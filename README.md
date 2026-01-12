@@ -36,17 +36,13 @@ vibee-lang/
 └── README.md               # This file
 ```
 
-## 🚀 Quick Start
+## Quick Start
 
-### 1. Install Dogfooding System
+### 1. Clone Repository
 
 ```bash
-# Automated setup
-./scripts/setup-dogfooding.sh
-
-# Manual setup
-cd gleam && gleam build
-gleam run -m honeycomb/dogfooding/cli -- install-hooks
+git clone https://github.com/gHashTag/vibee-lang.git
+cd vibee-lang
 ```
 
 ### 2. Create Specification (Given/When/Then + YAML)

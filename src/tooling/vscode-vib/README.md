@@ -1,23 +1,37 @@
-# vscode-vib
+# VIBEE Language Support for VS Code
 
-## Description
-Generated from spec.yml
+Syntax highlighting and language support for VIBEE specification files.
+
+## Features
+
+- Syntax highlighting for `.vibee`, `.vib`, `.vibe` files
+- YAML-based specification format
+- Given/When/Then behavior definitions
 
 ## Installation
-```gleam
-import honeycomb/tooling/vscode-vib
-```
 
-## Usage
-See spec.yml for behaviors and functions.
-
-## Testing
+### From VSIX (Local)
 ```bash
-gleam test
+npm install
+npm run compile
+npx vsce package
+code --install-extension vibee-language-1.0.0.vsix
 ```
 
-All tests must pass at 100% for plugin to build.
+## Example
 
-## Generated from spec.yml
-This file was auto-generated from spec.yml.
-To update, modify spec.yml and run: `vibee generate`
+```yaml
+name: example
+version: "1.0.0"
+language: zig
+
+behaviors:
+  - name: process_data
+    given: Input data provided
+    when: process_data function called
+    then: Data processed successfully
+```
+
+## License
+
+MIT
