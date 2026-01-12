@@ -1,0 +1,293 @@
+name: hooks
+version: "1.0.0"
+language: gleam
+module: honeycomb/dogfooding/hooks
+description: Git hooks installer for VIBEE spec enforcement
+
+behaviors:
+  - name: install_hooks
+    given: Git repository
+    when: Hooks are installed
+    then: Pre-commit and pre-push hooks are created
+    test_cases:
+      - name: install_in_valid_repo
+        input: {repo_path: "/workspaces/vibee-lang"}
+        expected: 
+          success: true
+          hooks_installed: ["pre-commit", "pre-push"]
+      - name: install_in_non_git_repo
+        input: {repo_path: "/tmp/not-a-repo"}
+        expected: {success: false, error: "not_a_git_repository"}
+
+  - name: create_pre_commit_hook
+    given: Git hooks directory
+    when: Pre-commit hook is created
+    then: Hook script is written and made executable
+    test_cases:
+      - name: create_hook_success
+        input: {hooks_dir: ".git/hooks"}
+        expected:
+          success: true
+          hook_path: ".git/hooks/pre-commit"
+          executable: true
+      - name: create_hook_existing
+        input: 
+          hooks_dir: ".git/hooks"
+          existing_hook: true
+        expected:
+          success: true
+          backup_created: true
+          backup_path: ".git/hooks/pre-commit.backup"
+
+  - name: run_pre_commit_check
+    given: Staged files
+    when: Pre-commit hook runs
+    then: Only staged Gleam files in honeycomb/ are checked
+    test_cases:
+      - name: check_staged_honeycomb_files
+        input:
+          staged_files:
+            - "honeycomb/agent/core.gleam"
+            - "honeycomb/mcp/tools.gleam"
+            - "README.md"
+        expected:
+          checked_files: 
+            - "honeycomb/agent/core.gleam"
+            - "honeycomb/mcp/tools.gleam"
+          violations: []
+          allow_commit: true
+      - name: check_with_violations
+        input:
+          staged_files: ["honeycomb/test.gleam"]
+          violations: [{rule: "NoManualCode", file: "honeycomb/test.gleam"}]
+        expected:
+          allow_commit: false
+          error_message: "Violations found. Fix or use --no-verify to skip."
+
+  - name: run_pre_push_check
+    given: Commits to be pushed
+    when: Pre-push hook runs
+    then: All honeycomb/ files are scanned
+    test_cases:
+      - name: check_all_honeycomb_files
+        input: {commits: ["abc123", "def456"]}
+        expected:
+          scanned_files_count: 150
+          violations: []
+          allow_push: true
+      - name: check_with_violations
+        input:
+          commits: ["abc123"]
+          violations: [{rule: "OutdatedCode", file: "honeycomb/old.gleam"}]
+        expected:
+          allow_push: false
+          error_message: "Violations found. Fix before pushing."
+
+  - name: backup_existing_hook
+    given: Existing git hook
+    when: New hook is installed
+    then: Existing hook is backed up
+    test_cases:
+      - name: backup_success
+        input: {hook_path: ".git/hooks/pre-commit"}
+        expected:
+          backup_path: ".git/hooks/pre-commit.backup.1704067200"
+          success: true
+
+  - name: uninstall_hooks
+    given: Installed hooks
+    when: Uninstall is requested
+    then: Hooks are removed and backups restored
+    test_cases:
+      - name: uninstall_with_backups
+        input:
+          hooks: ["pre-commit", "pre-push"]
+          backups_exist: true
+        expected:
+          success: true
+          restored: ["pre-commit", "pre-push"]
+      - name: uninstall_without_backups
+        input:
+          hooks: ["pre-commit"]
+          backups_exist: false
+        expected:
+          success: true
+          removed: ["pre-commit"]
+
+types:
+  HookType:
+    variants:
+      - PreCommit
+      - PrePush
+      - PostCommit
+
+  HookConfig:
+    hook_type: HookType
+    script_content: String
+    executable: Bool
+
+  InstallResult:
+    success: Bool
+    installed_hooks: List(HookType)
+    backups_created: List(String)
+    error: Option(String)
+
+  HookCheckResult:
+    allow_action: Bool  # Allow commit/push
+    violations: List(Violation)
+    checked_files: List(String)
+    error_message: Option(String)
+
+functions:
+  - name: install_hooks
+    params: {repo_path: String}
+    returns: Result(InstallResult, String)
+    description: Install all git hooks
+
+  - name: install_hook
+    params: {repo_path: String, hook_type: HookType}
+    returns: Result(String, String)
+    description: Install single git hook
+
+  - name: create_pre_commit_script
+    params: {}
+    returns: String
+    description: Generate pre-commit hook script
+
+  - name: create_pre_push_script
+    params: {}
+    returns: String
+    description: Generate pre-push hook script
+
+  - name: make_executable
+    params: {file_path: String}
+    returns: Result(Nil, String)
+    description: Set executable permission on file
+
+  - name: backup_hook
+    params: {hook_path: String}
+    returns: Result(String, String)
+    description: Backup existing hook file
+
+  - name: get_staged_files
+    params: {}
+    returns: Result(List(String), String)
+    description: Get list of staged files from git
+
+  - name: filter_honeycomb_gleam_files
+    params: {files: List(String)}
+    returns: List(String)
+    description: Filter for honeycomb/*.gleam files
+
+  - name: run_hook_check
+    params: {files: List(String), hook_type: HookType}
+    returns: HookCheckResult
+    description: Run violation check for hook
+
+  - name: uninstall_hooks
+    params: {repo_path: String}
+    returns: Result(Nil, String)
+    description: Remove installed hooks
+
+  - name: is_git_repo
+    params: {path: String}
+    returns: Bool
+    description: Check if path is a git repository
+
+  - name: get_hooks_dir
+    params: {repo_path: String}
+    returns: String
+    description: Get .git/hooks directory path
+
+imports:
+  - gleam/list
+  - gleam/string
+  - gleam/result
+  - gleam/option
+  - simplifile
+  - shellout
+
+hook_scripts: |
+  Pre-commit hook (Bash):
+  ```bash
+  #!/usr/bin/env bash
+  # VIBEE Dogfooding Pre-Commit Hook
+  # Auto-generated - do not edit manually
+  
+  echo "🔍 VIBEE: Checking staged files..."
+  
+  # Get staged .gleam files in honeycomb/
+  STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '^honeycomb/.*\.gleam$')
+  
+  if [ -z "$STAGED_FILES" ]; then
+    echo "✅ No honeycomb/ files staged"
+    exit 0
+  fi
+  
+  # Run scanner
+  cd "$(git rev-parse --show-toplevel)"
+  gleam run -m honeycomb/dogfooding/cli -- scan $STAGED_FILES
+  
+  if [ $? -ne 0 ]; then
+    echo "❌ Violations found! Fix or use 'git commit --no-verify' to skip."
+    exit 1
+  fi
+  
+  echo "✅ All checks passed"
+  exit 0
+  ```
+  
+  Pre-push hook (Bash):
+  ```bash
+  #!/usr/bin/env bash
+  # VIBEE Dogfooding Pre-Push Hook
+  # Auto-generated - do not edit manually
+  
+  echo "🔍 VIBEE: Checking all honeycomb/ files..."
+  
+  # Run full scan
+  cd "$(git rev-parse --show-toplevel)"
+  gleam run -m honeycomb/dogfooding/cli -- scan honeycomb/
+  
+  if [ $? -ne 0 ]; then
+    echo "❌ Violations found! Fix before pushing."
+    exit 1
+  fi
+  
+  echo "✅ All checks passed"
+  exit 0
+  ```
+
+installation_flow: |
+  1. Check if .git/ exists
+  2. Check if .git/hooks/ exists (create if not)
+  3. For each hook type:
+     a. Check if hook already exists
+     b. If exists: Create backup with timestamp
+     c. Write new hook script
+     d. Make executable (chmod +x)
+  4. Report installed hooks and backups
+
+uninstallation_flow: |
+  1. For each hook type:
+     a. Check if hook exists
+     b. Check if backup exists
+     c. If backup exists: Restore backup
+     d. If no backup: Remove hook
+  2. Report removed/restored hooks
+
+bypass_mechanism: |
+  Users can bypass hooks with:
+  - git commit --no-verify
+  - git push --no-verify
+  
+  This is intentional for emergency situations.
+  
+  Hook should print clear message about bypass option.
+
+performance_notes: |
+  - Pre-commit: Only scan staged files (fast)
+  - Pre-push: Scan all honeycomb/ files (slower but thorough)
+  - Use parallel scanning when possible
+  - Cache scan results to avoid re-scanning unchanged files
+  - Exit early if no relevant files changed

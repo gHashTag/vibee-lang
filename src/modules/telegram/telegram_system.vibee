@@ -1,0 +1,216 @@
+name: telegram_system
+version: "1.0.0"
+language: zig
+module: telegram_system
+description: Telegram bot integration with MTProto bridge
+
+behaviors:
+  - name: send_telegram_message
+    given: Bot token and chat ID
+    when: send_message function called
+    then: Message sent to Telegram chat
+    test_cases:
+      - name: send_text_message
+        input: {chat_id: 123456, text: "Hello from VIBEE", parse_mode: "Markdown"}
+        expected: {status: "sent", message_id: 789}
+      - name: send_with_keyboard
+        input: {chat_id: 123456, text: "Choose option", keyboard: [["A", "B"], ["C", "D"]]}
+        expected: {status: "sent", has_keyboard: true}
+
+  - name: receive_telegram_updates
+    given: Bot is running
+    when: Polling or webhook receives updates
+    then: Updates processed and handlers called
+    test_cases:
+      - name: receive_text_message
+        input: {update_id: 1, message: {text: "/start", from: {id: 123}}}
+        expected: {processed: true, handler: "start_command"}
+      - name: receive_callback_query
+        input: {update_id: 2, callback_query: {data: "button_1"}}
+        expected: {processed: true, handler: "callback_handler"}
+
+  - name: manage_telegram_session
+    given: User interacts with bot
+    when: Session management functions called
+    then: Session state maintained across messages
+    test_cases:
+      - name: create_session
+        input: {user_id: 123, chat_id: 456}
+        expected: {session_id: "uuid", state: "active"}
+      - name: update_session_state
+        input: {session_id: "uuid", state: {step: "awaiting_input"}}
+        expected: {updated: true, step: "awaiting_input"}
+
+  - name: handle_telegram_commands
+    given: User sends command
+    when: Command handler processes the command
+    then: Appropriate response sent
+    test_cases:
+      - name: handle_start_command
+        input: {command: "/start", user_id: 123}
+        expected: {response: "Welcome to VIBEE!", sent: true}
+      - name: handle_help_command
+        input: {command: "/help", user_id: 123}
+        expected: {response: "Available commands: ...", sent: true}
+
+types:
+  TelegramMessage:
+    message_id: int
+    chat_id: int
+    from_user_id: int
+    text: optional<str>
+    date: int
+    reply_to_message_id: optional<int>
+
+  TelegramUpdate:
+    update_id: int
+    message: optional<TelegramMessage>
+    callback_query: optional<CallbackQuery>
+    edited_message: optional<TelegramMessage>
+
+  CallbackQuery:
+    id: str
+    from_user_id: int
+    message: optional<TelegramMessage>
+    data: str
+
+  SendMessageRequest:
+    chat_id: int
+    text: str
+    parse_mode: optional<str>
+    reply_markup: optional<ReplyMarkup>
+
+  ReplyMarkup:
+    inline_keyboard: optional<list<list<InlineKeyboardButton>>>
+    keyboard: optional<list<list<str>>>
+    resize_keyboard: optional<bool>
+    one_time_keyboard: optional<bool>
+
+  InlineKeyboardButton:
+    text: str
+    callback_data: optional<str>
+    url: optional<str>
+
+  TelegramSession:
+    session_id: str
+    user_id: int
+    chat_id: int
+    state: SessionState
+    created_at: int
+    last_activity: int
+
+  SessionState:
+    step: str
+    data: json
+    awaiting_input: bool
+
+  BotConfig:
+    token: str
+    webhook_url: optional<str>
+    polling_timeout: int
+    allowed_updates: list<str>
+
+functions:
+  # Sending messages
+  - name: send_message
+    params: {request: SendMessageRequest}
+    returns: json
+    description: Send message to Telegram chat
+
+  - name: send_photo
+    params: {chat_id: int, photo_url: str, caption: optional<str>}
+    returns: json
+    description: Send photo to Telegram chat
+
+  - name: send_document
+    params: {chat_id: int, document_url: str, caption: optional<str>}
+    returns: json
+    description: Send document to Telegram chat
+
+  - name: edit_message
+    params: {chat_id: int, message_id: int, text: str}
+    returns: json
+    description: Edit existing message
+
+  - name: delete_message
+    params: {chat_id: int, message_id: int}
+    returns: bool
+    description: Delete message
+
+  # Receiving updates
+  - name: get_updates
+    params: {offset: int, timeout: int}
+    returns: list<TelegramUpdate>
+    description: Get updates via long polling
+
+  - name: process_update
+    params: {update: TelegramUpdate}
+    returns: bool
+    description: Process single update
+
+  - name: set_webhook
+    params: {url: str}
+    returns: bool
+    description: Set webhook URL
+
+  # Session management
+  - name: create_session
+    params: {user_id: int, chat_id: int}
+    returns: TelegramSession
+    description: Create new session
+
+  - name: get_session
+    params: {user_id: int}
+    returns: optional<TelegramSession>
+    description: Get existing session
+
+  - name: update_session
+    params: {session_id: str, state: SessionState}
+    returns: bool
+    description: Update session state
+
+  - name: close_session
+    params: {session_id: str}
+    returns: bool
+    description: Close session
+
+  # Command handling
+  - name: handle_command
+    params: {command: str, user_id: int, chat_id: int}
+    returns: json
+    description: Handle bot command
+
+  - name: register_command_handler
+    params: {command: str, handler: str}
+    returns: bool
+    description: Register command handler
+
+  # Callback handling
+  - name: handle_callback_query
+    params: {query: CallbackQuery}
+    returns: bool
+    description: Handle callback query
+
+  - name: answer_callback_query
+    params: {callback_query_id: str, text: optional<str>}
+    returns: bool
+    description: Answer callback query
+
+imports:
+  - std.json
+  - std.http
+  - std.mem
+  - std.ArrayList
+  - std.StringHashMap
+
+optimization:
+  target: zig
+  level: ReleaseFast
+  features:
+    - inline_small_functions
+    - unroll_loops
+
+performance:
+  expected_latency_ms: 100
+  max_concurrent_sessions: 10000
+  max_memory_mb: 500

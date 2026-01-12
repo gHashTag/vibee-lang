@@ -1,0 +1,304 @@
+name: vibee_ffi
+version: "1.0.0"
+language: zig
+module: ffi
+description: VIBEE Foreign Function Interface - Call C libraries from VIBEE
+
+behaviors:
+  - name: declare_external_function
+    given: C function signature
+    when: extern declaration in VIBEE
+    then: Function callable from VIBEE
+    test_cases:
+      - name: declare_c_printf
+        input: {name: "printf", params: ["format: *const u8"], returns: "i32"}
+        expected: {declared: true, callable: true}
+
+  - name: call_c_function
+    given: Declared C function
+    when: Function called from VIBEE
+    then: C function executed
+    test_cases:
+      - name: call_printf
+        input: {function: "printf", args: ["Hello, C!\n"]}
+        expected: {executed: true, return_value: 10}
+
+  - name: pass_primitive_types
+    given: C function expecting primitives
+    when: VIBEE primitives passed
+    then: Types converted correctly
+    test_cases:
+      - name: pass_int_to_c
+        input: {type: "i32", value: 42}
+        expected: {converted: true, c_value: 42}
+
+  - name: pass_pointers
+    given: C function expecting pointer
+    when: VIBEE pointer passed
+    then: Pointer passed correctly
+    test_cases:
+      - name: pass_string_pointer
+        input: {type: "*const u8", value: "hello"}
+        expected: {converted: true, valid_pointer: true}
+
+  - name: return_values_from_c
+    given: C function returns value
+    when: Function called from VIBEE
+    then: Return value converted to VIBEE type
+    test_cases:
+      - name: return_int_from_c
+        input: {c_return: 42, expected_type: "i32"}
+        expected: {converted: true, vibee_value: 42}
+
+  - name: handle_c_structs
+    given: C struct definition
+    when: Struct used in FFI
+    then: Memory layout matches C
+    test_cases:
+      - name: pass_struct_to_c
+        input: {struct: "Point", fields: {x: 10, y: 20}}
+        expected: {layout_correct: true, passed: true}
+
+  - name: link_c_library
+    given: C library (.so/.dll/.dylib)
+    when: Library linked to VIBEE program
+    then: Functions available
+    test_cases:
+      - name: link_libm
+        input: {library: "m", functions: ["sin", "cos", "sqrt"]}
+        expected: {linked: true, functions_available: 3}
+
+  - name: handle_c_callbacks
+    given: C function expecting callback
+    when: VIBEE function passed as callback
+    then: Callback invoked from C
+    test_cases:
+      - name: pass_callback_to_qsort
+        input: {function: "qsort", callback: "compare_fn"}
+        expected: {callback_invoked: true, sorted: true}
+
+types:
+  ExternFunction:
+    fields:
+      name: string
+      params: array_FfiType
+      return_type: FfiType
+      library: Option_string
+
+  FfiType:
+    variants:
+      - Void
+      - Bool
+      - I8
+      - I16
+      - I32
+      - I64
+      - U8
+      - U16
+      - U32
+      - U64
+      - F32
+      - F64
+      - Pointer: FfiType
+      - Struct: string
+      - Array: ArrayType
+
+  ArrayType:
+    fields:
+      element_type: FfiType
+      length: usize
+
+  CStruct:
+    fields:
+      name: string
+      fields: array_StructField
+      size: usize
+      alignment: usize
+
+  StructField:
+    fields:
+      name: string
+      type: FfiType
+      offset: usize
+
+  CLibrary:
+    fields:
+      name: string
+      path: string
+      functions: array_ExternFunction
+      handle: Option_pointer
+
+  FfiCall:
+    fields:
+      function: ExternFunction
+      args: array_FfiValue
+      return_value: Option_FfiValue
+
+  FfiValue:
+    variants:
+      - VoidValue
+      - BoolValue: bool
+      - I32Value: i32
+      - I64Value: i64
+      - U32Value: u32
+      - U64Value: u64
+      - F32Value: f32
+      - F64Value: f64
+      - PointerValue: pointer
+      - StructValue: CStruct
+
+functions:
+  - name: declare_extern
+    params: {name: string, params: array_FfiType, return_type: FfiType, library: Option_string}
+    returns: Result_ExternFunction_Error
+    description: Declare external C function
+    
+  - name: call_extern
+    params: {function: ExternFunction, args: array_FfiValue}
+    returns: Result_FfiValue_Error
+    description: Call external C function
+    
+  - name: load_library
+    params: {name: string, path: string}
+    returns: Result_CLibrary_Error
+    description: Load C shared library
+    
+  - name: unload_library
+    params: {library: CLibrary}
+    returns: Result_void_Error
+    description: Unload C shared library
+    
+  - name: get_function
+    params: {library: CLibrary, name: string}
+    returns: Result_ExternFunction_Error
+    description: Get function from loaded library
+    
+  - name: define_struct
+    params: {name: string, fields: array_StructField}
+    returns: Result_CStruct_Error
+    description: Define C struct layout
+    
+  - name: convert_to_c
+    params: {value: FfiValue, target_type: FfiType}
+    returns: Result_pointer_Error
+    description: Convert VIBEE value to C representation
+    
+  - name: convert_from_c
+    params: {ptr: pointer, source_type: FfiType}
+    returns: Result_FfiValue_Error
+    description: Convert C value to VIBEE representation
+    
+  - name: create_callback
+    params: {vibee_fn: function, signature: array_FfiType}
+    returns: Result_pointer_Error
+    description: Create C callback from VIBEE function
+    
+  - name: free_callback
+    params: {callback: pointer}
+    returns: Result_void_Error
+    description: Free C callback
+    
+  - name: check_abi_compatibility
+    params: {vibee_type: FfiType, c_type: string}
+    returns: Result_bool_Error
+    description: Check if types are ABI compatible
+    
+  - name: calculate_struct_layout
+    params: {fields: array_StructField}
+    returns: Result_CStruct_Error
+    description: Calculate C struct memory layout
+    
+  - name: align_pointer
+    params: {ptr: pointer, alignment: usize}
+    returns: pointer
+    description: Align pointer to required boundary
+    
+  - name: get_type_size
+    params: {type: FfiType}
+    returns: usize
+    description: Get size of FFI type in bytes
+    
+  - name: get_type_alignment
+    params: {type: FfiType}
+    returns: usize
+    description: Get alignment requirement of FFI type
+
+examples:
+  - name: call_c_printf
+    description: Call C printf function
+    code: |
+      extern fn printf(format: *const u8, ...) -> i32;
+      
+      fn main() {
+          printf("Hello from VIBEE!\n");
+      }
+      
+  - name: use_math_library
+    description: Use C math library
+    code: |
+      extern fn sin(x: f64) -> f64 from "m";
+      extern fn cos(x: f64) -> f64 from "m";
+      
+      fn main() {
+          let angle = 3.14159 / 4.0;
+          let s = sin(angle);
+          let c = cos(angle);
+          print("sin = {s}, cos = {c}");
+      }
+      
+  - name: pass_struct_to_c
+    description: Pass struct to C function
+    code: |
+      struct Point {
+          x: i32,
+          y: i32,
+      }
+      
+      extern fn draw_point(p: *const Point) -> void;
+      
+      fn main() {
+          let p = Point { x: 10, y: 20 };
+          draw_point(&p);
+      }
+      
+  - name: use_c_callback
+    description: Pass VIBEE function as C callback
+    code: |
+      extern fn qsort(
+          base: *mut void,
+          nmemb: usize,
+          size: usize,
+          compar: fn(*const void, *const void) -> i32
+      ) -> void;
+      
+      fn compare(a: *const void, b: *const void) -> i32 {
+          let x = *(a as *const i32);
+          let y = *(b as *const i32);
+          x - y
+      }
+      
+      fn main() {
+          let mut arr = [3, 1, 4, 1, 5, 9, 2, 6];
+          qsort(&mut arr, 8, 4, compare);
+      }
+
+safety_rules:
+  - rule: null_pointer_checks
+    description: Always check for null pointers from C
+    
+  - rule: memory_ownership
+    description: Clarify who owns memory (VIBEE or C)
+    
+  - rule: error_handling
+    description: Check C function return values for errors
+    
+  - rule: type_safety
+    description: Verify type compatibility at compile time
+    
+  - rule: abi_compatibility
+    description: Ensure ABI matches between VIBEE and C
+
+imports:
+  - std
+  - core
+  - collections

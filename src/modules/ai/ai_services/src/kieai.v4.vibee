@@ -1,0 +1,421 @@
+// KIE AI (Veo3) Video Generation Integration
+  // Performance Warning:   // AI Suggestion: Consider extracting hardcoded strings to constants  // AI Suggestion: Replace magic numbers with named constants// API Documentation: https://api.kie.ai/api/v1
+// Supports: Veo3 Fast/Pro, WAN 2.5 T2V/I2V, VEED Fabric Lipsync
+// Converted from infra/ai/kieai.gleam → dsl/infra/ai/kieai.vibee
+
+import "vibee/dsl/ffi/json"
+
+// =============================================================================
+// Types
+// =============================================================================
+
+struct KieAiConfig(
+  KieAiConfig(api_key: str)
+}
+
+struct VideoRequest(
+  VideoRequest(
+    prompt: str,
+    seeds: int,
+    model: str?,
+    aspect_ratio: str?
+  )
+}
+
+struct ImageToVideoRequest(
+  ImageToVideoRequest(
+    prompt: str?,
+    image_url: str,
+    seeds: int,
+    model: str?,
+    duration: int?
+  )
+}
+
+struct VeedFabricRequest(
+  VeedFabricRequest(
+    audio_url: str,
+    image_url: str,
+    aspect_ratio: str?
+  )
+}
+
+struct KieAiRequest(
+  KieAiRequest(
+    url: str,
+    method: str,
+    headers: [#(str, str]),
+    body: str
+  )
+}
+
+struct TaskStatus(
+  Processing
+  Success(video_urls: [str])
+  Failed(error: str)
+}
+
+struct Task(
+  Task(task_id: str, status: TaskStatus)
+}
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+let base_url = const("https://api.kie.ai/api/v1"
+
+// =============================================================================
+// Config Functions
+// =============================================================================
+
+@spec default_config(api_key: str) → KieAiConfig {
+  /// Create default KIE AI config
+  given: API key
+  when: Initializing KIE AI client
+  then: Returns configured client
+}
+
+@impl {
+  KieAiConfig(api_key)
+}
+
+// =============================================================================
+// Request Builders
+// =============================================================================
+
+@http_tool POST "/veo/generate"
+timeout(5m)
+retry(3)
+circuit_breaker(threshold: 2, timeout: 5m, half_open_requests: 1)
+trace("kieai.veo3")
+metrics("kieai")
+@spec create_video_request(config: KieAiConfig, req: VideoRequest) → KieAiRequest {
+  /// Create text-to-video request
+  given: Config and video params
+  when: Generating video from text
+  then: Returns HTTP request
+}
+
+@impl {
+  let body = video_request_to_json(req)
+
+  KieAiRequest(
+    base_url}/veo/generate",
+    "POST",
+    [
+      #("Authorization", "Bearer {config}.api_key),
+      #("Content-Type", "application/json")
+    ],
+    body
+  )
+}
+
+@http_tool GET "/veo/record-info"
+timeout(30s)
+backoff: exponential · retry
+trace("kieai.veo3")
+metrics("kieai")
+@spec get_task_status_request(config: KieAiConfig, task_id: str) → KieAiRequest {
+  /// Get task status
+  given: Config and task ID
+  when: Checking generation status
+  then: Returns HTTP request
+}
+
+@impl {
+  KieAiRequest(
+    base_url}/veo/record-info?taskId={task_id},
+    "GET",
+    [
+      #("Authorization", "Bearer {config}.api_key),
+      #("Content-Type", "application/json")
+    ],
+    ""
+  )
+}
+
+@http_tool GET "/veo/records"
+timeout(30s)
+backoff: exponential · retry
+metrics("kieai")
+@spec list_videos_request(config: KieAiConfig, limit: int, offset: int) → KieAiRequest {
+  /// list all videos
+  given: Config, limit, offset
+  when: Getting video list
+  then: Returns HTTP request
+}
+
+@impl {
+  KieAiRequest(
+    base_url}/veo/records?limit=int_to_string(limit) + "&offset=int_to_string(offset),
+    "GET",
+    [
+      #("Authorization", "Bearer {config}.api_key),
+      #("Content-Type", "application/json")
+    ],
+    ""
+  )
+}
+
+@http_tool POST "/veo/generate"
+timeout(5m)
+retry(3)
+circuit_breaker(threshold: 2, timeout: 5m, half_open_requests: 1)
+metrics("ai.kieai")
+@spec create_image_to_video_request(config: KieAiConfig, req: ImageToVideoRequest) → KieAiRequest {
+  /// Create image-to-video request
+  given: Config and I2V params
+  when: Animating still image
+  then: Returns HTTP request
+}
+
+@impl {
+  let body = image_to_video_request_to_json(req)
+
+  KieAiRequest(
+    base_url}/veo/generate",
+    "POST",
+    [
+      #("Authorization", "Bearer {config}.api_key),
+      #("Content-Type", "application/json")
+    ],
+    body
+  )
+}
+
+@http_tool POST "/veed-fabric"
+timeout(5m)
+retry(3)
+circuit_breaker(threshold: 2, timeout: 5m, half_open_requests: 1)
+metrics("ai.kieai")
+@spec create_veed_fabric_request(config: KieAiConfig, req: VeedFabricRequest) → KieAiRequest {
+  /// Create VEED Fabric lipsync request
+  given: Config and lipsync params
+  when: Creating talking head video
+  then: Returns HTTP request
+}
+
+@impl {
+  let body = veed_fabric_request_to_json(req)
+
+  KieAiRequest(
+    base_url}/veed-fabric",
+    "POST",
+    [
+      #("Authorization", "Bearer {config}.api_key),
+      #("Content-Type", "application/json")
+    ],
+    body
+  )
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+@spec simple_video_request(prompt: str) → VideoRequest {
+  /// Create simple video request with defaults
+  given: Prompt
+  when: Quick video generation
+  then: Returns request with defaults
+}
+
+@impl {
+  generate_seed( · VideoRequest, ∅, ∅)
+}
+
+@spec video_request_with_ratio(prompt: str, aspect_ratio: str) → VideoRequest {
+  /// Create video request with aspect ratio
+  given: Prompt and aspect ratio
+  when: Custom aspect ratio needed
+  then: Returns request with ratio
+}
+
+@impl {
+  generate_seed( · VideoRequest, ∅, ☐aspect_ratio))
+}
+
+@spec video_request_full(prompt: str, seeds: int, model: str, aspect_ratio: str) → VideoRequest {
+  /// Create video request with all options
+  given: All parameters
+  when: Full control needed
+  then: Returns fully configured request
+}
+
+@impl {
+  seeds, ☐model · VideoRequest, ☐aspect_ratio))
+}
+
+@spec simple_image_to_video(image_url: str) → ImageToVideoRequest {
+  /// Create simple I2V request
+  given: Image URL
+  when: Quick animation
+  then: Returns I2V request
+}
+
+@impl {
+  image_url, generate_seed( · ImageToVideoRequest, ∅, ∅)
+}
+
+@spec image_to_video_with_prompt(image_url: str, prompt: str) → ImageToVideoRequest {
+  /// Create I2V request with prompt
+  given: Image URL and prompt
+  when: Guided animation
+  then: Returns I2V request
+}
+
+@impl {
+  ImageToVideoRequest(☐prompt), image_url, generate_seed(), ∅, ∅)
+}
+
+@spec image_to_video_full(image_url: str, prompt: str?, seeds: int, model: str, duration: int) → ImageToVideoRequest {
+  /// Create full I2V request
+  given: All parameters
+  when: Full control needed
+  then: Returns fully configured request
+}
+
+@impl {
+  image_url, seeds, ☐model · ImageToVideoRequest, ☐duration))
+}
+
+@spec simple_veed_fabric(audio_url: str, image_url: str) → VeedFabricRequest {
+  /// Create simple lipsync request
+  given: Audio and image URLs
+  when: Quick lipsync
+  then: Returns lipsync request
+}
+
+@impl {
+  image_url, ∅· VeedFabricRequest
+}
+
+@spec veed_fabric_with_ratio(audio_url: str, image_url: str, aspect_ratio: str) → VeedFabricRequest {
+  /// Create lipsync request with aspect ratio
+  given: Audio, image, and aspect ratio
+  when: Custom aspect ratio
+  then: Returns lipsync request
+}
+
+@impl {
+  image_url, ☐aspect_ratio · VeedFabricRequest)
+}
+
+@spec generate_seed() → int {
+  /// Generate random seed
+  given: Nothing
+  when: Default seed needed
+  then: Returns seed value
+}
+
+@impl {
+  // Placeholder - should use actual random in production
+  50000
+}
+
+// =============================================================================
+// Available Options
+// =============================================================================
+
+cache(24h)
+@spec supported_models() → [str] {
+  /// Get supported video models
+  given: Nothing
+  when: Listing models
+  then: Returns model list
+}
+
+@impl {
+  ["veo3_fast", "veo3", "wan-2.5-t2v", "wan-2.5-i2v"]
+}
+
+@spec model_descriptions() → [#(str, str]) {
+  /// Get model descriptions
+  given: Nothing
+  when: Showing model info
+  then: Returns model descriptions
+}
+
+@impl {
+  [
+    #("veo3_fast", "Veo3 Fast - Quick generation, good quality"),
+    #("veo3", "Veo3 - Higher quality, slower generation"),
+    #("wan-2.5-t2v", "WAN 2.5 Text-to-Video - High quality T2V"),
+    #("wan-2.5-i2v", "WAN 2.5 Image-to-Video - Animate still images")
+  ]
+}
+
+cache(24h)
+@spec supported_aspect_ratios() → [str] {
+  /// Get supported aspect ratios
+  given: Nothing
+  when: Listing ratios
+  then: Returns ratio list
+}
+
+@impl {
+  ["9:16", "16:9", "1"]
+}
+
+@spec aspect_ratio_descriptions() → [#(str, str]) {
+  /// Get aspect ratio descriptions
+  given: Nothing
+  when: Showing ratio info
+  then: Returns ratio descriptions
+}
+
+@impl {
+  [
+    #("9:16", "Portrait (TikTok, Instagram Reels)"),
+    #("16:9", "Landscape (YouTube)"),
+    #("1", "Square (Instagram Posts)")
+  ]
+}
+
+@spec seed_range() → #(int, int) {
+  /// Get valid seed range
+  given: Nothing
+  when: Showing seed limits
+  then: Returns min/max seeds
+}
+
+@impl {
+  #(10000, 99999)
+}
+
+// =============================================================================
+// Status Parsing
+// =============================================================================
+
+@spec parse_success_flag(flag: int) → TaskStatus {
+  /// Parse successFlag from API response
+  /// -1: processing, 1: success, 2: failed, 3: error
+  given: Success flag integer
+  when: Parsing API response
+  then: Returns task status
+}
+
+@impl {
+  match flag {
+    1 → Success([])
+    2 → Failed("Generation failed")
+    3 → Failed("Generation error")
+    _ → Processing
+  }
+}
+
+// =============================================================================
+// FFI Imports
+// =============================================================================
+
+// @ffi json_object(fields: [#(str, Json])) → Json
+// @ffi json_string(s: str) → Json
+// @ffi json_int(n: int) → Json
+// @ffi json_to_string(j: Json) → str
+// @ffi int_to_string(n: int) → str
+
+# v8.0
+
+# v8.0
+# v10.0 - ML-Powered Migration

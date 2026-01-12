@@ -1,0 +1,296 @@
+// Agent Widget - AI Agent Status Display
+  // Performance Warning:   // AI Suggestion: Replace magic numbers with named constants  // AI Suggestion: Consider extracting hardcoded strings to constants// Shows current agent task progress in VIBEE Terminal
+// Part of VIBEE Terminal - AGI Open Source Framework
+
+import "../../cli_ui/ansi.vibee" as ansi
+import "../../cli_ui/spinner.vibee" as spinner
+
+// =============================================================================
+// TYPES
+// =============================================================================
+
+struct AgentTask = {
+  id: str,
+  name: str,
+  status: str,
+  started_at: int,
+  progress: int,
+  output: list[str]
+}
+
+struct AgentWidgetState = {
+  task: AgentTask,
+  scroll_offset: int,
+  expanded: bool
+}
+
+// =============================================================================
+// WIDGET RENDERING
+// =============================================================================
+
+tool render:
+  desc: "Render agent status widget"
+  @spec "Renders agent": state != nil && rect != nil → result.rendered == true
+
+  state: AgentWidgetState!
+  rect: Rect!
+
+  → {
+    task = state.task
+
+    case task.status:
+      "idle" → render_idle(rect)
+      "running" → rect, state.scroll_offset · render_running
+      "completed" → rect · render_completed
+      "failed" → rect · render_failed
+      "cancelled" → rect · render_cancelled
+      _ → render_idle(rect)
+
+    { rendered: true }
+  }
+
+// =============================================================================
+// STATUS RENDERERS
+// =============================================================================
+
+render_idle(rect: Rect) → nil:
+  // Empty state
+  message = ansi.fg("No active task", "bright_black")
+  print_at(rect.x, rect.y, message)
+
+  hint = ansi.fg("Type /agent <task> to start", "bright_black")
+  print_at(rect.x, rect.y + 2, hint)
+
+render_running(task: AgentTask, rect: Rect, scroll: int) → nil:
+  // Task name with spinner
+  spinner_char = get_spinner_frame()
+  title = ansi.fg(spinner_char + " ", "magenta") + ansi.fg(task.name, "cyan")
+  print_at(rect.x, rect.y, rect.width · truncate)
+
+  // Elapsed time
+  elapsed = format_elapsed(now_ms() - task.started_at)
+  time_line = ansi.fg("⏱️  {elapsed}", "bright_black")
+  print_at(rect.x, rect.y + 1, time_line)
+
+  // Progress bar (if progress > 0)
+  case task.progress > 0:
+    true → {
+      bar = render_progress_bar(task.progress, rect.width - 4)
+      print_at(rect.x, rect.y + 2, bar)
+    }
+    false → nil
+
+  // Output lines
+  output_start_y = case task.progress > 0: true → rect.y + 4 false → rect.y + 3
+  available_height = rect.height - (output_start_y - rect.y) - 1
+
+  visible_output = task.output
+    · skip(scroll)
+    · take(available_height)
+
+  visible_output · enumerate · each(fn(item) {
+    y = output_start_y + item.index
+    line = ansi.fg("│ ", "bright_black") + truncate(item.value, rect.width - 2)
+    print_at(rect.x, y, line)
+  }
+
+  // Scroll indicator
+  total_lines = length(task.output)
+  case total_lines > available_height:
+    true → {
+      indicator = ansi.fg("[{to_string(scroll + 1)}-{to_string(min(scroll + available_height, total_lines))}/{to_string(total_lines)}]", "bright_black")
+      print_at(rect.x, rect.y + rect.height - 1, indicator)
+    }
+    false → nil
+
+render_completed(task: AgentTask, rect: Rect) → nil:
+  // Success icon and name
+  title = ansi.fg("✓ ", "green") + task.name
+  print_at(rect.x, rect.y, rect.width · truncate)
+
+  // Duration
+  duration = format_elapsed(now_ms() - task.started_at)
+  duration_line = ansi.fg("Completed in {duration}", "bright_black")
+  print_at(rect.x, rect.y + 1, duration_line)
+
+  // Last output lines
+  last_lines = task.output · take_last(rect.height - 3)
+  last_lines · enumerate · each(fn(item) {
+    y = rect.y + 3 + item.index
+    line = ansi.fg("│ ", "green") + truncate(item.value, rect.width - 2)
+    print_at(rect.x, y, line)
+  }
+
+render_failed(task: AgentTask, rect: Rect) → nil:
+  // Error icon and name
+  title = ansi.fg("✗ ", "red") + ansi.fg(task.name, "red")
+  print_at(rect.x, rect.y, rect.width · truncate)
+
+  // Duration
+  duration = format_elapsed(now_ms() - task.started_at)
+  duration_line = ansi.fg("Failed after {duration}", "bright_black")
+  print_at(rect.x, rect.y + 1, duration_line)
+
+  // Error output
+  last_lines = task.output · take_last(rect.height - 3)
+  last_lines · enumerate · each(fn(item) {
+    y = rect.y + 3 + item.index
+    line = ansi.fg("│ ", "red") + truncate(item.value, rect.width - 2)
+    print_at(rect.x, y, line)
+  }
+
+render_cancelled(task: AgentTask, rect: Rect) → nil:
+  // Cancelled icon and name
+  title = ansi.fg("○ ", "yellow") + ansi.fg(task.name, "bright_black")
+  print_at(rect.x, rect.y, rect.width · truncate)
+
+  message = ansi.fg("Cancelled by type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}", "bright_black")
+  print_at(rect.x, rect.y + 1, message)
+
+// =============================================================================
+// PROGRESS BAR
+// =============================================================================
+
+render_progress_bar(progress: int, width: int) → str:
+  bar_width = width - 7  // Leave room for percentage
+  filled = (progress * bar_width) / 100
+  empty = bar_width - filled
+
+  bar = ansi.fg(repeat("█", filled), "magenta") +
+        ansi.fg(repeat("░", empty), "bright_black")
+
+  pct = pad_left(to_string(progress), 3) + "%"
+
+  "{bar} {ansi."cyan" · fg}"
+
+// =============================================================================
+// SPINNER
+// =============================================================================
+
+let SPINNER_FRAMES = const(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+get_spinner_frame() → str:
+  tick = (now_ms() / 80) % length(SPINNER_FRAMES)
+  SPINNER_FRAMES[tick]
+
+// =============================================================================
+// INTERACTION
+// =============================================================================
+
+tool handle_key:
+  desc: "Handle keyboard input in agent widget"
+  @spec "Handles key": state != nil && key != nil → result.state is AgentWidgetState
+
+  state: AgentWidgetState!
+  key: KeyEvent!
+
+  → case key.key:
+       "up" → {
+         new_offset = state.scroll_offset - 1 · max
+         { state: {state..., scroll_offset: new_offset }, consumed: true }
+       }
+       "down" → {
+         max_offset = length(state.task.output · max - 5)
+         new_offset = state.scroll_offset + 1 · min
+         { state: {state..., scroll_offset: new_offset }, consumed: true }
+       }
+       "e" → {
+         // Toggle expanded { state: {state..., expanded: !state.expanded }, consumed: true }
+       }
+       _ → { state, consumed: false }
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+print_at(x: int, y: int, text: str) → nil:
+  ffi("terminal_ffi", "move_cursor", x, y)
+  ffi("terminal_ffi", "print", text)
+
+format_elapsed(ms: int) → str:
+  seconds = ms / 1000
+  case seconds < 60:
+    true → "{to_string(seconds)}s"
+    false → {
+      minutes = seconds / 60
+      secs = seconds % 60
+      "{to_string(minutes)}m {to_string(secs)}s"
+    }
+
+truncate(s: str, max_len: int) → str:
+  case visible_length(s) > max_len:
+    true → 0, max_len - 1 · substring + "…"
+    false → s
+
+pad_left(s: str, width: int) → str:
+  padding = width - length(s)
+  case padding > 0:
+    true → repeat(" ", padding) + s
+    false → s
+
+repeat(s: str, n: int) → str:
+  case n <= 0:
+    true → ""
+    false → s ++ n - 1 · repeat
+
+enumerate(list[a]) → list[{ index: int, value: a }]:
+  0 · enumerate_helper
+
+enumerate_helper(list[a], i: int) → list[{ index: int, value: a }]:
+  case list:
+    [] → []
+    [head, ...tail] → [{ index: i, value: head }, ...i + 1 · enumerate_helper]
+
+skip(list[a], n: int) → list[a]:
+  case n <= 0:
+    true → list
+    false → case list:
+      [] → []
+      [_, ...tail] → n - 1 · skip
+
+take(list[a], n: int) → list[a]:
+  case n <= 0:
+    true → []
+    false → case list:
+      [] → []
+      [head, ...tail] → [head, ...n - 1 · take]
+
+take_last(list[a], n: int) → list[a]:
+  len = length(list)
+  case len <= n:
+    true → list
+    false → len - n · skip
+
+length(list[a]) → int:
+  case list:
+    [] → 0
+    [_, ...tail] → 1 + length(tail)
+
+max(a: int, b: int) → int:
+  case a > b: true → a false → b
+
+min(a: int, b: int) → int:
+  case a < b: true → a false → b
+
+now_ms() → int:
+  ffi("time_ffi", "now_ms")
+
+visible_length(s: str) → int:
+  ffi("string_ffi", "visible_length", s)
+
+substring(s: str, start: int, end: int) → str:
+  ffi("string_ffi", "substring", s, start, end)
+
+to_string(n: int) → str:
+  ffi("string_ffi", "to_string", n)
+
+# v8.0
+
+# v8.0
+# v10.0 - ML-Powered Migration

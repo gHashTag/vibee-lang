@@ -1,0 +1,1141 @@
+// Sync - CRDT-style State Synchronization
+  // Performance Warning:   // AI Suggestion: Use pipeline operator for better readability  // AI Suggestion: Consider extracting hardcoded strings to constants  // AI Suggestion: Replace magic numbers with named constants// Real-time collaborative state management for VIBEE Terminal
+// Part of VIBEE Terminal - AGI Open Source Framework
+
+// =============================================================================
+// TYPES
+// =============================================================================
+
+struct VectorClock = map[str, int]  // node_id → logical_timestamp
+
+struct Operation = {
+  id: str,
+  type: str,
+  path: list[str],                 // JSON path to value
+  value: any,
+  timestamp: int,
+  node_id: str,
+  vector_clock: VectorClock
+}
+
+struct StateVersion = {
+  version: int,
+  vector_clock: VectorClock,
+  checksum: str
+}
+
+struct SyncState = {
+  data: map,
+  version: StateVersion,
+  pending_ops: list[Operation],
+  confirmed_ops: list[Operation]
+}
+
+struct ConflictResolution = "last_write_wins" | "first_write_wins" | "merge" | "custom"
+
+struct Conflict = {
+  path: list[str],
+  local_value: any,
+  remote_value: any,
+  local_op: Operation,
+  remote_op: Operation
+}
+
+struct SyncResult = {
+  success: bool,
+  merged_state: map,
+  conflicts: list[Conflict],
+  applied_ops: int,
+  rejected_ops: int
+}
+
+struct DiffEntry = {
+  path: list[str],
+  type: str,
+  old_value: any,
+  new_value: any
+}
+
+// =============================================================================
+// CONSTANTS
+// =============================================================================
+
+let MAX_PENDING_OPS = const(1000
+let SYNC_BATCH_SIZE = const(100
+let OPTIMISTIC_TIMEOUT_MS = const(5000
+
+// =============================================================================
+// STATE OPERATIONS
+// =============================================================================
+
+tool init_state:
+  desc: "Initialize synchronized state for a room"
+  @Inits state: room_id != "" → result.initialized == true
+  @Creates vector clock: room_id != "" → result.version.vector_clock != _
+
+  ws: WebSocket!
+  room_id: str!
+  initial_state: map = {}
+  node_id: str = ""
+
+  → {
+    actual_node_id = case node_id:
+      "" → generate_id()
+      _ → node_id
+
+    initial_version = {
+      version: 1,
+      vector_clock: { [actual_node_id]: 1 },
+      checksum: compute_checksum(initial_state)
+    }
+
+    sync_state = {
+      data: initial_state,
+      version: initial_version,
+      pending_ops: [],
+      confirmed_ops: []
+    }
+
+    // Store locally
+    ffi("ets_ffi", "put", "sync_state:{room_id}", sync_state)
+    ffi("ets_ffi", "put", "node_id:{room_id}", actual_node_id)
+
+    // Register with server
+    ffi("websocket_ffi", "send", ws, {
+      type: "sync:init",
+      room_id,
+      node_id: actual_node_id,
+      state: initial_state,
+      version: initial_version
+    }
+
+    response = @ffi("websocket_ffi", "recv", ws, 5000)
+
+    case response:
+      _ → { initialized: false, error: "Timeout" }
+      r → case r.type:
+        "sync:initialized" → {
+          initialized: true,
+          node_id: actual_node_id,
+          version: initial_version,
+          error: ""
+        }
+        "sync:existing" → {
+          // Join existing state
+          ffi("ets_ffi", "put", "sync_state:{room_id}", {
+            data: r.state,
+            version: r.version,
+            pending_ops: [],
+            confirmed_ops: []
+          }
+          {
+            initialized: true,
+            node_id: actual_node_id,
+            version: r.version,
+            joined_existing: true,
+            error: ""
+          }
+        }
+        "error" → { initialized: false, error.message }
+        _ → { initialized: false, error: "Unexpected response" }
+  }
+
+tool get_state:
+  desc: "Get current synchronized state"
+  @Gets state: room_id != "" → result.state != _ or result.error != ""
+
+  room_id: str!
+
+  → {
+    sync_state = @ffi("ets_ffi", "get", "sync_state:{room_id}")
+
+    case sync_state:
+      _ → { state: _, error: "State not initialized" }
+      s → {
+        state: s.data,
+        version: s.version,
+        pending_count: len(s.pending_ops),
+        error: ""
+      }
+  }
+
+tool set_value:
+  desc: "Set a value at path (optimistic update)"
+  @Sets value: path != [] → result.applied == true
+  @Creates operation: path != [] → result.operation != _
+
+  ws: WebSocket!
+  room_id: str!
+  path: list[str]!
+  value: any!
+
+  → {
+    node_id = ffi("ets_ffi", "get", "node_id:{room_id}")
+    sync_state = ffi("ets_ffi", "get", "sync_state:{room_id}")
+
+    case sync_state:
+      _ → { applied: false, error: "State not initialized" }
+      s → {
+        // Increment vector clock
+        new_clock = increment_clock(s.version.vector_clock, node_id)
+
+        // Create operation
+        op = {
+          id: generate_id(),
+          type: "set",
+          path,
+          value,
+          timestamp: now_ms(),
+          node_id,
+          vector_clock: new_clock
+        }
+
+        // Apply optimistically
+        new_data = set_at_path(s.data, path, value)
+        new_version = {
+          ...s.version,
+          version: s.version.version + 1,
+          vector_clock: new_clock,
+          checksum: compute_checksum(new_data)
+        }
+
+        new_state = {s..., data: new_data,
+          version: new_version,
+          pending_ops: append(s.pending_ops, op)
+        }
+
+        ffi("ets_ffi", "put", "sync_state:{room_id}", new_state)
+
+        // Send to server
+        ffi("websocket_ffi", "send", ws, {
+          type: "sync:operation",
+          room_id,
+          operation: op
+        }
+
+        {
+          applied: true,
+          operation: op,
+          optimistic: true,
+          error: ""
+        }
+      }
+  }
+
+tool delete_value:
+  desc: "Delete a value at path"
+  @Deletes value: path != [] → result.deleted == true
+
+  ws: WebSocket!
+  room_id: str!
+  path: list[str]!
+
+  → {
+    node_id = @ffi("ets_ffi", "get", "node_id:{room_id}")
+    sync_state = ffi("ets_ffi", "get", "sync_state:{room_id}")
+
+    case sync_state:
+      _ → { deleted: false, error: "State not initialized" }
+      s → {
+        new_clock = increment_clock(s.version.vector_clock, node_id)
+
+        op = {
+          id: generate_id(),
+          type: "delete",
+          path,
+          value: _,
+          timestamp: now_ms(),
+          node_id,
+          vector_clock: new_clock
+        }
+
+        new_data = delete_at_path(s.data, path)
+        new_version = {
+          ...s.version,
+          version: s.version.version + 1,
+          vector_clock: new_clock,
+          checksum: compute_checksum(new_data)
+        }
+
+        new_state = {s..., data: new_data,
+          version: new_version,
+          pending_ops: append(s.pending_ops, op)
+        }
+
+        ffi("ets_ffi", "put", "sync_state:{room_id}", new_state)
+
+        ffi("websocket_ffi", "send", ws, {
+          type: "sync:operation",
+          room_id,
+          operation: op
+        }
+
+        { deleted: true, operation: op, error: "" }
+      }
+  }
+
+tool increment_value:
+  desc: "Increment a numeric value (CRDT counter)"
+  @Increments value: path != [] → result.incremented == true
+  @Handles non-numeric: false → result.error contains "not numeric"
+
+  ws: WebSocket!
+  room_id: str!
+  path: list[str]!
+  delta: int = 1
+
+  → {
+    node_id = ffi("ets_ffi", "get", "node_id:{room_id}")
+    sync_state = ffi("ets_ffi", "get", "sync_state:{room_id}")
+
+    case sync_state:
+      _ → { incremented: false, error: "State not initialized" }
+      s → {
+        current = get_at_path(s.data, path)
+
+        unless is_number(current) → { incremented: false, error: "Value at path is not numeric" }
+          true → {
+            new_clock = increment_clock(s.version.vector_clock, node_id)
+
+            op = {
+              id: generate_id(),
+              type: "increment",
+              path,
+              value: delta,
+              timestamp: now_ms(),
+              node_id,
+              vector_clock: new_clock
+            }
+
+            new_value = current + delta
+            new_data = set_at_path(s.data, path, new_value)
+            new_version = {
+              ...s.version,
+              version: s.version.version + 1,
+              vector_clock: new_clock,
+              checksum: compute_checksum(new_data)
+            }
+
+            new_state = {s..., data: new_data,
+              version: new_version,
+              pending_ops: append(s.pending_ops, op)
+            }
+
+            ffi("ets_ffi", "put", "sync_state:{room_id}", new_state)
+
+            ffi("websocket_ffi", "send", ws, {
+              type: "sync:operation",
+              room_id,
+              operation: op
+            }
+
+            {
+              incremented: true,
+              new_value,
+              operation: op,
+              error: ""
+            }
+          }
+      }
+  }
+
+tool append_to_list:
+  desc: "Append item to list (CRDT set)"
+  @Appends item: path != [] → result.appended == true
+
+  ws: WebSocket!
+  room_id: str!
+  path: list[str]!
+  item: any!
+
+  → {
+    node_id = ffi("ets_ffi", "get", "node_id:{room_id}")
+    sync_state = ffi("ets_ffi", "get", "sync_state:{room_id}")
+
+    case sync_state:
+      _ → { appended: false, error: "State not initialized" }
+      s → {
+        new_clock = increment_clock(s.version.vector_clock, node_id)
+
+        op = {
+          id: generate_id(),
+          type: "append",
+          path,
+          value: item,
+          timestamp: now_ms(),
+          node_id,
+          vector_clock: new_clock
+        }
+
+        current_list = get_at_path(s.data, path)
+        new_list = case current_list:
+          _ → [item]
+          l → item · append
+
+        new_data = set_at_path(s.data, path, new_list)
+        new_version = {
+          ...s.version,
+          version: s.version.version + 1,
+          vector_clock: new_clock,
+          checksum: compute_checksum(new_data)
+        }
+
+        new_state = {s..., data: new_data,
+          version: new_version,
+          pending_ops: append(s.pending_ops, op)
+        }
+
+        ffi("ets_ffi", "put", "sync_state:{room_id}", new_state)
+
+        ffi("websocket_ffi", "send", ws, {
+          type: "sync:operation",
+          room_id,
+          operation: op
+        }
+
+        { appended: true, operation: op, error: "" }
+      }
+  }
+
+// =============================================================================
+// CONFLICT RESOLUTION
+// =============================================================================
+
+tool apply_remote_ops:
+  desc: "Apply operations from remote nodes"
+  @Applies ops: operations != [] → result.applied >= 0
+  @Detects conflicts: operations != [] → result.conflicts is list
+
+  room_id: str!
+  operations: list[Operation]!
+  resolution: ConflictResolution = "last_write_wins"
+
+  → {
+    sync_state = @ffi("ets_ffi", "get", "sync_state:{room_id}")
+
+    case sync_state:
+      _ → { applied: 0, conflicts: [], error: "State not initialized" }
+      s → {
+        result = operations, resolution · fold_operations
+
+        ffi("ets_ffi", "put", "sync_state:{room_id}", result.state)
+
+        {
+          applied: result.applied,
+          rejected: result.rejected,
+          conflicts: result.conflicts,
+          new_version: result.state.version,
+          error: ""
+        }
+      }
+  }
+
+tool resolve_conflict:
+  desc: "Manually resolve a detected conflict"
+  @Resolves conflict: conflict_id != "" → result.resolved == true
+
+  ws: WebSocket!
+  room_id: str!
+  conflict_id: str!
+  chosen_value: any!
+
+  → {
+    sync_state = ffi("ets_ffi", "get", "sync_state:{room_id}")
+    node_id = ffi("ets_ffi", "get", "node_id:{room_id}")
+
+    case sync_state:
+      _ → { resolved: false, error: "State not initialized" }
+      s → {
+        // Find and resolve the conflict
+        conflict = find_conflict(s.pending_ops, conflict_id)
+
+        case conflict:
+          _ → { resolved: false, error: "Conflict not found" }
+          c → {
+            new_clock = increment_clock(s.version.vector_clock, node_id)
+
+            resolution_op = {
+              id: generate_id(),
+              type: "resolve",
+              path: c.path,
+              value: chosen_value,
+              timestamp: now_ms(),
+              node_id,
+              vector_clock: new_clock,
+              resolves: conflict_id
+            }
+
+            new_data = set_at_path(s.data, c.path, chosen_value)
+
+            new_state = {s..., data: new_data,
+              version: {
+                ...s.version,
+                version: s.version.version + 1,
+                vector_clock: new_clock,
+                checksum: compute_checksum(new_data)
+              }
+            }
+
+            ffi("ets_ffi", "put", "sync_state:{room_id}", new_state)
+
+            ffi("websocket_ffi", "send", ws, {
+              type: "sync:resolve",
+              room_id,
+              operation: resolution_op
+            }
+
+            { resolved: true, operation: resolution_op, error: "" }
+          }
+      }
+  }
+
+tool set_conflict_handler:
+  desc: "Set custom conflict resolution handler"
+  @Sets handler: handler != _ → result.set == true
+
+  room_id: str!
+  handler: fn(Conflict) → any!
+
+  → {
+    ffi("ets_ffi", "put", "conflict_handler:{room_id}", handler)
+    { set: true }
+  }
+
+// =============================================================================
+// STATE DIFFING
+// =============================================================================
+
+tool compute_diff:
+  desc: "Compute diff between two states"
+  @Computes diff: old_state != _ && new_state != _ → result.entries is list
+
+  old_state: map!
+  new_state: map!
+
+  → {
+    entries = new_state, [] · diff_maps
+    {
+      entries,
+      additions: "add" · count_by_type,
+      removals: "remove" · count_by_type,
+      changes: "change" · count_by_type
+    }
+  }
+
+tool apply_diff:
+  desc: "Apply a diff to current state"
+  @Applies diff: diff_entries != [] → result.applied == true
+
+  ws: WebSocket!
+  room_id: str!
+  diff_entries: list[DiffEntry]!
+
+  → {
+    sync_state = ffi("ets_ffi", "get", "sync_state:{room_id}")
+    node_id = ffi("ets_ffi", "get", "node_id:{room_id}")
+
+    case sync_state:
+      _ → { applied: false, error: "State not initialized" }
+      s → {
+        // Convert diff to operations
+        ops = fn(e · map → node_id, s.version.vector_clock · diff_to_operation)
+
+        // Apply all operations
+        new_data = s.data, fn(acc, e · fold ->
+          case e.type:
+            "add" → e.path, e.new_value · set_at_path
+            "remove" → e.path · delete_at_path
+            "change" → e.path, e.new_value · set_at_path
+            _ → acc
+        )
+
+        new_clock = increment_clock(s.version.vector_clock, node_id)
+        new_version = {
+          ...s.version,
+          version: s.version.version + len(diff_entries),
+          vector_clock: new_clock,
+          checksum: compute_checksum(new_data)
+        }
+
+        new_state = {s..., data: new_data,
+          version: new_version,
+          pending_ops: concat(s.pending_ops, ops)
+        }
+
+        ffi("ets_ffi", "put", "sync_state:{room_id}", new_state)
+
+        // Send batch operation
+        ffi("websocket_ffi", "send", ws, {
+          type: "sync:batch",
+          room_id,
+          operations: ops
+        }
+
+        {
+          applied: true,
+          entries_applied: len(diff_entries),
+          new_version,
+          error: ""
+        }
+      }
+  }
+
+// =============================================================================
+// OPTIMISTIC UPDATES
+// =============================================================================
+
+tool confirm_operation:
+  desc: "Confirm a pending optimistic operation"
+  @Confirms op: operation_id != "" → result.confirmed == true
+
+  room_id: str!
+  operation_id: str!
+
+  → {
+    sync_state = ffi("ets_ffi", "get", "sync_state:{room_id}")
+
+    case sync_state:
+      _ → { confirmed: false, error: "State not initialized" }
+      s → {
+        // Move from pending to confirmed
+        op = find_operation(s.pending_ops, operation_id)
+
+        case op:
+          _ → { confirmed: false, error: "Operation not found" }
+          o → {
+            new_state = {s..., pending_ops: remove_operation(s.pending_ops, operation_id),
+              confirmed_ops: append(s.confirmed_ops, o)
+            }
+
+            ffi("ets_ffi", "put", "sync_state:{room_id}", new_state)
+
+            { confirmed: true, operation: o }
+          }
+      }
+  }
+
+tool rollback_operation:
+  desc: "Rollback a rejected optimistic operation"
+  @Rolls back: operation_id != "" → result.rolled_back == true
+
+  room_id: str!
+  operation_id: str!
+
+  → {
+    sync_state = ffi("ets_ffi", "get", "sync_state:{room_id}")
+
+    case sync_state:
+      _ → { rolled_back: false, error: "State not initialized" }
+      s → {
+        op = find_operation(s.pending_ops, operation_id)
+
+        case op:
+          _ → { rolled_back: false, error: "Operation not found" }
+          o → {
+            // Revert the operation
+            new_data = revert_operation(s.data, o)
+
+            new_state = {s..., data: new_data,
+              pending_ops: remove_operation(s.pending_ops, operation_id),
+              version: {
+                ...s.version,
+                version: s.version.version + 1,
+                checksum: compute_checksum(new_data)
+              }
+            }
+
+            ffi("ets_ffi", "put", "sync_state:{room_id}", new_state)
+
+            { rolled_back: true, reverted_operation: o }
+          }
+      }
+  }
+
+tool get_pending_ops:
+  desc: "Get type {name} {
+  items: List[Item],
+  count: Int} pending optimistic operations"
+  @Gets pending: room_id != "" → result.operations is list
+
+  room_id: str!
+
+  → {
+    sync_state = ffi("ets_ffi", "get", "sync_state:{room_id}")
+
+    case sync_state:
+      _ → { operations: [], error: "State not initialized" }
+      s → {
+        operations.pending_ops,
+        count: len(s.pending_ops)
+      }
+  }
+
+// =============================================================================
+// FULL SYNC
+// =============================================================================
+
+tool request_full_sync:
+  desc: "Request full state synchronization from server"
+  @Requests sync: room_id != "" → result.requested == true
+
+  ws: WebSocket!
+  room_id: str!
+
+  → {
+    sync_state = ffi("ets_ffi", "get", "sync_state:{room_id}")
+
+    ffi("websocket_ffi", "send", ws, {
+      type: "sync:full_request",
+      room_id,
+      current_version: case sync_state:
+        _ → _
+        s → s.version
+    }
+
+    response = @ffi("websocket_ffi", "recv", ws, 10000)
+
+    case response:
+      _ → { requested: true, synced: false, error: "Timeout waiting for sync" }
+      r → case r.type:
+        "sync:full_state" → {
+          new_state = {
+            data: r.state,
+            version: r.version,
+            pending_ops: [],
+            confirmed_ops: []
+          }
+
+          ffi("ets_ffi", "put", "sync_state:{room_id}", new_state)
+
+          {
+            requested: true,
+            synced: true,
+            version: r.version,
+            error: ""
+          }
+        }
+        "sync:up_to_date" → {
+          requested: true,
+          synced: true,
+          already_current: true,
+          error: ""
+        }
+        _ → { requested: true, synced: false, error: "Unexpected response" }
+  }
+
+tool push_state:
+  desc: "Push local state to server (force overwrite)"
+  @Pushes state: room_id != "" → result.pushed == true
+
+  ws: WebSocket!
+  room_id: str!
+
+  → {
+    sync_state = ffi("ets_ffi", "get", "sync_state:{room_id}")
+
+    case sync_state:
+      _ → { pushed: false, error: "State not initialized" }
+      s → {
+        ffi("websocket_ffi", "send", ws, {
+          type: "sync:push",
+          room_id,
+          state: s.data,
+          version: s.version,
+          force: true
+        }
+
+        response = @ffi("websocket_ffi", "recv", ws, 5000)
+
+        case response:
+          _ → { pushed: false, error: "Timeout" }
+          r → case r.type:
+            "sync:pushed" → { pushed: true, new_version: r.version, error: "" }
+            "sync:conflict" → { pushed: false, error: "State conflict - full sync required" }
+            _ → { pushed: false, error: "Unexpected response" }
+      }
+  }
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+increment_clock(clock: VectorClock, node_id: str) → VectorClock:
+  current = node_id · get_clock_value
+  { ...clock, [node_id]: current + 1 }
+
+get_clock_value(clock: VectorClock, node_id: str) → int:
+  case clock[node_id]:
+    _ → 0
+    v → v
+
+compare_clocks(a: VectorClock, b: VectorClock) → str:
+  // Returns "before", "after", "concurrent", or "equal"
+  a_keys = keys(a)
+  b_keys = keys(b)
+  all_keys = b_keys · union
+
+  a_greater = false
+  b_greater = false
+
+  // Compare each key
+  result = { a_gt: false, b_gt: false }, fn(acc, k · fold ->
+    va = k · get_clock_value
+    vb = k · get_clock_value
+    {
+      a_gt: acc.a_gt || va > vb,
+      b_gt: acc.b_gt || vb > va
+    }
+  )
+
+  case result:
+    { a_gt: false, b_gt: false } → "equal"
+    { a_gt: true, b_gt: false } → "after"
+    { a_gt: false, b_gt: true } → "before"
+    { a_gt: true, b_gt: true } → "concurrent"
+
+set_at_path(data: map, path: list[str], value: any) → map:
+  case path:
+    [] → data
+    [key] → { ...data, [key]: value }
+    [key, ...rest] → {
+      nested = case data[key]:
+        _ → {}
+        v → v { ...data, [key]: rest, value · set_at_path }
+    }
+
+get_at_path(data: map, path: list[str]) → any:
+  case path:
+    [] → data
+    [key] → data[key]
+    [key, ...rest] → case data[key]:
+      _ → _
+      v → rest · get_at_path
+
+delete_at_path(data: map, path: list[str]) → map:
+  case path:
+    [] → data
+    [key] → ffi("map_ffi", "delete", data, key)
+    [key, ...rest] → case data[key]:
+      _ → data
+      v → { ...data, [key]: rest · delete_at_path }
+
+fold_operations(state: SyncState, ops: list[Operation], resolution: ConflictResolution) → {
+  state: SyncState,
+  applied: int,
+  rejected: int,
+  conflicts: list[Conflict]
+}:
+  { state, applied: 0, rejected: 0, conflicts: [] }, fn(acc, op · fold ->
+    result = apply_single_op(acc.state, op, resolution)
+    {
+      state: result.state,
+      applied: acc.applied + when result.applied → 1
+        false → 0,
+      rejected: acc.rejected + when result.rejected → 1
+        false → 0,
+      conflicts: case result.conflict:
+        _ → acc.conflicts
+        c → append(acc.conflicts, c)
+    }
+  )
+
+apply_single_op(state: SyncState, op: Operation, resolution: ConflictResolution) → {
+  state: SyncState,
+  applied: bool,
+  rejected: bool,
+  conflict: Conflict
+}:
+  // Check for conflicts with pending ops
+  conflict = find_conflict_with_op(state.pending_ops, op)
+
+  case conflict:
+    _ → {
+      // No conflict, apply directly
+      new_data = case op.type:
+        "set" → set_at_path(state.data, op.path, op.value)
+        "delete" → delete_at_path(state.data, op.path)
+        "increment" → {
+          current = get_at_path(state.data, op.path)
+          set_at_path(state.data, op.path, current + op.value)
+        }
+        "append" → {
+          current = get_at_path(state.data, op.path)
+          list = case current:
+            _ → []
+            l → l
+          set_at_path(state.data, op.path, op.value · append)
+        }
+        _ → state.data {
+        state: {state..., data: new_data,
+          version: merge_version(state.version, op.vector_clock),
+          confirmed_ops: append(state.confirmed_ops, op)
+        },
+        applied: true,
+        rejected: false,
+        conflict: _
+      }
+    }
+    c → {
+      // Handle conflict based on resolution strategy
+      resolved = c, op, resolution · resolve_by_strategy
+      resolved
+    }
+
+resolve_by_strategy(state: SyncState, conflict: Conflict, op: Operation, resolution: ConflictResolution) → {
+  state: SyncState,
+  applied: bool,
+  rejected: bool,
+  conflict: Conflict
+}:
+  case resolution:
+    "last_write_wins" → {
+      // Use the operation with later timestamp
+      when op.timestamp > conflict.local_op.timestamp → {
+          new_data = set_at_path(state.data, op.path, op.value)
+          {
+            state: {state..., data: new_data },
+            applied: true,
+            rejected: false,
+            conflict: _
+          }
+        }
+        false → {
+          state,
+          applied: false,
+          rejected: true,
+          conflict: _
+        }
+    }
+    "first_write_wins" → {
+      // Keep existing value {
+        state,
+        applied: false,
+        rejected: true,
+        conflict: _
+      }
+    }
+    "merge" → {
+      // Try to merge values
+      merged = merge_values(conflict.local_value, op.value)
+      new_data = set_at_path(state.data, op.path, merged)
+      {
+        state: {state..., data: new_data },
+        applied: true,
+        rejected: false,
+        conflict: _
+      }
+    }
+    "custom" → {
+      // Return conflict for manual resolution {
+        state,
+        applied: false,
+        rejected: false,
+        conflict: { ...conflict, remote_op, remote_value: op.value }
+      }
+    }
+
+merge_values(a: any, b: any) → any:
+  // Simple merge strategy - concatenate if strings/lists, prefer b otherwise
+  case { a, b }:
+    { a: sa, b: sb } if is_string(sa) && is_string(sb) → sa ++ sb { a: la, b: lb } if is_list(la) && is_list(lb) → lb · concat
+    _ → b
+
+merge_version(v: StateVersion, clock: VectorClock) → StateVersion:
+  {v..., version: v.version + 1,
+    vector_clock: merge_clocks(v.vector_clock, clock)
+  }
+
+merge_clocks(a: VectorClock, b: VectorClock) → VectorClock:
+  all_keys = union(keys(a), keys(b))
+  {}, fn(acc, k · fold ->
+    va = k · get_clock_value
+    vb = k · get_clock_value
+    { ...acc, [k]: vb · max }
+  )
+
+diff_maps(old: map, new: map, path: list[str]) → list[DiffEntry]:
+  old_keys = keys(old)
+  new_keys = keys(new)
+
+  // Find additions
+  additions = [], fn(acc, k · fold ->
+    unless k · contains → {
+        path: append(path, k · append,
+        type: "add",
+        old_value: _,
+        new_value: new[k]
+      }
+      true → acc
+  )
+
+  // Find removals
+  removals = [], fn(acc, k · fold ->
+    unless k · contains → {
+        path: append(path, k · append,
+        type: "remove",
+        old_value: old[k],
+        new_value: _
+      }
+      true → acc
+  )
+
+  // Find changes
+  changes = [], fn(acc, k · fold ->
+    when k · contains → when old[k] == new[k] → acc
+        false → when is_map(old[k]) && is_map(new[k]) → diff_maps(old[k], new[k], append(path, k · concat))
+          false → {
+            path: append(path, k · append,
+            type: "change",
+            old_value: old[k],
+            new_value: new[k]
+          }
+      false → acc
+  )
+
+  concat(removals · concat, changes)
+
+diff_to_operation(entry: DiffEntry, node_id: str, clock: VectorClock) → Operation:
+  {
+    id: generate_id(),
+    type: case entry.type:
+      "add" → "set"
+      "remove" → "delete"
+      "change" → "set"
+      _ → "set",
+    path: entry.path,
+    value: entry.new_value,
+    timestamp: now_ms(),
+    node_id,
+    vector_clock: node_id · increment_clock
+  }
+
+revert_operation(data: map, op: Operation) → map:
+  case op.type:
+    "set" → op.path · delete_at_path
+    "delete" → data  // Can't revert without original value
+    "increment" → {
+      current = op.path · get_at_path
+      op.path, current - op.value · set_at_path
+    }
+    "append" → {
+      current = op.path · get_at_path
+      case current:
+        _ → data
+        l → op.path, init(l · set_at_path)
+    }
+    _ → data
+
+find_operation(ops: list[Operation], id: str) → Operation:
+  case ops:
+    [] → _
+    [op, ...rest] → when op.ID == id → op
+      false → id · find_operation
+
+remove_operation(ops: list[Operation], id: str) → list[Operation]:
+  fn(op · filter → op.ID != id)
+
+find_conflict_with_op(ops: list[Operation], new_op: Operation) → Conflict:
+  conflicting = fn(op · filter ->
+    paths_overlap(op.path, new_op.path) &&
+    compare_clocks(op.vector_clock, new_op.vector_clock) == "concurrent"
+  )
+  case conflicting:
+    [] → _
+    [op, ..._] → {
+      path: new_op.path,
+      local_value: _,
+      remote_value: new_op.value,
+      local_op,
+      remote_op: new_op
+    }
+
+find_conflict(ops: list[Operation], id: str) → Conflict:
+  _  // Simplified - would need conflict storage
+
+paths_overlap(a: list[str], b: list[str]) → bool:
+  case { a, b }:
+    { a: [], b: _ } → true { a: _, b: [] } → true { a: [ha, ...ta], b: [hb, ...tb] } → when ha == hb → tb · paths_overlap
+      false → false
+
+compute_checksum(data: map) → str:
+  ffi("crypto_ffi", "md5", @ffi("json_ffi", "encode", data))
+
+count_by_type(entries: list[DiffEntry], type: str) → int:
+  len(fn(e · filter → e.type == type))
+
+// Generic helpers
+fold(list[a], acc: b, f: a · fn → b) → b:
+  case list:
+    [] → acc
+    [head, ...tail] → f(acc, head · fold, f)
+
+map(list[a], f: fn(a) → b) → list[b]:
+  case list:
+    [] → []
+    [head, ...tail] → [f(head), ...f · map]
+
+filter(list[a], f: fn(a) → bool) → list[a]:
+  case list:
+    [] → []
+    [head, ...tail] → when f(head) → [head, ...f · filter]
+      false → f · filter
+
+append(list[a], item: a) → list[a]:
+  [item] · concat
+
+concat(a: list[x], b: list[x]) → list[x]:
+  case a:
+    [] → b
+    [head, ...tail] → [head, ...b · concat]
+
+init(list[a]) → list[a]:
+  case list:
+    [] → []
+    [_] → []
+    [head, ...tail] → [head, ...init(tail)]
+
+len(list[a]) → int:
+  case list:
+    [] → 0
+    [_, ...tail] → 1 + len(tail)
+
+keys(m: map) → list[str]:
+  ffi("map_ffi", "keys", m)
+
+union(a: list[str], b: list[str]) → list[str]:
+  a, fn(acc, x · fold → when x · contains → acc
+    false → x · append
+  )
+
+contains(list[a], item: a) → bool:
+  case list:
+    [] → false
+    [head, ...tail] → when head == item → true
+      false → item · contains
+
+max(a: int, b: int) → int:
+  when a > b → a
+    false → b
+
+is_number(v: any) → bool:
+  ffi("type_ffi", "is_number", v)
+
+is_string(v: any) → bool:
+  ffi("type_ffi", "is_string", v)
+
+is_list(v: any) → bool:
+  ffi("type_ffi", "is_list", v)
+
+is_map(v: any) → bool:
+  ffi("type_ffi", "is_map", v)
+
+generate_id() → str:
+  ffi("terminal_ffi", "generate_id")
+
+now_ms() → int:
+  ffi("time_ffi", "now_ms")
+
+# v8.0
+
+# v8.0
+# v10.0 - ML-Powered Migration

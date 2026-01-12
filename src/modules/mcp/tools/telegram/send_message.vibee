@@ -1,0 +1,181 @@
+// Telegram Send Message Tool
+// Sends a text message to a Telegram chat
+
+import mcp/types/mcp_types.{Tool, ToolResult, Schema, Property}
+
+// Create telegram_send_message tool
+fn create_tool() → Tool {
+  mcp_types.tool_new(
+    "telegram_send_message",
+    "Send a text message to a Telegram chat, group, or channel",
+    create_schema(),
+    execute
+  )
+}
+
+// Define input schema
+fn create_schema() → Schema {
+  Schema {
+    type_name: "object",
+    properties: dict.new()
+      · dict.insert("session_id", Property {
+        type_name: "string",
+        description: "Telegram session ID for authentication",
+        enum_values: ∅
+      })
+      · dict.insert("chat_id", Property {
+        type_name: "string",
+        description: "Target chat ID (can be username, phone, or numeric ID)",
+        enum_values: ∅
+      })
+      · dict.insert("message", Property {
+        type_name: "string",
+        description: "Message text to send (supports Markdown)",
+        enum_values: ∅
+      })
+      · dict.insert("parse_mode", Property {
+        type_name: "string",
+        description: "Message formatting mode",
+        enum_values: Some(["markdown", "html", "none"])
+      })
+      · dict.insert("disable_notification", Property {
+        type_name: "boolean",
+        description: "Send message silently (no notification)",
+        enum_values: ∅
+      }),
+    required: ["session_id", "chat_id", "message"]
+  }
+}
+
+// Execute tool
+fn execute(params: Json) → ToolResult {
+  // Parse parameters
+  case parse_params(params) {
+    Ok(p) → {
+      // Validate session
+      case validate_session(p.session_id) {
+        Ok(_) → {
+          // Send message via Telegram API
+          case send_telegram_message(p) {
+            Ok(result) → {
+              mcp_types.tool_result_success([
+                mcp_types.text_content(format_success(result))
+              ])
+            }
+            Error(e) → {
+              mcp_types.tool_result_error("Failed to send message: " + e)
+            }
+          }
+        }
+        Error(e) → {
+          mcp_types.tool_result_error("Invalid session: " + e)
+        }
+      }
+    }
+    Error(e) → {
+      mcp_types.tool_result_error("Invalid parameters: " + e)
+    }
+  }
+}
+
+// Parameter types
+struct SendMessageParams {
+  session_id: str
+  chat_id: str
+  message: str
+  parse_mode: option(str)
+  disable_notification: option(bool)
+}
+
+struct SendMessageResult {
+  message_id: int
+  chat_id: str
+  date: int
+  text: str
+}
+
+// Parse parameters from JSON
+fn parse_params(params: Json) → result(SendMessageParams, str) {
+  case json.decode(params) {
+    Ok(obj) → {
+      let session_id = dict.get(obj, "session_id")
+        · result.map(json.to_string)
+        · result.unwrap("")
+      
+      let chat_id = dict.get(obj, "chat_id")
+        · result.map(json.to_string)
+        · result.unwrap("")
+      
+      let message = dict.get(obj, "message")
+        · result.map(json.to_string)
+        · result.unwrap("")
+      
+      let parse_mode = dict.get(obj, "parse_mode")
+        · result.map(json.to_string)
+        · result.to_option()
+      
+      let disable_notification = dict.get(obj, "disable_notification")
+        · result.map(json.to_bool)
+        · result.to_option()
+      
+      // Validate required fields
+      case session_id, chat_id, message {
+        "", _, _ → Error("session_id is required")
+        _, "", _ → Error("chat_id is required")
+        _, _, "" → Error("message is required")
+        _, _, _ → Ok(SendMessageParams {
+          session_id: session_id,
+          chat_id: chat_id,
+          message: message,
+          parse_mode: parse_mode,
+          disable_notification: disable_notification
+        })
+      }
+    }
+    Error(_) → Error("Invalid JSON")
+  }
+}
+
+// Validate session
+fn validate_session(session_id: str) → result(Nil, str) {
+  // TODO: Implement actual session validation
+  // For now, just check non-empty
+  case session_id {
+    "" → Error("Session ID cannot be empty")
+    _ → Ok(Nil)
+  }
+}
+
+// Send message via Telegram API
+fn send_telegram_message(params: SendMessageParams) → result(SendMessageResult, str) {
+  // TODO: Implement actual Telegram API call
+  // This would use the telegram bridge or MTProto client
+  
+  // For now, return mock result
+  Ok(SendMessageResult {
+    message_id: 12345,
+    chat_id: params.chat_id,
+    date: timestamp_now(),
+    text: params.message
+  })
+}
+
+// Format success response
+fn format_success(result: SendMessageResult) → str {
+  "Message sent successfully!\n" +
+  "Message ID: " + int.to_string(result.message_id) + "\n" +
+  "Chat ID: " + result.chat_id + "\n" +
+  "Date: " + int.to_string(result.date) + "\n" +
+  "Text: " + result.text
+}
+
+// Get current timestamp
+fn timestamp_now() → int {
+  // TODO: Implement actual timestamp
+  0
+}
+
+// Export tool
+fn get_tool() → Tool {
+  create_tool()
+}

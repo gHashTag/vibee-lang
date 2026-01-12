@@ -1,0 +1,488 @@
+// BFL (Black Forest Labs) Image Generation Integration
+  // Performance Warning:   // AI Suggestion: Replace magic numbers with named constants  // AI Suggestion: Consider extracting hardcoded strings to constants// API Documentation: https://api.bfl.ml/docs
+// Supports: FLUX Pro 1.1, FLUX Pro, FLUX Dev, FLUX Pro Ultra
+// Converted from infra/ai/bfl.gleam → dsl/infra/ai/bfl.vibee
+
+import "vibee/dsl/ffi/json"
+import "vibee/dsl/ffi/http"
+import "vibee/dsl/macros/http_tool"
+
+// =============================================================================
+// Types
+// =============================================================================
+
+struct BflConfig(
+  BflConfig(
+    api_key: str                       // Will validate non-empty
+  )
+}
+
+struct ImageRequest(
+  ImageRequest(
+    prompt: str,
+    model: str,
+    width: int?,                   // Will validate > 0 if Some
+    height: int?,                  // Will validate > 0 if Some
+    steps: int?                    // Will validate > 0 if Some
+  )
+}
+
+// BflRequest type removed - @http_tool macro auto-generates HTTP requests
+
+struct TaskStatus(
+  Pending
+  Processing
+  Ready(image_url: str)
+  Failed(error: str)
+}
+
+struct Task(
+  Task(task_id: str, status: TaskStatus)
+}
+
+// =============================================================================
+// Extended Image Request Types (Full API Support)
+// =============================================================================
+
+struct ImageRequestFull(
+  ImageRequestFull(
+    prompt: str,
+    model: str,
+    width: int?,
+    height: int?,
+    steps: int?,
+    seed: int?,
+    guidance_scale: float?,
+    safety_tolerance: int?,
+    prompt_upsampling: bool?,
+    output_format: str?
+  )
+}
+
+struct ImageToImageRequest(
+  ImageToImageRequest(
+    prompt: str,
+    model: str,
+    image_url: str,
+    strength: float?,
+    seed: int?,
+    guidance_scale: float?,
+    steps: int?
+  )
+}
+
+struct InpaintingRequest(
+  InpaintingRequest(
+    prompt: str,
+    model: str,
+    image_url: str,
+    mask_url: str,
+    seed: int?,
+    guidance_scale: float?,
+    steps: int?
+  )
+}
+
+struct ControlNetRequest(
+  ControlNetRequest(
+    prompt: str,
+    model: str,
+    control_image_url: str,
+    control_type: str,
+    control_strength: float?,
+    seed: int?,
+    guidance_scale: float?,
+    steps: int?
+  )
+}
+
+// =============================================================================
+// Config Functions
+// =============================================================================
+
+@spec default_config(api_key: str) → BflConfig {
+  /// Create default BFL config
+  given: API key
+  when: Initializing BFL client
+  then: Returns configured client
+}
+
+@impl {
+  BflConfig(api_key)
+}
+
+// =============================================================================
+// Request Builders (using @http_tool macro)
+// =============================================================================
+
+metrics("bfl_image_generation")
+trace("bfl.flux")
+@http_tool POST "https://api.bfl.ml/v1/{model}"
+@auth header("X-Key", config.api_key)
+timeout(60s)
+retry(3)
+circuit_breaker(threshold: 3, timeout: 60s, half_open_requests: 2)
+tool generate_image(config: BflConfig, model: str):
+  /// Generate image with FLUX model
+  @body prompt: str
+  @body width: int?
+  @body height: int?
+  @body steps: int?
+
+metrics("bfl_get_result")
+trace("bfl.flux")
+@http_tool GET "https://api.bfl.ml/v1/get_result"
+@auth header("X-Key", config.api_key)
+timeout(30s)
+backoff: exponential · retry
+circuit_breaker(threshold: 3, timeout: 60s, half_open_requests: 2)
+tool get_result(config: BflConfig):
+  /// Get task result by ID
+  @query id: str
+
+// =============================================================================
+// Full Request Builders (using @http_tool macro)
+// =============================================================================
+
+metrics("ai.bfl")
+@http_tool POST "https://api.bfl.ml/v1/{model}"
+@auth header("X-Key", config.api_key)
+timeout(60s)
+retry(3)
+circuit_breaker(threshold: 3, timeout: 60s, half_open_requests: 2)
+tool generate_image_full(config: BflConfig, model: str):
+  /// Generate image with all options
+  @body prompt: str
+  @body width: int?
+  @body height: int?
+  @body steps: int?
+  @body seed: int?
+  @body guidance_scale: float?
+  @body safety_tolerance: int?
+  @body prompt_upsampling: bool?
+  @body output_format: str?
+
+metrics("ai.bfl")
+trace("bfl.flux")
+@http_tool POST "https://api.bfl.ml/v1/{model}/image-to-image"
+@auth header("X-Key", config.api_key)
+timeout(60s)
+retry(3)
+circuit_breaker(threshold: 3, timeout: 60s, half_open_requests: 2)
+tool image_to_image(config: BflConfig, model: str):
+  /// Transform existing image with prompt
+  @body prompt: str
+  @body image_url: str
+  @body strength: float?
+  @body seed: int?
+  @body guidance_scale: float?
+  @body steps: int?
+
+metrics("ai.bfl")
+trace("bfl.flux")
+@http_tool POST "https://api.bfl.ml/v1/{model}/inpaint"
+@auth header("X-Key", config.api_key)
+timeout(60s)
+retry(3)
+circuit_breaker(threshold: 3, timeout: 60s, half_open_requests: 2)
+tool inpainting(config: BflConfig, model: str):
+  /// Fill masked region with generated content
+  @body prompt: str
+  @body image_url: str
+  @body mask_url: str
+  @body seed: int?
+  @body guidance_scale: float?
+  @body steps: int?
+
+metrics("ai.bfl")
+@http_tool POST "https://api.bfl.ml/v1/{model}/controlnet"
+@auth header("X-Key", config.api_key)
+timeout(60s)
+retry(3)
+circuit_breaker(threshold: 3, timeout: 60s, half_open_requests: 2)
+tool controlnet(config: BflConfig, model: str):
+  /// Generate with control image guidance
+  @body prompt: str
+  @body control_image_url: str
+  @body control_type: str
+  @body control_strength: float?
+  @body seed: int?
+  @body guidance_scale: float?
+  @body steps: int?
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+@spec simple_request(prompt: str) → ImageRequest {
+  /// Create simple image request with defaults
+  given: Prompt
+  when: Quick generation
+  then: Returns request with defaults
+}
+
+@impl {
+  "flux-pro-1.1",
+    ∅,
+    ∅,
+    ∅· ImageRequest
+}
+
+@spec request_with_size(prompt: str, width: int, height: int) → ImageRequest {
+  /// Create request with specific dimensions
+  given: Prompt and dimensions
+  when: Custom size needed
+  then: Returns sized request
+}
+
+@impl {
+  "flux-pro-1.1",
+    ☐width · ImageRequest,
+    ☐height),
+    ∅)
+}
+
+@spec request_with_seed(prompt: str, seed: int) → ImageRequestFull {
+  /// Create full request with seed for reproducibility
+  given: Prompt and seed
+  when: Reproducible results needed
+  then: Returns seeded request
+}
+
+@impl {
+  "flux-pro-1.1",
+    ∅,
+    ∅,
+    ∅,
+    ☐seed · ImageRequestFull,
+    ∅,
+    ∅,
+    ∅,
+    ∅)
+}
+
+@spec request_with_guidance(prompt: str, guidance_scale: float) → ImageRequestFull {
+  /// Create request with custom guidance scale
+  given: Prompt and guidance
+  when: Custom guidance needed
+  then: Returns request with guidance
+}
+
+@impl {
+  "flux-pro-1.1",
+    ∅,
+    ∅,
+    ∅,
+    ∅,
+    ☐guidance_scale · ImageRequestFull,
+    ∅,
+    ∅,
+    ∅)
+}
+
+@spec full_request(prompt: str, model: str, width: int, height: int, steps: int, seed: int, guidance_scale: float) → ImageRequestFull {
+  /// Create full request with all custom parameters
+  given: All parameters
+  when: Full control needed
+  then: Returns fully configured request
+}
+
+@impl {
+  model,
+    ☐width · ImageRequestFull,
+    ☐height),
+    ☐steps),
+    ☐seed),
+    ☐guidance_scale),
+    ∅,
+    ∅,
+    ∅)
+}
+
+@spec simple_img2img(prompt: str, image_url: str, strength: float) → ImageToImageRequest {
+  /// Create simple img2img request
+  given: Prompt, image URL, strength
+  when: Quick transformation
+  then: Returns img2img request
+}
+
+@impl {
+  "flux-pro-1.1",
+    image_url,
+    ☐strength · ImageToImageRequest,
+    ∅,
+    ∅,
+    ∅)
+}
+
+@spec simple_inpaint(prompt: str, image_url: str, mask_url: str) → InpaintingRequest {
+  /// Create simple inpainting request
+  given: Prompt, image, mask
+  when: Quick inpainting
+  then: Returns inpaint request
+}
+
+@impl {
+  "flux-pro-1.1",
+    image_url,
+    mask_url,
+    ∅,
+    ∅,
+    ∅· InpaintingRequest
+}
+
+@spec simple_controlnet(prompt: str, control_image_url: str, control_type: str) → ControlNetRequest {
+  /// Create simple ControlNet request
+  given: Prompt, control image, type
+  when: Quick controlnet
+  then: Returns controlnet request
+}
+
+@impl {
+  "flux-pro-1.1",
+    control_image_url,
+    control_type,
+    ∅,
+    ∅,
+    ∅,
+    ∅· ControlNetRequest
+}
+
+// =============================================================================
+// Available Options
+// =============================================================================
+
+cache(24h)
+@spec supported_models() → [str] {
+  /// Get supported FLUX models
+  given: Nothing
+  when: Listing models
+  then: Returns model list
+}
+
+@impl {
+  ["flux-pro-1.1", "flux-pro", "flux-dev", "flux-pro-1.1-ultra"]
+}
+
+cache(24h)
+@spec model_descriptions() → [#(str, str]) {
+  /// Get model descriptions
+  given: Nothing
+  when: Showing model info
+  then: Returns model descriptions
+}
+
+@impl {
+  [
+    #("flux-pro-1.1", "Latest FLUX Pro - Highest quality, fastest"),
+    #("flux-pro", "FLUX Pro - High quality"),
+    #("flux-dev", "FLUX Dev - Development model, free tier"),
+    #("flux-pro-1.1-ultra", "FLUX Pro Ultra - Highest resolution")
+  ]
+}
+
+cache(24h)
+@spec supported_output_formats() → [str] {
+  /// Get supported output formats
+  given: Nothing
+  when: Listing formats
+  then: Returns format list
+}
+
+@impl {
+  ["jpeg", "png", "webp"]
+}
+
+cache(24h)
+@spec supported_control_types() → [#(str, str]) {
+  /// Get supported ControlNet types
+  given: Nothing
+  when: Listing control types
+  then: Returns type list
+}
+
+@impl {
+  [
+    #("canny", "Edge detection - extracts edges from image"),
+    #("depth", "Depth estimation - uses depth map"),
+    #("soft_edge", "Soft edge detection - HED style"),
+    #("pose", "Pose estimation - OpenPose style")
+  ]
+}
+
+cache(24h)
+@spec safety_tolerance_levels() → [#(int, str]) {
+  /// Get safety tolerance levels
+  given: Nothing
+  when: Showing safety options
+  then: Returns tolerance levels
+}
+
+@impl {
+  [
+    #(0, "Most strict - block most potentially unsafe content"),
+    #(2, "Moderate - balanced filtering"),
+    #(4, "Lenient - allow more artistic content"),
+    #(6, "Least strict - minimal filtering")
+  ]
+}
+
+cache(24h)
+@spec recommended_steps() → [#(str, int]) {
+  /// Get recommended steps by model
+  given: Nothing
+  when: Showing step recommendations
+  then: Returns step recommendations
+}
+
+@impl {
+  [
+    #("flux-pro-1.1", 28),
+    #("flux-pro", 25),
+    #("flux-dev", 20),
+    #("flux-pro-1.1-ultra", 40)
+  ]
+}
+
+cache(24h)
+@spec guidance_recommendations() → [#(str, str]) {
+  /// Get guidance scale recommendations
+  given: Nothing
+  when: Showing guidance info
+  then: Returns recommendations
+}
+
+@impl {
+  [
+    #("1.5-3.0", "Low guidance - more creative, less prompt adherence"),
+    #("3.5-5.0", "Balanced - good prompt adherence with creativity"),
+    #("5.5-7.5", "High guidance - strong prompt adherence"),
+    #("8.0+", "Very high - strictly follows prompt, may reduce quality")
+  ]
+}
+
+cache(24h)
+@spec common_aspect_ratios() → [#(str, #(int, int])) {
+  /// Get common aspect ratios as width/height pairs
+  given: Nothing
+  when: Listing aspect ratios
+  then: Returns ratio dimensions
+}
+
+@impl {
+  [
+    #("1 Square", #(1024, 1024)),
+    #("16:9 Landscape", #(1344, 768)),
+    #("9:16 Portrait", #(768, 1344)),
+    #("4:3 Standard", #(1152, 864)),
+    #("3:4 Portrait", #(864, 1152)),
+    #("21:9 Ultrawide", #(1536, 640))
+  ]
+}
+
+// FFI imports via @import "vibee/dsl/ffi/json"
+
+# v8.0
+
+# v8.0
+# v10.0 - ML-Powered Migration

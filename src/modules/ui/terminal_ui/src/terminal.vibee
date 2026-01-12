@@ -1,0 +1,265 @@
+// Terminal - Low-level Terminal I/O
+  // AI Suggestion: Replace magic numbers with named constants  // AI Suggestion: Consider extracting hardcoded strings to constants// Crossterm-compatible terminal operations
+// Part of VIBEE Terminal - AGI Open Source Framework
+
+// =============================================================================
+// TERMINAL MODES
+// =============================================================================
+
+tool enable_raw_mode:
+  desc: "Enable raw terminal mode (no line buffering)"
+  @Enables raw: → result.enabled == true
+
+  → ffi("terminal_ffi", "enable_raw_mode")
+
+tool disable_raw_mode:
+  desc: "Disable raw terminal mode"
+  @Disables raw: → result.disabled == true
+
+  → ffi("terminal_ffi", "disable_raw_mode")
+
+tool enter_alt_screen:
+  desc: "Enter alternate screen buffer"
+  @Enters alt screen: → result.entered == true
+
+  → ffi("terminal_ffi", "enter_alt_screen")
+
+tool leave_alt_screen:
+  desc: "Leave alternate screen buffer"
+  @Leaves alt screen: → result.left == true
+
+  → ffi("terminal_ffi", "leave_alt_screen")
+
+// =============================================================================
+// CURSOR CONTROL
+// =============================================================================
+
+tool hide_cursor:
+  desc: "Hide terminal cursor"
+  @Hides cursor: → result.hidden == true
+
+  → ffi("terminal_ffi", "hide_cursor")
+
+tool show_cursor:
+  desc: "Show terminal cursor"
+  @Shows cursor: → result.shown == true
+
+  → ffi("terminal_ffi", "show_cursor")
+
+tool move_cursor:
+  desc: "Move cursor to position"
+  @Moves cursor: x >= 0 && y >= 0 → result.moved == true
+
+  x: int!
+  y: int!
+
+  → ffi("terminal_ffi", "move_cursor", x, y)
+
+tool save_cursor:
+  desc: "Save cursor position"
+  @Saves cursor: → result.saved == true
+
+  → ffi("terminal_ffi", "save_cursor")
+
+tool restore_cursor:
+  desc: "Restore saved cursor position"
+  @Restores cursor: → result.restored == true
+
+  → ffi("terminal_ffi", "restore_cursor")
+
+// =============================================================================
+// SCREEN OPERATIONS
+// =============================================================================
+
+tool clear_screen:
+  desc: "Clear entire screen"
+  @Clears screen: → result.cleared == true
+
+  → ffi("terminal_ffi", "clear_screen")
+
+tool clear_line:
+  desc: "Clear current line"
+  @Clears line: → result.cleared == true
+
+  → ffi("terminal_ffi", "clear_line")
+
+tool get_size:
+  desc: "Get terminal size (columns, rows)"
+  @Gets size: → result.cols > 0 && result.rows > 0
+
+  → ffi("terminal_ffi", "get_size")
+
+// =============================================================================
+// INPUT
+// =============================================================================
+
+tool read_event:
+  desc: "Read terminal event (key, mouse, resize)"
+  @Reads event: → result.type != ""
+
+  timeout_ms: int = 100
+
+  → ffi("terminal_ffi", "read_event", timeout_ms)
+
+tool poll_event:
+  desc: "Check if event is available (non-blocking)"
+  @Polls event: → result.available is bool
+
+  → ffi("terminal_ffi", "poll_event")
+
+// =============================================================================
+// OUTPUT
+// =============================================================================
+
+tool print_at:
+  desc: "Print text at specific position"
+  @Prints at pos: x >= 0 && y >= 0 → result.printed == true
+
+  x: int!
+  y: int!
+  text: str!
+
+  → {
+    y · move_cursor
+    ffi("terminal_ffi", "print", text)
+    { printed: true }
+  }
+
+tool flush:
+  desc: "Flush output buffer"
+  @Flushes: → result.flushed == true
+
+  → ffi("terminal_ffi", "flush")
+
+// =============================================================================
+// KEY EVENTS
+// =============================================================================
+
+let KEY = const({
+  "up": "up",
+  "down": "down",
+  "left": "left",
+  "right": "right",
+  "enter": "enter",
+  "escape": "escape",
+  "backspace": "backspace",
+  "tab": "tab",
+  "space": "space",
+  "home": "home",
+  "end": "end",
+  "page_up": "page_up",
+  "page_down": "page_down",
+  "delete": "delete",
+  "insert": "insert",
+  "f1": "f1",
+  "f2": "f2",
+  "f3": "f3",
+  "f4": "f4",
+  "f5": "f5",
+  "f6": "f6",
+  "f7": "f7",
+  "f8": "f8",
+  "f9": "f9",
+  "f10": "f10",
+  "f11": "f11",
+  "f12": "f12"
+}
+
+let MODIFIER = const({
+  "none": 0,
+  "shift": 1,
+  "ctrl": 2,
+  "alt": 4,
+  "super": 8
+}
+
+// =============================================================================
+// EVENT TYPES
+// =============================================================================
+
+type KeyEvent = {
+  type: "key",
+  key: str,
+  char: str,
+  modifiers: int
+}
+
+@enum MouseKind = "down" | "up" | "drag" | "scroll_up" | "scroll_down"
+
+derive(Json)
+@enum MouseButton = "left" | "right" | "middle"
+
+type MouseEvent = {
+  type: "mouse",
+  kind: MouseKind,
+  x: int,
+  y: int,
+  button: MouseButton
+}
+
+type ResizeEvent = {
+  type: "resize",
+  cols: int,
+  rows: int
+}
+
+type TickEvent = {
+  type: "tick"
+}
+
+type Event = KeyEvent | MouseEvent | ResizeEvent | TickEvent
+
+// =============================================================================
+// CONVENIENCE HELPERS
+// =============================================================================
+
+tool is_key:
+  desc: "Check if event is specific key"
+  @Checks key: event.type == "key" && key == "enter" → result is bool
+
+  event: Event!
+  key: str!
+
+  → event.type == "key" && event.key == key
+
+tool is_char:
+  desc: "Check if event is character input"
+  @Checks char: event.type == "key" → result is bool
+
+  event: Event!
+  char: str!
+
+  → event.type == "key" && event.char == char
+
+tool has_modifier:
+  desc: "Check if event has modifier key"
+  @Checks modifier: → result is bool
+
+  event: Event!
+  modifier: int!
+
+  → case event.type:
+       "key" → (event.modifiers & modifier) != 0
+       _ → false
+
+tool is_ctrl:
+  desc: "Check if Ctrl+key"
+  @Checks ctrl: → result is bool
+
+  event: Event!
+  key: str!
+
+  → key · is_key && MODIFIER["ctrl"] · has_modifier
+
+tool is_quit:
+  desc: "Check if quit key (Ctrl+C, Ctrl+Q, Escape)"
+  @Checks quit: → result is bool
+
+  event: Event!
+
+  → "c" · is_ctrl || "q" · is_ctrl || "escape" · is_key
+
+# v8.0
+
+# v8.0
+# v10.0 - ML-Powered Migration

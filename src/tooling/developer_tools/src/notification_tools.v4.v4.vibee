@@ -1,0 +1,272 @@
+// Notification Tools - MCP Tools for owner notification management
+  // Performance Warning:   // AI Suggestion: Consider extracting hardcoded strings to constants// Settings, mute, history
+// Converted from mcp/notification_tools.gleam → notification_tools.vibee
+
+// =============================================================================
+// Tool Definitions
+// =============================================================================
+
+tool owner_notifications_get {
+  /// Get owner notification settings
+  description: "Получить текущие настройки уведомлений owner. Показывает какие типы событий включены, минимальный уровень важности, замьюченные чаты."
+}
+
+tool owner_notifications_set {
+  /// Update notification settings
+  description: "Изменить настройки уведомлений owner. Можно включить/выключить типы событий и установить минимальный уровень важности."
+
+  @param enabled: bool? {
+    description: "Включить/выключить все уведомления"
+  }
+
+  @param notify_new_messages: bool? {
+    description: "Уведомлять о новых сообщениях"
+  }
+
+  @param notify_agent_replies: bool? {
+    description: "Уведомлять об ответах агента"
+  }
+
+  @param notify_triggers: bool? {
+    description: "Уведомлять о найденных триггерах"
+  }
+
+  @param notify_new_chats: bool? {
+    description: "Уведомлять о новых чатах"
+  }
+
+  @param notify_leads: bool? {
+    description: "Уведомлять о новых лидах"
+  }
+
+  @param notify_errors: bool? {
+    description: "Уведомлять об ошибках"
+  }
+
+  @param min_importance: str? {
+    enum: ["low", "medium", "high", "critical"]
+    description: "Минимальный уровень важности для уведомлений"
+  }
+}
+
+tool owner_notifications_mute {
+  /// Temporarily mute notifications
+  description: "Временно отключить уведомления для конкретного чата или всех уведомлений. duration: 1h, 4h, 24h, или 'unmute' для снятия."
+
+  @param duration: str {
+    enum: ["1h", "4h", "24h", "unmute"]
+    description: "Длительность mute или 'unmute' для снятия"
+    required: true
+  }
+
+  @param chat_id: int? {
+    description: "ID чата для mute (если не указан - mute всех)"
+  }
+}
+
+tool owner_notifications_history {
+  /// Get notification history
+  description: "Получить историю отправленных уведомлений owner. Показывает последние N уведомлений с фильтром по типу события."
+
+  @param limit: int? {
+    description: "Максимум записей (default: 20)"
+    default: 20
+  }
+
+  @param event_type: str? {
+    enum: ["new_message", "agent_reply", "trigger_detected", "new_chat", "lead", "error", "system"]
+    description: "Фильтр по типу события (опционально)"
+  }
+}
+
+// =============================================================================
+// Types
+// =============================================================================
+
+derive(Json)
+@enum
+type NotificationEventType(
+  NewMessage: "new_message"
+  AgentReply: "agent_reply"
+  TriggerDetected: "trigger_detected"
+  NewChat: "new_chat"
+  Lead: "lead"
+  Error: "error"
+  System: "system"
+}
+
+derive(Json)
+@enum
+type NotificationImportance(
+  Low: "low"
+  Medium: "medium"
+  High: "high"
+  Critical: "critical"
+}
+
+derive(Json)
+@enum
+type MuteDuration(
+  OneHour: "1h"      // 1h
+  FourHours: "4h"    // 4h
+  TwentyFourHours: "24h"  // 24h
+  Unmute: "unmute"   // Remove mute
+}
+
+type NotificationSettings(
+  NotificationSettings(
+    owner_id: int,
+    enabled: bool,
+    notify_new_messages: bool,
+    notify_agent_replies: bool,
+    notify_triggers: bool,
+    notify_new_chats: bool,
+    notify_leads: bool,
+    notify_errors: bool,
+    min_importance: NotificationImportance,
+    mute_until: str?,
+    muted_chats: [int]
+  )
+}
+
+type NotificationLogEntry(
+  NotificationLogEntry(
+    id: int,
+    owner_id: int,
+    event_type: NotificationEventType,
+    source_chat_id: int?,
+    from_type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}_id: int?,
+    message_text: str?,
+    telegram_message_id: int?,
+    sent_at: str
+  )
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+@spec event_type_from_string(s: str) → NotificationEventType {
+  /// Parse event type from string
+  given: Event type string
+  when: Filtering notification history
+  then: Returns NotificationEventType enum
+}
+
+@impl {
+  match s {
+    "new_message" → NewMessage
+    "agent_reply" → AgentReply
+    "trigger_detected" → TriggerDetected
+    "new_chat" → NewChat
+    "lead" → Lead
+    "error" → Error
+    "system" → System
+    _ → System
+  }
+}
+
+@spec event_type_to_string(t: NotificationEventType) → str {
+  /// Convert event type to string
+  given: NotificationEventType enum
+  when: Serializing response
+  then: Returns event type string
+}
+
+@impl {
+  match t {
+    NewMessage → "new_message"
+    AgentReply → "agent_reply"
+    TriggerDetected → "trigger_detected"
+    NewChat → "new_chat"
+    Lead → "lead"
+    Error → "error"
+    System → "system"
+  }
+}
+
+@spec importance_from_string(s: str) → NotificationImportance {
+  /// Parse importance level from string
+  given: Importance string
+  when: Parsing settings
+  then: Returns NotificationImportance enum
+}
+
+@impl {
+  match s {
+    "low" → Low
+    "medium" → Medium
+    "high" → High
+    "critical" → Critical
+    _ → Medium
+  }
+}
+
+@spec importance_to_string(i: NotificationImportance) → str {
+  /// Convert importance to string
+  given: NotificationImportance enum
+  when: Serializing settings
+  then: Returns importance string
+}
+
+@impl {
+  match i {
+    Low → "low"
+    Medium → "medium"
+    High → "high"
+    Critical → "critical"
+  }
+}
+
+@spec mute_duration_from_string(s: str) → MuteDuration {
+  /// Parse mute duration from string
+  given: Duration string
+  when: Parsing mute request
+  then: Returns MuteDuration enum
+}
+
+@impl {
+  match s {
+    "1h" → OneHour
+    "4h" → FourHours
+    "24h" → TwentyFourHours
+    "unmute" → Unmute
+    _ → OneHour
+  }
+}
+
+@spec mute_duration_to_hours(d: MuteDuration) → int {
+  /// Convert mute duration to hours
+  given: MuteDuration enum
+  when: Building SQL interval
+  then: Returns hours count (0 for unmute)
+}
+
+@impl {
+  match d {
+    OneHour → 1
+    FourHours → 4
+    TwentyFourHours → 24
+    Unmute → 0
+  }
+}
+
+// =============================================================================
+// FFI Imports - handlers in infra/mcp/notification_tools.gleam
+// =============================================================================
+
+// @ffi handle_notifications_get(args: Json) → ToolResult
+// @ffi handle_notifications_set(args: Json) → ToolResult
+// @ffi handle_notifications_mute(args: Json) → ToolResult
+// @ffi handle_notifications_history(args: Json) → ToolResult
+
+# v8.0
+
+# v8.0
+# v10.0 - ML-Powered Migration

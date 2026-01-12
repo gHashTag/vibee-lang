@@ -1,0 +1,133 @@
+// WAN 2.1 Video Generation Tools
+  // AI Suggestion: Replace magic numbers with named constants// Image-to-Video and Text-to-Video via FAL.AI
+  // AI Suggestion: Consider extracting hardcoded strings to constants// Migrated to compact syntax with @policy references
+
+// =============================================================================
+// WAN 2.1 IMAGE TO VIDEO
+// =============================================================================
+
+POST @AI https://queue.fal.run/fal-ai/wan/v2.1/image-to-video "Generate video from image using WAN 2.1 (FAL.AI)"
+  metrics("ai.wan")
+  @Video generated: image_url valid → generate() → result.video_url != null
+  @auth Bearer(FAL_KEY)
+
+  image_url: str!     @body
+  prompt: str!        @body
+  negative_prompt: str = "blurry, low quality, distorted"  @body
+  num_frames: int = 81      @body  // 81 frames = ~3 seconds at 24fps
+  frames_per_second: int = 24  @body
+  guidance_scale: float = 3.0  @body
+  num_inference_steps: int = 30  @body
+  seed: int?          @body
+
+  → { request_id: str!, status: str! }
+
+GET https://queue.fal.run/fal-ai/wan/v2.1/image-to-video/requests/{request_id} "Get WAN image-to-video result"
+  @auth Bearer(FAL_KEY)
+
+  request_id: str!  @path
+
+  → { status: str!, video: { url: str?, content_type: str? }?, error: str? }
+
+// =============================================================================
+// WAN 2.1 TEXT TO VIDEO
+// =============================================================================
+
+POST @AI https://queue.fal.run/fal-ai/wan/v2.1/text-to-video "Generate video from text prompt using WAN 2.1 (FAL.AI)"
+  metrics("ai.wan")
+  @Video generated: prompt valid → generate() → result.video_url != null
+  @auth Bearer(FAL_KEY)
+
+  prompt: str!        @body
+  negative_prompt: str = "blurry, low quality, distorted, static"  @body
+  num_frames: int = 81      @body
+  frames_per_second: int = 24  @body
+  guidance_scale: float = 3.0  @body
+  num_inference_steps: int = 30  @body
+  resolution: str = "720p"  @body  // 480p, 720p, 1080p
+  seed: int?          @body
+
+  → { request_id: str!, status: str! }
+
+GET https://queue.fal.run/fal-ai/wan/v2.1/text-to-video/requests/{request_id} "Get WAN text-to-video result"
+  @auth Bearer(FAL_KEY)
+
+  request_id: str!  @path
+
+  → { status: str!, video: { url: str?, content_type: str? }?, error: str? }
+
+// =============================================================================
+// WAN 2.2 5B MODEL (Higher quality, longer processing)
+// =============================================================================
+
+POST @BACKGROUND https://queue.fal.run/fal-ai/wan/v2.2-5b/image-to-video "Generate high-quality video using WAN 2.2-5b model"
+  metrics("ai.wan")
+  @HQ video: image + prompt → generate() → result.video_url != null
+  @auth Bearer(FAL_KEY)
+
+  image_url: str!     @body
+  prompt: str!        @body
+  negative_prompt: str = "blurry, low quality, distorted"  @body
+  num_frames: int = 81      @body
+  frames_per_second: int = 24  @body
+  guidance_scale: float = 3.0  @body
+  num_inference_steps: int = 50  @body
+  seed: int?          @body
+
+  → { request_id: str!, status: str! }
+
+GET https://queue.fal.run/fal-ai/wan/v2.2-5b/image-to-video/requests/{request_id} "Get WAN 5b model result"
+  @auth Bearer(FAL_KEY)
+
+  request_id: str!  @path
+
+  → { status: str!, video: { url: str?, content_type: str? }?, error: str? }
+
+// =============================================================================
+// UNIFIED VIDEO GENERATION PIPELINE
+// =============================================================================
+
+@pipeline
+tool generate_video:
+  desc: "Generate video using best available method"
+  metrics("ai.wan")
+  @Auto generation: selects best method based on input
+  circuit_breaker(threshold: 3, timeout: 120000)
+
+  image_url: str?       // If provided, uses image-to-video
+  prompt: str!
+  quality: str = "standard"  // standard, high
+  duration: int = 3     // seconds
+
+  step determine_method:
+    → case image_url:
+         ☐url) → "image_to_video"
+         ∅-> "text_to_video"
+
+  step calculate_frames:
+    → duration * 24  // 24 fps
+
+  step generate:
+    → case method, quality:
+         "image_to_video", "standard" → wan_image_to_video(image_url!, prompt, num_frames)
+         "image_to_video", "high" → wan_b_image_to_video(image_url!, prompt, num_frames)
+         "text_to_video", _ → num_frames · wan_text_to_video
+
+  step wait_completion:
+    → poll_until_complete(result.request_id, max_attempts: 120, interval: 5000)
+
+  → { video_url: str!, method: str!, duration: float? }
+
+// =============================================================================
+// PRICING CONSTANTS
+// =============================================================================
+
+let WAN_PRICING = const({
+  "wan_.1_i2v": { "per_second": 0.03, "description": "WAN 2.1 Image-to-Video" },
+  "wan_.1_t2v": { "per_second": 0.04, "description": "WAN 2.1 Text-to-Video" },
+  "wan_.2_b": { "per_second": 0.08, "description": "WAN 2.2-5b High Quality" }
+}
+
+# v8.0
+
+# v10.0 - ML-Powered Migration

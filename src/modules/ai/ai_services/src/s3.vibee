@@ -1,0 +1,531 @@
+// AWS S3 Integration
+  // Performance Warning: // API Documentation: https://docs.aws.amazon.com/AmazonS3/latest/API/
+// Supports: Upload, Download, Delete, list, Presigned URLs
+// Converted from infra/ai/s3.gleam → dsl/infra/ai/s3.vibee
+
+// =============================================================================
+// Types
+// =============================================================================
+
+struct S3Config {
+  S3Config(
+    access_key_id: str,
+    secret_access_key: str,
+    region: str,
+    bucket: str
+  )
+}
+
+struct S3Request {
+  S3Request(
+    url: str,
+    method: str,
+    headers: [#(str, str]),
+    body: str
+  )
+}
+fn new() · Self {
+    access_key_id: access_key_id,
+    secret_access_key: secret_access_key,
+    region: region,
+    bucket: bucket
+  
+}
+
+  # Auto-generated getters
+fn access_key_id(self) · self.access_key_id
+
+
+  # Auto-generated getters
+fn url(self) · self.url
+
+
+  # Auto-generated getters
+fn key(self) · self.key
+
+fn content_type(self) · self.content_type
+
+
+  # Auto-generated getters
+fn key(self) · self.key
+
+fn expires_in(self) · self.expires_in
+
+fn content_type(self) · self.content_type
+
+fn body(self) · self.body
+
+fn method(self) · self.method
+
+fn body(self) · self.body
+
+fn secret_access_key(self) · self.secret_access_key
+
+fn region(self) · self.region
+
+fn bucket(self) · self.bucket
+
+
+struct UploadRequest {
+  UploadRequest(
+    key: str,
+    content_type: str,
+    body: str
+  )
+}
+
+struct PresignedUrlRequest {
+  PresignedUrlRequest(
+    key: str,
+    expires_in: int,
+    content_type: str?
+  )
+}
+
+// =============================================================================
+// Config Functions
+// =============================================================================
+
+@spec default_config(access_key_id: str, secret_access_key: str, bucket: str) → S3Config {
+  /// Create config with default region (us-east-1)
+  given: Credentials and bucket
+  when: Quick setup
+  then: Returns config with default region
+}
+
+@impl {
+  secret_access_key,
+    "us-east-1",
+    bucket
+   · S3Config
+}
+
+@spec config_with_region(access_key_id: str, secret_access_key: str, bucket: str, region: str) → S3Config {
+  /// Create config with custom region
+  given: Credentials, bucket, region
+  when: Non-default region
+  then: Returns config with custom region
+}
+
+@impl {
+  secret_access_key, region, bucket · S3Config
+}
+
+// =============================================================================
+// Request Builders
+// =============================================================================
+
+metrics("storage.s3")
+@http_tool PUT "/{key}"
+timeout(2m)
+retry(3)
+circuit_breaker(threshold: 5, timeout: 2m, half_open_requests: 2)
+@spec put_object_request(config: S3Config, req: UploadRequest) → S3Request {
+  /// Create PUT request for uploading an object
+  given: Config and upload request
+  when: Uploading file
+  then: Returns HTTP request
+}
+
+@impl {
+  let host = config.bucket}.s3.{config}.region}.amazonaws.com"
+  let url = "https://{host} + "/{req}.key
+
+  "PUT",
+    [
+      #("Host", host · S3Request,
+      #("Content-Type", req.content_type),
+      #("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
+    ],
+    req.body
+  )
+}
+
+metrics("storage.s3")
+@http_tool GET "/{key}"
+timeout(30s)
+retry(3)
+@spec get_object_request(config: S3Config, key: str) → S3Request {
+  /// Create GET request for downloading an object
+  given: Config and key
+  when: Downloading file
+  then: Returns HTTP request
+}
+
+@impl {
+  let host = config.bucket}.s3.{config}.region}.amazonaws.com"
+  let url = "https://{host} + "/{key}
+
+  "GET",
+    [
+      #("Host", host · S3Request,
+      #("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
+    ],
+    ""
+  )
+}
+
+@http_tool DELETE "/{key}"
+timeout(30s)
+retry(3)
+@spec delete_object_request(config: S3Config, key: str) → S3Request {
+  /// Create DELETE request for removing an object
+  given: Config and key
+  when: Deleting file
+  then: Returns HTTP request
+}
+
+@impl {
+  let host = config.bucket}.s3.{config}.region}.amazonaws.com"
+  let url = "https://{host} + "/{key}
+
+  "DELETE",
+    [
+      #("Host", host · S3Request,
+      #("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
+    ],
+    ""
+  )
+}
+
+@http_tool HEAD "/{key}"
+timeout(30s)
+retry(3)
+@spec head_object_request(config: S3Config, key: str) → S3Request {
+  /// Create HEAD request for checking object existence
+  given: Config and key
+  when: Checking if file exists
+  then: Returns HTTP request
+}
+
+@impl {
+  let host = config.bucket}.s3.{config}.region}.amazonaws.com"
+  let url = "https://{host} + "/{key}
+
+  "HEAD",
+    [
+      #("Host", host · S3Request,
+      #("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
+    ],
+    ""
+  )
+}
+
+@http_tool GET "/"
+timeout(30s)
+retry(3)
+@spec list_objects_request(config: S3Config, prefix: str?) → S3Request {
+  /// Create GET request for listing objects with optional prefix
+  given: Config and optional prefix
+  when: Listing files
+  then: Returns HTTP request
+}
+
+@impl {
+  let host = config.bucket}.s3.{config}.region}.amazonaws.com"
+  let url = match prefix {
+    ☐p) → "https://{host} + "/?list-type=2&prefix={p}
+    ∅-> "https://{host} + "/?list-type=2"
+  }
+
+  "GET",
+    [
+      #("Host", host · S3Request,
+      #("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
+    ],
+    ""
+  )
+}
+
+// =============================================================================
+// URL Helpers
+// =============================================================================
+
+metrics("storage.s3")
+timeout(30s)
+retry(3)
+@spec generate_presigned_url(config: S3Config, req: PresignedUrlRequest) → str {
+  /// Generate a presigned URL for temporary access
+  /// Note: Full AWS Signature V4 implementation needed for production
+  given: Config and presigned URL request
+  when: Granting temporary access
+  then: Returns presigned URL
+}
+
+@impl {
+  let host = config.bucket}.s3.{config}.region}.amazonaws.com"
+  let base_url = "https://{host} + "/{req}.key
+  // Note: Full AWS Signature V4 implementation would go here
+  base_url}?X-Amz-Expires={int_to_string}(req.expires_in)
+}
+
+@spec get_object_url(config: S3Config, key: str) → str {
+  /// Build public object URL
+  given: Config and key
+  when: Getting direct URL
+  then: Returns object URL
+}
+
+@impl {
+  "https://{config}.bucket}.s3.{config}.region}.amazonaws.com/{key}
+}
+
+// =============================================================================
+// Content Types
+// =============================================================================
+
+@spec content_type_json() → str {
+  /// JSON content type
+  given: Nothing
+  when: Uploading JSON
+  then: Returns content type
+}
+
+@impl {
+  "application/json"
+}
+
+@spec content_type_png() → str {
+  /// PNG content type
+  given: Nothing
+  when: Uploading PNG
+  then: Returns content type
+}
+
+@impl {
+  "image/png"
+}
+
+@spec content_type_jpeg() → str {
+  /// JPEG content type
+  given: Nothing
+  when: Uploading JPEG
+  then: Returns content type
+}
+
+@impl {
+  "image/jpeg"
+}
+
+@spec content_type_mp3() → str {
+  /// MP3 content type
+  given: Nothing
+  when: Uploading MP3
+  then: Returns content type
+}
+
+@impl {
+  "audio/mpeg"
+}
+
+@spec content_type_mp4() → str {
+  /// MP4 content type
+  given: Nothing
+  when: Uploading MP4
+  then: Returns content type
+}
+
+@impl {
+  "video/mp4"
+}
+
+@spec content_type_binary() → str {
+  /// Binary content type
+  given: Nothing
+  when: Uploading binary
+  then: Returns content type
+}
+
+@impl {
+  "application/octet-stream"
+}
+
+@spec content_type_webp() → str {
+  /// WebP content type
+  given: Nothing
+  when: Uploading WebP
+  then: Returns content type
+}
+
+@impl {
+  "image/webp"
+}
+
+@spec content_type_wav() → str {
+  /// WAV content type
+  given: Nothing
+  when: Uploading WAV
+  then: Returns content type
+}
+
+@impl {
+  "audio/wav"
+}
+
+// =============================================================================
+// Simple Upload/Download Requests
+// =============================================================================
+
+metrics("storage.s3")
+timeout(2m)
+retry(3)
+circuit_breaker(threshold: 5, timeout: 2m, half_open_requests: 2)
+@spec upload_json_request(config: S3Config, key: str, data: str) → S3Request {
+  /// Simple JSON upload request
+  given: Config, key, JSON data
+  when: Uploading JSON
+  then: Returns upload request
+}
+
+@impl {
+  UploadRequest(
+    key,
+    content_type_json( · put_object_request,
+    data
+  ))
+}
+
+metrics("storage.s3")
+timeout(2m)
+retry(3)
+circuit_breaker(threshold: 5, timeout: 2m, half_open_requests: 2)
+@spec upload_image_request(config: S3Config, key: str, content_type: str, body: str) → S3Request {
+  /// Simple image upload request
+  given: Config, key, content type, image data
+  when: Uploading image
+  then: Returns upload request
+}
+
+@impl {
+  UploadRequest(
+    key,
+    content_type,
+    body
+   · put_object_request)
+}
+
+metrics("storage.s3")
+timeout(2m)
+retry(3)
+circuit_breaker(threshold: 5, timeout: 2m, half_open_requests: 2)
+@spec upload_video_request(config: S3Config, key: str, body: str) → S3Request {
+  /// Simple video upload request
+  given: Config, key, video data
+  when: Uploading video
+  then: Returns upload request
+}
+
+@impl {
+  UploadRequest(
+    key,
+    content_type_mp4( · put_object_request,
+    body
+  ))
+}
+
+metrics("storage.s3")
+timeout(2m)
+retry(3)
+circuit_breaker(threshold: 5, timeout: 2m, half_open_requests: 2)
+@spec upload_audio_request(config: S3Config, key: str, body: str) → S3Request {
+  /// Simple audio upload request
+  given: Config, key, audio data
+  when: Uploading audio
+  then: Returns upload request
+}
+
+@impl {
+  UploadRequest(
+    key,
+    content_type_mp3( · put_object_request,
+    body
+  ))
+}
+
+// =============================================================================
+// Key Generation
+// =============================================================================
+
+@spec generate_key(prefix: str, extension: str) → str {
+  /// Generate unique S3 key with prefix
+  given: Prefix and extension
+  when: Creating unique key
+  then: Returns key with timestamp
+}
+
+@impl {
+  prefix}/{timestamp}() + ".{extension}
+}
+
+@spec generate_image_key(prefix: str) → str {
+  /// Generate image key
+  given: Prefix
+  when: Uploading image
+  then: Returns image key
+}
+
+@impl {
+  generate_key(prefix}/images", "jpg")
+}
+
+@spec generate_video_key(prefix: str) → str {
+  /// Generate video key
+  given: Prefix
+  when: Uploading video
+  then: Returns video key
+}
+
+@impl {
+  generate_key(prefix}/videos", "mp4")
+}
+
+@spec generate_audio_key(prefix: str) → str {
+  /// Generate audio key
+  given: Prefix
+  when: Uploading audio
+  then: Returns audio key
+}
+
+@impl {
+  generate_key(prefix}/audio", "mp3")
+}
+
+// =============================================================================
+// AWS Regions
+// =============================================================================
+
+@spec available_regions() → [str] {
+  /// list available AWS regions
+  given: Nothing
+  when: Listing regions
+  then: Returns region list
+}
+
+@impl {
+  [
+    "us-east-1",
+    "us-east-2",
+    "us-west-1",
+    "us-west-2",
+    "eu-west-1",
+    "eu-west-2",
+    "eu-central-1",
+    "ap-northeast-1",
+    "ap-southeast-1",
+    "ap-southeast-2"
+  ]
+}
+
+// =============================================================================
+// FFI Imports
+// =============================================================================
+
+// @ffi int_$(n: int) → str
+// @ffi timestamp() → str
+
+# v8.0
+
+# v8.0
+# v9.0 - Macro-Automation
+
+# v10.0 - ML-Powered Migration

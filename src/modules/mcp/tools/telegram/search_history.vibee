@@ -1,0 +1,334 @@
+// Telegram Search History Tool
+// Searches through message history using keywords
+
+import mcp/types/mcp_types.{Tool, ToolResult, Schema, Property}
+
+// Create telegram_search_history tool
+fn create_tool() → Tool {
+  mcp_types.tool_new(
+    "telegram_search_history",
+    "Search through Telegram message history using keywords and filters",
+    create_schema(),
+    execute
+  )
+}
+
+// Define input schema
+fn create_schema() → Schema {
+  Schema {
+    type_name: "object",
+    properties: dict.new()
+      · dict.insert("session_id", Property {
+        type_name: "string",
+        description: "Telegram session ID for authentication",
+        enum_values: ∅
+      })
+      · dict.insert("query", Property {
+        type_name: "string",
+        description: "Search query (keywords to find in messages)",
+        enum_values: ∅
+      })
+      · dict.insert("chat_id", Property {
+        type_name: "string",
+        description: "Optional: Limit search to specific chat",
+        enum_values: ∅
+      })
+      · dict.insert("from_user", Property {
+        type_name: "string",
+        description: "Optional: Filter by sender username or ID",
+        enum_values: ∅
+      })
+      · dict.insert("limit", Property {
+        type_name: "integer",
+        description: "Maximum number of results (default: 20)",
+        enum_values: ∅
+      })
+      · dict.insert("min_date", Property {
+        type_name: "integer",
+        description: "Optional: Minimum message date (Unix timestamp)",
+        enum_values: ∅
+      })
+      · dict.insert("max_date", Property {
+        type_name: "integer",
+        description: "Optional: Maximum message date (Unix timestamp)",
+        enum_values: ∅
+      }),
+    required: ["session_id", "query"]
+  }
+}
+
+// Execute tool
+fn execute(params: Json) → ToolResult {
+  case parse_params(params) {
+    Ok(p) → {
+      case validate_session(p.session_id) {
+        Ok(_) → {
+          case search_telegram_history(p) {
+            Ok(results) → {
+              mcp_types.tool_result_success([
+                mcp_types.text_content(format_results(results))
+              ])
+            }
+            Error(e) → {
+              mcp_types.tool_result_error("Search failed: " + e)
+            }
+          }
+        }
+        Error(e) → {
+          mcp_types.tool_result_error("Invalid session: " + e)
+        }
+      }
+    }
+    Error(e) → {
+      mcp_types.tool_result_error("Invalid parameters: " + e)
+    }
+  }
+}
+
+// Parameter types
+struct SearchParams {
+  session_id: str
+  query: str
+  chat_id: option(str)
+  from_user: option(str)
+  limit: int
+  min_date: option(int)
+  max_date: option(int)
+}
+
+struct SearchResult {
+  message_id: int
+  chat_id: str
+  chat_title: str
+  from_id: str
+  from_name: str
+  text: str
+  date: int
+  match_score: float
+}
+
+struct SearchResults {
+  results: list(SearchResult)
+  total_count: int
+  query: str
+}
+
+// Parse parameters
+fn parse_params(params: Json) → result(SearchParams, str) {
+  case json.decode(params) {
+    Ok(obj) → {
+      let session_id = dict.get(obj, "session_id")
+        · result.map(json.to_string)
+        · result.unwrap("")
+      
+      let query = dict.get(obj, "query")
+        · result.map(json.to_string)
+        · result.unwrap("")
+      
+      let chat_id = dict.get(obj, "chat_id")
+        · result.map(json.to_string)
+        · result.to_option()
+      
+      let from_user = dict.get(obj, "from_user")
+        · result.map(json.to_string)
+        · result.to_option()
+      
+      let limit = dict.get(obj, "limit")
+        · result.map(json.to_int)
+        · result.unwrap(20)
+      
+      let min_date = dict.get(obj, "min_date")
+        · result.map(json.to_int)
+        · result.to_option()
+      
+      let max_date = dict.get(obj, "max_date")
+        · result.map(json.to_int)
+        · result.to_option()
+      
+      case session_id, query {
+        "", _ → Error("session_id is required")
+        _, "" → Error("query is required")
+        _, _ → Ok(SearchParams {
+          session_id: session_id,
+          query: query,
+          chat_id: chat_id,
+          from_user: from_user,
+          limit: limit,
+          min_date: min_date,
+          max_date: max_date
+        })
+      }
+    }
+    Error(_) → Error("Invalid JSON")
+  }
+}
+
+// Validate session
+fn validate_session(session_id: str) → result(Nil, str) {
+  case session_id {
+    "" → Error("Session ID cannot be empty")
+    _ → Ok(Nil)
+  }
+}
+
+// Search Telegram history
+fn search_telegram_history(params: SearchParams) → result(SearchResults, str) {
+  // TODO: Implement actual Telegram search API call
+  // This would use the telegram bridge with search functionality
+  
+  // Mock search results
+  let mock_results = [
+    SearchResult {
+      message_id: 2001,
+      chat_id: "user_123",
+      chat_title: "John Doe",
+      from_id: "user_123",
+      from_name: "John Doe",
+      text: "Hey, did you see the new AI model? It's amazing!",
+      date: timestamp_now() - 86400,
+      match_score: 0.95
+    },
+    SearchResult {
+      message_id: 2002,
+      chat_id: "group_456",
+      chat_title: "Dev Team",
+      from_id: "user_789",
+      from_name: "Alice",
+      text: "The AI integration is working great now",
+      date: timestamp_now() - 172800,
+      match_score: 0.87
+    },
+    SearchResult {
+      message_id: 2003,
+      chat_id: "channel_789",
+      chat_title: "Tech News",
+      from_id: "channel_789",
+      from_name: "Tech News",
+      text: "New AI breakthrough: GPT-5 announced!",
+      date: timestamp_now() - 259200,
+      match_score: 0.92
+    }
+  ]
+  
+  // Apply filters
+  let filtered = mock_results
+    · filter_by_chat(params.chat_id)
+    · filter_by_user(params.from_user)
+    · filter_by_date_range(params.min_date, params.max_date)
+    · filter_by_query(params.query)
+    · sort_by_relevance()
+    · list.take(params.limit)
+  
+  Ok(SearchResults {
+    results: filtered,
+    total_count: list.length(filtered),
+    query: params.query
+  })
+}
+
+// Filter by chat
+fn filter_by_chat(results: list(SearchResult), chat_id: option(str)) → list(SearchResult) {
+  case chat_id {
+    ∅ → results
+    Some(id) → list.filter(results, fn(r) { r.chat_id == id })
+  }
+}
+
+// Filter by user
+fn filter_by_user(results: list(SearchResult), from_user: option(str)) → list(SearchResult) {
+  case from_user {
+    ∅ → results
+    Some(user) → list.filter(results, fn(r) { 
+      r.from_id == user || r.from_name == user 
+    })
+  }
+}
+
+// Filter by date range
+fn filter_by_date_range(
+  results: list(SearchResult),
+  min_date: option(int),
+  max_date: option(int)
+) → list(SearchResult) {
+  results
+  · filter_min_date(min_date)
+  · filter_max_date(max_date)
+}
+
+fn filter_min_date(results: list(SearchResult), min_date: option(int)) → list(SearchResult) {
+  case min_date {
+    ∅ → results
+    Some(min) → list.filter(results, fn(r) { r.date >= min })
+  }
+}
+
+fn filter_max_date(results: list(SearchResult), max_date: option(int)) → list(SearchResult) {
+  case max_date {
+    ∅ → results
+    Some(max) → list.filter(results, fn(r) { r.date <= max })
+  }
+}
+
+// Filter by query (simple text matching)
+fn filter_by_query(results: list(SearchResult), query: str) → list(SearchResult) {
+  let query_lower = string.lowercase(query)
+  list.filter(results, fn(r) {
+    string.contains(string.lowercase(r.text), query_lower)
+  })
+}
+
+// Sort by relevance (match score)
+fn sort_by_relevance(results: list(SearchResult)) → list(SearchResult) {
+  list.sort(results, fn(a, b) {
+    case a.match_score > b.match_score {
+      true → order.Lt
+      false → order.Gt
+    }
+  })
+}
+
+// Format search results
+fn format_results(results: SearchResults) → str {
+  let header = "Found " + int.to_string(results.total_count) + 
+               " results for query: \"" + results.query + "\"\n\n"
+  
+  case results.total_count {
+    0 → header + "No messages found."
+    _ → {
+      let result_lines = results.results
+        · list.map(format_result)
+        · list.intersperse("\n---\n")
+        · string.concat()
+      
+      header + result_lines
+    }
+  }
+}
+
+// Format single result
+fn format_result(result: SearchResult) → str {
+  let score = float.to_string(result.match_score * 100.0) + "%"
+  let timestamp = format_timestamp(result.date)
+  
+  "[" + score + " match] " + result.chat_title + "\n" +
+  "From: " + result.from_name + " (" + timestamp + ")\n" +
+  "Message ID: " + int.to_string(result.message_id) + "\n" +
+  "Text: " + result.text
+}
+
+// Format timestamp
+fn format_timestamp(ts: int) → str {
+  // TODO: Implement proper date formatting
+  int.to_string(ts)
+}
+
+// Get current timestamp
+fn timestamp_now() → int {
+  // TODO: Implement actual timestamp
+  1704902400
+}
+
+// Export tool
+fn get_tool() → Tool {
+  create_tool()
+}

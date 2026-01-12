@@ -1,0 +1,675 @@
+name: plugin_system
+# Plugin Registry - Реестр плагинов с обязательными UI и документацией
+
+module: honeycomb/ui/plugin_system/registry
+version: 1.0.0
+description: Центральный реестр плагинов с валидацией и lifecycle управлением
+
+types:
+  # Манифест плагина
+  PluginManifest:
+    id: String
+    name: String
+    version: String
+    description: String
+    author: String
+    license: String
+    homepage: Option(String)
+    repository: Option(String)
+    
+    # UI (ОБЯЗАТЕЛЬНО)
+    canvas_widget: CanvasWidget
+    documentation_page: String
+    icon: Option(String)
+    screenshots: List(String)
+    
+    # Layout
+    min_width: Float
+    min_height: Float
+    max_width: Option(Float)
+    max_height: Option(Float)
+    resizable: Bool
+    aspect_ratio: Option(Float)
+    
+    # Зависимости
+    dependencies: List(PluginDependency)
+    peer_dependencies: List(String)
+    conflicts: List(String)
+    
+    # Права
+    permissions: List(Permission)
+    
+    # Lifecycle hooks
+    on_load: fn() -> Result(Nil, String)
+    on_unload: fn() -> Result(Nil, String)
+    on_resize: fn(Float, Float) -> Result(Nil, String)
+    on_focus: fn() -> Result(Nil, String)
+    on_blur: fn() -> Result(Nil, String)
+    
+    # Метаданные
+    tags: List(String)
+    category: PluginCategory
+    maturity: PluginMaturity
+    created_at: String
+    updated_at: String
+  
+  PluginCategory:
+    variants:
+      - Visualization
+      - Communication
+      - AI
+      - Payment
+      - Analytics
+      - Development
+      - Utility
+      - Entertainment
+      - Custom(String)
+  
+  PluginMaturity:
+    variants:
+      - Experimental
+      - Beta
+      - Stable
+      - Deprecated
+  
+  PluginDependency:
+    id: String
+    version: String
+    optional: Bool
+  
+  Permission:
+    variants:
+      - ReadState
+      - WriteState
+      - Network
+      - FileSystem
+      - Database
+      - Notifications
+      - Camera
+      - Microphone
+      - Location
+      - Clipboard
+      - Custom(String)
+  
+  # Canvas Widget
+  CanvasWidget:
+    render: fn(RenderContext) -> List(DrawCommand)
+    handle_event: fn(UIEvent) -> Result(EventResponse, String)
+    get_state: fn() -> WidgetState
+    update_state: fn(WidgetState) -> Result(Nil, String)
+    animate: Option(fn(Float) -> List(DrawCommand))
+  
+  RenderContext:
+    x: Float
+    y: Float
+    width: Float
+    height: Float
+    scale: Float
+    time: Float
+    viewport: Viewport
+    theme: Theme
+    focused: Bool
+    hovered: Bool
+  
+  Viewport:
+    width: Float
+    height: Float
+    scale: Float
+  
+  Theme:
+    primary: Color
+    secondary: Color
+    background: Color
+    text: Color
+  
+  Color:
+    r: Int
+    g: Int
+    b: Int
+    a: Int
+  
+  DrawCommand:
+    variants:
+      - DrawRect(x: Float, y: Float, width: Float, height: Float, color: Color, radius: Option(Float))
+      - DrawCircle(x: Float, y: Float, radius: Float, color: Color)
+      - DrawText(x: Float, y: Float, text: String, font: String, color: Color)
+      - DrawImage(x: Float, y: Float, width: Float, height: Float, src: String, opacity: Float)
+  
+  UIEvent:
+    variants:
+      - Click(x: Float, y: Float)
+      - MouseMove(x: Float, y: Float)
+      - MouseEnter
+      - MouseLeave
+      - KeyDown(key: String)
+      - KeyUp(key: String)
+      - Focus
+      - Blur
+      - Resize(width: Float, height: Float)
+  
+  EventResponse:
+    variants:
+      - Handled
+      - Propagate
+      - Update(WidgetState)
+      - Command(String)
+  
+  WidgetState:
+    visible: Bool
+    enabled: Bool
+    data: String
+  
+  # Зарегистрированный плагин
+  RegisteredPlugin:
+    manifest: PluginManifest
+    instance: Option(PluginInstance)
+    status: PluginStatus
+    load_time: Option(Int)
+    error: Option(String)
+  
+  PluginStatus:
+    variants:
+      - NotLoaded
+      - Loading
+      - Loaded
+      - Running
+      - Paused
+      - Error
+      - Unloading
+  
+  PluginInstance:
+    id: String
+    supervisor: Subject(PluginMessage)
+    widget_actor: Subject(WidgetMessage)
+    state_actor: Subject(StateMessage)
+    yoga_node: YogaNode
+  
+  # Сообщения Registry
+  RegistryMessage:
+    variants:
+      - Register(manifest: PluginManifest, reply: Subject(Result(Nil, String)))
+      - Unregister(id: String, reply: Subject(Result(Nil, String)))
+      - Load(id: String, reply: Subject(Result(Nil, String)))
+      - Unload(id: String, reply: Subject(Result(Nil, String)))
+      - Get(id: String, reply: Subject(Result(RegisteredPlugin, String)))
+      - List(filter: Option(PluginFilter), reply: Subject(List(RegisteredPlugin)))
+      - Search(query: String, reply: Subject(List(RegisteredPlugin)))
+  
+  PluginFilter:
+    category: Option(PluginCategory)
+    status: Option(PluginStatus)
+    tags: List(String)
+  
+  # Состояние Registry
+  RegistryState:
+    plugins: Dict(String, RegisteredPlugin)
+    categories: Dict(PluginCategory, List(String))
+    tags: Dict(String, List(String))
+  
+  YogaNode:
+    opaque: True
+  
+  PluginMessage:
+    opaque: True
+  
+  WidgetMessage:
+    opaque: True
+  
+  StateMessage:
+    opaque: True
+
+functions:
+  # Запуск Registry
+  start:
+    params: []
+    returns: Result(Subject(RegistryMessage), String)
+    description: Запускает Plugin Registry
+    implementation: |
+      let initial_state = RegistryState(
+        plugins: dict.new(),
+        categories: dict.new(),
+        tags: dict.new(),
+      )
+      
+      actor.start(initial_state, handle_message)
+  
+  # Обработка сообщений
+  handle_message:
+    params:
+      - msg: RegistryMessage
+      - state: RegistryState
+    returns: actor.Next(RegistryState)
+    description: Обрабатывает сообщения Registry
+    implementation: |
+      case msg {
+        Register(manifest, reply) -> {
+          # Валидация плагина
+          case validate_plugin(manifest) {
+            Ok(_) -> {
+              let plugin = RegisteredPlugin(
+                manifest: manifest,
+                instance: None,
+                status: NotLoaded,
+                load_time: None,
+                error: None,
+              )
+              
+              let new_plugins = dict.insert(state.plugins, manifest.id, plugin)
+              
+              # Обновляем индексы
+              let new_categories = update_category_index(state.categories, manifest)
+              let new_tags = update_tag_index(state.tags, manifest)
+              
+              let new_state = RegistryState(
+                plugins: new_plugins,
+                categories: new_categories,
+                tags: new_tags,
+              )
+              
+              process.send(reply, Ok(Nil))
+              actor.continue(new_state)
+            }
+            
+            Error(errors) -> {
+              let error_msg = string.join(errors, ", ")
+              process.send(reply, Error(error_msg))
+              actor.continue(state)
+            }
+          }
+        }
+        
+        Unregister(id, reply) -> {
+          case dict.get(state.plugins, id) {
+            Ok(plugin) -> {
+              # Выгружаем если загружен
+              case plugin.status {
+                Loaded | Running -> {
+                  let _ = unload_plugin_internal(plugin)
+                  Nil
+                }
+                _ -> Nil
+              }
+              
+              let new_plugins = dict.delete(state.plugins, id)
+              let new_state = RegistryState(..state, plugins: new_plugins)
+              
+              process.send(reply, Ok(Nil))
+              actor.continue(new_state)
+            }
+            
+            Error(_) -> {
+              process.send(reply, Error("Plugin not found"))
+              actor.continue(state)
+            }
+          }
+        }
+        
+        Load(id, reply) -> {
+          case dict.get(state.plugins, id) {
+            Ok(plugin) -> {
+              case plugin.status {
+                NotLoaded -> {
+                  # Загружаем плагин
+                  case load_plugin_internal(plugin) {
+                    Ok(instance) -> {
+                      let updated_plugin = RegisteredPlugin(
+                        ..plugin,
+                        instance: Some(instance),
+                        status: Loaded,
+                        load_time: Some(erlang.system_time(erlang.Millisecond)),
+                      )
+                      
+                      let new_plugins = dict.insert(state.plugins, id, updated_plugin)
+                      let new_state = RegistryState(..state, plugins: new_plugins)
+                      
+                      process.send(reply, Ok(Nil))
+                      actor.continue(new_state)
+                    }
+                    
+                    Error(err) -> {
+                      let updated_plugin = RegisteredPlugin(
+                        ..plugin,
+                        status: Error,
+                        error: Some(err),
+                      )
+                      
+                      let new_plugins = dict.insert(state.plugins, id, updated_plugin)
+                      let new_state = RegistryState(..state, plugins: new_plugins)
+                      
+                      process.send(reply, Error(err))
+                      actor.continue(new_state)
+                    }
+                  }
+                }
+                
+                _ -> {
+                  process.send(reply, Error("Plugin already loaded"))
+                  actor.continue(state)
+                }
+              }
+            }
+            
+            Error(_) -> {
+              process.send(reply, Error("Plugin not found"))
+              actor.continue(state)
+            }
+          }
+        }
+        
+        Unload(id, reply) -> {
+          case dict.get(state.plugins, id) {
+            Ok(plugin) -> {
+              case plugin.status {
+                Loaded | Running -> {
+                  case unload_plugin_internal(plugin) {
+                    Ok(_) -> {
+                      let updated_plugin = RegisteredPlugin(
+                        ..plugin,
+                        instance: None,
+                        status: NotLoaded,
+                      )
+                      
+                      let new_plugins = dict.insert(state.plugins, id, updated_plugin)
+                      let new_state = RegistryState(..state, plugins: new_plugins)
+                      
+                      process.send(reply, Ok(Nil))
+                      actor.continue(new_state)
+                    }
+                    
+                    Error(err) -> {
+                      process.send(reply, Error(err))
+                      actor.continue(state)
+                    }
+                  }
+                }
+                
+                _ -> {
+                  process.send(reply, Error("Plugin not loaded"))
+                  actor.continue(state)
+                }
+              }
+            }
+            
+            Error(_) -> {
+              process.send(reply, Error("Plugin not found"))
+              actor.continue(state)
+            }
+          }
+        }
+        
+        Get(id, reply) -> {
+          let result = dict.get(state.plugins, id)
+          process.send(reply, result)
+          actor.continue(state)
+        }
+        
+        List(filter, reply) -> {
+          let plugins = dict.values(state.plugins)
+          
+          let filtered = case filter {
+            Some(f) -> filter_plugins(plugins, f)
+            None -> plugins
+          }
+          
+          process.send(reply, filtered)
+          actor.continue(state)
+        }
+        
+        Search(query, reply) -> {
+          let plugins = dict.values(state.plugins)
+          let results = search_plugins(plugins, query)
+          
+          process.send(reply, results)
+          actor.continue(state)
+        }
+      }
+  
+  # Валидация плагина
+  validate_plugin:
+    params:
+      - manifest: PluginManifest
+    returns: Result(Nil, List(String))
+    description: Валидирует манифест плагина
+    implementation: |
+      let errors = []
+      
+      # 1. Проверка ID (reverse domain)
+      let errors = case string.starts_with(manifest.id, "com.") {
+        True -> errors
+        False -> list.append(errors, ["ID must start with reverse domain (com.*)"])
+      }
+      
+      # 2. Проверка версии (semver)
+      let errors = case is_valid_semver(manifest.version) {
+        True -> errors
+        False -> list.append(errors, ["Invalid semantic version"])
+      }
+      
+      # 3. Проверка Canvas widget (ОБЯЗАТЕЛЬНО)
+      let errors = case manifest.canvas_widget {
+        CanvasWidget(render: _, handle_event: _, get_state: _, ..) -> errors
+        _ -> list.append(errors, ["Canvas widget is required"])
+      }
+      
+      # 4. Проверка документации (ОБЯЗАТЕЛЬНО)
+      let errors = case file_exists(manifest.documentation_page) {
+        True -> errors
+        False -> list.append(errors, ["Documentation not found: " <> manifest.documentation_page])
+      }
+      
+      # 5. Проверка размеров
+      let errors = case manifest.min_width >. 0.0 && manifest.min_height >. 0.0 {
+        True -> errors
+        False -> list.append(errors, ["Invalid min dimensions"])
+      }
+      
+      # 6. Проверка зависимостей
+      let errors = list.fold(manifest.dependencies, errors, fn(errs, dep) {
+        case plugin_exists(dep.id) {
+          True -> errs
+          False -> list.append(errs, ["Dependency not found: " <> dep.id])
+        }
+      })
+      
+      case list.is_empty(errors) {
+        True -> Ok(Nil)
+        False -> Error(errors)
+      }
+  
+  # Загрузка плагина
+  load_plugin_internal:
+    params:
+      - plugin: RegisteredPlugin
+    returns: Result(PluginInstance, String)
+    description: Загружает плагин и создает instance
+    implementation: |
+      # Вызываем on_load hook
+      case plugin.manifest.on_load() {
+        Ok(_) -> {
+          # Создаем Yoga node
+          let yoga_node = create_yoga_node(plugin.manifest)
+          
+          # Создаем actors
+          let supervisor = plugin_supervisor.start(plugin.manifest.id)
+          let widget_actor = widget_actor.start(plugin.manifest.canvas_widget)
+          let state_actor = state_actor.start(WidgetState(
+            visible: True,
+            enabled: True,
+            data: "{}",
+          ))
+          
+          Ok(PluginInstance(
+            id: plugin.manifest.id,
+            supervisor: supervisor,
+            widget_actor: widget_actor,
+            state_actor: state_actor,
+            yoga_node: yoga_node,
+          ))
+        }
+        
+        Error(err) -> Error("on_load failed: " <> err)
+      }
+  
+  # Выгрузка плагина
+  unload_plugin_internal:
+    params:
+      - plugin: RegisteredPlugin
+    returns: Result(Nil, String)
+    description: Выгружает плагин
+    implementation: |
+      case plugin.instance {
+        Some(instance) -> {
+          # Останавливаем actors
+          process.send(instance.supervisor, Stop)
+          process.send(instance.widget_actor, Stop)
+          process.send(instance.state_actor, Stop)
+          
+          # Освобождаем Yoga node
+          yoga.free_node(instance.yoga_node)
+          
+          # Вызываем on_unload hook
+          plugin.manifest.on_unload()
+        }
+        
+        None -> Ok(Nil)
+      }
+  
+  # Фильтрация плагинов
+  filter_plugins:
+    params:
+      - plugins: List(RegisteredPlugin)
+      - filter: PluginFilter
+    returns: List(RegisteredPlugin)
+    description: Фильтрует плагины по критериям
+    implementation: |
+      plugins
+      |> list.filter(fn(p) {
+        let category_match = case filter.category {
+          Some(cat) -> p.manifest.category == cat
+          None -> True
+        }
+        
+        let status_match = case filter.status {
+          Some(st) -> p.status == st
+          None -> True
+        }
+        
+        let tags_match = case list.is_empty(filter.tags) {
+          True -> True
+          False -> {
+            list.any(filter.tags, fn(tag) {
+              list.contains(p.manifest.tags, tag)
+            })
+          }
+        }
+        
+        category_match && status_match && tags_match
+      })
+  
+  # Поиск плагинов
+  search_plugins:
+    params:
+      - plugins: List(RegisteredPlugin)
+      - query: String
+    returns: List(RegisteredPlugin)
+    description: Поиск плагинов по запросу
+    implementation: |
+      let query_lower = string.lowercase(query)
+      
+      plugins
+      |> list.filter(fn(p) {
+        let name_match = string.contains(string.lowercase(p.manifest.name), query_lower)
+        let desc_match = string.contains(string.lowercase(p.manifest.description), query_lower)
+        let tag_match = list.any(p.manifest.tags, fn(tag) {
+          string.contains(string.lowercase(tag), query_lower)
+        })
+        
+        name_match || desc_match || tag_match
+      })
+  
+  # Вспомогательные функции
+  update_category_index:
+    params:
+      - categories: Dict(PluginCategory, List(String))
+      - manifest: PluginManifest
+    returns: Dict(PluginCategory, List(String))
+    implementation: |
+      let current = dict.get(categories, manifest.category) |> result.unwrap([])
+      let updated = list.append(current, [manifest.id])
+      dict.insert(categories, manifest.category, updated)
+  
+  update_tag_index:
+    params:
+      - tags: Dict(String, List(String))
+      - manifest: PluginManifest
+    returns: Dict(String, List(String))
+    implementation: |
+      list.fold(manifest.tags, tags, fn(tag_dict, tag) {
+        let current = dict.get(tag_dict, tag) |> result.unwrap([])
+        let updated = list.append(current, [manifest.id])
+        dict.insert(tag_dict, tag, updated)
+      })
+  
+  create_yoga_node:
+    params:
+      - manifest: PluginManifest
+    returns: YogaNode
+    implementation: |
+      let node = yoga.create_node()
+      yoga.set_width(node, manifest.min_width)
+      yoga.set_height(node, manifest.min_height)
+      
+      case manifest.max_width {
+        Some(w) -> yoga.set_max_width(node, w)
+        None -> Nil
+      }
+      
+      case manifest.max_height {
+        Some(h) -> yoga.set_max_height(node, h)
+        None -> Nil
+      }
+      
+      node
+
+tests:
+  - name: start_registry
+    description: Запуск Registry
+    test: |
+      let result = start()
+      result |> should.be_ok
+  
+  - name: register_plugin
+    description: Регистрация плагина
+    test: |
+      let registry = start() |> should.be_ok
+      
+      let manifest = create_test_manifest()
+      
+      let reply = process.new_subject()
+      process.send(registry, Register(manifest, reply))
+      let result = process.receive(reply, 1000)
+      
+      result |> should.be_ok
+  
+  - name: validate_plugin_test
+    description: Валидация плагина
+    test: |
+      let manifest = create_test_manifest()
+      let result = validate_plugin(manifest)
+      result |> should.be_ok
+
+dependencies:
+  - gleam_stdlib
+  - gleam_erlang
+  - gleam_otp
+
+imports:
+  - gleam/dict
+  - gleam/list
+  - gleam/string
+  - gleam/option.{type Option, None, Some}
+  - gleam/result
+  - gleam/otp/actor
+  - gleam/erlang/process.{type Subject}
+  - gleam/erlang
+  - vibee_yoga as yoga

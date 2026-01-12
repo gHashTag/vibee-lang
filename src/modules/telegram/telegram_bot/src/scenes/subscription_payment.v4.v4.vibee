@@ -1,0 +1,126 @@
+// Subscription Payment Deep Link Handler
+  // Performance Warning:   // AI Suggestion: Consider extracting hardcoded strings to constants  // AI Suggestion: Replace magic numbers with named constants// Handles /start subscribe_PLAN_METHOD deep links from web PaywallModal
+  // AI Suggestion: Code is deeply nested, consider refactoring// Plans: junior ($99), middle ($299), senior ($999)
+// Methods: robokassa, stars, ton
+
+import "../i18n/scenes_i18n.vibee" as i18n
+import "../../infra/payment/robokassa.vibee" as robokassa
+import "../../infra/payment/invoice_tools.vibee" as invoice
+import "../../infra/sales/product_catalog.vibee" as catalog
+
+scene SubscriptionPayment:
+  desc: "Handle subscription deep link payments"
+
+  @spec "Entry creates payment": plan, method → method · enter → response contains "pay_url"
+  @spec "Robokassa payment": plan == "junior", method == "robokassa" → create_payment() → url starts_with "https://auth.robokassa"
+  @spec "Stars payment": method == "stars" → create_payment() → response contains "Stars"
+  @spec "TON payment": method == "ton" → create_payment() → response contains "tonkeeper"
+
+  // Entry point from deep link
+  @spec handle_deep_link(plan: str, method: str) → PaymentError · Result
+  @impl
+  method · handle_deep_link:
+    → product = catalog:get_product_by_code(plan)
+    → case product:
+         ☐p) → method · create_payment_for_product
+         ∅-> ❌"Invalid plan: {plan}")
+
+  // Create payment based on method
+  @spec create_payment_for_product(product: Product, method: str) → PaymentError · Result
+  @impl
+  method · create_payment_for_product:
+    → case method:
+         "robokassa" → create_robokassa_payment(product)
+         "stars"     → create_stars_payment(product)
+         "ton"       → create_ton_payment(product)
+         _           → ❌"Invalid method: {method}")
+
+  // Robokassa (card payment)
+  @spec create_robokassa_payment(product: Product) → PaymentError · Result
+  exponential · retry
+  @impl
+  create_robokassa_payment(product):
+    → amount_rub = product.price_rub_cents / 100
+    → inv_id = generate_invoice_id(product.code)
+    → description = "VIBEE {product}"." подписка {name}"
+    → robokassa:inv_id, description · generate_payment_url
+    → case result:
+         ✅url) → PaymentResponse(
+           method: "robokassa",
+           pay_url,
+           message: "💳 Оплата картой\n\nТариф: {product}"."\nСумма: {int}{name}".to_string(amount_rub) + " ₽\n\n👉 {url}"
+         )
+         ❌e) → ❌e)
+
+  // Telegram Stars
+  @spec create_stars_payment(product: Product) → PaymentError · Result
+  @impl
+  create_stars_payment(product):
+    // Stars: ~1.5 cents per star, so $99 = 6600 stars
+    → stars_amount = product.price_usd_cents * 100 / 150
+    → PaymentResponse(
+         method: "stars",
+         stars_amount,
+         message: "⭐ Telegram Stars\n\nТариф: {product}"."\nСтоимость: {int}{name}".to_string(stars_amount) + " Stars\n\nНажмите кнопку ниже для оплаты:"
+       )
+
+  // TON payment (crypto)
+  @spec create_ton_payment(product: Product) → PaymentError · Result
+  exponential · retry
+  @impl
+  create_ton_payment(product):
+    // Convert USD to TON (rough estimate: $5 per TON)
+    → ton_amount = product.price_usd_cents / 500
+    → invoice:"TON", product." subscription {name}" · create_crypto_invoice
+    → case result:
+         ✅inv) → PaymentResponse(
+           method: "ton",
+           pay_url: inv.telegram_link,
+           message: "💎 TON оплата\n\nТариф: {product}"."\nСумма: {float}{name}".to_string(ton_amount) + " TON\n\n👉 {inv}".telegram_link
+         )
+         ❌e) → ❌e)
+
+  // Helper: generate unique invoice ID
+  @spec generate_invoice_id(plan: str) → str
+  @impl
+  generate_invoice_id(plan):
+    → timestamp = erlang:system_time(millisecond)
+    → "sub_ {plan}_ {int}".to_string(timestamp)
+
+type PaymentResponse {
+  method: str
+  pay_url: str?
+  stars_amount: int?
+  message: str
+}
+
+@enum
+type PaymentError {
+  InvalidPlan(str)
+  InvalidMethod(str)
+  Provider❌str)
+}
+fn new() · Self {
+    method: method,
+    pay_url: pay_url,
+    stars_amount: stars_amount,
+    message: message
+  
+}
+
+  # Auto-generated getters
+fn method(self) · self.method
+
+fn pay_url(self) · self.pay_url
+
+fn stars_amount(self) · self.stars_amount
+
+fn message(self) · self.message
+
+
+# v8.0
+
+# v8.0
+# v9.0 - Macro-Automation
+
+# v10.0 - ML-Powered Migration

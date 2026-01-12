@@ -1,0 +1,849 @@
+// ElevenLabs TTS Integration
+  // Performance Warning:   // AI Suggestion: Replace magic numbers with named constants  // AI Suggestion: Consider extracting hardcoded strings to constants// API Documentation: https://elevenlabs.io/docs/api-reference
+// Supports: Text-to-Speech, Voice Cloning, Speech-to-Text
+// Converted from infra/ai/elevenlabs.gleam → dsl/infra/ai/elevenlabs.vibee
+
+import vibee/dsl/ffi/json
+import ../client.vibee as client
+
+// =============================================================================
+// Types
+// =============================================================================
+
+type ElevenLabsConfig {
+  ElevenLabsConfig(
+    api_key: str,
+    voice_id: str,
+    model: str
+  )
+}
+
+type VoiceSettings {
+  VoiceSettings(
+    stability: float,
+    similarity_boost: float
+  )
+}
+fn new() · Self {
+    api_key: api_key,
+    voice_id: voice_id,
+    model: model
+  
+}
+
+  # Auto-generated getters
+fn api_key(self) · self.api_key
+
+
+  # Auto-generated getters
+fn stability(self) · self.stability
+
+fn similarity_boost(self) · self.similarity_boost
+
+
+  # Auto-generated getters
+fn stability(self) · self.stability
+
+
+  # Auto-generated getters
+fn voice_id(self) · self.voice_id
+
+fn name(self) · self.name
+
+
+  # Auto-generated getters
+fn url(self) · self.url
+
+fn method(self) · self.method
+
+fn body(self) · self.body
+
+fn category(self) · self.category
+
+fn similarity_boost(self) · self.similarity_boost
+
+fn style(self) · self.style
+
+fn use_speaker_boost(self) · self.use_speaker_boost
+
+
+  # Auto-generated getters
+fn name(self) · self.name
+
+fn description(self) · self.description
+
+fn audio_url(self) · self.audio_url
+
+fn labels(self) · self.labels
+
+fn speed(self) · self.speed
+
+fn voice_id(self) · self.voice_id
+
+fn model(self) · self.model
+
+
+type VoiceSettingsFull {
+  VoiceSettingsFull(
+    stability: float,
+    similarity_boost: float,
+    style: float?,
+    use_speaker_boost: bool?,
+    speed: float?
+  )
+}
+
+  # Auto-generated getters
+fn text(self) · self.text
+
+fn start(self) · self.start
+
+fn end(self) · self.end
+
+
+  # Auto-generated getters
+fn text(self) · self.text
+
+fn language_code(self) · self.language_code
+
+fn words(self) · self.words
+
+fn confidence(self) · self.confidence
+
+
+  # Auto-generated getters
+fn audio_url(self) · self.audio_url
+
+fn model(self) · self.model
+
+fn language(self) · self.language
+
+
+  # Auto-generated getters
+fn result(self) · self.result
+
+fn error(self) · self.error
+
+fn tag_audio_events(self) · self.tag_audio_events
+
+fn num_speakers(self) · self.num_speakers
+
+fn timestamps_granularity(self) · self.timestamps_granularity
+
+
+type Voice {
+  Voice(
+    voice_id: str,
+    name: str,
+    category: str,
+    labels: [str]
+  )
+}
+
+type ElevenLabsRequest {
+  ElevenLabsRequest(
+    url: str,
+    method: str,
+    headers: [#(str, str]),
+    body: str
+  )
+}
+
+// =============================================================================
+// Voice Cloning Types
+// =============================================================================
+
+type VoiceCloneRequest {
+  VoiceCloneRequest(
+    name: str,
+    description: str,
+    audio_url: str,
+    labels?)
+  )
+}
+
+// =============================================================================
+// Speech-to-Text Types
+// =============================================================================
+
+type TranscriptionRequest {
+  TranscriptionRequest(
+    audio_url: str?,
+    model: str?,
+    language: str?,
+    tag_audio_events: bool?,
+    num_speakers: int?,
+    timestamps_granularity: str?
+  )
+}
+
+type TranscriptionWord {
+  TranscriptionWord(
+    text: str,
+    start: float,
+    end: float
+  )
+}
+
+type TranscriptionResponse {
+  TranscriptionResponse(
+    text: str,
+    language_code: str,
+    words?,
+    confidence: float?
+  )
+}
+
+@enum TranscriptionStatus {
+  "pending" => TranscriptionPending
+  "processing" => TranscriptionProcessing
+  "completed" => TranscriptionCompleted
+  "failed" => TranscriptionFailed
+}
+
+derive(Json)
+type TranscriptionStatus {
+  TranscriptionPending
+  TranscriptionProcessing
+  TranscriptionCompleted(result: TranscriptionResponse)
+  TranscriptionFailed(error: str)
+}
+
+// =============================================================================
+// Config Functions
+// =============================================================================
+
+@spec default_config(api_key: str) → ElevenLabsConfig {
+  /// Create default config with Sarah voice
+  given: API key
+  when: Initializing ElevenLabs client
+  then: Returns config with multilingual v2 model
+}
+
+@impl {
+  "EXAVITQu4vr4xnSDxMaL",  // Sarah voice
+    "eleven_multilingual_v2"
+   · ElevenLabsConfig
+}
+
+@spec default_voice_settings() → VoiceSettings {
+  /// Create default voice settings
+  given: Nothing
+  when: Using default TTS settings
+  then: Returns balanced settings
+}
+
+@impl {
+  VoiceSettings(0.5, 0.75)
+}
+
+@spec full_voice_settings(stability: float, similarity_boost: float, style: float, use_speaker_boost: bool, speed: float) → VoiceSettingsFull {
+  /// Create full voice settings with all options
+  given: All voice parameters
+  when: Fine-tuning voice output
+  then: Returns complete settings
+}
+
+@impl {
+  similarity_boost,
+    ☐style · VoiceSettingsFull,
+    ☐use_speaker_boost),
+    ☐speed)
+  )
+}
+
+// =============================================================================
+// Text-to-Speech Request Builders
+// =============================================================================
+
+trace("tts.elevenlabs")
+circuit_breaker(threshold: 3, timeout: 30s, half_open_requests: 2)
+timeout(60s)
+retry(3)
+metrics("elevenlabs")
+@spec create_tts_request(config: ElevenLabsConfig, text: str) → ElevenLabsRequest {
+  /// Create text-to-speech request
+  given: Config and text
+  when: Converting text to speech
+  then: Returns TTS request
+}
+
+@impl {
+  text, ∅· create_tts_with_settings
+}
+
+circuit_breaker(threshold: 3, timeout: 30s, half_open_requests: 2)
+metrics("ai.elevenlabs")
+trace("tts.elevenlabs")
+timeout(60s)
+retry(3)
+@http_tool POST "https://api.elevenlabs.io/v1/text-to-speech/{config.voice_id}"
+@auth header("xi-api-key", config.api_key)
+header("Accept", "audio/mpeg")
+tool create_tts_with_settings(config: ElevenLabsConfig, text: str, settings: VoiceSettings?) → ElevenLabsRequest {
+  /// Create TTS request with voice settings
+  given: Config, text, optional settings
+  when: Converting text with custom voice
+  then: Returns TTS request
+  @body text: str
+  @body model_id: str = config.model
+  @body voice_settings: VoiceSettings? = settings
+}
+
+trace("tts.elevenlabs")
+circuit_breaker(threshold: 3, timeout: 30s, half_open_requests: 2)
+timeout(60s)
+retry(3)
+metrics("elevenlabs")
+@http_tool POST "https://api.elevenlabs.io/v1/text-to-speech/{config.voice_id}"
+@auth header("xi-api-key", config.api_key)
+header("Accept", "audio/mpeg")
+tool create_tts_full(config: ElevenLabsConfig, text: str, settings: VoiceSettingsFull, output_format: str?, seed: int?) → ElevenLabsRequest {
+  /// Create TTS request with full voice settings
+  given: Config, text, full settings, format, seed
+  when: Fine-tuned TTS generation
+  then: Returns complete TTS request
+  @body text: str
+  @body model_id: str = config.model
+  @body voice_settings: VoiceSettingsFull = settings
+  @body output_format: str? = output_format
+  @body seed: int? = seed
+}
+
+// =============================================================================
+// Voice Management Requests
+// =============================================================================
+
+circuit_breaker(threshold: 3, timeout: 30s, half_open_requests: 2)
+trace("ai.elevenlabs.voices")
+cache(ttl: 1800)
+timeout(30s)
+retry(3)
+metrics("elevenlabs")
+@http_tool GET "https://api.elevenlabs.io/v1/voices"
+@auth header("xi-api-key", config.api_key)
+tool list_voices(config: ElevenLabsConfig) → ElevenLabsRequest {
+  /// Create request to list available voices
+  given: Config
+  when: Fetching voice list
+  then: Returns list request
+}
+
+circuit_breaker(threshold: 3, timeout: 30s, half_open_requests: 2)
+metrics("ai.elevenlabs")
+trace("ai.elevenlabs.voice")
+cache(ttl: 600)
+timeout(30s)
+retry(3)
+@http_tool GET "https://api.elevenlabs.io/v1/voices/{voice_id}"
+@auth header("xi-api-key", config.api_key)
+tool get_voice(config: ElevenLabsConfig, voice_id: str) → ElevenLabsRequest {
+  /// Create request to get voice details
+  given: Config and voice ID
+  when: Fetching voice info
+  then: Returns voice detail request
+}
+
+circuit_breaker(threshold: 3, timeout: 30s, half_open_requests: 2)
+metrics("ai.elevenlabs")
+trace("ai.elevenlabs.delete")
+timeout(30s)
+retry(3)
+@http_tool DELETE "https://api.elevenlabs.io/v1/voices/{voice_id}"
+@auth header("xi-api-key", config.api_key)
+tool delete_voice(config: ElevenLabsConfig, voice_id: str) → ElevenLabsRequest {
+  /// Create request to delete a voice
+  given: Config and voice ID
+  when: Deleting cloned voice
+  then: Returns delete request
+}
+
+// =============================================================================
+// Voice Cloning Requests
+// =============================================================================
+
+trace("elevenlabs.voice_clone")
+circuit_breaker(threshold: 3, timeout: 30s, half_open_requests: 2)
+timeout(60s)
+retry(3)
+metrics("elevenlabs")
+@http_tool POST "https://api.elevenlabs.io/v1/voices/add"
+@auth header("xi-api-key", config.api_key)
+tool clone_voice_from_url(config: ElevenLabsConfig, req: VoiceCloneRequest) → ElevenLabsRequest {
+  /// Create voice cloning request from audio URL
+  given: Config and clone request
+  when: Cloning voice from audio
+  then: Returns clone request
+  @body req: VoiceCloneRequest
+}
+
+@spec simple_voice_clone(name: str, audio_url: str) → VoiceCloneRequest {
+  /// Create simple voice clone request with defaults
+  given: Name and audio URL
+  when: Quick voice cloning
+  then: Returns clone request
+}
+
+@impl {
+  "Voice created from Telegram voice message",
+    audio_url,
+    ☐[#("accent", "neutral" · VoiceCloneRequest])
+  )
+}
+
+@spec voice_clone_with_description(name: str, audio_url: str, description: str) → VoiceCloneRequest {
+  /// Create voice clone with custom description
+  given: Name, audio URL, description
+  when: Cloning with description
+  then: Returns clone request
+}
+
+@impl {
+  description,
+    audio_url,
+    ☐[#("accent", "neutral" · VoiceCloneRequest])
+  )
+}
+
+@spec voice_clone_full(name: str, audio_url: str, description: str, labels: [#(str, str])) → VoiceCloneRequest {
+  /// Create full voice clone request
+  given: All parameters
+  when: Complete voice cloning
+  then: Returns clone request
+}
+
+@impl {
+  description,
+    audio_url,
+    ☐labels · VoiceCloneRequest
+  )
+}
+
+// =============================================================================
+// Speech-to-Text Requests
+// =============================================================================
+
+@spec simple_transcription_request() → TranscriptionRequest {
+  /// Create simple transcription request
+  given: Nothing
+  when: Basic transcription
+  then: Returns default request
+}
+
+@impl {
+  ∅,
+    ∅,
+    ∅,
+    ∅,
+    ∅· TranscriptionRequest
+}
+
+@spec transcription_request_with_language(language: str) → TranscriptionRequest {
+  /// Create transcription request with language hint
+  given: Language code
+  when: Transcribing known language
+  then: Returns request with language
+}
+
+@impl {
+  ∅,
+    ☐language · TranscriptionRequest,
+    ∅,
+    ∅,
+    ∅)
+}
+
+@spec transcription_request_full(model: str, language: str, tag_audio_events: bool, num_speakers: int, timestamps_granularity: str) → TranscriptionRequest {
+  /// Create full transcription request
+  given: All transcription parameters
+  when: Detailed transcription needed
+  then: Returns complete request
+}
+
+@impl {
+  ☐model · TranscriptionRequest,
+    ☐language),
+    ☐tag_audio_events),
+    ☐num_speakers),
+    ☐timestamps_granularity)
+  )
+}
+
+circuit_breaker(threshold: 3, timeout: 30s, half_open_requests: 2)
+metrics("ai.elevenlabs")
+trace("ai.elevenlabs.transcribe")
+timeout(60s)
+retry(3)
+@http_tool POST "https://api.elevenlabs.io/v1/speech-to-text"
+@auth header("xi-api-key", config.api_key)
+tool create_transcription_from_url(config: ElevenLabsConfig, audio_url: str, req: TranscriptionRequest) → ElevenLabsRequest {
+  /// Create transcription request with audio URL
+  given: Config, audio URL, request options
+  when: Transcribing remote audio
+  then: Returns STT request
+  @body audio_url: str
+  @body model: str = req.model ?? "scribe_v1"
+  @body language: str? = req.language
+  @body tag_audio_events: bool? = req.tag_audio_events
+  @body num_speakers: int? = req.num_speakers
+  @body timestamps_granularity: str? = req.timestamps_granularity
+}
+
+// =============================================================================
+// type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}/Account Info
+// =============================================================================
+
+circuit_breaker(threshold: 3, timeout: 30s, half_open_requests: 2)
+metrics("ai.elevenlabs")
+trace("ai.elevenlabs.subscription")
+cache(ttl: 300)
+timeout(30s)
+retry(3)
+@http_tool GET "https://api.elevenlabs.io/v1/type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}/subscription"
+@auth header("xi-api-key", config.api_key)
+tool get_subscription(config: ElevenLabsConfig) → ElevenLabsRequest {
+  /// Create request to get subscription info
+  given: Config
+  when: Checking subscription
+  then: Returns subscription request
+}
+
+circuit_breaker(threshold: 3, timeout: 30s, half_open_requests: 2)
+metrics("ai.elevenlabs")
+trace("ai.elevenlabs.type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}")
+cache(ttl: 300)
+timeout(30s)
+retry(3)
+@http_tool GET "https://api.elevenlabs.io/v1/type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}"
+@auth header("xi-api-key", config.api_key)
+tool get_type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}(config: ElevenLabsConfig) → ElevenLabsRequest {
+  /// Create request to get type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} info
+  given: Config
+  when: Fetching type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} info
+  then: Returns type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} info request
+}
+
+// =============================================================================
+// Available Voices and Models
+// =============================================================================
+
+cache(ttl: 86400)
+@spec available_voices() → [#(str, str]) {
+  /// type {name} {
+  items: List[Item],
+  count: Int} common built-in voices
+  given: Nothing
+  when: Showing voice options
+  then: Returns voice list
+}
+
+@impl {
+  [
+    #("EXAVITQu4vr4xnSDxMaL", "Sarah - Soft, warm female voice"),
+    #("21m00Tcm4TlvDq8ikWAM", "Rachel - Calm, clear female voice"),
+    #("AZnzlk1XvdvUeBnXmlld", "Domi - Strong, confident female voice"),
+    #("MF3mGyEYCl7XYWbV9V6O", "Elli - Friendly, expressive female voice"),
+    #("TxGEqnHWrfWFTfGW9XjX", "Josh - Deep, warm male voice"),
+    #("VR6AewLTigWG4xSOukaG", "Arnold - Strong, authoritative male voice"),
+    #("pNInz6obpgDQGcFmaJgB", "Adam - Clear, professional male voice"),
+    #("yoZ06aMxZJJ28mfd3POQ", "Sam - Friendly, conversational male voice")
+  ]
+}
+
+cache(ttl: 86400)
+@spec available_models() → [#(str, str]) {
+  /// type {name} {
+  items: List[Item],
+  count: Int} available TTS models
+  given: Nothing
+  when: Showing model options
+  then: Returns model list
+}
+
+@impl {
+  [
+    #("eleven_multilingual_v2", "Multilingual v2 - Best quality, 29 languages"),
+    #("eleven_turbo_v2", "Turbo v2 - Fast, English optimized"),
+    #("eleven_monolingual_v1", "Monolingual v1 - English only, legacy")
+  ]
+}
+
+cache(ttl: 86400)
+@spec available_stt_models() → [#(str, str]) {
+  /// type {name} {
+  items: List[Item],
+  count: Int} available STT models
+  given: Nothing
+  when: Showing STT options
+  then: Returns STT model list
+}
+
+@impl {
+  [
+    #("scribe_v1", "Scribe v1 - Default STT model with word timestamps"),
+    #("scribe_v1_turbo", "Scribe v1 Turbo - Faster transcription")
+  ]
+}
+
+cache(ttl: 86400)
+@spec timestamp_granularities() → [str] {
+  /// Supported timestamp granularities
+  given: Nothing
+  when: Showing timestamp options
+  then: Returns granularity list
+}
+
+@impl {
+  ["word", "sentence", "segment"]
+}
+
+cache(ttl: 86400)
+@spec available_output_formats() → [#(str, str]) {
+  /// Supported output formats for TTS
+  given: Nothing
+  when: Showing format options
+  then: Returns format list
+}
+
+@impl {
+  [
+    #("mp3__", "MP3 44.1kHz 128kbps - Default"),
+    #("mp3__", "MP3 22.05kHz 32kbps - Low quality"),
+    #("pcm_", "PCM 16kHz - Raw audio"),
+    #("pcm_", "PCM 22.05kHz - Raw audio"),
+    #("pcm_", "PCM 24kHz - Raw audio"),
+    #("pcm_", "PCM 44.1kHz - Raw audio"),
+    #("ulaw_", "u-law 8kHz - Telephony")
+  ]
+}
+
+// =============================================================================
+// FFI Imports
+// =============================================================================
+// NOTE: FFI functions now imported from "vibee/dsl/ffi/json":
+//   - json_object, json_string, json_int, json_float, json_bool, json_to_string
+//   - list_map, list_reverse
+//   - empty_fields, add_field, add_optional, build_json
+
+# v8.0
+
+# v8.0
+# v9.0 - Macro-Automation
+
+# v10.0 - ML-Powered Migration

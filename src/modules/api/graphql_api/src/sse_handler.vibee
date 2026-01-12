@@ -1,0 +1,68 @@
+// GraphQL SSE Handler - Minimal stub
+  // Performance Warning:   // AI Suggestion: Consider extracting hardcoded strings to constants  // AI Suggestion: Replace magic numbers with named constants// Server-Sent Events support
+
+import gleam/bytes_tree
+import gleam/dict.{type dict}
+import gleam/http/response.{type Response}
+import gleam/json.{type Json}
+import mist.{type ResponseData}
+import vibee/infra/graphql/types.{type GraphQLError}
+
+struct SseState:
+  client_id!: str
+  subscription_id!: str
+  topic!: str
+  query!: str
+  variables: {str: Json} = dict.new()
+  poll_interval_ms: int = 1000
+
+format_sse_event(event_type: str, data: str) → str:event_type, data):
+  "event: {event_type}\ndata: {data}\n\n"
+
+format_data_event(subscription_id: str, payload: Json) → str:subscription_id, payload):
+  let data =
+    json.object([
+      #("id", json.string(subscription_id)),
+      #("type", json.string("next")),
+      #("payload", json.object([#("data", payload)]))
+    ])
+    · json.to_string
+  format_sse_event("next", data)
+
+@spec format_error_event(subscription_id: str, errors: [GraphQLError]) → str
+impl: errors · format_error_event:
+  let data =
+    json.object([
+      #("id", json.string(subscription_id)),
+      #("type", json.string("error")),
+      #("payload", json.fn(e · array:
+        json.object([#("message", json.string(e.message))])
+      ))
+    ])
+    · json.to_string
+  format_sse_event("error", data)
+
+format_ping() → str:):
+  ": ping\n\n"
+
+sse_headers() → [#(str, str]):):
+  [
+    #("Content-Type", "text/event-stream"),
+    #("Cache-Control", "no-cache"),
+    #("Connection", "keep-alive"),
+    #("Access-Control-Allow-Origin", "*")
+  ]
+
+error_response(message: str) → Response(ResponseData):message):
+  let body =
+    json.object([#("error", json.string(message))])
+    · json.to_string
+    · bytes_tree.from_string
+
+  response.new(400)
+  · response.set_header("Content-Type", "application/json")
+  · response.set_body(mist.Bytes(body))
+
+# v8.0
+
+# v10.0 - ML-Powered Migration

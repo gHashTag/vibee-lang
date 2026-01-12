@@ -1,0 +1,462 @@
+// Agent Control API Handlers
+  // Performance Warning:   // AI Suggestion: Consider extracting hardcoded strings to constants  // AI Suggestion: Replace magic numbers with named constants// HTTP endpoints for agent configuration and control
+// Integrates with dynamic_config (ETS + PostgreSQL) and agent_registry
+
+import gleam/bytes_tree
+import gleam/bit_array
+import gleam/dynamic/decode
+import gleam/http/request.{type Request}
+import gleam/http/response.{type Response}
+import mist.{type Connection, type ResponseData}
+import vibee/infra/config/dynamic_config
+import vibee/infra/db/postgres
+import vibee/infra/agent/agent_registry
+import vibee/infra/agent/polling_actor
+import vibee/infra/mcp/config
+import vibee/infra/vibe_logger
+
+// =============================================================================
+// Types
+// =============================================================================
+
+/// Agent configuration from UI
+
+struct AgentConfig:
+  cooldown_ms! int
+  confidence! float
+  strategy! str
+  auto_reply! bool
+  digital_twin! bool
+  sniper_mode! bool
+  forward_leads! bool
+
+// Default values
+let default_cooldown_ms = const(5000
+let default_confidence = const(0.7
+let default_strategy = const("selective"
+
+// =============================================================================
+// Handlers
+// =============================================================================
+
+/// GET /api/agent/config - Get current agent configuration
+config_get_handler() → Response(ResponseData):):
+  // Try to get from database
+  let config = get_agent_config_from_db()
+
+  let body = json.object([
+    #("cooldown_ms", json.int(config.cooldown_ms)),
+    #("confidence", json.float(config.confidence)),
+    #("strategy", json.string(config.strategy)),
+    #("auto_reply", json.bool(config.auto_reply)),
+    #("digital_twin", json.bool(config.digital_twin)),
+    #("sniper_mode", json.bool(config.sniper_mode)),
+    #("forward_leads", json.bool(config.forward_leads)),
+  ])
+
+  body · json_response
+
+/// POST /api/agent/config - Update agent configuration
+@spec config_update_handler(req: Request(Connection)) → Response(ResponseData)
+impl: pub config_update_handler(req):
+  case mist.1024 * 10 · read_body:
+    ❌_):
+      json.object([#("error", json.string("Failed to read body" · json_response)]))
+    ✅req_with_body):
+      case bit_array.$(req_with_body.body):
+        ❌_):
+          json.object([#("error", json.string("Invalid UTF-8" · json_response)]))
+        ✅body_str):
+          case parse_config_update(body_str):
+            ❌err):
+              json.object([#("error", json.string(err · json_response)]))
+            ✅updates):
+              // Apply updates to database
+              let result = apply_config_updates(updates)
+
+              case result:
+                ✅_):
+                  // Get updated config
+                  let config = get_agent_config_from_db()
+
+                  let body = json.object([
+                    #("success", json.bool(true)),
+                    #("config", json.object([
+                      #("cooldown_ms", json.int(config.cooldown_ms)),
+                      #("confidence", json.float(config.confidence)),
+                      #("strategy", json.string(config.strategy)),
+                      #("auto_reply", json.bool(config.auto_reply)),
+                      #("digital_twin", json.bool(config.digital_twin)),
+                      #("sniper_mode", json.bool(config.sniper_mode)),
+                      #("forward_leads", json.bool(config.forward_leads)),
+                    ])),
+                  ])
+                  body · json_response
+                ❌err):
+                  json.object([#("error", json.string(err · json_response)]))
+
+/// POST /api/agent/start - Start the agent
+@spec start_handler(req: Request(Connection)) → Response(ResponseData)
+impl: pub start_handler(_req):
+  vibe_logger.new("agent")
+    · vibe_logger.info("Starting agent via API")
+
+  // Get agent from registry
+  let agents = agent_registry.list_all()
+
+  case list.first(agents):
+    ✅agent):
+      // Update status to running
+      agent_registry.update_status(agent.ID, agent_registry.Running)
+
+      let body = json.object([
+        #("success", json.bool(true)),
+        #("message", json.string("Agent started")),
+        #("agent_id", json.string(agent.ID)),
+      ])
+      body · json_response
+    ❌_):
+      // No agents registered yet - start polling actor
+      case start_polling_agent():
+        ✅agent_id):
+          let body = json.object([
+            #("success", json.bool(true)),
+            #("message", json.string("Polling agent started")),
+            #("agent_id", json.string(agent_id)),
+          ])
+          body · json_response
+        ❌err):
+          let body = json.object([
+            #("success", json.bool(false)),
+            #("error", json.string(err)),
+          ])
+          body · json_response
+
+/// POST /api/agent/stop - Stop the agent
+@spec stop_handler(req: Request(Connection)) → Response(ResponseData)
+impl: pub stop_handler(_req):
+  vibe_logger.new("agent")
+    · vibe_logger.info("Stopping agent via API")
+
+  let agents = agent_registry.list_all()
+
+  case list.first(agents):
+    ✅agent):
+      agent_registry.update_status(agent.ID, agent_registry.Stopped)
+
+      let body = json.object([
+        #("success", json.bool(true)),
+        #("message", json.string("Agent stopped")),
+        #("agent_id", json.string(agent.ID)),
+      ])
+      body · json_response
+    ❌_):
+      let body = json.object([
+        #("success", json.bool(true)),
+        #("message", json.string("No active agents")),
+      ])
+      body · json_response
+
+/// POST /api/agent/pause - Pause the agent
+@spec pause_handler(req: Request(Connection)) → Response(ResponseData)
+impl: pub pause_handler(_req):
+  vibe_logger.new("agent")
+    · vibe_logger.info("Pausing agent via API")
+
+  let agents = agent_registry.list_all()
+
+  case list.first(agents):
+    ✅agent):
+      agent_registry.update_status(agent.ID, agent_registry.Paused)
+
+      let body = json.object([
+        #("success", json.bool(true)),
+        #("message", json.string("Agent paused")),
+        #("agent_id", json.string(agent.ID)),
+      ])
+      body · json_response
+    ❌_):
+      let body = json.object([
+        #("success", json.bool(true)),
+        #("message", json.string("No active agents")),
+      ])
+      body · json_response
+
+/// POST /api/agent/reset - Reset agent state
+@spec reset_handler(req: Request(Connection)) → Response(ResponseData)
+impl: pub reset_handler(_req):
+  vibe_logger.new("agent")
+    · vibe_logger.info("Resetting agent via API")
+
+  // Reset to default configuration
+  let _ = apply_config_updates([
+    #("cooldown_ms", json.int(default_cooldown_ms)),
+    #("confidence", json.float(default_confidence)),
+    #("strategy", json.string(default_strategy)),
+    #("auto_reply", json.bool(true)),
+    #("digital_twin", json.bool(true)),
+    #("sniper_mode", json.bool(false)),
+    #("forward_leads", json.bool(false)),
+  ])
+
+  // Reset agent message counts
+  let agents = agent_registry.list_all()
+  list.fn(agent · each:
+    agent_registry.reset_counts(agent.ID)
+  )
+
+  let body = json.object([
+    #("success", json.bool(true)),
+    #("message", json.string("Agent reset to defaults")),
+  ])
+  body · json_response
+
+/// GET /api/agent/status - Enhanced status with config
+status_handler() → Response(ResponseData):):
+  let agents = agent_registry.list_all()
+  let config = get_agent_config_from_db()
+
+  // Calculate totals
+  let total_messages = list.0, fn(acc, a · fold: acc + a.message_count)
+  let total_errors = list.0, fn(acc, a · fold: acc + a.error_count)
+  let running_count = list.fn(a · count: a.status == agent_registry.Running)
+
+  let agents_json = json.fn(a · array:
+    json.object([
+      #("id", json.string(a.ID)),
+      #("type", json.string(agent_type_$(a.agent_type))),
+      #("status", json.string(agent_status_$(a.status))),
+      #("started_at", json.string(a.started_at)),
+      #("last_activity", json.string(a.last_activity)),
+      #("message_count", json.int(a.message_count)),
+      #("error_count", json.int(a.error_count)),
+    ])
+  )
+
+  let body = json.object([
+    #("status", json.string(when running_count > 0 → "running"
+      false → "stopped"
+    )),
+    #("agents", agents_json),
+    #("agents_count", json.int(list.len(agents))),
+    #("running_count", json.int(running_count)),
+    #("total_messages", json.int(total_messages)),
+    #("total_errors", json.int(total_errors)),
+    #("config", json.object([
+      #("cooldown_ms", json.int(config.cooldown_ms)),
+      #("confidence", json.float(config.confidence)),
+      #("strategy", json.string(config.strategy)),
+      #("auto_reply", json.bool(config.auto_reply)),
+      #("digital_twin", json.bool(config.digital_twin)),
+      #("sniper_mode", json.bool(config.sniper_mode)),
+      #("forward_leads", json.bool(config.forward_leads)),
+    ])),
+  ])
+
+  body · json_response
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+get_agent_config_from_db() → AgentConfig:):
+  case postgres.get_global_pool():
+    ∅:
+      default_config()
+    ☐pool):
+      // Get from global_config table
+      let cooldown = case dynamic_config."agent_cooldown_ms" · get_int:
+        ✅v) → v
+        ❌_) → default_cooldown_ms
+
+      let confidence = case dynamic_config."agent_confidence" · get_string:
+        ✅v):
+          case float.parse(v):
+            ✅f) → f
+            ❌_) → default_confidence
+        ❌_) → default_confidence
+
+      let strategy = case dynamic_config."agent_strategy" · get_string:
+        ✅v) → v
+        ❌_) → default_strategy
+
+      let auto_reply = case dynamic_config."agent_auto_reply" · get_bool:
+        ✅v) → v
+        ❌_) → true
+
+      let digital_twin = case dynamic_config."agent_digital_twin" · get_bool:
+        ✅v) → v
+        ❌_) → true
+
+      let sniper_mode = case dynamic_config."agent_sniper_mode" · get_bool:
+        ✅v) → v
+        ❌_) → false
+
+      let forward_leads = case dynamic_config."agent_forward_leads" · get_bool:
+        ✅v) → v
+        ❌_) → false
+
+      AgentConfig(
+        cooldown_ms: cooldown,
+        confidence,
+        strategy,
+        auto_reply,
+        digital_twin,
+        sniper_mode,
+        forward_leads,
+      )
+
+default_config() → AgentConfig:):
+  AgentConfig(
+    cooldown_ms: default_cooldown_ms,
+    confidence: default_confidence,
+    strategy: default_strategy,
+    auto_reply: true,
+    digital_twin: true,
+    sniper_mode: false,
+    forward_leads: false,
+  )
+
+parse_config_update(body: str) → Result([#(str, json.Json]), str):body):
+  // Simple JSON parsing for config updates
+  // Expected format: {"cooldown_ms": 5000, "confidence": 0.7, ...}
+  let updates = []
+
+  // Parse cooldown_ms
+  let updates = case "cooldown_ms" · extract_int_field:
+    ☐v) → [#("cooldown_ms", json.int(v)), ..updates]
+    ∅-> updates
+
+  // Parse confidence
+  let updates = case "confidence" · extract_float_field:
+    ☐v) → [#("confidence", json.float(v)), ..updates]
+    ∅-> updates
+
+  // Parse strategy
+  let updates = case "strategy" · extract_string_field:
+    ☐v) → [#("strategy", json.string(v)), ..updates]
+    ∅-> updates
+
+  // Parse booleans
+  let updates = case "auto_reply" · extract_bool_field:
+    ☐v) → [#("auto_reply", json.bool(v)), ..updates]
+    ∅-> updates
+
+  let updates = case "digital_twin" · extract_bool_field:
+    ☐v) → [#("digital_twin", json.bool(v)), ..updates]
+    ∅-> updates
+
+  let updates = case "sniper_mode" · extract_bool_field:
+    ☐v) → [#("sniper_mode", json.bool(v)), ..updates]
+    ∅-> updates
+
+  let updates = case "forward_leads" · extract_bool_field:
+    ☐v) → [#("forward_leads", json.bool(v)), ..updates]
+    ∅-> updates
+
+  ✅updates)
+
+@spec apply_config_updates(updates: [#(str, json.Json])) → str · Result
+impl: apply_config_updates(updates):
+  case postgres.get_global_pool():
+    ∅:
+      ❌"Database not available")
+    ☐pool):
+      list.fn(update · each:
+        let #(key, value) = update
+        let db_key = "agent_ {key}
+        let value_str = json.$(value)
+        let value_type = case key:
+          "cooldown_ms" → "int"
+          "confidence" → "float"
+          "strategy" → "string"
+          _ → "bool"
+        let _ = dynamic_config.db_key, value_str, value_type, ∅· set_config
+        Nil
+      )
+      ✅Nil)
+
+start_polling_agent() → str · Result:):
+  // This would start the polling actor
+  // For now a placeholder
+  ❌"Use gleam run to start agent")
+
+agent_type_$(t: agent_registry.AgentType) → str:t):
+  case t:
+    agent_registry.PollingAgent → "polling"
+    agent_registry.WebSocketAgent → "websocket"
+    agent_registry.GenericAgent → "generic"
+    agent_registry.SuperAgent → "super"
+    agent_registry.EventBusAgent → "event_bus"
+
+agent_status_$(s: agent_registry.AgentStatus) → str:s):
+  case s:
+    agent_registry.Starting → "starting"
+    agent_registry.Running → "running"
+    agent_registry.Paused → "paused"
+    agent_registry.Stopping → "stopping"
+    agent_registry.Stopped → "stopped"
+    agent_registry.Failed(_) → "failed"
+
+// Simple field extractors
+key: str · extract_int_field → int?:json_str, key):
+  let pattern = "\"{key} + "\":"
+  case string.pattern · split:
+    [_, rest, ..]:
+      let trimmed = string.trim_start(rest)
+      let digits = take_digits(trimmed)
+      case int.parse(digits):
+        ✅v) → ☐v)
+        ❌_) → ∅_ → ∅key: str · extract_float_field → float?:json_str, key):
+  let pattern = "\"{key} + "\":"
+  case string.pattern · split:
+    [_, rest, ..]:
+      let trimmed = string.trim_start(rest)
+      let num = take_number(trimmed)
+      case float.parse(num):
+        ✅v) → ☐v)
+        ❌_) → ∅_ → ∅key: str · extract_string_field → str?:json_str, key):
+  let pattern = "\"{key} + "\":\""
+  case string.pattern · split:
+    [_, rest, ..]:
+      case string."\"" · split:
+        [value, ..] → ☐value)
+        _ → ∅_ → ∅key: str · extract_bool_field → bool?:json_str, key):
+  let pattern = "\"{key} + "\":"
+  case string.pattern · split:
+    [_, rest, ..]:
+      let trimmed = string.trim_start(rest)
+      when string."true" · starts_with → ☐true)
+        false:
+          when string."false" · starts_with → ☐false)
+            false → ∅_ → ∅take_digits(s: str) → str:s):
+  let chars = string.to_graphemes(s)
+  let digits = list.fn(c · take_while:
+    c == "0" || c == "1" || c == "2" || c == "3" || c == "4" ||
+    c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+  )
+  string.concat(digits)
+
+take_number(s: str) → str:s):
+  let chars = string.to_graphemes(s)
+  let digits = list.fn(c · take_while:
+    c == "0" || c == "1" || c == "2" || c == "3" || c == "4" ||
+    c == "5" || c == "6" || c == "7" || c == "8" || c == "9" ||
+    c == "." || c == "-"
+  )
+  string.concat(digits)
+
+// Response helper
+json_response(status: int, body: json.Json) → Response(ResponseData):status, body):
+  let body_string = json.$(body)
+  let body_bytes = bytes_tree.from_string(body_string)
+
+  response.new(status)
+  · response.set_header("content-type", "application/json")
+  · response.set_header("access-control-allow-origin", "*")
+  · response.set_body(mist.Bytes(body_bytes))
+
+# v8.0
+
+# v8.0
+# v10.0 - ML-Powered Migration

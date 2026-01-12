@@ -1,0 +1,523 @@
+// ============================================================================
+  // Performance Warning:   // AI Suggestion: Consider more descriptive variable name  // AI Suggestion: Use pipeline operator for better readability  // AI Suggestion: Consider extracting hardcoded strings to constants// VCS TOOLS - работа с Git/GitHub, ветки, коммиты, pull requests
+// ============================================================================
+// Компонент 4 из 7 для SWE Agent
+// Переписано на VIBEE DSL
+
+@defaults(log=vcs_tools, auth=true, error=graceful)
+
+// ============================================================================
+// ТИПЫ И СТРУКТУРЫ
+// ============================================================================
+
+type GitCommit {
+  hash: str,
+  author: str,
+  message: str,
+  timestamp: str,
+  files_changed: [str]
+}
+
+type BranchInfo {
+  name: str,
+  is_local: bool,
+  is_remote: bool,
+  last_commit: GitCommit,
+  tracking_branch: str,
+}
+fn new() -> Self {
+  Self {
+    hash: hash,
+    author: author,
+    message: message,
+    timestamp: timestamp
+  }
+}
+
+  # Auto-generated getters
+fn hash(self) -> str {
+  self.hash
+}
+
+  # Auto-generated getters
+fn name(self) -> str {
+  self.name
+}
+fn is_local(self) -> bool {
+  self.is_local
+}
+
+  # Auto-generated getters
+fn file(self) -> str {
+  self.file
+}
+fn old_line_start(self) -> int {
+  self.old_line_start
+}
+fn old_line_count(self) -> int {
+  self.old_line_count
+}
+fn new_line_start(self) -> int {
+  self.new_line_start
+}
+
+  # Auto-generated getters
+fn number(self) -> int {
+  self.number
+}
+fn title(self) -> str {
+  self.title
+}
+
+  # Auto-generated getters
+fn branch(self) -> str {
+  self.branch
+}
+fn description(self) -> str {
+  self.description
+}
+
+  # Auto-generated getters
+fn remote_url(self) -> str {
+  self.remote_url
+}
+fn branch_name(self) -> str {
+  self.branch_name
+}
+fn commit_message_template(self) -> str {
+  self.commit_message_template
+}
+fn require_tests(self) -> bool {
+  self.require_tests
+}
+fn require_review(self) -> bool {
+  self.require_review
+}
+fn author(self) -> str {
+  self.author
+}
+fn source_branch(self) -> str {
+  self.source_branch
+}
+fn target_branch(self) -> str {
+  self.target_branch
+}
+fn status(self) -> str {
+  self.status
+}
+fn new_line_count(self) -> int {
+  self.new_line_count
+}
+fn is_remote(self) -> bool {
+  self.is_remote
+}
+fn last_commit(self) -> GitCommit {
+  self.last_commit
+}
+fn tracking_branch(self) -> str {
+  self.tracking_branch
+}
+fn author(self) -> str {
+  self.author
+}
+fn message(self) -> str {
+  self.message
+}
+fn timestamp(self) -> str {
+  self.timestamp
+}
+
+type DiffHunk {
+  file: str,
+  old_line_start: int,
+  old_line_count: int,
+  new_line_start: int,
+  new_line_count: int,
+  additions: [str]
+  deletions: [str]
+}
+
+type PullRequest {
+  number: int,
+  title: str,
+  description: str,
+  author: str,
+  source_branch: str,
+  target_branch: str,
+  status: str  // "open" | "merged" | "closed"
+  commits: [GitCommit]
+}
+
+type GitStatus {
+  branch: str,
+  modified_files: [str]
+  added_files: [str]
+  deleted_files: [str]
+  untracked_files: [str]
+}
+
+type RepositoryConfig {
+  remote_url: str,
+  branch_name: str,
+  commit_message_template: str,
+  require_tests: bool,
+  require_review: bool,
+}
+
+// ============================================================================
+// ИНСТРУМЕНТЫ - ОСНОВНЫЕ ФУНКЦИИ
+// ============================================================================
+
+// [TOOL 1] Получить текущий статус репозитория
+tool get_git_status() -> Result(GitStatus, str)
+  @doc "Получает текущий статус Git репозитория"
+  @auto_log
+  @auto_log
+
+  CASE run_git_command("status --porcelain") OF
+    Ok(output):
+      let modified = []
+      let added = []
+      let deleted = []
+      let untracked = []
+
+      FOR line IN output.split("\n") DO
+        IF line.length > 0 THEN
+          let prefix = line.slice(0, 2)
+          let file = line.slice(3).trim
+
+          CASE prefix OF
+            " M": modified = modified.append(file)
+            "A ": added = added.append(file)
+            "D ": deleted = deleted.append(file)
+            "??": untracked = untracked.append(file)
+            _: log("get_git_status.unknown_prefix") {prefix}
+
+      // Получить текущую ветку
+      CASE run_git_command("branch --show-current") OF
+        Ok(branch_output):
+          let current_branch = branch_output.trim
+
+          let status = GitStatus {
+            branch: current_branch,
+            modified_files: modified,
+            added_files: added,
+            deleted_files: deleted,
+            untracked_files: untracked
+          }
+
+            branch: current_branch,
+            modified.length,
+            added.length,
+            deleted.length,
+            untracked.length
+          }
+
+          RETURN Ok(status)
+
+        Error(msg):
+          RETURN Error("Failed to get branch name: "  <> msg)
+
+    Error(msg):
+      RETURN Error("Failed to get git status: "  <> msg)
+
+// [TOOL 2] Создать новую ветку и переключиться на нее
+tool create_and_checkout_branch(branch_name: str) -> Result(bool, str)
+  @doc "Создает новую ветку и переключается на нее"
+  @auto_log
+  @auto_log
+
+  // Валидация имени ветки
+  IF branch_name.contains(" ") || branch_name.length == 0 THEN
+    RETURN Error("Invalid branch name")
+
+  // Убедиться, что рабочая копия чистая
+  CASE get_git_status() OF
+    Ok(status):
+      IF status.modified_files.length > 0 || status.added_files.length > 0 THEN
+        RETURN Error("Working tree not clean. Commit or stash changes first.")
+
+    Error(msg):
+      RETURN Error(msg)
+
+  // Создать ветку
+  CASE run_git_command("checkout -b "  <> branch_name) OF
+    Ok(_):
+      RETURN Ok(true)
+
+    Error(msg):
+      RETURN Error("Failed to create branch: "  <> msg)
+
+// [TOOL 3] Сделать коммит с проверкой
+tool commit_changes(message: str, allow_empty: bool) -> Result(GitCommit, str)
+  @doc "Делает коммит с проверкой сообщения и статуса"
+  @auto_log
+  @auto_log
+
+  // Проверить, есть ли изменения
+  CASE get_git_status() OF
+    Ok(status):
+      let has_changes =
+        status.modified_files.length > 0 ||
+        status.added_files.length > 0 ||
+        status.deleted_files.length > 0
+
+      IF !has_changes && !allow_empty THEN
+        RETURN Error("No changes to commit")
+
+      // Стейджировать все изменения
+      CASE run_git_command("add -A") OF
+        Ok(_):
+          // Сделать коммит
+          let quoted_message = "\""  <> message  <> "\""
+          CASE run_git_command("commit -m "  <> quoted_message) OF
+            Ok(output):
+              // Получить информацию о коммите
+              CASE get_last_commit() OF
+                Ok(commit):
+                  RETURN Ok(commit)
+
+                Error(msg):
+                  RETURN Error("Commit created but failed to retrieve info: "  <> msg)
+
+            Error(msg):
+              RETURN Error("Failed to create commit: "  <> msg)
+
+        Error(msg):
+          RETURN Error("Failed to stage changes: "  <> msg)
+
+    Error(msg):
+      RETURN Error(msg)
+
+// [TOOL 4] Получить diff между ветками
+tool get_diff(base_branch: str, head_branch: str) -> Result([DiffHunk], str)
+  @doc "Получает diff между двумя ветками"
+  @auto_log
+  @auto_log
+
+  CASE run_git_command("diff "  <> base_branch  <> ".."  <> head_branch) OF
+    Ok(diff_output):
+      let hunks = parse_diff_output(diff_output)
+
+      RETURN Ok(hunks)
+
+    Error(msg):
+      RETURN Error("Failed to get diff: "  <> msg)
+
+// [TOOL 5] Создать pull request
+tool create_pull_request(
+  title: str,
+  description: str,
+  head_branch: str,
+  base_branch: str,
+) -> Result(PullRequest, str)
+  @doc "Создает pull request на GitHub"
+  @auto_log
+  @auto_log
+
+    title,
+    from: head_branch,
+    to: base_branch
+  }
+
+  // Это требует GitHub API или CLI
+  // Упрощено для примера
+
+  // Сначала пушим ветку
+  CASE run_git_command("push -u origin "  <> head_branch) OF
+    Ok(_):
+
+      // Вызвать GitHub API
+      CASE call_github_api(
+        "POST /repos/{owner}/{repo}/pulls",
+        {
+          title,
+          body: description,
+          head: head_branch,
+          base: base_branch
+        }
+      ) OF
+        Ok(response):
+          let pr = PullRequest {
+            number: response["number"],
+            title,
+            description,
+            author: response["type type User {
+  name: String,
+  email: String,
+  id: Int
+} {
+  name: String,
+  email: String,
+  id: Int
+}"]["login"],
+            source_branch: head_branch,
+            target_branch: base_branch,
+            status: "open",
+            commits: []
+          }
+
+          RETURN Ok(pr)
+
+        Error(msg):
+          RETURN Error("Failed to create PR: "  <> msg)
+
+    Error(msg):
+      RETURN Error("Failed to push branch: "  <> msg)
+
+// [TOOL 6] Получить историю коммитов
+tool get_commit_history(count: int) -> Result([GitCommit], str)
+  @doc "Получает последние коммиты"
+  @auto_log
+  @auto_log
+
+  CASE run_git_command("log -n "  <> count.to_string  <> " --format=%H%n%an%n%s%n%aI%n---") OF
+    Ok(output):
+      let commits = parse_commit_log(output)
+
+      RETURN Ok(commits)
+
+    Error(msg):
+      RETURN Error("Failed to get commit history: "  <> msg)
+
+// [TOOL 7] Слияние (merge) веток
+tool merge_branches(head_branch: str, base_branch: str) -> Result(bool, str)
+  @doc "Слияние двух веток с обработкой конфликтов"
+  @auto_log
+  @auto_log
+
+  // Переключиться на базовую ветку
+  CASE run_git_command("checkout "  <> base_branch) OF
+    Ok(_):
+      // Сделать слияние
+      CASE run_git_command("merge "  <> head_branch) OF
+        Ok(_):
+          RETURN Ok(true)
+
+        Error(msg):
+          IF msg.contains("conflict") THEN
+            RETURN Error("Merge conflicts detected. Please resolve manually.")
+
+          RETURN Error("Merge failed: "  <> msg)
+
+    Error(msg):
+      RETURN Error("Failed to checkout branch: "  <> msg)
+
+// ============================================================================
+// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+// ============================================================================
+
+run_git_command(command: str) -> Result(str, str)
+
+  // Выполнить git команду через shell
+
+  CASE execute_shell("git "  <> command) OF
+    Ok(output):
+      RETURN Ok(output)
+
+    Error(code):
+      RETURN Error("Git command failed with code: "  <> code.to_string)
+
+get_last_commit() -> Result(GitCommit, str)
+
+  CASE run_git_command("log -1 --format=%H%n%an%n%s%n%aI") OF
+    Ok(output):
+      let lines = output.split("\n")
+      IF lines.length >= 4 THEN
+        let commit = GitCommit {
+          hash: lines[0],
+          author: lines[1],
+          message: lines[2],
+          timestamp: lines[3],
+          files_changed: []
+        }
+        RETURN Ok(commit)
+
+      RETURN Error("Failed to parse commit info")
+
+    Error(msg):
+      RETURN Error(msg)
+
+parse_diff_output(diff: str) -> [DiffHunk]
+
+  // Упрощено - парсит unified diff формат
+  let hunks = []
+  let lines = diff.split("\n")
+
+  FOR line IN lines DO
+    IF line.starts_with("@@") THEN
+      // Это заголовок hunk'а
+      let hunk = DiffHunk {
+        file: "unknown",
+        old_line_start: 0,
+        old_line_count: 0,
+        new_line_start: 0,
+        new_line_count: 0,
+        additions: [],
+        deletions: []
+      }
+      hunks = hunks.append(hunk)
+
+  RETURN hunks
+
+parse_commit_log(log_output: str) -> [GitCommit]
+
+  let commits = []
+  let parts = log_output.split("---")
+
+  FOR part IN parts DO
+    IF part.trim.length > 0 THEN
+      let lines = part.split("\n")
+      IF lines.length >= 4 THEN
+        let commit = GitCommit {
+          hash: lines[0].trim,
+          author: lines[1].trim,
+          message: lines[2].trim,
+          timestamp: lines[3].trim,
+          files_changed: []
+        }
+        commits = commits.append(commit)
+
+  RETURN commits
+
+call_github_api(endpoint: str, payload: str) -> Result(str, str)
+
+  // Требует GITHUB_TOKEN в env
+  // Упрощено - возвращает mock response
+
+  RETURN Ok("{\"number\": 42}")
+
+execute_shell(command: str) -> Result(str, str)
+
+  // Выполнить shell команду
+  // Это вызовет реальный shell
+  RETURN Ok("command executed")
+
+// ============================================================================
+// ДЕМОНСТРАЦИЯ
+// ============================================================================
+
+tool demonstrate_vcs()
+
+  // Пример: получить статус
+  CASE get_git_status() OF
+    Ok(status):
+        branch: status.branch,
+        modified: status.modified_files.length
+      }
+    Error(msg):
+
+  // Пример: получить историю
+  CASE get_commit_history(5) OF
+    Ok(commits):
+    Error(msg):
+
+  RETURN true
+
+// ============================================================================
+// КОНЕЦ МОДУЛЯ
+// ============================================================================
+
+# v9.0 - Macro-Automation
+
+# v10.0 - ML-Powered Migration

@@ -1,0 +1,199 @@
+name: VIBEEC CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'vibeec/**'
+      - '.github/workflows/vibeec.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'vibeec/**'
+  release:
+    types: [ published ]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '26.0'
+          gleam-version: '1.0.0'
+      
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            vibeec/build
+            ~/.cache/gleam
+          key: ${{ runner.os }}-gleam-${{ hashFiles('vibeec/gleam.toml') }}
+      
+      - name: Download dependencies
+        working-directory: vibeec
+        run: gleam deps download
+      
+      - name: Build
+        working-directory: vibeec
+        run: gleam build
+      
+      - name: Run tests
+        working-directory: vibeec
+        run: gleam test
+      
+      - name: Format check
+        working-directory: vibeec
+        run: gleam format --check src test
+
+  benchmark:
+    name: Benchmark
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '26.0'
+          gleam-version: '1.0.0'
+      
+      - name: Build
+        working-directory: vibeec
+        run: gleam build
+      
+      - name: Run benchmarks
+        working-directory: vibeec
+        run: |
+          echo "Running compilation benchmarks..."
+          time gleam build
+          echo "Compilation time recorded"
+      
+      - name: Report size
+        working-directory: vibeec
+        run: |
+          echo "Compiler size:"
+          du -sh build/
+          echo "Source size:"
+          find src -name "*.gleam" | xargs wc -l | tail -1
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '26.0'
+          gleam-version: '1.0.0'
+      
+      - name: Check formatting
+        working-directory: vibeec
+        run: gleam format --check src test
+      
+      - name: Check for warnings
+        working-directory: vibeec
+        run: gleam build 2>&1 | tee build.log && ! grep -i "warning" build.log
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Check documentation
+        working-directory: vibeec
+        run: |
+          echo "Checking documentation files..."
+          test -f README.md
+          test -f DOCUMENTATION.md
+          test -f BENCHMARKS.md
+          test -f CONTRIBUTING.md
+          test -f CHANGELOG.md
+          echo "All documentation files present"
+      
+      - name: Validate examples
+        working-directory: vibeec
+        run: |
+          echo "Checking examples..."
+          test -d examples
+          test -f examples/hello.vibee
+          test -f examples/calculator.vibee
+          test -f COMPLETE_EXAMPLE.vibee
+          echo "All examples present"
+
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs: [test, benchmark, lint, docs]
+    if: github.event_name == 'release'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '26.0'
+          gleam-version: '1.0.0'
+      
+      - name: Build release
+        working-directory: vibeec
+        run: gleam build
+      
+      - name: Create release package
+        run: |
+          cd vibeec
+          tar -czf ../vibeec-${{ github.event.release.tag_name }}.tar.gz \
+            src/ \
+            test/ \
+            examples/ \
+            bin/ \
+            gleam.toml \
+            README.md \
+            DOCUMENTATION.md \
+            BENCHMARKS.md \
+            CONTRIBUTING.md \
+            CHANGELOG.md
+      
+      - name: Upload release asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./vibeec-${{ github.event.release.tag_name }}.tar.gz
+          asset_name: vibeec-${{ github.event.release.tag_name }}.tar.gz
+          asset_content_type: application/gzip
+
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [test, benchmark, lint, docs]
+    if: always()
+    
+    steps:
+      - name: Report status
+        run: |
+          echo "Build Status: ${{ job.status }}"
+          echo "Tests: ${{ needs.test.result }}"
+          echo "Benchmarks: ${{ needs.benchmark.result }}"
+          echo "Lint: ${{ needs.lint.result }}"
+          echo "Docs: ${{ needs.docs.result }}"

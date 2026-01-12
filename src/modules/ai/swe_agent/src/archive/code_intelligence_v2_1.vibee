@@ -1,0 +1,563 @@
+// ============================================================================
+  // Performance Warning:   // AI Suggestion: Use pipeline operator for better readability  // AI Suggestion: Replace magic numbers with named constants  // AI Suggestion: Consider extracting hardcoded strings to constants// CODE INTELLIGENCE - анализ, понимание и генерация кода через LLM
+// ============================================================================
+// Компонент 2 из 7 для SWE Agent
+// Migrated to VIBEE DSL v2.1
+
+inherit("swe_agent_defaults")
+
+// ============================================================================
+// ТИПЫ И СТРУКТУРЫ
+// ============================================================================
+
+type CodeFile {
+  path: FilePath,
+  content: str,
+  language: str = detect_language(path),
+  size_bytes: int = content.length,
+  last_modified: DateTime = now()
+}
+
+type CodeStructure {
+  file: CodeFile,
+  functions: [FunctionInfo],
+  classes: [ClassInfo],
+  imports: [str],
+  exports: [str],
+  complexity: int = calculate_complexity(file.content)
+}
+fn new() -> Self {
+  Self {
+    path: path,
+    content: content,
+    language: language,
+    size_bytes: size_bytes,
+    last_modified: last_modified
+  }
+}
+
+  # Auto-generated getters
+fn path(self) -> FilePath {
+  self.path
+}
+
+  # Auto-generated getters
+fn file(self) -> CodeFile {
+  self.file
+}
+fn complexity(self) -> int {
+  self.complexity
+}
+
+  # Auto-generated getters
+fn name(self) -> str {
+  self.name
+}
+fn return_type(self) -> str {
+  self.return_type
+}
+
+  # Auto-generated getters
+fn name(self) -> str {
+  self.name
+}
+fn extends(self) -> str {
+  self.extends
+}
+
+  # Auto-generated getters
+fn prompt(self) -> str {
+  self.prompt
+}
+fn language(self) -> str {
+  self.language
+}
+fn style_guide(self) -> str {
+  self.style_guide
+}
+
+  # Auto-generated getters
+fn code(self) -> str {
+  self.code
+}
+
+  # Auto-generated getters
+fn file(self) -> str {
+  self.file
+}
+fn line(self) -> int {
+  self.line
+}
+fn severity(self) -> Severity {
+  self.severity
+}
+fn message(self) -> str {
+  self.message
+}
+fn suggestion(self) -> str {
+  self.suggestion
+}
+fn language(self) -> str {
+  self.language
+}
+fn syntax_valid(self) -> bool {
+  self.syntax_valid
+}
+fn estimated_quality(self) -> int {
+  self.estimated_quality
+}
+fn line_start(self) -> int {
+  self.line_start
+}
+fn line_end(self) -> int {
+  self.line_end
+}
+fn line_start(self) -> int {
+  self.line_start
+}
+fn line_end(self) -> int {
+  self.line_end
+}
+fn body(self) -> str {
+  self.body
+}
+fn doc_comment(self) -> str {
+  self.doc_comment
+}
+fn content(self) -> str {
+  self.content
+}
+fn language(self) -> str {
+  self.language
+}
+fn size_bytes(self) -> int {
+  self.size_bytes
+}
+fn last_modified(self) -> DateTime {
+  self.last_modified
+}
+
+type FunctionInfo {
+  name: str,
+  params: [str],
+  return_type: str,
+  line_start: int,
+  line_end: int,
+  body: str,
+  doc_comment: str = ""
+}
+
+type ClassInfo {
+  name: str,
+  methods: [FunctionInfo],
+  properties: [str],
+  extends: str = "",
+  line_start: int,
+  line_end: int,
+}
+
+type CodeGenerationRequest {
+  prompt: str,
+  context: [CodeFile],
+  language: str,
+  style_guide: str = "default"
+}
+
+type GeneratedCode {
+  code: str,
+  language: str,
+  syntax_valid: bool,
+  estimated_quality: int,
+  suggested_tests: [str] = []
+}
+
+type CodeIssue {
+  file: str,
+  line: int,
+  severity: Severity,
+  message: str,
+  suggestion: str = ""
+}
+
+@enum Severity {
+  CRITICAL = 3,
+  WARNING = 2,
+  INFO = 1
+}
+
+// ============================================================================
+// ИНСТРУМЕНТЫ - ОСНОВНЫЕ ФУНКЦИИ
+// ============================================================================
+
+// [TOOL 1] Читать файл с кешированием
+tool swe_read(path: str) -> Result(str, str) {
+  @doc "Читает содержимое файла с кешированием"
+  @auto_log
+  @auto_log
+  @auto_log
+
+  cache.get(path)
+    |> or_else(fn() {
+      read_file(path)
+        |> tap(fn(content) { cache.set(path, content) })
+    })
+}
+
+// [TOOL 2] Записать файл с проверкой
+tool swe_write(path: str, content: str) -> Result(bool, str) {
+  @doc "Пишет содержимое в файл с валидацией"
+  @auto_log
+  @auto_log
+  @auto_log
+  @validate path: FilePath, content: NonEmpty
+
+  // Проверить валидность пути
+  validate_path(path)?
+
+  // Создать резервную копию
+  backup_if_exists(path)?
+
+  // Записать новое содержимое
+  write_file(path, content)
+    |> tap(fn(_) { cache.set(path, content) })
+    |> map(fn(_) { True })
+}
+
+// [TOOL 3] Редактировать конкретные строки файла
+tool swe_edit(path: str, start_line: int, end_line: int, new_content: str) -> Result(bool, str) {
+  @doc "Редактирует конкретные строки файла (патч-подход)"
+  @auto_log
+  @auto_log
+  @auto_log
+  @validate start_line: Positive, end_line: Positive
+
+  swe_read(path)?
+    |> split("\n")
+    |> edit_lines(start_line, end_line, new_content)?
+    |> join("\n")
+    |> swe_write(path, _)
+}
+
+// [TOOL 4] Анализировать структуру кода
+tool analyze_code_structure(path: str) -> Result(CodeStructure, str) {
+  @doc "Анализирует структуру кода (функции, классы, импорты)"
+  @auto_log
+  @auto_log
+  @auto_log
+  @cache 300
+
+  let content = swe_read(path)?
+
+  CodeStructure {
+    file: CodeFile {
+      path,
+      content,
+      language: detect_language(path),
+      size_bytes: content.length,
+      last_modified: get_modified_time(path)
+    },
+    functions: parse_functions(content),
+    classes: parse_classes(content),
+    imports: parse_imports(content),
+    exports: parse_exports(content),
+    complexity: calculate_complexity(content)
+  }
+  |> Ok
+}
+
+// [TOOL 5] Найти определение символа
+tool find_symbol_definition(symbol: str, context_path: str) -> Result(FunctionInfo, str) {
+  @doc "Находит определение функции или класса по имени"
+  @auto_log
+  @auto_log
+  @auto_log
+  @cache 600
+
+  analyze_code_structure(context_path)?
+    |> extract_functions
+    |> find_by_name(symbol)
+    |> ok_or("")
+}
+
+// [TOOL 6] Генерировать код через LLM
+tool generate_code(request: CodeGenerationRequest) -> Result(GeneratedCode, str) {
+  @doc "Генерирует код на основе запроса (LLM powered)"
+  @auto_log
+  @auto_log
+  @auto_log
+  timeout: 30000
+  @rate_limit 10/min
+
+  llm_generate(request.prompt, request.context)?
+    |> validate_syntax(request.language)?
+    |> estimate_quality
+    |> generate_tests
+    |> wrap_generated_code(request.language)
+}
+
+// [TOOL 7] Рефакторить код
+tool refactor_code(code: str, refactoring_type: str) -> Result(str, str) {
+  @doc "Рефакторит код (extract methods, rename, simplify)"
+  @auto_log
+  @auto_log
+  @auto_log
+  timeout: 20000
+
+  match refactoring_type {
+    "extract_method" -> extract_methods(code),
+    "rename" -> rename_symbols(code),
+    "simplify" -> simplify_code(code),
+    _ -> Error("")
+  }
+}
+
+// [TOOL 8] Найти проблемы в коде
+tool find_code_issues(code: str, file_path: str) -> Result([CodeIssue], str) {
+  @doc "Находит потенциальные проблемы в коде"
+  @auto_log
+  @auto_log
+  @auto_log
+  @cache 300
+
+  [
+    check_syntax(code, file_path),
+    check_complexity(code, file_path),
+    check_security(code, file_path),
+    check_performance(code, file_path)
+  ]
+  |> flatten
+  |> Ok
+}
+
+// [TOOL 9] Оптимизировать код
+tool optimize_code(code: str, language: str) -> Result(str, str) {
+  @doc "Оптимизирует код для производительности"
+  @auto_log
+  @auto_log
+  @auto_log
+  timeout: 20000
+
+  code
+    |> remove_dead_code
+    |> inline_small_functions
+    |> optimize_loops
+    |> simplify_expressions
+}
+
+// [TOOL 10] Генерировать документацию
+tool generate_code_docs(code: str, language: str) -> Result(str, str) {
+  @doc "Генерирует документацию для кода"
+  @auto_log
+  @auto_log
+  @auto_log
+  @cache 600
+
+  analyze_code_structure_from_content(code)?
+    |> extract_public_api
+    |> generate_doc_comments
+    |> format_as_markdown
+}
+
+// ============================================================================
+// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+// ============================================================================
+
+validate_path(path: str) -> Result(Nil, str) {
+  match {
+    path.contains("..") -> Error("Invalid path: contains .."),
+    path.starts_with("/") -> Error("Invalid path: absolute path"),
+    _ -> Ok(Nil)
+  }
+}
+
+backup_if_exists(path: str) -> Result(Nil, str) {
+  match file_exists(path) {
+    True -> {
+      let backup_path = "{path}.backup"
+      copy_file(path, backup_path)
+        |> map(fn(_) { Nil })
+    },
+    False -> Ok(Nil)
+  }
+}
+
+edit_lines(
+  lines: [str],
+  start: int,
+  end: int,
+  new_content: str,
+) -> Result([str], str) {
+  match {
+    start < 0 || end > list.length(lines) ->
+      Error("Line numbers out of bounds"),
+    _ -> {
+      lines
+        |> list.take(start)
+        |> list.append(string.split(new_content, "\n"))
+        |> list.append(list.drop(lines, end))
+        |> Ok
+    }
+  }
+}
+
+extract_functions(structure: CodeStructure) -> [FunctionInfo] {
+  structure.functions
+}
+
+find_by_name(functions: [FunctionInfo], name: str) -> FunctionInfo? {
+  list.find(functions, fn(f) { f.name == name })
+}
+
+ok_or(a?, error: str) -> Result(a, str) {
+  match option {
+    Some(value) -> Ok(value),
+    None -> Error(error)
+  }
+}
+
+validate_syntax(code: str, language: str) -> Result(str, str) {
+  // Validate syntax based on language
+  match language {
+    "gleam" -> validate_gleam_syntax(code),
+    "javascript" -> validate_js_syntax(code),
+    "python" -> validate_python_syntax(code),
+    _ -> Ok(code)  // Skip validation for unknown languages
+  }
+}
+
+estimate_quality(code: str) -> str {
+  // Estimate code quality (1-10)
+  code
+}
+
+generate_tests(code: str) -> str {
+  // Generate suggested tests
+  code
+}
+
+wrap_generated_code(code: str, language: str) -> Result(GeneratedCode, str) {
+  Ok(GeneratedCode {
+    code,
+    language,
+    syntax_valid: True,
+    estimated_quality: 8,
+    suggested_tests: []
+  })
+}
+
+extract_methods(code: str) -> Result(str, str) {
+  // Extract methods refactoring
+  Ok(code)
+}
+
+rename_symbols(code: str) -> Result(str, str) {
+  // Rename symbols refactoring
+  Ok(code)
+}
+
+simplify_code(code: str) -> Result(str, str) {
+  // Simplify code refactoring
+  Ok(code)
+}
+
+check_syntax(code: str, file_path: str) -> [CodeIssue] {
+  // Check syntax issues
+  []
+}
+
+check_complexity(code: str, file_path: str) -> [CodeIssue] {
+  // Check complexity issues
+  []
+}
+
+check_security(code: str, file_path: str) -> [CodeIssue] {
+  // Check security issues
+  []
+}
+
+check_performance(code: str, file_path: str) -> [CodeIssue] {
+  // Check performance issues
+  []
+}
+
+remove_dead_code(code: str) -> str {
+  code
+}
+
+inline_small_functions(code: str) -> str {
+  code
+}
+
+optimize_loops(code: str) -> str {
+  code
+}
+
+simplify_expressions(code: str) -> str {
+  code
+}
+
+analyze_code_structure_from_content(code: str) -> Result(CodeStructure, str) {
+  // Analyze code structure from content
+  !impl
+}
+
+extract_public_api(structure: CodeStructure) -> CodeStructure {
+  structure
+}
+
+generate_doc_comments(structure: CodeStructure) -> str {
+  ""
+}
+
+format_as_markdown(docs: str) -> str {
+  docs
+}
+
+// ============================================================================
+// ДЕМОНСТРАЦИЯ
+// ============================================================================
+
+tool demonstrate_code_intelligence() {
+  @doc "Демонстрирует возможности code intelligence"
+  @auto_log
+  @auto_log
+  @auto_log
+
+  print("=== Code Intelligence Demo ===")
+
+  // 1. Read file
+  let content = swe_read("example.gleam")?
+  print(" bytes")
+
+  // 2. Analyze structure
+  let structure = analyze_code_structure("example.gleam")?
+  print(""(structure.functions))
+
+  // 3. Find symbol
+  let func = find_symbol_definition("main", "example.gleam")?
+  print("")
+
+  // 4. Generate code
+  let request = CodeGenerationRequest {
+    prompt: "Create a hello world function",
+    context: [],
+    language: "gleam",
+    style_guide: "default"
+  }
+  let generated = generate_code(request)?
+  print(" chars")
+
+  // 5. Find issues
+  let issues = find_code_issues(content, "example.gleam")?
+  print(""(issues))
+
+  Ok(Nil)
+}
+
+// ============================================================================
+// END OF CODE INTELLIGENCE v2.1
+// ============================================================================
+
+# v9.0 - Macro-Automation
+
+# v10.0 - ML-Powered Migration

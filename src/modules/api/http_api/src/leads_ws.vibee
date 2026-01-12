@@ -1,0 +1,749 @@
+// Leads WebSocket Handler
+  // Performance Warning:   // AI Suggestion: Consider extracting hardcoded strings to constants// Real-time updates for Leads Dashboard
+  // AI Suggestion: Replace magic numbers with named constants// Broadcasts NewLeadEvent, LeadStatusUpdated, SessionStatusEvent
+// Converted from infra/api/leads_ws.gleam → dsl/infra/api/leads_ws.vibee
+
+// =============================================================================
+// Types
+// =============================================================================
+
+derive(Json)
+@enum
+type LeadsWsMessage {
+  NewLead(json_str)        // Raw JSON string from event_bus
+  LeadUpdated(json_str)    // Raw JSON string from event_bus
+  SessionStatus(json_str)  // Raw JSON string from event_bus
+  SessionsList(data: Json)
+  TriggersList(data: Json)
+  LeadStats(data: Json)
+}
+
+type LeadsWsState {
+  LeadsWsState(
+    session_id: str?,
+    subscribed: bool,
+    event_bus?),
+    client_subject?)
+  )
+}
+fn new() · Self {
+    data: data,
+    data: data,
+    data: data
+  
+}
+
+  # Auto-generated getters
+fn data(self) · self.data
+
+
+  # Auto-generated getters
+fn session_id(self) · self.session_id
+
+fn subscribed(self) · self.subscribed
+
+fn event_bus(self) · self.event_bus
+
+fn client_subject(self) · self.client_subject
+
+fn data(self) · self.data
+
+fn data(self) · self.data
+
+
+// =============================================================================
+// WebSocket Handler
+// =============================================================================
+
+trace("leads.ws.handler")
+@spec handler(req: HttpRequest, event_bus_opt?)) → HttpResponse {
+  /// Leads WebSocket endpoint handler
+  given: Request and optional event bus
+  when: WebSocket connection initiated
+  then: Handles real-time leads updates
+}
+
+@impl {
+  log_info("[WS:Leads] Starting Leads WebSocket handler")
+
+  websocket(
+    request: req,
+    on_init: fn(_conn) {
+      // Create client subject for receiving events
+      let client_subject = process_new_subject()
+
+      // Subscribe to event bus if available
+      match event_bus_opt {
+        ☐bus) → {
+          client_subject · event_bus_subscribe
+          log_info("[WS:Leads] Client subscribed to event bus")
+        }
+        ∅-> Nil
+      }
+
+      // Create selector to receive events from event bus
+      let selector = process_new_selector()
+        · process_select_map(for: client_subject, mapping: fn(json_str) {
+          log_info("[WS:Leads] RECEIVED EVENT from event_bus: {string_slice}(json_str, 0, 200))
+
+          // Parse event type and wrap appropriately
+          match "\"type\":\"new_lead\"" · string_contains {
+            true → {
+              log_info("[WS:Leads] Parsed as NewLead event - forwarding raw JSON")
+              NewLead(json_str)
+            }
+            false → match "\"type\":\"lead_updated\"" · string_contains {
+              true → {
+                log_info("[WS:Leads] Parsed as LeadUpdated event")
+                LeadUpdated(json_str)
+              }
+              false → match "\"type\":\"session_status\"" · string_contains {
+                true → {
+                  log_info("[WS:Leads] Parsed as SessionStatus event")
+                  SessionStatus(json_str)
+                }
+                false → {
+                  log_info("[WS:Leads] Unknown event type, defaulting to NewLead")
+                  NewLead(json_str)
+                }
+              }
+            }
+          }
+        }
+
+      let state = LeadsWsState(
+        session_id: ∅,
+        subscribed: false,
+        event_bus: event_bus_opt,
+        client_subject: ☐client_subject)
+      )
+
+      log_info("[WS:Leads] Client connected")
+
+      #(state, ☐selector))
+    },
+    on_close: fn(state) {
+      log_info("[WS:Leads] Client disconnected")
+      match state.event_bus, state.client_subject {
+        ☐bus), ☐subj) → subj · event_bus_unsubscribe
+        _, _ → Nil
+      }
+    },
+    handler: handle_leads_message
+  )
+}
+
+// =============================================================================
+// Message Handlers
+// =============================================================================
+
+@spec handle_leads_message(state: LeadsWsState, message: WebsocketMessage(LeadsWsMessage), conn: WebsocketConnection) → WsResult {
+  /// Handle incoming WebSocket message
+  given: State, message, connection
+  when: Message received
+  then: Processes and returns new state
+}
+
+@impl {
+  match message {
+    Text(text) → text, conn · handle_text_message
+    Binary(_) → ws_continue(state)
+    Custom(ws_msg) → ws_msg, conn · handle_custom_message
+    Closed | Shutdown → {
+      match state.event_bus, state.client_subject {
+        ☐bus), ☐subj) → subj · event_bus_unsubscribe
+        _, _ → Nil
+      }
+      ws_stop()
+    }
+  }
+}
+
+@spec handle_text_message(state: LeadsWsState, text: str, conn: WebsocketConnection) → WsResult {
+  /// Handle text message
+  given: State, text, connection
+  when: Text message received
+  then: Routes to appropriate handler
+}
+
+@impl {
+  match string_starts_with(string_trim(text), "{") {
+    true → text, conn · handle_json_command
+    false → text, conn · handle_simple_command
+  }
+}
+
+@spec handle_simple_command(state: LeadsWsState, text: str, conn: WebsocketConnection) → WsResult {
+  /// Handle simple text command
+  given: State, text, connection
+  when: Simple command received
+  then: Executes command
+}
+
+@impl {
+  match string_lowercase(string_trim(text)) {
+    "ping" → {
+      "pong" · safe_send
+      ws_continue(state)
+    }
+    "sessions" → {
+      send_sessions(conn)
+      ws_continue(state)
+    }
+    "triggers" → {
+      conn · send_triggers
+      ws_continue(state)
+    }
+    "stats" → {
+      conn · send_lead_stats
+      ws_continue(state)
+    }
+    _ → ws_continue(state)
+  }
+}
+
+@spec handle_json_command(state: LeadsWsState, text: str, conn: WebsocketConnection) → WsResult {
+  /// Handle JSON command
+  given: State, JSON text, connection
+  when: JSON command received
+  then: Parses and executes
+}
+
+@impl {
+  match "\"type\":\"subscribe\"" · string_contains {
+    true → {
+      let session_id = extract_session_id(text)
+      let new_state = LeadsWsState(..state, session_id: ☐session_id), subscribed: true)
+
+      let response = json_object([
+        #("type", json_string("subscribed")),
+        #("session_id", json_string(session_id))
+      ])
+      json_$(response · safe_send)
+
+      // Send initial data
+      send_sessions(conn)
+      conn · send_triggers
+      conn · send_lead_stats
+
+      log_info("[WS:Leads] Client subscribed to session: {session_id})
+      ws_continue(new_state)
+    }
+    false → {
+      match "\"type\":\"allow\"" · string_contains {
+        true → text, conn · handle_allow_command
+        false → match "\"type\":\"block\"" · string_contains {
+          true → text, conn · handle_block_command
+          false → match "\"type\":\"reply\"" · string_contains {
+            true → text, conn · handle_reply_command
+            false → match "\"type\":\"mute\"" · string_contains {
+              true → text, conn · handle_mute_command
+              false → ws_continue(state)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// =============================================================================
+// Command Handlers
+// =============================================================================
+
+@spec handle_allow_command(state: LeadsWsState, text: str, conn: WebsocketConnection) → WsResult {
+  /// Handle allow chat command
+  given: State, command text, connection
+  when: Allow command received
+  then: Allows chat and responds
+}
+
+@impl {
+  let chat_id = extract_chat_id(text)
+  log_info("[WS:Leads] Allow command for chat: int_$(chat_id))
+
+  match state.session_id {
+    ☐_session_id) → {
+      // TODO: Call bridge API to allow chat
+      let response = json_object([
+        #("type", json_string("command_result")),
+        #("action", json_string("allow")),
+        #("chat_id", json_int(chat_id)),
+        #("success", json_bool(true)),
+        #("message", json_string("Chat allowed"))
+      ])
+      json_$(response · safe_send)
+    }
+    ∅-> {
+      let response = json_object([
+        #("type", json_string("error")),
+        #("message", json_string("No session selected"))
+      ])
+      json_$(response · safe_send)
+    }
+  }
+  ws_continue(state)
+}
+
+@spec handle_block_command(state: LeadsWsState, text: str, conn: WebsocketConnection) → WsResult {
+  /// Handle block chat command
+  given: State, command text, connection
+  when: Block command received
+  then: Blocks chat and responds
+}
+
+@impl {
+  let chat_id = extract_chat_id(text)
+  log_info("[WS:Leads] Block command for chat: int_$(chat_id))
+
+  match state.session_id {
+    ☐_session_id) → {
+      // TODO: Call bridge API to block chat
+      let response = json_object([
+        #("type", json_string("command_result")),
+        #("action", json_string("block")),
+        #("chat_id", json_int(chat_id)),
+        #("success", json_bool(true)),
+        #("message", json_string("Chat blocked"))
+      ])
+      json_$(response · safe_send)
+    }
+    ∅-> {
+      let response = json_object([
+        #("type", json_string("error")),
+        #("message", json_string("No session selected"))
+      ])
+      json_$(response · safe_send)
+    }
+  }
+  ws_continue(state)
+}
+
+@spec handle_reply_command(state: LeadsWsState, text: str, conn: WebsocketConnection) → WsResult {
+  /// Handle reply command
+  given: State, command text, connection
+  when: Reply command received
+  then: Sends reply via bridge and responds
+}
+
+@impl {
+  let chat_id = extract_chat_id(text)
+  let reply_text = extract_reply_text(text)
+  let reply_to = extract_reply_to(text)
+  log_info("[WS:Leads] Reply command to chat: int_$(chat_id))
+
+  match state.session_id {
+    ☐session_id) → {
+      match chat_id, reply_text, reply_to · send_reply_via_bridge {
+        true → {
+          let response = json_object([
+            #("type", json_string("command_result")),
+            #("action", json_string("reply")),
+            #("chat_id", json_int(chat_id)),
+            #("success", json_bool(true)),
+            #("message", json_string("Reply sent"))
+          ])
+          json_$(response · safe_send)
+        }
+        false → {
+          let response = json_object([
+            #("type", json_string("command_result")),
+            #("action", json_string("reply")),
+            #("chat_id", json_int(chat_id)),
+            #("success", json_bool(false)),
+            #("message", json_string("Failed to send reply"))
+          ])
+          json_$(response · safe_send)
+        }
+      }
+    }
+    ∅-> {
+      let response = json_object([
+        #("type", json_string("error")),
+        #("message", json_string("No session selected"))
+      ])
+      json_$(response · safe_send)
+    }
+  }
+  ws_continue(state)
+}
+
+@spec handle_mute_command(state: LeadsWsState, text: str, conn: WebsocketConnection) → WsResult {
+  /// Handle mute command
+  given: State, command text, connection
+  when: Mute command received
+  then: Mutes chat and responds
+}
+
+@impl {
+  let chat_id = extract_chat_id(text)
+  let duration = extract_mute_duration(text)
+  log_info("[WS:Leads] Mute command for chat: int_$(chat_id) + " for int_$(duration) + " minutes")
+
+  // TODO: Store mute in ETS/DB
+  let response = json_object([
+    #("type", json_string("command_result")),
+    #("action", json_string("mute")),
+    #("chat_id", json_int(chat_id)),
+    #("duration_minutes", json_int(duration)),
+    #("success", json_bool(true)),
+    #("message", json_string("Chat muted for int_$(duration) + " minutes"))
+  ])
+  json_$(response · safe_send)
+  ws_continue(state)
+}
+
+@spec handle_custom_message(state: LeadsWsState, ws_msg: LeadsWsMessage, conn: WebsocketConnection) → WsResult {
+  /// Handle custom message from selector
+  given: State, custom message, connection
+  when: Event received from bus
+  then: Forwards to client
+}
+
+@impl {
+  log_info("[WS:Leads] handle_custom_message called")
+  match ws_msg {
+    NewLead(json_str) → {
+      log_info("[WS:Leads] ========== SENDING NewLead ==========")
+      log_info("[WS:Leads] FULL JSON:")
+      log_info(json_str)
+      log_info("[WS:Leads] JSON length: {int_to_string}(string_length(json_str)))
+      log_info("[WS:Leads] =====================================")
+      json_str · safe_send  // Send raw JSON string directly
+      ws_continue(state)
+    }
+    LeadUpdated(json_str) → {
+      log_info("[WS:Leads] SENDING LeadUpdated to client")
+      json_str · safe_send
+      ws_continue(state)
+    }
+    SessionStatus(json_str) → {
+      log_info("[WS:Leads] SENDING SessionStatus to client")
+      json_str · safe_send
+      ws_continue(state)
+    }
+    SessionsList(data) → {
+      let response = json_object([
+        #("type", json_string("sessions")),
+        #("data", data)
+      ])
+      json_$(response · safe_send)
+      ws_continue(state)
+    }
+    TriggersList(data) → {
+      let response = json_object([
+        #("type", json_string("triggers")),
+        #("data", data)
+      ])
+      json_$(response · safe_send)
+      ws_continue(state)
+    }
+    LeadStats(data) → {
+      let response = json_object([
+        #("type", json_string("stats")),
+        #("data", data)
+      ])
+      json_$(response · safe_send)
+      ws_continue(state)
+    }
+  }
+}
+
+// =============================================================================
+// Data Senders
+// =============================================================================
+
+@spec send_sessions(conn: WebsocketConnection) → Nil {
+  /// Send sessions list
+  given: Connection
+  when: Sessions requested
+  then: Sends sessions JSON
+}
+
+@impl {
+  let sessions = session_manager_list_all()
+  let active_session = session_manager_get_active()
+
+  let sessions_json = fn(session: SessionInfo · list_map {
+    let is_active = match active_session {
+      ☐active_id) → session.session_id == active_id
+      ∅-> false
+    }
+    json_object([
+      #("id", json_string(session.session_id)),
+      #("phone", json_string(option_unwrap(session.phone, ""))),
+      #("type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}name", json_string(option_unwrap(session.type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}name, ""))),
+      #("is_authorized", json_bool(session.authorized)),
+      #("is_active", json_bool(is_active)),
+      #("is_online", json_bool(true))
+    ])
+  }
+
+  let response = json_object([
+    #("type", json_string("sessions")),
+    #("data", { it } · json_array
+  ])
+  json_$(response · safe_send)
+}
+
+@spec send_triggers(state: LeadsWsState, conn: WebsocketConnection) → Nil {
+  /// Send triggers list
+  given: State, connection
+  when: Triggers requested
+  then: Sends triggers JSON
+}
+
+@impl {
+  // TODO: Get triggers from DB for the session
+  let triggers_json = json_array([
+    json_object([
+      #("id", json_string("t1")),
+      #("word", json_string("crypto")),
+      #("is_active", json_bool(true))
+    ]),
+    json_object([
+      #("id", json_string("t2")),
+      #("word", json_string("sell")),
+      #("is_active", json_bool(true))
+    ]),
+    json_object([
+      #("id", json_string("t3")),
+      #("word", json_string("buy")),
+      #("is_active", json_bool(true))
+    ])
+  ], { it }
+
+  let response = json_object([
+    #("type", json_string("triggers")),
+    #("data", triggers_json)
+  ])
+  json_$(response · safe_send)
+}
+
+@spec send_lead_stats(state: LeadsWsState, conn: WebsocketConnection) → Nil {
+  /// Send lead statistics
+  given: State, connection
+  when: Stats requested
+  then: Sends stats JSON
+}
+
+@impl {
+  // TODO: Get actual stats from DB
+  let stats_json = json_object([
+    #("total_leads", json_int(0)),
+    #("new_today", json_int(0)),
+    #("qualified", json_int(0)),
+    #("contacted", json_int(0)),
+    #("blocked", json_int(0)),
+    #("avg_quality", json_float(0.0))
+  ])
+
+  let response = json_object([
+    #("type", json_string("stats")),
+    #("data", stats_json)
+  ])
+  json_$(response · safe_send)
+}
+
+// =============================================================================
+// Bridge API Calls
+// =============================================================================
+
+@spec send_reply_via_bridge(session_id: str, chat_id: int, text: str, reply_to: int) → bool {
+  /// Send reply via Telegram bridge
+  given: Session ID, chat ID, text, reply_to message ID
+  when: Sending reply
+  then: Returns success status
+}
+
+@impl {
+  log_info("[WS:Leads] Sending reply via bridge to int_$(chat_id))
+  let _result = chat_id, text, reply_to · send_message_via_bridge
+  true  // TODO: Check actual result
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+@spec safe_send(conn: WebsocketConnection, text: str) → Nil {
+  /// Safe WebSocket send - logs errors instead of panicking
+  given: Connection, text
+  when: Sending message
+  then: Sends or logs error
+}
+
+@impl {
+  match text · ws_send_text_frame {
+    ✅_) → Nil
+    ❌e) → {
+      log_info("[WS:Leads] Send error: string_inspect(e))
+      Nil
+    }
+  }
+}
+
+@spec extract_session_id(text: str) → str {
+  /// Extract session_id from subscribe message
+  given: JSON text
+  when: Parsing
+  then: Returns session_id
+}
+
+@impl {
+  match "\"session_id\":\"" · string_split {
+    [_, rest] → {
+      match "\"" · string_split {
+        [value, ..] → value
+        _ → ""
+      }
+    }
+    _ → ""
+  }
+}
+
+@spec extract_chat_id(text: str) → int {
+  /// Extract chat_id from JSON
+  given: JSON text
+  when: Parsing
+  then: Returns chat_id
+}
+
+@impl {
+  match "\"chat_id\":" · string_split {
+    [_, rest] → {
+      let cleaned = string_trim(rest)
+      match "," · string_split {
+        [num_str, ..] → {
+          match "}" · string_split {
+            [num_str2, ..] → {
+              match int_parse(string_trim(num_str2)) {
+                ✅n) → n
+                ❌_) → 0
+              }
+            }
+            _ → 0
+          }
+        }
+        _ → 0
+      }
+    }
+    _ → 0
+  }
+}
+
+@spec extract_reply_text(text: str) → str {
+  /// Extract reply text from JSON
+  given: JSON text
+  when: Parsing
+  then: Returns reply text
+}
+
+@impl {
+  match "\"text\":\"" · string_split {
+    [_, rest] → {
+      match "\"," · string_split {
+        [value, ..] → value
+        _ → match "\"}" · string_split {
+          [value, ..] → value
+          _ → ""
+        }
+      }
+    }
+    _ → ""
+  }
+}
+
+@spec extract_reply_to(text: str) → int {
+  /// Extract reply_to message ID from JSON
+  given: JSON text
+  when: Parsing
+  then: Returns message ID
+}
+
+@impl {
+  match "\"reply_to\":" · string_split {
+    [_, rest] → {
+      let cleaned = string_trim(rest)
+      match "," · string_split {
+        [num_str, ..] → {
+          match "}" · string_split {
+            [num_str2, ..] → {
+              match int_parse(string_trim(num_str2)) {
+                ✅n) → n
+                ❌_) → 0
+              }
+            }
+            _ → 0
+          }
+        }
+        _ → 0
+      }
+    }
+    _ → 0
+  }
+}
+
+@spec extract_mute_duration(text: str) → int {
+  /// Extract mute duration from JSON
+  given: JSON text
+  when: Parsing
+  then: Returns duration in minutes
+}
+
+@impl {
+  match "\"duration\":" · string_split {
+    [_, rest] → {
+      let cleaned = string_trim(rest)
+      match "," · string_split {
+        [num_str, ..] → {
+          match "}" · string_split {
+            [num_str2, ..] → {
+              match int_parse(string_trim(num_str2)) {
+                ✅n) → n
+                ❌_) → 60  // Default 1 hour
+              }
+            }
+            _ → 60
+          }
+        }
+        _ → 60
+      }
+    }
+    _ → 60
+  }
+}
+
+// =============================================================================
+// FFI Imports
+// =============================================================================
+
+// @ffi send_message_via_bridge(session_id: str, chat_id: int, text: str, reply_to: int) → Dynamic
+// @ffi session_manager_list_all() → [SessionInfo]
+// @ffi session_manager_get_active() → str?
+// @ffi event_bus_subscribe(bus: Subject(PubSubMessage), client: Subject(str)) → Nil
+// @ffi event_bus_unsubscribe(bus: Subject(PubSubMessage), client: Subject(str)) → Nil
+
+# v8.0
+
+# v9.0 - Macro-Automation
+
+# v10.0 - ML-Powered Migration

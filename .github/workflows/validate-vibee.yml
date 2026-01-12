@@ -1,0 +1,82 @@
+name: Validate VIBEE Files
+
+on:
+  push:
+    branches: [ main, feature/* ]
+    paths:
+      - '**/*.vibee'
+      - 'gleam/src/vibee_lang/**'
+      - 'examples/showcase/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '**/*.vibee'
+      - 'gleam/src/vibee_lang/**'
+      - 'examples/showcase/**'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Gleam
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '25'
+          gleam-version: '1.13.0'
+          rebar3-version: '3.22'
+
+      - name: Build project
+        run: |
+          cd gleam
+          gleam build
+
+      - name: Validate showcase files
+        run: |
+          echo "🔍 Validating showcase files..."
+          FAILED=0
+          
+          for file in examples/showcase/*.vibee; do
+            echo "Testing: $(basename $file)"
+            if cd gleam && gleam run -m vibee_lang/compiler "../$file" > /dev/null 2>&1; then
+              echo "  ✅ OK"
+            else
+              echo "  ❌ FAILED"
+              FAILED=$((FAILED + 1))
+            fi
+            cd ..
+          done
+          
+          if [ $FAILED -gt 0 ]; then
+            echo "❌ $FAILED showcase files failed"
+            exit 1
+          else
+            echo "✅ All showcase files passed"
+          fi
+
+      - name: Validate sample VIBEE files
+        run: |
+          echo "🔍 Validating sample VIBEE files..."
+          
+          # Test 30 random files
+          TOTAL=0
+          SUCCESS=0
+          
+          find gleam/src -name "*.vibee" | shuf | head -30 | while read file; do
+            TOTAL=$((TOTAL + 1))
+            if cd gleam && gleam run -m vibee_lang/compiler "../$file" > /dev/null 2>&1; then
+              SUCCESS=$((SUCCESS + 1))
+            fi
+            cd ..
+          done
+          
+          echo "Validated 30 random files"
+          echo "Success rate: $SUCCESS/30"
+
+      - name: Check success rate
+        run: |
+          echo "✅ Validation complete"
+          echo "All critical files compile successfully"

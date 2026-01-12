@@ -1,0 +1,141 @@
+name: vibee_guard
+version: "1.0.0"
+language: zig
+module: vibee_guard
+target: guard.zig
+description: Compiler-level enforcement - only .vibee specs allowed, no manual code!
+
+behaviors:
+  - name: watch_file_changes
+    given: File system changes detected
+    when: File created or modified
+    then: Validate file is allowed or reject
+    test_cases:
+      - name: allow_vibee_spec
+        input: {file: "src/pollen/my_module/spec.vibee", action: "create"}
+        expected: {allowed: true}
+      - name: reject_manual_zig
+        input: {file: "src/modules/manual.zig", action: "create"}
+        expected: {allowed: false, error: "Manual code forbidden! Use .vibee specs"}
+
+  - name: validate_git_commit
+    given: Git commit attempted
+    when: Pre-commit hook runs
+    then: Block commit if manual code detected
+    test_cases:
+      - name: allow_spec_commit
+        input: {files: ["spec.vibee", "README.md"]}
+        expected: {allowed: true}
+      - name: block_manual_code
+        input: {files: ["manual.zig", "spec.vibee"]}
+        expected: {allowed: false, blocked_files: ["manual.zig"]}
+
+  - name: scan_repository
+    given: Repository path
+    when: Scan command executed
+    then: Report all manual code violations
+    test_cases:
+      - name: clean_repo
+        input: {path: "src/pollen"}
+        expected: {violations: 0, clean: true}
+      - name: violations_found
+        input: {path: "src/modules"}
+        expected: {violations: 5, files: ["a.zig", "b.zig"]}
+
+  - name: enforce_ide
+    given: IDE file save
+    when: User saves file
+    then: Block save if not allowed file type
+    test_cases:
+      - name: allow_vibee_save
+        input: {file: "spec.vibee", content: "name: test"}
+        expected: {saved: true}
+      - name: block_zig_save
+        input: {file: "manual.zig", content: "pub fn main() {}"}
+        expected: {saved: false, error: "Use .vibee specs!"}
+
+types:
+  GuardConfig:
+    enabled: Bool
+    strict_mode: Bool
+    allowed_extensions: List<String>
+    allowed_paths: List<String>
+    exceptions: List<String>
+    
+  FileAction:
+    - Create
+    - Modify
+    - Delete
+    - Rename
+    
+  ValidationResult:
+    allowed: Bool
+    file: String
+    reason: String
+    suggestion: String
+    
+  Violation:
+    file: String
+    type: ViolationType
+    severity: Severity
+    message: String
+    
+  ViolationType:
+    - ManualCode
+    - WrongLocation
+    - MissingSpec
+    - GeneratedInWrongPlace
+    
+  Severity:
+    - Critical
+    - High
+    - Medium
+    - Low
+    
+  ScanReport:
+    total_files: Int
+    violations: List<Violation>
+    clean: Bool
+    suggestions: List<String>
+
+functions:
+  - name: init_guard
+    params: {config: GuardConfig}
+    returns: Result<Void, Error>
+    
+  - name: watch_filesystem
+    params: {path: String}
+    returns: Result<Void, Error>
+    
+  - name: validate_file
+    params: {file: String, action: FileAction}
+    returns: Result<ValidationResult, Error>
+    
+  - name: is_allowed_file
+    params: {file: String}
+    returns: Bool
+    
+  - name: scan_repository
+    params: {path: String}
+    returns: Result<ScanReport, Error>
+    
+  - name: install_git_hooks
+    params: {repo_path: String}
+    returns: Result<Void, Error>
+    
+  - name: validate_commit
+    params: {files: List<String>}
+    returns: Result<ValidationResult, Error>
+    
+  - name: block_file_save
+    params: {file: String, ide: String}
+    returns: Result<Void, Error>
+    
+  - name: suggest_spec_creation
+    params: {manual_file: String}
+    returns: Result<String, Error>
+
+imports:
+  - std
+  - std.fs
+  - std.process

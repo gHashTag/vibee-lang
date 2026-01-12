@@ -1,0 +1,118 @@
+name: fs_watcher
+version: "1.0.0"
+language: zig
+module: fs_watcher
+target: fs_watcher.zig
+description: Cross-platform file system watcher (inotify/FSEvents/ReadDirectoryChangesW)
+
+behaviors:
+  - name: watch_directory
+    given: Directory path to watch
+    when: Watcher started
+    then: File system events detected
+    test_cases:
+      - name: detect_file_creation
+        input: {path: "src/", event: "create", file: "test.zig"}
+        expected: {detected: true, event_type: "Create"}
+      - name: detect_file_modification
+        input: {path: "src/", event: "modify", file: "test.zig"}
+        expected: {detected: true, event_type: "Modify"}
+
+  - name: filter_events
+    given: File system event
+    when: Event received
+    then: Event filtered by rules
+    test_cases:
+      - name: allow_vibee_file
+        input: {file: "spec.vibee", action: "create"}
+        expected: {allowed: true}
+      - name: block_manual_code
+        input: {file: "manual.zig", action: "create"}
+        expected: {allowed: false, blocked: true}
+
+  - name: handle_event
+    given: Filtered event
+    when: Event handler called
+    then: Appropriate action taken
+    test_cases:
+      - name: block_forbidden_file
+        input: {file: "src/modules/test.zig", action: "create"}
+        expected: {blocked: true, deleted: true}
+
+types:
+  Watcher:
+    path: String
+    recursive: Bool
+    filters: List<Filter>
+    handler: EventHandler
+    platform: Platform
+    
+  Platform:
+    - Linux
+    - MacOS
+    - Windows
+    
+  FSEvent:
+    path: String
+    event_type: EventType
+    timestamp: Int
+    
+  EventType:
+    - Create
+    - Modify
+    - Delete
+    - Rename
+    
+  Filter:
+    pattern: String
+    action: FilterAction
+    
+  FilterAction:
+    - Allow
+    - Block
+    - Ignore
+    
+  EventHandler:
+    on_create: Function
+    on_modify: Function
+    on_delete: Function
+    on_rename: Function
+
+functions:
+  - name: create_watcher
+    params: {path: String, recursive: Bool}
+    returns: Result<Watcher, Error>
+    
+  - name: start_watching
+    params: {watcher: Watcher}
+    returns: Result<Void, Error>
+    
+  - name: stop_watching
+    params: {watcher: Watcher}
+    returns: Result<Void, Error>
+    
+  - name: handle_event
+    params: {event: FSEvent}
+    returns: Result<Void, Error>
+    
+  - name: filter_event
+    params: {event: FSEvent, filters: List<Filter>}
+    returns: Bool
+    
+  # Platform-specific implementations
+  - name: watch_linux
+    params: {path: String}
+    returns: Result<Void, Error>
+    
+  - name: watch_macos
+    params: {path: String}
+    returns: Result<Void, Error>
+    
+  - name: watch_windows
+    params: {path: String}
+    returns: Result<Void, Error>
+
+imports:
+  - std
+  - std.fs
+  - std.os

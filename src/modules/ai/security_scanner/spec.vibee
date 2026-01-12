@@ -1,0 +1,462 @@
+name: ai_security_scanner
+version: 1.0.0
+description: AI-powered сканирование безопасности - находит уязвимости и предлагает исправления
+
+metadata:
+  author: VIBEE Team
+  category: ai_security
+  tags: [ai, security, vulnerabilities, owasp]
+  created: 2024-01-10
+
+types:
+  SecurityScan:
+    scan_id: string
+    timestamp: timestamp
+    code_analyzed: number
+    vulnerabilities_found: number
+    severity_breakdown: map<string, number>
+    
+  Vulnerability:
+    vuln_id: string
+    type: string  # injection, xss, csrf, etc
+    severity: string  # critical, high, medium, low
+    cwe_id: string
+    owasp_category: string
+    location: Location
+    description: string
+    exploit_scenario: string
+    fix_suggestion: string
+    code_example: string
+    
+  SecurityFix:
+    vuln_id: string
+    fix_type: string  # patch, refactor, config
+    code_before: string
+    code_after: string
+    explanation: string
+    validation: ValidationResult
+    
+  ValidationResult:
+    is_secure: boolean
+    remaining_issues: list<string>
+    security_score: number
+
+constants:
+  OWASP_TOP_10:
+    - id: "A01"
+      name: "Broken Access Control"
+      description: "Нарушение контроля доступа"
+      
+    - id: "A02"
+      name: "Cryptographic Failures"
+      description: "Криптографические ошибки"
+      
+    - id: "A03"
+      name: "Injection"
+      description: "SQL, NoSQL, OS injection"
+      
+    - id: "A04"
+      name: "Insecure Design"
+      description: "Небезопасный дизайн"
+      
+    - id: "A05"
+      name: "Security Misconfiguration"
+      description: "Неправильная конфигурация"
+      
+    - id: "A06"
+      name: "Vulnerable Components"
+      description: "Уязвимые компоненты"
+      
+    - id: "A07"
+      name: "Authentication Failures"
+      description: "Ошибки аутентификации"
+      
+    - id: "A08"
+      name: "Data Integrity Failures"
+      description: "Нарушение целостности данных"
+      
+    - id: "A09"
+      name: "Logging Failures"
+      description: "Недостаточное логирование"
+      
+    - id: "A10"
+      name: "SSRF"
+      description: "Server-Side Request Forgery"
+
+  VULNERABILITY_PATTERNS:
+    sql_injection:
+      pattern: 'query("SELECT * FROM users WHERE id = " <> user_input)'
+      severity: "critical"
+      cwe: "CWE-89"
+      fix: "Использовать параметризованные запросы"
+      
+    xss:
+      pattern: 'html.render(user_input)'
+      severity: "high"
+      cwe: "CWE-79"
+      fix: "Экранировать HTML"
+      
+    path_traversal:
+      pattern: 'file.read(user_input)'
+      severity: "high"
+      cwe: "CWE-22"
+      fix: "Валидировать пути файлов"
+      
+    weak_crypto:
+      pattern: 'md5(password)'
+      severity: "high"
+      cwe: "CWE-327"
+      fix: "Использовать bcrypt или argon2"
+      
+    hardcoded_secrets:
+      pattern: 'api_key = "sk-..."'
+      severity: "critical"
+      cwe: "CWE-798"
+      fix: "Использовать переменные окружения"
+
+  AI_PROMPTS:
+    security_scan: |
+      Ты - эксперт по безопасности приложений (OWASP Top 10).
+      
+      Код для анализа:
+      ```vibee
+      {code}
+      ```
+      
+      Контекст:
+      - Тип приложения: {app_type}
+      - Используемые библиотеки: {libraries}
+      - Обрабатываемые данные: {data_types}
+      
+      Задача: Найди все уязвимости безопасности.
+      
+      Проверь на:
+      1. Injection (SQL, NoSQL, OS, LDAP)
+      2. XSS (Reflected, Stored, DOM)
+      3. CSRF
+      4. Broken Authentication
+      5. Sensitive Data Exposure
+      6. XML External Entities (XXE)
+      7. Broken Access Control
+      8. Security Misconfiguration
+      9. Insecure Deserialization
+      10. Using Components with Known Vulnerabilities
+      
+      Формат ответа:
+      Уязвимости:
+      1. Тип: <название>
+         Severity: <critical/high/medium/low>
+         CWE: <CWE-ID>
+         OWASP: <A01-A10>
+         Место: <location>
+         Описание: <что не так>
+         Эксплойт: <как можно использовать>
+         Исправление:
+         ```vibee
+         <безопасный код>
+         ```
+         Объяснение: <почему это безопасно>
+      
+    exploit_analysis: |
+      Ты - эксперт по эксплуатации уязвимостей.
+      
+      Уязвимость:
+      ```vibee
+      {vulnerable_code}
+      ```
+      
+      Тип: {vulnerability_type}
+      
+      Задача: Опиши сценарий эксплуатации.
+      
+      Формат ответа:
+      Сценарий атаки:
+      1. Шаг: <действие атакующего>
+         Payload: <пример payload>
+         Результат: <что произойдет>
+      
+      Impact:
+      - Конфиденциальность: <high/medium/low>
+      - Целостность: <high/medium/low>
+      - Доступность: <high/medium/low>
+      
+      CVSS Score: <0-10>
+      
+    secure_coding: |
+      Ты - эксперт по безопасной разработке.
+      
+      Небезопасный код:
+      ```vibee
+      {insecure_code}
+      ```
+      
+      Проблема: {vulnerability_description}
+      
+      Задача: Предложи безопасную реализацию.
+      
+      Требования:
+      - Защита от известных атак
+      - Валидация входных данных
+      - Правильная обработка ошибок
+      - Минимальные привилегии
+      - Defense in depth
+      
+      Формат ответа:
+      Безопасный код:
+      ```vibee
+      <исправленный код>
+      ```
+      
+      Защита:
+      - От чего защищает: <список атак>
+      - Как работает: <объяснение>
+      - Дополнительные меры: <рекомендации>
+
+behaviors:
+  scan_code:
+    input:
+      code: string
+      scan_config: ScanConfig
+    output:
+      scan: SecurityScan
+      vulnerabilities: list<Vulnerability>
+    description: Сканирование кода на уязвимости
+    steps:
+      - Парсить код в AST
+      - Отправить на анализ AI
+      - Получить список уязвимостей
+      - Классифицировать по severity
+      - Добавить CWE/OWASP категории
+      - Вернуть результаты
+      
+  analyze_vulnerability:
+    input:
+      vuln: Vulnerability
+      code: string
+    output:
+      analysis: VulnerabilityAnalysis
+    description: Детальный анализ уязвимости
+    steps:
+      - Проанализировать уязвимость
+      - Определить exploit scenario
+      - Оценить impact
+      - Рассчитать CVSS score
+      - Вернуть analysis
+      
+  suggest_fix:
+    input:
+      vuln: Vulnerability
+      code: string
+    output:
+      fix: SecurityFix
+    description: Предложение исправления
+    steps:
+      - Определить тип уязвимости
+      - Сгенерировать безопасный код
+      - Валидировать исправление
+      - Проверить на новые уязвимости
+      - Вернуть fix
+      
+  apply_fix:
+    input:
+      fix: SecurityFix
+      code: string
+    output:
+      patched_code: string
+      validation: ValidationResult
+    description: Применение исправления
+    steps:
+      - Применить patch
+      - Запустить тесты
+      - Повторное сканирование
+      - Валидировать безопасность
+      - Вернуть результат
+      
+  generate_security_report:
+    input:
+      scan: SecurityScan
+      vulnerabilities: list<Vulnerability>
+    output:
+      report: string
+      format: string
+    description: Генерация отчета по безопасности
+    steps:
+      - Собрать статистику
+      - Группировать по severity
+      - Добавить рекомендации
+      - Форматировать отчет
+      - Вернуть report
+
+functions:
+  - name: detect_injection
+    params:
+      code: string
+    returns: list<Vulnerability>
+    description: Поиск injection уязвимостей
+    
+  - name: detect_xss
+    params:
+      code: string
+    returns: list<Vulnerability>
+    description: Поиск XSS уязвимостей
+    
+  - name: calculate_cvss
+    params:
+      vuln: Vulnerability
+    returns: number
+    description: Расчет CVSS score
+    
+  - name: validate_fix
+    params:
+      original: string
+      fixed: string
+      vuln_type: string
+    returns: boolean
+    description: Валидация исправления
+
+tests:
+  - name: detect_sql_injection
+    behavior: scan_code
+    input:
+      code: |
+        pub get_user(id) = {
+          query("SELECT * FROM users WHERE id = " <> id)
+        }
+      scan_config:
+        check_injection: true
+    expected:
+      vulnerabilities: length > 0
+      vulnerabilities[0].type: "sql_injection"
+      vulnerabilities[0].severity: "critical"
+      
+  - name: detect_xss
+    behavior: scan_code
+    input:
+      code: |
+        pub render_comment(text) = {
+          html.render("<div>" <> text <> "</div>")
+        }
+      scan_config:
+        check_xss: true
+    expected:
+      vulnerabilities: length > 0
+      vulnerabilities[0].type: "xss"
+      
+  - name: suggest_sql_injection_fix
+    behavior: suggest_fix
+    input:
+      vuln:
+        type: "sql_injection"
+        severity: "critical"
+      code: 'query("SELECT * FROM users WHERE id = " <> id)'
+    expected:
+      fix.code_after: contains("query_params")
+      fix.validation.is_secure: true
+      
+  - name: detect_hardcoded_secrets
+    behavior: scan_code
+    input:
+      code: |
+        pub api_key = "sk-1234567890abcdef"
+      scan_config:
+        check_secrets: true
+    expected:
+      vulnerabilities: length > 0
+      vulnerabilities[0].type: "hardcoded_secret"
+
+examples:
+  - name: "SQL Injection"
+    description: "AI находит и исправляет SQL injection"
+    input:
+      code: |
+        pub get_user(id) = {
+          db.query("SELECT * FROM users WHERE id = " <> id)
+        }
+    output:
+      vulnerability:
+        type: "sql_injection"
+        severity: "critical"
+        cwe: "CWE-89"
+        owasp: "A03"
+      fix:
+        code_after: |
+          pub get_user(id) = {
+            db.query_params("SELECT * FROM users WHERE id = ?", [id])
+          }
+        explanation: "Параметризованный запрос защищает от SQL injection"
+        
+  - name: "XSS"
+    description: "AI находит XSS уязвимость"
+    input:
+      code: |
+        pub render_comment(user_input) = {
+          html.render("<div>" <> user_input <> "</div>")
+        }
+    output:
+      vulnerability:
+        type: "xss"
+        severity: "high"
+        cwe: "CWE-79"
+        exploit: "Атакующий может вставить <script>alert('XSS')</script>"
+      fix:
+        code_after: |
+          pub render_comment(user_input) = {
+            html.render("<div>" <> html.escape(user_input) <> "</div>")
+          }
+        
+  - name: "Weak Crypto"
+    description: "AI находит слабую криптографию"
+    input:
+      code: |
+        pub hash_password(password) = {
+          crypto.md5(password)
+        }
+    output:
+      vulnerability:
+        type: "weak_crypto"
+        severity: "high"
+        cwe: "CWE-327"
+      fix:
+        code_after: |
+          pub hash_password(password) = {
+            crypto.bcrypt(password, rounds: 12)
+          }
+        explanation: "bcrypt устойчив к brute-force атакам"
+
+security_checks:
+  input_validation:
+    - "SQL injection"
+    - "XSS"
+    - "Path traversal"
+    - "Command injection"
+    - "LDAP injection"
+    
+  authentication:
+    - "Weak passwords"
+    - "Missing 2FA"
+    - "Session fixation"
+    - "Broken auth logic"
+    
+  authorization:
+    - "Missing access control"
+    - "IDOR"
+    - "Privilege escalation"
+    - "CSRF"
+    
+  cryptography:
+    - "Weak algorithms"
+    - "Hardcoded secrets"
+    - "Insecure random"
+    - "Missing encryption"
+    
+  configuration:
+    - "Debug mode in production"
+    - "Default credentials"
+    - "Exposed endpoints"
+    - "Missing security headers"
+
+metrics:
+  detection_rate: "> 95%"
+  false_positives: "< 5%"
+  fix_success_rate: "> 90%"
+  scan_time: "< 30 seconds per 1000 LOC"

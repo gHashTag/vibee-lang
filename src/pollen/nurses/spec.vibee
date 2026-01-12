@@ -1,0 +1,116 @@
+name: nurse_bees
+version: "1.0.0"
+language: gleam
+module: honeycomb/nurses
+description: |
+  👶 NURSE BEES - Code Maintainers
+  
+  Няни заботятся о коде: генерируют .vibee спецификации из ручного кода,
+  мигрируют код, и очищают репозиторий от устаревших файлов.
+
+behaviors:
+  - name: generate_spec_from_code
+    given: Manual source code file
+    when: Spec generation runs
+    then: .vibee specification created
+    test_cases:
+      - name: generate_spec_from_gleam
+        input: 
+          code: |
+            pub type User {
+              User(name: String, age: Int)
+            }
+            pub fn create_user(name: String, age: Int) -> User {
+              User(name: name, age: age)
+            }
+        expected:
+          spec:
+            name: "user"
+            types: [{name: "User", fields: {name: "String", age: "Int"}}]
+            functions: [{name: "create_user", params: {name: "String", age: "Int"}, returns: "User"}]
+
+  - name: migrate_code
+    given: Manual code and generated code
+    when: Migration runs
+    then: Imports updated, old code removed
+    test_cases:
+      - name: migrate_single_file
+        input: {old_path: "gleam/src/example.gleam", new_path: "honeycomb/storage/gleam/example.gleam"}
+        expected: {migrated: true, imports_updated: 5, old_file_removed: true}
+
+  - name: clean_repository
+    given: Repository with manual and generated code
+    when: Cleanup runs
+    then: All manual code removed
+    test_cases:
+      - name: clean_all_manual_code
+        input: {manual_files: 169}
+        expected: {removed: 169, remaining: 0, backup_created: true}
+
+  - name: update_imports
+    given: File with old import paths
+    when: Import update runs
+    then: Imports point to new locations
+    test_cases:
+      - name: update_gleam_imports
+        input: {file: "example.gleam", old_imports: ["gleam/src/old"], new_imports: ["honeycomb/storage/gleam/old"]}
+        expected: {updated: true, imports_changed: 1}
+
+types:
+  NurseBee:
+    nurse_id: String
+    task_type: String  # "generate_spec" | "migrate" | "clean" | "update_imports"
+    files_processed: Int
+    specs_generated: Int
+
+  SpecGenerationResult:
+    success: Bool
+    spec_path: String
+    spec_content: String
+    confidence: Float  # How confident the nurse is about the spec
+    warnings: List(String)
+
+  MigrationResult:
+    success: Bool
+    old_path: String
+    new_path: String
+    imports_updated: Int
+    backup_path: String
+
+  CleanupResult:
+    files_removed: Int
+    backup_created: Bool
+    backup_path: String
+    errors: List(String)
+
+functions:
+  - name: create_nurse
+    params: {nurse_id: String, task_type: String}
+    returns: NurseBee
+
+  - name: generate_spec_from_code
+    params: {nurse: NurseBee, code: String, language: String}
+    returns: Result(SpecGenerationResult, String)
+
+  - name: migrate_file
+    params: {nurse: NurseBee, old_path: String, new_path: String}
+    returns: Result(MigrationResult, String)
+
+  - name: clean_repository
+    params: {nurse: NurseBee, repo_path: String}
+    returns: Result(CleanupResult, String)
+
+  - name: update_imports
+    params: {nurse: NurseBee, file_path: String, import_map: List(ImportMapping)}
+    returns: Result(Int, String)
+
+  - name: create_backup
+    params: {files: List(String), backup_dir: String}
+    returns: Result(String, String)
+
+imports:
+  - gleam/io
+  - gleam/list
+  - gleam/result
+  - gleam/string
+  - simplifile

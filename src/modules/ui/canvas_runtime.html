@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Canvas UI Runtime - BEAM Pixel Diffusion</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0a0a;
+      color: #fff;
+      overflow: hidden;
+    }
+    
+    #canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      image-rendering: pixelated;
+    }
+    
+    #stats {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.8);
+      padding: 10px;
+      border-radius: 5px;
+      font-family: monospace;
+      font-size: 12px;
+      z-index: 1000;
+    }
+    
+    #connection-status {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: bold;
+      z-index: 1000;
+    }
+    
+    .connected {
+      background: #00ff00;
+      color: #000;
+    }
+    
+    .disconnected {
+      background: #ff0000;
+      color: #fff;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  
+  <div id="stats">
+    <div>FPS: <span id="fps">0</span></div>
+    <div>Pixels: <span id="pixel-count">0</span></div>
+    <div>Latency: <span id="latency">0</span>ms</div>
+  </div>
+  
+  <div id="connection-status" class="disconnected">Disconnected</div>
+
+  <script>
+    // Canvas setup
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    
+    // Set canvas size to Full HD
+    canvas.width = 1920;
+    canvas.height = 1080;
+    
+    // WebSocket connection
+    const ws = new WebSocket('ws://localhost:8080/canvas');
+    const statusEl = document.getElementById('connection-status');
+    
+    // Stats
+    let fps = 0;
+    let frameCount = 0;
+    let lastTime = performance.now();
+    let pixelCount = 0;
+    let latency = 0;
+    
+    // Pixel buffer (2,073,600 pixels for Full HD)
+    const pixelBuffer = new Uint8ClampedArray(1920 * 1080 * 4);
+    
+    // WebSocket handlers
+    ws.onopen = () => {
+      console.log('Connected to BEAM');
+      statusEl.textContent = 'Connected';
+      statusEl.className = 'connected';
+      
+      // Send initial viewport
+      ws.send(JSON.stringify({
+        type: 'viewport',
+        width: 1920,
+        height: 1080
+      }));
+    };
+    
+    ws.onclose = () => {
+      console.log('Disconnected from BEAM');
+      statusEl.textContent = 'Disconnected';
+      statusEl.className = 'disconnected';
+    };
+    
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+    
+    ws.onmessage = (event) => {
+      const startTime = performance.now();
+      const data = JSON.parse(event.data);
+      
+      switch (data.type) {
+        case 'frame':
+          // Full frame update from BEAM Pixel Diffusion
+          renderFrame(data.pixels);
+          break;
+          
+        case 'delta':
+          // Delta update (single pixel change)
+          updatePixel(data.x, data.y, data.color);
+          break;
+          
+        case 'layout':
+          // Layout update from YogaLayout
+          updateLayout(data.nodes);
+          break;
+      }
+      
+      latency = Math.round(performance.now() - startTime);
+    };
+    
+    // Render full frame
+    function renderFrame(pixels) {
+      pixelCount = pixels.length;
+      
+      // Update pixel buffer
+      pixels.forEach(pixel => {
+        const index = (pixel.y * 1920 + pixel.x) * 4;
+        pixelBuffer[index] = pixel.color.r;
+        pixelBuffer[index + 1] = pixel.color.g;
+        pixelBuffer[index + 2] = pixel.color.b;
+        pixelBuffer[index + 3] = 255;
+      });
+      
+      // Draw to canvas
+      const imageData = new ImageData(pixelBuffer, 1920, 1080);
+      ctx.putImageData(imageData, 0, 0);
+      
+      frameCount++;
+    }
+    
+    // Update single pixel
+    function updatePixel(x, y, color) {
+      const index = (y * 1920 + x) * 4;
+      pixelBuffer[index] = color.r;
+      pixelBuffer[index + 1] = color.g;
+      pixelBuffer[index + 2] = color.b;
+      pixelBuffer[index + 3] = 255;
+      
+      // Draw single pixel
+      ctx.fillStyle = `rgb(${color.r}, ${color.g}, ${color.b})`;
+      ctx.fillRect(x, y, 1, 1);
+      
+      pixelCount++;
+    }
+    
+    // Update layout (draw bounding boxes)
+    function updateLayout(nodes) {
+      ctx.strokeStyle = '#00ff00';
+      ctx.lineWidth = 1;
+      
+      nodes.forEach(node => {
+        ctx.strokeRect(node.x, node.y, node.width, node.height);
+      });
+    }
+    
+    // Send mouse events to BEAM
+    canvas.addEventListener('click', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.floor((e.clientX - rect.left) * (1920 / rect.width));
+      const y = Math.floor((e.clientY - rect.top) * (1080 / rect.height));
+      
+      ws.send(JSON.stringify({
+        type: 'click',
+        x,
+        y
+      }));
+    });
+    
+    canvas.addEventListener('mousemove', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.floor((e.clientX - rect.left) * (1920 / rect.width));
+      const y = Math.floor((e.clientY - rect.top) * (1080 / rect.height));
+      
+      ws.send(JSON.stringify({
+        type: 'hover',
+        x,
+        y
+      }));
+    });
+    
+    // FPS counter
+    setInterval(() => {
+      const now = performance.now();
+      const delta = now - lastTime;
+      fps = Math.round((frameCount * 1000) / delta);
+      
+      document.getElementById('fps').textContent = fps;
+      document.getElementById('pixel-count').textContent = pixelCount.toLocaleString();
+      document.getElementById('latency').textContent = latency;
+      
+      frameCount = 0;
+      pixelCount = 0;
+      lastTime = now;
+    }, 1000);
+    
+    // Initial clear
+    ctx.fillStyle = '#0a0a0a';
+    ctx.fillRect(0, 0, 1920, 1080);
+  </script>
+</body>
+</html>

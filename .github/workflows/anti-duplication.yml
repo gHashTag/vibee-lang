@@ -1,0 +1,245 @@
+name: Anti-Duplication Check
+
+on:
+  pull_request:
+    paths:
+      - 'honeycomb/**/*.vibee'
+      - 'honeycomb/**/*.gleam'
+      - 'honeycomb/.dedup_rules.toml'
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'honeycomb/**/*.vibee'
+      - 'honeycomb/**/*.gleam'
+
+jobs:
+  check-duplicates:
+    name: Check for Duplicate Logic
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for better analysis
+      
+      - name: Setup Gleam
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '26.0'
+          gleam-version: '1.0.0'
+      
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/gleam
+            honeycomb/build
+          key: ${{ runner.os }}-gleam-${{ hashFiles('**/gleam.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-gleam-
+      
+      - name: Install dependencies
+        working-directory: honeycomb
+        run: gleam deps download
+      
+      - name: Build dedup checker
+        working-directory: honeycomb
+        run: gleam build
+      
+      - name: Run duplication check
+        id: dedup_check
+        working-directory: honeycomb
+        run: |
+          echo "Running anti-duplication check..."
+          gleam run -m tools/dedup_checker > /tmp/dedup_report.txt 2>&1 || echo "DUPLICATES_FOUND=true" >> $GITHUB_ENV
+          cat /tmp/dedup_report.txt
+        continue-on-error: true
+      
+      - name: Generate markdown report
+        if: env.DUPLICATES_FOUND == 'true'
+        run: |
+          cat > /tmp/duplication_report.md << 'EOF'
+          ## ❌ Duplicate Logic Detected
+          
+          The anti-duplication checker found duplicate code in your changes.
+          
+          ### Report
+          
+          ```
+          $(cat /tmp/dedup_report.txt)
+          ```
+          
+          ### What to do
+          
+          1. **Review duplicates** - Check if the duplication is intentional
+          2. **Refactor** - Extract common logic to shared modules
+          3. **Whitelist** - If intentional, add to `honeycomb/.dedup_rules.toml`
+          
+          ### Example: Extract to common module
+          
+          ```gleam
+          // Before (duplicate in 2 plugins)
+          // plugin1/src/utils.vibee
+          pub fn format_date(date: String) -> String { ... }
+          
+          // plugin2/src/helpers.vibee
+          pub fn format_date(date: String) -> String { ... }
+          
+          // After (shared module)
+          // common/datetime/format.vibee
+          pub fn format_date(date: String) -> String { ... }
+          
+          // plugin1/src/utils.vibee
+          import common/datetime/format
+          pub use format.format_date
+          ```
+          
+          ### Example: Whitelist intentional duplicate
+          
+          ```toml
+          # honeycomb/.dedup_rules.toml
+          [[exceptions.item]]
+          file1 = "plugin1/src/types.vibee"
+          file2 = "plugin2/src/types.vibee"
+          reason = "Different type domains"
+          approved_by = "your_username"
+          expires = "2026-12-31"
+          ```
+          
+          ### Resources
+          
+          - [Anti-Duplication Strategy](../honeycomb/ANTI_DUPLICATION_STRATEGY.md)
+          - [Dedup Rules](../honeycomb/.dedup_rules.toml)
+          EOF
+      
+      - name: Comment on PR
+        if: env.DUPLICATES_FOUND == 'true' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('/tmp/duplication_report.md', 'utf8');
+            
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const botComment = comments.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('Duplicate Logic Detected')
+            );
+            
+            if (botComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: report
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: report
+              });
+            }
+      
+      - name: Upload report artifact
+        if: env.DUPLICATES_FOUND == 'true'
+        uses: actions/upload-artifact@v3
+        with:
+          name: duplication-report
+          path: /tmp/dedup_report.txt
+          retention-days: 30
+      
+      - name: Fail if duplicates found
+        if: env.DUPLICATES_FOUND == 'true'
+        run: |
+          echo "❌ Duplicates detected! See report above."
+          exit 1
+      
+      - name: Success message
+        if: env.DUPLICATES_FOUND != 'true'
+        run: |
+          echo "✅ No duplicates detected!"
+
+  check-export-collisions:
+    name: Check Export Collisions
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Gleam
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '26.0'
+          gleam-version: '1.0.0'
+      
+      - name: Install dependencies
+        working-directory: honeycomb
+        run: gleam deps download
+      
+      - name: Check export collisions
+        working-directory: honeycomb
+        run: |
+          echo "Checking for export collisions..."
+          gleam run -m tools/dedup_checker --exports-only
+      
+      - name: Success message
+        run: |
+          echo "✅ No export collisions detected!"
+
+  metrics:
+    name: Track Duplication Metrics
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Gleam
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '26.0'
+          gleam-version: '1.0.0'
+      
+      - name: Install dependencies
+        working-directory: honeycomb
+        run: gleam deps download
+      
+      - name: Generate metrics
+        working-directory: honeycomb
+        run: |
+          gleam run -m tools/dedup_checker --metrics > /tmp/metrics.json
+      
+      - name: Upload metrics
+        uses: actions/upload-artifact@v3
+        with:
+          name: duplication-metrics
+          path: /tmp/metrics.json
+          retention-days: 90
+      
+      - name: Update metrics file
+        run: |
+          mkdir -p honeycomb/.metrics
+          cp /tmp/metrics.json honeycomb/.metrics/$(date +%Y%m%d_%H%M%S).json
+      
+      - name: Commit metrics
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add honeycomb/.metrics/
+          git commit -m "chore: update duplication metrics [skip ci]" || echo "No changes"
+          git push || echo "Nothing to push"

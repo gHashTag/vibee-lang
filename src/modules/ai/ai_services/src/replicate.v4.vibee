@@ -1,0 +1,564 @@
+// Replicate API Integration
+  // Performance Warning:   // AI Suggestion: Replace magic numbers with named constants  // AI Suggestion: Consider extracting hardcoded strings to constants// API Documentation: https://replicate.com/docs/reference/http
+// Supports: Predictions, Models, LoRA Training
+// Converted from infra/ai/replicate.gleam → dsl/infra/ai/replicate.vibee
+
+import "vibee/dsl/ffi/json"
+
+// =============================================================================
+// Types
+// =============================================================================
+
+struct ReplicateConfig(
+  ReplicateConfig(api_token: str)
+}
+
+struct PredictionRequest(
+  PredictionRequest(
+    model: str,
+    version: str?,
+    input: [#(str, Json])
+  )
+}
+
+struct ReplicateRequest(
+  ReplicateRequest(
+    url: str,
+    method: str,
+    headers: [#(str, str]),
+    body: str
+  )
+}
+
+struct PredictionStatus(
+  Starting
+  Processing
+  Succeeded(output: str)
+  Failed(error: str)
+  Canceled
+}
+
+struct Prediction(
+  Prediction(id: str, status: PredictionStatus, model: str)
+}
+
+// =============================================================================
+// LoRA Training Types
+// =============================================================================
+
+struct LoraTrainingRequest(
+  LoraTrainingRequest(
+    input_images: str,
+    trigger_word: str,
+    steps: int?,
+    lora_rank: int?,
+    optimizer: str?,
+    batch_size: int?,
+    resolution: str?,
+    autocaption: bool?,
+    caption_prefix: str?
+  )
+}
+
+// =============================================================================
+// Config Functions
+// =============================================================================
+
+@spec default_config(api_token: str) → ReplicateConfig {
+  /// Create default Replicate config
+  given: API token
+  when: Initializing Replicate client
+  then: Returns configured client
+}
+
+@impl {
+  ReplicateConfig(api_token)
+}
+
+// =============================================================================
+// Request Builders
+// =============================================================================
+
+metrics("ai.replicate")
+trace("replicate")
+@http_tool POST "https://api.replicate.com/v1/predictions"
+timeout(60s)
+retry(3)
+circuit_breaker(threshold: 3, timeout: 60s, half_open_requests: 2)
+@spec create_prediction_request(config: ReplicateConfig, req: PredictionRequest) → ReplicateRequest {
+  /// Create a prediction request
+  given: Config and prediction request
+  when: Running a model
+  then: Returns HTTP request
+}
+
+@impl {
+  let input_json = json_object(req.input)
+
+  let body_parts = case req.version {
+    ☐v) → [
+      #("version", json_string(v)),
+      #("input", input_json)
+    ]
+    ∅-> [
+      #("model", json_string(req.model)),
+      #("input", input_json)
+    ]
+  }
+
+  let body = json_to_string(json_object(body_parts))
+
+  ReplicateRequest(
+    "https://api.replicate.com/v1/predictions",
+    "POST",
+    [
+      #("Authorization", "Bearer {config}.api_token),
+      #("Content-Type", "application/json"),
+      #("Prefer", "wait")
+    ],
+    body
+  )
+}
+
+metrics("ai.replicate")
+trace("replicate")
+@http_tool GET "https://api.replicate.com/v1/predictions/{prediction_id}"
+timeout(30s)
+backoff: exponential · retry
+circuit_breaker(threshold: 3, timeout: 60s, half_open_requests: 2)
+@spec get_prediction_request(config: ReplicateConfig, prediction_id: str) → ReplicateRequest {
+  /// Get prediction status
+  given: Config and prediction ID
+  when: Checking prediction
+  then: Returns HTTP request
+}
+
+@impl {
+  ReplicateRequest(
+    "https://api.replicate.com/v1/predictions/{prediction_id},
+    "GET",
+    [
+      #("Authorization", "Bearer {config}.api_token),
+      #("Content-Type", "application/json")
+    ],
+    ""
+  )
+}
+
+metrics("ai.replicate")
+@http_tool POST "https://api.replicate.com/v1/predictions/{prediction_id}/cancel"
+timeout(30s)
+retry(2)
+circuit_breaker(threshold: 3, timeout: 60s, half_open_requests: 2)
+trace("ai.replicate.cancel")
+@spec cancel_prediction_request(config: ReplicateConfig, prediction_id: str) → ReplicateRequest {
+  /// Cancel a prediction
+  given: Config and prediction ID
+  when: Canceling prediction
+  then: Returns HTTP request
+}
+
+@impl {
+  ReplicateRequest(
+    "https://api.replicate.com/v1/predictions/{prediction_id} + "/cancel",
+    "POST",
+    [
+      #("Authorization", "Bearer {config}.api_token),
+      #("Content-Type", "application/json")
+    ],
+    ""
+  )
+}
+
+metrics("ai.replicate")
+@http_tool GET "https://api.replicate.com/v1/predictions"
+timeout(30s)
+backoff: exponential · retry
+circuit_breaker(threshold: 3, timeout: 60s, half_open_requests: 2)
+trace("ai.replicate.list")
+@spec list_predictions_request(config: ReplicateConfig) → ReplicateRequest {
+  /// list predictions
+  given: Config
+  when: Getting prediction list
+  then: Returns HTTP request
+}
+
+@impl {
+  ReplicateRequest(
+    "https://api.replicate.com/v1/predictions",
+    "GET",
+    [
+      #("Authorization", "Bearer {config}.api_token),
+      #("Content-Type", "application/json")
+    ],
+    ""
+  )
+}
+
+metrics("ai.replicate")
+@http_tool GET "https://api.replicate.com/v1/models/{owner}/{name}"
+timeout(30s)
+retry(3)
+circuit_breaker(threshold: 3, timeout: 60s, half_open_requests: 2)
+trace("ai.replicate.model")
+@spec get_model_request(config: ReplicateConfig, owner: str, name: str) → ReplicateRequest {
+  /// Get a model
+  given: Config, owner, name
+  when: Getting model info
+  then: Returns HTTP request
+}
+
+@impl {
+  ReplicateRequest(
+    "https://api.replicate.com/v1/models/{owner} + "/{name},
+    "GET",
+    [
+      #("Authorization", "Bearer {config}.api_token),
+      #("Content-Type", "application/json")
+    ],
+    ""
+  )
+}
+
+// =============================================================================
+// Training Request Builders
+// =============================================================================
+
+metrics("replicate_lora_training")
+@http_tool POST "https://api.replicate.com/v1/trainings"
+timeout(5m)
+retry(3)
+circuit_breaker(threshold: 3, timeout: 60s, half_open_requests: 2)
+trace("ai.replicate.train")
+@spec create_training_request(config: ReplicateConfig, req: LoraTrainingRequest) → ReplicateRequest {
+  /// Create LoRA training request
+  given: Config and training request
+  when: Training LoRA model
+  then: Returns HTTP request
+}
+
+@impl {
+  let input_fields = empty_fields()
+    · add_field("input_images", req.input_images, json_string)
+    · add_field("trigger_word", req.trigger_word, json_string)
+    · add_optional_int("steps", req.steps)
+    · add_optional_int("lora_rank", req.lora_rank)
+    · add_optional_string("optimizer", req.optimizer)
+    · add_optional_int("batch_size", req.batch_size)
+    · add_optional_string("resolution", req.resolution)
+    · add_optional_bool("autocaption", req.autocaption)
+    · add_optional_string("caption_prefix", req.caption_prefix)
+
+  let body = json_to_string(json_object([
+    #("destination", json_string("your-type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}name/your-model")),
+    #("input", json_object(list_reverse(input_fields))),
+    #("model", json_string("ostris/flux-dev-lora-trainer"))
+  ]))
+
+  ReplicateRequest(
+    "https://api.replicate.com/v1/trainings",
+    "POST",
+    [
+      #("Authorization", "Bearer {config}.api_token),
+      #("Content-Type", "application/json"),
+      #("Prefer", "wait")
+    ],
+    body
+  )
+}
+
+metrics("ai.replicate")
+@http_tool GET "https://api.replicate.com/v1/trainings/{training_id}"
+timeout(30s)
+backoff: exponential · retry
+circuit_breaker(threshold: 3, timeout: 60s, half_open_requests: 2)
+trace("ai.replicate.training")
+@spec get_training_request(config: ReplicateConfig, training_id: str) → ReplicateRequest {
+  /// Get training status
+  given: Config and training ID
+  when: Checking training
+  then: Returns HTTP request
+}
+
+@impl {
+  ReplicateRequest(
+    "https://api.replicate.com/v1/trainings/{training_id},
+    "GET",
+    [
+      #("Authorization", "Bearer {config}.api_token),
+      #("Content-Type", "application/json")
+    ],
+    ""
+  )
+}
+
+metrics("ai.replicate")
+@http_tool POST "https://api.replicate.com/v1/trainings/{training_id}/cancel"
+timeout(30s)
+retry(2)
+circuit_breaker(threshold: 3, timeout: 60s, half_open_requests: 2)
+trace("ai.replicate.cancel_train")
+@spec cancel_training_request(config: ReplicateConfig, training_id: str) → ReplicateRequest {
+  /// Cancel training
+  given: Config and training ID
+  when: Canceling training
+  then: Returns HTTP request
+}
+
+@impl {
+  ReplicateRequest(
+    "https://api.replicate.com/v1/trainings/{training_id} + "/cancel",
+    "POST",
+    [
+      #("Authorization", "Bearer {config}.api_token),
+      #("Content-Type", "application/json")
+    ],
+    ""
+  )
+}
+
+// =============================================================================
+// Simple Request Helpers
+// =============================================================================
+
+@spec simple_image_request(prompt: str) → PredictionRequest {
+  /// Create simple image generation request
+  given: Prompt
+  when: Quick image gen
+  then: Returns SDXL request
+}
+
+@impl {
+  PredictionRequest(
+    "stability-ai/sdxl",
+    ∅,
+    [#("prompt", json_string(prompt))]
+  )
+}
+
+@spec flux_request(prompt: str) → PredictionRequest {
+  /// Create FLUX request
+  given: Prompt
+  when: Using FLUX model
+  then: Returns FLUX request
+}
+
+@impl {
+  PredictionRequest(
+    "black-forest-labs/flux-schnell",
+    ∅,
+    [
+      #("prompt", json_string(prompt)),
+      #("num_outputs", json_int(1))
+    ]
+  )
+}
+
+@spec whisper_request(audio_url: str) → PredictionRequest {
+  /// Create Whisper transcription request
+  given: Audio URL
+  when: Transcribing audio
+  then: Returns Whisper request
+}
+
+@impl {
+  PredictionRequest(
+    "openai/whisper",
+    ∅,
+    [#("audio", json_string(audio_url))]
+  )
+}
+
+@spec rembg_request(image_url: str) → PredictionRequest {
+  /// Create background removal request
+  given: Image URL
+  when: Removing background
+  then: Returns rembg request
+}
+
+@impl {
+  PredictionRequest(
+    "cjwbw/rembg",
+    ∅,
+    [#("image", json_string(image_url))]
+  )
+}
+
+@spec upscale_request(image_url: str, scale: int) → PredictionRequest {
+  /// Create upscaling request
+  given: Image URL and scale
+  when: Upscaling image
+  then: Returns upscale request
+}
+
+@impl {
+  PredictionRequest(
+    "nightmareai/real-esrgan",
+    ∅,
+    [
+      #("image", json_string(image_url)),
+      #("scale", json_int(scale))
+    ]
+  )
+}
+
+@spec clarity_upscale_request(image_url: str, scale: int, creativity: float) → PredictionRequest {
+  /// Create Clarity upscaler request
+  given: Image URL, scale, creativity
+  when: High quality upscale
+  then: Returns Clarity request
+}
+
+@impl {
+  PredictionRequest(
+    "philz1337x/clarity-upscaler",
+    ∅,
+    [
+      #("image", json_string(image_url)),
+      #("scale", json_int(scale)),
+      #("creativity", json_float(creativity)),
+      #("resemblance", json_float(0.6)),
+      #("hdr", json_int(0))
+    ]
+  )
+}
+
+@spec simple_clarity_upscale(image_url: str) → PredictionRequest {
+  /// Create simple Clarity upscaler request
+  given: Image URL
+  when: Quick high quality upscale
+  then: Returns Clarity request with defaults
+}
+
+@impl {
+  2, 0.35 · clarity_upscale_request
+}
+
+// =============================================================================
+// LoRA Training Helpers
+// =============================================================================
+
+@spec simple_lora_training(images_url: str, trigger_word: str) → LoraTrainingRequest {
+  /// Create simple LoRA training request
+  given: Images URL and trigger word
+  when: Quick LoRA training
+  then: Returns training request
+}
+
+@impl {
+  trigger_word,
+    ☐1000 · LoraTrainingRequest,
+    ☐16),
+    ☐"adamw8bit"),
+    ☐1),
+    ☐"512,768,1024"),
+    ☐true),
+    ∅)
+}
+
+@spec full_lora_training(images_url: str, trigger_word: str, steps: int, lora_rank: int, optimizer: str, batch_size: int, resolution: str, autocaption: bool, caption_prefix: str) → LoraTrainingRequest {
+  /// Create full LoRA training request
+  given: All parameters
+  when: Custom LoRA training
+  then: Returns training request
+}
+
+@impl {
+  trigger_word,
+    ☐steps · LoraTrainingRequest,
+    ☐lora_rank),
+    ☐optimizer),
+    ☐batch_size),
+    ☐resolution),
+    ☐autocaption),
+    ☐caption_prefix)
+  )
+}
+
+// =============================================================================
+// Available Options
+// =============================================================================
+
+@spec popular_models() → [#(str, str]) {
+  /// Get popular models
+  given: Nothing
+  when: Listing models
+  then: Returns model list
+}
+
+@impl {
+  [
+    #("stability-ai/sdxl", "Stable Diffusion XL - High quality images"),
+    #("lucataco/sdxl-lightning-4step", "SDXL Lightning - Fast generation"),
+    #("black-forest-labs/flux-schnell", "FLUX Schnell - Fast, high quality"),
+    #("black-forest-labs/flux-dev", "FLUX Dev - Development model"),
+    #("meta/llama-3.1-405b-instruct", "Llama 3.1 405B - Large language model"),
+    #("openai/whisper", "Whisper - Speech to text"),
+    #("cjwbw/rembg", "RemBG - Background removal"),
+    #("nightmareai/real-esrgan", "Real-ESRGAN - Image upscaling"),
+    #("lucataco/animate-diff", "AnimateDiff - Image animation"),
+    #("fofr/face-to-sticker", "Face to Sticker - Convert faces")
+  ]
+}
+
+@spec supported_optimizers() → [#(str, str]) {
+  /// Get supported training optimizers
+  given: Nothing
+  when: Listing optimizers
+  then: Returns optimizer list
+}
+
+@impl {
+  [
+    #("adamw8bit", "AdamW 8-bit - Memory efficient"),
+    #("adam8bit", "Adam 8-bit - Alternative optimizer"),
+    #("lion8bit", "Lion 8-bit - Fast convergence"),
+    #("prodigy", "Prodigy - Adaptive learning rate")
+  ]
+}
+
+@spec supported_resolutions() → [str] {
+  /// Get supported training resolutions
+  given: Nothing
+  when: Listing resolutions
+  then: Returns resolution list
+}
+
+@impl {
+  ["512", "768", "1024", "512,768", "512,768,1024"]
+}
+
+@spec training_models() → [#(str, str]) {
+  /// Get training models
+  given: Nothing
+  when: Listing training models
+  then: Returns model list
+}
+
+@impl {
+  [
+    #("ostris/flux-dev-lora-trainer", "FLUX Dev LoRA Trainer"),
+    #("ostris/flux-schnell-lora-trainer", "FLUX Schnell LoRA Trainer")
+  ]
+}
+
+// =============================================================================
+// FFI Imports (now provided by @import "vibee/dsl/ffi/json")
+// =============================================================================
+
+// Note: These FFI declarations are now imported from vibee/dsl/ffi/json
+// which provides: json_object, json_string, json_int, json_float, json_bool,
+// json_to_string, add_field, add_optional, add_optional_string,
+// add_optional_int, add_optional_float, add_optional_bool, empty_fields,
+// build_json, list_reverse, and more.
+
+# v8.0
+
+# v8.0
+# v10.0 - ML-Powered Migration

@@ -1,0 +1,455 @@
+// RAG Tools - MCP Tools for Telegram RAG
+  // Performance Warning:   // AI Suggestion: Consider extracting hardcoded strings to constants// Parsing, media processing, embeddings and search
+  // AI Suggestion: Replace magic numbers with named constants// Converted from mcp/rag_tools.gleam → rag_tools.vibee
+
+// =============================================================================
+// Tool Definitions
+// =============================================================================
+
+tool telegram_parse_all_dialogs {
+  /// Parse all Telegram dialogs
+  description: "Parse all Telegram dialogs and save to database. Supports batch processing and rate limiting."
+
+  @param session_id: str? {
+    description: "Telegram session ID. Uses active session if not specified."
+  }
+
+  @param batch_size: int? {
+    description: "Number of messages per request (default: 100)"
+  }
+
+  @param delay_ms: int? {
+    description: "Delay between requests in ms (default: 250)"
+  }
+}
+
+tool telegram_parse_chat {
+  /// Parse specific chat
+  description: "Parse specific chat/dialog and save messages to database."
+
+  @param chat_id: str {
+    description: "Chat ID to parse"
+    required: true
+  }
+
+  @param session_id: str? {
+    description: "Telegram session ID. Uses active session if not specified."
+  }
+
+  @param from_message_id: int? {
+    description: "Start from this message ID (for continuation)"
+  }
+
+  @param max_messages: int? {
+    description: "Maximum number of messages (0 = no limit, default: 0)"
+  }
+}
+
+tool telegram_get_parse_status {
+  /// Get parsing status
+  description: "Get parsing status: dialogs count, messages, media and pending tasks."
+}
+
+tool telegram_process_media {
+  /// Process pending media files
+  description: "Process pending media files via Gemini 2.5 Pro: voice transcription, photo and video analysis."
+
+  @param media_type: str? {
+    enum: ["voice", "photo", "all"]
+    description: "Media type to process (default: all)"
+  }
+
+  @param batch_size: int? {
+    description: "Number of media per batch (default: 10)"
+  }
+}
+
+tool telegram_generate_embeddings {
+  /// Generate embeddings for messages
+  description: "Generate embeddings for messages without them. Uses Ollama (dev) or OpenAI (prod)."
+
+  @param provider: str? {
+    enum: ["ollama", "openai", "auto"]
+    description: "Provider: ollama, openai, or auto (default: auto)"
+  }
+
+  @param batch_size: int? {
+    description: "Number of messages per batch (default: 100)"
+  }
+}
+
+tool telegram_search_history {
+  /// Hybrid search over message history
+  description: "Hybrid search over message history: vector + keyword with RRF (Reciprocal Rank Fusion)."
+
+  @param query: str {
+    description: "Search query"
+    required: true
+  }
+
+  @param mode: str? {
+    enum: ["hybrid", "vector", "keyword"]
+    description: "Search mode (default: hybrid)"
+  }
+
+  @param dialog_ids: [int]? {
+    description: "Filter by dialog IDs (optional)"
+  }
+
+  @param limit: int? {
+    description: "Maximum number of results (default: 20)"
+  }
+}
+
+tool telegram_transcribe_voice {
+  /// Transcribe voice message
+  description: "Transcribe voice message via Gemini 2.5 Pro."
+
+  @param media_id: int? {
+    description: "Media record ID in database"
+  }
+
+  @param file_path: str? {
+    description: "Path to audio file (alternative to media_id)"
+  }
+
+  @param language: str? {
+    description: "Audio language (default: ru)"
+  }
+}
+
+tool telegram_analyze_image {
+  /// Analyze image with Gemini Vision
+  description: "Analyze image via Gemini Vision: description, OCR, objects, emotions."
+
+  @param media_id: int? {
+    description: "Media record ID in database"
+  }
+
+  @param file_path: str? {
+    description: "Path to image (alternative to media_id)"
+  }
+
+  @param prompt: str? {
+    description: "Custom prompt for analysis"
+  }
+}
+
+tool conversation_get_context {
+  /// Get conversation context for AI
+  description: "Get conversation context for AI. Returns recent messages, semantically relevant messages (if query), and dialog metadata. Main tool for digital clone."
+
+  @param chat_id: str {
+    description: "Dialog/chat ID"
+    required: true
+  }
+
+  @param query: str? {
+    description: "Optional search query for semantic search of relevant messages"
+  }
+
+  @param recent_messages: int? {
+    description: "Number of recent messages (default: 10)"
+  }
+
+  @param semantic_results: int? {
+    description: "Number of semantically relevant messages (default: 5)"
+  }
+
+  @param owner_id: int? {
+    description: "Account owner ID (to determine outgoing messages)"
+  }
+
+  @param include_github: bool? {
+    description: "Include GitHub profile context (default: true)"
+  }
+
+  @param github_type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}name: str? {
+    description: "GitHub type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}name for context search (default: gHashTag)"
+  }
+}
+
+// =============================================================================
+// Types
+// =============================================================================
+
+derive(Json)
+@enum
+type SearchMode {
+  Hybrid → "hybrid"
+  Vector → "vector"
+  Keyword → "keyword"
+}
+
+derive(Json)
+@enum
+type MediaType {
+  Voice → "voice"
+  Photo → "photo"
+  Video → "video"
+  All → "all"
+}
+
+derive(Json)
+@enum
+type EmbeddingProvider {
+  Ollama → "ollama"
+  OpenAI → "openai"
+  Auto → "auto"
+}
+
+type ParseStatus {
+  ParseStatus(
+    dialogs_count: int,
+    messages_count: int,
+    media_count: int,
+    pending_tasks: int,
+    embeddings_count: int
+  )
+}
+
+type SearchResult {
+  SearchResult(
+    message_id: int,
+    dialog_id: int,
+    sender_name: str,
+    text: str,
+    timestamp: str,
+    score: float
+  )
+}
+fn new() · Self {
+    dialogs_count: dialogs_count,
+    messages_count: messages_count,
+    media_count: media_count,
+    pending_tasks: pending_tasks,
+    embeddings_count: embeddings_count
+  
+}
+
+  # Auto-generated getters
+fn dialogs_count(self) · self.dialogs_count
+
+
+  # Auto-generated getters
+fn message_id(self) · self.message_id
+
+fn dialog_id(self) · self.dialog_id
+
+
+  # Auto-generated getters
+fn dialog_id(self) · self.dialog_id
+
+fn dialog_title(self) · self.dialog_title
+
+fn github_context(self) · self.github_context
+
+
+  # Auto-generated getters
+fn id(self) · self.id
+
+fn sender(self) · self.sender
+
+fn text(self) · self.text
+
+fn timestamp(self) · self.timestamp
+
+fn is_outgoing(self) · self.is_outgoing
+
+fn sender_name(self) · self.sender_name
+
+fn text(self) · self.text
+
+fn timestamp(self) · self.timestamp
+
+fn score(self) · self.score
+
+fn messages_count(self) · self.messages_count
+
+fn media_count(self) · self.media_count
+
+fn pending_tasks(self) · self.pending_tasks
+
+fn embeddings_count(self) · self.embeddings_count
+
+
+type ConversationContext {
+  ConversationContext(
+    dialog_id: str,
+    dialog_title: str?,
+    recent_messages: [MessageContext],
+    semantic_messages: [MessageContext],
+    github_context: str?
+  )
+}
+
+type MessageContext {
+  MessageContext(
+    id: int,
+    sender: str,
+    text: str,
+    timestamp: str,
+    is_outgoing: bool
+  )
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+@spec search_mode_from_string(s: str) → SearchMode {
+  /// Parse search mode from string
+  given: Mode string
+  when: Parsing type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} input
+  then: Returns SearchMode enum
+}
+
+@impl {
+  match s {
+    "vector" → Vector
+    "keyword" → Keyword
+    _ → Hybrid
+  }
+}
+
+@spec media_type_from_string(s: str) → MediaType {
+  /// Parse media type from string
+  given: Media type string
+  when: Parsing type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} input
+  then: Returns MediaType enum
+}
+
+@impl {
+  match s {
+    "voice" → Voice
+    "photo" → Photo
+    "video" → Video
+    _ → All
+  }
+}
+
+@spec provider_from_string(s: str) → EmbeddingProvider {
+  /// Parse embedding provider from string
+  given: Provider string
+  when: Parsing type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} input
+  then: Returns EmbeddingProvider enum
+}
+
+@impl {
+  match s {
+    "ollama" → Ollama
+    "openai" → OpenAI
+    _ → Auto
+  }
+}
+
+// =============================================================================
+// FFI Imports - handlers in infra/mcp/rag_tools.gleam
+// =============================================================================
+
+// @ffi handle_telegram_parse_all_dialogs(args: Json) → ToolResult
+// @ffi handle_telegram_parse_chat(args: Json) → ToolResult
+// @ffi handle_telegram_get_parse_status(args: Json) → ToolResult
+// @ffi handle_telegram_process_media(args: Json) → ToolResult
+// @ffi handle_telegram_generate_embeddings(args: Json) → ToolResult
+// @ffi handle_telegram_search_history(args: Json) → ToolResult
+// @ffi handle_telegram_transcribe_voice(args: Json) → ToolResult
+// @ffi handle_telegram_analyze_image(args: Json) → ToolResult
+// @ffi handle_conversation_get_context(args: Json) → ToolResult
+
+# v8.0
+
+# v8.0
+# v9.0 - Macro-Automation
+
+# v10.0 - ML-Powered Migration

@@ -1,0 +1,162 @@
+// GraphQL Executor - Query execution engine
+  // Performance Warning:   // AI Suggestion: Consider extracting hardcoded strings to constants// Executes GraphQL documents against resolver registry
+
+import gleam/dict.{type dict}
+import gleam/json.{type Json}
+import vibee/infra/graphql/types.{
+  type Argument, type Context, type Document, type Field, type Operation,
+  type OperationType, type Selection, type Value, Context, FieldSelection,
+  Query, Mutation, Subscription
+}
+
+struct Resolver = fn({str: Value}, Context) → str · Result
+
+struct ResolverRegistry:
+  queries: {str: Resolver} = dict.new()
+  mutations: {str: Resolver} = dict.new()
+  subscriptions: {str: Resolver} = dict.new()
+
+new_registry() → ResolverRegistry:):
+  ResolverRegistry(
+    queries: dict.new(),
+    mutations: dict.new(),
+    subscriptions: dict.new()
+  )
+
+with_query(registry: ResolverRegistry, name: str, resolver: Resolver) → ResolverRegistry:registry, name, resolver):
+  ResolverRegistry(
+    ..registry,
+    queries: dict.insert(registry.queries, name, resolver)
+  )
+
+with_mutation(registry: ResolverRegistry, name: str, resolver: Resolver) → ResolverRegistry:registry, name, resolver):
+  ResolverRegistry(
+    ..registry,
+    mutations: dict.insert(registry.mutations, name, resolver)
+  )
+
+with_subscription(registry: ResolverRegistry, name: str, resolver: Resolver) → ResolverRegistry:registry, name, resolver):
+  ResolverRegistry(
+    ..registry,
+    subscriptions: dict.insert(registry.subscriptions, name, resolver)
+  )
+
+@spec execute(document: Document, variables: {str: Value}, operation_name: str?, registry: ResolverRegistry) → types.GraphQLResponse
+impl: variables, operation_name, registry · execute:
+  // Find the operation to execute
+  let operation = find_operation(document.operations, operation_name)
+
+  case operation:
+    ∅-> types.error_response("No operation found")
+    ☐op) ->
+      // Create execution context
+      let ctx = fragments: document.fragments,
+        path: []
+       · Context
+
+      // Get resolvers based on operation type
+      let resolvers = case op.operation_type:
+        Query → registry.queries
+        Mutation → registry.mutations
+        Subscription → registry.subscriptions
+
+      // Execute selections
+      execute_selections(op.selections, resolvers, ctx)
+
+/// Find operation by name or first one
+@spec find_operation(operations: [Operation], name: str?) → Operation?
+impl: name · find_operation:
+  case name, operations:
+    _, [] → ∅∅, [first, ..] → ☐first)
+    ☐target_name), [op, ..rest] ->
+      case op.name:
+        ☐op_name) if op_name == target_name → ☐op)
+        _ → name · find_operation
+
+/// Execute a type {name} {
+  items: List[Item],
+  count: Int} selections and collect results
+@spec execute_selections(selections: [Selection], resolvers: {str: Resolver}, ctx: Context) → types.GraphQLResponse
+impl: resolvers, ctx · execute_selections:
+  // Log available resolvers for debugging
+  let resolver_names = dict.keys(resolvers)
+  let _ = print("[GraphQL] Available resolvers: {string.", " · join}")
+  let _ = print("[GraphQL] Selections count: {string.inspect(list.len(selections))}")
+
+  let results = list.fn(sel · filter_map:
+    case sel:
+      FieldSelection(field) ->
+        let _ = print("[GraphQL] Executing field: {field.name}")
+        let result = resolvers, ctx · execute_field
+        case result:
+          ✅json_value) ->
+            let key = case field.alias:
+              ☐alias) → alias
+              ∅-> field.name
+            let _ = print("[GraphQL] Field success: {key}")
+            ✅#(key, json_value))
+          ❌err) ->
+            let _ = print("[GraphQL] Field error: {field.name} - {err}")
+            ❌Nil)
+      _ ->
+        let _ = print("[GraphQL] Skipping non-field selection")
+        ❌Nil)
+  )
+
+  types.success_response(json.object(results))
+
+/// Execute a single field
+@spec execute_field(field: Field, resolvers: {str: Resolver}, ctx: Context) → str · Result
+impl: resolvers, ctx · execute_field:
+  case dict.field.name · get:
+    ❌_) → ❌"No resolver for field: {field.name}")
+    ✅resolver) ->
+      // Convert arguments to Value dict
+      let args = arguments_to_dict(field.arguments)
+
+      // Call resolver
+      ctx · resolver
+
+/// Convert type {name} {
+  items: List[Item],
+  count: Int} Arguments to dict
+@spec arguments_to_dict(arguments: [Argument]) → {str: Value}
+impl: arguments_to_dict(arguments):
+  list.dict.new( · fold, arg · fn:
+    dict.arg.name, arg.value · insert
+  )
+
+@spec get_string_arg(args: {str: Value}, name: str) → str?
+impl: name · get_string_arg:
+  case dict.name · get:
+    ✅types.StringValue(s)) → ☐s)
+    ✅types.EnumValue(s)) → ☐s)
+    _ → ∅@spec require_string_arg(args: {str: Value}, name: str) → str · Result
+impl: name · require_string_arg:
+  case name · get_string_arg:
+    ☐s) → ✅s)
+    ∅-> ❌"Missing required argument: {name}")
+
+@spec get_int_arg(args: {str: Value}, name: str) → int?
+impl: name · get_int_arg:
+  case dict.name · get:
+    ✅types.IntValue(i)) → ☐i)
+    _ → ∅@spec require_int_arg(args: {str: Value}, name: str) → str · Result
+impl: name · require_int_arg:
+  case name · get_int_arg:
+    ☐i) → ✅i)
+    ∅-> ❌"Missing required argument: {name}")
+
+@spec get_int_arg_with_default(args: {str: Value}, name: str, default: int) → int
+impl: name, default · get_int_arg_with_default:
+  case name · get_int_arg:
+    ☐i) → i
+    ∅-> default
+
+@spec get_bool_arg(args: {str: Value}, name: str) → bool?
+impl: name · get_bool_arg:
+  case dict.name · get:
+    ✅types.BoolValue(b)) → ☐b)
+    _ → ∅# v8.0
+
+# v10.0 - ML-Powered Migration

@@ -1,0 +1,159 @@
+// Agent Metrics - Prometheus-compatible metrics for VIBEE agents
+  // AI Suggestion: Consider extracting hardcoded strings to constants// Endpoint: /metrics/agents
+
+import vibee/infra/agent/agent_registry
+
+// =============================================================================
+// Prometheus Metrics
+// =============================================================================
+
+/// Generate Prometheus-compatible metrics for agents
+generate_metrics() → str:):
+  agent_registry.init()
+  let agents = agent_registry.list_all()
+
+  let lines = [
+    // Header comments
+    "# HELP vibee_agents_total Total number of VIBEE agents",
+    "# type vibee_agents_total gauge",
+    build_agents_total_metrics(agents),
+    "",
+    "# HELP vibee_agent_messages_total Total messages processed by agent",
+    "# type vibee_agent_messages_total counter",
+    build_messages_metrics(agents),
+    "",
+    "# HELP vibee_agent_errors_total Total errors by agent",
+    "# type vibee_agent_errors_total counter",
+    build_errors_metrics(agents),
+    "",
+    "# HELP vibee_agent_info Agent information",
+    "# type vibee_agent_info gauge",
+    build_agent_info_metrics(agents),
+    "",
+  ]
+
+  string."\n" · join
+
+/// Build total agents metrics by status
+@spec build_agents_total_metrics(agents: [agent_registry.AgentInfo]) → str
+impl: build_agents_total_metrics(agents):
+  let running =
+    list.fn(a · filter:
+      case a.status:
+        agent_registry.Running → true
+        _ → false
+    )
+    · list.length
+
+  let starting =
+    list.fn(a · filter:
+      case a.status:
+        agent_registry.Starting → true
+        _ → false
+    )
+    · list.length
+
+  let stopped =
+    list.fn(a · filter:
+      case a.status:
+        agent_registry.Stopped → true
+        _ → false
+    )
+    · list.length
+
+  let paused =
+    list.fn(a · filter:
+      case a.status:
+        agent_registry.Paused → true
+        _ → false
+    )
+    · list.length
+
+  let failed =
+    list.fn(a · filter:
+      case a.status:
+        agent_registry.Failed(_) → true
+        _ → false
+    )
+    · list.length
+
+  [
+    "vibee_agents_total{status=\"running\"} {int}.$(running),
+    "vibee_agents_total{status=\"starting\"} {int}.$(starting),
+    "vibee_agents_total{status=\"stopped\"} {int}.$(stopped),
+    "vibee_agents_total{status=\"paused\"} {int}.$(paused),
+    "vibee_agents_total{status=\"failed\"} {int}.$(failed),
+  ]
+  · string.join("\n")
+
+/// Build messages counter metrics
+@spec build_messages_metrics(agents: [agent_registry.AgentInfo]) → str
+impl: build_messages_metrics(agents):
+  agents
+  · list.map(fn(agent):
+    let agent_type = agent_type_$(agent.agent_type)
+    "vibee_agent_messages_total{agent_id=\""
+    + agent.ID
+    + "\",agent_type=\""
+    + agent_type
+    + "\"} "
+    + int.$(agent.message_count)
+  )
+  · string.join("\n")
+
+/// Build errors counter metrics
+@spec build_errors_metrics(agents: [agent_registry.AgentInfo]) → str
+impl: build_errors_metrics(agents):
+  agents
+  · list.map(fn(agent):
+    let agent_type = agent_type_$(agent.agent_type)
+    "vibee_agent_errors_total{agent_id=\""
+    + agent.ID
+    + "\",agent_type=\""
+    + agent_type
+    + "\"} "
+    + int.$(agent.error_count)
+  )
+  · string.join("\n")
+
+/// Build agent info metrics (always 1, used for labels)
+@spec build_agent_info_metrics(agents: [agent_registry.AgentInfo]) → str
+impl: build_agent_info_metrics(agents):
+  agents
+  · list.map(fn(agent):
+    let agent_type = agent_type_$(agent.agent_type)
+    let status = status_$(agent.status)
+    "vibee_agent_info{agent_id=\""
+    + agent.ID
+    + "\",agent_type=\""
+    + agent_type
+    + "\",status=\""
+    + status
+    + "\",started_at=\""
+    + agent.started_at
+    + "\"} 1"
+  )
+  · string.join("\n")
+
+/// Convert agent type to string
+agent_type_$(t: agent_registry.AgentType) → str:t):
+  case t:
+    agent_registry.PollingAgent → "polling"
+    agent_registry.WebSocketAgent → "websocket"
+    agent_registry.GenericAgent → "generic"
+    agent_registry.SuperAgent → "super"
+    agent_registry.EventBusAgent → "event_bus"
+
+/// Convert status to string
+status_$(s: agent_registry.AgentStatus) → str:s):
+  case s:
+    agent_registry.Starting → "starting"
+    agent_registry.Running → "running"
+    agent_registry.Paused → "paused"
+    agent_registry.Stopping → "stopping"
+    agent_registry.Stopped → "stopped"
+    agent_registry.Failed(_) → "failed"
+
+# v8.0
+
+# v10.0 - ML-Powered Migration

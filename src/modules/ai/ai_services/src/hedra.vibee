@@ -1,0 +1,596 @@
+// Hedra Avatar Integration
+  // Performance Warning:   // AI Suggestion: Replace magic numbers with named constants  // AI Suggestion: Consider extracting hardcoded strings to constants// API Documentation: https://hedra.com/api
+// Supports: AI Avatar Video Generation, Talking Head, Lipsync
+// Converted from infra/ai/hedra.gleam → dsl/infra/ai/hedra.vibee
+
+import vibee/dsl/ffi/json
+import ../client.vibee as client
+
+// =============================================================================
+// Types
+// =============================================================================
+
+type HedraConfig {
+  HedraConfig(api_key: str)
+}
+
+type AvatarRequest {
+  AvatarRequest(
+    audio_url: str,
+    image_url: str,
+    aspect_ratio: str?
+  )
+}
+fn new() · Self {
+    api_key: api_key
+  
+}
+
+  # Auto-generated getters
+fn api_key(self) · self.api_key
+
+
+  # Auto-generated getters
+fn audio_url(self) · self.audio_url
+
+
+  # Auto-generated getters
+fn url(self) · self.url
+
+fn method(self) · self.method
+
+
+  # Auto-generated getters
+fn result_url(self) · self.result_url
+
+
+  # Auto-generated getters
+fn job_id(self) · self.job_id
+
+fn status(self) · self.status
+
+fn created_at(self) · self.created_at
+
+fn error(self) · self.error
+
+fn body(self) · self.body
+
+fn image_url(self) · self.image_url
+
+fn aspect_ratio(self) · self.aspect_ratio
+
+
+  # Auto-generated getters
+fn name(self) · self.name
+
+fn asset_type(self) · self.asset_type
+
+
+  # Auto-generated getters
+fn image_asset_id(self) · self.image_asset_id
+
+fn audio_asset_id(self) · self.audio_asset_id
+
+fn resolution(self) · self.resolution
+
+fn aspect_ratio(self) · self.aspect_ratio
+
+
+type HedraRequest {
+  HedraRequest(
+    url: str,
+    method: str,
+    headers: [#(str, str]),
+    body: str
+  )
+}
+
+type JobStatus {
+  Pending
+  Processing
+  Completed(result_url: str)
+  Failed(error: str)
+}
+
+type Job {
+  Job(
+    job_id: str,
+    status: JobStatus,
+    created_at: str
+  )
+}
+
+// =============================================================================
+// Asset Types (Full API)
+// =============================================================================
+
+@enum AssetType {
+  "audio" => Audio
+  "image" => Image
+}
+
+type CreateAssetRequest {
+  CreateAssetRequest(
+    name: str,
+    asset_type: AssetType
+  )
+}
+
+type GenerationRequest {
+  GenerationRequest(
+    image_asset_id: str,
+    audio_asset_id: str,
+    resolution: str?,
+    aspect_ratio: str?
+  )
+}
+
+// =============================================================================
+// Config Functions
+// =============================================================================
+
+@spec default_config(api_key: str) → HedraConfig {
+  /// Create default Hedra config
+  given: API key
+  when: Initializing Hedra client
+  then: Returns configured client
+}
+
+@impl {
+  HedraConfig(api_key)
+}
+
+// =============================================================================
+// Avatar Request Builders
+// =============================================================================
+
+metrics("hedra_avatar")
+@http_tool POST "https://api.hedra.com/v1/characters"
+timeout(2m)
+retry(3)
+circuit_breaker(threshold: 2, timeout: 2m, half_open_requests: 1)
+trace("ai.hedra.create")
+@spec create_avatar_request(config: HedraConfig, req: AvatarRequest) → HedraRequest {
+  /// Create avatar video generation request
+  given: Config and avatar request
+  when: Generating talking head video
+  then: Returns HTTP request
+}
+
+@impl {
+  HedraRequest(
+    "https://api.hedra.com/v1/characters",
+    "POST",
+    [
+      #("X-API-Key", config.api_key),
+      #("Content-Type", "application/json")
+    ],
+    avatar_request_to_json(req)
+  )
+}
+
+metrics("hedra_avatar")
+@http_tool GET "https://api.hedra.com/v1/characters/{job_id}"
+timeout(30s)
+backoff: exponential · retry
+circuit_breaker(threshold: 2, timeout: 2m, half_open_requests: 1)
+trace("ai.hedra.status")
+@spec get_status_request(config: HedraConfig, job_id: str) → HedraRequest {
+  /// Create request to check job status
+  given: Config and job ID
+  when: Polling for completion
+  then: Returns status request
+}
+
+@impl {
+  HedraRequest(
+    "https://api.hedra.com/v1/characters/{job_id},
+    "GET",
+    [
+      #("X-API-Key", config.api_key),
+      #("Content-Type", "application/json")
+    ],
+    ""
+  )
+}
+
+metrics("ai.hedra")
+@http_tool GET "https://api.hedra.com/v1/characters"
+timeout(30s)
+backoff: exponential · retry
+circuit_breaker(threshold: 2, timeout: 2m, half_open_requests: 1)
+trace("ai.hedra.list")
+@spec list_jobs_request(config: HedraConfig) → HedraRequest {
+  /// Create request to list all jobs
+  given: Config
+  when: Viewing all avatar jobs
+  then: Returns list request
+}
+
+@impl {
+  HedraRequest(
+    "https://api.hedra.com/v1/characters",
+    "GET",
+    [
+      #("X-API-Key", config.api_key),
+      #("Content-Type", "application/json")
+    ],
+    ""
+  )
+}
+
+metrics("ai.hedra")
+@http_tool POST "https://api.hedra.com/v1/characters/{job_id}/cancel"
+@spec cancel_job_request(config: HedraConfig, job_id: str) → HedraRequest {
+  /// Create request to cancel a job
+  given: Config and job ID
+  when: Cancelling generation
+  then: Returns cancel request
+}
+
+@impl {
+  HedraRequest(
+    "https://api.hedra.com/v1/characters/{job_id} + "/cancel",
+    "POST",
+    [
+      #("X-API-Key", config.api_key),
+      #("Content-Type", "application/json")
+    ],
+    ""
+  )
+}
+
+// =============================================================================
+// Asset Upload API
+// =============================================================================
+
+metrics("ai.hedra")
+@http_tool POST "https://api.hedra.com/v1/assets"
+timeout(2m)
+retry(3)
+circuit_breaker(threshold: 2, timeout: 2m, half_open_requests: 1)
+trace("ai.hedra.asset")
+@spec create_asset_request(config: HedraConfig, req: CreateAssetRequest) → HedraRequest {
+  /// Create asset (step 1 of upload)
+  given: Config and asset info
+  when: Preparing asset upload
+  then: Returns create asset request
+}
+
+@impl {
+  let type_str = match req.asset_type {
+    Audio → "audio"
+    Image → "image"
+  }
+
+  let body = empty_fields()
+    · add_field("name", req.name, json_string)
+    · add_field("type", type_str, json_string)
+    · build_json
+
+  HedraRequest(
+    "https://api.hedra.com/v1/assets",
+    "POST",
+    [
+      #("X-API-Key", config.api_key),
+      #("Content-Type", "application/json")
+    ],
+    body
+  )
+}
+
+metrics("ai.hedra")
+@http_tool POST "https://api.hedra.com/v1/assets/{asset_id}/upload"
+timeout(2m)
+retry(3)
+circuit_breaker(threshold: 2, timeout: 2m, half_open_requests: 1)
+trace("ai.hedra.upload")
+@spec upload_asset_request(config: HedraConfig, asset_id: str, url: str) → HedraRequest {
+  /// Upload asset content (step 2 of upload)
+  given: Config, asset ID, URL
+  when: Uploading asset from URL
+  then: Returns upload request
+}
+
+@impl {
+  let body = empty_fields()
+    · add_field("url", url, json_string)
+    · build_json
+
+  HedraRequest(
+    "https://api.hedra.com/v1/assets/{asset_id} + "/upload",
+    "POST",
+    [
+      #("X-API-Key", config.api_key),
+      #("Content-Type", "application/json")
+    ],
+    body
+  )
+}
+
+metrics("ai.hedra")
+@http_tool POST "https://api.hedra.com/v1/characters"
+timeout(2m)
+retry(3)
+circuit_breaker(threshold: 2, timeout: 2m, half_open_requests: 1)
+trace("ai.hedra.generate")
+@spec start_generation_request(config: HedraConfig, req: GenerationRequest) → HedraRequest {
+  /// Start generation with uploaded assets
+  given: Config and generation request
+  when: Starting avatar generation
+  then: Returns generation request
+}
+
+@impl {
+  let body = empty_fields()
+    · add_field("imageAssetId", req.image_asset_id, json_string)
+    · add_field("audioAssetId", req.audio_asset_id, json_string)
+    · add_field("aiModelId", ai_model_id(), json_string)
+    · add_optional_string("resolution", req.resolution)
+    · add_optional_string("aspectRatio", req.aspect_ratio)
+    · build_json
+
+  HedraRequest(
+    "https://api.hedra.com/v1/characters",
+    "POST",
+    [
+      #("X-API-Key", config.api_key),
+      #("Content-Type", "application/json")
+    ],
+    body
+  )
+}
+
+metrics("ai.hedra")
+@http_tool GET "https://api.hedra.com/v1/assets/{asset_id}"
+timeout(30s)
+backoff: exponential · retry
+circuit_breaker(threshold: 2, timeout: 2m, half_open_requests: 1)
+@spec get_asset_request(config: HedraConfig, asset_id: str) → HedraRequest {
+  /// Get asset details
+  given: Config and asset ID
+  when: Checking asset status
+  then: Returns asset request
+}
+
+@impl {
+  HedraRequest(
+    "https://api.hedra.com/v1/assets/{asset_id},
+    "GET",
+    [
+      #("X-API-Key", config.api_key),
+      #("Content-Type", "application/json")
+    ],
+    ""
+  )
+}
+
+metrics("ai.hedra")
+@http_tool DELETE "https://api.hedra.com/v1/assets/{asset_id}"
+timeout(30s)
+retry(2)
+circuit_breaker(threshold: 2, timeout: 2m, half_open_requests: 1)
+@spec delete_asset_request(config: HedraConfig, asset_id: str) → HedraRequest {
+  /// Delete an asset
+  given: Config and asset ID
+  when: Cleaning up assets
+  then: Returns delete request
+}
+
+@impl {
+  HedraRequest(
+    "https://api.hedra.com/v1/assets/{asset_id},
+    "DELETE",
+    [
+      #("X-API-Key", config.api_key),
+      #("Content-Type", "application/json")
+    ],
+    ""
+  )
+}
+
+// =============================================================================
+// Helper Functions - Simple Request Builders
+// =============================================================================
+
+@spec simple_avatar(audio_url: str, image_url: str) → AvatarRequest {
+  /// Create simple avatar request with defaults
+  given: Audio and image URLs
+  when: Quick avatar generation
+  then: Returns request with 16:9 ratio
+}
+
+@impl {
+  image_url,
+    ☐"16:9" · AvatarRequest
+  )
+}
+
+@spec portrait_avatar(audio_url: str, image_url: str) → AvatarRequest {
+  /// Create portrait avatar (9:16)
+  given: Audio and image URLs
+  when: Vertical avatar needed
+  then: Returns portrait request
+}
+
+@impl {
+  image_url,
+    ☐"9:16" · AvatarRequest
+  )
+}
+
+@spec square_avatar(audio_url: str, image_url: str) → AvatarRequest {
+  /// Create square avatar (1)
+  given: Audio and image URLs
+  when: Square avatar needed
+  then: Returns square request
+}
+
+@impl {
+  image_url,
+    ☐"1" · AvatarRequest
+  )
+}
+
+@spec simple_generation(image_asset_id: str, audio_asset_id: str) → GenerationRequest {
+  /// Create simple generation request
+  given: Asset IDs
+  when: Quick generation
+  then: Returns request with defaults
+}
+
+@impl {
+  audio_asset_id,
+    ☐"720p" · GenerationRequest,
+    ☐"16:9")
+  )
+}
+
+// =============================================================================
+// Job Status Helpers
+// =============================================================================
+
+@spec is_job_complete(status: JobStatus) → bool {
+  /// Check if job is completed
+  given: JobStatus
+  when: Checking completion
+  then: Returns true if done
+}
+
+@impl {
+  match status {
+    Completed(_) → true
+    Failed(_) → true
+    _ → false
+  }
+}
+
+@spec is_job_successful(status: JobStatus) → bool {
+  /// Check if job completed successfully
+  given: JobStatus
+  when: Checking success
+  then: Returns true if success
+}
+
+@impl {
+  match status {
+    Completed(_) → true
+    _ → false
+  }
+}
+
+@spec get_result_url(status: JobStatus) → str? {
+  /// Extract result URL from status
+  given: JobStatus
+  when: Getting result
+  then: Returns URL if completed
+}
+
+@impl {
+  match status {
+    Completed(url) → ☐url)
+    _ → ∅}
+}
+
+@spec get_error_message(status: JobStatus) → str? {
+  /// Extract error message from status
+  given: JobStatus
+  when: Getting error details
+  then: Returns error if failed
+}
+
+@impl {
+  match status {
+    Failed(error) → ☐error)
+    _ → ∅}
+}
+
+@spec status_$(status: JobStatus) → str {
+  /// Convert status to display string
+  given: JobStatus
+  when: Showing status to type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}
+  then: Returns human-readable status
+}
+
+@impl {
+  match status {
+    Pending → "Pending"
+    Processing → "Processing"
+    Completed(url) → "Completed: {url}
+    Failed(error) → "Failed: {error}
+  }
+}
+
+// =============================================================================
+// Reference Data
+// =============================================================================
+
+@spec ai_model_id() → str {
+  /// Hedra AI Model ID for character generation
+  given: Nothing
+  when: Starting generation
+  then: Returns model ID
+}
+
+@impl {
+  "d1dd37a3-e39a-4854-a298-6510289f9cf2"
+}
+
+cache(24h)
+@spec supported_aspect_ratios() → [str] {
+  /// Supported aspect ratios
+  given: Nothing
+  when: Listing ratios
+  then: Returns ratio list
+}
+
+@impl {
+  ["1", "16:9", "9:16", "4:3", "3:4"]
+}
+
+cache(24h)
+@spec supported_resolutions() → [str] {
+  /// Supported resolutions
+  given: Nothing
+  when: Listing resolutions
+  then: Returns resolution list
+}
+
+@impl {
+  ["540p", "720p"]
+}
+
+@spec resolution_descriptions() → [#(str, str]) {
+  /// Resolution descriptions
+  given: Nothing
+  when: Explaining resolutions
+  then: Returns resolution info
+}
+
+@impl {
+  [
+    #("540p", "Standard resolution, faster generation"),
+    #("720p", "HD resolution, higher quality")
+  ]
+}
+
+// =============================================================================
+// FFI Imports
+// =============================================================================
+// Now provided by centralized: import vibee/dsl/ffi/json
+// - json_object, json_string, json_int, json_float, json_bool, json_null
+// - json_array, json_to_string, json_parse
+// - empty_fields, add_field, add_optional, add_optional_string, build_json
+
+# v8.0
+
+# v8.0
+# v9.0 - Macro-Automation
+
+# v10.0 - ML-Powered Migration

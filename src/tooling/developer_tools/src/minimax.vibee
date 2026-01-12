@@ -1,0 +1,133 @@
+// Minimax Video Generation Tools
+  // Performance Warning: // Image-to-Video and Text-to-Video via FAL.AI Minimax
+  // AI Suggestion: Replace magic numbers with named constants  // AI Suggestion: Consider extracting hardcoded strings to constants// Migrated to compact syntax with @policy references
+
+// =============================================================================
+// MINIMAX VIDEO-01 (Image to Video)
+// =============================================================================
+
+POST @AI https://queue.fal.run/fal-ai/minimax/video-01/image-to-video "Generate video from image using Minimax Video-01"
+  @Video generated: image_url valid → generate() → result.video_url != null
+  @auth Bearer(FAL_KEY)
+
+  prompt: str!           @body
+  image_url: str!        body("first_frame_image")
+  prompt_optimizer: bool = true  @body
+
+  → { request_id: str!, status: str! }
+
+GET https://queue.fal.run/fal-ai/minimax/video-01/image-to-video/requests/{request_id} "Get Minimax image-to-video result"
+  @auth Bearer(FAL_KEY)
+
+  request_id: str!  @path
+
+  → { status: str!, video: { url: str?, content_type: str? }?, error: str? }
+
+// =============================================================================
+// MINIMAX VIDEO-01-LIVE (Live/Real-time focus)
+// =============================================================================
+
+POST @AI https://queue.fal.run/fal-ai/minimax/video-01-live/image-to-video "Generate video with live motion using Minimax Video-01-Live"
+  @Live video: prompt → generate() → result.video_url != null
+  @auth Bearer(FAL_KEY)
+
+  prompt: str!           @body
+  image_url: str!        body("first_frame_image")
+  prompt_optimizer: bool = true  @body
+
+  → { request_id: str!, status: str! }
+
+GET https://queue.fal.run/fal-ai/minimax/video-01-live/image-to-video/requests/{request_id} "Get Minimax live video result"
+  @auth Bearer(FAL_KEY)
+
+  request_id: str!  @path
+
+  → { status: str!, video: { url: str?, content_type: str? }?, error: str? }
+
+// =============================================================================
+// MINIMAX TEXT-TO-VIDEO
+// =============================================================================
+
+POST @AI https://queue.fal.run/fal-ai/minimax/video-01/text-to-video "Generate video from text using Minimax"
+  @T2V generated: prompt valid → generate() → result.video_url != null
+  @auth Bearer(FAL_KEY)
+
+  prompt: str!           @body
+  prompt_optimizer: bool = true  @body
+
+  → { request_id: str!, status: str! }
+
+GET https://queue.fal.run/fal-ai/minimax/video-01/text-to-video/requests/{request_id} "Get Minimax text-to-video result"
+  @auth Bearer(FAL_KEY)
+
+  request_id: str!  @path
+
+  → { status: str!, video: { url: str?, content_type: str? }?, error: str? }
+
+// =============================================================================
+// MINIMAX HAILUO (Alternative Minimax model)
+// =============================================================================
+
+POST @AI https://queue.fal.run/fal-ai/minimax-video/image-to-video "Generate video using Minimax Hailuo model"
+  @Hailuo video: image + prompt → generate() → result.video_url != null
+  @auth Bearer(FAL_KEY)
+
+  prompt: str!           @body
+  image_url: str!        @body
+  prompt_optimizer: bool = true  @body
+
+  → { request_id: str!, status: str! }
+
+GET https://queue.fal.run/fal-ai/minimax-video/image-to-video/requests/{request_id} "Get Minimax Hailuo result"
+  @auth Bearer(FAL_KEY)
+
+  request_id: str!  @path
+
+  → { status: str!, video: { url: str?, content_type: str? }?, error: str? }
+
+// =============================================================================
+// UNIFIED MINIMAX PIPELINE
+// =============================================================================
+
+@pipeline
+tool create_minimax_video:
+  desc: "Create video using best Minimax model"
+  @Auto selection: selects model based on input type
+  circuit_breaker(threshold: 3, timeout: 120000)
+
+  image_url: str?
+  prompt: str!
+  model: str = "auto"  // auto, video-01, video-01-live, hailuo
+
+  step select_model:
+    → case model, image_url:
+         "auto", ☐_) → "video-01"
+         "auto", ∅-> "video-01-t2v"
+         m, _ → m
+
+  step generate:
+    → case selected_model:
+         "video-01" → image_url! · minimax_image_to_video
+         "video-01-live" → image_url! · minimax_live_video
+         "video-01-t2v" → minimax_text_to_video(prompt)
+         "hailuo" → image_url! · minimax_hailuo_video
+         _ → image_url! · minimax_image_to_video
+
+  step wait_completion:
+    → poll_until_complete(result.request_id, max_attempts: 60, interval: 5000)
+
+  → { video_url: str!, model: str! }
+
+// =============================================================================
+// PRICING CONSTANTS
+// =============================================================================
+
+let MINIMAX_PRICING = const({
+  "video-01": { "per_generation": 0.30, "description": "Standard Minimax Video-01" },
+  "video-01-live": { "per_generation": 0.35, "description": "Minimax Live Motion" },
+  "hailuo": { "per_generation": 0.25, "description": "Minimax Hailuo (alternative)" }
+}
+
+# v8.0
+
+# v10.0 - ML-Powered Migration

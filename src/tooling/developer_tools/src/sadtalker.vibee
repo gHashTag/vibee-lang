@@ -1,0 +1,135 @@
+// SadTalker Integration
+  // AI Suggestion: Replace magic numbers with named constants// Lip-sync animation: animate photos with audio to create talking head videos
+  // Performance Warning:   // AI Suggestion: Consider extracting hardcoded strings to constants// Migrated to compact syntax with @policy references
+
+POST @AI https://api.replicate.com/v1/predictions "Create talking head video from photo and audio using SadTalker"
+  @Video generated: photo valid, audio valid → animate() → result.video_url != null
+  @Processing tracked: job started → poll_status() → result.status in ["starting", "processing", "succeeded"]
+  @Error handled: invalid input → animate() → result.error != null
+  @auth Bearer(REPLICATE_API_TOKEN)
+  body("model") = "cjwbw/sadtalker"
+  body("version") = "a519cc0cfebaaeade068b23899165a11ec76aaa1a2dc5c435e35a7d3f315e331"
+
+  source_image: str!   body("input.source_image")
+  driven_audio: str!   body("input.driven_audio")
+  pose_style: int = 0           body("input.pose_style")
+  expression_scale: float = 1.0 body("input.expression_scale")
+  enhancer: str = "gfpgan"      body("input.enhancer")
+  preprocess: str = "full"      body("input.preprocess")
+  still: bool = false           body("input.still")
+  use_blink: bool = true        body("input.use_blink")
+
+  → { id: str!, status: str!, video_url: str?, error: str? }
+
+GET https://api.replicate.com/v1/predictions/{prediction_id} "Check SadTalker job status"
+  @Status returned: prediction_id valid → get_status() → result.status != null
+  @auth Bearer(REPLICATE_API_TOKEN)
+
+  prediction_id: str!  @path
+
+  → { id: str!, status: str!, output: str?, error: str?, logs: str?, metrics: { predict_time: float? }? }
+
+// High-level talking head creator with full pipeline
+@pipeline
+cache(ttl: 3600)
+tool create_talking_head:
+  desc: "Create talking head video from photo + text (TTS + SadTalker)"
+  @Full pipeline: photo + text → tts() → animate() → video returned
+  @Audio sync: tts.duration matches video.duration
+
+  source_image: str!
+  text: str!
+  voice_id: str?
+  language: str = "ru"
+
+  step generate_audio:
+    → voice_id ?? "21m00Tcm4TlvDq8ikWAM" · elevenlabs_tts
+    → result.audio_url
+
+  step animate_face:
+    → driven_audio: audio_url, enhancer: "gfpgan", expression_scale: 1.2 · sadtalker_animate
+    → result
+
+  step wait_for_completion:
+    → poll_until_complete(result.ID, max_attempts: 60, interval: 5000)
+    → result.video_url
+
+  → { video_url: str!, audio_url: str!, duration: float! }
+
+// Batch processing for multiple images with same audio
+batch(size: 3, parallel: true)
+tool sadtalker_batch:
+  desc: "Create talking head videos for multiple images"
+  @Batch processed: images.length > 0 → animate_all() → results.length == images.length
+
+  source_images: [str!]
+  driven_audio: str!
+  enhancer: str = "gfpgan"
+
+  → { results: [{ image_url: str!, video_url: str?, status: str!, error: str? } }
+
+// Avatar video from scratch: generate photo + voice + animate
+@pipeline
+tool avatar_from_text:
+  desc: "Generate complete avatar video from text description"
+  @Avatar created: description + script → generate(] → video returned
+
+  avatar_description: str!
+  script: str!
+  voice_id: str?
+  style: str = "photorealistic"
+
+  step generate_avatar:
+    → flux_generate_image(prompt: "{avatar_description}, portrait, face forward, clean background, {style}", aspect_ratio: "1")
+    → result.image_url
+
+  step generate_speech:
+    → elevenlabs_tts(text: script, voice_id ?? "21m00Tcm4TlvDq8ikWAM")
+    → result.audio_url
+
+  step animate:
+    → sadtalker_animate(source_image: avatar_image_url, driven_audio: audio_url, enhancer: "gfpgan", expression_scale: 1.0)
+    → result
+
+  step wait_complete:
+    → poll_until_complete(result.ID, max_attempts: 60, interval: 5000)
+    → result.video_url
+
+  → { video_url: str!, avatar_image_url: str!, audio_url: str! }
+
+// Helper functions
+max_attempts, interval · poll_until_complete:
+  @SLOW
+  sadtalker_status(prediction_id)
+    · case result.status:
+         "succeeded" → ✅result)
+         "failed" → ❌result.error ?? "Unknown error")
+         _ → continue_polling
+
+// Pose style presets
+let POSE_STYLES = const({
+  "neutral": 0, "slight_left": 5, "slight_right": 10,
+  "look_up": 15, "look_down": 20, "nod": 25,
+  "shake": 30, "expressive": 35, "dramatic": 40, "subtle": 45
+}
+
+let ENHANCERS = const(["gfpgan", "RestoreFormer", "none"]
+
+let PREPROCESS_OPTIONS = const({
+  "crop": "Crop face only",
+  "extcrop": "Extended crop with more background",
+  "resize": "Resize to 256x256",
+  "full": "Full frame processing",
+  "extfull": "Extended full frame"
+}
+
+let AUDIO_FORMATS = const(["wav", "mp3", "m4a", "ogg"]
+
+let IMAGE_SPECS = const({
+  "min_size": 256, "max_size": 2048, "recommended_size": 512,
+  "aspect_ratio": "1", "formats": ["jpg", "jpeg", "png", "webp"]
+}
+
+# v8.0
+
+# v10.0 - ML-Powered Migration

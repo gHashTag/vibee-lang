@@ -1,0 +1,244 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Erlang/OTP and Gleam
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '26.0'
+          gleam-version: '1.0.0'
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            gleam/build
+            ~/.cache/gleam
+          key: ${{ runner.os }}-gleam-${{ hashFiles('gleam/gleam.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-gleam-
+
+      - name: Download dependencies
+        working-directory: gleam
+        run: gleam deps download
+
+      - name: Build project
+        working-directory: gleam
+        run: gleam build
+
+      - name: Run tests
+        working-directory: gleam
+        run: gleam test
+
+      - name: Check formatting
+        working-directory: gleam
+        run: gleam format --check
+
+  lint:
+    name: Lint Code
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Erlang/OTP and Gleam
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '26.0'
+          gleam-version: '1.0.0'
+
+      - name: Download dependencies
+        working-directory: gleam
+        run: gleam deps download
+
+      - name: Check formatting
+        working-directory: gleam
+        run: gleam format --check
+
+  coverage:
+    name: Test Coverage
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Erlang/OTP and Gleam
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '26.0'
+          gleam-version: '1.0.0'
+
+      - name: Download dependencies
+        working-directory: gleam
+        run: gleam deps download
+
+      - name: Run tests with coverage
+        working-directory: gleam
+        run: gleam test
+
+      # TODO: Add coverage reporting when Gleam supports it
+      # - name: Upload coverage
+      #   uses: codecov/codecov-action@v3
+
+  telegram-bridge:
+    name: Test Telegram Bridge (Go)
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('telegram-bridge/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        working-directory: telegram-bridge
+        run: go mod download
+
+      - name: Run tests
+        working-directory: telegram-bridge
+        run: go test -v ./...
+
+      - name: Check formatting
+        working-directory: telegram-bridge
+        run: |
+          if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
+            echo "Go code is not formatted:"
+            gofmt -s -l .
+            exit 1
+          fi
+
+      - name: Run go vet
+        working-directory: telegram-bridge
+        run: go vet ./...
+
+  remotion:
+    name: Test Remotion (Node.js)
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Cache npm dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('remotion/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install dependencies
+        working-directory: remotion
+        run: npm ci
+
+      - name: Run linter
+        working-directory: remotion
+        run: npm run lint || true  # Don't fail on lint errors for now
+
+      - name: Build project
+        working-directory: remotion
+        run: npm run build
+
+  remotion-player:
+    name: Test Remotion Player (React)
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Cache npm dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('remotion/player/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install dependencies
+        working-directory: remotion/player
+        run: npm ci
+
+      - name: Run linter
+        working-directory: remotion/player
+        run: npm run lint
+
+      - name: Build project
+        working-directory: remotion/player
+        run: npm run build
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [test, telegram-bridge, remotion]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up services
+        run: |
+          echo "Setting up integration test environment..."
+          # TODO: Add docker-compose or similar for integration tests
+
+      - name: Run integration tests
+        run: |
+          echo "Running integration tests..."
+          # TODO: Add actual integration tests
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'

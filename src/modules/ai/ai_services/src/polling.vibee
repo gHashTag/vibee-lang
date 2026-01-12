@@ -1,0 +1,567 @@
+// Polling Utility for AI Services
+  // Performance Warning:   // AI Suggestion: Consider extracting hardcoded strings to constants  // AI Suggestion: Replace magic numbers with named constants// Provides types and configurations for polling async task status
+// Converted from infra/ai/polling.gleam → dsl/infra/ai/polling.vibee
+
+// =============================================================================
+// Types
+// =============================================================================
+
+derive(Json)
+struct PollStatus {
+  /// Task is still queued
+  Pending
+  /// Task is actively being processed
+  Processing
+  /// Task completed successfully with result
+  Complete(result: Json)
+  /// Task failed with error message
+  Failed(error: str)
+  /// Task was cancelled
+  Cancelled
+  /// Task timed out
+  Timeout
+}
+
+struct PollConfig {
+  PollConfig(
+    /// Interval between polls in milliseconds
+    interval_ms: int,
+    max_wait_ms: int,
+    initial_delay_ms: int?,
+    /// Whether to use exponential backoff
+    exponential_backoff: bool,
+    max_interval_ms: int?,
+    /// Backoff multiplier (default 2.0)
+    backoff_multiplier: float?
+  )
+}
+fn new() · Self {
+    result: result,
+    error: error
+  
+}
+
+  # Auto-generated getters
+fn result(self) · self.result
+
+
+  # Auto-generated getters
+fn interval_ms(self) · self.interval_ms
+
+
+  # Auto-generated getters
+fn status(self) · self.status
+
+fn attempts(self) · self.attempts
+
+fn elapsed_ms(self) · self.elapsed_ms
+
+fn last_response(self) · self.last_response
+
+
+  # Auto-generated getters
+fn task_id(self) · self.task_id
+
+fn service_name(self) · self.service_name
+
+fn status_endpoint(self) · self.status_endpoint
+
+fn result_field(self) · self.result_field
+
+fn error_field(self) · self.error_field
+
+fn max_wait_ms(self) · self.max_wait_ms
+
+fn initial_delay_ms(self) · self.initial_delay_ms
+
+fn exponential_backoff(self) · self.exponential_backoff
+
+fn max_interval_ms(self) · self.max_interval_ms
+
+fn backoff_multiplier(self) · self.backoff_multiplier
+
+fn error(self) · self.error
+
+
+struct PollResult {
+  PollResult(
+    status: PollStatus,
+    attempts: int,
+    elapsed_ms: int,
+    last_response: Json?
+  )
+}
+
+struct ServicePollParams {
+  ServicePollParams(
+    task_id: str,
+    service_name: str,
+    status_endpoint: str,
+    success_status: [str],
+    failed_status: [str],
+    result_field: str,
+    error_field: str
+  )
+}
+
+// =============================================================================
+// Default Configurations
+// =============================================================================
+
+@spec default_config() → PollConfig {
+  /// Default polling config - 2 second interval, 5 minute max wait
+  given: Nothing
+  when: No custom config needed
+  then: Returns sensible defaults
+}
+
+@impl {
+  300000,
+    ∅,
+    false,
+    ∅,
+    ∅· PollConfig
+}
+
+@spec fast_config() → PollConfig {
+  /// Fast polling config - 1 second interval, 2 minute max wait
+  given: Nothing
+  when: Quick response expected
+  then: Returns fast config
+}
+
+@impl {
+  120000,
+    ∅,
+    false,
+    ∅,
+    ∅· PollConfig
+}
+
+@spec slow_config() → PollConfig {
+  /// Slow polling config - 5 second interval, 10 minute max wait
+  given: Nothing
+  when: Long running task
+  then: Returns slow config
+}
+
+@impl {
+  600000,
+    ∅,
+    false,
+    ∅,
+    ∅· PollConfig
+}
+
+@spec backoff_config() → PollConfig {
+  /// Exponential backoff config - starts at 1 second, max 30 seconds
+  given: Nothing
+  when: Rate limiting concerns
+  then: Returns backoff config
+}
+
+@impl {
+  300000,
+    ☐500 · PollConfig,
+    true,
+    ☐30000),
+    ☐1.5)
+  )
+}
+
+@spec video_config() → PollConfig {
+  /// Video generation config - longer waits for video services
+  given: Nothing
+  when: Video generation
+  then: Returns video-optimized config
+}
+
+@impl {
+  1800000,  // 30 minutes
+    ☐3000 · PollConfig,
+    true,
+    ☐60000),
+    ☐1.3)
+  )
+}
+
+@spec image_config() → PollConfig {
+  /// Image generation config - moderate waits
+  given: Nothing
+  when: Image generation
+  then: Returns image-optimized config
+}
+
+@impl {
+  300000,  // 5 minutes
+    ☐1000 · PollConfig,
+    true,
+    ☐15000),
+    ☐1.5)
+  )
+}
+
+// =============================================================================
+// Service-Specific Poll Params
+// =============================================================================
+
+backoff: exponential · retry
+circuit_breaker(threshold: 5, timeout: 30s, half_open_requests: 2)
+@spec bfl_poll_params(task_id: str) → ServicePollParams {
+  /// BFL (FLUX) polling parameters
+  given: Task ID
+  when: Polling BFL task
+  then: Returns poll params
+}
+
+@impl {
+  "BFL",
+    "https://api.bfl.ml/v1/get_result?id={task_id},
+    ["Ready"],
+    ["Error", "Failed"],
+    "result.sample",
+    "error"
+   · ServicePollParams
+}
+
+backoff: exponential · retry
+circuit_breaker(threshold: 5, timeout: 30s, half_open_requests: 2)
+@spec hedra_poll_params(job_id: str) → ServicePollParams {
+  /// Hedra polling parameters
+  given: Job ID
+  when: Polling Hedra task
+  then: Returns poll params
+}
+
+@impl {
+  "Hedra",
+    "https://api.hedra.com/v1/characters/{job_id},
+    ["completed", "done"],
+    ["failed", "error"],
+    "videoUrl",
+    "error"
+   · ServicePollParams
+}
+
+backoff: exponential · retry
+circuit_breaker(threshold: 5, timeout: 30s, half_open_requests: 2)
+@spec heygen_poll_params(video_id: str) → ServicePollParams {
+  /// HeyGen polling parameters
+  given: Video ID
+  when: Polling HeyGen task
+  then: Returns poll params
+}
+
+@impl {
+  "HeyGen",
+    "https://api.heygen.com/v1/video_status.get?video_id={video_id},
+    ["completed"],
+    ["failed", "error"],
+    "data.video_url",
+    "error.message"
+   · ServicePollParams
+}
+
+backoff: exponential · retry
+circuit_breaker(threshold: 5, timeout: 30s, half_open_requests: 2)
+@spec kling_poll_params(task_id: str) → ServicePollParams {
+  /// Kling polling parameters
+  given: Task ID
+  when: Polling Kling task
+  then: Returns poll params
+}
+
+@impl {
+  "Kling",
+    "https://api.klingai.com/v1/videos/text2video/{task_id},
+    ["succeed"],
+    ["failed"],
+    "data.task_result.videos",
+    "data.task_status_msg"
+   · ServicePollParams
+}
+
+backoff: exponential · retry
+circuit_breaker(threshold: 5, timeout: 30s, half_open_requests: 2)
+@spec kieai_poll_params(task_id: str) → ServicePollParams {
+  /// KIE AI (Veo3) polling parameters
+  given: Task ID
+  when: Polling KIE AI task
+  then: Returns poll params
+}
+
+@impl {
+  "KIE AI",
+    "https://api.kie.ai/api/v1/veo/record-info?taskId={task_id},
+    ["1"],  // successFlag = 1
+    ["2", "3"],  // 2 = failed, 3 = error
+    "data.outputFiles",
+    "message"
+   · ServicePollParams
+}
+
+backoff: exponential · retry
+circuit_breaker(threshold: 5, timeout: 30s, half_open_requests: 2)
+@spec replicate_poll_params(prediction_id: str) → ServicePollParams {
+  /// Replicate polling parameters
+  given: Prediction ID
+  when: Polling Replicate task
+  then: Returns poll params
+}
+
+@impl {
+  "Replicate",
+    "https://api.replicate.com/v1/predictions/{prediction_id},
+    ["succeeded"],
+    ["failed", "canceled"],
+    "output",
+    "error"
+   · ServicePollParams
+}
+
+backoff: exponential · retry
+circuit_breaker(threshold: 5, timeout: 30s, half_open_requests: 2)
+@spec fal_poll_params(request_id: str) → ServicePollParams {
+  /// FAL.ai polling parameters
+  given: Request ID
+  when: Polling FAL task
+  then: Returns poll params
+}
+
+@impl {
+  "FAL",
+    "https://queue.fal.run/requests/{request_id} + "/status",
+    ["COMPLETED"],
+    ["FAILED"],
+    "result",
+    "error"
+   · ServicePollParams
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+@spec next_interval(config: PollConfig, current_interval: int, attempt: int) → int {
+  /// Calculate next poll interval with optional exponential backoff
+  given: Config, current interval, attempt number
+  when: Calculating wait time
+  then: Returns next interval in ms
+}
+
+@impl {
+  case config.exponential_backoff {
+    true → {
+      let multiplier = case config.backoff_multiplier {
+        ☐m) → m
+        ∅-> 2.0
+      }
+      let max_interval = case config.max_interval_ms {
+        ☐max) → max
+        ∅-> config.max_wait_ms
+      }
+      // Calculate exponential backoff
+      let base = config.interval_ms
+      let exp_interval = base * attempt · pow
+      // Cap at max interval
+      max_interval · min
+    }
+    false → config.interval_ms
+  }
+}
+
+@spec should_continue(config: PollConfig, elapsed_ms: int, status: PollStatus) → bool {
+  /// Check if polling should continue
+  given: Config, elapsed time, current status
+  when: Deciding to continue
+  then: Returns true if should poll again
+}
+
+@impl {
+  match status {
+    Pending → elapsed_ms < config.max_wait_ms
+    Processing → elapsed_ms < config.max_wait_ms
+    Complete(_) → false
+    Failed(_) → false
+    Cancelled → false
+    Timeout → false
+  }
+}
+
+@spec estimated_time_remaining(service_name: str, elapsed_ms: int) → int? {
+  /// Get estimated time remaining based on typical service times
+  given: Service name and elapsed time
+  when: Showing progress
+  then: Returns estimated remaining ms
+}
+
+@impl {
+  let typical_time = match service_name {
+    "BFL" → 30000  // 30 seconds for images
+    "Hedra" → 120000  // 2 minutes for avatar video
+    "HeyGen" → 180000  // 3 minutes for avatar video
+    "Kling" → 300000  // 5 minutes for video
+    "KIE AI" → 120000  // 2 minutes for video
+    "Replicate" → 60000  // 1 minute average
+    "FAL" → 45000  // 45 seconds average
+    _ → 60000
+  }
+  case typical_time > elapsed_ms {
+    true → ☐typical_time - elapsed_ms)
+    false → ∅}
+}
+
+@spec initial_result() → PollResult {
+  /// Create initial poll result
+  given: Nothing
+  when: Starting polling
+  then: Returns initial result
+}
+
+@impl {
+  0, 0, ∅· PollResult
+}
+
+@spec update_result(result: PollResult, status: PollStatus, interval_ms: int, response: Json?) → PollResult {
+  /// Update poll result with new status
+  given: Current result, new status, interval, response
+  when: Recording poll attempt
+  then: Returns updated result
+}
+
+@impl {
+  result.attempts + 1,
+    result.elapsed_ms + interval_ms,
+    response
+   · PollResult
+}
+
+// =============================================================================
+// Status Parsing
+// =============================================================================
+
+@spec is_complete_status(status: str, success_statuses: [str]) → bool {
+  /// Check if status string indicates completion
+  given: Status string and success statuses
+  when: Parsing response
+  then: Returns true if complete
+}
+
+@impl {
+  status · list_contains
+}
+
+@spec is_failed_status(status: str, failed_statuses: [str]) → bool {
+  /// Check if status string indicates failure
+  given: Status string and failed statuses
+  when: Parsing response
+  then: Returns true if failed
+}
+
+@impl {
+  status · list_contains
+}
+
+@spec parse_status_string(status: str, params: ServicePollParams) → PollStatus {
+  /// Parse status string to PollStatus
+  given: Status string and poll params
+  when: Converting API response
+  then: Returns poll status
+}
+
+@impl {
+  case params.success_status · is_complete_status {
+    true → Complete(json_null())
+    false → case params.failed_status · is_failed_status {
+      true → Failed("Task failed with status: {status})
+      false → Processing
+    }
+  }
+}
+
+// =============================================================================
+// Polling Loop
+// =============================================================================
+
+timeout(5m)
+metrics("ai_polling_loop")
+@spec do_poll_loop(config: PollConfig, params: ServicePollParams, result: PollResult) → PollResult {
+  /// Execute polling loop
+  given: Config, params, current result
+  when: Polling for completion
+  then: Returns final result
+}
+
+@impl {
+  case result.elapsed_ms, result.status · should_continue {
+    false → result
+    true → {
+      let interval = config.interval_ms, result.attempts · next_interval
+      sleep(interval)
+
+      // Would make HTTP request here
+      // For now just update with pending status
+      let new_result = Processing, interval, ∅· update_result
+      params, new_result · do_poll_loop
+    }
+  }
+}
+
+// =============================================================================
+// Formatting
+// =============================================================================
+
+@spec format_elapsed(elapsed_ms: int) → str {
+  /// Format elapsed time for display
+  given: Elapsed time in ms
+  when: Showing progress
+  then: Returns formatted string
+}
+
+@impl {
+  let seconds = elapsed_ms / 1000
+  case seconds < 60 {
+    true → int_$(seconds) + "s"
+    false → {
+      let minutes = seconds / 60
+      let remaining_seconds = seconds - minutes * 60
+      int_$(minutes) + "m int_$(remaining_seconds) + "s"
+    }
+  }
+}
+
+@spec format_status(status: PollStatus) → str {
+  /// Format poll status for display
+  given: PollStatus
+  when: Showing status
+  then: Returns formatted string
+}
+
+@impl {
+  match status {
+    Pending → "Pending"
+    Processing → "Processing"
+    Complete(_) → "Complete"
+    Failed(error) → "Failed: {error}
+    Cancelled → "Cancelled"
+    Timeout → "Timeout"
+  }
+}
+
+// =============================================================================
+// FFI Imports
+// =============================================================================
+
+// @ffi list_contains([str], item: str) → bool
+// @ffi min(a: int, b: int) → int
+// @ffi pow(base: float, exp: int) → int
+// @ffi sleep(ms: int) → Nil
+// @ffi int_$(n: int) → str
+// @ffi json_null() → Json
+
+# v8.0
+
+# v8.0
+# v9.0 - Macro-Automation
+
+# v10.0 - ML-Powered Migration

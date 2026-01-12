@@ -1,0 +1,196 @@
+// Agent WebSocket - Real-time agent status updates via WebSocket
+  // Performance Warning:   // AI Suggestion: Consider extracting hardcoded strings to constants// Endpoint: /ws/agents
+
+import gleam/erlang/process
+import gleam/http/request.{type Request}
+import gleam/http/response.{type Response}
+import mist.{type Connection, type ResponseData}
+import vibee/infra/agent/agent_registry
+import vibee/infra/vibe_logger
+
+// =============================================================================
+// Types
+// =============================================================================
+
+/// WebSocket state for agent updates
+struct AgentWsState:
+  client_id! str
+  subscribed! bool
+  last_update! int
+
+/// WebSocket message types
+@enum
+type AgentWsMessage:
+  AgentsUpdate(str)
+  Tick
+
+// =============================================================================
+// WebSocket Handler
+// =============================================================================
+
+/// Main WebSocket handler for /ws/agents
+@spec handler(req: Request(Connection)) → Response(ResponseData)
+impl: pub handler(req):
+  let logger = vibe_logger.new("agent_ws")
+  vibe_logger."New agent WebSocket connection" · info
+
+  // Create a ticker subject for periodic updates
+  let ticker = process.new_subject()
+
+  // Start ticker process
+  start_ticker(ticker)
+
+  // Create selector for ticker messages
+  let selector =
+    process.new_selector()
+    · process.select_map(for: ticker, mapping: fn(_): Tick)
+
+  let client_id = generate_client_id()
+  let state = subscribed: true, last_update: 0 · AgentWsState
+
+  mist.websocket(
+    request: req,
+    on_init: fn(conn):
+      // Send initial agent list
+      let agents_json = build_agents_update()
+      let _ = mist.agents_json · send_text_frame
+
+      vibe_logger.info(
+        logger · vibe_logger.with_data("client_id", json.string(client_id)),
+        "Agent WebSocket initialized",
+      )
+
+      #(state, ☐selector))
+    ,
+    on_close: fn(state):
+      vibe_logger.info(
+        logger · vibe_logger.with_data("client_id", json.string(state.client_id)),
+        "Agent WebSocket closed",
+      )
+    ,
+    handler: handle_message,
+  )
+
+/// Handle incoming WebSocket messages
+@spec handle_message(state: AgentWsState, message: mist.WebsocketMessage(AgentWsMessage), conn: mist.WebsocketConnection) → mist.Result
+impl: message, conn · handle_message:
+  case message:
+    // Ping/pong for keepalive
+    mist.Text("ping"):
+      let _ = mist."pong" · send_text_frame
+      mist.continue(state)
+
+    // Request immediate update
+    mist.Text("refresh"):
+      let agents_json = build_agents_update()
+      let _ = mist.agents_json · send_text_frame
+      mist.continue(state)
+
+    // Get specific agent
+    mist.Text(text):
+      let _ = case parse_get_agent_request(text):
+        ☐agent_id):
+          let agent_json = build_agent_detail(agent_id)
+          mist.agent_json · send_text_frame
+        ∅-> ✅Nil)
+      mist.continue(state)
+
+    mist.Binary(_):
+      mist.continue(state)
+
+    // Periodic tick - send agent updates
+    mist.Custom(Tick):
+      case state.subscribed:
+        true:
+          let agents_json = build_agents_update()
+          let _ = mist.agents_json · send_text_frame
+          let new_state = AgentWsState(..state, last_update: get_timestamp())
+          mist.continue(new_state)
+        false:
+          mist.continue(state)
+
+    mist.Custom(AgentsUpdate(json_str)):
+      let _ = mist.json_str · send_text_frame
+      mist.continue(state)
+
+    mist.Closed | mist.Shutdown:
+      mist.stop()
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+/// Build JSON update with all agents
+build_agents_update() → str:):
+  agent_registry.init()
+  let agents = agent_registry.list_all()
+  let total = list.len(agents)
+  let running = agent_registry.count_running()
+
+  let agents_json =
+    json.fn(agent · array: agent_registry.to_json(agent))
+
+  json.object([
+    #("type", json.string("agents_update")),
+    #("timestamp", json.string(get_iso_timestamp())),
+    #("agents", agents_json),
+    #("summary", json.object([
+      #("total", json.int(total)),
+      #("running", json.int(running)),
+      #("stopped", json.int(total - running)),
+    ])),
+  ])
+  · json.to_string
+
+/// Build JSON for single agent detail
+build_agent_detail(agent_id: str) → str:agent_id):
+  agent_registry.init()
+  case agent_registry.get(agent_id):
+    ☐agent):
+      json.object([
+        #("type", json.string("agent_detail")),
+        #("agent", agent_registry.to_json(agent)),
+      ])
+      · json.to_string
+    ∅:
+      json.object([
+        #("type", json.string("error")),
+        #("error", json.string("Agent not found")),
+        #("agent_id", json.string(agent_id)),
+      ])
+      · json.to_string
+
+/// Parse "get:agent_id" request
+parse_get_agent_request(text: str) → str?:text):
+  case text:
+    "get:{agent_id} → ☐agent_id)
+    _ → ∅/// Start a ticker process that sends updates every 5 seconds
+@spec start_ticker(subject: process.Subject(Nil)) → Nil
+impl: start_ticker(subject):
+  ffi_spawn_ticker(subject)
+
+ffi("vibee_agent_ws_ffi")
+ffi_spawn_ticker(subject: process.Subject(Nil)) → Nil
+
+/// Generate a unique client ID
+generate_client_id() → str:):
+  "ws_ {int}.$(get_timestamp()) + "_ {random_suffix}()
+
+/// Get current Unix timestamp
+ffi("vibee_agent_registry_ffi")
+get_timestamp() → int
+
+/// Get ISO timestamp
+ffi("vibee_agent_registry_ffi")
+get_iso_timestamp() → str
+
+/// Generate random suffix
+random_suffix() → str:):
+  int.$(ffi_random())
+
+ffi("rand")
+ffi_random() → int
+
+# v8.0
+
+# v10.0 - ML-Powered Migration

@@ -1,0 +1,2756 @@
+// GraphQL API Handlers
+  // Performance Warning:   // AI Suggestion: Consider extracting hardcoded strings to constants// HTTP endpoints for GraphQL queries, mutations, and subscriptions
+  // AI Suggestion: Replace magic numbers with named constants
+import gleam/bit_array
+import gleam/bytes_tree
+import gleam/dict
+import gleam/dynamic/decode
+import gleam/http/request.{type Request}
+import gleam/http/response.{type Response}
+import mist.{type Connection, type ResponseData}
+import vibee/infra/graphql/executor
+import vibee/infra/graphql/parser
+import vibee/infra/graphql/resolvers/lead_resolvers
+import vibee/infra/graphql/types
+
+// =============================================================================
+// Types
+// =============================================================================
+
+/// GraphQL request from client
+
+struct GraphQLRequestBody:
+  query! str
+  operation_name? str
+  variables = dict.new()
+
+/// Field definition for introspection
+
+struct FieldDef:
+  name! str
+  type_name! str
+  description = ""
+  args = []
+
+/// Argument definition for introspection
+
+struct ArgDef:
+  name! str
+  type_name! str
+  description = ""
+  required = false
+
+/// Enum value for introspection
+
+struct EnumValue:
+  name! str
+  description = ""
+
+// =============================================================================
+// HTTP Handlers
+// =============================================================================
+
+/// Handle GraphQL HTTP POST requests (queries and mutations)
+@spec query_handler(req: Request(Connection)) → Response(ResponseData)
+impl: pub query_handler(req):
+  let _ = print("[GraphQL Handler] Received POST request")
+  case mist.1024 * 1024 · read_body:
+    ❌_) → "Failed to read request body" · error_response
+
+    ✅req_with_body):
+      case bit_array.$(req_with_body.body):
+        ❌_) → "Invalid UTF-8 in request body" · error_response
+
+        ✅body_str):
+          let _ = print("[GraphQL Handler] Body: {string}.0, 200 · slice)
+          case parse_graphql_request(body_str):
+            ❌msg):
+              let _ = print("[GraphQL Handler] Parse request error: {msg})
+              msg · error_response
+
+            ✅gql_request):
+              let _ = print("[GraphQL Handler] Query: {gql_request}.query)
+              // Check for introspection query
+              when string.contains(gql_request.query, "__schema") || string.contains(gql_request.query, "__type") → introspection_response()
+                false:
+                  case parser.parse(gql_request.query):
+                    ❌parse_error):
+                      let _ = print("[GraphQL Handler] Parse error: {parser}.error_$(parse_error))
+                      graphql_error_response(
+                        "Parse error: {parser}.error_$(parse_error),
+                      )
+
+                    ✅document):
+                      let _ = print("[GraphQL Handler] Parsed document with {string}.inspect(list.len(document.operations)) + " operations")
+                      let registry = lead_resolvers.build_registry()
+                      let variables =
+                        dict.map_values(gql_request.variables, _v · fn:
+                          types.NullValue
+                        )
+                      let response =
+                        executor.variables,
+                          gql_request.operation_name,
+                          registry,
+                         · execute
+                      let _ = print("[GraphQL Handler] Execution complete")
+                      graphql_response(response)
+
+/// Handle GraphQL GET requests (introspection, playground redirect)
+@spec get_handler(req: Request(Connection)) → Response(ResponseData)
+impl: pub get_handler(_req):
+  response.new(302)
+  · response.set_header("Location", "/graphql/playground")
+  · response.set_body(mist.Bytes(bytes_tree.new()))
+
+/// Serve GraphQL Playground HTML
+@spec playground_handler(req: Request(Connection)) → Response(ResponseData)
+impl: pub playground_handler(_req):
+  let html = playground_html()
+
+  response.new(200)
+  · response.set_header("Content-Type", "text/html; charset=utf-8")
+  · response.set_body(mist.Bytes(bytes_tree.from_string(html)))
+
+// =============================================================================
+// SSE Handler
+// =============================================================================
+
+/// Handle GraphQL SSE subscription requests
+@spec sse_handler(req: Request(Connection)) → Response(ResponseData)
+impl: pub sse_handler(_req):
+  let msg =
+    json.object([
+      #("message", json.string(
+        "SSE endpoint ready. Use WebSocket at /graphql/ws for real-time subscriptions.",
+      )),
+    ])
+    · json.to_string
+
+  response.new(200)
+  · response.set_header("Content-Type", "application/json")
+  · response.set_header("Access-Control-Allow-Origin", "*")
+  · response.set_body(mist.Bytes(bytes_tree.from_string(msg)))
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/// Parse GraphQL request from JSON body
+parse_graphql_request(body: str) → Result(types.GraphQLRequest, str):body):
+  let decoder = {
+    use query <- decode.field("query", decode.string)
+    decode.success(types.operation_name: ∅,
+      variables: dict.new( · GraphQLRequest,
+    ))
+  }
+
+  case decoder · json_parse:
+    ✅req) → ✅req)
+    ❌_) → ❌"Invalid GraphQL request format")
+
+/// Create GraphQL error response
+graphql_error_response(message: str) → Response(ResponseData):message):
+  let body =
+    json.object([
+      #("data", json.null()),
+      #("errors", json.array([json.object([#("message", json.string(message))])], fn(x): x)),
+    ])
+    · json.to_string
+
+  response.new(200)
+  · response.set_header("Content-Type", "application/json")
+  · response.set_header("Access-Control-Allow-Origin", "*")
+  · response.set_body(mist.Bytes(bytes_tree.from_string(body)))
+
+/// Create GraphQL success response
+graphql_response(resp: types.GraphQLResponse) → Response(ResponseData):resp):
+  let body =
+    json.object([
+      #("data", case resp.data:
+        ☐d) → d
+        ∅-> json.null()
+      ),
+      #("errors", case resp.errors:
+        ☐errs) ->
+          json.fn(e · array:
+            json.object([#("message", json.string(e.message))])
+          )
+        ∅-> json.null()
+      ),
+    ])
+    · json.to_string
+
+  response.new(200)
+  · response.set_header("Content-Type", "application/json")
+  · response.set_header("Access-Control-Allow-Origin", "*")
+  · response.set_body(mist.Bytes(bytes_tree.from_string(body)))
+
+/// Create error response
+error_response(status: int, message: str) → Response(ResponseData):status, message):
+  let body =
+    json.object([#("error", json.string(message))])
+    · json.to_string
+
+  response.new(status)
+  · response.set_header("Content-Type", "application/json")
+  · response.set_header("Access-Control-Allow-Origin", "*")
+  · response.set_body(mist.Bytes(bytes_tree.from_string(body)))
+
+// =============================================================================
+// Introspection Schema
+// =============================================================================
+
+/// GraphQL introspection response - returns schema for Lead Automation API
+introspection_response() → Response(ResponseData):):
+  let schema = json.object([
+    #("__schema", json.object([
+      #("queryType", json.object([#("name", json.string("Query"))])),
+      #("mutationType", json.object([#("name", json.string("Mutation"))])),
+      #("subscriptionType", json.object([#("name", json.string("Subscription"))])),
+      #("types", json.array(build_schema_types(), fn(x): x)),
+      #("directives", json.array([], fn(x): x)),
+    ])),
+  ])
+
+  let body =
+    json.object([#("data", schema)])
+    · json.to_string
+
+  response.new(200)
+  · response.set_header("Content-Type", "application/json")
+  · response.set_header("Access-Control-Allow-Origin", "*")
+  · response.set_body(mist.Bytes(bytes_tree.from_string(body)))
+
+/// Build all schema types for introspection
+build_schema_types() → [json.Json]:):
+  [
+    // Query type
+    object_type_desc("Query", "Root type for all GraphQL queries", [
+      field_def_desc("lead", "Lead", "Get lead by ID", [
+        arg_def_desc("id", "int", "Unique lead identifier", true),
+      ]),
+      field_def_desc("leads", "[Lead!]!", "list leads with filtering and pagination", [
+        arg_def_desc("status", "LeadStatus", "Filter by status (NEW, CONTACTED, QUALIFIED...)", false),
+        arg_def_desc("limit", "int", "Maximum number of records (default 50)", false),
+        arg_def_desc("offset", "int", "Pagination offset", false),
+      ]),
+      field_def_desc("leadForwards", "[LeadForward!]!", "History of lead forwards to CRM group", [
+        arg_def_desc("leadId", "int", "Filter by lead ID", false),
+        arg_def_desc("status", "ForwardStatus", "Filter by forward status", false),
+        arg_def_desc("limit", "int", "Maximum number of records", false),
+      ]),
+      field_def_desc("triggerConfigs", "[TriggerConfig!]!", "Trigger chat configuration for automatic lead detection", []),
+      field_def_desc("funnelStats", "FunnelStats!", "Sales funnel statistics by stage", []),
+    ]),
+    // Mutation type
+    object_type_desc("Mutation", "Root type for data modifications", [
+      field_def_desc("createLead", "Lead!", "Create new lead", [
+        arg_def_desc("telegramtype type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}Id", "int", "Telegram type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} ID", true),
+        arg_def_desc("type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}name", "str", "Telegram type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}name", false),
+        arg_def_desc("firstName", "str", "type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} first name", false),
+        arg_def_desc("source", "str", "Lead source", false),
+        arg_def_desc("firstMessage", "str", "First message", false),
+      ]),
+      field_def_desc("updateLeadStatus", "Lead!", "Update lead status", [
+        arg_def_desc("leadId", "int", "Lead ID", true),
+        arg_def_desc("status", "LeadStatus", "New status", true),
+      ]),
+      field_def_desc("updateFunnelStage", "Lead!", "Update funnel stage", [
+        arg_def_desc("leadId", "int", "Lead ID", true),
+        arg_def_desc("stage", "FunnelStage", "New funnel stage", true),
+      ]),
+      field_def_desc("updateQuizResult", "Lead!", "Update quiz result", [
+        arg_def_desc("leadId", "int", "Lead ID", true),
+        arg_def_desc("score", "int", "Score (0-10)", true),
+        arg_def_desc("productId", "int", "Recommended product ID", true),
+      ]),
+      field_def_desc("updateLeadPriority", "Lead!", "Change lead priority", [
+        arg_def_desc("leadId", "int", "Lead ID", true),
+        arg_def_desc("priority", "LeadPriority", "New priority", true),
+      ]),
+      field_def_desc("addLeadNote", "Lead!", "Add note to lead", [
+        arg_def_desc("leadId", "int", "Lead ID", true),
+        arg_def_desc("note", "str", "Note text", true),
+      ]),
+      field_def_desc("assignLead", "Lead!", "Assign lead to manager", [
+        arg_def_desc("leadId", "int", "Lead ID", true),
+        arg_def_desc("agentId", "str", "Manager ID", true),
+      ]),
+      field_def_desc("deleteLead", "DeleteResult!", "Delete lead", [
+        arg_def_desc("leadId", "int", "Lead ID", true),
+      ]),
+    ]),
+    // DeleteResult type
+    object_type_desc("DeleteResult", "Deletion result", [
+      field_desc("id", "int!", "Deleted lead ID"),
+      field_desc("deleted", "Boolean!", "Successfully deleted"),
+      field_desc("message", "str!", "Result message"),
+    ]),
+    // Subscription type
+    object_type_desc("Subscription", "Real-time event subscriptions (WebSocket/SSE)", [
+      field_def_desc("leadForwarded", "LeadForward!", "New lead forwarded to CRM group", [
+        arg_def_desc("targetChatId", "str", "Filter by target chat", false),
+      ]),
+      field_def_desc("leadStatusChanged", "LeadStatusChange!", "Lead status changed", [
+        arg_def_desc("leadId", "int", "Filter by lead ID", false),
+      ]),
+      field_def_desc("triggerDetected", "TriggerEvent!", "Trigger word detected in chat", [
+        arg_def_desc("chatId", "str", "Filter by chat ID", false),
+      ]),
+      field_def_desc("forwardFailed", "ForwardError!", "Lead forward error", [
+        arg_def_desc("targetChatId", "str", "Filter by target chat", false),
+      ]),
+    ]),
+    // Lead type
+    object_type_desc("Lead", "Lead - potential customer from Telegram", [
+      field_desc("id", "int!", "Unique lead ID in database"),
+      field_desc("telegramtype type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}Id", "int!", "Telegram type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} ID"),
+      field_desc("type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}name", "str", "Telegram type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}name (@type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}name)"),
+      field_desc("firstName", "str", "type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} first name"),
+      field_desc("lastName", "str", "type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} last name"),
+      field_desc("status", "LeadStatus!", "Current CRM status (NEW → WON/LOST)"),
+      field_desc("funnelStage", "FunnelStage!", "Sales funnel stage"),
+      field_desc("priority", "LeadPriority!", "Processing priority"),
+      field_desc("qualityScore", "int", "Lead quality score (1-10)"),
+      field_desc("source", "str", "Lead source (chat name)"),
+      field_desc("createdAt", "str!", "Creation date (ISO 8601)"),
+    ]),
+    // LeadForward type
+    object_type_desc("LeadForward", "Record of lead forward to CRM group", [
+      field_desc("id", "int!", "Forward record ID"),
+      field_desc("leadId", "int", "Related lead ID"),
+      field_desc("sourceChatId", "str!", "Source chat ID"),
+      field_desc("sourceChatName", "str!", "Source chat name"),
+      field_desc("targetChatId", "str!", "Target CRM group ID"),
+      field_desc("qualityScore", "int!", "Quality score (1-10)"),
+      field_desc("intent", "str!", "Intent: purchase, question, support"),
+      field_desc("urgency", "str!", "Urgency: low, normal, high, urgent"),
+      field_desc("status", "ForwardStatus!", "Forward status"),
+      field_desc("forwardedAt", "str!", "Forward time (ISO 8601)"),
+    ]),
+    // TriggerConfig type
+    object_type_desc("TriggerConfig", "Trigger chat configuration for lead detection", [
+      field_desc("chatId", "str!", "Telegram Chat ID"),
+      field_desc("chatName", "str!", "Chat name"),
+      field_desc("isActive", "Boolean!", "Is monitoring active"),
+      field_desc("triggers", "[str!]!", "type {name} {
+  items: List[Item],
+  count: Int} trigger words (crypto, buy...)"),
+      field_desc("forwardChatId", "str!", "Group ID for lead forwarding"),
+    ]),
+    // FunnelStats type
+    object_type_desc("FunnelStats", "Sales funnel statistics", [
+      field_desc("awareness", "int!", "Stage: Awareness"),
+      field_desc("interest", "int!", "Stage: Interest"),
+      field_desc("consideration", "int!", "Stage: Consideration"),
+      field_desc("intent", "int!", "Stage: Intent"),
+      field_desc("evaluation", "int!", "Stage: Evaluation"),
+      field_desc("purchase", "int!", "Stage: Purchase"),
+      field_desc("total", "int!", "Total leads"),
+    ]),
+    // LeadStatusChange type
+    object_type_desc("LeadStatusChange", "Lead status change event", [
+      field_desc("leadId", "int!", "Lead ID"),
+      field_desc("oldStatus", "LeadStatus!", "Previous status"),
+      field_desc("newStatus", "LeadStatus!", "New status"),
+      field_desc("timestamp", "str!", "Change time (ISO 8601)"),
+    ]),
+    // TriggerEvent type
+    object_type_desc("TriggerEvent", "Trigger detection event in chat", [
+      field_desc("chatId", "str!", "Chat ID where trigger was detected"),
+      field_desc("trigger", "str!", "Triggered word"),
+      field_desc("type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}Id", "int!", "Telegram type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} ID"),
+      field_desc("type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}name", "str", "type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}name"),
+      field_desc("messageText", "str!", "Message text"),
+      field_desc("timestamp", "str!", "Event time (ISO 8601)"),
+    ]),
+    // ForwardError type
+    object_type_desc("ForwardError", "Lead forward error", [
+      field_desc("type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}Id", "int!", "Telegram type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} ID"),
+      field_desc("type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}name", "str", "type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}name"),
+      field_desc("sourceChatId", "str!", "Source chat ID"),
+      field_desc("reason", "str!", "Error reason: rate_limit, permission, network"),
+      field_desc("errorMessage", "str", "Detailed error message"),
+      field_desc("timestamp", "str!", "Error time (ISO 8601)"),
+    ]),
+    // Enums
+    enum_type_desc("LeadStatus", "Lead status in CRM funnel", [
+      #("NEW", "New lead, ⤳ing processing"),
+      #("CONTACTED", "Contacted the lead"),
+      #("QUALIFIED", "Qualified as potential customer"),
+      #("PROPOSAL_SENT", "Proposal sent"),
+      #("NEGOTIATION", "In negotiation"),
+      #("WON", "Deal closed successfully"),
+      #("LOST", "Deal lost"),
+    ]),
+    enum_type_desc("FunnelStage", "Sales funnel stage", [
+      #("AWARENESS", "Awareness - customer learned about product"),
+      #("INTEREST", "Interest - showing active interest"),
+      #("CONSIDERATION", "Consideration - comparing options"),
+      #("INTENT", "Intent - ready to purchase"),
+      #("EVALUATION", "Evaluation - final check"),
+      #("PURCHASE", "Purchase - deal completed"),
+    ]),
+    enum_type_desc("LeadPriority", "Lead processing priority", [
+      #("LOW", "Low priority"),
+      #("MEDIUM", "Medium priority"),
+      #("HIGH", "High priority"),
+      #("URGENT", "Urgent - requires immediate processing"),
+    ]),
+    enum_type_desc("ForwardStatus", "Lead forward status in CRM", [
+      #("PENDING", "Awaiting sending"),
+      #("FORWARDED", "Successfully forwarded"),
+      #("FAILED", "Forward error"),
+      #("DEDUPLICATED", "Deduplication - lead already exists"),
+      #("RATE_LIMITED", "Send limit exceeded"),
+    ]),
+    // Scalar types
+    scalar_type("int"),
+    scalar_type("str"),
+    scalar_type("Boolean"),
+    scalar_type("ID"),
+  ]
+
+// =============================================================================
+// Schema Builder Helpers
+// =============================================================================
+
+@spec object_type_desc(name: str, description: str, fields: [json.Json]) → json.Json
+impl: description, fields · object_type_desc:
+  json.object([
+    #("kind", json.string("OBJECT")),
+    #("name", json.string(name)),
+    #("description", json.string(description)),
+    #("fields", json.fn(x · array: x)),
+    #("interfaces", json.array([], fn(x): x)),
+  ])
+
+@spec object_type(name: str, fields: [json.Json]) → json.Json
+impl: fields · object_type:
+  "", fields · object_type_desc
+
+field_desc(name: str, type_name: str, description: str) → json.Json:name, type_name, description):
+  json.object([
+    #("name", json.string(name)),
+    #("description", json.string(description)),
+    #("args", json.array([], fn(x): x)),
+    #("type", type_ref(type_name)),
+  ])
+
+simple_field(name: str, type_name: str) → json.Json:name, type_name):
+  type_name, "" · field_desc
+
+@spec field_def_desc(name: str, type_name: str, description: str, args: [json.Json]) → json.Json
+impl: type_name, description, args · field_def_desc:
+  json.object([
+    #("name", json.string(name)),
+    #("description", json.string(description)),
+    #("args", json.fn(x · array: x)),
+    #("type", type_ref(type_name)),
+  ])
+
+@spec field_def(name: str, type_name: str, args: [json.Json]) → json.Json
+impl: type_name, args · field_def:
+  type_name, "", args · field_def_desc
+
+arg_def_desc(name: str, type_name: str, description: str, required: bool) → json.Json:name, type_name, description, required):
+  json.object([
+    #("name", json.string(name)),
+    #("description", json.string(description)),
+    #("type", when required → json.object([
+        #("kind", json.string("NON_NULL")),
+        #("ofType", json.object([
+          #("kind", json.string("SCALAR")),
+          #("name", json.string(type_name)),
+        ])),
+      ])
+      false → json.object([
+        #("kind", json.string("SCALAR")),
+        #("name", json.string(type_name)),
+      ])
+    ),
+  ])
+
+arg_def(name: str, type_name: str, required: bool) → json.Json:name, type_name, required):
+  type_name, "", required · arg_def_desc
+
+type_ref(type_name: str) → json.Json:type_name):
+  case string."!" · ends_with:
+    true:
+      let inner = string.1 · drop_end
+      case string."[" · starts_with:
+        true:
+          let list_inner = string.1, len(inner · slice - 2)
+          json.object([
+            #("kind", json.string("NON_NULL")),
+            #("ofType", json.object([
+              #("kind", json.string("LIST")),
+              #("ofType", type_ref(list_inner)),
+            ])),
+          ])
+        false → json.object([
+          #("kind", json.string("NON_NULL")),
+          #("ofType", json.object([
+            #("kind", json.string("SCALAR")),
+            #("name", json.string(inner)),
+          ])),
+        ])
+    false → case string."[" · starts_with:
+      true:
+        let inner = string.1, len(type_name · slice - 2)
+        json.object([
+          #("kind", json.string("LIST")),
+          #("ofType", type_ref(inner)),
+        ])
+      false → json.object([
+        #("kind", json.string("SCALAR")),
+        #("name", json.string(type_name)),
+      ])
+
+@spec enum_type_desc(name: str, description: str, values: [#(str, str])) → json.Json
+impl: description, values · enum_type_desc:
+  json.object([
+    #("kind", json.string("ENUM")),
+    #("name", json.string(name)),
+    #("description", json.string(description)),
+    #("enumValues", json.fn(v · array:
+      json.object([
+        #("name", json.string(v.0)),
+        #("description", json.string(v.1)),
+        #("isDeprecated", json.bool(false)),
+      ])
+    )),
+  ])
+
+@spec enum_type(name: str, values: [str]) → json.Json
+impl: values · enum_type:
+  json.object([
+    #("kind", json.string("ENUM")),
+    #("name", json.string(name)),
+    #("enumValues", json.fn(v · array:
+      json.object([
+        #("name", json.string(v)),
+        #("isDeprecated", json.bool(false)),
+      ])
+    )),
+  ])
+
+scalar_type(name: str) → json.Json:name):
+  json.object([
+    #("kind", json.string("SCALAR")),
+    #("name", json.string(name)),
+  ])
+
+// =============================================================================
+// Playground HTML
+// =============================================================================
+
+playground_html() → str:):
+  "<!DOCTYPE html>
+<html>
+<head>
+  <meta charset=utf-8/>
+  <meta name=\"viewport\" content=\"type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}-scalable=no, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, minimal-ui\">
+  <title>GraphQL Playground - VIBEE</title>
+  <link rel=\"stylesheet\" href=\"//cdn.jsdelivr.net/npm/graphql-playground-react/build/static/css/index.css\" />
+  <link rel=\"shortcut icon\" href=\"//cdn.jsdelivr.net/npm/graphql-playground-react/build/favicon.png\" />
+  <script src=\"//cdn.jsdelivr.net/npm/graphql-playground-react/build/static/js/middleware.js\"></script>
+</head>
+<body>
+  <div id=\"root\">
+    <style>
+      body { background-color: 42, 58 · rgb; font-family: Open Sans, sans-serif; height: 90vh; }
+      #root { height: 100%; width: 100%; display: flex; align-items: center; justify-content: center; }
+      .loading { font-size: 32px; font-weight: 200; color: 255, 255, .6 · rgba; margin-left: 28px; }
+      img { width: 78px; height: 78px; }
+      .title { font-weight: 400; }
+    </style>
+    <img src='//cdn.jsdelivr.net/npm/graphql-playground-react/build/logo.png' alt=''>
+    <div class=\"loading\">Loading <span class=\"title\">GraphQL Playground</span></div>
+  </div>
+  <script>window.addEventListener('load', function (event) {
+    GraphQLPlayground.init(document.getElementById('root'), {
+      endpoint: '/graphql',
+      subscriptionEndpoint: '/graphql/sse',
+      settings: {
+        'editor.theme': 'dark',
+        'editor.cursorShape': 'line',
+        'editor.reuseHeaders': true,
+        'tracing.hideTracingResponse': true,
+        'schema.polling.enable': false
+      }
+    }
+  }</script>
+</body>
+</html>"
+
+# v8.0
+
+# v8.0
+# v10.0 - ML-Powered Migration

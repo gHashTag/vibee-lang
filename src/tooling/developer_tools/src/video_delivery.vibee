@@ -1,0 +1,172 @@
+// Video Delivery Optimization Tools
+  // Performance Warning: // HLS Streaming, CDN, Preloading - Best Practices 2025
+  // AI Suggestion: Consider extracting hardcoded strings to constants  // AI Suggestion: Replace magic numbers with named constants// Improves Time to First Frame from ~5s to <500ms
+// Migrated to compact syntax with @policy references
+
+// =============================================================================
+// HLS STREAMING (Adaptive Bitrate)
+// =============================================================================
+
+POST @BACKGROUND {RENDER_SERVER}/convert/hls "Convert MP4 to HLS format with multiple renditions for adaptive streaming"
+  metrics("video.delivery")
+  @HLS created: mp4_url → convert() → playlist_url ends with ".m3u8"
+  @Renditions: creates 360p, 720p, 1080p variants
+  @auth Bearer(VIBEE_API_KEY)
+
+  video_url: str!           @body
+  renditions: list[str] = ["360p", "720p", "1080p"]  @body
+  segment_duration: int = 6   @body  // HLS segment length in seconds
+
+  → { video_id: str!, playlist_url: str!, rendition_urls: dict!, duration: float!, status: str! }
+
+GET {RENDER_SERVER}/hls/{video_id}/master.m3u8 "Get HLS master manifest for video playback"
+  metrics("video.delivery")
+  @Manifest returned: video_id → get() → m3u8 content
+
+  video_id: str!  @path
+
+  → { manifest: str!, available_qualities: list[str]!, duration: float! }
+
+GET {RENDER_SERVER}/hls/status/{job_id} "Check HLS conversion job status"
+
+  job_id: str!  @path
+
+  → { status: str!, progress: float?, playlist_url: str?, error: str? }
+
+// =============================================================================
+// CDN INTEGRATION
+// =============================================================================
+
+POST @SLOW {RENDER_SERVER}/cdn/upload "Upload video to CDN for fast global edge delivery"
+  metrics("video.delivery")
+  @CDN uploaded: video → upload() → cdn_url with edge caching
+  @Cache TTL: default 1 year for immutable content
+  @auth Bearer(VIBEE_API_KEY)
+
+  video_url: str!         @body
+  cache_ttl: int = 31536000   @body  // 1 year in seconds
+  immutable: bool = true      @body  // Mark as immutable for aggressive caching
+
+  → { cdn_url: str!, cache_status: str!, edge_locations: list[str]!, original_size: int!, compressed_size: int? }
+
+GET {RENDER_SERVER}/cdn/status/{video_id} "Get CDN cache status and edge distribution for video"
+
+  video_id: str!  @path
+
+  → { cached: bool!, edge_locations: list[str]!, hit_rate: float!, bandwidth_saved: int!, ttl_remaining: int! }
+
+DELETE @FAST {RENDER_SERVER}/cdn/cache/{video_id} "Purge video from CDN cache (use when video updated)"
+  @auth Bearer(VIBEE_API_KEY)
+
+  video_id: str!  @path
+
+  → { purged: bool!, edge_locations_cleared: list[str]! }
+
+// =============================================================================
+// VIDEO PRELOADING
+// =============================================================================
+
+GET @FAST {RENDER_SERVER}/video/{video_id}/metadata "Preload video metadata (duration, dimensions, first frame) for fast start"
+  metrics("video.delivery")
+  @Fast metadata: video_id → preload() → metadata in <100ms
+
+  video_id: str!  @path
+
+  → { duration: float!, width: int!, height: int!, fps: float!, codec: str!, bitrate: int!, poster_url: str!, size_bytes: int! }
+
+POST @FAST {RENDER_SERVER}/video/{video_id}/preload "Preload first N seconds of video for instant playback start"
+  metrics("video.delivery")
+  @Instant start: preload first 2s → playback starts immediately
+  @auth Bearer(VIBEE_API_KEY)
+
+  video_id: str!  @path
+  seconds: int = 2  @body  // How many seconds to preload
+  quality: str = "720p"  @body
+
+  → { preload_url: str!, preloaded_bytes: int!, duration_preloaded: float! }
+
+// =============================================================================
+// QUALITY OPTIMIZATION
+// =============================================================================
+
+POST @BACKGROUND {RENDER_SERVER}/video/optimize "Optimize video for web delivery (codec conversion, compression)"
+  metrics("video.delivery")
+  @Optimized: HEVC → H.264 for browser compatibility
+  @Compressed: reduce size by 30-50% with minimal quality loss
+  @auth Bearer(VIBEE_API_KEY)
+
+  video_url: str!           @body
+  target_codec: str = "h264"  @body  // h264, h265, av1
+  quality: str = "balanced"   @body  // fast, balanced, quality
+  max_bitrate: int?           @body  // Max bitrate in kbps
+
+  → { optimized_url: str!, original_size: int!, optimized_size: int!, compression_ratio: float!, codec: str! }
+
+POST @FAST {RENDER_SERVER}/video/{video_id}/poster "Generate poster image from video frame for lazy loading placeholder"
+  @auth Bearer(VIBEE_API_KEY)
+
+  video_id: str!  @path
+  timestamp: float = 0.0  @body  // Seconds into video
+  format: str = "webp"    @body  // webp, jpg, png
+  quality: int = 80       @body  // 1-100
+
+  → { poster_url: str!, width: int!, height: int!, size_bytes: int! }
+
+// =============================================================================
+// UNIFIED DELIVERY PIPELINE
+// =============================================================================
+
+@pipeline
+tool prepare_video_for_delivery:
+  desc: "Full pipeline: optimize, convert to HLS, upload to CDN"
+  metrics("video.delivery")
+  @Production ready: raw video → optimized HLS on CDN
+  circuit_breaker(threshold: 3, timeout: 300000)
+
+  video_url: str!
+  quality: str = "balanced"
+  enable_hls: bool = true
+  enable_cdn: bool = true
+
+  step optimize:
+    → quality · optimize_video
+
+  step generate_poster:
+    → generate_video_poster(optimized_result.video_id, timestamp: 1.0)
+
+  step convert_hls:
+    → when enable_hls → video_to_hls(optimized_result.optimized_url)
+         false → ∅step upload_cdn:
+    → when enable_cdn → upload_to_cdn(hls_result?.playlist_url ?? optimized_result.optimized_url)
+         false → ∅-> { video_url: str!, hls_playlist: str?, cdn_url: str?, poster_url: str!, duration: float!, qualities: list[str]! }
+
+// =============================================================================
+// STREAMING CONFIGURATION
+// =============================================================================
+
+let HLS_CONFIG = const({
+  "segment_duration": 6,
+  "playlist_type": "vod",
+  "renditions": {
+    "360p": { "width": 640, "height": 360, "bitrate": 800 },
+    "480p": { "width": 854, "height": 480, "bitrate": 1400 },
+    "720p": { "width": 1280, "height": 720, "bitrate": 2800 },
+    "1080p": { "width": 1920, "height": 1080, "bitrate": 5000 }
+  }
+}
+
+let CDN_HEADERS = const({
+  "Cache-Control": "public, max-age=31536000, immutable",
+  "Accept-Ranges": "bytes",
+  "Access-Control-Allow-Origin": "*"
+}
+
+let CODEC_SUPPORT = const({
+  "h264": ["chrome", "firefox", "safari", "edge"],
+  "h265": ["safari"],
+  "av1": ["chrome", "firefox", "edge"]
+}
+
+# v8.0
+
+# v10.0 - ML-Powered Migration

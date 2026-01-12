@@ -1,0 +1,397 @@
+name: vibee_syntax_migrator
+version: 1.0.0
+description: Automated tool for migrating VIBEE code from V1 to V2 syntax
+
+metadata:
+  author: VIBEE Team
+  category: tooling
+  tags: [migration, ast, transformation, automation]
+
+types:
+  MigrationConfig:
+    source_dir: string
+    output_dir: string
+    rules: list<MigrationRule>
+    dry_run: boolean
+    backup: boolean
+    
+  MigrationRule:
+    id: string
+    name: string
+    pattern: Pattern
+    replacement: Replacement
+    priority: number
+    enabled: boolean
+    
+  Pattern:
+    regex: optional<string>
+    ast_matcher: optional<ASTMatcher>
+    
+  ASTMatcher:
+    node_type: string
+    conditions: map<string, any>
+    
+  Replacement:
+    template: string
+    variables: map<string, string>
+    
+  MigrationResult:
+    file_path: string
+    success: boolean
+    changes_made: number
+    lines_before: number
+    lines_after: number
+    reduction_percent: number
+    errors: list<string>
+    
+  MigrationReport:
+    total_files: number
+    migrated_files: number
+    failed_files: number
+    total_lines_before: number
+    total_lines_after: number
+    total_reduction_percent: number
+    time_taken_seconds: number
+    rules_applied: map<string, number>
+
+constants:
+  MIGRATION_RULES:
+    - id: "rule_001"
+      name: "Function Stubs"
+      priority: 1
+      pattern:
+        regex: 'pub fn (\w+)\(\) → Result\(String, String\) \{\s*Error\("Not implemented"\)\s*\}'
+      replacement:
+        template: "pub {name}: Result<String, String> = !impl"
+        variables:
+          name: "$1"
+          
+    - id: "rule_002"
+      name: "Type Definitions"
+      priority: 2
+      pattern:
+        regex: 'pub type (\w+)\((\w+), (\w+)\) \{\s*(\w+)\((\w+)\)\s*(\w+)\((\w+)\)\s*\}'
+      replacement:
+        template: "type {name}<{T}, {E}> = {Ok}({T}) | {Error}({E})"
+        
+    - id: "rule_003"
+      name: "Grouped Imports"
+      priority: 3
+      pattern:
+        regex: 'import gleam/(\w+)\nimport gleam/(\w+)\nimport gleam/(\w+)'
+      replacement:
+        template: "import gleam/{{$1, $2, $3}}"
+        
+    - id: "rule_004"
+      name: "Null Coalescing"
+      priority: 4
+      pattern:
+        ast_matcher:
+          node_type: "case_expression"
+          conditions:
+            branches: 2
+            pattern_0: "Some(value)"
+            pattern_1: "None"
+      replacement:
+        template: "{option} ?? {default}"
+        
+    - id: "rule_005"
+      name: "Error Propagation"
+      priority: 5
+      pattern:
+        regex: 'case (\w+) \{\s*Ok\((\w+)\) -> (\w+)\((\w+)\)\s*Error\((\w+)\) -> Error\((\w+)\)\s*\}'
+      replacement:
+        template: "{$1}? |> {$3}"
+        
+    - id: "rule_006"
+      name: "String Interpolation"
+      priority: 6
+      pattern:
+        regex: '"([^"]*)" <> (\w+) <> "([^"]*)"'
+      replacement:
+        template: '"{$1}{{$2}}{$3}"'
+        
+    - id: "rule_007"
+      name: "List Comprehension"
+      priority: 7
+      pattern:
+        ast_matcher:
+          node_type: "pipe_expression"
+          conditions:
+            has_filter: true
+            has_map: true
+      replacement:
+        template: "[{map_expr} for {var} in {list} if {filter_expr}]"
+        
+    - id: "rule_008"
+      name: "Pattern Match Syntax"
+      priority: 8
+      pattern:
+        regex: 'case (\w+) \{'
+      replacement:
+        template: "{$1} match {"
+        
+    - id: "rule_009"
+      name: "Arrow Function Syntax"
+      priority: 9
+      pattern:
+        regex: 'fn\((\w+)\) \{ ([^\}]+) \}'
+      replacement:
+        template: "{$1} => {$2}"
+        
+    - id: "rule_010"
+      name: "Type Annotation Simplification"
+      priority: 10
+      pattern:
+        regex: '→'
+      replacement:
+        template: ":"
+
+behaviors:
+  migrate_file:
+    input:
+      file_path: string
+      rules: list<MigrationRule>
+      config: MigrationConfig
+    output: MigrationResult
+    description: Migrate a single file
+    steps:
+      - Read file content
+      - Parse to AST
+      - Apply each rule in priority order
+      - Generate new code
+      - Calculate metrics
+      - Write to output (if not dry_run)
+      - Return result
+      
+  migrate_directory:
+    input:
+      config: MigrationConfig
+    output: MigrationReport
+    description: Migrate entire directory
+    steps:
+      - Scan directory for .vibee files
+      - Create backup if enabled
+      - Migrate each file
+      - Collect results
+      - Generate report
+      - Return report
+      
+  apply_rule:
+    input:
+      code: string
+      rule: MigrationRule
+    output:
+      new_code: string
+      matches_found: number
+    description: Apply single migration rule
+    steps:
+      - If regex pattern, use regex replacement
+      - If AST matcher, parse and transform AST
+      - Count matches
+      - Return transformed code
+      
+  validate_migration:
+    input:
+      original_file: string
+      migrated_file: string
+    output:
+      valid: boolean
+      errors: list<string>
+    description: Validate migrated code
+    steps:
+      - Compile both versions
+      - Run tests
+      - Compare behavior
+      - Return validation result
+      
+  rollback_migration:
+    input:
+      backup_dir: string
+      target_dir: string
+    output:
+      success: boolean
+    description: Rollback migration from backup
+    steps:
+      - Verify backup exists
+      - Copy files from backup
+      - Restore original state
+      - Return success
+      
+  generate_diff:
+    input:
+      original: string
+      migrated: string
+    output:
+      diff: string
+      changes: list<Change>
+    description: Generate diff between versions
+    steps:
+      - Compare line by line
+      - Identify changes
+      - Format as unified diff
+      - Return diff and changes
+
+functions:
+  - name: parse_vibee_code
+    params:
+      code: string
+    returns: AST
+    description: Parse VIBEE code to AST
+    
+  - name: apply_regex_rule
+    params:
+      code: string
+      pattern: string
+      replacement: string
+    returns: string
+    description: Apply regex-based transformation
+    
+  - name: apply_ast_rule
+    params:
+      ast: AST
+      matcher: ASTMatcher
+      replacement: Replacement
+    returns: AST
+    description: Apply AST-based transformation
+    
+  - name: calculate_code_metrics
+    params:
+      code: string
+    returns: Metrics
+    description: Calculate code metrics
+    
+  - name: backup_directory
+    params:
+      source: string
+      backup: string
+    returns: boolean
+    description: Create backup of directory
+
+tests:
+  - name: migrate_function_stub
+    behavior: migrate_file
+    input:
+      file_path: "test.vibee"
+      rules: [MIGRATION_RULES[0]]
+      config:
+        dry_run: true
+    expected:
+      success: true
+      changes_made: 1
+      reduction_percent: 89
+      
+  - name: migrate_multiple_rules
+    behavior: migrate_file
+    input:
+      file_path: "complex.vibee"
+      rules: MIGRATION_RULES
+      config:
+        dry_run: false
+        backup: true
+    expected:
+      success: true
+      changes_made: > 5
+      
+  - name: migrate_entire_codebase
+    behavior: migrate_directory
+    input:
+      config:
+        source_dir: "honeycomb/"
+        output_dir: "honeycomb_v2/"
+        rules: MIGRATION_RULES
+        dry_run: false
+        backup: true
+    expected:
+      total_files: 2717
+      migrated_files: > 2000
+      total_reduction_percent: > 60
+      
+  - name: validate_semantics_preserved
+    behavior: validate_migration
+    input:
+      original_file: "original.vibee"
+      migrated_file: "migrated.vibee"
+    expected:
+      valid: true
+      errors: []
+      
+  - name: rollback_on_failure
+    behavior: rollback_migration
+    input:
+      backup_dir: "backup/"
+      target_dir: "honeycomb/"
+    expected:
+      success: true
+      
+  - name: generate_migration_diff
+    behavior: generate_diff
+    input:
+      original: "pub fn test() → Result(String, String) { Error(\"Not implemented\") }"
+      migrated: "pub test: Result<String, String> = !impl"
+    expected:
+      diff: contains("-pub fn test()")
+      changes: length == 1
+
+cli_commands:
+  migrate:
+    description: "Migrate VIBEE code to V2 syntax"
+    usage: "vibee migrate [options] <source>"
+    options:
+      - name: "--output"
+        short: "-o"
+        description: "Output directory"
+        default: "source_v2"
+        
+      - name: "--dry-run"
+        short: "-d"
+        description: "Preview changes without applying"
+        default: false
+        
+      - name: "--backup"
+        short: "-b"
+        description: "Create backup before migration"
+        default: true
+        
+      - name: "--rules"
+        short: "-r"
+        description: "Comma-separated list of rule IDs to apply"
+        default: "all"
+        
+      - name: "--report"
+        description: "Generate detailed report"
+        default: true
+        
+    examples:
+      - command: "vibee migrate honeycomb/"
+        description: "Migrate entire honeycomb directory"
+        
+      - command: "vibee migrate --dry-run honeycomb/"
+        description: "Preview migration without changes"
+        
+      - command: "vibee migrate --rules rule_001,rule_002 src/"
+        description: "Apply specific rules only"
+        
+      - command: "vibee migrate --output v2/ --backup honeycomb/"
+        description: "Migrate to v2/ with backup"
+        
+  validate:
+    description: "Validate migrated code"
+    usage: "vibee validate <original> <migrated>"
+    examples:
+      - command: "vibee validate honeycomb/ honeycomb_v2/"
+        description: "Validate migration"
+        
+  rollback:
+    description: "Rollback migration from backup"
+    usage: "vibee rollback <backup_dir> <target_dir>"
+    examples:
+      - command: "vibee rollback backup/ honeycomb/"
+        description: "Restore from backup"
+        
+  diff:
+    description: "Show diff between versions"
+    usage: "vibee diff <original> <migrated>"
+    examples:
+      - command: "vibee diff honeycomb/ honeycomb_v2/"
+        description: "Show all changes"

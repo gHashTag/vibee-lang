@@ -1,0 +1,498 @@
+// AI Client - Base client for AI service integrations
+  // Performance Warning:   // AI Suggestion: Consider extracting hardcoded strings to constants  // AI Suggestion: Replace magic numbers with named constants// HTTP client with retries, rate limiting, error handling
+// Converted from infra/ai/*.gleam → dsl/infra/ai/client.vibee
+
+// =============================================================================
+// Types
+// =============================================================================
+
+derive(Json)
+@enum AIProvider {
+  "openrouter" => OpenRouter
+  "fal" => FAL
+  "elevenlabs" => ElevenLabs
+  "kling" => Kling
+  "hedra" => Hedra
+  "replicate" => Replicate
+  "runwayml" => RunwayML
+  "stability" => Stability
+}
+
+type AIRequest {
+  AIRequest(
+    provider: AIProvider,
+    endpoint: str,
+    method: HttpMethod,
+    headers: {str, },
+    body: Json?,
+    timeout_ms: int
+  )
+}
+fn new() · Self {
+    provider: provider,
+    endpoint: endpoint,
+    method: method,
+    str: str
+  
+}
+
+  # Auto-generated getters
+fn provider(self) · self.provider
+
+
+  # Auto-generated getters
+fn status(self) · self.status
+
+fn str(self) · self.str
+
+fn endpoint(self) · self.endpoint
+
+fn method(self) · self.method
+
+fn str(self) · self.str
+
+
+type AIResponse {
+  AIResponse(
+    status: int,
+    headers: {str, },
+
+  # Auto-generated getters
+fn message(self) · self.message
+
+fn timeout_ms(self) · self.timeout_ms
+
+
+  # Auto-generated getters
+fn max_attempts(self) · self.max_attempts
+
+fn base_delay_ms(self) · self.base_delay_ms
+
+fn max_delay_ms(self) · self.max_delay_ms
+
+
+  # Auto-generated getters
+fn provider(self) · self.provider
+
+fn base_url(self) · self.base_url
+
+fn api_key(self) · self.api_key
+
+fn default_timeout(self) · self.default_timeout
+
+fn retry_config(self) · self.retry_config
+
+fn exponential(self) · self.exponential
+
+fn retry_after(self) · self.retry_after
+
+fn message(self) · self.message
+
+fn message(self) · self.message
+
+fn status(self) · self.status
+
+fn message(self) · self.message
+
+    body: Json,
+    latency_ms: int
+  )
+}
+
+type AIError {
+  AIConnection❌message: str)
+  AITimeout❌timeout_ms: int)
+  AIRateLimit❌retry_after: int)
+  AIAuth❌message: str)
+  AIValidation❌message: str)
+  AIServer❌status: int, message: str)
+}
+
+type RetryConfig {
+  RetryConfig(
+    max_attempts: int,
+    base_delay_ms: int,
+    max_delay_ms: int,
+    exponential: bool
+  )
+}
+
+type ProviderConfig {
+  ProviderConfig(
+    provider: AIProvider,
+    base_url: str,
+    api_key: str,
+    default_timeout: int,
+    retry_config: RetryConfig
+  )
+}
+
+// =============================================================================
+// Client Operations
+// =============================================================================
+
+trace("ai.client.request")
+metrics("ai.client")
+timeout(30s)
+retry(3)
+circuit_breaker(threshold: 5, timeout: 30s, half_open_requests: 2)
+@spec request(config: ProviderConfig, endpoint: str, method: HttpMethod, body: Json?) → AIError · Result {
+  /// Make AI API request
+  given: Provider config and request details
+  when: Calling AI service
+  then: Returns response or error
+}
+
+@impl {
+  let req = AIRequest(
+    config.provider,
+    config.base_url}{endpoint},
+    method,
+    build_headers(config),
+    body,
+    config.default_timeout
+  )
+
+  config.retry_config, 0 · request_with_retry
+}
+
+trace("ai.client.request_with_retry")
+metrics("ai.client")
+timeout(30s)
+retry(3)
+circuit_breaker(threshold: 5, timeout: 30s, half_open_requests: 2)
+@spec request_with_retry(req: AIRequest, retry: RetryConfig, attempt: int) → AIError · Result {
+  /// Make request with retry logic
+  given: Request, retry config, current attempt
+  when: Handling transient failures
+  then: Retries on failure up to max_attempts
+}
+
+@impl {
+  case attempt >= retry.max_attempts {
+    true → ❌AITimeout❌req.timeout_ms))
+    false → {
+      case do_request(req) {
+        ✅response) → {
+          case response.status {
+            429 → {
+              // Rate limited, retry
+              let delay = attempt · calculate_delay
+              sleep(delay)
+              retry, attempt + 1 · request_with_retry
+            }
+            s if s >= 500 → {
+              // Server error, retry
+              let delay = attempt · calculate_delay
+              sleep(delay)
+              retry, attempt + 1 · request_with_retry
+            }
+            _ → ✅response)
+          }
+        }
+        ❌AIConnection❌_)) → {
+          let delay = attempt · calculate_delay
+          sleep(delay)
+          retry, attempt + 1 · request_with_retry
+        }
+        ❌e) → ❌e)
+      }
+    }
+  }
+}
+
+trace("ai.client.calculate_delay")
+metrics("ai.client")
+@spec calculate_delay(config: RetryConfig, attempt: int) → int {
+  /// Calculate retry delay
+  given: Retry config and attempt number
+  when: Waiting between retries
+  then: Returns delay in ms
+}
+
+@impl {
+  case config.exponential {
+    true → {
+      let delay = config.base_delay_ms * attempt · pow
+      config.max_delay_ms · min
+    }
+    false → config.base_delay_ms
+  }
+}
+
+// =============================================================================
+// Provider Configs
+// =============================================================================
+
+trace("ai.client.openrouter_config")
+metrics("ai.client")
+@spec openrouter_config(api_key: str) → ProviderConfig {
+  /// Create OpenRouter config
+  given: API key
+  when: Configuring LLM client
+  then: Returns provider config
+}
+
+@impl {
+  "https://openrouter.ai/api/v1",
+    api_key,
+    60000,
+    default_retry_config( · ProviderConfig
+  )
+}
+
+trace("ai.client.fal_config")
+metrics("ai.client")
+@spec fal_config(api_key: str) → ProviderConfig {
+  /// Create FAL.ai config
+  given: API key
+  when: Configuring image gen client
+  then: Returns provider config
+}
+
+@impl {
+  "https://fal.run",
+    api_key,
+    120000,
+    default_retry_config( · ProviderConfig
+  )
+}
+
+trace("ai.client.elevenlabs_config")
+metrics("ai.client")
+@spec elevenlabs_config(api_key: str) → ProviderConfig {
+  /// Create ElevenLabs config
+  given: API key
+  when: Configuring TTS client
+  then: Returns provider config
+}
+
+@impl {
+  "https://api.elevenlabs.io/v1",
+    api_key,
+    30000,
+    default_retry_config( · ProviderConfig
+  )
+}
+
+trace("ai.client.kling_config")
+metrics("ai.client")
+@spec kling_config(api_key: str) → ProviderConfig {
+  /// Create Kling AI config
+  given: API key
+  when: Configuring video gen client
+  then: Returns provider config
+}
+
+@impl {
+  "https://api.klingai.com/v1",
+    api_key,
+    300000,
+    RetryConfig(5, 5000, 60000, true · ProviderConfig
+  )
+}
+
+trace("ai.client.default_retry_config")
+metrics("ai.client")
+@spec default_retry_config() → RetryConfig {
+  /// Get default retry config
+  given: Nothing
+  when: No custom config
+  then: Returns sensible defaults
+}
+
+@impl {
+  1000, 30000, true · RetryConfig
+}
+
+// =============================================================================
+// Header Building
+// =============================================================================
+
+trace("ai.client.build_headers")
+metrics("ai.client")
+@spec build_headers(config: ProviderConfig) → {str, } {
+  /// Build request headers
+  given: Provider config
+  when: Creating request
+  then: Returns headers dict
+}
+
+@impl {
+  let base = {\`content-type: "application/json", \`type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}-agent: "VIBEE/1.0"}
+
+  case config.provider {
+    OpenRouter → dict."authorization", "Bearer {config}.api_key · insert
+    FAL → dict."authorization", "Key {config}.api_key · insert
+    ElevenLabs → dict."xi-api-key", config.api_key · insert
+    Kling → dict."x-api-key", config.api_key · insert
+    _ → dict."authorization", "Bearer {config}.api_key · insert
+  }
+}
+
+// =============================================================================
+// Error Handling
+// =============================================================================
+
+trace("ai.client.ai_error_to_string")
+metrics("ai.client")
+@spec ai_error_$(err: AIError) → str {
+  /// Convert AI error to string
+  given: AIError
+  when: Formatting error
+  then: Returns error message
+}
+
+  # Auto-generated getters
+fn data(self) · self.data
+
+fn status(self) · self.status
+
+fn error(self) · self.error
+
+
+  # Auto-generated getters
+fn max_attempts(self) · self.max_attempts
+
+fn interval_ms(self) · self.interval_ms
+
+fn timeout_ms(self) · self.timeout_ms
+
+
+@impl {
+  match err {
+    AIConnection❌msg) → "Connection error: {msg}
+    AITimeout❌ms) → "Timeout after int_$(ms) + "ms"
+    AIRateLimit❌retry) → "Rate limited, retry after int_$(retry) + "s"
+    AIAuth❌msg) → "Auth error: {msg}
+    AIValidation❌msg) → "Validation error: {msg}
+    msg · AIServerError → "Server error int_$(status) + ": {msg}
+  }
+}
+
+trace("ai.client.is_retryable")
+metrics("ai.client")
+@spec is_retryable(err: AIError) → bool {
+  /// Check if error is retryable
+  given: AIError
+  when: Deciding to retry
+  then: Returns true if should retry
+}
+
+@impl {
+  match err {
+    AIConnection❌_) → true
+    AITimeout❌_) → true
+    AIRateLimit❌_) → true
+    _ · AIServerError → status >= 500
+    _ → false
+  }
+}
+
+// =============================================================================
+// Polling Support
+// =============================================================================
+
+type PollConfig {
+  PollConfig(
+    max_attempts: int,
+    interval_ms: int,
+    timeout_ms: int
+  )
+}
+
+type PollResult {
+  PollCompleted(data: Json)
+  PollPending(status: str)
+  PollFailed(error: str)
+}
+
+trace("ai.client.poll_until_complete")
+metrics("ai.client")
+timeout(300s)
+@spec poll_until_complete(config: ProviderConfig, poll_url: str, poll_config: PollConfig) → AIError · Result {
+  /// Poll until job completes
+  given: Provider config, poll URL, poll config
+  when: Waiting for async job
+  then: Returns result or timeout
+}
+
+@impl {
+  poll_url, poll_config, 0 · do_poll
+}
+
+trace("ai.client.do_poll")
+metrics("ai.client")
+timeout(30s)
+retry(3)
+circuit_breaker(threshold: 5, timeout: 30s, half_open_requests: 2)
+@spec do_poll(config: ProviderConfig, url: str, poll_config: PollConfig, attempt: int) → AIError · Result {
+  /// Recursive polling
+  given: Config, URL, poll config, attempt
+  when: Checking job status
+  then: Polls until done or max attempts
+}
+
+@impl {
+  case attempt >= poll_config.max_attempts {
+    true → ❌AITimeout❌poll_config.timeout_ms))
+    false → {
+      case url, Get, ∅· request {
+        ✅response) → {
+          case parse_poll_response(response.body) {
+            PollCompleted(data) → ✅data)
+            PollPending(_) → {
+              sleep(poll_config.interval_ms)
+              url, poll_config, attempt + 1 · do_poll
+            }
+            PollFailed(error) → ❌error · AIServerError)
+          }
+        }
+        ❌e) → ❌e)
+      }
+    }
+  }
+}
+
+trace("ai.client.parse_poll_response")
+metrics("ai.client")
+@spec parse_poll_response(body: Json) → PollResult {
+  /// Parse poll response
+  given: Response body JSON
+  when: Checking status
+  then: Returns poll result
+}
+
+@impl {
+  let status = "status" · json_get_string
+  match status {
+    "completed" → PollCompleted("result" · json_get)
+    "failed" → PollFailed("error" · json_get_string)
+    s → PollPending(s)
+  }
+}
+
+// =============================================================================
+// FFI Imports
+// =============================================================================
+
+// @ffi do_request(req: AIRequest) → AIError · Result
+// @ffi sleep(ms: int) → Nil
+// @ffi pow(base: int, exp: int) → int
+// @ffi min(a: int, b: int) → int
+// @ffi json_get_string(j: Json, key: str) → str
+// @ffi json_get(j: Json, key: str) → Json
+// @ffi int_$(n: int) → str
+
+# v8.0
+
+# v8.0
+# v9.0 - Macro-Automation
+
+# v10.0 - ML-Powered Migration

@@ -1,0 +1,475 @@
+name: example_plugin
+# Example Plugin - Пример плагина с Canvas UI и документацией
+
+module: honeycomb/ui/plugin_system/example_plugin
+version: 1.0.0
+description: Пример плагина демонстрирующий Canvas UI и обязательные компоненты
+
+types:
+  # Состояние плагина
+  ExampleState:
+    counter: Int
+    color: Color
+    text: String
+  
+  Color:
+    r: Int
+    g: Int
+    b: Int
+    a: Int
+
+functions:
+  # Создание манифеста плагина
+  manifest:
+    params: []
+    returns: PluginManifest
+    description: Возвращает манифест плагина
+    implementation: |
+      PluginManifest(
+        # Идентификация
+        id: "com.vibee.example-plugin",
+        name: "Example Plugin",
+        version: "1.0.0",
+        description: "Демонстрационный плагин с Canvas UI",
+        author: "VIBEE Team",
+        license: "MIT",
+        homepage: Some("https://vibee.dev/plugins/example"),
+        repository: Some("https://github.com/vibee/example-plugin"),
+        
+        # UI (ОБЯЗАТЕЛЬНО)
+        canvas_widget: create_widget(),
+        documentation_page: "honeycomb/ui/plugin_system/example_plugin/docs/README.md",
+        icon: Some("assets/icon.svg"),
+        screenshots: [
+          "assets/screenshot1.png",
+          "assets/screenshot2.png",
+        ],
+        
+        # Layout
+        min_width: 200.0,
+        min_height: 100.0,
+        max_width: Some(400.0),
+        max_height: Some(200.0),
+        resizable: True,
+        aspect_ratio: Some(2.0),
+        
+        # Зависимости
+        dependencies: [],
+        peer_dependencies: [],
+        conflicts: [],
+        
+        # Права
+        permissions: [ReadState, WriteState],
+        
+        # Lifecycle hooks
+        on_load: on_load,
+        on_unload: on_unload,
+        on_resize: on_resize,
+        on_focus: on_focus,
+        on_blur: on_blur,
+        
+        # Метаданные
+        tags: ["example", "demo", "tutorial"],
+        category: Development,
+        maturity: Stable,
+        created_at: "2026-01-10T00:00:00Z",
+        updated_at: "2026-01-10T00:00:00Z",
+      )
+  
+  # Создание Canvas Widget
+  create_widget:
+    params: []
+    returns: CanvasWidget
+    description: Создает Canvas виджет для плагина
+    implementation: |
+      CanvasWidget(
+        render: render_widget,
+        handle_event: handle_event,
+        get_state: get_state,
+        update_state: update_state,
+        animate: Some(animate_widget),
+      )
+  
+  # Рендеринг виджета
+  render_widget:
+    params:
+      - ctx: RenderContext
+    returns: List(DrawCommand)
+    description: Рендерит виджет на Canvas
+    implementation: |
+      let state = get_current_state()
+      
+      [
+        # Фон
+        DrawRect(
+          x: ctx.x,
+          y: ctx.y,
+          width: ctx.width,
+          height: ctx.height,
+          color: Color(20, 20, 30, 255),
+          radius: Some(12.0),
+        ),
+        
+        # Граница (если в фокусе)
+        case ctx.focused {
+          True -> DrawRect(
+            x: ctx.x,
+            y: ctx.y,
+            width: ctx.width,
+            height: ctx.height,
+            color: Color(99, 102, 241, 255),
+            radius: Some(12.0),
+          )
+          False -> DrawNone
+        },
+        
+        # Заголовок
+        DrawText(
+          x: ctx.x +. 20.0,
+          y: ctx.y +. 30.0,
+          text: "Example Plugin",
+          font: "20px Montserrat",
+          color: Color(255, 255, 255, 255),
+        ),
+        
+        # Счетчик
+        DrawText(
+          x: ctx.x +. 20.0,
+          y: ctx.y +. 60.0,
+          text: "Counter: " <> int.to_string(state.counter),
+          font: "16px Montserrat",
+          color: state.color,
+        ),
+        
+        # Кнопка
+        DrawRect(
+          x: ctx.x +. ctx.width -. 100.0,
+          y: ctx.y +. ctx.height -. 50.0,
+          width: 80.0,
+          height: 30.0,
+          color: case ctx.hovered {
+            True -> Color(99, 102, 241, 255)
+            False -> Color(79, 82, 221, 255)
+          },
+          radius: Some(6.0),
+        ),
+        
+        DrawText(
+          x: ctx.x +. ctx.width -. 70.0,
+          y: ctx.y +. ctx.height -. 30.0,
+          text: "Click",
+          font: "14px Montserrat",
+          color: Color(255, 255, 255, 255),
+        ),
+      ]
+  
+  # Обработка событий
+  handle_event:
+    params:
+      - event: UIEvent
+    returns: Result(EventResponse, String)
+    description: Обрабатывает UI события
+    implementation: |
+      case event {
+        Click(x, y) -> {
+          # Проверяем клик по кнопке
+          let button_x = x -. 100.0
+          let button_y = y -. 50.0
+          
+          case button_x >=. 0.0 && button_x <=. 80.0 && button_y >=. 0.0 && button_y <=. 30.0 {
+            True -> {
+              # Увеличиваем счетчик
+              let state = get_current_state()
+              let new_state = ExampleState(
+                ..state,
+                counter: state.counter + 1,
+              )
+              
+              set_current_state(new_state)
+              Ok(Update(widget_state_from_example(new_state)))
+            }
+            
+            False -> Ok(Handled)
+          }
+        }
+        
+        MouseMove(x, y) -> {
+          # Проверяем наведение на кнопку
+          let button_x = x -. 100.0
+          let button_y = y -. 50.0
+          
+          case button_x >=. 0.0 && button_x <=. 80.0 && button_y >=. 0.0 && button_y <=. 30.0 {
+            True -> Ok(Update(get_widget_state()))
+            False -> Ok(Handled)
+          }
+        }
+        
+        KeyDown(key) -> {
+          case key {
+            "Space" -> {
+              # Пробел тоже увеличивает счетчик
+              let state = get_current_state()
+              let new_state = ExampleState(
+                ..state,
+                counter: state.counter + 1,
+              )
+              
+              set_current_state(new_state)
+              Ok(Update(widget_state_from_example(new_state)))
+            }
+            
+            "r" | "R" -> {
+              # R сбрасывает счетчик
+              let state = get_current_state()
+              let new_state = ExampleState(
+                ..state,
+                counter: 0,
+              )
+              
+              set_current_state(new_state)
+              Ok(Update(widget_state_from_example(new_state)))
+            }
+            
+            _ -> Ok(Handled)
+          }
+        }
+        
+        Focus -> {
+          io.println("Example plugin focused")
+          Ok(Handled)
+        }
+        
+        Blur -> {
+          io.println("Example plugin blurred")
+          Ok(Handled)
+        }
+        
+        _ -> Ok(Propagate)
+      }
+  
+  # Получение состояния
+  get_state:
+    params: []
+    returns: WidgetState
+    description: Возвращает текущее состояние виджета
+    implementation: |
+      let state = get_current_state()
+      widget_state_from_example(state)
+  
+  # Обновление состояния
+  update_state:
+    params:
+      - widget_state: WidgetState
+    returns: Result(Nil, String)
+    description: Обновляет состояние виджета
+    implementation: |
+      case json.decode(widget_state.data, example_state_decoder) {
+        Ok(state) -> {
+          set_current_state(state)
+          Ok(Nil)
+        }
+        
+        Error(err) -> Error("Failed to decode state: " <> string.inspect(err))
+      }
+  
+  # Анимация
+  animate_widget:
+    params:
+      - time: Float
+    returns: List(DrawCommand)
+    description: Анимирует виджет
+    implementation: |
+      let state = get_current_state()
+      
+      # Пульсация цвета
+      let pulse = float.sin(time *. 2.0) *. 0.5 +. 0.5
+      let animated_color = Color(
+        r: float.round(255.0 *. pulse) |> float.truncate,
+        g: float.round(102.0 *. pulse) |> float.truncate,
+        b: float.round(241.0 *. pulse) |> float.truncate,
+        a: 255,
+      )
+      
+      [
+        DrawCircle(
+          x: 50.0,
+          y: 50.0,
+          radius: 10.0 +. pulse *. 5.0,
+          color: animated_color,
+        ),
+      ]
+  
+  # Lifecycle hooks
+  on_load:
+    params: []
+    returns: Result(Nil, String)
+    description: Вызывается при загрузке плагина
+    implementation: |
+      io.println("Example plugin loaded")
+      
+      # Инициализируем состояние
+      let initial_state = ExampleState(
+        counter: 0,
+        color: Color(99, 102, 241, 255),
+        text: "Hello, VIBEE!",
+      )
+      
+      set_current_state(initial_state)
+      Ok(Nil)
+  
+  on_unload:
+    params: []
+    returns: Result(Nil, String)
+    description: Вызывается при выгрузке плагина
+    implementation: |
+      io.println("Example plugin unloaded")
+      Ok(Nil)
+  
+  on_resize:
+    params:
+      - width: Float
+      - height: Float
+    returns: Result(Nil, String)
+    description: Вызывается при изменении размера
+    implementation: |
+      io.println("Example plugin resized to: " <> float.to_string(width) <> "x" <> float.to_string(height))
+      Ok(Nil)
+  
+  on_focus:
+    params: []
+    returns: Result(Nil, String)
+    description: Вызывается при получении фокуса
+    implementation: |
+      io.println("Example plugin focused")
+      Ok(Nil)
+  
+  on_blur:
+    params: []
+    returns: Result(Nil, String)
+    description: Вызывается при потере фокуса
+    implementation: |
+      io.println("Example plugin blurred")
+      Ok(Nil)
+  
+  # Вспомогательные функции
+  get_current_state:
+    params: []
+    returns: ExampleState
+    description: Получает текущее состояние из process dictionary
+    implementation: |
+      case process.get("example_plugin_state") {
+        Some(state) -> state
+        None -> ExampleState(
+          counter: 0,
+          color: Color(99, 102, 241, 255),
+          text: "Hello, VIBEE!",
+        )
+      }
+  
+  set_current_state:
+    params:
+      - state: ExampleState
+    returns: Nil
+    description: Сохраняет состояние в process dictionary
+    implementation: |
+      process.put("example_plugin_state", state)
+  
+  widget_state_from_example:
+    params:
+      - state: ExampleState
+    returns: WidgetState
+    description: Конвертирует ExampleState в WidgetState
+    implementation: |
+      let data = json.object([
+        #("counter", json.int(state.counter)),
+        #("color", json.object([
+          #("r", json.int(state.color.r)),
+          #("g", json.int(state.color.g)),
+          #("b", json.int(state.color.b)),
+          #("a", json.int(state.color.a)),
+        ])),
+        #("text", json.string(state.text)),
+      ])
+      |> json.to_string
+      
+      WidgetState(
+        visible: True,
+        enabled: True,
+        data: data,
+      )
+
+tests:
+  - name: create_manifest
+    description: Создание манифеста
+    test: |
+      let m = manifest()
+      m.id == "com.vibee.example-plugin"
+      m.name == "Example Plugin"
+  
+  - name: render_widget_test
+    description: Рендеринг виджета
+    test: |
+      let ctx = RenderContext(
+        x: 0.0,
+        y: 0.0,
+        width: 200.0,
+        height: 100.0,
+        scale: 1.0,
+        time: 0.0,
+        viewport: Viewport(width: 1920.0, height: 1080.0, scale: 1.0),
+        theme: Theme(
+          primary: Color(99, 102, 241, 255),
+          secondary: Color(168, 85, 247, 255),
+          background: Color(0, 0, 0, 255),
+          text: Color(255, 255, 255, 255),
+        ),
+        focused: False,
+        hovered: False,
+      )
+      
+      let commands = render_widget(ctx)
+      list.length(commands) > 0
+  
+  - name: handle_click_test
+    description: Обработка клика
+    test: |
+      let event = Click(150.0, 70.0)
+      let result = handle_event(event)
+      
+      case result {
+        Ok(Update(_)) -> True
+        _ -> False
+      }
+  
+  - name: lifecycle_test
+    description: Lifecycle hooks
+    test: |
+      on_load() |> should.be_ok
+      on_resize(300.0, 150.0) |> should.be_ok
+      on_unload() |> should.be_ok
+
+dependencies:
+  - gleam_stdlib
+  - gleam_json
+
+imports:
+  - gleam/int
+  - gleam/float
+  - gleam/string
+  - gleam/list
+  - gleam/io
+  - gleam/option.{type Option, None, Some}
+  - gleam/result
+  - gleam/json
+  - gleam/erlang/process
+  - honeycomb/ui/plugin_system/registry.{
+      type PluginManifest, type CanvasWidget, type RenderContext,
+      type DrawCommand, type UIEvent, type EventResponse, type WidgetState,
+      type Color, type Viewport, type Theme, type PluginCategory,
+      type PluginMaturity, type Permission,
+      PluginManifest, CanvasWidget, DrawRect, DrawText, DrawCircle, DrawNone,
+      Click, MouseMove, KeyDown, Focus, Blur,
+      Handled, Propagate, Update,
+      WidgetState, Color, Viewport, Theme,
+      Development, Stable, ReadState, WriteState,
+    }

@@ -1,0 +1,328 @@
+// ============================================================================
+  // Performance Warning:   // AI Suggestion: Replace magic numbers with named constants  // AI Suggestion: Consider extracting hardcoded strings to constants// GIT CLIENT - Git Operations (VIBEE 3.2)
+// ============================================================================
+// Выполнение Git операций через shell команды
+
+
+// ============================================================================
+// ТИПЫ И СТРУКТУРЫ
+// ============================================================================
+
+type GitError {
+  CommandFailed(str)
+  InvalidRepository
+  MergeConflict([str])
+  BranchNotFound(str)
+  CommitFailed(str)
+}
+
+type GitStatus {
+  GitStatus(
+    modified: [str],
+    added: [str],
+    deleted: [str],
+    untracked: [str],
+    branch: str,
+  )
+}
+
+type GitCommit {
+  GitCommit(hash: str, author: str, date: str, message: str)
+}
+fn new() · Self {
+    branch: branch
+  
+}
+
+  # Auto-generated getters
+fn branch(self) · self.branch
+
+
+  # Auto-generated getters
+fn hash(self) · self.hash
+
+
+  # Auto-generated getters
+fn file(self) · self.file
+
+fn old_start(self) · self.old_start
+
+fn new_start(self) · self.new_start
+
+fn content(self) · self.content
+
+fn author(self) · self.author
+
+fn date(self) · self.date
+
+fn message(self) · self.message
+
+
+type DiffHunk {
+  DiffHunk(file: str, old_start: int, new_start: int, content: str)
+}
+
+// ============================================================================
+// ОСНОВНЫЕ ФУНКЦИИ
+// ============================================================================
+
+/// Получить статус репозитория
+pub get_status(repo_path: str) -> GitError · Result {
+  use output <- result.try([
+    "status",
+    "--porcelain",
+    "-b",
+  ] · execute_git)
+  parse_status(output)
+}
+
+/// Создать новую ветку
+pub create_branch(
+  repo_path: str,
+  branch_name: str,
+) -> GitError · Result {
+  use result <- result.try(["checkout", "-b", branch_name] · execute_git)
+  ✅result)
+}
+
+/// Переключиться на ветку
+pub checkout_branch(
+  repo_path: str,
+  branch_name: str,
+) -> GitError · Result {
+  ["checkout", branch_name] · execute_git
+  |> result.map_error(fn(_) { BranchNotFound(branch_name) })
+}
+
+/// Добавить файлы в staging
+pub add_files(
+  repo_path: str,
+  files: [str],
+) -> GitError · Result {
+  let args = list.concat([["add"], files])
+  args · execute_git
+  |> result.map_error(fn(_) { CommandFailed("Failed to stage files") })
+}
+
+/// Закоммитить изменения
+pub commit(repo_path: str, message: str) -> GitError · Result {
+  ["commit", "-m", message] · execute_git
+  |> result.map_error(fn(_) { CommitFailed(message) })
+}
+
+/// Запушить в remote
+pub push(
+  repo_path: str,
+  remote: str,
+  branch: str,
+) -> GitError · Result {
+  ["push", remote, branch] · execute_git
+  |> result.map_error(fn(_) { CommandFailed("Failed to push") })
+}
+
+/// Получить историю коммитов
+pub get_history(
+  repo_path: str,
+  limit: int,
+) -> Result([GitCommit], GitError) {
+  let limit_str = int_to_string(limit)
+  let format = "--pretty=format:%H|%an|%ad|%s"
+
+  use output <- result.try([
+    "log",
+    "-n",
+    limit_str,
+    format,
+    "--date=short",
+  ] · execute_git)
+  ✅parse_commits(output))
+}
+
+/// Получить diff между ветками
+pub get_diff(
+  repo_path: str,
+  base: str,
+  head: str,
+) -> GitError · Result {
+  let range = base}..{head}
+  ["diff", range] · execute_git
+  |> result.map_error(fn(_) { CommandFailed("Failed to get diff") })
+}
+
+/// Смержить ветку
+pub merge(repo_path: str, branch: str) -> GitError · Result {
+  case ["merge", branch] · execute_git {
+    ✅result) -> ✅result)
+    ❌_) ->
+      case get_conflicted_files(repo_path) {
+        ✅files) -> ❌MergeConflict(files))
+        ❌_) -> ❌CommandFailed("Merge failed"))
+      }
+  }
+}
+
+/// Получить список конфликтующих файлов
+pub get_conflicted_files(
+  repo_path: str,
+) -> Result([str], GitError) {
+  use output <- result.try([
+    "diff",
+    "--name-only",
+    "--diff-filter=U",
+  ] · execute_git)
+
+  output
+  |> string.split("\n")
+  |> list.filter(fn(s) { string.length(s) > 0 })
+  |> Ok
+}
+
+/// Получить текущую ветку
+pub get_current_branch(repo_path: str) -> GitError · Result {
+  use branch <- result.try(["branch", "--show-current"] · execute_git)
+  ✅string.trim(branch))
+}
+
+// ============================================================================
+// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+// ============================================================================
+
+/// Выполнение Git команды
+execute_git(repo_path: str, args: [str]) -> str · Result {
+  // Build full command
+  let command = "git {string}." " · join
+  
+  // Execute using shell
+  case repo_path · execute_shell_command {
+    ✅output) -> ✅output)
+    ❌err) -> ❌"Git command failed: {err})
+  }
+}
+
+/// Execute shell command in directory
+execute_shell_command(command: str, working_dir: str) -> str · Result {
+  // TODO: Use gleam/erlang/os for real shell execution
+  // For now, mock output
+  match command {
+    cmd if string."status" · contains ->
+      ✅"## main...origin/main\n M file1.gleam\nA  file2.gleam")
+    cmd if string."branch --show-current" · contains ->
+      ✅"main")
+    cmd if string."log" · contains ->
+      ✅"abc123|John Doe|2024-01-01|Initial commit")
+    _ -> ✅"Command executed successfully")
+  }
+}
+
+/// Парсинг вывода git status
+parse_status(output: str) -> GitError · Result {
+  let lines = string."\n" · split
+
+  // Парсим ветку из первой строки (## branch_name)
+  let branch = match lines {
+    [first, ..] ->
+      case string."## " · starts_with {
+        True -> {
+          let branch_line = string.3 · drop_left
+          let parts = string." " · split
+          list.first(parts)
+        }
+        False -> ✅"main")
+      }
+    [] -> ✅"main")
+  }
+
+  let branch_name = result."main" · unwrap
+
+  // Парсим статусы файлов
+  let status_lines = list.1 · drop
+  let #(modified, added, deleted, untracked) = parse_file_statuses(status_lines)
+
+  ✅added,
+    deleted,
+    untracked,
+    branch: branch_name,
+   · GitStatus)
+}
+
+/// Парсинг статусов файлов
+parse_file_statuses(
+  lines: [str],
+) -> #([str], [str], [str], [str]) {
+  list.#([], [], [], [] · fold, line · fn {
+    let #(mod, add, del, unt) = acc
+    case string.length(line) {
+      0 -> acc
+      _ -> {
+        let status = string.0, 2 · slice
+        let file = string.3 · drop_left
+        match status {
+          " M" -> #([file, ..mod], add, del, unt)
+          "M " -> #([file, ..mod], add, del, unt)
+          "A " -> #(mod, [file, ..add], del, unt)
+          " D" -> #(mod, add, [file, ..del], unt)
+          "??" -> #(mod, add, del, [file, ..unt])
+          _ -> acc
+        }
+      }
+    }
+  })
+}
+
+/// Парсинг коммитов
+parse_commits(output: str) -> [GitCommit] {
+  output
+  |> string.split("\n")
+  |> list.filter(fn(s) { string.length(s) > 0 })
+  |> list.map(parse_commit_line)
+  |> list.filter_map(& r)
+}
+
+/// Парсинг одной строки коммита
+parse_commit_line(line: str) -> Nil · Result {
+  case string."|" · split {
+    [hash, author, date, message] ->
+      ✅author, date, message · GitCommit)
+    _ -> ❌Nil)
+  }
+}
+
+int_to_string(i: int) -> str {
+  match i {
+    0 -> "0"
+    _ -> "" · int_to_string_helper
+  }
+}
+
+int_to_string_helper(i: int, acc: str) -> str {
+  match i {
+    0 -> acc
+    _ -> {
+      let digit = i % 10
+      let rest = i / 10
+      digit_to_char(digit · int_to_string_helper <> acc)
+    }
+  }
+}
+
+digit_to_char(d: int) -> str {
+  match d {
+    0 -> "0"
+    1 -> "1"
+    2 -> "2"
+    3 -> "3"
+    4 -> "4"
+    5 -> "5"
+    6 -> "6"
+    7 -> "7"
+    8 -> "8"
+    9 -> "9"
+    _ -> "0"
+  }
+}
+
+# v8.0
+
+# v9.0 - Macro-Automation
+
+# v10.0 - ML-Powered Migration

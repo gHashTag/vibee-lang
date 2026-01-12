@@ -1,0 +1,525 @@
+// HeyGen Avatar Video Integration
+  // AI Suggestion: Replace magic numbers with named constants  // AI Suggestion: Consider extracting hardcoded strings to constants// API Documentation: https://docs.heygen.com/reference/create-an-avatar-video-v2
+  // Performance Warning: // Supports: Avatar videos, TTS, talking heads
+// Converted from infra/ai/heygen.gleam → dsl/infra/ai/heygen.vibee
+
+import "vibee/dsl/ffi/json"
+
+// =============================================================================
+// Types
+// =============================================================================
+
+struct HeyGenConfig(
+  HeyGenConfig(api_key: str)
+}
+
+struct HeyGenRequest(
+  HeyGenRequest(
+    url: str,
+    method: str,
+    headers: [#(str, str]),
+    body: str
+  )
+}
+
+// =============================================================================
+// Video Request Types (v2 API)
+// =============================================================================
+
+struct VoiceSettings(
+  VoiceSettings(
+    voice_id: str,
+    input_text: str,
+    speed: float?,
+    pitch: int?,
+    emotion: str?
+  )
+}
+
+struct CharacterSettings(
+  CharacterSettings(
+    avatar_id: str,
+    avatar_style: str?,
+    scale: float?
+  )
+}
+
+struct Background(
+  ColorBackground(color: str)
+  ImageBackground(url: str)
+  VideoBackground(url: str)
+}
+
+struct VideoInput(
+  VideoInput(
+    character: CharacterSettings,
+    voice: VoiceSettings,
+    background: Background?
+  )
+}
+
+struct Dimension(
+  Dimension(width: int, height: int)
+}
+
+struct CreateVideoRequestV2(
+  CreateVideoRequestV2(
+    video_inputs: [VideoInput],
+    dimension: Dimension?,
+    caption: bool?,
+    title: str?,
+    callback_id: str?,
+    callback_url: str?
+  )
+}
+
+struct VideoRequest(
+  VideoRequest(
+    avatar_id: str,
+    script: str,
+    voice_id: str?,
+    background_url: str?
+  )
+}
+
+// =============================================================================
+// Response Types
+// =============================================================================
+
+struct VideoStatus(
+  Pending
+  Processing
+  Completed(video_url: str)
+  Failed(error: str)
+}
+
+struct Video(
+  Video(video_id: str, status: VideoStatus)
+}
+
+struct Avatar(
+  Avatar(
+    avatar_id: str,
+    name: str,
+    preview_url: str,
+    gender: str
+  )
+}
+
+struct Voice(
+  Voice(voice_id: str, name: str, language: str, gender: str)
+}
+
+// =============================================================================
+// Config Functions
+// =============================================================================
+
+@spec default_config(api_key: str) → HeyGenConfig {
+  /// Create default HeyGen config
+  given: API key
+  when: Initializing HeyGen client
+  then: Returns configured client
+}
+
+@impl {
+  HeyGenConfig(api_key)
+}
+
+// =============================================================================
+// HTTP Tools (using @http_tool macro)
+// =============================================================================
+
+trace("heygen.create_video_v2")
+@http_tool
+tool create_video_v2:
+  desc: "Create full v2 video generation request with all options"
+  @spec "Video created": valid_config, valid_request → generate() → result.video_id != null
+
+  POST "https://api.heygen.com/v2/video/generate"
+  @auth header("X-Api-Key", config.api_key)
+  circuit_breaker(threshold: 2, timeout: 2m, half_open_requests: 1)
+  metrics("ai.heygen")
+  timeout(3m)
+  retry(2)
+
+  config: HeyGenConfig!          @config
+  video_inputs: [VideoInput]!  @body
+  dimension: Dimension?          @body
+  caption: bool?                 @body
+  title: str?                 @body
+  callback_id: str?           @body
+  callback_url: str?          @body
+
+  returns:
+    video_id: str!
+    status: str!
+
+trace("ai.heygen.create")
+@http_tool
+tool create_video:
+  desc: "Create simple avatar video request"
+  @spec "Video created": valid_config, valid_request → generate() → result.video_id != null
+
+  POST "https://api.heygen.com/v2/video/generate"
+  @auth header("X-Api-Key", config.api_key)
+  circuit_breaker(threshold: 2, timeout: 2m, half_open_requests: 1)
+  metrics("ai.heygen")
+  timeout(3m)
+  retry(2)
+
+  config: HeyGenConfig!          @config
+  avatar_id: str!             @body
+  script: str!                @body
+  voice_id: str?              @body
+  background_url: str?        @body
+
+  returns:
+    video_id: str!
+    status: str!
+
+trace("ai.heygen.avatars")
+@http_tool
+tool list_avatars:
+  desc: "list available HeyGen avatars"
+  @spec "Avatars listed": valid_config → list() → result.avatars != null
+
+  GET "https://api.heygen.com/v2/avatars"
+  @auth header("X-Api-Key", config.api_key)
+  circuit_breaker(threshold: 2, timeout: 2m, half_open_requests: 1)
+  metrics("ai.heygen")
+  timeout(30s)
+  retry(2)
+
+  config: HeyGenConfig!          @config
+
+  returns:
+    avatars: [Avatar]!
+
+trace("heygen.get_video_status")
+@http_tool
+tool get_video_status:
+  desc: "Check video generation status"
+  @spec "Status retrieved": valid_config, valid_id → get_status() → result.status != null
+
+  GET "https://api.heygen.com/v1/video_status.get"
+  @auth header("X-Api-Key", config.api_key)
+  circuit_breaker(threshold: 2, timeout: 2m, half_open_requests: 1)
+  metrics("ai.heygen")
+  timeout(30s)
+  retry(2)
+
+  config: HeyGenConfig!          @config
+  video_id: str!              @query
+
+  returns:
+    status: str!
+    video_url: str?
+    error: str?
+
+trace("ai.heygen.voices")
+@http_tool
+tool list_voices:
+  desc: "list available HeyGen voices"
+  @spec "Voices listed": valid_config → list() → result.voices != null
+
+  GET "https://api.heygen.com/v2/voices"
+  @auth header("X-Api-Key", config.api_key)
+  circuit_breaker(threshold: 2, timeout: 2m, half_open_requests: 1)
+  metrics("ai.heygen")
+  timeout(30s)
+  retry(2)
+
+  config: HeyGenConfig!          @config
+
+  returns:
+    voices: [Voice]!
+
+trace("ai.heygen.get")
+@http_tool
+tool get_video:
+  desc: "Get video details by ID"
+  @spec "Video retrieved": valid_config, valid_id → get() → result.video_id != null
+
+  GET "https://api.heygen.com/v1/video/{video_id}"
+  @auth header("X-Api-Key", config.api_key)
+  circuit_breaker(threshold: 2, timeout: 2m, half_open_requests: 1)
+  metrics("ai.heygen")
+  timeout(30s)
+  retry(2)
+
+  config: HeyGenConfig!          @config
+  video_id: str!              @path
+
+  returns:
+    video_id: str!
+    status: str!
+    video_url: str?
+    duration: float?
+
+trace("ai.heygen.avatar")
+@http_tool
+tool get_avatar_details:
+  desc: "Get avatar details by ID"
+  @spec "Avatar retrieved": valid_config, valid_id → get() → result.avatar_id != null
+
+  GET "https://api.heygen.com/v2/avatars/{avatar_id}"
+  @auth header("X-Api-Key", config.api_key)
+  circuit_breaker(threshold: 2, timeout: 2m, half_open_requests: 1)
+  metrics("ai.heygen")
+  timeout(30s)
+  retry(2)
+
+  config: HeyGenConfig!          @config
+  avatar_id: str!             @path
+
+  returns:
+    avatar_id: str!
+    name: str!
+    preview_url: str!
+    gender: str!
+
+trace("ai.heygen.delete")
+@http_tool
+tool delete_video:
+  desc: "Delete a video by ID"
+  @spec "Video deleted": valid_config, valid_id → delete() → result.success
+
+  DELETE "https://api.heygen.com/v1/video/{video_id}"
+  @auth header("X-Api-Key", config.api_key)
+  circuit_breaker(threshold: 2, timeout: 2m, half_open_requests: 1)
+  metrics("ai.heygen")
+  timeout(30s)
+  retry(2)
+
+  config: HeyGenConfig!          @config
+  video_id: str!              @path
+
+  returns:
+    success: bool!
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+@spec simple_video_request(avatar_id: str, script: str) → VideoRequest {
+  /// Create simple video request
+  given: Avatar ID and script
+  when: Quick video generation
+  then: Returns request with defaults
+}
+
+@impl {
+  script, ∅, ∅· VideoRequest
+}
+
+@spec simple_voice(voice_id: str, text: str) → VoiceSettings {
+  /// Create simple voice settings
+  given: Voice ID and text
+  when: Basic voice config
+  then: Returns voice settings
+}
+
+@impl {
+  text, ∅, ∅, ∅· VoiceSettings
+}
+
+@spec voice_with_options(voice_id: str, text: str, speed: float, pitch: int, emotion: str) → VoiceSettings {
+  /// Create voice settings with all options
+  given: Voice ID, text, speed, pitch, emotion
+  when: Full voice customization
+  then: Returns voice settings
+}
+
+@impl {
+  text, ☐speed · VoiceSettings, ☐pitch), ☐emotion))
+}
+
+@spec simple_character(avatar_id: str) → CharacterSettings {
+  /// Create simple character settings
+  given: Avatar ID
+  when: Basic character config
+  then: Returns character settings
+}
+
+@impl {
+  ∅, ∅· CharacterSettings
+}
+
+@spec character_with_style(avatar_id: str, style: str, scale: float) → CharacterSettings {
+  /// Create character settings with style
+  given: Avatar ID, style, scale
+  when: Custom character appearance
+  then: Returns character settings
+}
+
+@impl {
+  ☐style · CharacterSettings, ☐scale))
+}
+
+@spec create_video_input(character: CharacterSettings, voice: VoiceSettings) → VideoInput {
+  /// Create video input from character and voice
+  given: Character and voice settings
+  when: Building video input
+  then: Returns video input
+}
+
+@impl {
+  voice, ∅· VideoInput
+}
+
+@spec create_video_input_with_bg(character: CharacterSettings, voice: VoiceSettings, background: Background) → VideoInput {
+  /// Create video input with background
+  given: Character, voice, background
+  when: Video with custom background
+  then: Returns video input
+}
+
+@impl {
+  voice, ☐background · VideoInput)
+}
+
+@spec simple_v2_request(video_input: VideoInput) → CreateVideoRequestV2 {
+  /// Create simple v2 request from single input
+  given: Video input
+  when: Quick v2 generation
+  then: Returns v2 request
+}
+
+@impl {
+  CreateVideoRequestV2([video_input], ∅, ∅, ∅, ∅, ∅)
+}
+
+@spec v2_request_with_dimension(video_inputs: [VideoInput], width: int, height: int) → CreateVideoRequestV2 {
+  /// Create v2 request with dimension
+  given: Video inputs and dimensions
+  when: Custom size video
+  then: Returns v2 request
+}
+
+@impl {
+  ☐Dimension(width, height · CreateVideoRequestV2), ∅, ∅, ∅, ∅)
+}
+
+// =============================================================================
+// Available Options
+// =============================================================================
+
+@spec supported_avatar_styles() → [str] {
+  /// Get supported avatar styles
+  given: Nothing
+  when: Listing styles
+  then: Returns style list
+}
+
+@impl {
+  ["normal", "circle", "closeUp"]
+}
+
+@spec supported_emotions() → [str] {
+  /// Get supported emotions
+  given: Nothing
+  when: Listing emotions
+  then: Returns emotion list
+}
+
+@impl {
+  ["default", "excited", "friendly", "serious", "soothing", "broadcaster"]
+}
+
+@spec common_dimensions() → [#(str, Dimension]) {
+  /// Get common video dimensions
+  given: Nothing
+  when: Listing dimensions
+  then: Returns dimension list
+}
+
+@impl {
+  [
+    #("1080p", 1080 · Dimension),
+    #("720p", 720 · Dimension),
+    #("square", 1080 · Dimension),
+    #("portrait", 1920 · Dimension)
+  ]
+}
+
+// =============================================================================
+// Internal Encoding Functions
+// =============================================================================
+
+@spec encode_video_input(input: VideoInput) → Json {
+  /// Encode video input to JSON
+  given: VideoInput
+  when: Building request body
+  then: Returns JSON object
+}
+
+@impl {
+  let character_fields = empty_fields()
+    · add_field("type", "avatar", json_string)
+    · add_field("avatar_id", input.character.avatar_id, json_string)
+    · add_optional_string("avatar_style", input.character.avatar_style)
+    · add_optional_float("scale", input.character.scale)
+
+  let voice_fields = empty_fields()
+    · add_field("type", "text", json_string)
+    · add_field("voice_id", input.voice.voice_id, json_string)
+    · add_field("input_text", input.voice.input_text, json_string)
+    · add_optional_float("speed", input.voice.speed)
+    · add_optional_int("pitch", input.voice.pitch)
+    · add_optional_string("emotion", input.voice.emotion)
+
+  let character_json = json_object(list_reverse(character_fields))
+  let voice_json = json_object(list_reverse(voice_fields))
+
+  let result = empty_fields()
+    · add_field("character", character_json, { it }
+    · add_field("voice", voice_json, { it }
+    · add_optional("background", input.background, encode_background)
+
+  json_object(list_reverse(result))
+}
+
+@spec encode_background(bg: Background) → Json {
+  /// Encode background to JSON
+  given: Background
+  when: Building request body
+  then: Returns JSON object
+}
+
+@impl {
+  match bg {
+    ColorBackground(color) ->
+      json_object([
+        #("type", json_string("color")),
+        #("value", json_string(color))
+      ])
+    ImageBackground(url) ->
+      json_object([
+        #("type", json_string("image")),
+        #("url", json_string(url))
+      ])
+    VideoBackground(url) ->
+      json_object([
+        #("type", json_string("video")),
+        #("url", json_string(url))
+      ])
+  }
+}
+
+// =============================================================================
+// FFI Imports
+// =============================================================================
+
+// @ffi json_object(fields: [#(str, Json])) → Json
+// @ffi json_array(items: [Json]) → Json
+// @ffi json_string(s: str) → Json
+// @ffi json_int(n: int) → Json
+// @ffi json_float(f: float) → Json
+// @ffi json_bool(b: bool) → Json
+// @ffi json_to_string(j: Json) → str
+// @ffi list_map([a], f: fn(a) → b) → [b]
+
+# v8.0
+
+# v8.0
+# v10.0 - ML-Powered Migration

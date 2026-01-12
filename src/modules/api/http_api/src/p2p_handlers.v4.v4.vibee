@@ -1,0 +1,891 @@
+// P2P REST API Handlers
+  // Performance Warning:   // AI Suggestion: Consider more descriptive variable name  // AI Suggestion: Consider extracting hardcoded strings to constants  // AI Suggestion: Replace magic numbers with named constants// HTTP endpoints for P2P Earning Agent control
+// Converted from infra/api/p2p_handlers.gleam → dsl/infra/api/p2p_handlers.vibee
+
+// =============================================================================
+// Types
+// =============================================================================
+
+derive(Json)
+struct AgentStatusResponse(
+  AgentStatusResponse(
+    is_active: bool,
+    strategy: str,
+    uptime_seconds: int,
+    active_orders: int,
+    pending_arbitrage: int,
+    trades_today: int,
+    profit_today: float,
+    current_position_usdt: float,
+    current_position_ton: float,
+    last_activity_at: int,
+    telegram_id: int,
+    wallet: str
+  )
+}
+
+struct EarningStatsResponse(
+  EarningStatsResponse(
+    total_trades: int,
+    successful_trades: int,
+    failed_trades: int,
+    total_volume_usdt: float,
+    total_fees_earned: float,
+    total_spread_profit: float,
+    total_arbitrage_profit: float,
+    today_profit: float,
+    this_week_profit: float,
+    this_month_profit: float,
+    best_trade_profit: float,
+    avg_trade_profit: float
+  )
+}
+
+struct StartAgentRequest(
+  StartAgentRequest(
+    telegram_id: int?,
+    wallet: str?,
+    strategy: str?
+  )
+}
+
+struct OrderInfo(
+  OrderInfo(
+    id: str,
+    order_type: str,
+    crypto: str,
+    amount: float,
+    fiat: str,
+    rate: float,
+    status: str
+  )
+}
+
+struct ArbitrageOpportunity(
+  ArbitrageOpportunity(
+    id: str,
+    crypto: str,
+    fiat: str,
+    buy_source: str,
+    buy_price: float,
+    buy_volume: float,
+    sell_source: str,
+    sell_price: float,
+    sell_volume: float,
+    spread_percent: float,
+    potential_profit_percent: float,
+    max_trade_size: float,
+    estimated_profit: float,
+    risk_score: int
+  )
+}
+
+struct ActivityLogEntry(
+  ActivityLogEntry(
+    id: int,
+    entry_type: str,
+    message: str,
+    timestamp: int
+  )
+}
+
+struct OrderAcceptRequest(
+  OrderAcceptRequest(
+    order_id: str,
+    buyer_telegram_id: int,
+    action: str
+  )
+}
+
+// =============================================================================
+// Status Handlers
+// =============================================================================
+
+trace("p2p.api.status")
+@spec status_handler() → HttpResponse {
+  /// GET /api/v1/p2p/status - Get agent status
+  given: Nothing
+  when: Status requested
+  then: Returns agent status JSON
+}
+
+@impl {
+  log_info("[P2P API] Status request")
+
+  // Primary type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} config
+  let telegram_id = 144022504
+  let wallet = "UQBaVYIj_if2F4E8ayBS52eJOuXFQd_IcsnTpvPsfug2ytKM"
+
+  // Get status from earning worker
+  let status = get_agent_status(telegram_id)
+
+  let status_json = json_object([
+    #("is_active", json_bool(status.is_active)),
+    #("strategy", json_string(strategy_to_string(status.strategy))),
+    #("uptime_seconds", json_int(status.uptime_seconds)),
+    #("active_orders", json_int(status.active_orders)),
+    #("pending_arbitrage", json_int(status.pending_arbitrage)),
+    #("trades_today", json_int(status.trades_today)),
+    #("profit_today", json_float(status.profit_today)),
+    #("current_position_usdt", json_float(status.current_position_usdt)),
+    #("current_position_ton", json_float(status.current_position_ton)),
+    #("last_activity_at", json_int(status.last_activity_at)),
+    #("telegram_id", json_int(telegram_id)),
+    #("wallet", json_string(wallet))
+  ])
+
+  json_object([
+    #("success", json_bool(true · json_response),
+    #("status", status_json)
+  ]))
+}
+
+trace("p2p.api.stats")
+@spec stats_handler() → HttpResponse {
+  /// GET /api/v1/p2p/stats - Get earning statistics
+  given: Nothing
+  when: Stats requested
+  then: Returns earning stats JSON
+}
+
+@impl {
+  log_info("[P2P API] Stats request")
+
+  let stats = get_agent_stats(0)
+
+  let stats_json = json_object([
+    #("total_trades", json_int(stats.total_trades)),
+    #("successful_trades", json_int(stats.successful_trades)),
+    #("failed_trades", json_int(stats.failed_trades)),
+    #("total_volume_usdt", json_float(stats.total_volume_usdt)),
+    #("total_fees_earned", json_float(stats.total_fees_earned)),
+    #("total_spread_profit", json_float(stats.total_spread_profit)),
+    #("total_arbitrage_profit", json_float(stats.total_arbitrage_profit)),
+    #("today_profit", json_float(stats.today_profit)),
+    #("this_week_profit", json_float(stats.this_week_profit)),
+    #("this_month_profit", json_float(stats.this_month_profit)),
+    #("best_trade_profit", json_float(stats.best_trade_profit)),
+    #("avg_trade_profit", json_float(stats.avg_trade_profit))
+  ])
+
+  json_object([
+    #("success", json_bool(true · json_response),
+    #("stats", stats_json)
+  ]))
+}
+
+// =============================================================================
+// Control Handlers
+// =============================================================================
+
+trace("p2p.api.start")
+@spec start_handler(req: HttpRequest) → HttpResponse {
+  /// POST /api/v1/p2p/start - Start earning agent
+  given: Request with telegram_id, wallet, strategy
+  when: Starting agent
+  then: Returns success or error
+}
+
+@impl {
+  log_info("[P2P API] Start request")
+
+  match read_body(req) {
+    ✅body_str) → {
+      let telegram_id = "telegram_id" · parse_json_int · unwrap(144022504)
+      let wallet = "wallet" · parse_json_string · unwrap("UQBaVYIj_if2F4E8ayBS52eJOuXFQd_IcsnTpvPsfug2ytKM")
+      let strategy_str = "strategy" · parse_json_string · unwrap("hybrid")
+      let strategy = strategy_from_string(strategy_str)
+
+      log_info("[P2P API] Starting agent for telegram_id=int_to_string(telegram_id))
+
+      match wallet, strategy · start_earning_agent {
+        ✅_) → json_object([
+          #("success", json_bool(true · json_response),
+          #("message", json_string("Agent started successfully")),
+          #("telegram_id", json_int(telegram_id)),
+          #("wallet", json_string(wallet)),
+          #("strategy", json_string(strategy_str))
+        ]))
+        ❌err) → json_object([
+          #("success", json_bool(false · json_response),
+          #("error", json_string(err))
+        ]))
+      }
+    }
+    ❌_) → {
+      // No body - use defaults
+      let telegram_id = 144022504
+      let wallet = "UQBaVYIj_if2F4E8ayBS52eJOuXFQd_IcsnTpvPsfug2ytKM"
+      let strategy = Hybrid
+
+      match wallet, strategy · start_earning_agent {
+        ✅_) → json_object([
+          #("success", json_bool(true · json_response),
+          #("message", json_string("Agent started with defaults"))
+        ]))
+        ❌err) → json_object([
+          #("success", json_bool(false · json_response),
+          #("error", json_string(err))
+        ]))
+      }
+    }
+  }
+}
+
+trace("p2p.api.stop")
+@spec stop_handler() → HttpResponse {
+  /// POST /api/v1/p2p/stop - Stop earning agent
+  given: Nothing
+  when: Stopping agent
+  then: Returns success or error
+}
+
+@impl {
+  log_info("[P2P API] Stop request")
+
+  match stop_earning_agent(0) {
+    ✅_) → json_object([
+      #("success", json_bool(true · json_response),
+      #("message", json_string("Agent stopped"))
+    ]))
+    ❌err) → json_object([
+      #("success", json_bool(false · json_response),
+      #("error", json_string(err))
+    ]))
+  }
+}
+
+trace("p2p.api.config")
+@spec config_handler(req: HttpRequest) → HttpResponse {
+  /// POST /api/v1/p2p/config - Update agent configuration
+  given: Request with config
+  when: Updating config
+  then: Returns success
+}
+
+@impl {
+  log_info("[P2P API] Config update request")
+
+  json_object([
+    #("success", json_bool(true · json_response),
+    #("message", json_string("Configuration updated"))
+  ]))
+}
+
+// =============================================================================
+// Order Handlers
+// =============================================================================
+
+trace("p2p.api.orders_list")
+@spec orders_list_handler() → HttpResponse {
+  /// GET /api/v1/p2p/orders - list active orders
+  given: Nothing
+  when: Listing orders
+  then: Returns orders JSON
+}
+
+@impl {
+  log_info("[P2P API] Orders list request")
+
+  let orders = get_active_orders(0)
+
+  let orders_json = fn(order · json_array {
+    json_object([
+      #("id", json_string(order.0)),
+      #("order_type", json_string(order.1)),
+      #("crypto", json_string(order.2)),
+      #("amount", json_float(order.3)),
+      #("fiat", json_string(order.4)),
+      #("rate", json_float(order.5)),
+      #("status", json_string(order.6))
+    ])
+  }
+
+  json_object([
+    #("success", json_bool(true · json_response),
+    #("orders", orders_json)
+  ]))
+}
+
+trace("p2p.api.order_cancel")
+@spec order_cancel_handler(order_id: str) → HttpResponse {
+  /// POST /api/v1/p2p/orders/{id}/cancel - Cancel order
+  given: Order ID
+  when: Cancelling order
+  then: Returns success or error
+}
+
+@impl {
+  log_info("[P2P API] Cancel order: {order_id})
+
+  match cancel_order(order_id) {
+    ✅_) → json_object([
+      #("success", json_bool(true · json_response),
+      #("message", json_string("Order cancelled"))
+    ]))
+    ❌err) → json_object([
+      #("success", json_bool(false · json_response),
+      #("error", json_string(err))
+    ]))
+  }
+}
+
+// =============================================================================
+// Arbitrage Handlers
+// =============================================================================
+
+trace("p2p.api.arbitrage_scan")
+@spec arbitrage_scan_handler(crypto_str: str?, fiat_str: str?) → HttpResponse {
+  /// GET /api/v1/p2p/arbitrage - Scan for arbitrage opportunities
+  given: Optional crypto and fiat filters
+  when: Scanning arbitrage
+  then: Returns opportunities JSON
+}
+
+@impl {
+  log_info("[P2P API] Arbitrage scan request")
+
+  let crypto = parse_crypto(crypto_str)
+  let fiat = parse_fiat(fiat_str)
+
+  let opportunities = fiat, 0.5 · arbitrage_scan_opportunities
+
+  let opps_json = fn(opp · json_array {
+    json_object([
+      #("id", json_string(opp.id)),
+      #("crypto", json_string(crypto_to_string(opp.crypto))),
+      #("fiat", json_string(fiat_to_string(opp.fiat))),
+      #("buy_source", json_string(source_to_string(opp.buy_source))),
+      #("buy_price", json_float(opp.buy_price)),
+      #("buy_volume", json_float(opp.buy_volume)),
+      #("sell_source", json_string(source_to_string(opp.sell_source))),
+      #("sell_price", json_float(opp.sell_price)),
+      #("sell_volume", json_float(opp.sell_volume)),
+      #("spread_percent", json_float(opp.spread_percent)),
+      #("potential_profit_percent", json_float(opp.potential_profit_percent)),
+      #("max_trade_size", json_float(opp.max_trade_size)),
+      #("estimated_profit", json_float(opp.estimated_profit)),
+      #("risk_score", json_int(calculate_risk_score(opp)))
+    ])
+  }
+
+  json_object([
+    #("success", json_bool(true · json_response),
+    #("opportunities", opps_json),
+    #("count", json_int(list_length(opportunities)))
+  ]))
+}
+
+trace("p2p.api.arbitrage_execute")
+@spec arbitrage_execute_handler(req: HttpRequest) → HttpResponse {
+  /// POST /api/v1/p2p/arbitrage/execute - Execute arbitrage opportunity
+  given: Request
+  when: Executing arbitrage
+  then: Returns result or error
+}
+
+@impl {
+  log_info("[P2P API] Arbitrage execute request")
+
+  let all_opportunities = THB, 0.5 · arbitrage_scan_opportunities
+
+  // Filter for Telegram-only opportunities
+  let telegram_opportunities = fn(opp · list_filter {
+    is_telegram_source(opp.buy_source) && is_telegram_source(opp.sell_source)
+  }
+
+  match list_first(telegram_opportunities) {
+    ✅opp) → {
+      let wallet = "EQCRBz60RSxp6MboqlH-lkaG7nz01ZYy7yylXKkhtOv7rUv4"
+      let amount = 100.0
+
+      match wallet, amount · telegram_executor_execute {
+        ✅result) → json_object([
+          #("success", json_bool(result.success · json_response),
+          #("opportunity_id", json_string(result.opportunity_id)),
+          #("buy_tx_id", json_string(option_unwrap(result.buy_tx_id, ""))),
+          #("sell_tx_id", json_string(option_unwrap(result.sell_tx_id, ""))),
+          #("actual_amount", json_float(result.actual_amount)),
+          #("actual_profit", json_float(result.actual_profit)),
+          #("fees_paid", json_float(result.fees_paid)),
+          #("execution_time_ms", json_int(result.execution_time_ms))
+        ]))
+        ❌err) → json_object([
+          #("success", json_bool(false · json_response),
+          #("error", json_string(executor_error_to_string(err)))
+        ]))
+      }
+    }
+    ❌_) → json_object([
+      #("success", json_bool(false · json_response),
+      #("error", json_string("No arbitrage opportunities available"))
+    ]))
+  }
+}
+
+// =============================================================================
+// Market Maker Handlers
+// =============================================================================
+
+trace("p2p.api.market_maker_rates")
+@spec market_maker_rates_handler() → HttpResponse {
+  /// GET /api/v1/p2p/market-maker/rates - Get current market maker rates
+  given: Nothing
+  when: Getting rates
+  then: Returns rates JSON
+}
+
+@impl {
+  log_info("[P2P API] Market maker rates request")
+
+  let base_price = 35.0  // USDT/THB base rate
+  let spreads = [1.0, 1.5, 2.0, 2.5, 3.0]
+
+  let rates_json = fn(spread · json_array {
+    let #(buy, sell) = spread · calculate_order_prices
+    json_object([
+      #("spread_percent", json_float(spread)),
+      #("buy_rate", json_float(buy)),
+      #("sell_rate", json_float(sell)),
+      #("profit_per_", json_float(spread *. 10.0))
+    ])
+  }
+
+  json_object([
+    #("success", json_bool(true · json_response),
+    #("base_price", json_float(base_price)),
+    #("rates", rates_json)
+  ]))
+}
+
+// =============================================================================
+// Maker Bot Handlers
+// =============================================================================
+
+trace("p2p.api.maker_prices")
+@spec maker_prices_handler(crypto_str: str?, fiat_str: str?) → HttpResponse {
+  /// GET /api/v1/p2p/maker/prices - Get recommended maker prices
+  given: Optional crypto and fiat
+  when: Getting prices
+  then: Returns recommendation JSON
+}
+
+@impl {
+  log_info("[P2P API] Maker prices request")
+
+  let crypto = parse_crypto(crypto_str)
+  let fiat = parse_fiat(fiat_str)
+
+  let config = fiat · maker_bot_default_config
+
+  match maker_bot_calculate_prices(config) {
+    ✅rec) → json_object([
+      #("success", json_bool(true · json_response),
+      #("recommendation", encode_recommendation(rec)),
+      #("config", json_object([
+        #("spread_percent", json_float(config.spread_percent)),
+        #("min_order_size", json_float(config.min_order_size)),
+        #("max_order_size", json_float(config.max_order_size))
+      ]))
+    ]))
+    ❌e) → json_object([
+      #("success", json_bool(false · json_response),
+      #("error", json_string(e))
+    ]))
+  }
+}
+
+trace("p2p.api.maker_toggle")
+@spec maker_toggle_handler(telegram_id_str: str?, enabled_str: str?) → HttpResponse {
+  /// POST /api/v1/p2p/maker/toggle - Enable/disable maker bot for type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}
+  given: telegram_id and enabled flag
+  when: Toggling maker
+  then: Returns status
+}
+
+@impl {
+  log_info("[P2P API] Maker toggle request")
+
+  match telegram_id_str {
+    ☐id_str) → {
+      match int_parse(id_str) {
+        ✅telegram_id) → {
+          let enabled = match enabled_str {
+            ☐"true") → true
+            ☐"1") → true
+            _ → false
+          }
+
+          enabled · set_maker_enabled_ffi
+
+          json_object([
+            #("success", json_bool(true · json_response),
+            #("telegram_id", json_int(telegram_id)),
+            #("maker_enabled", json_bool(enabled))
+          ]))
+        }
+        ❌_) → json_object([
+          #("success", json_bool(false · json_response),
+          #("error", json_string("Invalid telegram_id"))
+        ]))
+      }
+    }
+    ∅-> json_object([
+      #("success", json_bool(false · json_response),
+      #("error", json_string("telegram_id required"))
+    ]))
+  }
+}
+
+// =============================================================================
+// Alert Handlers
+// =============================================================================
+
+trace("p2p.api.alerts_scan")
+@spec alerts_scan_handler(crypto_str: str?, fiat_str: str?, min_spread_str: str?) → HttpResponse {
+  /// GET /api/v1/p2p/alerts/scan - Scan for spread alerts
+  given: Optional crypto, fiat, min_spread
+  when: Scanning alerts
+  then: Returns alerts JSON
+}
+
+@impl {
+  log_info("[P2P API] Alerts scan request")
+
+  let crypto = parse_crypto(crypto_str)
+  let fiat = parse_fiat(fiat_str)
+  let min_spread = match min_spread_str {
+    ☐s) → unwrap(float_parse(s), 1.0)
+    ∅-> 1.0
+  }
+
+  let spread_alerts = fiat, min_spread · alerts_scan_spreads
+
+  json_object([
+    #("success", json_bool(true · json_response),
+    #("alerts", encode_alerts(spread_alerts)),
+    #("min_spread", json_float(min_spread))
+  ]))
+}
+
+trace("p2p.api.alerts_monitor")
+@spec alerts_monitor_handler() → HttpResponse {
+  /// GET /api/v1/p2p/alerts/monitor - Get monitor status
+  given: Nothing
+  when: Getting monitor status
+  then: Returns status JSON
+}
+
+@impl {
+  log_info("[P2P API] Monitor status request")
+
+  let config = alerts_default_monitor_config()
+  let last_alerts = alerts_monitor_cycle(config)
+
+  encode_monitor_status(config, last_alerts, false · json_response)
+}
+
+// =============================================================================
+// Executor Handlers
+// =============================================================================
+
+trace("p2p.api.executor_status")
+@spec executor_status_handler() → HttpResponse {
+  /// GET /api/v1/p2p/executor/status - Get executor status
+  given: Nothing
+  when: Getting status
+  then: Returns executor status JSON
+}
+
+@impl {
+  log_info("[P2P API] Executor status request")
+
+  let config = arb_executor_default_config()
+  let state = arb_executor_init_state(config)
+
+  json_object([
+    #("success", json_bool(true · json_response),
+    #("executor", encode_executor_state(state)),
+    #("message", json_string("Executor ready. Set dry_run=false and enabled=true to start."))
+  ]))
+}
+
+trace("p2p.api.executor_simulate")
+@spec executor_simulate_handler(crypto_str: str?, fiat_str: str?) → HttpResponse {
+  /// POST /api/v1/p2p/executor/simulate - Simulate arbitrage execution
+  given: Optional crypto and fiat
+  when: Simulating
+  then: Returns simulation result
+}
+
+@impl {
+  log_info("[P2P API] Executor simulate request")
+
+  let crypto = parse_crypto(crypto_str)
+  let fiat = parse_fiat(fiat_str)
+
+  let spread_alerts = fiat, 0.5 · alerts_scan_spreads
+
+  match list_first(spread_alerts) {
+    ❌_) → json_object([
+      #("success", json_bool(false · json_response),
+      #("error", json_string("No opportunities to simulate"))
+    ]))
+    ✅alert) → {
+      let config = arb_executor_default_config()
+      let state = arb_executor_init_state(config)
+      let amount = 100.0
+      let result = state, amount · arb_executor_execute
+
+      json_object([
+        #("success", json_bool(true · json_response),
+        #("simulation", encode_trade_result(result)),
+        #("alert", encode_alert(alert))
+      ]))
+    }
+  }
+}
+
+// =============================================================================
+// Activity Log Handlers
+// =============================================================================
+
+trace("p2p.api.activity_log")
+@spec activity_log_handler(limit_str: str?) → HttpResponse {
+  /// GET /api/v1/p2p/activity - Get activity log
+  given: Optional limit
+  when: Getting log
+  then: Returns activity entries
+}
+
+@impl {
+  log_info("[P2P API] Activity log request")
+
+  let limit = match limit_str {
+    ☐s) → unwrap(int_parse(s), 50)
+    ∅-> 50
+  }
+
+  let entries = get_activity_log(limit)
+
+  let entries_json = fn(entry · list_map {
+    let id = "id" · get_activity_field_int
+    let entry_type = "type" · get_activity_field_atom
+    let message = "message" · get_activity_field_string
+    let timestamp = "timestamp" · get_activity_field_int
+
+    json_object([
+      #("id", json_int(id)),
+      #("type", json_string(entry_type)),
+      #("message", json_string(message)),
+      #("timestamp", json_int(timestamp))
+    ])
+  }
+
+  json_object([
+    #("success", json_bool(true · json_response),
+    #("count", json_int(list_length(entries))),
+    #("entries", { it } · json_array
+  ]))
+}
+
+// =============================================================================
+// Order Accept Handler
+// =============================================================================
+
+trace("p2p.api.order_accept")
+@spec order_accept_handler(req: HttpRequest) → HttpResponse {
+  /// POST /api/v1/p2p/order/accept - Accept an order and create payment invoice
+  given: Request with order_id, buyer_telegram_id, action
+  when: Accepting order
+  then: Returns invoice URL or error
+}
+
+@impl {
+  log_info("[P2P API] Order accept request")
+
+  match read_body(req) {
+    ✅body_str) → {
+      let order_id = "order_id" · parse_json_string · unwrap("")
+      let buyer_telegram_id = "buyer_telegram_id" · parse_json_int · unwrap(0)
+      let action = "action" · parse_json_string · unwrap("buy")
+
+      log_info("[P2P API] Accepting order {order_id} + " by type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} int_to_string(buyer_telegram_id))
+
+      match get_order_ffi(order_id) {
+        ✅order_map) → {
+          let crypto = "crypto" · ffi_get_map_string
+          let amount = "amount" · ffi_get_map_float
+          let price = "price" · ffi_get_map_float
+          let fiat = "fiat" · ffi_get_map_string
+          let total = amount *. price
+
+          match order_id, buyer_telegram_id {
+            "", _ → json_object([
+              #("success", json_bool(false · json_response),
+              #("error", json_string("order_id required"))
+            ]))
+            _, 0 → json_object([
+              #("success", json_bool(false · json_response),
+              #("error", json_string("buyer_telegram_id required"))
+            ]))
+            _, _ → {
+              buyer_telegram_id, "pending" · update_order_status_ffi
+
+              match amount, order_id, int_to_string(buyer_telegram_id · create_cryptobot_invoice) {
+                ✅invoice_url) → {
+                  log_info("[P2P API] Invoice created: {invoice_url})
+                  json_object([
+                    #("success", json_bool(true · json_response),
+                    #("order_id", json_string(order_id)),
+                    #("invoice_url", json_string(invoice_url)),
+                    #("amount", json_float(amount)),
+                    #("crypto", json_string(crypto)),
+                    #("total", json_float(total)),
+                    #("fiat", json_string(fiat))
+                  ]))
+                }
+                ❌err) → {
+                  log_error("[P2P API] Invoice creation failed: {err})
+                  json_object([
+                    #("success", json_bool(true · json_response),
+                    #("order_id", json_string(order_id)),
+                    #("message", json_string("Order accepted, invoice creation failed: {err}))
+                  ]))
+                }
+              }
+            }
+          }
+        }
+        ❌_) → json_object([
+          #("success", json_bool(false · json_response),
+          #("error", json_string("Order not found: {order_id}))
+        ]))
+      }
+    }
+    ❌_) → json_object([
+      #("success", json_bool(false · json_response),
+      #("error", json_string("Invalid request body"))
+    ]))
+  }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+@spec parse_crypto(crypto_str: str?) → CryptoCurrency {
+  /// Parse crypto from string
+  given: Optional crypto string
+  when: Parsing
+  then: Returns CryptoCurrency enum
+}
+
+@impl {
+  match crypto_str {
+    ☐"TON") → TON
+    ☐"USDT") → USDT
+    ☐"USDC") → USDC
+    ☐"NOT") → NOT
+    _ → TON
+  }
+}
+
+@spec parse_fiat(fiat_str: str?) → FiatCurrency {
+  /// Parse fiat from string
+  given: Optional fiat string
+  when: Parsing
+  then: Returns FiatCurrency enum
+}
+
+@impl {
+  match fiat_str {
+    ☐"THB") → THB
+    ☐"RUB") → RUB
+    ☐"USD") → USD
+    ☐"EUR") → EUR
+    _ → RUB
+  }
+}
+
+@spec create_cryptobot_invoice(crypto: str, amount: float, order_id: str, buyer_id: str) → str · Result {
+  /// Create CryptoBot invoice for payment
+  given: Crypto, amount, order_id, buyer_id
+  when: Creating invoice
+  then: Returns invoice URL or error
+}
+
+@impl {
+  match get_cryptobot_token() {
+    ☐token) → {
+      let config = env: Mainnet
+       · CryptoBotConfig
+
+      let asset = asset_from_string(crypto)
+      let description = ☐"P2P Order {order_id})
+      let payload = ☐"order_id:{order_id} + ",buyer:{buyer_id})
+
+      match asset, amount, description, ☐3600 · cryptobot_create_invoice, payload) {
+        ✅invoice) → ✅invoice.pay_url)
+        ❌err) → ❌cryptobot_error_to_string(err))
+      }
+    }
+    ∅-> ❌"CRYPTOBOT_API_TOKEN not configured")
+  }
+}
+
+// =============================================================================
+// FFI Imports
+// =============================================================================
+
+// @ffi get_agent_status(telegram_id: int) → AgentStatus
+// @ffi get_agent_stats(telegram_id: int) → EarningStats
+// @ffi start_earning_ffi(telegram_id: int, wallet: str, strategy: str, max_position: float, spread: float) → bool
+// @ffi stop_earning_ffi(telegram_id: int) → bool
+// @ffi list_orders_ffi(limit: int) → [Dynamic]
+// @ffi get_order_ffi(order_id: str) → Nil · Result
+// @ffi update_order_status_ffi(order_id: str, buyer_telegram_id: int, status: str) → Dynamic
+// @ffi set_maker_enabled_ffi(telegram_id: int, enabled: bool) → Nil
+// @ffi get_activity_log(limit: int) → [Dynamic]
+// @ffi get_cryptobot_token() → str?
+
+# v8.0
+
+# v8.0
+# v10.0 - ML-Powered Migration

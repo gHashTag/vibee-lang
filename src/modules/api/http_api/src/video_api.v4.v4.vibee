@@ -1,0 +1,651 @@
+// Video API Handlers
+  // AI Suggestion: Replace magic numbers with named constants  // AI Suggestion: Consider extracting hardcoded strings to constants// Auto Video Pipeline endpoints for fully automated video rendering
+  // Performance Warning: // Converted from infra/api/video_api.gleam → dsl/infra/api/video_api.vibee
+//
+// Endpoints:
+// POST /api/video/auto-render - Start pipeline
+// GET /api/video/status/:pipeline_id - Check status
+// POST /api/video/ai-render - Start AI-powered pipeline
+// POST /api/video/ai-reels/template1 - AI Reels Template 1
+// GET /api/video/prompts/preview - Preview B-roll prompts
+
+import "vibee/dsl/ffi/json"
+import "vibee/dsl/ffi/http"
+import "vibee/infra/config/endpoints"
+import "vibee/infra/video/pipeline"
+import "vibee/infra/video/broll_prompts"
+import "vibee/infra/video/ai_reels_template1"
+
+// =============================================================================
+// TYPES
+// =============================================================================
+
+derive(Json)
+type AutoRenderRequest(
+  AutoRenderRequest(
+    photo_url: str,
+    script_text: str,
+    voice_id: str?,
+    webhook_url: str?,
+    test_mode: bool
+  )
+}
+
+type Template1Request(
+  Template1Request(
+    photo_url: str,
+    text: str,
+    voice_id: str?,
+    telegram_id: str,
+    test_mode: bool
+  )
+}
+
+type PipelineConfig(
+  PipelineConfig(
+    elevenlabs_api_key: str,
+    fal_api_key: str,
+    remotion_url: str,
+    test_assets_url: str
+  )
+}
+
+@enum PipelineError {
+  "tts_error" => TTS❌msg: str)
+  "lipsync_error" => Lipsync❌msg: str)
+  "render_error" => Render❌msg: str)
+  "config_error" => Config❌msg: str)
+  "network_error" => Network❌msg: str)
+  "broll_error" => BRoll❌msg: str)
+}
+
+// =============================================================================
+// POST /api/video/auto-render
+// Start fully automated video pipeline
+// =============================================================================
+
+POST /api/video/auto-render "Start fully automated video pipeline"
+  metrics("video.render")
+  @spec "Pipeline started": valid_request() → start_pipeline() → job.id != null
+
+  photo_url: str!     @body
+  script_text: str!   @body
+  voice_id: str?      @body
+  webhook_url: str?   @body
+  test_mode: bool = true  @body
+
+  → {
+    id: str!,
+    status: str!,
+    photo_url: str?,
+    script_text: str?,
+    error: str?
+  }
+
+@spec auto_render_handler(req: Request(Connection)) → Response(ResponseData) {
+  /// POST /api/video/auto-render
+  /// Start fully automated video pipeline
+  given: HTTP request with render params
+  when: Starting video pipeline
+  then: Returns 202 Accepted with job info or error
+}
+
+@impl {
+  // Read request body
+  match 1024 * 1024 · mist_read_body {
+    ✅body_req) → {
+      let body_str = match bit_array_to_string(body_req.body) {
+        ✅s) → s
+        ❌_) → ""
+      }
+
+      // Parse JSON request manually
+      match parse_auto_render_request(body_str) {
+        ✅render_req) → {
+          // Get config (hardcoded for test mode)
+          let config = get_pipeline_config()
+
+          // Build pipeline request
+          let pipeline_req = PipelineRequest(
+            photo_url: render_req.photo_url,
+            script_text: render_req.script_text,
+            voice_id: render_req.voice_id,
+            webhook_url: render_req.webhook_url,
+            test_mode: render_req.test_mode,
+            quick_test: false  // Full render via API
+          )
+
+          // Start pipeline (test mode for now)
+          match pipeline_req · start_test_pipeline {
+            ✅job) → {
+              let body = job_to_json(job) · json_to_string()
+
+              response_new(202)
+              · response_set_header("content-type", "application/json")
+              · response_set_header("location", "/api/video/status/{job}.id)
+              · response_set_body(mist_bytes(bytes_tree_from_string(body)))
+            }
+            ❌err) → {
+              let error_msg = pipeline_error_to_string(err)
+              error_msg, "failed" · json_error_response
+            }
+          }
+        }
+        ❌err) → {
+          "Invalid request: {err}, "failed" · json_error_response
+        }
+      }
+    }
+    ❌_) → {
+      "Failed to read request body", "failed" · json_error_response
+    }
+  }
+}
+
+// =============================================================================
+// POST /api/video/ai-render
+// Start AI-powered video pipeline with dynamic B-roll generation
+// =============================================================================
+
+POST /api/video/ai-render "Start AI-powered video pipeline"
+  metrics("video.render")
+  @spec "AI Pipeline started": valid_request() → start_ai_pipeline() → job.id != null
+
+  photo_url: str!     @body
+  script_text: str!   @body
+  voice_id: str?      @body
+  webhook_url: str?   @body
+  test_mode: bool = true  @body
+
+  → {
+    id: str!,
+    status: str!,
+    photo_url: str?,
+    script_text: str?,
+    error: str?
+  }
+
+@spec ai_render_handler(req: Request(Connection)) → Response(ResponseData) {
+  /// POST /api/video/ai-render
+  /// Start AI-powered video pipeline with dynamic B-roll generation
+  given: HTTP request with render params
+  when: Starting AI video pipeline
+  then: Returns 202 Accepted with job info or error
+}
+
+@impl {
+  // Read request body
+  match 1024 * 1024 · mist_read_body {
+    ✅body_req) → {
+      let body_str = match bit_array_to_string(body_req.body) {
+        ✅s) → s
+        ❌_) → ""
+      }
+
+      // Parse JSON request manually
+      match parse_auto_render_request(body_str) {
+        ✅render_req) → {
+          // Get config
+          let config = get_pipeline_config()
+
+          // Build pipeline request
+          let pipeline_req = PipelineRequest(
+            photo_url: render_req.photo_url,
+            script_text: render_req.script_text,
+            voice_id: render_req.voice_id,
+            webhook_url: render_req.webhook_url,
+            test_mode: render_req.test_mode,
+            quick_test: false  // Full render via API
+          )
+
+          // Start AI pipeline (uses OpenRouter for B-roll generation)
+          match pipeline_req · start_ai_pipeline {
+            ✅job) → {
+              let body = job_to_json(job) · json_to_string()
+
+              response_new(202)
+              · response_set_header("content-type", "application/json")
+              · response_set_header("location", "/api/video/status/{job}.id)
+              · response_set_body(mist_bytes(bytes_tree_from_string(body)))
+            }
+            ❌err) → {
+              let error_msg = pipeline_error_to_string(err)
+              error_msg, "failed" · json_error_response
+            }
+          }
+        }
+        ❌err) → {
+          "Invalid request: {err}, "failed" · json_error_response
+        }
+      }
+    }
+    ❌_) → {
+      "Failed to read request body", "failed" · json_error_response
+    }
+  }
+}
+
+// =============================================================================
+// POST /api/video/ai-reels/template1
+// AI Reels Template 1 - Full emulation with test mode
+// =============================================================================
+
+POST /api/video/ai-reels/template1 "AI Reels Template 1"
+  metrics("video.reels")
+  @spec "Template1 rendered": valid_request() → run_template1() → result != null
+
+  photo_url: str!     @body
+  text: str!          @body
+  voice_id: str?      @body
+  telegram_id: str = "0"  @body
+  test_mode: bool = true  @body
+
+  → {
+    status: str!,
+    video_url: str?,
+    error: str?
+  }
+
+@spec template1_handler(req: Request(Connection)) → Response(ResponseData) {
+  /// POST /api/video/ai-reels/template1
+  /// AI Reels Template 1 - Full emulation with test mode
+  given: HTTP request with template params
+  when: Running Template 1 pipeline
+  then: Returns video result or error
+}
+
+@impl {
+  match 1024 * 1024 · mist_read_body {
+    ✅body_req) → {
+      let body_str = match bit_array_to_string(body_req.body) {
+        ✅s) → s
+        ❌_) → ""
+      }
+
+      // Parse JSON request
+      match parse_template1_request(body_str) {
+        ✅template_req) → {
+          // Run Template 1 pipeline
+          match run_template1(template_req) {
+            ✅resp) → {
+              let body = response_to_json(resp) · json_to_string()
+
+              response_new(200)
+              · response_set_header("content-type", "application/json")
+              · response_set_body(mist_bytes(bytes_tree_from_string(body)))
+            }
+            ❌err) → {
+              err, "failed" · json_error_response
+            }
+          }
+        }
+        ❌err) → {
+          "Invalid request: {err}, "failed" · json_error_response
+        }
+      }
+    }
+    ❌_) → {
+      "Failed to read request body", "failed" · json_error_response
+    }
+  }
+}
+
+// =============================================================================
+// GET /api/video/status/:pipeline_id
+// Check pipeline status
+// =============================================================================
+
+GET /api/video/status/{pipeline_id} "Check pipeline status"
+  metrics("video.status")
+  @spec "Status returned": valid_pipeline_id(pipeline_id) → get_status() → status != null
+
+  pipeline_id: str!  @path
+
+  → {
+    id: str!,
+    status: str!,
+    message: str?
+  }
+
+@spec status_handler(pipeline_id: str) → Response(ResponseData) {
+  /// GET /api/video/status/:pipeline_id
+  /// Check pipeline status
+  given: Pipeline ID
+  when: Checking pipeline status
+  then: Returns status info
+}
+
+@impl {
+  // TODO: Implement proper status lookup from ETS/database
+  // For now, placeholder response
+  let body = json_object([
+    #("id", json_string(pipeline_id)),
+    #("status", json_string("pending")),
+    #("message", json_string("Pipeline status lookup not yet implemented. Pipeline was started successfully."))
+  ]) · json_to_string()
+
+  response_new(200)
+  · response_set_header("content-type", "application/json")
+  · response_set_body(mist_bytes(bytes_tree_from_string(body)))
+}
+
+// =============================================================================
+// GET /api/video/prompts/preview
+// Preview B-roll prompts for a script (no render)
+// =============================================================================
+
+GET /api/video/prompts/preview "Preview B-roll prompts for a script"
+  metrics("video.prompts")
+  @spec "Prompts returned": script → get_prompts() → prompts != null
+
+  script: str = "business presentation"  @query
+  duration: str = "25.92"  @query
+
+  → {
+    script: str!,
+    duration: float!,
+    prompts: json!,
+    count: int!
+  }
+
+@spec prompts_preview_handler(req: Request(Connection)) → Response(ResponseData) {
+  /// GET /api/video/prompts/preview?script=X&duration=Y
+  /// Preview B-roll prompts for a script (no render)
+  given: HTTP request with script and duration params
+  when: Generating prompt preview
+  then: Returns type {name} {
+  items: List[Item],
+  count: Int} B-roll prompts
+}
+
+@impl {
+  // Get script from query params
+  let query = match req.query {
+    ☐q) → q
+    ∅-> ""
+  }
+
+  // Parse script parameter
+  let script = match "script" · parse_query_param {
+    ☐s) → s
+    ∅-> "business presentation"
+  }
+
+  let duration_str = match "duration" · parse_query_param {
+    ☐d) → d
+    ∅-> "25.92"
+  }
+
+  let duration = match float_parse(duration_str) {
+    ✅d) → d
+    ❌_) → 25.92
+  }
+
+  // Generate prompts
+  let prompts = duration · get_preset_prompts
+
+  let body = json_object([
+    #("script", json_string(script)),
+    #("duration", json_float(duration)),
+    #("prompts", prompts_to_json(prompts)),
+    #("count", json_int(list_length(prompts)))
+  ]) · json_to_string()
+
+  response_new(200)
+  · response_set_header("content-type", "application/json")
+  · response_set_body(mist_bytes(bytes_tree_from_string(body)))
+}
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+@spec get_pipeline_config() → PipelineConfig {
+  /// Get pipeline configuration
+  given: Nothing
+  when: Initializing pipeline
+  then: Returns config with remotion URL
+}
+
+@impl {
+  // For test mode, use hardcoded values
+  // In production, read from environment
+  let remotion_url = get_remotion_url()
+  PipelineConfig(
+    elevenlabs_api_key: "",
+    fal_api_key: "",
+    remotion_url,
+    test_assets_url: remotion_url}/public"
+  )
+}
+
+@spec parse_auto_render_request(body: str) → str · Result {
+  /// Parse auto-render request from JSON body
+  given: JSON string
+  when: Parsing request body
+  then: Returns ✅request) or ❌message)
+}
+
+@impl {
+  match "photo_url" · extract_json_string {
+    ∅-> ❌"Missing photo_url")
+    ☐photo_url) ->
+      match "script_text" · extract_json_string {
+        ∅-> ❌"Missing script_text")
+        ☐script_text) → {
+          // Extract optional fields
+          let voice_id = "voice_id" · extract_json_string
+          let webhook_url = "webhook_url" · extract_json_string
+
+          // Extract test_mode (default true)
+          let test_mode = match "test_mode" · extract_json_bool {
+            ☐b) → b
+            ∅-> true
+          }
+
+          ✅script_text,
+            voice_id,
+            webhook_url,
+            test_mode
+           · AutoRenderRequest)
+        }
+      }
+  }
+}
+
+@spec parse_template1_request(body: str) → str · Result {
+  /// Parse Template 1 request from JSON body
+  given: JSON string
+  when: Parsing template request
+  then: Returns ✅request) or ❌message)
+}
+
+@impl {
+  match "photo_url" · extract_json_string {
+    ∅-> ❌"Missing photo_url")
+    ☐photo_url) ->
+      match "text" · extract_json_string {
+        ∅-> ❌"Missing text")
+        ☐text) → {
+          // Extract optional fields
+          let voice_id = "voice_id" · extract_json_string
+          let telegram_id = match "telegram_id" · extract_json_string {
+            ☐id) → id
+            ∅-> "0"
+          }
+
+          // Extract test_mode (default true)
+          let test_mode = match "test_mode" · extract_json_bool {
+            ☐b) → b
+            ∅-> true
+          }
+
+          ✅text,
+            voice_id,
+            telegram_id,
+            test_mode
+           · Template1Request)
+        }
+      }
+  }
+}
+
+@spec key: str · extract_json_string → str? {
+  /// Extract string value from JSON
+  given: JSON string and key
+  when: Parsing JSON manually
+  then: Returns ☐value) or ∅}
+
+@impl {
+  let pattern = "\"{key} + "\":"
+  match pattern · string_split {
+    [_, rest] → {
+      // Find the value - it starts with " and ends with "
+      let trimmed = string_trim_start(rest)
+      match "\"" · string_starts_with {
+        true → {
+          // Remove leading quote
+          let without_start = 1 · string_drop_start
+          // Find closing quote
+          match "\"" · string_split {
+            [value, ..] → ☐value)
+            _ → ∅}
+        }
+        false → ∅}
+    }
+    _ → ∅}
+}
+
+@spec key: str · extract_json_bool → bool? {
+  /// Extract boolean value from JSON
+  given: JSON string and key
+  when: Parsing JSON manually
+  then: Returns ☐value) or ∅}
+
+@impl {
+  let pattern = "\"{key} + "\":"
+  match pattern · string_split {
+    [_, rest] → {
+      let trimmed = string_trim_start(rest)
+      match "true" · string_starts_with {
+        true → ☐true)
+        false ->
+          match "false" · string_starts_with {
+            true → ☐false)
+            false → ∅}
+      }
+    }
+    _ → ∅}
+}
+
+@spec parse_query_param(query: str, param: str) → str? {
+  /// Parse query parameter from query string
+  given: Query string and parameter name
+  when: Extracting URL parameters
+  then: Returns ☐value) or ∅}
+
+@impl {
+  query
+  · string_split("&")
+  · list_filter_map(fn(pair) {
+    match "=" · string_split {
+      [key, value] if key == param → ✅value)
+      _ → ❌Nil)
+    }
+  }
+  · list_first()
+  · option_from_result()
+}
+
+@spec json_error_response(status: int, message: str, status_str) → Response(ResponseData) {
+  /// Create error JSON HTTP response
+  given: Status code, error message, and status string
+  when: Returning error response
+  then: Returns error response with JSON body
+}
+
+@impl {
+  let body = json_object([
+    #("error", json_string(message)),
+    #("status", json_string(status_str))
+  ]) · json_to_string()
+
+  response_new(status)
+  · response_set_header("content-type", "application/json")
+  · response_set_body(mist_bytes(bytes_tree_from_string(body)))
+}
+
+@spec pipeline_error_to_string(err: PipelineError) → str {
+  /// Convert pipeline error to string
+  given: PipelineError
+  when: Formatting error message
+  then: Returns human-readable string
+}
+
+@impl {
+  match err {
+    TTS❌msg) → "TTS Error: {msg}
+    Lipsync❌msg) → "Lipsync Error: {msg}
+    Render❌msg) → "Render Error: {msg}
+    Config❌msg) → "Config Error: {msg}
+    Network❌msg) → "Network Error: {msg}
+    BRoll❌msg) → "B-Roll Error: {msg}
+  }
+}
+
+// =============================================================================
+// FFI Imports
+// =============================================================================
+
+// HTTP helpers
+// @ffi response_new(status: int) → Response
+// @ffi response_set_header(resp: Response, key: str, value: str) → Response
+// @ffi response_set_body(resp: Response, body: ResponseData) → Response
+// @ffi mist_read_body(req: Request, max: int) → Nil · Result
+// @ffi mist_bytes(data: BytesTree) → ResponseData
+// @ffi bytes_tree_from_string(s: str) → BytesTree
+// @ffi bit_array_to_string(bits: BitArray) → Nil · Result
+
+// JSON helpers
+// @ffi json_object(pairs: [#(str, Json])) → Json
+// @ffi json_string(s: str) → Json
+// @ffi json_int(n: int) → Json
+// @ffi json_float(f: float) → Json
+// @ffi json_to_string(json: Json) → str
+
+// Pipeline helpers
+// @ffi start_test_pipeline(config: PipelineConfig, req: PipelineRequest) → PipelineError · Result
+// @ffi start_ai_pipeline(config: PipelineConfig, req: PipelineRequest) → PipelineError · Result
+// @ffi job_to_json(job: Job) → Json
+// @ffi run_template1(req: Template1Request) → str · Result
+// @ffi response_to_json(resp: Template1Response) → Json
+// @ffi get_preset_prompts(script: str, duration: float) → [Prompt]
+// @ffi prompts_to_json(prompts: [Prompt]) → Json
+
+// Config helpers
+// @ffi get_remotion_url() → str
+
+// str helpers
+// @ffi string_split(s: str, pattern: str) → [str]
+// @ffi string_trim_start(s: str) → str
+// @ffi string_starts_with(s: str, prefix: str) → bool
+// @ffi string_drop_start(s: str, n: int) → str
+
+// list helpers
+// @ffi list_filter_map([a], f: fn(a) → c · Result) → [b]
+// @ffi list_first([a]) → Nil · Result
+// @ffi list_length([a]) → int
+
+// Option helpers
+// @ffi option_from_result(result!) → a?
+
+// Conversion helpers
+// @ffi float_parse(s: str) → Nil · Result
+
+// Logging
+// @ffi log_info(message: str) → Nil
+
+# v8.0
+
+# v8.0
+# v10.0 - ML-Powered Migration

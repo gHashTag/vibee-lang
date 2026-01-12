@@ -1,0 +1,348 @@
+name: vibee_lsp
+version: "1.0.0"
+language: zig
+module: lsp
+description: VIBEE Language Server Protocol - IDE integration for VIBEE
+
+behaviors:
+  - name: initialize_lsp_server
+    given: IDE connects to LSP server
+    when: initialize request sent
+    then: Server capabilities returned
+    test_cases:
+      - name: initialize_with_capabilities
+        input: {client: "vscode", version: "1.0"}
+        expected: {initialized: true, capabilities: ["completion", "hover", "goto_definition"]}
+
+  - name: provide_completions
+    given: Cursor at position in code
+    when: Completion requested
+    then: Relevant completions returned
+    test_cases:
+      - name: complete_function_name
+        input: {code: "let x = pri", position: {line: 0, char: 11}}
+        expected: {completions: ["print", "println"], count: 2}
+
+  - name: show_hover_information
+    given: Cursor over identifier
+    when: Hover requested
+    then: Type and documentation shown
+    test_cases:
+      - name: hover_over_function
+        input: {code: "print('hello')", position: {line: 0, char: 2}}
+        expected: {hover: "fn print(s: String) -> void", docs: "Print string to stdout"}
+
+  - name: goto_definition
+    given: Cursor over identifier
+    when: Go to definition requested
+    then: Definition location returned
+    test_cases:
+      - name: goto_function_definition
+        input: {identifier: "my_function", usage_line: 10}
+        expected: {file: "main.vibee", line: 5, char: 0}
+
+  - name: find_references
+    given: Identifier selected
+    when: Find references requested
+    then: All references returned
+    test_cases:
+      - name: find_function_references
+        input: {identifier: "calculate", file: "main.vibee"}
+        expected: {references: 5, locations: ["main.vibee:10", "main.vibee:15", "test.vibee:20"]}
+
+  - name: show_diagnostics
+    given: Code with errors
+    when: File saved or changed
+    then: Diagnostics published
+    test_cases:
+      - name: show_type_error
+        input: {code: "let x: i32 = 'hello'"}
+        expected: {diagnostics: 1, severity: "error", message: "Type mismatch"}
+
+  - name: format_document
+    given: Unformatted code
+    when: Format document requested
+    then: Formatted code returned
+    test_cases:
+      - name: format_function
+        input: {code: "fn  foo( x:i32 ){x+1}"}
+        expected: {formatted: "fn foo(x: i32) { x + 1 }"}
+
+  - name: rename_symbol
+    given: Symbol selected
+    when: Rename requested
+    then: All occurrences renamed
+    test_cases:
+      - name: rename_variable
+        input: {old_name: "temp", new_name: "result", file: "main.vibee"}
+        expected: {renamed: 3, files_modified: 1}
+
+types:
+  LspServer:
+    fields:
+      capabilities: ServerCapabilities
+      documents: HashMap_string_Document
+      workspace: Workspace
+      allocator: Allocator
+
+  ServerCapabilities:
+    fields:
+      completion_provider: bool
+      hover_provider: bool
+      definition_provider: bool
+      references_provider: bool
+      rename_provider: bool
+      formatting_provider: bool
+      diagnostics_provider: bool
+
+  Document:
+    fields:
+      uri: string
+      version: i32
+      content: string
+      ast: Option_AST
+      diagnostics: array_Diagnostic
+
+  Position:
+    fields:
+      line: usize
+      character: usize
+
+  Range:
+    fields:
+      start: Position
+      end: Position
+
+  Location:
+    fields:
+      uri: string
+      range: Range
+
+  CompletionItem:
+    fields:
+      label: string
+      kind: CompletionKind
+      detail: Option_string
+      documentation: Option_string
+      insert_text: Option_string
+
+  CompletionKind:
+    variants:
+      - Function
+      - Variable
+      - Keyword
+      - Type
+      - Module
+      - Field
+      - Method
+
+  Hover:
+    fields:
+      contents: string
+      range: Option_Range
+
+  Diagnostic:
+    fields:
+      range: Range
+      severity: DiagnosticSeverity
+      message: string
+      source: string
+
+  DiagnosticSeverity:
+    variants:
+      - Error
+      - Warning
+      - Information
+      - Hint
+
+  Workspace:
+    fields:
+      root_uri: string
+      documents: HashMap_string_Document
+      symbols: SymbolTable
+
+  SymbolTable:
+    fields:
+      symbols: HashMap_string_Symbol
+      scopes: array_Scope
+
+  Symbol:
+    fields:
+      name: string
+      kind: SymbolKind
+      location: Location
+      type: Option_string
+      documentation: Option_string
+
+  SymbolKind:
+    variants:
+      - Function
+      - Variable
+      - Type
+      - Module
+      - Constant
+
+  Scope:
+    fields:
+      range: Range
+      symbols: HashMap_string_Symbol
+      parent: Option_pointer
+
+functions:
+  - name: LspServer.init
+    params: {allocator: Allocator}
+    returns: Result_LspServer_Error
+    description: Initialize LSP server
+    
+  - name: LspServer.deinit
+    params: {self: LspServer}
+    returns: void
+    description: Shutdown LSP server
+    
+  - name: LspServer.handle_initialize
+    params: {self: LspServer, params: InitializeParams}
+    returns: Result_InitializeResult_Error
+    description: Handle initialize request
+    
+  - name: LspServer.handle_completion
+    params: {self: LspServer, uri: string, position: Position}
+    returns: Result_array_CompletionItem_Error
+    description: Provide completions at position
+    
+  - name: LspServer.handle_hover
+    params: {self: LspServer, uri: string, position: Position}
+    returns: Result_Option_Hover_Error
+    description: Provide hover information
+    
+  - name: LspServer.handle_definition
+    params: {self: LspServer, uri: string, position: Position}
+    returns: Result_Option_Location_Error
+    description: Go to definition
+    
+  - name: LspServer.handle_references
+    params: {self: LspServer, uri: string, position: Position}
+    returns: Result_array_Location_Error
+    description: Find all references
+    
+  - name: LspServer.handle_rename
+    params: {self: LspServer, uri: string, position: Position, new_name: string}
+    returns: Result_WorkspaceEdit_Error
+    description: Rename symbol
+    
+  - name: LspServer.handle_formatting
+    params: {self: LspServer, uri: string}
+    returns: Result_array_TextEdit_Error
+    description: Format document
+    
+  - name: LspServer.publish_diagnostics
+    params: {self: LspServer, uri: string, diagnostics: array_Diagnostic}
+    returns: Result_void_Error
+    description: Publish diagnostics to client
+    
+  - name: Document.open
+    params: {uri: string, content: string, version: i32}
+    returns: Result_Document_Error
+    description: Open document
+    
+  - name: Document.update
+    params: {self: Document, content: string, version: i32}
+    returns: Result_void_Error
+    description: Update document content
+    
+  - name: Document.close
+    params: {self: Document}
+    returns: void
+    description: Close document
+    
+  - name: Document.parse
+    params: {self: Document}
+    returns: Result_AST_Error
+    description: Parse document to AST
+    
+  - name: Document.analyze
+    params: {self: Document}
+    returns: Result_array_Diagnostic_Error
+    description: Analyze document for errors
+    
+  - name: find_symbol_at_position
+    params: {document: Document, position: Position}
+    returns: Option_Symbol
+    description: Find symbol at cursor position
+    
+  - name: get_completions_at_position
+    params: {document: Document, position: Position}
+    returns: array_CompletionItem
+    description: Get completions at position
+    
+  - name: format_code
+    params: {code: string}
+    returns: Result_string_Error
+    description: Format VIBEE code
+
+features:
+  - name: syntax_highlighting
+    description: Semantic syntax highlighting
+    status: supported
+    
+  - name: auto_completion
+    description: Context-aware completions
+    status: supported
+    
+  - name: hover_info
+    description: Type and documentation on hover
+    status: supported
+    
+  - name: goto_definition
+    description: Jump to symbol definition
+    status: supported
+    
+  - name: find_references
+    description: Find all symbol references
+    status: supported
+    
+  - name: rename_refactoring
+    description: Rename symbol across files
+    status: supported
+    
+  - name: diagnostics
+    description: Real-time error checking
+    status: supported
+    
+  - name: formatting
+    description: Code formatting
+    status: supported
+    
+  - name: code_actions
+    description: Quick fixes and refactorings
+    status: planned
+    
+  - name: signature_help
+    description: Function signature hints
+    status: planned
+
+ide_support:
+  - editor: vscode
+    extension: vibee-vscode
+    features: all
+    
+  - editor: intellij
+    plugin: vibee-intellij
+    features: all
+    
+  - editor: vim
+    plugin: vibee.vim
+    features: basic
+    
+  - editor: emacs
+    mode: vibee-mode
+    features: basic
+    
+  - editor: sublime
+    package: VIBEE
+    features: basic
+
+imports:
+  - std
+  - core
+  - collections
+  - io

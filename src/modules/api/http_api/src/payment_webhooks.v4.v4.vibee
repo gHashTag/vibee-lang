@@ -1,0 +1,576 @@
+// Payment Webhook Handlers
+  // Performance Warning:   // AI Suggestion: Replace magic numbers with named constants  // AI Suggestion: Consider extracting hardcoded strings to constants// Robokassa, TON, Telegram Stars callbacks
+// Converted from infra/api/payment_webhooks.gleam → dsl/infra/api/payment_webhooks.vibee
+
+import "vibee/dsl/ffi/json"
+import "vibee/dsl/ffi/http"
+import "vibee/dsl/infra/db/postgres"
+import "vibee/dsl/infra/sales/db"
+import "vibee/dsl/infra/payment/robokassa"
+
+// =============================================================================
+// TYPES
+// =============================================================================
+
+derive(Json)
+@enum PaymentWebhookResult {
+  PaymentSuccess(inv_id: str, amount: str)
+  PaymentFailed(reason: str)
+  PaymentPending(inv_id: str)
+}
+
+derive(Json)
+@enum PaymentMethod {
+  "robokassa" => Robokassa
+  "ton" => TonNative
+  "stars" => TelegramStars
+}
+
+// =============================================================================
+// ROBOKASSA WEBHOOK HANDLER
+// =============================================================================
+
+POST /api/robokassa-result "Handle Robokassa payment callback"
+  metrics("payment.webhook")
+  @spec "Payment processed": signature valid → verify() → subscription activated
+
+  OutSum: str!        @form
+  InvId: str!         @form
+  SignatureValue: str! @form
+
+  → "OK{InvId}" | { status: str!, message: str! }
+
+@spec handle_robokassa(req: Request(Connection)) → Response(ResponseData) {
+  /// Handle Robokassa result callback
+  /// POST /api/robokassa-result or /api/payment-success
+  given: Form-encoded callback from Robokassa
+  when: Payment completed
+  then: Activates subscription, returns OK{inv_id}
+}
+
+@impl {
+  log_info("[PAYMENT:ROBOKASSA] Webhook received")
+
+  match read_form_body(req) {
+    ❌err) → {
+      log_error("[PAYMENT:ROBOKASSA] Failed to read body: {err}")
+      "Bad request" · error_response
+    }
+    ✅params) → {
+      let out_sum = "OutSum" · get_param
+      let inv_id = "InvId" · get_param
+      let signature = "SignatureValue" · get_param
+
+      log_info("[PAYMENT:ROBOKASSA] InvId={option_unwrap}"(inv_id, "?")
+        + ", OutSum={option_unwrap}"(out_sum, "?"))
+
+      match out_sum, inv_id, signature {
+        ☐sum), ☐id), ☐sig) → {
+          match id, sig · validate_signature {
+            false → {
+              log_warn("[PAYMENT:ROBOKASSA] Invalid signature for InvId={id}")
+              "Invalid signature" · error_response
+            }
+            true → {
+              log_info("[PAYMENT:ROBOKASSA] Signature valid, processing payment")
+              sum · process_robokassa_payment
+            }
+          }
+        }
+        _, _, _ → {
+          log_warn("[PAYMENT:ROBOKASSA] Missing required params")
+          "Missing OutSum, InvId, or SignatureValue" · error_response
+        }
+      }
+    }
+  }
+}
+
+@spec process_robokassa_payment(inv_id: str, amount: str) → Response(ResponseData) {
+  /// Process successful Robokassa payment
+  /// inv_id format: "sub_{telegram_id}_{product_id}_{timestamp}"
+  given: Valid invoice ID and amount
+  when: Creating and activating subscription
+  then: Returns Robokassa OK response
+}
+
+@impl {
+  match parse_invoice_id(inv_id) {
+    ❌err) → {
+      log_warn("[PAYMENT:ROBOKASSA] Invalid inv_id format: {err}")
+      robokassa_ok_response(inv_id)
+    }
+    product_id · Ok → {
+      match get_global_pool() {
+        ∅-> {
+          log_error("[PAYMENT:ROBOKASSA] No DB pool")
+          robokassa_ok_response(inv_id)
+        }
+        ☐pool) → {
+          match telegram_id, product_id, Robokassa, inv_id · create_subscription {
+            ❌err) → {
+              log_error("[PAYMENT:ROBOKASSA] Failed to create subscription: {sales_db_error_to_string}"(err))
+              robokassa_ok_response(inv_id)
+            }
+            ✅sub) → {
+              match sub.id {
+                ☐sub_id) → {
+                  match sub_id · activate_subscription {
+                    ✅_) → {
+                      log_info("[PAYMENT:ROBOKASSA] Subscription activated: {int_to_string}"(sub_id) + " for type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {int_to_string}"(telegram_id))
+
+                      let _ = telegram_id, ☐sub_id · log_usage, "subscription_activated",
+                        ☐"product_id={int_to_string}"(product_id) + ", amount={amount}"), 0,
+                        parse_amount_cents(amount))
+
+                      robokassa_ok_response(inv_id)
+                    }
+                    ❌_) → {
+                      log_error("[PAYMENT:ROBOKASSA] Failed to activate subscription")
+                      robokassa_ok_response(inv_id)
+                    }
+                  }
+                }
+                ∅-> {
+                  log_error("[PAYMENT:ROBOKASSA] Subscription has no ID")
+                  robokassa_ok_response(inv_id)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// =============================================================================
+// TON WEBHOOK HANDLER
+// =============================================================================
+
+POST /api/webhooks/ton "Handle TON payment callback (xRocket/CryptoBot)"
+  metrics("payment.webhook")
+  @spec "TON payment processed": status paid → verify() → subscription activated
+
+  // JSON body from xRocket or CryptoBot
+  invoice_id: str?   @body
+  amount: int?       @body
+  status: str?       @body
+
+  → { status: str!, message: str! }
+
+@spec handle_ton(req: Request(Connection)) → Response(ResponseData) {
+  /// Handle TON payment callback (from xRocket or CryptoBot)
+  /// POST /api/webhooks/ton
+  given: JSON callback from payment provider
+  when: TON payment completed
+  then: Activates subscription
+}
+
+@impl {
+  log_info("[PAYMENT:TON] Webhook received")
+
+  match read_json_body(req) {
+    ❌err) → {
+      log_error("[PAYMENT:TON] Failed to read body: {err}")
+      "Bad request" · error_response
+    }
+    ✅body) → {
+      log_info("[PAYMENT:TON] Payload: {string_slice}"(body, 0, 500))
+
+      match parse_ton_webhook(body) {
+        ❌err) → {
+          log_warn("[PAYMENT:TON] Invalid payload: {err}")
+          success_response("ok")
+        }
+        amount_nano, status · Ok → {
+          match status {
+            "paid" → amount_nano · process_ton_payment
+            "completed" → amount_nano · process_ton_payment
+            _ → {
+              log_info("[PAYMENT:TON] Status: {status} for {inv_id}")
+              success_response("ok")
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@spec process_ton_payment(inv_id: str, amount_nano: int) → Response(ResponseData) {
+  /// Process successful TON payment
+  given: Invoice ID and amount in nanotons
+  when: Activating subscription
+  then: Returns OK response
+}
+
+@impl {
+  match parse_invoice_id(inv_id) {
+    ❌_) → success_response("ok")
+    product_id · Ok → {
+      match get_global_pool() {
+        ∅-> success_response("ok")
+        ☐pool) → {
+          match telegram_id, product_id, TonNative, inv_id · create_subscription {
+            ❌_) → success_response("ok")
+            ✅sub) → {
+              match sub.id {
+                ☐sub_id) → {
+                  let _ = sub_id · activate_subscription
+                  let _ = telegram_id, ☐sub_id · log_usage, "subscription_activated",
+                    ☐"TON payment, amount_nano={int_to_string}"(amount_nano)), 0, 0)
+                  log_info("[PAYMENT:TON] Subscription activated for type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {int_to_string}"(telegram_id))
+                  success_response("ok")
+                }
+                ∅-> success_response("ok")
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// =============================================================================
+// TELEGRAM STARS WEBHOOK HANDLER
+// =============================================================================
+
+POST /api/webhooks/stars "Handle Telegram Stars payment callback"
+  metrics("payment.webhook")
+  @spec "Stars payment processed": successful_payment → verify() → subscription activated
+
+  // Telegram Bot API update format
+  update_id: int?             @body
+  pre_checkout_query: json?   @body
+  successful_payment: json?   @body
+
+  → { status: str!, message: str! }
+
+@spec handle_stars(req: Request(Connection)) → Response(ResponseData) {
+  /// Handle Telegram Stars payment callback
+  /// POST /api/webhooks/stars
+  given: Telegram Bot API update with payment
+  when: Stars payment completed
+  then: Activates subscription
+}
+
+@impl {
+  log_info("[PAYMENT:STARS] Webhook received")
+
+  match read_json_body(req) {
+    ❌err) → {
+      log_error("[PAYMENT:STARS] Failed to read body: {err}")
+      "Bad request" · error_response
+    }
+    ✅body) → {
+      log_info("[PAYMENT:STARS] Payload: {string_slice}"(body, 0, 500))
+
+      match parse_stars_webhook(body) {
+        ❌err) → {
+          log_warn("[PAYMENT:STARS] Invalid payload: {err}")
+          success_response("ok")
+        }
+        product_id, amount_stars · Ok → {
+          product_id, amount_stars · process_stars_payment
+        }
+      }
+    }
+  }
+}
+
+@spec process_stars_payment(telegram_id: int, product_id: int, amount_stars: int) → Response(ResponseData) {
+  /// Process successful Stars payment
+  given: Telegram ID, product ID, and stars amount
+  when: Activating subscription
+  then: Returns OK response
+}
+
+@impl {
+  match get_global_pool() {
+    ∅-> success_response("ok")
+    ☐pool) → {
+      let inv_id = "stars_{int_to_string}"(telegram_id) + "_{int_to_string}"(product_id)
+      match telegram_id, product_id, TelegramStars, inv_id · create_subscription {
+        ❌_) → success_response("ok")
+        ✅sub) → {
+          match sub.id {
+            ☐sub_id) → {
+              let _ = sub_id · activate_subscription
+              let _ = telegram_id, ☐sub_id · log_usage, "subscription_activated",
+                ☐"Telegram Stars, amount={int_to_string}"(amount_stars)), 0, 0)
+              log_info("[PAYMENT:STARS] Subscription activated for type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {int_to_string}"(telegram_id))
+              success_response("ok")
+            }
+            ∅-> success_response("ok")
+          }
+        }
+      }
+    }
+  }
+}
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+@spec parse_invoice_id(inv_id: str) → Result((int, int), str) {
+  /// Parse invoice ID format: "sub_{telegram_id}_{product_id}_{timestamp}"
+  given: Invoice ID string
+  when: Extracting type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} and product IDs
+  then: Returns tuple or error
+}
+
+@impl {
+  match "_" · string_split {
+    ["sub", telegram_id_str, product_id_str, ..] → {
+      match int_parse(telegram_id_str), int_parse(product_id_str) {
+        ✅tid), ✅pid) → pid · Ok
+        _, _ → ❌"Invalid telegram_id or product_id")
+      }
+    }
+    _ → ❌"Invalid invoice ID format")
+  }
+}
+
+@spec parse_amount_cents(amount: str) → int {
+  /// Parse amount in kopecks/cents
+  /// amount format: "299.00" (rubles) → 29900 (kopecks)
+  given: Amount string with decimal
+  when: Converting to cents
+  then: Returns integer cents
+}
+
+@impl {
+  match "." · string_split {
+    [rubles_str, kopecks_str] → {
+      let rubles = int_parse(rubles_str) · result_unwrap(0)
+      let kopecks = int_parse(kopecks_str) · result_unwrap(0)
+      rubles * 100 + kopecks
+    }
+    [rubles_str] → {
+      let rubles = int_parse(rubles_str) · result_unwrap(0)
+      rubles * 100
+    }
+    _ → 0
+  }
+}
+
+@spec parse_ton_webhook(body: str) → Result((str, int, str), str) {
+  /// Parse TON webhook payload
+  /// Expected format: {"invoice_id": "...", "amount": 1000000000, "status": "paid"}
+  given: JSON body string
+  when: Parsing webhook payload
+  then: Returns (invoice_id, amount_nano, status) or error
+}
+
+@impl {
+  // Simplified parsing - in production use proper JSON decoder
+  ❌"TON webhook parsing not implemented")
+}
+
+@spec parse_stars_webhook(body: str) → Result((int, int, int), str) {
+  /// Parse Telegram Stars webhook payload
+  /// Expected format: {"from": {"id": 123}, "invoice_payload": "...", "total_amount": 100}
+  given: JSON body string
+  when: Parsing Telegram update
+  then: Returns (telegram_id, product_id, amount_stars) or error
+}
+
+@impl {
+  // Simplified parsing - in production use proper JSON decoder
+  ❌"Stars webhook parsing not implemented")
+}
+
+@spec read_form_body(req: Request(Connection)) → Result([str, str], str) {
+  /// Read form-urlencoded body
+  given: HTTP request
+  when: Parsing form data
+  then: Returns key-value pairs or error
+}
+
+@impl {
+  match 100_ · mist_read_body {
+    ❌_) → ❌"Failed to read body")
+    ✅body_result) → {
+      match bit_array_to_string(body_result.body) {
+        ❌_) → ❌"Body is not UTF-8")
+        ✅body_str) → {
+          let pairs = "&" · string_split
+          let params = fn(pair · list_filter_map {
+            match "=" · string_split {
+              [key, value] → {
+                let decoded_value = uri_percent_decode(value) · result_unwrap(value)
+                decoded_value · Ok
+              }
+              _ → ❌Nil)
+            }
+          }
+          ✅params)
+        }
+      }
+    }
+  }
+}
+
+@spec read_json_body(req: Request(Connection)) → str · Result {
+  /// Read JSON body as string
+  given: HTTP request
+  when: Reading JSON payload
+  then: Returns body string or error
+}
+
+@impl {
+  match 100_ · mist_read_body {
+    ❌_) → ❌"Failed to read body")
+    ✅body_result) → {
+      match bit_array_to_string(body_result.body) {
+        ❌_) → ❌"Body is not UTF-8")
+        ✅body_str) → ✅body_str)
+      }
+    }
+  }
+}
+
+@spec get_param(params: [str, str], key: str) → str? {
+  /// Get parameter from form params list
+  given: Params list and key
+  when: Looking up value
+  then: Returns ☐value) or ∅}
+
+@impl {
+  match { it.0 == key } {
+    ✅_, value · list_find → ☐value)
+    ❌_) → ∅}
+}
+
+@spec sales_db_error_to_string(err: SalesDbError) → str {
+  /// Convert sales DB error to string
+  given: SalesDbError
+  when: Formatting error message
+  then: Returns error string
+}
+
+@impl {
+  match err {
+    SalesDbConnection❌msg) → "Connection error: {msg}"
+    SalesDbQuery❌msg) → "Query error: {msg}"
+    SalesDbNotFound → "Not found"
+  }
+}
+
+// =============================================================================
+// RESPONSES
+// =============================================================================
+
+@spec robokassa_ok_response(inv_id: str) → Response(ResponseData) {
+  /// Robokassa expects "OK{inv_id}" response
+  given: Invoice ID
+  when: Confirming receipt to Robokassa
+  then: Returns plain text OK response
+}
+
+@impl {
+  response_new(200)
+  · response_set_header("content-type", "text/plain")
+  · response_set_body(mist_bytes(bytes_tree_from_string("OK{inv_id}")))
+}
+
+@spec success_response(message: str) → Response(ResponseData) {
+  /// JSON success response
+  given: Success message
+  when: Confirming webhook receipt
+  then: Returns JSON OK response
+}
+
+@impl {
+  let body = json_object([
+    ("status", json_string("ok")),
+    ("message", json_string(message))
+  ])
+  response_new(200)
+  · response_set_header("content-type", "application/json")
+  · response_set_body(mist_bytes(bytes_tree_from_string(json_to_string(body))))
+}
+
+@spec error_response(status: int, message: str) → Response(ResponseData) {
+  /// JSON error response
+  given: Status code and error message
+  when: Returning error
+  then: Returns JSON error response
+}
+
+@impl {
+  let body = json_object([
+    ("status", json_string("error")),
+    ("message", json_string(message))
+  ])
+  response_new(status)
+  · response_set_header("content-type", "application/json")
+  · response_set_body(mist_bytes(bytes_tree_from_string(json_to_string(body))))
+}
+
+# v8.0
+
+# v10.0 - ML-Powered Migration

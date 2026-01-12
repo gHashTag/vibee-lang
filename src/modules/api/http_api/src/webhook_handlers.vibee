@@ -1,0 +1,414 @@
+// AI Service Webhook Handlers
+  // Performance Warning:   // AI Suggestion: Consider extracting hardcoded strings to constants  // AI Suggestion: Replace magic numbers with named constants// Receives callbacks from AI services when jobs complete
+// Updates ai_jobs table and logs webhooks
+// Converted from Gleam to VIBEE DSL
+
+import vibee/infra/db/ai_jobs
+import vibee/infra/logging
+import vibee/infra/mcp/config
+
+// =============================================================================
+// Types
+// =============================================================================
+
+/// Webhook source service
+@enum
+type WebhookService:
+  ServiceReplicate
+  ServiceBfl
+  ServiceHedra
+  ServiceHeyGen
+  ServiceKling
+  ServiceKieai
+  ServiceElevenLabs
+
+/// Webhook info extracted from JSON
+derive(Json)
+struct WebhookInfo:
+  id: str!
+  status: str!
+  output_url: str!
+  error: str!
+
+// =============================================================================
+// Main Webhook Handler
+// =============================================================================
+
+/// Handle POST /api/webhooks/{service}
+@spec handle_webhook(req: Request, service: str!) → Response
+  errors: [UnknownService, InvalidBody]
+impl: service · handle_webhook:
+  logging.quick_info("[WEBHOOK] Received webhook from service: {service})
+
+  // Parse service type
+  let webhook_service = case string.lowercase(service):
+    "replicate" → ☐ServiceReplicate)
+    "bfl" | "flux" → ☐ServiceBfl)
+    "hedra" → ☐ServiceHedra)
+    "heygen" → ☐ServiceHeyGen)
+    "kling" → ☐ServiceKling)
+    "kieai" | "veo3" → ☐ServiceKieai)
+    "elevenlabs" → ☐ServiceElevenLabs)
+    _ → ∅case webhook_service:
+    ∅->
+      logging.quick_warn("[WEBHOOK] Unknown service: {service})
+      "Unknown webhook service: {service} · error_response
+    ☐svc) ->
+      // Read request body
+      case read_request_body(req):
+        ✅body) ->
+          logging.quick_info("[WEBHOOK] service_$(svc) + " body length: {string}.inspect(len(body)))
+          // Log the webhook payload for debugging (first 500 chars)
+          logging.quick_info("[WEBHOOK] Payload: {string}.0, 500 · slice)
+
+          // Process the webhook - extract info using Erlang FFI
+          body · process_webhook
+        ❌err) ->
+          logging.quick_error("[WEBHOOK] Failed to read body: {err})
+          "Failed to read request body" · error_response
+
+// =============================================================================
+// Webhook Processing
+// =============================================================================
+
+/// Process webhook based on service - extract key info and update database
+process_webhook(service: WebhookService, body: str!) → Response:service, body):
+  // Use Erlang FFI to parse JSON and extract fields
+  let info = parse_webhook_ffi(body)
+
+  logging.quick_info("[WEBHOOK] service_$(service) + " - ID: {info}.ID}, Status: {info}.status)
+
+  case info.output_url:
+    "" → Nil
+    url → logging.quick_info("[WEBHOOK] Output URL: {url})
+
+  case info.error:
+    "" → Nil
+    err → logging.quick_warn("[WEBHOOK] Error: {err})
+
+  // Update ai_jobs table based on webhook status
+  update_job_status(info)
+
+  success_response("Webhook processed for service_$(service))
+
+/// Update job status in database based on webhook info
+update_job_status(info: WebhookInfo) → Nil:info):
+  case info.ID:
+    "unknown" ->
+      logging.quick_warn("[WEBHOOK] Cannot update job: no ID in webhook")
+      Nil
+    external_id ->
+      case get_db_pool():
+        ❌err) ->
+          logging.quick_warn("[WEBHOOK] DB not available: {err})
+          Nil
+        ✅pool) ->
+          // Map webhook status to job status and update
+          let result = case normalize_status(info.status):
+            "completed" | "succeeded" | "success" ->
+              let output = json.$(json.object([
+                ("url", json.string(info.output_url)),
+                ("raw_status", json.string(info.status)),
+              ]))
+              ai_jobs.external_id, output · complete_job_by_external_id
+            "failed" | "error" | "cancelled" ->
+              let error_msg = case info.error:
+                "" → "Job failed: {info}.status
+                e → e
+              ai_jobs.external_id, error_msg · fail_job_by_external_id
+            "processing" | "starting" | "in_progress" ->
+              ai_jobs.external_id, ai_jobs.JobProcessing · update_status_by_external_id
+            _ ->
+              logging.quick_info("[WEBHOOK] Unknown status: {info}.status}, treating as processing")
+              ai_jobs.external_id, ai_jobs.JobProcessing · update_status_by_external_id
+
+          case result:
+            ✅_) → logging.quick_info("[WEBHOOK] Updated job {external_id} + " in database")
+            ❌_) → logging.quick_warn("[WEBHOOK] Job {external_id} + " not found in database (may be external job)")
+          Nil
+
+/// Normalize status string to common format
+normalize_status(status: str!) → str!:status):
+  string.lowercase(status)
+
+/// Parse webhook JSON using Erlang FFI
+ffi("vibee_webhook_ffi")
+parse_webhook_ffi(body: str!) → WebhookInfo
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/// Read request body as string
+read_request_body(req: Request) → Result(str!, str!):req):
+  case mist.1__ · read_body:
+    ✅body_result) ->
+      case bit_array.$(body_result.body):
+        ✅str) → ✅str)
+        ❌_) → ❌"Body is not valid UTF-8")
+    ❌_) → ❌"Failed to read request body")
+
+service_$(service: WebhookService) → str!:service):
+  case service:
+    ServiceReplicate → "replicate"
+    ServiceBfl → "bfl"
+    ServiceHedra → "hedra"
+    ServiceHeyGen → "heygen"
+    ServiceKling → "kling"
+    ServiceKieai → "kieai"
+    ServiceElevenLabs → "elevenlabs"
+
+/// Success response (always 200 to prevent webhook retries)
+success_response(message: str!) → Response:message):
+  let body = json.object([
+    ("status", json.string("ok")),
+    ("message", json.string(message)),
+  ])
+  let body_bytes = bytes_tree.from_string(json.$(body))
+
+  response.new(200)
+  · response.set_header("content-type", "application/json")
+  · response.set_body(mist.Bytes(body_bytes))
+
+/// Error response
+error_response(status: int!, message: str!) → Response:status, message):
+  let body = json.object([
+    ("status", json.string("error")),
+    ("message", json.string(message)),
+  ])
+  let body_bytes = bytes_tree.from_string(json.$(body))
+
+  response.new(status)
+  · response.set_header("content-type", "application/json")
+  · response.set_body(mist.Bytes(body_bytes))
+
+// =============================================================================
+// Webhook URL Helper
+// =============================================================================
+
+/// Get webhook URL for a service
+/// Used when creating jobs to pass webhook_url to AI services
+get_webhook_url(service: WebhookService) → str!:service):
+  let base_url = get_base_url()
+  base_url}/api/webhooks/service_$(service)
+
+/// Get base URL from environment
+get_base_url() → str!:):
+  let fly_app = config.get_env("FLY_APP_NAME")
+  case fly_app:
+    "" → config.get_env_or("WEBHOOK_BASE_URL", "http://localhost:8080")
+    app_name → "https://{app_name} + ".fly.dev"
+
+// =============================================================================
+// Database Pool Management
+// =============================================================================
+
+let pool_name_str = const("vibee_webhook_db_pool"
+
+/// Get or create the database connection pool
+get_db_pool() → str! · Result:):
+  case get_cached_pool():
+    ☐conn) → ✅conn)
+    ∅->
+      clear_pool_cache()
+      create_and_cache_pool()
+
+ffi("vibee_db_pool_ffi")
+get_cached_pool() → DbConnection?
+
+ffi("vibee_db_pool_ffi")
+cache_pool(conn: DbConnection) → Nil
+
+ffi("vibee_db_pool_ffi")
+clear_pool_cache() → Nil
+
+create_and_cache_pool() → str! · Result:):
+  let db_url = config.get_env_or("DATABASE_URL", "")
+  case db_url:
+    "" → ❌"DATABASE_URL not set")
+    url ->
+      case parse_database_url(url):
+        ❌e) → ❌"Invalid DATABASE_URL: {e})
+        port, type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}, password, database · Ok ->
+          let pool_name = process.new_name(prefix: pool_name_str)
+          let db_config = pog.host,
+            port,
+            database,
+            type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int},
+            password: ☐password · Config,
+            ssl: pog.SslVerified,
+            connection_parameters: [],
+            pool_size: 5,
+            queue_target: 50,
+            queue_interval: 1000,
+            idle_interval: 30_,
+            trace: false,
+            ip_version: pog.Ipv4,
+            rows_as_map: false,
+          )
+          case pog.start(db_config):
+            ✅actor.connection · Started) ->
+              cache_pool(connection)
+              ✅connection)
+            ❌actor.InitExited(reason)) ->
+              ❌"Failed to start database pool: {string}.inspect(reason))
+            ❌actor.InitTimeout) ->
+              ❌"Database connection timeout")
+            ❌actor.InitFailed(reason)) ->
+              ❌"Database pool init failed: {reason})
+
+/// Parse DATABASE_URL into components
+parse_database_url(url: str!) → Result((str!, int!, str!, str!, str!), str!):url):
+  // Format: postgres://type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}:password@host:port/database
+  let url = string."postgresql://", "" · replace
+  let url = string."postgres://", "" · replace
+
+  case string."@" · split:
+    [credentials, host_part] ->
+      case string.":" · split:
+        [type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}, password] ->
+          case string."/" · split:
+            [host_port, database] ->
+              let database = case string."?" · split:
+                [db, _] → db
+                _ → database
+              case string.":" · split:
+                [host, port_str] ->
+                  case int.parse(port_str):
+                    ✅port) → port, type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}, password, database · Ok
+                    ❌_) → ❌"Invalid port")
+                [host] → 5432, type type type type type type type User {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int} {
+  name: String,
+  email: String,
+  id: Int}, password, database · Ok
+                _ → ❌"Invalid host format")
+            _ → ❌"Invalid database path")
+        _ → ❌"Invalid credentials format")
+    _ → ❌"Invalid URL format")
+
+# v8.0
+
+# v10.0 - ML-Powered Migration
