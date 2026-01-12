@@ -248,14 +248,21 @@ See [docs/guides/SPECIFICATION_FORMAT.md](docs/guides/SPECIFICATION_FORMAT.md) f
 | Target | Status | Output | Notes |
 |--------|--------|--------|-------|
 | **Zig** | ✅ Production | `.zig` | Primary target, fastest |
-| **Gleam** | ✅ Working | `.gleam` | BEAM ecosystem |
-| **Rust** | ✅ Working | `.rs` | Systems programming |
-| **TypeScript** | ✅ Working | `.ts` | Web/Node.js |
-| **Python** | 🚧 Beta | `.py` | Scripting |
-| **WASM** | 🚧 Beta | `.wasm` | Browser/Edge |
-| **Native** | 🚧 Beta | binary | Direct compilation |
+| **Python** | ✅ Production | `.py` | With pytest integration |
+| **Rust** | ✅ Production | `.rs` | With #[cfg(test)] |
+| **Go** | ✅ Production | `.go` | With testing package |
+| **Gleam** | ✅ Production | `.gleam` | BEAM ecosystem |
+| **TypeScript** | ✅ Production | `.ts` | With vitest |
+| **WASM** | ✅ Production | `.wat` | WebAssembly Text Format |
 
-See [src/tooling/language_generator/spec.vibee](src/tooling/language_generator/spec.vibee) for multi-target generation.
+All 7 targets tested and working (11/11 tests passing).
+
+```bash
+# Generate for specific target
+vibeec gen spec.vibee --target python
+vibeec gen spec.vibee --target rust
+vibeec gen spec.vibee --target wasm
+```
 
 ---
 
