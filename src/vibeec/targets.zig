@@ -1,0 +1,666 @@
+// ============================================================================
+// VIBEEC TARGET PLATFORMS
+// Code generation for multiple target platforms: Zig, Rust, Go, WASM, etc.
+// ============================================================================
+
+const std = @import("std");
+const evolution = @import("evolution.zig");
+
+// ============================================================================
+// TARGET PLATFORM TYPES
+// ============================================================================
+
+pub const TargetPlatform = enum {
+    Zig,
+    Rust,
+    Go,
+    Python,
+    TypeScript,
+    Gleam,
+    WASM,
+    
+    pub fn getName(self: TargetPlatform) []const u8 {
+        return switch (self) {
+            .Zig => "Zig",
+            .Rust => "Rust",
+            .Go => "Go",
+            .Python => "Python",
+            .TypeScript => "TypeScript",
+            .Gleam => "Gleam",
+            .WASM => "WebAssembly",
+        };
+    }
+    
+    pub fn getExtension(self: TargetPlatform) []const u8 {
+        return switch (self) {
+            .Zig => ".zig",
+            .Rust => ".rs",
+            .Go => ".go",
+            .Python => ".py",
+            .TypeScript => ".ts",
+            .Gleam => ".gleam",
+            .WASM => ".wat",
+        };
+    }
+    
+    pub fn getCommentStyle(self: TargetPlatform) []const u8 {
+        return switch (self) {
+            .Zig, .Rust, .Go, .TypeScript, .WASM => "//",
+            .Python => "#",
+            .Gleam => "//",
+        };
+    }
+};
+
+/// Target-specific optimization parameters
+pub const TargetConfig = struct {
+    platform: TargetPlatform,
+    optimization_level: u8,
+    use_simd: bool,
+    inline_threshold: u8,
+    memory_model: MemoryModel,
+    concurrency_model: ConcurrencyModel,
+    
+    pub fn default(platform: TargetPlatform) TargetConfig {
+        return switch (platform) {
+            .Zig => .{
+                .platform = .Zig,
+                .optimization_level = 3,
+                .use_simd = true,
+                .inline_threshold = 70,
+                .memory_model = .Manual,
+                .concurrency_model = .Async,
+            },
+            .Rust => .{
+                .platform = .Rust,
+                .optimization_level = 3,
+                .use_simd = true,
+                .inline_threshold = 60,
+                .memory_model = .Ownership,
+                .concurrency_model = .Async,
+            },
+            .Go => .{
+                .platform = .Go,
+                .optimization_level = 2,
+                .use_simd = false,
+                .inline_threshold = 50,
+                .memory_model = .GarbageCollected,
+                .concurrency_model = .Goroutines,
+            },
+            .Python => .{
+                .platform = .Python,
+                .optimization_level = 0,
+                .use_simd = false,
+                .inline_threshold = 0,
+                .memory_model = .GarbageCollected,
+                .concurrency_model = .AsyncAwait,
+            },
+            .TypeScript => .{
+                .platform = .TypeScript,
+                .optimization_level = 1,
+                .use_simd = false,
+                .inline_threshold = 30,
+                .memory_model = .GarbageCollected,
+                .concurrency_model = .AsyncAwait,
+            },
+            .Gleam => .{
+                .platform = .Gleam,
+                .optimization_level = 2,
+                .use_simd = false,
+                .inline_threshold = 40,
+                .memory_model = .Immutable,
+                .concurrency_model = .ActorModel,
+            },
+            .WASM => .{
+                .platform = .WASM,
+                .optimization_level = 3,
+                .use_simd = true,
+                .inline_threshold = 80,
+                .memory_model = .Linear,
+                .concurrency_model = .SingleThreaded,
+            },
+        };
+    }
+};
+
+pub const MemoryModel = enum {
+    Manual,           // Zig - manual memory management
+    Ownership,        // Rust - ownership system
+    GarbageCollected, // Go, Python, TypeScript
+    Immutable,        // Gleam - immutable data
+    Linear,           // WASM - linear memory
+};
+
+pub const ConcurrencyModel = enum {
+    Async,           // Zig, Rust async/await
+    Goroutines,      // Go goroutines
+    AsyncAwait,      // Python, TypeScript async/await
+    ActorModel,      // Gleam/Erlang actors
+    SingleThreaded,  // WASM (default)
+};
+
+// ============================================================================
+// CODE GENERATION TEMPLATES
+// ============================================================================
+
+/// Generate Fibonacci function for target platform
+pub fn generateFibonacci(target: TargetPlatform, allocator: std.mem.Allocator) ![]const u8 {
+    var output = std.ArrayList(u8).init(allocator);
+    const writer = output.writer();
+    
+    const comment = target.getCommentStyle();
+    
+    try writer.print("{s} Generated by VIBEEC for {s}\n\n", .{comment, target.getName()});
+    
+    switch (target) {
+        .Zig => {
+            try writer.writeAll(
+                \\pub fn fibonacci(n: u32) u64 {
+                \\    if (n <= 1) return n;
+                \\    var a: u64 = 0;
+                \\    var b: u64 = 1;
+                \\    var i: u32 = 2;
+                \\    while (i <= n) : (i += 1) {
+                \\        const temp = a + b;
+                \\        a = b;
+                \\        b = temp;
+                \\    }
+                \\    return b;
+                \\}
+                \\
+            );
+        },
+        .Rust => {
+            try writer.writeAll(
+                \\pub fn fibonacci(n: u32) -> u64 {
+                \\    if n <= 1 { return n as u64; }
+                \\    let mut a: u64 = 0;
+                \\    let mut b: u64 = 1;
+                \\    for _ in 2..=n {
+                \\        let temp = a + b;
+                \\        a = b;
+                \\        b = temp;
+                \\    }
+                \\    b
+                \\}
+                \\
+            );
+        },
+        .Go => {
+            try writer.writeAll(
+                \\func fibonacci(n uint32) uint64 {
+                \\    if n <= 1 {
+                \\        return uint64(n)
+                \\    }
+                \\    var a, b uint64 = 0, 1
+                \\    for i := uint32(2); i <= n; i++ {
+                \\        a, b = b, a+b
+                \\    }
+                \\    return b
+                \\}
+                \\
+            );
+        },
+        .Python => {
+            try writer.writeAll(
+                \\def fibonacci(n: int) -> int:
+                \\    if n <= 1:
+                \\        return n
+                \\    a, b = 0, 1
+                \\    for _ in range(2, n + 1):
+                \\        a, b = b, a + b
+                \\    return b
+                \\
+            );
+        },
+        .TypeScript => {
+            try writer.writeAll(
+                \\export function fibonacci(n: number): number {
+                \\    if (n <= 1) return n;
+                \\    let a = 0, b = 1;
+                \\    for (let i = 2; i <= n; i++) {
+                \\        [a, b] = [b, a + b];
+                \\    }
+                \\    return b;
+                \\}
+                \\
+            );
+        },
+        .Gleam => {
+            try writer.writeAll(
+                \\pub fn fibonacci(n: Int) -> Int {
+                \\  case n {
+                \\    0 -> 0
+                \\    1 -> 1
+                \\    _ -> fib_iter(n, 0, 1)
+                \\  }
+                \\}
+                \\
+                \\fn fib_iter(n: Int, a: Int, b: Int) -> Int {
+                \\  case n {
+                \\    0 -> a
+                \\    _ -> fib_iter(n - 1, b, a + b)
+                \\  }
+                \\}
+                \\
+            );
+        },
+        .WASM => {
+            try writer.writeAll(
+                \\(module
+                \\  (func $fibonacci (param $n i32) (result i64)
+                \\    (local $a i64)
+                \\    (local $b i64)
+                \\    (local $i i32)
+                \\    (local $temp i64)
+                \\    (if (i32.le_u (local.get $n) (i32.const 1))
+                \\      (then (return (i64.extend_i32_u (local.get $n))))
+                \\    )
+                \\    (local.set $a (i64.const 0))
+                \\    (local.set $b (i64.const 1))
+                \\    (local.set $i (i32.const 2))
+                \\    (block $break
+                \\      (loop $continue
+                \\        (br_if $break (i32.gt_u (local.get $i) (local.get $n)))
+                \\        (local.set $temp (i64.add (local.get $a) (local.get $b)))
+                \\        (local.set $a (local.get $b))
+                \\        (local.set $b (local.get $temp))
+                \\        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                \\        (br $continue)
+                \\      )
+                \\    )
+                \\    (local.get $b)
+                \\  )
+                \\  (export "fibonacci" (func $fibonacci))
+                \\)
+                \\
+            );
+        },
+    }
+    
+    return output.toOwnedSlice();
+}
+
+/// Generate quicksort function for target platform
+pub fn generateQuicksort(target: TargetPlatform, allocator: std.mem.Allocator) ![]const u8 {
+    var output = std.ArrayList(u8).init(allocator);
+    const writer = output.writer();
+    
+    const comment = target.getCommentStyle();
+    
+    try writer.print("{s} Generated by VIBEEC for {s}\n\n", .{comment, target.getName()});
+    
+    switch (target) {
+        .Zig => {
+            try writer.writeAll(
+                \\pub fn quicksort(arr: []i64) void {
+                \\    if (arr.len <= 1) return;
+                \\    quicksortImpl(arr, 0, arr.len - 1);
+                \\}
+                \\
+                \\fn quicksortImpl(arr: []i64, low: usize, high: usize) void {
+                \\    if (low < high) {
+                \\        const pi = partition(arr, low, high);
+                \\        if (pi > 0) quicksortImpl(arr, low, pi - 1);
+                \\        quicksortImpl(arr, pi + 1, high);
+                \\    }
+                \\}
+                \\
+                \\fn partition(arr: []i64, low: usize, high: usize) usize {
+                \\    const pivot = arr[high];
+                \\    var i = low;
+                \\    for (low..high) |j| {
+                \\        if (arr[j] < pivot) {
+                \\            const temp = arr[i];
+                \\            arr[i] = arr[j];
+                \\            arr[j] = temp;
+                \\            i += 1;
+                \\        }
+                \\    }
+                \\    const temp = arr[i];
+                \\    arr[i] = arr[high];
+                \\    arr[high] = temp;
+                \\    return i;
+                \\}
+                \\
+            );
+        },
+        .Rust => {
+            try writer.writeAll(
+                \\pub fn quicksort(arr: &mut [i64]) {
+                \\    if arr.len() <= 1 { return; }
+                \\    let len = arr.len();
+                \\    quicksort_impl(arr, 0, len - 1);
+                \\}
+                \\
+                \\fn quicksort_impl(arr: &mut [i64], low: usize, high: usize) {
+                \\    if low < high {
+                \\        let pi = partition(arr, low, high);
+                \\        if pi > 0 { quicksort_impl(arr, low, pi - 1); }
+                \\        quicksort_impl(arr, pi + 1, high);
+                \\    }
+                \\}
+                \\
+                \\fn partition(arr: &mut [i64], low: usize, high: usize) -> usize {
+                \\    let pivot = arr[high];
+                \\    let mut i = low;
+                \\    for j in low..high {
+                \\        if arr[j] < pivot {
+                \\            arr.swap(i, j);
+                \\            i += 1;
+                \\        }
+                \\    }
+                \\    arr.swap(i, high);
+                \\    i
+                \\}
+                \\
+            );
+        },
+        .Go => {
+            try writer.writeAll(
+                \\func quicksort(arr []int64) {
+                \\    if len(arr) <= 1 {
+                \\        return
+                \\    }
+                \\    quicksortImpl(arr, 0, len(arr)-1)
+                \\}
+                \\
+                \\func quicksortImpl(arr []int64, low, high int) {
+                \\    if low < high {
+                \\        pi := partition(arr, low, high)
+                \\        quicksortImpl(arr, low, pi-1)
+                \\        quicksortImpl(arr, pi+1, high)
+                \\    }
+                \\}
+                \\
+                \\func partition(arr []int64, low, high int) int {
+                \\    pivot := arr[high]
+                \\    i := low
+                \\    for j := low; j < high; j++ {
+                \\        if arr[j] < pivot {
+                \\            arr[i], arr[j] = arr[j], arr[i]
+                \\            i++
+                \\        }
+                \\    }
+                \\    arr[i], arr[high] = arr[high], arr[i]
+                \\    return i
+                \\}
+                \\
+            );
+        },
+        .Python => {
+            try writer.writeAll(
+                \\def quicksort(arr: list[int]) -> None:
+                \\    if len(arr) <= 1:
+                \\        return
+                \\    _quicksort_impl(arr, 0, len(arr) - 1)
+                \\
+                \\def _quicksort_impl(arr: list[int], low: int, high: int) -> None:
+                \\    if low < high:
+                \\        pi = _partition(arr, low, high)
+                \\        _quicksort_impl(arr, low, pi - 1)
+                \\        _quicksort_impl(arr, pi + 1, high)
+                \\
+                \\def _partition(arr: list[int], low: int, high: int) -> int:
+                \\    pivot = arr[high]
+                \\    i = low
+                \\    for j in range(low, high):
+                \\        if arr[j] < pivot:
+                \\            arr[i], arr[j] = arr[j], arr[i]
+                \\            i += 1
+                \\    arr[i], arr[high] = arr[high], arr[i]
+                \\    return i
+                \\
+            );
+        },
+        .TypeScript => {
+            try writer.writeAll(
+                \\export function quicksort(arr: number[]): void {
+                \\    if (arr.length <= 1) return;
+                \\    quicksortImpl(arr, 0, arr.length - 1);
+                \\}
+                \\
+                \\function quicksortImpl(arr: number[], low: number, high: number): void {
+                \\    if (low < high) {
+                \\        const pi = partition(arr, low, high);
+                \\        quicksortImpl(arr, low, pi - 1);
+                \\        quicksortImpl(arr, pi + 1, high);
+                \\    }
+                \\}
+                \\
+                \\function partition(arr: number[], low: number, high: number): number {
+                \\    const pivot = arr[high];
+                \\    let i = low;
+                \\    for (let j = low; j < high; j++) {
+                \\        if (arr[j] < pivot) {
+                \\            [arr[i], arr[j]] = [arr[j], arr[i]];
+                \\            i++;
+                \\        }
+                \\    }
+                \\    [arr[i], arr[high]] = [arr[high], arr[i]];
+                \\    return i;
+                \\}
+                \\
+            );
+        },
+        .Gleam => {
+            try writer.writeAll(
+                \\pub fn quicksort(arr: List(Int)) -> List(Int) {
+                \\  case arr {
+                \\    [] -> []
+                \\    [pivot, ..rest] -> {
+                \\      let smaller = list.filter(rest, fn(x) { x < pivot })
+                \\      let larger = list.filter(rest, fn(x) { x >= pivot })
+                \\      list.concat(quicksort(smaller), [pivot, ..quicksort(larger)])
+                \\    }
+                \\  }
+                \\}
+                \\
+            );
+        },
+        .WASM => {
+            try writer.writeAll(
+                \\;; Quicksort for WASM (simplified - requires memory management)
+                \\(module
+                \\  (memory 1)
+                \\  (func $quicksort (param $ptr i32) (param $len i32)
+                \\    ;; Implementation requires memory operations
+                \\    ;; This is a placeholder for the full implementation
+                \\  )
+                \\  (export "quicksort" (func $quicksort))
+                \\)
+                \\
+            );
+        },
+    }
+    
+    return output.toOwnedSlice();
+}
+
+// ============================================================================
+// TARGET PERFORMANCE CHARACTERISTICS
+// ============================================================================
+
+/// Expected performance characteristics for each target
+pub const TargetPerformance = struct {
+    platform: TargetPlatform,
+    relative_speed: f64,      // 1.0 = baseline (Zig)
+    memory_overhead: f64,     // 1.0 = baseline
+    startup_time_ms: f64,
+    binary_size_factor: f64,  // 1.0 = baseline
+};
+
+pub fn getTargetPerformance(platform: TargetPlatform) TargetPerformance {
+    return switch (platform) {
+        .Zig => .{
+            .platform = .Zig,
+            .relative_speed = 1.0,
+            .memory_overhead = 1.0,
+            .startup_time_ms = 0.1,
+            .binary_size_factor = 1.0,
+        },
+        .Rust => .{
+            .platform = .Rust,
+            .relative_speed = 1.0,
+            .memory_overhead = 1.0,
+            .startup_time_ms = 0.1,
+            .binary_size_factor = 1.1,
+        },
+        .Go => .{
+            .platform = .Go,
+            .relative_speed = 0.7,
+            .memory_overhead = 2.0,
+            .startup_time_ms = 5.0,
+            .binary_size_factor = 3.0,
+        },
+        .Python => .{
+            .platform = .Python,
+            .relative_speed = 0.02,
+            .memory_overhead = 10.0,
+            .startup_time_ms = 50.0,
+            .binary_size_factor = 0.1, // Interpreted
+        },
+        .TypeScript => .{
+            .platform = .TypeScript,
+            .relative_speed = 0.1,
+            .memory_overhead = 5.0,
+            .startup_time_ms = 100.0,
+            .binary_size_factor = 0.5,
+        },
+        .Gleam => .{
+            .platform = .Gleam,
+            .relative_speed = 0.3,
+            .memory_overhead = 3.0,
+            .startup_time_ms = 10.0,
+            .binary_size_factor = 2.0,
+        },
+        .WASM => .{
+            .platform = .WASM,
+            .relative_speed = 0.8,
+            .memory_overhead = 1.2,
+            .startup_time_ms = 1.0,
+            .binary_size_factor = 0.8,
+        },
+    };
+}
+
+// ============================================================================
+// MAIN - Demonstrate multi-target code generation
+// ============================================================================
+
+pub fn main() !void {
+    const stdout = std.io.getStdOut().writer();
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    try stdout.print("\n", .{});
+    try stdout.print("╔══════════════════════════════════════════════════════════════════════════════╗\n", .{});
+    try stdout.print("║              VIBEEC MULTI-TARGET CODE GENERATION                            ║\n", .{});
+    try stdout.print("║              Generating Code for Zig, Rust, Go, Python, TypeScript, WASM    ║\n", .{});
+    try stdout.print("╚══════════════════════════════════════════════════════════════════════════════╝\n\n", .{});
+
+    const targets = [_]TargetPlatform{ .Zig, .Rust, .Go, .Python, .TypeScript, .Gleam, .WASM };
+
+    // Show target configurations
+    try stdout.print("Target Platform Configurations:\n", .{});
+    try stdout.print("─────────────────────────────────────────────────────────────────────────────\n", .{});
+    
+    for (targets) |target| {
+        const config = TargetConfig.default(target);
+        const perf = getTargetPerformance(target);
+        
+        try stdout.print("\n{s} ({s}):\n", .{target.getName(), target.getExtension()});
+        try stdout.print("  Optimization: {d}, SIMD: {s}, Inline: {d}\n", .{
+            config.optimization_level,
+            if (config.use_simd) "yes" else "no",
+            config.inline_threshold,
+        });
+        try stdout.print("  Memory: {s}, Concurrency: {s}\n", .{
+            @tagName(config.memory_model),
+            @tagName(config.concurrency_model),
+        });
+        try stdout.print("  Relative speed: {d:.1}x, Memory overhead: {d:.1}x\n", .{
+            perf.relative_speed,
+            perf.memory_overhead,
+        });
+    }
+
+    // Generate Fibonacci for each target
+    try stdout.print("\n\n═══ GENERATED FIBONACCI FUNCTIONS ═══\n", .{});
+    
+    for (targets) |target| {
+        try stdout.print("\n─── {s} ───\n", .{target.getName()});
+        const code = try generateFibonacci(target, allocator);
+        defer allocator.free(code);
+        try stdout.print("{s}\n", .{code});
+    }
+
+    // Generate Quicksort for select targets
+    try stdout.print("\n═══ GENERATED QUICKSORT (Rust, Go, Python) ═══\n", .{});
+    
+    const quicksort_targets = [_]TargetPlatform{ .Rust, .Go, .Python };
+    for (quicksort_targets) |target| {
+        try stdout.print("\n─── {s} ───\n", .{target.getName()});
+        const code = try generateQuicksort(target, allocator);
+        defer allocator.free(code);
+        try stdout.print("{s}\n", .{code});
+    }
+
+    try stdout.print("✅ Multi-target code generation complete\n", .{});
+}
+
+// ============================================================================
+// TESTS
+// ============================================================================
+
+test "target platform names" {
+    try std.testing.expectEqualStrings("Zig", TargetPlatform.Zig.getName());
+    try std.testing.expectEqualStrings("Rust", TargetPlatform.Rust.getName());
+    try std.testing.expectEqualStrings("Go", TargetPlatform.Go.getName());
+}
+
+test "target platform extensions" {
+    try std.testing.expectEqualStrings(".zig", TargetPlatform.Zig.getExtension());
+    try std.testing.expectEqualStrings(".rs", TargetPlatform.Rust.getExtension());
+    try std.testing.expectEqualStrings(".go", TargetPlatform.Go.getExtension());
+    try std.testing.expectEqualStrings(".wat", TargetPlatform.WASM.getExtension());
+}
+
+test "default config for zig" {
+    const config = TargetConfig.default(.Zig);
+    try std.testing.expect(config.optimization_level == 3);
+    try std.testing.expect(config.use_simd == true);
+    try std.testing.expect(config.memory_model == .Manual);
+}
+
+test "default config for python" {
+    const config = TargetConfig.default(.Python);
+    try std.testing.expect(config.optimization_level == 0);
+    try std.testing.expect(config.use_simd == false);
+    try std.testing.expect(config.memory_model == .GarbageCollected);
+}
+
+test "generate fibonacci for zig" {
+    const code = try generateFibonacci(.Zig, std.testing.allocator);
+    defer std.testing.allocator.free(code);
+    
+    try std.testing.expect(code.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, code, "pub fn fibonacci") != null);
+}
+
+test "generate fibonacci for rust" {
+    const code = try generateFibonacci(.Rust, std.testing.allocator);
+    defer std.testing.allocator.free(code);
+    
+    try std.testing.expect(code.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, code, "pub fn fibonacci") != null);
+}
+
+test "target performance characteristics" {
+    const zig_perf = getTargetPerformance(.Zig);
+    const python_perf = getTargetPerformance(.Python);
+    
+    try std.testing.expect(zig_perf.relative_speed > python_perf.relative_speed);
+    try std.testing.expect(zig_perf.memory_overhead < python_perf.memory_overhead);
+}
