@@ -77,11 +77,13 @@ This study evaluates VIBEE across **8 performance criteria** and **7 target lang
 
 | Target | Compile Time | Relative |
 |--------|--------------|----------|
+| VIBEE→WASM | 2ms | Fastest compiled |
 | VIBEE→TypeScript | 0ms | No compilation |
 | VIBEE→Python | 0ms | No compilation |
-| VIBEE→Go | 97ms | 1.0x baseline |
-| VIBEE→Rust | 97ms | 1.0x |
-| VIBEE→Zig | 5,436ms | 56x slower |
+| VIBEE→Go | 99ms | 1.0x baseline |
+| VIBEE→Rust | 95ms | ~1.0x |
+| VIBEE→Zig (Debug) | 1,256ms | 13x slower |
+| VIBEE→Zig (Release) | 5,387ms | 54x slower |
 
 ### 2.2 Analysis
 
@@ -90,11 +92,13 @@ This study evaluates VIBEE across **8 performance criteria** and **7 target lang
 │  COMPILATION TIME BREAKDOWN                                                     │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
+│  VIBEE→WASM        ▏ 2ms (wat2wasm)                                             │
 │  VIBEE→TypeScript  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0ms     │
 │  VIBEE→Python      ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0ms     │
-│  VIBEE→Go          ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  97ms    │
-│  VIBEE→Rust        ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  97ms    │
-│  VIBEE→Zig         ██████████████████████████████████████████████████  5436ms  │
+│  VIBEE→Go          ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  99ms    │
+│  VIBEE→Rust        ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  95ms    │
+│  VIBEE→Zig Debug   ████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  1256ms  │
+│  VIBEE→Zig Release ██████████████████████████████████████████████████  5387ms  │
 │                                                                                 │
 │  Legend: █ = compilation time, ░ = no compilation                               │
 │                                                                                 │
@@ -104,9 +108,11 @@ This study evaluates VIBEE across **8 performance criteria** and **7 target lang
 ### 2.3 Why This Matters
 
 **Compilation time affects developer iteration speed:**
+- VIBEE→WASM: Near-instant compilation (2ms)
 - VIBEE→TypeScript: Instant feedback (0ms compile)
 - VIBEE→Go/Rust: Fast iteration (~100ms)
-- VIBEE→Zig: Best for final deployment (slow compile, fast runtime)
+- VIBEE→Zig Debug: Good for development (1.3s compile, acceptable runtime)
+- VIBEE→Zig Release: Best for final deployment (5.4s compile, fastest runtime)
 
 ---
 
@@ -420,7 +426,7 @@ This study evaluates VIBEE across **8 performance criteria** and **7 target lang
 │  Metric          │ Zig   │ Rust  │ Go    │ Python │ TS    │ Gleam │ WASM       │
 │  ────────────────┼───────┼───────┼───────┼────────┼───────┼───────┼────────    │
 │  Gen Time        │ 2ms   │ 2ms   │ 2ms   │ 2ms    │ 1ms   │ 2ms   │ 2ms        │
-│  Compile Time    │ 5.4s  │ 97ms  │ 97ms  │ 0ms    │ 0ms   │ N/A   │ 2ms        │
+│  Compile Time    │1.3/5.4│ 95ms  │ 99ms  │ 0ms    │ 0ms   │ N/A   │ 2ms        │
 │  Runtime         │ 27ms  │ 26ms  │ 52ms  │ 1162ms │ 115ms │ N/A   │ 70ms       │
 │  Binary Size     │ 1.6MB │ 3.8MB │ 1.9MB │ 1.2KB  │ 2.5KB │ N/A   │ 80B        │
 │  Memory          │ 2MB   │ 3MB   │ 10MB  │ 30MB   │ 50MB  │ N/A   │ ~1MB       │
@@ -537,6 +543,8 @@ This study evaluates VIBEE across **8 performance criteria** and **7 target lang
 
 ### For Embedded/IoT
 **Use VIBEE→Zig** for minimal footprint and maximum performance.
+- **Debug mode** (1.3s compile): Use during development for faster iteration
+- **Release mode** (5.4s compile): Use for production with 3.4x faster runtime
 
 ### For Research/Academia
 **Use VIBEE→Python** for experimentation, VIBEE→Rust for production systems.
