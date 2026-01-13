@@ -1,5 +1,6 @@
 // VIBEEC Code Generator - Multi-target code generation
 // Supports: Zig, Python, Rust, Go, Gleam, TypeScript, WASM
+// Enhanced with Creation Pattern code generation from mathematical experiments
 
 const std = @import("std");
 const parser = @import("parser.zig");
@@ -72,6 +73,16 @@ fn generateZig(allocator: std.mem.Allocator, spec: parser.Spec) ![]const u8 {
         \\
     , .{ spec.name, spec.module, spec.version });
 
+    // Generate Creation Pattern infrastructure if present
+    if (spec.hasCreationPattern()) {
+        try generateCreationPatternZig(writer, spec);
+    }
+
+    // Generate transformer functions
+    for (spec.transformers) |transformer| {
+        try generateTransformerZig(writer, transformer);
+    }
+
     for (spec.behaviors) |behavior| {
         try writer.print(
             \\/// {s}
@@ -94,6 +105,11 @@ fn generateZig(allocator: std.mem.Allocator, spec: parser.Spec) ![]const u8 {
         \\
         \\
     , .{});
+
+    // Generate automatic tests based on test_generation config
+    if (spec.test_generation) |tg| {
+        try generateAutoTestsZig(writer, spec, tg);
+    }
 
     for (spec.behaviors) |behavior| {
         try writer.print(
@@ -473,6 +489,362 @@ fn generateWasm(allocator: std.mem.Allocator, spec: parser.Spec) ![]const u8 {
 }
 
 // ============================================================================
+// CREATION PATTERN CODE GENERATION (from mathematical experiments)
+// ============================================================================
+
+/// Generate Creation Pattern infrastructure for Zig
+fn generateCreationPatternZig(writer: anytype, spec: parser.Spec) !void {
+    const cp = spec.creation_pattern orelse return;
+
+    try writer.print(
+        \\// ============================================================================
+        \\// Creation Pattern: {s} → {s} → {s}
+        \\// ============================================================================
+        \\
+        \\
+    , .{ cp.source, cp.transformer, cp.result });
+
+    // Generate iteration result type
+    try writer.print(
+        \\/// Result of iterative transformation
+        \\pub const IterationResult = struct {{
+        \\    value: u64,
+        \\    steps: usize,
+        \\    max_reached: u64,
+        \\    converged: bool,
+        \\}};
+        \\
+        \\
+    , .{});
+
+    // Generate iteration function based on iteration type
+    switch (cp.iteration) {
+        .until_condition, .until_fixed_point => {
+            try writer.print(
+                \\/// Apply transformer iteratively until condition is met
+                \\/// Pattern: Source → Transformer^n → Result
+                \\pub fn iterate_until(
+                \\    initial: u64,
+                \\    transformer: *const fn(u64) u64,
+                \\    condition: *const fn(u64) bool,
+                \\    max_steps: usize,
+                \\) IterationResult {{
+                \\    var current = initial;
+                \\    var steps: usize = 0;
+                \\    var max_reached: u64 = initial;
+                \\
+                \\    while (!condition(current) and steps < max_steps) {{
+                \\        current = transformer(current);
+                \\        steps += 1;
+                \\        if (current > max_reached) {{
+                \\            max_reached = current;
+                \\        }}
+                \\    }}
+                \\
+                \\    return .{{
+                \\        .value = current,
+                \\        .steps = steps,
+                \\        .max_reached = max_reached,
+                \\        .converged = condition(current),
+                \\    }};
+                \\}}
+                \\
+                \\
+            , .{});
+        },
+        .bounded => {
+            try writer.print(
+                \\/// Apply transformer a fixed number of times
+                \\pub fn iterate_bounded(
+                \\    initial: u64,
+                \\    transformer: *const fn(u64) u64,
+                \\    steps: usize,
+                \\) u64 {{
+                \\    var current = initial;
+                \\    var i: usize = 0;
+                \\    while (i < steps) : (i += 1) {{
+                \\        current = transformer(current);
+                \\    }}
+                \\    return current;
+                \\}}
+                \\
+                \\
+            , .{});
+        },
+        .single => {
+            // No special iteration needed
+        },
+        .infinite => {
+            try writer.print(
+                \\/// Generator for infinite sequence
+                \\pub const InfiniteIterator = struct {{
+                \\    current: u64,
+                \\    transformer: *const fn(u64) u64,
+                \\
+                \\    pub fn next(self: *InfiniteIterator) u64 {{
+                \\        const result = self.current;
+                \\        self.current = self.transformer(self.current);
+                \\        return result;
+                \\    }}
+                \\}};
+                \\
+                \\pub fn infinite_sequence(initial: u64, transformer: *const fn(u64) u64) InfiniteIterator {{
+                \\    return .{{ .current = initial, .transformer = transformer }};
+                \\}}
+                \\
+                \\
+            , .{});
+        },
+    }
+
+    // Generate statistical analysis if needed
+    try writer.print(
+        \\/// Statistical analysis of transformation over a range
+        \\pub const Statistics = struct {{
+        \\    count: usize,
+        \\    sum: f64,
+        \\    mean: f64,
+        \\    min: f64,
+        \\    max: f64,
+        \\    all_converged: bool,
+        \\}};
+        \\
+        \\pub fn analyze_range(
+        \\    start: u64,
+        \\    end: u64,
+        \\    transformer: *const fn(u64) u64,
+        \\    condition: *const fn(u64) bool,
+        \\    max_steps: usize,
+        \\) Statistics {{
+        \\    var sum: f64 = 0;
+        \\    var count: usize = 0;
+        \\    var min: f64 = std.math.inf(f64);
+        \\    var max: f64 = -std.math.inf(f64);
+        \\    var all_converged = true;
+        \\
+        \\    var n = start;
+        \\    while (n <= end) : (n += 1) {{
+        \\        const result = iterate_until(n, transformer, condition, max_steps);
+        \\        const steps_f = @as(f64, @floatFromInt(result.steps));
+        \\        sum += steps_f;
+        \\        count += 1;
+        \\        if (steps_f < min) min = steps_f;
+        \\        if (steps_f > max) max = steps_f;
+        \\        if (!result.converged) all_converged = false;
+        \\    }}
+        \\
+        \\    return .{{
+        \\        .count = count,
+        \\        .sum = sum,
+        \\        .mean = sum / @as(f64, @floatFromInt(count)),
+        \\        .min = min,
+        \\        .max = max,
+        \\        .all_converged = all_converged,
+        \\    }};
+        \\}}
+        \\
+        \\
+    , .{});
+}
+
+/// Generate transformer function for Zig
+fn generateTransformerZig(writer: anytype, transformer: parser.Transformer) !void {
+    try writer.print(
+        \\/// Transformer: {s}
+        \\/// Type: {s}
+        \\/// Input: {s} → Output: {s}
+        \\
+    , .{
+        transformer.name,
+        @tagName(transformer.transformer_type),
+        transformer.input,
+        transformer.output,
+    });
+
+    switch (transformer.transformer_type) {
+        .pure => {
+            try writer.print(
+                \\pub fn {s}(input: u64) u64 {{
+                \\    // TODO: Implement transformation rule
+                \\    // Rule: {s}
+                \\    _ = input;
+                \\    return 0;
+                \\}}
+                \\
+                \\
+            , .{ transformer.name, transformer.rule });
+        },
+        .filter => {
+            try writer.print(
+                \\pub fn {s}(input: u64) bool {{
+                \\    // TODO: Implement filter predicate
+                \\    // Rule: {s}
+                \\    _ = input;
+                \\    return false;
+                \\}}
+                \\
+                \\/// Filter a range using {s}
+                \\pub fn filter_range_{s}(allocator: std.mem.Allocator, start: u64, end: u64) ![]u64 {{
+                \\    var results = std.ArrayList(u64).init(allocator);
+                \\    var n = start;
+                \\    while (n <= end) : (n += 1) {{
+                \\        if ({s}(n)) {{
+                \\            try results.append(n);
+                \\        }}
+                \\    }}
+                \\    return results.toOwnedSlice();
+                \\}}
+                \\
+                \\
+            , .{ transformer.name, transformer.rule, transformer.name, transformer.name, transformer.name });
+        },
+        .mapping => {
+            try writer.print(
+                \\pub fn {s}(a: u64, b: u64) u64 {{
+                \\    // TODO: Implement mapping function
+                \\    // Rule: {s}
+                \\    _ = a;
+                \\    _ = b;
+                \\    return 0;
+                \\}}
+                \\
+                \\/// Find pairs that map to target using {s}
+                \\pub const Pair = struct {{ a: u64, b: u64 }};
+                \\
+                \\pub fn find_pairs_{s}(allocator: std.mem.Allocator, target: u64, limit: u64) ![]Pair {{
+                \\    var results = std.ArrayList(Pair).init(allocator);
+                \\    var a: u64 = 1;
+                \\    while (a <= limit) : (a += 1) {{
+                \\        var b: u64 = a;
+                \\        while (b <= limit) : (b += 1) {{
+                \\            if ({s}(a, b) == target) {{
+                \\                try results.append(.{{ .a = a, .b = b }});
+                \\            }}
+                \\        }}
+                \\    }}
+                \\    return results.toOwnedSlice();
+                \\}}
+                \\
+                \\
+            , .{ transformer.name, transformer.rule, transformer.name, transformer.name, transformer.name });
+        },
+        .generator => {
+            try writer.print(
+                \\pub const {s}Iterator = struct {{
+                \\    state: u64,
+                \\
+                \\    pub fn next(self: *{s}Iterator) ?u64 {{
+                \\        // TODO: Implement generator
+                \\        // Rule: {s}
+                \\        const result = self.state;
+                \\        self.state += 1;
+                \\        return result;
+                \\    }}
+                \\}};
+                \\
+                \\pub fn {s}() {s}Iterator {{
+                \\    return .{{ .state = 0 }};
+                \\}}
+                \\
+                \\
+            , .{ transformer.name, transformer.name, transformer.rule, transformer.name, transformer.name });
+        },
+        .iterative => {
+            try writer.print(
+                \\pub fn {s}(input: u64) u64 {{
+                \\    // TODO: Implement iterative transformation
+                \\    // Rule: {s}
+                \\    _ = input;
+                \\    return 0;
+                \\}}
+                \\
+                \\
+            , .{ transformer.name, transformer.rule });
+        },
+    }
+}
+
+/// Generate automatic tests based on test_generation config
+fn generateAutoTestsZig(writer: anytype, spec: parser.Spec, tg: parser.TestGeneration) !void {
+    _ = spec;
+
+    try writer.print(
+        \\// ============================================================================
+        \\// Auto-generated Tests (from test_generation config)
+        \\// ============================================================================
+        \\
+        \\
+    , .{});
+
+    if (tg.boundary) {
+        try writer.print(
+            \\test "boundary: zero" {{
+            \\    // Auto-generated boundary test for value 0
+            \\    // TODO: Add assertions based on spec
+            \\}}
+            \\
+            \\test "boundary: one" {{
+            \\    // Auto-generated boundary test for value 1
+            \\    // TODO: Add assertions based on spec
+            \\}}
+            \\
+            \\test "boundary: max_u32" {{
+            \\    // Auto-generated boundary test for max u32
+            \\    const max_val: u64 = std.math.maxInt(u32);
+            \\    _ = max_val;
+            \\    // TODO: Add assertions based on spec
+            \\}}
+            \\
+            \\
+        , .{});
+    }
+
+    if (tg.stress) {
+        for (tg.stress_limits) |limit| {
+            try writer.print(
+                \\test "stress: range_1_to_{d}" {{
+                \\    // Auto-generated stress test for range 1 to {d}
+                \\    // TODO: Add range verification based on spec
+                \\}}
+                \\
+                \\
+            , .{ limit, limit });
+        }
+
+        // Default stress tests if no limits specified
+        if (tg.stress_limits.len == 0) {
+            try writer.print(
+                \\test "stress: range_1_to_1000" {{
+                \\    // Auto-generated stress test for range 1 to 1000
+                \\}}
+                \\
+                \\test "stress: range_1_to_10000" {{
+                \\    // Auto-generated stress test for range 1 to 10000
+                \\}}
+                \\
+                \\
+            , .{});
+        }
+    }
+
+    if (tg.property) {
+        try writer.print(
+            \\test "property: idempotence" {{
+            \\    // Auto-generated property test: f(f(x)) behavior
+            \\    // TODO: Add property assertions based on spec
+            \\}}
+            \\
+            \\test "property: monotonicity" {{
+            \\    // Auto-generated property test: ordering preservation
+            \\    // TODO: Add property assertions based on spec
+            \\}}
+            \\
+            \\
+        , .{});
+    }
+}
+
+// ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
 
@@ -513,6 +885,9 @@ test "generate zig code" {
         .types = &[_]parser.Type{},
         .functions = &[_]parser.Function{},
         .imports = &[_][]const u8{},
+        .creation_pattern = null,
+        .transformers = &[_]parser.Transformer{},
+        .test_generation = null,
         .allocator = std.testing.allocator,
     };
 
@@ -544,6 +919,9 @@ test "generate python code" {
         .types = &[_]parser.Type{},
         .functions = &[_]parser.Function{},
         .imports = &[_][]const u8{},
+        .creation_pattern = null,
+        .transformers = &[_]parser.Transformer{},
+        .test_generation = null,
         .allocator = std.testing.allocator,
     };
 
@@ -576,6 +954,9 @@ test "generate rust code" {
         .types = &[_]parser.Type{},
         .functions = &[_]parser.Function{},
         .imports = &[_][]const u8{},
+        .creation_pattern = null,
+        .transformers = &[_]parser.Transformer{},
+        .test_generation = null,
         .allocator = std.testing.allocator,
     };
 
@@ -608,6 +989,9 @@ test "generate go code" {
         .types = &[_]parser.Type{},
         .functions = &[_]parser.Function{},
         .imports = &[_][]const u8{},
+        .creation_pattern = null,
+        .transformers = &[_]parser.Transformer{},
+        .test_generation = null,
         .allocator = std.testing.allocator,
     };
 
@@ -640,6 +1024,9 @@ test "generate typescript code" {
         .types = &[_]parser.Type{},
         .functions = &[_]parser.Function{},
         .imports = &[_][]const u8{},
+        .creation_pattern = null,
+        .transformers = &[_]parser.Transformer{},
+        .test_generation = null,
         .allocator = std.testing.allocator,
     };
 
@@ -671,6 +1058,9 @@ test "generate wasm code" {
         .types = &[_]parser.Type{},
         .functions = &[_]parser.Function{},
         .imports = &[_][]const u8{},
+        .creation_pattern = null,
+        .transformers = &[_]parser.Transformer{},
+        .test_generation = null,
         .allocator = std.testing.allocator,
     };
 
@@ -695,4 +1085,139 @@ test "target from string" {
     try std.testing.expect(Target.fromString("ts") == .typescript);
     try std.testing.expect(Target.fromString("wasm") == .wasm);
     try std.testing.expect(Target.fromString("unknown") == null);
+}
+
+// ============================================================================
+// Creation Pattern Code Generation Tests
+// ============================================================================
+
+test "generate creation pattern infrastructure" {
+    var behaviors = [_]parser.Behavior{};
+
+    const cp = parser.CreationPattern{
+        .source = "PositiveInteger",
+        .transformer = "collatz_step",
+        .result = "One",
+        .iteration = .until_condition,
+        .condition = "equals(1)",
+        .max_steps = 10000,
+    };
+
+    const spec = parser.Spec{
+        .name = "collatz",
+        .version = "1.0.0",
+        .language = "zig",
+        .module = "collatz",
+        .description = "Collatz conjecture",
+        .behaviors = &behaviors,
+        .types = &[_]parser.Type{},
+        .functions = &[_]parser.Function{},
+        .imports = &[_][]const u8{},
+        .creation_pattern = cp,
+        .transformers = &[_]parser.Transformer{},
+        .test_generation = null,
+        .allocator = std.testing.allocator,
+    };
+
+    const code = try generate(std.testing.allocator, spec);
+    defer std.testing.allocator.free(code);
+
+    // Should generate Creation Pattern header
+    try std.testing.expect(std.mem.indexOf(u8, code, "Creation Pattern:") != null);
+    // Should generate IterationResult type
+    try std.testing.expect(std.mem.indexOf(u8, code, "IterationResult") != null);
+    // Should generate iterate_until function
+    try std.testing.expect(std.mem.indexOf(u8, code, "iterate_until") != null);
+    // Should generate Statistics type
+    try std.testing.expect(std.mem.indexOf(u8, code, "Statistics") != null);
+    // Should generate analyze_range function
+    try std.testing.expect(std.mem.indexOf(u8, code, "analyze_range") != null);
+}
+
+test "generate transformer functions" {
+    var behaviors = [_]parser.Behavior{};
+
+    var transformers = [_]parser.Transformer{
+        .{
+            .name = "collatz_step",
+            .transformer_type = .pure,
+            .input = "u64",
+            .output = "u64",
+            .rule = "n/2 if even, 3n+1 if odd",
+        },
+        .{
+            .name = "is_twin_prime",
+            .transformer_type = .filter,
+            .input = "u64",
+            .output = "bool",
+            .rule = "p and p+2 both prime",
+        },
+    };
+
+    const spec = parser.Spec{
+        .name = "transformers",
+        .version = "1.0.0",
+        .language = "zig",
+        .module = "transformers",
+        .description = "Transformer tests",
+        .behaviors = &behaviors,
+        .types = &[_]parser.Type{},
+        .functions = &[_]parser.Function{},
+        .imports = &[_][]const u8{},
+        .creation_pattern = null,
+        .transformers = &transformers,
+        .test_generation = null,
+        .allocator = std.testing.allocator,
+    };
+
+    const code = try generate(std.testing.allocator, spec);
+    defer std.testing.allocator.free(code);
+
+    // Should generate pure transformer
+    try std.testing.expect(std.mem.indexOf(u8, code, "pub fn collatz_step") != null);
+    // Should generate filter transformer
+    try std.testing.expect(std.mem.indexOf(u8, code, "pub fn is_twin_prime") != null);
+    // Should generate filter_range helper for filter type
+    try std.testing.expect(std.mem.indexOf(u8, code, "filter_range_is_twin_prime") != null);
+}
+
+test "generate auto tests" {
+    var behaviors = [_]parser.Behavior{};
+
+    const tg = parser.TestGeneration{
+        .boundary = true,
+        .stress = true,
+        .property = true,
+        .stress_limits = &[_]usize{},
+        .coverage_target = 80,
+    };
+
+    const spec = parser.Spec{
+        .name = "autotests",
+        .version = "1.0.0",
+        .language = "zig",
+        .module = "autotests",
+        .description = "Auto test generation",
+        .behaviors = &behaviors,
+        .types = &[_]parser.Type{},
+        .functions = &[_]parser.Function{},
+        .imports = &[_][]const u8{},
+        .creation_pattern = null,
+        .transformers = &[_]parser.Transformer{},
+        .test_generation = tg,
+        .allocator = std.testing.allocator,
+    };
+
+    const code = try generate(std.testing.allocator, spec);
+    defer std.testing.allocator.free(code);
+
+    // Should generate boundary tests
+    try std.testing.expect(std.mem.indexOf(u8, code, "boundary: zero") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "boundary: one") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "boundary: max_u32") != null);
+    // Should generate stress tests
+    try std.testing.expect(std.mem.indexOf(u8, code, "stress: range") != null);
+    // Should generate property tests
+    try std.testing.expect(std.mem.indexOf(u8, code, "property: idempotence") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "property: monotonicity") != null);
 }

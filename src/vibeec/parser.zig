@@ -1,7 +1,82 @@
 // VIBEEC Parser - Parses .vibee YAML specifications
 // Supports full Given/When/Then behavioral format
+// Enhanced with Creation Pattern support from mathematical experiments
 
 const std = @import("std");
+
+// ============================================================================
+// CREATION PATTERN TYPES (from Collatz/Goldbach/TwinPrimes experiments)
+// ============================================================================
+
+/// Iteration strategy for transformers
+pub const IterationType = enum {
+    single, // Apply transformer once
+    until_fixed_point, // Apply until value stops changing
+    until_condition, // Apply until condition is met
+    bounded, // Apply up to max_steps times
+    infinite, // Generate infinite stream (lazy)
+
+    pub fn fromString(s: []const u8) ?IterationType {
+        if (std.mem.eql(u8, s, "single")) return .single;
+        if (std.mem.eql(u8, s, "until_fixed_point")) return .until_fixed_point;
+        if (std.mem.eql(u8, s, "until_condition")) return .until_condition;
+        if (std.mem.eql(u8, s, "bounded")) return .bounded;
+        if (std.mem.eql(u8, s, "infinite")) return .infinite;
+        return null;
+    }
+};
+
+/// Transformer classification (from experiment patterns)
+pub const TransformerType = enum {
+    pure, // f(x) -> y, no side effects (Collatz step)
+    iterative, // f^n(x) until condition (Collatz sequence)
+    filter, // f(x) -> bool, select matching (Twin primes)
+    mapping, // f(x, y) -> z, combine inputs (Goldbach)
+    generator, // () -> Stream<T>, produce values (Prime sieve)
+
+    pub fn fromString(s: []const u8) ?TransformerType {
+        if (std.mem.eql(u8, s, "pure")) return .pure;
+        if (std.mem.eql(u8, s, "iterative")) return .iterative;
+        if (std.mem.eql(u8, s, "filter")) return .filter;
+        if (std.mem.eql(u8, s, "mapping")) return .mapping;
+        if (std.mem.eql(u8, s, "generator")) return .generator;
+        return null;
+    }
+};
+
+/// Creation Pattern: Source → Transformer → Result
+pub const CreationPattern = struct {
+    source: []const u8, // Input type/domain
+    transformer: []const u8, // Function name
+    result: []const u8, // Output type/target
+    iteration: IterationType, // How to apply transformer
+    condition: []const u8, // Stop condition (for iterative)
+    max_steps: usize, // Maximum iterations (for bounded)
+};
+
+/// Transformer definition with type classification
+pub const Transformer = struct {
+    name: []const u8,
+    transformer_type: TransformerType,
+    input: []const u8,
+    output: []const u8,
+    rule: []const u8, // Transformation rule/logic
+};
+
+/// Test generation configuration
+pub const TestGeneration = struct {
+    boundary: bool, // Generate edge case tests
+    stress: bool, // Generate stress tests
+    property: bool, // Generate property-based tests
+    stress_limits: []usize, // Stress test limits [1000, 10000, ...]
+    coverage_target: usize, // Target coverage percentage
+};
+
+/// Type constraint for constrained types
+pub const TypeConstraint = struct {
+    base_type: []const u8,
+    constraint: []const u8, // e.g., "> 0", "% 2 == 0", "is_prime"
+};
 
 pub const Spec = struct {
     name: []const u8,
@@ -13,6 +88,10 @@ pub const Spec = struct {
     types: []Type,
     functions: []Function,
     imports: [][]const u8,
+    // New Creation Pattern fields
+    creation_pattern: ?CreationPattern,
+    transformers: []Transformer,
+    test_generation: ?TestGeneration,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *const Spec) void {
@@ -29,6 +108,25 @@ pub const Spec = struct {
         }
         self.allocator.free(self.functions);
         self.allocator.free(self.imports);
+        self.allocator.free(self.transformers);
+        if (self.test_generation) |tg| {
+            self.allocator.free(tg.stress_limits);
+        }
+    }
+
+    /// Check if spec uses Creation Pattern
+    pub fn hasCreationPattern(self: *const Spec) bool {
+        return self.creation_pattern != null;
+    }
+
+    /// Get transformer type for a behavior
+    pub fn getTransformerType(self: *const Spec, name: []const u8) ?TransformerType {
+        for (self.transformers) |t| {
+            if (std.mem.eql(u8, t.name, name)) {
+                return t.transformer_type;
+            }
+        }
+        return null;
     }
 };
 
@@ -80,6 +178,11 @@ const ParserState = enum {
     Functions,
     FunctionItem,
     Imports,
+    // New states for Creation Pattern
+    CreationPattern,
+    Transformers,
+    TransformerItem,
+    TestGeneration,
 };
 
 pub fn parse(allocator: std.mem.Allocator, content: []const u8) ParseError!Spec {
@@ -93,6 +196,10 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) ParseError!Spec 
         .types = &[_]Type{},
         .functions = &[_]Function{},
         .imports = &[_][]const u8{},
+        // New Creation Pattern fields
+        .creation_pattern = null,
+        .transformers = &[_]Transformer{},
+        .test_generation = null,
         .allocator = allocator,
     };
 
@@ -100,6 +207,13 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) ParseError!Spec 
     var types = std.ArrayList(Type).init(allocator);
     var functions = std.ArrayList(Function).init(allocator);
     var imports = std.ArrayList([]const u8).init(allocator);
+    var transformers = std.ArrayList(Transformer).init(allocator);
+
+    // Creation pattern parsing state
+    var current_creation_pattern: ?CreationPattern = null;
+    var current_transformer: ?Transformer = null;
+    var current_test_gen: ?TestGeneration = null;
+    var stress_limits = std.ArrayList(usize).init(allocator);
 
     var state: ParserState = .Root;
     var current_behavior: ?Behavior = null;
@@ -147,6 +261,33 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) ParseError!Spec 
             continue;
         } else if (std.mem.startsWith(u8, trimmed, "test_cases:")) {
             state = .TestCases;
+            continue;
+        } else if (std.mem.startsWith(u8, trimmed, "creation_pattern:")) {
+            // New: Parse Creation Pattern block
+            current_creation_pattern = CreationPattern{
+                .source = "",
+                .transformer = "",
+                .result = "",
+                .iteration = .single,
+                .condition = "",
+                .max_steps = 10000,
+            };
+            state = .CreationPattern;
+            continue;
+        } else if (std.mem.startsWith(u8, trimmed, "transformers:")) {
+            // New: Parse Transformers block
+            state = .Transformers;
+            continue;
+        } else if (std.mem.startsWith(u8, trimmed, "test_generation:")) {
+            // New: Parse Test Generation config
+            current_test_gen = TestGeneration{
+                .boundary = false,
+                .stress = false,
+                .property = false,
+                .stress_limits = &[_]usize{},
+                .coverage_target = 80,
+            };
+            state = .TestGeneration;
             continue;
         }
 
@@ -273,6 +414,76 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) ParseError!Spec 
                     imports.append(trimmed[2..]) catch return ParseError.OutOfMemory;
                 }
             },
+            // New: Creation Pattern parsing
+            .CreationPattern => {
+                if (current_creation_pattern) |*cp| {
+                    if (std.mem.startsWith(u8, trimmed, "source:")) {
+                        cp.source = extractValue(trimmed);
+                    } else if (std.mem.startsWith(u8, trimmed, "transformer:")) {
+                        cp.transformer = extractValue(trimmed);
+                    } else if (std.mem.startsWith(u8, trimmed, "result:")) {
+                        cp.result = extractValue(trimmed);
+                    } else if (std.mem.startsWith(u8, trimmed, "iteration:")) {
+                        const iter_str = extractValue(trimmed);
+                        cp.iteration = IterationType.fromString(iter_str) orelse .single;
+                    } else if (std.mem.startsWith(u8, trimmed, "condition:")) {
+                        cp.condition = extractValue(trimmed);
+                    } else if (std.mem.startsWith(u8, trimmed, "max_steps:")) {
+                        const steps_str = extractValue(trimmed);
+                        cp.max_steps = std.fmt.parseInt(usize, steps_str, 10) catch 10000;
+                    }
+                }
+            },
+            // New: Transformers parsing
+            .Transformers, .TransformerItem => {
+                if (std.mem.startsWith(u8, trimmed, "- name:")) {
+                    if (current_transformer) |t| {
+                        transformers.append(t) catch return ParseError.OutOfMemory;
+                    }
+                    current_transformer = Transformer{
+                        .name = extractValue(trimmed[2..]),
+                        .transformer_type = .pure,
+                        .input = "",
+                        .output = "",
+                        .rule = "",
+                    };
+                    state = .TransformerItem;
+                } else if (current_transformer) |*t| {
+                    if (std.mem.startsWith(u8, trimmed, "type:")) {
+                        const type_str = extractValue(trimmed);
+                        t.transformer_type = TransformerType.fromString(type_str) orelse .pure;
+                    } else if (std.mem.startsWith(u8, trimmed, "input:")) {
+                        t.input = extractValue(trimmed);
+                    } else if (std.mem.startsWith(u8, trimmed, "output:")) {
+                        t.output = extractValue(trimmed);
+                    } else if (std.mem.startsWith(u8, trimmed, "rule:")) {
+                        t.rule = extractValue(trimmed);
+                    }
+                }
+            },
+            // New: Test Generation parsing
+            .TestGeneration => {
+                if (current_test_gen) |*tg| {
+                    if (std.mem.startsWith(u8, trimmed, "boundary:")) {
+                        const val = extractValue(trimmed);
+                        tg.boundary = std.mem.eql(u8, val, "true");
+                    } else if (std.mem.startsWith(u8, trimmed, "stress:")) {
+                        const val = extractValue(trimmed);
+                        tg.stress = std.mem.eql(u8, val, "true");
+                    } else if (std.mem.startsWith(u8, trimmed, "property:")) {
+                        const val = extractValue(trimmed);
+                        tg.property = std.mem.eql(u8, val, "true");
+                    } else if (std.mem.startsWith(u8, trimmed, "coverage:")) {
+                        const val = extractValue(trimmed);
+                        tg.coverage_target = std.fmt.parseInt(usize, val, 10) catch 80;
+                    } else if (std.mem.startsWith(u8, trimmed, "- ")) {
+                        // Parse stress limits array
+                        const limit_str = trimmed[2..];
+                        const limit = std.fmt.parseInt(usize, limit_str, 10) catch continue;
+                        stress_limits.append(limit) catch return ParseError.OutOfMemory;
+                    }
+                }
+            },
         }
 
     }
@@ -290,11 +501,22 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) ParseError!Spec 
         f.params = current_params.toOwnedSlice() catch return ParseError.OutOfMemory;
         functions.append(f.*) catch return ParseError.OutOfMemory;
     }
+    // Save new Creation Pattern items
+    if (current_transformer) |t| {
+        transformers.append(t) catch return ParseError.OutOfMemory;
+    }
+    if (current_test_gen) |*tg| {
+        tg.stress_limits = stress_limits.toOwnedSlice() catch return ParseError.OutOfMemory;
+    }
 
     spec.behaviors = behaviors.toOwnedSlice() catch return ParseError.OutOfMemory;
     spec.types = types.toOwnedSlice() catch return ParseError.OutOfMemory;
     spec.functions = functions.toOwnedSlice() catch return ParseError.OutOfMemory;
     spec.imports = imports.toOwnedSlice() catch return ParseError.OutOfMemory;
+    // Assign new fields
+    spec.creation_pattern = current_creation_pattern;
+    spec.transformers = transformers.toOwnedSlice() catch return ParseError.OutOfMemory;
+    spec.test_generation = current_test_gen;
 
     return spec;
 }
@@ -399,4 +621,141 @@ test "parse imports" {
     defer spec.deinit();
 
     try std.testing.expect(spec.imports.len == 2);
+}
+
+// ============================================================================
+// Creation Pattern Tests (from mathematical experiments)
+// ============================================================================
+
+test "parse creation pattern" {
+    const content =
+        \\name: collatz_test
+        \\version: "1.0.0"
+        \\language: zig
+        \\module: collatz
+        \\
+        \\creation_pattern:
+        \\  source: PositiveInteger
+        \\  transformer: collatz_step
+        \\  result: One
+        \\  iteration: until_condition
+        \\  condition: equals(1)
+        \\  max_steps: 10000
+    ;
+
+    const spec = try parse(std.testing.allocator, content);
+    defer spec.deinit();
+
+    try std.testing.expect(spec.creation_pattern != null);
+    const cp = spec.creation_pattern.?;
+    try std.testing.expectEqualStrings("PositiveInteger", cp.source);
+    try std.testing.expectEqualStrings("collatz_step", cp.transformer);
+    try std.testing.expectEqualStrings("One", cp.result);
+    try std.testing.expect(cp.iteration == .until_condition);
+    try std.testing.expectEqualStrings("equals(1)", cp.condition);
+    try std.testing.expect(cp.max_steps == 10000);
+}
+
+test "parse transformers" {
+    const content =
+        \\name: transformer_test
+        \\version: "1.0.0"
+        \\language: zig
+        \\module: transformers
+        \\
+        \\transformers:
+        \\  - name: collatz_step
+        \\    type: pure
+        \\    input: u64
+        \\    output: u64
+        \\  - name: twin_filter
+        \\    type: filter
+        \\    input: Prime
+        \\    output: bool
+    ;
+
+    const spec = try parse(std.testing.allocator, content);
+    defer spec.deinit();
+
+    try std.testing.expect(spec.transformers.len == 2);
+    try std.testing.expectEqualStrings("collatz_step", spec.transformers[0].name);
+    try std.testing.expect(spec.transformers[0].transformer_type == .pure);
+    try std.testing.expectEqualStrings("twin_filter", spec.transformers[1].name);
+    try std.testing.expect(spec.transformers[1].transformer_type == .filter);
+}
+
+test "parse test generation config" {
+    const content =
+        \\name: testgen_test
+        \\version: "1.0.0"
+        \\language: zig
+        \\module: testgen
+        \\
+        \\test_generation:
+        \\  boundary: true
+        \\  stress: true
+        \\  property: false
+        \\  coverage: 90
+    ;
+
+    const spec = try parse(std.testing.allocator, content);
+    defer spec.deinit();
+
+    try std.testing.expect(spec.test_generation != null);
+    const tg = spec.test_generation.?;
+    try std.testing.expect(tg.boundary == true);
+    try std.testing.expect(tg.stress == true);
+    try std.testing.expect(tg.property == false);
+    try std.testing.expect(tg.coverage_target == 90);
+}
+
+test "iteration type from string" {
+    try std.testing.expect(IterationType.fromString("single") == .single);
+    try std.testing.expect(IterationType.fromString("until_fixed_point") == .until_fixed_point);
+    try std.testing.expect(IterationType.fromString("until_condition") == .until_condition);
+    try std.testing.expect(IterationType.fromString("bounded") == .bounded);
+    try std.testing.expect(IterationType.fromString("infinite") == .infinite);
+    try std.testing.expect(IterationType.fromString("unknown") == null);
+}
+
+test "transformer type from string" {
+    try std.testing.expect(TransformerType.fromString("pure") == .pure);
+    try std.testing.expect(TransformerType.fromString("iterative") == .iterative);
+    try std.testing.expect(TransformerType.fromString("filter") == .filter);
+    try std.testing.expect(TransformerType.fromString("mapping") == .mapping);
+    try std.testing.expect(TransformerType.fromString("generator") == .generator);
+    try std.testing.expect(TransformerType.fromString("unknown") == null);
+}
+
+test "spec has creation pattern" {
+    const content =
+        \\name: pattern_test
+        \\version: "1.0.0"
+        \\language: zig
+        \\module: pattern
+        \\
+        \\creation_pattern:
+        \\  source: Input
+        \\  transformer: transform
+        \\  result: Output
+    ;
+
+    const spec = try parse(std.testing.allocator, content);
+    defer spec.deinit();
+
+    try std.testing.expect(spec.hasCreationPattern());
+}
+
+test "spec without creation pattern" {
+    const content =
+        \\name: no_pattern_test
+        \\version: "1.0.0"
+        \\language: zig
+        \\module: no_pattern
+    ;
+
+    const spec = try parse(std.testing.allocator, content);
+    defer spec.deinit();
+
+    try std.testing.expect(!spec.hasCreationPattern());
 }
