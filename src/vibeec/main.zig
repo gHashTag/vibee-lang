@@ -35,6 +35,23 @@ pub fn main() !void {
             return;
         }
         try checkSpec(allocator, args[2]);
+    } else if (std.mem.eql(u8, command, "bee")) {
+        if (args.len < 3) {
+            std.debug.print("Error: Missing bee subcommand\n", .{});
+            std.debug.print("Usage: vibeec bee <status|achievements|daily>\n", .{});
+            return;
+        }
+        const subcommand = args[2];
+        if (std.mem.eql(u8, subcommand, "status")) {
+            try beeStatus();
+        } else if (std.mem.eql(u8, subcommand, "achievements")) {
+            try beeAchievements();
+        } else if (std.mem.eql(u8, subcommand, "daily")) {
+            try beeDaily();
+        } else {
+            std.debug.print("Unknown bee subcommand: {s}\n", .{subcommand});
+            std.debug.print("Available: status, achievements, daily\n", .{});
+        }
     } else if (std.mem.eql(u8, command, "version")) {
         std.debug.print("vibeec 1.0.0\n", .{});
     } else if (std.mem.eql(u8, command, "help")) {
@@ -55,6 +72,9 @@ fn printUsage() !void {
         \\Commands:
         \\  gen <spec.vibee>     Generate code from specification
         \\  check <spec.vibee>   Validate specification
+        \\  bee status           Show your bee status and XP
+        \\  bee achievements     Show your achievements
+        \\  bee daily            Show daily challenge
         \\  version              Show version
         \\  help                 Show this help
         \\
@@ -65,6 +85,7 @@ fn printUsage() !void {
         \\  vibeec gen specs/example.vibee
         \\  vibeec gen specs/example.vibee --output src/
         \\  vibeec check specs/example.vibee
+        \\  vibeec bee status
         \\
     , .{});
 }
@@ -100,6 +121,100 @@ fn generateCode(allocator: std.mem.Allocator, spec_file: []const u8, output_dir:
     try out_file.writeAll(code);
 
     std.debug.print("Generated: {s}\n", .{output_name});
+}
+
+fn beeStatus() !void {
+    const stdout = std.io.getStdOut().writer();
+    
+    // Get current day of week for variety
+    const timestamp = std.time.timestamp();
+    const day = @mod(@divFloor(timestamp, 86400), 7);
+    
+    // Simulated progress based on time (in real app, would read from ~/.vibeec/profile.json)
+    const base_xp: u32 = 1234;
+    const daily_bonus: u32 = @intCast(@mod(timestamp, 100));
+    const xp = base_xp + daily_bonus;
+    
+    const level: u8 = if (xp < 500) 1 else if (xp < 2000) 2 else if (xp < 5000) 3 else if (xp < 10000) 4 else 5;
+    const level_names = [_][]const u8{ "Larva", "Worker Bee", "Nurse Bee", "Guard Bee", "Scout Bee", "Queen Bee" };
+    const next_level_xp = [_]u32{ 500, 2000, 5000, 10000, 25000, 100000 };
+    
+    const pollen_spec: u32 = 45 + @as(u32, @intCast(@mod(day, 10)));
+    const pollen_test: u32 = 23 + @as(u32, @intCast(@mod(day, 5)));
+    const pollen_code: u32 = 12 + @as(u32, @intCast(@mod(day, 3)));
+    const honey: u32 = 8 + @as(u32, @intCast(@mod(day, 2)));
+    
+    try stdout.print(
+        \\
+        \\  🐝 {s} (Level {d})
+        \\  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        \\  XP: {d} / {d}
+        \\  Pollen: 🌼 {d} | 🌸 {d} | 🌻 {d}
+        \\  Honey: 🍯 {d}
+        \\  Next: {s} ({d} XP needed)
+        \\
+        \\  Tip: Run 'vibeec bee daily' for today's challenge!
+        \\
+    , .{ level_names[level], level, xp, next_level_xp[level], pollen_spec, pollen_test, pollen_code, honey, level_names[level + 1], next_level_xp[level] - xp });
+}
+
+fn beeAchievements() !void {
+    const stdout = std.io.getStdOut().writer();
+    try stdout.print(
+        \\
+        \\  🏆 YOUR ACHIEVEMENTS
+        \\  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        \\
+        \\  ✅ 🏅 First Flight      - Complete tutorial
+        \\  ✅ 🥚 First Spec        - Write your first .vibee file
+        \\  ✅ 🌱 Hello Hive        - Generate first code
+        \\  ✅ 📖 Reader            - Read documentation
+        \\  ⬜ 🐝 First Honey       - Create working module
+        \\  ⬜ 🧪 Tester            - Write 10 test cases
+        \\  ⬜ 🎖️ Busy Bee          - 100 specs written
+        \\  ⬜ 🏆 Honey Master      - 1000 lines generated
+        \\  ⬜ 👑 Queen's Guard     - 0 violations in 30 days
+        \\
+        \\  Progress: 4/9 achievements unlocked
+        \\
+    , .{});
+}
+
+fn beeDaily() !void {
+    const stdout = std.io.getStdOut().writer();
+    
+    const timestamp = std.time.timestamp();
+    const day_of_week = @mod(@divFloor(timestamp, 86400), 7);
+    
+    const challenges = [_][]const u8{
+        "🍯 Honey Flow    - Generate code for 3 specs",
+        "🐝 Waggle Dance  - Share knowledge with a teammate",
+        "🌸 Foraging      - Research a new VIBEE feature",
+        "🏗️ Comb Building - Create a new module architecture",
+        "🛡️ Hive Defense  - Review 5 specs for quality",
+        "🌼 Nectar Hunt   - Write 3 new behaviors",
+        "📖 Royal Rest    - Read documentation for 15 min",
+    };
+    
+    const rewards = [_][]const u8{ "60 XP", "70 XP", "55 XP", "80 XP", "50 XP", "50 XP", "30 XP" };
+    
+    const day_names = [_][]const u8{ "Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday" };
+    
+    try stdout.print(
+        \\
+        \\  📅 DAILY CHALLENGE - {s}
+        \\  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        \\
+        \\  {s}
+        \\
+        \\  Reward: {s} + 🌼 x3
+        \\
+        \\  Status: ⬜ Not completed
+        \\
+        \\  Complete by writing specs and running:
+        \\    vibeec gen <your-spec.vibee>
+        \\
+    , .{ day_names[@intCast(day_of_week)], challenges[@intCast(day_of_week)], rewards[@intCast(day_of_week)] });
 }
 
 fn checkSpec(allocator: std.mem.Allocator, spec_file: []const u8) !void {
