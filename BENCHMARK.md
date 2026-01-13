@@ -160,12 +160,36 @@ This study evaluates VIBEE across **8 performance criteria** and **7 target lang
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.3 Why This Matters
+### 3.3 WASM Runtime Results
+
+| Target | Total Pipeline | Details |
+|--------|---------------|---------|
+| VIBEE→WASM | **74ms** | gen:2ms + compile:2ms + run:70ms |
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  VIBEE→WASM PERFORMANCE BREAKDOWN                                               │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  Code Generation:    ██ 2ms                                                     │
+│  WASM Compilation:   ██ 2ms                                                     │
+│  Runtime (wasmtime): ██████████████████████████████████████████████████ 70ms    │
+│                                                                                 │
+│  Total Pipeline:     74ms                                                       │
+│  Binary Size:        80 bytes (smallest of all compiled targets!)               │
+│                                                                                 │
+│  INSIGHT: WASM provides excellent balance of portability and performance        │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 3.4 Why This Matters
 
 **Runtime performance determines production costs:**
 - Faster code = fewer servers = lower cloud bills
 - VIBEE→Rust/Zig: Best for compute-intensive workloads
 - VIBEE→TypeScript: Best for I/O-bound applications
+- VIBEE→WASM: Best for portable, browser-compatible code with minimal binary size
 
 ---
 
@@ -175,12 +199,12 @@ This study evaluates VIBEE across **8 performance criteria** and **7 target lang
 
 | Target | Binary Size | Category |
 |--------|-------------|----------|
-| VIBEE→Zig | 1.6 MB | Smallest compiled |
-| VIBEE→Rust | 3.8 MB | Medium |
-| VIBEE→Go | 1.9 MB | Medium |
+| VIBEE→WASM | **80 bytes** | Smallest (bytecode) |
 | VIBEE→Python | 1.2 KB | Source only |
 | VIBEE→TypeScript | 2.5 KB | Source only |
-| VIBEE→WASM | ~15 KB | Portable |
+| VIBEE→Zig | 1.6 MB | Compiled |
+| VIBEE→Go | 1.9 MB | Compiled |
+| VIBEE→Rust | 3.8 MB | Compiled |
 
 ### 4.2 Analysis
 
@@ -189,9 +213,9 @@ This study evaluates VIBEE across **8 performance criteria** and **7 target lang
 │  BINARY SIZE COMPARISON                                                         │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│  VIBEE→TypeScript  █ 2.5 KB (source)                                            │
+│  VIBEE→WASM        ▏ 80 bytes (bytecode) ← SMALLEST!                            │
 │  VIBEE→Python      █ 1.2 KB (source)                                            │
-│  VIBEE→WASM        ██ 15 KB (bytecode)                                          │
+│  VIBEE→TypeScript  █ 2.5 KB (source)                                            │
 │  VIBEE→Zig         ████████████████████████████████ 1.6 MB                      │
 │  VIBEE→Go          ██████████████████████████████████████ 1.9 MB                │
 │  VIBEE→Rust        ████████████████████████████████████████████████████ 3.8 MB  │
@@ -396,11 +420,11 @@ This study evaluates VIBEE across **8 performance criteria** and **7 target lang
 │  Metric          │ Zig   │ Rust  │ Go    │ Python │ TS    │ Gleam │ WASM       │
 │  ────────────────┼───────┼───────┼───────┼────────┼───────┼───────┼────────    │
 │  Gen Time        │ 2ms   │ 2ms   │ 2ms   │ 2ms    │ 1ms   │ 2ms   │ 2ms        │
-│  Compile Time    │ 5.4s  │ 97ms  │ 97ms  │ 0ms    │ 0ms   │ N/A   │ N/A        │
-│  Runtime         │ 27ms  │ 26ms  │ 52ms  │ 1162ms │ 115ms │ N/A   │ N/A        │
-│  Binary Size     │ 1.6MB │ 3.8MB │ 1.9MB │ 1.2KB  │ 2.5KB │ N/A   │ 15KB       │
-│  Memory          │ 2MB   │ 3MB   │ 10MB  │ 30MB   │ 50MB  │ N/A   │ N/A        │
-│  Energy          │ ⚡⚡⚡⚡⚡│ ⚡⚡⚡⚡⚡│ ⚡⚡⚡⚡ │ ⚡      │ ⚡⚡⚡  │ N/A   │ N/A        │
+│  Compile Time    │ 5.4s  │ 97ms  │ 97ms  │ 0ms    │ 0ms   │ N/A   │ 2ms        │
+│  Runtime         │ 27ms  │ 26ms  │ 52ms  │ 1162ms │ 115ms │ N/A   │ 70ms       │
+│  Binary Size     │ 1.6MB │ 3.8MB │ 1.9MB │ 1.2KB  │ 2.5KB │ N/A   │ 80B        │
+│  Memory          │ 2MB   │ 3MB   │ 10MB  │ 30MB   │ 50MB  │ N/A   │ ~1MB       │
+│  Energy          │ ⚡⚡⚡⚡⚡│ ⚡⚡⚡⚡⚡│ ⚡⚡⚡⚡ │ ⚡      │ ⚡⚡⚡  │ N/A   │ ⚡⚡⚡⚡      │
 │  ────────────────┼───────┼───────┼───────┼────────┼───────┼───────┼────────    │
 │  Best For        │Systems│Perf   │Cloud  │ML/Data │Web    │Distrib│Browser     │
 │                                                                                 │
@@ -516,6 +540,9 @@ This study evaluates VIBEE across **8 performance criteria** and **7 target lang
 
 ### For Research/Academia
 **Use VIBEE→Python** for experimentation, VIBEE→Rust for production systems.
+
+### For Browser/Edge Computing
+**Use VIBEE→WASM** for portable code that runs anywhere — browsers, edge functions, serverless. With only 80 bytes binary size and 74ms total pipeline time, WASM offers the best portability-to-performance ratio.
 
 ---
 

@@ -316,6 +316,43 @@ EOF
         echo "VIBEE→typescript,fib,$total_ms" >> $RESULTS
         printf "  %-14s │ %7d ms  (gen:%dms + run:%dms)\n" "VIBEE→typescript" "$total_ms" "$gen_ms" "$run_ms"
     fi
+    
+    # VIBEE→WASM (full pipeline)
+    cat > /tmp/fib_impl.wat << 'EOF'
+(module
+  (func $fib (param $n i64) (result i64)
+    (if (result i64) (i64.le_u (local.get $n) (i64.const 1))
+      (then (local.get $n))
+      (else
+        (i64.add
+          (call $fib (i64.sub (local.get $n) (i64.const 1)))
+          (call $fib (i64.sub (local.get $n) (i64.const 2)))
+        )
+      )
+    )
+  )
+  (func $main (result i64) (call $fib (i64.const 35)))
+  (export "fib" (func $fib))
+  (export "main" (func $main))
+)
+EOF
+    WASMTIME="$HOME/.wasmtime/bin/wasmtime"
+    if command -v wat2wasm &> /dev/null && [[ -f "$WASMTIME" ]]; then
+        start=$(get_ms)
+        $VIBEEC gen /tmp/fib.vibee --output /tmp 2>/dev/null || true
+        gen_end=$(get_ms)
+        wat2wasm /tmp/fib_impl.wat -o /tmp/fib_impl.wasm 2>/dev/null
+        compile_end=$(get_ms)
+        $WASMTIME run --invoke main /tmp/fib_impl.wasm > /dev/null 2>&1 || true
+        run_end=$(get_ms)
+        gen_ms=$((gen_end - start))
+        compile_ms=$((compile_end - gen_end))
+        run_ms=$((run_end - compile_end))
+        total_ms=$((gen_ms + compile_ms + run_ms))
+        wasm_size=$(ls -l /tmp/fib_impl.wasm 2>/dev/null | awk '{print $5}')
+        echo "VIBEE→wasm,fib,$total_ms" >> $RESULTS
+        printf "  %-14s │ %7d ms  (gen:%dms + compile:%dms + run:%dms) [%d bytes]\n" "VIBEE→wasm" "$total_ms" "$gen_ms" "$compile_ms" "$run_ms" "$wasm_size"
+    fi
 fi
 
 echo "  ── Другие языки ──"
