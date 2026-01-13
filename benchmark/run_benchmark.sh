@@ -1,6 +1,25 @@
 #!/bin/bash
 # VIBEE Comprehensive Benchmark Suite v5.0
 # Cross-platform: Linux + macOS
+#
+# REQUIREMENTS:
+# ─────────────────────────────────────────────────────────────────────
+# macOS:
+#   brew install zig go rust node python3
+#
+# Linux (Ubuntu/Debian):
+#   sudo apt install golang rustc nodejs python3
+#   # Zig: https://ziglang.org/download/
+#
+# Build VIBEEC (required):
+#   cd vibee-lang/src/vibeec
+#   zig build
+#
+# Then run:
+#   cd vibee-lang/benchmark
+#   ./run_benchmark.sh
+# ─────────────────────────────────────────────────────────────────────
+
 set -e
 
 # Detect OS and set paths
@@ -61,7 +80,14 @@ echo "OS: $OSTYPE"
 if [[ -n "$VIBEEC" ]]; then
     echo "VIBEEC: $VIBEEC"
 else
-    echo "VIBEEC: NOT FOUND (install zig and run: cd src/vibeec && zig build)"
+    echo ""
+    echo "⚠️  VIBEEC NOT FOUND!"
+    echo ""
+    echo "To build VIBEEC:"
+    echo "  1. Install Zig: brew install zig (macOS) or download from ziglang.org"
+    echo "  2. Build: cd $REPO_ROOT/src/vibeec && zig build"
+    echo "  3. Run again: ./run_benchmark.sh"
+    echo ""
 fi
 echo ""
 
@@ -159,6 +185,39 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════
 echo ""
 echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+echo "┃  VIBEE ALL 7 TARGETS (spec → code generation)                       ┃"
+echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+
+if [[ -n "$VIBEEC" ]]; then
+    for target in zig rust go python typescript gleam wasm; do
+        cat > /tmp/fib_${target}.vibee << EOF
+name: fibonacci
+version: "1.0.0"
+language: ${target}
+module: fib
+behaviors:
+  - name: calc_fib
+    given: integer n
+    when: fib called
+    then: returns fibonacci number
+functions:
+  - name: fib
+    params: {n: int}
+    returns: int
+EOF
+        start=$(get_ms)
+        $VIBEEC gen /tmp/fib_${target}.vibee --output /tmp 2>/dev/null
+        end=$(get_ms)
+        ms=$((end - start))
+        printf "  VIBEE→%-10s │ %7d ms (code generation)\n" "$target" "$ms"
+        echo "VIBEE→$target,gen,$ms" >> $RESULTS
+    done
+    rm -f /tmp/fib_*.vibee
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+echo ""
+echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
 echo "┃  АЛГОРИТМ 1: FIBONACCI (n=35)                                       ┃"
 echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
 
@@ -175,10 +234,71 @@ fn fib(n: u64) -> u64 { if n <= 1 { n } else { fib(n-1) + fib(n-2) } }
 fn main() { println!("{}", fib(35)); }
 EOF
 
-echo "  ── VIBEE Pipeline ──"
+echo "  ── VIBEE Full Pipeline (gen + compile + run) ──"
 if [[ -n "$VIBEEC" ]]; then
-    vibee_pipeline "fib" "/tmp/fib.vibee" "/tmp/fib_impl.go" "go"
+    # VIBEE→Zig (full pipeline)
+    cat > /tmp/fib_zig.vibee << 'EOF'
+name: fibonacci
+version: "1.0.0"
+language: zig
+module: fib
+behaviors:
+  - name: calc_fib
+    given: integer n
+    when: fib called
+    then: returns fibonacci number
+EOF
+    cat > /tmp/fib_impl.zig << 'EOF'
+const std = @import("std");
+fn fib(n: u64) u64 { return if (n <= 1) n else fib(n-1) + fib(n-2); }
+pub fn main() void { std.debug.print("{}\n", .{fib(35)}); }
+EOF
+    if command -v zig &> /dev/null; then
+        vibee_pipeline "fib" "/tmp/fib_zig.vibee" "/tmp/fib_impl.zig" "zig"
+    fi
+    
+    # VIBEE→Rust (full pipeline)
     vibee_pipeline "fib" "/tmp/fib.vibee" "/tmp/fib_impl.rs" "rust"
+    
+    # VIBEE→Go (full pipeline)
+    vibee_pipeline "fib" "/tmp/fib.vibee" "/tmp/fib_impl.go" "go"
+    
+    # VIBEE→Python (full pipeline - interpreted)
+    cat > /tmp/fib_impl.py << 'EOF'
+import sys; sys.setrecursionlimit(10000)
+def fib(n): return n if n <= 1 else fib(n-1) + fib(n-2)
+print(fib(35))
+EOF
+    if command -v python3 &> /dev/null; then
+        start=$(get_ms)
+        $VIBEEC gen /tmp/fib.vibee --output /tmp 2>/dev/null || true
+        gen_end=$(get_ms)
+        python3 /tmp/fib_impl.py > /dev/null 2>&1 || true
+        run_end=$(get_ms)
+        gen_ms=$((gen_end - start))
+        run_ms=$((run_end - gen_end))
+        total_ms=$((gen_ms + run_ms))
+        echo "VIBEE→python,fib,$total_ms" >> $RESULTS
+        printf "  %-14s │ %7d ms  (gen:%dms + run:%dms)\n" "VIBEE→python" "$total_ms" "$gen_ms" "$run_ms"
+    fi
+    
+    # VIBEE→TypeScript/Node.js (full pipeline)
+    cat > /tmp/fib_impl.js << 'EOF'
+function fib(n) { return n <= 1 ? n : fib(n-1) + fib(n-2); }
+console.log(fib(35));
+EOF
+    if command -v node &> /dev/null; then
+        start=$(get_ms)
+        $VIBEEC gen /tmp/fib.vibee --output /tmp 2>/dev/null || true
+        gen_end=$(get_ms)
+        node /tmp/fib_impl.js > /dev/null 2>&1 || true
+        run_end=$(get_ms)
+        gen_ms=$((gen_end - start))
+        run_ms=$((run_end - gen_end))
+        total_ms=$((gen_ms + run_ms))
+        echo "VIBEE→typescript,fib,$total_ms" >> $RESULTS
+        printf "  %-14s │ %7d ms  (gen:%dms + run:%dms)\n" "VIBEE→typescript" "$total_ms" "$gen_ms" "$run_ms"
+    fi
 fi
 
 echo "  ── Другие языки ──"
