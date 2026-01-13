@@ -2,7 +2,7 @@
 
 ## What Does the G-Block Give Humanity?
 
-**Authors:** Vibee Research, Ona  
+**Author**: Dmitrii Vasilev  
 **Date:** January 13, 2026
 
 ---

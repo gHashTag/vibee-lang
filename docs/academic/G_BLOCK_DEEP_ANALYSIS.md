@@ -2,7 +2,7 @@
 
 ## The First g-Orbital Electrons in History (Z=121-138)
 
-**Authors:** Vibee Research, Ona  
+**Author**: Dmitrii Vasilev  
 **Date:** January 13, 2026  
 **Status:** Theoretical Predictions
 

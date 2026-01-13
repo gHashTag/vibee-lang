@@ -2,7 +2,7 @@
 
 ## A Complete Guide to the Prediction System
 
-**Authors:** Vibee Research, Ona  
+**Author**: Dmitrii Vasilev  
 **Date:** January 13, 2026  
 **Version:** 1.0
 

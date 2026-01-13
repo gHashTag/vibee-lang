@@ -2,7 +2,7 @@
 
 **Predicting Undiscovered Laws, Materials, and Constants**
 
-**Authors**: Vibee Research, Ona  
+**Author**: Dmitrii Vasilev  
 **Date**: January 13, 2026  
 **Status**: Prediction Framework with Validation
 

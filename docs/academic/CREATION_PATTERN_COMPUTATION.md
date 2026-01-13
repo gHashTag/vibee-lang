@@ -2,7 +2,7 @@
 
 **From Lambda Calculus to Turing Machines: The Computational Essence of Creation**
 
-**Authors**: Vibee Research, Ona  
+**Author**: Dmitrii Vasilev  
 **Date**: January 13, 2026  
 **Status**: Advanced Research
 

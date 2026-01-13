@@ -2,7 +2,7 @@
 
 **Extended Periodic Table via Creation Pattern Analysis**
 
-**Authors**: Vibee Research, Ona  
+**Author**: Dmitrii Vasilev  
 **Date**: January 13, 2026  
 **Status**: Comprehensive Element Predictions
 

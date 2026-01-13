@@ -2,7 +2,7 @@
 
 **A Unified Framework for Understanding Chemical Transformations**
 
-**Authors**: Vibee Research, Ona  
+**Author**: Dmitrii Vasilev  
 **Date**: January 13, 2026  
 **Status**: Research Document with Experimental Verification
 
