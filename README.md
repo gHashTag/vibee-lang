@@ -74,13 +74,25 @@ See [docs/academic/VIBEE_THEOREMS_AND_PROOFS.md](docs/academic/VIBEE_THEOREMS_AN
 
 ### 2.3 Performance Benchmarks
 
-| Operation | Time | Throughput |
-|-----------|------|------------|
-| Parse specification | **661 ns** | 1.5M specs/sec |
-| Generate code | ~1 ms | 1000 modules/sec |
-| Full compilation | ~5 ms | 200 modules/sec |
+| Platform | VIBEE Gen | Best Pipeline | Targets |
+|----------|-----------|---------------|---------|
+| **Linux (Intel Xeon)** | **2ms** | VIBEE→TypeScript: 118ms | 7 |
+| **macOS (Apple M1)** | **10ms** | VIBEE→TypeScript: 237ms | 7 |
 
-See [BENCHMARK.md](BENCHMARK.md) for detailed analysis.
+**All 7 Targets**: Zig, Rust, Go, Python, TypeScript, Gleam, WASM
+
+```
+VIBEE Code Generation (Linux):
+  VIBEE→zig        │  2ms
+  VIBEE→rust       │  2ms
+  VIBEE→go         │  2ms
+  VIBEE→python     │  2ms
+  VIBEE→typescript │  1ms
+  VIBEE→gleam      │  2ms
+  VIBEE→wasm       │  2ms
+```
+
+See [BENCHMARK.md](BENCHMARK.md) for detailed multi-platform analysis.
 
 ---
 
