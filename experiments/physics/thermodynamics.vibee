@@ -1,0 +1,191 @@
+name: thermodynamics
+version: "1.0.0"
+language: zig
+module: thermodynamics
+description: |
+  Паттерн Творения: Термодинамика
+  
+  Источник: Термодинамическое состояние (T, P, V, S, U)
+  Трансформер: Законы термодинамики
+  Результат: Новое состояние / Равновесие
+  
+  Четыре закона термодинамики:
+  0. Термическое равновесие транзитивно
+  1. Сохранение энергии: dU = δQ - δW
+  2. Энтропия возрастает: dS ≥ δQ/T
+  3. Абсолютный ноль недостижим: lim(T→0) S = 0
+
+creation_pattern:
+  source: ThermodynamicState
+  transformer: thermodynamic_process
+  result: ThermodynamicState
+  iteration: until_condition
+  condition: equilibrium_reached
+
+behaviors:
+  # Нулевой закон: Термическое равновесие
+  - name: zeroth_law_equilibrium
+    given: Три системы A, B, C
+    when: A в равновесии с C и B в равновесии с C
+    then: A в равновесии с B
+    test_cases:
+      - name: transitive_equilibrium
+        input: {T_A: 300, T_B: 300, T_C: 300}
+        expected: {A_eq_B: true, A_eq_C: true, B_eq_C: true}
+      - name: not_equilibrium
+        input: {T_A: 300, T_B: 350, T_C: 300}
+        expected: {A_eq_B: false, A_eq_C: true, B_eq_C: false}
+
+  # Первый закон: Сохранение энергии
+  - name: first_law_energy_conservation
+    given: Изолированная система
+    when: Происходит процесс
+    then: dU = δQ - δW
+    test_cases:
+      - name: adiabatic_compression
+        input: {Q: 0, W: -100}
+        expected: {dU: 100}
+      - name: isothermal_expansion
+        input: {Q: 500, W: 500}
+        expected: {dU: 0}
+      - name: isochoric_heating
+        input: {Q: 200, W: 0}
+        expected: {dU: 200}
+
+  # Второй закон: Возрастание энтропии
+  - name: second_law_entropy
+    given: Изолированная система
+    when: Происходит необратимый процесс
+    then: dS_total ≥ 0
+    test_cases:
+      - name: heat_transfer
+        input: {T_hot: 400, T_cold: 300, Q: 100}
+        expected: {dS_hot: -0.25, dS_cold: 0.333, dS_total: 0.083}
+      - name: free_expansion
+        input: {n: 1, V1: 1, V2: 2}
+        expected: {dS: 5.76}
+
+  # Третий закон: Абсолютный ноль
+  - name: third_law_absolute_zero
+    given: Система при температуре T
+    when: T приближается к 0
+    then: S приближается к 0
+    test_cases:
+      - name: entropy_at_low_T
+        input: {T: 1}
+        expected: {S_approaches_zero: true}
+
+  # Идеальный газ
+  - name: ideal_gas_law
+    given: Идеальный газ
+    when: PV = nRT
+    then: Состояние определено
+    test_cases:
+      - name: standard_conditions
+        input: {n: 1, T: 273.15, V: 0.0224}
+        expected: {P: 101325}
+      - name: double_temperature
+        input: {n: 1, T: 546.3, V: 0.0224}
+        expected: {P: 202650}
+
+  # Цикл Карно
+  - name: carnot_cycle
+    given: Тепловая машина между T_hot и T_cold
+    when: Работает по циклу Карно
+    then: КПД = 1 - T_cold/T_hot
+    test_cases:
+      - name: carnot_efficiency
+        input: {T_hot: 500, T_cold: 300}
+        expected: {efficiency: 0.4}
+      - name: carnot_max
+        input: {T_hot: 1000, T_cold: 300}
+        expected: {efficiency: 0.7}
+
+  # Свободная энергия Гиббса
+  - name: gibbs_free_energy
+    given: Система при постоянных T и P
+    when: Вычисляется G = H - TS
+    then: Процесс спонтанен если dG < 0
+    test_cases:
+      - name: spontaneous_reaction
+        input: {dH: -100, T: 300, dS: 0.1}
+        expected: {dG: -130, spontaneous: true}
+      - name: non_spontaneous
+        input: {dH: 100, T: 300, dS: 0.1}
+        expected: {dG: 70, spontaneous: false}
+
+transformers:
+  - name: heat_transfer
+    type: iterative
+    input: TwoBodyThermal
+    output: TwoBodyThermal
+    rule: |
+      dQ = k * (T1 - T2) * dt
+      T1_new = T1 - dQ / C1
+      T2_new = T2 + dQ / C2
+
+  - name: adiabatic_process
+    type: pure
+    input: GasState
+    output: GasState
+    rule: PV^γ = const
+
+  - name: isothermal_process
+    type: pure
+    input: GasState
+    output: GasState
+    rule: PV = const
+
+  - name: entropy_change
+    type: pure
+    input: HeatTransfer
+    output: float
+    rule: dS = Q / T
+
+types:
+  ThermodynamicState:
+    T: float      # температура (K)
+    P: float      # давление (Pa)
+    V: float      # объём (m³)
+    S: float      # энтропия (J/K)
+    U: float      # внутренняя энергия (J)
+    
+  GasState:
+    n: float      # количество вещества (моль)
+    T: float
+    P: float
+    V: float
+    
+  TwoBodyThermal:
+    T1: float
+    T2: float
+    C1: float     # теплоёмкость 1
+    C2: float     # теплоёмкость 2
+
+constants:
+  R: 8.314       # газовая постоянная (Дж/(моль·К))
+  k_B: 1.381e-23 # постоянная Больцмана (Дж/К)
+  N_A: 6.022e23  # число Авогадро
+
+functions:
+  - name: ideal_gas_pressure
+    params: {n: float, T: float, V: float}
+    returns: float
+    
+  - name: carnot_efficiency
+    params: {T_hot: float, T_cold: float}
+    returns: float
+    
+  - name: entropy_change
+    params: {Q: float, T: float}
+    returns: float
+    
+  - name: gibbs_energy
+    params: {H: float, T: float, S: float}
+    returns: float
+
+test_generation:
+  boundary: true
+  stress: true
+  property: true
+  coverage: 90
