@@ -1,0 +1,751 @@
+// =============================================================================
+// Vibee OS — Linker Module
+// Object File Linking and Symbol Resolution
+// =============================================================================
+
+use ir::*
+
+// =============================================================================
+// Object File Format
+// =============================================================================
+
+/// Object file representation
+struct ObjectFile {
+    name: String
+    sections: [Section]
+    symbols: [Symbol]
+    relocations: [Relocation]
+    metadata: ObjectMetadata
+}
+
+struct ObjectMetadata {
+    version: Int
+    target: TargetTriple
+    flags: ObjectFlags
+}
+
+struct ObjectFlags {
+    is_executable: Bool
+    is_shared: Bool
+    is_relocatable: Bool
+    has_debug_info: Bool
+}
+
+/// Target triple (arch-vendor-os)
+struct TargetTriple {
+    arch: String
+    vendor: String
+    os: String
+}
+
+impl TargetTriple {
+    fn native() -> Self {
+        TargetTriple {
+            arch: "x86_64",
+            vendor: "unknown",
+            os: "vibee"
+        }
+    }
+    
+    fn parse(s: String) -> Option<Self> {
+        let parts: [String] = s.split("-").collect()
+        if parts.len() >= 3 {
+            Some(TargetTriple {
+                arch: parts[0].clone(),
+                vendor: parts[1].clone(),
+                os: parts[2].clone()
+            })
+        } else { None }
+    }
+    
+    fn to_string() -> String {
+        format!("{}-{}-{}", self.arch, self.vendor, self.os)
+    }
+}
+
+// =============================================================================
+// Sections
+// =============================================================================
+
+/// Section in object file
+struct Section {
+    name: String
+    kind: SectionKind
+    data: [UInt8]
+    alignment: Int
+    flags: SectionFlags
+}
+
+enum SectionKind {
+    Text        // Executable code
+    Data        // Initialized data
+    Rodata      // Read-only data
+    Bss         // Uninitialized data
+    Debug       // Debug information
+    SymTab      // Symbol table
+    StrTab      // String table
+    RelText     // Relocations for .text
+    RelData     // Relocations for .data
+    Custom(String)
+}
+
+struct SectionFlags {
+    writable: Bool
+    executable: Bool
+    allocatable: Bool
+}
+
+impl Section {
+    fn new(name: String, kind: SectionKind) -> Self {
+        Section {
+            name: name,
+            kind: kind,
+            data: [],
+            alignment: 8,
+            flags: SectionFlags {
+                writable: false,
+                executable: false,
+                allocatable: true
+            }
+        }
+    }
+    
+    fn text() -> Self {
+        var s = Self.new(".text", SectionKind.Text)
+        s.flags.executable = true
+        s
+    }
+    
+    fn data() -> Self {
+        var s = Self.new(".data", SectionKind.Data)
+        s.flags.writable = true
+        s
+    }
+    
+    fn rodata() -> Self {
+        Self.new(".rodata", SectionKind.Rodata)
+    }
+    
+    fn bss(size: Int) -> Self {
+        var s = Self.new(".bss", SectionKind.Bss)
+        s.flags.writable = true
+        s.data = vec![0; size]
+        s
+    }
+    
+    fn append(data: [UInt8]) {
+        self.data.extend(data)
+    }
+    
+    fn size() -> Int { self.data.len() }
+}
+
+// =============================================================================
+// Symbols
+// =============================================================================
+
+/// Symbol in object file
+struct Symbol {
+    name: String
+    kind: SymbolKind
+    binding: SymbolBinding
+    section: Option<Int>
+    value: Int
+    size: Int
+}
+
+enum SymbolKind {
+    NoType
+    Function
+    Object
+    Section
+    File
+}
+
+enum SymbolBinding {
+    Local
+    Global
+    Weak
+}
+
+impl Symbol {
+    fn function(name: String, section: Int, offset: Int, size: Int) -> Self {
+        Symbol {
+            name: name,
+            kind: SymbolKind.Function,
+            binding: SymbolBinding.Global,
+            section: Some(section),
+            value: offset,
+            size: size
+        }
+    }
+    
+    fn global_var(name: String, section: Int, offset: Int, size: Int) -> Self {
+        Symbol {
+            name: name,
+            kind: SymbolKind.Object,
+            binding: SymbolBinding.Global,
+            section: Some(section),
+            value: offset,
+            size: size
+        }
+    }
+    
+    fn undefined(name: String) -> Self {
+        Symbol {
+            name: name,
+            kind: SymbolKind.NoType,
+            binding: SymbolBinding.Global,
+            section: None,
+            value: 0,
+            size: 0
+        }
+    }
+    
+    fn is_defined() -> Bool { self.section.is_some() }
+    fn is_undefined() -> Bool { self.section.is_none() }
+}
+
+// =============================================================================
+// Relocations
+// =============================================================================
+
+/// Relocation entry
+struct Relocation {
+    offset: Int
+    kind: RelocKind
+    symbol: Int
+    addend: Int64
+}
+
+enum RelocKind {
+    // x86-64 relocations
+    R_X86_64_64         // 64-bit absolute
+    R_X86_64_PC32       // 32-bit PC-relative
+    R_X86_64_PLT32      // PLT entry
+    R_X86_64_GOTPCREL   // GOT entry
+    R_X86_64_32         // 32-bit absolute
+    R_X86_64_32S        // 32-bit signed
+    
+    // Generic relocations
+    Absolute32
+    Absolute64
+    Relative32
+    Relative64
+}
+
+impl Relocation {
+    fn absolute64(offset: Int, symbol: Int, addend: Int64) -> Self {
+        Relocation {
+            offset: offset,
+            kind: RelocKind.R_X86_64_64,
+            symbol: symbol,
+            addend: addend
+        }
+    }
+    
+    fn pc_relative(offset: Int, symbol: Int, addend: Int64) -> Self {
+        Relocation {
+            offset: offset,
+            kind: RelocKind.R_X86_64_PC32,
+            symbol: symbol,
+            addend: addend
+        }
+    }
+}
+
+// =============================================================================
+// Linker
+// =============================================================================
+
+/// Linker configuration
+struct LinkerConfig {
+    output_type: OutputType
+    entry_point: String
+    base_address: Int
+    page_size: Int
+    strip_symbols: Bool
+    gc_sections: Bool
+    allow_undefined: Bool
+}
+
+enum OutputType {
+    Executable
+    SharedLibrary
+    StaticLibrary
+    Relocatable
+}
+
+impl LinkerConfig {
+    fn executable() -> Self {
+        LinkerConfig {
+            output_type: OutputType.Executable,
+            entry_point: "_start",
+            base_address: 0x400000,
+            page_size: 4096,
+            strip_symbols: false,
+            gc_sections: true,
+            allow_undefined: false
+        }
+    }
+    
+    fn shared_library() -> Self {
+        LinkerConfig {
+            output_type: OutputType.SharedLibrary,
+            entry_point: "",
+            base_address: 0,
+            page_size: 4096,
+            strip_symbols: false,
+            gc_sections: true,
+            allow_undefined: true
+        }
+    }
+}
+
+/// Linker error
+enum LinkerError {
+    UndefinedSymbol(String)
+    DuplicateSymbol(String)
+    InvalidRelocation(String)
+    SectionOverlap(String, String)
+    EntryPointNotFound(String)
+    IncompatibleTarget(String, String)
+}
+
+/// Main linker
+struct Linker {
+    config: LinkerConfig
+    objects: [ObjectFile]
+    global_symbols: Map<String, SymbolRef>
+    sections: [LinkedSection]
+    errors: [LinkerError]
+}
+
+struct SymbolRef {
+    object_idx: Int
+    symbol_idx: Int
+    address: Int
+}
+
+struct LinkedSection {
+    name: String
+    address: Int
+    data: [UInt8]
+    flags: SectionFlags
+}
+
+impl Linker {
+    fn new(config: LinkerConfig) -> Self {
+        Linker {
+            config: config,
+            objects: [],
+            global_symbols: Map.new(),
+            sections: [],
+            errors: []
+        }
+    }
+    
+    /// Add object file to link
+    fn add_object(obj: ObjectFile) {
+        self.objects.push(obj)
+    }
+    
+    /// Link all objects into final output
+    fn link() -> Result<LinkedOutput, [LinkerError]> {
+        // Phase 1: Collect symbols
+        self.collect_symbols()?
+        
+        // Phase 2: Resolve symbols
+        self.resolve_symbols()?
+        
+        // Phase 3: Layout sections
+        self.layout_sections()?
+        
+        // Phase 4: Apply relocations
+        self.apply_relocations()?
+        
+        // Phase 5: Generate output
+        if !self.errors.is_empty() {
+            return Err(self.errors.clone())
+        }
+        
+        Ok(self.generate_output())
+    }
+    
+    fn collect_symbols() -> Result<(), [LinkerError]> {
+        for (obj_idx, obj) in self.objects.iter().enumerate() {
+            for (sym_idx, sym) in obj.symbols.iter().enumerate() {
+                if sym.binding == SymbolBinding.Global && sym.is_defined() {
+                    if self.global_symbols.contains_key(sym.name) {
+                        self.errors.push(LinkerError.DuplicateSymbol(sym.name.clone()))
+                    } else {
+                        self.global_symbols.insert(sym.name.clone(), SymbolRef {
+                            object_idx: obj_idx,
+                            symbol_idx: sym_idx,
+                            address: 0
+                        })
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    
+    fn resolve_symbols() -> Result<(), [LinkerError]> {
+        for obj in self.objects.iter() {
+            for sym in obj.symbols.iter() {
+                if sym.is_undefined() && sym.binding == SymbolBinding.Global {
+                    if !self.global_symbols.contains_key(sym.name) && !self.config.allow_undefined {
+                        self.errors.push(LinkerError.UndefinedSymbol(sym.name.clone()))
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    
+    fn layout_sections() -> Result<(), [LinkerError]> {
+        var current_address = self.config.base_address
+        
+        // Collect and merge sections by type
+        var text_data: [UInt8] = []
+        var data_data: [UInt8] = []
+        var rodata_data: [UInt8] = []
+        var bss_size = 0
+        
+        for obj in self.objects.iter() {
+            for section in obj.sections.iter() {
+                match section.kind {
+                    SectionKind.Text => {
+                        // Align
+                        while text_data.len() % section.alignment != 0 {
+                            text_data.push(0x90) // NOP padding
+                        }
+                        text_data.extend(section.data.clone())
+                    }
+                    SectionKind.Data => {
+                        while data_data.len() % section.alignment != 0 {
+                            data_data.push(0)
+                        }
+                        data_data.extend(section.data.clone())
+                    }
+                    SectionKind.Rodata => {
+                        while rodata_data.len() % section.alignment != 0 {
+                            rodata_data.push(0)
+                        }
+                        rodata_data.extend(section.data.clone())
+                    }
+                    SectionKind.Bss => {
+                        bss_size += section.data.len()
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
+        // Layout .text
+        self.sections.push(LinkedSection {
+            name: ".text".to_string(),
+            address: current_address,
+            data: text_data.clone(),
+            flags: SectionFlags { writable: false, executable: true, allocatable: true }
+        })
+        current_address += text_data.len()
+        current_address = self.align_to_page(current_address)
+        
+        // Layout .rodata
+        self.sections.push(LinkedSection {
+            name: ".rodata".to_string(),
+            address: current_address,
+            data: rodata_data.clone(),
+            flags: SectionFlags { writable: false, executable: false, allocatable: true }
+        })
+        current_address += rodata_data.len()
+        current_address = self.align_to_page(current_address)
+        
+        // Layout .data
+        self.sections.push(LinkedSection {
+            name: ".data".to_string(),
+            address: current_address,
+            data: data_data.clone(),
+            flags: SectionFlags { writable: true, executable: false, allocatable: true }
+        })
+        current_address += data_data.len()
+        current_address = self.align_to_page(current_address)
+        
+        // Layout .bss
+        self.sections.push(LinkedSection {
+            name: ".bss".to_string(),
+            address: current_address,
+            data: vec![0; bss_size],
+            flags: SectionFlags { writable: true, executable: false, allocatable: true }
+        })
+        
+        Ok(())
+    }
+    
+    fn apply_relocations() -> Result<(), [LinkerError]> {
+        for obj in self.objects.iter() {
+            for reloc in obj.relocations.iter() {
+                let sym = obj.symbols.get(reloc.symbol).ok_or_else(|| {
+                    LinkerError.InvalidRelocation("invalid symbol index".to_string())
+                })?
+                
+                let sym_addr = if sym.is_defined() {
+                    // Local symbol - calculate address
+                    sym.value
+                } else {
+                    // External symbol - lookup
+                    self.global_symbols.get(sym.name)
+                        .map(|r| r.address)
+                        .unwrap_or(0)
+                }
+                
+                // Apply relocation based on type
+                match reloc.kind {
+                    RelocKind.R_X86_64_64 => {
+                        let value = sym_addr as Int64 + reloc.addend
+                        // Write 64-bit value at offset
+                    }
+                    RelocKind.R_X86_64_PC32 => {
+                        let pc = reloc.offset + 4
+                        let value = (sym_addr as Int64 - pc as Int64 + reloc.addend) as Int32
+                        // Write 32-bit value at offset
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+    
+    fn align_to_page(addr: Int) -> Int {
+        (addr + self.config.page_size - 1) & !(self.config.page_size - 1)
+    }
+    
+    fn generate_output() -> LinkedOutput {
+        let entry = self.global_symbols.get(self.config.entry_point)
+            .map(|r| r.address)
+            .unwrap_or(self.config.base_address)
+        
+        LinkedOutput {
+            sections: self.sections.clone(),
+            entry_point: entry,
+            symbols: self.global_symbols.clone()
+        }
+    }
+}
+
+/// Linked output
+struct LinkedOutput {
+    sections: [LinkedSection]
+    entry_point: Int
+    symbols: Map<String, SymbolRef>
+}
+
+impl LinkedOutput {
+    /// Get section by name
+    fn get_section(name: String) -> Option<LinkedSection> {
+        self.sections.iter().find(|s| s.name == name).cloned()
+    }
+    
+    /// Get symbol address
+    fn get_symbol(name: String) -> Option<Int> {
+        self.symbols.get(name).map(|r| r.address)
+    }
+    
+    /// Total size of all sections
+    fn total_size() -> Int {
+        self.sections.iter().map(|s| s.data.len()).sum()
+    }
+}
+
+// =============================================================================
+// Archive (Static Library)
+// =============================================================================
+
+/// Static library archive
+struct Archive {
+    name: String
+    members: [ArchiveMember]
+    symbol_table: Map<String, Int>
+}
+
+struct ArchiveMember {
+    name: String
+    data: [UInt8]
+    mtime: Int64
+}
+
+impl Archive {
+    fn new(name: String) -> Self {
+        Archive {
+            name: name,
+            members: [],
+            symbol_table: Map.new()
+        }
+    }
+    
+    fn add_object(obj: ObjectFile) {
+        // Serialize object to bytes
+        let data = Self.serialize_object(obj.clone())
+        
+        // Add to symbol table
+        for (i, sym) in obj.symbols.iter().enumerate() {
+            if sym.binding == SymbolBinding.Global && sym.is_defined() {
+                self.symbol_table.insert(sym.name.clone(), self.members.len())
+            }
+        }
+        
+        self.members.push(ArchiveMember {
+            name: obj.name.clone(),
+            data: data,
+            mtime: 0
+        })
+    }
+    
+    fn serialize_object(obj: ObjectFile) -> [UInt8] {
+        // Simplified serialization
+        []
+    }
+    
+    fn get_member(name: String) -> Option<ArchiveMember> {
+        self.members.iter().find(|m| m.name == name).cloned()
+    }
+    
+    fn get_member_for_symbol(sym: String) -> Option<ArchiveMember> {
+        let idx = self.symbol_table.get(sym)?
+        self.members.get(idx).cloned()
+    }
+}
+
+// =============================================================================
+// Dynamic Linker Support
+// =============================================================================
+
+/// Dynamic symbol table entry
+struct DynSym {
+    name: String
+    address: Int
+    size: Int
+    kind: SymbolKind
+}
+
+/// PLT (Procedure Linkage Table) entry
+struct PltEntry {
+    symbol: String
+    got_offset: Int
+}
+
+/// GOT (Global Offset Table) entry
+struct GotEntry {
+    symbol: String
+    address: Int
+}
+
+/// Dynamic linking info
+struct DynamicInfo {
+    needed: [String]
+    plt: [PltEntry]
+    got: [GotEntry]
+    rpath: Option<String>
+}
+
+impl DynamicInfo {
+    fn new() -> Self {
+        DynamicInfo {
+            needed: [],
+            plt: [],
+            got: [],
+            rpath: None
+        }
+    }
+    
+    fn add_needed(lib: String) {
+        self.needed.push(lib)
+    }
+    
+    fn add_plt_entry(symbol: String, got_offset: Int) {
+        self.plt.push(PltEntry { symbol: symbol, got_offset: got_offset })
+    }
+    
+    fn add_got_entry(symbol: String) -> Int {
+        let offset = self.got.len() * 8
+        self.got.push(GotEntry { symbol: symbol, address: 0 })
+        offset
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "target triple" {
+    let triple = TargetTriple.parse("x86_64-unknown-linux")?
+    assert_eq(triple.arch, "x86_64")?
+    assert_eq(triple.os, "linux")?
+}
+
+test "section creation" {
+    var text = Section.text()
+    text.append([0x55, 0x48, 0x89, 0xE5]) // push rbp; mov rbp, rsp
+    
+    assert_eq(text.size(), 4)?
+    assert(text.flags.executable)?
+}
+
+test "symbol definition" {
+    let sym = Symbol.function("main", 0, 0, 100)
+    assert(sym.is_defined())?
+    assert_eq(sym.kind, SymbolKind.Function)?
+}
+
+test "linker basic" {
+    var linker = Linker.new(LinkerConfig.executable())
+    
+    var obj = ObjectFile {
+        name: "test.o",
+        sections: [Section.text()],
+        symbols: [Symbol.function("_start", 0, 0, 10)],
+        relocations: [],
+        metadata: ObjectMetadata {
+            version: 1,
+            target: TargetTriple.native(),
+            flags: ObjectFlags {
+                is_executable: false,
+                is_shared: false,
+                is_relocatable: true,
+                has_debug_info: false
+            }
+        }
+    }
+    
+    linker.add_object(obj)
+    let result = linker.link()?
+    
+    assert(result.entry_point >= 0x400000)?
+}
+
+test "archive" {
+    var archive = Archive.new("libtest.a")
+    
+    let obj = ObjectFile {
+        name: "foo.o",
+        sections: [],
+        symbols: [Symbol.function("foo", 0, 0, 10)],
+        relocations: [],
+        metadata: ObjectMetadata {
+            version: 1,
+            target: TargetTriple.native(),
+            flags: ObjectFlags {
+                is_executable: false,
+                is_shared: false,
+                is_relocatable: true,
+                has_debug_info: false
+            }
+        }
+    }
+    
+    archive.add_object(obj)
+    assert(archive.symbol_table.contains_key("foo"))?
+}

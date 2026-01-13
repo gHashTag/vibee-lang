@@ -1,0 +1,842 @@
+// =============================================================================
+// Vibee OS — Plugin Registry Module
+// Central registry for plugin management and discovery
+// =============================================================================
+
+use result::{Result, Ok, Err}
+use option::{Option, Some, None}
+use plugin_api::{
+    Plugin, PluginMetadata, PluginVersion, PluginState, PluginHealth,
+    PluginError, PluginCapability, PluginDependency, PluginContext,
+    PluginEvent, PluginConfig, Service, ServiceRegistry
+}
+
+// =============================================================================
+// Plugin Registry
+// =============================================================================
+
+/// Central plugin registry
+struct PluginRegistry {
+    plugins: Map<String, RegisteredPlugin>
+    services: Map<String, ServiceEntry>
+    hooks: Map<String, [HookEntry]>
+    event_handlers: Map<String, [EventHandler]>
+    dependency_graph: DependencyGraph
+    config: RegistryConfig
+}
+
+/// Registered plugin entry
+struct RegisteredPlugin {
+    metadata: PluginMetadata
+    instance: Option<Box<dyn Plugin>>
+    state: PluginState
+    load_time: Int64
+    start_time: Option<Int64>
+    error_count: Int
+    last_error: Option<String>
+    config: PluginConfig
+}
+
+/// Service entry in registry
+struct ServiceEntry {
+    name: String
+    provider_plugin: String
+    service: Box<dyn Service>
+    version: PluginVersion
+}
+
+/// Hook entry
+struct HookEntry {
+    hook_name: String
+    plugin_id: String
+    priority: Int
+    handler: fn(Any) -> Any
+}
+
+/// Event handler entry
+struct EventHandler {
+    plugin_id: String
+    event_type: String
+    handler: fn(PluginEvent)
+}
+
+/// Registry configuration
+struct RegistryConfig {
+    max_plugins: Int
+    allow_duplicates: Bool
+    strict_dependencies: Bool
+    auto_resolve_dependencies: Bool
+    enable_hot_reload: Bool
+}
+
+impl RegistryConfig {
+    fn default() -> Self {
+        RegistryConfig {
+            max_plugins: 1000,
+            allow_duplicates: false,
+            strict_dependencies: true,
+            auto_resolve_dependencies: true,
+            enable_hot_reload: false
+        }
+    }
+}
+
+impl PluginRegistry {
+    fn new() -> Self {
+        Self.with_config(RegistryConfig.default())
+    }
+    
+    fn with_config(config: RegistryConfig) -> Self {
+        PluginRegistry {
+            plugins: Map.new(),
+            services: Map.new(),
+            hooks: Map.new(),
+            event_handlers: Map.new(),
+            dependency_graph: DependencyGraph.new(),
+            config: config
+        }
+    }
+    
+    // =========================================================================
+    // Plugin Registration
+    // =========================================================================
+    
+    /// Register a plugin
+    fn register<P: Plugin>(plugin: P) -> Result<(), PluginError> {
+        let metadata = plugin.metadata()
+        let id = metadata.id.clone()
+        
+        // Check if already registered
+        if self.plugins.contains_key(id.clone()) && !self.config.allow_duplicates {
+            return Err(PluginError.LoadFailed(format!("Plugin {} already registered", id)))
+        }
+        
+        // Check max plugins
+        if self.plugins.len() >= self.config.max_plugins {
+            return Err(PluginError.LoadFailed("Maximum plugin limit reached".to_string()))
+        }
+        
+        // Validate metadata
+        metadata.validate()?
+        
+        // Check dependencies
+        self.check_dependencies(metadata.clone())?
+        
+        // Register plugin
+        let entry = RegisteredPlugin {
+            metadata: metadata.clone(),
+            instance: Some(Box.new(plugin)),
+            state: PluginState.Loaded,
+            load_time: Time.now().unix_millis(),
+            start_time: None,
+            error_count: 0,
+            last_error: None,
+            config: PluginConfig.empty()
+        }
+        
+        self.plugins.insert(id.clone(), entry)
+        self.dependency_graph.add_node(id.clone())
+        
+        // Add dependency edges
+        for dep in metadata.dependencies.iter() {
+            self.dependency_graph.add_edge(id.clone(), dep.plugin_id.clone())
+        }
+        
+        // Emit event
+        self.emit_event(PluginEvent.PluginLoaded(id))
+        
+        Ok(())
+    }
+    
+    /// Unregister a plugin
+    fn unregister(plugin_id: String) -> Result<(), PluginError> {
+        // Check if plugin exists
+        let entry = self.plugins.get(plugin_id.clone())
+            .ok_or(PluginError.NotFound(plugin_id.clone()))?
+        
+        // Check if other plugins depend on this one
+        let dependents = self.get_dependents(plugin_id.clone())
+        if !dependents.is_empty() {
+            return Err(PluginError.LoadFailed(
+                format!("Cannot unregister {}: plugins depend on it: {:?}", plugin_id, dependents)
+            ))
+        }
+        
+        // Stop plugin if running
+        if entry.state == PluginState.Running {
+            self.stop(plugin_id.clone())?
+        }
+        
+        // Remove services provided by this plugin
+        self.services.retain(|_, v| v.provider_plugin != plugin_id)
+        
+        // Remove hooks
+        for (_, handlers) in self.hooks.iter_mut() {
+            handlers.retain(|h| h.plugin_id != plugin_id)
+        }
+        
+        // Remove event handlers
+        for (_, handlers) in self.event_handlers.iter_mut() {
+            handlers.retain(|h| h.plugin_id != plugin_id)
+        }
+        
+        // Remove from dependency graph
+        self.dependency_graph.remove_node(plugin_id.clone())
+        
+        // Remove plugin
+        self.plugins.remove(plugin_id.clone())
+        
+        // Emit event
+        self.emit_event(PluginEvent.PluginUnloaded(plugin_id))
+        
+        Ok(())
+    }
+    
+    // =========================================================================
+    // Plugin Lifecycle
+    // =========================================================================
+    
+    /// Initialize a plugin
+    fn initialize(plugin_id: String) -> Result<(), PluginError> {
+        let entry = self.plugins.get_mut(plugin_id.clone())
+            .ok_or(PluginError.NotFound(plugin_id.clone()))?
+        
+        if entry.state != PluginState.Loaded {
+            return Err(PluginError.InitializationFailed(
+                format!("Plugin {} is not in Loaded state", plugin_id)
+            ))
+        }
+        
+        // Initialize dependencies first
+        for dep in entry.metadata.dependencies.iter() {
+            if !dep.optional {
+                self.initialize(dep.plugin_id.clone())?
+            }
+        }
+        
+        // Create context
+        let ctx = PluginContext.new(plugin_id.clone())
+            .with_config(entry.config.clone())
+        
+        // Initialize plugin
+        if let Some(ref mut instance) = entry.instance {
+            match instance.initialize(ctx) {
+                Ok(()) => {
+                    entry.state = PluginState.Initialized
+                    Ok(())
+                }
+                Err(e) => {
+                    entry.state = PluginState.Failed(e.message())
+                    entry.error_count += 1
+                    entry.last_error = Some(e.message())
+                    Err(e)
+                }
+            }
+        } else {
+            Err(PluginError.InitializationFailed("Plugin instance not found".to_string()))
+        }
+    }
+    
+    /// Start a plugin
+    fn start(plugin_id: String) -> Result<(), PluginError> {
+        let entry = self.plugins.get_mut(plugin_id.clone())
+            .ok_or(PluginError.NotFound(plugin_id.clone()))?
+        
+        if entry.state != PluginState.Initialized && entry.state != PluginState.Stopped {
+            return Err(PluginError.StartFailed(
+                format!("Plugin {} cannot be started from state {:?}", plugin_id, entry.state)
+            ))
+        }
+        
+        // Start dependencies first
+        for dep in entry.metadata.dependencies.iter() {
+            if !dep.optional {
+                let dep_entry = self.plugins.get(dep.plugin_id.clone())
+                if let Some(de) = dep_entry {
+                    if de.state != PluginState.Running {
+                        self.start(dep.plugin_id.clone())?
+                    }
+                }
+            }
+        }
+        
+        // Emit before start event
+        if let Some(ref instance) = entry.instance {
+            instance.on_event(PluginEvent.BeforeStart)?
+        }
+        
+        // Start plugin
+        if let Some(ref mut instance) = entry.instance {
+            match instance.start() {
+                Ok(()) => {
+                    entry.state = PluginState.Running
+                    entry.start_time = Some(Time.now().unix_millis())
+                    
+                    // Emit after start event
+                    instance.on_event(PluginEvent.AfterStart)?
+                    
+                    Ok(())
+                }
+                Err(e) => {
+                    entry.state = PluginState.Failed(e.message())
+                    entry.error_count += 1
+                    entry.last_error = Some(e.message())
+                    Err(e)
+                }
+            }
+        } else {
+            Err(PluginError.StartFailed("Plugin instance not found".to_string()))
+        }
+    }
+    
+    /// Stop a plugin
+    fn stop(plugin_id: String) -> Result<(), PluginError> {
+        let entry = self.plugins.get_mut(plugin_id.clone())
+            .ok_or(PluginError.NotFound(plugin_id.clone()))?
+        
+        if entry.state != PluginState.Running {
+            return Ok(()) // Already stopped
+        }
+        
+        // Stop dependents first
+        let dependents = self.get_dependents(plugin_id.clone())
+        for dep_id in dependents.iter() {
+            self.stop(dep_id.clone())?
+        }
+        
+        // Emit before stop event
+        if let Some(ref instance) = entry.instance {
+            instance.on_event(PluginEvent.BeforeStop)?
+        }
+        
+        // Stop plugin
+        if let Some(ref mut instance) = entry.instance {
+            match instance.stop() {
+                Ok(()) => {
+                    entry.state = PluginState.Stopped
+                    entry.start_time = None
+                    Ok(())
+                }
+                Err(e) => {
+                    entry.error_count += 1
+                    entry.last_error = Some(e.message())
+                    Err(e)
+                }
+            }
+        } else {
+            Err(PluginError.StopFailed("Plugin instance not found".to_string()))
+        }
+    }
+    
+    /// Initialize and start all registered plugins
+    fn start_all() -> Result<(), PluginError> {
+        // Get plugins in dependency order
+        let order = self.dependency_graph.topological_sort()?
+        
+        for plugin_id in order.iter() {
+            self.initialize(plugin_id.clone())?
+            self.start(plugin_id.clone())?
+        }
+        
+        Ok(())
+    }
+    
+    /// Stop all plugins
+    fn stop_all() -> Result<(), PluginError> {
+        // Stop in reverse dependency order
+        let order = self.dependency_graph.topological_sort()?
+        
+        for plugin_id in order.iter().rev() {
+            self.stop(plugin_id.clone())?
+        }
+        
+        Ok(())
+    }
+    
+    // =========================================================================
+    // Plugin Query
+    // =========================================================================
+    
+    /// Get plugin by ID
+    fn get(plugin_id: String) -> Option<RegisteredPlugin> {
+        self.plugins.get(plugin_id).cloned()
+    }
+    
+    /// Get plugin metadata
+    fn get_metadata(plugin_id: String) -> Option<PluginMetadata> {
+        self.plugins.get(plugin_id).map(|p| p.metadata.clone())
+    }
+    
+    /// Get plugin state
+    fn get_state(plugin_id: String) -> Option<PluginState> {
+        self.plugins.get(plugin_id).map(|p| p.state.clone())
+    }
+    
+    /// Check if plugin is registered
+    fn has(plugin_id: String) -> Bool {
+        self.plugins.contains_key(plugin_id)
+    }
+    
+    /// Check if plugin is running
+    fn is_running(plugin_id: String) -> Bool {
+        self.plugins.get(plugin_id)
+            .map(|p| p.state == PluginState.Running)
+            .unwrap_or(false)
+    }
+    
+    /// List all registered plugins
+    fn list() -> [PluginMetadata] {
+        self.plugins.values().map(|p| p.metadata.clone()).collect()
+    }
+    
+    /// List running plugins
+    fn list_running() -> [String] {
+        self.plugins.iter()
+            .filter(|(_, p)| p.state == PluginState.Running)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+    
+    /// Find plugins by capability
+    fn find_by_capability(cap: PluginCapability) -> [PluginMetadata] {
+        self.plugins.values()
+            .filter(|p| p.metadata.capabilities.contains(cap))
+            .map(|p| p.metadata.clone())
+            .collect()
+    }
+    
+    /// Search plugins by name or description
+    fn search(query: String) -> [PluginMetadata] {
+        let query_lower = query.to_lowercase()
+        self.plugins.values()
+            .filter(|p| {
+                p.metadata.name.to_lowercase().contains(query_lower.clone()) ||
+                p.metadata.description.to_lowercase().contains(query_lower.clone())
+            })
+            .map(|p| p.metadata.clone())
+            .collect()
+    }
+    
+    // =========================================================================
+    // Dependency Management
+    // =========================================================================
+    
+    /// Check if all dependencies are satisfied
+    fn check_dependencies(metadata: PluginMetadata) -> Result<(), PluginError> {
+        for dep in metadata.dependencies.iter() {
+            if dep.optional { continue }
+            
+            if !self.plugins.contains_key(dep.plugin_id.clone()) {
+                if self.config.strict_dependencies {
+                    return Err(PluginError.DependencyMissing(dep.plugin_id.clone()))
+                }
+            }
+        }
+        Ok(())
+    }
+    
+    /// Get plugins that depend on the given plugin
+    fn get_dependents(plugin_id: String) -> [String] {
+        self.dependency_graph.get_dependents(plugin_id)
+    }
+    
+    /// Get dependencies of a plugin
+    fn get_dependencies(plugin_id: String) -> [String] {
+        self.dependency_graph.get_dependencies(plugin_id)
+    }
+    
+    // =========================================================================
+    // Service Management
+    // =========================================================================
+    
+    /// Register a service
+    fn register_service<S: Service>(plugin_id: String, service: S) -> Result<(), PluginError> {
+        let name = service.name()
+        
+        if self.services.contains_key(name.clone()) {
+            return Err(PluginError.LoadFailed(format!("Service {} already registered", name)))
+        }
+        
+        self.services.insert(name.clone(), ServiceEntry {
+            name: name,
+            provider_plugin: plugin_id,
+            service: Box.new(service),
+            version: PluginVersion.new(1, 0, 0)
+        })
+        
+        Ok(())
+    }
+    
+    /// Get a service
+    fn get_service<S: Service>(name: String) -> Option<S> {
+        self.services.get(name).and_then(|e| e.service.downcast())
+    }
+    
+    /// List all services
+    fn list_services() -> [String] {
+        self.services.keys().collect()
+    }
+    
+    // =========================================================================
+    // Hook Management
+    // =========================================================================
+    
+    /// Register a hook handler
+    fn register_hook(hook_name: String, plugin_id: String, priority: Int, handler: fn(Any) -> Any) {
+        let entry = HookEntry {
+            hook_name: hook_name.clone(),
+            plugin_id: plugin_id,
+            priority: priority,
+            handler: handler
+        }
+        
+        if let Some(handlers) = self.hooks.get_mut(hook_name.clone()) {
+            handlers.push(entry)
+            handlers.sort_by(|a, b| b.priority - a.priority)
+        } else {
+            self.hooks.insert(hook_name, [entry])
+        }
+    }
+    
+    /// Execute hook
+    fn execute_hook<T>(hook_name: String, value: T) -> T {
+        if let Some(handlers) = self.hooks.get(hook_name) {
+            var result: Any = value
+            for handler in handlers.iter() {
+                result = (handler.handler)(result)
+            }
+            result.downcast().unwrap_or(value)
+        } else {
+            value
+        }
+    }
+    
+    // =========================================================================
+    // Event Management
+    // =========================================================================
+    
+    /// Register event handler
+    fn on_event(event_type: String, plugin_id: String, handler: fn(PluginEvent)) {
+        let entry = EventHandler {
+            plugin_id: plugin_id,
+            event_type: event_type.clone(),
+            handler: handler
+        }
+        
+        if let Some(handlers) = self.event_handlers.get_mut(event_type.clone()) {
+            handlers.push(entry)
+        } else {
+            self.event_handlers.insert(event_type, [entry])
+        }
+    }
+    
+    /// Emit event to all handlers
+    fn emit_event(event: PluginEvent) {
+        let event_type = match event {
+            PluginEvent.BeforeStart => "before_start",
+            PluginEvent.AfterStart => "after_start",
+            PluginEvent.BeforeStop => "before_stop",
+            PluginEvent.ConfigChanged(_) => "config_changed",
+            PluginEvent.PluginLoaded(_) => "plugin_loaded",
+            PluginEvent.PluginUnloaded(_) => "plugin_unloaded",
+            PluginEvent.PluginMessage(_, _) => "plugin_message",
+            _ => "unknown"
+        }
+        
+        if let Some(handlers) = self.event_handlers.get(event_type) {
+            for handler in handlers.iter() {
+                (handler.handler)(event.clone())
+            }
+        }
+    }
+    
+    // =========================================================================
+    // Health & Monitoring
+    // =========================================================================
+    
+    /// Get health status of all plugins
+    fn health_check() -> Map<String, PluginHealth> {
+        var result: Map<String, PluginHealth> = Map.new()
+        
+        for (id, entry) in self.plugins.iter() {
+            let health = if let Some(ref instance) = entry.instance {
+                instance.health()
+            } else {
+                PluginHealth.Unknown
+            }
+            result.insert(id.clone(), health)
+        }
+        
+        result
+    }
+    
+    /// Get plugin statistics
+    fn stats() -> RegistryStats {
+        let running = self.plugins.values().filter(|p| p.state == PluginState.Running).count()
+        let failed = self.plugins.values().filter(|p| matches!(p.state, PluginState.Failed(_))).count()
+        
+        RegistryStats {
+            total_plugins: self.plugins.len(),
+            running_plugins: running,
+            failed_plugins: failed,
+            total_services: self.services.len(),
+            total_hooks: self.hooks.len()
+        }
+    }
+}
+
+/// Registry statistics
+struct RegistryStats {
+    total_plugins: Int
+    running_plugins: Int
+    failed_plugins: Int
+    total_services: Int
+    total_hooks: Int
+}
+
+// =============================================================================
+// Dependency Graph
+// =============================================================================
+
+/// Dependency graph for plugin ordering
+struct DependencyGraph {
+    nodes: Set<String>
+    edges: Map<String, Set<String>>  // plugin -> dependencies
+    reverse_edges: Map<String, Set<String>>  // plugin -> dependents
+}
+
+impl DependencyGraph {
+    fn new() -> Self {
+        DependencyGraph {
+            nodes: Set.new(),
+            edges: Map.new(),
+            reverse_edges: Map.new()
+        }
+    }
+    
+    fn add_node(id: String) {
+        self.nodes.insert(id.clone())
+        if !self.edges.contains_key(id.clone()) {
+            self.edges.insert(id.clone(), Set.new())
+        }
+        if !self.reverse_edges.contains_key(id.clone()) {
+            self.reverse_edges.insert(id, Set.new())
+        }
+    }
+    
+    fn remove_node(id: String) {
+        self.nodes.remove(id.clone())
+        self.edges.remove(id.clone())
+        self.reverse_edges.remove(id.clone())
+        
+        // Remove edges pointing to this node
+        for (_, deps) in self.edges.iter_mut() {
+            deps.remove(id.clone())
+        }
+        for (_, deps) in self.reverse_edges.iter_mut() {
+            deps.remove(id.clone())
+        }
+    }
+    
+    fn add_edge(from: String, to: String) {
+        if let Some(deps) = self.edges.get_mut(from.clone()) {
+            deps.insert(to.clone())
+        }
+        if let Some(deps) = self.reverse_edges.get_mut(to) {
+            deps.insert(from)
+        }
+    }
+    
+    fn get_dependencies(id: String) -> [String] {
+        self.edges.get(id).map(|s| s.iter().collect()).unwrap_or([])
+    }
+    
+    fn get_dependents(id: String) -> [String] {
+        self.reverse_edges.get(id).map(|s| s.iter().collect()).unwrap_or([])
+    }
+    
+    /// Topological sort for dependency ordering
+    fn topological_sort() -> Result<[String], PluginError> {
+        var visited: Set<String> = Set.new()
+        var temp_visited: Set<String> = Set.new()
+        var result: [String] = []
+        
+        for node in self.nodes.iter() {
+            if !visited.contains(node) {
+                self.visit(node.clone(), visited, temp_visited, result)?
+            }
+        }
+        
+        Ok(result)
+    }
+    
+    fn visit(
+        node: String,
+        visited: Set<String>,
+        temp_visited: Set<String>,
+        result: [String]
+    ) -> Result<(), PluginError> {
+        if temp_visited.contains(node.clone()) {
+            return Err(PluginError.LoadFailed(format!("Circular dependency detected: {}", node)))
+        }
+        
+        if visited.contains(node.clone()) {
+            return Ok(())
+        }
+        
+        temp_visited.insert(node.clone())
+        
+        if let Some(deps) = self.edges.get(node.clone()) {
+            for dep in deps.iter() {
+                self.visit(dep.clone(), visited, temp_visited, result)?
+            }
+        }
+        
+        temp_visited.remove(node.clone())
+        visited.insert(node.clone())
+        result.push(node)
+        
+        Ok(())
+    }
+    
+    /// Check for circular dependencies
+    fn has_cycle() -> Bool {
+        self.topological_sort().is_err()
+    }
+}
+
+// =============================================================================
+// Global Registry Actor
+// =============================================================================
+
+/// Global plugin registry actor for thread-safe access
+actor PluginRegistryActor {
+    registry: PluginRegistry
+    
+    fn new() -> Self {
+        PluginRegistryActor {
+            registry: PluginRegistry.new()
+        }
+    }
+    
+    async fn register<P: Plugin>(plugin: P) -> Result<(), PluginError> {
+        self.registry.register(plugin)
+    }
+    
+    async fn unregister(plugin_id: String) -> Result<(), PluginError> {
+        self.registry.unregister(plugin_id)
+    }
+    
+    async fn start(plugin_id: String) -> Result<(), PluginError> {
+        self.registry.initialize(plugin_id.clone())?
+        self.registry.start(plugin_id)
+    }
+    
+    async fn stop(plugin_id: String) -> Result<(), PluginError> {
+        self.registry.stop(plugin_id)
+    }
+    
+    async fn get_state(plugin_id: String) -> Option<PluginState> {
+        self.registry.get_state(plugin_id)
+    }
+    
+    async fn list() -> [PluginMetadata] {
+        self.registry.list()
+    }
+    
+    async fn health_check() -> Map<String, PluginHealth> {
+        self.registry.health_check()
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "plugin registration" {
+    var registry = PluginRegistry.new()
+    
+    struct TestPlugin {}
+    impl Plugin for TestPlugin {
+        fn metadata() -> PluginMetadata {
+            PluginMetadata.new("test", "Test Plugin", PluginVersion.new(1, 0, 0))
+        }
+        fn initialize(ctx: PluginContext) -> Result<(), PluginError> { Ok(()) }
+        fn start() -> Result<(), PluginError> { Ok(()) }
+        fn stop() -> Result<(), PluginError> { Ok(()) }
+        fn cleanup() {}
+    }
+    
+    registry.register(TestPlugin {})?
+    assert(registry.has("test"))?
+}
+
+test "dependency graph" {
+    var graph = DependencyGraph.new()
+    graph.add_node("a")
+    graph.add_node("b")
+    graph.add_node("c")
+    graph.add_edge("a", "b")
+    graph.add_edge("b", "c")
+    
+    let order = graph.topological_sort()?
+    assert_eq(order, ["c", "b", "a"])?
+}
+
+test "circular dependency detection" {
+    var graph = DependencyGraph.new()
+    graph.add_node("a")
+    graph.add_node("b")
+    graph.add_edge("a", "b")
+    graph.add_edge("b", "a")
+    
+    assert(graph.has_cycle())?
+}
+
+test "plugin lifecycle" {
+    var registry = PluginRegistry.new()
+    
+    struct LifecyclePlugin {
+        initialized: Bool
+        started: Bool
+    }
+    impl Plugin for LifecyclePlugin {
+        fn metadata() -> PluginMetadata {
+            PluginMetadata.new("lifecycle", "Lifecycle Plugin", PluginVersion.new(1, 0, 0))
+        }
+        fn initialize(ctx: PluginContext) -> Result<(), PluginError> {
+            self.initialized = true
+            Ok(())
+        }
+        fn start() -> Result<(), PluginError> {
+            self.started = true
+            Ok(())
+        }
+        fn stop() -> Result<(), PluginError> {
+            self.started = false
+            Ok(())
+        }
+        fn cleanup() {}
+    }
+    
+    registry.register(LifecyclePlugin { initialized: false, started: false })?
+    registry.initialize("lifecycle")?
+    registry.start("lifecycle")?
+    
+    assert(registry.is_running("lifecycle"))?
+    
+    registry.stop("lifecycle")?
+    assert(!registry.is_running("lifecycle"))?
+}
+
+test "service registration" {
+    var registry = PluginRegistry.new()
+    
+    struct TestService {}
+    impl Service for TestService {
+        fn name() -> String { "test_service".to_string() }
+    }
+    
+    registry.register_service("plugin1", TestService {})?
+    assert(registry.list_services().contains("test_service"))?
+}

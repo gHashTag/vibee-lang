@@ -1,0 +1,768 @@
+// =============================================================================
+// Vibee OS — Build System Module
+// Comprehensive build system for Vibee projects
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Build Configuration
+// -----------------------------------------------------------------------------
+
+/// Build configuration
+struct BuildConfig {
+    name: String
+    version: String
+    target: BuildTarget
+    profile: BuildProfile
+    output_dir: String
+    source_dirs: [String]
+    include_dirs: [String]
+    lib_dirs: [String]
+    defines: Map<String, String>
+    features: [String]
+    dependencies: [DependencySpec]
+    
+    fn default() -> Self {
+        BuildConfig {
+            name: "project",
+            version: "0.1.0",
+            target: BuildTarget.Native,
+            profile: BuildProfile.Debug,
+            output_dir: "target",
+            source_dirs: ["src"],
+            include_dirs: [],
+            lib_dirs: [],
+            defines: Map.empty(),
+            features: [],
+            dependencies: []
+        }
+    }
+    
+    fn from_file(path: String) -> Result<Self, BuildError> {
+        let content = fs::read_string(path)?
+        if path.ends_with(".toml") {
+            Self.from_toml(content)
+        } else if path.ends_with(".json") {
+            Self.from_json(content)
+        } else {
+            Err(BuildError.UnsupportedFormat(path))
+        }
+    }
+    
+    fn from_toml(content: String) -> Result<Self, BuildError> {
+        let toml = toml::parse(content)?
+        Ok(BuildConfig {
+            name: toml.path("package.name")?.as_str().unwrap_or("project"),
+            version: toml.path("package.version")?.as_str().unwrap_or("0.1.0"),
+            target: BuildTarget.from_str(toml.path("build.target")?.as_str().unwrap_or("native")),
+            profile: BuildProfile.from_str(toml.path("build.profile")?.as_str().unwrap_or("debug")),
+            output_dir: toml.path("build.output")?.as_str().unwrap_or("target"),
+            source_dirs: toml.path("build.sources")?.as_array().map(|a| a.filter_map(|v| v.as_str())).unwrap_or(["src"]),
+            include_dirs: toml.path("build.includes")?.as_array().map(|a| a.filter_map(|v| v.as_str())).unwrap_or([]),
+            lib_dirs: toml.path("build.lib_dirs")?.as_array().map(|a| a.filter_map(|v| v.as_str())).unwrap_or([]),
+            defines: Map.empty(),
+            features: toml.path("features.default")?.as_array().map(|a| a.filter_map(|v| v.as_str())).unwrap_or([]),
+            dependencies: []
+        })
+    }
+    
+    fn from_json(content: String) -> Result<Self, BuildError> {
+        let json = json::parse(content)?
+        // Similar parsing logic for JSON
+        Ok(Self.default())
+    }
+}
+
+/// Build target platform
+enum BuildTarget {
+    Native
+    Wasm
+    Wasm32Wasi
+    Linux_x86_64
+    Linux_aarch64
+    MacOS_x86_64
+    MacOS_aarch64
+    Windows_x86_64
+    Android
+    iOS
+    Custom(String)
+    
+    fn from_str(s: String) -> Self {
+        match s.to_lowercase() {
+            "native" => BuildTarget.Native
+            "wasm" | "wasm32" => BuildTarget.Wasm
+            "wasi" | "wasm32-wasi" => BuildTarget.Wasm32Wasi
+            "linux-x86_64" | "linux-amd64" => BuildTarget.Linux_x86_64
+            "linux-aarch64" | "linux-arm64" => BuildTarget.Linux_aarch64
+            "macos-x86_64" | "darwin-amd64" => BuildTarget.MacOS_x86_64
+            "macos-aarch64" | "darwin-arm64" => BuildTarget.MacOS_aarch64
+            "windows-x86_64" | "win64" => BuildTarget.Windows_x86_64
+            "android" => BuildTarget.Android
+            "ios" => BuildTarget.iOS
+            other => BuildTarget.Custom(other)
+        }
+    }
+    
+    fn triple() -> String {
+        match self {
+            Native => @native("get_host_triple")
+            Wasm => "wasm32-unknown-unknown"
+            Wasm32Wasi => "wasm32-wasi"
+            Linux_x86_64 => "x86_64-unknown-linux-gnu"
+            Linux_aarch64 => "aarch64-unknown-linux-gnu"
+            MacOS_x86_64 => "x86_64-apple-darwin"
+            MacOS_aarch64 => "aarch64-apple-darwin"
+            Windows_x86_64 => "x86_64-pc-windows-msvc"
+            Android => "aarch64-linux-android"
+            iOS => "aarch64-apple-ios"
+            Custom(s) => s
+        }
+    }
+}
+
+/// Build profile
+enum BuildProfile {
+    Debug
+    Release
+    RelWithDebInfo
+    MinSize
+    Custom(String)
+    
+    fn from_str(s: String) -> Self {
+        match s.to_lowercase() {
+            "debug" | "dev" => BuildProfile.Debug
+            "release" | "prod" => BuildProfile.Release
+            "relwithdebinfo" => BuildProfile.RelWithDebInfo
+            "minsize" | "min" => BuildProfile.MinSize
+            other => BuildProfile.Custom(other)
+        }
+    }
+    
+    fn optimization_level() -> Int {
+        match self {
+            Debug => 0
+            Release => 3
+            RelWithDebInfo => 2
+            MinSize => 2
+            Custom(_) => 2
+        }
+    }
+    
+    fn debug_info() -> Bool {
+        match self {
+            Debug | RelWithDebInfo => true
+            _ => false
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Build System Actor
+// -----------------------------------------------------------------------------
+
+/// Main build system actor
+actor BuildSystem {
+    state config: BuildConfig
+    state cache: BuildCache
+    state artifacts: [Artifact]
+    state tasks: [BuildTask]
+    state hooks: BuildHooks
+    state logger: BuildLogger
+    
+    init() {
+        self.config = BuildConfig.default()
+        self.cache = BuildCache.new()
+        self.artifacts = []
+        self.tasks = []
+        self.hooks = BuildHooks.new()
+        self.logger = BuildLogger.new()
+    }
+    
+    init(config: BuildConfig) {
+        self.config = config
+        self.cache = BuildCache.new()
+        self.artifacts = []
+        self.tasks = []
+        self.hooks = BuildHooks.new()
+        self.logger = BuildLogger.new()
+    }
+    
+    /// Load configuration from file
+    on load_config(path: String) -> Result<(), BuildError> {
+        self.config = BuildConfig.from_file(path)?
+        self.logger.info("Loaded config from \(path)")
+        Ok(())
+    }
+    
+    /// Configure build target
+    on target(t: BuildTarget) -> Self {
+        self.config.target = t
+        self
+    }
+    
+    /// Configure build profile
+    on profile(p: BuildProfile) -> Self {
+        self.config.profile = p
+        self
+    }
+    
+    /// Add source directory
+    on source_dir(dir: String) -> Self {
+        self.config.source_dirs.append(dir)
+        self
+    }
+    
+    /// Add feature
+    on feature(f: String) -> Self {
+        self.config.features.append(f)
+        self
+    }
+    
+    /// Add define
+    on define(key: String, value: String) -> Self {
+        self.config.defines.set(key, value)
+        self
+    }
+    
+    /// Add build hook
+    on hook(phase: BuildPhase, callback: fn() -> Result<(), BuildError>) -> Self {
+        self.hooks.add(phase, callback)
+        self
+    }
+    
+    /// Execute full build
+    on build() -> Result<BuildResult, BuildError> {
+        let start = Instant.now()
+        self.logger.info("Starting build: \(self.config.name) v\(self.config.version)")
+        
+        // Pre-build hooks
+        self.hooks.run(BuildPhase.PreBuild)?
+        
+        // Collect source files
+        let sources = self.collect_sources()?
+        self.logger.info("Found \(sources.len()) source files")
+        
+        // Check cache and determine what needs rebuilding
+        let to_build = self.filter_cached(sources)?
+        self.logger.info("\(to_build.len()) files need compilation")
+        
+        // Compile sources
+        let objects = self.compile_all(to_build)?
+        
+        // Link
+        let output = self.link(objects)?
+        
+        // Post-build hooks
+        self.hooks.run(BuildPhase.PostBuild)?
+        
+        let duration = start.elapsed()
+        self.logger.info("Build completed in \(duration.as_secs_f64())s")
+        
+        Ok(BuildResult {
+            success: true,
+            output: output,
+            artifacts: self.artifacts.clone(),
+            duration: duration,
+            warnings: [],
+            errors: []
+        })
+    }
+    
+    /// Clean build artifacts
+    on clean() -> Result<(), BuildError> {
+        self.logger.info("Cleaning build artifacts...")
+        fs::remove_dir_all(self.config.output_dir)?
+        self.cache.clear()
+        self.artifacts.clear()
+        Ok(())
+    }
+    
+    /// Rebuild (clean + build)
+    on rebuild() -> Result<BuildResult, BuildError> {
+        self.clean()?
+        self.build()
+    }
+    
+    /// Check without building
+    on check() -> Result<CheckResult, BuildError> {
+        let sources = self.collect_sources()?
+        var errors = []
+        var warnings = []
+        
+        for source in sources {
+            match self.check_file(source) {
+                Ok(w) => warnings.extend(w)
+                Err(e) => errors.append(e)
+            }
+        }
+        
+        Ok(CheckResult {
+            success: errors.is_empty(),
+            errors: errors,
+            warnings: warnings
+        })
+    }
+    
+    /// Run tests
+    on test(filter: Option<String> = None) -> Result<TestResult, BuildError> {
+        self.logger.info("Running tests...")
+        
+        // Build with test configuration
+        let test_config = BuildConfig { 
+            features: self.config.features + ["test"],
+            ..self.config 
+        }
+        
+        let result = @native("run_tests", test_config, filter)
+        Ok(result)
+    }
+    
+    /// Generate documentation
+    on doc() -> Result<(), BuildError> {
+        self.logger.info("Generating documentation...")
+        let sources = self.collect_sources()?
+        @native("generate_docs", sources, self.config.output_dir + "/doc")
+    }
+    
+    // Internal methods
+    
+    fn collect_sources() -> Result<[SourceFile], BuildError> {
+        var sources = []
+        for dir in self.config.source_dirs {
+            for entry in fs::walk(dir) {
+                let entry = entry?
+                if entry.path.ends_with(".vibee") {
+                    sources.append(SourceFile {
+                        path: entry.path,
+                        modified: fs::metadata(entry.path)?.modified.unwrap_or(DateTime.now())
+                    })
+                }
+            }
+        }
+        Ok(sources)
+    }
+    
+    fn filter_cached(sources: [SourceFile]) -> Result<[SourceFile], BuildError> {
+        sources.iter()
+            .filter(|s| !self.cache.is_valid(s.path, s.modified))
+            .collect()
+    }
+    
+    fn compile_all(sources: [SourceFile]) -> Result<[ObjectFile], BuildError> {
+        var objects = []
+        
+        // Parallel compilation
+        let results = parallel::map(sources, |source| {
+            self.compile_file(source)
+        })
+        
+        for result in results {
+            objects.append(result?)
+        }
+        
+        Ok(objects)
+    }
+    
+    fn compile_file(source: SourceFile) -> Result<ObjectFile, BuildError> {
+        self.logger.debug("Compiling \(source.path)")
+        
+        let output_path = self.object_path(source.path)
+        fs::create_dir_all(path::parent(output_path))?
+        
+        let result = @native("compile_vibee", source.path, output_path, self.config)
+        
+        if result.success {
+            self.cache.update(source.path, source.modified)
+            Ok(ObjectFile { path: output_path })
+        } else {
+            Err(BuildError.CompilationFailed(source.path, result.errors))
+        }
+    }
+    
+    fn check_file(source: SourceFile) -> Result<[Warning], BuildError> {
+        @native("check_vibee", source.path, self.config)
+    }
+    
+    fn link(objects: [ObjectFile]) -> Result<String, BuildError> {
+        self.logger.info("Linking...")
+        
+        let output_path = self.output_path()
+        fs::create_dir_all(path::parent(output_path))?
+        
+        let result = @native("link_vibee", objects, output_path, self.config)
+        
+        if result.success {
+            self.artifacts.append(Artifact {
+                path: output_path,
+                artifact_type: ArtifactType.Executable,
+                size: fs::metadata(output_path)?.size
+            })
+            Ok(output_path)
+        } else {
+            Err(BuildError.LinkFailed(result.errors))
+        }
+    }
+    
+    fn object_path(source: String) -> String {
+        let rel = path::strip_prefix(source, self.config.source_dirs[0]).unwrap_or(source)
+        format!("{}/obj/{}.o", self.config.output_dir, rel)
+    }
+    
+    fn output_path() -> String {
+        let ext = match self.config.target {
+            BuildTarget.Windows_x86_64 => ".exe"
+            BuildTarget.Wasm | BuildTarget.Wasm32Wasi => ".wasm"
+            _ => ""
+        }
+        format!("{}/{}{}", self.config.output_dir, self.config.name, ext)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Build Cache
+// -----------------------------------------------------------------------------
+
+struct BuildCache {
+    entries: Map<String, CacheEntry>
+    path: String
+    
+    fn new() -> Self {
+        BuildCache { entries: Map.empty(), path: ".vibee-cache" }
+    }
+    
+    fn load() -> Result<Self, BuildError> {
+        if fs::exists(".vibee-cache") {
+            let content = fs::read_string(".vibee-cache")?
+            let entries = json::parse(content)?
+            Ok(BuildCache { entries: entries, path: ".vibee-cache" })
+        } else {
+            Ok(Self.new())
+        }
+    }
+    
+    fn save() -> Result<(), BuildError> {
+        let content = json::stringify(self.entries)
+        fs::write_string(self.path, content)?
+        Ok(())
+    }
+    
+    fn is_valid(path: String, modified: DateTime) -> Bool {
+        match self.entries.get(path) {
+            Some(entry) => entry.modified >= modified && fs::exists(entry.object_path)
+            None => false
+        }
+    }
+    
+    fn update(path: String, modified: DateTime) {
+        self.entries.set(path, CacheEntry {
+            modified: modified,
+            hash: "",
+            object_path: ""
+        })
+    }
+    
+    fn clear() {
+        self.entries.clear()
+    }
+}
+
+struct CacheEntry {
+    modified: DateTime
+    hash: String
+    object_path: String
+}
+
+// -----------------------------------------------------------------------------
+// Build Hooks
+// -----------------------------------------------------------------------------
+
+enum BuildPhase {
+    PreBuild
+    PreCompile
+    PostCompile
+    PreLink
+    PostLink
+    PostBuild
+}
+
+struct BuildHooks {
+    hooks: Map<BuildPhase, [fn() -> Result<(), BuildError>]>
+    
+    fn new() -> Self {
+        BuildHooks { hooks: Map.empty() }
+    }
+    
+    fn add(phase: BuildPhase, callback: fn() -> Result<(), BuildError>) {
+        self.hooks.entry(phase).or_insert([]).append(callback)
+    }
+    
+    fn run(phase: BuildPhase) -> Result<(), BuildError> {
+        if let Some(callbacks) = self.hooks.get(phase) {
+            for callback in callbacks {
+                callback()?
+            }
+        }
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Build Tasks
+// -----------------------------------------------------------------------------
+
+struct BuildTask {
+    name: String
+    description: String
+    dependencies: [String]
+    action: fn() -> Result<(), BuildError>
+}
+
+actor TaskRunner {
+    state tasks: Map<String, BuildTask>
+    state completed: Set<String>
+    
+    init() {
+        self.tasks = Map.empty()
+        self.completed = Set.empty()
+    }
+    
+    on register(task: BuildTask) {
+        self.tasks.set(task.name.clone(), task)
+    }
+    
+    on run(name: String) -> Result<(), BuildError> {
+        if self.completed.contains(name) {
+            return Ok(())
+        }
+        
+        let task = self.tasks.get(name).ok_or(BuildError.TaskNotFound(name))?
+        
+        // Run dependencies first
+        for dep in task.dependencies {
+            self.run(dep)?
+        }
+        
+        // Run task
+        (task.action)()?
+        self.completed.insert(name)
+        Ok(())
+    }
+    
+    on run_all() -> Result<(), BuildError> {
+        for (name, _) in self.tasks {
+            self.run(name)?
+        }
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Supporting Types
+// -----------------------------------------------------------------------------
+
+struct SourceFile {
+    path: String
+    modified: DateTime
+}
+
+struct ObjectFile {
+    path: String
+}
+
+struct Artifact {
+    path: String
+    artifact_type: ArtifactType
+    size: Int64
+}
+
+enum ArtifactType {
+    Executable
+    Library
+    StaticLib
+    DynamicLib
+    Wasm
+    Documentation
+    Package
+}
+
+struct BuildResult {
+    success: Bool
+    output: String
+    artifacts: [Artifact]
+    duration: Duration
+    warnings: [Warning]
+    errors: [String]
+}
+
+struct CheckResult {
+    success: Bool
+    errors: [String]
+    warnings: [Warning]
+}
+
+struct TestResult {
+    passed: Int
+    failed: Int
+    skipped: Int
+    duration: Duration
+    failures: [TestFailure]
+}
+
+struct TestFailure {
+    name: String
+    message: String
+    location: String
+}
+
+struct Warning {
+    message: String
+    location: String
+    code: String
+}
+
+struct DependencySpec {
+    name: String
+    version: String
+    source: DependencySource
+}
+
+enum DependencySource {
+    Registry(String)
+    Git(String, String)
+    Path(String)
+}
+
+// -----------------------------------------------------------------------------
+// Build Logger
+// -----------------------------------------------------------------------------
+
+struct BuildLogger {
+    level: LogLevel
+    
+    fn new() -> Self {
+        BuildLogger { level: LogLevel.Info }
+    }
+    
+    fn debug(msg: String) {
+        if self.level <= LogLevel.Debug {
+            println!("[DEBUG] \(msg)")
+        }
+    }
+    
+    fn info(msg: String) {
+        if self.level <= LogLevel.Info {
+            println!("[INFO] \(msg)")
+        }
+    }
+    
+    fn warn(msg: String) {
+        if self.level <= LogLevel.Warn {
+            println!("[WARN] \(msg)")
+        }
+    }
+    
+    fn error(msg: String) {
+        eprintln!("[ERROR] \(msg)")
+    }
+}
+
+enum LogLevel { Debug, Info, Warn, Error }
+
+impl Ord for LogLevel {
+    fn cmp(other: LogLevel) -> Ordering {
+        let a = match self { Debug => 0, Info => 1, Warn => 2, Error => 3 }
+        let b = match other { Debug => 0, Info => 1, Warn => 2, Error => 3 }
+        a.cmp(b)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum BuildError {
+    ConfigNotFound(String)
+    UnsupportedFormat(String)
+    CompilationFailed(String, [String])
+    LinkFailed([String])
+    TaskNotFound(String)
+    DependencyError(String)
+    IOError(String)
+    
+    fn message() -> String {
+        match self {
+            .ConfigNotFound(p) => "Configuration not found: \(p)"
+            .UnsupportedFormat(p) => "Unsupported format: \(p)"
+            .CompilationFailed(f, _) => "Compilation failed: \(f)"
+            .LinkFailed(_) => "Linking failed"
+            .TaskNotFound(t) => "Task not found: \(t)"
+            .DependencyError(m) => "Dependency error: \(m)"
+            .IOError(m) => "I/O error: \(m)"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+/// Create new build system
+fn new() -> BuildSystem {
+    BuildSystem.new()
+}
+
+/// Create build system from config file
+fn from_config(path: String) -> Result<BuildSystem, BuildError> {
+    let config = BuildConfig.from_file(path)?
+    Ok(BuildSystem.new(config))
+}
+
+/// Quick build current project
+fn build() -> Result<BuildResult, BuildError> {
+    let bs = from_config("vibee.toml")?
+    bs.build()
+}
+
+/// Quick clean
+fn clean() -> Result<(), BuildError> {
+    let bs = from_config("vibee.toml")?
+    bs.clean()
+}
+
+/// Quick test
+fn test() -> Result<TestResult, BuildError> {
+    let bs = from_config("vibee.toml")?
+    bs.test(None)
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "build config default" {
+    let config = BuildConfig.default()
+    assert_eq(config.name, "project")?
+    assert_eq(config.profile, BuildProfile.Debug)?
+}
+
+test "build target triple" {
+    assert_eq(BuildTarget.Wasm.triple(), "wasm32-unknown-unknown")?
+    assert_eq(BuildTarget.Linux_x86_64.triple(), "x86_64-unknown-linux-gnu")?
+}
+
+test "build profile optimization" {
+    assert_eq(BuildProfile.Debug.optimization_level(), 0)?
+    assert_eq(BuildProfile.Release.optimization_level(), 3)?
+}
+
+test "task runner" {
+    let runner = TaskRunner.new()
+    var executed = false
+    runner.register(BuildTask {
+        name: "test",
+        description: "Test task",
+        dependencies: [],
+        action: || { executed = true; Ok(()) }
+    })
+    runner.run("test")?
+    assert(executed)?
+}

@@ -1,0 +1,783 @@
+// =============================================================================
+// Vibee OS — Reaction Module
+// Message reactions, emoji responses, and reaction analytics
+// =============================================================================
+
+use result::{Result, Ok, Err}
+use datetime::{DateTime, Duration}
+
+// =============================================================================
+// Reaction Types
+// =============================================================================
+
+/// Reaction type
+enum ReactionType {
+    Emoji(String),
+    CustomEmoji(CustomEmoji),
+    Sticker(String),
+    Animation(String)
+}
+
+impl ReactionType {
+    fn display() -> String {
+        match self {
+            ReactionType.Emoji(e) => e,
+            ReactionType.CustomEmoji(c) => c.shortcode,
+            ReactionType.Sticker(s) => "🎭",
+            ReactionType.Animation(a) => "✨"
+        }
+    }
+    
+    fn is_emoji() -> Bool {
+        match self {
+            ReactionType.Emoji(_) => true,
+            _ => false
+        }
+    }
+    
+    fn as_emoji() -> Option<String> {
+        match self {
+            ReactionType.Emoji(e) => Some(e),
+            _ => None
+        }
+    }
+}
+
+/// Custom emoji
+struct CustomEmoji {
+    id: String,
+    shortcode: String,
+    url: String,
+    is_animated: Bool
+}
+
+impl CustomEmoji {
+    fn new(id: String, shortcode: String, url: String) -> Self {
+        CustomEmoji {
+            id: id,
+            shortcode: shortcode,
+            url: url,
+            is_animated: false
+        }
+    }
+}
+
+// =============================================================================
+// Reaction
+// =============================================================================
+
+/// Single reaction instance
+struct Reaction {
+    id: String,
+    message_id: String,
+    user_id: String,
+    user_name: String,
+    reaction_type: ReactionType,
+    created_at: DateTime
+}
+
+impl Reaction {
+    fn new(message_id: String, user_id: String, user_name: String, reaction_type: ReactionType) -> Self {
+        Reaction {
+            id: @native("uuid_v4"),
+            message_id: message_id,
+            user_id: user_id,
+            user_name: user_name,
+            reaction_type: reaction_type,
+            created_at: DateTime.now()
+        }
+    }
+    
+    fn emoji(message_id: String, user_id: String, user_name: String, emoji: String) -> Self {
+        Self.new(message_id, user_id, user_name, ReactionType.Emoji(emoji))
+    }
+    
+    fn is_from(user_id: String) -> Bool {
+        self.user_id == user_id
+    }
+    
+    fn display() -> String {
+        self.reaction_type.display()
+    }
+}
+
+/// Aggregated reaction count
+struct ReactionCount {
+    reaction_type: ReactionType,
+    count: Int,
+    users: [ReactionUser],
+    has_reacted: Bool  // Current user has reacted
+}
+
+struct ReactionUser {
+    user_id: String,
+    user_name: String
+}
+
+impl ReactionCount {
+    fn new(reaction_type: ReactionType) -> Self {
+        ReactionCount {
+            reaction_type: reaction_type,
+            count: 0,
+            users: [],
+            has_reacted: false
+        }
+    }
+    
+    fn add_user(user_id: String, user_name: String, is_current_user: Bool) {
+        self.users.push(ReactionUser { user_id: user_id, user_name: user_name })
+        self.count += 1
+        if is_current_user {
+            self.has_reacted = true
+        }
+    }
+    
+    fn remove_user(user_id: String, is_current_user: Bool) {
+        self.users.retain(|u| u.user_id != user_id)
+        self.count = self.count.saturating_sub(1)
+        if is_current_user {
+            self.has_reacted = false
+        }
+    }
+    
+    fn display() -> String {
+        "\(self.reaction_type.display()) \(self.count)"
+    }
+    
+    fn user_names(limit: Int) -> String {
+        let names = self.users.iter()
+            .take(limit)
+            .map(|u| u.user_name.clone())
+            .collect::<Vec<_>>()
+        
+        if self.users.len() > limit {
+            let remaining = self.users.len() - limit
+            names.join(", ") + " and \(remaining) others"
+        } else {
+            names.join(", ")
+        }
+    }
+}
+
+// =============================================================================
+// Message Reactions
+// =============================================================================
+
+/// All reactions for a message
+struct MessageReactions {
+    message_id: String,
+    reactions: Map<String, [Reaction]>,  // emoji -> reactions
+    counts: Map<String, ReactionCount>
+}
+
+impl MessageReactions {
+    fn new(message_id: String) -> Self {
+        MessageReactions {
+            message_id: message_id,
+            reactions: Map.empty(),
+            counts: Map.empty()
+        }
+    }
+    
+    fn add(reaction: Reaction, is_current_user: Bool) -> Bool {
+        let key = reaction.display()
+        
+        // Check if user already reacted with this emoji
+        if let Some(existing) = self.reactions.get(key) {
+            if existing.iter().any(|r| r.user_id == reaction.user_id) {
+                return false  // Already reacted
+            }
+            existing.push(reaction.clone())
+        } else {
+            self.reactions.insert(key.clone(), [reaction.clone()])
+        }
+        
+        // Update count
+        if let Some(count) = self.counts.get(key) {
+            count.add_user(reaction.user_id.clone(), reaction.user_name.clone(), is_current_user)
+        } else {
+            var count = ReactionCount.new(reaction.reaction_type.clone())
+            count.add_user(reaction.user_id.clone(), reaction.user_name.clone(), is_current_user)
+            self.counts.insert(key, count)
+        }
+        
+        true
+    }
+    
+    fn remove(emoji: String, user_id: String, is_current_user: Bool) -> Bool {
+        if let Some(reactions) = self.reactions.get(emoji) {
+            let before_len = reactions.len()
+            reactions.retain(|r| r.user_id != user_id)
+            
+            if reactions.len() < before_len {
+                // Update count
+                if let Some(count) = self.counts.get(emoji) {
+                    count.remove_user(user_id, is_current_user)
+                    if count.count == 0 {
+                        self.counts.remove(emoji.clone())
+                        self.reactions.remove(emoji)
+                    }
+                }
+                return true
+            }
+        }
+        false
+    }
+    
+    fn toggle(emoji: String, user_id: String, user_name: String, is_current_user: Bool) -> Bool {
+        // Returns true if added, false if removed
+        if self.has_reacted(emoji.clone(), user_id.clone()) {
+            self.remove(emoji, user_id, is_current_user)
+            false
+        } else {
+            let reaction = Reaction.emoji(self.message_id.clone(), user_id, user_name, emoji)
+            self.add(reaction, is_current_user)
+            true
+        }
+    }
+    
+    fn has_reacted(emoji: String, user_id: String) -> Bool {
+        self.reactions.get(emoji)
+            .map(|rs| rs.iter().any(|r| r.user_id == user_id))
+            .unwrap_or(false)
+    }
+    
+    fn get_counts() -> [ReactionCount] {
+        self.counts.values().cloned().collect()
+    }
+    
+    fn get_sorted_counts() -> [ReactionCount] {
+        var counts = self.get_counts()
+        counts.sort_by(|a, b| b.count.cmp(a.count))
+        counts
+    }
+    
+    fn total_count() -> Int {
+        self.counts.values().map(|c| c.count).sum()
+    }
+    
+    fn unique_users() -> Int {
+        let users = Set.new()
+        for (_, reactions) in self.reactions {
+            for r in reactions {
+                users.insert(r.user_id.clone())
+            }
+        }
+        users.len()
+    }
+    
+    fn get_users_for(emoji: String) -> [ReactionUser] {
+        self.counts.get(emoji)
+            .map(|c| c.users.clone())
+            .unwrap_or([])
+    }
+    
+    fn most_popular() -> Option<ReactionCount> {
+        self.counts.values()
+            .max_by(|a, b| a.count.cmp(b.count))
+            .cloned()
+    }
+    
+    fn is_empty() -> Bool {
+        self.reactions.is_empty()
+    }
+}
+
+// =============================================================================
+// Reaction Event
+// =============================================================================
+
+/// Reaction event for pub/sub
+struct ReactionEvent {
+    event_type: ReactionEventType,
+    message_id: String,
+    conversation_id: String,
+    user_id: String,
+    user_name: String,
+    emoji: String,
+    timestamp: DateTime
+}
+
+enum ReactionEventType {
+    Added,
+    Removed
+}
+
+impl ReactionEvent {
+    fn added(msg_id: String, conv_id: String, user_id: String, user_name: String, emoji: String) -> Self {
+        ReactionEvent {
+            event_type: ReactionEventType.Added,
+            message_id: msg_id,
+            conversation_id: conv_id,
+            user_id: user_id,
+            user_name: user_name,
+            emoji: emoji,
+            timestamp: DateTime.now()
+        }
+    }
+    
+    fn removed(msg_id: String, conv_id: String, user_id: String, user_name: String, emoji: String) -> Self {
+        ReactionEvent {
+            event_type: ReactionEventType.Removed,
+            message_id: msg_id,
+            conversation_id: conv_id,
+            user_id: user_id,
+            user_name: user_name,
+            emoji: emoji,
+            timestamp: DateTime.now()
+        }
+    }
+    
+    fn is_added() -> Bool {
+        match self.event_type {
+            ReactionEventType.Added => true,
+            _ => false
+        }
+    }
+}
+
+// =============================================================================
+// Reaction Manager Actor
+// =============================================================================
+
+/// Manage reactions across messages
+actor ReactionManager {
+    state reactions: Map<String, MessageReactions>  // message_id -> reactions
+    state user_reactions: Map<String, [String]>     // user_id -> [message_ids]
+    state on_event: [fn(ReactionEvent)]
+    state allowed_emojis: Option<[String]>
+    state max_reactions_per_message: Int
+    state max_reactions_per_user: Int
+    
+    fn new() -> Self {
+        ReactionManager {
+            reactions: Map.empty(),
+            user_reactions: Map.empty(),
+            on_event: [],
+            allowed_emojis: None,
+            max_reactions_per_message: 20,
+            max_reactions_per_user: 100
+        }
+    }
+    
+    on add_reaction(
+        message_id: String,
+        conversation_id: String,
+        user_id: String,
+        user_name: String,
+        emoji: String,
+        is_current_user: Bool
+    ) -> Result<(), ReactionError> {
+        // Validate emoji
+        if let Some(allowed) = self.allowed_emojis {
+            if !allowed.contains(emoji) {
+                return Err(ReactionError.EmojiNotAllowed(emoji))
+            }
+        }
+        
+        // Check user limit
+        let user_count = self.user_reactions.get(user_id)
+            .map(|ids| ids.len())
+            .unwrap_or(0)
+        if user_count >= self.max_reactions_per_user {
+            return Err(ReactionError.UserLimitReached(self.max_reactions_per_user))
+        }
+        
+        // Get or create message reactions
+        let msg_reactions = if let Some(r) = self.reactions.get(message_id) {
+            r
+        } else {
+            let r = MessageReactions.new(message_id.clone())
+            self.reactions.insert(message_id.clone(), r.clone())
+            self.reactions.get(message_id).unwrap()
+        }
+        
+        // Check message limit
+        if msg_reactions.total_count() >= self.max_reactions_per_message {
+            return Err(ReactionError.MessageLimitReached(self.max_reactions_per_message))
+        }
+        
+        // Add reaction
+        let reaction = Reaction.emoji(message_id.clone(), user_id.clone(), user_name.clone(), emoji.clone())
+        if !msg_reactions.add(reaction, is_current_user) {
+            return Err(ReactionError.AlreadyReacted)
+        }
+        
+        // Track user reaction
+        if let Some(ids) = self.user_reactions.get(user_id) {
+            ids.push(message_id.clone())
+        } else {
+            self.user_reactions.insert(user_id.clone(), [message_id.clone()])
+        }
+        
+        // Emit event
+        let event = ReactionEvent.added(message_id, conversation_id, user_id, user_name, emoji)
+        self.emit_event(event)
+        
+        Ok(())
+    }
+    
+    on remove_reaction(
+        message_id: String,
+        conversation_id: String,
+        user_id: String,
+        user_name: String,
+        emoji: String,
+        is_current_user: Bool
+    ) -> Result<(), ReactionError> {
+        let msg_reactions = self.reactions.get(message_id)
+            .ok_or(ReactionError.NotFound)?
+        
+        if !msg_reactions.remove(emoji.clone(), user_id.clone(), is_current_user) {
+            return Err(ReactionError.NotFound)
+        }
+        
+        // Update user tracking
+        if let Some(ids) = self.user_reactions.get(user_id) {
+            ids.retain(|id| id != message_id)
+        }
+        
+        // Emit event
+        let event = ReactionEvent.removed(message_id, conversation_id, user_id, user_name, emoji)
+        self.emit_event(event)
+        
+        Ok(())
+    }
+    
+    on toggle_reaction(
+        message_id: String,
+        conversation_id: String,
+        user_id: String,
+        user_name: String,
+        emoji: String,
+        is_current_user: Bool
+    ) -> Result<Bool, ReactionError> {
+        let msg_reactions = if let Some(r) = self.reactions.get(message_id) {
+            r
+        } else {
+            let r = MessageReactions.new(message_id.clone())
+            self.reactions.insert(message_id.clone(), r.clone())
+            self.reactions.get(message_id).unwrap()
+        }
+        
+        let added = msg_reactions.toggle(emoji.clone(), user_id.clone(), user_name.clone(), is_current_user)
+        
+        let event = if added {
+            ReactionEvent.added(message_id, conversation_id, user_id, user_name, emoji)
+        } else {
+            ReactionEvent.removed(message_id, conversation_id, user_id, user_name, emoji)
+        }
+        self.emit_event(event)
+        
+        Ok(added)
+    }
+    
+    on get_reactions(message_id: String) -> Option<MessageReactions> {
+        self.reactions.get(message_id).cloned()
+    }
+    
+    on get_counts(message_id: String) -> [ReactionCount] {
+        self.reactions.get(message_id)
+            .map(|r| r.get_sorted_counts())
+            .unwrap_or([])
+    }
+    
+    on has_reacted(message_id: String, user_id: String, emoji: String) -> Bool {
+        self.reactions.get(message_id)
+            .map(|r| r.has_reacted(emoji, user_id))
+            .unwrap_or(false)
+    }
+    
+    on get_user_reactions(user_id: String) -> [String] {
+        self.user_reactions.get(user_id).cloned().unwrap_or([])
+    }
+    
+    on clear_message_reactions(message_id: String) {
+        if let Some(reactions) = self.reactions.remove(message_id) {
+            // Clean up user tracking
+            for (_, rs) in reactions.reactions {
+                for r in rs {
+                    if let Some(ids) = self.user_reactions.get(r.user_id) {
+                        ids.retain(|id| id != message_id)
+                    }
+                }
+            }
+        }
+    }
+    
+    fn emit_event(event: ReactionEvent) {
+        for handler in self.on_event {
+            handler(event.clone())
+        }
+    }
+    
+    fn on_reaction_event(handler: fn(ReactionEvent)) {
+        self.on_event.push(handler)
+    }
+    
+    fn set_allowed_emojis(emojis: [String]) {
+        self.allowed_emojis = Some(emojis)
+    }
+    
+    fn clear_allowed_emojis() {
+        self.allowed_emojis = None
+    }
+}
+
+/// Reaction errors
+enum ReactionError {
+    NotFound,
+    AlreadyReacted,
+    EmojiNotAllowed(String),
+    UserLimitReached(Int),
+    MessageLimitReached(Int),
+    InvalidEmoji(String)
+}
+
+// =============================================================================
+// Quick Reactions
+// =============================================================================
+
+/// Quick reaction picker
+struct QuickReactions {
+    emojis: [String],
+    recent: [String],
+    max_recent: Int
+}
+
+impl QuickReactions {
+    fn default() -> Self {
+        QuickReactions {
+            emojis: ["👍", "❤️", "😂", "😮", "😢", "😡"],
+            recent: [],
+            max_recent: 10
+        }
+    }
+    
+    fn with_emojis(emojis: [String]) -> Self {
+        QuickReactions {
+            emojis: emojis,
+            recent: [],
+            max_recent: 10
+        }
+    }
+    
+    fn add_recent(emoji: String) {
+        // Remove if already in recent
+        self.recent.retain(|e| e != emoji)
+        
+        // Add to front
+        self.recent.insert(0, emoji)
+        
+        // Trim to max
+        if self.recent.len() > self.max_recent {
+            self.recent.truncate(self.max_recent)
+        }
+    }
+    
+    fn get_all() -> [String] {
+        var all = self.recent.clone()
+        for emoji in self.emojis {
+            if !all.contains(emoji) {
+                all.push(emoji)
+            }
+        }
+        all
+    }
+}
+
+// =============================================================================
+// Reaction Analytics
+// =============================================================================
+
+/// Reaction analytics for a conversation
+struct ReactionAnalytics {
+    conversation_id: String,
+    total_reactions: Int,
+    emoji_counts: Map<String, Int>,
+    top_reactors: Map<String, Int>,
+    reactions_by_day: Map<String, Int>
+}
+
+impl ReactionAnalytics {
+    fn new(conversation_id: String) -> Self {
+        ReactionAnalytics {
+            conversation_id: conversation_id,
+            total_reactions: 0,
+            emoji_counts: Map.empty(),
+            top_reactors: Map.empty(),
+            reactions_by_day: Map.empty()
+        }
+    }
+    
+    fn record(event: ReactionEvent) {
+        if event.event_type == ReactionEventType.Added {
+            self.total_reactions += 1
+            
+            // Count emoji
+            let count = self.emoji_counts.get(event.emoji).unwrap_or(0)
+            self.emoji_counts.insert(event.emoji.clone(), count + 1)
+            
+            // Count reactor
+            let user_count = self.top_reactors.get(event.user_id).unwrap_or(0)
+            self.top_reactors.insert(event.user_id.clone(), user_count + 1)
+            
+            // Count by day
+            let day = event.timestamp.format("YYYY-MM-DD")
+            let day_count = self.reactions_by_day.get(day).unwrap_or(0)
+            self.reactions_by_day.insert(day, day_count + 1)
+        }
+    }
+    
+    fn top_emojis(limit: Int) -> [(String, Int)] {
+        var items: [(String, Int)] = self.emoji_counts.iter()
+            .map(|(k, v)| (k.clone(), v))
+            .collect()
+        items.sort_by(|a, b| b.1.cmp(a.1))
+        items.into_iter().take(limit).collect()
+    }
+    
+    fn top_users(limit: Int) -> [(String, Int)] {
+        var items: [(String, Int)] = self.top_reactors.iter()
+            .map(|(k, v)| (k.clone(), v))
+            .collect()
+        items.sort_by(|a, b| b.1.cmp(a.1))
+        items.into_iter().take(limit).collect()
+    }
+    
+    fn average_per_day() -> Float {
+        if self.reactions_by_day.is_empty() {
+            return 0.0
+        }
+        self.total_reactions as Float / self.reactions_by_day.len() as Float
+    }
+}
+
+// =============================================================================
+// Reaction Notification
+// =============================================================================
+
+/// Reaction notification
+struct ReactionNotification {
+    id: String,
+    message_id: String,
+    message_preview: String,
+    reactor_id: String,
+    reactor_name: String,
+    emoji: String,
+    timestamp: DateTime,
+    is_read: Bool
+}
+
+impl ReactionNotification {
+    fn new(event: ReactionEvent, message_preview: String) -> Self {
+        ReactionNotification {
+            id: @native("uuid_v4"),
+            message_id: event.message_id,
+            message_preview: message_preview,
+            reactor_id: event.user_id,
+            reactor_name: event.user_name,
+            emoji: event.emoji,
+            timestamp: event.timestamp,
+            is_read: false
+        }
+    }
+    
+    fn display() -> String {
+        "\(self.reactor_name) reacted \(self.emoji) to \"\(self.message_preview)\""
+    }
+    
+    fn mark_read() {
+        self.is_read = true
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "reaction type" {
+    let emoji = ReactionType.Emoji("👍")
+    assert(emoji.is_emoji())?
+    assert_eq(emoji.display(), "👍")?
+    assert_eq(emoji.as_emoji(), Some("👍"))?
+}
+
+test "reaction" {
+    let reaction = Reaction.emoji("msg1", "user1", "Alice", "❤️")
+    assert_eq(reaction.message_id, "msg1")?
+    assert_eq(reaction.display(), "❤️")?
+    assert(reaction.is_from("user1"))?
+}
+
+test "message reactions" {
+    var reactions = MessageReactions.new("msg1")
+    
+    let r1 = Reaction.emoji("msg1", "user1", "Alice", "👍")
+    let r2 = Reaction.emoji("msg1", "user2", "Bob", "👍")
+    let r3 = Reaction.emoji("msg1", "user1", "Alice", "❤️")
+    
+    assert(reactions.add(r1, false))?
+    assert(reactions.add(r2, false))?
+    assert(reactions.add(r3, true))?
+    
+    assert_eq(reactions.total_count(), 3)?
+    assert_eq(reactions.unique_users(), 2)?
+    
+    let counts = reactions.get_sorted_counts()
+    assert_eq(counts[0].count, 2)?  // 👍 has 2
+}
+
+test "toggle reaction" {
+    var reactions = MessageReactions.new("msg1")
+    
+    // Add
+    let added = reactions.toggle("👍", "user1", "Alice", true)
+    assert(added)?
+    assert(reactions.has_reacted("👍", "user1"))?
+    
+    // Remove
+    let removed = reactions.toggle("👍", "user1", "Alice", true)
+    assert(!removed)?
+    assert(!reactions.has_reacted("👍", "user1"))?
+}
+
+test "reaction manager" {
+    let manager = ReactionManager.new()
+    
+    manager.add_reaction("msg1", "conv1", "user1", "Alice", "👍", false)?
+    manager.add_reaction("msg1", "conv1", "user2", "Bob", "👍", false)?
+    
+    let counts = manager.get_counts("msg1")
+    assert_eq(counts.len(), 1)?
+    assert_eq(counts[0].count, 2)?
+    
+    assert(manager.has_reacted("msg1", "user1", "👍"))?
+}
+
+test "quick reactions" {
+    var quick = QuickReactions.default()
+    assert_eq(quick.emojis.len(), 6)?
+    
+    quick.add_recent("🎉")
+    quick.add_recent("🔥")
+    
+    let all = quick.get_all()
+    assert_eq(all[0], "🔥")?  // Most recent first
+    assert_eq(all[1], "🎉")?
+}
+
+test "reaction count display" {
+    var count = ReactionCount.new(ReactionType.Emoji("👍"))
+    count.add_user("user1", "Alice", false)
+    count.add_user("user2", "Bob", false)
+    
+    assert_eq(count.display(), "👍 2")?
+    assert_eq(count.user_names(5), "Alice, Bob")?
+}
+
+test "reaction event" {
+    let event = ReactionEvent.added("msg1", "conv1", "user1", "Alice", "👍")
+    assert(event.is_added())?
+    assert_eq(event.emoji, "👍")?
+}

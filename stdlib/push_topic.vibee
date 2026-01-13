@@ -1,0 +1,605 @@
+// =============================================================================
+// Vibee OS — Push Topic Module
+// Topic-based push notification management and subscription
+// =============================================================================
+
+use json.{JsonValue, Serialize, Deserialize}
+
+// =============================================================================
+// Topic
+// =============================================================================
+
+struct Topic {
+    id: String
+    name: String
+    description: Option<String>
+    created_at: Instant
+    metadata: Map<String, String>
+}
+
+impl Topic {
+    fn new(name: String) -> Self {
+        Topic {
+            id: UUID.v4(),
+            name: name,
+            description: None,
+            created_at: Instant.now(),
+            metadata: Map.empty()
+        }
+    }
+    
+    fn description(desc: String) -> Self { self.description = Some(desc); self }
+    fn meta(key: String, value: String) -> Self { self.metadata.set(key, value); self }
+    
+    fn validate_name() -> Result<(), TopicError> {
+        if self.name.is_empty() {
+            return Err(TopicError.InvalidName("Topic name cannot be empty"))
+        }
+        if self.name.len() > 256 {
+            return Err(TopicError.InvalidName("Topic name too long (max 256 chars)"))
+        }
+        if !self.name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.') {
+            return Err(TopicError.InvalidName("Topic name contains invalid characters"))
+        }
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Topic Subscription
+// =============================================================================
+
+struct TopicSubscription {
+    topic_id: String
+    token: String
+    platform: Platform
+    subscribed_at: Instant
+    metadata: Map<String, String>
+}
+
+enum Platform { Android, iOS, Web }
+
+impl TopicSubscription {
+    fn new(topic_id: String, token: String, platform: Platform) -> Self {
+        TopicSubscription {
+            topic_id: topic_id,
+            token: token,
+            platform: platform,
+            subscribed_at: Instant.now(),
+            metadata: Map.empty()
+        }
+    }
+}
+
+// =============================================================================
+// Topic Manager
+// =============================================================================
+
+actor TopicManager {
+    state topics: Map<String, Topic>
+    state subscriptions: Map<String, [TopicSubscription]>
+    state token_topics: Map<String, [String]>
+    
+    fn new() -> Self {
+        TopicManager {
+            topics: Map.empty(),
+            subscriptions: Map.empty(),
+            token_topics: Map.empty()
+        }
+    }
+    
+    on create_topic(topic: Topic) -> Result<Topic, TopicError> {
+        topic.validate_name()?
+        if self.topics.contains_key(topic.name.clone()) {
+            return Err(TopicError.AlreadyExists(topic.name))
+        }
+        self.topics.set(topic.name.clone(), topic.clone())
+        self.subscriptions.set(topic.name.clone(), [])
+        Ok(topic)
+    }
+    
+    on delete_topic(name: String) -> Result<(), TopicError> {
+        if !self.topics.contains_key(name.clone()) {
+            return Err(TopicError.NotFound(name))
+        }
+        
+        if let Some(subs) = self.subscriptions.remove(name.clone()) {
+            for sub in subs {
+                if let Some(topics) = self.token_topics.get_mut(sub.token.clone()) {
+                    topics.retain(|t| *t != name)
+                }
+            }
+        }
+        self.topics.remove(name)
+        Ok(())
+    }
+    
+    on subscribe(token: String, topic_name: String, platform: Platform) -> Result<(), TopicError> {
+        if !self.topics.contains_key(topic_name.clone()) {
+            return Err(TopicError.NotFound(topic_name))
+        }
+        
+        let subs = self.subscriptions.get_mut(topic_name.clone()).unwrap()
+        if subs.iter().any(|s| s.token == token) {
+            return Ok(())
+        }
+        
+        let topic = self.topics.get(topic_name.clone()).unwrap()
+        subs.push(TopicSubscription.new(topic.id.clone(), token.clone(), platform))
+        
+        let mut token_topics = self.token_topics.get(token.clone()).unwrap_or([])
+        token_topics.push(topic_name)
+        self.token_topics.set(token, token_topics)
+        
+        Ok(())
+    }
+    
+    on unsubscribe(token: String, topic_name: String) -> Result<(), TopicError> {
+        if let Some(subs) = self.subscriptions.get_mut(topic_name.clone()) {
+            subs.retain(|s| s.token != token)
+        }
+        
+        if let Some(topics) = self.token_topics.get_mut(token) {
+            topics.retain(|t| *t != topic_name)
+        }
+        
+        Ok(())
+    }
+    
+    on unsubscribe_all(token: String) {
+        if let Some(topics) = self.token_topics.remove(token.clone()) {
+            for topic_name in topics {
+                if let Some(subs) = self.subscriptions.get_mut(topic_name) {
+                    subs.retain(|s| s.token != token)
+                }
+            }
+        }
+    }
+    
+    fn get_topic(name: String) -> Option<Topic> {
+        self.topics.get(name)
+    }
+    
+    fn list_topics() -> [Topic] {
+        self.topics.values().collect()
+    }
+    
+    fn get_subscribers(topic_name: String) -> [TopicSubscription] {
+        self.subscriptions.get(topic_name).unwrap_or([])
+    }
+    
+    fn get_subscriber_count(topic_name: String) -> Int {
+        self.subscriptions.get(topic_name).map(|s| s.len()).unwrap_or(0)
+    }
+    
+    fn get_token_topics(token: String) -> [String] {
+        self.token_topics.get(token).unwrap_or([])
+    }
+    
+    fn is_subscribed(token: String, topic_name: String) -> Bool {
+        self.token_topics.get(token).map(|t| t.contains(topic_name)).unwrap_or(false)
+    }
+}
+
+// =============================================================================
+// Topic Condition
+// =============================================================================
+
+struct TopicCondition {
+    expression: String
+}
+
+impl TopicCondition {
+    fn topic(name: String) -> Self {
+        TopicCondition { expression: format!("'{}'", name) }
+    }
+    
+    fn and(other: TopicCondition) -> Self {
+        TopicCondition { expression: format!("({} && {})", self.expression, other.expression) }
+    }
+    
+    fn or(other: TopicCondition) -> Self {
+        TopicCondition { expression: format!("({} || {})", self.expression, other.expression) }
+    }
+    
+    fn not() -> Self {
+        TopicCondition { expression: format!("!{}", self.expression) }
+    }
+    
+    fn in_topic(name: String) -> Self {
+        TopicCondition { expression: format!("'{}' in topics", name) }
+    }
+    
+    fn build() -> String { self.expression.clone() }
+    
+    fn validate() -> Result<(), TopicError> {
+        let depth = self.count_depth()
+        if depth > 5 {
+            return Err(TopicError.InvalidCondition("Condition too complex (max 5 levels)"))
+        }
+        
+        let topics = self.count_topics()
+        if topics > 5 {
+            return Err(TopicError.InvalidCondition("Too many topics (max 5)"))
+        }
+        
+        Ok(())
+    }
+    
+    fn count_depth() -> Int {
+        let mut depth = 0
+        let mut max_depth = 0
+        for c in self.expression.chars() {
+            if c == '(' { depth += 1; max_depth = max_depth.max(depth) }
+            if c == ')' { depth -= 1 }
+        }
+        max_depth
+    }
+    
+    fn count_topics() -> Int {
+        self.expression.matches("'").count() / 2
+    }
+}
+
+// =============================================================================
+// Topic Sender
+// =============================================================================
+
+struct TopicSender {
+    provider: Box<dyn TopicPushProvider>
+    manager: TopicManager
+}
+
+trait TopicPushProvider {
+    fn send_to_topic(topic: String, notification: TopicNotification) -> Result<TopicSendResult, TopicError>
+    fn send_to_condition(condition: String, notification: TopicNotification) -> Result<TopicSendResult, TopicError>
+    fn subscribe_tokens(tokens: [String], topic: String) -> Result<TopicBatchResult, TopicError>
+    fn unsubscribe_tokens(tokens: [String], topic: String) -> Result<TopicBatchResult, TopicError>
+}
+
+impl TopicSender {
+    fn new(provider: Box<dyn TopicPushProvider>, manager: TopicManager) -> Self {
+        TopicSender { provider: provider, manager: manager }
+    }
+    
+    fn send(topic_name: String, notification: TopicNotification) -> Result<TopicSendResult, TopicError> {
+        if !self.manager.get_topic(topic_name.clone()).is_some() {
+            return Err(TopicError.NotFound(topic_name))
+        }
+        self.provider.send_to_topic(topic_name, notification)
+    }
+    
+    fn send_to_condition(condition: TopicCondition, notification: TopicNotification) -> Result<TopicSendResult, TopicError> {
+        condition.validate()?
+        self.provider.send_to_condition(condition.build(), notification)
+    }
+    
+    fn send_to_multiple(topics: [String], notification: TopicNotification) -> [Result<TopicSendResult, TopicError>] {
+        topics.iter().map(|t| self.send(t.clone(), notification.clone())).collect()
+    }
+    
+    fn broadcast(notification: TopicNotification) -> [Result<TopicSendResult, TopicError>] {
+        let topics = self.manager.list_topics()
+        topics.iter().map(|t| self.send(t.name.clone(), notification.clone())).collect()
+    }
+}
+
+// =============================================================================
+// Topic Notification
+// =============================================================================
+
+struct TopicNotification {
+    title: String
+    body: String
+    image: Option<String>
+    data: Map<String, String>
+    android: Option<AndroidTopicConfig>
+    ios: Option<IosTopicConfig>
+    web: Option<WebTopicConfig>
+}
+
+impl TopicNotification {
+    fn new(title: String, body: String) -> Self {
+        TopicNotification {
+            title: title, body: body, image: None, data: Map.empty(),
+            android: None, ios: None, web: None
+        }
+    }
+    
+    fn image(url: String) -> Self { self.image = Some(url); self }
+    fn data(key: String, value: String) -> Self { self.data.set(key, value); self }
+    fn android(config: AndroidTopicConfig) -> Self { self.android = Some(config); self }
+    fn ios(config: IosTopicConfig) -> Self { self.ios = Some(config); self }
+    fn web(config: WebTopicConfig) -> Self { self.web = Some(config); self }
+}
+
+struct AndroidTopicConfig {
+    channel_id: Option<String>
+    priority: AndroidPriority
+    ttl: Option<Duration>
+    collapse_key: Option<String>
+}
+
+enum AndroidPriority { Normal, High }
+
+impl AndroidTopicConfig {
+    fn new() -> Self {
+        AndroidTopicConfig { channel_id: None, priority: AndroidPriority.Normal, ttl: None, collapse_key: None }
+    }
+    
+    fn channel(id: String) -> Self { self.channel_id = Some(id); self }
+    fn high_priority() -> Self { self.priority = AndroidPriority.High; self }
+    fn ttl(duration: Duration) -> Self { self.ttl = Some(duration); self }
+    fn collapse_key(key: String) -> Self { self.collapse_key = Some(key); self }
+}
+
+struct IosTopicConfig {
+    badge: Option<Int>
+    sound: Option<String>
+    category: Option<String>
+    thread_id: Option<String>
+}
+
+impl IosTopicConfig {
+    fn new() -> Self {
+        IosTopicConfig { badge: None, sound: None, category: None, thread_id: None }
+    }
+    
+    fn badge(count: Int) -> Self { self.badge = Some(count); self }
+    fn sound(name: String) -> Self { self.sound = Some(name); self }
+    fn category(cat: String) -> Self { self.category = Some(cat); self }
+    fn thread_id(id: String) -> Self { self.thread_id = Some(id); self }
+}
+
+struct WebTopicConfig {
+    icon: Option<String>
+    badge: Option<String>
+    actions: [WebAction]
+    require_interaction: Bool
+}
+
+struct WebAction {
+    action: String
+    title: String
+}
+
+impl WebTopicConfig {
+    fn new() -> Self {
+        WebTopicConfig { icon: None, badge: None, actions: [], require_interaction: false }
+    }
+    
+    fn icon(url: String) -> Self { self.icon = Some(url); self }
+    fn badge(url: String) -> Self { self.badge = Some(url); self }
+    fn action(action: String, title: String) -> Self {
+        self.actions.push(WebAction { action: action, title: title }); self
+    }
+    fn require_interaction() -> Self { self.require_interaction = true; self }
+}
+
+// =============================================================================
+// Results
+// =============================================================================
+
+struct TopicSendResult {
+    message_id: String
+    topic: String
+    success: Bool
+}
+
+struct TopicBatchResult {
+    success_count: Int
+    failure_count: Int
+    errors: [TokenError]
+}
+
+struct TokenError {
+    token: String
+    error: String
+}
+
+impl TopicBatchResult {
+    fn success_rate() -> Float {
+        let total = self.success_count + self.failure_count
+        if total == 0 { 0.0 } else { self.success_count as Float / total as Float }
+    }
+}
+
+// =============================================================================
+// Topic Groups
+// =============================================================================
+
+struct TopicGroup {
+    id: String
+    name: String
+    topics: [String]
+    created_at: Instant
+}
+
+impl TopicGroup {
+    fn new(name: String) -> Self {
+        TopicGroup { id: UUID.v4(), name: name, topics: [], created_at: Instant.now() }
+    }
+    
+    fn add(topic: String) -> Self { self.topics.push(topic); self }
+    fn remove(topic: String) -> Self { self.topics.retain(|t| *t != topic); self }
+    
+    fn to_condition() -> TopicCondition {
+        if self.topics.is_empty() {
+            return TopicCondition { expression: "false" }
+        }
+        
+        let mut condition = TopicCondition.topic(self.topics[0].clone())
+        for topic in self.topics[1..].iter() {
+            condition = condition.or(TopicCondition.topic(topic.clone()))
+        }
+        condition
+    }
+}
+
+// =============================================================================
+// User Topic Preferences
+// =============================================================================
+
+struct UserTopicPreferences {
+    user_id: String
+    subscribed_topics: [String]
+    muted_topics: [String]
+    preferences: Map<String, TopicPreference>
+}
+
+struct TopicPreference {
+    enabled: Bool
+    sound: Bool
+    vibrate: Bool
+    badge: Bool
+}
+
+impl UserTopicPreferences {
+    fn new(user_id: String) -> Self {
+        UserTopicPreferences {
+            user_id: user_id,
+            subscribed_topics: [],
+            muted_topics: [],
+            preferences: Map.empty()
+        }
+    }
+    
+    fn subscribe(topic: String) -> Self {
+        if !self.subscribed_topics.contains(topic.clone()) {
+            self.subscribed_topics.push(topic)
+        }; self
+    }
+    
+    fn unsubscribe(topic: String) -> Self {
+        self.subscribed_topics.retain(|t| *t != topic); self
+    }
+    
+    fn mute(topic: String) -> Self {
+        if !self.muted_topics.contains(topic.clone()) {
+            self.muted_topics.push(topic)
+        }; self
+    }
+    
+    fn unmute(topic: String) -> Self {
+        self.muted_topics.retain(|t| *t != topic); self
+    }
+    
+    fn is_subscribed(topic: String) -> Bool {
+        self.subscribed_topics.contains(topic)
+    }
+    
+    fn is_muted(topic: String) -> Bool {
+        self.muted_topics.contains(topic)
+    }
+    
+    fn should_notify(topic: String) -> Bool {
+        self.is_subscribed(topic) && !self.is_muted(topic)
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum TopicError {
+    InvalidName(String)
+    InvalidCondition(String)
+    NotFound(String)
+    AlreadyExists(String)
+    SubscriptionFailed(String)
+    SendFailed(String)
+    ProviderError(String)
+}
+
+impl Display for TopicError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidName(msg) => f.write(format!("Invalid topic name: {}", msg)),
+            InvalidCondition(msg) => f.write(format!("Invalid condition: {}", msg)),
+            NotFound(name) => f.write(format!("Topic not found: {}", name)),
+            AlreadyExists(name) => f.write(format!("Topic already exists: {}", name)),
+            SubscriptionFailed(msg) => f.write(format!("Subscription failed: {}", msg)),
+            SendFailed(msg) => f.write(format!("Send failed: {}", msg)),
+            ProviderError(msg) => f.write(format!("Provider error: {}", msg))
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "topic creation" {
+    let topic = Topic.new("news").description("News updates")
+    assert_eq(topic.name, "news")?
+    assert(topic.validate_name().is_ok())?
+}
+
+test "topic name validation" {
+    let valid = Topic.new("my_topic-123")
+    assert(valid.validate_name().is_ok())?
+    
+    let invalid = Topic.new("topic with spaces")
+    assert(invalid.validate_name().is_err())?
+    
+    let empty = Topic.new("")
+    assert(empty.validate_name().is_err())?
+}
+
+test "topic condition" {
+    let condition = TopicCondition.topic("news")
+        .and(TopicCondition.topic("sports").not())
+    
+    assert(condition.expression.contains("news"))?
+    assert(condition.expression.contains("sports"))?
+    assert(condition.validate().is_ok())?
+}
+
+test "topic condition complexity" {
+    let simple = TopicCondition.topic("a").and(TopicCondition.topic("b"))
+    assert(simple.validate().is_ok())?
+}
+
+test "topic group" {
+    let group = TopicGroup.new("sports")
+        .add("football")
+        .add("basketball")
+        .add("tennis")
+    
+    assert_eq(group.topics.len(), 3)?
+    let condition = group.to_condition()
+    assert(condition.expression.contains("football"))?
+}
+
+test "user preferences" {
+    let prefs = UserTopicPreferences.new("user1")
+        .subscribe("news")
+        .subscribe("sports")
+        .mute("sports")
+    
+    assert(prefs.should_notify("news"))?
+    assert(!prefs.should_notify("sports"))?
+    assert(!prefs.should_notify("weather"))?
+}
+
+test "topic notification" {
+    let notification = TopicNotification.new("Breaking News", "Something happened")
+        .image("/image.png")
+        .data("url", "/article/123")
+        .android(AndroidTopicConfig.new().high_priority())
+        .ios(IosTopicConfig.new().badge(1).sound("default"))
+    
+    assert_eq(notification.title, "Breaking News")?
+    assert(notification.android.is_some())?
+    assert(notification.ios.is_some())?
+}
+
+test "batch result" {
+    let result = TopicBatchResult {
+        success_count: 8,
+        failure_count: 2,
+        errors: [TokenError { token: "t1", error: "invalid" }]
+    }
+    
+    assert_eq(result.success_rate(), 0.8)?
+}

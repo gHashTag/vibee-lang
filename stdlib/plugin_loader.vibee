@@ -1,0 +1,797 @@
+// =============================================================================
+// Vibee OS — Plugin Loader Module
+// Dynamic plugin loading and management
+// =============================================================================
+
+use result::{Result, Ok, Err}
+use option::{Option, Some, None}
+use plugin_api::{
+    Plugin, PluginMetadata, PluginVersion, PluginState, PluginError,
+    PluginCapability, PluginManifest, PluginConfig
+}
+use plugin_registry::{PluginRegistry, RegisteredPlugin}
+use loader::{Loader, LoaderConfig, LoaderError, Module, DynLib}
+
+// =============================================================================
+// Plugin Loader
+// =============================================================================
+
+/// Plugin loader configuration
+struct PluginLoaderConfig {
+    plugin_dirs: [String]
+    cache_dir: String
+    auto_discover: Bool
+    verify_signatures: Bool
+    allowed_capabilities: [PluginCapability]
+    max_load_time_ms: Int
+    parallel_loading: Bool
+}
+
+impl PluginLoaderConfig {
+    fn default() -> Self {
+        PluginLoaderConfig {
+            plugin_dirs: ["./plugins", "/usr/lib/vibee/plugins"],
+            cache_dir: "/tmp/vibee/plugin_cache",
+            auto_discover: true,
+            verify_signatures: false,
+            allowed_capabilities: [
+                PluginCapability.FileSystem,
+                PluginCapability.Network,
+                PluginCapability.Database
+            ],
+            max_load_time_ms: 5000,
+            parallel_loading: true
+        }
+    }
+    
+    fn with_plugin_dir(self, dir: String) -> Self {
+        self.plugin_dirs.push(dir)
+        self
+    }
+    
+    fn with_capability(self, cap: PluginCapability) -> Self {
+        self.allowed_capabilities.push(cap)
+        self
+    }
+}
+
+/// Plugin loader for dynamic plugin management
+struct PluginLoader {
+    config: PluginLoaderConfig
+    registry: PluginRegistry
+    module_loader: Loader
+    loaded_modules: Map<String, LoadedPluginModule>
+    manifest_cache: Map<String, PluginManifest>
+    load_order: [String]
+}
+
+/// Loaded plugin module information
+struct LoadedPluginModule {
+    plugin_id: String
+    path: String
+    module: Module
+    manifest: PluginManifest
+    load_time: Int64
+    checksum: String
+}
+
+impl PluginLoader {
+    fn new(config: PluginLoaderConfig) -> Self {
+        PluginLoader {
+            config: config,
+            registry: PluginRegistry.new(),
+            module_loader: Loader.with_defaults(),
+            loaded_modules: Map.new(),
+            manifest_cache: Map.new(),
+            load_order: []
+        }
+    }
+    
+    fn with_defaults() -> Self {
+        Self.new(PluginLoaderConfig.default())
+    }
+    
+    // =========================================================================
+    // Plugin Discovery
+    // =========================================================================
+    
+    /// Discover all plugins in configured directories
+    fn discover() -> Result<[PluginManifest], PluginError> {
+        var manifests: [PluginManifest] = []
+        
+        for dir in self.config.plugin_dirs.iter() {
+            let discovered = self.discover_in_directory(dir.clone())?
+            manifests.extend(discovered)
+        }
+        
+        Ok(manifests)
+    }
+    
+    /// Discover plugins in a specific directory
+    fn discover_in_directory(dir: String) -> Result<[PluginManifest], PluginError> {
+        var manifests: [PluginManifest] = []
+        
+        let entries = self.list_directory(dir.clone())?
+        
+        for entry in entries.iter() {
+            let manifest_path = format!("{}/{}/plugin.json", dir, entry)
+            
+            if self.file_exists(manifest_path.clone()) {
+                match self.load_manifest(manifest_path) {
+                    Ok(manifest) => {
+                        self.manifest_cache.insert(manifest.metadata.id.clone(), manifest.clone())
+                        manifests.push(manifest)
+                    }
+                    Err(e) => {
+                        // Log warning but continue
+                        println!("Warning: Failed to load manifest from {}: {}", entry, e.message())
+                    }
+                }
+            }
+        }
+        
+        Ok(manifests)
+    }
+    
+    /// Load plugin manifest from file
+    fn load_manifest(path: String) -> Result<PluginManifest, PluginError> {
+        let content = self.read_file(path.clone())?
+        let manifest = PluginManifest.from_json(content)?
+        manifest.validate()?
+        Ok(manifest)
+    }
+    
+    // =========================================================================
+    // Plugin Loading
+    // =========================================================================
+    
+    /// Load a plugin by ID
+    fn load(plugin_id: String) -> Result<(), PluginError> {
+        // Check if already loaded
+        if self.loaded_modules.contains_key(plugin_id.clone()) {
+            return Ok(())
+        }
+        
+        // Find plugin
+        let manifest = self.find_plugin(plugin_id.clone())?
+        
+        // Check capabilities
+        self.check_capabilities(manifest.clone())?
+        
+        // Load dependencies first
+        for dep in manifest.metadata.dependencies.iter() {
+            if !dep.optional {
+                self.load(dep.plugin_id.clone())?
+            }
+        }
+        
+        // Load plugin module
+        let plugin_path = self.get_plugin_path(plugin_id.clone())?
+        let module = self.load_module(plugin_path.clone(), manifest.clone())?
+        
+        // Create loaded module entry
+        let loaded = LoadedPluginModule {
+            plugin_id: plugin_id.clone(),
+            path: plugin_path,
+            module: module,
+            manifest: manifest.clone(),
+            load_time: Time.now().unix_millis(),
+            checksum: self.compute_checksum(plugin_id.clone())
+        }
+        
+        self.loaded_modules.insert(plugin_id.clone(), loaded)
+        self.load_order.push(plugin_id.clone())
+        
+        // Instantiate and register plugin
+        self.instantiate_plugin(plugin_id)?
+        
+        Ok(())
+    }
+    
+    /// Load plugin from a specific path
+    fn load_from_path(path: String) -> Result<String, PluginError> {
+        let manifest_path = format!("{}/plugin.json", path)
+        let manifest = self.load_manifest(manifest_path)?
+        let plugin_id = manifest.metadata.id.clone()
+        
+        self.manifest_cache.insert(plugin_id.clone(), manifest)
+        self.load(plugin_id.clone())?
+        
+        Ok(plugin_id)
+    }
+    
+    /// Load multiple plugins in parallel
+    async fn load_parallel(plugin_ids: [String]) -> Result<(), PluginError> {
+        if !self.config.parallel_loading {
+            for id in plugin_ids.iter() {
+                self.load(id.clone())?
+            }
+            return Ok(())
+        }
+        
+        // Group plugins by dependency level
+        let levels = self.group_by_dependency_level(plugin_ids)?
+        
+        for level in levels.iter() {
+            let futures: [Future<Result<(), PluginError>>] = level.iter()
+                .map(|id| async { self.load(id.clone()) })
+                .collect()
+            
+            let results = Future.join_all(futures).await
+            
+            for result in results.iter() {
+                result?
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Load module from compiled plugin
+    fn load_module(path: String, manifest: PluginManifest) -> Result<Module, PluginError> {
+        let entry_path = format!("{}/{}", path, manifest.entry_point)
+        
+        // Set timeout for loading
+        let timeout = Duration.from_millis(self.config.max_load_time_ms)
+        
+        match self.module_loader.load_from_path(entry_path).timeout(timeout) {
+            Ok(module) => Ok(module),
+            Err(LoaderError.ModuleNotFound(msg)) => 
+                Err(PluginError.NotFound(msg)),
+            Err(e) => 
+                Err(PluginError.LoadFailed(format!("Module load failed: {:?}", e)))
+        }
+    }
+    
+    /// Instantiate plugin from loaded module
+    fn instantiate_plugin(plugin_id: String) -> Result<(), PluginError> {
+        let loaded = self.loaded_modules.get(plugin_id.clone())
+            .ok_or(PluginError.NotFound(plugin_id.clone()))?
+        
+        // Get plugin factory function from module
+        let factory_addr = loaded.module.exports.get("__vibee_plugin_create")
+            .ok_or(PluginError.LoadFailed("Plugin factory not found".to_string()))?
+        
+        // Call factory to create plugin instance
+        let plugin = self.call_factory(factory_addr.address)?
+        
+        // Register with registry
+        self.registry.register(plugin)?
+        
+        Ok(())
+    }
+    
+    fn call_factory(address: Int) -> Result<Box<dyn Plugin>, PluginError> {
+        // Call native factory function
+        // This would be implemented via FFI
+        Err(PluginError.LoadFailed("Factory call not implemented".to_string()))
+    }
+    
+    // =========================================================================
+    // Plugin Unloading
+    // =========================================================================
+    
+    /// Unload a plugin
+    fn unload(plugin_id: String) -> Result<(), PluginError> {
+        // Check if loaded
+        if !self.loaded_modules.contains_key(plugin_id.clone()) {
+            return Err(PluginError.NotFound(plugin_id))
+        }
+        
+        // Check for dependents
+        let dependents = self.get_dependents(plugin_id.clone())
+        if !dependents.is_empty() {
+            return Err(PluginError.LoadFailed(
+                format!("Cannot unload {}: plugins depend on it: {:?}", plugin_id, dependents)
+            ))
+        }
+        
+        // Stop plugin if running
+        if self.registry.is_running(plugin_id.clone()) {
+            self.registry.stop(plugin_id.clone())?
+        }
+        
+        // Unregister from registry
+        self.registry.unregister(plugin_id.clone())?
+        
+        // Unload module
+        let loaded = self.loaded_modules.remove(plugin_id.clone()).unwrap()
+        self.module_loader.unload(loaded.module.id.name)?
+        
+        // Remove from load order
+        self.load_order.retain(|id| id != plugin_id)
+        
+        Ok(())
+    }
+    
+    /// Unload all plugins
+    fn unload_all() -> Result<(), PluginError> {
+        // Unload in reverse order
+        let order = self.load_order.clone()
+        for plugin_id in order.iter().rev() {
+            self.unload(plugin_id.clone())?
+        }
+        Ok(())
+    }
+    
+    // =========================================================================
+    // Plugin Reload
+    // =========================================================================
+    
+    /// Reload a plugin
+    fn reload(plugin_id: String) -> Result<(), PluginError> {
+        // Get current config
+        let config = self.registry.get(plugin_id.clone())
+            .map(|p| p.config.clone())
+            .unwrap_or(PluginConfig.empty())
+        
+        // Unload
+        self.unload(plugin_id.clone())?
+        
+        // Clear manifest cache
+        self.manifest_cache.remove(plugin_id.clone())
+        
+        // Reload
+        self.load(plugin_id.clone())?
+        
+        // Restore config
+        if let Some(entry) = self.registry.plugins.get_mut(plugin_id) {
+            entry.config = config
+        }
+        
+        Ok(())
+    }
+    
+    // =========================================================================
+    // Helper Methods
+    // =========================================================================
+    
+    /// Find plugin manifest by ID
+    fn find_plugin(plugin_id: String) -> Result<PluginManifest, PluginError> {
+        // Check cache first
+        if let Some(manifest) = self.manifest_cache.get(plugin_id.clone()) {
+            return Ok(manifest.clone())
+        }
+        
+        // Discover if auto-discover enabled
+        if self.config.auto_discover {
+            self.discover()?
+            
+            if let Some(manifest) = self.manifest_cache.get(plugin_id.clone()) {
+                return Ok(manifest.clone())
+            }
+        }
+        
+        Err(PluginError.NotFound(plugin_id))
+    }
+    
+    /// Get plugin installation path
+    fn get_plugin_path(plugin_id: String) -> Result<String, PluginError> {
+        for dir in self.config.plugin_dirs.iter() {
+            let path = format!("{}/{}", dir, plugin_id)
+            if self.directory_exists(path.clone()) {
+                return Ok(path)
+            }
+        }
+        Err(PluginError.NotFound(plugin_id))
+    }
+    
+    /// Check if plugin capabilities are allowed
+    fn check_capabilities(manifest: PluginManifest) -> Result<(), PluginError> {
+        for cap in manifest.permissions.iter() {
+            if !self.config.allowed_capabilities.contains(cap) {
+                return Err(PluginError.CapabilityDenied(cap.clone()))
+            }
+        }
+        Ok(())
+    }
+    
+    /// Get plugins that depend on the given plugin
+    fn get_dependents(plugin_id: String) -> [String] {
+        var dependents: [String] = []
+        
+        for (id, loaded) in self.loaded_modules.iter() {
+            for dep in loaded.manifest.metadata.dependencies.iter() {
+                if dep.plugin_id == plugin_id {
+                    dependents.push(id.clone())
+                }
+            }
+        }
+        
+        dependents
+    }
+    
+    /// Group plugins by dependency level for parallel loading
+    fn group_by_dependency_level(plugin_ids: [String]) -> Result<[[String]], PluginError> {
+        var levels: [[String]] = []
+        var remaining: Set<String> = plugin_ids.iter().cloned().collect()
+        var loaded: Set<String> = self.loaded_modules.keys().cloned().collect()
+        
+        while !remaining.is_empty() {
+            var current_level: [String] = []
+            
+            for id in remaining.iter() {
+                let manifest = self.find_plugin(id.clone())?
+                let deps_satisfied = manifest.metadata.dependencies.iter()
+                    .filter(|d| !d.optional)
+                    .all(|d| loaded.contains(d.plugin_id.clone()))
+                
+                if deps_satisfied {
+                    current_level.push(id.clone())
+                }
+            }
+            
+            if current_level.is_empty() && !remaining.is_empty() {
+                return Err(PluginError.LoadFailed("Circular dependency detected".to_string()))
+            }
+            
+            for id in current_level.iter() {
+                remaining.remove(id.clone())
+                loaded.insert(id.clone())
+            }
+            
+            levels.push(current_level)
+        }
+        
+        Ok(levels)
+    }
+    
+    fn compute_checksum(plugin_id: String) -> String {
+        // Compute SHA256 checksum of plugin files
+        "".to_string()
+    }
+    
+    // File system helpers
+    fn list_directory(path: String) -> Result<[String], PluginError> {
+        // List directory entries
+        Ok([])
+    }
+    
+    fn file_exists(path: String) -> Bool {
+        false
+    }
+    
+    fn directory_exists(path: String) -> Bool {
+        false
+    }
+    
+    fn read_file(path: String) -> Result<String, PluginError> {
+        Err(PluginError.LoadFailed("File read not implemented".to_string()))
+    }
+    
+    // =========================================================================
+    // Query Methods
+    // =========================================================================
+    
+    /// List all loaded plugins
+    fn list_loaded() -> [String] {
+        self.loaded_modules.keys().collect()
+    }
+    
+    /// Get loaded plugin info
+    fn get_loaded(plugin_id: String) -> Option<LoadedPluginModule> {
+        self.loaded_modules.get(plugin_id).cloned()
+    }
+    
+    /// Check if plugin is loaded
+    fn is_loaded(plugin_id: String) -> Bool {
+        self.loaded_modules.contains_key(plugin_id)
+    }
+    
+    /// Get registry reference
+    fn registry() -> PluginRegistry {
+        self.registry.clone()
+    }
+}
+
+// =============================================================================
+// Plugin Bundle
+// =============================================================================
+
+/// Plugin bundle for packaging multiple plugins
+struct PluginBundle {
+    name: String
+    version: PluginVersion
+    plugins: [BundledPlugin]
+    metadata: Map<String, String>
+}
+
+struct BundledPlugin {
+    plugin_id: String
+    manifest: PluginManifest
+    data: [UInt8]
+}
+
+impl PluginBundle {
+    fn new(name: String, version: PluginVersion) -> Self {
+        PluginBundle {
+            name: name,
+            version: version,
+            plugins: [],
+            metadata: Map.new()
+        }
+    }
+    
+    fn add_plugin(manifest: PluginManifest, data: [UInt8]) {
+        self.plugins.push(BundledPlugin {
+            plugin_id: manifest.metadata.id.clone(),
+            manifest: manifest,
+            data: data
+        })
+    }
+    
+    /// Pack bundle to bytes
+    fn pack() -> [UInt8] {
+        // Serialize bundle
+        []
+    }
+    
+    /// Unpack bundle from bytes
+    fn unpack(data: [UInt8]) -> Result<Self, PluginError> {
+        // Deserialize bundle
+        Ok(PluginBundle.new("".to_string(), PluginVersion.new(0, 0, 0)))
+    }
+    
+    /// Install bundle
+    fn install(loader: PluginLoader, target_dir: String) -> Result<[String], PluginError> {
+        var installed: [String] = []
+        
+        for bundled in self.plugins.iter() {
+            let plugin_dir = format!("{}/{}", target_dir, bundled.plugin_id)
+            // Extract plugin files
+            // Write manifest
+            installed.push(bundled.plugin_id.clone())
+        }
+        
+        Ok(installed)
+    }
+}
+
+// =============================================================================
+// Plugin Installer
+// =============================================================================
+
+/// Plugin installer for managing plugin installation
+struct PluginInstaller {
+    install_dir: String
+    temp_dir: String
+    backup_dir: String
+}
+
+impl PluginInstaller {
+    fn new(install_dir: String) -> Self {
+        PluginInstaller {
+            install_dir: install_dir.clone(),
+            temp_dir: format!("{}/temp", install_dir),
+            backup_dir: format!("{}/backup", install_dir)
+        }
+    }
+    
+    /// Install plugin from archive
+    fn install_from_archive(archive_path: String) -> Result<String, PluginError> {
+        // Extract archive to temp
+        let temp_path = self.extract_archive(archive_path)?
+        
+        // Load and validate manifest
+        let manifest = self.load_manifest(format!("{}/plugin.json", temp_path))?
+        let plugin_id = manifest.metadata.id.clone()
+        
+        // Check if already installed
+        let target_path = format!("{}/{}", self.install_dir, plugin_id)
+        if self.directory_exists(target_path.clone()) {
+            // Backup existing
+            self.backup(plugin_id.clone())?
+        }
+        
+        // Move to install dir
+        self.move_directory(temp_path, target_path)?
+        
+        Ok(plugin_id)
+    }
+    
+    /// Install plugin from URL
+    async fn install_from_url(url: String) -> Result<String, PluginError> {
+        // Download archive
+        let archive_path = self.download(url).await?
+        
+        // Install from archive
+        self.install_from_archive(archive_path)
+    }
+    
+    /// Uninstall plugin
+    fn uninstall(plugin_id: String) -> Result<(), PluginError> {
+        let plugin_path = format!("{}/{}", self.install_dir, plugin_id)
+        
+        if !self.directory_exists(plugin_path.clone()) {
+            return Err(PluginError.NotFound(plugin_id))
+        }
+        
+        // Backup before removal
+        self.backup(plugin_id.clone())?
+        
+        // Remove directory
+        self.remove_directory(plugin_path)?
+        
+        Ok(())
+    }
+    
+    /// Update plugin
+    fn update(plugin_id: String, archive_path: String) -> Result<(), PluginError> {
+        // Backup current version
+        self.backup(plugin_id.clone())?
+        
+        // Install new version
+        self.install_from_archive(archive_path)?
+        
+        Ok(())
+    }
+    
+    /// Restore plugin from backup
+    fn restore(plugin_id: String) -> Result<(), PluginError> {
+        let backup_path = format!("{}/{}", self.backup_dir, plugin_id)
+        let target_path = format!("{}/{}", self.install_dir, plugin_id)
+        
+        if !self.directory_exists(backup_path.clone()) {
+            return Err(PluginError.NotFound(format!("No backup for {}", plugin_id)))
+        }
+        
+        // Remove current if exists
+        if self.directory_exists(target_path.clone()) {
+            self.remove_directory(target_path.clone())?
+        }
+        
+        // Restore from backup
+        self.copy_directory(backup_path, target_path)?
+        
+        Ok(())
+    }
+    
+    fn backup(plugin_id: String) -> Result<(), PluginError> {
+        let source = format!("{}/{}", self.install_dir, plugin_id)
+        let target = format!("{}/{}", self.backup_dir, plugin_id)
+        self.copy_directory(source, target)
+    }
+    
+    // File system helpers
+    fn extract_archive(path: String) -> Result<String, PluginError> {
+        Ok(format!("{}/extracted", self.temp_dir))
+    }
+    
+    fn load_manifest(path: String) -> Result<PluginManifest, PluginError> {
+        PluginManifest.from_json("{}".to_string())
+    }
+    
+    fn directory_exists(path: String) -> Bool { false }
+    fn move_directory(from: String, to: String) -> Result<(), PluginError> { Ok(()) }
+    fn copy_directory(from: String, to: String) -> Result<(), PluginError> { Ok(()) }
+    fn remove_directory(path: String) -> Result<(), PluginError> { Ok(()) }
+    
+    async fn download(url: String) -> Result<String, PluginError> {
+        Ok(format!("{}/download.zip", self.temp_dir))
+    }
+}
+
+// =============================================================================
+// Plugin Loader Actor
+// =============================================================================
+
+/// Thread-safe plugin loader actor
+actor PluginLoaderActor {
+    loader: PluginLoader
+    
+    fn new(config: PluginLoaderConfig) -> Self {
+        PluginLoaderActor {
+            loader: PluginLoader.new(config)
+        }
+    }
+    
+    async fn discover() -> Result<[PluginManifest], PluginError> {
+        self.loader.discover()
+    }
+    
+    async fn load(plugin_id: String) -> Result<(), PluginError> {
+        self.loader.load(plugin_id)
+    }
+    
+    async fn unload(plugin_id: String) -> Result<(), PluginError> {
+        self.loader.unload(plugin_id)
+    }
+    
+    async fn reload(plugin_id: String) -> Result<(), PluginError> {
+        self.loader.reload(plugin_id)
+    }
+    
+    async fn list_loaded() -> [String] {
+        self.loader.list_loaded()
+    }
+    
+    async fn is_loaded(plugin_id: String) -> Bool {
+        self.loader.is_loaded(plugin_id)
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "plugin loader config" {
+    let config = PluginLoaderConfig.default()
+    assert(config.plugin_dirs.len() > 0)?
+    assert(config.auto_discover)?
+}
+
+test "dependency level grouping" {
+    var loader = PluginLoader.with_defaults()
+    
+    // Add mock manifests
+    let manifest_a = PluginManifest {
+        metadata: PluginMetadata.new("a", "Plugin A", PluginVersion.new(1, 0, 0)),
+        entry_point: "main.vibee".to_string(),
+        exports: [],
+        permissions: [],
+        config_schema: None,
+        hooks: []
+    }
+    
+    let manifest_b = PluginManifest {
+        metadata: PluginMetadata.new("b", "Plugin B", PluginVersion.new(1, 0, 0))
+            .with_dependency(PluginDependency.required("a", "^1.0.0")),
+        entry_point: "main.vibee".to_string(),
+        exports: [],
+        permissions: [],
+        config_schema: None,
+        hooks: []
+    }
+    
+    loader.manifest_cache.insert("a", manifest_a)
+    loader.manifest_cache.insert("b", manifest_b)
+    
+    let levels = loader.group_by_dependency_level(["a", "b"])?
+    assert_eq(levels.len(), 2)?
+    assert_eq(levels[0], ["a"])?
+    assert_eq(levels[1], ["b"])?
+}
+
+test "plugin bundle" {
+    var bundle = PluginBundle.new("test-bundle", PluginVersion.new(1, 0, 0))
+    
+    let manifest = PluginManifest {
+        metadata: PluginMetadata.new("test", "Test", PluginVersion.new(1, 0, 0)),
+        entry_point: "main.vibee".to_string(),
+        exports: [],
+        permissions: [],
+        config_schema: None,
+        hooks: []
+    }
+    
+    bundle.add_plugin(manifest, [1, 2, 3])
+    assert_eq(bundle.plugins.len(), 1)?
+}
+
+test "capability check" {
+    var loader = PluginLoader.with_defaults()
+    
+    let manifest = PluginManifest {
+        metadata: PluginMetadata.new("test", "Test", PluginVersion.new(1, 0, 0)),
+        entry_point: "main.vibee".to_string(),
+        exports: [],
+        permissions: [PluginCapability.FileSystem],
+        config_schema: None,
+        hooks: []
+    }
+    
+    // FileSystem is allowed by default
+    assert(loader.check_capabilities(manifest.clone()).is_ok())?
+    
+    // Native is not allowed by default
+    let manifest_native = PluginManifest {
+        metadata: PluginMetadata.new("test2", "Test2", PluginVersion.new(1, 0, 0)),
+        entry_point: "main.vibee".to_string(),
+        exports: [],
+        permissions: [PluginCapability.Native],
+        config_schema: None,
+        hooks: []
+    }
+    
+    assert(loader.check_capabilities(manifest_native).is_err())?
+}

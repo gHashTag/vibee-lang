@@ -1,0 +1,805 @@
+// =============================================================================
+// Vibee OS — Web Crawler Module
+// Web crawling with URL frontier, politeness, and link extraction
+// =============================================================================
+
+use http::{Client, Request, Response, HttpError}
+use html_parser::{HtmlDocument, HtmlElement}
+use scraper::{Scraper, ScrapedPage, ScrapeError, Link}
+use url::{URL, URLError}
+use result::{Result, Ok, Err}
+use option::{Option, Some, None}
+use regex::{Regex}
+
+// =============================================================================
+// Crawler
+// =============================================================================
+
+/// Web crawler for systematic website traversal
+actor Crawler {
+    state config: CrawlerConfig
+    state frontier: UrlFrontier
+    state visited: Set<String>
+    state robots_cache: Map<String, RobotsTxt>
+    state stats: CrawlStats
+    state running: Bool
+    state handlers: CrawlHandlers
+    
+    /// Create new crawler
+    fn new() -> Self {
+        Crawler {
+            config: CrawlerConfig.default(),
+            frontier: UrlFrontier.new(),
+            visited: Set.empty(),
+            robots_cache: Map.empty(),
+            stats: CrawlStats.new(),
+            running: false,
+            handlers: CrawlHandlers.default()
+        }
+    }
+    
+    /// Configure crawler
+    fn config(config: CrawlerConfig) -> Self {
+        Crawler { config: config, ..self }
+    }
+    
+    /// Set seed URLs
+    fn seeds(urls: [String]) -> Self {
+        for url in urls {
+            self.frontier.add(url, 0)
+        }
+        self
+    }
+    
+    /// Add single seed URL
+    fn seed(url: String) -> Self {
+        self.frontier.add(url, 0)
+        self
+    }
+    
+    /// Set page handler
+    fn on_page(handler: fn(CrawledPage) -> CrawlAction) -> Self {
+        self.handlers.on_page = Some(handler)
+        self
+    }
+    
+    /// Set error handler
+    fn on_error(handler: fn(String, ScrapeError)) -> Self {
+        self.handlers.on_error = Some(handler)
+        self
+    }
+    
+    /// Set link filter
+    fn filter_links(filter: fn(String) -> Bool) -> Self {
+        self.handlers.link_filter = Some(filter)
+        self
+    }
+    
+    /// Start crawling
+    fn start() -> CrawlResult {
+        self.running = true
+        self.stats = CrawlStats.new()
+        self.stats.start_time = Some(DateTime.now())
+        
+        let scraper = Scraper.new()
+            .user_agent(self.config.user_agent)
+            .timeout(self.config.timeout_ms)
+            .delay(self.config.delay_ms)
+        
+        while self.running && self.stats.pages_crawled < self.config.max_pages {
+            match self.frontier.next() {
+                Some((url, depth)) => {
+                    if self.should_crawl(url, depth) {
+                        self.crawl_url(scraper, url, depth)
+                    }
+                }
+                None => {
+                    if self.frontier.is_empty() {
+                        break
+                    }
+                    @native("sleep_ms", 100)
+                }
+            }
+        }
+        
+        self.stats.end_time = Some(DateTime.now())
+        self.running = false
+        
+        CrawlResult {
+            stats: self.stats,
+            visited: self.visited.iter().collect()
+        }
+    }
+    
+    /// Stop crawling
+    fn stop() {
+        self.running = false
+    }
+    
+    /// Pause crawling
+    fn pause() {
+        self.running = false
+    }
+    
+    /// Resume crawling
+    fn resume() -> CrawlResult {
+        self.start()
+    }
+    
+    fn should_crawl(url: String, depth: Int) -> Bool {
+        // Check if already visited
+        if self.visited.contains(url) {
+            return false
+        }
+        
+        // Check depth limit
+        if depth > self.config.max_depth {
+            return false
+        }
+        
+        // Check domain restrictions
+        if !self.is_allowed_domain(url) {
+            return false
+        }
+        
+        // Check URL patterns
+        if !self.matches_patterns(url) {
+            return false
+        }
+        
+        // Check robots.txt
+        if self.config.respect_robots && !self.is_allowed_by_robots(url) {
+            return false
+        }
+        
+        true
+    }
+    
+    fn is_allowed_domain(url: String) -> Bool {
+        if self.config.allowed_domains.is_empty() {
+            return true
+        }
+        
+        match URL.parse(url) {
+            Ok(parsed) => {
+                match parsed.host {
+                    Some(host) => self.config.allowed_domains.iter().any(|d| {
+                        host == d || host.ends_with(format!(".{}", d))
+                    })
+                    None => false
+                }
+            }
+            Err(_) => false
+        }
+    }
+    
+    fn matches_patterns(url: String) -> Bool {
+        // Check include patterns
+        if !self.config.include_patterns.is_empty() {
+            let matches_include = self.config.include_patterns.iter().any(|p| {
+                Regex.new(p).map(|r| r.is_match(url)).unwrap_or(false)
+            })
+            if !matches_include {
+                return false
+            }
+        }
+        
+        // Check exclude patterns
+        for pattern in self.config.exclude_patterns {
+            if Regex.new(pattern).map(|r| r.is_match(url)).unwrap_or(false) {
+                return false
+            }
+        }
+        
+        true
+    }
+    
+    fn is_allowed_by_robots(url: String) -> Bool {
+        match URL.parse(url) {
+            Ok(parsed) => {
+                let robots_url = format!("{}://{}/robots.txt", parsed.scheme, parsed.host.unwrap_or(""))
+                
+                let robots = self.robots_cache.get(robots_url).cloned().unwrap_or_else(|| {
+                    let txt = self.fetch_robots(robots_url)
+                    self.robots_cache.set(robots_url, txt.clone())
+                    txt
+                })
+                
+                robots.is_allowed(self.config.user_agent, parsed.path)
+            }
+            Err(_) => true
+        }
+    }
+    
+    fn fetch_robots(url: String) -> RobotsTxt {
+        match http.get(url) {
+            Ok(response) => {
+                if response.is_success() {
+                    RobotsTxt.parse(response.text())
+                } else {
+                    RobotsTxt.allow_all()
+                }
+            }
+            Err(_) => RobotsTxt.allow_all()
+        }
+    }
+    
+    fn crawl_url(scraper: Scraper, url: String, depth: Int) {
+        self.visited.insert(url.clone())
+        self.stats.pages_crawled += 1
+        
+        match scraper.fetch(url.clone()) {
+            Ok(page) => {
+                self.stats.pages_success += 1
+                
+                let crawled = CrawledPage {
+                    url: url.clone(),
+                    page: page,
+                    depth: depth,
+                    timestamp: DateTime.now()
+                }
+                
+                // Call page handler
+                let action = match self.handlers.on_page {
+                    Some(handler) => handler(crawled.clone())
+                    None => CrawlAction.Continue
+                }
+                
+                match action {
+                    CrawlAction.Continue => {
+                        // Extract and queue links
+                        if depth < self.config.max_depth {
+                            self.extract_links(crawled.page, url, depth)
+                        }
+                    }
+                    CrawlAction.Skip => {}
+                    CrawlAction.Stop => {
+                        self.running = false
+                    }
+                }
+            }
+            Err(e) => {
+                self.stats.pages_failed += 1
+                
+                match e {
+                    ScrapeError.HttpError(code) => {
+                        if code == 429 {
+                            self.stats.rate_limited += 1
+                            // Re-queue with delay
+                            self.frontier.add_delayed(url, depth, self.config.rate_limit_delay_ms)
+                        }
+                    }
+                    _ => {}
+                }
+                
+                if let Some(handler) = self.handlers.on_error {
+                    handler(url, e)
+                }
+            }
+        }
+    }
+    
+    fn extract_links(page: ScrapedPage, base_url: String, depth: Int) {
+        for link in page.links() {
+            let href = link.href
+            
+            // Skip non-http links
+            if href.starts_with("javascript:") || href.starts_with("mailto:") || href.starts_with("#") {
+                continue
+            }
+            
+            // Resolve relative URLs
+            let absolute = match page.absolute_url(href) {
+                Ok(url) => url
+                Err(_) => continue
+            }
+            
+            // Apply link filter
+            let should_add = match self.handlers.link_filter {
+                Some(filter) => filter(absolute.clone())
+                None => true
+            }
+            
+            if should_add && !self.visited.contains(absolute.clone()) {
+                self.frontier.add(absolute, depth + 1)
+                self.stats.links_found += 1
+            }
+        }
+    }
+    
+    /// Get current stats
+    fn stats() -> CrawlStats {
+        self.stats.clone()
+    }
+    
+    /// Get visited URLs
+    fn visited() -> [String] {
+        self.visited.iter().collect()
+    }
+    
+    /// Get frontier size
+    fn frontier_size() -> Int {
+        self.frontier.len()
+    }
+}
+
+// =============================================================================
+// Crawler Configuration
+// =============================================================================
+
+/// Crawler configuration
+struct CrawlerConfig {
+    user_agent: String
+    max_pages: Int
+    max_depth: Int
+    delay_ms: Int64
+    timeout_ms: Int64
+    concurrent_requests: Int
+    respect_robots: Bool
+    allowed_domains: [String]
+    include_patterns: [String]
+    exclude_patterns: [String]
+    rate_limit_delay_ms: Int64
+    
+    fn default() -> Self {
+        CrawlerConfig {
+            user_agent: "Vibee-Crawler/1.0",
+            max_pages: 1000,
+            max_depth: 5,
+            delay_ms: 1000,
+            timeout_ms: 30000,
+            concurrent_requests: 1,
+            respect_robots: true,
+            allowed_domains: [],
+            include_patterns: [],
+            exclude_patterns: [],
+            rate_limit_delay_ms: 60000
+        }
+    }
+    
+    fn user_agent(ua: String) -> Self {
+        CrawlerConfig { user_agent: ua, ..self }
+    }
+    
+    fn max_pages(n: Int) -> Self {
+        CrawlerConfig { max_pages: n, ..self }
+    }
+    
+    fn max_depth(n: Int) -> Self {
+        CrawlerConfig { max_depth: n, ..self }
+    }
+    
+    fn delay(ms: Int64) -> Self {
+        CrawlerConfig { delay_ms: ms, ..self }
+    }
+    
+    fn timeout(ms: Int64) -> Self {
+        CrawlerConfig { timeout_ms: ms, ..self }
+    }
+    
+    fn concurrent(n: Int) -> Self {
+        CrawlerConfig { concurrent_requests: n, ..self }
+    }
+    
+    fn respect_robots(enabled: Bool) -> Self {
+        CrawlerConfig { respect_robots: enabled, ..self }
+    }
+    
+    fn allowed_domains(domains: [String]) -> Self {
+        CrawlerConfig { allowed_domains: domains, ..self }
+    }
+    
+    fn include_pattern(pattern: String) -> Self {
+        self.include_patterns.push(pattern)
+        self
+    }
+    
+    fn exclude_pattern(pattern: String) -> Self {
+        self.exclude_patterns.push(pattern)
+        self
+    }
+}
+
+// =============================================================================
+// URL Frontier
+// =============================================================================
+
+/// URL frontier for managing URLs to crawl
+struct UrlFrontier {
+    queues: Map<Int, [(String, Int64)]>  // priority -> [(url, available_at)]
+    seen: Set<String>
+    
+    fn new() -> Self {
+        UrlFrontier {
+            queues: Map.empty(),
+            seen: Set.empty()
+        }
+    }
+    
+    /// Add URL with priority (depth)
+    fn add(url: String, priority: Int) {
+        if self.seen.contains(url) {
+            return
+        }
+        self.seen.insert(url.clone())
+        
+        let queue = self.queues.entry(priority).or_insert([])
+        queue.push((url, 0))
+    }
+    
+    /// Add URL with delay
+    fn add_delayed(url: String, priority: Int, delay_ms: Int64) {
+        let available_at = DateTime.now().timestamp_ms() + delay_ms
+        let queue = self.queues.entry(priority).or_insert([])
+        queue.push((url, available_at))
+    }
+    
+    /// Get next URL to crawl
+    fn next() -> Option<(String, Int)> {
+        let now = DateTime.now().timestamp_ms()
+        
+        // Get URLs by priority (lower = higher priority)
+        let priorities = self.queues.keys().sorted()
+        
+        for priority in priorities {
+            if let Some(queue) = self.queues.get_mut(priority) {
+                // Find first available URL
+                for i in 0..queue.len() {
+                    let (url, available_at) = queue[i]
+                    if available_at <= now {
+                        queue.remove(i)
+                        return Some((url, priority))
+                    }
+                }
+            }
+        }
+        
+        None
+    }
+    
+    /// Check if frontier is empty
+    fn is_empty() -> Bool {
+        self.queues.values().all(|q| q.is_empty())
+    }
+    
+    /// Get total number of URLs
+    fn len() -> Int {
+        self.queues.values().map(|q| q.len()).sum()
+    }
+    
+    /// Clear frontier
+    fn clear() {
+        self.queues.clear()
+        self.seen.clear()
+    }
+}
+
+// =============================================================================
+// Robots.txt Parser
+// =============================================================================
+
+/// Robots.txt rules
+struct RobotsTxt {
+    rules: [RobotsRule]
+    sitemaps: [String]
+    crawl_delay: Option<Int>
+    
+    fn parse(content: String) -> Self {
+        var rules = []
+        var sitemaps = []
+        var crawl_delay = None
+        var current_agents = []
+        
+        for line in content.lines() {
+            let line = line.trim()
+            
+            if line.is_empty() || line.starts_with("#") {
+                continue
+            }
+            
+            let parts = line.splitn(":", 2)
+            if parts.len() != 2 {
+                continue
+            }
+            
+            let directive = parts[0].trim().to_lower()
+            let value = parts[1].trim()
+            
+            match directive {
+                "user-agent" => {
+                    current_agents.push(value)
+                }
+                "disallow" => {
+                    for agent in current_agents.clone() {
+                        rules.push(RobotsRule {
+                            user_agent: agent,
+                            path: value,
+                            allowed: false
+                        })
+                    }
+                }
+                "allow" => {
+                    for agent in current_agents.clone() {
+                        rules.push(RobotsRule {
+                            user_agent: agent,
+                            path: value,
+                            allowed: true
+                        })
+                    }
+                }
+                "sitemap" => {
+                    sitemaps.push(value)
+                }
+                "crawl-delay" => {
+                    crawl_delay = Int.parse(value).ok()
+                }
+                _ => {}
+            }
+        }
+        
+        RobotsTxt {
+            rules: rules,
+            sitemaps: sitemaps,
+            crawl_delay: crawl_delay
+        }
+    }
+    
+    fn allow_all() -> Self {
+        RobotsTxt {
+            rules: [],
+            sitemaps: [],
+            crawl_delay: None
+        }
+    }
+    
+    fn is_allowed(user_agent: String, path: String) -> Bool {
+        // Find matching rules
+        var matching_rules = []
+        
+        for rule in self.rules {
+            if self.agent_matches(rule.user_agent, user_agent) {
+                if path.starts_with(rule.path) || rule.path == "/" {
+                    matching_rules.push(rule)
+                }
+            }
+        }
+        
+        if matching_rules.is_empty() {
+            return true
+        }
+        
+        // Most specific rule wins
+        matching_rules.sort_by(|a, b| b.path.len().cmp(a.path.len()))
+        matching_rules[0].allowed
+    }
+    
+    fn agent_matches(pattern: String, agent: String) -> Bool {
+        pattern == "*" || agent.to_lower().contains(pattern.to_lower())
+    }
+}
+
+/// Robots.txt rule
+struct RobotsRule {
+    user_agent: String
+    path: String
+    allowed: Bool
+}
+
+// =============================================================================
+// Crawl Types
+// =============================================================================
+
+/// Crawled page
+struct CrawledPage {
+    url: String
+    page: ScrapedPage
+    depth: Int
+    timestamp: DateTime
+}
+
+/// Crawl action
+enum CrawlAction {
+    Continue    // Continue crawling, extract links
+    Skip        // Skip link extraction
+    Stop        // Stop crawling
+}
+
+/// Crawl handlers
+struct CrawlHandlers {
+    on_page: Option<fn(CrawledPage) -> CrawlAction>
+    on_error: Option<fn(String, ScrapeError)>
+    link_filter: Option<fn(String) -> Bool>
+    
+    fn default() -> Self {
+        CrawlHandlers {
+            on_page: None,
+            on_error: None,
+            link_filter: None
+        }
+    }
+}
+
+/// Crawl statistics
+struct CrawlStats {
+    pages_crawled: Int
+    pages_success: Int
+    pages_failed: Int
+    links_found: Int
+    rate_limited: Int
+    start_time: Option<DateTime>
+    end_time: Option<DateTime>
+    
+    fn new() -> Self {
+        CrawlStats {
+            pages_crawled: 0,
+            pages_success: 0,
+            pages_failed: 0,
+            links_found: 0,
+            rate_limited: 0,
+            start_time: None,
+            end_time: None
+        }
+    }
+    
+    fn duration() -> Option<Duration> {
+        match (self.start_time, self.end_time) {
+            (Some(start), Some(end)) => Some(end - start)
+            _ => None
+        }
+    }
+    
+    fn pages_per_second() -> Option<Float> {
+        self.duration().map(|d| {
+            let secs = d.as_secs_f64()
+            if secs > 0.0 {
+                self.pages_crawled as Float / secs
+            } else {
+                0.0
+            }
+        })
+    }
+    
+    fn success_rate() -> Float {
+        if self.pages_crawled > 0 {
+            self.pages_success as Float / self.pages_crawled as Float
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Crawl result
+struct CrawlResult {
+    stats: CrawlStats
+    visited: [String]
+}
+
+// =============================================================================
+// Site Crawler (Single Site)
+// =============================================================================
+
+/// Crawl a single website
+struct SiteCrawler {
+    base_url: String
+    config: CrawlerConfig
+    
+    fn new(url: String) -> Result<Self, URLError> {
+        let parsed = URL.parse(url)?
+        let base = format!("{}://{}", parsed.scheme, parsed.host.unwrap_or(""))
+        
+        Ok(SiteCrawler {
+            base_url: base.clone(),
+            config: CrawlerConfig.default()
+                .allowed_domains([parsed.host.unwrap_or("")])
+        })
+    }
+    
+    fn config(config: CrawlerConfig) -> Self {
+        SiteCrawler { config: config, ..self }
+    }
+    
+    fn crawl() -> CrawlResult {
+        Crawler.new()
+            .config(self.config)
+            .seed(self.base_url)
+            .start()
+    }
+    
+    fn crawl_with_handler(handler: fn(CrawledPage) -> CrawlAction) -> CrawlResult {
+        Crawler.new()
+            .config(self.config)
+            .seed(self.base_url)
+            .on_page(handler)
+            .start()
+    }
+}
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+/// Quick crawl
+fn crawl(url: String, max_pages: Int) -> CrawlResult {
+    Crawler.new()
+        .config(CrawlerConfig.default().max_pages(max_pages))
+        .seed(url)
+        .start()
+}
+
+/// Crawl site
+fn crawl_site(url: String) -> Result<CrawlResult, URLError> {
+    let crawler = SiteCrawler.new(url)?
+    Ok(crawler.crawl())
+}
+
+/// Get all links from URL
+fn get_links(url: String) -> Result<[String], ScrapeError> {
+    let page = scraper.scrape(url)?
+    Ok(page.links().iter().map(|l| l.href).collect())
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "crawler config" {
+    let config = CrawlerConfig.default()
+        .max_pages(100)
+        .max_depth(3)
+        .delay(500)
+    
+    assert_eq(config.max_pages, 100)?
+    assert_eq(config.max_depth, 3)?
+    assert_eq(config.delay_ms, 500)?
+}
+
+test "url frontier" {
+    var frontier = UrlFrontier.new()
+    
+    frontier.add("https://example.com/a", 0)
+    frontier.add("https://example.com/b", 1)
+    frontier.add("https://example.com/c", 0)
+    
+    assert_eq(frontier.len(), 3)?
+    
+    // Should get priority 0 first
+    let (url, priority) = frontier.next()?
+    assert_eq(priority, 0)?
+}
+
+test "robots txt parse" {
+    let content = "
+User-agent: *
+Disallow: /admin/
+Allow: /admin/public/
+
+User-agent: BadBot
+Disallow: /
+
+Sitemap: https://example.com/sitemap.xml
+"
+    
+    let robots = RobotsTxt.parse(content)
+    
+    assert(robots.is_allowed("GoodBot", "/page"))?
+    assert(!robots.is_allowed("GoodBot", "/admin/secret"))?
+    assert(robots.is_allowed("GoodBot", "/admin/public/page"))?
+    assert(!robots.is_allowed("BadBot", "/page"))?
+}
+
+test "crawl stats" {
+    var stats = CrawlStats.new()
+    stats.pages_crawled = 100
+    stats.pages_success = 95
+    stats.pages_failed = 5
+    
+    assert_eq(stats.success_rate(), 0.95)?
+}
+
+test "crawl action" {
+    let action = CrawlAction.Continue
+    match action {
+        CrawlAction.Continue => assert(true)?
+        _ => assert(false)?
+    }
+}

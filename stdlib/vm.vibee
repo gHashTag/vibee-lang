@@ -1,0 +1,823 @@
+// =============================================================================
+// Vibee OS — VM Module
+// Virtual Machine for Vibee Bytecode Execution
+// =============================================================================
+
+use ir::*
+
+// =============================================================================
+// Bytecode Instructions
+// =============================================================================
+
+/// Bytecode operation codes
+enum OpCode {
+    // Stack operations
+    Nop
+    Push(Value)
+    Pop
+    Dup
+    Swap
+    
+    // Arithmetic
+    Add
+    Sub
+    Mul
+    Div
+    Rem
+    Neg
+    
+    // Bitwise
+    BitAnd
+    BitOr
+    BitXor
+    BitNot
+    Shl
+    Shr
+    
+    // Comparison
+    Eq
+    Ne
+    Lt
+    Le
+    Gt
+    Ge
+    
+    // Logic
+    And
+    Or
+    Not
+    
+    // Control flow
+    Jump(Int)
+    JumpIf(Int)
+    JumpIfNot(Int)
+    Call(Int)
+    Return
+    Halt
+    
+    // Memory
+    Load(Int)
+    Store(Int)
+    LoadGlobal(Int)
+    StoreGlobal(Int)
+    LoadField(Int)
+    StoreField(Int)
+    
+    // Objects
+    NewObject(Int)
+    NewArray(Int)
+    ArrayGet
+    ArraySet
+    ArrayLen
+    
+    // Functions
+    CallNative(String)
+    CallMethod(Int)
+    
+    // Actors
+    Spawn(Int)
+    Send(Int)
+    Receive
+}
+
+/// Runtime value
+enum Value {
+    Null
+    Bool(Bool)
+    Int(Int64)
+    Float(Float64)
+    String(String)
+    Object(ObjectRef)
+    Array(ArrayRef)
+    Function(FunctionRef)
+    Actor(ActorRef)
+}
+
+impl Value {
+    fn as_bool() -> Result<Bool, VmError> {
+        match self {
+            Value.Bool(b) => Ok(b)
+            _ => Err(VmError.TypeError("expected bool"))
+        }
+    }
+    
+    fn as_int() -> Result<Int64, VmError> {
+        match self {
+            Value.Int(n) => Ok(n)
+            _ => Err(VmError.TypeError("expected int"))
+        }
+    }
+    
+    fn as_float() -> Result<Float64, VmError> {
+        match self {
+            Value.Float(n) => Ok(n)
+            Value.Int(n) => Ok(n as Float64)
+            _ => Err(VmError.TypeError("expected float"))
+        }
+    }
+    
+    fn is_truthy() -> Bool {
+        match self {
+            Value.Null => false
+            Value.Bool(b) => b
+            Value.Int(n) => n != 0
+            _ => true
+        }
+    }
+}
+
+// =============================================================================
+// VM Types
+// =============================================================================
+
+struct ObjectRef { id: Int, type_id: Int }
+struct ArrayRef { id: Int, elem_type: Int }
+struct FunctionRef { id: Int }
+struct ActorRef { id: Int }
+
+/// Bytecode chunk
+struct Chunk {
+    code: [OpCode]
+    constants: [Value]
+    lines: [Int]
+    name: String
+}
+
+impl Chunk {
+    fn new(name: String) -> Self {
+        Chunk { code: [], constants: [], lines: [], name: name }
+    }
+    
+    fn emit(op: OpCode, line: Int) -> Int {
+        let idx = self.code.len()
+        self.code.push(op)
+        self.lines.push(line)
+        idx
+    }
+    
+    fn add_constant(value: Value) -> Int {
+        self.constants.push(value)
+        self.constants.len() - 1
+    }
+    
+    fn patch_jump(offset: Int, target: Int) {
+        match self.code[offset] {
+            OpCode.Jump(_) => self.code[offset] = OpCode.Jump(target)
+            OpCode.JumpIf(_) => self.code[offset] = OpCode.JumpIf(target)
+            OpCode.JumpIfNot(_) => self.code[offset] = OpCode.JumpIfNot(target)
+            _ => {}
+        }
+    }
+}
+
+/// Call frame
+struct CallFrame {
+    chunk: Chunk
+    ip: Int
+    base: Int
+    return_addr: Int
+}
+
+impl CallFrame {
+    fn new(chunk: Chunk, base: Int) -> Self {
+        CallFrame { chunk: chunk, ip: 0, base: base, return_addr: 0 }
+    }
+}
+
+// =============================================================================
+// Virtual Machine
+// =============================================================================
+
+/// VM execution error
+enum VmError {
+    StackOverflow
+    StackUnderflow
+    TypeError(String)
+    DivisionByZero
+    InvalidOpcode
+    InvalidAddress(Int)
+    OutOfMemory
+    Halted
+}
+
+/// VM configuration
+struct VmConfig {
+    stack_size: Int
+    heap_size: Int
+    max_frames: Int
+    gc_threshold: Int
+}
+
+impl VmConfig {
+    fn default() -> Self {
+        VmConfig {
+            stack_size: 65536,
+            heap_size: 1048576,
+            max_frames: 1024,
+            gc_threshold: 10000
+        }
+    }
+}
+
+/// Virtual Machine
+struct VM {
+    stack: [Value]
+    frames: [CallFrame]
+    globals: Map<String, Value>
+    heap: Heap
+    config: VmConfig
+    halted: Bool
+    native_fns: Map<String, fn([Value]) -> Result<Value, VmError>>
+}
+
+impl VM {
+    fn new(config: VmConfig) -> Self {
+        VM {
+            stack: [],
+            frames: [],
+            globals: Map.new(),
+            heap: Heap.new(config.heap_size),
+            config: config,
+            halted: false,
+            native_fns: Map.new()
+        }
+    }
+    
+    fn with_defaults() -> Self {
+        Self.new(VmConfig.default())
+    }
+    
+    /// Register native function
+    fn register_native(name: String, func: fn([Value]) -> Result<Value, VmError>) {
+        self.native_fns.insert(name, func)
+    }
+    
+    /// Execute bytecode chunk
+    fn execute(chunk: Chunk) -> Result<Value, VmError> {
+        self.frames.push(CallFrame.new(chunk, 0))
+        self.run()
+    }
+    
+    /// Main execution loop
+    fn run() -> Result<Value, VmError> {
+        while !self.halted && !self.frames.is_empty() {
+            let result = self.step()?
+            if self.halted { return Ok(result) }
+        }
+        
+        if self.stack.is_empty() { Ok(Value.Null) }
+        else { Ok(self.stack.pop().unwrap_or(Value.Null)) }
+    }
+    
+    /// Execute single instruction
+    fn step() -> Result<Value, VmError> {
+        let frame = self.current_frame_mut()?
+        if frame.ip >= frame.chunk.code.len() {
+            return Err(VmError.InvalidAddress(frame.ip))
+        }
+        
+        let op = frame.chunk.code[frame.ip]
+        frame.ip += 1
+        
+        match op {
+            OpCode.Nop => {}
+            OpCode.Push(v) => self.push(v)?
+            OpCode.Pop => { self.pop()?; }
+            OpCode.Dup => { let v = self.peek(0)?; self.push(v)?; }
+            OpCode.Swap => {
+                let a = self.pop()?
+                let b = self.pop()?
+                self.push(a)?
+                self.push(b)?
+            }
+            
+            // Arithmetic
+            OpCode.Add => self.binary_op(|a, b| a + b)?
+            OpCode.Sub => self.binary_op(|a, b| a - b)?
+            OpCode.Mul => self.binary_op(|a, b| a * b)?
+            OpCode.Div => {
+                let b = self.pop()?.as_int()?
+                if b == 0 { return Err(VmError.DivisionByZero) }
+                let a = self.pop()?.as_int()?
+                self.push(Value.Int(a / b))?
+            }
+            OpCode.Rem => {
+                let b = self.pop()?.as_int()?
+                if b == 0 { return Err(VmError.DivisionByZero) }
+                let a = self.pop()?.as_int()?
+                self.push(Value.Int(a % b))?
+            }
+            OpCode.Neg => {
+                let v = self.pop()?.as_int()?
+                self.push(Value.Int(-v))?
+            }
+            
+            // Bitwise
+            OpCode.BitAnd => self.binary_op(|a, b| a & b)?
+            OpCode.BitOr => self.binary_op(|a, b| a | b)?
+            OpCode.BitXor => self.binary_op(|a, b| a ^ b)?
+            OpCode.BitNot => {
+                let v = self.pop()?.as_int()?
+                self.push(Value.Int(!v))?
+            }
+            OpCode.Shl => self.binary_op(|a, b| a << b)?
+            OpCode.Shr => self.binary_op(|a, b| a >> b)?
+            
+            // Comparison
+            OpCode.Eq => self.compare_op(|a, b| a == b)?
+            OpCode.Ne => self.compare_op(|a, b| a != b)?
+            OpCode.Lt => self.compare_op(|a, b| a < b)?
+            OpCode.Le => self.compare_op(|a, b| a <= b)?
+            OpCode.Gt => self.compare_op(|a, b| a > b)?
+            OpCode.Ge => self.compare_op(|a, b| a >= b)?
+            
+            // Logic
+            OpCode.And => {
+                let b = self.pop()?.is_truthy()
+                let a = self.pop()?.is_truthy()
+                self.push(Value.Bool(a && b))?
+            }
+            OpCode.Or => {
+                let b = self.pop()?.is_truthy()
+                let a = self.pop()?.is_truthy()
+                self.push(Value.Bool(a || b))?
+            }
+            OpCode.Not => {
+                let v = self.pop()?.is_truthy()
+                self.push(Value.Bool(!v))?
+            }
+            
+            // Control flow
+            OpCode.Jump(addr) => { self.current_frame_mut()?.ip = addr }
+            OpCode.JumpIf(addr) => {
+                if self.pop()?.is_truthy() { self.current_frame_mut()?.ip = addr }
+            }
+            OpCode.JumpIfNot(addr) => {
+                if !self.pop()?.is_truthy() { self.current_frame_mut()?.ip = addr }
+            }
+            OpCode.Call(arity) => self.call_function(arity)?
+            OpCode.Return => {
+                let result = if self.stack.len() > self.current_frame()?.base {
+                    self.pop()?
+                } else { Value.Null }
+                
+                let frame = self.frames.pop().ok_or(VmError.StackUnderflow)?
+                self.stack.truncate(frame.base)
+                
+                if !self.frames.is_empty() { self.push(result)? }
+                else { return Ok(result) }
+            }
+            OpCode.Halt => {
+                self.halted = true
+                return Ok(self.stack.last().cloned().unwrap_or(Value.Null))
+            }
+            
+            // Memory
+            OpCode.Load(idx) => {
+                let base = self.current_frame()?.base
+                let v = self.stack.get(base + idx).cloned().ok_or(VmError.InvalidAddress(idx))?
+                self.push(v)?
+            }
+            OpCode.Store(idx) => {
+                let v = self.pop()?
+                let base = self.current_frame()?.base
+                if base + idx < self.stack.len() {
+                    self.stack[base + idx] = v
+                }
+            }
+            OpCode.LoadGlobal(idx) => {
+                let name = self.current_frame()?.chunk.constants.get(idx)
+                    .and_then(|v| if let Value.String(s) = v { Some(s) } else { None })
+                    .ok_or(VmError.InvalidAddress(idx))?
+                let v = self.globals.get(name).cloned().unwrap_or(Value.Null)
+                self.push(v)?
+            }
+            OpCode.StoreGlobal(idx) => {
+                let v = self.pop()?
+                let name = self.current_frame()?.chunk.constants.get(idx)
+                    .and_then(|v| if let Value.String(s) = v { Some(s.clone()) } else { None })
+                    .ok_or(VmError.InvalidAddress(idx))?
+                self.globals.insert(name, v)
+            }
+            
+            // Objects
+            OpCode.NewObject(type_id) => {
+                let obj = self.heap.alloc_object(type_id)?
+                self.push(Value.Object(obj))?
+            }
+            OpCode.NewArray(size) => {
+                let arr = self.heap.alloc_array(size)?
+                self.push(Value.Array(arr))?
+            }
+            OpCode.ArrayGet => {
+                let idx = self.pop()?.as_int()? as Int
+                let arr = self.pop()?
+                if let Value.Array(ref a) = arr {
+                    let v = self.heap.array_get(a, idx)?
+                    self.push(v)?
+                }
+            }
+            OpCode.ArraySet => {
+                let v = self.pop()?
+                let idx = self.pop()?.as_int()? as Int
+                let arr = self.pop()?
+                if let Value.Array(ref a) = arr {
+                    self.heap.array_set(a, idx, v)?
+                }
+            }
+            OpCode.ArrayLen => {
+                let arr = self.pop()?
+                if let Value.Array(ref a) = arr {
+                    let len = self.heap.array_len(a)
+                    self.push(Value.Int(len as Int64))?
+                }
+            }
+            
+            // Native calls
+            OpCode.CallNative(name) => {
+                if let Some(func) = self.native_fns.get(name) {
+                    let result = func([])?
+                    self.push(result)?
+                }
+            }
+            
+            _ => return Err(VmError.InvalidOpcode)
+        }
+        
+        Ok(Value.Null)
+    }
+    
+    fn push(value: Value) -> Result<(), VmError> {
+        if self.stack.len() >= self.config.stack_size {
+            return Err(VmError.StackOverflow)
+        }
+        self.stack.push(value)
+        Ok(())
+    }
+    
+    fn pop() -> Result<Value, VmError> {
+        self.stack.pop().ok_or(VmError.StackUnderflow)
+    }
+    
+    fn peek(offset: Int) -> Result<Value, VmError> {
+        let idx = self.stack.len() - 1 - offset
+        self.stack.get(idx).cloned().ok_or(VmError.StackUnderflow)
+    }
+    
+    fn current_frame() -> Result<CallFrame, VmError> {
+        self.frames.last().cloned().ok_or(VmError.StackUnderflow)
+    }
+    
+    fn current_frame_mut() -> Result<&mut CallFrame, VmError> {
+        self.frames.last_mut().ok_or(VmError.StackUnderflow)
+    }
+    
+    fn binary_op(op: fn(Int64, Int64) -> Int64) -> Result<(), VmError> {
+        let b = self.pop()?.as_int()?
+        let a = self.pop()?.as_int()?
+        self.push(Value.Int(op(a, b)))
+    }
+    
+    fn compare_op(op: fn(Int64, Int64) -> Bool) -> Result<(), VmError> {
+        let b = self.pop()?.as_int()?
+        let a = self.pop()?.as_int()?
+        self.push(Value.Bool(op(a, b)))
+    }
+    
+    fn call_function(arity: Int) -> Result<(), VmError> {
+        let callee = self.peek(arity)?
+        if let Value.Function(ref f) = callee {
+            // Get function chunk and create new frame
+            let base = self.stack.len() - arity
+            // Frame creation would happen here
+        }
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Heap Management
+// =============================================================================
+
+struct Heap {
+    objects: Map<Int, HeapObject>
+    arrays: Map<Int, HeapArray>
+    next_id: Int
+    size: Int
+    capacity: Int
+}
+
+struct HeapObject {
+    type_id: Int
+    fields: Map<Int, Value>
+    marked: Bool
+}
+
+struct HeapArray {
+    elements: [Value]
+    marked: Bool
+}
+
+impl Heap {
+    fn new(capacity: Int) -> Self {
+        Heap {
+            objects: Map.new(),
+            arrays: Map.new(),
+            next_id: 0,
+            size: 0,
+            capacity: capacity
+        }
+    }
+    
+    fn alloc_object(type_id: Int) -> Result<ObjectRef, VmError> {
+        if self.size >= self.capacity {
+            return Err(VmError.OutOfMemory)
+        }
+        
+        let id = self.next_id
+        self.next_id += 1
+        self.size += 1
+        
+        self.objects.insert(id, HeapObject {
+            type_id: type_id,
+            fields: Map.new(),
+            marked: false
+        })
+        
+        Ok(ObjectRef { id: id, type_id: type_id })
+    }
+    
+    fn alloc_array(size: Int) -> Result<ArrayRef, VmError> {
+        if self.size >= self.capacity {
+            return Err(VmError.OutOfMemory)
+        }
+        
+        let id = self.next_id
+        self.next_id += 1
+        self.size += size
+        
+        var elements = []
+        for _ in 0..size { elements.push(Value.Null) }
+        
+        self.arrays.insert(id, HeapArray {
+            elements: elements,
+            marked: false
+        })
+        
+        Ok(ArrayRef { id: id, elem_type: 0 })
+    }
+    
+    fn array_get(arr: ArrayRef, idx: Int) -> Result<Value, VmError> {
+        let heap_arr = self.arrays.get(arr.id).ok_or(VmError.InvalidAddress(arr.id))?
+        heap_arr.elements.get(idx).cloned().ok_or(VmError.InvalidAddress(idx))
+    }
+    
+    fn array_set(arr: ArrayRef, idx: Int, value: Value) -> Result<(), VmError> {
+        let heap_arr = self.arrays.get_mut(arr.id).ok_or(VmError.InvalidAddress(arr.id))?
+        if idx < heap_arr.elements.len() {
+            heap_arr.elements[idx] = value
+            Ok(())
+        } else {
+            Err(VmError.InvalidAddress(idx))
+        }
+    }
+    
+    fn array_len(arr: ArrayRef) -> Int {
+        self.arrays.get(arr.id).map(|a| a.elements.len()).unwrap_or(0)
+    }
+    
+    /// Mark and sweep garbage collection
+    fn gc(roots: [Value]) {
+        // Mark phase
+        for root in roots { self.mark(root) }
+        
+        // Sweep phase
+        self.objects.retain(|_, obj| obj.marked)
+        self.arrays.retain(|_, arr| arr.marked)
+        
+        // Reset marks
+        for (_, obj) in self.objects.iter_mut() { obj.marked = false }
+        for (_, arr) in self.arrays.iter_mut() { arr.marked = false }
+    }
+    
+    fn mark(value: Value) {
+        match value {
+            Value.Object(ref o) => {
+                if let Some(obj) = self.objects.get_mut(o.id) {
+                    if !obj.marked {
+                        obj.marked = true
+                        for (_, v) in obj.fields.iter() { self.mark(v) }
+                    }
+                }
+            }
+            Value.Array(ref a) => {
+                if let Some(arr) = self.arrays.get_mut(a.id) {
+                    if !arr.marked {
+                        arr.marked = true
+                        for elem in arr.elements.iter() { self.mark(elem) }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+// =============================================================================
+// Bytecode Compiler
+// =============================================================================
+
+/// Compile IR to bytecode
+struct BytecodeCompiler {
+    chunk: Chunk
+    locals: [Local]
+    scope_depth: Int
+}
+
+struct Local {
+    name: String
+    depth: Int
+    slot: Int
+}
+
+impl BytecodeCompiler {
+    fn new(name: String) -> Self {
+        BytecodeCompiler {
+            chunk: Chunk.new(name),
+            locals: [],
+            scope_depth: 0
+        }
+    }
+    
+    fn compile(module: IrModule) -> Chunk {
+        for func in module.functions {
+            self.compile_function(func)
+        }
+        self.chunk.emit(OpCode.Halt, 0)
+        self.chunk
+    }
+    
+    fn compile_function(func: IrFunction) {
+        self.begin_scope()
+        
+        for block in func.blocks {
+            for inst in block.instructions {
+                self.compile_instruction(inst)
+            }
+        }
+        
+        self.end_scope()
+    }
+    
+    fn compile_instruction(inst: IrInstruction) {
+        match inst.op {
+            IrOp.Const(v) => {
+                let idx = self.chunk.add_constant(self.ir_to_value(v))
+                self.chunk.emit(OpCode.Push(self.ir_to_value(v)), 0)
+            }
+            IrOp.Add(_, _) => { self.chunk.emit(OpCode.Add, 0); }
+            IrOp.Sub(_, _) => { self.chunk.emit(OpCode.Sub, 0); }
+            IrOp.Mul(_, _) => { self.chunk.emit(OpCode.Mul, 0); }
+            IrOp.Div(_, _) => { self.chunk.emit(OpCode.Div, 0); }
+            IrOp.Ret(_) => { self.chunk.emit(OpCode.Return, 0); }
+            _ => {}
+        }
+    }
+    
+    fn ir_to_value(v: IrValue) -> Value {
+        match v {
+            IrValue.Int(n) => Value.Int(n)
+            IrValue.Float(n) => Value.Float(n)
+            IrValue.Bool(b) => Value.Bool(b)
+            _ => Value.Null
+        }
+    }
+    
+    fn begin_scope() { self.scope_depth += 1 }
+    
+    fn end_scope() {
+        self.scope_depth -= 1
+        while !self.locals.is_empty() && self.locals.last().map(|l| l.depth > self.scope_depth).unwrap_or(false) {
+            self.chunk.emit(OpCode.Pop, 0)
+            self.locals.pop()
+        }
+    }
+}
+
+// =============================================================================
+// Disassembler
+// =============================================================================
+
+/// Disassemble bytecode for debugging
+struct Disassembler {}
+
+impl Disassembler {
+    fn disassemble(chunk: Chunk) -> String {
+        var output = format!("== {} ==\n", chunk.name)
+        
+        for (i, op) in chunk.code.iter().enumerate() {
+            let line = chunk.lines.get(i).unwrap_or(0)
+            output.push_str(format!("{:04} {:4} {}\n", i, line, Self.format_op(op)))
+        }
+        
+        output
+    }
+    
+    fn format_op(op: OpCode) -> String {
+        match op {
+            OpCode.Nop => "NOP"
+            OpCode.Push(v) => format!("PUSH {:?}", v)
+            OpCode.Pop => "POP"
+            OpCode.Dup => "DUP"
+            OpCode.Swap => "SWAP"
+            OpCode.Add => "ADD"
+            OpCode.Sub => "SUB"
+            OpCode.Mul => "MUL"
+            OpCode.Div => "DIV"
+            OpCode.Rem => "REM"
+            OpCode.Neg => "NEG"
+            OpCode.Eq => "EQ"
+            OpCode.Ne => "NE"
+            OpCode.Lt => "LT"
+            OpCode.Le => "LE"
+            OpCode.Gt => "GT"
+            OpCode.Ge => "GE"
+            OpCode.Jump(addr) => format!("JUMP {}", addr)
+            OpCode.JumpIf(addr) => format!("JUMP_IF {}", addr)
+            OpCode.JumpIfNot(addr) => format!("JUMP_IF_NOT {}", addr)
+            OpCode.Call(n) => format!("CALL {}", n)
+            OpCode.Return => "RETURN"
+            OpCode.Halt => "HALT"
+            OpCode.Load(i) => format!("LOAD {}", i)
+            OpCode.Store(i) => format!("STORE {}", i)
+            _ => "UNKNOWN"
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "vm basic arithmetic" {
+    var vm = VM.with_defaults()
+    var chunk = Chunk.new("test")
+    
+    chunk.emit(OpCode.Push(Value.Int(10)), 1)
+    chunk.emit(OpCode.Push(Value.Int(20)), 1)
+    chunk.emit(OpCode.Add, 1)
+    chunk.emit(OpCode.Halt, 1)
+    
+    let result = vm.execute(chunk)?
+    assert_eq(result, Value.Int(30))?
+}
+
+test "vm comparison" {
+    var vm = VM.with_defaults()
+    var chunk = Chunk.new("test")
+    
+    chunk.emit(OpCode.Push(Value.Int(5)), 1)
+    chunk.emit(OpCode.Push(Value.Int(10)), 1)
+    chunk.emit(OpCode.Lt, 1)
+    chunk.emit(OpCode.Halt, 1)
+    
+    let result = vm.execute(chunk)?
+    assert_eq(result, Value.Bool(true))?
+}
+
+test "vm jump" {
+    var vm = VM.with_defaults()
+    var chunk = Chunk.new("test")
+    
+    chunk.emit(OpCode.Push(Value.Int(1)), 1)
+    chunk.emit(OpCode.Jump(4), 1)
+    chunk.emit(OpCode.Push(Value.Int(2)), 1)  // Skipped
+    chunk.emit(OpCode.Add, 1)                  // Skipped
+    chunk.emit(OpCode.Push(Value.Int(100)), 1)
+    chunk.emit(OpCode.Halt, 1)
+    
+    let result = vm.execute(chunk)?
+    assert_eq(result, Value.Int(100))?
+}
+
+test "heap allocation" {
+    var heap = Heap.new(1000)
+    let arr = heap.alloc_array(5)?
+    
+    heap.array_set(arr, 0, Value.Int(42))?
+    let v = heap.array_get(arr, 0)?
+    
+    assert_eq(v, Value.Int(42))?
+}
+
+test "disassembler" {
+    var chunk = Chunk.new("test")
+    chunk.emit(OpCode.Push(Value.Int(10)), 1)
+    chunk.emit(OpCode.Push(Value.Int(20)), 2)
+    chunk.emit(OpCode.Add, 3)
+    chunk.emit(OpCode.Halt, 4)
+    
+    let output = Disassembler.disassemble(chunk)
+    assert(output.contains("ADD"))?
+    assert(output.contains("HALT"))?
+}

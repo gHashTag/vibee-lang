@@ -1,0 +1,700 @@
+// =============================================================================
+// Vibee OS — Universal Connector Module
+// Universal connector for integration platforms (Zapier, IFTTT, Make, n8n, etc.)
+// =============================================================================
+
+use http::{Request, Response, Method, Status, Headers, Client as HttpClient}
+use json::{JsonValue, Serialize, Deserialize}
+use crypto::{hmac_sha256, hmac_sha512, constant_time_eq}
+use uuid::{uuid}
+
+// =============================================================================
+// Universal Connector
+// =============================================================================
+
+/// Universal connector that abstracts different integration platforms
+actor UniversalConnector {
+    state platform: ConnectorPlatform
+    state config: ConnectorConfig
+    state http_client: HttpClient
+    state middleware: [fn(ConnectorRequest) -> ConnectorRequest]
+    state retry_config: RetryConfig
+    
+    fn new(platform: ConnectorPlatform, config: ConnectorConfig) -> Self {
+        UniversalConnector {
+            platform: platform,
+            config: config,
+            http_client: HttpClient.new().timeout(30000),
+            middleware: [],
+            retry_config: RetryConfig.default()
+        }
+    }
+    
+    /// Create a Zapier connector
+    fn zapier(api_key: String, webhook_url: String) -> Self {
+        Self.new(
+            ConnectorPlatform.Zapier,
+            ConnectorConfig.new()
+                .api_key(api_key)
+                .webhook_url(webhook_url)
+        )
+    }
+    
+    /// Create an IFTTT connector
+    fn ifttt(webhook_key: String) -> Self {
+        Self.new(
+            ConnectorPlatform.IFTTT,
+            ConnectorConfig.new()
+                .api_key(webhook_key)
+                .base_url("https://maker.ifttt.com/trigger")
+        )
+    }
+    
+    /// Create a Make connector
+    fn make(api_token: String) -> Self {
+        Self.new(
+            ConnectorPlatform.Make,
+            ConnectorConfig.new()
+                .api_key(api_token)
+                .base_url("https://hook.make.com")
+        )
+    }
+    
+    /// Create an n8n connector
+    fn n8n(base_url: String, api_key: Option<String>) -> Self {
+        var config = ConnectorConfig.new().base_url(base_url)
+        if let Some(key) = api_key {
+            config = config.api_key(key)
+        }
+        Self.new(ConnectorPlatform.N8n, config)
+    }
+    
+    /// Create a custom webhook connector
+    fn custom(webhook_url: String) -> Self {
+        Self.new(
+            ConnectorPlatform.Custom,
+            ConnectorConfig.new().webhook_url(webhook_url)
+        )
+    }
+    
+    fn with_retry(config: RetryConfig) -> Self {
+        self.retry_config = config
+        self
+    }
+    
+    fn use_middleware(mw: fn(ConnectorRequest) -> ConnectorRequest) -> Self {
+        self.middleware.push(mw)
+        self
+    }
+    
+    /// Trigger an event/webhook
+    fn trigger(event: String, data: JsonValue) -> Result<ConnectorResponse, ConnectorError> {
+        let request = ConnectorRequest {
+            event: event,
+            data: data,
+            metadata: Map.empty()
+        }
+        
+        // Apply middleware
+        var processed_request = request
+        for mw in self.middleware.iter() {
+            processed_request = mw(processed_request)
+        }
+        
+        self.send_trigger(processed_request)
+    }
+    
+    /// Trigger with metadata
+    fn trigger_with_meta(event: String, data: JsonValue, metadata: Map<String, String>) -> Result<ConnectorResponse, ConnectorError> {
+        let request = ConnectorRequest {
+            event: event,
+            data: data,
+            metadata: metadata
+        }
+        
+        var processed_request = request
+        for mw in self.middleware.iter() {
+            processed_request = mw(processed_request)
+        }
+        
+        self.send_trigger(processed_request)
+    }
+    
+    /// Batch trigger multiple events
+    fn trigger_batch(events: [(String, JsonValue)]) -> Result<[ConnectorResponse], ConnectorError> {
+        var results: [ConnectorResponse] = []
+        for (event, data) in events.iter() {
+            results.push(self.trigger(event.clone(), data.clone())?)
+        }
+        Ok(results)
+    }
+    
+    fn send_trigger(request: ConnectorRequest) -> Result<ConnectorResponse, ConnectorError> {
+        match self.platform {
+            ConnectorPlatform.Zapier => self.send_zapier(request),
+            ConnectorPlatform.IFTTT => self.send_ifttt(request),
+            ConnectorPlatform.Make => self.send_make(request),
+            ConnectorPlatform.N8n => self.send_n8n(request),
+            ConnectorPlatform.Custom => self.send_custom(request)
+        }
+    }
+    
+    fn send_zapier(request: ConnectorRequest) -> Result<ConnectorResponse, ConnectorError> {
+        let url = self.config.webhook_url.clone()
+            .ok_or(ConnectorError.ConfigError("Webhook URL not configured"))?
+        
+        let http_request = Request.post(url)
+            .header("Content-Type", "application/json")
+            .header("X-Zapier-Event", request.event.clone())
+            .json(request.data)
+        
+        self.execute_request(http_request)
+    }
+    
+    fn send_ifttt(request: ConnectorRequest) -> Result<ConnectorResponse, ConnectorError> {
+        let base_url = self.config.base_url.clone()
+            .unwrap_or("https://maker.ifttt.com/trigger".to_string())
+        let api_key = self.config.api_key.clone()
+            .ok_or(ConnectorError.ConfigError("API key not configured"))?
+        
+        let url = format!("{}/{}/with/key/{}", base_url, request.event, api_key)
+        
+        // IFTTT expects value1, value2, value3
+        var payload = Map.empty()
+        if let Some(v1) = request.data.get("value1") {
+            payload.set("value1", v1.as_string().unwrap_or(""))
+        }
+        if let Some(v2) = request.data.get("value2") {
+            payload.set("value2", v2.as_string().unwrap_or(""))
+        }
+        if let Some(v3) = request.data.get("value3") {
+            payload.set("value3", v3.as_string().unwrap_or(""))
+        }
+        
+        let http_request = Request.post(url)
+            .header("Content-Type", "application/json")
+            .json(JsonValue.from_map(payload))
+        
+        self.execute_request(http_request)
+    }
+    
+    fn send_make(request: ConnectorRequest) -> Result<ConnectorResponse, ConnectorError> {
+        let url = self.config.webhook_url.clone()
+            .ok_or(ConnectorError.ConfigError("Webhook URL not configured"))?
+        
+        var http_request = Request.post(url)
+            .header("Content-Type", "application/json")
+        
+        if let Some(token) = self.config.api_key.clone() {
+            http_request = http_request.header("Authorization", format!("Token {}", token))
+        }
+        
+        http_request = http_request.json(request.data)
+        
+        self.execute_request(http_request)
+    }
+    
+    fn send_n8n(request: ConnectorRequest) -> Result<ConnectorResponse, ConnectorError> {
+        let base_url = self.config.base_url.clone()
+            .ok_or(ConnectorError.ConfigError("Base URL not configured"))?
+        
+        let url = format!("{}/webhook/{}", base_url, request.event)
+        
+        var http_request = Request.post(url)
+            .header("Content-Type", "application/json")
+        
+        if let Some(key) = self.config.api_key.clone() {
+            http_request = http_request.header("X-N8N-API-KEY", key)
+        }
+        
+        http_request = http_request.json(request.data)
+        
+        self.execute_request(http_request)
+    }
+    
+    fn send_custom(request: ConnectorRequest) -> Result<ConnectorResponse, ConnectorError> {
+        let url = self.config.webhook_url.clone()
+            .ok_or(ConnectorError.ConfigError("Webhook URL not configured"))?
+        
+        var http_request = Request.post(url)
+            .header("Content-Type", "application/json")
+            .header("X-Event-Type", request.event.clone())
+        
+        // Add custom headers
+        for (key, value) in self.config.headers.iter() {
+            http_request = http_request.header(key, value)
+        }
+        
+        // Add metadata as headers
+        for (key, value) in request.metadata.iter() {
+            http_request = http_request.header(format!("X-Meta-{}", key), value)
+        }
+        
+        http_request = http_request.json(request.data)
+        
+        self.execute_request(http_request)
+    }
+    
+    fn execute_request(request: Request) -> Result<ConnectorResponse, ConnectorError> {
+        var attempts = 0
+        var last_error: Option<ConnectorError> = None
+        
+        while attempts < self.retry_config.max_retries {
+            match self.http_client.send(request.clone()) {
+                Ok(response) => {
+                    if response.is_success() {
+                        return Ok(ConnectorResponse {
+                            success: true,
+                            status_code: response.status.code,
+                            data: response.json().ok(),
+                            request_id: response.headers.get("X-Request-Id")
+                        })
+                    }
+                    if response.status.code >= 500 {
+                        last_error = Some(ConnectorError.ServerError(response.status.code))
+                        attempts += 1
+                        @native("sleep_ms", self.retry_config.delay_ms * (2 ** attempts))
+                        continue
+                    }
+                    return Err(ConnectorError.ApiError(response.status.code, response.text()))
+                }
+                Err(e) => {
+                    last_error = Some(ConnectorError.NetworkError(e.to_string()))
+                    attempts += 1
+                    @native("sleep_ms", self.retry_config.delay_ms * (2 ** attempts))
+                }
+            }
+        }
+        
+        Err(last_error.unwrap_or(ConnectorError.MaxRetriesExceeded))
+    }
+}
+
+// =============================================================================
+// Connector Platform
+// =============================================================================
+
+enum ConnectorPlatform {
+    Zapier,
+    IFTTT,
+    Make,
+    N8n,
+    Custom
+}
+
+impl ConnectorPlatform {
+    fn to_string() -> String {
+        match self {
+            Zapier => "zapier",
+            IFTTT => "ifttt",
+            Make => "make",
+            N8n => "n8n",
+            Custom => "custom"
+        }
+    }
+}
+
+// =============================================================================
+// Connector Config
+// =============================================================================
+
+struct ConnectorConfig {
+    api_key: Option<String>
+    webhook_url: Option<String>
+    base_url: Option<String>
+    secret: Option<String>
+    headers: Map<String, String>
+    timeout_ms: Int64
+}
+
+impl ConnectorConfig {
+    fn new() -> Self {
+        ConnectorConfig {
+            api_key: None,
+            webhook_url: None,
+            base_url: None,
+            secret: None,
+            headers: Map.empty(),
+            timeout_ms: 30000
+        }
+    }
+    
+    fn api_key(key: String) -> Self { self.api_key = Some(key); self }
+    fn webhook_url(url: String) -> Self { self.webhook_url = Some(url); self }
+    fn base_url(url: String) -> Self { self.base_url = Some(url); self }
+    fn secret(s: String) -> Self { self.secret = Some(s); self }
+    fn header(name: String, value: String) -> Self { self.headers.set(name, value); self }
+    fn timeout(ms: Int64) -> Self { self.timeout_ms = ms; self }
+}
+
+// =============================================================================
+// Connector Request/Response
+// =============================================================================
+
+struct ConnectorRequest {
+    event: String
+    data: JsonValue
+    metadata: Map<String, String>
+}
+
+struct ConnectorResponse {
+    success: Bool
+    status_code: Int
+    data: Option<JsonValue>
+    request_id: Option<String>
+}
+
+// =============================================================================
+// Universal Webhook Handler
+// =============================================================================
+
+/// Universal webhook handler for receiving webhooks from any platform
+actor UniversalWebhookHandler {
+    state handlers: Map<String, fn(WebhookEvent) -> Result<JsonValue, ConnectorError>>
+    state platform_handlers: Map<ConnectorPlatform, fn(Request) -> Result<WebhookEvent, ConnectorError>>
+    state secrets: Map<ConnectorPlatform, String>
+    
+    fn new() -> Self {
+        UniversalWebhookHandler {
+            handlers: Map.empty(),
+            platform_handlers: Map.empty(),
+            secrets: Map.empty()
+        }
+    }
+    
+    fn with_secret(platform: ConnectorPlatform, secret: String) -> Self {
+        self.secrets.set(platform, secret)
+        self
+    }
+    
+    fn on(event: String, handler: fn(WebhookEvent) -> Result<JsonValue, ConnectorError>) -> Self {
+        self.handlers.set(event, handler)
+        self
+    }
+    
+    fn on_any(handler: fn(WebhookEvent) -> Result<JsonValue, ConnectorError>) -> Self {
+        self.handlers.set("*", handler)
+        self
+    }
+    
+    /// Handle incoming webhook request
+    fn handle(request: Request) -> Result<Response, ConnectorError> {
+        // Detect platform from headers
+        let platform = self.detect_platform(request.clone())
+        
+        // Verify signature if secret is configured
+        if let Some(secret) = self.secrets.get(platform.clone()) {
+            self.verify_signature(request.clone(), platform.clone(), secret)?
+        }
+        
+        // Parse event
+        let event = self.parse_event(request, platform)?
+        
+        // Find handler
+        let handler = self.handlers.get(event.event_type.clone())
+            .or_else(|| self.handlers.get("*"))
+            .ok_or(ConnectorError.UnknownEvent(event.event_type.clone()))?
+        
+        let result = handler(event)?
+        
+        Ok(Response.ok().json(result))
+    }
+    
+    fn detect_platform(request: Request) -> ConnectorPlatform {
+        if request.headers.contains("X-Zapier-Key") || request.headers.contains("X-Zapier-Signature") {
+            return ConnectorPlatform.Zapier
+        }
+        if request.headers.contains("IFTTT-Service-Key") {
+            return ConnectorPlatform.IFTTT
+        }
+        if request.headers.contains("X-Make-Signature") {
+            return ConnectorPlatform.Make
+        }
+        if request.headers.contains("X-N8N-API-KEY") {
+            return ConnectorPlatform.N8n
+        }
+        ConnectorPlatform.Custom
+    }
+    
+    fn verify_signature(request: Request, platform: ConnectorPlatform, secret: String) -> Result<(), ConnectorError> {
+        let body_str = String.from_utf8(request.body.clone())
+            .map_err(|_| ConnectorError.InvalidPayload)?
+        
+        let signature_header = match platform {
+            ConnectorPlatform.Zapier => "X-Zapier-Signature",
+            ConnectorPlatform.Make => "X-Make-Signature",
+            _ => return Ok(()) // No signature verification for other platforms
+        }
+        
+        let signature = request.headers.get(signature_header)
+            .ok_or(ConnectorError.InvalidSignature)?
+        
+        let expected = hex.encode(hmac_sha256(secret.as_bytes(), body_str.as_bytes()))
+        
+        if !constant_time_eq(signature.as_bytes(), expected.as_bytes()) {
+            return Err(ConnectorError.InvalidSignature)
+        }
+        
+        Ok(())
+    }
+    
+    fn parse_event(request: Request, platform: ConnectorPlatform) -> Result<WebhookEvent, ConnectorError> {
+        let body_str = String.from_utf8(request.body.clone())
+            .map_err(|_| ConnectorError.InvalidPayload)?
+        
+        let data: JsonValue = json.decode(body_str)
+            .map_err(|_| ConnectorError.InvalidPayload)?
+        
+        let event_type = match platform {
+            ConnectorPlatform.Zapier => request.headers.get("X-Zapier-Event").unwrap_or("webhook"),
+            ConnectorPlatform.IFTTT => data.get("trigger_identity").and_then(|v| v.as_string()).unwrap_or("webhook"),
+            ConnectorPlatform.Make => data.get("event_type").and_then(|v| v.as_string()).unwrap_or("webhook"),
+            ConnectorPlatform.N8n => request.headers.get("X-N8N-Event").unwrap_or("webhook"),
+            ConnectorPlatform.Custom => request.headers.get("X-Event-Type").unwrap_or("webhook")
+        }
+        
+        Ok(WebhookEvent {
+            event_type: event_type,
+            platform: platform,
+            data: data,
+            timestamp: @native("timestamp_ms"),
+            request_id: request.headers.get("X-Request-Id").unwrap_or(uuid())
+        })
+    }
+}
+
+/// Webhook event from any platform
+struct WebhookEvent {
+    event_type: String
+    platform: ConnectorPlatform
+    data: JsonValue
+    timestamp: Int64
+    request_id: String
+}
+
+// =============================================================================
+// Connector Builder (Fluent API)
+// =============================================================================
+
+/// Fluent builder for creating connectors
+struct ConnectorBuilder {
+    platform: Option<ConnectorPlatform>
+    config: ConnectorConfig
+    middleware: [fn(ConnectorRequest) -> ConnectorRequest]
+    retry_config: RetryConfig
+}
+
+impl ConnectorBuilder {
+    fn new() -> Self {
+        ConnectorBuilder {
+            platform: None,
+            config: ConnectorConfig.new(),
+            middleware: [],
+            retry_config: RetryConfig.default()
+        }
+    }
+    
+    fn platform(p: ConnectorPlatform) -> Self { self.platform = Some(p); self }
+    fn api_key(key: String) -> Self { self.config = self.config.api_key(key); self }
+    fn webhook_url(url: String) -> Self { self.config = self.config.webhook_url(url); self }
+    fn base_url(url: String) -> Self { self.config = self.config.base_url(url); self }
+    fn secret(s: String) -> Self { self.config = self.config.secret(s); self }
+    fn header(name: String, value: String) -> Self { self.config = self.config.header(name, value); self }
+    fn timeout(ms: Int64) -> Self { self.config = self.config.timeout(ms); self }
+    fn retry(config: RetryConfig) -> Self { self.retry_config = config; self }
+    
+    fn use_middleware(mw: fn(ConnectorRequest) -> ConnectorRequest) -> Self {
+        self.middleware.push(mw)
+        self
+    }
+    
+    fn build() -> Result<UniversalConnector, ConnectorError> {
+        let platform = self.platform.ok_or(ConnectorError.ConfigError("Platform not specified"))?
+        
+        var connector = UniversalConnector.new(platform, self.config.clone())
+            .with_retry(self.retry_config.clone())
+        
+        for mw in self.middleware.iter() {
+            connector = connector.use_middleware(mw)
+        }
+        
+        Ok(connector)
+    }
+}
+
+// =============================================================================
+// Multi-Platform Connector
+// =============================================================================
+
+/// Connector that can send to multiple platforms simultaneously
+actor MultiPlatformConnector {
+    state connectors: Map<String, UniversalConnector>
+    state default_connector: Option<String>
+    
+    fn new() -> Self {
+        MultiPlatformConnector {
+            connectors: Map.empty(),
+            default_connector: None
+        }
+    }
+    
+    fn add(name: String, connector: UniversalConnector) -> Self {
+        if self.connectors.is_empty() {
+            self.default_connector = Some(name.clone())
+        }
+        self.connectors.set(name, connector)
+        self
+    }
+    
+    fn set_default(name: String) -> Self {
+        self.default_connector = Some(name)
+        self
+    }
+    
+    /// Trigger on default connector
+    fn trigger(event: String, data: JsonValue) -> Result<ConnectorResponse, ConnectorError> {
+        let name = self.default_connector.clone()
+            .ok_or(ConnectorError.ConfigError("No default connector"))?
+        self.trigger_on(name, event, data)
+    }
+    
+    /// Trigger on specific connector
+    fn trigger_on(name: String, event: String, data: JsonValue) -> Result<ConnectorResponse, ConnectorError> {
+        let connector = self.connectors.get(name.clone())
+            .ok_or(ConnectorError.ConfigError(format!("Connector '{}' not found", name)))?
+        connector.trigger(event, data)
+    }
+    
+    /// Trigger on all connectors
+    fn trigger_all(event: String, data: JsonValue) -> Map<String, Result<ConnectorResponse, ConnectorError>> {
+        var results: Map<String, Result<ConnectorResponse, ConnectorError>> = Map.empty()
+        for (name, connector) in self.connectors.iter() {
+            results.set(name.clone(), connector.trigger(event.clone(), data.clone()))
+        }
+        results
+    }
+    
+    /// Trigger on selected connectors
+    fn trigger_selected(names: [String], event: String, data: JsonValue) -> Map<String, Result<ConnectorResponse, ConnectorError>> {
+        var results: Map<String, Result<ConnectorResponse, ConnectorError>> = Map.empty()
+        for name in names.iter() {
+            if let Some(connector) = self.connectors.get(name.clone()) {
+                results.set(name.clone(), connector.trigger(event.clone(), data.clone()))
+            }
+        }
+        results
+    }
+}
+
+// =============================================================================
+// Retry Config
+// =============================================================================
+
+struct RetryConfig {
+    max_retries: Int
+    delay_ms: Int64
+    exponential_backoff: Bool
+}
+
+impl RetryConfig {
+    fn default() -> Self {
+        RetryConfig {
+            max_retries: 3,
+            delay_ms: 1000,
+            exponential_backoff: true
+        }
+    }
+    
+    fn new(max_retries: Int, delay_ms: Int64) -> Self {
+        RetryConfig {
+            max_retries: max_retries,
+            delay_ms: delay_ms,
+            exponential_backoff: true
+        }
+    }
+    
+    fn no_backoff() -> Self {
+        self.exponential_backoff = false
+        self
+    }
+}
+
+// =============================================================================
+// Error Types
+// =============================================================================
+
+enum ConnectorError {
+    ConfigError(String),
+    NetworkError(String),
+    ApiError(Int, String),
+    ServerError(Int),
+    MaxRetriesExceeded,
+    InvalidSignature,
+    InvalidPayload,
+    UnknownEvent(String),
+    Other(String)
+}
+
+impl Display for ConnectorError {
+    fn fmt(f: Formatter) {
+        match self {
+            ConfigError(s) => f.write(format!("Config error: {}", s)),
+            NetworkError(s) => f.write(format!("Network error: {}", s)),
+            ApiError(code, msg) => f.write(format!("API error {}: {}", code, msg)),
+            ServerError(code) => f.write(format!("Server error: {}", code)),
+            MaxRetriesExceeded => f.write("Max retries exceeded"),
+            InvalidSignature => f.write("Invalid signature"),
+            InvalidPayload => f.write("Invalid payload"),
+            UnknownEvent(e) => f.write(format!("Unknown event: {}", e)),
+            Other(s) => f.write(s)
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "connector config builder" {
+    let config = ConnectorConfig.new()
+        .api_key("test-key")
+        .webhook_url("https://example.com/webhook")
+        .timeout(60000)
+    
+    assert_eq(config.api_key, Some("test-key"))?
+    assert_eq(config.webhook_url, Some("https://example.com/webhook"))?
+    assert_eq(config.timeout_ms, 60000)?
+}
+
+test "connector builder" {
+    let connector = ConnectorBuilder.new()
+        .platform(ConnectorPlatform.Zapier)
+        .api_key("test-key")
+        .webhook_url("https://hooks.zapier.com/test")
+        .build()
+    
+    assert(connector.is_ok())?
+}
+
+test "platform detection" {
+    assert_eq(ConnectorPlatform.Zapier.to_string(), "zapier")?
+    assert_eq(ConnectorPlatform.IFTTT.to_string(), "ifttt")?
+    assert_eq(ConnectorPlatform.Make.to_string(), "make")?
+    assert_eq(ConnectorPlatform.N8n.to_string(), "n8n")?
+}
+
+test "retry config" {
+    let config = RetryConfig.default()
+    assert_eq(config.max_retries, 3)?
+    assert_eq(config.delay_ms, 1000)?
+    assert(config.exponential_backoff)?
+}
+
+test "multi platform connector" {
+    let multi = MultiPlatformConnector.new()
+        .add("zapier", UniversalConnector.zapier("key1", "https://hooks.zapier.com/test"))
+        .add("make", UniversalConnector.make("key2"))
+        .set_default("zapier")
+    
+    assert_eq(multi.default_connector, Some("zapier"))?
+}

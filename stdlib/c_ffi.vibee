@@ -1,0 +1,766 @@
+// =============================================================================
+// Vibee OS — C FFI Module
+// C Foreign Function Interface for native C library interoperability
+// =============================================================================
+
+// =============================================================================
+// C Types
+// =============================================================================
+
+/// C primitive types mapping
+type CChar = Int8
+type CUChar = UInt8
+type CShort = Int16
+type CUShort = UInt16
+type CInt = Int32
+type CUInt = UInt32
+type CLong = Int64
+type CULong = UInt64
+type CLongLong = Int64
+type CULongLong = UInt64
+type CFloat = Float32
+type CDouble = Float64
+type CSizeT = UInt64
+type CSSizeT = Int64
+type CPtrDiffT = Int64
+type CVoid = ()
+
+/// C pointer types
+type CPtr<T> = *T
+type CMutPtr<T> = *mut T
+type CVoidPtr = *CVoid
+type CConstCharPtr = *CChar
+type CCharPtr = *mut CChar
+
+// =============================================================================
+// C String
+// =============================================================================
+
+/// C string wrapper for null-terminated strings
+struct CString {
+    ptr: CCharPtr
+    len: Int
+    owned: Bool
+}
+
+impl CString {
+    /// Create CString from Vibee String
+    fn from_string(s: String) -> Result<Self, CFFIError> {
+        let bytes = s.as_bytes()
+        let len = bytes.len()
+        let ptr = @native("c_malloc", len + 1) as CCharPtr
+        if ptr.is_null() {
+            return Err(CFFIError.AllocationFailed)
+        }
+        @native("c_memcpy", ptr, bytes.as_ptr(), len)
+        @native("c_memset", ptr.offset(len), 0, 1)
+        Ok(CString { ptr: ptr, len: len, owned: true })
+    }
+    
+    /// Create CString from raw pointer (borrowed, not owned)
+    fn from_ptr(ptr: CConstCharPtr) -> Self {
+        let len = @native("c_strlen", ptr) as Int
+        CString { ptr: ptr as CCharPtr, len: len, owned: false }
+    }
+    
+    /// Create CString from raw pointer with known length
+    fn from_ptr_len(ptr: CConstCharPtr, len: Int) -> Self {
+        CString { ptr: ptr as CCharPtr, len: len, owned: false }
+    }
+    
+    /// Get raw pointer
+    fn as_ptr() -> CConstCharPtr { self.ptr as CConstCharPtr }
+    
+    /// Get mutable raw pointer
+    fn as_mut_ptr() -> CCharPtr { self.ptr }
+    
+    /// Convert to Vibee String
+    fn to_string() -> Result<String, CFFIError> {
+        if self.ptr.is_null() {
+            return Err(CFFIError.NullPointer)
+        }
+        let bytes = @native("c_ptr_to_bytes", self.ptr, self.len)
+        String.from_utf8(bytes).map_err(|_| CFFIError.InvalidUtf8)
+    }
+    
+    /// Get length (excluding null terminator)
+    fn len() -> Int { self.len }
+    
+    /// Check if empty
+    fn is_empty() -> Bool { self.len == 0 }
+    
+    /// Check if null
+    fn is_null() -> Bool { self.ptr.is_null() }
+}
+
+impl Drop for CString {
+    fn drop() {
+        if self.owned && !self.ptr.is_null() {
+            @native("c_free", self.ptr)
+        }
+    }
+}
+
+impl Clone for CString {
+    fn clone() -> Self {
+        if self.owned {
+            let ptr = @native("c_malloc", self.len + 1) as CCharPtr
+            @native("c_memcpy", ptr, self.ptr, self.len + 1)
+            CString { ptr: ptr, len: self.len, owned: true }
+        } else {
+            CString { ptr: self.ptr, len: self.len, owned: false }
+        }
+    }
+}
+
+// =============================================================================
+// C Array
+// =============================================================================
+
+/// C array wrapper for contiguous memory
+struct CArray<T> {
+    ptr: CMutPtr<T>
+    len: Int
+    cap: Int
+    owned: Bool
+}
+
+impl<T> CArray<T> {
+    /// Create new C array with capacity
+    fn with_capacity(cap: Int) -> Result<Self, CFFIError> {
+        let size = cap * @size_of::<T>()
+        let ptr = @native("c_malloc", size) as CMutPtr<T>
+        if ptr.is_null() {
+            return Err(CFFIError.AllocationFailed)
+        }
+        Ok(CArray { ptr: ptr, len: 0, cap: cap, owned: true })
+    }
+    
+    /// Create from raw pointer (borrowed)
+    fn from_ptr(ptr: CMutPtr<T>, len: Int) -> Self {
+        CArray { ptr: ptr, len: len, cap: len, owned: false }
+    }
+    
+    /// Create from Vibee array
+    fn from_array(arr: [T]) -> Result<Self, CFFIError> {
+        let len = arr.len()
+        let size = len * @size_of::<T>()
+        let ptr = @native("c_malloc", size) as CMutPtr<T>
+        if ptr.is_null() {
+            return Err(CFFIError.AllocationFailed)
+        }
+        @native("c_memcpy", ptr, arr.as_ptr(), size)
+        Ok(CArray { ptr: ptr, len: len, cap: len, owned: true })
+    }
+    
+    /// Get element at index
+    fn get(index: Int) -> Option<T> {
+        if index < 0 || index >= self.len { return None }
+        Some(@native("c_ptr_read", self.ptr.offset(index)))
+    }
+    
+    /// Set element at index
+    fn set(index: Int, value: T) -> Result<(), CFFIError> {
+        if index < 0 || index >= self.len {
+            return Err(CFFIError.IndexOutOfBounds)
+        }
+        @native("c_ptr_write", self.ptr.offset(index), value)
+        Ok(())
+    }
+    
+    /// Push element to end
+    fn push(value: T) -> Result<(), CFFIError> {
+        if self.len >= self.cap {
+            return Err(CFFIError.CapacityExceeded)
+        }
+        @native("c_ptr_write", self.ptr.offset(self.len), value)
+        self.len += 1
+        Ok(())
+    }
+    
+    /// Pop element from end
+    fn pop() -> Option<T> {
+        if self.len == 0 { return None }
+        self.len -= 1
+        Some(@native("c_ptr_read", self.ptr.offset(self.len)))
+    }
+    
+    /// Get raw pointer
+    fn as_ptr() -> CPtr<T> { self.ptr as CPtr<T> }
+    
+    /// Get mutable raw pointer
+    fn as_mut_ptr() -> CMutPtr<T> { self.ptr }
+    
+    /// Convert to Vibee array
+    fn to_array() -> [T] {
+        var result = []
+        for i in 0..self.len {
+            result.push(@native("c_ptr_read", self.ptr.offset(i)))
+        }
+        result
+    }
+    
+    /// Get length
+    fn len() -> Int { self.len }
+    
+    /// Get capacity
+    fn capacity() -> Int { self.cap }
+    
+    /// Check if empty
+    fn is_empty() -> Bool { self.len == 0 }
+}
+
+impl<T> Drop for CArray<T> {
+    fn drop() {
+        if self.owned && !self.ptr.is_null() {
+            @native("c_free", self.ptr)
+        }
+    }
+}
+
+impl<T> Index<Int> for CArray<T> {
+    type Output = T
+    fn index(idx: Int) -> T {
+        self.get(idx).expect("Index out of bounds")
+    }
+}
+
+// =============================================================================
+// C Struct Layout
+// =============================================================================
+
+/// C struct layout descriptor for FFI struct mapping
+struct CStructLayout {
+    size: Int
+    align: Int
+    fields: [(String, Int, Int)]  // (name, offset, size)
+}
+
+impl CStructLayout {
+    /// Create new empty layout
+    fn new() -> Self {
+        CStructLayout { size: 0, align: 1, fields: [] }
+    }
+    
+    /// Add field to layout with proper alignment
+    fn add_field(name: String, size: Int, align: Int) -> Int {
+        // Calculate aligned offset
+        let offset = (self.size + align - 1) & !(align - 1)
+        self.fields.push((name, offset, size))
+        self.size = offset + size
+        self.align = self.align.max(align)
+        offset
+    }
+    
+    /// Finalize layout with tail padding
+    fn finalize() {
+        self.size = (self.size + self.align - 1) & !(self.align - 1)
+    }
+    
+    /// Get field offset by name
+    fn field_offset(name: String) -> Option<Int> {
+        self.fields.iter().find(|(n, _, _)| n == name).map(|(_, o, _)| o)
+    }
+    
+    /// Get field size by name
+    fn field_size(name: String) -> Option<Int> {
+        self.fields.iter().find(|(n, _, _)| n == name).map(|(_, _, s)| s)
+    }
+    
+    /// Get total size
+    fn total_size() -> Int { self.size }
+    
+    /// Get alignment requirement
+    fn alignment() -> Int { self.align }
+}
+
+/// C struct wrapper for accessing C struct memory
+struct CStruct {
+    ptr: CVoidPtr
+    layout: CStructLayout
+    owned: Bool
+}
+
+impl CStruct {
+    /// Allocate new C struct
+    fn new(layout: CStructLayout) -> Result<Self, CFFIError> {
+        let ptr = @native("c_aligned_alloc", layout.align, layout.size)
+        if ptr.is_null() {
+            return Err(CFFIError.AllocationFailed)
+        }
+        @native("c_memset", ptr, 0, layout.size)
+        Ok(CStruct { ptr: ptr, layout: layout, owned: true })
+    }
+    
+    /// Wrap existing pointer
+    fn from_ptr(ptr: CVoidPtr, layout: CStructLayout) -> Self {
+        CStruct { ptr: ptr, layout: layout, owned: false }
+    }
+    
+    /// Get field value by name
+    fn get_field<T>(name: String) -> Result<T, CFFIError> {
+        let offset = self.layout.field_offset(name).ok_or(CFFIError.FieldNotFound)?
+        let field_ptr = self.ptr.offset(offset) as CPtr<T>
+        Ok(@native("c_ptr_read", field_ptr))
+    }
+    
+    /// Set field value by name
+    fn set_field<T>(name: String, value: T) -> Result<(), CFFIError> {
+        let offset = self.layout.field_offset(name).ok_or(CFFIError.FieldNotFound)?
+        let field_ptr = self.ptr.offset(offset) as CMutPtr<T>
+        @native("c_ptr_write", field_ptr, value)
+        Ok(())
+    }
+    
+    /// Get raw pointer
+    fn as_ptr() -> CVoidPtr { self.ptr }
+}
+
+impl Drop for CStruct {
+    fn drop() {
+        if self.owned && !self.ptr.is_null() {
+            @native("c_free", self.ptr)
+        }
+    }
+}
+
+// =============================================================================
+// C Library Loading
+// =============================================================================
+
+/// Dynamic C library handle
+struct CLibrary {
+    handle: CVoidPtr
+    path: String
+}
+
+impl CLibrary {
+    /// Load library by path
+    fn load(path: String) -> Result<Self, CFFIError> {
+        let cpath = CString.from_string(path)?
+        let handle = @native("dlopen", cpath.as_ptr(), RTLD_NOW)
+        if handle.is_null() {
+            let error = @native("dlerror")
+            let msg = if !error.is_null() {
+                CString.from_ptr(error).to_string().unwrap_or("Unknown error")
+            } else {
+                "Unknown error"
+            }
+            return Err(CFFIError.LibraryLoadFailed(msg))
+        }
+        Ok(CLibrary { handle: handle, path: path })
+    }
+    
+    /// Load library by name (searches standard paths)
+    fn load_by_name(name: String) -> Result<Self, CFFIError> {
+        let path = if @platform() == "windows" {
+            format!("{}.dll", name)
+        } else if @platform() == "macos" {
+            format!("lib{}.dylib", name)
+        } else {
+            format!("lib{}.so", name)
+        }
+        Self.load(path)
+    }
+    
+    /// Get symbol from library
+    fn get_symbol(name: String) -> Result<CVoidPtr, CFFIError> {
+        let cname = CString.from_string(name)?
+        let ptr = @native("dlsym", self.handle, cname.as_ptr())
+        if ptr.is_null() {
+            return Err(CFFIError.SymbolNotFound(name))
+        }
+        Ok(ptr)
+    }
+    
+    /// Get function from library
+    fn get_function<Args, Ret>(name: String) -> Result<CFunction<Args, Ret>, CFFIError> {
+        let ptr = self.get_symbol(name)?
+        Ok(CFunction { ptr: ptr, name: name })
+    }
+    
+    /// Check if symbol exists
+    fn has_symbol(name: String) -> Bool {
+        self.get_symbol(name).is_ok()
+    }
+    
+    /// Get library path
+    fn path() -> String { self.path.clone() }
+}
+
+impl Drop for CLibrary {
+    fn drop() {
+        if !self.handle.is_null() {
+            @native("dlclose", self.handle)
+        }
+    }
+}
+
+/// Library loading flags
+const RTLD_LAZY: CInt = 0x00001
+const RTLD_NOW: CInt = 0x00002
+const RTLD_GLOBAL: CInt = 0x00100
+const RTLD_LOCAL: CInt = 0x00000
+
+// =============================================================================
+// C Function
+// =============================================================================
+
+/// C function pointer wrapper
+struct CFunction<Args, Ret> {
+    ptr: CVoidPtr
+    name: String
+}
+
+impl<Args, Ret> CFunction<Args, Ret> {
+    /// Create from raw function pointer
+    fn from_ptr(ptr: CVoidPtr) -> Self {
+        CFunction { ptr: ptr, name: "<anonymous>" }
+    }
+    
+    /// Create from symbol in library
+    fn from_symbol(lib: CLibrary, name: String) -> Result<Self, CFFIError> {
+        let ptr = lib.get_symbol(name)?
+        Ok(CFunction { ptr: ptr, name: name })
+    }
+    
+    /// Check if valid
+    fn is_valid() -> Bool { !self.ptr.is_null() }
+    
+    /// Get function name
+    fn name() -> String { self.name.clone() }
+    
+    /// Get raw pointer
+    fn as_ptr() -> CVoidPtr { self.ptr }
+}
+
+/// Call C function with 0 arguments
+fn c_call_0<Ret>(func: CFunction<(), Ret>) -> Ret {
+    @native("c_call_0", func.ptr)
+}
+
+/// Call C function with 1 argument
+fn c_call_1<A, Ret>(func: CFunction<(A,), Ret>, a: A) -> Ret {
+    @native("c_call_1", func.ptr, a)
+}
+
+/// Call C function with 2 arguments
+fn c_call_2<A, B, Ret>(func: CFunction<(A, B), Ret>, a: A, b: B) -> Ret {
+    @native("c_call_2", func.ptr, a, b)
+}
+
+/// Call C function with 3 arguments
+fn c_call_3<A, B, C, Ret>(func: CFunction<(A, B, C), Ret>, a: A, b: B, c: C) -> Ret {
+    @native("c_call_3", func.ptr, a, b, c)
+}
+
+/// Call C function with 4 arguments
+fn c_call_4<A, B, C, D, Ret>(func: CFunction<(A, B, C, D), Ret>, a: A, b: B, c: C, d: D) -> Ret {
+    @native("c_call_4", func.ptr, a, b, c, d)
+}
+
+/// Call C function with 5 arguments
+fn c_call_5<A, B, C, D, E, Ret>(func: CFunction<(A, B, C, D, E), Ret>, a: A, b: B, c: C, d: D, e: E) -> Ret {
+    @native("c_call_5", func.ptr, a, b, c, d, e)
+}
+
+/// Call C function with 6 arguments
+fn c_call_6<A, B, C, D, E, F, Ret>(func: CFunction<(A, B, C, D, E, F), Ret>, a: A, b: B, c: C, d: D, e: E, f: F) -> Ret {
+    @native("c_call_6", func.ptr, a, b, c, d, e, f)
+}
+
+// =============================================================================
+// C Callback
+// =============================================================================
+
+/// Callback wrapper for passing Vibee functions to C code
+struct CCallback<Args, Ret> {
+    trampoline: CVoidPtr
+    closure: Box<dyn Fn(Args) -> Ret>
+}
+
+impl<Args, Ret> CCallback<Args, Ret> {
+    /// Create callback from Vibee closure
+    fn new<F: Fn(Args) -> Ret>(f: F) -> Result<Self, CFFIError> {
+        let closure = Box.new(f)
+        let trampoline = @native("c_create_trampoline", closure.as_ptr())
+        if trampoline.is_null() {
+            return Err(CFFIError.CallbackCreationFailed)
+        }
+        Ok(CCallback { trampoline: trampoline, closure: closure })
+    }
+    
+    /// Get C function pointer for passing to C code
+    fn as_ptr() -> CVoidPtr { self.trampoline }
+}
+
+impl<Args, Ret> Drop for CCallback<Args, Ret> {
+    fn drop() {
+        if !self.trampoline.is_null() {
+            @native("c_destroy_trampoline", self.trampoline)
+        }
+    }
+}
+
+// =============================================================================
+// Memory Operations
+// =============================================================================
+
+/// Allocate memory
+fn c_malloc(size: Int) -> CVoidPtr {
+    @native("c_malloc", size)
+}
+
+/// Allocate zeroed memory
+fn c_calloc(count: Int, size: Int) -> CVoidPtr {
+    @native("c_calloc", count, size)
+}
+
+/// Reallocate memory
+fn c_realloc(ptr: CVoidPtr, size: Int) -> CVoidPtr {
+    @native("c_realloc", ptr, size)
+}
+
+/// Free memory
+fn c_free(ptr: CVoidPtr) {
+    @native("c_free", ptr)
+}
+
+/// Aligned allocation
+fn c_aligned_alloc(align: Int, size: Int) -> CVoidPtr {
+    @native("c_aligned_alloc", align, size)
+}
+
+/// Copy memory
+fn c_memcpy(dest: CVoidPtr, src: CVoidPtr, size: Int) -> CVoidPtr {
+    @native("c_memcpy", dest, src, size)
+}
+
+/// Move memory (handles overlapping)
+fn c_memmove(dest: CVoidPtr, src: CVoidPtr, size: Int) -> CVoidPtr {
+    @native("c_memmove", dest, src, size)
+}
+
+/// Set memory to value
+fn c_memset(ptr: CVoidPtr, value: CInt, size: Int) -> CVoidPtr {
+    @native("c_memset", ptr, value, size)
+}
+
+/// Compare memory
+fn c_memcmp(a: CVoidPtr, b: CVoidPtr, size: Int) -> CInt {
+    @native("c_memcmp", a, b, size)
+}
+
+/// Get string length
+fn c_strlen(s: CConstCharPtr) -> CSizeT {
+    @native("c_strlen", s)
+}
+
+// =============================================================================
+// C Errno
+// =============================================================================
+
+/// Get C errno value
+fn c_errno() -> CInt {
+    @native("c_get_errno")
+}
+
+/// Set C errno value
+fn c_set_errno(value: CInt) {
+    @native("c_set_errno", value)
+}
+
+/// Get error string for errno
+fn c_strerror(errnum: CInt) -> String {
+    let ptr = @native("c_strerror", errnum)
+    CString.from_ptr(ptr).to_string().unwrap_or("Unknown error")
+}
+
+// =============================================================================
+// Calling Conventions
+// =============================================================================
+
+/// C calling convention
+enum CallingConvention {
+    Cdecl       // Default C calling convention
+    Stdcall     // Windows stdcall
+    Fastcall    // Fast calling convention
+    Thiscall    // C++ this call
+    Vectorcall  // SIMD optimized
+    SysV        // System V AMD64 ABI
+    Win64       // Windows x64 ABI
+}
+
+/// C type descriptor
+enum CType {
+    Void
+    Char
+    UChar
+    Short
+    UShort
+    Int
+    UInt
+    Long
+    ULong
+    LongLong
+    ULongLong
+    Float
+    Double
+    Pointer(Box<CType>)
+    Array(Box<CType>, Int)
+    Struct(CStructLayout)
+    Function(Box<CFunctionSignature>)
+}
+
+impl CType {
+    /// Get size of type in bytes
+    fn size() -> Int {
+        match self {
+            Void => 0
+            Char | UChar => 1
+            Short | UShort => 2
+            Int | UInt | Float => 4
+            Long | ULong | LongLong | ULongLong | Double | Pointer(_) => 8
+            Array(ty, n) => ty.size() * n
+            Struct(layout) => layout.size
+            Function(_) => 8
+        }
+    }
+    
+    /// Get alignment of type
+    fn align() -> Int {
+        match self {
+            Void => 1
+            Char | UChar => 1
+            Short | UShort => 2
+            Int | UInt | Float => 4
+            Long | ULong | LongLong | ULongLong | Double | Pointer(_) => 8
+            Array(ty, _) => ty.align()
+            Struct(layout) => layout.align
+            Function(_) => 8
+        }
+    }
+}
+
+/// C function signature descriptor
+struct CFunctionSignature {
+    return_type: CType
+    param_types: [CType]
+    variadic: Bool
+    convention: CallingConvention
+}
+
+impl CFunctionSignature {
+    fn new() -> Self {
+        CFunctionSignature {
+            return_type: CType.Void,
+            param_types: [],
+            variadic: false,
+            convention: CallingConvention.Cdecl
+        }
+    }
+    
+    fn returns(ty: CType) -> Self {
+        self.return_type = ty
+        self
+    }
+    
+    fn param(ty: CType) -> Self {
+        self.param_types.push(ty)
+        self
+    }
+    
+    fn variadic() -> Self {
+        self.variadic = true
+        self
+    }
+    
+    fn convention(conv: CallingConvention) -> Self {
+        self.convention = conv
+        self
+    }
+}
+
+// =============================================================================
+// Error Types
+// =============================================================================
+
+/// C FFI error types
+enum CFFIError {
+    AllocationFailed
+    NullPointer
+    InvalidUtf8
+    IndexOutOfBounds
+    CapacityExceeded
+    FieldNotFound
+    LibraryLoadFailed(String)
+    SymbolNotFound(String)
+    CallbackCreationFailed
+    InvalidArgument(String)
+    TypeMismatch
+    Other(String)
+}
+
+impl Display for CFFIError {
+    fn fmt(f: Formatter) {
+        match self {
+            AllocationFailed => f.write("C memory allocation failed")
+            NullPointer => f.write("Null pointer dereference")
+            InvalidUtf8 => f.write("Invalid UTF-8 in C string")
+            IndexOutOfBounds => f.write("Array index out of bounds")
+            CapacityExceeded => f.write("Array capacity exceeded")
+            FieldNotFound => f.write("Struct field not found")
+            LibraryLoadFailed(s) => f.write(format!("Failed to load library: {}", s))
+            SymbolNotFound(s) => f.write(format!("Symbol not found: {}", s))
+            CallbackCreationFailed => f.write("Failed to create callback")
+            InvalidArgument(s) => f.write(format!("Invalid argument: {}", s))
+            TypeMismatch => f.write("Type mismatch")
+            Other(s) => f.write(s)
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "cstring from string" {
+    let cs = CString.from_string("Hello, C!")?
+    assert_eq(cs.len(), 9)?
+    assert(!cs.is_null())?
+    
+    let s = cs.to_string()?
+    assert_eq(s, "Hello, C!")?
+}
+
+test "carray operations" {
+    let arr = CArray::<CInt>.with_capacity(10)?
+    arr.push(1)?
+    arr.push(2)?
+    arr.push(3)?
+    
+    assert_eq(arr.len(), 3)?
+    assert_eq(arr.get(0), Some(1))?
+    assert_eq(arr.get(1), Some(2))?
+    assert_eq(arr.get(2), Some(3))?
+}
+
+test "cstruct layout" {
+    var layout = CStructLayout.new()
+    let x_offset = layout.add_field("x", 4, 4)
+    let y_offset = layout.add_field("y", 4, 4)
+    let z_offset = layout.add_field("z", 8, 8)
+    layout.finalize()
+    
+    assert_eq(x_offset, 0)?
+    assert_eq(y_offset, 4)?
+    assert_eq(z_offset, 8)?
+    assert_eq(layout.size, 16)?
+}
+
+test "ctype sizes" {
+    assert_eq(CType.Char.size(), 1)?
+    assert_eq(CType.Int.size(), 4)?
+    assert_eq(CType.Double.size(), 8)?
+    assert_eq(CType.Pointer(Box.new(CType.Int)).size(), 8)?
+}

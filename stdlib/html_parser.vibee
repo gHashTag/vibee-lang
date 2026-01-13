@@ -1,0 +1,950 @@
+// =============================================================================
+// Vibee OS — HTML Parser Module
+// HTML parsing, DOM manipulation, and element selection
+// =============================================================================
+
+use result::{Result, Ok, Err}
+use option::{Option, Some, None}
+
+// =============================================================================
+// HTML Document
+// =============================================================================
+
+/// Parsed HTML document
+struct HtmlDocument {
+    root: HtmlNode
+    doctype: Option<String>
+    
+    /// Parse HTML string
+    fn parse(html: String) -> Result<Self, HtmlParseError> {
+        let parser = HtmlParser.new()
+        parser.parse(html)
+    }
+    
+    /// Parse HTML fragment (no doctype required)
+    fn parse_fragment(html: String) -> Result<Self, HtmlParseError> {
+        let parser = HtmlParser.new().fragment_mode(true)
+        parser.parse(html)
+    }
+    
+    /// Get document root element
+    fn root() -> HtmlNode {
+        self.root.clone()
+    }
+    
+    /// Find element by ID
+    fn get_element_by_id(id: String) -> Option<HtmlElement> {
+        self.root.find_by_id(id)
+    }
+    
+    /// Find elements by tag name
+    fn get_elements_by_tag(tag: String) -> [HtmlElement] {
+        self.root.find_by_tag(tag)
+    }
+    
+    /// Find elements by class name
+    fn get_elements_by_class(class: String) -> [HtmlElement] {
+        self.root.find_by_class(class)
+    }
+    
+    /// Query selector (CSS selector)
+    fn query_selector(selector: String) -> Option<HtmlElement> {
+        let sel = CssSelector.parse(selector).ok()?
+        self.root.query_one(sel)
+    }
+    
+    /// Query selector all
+    fn query_selector_all(selector: String) -> [HtmlElement] {
+        match CssSelector.parse(selector) {
+            Ok(sel) => self.root.query_all(sel)
+            Err(_) => []
+        }
+    }
+    
+    /// Get document title
+    fn title() -> Option<String> {
+        self.query_selector("title")?.text_content()
+    }
+    
+    /// Get document body
+    fn body() -> Option<HtmlElement> {
+        self.query_selector("body")
+    }
+    
+    /// Get document head
+    fn head() -> Option<HtmlElement> {
+        self.query_selector("head")
+    }
+    
+    /// Get all links
+    fn links() -> [HtmlElement] {
+        self.query_selector_all("a[href]")
+    }
+    
+    /// Get all images
+    fn images() -> [HtmlElement] {
+        self.query_selector_all("img[src]")
+    }
+    
+    /// Get all forms
+    fn forms() -> [HtmlElement] {
+        self.query_selector_all("form")
+    }
+    
+    /// Get all meta tags
+    fn meta_tags() -> [HtmlElement] {
+        self.query_selector_all("meta")
+    }
+    
+    /// Serialize to HTML string
+    fn to_html() -> String {
+        var result = ""
+        if let Some(dt) = self.doctype {
+            result.push_str(format!("<!DOCTYPE {}>\n", dt))
+        }
+        result.push_str(self.root.to_html())
+        result
+    }
+    
+    /// Get text content of entire document
+    fn text_content() -> String {
+        self.root.text_content()
+    }
+}
+
+// =============================================================================
+// HTML Node
+// =============================================================================
+
+/// HTML node types
+enum HtmlNode {
+    Element(HtmlElement)
+    Text(String)
+    Comment(String)
+    Doctype(String)
+    
+    /// Check if node is element
+    fn is_element() -> Bool {
+        match self {
+            Element(_) => true
+            _ => false
+        }
+    }
+    
+    /// Check if node is text
+    fn is_text() -> Bool {
+        match self {
+            Text(_) => true
+            _ => false
+        }
+    }
+    
+    /// Get as element
+    fn as_element() -> Option<HtmlElement> {
+        match self {
+            Element(e) => Some(e)
+            _ => None
+        }
+    }
+    
+    /// Get text content
+    fn text_content() -> String {
+        match self {
+            Element(e) => e.text_content()
+            Text(t) => t
+            Comment(_) => ""
+            Doctype(_) => ""
+        }
+    }
+    
+    /// Find element by ID
+    fn find_by_id(id: String) -> Option<HtmlElement> {
+        match self {
+            Element(e) => {
+                if e.get_attribute("id") == Some(id) {
+                    return Some(e)
+                }
+                for child in e.children {
+                    if let Some(found) = child.find_by_id(id) {
+                        return Some(found)
+                    }
+                }
+                None
+            }
+            _ => None
+        }
+    }
+    
+    /// Find elements by tag name
+    fn find_by_tag(tag: String) -> [HtmlElement] {
+        var results = []
+        match self {
+            Element(e) => {
+                if e.tag_name.to_lower() == tag.to_lower() {
+                    results.push(e)
+                }
+                for child in e.children {
+                    results.extend(child.find_by_tag(tag))
+                }
+            }
+            _ => {}
+        }
+        results
+    }
+    
+    /// Find elements by class name
+    fn find_by_class(class: String) -> [HtmlElement] {
+        var results = []
+        match self {
+            Element(e) => {
+                if e.has_class(class) {
+                    results.push(e)
+                }
+                for child in e.children {
+                    results.extend(child.find_by_class(class))
+                }
+            }
+            _ => {}
+        }
+        results
+    }
+    
+    /// Query one element
+    fn query_one(selector: CssSelector) -> Option<HtmlElement> {
+        match self {
+            Element(e) => {
+                if selector.matches(e) {
+                    return Some(e)
+                }
+                for child in e.children {
+                    if let Some(found) = child.query_one(selector) {
+                        return Some(found)
+                    }
+                }
+                None
+            }
+            _ => None
+        }
+    }
+    
+    /// Query all elements
+    fn query_all(selector: CssSelector) -> [HtmlElement] {
+        var results = []
+        match self {
+            Element(e) => {
+                if selector.matches(e) {
+                    results.push(e)
+                }
+                for child in e.children {
+                    results.extend(child.query_all(selector))
+                }
+            }
+            _ => {}
+        }
+        results
+    }
+    
+    /// Convert to HTML string
+    fn to_html() -> String {
+        match self {
+            Element(e) => e.to_html()
+            Text(t) => html_escape(t)
+            Comment(c) => format!("<!--{}-->", c)
+            Doctype(d) => format!("<!DOCTYPE {}>", d)
+        }
+    }
+}
+
+// =============================================================================
+// HTML Element
+// =============================================================================
+
+/// HTML element
+struct HtmlElement {
+    tag_name: String
+    attributes: Map<String, String>
+    children: [HtmlNode]
+    parent: Option<Box<HtmlElement>>
+    
+    /// Create new element
+    fn new(tag: String) -> Self {
+        HtmlElement {
+            tag_name: tag,
+            attributes: Map.empty(),
+            children: [],
+            parent: None
+        }
+    }
+    
+    /// Get tag name
+    fn tag() -> String {
+        self.tag_name.to_lower()
+    }
+    
+    /// Get attribute value
+    fn get_attribute(name: String) -> Option<String> {
+        self.attributes.get(name.to_lower())
+    }
+    
+    /// Set attribute value
+    fn set_attribute(name: String, value: String) {
+        self.attributes.set(name.to_lower(), value)
+    }
+    
+    /// Remove attribute
+    fn remove_attribute(name: String) {
+        self.attributes.remove(name.to_lower())
+    }
+    
+    /// Check if has attribute
+    fn has_attribute(name: String) -> Bool {
+        self.attributes.contains(name.to_lower())
+    }
+    
+    /// Get all attribute names
+    fn attribute_names() -> [String] {
+        self.attributes.keys().collect()
+    }
+    
+    /// Get ID
+    fn id() -> Option<String> {
+        self.get_attribute("id")
+    }
+    
+    /// Get class list
+    fn class_list() -> [String] {
+        self.get_attribute("class")
+            .map(|c| c.split_whitespace().collect())
+            .unwrap_or([])
+    }
+    
+    /// Check if has class
+    fn has_class(class: String) -> Bool {
+        self.class_list().contains(class)
+    }
+    
+    /// Add class
+    fn add_class(class: String) {
+        var classes = self.class_list()
+        if !classes.contains(class) {
+            classes.push(class)
+            self.set_attribute("class", classes.join(" "))
+        }
+    }
+    
+    /// Remove class
+    fn remove_class(class: String) {
+        let classes = self.class_list().filter(|c| c != class)
+        if classes.is_empty() {
+            self.remove_attribute("class")
+        } else {
+            self.set_attribute("class", classes.join(" "))
+        }
+    }
+    
+    /// Toggle class
+    fn toggle_class(class: String) -> Bool {
+        if self.has_class(class) {
+            self.remove_class(class)
+            false
+        } else {
+            self.add_class(class)
+            true
+        }
+    }
+    
+    /// Get text content (recursive)
+    fn text_content() -> String {
+        var text = ""
+        for child in self.children {
+            text.push_str(child.text_content())
+        }
+        text
+    }
+    
+    /// Get inner HTML
+    fn inner_html() -> String {
+        self.children.iter().map(|c| c.to_html()).join("")
+    }
+    
+    /// Set inner HTML
+    fn set_inner_html(html: String) -> Result<(), HtmlParseError> {
+        let doc = HtmlDocument.parse_fragment(html)?
+        self.children = doc.root.as_element()?.children
+        Ok(())
+    }
+    
+    /// Get outer HTML
+    fn outer_html() -> String {
+        self.to_html()
+    }
+    
+    /// Convert to HTML string
+    fn to_html() -> String {
+        let void_elements = ["area", "base", "br", "col", "embed", "hr", "img", 
+                            "input", "link", "meta", "param", "source", "track", "wbr"]
+        
+        var html = format!("<{}", self.tag_name)
+        
+        for (name, value) in self.attributes.iter() {
+            html.push_str(format!(" {}=\"{}\"", name, html_escape_attr(value)))
+        }
+        
+        if void_elements.contains(self.tag_name.to_lower()) {
+            html.push_str(" />")
+        } else {
+            html.push_str(">")
+            html.push_str(self.inner_html())
+            html.push_str(format!("</{}>", self.tag_name))
+        }
+        
+        html
+    }
+    
+    /// Get child elements
+    fn child_elements() -> [HtmlElement] {
+        self.children.iter()
+            .filter_map(|c| c.as_element())
+            .collect()
+    }
+    
+    /// Get first child element
+    fn first_child() -> Option<HtmlElement> {
+        self.child_elements().first().cloned()
+    }
+    
+    /// Get last child element
+    fn last_child() -> Option<HtmlElement> {
+        self.child_elements().last().cloned()
+    }
+    
+    /// Get next sibling
+    fn next_sibling() -> Option<HtmlElement> {
+        // Implementation requires parent reference
+        None // Simplified
+    }
+    
+    /// Get previous sibling
+    fn prev_sibling() -> Option<HtmlElement> {
+        // Implementation requires parent reference
+        None // Simplified
+    }
+    
+    /// Append child
+    fn append_child(node: HtmlNode) {
+        self.children.push(node)
+    }
+    
+    /// Prepend child
+    fn prepend_child(node: HtmlNode) {
+        self.children.insert(0, node)
+    }
+    
+    /// Remove child at index
+    fn remove_child(index: Int) -> Option<HtmlNode> {
+        if index >= 0 && index < self.children.len() {
+            Some(self.children.remove(index))
+        } else {
+            None
+        }
+    }
+    
+    /// Query selector within element
+    fn query_selector(selector: String) -> Option<HtmlElement> {
+        let sel = CssSelector.parse(selector).ok()?
+        HtmlNode.Element(self).query_one(sel)
+    }
+    
+    /// Query selector all within element
+    fn query_selector_all(selector: String) -> [HtmlElement] {
+        match CssSelector.parse(selector) {
+            Ok(sel) => HtmlNode.Element(self).query_all(sel)
+            Err(_) => []
+        }
+    }
+    
+    /// Get data attribute
+    fn data(name: String) -> Option<String> {
+        self.get_attribute(format!("data-{}", name))
+    }
+    
+    /// Set data attribute
+    fn set_data(name: String, value: String) {
+        self.set_attribute(format!("data-{}", name), value)
+    }
+    
+    /// Get href attribute (for links)
+    fn href() -> Option<String> {
+        self.get_attribute("href")
+    }
+    
+    /// Get src attribute (for images, scripts)
+    fn src() -> Option<String> {
+        self.get_attribute("src")
+    }
+    
+    /// Get value attribute (for inputs)
+    fn value() -> Option<String> {
+        self.get_attribute("value")
+    }
+}
+
+// =============================================================================
+// CSS Selector
+// =============================================================================
+
+/// CSS selector
+struct CssSelector {
+    parts: [SelectorPart]
+    
+    /// Parse CSS selector string
+    fn parse(selector: String) -> Result<Self, SelectorError> {
+        let parser = SelectorParser.new()
+        parser.parse(selector)
+    }
+    
+    /// Check if element matches selector
+    fn matches(element: HtmlElement) -> Bool {
+        for part in self.parts {
+            if !part.matches(element) {
+                return false
+            }
+        }
+        true
+    }
+}
+
+/// Selector part
+enum SelectorPart {
+    Tag(String)
+    Id(String)
+    Class(String)
+    Attribute(String, Option<AttrMatcher>)
+    PseudoClass(String)
+    Combinator(SelectorCombinator)
+    
+    fn matches(element: HtmlElement) -> Bool {
+        match self {
+            Tag(t) => element.tag() == t.to_lower()
+            Id(id) => element.id() == Some(id)
+            Class(c) => element.has_class(c)
+            Attribute(name, matcher) => {
+                match element.get_attribute(name) {
+                    Some(value) => match matcher {
+                        Some(m) => m.matches(value)
+                        None => true
+                    }
+                    None => false
+                }
+            }
+            PseudoClass(pc) => match_pseudo_class(element, pc)
+            Combinator(_) => true // Handled separately
+        }
+    }
+}
+
+/// Attribute matcher
+struct AttrMatcher {
+    op: AttrOp
+    value: String
+    
+    fn matches(attr_value: String) -> Bool {
+        match self.op {
+            Equals => attr_value == self.value
+            Contains => attr_value.contains(self.value)
+            StartsWith => attr_value.starts_with(self.value)
+            EndsWith => attr_value.ends_with(self.value)
+            WordMatch => attr_value.split_whitespace().any(|w| w == self.value)
+            PrefixMatch => attr_value == self.value || attr_value.starts_with(format!("{}-", self.value))
+        }
+    }
+}
+
+/// Attribute operator
+enum AttrOp {
+    Equals      // =
+    Contains    // *=
+    StartsWith  // ^=
+    EndsWith    // $=
+    WordMatch   // ~=
+    PrefixMatch // |=
+}
+
+/// Selector combinator
+enum SelectorCombinator {
+    Descendant      // space
+    Child           // >
+    NextSibling     // +
+    SubsequentSibling // ~
+}
+
+/// Selector parser
+struct SelectorParser {
+    fn new() -> Self { SelectorParser {} }
+    
+    fn parse(selector: String) -> Result<CssSelector, SelectorError> {
+        var parts = []
+        var current = ""
+        var chars = selector.chars().peekable()
+        
+        while let Some(c) = chars.next() {
+            match c {
+                '#' => {
+                    if !current.is_empty() {
+                        parts.push(SelectorPart.Tag(current))
+                        current = ""
+                    }
+                    var id = ""
+                    while let Some(nc) = chars.peek() {
+                        if nc.is_alphanumeric() || nc == '-' || nc == '_' {
+                            id.push(chars.next()?)
+                        } else {
+                            break
+                        }
+                    }
+                    parts.push(SelectorPart.Id(id))
+                }
+                '.' => {
+                    if !current.is_empty() {
+                        parts.push(SelectorPart.Tag(current))
+                        current = ""
+                    }
+                    var class = ""
+                    while let Some(nc) = chars.peek() {
+                        if nc.is_alphanumeric() || nc == '-' || nc == '_' {
+                            class.push(chars.next()?)
+                        } else {
+                            break
+                        }
+                    }
+                    parts.push(SelectorPart.Class(class))
+                }
+                '[' => {
+                    if !current.is_empty() {
+                        parts.push(SelectorPart.Tag(current))
+                        current = ""
+                    }
+                    let attr_part = self.parse_attribute(chars)?
+                    parts.push(attr_part)
+                }
+                ':' => {
+                    if !current.is_empty() {
+                        parts.push(SelectorPart.Tag(current))
+                        current = ""
+                    }
+                    var pseudo = ""
+                    while let Some(nc) = chars.peek() {
+                        if nc.is_alphanumeric() || nc == '-' {
+                            pseudo.push(chars.next()?)
+                        } else {
+                            break
+                        }
+                    }
+                    parts.push(SelectorPart.PseudoClass(pseudo))
+                }
+                ' ' => {
+                    if !current.is_empty() {
+                        parts.push(SelectorPart.Tag(current))
+                        current = ""
+                    }
+                    parts.push(SelectorPart.Combinator(SelectorCombinator.Descendant))
+                }
+                '>' => {
+                    if !current.is_empty() {
+                        parts.push(SelectorPart.Tag(current))
+                        current = ""
+                    }
+                    parts.push(SelectorPart.Combinator(SelectorCombinator.Child))
+                }
+                '+' => {
+                    if !current.is_empty() {
+                        parts.push(SelectorPart.Tag(current))
+                        current = ""
+                    }
+                    parts.push(SelectorPart.Combinator(SelectorCombinator.NextSibling))
+                }
+                '~' => {
+                    if !current.is_empty() {
+                        parts.push(SelectorPart.Tag(current))
+                        current = ""
+                    }
+                    parts.push(SelectorPart.Combinator(SelectorCombinator.SubsequentSibling))
+                }
+                _ => {
+                    if c.is_alphanumeric() || c == '-' || c == '_' {
+                        current.push(c)
+                    }
+                }
+            }
+        }
+        
+        if !current.is_empty() {
+            parts.push(SelectorPart.Tag(current))
+        }
+        
+        Ok(CssSelector { parts: parts })
+    }
+    
+    fn parse_attribute(chars: impl Iterator<Item = Char>) -> Result<SelectorPart, SelectorError> {
+        var name = ""
+        var op = None
+        var value = ""
+        var in_value = false
+        var quote_char = None
+        
+        while let Some(c) = chars.next() {
+            if c == ']' && !in_value {
+                break
+            }
+            
+            if in_value {
+                if Some(c) == quote_char {
+                    in_value = false
+                    quote_char = None
+                } else {
+                    value.push(c)
+                }
+            } else {
+                match c {
+                    '=' => {
+                        op = Some(AttrOp.Equals)
+                        in_value = true
+                    }
+                    '*' => {
+                        if chars.peek() == Some('=') {
+                            chars.next()
+                            op = Some(AttrOp.Contains)
+                            in_value = true
+                        }
+                    }
+                    '^' => {
+                        if chars.peek() == Some('=') {
+                            chars.next()
+                            op = Some(AttrOp.StartsWith)
+                            in_value = true
+                        }
+                    }
+                    '$' => {
+                        if chars.peek() == Some('=') {
+                            chars.next()
+                            op = Some(AttrOp.EndsWith)
+                            in_value = true
+                        }
+                    }
+                    '~' => {
+                        if chars.peek() == Some('=') {
+                            chars.next()
+                            op = Some(AttrOp.WordMatch)
+                            in_value = true
+                        }
+                    }
+                    '|' => {
+                        if chars.peek() == Some('=') {
+                            chars.next()
+                            op = Some(AttrOp.PrefixMatch)
+                            in_value = true
+                        }
+                    }
+                    '"' | '\'' => {
+                        quote_char = Some(c)
+                    }
+                    _ => {
+                        if !in_value {
+                            name.push(c)
+                        }
+                    }
+                }
+            }
+        }
+        
+        let matcher = op.map(|o| AttrMatcher { op: o, value: value })
+        Ok(SelectorPart.Attribute(name.trim(), matcher))
+    }
+}
+
+fn match_pseudo_class(element: HtmlElement, pseudo: String) -> Bool {
+    match pseudo {
+        "first-child" => element.prev_sibling().is_none()
+        "last-child" => element.next_sibling().is_none()
+        "empty" => element.children.is_empty()
+        "checked" => element.has_attribute("checked")
+        "disabled" => element.has_attribute("disabled")
+        "enabled" => !element.has_attribute("disabled")
+        "required" => element.has_attribute("required")
+        "optional" => !element.has_attribute("required")
+        "read-only" => element.has_attribute("readonly")
+        _ => false
+    }
+}
+
+// =============================================================================
+// HTML Parser
+// =============================================================================
+
+/// HTML parser
+struct HtmlParser {
+    fragment_mode: Bool
+    strict_mode: Bool
+    
+    fn new() -> Self {
+        HtmlParser {
+            fragment_mode: false,
+            strict_mode: false
+        }
+    }
+    
+    fn fragment_mode(enabled: Bool) -> Self {
+        HtmlParser { fragment_mode: enabled, ..self }
+    }
+    
+    fn strict_mode(enabled: Bool) -> Self {
+        HtmlParser { strict_mode: enabled, ..self }
+    }
+    
+    fn parse(html: String) -> Result<HtmlDocument, HtmlParseError> {
+        @native("html_parse", html, self.fragment_mode, self.strict_mode)
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/// Escape HTML special characters
+fn html_escape(s: String) -> String {
+    s.replace("&", "&amp;")
+     .replace("<", "&lt;")
+     .replace(">", "&gt;")
+}
+
+/// Escape HTML attribute value
+fn html_escape_attr(s: String) -> String {
+    s.replace("&", "&amp;")
+     .replace("<", "&lt;")
+     .replace(">", "&gt;")
+     .replace("\"", "&quot;")
+     .replace("'", "&#39;")
+}
+
+/// Unescape HTML entities
+fn html_unescape(s: String) -> String {
+    s.replace("&amp;", "&")
+     .replace("&lt;", "<")
+     .replace("&gt;", ">")
+     .replace("&quot;", "\"")
+     .replace("&#39;", "'")
+     .replace("&nbsp;", " ")
+}
+
+/// Strip HTML tags
+fn strip_tags(html: String) -> String {
+    match HtmlDocument.parse_fragment(html) {
+        Ok(doc) => doc.text_content()
+        Err(_) => html
+    }
+}
+
+/// Extract text from HTML
+fn extract_text(html: String) -> String {
+    strip_tags(html).trim()
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+/// HTML parse error
+enum HtmlParseError {
+    InvalidSyntax(String)
+    UnexpectedToken(String)
+    UnclosedTag(String)
+    InvalidAttribute(String)
+    EncodingError
+}
+
+impl Display for HtmlParseError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidSyntax(s) => f.write(format!("Invalid HTML syntax: {}", s))
+            UnexpectedToken(t) => f.write(format!("Unexpected token: {}", t))
+            UnclosedTag(t) => f.write(format!("Unclosed tag: {}", t))
+            InvalidAttribute(a) => f.write(format!("Invalid attribute: {}", a))
+            EncodingError => f.write("Encoding error")
+        }
+    }
+}
+
+/// Selector error
+enum SelectorError {
+    InvalidSelector(String)
+    UnexpectedToken(String)
+    EmptySelector
+}
+
+impl Display for SelectorError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidSelector(s) => f.write(format!("Invalid selector: {}", s))
+            UnexpectedToken(t) => f.write(format!("Unexpected token: {}", t))
+            EmptySelector => f.write("Empty selector")
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "parse simple html" {
+    let html = "<html><body><h1>Hello</h1></body></html>"
+    let doc = HtmlDocument.parse(html)?
+    assert_eq(doc.query_selector("h1")?.text_content(), "Hello")?
+}
+
+test "query selector" {
+    let html = "<div class=\"container\"><p id=\"intro\">Text</p></div>"
+    let doc = HtmlDocument.parse_fragment(html)?
+    
+    assert(doc.query_selector("#intro").is_some())?
+    assert(doc.query_selector(".container").is_some())?
+    assert(doc.query_selector("p").is_some())?
+}
+
+test "attribute selector" {
+    let html = "<a href=\"https://example.com\">Link</a>"
+    let doc = HtmlDocument.parse_fragment(html)?
+    
+    let links = doc.query_selector_all("a[href]")
+    assert_eq(links.len(), 1)?
+    assert_eq(links[0].href(), Some("https://example.com"))?
+}
+
+test "class manipulation" {
+    var elem = HtmlElement.new("div")
+    elem.add_class("foo")
+    elem.add_class("bar")
+    
+    assert(elem.has_class("foo"))?
+    assert(elem.has_class("bar"))?
+    
+    elem.remove_class("foo")
+    assert(!elem.has_class("foo"))?
+}
+
+test "html escape" {
+    assert_eq(html_escape("<script>"), "&lt;script&gt;")?
+    assert_eq(html_unescape("&lt;script&gt;"), "<script>")?
+}
+
+test "strip tags" {
+    let html = "<p>Hello <b>World</b>!</p>"
+    assert_eq(strip_tags(html), "Hello World!")?
+}
+
+test "element to html" {
+    var elem = HtmlElement.new("div")
+    elem.set_attribute("class", "container")
+    elem.append_child(HtmlNode.Text("Hello"))
+    
+    assert_eq(elem.to_html(), "<div class=\"container\">Hello</div>")?
+}

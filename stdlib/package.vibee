@@ -1,0 +1,785 @@
+// =============================================================================
+// Vibee OS — Package Module
+// Package management and project structure
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Package Manifest
+// -----------------------------------------------------------------------------
+
+/// Package manifest (vibee.toml)
+struct Package {
+    name: String
+    version: String
+    description: String
+    authors: [String]
+    license: String
+    repository: Option<String>
+    homepage: Option<String>
+    documentation: Option<String>
+    readme: Option<String>
+    keywords: [String]
+    categories: [String]
+    edition: String
+    
+    fn new(name: String) -> Self {
+        Package {
+            name: name,
+            version: "0.1.0",
+            description: "",
+            authors: [],
+            license: "MIT",
+            repository: None,
+            homepage: None,
+            documentation: None,
+            readme: Some("README.md"),
+            keywords: [],
+            categories: [],
+            edition: "2024"
+        }
+    }
+    
+    fn load(path: String) -> Result<Self, PackageError> {
+        let content = fs::read_string(path)?
+        Self.from_toml(content)
+    }
+    
+    fn from_toml(content: String) -> Result<Self, PackageError> {
+        let toml = toml::parse(content)?
+        let pkg = toml.get("package").ok_or(PackageError.MissingSection("package"))?
+        
+        Ok(Package {
+            name: pkg.get("name")?.as_str().ok_or(PackageError.MissingField("name"))?,
+            version: pkg.get("version")?.as_str().unwrap_or("0.1.0"),
+            description: pkg.get("description")?.as_str().unwrap_or(""),
+            authors: pkg.get("authors")?.as_array().map(|a| a.filter_map(|v| v.as_str())).unwrap_or([]),
+            license: pkg.get("license")?.as_str().unwrap_or("MIT"),
+            repository: pkg.get("repository")?.as_str(),
+            homepage: pkg.get("homepage")?.as_str(),
+            documentation: pkg.get("documentation")?.as_str(),
+            readme: pkg.get("readme")?.as_str(),
+            keywords: pkg.get("keywords")?.as_array().map(|a| a.filter_map(|v| v.as_str())).unwrap_or([]),
+            categories: pkg.get("categories")?.as_array().map(|a| a.filter_map(|v| v.as_str())).unwrap_or([]),
+            edition: pkg.get("edition")?.as_str().unwrap_or("2024")
+        })
+    }
+    
+    fn to_toml() -> String {
+        var content = "[package]\n"
+        content += format!("name = \"{}\"\n", self.name)
+        content += format!("version = \"{}\"\n", self.version)
+        if !self.description.is_empty() {
+            content += format!("description = \"{}\"\n", self.description)
+        }
+        if !self.authors.is_empty() {
+            content += format!("authors = [{}]\n", self.authors.map(|a| format!("\"{}\"", a)).join(", "))
+        }
+        content += format!("license = \"{}\"\n", self.license)
+        content += format!("edition = \"{}\"\n", self.edition)
+        if let Some(repo) = self.repository {
+            content += format!("repository = \"{}\"\n", repo)
+        }
+        if let Some(home) = self.homepage {
+            content += format!("homepage = \"{}\"\n", home)
+        }
+        if !self.keywords.is_empty() {
+            content += format!("keywords = [{}]\n", self.keywords.map(|k| format!("\"{}\"", k)).join(", "))
+        }
+        if !self.categories.is_empty() {
+            content += format!("categories = [{}]\n", self.categories.map(|c| format!("\"{}\"", c)).join(", "))
+        }
+        content
+    }
+    
+    fn save(path: String) -> Result<(), PackageError> {
+        fs::write_string(path, self.to_toml())?
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Package Manifest Builder
+// -----------------------------------------------------------------------------
+
+actor PackageBuilder {
+    state package: Package
+    state dependencies: Map<String, DependencySpec>
+    state dev_dependencies: Map<String, DependencySpec>
+    state build_dependencies: Map<String, DependencySpec>
+    state features: Map<String, [String]>
+    state targets: [TargetConfig]
+    state workspace: Option<WorkspaceConfig>
+    
+    init(name: String) {
+        self.package = Package.new(name)
+        self.dependencies = Map.empty()
+        self.dev_dependencies = Map.empty()
+        self.build_dependencies = Map.empty()
+        self.features = Map.empty()
+        self.targets = []
+        self.workspace = None
+    }
+    
+    on version(v: String) -> Self { self.package.version = v; self }
+    on description(d: String) -> Self { self.package.description = d; self }
+    on author(a: String) -> Self { self.package.authors.append(a); self }
+    on license(l: String) -> Self { self.package.license = l; self }
+    on repository(r: String) -> Self { self.package.repository = Some(r); self }
+    on homepage(h: String) -> Self { self.package.homepage = Some(h); self }
+    on keyword(k: String) -> Self { self.package.keywords.append(k); self }
+    on category(c: String) -> Self { self.package.categories.append(c); self }
+    on edition(e: String) -> Self { self.package.edition = e; self }
+    
+    on dependency(name: String, version: String) -> Self {
+        self.dependencies.set(name, DependencySpec.Version(version))
+        self
+    }
+    
+    on dependency_git(name: String, url: String, rev: Option<String>) -> Self {
+        self.dependencies.set(name, DependencySpec.Git { url: url, rev: rev })
+        self
+    }
+    
+    on dependency_path(name: String, path: String) -> Self {
+        self.dependencies.set(name, DependencySpec.Path(path))
+        self
+    }
+    
+    on dev_dependency(name: String, version: String) -> Self {
+        self.dev_dependencies.set(name, DependencySpec.Version(version))
+        self
+    }
+    
+    on feature(name: String, deps: [String]) -> Self {
+        self.features.set(name, deps)
+        self
+    }
+    
+    on bin(name: String, path: String) -> Self {
+        self.targets.append(TargetConfig.Bin { name: name, path: path })
+        self
+    }
+    
+    on lib(name: String, path: String) -> Self {
+        self.targets.append(TargetConfig.Lib { name: name, path: path, crate_type: ["lib"] })
+        self
+    }
+    
+    on build() -> PackageManifest {
+        PackageManifest {
+            package: self.package.clone(),
+            dependencies: self.dependencies.clone(),
+            dev_dependencies: self.dev_dependencies.clone(),
+            build_dependencies: self.build_dependencies.clone(),
+            features: self.features.clone(),
+            targets: self.targets.clone(),
+            workspace: self.workspace.clone()
+        }
+    }
+    
+    on save(path: String) -> Result<(), PackageError> {
+        let manifest = self.build()
+        manifest.save(path)
+    }
+}
+
+/// Dependency specification
+enum DependencySpec {
+    Version(String)
+    Git { url: String, rev: Option<String> }
+    Path(String)
+    Detailed { version: String, features: [String], optional: Bool }
+    
+    fn to_toml() -> String {
+        match self {
+            .Version(v) => format!("\"{}\"", v)
+            .Git { url, rev } => {
+                match rev {
+                    Some(r) => format!("{{ git = \"{}\", rev = \"{}\" }}", url, r)
+                    None => format!("{{ git = \"{}\" }}", url)
+                }
+            }
+            .Path(p) => format!("{{ path = \"{}\" }}", p)
+            .Detailed { version, features, optional } => {
+                var parts = [format!("version = \"{}\"", version)]
+                if !features.is_empty() {
+                    parts.append(format!("features = [{}]", features.map(|f| format!("\"{}\"", f)).join(", ")))
+                }
+                if optional {
+                    parts.append("optional = true")
+                }
+                format!("{{ {} }}", parts.join(", "))
+            }
+        }
+    }
+}
+
+/// Target configuration
+enum TargetConfig {
+    Bin { name: String, path: String }
+    Lib { name: String, path: String, crate_type: [String] }
+    Example { name: String, path: String }
+    Test { name: String, path: String }
+    Bench { name: String, path: String }
+}
+
+/// Workspace configuration
+struct WorkspaceConfig {
+    members: [String]
+    exclude: [String]
+    default_members: [String]
+}
+
+// -----------------------------------------------------------------------------
+// Full Package Manifest
+// -----------------------------------------------------------------------------
+
+struct PackageManifest {
+    package: Package
+    dependencies: Map<String, DependencySpec>
+    dev_dependencies: Map<String, DependencySpec>
+    build_dependencies: Map<String, DependencySpec>
+    features: Map<String, [String]>
+    targets: [TargetConfig]
+    workspace: Option<WorkspaceConfig>
+    
+    fn load(path: String) -> Result<Self, PackageError> {
+        let content = fs::read_string(path)?
+        Self.from_toml(content)
+    }
+    
+    fn from_toml(content: String) -> Result<Self, PackageError> {
+        let toml = toml::parse(content)?
+        
+        let package = Package.from_toml(content)?
+        
+        let dependencies = Self.parse_deps(toml.get("dependencies"))?
+        let dev_dependencies = Self.parse_deps(toml.get("dev-dependencies"))?
+        let build_dependencies = Self.parse_deps(toml.get("build-dependencies"))?
+        
+        var features = Map.empty()
+        if let Some(feat_table) = toml.get("features")?.as_table() {
+            for (name, deps) in feat_table {
+                let dep_list = deps.as_array().map(|a| a.filter_map(|v| v.as_str())).unwrap_or([])
+                features.set(name, dep_list)
+            }
+        }
+        
+        Ok(PackageManifest {
+            package: package,
+            dependencies: dependencies,
+            dev_dependencies: dev_dependencies,
+            build_dependencies: build_dependencies,
+            features: features,
+            targets: [],
+            workspace: None
+        })
+    }
+    
+    fn parse_deps(value: Option<toml::Value>) -> Result<Map<String, DependencySpec>, PackageError> {
+        var deps = Map.empty()
+        
+        if let Some(table) = value?.as_table() {
+            for (name, spec) in table {
+                let dep_spec = match spec {
+                    toml::Value.String(v) => DependencySpec.Version(v)
+                    toml::Value.Table(t) => {
+                        if let Some(path) = t.get("path")?.as_str() {
+                            DependencySpec.Path(path)
+                        } else if let Some(git) = t.get("git")?.as_str() {
+                            DependencySpec.Git { url: git, rev: t.get("rev")?.as_str() }
+                        } else {
+                            let version = t.get("version")?.as_str().unwrap_or("*")
+                            let features = t.get("features")?.as_array().map(|a| a.filter_map(|v| v.as_str())).unwrap_or([])
+                            let optional = t.get("optional")?.as_bool().unwrap_or(false)
+                            DependencySpec.Detailed { version: version, features: features, optional: optional }
+                        }
+                    }
+                    _ => continue
+                }
+                deps.set(name, dep_spec)
+            }
+        }
+        
+        Ok(deps)
+    }
+    
+    fn to_toml() -> String {
+        var content = self.package.to_toml()
+        
+        if !self.dependencies.is_empty() {
+            content += "\n[dependencies]\n"
+            for (name, spec) in self.dependencies {
+                content += format!("{} = {}\n", name, spec.to_toml())
+            }
+        }
+        
+        if !self.dev_dependencies.is_empty() {
+            content += "\n[dev-dependencies]\n"
+            for (name, spec) in self.dev_dependencies {
+                content += format!("{} = {}\n", name, spec.to_toml())
+            }
+        }
+        
+        if !self.features.is_empty() {
+            content += "\n[features]\n"
+            for (name, deps) in self.features {
+                content += format!("{} = [{}]\n", name, deps.map(|d| format!("\"{}\"", d)).join(", "))
+            }
+        }
+        
+        content
+    }
+    
+    fn save(path: String) -> Result<(), PackageError> {
+        fs::write_string(path, self.to_toml())?
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Package Manager
+// -----------------------------------------------------------------------------
+
+/// Package manager actor
+actor PackageManager {
+    state root: String
+    state manifest: Option<PackageManifest>
+    state lock: LockFile
+    
+    init() {
+        self.root = "."
+        self.manifest = None
+        self.lock = LockFile.empty()
+    }
+    
+    init(root: String) {
+        self.root = root
+        self.manifest = None
+        self.lock = LockFile.empty()
+    }
+    
+    /// Initialize new package
+    on init_package(name: String, template: PackageTemplate = PackageTemplate.Binary) -> Result<(), PackageError> {
+        // Create directory structure
+        fs::create_dir_all(format!("{}/src", self.root))?
+        
+        // Create manifest
+        let manifest = match template {
+            PackageTemplate.Binary => {
+                PackageBuilder.new(name)
+                    .version("0.1.0")
+                    .edition("2024")
+                    .bin("main", "src/main.vibee")
+                    .build()
+            }
+            PackageTemplate.Library => {
+                PackageBuilder.new(name)
+                    .version("0.1.0")
+                    .edition("2024")
+                    .lib(name, "src/lib.vibee")
+                    .build()
+            }
+            PackageTemplate.Workspace => {
+                PackageManifest {
+                    package: Package.new(name),
+                    dependencies: Map.empty(),
+                    dev_dependencies: Map.empty(),
+                    build_dependencies: Map.empty(),
+                    features: Map.empty(),
+                    targets: [],
+                    workspace: Some(WorkspaceConfig {
+                        members: [],
+                        exclude: [],
+                        default_members: []
+                    })
+                }
+            }
+        }
+        
+        manifest.save(format!("{}/vibee.toml", self.root))?
+        
+        // Create source files
+        match template {
+            PackageTemplate.Binary => {
+                fs::write_string(format!("{}/src/main.vibee", self.root), 
+                    "fn main() {\n    println!(\"Hello, Vibee!\")\n}\n")?
+            }
+            PackageTemplate.Library => {
+                fs::write_string(format!("{}/src/lib.vibee", self.root),
+                    "/// Library entry point\npub fn hello() -> String {\n    \"Hello from \(name)!\"\n}\n")?
+            }
+            _ => {}
+        }
+        
+        // Create .gitignore
+        fs::write_string(format!("{}/.gitignore", self.root), "/target\n.vibee-cache\n")?
+        
+        // Create README
+        fs::write_string(format!("{}/README.md", self.root), format!("# {}\n\nA Vibee project.\n", name))?
+        
+        self.manifest = Some(manifest)
+        Ok(())
+    }
+    
+    /// Load existing package
+    on load() -> Result<(), PackageError> {
+        let manifest_path = format!("{}/vibee.toml", self.root)
+        self.manifest = Some(PackageManifest.load(manifest_path)?)
+        
+        let lock_path = format!("{}/vibee.lock", self.root)
+        if fs::exists(lock_path) {
+            self.lock = LockFile.load(lock_path)?
+        }
+        
+        Ok(())
+    }
+    
+    /// Add dependency
+    on add(name: String, version: String) -> Result<(), PackageError> {
+        let manifest = self.manifest.as_mut().ok_or(PackageError.NotLoaded)?
+        manifest.dependencies.set(name, DependencySpec.Version(version))
+        manifest.save(format!("{}/vibee.toml", self.root))?
+        Ok(())
+    }
+    
+    /// Add dev dependency
+    on add_dev(name: String, version: String) -> Result<(), PackageError> {
+        let manifest = self.manifest.as_mut().ok_or(PackageError.NotLoaded)?
+        manifest.dev_dependencies.set(name, DependencySpec.Version(version))
+        manifest.save(format!("{}/vibee.toml", self.root))?
+        Ok(())
+    }
+    
+    /// Remove dependency
+    on remove(name: String) -> Result<(), PackageError> {
+        let manifest = self.manifest.as_mut().ok_or(PackageError.NotLoaded)?
+        manifest.dependencies.remove(name)
+        manifest.dev_dependencies.remove(name)
+        manifest.save(format!("{}/vibee.toml", self.root))?
+        Ok(())
+    }
+    
+    /// Install dependencies
+    on install() -> Result<(), PackageError> {
+        let manifest = self.manifest.as_ref().ok_or(PackageError.NotLoaded)?
+        
+        // Resolve dependencies
+        let resolver = DependencyResolver.new()
+        let resolved = resolver.resolve(self.collect_deps(manifest))?
+        
+        // Fetch dependencies
+        let fetcher = DependencyFetcher.new()
+        fetcher.fetch(resolved)?
+        
+        // Update lock file
+        self.lock.save(format!("{}/vibee.lock", self.root))?
+        
+        Ok(())
+    }
+    
+    /// Update dependencies
+    on update(names: Option<[String]>) -> Result<(), PackageError> {
+        let manifest = self.manifest.as_ref().ok_or(PackageError.NotLoaded)?
+        
+        // Clear lock for specified deps or all
+        match names {
+            Some(ns) => {
+                for name in ns {
+                    self.lock.remove(name)
+                }
+            }
+            None => self.lock = LockFile.empty()
+        }
+        
+        self.install()
+    }
+    
+    /// List dependencies
+    on list() -> Result<[PackageInfo], PackageError> {
+        let manifest = self.manifest.as_ref().ok_or(PackageError.NotLoaded)?
+        
+        var packages = []
+        for (name, spec) in manifest.dependencies {
+            packages.append(PackageInfo {
+                name: name,
+                version: self.lock.get(name).map(|l| l.version.to_string()).unwrap_or("*"),
+                source: match spec {
+                    DependencySpec.Version(_) => "registry"
+                    DependencySpec.Git { .. } => "git"
+                    DependencySpec.Path(_) => "path"
+                    _ => "unknown"
+                },
+                is_dev: false
+            })
+        }
+        
+        for (name, spec) in manifest.dev_dependencies {
+            packages.append(PackageInfo {
+                name: name,
+                version: self.lock.get(name).map(|l| l.version.to_string()).unwrap_or("*"),
+                source: "registry",
+                is_dev: true
+            })
+        }
+        
+        Ok(packages)
+    }
+    
+    /// Search packages
+    on search(query: String) -> Result<[SearchResult], PackageError> {
+        let registry = RegistryClient.new("https://registry.vibee.dev")
+        registry.search(query)
+    }
+    
+    /// Get package info
+    on info(name: String) -> Result<PackageDetails, PackageError> {
+        let registry = RegistryClient.new("https://registry.vibee.dev")
+        registry.get_package(name)
+    }
+    
+    fn collect_deps(manifest: PackageManifest) -> [Dependency] {
+        var deps = []
+        for (name, spec) in manifest.dependencies {
+            let dep = match spec {
+                DependencySpec.Version(v) => Dependency.new(name, v).ok()
+                DependencySpec.Git { url, rev } => Some(Dependency.from_git(name, url, rev))
+                DependencySpec.Path(p) => Some(Dependency.from_path(name, p))
+                _ => None
+            }
+            if let Some(d) = dep {
+                deps.append(d)
+            }
+        }
+        deps
+    }
+}
+
+/// Package template
+enum PackageTemplate {
+    Binary
+    Library
+    Workspace
+}
+
+// -----------------------------------------------------------------------------
+// Supporting Types
+// -----------------------------------------------------------------------------
+
+struct PackageInfo {
+    name: String
+    version: String
+    source: String
+    is_dev: Bool
+}
+
+struct SearchResult {
+    name: String
+    description: String
+    version: String
+    downloads: Int
+}
+
+struct PackageDetails {
+    name: String
+    version: String
+    description: String
+    authors: [String]
+    license: String
+    repository: Option<String>
+    downloads: Int
+    versions: [String]
+    dependencies: [String]
+}
+
+struct LockFile {
+    packages: Map<String, LockedPackage>
+    
+    fn empty() -> Self {
+        LockFile { packages: Map.empty() }
+    }
+    
+    fn load(path: String) -> Result<Self, PackageError> {
+        let content = fs::read_string(path)?
+        let toml = toml::parse(content)?
+        
+        var packages = Map.empty()
+        if let Some(pkgs) = toml.get("package")?.as_array() {
+            for pkg in pkgs {
+                let name = pkg.get("name")?.as_str()?
+                packages.set(name.clone(), LockedPackage {
+                    name: name,
+                    version: Version.parse(pkg.get("version")?.as_str()?)?,
+                    checksum: pkg.get("checksum")?.as_str().unwrap_or("")
+                })
+            }
+        }
+        
+        Ok(LockFile { packages: packages })
+    }
+    
+    fn save(path: String) -> Result<(), PackageError> {
+        var content = "# Auto-generated by vibee\n\n"
+        for (_, pkg) in self.packages {
+            content += "[[package]]\n"
+            content += format!("name = \"{}\"\n", pkg.name)
+            content += format!("version = \"{}\"\n", pkg.version.to_string())
+            if !pkg.checksum.is_empty() {
+                content += format!("checksum = \"{}\"\n", pkg.checksum)
+            }
+            content += "\n"
+        }
+        fs::write_string(path, content)?
+        Ok(())
+    }
+    
+    fn get(name: String) -> Option<LockedPackage> {
+        self.packages.get(name)
+    }
+    
+    fn remove(name: String) {
+        self.packages.remove(name)
+    }
+}
+
+struct LockedPackage {
+    name: String
+    version: Version
+    checksum: String
+}
+
+struct Version {
+    major: Int
+    minor: Int
+    patch: Int
+    
+    fn parse(s: String) -> Result<Self, PackageError> {
+        let parts = s.trim().trim_start("v").split(".")
+        Ok(Version {
+            major: Int.parse(parts.get(0).unwrap_or("0"))?,
+            minor: Int.parse(parts.get(1).unwrap_or("0"))?,
+            patch: Int.parse(parts.get(2).unwrap_or("0"))?
+        })
+    }
+    
+    fn to_string() -> String {
+        format!("{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum PackageError {
+    NotLoaded
+    MissingSection(String)
+    MissingField(String)
+    InvalidManifest(String)
+    DependencyError(String)
+    IOError(String)
+    ParseError(String)
+    
+    fn message() -> String {
+        match self {
+            .NotLoaded => "Package not loaded"
+            .MissingSection(s) => "Missing section: \(s)"
+            .MissingField(f) => "Missing field: \(f)"
+            .InvalidManifest(m) => "Invalid manifest: \(m)"
+            .DependencyError(m) => "Dependency error: \(m)"
+            .IOError(m) => "I/O error: \(m)"
+            .ParseError(m) => "Parse error: \(m)"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+/// Initialize new package
+fn init(name: String) -> Result<(), PackageError> {
+    let pm = PackageManager.new()
+    pm.init_package(name, PackageTemplate.Binary)
+}
+
+/// Initialize new library
+fn init_lib(name: String) -> Result<(), PackageError> {
+    let pm = PackageManager.new()
+    pm.init_package(name, PackageTemplate.Library)
+}
+
+/// Load package from current directory
+fn load() -> Result<PackageManager, PackageError> {
+    let pm = PackageManager.new()
+    pm.load()?
+    Ok(pm)
+}
+
+/// Add dependency to current package
+fn add(name: String, version: String) -> Result<(), PackageError> {
+    let pm = load()?
+    pm.add(name, version)
+}
+
+/// Remove dependency from current package
+fn remove(name: String) -> Result<(), PackageError> {
+    let pm = load()?
+    pm.remove(name)
+}
+
+/// Install all dependencies
+fn install() -> Result<(), PackageError> {
+    let pm = load()?
+    pm.install()
+}
+
+/// Update dependencies
+fn update() -> Result<(), PackageError> {
+    let pm = load()?
+    pm.update(None)
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "package creation" {
+    let pkg = Package.new("test-pkg")
+    assert_eq(pkg.name, "test-pkg")?
+    assert_eq(pkg.version, "0.1.0")?
+}
+
+test "package builder" {
+    let manifest = PackageBuilder.new("my-app")
+        .version("1.0.0")
+        .description("My application")
+        .author("Developer <dev@example.com>")
+        .license("MIT")
+        .dependency("serde", "^1.0")
+        .build()
+    
+    assert_eq(manifest.package.name, "my-app")?
+    assert_eq(manifest.package.version, "1.0.0")?
+    assert(manifest.dependencies.contains_key("serde"))?
+}
+
+test "dependency spec toml" {
+    let spec = DependencySpec.Version("1.0.0")
+    assert_eq(spec.to_toml(), "\"1.0.0\"")?
+    
+    let git_spec = DependencySpec.Git { url: "https://github.com/user/repo", rev: Some("main") }
+    assert(git_spec.to_toml().contains("git"))?
+}
+
+test "manifest to toml" {
+    let manifest = PackageBuilder.new("test")
+        .version("0.1.0")
+        .dependency("dep1", "^1.0")
+        .build()
+    
+    let toml = manifest.to_toml()
+    assert(toml.contains("[package]"))?
+    assert(toml.contains("name = \"test\""))?
+    assert(toml.contains("[dependencies]"))?
+}

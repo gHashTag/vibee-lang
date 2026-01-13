@@ -1,0 +1,303 @@
+// =============================================================================
+// Vibee OS — Telegram Bot Module
+// Telegram Bot API client and handlers
+// =============================================================================
+
+use http::{Client as HttpClient, Request, Response}
+use json::{JsonValue, Serialize, Deserialize}
+use result::{Result, Ok, Err}
+
+// =============================================================================
+// Core Types
+// =============================================================================
+
+/// Parse mode for messages
+enum ParseMode { Text, HTML, Markdown, MarkdownV2 }
+
+impl ParseMode {
+    fn to_string() -> String {
+        match self {
+            ParseMode.Text => "", ParseMode.HTML => "HTML",
+            ParseMode.Markdown => "Markdown", ParseMode.MarkdownV2 => "MarkdownV2"
+        }
+    }
+}
+
+/// Chat types
+enum ChatType { Private, Group, Supergroup, Channel }
+
+impl ChatType {
+    fn from_str(s: String) -> Option<Self> {
+        match s {
+            "private" => Some(ChatType.Private), "group" => Some(ChatType.Group),
+            "supergroup" => Some(ChatType.Supergroup), "channel" => Some(ChatType.Channel), _ => None
+        }
+    }
+}
+
+/// Chat actions
+enum ChatAction { Typing, UploadPhoto, RecordVideo, UploadVideo, RecordVoice, UploadDocument, FindLocation }
+
+impl ChatAction {
+    fn to_string() -> String {
+        match self {
+            ChatAction.Typing => "typing", ChatAction.UploadPhoto => "upload_photo",
+            ChatAction.RecordVideo => "record_video", ChatAction.UploadVideo => "upload_video",
+            ChatAction.RecordVoice => "record_voice", ChatAction.UploadDocument => "upload_document",
+            ChatAction.FindLocation => "find_location"
+        }
+    }
+}
+
+// =============================================================================
+// Telegram Entities
+// =============================================================================
+
+/// Telegram User
+struct User { id: Int64, is_bot: Bool, first_name: String, last_name: Option<String>, username: Option<String>, language_code: Option<String> }
+
+impl User {
+    fn full_name() -> String {
+        match self.last_name { Some(last) => format!("{} {}", self.first_name, last), None => self.first_name.clone() }
+    }
+    fn mention() -> String {
+        match self.username { Some(uname) => format!("@{}", uname), None => self.full_name() }
+    }
+}
+
+/// Telegram Chat
+struct Chat { id: Int64, chat_type: ChatType, title: Option<String>, username: Option<String> }
+
+impl Chat {
+    fn is_private() -> Bool { matches!(self.chat_type, ChatType.Private) }
+    fn is_group() -> Bool { matches!(self.chat_type, ChatType.Group | ChatType.Supergroup) }
+    fn is_channel() -> Bool { matches!(self.chat_type, ChatType.Channel) }
+}
+
+/// Message entity
+struct MessageEntity { entity_type: String, offset: Int, length: Int, url: Option<String>, user: Option<User> }
+
+/// Photo size
+struct PhotoSize { file_id: String, file_unique_id: String, width: Int, height: Int, file_size: Option<Int64> }
+
+/// Document
+struct Document { file_id: String, file_unique_id: String, file_name: Option<String>, mime_type: Option<String> }
+
+/// Telegram Message
+struct Message {
+    message_id: Int64, from: Option<User>, chat: Chat, date: Int64, text: Option<String>,
+    entities: [MessageEntity], reply_to_message: Option<Box<Message>>, photo: Option<[PhotoSize]>,
+    document: Option<Document>, caption: Option<String>
+}
+
+impl Message {
+    fn get_text() -> String { self.text.clone().unwrap_or_default() }
+    fn is_command() -> Bool { self.text.map(|t| t.starts_with("/")).unwrap_or(false) }
+    fn get_command() -> Option<String> {
+        if !self.is_command() { return None }
+        self.text.and_then(|t| t.split_whitespace().first().map(|cmd| cmd.trim_start_matches('/').to_string()))
+    }
+    fn get_args() -> [String] {
+        self.text.map(|t| {
+            let parts: [String] = t.split_whitespace().collect();
+            if parts.len() > 1 { parts[1..].to_vec() } else { [] }
+        }).unwrap_or([])
+    }
+}
+
+/// Callback query
+struct CallbackQuery { id: String, from: User, message: Option<Message>, chat_instance: String, data: Option<String> }
+
+/// Update from Telegram
+struct Update { update_id: Int64, message: Option<Message>, edited_message: Option<Message>, callback_query: Option<CallbackQuery> }
+
+impl Update {
+    fn get_message() -> Option<Message> { self.message.clone().or(self.edited_message.clone()) }
+    fn get_chat_id() -> Option<Int64> {
+        self.get_message().map(|m| m.chat.id).or(self.callback_query.and_then(|cq| cq.message.map(|m| m.chat.id)))
+    }
+}
+
+// =============================================================================
+// Keyboard Types
+// =============================================================================
+
+/// Inline keyboard button
+struct InlineKeyboardButton { text: String, callback_data: Option<String>, url: Option<String> }
+
+impl InlineKeyboardButton {
+    fn callback(text: String, data: String) -> Self { InlineKeyboardButton { text: text, callback_data: Some(data), url: None } }
+    fn url(text: String, url: String) -> Self { InlineKeyboardButton { text: text, callback_data: None, url: Some(url) } }
+}
+
+/// Inline keyboard markup
+struct InlineKeyboardMarkup { inline_keyboard: [[InlineKeyboardButton]] }
+
+impl InlineKeyboardMarkup {
+    fn new() -> Self { InlineKeyboardMarkup { inline_keyboard: [] } }
+    fn row(buttons: [InlineKeyboardButton]) -> Self { self.inline_keyboard.push(buttons); self }
+    fn button(text: String, callback_data: String) -> Self { self.row([InlineKeyboardButton.callback(text, callback_data)]) }
+}
+
+/// Reply keyboard button
+struct KeyboardButton { text: String, request_contact: Bool, request_location: Bool }
+
+impl KeyboardButton {
+    fn new(text: String) -> Self { KeyboardButton { text: text, request_contact: false, request_location: false } }
+    fn contact(text: String) -> Self { KeyboardButton { text: text, request_contact: true, request_location: false } }
+    fn location(text: String) -> Self { KeyboardButton { text: text, request_contact: false, request_location: true } }
+}
+
+/// Reply keyboard markup
+struct ReplyKeyboardMarkup { keyboard: [[KeyboardButton]], resize_keyboard: Bool, one_time_keyboard: Bool }
+
+impl ReplyKeyboardMarkup {
+    fn new() -> Self { ReplyKeyboardMarkup { keyboard: [], resize_keyboard: true, one_time_keyboard: false } }
+    fn row(buttons: [KeyboardButton]) -> Self { self.keyboard.push(buttons); self }
+    fn one_time() -> Self { self.one_time_keyboard = true; self }
+}
+
+// =============================================================================
+// Bot Client
+// =============================================================================
+
+/// Telegram Bot API error
+enum TelegramError { NetworkError(String), ApiError { code: Int, description: String }, ParseError(String), Unauthorized }
+
+/// Telegram Bot client
+actor TelegramBot {
+    state token: String
+    state api_url: String
+    state http: HttpClient
+    state handlers: Map<String, fn(Message) -> ()>
+    state callback_handlers: Map<String, fn(CallbackQuery) -> ()>
+    state default_handler: Option<fn(Message) -> ()>
+    state parse_mode: ParseMode
+    
+    fn new(token: String) -> Self {
+        TelegramBot {
+            token: token, api_url: "https://api.telegram.org", http: HttpClient.new().timeout(30000),
+            handlers: Map.new(), callback_handlers: Map.new(), default_handler: None, parse_mode: ParseMode.HTML
+        }
+    }
+    
+    fn api_endpoint(method: String) -> String { format!("{}/bot{}/{}", self.api_url, self.token, method) }
+    
+    fn call<T: Deserialize>(method: String, params: JsonValue) -> Result<T, TelegramError> {
+        let response = self.http.send(Request.post(self.api_endpoint(method)).json(params))
+            .map_err(|e| TelegramError.NetworkError(e.to_string()))?;
+        let body: JsonValue = response.json().map_err(|e| TelegramError.ParseError(e.to_string()))?;
+        if body["ok"].as_bool().unwrap_or(false) {
+            json::from_value(body["result"].clone()).map_err(|e| TelegramError.ParseError(e.to_string()))
+        } else {
+            Err(TelegramError.ApiError { code: body["error_code"].as_int().unwrap_or(0), description: body["description"].as_str().unwrap_or("").to_string() })
+        }
+    }
+    
+    fn get_me() -> Result<User, TelegramError> { self.call("getMe", {}) }
+    
+    fn send_message(chat_id: Int64, text: String) -> Result<Message, TelegramError> {
+        self.call("sendMessage", { "chat_id": chat_id, "text": text, "parse_mode": self.parse_mode.to_string() })
+    }
+    
+    fn send_message_with_keyboard(chat_id: Int64, text: String, keyboard: InlineKeyboardMarkup) -> Result<Message, TelegramError> {
+        self.call("sendMessage", { "chat_id": chat_id, "text": text, "parse_mode": self.parse_mode.to_string(), "reply_markup": keyboard })
+    }
+    
+    fn reply(message: Message, text: String) -> Result<Message, TelegramError> {
+        self.call("sendMessage", { "chat_id": message.chat.id, "text": text, "reply_to_message_id": message.message_id })
+    }
+    
+    fn edit_message(chat_id: Int64, message_id: Int64, text: String) -> Result<Message, TelegramError> {
+        self.call("editMessageText", { "chat_id": chat_id, "message_id": message_id, "text": text })
+    }
+    
+    fn delete_message(chat_id: Int64, message_id: Int64) -> Result<Bool, TelegramError> {
+        self.call("deleteMessage", { "chat_id": chat_id, "message_id": message_id })
+    }
+    
+    fn send_photo(chat_id: Int64, photo: String, caption: Option<String>) -> Result<Message, TelegramError> {
+        let mut params = { "chat_id": chat_id, "photo": photo };
+        if let Some(cap) = caption { params["caption"] = cap; }
+        self.call("sendPhoto", params)
+    }
+    
+    fn send_document(chat_id: Int64, document: String, caption: Option<String>) -> Result<Message, TelegramError> {
+        let mut params = { "chat_id": chat_id, "document": document };
+        if let Some(cap) = caption { params["caption"] = cap; }
+        self.call("sendDocument", params)
+    }
+    
+    fn send_location(chat_id: Int64, latitude: Float64, longitude: Float64) -> Result<Message, TelegramError> {
+        self.call("sendLocation", { "chat_id": chat_id, "latitude": latitude, "longitude": longitude })
+    }
+    
+    fn send_chat_action(chat_id: Int64, action: ChatAction) -> Result<Bool, TelegramError> {
+        self.call("sendChatAction", { "chat_id": chat_id, "action": action.to_string() })
+    }
+    
+    fn answer_callback_query(callback_query_id: String, text: Option<String>, show_alert: Bool) -> Result<Bool, TelegramError> {
+        let mut params = { "callback_query_id": callback_query_id, "show_alert": show_alert };
+        if let Some(t) = text { params["text"] = t; }
+        self.call("answerCallbackQuery", params)
+    }
+    
+    fn get_updates(offset: Option<Int64>, timeout: Int) -> Result<[Update], TelegramError> {
+        let mut params = { "timeout": timeout };
+        if let Some(off) = offset { params["offset"] = off; }
+        self.call("getUpdates", params)
+    }
+    
+    fn set_webhook(url: String) -> Result<Bool, TelegramError> { self.call("setWebhook", { "url": url }) }
+    fn delete_webhook() -> Result<Bool, TelegramError> { self.call("deleteWebhook", {}) }
+    
+    fn on_command(command: String, handler: fn(Message) -> ()) -> Self { self.handlers.insert(command, handler); self }
+    fn on_callback(data_prefix: String, handler: fn(CallbackQuery) -> ()) -> Self { self.callback_handlers.insert(data_prefix, handler); self }
+    fn on_message(handler: fn(Message) -> ()) -> Self { self.default_handler = Some(handler); self }
+    
+    fn process_update(update: Update) {
+        if let Some(callback) = update.callback_query {
+            if let Some(data) = callback.data.clone() {
+                for (prefix, handler) in self.callback_handlers.iter() {
+                    if data.starts_with(prefix) { handler(callback.clone()); return; }
+                }
+            }
+            return;
+        }
+        if let Some(message) = update.get_message() {
+            if let Some(cmd) = message.get_command() {
+                if let Some(handler) = self.handlers.get(&cmd) { handler(message); return; }
+            }
+            if let Some(handler) = self.default_handler { handler(message); }
+        }
+    }
+    
+    fn start_polling() -> Result<(), TelegramError> {
+        let mut offset: Option<Int64> = None;
+        loop {
+            let updates = self.get_updates(offset, 30)?;
+            for update in updates { offset = Some(update.update_id + 1); self.process_update(update); }
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "parse mode" { assert_eq(ParseMode.HTML.to_string(), "HTML")? }
+
+test "inline keyboard" {
+    let kb = InlineKeyboardMarkup.new().row([InlineKeyboardButton.callback("Yes", "yes"), InlineKeyboardButton.callback("No", "no")]);
+    assert_eq(kb.inline_keyboard.len(), 1)?
+}
+
+test "message command" {
+    let msg = Message { message_id: 1, from: None, chat: Chat { id: 123, chat_type: ChatType.Private, title: None, username: None }, date: 0, text: Some("/start arg1"), entities: [], reply_to_message: None, photo: None, document: None, caption: None };
+    assert(msg.is_command())? assert_eq(msg.get_command(), Some("start"))?
+}
+
+test "user mention" {
+    let user = User { id: 123, is_bot: false, first_name: "John", last_name: Some("Doe"), username: Some("johndoe"), language_code: None };
+    assert_eq(user.mention(), "@johndoe")?
+}

@@ -1,0 +1,316 @@
+// =============================================================================
+// Vibee OS — Campaign Module
+// Email campaign management, scheduling, and analytics
+// =============================================================================
+
+use email.{Email, Address}
+use mailer.{Mailer, DeliveryResult, DeliveryStatus, MailerError}
+use template_email.{EmailTemplate, TemplateBuilder, RenderedEmail}
+use bounce.{BounceHandler, Bounce}
+
+// =============================================================================
+// Campaign
+// =============================================================================
+
+struct Campaign {
+    id: String
+    name: String
+    subject: String
+    template: EmailTemplate
+    from: Address
+    reply_to: Option<Address>
+    recipients: [Recipient]
+    status: CampaignStatus
+    schedule: Option<Instant>
+    created_at: Instant
+    started_at: Option<Instant>
+    completed_at: Option<Instant>
+    settings: CampaignSettings
+    stats: CampaignStats
+}
+
+enum CampaignStatus { Draft, Scheduled, Running, Paused, Completed, Cancelled }
+
+struct CampaignSettings {
+    batch_size: Int
+    batch_delay_ms: Int64
+    track_opens: Bool
+    track_clicks: Bool
+    unsubscribe_url: Option<String>
+}
+
+impl Campaign {
+    fn new(name: String) -> Self {
+        Campaign {
+            id: UUID.v4(), name: name, subject: "", template: EmailTemplate.new("campaign"),
+            from: Address.empty(), reply_to: None, recipients: [], status: CampaignStatus.Draft,
+            schedule: None, created_at: Instant.now(), started_at: None, completed_at: None,
+            settings: CampaignSettings { batch_size: 100, batch_delay_ms: 1000, track_opens: true, track_clicks: true, unsubscribe_url: None },
+            stats: CampaignStats.new()
+        }
+    }
+    
+    fn subject(s: String) -> Self { self.subject = s; self }
+    fn template(t: EmailTemplate) -> Self { self.template = t; self }
+    fn from(addr: Address) -> Self { self.from = addr; self }
+    fn from_email(email: String) -> Self { self.from = Address.new(email); self }
+    fn reply_to(addr: Address) -> Self { self.reply_to = Some(addr); self }
+    fn add_recipient(r: Recipient) -> Self { self.recipients.push(r); self }
+    fn recipients(list: [Recipient]) -> Self { self.recipients = list; self }
+    fn schedule_at(time: Instant) -> Self { self.schedule = Some(time); self.status = CampaignStatus.Scheduled; self }
+    fn batch_size(size: Int) -> Self { self.settings.batch_size = size; self }
+    fn track_opens(enabled: Bool) -> Self { self.settings.track_opens = enabled; self }
+    fn track_clicks(enabled: Bool) -> Self { self.settings.track_clicks = enabled; self }
+    fn unsubscribe_url(url: String) -> Self { self.settings.unsubscribe_url = Some(url); self }
+    
+    fn recipient_count() -> Int { self.recipients.len() }
+    fn is_draft() -> Bool { self.status == CampaignStatus.Draft }
+    fn is_running() -> Bool { self.status == CampaignStatus.Running }
+    fn is_completed() -> Bool { self.status == CampaignStatus.Completed }
+}
+
+// =============================================================================
+// Recipient
+// =============================================================================
+
+struct Recipient {
+    email: String
+    name: Option<String>
+    variables: Map<String, String>
+    status: RecipientStatus
+    sent_at: Option<Instant>
+    opened_at: Option<Instant>
+    clicked_at: Option<Instant>
+}
+
+enum RecipientStatus { Pending, Sent, Delivered, Opened, Clicked, Bounced, Unsubscribed, Failed }
+
+impl Recipient {
+    fn new(email: String) -> Self {
+        Recipient { email: email, name: None, variables: Map.empty(), status: RecipientStatus.Pending, sent_at: None, opened_at: None, clicked_at: None }
+    }
+    
+    fn named(name: String, email: String) -> Self { Recipient { email: email, name: Some(name), variables: Map.empty(), status: RecipientStatus.Pending, sent_at: None, opened_at: None, clicked_at: None } }
+    fn var(key: String, value: String) -> Self { self.variables.set(key, value); self }
+    fn to_address() -> Address { match self.name.clone() { Some(n) => Address.named(n, self.email.clone()), None => Address.new(self.email.clone()) } }
+}
+
+// =============================================================================
+// Campaign Runner
+// =============================================================================
+
+actor CampaignRunner {
+    state mailer: Box<dyn Mailer>
+    state campaigns: Map<String, Campaign>
+    state running: Bool
+    state bounce_handler: Option<BounceHandler>
+    
+    fn new(mailer: Box<dyn Mailer>) -> Self {
+        CampaignRunner { mailer: mailer, campaigns: Map.empty(), running: false, bounce_handler: None }
+    }
+    
+    fn with_bounce_handler(handler: BounceHandler) -> Self { self.bounce_handler = Some(handler); self }
+    
+    fn create(campaign: Campaign) -> String {
+        let id = campaign.id.clone()
+        self.campaigns.set(id.clone(), campaign)
+        id
+    }
+    
+    fn start(campaign_id: String) -> Result<(), CampaignError> {
+        let campaign = self.campaigns.get_mut(campaign_id.clone()).ok_or(CampaignError.NotFound)?
+        if campaign.status != CampaignStatus.Draft && campaign.status != CampaignStatus.Scheduled {
+            return Err(CampaignError.InvalidStatus)
+        }
+        campaign.status = CampaignStatus.Running
+        campaign.started_at = Some(Instant.now())
+        spawn { self.run_campaign(campaign_id) }
+        Ok(())
+    }
+    
+    fn pause(campaign_id: String) -> Result<(), CampaignError> {
+        let campaign = self.campaigns.get_mut(campaign_id).ok_or(CampaignError.NotFound)?
+        if campaign.status == CampaignStatus.Running { campaign.status = CampaignStatus.Paused }
+        Ok(())
+    }
+    
+    fn resume(campaign_id: String) -> Result<(), CampaignError> {
+        let campaign = self.campaigns.get_mut(campaign_id.clone()).ok_or(CampaignError.NotFound)?
+        if campaign.status == CampaignStatus.Paused {
+            campaign.status = CampaignStatus.Running
+            spawn { self.run_campaign(campaign_id) }
+        }
+        Ok(())
+    }
+    
+    fn cancel(campaign_id: String) -> Result<(), CampaignError> {
+        let campaign = self.campaigns.get_mut(campaign_id).ok_or(CampaignError.NotFound)?
+        campaign.status = CampaignStatus.Cancelled
+        Ok(())
+    }
+    
+    fn run_campaign(campaign_id: String) {
+        let campaign = match self.campaigns.get_mut(campaign_id.clone()) { Some(c) => c, None => return }
+        let batch_size = campaign.settings.batch_size
+        let delay = campaign.settings.batch_delay_ms
+        
+        let pending: [Int] = campaign.recipients.iter().enumerate()
+            .filter(|(_, r)| r.status == RecipientStatus.Pending).map(|(i, _)| i).collect()
+        
+        for chunk in pending.chunks(batch_size) {
+            if campaign.status != CampaignStatus.Running { break }
+            
+            for idx in chunk {
+                if let Some(recipient) = campaign.recipients.get_mut(*idx) {
+                    if let Some(handler) = self.bounce_handler.as_ref() {
+                        if handler.is_suppressed(recipient.email.clone()) {
+                            recipient.status = RecipientStatus.Bounced
+                            campaign.stats.bounced += 1
+                            continue
+                        }
+                    }
+                    
+                    match self.send_to_recipient(campaign, recipient) {
+                        Ok(_) => { recipient.status = RecipientStatus.Sent; recipient.sent_at = Some(Instant.now()); campaign.stats.sent += 1 }
+                        Err(_) => { recipient.status = RecipientStatus.Failed; campaign.stats.failed += 1 }
+                    }
+                }
+            }
+            @native("sleep", Duration.milliseconds(delay))
+        }
+        
+        if campaign.status == CampaignStatus.Running {
+            campaign.status = CampaignStatus.Completed
+            campaign.completed_at = Some(Instant.now())
+        }
+    }
+    
+    fn send_to_recipient(campaign: &Campaign, recipient: &Recipient) -> Result<(), MailerError> {
+        var vars = recipient.variables.clone()
+        vars.set("email", recipient.email.clone())
+        if let Some(name) = recipient.name.clone() { vars.set("name", name) }
+        if let Some(url) = campaign.settings.unsubscribe_url.clone() { vars.set("unsubscribe_url", url) }
+        
+        let email = Email.new()
+            .from(campaign.from.to_string())
+            .to(recipient.email.clone())
+            .subject(campaign.subject.clone())
+        
+        self.mailer.send(email).map(|_| ())
+    }
+    
+    fn get(campaign_id: String) -> Option<Campaign> { self.campaigns.get(campaign_id).cloned() }
+    fn get_stats(campaign_id: String) -> Option<CampaignStats> { self.campaigns.get(campaign_id).map(|c| c.stats.clone()) }
+    fn list() -> [Campaign] { self.campaigns.values().cloned().collect() }
+}
+
+// =============================================================================
+// Campaign Stats
+// =============================================================================
+
+struct CampaignStats {
+    total: Int
+    sent: Int
+    delivered: Int
+    opened: Int
+    clicked: Int
+    bounced: Int
+    unsubscribed: Int
+    failed: Int
+}
+
+impl CampaignStats {
+    fn new() -> Self { CampaignStats { total: 0, sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0, unsubscribed: 0, failed: 0 } }
+    fn delivery_rate() -> Float { if self.sent == 0 { 0.0 } else { self.delivered as Float / self.sent as Float } }
+    fn open_rate() -> Float { if self.delivered == 0 { 0.0 } else { self.opened as Float / self.delivered as Float } }
+    fn click_rate() -> Float { if self.opened == 0 { 0.0 } else { self.clicked as Float / self.opened as Float } }
+    fn bounce_rate() -> Float { if self.sent == 0 { 0.0 } else { self.bounced as Float / self.sent as Float } }
+}
+
+// =============================================================================
+// A/B Testing
+// =============================================================================
+
+struct ABTest {
+    id: String
+    name: String
+    variants: [ABVariant]
+    winner_criteria: WinnerCriteria
+    test_percentage: Float
+    status: ABTestStatus
+}
+
+struct ABVariant { id: String, name: String, subject: Option<String>, template: Option<EmailTemplate>, weight: Float, stats: CampaignStats }
+enum WinnerCriteria { OpenRate, ClickRate, ConversionRate }
+enum ABTestStatus { Draft, Running, Completed }
+
+impl ABTest {
+    fn new(name: String) -> Self { ABTest { id: UUID.v4(), name: name, variants: [], winner_criteria: WinnerCriteria.OpenRate, test_percentage: 0.2, status: ABTestStatus.Draft } }
+    fn add_variant(name: String) -> Self { self.variants.push(ABVariant { id: UUID.v4(), name: name, subject: None, template: None, weight: 1.0, stats: CampaignStats.new() }); self }
+    fn test_percentage(pct: Float) -> Self { self.test_percentage = pct; self }
+    fn winner_by(criteria: WinnerCriteria) -> Self { self.winner_criteria = criteria; self }
+    
+    fn get_winner() -> Option<&ABVariant> {
+        if self.variants.is_empty() { return None }
+        self.variants.iter().max_by(|a, b| {
+            let score_a = match self.winner_criteria { WinnerCriteria.OpenRate => a.stats.open_rate(), WinnerCriteria.ClickRate => a.stats.click_rate(), _ => 0.0 }
+            let score_b = match self.winner_criteria { WinnerCriteria.OpenRate => b.stats.open_rate(), WinnerCriteria.ClickRate => b.stats.click_rate(), _ => 0.0 }
+            score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
+        })
+    }
+}
+
+// =============================================================================
+// Subscriber List
+// =============================================================================
+
+struct SubscriberList {
+    id: String
+    name: String
+    subscribers: Map<String, Subscriber>
+    tags: Set<String>
+}
+
+struct Subscriber {
+    email: String
+    name: Option<String>
+    status: SubscriberStatus
+    tags: Set<String>
+    custom_fields: Map<String, String>
+    subscribed_at: Instant
+    unsubscribed_at: Option<Instant>
+}
+
+enum SubscriberStatus { Active, Unsubscribed, Bounced, Complained }
+
+impl SubscriberList {
+    fn new(name: String) -> Self { SubscriberList { id: UUID.v4(), name: name, subscribers: Map.empty(), tags: Set.new() } }
+    
+    fn add(email: String) -> Self {
+        self.subscribers.set(email.clone(), Subscriber { email: email, name: None, status: SubscriberStatus.Active, tags: Set.new(), custom_fields: Map.empty(), subscribed_at: Instant.now(), unsubscribed_at: None })
+        self
+    }
+    
+    fn add_subscriber(sub: Subscriber) -> Self { self.subscribers.set(sub.email.clone(), sub); self }
+    fn remove(email: String) { self.subscribers.remove(email) }
+    fn unsubscribe(email: String) { if let Some(s) = self.subscribers.get_mut(email) { s.status = SubscriberStatus.Unsubscribed; s.unsubscribed_at = Some(Instant.now()) } }
+    fn get(email: String) -> Option<&Subscriber> { self.subscribers.get(email) }
+    fn active_count() -> Int { self.subscribers.values().filter(|s| s.status == SubscriberStatus.Active).count() }
+    fn to_recipients() -> [Recipient] { self.subscribers.values().filter(|s| s.status == SubscriberStatus.Active).map(|s| Recipient.new(s.email.clone()).var("name", s.name.clone().unwrap_or(""))).collect() }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum CampaignError { NotFound, InvalidStatus, SendError(String), ValidationError(String) }
+impl Display for CampaignError { fn fmt(f: Formatter) { match self { NotFound => f.write("Campaign not found"), InvalidStatus => f.write("Invalid status"), SendError(e) => f.write(format!("Send error: {}", e)), ValidationError(e) => f.write(format!("Validation: {}", e)) } } }
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "campaign creation" { let c = Campaign.new("Test").subject("Hello").batch_size(50); assert_eq(c.name, "Test")?; assert_eq(c.settings.batch_size, 50)? }
+test "recipient" { let r = Recipient.named("John", "john@example.com").var("company", "Acme"); assert_eq(r.variables.get("company"), Some("Acme"))? }
+test "campaign stats" { let s = CampaignStats { total: 100, sent: 100, delivered: 90, opened: 45, clicked: 10, bounced: 5, unsubscribed: 2, failed: 5 }; assert_eq(s.open_rate(), 0.5)? }
+test "subscriber list" { let mut list = SubscriberList.new("Newsletter").add("a@test.com").add("b@test.com"); assert_eq(list.active_count(), 2)? }

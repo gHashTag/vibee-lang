@@ -1,0 +1,823 @@
+// =============================================================================
+// Vibee OS — Workflow Engine Module
+// Core workflow execution engine
+// =============================================================================
+
+use result::{Result, Ok, Err}
+use datetime::{DateTime, Duration}
+use workflow_step::{Step, StepContext, StepResult, StepStatus, StepExecutor, StepError}
+use workflow_condition::{Condition, ConditionContext}
+use workflow_trigger::{Trigger, TriggerEvent, TriggerRegistry}
+use approval::{ApprovalRequest, ApprovalManager, ApprovalStatus}
+
+// =============================================================================
+// Workflow Status
+// =============================================================================
+
+enum WorkflowStatus {
+    Draft
+    Active
+    Running
+    Paused
+    Completed
+    Failed(String)
+    Cancelled
+    WaitingForApproval
+    
+    fn is_terminal() -> Bool {
+        match self {
+            Completed | Failed(_) | Cancelled => true
+            _ => false
+        }
+    }
+    
+    fn is_running() -> Bool {
+        matches!(self, Running | WaitingForApproval)
+    }
+}
+
+// =============================================================================
+// Workflow Definition
+// =============================================================================
+
+struct WorkflowDefinition {
+    id: String
+    name: String
+    description: String
+    version: String
+    steps: [WorkflowStepDef]
+    triggers: [Box<dyn Trigger>]
+    variables: Map<String, Any>
+    timeout: Option<Duration>
+    retry_policy: Option<WorkflowRetryPolicy>
+    on_success: Option<fn(WorkflowExecution)>
+    on_failure: Option<fn(WorkflowExecution, String)>
+    metadata: Map<String, Any>
+    
+    fn new(id: String, name: String) -> Self {
+        WorkflowDefinition {
+            id: id,
+            name: name,
+            description: "",
+            version: "1.0.0",
+            steps: [],
+            triggers: [],
+            variables: Map.empty(),
+            timeout: None,
+            retry_policy: None,
+            on_success: None,
+            on_failure: None,
+            metadata: Map.empty()
+        }
+    }
+    
+    fn with_description(desc: String) -> Self {
+        self.description = desc
+        self
+    }
+    
+    fn with_version(version: String) -> Self {
+        self.version = version
+        self
+    }
+    
+    fn add_step(step: WorkflowStepDef) -> Self {
+        self.steps.push(step)
+        self
+    }
+    
+    fn add_trigger<T: Trigger>(trigger: T) -> Self {
+        self.triggers.push(Box.new(trigger))
+        self
+    }
+    
+    fn with_variable(name: String, value: Any) -> Self {
+        self.variables.set(name, value)
+        self
+    }
+    
+    fn with_timeout(timeout: Duration) -> Self {
+        self.timeout = Some(timeout)
+        self
+    }
+    
+    fn on_success(callback: fn(WorkflowExecution)) -> Self {
+        self.on_success = Some(callback)
+        self
+    }
+    
+    fn on_failure(callback: fn(WorkflowExecution, String)) -> Self {
+        self.on_failure = Some(callback)
+        self
+    }
+    
+    fn validate() -> Result<(), WorkflowError> {
+        if self.steps.is_empty() {
+            return Err(WorkflowError.InvalidDefinition("Workflow must have at least one step"))
+        }
+        
+        // Check for duplicate step IDs
+        let ids: Set<String> = Set.new()
+        for step in self.steps {
+            if ids.contains(step.id.clone()) {
+                return Err(WorkflowError.InvalidDefinition(format!("Duplicate step ID: {}", step.id)))
+            }
+            ids.insert(step.id.clone())
+        }
+        
+        // Validate step dependencies
+        for step in self.steps {
+            for dep in step.depends_on {
+                if !ids.contains(dep.clone()) {
+                    return Err(WorkflowError.InvalidDefinition(format!("Unknown dependency: {}", dep)))
+                }
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+struct WorkflowStepDef {
+    id: String
+    name: String
+    step: Box<dyn Step>
+    condition: Option<Box<dyn Condition>>
+    depends_on: [String]
+    on_error: ErrorHandling
+    
+    fn new(id: String, step: Box<dyn Step>) -> Self {
+        WorkflowStepDef {
+            id: id.clone(),
+            name: step.name(),
+            step: step,
+            condition: None,
+            depends_on: [],
+            on_error: ErrorHandling.Fail
+        }
+    }
+    
+    fn with_condition<C: Condition>(condition: C) -> Self {
+        self.condition = Some(Box.new(condition))
+        self
+    }
+    
+    fn depends_on(step_ids: [String]) -> Self {
+        self.depends_on = step_ids
+        self
+    }
+    
+    fn on_error(handling: ErrorHandling) -> Self {
+        self.on_error = handling
+        self
+    }
+}
+
+enum ErrorHandling {
+    Fail
+    Skip
+    Retry(Int)
+    Continue
+    Rollback
+}
+
+struct WorkflowRetryPolicy {
+    max_retries: Int
+    delay: Duration
+    backoff: Float
+    
+    fn default() -> Self {
+        WorkflowRetryPolicy {
+            max_retries: 3,
+            delay: Duration.seconds(5),
+            backoff: 2.0
+        }
+    }
+}
+
+// =============================================================================
+// Workflow Execution
+// =============================================================================
+
+struct WorkflowExecution {
+    id: String
+    workflow_id: String
+    workflow_version: String
+    status: WorkflowStatus
+    current_step: Option<String>
+    step_results: Map<String, StepResult>
+    variables: Map<String, Any>
+    started_at: DateTime
+    completed_at: Option<DateTime>
+    error: Option<String>
+    trigger_event: Option<TriggerEvent>
+    metadata: Map<String, Any>
+    
+    fn new(workflow: WorkflowDefinition) -> Self {
+        WorkflowExecution {
+            id: UUID.v4(),
+            workflow_id: workflow.id,
+            workflow_version: workflow.version,
+            status: WorkflowStatus.Running,
+            current_step: None,
+            step_results: Map.empty(),
+            variables: workflow.variables.clone(),
+            started_at: DateTime.now(),
+            completed_at: None,
+            error: None,
+            trigger_event: None,
+            metadata: Map.empty()
+        }
+    }
+    
+    fn with_trigger(event: TriggerEvent) -> Self {
+        self.trigger_event = Some(event.clone())
+        self.variables.extend(event.payload)
+        self
+    }
+    
+    fn with_variables(vars: Map<String, Any>) -> Self {
+        self.variables.extend(vars)
+        self
+    }
+    
+    fn duration() -> Option<Duration> {
+        self.completed_at.map(|end| end - self.started_at)
+    }
+    
+    fn get_step_result(step_id: String) -> Option<StepResult> {
+        self.step_results.get(step_id)
+    }
+    
+    fn set_step_result(step_id: String, result: StepResult) {
+        self.step_results.set(step_id, result)
+    }
+    
+    fn complete() {
+        self.status = WorkflowStatus.Completed
+        self.completed_at = Some(DateTime.now())
+    }
+    
+    fn fail(error: String) {
+        self.status = WorkflowStatus.Failed(error.clone())
+        self.error = Some(error)
+        self.completed_at = Some(DateTime.now())
+    }
+    
+    fn cancel() {
+        self.status = WorkflowStatus.Cancelled
+        self.completed_at = Some(DateTime.now())
+    }
+}
+
+// =============================================================================
+// Workflow Engine
+// =============================================================================
+
+actor WorkflowEngine {
+    state definitions: Map<String, WorkflowDefinition>
+    state executions: Map<String, WorkflowExecution>
+    state trigger_registry: TriggerRegistry
+    state approval_manager: ApprovalManager
+    state running: Bool
+    state event_handlers: WorkflowEventHandlers
+    
+    fn new() -> Self {
+        WorkflowEngine {
+            definitions: Map.empty(),
+            executions: Map.empty(),
+            trigger_registry: TriggerRegistry.new(),
+            approval_manager: ApprovalManager.new(),
+            running: false,
+            event_handlers: WorkflowEventHandlers.new()
+        }
+    }
+    
+    /// Register a workflow definition
+    fn register(workflow: WorkflowDefinition) -> Result<(), WorkflowError> {
+        workflow.validate()?
+        
+        // Register triggers
+        for trigger in workflow.triggers.iter() {
+            self.trigger_registry.register(trigger.clone(), workflow.id.clone())
+        }
+        
+        self.definitions.set(workflow.id.clone(), workflow)
+        Ok(())
+    }
+    
+    /// Unregister a workflow
+    fn unregister(workflow_id: String) {
+        self.definitions.remove(workflow_id)
+    }
+    
+    /// Start a workflow execution
+    fn start(workflow_id: String, inputs: Map<String, Any>) -> Result<String, WorkflowError> {
+        let workflow = self.definitions.get(workflow_id.clone())
+            .ok_or(WorkflowError.NotFound)?
+        
+        var execution = WorkflowExecution.new(workflow.clone())
+        execution.variables.extend(inputs)
+        
+        let execution_id = execution.id.clone()
+        self.executions.set(execution_id.clone(), execution.clone())
+        
+        self.event_handlers.on_start(execution.clone())
+        
+        // Execute workflow asynchronously
+        spawn { self.execute(execution_id.clone()) }
+        
+        Ok(execution_id)
+    }
+    
+    /// Start workflow from trigger event
+    fn start_from_trigger(event: TriggerEvent) -> Result<String, WorkflowError> {
+        let workflow = self.definitions.get(event.workflow_id.clone())
+            .ok_or(WorkflowError.NotFound)?
+        
+        var execution = WorkflowExecution.new(workflow.clone())
+            .with_trigger(event)
+        
+        let execution_id = execution.id.clone()
+        self.executions.set(execution_id.clone(), execution.clone())
+        
+        spawn { self.execute(execution_id.clone()) }
+        
+        Ok(execution_id)
+    }
+    
+    /// Execute workflow
+    fn execute(execution_id: String) {
+        let execution = match self.executions.get_mut(execution_id.clone()) {
+            Some(e) => e
+            None => return
+        }
+        
+        let workflow = match self.definitions.get(execution.workflow_id.clone()) {
+            Some(w) => w
+            None => {
+                execution.fail("Workflow definition not found")
+                return
+            }
+        }
+        
+        // Build execution order based on dependencies
+        let order = self.resolve_execution_order(workflow.steps.clone())
+        
+        for step_def in order {
+            // Check if workflow was cancelled
+            if execution.status == WorkflowStatus.Cancelled {
+                break
+            }
+            
+            execution.current_step = Some(step_def.id.clone())
+            
+            // Check dependencies
+            if !self.check_dependencies(step_def.depends_on.clone(), execution) {
+                execution.set_step_result(step_def.id.clone(), StepResult.skipped("Dependencies not met"))
+                continue
+            }
+            
+            // Check condition
+            if let Some(condition) = step_def.condition {
+                let cond_ctx = ConditionContext.new(execution.workflow_id.clone())
+                    .with_variables(execution.variables.clone())
+                    .with_step_results(execution.step_results.clone())
+                
+                if !condition.evaluate(cond_ctx) {
+                    execution.set_step_result(step_def.id.clone(), StepResult.skipped("Condition not met"))
+                    continue
+                }
+            }
+            
+            // Execute step
+            let step_ctx = StepContext.new(execution.workflow_id.clone(), step_def.id.clone())
+                .with_variables(execution.variables.clone())
+            
+            let result = match StepExecutor.execute_with_retry(step_def.step, step_ctx) {
+                Ok(r) => r
+                Err(e) => StepResult.failure(e.to_string())
+            }
+            
+            // Handle step result
+            if result.status.is_failure() {
+                match step_def.on_error {
+                    ErrorHandling.Fail => {
+                        execution.set_step_result(step_def.id.clone(), result.clone())
+                        execution.fail(result.error.unwrap_or("Step failed"))
+                        self.event_handlers.on_failure(execution.clone(), result.error.unwrap_or(""))
+                        return
+                    }
+                    ErrorHandling.Skip => {
+                        execution.set_step_result(step_def.id.clone(), StepResult.skipped("Error skipped"))
+                    }
+                    ErrorHandling.Continue => {
+                        execution.set_step_result(step_def.id.clone(), result)
+                    }
+                    ErrorHandling.Rollback => {
+                        self.rollback(execution_id.clone())
+                        return
+                    }
+                    ErrorHandling.Retry(n) => {
+                        // Already handled by StepExecutor
+                        execution.set_step_result(step_def.id.clone(), result)
+                    }
+                }
+            } else {
+                // Merge step outputs into workflow variables
+                if let Some(output) = result.output {
+                    execution.variables.set(format!("{}_output", step_def.id), output)
+                }
+                execution.set_step_result(step_def.id.clone(), result)
+            }
+            
+            self.event_handlers.on_step_complete(execution.clone(), step_def.id.clone())
+        }
+        
+        // Workflow completed successfully
+        if !execution.status.is_terminal() {
+            execution.complete()
+            self.event_handlers.on_complete(execution.clone())
+            
+            if let Some(callback) = workflow.on_success {
+                callback(execution.clone())
+            }
+        }
+    }
+    
+    /// Resolve execution order based on dependencies
+    fn resolve_execution_order(steps: [WorkflowStepDef]) -> [WorkflowStepDef] {
+        var result = []
+        var remaining = steps.clone()
+        var completed: Set<String> = Set.new()
+        
+        while !remaining.is_empty() {
+            var found = false
+            
+            for (i, step) in remaining.iter().enumerate() {
+                let deps_met = step.depends_on.iter().all(|d| completed.contains(d))
+                
+                if deps_met {
+                    result.push(step.clone())
+                    completed.insert(step.id.clone())
+                    remaining.remove(i)
+                    found = true
+                    break
+                }
+            }
+            
+            if !found {
+                // Circular dependency or missing dependency
+                result.extend(remaining)
+                break
+            }
+        }
+        
+        result
+    }
+    
+    /// Check if all dependencies are satisfied
+    fn check_dependencies(deps: [String], execution: WorkflowExecution) -> Bool {
+        deps.iter().all(|dep| {
+            execution.step_results.get(dep)
+                .map(|r| r.status.is_success())
+                .unwrap_or(false)
+        })
+    }
+    
+    /// Rollback executed steps
+    fn rollback(execution_id: String) {
+        let execution = match self.executions.get_mut(execution_id.clone()) {
+            Some(e) => e
+            None => return
+        }
+        
+        let workflow = match self.definitions.get(execution.workflow_id.clone()) {
+            Some(w) => w
+            None => return
+        }
+        
+        // Rollback in reverse order
+        let completed_steps: Vec<_> = execution.step_results.keys().collect()
+        
+        for step_id in completed_steps.iter().rev() {
+            if let Some(step_def) = workflow.steps.iter().find(|s| s.id == *step_id) {
+                let ctx = StepContext.new(execution.workflow_id.clone(), step_id.clone())
+                    .with_variables(execution.variables.clone())
+                
+                let _ = step_def.step.rollback(ctx)
+            }
+        }
+        
+        execution.fail("Workflow rolled back")
+    }
+    
+    /// Pause a running workflow
+    fn pause(execution_id: String) -> Result<(), WorkflowError> {
+        let execution = self.executions.get_mut(execution_id)
+            .ok_or(WorkflowError.NotFound)?
+        
+        if execution.status == WorkflowStatus.Running {
+            execution.status = WorkflowStatus.Paused
+            Ok(())
+        } else {
+            Err(WorkflowError.InvalidState("Cannot pause workflow in current state"))
+        }
+    }
+    
+    /// Resume a paused workflow
+    fn resume(execution_id: String) -> Result<(), WorkflowError> {
+        let execution = self.executions.get_mut(execution_id.clone())
+            .ok_or(WorkflowError.NotFound)?
+        
+        if execution.status == WorkflowStatus.Paused {
+            execution.status = WorkflowStatus.Running
+            spawn { self.execute(execution_id) }
+            Ok(())
+        } else {
+            Err(WorkflowError.InvalidState("Cannot resume workflow in current state"))
+        }
+    }
+    
+    /// Cancel a running workflow
+    fn cancel(execution_id: String) -> Result<(), WorkflowError> {
+        let execution = self.executions.get_mut(execution_id)
+            .ok_or(WorkflowError.NotFound)?
+        
+        if !execution.status.is_terminal() {
+            execution.cancel()
+            Ok(())
+        } else {
+            Err(WorkflowError.InvalidState("Cannot cancel completed workflow"))
+        }
+    }
+    
+    /// Get workflow execution status
+    fn get_execution(execution_id: String) -> Option<WorkflowExecution> {
+        self.executions.get(execution_id)
+    }
+    
+    /// Get all executions for a workflow
+    fn get_executions(workflow_id: String) -> [WorkflowExecution] {
+        self.executions.values()
+            .filter(|e| e.workflow_id == workflow_id)
+            .collect()
+    }
+    
+    /// Start the engine (for trigger processing)
+    fn start_engine() {
+        self.running = true
+        spawn { self.trigger_loop() }
+    }
+    
+    /// Stop the engine
+    fn stop_engine() {
+        self.running = false
+    }
+    
+    fn trigger_loop() {
+        while self.running {
+            let context = workflow_trigger::TriggerContext.new()
+            let events = self.trigger_registry.check_all(context)
+            
+            for event in events {
+                let _ = self.start_from_trigger(event)
+            }
+            
+            @native("sleep", Duration.seconds(1))
+        }
+    }
+    
+    /// Set event handlers
+    fn on_workflow_start(handler: fn(WorkflowExecution)) {
+        self.event_handlers.start_handler = Some(handler)
+    }
+    
+    fn on_workflow_complete(handler: fn(WorkflowExecution)) {
+        self.event_handlers.complete_handler = Some(handler)
+    }
+    
+    fn on_workflow_failure(handler: fn(WorkflowExecution, String)) {
+        self.event_handlers.failure_handler = Some(handler)
+    }
+}
+
+struct WorkflowEventHandlers {
+    start_handler: Option<fn(WorkflowExecution)>
+    complete_handler: Option<fn(WorkflowExecution)>
+    failure_handler: Option<fn(WorkflowExecution, String)>
+    step_handler: Option<fn(WorkflowExecution, String)>
+    
+    fn new() -> Self {
+        WorkflowEventHandlers {
+            start_handler: None,
+            complete_handler: None,
+            failure_handler: None,
+            step_handler: None
+        }
+    }
+    
+    fn on_start(execution: WorkflowExecution) {
+        if let Some(h) = self.start_handler { h(execution) }
+    }
+    
+    fn on_complete(execution: WorkflowExecution) {
+        if let Some(h) = self.complete_handler { h(execution) }
+    }
+    
+    fn on_failure(execution: WorkflowExecution, error: String) {
+        if let Some(h) = self.failure_handler { h(execution, error) }
+    }
+    
+    fn on_step_complete(execution: WorkflowExecution, step_id: String) {
+        if let Some(h) = self.step_handler { h(execution, step_id) }
+    }
+}
+
+// =============================================================================
+// Workflow Builder
+// =============================================================================
+
+struct WorkflowBuilder {
+    id: String
+    name: String
+    description: String
+    steps: [WorkflowStepDef]
+    variables: Map<String, Any>
+    timeout: Option<Duration>
+    
+    fn new(id: String, name: String) -> Self {
+        WorkflowBuilder {
+            id: id,
+            name: name,
+            description: "",
+            steps: [],
+            variables: Map.empty(),
+            timeout: None
+        }
+    }
+    
+    fn description(desc: String) -> Self {
+        self.description = desc
+        self
+    }
+    
+    fn step<S: Step>(id: String, step: S) -> Self {
+        self.steps.push(WorkflowStepDef.new(id, Box.new(step)))
+        self
+    }
+    
+    fn step_with_condition<S: Step, C: Condition>(id: String, step: S, condition: C) -> Self {
+        self.steps.push(WorkflowStepDef.new(id, Box.new(step)).with_condition(condition))
+        self
+    }
+    
+    fn step_depends_on<S: Step>(id: String, step: S, deps: [String]) -> Self {
+        self.steps.push(WorkflowStepDef.new(id, Box.new(step)).depends_on(deps))
+        self
+    }
+    
+    fn variable(name: String, value: Any) -> Self {
+        self.variables.set(name, value)
+        self
+    }
+    
+    fn timeout(duration: Duration) -> Self {
+        self.timeout = Some(duration)
+        self
+    }
+    
+    fn build() -> WorkflowDefinition {
+        var workflow = WorkflowDefinition.new(self.id, self.name)
+            .with_description(self.description)
+        
+        workflow.steps = self.steps
+        workflow.variables = self.variables
+        workflow.timeout = self.timeout
+        
+        workflow
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum WorkflowError {
+    NotFound
+    InvalidDefinition(String)
+    InvalidState(String)
+    ExecutionFailed(String)
+    Timeout
+    Cancelled
+    
+    fn to_string() -> String {
+        match self {
+            NotFound => "Workflow not found"
+            InvalidDefinition(msg) => format!("Invalid definition: {}", msg)
+            InvalidState(msg) => format!("Invalid state: {}", msg)
+            ExecutionFailed(msg) => format!("Execution failed: {}", msg)
+            Timeout => "Workflow timed out"
+            Cancelled => "Workflow was cancelled"
+        }
+    }
+}
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+/// Create a new workflow definition
+fn workflow(id: String, name: String) -> WorkflowBuilder {
+    WorkflowBuilder.new(id, name)
+}
+
+/// Create a simple sequential workflow
+fn sequential(id: String, name: String, steps: [Box<dyn Step>]) -> WorkflowDefinition {
+    var builder = WorkflowBuilder.new(id, name)
+    var prev_id: Option<String> = None
+    
+    for (i, step) in steps.iter().enumerate() {
+        let step_id = format!("step-{}", i)
+        
+        if let Some(prev) = prev_id {
+            builder = builder.step_depends_on(step_id.clone(), step.clone(), [prev])
+        } else {
+            builder = builder.step(step_id.clone(), step.clone())
+        }
+        
+        prev_id = Some(step_id)
+    }
+    
+    builder.build()
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "workflow definition" {
+    let workflow = WorkflowDefinition.new("wf-1", "Test Workflow")
+        .with_description("A test workflow")
+        .with_version("1.0.0")
+    
+    assert_eq(workflow.id, "wf-1")?
+    assert_eq(workflow.name, "Test Workflow")?
+}
+
+test "workflow builder" {
+    let step1 = workflow_step::ActionStep.new("s1", "Step 1", |_| Ok(1))
+    let step2 = workflow_step::ActionStep.new("s2", "Step 2", |_| Ok(2))
+    
+    let workflow = WorkflowBuilder.new("wf-1", "Test")
+        .step("step-1", step1)
+        .step_depends_on("step-2", step2, ["step-1"])
+        .variable("env", "test")
+        .build()
+    
+    assert_eq(workflow.steps.len(), 2)?
+    assert_eq(workflow.variables.get("env"), Some("test"))?
+}
+
+test "workflow execution" {
+    let workflow = WorkflowDefinition.new("wf-1", "Test")
+    let execution = WorkflowExecution.new(workflow)
+    
+    assert_eq(execution.status, WorkflowStatus.Running)?
+    assert(execution.started_at <= DateTime.now())?
+}
+
+test "workflow engine register" {
+    let engine = WorkflowEngine.new()
+    
+    let step = workflow_step::ActionStep.new("s1", "Step", |_| Ok(()))
+    let workflow = WorkflowBuilder.new("wf-1", "Test")
+        .step("step-1", step)
+        .build()
+    
+    engine.register(workflow)?
+    
+    assert(engine.definitions.contains_key("wf-1"))?
+}
+
+test "execution order resolution" {
+    let engine = WorkflowEngine.new()
+    
+    let steps = [
+        WorkflowStepDef.new("c", Box.new(workflow_step::ActionStep.new("c", "C", |_| Ok(())))).depends_on(["a", "b"]),
+        WorkflowStepDef.new("a", Box.new(workflow_step::ActionStep.new("a", "A", |_| Ok(())))),
+        WorkflowStepDef.new("b", Box.new(workflow_step::ActionStep.new("b", "B", |_| Ok(())))).depends_on(["a"]),
+    ]
+    
+    let order = engine.resolve_execution_order(steps)
+    
+    assert_eq(order[0].id, "a")?
+    assert_eq(order[1].id, "b")?
+    assert_eq(order[2].id, "c")?
+}
+
+test "workflow status" {
+    assert(WorkflowStatus.Completed.is_terminal())?
+    assert(WorkflowStatus.Running.is_running())?
+    assert(!WorkflowStatus.Paused.is_running())?
+}

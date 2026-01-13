@@ -1,0 +1,687 @@
+// =============================================================================
+// Vibee OS — Apple Push Notification Service Module
+// Native APNS support for iOS, macOS, watchOS, tvOS
+// =============================================================================
+
+use http.{HttpClient, Request, Response}
+use json.{JsonValue, Serialize, Deserialize}
+use crypto.{sign_es256, load_p8_key}
+use tls.{TlsConfig, Certificate}
+
+// =============================================================================
+// APNS Configuration
+// =============================================================================
+
+struct ApnsConfig {
+    key_id: String
+    team_id: String
+    bundle_id: String
+    key_path: Option<String>
+    key_data: Option<String>
+    environment: ApnsEnvironment
+    timeout: Duration
+}
+
+enum ApnsEnvironment {
+    Development
+    Production
+}
+
+impl ApnsEnvironment {
+    fn host() -> String {
+        match self {
+            .Development => "api.sandbox.push.apple.com",
+            .Production => "api.push.apple.com"
+        }
+    }
+    
+    fn port() -> Int { 443 }
+}
+
+impl ApnsConfig {
+    fn new(key_id: String, team_id: String, bundle_id: String) -> Self {
+        ApnsConfig {
+            key_id: key_id,
+            team_id: team_id,
+            bundle_id: bundle_id,
+            key_path: None,
+            key_data: None,
+            environment: ApnsEnvironment.Production,
+            timeout: Duration.from_secs(30)
+        }
+    }
+    
+    fn key_file(path: String) -> Self { self.key_path = Some(path); self }
+    fn key(data: String) -> Self { self.key_data = Some(data); self }
+    fn development() -> Self { self.environment = ApnsEnvironment.Development; self }
+    fn production() -> Self { self.environment = ApnsEnvironment.Production; self }
+    fn timeout(duration: Duration) -> Self { self.timeout = duration; self }
+}
+
+// =============================================================================
+// APNS Notification
+// =============================================================================
+
+struct ApnsNotification {
+    device_token: String
+    payload: ApnsPayload
+    headers: ApnsHeaders
+}
+
+struct ApnsPayload {
+    aps: ApsPayload
+    custom_data: Map<String, JsonValue>
+}
+
+struct ApsPayload {
+    alert: Option<ApnsAlert>
+    badge: Option<Int>
+    sound: Option<ApnsSound>
+    content_available: Bool
+    mutable_content: Bool
+    category: Option<String>
+    thread_id: Option<String>
+    target_content_id: Option<String>
+    interruption_level: Option<InterruptionLevel>
+    relevance_score: Option<Float>
+    filter_criteria: Option<String>
+}
+
+enum InterruptionLevel {
+    Passive
+    Active
+    TimeSensitive
+    Critical
+}
+
+impl InterruptionLevel {
+    fn to_string() -> String {
+        match self {
+            .Passive => "passive",
+            .Active => "active",
+            .TimeSensitive => "time-sensitive",
+            .Critical => "critical"
+        }
+    }
+}
+
+struct ApnsAlert {
+    title: Option<String>
+    subtitle: Option<String>
+    body: Option<String>
+    title_loc_key: Option<String>
+    title_loc_args: [String]
+    subtitle_loc_key: Option<String>
+    subtitle_loc_args: [String]
+    loc_key: Option<String>
+    loc_args: [String]
+    launch_image: Option<String>
+}
+
+enum ApnsSound {
+    Default
+    Named(String)
+    Critical(CriticalSound)
+}
+
+struct CriticalSound {
+    name: String
+    critical: Bool
+    volume: Float
+}
+
+impl ApnsNotification {
+    fn new(device_token: String) -> Self {
+        ApnsNotification {
+            device_token: device_token,
+            payload: ApnsPayload {
+                aps: ApsPayload {
+                    alert: None, badge: None, sound: None,
+                    content_available: false, mutable_content: false,
+                    category: None, thread_id: None, target_content_id: None,
+                    interruption_level: None, relevance_score: None, filter_criteria: None
+                },
+                custom_data: Map.empty()
+            },
+            headers: ApnsHeaders.new()
+        }
+    }
+    
+    fn alert(title: String, body: String) -> Self {
+        self.payload.aps.alert = Some(ApnsAlert {
+            title: Some(title), subtitle: None, body: Some(body),
+            title_loc_key: None, title_loc_args: [],
+            subtitle_loc_key: None, subtitle_loc_args: [],
+            loc_key: None, loc_args: [], launch_image: None
+        }); self
+    }
+    
+    fn subtitle(text: String) -> Self {
+        if let Some(ref mut alert) = self.payload.aps.alert {
+            alert.subtitle = Some(text)
+        }; self
+    }
+    
+    fn badge(count: Int) -> Self { self.payload.aps.badge = Some(count); self }
+    fn sound_default() -> Self { self.payload.aps.sound = Some(ApnsSound.Default); self }
+    fn sound(name: String) -> Self { self.payload.aps.sound = Some(ApnsSound.Named(name)); self }
+    fn sound_critical(name: String, volume: Float) -> Self {
+        self.payload.aps.sound = Some(ApnsSound.Critical(CriticalSound {
+            name: name, critical: true, volume: volume
+        })); self
+    }
+    
+    fn content_available() -> Self { self.payload.aps.content_available = true; self }
+    fn mutable_content() -> Self { self.payload.aps.mutable_content = true; self }
+    fn category(cat: String) -> Self { self.payload.aps.category = Some(cat); self }
+    fn thread_id(id: String) -> Self { self.payload.aps.thread_id = Some(id); self }
+    fn target_content_id(id: String) -> Self { self.payload.aps.target_content_id = Some(id); self }
+    fn interruption_level(level: InterruptionLevel) -> Self { self.payload.aps.interruption_level = Some(level); self }
+    fn relevance_score(score: Float) -> Self { self.payload.aps.relevance_score = Some(score); self }
+    
+    fn data(key: String, value: JsonValue) -> Self { self.payload.custom_data.set(key, value); self }
+    fn data_string(key: String, value: String) -> Self { self.payload.custom_data.set(key, JsonValue.string(value)); self }
+    fn data_int(key: String, value: Int) -> Self { self.payload.custom_data.set(key, JsonValue.number(value)); self }
+    
+    fn priority(p: ApnsPriority) -> Self { self.headers.priority = Some(p); self }
+    fn expiration(exp: Int64) -> Self { self.headers.expiration = Some(exp); self }
+    fn collapse_id(id: String) -> Self { self.headers.collapse_id = Some(id); self }
+    fn push_type(t: ApnsPushType) -> Self { self.headers.push_type = Some(t); self }
+    
+    fn to_json() -> JsonValue {
+        let mut obj = JsonValue.object()
+        obj.set("aps", self.payload.aps.to_json())
+        for (k, v) in self.payload.custom_data { obj.set(k, v) }
+        obj
+    }
+    
+    fn payload_size() -> Int { self.to_json().to_string().len() }
+    fn is_valid_size() -> Bool { self.payload_size() <= 4096 }
+}
+
+impl ApsPayload {
+    fn to_json() -> JsonValue {
+        let mut obj = JsonValue.object()
+        
+        if let Some(alert) = self.alert { obj.set("alert", alert.to_json()) }
+        if let Some(badge) = self.badge { obj.set("badge", badge) }
+        if let Some(sound) = self.sound {
+            match sound {
+                ApnsSound.Default => obj.set("sound", "default"),
+                ApnsSound.Named(name) => obj.set("sound", name),
+                ApnsSound.Critical(cs) => {
+                    let mut s = JsonValue.object()
+                    s.set("name", cs.name)
+                    s.set("critical", 1)
+                    s.set("volume", cs.volume)
+                    obj.set("sound", s)
+                }
+            }
+        }
+        if self.content_available { obj.set("content-available", 1) }
+        if self.mutable_content { obj.set("mutable-content", 1) }
+        if let Some(cat) = self.category { obj.set("category", cat) }
+        if let Some(tid) = self.thread_id { obj.set("thread-id", tid) }
+        if let Some(tcid) = self.target_content_id { obj.set("target-content-id", tcid) }
+        if let Some(level) = self.interruption_level { obj.set("interruption-level", level.to_string()) }
+        if let Some(score) = self.relevance_score { obj.set("relevance-score", score) }
+        if let Some(filter) = self.filter_criteria { obj.set("filter-criteria", filter) }
+        
+        obj
+    }
+}
+
+impl ApnsAlert {
+    fn to_json() -> JsonValue {
+        let mut obj = JsonValue.object()
+        if let Some(t) = self.title { obj.set("title", t) }
+        if let Some(s) = self.subtitle { obj.set("subtitle", s) }
+        if let Some(b) = self.body { obj.set("body", b) }
+        if let Some(k) = self.title_loc_key { obj.set("title-loc-key", k) }
+        if !self.title_loc_args.is_empty() { obj.set("title-loc-args", JsonValue.from(self.title_loc_args)) }
+        if let Some(k) = self.subtitle_loc_key { obj.set("subtitle-loc-key", k) }
+        if !self.subtitle_loc_args.is_empty() { obj.set("subtitle-loc-args", JsonValue.from(self.subtitle_loc_args)) }
+        if let Some(k) = self.loc_key { obj.set("loc-key", k) }
+        if !self.loc_args.is_empty() { obj.set("loc-args", JsonValue.from(self.loc_args)) }
+        if let Some(img) = self.launch_image { obj.set("launch-image", img) }
+        obj
+    }
+}
+
+// =============================================================================
+// APNS Headers
+// =============================================================================
+
+struct ApnsHeaders {
+    priority: Option<ApnsPriority>
+    expiration: Option<Int64>
+    collapse_id: Option<String>
+    push_type: Option<ApnsPushType>
+    topic: Option<String>
+    id: Option<String>
+}
+
+enum ApnsPriority {
+    Immediate  // 10
+    PowerConserving  // 5
+    LowPriority  // 1
+}
+
+impl ApnsPriority {
+    fn value() -> Int {
+        match self {
+            .Immediate => 10,
+            .PowerConserving => 5,
+            .LowPriority => 1
+        }
+    }
+}
+
+enum ApnsPushType {
+    Alert
+    Background
+    Location
+    Voip
+    Complication
+    FileProvider
+    Mdm
+    LiveActivity
+}
+
+impl ApnsPushType {
+    fn to_string() -> String {
+        match self {
+            .Alert => "alert",
+            .Background => "background",
+            .Location => "location",
+            .Voip => "voip",
+            .Complication => "complication",
+            .FileProvider => "fileprovider",
+            .Mdm => "mdm",
+            .LiveActivity => "liveactivity"
+        }
+    }
+}
+
+impl ApnsHeaders {
+    fn new() -> Self {
+        ApnsHeaders {
+            priority: None, expiration: None, collapse_id: None,
+            push_type: None, topic: None, id: None
+        }
+    }
+    
+    fn to_http_headers(bundle_id: String) -> Map<String, String> {
+        let mut headers = Map.empty()
+        headers.set("apns-topic", self.topic.unwrap_or(bundle_id))
+        if let Some(p) = self.priority { headers.set("apns-priority", p.value().to_string()) }
+        if let Some(e) = self.expiration { headers.set("apns-expiration", e.to_string()) }
+        if let Some(c) = self.collapse_id { headers.set("apns-collapse-id", c) }
+        if let Some(t) = self.push_type { headers.set("apns-push-type", t.to_string()) }
+        if let Some(id) = self.id { headers.set("apns-id", id) }
+        headers
+    }
+}
+
+// =============================================================================
+// APNS Client
+// =============================================================================
+
+struct ApnsClient {
+    config: ApnsConfig
+    http: HttpClient
+    jwt_token: Option<String>
+    jwt_issued_at: Option<Instant>
+}
+
+impl ApnsClient {
+    fn new(config: ApnsConfig) -> Self {
+        ApnsClient {
+            config: config,
+            http: HttpClient.new().http2(),
+            jwt_token: None,
+            jwt_issued_at: None
+        }
+    }
+    
+    fn send(notification: ApnsNotification) -> Result<ApnsResponse, ApnsError> {
+        if !notification.is_valid_size() {
+            return Err(ApnsError.PayloadTooLarge(notification.payload_size()))
+        }
+        
+        let token = self.get_jwt_token()?
+        let url = format!("https://{}:{}/3/device/{}", 
+            self.config.environment.host(),
+            self.config.environment.port(),
+            notification.device_token)
+        
+        let mut headers = notification.headers.to_http_headers(self.config.bundle_id.clone())
+        headers.set("authorization", format!("bearer {}", token))
+        
+        let response = self.http.post(url)
+            .headers(headers)
+            .body(notification.to_json().to_string())
+            .timeout(self.config.timeout)
+            .send()?
+        
+        self.parse_response(response)
+    }
+    
+    fn send_batch(notifications: [ApnsNotification]) -> ApnsBatchResponse {
+        let mut responses = []
+        let mut success_count = 0
+        let mut failure_count = 0
+        
+        for notification in notifications {
+            let token = notification.device_token.clone()
+            match self.send(notification) {
+                Ok(resp) => {
+                    success_count += 1
+                    responses.push(ApnsSendResult.success(token, resp.apns_id))
+                },
+                Err(e) => {
+                    failure_count += 1
+                    responses.push(ApnsSendResult.failure(token, e))
+                }
+            }
+        }
+        
+        ApnsBatchResponse { responses: responses, success_count: success_count, failure_count: failure_count }
+    }
+    
+    fn send_silent(device_token: String, data: Map<String, JsonValue>) -> Result<ApnsResponse, ApnsError> {
+        let mut notification = ApnsNotification.new(device_token)
+            .content_available()
+            .push_type(ApnsPushType.Background)
+            .priority(ApnsPriority.PowerConserving)
+        
+        for (k, v) in data {
+            notification = notification.data(k, v)
+        }
+        
+        self.send(notification)
+    }
+    
+    fn send_voip(device_token: String, payload: Map<String, JsonValue>) -> Result<ApnsResponse, ApnsError> {
+        let mut notification = ApnsNotification.new(device_token)
+            .push_type(ApnsPushType.Voip)
+            .priority(ApnsPriority.Immediate)
+        
+        notification.headers.topic = Some(format!("{}.voip", self.config.bundle_id))
+        
+        for (k, v) in payload {
+            notification = notification.data(k, v)
+        }
+        
+        self.send(notification)
+    }
+    
+    fn send_live_activity(device_token: String, event: LiveActivityEvent, content_state: JsonValue) -> Result<ApnsResponse, ApnsError> {
+        let mut notification = ApnsNotification.new(device_token)
+            .push_type(ApnsPushType.LiveActivity)
+            .priority(ApnsPriority.Immediate)
+        
+        notification.headers.topic = Some(format!("{}.push-type.liveactivity", self.config.bundle_id))
+        notification = notification.data("event", JsonValue.string(event.to_string()))
+        notification = notification.data("content-state", content_state)
+        
+        self.send(notification)
+    }
+    
+    fn get_jwt_token() -> Result<String, ApnsError> {
+        if let Some(token) = self.jwt_token.clone() {
+            if let Some(issued) = self.jwt_issued_at {
+                if Instant.now().duration_since(issued) < Duration.from_secs(3000) {
+                    return Ok(token)
+                }
+            }
+        }
+        self.refresh_jwt_token()
+    }
+    
+    fn refresh_jwt_token() -> Result<String, ApnsError> {
+        let key_data = match (self.config.key_path.clone(), self.config.key_data.clone()) {
+            (Some(path), _) => fs.read_string(path)?,
+            (_, Some(data)) => data,
+            _ => return Err(ApnsError.ConfigError("No key provided"))
+        }
+        
+        let now = Instant.now().unix_timestamp()
+        let header = JsonValue.object()
+        header.set("alg", "ES256")
+        header.set("kid", self.config.key_id.clone())
+        
+        let claims = JsonValue.object()
+        claims.set("iss", self.config.team_id.clone())
+        claims.set("iat", now)
+        
+        let header_b64 = base64.url_encode(header.to_string())
+        let claims_b64 = base64.url_encode(claims.to_string())
+        let signing_input = format!("{}.{}", header_b64, claims_b64)
+        
+        let key = load_p8_key(key_data)?
+        let signature = sign_es256(key, signing_input.as_bytes())?
+        let signature_b64 = base64.url_encode(signature)
+        
+        let token = format!("{}.{}.{}", header_b64, claims_b64, signature_b64)
+        self.jwt_token = Some(token.clone())
+        self.jwt_issued_at = Some(Instant.now())
+        
+        Ok(token)
+    }
+    
+    fn parse_response(response: Response) -> Result<ApnsResponse, ApnsError> {
+        let apns_id = response.header("apns-id").unwrap_or("")
+        
+        match response.status().code() {
+            200 => Ok(ApnsResponse {
+                apns_id: apns_id,
+                status: ApnsStatus.Success,
+                reason: None,
+                timestamp: None
+            }),
+            400 => Err(ApnsError.BadRequest(self.parse_error_reason(response))),
+            403 => Err(ApnsError.Forbidden(self.parse_error_reason(response))),
+            404 => Err(ApnsError.DeviceTokenNotFound),
+            405 => Err(ApnsError.MethodNotAllowed),
+            410 => {
+                let json = response.json().ok()
+                let timestamp = json.and_then(|j| j.get("timestamp").as_int64())
+                Err(ApnsError.Unregistered(timestamp))
+            },
+            413 => Err(ApnsError.PayloadTooLarge(0)),
+            429 => Err(ApnsError.TooManyRequests),
+            500 => Err(ApnsError.InternalServerError),
+            503 => Err(ApnsError.ServiceUnavailable),
+            _ => Err(ApnsError.Unknown(response.status().code()))
+        }
+    }
+    
+    fn parse_error_reason(response: Response) -> String {
+        response.json().ok()
+            .and_then(|j| j.get("reason").as_string())
+            .unwrap_or("Unknown error")
+    }
+}
+
+// =============================================================================
+// Live Activity
+// =============================================================================
+
+enum LiveActivityEvent {
+    Start
+    Update
+    End
+}
+
+impl LiveActivityEvent {
+    fn to_string() -> String {
+        match self {
+            .Start => "start",
+            .Update => "update",
+            .End => "end"
+        }
+    }
+}
+
+// =============================================================================
+// APNS Response Types
+// =============================================================================
+
+struct ApnsResponse {
+    apns_id: String
+    status: ApnsStatus
+    reason: Option<String>
+    timestamp: Option<Int64>
+}
+
+enum ApnsStatus {
+    Success
+    BadRequest
+    Forbidden
+    NotFound
+    MethodNotAllowed
+    Unregistered
+    PayloadTooLarge
+    TooManyRequests
+    InternalError
+    ServiceUnavailable
+}
+
+struct ApnsBatchResponse {
+    responses: [ApnsSendResult]
+    success_count: Int
+    failure_count: Int
+}
+
+impl ApnsBatchResponse {
+    fn success_rate() -> Float {
+        if self.success_count + self.failure_count == 0 { return 0.0 }
+        self.success_count as Float / (self.success_count + self.failure_count) as Float
+    }
+    
+    fn failed_tokens() -> [String] {
+        self.responses.filter(|r| !r.success).map(|r| r.device_token.clone()).collect()
+    }
+    
+    fn unregistered_tokens() -> [String] {
+        self.responses.filter(|r| {
+            match r.error {
+                Some(ApnsError.Unregistered(_)) => true,
+                Some(ApnsError.DeviceTokenNotFound) => true,
+                _ => false
+            }
+        }).map(|r| r.device_token.clone()).collect()
+    }
+}
+
+struct ApnsSendResult {
+    device_token: String
+    success: Bool
+    apns_id: Option<String>
+    error: Option<ApnsError>
+}
+
+impl ApnsSendResult {
+    fn success(token: String, apns_id: String) -> Self {
+        ApnsSendResult { device_token: token, success: true, apns_id: Some(apns_id), error: None }
+    }
+    fn failure(token: String, error: ApnsError) -> Self {
+        ApnsSendResult { device_token: token, success: false, apns_id: None, error: Some(error) }
+    }
+}
+
+// =============================================================================
+// APNS Errors
+// =============================================================================
+
+enum ApnsError {
+    ConfigError(String)
+    BadRequest(String)
+    Forbidden(String)
+    DeviceTokenNotFound
+    MethodNotAllowed
+    Unregistered(Option<Int64>)
+    PayloadTooLarge(Int)
+    TooManyRequests
+    InternalServerError
+    ServiceUnavailable
+    NetworkError(String)
+    JwtError(String)
+    Unknown(Int)
+}
+
+impl Display for ApnsError {
+    fn fmt(f: Formatter) {
+        match self {
+            ConfigError(msg) => f.write(format!("Config error: {}", msg)),
+            BadRequest(msg) => f.write(format!("Bad request: {}", msg)),
+            Forbidden(msg) => f.write(format!("Forbidden: {}", msg)),
+            DeviceTokenNotFound => f.write("Device token not found"),
+            MethodNotAllowed => f.write("Method not allowed"),
+            Unregistered(ts) => f.write(format!("Device unregistered at {:?}", ts)),
+            PayloadTooLarge(size) => f.write(format!("Payload too large: {} bytes", size)),
+            TooManyRequests => f.write("Too many requests"),
+            InternalServerError => f.write("Internal server error"),
+            ServiceUnavailable => f.write("Service unavailable"),
+            NetworkError(msg) => f.write(format!("Network error: {}", msg)),
+            JwtError(msg) => f.write(format!("JWT error: {}", msg)),
+            Unknown(code) => f.write(format!("Unknown error: {}", code))
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "apns notification creation" {
+    let notification = ApnsNotification.new("device_token_123")
+        .alert("Hello", "World")
+        .badge(5)
+        .sound_default()
+    
+    assert_eq(notification.device_token, "device_token_123")?
+    assert(notification.payload.aps.badge == Some(5))?
+}
+
+test "apns payload size" {
+    let notification = ApnsNotification.new("token")
+        .alert("Title", "Body")
+    
+    assert(notification.is_valid_size())?
+    assert(notification.payload_size() < 4096)?
+}
+
+test "apns priority values" {
+    assert_eq(ApnsPriority.Immediate.value(), 10)?
+    assert_eq(ApnsPriority.PowerConserving.value(), 5)?
+    assert_eq(ApnsPriority.LowPriority.value(), 1)?
+}
+
+test "apns push types" {
+    assert_eq(ApnsPushType.Alert.to_string(), "alert")?
+    assert_eq(ApnsPushType.Background.to_string(), "background")?
+    assert_eq(ApnsPushType.Voip.to_string(), "voip")?
+    assert_eq(ApnsPushType.LiveActivity.to_string(), "liveactivity")?
+}
+
+test "interruption levels" {
+    assert_eq(InterruptionLevel.Passive.to_string(), "passive")?
+    assert_eq(InterruptionLevel.TimeSensitive.to_string(), "time-sensitive")?
+    assert_eq(InterruptionLevel.Critical.to_string(), "critical")?
+}
+
+test "apns batch response" {
+    let batch = ApnsBatchResponse {
+        responses: [
+            ApnsSendResult.success("t1", "id1"),
+            ApnsSendResult.failure("t2", ApnsError.Unregistered(None))
+        ],
+        success_count: 1,
+        failure_count: 1
+    }
+    
+    assert_eq(batch.success_rate(), 0.5)?
+    assert_eq(batch.unregistered_tokens(), ["t2"])?
+}

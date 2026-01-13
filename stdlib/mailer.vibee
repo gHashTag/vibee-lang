@@ -1,0 +1,755 @@
+// =============================================================================
+// Vibee OS — Mailer Module
+// High-level email sending with multiple providers and delivery tracking
+// =============================================================================
+
+use email.{Email, Address, Attachment, EmailError, SmtpEncryption}
+use smtp.{SmtpClient, SmtpCapabilities}
+use http.{HttpClient, Request, Response}
+use json.{JsonValue, Serialize, Deserialize}
+
+// =============================================================================
+// Mailer Trait
+// =============================================================================
+
+/// Universal mailer trait for different providers
+trait Mailer {
+    fn send(email: Email) -> Result<DeliveryResult, MailerError>
+    fn send_batch(emails: [Email]) -> [Result<DeliveryResult, MailerError>]
+    fn verify_connection() -> Result<(), MailerError>
+    fn provider_name() -> String
+}
+
+// =============================================================================
+// Delivery Result
+// =============================================================================
+
+/// Result of email delivery
+struct DeliveryResult {
+    message_id: String
+    status: DeliveryStatus
+    provider: String
+    timestamp: Instant
+    recipients: [RecipientResult]
+    metadata: Map<String, String>
+}
+
+impl DeliveryResult {
+    fn new(message_id: String, provider: String) -> Self {
+        DeliveryResult {
+            message_id: message_id,
+            status: DeliveryStatus.Queued,
+            provider: provider,
+            timestamp: Instant.now(),
+            recipients: [],
+            metadata: Map.empty()
+        }
+    }
+    
+    fn with_status(status: DeliveryStatus) -> Self {
+        self.status = status
+        self
+    }
+    
+    fn add_recipient(recipient: RecipientResult) -> Self {
+        self.recipients.push(recipient)
+        self
+    }
+    
+    fn is_success() -> Bool {
+        match self.status {
+            DeliveryStatus.Sent | DeliveryStatus.Queued | DeliveryStatus.Delivered => true
+            _ => false
+        }
+    }
+}
+
+/// Delivery status
+enum DeliveryStatus {
+    Queued
+    Sent
+    Delivered
+    Bounced
+    Failed
+    Rejected
+    Deferred
+}
+
+/// Per-recipient result
+struct RecipientResult {
+    email: String
+    status: DeliveryStatus
+    error: Option<String>
+}
+
+// =============================================================================
+// SMTP Mailer
+// =============================================================================
+
+/// SMTP-based mailer
+struct SmtpMailer {
+    host: String
+    port: Int
+    username: Option<String>
+    password: Option<String>
+    encryption: SmtpEncryption
+    timeout_ms: Int64
+    pool_size: Int
+    retry_count: Int
+    retry_delay_ms: Int64
+}
+
+impl SmtpMailer {
+    fn new(host: String) -> Self {
+        SmtpMailer {
+            host: host,
+            port: 587,
+            username: None,
+            password: None,
+            encryption: SmtpEncryption.StartTls,
+            timeout_ms: 30000,
+            pool_size: 5,
+            retry_count: 3,
+            retry_delay_ms: 1000
+        }
+    }
+    
+    fn port(p: Int) -> Self { self.port = p; self }
+    fn credentials(user: String, pass: String) -> Self {
+        self.username = Some(user)
+        self.password = Some(pass)
+        self
+    }
+    fn tls() -> Self { self.encryption = SmtpEncryption.Tls; self.port = 465; self }
+    fn starttls() -> Self { self.encryption = SmtpEncryption.StartTls; self.port = 587; self }
+    fn plain() -> Self { self.encryption = SmtpEncryption.None; self.port = 25; self }
+    fn timeout(ms: Int64) -> Self { self.timeout_ms = ms; self }
+    fn pool_size(size: Int) -> Self { self.pool_size = size; self }
+    fn retry(count: Int, delay_ms: Int64) -> Self {
+        self.retry_count = count
+        self.retry_delay_ms = delay_ms
+        self
+    }
+    
+    fn build_client() -> SmtpClient {
+        var client = SmtpClient.new(self.host.clone()).port(self.port).timeout(self.timeout_ms)
+        if let (Some(u), Some(p)) = (self.username.clone(), self.password.clone()) {
+            client = client.credentials(u, p)
+        }
+        match self.encryption {
+            SmtpEncryption.Tls => client.tls()
+            SmtpEncryption.StartTls => client.starttls()
+            SmtpEncryption.None => client.plain()
+        }
+    }
+    
+    // Common providers
+    fn gmail(user: String, pass: String) -> Self {
+        Self.new("smtp.gmail.com").tls().credentials(user, pass)
+    }
+    
+    fn outlook(user: String, pass: String) -> Self {
+        Self.new("smtp.office365.com").starttls().credentials(user, pass)
+    }
+    
+    fn yahoo(user: String, pass: String) -> Self {
+        Self.new("smtp.mail.yahoo.com").tls().credentials(user, pass)
+    }
+    
+    fn mailgun(domain: String, api_key: String) -> Self {
+        Self.new(format!("smtp.mailgun.org")).starttls().credentials(format!("postmaster@{}", domain), api_key)
+    }
+}
+
+impl Mailer for SmtpMailer {
+    fn send(email: Email) -> Result<DeliveryResult, MailerError> {
+        let client = self.build_client()
+        var last_error: Option<MailerError> = None
+        
+        for attempt in 0..self.retry_count {
+            match client.send(email.clone()) {
+                Ok(_) => {
+                    let message_id = generate_message_id()
+                    var result = DeliveryResult.new(message_id, "smtp")
+                        .with_status(DeliveryStatus.Sent)
+                    
+                    for addr in email.to {
+                        result = result.add_recipient(RecipientResult {
+                            email: addr.email.clone(),
+                            status: DeliveryStatus.Sent,
+                            error: None
+                        })
+                    }
+                    return Ok(result)
+                }
+                Err(e) => {
+                    last_error = Some(MailerError.SmtpError(e.to_string()))
+                    if attempt < self.retry_count - 1 {
+                        @native("sleep", Duration.milliseconds(self.retry_delay_ms))
+                    }
+                }
+            }
+        }
+        
+        Err(last_error.unwrap_or(MailerError.SendFailed("Unknown error")))
+    }
+    
+    fn send_batch(emails: [Email]) -> [Result<DeliveryResult, MailerError>] {
+        emails.iter().map(|e| self.send(e)).collect()
+    }
+    
+    fn verify_connection() -> Result<(), MailerError> {
+        self.build_client().verify().map_err(|e| MailerError.ConnectionFailed(e.to_string()))
+    }
+    
+    fn provider_name() -> String { "SMTP" }
+}
+
+// =============================================================================
+// SendGrid Mailer
+// =============================================================================
+
+/// SendGrid API mailer
+struct SendGridMailer {
+    api_key: String
+    base_url: String
+    sandbox_mode: Bool
+    tracking: SendGridTracking
+}
+
+struct SendGridTracking {
+    click_tracking: Bool
+    open_tracking: Bool
+    subscription_tracking: Bool
+}
+
+impl SendGridMailer {
+    fn new(api_key: String) -> Self {
+        SendGridMailer {
+            api_key: api_key,
+            base_url: "https://api.sendgrid.com/v3",
+            sandbox_mode: false,
+            tracking: SendGridTracking {
+                click_tracking: true,
+                open_tracking: true,
+                subscription_tracking: false
+            }
+        }
+    }
+    
+    fn sandbox() -> Self { self.sandbox_mode = true; self }
+    fn click_tracking(enabled: Bool) -> Self { self.tracking.click_tracking = enabled; self }
+    fn open_tracking(enabled: Bool) -> Self { self.tracking.open_tracking = enabled; self }
+    
+    fn build_payload(email: Email) -> JsonValue {
+        var personalizations = []
+        var to_list = []
+        for addr in email.to {
+            to_list.push(JsonValue.Object(Map.from([
+                ("email", JsonValue.String(addr.email.clone())),
+                ("name", addr.name.map(|n| JsonValue.String(n)).unwrap_or(JsonValue.Null))
+            ])))
+        }
+        
+        personalizations.push(JsonValue.Object(Map.from([
+            ("to", JsonValue.Array(to_list))
+        ])))
+        
+        var content = []
+        if let Some(text) = email.text.clone() {
+            content.push(JsonValue.Object(Map.from([
+                ("type", JsonValue.String("text/plain")),
+                ("value", JsonValue.String(text))
+            ])))
+        }
+        if let Some(html) = email.html.clone() {
+            content.push(JsonValue.Object(Map.from([
+                ("type", JsonValue.String("text/html")),
+                ("value", JsonValue.String(html))
+            ])))
+        }
+        
+        JsonValue.Object(Map.from([
+            ("personalizations", JsonValue.Array(personalizations)),
+            ("from", JsonValue.Object(Map.from([
+                ("email", JsonValue.String(email.from.email.clone())),
+                ("name", email.from.name.map(|n| JsonValue.String(n)).unwrap_or(JsonValue.Null))
+            ]))),
+            ("subject", JsonValue.String(email.subject.clone())),
+            ("content", JsonValue.Array(content))
+        ]))
+    }
+}
+
+impl Mailer for SendGridMailer {
+    fn send(email: Email) -> Result<DeliveryResult, MailerError> {
+        let payload = self.build_payload(email.clone())
+        
+        let response = HttpClient.new()
+            .post(format!("{}/mail/send", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(payload)
+            .send()
+            .map_err(|e| MailerError.ApiError(e.to_string()))?
+        
+        if response.status.is_success() {
+            let message_id = response.headers.get("X-Message-Id").unwrap_or(generate_message_id())
+            var result = DeliveryResult.new(message_id, "sendgrid")
+                .with_status(DeliveryStatus.Queued)
+            
+            for addr in email.to {
+                result = result.add_recipient(RecipientResult {
+                    email: addr.email.clone(),
+                    status: DeliveryStatus.Queued,
+                    error: None
+                })
+            }
+            Ok(result)
+        } else {
+            Err(MailerError.ApiError(format!("SendGrid error: {}", response.status)))
+        }
+    }
+    
+    fn send_batch(emails: [Email]) -> [Result<DeliveryResult, MailerError>] {
+        emails.iter().map(|e| self.send(e)).collect()
+    }
+    
+    fn verify_connection() -> Result<(), MailerError> {
+        let response = HttpClient.new()
+            .get(format!("{}/user/profile", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .map_err(|e| MailerError.ConnectionFailed(e.to_string()))?
+        
+        if response.status.is_success() { Ok(()) }
+        else { Err(MailerError.AuthFailed) }
+    }
+    
+    fn provider_name() -> String { "SendGrid" }
+}
+
+// =============================================================================
+// Mailgun Mailer
+// =============================================================================
+
+/// Mailgun API mailer
+struct MailgunMailer {
+    api_key: String
+    domain: String
+    region: MailgunRegion
+    tracking: Bool
+}
+
+enum MailgunRegion { US, EU }
+
+impl MailgunMailer {
+    fn new(api_key: String, domain: String) -> Self {
+        MailgunMailer {
+            api_key: api_key,
+            domain: domain,
+            region: MailgunRegion.US,
+            tracking: true
+        }
+    }
+    
+    fn eu() -> Self { self.region = MailgunRegion.EU; self }
+    fn us() -> Self { self.region = MailgunRegion.US; self }
+    fn tracking(enabled: Bool) -> Self { self.tracking = enabled; self }
+    
+    fn base_url() -> String {
+        match self.region {
+            MailgunRegion.US => format!("https://api.mailgun.net/v3/{}", self.domain)
+            MailgunRegion.EU => format!("https://api.eu.mailgun.net/v3/{}", self.domain)
+        }
+    }
+}
+
+impl Mailer for MailgunMailer {
+    fn send(email: Email) -> Result<DeliveryResult, MailerError> {
+        var form_data = Map.new()
+        form_data.set("from", email.from.to_string())
+        form_data.set("to", email.to.iter().map(|a| a.to_string()).join(","))
+        form_data.set("subject", email.subject.clone())
+        
+        if let Some(text) = email.text.clone() { form_data.set("text", text) }
+        if let Some(html) = email.html.clone() { form_data.set("html", html) }
+        
+        let response = HttpClient.new()
+            .post(format!("{}/messages", self.base_url()))
+            .basic_auth("api", self.api_key.clone())
+            .form(form_data)
+            .send()
+            .map_err(|e| MailerError.ApiError(e.to_string()))?
+        
+        if response.status.is_success() {
+            let body: JsonValue = response.json().map_err(|e| MailerError.ApiError(e.to_string()))?
+            let message_id = body.get("id").and_then(|v| v.as_string()).unwrap_or(generate_message_id())
+            
+            var result = DeliveryResult.new(message_id, "mailgun")
+                .with_status(DeliveryStatus.Queued)
+            
+            for addr in email.to {
+                result = result.add_recipient(RecipientResult {
+                    email: addr.email.clone(),
+                    status: DeliveryStatus.Queued,
+                    error: None
+                })
+            }
+            Ok(result)
+        } else {
+            Err(MailerError.ApiError(format!("Mailgun error: {}", response.status)))
+        }
+    }
+    
+    fn send_batch(emails: [Email]) -> [Result<DeliveryResult, MailerError>] {
+        emails.iter().map(|e| self.send(e)).collect()
+    }
+    
+    fn verify_connection() -> Result<(), MailerError> {
+        let response = HttpClient.new()
+            .get(format!("{}/domains/{}", self.base_url(), self.domain))
+            .basic_auth("api", self.api_key.clone())
+            .send()
+            .map_err(|e| MailerError.ConnectionFailed(e.to_string()))?
+        
+        if response.status.is_success() { Ok(()) }
+        else { Err(MailerError.AuthFailed) }
+    }
+    
+    fn provider_name() -> String { "Mailgun" }
+}
+
+// =============================================================================
+// AWS SES Mailer
+// =============================================================================
+
+/// AWS SES mailer
+struct SesMailer {
+    access_key: String
+    secret_key: String
+    region: String
+    configuration_set: Option<String>
+}
+
+impl SesMailer {
+    fn new(access_key: String, secret_key: String, region: String) -> Self {
+        SesMailer {
+            access_key: access_key,
+            secret_key: secret_key,
+            region: region,
+            configuration_set: None
+        }
+    }
+    
+    fn configuration_set(name: String) -> Self {
+        self.configuration_set = Some(name)
+        self
+    }
+    
+    fn from_env() -> Result<Self, MailerError> {
+        let access_key = @native("env_get", "AWS_ACCESS_KEY_ID")
+            .ok_or(MailerError.ConfigError("AWS_ACCESS_KEY_ID not set"))?
+        let secret_key = @native("env_get", "AWS_SECRET_ACCESS_KEY")
+            .ok_or(MailerError.ConfigError("AWS_SECRET_ACCESS_KEY not set"))?
+        let region = @native("env_get", "AWS_REGION").unwrap_or("us-east-1")
+        
+        Ok(Self.new(access_key, secret_key, region))
+    }
+}
+
+impl Mailer for SesMailer {
+    fn send(email: Email) -> Result<DeliveryResult, MailerError> {
+        let raw_message = email.to_mime()
+        let result = @native("ses_send_raw_email", self.access_key, self.secret_key, self.region, raw_message, self.configuration_set)
+            .map_err(|e| MailerError.ApiError(e))?
+        
+        var delivery = DeliveryResult.new(result.message_id, "ses")
+            .with_status(DeliveryStatus.Sent)
+        
+        for addr in email.to {
+            delivery = delivery.add_recipient(RecipientResult {
+                email: addr.email.clone(),
+                status: DeliveryStatus.Sent,
+                error: None
+            })
+        }
+        Ok(delivery)
+    }
+    
+    fn send_batch(emails: [Email]) -> [Result<DeliveryResult, MailerError>] {
+        emails.iter().map(|e| self.send(e)).collect()
+    }
+    
+    fn verify_connection() -> Result<(), MailerError> {
+        @native("ses_verify_identity", self.access_key, self.secret_key, self.region)
+            .map_err(|e| MailerError.ConnectionFailed(e))
+    }
+    
+    fn provider_name() -> String { "AWS SES" }
+}
+
+// =============================================================================
+// Multi-Provider Mailer
+// =============================================================================
+
+/// Mailer with failover support
+struct MultiMailer {
+    providers: [Box<dyn Mailer>]
+    strategy: FailoverStrategy
+}
+
+enum FailoverStrategy {
+    Primary      // Use first, failover to next
+    RoundRobin   // Distribute load
+    Random       // Random selection
+}
+
+impl MultiMailer {
+    fn new() -> Self {
+        MultiMailer {
+            providers: [],
+            strategy: FailoverStrategy.Primary
+        }
+    }
+    
+    fn add_provider(provider: Box<dyn Mailer>) -> Self {
+        self.providers.push(provider)
+        self
+    }
+    
+    fn strategy(s: FailoverStrategy) -> Self {
+        self.strategy = s
+        self
+    }
+    
+    fn select_provider(index: Int) -> Option<&Box<dyn Mailer>> {
+        match self.strategy {
+            FailoverStrategy.Primary => self.providers.get(index)
+            FailoverStrategy.RoundRobin => {
+                let idx = @native("atomic_fetch_add", "mailer_rr_counter", 1) % self.providers.len()
+                self.providers.get(idx)
+            }
+            FailoverStrategy.Random => {
+                let idx = @native("random_int", 0, self.providers.len())
+                self.providers.get(idx)
+            }
+        }
+    }
+}
+
+impl Mailer for MultiMailer {
+    fn send(email: Email) -> Result<DeliveryResult, MailerError> {
+        var last_error: Option<MailerError> = None
+        
+        for i in 0..self.providers.len() {
+            if let Some(provider) = self.select_provider(i) {
+                match provider.send(email.clone()) {
+                    Ok(result) => return Ok(result)
+                    Err(e) => {
+                        last_error = Some(e)
+                        if self.strategy != FailoverStrategy.Primary { break }
+                    }
+                }
+            }
+        }
+        
+        Err(last_error.unwrap_or(MailerError.NoProviders))
+    }
+    
+    fn send_batch(emails: [Email]) -> [Result<DeliveryResult, MailerError>] {
+        emails.iter().map(|e| self.send(e)).collect()
+    }
+    
+    fn verify_connection() -> Result<(), MailerError> {
+        for provider in self.providers {
+            if provider.verify_connection().is_ok() {
+                return Ok(())
+            }
+        }
+        Err(MailerError.NoProviders)
+    }
+    
+    fn provider_name() -> String { "Multi" }
+}
+
+// =============================================================================
+// Mailer Actor (Async Queue)
+// =============================================================================
+
+/// Async mailer actor with queue
+actor MailerActor {
+    state mailer: Box<dyn Mailer>
+    state queue: Deque<QueuedEmail>
+    state results: Map<String, DeliveryResult>
+    state running: Bool
+    state max_concurrent: Int
+    state in_flight: Int
+    
+    fn new(mailer: Box<dyn Mailer>) -> Self {
+        MailerActor {
+            mailer: mailer,
+            queue: Deque.new(),
+            results: Map.empty(),
+            running: false,
+            max_concurrent: 10,
+            in_flight: 0
+        }
+    }
+    
+    fn max_concurrent(n: Int) -> Self {
+        self.max_concurrent = n
+        self
+    }
+    
+    /// Queue email for sending
+    fn queue(email: Email) -> String {
+        let id = generate_message_id()
+        self.queue.push_back(QueuedEmail {
+            id: id.clone(),
+            email: email,
+            queued_at: Instant.now(),
+            attempts: 0
+        })
+        id
+    }
+    
+    /// Get result for queued email
+    fn get_result(id: String) -> Option<DeliveryResult> {
+        self.results.get(id)
+    }
+    
+    /// Start processing queue
+    fn start() {
+        if self.running { return }
+        self.running = true
+        spawn { self.process_loop() }
+    }
+    
+    /// Stop processing
+    fn stop() {
+        self.running = false
+    }
+    
+    fn process_loop() {
+        while self.running {
+            while self.in_flight < self.max_concurrent {
+                match self.queue.pop_front() {
+                    Some(queued) => {
+                        self.in_flight += 1
+                        spawn { self.send_queued(queued) }
+                    }
+                    None => break
+                }
+            }
+            @native("sleep", Duration.milliseconds(100))
+        }
+    }
+    
+    fn send_queued(queued: QueuedEmail) {
+        match self.mailer.send(queued.email) {
+            Ok(result) => {
+                self.results.set(queued.id, result)
+            }
+            Err(e) => {
+                self.results.set(queued.id, DeliveryResult.new(queued.id.clone(), "error")
+                    .with_status(DeliveryStatus.Failed))
+            }
+        }
+        self.in_flight -= 1
+    }
+    
+    fn queue_size() -> Int { self.queue.len() }
+    fn is_running() -> Bool { self.running }
+}
+
+struct QueuedEmail {
+    id: String
+    email: Email
+    queued_at: Instant
+    attempts: Int
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum MailerError {
+    ConnectionFailed(String)
+    AuthFailed
+    SendFailed(String)
+    SmtpError(String)
+    ApiError(String)
+    ConfigError(String)
+    NoProviders
+    RateLimited
+    InvalidEmail
+}
+
+impl Display for MailerError {
+    fn fmt(f: Formatter) {
+        match self {
+            ConnectionFailed(s) => f.write(format!("Connection failed: {}", s))
+            AuthFailed => f.write("Authentication failed")
+            SendFailed(s) => f.write(format!("Send failed: {}", s))
+            SmtpError(s) => f.write(format!("SMTP error: {}", s))
+            ApiError(s) => f.write(format!("API error: {}", s))
+            ConfigError(s) => f.write(format!("Config error: {}", s))
+            NoProviders => f.write("No providers available")
+            RateLimited => f.write("Rate limited")
+            InvalidEmail => f.write("Invalid email")
+        }
+    }
+}
+
+impl Error for MailerError {}
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+fn generate_message_id() -> String {
+    format!("<{}.{}@vibee>", UUID.v4(), Instant.now().timestamp_millis())
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "smtp mailer creation" {
+    let mailer = SmtpMailer.new("smtp.example.com")
+        .port(587)
+        .credentials("user", "pass")
+        .starttls()
+    
+    assert_eq(mailer.host, "smtp.example.com")?
+    assert_eq(mailer.port, 587)?
+}
+
+test "sendgrid payload" {
+    let email = Email.new()
+        .from("sender@example.com")
+        .to("recipient@example.com")
+        .subject("Test")
+        .text("Hello")
+    
+    let mailer = SendGridMailer.new("test-key")
+    let payload = mailer.build_payload(email)
+    
+    assert(payload.get("subject").is_some())?
+}
+
+test "multi mailer failover" {
+    let multi = MultiMailer.new()
+        .strategy(FailoverStrategy.Primary)
+    
+    assert_eq(multi.providers.len(), 0)?
+}
+
+test "delivery result" {
+    let result = DeliveryResult.new("msg-123", "smtp")
+        .with_status(DeliveryStatus.Sent)
+    
+    assert(result.is_success())?
+    assert_eq(result.message_id, "msg-123")?
+}
