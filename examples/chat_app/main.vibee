@@ -1,0 +1,336 @@
+/// Chat Application Example
+/// Real-time chat using actors and WebSockets
+
+use std::websocket::{Server, Client, Message}
+use std::json
+use std::time
+use std::uuid
+
+// Message types
+enum ChatMessage {
+    Join { user_id: String, username: String },
+    Leave { user_id: String },
+    Text { user_id: String, content: String, timestamp: String },
+    System { content: String },
+    UserList { users: Vec<User> },
+}
+
+struct User {
+    id: String,
+    username: String,
+    joined_at: String,
+}
+
+// Chat room actor
+actor ChatRoom {
+    users: HashMap<String, User>,
+    messages: Vec<ChatMessage>,
+    max_history: Int,
+    
+    fn new() -> ChatRoom {
+        ChatRoom {
+            users: HashMap::new(),
+            messages: Vec::new(),
+            max_history: 100,
+        }
+    }
+    
+    // Handle user joining
+    pub fn join(mut self, user_id: String, username: String) -> ChatMessage {
+        let user = User {
+            id: user_id.clone(),
+            username: username.clone(),
+            joined_at: time::now().to_string(),
+        }
+        
+        self.users.insert(user_id.clone(), user)
+        
+        let msg = ChatMessage::Join { user_id, username }
+        self.add_message(msg.clone())
+        
+        // Broadcast to all users
+        self.broadcast(msg.clone())
+        
+        msg
+    }
+    
+    // Handle user leaving
+    pub fn leave(mut self, user_id: String) -> ChatMessage {
+        self.users.remove(&user_id)
+        
+        let msg = ChatMessage::Leave { user_id }
+        self.add_message(msg.clone())
+        self.broadcast(msg.clone())
+        
+        msg
+    }
+    
+    // Handle text message
+    pub fn send_message(mut self, user_id: String, content: String) -> ChatMessage {
+        let msg = ChatMessage::Text {
+            user_id,
+            content,
+            timestamp: time::now().to_string(),
+        }
+        
+        self.add_message(msg.clone())
+        self.broadcast(msg.clone())
+        
+        msg
+    }
+    
+    // Get user list
+    pub fn get_users(self) -> Vec<User> {
+        self.users.values().cloned().collect()
+    }
+    
+    // Get message history
+    pub fn get_history(self) -> Vec<ChatMessage> {
+        self.messages.clone()
+    }
+    
+    fn add_message(mut self, msg: ChatMessage) {
+        self.messages.push(msg)
+        
+        // Trim history if needed
+        if self.messages.len() > self.max_history {
+            self.messages.remove(0)
+        }
+    }
+    
+    fn broadcast(self, msg: ChatMessage) {
+        // Send to all connected clients
+        for (user_id, _) in self.users.iter() {
+            // In real implementation, this would send via WebSocket
+        }
+    }
+}
+
+// WebSocket handler
+struct ChatHandler {
+    room: ChatRoom,
+    connections: HashMap<String, Client>,
+}
+
+impl ChatHandler {
+    fn new() -> ChatHandler {
+        ChatHandler {
+            room: ChatRoom::new(),
+            connections: HashMap::new(),
+        }
+    }
+    
+    fn on_connect(mut self, client: Client) {
+        let user_id = uuid::v4()
+        self.connections.insert(user_id.clone(), client)
+        
+        // Send welcome message
+        let welcome = json::object!{
+            "type": "system",
+            "content": "Welcome to the chat! Please set your username with /nick <name>"
+        }
+        self.send_to(user_id.clone(), welcome)
+        
+        // Send user list
+        let users = self.room.get_users()
+        let user_list = json::object!{
+            "type": "user_list",
+            "users": users.iter().map(|u| json::object!{
+                "id": u.id,
+                "username": u.username
+            }).collect::<Vec<_>>()
+        }
+        self.send_to(user_id, user_list)
+    }
+    
+    fn on_message(mut self, user_id: String, msg: Message) {
+        let data = json::parse(msg.text())
+        let msg_type = data["type"].as_str().unwrap_or("text")
+        
+        match msg_type {
+            "join" => {
+                let username = data["username"].as_str().unwrap()
+                self.room.join(user_id, username.to_string())
+                self.broadcast_user_list()
+            },
+            "text" => {
+                let content = data["content"].as_str().unwrap()
+                
+                // Check for commands
+                if content.starts_with("/") {
+                    self.handle_command(user_id, content.to_string())
+                } else {
+                    self.room.send_message(user_id, content.to_string())
+                }
+            },
+            "leave" => {
+                self.room.leave(user_id.clone())
+                self.connections.remove(&user_id)
+                self.broadcast_user_list()
+            },
+            _ => {},
+        }
+    }
+    
+    fn on_disconnect(mut self, user_id: String) {
+        self.room.leave(user_id.clone())
+        self.connections.remove(&user_id)
+        self.broadcast_user_list()
+    }
+    
+    fn handle_command(mut self, user_id: String, command: String) {
+        let parts: Vec<&str> = command.split_whitespace().collect()
+        
+        match parts[0] {
+            "/nick" => {
+                if parts.len() > 1 {
+                    let username = parts[1..].join(" ")
+                    self.room.join(user_id, username)
+                    self.broadcast_user_list()
+                }
+            },
+            "/users" => {
+                let users = self.room.get_users()
+                let msg = json::object!{
+                    "type": "system",
+                    "content": format!("Online users: {}", 
+                        users.iter().map(|u| u.username.clone()).collect::<Vec<_>>().join(", "))
+                }
+                self.send_to(user_id, msg)
+            },
+            "/help" => {
+                let msg = json::object!{
+                    "type": "system",
+                    "content": "Commands: /nick <name>, /users, /help"
+                }
+                self.send_to(user_id, msg)
+            },
+            _ => {
+                let msg = json::object!{
+                    "type": "system",
+                    "content": "Unknown command. Type /help for available commands."
+                }
+                self.send_to(user_id, msg)
+            },
+        }
+    }
+    
+    fn send_to(self, user_id: String, data: json::Value) {
+        if let Some(client) = self.connections.get(&user_id) {
+            client.send(Message::text(json::stringify(data)))
+        }
+    }
+    
+    fn broadcast(self, data: json::Value) {
+        let text = json::stringify(data)
+        for (_, client) in self.connections.iter() {
+            client.send(Message::text(text.clone()))
+        }
+    }
+    
+    fn broadcast_user_list(self) {
+        let users = self.room.get_users()
+        let msg = json::object!{
+            "type": "user_list",
+            "users": users.iter().map(|u| json::object!{
+                "id": u.id,
+                "username": u.username
+            }).collect::<Vec<_>>()
+        }
+        self.broadcast(msg)
+    }
+}
+
+// HTML client
+const CLIENT_HTML: &str = r#"
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Vibee Chat</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, sans-serif; display: flex; height: 100vh; }
+        .sidebar { width: 200px; background: #2c3e50; color: white; padding: 20px; }
+        .sidebar h2 { margin-bottom: 20px; }
+        .user-list { list-style: none; }
+        .user-list li { padding: 5px 0; }
+        .user-list li::before { content: "● "; color: #2ecc71; }
+        .main { flex: 1; display: flex; flex-direction: column; }
+        .messages { flex: 1; overflow-y: auto; padding: 20px; }
+        .message { margin-bottom: 10px; }
+        .message .username { font-weight: bold; color: #3498db; }
+        .message .time { color: #95a5a6; font-size: 0.8em; }
+        .message.system { color: #95a5a6; font-style: italic; }
+        .input-area { padding: 20px; border-top: 1px solid #eee; display: flex; }
+        .input-area input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+        .input-area button { margin-left: 10px; padding: 10px 20px; background: #3498db; color: white; border: none; border-radius: 5px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <h2>Users</h2>
+        <ul class="user-list" id="users"></ul>
+    </div>
+    <div class="main">
+        <div class="messages" id="messages"></div>
+        <div class="input-area">
+            <input type="text" id="input" placeholder="Type a message..." />
+            <button onclick="send()">Send</button>
+        </div>
+    </div>
+    <script>
+        const ws = new WebSocket('ws://localhost:8080/ws');
+        const messages = document.getElementById('messages');
+        const users = document.getElementById('users');
+        const input = document.getElementById('input');
+        
+        ws.onmessage = (e) => {
+            const data = JSON.parse(e.data);
+            if (data.type === 'user_list') {
+                users.innerHTML = data.users.map(u => `<li>${u.username}</li>`).join('');
+            } else if (data.type === 'text') {
+                addMessage(data.username, data.content, data.timestamp);
+            } else if (data.type === 'system') {
+                addSystemMessage(data.content);
+            }
+        };
+        
+        function addMessage(username, content, time) {
+            messages.innerHTML += `<div class="message"><span class="username">${username}</span> <span class="time">${time}</span><br>${content}</div>`;
+            messages.scrollTop = messages.scrollHeight;
+        }
+        
+        function addSystemMessage(content) {
+            messages.innerHTML += `<div class="message system">${content}</div>`;
+            messages.scrollTop = messages.scrollHeight;
+        }
+        
+        function send() {
+            if (input.value) {
+                ws.send(JSON.stringify({ type: 'text', content: input.value }));
+                input.value = '';
+            }
+        }
+        
+        input.addEventListener('keypress', (e) => { if (e.key === 'Enter') send(); });
+    </script>
+</body>
+</html>
+"#;
+
+fn main() {
+    let mut handler = ChatHandler::new()
+    
+    let server = Server::new("0.0.0.0:8080")
+        .route("/", |req| {
+            Response::html(CLIENT_HTML)
+        })
+        .route("/ws", |ws| {
+            ws.on_connect(|client| handler.on_connect(client))
+            ws.on_message(|user_id, msg| handler.on_message(user_id, msg))
+            ws.on_disconnect(|user_id| handler.on_disconnect(user_id))
+        })
+    
+    println("💬 Chat server running at http://localhost:8080")
+    server.run()
+}

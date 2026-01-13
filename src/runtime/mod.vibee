@@ -1,0 +1,497 @@
+/// Vibee Lang Runtime
+/// Core runtime support for Vibee programs
+
+// Memory management
+pub struct Allocator {
+    heap: Vec<u8>,
+    free_list: Vec<(Int, Int)>,
+    allocated: Int,
+}
+
+impl Allocator {
+    pub fn new(size: Int) -> Allocator {
+        Allocator {
+            heap: Vec::with_capacity(size),
+            free_list: vec![(0, size)],
+            allocated: 0,
+        }
+    }
+    
+    pub fn alloc(mut self, size: Int) -> Option<Int> {
+        // Find first fit
+        for i in 0..self.free_list.len() {
+            let (start, len) = self.free_list[i]
+            if len >= size {
+                self.free_list.remove(i)
+                if len > size {
+                    self.free_list.push((start + size, len - size))
+                }
+                self.allocated += size
+                return Some(start)
+            }
+        }
+        None
+    }
+    
+    pub fn free(mut self, ptr: Int, size: Int) {
+        self.free_list.push((ptr, size))
+        self.allocated -= size
+        self.coalesce()
+    }
+    
+    fn coalesce(mut self) {
+        self.free_list.sort_by(|a, b| a.0.cmp(&b.0))
+        let mut i = 0
+        while i < self.free_list.len() - 1 {
+            let (start1, len1) = self.free_list[i]
+            let (start2, len2) = self.free_list[i + 1]
+            if start1 + len1 == start2 {
+                self.free_list[i] = (start1, len1 + len2)
+                self.free_list.remove(i + 1)
+            } else {
+                i += 1
+            }
+        }
+    }
+}
+
+// Garbage collector
+pub struct GC {
+    allocator: Allocator,
+    roots: Vec<Int>,
+    objects: HashMap<Int, GCObject>,
+}
+
+pub struct GCObject {
+    pub ptr: Int,
+    pub size: Int,
+    pub marked: Bool,
+    pub refs: Vec<Int>,
+}
+
+impl GC {
+    pub fn new(heap_size: Int) -> GC {
+        GC {
+            allocator: Allocator::new(heap_size),
+            roots: Vec::new(),
+            objects: HashMap::new(),
+        }
+    }
+    
+    pub fn alloc(mut self, size: Int) -> Option<Int> {
+        // Try to allocate
+        if let Some(ptr) = self.allocator.alloc(size) {
+            self.objects.insert(ptr, GCObject {
+                ptr,
+                size,
+                marked: false,
+                refs: Vec::new(),
+            })
+            return Some(ptr)
+        }
+        
+        // Collect garbage and retry
+        self.collect()
+        
+        if let Some(ptr) = self.allocator.alloc(size) {
+            self.objects.insert(ptr, GCObject {
+                ptr,
+                size,
+                marked: false,
+                refs: Vec::new(),
+            })
+            return Some(ptr)
+        }
+        
+        None
+    }
+    
+    pub fn add_root(mut self, ptr: Int) {
+        self.roots.push(ptr)
+    }
+    
+    pub fn remove_root(mut self, ptr: Int) {
+        self.roots.retain(|r| *r != ptr)
+    }
+    
+    pub fn add_ref(mut self, from: Int, to: Int) {
+        if let Some(obj) = self.objects.get_mut(&from) {
+            obj.refs.push(to)
+        }
+    }
+    
+    pub fn collect(mut self) {
+        // Mark phase
+        for root in self.roots.iter() {
+            self.mark(*root)
+        }
+        
+        // Sweep phase
+        let to_free: Vec<Int> = self.objects.iter()
+            .filter(|(_, obj)| !obj.marked)
+            .map(|(ptr, _)| *ptr)
+            .collect()
+        
+        for ptr in to_free.iter() {
+            if let Some(obj) = self.objects.remove(ptr) {
+                self.allocator.free(obj.ptr, obj.size)
+            }
+        }
+        
+        // Reset marks
+        for (_, obj) in self.objects.iter_mut() {
+            obj.marked = false
+        }
+    }
+    
+    fn mark(mut self, ptr: Int) {
+        if let Some(obj) = self.objects.get_mut(&ptr) {
+            if obj.marked { return }
+            obj.marked = true
+            let refs = obj.refs.clone()
+            for r in refs.iter() {
+                self.mark(*r)
+            }
+        }
+    }
+}
+
+// String interning
+pub struct StringInterner {
+    strings: HashMap<String, Int>,
+    data: Vec<String>,
+}
+
+impl StringInterner {
+    pub fn new() -> StringInterner {
+        StringInterner {
+            strings: HashMap::new(),
+            data: Vec::new(),
+        }
+    }
+    
+    pub fn intern(mut self, s: String) -> Int {
+        if let Some(id) = self.strings.get(&s) {
+            return *id
+        }
+        
+        let id = self.data.len() as Int
+        self.data.push(s.clone())
+        self.strings.insert(s, id)
+        id
+    }
+    
+    pub fn get(self, id: Int) -> Option<String> {
+        self.data.get(id as usize).cloned()
+    }
+}
+
+// Type information at runtime
+pub enum RuntimeType {
+    Nil,
+    Bool,
+    Int,
+    Float,
+    Char,
+    String,
+    Array(Box<RuntimeType>),
+    Struct(String),
+    Enum(String),
+    Function,
+    Actor,
+}
+
+pub struct TypeRegistry {
+    types: HashMap<String, RuntimeType>,
+    vtables: HashMap<String, VTable>,
+}
+
+pub struct VTable {
+    pub type_name: String,
+    pub methods: HashMap<String, Int>,
+}
+
+impl TypeRegistry {
+    pub fn new() -> TypeRegistry {
+        TypeRegistry {
+            types: HashMap::new(),
+            vtables: HashMap::new(),
+        }
+    }
+    
+    pub fn register_type(mut self, name: String, ty: RuntimeType) {
+        self.types.insert(name, ty)
+    }
+    
+    pub fn register_vtable(mut self, name: String, vtable: VTable) {
+        self.vtables.insert(name, vtable)
+    }
+    
+    pub fn get_type(self, name: String) -> Option<RuntimeType> {
+        self.types.get(&name).cloned()
+    }
+    
+    pub fn get_vtable(self, name: String) -> Option<VTable> {
+        self.vtables.get(&name).cloned()
+    }
+}
+
+// Actor runtime
+pub struct ActorRuntime {
+    actors: HashMap<Int, ActorState>,
+    mailboxes: HashMap<Int, Vec<Message>>,
+    next_id: Int,
+}
+
+pub struct ActorState {
+    pub id: Int,
+    pub type_name: String,
+    pub state: HashMap<String, Value>,
+    pub alive: Bool,
+}
+
+pub struct Message {
+    pub sender: Int,
+    pub handler: String,
+    pub args: Vec<Value>,
+}
+
+pub enum Value {
+    Nil,
+    Bool(Bool),
+    Int(Int),
+    Float(Float),
+    String(String),
+    Array(Vec<Value>),
+    Struct(String, HashMap<String, Value>),
+}
+
+impl ActorRuntime {
+    pub fn new() -> ActorRuntime {
+        ActorRuntime {
+            actors: HashMap::new(),
+            mailboxes: HashMap::new(),
+            next_id: 0,
+        }
+    }
+    
+    pub fn spawn(mut self, type_name: String, initial_state: HashMap<String, Value>) -> Int {
+        let id = self.next_id
+        self.next_id += 1
+        
+        self.actors.insert(id, ActorState {
+            id,
+            type_name,
+            state: initial_state,
+            alive: true,
+        })
+        self.mailboxes.insert(id, Vec::new())
+        
+        id
+    }
+    
+    pub fn send(mut self, to: Int, sender: Int, handler: String, args: Vec<Value>) {
+        if let Some(mailbox) = self.mailboxes.get_mut(&to) {
+            mailbox.push(Message { sender, handler, args })
+        }
+    }
+    
+    pub fn process(mut self, id: Int) -> Bool {
+        let msg = {
+            if let Some(mailbox) = self.mailboxes.get_mut(&id) {
+                if mailbox.is_empty() { return false }
+                Some(mailbox.remove(0))
+            } else { None }
+        };
+        
+        if let Some(message) = msg {
+            // Process message - actual implementation would call handler
+            true
+        } else {
+            false
+        }
+    }
+    
+    pub fn kill(mut self, id: Int) {
+        if let Some(actor) = self.actors.get_mut(&id) {
+            actor.alive = false
+        }
+    }
+}
+
+// Async runtime
+pub struct AsyncRuntime {
+    tasks: Vec<Task>,
+    ready: Vec<Int>,
+    next_id: Int,
+}
+
+pub struct Task {
+    pub id: Int,
+    pub state: TaskState,
+    pub continuation: Box<dyn Fn() -> TaskState>,
+}
+
+pub enum TaskState {
+    Ready,
+    Running,
+    Waiting(Int),
+    Completed(Value),
+    Failed(String),
+}
+
+impl AsyncRuntime {
+    pub fn new() -> AsyncRuntime {
+        AsyncRuntime {
+            tasks: Vec::new(),
+            ready: Vec::new(),
+            next_id: 0,
+        }
+    }
+    
+    pub fn spawn(mut self, f: Box<dyn Fn() -> TaskState>) -> Int {
+        let id = self.next_id
+        self.next_id += 1
+        
+        self.tasks.push(Task {
+            id,
+            state: TaskState::Ready,
+            continuation: f,
+        })
+        self.ready.push(id)
+        
+        id
+    }
+    
+    pub fn run(mut self) {
+        while !self.ready.is_empty() {
+            let id = self.ready.remove(0)
+            
+            if let Some(task) = self.tasks.iter_mut().find(|t| t.id == id) {
+                task.state = TaskState::Running
+                let new_state = (task.continuation)()
+                task.state = new_state.clone()
+                
+                match new_state {
+                    TaskState::Ready => self.ready.push(id),
+                    TaskState::Waiting(_) => {},
+                    TaskState::Completed(_) | TaskState::Failed(_) => {},
+                    _ => {},
+                }
+            }
+        }
+    }
+    
+    pub fn wake(mut self, id: Int) {
+        if let Some(task) = self.tasks.iter_mut().find(|t| t.id == id) {
+            if let TaskState::Waiting(_) = task.state {
+                task.state = TaskState::Ready
+                self.ready.push(id)
+            }
+        }
+    }
+}
+
+// Exception handling
+pub struct ExceptionHandler {
+    handlers: Vec<Handler>,
+}
+
+pub struct Handler {
+    pub exception_type: String,
+    pub handler: Box<dyn Fn(Value) -> Value>,
+}
+
+impl ExceptionHandler {
+    pub fn new() -> ExceptionHandler {
+        ExceptionHandler { handlers: Vec::new() }
+    }
+    
+    pub fn push(mut self, exception_type: String, handler: Box<dyn Fn(Value) -> Value>) {
+        self.handlers.push(Handler { exception_type, handler })
+    }
+    
+    pub fn pop(mut self) {
+        self.handlers.pop();
+    }
+    
+    pub fn handle(self, exception_type: String, value: Value) -> Option<Value> {
+        for handler in self.handlers.iter().rev() {
+            if handler.exception_type == exception_type || handler.exception_type == "*" {
+                return Some((handler.handler)(value))
+            }
+        }
+        None
+    }
+}
+
+// Runtime initialization
+pub struct Runtime {
+    pub gc: GC,
+    pub strings: StringInterner,
+    pub types: TypeRegistry,
+    pub actors: ActorRuntime,
+    pub async_rt: AsyncRuntime,
+    pub exceptions: ExceptionHandler,
+}
+
+impl Runtime {
+    pub fn new() -> Runtime {
+        Runtime {
+            gc: GC::new(1024 * 1024), // 1MB heap
+            strings: StringInterner::new(),
+            types: TypeRegistry::new(),
+            actors: ActorRuntime::new(),
+            async_rt: AsyncRuntime::new(),
+            exceptions: ExceptionHandler::new(),
+        }
+    }
+    
+    pub fn init(mut self) {
+        // Register built-in types
+        self.types.register_type("Nil", RuntimeType::Nil)
+        self.types.register_type("Bool", RuntimeType::Bool)
+        self.types.register_type("Int", RuntimeType::Int)
+        self.types.register_type("Float", RuntimeType::Float)
+        self.types.register_type("Char", RuntimeType::Char)
+        self.types.register_type("String", RuntimeType::String)
+    }
+}
+
+// Global runtime instance
+static mut RUNTIME: Option<Runtime> = None
+
+pub fn init_runtime() {
+    unsafe {
+        RUNTIME = Some(Runtime::new())
+        if let Some(ref mut rt) = RUNTIME {
+            rt.init()
+        }
+    }
+}
+
+pub fn get_runtime() -> &'static mut Runtime {
+    unsafe {
+        RUNTIME.as_mut().expect("Runtime not initialized")
+    }
+}
+
+// Built-in functions
+pub fn vibee_print(s: String) {
+    print!("{}", s)
+}
+
+pub fn vibee_println(s: String) {
+    println!("{}", s)
+}
+
+pub fn vibee_panic(msg: String) -> ! {
+    eprintln!("panic: {}", msg)
+    std::process::exit(1)
+}
+
+pub fn vibee_assert(cond: Bool, msg: String) {
+    if !cond {
+        vibee_panic(format!("assertion failed: {}", msg))
+    }
+}

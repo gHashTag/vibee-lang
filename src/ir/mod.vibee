@@ -1,0 +1,626 @@
+/// Vibee Lang Intermediate Representation (IR)
+/// Low-level representation for optimization and code generation
+
+use crate::parser::{Module, Expr, Stmt, Type}
+use crate::typechecker::TypeInfo
+
+// IR Instructions
+pub enum IRInst {
+    // Constants
+    ConstInt(Reg, Int),
+    ConstFloat(Reg, Float),
+    ConstBool(Reg, Bool),
+    ConstString(Reg, String),
+    ConstNil(Reg),
+    
+    // Arithmetic
+    Add(Reg, Reg, Reg),
+    Sub(Reg, Reg, Reg),
+    Mul(Reg, Reg, Reg),
+    Div(Reg, Reg, Reg),
+    Mod(Reg, Reg, Reg),
+    Neg(Reg, Reg),
+    
+    // Comparison
+    Eq(Reg, Reg, Reg),
+    NotEq(Reg, Reg, Reg),
+    Lt(Reg, Reg, Reg),
+    Gt(Reg, Reg, Reg),
+    LtEq(Reg, Reg, Reg),
+    GtEq(Reg, Reg, Reg),
+    
+    // Logical
+    And(Reg, Reg, Reg),
+    Or(Reg, Reg, Reg),
+    Not(Reg, Reg),
+    
+    // Bitwise
+    BitAnd(Reg, Reg, Reg),
+    BitOr(Reg, Reg, Reg),
+    BitXor(Reg, Reg, Reg),
+    BitNot(Reg, Reg),
+    Shl(Reg, Reg, Reg),
+    Shr(Reg, Reg, Reg),
+    
+    // Memory
+    Load(Reg, Addr),
+    Store(Addr, Reg),
+    Alloc(Reg, Int),
+    Free(Reg),
+    
+    // Control flow
+    Jump(Label),
+    JumpIf(Reg, Label),
+    JumpIfNot(Reg, Label),
+    Label(Label),
+    
+    // Functions
+    Call(Reg, String, Vec<Reg>),
+    CallIndirect(Reg, Reg, Vec<Reg>),
+    Return(Option<Reg>),
+    
+    // Data structures
+    ArrayNew(Reg, Int),
+    ArrayGet(Reg, Reg, Reg),
+    ArraySet(Reg, Reg, Reg),
+    ArrayLen(Reg, Reg),
+    
+    StructNew(Reg, String),
+    StructGet(Reg, Reg, String),
+    StructSet(Reg, String, Reg),
+    
+    // Type operations
+    Cast(Reg, Reg, TypeInfo),
+    TypeCheck(Reg, Reg, TypeInfo),
+    
+    // Misc
+    Move(Reg, Reg),
+    Phi(Reg, Vec<(Label, Reg)>),
+    Nop,
+}
+
+pub type Reg = Int
+pub type Label = String
+pub type Addr = Int
+
+// IR Function
+pub struct IRFunction {
+    pub name: String,
+    pub params: Vec<(String, TypeInfo)>,
+    pub ret_type: TypeInfo,
+    pub locals: Vec<(String, TypeInfo)>,
+    pub blocks: Vec<IRBlock>,
+    pub reg_count: Int,
+}
+
+pub struct IRBlock {
+    pub label: Label,
+    pub instructions: Vec<IRInst>,
+    pub terminator: IRTerminator,
+}
+
+pub enum IRTerminator {
+    Return(Option<Reg>),
+    Jump(Label),
+    Branch(Reg, Label, Label),
+    Switch(Reg, Vec<(Int, Label)>, Label),
+    Unreachable,
+}
+
+// IR Module
+pub struct IRModule {
+    pub name: String,
+    pub functions: Vec<IRFunction>,
+    pub globals: Vec<IRGlobal>,
+    pub structs: Vec<IRStruct>,
+}
+
+pub struct IRGlobal {
+    pub name: String,
+    pub ty: TypeInfo,
+    pub init: Option<IRInst>,
+}
+
+pub struct IRStruct {
+    pub name: String,
+    pub fields: Vec<(String, TypeInfo)>,
+}
+
+// IR Builder
+pub struct IRBuilder {
+    current_fn: Option<IRFunction>,
+    current_block: Option<IRBlock>,
+    reg_counter: Int,
+    label_counter: Int,
+}
+
+impl IRBuilder {
+    pub fn new() -> IRBuilder {
+        IRBuilder {
+            current_fn: None,
+            current_block: None,
+            reg_counter: 0,
+            label_counter: 0,
+        }
+    }
+    
+    pub fn new_reg(mut self) -> Reg {
+        let reg = self.reg_counter
+        self.reg_counter += 1
+        reg
+    }
+    
+    pub fn new_label(mut self, prefix: String) -> Label {
+        let label = format!("{}_{}", prefix, self.label_counter)
+        self.label_counter += 1
+        label
+    }
+    
+    pub fn start_function(mut self, name: String, params: Vec<(String, TypeInfo)>, ret_type: TypeInfo) {
+        self.current_fn = Some(IRFunction {
+            name,
+            params,
+            ret_type,
+            locals: Vec::new(),
+            blocks: Vec::new(),
+            reg_count: 0,
+        })
+        self.reg_counter = 0
+        self.start_block("entry")
+    }
+    
+    pub fn end_function(mut self) -> IRFunction {
+        self.end_block()
+        let mut func = self.current_fn.take().unwrap()
+        func.reg_count = self.reg_counter
+        func
+    }
+    
+    pub fn start_block(mut self, label: Label) {
+        self.current_block = Some(IRBlock {
+            label,
+            instructions: Vec::new(),
+            terminator: IRTerminator::Unreachable,
+        })
+    }
+    
+    pub fn end_block(mut self) {
+        if let Some(block) = self.current_block.take() {
+            if let Some(ref mut func) = self.current_fn {
+                func.blocks.push(block)
+            }
+        }
+    }
+    
+    pub fn emit(mut self, inst: IRInst) {
+        if let Some(ref mut block) = self.current_block {
+            block.instructions.push(inst)
+        }
+    }
+    
+    pub fn set_terminator(mut self, term: IRTerminator) {
+        if let Some(ref mut block) = self.current_block {
+            block.terminator = term
+        }
+    }
+    
+    // Convenience methods
+    pub fn const_int(mut self, value: Int) -> Reg {
+        let reg = self.new_reg()
+        self.emit(IRInst::ConstInt(reg, value))
+        reg
+    }
+    
+    pub fn const_float(mut self, value: Float) -> Reg {
+        let reg = self.new_reg()
+        self.emit(IRInst::ConstFloat(reg, value))
+        reg
+    }
+    
+    pub fn const_bool(mut self, value: Bool) -> Reg {
+        let reg = self.new_reg()
+        self.emit(IRInst::ConstBool(reg, value))
+        reg
+    }
+    
+    pub fn const_string(mut self, value: String) -> Reg {
+        let reg = self.new_reg()
+        self.emit(IRInst::ConstString(reg, value))
+        reg
+    }
+    
+    pub fn add(mut self, left: Reg, right: Reg) -> Reg {
+        let reg = self.new_reg()
+        self.emit(IRInst::Add(reg, left, right))
+        reg
+    }
+    
+    pub fn sub(mut self, left: Reg, right: Reg) -> Reg {
+        let reg = self.new_reg()
+        self.emit(IRInst::Sub(reg, left, right))
+        reg
+    }
+    
+    pub fn mul(mut self, left: Reg, right: Reg) -> Reg {
+        let reg = self.new_reg()
+        self.emit(IRInst::Mul(reg, left, right))
+        reg
+    }
+    
+    pub fn div(mut self, left: Reg, right: Reg) -> Reg {
+        let reg = self.new_reg()
+        self.emit(IRInst::Div(reg, left, right))
+        reg
+    }
+    
+    pub fn call(mut self, name: String, args: Vec<Reg>) -> Reg {
+        let reg = self.new_reg()
+        self.emit(IRInst::Call(reg, name, args))
+        reg
+    }
+    
+    pub fn ret(mut self, value: Option<Reg>) {
+        self.set_terminator(IRTerminator::Return(value))
+    }
+    
+    pub fn jump(mut self, label: Label) {
+        self.set_terminator(IRTerminator::Jump(label))
+    }
+    
+    pub fn branch(mut self, cond: Reg, then_label: Label, else_label: Label) {
+        self.set_terminator(IRTerminator::Branch(cond, then_label, else_label))
+    }
+}
+
+// IR Lowering from AST
+pub struct IRLowering {
+    builder: IRBuilder,
+    locals: HashMap<String, Reg>,
+}
+
+impl IRLowering {
+    pub fn new() -> IRLowering {
+        IRLowering {
+            builder: IRBuilder::new(),
+            locals: HashMap::new(),
+        }
+    }
+    
+    pub fn lower(mut self, module: Module) -> IRModule {
+        let mut functions = Vec::new()
+        let mut structs = Vec::new()
+        
+        for item in module.items.iter() {
+            match item {
+                Item::Function(def) => {
+                    functions.push(self.lower_function(def.clone()))
+                },
+                Item::Struct(def) => {
+                    structs.push(self.lower_struct(def.clone()))
+                },
+                _ => {},
+            }
+        }
+        
+        IRModule {
+            name: module.name,
+            functions,
+            globals: Vec::new(),
+            structs,
+        }
+    }
+    
+    fn lower_function(mut self, def: FnDef) -> IRFunction {
+        let params: Vec<(String, TypeInfo)> = def.params.iter()
+            .map(|p| (p.name.clone(), self.type_to_info(p.ty.clone())))
+            .collect()
+        
+        let ret_type = def.ret_type
+            .map(|t| self.type_to_info(t))
+            .unwrap_or(TypeInfo::Unit)
+        
+        self.builder.start_function(def.name.clone(), params.clone(), ret_type)
+        self.locals.clear()
+        
+        // Allocate registers for parameters
+        for (i, (name, _)) in params.iter().enumerate() {
+            self.locals.insert(name.clone(), i as Reg)
+        }
+        
+        // Lower body
+        if let Some(body) = def.body {
+            let result = self.lower_block(body)
+            self.builder.ret(result)
+        }
+        
+        self.builder.end_function()
+    }
+    
+    fn lower_struct(self, def: StructDef) -> IRStruct {
+        let fields: Vec<(String, TypeInfo)> = def.fields.iter()
+            .map(|f| (f.name.clone(), self.type_to_info(f.ty.clone())))
+            .collect()
+        
+        IRStruct { name: def.name, fields }
+    }
+    
+    fn lower_block(mut self, block: Block) -> Option<Reg> {
+        let mut result = None
+        for stmt in block.stmts.iter() {
+            result = self.lower_stmt(stmt.clone())
+        }
+        if let Some(expr) = block.expr {
+            result = Some(self.lower_expr(*expr))
+        }
+        result
+    }
+    
+    fn lower_stmt(mut self, stmt: Stmt) -> Option<Reg> {
+        match stmt {
+            Stmt::Let(name, _, value) => {
+                if let Some(init) = value {
+                    let reg = self.lower_expr(init)
+                    self.locals.insert(name, reg)
+                }
+                None
+            },
+            Stmt::Expr(expr) => Some(self.lower_expr(expr)),
+            Stmt::Return(value) => {
+                let reg = value.map(|e| self.lower_expr(e))
+                self.builder.ret(reg)
+                None
+            },
+            Stmt::While(cond, body) => {
+                let loop_label = self.builder.new_label("while_loop")
+                let body_label = self.builder.new_label("while_body")
+                let end_label = self.builder.new_label("while_end")
+                
+                self.builder.jump(loop_label.clone())
+                self.builder.end_block()
+                
+                self.builder.start_block(loop_label)
+                let cond_reg = self.lower_expr(cond)
+                self.builder.branch(cond_reg, body_label.clone(), end_label.clone())
+                self.builder.end_block()
+                
+                self.builder.start_block(body_label)
+                self.lower_block(body);
+                self.builder.jump(loop_label)
+                self.builder.end_block()
+                
+                self.builder.start_block(end_label)
+                None
+            },
+            Stmt::For(var, iter, body) => {
+                let iter_reg = self.lower_expr(iter)
+                let idx_reg = self.builder.const_int(0)
+                let len_reg = self.builder.new_reg()
+                self.builder.emit(IRInst::ArrayLen(len_reg, iter_reg))
+                
+                let loop_label = self.builder.new_label("for_loop")
+                let body_label = self.builder.new_label("for_body")
+                let end_label = self.builder.new_label("for_end")
+                
+                self.builder.jump(loop_label.clone())
+                self.builder.end_block()
+                
+                self.builder.start_block(loop_label.clone())
+                let cond_reg = self.builder.new_reg()
+                self.builder.emit(IRInst::Lt(cond_reg, idx_reg, len_reg))
+                self.builder.branch(cond_reg, body_label.clone(), end_label.clone())
+                self.builder.end_block()
+                
+                self.builder.start_block(body_label)
+                let elem_reg = self.builder.new_reg()
+                self.builder.emit(IRInst::ArrayGet(elem_reg, iter_reg, idx_reg))
+                self.locals.insert(var, elem_reg)
+                self.lower_block(body);
+                let one = self.builder.const_int(1)
+                let new_idx = self.builder.add(idx_reg, one)
+                self.builder.emit(IRInst::Move(idx_reg, new_idx))
+                self.builder.jump(loop_label)
+                self.builder.end_block()
+                
+                self.builder.start_block(end_label)
+                None
+            },
+            _ => None,
+        }
+    }
+    
+    fn lower_expr(mut self, expr: Expr) -> Reg {
+        match expr {
+            Expr::Literal(lit) => self.lower_literal(lit),
+            Expr::Identifier(name) => {
+                self.locals.get(&name).copied().unwrap_or(0)
+            },
+            Expr::Binary(left, op, right) => {
+                let left_reg = self.lower_expr(*left)
+                let right_reg = self.lower_expr(*right)
+                self.lower_binary(op, left_reg, right_reg)
+            },
+            Expr::Unary(op, expr) => {
+                let reg = self.lower_expr(*expr)
+                self.lower_unary(op, reg)
+            },
+            Expr::Call(callee, args) => {
+                let arg_regs: Vec<Reg> = args.iter()
+                    .map(|a| self.lower_expr(a.clone()))
+                    .collect()
+                
+                match *callee {
+                    Expr::Identifier(name) => {
+                        self.builder.call(name, arg_regs)
+                    },
+                    _ => {
+                        let callee_reg = self.lower_expr(*callee)
+                        let result = self.builder.new_reg()
+                        self.builder.emit(IRInst::CallIndirect(result, callee_reg, arg_regs))
+                        result
+                    },
+                }
+            },
+            Expr::Index(array, index) => {
+                let array_reg = self.lower_expr(*array)
+                let index_reg = self.lower_expr(*index)
+                let result = self.builder.new_reg()
+                self.builder.emit(IRInst::ArrayGet(result, array_reg, index_reg))
+                result
+            },
+            Expr::Field(obj, field) => {
+                let obj_reg = self.lower_expr(*obj)
+                let result = self.builder.new_reg()
+                self.builder.emit(IRInst::StructGet(result, obj_reg, field))
+                result
+            },
+            Expr::If(cond, then_block, else_block) => {
+                let cond_reg = self.lower_expr(*cond)
+                let then_label = self.builder.new_label("if_then")
+                let else_label = self.builder.new_label("if_else")
+                let end_label = self.builder.new_label("if_end")
+                
+                self.builder.branch(cond_reg, then_label.clone(), else_label.clone())
+                self.builder.end_block()
+                
+                self.builder.start_block(then_label)
+                let then_result = self.lower_block(*then_block)
+                let then_reg = then_result.unwrap_or(self.builder.const_int(0))
+                self.builder.jump(end_label.clone())
+                self.builder.end_block()
+                
+                self.builder.start_block(else_label)
+                let else_reg = if let Some(else_b) = else_block {
+                    self.lower_block(*else_b).unwrap_or(self.builder.const_int(0))
+                } else {
+                    self.builder.const_int(0)
+                };
+                self.builder.jump(end_label.clone())
+                self.builder.end_block()
+                
+                self.builder.start_block(end_label)
+                let result = self.builder.new_reg()
+                self.builder.emit(IRInst::Phi(result, vec![
+                    (then_label, then_reg),
+                    (else_label, else_reg),
+                ]))
+                result
+            },
+            Expr::Array(elements) => {
+                let len = elements.len() as Int
+                let array_reg = self.builder.new_reg()
+                self.builder.emit(IRInst::ArrayNew(array_reg, len))
+                
+                for (i, elem) in elements.iter().enumerate() {
+                    let elem_reg = self.lower_expr(elem.clone())
+                    let idx_reg = self.builder.const_int(i as Int)
+                    self.builder.emit(IRInst::ArraySet(array_reg, idx_reg, elem_reg))
+                }
+                array_reg
+            },
+            Expr::Block(block) => {
+                self.lower_block(block).unwrap_or(self.builder.const_int(0))
+            },
+            _ => self.builder.const_int(0),
+        }
+    }
+    
+    fn lower_literal(mut self, lit: LiteralExpr) -> Reg {
+        match lit {
+            LiteralExpr::Int(v) => self.builder.const_int(v),
+            LiteralExpr::Float(v) => self.builder.const_float(v),
+            LiteralExpr::Bool(v) => self.builder.const_bool(v),
+            LiteralExpr::String(v) => self.builder.const_string(v),
+            LiteralExpr::Nil => {
+                let reg = self.builder.new_reg()
+                self.builder.emit(IRInst::ConstNil(reg))
+                reg
+            },
+            _ => self.builder.const_int(0),
+        }
+    }
+    
+    fn lower_binary(mut self, op: BinOp, left: Reg, right: Reg) -> Reg {
+        let result = self.builder.new_reg()
+        let inst = match op {
+            BinOp::Add => IRInst::Add(result, left, right),
+            BinOp::Sub => IRInst::Sub(result, left, right),
+            BinOp::Mul => IRInst::Mul(result, left, right),
+            BinOp::Div => IRInst::Div(result, left, right),
+            BinOp::Mod => IRInst::Mod(result, left, right),
+            BinOp::Eq => IRInst::Eq(result, left, right),
+            BinOp::NotEq => IRInst::NotEq(result, left, right),
+            BinOp::Lt => IRInst::Lt(result, left, right),
+            BinOp::Gt => IRInst::Gt(result, left, right),
+            BinOp::LtEq => IRInst::LtEq(result, left, right),
+            BinOp::GtEq => IRInst::GtEq(result, left, right),
+            BinOp::And => IRInst::And(result, left, right),
+            BinOp::Or => IRInst::Or(result, left, right),
+            BinOp::BitAnd => IRInst::BitAnd(result, left, right),
+            BinOp::BitOr => IRInst::BitOr(result, left, right),
+            BinOp::BitXor => IRInst::BitXor(result, left, right),
+            BinOp::Shl => IRInst::Shl(result, left, right),
+            BinOp::Shr => IRInst::Shr(result, left, right),
+        };
+        self.builder.emit(inst)
+        result
+    }
+    
+    fn lower_unary(mut self, op: UnaryOp, operand: Reg) -> Reg {
+        let result = self.builder.new_reg()
+        let inst = match op {
+            UnaryOp::Neg => IRInst::Neg(result, operand),
+            UnaryOp::Not => IRInst::Not(result, operand),
+            UnaryOp::BitNot => IRInst::BitNot(result, operand),
+            _ => IRInst::Move(result, operand),
+        };
+        self.builder.emit(inst)
+        result
+    }
+    
+    fn type_to_info(self, ty: Type) -> TypeInfo {
+        match ty {
+            Type::Named(name) => {
+                match name.as_str() {
+                    "Int" => TypeInfo::Int,
+                    "Float" => TypeInfo::Float,
+                    "Bool" => TypeInfo::Bool,
+                    "Char" => TypeInfo::Char,
+                    "String" => TypeInfo::String,
+                    _ => TypeInfo::Struct(name, Vec::new()),
+                }
+            },
+            _ => TypeInfo::Unknown,
+        }
+    }
+}
+
+// Public API
+pub fn lower(module: Module) -> IRModule {
+    IRLowering::new().lower(module)
+}
+
+// IR Printer
+pub fn print_ir(module: IRModule) -> String {
+    let mut output = String::new()
+    output += format!("; Module: {}\n\n", module.name)
+    
+    for func in module.functions.iter() {
+        output += format!("fn {}(", func.name)
+        for (i, (name, ty)) in func.params.iter().enumerate() {
+            if i > 0 { output += ", " }
+            output += format!("{}: {:?}", name, ty)
+        }
+        output += format!(") -> {:?} {{\n", func.ret_type)
+        
+        for block in func.blocks.iter() {
+            output += format!("  {}:\n", block.label)
+            for inst in block.instructions.iter() {
+                output += format!("    {:?}\n", inst)
+            }
+            output += format!("    {:?}\n", block.terminator)
+        }
+        output += "}\n\n"
+    }
+    
+    output
+}

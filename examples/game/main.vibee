@@ -1,0 +1,275 @@
+/// Simple Game Example
+/// A snake game built with Vibee
+
+use std::io
+use std::time
+use std::random
+
+const WIDTH: Int = 40
+const HEIGHT: Int = 20
+const INITIAL_LENGTH: Int = 3
+
+enum Direction {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+impl Point {
+    fn new(x: Int, y: Int) -> Point {
+        Point { x, y }
+    }
+    
+    fn equals(self, other: Point) -> Bool {
+        self.x == other.x && self.y == other.y
+    }
+}
+
+struct Snake {
+    body: Vec<Point>,
+    direction: Direction,
+    growing: Bool,
+}
+
+impl Snake {
+    fn new() -> Snake {
+        let mut body = Vec::new()
+        for i in 0..INITIAL_LENGTH {
+            body.push(Point::new(WIDTH / 2 - i, HEIGHT / 2))
+        }
+        Snake {
+            body,
+            direction: Direction::Right,
+            growing: false,
+        }
+    }
+    
+    fn head(self) -> Point {
+        self.body[0].clone()
+    }
+    
+    fn move_forward(mut self) {
+        let head = self.head()
+        let new_head = match self.direction {
+            Direction::Up => Point::new(head.x, head.y - 1),
+            Direction::Down => Point::new(head.x, head.y + 1),
+            Direction::Left => Point::new(head.x - 1, head.y),
+            Direction::Right => Point::new(head.x + 1, head.y),
+        }
+        
+        self.body.insert(0, new_head)
+        
+        if !self.growing {
+            self.body.pop()
+        }
+        self.growing = false
+    }
+    
+    fn grow(mut self) {
+        self.growing = true
+    }
+    
+    fn set_direction(mut self, dir: Direction) {
+        // Prevent 180-degree turns
+        let valid = match (self.direction.clone(), dir.clone()) {
+            (Direction::Up, Direction::Down) => false,
+            (Direction::Down, Direction::Up) => false,
+            (Direction::Left, Direction::Right) => false,
+            (Direction::Right, Direction::Left) => false,
+            _ => true,
+        }
+        
+        if valid {
+            self.direction = dir
+        }
+    }
+    
+    fn collides_with_self(self) -> Bool {
+        let head = self.head()
+        for i in 1..self.body.len() {
+            if head.equals(self.body[i].clone()) {
+                return true
+            }
+        }
+        false
+    }
+    
+    fn collides_with_wall(self) -> Bool {
+        let head = self.head()
+        head.x < 0 || head.x >= WIDTH || head.y < 0 || head.y >= HEIGHT
+    }
+    
+    fn contains(self, point: Point) -> Bool {
+        for p in self.body.iter() {
+            if p.equals(point.clone()) {
+                return true
+            }
+        }
+        false
+    }
+}
+
+struct Food {
+    position: Point,
+}
+
+impl Food {
+    fn new(snake: &Snake) -> Food {
+        let mut rng = random::Rng::new()
+        loop {
+            let pos = Point::new(
+                rng.range(0, WIDTH),
+                rng.range(0, HEIGHT)
+            )
+            if !snake.contains(pos.clone()) {
+                return Food { position: pos }
+            }
+        }
+    }
+}
+
+struct Game {
+    snake: Snake,
+    food: Food,
+    score: Int,
+    game_over: Bool,
+    high_score: Int,
+}
+
+impl Game {
+    fn new() -> Game {
+        let snake = Snake::new()
+        let food = Food::new(&snake)
+        Game {
+            snake,
+            food,
+            score: 0,
+            game_over: false,
+            high_score: 0,
+        }
+    }
+    
+    fn update(mut self) {
+        if self.game_over { return }
+        
+        self.snake.move_forward()
+        
+        // Check food collision
+        if self.snake.head().equals(self.food.position.clone()) {
+            self.snake.grow()
+            self.score += 10
+            self.food = Food::new(&self.snake)
+        }
+        
+        // Check game over
+        if self.snake.collides_with_wall() || self.snake.collides_with_self() {
+            self.game_over = true
+            if self.score > self.high_score {
+                self.high_score = self.score
+            }
+        }
+    }
+    
+    fn handle_input(mut self, key: Char) {
+        match key {
+            'w' | 'W' => self.snake.set_direction(Direction::Up),
+            's' | 'S' => self.snake.set_direction(Direction::Down),
+            'a' | 'A' => self.snake.set_direction(Direction::Left),
+            'd' | 'D' => self.snake.set_direction(Direction::Right),
+            'r' | 'R' => {
+                if self.game_over {
+                    self.snake = Snake::new()
+                    self.food = Food::new(&self.snake)
+                    self.score = 0
+                    self.game_over = false
+                }
+            },
+            'q' | 'Q' => std::process::exit(0),
+            _ => {},
+        }
+    }
+    
+    fn render(self) {
+        // Clear screen
+        print("\x1B[2J\x1B[H")
+        
+        // Draw border
+        print("╔")
+        for _ in 0..WIDTH {
+            print("═")
+        }
+        println("╗")
+        
+        // Draw game area
+        for y in 0..HEIGHT {
+            print("║")
+            for x in 0..WIDTH {
+                let point = Point::new(x, y)
+                
+                if self.snake.head().equals(point.clone()) {
+                    print("●")  // Snake head
+                } else if self.snake.contains(point.clone()) {
+                    print("○")  // Snake body
+                } else if self.food.position.equals(point.clone()) {
+                    print("★")  // Food
+                } else {
+                    print(" ")
+                }
+            }
+            println("║")
+        }
+        
+        // Draw border
+        print("╚")
+        for _ in 0..WIDTH {
+            print("═")
+        }
+        println("╝")
+        
+        // Draw score
+        println("Score: {}  |  High Score: {}  |  Length: {}", 
+            self.score, self.high_score, self.snake.body.len())
+        
+        if self.game_over {
+            println("")
+            println("  GAME OVER!")
+            println("  Press 'R' to restart or 'Q' to quit")
+        } else {
+            println("Controls: W/A/S/D to move, Q to quit")
+        }
+    }
+}
+
+fn main() {
+    // Set terminal to raw mode
+    io::set_raw_mode(true)
+    
+    let mut game = Game::new()
+    let tick_rate = time::Duration::from_millis(100)
+    
+    println("🐍 Snake Game")
+    println("Press any key to start...")
+    io::read_char()
+    
+    loop {
+        // Handle input (non-blocking)
+        if let Some(key) = io::try_read_char() {
+            game.handle_input(key)
+        }
+        
+        // Update game state
+        game.update()
+        
+        // Render
+        game.render()
+        
+        // Wait for next tick
+        time::sleep(tick_rate)
+    }
+}

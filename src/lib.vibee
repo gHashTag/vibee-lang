@@ -1,0 +1,160 @@
+/// Vibee Lang Compiler Library
+/// Main entry point for the compiler
+
+pub mod lexer
+pub mod parser
+pub mod typechecker
+pub mod ir
+pub mod codegen
+pub mod runtime
+pub mod cli
+
+// Re-exports
+pub use lexer::{Token, TokenKind, Span, tokenize}
+pub use parser::{Module, Item, Expr, Stmt, Type, parse}
+pub use typechecker::{TypeInfo, TypeError, check}
+pub use ir::{IRModule, IRFunction, IRInst, lower}
+pub use codegen::{Target, generate}
+pub use runtime::Runtime
+
+/// Compile source code to target
+pub fn compile(source: String, target: Target) -> Result<String, Vec<String>> {
+    // Lexing
+    let tokens = tokenize(source)
+    
+    // Parsing
+    let module = parse(tokens)
+    
+    // Type checking
+    let errors = check(module.clone())
+    if !errors.is_empty() {
+        return Err(errors.iter().map(|e| e.message.clone()).collect())
+    }
+    
+    // IR generation
+    let ir = lower(module)
+    
+    // Code generation
+    let output = generate(ir, target)
+    
+    Ok(output)
+}
+
+/// Compile and run source code
+pub fn run(source: String) -> Result<(), Vec<String>> {
+    let js = compile(source, Target::JavaScript)?
+    
+    // Execute with runtime
+    runtime::init_runtime()
+    // ... execute JS
+    
+    Ok(())
+}
+
+/// Format source code
+pub fn format(source: String) -> String {
+    let tokens = tokenize(source)
+    let module = parse(tokens)
+    
+    // Pretty print AST
+    let mut output = String::new()
+    for item in module.items.iter() {
+        output += &format_item(item)
+        output += "\n"
+    }
+    output
+}
+
+fn format_item(item: &Item) -> String {
+    match item {
+        Item::Function(def) => {
+            let mut s = String::new()
+            if def.is_pub { s += "pub " }
+            if def.is_async { s += "async " }
+            s += "fn "
+            s += &def.name
+            s += "("
+            for (i, p) in def.params.iter().enumerate() {
+                if i > 0 { s += ", " }
+                s += &p.name
+                s += ": "
+                s += &format_type(&p.ty)
+            }
+            s += ")"
+            if let Some(ref ret) = def.ret_type {
+                s += " -> "
+                s += &format_type(ret)
+            }
+            if def.body.is_some() {
+                s += " { ... }"
+            }
+            s
+        },
+        Item::Struct(def) => {
+            let mut s = String::new()
+            if def.is_pub { s += "pub " }
+            s += "struct "
+            s += &def.name
+            s += " { ... }"
+            s
+        },
+        Item::Enum(def) => {
+            let mut s = String::new()
+            if def.is_pub { s += "pub " }
+            s += "enum "
+            s += &def.name
+            s += " { ... }"
+            s
+        },
+        _ => String::new(),
+    }
+}
+
+fn format_type(ty: &Type) -> String {
+    match ty {
+        Type::Named(name) => name.clone(),
+        Type::Generic(name, args) => {
+            let args_str: Vec<String> = args.iter().map(|a| format_type(a)).collect()
+            format!("{}<{}>", name, args_str.join(", "))
+        },
+        Type::Array(inner, size) => {
+            if let Some(n) = size {
+                format!("[{}; {}]", format_type(inner), n)
+            } else {
+                format!("[{}]", format_type(inner))
+            }
+        },
+        Type::Tuple(types) => {
+            let types_str: Vec<String> = types.iter().map(|t| format_type(t)).collect()
+            format!("({})", types_str.join(", "))
+        },
+        Type::Function(params, ret) => {
+            let params_str: Vec<String> = params.iter().map(|p| format_type(p)).collect()
+            format!("fn({}) -> {}", params_str.join(", "), format_type(ret))
+        },
+        Type::Optional(inner) => format!("{}?", format_type(inner)),
+        Type::Reference(inner, mutable) => {
+            if *mutable {
+                format!("&mut {}", format_type(inner))
+            } else {
+                format!("&{}", format_type(inner))
+            }
+        },
+    }
+}
+
+// Version info
+pub const VERSION: &str = "0.1.0"
+pub const EDITION: &str = "2024"
+
+test "compile simple program" {
+    let source = "fn main() { println(\"Hello\") }"
+    let result = compile(source, Target::JavaScript)
+    assert(result.is_ok())
+}
+
+test "type error" {
+    let source = "fn bad() -> Int { \"hello\" }"
+    let result = compile(source, Target::JavaScript)
+    assert(result.is_err())
+}
