@@ -1,0 +1,667 @@
+// =============================================================================
+// Vibee OS — HTTP/2 Module
+// HTTP/2 protocol implementation (RFC 7540)
+// =============================================================================
+
+use tls.{TlsConfig, TlsStream}
+use net.{SocketAddr, TcpStream}
+
+// -----------------------------------------------------------------------------
+// HTTP/2 Frame Types
+// -----------------------------------------------------------------------------
+
+/// HTTP/2 Frame type
+enum FrameType {
+    Data, Headers, Priority, RstStream, Settings, PushPromise,
+    Ping, GoAway, WindowUpdate, Continuation
+}
+
+impl FrameType {
+    fn from_u8(v: UInt8) -> Option<Self> {
+        match v {
+            0 => Some(Data), 1 => Some(Headers), 2 => Some(Priority),
+            3 => Some(RstStream), 4 => Some(Settings), 5 => Some(PushPromise),
+            6 => Some(Ping), 7 => Some(GoAway), 8 => Some(WindowUpdate),
+            9 => Some(Continuation), _ => None
+        }
+    }
+    fn to_u8() -> UInt8 {
+        match self {
+            Data => 0, Headers => 1, Priority => 2, RstStream => 3,
+            Settings => 4, PushPromise => 5, Ping => 6, GoAway => 7,
+            WindowUpdate => 8, Continuation => 9
+        }
+    }
+}
+
+/// HTTP/2 Frame
+struct Frame {
+    length: Int
+    frame_type: FrameType
+    flags: UInt8
+    stream_id: Int
+    payload: [UInt8]
+}
+
+impl Frame {
+    fn new(frame_type: FrameType, stream_id: Int, payload: [UInt8]) -> Self {
+        Frame { length: payload.len(), frame_type: frame_type, flags: 0, stream_id: stream_id, payload: payload }
+    }
+    
+    fn data(stream_id: Int, data: [UInt8], end_stream: Bool) -> Self {
+        var f = Self.new(FrameType.Data, stream_id, data)
+        if end_stream { f.flags |= 0x01 }
+        f
+    }
+    
+    fn headers(stream_id: Int, headers: [UInt8], end_stream: Bool, end_headers: Bool) -> Self {
+        var f = Self.new(FrameType.Headers, stream_id, headers)
+        if end_stream { f.flags |= 0x01 }
+        if end_headers { f.flags |= 0x04 }
+        f
+    }
+    
+    fn settings(params: [(SettingId, Int)]) -> Self {
+        var payload = []
+        for (id, val) in params {
+            payload.extend([(id.to_u16() >> 8) as UInt8, id.to_u16() as UInt8])
+            payload.extend([(val >> 24) as UInt8, (val >> 16) as UInt8, (val >> 8) as UInt8, val as UInt8])
+        }
+        Self.new(FrameType.Settings, 0, payload)
+    }
+    
+    fn settings_ack() -> Self {
+        var f = Self.new(FrameType.Settings, 0, [])
+        f.flags = 0x01
+        f
+    }
+    
+    fn ping(data: [UInt8; 8], ack: Bool) -> Self {
+        var f = Self.new(FrameType.Ping, 0, data.to_vec())
+        if ack { f.flags = 0x01 }
+        f
+    }
+    
+    fn goaway(last_stream_id: Int, error_code: ErrorCode, debug: [UInt8]) -> Self {
+        var payload = [
+            (last_stream_id >> 24) as UInt8, (last_stream_id >> 16) as UInt8,
+            (last_stream_id >> 8) as UInt8, last_stream_id as UInt8,
+            (error_code.to_u32() >> 24) as UInt8, (error_code.to_u32() >> 16) as UInt8,
+            (error_code.to_u32() >> 8) as UInt8, error_code.to_u32() as UInt8
+        ]
+        payload.extend(debug)
+        Self.new(FrameType.GoAway, 0, payload)
+    }
+    
+    fn window_update(stream_id: Int, increment: Int) -> Self {
+        let payload = [(increment >> 24) as UInt8, (increment >> 16) as UInt8, (increment >> 8) as UInt8, increment as UInt8]
+        Self.new(FrameType.WindowUpdate, stream_id, payload)
+    }
+    
+    fn rst_stream(stream_id: Int, error_code: ErrorCode) -> Self {
+        let code = error_code.to_u32()
+        let payload = [(code >> 24) as UInt8, (code >> 16) as UInt8, (code >> 8) as UInt8, code as UInt8]
+        Self.new(FrameType.RstStream, stream_id, payload)
+    }
+    
+    fn encode() -> [UInt8] {
+        var buf = []
+        buf.push((self.length >> 16) as UInt8)
+        buf.push((self.length >> 8) as UInt8)
+        buf.push(self.length as UInt8)
+        buf.push(self.frame_type.to_u8())
+        buf.push(self.flags)
+        buf.push((self.stream_id >> 24) as UInt8)
+        buf.push((self.stream_id >> 16) as UInt8)
+        buf.push((self.stream_id >> 8) as UInt8)
+        buf.push(self.stream_id as UInt8)
+        buf.extend(self.payload)
+        buf
+    }
+    
+    fn decode(data: [UInt8]) -> Result<Self, Http2Error> {
+        if data.len() < 9 { return Err(Http2Error.FrameError("Frame too short")) }
+        let length = ((data[0] as Int) << 16) | ((data[1] as Int) << 8) | (data[2] as Int)
+        let frame_type = FrameType.from_u8(data[3]).ok_or(Http2Error.FrameError("Unknown frame type"))?
+        let flags = data[4]
+        let stream_id = ((data[5] as Int & 0x7F) << 24) | ((data[6] as Int) << 16) | ((data[7] as Int) << 8) | (data[8] as Int)
+        let payload = if data.len() > 9 { data[9..].to_vec() } else { [] }
+        Ok(Frame { length: length, frame_type: frame_type, flags: flags, stream_id: stream_id, payload: payload })
+    }
+    
+    fn is_end_stream() -> Bool { self.flags & 0x01 != 0 }
+    fn is_end_headers() -> Bool { self.flags & 0x04 != 0 }
+    fn is_ack() -> Bool { self.flags & 0x01 != 0 }
+    fn is_padded() -> Bool { self.flags & 0x08 != 0 }
+    fn is_priority() -> Bool { self.flags & 0x20 != 0 }
+}
+
+// -----------------------------------------------------------------------------
+// Settings
+// -----------------------------------------------------------------------------
+
+enum SettingId {
+    HeaderTableSize, EnablePush, MaxConcurrentStreams,
+    InitialWindowSize, MaxFrameSize, MaxHeaderListSize
+}
+
+impl SettingId {
+    fn to_u16() -> UInt16 {
+        match self { HeaderTableSize => 1, EnablePush => 2, MaxConcurrentStreams => 3, InitialWindowSize => 4, MaxFrameSize => 5, MaxHeaderListSize => 6 }
+    }
+}
+
+struct Settings {
+    header_table_size: Int
+    enable_push: Bool
+    max_concurrent_streams: Int
+    initial_window_size: Int
+    max_frame_size: Int
+    max_header_list_size: Int
+}
+
+impl Settings {
+    fn default() -> Self {
+        Settings {
+            header_table_size: 4096, enable_push: true, max_concurrent_streams: 100,
+            initial_window_size: 65535, max_frame_size: 16384, max_header_list_size: 8192
+        }
+    }
+    
+    fn to_params() -> [(SettingId, Int)] {
+        [
+            (SettingId.HeaderTableSize, self.header_table_size),
+            (SettingId.EnablePush, if self.enable_push { 1 } else { 0 }),
+            (SettingId.MaxConcurrentStreams, self.max_concurrent_streams),
+            (SettingId.InitialWindowSize, self.initial_window_size),
+            (SettingId.MaxFrameSize, self.max_frame_size),
+            (SettingId.MaxHeaderListSize, self.max_header_list_size)
+        ]
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Error Codes
+// -----------------------------------------------------------------------------
+
+enum ErrorCode {
+    NoError, ProtocolError, InternalError, FlowControlError, SettingsTimeout,
+    StreamClosed, FrameSizeError, RefusedStream, Cancel, CompressionError,
+    ConnectError, EnhanceYourCalm, InadequateSecurity, Http11Required
+}
+
+impl ErrorCode {
+    fn to_u32() -> UInt32 {
+        match self {
+            NoError => 0, ProtocolError => 1, InternalError => 2, FlowControlError => 3,
+            SettingsTimeout => 4, StreamClosed => 5, FrameSizeError => 6, RefusedStream => 7,
+            Cancel => 8, CompressionError => 9, ConnectError => 10, EnhanceYourCalm => 11,
+            InadequateSecurity => 12, Http11Required => 13
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// HPACK Header Compression
+// -----------------------------------------------------------------------------
+
+struct HpackEncoder {
+    dynamic_table: [(String, String)]
+    max_size: Int
+}
+
+impl HpackEncoder {
+    fn new() -> Self { HpackEncoder { dynamic_table: [], max_size: 4096 } }
+    
+    fn encode(headers: [(String, String)]) -> [UInt8] {
+        var buf = []
+        for (name, value) in headers {
+            if let Some(idx) = self.find_static(name, value) {
+                buf.push(0x80 | idx as UInt8)
+            } else {
+                buf.push(0x40)
+                buf.extend(self.encode_string(name))
+                buf.extend(self.encode_string(value))
+                self.add_to_dynamic(name, value)
+            }
+        }
+        buf
+    }
+    
+    fn encode_string(s: String) -> [UInt8] {
+        let bytes = s.as_bytes()
+        var buf = []
+        if bytes.len() < 127 {
+            buf.push(bytes.len() as UInt8)
+        } else {
+            buf.push(127)
+            var len = bytes.len() - 127
+            while len >= 128 { buf.push((len % 128 + 128) as UInt8); len /= 128 }
+            buf.push(len as UInt8)
+        }
+        buf.extend(bytes)
+        buf
+    }
+    
+    fn find_static(name: String, value: String) -> Option<Int> {
+        match (name.as_str(), value.as_str()) {
+            (":authority", _) => Some(1), (":method", "GET") => Some(2), (":method", "POST") => Some(3),
+            (":path", "/") => Some(4), (":scheme", "http") => Some(6), (":scheme", "https") => Some(7),
+            (":status", "200") => Some(8), (":status", "204") => Some(9), (":status", "404") => Some(13),
+            _ => None
+        }
+    }
+    
+    fn add_to_dynamic(name: String, value: String) {
+        let size = name.len() + value.len() + 32
+        while self.table_size() + size > self.max_size && !self.dynamic_table.is_empty() {
+            self.dynamic_table.pop()
+        }
+        if size <= self.max_size { self.dynamic_table.insert(0, (name, value)) }
+    }
+    
+    fn table_size() -> Int {
+        self.dynamic_table.iter().map(|(n, v)| n.len() + v.len() + 32).sum()
+    }
+}
+
+struct HpackDecoder {
+    dynamic_table: [(String, String)]
+    max_size: Int
+}
+
+impl HpackDecoder {
+    fn new() -> Self { HpackDecoder { dynamic_table: [], max_size: 4096 } }
+    
+    fn decode(data: [UInt8]) -> Result<[(String, String)], Http2Error> {
+        var headers = []
+        var i = 0
+        while i < data.len() {
+            let b = data[i]
+            if b & 0x80 != 0 {
+                let idx = (b & 0x7F) as Int
+                if let Some((n, v)) = self.get_indexed(idx) { headers.push((n, v)) }
+                i += 1
+            } else if b & 0x40 != 0 {
+                i += 1
+                let (name, ni) = self.decode_string(data, i)?
+                i = ni
+                let (value, vi) = self.decode_string(data, i)?
+                i = vi
+                self.add_to_dynamic(name.clone(), value.clone())
+                headers.push((name, value))
+            } else {
+                i += 1
+            }
+        }
+        Ok(headers)
+    }
+    
+    fn decode_string(data: [UInt8], start: Int) -> Result<(String, Int), Http2Error> {
+        if start >= data.len() { return Err(Http2Error.CompressionError) }
+        let huffman = data[start] & 0x80 != 0
+        var len = (data[start] & 0x7F) as Int
+        var i = start + 1
+        if len == 127 {
+            var m = 0
+            loop {
+                if i >= data.len() { return Err(Http2Error.CompressionError) }
+                len += ((data[i] & 0x7F) as Int) << m
+                if data[i] & 0x80 == 0 { i += 1; break }
+                m += 7; i += 1
+            }
+        }
+        if i + len > data.len() { return Err(Http2Error.CompressionError) }
+        let bytes = data[i..(i + len)].to_vec()
+        let s = String.from_utf8(bytes).map_err(|_| Http2Error.CompressionError)?
+        Ok((s, i + len))
+    }
+    
+    fn get_indexed(idx: Int) -> Option<(String, String)> {
+        if idx <= 61 { Self.static_table(idx) }
+        else { self.dynamic_table.get(idx - 62).cloned() }
+    }
+    
+    fn static_table(idx: Int) -> Option<(String, String)> {
+        match idx {
+            1 => Some((":authority", "")), 2 => Some((":method", "GET")), 3 => Some((":method", "POST")),
+            4 => Some((":path", "/")), 5 => Some((":path", "/index.html")), 6 => Some((":scheme", "http")),
+            7 => Some((":scheme", "https")), 8 => Some((":status", "200")), _ => None
+        }.map(|(n, v)| (n.to_string(), v.to_string()))
+    }
+    
+    fn add_to_dynamic(name: String, value: String) {
+        let size = name.len() + value.len() + 32
+        while self.table_size() + size > self.max_size && !self.dynamic_table.is_empty() {
+            self.dynamic_table.pop()
+        }
+        if size <= self.max_size { self.dynamic_table.insert(0, (name, value)) }
+    }
+    
+    fn table_size() -> Int {
+        self.dynamic_table.iter().map(|(n, v)| n.len() + v.len() + 32).sum()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// HTTP/2 Stream
+// -----------------------------------------------------------------------------
+
+enum StreamState { Idle, Open, HalfClosedLocal, HalfClosedRemote, Closed }
+
+struct Stream {
+    id: Int
+    state: StreamState
+    window_size: Int
+    headers: [(String, String)]
+    data: [UInt8]
+    priority: Priority
+}
+
+struct Priority { dependent: Int, weight: UInt8, exclusive: Bool }
+
+impl Stream {
+    fn new(id: Int) -> Self {
+        Stream {
+            id: id, state: StreamState.Idle, window_size: 65535,
+            headers: [], data: [], priority: Priority { dependent: 0, weight: 16, exclusive: false }
+        }
+    }
+    
+    fn is_open() -> Bool { matches!(self.state, StreamState.Open | StreamState.HalfClosedLocal | StreamState.HalfClosedRemote) }
+}
+
+// -----------------------------------------------------------------------------
+// HTTP/2 Connection
+// -----------------------------------------------------------------------------
+
+actor Http2Connection {
+    state tls: TlsStream
+    state settings: Settings
+    state peer_settings: Settings
+    state streams: Map<Int, Stream>
+    state next_stream_id: Int
+    state encoder: HpackEncoder
+    state decoder: HpackDecoder
+    state window_size: Int
+    state closed: Bool
+}
+
+impl Http2Connection {
+    fn connect(host: String, port: Int) -> Result<Self, Http2Error> {
+        let config = TlsConfig.client().alpn(["h2"])
+        let tls = TlsStream.connect_with(host, port, config)?
+        
+        if tls.negotiated_alpn() != Some("h2") {
+            return Err(Http2Error.ProtocolError("ALPN negotiation failed"))
+        }
+        
+        var conn = Http2Connection {
+            tls: tls, settings: Settings.default(), peer_settings: Settings.default(),
+            streams: Map.new(), next_stream_id: 1, encoder: HpackEncoder.new(),
+            decoder: HpackDecoder.new(), window_size: 65535, closed: false
+        }
+        
+        conn.send_preface()?
+        conn.send_settings()?
+        conn.recv_settings()?
+        
+        Ok(conn)
+    }
+    
+    fn send_preface() -> Result<(), Http2Error> {
+        self.tls.write_all("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".as_bytes())?
+        Ok(())
+    }
+    
+    fn send_settings() -> Result<(), Http2Error> {
+        let frame = Frame.settings(self.settings.to_params())
+        self.send_frame(frame)
+    }
+    
+    fn recv_settings() -> Result<(), Http2Error> {
+        let frame = self.recv_frame()?
+        if !matches!(frame.frame_type, FrameType.Settings) {
+            return Err(Http2Error.ProtocolError("Expected SETTINGS frame"))
+        }
+        self.send_frame(Frame.settings_ack())
+    }
+    
+    fn send_frame(frame: Frame) -> Result<(), Http2Error> {
+        self.tls.write_all(frame.encode())?
+        Ok(())
+    }
+    
+    fn recv_frame() -> Result<Frame, Http2Error> {
+        var header = [0u8; 9]
+        self.tls.read_exact(header)?
+        let length = ((header[0] as Int) << 16) | ((header[1] as Int) << 8) | (header[2] as Int)
+        var payload = [0u8; length]
+        if length > 0 { self.tls.read_exact(payload)? }
+        var data = header.to_vec()
+        data.extend(payload)
+        Frame.decode(data)
+    }
+    
+    fn request(method: String, path: String, headers: [(String, String)], body: Option<[UInt8]>) -> Result<Http2Response, Http2Error> {
+        let stream_id = self.next_stream_id
+        self.next_stream_id += 2
+        
+        var all_headers = [(":method", method), (":path", path), (":scheme", "https")]
+        all_headers.extend(headers)
+        
+        let encoded = self.encoder.encode(all_headers)
+        let has_body = body.is_some()
+        self.send_frame(Frame.headers(stream_id, encoded, !has_body, true))?
+        
+        if let Some(data) = body {
+            self.send_frame(Frame.data(stream_id, data, true))?
+        }
+        
+        self.streams.insert(stream_id, Stream.new(stream_id))
+        self.read_response(stream_id)
+    }
+    
+    fn read_response(stream_id: Int) -> Result<Http2Response, Http2Error> {
+        var response_headers = []
+        var response_data = []
+        
+        loop {
+            let frame = self.recv_frame()?
+            
+            match frame.frame_type {
+                FrameType.Headers => {
+                    response_headers = self.decoder.decode(frame.payload)?
+                    if frame.is_end_stream() { break }
+                }
+                FrameType.Data => {
+                    response_data.extend(frame.payload)
+                    if frame.is_end_stream() { break }
+                }
+                FrameType.WindowUpdate => {
+                    self.window_size += ((frame.payload[0] as Int) << 24) | ((frame.payload[1] as Int) << 16) |
+                                        ((frame.payload[2] as Int) << 8) | (frame.payload[3] as Int)
+                }
+                FrameType.Ping => {
+                    if !frame.is_ack() { self.send_frame(Frame.ping(frame.payload.try_into().unwrap(), true))? }
+                }
+                FrameType.GoAway => { self.closed = true; break }
+                _ => {}
+            }
+        }
+        
+        Ok(Http2Response { headers: response_headers, body: response_data })
+    }
+    
+    fn get(path: String) -> Result<Http2Response, Http2Error> {
+        self.request("GET", path, [], None)
+    }
+    
+    fn post(path: String, body: [UInt8]) -> Result<Http2Response, Http2Error> {
+        self.request("POST", path, [], Some(body))
+    }
+    
+    fn ping() -> Result<Duration, Http2Error> {
+        let start = Instant.now()
+        let data = [0u8; 8]
+        self.send_frame(Frame.ping(data, false))?
+        loop {
+            let frame = self.recv_frame()?
+            if matches!(frame.frame_type, FrameType.Ping) && frame.is_ack() {
+                return Ok(start.elapsed())
+            }
+        }
+    }
+    
+    fn close() -> Result<(), Http2Error> {
+        self.send_frame(Frame.goaway(self.next_stream_id - 2, ErrorCode.NoError, []))?
+        self.closed = true
+        self.tls.shutdown()?
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// HTTP/2 Response
+// -----------------------------------------------------------------------------
+
+struct Http2Response {
+    headers: [(String, String)]
+    body: [UInt8]
+}
+
+impl Http2Response {
+    fn status() -> Option<Int> {
+        self.headers.iter().find(|(n, _)| n == ":status").and_then(|(_, v)| Int.parse(v).ok())
+    }
+    
+    fn header(name: String) -> Option<String> {
+        self.headers.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone())
+    }
+    
+    fn text() -> String { String.from_utf8(self.body).unwrap_or("") }
+    fn json<T: Deserialize>() -> Result<T, JsonError> { json.decode(self.text()) }
+}
+
+// -----------------------------------------------------------------------------
+// HTTP/2 Server
+// -----------------------------------------------------------------------------
+
+actor Http2Server {
+    state addr: SocketAddr
+    state cert: Certificate
+    state key: PrivateKey
+    state handlers: Map<String, fn(Http2Request) -> Http2Response>
+    state settings: Settings
+    state running: Bool
+}
+
+impl Http2Server {
+    fn new(addr: String, cert: Certificate, key: PrivateKey) -> Result<Self, Http2Error> {
+        Ok(Http2Server {
+            addr: SocketAddr.parse(addr)?, cert: cert, key: key,
+            handlers: Map.new(), settings: Settings.default(), running: false
+        })
+    }
+    
+    fn route(path: String, handler: fn(Http2Request) -> Http2Response) -> Self {
+        self.handlers.insert(path, handler)
+        self
+    }
+    
+    fn settings(s: Settings) -> Self { self.settings = s; self }
+    
+    fn run() -> Result<(), Http2Error> {
+        let config = TlsConfig.server(self.cert, self.key).alpn(["h2"])
+        let listener = TlsListener.bind(self.addr.to_string(), self.cert, self.key)?
+        self.running = true
+        
+        while self.running {
+            let tls = listener.accept()?
+            spawn { self.handle_connection(tls) }
+        }
+        Ok(())
+    }
+    
+    fn handle_connection(tls: TlsStream) {
+        // Server-side connection handling
+    }
+    
+    fn stop() { self.running = false }
+}
+
+struct Http2Request {
+    method: String
+    path: String
+    headers: [(String, String)]
+    body: [UInt8]
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum Http2Error {
+    ConnectionError(String), ProtocolError(String), FrameError(String),
+    StreamError(Int, ErrorCode), CompressionError, Timeout, TlsError(String), Io(String)
+}
+
+impl Display for Http2Error {
+    fn fmt(f: Formatter) {
+        match self {
+            ConnectionError(s) => f.write(format!("Connection error: {}", s))
+            ProtocolError(s) => f.write(format!("Protocol error: {}", s))
+            FrameError(s) => f.write(format!("Frame error: {}", s))
+            StreamError(id, code) => f.write(format!("Stream {} error: {:?}", id, code))
+            CompressionError => f.write("HPACK compression error")
+            Timeout => f.write("Timeout")
+            TlsError(s) => f.write(format!("TLS error: {}", s))
+            Io(s) => f.write(format!("IO error: {}", s))
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+fn connect(host: String) -> Result<Http2Connection, Http2Error> {
+    Http2Connection.connect(host, 443)
+}
+
+fn get(url: String) -> Result<Http2Response, Http2Error> {
+    let (host, path) = parse_url(url)?
+    let conn = connect(host)?
+    conn.get(path)
+}
+
+fn parse_url(url: String) -> Result<(String, String), Http2Error> {
+    let url = url.strip_prefix("https://").unwrap_or(url)
+    let parts: [String] = url.splitn(2, '/').collect()
+    let host = parts[0].clone()
+    let path = if parts.len() > 1 { format!("/{}", parts[1]) } else { "/".to_string() }
+    Ok((host, path))
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "frame encoding" {
+    let frame = Frame.settings([(SettingId.MaxConcurrentStreams, 100)])
+    let encoded = frame.encode()
+    assert(encoded.len() > 9)
+}
+
+test "hpack encoder" {
+    let encoder = HpackEncoder.new()
+    let headers = [(":method", "GET"), (":path", "/"), (":scheme", "https")]
+    let encoded = encoder.encode(headers)
+    assert(!encoded.is_empty())
+}
+
+test "settings default" {
+    let s = Settings.default()
+    assert_eq(s.max_frame_size, 16384)
+    assert_eq(s.initial_window_size, 65535)
+}

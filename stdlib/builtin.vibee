@@ -1,0 +1,686 @@
+// =============================================================================
+// Vibee OS — Builtin Module
+// Built-in functions available in every Vibee program
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Output Functions
+// -----------------------------------------------------------------------------
+
+/// Print to stdout without newline
+fn print(args: ...) {
+    let s = format_args(args)
+    @native("stdout_write", s)
+}
+
+/// Print to stdout with newline
+fn println(args: ...) {
+    let s = format_args(args)
+    @native("stdout_write", s)
+    @native("stdout_write", "\n")
+}
+
+/// Print to stderr without newline
+fn eprint(args: ...) {
+    let s = format_args(args)
+    @native("stderr_write", s)
+}
+
+/// Print to stderr with newline
+fn eprintln(args: ...) {
+    let s = format_args(args)
+    @native("stderr_write", s)
+    @native("stderr_write", "\n")
+}
+
+/// Format string with arguments
+fn format(template: Str, args: ...) -> String {
+    @native("format_string", template, args)
+}
+
+/// Debug print with file/line info
+fn dbg<T: Debug>(value: T) -> T {
+    let loc = @native("caller_location")
+    eprintln!("[{}:{}] {} = {:?}", loc.file, loc.line, stringify!(value), value)
+    value
+}
+
+/// Format arguments to string
+fn format_args(args: ...) -> String {
+    var result = String.new()
+    for arg in args {
+        result.push_str(arg.to_string().as_str())
+    }
+    result
+}
+
+// -----------------------------------------------------------------------------
+// Assertion Functions
+// -----------------------------------------------------------------------------
+
+/// Assert condition is true
+fn assert(condition: Bool) {
+    if !condition {
+        panic("Assertion failed")
+    }
+}
+
+/// Assert condition with message
+fn assert_msg(condition: Bool, message: Str) {
+    if !condition {
+        panic(format!("Assertion failed: {}", message))
+    }
+}
+
+/// Assert two values are equal
+fn assert_eq<T: Eq + Debug>(left: T, right: T) {
+    if left != right {
+        panic(format!("Assertion failed: {:?} != {:?}", left, right))
+    }
+}
+
+/// Assert two values are not equal
+fn assert_ne<T: Eq + Debug>(left: T, right: T) {
+    if left == right {
+        panic(format!("Assertion failed: {:?} == {:?}", left, right))
+    }
+}
+
+/// Debug-only assertion (removed in release builds)
+fn debug_assert(condition: Bool) {
+    if @cfg("debug") && !condition {
+        panic("Debug assertion failed")
+    }
+}
+
+/// Debug-only equality assertion
+fn debug_assert_eq<T: Eq + Debug>(left: T, right: T) {
+    if @cfg("debug") && left != right {
+        panic(format!("Debug assertion failed: {:?} != {:?}", left, right))
+    }
+}
+
+/// Debug-only inequality assertion
+fn debug_assert_ne<T: Eq + Debug>(left: T, right: T) {
+    if @cfg("debug") && left == right {
+        panic(format!("Debug assertion failed: {:?} == {:?}", left, right))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Control Flow Functions
+// -----------------------------------------------------------------------------
+
+/// Panic with message (terminates program)
+fn panic(message: Str) -> Never {
+    let info = PanicInfo {
+        message: message.to_string(),
+        location: @native("caller_location"),
+        backtrace: Backtrace.capture()
+    }
+    @native("trigger_panic", info)
+}
+
+/// Mark code as unreachable
+fn unreachable() -> Never {
+    panic("Entered unreachable code")
+}
+
+/// Mark code as unreachable with message
+fn unreachable_msg(message: Str) -> Never {
+    panic(format!("Unreachable: {}", message))
+}
+
+/// Mark code as not yet implemented
+fn todo() -> Never {
+    panic("Not yet implemented")
+}
+
+/// Mark code as not yet implemented with message
+fn todo_msg(message: Str) -> Never {
+    panic(format!("Not yet implemented: {}", message))
+}
+
+/// Mark code as unimplemented
+fn unimplemented() -> Never {
+    panic("Not implemented")
+}
+
+/// Mark code as unimplemented with message
+fn unimplemented_msg(message: Str) -> Never {
+    panic(format!("Not implemented: {}", message))
+}
+
+// -----------------------------------------------------------------------------
+// Memory Functions
+// -----------------------------------------------------------------------------
+
+/// Drop a value (call destructor)
+fn drop<T>(value: T) {
+    // Compiler inserts destructor call
+    @native("drop_value", value)
+}
+
+/// Forget a value (don't call destructor)
+fn forget<T>(value: T) {
+    @native("forget_value", value)
+}
+
+/// Get size of type in bytes
+fn size_of<T>() -> Int {
+    @native("size_of", T)
+}
+
+/// Get alignment of type in bytes
+fn align_of<T>() -> Int {
+    @native("align_of", T)
+}
+
+/// Get size of value in bytes
+fn size_of_val<T>(value: T) -> Int {
+    @native("size_of_val", value)
+}
+
+/// Take value, leaving default in place
+fn take<T: Default>(place: T) -> T {
+    replace(place, T.default())
+}
+
+/// Replace value, returning old value
+fn replace<T>(dest: T, src: T) -> T {
+    let old = dest
+    dest = src
+    old
+}
+
+/// Swap two values
+fn swap<T>(a: T, b: T) {
+    let tmp = a
+    a = b
+    b = tmp
+}
+
+/// Create uninitialized memory (unsafe)
+fn uninit<T>() -> T {
+    @native("uninit", T)
+}
+
+/// Zero-initialize memory
+fn zeroed<T>() -> T {
+    @native("zeroed", T)
+}
+
+/// Copy bytes
+fn copy_bytes(src: *UInt8, dst: *UInt8, count: Int) {
+    @native("memcpy", dst, src, count)
+}
+
+/// Set bytes to value
+fn set_bytes(dst: *UInt8, value: UInt8, count: Int) {
+    @native("memset", dst, value, count)
+}
+
+/// Compare bytes
+fn compare_bytes(a: *UInt8, b: *UInt8, count: Int) -> Int {
+    @native("memcmp", a, b, count)
+}
+
+// -----------------------------------------------------------------------------
+// Type Introspection
+// -----------------------------------------------------------------------------
+
+/// Get type name as string
+fn type_name<T>() -> Str {
+    @native("type_name", T)
+}
+
+/// Get type ID
+fn type_id<T>() -> TypeId {
+    TypeId { id: @native("type_id", T) }
+}
+
+/// Type identifier
+struct TypeId {
+    id: UInt64
+}
+
+impl Eq for TypeId {
+    fn eq(other: Self) -> Bool { self.id == other.id }
+}
+
+impl Hash for TypeId {
+    fn hash(hasher: Hasher) { hasher.write_u64(self.id) }
+}
+
+/// Check if types are the same
+fn same_type<T, U>() -> Bool {
+    type_id::<T>() == type_id::<U>()
+}
+
+/// Any trait for type erasure
+trait Any {
+    fn type_id() -> TypeId
+}
+
+impl<T> Any for T {
+    fn type_id() -> TypeId { type_id::<T>() }
+}
+
+/// Downcast from Any
+fn downcast<T>(value: Box<dyn Any>) -> Option<Box<T>> {
+    if value.type_id() == type_id::<T>() {
+        Some(@native("transmute", value))
+    } else {
+        None
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Option/Result Helpers
+// -----------------------------------------------------------------------------
+
+/// Create Some value
+fn some<T>(value: T) -> Option<T> { Some(value) }
+
+/// Create None value
+fn none<T>() -> Option<T> { None }
+
+/// Create Ok result
+fn ok<T, E>(value: T) -> Result<T, E> { Ok(value) }
+
+/// Create Err result
+fn err<T, E>(error: E) -> Result<T, E> { Err(error) }
+
+// -----------------------------------------------------------------------------
+// Numeric Functions
+// -----------------------------------------------------------------------------
+
+/// Minimum of two values
+fn min<T: Ord>(a: T, b: T) -> T {
+    if a <= b { a } else { b }
+}
+
+/// Maximum of two values
+fn max<T: Ord>(a: T, b: T) -> T {
+    if a >= b { a } else { b }
+}
+
+/// Clamp value to range
+fn clamp<T: Ord>(value: T, min_val: T, max_val: T) -> T {
+    max(min_val, min(max_val, value))
+}
+
+/// Absolute value
+fn abs<T: Neg<Output = T> + Ord + Default>(value: T) -> T {
+    if value < T.default() { -value } else { value }
+}
+
+// -----------------------------------------------------------------------------
+// Conversion Functions
+// -----------------------------------------------------------------------------
+
+/// Convert value to another type
+fn into<T, U: From<T>>(value: T) -> U {
+    U.from(value)
+}
+
+/// Try to convert value to another type
+fn try_into<T, U: TryFrom<T>>(value: T) -> Result<U, U.Error> {
+    U.try_from(value)
+}
+
+// -----------------------------------------------------------------------------
+// Pointer Functions
+// -----------------------------------------------------------------------------
+
+/// Create null pointer
+fn null<T>() -> *T {
+    @native("null_ptr")
+}
+
+/// Create null mutable pointer
+fn null_mut<T>() -> *mut T {
+    @native("null_ptr")
+}
+
+/// Check if pointer is null
+fn is_null<T>(ptr: *T) -> Bool {
+    ptr == null()
+}
+
+/// Offset pointer by count
+fn offset<T>(ptr: *T, count: Int) -> *T {
+    @native("ptr_offset", ptr, count * size_of::<T>())
+}
+
+/// Read from pointer
+fn read<T>(ptr: *T) -> T {
+    @native("ptr_read", ptr)
+}
+
+/// Write to pointer
+fn write<T>(ptr: *mut T, value: T) {
+    @native("ptr_write", ptr, value)
+}
+
+// -----------------------------------------------------------------------------
+// Hashing Functions
+// -----------------------------------------------------------------------------
+
+/// Hash a value
+fn hash<T: Hash>(value: T) -> UInt64 {
+    let mut hasher = DefaultHasher.new()
+    value.hash(hasher)
+    hasher.finish()
+}
+
+/// Default hasher implementation
+struct DefaultHasher {
+    state: UInt64
+    
+    fn new() -> Self { DefaultHasher { state: 0xcbf29ce484222325 } }  // FNV offset basis
+}
+
+impl Hasher for DefaultHasher {
+    fn write(bytes: [UInt8]) {
+        for byte in bytes {
+            self.state ^= byte as UInt64
+            self.state *= 0x100000001b3  // FNV prime
+        }
+    }
+    
+    fn finish() -> UInt64 { self.state }
+}
+
+// -----------------------------------------------------------------------------
+// Environment Functions
+// -----------------------------------------------------------------------------
+
+/// Get environment variable
+fn env(name: Str) -> Option<String> {
+    @native("getenv", name)
+}
+
+/// Get environment variable or default
+fn env_or(name: Str, default: Str) -> String {
+    env(name).unwrap_or(default.to_string())
+}
+
+/// Set environment variable
+fn set_env(name: Str, value: Str) {
+    @native("setenv", name, value)
+}
+
+/// Remove environment variable
+fn unset_env(name: Str) {
+    @native("unsetenv", name)
+}
+
+/// Get all environment variables
+fn env_vars() -> Map<String, String> {
+    @native("environ")
+}
+
+/// Get current working directory
+fn cwd() -> String {
+    @native("getcwd")
+}
+
+/// Change current working directory
+fn chdir(path: Str) -> Result<(), IoError> {
+    @native("chdir", path)
+}
+
+// -----------------------------------------------------------------------------
+// Process Functions
+// -----------------------------------------------------------------------------
+
+/// Exit process with code
+fn exit(code: Int) -> Never {
+    @native("exit", code)
+}
+
+/// Abort process immediately
+fn abort() -> Never {
+    @native("abort")
+}
+
+/// Get process ID
+fn pid() -> Int {
+    @native("getpid")
+}
+
+/// Get parent process ID
+fn ppid() -> Int {
+    @native("getppid")
+}
+
+/// Get command line arguments
+fn args() -> [String] {
+    @native("argv")
+}
+
+// -----------------------------------------------------------------------------
+// Time Functions
+// -----------------------------------------------------------------------------
+
+/// Get current timestamp in milliseconds
+fn now_ms() -> Int64 {
+    @native("time_ms")
+}
+
+/// Get current timestamp in microseconds
+fn now_us() -> Int64 {
+    @native("time_us")
+}
+
+/// Get current timestamp in nanoseconds
+fn now_ns() -> Int64 {
+    @native("time_ns")
+}
+
+/// Get monotonic time (for measuring durations)
+fn monotonic_ns() -> Int64 {
+    @native("monotonic_ns")
+}
+
+/// Sleep for milliseconds
+fn sleep_ms(ms: Int64) {
+    @native("sleep_ms", ms)
+}
+
+/// Sleep for microseconds
+fn sleep_us(us: Int64) {
+    @native("sleep_us", us)
+}
+
+// -----------------------------------------------------------------------------
+// Random Functions
+// -----------------------------------------------------------------------------
+
+/// Generate random integer
+fn random_int() -> Int {
+    @native("random_int")
+}
+
+/// Generate random integer in range [min, max)
+fn random_range(min: Int, max: Int) -> Int {
+    min + (random_int().abs() % (max - min))
+}
+
+/// Generate random float in [0, 1)
+fn random_float() -> Float {
+    @native("random_float")
+}
+
+/// Generate random boolean
+fn random_bool() -> Bool {
+    random_int() % 2 == 0
+}
+
+/// Generate random bytes
+fn random_bytes(count: Int) -> [UInt8] {
+    @native("random_bytes", count)
+}
+
+// -----------------------------------------------------------------------------
+// Lazy Initialization
+// -----------------------------------------------------------------------------
+
+/// Lazy value (initialized on first access)
+struct Lazy<T> {
+    init: fn() -> T
+    value: Option<T>
+    initialized: Bool
+    
+    fn new(init: fn() -> T) -> Self {
+        Lazy { init: init, value: None, initialized: false }
+    }
+    
+    fn get() -> T {
+        if !self.initialized {
+            self.value = Some((self.init)())
+            self.initialized = true
+        }
+        self.value.unwrap()
+    }
+    
+    fn is_initialized() -> Bool { self.initialized }
+}
+
+/// Once cell (can be set once)
+struct OnceCell<T> {
+    value: Option<T>
+    
+    fn new() -> Self { OnceCell { value: None } }
+    fn empty() -> Self { Self.new() }
+    
+    fn get() -> Option<T> { self.value }
+    
+    fn set(value: T) -> Result<(), T> {
+        if self.value.is_some() {
+            Err(value)
+        } else {
+            self.value = Some(value)
+            Ok(())
+        }
+    }
+    
+    fn get_or_init(f: fn() -> T) -> T {
+        if self.value.is_none() {
+            self.value = Some(f())
+        }
+        self.value.unwrap()
+    }
+    
+    fn is_set() -> Bool { self.value.is_some() }
+}
+
+// -----------------------------------------------------------------------------
+// Utility Macros (implemented as functions)
+// -----------------------------------------------------------------------------
+
+/// Check if value matches pattern
+fn matches<T>(value: T, pattern: T) -> Bool where T: Eq {
+    value == pattern
+}
+
+/// Stringify expression (compile-time)
+fn stringify(expr: ...) -> Str {
+    @native("stringify", expr)
+}
+
+/// Concatenate strings (compile-time)
+fn concat(args: ...) -> Str {
+    @native("concat", args)
+}
+
+/// Include file as string (compile-time)
+fn include_str(path: Str) -> Str {
+    @native("include_str", path)
+}
+
+/// Include file as bytes (compile-time)
+fn include_bytes(path: Str) -> [UInt8] {
+    @native("include_bytes", path)
+}
+
+/// Get current file name
+fn file() -> Str {
+    @native("file")
+}
+
+/// Get current line number
+fn line() -> Int {
+    @native("line")
+}
+
+/// Get current column number
+fn column() -> Int {
+    @native("column")
+}
+
+/// Get current module path
+fn module_path() -> Str {
+    @native("module_path")
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "assert" {
+    assert(true)
+    assert_eq(1, 1)
+    assert_ne(1, 2)
+}
+
+test "min max" {
+    assert_eq(min(1, 2), 1)?
+    assert_eq(max(1, 2), 2)?
+    assert_eq(clamp(5, 0, 3), 3)?
+}
+
+test "type introspection" {
+    assert_eq(type_name::<Int>(), "Int")?
+    assert(same_type::<Int, Int>())?
+    assert(!same_type::<Int, Float>())?
+}
+
+test "option helpers" {
+    assert_eq(some(42), Some(42))?
+    assert_eq(none::<Int>(), None)?
+}
+
+test "result helpers" {
+    assert(ok::<Int, String>(1).is_ok())?
+    assert(err::<Int, String>("e").is_err())?
+}
+
+test "lazy" {
+    var counter = 0
+    let lazy = Lazy.new(|| { counter += 1; 42 })
+    assert(!lazy.is_initialized())?
+    assert_eq(lazy.get(), 42)?
+    assert(lazy.is_initialized())?
+    assert_eq(lazy.get(), 42)?  // Should not increment counter again
+    assert_eq(counter, 1)?
+}
+
+test "once cell" {
+    let cell = OnceCell.new()
+    assert(cell.set(42).is_ok())?
+    assert(cell.set(100).is_err())?
+    assert_eq(cell.get(), Some(42))?
+}
+
+test "size_of" {
+    assert(size_of::<Int>() > 0)?
+    assert(size_of::<Bool>() > 0)?
+}
+
+test "hash" {
+    let h1 = hash(42)
+    let h2 = hash(42)
+    assert_eq(h1, h2)?
+}

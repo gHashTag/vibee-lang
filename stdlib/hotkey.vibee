@@ -1,0 +1,700 @@
+// =============================================================================
+// Vibee OS — Hotkey Module
+// Global hotkey registration and management
+// =============================================================================
+
+use input.{Key, MouseButton}
+
+// =============================================================================
+// Modifier Keys
+// =============================================================================
+
+enum Modifier {
+    Ctrl,
+    Alt,
+    Shift,
+    Super,      // Windows/Command key
+    Meta,       // Same as Super on most systems
+    CapsLock,
+    NumLock
+    
+    fn to_mask() -> Int {
+        match self {
+            .Ctrl => 0x01,
+            .Alt => 0x02,
+            .Shift => 0x04,
+            .Super => 0x08,
+            .Meta => 0x08,
+            .CapsLock => 0x10,
+            .NumLock => 0x20
+        }
+    }
+    
+    fn name() -> String {
+        match self {
+            .Ctrl => "Ctrl",
+            .Alt => "Alt",
+            .Shift => "Shift",
+            .Super => "Super",
+            .Meta => "Meta",
+            .CapsLock => "CapsLock",
+            .NumLock => "NumLock"
+        }
+    }
+    
+    fn symbol() -> String {
+        match self {
+            .Ctrl => "⌃",
+            .Alt => "⌥",
+            .Shift => "⇧",
+            .Super => "⌘",
+            .Meta => "⌘",
+            .CapsLock => "⇪",
+            .NumLock => "⇭"
+        }
+    }
+}
+
+// =============================================================================
+// Key Combination
+// =============================================================================
+
+struct KeyCombo {
+    key: Key
+    modifiers: [Modifier]
+}
+
+impl KeyCombo {
+    fn new(key: Key) -> Self {
+        KeyCombo { key: key, modifiers: [] }
+    }
+    
+    fn ctrl(key: Key) -> Self {
+        KeyCombo { key: key, modifiers: [Modifier.Ctrl] }
+    }
+    
+    fn alt(key: Key) -> Self {
+        KeyCombo { key: key, modifiers: [Modifier.Alt] }
+    }
+    
+    fn shift(key: Key) -> Self {
+        KeyCombo { key: key, modifiers: [Modifier.Shift] }
+    }
+    
+    fn super_key(key: Key) -> Self {
+        KeyCombo { key: key, modifiers: [Modifier.Super] }
+    }
+    
+    fn ctrl_shift(key: Key) -> Self {
+        KeyCombo { key: key, modifiers: [Modifier.Ctrl, Modifier.Shift] }
+    }
+    
+    fn ctrl_alt(key: Key) -> Self {
+        KeyCombo { key: key, modifiers: [Modifier.Ctrl, Modifier.Alt] }
+    }
+    
+    fn ctrl_alt_shift(key: Key) -> Self {
+        KeyCombo { key: key, modifiers: [Modifier.Ctrl, Modifier.Alt, Modifier.Shift] }
+    }
+    
+    fn add_modifier(mod: Modifier) -> Self {
+        if !self.modifiers.contains(mod) {
+            self.modifiers.push(mod);
+        }
+        self
+    }
+    
+    fn with_ctrl() -> Self { self.add_modifier(Modifier.Ctrl) }
+    fn with_alt() -> Self { self.add_modifier(Modifier.Alt) }
+    fn with_shift() -> Self { self.add_modifier(Modifier.Shift) }
+    fn with_super() -> Self { self.add_modifier(Modifier.Super) }
+    
+    fn modifier_mask() -> Int {
+        self.modifiers.iter().fold(0, |acc, m| acc | m.to_mask())
+    }
+    
+    fn has_modifier(mod: Modifier) -> Bool {
+        self.modifiers.contains(mod)
+    }
+    
+    fn matches(key: Key, active_modifiers: [Modifier]) -> Bool {
+        if self.key != key { return false }
+        
+        // Check all required modifiers are present
+        for mod in self.modifiers.iter() {
+            if !active_modifiers.contains(*mod) { return false }
+        }
+        
+        // Check no extra modifiers are present
+        for mod in active_modifiers.iter() {
+            if !self.modifiers.contains(*mod) { return false }
+        }
+        
+        true
+    }
+    
+    fn to_string() -> String {
+        let mut parts: [String] = [];
+        for mod in self.modifiers.iter() {
+            parts.push(mod.name());
+        }
+        parts.push(self.key.name());
+        parts.join("+")
+    }
+    
+    fn to_symbol_string() -> String {
+        let mut parts: [String] = [];
+        for mod in self.modifiers.iter() {
+            parts.push(mod.symbol());
+        }
+        parts.push(self.key.name());
+        parts.join("")
+    }
+    
+    fn parse(s: String) -> Option<Self> {
+        let parts: [String] = s.split("+").map(|p| p.trim()).collect();
+        if parts.is_empty() { return None }
+        
+        let mut modifiers: [Modifier] = [];
+        let mut key: Option<Key> = None;
+        
+        for part in parts.iter() {
+            match part.to_lowercase().as_str() {
+                "ctrl" | "control" => modifiers.push(Modifier.Ctrl),
+                "alt" => modifiers.push(Modifier.Alt),
+                "shift" => modifiers.push(Modifier.Shift),
+                "super" | "win" | "cmd" | "command" => modifiers.push(Modifier.Super),
+                "meta" => modifiers.push(Modifier.Meta),
+                _ => {
+                    // Try to parse as key
+                    key = Key.from_name(part.clone());
+                }
+            }
+        }
+        
+        key.map(|k| KeyCombo { key: k, modifiers: modifiers })
+    }
+}
+
+// =============================================================================
+// Hotkey
+// =============================================================================
+
+struct Hotkey {
+    id: String
+    combo: KeyCombo
+    description: String
+    enabled: Bool
+    callback: Option<fn()>
+    scope: HotkeyScope
+    repeat: Bool
+    passthrough: Bool
+}
+
+enum HotkeyScope {
+    Global,
+    Application(String),
+    Window(Int)
+}
+
+impl Hotkey {
+    fn new(id: String, combo: KeyCombo) -> Self {
+        Hotkey {
+            id: id,
+            combo: combo,
+            description: "",
+            enabled: true,
+            callback: None,
+            scope: HotkeyScope.Global,
+            repeat: false,
+            passthrough: false
+        }
+    }
+    
+    fn global(id: String, combo: KeyCombo) -> Self {
+        Hotkey.new(id, combo)
+    }
+    
+    fn for_app(id: String, combo: KeyCombo, app: String) -> Self {
+        let mut hk = Hotkey.new(id, combo);
+        hk.scope = HotkeyScope.Application(app);
+        hk
+    }
+    
+    fn description(desc: String) -> Self { self.description = desc; self }
+    fn on_press(callback: fn()) -> Self { self.callback = Some(callback); self }
+    fn allow_repeat() -> Self { self.repeat = true; self }
+    fn passthrough() -> Self { self.passthrough = true; self }
+    fn disabled() -> Self { self.enabled = false; self }
+    
+    fn enable() -> Self { self.enabled = true; self }
+    fn disable() -> Self { self.enabled = false; self }
+    fn toggle() -> Self { self.enabled = !self.enabled; self }
+    
+    fn trigger() {
+        if self.enabled {
+            if let Some(cb) = self.callback {
+                cb();
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Hotkey Event
+// =============================================================================
+
+struct HotkeyEvent {
+    hotkey_id: String
+    combo: KeyCombo
+    timestamp: Instant
+    is_repeat: Bool
+}
+
+impl HotkeyEvent {
+    fn new(hotkey_id: String, combo: KeyCombo) -> Self {
+        HotkeyEvent {
+            hotkey_id: hotkey_id,
+            combo: combo,
+            timestamp: Instant.now(),
+            is_repeat: false
+        }
+    }
+}
+
+// =============================================================================
+// Hotkey Manager Actor
+// =============================================================================
+
+actor HotkeyManager {
+    state hotkeys: Map<String, Hotkey>
+    state groups: Map<String, [String]>
+    state enabled: Bool
+    state listeners: [Box<dyn HotkeyListener>]
+    state conflict_resolver: ConflictResolution
+    
+    fn new() -> Self {
+        HotkeyManager {
+            hotkeys: Map.empty(),
+            groups: Map.empty(),
+            enabled: true,
+            listeners: [],
+            conflict_resolver: ConflictResolution.RejectNew
+        }
+    }
+    
+    fn with_conflict_resolution(resolution: ConflictResolution) -> Self {
+        let mut mgr = HotkeyManager.new();
+        mgr.conflict_resolver = resolution;
+        mgr
+    }
+    
+    // --- Registration ---
+    
+    on register(hotkey: Hotkey) -> Result<(), HotkeyError> {
+        // Check for conflicts
+        if let Some(conflict) = self.find_conflict(hotkey.combo.clone()) {
+            match self.conflict_resolver {
+                ConflictResolution.RejectNew => {
+                    return Err(HotkeyError.Conflict(conflict.id.clone()))
+                },
+                ConflictResolution.ReplaceExisting => {
+                    self.unregister(conflict.id.clone())?;
+                },
+                ConflictResolution.AllowDuplicates => {
+                    // Allow registration
+                }
+            }
+        }
+        
+        // Register with system
+        @native("hotkey_register", hotkey.id.clone(), hotkey.combo.clone())?;
+        
+        self.hotkeys.set(hotkey.id.clone(), hotkey);
+        Ok(())
+    }
+    
+    on register_many(hotkeys: [Hotkey]) -> BatchRegisterResult {
+        let mut success = 0;
+        let mut failed = 0;
+        let mut errors: [HotkeyError] = [];
+        
+        for hk in hotkeys {
+            match self.register(hk) {
+                Ok(_) => success += 1,
+                Err(e) => { failed += 1; errors.push(e); }
+            }
+        }
+        
+        BatchRegisterResult { success_count: success, failure_count: failed, errors: errors }
+    }
+    
+    on unregister(id: String) -> Result<(), HotkeyError> {
+        if !self.hotkeys.contains_key(id.clone()) {
+            return Err(HotkeyError.NotFound(id))
+        }
+        
+        @native("hotkey_unregister", id.clone())?;
+        self.hotkeys.remove(id.clone());
+        
+        // Remove from groups
+        for (_, group_ids) in self.groups.iter_mut() {
+            group_ids.retain(|hid| *hid != id);
+        }
+        
+        Ok(())
+    }
+    
+    on unregister_all() {
+        for (id, _) in self.hotkeys.iter() {
+            @native("hotkey_unregister", id.clone());
+        }
+        self.hotkeys.clear();
+        self.groups.clear();
+    }
+    
+    // --- Groups ---
+    
+    on create_group(name: String, hotkey_ids: [String]) {
+        self.groups.set(name, hotkey_ids)
+    }
+    
+    on enable_group(name: String) {
+        if let Some(ids) = self.groups.get(name) {
+            for id in ids.iter() {
+                if let Some(hk) = self.hotkeys.get_mut(id.clone()) {
+                    hk.enabled = true;
+                }
+            }
+        }
+    }
+    
+    on disable_group(name: String) {
+        if let Some(ids) = self.groups.get(name) {
+            for id in ids.iter() {
+                if let Some(hk) = self.hotkeys.get_mut(id.clone()) {
+                    hk.enabled = false;
+                }
+            }
+        }
+    }
+    
+    // --- Query ---
+    
+    fn get(id: String) -> Option<Hotkey> {
+        self.hotkeys.get(id)
+    }
+    
+    fn all() -> [Hotkey] {
+        self.hotkeys.values().collect()
+    }
+    
+    fn enabled_hotkeys() -> [Hotkey] {
+        self.hotkeys.values().filter(|h| h.enabled).collect()
+    }
+    
+    fn find_by_combo(combo: KeyCombo) -> Option<Hotkey> {
+        self.hotkeys.values().find(|h| h.combo.to_string() == combo.to_string())
+    }
+    
+    fn find_conflict(combo: KeyCombo) -> Option<Hotkey> {
+        self.hotkeys.values().find(|h| h.combo.to_string() == combo.to_string())
+    }
+    
+    // --- Enable/Disable ---
+    
+    on enable() { self.enabled = true }
+    on disable() { self.enabled = false }
+    
+    on enable_hotkey(id: String) -> Result<(), HotkeyError> {
+        match self.hotkeys.get_mut(id.clone()) {
+            Some(hk) => { hk.enabled = true; Ok(()) },
+            None => Err(HotkeyError.NotFound(id))
+        }
+    }
+    
+    on disable_hotkey(id: String) -> Result<(), HotkeyError> {
+        match self.hotkeys.get_mut(id.clone()) {
+            Some(hk) => { hk.enabled = false; Ok(()) },
+            None => Err(HotkeyError.NotFound(id))
+        }
+    }
+    
+    // --- Event Handling ---
+    
+    on handle_key_event(key: Key, modifiers: [Modifier], is_down: Bool) {
+        if !self.enabled || !is_down { return }
+        
+        for (_, hotkey) in self.hotkeys.iter() {
+            if hotkey.enabled && hotkey.combo.matches(key, modifiers.clone()) {
+                let event = HotkeyEvent.new(hotkey.id.clone(), hotkey.combo.clone());
+                
+                // Notify listeners
+                for listener in self.listeners.iter() {
+                    listener.on_hotkey(event.clone());
+                }
+                
+                // Trigger callback
+                hotkey.trigger();
+            }
+        }
+    }
+    
+    // --- Listeners ---
+    
+    on add_listener(listener: Box<dyn HotkeyListener>) {
+        self.listeners.push(listener)
+    }
+    
+    on remove_listener(id: String) {
+        self.listeners.retain(|l| l.id() != id)
+    }
+    
+    // --- Rebinding ---
+    
+    on rebind(id: String, new_combo: KeyCombo) -> Result<(), HotkeyError> {
+        // Check for conflicts
+        if let Some(conflict) = self.find_conflict(new_combo.clone()) {
+            if conflict.id != id {
+                return Err(HotkeyError.Conflict(conflict.id))
+            }
+        }
+        
+        match self.hotkeys.get_mut(id.clone()) {
+            Some(hk) => {
+                @native("hotkey_unregister", id.clone())?;
+                hk.combo = new_combo.clone();
+                @native("hotkey_register", id.clone(), new_combo)?;
+                Ok(())
+            },
+            None => Err(HotkeyError.NotFound(id))
+        }
+    }
+}
+
+// =============================================================================
+// Hotkey Listener Trait
+// =============================================================================
+
+trait HotkeyListener {
+    fn id() -> String
+    fn on_hotkey(event: HotkeyEvent)
+}
+
+// =============================================================================
+// Conflict Resolution
+// =============================================================================
+
+enum ConflictResolution {
+    RejectNew,
+    ReplaceExisting,
+    AllowDuplicates
+}
+
+// =============================================================================
+// Batch Result
+// =============================================================================
+
+struct BatchRegisterResult {
+    success_count: Int
+    failure_count: Int
+    errors: [HotkeyError]
+}
+
+impl BatchRegisterResult {
+    fn is_success() -> Bool { self.failure_count == 0 }
+    fn total() -> Int { self.success_count + self.failure_count }
+}
+
+// =============================================================================
+// Hotkey Errors
+// =============================================================================
+
+enum HotkeyError {
+    NotFound(String),
+    Conflict(String),
+    InvalidCombo,
+    RegistrationFailed(String),
+    SystemError(String),
+    PermissionDenied,
+    AlreadyRegistered(String)
+    
+    fn message() -> String {
+        match self {
+            .NotFound(id) => f"Hotkey not found: {id}",
+            .Conflict(id) => f"Hotkey conflicts with: {id}",
+            .InvalidCombo => "Invalid key combination",
+            .RegistrationFailed(msg) => f"Registration failed: {msg}",
+            .SystemError(msg) => f"System error: {msg}",
+            .PermissionDenied => "Permission denied for global hotkey registration",
+            .AlreadyRegistered(id) => f"Hotkey already registered: {id}"
+        }
+    }
+}
+
+// =============================================================================
+// Hotkey Builder
+// =============================================================================
+
+struct HotkeyBuilder {
+    id: String
+    key: Option<Key>
+    modifiers: [Modifier]
+    description: String
+    callback: Option<fn()>
+    scope: HotkeyScope
+    repeat: Bool
+    passthrough: Bool
+}
+
+impl HotkeyBuilder {
+    fn new(id: String) -> Self {
+        HotkeyBuilder {
+            id: id,
+            key: None,
+            modifiers: [],
+            description: "",
+            callback: None,
+            scope: HotkeyScope.Global,
+            repeat: false,
+            passthrough: false
+        }
+    }
+    
+    fn key(k: Key) -> Self { self.key = Some(k); self }
+    fn ctrl() -> Self { self.modifiers.push(Modifier.Ctrl); self }
+    fn alt() -> Self { self.modifiers.push(Modifier.Alt); self }
+    fn shift() -> Self { self.modifiers.push(Modifier.Shift); self }
+    fn super_key() -> Self { self.modifiers.push(Modifier.Super); self }
+    fn description(desc: String) -> Self { self.description = desc; self }
+    fn on_press(cb: fn()) -> Self { self.callback = Some(cb); self }
+    fn for_app(app: String) -> Self { self.scope = HotkeyScope.Application(app); self }
+    fn allow_repeat() -> Self { self.repeat = true; self }
+    fn passthrough() -> Self { self.passthrough = true; self }
+    
+    fn build() -> Result<Hotkey, HotkeyError> {
+        let key = self.key.ok_or(HotkeyError.InvalidCombo)?;
+        let combo = KeyCombo { key: key, modifiers: self.modifiers.clone() };
+        
+        let mut hotkey = Hotkey.new(self.id.clone(), combo);
+        hotkey.description = self.description.clone();
+        hotkey.callback = self.callback;
+        hotkey.scope = self.scope.clone();
+        hotkey.repeat = self.repeat;
+        hotkey.passthrough = self.passthrough;
+        
+        Ok(hotkey)
+    }
+}
+
+// =============================================================================
+// Predefined Hotkeys
+// =============================================================================
+
+struct CommonHotkeys;
+
+impl CommonHotkeys {
+    fn copy() -> KeyCombo { KeyCombo.ctrl(Key.C) }
+    fn cut() -> KeyCombo { KeyCombo.ctrl(Key.X) }
+    fn paste() -> KeyCombo { KeyCombo.ctrl(Key.V) }
+    fn undo() -> KeyCombo { KeyCombo.ctrl(Key.Z) }
+    fn redo() -> KeyCombo { KeyCombo.ctrl_shift(Key.Z) }
+    fn save() -> KeyCombo { KeyCombo.ctrl(Key.S) }
+    fn save_as() -> KeyCombo { KeyCombo.ctrl_shift(Key.S) }
+    fn open() -> KeyCombo { KeyCombo.ctrl(Key.O) }
+    fn new_file() -> KeyCombo { KeyCombo.ctrl(Key.N) }
+    fn close() -> KeyCombo { KeyCombo.ctrl(Key.W) }
+    fn quit() -> KeyCombo { KeyCombo.ctrl(Key.Q) }
+    fn find() -> KeyCombo { KeyCombo.ctrl(Key.F) }
+    fn find_replace() -> KeyCombo { KeyCombo.ctrl(Key.H) }
+    fn select_all() -> KeyCombo { KeyCombo.ctrl(Key.A) }
+    fn print() -> KeyCombo { KeyCombo.ctrl(Key.P) }
+    fn refresh() -> KeyCombo { KeyCombo.new(Key.F5) }
+    fn fullscreen() -> KeyCombo { KeyCombo.new(Key.F11) }
+    fn help() -> KeyCombo { KeyCombo.new(Key.F1) }
+}
+
+// =============================================================================
+// Global Hotkey Manager Instance
+// =============================================================================
+
+static HOTKEY_MANAGER: HotkeyManager = HotkeyManager.new()
+
+/// Register a global hotkey
+fn register(id: String, combo: KeyCombo, callback: fn()) -> Result<(), HotkeyError> {
+    let hotkey = Hotkey.new(id, combo).on_press(callback);
+    HOTKEY_MANAGER.register(hotkey)
+}
+
+/// Unregister a hotkey
+fn unregister(id: String) -> Result<(), HotkeyError> {
+    HOTKEY_MANAGER.unregister(id)
+}
+
+/// Quick registration with string parsing
+fn register_str(id: String, combo_str: String, callback: fn()) -> Result<(), HotkeyError> {
+    let combo = KeyCombo.parse(combo_str).ok_or(HotkeyError.InvalidCombo)?;
+    register(id, combo, callback)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "key combo creation" {
+    let combo = KeyCombo.ctrl_shift(Key.S);
+    assert(combo.has_modifier(Modifier.Ctrl))?
+    assert(combo.has_modifier(Modifier.Shift))?
+    assert_eq(combo.key, Key.S)?
+}
+
+test "key combo to string" {
+    let combo = KeyCombo.ctrl_alt(Key.Delete);
+    assert_eq(combo.to_string(), "Ctrl+Alt+Delete")?
+}
+
+test "key combo parsing" {
+    let combo = KeyCombo.parse("Ctrl+Shift+S");
+    assert(combo.is_some())?
+    let c = combo.unwrap();
+    assert(c.has_modifier(Modifier.Ctrl))?
+    assert(c.has_modifier(Modifier.Shift))?
+}
+
+test "hotkey builder" {
+    let hotkey = HotkeyBuilder.new("test")
+        .key(Key.F1)
+        .ctrl()
+        .shift()
+        .description("Test hotkey")
+        .build();
+    
+    assert(hotkey.is_ok())?
+    let hk = hotkey.unwrap();
+    assert_eq(hk.id, "test")?
+    assert_eq(hk.description, "Test hotkey")?
+}
+
+test "modifier mask" {
+    let combo = KeyCombo.ctrl_alt_shift(Key.A);
+    let mask = combo.modifier_mask();
+    assert_eq(mask, 0x01 | 0x02 | 0x04)?  // Ctrl | Alt | Shift
+}
+
+test "common hotkeys" {
+    let copy = CommonHotkeys.copy();
+    assert_eq(copy.key, Key.C)?
+    assert(copy.has_modifier(Modifier.Ctrl))?
+    
+    let save_as = CommonHotkeys.save_as();
+    assert(save_as.has_modifier(Modifier.Ctrl))?
+    assert(save_as.has_modifier(Modifier.Shift))?
+}
+
+test "hotkey matching" {
+    let combo = KeyCombo.ctrl_shift(Key.S);
+    
+    assert(combo.matches(Key.S, [Modifier.Ctrl, Modifier.Shift]))?
+    assert(!combo.matches(Key.S, [Modifier.Ctrl]))?
+    assert(!combo.matches(Key.A, [Modifier.Ctrl, Modifier.Shift]))?
+}

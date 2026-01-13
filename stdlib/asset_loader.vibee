@@ -1,0 +1,738 @@
+// =============================================================================
+// Vibee OS — Asset Loader Module
+// Async asset loading, caching, and management
+// =============================================================================
+
+use fs::File
+use image::Image
+use audio::AudioClip
+use sprite::{Texture, SpriteSheet}
+use future::Future
+
+// -----------------------------------------------------------------------------
+// Asset Types
+// -----------------------------------------------------------------------------
+
+/// Supported asset types
+enum AssetType {
+    Texture,
+    Audio,
+    Font,
+    Shader,
+    Data,
+    Tilemap,
+    Animation,
+    Prefab,
+    Custom(String)
+}
+
+/// Asset loading state
+enum AssetState {
+    NotLoaded,
+    Loading,
+    Loaded,
+    Failed(String)
+}
+
+// -----------------------------------------------------------------------------
+// Asset Handle
+// -----------------------------------------------------------------------------
+
+/// Handle to a loaded asset
+struct AssetHandle<T> {
+    id: UInt64
+    path: String
+    state: AssetState
+    data: Option<T>
+    ref_count: Int
+    
+    fn new(id: UInt64, path: String) -> Self {
+        AssetHandle {
+            id: id,
+            path: path,
+            state: AssetState.NotLoaded,
+            data: None,
+            ref_count: 1
+        }
+    }
+    
+    fn is_loaded() -> Bool { self.state == AssetState.Loaded }
+    fn is_loading() -> Bool { self.state == AssetState.Loading }
+    fn is_failed() -> Bool { matches!(self.state, AssetState.Failed(_)) }
+    
+    fn get() -> Option<&T> { self.data.as_ref() }
+    fn get_mut() -> Option<&mut T> { self.data.as_mut() }
+    
+    fn unwrap() -> &T { self.data.as_ref().unwrap() }
+}
+
+// -----------------------------------------------------------------------------
+// Asset Cache
+// -----------------------------------------------------------------------------
+
+/// Cache for loaded assets
+struct AssetCache<T> {
+    assets: Map<String, AssetHandle<T>>
+    max_size: Int
+    current_size: Int
+    
+    fn new() -> Self {
+        AssetCache {
+            assets: Map.new(),
+            max_size: 1024 * 1024 * 512, // 512MB default
+            current_size: 0
+        }
+    }
+    
+    fn with_max_size(size: Int) -> Self {
+        self.max_size = size
+        self
+    }
+    
+    fn get(path: String) -> Option<&AssetHandle<T>> {
+        self.assets.get(path)
+    }
+    
+    fn get_mut(path: String) -> Option<&mut AssetHandle<T>> {
+        self.assets.get_mut(path)
+    }
+    
+    fn insert(path: String, handle: AssetHandle<T>) {
+        self.assets.insert(path, handle)
+    }
+    
+    fn remove(path: String) -> Option<AssetHandle<T>> {
+        self.assets.remove(path)
+    }
+    
+    fn contains(path: String) -> Bool {
+        self.assets.contains_key(path)
+    }
+    
+    fn clear() {
+        self.assets.clear()
+        self.current_size = 0
+    }
+    
+    fn evict_lru() {
+        // Simple LRU eviction - remove assets with ref_count == 0
+        let to_remove: [String] = self.assets.iter()
+            .filter(|(_, h)| h.ref_count == 0)
+            .map(|(k, _)| k.clone())
+            .collect()
+        
+        for path in to_remove {
+            self.assets.remove(path)
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Asset Loader
+// -----------------------------------------------------------------------------
+
+/// Main asset loader with async support
+struct AssetLoader {
+    textures: AssetCache<Texture>
+    audio: AssetCache<AudioClip>
+    fonts: AssetCache<Font>
+    data: AssetCache<[UInt8]>
+    base_path: String
+    loading_queue: [LoadRequest]
+    next_id: UInt64
+    on_progress: Option<fn(Float64)>
+    on_complete: Option<fn()>
+    on_error: Option<fn(String, String)>
+    
+    fn new() -> Self {
+        AssetLoader {
+            textures: AssetCache.new(),
+            audio: AssetCache.new(),
+            fonts: AssetCache.new(),
+            data: AssetCache.new(),
+            base_path: "assets/",
+            loading_queue: [],
+            next_id: 1,
+            on_progress: None,
+            on_complete: None,
+            on_error: None
+        }
+    }
+    
+    fn with_base_path(path: String) -> Self {
+        self.base_path = path
+        self
+    }
+    
+    fn on_progress(callback: fn(Float64)) -> Self {
+        self.on_progress = Some(callback)
+        self
+    }
+    
+    fn on_complete(callback: fn()) -> Self {
+        self.on_complete = Some(callback)
+        self
+    }
+    
+    fn on_error(callback: fn(String, String)) -> Self {
+        self.on_error = Some(callback)
+        self
+    }
+    
+    // -------------------------------------------------------------------------
+    // Texture Loading
+    // -------------------------------------------------------------------------
+    
+    /// Load texture synchronously
+    fn load_texture(path: String) -> Result<&Texture, String> {
+        let full_path = self.base_path.clone() + path.clone()
+        
+        if let Some(handle) = self.textures.get(path.clone()) {
+            if handle.is_loaded() {
+                return Ok(handle.unwrap())
+            }
+        }
+        
+        let img = Image.load(full_path)?
+        let texture = Texture.from_image(img)
+        
+        var handle = AssetHandle.new(self.next_id, path.clone())
+        self.next_id += 1
+        handle.data = Some(texture)
+        handle.state = AssetState.Loaded
+        
+        self.textures.insert(path.clone(), handle)
+        Ok(self.textures.get(path).unwrap().unwrap())
+    }
+    
+    /// Load texture asynchronously
+    async fn load_texture_async(path: String) -> Result<&Texture, String> {
+        let full_path = self.base_path.clone() + path.clone()
+        
+        if let Some(handle) = self.textures.get(path.clone()) {
+            if handle.is_loaded() {
+                return Ok(handle.unwrap())
+            }
+        }
+        
+        var handle = AssetHandle.new(self.next_id, path.clone())
+        self.next_id += 1
+        handle.state = AssetState.Loading
+        self.textures.insert(path.clone(), handle)
+        
+        let img = Image.load_async(full_path).await?
+        let texture = Texture.from_image(img)
+        
+        if let Some(h) = self.textures.get_mut(path.clone()) {
+            h.data = Some(texture)
+            h.state = AssetState.Loaded
+        }
+        
+        Ok(self.textures.get(path).unwrap().unwrap())
+    }
+    
+    /// Get cached texture
+    fn get_texture(path: String) -> Option<&Texture> {
+        self.textures.get(path).and_then(|h| h.get())
+    }
+    
+    // -------------------------------------------------------------------------
+    // Audio Loading
+    // -------------------------------------------------------------------------
+    
+    /// Load audio synchronously
+    fn load_audio(path: String) -> Result<&AudioClip, String> {
+        let full_path = self.base_path.clone() + path.clone()
+        
+        if let Some(handle) = self.audio.get(path.clone()) {
+            if handle.is_loaded() {
+                return Ok(handle.unwrap())
+            }
+        }
+        
+        let clip = AudioClip.load(full_path)?
+        
+        var handle = AssetHandle.new(self.next_id, path.clone())
+        self.next_id += 1
+        handle.data = Some(clip)
+        handle.state = AssetState.Loaded
+        
+        self.audio.insert(path.clone(), handle)
+        Ok(self.audio.get(path).unwrap().unwrap())
+    }
+    
+    /// Load audio asynchronously
+    async fn load_audio_async(path: String) -> Result<&AudioClip, String> {
+        let full_path = self.base_path.clone() + path.clone()
+        
+        if let Some(handle) = self.audio.get(path.clone()) {
+            if handle.is_loaded() {
+                return Ok(handle.unwrap())
+            }
+        }
+        
+        var handle = AssetHandle.new(self.next_id, path.clone())
+        self.next_id += 1
+        handle.state = AssetState.Loading
+        self.audio.insert(path.clone(), handle)
+        
+        let clip = AudioClip.load_async(full_path).await?
+        
+        if let Some(h) = self.audio.get_mut(path.clone()) {
+            h.data = Some(clip)
+            h.state = AssetState.Loaded
+        }
+        
+        Ok(self.audio.get(path).unwrap().unwrap())
+    }
+    
+    /// Get cached audio
+    fn get_audio(path: String) -> Option<&AudioClip> {
+        self.audio.get(path).and_then(|h| h.get())
+    }
+    
+    // -------------------------------------------------------------------------
+    // Data Loading
+    // -------------------------------------------------------------------------
+    
+    /// Load raw data
+    fn load_data(path: String) -> Result<&[UInt8], String> {
+        let full_path = self.base_path.clone() + path.clone()
+        
+        if let Some(handle) = self.data.get(path.clone()) {
+            if handle.is_loaded() {
+                return Ok(handle.unwrap())
+            }
+        }
+        
+        let bytes = File.read_bytes(full_path)?
+        
+        var handle = AssetHandle.new(self.next_id, path.clone())
+        self.next_id += 1
+        handle.data = Some(bytes)
+        handle.state = AssetState.Loaded
+        
+        self.data.insert(path.clone(), handle)
+        Ok(self.data.get(path).unwrap().unwrap())
+    }
+    
+    /// Load JSON data
+    fn load_json<T: Deserialize>(path: String) -> Result<T, String> {
+        let data = self.load_data(path)?
+        let text = String.from_utf8(data.to_vec())?
+        json::parse(text)
+    }
+    
+    // -------------------------------------------------------------------------
+    // Batch Loading
+    // -------------------------------------------------------------------------
+    
+    /// Queue asset for loading
+    fn queue(path: String, asset_type: AssetType) {
+        self.loading_queue.push(LoadRequest {
+            path: path,
+            asset_type: asset_type,
+            priority: 0
+        })
+    }
+    
+    /// Queue with priority
+    fn queue_priority(path: String, asset_type: AssetType, priority: Int) {
+        self.loading_queue.push(LoadRequest {
+            path: path,
+            asset_type: asset_type,
+            priority: priority
+        })
+        self.loading_queue.sort_by(|a, b| b.priority.cmp(&a.priority))
+    }
+    
+    /// Load all queued assets
+    async fn load_queued() -> Result<(), String> {
+        let total = self.loading_queue.len()
+        var loaded = 0
+        
+        while let Some(request) = self.loading_queue.pop_front() {
+            let result = match request.asset_type {
+                Texture => self.load_texture_async(request.path.clone()).await.map(|_| ()),
+                Audio => self.load_audio_async(request.path.clone()).await.map(|_| ()),
+                Data => self.load_data(request.path.clone()).map(|_| ()),
+                _ => Ok(())
+            }
+            
+            if let Err(e) = result {
+                if let Some(callback) = &self.on_error {
+                    callback(request.path, e.clone())
+                }
+            }
+            
+            loaded += 1
+            if let Some(callback) = &self.on_progress {
+                callback(loaded as Float64 / total as Float64)
+            }
+        }
+        
+        if let Some(callback) = &self.on_complete {
+            callback()
+        }
+        
+        Ok(())
+    }
+    
+    /// Load multiple assets in parallel
+    async fn load_parallel(paths: [(String, AssetType)]) -> Result<(), String> {
+        let futures: [Future<Result<(), String>>] = paths.iter()
+            .map(|(path, asset_type)| {
+                match asset_type {
+                    Texture => self.load_texture_async(path.clone()).map(|_| ()),
+                    Audio => self.load_audio_async(path.clone()).map(|_| ()),
+                    _ => Future.ready(Ok(()))
+                }
+            })
+            .collect()
+        
+        Future.join_all(futures).await?
+        Ok(())
+    }
+    
+    // -------------------------------------------------------------------------
+    // Unloading
+    // -------------------------------------------------------------------------
+    
+    /// Unload texture
+    fn unload_texture(path: String) {
+        if let Some(handle) = self.textures.remove(path) {
+            if let Some(tex) = handle.data {
+                tex.drop()
+            }
+        }
+    }
+    
+    /// Unload audio
+    fn unload_audio(path: String) {
+        self.audio.remove(path)
+    }
+    
+    /// Unload all assets
+    fn unload_all() {
+        for (_, handle) in self.textures.assets.iter() {
+            if let Some(tex) = &handle.data {
+                tex.drop()
+            }
+        }
+        self.textures.clear()
+        self.audio.clear()
+        self.fonts.clear()
+        self.data.clear()
+    }
+    
+    /// Garbage collect unused assets
+    fn gc() {
+        self.textures.evict_lru()
+        self.audio.evict_lru()
+        self.fonts.evict_lru()
+        self.data.evict_lru()
+    }
+}
+
+struct LoadRequest {
+    path: String
+    asset_type: AssetType
+    priority: Int
+}
+
+// -----------------------------------------------------------------------------
+// Font Asset
+// -----------------------------------------------------------------------------
+
+struct Font {
+    id: UInt64
+    name: String
+    size: Int
+    
+    fn load(path: String) -> Result<Self, String> {
+        @native("font_load", path)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Asset Bundle
+// -----------------------------------------------------------------------------
+
+/// Bundle of related assets
+struct AssetBundle {
+    name: String
+    assets: Map<String, AssetType>
+    loaded: Bool
+    
+    fn new(name: String) -> Self {
+        AssetBundle {
+            name: name,
+            assets: Map.new(),
+            loaded: false
+        }
+    }
+    
+    fn add(path: String, asset_type: AssetType) -> Self {
+        self.assets.insert(path, asset_type)
+        self
+    }
+    
+    fn add_texture(path: String) -> Self { self.add(path, AssetType.Texture) }
+    fn add_audio(path: String) -> Self { self.add(path, AssetType.Audio) }
+    fn add_data(path: String) -> Self { self.add(path, AssetType.Data) }
+    
+    async fn load(loader: &mut AssetLoader) -> Result<(), String> {
+        let items: [(String, AssetType)] = self.assets.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+        
+        loader.load_parallel(items).await?
+        self.loaded = true
+        Ok(())
+    }
+    
+    fn unload(loader: &mut AssetLoader) {
+        for (path, asset_type) in self.assets.iter() {
+            match asset_type {
+                Texture => loader.unload_texture(path.clone()),
+                Audio => loader.unload_audio(path.clone()),
+                _ => {}
+            }
+        }
+        self.loaded = false
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Asset Manifest
+// -----------------------------------------------------------------------------
+
+/// Manifest file for asset bundles
+struct AssetManifest {
+    bundles: Map<String, AssetBundle>
+    
+    fn new() -> Self {
+        AssetManifest { bundles: Map.new() }
+    }
+    
+    fn load(path: String) -> Result<Self, String> {
+        let data = File.read_string(path)?
+        let json: JsonValue = json::parse(data)?
+        
+        var manifest = AssetManifest.new()
+        
+        if let Some(bundles) = json.get("bundles").as_object() {
+            for (name, bundle_data) in bundles.iter() {
+                var bundle = AssetBundle.new(name.clone())
+                
+                if let Some(assets) = bundle_data.get("assets").as_array() {
+                    for asset in assets {
+                        let path = asset.get("path").as_string()?
+                        let type_str = asset.get("type").as_string()?
+                        let asset_type = match type_str.as_str() {
+                            "texture" => AssetType.Texture,
+                            "audio" => AssetType.Audio,
+                            "font" => AssetType.Font,
+                            "data" => AssetType.Data,
+                            _ => AssetType.Custom(type_str)
+                        }
+                        bundle.add(path, asset_type)
+                    }
+                }
+                
+                manifest.bundles.insert(name.clone(), bundle)
+            }
+        }
+        
+        Ok(manifest)
+    }
+    
+    fn get_bundle(name: String) -> Option<&AssetBundle> {
+        self.bundles.get(name)
+    }
+    
+    fn get_bundle_mut(name: String) -> Option<&mut AssetBundle> {
+        self.bundles.get_mut(name)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Preloader
+// -----------------------------------------------------------------------------
+
+/// Preloader with progress tracking
+struct Preloader {
+    loader: AssetLoader
+    bundles: [String]
+    current_bundle: Int
+    progress: Float64
+    state: PreloaderState
+    
+    fn new(loader: AssetLoader) -> Self {
+        Preloader {
+            loader: loader,
+            bundles: [],
+            current_bundle: 0,
+            progress: 0.0,
+            state: PreloaderState.Idle
+        }
+    }
+    
+    fn add_bundle(name: String) -> Self {
+        self.bundles.push(name)
+        self
+    }
+    
+    async fn start(manifest: &AssetManifest) -> Result<(), String> {
+        self.state = PreloaderState.Loading
+        
+        for (i, bundle_name) in self.bundles.iter().enumerate() {
+            self.current_bundle = i
+            
+            if let Some(bundle) = manifest.get_bundle_mut(bundle_name.clone()) {
+                bundle.load(&mut self.loader).await?
+            }
+            
+            self.progress = (i + 1) as Float64 / self.bundles.len() as Float64
+        }
+        
+        self.state = PreloaderState.Complete
+        Ok(())
+    }
+    
+    fn is_loading() -> Bool { self.state == PreloaderState.Loading }
+    fn is_complete() -> Bool { self.state == PreloaderState.Complete }
+    fn get_progress() -> Float64 { self.progress }
+}
+
+enum PreloaderState {
+    Idle,
+    Loading,
+    Complete,
+    Failed
+}
+
+// -----------------------------------------------------------------------------
+// Hot Reload (Development)
+// -----------------------------------------------------------------------------
+
+/// Hot reload support for development
+struct HotReloader {
+    loader: &mut AssetLoader
+    watch_paths: [String]
+    last_modified: Map<String, UInt64>
+    enabled: Bool
+    
+    fn new(loader: &mut AssetLoader) -> Self {
+        HotReloader {
+            loader: loader,
+            watch_paths: [],
+            last_modified: Map.new(),
+            enabled: true
+        }
+    }
+    
+    fn watch(path: String) -> Self {
+        self.watch_paths.push(path)
+        self
+    }
+    
+    fn check_and_reload() {
+        if !self.enabled { return }
+        
+        for path in self.watch_paths.iter() {
+            if let Ok(modified) = @native("file_modified_time", path) as Result<UInt64, String> {
+                let last = self.last_modified.get(path).unwrap_or(&0)
+                
+                if modified > *last {
+                    self.last_modified.insert(path.clone(), modified)
+                    self.reload_asset(path.clone())
+                }
+            }
+        }
+    }
+    
+    fn reload_asset(path: String) {
+        // Determine asset type from extension
+        let ext = path.split('.').last().unwrap_or("")
+        
+        match ext {
+            "png" | "jpg" | "jpeg" | "bmp" => {
+                self.loader.unload_texture(path.clone())
+                let _ = self.loader.load_texture(path)
+            },
+            "wav" | "ogg" | "mp3" => {
+                self.loader.unload_audio(path.clone())
+                let _ = self.loader.load_audio(path)
+            },
+            _ => {}
+        }
+    }
+    
+    fn enable() { self.enabled = true }
+    fn disable() { self.enabled = false }
+}
+
+// -----------------------------------------------------------------------------
+// Global Asset Loader
+// -----------------------------------------------------------------------------
+
+static mut GLOBAL_LOADER: Option<AssetLoader> = None
+
+fn init_global_loader() {
+    unsafe { GLOBAL_LOADER = Some(AssetLoader.new()) }
+}
+
+fn global_loader() -> &mut AssetLoader {
+    unsafe { GLOBAL_LOADER.as_mut().unwrap() }
+}
+
+fn load_texture(path: String) -> Result<&Texture, String> {
+    global_loader().load_texture(path)
+}
+
+fn load_audio(path: String) -> Result<&AudioClip, String> {
+    global_loader().load_audio(path)
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "asset handle" {
+    let handle: AssetHandle<Int> = AssetHandle.new(1, "test.png")
+    assert_eq(handle.id, 1)?
+    assert(!handle.is_loaded())?
+}
+
+test "asset cache" {
+    var cache: AssetCache<Int> = AssetCache.new()
+    var handle = AssetHandle.new(1, "test")
+    handle.data = Some(42)
+    handle.state = AssetState.Loaded
+    
+    cache.insert("test", handle)
+    assert(cache.contains("test"))?
+    
+    let h = cache.get("test")?
+    assert_eq(h.get(), Some(&42))?
+}
+
+test "asset bundle" {
+    let bundle = AssetBundle.new("level1")
+        .add_texture("player.png")
+        .add_audio("music.ogg")
+    
+    assert_eq(bundle.assets.len(), 2)?
+}
+
+test "load request priority" {
+    var loader = AssetLoader.new()
+    loader.queue_priority("high.png", AssetType.Texture, 10)
+    loader.queue_priority("low.png", AssetType.Texture, 1)
+    loader.queue_priority("medium.png", AssetType.Texture, 5)
+    
+    assert_eq(loader.loading_queue[0].path, "high.png")?
+    assert_eq(loader.loading_queue[1].path, "medium.png")?
+    assert_eq(loader.loading_queue[2].path, "low.png")?
+}

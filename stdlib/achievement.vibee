@@ -1,0 +1,785 @@
+// =============================================================================
+// Vibee OS — Achievement Module
+// Game achievements, trophies, and progress tracking
+// =============================================================================
+
+use datetime::DateTime
+use fs::File
+
+// -----------------------------------------------------------------------------
+// Achievement Definition
+// -----------------------------------------------------------------------------
+
+/// Achievement definition
+struct Achievement {
+    id: String
+    name: String
+    description: String
+    icon: String
+    points: Int
+    hidden: Bool
+    category: String
+    rarity: AchievementRarity
+    prerequisites: [String]
+    
+    fn new(id: String, name: String, description: String) -> Self {
+        Achievement {
+            id: id,
+            name: name,
+            description: description,
+            icon: "",
+            points: 10,
+            hidden: false,
+            category: "General",
+            rarity: AchievementRarity.Common,
+            prerequisites: []
+        }
+    }
+    
+    fn with_icon(icon: String) -> Self { self.icon = icon; self }
+    fn with_points(points: Int) -> Self { self.points = points; self }
+    fn hidden() -> Self { self.hidden = true; self }
+    fn with_category(cat: String) -> Self { self.category = cat; self }
+    fn with_rarity(rarity: AchievementRarity) -> Self { self.rarity = rarity; self }
+    fn requires(prereq: String) -> Self { self.prerequisites.push(prereq); self }
+}
+
+enum AchievementRarity {
+    Common,      // > 50% of players
+    Uncommon,    // 25-50%
+    Rare,        // 10-25%
+    Epic,        // 5-10%
+    Legendary,   // < 5%
+    Secret       // Hidden until unlocked
+}
+
+impl AchievementRarity {
+    fn multiplier() -> Float64 {
+        match self {
+            Common => 1.0,
+            Uncommon => 1.5,
+            Rare => 2.0,
+            Epic => 3.0,
+            Legendary => 5.0,
+            Secret => 2.5
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Achievement Progress
+// -----------------------------------------------------------------------------
+
+/// Progress towards an achievement
+struct AchievementProgress {
+    achievement_id: String
+    current: Int
+    target: Int
+    unlocked: Bool
+    unlocked_at: Option<DateTime>
+    notified: Bool
+    
+    fn new(id: String, target: Int) -> Self {
+        AchievementProgress {
+            achievement_id: id,
+            current: 0,
+            target: target,
+            unlocked: false,
+            unlocked_at: None,
+            notified: false
+        }
+    }
+    
+    fn percentage() -> Float64 {
+        if self.target == 0 { return 100.0 }
+        (self.current as Float64 / self.target as Float64 * 100.0).min(100.0)
+    }
+    
+    fn is_complete() -> Bool {
+        self.current >= self.target
+    }
+    
+    fn increment(amount: Int) -> Bool {
+        if self.unlocked { return false }
+        self.current = (self.current + amount).min(self.target)
+        self.check_unlock()
+    }
+    
+    fn set(value: Int) -> Bool {
+        if self.unlocked { return false }
+        self.current = value.min(self.target)
+        self.check_unlock()
+    }
+    
+    fn check_unlock() -> Bool {
+        if !self.unlocked && self.is_complete() {
+            self.unlocked = true
+            self.unlocked_at = Some(DateTime.now())
+            true
+        } else {
+            false
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Achievement Manager
+// -----------------------------------------------------------------------------
+
+/// Main achievement system manager
+struct AchievementManager {
+    achievements: Map<String, Achievement>
+    progress: Map<String, AchievementProgress>
+    total_points: Int
+    earned_points: Int
+    on_unlock: Option<fn(&Achievement)>
+    on_progress: Option<fn(&Achievement, &AchievementProgress)>
+    notification_queue: [String]
+    
+    fn new() -> Self {
+        AchievementManager {
+            achievements: Map.new(),
+            progress: Map.new(),
+            total_points: 0,
+            earned_points: 0,
+            on_unlock: None,
+            on_progress: None,
+            notification_queue: []
+        }
+    }
+    
+    fn on_unlock(callback: fn(&Achievement)) -> Self {
+        self.on_unlock = Some(callback)
+        self
+    }
+    
+    fn on_progress(callback: fn(&Achievement, &AchievementProgress)) -> Self {
+        self.on_progress = Some(callback)
+        self
+    }
+    
+    // -------------------------------------------------------------------------
+    // Registration
+    // -------------------------------------------------------------------------
+    
+    /// Register an achievement
+    fn register(achievement: Achievement) {
+        self.total_points += achievement.points
+        let id = achievement.id.clone()
+        self.achievements.insert(id.clone(), achievement)
+        self.progress.insert(id.clone(), AchievementProgress.new(id, 1))
+    }
+    
+    /// Register achievement with progress target
+    fn register_progressive(achievement: Achievement, target: Int) {
+        self.total_points += achievement.points
+        let id = achievement.id.clone()
+        self.achievements.insert(id.clone(), achievement)
+        self.progress.insert(id.clone(), AchievementProgress.new(id, target))
+    }
+    
+    /// Register multiple achievements
+    fn register_all(achievements: [Achievement]) {
+        for ach in achievements {
+            self.register(ach)
+        }
+    }
+    
+    // -------------------------------------------------------------------------
+    // Unlocking
+    // -------------------------------------------------------------------------
+    
+    /// Unlock an achievement
+    fn unlock(id: String) -> Bool {
+        if !self.can_unlock(id.clone()) { return false }
+        
+        if let Some(prog) = self.progress.get_mut(id.clone()) {
+            prog.current = prog.target
+            if prog.check_unlock() {
+                self.on_achievement_unlocked(id.clone())
+                return true
+            }
+        }
+        false
+    }
+    
+    /// Increment progress
+    fn increment(id: String, amount: Int) -> Bool {
+        if let Some(prog) = self.progress.get_mut(id.clone()) {
+            let was_complete = prog.is_complete()
+            prog.increment(amount)
+            
+            if !was_complete && prog.is_complete() {
+                if self.can_unlock(id.clone()) {
+                    self.on_achievement_unlocked(id.clone())
+                    return true
+                }
+            } else if !prog.unlocked {
+                self.on_progress_updated(id.clone())
+            }
+        }
+        false
+    }
+    
+    /// Set progress value
+    fn set_progress(id: String, value: Int) -> Bool {
+        if let Some(prog) = self.progress.get_mut(id.clone()) {
+            let was_complete = prog.is_complete()
+            prog.set(value)
+            
+            if !was_complete && prog.is_complete() {
+                if self.can_unlock(id.clone()) {
+                    self.on_achievement_unlocked(id.clone())
+                    return true
+                }
+            } else if !prog.unlocked {
+                self.on_progress_updated(id.clone())
+            }
+        }
+        false
+    }
+    
+    /// Check if achievement can be unlocked (prerequisites met)
+    fn can_unlock(id: String) -> Bool {
+        if let Some(ach) = self.achievements.get(id) {
+            for prereq in ach.prerequisites.iter() {
+                if !self.is_unlocked(prereq.clone()) {
+                    return false
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+    
+    fn on_achievement_unlocked(id: String) {
+        if let Some(ach) = self.achievements.get(id.clone()) {
+            self.earned_points += ach.points
+            self.notification_queue.push(id.clone())
+            
+            if let Some(callback) = &self.on_unlock {
+                callback(ach)
+            }
+        }
+    }
+    
+    fn on_progress_updated(id: String) {
+        if let (Some(ach), Some(prog)) = (self.achievements.get(id.clone()), self.progress.get(id)) {
+            if let Some(callback) = &self.on_progress {
+                callback(ach, prog)
+            }
+        }
+    }
+    
+    // -------------------------------------------------------------------------
+    // Queries
+    // -------------------------------------------------------------------------
+    
+    /// Check if achievement is unlocked
+    fn is_unlocked(id: String) -> Bool {
+        self.progress.get(id).map(|p| p.unlocked).unwrap_or(false)
+    }
+    
+    /// Get achievement
+    fn get(id: String) -> Option<&Achievement> {
+        self.achievements.get(id)
+    }
+    
+    /// Get progress
+    fn get_progress(id: String) -> Option<&AchievementProgress> {
+        self.progress.get(id)
+    }
+    
+    /// Get all achievements
+    fn all() -> [&Achievement] {
+        self.achievements.values().collect()
+    }
+    
+    /// Get unlocked achievements
+    fn unlocked() -> [&Achievement] {
+        self.achievements.values()
+            .filter(|a| self.is_unlocked(a.id.clone()))
+            .collect()
+    }
+    
+    /// Get locked achievements
+    fn locked() -> [&Achievement] {
+        self.achievements.values()
+            .filter(|a| !self.is_unlocked(a.id.clone()))
+            .collect()
+    }
+    
+    /// Get achievements by category
+    fn by_category(category: String) -> [&Achievement] {
+        self.achievements.values()
+            .filter(|a| a.category == category)
+            .collect()
+    }
+    
+    /// Get visible achievements (not hidden or unlocked)
+    fn visible() -> [&Achievement] {
+        self.achievements.values()
+            .filter(|a| !a.hidden || self.is_unlocked(a.id.clone()))
+            .collect()
+    }
+    
+    /// Get completion percentage
+    fn completion_percentage() -> Float64 {
+        let total = self.achievements.len()
+        if total == 0 { return 0.0 }
+        
+        let unlocked = self.progress.values()
+            .filter(|p| p.unlocked)
+            .count()
+        
+        unlocked as Float64 / total as Float64 * 100.0
+    }
+    
+    /// Get points percentage
+    fn points_percentage() -> Float64 {
+        if self.total_points == 0 { return 0.0 }
+        self.earned_points as Float64 / self.total_points as Float64 * 100.0
+    }
+    
+    // -------------------------------------------------------------------------
+    // Notifications
+    // -------------------------------------------------------------------------
+    
+    /// Get next notification
+    fn pop_notification() -> Option<String> {
+        self.notification_queue.pop_front()
+    }
+    
+    /// Check if there are pending notifications
+    fn has_notifications() -> Bool {
+        !self.notification_queue.is_empty()
+    }
+    
+    /// Mark notification as shown
+    fn mark_notified(id: String) {
+        if let Some(prog) = self.progress.get_mut(id) {
+            prog.notified = true
+        }
+    }
+    
+    // -------------------------------------------------------------------------
+    // Persistence
+    // -------------------------------------------------------------------------
+    
+    /// Save progress to file
+    fn save(path: String) -> Result<(), String> {
+        var data = Map.new()
+        
+        for (id, prog) in self.progress.iter() {
+            var entry = Map.new()
+            entry.insert("current", prog.current)
+            entry.insert("unlocked", prog.unlocked)
+            if let Some(dt) = &prog.unlocked_at {
+                entry.insert("unlocked_at", dt.timestamp())
+            }
+            data.insert(id.clone(), entry)
+        }
+        
+        let json = json::to_string_pretty(data)?
+        File.write_string(path, json)
+    }
+    
+    /// Load progress from file
+    fn load(path: String) -> Result<(), String> {
+        let json = File.read_string(path)?
+        let data: Map<String, JsonValue> = json::parse(json)?
+        
+        for (id, entry) in data.iter() {
+            if let Some(prog) = self.progress.get_mut(id.clone()) {
+                if let Some(current) = entry.get("current").as_int() {
+                    prog.current = current
+                }
+                if let Some(unlocked) = entry.get("unlocked").as_bool() {
+                    prog.unlocked = unlocked
+                    if unlocked {
+                        if let Some(ach) = self.achievements.get(id.clone()) {
+                            self.earned_points += ach.points
+                        }
+                    }
+                }
+                if let Some(ts) = entry.get("unlocked_at").as_int64() {
+                    prog.unlocked_at = Some(DateTime.from_timestamp(ts))
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Reset all progress
+    fn reset() {
+        self.earned_points = 0
+        for (id, prog) in self.progress.iter_mut() {
+            prog.current = 0
+            prog.unlocked = false
+            prog.unlocked_at = None
+            prog.notified = false
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Achievement Builder
+// -----------------------------------------------------------------------------
+
+/// Builder for creating achievements
+struct AchievementBuilder {
+    manager: &mut AchievementManager
+    
+    fn new(manager: &mut AchievementManager) -> Self {
+        AchievementBuilder { manager: manager }
+    }
+    
+    fn add(id: String, name: String, description: String) -> AchievementBuilderItem {
+        AchievementBuilderItem {
+            manager: self.manager,
+            achievement: Achievement.new(id, name, description),
+            target: 1
+        }
+    }
+}
+
+struct AchievementBuilderItem {
+    manager: &mut AchievementManager
+    achievement: Achievement
+    target: Int
+    
+    fn icon(icon: String) -> Self { self.achievement.icon = icon; self }
+    fn points(points: Int) -> Self { self.achievement.points = points; self }
+    fn hidden() -> Self { self.achievement.hidden = true; self }
+    fn category(cat: String) -> Self { self.achievement.category = cat; self }
+    fn rarity(rarity: AchievementRarity) -> Self { self.achievement.rarity = rarity; self }
+    fn requires(prereq: String) -> Self { self.achievement.prerequisites.push(prereq); self }
+    fn target(t: Int) -> Self { self.target = t; self }
+    
+    fn build() {
+        if self.target > 1 {
+            self.manager.register_progressive(self.achievement, self.target)
+        } else {
+            self.manager.register(self.achievement)
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Achievement Display
+// -----------------------------------------------------------------------------
+
+/// Achievement notification display
+struct AchievementNotification {
+    achievement: &Achievement
+    progress: &AchievementProgress
+    display_time: Float64
+    elapsed: Float64
+    state: NotificationState
+    
+    fn new(ach: &Achievement, prog: &AchievementProgress, duration: Float64) -> Self {
+        AchievementNotification {
+            achievement: ach,
+            progress: prog,
+            display_time: duration,
+            elapsed: 0.0,
+            state: NotificationState.Entering
+        }
+    }
+    
+    fn update(dt: Float64) -> Bool {
+        self.elapsed += dt
+        
+        match self.state {
+            Entering => {
+                if self.elapsed >= 0.3 {
+                    self.state = NotificationState.Showing
+                }
+            },
+            Showing => {
+                if self.elapsed >= self.display_time - 0.3 {
+                    self.state = NotificationState.Exiting
+                }
+            },
+            Exiting => {
+                if self.elapsed >= self.display_time {
+                    return true // Done
+                }
+            }
+        }
+        false
+    }
+    
+    fn animation_progress() -> Float64 {
+        match self.state {
+            Entering => (self.elapsed / 0.3).min(1.0),
+            Showing => 1.0,
+            Exiting => 1.0 - ((self.elapsed - (self.display_time - 0.3)) / 0.3).min(1.0)
+        }
+    }
+}
+
+enum NotificationState {
+    Entering,
+    Showing,
+    Exiting
+}
+
+/// Achievement notification queue
+struct NotificationQueue {
+    notifications: [AchievementNotification]
+    max_visible: Int
+    display_duration: Float64
+    
+    fn new() -> Self {
+        NotificationQueue {
+            notifications: [],
+            max_visible: 3,
+            display_duration: 5.0
+        }
+    }
+    
+    fn with_max_visible(count: Int) -> Self { self.max_visible = count; self }
+    fn with_duration(duration: Float64) -> Self { self.display_duration = duration; self }
+    
+    fn add(ach: &Achievement, prog: &AchievementProgress) {
+        let notif = AchievementNotification.new(ach, prog, self.display_duration)
+        self.notifications.push(notif)
+    }
+    
+    fn update(dt: Float64) {
+        var to_remove = []
+        
+        for (i, notif) in self.notifications.iter_mut().enumerate() {
+            if notif.update(dt) {
+                to_remove.push(i)
+            }
+        }
+        
+        // Remove completed notifications (in reverse order)
+        for i in to_remove.iter().rev() {
+            self.notifications.remove(*i)
+        }
+    }
+    
+    fn visible() -> [&AchievementNotification] {
+        self.notifications.iter()
+            .take(self.max_visible)
+            .collect()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Statistics Tracker
+// -----------------------------------------------------------------------------
+
+/// Track statistics that can trigger achievements
+struct StatTracker {
+    stats: Map<String, Int64>
+    manager: &mut AchievementManager
+    triggers: Map<String, [(String, Int64)]>
+    
+    fn new(manager: &mut AchievementManager) -> Self {
+        StatTracker {
+            stats: Map.new(),
+            manager: manager,
+            triggers: Map.new()
+        }
+    }
+    
+    /// Register a stat
+    fn register_stat(name: String) {
+        self.stats.insert(name, 0)
+    }
+    
+    /// Add trigger: when stat reaches value, unlock achievement
+    fn add_trigger(stat: String, value: Int64, achievement_id: String) {
+        if !self.triggers.contains_key(stat.clone()) {
+            self.triggers.insert(stat.clone(), [])
+        }
+        self.triggers.get_mut(stat).unwrap().push((achievement_id, value))
+    }
+    
+    /// Increment stat
+    fn increment(name: String, amount: Int64) {
+        let new_value = self.stats.get(name.clone()).unwrap_or(&0) + amount
+        self.stats.insert(name.clone(), new_value)
+        self.check_triggers(name, new_value)
+    }
+    
+    /// Set stat value
+    fn set(name: String, value: Int64) {
+        self.stats.insert(name.clone(), value)
+        self.check_triggers(name, value)
+    }
+    
+    /// Get stat value
+    fn get(name: String) -> Int64 {
+        *self.stats.get(name).unwrap_or(&0)
+    }
+    
+    fn check_triggers(stat: String, value: Int64) {
+        if let Some(triggers) = self.triggers.get(stat) {
+            for (ach_id, threshold) in triggers.iter() {
+                if value >= *threshold {
+                    self.manager.unlock(ach_id.clone())
+                }
+            }
+        }
+    }
+    
+    /// Save stats
+    fn save(path: String) -> Result<(), String> {
+        let json = json::to_string_pretty(&self.stats)?
+        File.write_string(path, json)
+    }
+    
+    /// Load stats
+    fn load(path: String) -> Result<(), String> {
+        let json = File.read_string(path)?
+        self.stats = json::parse(json)?
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Leaderboard Integration
+// -----------------------------------------------------------------------------
+
+/// Achievement leaderboard entry
+struct LeaderboardEntry {
+    player_id: String
+    player_name: String
+    achievement_count: Int
+    total_points: Int
+    completion_percentage: Float64
+    rank: Int
+}
+
+/// Achievement leaderboard
+actor AchievementLeaderboard {
+    api_url: String
+    auth_token: String
+    entries: [LeaderboardEntry]
+    
+    fn new(url: String, token: String) -> Self {
+        AchievementLeaderboard {
+            api_url: url,
+            auth_token: token,
+            entries: []
+        }
+    }
+    
+    async fn fetch(limit: Int) -> Result<[LeaderboardEntry], String> {
+        let url = format!("{}/leaderboard?limit={}", self.api_url, limit)
+        let response = @native("http_get", url, self.auth_token).await?
+        let data: [JsonValue] = json::parse(String.from_utf8(response)?)?
+        
+        self.entries = data.iter().enumerate().map(|(i, entry)| {
+            LeaderboardEntry {
+                player_id: entry.get("player_id").as_string().unwrap_or(""),
+                player_name: entry.get("player_name").as_string().unwrap_or("Unknown"),
+                achievement_count: entry.get("achievement_count").as_int().unwrap_or(0),
+                total_points: entry.get("total_points").as_int().unwrap_or(0),
+                completion_percentage: entry.get("completion").as_float().unwrap_or(0.0),
+                rank: i + 1
+            }
+        }).collect()
+        
+        Ok(self.entries.clone())
+    }
+    
+    async fn submit(manager: &AchievementManager) -> Result<(), String> {
+        let data = json::object! {
+            "achievement_count": manager.unlocked().len(),
+            "total_points": manager.earned_points,
+            "completion": manager.completion_percentage()
+        }
+        
+        let url = format!("{}/leaderboard", self.api_url)
+        @native("http_post", url, json::to_string(data)?, self.auth_token).await
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "achievement creation" {
+    let ach = Achievement.new("first_kill", "First Blood", "Defeat your first enemy")
+        .with_points(10)
+        .with_category("Combat")
+    
+    assert_eq(ach.id, "first_kill")?
+    assert_eq(ach.points, 10)?
+    assert_eq(ach.category, "Combat")?
+}
+
+test "achievement progress" {
+    var prog = AchievementProgress.new("kills", 10)
+    assert_eq(prog.percentage(), 0.0)?
+    
+    prog.increment(5)
+    assert_eq(prog.percentage(), 50.0)?
+    assert(!prog.is_complete())?
+    
+    prog.increment(5)
+    assert(prog.is_complete())?
+    assert(prog.unlocked)?
+}
+
+test "achievement manager" {
+    var manager = AchievementManager.new()
+    
+    manager.register(Achievement.new("test", "Test", "Test achievement"))
+    assert_eq(manager.total_points, 10)?
+    
+    manager.unlock("test")
+    assert(manager.is_unlocked("test"))?
+    assert_eq(manager.earned_points, 10)?
+}
+
+test "progressive achievement" {
+    var manager = AchievementManager.new()
+    
+    manager.register_progressive(
+        Achievement.new("collector", "Collector", "Collect 100 items"),
+        100
+    )
+    
+    manager.increment("collector", 50)
+    assert_eq(manager.get_progress("collector").unwrap().percentage(), 50.0)?
+    
+    manager.increment("collector", 50)
+    assert(manager.is_unlocked("collector"))?
+}
+
+test "prerequisites" {
+    var manager = AchievementManager.new()
+    
+    manager.register(Achievement.new("basic", "Basic", "Basic achievement"))
+    manager.register(Achievement.new("advanced", "Advanced", "Requires basic").requires("basic"))
+    
+    // Can't unlock advanced without basic
+    assert(!manager.can_unlock("advanced"))?
+    
+    manager.unlock("basic")
+    assert(manager.can_unlock("advanced"))?
+}
+
+test "completion percentage" {
+    var manager = AchievementManager.new()
+    
+    manager.register(Achievement.new("a1", "A1", "First"))
+    manager.register(Achievement.new("a2", "A2", "Second"))
+    
+    assert_eq(manager.completion_percentage(), 0.0)?
+    
+    manager.unlock("a1")
+    assert_eq(manager.completion_percentage(), 50.0)?
+    
+    manager.unlock("a2")
+    assert_eq(manager.completion_percentage(), 100.0)?
+}

@@ -1,0 +1,705 @@
+// =============================================================================
+// Vibee OS — Screenshot Module
+// Screen capture and screenshot functionality
+// =============================================================================
+
+use image.{Image, ImageFormat, Pixel}
+use geometry.{Rect, Point, Size}
+
+// =============================================================================
+// Screenshot Region
+// =============================================================================
+
+enum CaptureRegion {
+    FullScreen,
+    PrimaryMonitor,
+    Monitor(Int),
+    Window(WindowHandle),
+    ActiveWindow,
+    Selection(Rect),
+    Custom { x: Int, y: Int, width: Int, height: Int }
+    
+    fn to_rect(displays: [DisplayInfo]) -> Option<Rect> {
+        match self {
+            .FullScreen => {
+                let total_width = displays.iter().map(|d| d.x + d.width).max().unwrap_or(0);
+                let total_height = displays.iter().map(|d| d.y + d.height).max().unwrap_or(0);
+                Some(Rect.new(0, 0, total_width, total_height))
+            },
+            .PrimaryMonitor => {
+                displays.iter().find(|d| d.is_primary).map(|d| d.bounds())
+            },
+            .Monitor(idx) => {
+                displays.get(idx).map(|d| d.bounds())
+            },
+            .Selection(rect) => Some(rect),
+            .Custom { x, y, width, height } => Some(Rect.new(x, y, width, height)),
+            _ => None
+        }
+    }
+}
+
+// =============================================================================
+// Display Information
+// =============================================================================
+
+struct DisplayInfo {
+    id: Int
+    name: String
+    x: Int
+    y: Int
+    width: Int
+    height: Int
+    scale_factor: Float
+    is_primary: Bool
+    refresh_rate: Int
+}
+
+impl DisplayInfo {
+    fn bounds() -> Rect {
+        Rect.new(self.x, self.y, self.width, self.height)
+    }
+    
+    fn size() -> Size {
+        Size.new(self.width, self.height)
+    }
+    
+    fn center() -> Point {
+        Point.new(self.x + self.width / 2, self.y + self.height / 2)
+    }
+    
+    fn scaled_size() -> Size {
+        Size.new(
+            (self.width as Float * self.scale_factor) as Int,
+            (self.height as Float * self.scale_factor) as Int
+        )
+    }
+}
+
+// =============================================================================
+// Window Handle
+// =============================================================================
+
+struct WindowHandle {
+    id: Int
+    title: String
+    process_name: String
+    bounds: Rect
+    is_visible: Bool
+    is_minimized: Bool
+}
+
+impl WindowHandle {
+    fn from_id(id: Int) -> Option<Self> {
+        @native("window_from_id", id)
+    }
+    
+    fn from_title(title: String) -> Option<Self> {
+        @native("window_from_title", title)
+    }
+    
+    fn active() -> Option<Self> {
+        @native("window_active")
+    }
+    
+    fn all() -> [Self] {
+        @native("window_list")
+    }
+    
+    fn by_process(name: String) -> [Self] {
+        Self.all().iter().filter(|w| w.process_name == name).collect()
+    }
+}
+
+// =============================================================================
+// Screenshot Options
+// =============================================================================
+
+struct ScreenshotOptions {
+    format: ImageFormat
+    quality: Int
+    scale: Float
+    include_cursor: Bool
+    delay: Duration
+    hide_desktop_icons: Bool
+    capture_shadow: Bool
+    output_path: Option<String>
+}
+
+impl ScreenshotOptions {
+    fn default() -> Self {
+        ScreenshotOptions {
+            format: ImageFormat.PNG,
+            quality: 100,
+            scale: 1.0,
+            include_cursor: false,
+            delay: Duration.zero(),
+            hide_desktop_icons: false,
+            capture_shadow: true,
+            output_path: None
+        }
+    }
+    
+    fn png() -> Self { self.format = ImageFormat.PNG; self }
+    fn jpeg(quality: Int) -> Self { 
+        self.format = ImageFormat.JPEG; 
+        self.quality = quality.clamp(1, 100); 
+        self 
+    }
+    fn webp(quality: Int) -> Self {
+        self.format = ImageFormat.WEBP;
+        self.quality = quality.clamp(1, 100);
+        self
+    }
+    fn quality(q: Int) -> Self { self.quality = q.clamp(1, 100); self }
+    fn scale(s: Float) -> Self { self.scale = s.clamp(0.1, 4.0); self }
+    fn with_cursor() -> Self { self.include_cursor = true; self }
+    fn delay(d: Duration) -> Self { self.delay = d; self }
+    fn delay_seconds(s: Int) -> Self { self.delay = Duration.from_seconds(s); self }
+    fn hide_icons() -> Self { self.hide_desktop_icons = true; self }
+    fn no_shadow() -> Self { self.capture_shadow = false; self }
+    fn save_to(path: String) -> Self { self.output_path = Some(path); self }
+}
+
+// =============================================================================
+// Screenshot Result
+// =============================================================================
+
+struct Screenshot {
+    image: Image
+    region: Rect
+    captured_at: Instant
+    display_id: Option<Int>
+    window_title: Option<String>
+}
+
+impl Screenshot {
+    fn new(image: Image, region: Rect) -> Self {
+        Screenshot {
+            image: image,
+            region: region,
+            captured_at: Instant.now(),
+            display_id: None,
+            window_title: None
+        }
+    }
+    
+    fn width() -> Int { self.image.width }
+    fn height() -> Int { self.image.height }
+    fn size() -> Size { Size.new(self.image.width, self.image.height) }
+    
+    fn save(path: String) -> Result<(), ScreenshotError> {
+        self.image.save(path).map_err(|e| ScreenshotError.SaveFailed(e.to_string()))
+    }
+    
+    fn save_with_format(path: String, format: ImageFormat) -> Result<(), ScreenshotError> {
+        self.image.save_with_format(path, format)
+            .map_err(|e| ScreenshotError.SaveFailed(e.to_string()))
+    }
+    
+    fn to_bytes(format: ImageFormat) -> Result<[Byte], ScreenshotError> {
+        self.image.encode(format).map_err(|e| ScreenshotError.EncodeFailed(e.to_string()))
+    }
+    
+    fn to_base64(format: ImageFormat) -> Result<String, ScreenshotError> {
+        let bytes = self.to_bytes(format)?;
+        Ok(base64.encode(bytes))
+    }
+    
+    fn crop(rect: Rect) -> Screenshot {
+        Screenshot {
+            image: self.image.crop(rect.x, rect.y, rect.width, rect.height),
+            region: rect,
+            captured_at: self.captured_at,
+            display_id: self.display_id,
+            window_title: self.window_title.clone()
+        }
+    }
+    
+    fn resize(width: Int, height: Int) -> Screenshot {
+        Screenshot {
+            image: self.image.resize(width, height),
+            region: self.region,
+            captured_at: self.captured_at,
+            display_id: self.display_id,
+            window_title: self.window_title.clone()
+        }
+    }
+    
+    fn thumbnail(max_size: Int) -> Screenshot {
+        let ratio = self.image.width as Float / self.image.height as Float;
+        let (w, h) = if self.image.width > self.image.height {
+            (max_size, (max_size as Float / ratio) as Int)
+        } else {
+            ((max_size as Float * ratio) as Int, max_size)
+        };
+        self.resize(w, h)
+    }
+}
+
+// =============================================================================
+// Screenshot Capturer
+// =============================================================================
+
+struct ScreenshotCapturer {
+    options: ScreenshotOptions
+}
+
+impl ScreenshotCapturer {
+    fn new() -> Self {
+        ScreenshotCapturer { options: ScreenshotOptions.default() }
+    }
+    
+    fn with_options(options: ScreenshotOptions) -> Self {
+        ScreenshotCapturer { options: options }
+    }
+    
+    fn options(opts: ScreenshotOptions) -> Self {
+        self.options = opts; self
+    }
+    
+    // --- Capture Methods ---
+    
+    fn capture(region: CaptureRegion) -> Result<Screenshot, ScreenshotError> {
+        // Apply delay if set
+        if self.options.delay > Duration.zero() {
+            sleep(self.options.delay);
+        }
+        
+        // Hide desktop icons if requested
+        if self.options.hide_desktop_icons {
+            @native("desktop_icons_hide");
+        }
+        
+        // Capture based on region
+        let result = match region {
+            CaptureRegion.FullScreen => self.capture_full_screen(),
+            CaptureRegion.PrimaryMonitor => self.capture_primary_monitor(),
+            CaptureRegion.Monitor(idx) => self.capture_monitor(idx),
+            CaptureRegion.Window(handle) => self.capture_window(handle),
+            CaptureRegion.ActiveWindow => self.capture_active_window(),
+            CaptureRegion.Selection(rect) => self.capture_rect(rect),
+            CaptureRegion.Custom { x, y, width, height } => {
+                self.capture_rect(Rect.new(x, y, width, height))
+            }
+        };
+        
+        // Restore desktop icons
+        if self.options.hide_desktop_icons {
+            @native("desktop_icons_show");
+        }
+        
+        // Apply scaling if needed
+        let screenshot = result?;
+        let scaled = if self.options.scale != 1.0 {
+            let new_width = (screenshot.width() as Float * self.options.scale) as Int;
+            let new_height = (screenshot.height() as Float * self.options.scale) as Int;
+            screenshot.resize(new_width, new_height)
+        } else {
+            screenshot
+        };
+        
+        // Save if output path specified
+        if let Some(path) = self.options.output_path.clone() {
+            scaled.save_with_format(path, self.options.format)?;
+        }
+        
+        Ok(scaled)
+    }
+    
+    fn capture_full_screen() -> Result<Screenshot, ScreenshotError> {
+        let image: Image = @native("screenshot_full", self.options.include_cursor)?;
+        let displays = get_displays();
+        let total_width = displays.iter().map(|d| d.x + d.width).max().unwrap_or(0);
+        let total_height = displays.iter().map(|d| d.y + d.height).max().unwrap_or(0);
+        Ok(Screenshot.new(image, Rect.new(0, 0, total_width, total_height)))
+    }
+    
+    fn capture_primary_monitor() -> Result<Screenshot, ScreenshotError> {
+        let displays = get_displays();
+        let primary = displays.iter().find(|d| d.is_primary)
+            .ok_or(ScreenshotError.NoDisplayFound)?;
+        self.capture_monitor_internal(primary)
+    }
+    
+    fn capture_monitor(index: Int) -> Result<Screenshot, ScreenshotError> {
+        let displays = get_displays();
+        let display = displays.get(index)
+            .ok_or(ScreenshotError.InvalidMonitor(index))?;
+        self.capture_monitor_internal(display)
+    }
+    
+    fn capture_monitor_internal(display: DisplayInfo) -> Result<Screenshot, ScreenshotError> {
+        let image: Image = @native("screenshot_monitor", display.id, self.options.include_cursor)?;
+        let mut screenshot = Screenshot.new(image, display.bounds());
+        screenshot.display_id = Some(display.id);
+        Ok(screenshot)
+    }
+    
+    fn capture_window(handle: WindowHandle) -> Result<Screenshot, ScreenshotError> {
+        if !handle.is_visible {
+            return Err(ScreenshotError.WindowNotVisible)
+        }
+        if handle.is_minimized {
+            return Err(ScreenshotError.WindowMinimized)
+        }
+        
+        let image: Image = @native("screenshot_window", handle.id, self.options.capture_shadow)?;
+        let mut screenshot = Screenshot.new(image, handle.bounds);
+        screenshot.window_title = Some(handle.title.clone());
+        Ok(screenshot)
+    }
+    
+    fn capture_active_window() -> Result<Screenshot, ScreenshotError> {
+        let handle = WindowHandle.active()
+            .ok_or(ScreenshotError.NoActiveWindow)?;
+        self.capture_window(handle)
+    }
+    
+    fn capture_rect(rect: Rect) -> Result<Screenshot, ScreenshotError> {
+        if rect.width <= 0 || rect.height <= 0 {
+            return Err(ScreenshotError.InvalidRegion)
+        }
+        let image: Image = @native("screenshot_rect", rect.x, rect.y, rect.width, rect.height, self.options.include_cursor)?;
+        Ok(Screenshot.new(image, rect))
+    }
+    
+    // --- Interactive Selection ---
+    
+    fn capture_interactive() -> Result<Screenshot, ScreenshotError> {
+        let rect: Rect = @native("screenshot_select_region")?;
+        self.capture_rect(rect)
+    }
+}
+
+// =============================================================================
+// Screen Recording
+// =============================================================================
+
+enum RecordingState {
+    Idle,
+    Recording,
+    Paused,
+    Stopped
+}
+
+struct RecordingOptions {
+    fps: Int
+    quality: Int
+    include_audio: Bool
+    audio_source: AudioSource
+    include_cursor: Bool
+    highlight_clicks: Bool
+    output_format: VideoFormat
+}
+
+enum AudioSource {
+    None,
+    System,
+    Microphone,
+    Both
+}
+
+enum VideoFormat {
+    MP4,
+    WebM,
+    GIF,
+    AVI
+    
+    fn extension() -> String {
+        match self {
+            .MP4 => "mp4",
+            .WebM => "webm",
+            .GIF => "gif",
+            .AVI => "avi"
+        }
+    }
+}
+
+impl RecordingOptions {
+    fn default() -> Self {
+        RecordingOptions {
+            fps: 30,
+            quality: 80,
+            include_audio: false,
+            audio_source: AudioSource.None,
+            include_cursor: true,
+            highlight_clicks: false,
+            output_format: VideoFormat.MP4
+        }
+    }
+    
+    fn fps(f: Int) -> Self { self.fps = f.clamp(1, 60); self }
+    fn quality(q: Int) -> Self { self.quality = q.clamp(1, 100); self }
+    fn with_system_audio() -> Self { 
+        self.include_audio = true; 
+        self.audio_source = AudioSource.System; 
+        self 
+    }
+    fn with_microphone() -> Self {
+        self.include_audio = true;
+        self.audio_source = AudioSource.Microphone;
+        self
+    }
+    fn with_all_audio() -> Self {
+        self.include_audio = true;
+        self.audio_source = AudioSource.Both;
+        self
+    }
+    fn with_cursor() -> Self { self.include_cursor = true; self }
+    fn highlight_clicks() -> Self { self.highlight_clicks = true; self }
+    fn format(f: VideoFormat) -> Self { self.output_format = f; self }
+    fn gif() -> Self { self.output_format = VideoFormat.GIF; self }
+}
+
+actor ScreenRecorder {
+    state region: CaptureRegion
+    state options: RecordingOptions
+    state state: RecordingState
+    state output_path: String
+    state start_time: Option<Instant>
+    state frames_captured: Int
+    
+    fn new(output_path: String) -> Self {
+        ScreenRecorder {
+            region: CaptureRegion.FullScreen,
+            options: RecordingOptions.default(),
+            state: RecordingState.Idle,
+            output_path: output_path,
+            start_time: None,
+            frames_captured: 0
+        }
+    }
+    
+    fn region(r: CaptureRegion) -> Self { self.region = r; self }
+    fn options(o: RecordingOptions) -> Self { self.options = o; self }
+    
+    on start() -> Result<(), ScreenshotError> {
+        if self.state != RecordingState.Idle && self.state != RecordingState.Stopped {
+            return Err(ScreenshotError.RecordingInProgress)
+        }
+        
+        @native("recording_start", self.region.clone(), self.options.clone(), self.output_path.clone())?;
+        self.state = RecordingState.Recording;
+        self.start_time = Some(Instant.now());
+        self.frames_captured = 0;
+        Ok(())
+    }
+    
+    on pause() -> Result<(), ScreenshotError> {
+        if self.state != RecordingState.Recording {
+            return Err(ScreenshotError.NotRecording)
+        }
+        @native("recording_pause")?;
+        self.state = RecordingState.Paused;
+        Ok(())
+    }
+    
+    on resume() -> Result<(), ScreenshotError> {
+        if self.state != RecordingState.Paused {
+            return Err(ScreenshotError.NotPaused)
+        }
+        @native("recording_resume")?;
+        self.state = RecordingState.Recording;
+        Ok(())
+    }
+    
+    on stop() -> Result<RecordingResult, ScreenshotError> {
+        if self.state == RecordingState.Idle || self.state == RecordingState.Stopped {
+            return Err(ScreenshotError.NotRecording)
+        }
+        
+        let result: RecordingResult = @native("recording_stop")?;
+        self.state = RecordingState.Stopped;
+        Ok(result)
+    }
+    
+    fn is_recording() -> Bool { self.state == RecordingState.Recording }
+    fn is_paused() -> Bool { self.state == RecordingState.Paused }
+    
+    fn duration() -> Duration {
+        match self.start_time {
+            Some(start) => Instant.now().duration_since(start),
+            None => Duration.zero()
+        }
+    }
+}
+
+struct RecordingResult {
+    path: String
+    duration: Duration
+    frames: Int
+    file_size: Int
+    format: VideoFormat
+}
+
+// =============================================================================
+// Screenshot Errors
+// =============================================================================
+
+enum ScreenshotError {
+    CaptureFaild(String),
+    NoDisplayFound,
+    InvalidMonitor(Int),
+    InvalidRegion,
+    WindowNotFound,
+    WindowNotVisible,
+    WindowMinimized,
+    NoActiveWindow,
+    SaveFailed(String),
+    EncodeFailed(String),
+    PermissionDenied,
+    RecordingInProgress,
+    NotRecording,
+    NotPaused,
+    Timeout
+    
+    fn message() -> String {
+        match self {
+            .CaptureFaild(msg) => f"Capture failed: {msg}",
+            .NoDisplayFound => "No display found",
+            .InvalidMonitor(idx) => f"Invalid monitor index: {idx}",
+            .InvalidRegion => "Invalid capture region",
+            .WindowNotFound => "Window not found",
+            .WindowNotVisible => "Window is not visible",
+            .WindowMinimized => "Window is minimized",
+            .NoActiveWindow => "No active window",
+            .SaveFailed(msg) => f"Failed to save: {msg}",
+            .EncodeFailed(msg) => f"Failed to encode: {msg}",
+            .PermissionDenied => "Permission denied for screen capture",
+            .RecordingInProgress => "Recording already in progress",
+            .NotRecording => "Not currently recording",
+            .NotPaused => "Recording is not paused",
+            .Timeout => "Screenshot operation timed out"
+        }
+    }
+}
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
+/// Get all connected displays
+fn get_displays() -> [DisplayInfo] {
+    @native("display_list")
+}
+
+/// Get primary display
+fn get_primary_display() -> Option<DisplayInfo> {
+    get_displays().iter().find(|d| d.is_primary)
+}
+
+/// Get display count
+fn display_count() -> Int {
+    get_displays().len()
+}
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+/// Capture full screen
+fn capture() -> Result<Screenshot, ScreenshotError> {
+    ScreenshotCapturer.new().capture(CaptureRegion.FullScreen)
+}
+
+/// Capture primary monitor
+fn capture_primary() -> Result<Screenshot, ScreenshotError> {
+    ScreenshotCapturer.new().capture(CaptureRegion.PrimaryMonitor)
+}
+
+/// Capture specific monitor
+fn capture_monitor(index: Int) -> Result<Screenshot, ScreenshotError> {
+    ScreenshotCapturer.new().capture(CaptureRegion.Monitor(index))
+}
+
+/// Capture active window
+fn capture_window() -> Result<Screenshot, ScreenshotError> {
+    ScreenshotCapturer.new().capture(CaptureRegion.ActiveWindow)
+}
+
+/// Capture specific region
+fn capture_region(x: Int, y: Int, width: Int, height: Int) -> Result<Screenshot, ScreenshotError> {
+    ScreenshotCapturer.new().capture(CaptureRegion.Custom { x: x, y: y, width: width, height: height })
+}
+
+/// Interactive region selection and capture
+fn capture_selection() -> Result<Screenshot, ScreenshotError> {
+    ScreenshotCapturer.new().capture_interactive()
+}
+
+/// Capture and save to file
+fn capture_to_file(path: String) -> Result<Screenshot, ScreenshotError> {
+    let options = ScreenshotOptions.default().save_to(path);
+    ScreenshotCapturer.with_options(options).capture(CaptureRegion.FullScreen)
+}
+
+/// Capture with delay
+fn capture_delayed(seconds: Int) -> Result<Screenshot, ScreenshotError> {
+    let options = ScreenshotOptions.default().delay_seconds(seconds);
+    ScreenshotCapturer.with_options(options).capture(CaptureRegion.FullScreen)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "screenshot options" {
+    let opts = ScreenshotOptions.default()
+        .jpeg(85)
+        .scale(0.5)
+        .with_cursor()
+        .delay_seconds(3);
+    
+    assert_eq(opts.format, ImageFormat.JPEG)?
+    assert_eq(opts.quality, 85)?
+    assert_eq(opts.scale, 0.5)?
+    assert(opts.include_cursor)?
+}
+
+test "display info" {
+    let display = DisplayInfo {
+        id: 0,
+        name: "Primary",
+        x: 0, y: 0,
+        width: 1920, height: 1080,
+        scale_factor: 1.0,
+        is_primary: true,
+        refresh_rate: 60
+    };
+    
+    assert_eq(display.bounds(), Rect.new(0, 0, 1920, 1080))?
+    assert_eq(display.center(), Point.new(960, 540))?
+}
+
+test "capture region" {
+    let region = CaptureRegion.Custom { x: 100, y: 100, width: 500, height: 300 };
+    let displays = [DisplayInfo {
+        id: 0, name: "Test", x: 0, y: 0, width: 1920, height: 1080,
+        scale_factor: 1.0, is_primary: true, refresh_rate: 60
+    }];
+    
+    let rect = region.to_rect(displays);
+    assert_eq(rect, Some(Rect.new(100, 100, 500, 300)))?
+}
+
+test "recording options" {
+    let opts = RecordingOptions.default()
+        .fps(60)
+        .quality(90)
+        .with_system_audio()
+        .highlight_clicks()
+        .gif();
+    
+    assert_eq(opts.fps, 60)?
+    assert_eq(opts.quality, 90)?
+    assert(opts.include_audio)?
+    assert(opts.highlight_clicks)?
+    assert_eq(opts.output_format, VideoFormat.GIF)?
+}
+
+test "video format extension" {
+    assert_eq(VideoFormat.MP4.extension(), "mp4")?
+    assert_eq(VideoFormat.WebM.extension(), "webm")?
+    assert_eq(VideoFormat.GIF.extension(), "gif")?
+}

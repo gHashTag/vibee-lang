@@ -1,0 +1,600 @@
+// =============================================================================
+// Vibee OS — AES Module
+// Advanced Encryption Standard (FIPS 197)
+// =============================================================================
+//
+// AES is a symmetric block cipher supporting 128, 192, and 256-bit keys.
+// This module provides:
+// - AES-GCM (recommended for authenticated encryption)
+// - AES-CBC (legacy, requires separate MAC)
+// - AES-CTR (stream cipher mode)
+// - AES-ECB (not recommended, no IV)
+// =============================================================================
+
+const BLOCK_SIZE: Int = 16
+const NONCE_SIZE_GCM: Int = 12
+const TAG_SIZE_GCM: Int = 16
+
+// =============================================================================
+// Key Sizes
+// =============================================================================
+
+enum AesKeySize {
+    Aes128  // 16 bytes
+    Aes192  // 24 bytes
+    Aes256  // 32 bytes
+}
+
+impl AesKeySize {
+    fn bytes() -> Int {
+        match self {
+            Aes128 => 16
+            Aes192 => 24
+            Aes256 => 32
+        }
+    }
+    
+    fn bits() -> Int {
+        self.bytes() * 8
+    }
+    
+    fn from_key_len(len: Int) -> Option<Self> {
+        match len {
+            16 => Some(AesKeySize.Aes128)
+            24 => Some(AesKeySize.Aes192)
+            32 => Some(AesKeySize.Aes256)
+            _ => None
+        }
+    }
+}
+
+// =============================================================================
+// AES Key
+// =============================================================================
+
+/// AES encryption key
+struct AesKey {
+    bytes: [UInt8]
+    size: AesKeySize
+}
+
+impl AesKey {
+    /// Create key from bytes
+    fn from_bytes(bytes: [UInt8]) -> Result<Self, AesError> {
+        let size = AesKeySize.from_key_len(bytes.len())
+            .ok_or(AesError.InvalidKeySize)?
+        Ok(AesKey { bytes: bytes, size: size })
+    }
+    
+    /// Generate random AES-128 key
+    fn generate_128() -> Self {
+        AesKey { bytes: crypto.random_bytes(16), size: AesKeySize.Aes128 }
+    }
+    
+    /// Generate random AES-192 key
+    fn generate_192() -> Self {
+        AesKey { bytes: crypto.random_bytes(24), size: AesKeySize.Aes192 }
+    }
+    
+    /// Generate random AES-256 key
+    fn generate_256() -> Self {
+        AesKey { bytes: crypto.random_bytes(32), size: AesKeySize.Aes256 }
+    }
+    
+    /// Generate key with specified size
+    fn generate(size: AesKeySize) -> Self {
+        AesKey { bytes: crypto.random_bytes(size.bytes()), size: size }
+    }
+    
+    /// Derive key from password using PBKDF2
+    fn from_password(password: String, salt: [UInt8], iterations: Int, size: AesKeySize) -> Self {
+        let key_bytes = crypto.pbkdf2_sha256(password.as_bytes(), salt, iterations, size.bytes())
+        AesKey { bytes: key_bytes, size: size }
+    }
+    
+    /// Derive key from password using Argon2id
+    fn from_password_argon2(password: String, salt: [UInt8], size: AesKeySize) -> Result<Self, AesError> {
+        let key_bytes = crypto.argon2id(password.as_bytes(), salt, 65536, 3, 4, size.bytes())
+            .map_err(|_| AesError.KeyDerivationFailed)?
+        Ok(AesKey { bytes: key_bytes, size: size })
+    }
+    
+    /// Get key bytes
+    fn as_bytes() -> [UInt8] {
+        self.bytes
+    }
+    
+    /// Get key size
+    fn key_size() -> AesKeySize {
+        self.size
+    }
+    
+    /// Securely zero key from memory
+    fn zeroize() {
+        crypto.secure_zero(self.bytes)
+    }
+}
+
+impl Drop for AesKey {
+    fn drop() {
+        self.zeroize()
+    }
+}
+
+// =============================================================================
+// AES-GCM (Galois/Counter Mode) - Recommended
+// =============================================================================
+
+/// AES-GCM cipher for authenticated encryption
+struct AesGcm {
+    key: AesKey
+}
+
+impl AesGcm {
+    /// Create new AES-GCM cipher
+    fn new(key: AesKey) -> Self {
+        AesGcm { key: key }
+    }
+    
+    /// Create with raw key bytes
+    fn from_bytes(key: [UInt8]) -> Result<Self, AesError> {
+        Ok(AesGcm { key: AesKey.from_bytes(key)? })
+    }
+    
+    /// Create with generated key
+    fn with_generated_key(size: AesKeySize) -> Self {
+        AesGcm { key: AesKey.generate(size) }
+    }
+    
+    /// Generate random nonce (12 bytes for GCM)
+    fn generate_nonce() -> [UInt8; 12] {
+        let bytes = crypto.random_bytes(12)
+        bytes.try_into().unwrap()
+    }
+    
+    /// Encrypt with provided nonce
+    fn encrypt(plaintext: [UInt8], nonce: [UInt8], aad: [UInt8]) -> Result<[UInt8], AesError> {
+        if nonce.len() != NONCE_SIZE_GCM {
+            return Err(AesError.InvalidNonce)
+        }
+        @native("aes_gcm_encrypt", self.key.bytes, nonce, plaintext, aad)
+            .map_err(|_| AesError.EncryptionFailed)
+    }
+    
+    /// Encrypt with auto-generated nonce (prepended to ciphertext)
+    fn encrypt_with_nonce(plaintext: [UInt8], aad: [UInt8]) -> Result<[UInt8], AesError> {
+        let nonce = Self.generate_nonce()
+        let ciphertext = self.encrypt(plaintext, nonce.to_vec(), aad)?
+        Ok(nonce.to_vec() + ciphertext)
+    }
+    
+    /// Encrypt without AAD
+    fn encrypt_simple(plaintext: [UInt8]) -> Result<[UInt8], AesError> {
+        self.encrypt_with_nonce(plaintext, [])
+    }
+    
+    /// Decrypt with provided nonce
+    fn decrypt(ciphertext: [UInt8], nonce: [UInt8], aad: [UInt8]) -> Result<[UInt8], AesError> {
+        if nonce.len() != NONCE_SIZE_GCM {
+            return Err(AesError.InvalidNonce)
+        }
+        @native("aes_gcm_decrypt", self.key.bytes, nonce, ciphertext, aad)
+            .map_err(|_| AesError.DecryptionFailed)
+    }
+    
+    /// Decrypt with nonce prepended to ciphertext
+    fn decrypt_with_nonce(data: [UInt8], aad: [UInt8]) -> Result<[UInt8], AesError> {
+        if data.len() < NONCE_SIZE_GCM + TAG_SIZE_GCM {
+            return Err(AesError.InvalidCiphertext)
+        }
+        let nonce = data[0..NONCE_SIZE_GCM]
+        let ciphertext = data[NONCE_SIZE_GCM..]
+        self.decrypt(ciphertext, nonce, aad)
+    }
+    
+    /// Decrypt without AAD
+    fn decrypt_simple(data: [UInt8]) -> Result<[UInt8], AesError> {
+        self.decrypt_with_nonce(data, [])
+    }
+    
+    /// Get the encryption key
+    fn key() -> AesKey {
+        self.key
+    }
+}
+
+// =============================================================================
+// AES-CBC (Cipher Block Chaining)
+// =============================================================================
+
+/// AES-CBC cipher (requires separate authentication)
+struct AesCbc {
+    key: AesKey
+}
+
+impl AesCbc {
+    /// Create new AES-CBC cipher
+    fn new(key: AesKey) -> Self {
+        AesCbc { key: key }
+    }
+    
+    /// Create with raw key bytes
+    fn from_bytes(key: [UInt8]) -> Result<Self, AesError> {
+        Ok(AesCbc { key: AesKey.from_bytes(key)? })
+    }
+    
+    /// Generate random IV (16 bytes)
+    fn generate_iv() -> [UInt8; 16] {
+        let bytes = crypto.random_bytes(16)
+        bytes.try_into().unwrap()
+    }
+    
+    /// Encrypt with PKCS7 padding
+    fn encrypt(plaintext: [UInt8], iv: [UInt8]) -> Result<[UInt8], AesError> {
+        if iv.len() != BLOCK_SIZE {
+            return Err(AesError.InvalidIv)
+        }
+        let padded = pkcs7_pad(plaintext, BLOCK_SIZE)
+        @native("aes_cbc_encrypt", self.key.bytes, iv, padded)
+            .map_err(|_| AesError.EncryptionFailed)
+    }
+    
+    /// Encrypt with auto-generated IV (prepended to ciphertext)
+    fn encrypt_with_iv(plaintext: [UInt8]) -> Result<[UInt8], AesError> {
+        let iv = Self.generate_iv()
+        let ciphertext = self.encrypt(plaintext, iv.to_vec())?
+        Ok(iv.to_vec() + ciphertext)
+    }
+    
+    /// Decrypt and remove PKCS7 padding
+    fn decrypt(ciphertext: [UInt8], iv: [UInt8]) -> Result<[UInt8], AesError> {
+        if iv.len() != BLOCK_SIZE {
+            return Err(AesError.InvalidIv)
+        }
+        if ciphertext.len() % BLOCK_SIZE != 0 {
+            return Err(AesError.InvalidCiphertext)
+        }
+        let padded = @native("aes_cbc_decrypt", self.key.bytes, iv, ciphertext)
+            .map_err(|_| AesError.DecryptionFailed)?
+        pkcs7_unpad(padded)
+    }
+    
+    /// Decrypt with IV prepended to ciphertext
+    fn decrypt_with_iv(data: [UInt8]) -> Result<[UInt8], AesError> {
+        if data.len() < BLOCK_SIZE * 2 {
+            return Err(AesError.InvalidCiphertext)
+        }
+        let iv = data[0..BLOCK_SIZE]
+        let ciphertext = data[BLOCK_SIZE..]
+        self.decrypt(ciphertext, iv)
+    }
+}
+
+// =============================================================================
+// AES-CTR (Counter Mode)
+// =============================================================================
+
+/// AES-CTR cipher (stream cipher mode)
+struct AesCtr {
+    key: AesKey
+}
+
+impl AesCtr {
+    /// Create new AES-CTR cipher
+    fn new(key: AesKey) -> Self {
+        AesCtr { key: key }
+    }
+    
+    /// Create with raw key bytes
+    fn from_bytes(key: [UInt8]) -> Result<Self, AesError> {
+        Ok(AesCtr { key: AesKey.from_bytes(key)? })
+    }
+    
+    /// Generate random nonce (16 bytes)
+    fn generate_nonce() -> [UInt8; 16] {
+        let bytes = crypto.random_bytes(16)
+        bytes.try_into().unwrap()
+    }
+    
+    /// Encrypt (same as decrypt in CTR mode)
+    fn encrypt(plaintext: [UInt8], nonce: [UInt8]) -> Result<[UInt8], AesError> {
+        if nonce.len() != BLOCK_SIZE {
+            return Err(AesError.InvalidNonce)
+        }
+        @native("aes_ctr_encrypt", self.key.bytes, nonce, plaintext)
+            .map_err(|_| AesError.EncryptionFailed)
+    }
+    
+    /// Decrypt (same as encrypt in CTR mode)
+    fn decrypt(ciphertext: [UInt8], nonce: [UInt8]) -> Result<[UInt8], AesError> {
+        self.encrypt(ciphertext, nonce)
+    }
+    
+    /// Encrypt with auto-generated nonce
+    fn encrypt_with_nonce(plaintext: [UInt8]) -> Result<[UInt8], AesError> {
+        let nonce = Self.generate_nonce()
+        let ciphertext = self.encrypt(plaintext, nonce.to_vec())?
+        Ok(nonce.to_vec() + ciphertext)
+    }
+    
+    /// Decrypt with nonce prepended
+    fn decrypt_with_nonce(data: [UInt8]) -> Result<[UInt8], AesError> {
+        if data.len() < BLOCK_SIZE {
+            return Err(AesError.InvalidCiphertext)
+        }
+        let nonce = data[0..BLOCK_SIZE]
+        let ciphertext = data[BLOCK_SIZE..]
+        self.decrypt(ciphertext, nonce)
+    }
+}
+
+// =============================================================================
+// AES-ECB (Electronic Codebook) - Not Recommended
+// =============================================================================
+
+/// AES-ECB cipher (WARNING: Not secure for most uses)
+struct AesEcb {
+    key: AesKey
+}
+
+impl AesEcb {
+    /// Create new AES-ECB cipher
+    fn new(key: AesKey) -> Self {
+        AesEcb { key: key }
+    }
+    
+    /// Encrypt single block (16 bytes)
+    fn encrypt_block(block: [UInt8; 16]) -> [UInt8; 16] {
+        @native("aes_ecb_encrypt_block", self.key.bytes, block)
+    }
+    
+    /// Decrypt single block (16 bytes)
+    fn decrypt_block(block: [UInt8; 16]) -> [UInt8; 16] {
+        @native("aes_ecb_decrypt_block", self.key.bytes, block)
+    }
+    
+    /// Encrypt with PKCS7 padding
+    fn encrypt(plaintext: [UInt8]) -> Result<[UInt8], AesError> {
+        let padded = pkcs7_pad(plaintext, BLOCK_SIZE)
+        @native("aes_ecb_encrypt", self.key.bytes, padded)
+            .map_err(|_| AesError.EncryptionFailed)
+    }
+    
+    /// Decrypt and remove PKCS7 padding
+    fn decrypt(ciphertext: [UInt8]) -> Result<[UInt8], AesError> {
+        if ciphertext.len() % BLOCK_SIZE != 0 {
+            return Err(AesError.InvalidCiphertext)
+        }
+        let padded = @native("aes_ecb_decrypt", self.key.bytes, ciphertext)
+            .map_err(|_| AesError.DecryptionFailed)?
+        pkcs7_unpad(padded)
+    }
+}
+
+// =============================================================================
+// Streaming Encryption Actor
+// =============================================================================
+
+/// Actor for streaming AES-GCM encryption
+actor AesGcmStream {
+    state cipher: AesGcm
+    state nonce: [UInt8]
+    state buffer: [UInt8]
+    state finalized: Bool
+    
+    fn new(key: AesKey) -> Self {
+        AesGcmStream {
+            cipher: AesGcm.new(key),
+            nonce: AesGcm.generate_nonce().to_vec(),
+            buffer: [],
+            finalized: false
+        }
+    }
+    
+    /// Get the nonce (needed for decryption)
+    fn nonce() -> [UInt8] {
+        self.nonce
+    }
+    
+    /// Write data to encrypt
+    fn write(data: [UInt8]) -> Result<(), AesError> {
+        if self.finalized {
+            return Err(AesError.AlreadyFinalized)
+        }
+        self.buffer.extend(data)
+        Ok(())
+    }
+    
+    /// Finalize and get encrypted data
+    fn finalize(aad: [UInt8]) -> Result<[UInt8], AesError> {
+        if self.finalized {
+            return Err(AesError.AlreadyFinalized)
+        }
+        self.finalized = true
+        self.cipher.encrypt(self.buffer, self.nonce, aad)
+    }
+    
+    /// Finalize without AAD
+    fn finalize_simple() -> Result<[UInt8], AesError> {
+        self.finalize([])
+    }
+}
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
+/// PKCS7 padding
+fn pkcs7_pad(data: [UInt8], block_size: Int) -> [UInt8] {
+    let padding_len = block_size - (data.len() % block_size)
+    let padding = [padding_len as UInt8; padding_len]
+    data + padding
+}
+
+/// PKCS7 unpadding
+fn pkcs7_unpad(data: [UInt8]) -> Result<[UInt8], AesError> {
+    if data.is_empty() {
+        return Err(AesError.InvalidPadding)
+    }
+    let padding_len = data[data.len() - 1] as Int
+    if padding_len == 0 || padding_len > BLOCK_SIZE || padding_len > data.len() {
+        return Err(AesError.InvalidPadding)
+    }
+    // Verify padding bytes
+    for i in 0..padding_len {
+        if data[data.len() - 1 - i] != padding_len as UInt8 {
+            return Err(AesError.InvalidPadding)
+        }
+    }
+    Ok(data[0..data.len() - padding_len])
+}
+
+/// Quick encrypt with AES-256-GCM
+fn encrypt(key: [UInt8], plaintext: [UInt8]) -> Result<[UInt8], AesError> {
+    let cipher = AesGcm.from_bytes(key)?
+    cipher.encrypt_simple(plaintext)
+}
+
+/// Quick decrypt with AES-256-GCM
+fn decrypt(key: [UInt8], ciphertext: [UInt8]) -> Result<[UInt8], AesError> {
+    let cipher = AesGcm.from_bytes(key)?
+    cipher.decrypt_simple(ciphertext)
+}
+
+/// Encrypt string with password
+fn encrypt_with_password(plaintext: String, password: String) -> Result<[UInt8], AesError> {
+    let salt = crypto.random_bytes(16)
+    let key = AesKey.from_password(password, salt, 100000, AesKeySize.Aes256)
+    let cipher = AesGcm.new(key)
+    let ciphertext = cipher.encrypt_simple(plaintext.as_bytes())?
+    Ok(salt + ciphertext)
+}
+
+/// Decrypt string with password
+fn decrypt_with_password(data: [UInt8], password: String) -> Result<String, AesError> {
+    if data.len() < 16 {
+        return Err(AesError.InvalidCiphertext)
+    }
+    let salt = data[0..16]
+    let ciphertext = data[16..]
+    let key = AesKey.from_password(password, salt, 100000, AesKeySize.Aes256)
+    let cipher = AesGcm.new(key)
+    let plaintext = cipher.decrypt_simple(ciphertext)?
+    String.from_utf8(plaintext).map_err(|_| AesError.InvalidPlaintext)
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum AesError {
+    InvalidKeySize
+    InvalidNonce
+    InvalidIv
+    InvalidCiphertext
+    InvalidPadding
+    InvalidPlaintext
+    EncryptionFailed
+    DecryptionFailed
+    KeyDerivationFailed
+    AlreadyFinalized
+    AuthenticationFailed
+}
+
+impl Display for AesError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidKeySize => f.write("Invalid AES key size (must be 16, 24, or 32 bytes)")
+            InvalidNonce => f.write("Invalid nonce size")
+            InvalidIv => f.write("Invalid IV size (must be 16 bytes)")
+            InvalidCiphertext => f.write("Invalid ciphertext")
+            InvalidPadding => f.write("Invalid PKCS7 padding")
+            InvalidPlaintext => f.write("Invalid plaintext encoding")
+            EncryptionFailed => f.write("Encryption failed")
+            DecryptionFailed => f.write("Decryption failed (authentication failed)")
+            KeyDerivationFailed => f.write("Key derivation failed")
+            AlreadyFinalized => f.write("Stream already finalized")
+            AuthenticationFailed => f.write("Authentication tag verification failed")
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "aes-gcm encrypt decrypt" {
+    let key = AesKey.generate_256()
+    let cipher = AesGcm.new(key)
+    let plaintext = "Hello, World!".as_bytes()
+    
+    let ciphertext = cipher.encrypt_simple(plaintext)?
+    let decrypted = cipher.decrypt_simple(ciphertext)?
+    
+    assert_eq(decrypted, plaintext)?
+}
+
+test "aes-gcm with aad" {
+    let key = AesKey.generate_256()
+    let cipher = AesGcm.new(key)
+    let plaintext = "Secret message".as_bytes()
+    let aad = "authenticated data".as_bytes()
+    let nonce = AesGcm.generate_nonce()
+    
+    let ciphertext = cipher.encrypt(plaintext, nonce.to_vec(), aad)?
+    let decrypted = cipher.decrypt(ciphertext, nonce.to_vec(), aad)?
+    
+    assert_eq(decrypted, plaintext)?
+}
+
+test "aes-cbc encrypt decrypt" {
+    let key = AesKey.generate_256()
+    let cipher = AesCbc.new(key)
+    let plaintext = "Hello, CBC mode!".as_bytes()
+    
+    let ciphertext = cipher.encrypt_with_iv(plaintext)?
+    let decrypted = cipher.decrypt_with_iv(ciphertext)?
+    
+    assert_eq(decrypted, plaintext)?
+}
+
+test "aes-ctr encrypt decrypt" {
+    let key = AesKey.generate_128()
+    let cipher = AesCtr.new(key)
+    let plaintext = "Stream cipher test".as_bytes()
+    
+    let ciphertext = cipher.encrypt_with_nonce(plaintext)?
+    let decrypted = cipher.decrypt_with_nonce(ciphertext)?
+    
+    assert_eq(decrypted, plaintext)?
+}
+
+test "key from password" {
+    let key = AesKey.from_password("my-password", "salt1234".as_bytes(), 10000, AesKeySize.Aes256)
+    assert_eq(key.as_bytes().len(), 32)?
+}
+
+test "password encryption" {
+    let message = "Secret message"
+    let password = "strong-password-123"
+    
+    let encrypted = encrypt_with_password(message, password)?
+    let decrypted = decrypt_with_password(encrypted, password)?
+    
+    assert_eq(decrypted, message)?
+}
+
+test "pkcs7 padding" {
+    let data = [1, 2, 3, 4, 5]
+    let padded = pkcs7_pad(data, 16)
+    assert_eq(padded.len(), 16)?
+    
+    let unpadded = pkcs7_unpad(padded)?
+    assert_eq(unpadded, data)?
+}
+
+test "key sizes" {
+    assert_eq(AesKeySize.Aes128.bytes(), 16)?
+    assert_eq(AesKeySize.Aes192.bytes(), 24)?
+    assert_eq(AesKeySize.Aes256.bytes(), 32)?
+}

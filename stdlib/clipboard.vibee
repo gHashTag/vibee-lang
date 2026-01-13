@@ -1,0 +1,572 @@
+// =============================================================================
+// Vibee OS — Clipboard Module
+// System clipboard operations for text, images, and custom data
+// =============================================================================
+
+use image.{Image, ImageFormat}
+use json.{JsonValue, Serialize, Deserialize}
+
+// =============================================================================
+// Clipboard Content Types
+// =============================================================================
+
+enum ClipboardFormat {
+    PlainText,
+    RichText,
+    Html,
+    Image,
+    Files,
+    Custom(String)
+    
+    fn mime_type() -> String {
+        match self {
+            .PlainText => "text/plain",
+            .RichText => "text/rtf",
+            .Html => "text/html",
+            .Image => "image/png",
+            .Files => "text/uri-list",
+            .Custom(mime) => mime
+        }
+    }
+    
+    fn from_mime(mime: String) -> Self {
+        match mime.as_str() {
+            "text/plain" => ClipboardFormat.PlainText,
+            "text/rtf" => ClipboardFormat.RichText,
+            "text/html" => ClipboardFormat.Html,
+            "image/png" | "image/jpeg" | "image/gif" => ClipboardFormat.Image,
+            "text/uri-list" => ClipboardFormat.Files,
+            _ => ClipboardFormat.Custom(mime)
+        }
+    }
+}
+
+// =============================================================================
+// Clipboard Content
+// =============================================================================
+
+enum ClipboardContent {
+    Text(String),
+    RichText { text: String, rtf: String },
+    Html { text: String, html: String },
+    ImageData(Image),
+    FileList([String]),
+    Binary { format: String, data: [Byte] },
+    Empty
+    
+    fn is_empty() -> Bool {
+        match self {
+            .Empty => true,
+            .Text(s) => s.is_empty(),
+            .FileList(files) => files.is_empty(),
+            _ => false
+        }
+    }
+    
+    fn as_text() -> Option<String> {
+        match self {
+            .Text(s) => Some(s),
+            .RichText { text, .. } => Some(text),
+            .Html { text, .. } => Some(text),
+            _ => None
+        }
+    }
+    
+    fn as_image() -> Option<Image> {
+        match self {
+            .ImageData(img) => Some(img),
+            _ => None
+        }
+    }
+    
+    fn as_files() -> Option<[String]> {
+        match self {
+            .FileList(files) => Some(files),
+            _ => None
+        }
+    }
+}
+
+// =============================================================================
+// Clipboard Item
+// =============================================================================
+
+struct ClipboardItem {
+    content: ClipboardContent
+    format: ClipboardFormat
+    timestamp: Instant
+    source: Option<String>
+    metadata: Map<String, String>
+}
+
+impl ClipboardItem {
+    fn new(content: ClipboardContent) -> Self {
+        let format = match content {
+            ClipboardContent.Text(_) => ClipboardFormat.PlainText,
+            ClipboardContent.RichText { .. } => ClipboardFormat.RichText,
+            ClipboardContent.Html { .. } => ClipboardFormat.Html,
+            ClipboardContent.ImageData(_) => ClipboardFormat.Image,
+            ClipboardContent.FileList(_) => ClipboardFormat.Files,
+            ClipboardContent.Binary { format, .. } => ClipboardFormat.Custom(format),
+            ClipboardContent.Empty => ClipboardFormat.PlainText
+        };
+        
+        ClipboardItem {
+            content: content,
+            format: format,
+            timestamp: Instant.now(),
+            source: None,
+            metadata: Map.empty()
+        }
+    }
+    
+    fn text(s: String) -> Self {
+        ClipboardItem.new(ClipboardContent.Text(s))
+    }
+    
+    fn image(img: Image) -> Self {
+        ClipboardItem.new(ClipboardContent.ImageData(img))
+    }
+    
+    fn files(paths: [String]) -> Self {
+        ClipboardItem.new(ClipboardContent.FileList(paths))
+    }
+    
+    fn html(text: String, html: String) -> Self {
+        ClipboardItem.new(ClipboardContent.Html { text: text, html: html })
+    }
+    
+    fn rich_text(text: String, rtf: String) -> Self {
+        ClipboardItem.new(ClipboardContent.RichText { text: text, rtf: rtf })
+    }
+    
+    fn source(app: String) -> Self { self.source = Some(app); self }
+    fn meta(key: String, value: String) -> Self { self.metadata.set(key, value); self }
+    
+    fn age() -> Duration {
+        Instant.now().duration_since(self.timestamp)
+    }
+}
+
+// =============================================================================
+// Clipboard Manager Actor
+// =============================================================================
+
+actor Clipboard {
+    state current: Option<ClipboardItem>
+    state history: [ClipboardItem]
+    state max_history: Int
+    state watchers: [Box<dyn ClipboardWatcher>]
+    state settings: ClipboardSettings
+    
+    fn new() -> Self {
+        Clipboard {
+            current: None,
+            history: [],
+            max_history: 100,
+            watchers: [],
+            settings: ClipboardSettings.default()
+        }
+    }
+    
+    fn with_settings(settings: ClipboardSettings) -> Self {
+        let mut cb = Clipboard.new();
+        cb.settings = settings;
+        cb.max_history = settings.max_history;
+        cb
+    }
+    
+    // --- Write Operations ---
+    
+    on copy(content: ClipboardContent) -> Result<(), ClipboardError> {
+        let item = ClipboardItem.new(content);
+        self.set_item(item)
+    }
+    
+    on copy_text(text: String) -> Result<(), ClipboardError> {
+        if text.is_empty() && !self.settings.allow_empty {
+            return Err(ClipboardError.EmptyContent)
+        }
+        self.copy(ClipboardContent.Text(text))
+    }
+    
+    on copy_image(image: Image) -> Result<(), ClipboardError> {
+        self.copy(ClipboardContent.ImageData(image))
+    }
+    
+    on copy_files(paths: [String]) -> Result<(), ClipboardError> {
+        if paths.is_empty() {
+            return Err(ClipboardError.EmptyContent)
+        }
+        self.copy(ClipboardContent.FileList(paths))
+    }
+    
+    on copy_html(text: String, html: String) -> Result<(), ClipboardError> {
+        self.copy(ClipboardContent.Html { text: text, html: html })
+    }
+    
+    on set_item(item: ClipboardItem) -> Result<(), ClipboardError> {
+        // Store in history if enabled
+        if self.settings.history_enabled {
+            if let Some(prev) = self.current.take() {
+                self.history.insert(0, prev);
+                if self.history.len() > self.max_history {
+                    self.history.pop();
+                }
+            }
+        }
+        
+        // Set current
+        self.current = Some(item.clone());
+        
+        // Write to system clipboard
+        @native("clipboard_write", item.content.clone())?;
+        
+        // Notify watchers
+        for watcher in self.watchers.iter() {
+            watcher.on_change(item.clone());
+        }
+        
+        Ok(())
+    }
+    
+    // --- Read Operations ---
+    
+    fn read() -> Result<ClipboardContent, ClipboardError> {
+        @native("clipboard_read")
+    }
+    
+    fn read_text() -> Result<String, ClipboardError> {
+        match self.read()? {
+            ClipboardContent.Text(s) => Ok(s),
+            ClipboardContent.RichText { text, .. } => Ok(text),
+            ClipboardContent.Html { text, .. } => Ok(text),
+            _ => Err(ClipboardError.FormatMismatch("text"))
+        }
+    }
+    
+    fn read_image() -> Result<Image, ClipboardError> {
+        match self.read()? {
+            ClipboardContent.ImageData(img) => Ok(img),
+            _ => Err(ClipboardError.FormatMismatch("image"))
+        }
+    }
+    
+    fn read_files() -> Result<[String], ClipboardError> {
+        match self.read()? {
+            ClipboardContent.FileList(files) => Ok(files),
+            _ => Err(ClipboardError.FormatMismatch("files"))
+        }
+    }
+    
+    fn peek() -> Option<ClipboardItem> {
+        self.current.clone()
+    }
+    
+    fn has_text() -> Bool {
+        self.available_formats().contains(ClipboardFormat.PlainText)
+    }
+    
+    fn has_image() -> Bool {
+        self.available_formats().contains(ClipboardFormat.Image)
+    }
+    
+    fn has_files() -> Bool {
+        self.available_formats().contains(ClipboardFormat.Files)
+    }
+    
+    fn available_formats() -> [ClipboardFormat] {
+        @native("clipboard_formats")
+    }
+    
+    fn is_empty() -> Bool {
+        match self.read() {
+            Ok(content) => content.is_empty(),
+            Err(_) => true
+        }
+    }
+    
+    // --- History Operations ---
+    
+    fn history() -> [ClipboardItem] {
+        self.history.clone()
+    }
+    
+    fn history_item(index: Int) -> Option<ClipboardItem> {
+        if index >= 0 && index < self.history.len() {
+            Some(self.history[index].clone())
+        } else {
+            None
+        }
+    }
+    
+    on restore_from_history(index: Int) -> Result<(), ClipboardError> {
+        match self.history_item(index) {
+            Some(item) => self.set_item(item),
+            None => Err(ClipboardError.HistoryIndexOutOfBounds(index))
+        }
+    }
+    
+    on clear_history() {
+        self.history.clear()
+    }
+    
+    fn search_history(query: String) -> [ClipboardItem] {
+        self.history.iter()
+            .filter(|item| {
+                match item.content.as_text() {
+                    Some(text) => text.to_lowercase().contains(query.to_lowercase()),
+                    None => false
+                }
+            })
+            .collect()
+    }
+    
+    // --- Clear Operations ---
+    
+    on clear() -> Result<(), ClipboardError> {
+        self.current = None;
+        @native("clipboard_clear")
+    }
+    
+    // --- Watcher Operations ---
+    
+    on watch(watcher: Box<dyn ClipboardWatcher>) {
+        self.watchers.push(watcher)
+    }
+    
+    on unwatch(watcher_id: String) {
+        self.watchers.retain(|w| w.id() != watcher_id)
+    }
+    
+    // --- Sync Operations ---
+    
+    on sync_from_system() -> Result<(), ClipboardError> {
+        let content = self.read()?;
+        let item = ClipboardItem.new(content);
+        self.current = Some(item);
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Clipboard Watcher Trait
+// =============================================================================
+
+trait ClipboardWatcher {
+    fn id() -> String
+    fn on_change(item: ClipboardItem)
+    fn on_clear()
+}
+
+// =============================================================================
+// Clipboard Monitor
+// =============================================================================
+
+actor ClipboardMonitor {
+    state clipboard: Clipboard
+    state poll_interval: Duration
+    state last_content_hash: Option<Int>
+    state running: Bool
+    state callbacks: [fn(ClipboardItem)]
+    
+    fn new(clipboard: Clipboard) -> Self {
+        ClipboardMonitor {
+            clipboard: clipboard,
+            poll_interval: Duration.from_millis(500),
+            last_content_hash: None,
+            running: false,
+            callbacks: []
+        }
+    }
+    
+    fn poll_interval(duration: Duration) -> Self {
+        self.poll_interval = duration; self
+    }
+    
+    on start() {
+        self.running = true;
+        self.poll_loop()
+    }
+    
+    on stop() {
+        self.running = false
+    }
+    
+    on on_change(callback: fn(ClipboardItem)) {
+        self.callbacks.push(callback)
+    }
+    
+    fn poll_loop() {
+        while self.running {
+            if let Ok(content) = self.clipboard.read() {
+                let hash = self.hash_content(content.clone());
+                if self.last_content_hash != Some(hash) {
+                    self.last_content_hash = Some(hash);
+                    let item = ClipboardItem.new(content);
+                    for callback in self.callbacks.iter() {
+                        callback(item.clone());
+                    }
+                }
+            }
+            sleep(self.poll_interval);
+        }
+    }
+    
+    fn hash_content(content: ClipboardContent) -> Int {
+        match content {
+            ClipboardContent.Text(s) => s.hash(),
+            ClipboardContent.ImageData(img) => img.width * 10000 + img.height,
+            ClipboardContent.FileList(files) => files.join(",").hash(),
+            _ => 0
+        }
+    }
+}
+
+// =============================================================================
+// Clipboard Settings
+// =============================================================================
+
+struct ClipboardSettings {
+    history_enabled: Bool
+    max_history: Int
+    allow_empty: Bool
+    auto_trim_whitespace: Bool
+    max_text_length: Option<Int>
+    excluded_apps: [String]
+    sensitive_mode: Bool
+}
+
+impl ClipboardSettings {
+    fn default() -> Self {
+        ClipboardSettings {
+            history_enabled: true,
+            max_history: 100,
+            allow_empty: false,
+            auto_trim_whitespace: false,
+            max_text_length: None,
+            excluded_apps: [],
+            sensitive_mode: false
+        }
+    }
+    
+    fn no_history() -> Self { self.history_enabled = false; self }
+    fn max_history(n: Int) -> Self { self.max_history = n; self }
+    fn allow_empty() -> Self { self.allow_empty = true; self }
+    fn trim_whitespace() -> Self { self.auto_trim_whitespace = true; self }
+    fn max_text_length(n: Int) -> Self { self.max_text_length = Some(n); self }
+    fn exclude_app(app: String) -> Self { self.excluded_apps.push(app); self }
+    fn sensitive() -> Self { self.sensitive_mode = true; self }
+}
+
+// =============================================================================
+// Clipboard Errors
+// =============================================================================
+
+enum ClipboardError {
+    AccessDenied,
+    EmptyContent,
+    FormatMismatch(String),
+    SystemError(String),
+    HistoryIndexOutOfBounds(Int),
+    ContentTooLarge,
+    Timeout,
+    Locked
+    
+    fn message() -> String {
+        match self {
+            .AccessDenied => "Clipboard access denied",
+            .EmptyContent => "Cannot copy empty content",
+            .FormatMismatch(fmt) => f"Expected format: {fmt}",
+            .SystemError(msg) => f"System error: {msg}",
+            .HistoryIndexOutOfBounds(idx) => f"History index out of bounds: {idx}",
+            .ContentTooLarge => "Content exceeds maximum size",
+            .Timeout => "Clipboard operation timed out",
+            .Locked => "Clipboard is locked by another application"
+        }
+    }
+}
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+/// Global clipboard instance
+static CLIPBOARD: Clipboard = Clipboard.new()
+
+/// Copy text to clipboard
+fn copy(text: String) -> Result<(), ClipboardError> {
+    CLIPBOARD.copy_text(text)
+}
+
+/// Paste text from clipboard
+fn paste() -> Result<String, ClipboardError> {
+    CLIPBOARD.read_text()
+}
+
+/// Copy image to clipboard
+fn copy_image(image: Image) -> Result<(), ClipboardError> {
+    CLIPBOARD.copy_image(image)
+}
+
+/// Paste image from clipboard
+fn paste_image() -> Result<Image, ClipboardError> {
+    CLIPBOARD.read_image()
+}
+
+/// Copy files to clipboard
+fn copy_files(paths: [String]) -> Result<(), ClipboardError> {
+    CLIPBOARD.copy_files(paths)
+}
+
+/// Paste files from clipboard
+fn paste_files() -> Result<[String], ClipboardError> {
+    CLIPBOARD.read_files()
+}
+
+/// Clear clipboard
+fn clear() -> Result<(), ClipboardError> {
+    CLIPBOARD.clear()
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "clipboard item creation" {
+    let item = ClipboardItem.text("Hello, World!");
+    assert_eq(item.format, ClipboardFormat.PlainText)?
+    assert_eq(item.content.as_text(), Some("Hello, World!"))?
+}
+
+test "clipboard content types" {
+    let text = ClipboardContent.Text("test");
+    assert(!text.is_empty())?
+    assert_eq(text.as_text(), Some("test"))?
+    
+    let empty = ClipboardContent.Empty;
+    assert(empty.is_empty())?
+}
+
+test "clipboard format mime types" {
+    assert_eq(ClipboardFormat.PlainText.mime_type(), "text/plain")?
+    assert_eq(ClipboardFormat.Html.mime_type(), "text/html")?
+    assert_eq(ClipboardFormat.Image.mime_type(), "image/png")?
+}
+
+test "clipboard settings" {
+    let settings = ClipboardSettings.default()
+        .max_history(50)
+        .trim_whitespace()
+        .sensitive();
+    
+    assert_eq(settings.max_history, 50)?
+    assert(settings.auto_trim_whitespace)?
+    assert(settings.sensitive_mode)?
+}
+
+test "html content" {
+    let item = ClipboardItem.html("Hello", "<b>Hello</b>");
+    assert_eq(item.format, ClipboardFormat.Html)?
+    assert_eq(item.content.as_text(), Some("Hello"))?
+}

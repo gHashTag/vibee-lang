@@ -1,0 +1,681 @@
+// =============================================================================
+// Vibee OS — Runtime Core Module
+// Runtime system, scheduler, memory management, and execution environment
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Runtime Configuration
+// -----------------------------------------------------------------------------
+
+/// Runtime configuration
+struct RuntimeConfig {
+    /// Number of worker threads (0 = auto-detect)
+    num_threads: Int
+    /// Stack size per thread in bytes
+    stack_size: Int
+    /// Enable work stealing
+    work_stealing: Bool
+    /// GC configuration
+    gc_config: GCConfig
+    /// Panic handler
+    panic_handler: Option<fn(PanicInfo)>
+    /// Enable debug mode
+    debug_mode: Bool
+    /// Max recursion depth
+    max_recursion: Int
+    
+    fn default() -> Self {
+        RuntimeConfig {
+            num_threads: 0,
+            stack_size: 2 * 1024 * 1024,  // 2MB
+            work_stealing: true,
+            gc_config: GCConfig.default(),
+            panic_handler: None,
+            debug_mode: false,
+            max_recursion: 1000
+        }
+    }
+    
+    fn with_threads(n: Int) -> Self { var c = Self.default(); c.num_threads = n; c }
+    fn single_threaded() -> Self { Self.with_threads(1) }
+}
+
+/// GC configuration
+struct GCConfig {
+    heap_size: Int
+    threshold: Int
+    concurrent: Bool
+    incremental: Bool
+    
+    fn default() -> Self {
+        GCConfig {
+            heap_size: 256 * 1024 * 1024,  // 256MB
+            threshold: 1024 * 1024,         // 1MB
+            concurrent: true,
+            incremental: true
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Runtime System
+// -----------------------------------------------------------------------------
+
+/// Main runtime system
+actor Runtime {
+    state config: RuntimeConfig
+    state scheduler: Scheduler
+    state gc: GarbageCollector
+    state threads: [Thread]
+    state running: Bool
+    state stats: RuntimeStats
+    
+    /// Initialize runtime with default config
+    fn new() -> Self {
+        Self.with_config(RuntimeConfig.default())
+    }
+    
+    /// Initialize runtime with custom config
+    fn with_config(config: RuntimeConfig) -> Self {
+        let num_threads = if config.num_threads == 0 {
+            @native("cpu_count")
+        } else {
+            config.num_threads
+        }
+        
+        Runtime {
+            config: config,
+            scheduler: Scheduler.new(num_threads, config.work_stealing),
+            gc: GarbageCollector.new(config.gc_config),
+            threads: [],
+            running: false,
+            stats: RuntimeStats.new()
+        }
+    }
+    
+    /// Start the runtime
+    fn start() {
+        if self.running { return }
+        self.running = true
+        
+        // Initialize threads
+        let num = if self.config.num_threads == 0 { @native("cpu_count") } else { self.config.num_threads }
+        for i in 0..num {
+            let thread = Thread.new(i, self.config.stack_size)
+            thread.start(|| self.scheduler.run_worker(i))
+            self.threads.push(thread)
+        }
+        
+        // Start GC
+        self.gc.start()
+    }
+    
+    /// Shutdown the runtime
+    fn shutdown() {
+        if !self.running { return }
+        self.running = false
+        
+        self.scheduler.shutdown()
+        for thread in self.threads { thread.join() }
+        self.gc.stop()
+        self.threads.clear()
+    }
+    
+    /// Spawn a new task
+    fn spawn<T>(f: fn() -> T) -> TaskHandle<T> {
+        let task = Task.new(f)
+        self.scheduler.schedule(task)
+        TaskHandle { task: task }
+    }
+    
+    /// Spawn with priority
+    fn spawn_with_priority<T>(priority: Priority, f: fn() -> T) -> TaskHandle<T> {
+        let task = Task.with_priority(priority, f)
+        self.scheduler.schedule(task)
+        TaskHandle { task: task }
+    }
+    
+    /// Block on a future
+    fn block_on<T>(future: Future<T>) -> T {
+        while future.is_pending() {
+            self.scheduler.tick()
+        }
+        future.await().unwrap()
+    }
+    
+    /// Get runtime statistics
+    fn stats() -> RuntimeStats { self.stats.clone() }
+    
+    /// Force garbage collection
+    fn gc_collect() { self.gc.collect() }
+    
+    /// Get current thread ID
+    fn current_thread_id() -> Int { @native("current_thread_id") }
+    
+    /// Yield current task
+    fn yield_now() { @native("yield") }
+}
+
+/// Runtime statistics
+struct RuntimeStats {
+    tasks_spawned: Int
+    tasks_completed: Int
+    gc_collections: Int
+    gc_pause_time_ms: Int
+    memory_allocated: Int
+    memory_freed: Int
+    uptime_ms: Int64
+    
+    fn new() -> Self {
+        RuntimeStats {
+            tasks_spawned: 0, tasks_completed: 0,
+            gc_collections: 0, gc_pause_time_ms: 0,
+            memory_allocated: 0, memory_freed: 0,
+            uptime_ms: 0
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Scheduler
+// -----------------------------------------------------------------------------
+
+/// Task scheduler
+actor Scheduler {
+    state workers: [WorkerQueue]
+    state global_queue: TaskQueue
+    state work_stealing: Bool
+    state running: Bool
+    
+    fn new(num_workers: Int, work_stealing: Bool) -> Self {
+        var workers = []
+        for _ in 0..num_workers {
+            workers.push(WorkerQueue.new())
+        }
+        Scheduler {
+            workers: workers,
+            global_queue: TaskQueue.new(),
+            work_stealing: work_stealing,
+            running: false
+        }
+    }
+    
+    /// Schedule a task
+    fn schedule(task: Task) {
+        // Try to schedule on current worker first
+        let worker_id = @native("current_worker_id")
+        if worker_id >= 0 && worker_id < self.workers.len() {
+            self.workers[worker_id].push(task)
+        } else {
+            self.global_queue.push(task)
+        }
+    }
+    
+    /// Run worker loop
+    fn run_worker(worker_id: Int) {
+        while self.running {
+            // Try local queue first
+            if let Some(task) = self.workers[worker_id].pop() {
+                task.run()
+                continue
+            }
+            
+            // Try global queue
+            if let Some(task) = self.global_queue.pop() {
+                task.run()
+                continue
+            }
+            
+            // Try work stealing
+            if self.work_stealing {
+                if let Some(task) = self.steal_work(worker_id) {
+                    task.run()
+                    continue
+                }
+            }
+            
+            // No work, park thread
+            @native("thread_park")
+        }
+    }
+    
+    /// Steal work from another worker
+    fn steal_work(worker_id: Int) -> Option<Task> {
+        for i in 0..self.workers.len() {
+            if i != worker_id {
+                if let Some(task) = self.workers[i].steal() {
+                    return Some(task)
+                }
+            }
+        }
+        None
+    }
+    
+    /// Single scheduler tick
+    fn tick() {
+        if let Some(task) = self.global_queue.pop() {
+            task.run()
+        }
+    }
+    
+    /// Shutdown scheduler
+    fn shutdown() {
+        self.running = false
+        // Wake all parked threads
+        for _ in 0..self.workers.len() {
+            @native("thread_unpark_one")
+        }
+    }
+}
+
+/// Worker-local task queue
+struct WorkerQueue {
+    tasks: [Task]
+    
+    fn new() -> Self { WorkerQueue { tasks: [] } }
+    fn push(task: Task) { self.tasks.push(task) }
+    fn pop() -> Option<Task> { if self.tasks.is_empty() { None } else { Some(self.tasks.pop().unwrap()) } }
+    fn steal() -> Option<Task> { if self.tasks.is_empty() { None } else { Some(self.tasks.remove(0)) } }
+    fn is_empty() -> Bool { self.tasks.is_empty() }
+}
+
+/// Global task queue
+struct TaskQueue {
+    tasks: [Task]
+    lock: Mutex
+    
+    fn new() -> Self { TaskQueue { tasks: [], lock: Mutex.new() } }
+    
+    fn push(task: Task) {
+        self.lock.lock()
+        self.tasks.push(task)
+        self.lock.unlock()
+    }
+    
+    fn pop() -> Option<Task> {
+        self.lock.lock()
+        let result = if self.tasks.is_empty() { None } else { Some(self.tasks.remove(0)) }
+        self.lock.unlock()
+        result
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Task System
+// -----------------------------------------------------------------------------
+
+/// Task priority
+enum Priority {
+    Low,
+    Normal,
+    High,
+    Critical
+}
+
+/// Task state
+enum TaskState {
+    Pending,
+    Running,
+    Completed,
+    Cancelled,
+    Failed(Error)
+}
+
+/// Async task
+struct Task {
+    id: Int
+    priority: Priority
+    state: TaskState
+    func: fn()
+    result: Option<Box<dyn Any>>
+    
+    fn new<T>(f: fn() -> T) -> Self {
+        Task {
+            id: @native("next_task_id"),
+            priority: Priority.Normal,
+            state: TaskState.Pending,
+            func: || { let r = f(); self.result = Some(Box.new(r)) },
+            result: None
+        }
+    }
+    
+    fn with_priority<T>(priority: Priority, f: fn() -> T) -> Self {
+        var task = Self.new(f)
+        task.priority = priority
+        task
+    }
+    
+    fn run() {
+        self.state = TaskState.Running
+        (self.func)()
+        self.state = TaskState.Completed
+    }
+    
+    fn cancel() { self.state = TaskState.Cancelled }
+    fn is_completed() -> Bool { matches!(self.state, TaskState.Completed) }
+    fn is_cancelled() -> Bool { matches!(self.state, TaskState.Cancelled) }
+}
+
+/// Handle to a spawned task
+struct TaskHandle<T> {
+    task: Task
+    
+    fn await() -> Result<T, Error> {
+        while !self.task.is_completed() && !self.task.is_cancelled() {
+            @native("yield")
+        }
+        match self.task.state {
+            TaskState.Completed => Ok(*self.task.result.unwrap().downcast::<T>().unwrap()),
+            TaskState.Cancelled => Err(Error.Cancelled),
+            TaskState.Failed(e) => Err(e),
+            _ => Err(Error.Unknown)
+        }
+    }
+    
+    fn cancel() { self.task.cancel() }
+    fn is_done() -> Bool { self.task.is_completed() || self.task.is_cancelled() }
+}
+
+// -----------------------------------------------------------------------------
+// Thread Management
+// -----------------------------------------------------------------------------
+
+/// Native thread wrapper
+struct Thread {
+    id: Int
+    handle: @native("ThreadHandle")
+    stack_size: Int
+    
+    fn new(id: Int, stack_size: Int) -> Self {
+        Thread { id: id, handle: @native("null_handle"), stack_size: stack_size }
+    }
+    
+    fn start(f: fn()) {
+        self.handle = @native("thread_spawn", f, self.stack_size)
+    }
+    
+    fn join() { @native("thread_join", self.handle) }
+    fn detach() { @native("thread_detach", self.handle) }
+    
+    fn current() -> Self { Thread { id: @native("current_thread_id"), handle: @native("current_thread_handle"), stack_size: 0 } }
+    fn sleep(ms: Int64) { @native("thread_sleep", ms) }
+    fn yield_now() { @native("yield") }
+}
+
+/// Thread-local storage
+struct ThreadLocal<T> {
+    key: @native("TlsKey")
+    init: fn() -> T
+    
+    fn new(init: fn() -> T) -> Self {
+        ThreadLocal { key: @native("tls_create"), init: init }
+    }
+    
+    fn get() -> T {
+        match @native("tls_get", self.key) {
+            Some(v) => v,
+            None => {
+                let v = (self.init)()
+                @native("tls_set", self.key, v)
+                v
+            }
+        }
+    }
+    
+    fn set(value: T) { @native("tls_set", self.key, value) }
+}
+
+// -----------------------------------------------------------------------------
+// Garbage Collector
+// -----------------------------------------------------------------------------
+
+/// Garbage collector
+actor GarbageCollector {
+    state config: GCConfig
+    state running: Bool
+    state stats: GCStats
+    state roots: [*()]
+    
+    fn new(config: GCConfig) -> Self {
+        GarbageCollector {
+            config: config,
+            running: false,
+            stats: GCStats.new(),
+            roots: []
+        }
+    }
+    
+    fn start() {
+        self.running = true
+        if self.config.concurrent {
+            spawn { self.gc_loop() }
+        }
+    }
+    
+    fn stop() { self.running = false }
+    
+    fn gc_loop() {
+        while self.running {
+            Thread.sleep(100)  // Check every 100ms
+            if self.should_collect() {
+                self.collect()
+            }
+        }
+    }
+    
+    fn should_collect() -> Bool {
+        @native("heap_used") > self.config.threshold
+    }
+    
+    fn collect() {
+        let start = @native("monotonic_time")
+        
+        // Mark phase
+        self.mark()
+        
+        // Sweep phase
+        self.sweep()
+        
+        let elapsed = @native("monotonic_time") - start
+        self.stats.collections += 1
+        self.stats.total_pause_ms += elapsed
+    }
+    
+    fn mark() {
+        // Mark all reachable objects from roots
+        for root in self.roots {
+            self.mark_object(root)
+        }
+    }
+    
+    fn mark_object(ptr: *()) {
+        @native("gc_mark", ptr)
+    }
+    
+    fn sweep() {
+        @native("gc_sweep")
+    }
+    
+    fn add_root(ptr: *()) { self.roots.push(ptr) }
+    fn remove_root(ptr: *()) { self.roots.retain(|p| p != ptr) }
+    
+    fn stats() -> GCStats { self.stats.clone() }
+}
+
+/// GC statistics
+struct GCStats {
+    collections: Int
+    total_pause_ms: Int64
+    bytes_allocated: Int
+    bytes_freed: Int
+    
+    fn new() -> Self { GCStats { collections: 0, total_pause_ms: 0, bytes_allocated: 0, bytes_freed: 0 } }
+}
+
+// -----------------------------------------------------------------------------
+// Memory Allocator
+// -----------------------------------------------------------------------------
+
+/// Memory allocator interface
+trait Allocator {
+    fn allocate(size: Int, align: Int) -> *()
+    fn deallocate(ptr: *(), size: Int, align: Int)
+    fn reallocate(ptr: *(), old_size: Int, new_size: Int, align: Int) -> *()
+}
+
+/// Global allocator
+struct GlobalAllocator {}
+
+impl Allocator for GlobalAllocator {
+    fn allocate(size: Int, align: Int) -> *() { @native("alloc", size, align) }
+    fn deallocate(ptr: *(), size: Int, align: Int) { @native("dealloc", ptr, size, align) }
+    fn reallocate(ptr: *(), old_size: Int, new_size: Int, align: Int) -> *() {
+        @native("realloc", ptr, old_size, new_size, align)
+    }
+}
+
+/// Arena allocator (bump allocator)
+struct ArenaAllocator {
+    buffer: [UInt8]
+    offset: Int
+    
+    fn new(size: Int) -> Self {
+        ArenaAllocator { buffer: @native("alloc_bytes", size), offset: 0 }
+    }
+    
+    fn allocate(size: Int, align: Int) -> *() {
+        let aligned_offset = (self.offset + align - 1) & !(align - 1)
+        if aligned_offset + size > self.buffer.len() { panic("Arena out of memory") }
+        let ptr = &self.buffer[aligned_offset]
+        self.offset = aligned_offset + size
+        ptr
+    }
+    
+    fn reset() { self.offset = 0 }
+}
+
+// -----------------------------------------------------------------------------
+// Panic Handling
+// -----------------------------------------------------------------------------
+
+/// Panic information
+struct PanicInfo {
+    message: String
+    location: SourceLocation
+    backtrace: Backtrace
+}
+
+/// Source location
+struct SourceLocation {
+    file: String
+    line: Int
+    column: Int
+}
+
+/// Backtrace
+struct Backtrace {
+    frames: [StackFrame]
+    
+    fn capture() -> Self { Backtrace { frames: @native("capture_backtrace") } }
+    fn print() { for frame in self.frames { println!("  at {}", frame) } }
+}
+
+/// Stack frame
+struct StackFrame {
+    function: String
+    file: Option<String>
+    line: Option<Int>
+}
+
+impl Display for StackFrame {
+    fn fmt(f: Formatter) -> Result<(), FormatError> {
+        f.write(self.function)
+        if let Some(file) = self.file {
+            f.write(format!(" ({}:{})", file, self.line.unwrap_or(0)))
+        }
+        Ok(())
+    }
+}
+
+/// Set panic hook
+fn set_panic_hook(hook: fn(PanicInfo)) {
+    @native("set_panic_hook", hook)
+}
+
+/// Default panic handler
+fn default_panic_handler(info: PanicInfo) {
+    eprintln!("PANIC: {}", info.message)
+    eprintln!("  at {}:{}:{}", info.location.file, info.location.line, info.location.column)
+    info.backtrace.print()
+    @native("abort")
+}
+
+// -----------------------------------------------------------------------------
+// Error Types
+// -----------------------------------------------------------------------------
+
+/// Runtime error
+enum Error {
+    OutOfMemory,
+    StackOverflow,
+    Cancelled,
+    Timeout,
+    Unknown,
+    Custom(String)
+}
+
+impl Display for Error {
+    fn fmt(f: Formatter) -> Result<(), FormatError> {
+        match self {
+            Error.OutOfMemory => f.write("Out of memory"),
+            Error.StackOverflow => f.write("Stack overflow"),
+            Error.Cancelled => f.write("Operation cancelled"),
+            Error.Timeout => f.write("Operation timed out"),
+            Error.Unknown => f.write("Unknown error"),
+            Error.Custom(msg) => f.write(msg)
+        }
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Global Runtime Access
+// -----------------------------------------------------------------------------
+
+/// Global runtime instance
+static RUNTIME: Lazy<Runtime> = Lazy.new(|| Runtime.new())
+
+/// Get global runtime
+fn runtime() -> Runtime { RUNTIME.get() }
+
+/// Spawn task on global runtime
+fn spawn<T>(f: fn() -> T) -> TaskHandle<T> { runtime().spawn(f) }
+
+/// Block on future using global runtime
+fn block_on<T>(future: Future<T>) -> T { runtime().block_on(future) }
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "runtime config" {
+    let config = RuntimeConfig.default()
+    assert_eq(config.work_stealing, true)?
+    assert(config.stack_size > 0)?
+}
+
+test "spawn task" {
+    let handle = spawn(|| 42)
+    assert_eq(handle.await()?, 42)?
+}
+
+test "priority" {
+    let handle = runtime().spawn_with_priority(Priority.High, || "high priority")
+    assert_eq(handle.await()?, "high priority")?
+}
+
+test "thread local" {
+    let tls = ThreadLocal.new(|| 0)
+    tls.set(42)
+    assert_eq(tls.get(), 42)?
+}
