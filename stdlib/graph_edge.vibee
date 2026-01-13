@@ -1,0 +1,506 @@
+// =============================================================================
+// Vibee OS — Graph Edge Module
+// Edge structures and operations for graphs
+// =============================================================================
+
+use graph_node.{NodeId}
+
+/// Edge identifier type
+type EdgeId = Int
+
+/// Generic directed edge
+struct Edge<W> {
+    id: EdgeId
+    source: NodeId
+    target: NodeId
+    weight: W
+    metadata: EdgeMetadata
+    
+    fn new(id: EdgeId, source: NodeId, target: NodeId, weight: W) -> Self {
+        Edge {
+            id: id,
+            source: source,
+            target: target,
+            weight: weight,
+            metadata: EdgeMetadata.default()
+        }
+    }
+    
+    fn with_metadata(id: EdgeId, source: NodeId, target: NodeId, weight: W, metadata: EdgeMetadata) -> Self {
+        Edge { id: id, source: source, target: target, weight: weight, metadata: metadata }
+    }
+    
+    fn id() -> EdgeId { self.id }
+    fn source() -> NodeId { self.source }
+    fn target() -> NodeId { self.target }
+    fn weight() -> W { self.weight.clone() }
+    fn weight_ref() -> &W { &self.weight }
+    fn set_weight(weight: W) { self.weight = weight }
+    
+    fn endpoints() -> (NodeId, NodeId) { (self.source, self.target) }
+    
+    fn connects(a: NodeId, b: NodeId) -> Bool {
+        (self.source == a && self.target == b) || (self.source == b && self.target == a)
+    }
+    
+    fn has_endpoint(node: NodeId) -> Bool {
+        self.source == node || self.target == node
+    }
+    
+    fn other_endpoint(node: NodeId) -> Option<NodeId> {
+        if self.source == node { Some(self.target) }
+        else if self.target == node { Some(self.source) }
+        else { None }
+    }
+    
+    fn reverse() -> Self {
+        Edge.with_metadata(self.id, self.target, self.source, self.weight.clone(), self.metadata.clone())
+    }
+    
+    fn is_self_loop() -> Bool { self.source == self.target }
+}
+
+/// Edge metadata for additional properties
+struct EdgeMetadata {
+    label: Option<String>
+    color: Option<String>
+    style: EdgeStyle
+    attributes: Map<String, String>
+    bidirectional: Bool
+    capacity: Option<Float>
+    flow: Option<Float>
+    
+    fn default() -> Self {
+        EdgeMetadata {
+            label: None,
+            color: None,
+            style: EdgeStyle.Solid,
+            attributes: Map.empty(),
+            bidirectional: false,
+            capacity: None,
+            flow: None
+        }
+    }
+    
+    fn with_label(label: String) -> Self {
+        var m = Self.default()
+        m.label = Some(label)
+        m
+    }
+    
+    fn with_capacity(capacity: Float) -> Self {
+        var m = Self.default()
+        m.capacity = Some(capacity)
+        m.flow = Some(0.0)
+        m
+    }
+    
+    fn set_attribute(key: String, value: String) {
+        self.attributes.set(key, value)
+    }
+    
+    fn get_attribute(key: String) -> Option<String> {
+        self.attributes.get(key).cloned()
+    }
+    
+    fn residual_capacity() -> Float {
+        match (self.capacity, self.flow) {
+            (Some(cap), Some(f)) => cap - f,
+            _ => Float.INFINITY
+        }
+    }
+}
+
+/// Edge visual style
+enum EdgeStyle {
+    Solid
+    Dashed
+    Dotted
+    Bold
+    Invisible
+}
+
+/// Edge direction type
+enum EdgeDirection {
+    Outgoing
+    Incoming
+    Both
+}
+
+/// Unweighted edge (weight = 1)
+struct UnweightedEdge {
+    id: EdgeId
+    source: NodeId
+    target: NodeId
+    
+    fn new(id: EdgeId, source: NodeId, target: NodeId) -> Self {
+        UnweightedEdge { id: id, source: source, target: target }
+    }
+    
+    fn to_weighted() -> Edge<Int> {
+        Edge.new(self.id, self.source, self.target, 1)
+    }
+    
+    fn source() -> NodeId { self.source }
+    fn target() -> NodeId { self.target }
+    fn endpoints() -> (NodeId, NodeId) { (self.source, self.target) }
+}
+
+/// Labeled edge with string label
+struct LabeledEdge<W> {
+    inner: Edge<W>
+    label: String
+    
+    fn new(id: EdgeId, source: NodeId, target: NodeId, weight: W, label: String) -> Self {
+        var edge = Edge.new(id, source, target, weight)
+        edge.metadata.label = Some(label.clone())
+        LabeledEdge { inner: edge, label: label }
+    }
+    
+    fn label() -> String { self.label.clone() }
+    fn source() -> NodeId { self.inner.source() }
+    fn target() -> NodeId { self.inner.target() }
+    fn weight() -> W { self.inner.weight() }
+}
+
+/// Edge collection for efficient operations
+struct EdgeCollection<W> {
+    edges: Map<EdgeId, Edge<W>>
+    by_source: Map<NodeId, [EdgeId]>
+    by_target: Map<NodeId, [EdgeId]>
+    next_id: EdgeId
+    
+    fn new() -> Self {
+        EdgeCollection {
+            edges: Map.empty(),
+            by_source: Map.empty(),
+            by_target: Map.empty(),
+            next_id: 0
+        }
+    }
+    
+    fn add(source: NodeId, target: NodeId, weight: W) -> EdgeId {
+        let id = self.next_id
+        self.next_id += 1
+        let edge = Edge.new(id, source, target, weight)
+        self.edges.set(id, edge)
+        self.by_source.entry(source).or_insert([]).push(id)
+        self.by_target.entry(target).or_insert([]).push(id)
+        id
+    }
+    
+    fn get(id: EdgeId) -> Option<Edge<W>> {
+        self.edges.get(id).cloned()
+    }
+    
+    fn remove(id: EdgeId) -> Option<Edge<W>> {
+        let edge = self.edges.remove(id)?
+        if let Some(edges) = self.by_source.get_mut(edge.source) {
+            edges.retain(|e| *e != id)
+        }
+        if let Some(edges) = self.by_target.get_mut(edge.target) {
+            edges.retain(|e| *e != id)
+        }
+        Some(edge)
+    }
+    
+    fn outgoing(node: NodeId) -> [Edge<W>] {
+        self.by_source.get(node)
+            .map(|ids| ids.iter().filter_map(|id| self.edges.get(*id).cloned()).collect())
+            .unwrap_or([])
+    }
+    
+    fn incoming(node: NodeId) -> [Edge<W>] {
+        self.by_target.get(node)
+            .map(|ids| ids.iter().filter_map(|id| self.edges.get(*id).cloned()).collect())
+            .unwrap_or([])
+    }
+    
+    fn edges_between(source: NodeId, target: NodeId) -> [Edge<W>] {
+        self.outgoing(source).into_iter()
+            .filter(|e| e.target == target)
+            .collect()
+    }
+    
+    fn has_edge(source: NodeId, target: NodeId) -> Bool {
+        !self.edges_between(source, target).is_empty()
+    }
+    
+    fn len() -> Int { self.edges.len() }
+    fn is_empty() -> Bool { self.edges.is_empty() }
+    
+    fn iter() -> impl Iterator<Item = Edge<W>> {
+        self.edges.values()
+    }
+    
+    fn clear() {
+        self.edges.clear()
+        self.by_source.clear()
+        self.by_target.clear()
+        self.next_id = 0
+    }
+    
+    fn out_degree(node: NodeId) -> Int {
+        self.by_source.get(node).map(|e| e.len()).unwrap_or(0)
+    }
+    
+    fn in_degree(node: NodeId) -> Int {
+        self.by_target.get(node).map(|e| e.len()).unwrap_or(0)
+    }
+    
+    fn degree(node: NodeId) -> Int {
+        self.out_degree(node) + self.in_degree(node)
+    }
+}
+
+/// Adjacency list representation
+struct AdjacencyList<W> {
+    adj: Map<NodeId, [(NodeId, W)]>
+    
+    fn new() -> Self {
+        AdjacencyList { adj: Map.empty() }
+    }
+    
+    fn add_node(node: NodeId) {
+        self.adj.entry(node).or_insert([])
+    }
+    
+    fn add_edge(source: NodeId, target: NodeId, weight: W) {
+        self.adj.entry(source).or_insert([]).push((target, weight))
+    }
+    
+    fn add_undirected_edge(a: NodeId, b: NodeId, weight: W) where W: Clone {
+        self.add_edge(a, b, weight.clone())
+        self.add_edge(b, a, weight)
+    }
+    
+    fn neighbors(node: NodeId) -> [(NodeId, W)] {
+        self.adj.get(node).cloned().unwrap_or([])
+    }
+    
+    fn has_edge(source: NodeId, target: NodeId) -> Bool {
+        self.neighbors(source).iter().any(|(t, _)| *t == target)
+    }
+    
+    fn remove_edge(source: NodeId, target: NodeId) -> Bool {
+        if let Some(edges) = self.adj.get_mut(source) {
+            let len = edges.len()
+            edges.retain(|(t, _)| *t != target)
+            edges.len() < len
+        } else {
+            false
+        }
+    }
+    
+    fn nodes() -> [NodeId] {
+        self.adj.keys().collect()
+    }
+    
+    fn node_count() -> Int { self.adj.len() }
+}
+
+/// Adjacency matrix representation
+struct AdjacencyMatrix<W: Clone> {
+    matrix: [[Option<W>]]
+    node_map: Map<NodeId, Int>
+    reverse_map: Map<Int, NodeId>
+    size: Int
+    
+    fn new(capacity: Int) -> Self {
+        AdjacencyMatrix {
+            matrix: [[None; capacity]; capacity],
+            node_map: Map.empty(),
+            reverse_map: Map.empty(),
+            size: 0
+        }
+    }
+    
+    fn add_node(node: NodeId) -> Bool {
+        if self.node_map.contains(node) { return false }
+        let idx = self.size
+        self.node_map.set(node, idx)
+        self.reverse_map.set(idx, node)
+        self.size += 1
+        true
+    }
+    
+    fn add_edge(source: NodeId, target: NodeId, weight: W) -> Bool {
+        let si = self.node_map.get(source)?
+        let ti = self.node_map.get(target)?
+        self.matrix[*si][*ti] = Some(weight)
+        true
+    }
+    
+    fn get_weight(source: NodeId, target: NodeId) -> Option<W> {
+        let si = self.node_map.get(source)?
+        let ti = self.node_map.get(target)?
+        self.matrix[*si][*ti].clone()
+    }
+    
+    fn has_edge(source: NodeId, target: NodeId) -> Bool {
+        self.get_weight(source, target).is_some()
+    }
+    
+    fn remove_edge(source: NodeId, target: NodeId) -> Bool {
+        if let (Some(si), Some(ti)) = (self.node_map.get(source), self.node_map.get(target)) {
+            let had = self.matrix[*si][*ti].is_some()
+            self.matrix[*si][*ti] = None
+            had
+        } else {
+            false
+        }
+    }
+    
+    fn neighbors(node: NodeId) -> [(NodeId, W)] {
+        let idx = match self.node_map.get(node) { Some(i) => *i, None => return [] }
+        var result = []
+        for j in 0..self.size {
+            if let Some(w) = self.matrix[idx][j].clone() {
+                if let Some(target) = self.reverse_map.get(j) {
+                    result.push((*target, w))
+                }
+            }
+        }
+        result
+    }
+}
+
+/// Edge builder for fluent API
+struct EdgeBuilder<W> {
+    source: NodeId
+    target: NodeId
+    weight: W
+    metadata: EdgeMetadata
+    
+    fn new(source: NodeId, target: NodeId, weight: W) -> Self {
+        EdgeBuilder { source: source, target: target, weight: weight, metadata: EdgeMetadata.default() }
+    }
+    
+    fn label(label: String) -> Self {
+        self.metadata.label = Some(label)
+        self
+    }
+    
+    fn color(color: String) -> Self {
+        self.metadata.color = Some(color)
+        self
+    }
+    
+    fn style(style: EdgeStyle) -> Self {
+        self.metadata.style = style
+        self
+    }
+    
+    fn bidirectional() -> Self {
+        self.metadata.bidirectional = true
+        self
+    }
+    
+    fn capacity(capacity: Float) -> Self {
+        self.metadata.capacity = Some(capacity)
+        self.metadata.flow = Some(0.0)
+        self
+    }
+    
+    fn attribute(key: String, value: String) -> Self {
+        self.metadata.attributes.set(key, value)
+        self
+    }
+    
+    fn build(id: EdgeId) -> Edge<W> {
+        Edge.with_metadata(id, self.source, self.target, self.weight, self.metadata)
+    }
+}
+
+/// Trait for edge types
+trait GraphEdge {
+    type Weight
+    
+    fn source() -> NodeId
+    fn target() -> NodeId
+    fn weight() -> Self.Weight
+}
+
+impl<W> GraphEdge for Edge<W> {
+    type Weight = W
+    
+    fn source() -> NodeId { self.source }
+    fn target() -> NodeId { self.target }
+    fn weight() -> W { self.weight.clone() }
+}
+
+// Tests
+test "edge creation" {
+    let edge = Edge.new(0, 1, 2, 5.0)
+    assert_eq(edge.source(), 1)?
+    assert_eq(edge.target(), 2)?
+    assert_eq(edge.weight(), 5.0)?
+}
+
+test "edge endpoints" {
+    let edge = Edge.new(0, 1, 2, 1)
+    assert!(edge.connects(1, 2))?
+    assert!(edge.connects(2, 1))?
+    assert!(!edge.connects(1, 3))?
+    assert_eq(edge.other_endpoint(1), Some(2))?
+    assert_eq(edge.other_endpoint(2), Some(1))?
+}
+
+test "edge collection" {
+    var edges = EdgeCollection::<Int>.new()
+    let e1 = edges.add(0, 1, 10)
+    let e2 = edges.add(0, 2, 20)
+    let e3 = edges.add(1, 2, 30)
+    assert_eq(edges.len(), 3)?
+    assert_eq(edges.outgoing(0).len(), 2)?
+    assert_eq(edges.incoming(2).len(), 2)?
+    assert!(edges.has_edge(0, 1))?
+}
+
+test "adjacency list" {
+    var adj = AdjacencyList::<Int>.new()
+    adj.add_edge(0, 1, 10)
+    adj.add_edge(0, 2, 20)
+    adj.add_edge(1, 2, 30)
+    assert_eq(adj.neighbors(0).len(), 2)?
+    assert!(adj.has_edge(0, 1))?
+    assert!(!adj.has_edge(1, 0))?
+}
+
+test "adjacency matrix" {
+    var matrix = AdjacencyMatrix::<Int>.new(10)
+    matrix.add_node(0)
+    matrix.add_node(1)
+    matrix.add_node(2)
+    matrix.add_edge(0, 1, 10)
+    matrix.add_edge(0, 2, 20)
+    assert_eq(matrix.get_weight(0, 1), Some(10))?
+    assert!(matrix.has_edge(0, 1))?
+    assert!(!matrix.has_edge(1, 0))?
+}
+
+test "edge builder" {
+    let edge = EdgeBuilder.new(0, 1, 5.0)
+        .label("connection")
+        .color("blue")
+        .style(EdgeStyle.Dashed)
+        .capacity(100.0)
+        .build(0)
+    assert_eq(edge.source(), 0)?
+    assert_eq(edge.target(), 1)?
+    assert_eq(edge.metadata.label, Some("connection"))?
+}
+
+test "self loop" {
+    let edge = Edge.new(0, 1, 1, 1)
+    assert!(edge.is_self_loop())?
+    let edge2 = Edge.new(1, 1, 2, 1)
+    assert!(!edge2.is_self_loop())?
+}
+
+test "edge reverse" {
+    let edge = Edge.new(0, 1, 2, 5)
+    let reversed = edge.reverse()
+    assert_eq(reversed.source(), 2)?
+    assert_eq(reversed.target(), 1)?
+}

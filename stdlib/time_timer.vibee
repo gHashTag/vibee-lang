@@ -1,0 +1,791 @@
+// =============================================================================
+// Vibee OS — Timer Module
+// Timers, schedulers, and delayed execution
+// =============================================================================
+
+use duration.{Duration}
+use instant.{Instant}
+
+// -----------------------------------------------------------------------------
+// Timer
+// -----------------------------------------------------------------------------
+
+/// A one-shot or repeating timer
+actor Timer {
+    state id: String
+    state delay: Duration
+    state interval: Option<Duration>
+    state callback: fn()
+    state running: Bool
+    state cancelled: Bool
+    state fire_count: Int
+    state max_fires: Option<Int>
+    state next_fire: Option<Instant>
+    
+    /// Create a one-shot timer
+    fn once(delay: Duration, callback: fn()) -> Self {
+        Timer {
+            id: @native("uuid_v4"),
+            delay: delay,
+            interval: None,
+            callback: callback,
+            running: false,
+            cancelled: false,
+            fire_count: 0,
+            max_fires: Some(1),
+            next_fire: None
+        }
+    }
+    
+    /// Create a repeating timer
+    fn repeating(interval: Duration, callback: fn()) -> Self {
+        Timer {
+            id: @native("uuid_v4"),
+            delay: interval,
+            interval: Some(interval),
+            callback: callback,
+            running: false,
+            cancelled: false,
+            fire_count: 0,
+            max_fires: None,
+            next_fire: None
+        }
+    }
+    
+    /// Create a repeating timer with initial delay
+    fn repeating_with_delay(delay: Duration, interval: Duration, callback: fn()) -> Self {
+        Timer {
+            id: @native("uuid_v4"),
+            delay: delay,
+            interval: Some(interval),
+            callback: callback,
+            running: false,
+            cancelled: false,
+            fire_count: 0,
+            max_fires: None,
+            next_fire: None
+        }
+    }
+    
+    /// Set maximum number of fires
+    fn max_fires(n: Int) -> Self {
+        self.max_fires = Some(n)
+        self
+    }
+    
+    /// Start the timer
+    fn start() -> Self {
+        if self.running || self.cancelled { return self }
+        
+        self.running = true
+        self.next_fire = Some(Instant.now() + self.delay)
+        
+        spawn { self.run_loop() }
+        self
+    }
+    
+    /// Stop the timer
+    fn stop() {
+        self.running = false
+    }
+    
+    /// Cancel the timer permanently
+    fn cancel() {
+        self.cancelled = true
+        self.running = false
+    }
+    
+    /// Reset the timer
+    fn reset() {
+        self.fire_count = 0
+        self.cancelled = false
+        if self.running {
+            self.next_fire = Some(Instant.now() + self.delay)
+        }
+    }
+    
+    /// Restart the timer
+    fn restart() {
+        self.reset()
+        self.start()
+    }
+    
+    /// Check if timer is running
+    fn is_running() -> Bool { self.running }
+    
+    /// Check if timer is cancelled
+    fn is_cancelled() -> Bool { self.cancelled }
+    
+    /// Get fire count
+    fn fire_count() -> Int { self.fire_count }
+    
+    /// Get time until next fire
+    fn time_until_fire() -> Option<Duration> {
+        self.next_fire.map(|nf| {
+            let now = Instant.now()
+            if nf > now { nf - now } else { Duration.zero() }
+        })
+    }
+    
+    /// Get timer ID
+    fn id() -> String { self.id.clone() }
+    
+    fn run_loop() {
+        while self.running && !self.cancelled {
+            if let Some(next) = self.next_fire {
+                let now = Instant.now()
+                
+                if now >= next {
+                    // Fire the callback
+                    self.fire_count += 1
+                    spawn { (self.callback)() }
+                    
+                    // Check if we should continue
+                    if let Some(max) = self.max_fires {
+                        if self.fire_count >= max {
+                            self.running = false
+                            break
+                        }
+                    }
+                    
+                    // Schedule next fire
+                    if let Some(interval) = self.interval {
+                        self.next_fire = Some(next + interval)
+                    } else {
+                        self.running = false
+                        break
+                    }
+                } else {
+                    // Sleep until next fire
+                    let sleep_time = (next - now).as_millis()
+                    @native("sleep_ms", sleep_time.min(100))
+                }
+            } else {
+                break
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Debouncer
+// -----------------------------------------------------------------------------
+
+/// Debounce rapid calls to a function
+actor Debouncer {
+    state delay: Duration
+    state callback: fn()
+    state timer: Option<Timer>
+    state last_call: Option<Instant>
+    state leading: Bool
+    state trailing: Bool
+    
+    /// Create a debouncer with trailing edge (default)
+    fn new(delay: Duration, callback: fn()) -> Self {
+        Debouncer {
+            delay: delay,
+            callback: callback,
+            timer: None,
+            last_call: None,
+            leading: false,
+            trailing: true
+        }
+    }
+    
+    /// Create a debouncer with leading edge
+    fn leading(delay: Duration, callback: fn()) -> Self {
+        Debouncer {
+            delay: delay,
+            callback: callback,
+            timer: None,
+            last_call: None,
+            leading: true,
+            trailing: false
+        }
+    }
+    
+    /// Create a debouncer with both edges
+    fn both_edges(delay: Duration, callback: fn()) -> Self {
+        Debouncer {
+            delay: delay,
+            callback: callback,
+            timer: None,
+            last_call: None,
+            leading: true,
+            trailing: true
+        }
+    }
+    
+    /// Call the debounced function
+    fn call() {
+        let now = Instant.now()
+        let should_call_leading = self.leading && self.last_call.map(|lc| now - lc > self.delay).unwrap_or(true)
+        
+        // Cancel existing timer
+        if let Some(t) = self.timer.take() {
+            t.cancel()
+        }
+        
+        // Leading edge call
+        if should_call_leading {
+            spawn { (self.callback)() }
+        }
+        
+        // Schedule trailing edge call
+        if self.trailing {
+            let cb = self.callback
+            self.timer = Some(Timer.once(self.delay, cb).start())
+        }
+        
+        self.last_call = Some(now)
+    }
+    
+    /// Cancel pending calls
+    fn cancel() {
+        if let Some(t) = self.timer.take() {
+            t.cancel()
+        }
+    }
+    
+    /// Flush pending calls immediately
+    fn flush() {
+        if let Some(t) = self.timer.take() {
+            t.cancel()
+            (self.callback)()
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Throttler
+// -----------------------------------------------------------------------------
+
+/// Throttle calls to a function
+actor Throttler {
+    state interval: Duration
+    state callback: fn()
+    state last_call: Option<Instant>
+    state pending: Bool
+    state leading: Bool
+    state trailing: Bool
+    
+    /// Create a throttler
+    fn new(interval: Duration, callback: fn()) -> Self {
+        Throttler {
+            interval: interval,
+            callback: callback,
+            last_call: None,
+            pending: false,
+            leading: true,
+            trailing: true
+        }
+    }
+    
+    /// Create a throttler with leading edge only
+    fn leading_only(interval: Duration, callback: fn()) -> Self {
+        Throttler {
+            interval: interval,
+            callback: callback,
+            last_call: None,
+            pending: false,
+            leading: true,
+            trailing: false
+        }
+    }
+    
+    /// Create a throttler with trailing edge only
+    fn trailing_only(interval: Duration, callback: fn()) -> Self {
+        Throttler {
+            interval: interval,
+            callback: callback,
+            last_call: None,
+            pending: false,
+            leading: false,
+            trailing: true
+        }
+    }
+    
+    /// Call the throttled function
+    fn call() {
+        let now = Instant.now()
+        
+        let can_call = self.last_call.map(|lc| now - lc >= self.interval).unwrap_or(true)
+        
+        if can_call {
+            if self.leading {
+                (self.callback)()
+                self.last_call = Some(now)
+            }
+        } else {
+            if self.trailing {
+                self.pending = true
+                self.schedule_trailing()
+            }
+        }
+    }
+    
+    fn schedule_trailing() {
+        if !self.pending { return }
+        
+        let remaining = self.last_call.map(|lc| {
+            let elapsed = Instant.now() - lc
+            if elapsed < self.interval {
+                self.interval - elapsed
+            } else {
+                Duration.zero()
+            }
+        }).unwrap_or(Duration.zero())
+        
+        let cb = self.callback
+        spawn {
+            @native("sleep_nanos", remaining.as_nanos())
+            if self.pending {
+                self.pending = false
+                cb()
+                self.last_call = Some(Instant.now())
+            }
+        }
+    }
+    
+    /// Cancel pending calls
+    fn cancel() {
+        self.pending = false
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Scheduler
+// -----------------------------------------------------------------------------
+
+/// A scheduler for managing multiple timers
+actor Scheduler {
+    state timers: Map<String, Timer>
+    state running: Bool
+    
+    fn new() -> Self {
+        Scheduler {
+            timers: Map.new(),
+            running: true
+        }
+    }
+    
+    /// Schedule a one-shot timer
+    fn schedule_once(id: String, delay: Duration, callback: fn()) -> String {
+        let timer = Timer.once(delay, callback).start()
+        let timer_id = timer.id()
+        self.timers.insert(id, timer)
+        timer_id
+    }
+    
+    /// Schedule a repeating timer
+    fn schedule_repeating(id: String, interval: Duration, callback: fn()) -> String {
+        let timer = Timer.repeating(interval, callback).start()
+        let timer_id = timer.id()
+        self.timers.insert(id, timer)
+        timer_id
+    }
+    
+    /// Schedule at a specific time
+    fn schedule_at(id: String, at: Instant, callback: fn()) -> String {
+        let now = Instant.now()
+        let delay = if at > now { at - now } else { Duration.zero() }
+        self.schedule_once(id, delay, callback)
+    }
+    
+    /// Cancel a timer
+    fn cancel(id: String) -> Bool {
+        if let Some(timer) = self.timers.remove(id) {
+            timer.cancel()
+            true
+        } else {
+            false
+        }
+    }
+    
+    /// Cancel all timers
+    fn cancel_all() {
+        for (_, timer) in self.timers.drain() {
+            timer.cancel()
+        }
+    }
+    
+    /// Check if a timer exists
+    fn has_timer(id: String) -> Bool {
+        self.timers.contains(id)
+    }
+    
+    /// Get timer by ID
+    fn get_timer(id: String) -> Option<Timer> {
+        self.timers.get(id).cloned()
+    }
+    
+    /// Get all timer IDs
+    fn timer_ids() -> [String] {
+        self.timers.keys().collect()
+    }
+    
+    /// Get count of active timers
+    fn active_count() -> Int {
+        self.timers.values().filter(|t| t.is_running()).count()
+    }
+    
+    /// Shutdown the scheduler
+    fn shutdown() {
+        self.running = false
+        self.cancel_all()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Delayed Execution
+// -----------------------------------------------------------------------------
+
+/// Execute a function after a delay
+fn after(delay: Duration, f: fn()) -> Timer {
+    Timer.once(delay, f).start()
+}
+
+/// Execute a function after milliseconds
+fn after_ms(ms: Int64, f: fn()) -> Timer {
+    after(Duration.millis(ms), f)
+}
+
+/// Execute a function after seconds
+fn after_secs(secs: Int64, f: fn()) -> Timer {
+    after(Duration.seconds(secs), f)
+}
+
+/// Execute a function repeatedly
+fn every(interval: Duration, f: fn()) -> Timer {
+    Timer.repeating(interval, f).start()
+}
+
+/// Execute a function repeatedly (milliseconds)
+fn every_ms(ms: Int64, f: fn()) -> Timer {
+    every(Duration.millis(ms), f)
+}
+
+/// Execute a function repeatedly (seconds)
+fn every_secs(secs: Int64, f: fn()) -> Timer {
+    every(Duration.seconds(secs), f)
+}
+
+// -----------------------------------------------------------------------------
+// Retry Timer
+// -----------------------------------------------------------------------------
+
+/// A timer that retries a fallible operation
+actor RetryTimer<T> {
+    state operation: fn() -> Result<T, Error>
+    state max_retries: Int
+    state delay: Duration
+    state backoff: BackoffStrategy
+    state current_retry: Int
+    state on_success: Option<fn(T)>
+    state on_failure: Option<fn(Error)>
+    state on_retry: Option<fn(Int, Error)>
+    state running: Bool
+    
+    fn new(operation: fn() -> Result<T, Error>) -> Self {
+        RetryTimer {
+            operation: operation,
+            max_retries: 3,
+            delay: Duration.seconds(1),
+            backoff: BackoffStrategy.Exponential(2.0),
+            current_retry: 0,
+            on_success: None,
+            on_failure: None,
+            on_retry: None,
+            running: false
+        }
+    }
+    
+    fn max_retries(n: Int) -> Self { self.max_retries = n; self }
+    fn delay(d: Duration) -> Self { self.delay = d; self }
+    fn backoff(b: BackoffStrategy) -> Self { self.backoff = b; self }
+    fn on_success(f: fn(T)) -> Self { self.on_success = Some(f); self }
+    fn on_failure(f: fn(Error)) -> Self { self.on_failure = Some(f); self }
+    fn on_retry(f: fn(Int, Error)) -> Self { self.on_retry = Some(f); self }
+    
+    /// Start the retry timer
+    fn start() {
+        if self.running { return }
+        self.running = true
+        self.current_retry = 0
+        self.attempt()
+    }
+    
+    /// Stop the retry timer
+    fn stop() {
+        self.running = false
+    }
+    
+    fn attempt() {
+        if !self.running { return }
+        
+        match (self.operation)() {
+            Ok(value) => {
+                self.running = false
+                if let Some(f) = self.on_success {
+                    f(value)
+                }
+            }
+            Err(error) => {
+                self.current_retry += 1
+                
+                if self.current_retry > self.max_retries {
+                    self.running = false
+                    if let Some(f) = self.on_failure {
+                        f(error)
+                    }
+                } else {
+                    if let Some(f) = self.on_retry {
+                        f(self.current_retry, error)
+                    }
+                    
+                    let delay = self.calculate_delay()
+                    spawn {
+                        @native("sleep_nanos", delay.as_nanos())
+                        self.attempt()
+                    }
+                }
+            }
+        }
+    }
+    
+    fn calculate_delay() -> Duration {
+        match self.backoff {
+            BackoffStrategy.Fixed => self.delay
+            BackoffStrategy.Linear(factor) => {
+                Duration.nanos((self.delay.as_nanos() as Float * (1.0 + factor * self.current_retry as Float)) as Int64)
+            }
+            BackoffStrategy.Exponential(base) => {
+                Duration.nanos((self.delay.as_nanos() as Float * base.pow(self.current_retry as Float)) as Int64)
+            }
+            BackoffStrategy.Jitter(max_jitter) => {
+                let jitter = (@native("random_float") * max_jitter.as_nanos() as Float) as Int64
+                Duration.nanos(self.delay.as_nanos() + jitter)
+            }
+        }
+    }
+}
+
+enum BackoffStrategy {
+    Fixed
+    Linear(Float)
+    Exponential(Float)
+    Jitter(Duration)
+}
+
+// -----------------------------------------------------------------------------
+// Watchdog Timer
+// -----------------------------------------------------------------------------
+
+/// A watchdog timer that triggers if not reset periodically
+actor WatchdogTimer {
+    state timeout: Duration
+    state callback: fn()
+    state last_reset: Instant
+    state running: Bool
+    
+    fn new(timeout: Duration, callback: fn()) -> Self {
+        WatchdogTimer {
+            timeout: timeout,
+            callback: callback,
+            last_reset: Instant.now(),
+            running: false
+        }
+    }
+    
+    /// Start the watchdog
+    fn start() {
+        if self.running { return }
+        self.running = true
+        self.last_reset = Instant.now()
+        self.watch_loop()
+    }
+    
+    /// Stop the watchdog
+    fn stop() {
+        self.running = false
+    }
+    
+    /// Reset the watchdog (pet the dog)
+    fn reset() {
+        self.last_reset = Instant.now()
+    }
+    
+    /// Alias for reset
+    fn kick() { self.reset() }
+    fn pet() { self.reset() }
+    
+    /// Check if watchdog is running
+    fn is_running() -> Bool { self.running }
+    
+    /// Get time until timeout
+    fn time_remaining() -> Duration {
+        let elapsed = self.last_reset.elapsed()
+        if elapsed >= self.timeout {
+            Duration.zero()
+        } else {
+            self.timeout - elapsed
+        }
+    }
+    
+    fn watch_loop() {
+        spawn {
+            while self.running {
+                let elapsed = self.last_reset.elapsed()
+                
+                if elapsed >= self.timeout {
+                    (self.callback)()
+                    self.last_reset = Instant.now()
+                }
+                
+                let sleep_time = (self.timeout - elapsed).as_millis().max(100)
+                @native("sleep_ms", sleep_time)
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Heartbeat Timer
+// -----------------------------------------------------------------------------
+
+/// A timer that sends periodic heartbeats
+actor HeartbeatTimer {
+    state interval: Duration
+    state on_beat: fn()
+    state on_missed: Option<fn(Int)>
+    state running: Bool
+    state beat_count: Int
+    state missed_count: Int
+    state last_beat: Option<Instant>
+    
+    fn new(interval: Duration, on_beat: fn()) -> Self {
+        HeartbeatTimer {
+            interval: interval,
+            on_beat: on_beat,
+            on_missed: None,
+            running: false,
+            beat_count: 0,
+            missed_count: 0,
+            last_beat: None
+        }
+    }
+    
+    fn on_missed(f: fn(Int)) -> Self {
+        self.on_missed = Some(f)
+        self
+    }
+    
+    /// Start sending heartbeats
+    fn start() {
+        if self.running { return }
+        self.running = true
+        self.beat_loop()
+    }
+    
+    /// Stop sending heartbeats
+    fn stop() {
+        self.running = false
+    }
+    
+    /// Record a received heartbeat response
+    fn ack() {
+        self.missed_count = 0
+    }
+    
+    /// Get beat count
+    fn beat_count() -> Int { self.beat_count }
+    
+    /// Get missed count
+    fn missed_count() -> Int { self.missed_count }
+    
+    fn beat_loop() {
+        spawn {
+            while self.running {
+                // Check for missed beats
+                if self.missed_count > 0 {
+                    if let Some(f) = self.on_missed {
+                        f(self.missed_count)
+                    }
+                }
+                
+                // Send heartbeat
+                (self.on_beat)()
+                self.beat_count += 1
+                self.missed_count += 1
+                self.last_beat = Some(Instant.now())
+                
+                @native("sleep_nanos", self.interval.as_nanos())
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "timer once" {
+    var fired = false
+    let timer = Timer.once(Duration.millis(10), || { fired = true }).start()
+    @native("sleep_ms", 50)
+    assert(fired)?
+}
+
+test "timer repeating" {
+    var count = 0
+    let timer = Timer.repeating(Duration.millis(10), || { count += 1 })
+        .max_fires(3)
+        .start()
+    @native("sleep_ms", 100)
+    assert_eq(count, 3)?
+}
+
+test "timer cancel" {
+    var fired = false
+    let timer = Timer.once(Duration.millis(50), || { fired = true }).start()
+    timer.cancel()
+    @native("sleep_ms", 100)
+    assert(!fired)?
+}
+
+test "scheduler" {
+    let scheduler = Scheduler.new()
+    var count = 0
+    
+    scheduler.schedule_once("test", Duration.millis(10), || { count += 1 })
+    @native("sleep_ms", 50)
+    
+    assert_eq(count, 1)?
+    scheduler.shutdown()
+}
+
+test "after convenience" {
+    var fired = false
+    after_ms(10, || { fired = true })
+    @native("sleep_ms", 50)
+    assert(fired)?
+}
+
+test "watchdog timer" {
+    var triggered = false
+    let watchdog = WatchdogTimer.new(Duration.millis(50), || { triggered = true })
+    watchdog.start()
+    
+    // Reset before timeout
+    @native("sleep_ms", 30)
+    watchdog.reset()
+    
+    @native("sleep_ms", 30)
+    assert(!triggered)?  // Should not have triggered
+    
+    // Let it timeout
+    @native("sleep_ms", 60)
+    assert(triggered)?
+    
+    watchdog.stop()
+}

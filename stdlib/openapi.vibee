@@ -1,0 +1,454 @@
+// =============================================================================
+// Vibee OS — OpenAPI Module
+// OpenAPI 3.0/3.1 specification generation and parsing
+// =============================================================================
+
+use json::{JsonValue, Serialize, Deserialize}
+use yaml::{Yaml}
+use http::{Method}
+
+// =============================================================================
+// OpenAPI Specification
+// =============================================================================
+
+/// OpenAPI Document (root)
+struct OpenApiSpec {
+    openapi: String
+    info: Info
+    servers: [Server]
+    paths: Map<String, PathItem>
+    components: Option<Components>
+    security: [SecurityRequirement]
+    tags: [Tag]
+    external_docs: Option<ExternalDocs>
+}
+
+impl OpenApiSpec {
+    /// Create new OpenAPI 3.0 spec
+    fn new(title: String, version: String) -> Self {
+        OpenApiSpec {
+            openapi: "3.0.3",
+            info: Info.new(title, version),
+            servers: [],
+            paths: Map.empty(),
+            components: None,
+            security: [],
+            tags: [],
+            external_docs: None
+        }
+    }
+    
+    /// Create OpenAPI 3.1 spec
+    fn v3_1(title: String, version: String) -> Self {
+        var spec = Self.new(title, version)
+        spec.openapi = "3.1.0"
+        spec
+    }
+    
+    fn description(desc: String) -> Self { self.info.description = Some(desc); self }
+    fn terms_of_service(url: String) -> Self { self.info.terms_of_service = Some(url); self }
+    fn contact(contact: Contact) -> Self { self.info.contact = Some(contact); self }
+    fn license(license: License) -> Self { self.info.license = Some(license); self }
+    
+    fn server(url: String, description: String = "") -> Self {
+        self.servers.push(Server { url: url, description: if description.is_empty() { None } else { Some(description) }, variables: Map.empty() })
+        self
+    }
+    
+    fn path(path: String, item: PathItem) -> Self { self.paths.set(path, item); self }
+    fn tag(name: String, description: String = "") -> Self { self.tags.push(Tag { name: name, description: if description.is_empty() { None } else { Some(description) }, external_docs: None }); self }
+    fn security_scheme(name: String, scheme: SecurityScheme) -> Self {
+        if self.components.is_none() { self.components = Some(Components.new()) }
+        self.components.unwrap().security_schemes.set(name, scheme)
+        self
+    }
+    fn schema(name: String, schema: Schema) -> Self {
+        if self.components.is_none() { self.components = Some(Components.new()) }
+        self.components.unwrap().schemas.set(name, schema)
+        self
+    }
+    fn require_security(name: String, scopes: [String] = []) -> Self { self.security.push(SecurityRequirement { name: name, scopes: scopes }); self }
+    
+    /// Export to JSON
+    fn to_json() -> String { json.encode_pretty(self) }
+    
+    /// Export to YAML
+    fn to_yaml() -> String { yaml.encode(self) }
+    
+    /// Parse from JSON
+    fn from_json(s: String) -> Result<Self, OpenApiError> { json.decode::<Self>(s).map_err(|e| OpenApiError.ParseError(e.to_string())) }
+    
+    /// Parse from YAML
+    fn from_yaml(s: String) -> Result<Self, OpenApiError> { yaml.decode::<Self>(s).map_err(|e| OpenApiError.ParseError(e.to_string())) }
+    
+    /// Validate specification
+    fn validate() -> Result<(), [ValidationIssue]> {
+        var issues: [ValidationIssue] = []
+        if self.info.title.is_empty() { issues.push(ValidationIssue { path: "info.title", message: "Title is required", severity: Severity.Error }) }
+        if self.info.version.is_empty() { issues.push(ValidationIssue { path: "info.version", message: "Version is required", severity: Severity.Error }) }
+        if self.paths.is_empty() { issues.push(ValidationIssue { path: "paths", message: "At least one path is required", severity: Severity.Warning }) }
+        for (path, item) in self.paths.iter() {
+            if !path.starts_with("/") { issues.push(ValidationIssue { path: format!("paths.{}", path), message: "Path must start with /", severity: Severity.Error }) }
+            issues.extend(item.validate(path))
+        }
+        if issues.iter().any(|i| i.severity == Severity.Error) { Err(issues) } else { Ok(()) }
+    }
+}
+
+/// API Info
+struct Info {
+    title: String
+    version: String
+    description: Option<String>
+    terms_of_service: Option<String>
+    contact: Option<Contact>
+    license: Option<License>
+}
+
+impl Info {
+    fn new(title: String, version: String) -> Self {
+        Info { title: title, version: version, description: None, terms_of_service: None, contact: None, license: None }
+    }
+}
+
+struct Contact { name: Option<String>, url: Option<String>, email: Option<String> }
+impl Contact { fn new(name: String, email: String) -> Self { Contact { name: Some(name), url: None, email: Some(email) } } }
+
+struct License { name: String, url: Option<String> }
+impl License {
+    fn mit() -> Self { License { name: "MIT", url: Some("https://opensource.org/licenses/MIT") } }
+    fn apache2() -> Self { License { name: "Apache 2.0", url: Some("https://www.apache.org/licenses/LICENSE-2.0") } }
+}
+
+struct Server { url: String, description: Option<String>, variables: Map<String, ServerVariable> }
+struct ServerVariable { default: String, enum_values: [String], description: Option<String> }
+
+// =============================================================================
+// Paths and Operations
+// =============================================================================
+
+/// Path Item
+struct PathItem {
+    summary: Option<String>
+    description: Option<String>
+    get: Option<Operation>
+    post: Option<Operation>
+    put: Option<Operation>
+    delete: Option<Operation>
+    patch: Option<Operation>
+    options: Option<Operation>
+    head: Option<Operation>
+    parameters: [Parameter]
+}
+
+impl PathItem {
+    fn new() -> Self { PathItem { summary: None, description: None, get: None, post: None, put: None, delete: None, patch: None, options: None, head: None, parameters: [] } }
+    fn get(op: Operation) -> Self { self.get = Some(op); self }
+    fn post(op: Operation) -> Self { self.post = Some(op); self }
+    fn put(op: Operation) -> Self { self.put = Some(op); self }
+    fn delete(op: Operation) -> Self { self.delete = Some(op); self }
+    fn patch(op: Operation) -> Self { self.patch = Some(op); self }
+    fn param(p: Parameter) -> Self { self.parameters.push(p); self }
+    
+    fn validate(path: String) -> [ValidationIssue] {
+        var issues: [ValidationIssue] = []
+        for op in [self.get, self.post, self.put, self.delete, self.patch].filter_map(|o| o) {
+            issues.extend(op.validate(path))
+        }
+        issues
+    }
+}
+
+/// Operation
+struct Operation {
+    operation_id: Option<String>
+    summary: Option<String>
+    description: Option<String>
+    tags: [String]
+    parameters: [Parameter]
+    request_body: Option<RequestBody>
+    responses: Map<String, ApiResponse>
+    security: [SecurityRequirement]
+    deprecated: Bool
+    external_docs: Option<ExternalDocs>
+}
+
+impl Operation {
+    fn new() -> Self { Operation { operation_id: None, summary: None, description: None, tags: [], parameters: [], request_body: None, responses: Map.empty(), security: [], deprecated: false, external_docs: None } }
+    fn id(id: String) -> Self { self.operation_id = Some(id); self }
+    fn summary(s: String) -> Self { self.summary = Some(s); self }
+    fn description(d: String) -> Self { self.description = Some(d); self }
+    fn tag(t: String) -> Self { self.tags.push(t); self }
+    fn param(p: Parameter) -> Self { self.parameters.push(p); self }
+    fn body(b: RequestBody) -> Self { self.request_body = Some(b); self }
+    fn response(code: String, r: ApiResponse) -> Self { self.responses.set(code, r); self }
+    fn ok(r: ApiResponse) -> Self { self.response("200", r) }
+    fn created(r: ApiResponse) -> Self { self.response("201", r) }
+    fn no_content() -> Self { self.response("204", ApiResponse.new("No Content")) }
+    fn bad_request(r: ApiResponse) -> Self { self.response("400", r) }
+    fn unauthorized() -> Self { self.response("401", ApiResponse.new("Unauthorized")) }
+    fn not_found() -> Self { self.response("404", ApiResponse.new("Not Found")) }
+    fn security(name: String, scopes: [String] = []) -> Self { self.security.push(SecurityRequirement { name: name, scopes: scopes }); self }
+    fn deprecated() -> Self { self.deprecated = true; self }
+    
+    fn validate(path: String) -> [ValidationIssue] {
+        var issues: [ValidationIssue] = []
+        if self.responses.is_empty() { issues.push(ValidationIssue { path: format!("{}.responses", path), message: "At least one response is required", severity: Severity.Error }) }
+        issues
+    }
+}
+
+// =============================================================================
+// Parameters
+// =============================================================================
+
+/// Parameter location
+enum ParameterIn { Query, Header, Path, Cookie }
+impl ParameterIn { fn to_string() -> String { match self { Query => "query", Header => "header", Path => "path", Cookie => "cookie" } } }
+
+/// Parameter
+struct Parameter {
+    name: String
+    in_: ParameterIn
+    description: Option<String>
+    required: Bool
+    deprecated: Bool
+    schema: Option<Schema>
+    example: Option<JsonValue>
+    examples: Map<String, Example>
+}
+
+impl Parameter {
+    fn query(name: String) -> Self { Parameter { name: name, in_: ParameterIn.Query, description: None, required: false, deprecated: false, schema: None, example: None, examples: Map.empty() } }
+    fn path(name: String) -> Self { Parameter { name: name, in_: ParameterIn.Path, description: None, required: true, deprecated: false, schema: None, example: None, examples: Map.empty() } }
+    fn header(name: String) -> Self { Parameter { name: name, in_: ParameterIn.Header, description: None, required: false, deprecated: false, schema: None, example: None, examples: Map.empty() } }
+    fn cookie(name: String) -> Self { Parameter { name: name, in_: ParameterIn.Cookie, description: None, required: false, deprecated: false, schema: None, example: None, examples: Map.empty() } }
+    
+    fn description(d: String) -> Self { self.description = Some(d); self }
+    fn required() -> Self { self.required = true; self }
+    fn schema(s: Schema) -> Self { self.schema = Some(s); self }
+    fn example(e: JsonValue) -> Self { self.example = Some(e); self }
+    fn deprecated() -> Self { self.deprecated = true; self }
+}
+
+// =============================================================================
+// Request/Response Bodies
+// =============================================================================
+
+struct RequestBody {
+    description: Option<String>
+    content: Map<String, MediaType>
+    required: Bool
+}
+
+impl RequestBody {
+    fn json(schema: Schema) -> Self { RequestBody { description: None, content: Map.from([("application/json", MediaType { schema: Some(schema), example: None, examples: Map.empty() })]), required: true } }
+    fn form(schema: Schema) -> Self { RequestBody { description: None, content: Map.from([("application/x-www-form-urlencoded", MediaType { schema: Some(schema), example: None, examples: Map.empty() })]), required: true } }
+    fn multipart(schema: Schema) -> Self { RequestBody { description: None, content: Map.from([("multipart/form-data", MediaType { schema: Some(schema), example: None, examples: Map.empty() })]), required: true } }
+    fn description(d: String) -> Self { self.description = Some(d); self }
+    fn optional() -> Self { self.required = false; self }
+}
+
+struct ApiResponse {
+    description: String
+    content: Map<String, MediaType>
+    headers: Map<String, Header>
+}
+
+impl ApiResponse {
+    fn new(description: String) -> Self { ApiResponse { description: description, content: Map.empty(), headers: Map.empty() } }
+    fn json(description: String, schema: Schema) -> Self { ApiResponse { description: description, content: Map.from([("application/json", MediaType { schema: Some(schema), example: None, examples: Map.empty() })]), headers: Map.empty() } }
+    fn header(name: String, h: Header) -> Self { self.headers.set(name, h); self }
+}
+
+struct MediaType { schema: Option<Schema>, example: Option<JsonValue>, examples: Map<String, Example> }
+struct Header { description: Option<String>, schema: Option<Schema> }
+struct Example { summary: Option<String>, description: Option<String>, value: JsonValue }
+
+// =============================================================================
+// Schema
+// =============================================================================
+
+/// JSON Schema
+struct Schema {
+    type_: Option<String>
+    format: Option<String>
+    title: Option<String>
+    description: Option<String>
+    default: Option<JsonValue>
+    enum_values: [JsonValue]
+    properties: Map<String, Schema>
+    required: [String]
+    items: Option<Box<Schema>>
+    all_of: [Schema]
+    one_of: [Schema]
+    any_of: [Schema]
+    nullable: Bool
+    read_only: Bool
+    write_only: Bool
+    minimum: Option<Float>
+    maximum: Option<Float>
+    min_length: Option<Int>
+    max_length: Option<Int>
+    pattern: Option<String>
+    ref_: Option<String>
+}
+
+impl Schema {
+    fn new() -> Self { Schema { type_: None, format: None, title: None, description: None, default: None, enum_values: [], properties: Map.empty(), required: [], items: None, all_of: [], one_of: [], any_of: [], nullable: false, read_only: false, write_only: false, minimum: None, maximum: None, min_length: None, max_length: None, pattern: None, ref_: None } }
+    
+    fn string() -> Self { var s = Self.new(); s.type_ = Some("string"); s }
+    fn integer() -> Self { var s = Self.new(); s.type_ = Some("integer"); s }
+    fn number() -> Self { var s = Self.new(); s.type_ = Some("number"); s }
+    fn boolean() -> Self { var s = Self.new(); s.type_ = Some("boolean"); s }
+    fn array(items: Schema) -> Self { var s = Self.new(); s.type_ = Some("array"); s.items = Some(Box.new(items)); s }
+    fn object() -> Self { var s = Self.new(); s.type_ = Some("object"); s }
+    fn ref_(name: String) -> Self { var s = Self.new(); s.ref_ = Some(format!("#/components/schemas/{}", name)); s }
+    
+    fn format(f: String) -> Self { self.format = Some(f); self }
+    fn email() -> Self { Self.string().format("email") }
+    fn uri() -> Self { Self.string().format("uri") }
+    fn uuid() -> Self { Self.string().format("uuid") }
+    fn date() -> Self { Self.string().format("date") }
+    fn datetime() -> Self { Self.string().format("date-time") }
+    fn int32() -> Self { Self.integer().format("int32") }
+    fn int64() -> Self { Self.integer().format("int64") }
+    fn float() -> Self { Self.number().format("float") }
+    fn double() -> Self { Self.number().format("double") }
+    
+    fn description(d: String) -> Self { self.description = Some(d); self }
+    fn nullable() -> Self { self.nullable = true; self }
+    fn read_only() -> Self { self.read_only = true; self }
+    fn write_only() -> Self { self.write_only = true; self }
+    fn default(v: JsonValue) -> Self { self.default = Some(v); self }
+    fn enum_values(values: [JsonValue]) -> Self { self.enum_values = values; self }
+    fn property(name: String, schema: Schema) -> Self { self.properties.set(name, schema); self }
+    fn required(names: [String]) -> Self { self.required = names; self }
+    fn min(v: Float) -> Self { self.minimum = Some(v); self }
+    fn max(v: Float) -> Self { self.maximum = Some(v); self }
+    fn min_length(v: Int) -> Self { self.min_length = Some(v); self }
+    fn max_length(v: Int) -> Self { self.max_length = Some(v); self }
+    fn pattern(p: String) -> Self { self.pattern = Some(p); self }
+}
+
+// =============================================================================
+// Security
+// =============================================================================
+
+struct SecurityRequirement { name: String, scopes: [String] }
+
+enum SecurityScheme {
+    ApiKey { name: String, in_: String }
+    Http { scheme: String, bearer_format: Option<String> }
+    OAuth2 { flows: OAuthFlows }
+    OpenIdConnect { openid_connect_url: String }
+}
+
+impl SecurityScheme {
+    fn api_key_header(name: String) -> Self { SecurityScheme.ApiKey { name: name, in_: "header" } }
+    fn api_key_query(name: String) -> Self { SecurityScheme.ApiKey { name: name, in_: "query" } }
+    fn bearer() -> Self { SecurityScheme.Http { scheme: "bearer", bearer_format: Some("JWT") } }
+    fn basic() -> Self { SecurityScheme.Http { scheme: "basic", bearer_format: None } }
+    fn oauth2(flows: OAuthFlows) -> Self { SecurityScheme.OAuth2 { flows: flows } }
+}
+
+struct OAuthFlows { authorization_code: Option<OAuthFlow>, client_credentials: Option<OAuthFlow>, implicit: Option<OAuthFlow>, password: Option<OAuthFlow> }
+struct OAuthFlow { authorization_url: Option<String>, token_url: Option<String>, refresh_url: Option<String>, scopes: Map<String, String> }
+
+// =============================================================================
+// Components
+// =============================================================================
+
+struct Components {
+    schemas: Map<String, Schema>
+    responses: Map<String, ApiResponse>
+    parameters: Map<String, Parameter>
+    request_bodies: Map<String, RequestBody>
+    headers: Map<String, Header>
+    security_schemes: Map<String, SecurityScheme>
+}
+
+impl Components {
+    fn new() -> Self { Components { schemas: Map.empty(), responses: Map.empty(), parameters: Map.empty(), request_bodies: Map.empty(), headers: Map.empty(), security_schemes: Map.empty() } }
+}
+
+// =============================================================================
+// Misc
+// =============================================================================
+
+struct Tag { name: String, description: Option<String>, external_docs: Option<ExternalDocs> }
+struct ExternalDocs { url: String, description: Option<String> }
+
+struct ValidationIssue { path: String, message: String, severity: Severity }
+enum Severity { Error, Warning, Info }
+
+enum OpenApiError { ParseError(String), ValidationError([ValidationIssue]), IoError(String) }
+
+// =============================================================================
+// Builder from Code
+// =============================================================================
+
+/// Generate OpenAPI spec from annotated types
+trait OpenApiSchema {
+    fn openapi_schema() -> Schema
+}
+
+/// Macro to derive OpenAPI schema
+macro derive_openapi_schema($struct_name:ident { $($field:ident: $type:ty),* }) {
+    impl OpenApiSchema for $struct_name {
+        fn openapi_schema() -> Schema {
+            Schema.object()
+                $(.property(stringify!($field), <$type as OpenApiSchema>::openapi_schema()))*
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "create openapi spec" {
+    let spec = OpenApiSpec.new("My API", "1.0.0")
+        .description("A sample API")
+        .server("https://api.example.com", "Production")
+        .tag("users", "User operations")
+        .path("/users", PathItem.new()
+            .get(Operation.new()
+                .id("listUsers")
+                .summary("List all users")
+                .tag("users")
+                .ok(ApiResponse.json("Success", Schema.array(Schema.ref_("User"))))))
+    
+    assert_eq(spec.openapi, "3.0.3")?
+    assert_eq(spec.info.title, "My API")?
+    assert(spec.paths.contains("/users"))?
+}
+
+test "schema types" {
+    let user_schema = Schema.object()
+        .property("id", Schema.uuid())
+        .property("email", Schema.email())
+        .property("age", Schema.integer().min(0).max(150))
+        .required(["id", "email"])
+    
+    assert_eq(user_schema.type_, Some("object"))?
+    assert_eq(user_schema.required.len(), 2)?
+}
+
+test "security schemes" {
+    let spec = OpenApiSpec.new("Secure API", "1.0.0")
+        .security_scheme("bearerAuth", SecurityScheme.bearer())
+        .require_security("bearerAuth")
+    
+    assert(spec.components.is_some())?
+    assert_eq(spec.security.len(), 1)?
+}
+
+test "export formats" {
+    let spec = OpenApiSpec.new("Test", "1.0.0")
+    let json_str = spec.to_json()
+    let yaml_str = spec.to_yaml()
+    
+    assert(json_str.contains("\"openapi\""))?
+    assert(yaml_str.contains("openapi:"))?
+}

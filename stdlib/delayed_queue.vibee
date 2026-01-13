@@ -1,0 +1,768 @@
+// =============================================================================
+// Vibee OS — Delayed Queue Module
+// Time-based delayed message delivery
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Delayed Item
+// -----------------------------------------------------------------------------
+
+/// Item with scheduled delivery time
+struct DelayedItem<T> {
+    data: T
+    deliver_at: Instant
+    created_at: Instant
+    id: String
+    
+    fn new(data: T, delay: Duration) -> Self {
+        let now = Instant.now()
+        DelayedItem {
+            data: data,
+            deliver_at: now + delay,
+            created_at: now,
+            id: UUID.v4()
+        }
+    }
+    
+    fn at(data: T, deliver_at: Instant) -> Self {
+        DelayedItem {
+            data: data,
+            deliver_at: deliver_at,
+            created_at: Instant.now(),
+            id: UUID.v4()
+        }
+    }
+    
+    fn is_ready() -> Bool {
+        Instant.now() >= self.deliver_at
+    }
+    
+    fn time_until_ready() -> Duration {
+        let now = Instant.now()
+        if now >= self.deliver_at {
+            Duration.zero()
+        } else {
+            self.deliver_at - now
+        }
+    }
+}
+
+impl<T> Ord for DelayedItem<T> {
+    fn cmp(other: DelayedItem<T>) -> Ordering {
+        // Earlier delivery time = higher priority
+        self.deliver_at.cmp(other.deliver_at)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Delayed Queue
+// -----------------------------------------------------------------------------
+
+/// Delayed queue using min-heap ordered by delivery time
+struct DelayedQueue<T> {
+    heap: MinHeap<DelayedItem<T>>
+    
+    fn new() -> Self {
+        DelayedQueue { heap: MinHeap.new() }
+    }
+    
+    /// Schedule item with delay
+    fn schedule(item: T, delay: Duration) -> String {
+        let delayed = DelayedItem.new(item, delay)
+        let id = delayed.id.clone()
+        self.heap.push(delayed)
+        id
+    }
+    
+    /// Schedule item at specific time
+    fn schedule_at(item: T, deliver_at: Instant) -> String {
+        let delayed = DelayedItem.at(item, deliver_at)
+        let id = delayed.id.clone()
+        self.heap.push(delayed)
+        id
+    }
+    
+    /// Get next ready item (non-blocking)
+    fn poll() -> Option<T> {
+        if let Some(item) = self.heap.peek() {
+            if item.is_ready() {
+                return self.heap.pop().map(|i| i.data)
+            }
+        }
+        None
+    }
+    
+    /// Get all ready items
+    fn poll_all() -> [T] {
+        var ready = []
+        while let Some(item) = self.poll() {
+            ready.push(item)
+        }
+        ready
+    }
+    
+    /// Peek next item without removing
+    fn peek() -> Option<(T, Instant)> {
+        self.heap.peek().map(|i| (i.data.clone(), i.deliver_at))
+    }
+    
+    /// Time until next item is ready
+    fn time_until_next() -> Option<Duration> {
+        self.heap.peek().map(|i| i.time_until_ready())
+    }
+    
+    fn len() -> Int { self.heap.len() }
+    fn is_empty() -> Bool { self.heap.is_empty() }
+    fn clear() { self.heap.clear() }
+}
+
+// -----------------------------------------------------------------------------
+// Concurrent Delayed Queue Actor
+// -----------------------------------------------------------------------------
+
+/// Thread-safe delayed queue with background delivery
+actor ConcurrentDelayedQueue<T> {
+    state queue: DelayedQueue<T>
+    state subscribers: [fn(T)]
+    state timer_running: Bool
+    state closed: Bool
+    
+    fn new() -> Self {
+        ConcurrentDelayedQueue {
+            queue: DelayedQueue.new(),
+            subscribers: [],
+            timer_running: false,
+            closed: false
+        }
+    }
+    
+    /// Schedule item with delay
+    fn schedule(item: T, delay: Duration) -> Result<String, QueueError> {
+        if self.closed {
+            return Err(QueueError.Closed)
+        }
+        
+        let id = self.queue.schedule(item, delay)
+        self.ensure_timer_running()
+        Ok(id)
+    }
+    
+    /// Schedule at specific time
+    fn schedule_at(item: T, deliver_at: Instant) -> Result<String, QueueError> {
+        if self.closed {
+            return Err(QueueError.Closed)
+        }
+        
+        let id = self.queue.schedule_at(item, deliver_at)
+        self.ensure_timer_running()
+        Ok(id)
+    }
+    
+    /// Subscribe to receive delivered items
+    fn subscribe(handler: fn(T)) {
+        self.subscribers.push(handler)
+    }
+    
+    /// Poll for ready items manually
+    fn poll() -> [T] {
+        self.queue.poll_all()
+    }
+    
+    /// Take next ready item (blocking until ready)
+    fn take() -> Option<T> {
+        loop {
+            if let Some(item) = self.queue.poll() {
+                return Some(item)
+            }
+            
+            if self.closed && self.queue.is_empty() {
+                return None
+            }
+            
+            // Wait until next item is ready or new item added
+            match self.queue.time_until_next() {
+                Some(wait_time) => @native("sleep", wait_time.min(Duration.milliseconds(100)))
+                None => @native("yield")
+            }
+        }
+    }
+    
+    /// Take with timeout
+    fn take_timeout(timeout: Duration) -> Option<T> {
+        let deadline = Instant.now() + timeout
+        
+        loop {
+            if let Some(item) = self.queue.poll() {
+                return Some(item)
+            }
+            
+            if Instant.now() >= deadline {
+                return None
+            }
+            
+            if self.closed && self.queue.is_empty() {
+                return None
+            }
+            
+            let remaining = deadline - Instant.now()
+            match self.queue.time_until_next() {
+                Some(wait_time) => {
+                    let sleep_time = wait_time.min(remaining).min(Duration.milliseconds(100))
+                    @native("sleep", sleep_time)
+                }
+                None => @native("yield")
+            }
+        }
+    }
+    
+    fn ensure_timer_running() {
+        if !self.timer_running {
+            self.timer_running = true
+            spawn { self.timer_loop() }
+        }
+    }
+    
+    fn timer_loop() {
+        while !self.closed || !self.queue.is_empty() {
+            let ready = self.queue.poll_all()
+            
+            for item in ready {
+                for subscriber in self.subscribers {
+                    subscriber(item.clone())
+                }
+            }
+            
+            // Sleep until next item or check interval
+            match self.queue.time_until_next() {
+                Some(wait_time) => @native("sleep", wait_time.min(Duration.milliseconds(100)))
+                None => @native("sleep", Duration.milliseconds(100))
+            }
+        }
+        
+        self.timer_running = false
+    }
+    
+    fn close() {
+        self.closed = true
+    }
+    
+    fn len() -> Int { self.queue.len() }
+    fn is_empty() -> Bool { self.queue.is_empty() }
+}
+
+// -----------------------------------------------------------------------------
+// Delayed Message Queue
+// -----------------------------------------------------------------------------
+
+/// Delayed message with metadata
+struct DelayedMessage {
+    id: String
+    payload: [Byte]
+    headers: Map<String, String>
+    created_at: Instant
+    deliver_at: Instant
+    retry_count: Int
+    max_retries: Int
+    
+    fn new(payload: [Byte], delay: Duration) -> Self {
+        let now = Instant.now()
+        DelayedMessage {
+            id: UUID.v4(),
+            payload: payload,
+            headers: Map.empty(),
+            created_at: now,
+            deliver_at: now + delay,
+            retry_count: 0,
+            max_retries: 3
+        }
+    }
+    
+    fn text(content: String, delay: Duration) -> Self {
+        Self.new(content.bytes(), delay)
+    }
+    
+    fn json<T: Serialize>(data: T, delay: Duration) -> Self {
+        let mut msg = Self.new(JSON.stringify(data).bytes(), delay)
+        msg.headers.set("content-type", "application/json")
+        msg
+    }
+    
+    fn at(payload: [Byte], deliver_at: Instant) -> Self {
+        DelayedMessage {
+            id: UUID.v4(),
+            payload: payload,
+            headers: Map.empty(),
+            created_at: Instant.now(),
+            deliver_at: deliver_at,
+            retry_count: 0,
+            max_retries: 3
+        }
+    }
+    
+    fn with_header(key: String, value: String) -> Self {
+        self.headers.set(key, value)
+        self
+    }
+    
+    fn is_ready() -> Bool {
+        Instant.now() >= self.deliver_at
+    }
+    
+    fn delay_remaining() -> Duration {
+        let now = Instant.now()
+        if now >= self.deliver_at {
+            Duration.zero()
+        } else {
+            self.deliver_at - now
+        }
+    }
+    
+    fn as_string() -> Result<String, DecodeError> {
+        String.from_utf8(self.payload)
+    }
+    
+    fn as_json<T: Deserialize>() -> Result<T, DecodeError> {
+        JSON.parse(self.as_string()?)
+    }
+}
+
+impl Ord for DelayedMessage {
+    fn cmp(other: DelayedMessage) -> Ordering {
+        self.deliver_at.cmp(other.deliver_at)
+    }
+}
+
+/// Delayed message queue actor
+actor DelayedMessageQueue {
+    state heap: MinHeap<DelayedMessage>
+    state pending_acks: Map<String, DelayedMessage>
+    state dead_letter: Option<DeadLetterQueue>
+    state metrics: DelayedQueueMetrics
+    state closed: Bool
+    
+    fn new() -> Self {
+        DelayedMessageQueue {
+            heap: MinHeap.new(),
+            pending_acks: Map.empty(),
+            dead_letter: None,
+            metrics: DelayedQueueMetrics.new(),
+            closed: false
+        }
+    }
+    
+    fn with_dead_letter(dlq: DeadLetterQueue) -> Self {
+        let mut q = Self.new()
+        q.dead_letter = Some(dlq)
+        q
+    }
+    
+    /// Schedule message with delay
+    fn schedule(message: DelayedMessage) -> Result<String, QueueError> {
+        if self.closed {
+            return Err(QueueError.Closed)
+        }
+        
+        let id = message.id.clone()
+        self.heap.push(message)
+        self.metrics.scheduled += 1
+        Ok(id)
+    }
+    
+    /// Schedule text message
+    fn schedule_text(content: String, delay: Duration) -> Result<String, QueueError> {
+        self.schedule(DelayedMessage.text(content, delay))
+    }
+    
+    /// Receive next ready message (blocking)
+    fn receive() -> Option<DelayedMessage> {
+        loop {
+            // Check if next message is ready
+            if let Some(msg) = self.heap.peek() {
+                if msg.is_ready() {
+                    let msg = self.heap.pop().unwrap()
+                    self.pending_acks.set(msg.id.clone(), msg.clone())
+                    self.metrics.delivered += 1
+                    return Some(msg)
+                }
+            }
+            
+            if self.closed && self.heap.is_empty() {
+                return None
+            }
+            
+            // Wait for next message
+            match self.heap.peek() {
+                Some(msg) => {
+                    let wait = msg.delay_remaining().min(Duration.milliseconds(100))
+                    @native("sleep", wait)
+                }
+                None => @native("yield")
+            }
+        }
+    }
+    
+    /// Try receive without blocking
+    fn try_receive() -> Option<DelayedMessage> {
+        if let Some(msg) = self.heap.peek() {
+            if msg.is_ready() {
+                let msg = self.heap.pop().unwrap()
+                self.pending_acks.set(msg.id.clone(), msg.clone())
+                self.metrics.delivered += 1
+                return Some(msg)
+            }
+        }
+        None
+    }
+    
+    /// Receive with timeout
+    fn receive_timeout(timeout: Duration) -> Option<DelayedMessage> {
+        let deadline = Instant.now() + timeout
+        
+        loop {
+            if let Some(msg) = self.try_receive() {
+                return Some(msg)
+            }
+            
+            if Instant.now() >= deadline {
+                return None
+            }
+            
+            if self.closed && self.heap.is_empty() {
+                return None
+            }
+            
+            let remaining = deadline - Instant.now()
+            let wait = remaining.min(Duration.milliseconds(100))
+            @native("sleep", wait)
+        }
+    }
+    
+    /// Acknowledge message
+    fn ack(message_id: String) -> Result<(), QueueError> {
+        match self.pending_acks.remove(message_id) {
+            Some(_) => {
+                self.metrics.acknowledged += 1
+                Ok(())
+            }
+            None => Err(QueueError.MessageNotFound)
+        }
+    }
+    
+    /// Negative acknowledge with optional reschedule
+    fn nack(message_id: String, reschedule_delay: Option<Duration>) -> Result<(), QueueError> {
+        match self.pending_acks.remove(message_id) {
+            Some(mut msg) => {
+                msg.retry_count += 1
+                
+                if msg.retry_count < msg.max_retries {
+                    if let Some(delay) = reschedule_delay {
+                        msg.deliver_at = Instant.now() + delay
+                        self.heap.push(msg)
+                        self.metrics.rescheduled += 1
+                    }
+                } else if let Some(dlq) = self.dead_letter {
+                    dlq.send(msg, "max_retries_exceeded")
+                    self.metrics.dead_lettered += 1
+                }
+                
+                Ok(())
+            }
+            None => Err(QueueError.MessageNotFound)
+        }
+    }
+    
+    /// Get time until next message is ready
+    fn time_until_next() -> Option<Duration> {
+        self.heap.peek().map(|m| m.delay_remaining())
+    }
+    
+    /// Get metrics
+    fn metrics() -> DelayedQueueMetrics {
+        self.metrics.clone()
+    }
+    
+    fn close() {
+        self.closed = true
+    }
+    
+    fn len() -> Int { self.heap.len() }
+    fn pending_count() -> Int { self.pending_acks.len() }
+}
+
+/// Delayed queue metrics
+struct DelayedQueueMetrics {
+    scheduled: Int
+    delivered: Int
+    acknowledged: Int
+    rescheduled: Int
+    dead_lettered: Int
+    
+    fn new() -> Self {
+        DelayedQueueMetrics {
+            scheduled: 0,
+            delivered: 0,
+            acknowledged: 0,
+            rescheduled: 0,
+            dead_lettered: 0
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Scheduled Task Queue
+// -----------------------------------------------------------------------------
+
+/// Scheduled task with cron-like scheduling
+struct ScheduledTask {
+    id: String
+    name: String
+    task: fn()
+    schedule: Schedule
+    next_run: Instant
+    last_run: Option<Instant>
+    enabled: Bool
+    
+    fn new(name: String, task: fn(), schedule: Schedule) -> Self {
+        ScheduledTask {
+            id: UUID.v4(),
+            name: name,
+            task: task,
+            schedule: schedule,
+            next_run: schedule.next_occurrence(Instant.now()),
+            last_run: None,
+            enabled: true
+        }
+    }
+    
+    fn once_at(name: String, task: fn(), at: Instant) -> Self {
+        ScheduledTask {
+            id: UUID.v4(),
+            name: name,
+            task: task,
+            schedule: Schedule.Once,
+            next_run: at,
+            last_run: None,
+            enabled: true
+        }
+    }
+    
+    fn after(name: String, task: fn(), delay: Duration) -> Self {
+        Self.once_at(name, task, Instant.now() + delay)
+    }
+}
+
+impl Ord for ScheduledTask {
+    fn cmp(other: ScheduledTask) -> Ordering {
+        self.next_run.cmp(other.next_run)
+    }
+}
+
+/// Schedule definition
+enum Schedule {
+    Once
+    Interval(Duration)
+    Daily(Time)
+    Weekly(Weekday, Time)
+    Cron(CronExpr)
+    
+    fn next_occurrence(from: Instant) -> Instant {
+        match self {
+            Once => from
+            Interval(d) => from + d
+            Daily(time) => {
+                let today = from.date().at(time)
+                if today > from { today } else { today + Duration.days(1) }
+            }
+            Weekly(day, time) => {
+                // Calculate next occurrence of weekday at time
+                @native("next_weekday", from, day, time)
+            }
+            Cron(expr) => expr.next(from)
+        }
+    }
+}
+
+/// Task scheduler actor
+actor TaskScheduler {
+    state tasks: MinHeap<ScheduledTask>
+    state task_map: Map<String, ScheduledTask>
+    state running: Bool
+    
+    fn new() -> Self {
+        TaskScheduler {
+            tasks: MinHeap.new(),
+            task_map: Map.empty(),
+            running: false
+        }
+    }
+    
+    /// Schedule a task
+    fn schedule(task: ScheduledTask) -> String {
+        let id = task.id.clone()
+        self.task_map.set(id.clone(), task.clone())
+        self.tasks.push(task)
+        id
+    }
+    
+    /// Schedule task to run after delay
+    fn schedule_after(name: String, delay: Duration, task: fn()) -> String {
+        self.schedule(ScheduledTask.after(name, task, delay))
+    }
+    
+    /// Schedule recurring task
+    fn schedule_interval(name: String, interval: Duration, task: fn()) -> String {
+        self.schedule(ScheduledTask.new(name, task, Schedule.Interval(interval)))
+    }
+    
+    /// Cancel a scheduled task
+    fn cancel(task_id: String) -> Bool {
+        match self.task_map.remove(task_id) {
+            Some(task) => {
+                task.enabled = false
+                true
+            }
+            None => false
+        }
+    }
+    
+    /// Start the scheduler
+    fn start() {
+        if self.running { return }
+        self.running = true
+        spawn { self.run_loop() }
+    }
+    
+    /// Stop the scheduler
+    fn stop() {
+        self.running = false
+    }
+    
+    fn run_loop() {
+        while self.running {
+            let now = Instant.now()
+            
+            // Execute all ready tasks
+            while let Some(task) = self.tasks.peek() {
+                if task.next_run > now { break }
+                
+                let mut task = self.tasks.pop().unwrap()
+                
+                if !task.enabled { continue }
+                
+                // Execute task
+                spawn { (task.task)() }
+                task.last_run = Some(now)
+                
+                // Reschedule if recurring
+                match task.schedule {
+                    Schedule.Once => {
+                        self.task_map.remove(task.id)
+                    }
+                    _ => {
+                        task.next_run = task.schedule.next_occurrence(now)
+                        self.tasks.push(task)
+                    }
+                }
+            }
+            
+            // Sleep until next task
+            match self.tasks.peek() {
+                Some(task) => {
+                    let wait = (task.next_run - now).min(Duration.seconds(1))
+                    @native("sleep", wait)
+                }
+                None => @native("sleep", Duration.seconds(1))
+            }
+        }
+    }
+    
+    fn task_count() -> Int { self.task_map.len() }
+    fn is_running() -> Bool { self.running }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum QueueError {
+    Closed
+    Full
+    Empty
+    MessageNotFound
+    Timeout
+    
+    fn message() -> String {
+        match self {
+            Closed => "Queue is closed"
+            Full => "Queue is full"
+            Empty => "Queue is empty"
+            MessageNotFound => "Message not found"
+            Timeout => "Operation timed out"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "delayed queue basic" {
+    var dq = DelayedQueue::<String>.new()
+    
+    dq.schedule("later", Duration.milliseconds(100))
+    dq.schedule("soon", Duration.milliseconds(10))
+    
+    // Nothing ready yet
+    assert_eq(dq.poll(), None)?
+    
+    // Wait for first item
+    @native("sleep", Duration.milliseconds(20))
+    assert_eq(dq.poll(), Some("soon"))?
+    
+    // Wait for second item
+    @native("sleep", Duration.milliseconds(100))
+    assert_eq(dq.poll(), Some("later"))?
+}
+
+test "delayed queue ordering" {
+    var dq = DelayedQueue::<Int>.new()
+    
+    dq.schedule(3, Duration.milliseconds(30))
+    dq.schedule(1, Duration.milliseconds(10))
+    dq.schedule(2, Duration.milliseconds(20))
+    
+    // Wait for all to be ready
+    @native("sleep", Duration.milliseconds(50))
+    
+    assert_eq(dq.poll(), Some(1))?
+    assert_eq(dq.poll(), Some(2))?
+    assert_eq(dq.poll(), Some(3))?
+}
+
+test "delayed message" {
+    let msg = DelayedMessage.text("hello", Duration.seconds(5))
+    assert(!msg.is_ready())?
+    assert(msg.delay_remaining() > Duration.zero())?
+}
+
+test "schedule at specific time" {
+    var dq = DelayedQueue::<String>.new()
+    
+    let future = Instant.now() + Duration.milliseconds(50)
+    dq.schedule_at("scheduled", future)
+    
+    assert_eq(dq.poll(), None)?
+    
+    @native("sleep", Duration.milliseconds(60))
+    assert_eq(dq.poll(), Some("scheduled"))?
+}
+
+test "concurrent delayed queue" {
+    let dq = ConcurrentDelayedQueue::<Int>.new()
+    
+    dq.schedule(1, Duration.milliseconds(10))?
+    dq.schedule(2, Duration.milliseconds(20))?
+    
+    let result = dq.take_timeout(Duration.milliseconds(50))
+    assert_eq(result, Some(1))?
+}

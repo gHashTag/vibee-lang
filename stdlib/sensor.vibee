@@ -1,0 +1,741 @@
+// =============================================================================
+// Vibee OS — Sensor Module
+// IoT sensor abstractions and implementations
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Core Sensor Traits
+// -----------------------------------------------------------------------------
+
+/// Base trait for all sensors
+trait Sensor {
+    type Reading
+    
+    fn read() -> Result<Self.Reading, SensorError>
+    fn id() -> String
+    fn sensor_type() -> SensorType
+    fn is_available() -> Bool
+    fn calibrate() -> Result<(), SensorError>
+}
+
+/// Trait for continuous sensor readings
+trait ContinuousSensor: Sensor {
+    fn start_stream(interval_ms: Int64) -> SensorStream<Self.Reading>
+    fn stop_stream()
+}
+
+/// Trait for threshold-based sensors
+trait ThresholdSensor: Sensor {
+    fn set_threshold(threshold: Self.Reading)
+    fn on_threshold_exceeded(handler: fn(Self.Reading))
+}
+
+// -----------------------------------------------------------------------------
+// Sensor Types
+// -----------------------------------------------------------------------------
+
+enum SensorType {
+    Temperature
+    Humidity
+    Pressure
+    Light
+    Motion
+    Proximity
+    Accelerometer
+    Gyroscope
+    Magnetometer
+    GPS
+    Sound
+    Gas
+    Smoke
+    Water
+    Vibration
+    Current
+    Voltage
+    Power
+    Custom(String)
+    
+    fn to_string() -> String {
+        match self {
+            .Temperature => "temperature"
+            .Humidity => "humidity"
+            .Pressure => "pressure"
+            .Light => "light"
+            .Motion => "motion"
+            .Proximity => "proximity"
+            .Accelerometer => "accelerometer"
+            .Gyroscope => "gyroscope"
+            .Magnetometer => "magnetometer"
+            .GPS => "gps"
+            .Sound => "sound"
+            .Gas => "gas"
+            .Smoke => "smoke"
+            .Water => "water"
+            .Vibration => "vibration"
+            .Current => "current"
+            .Voltage => "voltage"
+            .Power => "power"
+            .Custom(name) => name
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Sensor Readings
+// -----------------------------------------------------------------------------
+
+/// Generic sensor reading with metadata
+struct SensorReading<T> {
+    value: T
+    timestamp: Int64
+    sensor_id: String
+    quality: DataQuality
+    unit: String
+    
+    fn new(value: T, sensor_id: String, unit: String) -> Self {
+        SensorReading {
+            value: value,
+            timestamp: @native("timestamp_ms"),
+            sensor_id: sensor_id,
+            quality: DataQuality.Good,
+            unit: unit
+        }
+    }
+    
+    fn with_quality(quality: DataQuality) -> Self {
+        self.quality = quality
+        self
+    }
+}
+
+/// Data quality indicator
+enum DataQuality {
+    Good
+    Uncertain
+    Bad
+    OutOfRange
+    SensorFault
+    
+    fn is_valid() -> Bool {
+        match self {
+            .Good | .Uncertain => true
+            _ => false
+        }
+    }
+}
+
+/// Temperature reading
+struct TemperatureReading {
+    celsius: Float64
+    timestamp: Int64
+    
+    fn new(celsius: Float64) -> Self {
+        TemperatureReading { celsius: celsius, timestamp: @native("timestamp_ms") }
+    }
+    
+    fn fahrenheit() -> Float64 { self.celsius * 9.0 / 5.0 + 32.0 }
+    fn kelvin() -> Float64 { self.celsius + 273.15 }
+}
+
+/// Humidity reading
+struct HumidityReading {
+    relative_humidity: Float64  // 0-100%
+    timestamp: Int64
+    
+    fn new(rh: Float64) -> Self {
+        HumidityReading { relative_humidity: rh.clamp(0.0, 100.0), timestamp: @native("timestamp_ms") }
+    }
+    
+    fn is_comfortable() -> Bool { self.relative_humidity >= 30.0 && self.relative_humidity <= 60.0 }
+}
+
+/// Pressure reading
+struct PressureReading {
+    pascals: Float64
+    timestamp: Int64
+    
+    fn new(pascals: Float64) -> Self {
+        PressureReading { pascals: pascals, timestamp: @native("timestamp_ms") }
+    }
+    
+    fn hectopascals() -> Float64 { self.pascals / 100.0 }
+    fn millibars() -> Float64 { self.pascals / 100.0 }
+    fn atmospheres() -> Float64 { self.pascals / 101325.0 }
+    fn psi() -> Float64 { self.pascals / 6894.76 }
+}
+
+/// 3D vector reading (accelerometer, gyroscope, magnetometer)
+struct Vector3Reading {
+    x: Float64
+    y: Float64
+    z: Float64
+    timestamp: Int64
+    
+    fn new(x: Float64, y: Float64, z: Float64) -> Self {
+        Vector3Reading { x: x, y: y, z: z, timestamp: @native("timestamp_ms") }
+    }
+    
+    fn magnitude() -> Float64 { (self.x * self.x + self.y * self.y + self.z * self.z).sqrt() }
+    fn normalized() -> Self {
+        let mag = self.magnitude()
+        if mag == 0.0 { return self }
+        Vector3Reading { x: self.x / mag, y: self.y / mag, z: self.z / mag, timestamp: self.timestamp }
+    }
+}
+
+/// GPS reading
+struct GpsReading {
+    latitude: Float64
+    longitude: Float64
+    altitude: Option<Float64>
+    accuracy: Float64
+    speed: Option<Float64>
+    heading: Option<Float64>
+    timestamp: Int64
+    
+    fn new(lat: Float64, lon: Float64) -> Self {
+        GpsReading {
+            latitude: lat, longitude: lon, altitude: None,
+            accuracy: 0.0, speed: None, heading: None,
+            timestamp: @native("timestamp_ms")
+        }
+    }
+    
+    fn with_altitude(alt: Float64) -> Self { self.altitude = Some(alt); self }
+    fn with_accuracy(acc: Float64) -> Self { self.accuracy = acc; self }
+    fn with_speed(spd: Float64) -> Self { self.speed = Some(spd); self }
+    fn with_heading(hdg: Float64) -> Self { self.heading = Some(hdg); self }
+    
+    fn distance_to(other: GpsReading) -> Float64 {
+        // Haversine formula
+        let r = 6371000.0  // Earth radius in meters
+        let lat1 = self.latitude.to_radians()
+        let lat2 = other.latitude.to_radians()
+        let dlat = (other.latitude - self.latitude).to_radians()
+        let dlon = (other.longitude - self.longitude).to_radians()
+        
+        let a = (dlat / 2.0).sin().pow(2.0) + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().pow(2.0)
+        let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt())
+        r * c
+    }
+}
+
+/// Light reading
+struct LightReading {
+    lux: Float64
+    timestamp: Int64
+    
+    fn new(lux: Float64) -> Self {
+        LightReading { lux: lux, timestamp: @native("timestamp_ms") }
+    }
+    
+    fn brightness_level() -> BrightnessLevel {
+        match self.lux {
+            l if l < 1.0 => BrightnessLevel.Dark
+            l if l < 50.0 => BrightnessLevel.Dim
+            l if l < 200.0 => BrightnessLevel.Indoor
+            l if l < 1000.0 => BrightnessLevel.Bright
+            l if l < 10000.0 => BrightnessLevel.Daylight
+            _ => BrightnessLevel.DirectSunlight
+        }
+    }
+}
+
+enum BrightnessLevel { Dark, Dim, Indoor, Bright, Daylight, DirectSunlight }
+
+// -----------------------------------------------------------------------------
+// Sensor Implementations
+// -----------------------------------------------------------------------------
+
+/// Temperature sensor
+actor TemperatureSensor {
+    state id: String
+    state pin: Int
+    state offset: Float64
+    state available: Bool
+    
+    fn new(id: String, pin: Int) -> Self {
+        TemperatureSensor { id: id, pin: pin, offset: 0.0, available: true }
+    }
+    
+    on read() -> Result<TemperatureReading, SensorError> {
+        if !self.available { return Err(SensorError.NotAvailable) }
+        let raw = @native("sensor_read_temperature", self.pin)?
+        Ok(TemperatureReading.new(raw + self.offset))
+    }
+    
+    on calibrate(known_temp: Float64) -> Result<(), SensorError> {
+        let reading = self.read()?
+        self.offset = known_temp - reading.celsius
+        Ok(())
+    }
+    
+    fn id() -> String { self.id }
+    fn sensor_type() -> SensorType { SensorType.Temperature }
+    fn is_available() -> Bool { self.available }
+}
+
+/// Humidity sensor
+actor HumiditySensor {
+    state id: String
+    state pin: Int
+    state available: Bool
+    
+    fn new(id: String, pin: Int) -> Self {
+        HumiditySensor { id: id, pin: pin, available: true }
+    }
+    
+    on read() -> Result<HumidityReading, SensorError> {
+        if !self.available { return Err(SensorError.NotAvailable) }
+        let raw = @native("sensor_read_humidity", self.pin)?
+        Ok(HumidityReading.new(raw))
+    }
+    
+    fn id() -> String { self.id }
+    fn sensor_type() -> SensorType { SensorType.Humidity }
+    fn is_available() -> Bool { self.available }
+}
+
+/// Combined temperature and humidity sensor (DHT22, BME280, etc.)
+actor TempHumiditySensor {
+    state id: String
+    state pin: Int
+    state model: TempHumidityModel
+    state available: Bool
+    
+    fn new(id: String, pin: Int, model: TempHumidityModel) -> Self {
+        TempHumiditySensor { id: id, pin: pin, model: model, available: true }
+    }
+    
+    on read() -> Result<(TemperatureReading, HumidityReading), SensorError> {
+        if !self.available { return Err(SensorError.NotAvailable) }
+        let (temp, hum) = @native("sensor_read_temp_humidity", self.pin, self.model)?
+        Ok((TemperatureReading.new(temp), HumidityReading.new(hum)))
+    }
+    
+    on read_temperature() -> Result<TemperatureReading, SensorError> {
+        let (temp, _) = self.read()?
+        Ok(temp)
+    }
+    
+    on read_humidity() -> Result<HumidityReading, SensorError> {
+        let (_, hum) = self.read()?
+        Ok(hum)
+    }
+    
+    fn id() -> String { self.id }
+    fn is_available() -> Bool { self.available }
+}
+
+enum TempHumidityModel { DHT11, DHT22, BME280, SHT31, AHT20 }
+
+/// Motion sensor (PIR)
+actor MotionSensor {
+    state id: String
+    state pin: Int
+    state sensitivity: Float64
+    state cooldown_ms: Int64
+    state last_trigger: Int64
+    state handler: Option<fn(Bool)>
+    
+    fn new(id: String, pin: Int) -> Self {
+        MotionSensor {
+            id: id, pin: pin, sensitivity: 0.5,
+            cooldown_ms: 2000, last_trigger: 0, handler: None
+        }
+    }
+    
+    on read() -> Result<Bool, SensorError> {
+        let detected = @native("sensor_read_digital", self.pin)?
+        if detected {
+            let now = @native("timestamp_ms")
+            if now - self.last_trigger >= self.cooldown_ms {
+                self.last_trigger = now
+                if let Some(h) = self.handler { h(true) }
+            }
+        }
+        Ok(detected)
+    }
+    
+    on on_motion(handler: fn(Bool)) {
+        self.handler = Some(handler)
+    }
+    
+    on set_sensitivity(sensitivity: Float64) {
+        self.sensitivity = sensitivity.clamp(0.0, 1.0)
+    }
+    
+    on set_cooldown(ms: Int64) {
+        self.cooldown_ms = ms
+    }
+    
+    fn id() -> String { self.id }
+    fn sensor_type() -> SensorType { SensorType.Motion }
+}
+
+/// Accelerometer sensor
+actor Accelerometer {
+    state id: String
+    state i2c_addr: UInt8
+    state range: AccelRange
+    state available: Bool
+    
+    fn new(id: String, i2c_addr: UInt8) -> Self {
+        Accelerometer { id: id, i2c_addr: i2c_addr, range: AccelRange.G2, available: true }
+    }
+    
+    on read() -> Result<Vector3Reading, SensorError> {
+        if !self.available { return Err(SensorError.NotAvailable) }
+        let (x, y, z) = @native("sensor_read_accel", self.i2c_addr)?
+        Ok(Vector3Reading.new(x, y, z))
+    }
+    
+    on set_range(range: AccelRange) {
+        self.range = range
+        @native("sensor_config_accel_range", self.i2c_addr, range)
+    }
+    
+    on detect_shake(threshold: Float64) -> Bool {
+        if let Ok(reading) = self.read() {
+            reading.magnitude() > threshold
+        } else { false }
+    }
+    
+    on detect_orientation() -> Orientation {
+        if let Ok(r) = self.read() {
+            if r.z.abs() > r.x.abs() && r.z.abs() > r.y.abs() {
+                if r.z > 0.0 { Orientation.FaceUp } else { Orientation.FaceDown }
+            } else if r.x.abs() > r.y.abs() {
+                if r.x > 0.0 { Orientation.LandscapeRight } else { Orientation.LandscapeLeft }
+            } else {
+                if r.y > 0.0 { Orientation.Portrait } else { Orientation.PortraitUpsideDown }
+            }
+        } else { Orientation.Unknown }
+    }
+    
+    fn id() -> String { self.id }
+    fn sensor_type() -> SensorType { SensorType.Accelerometer }
+}
+
+enum AccelRange { G2, G4, G8, G16 }
+enum Orientation { Portrait, PortraitUpsideDown, LandscapeLeft, LandscapeRight, FaceUp, FaceDown, Unknown }
+
+/// GPS sensor
+actor GpsSensor {
+    state id: String
+    state uart_port: Int
+    state baud_rate: Int
+    state last_fix: Option<GpsReading>
+    state available: Bool
+    
+    fn new(id: String, uart_port: Int) -> Self {
+        GpsSensor {
+            id: id, uart_port: uart_port, baud_rate: 9600,
+            last_fix: None, available: true
+        }
+    }
+    
+    on read() -> Result<GpsReading, SensorError> {
+        if !self.available { return Err(SensorError.NotAvailable) }
+        let nmea = @native("gps_read_nmea", self.uart_port)?
+        let reading = Self.parse_nmea(nmea)?
+        self.last_fix = Some(reading)
+        Ok(reading)
+    }
+    
+    fn parse_nmea(nmea: String) -> Result<GpsReading, SensorError> {
+        @native("gps_parse_nmea", nmea)
+    }
+    
+    on get_last_fix() -> Option<GpsReading> { self.last_fix }
+    
+    on has_fix() -> Bool { self.last_fix.is_some() }
+    
+    fn id() -> String { self.id }
+    fn sensor_type() -> SensorType { SensorType.GPS }
+}
+
+/// Light sensor
+actor LightSensor {
+    state id: String
+    state pin: Int
+    state available: Bool
+    
+    fn new(id: String, pin: Int) -> Self {
+        LightSensor { id: id, pin: pin, available: true }
+    }
+    
+    on read() -> Result<LightReading, SensorError> {
+        if !self.available { return Err(SensorError.NotAvailable) }
+        let lux = @native("sensor_read_light", self.pin)?
+        Ok(LightReading.new(lux))
+    }
+    
+    fn id() -> String { self.id }
+    fn sensor_type() -> SensorType { SensorType.Light }
+}
+
+/// Gas sensor (MQ series)
+actor GasSensor {
+    state id: String
+    state pin: Int
+    state gas_type: GasType
+    state preheat_time_ms: Int64
+    state preheated: Bool
+    
+    fn new(id: String, pin: Int, gas_type: GasType) -> Self {
+        GasSensor {
+            id: id, pin: pin, gas_type: gas_type,
+            preheat_time_ms: 180000, preheated: false
+        }
+    }
+    
+    on preheat() {
+        @native("sensor_preheat", self.pin)
+        @native("sleep_ms", self.preheat_time_ms)
+        self.preheated = true
+    }
+    
+    on read() -> Result<Float64, SensorError> {
+        if !self.preheated { return Err(SensorError.NotReady("Sensor needs preheating")) }
+        @native("sensor_read_gas", self.pin, self.gas_type)
+    }
+    
+    on read_ppm() -> Result<Float64, SensorError> {
+        self.read()
+    }
+    
+    fn id() -> String { self.id }
+    fn sensor_type() -> SensorType { SensorType.Gas }
+}
+
+enum GasType { CO, CO2, Methane, LPG, Propane, Alcohol, Smoke, Hydrogen, Ammonia }
+
+// -----------------------------------------------------------------------------
+// Sensor Stream
+// -----------------------------------------------------------------------------
+
+/// Stream of sensor readings
+actor SensorStream<T> {
+    state sensor_id: String
+    state interval_ms: Int64
+    state running: Bool
+    state buffer: [T]
+    state max_buffer: Int
+    
+    fn new(sensor_id: String, interval_ms: Int64) -> Self {
+        SensorStream {
+            sensor_id: sensor_id,
+            interval_ms: interval_ms,
+            running: false,
+            buffer: [],
+            max_buffer: 100
+        }
+    }
+    
+    on start<S: Sensor<Reading = T>>(sensor: S) {
+        self.running = true
+        async {
+            while self.running {
+                if let Ok(reading) = sensor.read() {
+                    if self.buffer.len() >= self.max_buffer {
+                        self.buffer.remove(0)
+                    }
+                    self.buffer.push(reading)
+                }
+                @native("sleep_ms", self.interval_ms)
+            }
+        }
+    }
+    
+    on stop() { self.running = false }
+    
+    on get_latest() -> Option<T> {
+        if self.buffer.is_empty() { None }
+        else { Some(self.buffer[self.buffer.len() - 1]) }
+    }
+    
+    on get_all() -> [T] { self.buffer.clone() }
+    
+    on clear() { self.buffer.clear() }
+    
+    fn is_running() -> Bool { self.running }
+}
+
+// -----------------------------------------------------------------------------
+// Sensor Aggregation
+// -----------------------------------------------------------------------------
+
+/// Aggregate multiple sensor readings
+struct SensorAggregator<T: Into<Float64>> {
+    readings: [T]
+    
+    fn new() -> Self { SensorAggregator { readings: [] } }
+    
+    fn add(reading: T) -> Self {
+        self.readings.push(reading)
+        self
+    }
+    
+    fn average() -> Option<Float64> {
+        if self.readings.is_empty() { return None }
+        let sum: Float64 = self.readings.iter().map(|r| r.into()).sum()
+        Some(sum / self.readings.len() as Float64)
+    }
+    
+    fn min() -> Option<Float64> {
+        self.readings.iter().map(|r| r.into()).min()
+    }
+    
+    fn max() -> Option<Float64> {
+        self.readings.iter().map(|r| r.into()).max()
+    }
+    
+    fn std_dev() -> Option<Float64> {
+        let avg = self.average()?
+        let variance: Float64 = self.readings.iter()
+            .map(|r| { let v: Float64 = r.into(); (v - avg).pow(2.0) })
+            .sum::<Float64>() / self.readings.len() as Float64
+        Some(variance.sqrt())
+    }
+    
+    fn clear() { self.readings.clear() }
+}
+
+// -----------------------------------------------------------------------------
+// Sensor Manager
+// -----------------------------------------------------------------------------
+
+/// Manages multiple sensors
+actor SensorManager {
+    state sensors: Map<String, Box<dyn Sensor>>
+    state readings_cache: Map<String, Box<dyn Any>>
+    state poll_interval_ms: Int64
+    
+    fn new() -> Self {
+        SensorManager {
+            sensors: Map.empty(),
+            readings_cache: Map.empty(),
+            poll_interval_ms: 1000
+        }
+    }
+    
+    on register<S: Sensor>(sensor: S) {
+        self.sensors.set(sensor.id(), Box.new(sensor))
+    }
+    
+    on unregister(sensor_id: String) {
+        self.sensors.remove(sensor_id)
+        self.readings_cache.remove(sensor_id)
+    }
+    
+    on get_sensor(sensor_id: String) -> Option<Box<dyn Sensor>> {
+        self.sensors.get(sensor_id)
+    }
+    
+    on list_sensors() -> [String] {
+        self.sensors.keys().collect()
+    }
+    
+    on poll_all() -> Map<String, Result<Box<dyn Any>, SensorError>> {
+        var results = Map.empty()
+        for (id, sensor) in self.sensors {
+            let result = sensor.read()
+            results.set(id, result)
+        }
+        results
+    }
+    
+    on start_polling(interval_ms: Int64) {
+        self.poll_interval_ms = interval_ms
+        async {
+            loop {
+                let results = self.poll_all()
+                for (id, result) in results {
+                    if let Ok(reading) = result {
+                        self.readings_cache.set(id, reading)
+                    }
+                }
+                @native("sleep_ms", self.poll_interval_ms)
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum SensorError {
+    NotAvailable
+    NotReady(String)
+    ReadError(String)
+    CalibrationError(String)
+    CommunicationError(String)
+    InvalidData
+    Timeout
+    OutOfRange(Float64, Float64, Float64)  // value, min, max
+    
+    fn to_string() -> String {
+        match self {
+            .NotAvailable => "Sensor not available"
+            .NotReady(msg) => "Sensor not ready: \(msg)"
+            .ReadError(msg) => "Read error: \(msg)"
+            .CalibrationError(msg) => "Calibration error: \(msg)"
+            .CommunicationError(msg) => "Communication error: \(msg)"
+            .InvalidData => "Invalid sensor data"
+            .Timeout => "Sensor timeout"
+            .OutOfRange(v, min, max) => "Value \(v) out of range [\(min), \(max)]"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "temperature reading conversions" {
+    let reading = TemperatureReading.new(25.0)
+    assert_eq(reading.fahrenheit(), 77.0)?
+    assert_eq(reading.kelvin(), 298.15)?
+}
+
+test "humidity comfort check" {
+    let comfortable = HumidityReading.new(45.0)
+    let dry = HumidityReading.new(20.0)
+    assert(comfortable.is_comfortable())?
+    assert(!dry.is_comfortable())?
+}
+
+test "pressure conversions" {
+    let reading = PressureReading.new(101325.0)
+    assert_eq(reading.atmospheres(), 1.0)?
+    assert_eq(reading.hectopascals(), 1013.25)?
+}
+
+test "vector magnitude" {
+    let v = Vector3Reading.new(3.0, 4.0, 0.0)
+    assert_eq(v.magnitude(), 5.0)?
+}
+
+test "gps distance" {
+    let paris = GpsReading.new(48.8566, 2.3522)
+    let london = GpsReading.new(51.5074, -0.1278)
+    let distance = paris.distance_to(london)
+    // Approximately 344 km
+    assert(distance > 340000.0 && distance < 350000.0)?
+}
+
+test "light brightness levels" {
+    let dark = LightReading.new(0.5)
+    let bright = LightReading.new(500.0)
+    assert_eq(dark.brightness_level(), BrightnessLevel.Dark)?
+    assert_eq(bright.brightness_level(), BrightnessLevel.Bright)?
+}
+
+test "data quality validation" {
+    assert(DataQuality.Good.is_valid())?
+    assert(DataQuality.Uncertain.is_valid())?
+    assert(!DataQuality.Bad.is_valid())?
+    assert(!DataQuality.SensorFault.is_valid())?
+}

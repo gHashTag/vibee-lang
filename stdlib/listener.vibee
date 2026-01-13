@@ -1,0 +1,767 @@
+// =============================================================================
+// Vibee OS — Event Listener Module
+// Event listeners, handlers, and subscription management
+// =============================================================================
+
+use result::{Result, Ok, Err}
+use emitter::{Event, EventMeta, EventPriority, ListenerId}
+
+// =============================================================================
+// Core Listener Traits
+// =============================================================================
+
+/// Base listener trait
+trait Listener<T> {
+    fn handle(event: Event<T>)
+    fn matches(event_name: String) -> Bool
+    fn is_active() -> Bool
+}
+
+/// Async listener trait
+trait AsyncListener<T> {
+    fn handle(event: Event<T>) -> Future<()>
+    fn matches(event_name: String) -> Bool
+    fn is_active() -> Bool
+}
+
+/// Listener with lifecycle hooks
+trait LifecycleListener<T>: Listener<T> {
+    fn on_subscribe()
+    fn on_unsubscribe()
+    fn on_error(err: Error)
+}
+
+// =============================================================================
+// Listener Types
+// =============================================================================
+
+/// Simple function-based listener
+struct FnListener<T> {
+    event_pattern: String,
+    handler: fn(Event<T>),
+    active: Bool
+}
+
+impl<T> FnListener<T> {
+    fn new(pattern: String, handler: fn(Event<T>)) -> Self {
+        FnListener {
+            event_pattern: pattern,
+            handler: handler,
+            active: true
+        }
+    }
+    
+    fn deactivate() {
+        self.active = false
+    }
+    
+    fn activate() {
+        self.active = true
+    }
+}
+
+impl<T> Listener<T> for FnListener<T> {
+    fn handle(event: Event<T>) {
+        if self.active {
+            (self.handler)(event)
+        }
+    }
+    
+    fn matches(event_name: String) -> Bool {
+        if self.event_pattern == "*" {
+            return true
+        }
+        if self.event_pattern.ends_with("*") {
+            let prefix = self.event_pattern.trim_end_matches("*")
+            return event_name.starts_with(prefix)
+        }
+        self.event_pattern == event_name
+    }
+    
+    fn is_active() -> Bool {
+        self.active
+    }
+}
+
+/// Filtered listener - only handles events matching predicate
+struct FilteredListener<T> {
+    inner: impl Listener<T>,
+    predicate: fn(Event<T>) -> Bool
+}
+
+impl<T> FilteredListener<T> {
+    fn new(inner: impl Listener<T>, predicate: fn(Event<T>) -> Bool) -> Self {
+        FilteredListener {
+            inner: inner,
+            predicate: predicate
+        }
+    }
+}
+
+impl<T> Listener<T> for FilteredListener<T> {
+    fn handle(event: Event<T>) {
+        if (self.predicate)(event.clone()) {
+            self.inner.handle(event)
+        }
+    }
+    
+    fn matches(event_name: String) -> Bool {
+        self.inner.matches(event_name)
+    }
+    
+    fn is_active() -> Bool {
+        self.inner.is_active()
+    }
+}
+
+/// Mapped listener - transforms event data before handling
+struct MappedListener<T, U> {
+    inner: impl Listener<U>,
+    mapper: fn(Event<T>) -> Event<U>
+}
+
+impl<T, U> MappedListener<T, U> {
+    fn new(inner: impl Listener<U>, mapper: fn(Event<T>) -> Event<U>) -> Self {
+        MappedListener {
+            inner: inner,
+            mapper: mapper
+        }
+    }
+}
+
+impl<T, U> Listener<T> for MappedListener<T, U> {
+    fn handle(event: Event<T>) {
+        let mapped = (self.mapper)(event)
+        self.inner.handle(mapped)
+    }
+    
+    fn matches(event_name: String) -> Bool {
+        self.inner.matches(event_name)
+    }
+    
+    fn is_active() -> Bool {
+        self.inner.is_active()
+    }
+}
+
+/// Debounced listener - delays handling until quiet period
+actor DebouncedListener<T: Clone> {
+    state inner: impl Listener<T>
+    state delay_ms: Int64
+    state pending: Option<Event<T>>
+    state timer_id: Option<Int>
+    
+    fn new(inner: impl Listener<T>, delay_ms: Int64) -> Self {
+        DebouncedListener {
+            inner: inner,
+            delay_ms: delay_ms,
+            pending: None,
+            timer_id: None
+        }
+    }
+    
+    fn handle(event: Event<T>) {
+        // Cancel previous timer
+        if let Some(id) = self.timer_id.take() {
+            @native("clear_timeout", id)
+        }
+        
+        self.pending = Some(event)
+        
+        // Set new timer
+        self.timer_id = Some(@native("set_timeout", self.delay_ms, || {
+            if let Some(evt) = self.pending.take() {
+                self.inner.handle(evt)
+            }
+        }))
+    }
+    
+    fn flush() {
+        if let Some(id) = self.timer_id.take() {
+            @native("clear_timeout", id)
+        }
+        if let Some(evt) = self.pending.take() {
+            self.inner.handle(evt)
+        }
+    }
+    
+    fn cancel() {
+        if let Some(id) = self.timer_id.take() {
+            @native("clear_timeout", id)
+        }
+        self.pending = None
+    }
+}
+
+/// Throttled listener - limits handling rate
+actor ThrottledListener<T> {
+    state inner: impl Listener<T>
+    state interval_ms: Int64
+    state last_handled: Int64
+    state trailing: Bool
+    state pending: Option<Event<T>>
+    
+    fn new(inner: impl Listener<T>, interval_ms: Int64) -> Self {
+        ThrottledListener {
+            inner: inner,
+            interval_ms: interval_ms,
+            last_handled: 0,
+            trailing: false,
+            pending: None
+        }
+    }
+    
+    fn with_trailing(inner: impl Listener<T>, interval_ms: Int64) -> Self {
+        ThrottledListener {
+            inner: inner,
+            interval_ms: interval_ms,
+            last_handled: 0,
+            trailing: true,
+            pending: None
+        }
+    }
+    
+    fn handle(event: Event<T>) {
+        let now = @native("timestamp_ms")
+        
+        if now - self.last_handled >= self.interval_ms {
+            self.inner.handle(event)
+            self.last_handled = now
+            self.pending = None
+        } else if self.trailing {
+            self.pending = Some(event)
+            let remaining = self.interval_ms - (now - self.last_handled)
+            @native("set_timeout", remaining, || {
+                if let Some(evt) = self.pending.take() {
+                    self.inner.handle(evt)
+                    self.last_handled = @native("timestamp_ms")
+                }
+            })
+        }
+    }
+}
+
+/// Batched listener - collects events and handles in batches
+actor BatchedListener<T: Clone> {
+    state handler: fn([Event<T>])
+    state batch: [Event<T>]
+    state batch_size: Int
+    state flush_interval_ms: Int64
+    state timer_id: Option<Int>
+    
+    fn new(handler: fn([Event<T>]), batch_size: Int, flush_interval_ms: Int64) -> Self {
+        let listener = BatchedListener {
+            handler: handler,
+            batch: [],
+            batch_size: batch_size,
+            flush_interval_ms: flush_interval_ms,
+            timer_id: None
+        }
+        listener.start_timer()
+        listener
+    }
+    
+    fn start_timer() {
+        self.timer_id = Some(@native("set_interval", self.flush_interval_ms, || {
+            self.flush()
+        }))
+    }
+    
+    fn handle(event: Event<T>) {
+        self.batch.push(event)
+        
+        if self.batch.len() >= self.batch_size {
+            self.flush()
+        }
+    }
+    
+    fn flush() {
+        if !self.batch.is_empty() {
+            let events = self.batch.clone()
+            self.batch.clear()
+            (self.handler)(events)
+        }
+    }
+    
+    fn stop() {
+        if let Some(id) = self.timer_id.take() {
+            @native("clear_interval", id)
+        }
+        self.flush()
+    }
+}
+
+/// Retry listener - retries on failure
+actor RetryListener<T: Clone> {
+    state inner: fn(Event<T>) -> Result<(), Error>
+    state max_retries: Int
+    state retry_delay_ms: Int64
+    state backoff_multiplier: Float
+    
+    fn new(inner: fn(Event<T>) -> Result<(), Error>, max_retries: Int) -> Self {
+        RetryListener {
+            inner: inner,
+            max_retries: max_retries,
+            retry_delay_ms: 100,
+            backoff_multiplier: 2.0
+        }
+    }
+    
+    fn with_backoff(
+        inner: fn(Event<T>) -> Result<(), Error>,
+        max_retries: Int,
+        initial_delay_ms: Int64,
+        multiplier: Float
+    ) -> Self {
+        RetryListener {
+            inner: inner,
+            max_retries: max_retries,
+            retry_delay_ms: initial_delay_ms,
+            backoff_multiplier: multiplier
+        }
+    }
+    
+    fn handle(event: Event<T>) -> Result<(), Error> {
+        var delay = self.retry_delay_ms
+        
+        for attempt in 0..=self.max_retries {
+            match (self.inner)(event.clone()) {
+                Ok(_) => return Ok(()),
+                Err(e) if attempt == self.max_retries => return Err(e),
+                Err(_) => {
+                    @native("sleep_ms", delay)
+                    delay = (delay as Float * self.backoff_multiplier) as Int64
+                }
+            }
+        }
+        
+        Err(Error.new("Max retries exceeded"))
+    }
+}
+
+// =============================================================================
+// Listener Group
+// =============================================================================
+
+/// Group of listeners that can be managed together
+actor ListenerGroup<T> {
+    state listeners: [impl Listener<T>]
+    state active: Bool
+    
+    fn new() -> Self {
+        ListenerGroup {
+            listeners: [],
+            active: true
+        }
+    }
+    
+    fn add(listener: impl Listener<T>) {
+        self.listeners.push(listener)
+    }
+    
+    fn handle(event: Event<T>) {
+        if !self.active { return }
+        
+        for listener in self.listeners.iter() {
+            if listener.matches(event.name.clone()) && listener.is_active() {
+                listener.handle(event.clone())
+            }
+        }
+    }
+    
+    fn activate() {
+        self.active = true
+    }
+    
+    fn deactivate() {
+        self.active = false
+    }
+    
+    fn clear() {
+        self.listeners.clear()
+    }
+    
+    fn count() -> Int {
+        self.listeners.len()
+    }
+}
+
+// =============================================================================
+// Subscription Management
+// =============================================================================
+
+/// Subscription handle for managing listener lifecycle
+struct Subscription {
+    id: Int,
+    unsubscribe_fn: fn(),
+    active: Bool
+}
+
+impl Subscription {
+    fn new(id: Int, unsubscribe_fn: fn()) -> Self {
+        Subscription {
+            id: id,
+            unsubscribe_fn: unsubscribe_fn,
+            active: true
+        }
+    }
+    
+    fn empty() -> Self {
+        Subscription {
+            id: 0,
+            unsubscribe_fn: || {},
+            active: false
+        }
+    }
+    
+    fn unsubscribe() {
+        if self.active {
+            (self.unsubscribe_fn)()
+            self.active = false
+        }
+    }
+    
+    fn is_active() -> Bool {
+        self.active
+    }
+}
+
+/// Composite subscription - manages multiple subscriptions
+struct CompositeSubscription {
+    subscriptions: [Subscription]
+}
+
+impl CompositeSubscription {
+    fn new() -> Self {
+        CompositeSubscription { subscriptions: [] }
+    }
+    
+    fn add(sub: Subscription) {
+        self.subscriptions.push(sub)
+    }
+    
+    fn unsubscribe_all() {
+        for sub in self.subscriptions.iter_mut() {
+            sub.unsubscribe()
+        }
+        self.subscriptions.clear()
+    }
+    
+    fn count() -> Int {
+        self.subscriptions.iter().filter(|s| s.is_active()).count()
+    }
+}
+
+/// Scoped subscription - auto-unsubscribes when dropped
+struct ScopedSubscription {
+    inner: Subscription
+}
+
+impl ScopedSubscription {
+    fn new(sub: Subscription) -> Self {
+        ScopedSubscription { inner: sub }
+    }
+}
+
+impl Drop for ScopedSubscription {
+    fn drop() {
+        self.inner.unsubscribe()
+    }
+}
+
+// =============================================================================
+// Listener Builder
+// =============================================================================
+
+/// Fluent builder for creating listeners
+struct ListenerBuilder<T> {
+    event_pattern: String,
+    handler: Option<fn(Event<T>)>,
+    filter: Option<fn(Event<T>) -> Bool>,
+    debounce_ms: Option<Int64>,
+    throttle_ms: Option<Int64>,
+    max_calls: Option<Int>
+}
+
+impl<T> ListenerBuilder<T> {
+    fn new(pattern: String) -> Self {
+        ListenerBuilder {
+            event_pattern: pattern,
+            handler: None,
+            filter: None,
+            debounce_ms: None,
+            throttle_ms: None,
+            max_calls: None
+        }
+    }
+    
+    fn handler(handler: fn(Event<T>)) -> Self {
+        self.handler = Some(handler)
+        self
+    }
+    
+    fn filter(predicate: fn(Event<T>) -> Bool) -> Self {
+        self.filter = Some(predicate)
+        self
+    }
+    
+    fn debounce(ms: Int64) -> Self {
+        self.debounce_ms = Some(ms)
+        self
+    }
+    
+    fn throttle(ms: Int64) -> Self {
+        self.throttle_ms = Some(ms)
+        self
+    }
+    
+    fn max_calls(n: Int) -> Self {
+        self.max_calls = Some(n)
+        self
+    }
+    
+    fn build() -> impl Listener<T> {
+        let handler = self.handler.expect("Handler is required")
+        var listener: impl Listener<T> = FnListener.new(self.event_pattern.clone(), handler)
+        
+        if let Some(pred) = self.filter {
+            listener = FilteredListener.new(listener, pred)
+        }
+        
+        if let Some(n) = self.max_calls {
+            listener = LimitedListener.new(listener, n)
+        }
+        
+        listener
+    }
+}
+
+/// Limited listener - stops after N calls
+struct LimitedListener<T> {
+    inner: impl Listener<T>,
+    remaining: Int
+}
+
+impl<T> LimitedListener<T> {
+    fn new(inner: impl Listener<T>, max_calls: Int) -> Self {
+        LimitedListener {
+            inner: inner,
+            remaining: max_calls
+        }
+    }
+}
+
+impl<T> Listener<T> for LimitedListener<T> {
+    fn handle(event: Event<T>) {
+        if self.remaining > 0 {
+            self.remaining -= 1
+            self.inner.handle(event)
+        }
+    }
+    
+    fn matches(event_name: String) -> Bool {
+        self.inner.matches(event_name)
+    }
+    
+    fn is_active() -> Bool {
+        self.remaining > 0 && self.inner.is_active()
+    }
+}
+
+// =============================================================================
+// Event Handler Combinators
+// =============================================================================
+
+/// Combine multiple handlers into one
+fn combine<T: Clone>(handlers: [fn(Event<T>)]) -> fn(Event<T>) {
+    |event| {
+        for handler in handlers {
+            handler(event.clone())
+        }
+    }
+}
+
+/// Create handler that runs handlers in sequence, stopping on error
+fn sequence<T: Clone>(handlers: [fn(Event<T>) -> Result<(), Error>]) -> fn(Event<T>) -> Result<(), Error> {
+    |event| {
+        for handler in handlers {
+            handler(event.clone())?
+        }
+        Ok(())
+    }
+}
+
+/// Create handler that runs all handlers, collecting errors
+fn parallel<T: Clone>(handlers: [fn(Event<T>) -> Result<(), Error>]) -> fn(Event<T>) -> [Error] {
+    |event| {
+        var errors = []
+        for handler in handlers {
+            if let Err(e) = handler(event.clone()) {
+                errors.push(e)
+            }
+        }
+        errors
+    }
+}
+
+/// Create handler with timeout
+fn with_timeout<T>(handler: fn(Event<T>), timeout_ms: Int64) -> fn(Event<T>) -> Result<(), Error> {
+    |event| {
+        let result = @native("with_timeout", timeout_ms, || handler(event))
+        result.ok_or(Error.new("Handler timeout"))
+    }
+}
+
+/// Create handler with error recovery
+fn with_fallback<T: Clone>(
+    handler: fn(Event<T>) -> Result<(), Error>,
+    fallback: fn(Event<T>, Error)
+) -> fn(Event<T>) {
+    |event| {
+        if let Err(e) = handler(event.clone()) {
+            fallback(event, e)
+        }
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/// Create a simple listener
+fn listener<T>(pattern: String, handler: fn(Event<T>)) -> FnListener<T> {
+    FnListener.new(pattern, handler)
+}
+
+/// Create a filtered listener
+fn filtered<T>(
+    pattern: String,
+    handler: fn(Event<T>),
+    predicate: fn(Event<T>) -> Bool
+) -> FilteredListener<T> {
+    FilteredListener.new(FnListener.new(pattern, handler), predicate)
+}
+
+/// Create a debounced listener
+fn debounced<T: Clone>(
+    inner: impl Listener<T>,
+    delay_ms: Int64
+) -> DebouncedListener<T> {
+    DebouncedListener.new(inner, delay_ms)
+}
+
+/// Create a throttled listener
+fn throttled<T>(
+    inner: impl Listener<T>,
+    interval_ms: Int64
+) -> ThrottledListener<T> {
+    ThrottledListener.new(inner, interval_ms)
+}
+
+/// Create a batched listener
+fn batched<T: Clone>(
+    handler: fn([Event<T>]),
+    batch_size: Int,
+    flush_interval_ms: Int64
+) -> BatchedListener<T> {
+    BatchedListener.new(handler, batch_size, flush_interval_ms)
+}
+
+/// Create a listener builder
+fn builder<T>(pattern: String) -> ListenerBuilder<T> {
+    ListenerBuilder.new(pattern)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "fn listener" {
+    var received = false
+    let l = FnListener.new("test", |_| { received = true })
+    
+    assert(l.matches("test"))?
+    assert(!l.matches("other"))?
+    
+    l.handle(Event.new("test", 42, "source"))
+    assert(received)?
+}
+
+test "wildcard matching" {
+    let l = FnListener::<Int>.new("user.*", |_| {})
+    
+    assert(l.matches("user.created"))?
+    assert(l.matches("user.updated"))?
+    assert(!l.matches("order.created"))?
+}
+
+test "filtered listener" {
+    var count = 0
+    let inner = FnListener.new("*", |_: Event<Int>| { count += 1 })
+    let filtered = FilteredListener.new(inner, |evt: Event<Int>| evt.data > 5)
+    
+    filtered.handle(Event.new("test", 3, "source"))
+    filtered.handle(Event.new("test", 10, "source"))
+    
+    assert_eq(count, 1)?
+}
+
+test "limited listener" {
+    var count = 0
+    let inner = FnListener.new("*", |_: Event<Int>| { count += 1 })
+    let limited = LimitedListener.new(inner, 2)
+    
+    limited.handle(Event.new("test", 1, "source"))
+    limited.handle(Event.new("test", 2, "source"))
+    limited.handle(Event.new("test", 3, "source"))
+    
+    assert_eq(count, 2)?
+    assert(!limited.is_active())?
+}
+
+test "listener group" {
+    var results = []
+    let group = ListenerGroup::<Int>.new()
+    
+    group.add(FnListener.new("a", |evt| { results.push(("a", evt.data)) }))
+    group.add(FnListener.new("b", |evt| { results.push(("b", evt.data)) }))
+    
+    group.handle(Event.new("a", 1, "source"))
+    group.handle(Event.new("b", 2, "source"))
+    
+    assert_eq(results, [("a", 1), ("b", 2)])?
+}
+
+test "subscription" {
+    var active = true
+    let sub = Subscription.new(1, || { active = false })
+    
+    assert(sub.is_active())?
+    sub.unsubscribe()
+    assert(!sub.is_active())?
+    assert(!active)?
+}
+
+test "composite subscription" {
+    var count = 0
+    let comp = CompositeSubscription.new()
+    
+    comp.add(Subscription.new(1, || { count += 1 }))
+    comp.add(Subscription.new(2, || { count += 1 }))
+    
+    assert_eq(comp.count(), 2)?
+    comp.unsubscribe_all()
+    assert_eq(count, 2)?
+    assert_eq(comp.count(), 0)?
+}
+
+test "combine handlers" {
+    var results = []
+    let combined = combine([
+        |evt: Event<Int>| { results.push(1) },
+        |evt: Event<Int>| { results.push(2) }
+    ])
+    
+    combined(Event.new("test", 0, "source"))
+    assert_eq(results, [1, 2])?
+}

@@ -1,0 +1,646 @@
+// =============================================================================
+// Vibee OS — Auth Module
+// Authentication system with multiple strategies
+// =============================================================================
+
+// =============================================================================
+// Authentication Result
+// =============================================================================
+
+/// Authentication result
+enum AuthResult<T> {
+    Authenticated(T)
+    Failed(AuthError)
+    RequiresMfa(MfaChallenge)
+    RequiresPasswordChange(T)
+    Locked(DateTime)
+}
+
+impl<T> AuthResult<T> {
+    fn is_authenticated() -> Bool { match self { Authenticated(_) => true, _ => false } }
+    fn is_failed() -> Bool { match self { Failed(_) => true, _ => false } }
+    fn requires_mfa() -> Bool { match self { RequiresMfa(_) => true, _ => false } }
+    fn user() -> Option<T> { match self { Authenticated(u) => Some(u), RequiresPasswordChange(u) => Some(u), _ => None } }
+    fn error() -> Option<AuthError> { match self { Failed(e) => Some(e), _ => None } }
+}
+
+/// Authentication error
+enum AuthError {
+    InvalidCredentials
+    UserNotFound
+    UserDisabled
+    UserLocked
+    PasswordExpired
+    SessionExpired
+    TokenInvalid
+    TokenExpired
+    MfaRequired
+    MfaFailed
+    RateLimited(Int64)
+    Other(String)
+}
+
+impl Display for AuthError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidCredentials => f.write("Invalid credentials")
+            UserNotFound => f.write("User not found")
+            UserDisabled => f.write("User account is disabled")
+            UserLocked => f.write("User account is locked")
+            PasswordExpired => f.write("Password has expired")
+            SessionExpired => f.write("Session has expired")
+            TokenInvalid => f.write("Invalid token")
+            TokenExpired => f.write("Token has expired")
+            MfaRequired => f.write("MFA verification required")
+            MfaFailed => f.write("MFA verification failed")
+            RateLimited(seconds) => f.write(format!("Rate limited, retry in {} seconds", seconds))
+            Other(msg) => f.write(msg)
+        }
+    }
+}
+
+/// MFA Challenge
+struct MfaChallenge {
+    user_id: String
+    challenge_id: String
+    method: MfaMethod
+    expires_at: DateTime
+}
+
+enum MfaMethod { Totp, Sms, Email, Push, WebAuthn, RecoveryCode }
+
+// =============================================================================
+// User Identity
+// =============================================================================
+
+/// User identity
+struct Identity {
+    id: String
+    username: String
+    email: Option<String>
+    roles: [String]
+    permissions: Set<String>
+    metadata: Map<String, String>
+    authenticated_at: DateTime
+    auth_method: AuthMethod
+}
+
+impl Identity {
+    fn new(id: String, username: String) -> Self {
+        Identity {
+            id: id,
+            username: username,
+            email: None,
+            roles: [],
+            permissions: Set.empty(),
+            metadata: Map.empty(),
+            authenticated_at: DateTime.now(),
+            auth_method: AuthMethod.Password
+        }
+    }
+    
+    fn with_email(email: String) -> Self { self.email = Some(email); self }
+    fn with_roles(roles: [String]) -> Self { self.roles = roles; self }
+    fn with_permissions(perms: Set<String>) -> Self { self.permissions = perms; self }
+    fn with_metadata(key: String, value: String) -> Self { self.metadata.set(key, value); self }
+    
+    fn has_role(role: String) -> Bool { self.roles.contains(role) }
+    fn has_permission(perm: String) -> Bool { self.permissions.contains(perm) }
+    fn has_any_role(roles: [String]) -> Bool { roles.iter().any(|r| self.has_role(r)) }
+    fn has_all_roles(roles: [String]) -> Bool { roles.iter().all(|r| self.has_role(r)) }
+}
+
+enum AuthMethod { Password, Token, OAuth, Saml, ApiKey, Certificate, Biometric, Mfa }
+
+// =============================================================================
+// Credentials
+// =============================================================================
+
+/// User credentials
+enum Credentials {
+    Password { username: String, password: String }
+    Token { token: String }
+    ApiKey { key: String, secret: Option<String> }
+    OAuth { provider: String, code: String, state: String }
+    Certificate { cert: [UInt8] }
+    Refresh { refresh_token: String }
+}
+
+impl Credentials {
+    fn password(username: String, password: String) -> Self {
+        Credentials.Password { username: username, password: password }
+    }
+    
+    fn token(token: String) -> Self { Credentials.Token { token: token } }
+    fn api_key(key: String) -> Self { Credentials.ApiKey { key: key, secret: None } }
+    fn api_key_with_secret(key: String, secret: String) -> Self { Credentials.ApiKey { key: key, secret: Some(secret) } }
+    fn oauth(provider: String, code: String, state: String) -> Self { Credentials.OAuth { provider: provider, code: code, state: state } }
+    fn refresh(token: String) -> Self { Credentials.Refresh { refresh_token: token } }
+}
+
+// =============================================================================
+// Authentication Provider Trait
+// =============================================================================
+
+/// Authentication provider trait
+trait AuthProvider {
+    fn authenticate(credentials: Credentials) -> Result<AuthResult<Identity>, AuthError>
+    fn validate_token(token: String) -> Result<Identity, AuthError>
+    fn refresh_token(refresh_token: String) -> Result<TokenPair, AuthError>
+    fn revoke_token(token: String) -> Result<(), AuthError>
+}
+
+/// Token pair (access + refresh)
+struct TokenPair {
+    access_token: String
+    refresh_token: Option<String>
+    token_type: String
+    expires_in: Int64
+    scope: Option<String>
+}
+
+impl TokenPair {
+    fn new(access: String, expires_in: Int64) -> Self {
+        TokenPair {
+            access_token: access,
+            refresh_token: None,
+            token_type: "Bearer",
+            expires_in: expires_in,
+            scope: None
+        }
+    }
+    
+    fn with_refresh(refresh: String) -> Self { self.refresh_token = Some(refresh); self }
+    fn with_scope(scope: String) -> Self { self.scope = Some(scope); self }
+    fn bearer_header() -> String { format!("Bearer {}", self.access_token) }
+}
+
+// =============================================================================
+// Password Authenticator
+// =============================================================================
+
+/// Password-based authenticator
+struct PasswordAuthenticator<S: UserStore> {
+    store: S
+    config: PasswordAuthConfig
+}
+
+struct PasswordAuthConfig {
+    max_attempts: Int
+    lockout_duration: Int64
+    password_expiry_days: Option<Int>
+    require_mfa: Bool
+}
+
+impl PasswordAuthConfig {
+    fn default() -> Self {
+        PasswordAuthConfig {
+            max_attempts: 5,
+            lockout_duration: 900,
+            password_expiry_days: None,
+            require_mfa: false
+        }
+    }
+    
+    fn strict() -> Self {
+        PasswordAuthConfig {
+            max_attempts: 3,
+            lockout_duration: 3600,
+            password_expiry_days: Some(90),
+            require_mfa: true
+        }
+    }
+}
+
+impl<S: UserStore> PasswordAuthenticator<S> {
+    fn new(store: S) -> Self {
+        PasswordAuthenticator { store: store, config: PasswordAuthConfig.default() }
+    }
+    
+    fn with_config(config: PasswordAuthConfig) -> Self { self.config = config; self }
+    
+    fn authenticate(username: String, pwd: String) -> Result<AuthResult<Identity>, AuthError> {
+        let user = self.store.find_by_username(username.clone()).ok_or(AuthError.UserNotFound)?
+        
+        if user.is_disabled { return Ok(AuthResult.Failed(AuthError.UserDisabled)) }
+        
+        if let Some(locked_until) = user.locked_until {
+            if DateTime.now() < locked_until { return Ok(AuthResult.Locked(locked_until)) }
+            self.store.unlock_user(user.id.clone())?
+        }
+        
+        if !password.verify(pwd, user.password_hash.clone()) {
+            let attempts = self.store.increment_failed_attempts(user.id.clone())?
+            if attempts >= self.config.max_attempts {
+                let locked_until = DateTime.now().add_seconds(self.config.lockout_duration)
+                self.store.lock_user(user.id.clone(), locked_until)?
+                return Ok(AuthResult.Locked(locked_until))
+            }
+            return Ok(AuthResult.Failed(AuthError.InvalidCredentials))
+        }
+        
+        self.store.reset_failed_attempts(user.id.clone())?
+        
+        if self.config.require_mfa && user.mfa_enabled {
+            let challenge = MfaChallenge {
+                user_id: user.id.clone(),
+                challenge_id: uuid.v4(),
+                method: user.mfa_method.unwrap_or(MfaMethod.Totp),
+                expires_at: DateTime.now().add_minutes(5)
+            }
+            return Ok(AuthResult.RequiresMfa(challenge))
+        }
+        
+        let identity = Identity {
+            id: user.id,
+            username: user.username,
+            email: user.email,
+            roles: user.roles,
+            permissions: user.permissions,
+            metadata: Map.empty(),
+            authenticated_at: DateTime.now(),
+            auth_method: AuthMethod.Password
+        }
+        
+        Ok(AuthResult.Authenticated(identity))
+    }
+    
+    fn change_password(user_id: String, old_pwd: String, new_pwd: String) -> Result<(), AuthError> {
+        let user = self.store.find_by_id(user_id.clone()).ok_or(AuthError.UserNotFound)?
+        if !password.verify(old_pwd, user.password_hash) { return Err(AuthError.InvalidCredentials) }
+        let new_hash = password.hash(new_pwd).map_err(|_| AuthError.Other("Hashing failed"))?
+        self.store.update_password(user_id, new_hash)
+    }
+}
+
+// =============================================================================
+// Token Authenticator
+// =============================================================================
+
+/// JWT-based token authenticator
+struct TokenAuthenticator {
+    secret: JwtKey
+    issuer: String
+    audience: Option<String>
+    access_ttl: Int64
+    refresh_ttl: Int64
+    revoked_tokens: Set<String>
+}
+
+impl TokenAuthenticator {
+    fn new(secret: String) -> Self {
+        TokenAuthenticator {
+            secret: JwtKey.hmac_str(secret),
+            issuer: "vibee-auth",
+            audience: None,
+            access_ttl: 3600,
+            refresh_ttl: 604800,
+            revoked_tokens: Set.empty()
+        }
+    }
+    
+    fn with_issuer(issuer: String) -> Self { self.issuer = issuer; self }
+    fn with_audience(audience: String) -> Self { self.audience = Some(audience); self }
+    fn with_access_ttl(ttl: Int64) -> Self { self.access_ttl = ttl; self }
+    fn with_refresh_ttl(ttl: Int64) -> Self { self.refresh_ttl = ttl; self }
+    
+    fn generate_tokens(identity: Identity) -> Result<TokenPair, AuthError> {
+        var access_builder = JwtBuilder.hs256()
+            .issuer(self.issuer.clone())
+            .subject(identity.id.clone())
+            .expires_in(self.access_ttl)
+            .claim("username", JsonValue.String(identity.username.clone()))
+            .claim("roles", JsonValue.Array(identity.roles.iter().map(|r| JsonValue.String(r)).collect()))
+        
+        if let Some(aud) = self.audience.clone() { access_builder = access_builder.audience(aud) }
+        
+        let access_token = access_builder.sign(self.secret.clone())
+            .map_err(|_| AuthError.Other("Failed to generate access token"))?
+        
+        let refresh_token = JwtBuilder.hs256()
+            .issuer(self.issuer.clone())
+            .subject(identity.id.clone())
+            .expires_in(self.refresh_ttl)
+            .claim("type", JsonValue.String("refresh"))
+            .jwt_id(uuid.v4())
+            .sign(self.secret.clone())
+            .map_err(|_| AuthError.Other("Failed to generate refresh token"))?
+        
+        Ok(TokenPair {
+            access_token: access_token,
+            refresh_token: Some(refresh_token),
+            token_type: "Bearer",
+            expires_in: self.access_ttl,
+            scope: None
+        })
+    }
+    
+    fn validate(token: String) -> Result<Identity, AuthError> {
+        if self.revoked_tokens.contains(token.clone()) { return Err(AuthError.TokenInvalid) }
+        
+        let jwt = Jwt.verify(token, self.secret.clone())
+            .map_err(|e| match e { JwtError.Expired => AuthError.TokenExpired, _ => AuthError.TokenInvalid })?
+        
+        if jwt.claims.iss != Some(self.issuer.clone()) { return Err(AuthError.TokenInvalid) }
+        
+        if let Some(aud) = self.audience.clone() {
+            if jwt.claims.aud != Some(aud) { return Err(AuthError.TokenInvalid) }
+        }
+        
+        let id = jwt.claims.sub.ok_or(AuthError.TokenInvalid)?
+        let username = jwt.claims.get("username").and_then(|v| v.as_string()).unwrap_or("")
+        let roles = jwt.claims.get("roles").and_then(|v| v.as_array()).map(|arr| arr.iter().filter_map(|v| v.as_string()).collect()).unwrap_or([])
+        
+        Ok(Identity {
+            id: id,
+            username: username,
+            email: None,
+            roles: roles,
+            permissions: Set.empty(),
+            metadata: Map.empty(),
+            authenticated_at: DateTime.now(),
+            auth_method: AuthMethod.Token
+        })
+    }
+    
+    fn refresh(refresh_token: String) -> Result<TokenPair, AuthError> {
+        let jwt = Jwt.verify(refresh_token.clone(), self.secret.clone()).map_err(|_| AuthError.TokenInvalid)?
+        
+        let token_type = jwt.claims.get("type").and_then(|v| v.as_string()).unwrap_or("")
+        if token_type != "refresh" { return Err(AuthError.TokenInvalid) }
+        
+        let id = jwt.claims.sub.ok_or(AuthError.TokenInvalid)?
+        self.revoke(refresh_token)?
+        
+        let identity = Identity.new(id, "")
+        self.generate_tokens(identity)
+    }
+    
+    fn revoke(token: String) -> Result<(), AuthError> { self.revoked_tokens.insert(token); Ok(()) }
+}
+
+// =============================================================================
+// API Key Authenticator
+// =============================================================================
+
+/// API Key authenticator
+struct ApiKeyAuthenticator<S: ApiKeyStore> {
+    store: S
+    hash_keys: Bool
+}
+
+impl<S: ApiKeyStore> ApiKeyAuthenticator<S> {
+    fn new(store: S) -> Self { ApiKeyAuthenticator { store: store, hash_keys: true } }
+    
+    fn authenticate(key: String, secret: Option<String>) -> Result<Identity, AuthError> {
+        let key_hash = if self.hash_keys { crypto.sha256_hex(key.as_bytes()) } else { key.clone() }
+        
+        let api_key = self.store.find_by_key(key_hash).ok_or(AuthError.InvalidCredentials)?
+        
+        if !api_key.is_active { return Err(AuthError.TokenInvalid) }
+        
+        if let Some(expires_at) = api_key.expires_at {
+            if DateTime.now() > expires_at { return Err(AuthError.TokenExpired) }
+        }
+        
+        if let Some(s) = secret {
+            let secret_hash = api_key.secret_hash.ok_or(AuthError.InvalidCredentials)?
+            if !password.verify(s, secret_hash) { return Err(AuthError.InvalidCredentials) }
+        }
+        
+        self.store.update_last_used(api_key.id.clone())?
+        
+        Ok(Identity {
+            id: api_key.owner_id,
+            username: api_key.name,
+            email: None,
+            roles: api_key.roles,
+            permissions: api_key.permissions,
+            metadata: Map.empty(),
+            authenticated_at: DateTime.now(),
+            auth_method: AuthMethod.ApiKey
+        })
+    }
+    
+    fn generate_key(owner_id: String, name: String, permissions: Set<String>) -> Result<(String, String), AuthError> {
+        let key = format!("vb_{}", base64.encode_url_safe(crypto.random_bytes(24)))
+        let secret = base64.encode_url_safe(crypto.random_bytes(32))
+        
+        let key_hash = if self.hash_keys { crypto.sha256_hex(key.as_bytes()) } else { key.clone() }
+        let secret_hash = password.hash(secret.clone()).map_err(|_| AuthError.Other("Hashing failed"))?
+        
+        let api_key = ApiKey {
+            id: uuid.v4(),
+            key_hash: key_hash,
+            secret_hash: Some(secret_hash),
+            owner_id: owner_id,
+            name: name,
+            roles: [],
+            permissions: permissions,
+            is_active: true,
+            expires_at: None,
+            created_at: DateTime.now(),
+            last_used_at: None
+        }
+        
+        self.store.create(api_key)?
+        Ok((key, secret))
+    }
+    
+    fn revoke_key(key_id: String) -> Result<(), AuthError> { self.store.deactivate(key_id) }
+}
+
+// =============================================================================
+// User Store Trait
+// =============================================================================
+
+trait UserStore {
+    fn find_by_id(id: String) -> Option<User>
+    fn find_by_username(username: String) -> Option<User>
+    fn find_by_email(email: String) -> Option<User>
+    fn create(user: User) -> Result<User, AuthError>
+    fn update(user: User) -> Result<User, AuthError>
+    fn update_password(user_id: String, password_hash: String) -> Result<(), AuthError>
+    fn increment_failed_attempts(user_id: String) -> Result<Int, AuthError>
+    fn reset_failed_attempts(user_id: String) -> Result<(), AuthError>
+    fn lock_user(user_id: String, until: DateTime) -> Result<(), AuthError>
+    fn unlock_user(user_id: String) -> Result<(), AuthError>
+}
+
+struct User {
+    id: String
+    username: String
+    email: Option<String>
+    password_hash: String
+    roles: [String]
+    permissions: Set<String>
+    is_disabled: Bool
+    locked_until: Option<DateTime>
+    failed_attempts: Int
+    mfa_enabled: Bool
+    mfa_method: Option<MfaMethod>
+    mfa_secret: Option<String>
+    created_at: DateTime
+}
+
+impl User {
+    fn new(username: String, password_hash: String) -> Self {
+        User {
+            id: uuid.v4(),
+            username: username,
+            email: None,
+            password_hash: password_hash,
+            roles: [],
+            permissions: Set.empty(),
+            is_disabled: false,
+            locked_until: None,
+            failed_attempts: 0,
+            mfa_enabled: false,
+            mfa_method: None,
+            mfa_secret: None,
+            created_at: DateTime.now()
+        }
+    }
+    
+    fn is_locked() -> Bool { self.locked_until.map(|t| DateTime.now() < t).unwrap_or(false) }
+}
+
+// =============================================================================
+// API Key Store Trait
+// =============================================================================
+
+trait ApiKeyStore {
+    fn find_by_key(key_hash: String) -> Option<ApiKey>
+    fn find_by_id(id: String) -> Option<ApiKey>
+    fn create(key: ApiKey) -> Result<ApiKey, AuthError>
+    fn update_last_used(id: String) -> Result<(), AuthError>
+    fn deactivate(id: String) -> Result<(), AuthError>
+    fn list_by_owner(owner_id: String) -> [ApiKey]
+}
+
+struct ApiKey {
+    id: String
+    key_hash: String
+    secret_hash: Option<String>
+    owner_id: String
+    name: String
+    roles: [String]
+    permissions: Set<String>
+    is_active: Bool
+    expires_at: Option<DateTime>
+    created_at: DateTime
+    last_used_at: Option<DateTime>
+}
+
+// =============================================================================
+// Authentication Manager Actor
+// =============================================================================
+
+actor AuthManager {
+    state token_auth: TokenAuthenticator
+    state sessions: Map<String, SessionInfo>
+    state rate_limiter: RateLimiter
+    
+    fn new(secret: String) -> Self {
+        AuthManager {
+            token_auth: TokenAuthenticator.new(secret),
+            sessions: Map.empty(),
+            rate_limiter: RateLimiter.new(10, 60)
+        }
+    }
+    
+    fn authenticate(credentials: Credentials) -> Result<AuthResult<TokenPair>, AuthError> {
+        match credentials {
+            Credentials.Token { token } => {
+                let identity = self.token_auth.validate(token)?
+                let tokens = self.token_auth.generate_tokens(identity)?
+                Ok(AuthResult.Authenticated(tokens))
+            }
+            Credentials.Refresh { refresh_token } => {
+                let tokens = self.token_auth.refresh(refresh_token)?
+                Ok(AuthResult.Authenticated(tokens))
+            }
+            _ => Err(AuthError.Other("Unsupported credential type"))
+        }
+    }
+    
+    fn validate_token(token: String) -> Result<Identity, AuthError> { self.token_auth.validate(token) }
+    fn revoke_token(token: String) -> Result<(), AuthError> { self.token_auth.revoke(token) }
+    
+    fn create_session(identity: Identity) -> String {
+        let session_id = uuid.v4()
+        self.sessions.set(session_id.clone(), SessionInfo { identity: identity, created_at: DateTime.now(), last_activity: DateTime.now() })
+        session_id
+    }
+    
+    fn get_session(session_id: String) -> Option<Identity> { self.sessions.get(session_id).map(|s| s.identity.clone()) }
+    fn invalidate_session(session_id: String) { self.sessions.remove(session_id) }
+}
+
+struct SessionInfo { identity: Identity, created_at: DateTime, last_activity: DateTime }
+
+struct RateLimiter { max_attempts: Int, window_seconds: Int64, attempts: Map<String, [Int64]> }
+
+impl RateLimiter {
+    fn new(max_attempts: Int, window_seconds: Int64) -> Self {
+        RateLimiter { max_attempts: max_attempts, window_seconds: window_seconds, attempts: Map.empty() }
+    }
+    
+    fn check(key: String) -> Result<(), Int64> {
+        let now = DateTime.now().timestamp()
+        let window_start = now - self.window_seconds
+        let attempts = self.attempts.get(key.clone()).unwrap_or([])
+        let recent: [Int64] = attempts.iter().filter(|t| *t > window_start).collect()
+        
+        if recent.len() >= self.max_attempts {
+            let oldest = recent.iter().min().unwrap_or(now)
+            return Err(oldest + self.window_seconds - now)
+        }
+        
+        var updated = recent.clone()
+        updated.push(now)
+        self.attempts.set(key, updated)
+        Ok(())
+    }
+    
+    fn reset(key: String) { self.attempts.remove(key) }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "identity creation" {
+    let identity = Identity.new("user-123", "john").with_email("john@example.com").with_roles(["admin", "user"])
+    assert_eq(identity.id, "user-123")?
+    assert(identity.has_role("admin"))?
+    assert(!identity.has_role("guest"))?
+}
+
+test "token generation and validation" {
+    let auth = TokenAuthenticator.new("super-secret-key")
+    let identity = Identity.new("user-123", "john")
+    let tokens = auth.generate_tokens(identity)?
+    assert(!tokens.access_token.is_empty())?
+    let validated = auth.validate(tokens.access_token)?
+    assert_eq(validated.id, "user-123")?
+}
+
+test "rate limiter" {
+    var limiter = RateLimiter.new(3, 60)
+    assert(limiter.check("user1").is_ok())?
+    assert(limiter.check("user1").is_ok())?
+    assert(limiter.check("user1").is_ok())?
+    assert(limiter.check("user1").is_err())?
+}
+
+test "credentials" {
+    let creds = Credentials.password("john", "secret123")
+    match creds {
+        Credentials.Password { username, password } => {
+            assert_eq(username, "john")?
+            assert_eq(password, "secret123")?
+        }
+        _ => assert(false)?
+    }
+}

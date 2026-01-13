@@ -1,0 +1,759 @@
+// =============================================================================
+// Vibee OS — Object Store Module
+// Object storage abstraction with multiple backend support
+// =============================================================================
+
+// =============================================================================
+// Object Store Configuration
+// =============================================================================
+
+struct ObjectStoreConfig {
+    backend: ObjectStoreBackend
+    bucket: String
+    prefix: String
+    max_object_size: Int64
+    multipart_threshold: Int64
+    multipart_chunk_size: Int64
+    retry_config: RetryConfig
+}
+
+enum ObjectStoreBackend {
+    Memory
+    FileSystem(String)  // base path
+    S3(S3Config)
+    GCS(GCSConfig)
+    Azure(AzureConfig)
+    MinIO(MinIOConfig)
+}
+
+struct S3Config {
+    endpoint: String
+    region: String
+    access_key: String
+    secret_key: String
+    use_ssl: Bool
+}
+
+struct GCSConfig {
+    project_id: String
+    credentials_path: Option<String>
+}
+
+struct AzureConfig {
+    account_name: String
+    account_key: String
+    container: String
+}
+
+struct MinIOConfig {
+    endpoint: String
+    access_key: String
+    secret_key: String
+    use_ssl: Bool
+}
+
+struct RetryConfig {
+    max_retries: Int
+    initial_delay_ms: Int64
+    max_delay_ms: Int64
+    backoff_multiplier: Float64
+}
+
+impl RetryConfig {
+    fn default() -> Self {
+        RetryConfig {
+            max_retries: 3,
+            initial_delay_ms: 100,
+            max_delay_ms: 10000,
+            backoff_multiplier: 2.0
+        }
+    }
+}
+
+impl ObjectStoreConfig {
+    fn memory(bucket: String) -> Self {
+        ObjectStoreConfig {
+            backend: ObjectStoreBackend.Memory,
+            bucket: bucket,
+            prefix: "",
+            max_object_size: 5 * 1024 * 1024 * 1024,  // 5GB
+            multipart_threshold: 100 * 1024 * 1024,   // 100MB
+            multipart_chunk_size: 5 * 1024 * 1024,    // 5MB
+            retry_config: RetryConfig.default()
+        }
+    }
+    
+    fn filesystem(base_path: String, bucket: String) -> Self {
+        ObjectStoreConfig {
+            backend: ObjectStoreBackend.FileSystem(base_path),
+            bucket: bucket,
+            prefix: "",
+            max_object_size: 5 * 1024 * 1024 * 1024,
+            multipart_threshold: 100 * 1024 * 1024,
+            multipart_chunk_size: 5 * 1024 * 1024,
+            retry_config: RetryConfig.default()
+        }
+    }
+    
+    fn s3(config: S3Config, bucket: String) -> Self {
+        ObjectStoreConfig {
+            backend: ObjectStoreBackend.S3(config),
+            bucket: bucket,
+            prefix: "",
+            max_object_size: 5 * 1024 * 1024 * 1024,
+            multipart_threshold: 100 * 1024 * 1024,
+            multipart_chunk_size: 5 * 1024 * 1024,
+            retry_config: RetryConfig.default()
+        }
+    }
+    
+    fn with_prefix(prefix: String) -> Self { self.prefix = prefix; self }
+    fn with_retry(config: RetryConfig) -> Self { self.retry_config = config; self }
+}
+
+// =============================================================================
+// Object Store Error
+// =============================================================================
+
+enum ObjectStoreError {
+    NotFound(String)
+    AlreadyExists(String)
+    PermissionDenied
+    InvalidKey(String)
+    ObjectTooLarge(Int64, Int64)
+    BucketNotFound(String)
+    NetworkError(String)
+    Timeout
+    ChecksumMismatch(String, String)
+    QuotaExceeded
+    BackendError(String)
+    Other(String)
+}
+
+impl Display for ObjectStoreError {
+    fn fmt(f: Formatter) {
+        match self {
+            .NotFound(key) => f.write("Object not found: \(key)")
+            .AlreadyExists(key) => f.write("Object already exists: \(key)")
+            .PermissionDenied => f.write("Permission denied")
+            .InvalidKey(key) => f.write("Invalid key: \(key)")
+            .ObjectTooLarge(size, max) => f.write("Object too large: \(size) > \(max)")
+            .BucketNotFound(bucket) => f.write("Bucket not found: \(bucket)")
+            .NetworkError(msg) => f.write("Network error: \(msg)")
+            .Timeout => f.write("Operation timed out")
+            .ChecksumMismatch(expected, actual) => f.write("Checksum mismatch: \(expected) != \(actual)")
+            .QuotaExceeded => f.write("Storage quota exceeded")
+            .BackendError(msg) => f.write("Backend error: \(msg)")
+            .Other(msg) => f.write(msg)
+        }
+    }
+}
+
+// =============================================================================
+// Object Metadata
+// =============================================================================
+
+struct ObjectMeta {
+    key: String
+    size: Int64
+    etag: String
+    content_type: String
+    last_modified: Int64
+    metadata: Map<String, String>
+    version_id: Option<String>
+    storage_class: Option<String>
+}
+
+impl ObjectMeta {
+    fn new(key: String, size: Int64) -> Self {
+        ObjectMeta {
+            key: key,
+            size: size,
+            etag: "",
+            content_type: "application/octet-stream",
+            last_modified: @native("timestamp_ms"),
+            metadata: Map.empty(),
+            version_id: None,
+            storage_class: None
+        }
+    }
+    
+    fn with_content_type(ct: String) -> Self { self.content_type = ct; self }
+    fn with_etag(etag: String) -> Self { self.etag = etag; self }
+    fn with_metadata(key: String, value: String) -> Self { self.metadata.set(key, value); self }
+}
+
+// =============================================================================
+// Put Options
+// =============================================================================
+
+struct PutOptions {
+    content_type: Option<String>
+    content_encoding: Option<String>
+    cache_control: Option<String>
+    metadata: Map<String, String>
+    if_none_match: Bool
+    storage_class: Option<String>
+}
+
+impl PutOptions {
+    fn default() -> Self {
+        PutOptions {
+            content_type: None,
+            content_encoding: None,
+            cache_control: None,
+            metadata: Map.empty(),
+            if_none_match: false,
+            storage_class: None
+        }
+    }
+    
+    fn with_content_type(ct: String) -> Self { self.content_type = Some(ct); self }
+    fn with_metadata(key: String, value: String) -> Self { self.metadata.set(key, value); self }
+    fn with_cache_control(cc: String) -> Self { self.cache_control = Some(cc); self }
+    fn if_not_exists() -> Self { self.if_none_match = true; self }
+}
+
+// =============================================================================
+// List Options
+// =============================================================================
+
+struct ListOptions {
+    prefix: Option<String>
+    delimiter: Option<String>
+    max_keys: Int
+    start_after: Option<String>
+    continuation_token: Option<String>
+}
+
+impl ListOptions {
+    fn default() -> Self {
+        ListOptions {
+            prefix: None,
+            delimiter: None,
+            max_keys: 1000,
+            start_after: None,
+            continuation_token: None
+        }
+    }
+    
+    fn with_prefix(prefix: String) -> Self { self.prefix = Some(prefix); self }
+    fn with_delimiter(d: String) -> Self { self.delimiter = Some(d); self }
+    fn with_max_keys(max: Int) -> Self { self.max_keys = max; self }
+}
+
+struct ListResult {
+    objects: [ObjectMeta]
+    common_prefixes: [String]
+    is_truncated: Bool
+    next_continuation_token: Option<String>
+}
+
+// =============================================================================
+// Object Store Trait
+// =============================================================================
+
+trait ObjectStore {
+    fn put(key: String, data: [Byte], opts: PutOptions) -> Result<ObjectMeta, ObjectStoreError>
+    fn get(key: String) -> Result<[Byte], ObjectStoreError>
+    fn head(key: String) -> Result<ObjectMeta, ObjectStoreError>
+    fn delete(key: String) -> Result<(), ObjectStoreError>
+    fn list(opts: ListOptions) -> Result<ListResult, ObjectStoreError>
+    fn exists(key: String) -> Result<Bool, ObjectStoreError>
+}
+
+// =============================================================================
+// Memory Object Store
+// =============================================================================
+
+actor MemoryObjectStore {
+    state config: ObjectStoreConfig
+    state objects: Map<String, (ObjectMeta, [Byte])>
+    
+    init(config: ObjectStoreConfig) {
+        self.config = config
+        self.objects = Map.empty()
+    }
+    
+    fn full_key(key: String) -> String {
+        if self.config.prefix.is_empty() { key }
+        else { "\(self.config.prefix)/\(key)" }
+    }
+    
+    on put(key: String, data: [Byte], opts: PutOptions = PutOptions.default()) -> Result<ObjectMeta, ObjectStoreError> {
+        let full_key = self.full_key(key.clone())
+        
+        if data.len() as Int64 > self.config.max_object_size {
+            return Err(ObjectStoreError.ObjectTooLarge(data.len() as Int64, self.config.max_object_size))
+        }
+        
+        if opts.if_none_match && self.objects.contains(full_key.clone()) {
+            return Err(ObjectStoreError.AlreadyExists(key))
+        }
+        
+        let etag = crypto.md5(data.clone()).hex()
+        var meta = ObjectMeta.new(key, data.len() as Int64).with_etag(etag)
+        
+        if let Some(ct) = opts.content_type {
+            meta = meta.with_content_type(ct)
+        }
+        for (k, v) in opts.metadata.iter() {
+            meta = meta.with_metadata(k.clone(), v.clone())
+        }
+        
+        self.objects.set(full_key, (meta.clone(), data))
+        Ok(meta)
+    }
+    
+    on get(key: String) -> Result<[Byte], ObjectStoreError> {
+        let full_key = self.full_key(key.clone())
+        match self.objects.get(full_key) {
+            Some((_, data)) => Ok(data.clone())
+            None => Err(ObjectStoreError.NotFound(key))
+        }
+    }
+    
+    on head(key: String) -> Result<ObjectMeta, ObjectStoreError> {
+        let full_key = self.full_key(key.clone())
+        match self.objects.get(full_key) {
+            Some((meta, _)) => Ok(meta.clone())
+            None => Err(ObjectStoreError.NotFound(key))
+        }
+    }
+    
+    on delete(key: String) -> Result<(), ObjectStoreError> {
+        let full_key = self.full_key(key.clone())
+        self.objects.remove(full_key)
+        Ok(())
+    }
+    
+    on list(opts: ListOptions = ListOptions.default()) -> Result<ListResult, ObjectStoreError> {
+        let prefix = opts.prefix.unwrap_or("")
+        let full_prefix = self.full_key(prefix)
+        
+        var objects: [ObjectMeta] = []
+        var common_prefixes: [String] = []
+        
+        for (key, (meta, _)) in self.objects.iter() {
+            if !key.starts_with(full_prefix) { continue }
+            
+            let relative_key = key.strip_prefix(self.config.prefix).trim_start("/")
+            
+            if let Some(delimiter) = opts.delimiter.clone() {
+                let after_prefix = relative_key.strip_prefix(prefix).trim_start("/")
+                if let Some(idx) = after_prefix.find(delimiter) {
+                    let common_prefix = "\(prefix)\(after_prefix[..idx + 1])"
+                    if !common_prefixes.contains(common_prefix.clone()) {
+                        common_prefixes.push(common_prefix)
+                    }
+                    continue
+                }
+            }
+            
+            objects.push(meta.clone())
+            if objects.len() >= opts.max_keys { break }
+        }
+        
+        Ok(ListResult {
+            objects: objects,
+            common_prefixes: common_prefixes,
+            is_truncated: false,
+            next_continuation_token: None
+        })
+    }
+    
+    on exists(key: String) -> Result<Bool, ObjectStoreError> {
+        let full_key = self.full_key(key)
+        Ok(self.objects.contains(full_key))
+    }
+    
+    on copy(src: String, dst: String) -> Result<ObjectMeta, ObjectStoreError> {
+        let data = self.get(src)?
+        let meta = self.head(src)?
+        self.put(dst, data, PutOptions.default().with_content_type(meta.content_type))
+    }
+    
+    on move(src: String, dst: String) -> Result<ObjectMeta, ObjectStoreError> {
+        let meta = self.copy(src.clone(), dst)?
+        self.delete(src)?
+        Ok(meta)
+    }
+    
+    on clear() {
+        self.objects.clear()
+    }
+    
+    on count() -> Int {
+        self.objects.len()
+    }
+    
+    on total_size() -> Int64 {
+        self.objects.iter().map(|(_, (meta, _))| meta.size).sum()
+    }
+}
+
+impl ObjectStore for MemoryObjectStore {
+    fn put(key: String, data: [Byte], opts: PutOptions) -> Result<ObjectMeta, ObjectStoreError> { self.put(key, data, opts) }
+    fn get(key: String) -> Result<[Byte], ObjectStoreError> { self.get(key) }
+    fn head(key: String) -> Result<ObjectMeta, ObjectStoreError> { self.head(key) }
+    fn delete(key: String) -> Result<(), ObjectStoreError> { self.delete(key) }
+    fn list(opts: ListOptions) -> Result<ListResult, ObjectStoreError> { self.list(opts) }
+    fn exists(key: String) -> Result<Bool, ObjectStoreError> { self.exists(key) }
+}
+
+// =============================================================================
+// Filesystem Object Store
+// =============================================================================
+
+actor FilesystemObjectStore {
+    state config: ObjectStoreConfig
+    state base_path: String
+    
+    init(config: ObjectStoreConfig) {
+        self.config = config
+        self.base_path = match config.backend {
+            .FileSystem(path) => path
+            _ => "/tmp/object_store"
+        }
+        self.ensure_bucket()
+    }
+    
+    fn ensure_bucket() {
+        let bucket_path = "\(self.base_path)/\(self.config.bucket)"
+        if !fs.exists(bucket_path) {
+            fs.create_dir_all(bucket_path)
+        }
+    }
+    
+    fn object_path(key: String) -> String {
+        let full_key = if self.config.prefix.is_empty() { key } else { "\(self.config.prefix)/\(key)" }
+        "\(self.base_path)/\(self.config.bucket)/\(full_key)"
+    }
+    
+    fn meta_path(key: String) -> String {
+        "\(self.object_path(key)).meta.json"
+    }
+    
+    on put(key: String, data: [Byte], opts: PutOptions = PutOptions.default()) -> Result<ObjectMeta, ObjectStoreError> {
+        if data.len() as Int64 > self.config.max_object_size {
+            return Err(ObjectStoreError.ObjectTooLarge(data.len() as Int64, self.config.max_object_size))
+        }
+        
+        let obj_path = self.object_path(key.clone())
+        
+        if opts.if_none_match && fs.exists(obj_path.clone()) {
+            return Err(ObjectStoreError.AlreadyExists(key))
+        }
+        
+        let dir = path::parent(obj_path.clone())
+        if !fs.exists(dir.clone()) {
+            fs.create_dir_all(dir).map_err(|e| ObjectStoreError.BackendError(e.to_string()))?
+        }
+        
+        fs.write_bytes(obj_path, data.clone()).map_err(|e| ObjectStoreError.BackendError(e.to_string()))?
+        
+        let etag = crypto.md5(data.clone()).hex()
+        var meta = ObjectMeta.new(key, data.len() as Int64).with_etag(etag)
+        
+        if let Some(ct) = opts.content_type {
+            meta = meta.with_content_type(ct)
+        }
+        for (k, v) in opts.metadata.iter() {
+            meta = meta.with_metadata(k.clone(), v.clone())
+        }
+        
+        let meta_json = json.encode(meta.clone())
+        fs.write_string(self.meta_path(meta.key.clone()), meta_json)
+        
+        Ok(meta)
+    }
+    
+    on get(key: String) -> Result<[Byte], ObjectStoreError> {
+        let obj_path = self.object_path(key.clone())
+        fs.read_bytes(obj_path).map_err(|e| {
+            if e == fs.IoError.NotFound { ObjectStoreError.NotFound(key) }
+            else { ObjectStoreError.BackendError(e.to_string()) }
+        })
+    }
+    
+    on head(key: String) -> Result<ObjectMeta, ObjectStoreError> {
+        let meta_path = self.meta_path(key.clone())
+        if fs.exists(meta_path.clone()) {
+            let content = fs.read_string(meta_path).map_err(|e| ObjectStoreError.BackendError(e.to_string()))?
+            json.decode::<ObjectMeta>(content).map_err(|e| ObjectStoreError.BackendError(e.to_string()))
+        } else {
+            let obj_path = self.object_path(key.clone())
+            let fs_meta = fs.metadata(obj_path).map_err(|e| {
+                if e == fs.IoError.NotFound { ObjectStoreError.NotFound(key.clone()) }
+                else { ObjectStoreError.BackendError(e.to_string()) }
+            })?
+            Ok(ObjectMeta.new(key, fs_meta.size))
+        }
+    }
+    
+    on delete(key: String) -> Result<(), ObjectStoreError> {
+        let obj_path = self.object_path(key.clone())
+        let meta_path = self.meta_path(key)
+        
+        fs.remove(obj_path)
+        fs.remove(meta_path)
+        Ok(())
+    }
+    
+    on list(opts: ListOptions = ListOptions.default()) -> Result<ListResult, ObjectStoreError> {
+        let prefix = opts.prefix.unwrap_or("")
+        let search_path = self.object_path(prefix)
+        let base = self.object_path("")
+        
+        var objects: [ObjectMeta] = []
+        var common_prefixes: [String] = []
+        
+        for entry in fs.walk(base) {
+            if !entry.is_file() || entry.name.ends_with(".meta.json") { continue }
+            
+            let relative = entry.path.strip_prefix(base).trim_start("/")
+            if !relative.starts_with(prefix) { continue }
+            
+            if let Some(delimiter) = opts.delimiter.clone() {
+                let after_prefix = relative.strip_prefix(prefix).trim_start("/")
+                if let Some(idx) = after_prefix.find(delimiter) {
+                    let common_prefix = "\(prefix)\(after_prefix[..idx + 1])"
+                    if !common_prefixes.contains(common_prefix.clone()) {
+                        common_prefixes.push(common_prefix)
+                    }
+                    continue
+                }
+            }
+            
+            match self.head(relative) {
+                Ok(meta) => objects.push(meta)
+                Err(_) => {}
+            }
+            
+            if objects.len() >= opts.max_keys { break }
+        }
+        
+        Ok(ListResult {
+            objects: objects,
+            common_prefixes: common_prefixes,
+            is_truncated: false,
+            next_continuation_token: None
+        })
+    }
+    
+    on exists(key: String) -> Result<Bool, ObjectStoreError> {
+        Ok(fs.exists(self.object_path(key)))
+    }
+}
+
+impl ObjectStore for FilesystemObjectStore {
+    fn put(key: String, data: [Byte], opts: PutOptions) -> Result<ObjectMeta, ObjectStoreError> { self.put(key, data, opts) }
+    fn get(key: String) -> Result<[Byte], ObjectStoreError> { self.get(key) }
+    fn head(key: String) -> Result<ObjectMeta, ObjectStoreError> { self.head(key) }
+    fn delete(key: String) -> Result<(), ObjectStoreError> { self.delete(key) }
+    fn list(opts: ListOptions) -> Result<ListResult, ObjectStoreError> { self.list(opts) }
+    fn exists(key: String) -> Result<Bool, ObjectStoreError> { self.exists(key) }
+}
+
+// =============================================================================
+// Unified Object Store
+// =============================================================================
+
+actor UnifiedObjectStore {
+    state inner: Box<dyn ObjectStore>
+    state config: ObjectStoreConfig
+    
+    init(config: ObjectStoreConfig) {
+        self.config = config.clone()
+        self.inner = match config.backend {
+            .Memory => Box.new(MemoryObjectStore.new(config))
+            .FileSystem(_) => Box.new(FilesystemObjectStore.new(config))
+            .S3(s3_config) => Box.new(@native("s3_object_store", config, s3_config))
+            .GCS(gcs_config) => Box.new(@native("gcs_object_store", config, gcs_config))
+            .Azure(azure_config) => Box.new(@native("azure_object_store", config, azure_config))
+            .MinIO(minio_config) => Box.new(@native("minio_object_store", config, minio_config))
+        }
+    }
+    
+    on put(key: String, data: [Byte], opts: PutOptions = PutOptions.default()) -> Result<ObjectMeta, ObjectStoreError> {
+        self.inner.put(key, data, opts)
+    }
+    
+    on put_string(key: String, content: String, content_type: String = "text/plain") -> Result<ObjectMeta, ObjectStoreError> {
+        self.put(key, content.bytes(), PutOptions.default().with_content_type(content_type))
+    }
+    
+    on put_json<T: Serialize>(key: String, value: T) -> Result<ObjectMeta, ObjectStoreError> {
+        let data = json.encode(value).bytes()
+        self.put(key, data, PutOptions.default().with_content_type("application/json"))
+    }
+    
+    on get(key: String) -> Result<[Byte], ObjectStoreError> {
+        self.inner.get(key)
+    }
+    
+    on get_string(key: String) -> Result<String, ObjectStoreError> {
+        let data = self.get(key)?
+        String.from_utf8(data).map_err(|e| ObjectStoreError.Other(e.to_string()))
+    }
+    
+    on get_json<T: Deserialize>(key: String) -> Result<T, ObjectStoreError> {
+        let data = self.get_string(key)?
+        json.decode::<T>(data).map_err(|e| ObjectStoreError.Other(e.to_string()))
+    }
+    
+    on head(key: String) -> Result<ObjectMeta, ObjectStoreError> {
+        self.inner.head(key)
+    }
+    
+    on delete(key: String) -> Result<(), ObjectStoreError> {
+        self.inner.delete(key)
+    }
+    
+    on delete_many(keys: [String]) -> Result<Int, ObjectStoreError> {
+        var deleted = 0
+        for key in keys {
+            self.delete(key)?
+            deleted += 1
+        }
+        Ok(deleted)
+    }
+    
+    on list(opts: ListOptions = ListOptions.default()) -> Result<ListResult, ObjectStoreError> {
+        self.inner.list(opts)
+    }
+    
+    on list_all(prefix: String = "") -> Result<[ObjectMeta], ObjectStoreError> {
+        var all: [ObjectMeta] = []
+        var token: Option<String> = None
+        
+        loop {
+            let opts = ListOptions.default()
+                .with_prefix(prefix.clone())
+            if let Some(t) = token { opts.continuation_token = Some(t) }
+            
+            let result = self.list(opts)?
+            all.extend(result.objects)
+            
+            if !result.is_truncated { break }
+            token = result.next_continuation_token
+        }
+        
+        Ok(all)
+    }
+    
+    on exists(key: String) -> Result<Bool, ObjectStoreError> {
+        self.inner.exists(key)
+    }
+    
+    on copy(src: String, dst: String) -> Result<ObjectMeta, ObjectStoreError> {
+        let data = self.get(src)?
+        let meta = self.head(src)?
+        self.put(dst, data, PutOptions.default().with_content_type(meta.content_type))
+    }
+    
+    on move(src: String, dst: String) -> Result<ObjectMeta, ObjectStoreError> {
+        let meta = self.copy(src.clone(), dst)?
+        self.delete(src)?
+        Ok(meta)
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+fn memory(bucket: String) -> UnifiedObjectStore {
+    UnifiedObjectStore.new(ObjectStoreConfig.memory(bucket))
+}
+
+fn filesystem(base_path: String, bucket: String) -> UnifiedObjectStore {
+    UnifiedObjectStore.new(ObjectStoreConfig.filesystem(base_path, bucket))
+}
+
+fn s3(config: S3Config, bucket: String) -> UnifiedObjectStore {
+    UnifiedObjectStore.new(ObjectStoreConfig.s3(config, bucket))
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "memory object store basic" {
+    let store = memory("test-bucket")
+    
+    let data = "Hello, World!".bytes()
+    let meta = store.put("hello.txt", data.clone(), PutOptions.default().with_content_type("text/plain"))?
+    
+    assert_eq(meta.key, "hello.txt")?
+    assert_eq(meta.size, data.len() as Int64)?
+    assert_eq(meta.content_type, "text/plain")?
+    
+    let retrieved = store.get("hello.txt")?
+    assert_eq(retrieved, data)?
+    
+    assert(store.exists("hello.txt")?)?
+    
+    store.delete("hello.txt")?
+    assert(!store.exists("hello.txt")?)?
+}
+
+test "object store list" {
+    let store = memory("test-bucket")
+    
+    store.put("a/1.txt", [1])?
+    store.put("a/2.txt", [2])?
+    store.put("b/1.txt", [3])?
+    
+    let result = store.list(ListOptions.default().with_prefix("a/"))?
+    assert_eq(result.objects.len(), 2)?
+    
+    let all = store.list_all()?
+    assert_eq(all.len(), 3)?
+}
+
+test "object store json" {
+    let store = memory("test-bucket")
+    
+    struct User { name: String, age: Int }
+    
+    let user = User { name: "Alice", age: 30 }
+    store.put_json("user.json", user)?
+    
+    let loaded: User = store.get_json("user.json")?
+    assert_eq(loaded.name, "Alice")?
+    assert_eq(loaded.age, 30)?
+}
+
+test "object store copy move" {
+    let store = memory("test-bucket")
+    
+    store.put("original.txt", "content".bytes())?
+    
+    store.copy("original.txt", "copy.txt")?
+    assert(store.exists("original.txt")?)?
+    assert(store.exists("copy.txt")?)?
+    
+    store.move("copy.txt", "moved.txt")?
+    assert(!store.exists("copy.txt")?)?
+    assert(store.exists("moved.txt")?)?
+}
+
+test "object store if not exists" {
+    let store = memory("test-bucket")
+    
+    store.put("file.txt", [1], PutOptions.default().if_not_exists())?
+    
+    let result = store.put("file.txt", [2], PutOptions.default().if_not_exists())
+    assert(result.is_err())?
+}
+
+test "filesystem object store" {
+    let store = filesystem("/tmp/test_object_store", "test-bucket")
+    
+    store.put("test.txt", "Hello".bytes())?
+    let data = store.get("test.txt")?
+    assert_eq(String.from_utf8(data)?, "Hello")?
+    
+    store.delete("test.txt")?
+}

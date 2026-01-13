@@ -1,0 +1,771 @@
+// =============================================================================
+// Vibee OS — Model Registry Module
+// Centralized model versioning, storage, and lifecycle management
+// =============================================================================
+
+use datetime::{DateTime, Duration}
+use uuid::{UUID}
+use semver::{Version}
+use result::{Result, Ok, Err}
+use json::{Json, ToJson}
+use crypto::{sha256}
+
+// -----------------------------------------------------------------------------
+// Model Stage
+// -----------------------------------------------------------------------------
+
+/// Model lifecycle stage
+enum ModelStage {
+    None
+    Development
+    Staging
+    Production
+    Archived
+    
+    fn to_string() -> String {
+        match self {
+            None => "none",
+            Development => "development",
+            Staging => "staging",
+            Production => "production",
+            Archived => "archived"
+        }
+    }
+    
+    fn from_string(s: String) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "none" => Some(ModelStage.None),
+            "development" => Some(ModelStage.Development),
+            "staging" => Some(ModelStage.Staging),
+            "production" => Some(ModelStage.Production),
+            "archived" => Some(ModelStage.Archived),
+            _ => None
+        }
+    }
+    
+    fn can_transition_to(target: ModelStage) -> Bool {
+        match (self, target) {
+            (None, Development) => true,
+            (Development, Staging) => true,
+            (Development, Archived) => true,
+            (Staging, Production) => true,
+            (Staging, Development) => true,
+            (Staging, Archived) => true,
+            (Production, Archived) => true,
+            (Production, Staging) => true,
+            _ => false
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Model Format
+// -----------------------------------------------------------------------------
+
+/// Supported model serialization formats
+enum ModelFormat {
+    ONNX
+    TorchScript
+    TensorFlowSavedModel
+    Pickle
+    PMML
+    Custom(String)
+    
+    fn extension() -> String {
+        match self {
+            ONNX => ".onnx",
+            TorchScript => ".pt",
+            TensorFlowSavedModel => ".pb",
+            Pickle => ".pkl",
+            PMML => ".pmml",
+            Custom(ext) => ext
+        }
+    }
+    
+    fn mime_type() -> String {
+        match self {
+            ONNX => "application/onnx",
+            TorchScript => "application/x-pytorch",
+            TensorFlowSavedModel => "application/x-tensorflow",
+            Pickle => "application/x-pickle",
+            PMML => "application/xml",
+            Custom(_) => "application/octet-stream"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Model Signature
+// -----------------------------------------------------------------------------
+
+/// Input/Output schema for model
+struct TensorSpec {
+    name: String
+    dtype: String
+    shape: [Int]
+    
+    fn new(name: String, dtype: String, shape: [Int]) -> Self {
+        TensorSpec { name: name, dtype: dtype, shape: shape }
+    }
+}
+
+/// Model signature defining inputs and outputs
+struct ModelSignature {
+    inputs: [TensorSpec]
+    outputs: [TensorSpec]
+    
+    fn new() -> Self {
+        ModelSignature { inputs: [], outputs: [] }
+    }
+    
+    fn add_input(name: String, dtype: String, shape: [Int]) -> Self {
+        self.inputs.push(TensorSpec.new(name, dtype, shape))
+        self
+    }
+    
+    fn add_output(name: String, dtype: String, shape: [Int]) -> Self {
+        self.outputs.push(TensorSpec.new(name, dtype, shape))
+        self
+    }
+    
+    fn validate_input(data: Map<String, Tensor>) -> Result<(), String> {
+        for spec in self.inputs {
+            if !data.contains_key(spec.name) {
+                return Err("Missing input: \(spec.name)")
+            }
+        }
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Model Metrics
+// -----------------------------------------------------------------------------
+
+/// Model performance metrics
+struct ModelMetrics {
+    metrics: Map<String, Float>
+    dataset_name: String
+    evaluated_at: DateTime
+    
+    fn new(dataset_name: String) -> Self {
+        ModelMetrics {
+            metrics: Map.empty(),
+            dataset_name: dataset_name,
+            evaluated_at: DateTime.now()
+        }
+    }
+    
+    fn add(name: String, value: Float) -> Self {
+        self.metrics.insert(name, value)
+        self
+    }
+    
+    fn get(name: String) -> Option<Float> {
+        self.metrics.get(name).cloned()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Model Version
+// -----------------------------------------------------------------------------
+
+/// A specific version of a registered model
+struct ModelVersion {
+    version: Int
+    model_id: UUID
+    run_id: Option<UUID>
+    artifact_path: String
+    format: ModelFormat
+    signature: Option<ModelSignature>
+    stage: ModelStage
+    metrics: [ModelMetrics]
+    tags: Map<String, String>
+    description: String
+    size_bytes: Int
+    checksum: String
+    created_at: DateTime
+    updated_at: DateTime
+    created_by: String
+    
+    fn new(model_id: UUID, version: Int, artifact_path: String, format: ModelFormat) -> Self {
+        let now = DateTime.now()
+        ModelVersion {
+            version: version,
+            model_id: model_id,
+            run_id: None,
+            artifact_path: artifact_path,
+            format: format,
+            signature: None,
+            stage: ModelStage.None,
+            metrics: [],
+            tags: Map.empty(),
+            description: "",
+            size_bytes: 0,
+            checksum: "",
+            created_at: now,
+            updated_at: now,
+            created_by: ""
+        }
+    }
+    
+    fn with_signature(signature: ModelSignature) -> Self {
+        self.signature = Some(signature)
+        self
+    }
+    
+    fn with_run_id(run_id: UUID) -> Self {
+        self.run_id = Some(run_id)
+        self
+    }
+    
+    fn with_description(description: String) -> Self {
+        self.description = description
+        self
+    }
+    
+    fn add_metrics(metrics: ModelMetrics) {
+        self.metrics.push(metrics)
+        self.updated_at = DateTime.now()
+    }
+    
+    fn set_tag(key: String, value: String) {
+        self.tags.insert(key, value)
+        self.updated_at = DateTime.now()
+    }
+    
+    fn transition_to(stage: ModelStage) -> Result<(), String> {
+        if !self.stage.can_transition_to(stage) {
+            return Err("Invalid stage transition from \(self.stage.to_string()) to \(stage.to_string())")
+        }
+        self.stage = stage
+        self.updated_at = DateTime.now()
+        Ok(())
+    }
+    
+    fn is_production() -> Bool {
+        self.stage == ModelStage.Production
+    }
+    
+    fn version_string() -> String {
+        "v\(self.version)"
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Registered Model
+// -----------------------------------------------------------------------------
+
+/// A registered model with multiple versions
+struct RegisteredModel {
+    id: UUID
+    name: String
+    description: String
+    versions: [ModelVersion]
+    latest_version: Int
+    tags: Map<String, String>
+    created_at: DateTime
+    updated_at: DateTime
+    
+    fn new(name: String) -> Self {
+        let now = DateTime.now()
+        RegisteredModel {
+            id: UUID.v4(),
+            name: name,
+            description: "",
+            versions: [],
+            latest_version: 0,
+            tags: Map.empty(),
+            created_at: now,
+            updated_at: now
+        }
+    }
+    
+    fn with_description(description: String) -> Self {
+        self.description = description
+        self
+    }
+    
+    fn create_version(artifact_path: String, format: ModelFormat) -> ModelVersion {
+        self.latest_version += 1
+        let version = ModelVersion.new(self.id, self.latest_version, artifact_path, format)
+        self.versions.push(version.clone())
+        self.updated_at = DateTime.now()
+        version
+    }
+    
+    fn get_version(version: Int) -> Option<ModelVersion> {
+        self.versions.iter().find(|v| v.version == version).cloned()
+    }
+    
+    fn get_latest_version() -> Option<ModelVersion> {
+        self.get_version(self.latest_version)
+    }
+    
+    fn get_production_version() -> Option<ModelVersion> {
+        self.versions.iter()
+            .find(|v| v.stage == ModelStage.Production)
+            .cloned()
+    }
+    
+    fn get_staging_version() -> Option<ModelVersion> {
+        self.versions.iter()
+            .find(|v| v.stage == ModelStage.Staging)
+            .cloned()
+    }
+    
+    fn get_versions_by_stage(stage: ModelStage) -> [ModelVersion] {
+        self.versions.iter()
+            .filter(|v| v.stage == stage)
+            .cloned()
+            .collect()
+    }
+    
+    fn delete_version(version: Int) -> Bool {
+        let len_before = self.versions.len()
+        self.versions.retain(|v| v.version != version)
+        self.updated_at = DateTime.now()
+        self.versions.len() < len_before
+    }
+    
+    fn set_tag(key: String, value: String) {
+        self.tags.insert(key, value)
+        self.updated_at = DateTime.now()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Model Registry Backend Trait
+// -----------------------------------------------------------------------------
+
+/// Trait for model registry storage backends
+trait RegistryBackend {
+    fn save_model(model: RegisteredModel) -> Result<(), String>
+    fn load_model(name: String) -> Result<RegisteredModel, String>
+    fn list_models() -> Result<[RegisteredModel], String>
+    fn delete_model(name: String) -> Result<(), String>
+    fn search_models(query: String) -> Result<[RegisteredModel], String>
+    fn save_artifact(path: String, data: [Byte]) -> Result<String, String>
+    fn load_artifact(path: String) -> Result<[Byte], String>
+}
+
+/// In-memory registry backend
+struct InMemoryRegistryBackend {
+    models: Map<String, RegisteredModel>
+    artifacts: Map<String, [Byte]>
+    
+    fn new() -> Self {
+        InMemoryRegistryBackend {
+            models: Map.empty(),
+            artifacts: Map.empty()
+        }
+    }
+}
+
+impl RegistryBackend for InMemoryRegistryBackend {
+    fn save_model(model: RegisteredModel) -> Result<(), String> {
+        self.models.insert(model.name.clone(), model)
+        Ok(())
+    }
+    
+    fn load_model(name: String) -> Result<RegisteredModel, String> {
+        self.models.get(name).cloned().ok_or("Model not found: \(name)")
+    }
+    
+    fn list_models() -> Result<[RegisteredModel], String> {
+        Ok(self.models.values().cloned().collect())
+    }
+    
+    fn delete_model(name: String) -> Result<(), String> {
+        self.models.remove(name)
+        Ok(())
+    }
+    
+    fn search_models(query: String) -> Result<[RegisteredModel], String> {
+        let results = self.models.values()
+            .filter(|m| m.name.contains(query) || m.description.contains(query))
+            .cloned()
+            .collect()
+        Ok(results)
+    }
+    
+    fn save_artifact(path: String, data: [Byte]) -> Result<String, String> {
+        self.artifacts.insert(path.clone(), data)
+        Ok(path)
+    }
+    
+    fn load_artifact(path: String) -> Result<[Byte], String> {
+        self.artifacts.get(path).cloned().ok_or("Artifact not found: \(path)")
+    }
+}
+
+/// S3-based registry backend
+struct S3RegistryBackend {
+    bucket: String
+    prefix: String
+    
+    fn new(bucket: String, prefix: String = "models") -> Self {
+        S3RegistryBackend { bucket: bucket, prefix: prefix }
+    }
+    
+    fn model_key(name: String) -> String {
+        "\(self.prefix)/\(name)/metadata.json"
+    }
+    
+    fn artifact_key(name: String, version: Int, filename: String) -> String {
+        "\(self.prefix)/\(name)/\(version)/\(filename)"
+    }
+}
+
+impl RegistryBackend for S3RegistryBackend {
+    fn save_model(model: RegisteredModel) -> Result<(), String> {
+        let key = self.model_key(model.name)
+        @native("s3_put", self.bucket, key, model.to_json().to_string())
+    }
+    
+    fn load_model(name: String) -> Result<RegisteredModel, String> {
+        let key = self.model_key(name)
+        let content = @native("s3_get", self.bucket, key)?
+        RegisteredModel.from_json(Json.parse(content)?)
+    }
+    
+    fn list_models() -> Result<[RegisteredModel], String> {
+        let keys = @native("s3_list", self.bucket, self.prefix)?
+        var models = []
+        for key in keys {
+            if key.ends_with("/metadata.json") {
+                let name = key.split("/")[1]
+                models.push(self.load_model(name)?)
+            }
+        }
+        Ok(models)
+    }
+    
+    fn delete_model(name: String) -> Result<(), String> {
+        @native("s3_delete_prefix", self.bucket, "\(self.prefix)/\(name)/")
+    }
+    
+    fn search_models(query: String) -> Result<[RegisteredModel], String> {
+        let all = self.list_models()?
+        Ok(all.iter()
+            .filter(|m| m.name.contains(query) || m.description.contains(query))
+            .cloned()
+            .collect())
+    }
+    
+    fn save_artifact(path: String, data: [Byte]) -> Result<String, String> {
+        @native("s3_put_bytes", self.bucket, path, data)?
+        Ok("s3://\(self.bucket)/\(path)")
+    }
+    
+    fn load_artifact(path: String) -> Result<[Byte], String> {
+        @native("s3_get_bytes", self.bucket, path)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Model Registry Actor
+// -----------------------------------------------------------------------------
+
+/// Actor for managing the model registry
+actor ModelRegistry {
+    backend: Box<dyn RegistryBackend>
+    cache: Map<String, RegisteredModel>
+    
+    fn new(backend: Box<dyn RegistryBackend>) -> Self {
+        ModelRegistry {
+            backend: backend,
+            cache: Map.empty()
+        }
+    }
+    
+    fn default() -> Self {
+        ModelRegistry.new(Box.new(InMemoryRegistryBackend.new()))
+    }
+    
+    // Model management
+    fn register_model(name: String, description: String = "") -> RegisteredModel {
+        let model = RegisteredModel.new(name).with_description(description)
+        self.backend.save_model(model.clone())
+        self.cache.insert(name, model.clone())
+        model
+    }
+    
+    fn get_model(name: String) -> Result<RegisteredModel, String> {
+        if let Some(model) = self.cache.get(name) {
+            return Ok(model.clone())
+        }
+        let model = self.backend.load_model(name)?
+        self.cache.insert(name, model.clone())
+        Ok(model)
+    }
+    
+    fn list_models() -> Result<[RegisteredModel], String> {
+        self.backend.list_models()
+    }
+    
+    fn search_models(query: String) -> Result<[RegisteredModel], String> {
+        self.backend.search_models(query)
+    }
+    
+    fn delete_model(name: String) -> Result<(), String> {
+        self.cache.remove(name)
+        self.backend.delete_model(name)
+    }
+    
+    // Version management
+    fn log_model(
+        name: String,
+        artifact_path: String,
+        format: ModelFormat,
+        signature: Option<ModelSignature> = None,
+        run_id: Option<UUID> = None
+    ) -> Result<ModelVersion, String> {
+        var model = match self.get_model(name) {
+            Ok(m) => m,
+            Err(_) => self.register_model(name)
+        }
+        
+        var version = model.create_version(artifact_path, format)
+        if let Some(sig) = signature {
+            version = version.with_signature(sig)
+        }
+        if let Some(rid) = run_id {
+            version = version.with_run_id(rid)
+        }
+        
+        self.backend.save_model(model.clone())
+        self.cache.insert(name, model)
+        Ok(version)
+    }
+    
+    fn get_model_version(name: String, version: Int) -> Result<ModelVersion, String> {
+        let model = self.get_model(name)?
+        model.get_version(version).ok_or("Version \(version) not found")
+    }
+    
+    fn get_latest_version(name: String) -> Result<ModelVersion, String> {
+        let model = self.get_model(name)?
+        model.get_latest_version().ok_or("No versions found")
+    }
+    
+    fn get_production_version(name: String) -> Result<ModelVersion, String> {
+        let model = self.get_model(name)?
+        model.get_production_version().ok_or("No production version found")
+    }
+    
+    // Stage transitions
+    fn transition_model_version(name: String, version: Int, stage: ModelStage) -> Result<(), String> {
+        var model = self.get_model(name)?
+        
+        // If transitioning to production, demote current production version
+        if stage == ModelStage.Production {
+            for v in model.versions.iter_mut() {
+                if v.stage == ModelStage.Production {
+                    v.stage = ModelStage.Archived
+                }
+            }
+        }
+        
+        // Find and transition the target version
+        for v in model.versions.iter_mut() {
+            if v.version == version {
+                v.transition_to(stage)?
+                break
+            }
+        }
+        
+        self.backend.save_model(model.clone())
+        self.cache.insert(name, model)
+        Ok(())
+    }
+    
+    fn promote_to_staging(name: String, version: Int) -> Result<(), String> {
+        self.transition_model_version(name, version, ModelStage.Staging)
+    }
+    
+    fn promote_to_production(name: String, version: Int) -> Result<(), String> {
+        self.transition_model_version(name, version, ModelStage.Production)
+    }
+    
+    fn archive_version(name: String, version: Int) -> Result<(), String> {
+        self.transition_model_version(name, version, ModelStage.Archived)
+    }
+    
+    // Artifact management
+    fn download_model(name: String, version: Int, dest_path: String) -> Result<String, String> {
+        let model_version = self.get_model_version(name, version)?
+        let data = self.backend.load_artifact(model_version.artifact_path)?
+        @native("fs_write_bytes", dest_path, data)?
+        Ok(dest_path)
+    }
+    
+    fn upload_model(name: String, source_path: String, format: ModelFormat) -> Result<ModelVersion, String> {
+        let data = @native("fs_read_bytes", source_path)?
+        let checksum = sha256(data)
+        
+        var model = match self.get_model(name) {
+            Ok(m) => m,
+            Err(_) => self.register_model(name)
+        }
+        
+        let artifact_path = "models/\(name)/\(model.latest_version + 1)/model\(format.extension())"
+        self.backend.save_artifact(artifact_path.clone(), data)?
+        
+        var version = model.create_version(artifact_path, format)
+        version.checksum = checksum
+        version.size_bytes = data.len()
+        
+        self.backend.save_model(model.clone())
+        self.cache.insert(name, model)
+        Ok(version)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Global Registry Instance
+// -----------------------------------------------------------------------------
+
+static REGISTRY: ModelRegistry = ModelRegistry.default()
+
+fn register_model(name: String, description: String = "") -> RegisteredModel {
+    REGISTRY.register_model(name, description)
+}
+
+fn log_model(
+    name: String,
+    artifact_path: String,
+    format: ModelFormat = ModelFormat.ONNX,
+    signature: Option<ModelSignature> = None
+) -> Result<ModelVersion, String> {
+    REGISTRY.log_model(name, artifact_path, format, signature, None)
+}
+
+fn get_model(name: String) -> Result<RegisteredModel, String> {
+    REGISTRY.get_model(name)
+}
+
+fn get_model_version(name: String, version: Int) -> Result<ModelVersion, String> {
+    REGISTRY.get_model_version(name, version)
+}
+
+fn get_production_model(name: String) -> Result<ModelVersion, String> {
+    REGISTRY.get_production_version(name)
+}
+
+fn promote_to_production(name: String, version: Int) -> Result<(), String> {
+    REGISTRY.promote_to_production(name, version)
+}
+
+// -----------------------------------------------------------------------------
+// Model Comparison
+// -----------------------------------------------------------------------------
+
+/// Compare multiple model versions
+struct ModelComparison {
+    versions: [ModelVersion]
+    metric_names: [String]
+    
+    fn new() -> Self {
+        ModelComparison { versions: [], metric_names: [] }
+    }
+    
+    fn add_version(version: ModelVersion) -> Self {
+        self.versions.push(version)
+        self
+    }
+    
+    fn compare_metrics(metric_names: [String]) -> Map<Int, Map<String, Float>> {
+        var result = Map.empty()
+        
+        for version in self.versions {
+            var metrics = Map.empty()
+            for name in metric_names {
+                for m in version.metrics {
+                    if let Some(value) = m.get(name) {
+                        metrics.insert(name.clone(), value)
+                        break
+                    }
+                }
+            }
+            result.insert(version.version, metrics)
+        }
+        
+        result
+    }
+    
+    fn best_version(metric_name: String, minimize: Bool = true) -> Option<ModelVersion> {
+        var best: Option<ModelVersion> = None
+        var best_value: Option<Float> = None
+        
+        for version in self.versions {
+            for m in version.metrics {
+                if let Some(value) = m.get(metric_name) {
+                    let is_better = match best_value {
+                        None => true,
+                        Some(bv) => if minimize { value < bv } else { value > bv }
+                    }
+                    if is_better {
+                        best = Some(version.clone())
+                        best_value = Some(value)
+                    }
+                    break
+                }
+            }
+        }
+        
+        best
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "model_registration" {
+    let model = RegisteredModel.new("test-model")
+    assert_eq(model.name, "test-model")?
+    assert_eq(model.latest_version, 0)?
+}
+
+test "version_creation" {
+    var model = RegisteredModel.new("test-model")
+    let v1 = model.create_version("/path/to/model.onnx", ModelFormat.ONNX)
+    let v2 = model.create_version("/path/to/model2.onnx", ModelFormat.ONNX)
+    
+    assert_eq(v1.version, 1)?
+    assert_eq(v2.version, 2)?
+    assert_eq(model.latest_version, 2)?
+}
+
+test "stage_transitions" {
+    var version = ModelVersion.new(UUID.v4(), 1, "/path", ModelFormat.ONNX)
+    
+    assert_eq(version.stage, ModelStage.None)?
+    
+    version.transition_to(ModelStage.Development)?
+    assert_eq(version.stage, ModelStage.Development)?
+    
+    version.transition_to(ModelStage.Staging)?
+    assert_eq(version.stage, ModelStage.Staging)?
+    
+    version.transition_to(ModelStage.Production)?
+    assert_eq(version.stage, ModelStage.Production)?
+}
+
+test "model_signature" {
+    let sig = ModelSignature.new()
+        .add_input("input", "float32", [-1, 784])
+        .add_output("output", "float32", [-1, 10])
+    
+    assert_eq(sig.inputs.len(), 1)?
+    assert_eq(sig.outputs.len(), 1)?
+}
+
+test "model_metrics" {
+    var metrics = ModelMetrics.new("test-dataset")
+        .add("accuracy", 0.95)
+        .add("f1_score", 0.93)
+    
+    assert_eq(metrics.get("accuracy"), Some(0.95))?
+}

@@ -1,0 +1,607 @@
+// =============================================================================
+// Vibee OS — Pipeline Module
+// Data pipelines for stream processing and workflow orchestration
+// =============================================================================
+
+use stream::{Stream, Poll}
+use result::{Result, Ok, Err}
+
+// =============================================================================
+// Pipeline Stage Trait
+// =============================================================================
+
+/// Trait for pipeline stages
+trait Stage<I, O> {
+    fn process(input: I) -> Result<O, PipelineError>
+    fn name() -> String { "unnamed_stage" }
+    fn on_start() {}
+    fn on_complete() {}
+    fn on_error(error: PipelineError) {}
+}
+
+/// Pipeline error
+enum PipelineError {
+    StageError { stage: String, message: String }
+    Timeout { stage: String, timeout_ms: Int64 }
+    Cancelled
+    InvalidInput(String)
+    ResourceExhausted(String)
+    
+    fn message() -> String {
+        match self {
+            .StageError { stage, message } => format!("Stage '{}' error: {}", stage, message)
+            .Timeout { stage, timeout_ms } => format!("Stage '{}' timed out after {}ms", stage, timeout_ms)
+            .Cancelled => "Pipeline cancelled"
+            .InvalidInput(msg) => format!("Invalid input: {}", msg)
+            .ResourceExhausted(msg) => format!("Resource exhausted: {}", msg)
+        }
+    }
+}
+
+// =============================================================================
+// Pipeline Builder
+// =============================================================================
+
+/// Pipeline builder for composing stages
+struct Pipeline<I, O> {
+    stages: [Box<dyn AnyStage>]
+    name: String
+    config: PipelineConfig
+    
+    fn new(name: String) -> Pipeline<(), ()> {
+        Pipeline { stages: [], name: name, config: PipelineConfig.default() }
+    }
+    
+    fn configure(config: PipelineConfig) -> Self { self.config = config; self }
+    
+    /// Add a stage to the pipeline
+    fn stage<N, S: Stage<O, N>>(s: S) -> Pipeline<I, N> {
+        self.stages.push(Box.new(s))
+        Pipeline { stages: self.stages, name: self.name, config: self.config }
+    }
+    
+    /// Add a map stage
+    fn map<N>(f: fn(O) -> N) -> Pipeline<I, N> {
+        self.stage(MapStage { f: f, name: "map" })
+    }
+    
+    /// Add a filter stage
+    fn filter(pred: fn(O) -> Bool) -> Pipeline<I, Option<O>> where O: Clone {
+        self.stage(FilterStage { pred: pred, name: "filter" })
+    }
+    
+    /// Add a flat_map stage
+    fn flat_map<N>(f: fn(O) -> [N]) -> Pipeline<I, N> {
+        self.stage(FlatMapStage { f: f, name: "flat_map" })
+    }
+    
+    /// Add a batch stage
+    fn batch(size: Int) -> Pipeline<I, [O]> {
+        self.stage(BatchStage { size: size, buffer: [], name: "batch" })
+    }
+    
+    /// Add a window stage
+    fn window(duration_ms: Int64) -> Pipeline<I, [O]> {
+        self.stage(WindowStage { duration_ms: duration_ms, buffer: [], start_time: 0, name: "window" })
+    }
+    
+    /// Add a throttle stage
+    fn throttle(interval_ms: Int64) -> Pipeline<I, O> {
+        self.stage(ThrottleStage { interval_ms: interval_ms, last_time: 0, name: "throttle" })
+    }
+    
+    /// Add a retry stage
+    fn retry(max_attempts: Int, delay_ms: Int64) -> Pipeline<I, O> {
+        self.stage(RetryStage { max_attempts: max_attempts, delay_ms: delay_ms, name: "retry" })
+    }
+    
+    /// Add a timeout stage
+    fn timeout(timeout_ms: Int64) -> Pipeline<I, O> {
+        self.stage(TimeoutStage { timeout_ms: timeout_ms, name: "timeout" })
+    }
+    
+    /// Add a tap stage (side effect)
+    fn tap(f: fn(O)) -> Pipeline<I, O> where O: Clone {
+        self.stage(TapStage { f: f, name: "tap" })
+    }
+    
+    /// Add a branch stage
+    fn branch<A, B>(pred: fn(O) -> Bool, left: Pipeline<O, A>, right: Pipeline<O, B>) -> Pipeline<I, Either<A, B>> {
+        self.stage(BranchStage { pred: pred, left: left, right: right, name: "branch" })
+    }
+}
+
+/// Pipeline configuration
+struct PipelineConfig {
+    parallelism: Int
+    buffer_size: Int
+    error_handling: ErrorStrategy
+    metrics_enabled: Bool
+    tracing_enabled: Bool
+    
+    fn default() -> Self {
+        PipelineConfig {
+            parallelism: 1,
+            buffer_size: 1000,
+            error_handling: ErrorStrategy.Propagate,
+            metrics_enabled: false,
+            tracing_enabled: false
+        }
+    }
+    
+    fn parallel(n: Int) -> Self { self.parallelism = n; self }
+    fn buffer(size: Int) -> Self { self.buffer_size = size; self }
+    fn on_error(strategy: ErrorStrategy) -> Self { self.error_handling = strategy; self }
+    fn with_metrics() -> Self { self.metrics_enabled = true; self }
+    fn with_tracing() -> Self { self.tracing_enabled = true; self }
+}
+
+/// Error handling strategy
+enum ErrorStrategy {
+    Propagate
+    Skip
+    Retry(Int)
+    DeadLetter(String)
+    Fallback(fn(PipelineError) -> O)
+}
+
+// =============================================================================
+// Pipeline Executor
+// =============================================================================
+
+/// Pipeline executor actor
+actor PipelineExecutor<I, O> {
+    state pipeline: Pipeline<I, O>
+    state stats: PipelineStats
+    state running: Bool
+    state cancelled: Bool
+    
+    init(pipeline: Pipeline<I, O>) {
+        self.pipeline = pipeline
+        self.stats = PipelineStats.new(pipeline.name.clone())
+        self.running = false
+        self.cancelled = false
+    }
+    
+    /// Execute pipeline on a single input
+    on execute(input: I) -> Result<O, PipelineError> {
+        if self.cancelled { return Err(PipelineError.Cancelled) }
+        
+        self.stats.items_in += 1
+        let start = @native("timestamp_ms")
+        
+        var current: Box<dyn Any> = Box.new(input)
+        
+        for (i, stage) in self.pipeline.stages.iter().enumerate() {
+            let stage_start = @native("timestamp_ms")
+            
+            match stage.process_any(current) {
+                Ok(output) => {
+                    current = output
+                    self.stats.stage_times[i] += @native("timestamp_ms") - stage_start
+                }
+                Err(e) => {
+                    self.stats.errors += 1
+                    return self.handle_error(e)
+                }
+            }
+        }
+        
+        self.stats.items_out += 1
+        self.stats.total_time += @native("timestamp_ms") - start
+        
+        Ok(*current.downcast::<O>().unwrap())
+    }
+    
+    /// Execute pipeline on a stream
+    on execute_stream(stream: Stream<I>) -> Stream<O> {
+        self.running = true
+        
+        PipelineStream {
+            executor: self,
+            source: stream
+        }
+    }
+    
+    /// Execute pipeline on a batch
+    on execute_batch(inputs: [I]) -> Result<[O], PipelineError> {
+        var results = []
+        for input in inputs {
+            if self.cancelled { return Err(PipelineError.Cancelled) }
+            results.push(self.execute(input)?)
+        }
+        Ok(results)
+    }
+    
+    /// Execute in parallel
+    on execute_parallel(inputs: [I]) -> Result<[O], PipelineError> {
+        let parallelism = self.pipeline.config.parallelism
+        let chunks = inputs.chunks(inputs.len() / parallelism + 1)
+        
+        var handles = []
+        for chunk in chunks {
+            handles.push(@native("spawn", || self.execute_batch(chunk)))
+        }
+        
+        var results = []
+        for handle in handles {
+            results.extend(@native("await", handle)?)
+        }
+        Ok(results)
+    }
+    
+    fn handle_error(error: PipelineError) -> Result<O, PipelineError> {
+        match self.pipeline.config.error_handling {
+            ErrorStrategy.Propagate => Err(error)
+            ErrorStrategy.Skip => Err(error)  // Caller handles skip
+            ErrorStrategy.Retry(n) => Err(error)  // Handled by retry stage
+            ErrorStrategy.DeadLetter(path) => {
+                @native("file_append", path, error.message())
+                Err(error)
+            }
+            ErrorStrategy.Fallback(f) => Ok(f(error))
+        }
+    }
+    
+    /// Get statistics
+    on stats() -> PipelineStats { self.stats.clone() }
+    
+    /// Cancel execution
+    on cancel() { self.cancelled = true }
+    
+    /// Check if running
+    on is_running() -> Bool { self.running }
+}
+
+/// Pipeline statistics
+struct PipelineStats {
+    pipeline_name: String
+    items_in: Int64
+    items_out: Int64
+    errors: Int64
+    total_time: Int64
+    stage_times: [Int64]
+    
+    fn new(name: String) -> Self {
+        PipelineStats {
+            pipeline_name: name,
+            items_in: 0,
+            items_out: 0,
+            errors: 0,
+            total_time: 0,
+            stage_times: []
+        }
+    }
+    
+    fn throughput() -> Float {
+        if self.total_time == 0 { 0.0 }
+        else { self.items_out as Float / (self.total_time as Float / 1000.0) }
+    }
+    
+    fn avg_latency_ms() -> Float {
+        if self.items_out == 0 { 0.0 }
+        else { self.total_time as Float / self.items_out as Float }
+    }
+    
+    fn error_rate() -> Float {
+        if self.items_in == 0 { 0.0 }
+        else { self.errors as Float / self.items_in as Float }
+    }
+}
+
+// =============================================================================
+// Built-in Stages
+// =============================================================================
+
+/// Map stage
+struct MapStage<I, O> { f: fn(I) -> O, name: String }
+impl<I, O> Stage<I, O> for MapStage<I, O> {
+    fn process(input: I) -> Result<O, PipelineError> { Ok((self.f)(input)) }
+    fn name() -> String { self.name.clone() }
+}
+
+/// Filter stage
+struct FilterStage<T> { pred: fn(T) -> Bool, name: String }
+impl<T: Clone> Stage<T, Option<T>> for FilterStage<T> {
+    fn process(input: T) -> Result<Option<T>, PipelineError> {
+        if (self.pred)(input.clone()) { Ok(Some(input)) } else { Ok(None) }
+    }
+    fn name() -> String { self.name.clone() }
+}
+
+/// FlatMap stage
+struct FlatMapStage<I, O> { f: fn(I) -> [O], name: String }
+impl<I, O> Stage<I, [O]> for FlatMapStage<I, O> {
+    fn process(input: I) -> Result<[O], PipelineError> { Ok((self.f)(input)) }
+    fn name() -> String { self.name.clone() }
+}
+
+/// Batch stage
+struct BatchStage<T> { size: Int, buffer: [T], name: String }
+impl<T: Clone> Stage<T, Option<[T]>> for BatchStage<T> {
+    fn process(input: T) -> Result<Option<[T]>, PipelineError> {
+        self.buffer.push(input)
+        if self.buffer.len() >= self.size {
+            let batch = self.buffer.clone()
+            self.buffer.clear()
+            Ok(Some(batch))
+        } else {
+            Ok(None)
+        }
+    }
+    fn name() -> String { self.name.clone() }
+}
+
+/// Window stage (time-based batching)
+struct WindowStage<T> { duration_ms: Int64, buffer: [T], start_time: Int64, name: String }
+impl<T: Clone> Stage<T, Option<[T]>> for WindowStage<T> {
+    fn process(input: T) -> Result<Option<[T]>, PipelineError> {
+        let now = @native("timestamp_ms")
+        if self.start_time == 0 { self.start_time = now }
+        
+        self.buffer.push(input)
+        
+        if now - self.start_time >= self.duration_ms {
+            let window = self.buffer.clone()
+            self.buffer.clear()
+            self.start_time = now
+            Ok(Some(window))
+        } else {
+            Ok(None)
+        }
+    }
+    fn name() -> String { self.name.clone() }
+}
+
+/// Throttle stage
+struct ThrottleStage<T> { interval_ms: Int64, last_time: Int64, name: String }
+impl<T> Stage<T, T> for ThrottleStage<T> {
+    fn process(input: T) -> Result<T, PipelineError> {
+        let now = @native("timestamp_ms")
+        let elapsed = now - self.last_time
+        if elapsed < self.interval_ms {
+            @native("sleep_ms", self.interval_ms - elapsed)
+        }
+        self.last_time = @native("timestamp_ms")
+        Ok(input)
+    }
+    fn name() -> String { self.name.clone() }
+}
+
+/// Retry stage
+struct RetryStage<T> { max_attempts: Int, delay_ms: Int64, name: String }
+impl<T: Clone> Stage<Result<T, PipelineError>, T> for RetryStage<T> {
+    fn process(input: Result<T, PipelineError>) -> Result<T, PipelineError> {
+        match input {
+            Ok(v) => Ok(v)
+            Err(e) => Err(e)  // Retry logic handled by executor
+        }
+    }
+    fn name() -> String { self.name.clone() }
+}
+
+/// Timeout stage
+struct TimeoutStage<T> { timeout_ms: Int64, name: String }
+impl<T> Stage<T, T> for TimeoutStage<T> {
+    fn process(input: T) -> Result<T, PipelineError> {
+        // Timeout handled by executor
+        Ok(input)
+    }
+    fn name() -> String { self.name.clone() }
+}
+
+/// Tap stage (side effect)
+struct TapStage<T> { f: fn(T), name: String }
+impl<T: Clone> Stage<T, T> for TapStage<T> {
+    fn process(input: T) -> Result<T, PipelineError> {
+        (self.f)(input.clone())
+        Ok(input)
+    }
+    fn name() -> String { self.name.clone() }
+}
+
+/// Branch stage
+struct BranchStage<I, A, B> { pred: fn(I) -> Bool, left: Pipeline<I, A>, right: Pipeline<I, B>, name: String }
+impl<I: Clone, A, B> Stage<I, Either<A, B>> for BranchStage<I, A, B> {
+    fn process(input: I) -> Result<Either<A, B>, PipelineError> {
+        if (self.pred)(input.clone()) {
+            let executor = PipelineExecutor.new(self.left.clone())
+            Ok(Either.Left(executor.execute(input)?))
+        } else {
+            let executor = PipelineExecutor.new(self.right.clone())
+            Ok(Either.Right(executor.execute(input)?))
+        }
+    }
+    fn name() -> String { self.name.clone() }
+}
+
+/// Either type for branching
+enum Either<A, B> {
+    Left(A)
+    Right(B)
+    
+    fn is_left() -> Bool { match self { .Left(_) => true, _ => false } }
+    fn is_right() -> Bool { match self { .Right(_) => true, _ => false } }
+    fn left() -> Option<A> { match self { .Left(a) => Some(a), _ => None } }
+    fn right() -> Option<B> { match self { .Right(b) => Some(b), _ => None } }
+}
+
+// =============================================================================
+// Pipeline Stream
+// =============================================================================
+
+struct PipelineStream<I, O> {
+    executor: PipelineExecutor<I, O>
+    source: Stream<I>
+}
+
+impl<I, O> Stream for PipelineStream<I, O> {
+    type Item = O
+    
+    fn poll_next() -> Poll<Option<O>> {
+        match self.source.poll_next() {
+            Poll.Ready(Some(input)) => {
+                match self.executor.execute(input) {
+                    Ok(output) => Poll.Ready(Some(output))
+                    Err(_) => self.poll_next()  // Skip errors
+                }
+            }
+            Poll.Ready(None) => Poll.Ready(None)
+            Poll.Pending => Poll.Pending
+        }
+    }
+}
+
+// =============================================================================
+// DAG Pipeline
+// =============================================================================
+
+/// Directed Acyclic Graph pipeline for complex workflows
+actor DAGPipeline {
+    state nodes: Map<String, DAGNode>
+    state edges: [(String, String)]
+    state name: String
+    
+    init(name: String) {
+        self.nodes = Map.empty()
+        self.edges = []
+        self.name = name
+    }
+    
+    /// Add a node
+    on node<I, O>(id: String, stage: impl Stage<I, O>) -> Self {
+        self.nodes.insert(id.clone(), DAGNode { id: id, stage: Box.new(stage), inputs: [], outputs: [] })
+        self
+    }
+    
+    /// Add an edge
+    on edge(from: String, to: String) -> Self {
+        self.edges.push((from.clone(), to.clone()))
+        if let Some(from_node) = self.nodes.get_mut(from) { from_node.outputs.push(to.clone()) }
+        if let Some(to_node) = self.nodes.get_mut(to) { to_node.inputs.push(from) }
+        self
+    }
+    
+    /// Execute the DAG
+    on execute(inputs: Map<String, Box<dyn Any>>) -> Result<Map<String, Box<dyn Any>>, PipelineError> {
+        let order = self.topological_sort()?
+        var results: Map<String, Box<dyn Any>> = inputs
+        
+        for node_id in order {
+            let node = self.nodes.get(node_id).ok_or(PipelineError.InvalidInput(format!("Node {} not found", node_id)))?
+            
+            // Gather inputs
+            let input = if node.inputs.is_empty() {
+                results.get(node_id).cloned().ok_or(PipelineError.InvalidInput(format!("No input for {}", node_id)))?
+            } else {
+                // Merge inputs from dependencies
+                let mut merged = Map.empty()
+                for dep in node.inputs.iter() {
+                    if let Some(v) = results.get(dep) { merged.insert(dep.clone(), v.clone()) }
+                }
+                Box.new(merged)
+            }
+            
+            // Process
+            let output = node.stage.process_any(input)?
+            results.insert(node_id.clone(), output)
+        }
+        
+        Ok(results)
+    }
+    
+    /// Topological sort
+    fn topological_sort() -> Result<[String], PipelineError> {
+        var in_degree: Map<String, Int> = Map.empty()
+        for (id, _) in self.nodes.iter() { in_degree.insert(id.clone(), 0) }
+        for (_, to) in self.edges.iter() { *in_degree.get_mut(to).unwrap() += 1 }
+        
+        var queue = []
+        for (id, degree) in in_degree.iter() { if *degree == 0 { queue.push(id.clone()) } }
+        
+        var result = []
+        while !queue.is_empty() {
+            let node = queue.remove(0)
+            result.push(node.clone())
+            
+            if let Some(n) = self.nodes.get(node) {
+                for out in n.outputs.iter() {
+                    *in_degree.get_mut(out).unwrap() -= 1
+                    if *in_degree.get(out).unwrap() == 0 { queue.push(out.clone()) }
+                }
+            }
+        }
+        
+        if result.len() != self.nodes.len() {
+            Err(PipelineError.InvalidInput("Cycle detected in DAG"))
+        } else {
+            Ok(result)
+        }
+    }
+}
+
+struct DAGNode {
+    id: String
+    stage: Box<dyn AnyStage>
+    inputs: [String]
+    outputs: [String]
+}
+
+trait AnyStage {
+    fn process_any(input: Box<dyn Any>) -> Result<Box<dyn Any>, PipelineError>
+    fn name() -> String
+}
+
+// =============================================================================
+// Builder Functions
+// =============================================================================
+
+/// Create a new pipeline
+fn pipeline(name: String) -> Pipeline<(), ()> { Pipeline.new(name) }
+
+/// Create a pipeline executor
+fn executor<I, O>(pipeline: Pipeline<I, O>) -> PipelineExecutor<I, O> { PipelineExecutor.new(pipeline) }
+
+/// Create a DAG pipeline
+fn dag(name: String) -> DAGPipeline { DAGPipeline.new(name) }
+
+/// Create a map stage
+fn map_stage<I, O>(name: String, f: fn(I) -> O) -> MapStage<I, O> { MapStage { f: f, name: name } }
+
+/// Create a filter stage
+fn filter_stage<T>(name: String, pred: fn(T) -> Bool) -> FilterStage<T> { FilterStage { pred: pred, name: name } }
+
+/// Create a batch stage
+fn batch_stage<T>(name: String, size: Int) -> BatchStage<T> { BatchStage { size: size, buffer: [], name: name } }
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "pipeline_map" {
+    let p = Pipeline.new("test").map(|x: Int| x * 2)
+    let executor = PipelineExecutor.new(p)
+    let result = executor.execute(5)?
+    assert_eq(result, 10)?
+}
+
+test "pipeline_stats" {
+    let stats = PipelineStats.new("test")
+    assert_eq(stats.throughput(), 0.0)?
+    assert_eq(stats.error_rate(), 0.0)?
+}
+
+test "either" {
+    let left: Either<Int, String> = Either.Left(42)
+    assert(left.is_left())?
+    assert_eq(left.left(), Some(42))?
+    
+    let right: Either<Int, String> = Either.Right("hello")
+    assert(right.is_right())?
+    assert_eq(right.right(), Some("hello"))?
+}
+
+test "pipeline_error" {
+    let err = PipelineError.StageError { stage: "map", message: "failed" }
+    assert(err.message().contains("map"))?
+}

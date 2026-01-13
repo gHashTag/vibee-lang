@@ -1,0 +1,782 @@
+// =============================================================================
+// Vibee OS — State Middleware Module
+// Middleware for state management (logging, async, thunks, sagas)
+// =============================================================================
+
+use action::{Action, StandardAction, AsyncActionCreator, ActionBatch}
+use store::{Store, CoreStore, Middleware}
+use reducer::{Reducer}
+
+// =============================================================================
+// Logger Middleware
+// =============================================================================
+
+/// Logging configuration
+struct LoggerConfig {
+    collapsed: Bool
+    diff: Bool
+    colors: Bool
+    timestamp: Bool
+    duration: Bool
+    predicate: Option<fn(impl Action) -> Bool>
+}
+
+impl LoggerConfig {
+    fn new() -> Self {
+        LoggerConfig {
+            collapsed: false,
+            diff: false,
+            colors: true,
+            timestamp: true,
+            duration: true,
+            predicate: None
+        }
+    }
+    
+    fn collapsed() -> Self {
+        self.collapsed = true
+        self
+    }
+    
+    fn with_diff() -> Self {
+        self.diff = true
+        self
+    }
+    
+    fn without_colors() -> Self {
+        self.colors = false
+        self
+    }
+    
+    fn filter(predicate: fn(impl Action) -> Bool) -> Self {
+        self.predicate = Some(predicate)
+        self
+    }
+}
+
+/// Create logger middleware
+fn logger<S: Clone + Debug>(config: LoggerConfig) -> Middleware<S> {
+    Middleware.new("logger", |store, action, next| {
+        // Check predicate
+        if let Some(pred) = config.predicate {
+            if !pred(action) {
+                next()
+                return
+            }
+        }
+        
+        let prev_state = store.get_state()
+        let start_time = @native("now_ms")
+        
+        // Log action start
+        let action_type = action.action_type()
+        let timestamp = if config.timestamp {
+            " @ " + format_time(@native("now_ms"))
+        } else {
+            ""
+        }
+        
+        if config.collapsed {
+            @native("console_group_collapsed", "action " + action_type + timestamp)
+        } else {
+            @native("console_group", "action " + action_type + timestamp)
+        }
+        
+        if config.colors {
+            @native("console_log", "%cprev state", "color: #9E9E9E; font-weight: bold", prev_state)
+        } else {
+            @native("console_log", "prev state", prev_state)
+        }
+        
+        if config.colors {
+            @native("console_log", "%caction    ", "color: #03A9F4; font-weight: bold", action)
+        } else {
+            @native("console_log", "action    ", action)
+        }
+        
+        // Execute action
+        next()
+        
+        let next_state = store.get_state()
+        let duration = @native("now_ms") - start_time
+        
+        if config.colors {
+            @native("console_log", "%cnext state", "color: #4CAF50; font-weight: bold", next_state)
+        } else {
+            @native("console_log", "next state", next_state)
+        }
+        
+        // Show diff if enabled
+        if config.diff {
+            let diff = compute_diff(prev_state, next_state)
+            @native("console_log", "diff", diff)
+        }
+        
+        if config.duration {
+            @native("console_log", "duration: " + duration.to_string() + "ms")
+        }
+        
+        @native("console_group_end")
+    })
+}
+
+/// Simple logger (default config)
+fn simple_logger<S: Clone + Debug>() -> Middleware<S> {
+    logger(LoggerConfig.new())
+}
+
+fn format_time(ms: Int64) -> String {
+    let date = @native("date_from_ms", ms)
+    @native("date_format", date, "HH:mm:ss.SSS")
+}
+
+fn compute_diff<T: Debug>(prev: T, next: T) -> String {
+    // Simple diff implementation
+    let prev_str = @native("debug_format", prev)
+    let next_str = @native("debug_format", next)
+    
+    if prev_str == next_str {
+        "(no changes)"
+    } else {
+        "- " + prev_str + "\n+ " + next_str
+    }
+}
+
+// =============================================================================
+// Thunk Middleware
+// =============================================================================
+
+/// Thunk action - function that can dispatch
+struct ThunkAction<S> {
+    thunk_fn: fn(fn(impl Action), fn() -> S)
+}
+
+impl<S> Action for ThunkAction<S> {
+    fn action_type() -> String { "@@THUNK" }
+}
+
+impl<S> ThunkAction<S> {
+    fn new(thunk_fn: fn(fn(impl Action), fn() -> S)) -> Self {
+        ThunkAction { thunk_fn: thunk_fn }
+    }
+}
+
+/// Create thunk middleware
+fn thunk<S: Clone>() -> Middleware<S> {
+    Middleware.new("thunk", |store, action, next| {
+        if let Some(thunk_action) = action.downcast::<ThunkAction<S>>() {
+            let dispatch = |a| store.dispatch(a)
+            let get_state = || store.get_state()
+            (thunk_action.thunk_fn)(dispatch, get_state)
+        } else {
+            next()
+        }
+    })
+}
+
+/// Create thunk action helper
+fn create_thunk<S>(thunk_fn: fn(fn(impl Action), fn() -> S)) -> ThunkAction<S> {
+    ThunkAction.new(thunk_fn)
+}
+
+// =============================================================================
+// Promise Middleware
+// =============================================================================
+
+/// Promise action - async action with promise
+struct PromiseAction<P, R, E> {
+    creator: AsyncActionCreator<P, R, E>
+    payload: P
+    promise: Future<Result<R, E>>
+}
+
+impl<P, R, E> Action for PromiseAction<P, R, E> {
+    fn action_type() -> String { "@@PROMISE" }
+}
+
+/// Create promise middleware
+fn promise<S: Clone>() -> Middleware<S> {
+    Middleware.new("promise", |store, action, next| {
+        if let Some(promise_action) = action.downcast::<PromiseAction<Any, Any, Any>>() {
+            // Dispatch pending
+            store.dispatch(promise_action.creator.pending(promise_action.payload.clone()))
+            
+            // Handle promise resolution
+            promise_action.promise.on_complete(|result| {
+                match result {
+                    Ok(value) => store.dispatch(promise_action.creator.fulfilled(value)),
+                    Err(error) => store.dispatch(promise_action.creator.rejected(error))
+                }
+            })
+        } else {
+            next()
+        }
+    })
+}
+
+/// Create promise action
+fn create_promise_action<P, R, E>(
+    creator: AsyncActionCreator<P, R, E>,
+    payload: P,
+    promise: Future<Result<R, E>>
+) -> PromiseAction<P, R, E> {
+    PromiseAction {
+        creator: creator,
+        payload: payload,
+        promise: promise
+    }
+}
+
+// =============================================================================
+// Saga Middleware
+// =============================================================================
+
+/// Effect types for sagas
+enum Effect<S> {
+    Take(String)                              // Wait for action type
+    TakeEvery(String, fn(impl Action))        // Handle every action of type
+    TakeLatest(String, fn(impl Action))       // Handle only latest action
+    Put(impl Action)                          // Dispatch action
+    Call(fn() -> Any)                         // Call function
+    Select(fn(S) -> Any)                      // Select from state
+    Fork(fn())                                // Fork new saga
+    Cancel(SagaTask)                          // Cancel saga task
+    Delay(Int64)                              // Delay execution
+    Race([Effect<S>])                         // Race multiple effects
+    All([Effect<S>])                          // Wait for all effects
+}
+
+/// Saga task handle
+struct SagaTask {
+    id: Int
+    cancelled: Bool
+}
+
+impl SagaTask {
+    fn cancel() {
+        self.cancelled = true
+    }
+    
+    fn is_cancelled() -> Bool {
+        self.cancelled
+    }
+}
+
+/// Saga context
+struct SagaContext<S> {
+    store: impl Store<S>
+    task_id: Int
+}
+
+/// Saga runner
+actor SagaRunner<S: Clone> {
+    state store: impl Store<S>
+    state watchers: Map<String, [fn(impl Action)]>
+    state latest_watchers: Map<String, fn(impl Action)>
+    state tasks: Map<Int, SagaTask>
+    state next_task_id: Int
+    
+    fn new(store: impl Store<S>) -> Self {
+        SagaRunner {
+            store: store,
+            watchers: Map.new(),
+            latest_watchers: Map.new(),
+            tasks: Map.new(),
+            next_task_id: 0
+        }
+    }
+    
+    fn run(saga: fn(SagaContext<S>)) -> SagaTask {
+        let task_id = self.next_task_id
+        self.next_task_id += 1
+        
+        let task = SagaTask { id: task_id, cancelled: false }
+        self.tasks.insert(task_id, task.clone())
+        
+        let ctx = SagaContext {
+            store: self.store.clone(),
+            task_id: task_id
+        }
+        
+        spawn {
+            saga(ctx)
+        }
+        
+        task
+    }
+    
+    fn handle_action(action: impl Action) {
+        let action_type = action.action_type()
+        
+        // Handle takeEvery watchers
+        if let Some(handlers) = self.watchers.get(action_type.clone()) {
+            for handler in handlers.iter() {
+                spawn { handler(action.clone()) }
+            }
+        }
+        
+        // Handle takeLatest watchers
+        if let Some(handler) = self.latest_watchers.get(action_type) {
+            // Cancel previous and run new
+            spawn { handler(action.clone()) }
+        }
+    }
+    
+    fn take_every(action_type: String, handler: fn(impl Action)) {
+        if !self.watchers.contains_key(action_type.clone()) {
+            self.watchers.insert(action_type.clone(), [])
+        }
+        self.watchers.get_mut(action_type).unwrap().push(handler)
+    }
+    
+    fn take_latest(action_type: String, handler: fn(impl Action)) {
+        self.latest_watchers.insert(action_type, handler)
+    }
+}
+
+/// Create saga middleware
+fn saga<S: Clone>(root_saga: fn(SagaContext<S>)) -> Middleware<S> {
+    var runner: Option<SagaRunner<S>> = None
+    
+    Middleware.new("saga", |store, action, next| {
+        // Initialize runner on first action
+        if runner.is_none() {
+            let r = SagaRunner.new(store.clone())
+            r.run(root_saga)
+            runner = Some(r)
+        }
+        
+        next()
+        
+        // Notify saga runner of action
+        if let Some(ref r) = runner {
+            r.handle_action(action)
+        }
+    })
+}
+
+/// Effect creators
+fn take<S>(action_type: String) -> Effect<S> {
+    Effect.Take(action_type)
+}
+
+fn take_every<S>(action_type: String, handler: fn(impl Action)) -> Effect<S> {
+    Effect.TakeEvery(action_type, handler)
+}
+
+fn take_latest<S>(action_type: String, handler: fn(impl Action)) -> Effect<S> {
+    Effect.TakeLatest(action_type, handler)
+}
+
+fn put<S>(action: impl Action) -> Effect<S> {
+    Effect.Put(action)
+}
+
+fn call<S>(func: fn() -> Any) -> Effect<S> {
+    Effect.Call(func)
+}
+
+fn select_effect<S>(selector: fn(S) -> Any) -> Effect<S> {
+    Effect.Select(selector)
+}
+
+fn delay<S>(ms: Int64) -> Effect<S> {
+    Effect.Delay(ms)
+}
+
+// =============================================================================
+// Batch Middleware
+// =============================================================================
+
+/// Create batch middleware - handles batched actions
+fn batch<S: Clone>() -> Middleware<S> {
+    Middleware.new("batch", |store, action, next| {
+        if action.action_type() == "@@BATCH" {
+            if let Some(batch_action) = action.downcast::<ActionBatch>() {
+                for a in batch_action.iter() {
+                    store.dispatch(a)
+                }
+            }
+        } else {
+            next()
+        }
+    })
+}
+
+// =============================================================================
+// Debounce Middleware
+// =============================================================================
+
+/// Debounce configuration
+struct DebounceConfig {
+    action_types: [String]
+    wait_ms: Int64
+    leading: Bool
+    trailing: Bool
+}
+
+impl DebounceConfig {
+    fn new(wait_ms: Int64) -> Self {
+        DebounceConfig {
+            action_types: [],
+            wait_ms: wait_ms,
+            leading: false,
+            trailing: true
+        }
+    }
+    
+    fn for_types(types: [String]) -> Self {
+        self.action_types = types
+        self
+    }
+    
+    fn leading() -> Self {
+        self.leading = true
+        self.trailing = false
+        self
+    }
+    
+    fn both() -> Self {
+        self.leading = true
+        self.trailing = true
+        self
+    }
+}
+
+/// Create debounce middleware
+fn debounce<S: Clone>(config: DebounceConfig) -> Middleware<S> {
+    var timers: Map<String, Int> = Map.new()
+    var leading_called: Map<String, Bool> = Map.new()
+    
+    Middleware.new("debounce", |store, action, next| {
+        let action_type = action.action_type()
+        
+        // Check if this action type should be debounced
+        if !config.action_types.is_empty() && !config.action_types.contains(action_type.clone()) {
+            next()
+            return
+        }
+        
+        // Cancel existing timer
+        if let Some(timer_id) = timers.get(action_type.clone()) {
+            @native("clear_timeout", timer_id)
+        }
+        
+        // Handle leading edge
+        if config.leading && !leading_called.get(action_type.clone()).unwrap_or(false) {
+            leading_called.insert(action_type.clone(), true)
+            next()
+        }
+        
+        // Set new timer for trailing edge
+        if config.trailing {
+            let timer_id = @native("set_timeout", config.wait_ms, || {
+                leading_called.insert(action_type.clone(), false)
+                next()
+            })
+            timers.insert(action_type, timer_id)
+        }
+    })
+}
+
+// =============================================================================
+// Throttle Middleware
+// =============================================================================
+
+/// Create throttle middleware
+fn throttle<S: Clone>(action_types: [String], wait_ms: Int64) -> Middleware<S> {
+    var last_call: Map<String, Int64> = Map.new()
+    
+    Middleware.new("throttle", |store, action, next| {
+        let action_type = action.action_type()
+        
+        // Check if this action type should be throttled
+        if !action_types.is_empty() && !action_types.contains(action_type.clone()) {
+            next()
+            return
+        }
+        
+        let now = @native("now_ms")
+        let last = last_call.get(action_type.clone()).unwrap_or(0)
+        
+        if now - last >= wait_ms {
+            last_call.insert(action_type, now)
+            next()
+        }
+    })
+}
+
+// =============================================================================
+// Error Handling Middleware
+// =============================================================================
+
+/// Error handler type
+type ErrorHandler = fn(Error, impl Action, Any) -> ()
+
+/// Create error handling middleware
+fn error_handler<S: Clone>(handler: ErrorHandler) -> Middleware<S> {
+    Middleware.new("error_handler", |store, action, next| {
+        let prev_state = store.get_state()
+        
+        // Try to execute action
+        let result = @native("try_catch", || {
+            next()
+        })
+        
+        match result {
+            Ok(_) => {}
+            Err(error) => {
+                handler(error, action, prev_state)
+            }
+        }
+    })
+}
+
+/// Create crash reporter middleware
+fn crash_reporter<S: Clone>(report_fn: fn(Error, impl Action, S)) -> Middleware<S> {
+    error_handler(|error, action, state| {
+        report_fn(error, action, state)
+    })
+}
+
+// =============================================================================
+// Analytics Middleware
+// =============================================================================
+
+/// Analytics event
+struct AnalyticsEvent {
+    action_type: String
+    timestamp: Int64
+    payload: Option<Any>
+    metadata: Map<String, String>
+}
+
+/// Analytics tracker trait
+trait AnalyticsTracker {
+    fn track(event: AnalyticsEvent)
+}
+
+/// Create analytics middleware
+fn analytics<S: Clone>(
+    tracker: impl AnalyticsTracker,
+    action_filter: Option<fn(impl Action) -> Bool>
+) -> Middleware<S> {
+    Middleware.new("analytics", |store, action, next| {
+        // Check filter
+        if let Some(filter) = action_filter {
+            if !filter(action) {
+                next()
+                return
+            }
+        }
+        
+        // Track event
+        let event = AnalyticsEvent {
+            action_type: action.action_type(),
+            timestamp: @native("now_ms"),
+            payload: if let Some(std_action) = action.downcast::<StandardAction<Any>>() {
+                Some(std_action.payload())
+            } else {
+                None
+            },
+            metadata: Map.new()
+        }
+        
+        tracker.track(event)
+        next()
+    })
+}
+
+// =============================================================================
+// Persistence Middleware
+// =============================================================================
+
+/// Create persistence middleware
+fn persist<S: Clone + Serialize>(
+    storage_key: String,
+    debounce_ms: Int64
+) -> Middleware<S> {
+    var timer_id: Option<Int> = None
+    
+    Middleware.new("persist", |store, action, next| {
+        next()
+        
+        // Debounce persistence
+        if let Some(id) = timer_id {
+            @native("clear_timeout", id)
+        }
+        
+        timer_id = Some(@native("set_timeout", debounce_ms, || {
+            let state = store.get_state()
+            let json = state.to_json()
+            @native("local_storage_set", storage_key.clone(), json)
+        }))
+    })
+}
+
+// =============================================================================
+// Validation Middleware
+// =============================================================================
+
+/// Action validator
+type ActionValidator = fn(impl Action) -> Result<(), String>
+
+/// Create validation middleware
+fn validate<S: Clone>(validators: Map<String, ActionValidator>) -> Middleware<S> {
+    Middleware.new("validate", |store, action, next| {
+        let action_type = action.action_type()
+        
+        if let Some(validator) = validators.get(action_type) {
+            match validator(action) {
+                Ok(_) => next(),
+                Err(msg) => {
+                    @native("console_error", "Action validation failed: " + msg)
+                    // Don't dispatch invalid action
+                }
+            }
+        } else {
+            next()
+        }
+    })
+}
+
+// =============================================================================
+// Compose Middleware
+// =============================================================================
+
+/// Compose multiple middlewares
+fn compose<S: Clone>(middlewares: [Middleware<S>]) -> [Middleware<S>] {
+    middlewares
+}
+
+/// Apply middlewares in order
+fn apply<S: Clone>(store: CoreStore<S>, middlewares: [Middleware<S>]) -> CoreStore<S> {
+    var result = store
+    for mw in middlewares {
+        result = result.with_middleware(mw)
+    }
+    result
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "logger middleware" {
+    let reducer = FnReducer.new(0, |state, action| {
+        match action.action_type().as_str() {
+            "INCREMENT" => state + 1,
+            _ => state
+        }
+    })
+    
+    let store = CoreStore.new(reducer, 0)
+        .with_middleware(simple_logger())
+    
+    store.dispatch(simple_action("INCREMENT"))
+    assert_eq(store.get_state(), 1)?
+}
+
+test "thunk middleware" {
+    let reducer = FnReducer.new(0, |state, action| {
+        match action.action_type().as_str() {
+            "SET" => {
+                if let Some(typed) = action.downcast::<StandardAction<Int>>() {
+                    typed.payload()
+                } else {
+                    state
+                }
+            }
+            _ => state
+        }
+    })
+    
+    let store = CoreStore.new(reducer, 0)
+        .with_middleware(thunk())
+    
+    let async_action = create_thunk(|dispatch, get_state| {
+        let current = get_state()
+        dispatch(action_with_payload("SET", current + 10))
+    })
+    
+    store.dispatch(async_action)
+    assert_eq(store.get_state(), 10)?
+}
+
+test "batch middleware" {
+    let reducer = FnReducer.new(0, |state, action| {
+        match action.action_type().as_str() {
+            "INCREMENT" => state + 1,
+            _ => state
+        }
+    })
+    
+    let store = CoreStore.new(reducer, 0)
+        .with_middleware(batch())
+    
+    let batch_action = ActionBatch.new()
+        .add(simple_action("INCREMENT"))
+        .add(simple_action("INCREMENT"))
+        .add(simple_action("INCREMENT"))
+    
+    store.dispatch(batch_action)
+    assert_eq(store.get_state(), 3)?
+}
+
+test "error handler middleware" {
+    var error_caught = false
+    
+    let reducer = FnReducer.new(0, |state, action| {
+        if action.action_type() == "FAIL" {
+            panic("Intentional error")
+        }
+        state
+    })
+    
+    let store = CoreStore.new(reducer, 0)
+        .with_middleware(error_handler(|err, action, state| {
+            error_caught = true
+        }))
+    
+    store.dispatch(simple_action("FAIL"))
+    assert(error_caught)?
+}
+
+test "throttle middleware" {
+    let reducer = FnReducer.new(0, |state, action| {
+        match action.action_type().as_str() {
+            "INCREMENT" => state + 1,
+            _ => state
+        }
+    })
+    
+    let store = CoreStore.new(reducer, 0)
+        .with_middleware(throttle(["INCREMENT"], 100))
+    
+    // Rapid dispatches - only first should go through
+    store.dispatch(simple_action("INCREMENT"))
+    store.dispatch(simple_action("INCREMENT"))
+    store.dispatch(simple_action("INCREMENT"))
+    
+    assert_eq(store.get_state(), 1)?
+}
+
+test "compose middlewares" {
+    let reducer = FnReducer.new(0, |state, action| {
+        match action.action_type().as_str() {
+            "INCREMENT" => state + 1,
+            _ => state
+        }
+    })
+    
+    let middlewares = compose([
+        simple_logger(),
+        thunk(),
+        batch()
+    ])
+    
+    let store = apply(CoreStore.new(reducer, 0), middlewares)
+    
+    store.dispatch(simple_action("INCREMENT"))
+    assert_eq(store.get_state(), 1)?
+}

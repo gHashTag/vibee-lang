@@ -1,0 +1,805 @@
+// =============================================================================
+// Vibee OS — Graph Centrality Module
+// PageRank, Betweenness, Closeness and other centrality measures
+// =============================================================================
+
+use graph_node.{NodeId}
+use graph_edge.{AdjacencyList}
+use shortest_path.{ShortestPath}
+use traversal.{Traversal}
+
+/// Centrality result with scores for all nodes
+struct CentralityResult {
+    scores: Map<NodeId, Float>
+    
+    fn get(node: NodeId) -> Float {
+        self.scores.get(node).cloned().unwrap_or(0.0)
+    }
+    
+    fn top_k(k: Int) -> [(NodeId, Float)] {
+        var items: [(NodeId, Float)] = self.scores.iter()
+            .map(|(n, s)| (*n, *s))
+            .collect()
+        items.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap())
+        items.into_iter().take(k).collect()
+    }
+    
+    fn bottom_k(k: Int) -> [(NodeId, Float)] {
+        var items: [(NodeId, Float)] = self.scores.iter()
+            .map(|(n, s)| (*n, *s))
+            .collect()
+        items.sort_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        items.into_iter().take(k).collect()
+    }
+    
+    fn max() -> Option<(NodeId, Float)> {
+        self.scores.iter()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(n, s)| (*n, *s))
+    }
+    
+    fn min() -> Option<(NodeId, Float)> {
+        self.scores.iter()
+            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(n, s)| (*n, *s))
+    }
+    
+    fn mean() -> Float {
+        if self.scores.is_empty() { return 0.0 }
+        let sum: Float = self.scores.values().sum()
+        sum / self.scores.len() as Float
+    }
+    
+    fn normalize() -> CentralityResult {
+        let max_score = self.scores.values().max().unwrap_or(1.0)
+        if max_score == 0.0 { return self.clone() }
+        
+        var normalized = Map.empty()
+        for (node, score) in self.scores.iter() {
+            normalized.set(*node, *score / max_score)
+        }
+        CentralityResult { scores: normalized }
+    }
+}
+
+/// Centrality algorithms
+struct Centrality;
+
+impl Centrality {
+    /// PageRank algorithm
+    fn pagerank(
+        graph: AdjacencyList<Float>,
+        damping: Float,
+        max_iterations: Int,
+        tolerance: Float
+    ) -> CentralityResult {
+        let nodes = graph.nodes()
+        let n = nodes.len() as Float
+        
+        if n == 0.0 { return CentralityResult { scores: Map.empty() } }
+        
+        // Initialize scores
+        var scores = Map.empty()
+        let initial = 1.0 / n
+        for node in nodes.iter() {
+            scores.set(*node, initial)
+        }
+        
+        // Calculate out-degrees
+        var out_degree = Map.empty()
+        for node in nodes.iter() {
+            out_degree.set(*node, graph.neighbors(*node).len() as Float)
+        }
+        
+        // Build reverse graph for incoming edges
+        var incoming = Map.empty()
+        for node in nodes.iter() {
+            incoming.set(*node, [])
+        }
+        for node in nodes.iter() {
+            for (neighbor, _) in graph.neighbors(*node) {
+                incoming.entry(neighbor).or_insert([]).push(*node)
+            }
+        }
+        
+        // Iterate
+        for _ in 0..max_iterations {
+            var new_scores = Map.empty()
+            var diff = 0.0
+            
+            // Handle dangling nodes (no outgoing edges)
+            var dangling_sum = 0.0
+            for node in nodes.iter() {
+                if out_degree.get(*node).unwrap() == 0.0 {
+                    dangling_sum += scores.get(*node).unwrap()
+                }
+            }
+            
+            for node in nodes.iter() {
+                var sum = 0.0
+                
+                // Sum contributions from incoming nodes
+                for source in incoming.get(*node).unwrap_or(&[]).iter() {
+                    let source_score = scores.get(*source).unwrap()
+                    let source_out = out_degree.get(*source).unwrap()
+                    if source_out > 0.0 {
+                        sum += source_score / source_out
+                    }
+                }
+                
+                // Add dangling node contribution
+                sum += dangling_sum / n
+                
+                // Apply damping factor
+                let new_score = (1.0 - damping) / n + damping * sum
+                new_scores.set(*node, new_score)
+                
+                diff += (new_score - scores.get(*node).unwrap()).abs()
+            }
+            
+            scores = new_scores
+            
+            // Check convergence
+            if diff < tolerance { break }
+        }
+        
+        CentralityResult { scores: scores }
+    }
+    
+    /// PageRank with default parameters
+    fn pagerank_default(graph: AdjacencyList<Float>) -> CentralityResult {
+        Self.pagerank(graph, 0.85, 100, 1e-6)
+    }
+    
+    /// Personalized PageRank (topic-sensitive)
+    fn personalized_pagerank(
+        graph: AdjacencyList<Float>,
+        personalization: Map<NodeId, Float>,
+        damping: Float,
+        max_iterations: Int,
+        tolerance: Float
+    ) -> CentralityResult {
+        let nodes = graph.nodes()
+        let n = nodes.len() as Float
+        
+        if n == 0.0 { return CentralityResult { scores: Map.empty() } }
+        
+        // Normalize personalization vector
+        let pers_sum: Float = personalization.values().sum()
+        var pers_normalized = Map.empty()
+        for (node, score) in personalization.iter() {
+            pers_normalized.set(*node, *score / pers_sum)
+        }
+        
+        // Initialize scores
+        var scores = Map.empty()
+        for node in nodes.iter() {
+            scores.set(*node, pers_normalized.get(*node).unwrap_or(1.0 / n))
+        }
+        
+        // Calculate out-degrees
+        var out_degree = Map.empty()
+        for node in nodes.iter() {
+            out_degree.set(*node, graph.neighbors(*node).len() as Float)
+        }
+        
+        // Build reverse graph
+        var incoming = Map.empty()
+        for node in nodes.iter() {
+            incoming.set(*node, [])
+        }
+        for node in nodes.iter() {
+            for (neighbor, _) in graph.neighbors(*node) {
+                incoming.entry(neighbor).or_insert([]).push(*node)
+            }
+        }
+        
+        // Iterate
+        for _ in 0..max_iterations {
+            var new_scores = Map.empty()
+            var diff = 0.0
+            
+            for node in nodes.iter() {
+                var sum = 0.0
+                
+                for source in incoming.get(*node).unwrap_or(&[]).iter() {
+                    let source_score = scores.get(*source).unwrap()
+                    let source_out = out_degree.get(*source).unwrap()
+                    if source_out > 0.0 {
+                        sum += source_score / source_out
+                    }
+                }
+                
+                let pers_value = pers_normalized.get(*node).unwrap_or(0.0)
+                let new_score = (1.0 - damping) * pers_value + damping * sum
+                new_scores.set(*node, new_score)
+                
+                diff += (new_score - scores.get(*node).unwrap()).abs()
+            }
+            
+            scores = new_scores
+            if diff < tolerance { break }
+        }
+        
+        CentralityResult { scores: scores }
+    }
+    
+    /// Betweenness centrality
+    fn betweenness(graph: AdjacencyList<Float>) -> CentralityResult {
+        let nodes = graph.nodes()
+        var betweenness = Map.empty()
+        
+        // Initialize
+        for node in nodes.iter() {
+            betweenness.set(*node, 0.0)
+        }
+        
+        // For each source node
+        for source in nodes.iter() {
+            // BFS/Dijkstra from source
+            var stack = []
+            var predecessors: Map<NodeId, [NodeId]> = Map.empty()
+            var sigma = Map.empty()  // Number of shortest paths
+            var dist = Map.empty()
+            
+            for node in nodes.iter() {
+                predecessors.set(*node, [])
+                sigma.set(*node, 0.0)
+                dist.set(*node, Float.INFINITY)
+            }
+            
+            sigma.set(*source, 1.0)
+            dist.set(*source, 0.0)
+            
+            var queue = [*source]
+            
+            while !queue.is_empty() {
+                let v = queue.remove(0)
+                stack.push(v)
+                
+                for (w, weight) in graph.neighbors(v) {
+                    let new_dist = dist.get(v).unwrap() + weight
+                    
+                    // First time visiting w
+                    if dist.get(w).unwrap() == Float.INFINITY {
+                        dist.set(w, new_dist)
+                        queue.push(w)
+                    }
+                    
+                    // Shortest path to w via v
+                    if (dist.get(w).unwrap() - new_dist).abs() < 1e-10 {
+                        sigma.set(w, sigma.get(w).unwrap() + sigma.get(v).unwrap())
+                        predecessors.get_mut(w).unwrap().push(v)
+                    }
+                }
+            }
+            
+            // Accumulation
+            var delta = Map.empty()
+            for node in nodes.iter() {
+                delta.set(*node, 0.0)
+            }
+            
+            while !stack.is_empty() {
+                let w = stack.pop().unwrap()
+                for v in predecessors.get(w).unwrap().iter() {
+                    let coeff = (sigma.get(*v).unwrap() / sigma.get(w).unwrap()) 
+                        * (1.0 + delta.get(w).unwrap())
+                    delta.set(*v, delta.get(*v).unwrap() + coeff)
+                }
+                if w != *source {
+                    betweenness.set(w, betweenness.get(w).unwrap() + delta.get(w).unwrap())
+                }
+            }
+        }
+        
+        // Normalize for undirected graphs (divide by 2)
+        // For directed graphs, no normalization needed
+        
+        CentralityResult { scores: betweenness }
+    }
+    
+    /// Closeness centrality
+    fn closeness(graph: AdjacencyList<Float>) -> CentralityResult {
+        let nodes = graph.nodes()
+        let n = nodes.len() as Float
+        var closeness = Map.empty()
+        
+        for source in nodes.iter() {
+            let result = ShortestPath.dijkstra(graph.clone(), *source)
+            
+            var total_dist = 0.0
+            var reachable = 0
+            
+            for target in nodes.iter() {
+                if source == target { continue }
+                if let Some(dist) = result.distance_to(*target) {
+                    if dist < Float.INFINITY {
+                        total_dist += dist
+                        reachable += 1
+                    }
+                }
+            }
+            
+            if reachable > 0 && total_dist > 0.0 {
+                // Wasserman-Faust normalization for disconnected graphs
+                let score = (reachable as Float / (n - 1.0)) * (reachable as Float / total_dist)
+                closeness.set(*source, score)
+            } else {
+                closeness.set(*source, 0.0)
+            }
+        }
+        
+        CentralityResult { scores: closeness }
+    }
+    
+    /// Harmonic centrality (handles disconnected graphs better)
+    fn harmonic(graph: AdjacencyList<Float>) -> CentralityResult {
+        let nodes = graph.nodes()
+        let n = nodes.len() as Float
+        var harmonic = Map.empty()
+        
+        for source in nodes.iter() {
+            let result = ShortestPath.dijkstra(graph.clone(), *source)
+            
+            var sum = 0.0
+            for target in nodes.iter() {
+                if source == target { continue }
+                if let Some(dist) = result.distance_to(*target) {
+                    if dist > 0.0 && dist < Float.INFINITY {
+                        sum += 1.0 / dist
+                    }
+                }
+            }
+            
+            harmonic.set(*source, sum / (n - 1.0))
+        }
+        
+        CentralityResult { scores: harmonic }
+    }
+    
+    /// Degree centrality
+    fn degree(graph: AdjacencyList<Float>) -> CentralityResult {
+        let nodes = graph.nodes()
+        let n = nodes.len() as Float
+        var degree = Map.empty()
+        
+        for node in nodes.iter() {
+            let out_degree = graph.neighbors(*node).len() as Float
+            degree.set(*node, out_degree / (n - 1.0))
+        }
+        
+        CentralityResult { scores: degree }
+    }
+    
+    /// In-degree centrality (for directed graphs)
+    fn in_degree(graph: AdjacencyList<Float>) -> CentralityResult {
+        let nodes = graph.nodes()
+        let n = nodes.len() as Float
+        var in_degree = Map.empty()
+        
+        // Initialize
+        for node in nodes.iter() {
+            in_degree.set(*node, 0.0)
+        }
+        
+        // Count incoming edges
+        for node in nodes.iter() {
+            for (neighbor, _) in graph.neighbors(*node) {
+                in_degree.set(neighbor, in_degree.get(neighbor).unwrap() + 1.0)
+            }
+        }
+        
+        // Normalize
+        for node in nodes.iter() {
+            let score = in_degree.get(*node).unwrap() / (n - 1.0)
+            in_degree.set(*node, score)
+        }
+        
+        CentralityResult { scores: in_degree }
+    }
+    
+    /// Out-degree centrality (for directed graphs)
+    fn out_degree(graph: AdjacencyList<Float>) -> CentralityResult {
+        Self.degree(graph)
+    }
+    
+    /// Eigenvector centrality
+    fn eigenvector(
+        graph: AdjacencyList<Float>,
+        max_iterations: Int,
+        tolerance: Float
+    ) -> CentralityResult {
+        let nodes = graph.nodes()
+        let n = nodes.len()
+        
+        if n == 0 { return CentralityResult { scores: Map.empty() } }
+        
+        // Initialize with equal values
+        var scores = Map.empty()
+        let initial = 1.0 / (n as Float).sqrt()
+        for node in nodes.iter() {
+            scores.set(*node, initial)
+        }
+        
+        // Build reverse graph
+        var incoming = Map.empty()
+        for node in nodes.iter() {
+            incoming.set(*node, [])
+        }
+        for node in nodes.iter() {
+            for (neighbor, weight) in graph.neighbors(*node) {
+                incoming.entry(neighbor).or_insert([]).push((*node, weight))
+            }
+        }
+        
+        // Power iteration
+        for _ in 0..max_iterations {
+            var new_scores = Map.empty()
+            
+            for node in nodes.iter() {
+                var sum = 0.0
+                for (source, weight) in incoming.get(*node).unwrap_or(&[]).iter() {
+                    sum += scores.get(*source).unwrap() * weight
+                }
+                new_scores.set(*node, sum)
+            }
+            
+            // Normalize
+            let norm: Float = new_scores.values().map(|x| x * x).sum().sqrt()
+            if norm > 0.0 {
+                for node in nodes.iter() {
+                    new_scores.set(*node, new_scores.get(*node).unwrap() / norm)
+                }
+            }
+            
+            // Check convergence
+            var diff = 0.0
+            for node in nodes.iter() {
+                diff += (new_scores.get(*node).unwrap() - scores.get(*node).unwrap()).abs()
+            }
+            
+            scores = new_scores
+            if diff < tolerance { break }
+        }
+        
+        CentralityResult { scores: scores }
+    }
+    
+    /// Katz centrality
+    fn katz(
+        graph: AdjacencyList<Float>,
+        alpha: Float,
+        beta: Float,
+        max_iterations: Int,
+        tolerance: Float
+    ) -> CentralityResult {
+        let nodes = graph.nodes()
+        
+        if nodes.is_empty() { return CentralityResult { scores: Map.empty() } }
+        
+        // Initialize
+        var scores = Map.empty()
+        for node in nodes.iter() {
+            scores.set(*node, 0.0)
+        }
+        
+        // Build reverse graph
+        var incoming = Map.empty()
+        for node in nodes.iter() {
+            incoming.set(*node, [])
+        }
+        for node in nodes.iter() {
+            for (neighbor, _) in graph.neighbors(*node) {
+                incoming.entry(neighbor).or_insert([]).push(*node)
+            }
+        }
+        
+        // Iterate
+        for _ in 0..max_iterations {
+            var new_scores = Map.empty()
+            var diff = 0.0
+            
+            for node in nodes.iter() {
+                var sum = beta
+                for source in incoming.get(*node).unwrap_or(&[]).iter() {
+                    sum += alpha * scores.get(*source).unwrap()
+                }
+                new_scores.set(*node, sum)
+                diff += (sum - scores.get(*node).unwrap()).abs()
+            }
+            
+            scores = new_scores
+            if diff < tolerance { break }
+        }
+        
+        CentralityResult { scores: scores }
+    }
+    
+    /// HITS algorithm (Hyperlink-Induced Topic Search)
+    fn hits(
+        graph: AdjacencyList<Float>,
+        max_iterations: Int,
+        tolerance: Float
+    ) -> (CentralityResult, CentralityResult) {
+        let nodes = graph.nodes()
+        
+        if nodes.is_empty() {
+            return (
+                CentralityResult { scores: Map.empty() },
+                CentralityResult { scores: Map.empty() }
+            )
+        }
+        
+        // Initialize hub and authority scores
+        var hubs = Map.empty()
+        var authorities = Map.empty()
+        for node in nodes.iter() {
+            hubs.set(*node, 1.0)
+            authorities.set(*node, 1.0)
+        }
+        
+        // Build reverse graph
+        var incoming = Map.empty()
+        for node in nodes.iter() {
+            incoming.set(*node, [])
+        }
+        for node in nodes.iter() {
+            for (neighbor, _) in graph.neighbors(*node) {
+                incoming.entry(neighbor).or_insert([]).push(*node)
+            }
+        }
+        
+        // Iterate
+        for _ in 0..max_iterations {
+            var new_authorities = Map.empty()
+            var new_hubs = Map.empty()
+            
+            // Update authorities
+            for node in nodes.iter() {
+                var sum = 0.0
+                for source in incoming.get(*node).unwrap_or(&[]).iter() {
+                    sum += hubs.get(*source).unwrap()
+                }
+                new_authorities.set(*node, sum)
+            }
+            
+            // Update hubs
+            for node in nodes.iter() {
+                var sum = 0.0
+                for (neighbor, _) in graph.neighbors(*node) {
+                    sum += new_authorities.get(neighbor).unwrap()
+                }
+                new_hubs.set(*node, sum)
+            }
+            
+            // Normalize
+            let auth_norm: Float = new_authorities.values().map(|x| x * x).sum().sqrt()
+            let hub_norm: Float = new_hubs.values().map(|x| x * x).sum().sqrt()
+            
+            if auth_norm > 0.0 {
+                for node in nodes.iter() {
+                    new_authorities.set(*node, new_authorities.get(*node).unwrap() / auth_norm)
+                }
+            }
+            if hub_norm > 0.0 {
+                for node in nodes.iter() {
+                    new_hubs.set(*node, new_hubs.get(*node).unwrap() / hub_norm)
+                }
+            }
+            
+            // Check convergence
+            var diff = 0.0
+            for node in nodes.iter() {
+                diff += (new_authorities.get(*node).unwrap() - authorities.get(*node).unwrap()).abs()
+                diff += (new_hubs.get(*node).unwrap() - hubs.get(*node).unwrap()).abs()
+            }
+            
+            authorities = new_authorities
+            hubs = new_hubs
+            
+            if diff < tolerance { break }
+        }
+        
+        (
+            CentralityResult { scores: hubs },
+            CentralityResult { scores: authorities }
+        )
+    }
+    
+    /// Load centrality (based on betweenness)
+    fn load(graph: AdjacencyList<Float>) -> CentralityResult {
+        // Load centrality is similar to betweenness but counts
+        // the fraction of shortest paths through each node
+        Self.betweenness(graph)
+    }
+    
+    /// Current flow betweenness centrality (approximate)
+    fn current_flow_betweenness(graph: AdjacencyList<Float>) -> CentralityResult {
+        // Simplified version using random walks
+        let nodes = graph.nodes()
+        var scores = Map.empty()
+        
+        for node in nodes.iter() {
+            scores.set(*node, 0.0)
+        }
+        
+        let num_walks = 1000
+        let walk_length = 50
+        
+        for source in nodes.iter() {
+            for _ in 0..num_walks {
+                var current = *source
+                var visited = Set.empty()
+                
+                for _ in 0..walk_length {
+                    let neighbors = graph.neighbors(current)
+                    if neighbors.is_empty() { break }
+                    
+                    // Random neighbor selection
+                    let idx = @native("random_int", 0, neighbors.len())
+                    let (next, _) = neighbors[idx]
+                    
+                    if !visited.contains(next) {
+                        visited.insert(next)
+                        scores.set(next, scores.get(next).unwrap() + 1.0)
+                    }
+                    
+                    current = next
+                }
+            }
+        }
+        
+        // Normalize
+        let max_score = scores.values().max().unwrap_or(1.0)
+        if max_score > 0.0 {
+            for node in nodes.iter() {
+                scores.set(*node, scores.get(*node).unwrap() / max_score)
+            }
+        }
+        
+        CentralityResult { scores: scores }
+    }
+}
+
+/// Actor for parallel centrality computation
+actor CentralityActor {
+    state graph: AdjacencyList<Float>
+    state results: Map<String, CentralityResult>
+    
+    fn new(graph: AdjacencyList<Float>) -> Self {
+        CentralityActor { graph: graph, results: Map.empty() }
+    }
+    
+    fn compute_pagerank(damping: Float, iterations: Int, tolerance: Float) {
+        let result = Centrality.pagerank(self.graph.clone(), damping, iterations, tolerance)
+        self.results.set("pagerank", result)
+    }
+    
+    fn compute_betweenness() {
+        let result = Centrality.betweenness(self.graph.clone())
+        self.results.set("betweenness", result)
+    }
+    
+    fn compute_closeness() {
+        let result = Centrality.closeness(self.graph.clone())
+        self.results.set("closeness", result)
+    }
+    
+    fn compute_all() {
+        self.compute_pagerank(0.85, 100, 1e-6)
+        self.compute_betweenness()
+        self.compute_closeness()
+    }
+    
+    fn get_result(name: String) -> Option<CentralityResult> {
+        self.results.get(name).cloned()
+    }
+}
+
+// Tests
+test "pagerank basic" {
+    var graph = AdjacencyList::<Float>.new()
+    graph.add_edge(0, 1, 1.0)
+    graph.add_edge(1, 2, 1.0)
+    graph.add_edge(2, 0, 1.0)
+    
+    let result = Centrality.pagerank_default(graph)
+    // All nodes should have similar PageRank in a cycle
+    let scores: [Float] = [result.get(0), result.get(1), result.get(2)]
+    let diff = (scores[0] - scores[1]).abs() + (scores[1] - scores[2]).abs()
+    assert!(diff < 0.1)?
+}
+
+test "pagerank star" {
+    var graph = AdjacencyList::<Float>.new()
+    // Star graph: 0 is center
+    graph.add_edge(1, 0, 1.0)
+    graph.add_edge(2, 0, 1.0)
+    graph.add_edge(3, 0, 1.0)
+    graph.add_node(0)
+    
+    let result = Centrality.pagerank_default(graph)
+    // Center should have highest PageRank
+    assert!(result.get(0) > result.get(1))?
+}
+
+test "betweenness basic" {
+    var graph = AdjacencyList::<Float>.new()
+    // Line graph: 0 - 1 - 2
+    graph.add_edge(0, 1, 1.0)
+    graph.add_edge(1, 0, 1.0)
+    graph.add_edge(1, 2, 1.0)
+    graph.add_edge(2, 1, 1.0)
+    
+    let result = Centrality.betweenness(graph)
+    // Node 1 should have highest betweenness
+    assert!(result.get(1) >= result.get(0))?
+    assert!(result.get(1) >= result.get(2))?
+}
+
+test "closeness basic" {
+    var graph = AdjacencyList::<Float>.new()
+    graph.add_edge(0, 1, 1.0)
+    graph.add_edge(1, 2, 1.0)
+    graph.add_edge(0, 2, 2.0)
+    
+    let result = Centrality.closeness(graph)
+    // All nodes should have positive closeness
+    assert!(result.get(0) > 0.0)?
+}
+
+test "degree centrality" {
+    var graph = AdjacencyList::<Float>.new()
+    graph.add_edge(0, 1, 1.0)
+    graph.add_edge(0, 2, 1.0)
+    graph.add_edge(0, 3, 1.0)
+    graph.add_edge(1, 2, 1.0)
+    
+    let result = Centrality.degree(graph)
+    // Node 0 has highest out-degree
+    assert!(result.get(0) > result.get(1))?
+}
+
+test "centrality result operations" {
+    var scores = Map.empty()
+    scores.set(0, 0.5)
+    scores.set(1, 0.3)
+    scores.set(2, 0.8)
+    
+    let result = CentralityResult { scores: scores }
+    
+    assert_eq(result.max(), Some((2, 0.8)))?
+    assert_eq(result.min(), Some((1, 0.3)))?
+    
+    let top = result.top_k(2)
+    assert_eq(top[0].0, 2)?
+    assert_eq(top[1].0, 0)?
+}
+
+test "hits algorithm" {
+    var graph = AdjacencyList::<Float>.new()
+    graph.add_edge(0, 1, 1.0)
+    graph.add_edge(0, 2, 1.0)
+    graph.add_edge(1, 2, 1.0)
+    
+    let (hubs, authorities) = Centrality.hits(graph, 100, 1e-6)
+    
+    // Node 0 should be a good hub (points to others)
+    // Node 2 should be a good authority (pointed to by others)
+    assert!(hubs.get(0) > 0.0)?
+    assert!(authorities.get(2) > 0.0)?
+}
+
+test "eigenvector centrality" {
+    var graph = AdjacencyList::<Float>.new()
+    graph.add_edge(0, 1, 1.0)
+    graph.add_edge(1, 2, 1.0)
+    graph.add_edge(2, 0, 1.0)
+    
+    let result = Centrality.eigenvector(graph, 100, 1e-6)
+    
+    // All nodes should have similar eigenvector centrality in a cycle
+    let scores: [Float] = [result.get(0), result.get(1), result.get(2)]
+    assert!(scores.iter().all(|s| *s > 0.0))?
+}

@@ -1,0 +1,952 @@
+// =============================================================================
+// Vibee OS — Log Handler Module
+// Log output handlers for various destinations
+// =============================================================================
+
+use logger.{LogRecord, Level}
+use log_formatter.{Formatter, DefaultFormatter, JsonFormatter}
+use log_filter.{Filter, LevelFilter}
+use fs.{File, OpenOptions}
+use io.{Write, BufWriter}
+use net.{TcpStream, UdpSocket}
+use datetime.{DateTime, Duration}
+
+// -----------------------------------------------------------------------------
+// Handler Trait
+// -----------------------------------------------------------------------------
+
+/// Core handler interface
+trait Handler {
+    fn handle(record: LogRecord, formatter: &dyn Formatter)
+    fn flush()
+    fn close()
+}
+
+// -----------------------------------------------------------------------------
+// Console Handler
+// -----------------------------------------------------------------------------
+
+/// Writes logs to stdout/stderr
+struct ConsoleHandler {
+    level: Level
+    use_stderr: Bool
+    error_to_stderr: Bool
+    formatter: Option<Box<dyn Formatter>>
+}
+
+impl ConsoleHandler {
+    fn new() -> Self {
+        ConsoleHandler {
+            level: Level.Trace,
+            use_stderr: false,
+            error_to_stderr: true,
+            formatter: None
+        }
+    }
+    
+    fn stderr() -> Self {
+        ConsoleHandler {
+            level: Level.Trace,
+            use_stderr: true,
+            error_to_stderr: true,
+            formatter: None
+        }
+    }
+    
+    fn with_level(level: Level) -> Self {
+        self.level = level
+        self
+    }
+    
+    fn with_formatter<F: Formatter>(formatter: F) -> Self {
+        self.formatter = Some(Box.new(formatter))
+        self
+    }
+    
+    fn with_error_to_stderr(enabled: Bool) -> Self {
+        self.error_to_stderr = enabled
+        self
+    }
+}
+
+impl Handler for ConsoleHandler {
+    fn handle(record: LogRecord, formatter: &dyn Formatter) {
+        if record.level < self.level { return }
+        
+        let fmt = self.formatter.as_ref().map(|f| f.as_ref()).unwrap_or(formatter)
+        let output = fmt.format(record.clone()) + "\n"
+        
+        let use_stderr = self.use_stderr || (self.error_to_stderr && record.level >= Level.Error)
+        
+        if use_stderr {
+            @native("stderr_write", output.as_bytes())
+        } else {
+            @native("stdout_write", output.as_bytes())
+        }
+    }
+    
+    fn flush() {
+        @native("stdout_flush")
+        @native("stderr_flush")
+    }
+    
+    fn close() {
+        self.flush()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// File Handler
+// -----------------------------------------------------------------------------
+
+/// Writes logs to a file
+struct FileHandler {
+    path: String
+    file: Option<BufWriter<File>>
+    level: Level
+    formatter: Option<Box<dyn Formatter>>
+    append: Bool
+    buffer_size: Int
+}
+
+impl FileHandler {
+    fn new(path: String) -> Self {
+        FileHandler {
+            path: path,
+            file: None,
+            level: Level.Trace,
+            formatter: None,
+            append: true,
+            buffer_size: 8192
+        }
+    }
+    
+    fn with_level(level: Level) -> Self {
+        self.level = level
+        self
+    }
+    
+    fn with_formatter<F: Formatter>(formatter: F) -> Self {
+        self.formatter = Some(Box.new(formatter))
+        self
+    }
+    
+    fn with_append(append: Bool) -> Self {
+        self.append = append
+        self
+    }
+    
+    fn with_buffer_size(size: Int) -> Self {
+        self.buffer_size = size
+        self
+    }
+    
+    fn open() -> Result<(), IoError> {
+        let opts = if self.append {
+            OpenOptions.new().write(true).create(true).append(true)
+        } else {
+            OpenOptions.new().write(true).create(true).truncate(true)
+        }
+        
+        let file = File.open_with(self.path.clone(), opts)?
+        self.file = Some(BufWriter.with_capacity(self.buffer_size, file))
+        Ok(())
+    }
+    
+    fn ensure_open() {
+        if self.file.is_none() {
+            self.open().ok()
+        }
+    }
+}
+
+impl Handler for FileHandler {
+    fn handle(record: LogRecord, formatter: &dyn Formatter) {
+        if record.level < self.level { return }
+        
+        self.ensure_open()
+        
+        if let Some(writer) = self.file.as_mut() {
+            let fmt = self.formatter.as_ref().map(|f| f.as_ref()).unwrap_or(formatter)
+            let output = fmt.format(record) + "\n"
+            writer.write_all(output.as_bytes()).ok()
+        }
+    }
+    
+    fn flush() {
+        if let Some(writer) = self.file.as_mut() {
+            writer.flush().ok()
+        }
+    }
+    
+    fn close() {
+        self.flush()
+        self.file = None
+    }
+}
+
+impl Drop for FileHandler {
+    fn drop() { self.close() }
+}
+
+// -----------------------------------------------------------------------------
+// Rotating File Handler
+// -----------------------------------------------------------------------------
+
+/// File handler with rotation support
+struct RotatingFileHandler {
+    base_path: String
+    max_bytes: Int64
+    backup_count: Int
+    current_file: Option<BufWriter<File>>
+    current_size: Int64
+    level: Level
+    formatter: Option<Box<dyn Formatter>>
+}
+
+impl RotatingFileHandler {
+    fn new(path: String) -> Self {
+        RotatingFileHandler {
+            base_path: path,
+            max_bytes: 10 * 1024 * 1024,  // 10MB default
+            backup_count: 5,
+            current_file: None,
+            current_size: 0,
+            level: Level.Trace,
+            formatter: None
+        }
+    }
+    
+    fn with_max_bytes(bytes: Int64) -> Self {
+        self.max_bytes = bytes
+        self
+    }
+    
+    fn with_backup_count(count: Int) -> Self {
+        self.backup_count = count
+        self
+    }
+    
+    fn with_level(level: Level) -> Self {
+        self.level = level
+        self
+    }
+    
+    fn with_formatter<F: Formatter>(formatter: F) -> Self {
+        self.formatter = Some(Box.new(formatter))
+        self
+    }
+    
+    fn rotate() {
+        self.close_current()
+        
+        // Rotate existing backups
+        for i in (1..self.backup_count).rev() {
+            let src = "\(self.base_path).\(i)"
+            let dst = "\(self.base_path).\(i + 1)"
+            if fs.exists(src) {
+                fs.rename(src, dst).ok()
+            }
+        }
+        
+        // Move current to .1
+        if fs.exists(self.base_path) {
+            fs.rename(self.base_path.clone(), "\(self.base_path).1").ok()
+        }
+        
+        // Delete oldest if exceeds backup count
+        let oldest = "\(self.base_path).\(self.backup_count + 1)"
+        if fs.exists(oldest) {
+            fs.remove(oldest).ok()
+        }
+        
+        self.current_size = 0
+    }
+    
+    fn close_current() {
+        if let Some(writer) = self.current_file.as_mut() {
+            writer.flush().ok()
+        }
+        self.current_file = None
+    }
+    
+    fn ensure_open() {
+        if self.current_file.is_none() {
+            let opts = OpenOptions.new().write(true).create(true).append(true)
+            if let Ok(file) = File.open_with(self.base_path.clone(), opts) {
+                self.current_size = fs.metadata(self.base_path.clone())
+                    .map(|m| m.size)
+                    .unwrap_or(0)
+                self.current_file = Some(BufWriter.new(file))
+            }
+        }
+    }
+    
+    fn should_rotate() -> Bool {
+        self.current_size >= self.max_bytes
+    }
+}
+
+impl Handler for RotatingFileHandler {
+    fn handle(record: LogRecord, formatter: &dyn Formatter) {
+        if record.level < self.level { return }
+        
+        if self.should_rotate() {
+            self.rotate()
+        }
+        
+        self.ensure_open()
+        
+        if let Some(writer) = self.current_file.as_mut() {
+            let fmt = self.formatter.as_ref().map(|f| f.as_ref()).unwrap_or(formatter)
+            let output = fmt.format(record) + "\n"
+            let bytes = output.as_bytes()
+            writer.write_all(bytes).ok()
+            self.current_size += bytes.len() as Int64
+        }
+    }
+    
+    fn flush() {
+        if let Some(writer) = self.current_file.as_mut() {
+            writer.flush().ok()
+        }
+    }
+    
+    fn close() {
+        self.close_current()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Timed Rotating File Handler
+// -----------------------------------------------------------------------------
+
+/// File handler with time-based rotation
+struct TimedRotatingFileHandler {
+    base_path: String
+    rotation_interval: RotationInterval
+    backup_count: Int
+    current_file: Option<BufWriter<File>>
+    current_date: Option<String>
+    level: Level
+    formatter: Option<Box<dyn Formatter>>
+}
+
+enum RotationInterval {
+    Hourly
+    Daily
+    Weekly
+    Monthly
+    
+    fn format_suffix(dt: DateTime) -> String {
+        match self {
+            Hourly => dt.format("%Y%m%d%H")
+            Daily => dt.format("%Y%m%d")
+            Weekly => dt.format("%Y%W")
+            Monthly => dt.format("%Y%m")
+        }
+    }
+}
+
+impl TimedRotatingFileHandler {
+    fn new(path: String) -> Self {
+        TimedRotatingFileHandler {
+            base_path: path,
+            rotation_interval: RotationInterval.Daily,
+            backup_count: 7,
+            current_file: None,
+            current_date: None,
+            level: Level.Trace,
+            formatter: None
+        }
+    }
+    
+    fn hourly() -> Self {
+        self.rotation_interval = RotationInterval.Hourly
+        self
+    }
+    
+    fn daily() -> Self {
+        self.rotation_interval = RotationInterval.Daily
+        self
+    }
+    
+    fn weekly() -> Self {
+        self.rotation_interval = RotationInterval.Weekly
+        self
+    }
+    
+    fn monthly() -> Self {
+        self.rotation_interval = RotationInterval.Monthly
+        self
+    }
+    
+    fn with_backup_count(count: Int) -> Self {
+        self.backup_count = count
+        self
+    }
+    
+    fn with_level(level: Level) -> Self {
+        self.level = level
+        self
+    }
+    
+    fn with_formatter<F: Formatter>(formatter: F) -> Self {
+        self.formatter = Some(Box.new(formatter))
+        self
+    }
+    
+    fn current_suffix() -> String {
+        self.rotation_interval.format_suffix(DateTime.now())
+    }
+    
+    fn should_rotate() -> Bool {
+        match self.current_date {
+            Some(date) => date != self.current_suffix()
+            None => false
+        }
+    }
+    
+    fn rotate() {
+        self.close_current()
+        self.cleanup_old_files()
+    }
+    
+    fn close_current() {
+        if let Some(writer) = self.current_file.as_mut() {
+            writer.flush().ok()
+        }
+        self.current_file = None
+    }
+    
+    fn cleanup_old_files() {
+        // Implementation would scan directory and remove old log files
+        // based on backup_count
+    }
+    
+    fn current_path() -> String {
+        let suffix = self.current_suffix()
+        "\(self.base_path).\(suffix)"
+    }
+    
+    fn ensure_open() {
+        let suffix = self.current_suffix()
+        
+        if self.current_date != Some(suffix.clone()) {
+            self.close_current()
+            self.current_date = Some(suffix.clone())
+        }
+        
+        if self.current_file.is_none() {
+            let path = self.current_path()
+            let opts = OpenOptions.new().write(true).create(true).append(true)
+            if let Ok(file) = File.open_with(path, opts) {
+                self.current_file = Some(BufWriter.new(file))
+            }
+        }
+    }
+}
+
+impl Handler for TimedRotatingFileHandler {
+    fn handle(record: LogRecord, formatter: &dyn Formatter) {
+        if record.level < self.level { return }
+        
+        if self.should_rotate() {
+            self.rotate()
+        }
+        
+        self.ensure_open()
+        
+        if let Some(writer) = self.current_file.as_mut() {
+            let fmt = self.formatter.as_ref().map(|f| f.as_ref()).unwrap_or(formatter)
+            let output = fmt.format(record) + "\n"
+            writer.write_all(output.as_bytes()).ok()
+        }
+    }
+    
+    fn flush() {
+        if let Some(writer) = self.current_file.as_mut() {
+            writer.flush().ok()
+        }
+    }
+    
+    fn close() {
+        self.close_current()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Memory Handler
+// -----------------------------------------------------------------------------
+
+/// Stores logs in memory (useful for testing)
+struct MemoryHandler {
+    records: [LogRecord]
+    capacity: Int
+    level: Level
+}
+
+impl MemoryHandler {
+    fn new() -> Self {
+        MemoryHandler {
+            records: [],
+            capacity: 1000,
+            level: Level.Trace
+        }
+    }
+    
+    fn with_capacity(cap: Int) -> Self {
+        self.capacity = cap
+        self
+    }
+    
+    fn with_level(level: Level) -> Self {
+        self.level = level
+        self
+    }
+    
+    fn get_records() -> [LogRecord] {
+        self.records.clone()
+    }
+    
+    fn clear() {
+        self.records.clear()
+    }
+    
+    fn len() -> Int {
+        self.records.len()
+    }
+    
+    fn find_by_level(level: Level) -> [LogRecord] {
+        self.records.iter()
+            .filter(|r| r.level == level)
+            .cloned()
+            .collect()
+    }
+    
+    fn find_by_message(pattern: String) -> [LogRecord] {
+        self.records.iter()
+            .filter(|r| r.message.contains(pattern))
+            .cloned()
+            .collect()
+    }
+}
+
+impl Handler for MemoryHandler {
+    fn handle(record: LogRecord, _formatter: &dyn Formatter) {
+        if record.level < self.level { return }
+        
+        if self.records.len() >= self.capacity {
+            self.records.remove(0)
+        }
+        self.records.push(record)
+    }
+    
+    fn flush() {}
+    fn close() {}
+}
+
+// -----------------------------------------------------------------------------
+// TCP Handler
+// -----------------------------------------------------------------------------
+
+/// Sends logs over TCP
+struct TcpHandler {
+    host: String
+    port: Int
+    connection: Option<TcpStream>
+    level: Level
+    formatter: Option<Box<dyn Formatter>>
+    reconnect_delay: Duration
+    last_error: Option<DateTime>
+}
+
+impl TcpHandler {
+    fn new(host: String, port: Int) -> Self {
+        TcpHandler {
+            host: host,
+            port: port,
+            connection: None,
+            level: Level.Trace,
+            formatter: Some(Box.new(JsonFormatter.new())),
+            reconnect_delay: Duration.seconds(5),
+            last_error: None
+        }
+    }
+    
+    fn with_level(level: Level) -> Self {
+        self.level = level
+        self
+    }
+    
+    fn with_formatter<F: Formatter>(formatter: F) -> Self {
+        self.formatter = Some(Box.new(formatter))
+        self
+    }
+    
+    fn with_reconnect_delay(delay: Duration) -> Self {
+        self.reconnect_delay = delay
+        self
+    }
+    
+    fn connect() -> Result<(), IoError> {
+        let stream = TcpStream.connect("\(self.host):\(self.port)")?
+        self.connection = Some(stream)
+        self.last_error = None
+        Ok(())
+    }
+    
+    fn should_reconnect() -> Bool {
+        if self.connection.is_some() { return false }
+        
+        match self.last_error {
+            Some(time) => DateTime.now().diff(time) >= self.reconnect_delay
+            None => true
+        }
+    }
+    
+    fn ensure_connected() {
+        if self.should_reconnect() {
+            if self.connect().is_err() {
+                self.last_error = Some(DateTime.now())
+            }
+        }
+    }
+}
+
+impl Handler for TcpHandler {
+    fn handle(record: LogRecord, formatter: &dyn Formatter) {
+        if record.level < self.level { return }
+        
+        self.ensure_connected()
+        
+        if let Some(conn) = self.connection.as_mut() {
+            let fmt = self.formatter.as_ref().map(|f| f.as_ref()).unwrap_or(formatter)
+            let output = fmt.format(record) + "\n"
+            
+            if conn.write_all(output.as_bytes()).is_err() {
+                self.connection = None
+                self.last_error = Some(DateTime.now())
+            }
+        }
+    }
+    
+    fn flush() {
+        if let Some(conn) = self.connection.as_mut() {
+            conn.flush().ok()
+        }
+    }
+    
+    fn close() {
+        self.flush()
+        self.connection = None
+    }
+}
+
+// -----------------------------------------------------------------------------
+// UDP Handler
+// -----------------------------------------------------------------------------
+
+/// Sends logs over UDP
+struct UdpHandler {
+    host: String
+    port: Int
+    socket: Option<UdpSocket>
+    level: Level
+    formatter: Option<Box<dyn Formatter>>
+}
+
+impl UdpHandler {
+    fn new(host: String, port: Int) -> Self {
+        UdpHandler {
+            host: host,
+            port: port,
+            socket: None,
+            level: Level.Trace,
+            formatter: Some(Box.new(JsonFormatter.new()))
+        }
+    }
+    
+    fn with_level(level: Level) -> Self {
+        self.level = level
+        self
+    }
+    
+    fn with_formatter<F: Formatter>(formatter: F) -> Self {
+        self.formatter = Some(Box.new(formatter))
+        self
+    }
+    
+    fn ensure_socket() {
+        if self.socket.is_none() {
+            if let Ok(socket) = UdpSocket.bind("0.0.0.0:0") {
+                self.socket = Some(socket)
+            }
+        }
+    }
+}
+
+impl Handler for UdpHandler {
+    fn handle(record: LogRecord, formatter: &dyn Formatter) {
+        if record.level < self.level { return }
+        
+        self.ensure_socket()
+        
+        if let Some(socket) = self.socket.as_ref() {
+            let fmt = self.formatter.as_ref().map(|f| f.as_ref()).unwrap_or(formatter)
+            let output = fmt.format(record)
+            socket.send_to(output.as_bytes(), "\(self.host):\(self.port)").ok()
+        }
+    }
+    
+    fn flush() {}
+    fn close() { self.socket = None }
+}
+
+// -----------------------------------------------------------------------------
+// Syslog Handler
+// -----------------------------------------------------------------------------
+
+/// Sends logs to syslog
+struct SyslogHandler {
+    socket: Option<UdpSocket>
+    server: String
+    port: Int
+    app_name: String
+    facility: Int
+    level: Level
+}
+
+impl SyslogHandler {
+    fn new(app_name: String) -> Self {
+        SyslogHandler {
+            socket: None,
+            server: "127.0.0.1",
+            port: 514,
+            app_name: app_name,
+            facility: 1,  // User
+            level: Level.Trace
+        }
+    }
+    
+    fn with_server(server: String, port: Int) -> Self {
+        self.server = server
+        self.port = port
+        self
+    }
+    
+    fn with_facility(facility: Int) -> Self {
+        self.facility = facility
+        self
+    }
+    
+    fn with_level(level: Level) -> Self {
+        self.level = level
+        self
+    }
+    
+    fn severity(level: Level) -> Int {
+        match level {
+            Level.Trace => 7
+            Level.Debug => 7
+            Level.Info => 6
+            Level.Warn => 4
+            Level.Error => 3
+            Level.Fatal => 2
+        }
+    }
+    
+    fn priority(level: Level) -> Int {
+        self.facility * 8 + Self.severity(level)
+    }
+    
+    fn ensure_socket() {
+        if self.socket.is_none() {
+            if let Ok(socket) = UdpSocket.bind("0.0.0.0:0") {
+                self.socket = Some(socket)
+            }
+        }
+    }
+}
+
+impl Handler for SyslogHandler {
+    fn handle(record: LogRecord, _formatter: &dyn Formatter) {
+        if record.level < self.level { return }
+        
+        self.ensure_socket()
+        
+        if let Some(socket) = self.socket.as_ref() {
+            let pri = self.priority(record.level)
+            let timestamp = record.timestamp.format("%b %d %H:%M:%S")
+            let message = "<\(pri)>\(timestamp) \(self.app_name): \(record.message)"
+            socket.send_to(message.as_bytes(), "\(self.server):\(self.port)").ok()
+        }
+    }
+    
+    fn flush() {}
+    fn close() { self.socket = None }
+}
+
+// -----------------------------------------------------------------------------
+// Async Handler
+// -----------------------------------------------------------------------------
+
+/// Asynchronous handler wrapper using actor
+actor AsyncHandler {
+    inner: Box<dyn Handler>
+    buffer: [LogRecord]
+    formatter: Box<dyn Formatter>
+    buffer_size: Int
+    
+    fn new<H: Handler>(handler: H) -> Self {
+        AsyncHandler {
+            inner: Box.new(handler),
+            buffer: [],
+            formatter: Box.new(DefaultFormatter.new()),
+            buffer_size: 100
+        }
+    }
+    
+    fn with_buffer_size(size: Int) -> Self {
+        self.buffer_size = size
+        self
+    }
+    
+    fn with_formatter<F: Formatter>(formatter: F) -> Self {
+        self.formatter = Box.new(formatter)
+        self
+    }
+    
+    async fn handle(record: LogRecord) {
+        self.buffer.push(record)
+        if self.buffer.len() >= self.buffer_size {
+            self.flush().await
+        }
+    }
+    
+    async fn flush() {
+        for record in self.buffer.drain(..) {
+            self.inner.handle(record, self.formatter.as_ref())
+        }
+        self.inner.flush()
+    }
+    
+    async fn close() {
+        self.flush().await
+        self.inner.close()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Multi Handler
+// -----------------------------------------------------------------------------
+
+/// Dispatches to multiple handlers
+struct MultiHandler {
+    handlers: [Box<dyn Handler>]
+}
+
+impl MultiHandler {
+    fn new() -> Self {
+        MultiHandler { handlers: [] }
+    }
+    
+    fn add<H: Handler>(handler: H) -> Self {
+        self.handlers.push(Box.new(handler))
+        self
+    }
+}
+
+impl Handler for MultiHandler {
+    fn handle(record: LogRecord, formatter: &dyn Formatter) {
+        for handler in self.handlers.iter() {
+            handler.handle(record.clone(), formatter)
+        }
+    }
+    
+    fn flush() {
+        for handler in self.handlers.iter() {
+            handler.flush()
+        }
+    }
+    
+    fn close() {
+        for handler in self.handlers.iter() {
+            handler.close()
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Null Handler
+// -----------------------------------------------------------------------------
+
+/// Discards all logs (useful for testing)
+struct NullHandler {}
+
+impl NullHandler {
+    fn new() -> Self { NullHandler {} }
+}
+
+impl Handler for NullHandler {
+    fn handle(_record: LogRecord, _formatter: &dyn Formatter) {}
+    fn flush() {}
+    fn close() {}
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "console handler" {
+    let handler = ConsoleHandler.new()
+        .with_level(Level.Info)
+    
+    assert_eq(handler.level, Level.Info)?
+}
+
+test "file handler" {
+    let handler = FileHandler.new("/tmp/test.log")
+        .with_level(Level.Debug)
+        .with_append(true)
+    
+    assert_eq(handler.path, "/tmp/test.log")?
+    assert(handler.append)?
+}
+
+test "memory handler" {
+    let handler = MemoryHandler.new()
+        .with_capacity(100)
+    
+    let record = LogRecord.new(Level.Info, "test")
+    let formatter = DefaultFormatter.new()
+    handler.handle(record, &formatter)
+    
+    assert_eq(handler.len(), 1)?
+}
+
+test "rotating file handler" {
+    let handler = RotatingFileHandler.new("/tmp/app.log")
+        .with_max_bytes(1024 * 1024)
+        .with_backup_count(3)
+    
+    assert_eq(handler.max_bytes, 1024 * 1024)?
+    assert_eq(handler.backup_count, 3)?
+}
+
+test "multi handler" {
+    let handler = MultiHandler.new()
+        .add(ConsoleHandler.new())
+        .add(MemoryHandler.new())
+    
+    assert_eq(handler.handlers.len(), 2)?
+}
+
+test "null handler" {
+    let handler = NullHandler.new()
+    let record = LogRecord.new(Level.Error, "ignored")
+    let formatter = DefaultFormatter.new()
+    
+    // Should not panic
+    handler.handle(record, &formatter)
+}

@@ -1,0 +1,691 @@
+// =============================================================================
+// Vibee OS — AR Module
+// Unix AR archive format (used for static libraries, .deb packages)
+// =============================================================================
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+const AR_MAGIC: String = "!<arch>\n"
+const AR_MAGIC_BYTES: [UInt8; 8] = [0x21, 0x3c, 0x61, 0x72, 0x63, 0x68, 0x3e, 0x0a]
+const AR_HEADER_SIZE: Int = 60
+const AR_FMAG: String = "`\n"
+const AR_FMAG_BYTES: [UInt8; 2] = [0x60, 0x0a]
+
+// Special member names
+const AR_SYMTAB_NAME: String = "/"           // Symbol table (System V)
+const AR_STRTAB_NAME: String = "//"          // String table (System V)
+const AR_SYMTAB_NAME_BSD: String = "__.SYMDEF"  // Symbol table (BSD)
+const AR_SYMTAB_SORTED_BSD: String = "__.SYMDEF SORTED"
+
+// Name length limits
+const AR_NAME_SIZE: Int = 16
+const AR_BSD_NAME_PREFIX: String = "#1/"
+const AR_GNU_NAME_PREFIX: String = "/"
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+/// AR format variant
+enum ArFormat {
+    Common      // Common/traditional format
+    Gnu         // GNU format (long names via string table)
+    Bsd         // BSD format (long names inline)
+    SystemV     // System V format
+}
+
+impl ArFormat {
+    fn supports_long_names() -> Bool {
+        match self {
+            Common => false
+            Gnu | Bsd | SystemV => true
+        }
+    }
+}
+
+/// AR entry type
+enum ArEntryType {
+    Regular         // Regular file
+    SymbolTable     // Symbol table
+    StringTable     // String table for long names
+    BsdSymbolTable  // BSD symbol table
+}
+
+impl ArEntryType {
+    fn is_regular() -> Bool { match self { Regular => true, _ => false } }
+    fn is_metadata() -> Bool { !self.is_regular() }
+}
+
+// =============================================================================
+// Structs
+// =============================================================================
+
+/// AR file header (60 bytes)
+struct ArHeader {
+    name: String        // 16 bytes - File name
+    mtime: Int64        // 12 bytes - Modification time (decimal)
+    uid: Int            // 6 bytes - Owner user ID (decimal)
+    gid: Int            // 6 bytes - Owner group ID (decimal)
+    mode: Int           // 8 bytes - File mode (octal)
+    size: Int64         // 10 bytes - File size (decimal)
+}
+
+impl ArHeader {
+    fn new() -> Self {
+        ArHeader {
+            name: ""
+            mtime: 0
+            uid: 0
+            gid: 0
+            mode: 0o644
+            size: 0
+        }
+    }
+    
+    fn for_file(name: String, size: Int64) -> Self {
+        ArHeader {
+            name: name
+            mtime: DateTime.now().timestamp()
+            uid: 0
+            gid: 0
+            mode: 0o644
+            size: size
+        }
+    }
+    
+    fn to_bytes(format: ArFormat) -> [UInt8] {
+        @native("ar_header_to_bytes", self, format)
+    }
+    
+    fn from_bytes(data: [UInt8]) -> Result<Self, ArError> {
+        @native("ar_header_from_bytes", data)
+    }
+    
+    fn is_symbol_table() -> Bool {
+        self.name == AR_SYMTAB_NAME || 
+        self.name == AR_SYMTAB_NAME_BSD ||
+        self.name == AR_SYMTAB_SORTED_BSD
+    }
+    
+    fn is_string_table() -> Bool {
+        self.name == AR_STRTAB_NAME
+    }
+    
+    fn is_bsd_long_name() -> Bool {
+        self.name.starts_with(AR_BSD_NAME_PREFIX)
+    }
+    
+    fn is_gnu_long_name() -> Bool {
+        self.name.starts_with(AR_GNU_NAME_PREFIX) && 
+        self.name != AR_SYMTAB_NAME && 
+        self.name != AR_STRTAB_NAME
+    }
+    
+    fn bsd_name_length() -> Option<Int> {
+        if self.is_bsd_long_name() {
+            let len_str = self.name[3..]
+            len_str.parse::<Int>().ok()
+        } else {
+            None
+        }
+    }
+}
+
+/// AR archive entry
+struct ArEntry {
+    name: String
+    size: Int64
+    mtime: Int64
+    uid: Int
+    gid: Int
+    mode: Int
+    entry_type: ArEntryType
+    data: [UInt8]
+}
+
+impl ArEntry {
+    fn new(name: String, data: [UInt8]) -> Self {
+        ArEntry {
+            name: name
+            size: data.len() as Int64
+            mtime: DateTime.now().timestamp()
+            uid: 0
+            gid: 0
+            mode: 0o644
+            entry_type: ArEntryType.Regular
+            data: data
+        }
+    }
+    
+    fn from_file(name: String, data: [UInt8]) -> Self {
+        Self.new(name, data)
+    }
+    
+    fn with_mode(mode: Int) -> Self {
+        self.mode = mode
+        self
+    }
+    
+    fn with_owner(uid: Int, gid: Int) -> Self {
+        self.uid = uid
+        self.gid = gid
+        self
+    }
+    
+    fn with_mtime(mtime: Int64) -> Self {
+        self.mtime = mtime
+        self
+    }
+    
+    fn is_regular() -> Bool { self.entry_type.is_regular() }
+    fn is_metadata() -> Bool { self.entry_type.is_metadata() }
+    
+    fn header() -> ArHeader {
+        ArHeader {
+            name: self.name.clone()
+            mtime: self.mtime
+            uid: self.uid
+            gid: self.gid
+            mode: self.mode
+            size: self.size
+        }
+    }
+}
+
+/// AR archive reader
+struct ArReader {
+    inner: @native("ArReader")
+    format: ArFormat
+    entries: [ArEntry]
+    string_table: Option<String>
+}
+
+impl ArReader {
+    fn new(data: [UInt8]) -> Result<Self, ArError> {
+        if !is_ar(data) {
+            return Err(ArError.InvalidArchive)
+        }
+        let inner = @native("ar_reader_new", data)?
+        let format = @native("ar_reader_format", inner)
+        let entries = @native("ar_reader_entries", inner)?
+        let string_table = @native("ar_reader_string_table", inner)
+        Ok(ArReader { 
+            inner: inner
+            format: format
+            entries: entries
+            string_table: string_table
+        })
+    }
+    
+    fn open(path: String) -> Result<Self, ArError> {
+        let data = @native("fs_read_bytes", path)?
+        Self.new(data)
+    }
+    
+    fn format() -> ArFormat { self.format }
+    
+    fn entries() -> [ArEntry] { 
+        self.entries.iter()
+            .filter(|e| e.is_regular())
+            .collect()
+    }
+    
+    fn all_entries() -> [ArEntry] { self.entries.clone() }
+    
+    fn len() -> Int { 
+        self.entries.iter()
+            .filter(|e| e.is_regular())
+            .count()
+    }
+    
+    fn is_empty() -> Bool { self.len() == 0 }
+    
+    fn list() -> [String] { 
+        self.entries.iter()
+            .filter(|e| e.is_regular())
+            .map(|e| e.name.clone())
+            .collect()
+    }
+    
+    fn find(name: String) -> Option<ArEntry> {
+        for e in self.entries {
+            if e.name == name && e.is_regular() { 
+                return Some(e.clone()) 
+            }
+        }
+        None
+    }
+    
+    fn extract(dest: String) -> Result<Int, ArError> {
+        @native("ar_reader_extract", self.inner, dest)
+    }
+    
+    fn extract_file(name: String) -> Result<[UInt8], ArError> {
+        match self.find(name) {
+            Some(entry) => Ok(entry.data.clone())
+            None => Err(ArError.FileNotFound(name))
+        }
+    }
+    
+    fn has_symbol_table() -> Bool {
+        self.entries.iter().any(|e| e.entry_type == ArEntryType.SymbolTable)
+    }
+    
+    fn symbols() -> Result<[ArSymbol], ArError> {
+        @native("ar_reader_symbols", self.inner)
+    }
+}
+
+impl Iterator for ArReader {
+    type Item = ArEntry
+    fn next() -> Option<Self.Item> {
+        @native("ar_reader_next", self.inner)
+    }
+}
+
+impl Drop for ArReader {
+    fn drop() { @native("ar_reader_close", self.inner) }
+}
+
+/// AR archive builder
+struct ArBuilder {
+    entries: [ArEntry]
+    format: ArFormat
+    deterministic: Bool
+    symbol_table: Bool
+}
+
+impl ArBuilder {
+    fn new() -> Self {
+        ArBuilder {
+            entries: []
+            format: ArFormat.Gnu
+            deterministic: false
+            symbol_table: false
+        }
+    }
+    
+    fn with_format(format: ArFormat) -> Self {
+        self.format = format
+        self
+    }
+    
+    fn deterministic(d: Bool) -> Self {
+        self.deterministic = d
+        self
+    }
+    
+    fn with_symbol_table(s: Bool) -> Self {
+        self.symbol_table = s
+        self
+    }
+    
+    fn add_file(name: String, data: [UInt8]) -> Self {
+        self.entries.push(ArEntry.new(name, data))
+        self
+    }
+    
+    fn add_file_with_mode(name: String, data: [UInt8], mode: Int) -> Self {
+        let entry = ArEntry.new(name, data).with_mode(mode)
+        self.entries.push(entry)
+        self
+    }
+    
+    fn add_entry(entry: ArEntry) -> Self {
+        self.entries.push(entry)
+        self
+    }
+    
+    fn add_path(path: String) -> Result<Self, ArError> {
+        @native("ar_builder_add_path", self, path)
+    }
+    
+    fn build() -> Result<[UInt8], ArError> {
+        @native("ar_builder_build", self.entries, self.format, self.deterministic, self.symbol_table)
+    }
+    
+    fn write(path: String) -> Result<(), ArError> {
+        let data = self.build()?
+        @native("fs_write_bytes", path, data)
+    }
+}
+
+/// AR archive writer (streaming)
+struct ArWriter {
+    inner: @native("ArWriter")
+    format: ArFormat
+}
+
+impl ArWriter {
+    fn new() -> Self {
+        ArWriter { 
+            inner: @native("ar_writer_new")
+            format: ArFormat.Gnu
+        }
+    }
+    
+    fn create(path: String) -> Result<Self, ArError> {
+        Ok(ArWriter { 
+            inner: @native("ar_writer_create", path)?
+            format: ArFormat.Gnu
+        })
+    }
+    
+    fn with_format(format: ArFormat) -> Self {
+        self.format = format
+        self
+    }
+    
+    fn write_header(header: ArHeader) -> Result<(), ArError> {
+        @native("ar_writer_write_header", self.inner, header, self.format)
+    }
+    
+    fn write_data(data: [UInt8]) -> Result<(), ArError> {
+        @native("ar_writer_write_data", self.inner, data)
+    }
+    
+    fn write_entry(entry: ArEntry) -> Result<(), ArError> {
+        self.write_header(entry.header())?
+        self.write_data(entry.data)
+    }
+    
+    fn finish() -> Result<[UInt8], ArError> {
+        @native("ar_writer_finish", self.inner)
+    }
+}
+
+impl Drop for ArWriter {
+    fn drop() { @native("ar_writer_close", self.inner) }
+}
+
+/// Symbol from AR symbol table
+struct ArSymbol {
+    name: String
+    member: String      // Name of the member containing this symbol
+    offset: Int64       // Offset in archive
+}
+
+impl ArSymbol {
+    fn new(name: String, member: String) -> Self {
+        ArSymbol { name: name, member: member, offset: 0 }
+    }
+}
+
+// =============================================================================
+// Debian Package Support
+// =============================================================================
+
+/// Debian package (.deb) reader
+/// .deb files are AR archives containing debian-binary, control.tar.*, and data.tar.*
+struct DebReader {
+    ar_reader: ArReader
+    version: String
+    control_data: [UInt8]
+    data_data: [UInt8]
+}
+
+impl DebReader {
+    fn new(data: [UInt8]) -> Result<Self, ArError> {
+        let ar = ArReader.new(data)?
+        
+        // Read debian-binary version
+        let version_data = ar.extract_file("debian-binary")?
+        let version = String.from_bytes(version_data).trim()
+        
+        // Find control archive
+        let control_data = ar.entries().iter()
+            .find(|e| e.name.starts_with("control.tar"))
+            .map(|e| e.data.clone())
+            .ok_or(ArError.InvalidDebPackage("Missing control archive"))?
+        
+        // Find data archive
+        let data_data = ar.entries().iter()
+            .find(|e| e.name.starts_with("data.tar"))
+            .map(|e| e.data.clone())
+            .ok_or(ArError.InvalidDebPackage("Missing data archive"))?
+        
+        Ok(DebReader {
+            ar_reader: ar
+            version: version
+            control_data: control_data
+            data_data: data_data
+        })
+    }
+    
+    fn open(path: String) -> Result<Self, ArError> {
+        let data = @native("fs_read_bytes", path)?
+        Self.new(data)
+    }
+    
+    fn version() -> String { self.version.clone() }
+    
+    fn control_archive() -> [UInt8] { self.control_data.clone() }
+    
+    fn data_archive() -> [UInt8] { self.data_data.clone() }
+    
+    fn extract_control(dest: String) -> Result<Int, ArError> {
+        @native("tar_extract_auto", self.control_data, dest)
+    }
+    
+    fn extract_data(dest: String) -> Result<Int, ArError> {
+        @native("tar_extract_auto", self.data_data, dest)
+    }
+    
+    fn extract(dest: String) -> Result<(), ArError> {
+        self.extract_data(dest)?
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Actor for async operations
+// =============================================================================
+
+actor ArActor {
+    fn create_async(files: [(String, [UInt8])]) -> Result<[UInt8], ArError> {
+        create(files)
+    }
+    
+    fn extract_async(data: [UInt8], dest: String) -> Result<Int, ArError> {
+        extract(data, dest)
+    }
+    
+    fn list_async(data: [UInt8]) -> Result<[String], ArError> {
+        list(data)
+    }
+}
+
+// =============================================================================
+// Trait implementations
+// =============================================================================
+
+trait Archive {
+    fn list() -> [String]
+    fn extract(dest: String) -> Result<Int, ArError>
+    fn extract_file(name: String) -> Result<[UInt8], ArError>
+}
+
+impl Archive for ArReader {
+    fn list() -> [String] { self.list() }
+    fn extract(dest: String) -> Result<Int, ArError> { self.extract(dest) }
+    fn extract_file(name: String) -> Result<[UInt8], ArError> { self.extract_file(name) }
+}
+
+// =============================================================================
+// Public API Functions
+// =============================================================================
+
+/// Check if data is an AR archive
+fn is_ar(data: [UInt8]) -> Bool {
+    if data.len() < 8 { return false }
+    data[0] == 0x21 && data[1] == 0x3c && data[2] == 0x61 && data[3] == 0x72 &&
+    data[4] == 0x63 && data[5] == 0x68 && data[6] == 0x3e && data[7] == 0x0a
+}
+
+/// Check if data is a Debian package
+fn is_deb(data: [UInt8]) -> Bool {
+    if !is_ar(data) { return false }
+    // Check for debian-binary member
+    match ArReader.new(data) {
+        Ok(reader) => reader.find("debian-binary").is_some()
+        Err(_) => false
+    }
+}
+
+/// Create an AR archive from files
+fn create(files: [(String, [UInt8])]) -> Result<[UInt8], ArError> {
+    let mut builder = ArBuilder.new()
+    for (name, data) in files {
+        builder = builder.add_file(name, data)
+    }
+    builder.build()
+}
+
+/// Create an AR archive with specific format
+fn create_with_format(files: [(String, [UInt8])], format: ArFormat) -> Result<[UInt8], ArError> {
+    let mut builder = ArBuilder.new().with_format(format)
+    for (name, data) in files {
+        builder = builder.add_file(name, data)
+    }
+    builder.build()
+}
+
+/// Create a deterministic AR archive (reproducible builds)
+fn create_deterministic(files: [(String, [UInt8])]) -> Result<[UInt8], ArError> {
+    let mut builder = ArBuilder.new().deterministic(true)
+    for (name, data) in files {
+        builder = builder.add_file(name, data)
+    }
+    builder.build()
+}
+
+/// Extract AR archive to directory
+fn extract(data: [UInt8], dest: String) -> Result<Int, ArError> {
+    let reader = ArReader.new(data)?
+    reader.extract(dest)
+}
+
+/// Extract AR archive from file
+fn extract_file(path: String, dest: String) -> Result<Int, ArError> {
+    let reader = ArReader.open(path)?
+    reader.extract(dest)
+}
+
+/// List files in AR archive
+fn list(data: [UInt8]) -> Result<[String], ArError> {
+    let reader = ArReader.new(data)?
+    Ok(reader.list())
+}
+
+/// Get a single file from AR archive
+fn get_file(data: [UInt8], name: String) -> Result<[UInt8], ArError> {
+    let reader = ArReader.new(data)?
+    reader.extract_file(name)
+}
+
+/// Get archive format
+fn detect_format(data: [UInt8]) -> Result<ArFormat, ArError> {
+    let reader = ArReader.new(data)?
+    Ok(reader.format())
+}
+
+/// Create a static library (.a file)
+fn create_static_lib(objects: [(String, [UInt8])]) -> Result<[UInt8], ArError> {
+    ArBuilder.new()
+        .with_format(ArFormat.Gnu)
+        .with_symbol_table(true)
+        .deterministic(true)
+        .entries
+        .extend(objects.iter().map(|(n, d)| ArEntry.new(n, d)))
+        .build()
+}
+
+// =============================================================================
+// Error Type
+// =============================================================================
+
+enum ArError {
+    InvalidArchive
+    InvalidHeader
+    InvalidMagic
+    FileNotFound(String)
+    NameTooLong(String)
+    IoError(String)
+    InvalidDebPackage(String)
+    Other(String)
+}
+
+impl Display for ArError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidArchive => f.write("Invalid AR archive")
+            InvalidHeader => f.write("Invalid AR header")
+            InvalidMagic => f.write("Invalid AR magic number")
+            FileNotFound(name) => f.write("File not found in archive: " + name)
+            NameTooLong(name) => f.write("File name too long: " + name)
+            IoError(msg) => f.write("I/O error: " + msg)
+            InvalidDebPackage(msg) => f.write("Invalid Debian package: " + msg)
+            Other(msg) => f.write(msg)
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "is_ar detection" {
+    let valid_ar = [0x21, 0x3c, 0x61, 0x72, 0x63, 0x68, 0x3e, 0x0a]
+    assert(is_ar(valid_ar))?
+    
+    let invalid = [0x00, 0x00, 0x00, 0x00]
+    assert(!is_ar(invalid))?
+}
+
+test "ar builder" {
+    let ar_data = ArBuilder.new()
+        .with_format(ArFormat.Gnu)
+        .add_file("test.o", [0x7f, 0x45, 0x4c, 0x46])  // ELF magic
+        .add_file("main.o", [0x7f, 0x45, 0x4c, 0x46])
+        .build()?
+    
+    assert(is_ar(ar_data))?
+    
+    let names = list(ar_data)?
+    assert_eq(names.len(), 2)?
+}
+
+test "ar entry" {
+    let entry = ArEntry.new("test.o", [0x00, 0x01, 0x02])
+    assert_eq(entry.name, "test.o")?
+    assert_eq(entry.size, 3)?
+    assert(entry.is_regular())?
+}
+
+test "ar formats" {
+    assert(ArFormat.Gnu.supports_long_names())?
+    assert(ArFormat.Bsd.supports_long_names())?
+    assert(!ArFormat.Common.supports_long_names())?
+}
+
+test "ar header" {
+    let header = ArHeader.for_file("test.o", 100)
+    assert_eq(header.name, "test.o")?
+    assert_eq(header.size, 100)?
+    assert_eq(header.mode, 0o644)?
+}
+
+test "deterministic archive" {
+    let ar1 = create_deterministic([("a.o", [0x00])])?
+    let ar2 = create_deterministic([("a.o", [0x00])])?
+    // Deterministic archives should be identical
+    assert_eq(ar1, ar2)?
+}
+
+test "entry types" {
+    assert(ArEntryType.Regular.is_regular())?
+    assert(!ArEntryType.Regular.is_metadata())?
+    assert(ArEntryType.SymbolTable.is_metadata())?
+}

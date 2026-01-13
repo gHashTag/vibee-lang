@@ -1,0 +1,585 @@
+// =============================================================================
+// Vibee OS — Coordinate Module
+// Advanced coordinate systems and transformations
+// =============================================================================
+
+use math::{PI, sin, cos, tan, sqrt, atan, atan2, abs, floor}
+
+// -----------------------------------------------------------------------------
+// Constants
+// -----------------------------------------------------------------------------
+
+/// WGS84 Ellipsoid parameters
+const WGS84_A: Float64 = 6378137.0              // Semi-major axis (meters)
+const WGS84_B: Float64 = 6356752.314245         // Semi-minor axis (meters)
+const WGS84_F: Float64 = 1.0 / 298.257223563    // Flattening
+const WGS84_E2: Float64 = 0.00669437999014      // Eccentricity squared
+
+/// UTM parameters
+const UTM_K0: Float64 = 0.9996                  // Scale factor
+const UTM_E0: Float64 = 500000.0                // False easting
+
+// -----------------------------------------------------------------------------
+// Geographic Coordinate (WGS84)
+// -----------------------------------------------------------------------------
+
+/// Geographic coordinate in WGS84 datum
+struct GeoCoord {
+    lat: Float64    // Latitude in degrees (-90 to 90)
+    lon: Float64    // Longitude in degrees (-180 to 180)
+    alt: Float64    // Altitude in meters (optional, default 0)
+    
+    /// Create new coordinate with validation
+    fn new(lat: Float64, lon: Float64, alt: Float64 = 0.0) -> Result<Self, CoordError> {
+        if lat < -90.0 || lat > 90.0 {
+            return Err(CoordError.InvalidLatitude(lat))
+        }
+        if lon < -180.0 || lon > 180.0 {
+            return Err(CoordError.InvalidLongitude(lon))
+        }
+        Ok(GeoCoord { lat: lat, lon: lon, alt: alt })
+    }
+    
+    /// Create without validation
+    fn unchecked(lat: Float64, lon: Float64, alt: Float64 = 0.0) -> Self {
+        GeoCoord { lat: lat, lon: lon, alt: alt }
+    }
+    
+    /// Parse from string "lat,lon" or "lat,lon,alt"
+    fn parse(s: String) -> Result<Self, CoordError> {
+        let parts = s.split(",")
+        if parts.len() < 2 || parts.len() > 3 {
+            return Err(CoordError.ParseError("Expected 'lat,lon' or 'lat,lon,alt'"))
+        }
+        let lat = Float64.parse(parts[0].trim())
+            .map_err(|_| CoordError.ParseError("Invalid latitude"))?
+        let lon = Float64.parse(parts[1].trim())
+            .map_err(|_| CoordError.ParseError("Invalid longitude"))?
+        let alt = if parts.len() == 3 {
+            Float64.parse(parts[2].trim()).unwrap_or(0.0)
+        } else { 0.0 }
+        Self.new(lat, lon, alt)
+    }
+    
+    /// Convert to UTM coordinates
+    fn to_utm() -> UTMCoord {
+        let zone = ((self.lon + 180.0) / 6.0).floor() as Int + 1
+        let is_north = self.lat >= 0.0
+        
+        let lat_rad = self.lat.to_radians()
+        let lon_rad = self.lon.to_radians()
+        let lon0 = ((zone - 1) * 6 - 180 + 3) as Float64
+        let lon0_rad = lon0.to_radians()
+        
+        let n = WGS84_A / sqrt(1.0 - WGS84_E2 * sin(lat_rad).pow(2))
+        let t = tan(lat_rad).pow(2)
+        let c = WGS84_E2 / (1.0 - WGS84_E2) * cos(lat_rad).pow(2)
+        let a = cos(lat_rad) * (lon_rad - lon0_rad)
+        
+        let m = WGS84_A * (
+            (1.0 - WGS84_E2/4.0 - 3.0*WGS84_E2.pow(2)/64.0) * lat_rad -
+            (3.0*WGS84_E2/8.0 + 3.0*WGS84_E2.pow(2)/32.0) * sin(2.0*lat_rad) +
+            (15.0*WGS84_E2.pow(2)/256.0) * sin(4.0*lat_rad)
+        )
+        
+        let easting = UTM_K0 * n * (a + (1.0-t+c)*a.pow(3)/6.0) + UTM_E0
+        var northing = UTM_K0 * (m + n*tan(lat_rad)*(a.pow(2)/2.0 + (5.0-t+9.0*c)*a.pow(4)/24.0))
+        
+        if !is_north {
+            northing += 10000000.0
+        }
+        
+        UTMCoord { zone: zone, is_north: is_north, easting: easting, northing: northing }
+    }
+    
+    /// Convert to ECEF (Earth-Centered, Earth-Fixed)
+    fn to_ecef() -> ECEFCoord {
+        let lat_rad = self.lat.to_radians()
+        let lon_rad = self.lon.to_radians()
+        
+        let n = WGS84_A / sqrt(1.0 - WGS84_E2 * sin(lat_rad).pow(2))
+        
+        let x = (n + self.alt) * cos(lat_rad) * cos(lon_rad)
+        let y = (n + self.alt) * cos(lat_rad) * sin(lon_rad)
+        let z = (n * (1.0 - WGS84_E2) + self.alt) * sin(lat_rad)
+        
+        ECEFCoord { x: x, y: y, z: z }
+    }
+    
+    /// Convert to local ENU (East-North-Up) relative to reference
+    fn to_enu(reference: GeoCoord) -> ENUCoord {
+        let ecef = self.to_ecef()
+        let ref_ecef = reference.to_ecef()
+        
+        let dx = ecef.x - ref_ecef.x
+        let dy = ecef.y - ref_ecef.y
+        let dz = ecef.z - ref_ecef.z
+        
+        let lat_rad = reference.lat.to_radians()
+        let lon_rad = reference.lon.to_radians()
+        
+        let east = -sin(lon_rad)*dx + cos(lon_rad)*dy
+        let north = -sin(lat_rad)*cos(lon_rad)*dx - sin(lat_rad)*sin(lon_rad)*dy + cos(lat_rad)*dz
+        let up = cos(lat_rad)*cos(lon_rad)*dx + cos(lat_rad)*sin(lon_rad)*dy + sin(lat_rad)*dz
+        
+        ENUCoord { east: east, north: north, up: up, reference: reference }
+    }
+    
+    /// Normalize longitude to [-180, 180]
+    fn normalize() -> Self {
+        var lon = self.lon
+        while lon > 180.0 { lon -= 360.0 }
+        while lon < -180.0 { lon += 360.0 }
+        GeoCoord { lat: self.lat, lon: lon, alt: self.alt }
+    }
+    
+    /// Get hemisphere
+    fn hemisphere() -> (Hemisphere, Hemisphere) {
+        let lat_h = if self.lat >= 0.0 { Hemisphere.North } else { Hemisphere.South }
+        let lon_h = if self.lon >= 0.0 { Hemisphere.East } else { Hemisphere.West }
+        (lat_h, lon_h)
+    }
+    
+    fn to_string() -> String {
+        format!("{:.6}°, {:.6}°, {:.2}m", self.lat, self.lon, self.alt)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// UTM Coordinate
+// -----------------------------------------------------------------------------
+
+/// UTM (Universal Transverse Mercator) coordinate
+struct UTMCoord {
+    zone: Int           // Zone number (1-60)
+    is_north: Bool      // Northern hemisphere
+    easting: Float64    // Easting in meters
+    northing: Float64   // Northing in meters
+    
+    /// Create new UTM coordinate
+    fn new(zone: Int, is_north: Bool, easting: Float64, northing: Float64) -> Result<Self, CoordError> {
+        if zone < 1 || zone > 60 {
+            return Err(CoordError.InvalidZone(zone))
+        }
+        Ok(UTMCoord { zone: zone, is_north: is_north, easting: easting, northing: northing })
+    }
+    
+    /// Convert to geographic coordinates
+    fn to_geo() -> GeoCoord {
+        let x = self.easting - UTM_E0
+        var y = self.northing
+        if !self.is_north {
+            y -= 10000000.0
+        }
+        
+        let lon0 = ((self.zone - 1) * 6 - 180 + 3) as Float64
+        
+        let m = y / UTM_K0
+        let mu = m / (WGS84_A * (1.0 - WGS84_E2/4.0 - 3.0*WGS84_E2.pow(2)/64.0))
+        
+        let e1 = (1.0 - sqrt(1.0 - WGS84_E2)) / (1.0 + sqrt(1.0 - WGS84_E2))
+        let phi1 = mu + (3.0*e1/2.0 - 27.0*e1.pow(3)/32.0)*sin(2.0*mu)
+        
+        let n1 = WGS84_A / sqrt(1.0 - WGS84_E2*sin(phi1).pow(2))
+        let t1 = tan(phi1).pow(2)
+        let c1 = WGS84_E2/(1.0-WGS84_E2) * cos(phi1).pow(2)
+        let r1 = WGS84_A*(1.0-WGS84_E2) / (1.0-WGS84_E2*sin(phi1).pow(2)).pow(1.5)
+        let d = x / (n1 * UTM_K0)
+        
+        let lat = phi1 - (n1*tan(phi1)/r1) * (d.pow(2)/2.0 - (5.0+3.0*t1)*d.pow(4)/24.0)
+        let lon = lon0.to_radians() + (d - (1.0+2.0*t1+c1)*d.pow(3)/6.0) / cos(phi1)
+        
+        GeoCoord.unchecked(lat.to_degrees(), lon.to_degrees())
+    }
+    
+    /// Get zone letter
+    fn zone_letter() -> Char {
+        let letters = "CDEFGHJKLMNPQRSTUVWX"
+        let geo = self.to_geo()
+        let idx = ((geo.lat + 80.0) / 8.0).floor() as Int
+        letters.char_at(idx.clamp(0, 19)).unwrap_or('N')
+    }
+    
+    fn to_string() -> String {
+        let letter = self.zone_letter()
+        format!("{}{}  {:.2}E  {:.2}N", self.zone, letter, self.easting, self.northing)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// ECEF Coordinate
+// -----------------------------------------------------------------------------
+
+/// ECEF (Earth-Centered, Earth-Fixed) coordinate
+struct ECEFCoord {
+    x: Float64  // X in meters
+    y: Float64  // Y in meters
+    z: Float64  // Z in meters
+    
+    fn new(x: Float64, y: Float64, z: Float64) -> Self {
+        ECEFCoord { x: x, y: y, z: z }
+    }
+    
+    /// Convert to geographic coordinates
+    fn to_geo() -> GeoCoord {
+        let p = sqrt(self.x.pow(2) + self.y.pow(2))
+        let lon = atan2(self.y, self.x)
+        
+        // Iterative calculation for latitude
+        var lat = atan2(self.z, p * (1.0 - WGS84_E2))
+        for _ in 0..10 {
+            let n = WGS84_A / sqrt(1.0 - WGS84_E2 * sin(lat).pow(2))
+            lat = atan2(self.z + WGS84_E2 * n * sin(lat), p)
+        }
+        
+        let n = WGS84_A / sqrt(1.0 - WGS84_E2 * sin(lat).pow(2))
+        let alt = p / cos(lat) - n
+        
+        GeoCoord.unchecked(lat.to_degrees(), lon.to_degrees(), alt)
+    }
+    
+    /// Distance to another ECEF point
+    fn distance_to(other: ECEFCoord) -> Float64 {
+        sqrt((self.x - other.x).pow(2) + (self.y - other.y).pow(2) + (self.z - other.z).pow(2))
+    }
+    
+    fn to_string() -> String {
+        format!("X:{:.2}m Y:{:.2}m Z:{:.2}m", self.x, self.y, self.z)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// ENU Coordinate
+// -----------------------------------------------------------------------------
+
+/// ENU (East-North-Up) local coordinate
+struct ENUCoord {
+    east: Float64       // East in meters
+    north: Float64      // North in meters
+    up: Float64         // Up in meters
+    reference: GeoCoord // Reference point
+    
+    fn new(east: Float64, north: Float64, up: Float64, reference: GeoCoord) -> Self {
+        ENUCoord { east: east, north: north, up: up, reference: reference }
+    }
+    
+    /// Convert back to geographic coordinates
+    fn to_geo() -> GeoCoord {
+        let lat_rad = self.reference.lat.to_radians()
+        let lon_rad = self.reference.lon.to_radians()
+        
+        let dx = -sin(lon_rad)*self.east - sin(lat_rad)*cos(lon_rad)*self.north + cos(lat_rad)*cos(lon_rad)*self.up
+        let dy = cos(lon_rad)*self.east - sin(lat_rad)*sin(lon_rad)*self.north + cos(lat_rad)*sin(lon_rad)*self.up
+        let dz = cos(lat_rad)*self.north + sin(lat_rad)*self.up
+        
+        let ref_ecef = self.reference.to_ecef()
+        let ecef = ECEFCoord.new(ref_ecef.x + dx, ref_ecef.y + dy, ref_ecef.z + dz)
+        ecef.to_geo()
+    }
+    
+    /// Horizontal distance from reference
+    fn horizontal_distance() -> Float64 {
+        sqrt(self.east.pow(2) + self.north.pow(2))
+    }
+    
+    /// 3D distance from reference
+    fn distance_3d() -> Float64 {
+        sqrt(self.east.pow(2) + self.north.pow(2) + self.up.pow(2))
+    }
+    
+    /// Azimuth from reference (degrees, 0=North, clockwise)
+    fn azimuth() -> Float64 {
+        let az = atan2(self.east, self.north).to_degrees()
+        if az < 0.0 { az + 360.0 } else { az }
+    }
+    
+    /// Elevation angle from reference (degrees)
+    fn elevation() -> Float64 {
+        atan2(self.up, self.horizontal_distance()).to_degrees()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// MGRS Coordinate
+// -----------------------------------------------------------------------------
+
+/// MGRS (Military Grid Reference System) coordinate
+struct MGRSCoord {
+    zone: Int
+    band: Char
+    column: Char
+    row: Char
+    easting: Int
+    northing: Int
+    
+    /// Parse MGRS string (e.g., "18TWL8401")
+    fn parse(s: String) -> Result<Self, CoordError> {
+        let s = s.replace(" ", "").to_upper()
+        if s.len() < 5 {
+            return Err(CoordError.ParseError("MGRS string too short"))
+        }
+        
+        // Parse zone number (1-2 digits)
+        var zone_end = 1
+        if s.char_at(1).map(|c| c.is_digit()).unwrap_or(false) {
+            zone_end = 2
+        }
+        let zone = Int.parse(s[0..zone_end])
+            .map_err(|_| CoordError.ParseError("Invalid zone"))?
+        
+        let band = s.char_at(zone_end)
+            .ok_or(CoordError.ParseError("Missing band letter"))?
+        let column = s.char_at(zone_end + 1)
+            .ok_or(CoordError.ParseError("Missing column letter"))?
+        let row = s.char_at(zone_end + 2)
+            .ok_or(CoordError.ParseError("Missing row letter"))?
+        
+        let coords = s[(zone_end + 3)..]
+        let half = coords.len() / 2
+        let easting = Int.parse(coords[0..half]).unwrap_or(0)
+        let northing = Int.parse(coords[half..]).unwrap_or(0)
+        
+        Ok(MGRSCoord { zone: zone, band: band, column: column, row: row, easting: easting, northing: northing })
+    }
+    
+    /// Convert to UTM
+    fn to_utm() -> UTMCoord {
+        // Simplified conversion
+        let is_north = self.band >= 'N'
+        let col_idx = "ABCDEFGHJKLMNPQRSTUVWXYZ".find(self.column).unwrap_or(0)
+        let row_idx = "ABCDEFGHJKLMNPQRSTUV".find(self.row).unwrap_or(0)
+        
+        let base_easting = ((col_idx % 8) * 100000) as Float64
+        let base_northing = (row_idx * 100000) as Float64
+        
+        UTMCoord {
+            zone: self.zone,
+            is_north: is_north,
+            easting: base_easting + self.easting as Float64,
+            northing: base_northing + self.northing as Float64
+        }
+    }
+    
+    fn to_string() -> String {
+        format!("{}{} {} {} {:05} {:05}", self.zone, self.band, self.column, self.row, self.easting, self.northing)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Plus Code (Open Location Code)
+// -----------------------------------------------------------------------------
+
+/// Plus Code (Open Location Code)
+struct PlusCode {
+    code: String
+    
+    const ALPHABET: String = "23456789CFGHJMPQRVWX"
+    
+    /// Encode geographic coordinate to Plus Code
+    fn encode(coord: GeoCoord, length: Int = 10) -> Self {
+        var lat = coord.lat + 90.0
+        var lon = coord.lon + 180.0
+        var code = ""
+        
+        var lat_precision = 20.0
+        var lon_precision = 20.0
+        
+        for i in 0..length {
+            if i == 8 { code.push('+') }
+            
+            if i < 10 {
+                if i % 2 == 0 {
+                    let lat_idx = (lat / lat_precision).floor() as Int
+                    code.push(Self.ALPHABET.char_at(lat_idx.clamp(0, 19)).unwrap())
+                    lat -= lat_idx as Float64 * lat_precision
+                    lat_precision /= 20.0
+                } else {
+                    let lon_idx = (lon / lon_precision).floor() as Int
+                    code.push(Self.ALPHABET.char_at(lon_idx.clamp(0, 19)).unwrap())
+                    lon -= lon_idx as Float64 * lon_precision
+                    lon_precision /= 20.0
+                }
+            }
+        }
+        
+        if code.len() == 8 { code.push('+') }
+        PlusCode { code: code }
+    }
+    
+    /// Decode Plus Code to geographic coordinate
+    fn decode() -> Result<GeoCoord, CoordError> {
+        let clean = self.code.replace("+", "").to_upper()
+        var lat = -90.0
+        var lon = -180.0
+        var lat_precision = 20.0
+        var lon_precision = 20.0
+        
+        for (i, c) in clean.chars().enumerate() {
+            let idx = Self.ALPHABET.find(c)
+                .ok_or(CoordError.ParseError("Invalid Plus Code character"))?
+            
+            if i % 2 == 0 {
+                lat += idx as Float64 * lat_precision
+                lat_precision /= 20.0
+            } else {
+                lon += idx as Float64 * lon_precision
+                lon_precision /= 20.0
+            }
+        }
+        
+        Ok(GeoCoord.unchecked(lat + lat_precision/2.0, lon + lon_precision/2.0))
+    }
+    
+    /// Check if valid Plus Code
+    fn is_valid() -> Bool {
+        let clean = self.code.replace("+", "").to_upper()
+        clean.chars().all(|c| Self.ALPHABET.contains(c))
+    }
+    
+    fn to_string() -> String { self.code.clone() }
+}
+
+// -----------------------------------------------------------------------------
+// Hemisphere
+// -----------------------------------------------------------------------------
+
+enum Hemisphere {
+    North
+    South
+    East
+    West
+}
+
+impl Hemisphere {
+    fn to_string() -> String {
+        match self {
+            North => "N"
+            South => "S"
+            East => "E"
+            West => "W"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Coordinate Converter
+// -----------------------------------------------------------------------------
+
+/// Universal coordinate converter
+struct CoordConverter {
+    /// Convert any coordinate string to GeoCoord
+    fn parse(s: String) -> Result<GeoCoord, CoordError> {
+        let s = s.trim()
+        
+        // Try Plus Code
+        if s.contains("+") {
+            return PlusCode { code: s.to_string() }.decode()
+        }
+        
+        // Try MGRS
+        if s.len() >= 5 && s.char_at(0).map(|c| c.is_digit()).unwrap_or(false) {
+            if let Ok(mgrs) = MGRSCoord.parse(s) {
+                return Ok(mgrs.to_utm().to_geo())
+            }
+        }
+        
+        // Try decimal degrees
+        if s.contains(",") {
+            return GeoCoord.parse(s)
+        }
+        
+        // Try DMS
+        if s.contains("°") {
+            return Self.parse_dms(s)
+        }
+        
+        Err(CoordError.ParseError("Unknown coordinate format"))
+    }
+    
+    fn parse_dms(s: String) -> Result<GeoCoord, CoordError> {
+        let parts = s.split_whitespace()
+        if parts.len() != 2 {
+            return Err(CoordError.ParseError("Expected 'lat lon' in DMS"))
+        }
+        let lat = Self.parse_dms_part(parts[0])?
+        let lon = Self.parse_dms_part(parts[1])?
+        GeoCoord.new(lat, lon)
+    }
+    
+    fn parse_dms_part(s: String) -> Result<Float64, CoordError> {
+        let dir = s.chars().last().unwrap_or('X')
+        let sign = match dir {
+            'N' | 'E' => 1.0
+            'S' | 'W' => -1.0
+            _ => return Err(CoordError.ParseError("Invalid direction"))
+        }
+        
+        let num = s[0..(s.len()-1)]
+        let parts = num.split(['°', '\'', '"'])
+        let d = Float64.parse(parts.get(0).unwrap_or("0")).unwrap_or(0.0)
+        let m = Float64.parse(parts.get(1).unwrap_or("0")).unwrap_or(0.0)
+        let sec = Float64.parse(parts.get(2).unwrap_or("0")).unwrap_or(0.0)
+        
+        Ok(sign * (d + m/60.0 + sec/3600.0))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum CoordError {
+    InvalidLatitude(Float64)
+    InvalidLongitude(Float64)
+    InvalidZone(Int)
+    ParseError(String)
+    ConversionError(String)
+}
+
+impl Display for CoordError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidLatitude(v) => f.write(format!("Invalid latitude: {}", v))
+            InvalidLongitude(v) => f.write(format!("Invalid longitude: {}", v))
+            InvalidZone(z) => f.write(format!("Invalid UTM zone: {}", z))
+            ParseError(msg) => f.write(format!("Parse error: {}", msg))
+            ConversionError(msg) => f.write(format!("Conversion error: {}", msg))
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "geo to utm conversion" {
+    let geo = GeoCoord.unchecked(40.7128, -74.0060)
+    let utm = geo.to_utm()
+    assert_eq(utm.zone, 18)?
+    assert(utm.is_north)?
+}
+
+test "utm to geo conversion" {
+    let utm = UTMCoord.new(18, true, 583960.0, 4507523.0)?
+    let geo = utm.to_geo()
+    assert((geo.lat - 40.7).abs() < 0.1)?
+}
+
+test "ecef conversion" {
+    let geo = GeoCoord.unchecked(0.0, 0.0, 0.0)
+    let ecef = geo.to_ecef()
+    assert((ecef.x - WGS84_A).abs() < 1.0)?
+    assert(ecef.y.abs() < 1.0)?
+}
+
+test "plus code" {
+    let geo = GeoCoord.unchecked(40.7128, -74.0060)
+    let code = PlusCode.encode(geo)
+    let decoded = code.decode()?
+    assert((decoded.lat - geo.lat).abs() < 0.001)?
+}
+
+test "coordinate converter" {
+    let geo = CoordConverter.parse("40.7128, -74.0060")?
+    assert((geo.lat - 40.7128).abs() < 0.0001)?
+}

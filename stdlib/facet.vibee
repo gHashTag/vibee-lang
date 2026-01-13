@@ -1,0 +1,586 @@
+// =============================================================================
+// Vibee OS — Facet Search Module
+// Faceted search and filtering for structured data
+// =============================================================================
+
+// =============================================================================
+// Core Types
+// =============================================================================
+
+/// Facet value with count
+struct FacetValue {
+    value: String
+    count: Int
+    selected: Bool
+    
+    fn new(value: String, count: Int) -> Self {
+        FacetValue { value: value, count: count, selected: false }
+    }
+}
+
+/// Facet definition
+struct Facet {
+    name: String
+    field: String
+    values: [FacetValue]
+    facet_type: FacetType
+    
+    fn new(name: String, field: String) -> Self {
+        Facet { name: name, field: field, values: [], facet_type: FacetType.Terms }
+    }
+    
+    fn with_type(facet_type: FacetType) -> Self {
+        self.facet_type = facet_type
+        self
+    }
+}
+
+/// Facet type
+enum FacetType {
+    Terms
+    Range { ranges: [RangeSpec] }
+    Histogram { interval: Float }
+    DateHistogram { interval: DateInterval }
+}
+
+/// Range specification
+struct RangeSpec {
+    label: String
+    from: Option<Float>
+    to: Option<Float>
+    
+    fn new(label: String) -> Self {
+        RangeSpec { label: label, from: None, to: None }
+    }
+    
+    fn from(value: Float) -> Self { self.from = Some(value); self }
+    fn to(value: Float) -> Self { self.to = Some(value); self }
+    
+    fn contains(value: Float) -> Bool {
+        let above_min = self.from.map(|f| value >= f).unwrap_or(true)
+        let below_max = self.to.map(|t| value < t).unwrap_or(true)
+        above_min && below_max
+    }
+}
+
+/// Date interval for date histograms
+enum DateInterval {
+    Day
+    Week
+    Month
+    Quarter
+    Year
+}
+
+// =============================================================================
+// Faceted Document
+// =============================================================================
+
+/// Document with facetable fields
+struct FacetDocument {
+    id: String
+    fields: Map<String, FieldValue>
+    
+    fn new(id: String) -> Self {
+        FacetDocument { id: id, fields: Map.empty() }
+    }
+    
+    fn set_string(field: String, value: String) -> Self {
+        self.fields.set(field, FieldValue.Text(value))
+        self
+    }
+    
+    fn set_number(field: String, value: Float) -> Self {
+        self.fields.set(field, FieldValue.Number(value))
+        self
+    }
+    
+    fn set_strings(field: String, values: [String]) -> Self {
+        self.fields.set(field, FieldValue.TextArray(values))
+        self
+    }
+    
+    fn set_date(field: String, timestamp: Int64) -> Self {
+        self.fields.set(field, FieldValue.Date(timestamp))
+        self
+    }
+    
+    fn set_bool(field: String, value: Bool) -> Self {
+        self.fields.set(field, FieldValue.Boolean(value))
+        self
+    }
+    
+    fn get(field: String) -> Option<FieldValue> {
+        self.fields.get(field).cloned()
+    }
+}
+
+/// Field value types
+enum FieldValue {
+    Text(String)
+    TextArray([String])
+    Number(Float)
+    Date(Int64)
+    Boolean(Bool)
+}
+
+impl FieldValue {
+    fn as_strings() -> [String] {
+        match self {
+            FieldValue.Text(s) => [s]
+            FieldValue.TextArray(arr) => arr
+            FieldValue.Number(n) => [n.to_string()]
+            FieldValue.Date(d) => [d.to_string()]
+            FieldValue.Boolean(b) => [b.to_string()]
+        }
+    }
+    
+    fn as_number() -> Option<Float> {
+        match self {
+            FieldValue.Number(n) => Some(n)
+            FieldValue.Text(s) => s.parse().ok()
+            _ => None
+        }
+    }
+}
+
+// =============================================================================
+// Filter Types
+// =============================================================================
+
+/// Filter for faceted search
+enum Filter {
+    Term { field: String, value: String }
+    Terms { field: String, values: [String] }
+    Range { field: String, from: Option<Float>, to: Option<Float> }
+    DateRange { field: String, from: Option<Int64>, to: Option<Int64> }
+    Bool { value: Bool, field: String }
+    And([Filter])
+    Or([Filter])
+    Not(Box<Filter>)
+}
+
+impl Filter {
+    fn term(field: String, value: String) -> Self {
+        Filter.Term { field: field, value: value }
+    }
+    
+    fn terms(field: String, values: [String]) -> Self {
+        Filter.Terms { field: field, values: values }
+    }
+    
+    fn range(field: String, from: Option<Float>, to: Option<Float>) -> Self {
+        Filter.Range { field: field, from: from, to: to }
+    }
+    
+    fn and(filters: [Filter]) -> Self { Filter.And(filters) }
+    fn or(filters: [Filter]) -> Self { Filter.Or(filters) }
+    fn not(filter: Filter) -> Self { Filter.Not(Box.new(filter)) }
+    
+    /// Check if document matches filter
+    fn matches(doc: FacetDocument) -> Bool {
+        match self {
+            Filter.Term { field, value } => {
+                doc.get(field)
+                    .map(|v| v.as_strings().contains(value))
+                    .unwrap_or(false)
+            }
+            Filter.Terms { field, values } => {
+                doc.get(field)
+                    .map(|v| v.as_strings().iter().any(|s| values.contains(s)))
+                    .unwrap_or(false)
+            }
+            Filter.Range { field, from, to } => {
+                doc.get(field)
+                    .and_then(|v| v.as_number())
+                    .map(|n| {
+                        let above = from.map(|f| n >= f).unwrap_or(true)
+                        let below = to.map(|t| n < t).unwrap_or(true)
+                        above && below
+                    })
+                    .unwrap_or(false)
+            }
+            Filter.DateRange { field, from, to } => {
+                match doc.get(field) {
+                    Some(FieldValue.Date(d)) => {
+                        let above = from.map(|f| d >= f).unwrap_or(true)
+                        let below = to.map(|t| d < t).unwrap_or(true)
+                        above && below
+                    }
+                    _ => false
+                }
+            }
+            Filter.Bool { field, value } => {
+                match doc.get(field) {
+                    Some(FieldValue.Boolean(b)) => b == value
+                    _ => false
+                }
+            }
+            Filter.And(filters) => filters.iter().all(|f| f.matches(doc.clone()))
+            Filter.Or(filters) => filters.iter().any(|f| f.matches(doc.clone()))
+            Filter.Not(inner) => !inner.matches(doc)
+        }
+    }
+}
+
+// =============================================================================
+// Facet Engine
+// =============================================================================
+
+/// Faceted search engine
+struct FacetEngine {
+    documents: Map<String, FacetDocument>
+    facet_configs: [FacetConfig]
+    
+    fn new() -> Self {
+        FacetEngine { documents: Map.empty(), facet_configs: [] }
+    }
+    
+    /// Add document
+    fn add(doc: FacetDocument) {
+        self.documents.set(doc.id.clone(), doc)
+    }
+    
+    /// Add multiple documents
+    fn add_all(docs: [FacetDocument]) {
+        for doc in docs { self.add(doc) }
+    }
+    
+    /// Remove document
+    fn remove(id: String) {
+        self.documents.remove(id)
+    }
+    
+    /// Configure facet
+    fn add_facet(config: FacetConfig) {
+        self.facet_configs.push(config)
+    }
+    
+    /// Search with filters and compute facets
+    fn search(filters: [Filter]) -> FacetSearchResult {
+        // Apply filters
+        let filtered_docs: [FacetDocument] = self.documents.values()
+            .filter(|doc| filters.iter().all(|f| f.matches(doc.clone())))
+            .collect()
+        
+        // Compute facets
+        var facets = []
+        for config in self.facet_configs.iter() {
+            let facet = self.compute_facet(config, filtered_docs.clone(), filters.clone())
+            facets.push(facet)
+        }
+        
+        FacetSearchResult {
+            documents: filtered_docs,
+            facets: facets,
+            total: self.documents.len()
+        }
+    }
+    
+    fn compute_facet(config: FacetConfig, docs: [FacetDocument], active_filters: [Filter]) -> Facet {
+        // For facet counts, exclude filters on this field
+        let other_filters: [Filter] = active_filters.iter()
+            .filter(|f| !self.filter_targets_field(f, config.field.clone()))
+            .collect()
+        
+        let facet_docs: [FacetDocument] = if other_filters.is_empty() {
+            self.documents.values().collect()
+        } else {
+            self.documents.values()
+                .filter(|doc| other_filters.iter().all(|f| f.matches(doc.clone())))
+                .collect()
+        }
+        
+        match config.facet_type {
+            FacetType.Terms => self.compute_terms_facet(config, facet_docs, active_filters)
+            FacetType.Range { ranges } => self.compute_range_facet(config, facet_docs, ranges)
+            FacetType.Histogram { interval } => self.compute_histogram_facet(config, facet_docs, interval)
+            FacetType.DateHistogram { interval } => self.compute_date_histogram(config, facet_docs, interval)
+        }
+    }
+    
+    fn filter_targets_field(filter: Filter, field: String) -> Bool {
+        match filter {
+            Filter.Term { field: f, .. } => f == field
+            Filter.Terms { field: f, .. } => f == field
+            Filter.Range { field: f, .. } => f == field
+            Filter.DateRange { field: f, .. } => f == field
+            Filter.Bool { field: f, .. } => f == field
+            Filter.And(filters) => filters.iter().any(|f| self.filter_targets_field(f, field.clone()))
+            Filter.Or(filters) => filters.iter().any(|f| self.filter_targets_field(f, field.clone()))
+            Filter.Not(inner) => self.filter_targets_field(*inner, field)
+        }
+    }
+    
+    fn compute_terms_facet(config: FacetConfig, docs: [FacetDocument], active_filters: [Filter]) -> Facet {
+        var counts = Map.empty()
+        
+        for doc in docs {
+            if let Some(value) = doc.get(config.field.clone()) {
+                for v in value.as_strings() {
+                    *counts.entry(v).or_insert(0) += 1
+                }
+            }
+        }
+        
+        // Check which values are selected
+        let selected_values: Set<String> = active_filters.iter()
+            .filter_map(|f| match f {
+                Filter.Term { field, value } if field == config.field => Some([value].into_iter())
+                Filter.Terms { field, values } if field == config.field => Some(values.iter())
+                _ => None
+            })
+            .flatten()
+            .collect()
+        
+        var values: [FacetValue] = counts.iter()
+            .map(|(v, c)| {
+                var fv = FacetValue.new(v, c)
+                fv.selected = selected_values.contains(v)
+                fv
+            })
+            .collect()
+        
+        values.sort_by(|a, b| b.count.cmp(a.count))
+        
+        if let Some(limit) = config.limit {
+            values.truncate(limit)
+        }
+        
+        Facet { name: config.name, field: config.field, values: values, facet_type: FacetType.Terms }
+    }
+    
+    fn compute_range_facet(config: FacetConfig, docs: [FacetDocument], ranges: [RangeSpec]) -> Facet {
+        var values = []
+        
+        for range in ranges {
+            var count = 0
+            for doc in docs.iter() {
+                if let Some(num) = doc.get(config.field.clone()).and_then(|v| v.as_number()) {
+                    if range.contains(num) { count += 1 }
+                }
+            }
+            values.push(FacetValue.new(range.label.clone(), count))
+        }
+        
+        Facet { name: config.name, field: config.field, values: values, facet_type: FacetType.Range { ranges: ranges } }
+    }
+    
+    fn compute_histogram_facet(config: FacetConfig, docs: [FacetDocument], interval: Float) -> Facet {
+        var buckets = Map.empty()
+        
+        for doc in docs {
+            if let Some(num) = doc.get(config.field.clone()).and_then(|v| v.as_number()) {
+                let bucket = (num / interval).floor() * interval
+                *buckets.entry(bucket).or_insert(0) += 1
+            }
+        }
+        
+        var values: [FacetValue] = buckets.iter()
+            .map(|(b, c)| FacetValue.new(format!("{}-{}", b, b + interval), c))
+            .collect()
+        
+        values.sort_by(|a, b| a.value.cmp(b.value))
+        
+        Facet { name: config.name, field: config.field, values: values, facet_type: FacetType.Histogram { interval: interval } }
+    }
+    
+    fn compute_date_histogram(config: FacetConfig, docs: [FacetDocument], interval: DateInterval) -> Facet {
+        var buckets = Map.empty()
+        
+        for doc in docs {
+            if let Some(FieldValue.Date(ts)) = doc.get(config.field.clone()) {
+                let bucket = self.date_bucket(ts, interval)
+                *buckets.entry(bucket).or_insert(0) += 1
+            }
+        }
+        
+        var values: [FacetValue] = buckets.iter()
+            .map(|(b, c)| FacetValue.new(b, c))
+            .collect()
+        
+        values.sort_by(|a, b| a.value.cmp(b.value))
+        
+        Facet { name: config.name, field: config.field, values: values, facet_type: FacetType.DateHistogram { interval: interval } }
+    }
+    
+    fn date_bucket(timestamp: Int64, interval: DateInterval) -> String {
+        // Simplified date bucketing
+        let day_ms = 86400000i64
+        let days = timestamp / day_ms
+        
+        match interval {
+            DateInterval.Day => format!("day-{}", days)
+            DateInterval.Week => format!("week-{}", days / 7)
+            DateInterval.Month => format!("month-{}", days / 30)
+            DateInterval.Quarter => format!("quarter-{}", days / 90)
+            DateInterval.Year => format!("year-{}", days / 365)
+        }
+    }
+    
+    fn document_count() -> Int { self.documents.len() }
+}
+
+/// Facet configuration
+struct FacetConfig {
+    name: String
+    field: String
+    facet_type: FacetType
+    limit: Option<Int>
+    min_count: Int
+    
+    fn terms(name: String, field: String) -> Self {
+        FacetConfig { name: name, field: field, facet_type: FacetType.Terms, limit: Some(10), min_count: 1 }
+    }
+    
+    fn range(name: String, field: String, ranges: [RangeSpec]) -> Self {
+        FacetConfig { name: name, field: field, facet_type: FacetType.Range { ranges: ranges }, limit: None, min_count: 0 }
+    }
+    
+    fn histogram(name: String, field: String, interval: Float) -> Self {
+        FacetConfig { name: name, field: field, facet_type: FacetType.Histogram { interval: interval }, limit: None, min_count: 0 }
+    }
+    
+    fn with_limit(limit: Int) -> Self { self.limit = Some(limit); self }
+    fn with_min_count(min: Int) -> Self { self.min_count = min; self }
+}
+
+/// Faceted search result
+struct FacetSearchResult {
+    documents: [FacetDocument]
+    facets: [Facet]
+    total: Int
+    
+    fn count() -> Int { self.documents.len() }
+    
+    fn get_facet(name: String) -> Option<Facet> {
+        self.facets.iter().find(|f| f.name == name).cloned()
+    }
+}
+
+// =============================================================================
+// Facet Query Builder
+// =============================================================================
+
+/// Builder for faceted queries
+struct FacetQuery {
+    filters: [Filter]
+    facet_fields: [String]
+    sort_field: Option<String>
+    sort_desc: Bool
+    offset: Int
+    limit: Int
+    
+    fn new() -> Self {
+        FacetQuery { filters: [], facet_fields: [], sort_field: None, sort_desc: false, offset: 0, limit: 20 }
+    }
+    
+    fn filter(f: Filter) -> Self { self.filters.push(f); self }
+    fn facet(field: String) -> Self { self.facet_fields.push(field); self }
+    fn sort(field: String, desc: Bool) -> Self { self.sort_field = Some(field); self.sort_desc = desc; self }
+    fn page(offset: Int, limit: Int) -> Self { self.offset = offset; self.limit = limit; self }
+    
+    fn filter_term(field: String, value: String) -> Self {
+        self.filter(Filter.term(field, value))
+    }
+    
+    fn filter_terms(field: String, values: [String]) -> Self {
+        self.filter(Filter.terms(field, values))
+    }
+    
+    fn filter_range(field: String, from: Option<Float>, to: Option<Float>) -> Self {
+        self.filter(Filter.range(field, from, to))
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "basic facet search" {
+    var engine = FacetEngine.new()
+    
+    engine.add(FacetDocument.new("1").set_string("category", "electronics").set_string("brand", "Apple"))
+    engine.add(FacetDocument.new("2").set_string("category", "electronics").set_string("brand", "Samsung"))
+    engine.add(FacetDocument.new("3").set_string("category", "clothing").set_string("brand", "Nike"))
+    
+    engine.add_facet(FacetConfig.terms("Category", "category"))
+    engine.add_facet(FacetConfig.terms("Brand", "brand"))
+    
+    let result = engine.search([])
+    assert_eq(result.count(), 3)?
+    
+    let cat_facet = result.get_facet("Category")?
+    assert_eq(cat_facet.values.len(), 2)?
+}
+
+test "filtered facet search" {
+    var engine = FacetEngine.new()
+    
+    engine.add(FacetDocument.new("1").set_string("category", "electronics").set_number("price", 999.0))
+    engine.add(FacetDocument.new("2").set_string("category", "electronics").set_number("price", 499.0))
+    engine.add(FacetDocument.new("3").set_string("category", "clothing").set_number("price", 99.0))
+    
+    engine.add_facet(FacetConfig.terms("Category", "category"))
+    
+    let result = engine.search([Filter.term("category", "electronics")])
+    assert_eq(result.count(), 2)?
+}
+
+test "range facet" {
+    var engine = FacetEngine.new()
+    
+    engine.add(FacetDocument.new("1").set_number("price", 50.0))
+    engine.add(FacetDocument.new("2").set_number("price", 150.0))
+    engine.add(FacetDocument.new("3").set_number("price", 250.0))
+    
+    let ranges = [
+        RangeSpec.new("Under $100").to(100.0),
+        RangeSpec.new("$100-$200").from(100.0).to(200.0),
+        RangeSpec.new("Over $200").from(200.0)
+    ]
+    
+    engine.add_facet(FacetConfig.range("Price", "price", ranges))
+    
+    let result = engine.search([])
+    let price_facet = result.get_facet("Price")?
+    
+    assert_eq(price_facet.values[0].count, 1)?  // Under $100
+    assert_eq(price_facet.values[1].count, 1)?  // $100-$200
+    assert_eq(price_facet.values[2].count, 1)?  // Over $200
+}
+
+test "multi-value facet" {
+    var engine = FacetEngine.new()
+    
+    engine.add(FacetDocument.new("1").set_strings("tags", ["red", "large"]))
+    engine.add(FacetDocument.new("2").set_strings("tags", ["blue", "small"]))
+    engine.add(FacetDocument.new("3").set_strings("tags", ["red", "small"]))
+    
+    engine.add_facet(FacetConfig.terms("Tags", "tags"))
+    
+    let result = engine.search([])
+    let tags_facet = result.get_facet("Tags")?
+    
+    let red_count = tags_facet.values.iter().find(|v| v.value == "red")?.count
+    assert_eq(red_count, 2)?
+}
+
+test "filter combinations" {
+    var engine = FacetEngine.new()
+    
+    engine.add(FacetDocument.new("1").set_string("color", "red").set_string("size", "large"))
+    engine.add(FacetDocument.new("2").set_string("color", "red").set_string("size", "small"))
+    engine.add(FacetDocument.new("3").set_string("color", "blue").set_string("size", "large"))
+    
+    let filters = [
+        Filter.and([
+            Filter.term("color", "red"),
+            Filter.term("size", "large")
+        ])
+    ]
+    
+    let result = engine.search(filters)
+    assert_eq(result.count(), 1)?
+    assert_eq(result.documents[0].id, "1")?
+}

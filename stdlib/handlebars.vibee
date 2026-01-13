@@ -1,0 +1,518 @@
+// =============================================================================
+// Vibee OS — Handlebars Module
+// Handlebars templating with helpers and partials
+// =============================================================================
+
+/// Compiled Handlebars template
+struct Template {
+    source: String
+    ast: [Node]
+    helpers: Map<String, Helper>
+    partials: Map<String, Template>
+    
+    fn parse(source: String) -> Result<Self, HandlebarsError> {
+        let ast = Parser.new(source).parse()?
+        Ok(Template { source: source, ast: ast, helpers: default_helpers(), partials: Map.new() })
+    }
+    
+    fn register_helper(name: String, helper: Helper) -> Self {
+        self.helpers.insert(name, helper)
+        self
+    }
+    
+    fn register_partial(name: String, partial: Template) -> Self {
+        self.partials.insert(name, partial)
+        self
+    }
+    
+    fn render(context: Value) -> Result<String, HandlebarsError> {
+        Renderer.new(self, Context.new(context)).render()
+    }
+}
+
+// =============================================================================
+// AST Nodes
+// =============================================================================
+
+enum Node {
+    Text(String)
+    Expression(String, Bool)  // (path, escaped)
+    Block(String, [Param], [Node], Option<[Node]>)  // (helper, params, body, inverse)
+    Partial(String, Option<String>)  // (name, context)
+    Comment(String)
+}
+
+struct Param {
+    name: Option<String>
+    value: ParamValue
+}
+
+enum ParamValue {
+    Path(String)
+    Literal(Value)
+}
+
+// =============================================================================
+// Values
+// =============================================================================
+
+enum Value {
+    Null
+    Bool(Bool)
+    Int(Int)
+    Float(Float)
+    String(String)
+    Array([Value])
+    Object(Map<String, Value>)
+    
+    fn is_truthy() -> Bool {
+        match self {
+            Null => false
+            Bool(b) => b
+            Array(a) => !a.is_empty()
+            String(s) => !s.is_empty()
+            _ => true
+        }
+    }
+    
+    fn as_string() -> String {
+        match self {
+            String(s) => s
+            Int(i) => i.to_string()
+            Float(f) => f.to_string()
+            Bool(b) => b.to_string()
+            _ => ""
+        }
+    }
+    
+    fn get(key: String) -> Option<Value> {
+        match self { Object(m) => m.get(key), _ => None }
+    }
+}
+
+// =============================================================================
+// Context
+// =============================================================================
+
+struct Context {
+    stack: [Value]
+    data: Map<String, Value>
+    
+    fn new(root: Value) -> Self { Context { stack: [root], data: Map.new() } }
+    fn push(v: Value) { self.stack.push(v) }
+    fn pop() { if self.stack.len() > 1 { self.stack.pop(); } }
+    
+    fn lookup(path: String) -> Option<Value> {
+        if path == "this" || path == "." { return self.stack.last() }
+        if path.starts_with("@") { return self.data.get(path[1..]) }
+        
+        let parts = path.split(".")
+        for i in (0..self.stack.len()).rev() {
+            var current = self.stack[i]
+            var found = true
+            for part in parts {
+                match current.get(part) {
+                    Some(v) => current = v
+                    None => { found = false; break }
+                }
+            }
+            if found { return Some(current) }
+        }
+        None
+    }
+    
+    fn set_data(key: String, value: Value) { self.data.insert(key, value) }
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+struct Helper {
+    func: fn(HelperContext) -> Result<String, HandlebarsError>
+}
+
+struct HelperContext {
+    params: [Value]
+    hash: Map<String, Value>
+    context: Context
+    body: Option<[Node]>
+    inverse: Option<[Node]>
+    renderer: Renderer
+}
+
+impl HelperContext {
+    fn render_body() -> Result<String, HandlebarsError> {
+        match self.body {
+            Some(nodes) => self.renderer.render_nodes(nodes)
+            None => Ok("")
+        }
+    }
+    
+    fn render_inverse() -> Result<String, HandlebarsError> {
+        match self.inverse {
+            Some(nodes) => self.renderer.render_nodes(nodes)
+            None => Ok("")
+        }
+    }
+}
+
+fn default_helpers() -> Map<String, Helper> {
+    var helpers = Map.new()
+    
+    helpers.insert("if", Helper { func: |ctx| {
+        if ctx.params.get(0).map(|v| v.is_truthy()).unwrap_or(false) {
+            ctx.render_body()
+        } else {
+            ctx.render_inverse()
+        }
+    }})
+    
+    helpers.insert("unless", Helper { func: |ctx| {
+        if !ctx.params.get(0).map(|v| v.is_truthy()).unwrap_or(false) {
+            ctx.render_body()
+        } else {
+            ctx.render_inverse()
+        }
+    }})
+    
+    helpers.insert("each", Helper { func: |ctx| {
+        var result = ""
+        match ctx.params.get(0) {
+            Some(Value.Array(items)) => {
+                for (i, item) in items.iter().enumerate() {
+                    ctx.context.push(item)
+                    ctx.context.set_data("index", Value.Int(i))
+                    ctx.context.set_data("first", Value.Bool(i == 0))
+                    ctx.context.set_data("last", Value.Bool(i == items.len() - 1))
+                    result.push_str(ctx.render_body()?)
+                    ctx.context.pop()
+                }
+            }
+            Some(Value.Object(map)) => {
+                for (i, (k, v)) in map.iter().enumerate() {
+                    ctx.context.push(v)
+                    ctx.context.set_data("key", Value.String(k))
+                    ctx.context.set_data("index", Value.Int(i))
+                    result.push_str(ctx.render_body()?)
+                    ctx.context.pop()
+                }
+            }
+            _ => result = ctx.render_inverse()?
+        }
+        Ok(result)
+    }})
+    
+    helpers.insert("with", Helper { func: |ctx| {
+        match ctx.params.get(0) {
+            Some(v) if v.is_truthy() => {
+                ctx.context.push(v)
+                let result = ctx.render_body()?
+                ctx.context.pop()
+                Ok(result)
+            }
+            _ => ctx.render_inverse()
+        }
+    }})
+    
+    helpers.insert("lookup", Helper { func: |ctx| {
+        let obj = ctx.params.get(0)?
+        let key = ctx.params.get(1)?.as_string()
+        Ok(obj.get(key).map(|v| v.as_string()).unwrap_or(""))
+    }})
+    
+    helpers
+}
+
+// =============================================================================
+// Parser
+// =============================================================================
+
+struct Parser {
+    source: String
+    pos: Int
+    
+    fn new(source: String) -> Self { Parser { source: source, pos: 0 } }
+    
+    fn parse() -> Result<[Node], HandlebarsError> {
+        var nodes: [Node] = []
+        while self.pos < self.source.len() {
+            if self.starts_with("{{") {
+                nodes.push(self.parse_tag()?)
+            } else {
+                let text = self.parse_text()
+                if !text.is_empty() { nodes.push(Node.Text(text)) }
+            }
+        }
+        Ok(nodes)
+    }
+    
+    fn parse_text() -> String {
+        let start = self.pos
+        while self.pos < self.source.len() && !self.starts_with("{{") { self.pos += 1 }
+        self.source[start..self.pos]
+    }
+    
+    fn parse_tag() -> Result<Node, HandlebarsError> {
+        self.pos += 2
+        let escaped = !self.starts_with("{")
+        if !escaped { self.pos += 1 }
+        self.skip_ws()
+        
+        let c = self.peek()
+        let node = match c {
+            '!' => { self.pos += 2; Node.Comment(self.parse_until("}}")) }
+            '>' => { self.pos += 1; self.skip_ws(); Node.Partial(self.parse_id(), None) }
+            '#' => self.parse_block()?
+            '^' => self.parse_inverse_block()?
+            '/' => { self.pos += 1; self.skip_ws(); self.parse_id(); Node.Text("") }
+            _ => Node.Expression(self.parse_id(), escaped)
+        }
+        
+        self.skip_ws()
+        if !escaped && self.peek() == '}' { self.pos += 1 }
+        self.pos += 2
+        Ok(node)
+    }
+    
+    fn parse_block() -> Result<Node, HandlebarsError> {
+        self.pos += 1
+        self.skip_ws()
+        let name = self.parse_id()
+        let params = self.parse_params()
+        self.skip_ws()
+        self.pos += 2
+        
+        let body = self.parse_until_block_end(name)?
+        let inverse = if self.check_else() { Some(self.parse_until_block_end(name)?) } else { None }
+        
+        Ok(Node.Block(name, params, body, inverse))
+    }
+    
+    fn parse_inverse_block() -> Result<Node, HandlebarsError> {
+        self.pos += 1
+        self.skip_ws()
+        let name = self.parse_id()
+        self.skip_ws()
+        self.pos += 2
+        
+        let body = self.parse_until_block_end(name)?
+        Ok(Node.Block(name, [], [], Some(body)))
+    }
+    
+    fn parse_until_block_end(name: String) -> Result<[Node], HandlebarsError> {
+        var nodes: [Node] = []
+        while self.pos < self.source.len() {
+            if self.starts_with("{{/") || self.starts_with("{{else") { break }
+            if self.starts_with("{{") {
+                nodes.push(self.parse_tag()?)
+            } else {
+                let text = self.parse_text()
+                if !text.is_empty() { nodes.push(Node.Text(text)) }
+            }
+        }
+        if self.starts_with("{{/") {
+            self.pos += 3
+            self.skip_ws()
+            self.parse_id()
+            self.skip_ws()
+            self.pos += 2
+        }
+        Ok(nodes)
+    }
+    
+    fn check_else() -> Bool {
+        if self.starts_with("{{else}}") { self.pos += 8; true }
+        else { false }
+    }
+    
+    fn parse_params() -> [Param] {
+        var params: [Param] = []
+        self.skip_ws()
+        while self.pos < self.source.len() && !self.starts_with("}}") {
+            let value = self.parse_param_value()
+            params.push(Param { name: None, value: value })
+            self.skip_ws()
+        }
+        params
+    }
+    
+    fn parse_param_value() -> ParamValue {
+        if self.peek() == '"' { ParamValue.Literal(Value.String(self.parse_string())) }
+        else if self.peek().is_digit() { ParamValue.Literal(Value.Int(self.parse_number())) }
+        else { ParamValue.Path(self.parse_id()) }
+    }
+    
+    fn parse_id() -> String {
+        let start = self.pos
+        while self.pos < self.source.len() && (self.peek().is_alphanumeric() || self.peek() == '_' || self.peek() == '.' || self.peek() == '@') {
+            self.pos += 1
+        }
+        self.source[start..self.pos]
+    }
+    
+    fn parse_string() -> String {
+        self.pos += 1
+        let start = self.pos
+        while self.pos < self.source.len() && self.peek() != '"' { self.pos += 1 }
+        let s = self.source[start..self.pos]
+        self.pos += 1
+        s
+    }
+    
+    fn parse_number() -> Int {
+        let start = self.pos
+        while self.pos < self.source.len() && self.peek().is_digit() { self.pos += 1 }
+        self.source[start..self.pos].parse().unwrap_or(0)
+    }
+    
+    fn parse_until(end: String) -> String {
+        let start = self.pos
+        while !self.starts_with(end) { self.pos += 1 }
+        self.source[start..self.pos]
+    }
+    
+    fn skip_ws() { while self.pos < self.source.len() && self.peek().is_whitespace() { self.pos += 1 } }
+    fn peek() -> Char { self.source[self.pos] }
+    fn starts_with(s: String) -> Bool { self.source[self.pos..].starts_with(s) }
+}
+
+// =============================================================================
+// Renderer
+// =============================================================================
+
+struct Renderer {
+    template: Template
+    context: Context
+    
+    fn new(template: Template, context: Context) -> Self {
+        Renderer { template: template, context: context }
+    }
+    
+    fn render() -> Result<String, HandlebarsError> {
+        self.render_nodes(self.template.ast)
+    }
+    
+    fn render_nodes(nodes: [Node]) -> Result<String, HandlebarsError> {
+        var output = ""
+        for node in nodes {
+            match node {
+                Text(s) => output.push_str(s)
+                Expression(path, escaped) => {
+                    let v = self.context.lookup(path).unwrap_or(Value.Null).as_string()
+                    output.push_str(if escaped { html_escape(v) } else { v })
+                }
+                Block(name, params, body, inverse) => {
+                    output.push_str(self.render_block(name, params, body, inverse)?)
+                }
+                Partial(name, _) => {
+                    if let Some(p) = self.template.partials.get(name) {
+                        output.push_str(Renderer.new(p, self.context).render()?)
+                    }
+                }
+                Comment(_) => {}
+            }
+        }
+        Ok(output)
+    }
+    
+    fn render_block(name: String, params: [Param], body: [Node], inverse: Option<[Node]>) -> Result<String, HandlebarsError> {
+        let resolved_params = params.iter().map(|p| self.resolve_param(p)).collect()
+        
+        match self.template.helpers.get(name) {
+            Some(helper) => {
+                let ctx = HelperContext {
+                    params: resolved_params,
+                    hash: Map.new(),
+                    context: self.context,
+                    body: Some(body),
+                    inverse: inverse,
+                    renderer: self
+                }
+                (helper.func)(ctx)
+            }
+            None => {
+                let value = self.context.lookup(name).unwrap_or(Value.Null)
+                if value.is_truthy() {
+                    self.context.push(value)
+                    let result = self.render_nodes(body)?
+                    self.context.pop()
+                    Ok(result)
+                } else {
+                    match inverse {
+                        Some(inv) => self.render_nodes(inv)
+                        None => Ok("")
+                    }
+                }
+            }
+        }
+    }
+    
+    fn resolve_param(param: Param) -> Value {
+        match param.value {
+            Path(p) => self.context.lookup(p).unwrap_or(Value.Null)
+            Literal(v) => v
+        }
+    }
+}
+
+fn html_escape(s: String) -> String {
+    s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum HandlebarsError {
+    ParseError(String)
+    RenderError(String)
+    HelperError(String)
+}
+
+impl Display for HandlebarsError {
+    fn fmt(f: Formatter) {
+        match self {
+            ParseError(s) => f.write(format!("Parse error: {}", s))
+            RenderError(s) => f.write(format!("Render error: {}", s))
+            HelperError(s) => f.write(format!("Helper error: {}", s))
+        }
+    }
+}
+
+impl Error for HandlebarsError {}
+
+// =============================================================================
+// Convenience
+// =============================================================================
+
+fn render(template: String, context: Value) -> Result<String, HandlebarsError> {
+    Template.parse(template)?.render(context)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "simple expression" {
+    let result = render("Hello {{name}}!", Value.Object(Map.from([("name", Value.String("World"))])))?
+    assert_eq(result, "Hello World!")?
+}
+
+test "if helper" {
+    let tmpl = "{{#if show}}visible{{/if}}"
+    assert_eq(render(tmpl, Value.Object(Map.from([("show", Value.Bool(true))])))?, "visible")?
+    assert_eq(render(tmpl, Value.Object(Map.from([("show", Value.Bool(false))])))?, "")?
+}
+
+test "each helper" {
+    let tmpl = "{{#each items}}{{this}}{{/each}}"
+    let ctx = Value.Object(Map.from([("items", Value.Array([Value.String("a"), Value.String("b")]))]))
+    assert_eq(render(tmpl, ctx)?, "ab")?
+}
+
+test "nested paths" {
+    let tmpl = "{{person.name}}"
+    let ctx = Value.Object(Map.from([("person", Value.Object(Map.from([("name", Value.String("Alice"))])))]))
+    assert_eq(render(tmpl, ctx)?, "Alice")?
+}

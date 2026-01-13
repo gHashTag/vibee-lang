@@ -1,0 +1,411 @@
+// =============================================================================
+// Vibee OS — EJS Module
+// Embedded JavaScript-style templating
+// =============================================================================
+
+struct Template {
+    nodes: [Node]
+    
+    fn parse(source: String) -> Result<Self, EjsError> {
+        Ok(Template { nodes: Parser.new(source).parse()? })
+    }
+    
+    fn render(context: Value) -> Result<String, EjsError> {
+        Renderer.new(Context.new(context)).render(self.nodes)
+    }
+}
+
+enum Node {
+    Text(String)
+    Output(Expr, Bool)  // (expr, escaped)
+    Code([Stmt])
+    Comment(String)
+}
+
+enum Stmt {
+    If(Expr, [Stmt], Option<[Stmt]>)
+    For(String, Expr, [Stmt])
+    ForRange(String, Expr, Expr, [Stmt])
+    Let(String, Expr)
+    Expr(Expr)
+    Output(Expr, Bool)
+    Text(String)
+}
+
+enum Expr {
+    Var(String)
+    Literal(Value)
+    Binary(Box<Expr>, BinOp, Box<Expr>)
+    Unary(UnaryOp, Box<Expr>)
+    Call(Box<Expr>, [Expr])
+    Member(Box<Expr>, String)
+    Index(Box<Expr>, Box<Expr>)
+    Ternary(Box<Expr>, Box<Expr>, Box<Expr>)
+}
+
+enum BinOp { Add, Sub, Mul, Div, Mod, Eq, Ne, Lt, Gt, Le, Ge, And, Or }
+enum UnaryOp { Not, Neg }
+
+enum Value {
+    Null
+    Bool(Bool)
+    Int(Int)
+    Float(Float)
+    String(String)
+    Array([Value])
+    Object(Map<String, Value>)
+    
+    fn is_truthy() -> Bool {
+        match self { Null => false, Bool(b) => b, Int(0) => false, String(s) => !s.is_empty(), Array(a) => !a.is_empty(), _ => true }
+    }
+    
+    fn as_string() -> String {
+        match self { String(s) => s, Int(i) => i.to_string(), Float(f) => f.to_string(), Bool(b) => b.to_string(), Null => "null", _ => "" }
+    }
+    
+    fn get(k: String) -> Option<Value> { match self { Object(m) => m.get(k), _ => None } }
+    fn index(i: Int) -> Option<Value> { match self { Array(a) => a.get(i), _ => None } }
+    fn len() -> Int { match self { Array(a) => a.len(), String(s) => s.len(), _ => 0 } }
+}
+
+struct Context {
+    vars: Map<String, Value>
+    
+    fn new(root: Value) -> Self {
+        let v = match root { Value.Object(m) => m, _ => Map.new() }
+        Context { vars: v }
+    }
+    
+    fn get(name: String) -> Option<Value> { self.vars.get(name) }
+    fn set(name: String, value: Value) { self.vars.insert(name, value) }
+}
+
+struct Parser {
+    src: String
+    pos: Int
+    
+    fn new(src: String) -> Self { Parser { src: src, pos: 0 } }
+    
+    fn parse() -> Result<[Node], EjsError> {
+        var nodes: [Node] = []
+        while self.pos < self.src.len() {
+            if self.at("<%") { nodes.push(self.parse_tag()?) }
+            else { let t = self.text(); if !t.is_empty() { nodes.push(Node.Text(t)) } }
+        }
+        Ok(nodes)
+    }
+    
+    fn text() -> String {
+        let s = self.pos
+        while self.pos < self.src.len() && !self.at("<%") { self.pos += 1 }
+        self.src[s..self.pos]
+    }
+    
+    fn parse_tag() -> Result<Node, EjsError> {
+        self.pos += 2
+        let c = self.peek()
+        match c {
+            '=' => { self.pos += 1; self.ws(); let e = self.expr()?; self.ws(); self.expect("%>"); Ok(Node.Output(e, true)) }
+            '-' => { self.pos += 1; self.ws(); let e = self.expr()?; self.ws(); self.expect("%>"); Ok(Node.Output(e, false)) }
+            '#' => { self.pos += 1; let s = self.pos; while !self.at("%>") { self.pos += 1 }; let c = self.src[s..self.pos]; self.pos += 2; Ok(Node.Comment(c)) }
+            _ => { self.ws(); let stmts = self.stmts()?; self.ws(); self.expect("%>"); Ok(Node.Code(stmts)) }
+        }
+    }
+    
+    fn stmts() -> Result<[Stmt], EjsError> {
+        var stmts: [Stmt] = []
+        while !self.at("%>") && self.pos < self.src.len() {
+            stmts.push(self.stmt()?)
+            self.ws()
+        }
+        Ok(stmts)
+    }
+    
+    fn stmt() -> Result<Stmt, EjsError> {
+        self.ws()
+        if self.kw("if") { return self.parse_if() }
+        if self.kw("for") { return self.parse_for() }
+        if self.kw("let") || self.kw("var") || self.kw("const") { return self.parse_let() }
+        Ok(Stmt.Expr(self.expr()?))
+    }
+    
+    fn parse_if() -> Result<Stmt, EjsError> {
+        self.expect("("); self.ws()
+        let cond = self.expr()?
+        self.ws(); self.expect(")"); self.ws(); self.expect("{"); self.ws()
+        let body = self.block_stmts()?
+        self.ws()
+        let els = if self.kw("else") { self.ws(); self.expect("{"); self.ws(); Some(self.block_stmts()?) } else { None }
+        Ok(Stmt.If(cond, body, els))
+    }
+    
+    fn parse_for() -> Result<Stmt, EjsError> {
+        self.expect("("); self.ws()
+        self.kw("let") || self.kw("var") || self.kw("const")
+        self.ws()
+        let var = self.id()
+        self.ws()
+        if self.kw("of") {
+            self.ws()
+            let iter = self.expr()?
+            self.ws(); self.expect(")"); self.ws(); self.expect("{"); self.ws()
+            let body = self.block_stmts()?
+            return Ok(Stmt.For(var, iter, body))
+        }
+        Ok(Stmt.Expr(Expr.Literal(Value.Null)))
+    }
+    
+    fn parse_let() -> Result<Stmt, EjsError> {
+        self.ws()
+        let name = self.id()
+        self.ws(); self.expect("="); self.ws()
+        let val = self.expr()?
+        Ok(Stmt.Let(name, val))
+    }
+    
+    fn block_stmts() -> Result<[Stmt], EjsError> {
+        var stmts: [Stmt] = []
+        while !self.at("}") && self.pos < self.src.len() {
+            stmts.push(self.stmt()?)
+            self.ws()
+            if self.at(";") { self.pos += 1; self.ws() }
+        }
+        self.expect("}")
+        Ok(stmts)
+    }
+    
+    fn expr() -> Result<Expr, EjsError> { self.ternary() }
+    
+    fn ternary() -> Result<Expr, EjsError> {
+        let cond = self.or_expr()?
+        self.ws()
+        if self.at("?") {
+            self.pos += 1; self.ws()
+            let then = self.expr()?
+            self.ws(); self.expect(":"); self.ws()
+            let els = self.expr()?
+            return Ok(Expr.Ternary(Box.new(cond), Box.new(then), Box.new(els)))
+        }
+        Ok(cond)
+    }
+    
+    fn or_expr() -> Result<Expr, EjsError> {
+        var l = self.and_expr()?
+        while self.at("||") { self.pos += 2; self.ws(); l = Expr.Binary(Box.new(l), BinOp.Or, Box.new(self.and_expr()?)) }
+        Ok(l)
+    }
+    
+    fn and_expr() -> Result<Expr, EjsError> {
+        var l = self.eq_expr()?
+        while self.at("&&") { self.pos += 2; self.ws(); l = Expr.Binary(Box.new(l), BinOp.And, Box.new(self.eq_expr()?)) }
+        Ok(l)
+    }
+    
+    fn eq_expr() -> Result<Expr, EjsError> {
+        var l = self.cmp_expr()?
+        self.ws()
+        if self.at("===") || self.at("==") { let n = if self.at("===") { 3 } else { 2 }; self.pos += n; self.ws(); l = Expr.Binary(Box.new(l), BinOp.Eq, Box.new(self.cmp_expr()?)) }
+        else if self.at("!==") || self.at("!=") { let n = if self.at("!==") { 3 } else { 2 }; self.pos += n; self.ws(); l = Expr.Binary(Box.new(l), BinOp.Ne, Box.new(self.cmp_expr()?)) }
+        Ok(l)
+    }
+    
+    fn cmp_expr() -> Result<Expr, EjsError> {
+        var l = self.add_expr()?
+        self.ws()
+        if self.at("<=") { self.pos += 2; self.ws(); l = Expr.Binary(Box.new(l), BinOp.Le, Box.new(self.add_expr()?)) }
+        else if self.at(">=") { self.pos += 2; self.ws(); l = Expr.Binary(Box.new(l), BinOp.Ge, Box.new(self.add_expr()?)) }
+        else if self.at("<") { self.pos += 1; self.ws(); l = Expr.Binary(Box.new(l), BinOp.Lt, Box.new(self.add_expr()?)) }
+        else if self.at(">") { self.pos += 1; self.ws(); l = Expr.Binary(Box.new(l), BinOp.Gt, Box.new(self.add_expr()?)) }
+        Ok(l)
+    }
+    
+    fn add_expr() -> Result<Expr, EjsError> {
+        var l = self.mul_expr()?
+        loop {
+            self.ws()
+            if self.at("+") { self.pos += 1; self.ws(); l = Expr.Binary(Box.new(l), BinOp.Add, Box.new(self.mul_expr()?)) }
+            else if self.at("-") && !self.at("-%>") { self.pos += 1; self.ws(); l = Expr.Binary(Box.new(l), BinOp.Sub, Box.new(self.mul_expr()?)) }
+            else { break }
+        }
+        Ok(l)
+    }
+    
+    fn mul_expr() -> Result<Expr, EjsError> {
+        var l = self.unary()?
+        loop {
+            self.ws()
+            if self.at("*") { self.pos += 1; self.ws(); l = Expr.Binary(Box.new(l), BinOp.Mul, Box.new(self.unary()?)) }
+            else if self.at("/") { self.pos += 1; self.ws(); l = Expr.Binary(Box.new(l), BinOp.Div, Box.new(self.unary()?)) }
+            else if self.at("%") && !self.at("%>") { self.pos += 1; self.ws(); l = Expr.Binary(Box.new(l), BinOp.Mod, Box.new(self.unary()?)) }
+            else { break }
+        }
+        Ok(l)
+    }
+    
+    fn unary() -> Result<Expr, EjsError> {
+        self.ws()
+        if self.at("!") { self.pos += 1; self.ws(); return Ok(Expr.Unary(UnaryOp.Not, Box.new(self.unary()?))) }
+        if self.at("-") && !self.at("-%>") { self.pos += 1; self.ws(); return Ok(Expr.Unary(UnaryOp.Neg, Box.new(self.unary()?))) }
+        self.postfix()
+    }
+    
+    fn postfix() -> Result<Expr, EjsError> {
+        var e = self.primary()?
+        loop {
+            self.ws()
+            if self.at(".") { self.pos += 1; e = Expr.Member(Box.new(e), self.id()) }
+            else if self.at("[") { self.pos += 1; self.ws(); let i = self.expr()?; self.ws(); self.expect("]"); e = Expr.Index(Box.new(e), Box.new(i)) }
+            else if self.at("(") { self.pos += 1; self.ws(); let args = self.args()?; self.expect(")"); e = Expr.Call(Box.new(e), args) }
+            else { break }
+        }
+        Ok(e)
+    }
+    
+    fn primary() -> Result<Expr, EjsError> {
+        self.ws()
+        let c = self.peek()
+        if c == '"' || c == '\'' || c == '`' { return Ok(Expr.Literal(Value.String(self.str_lit()))) }
+        if c.is_digit() { return Ok(Expr.Literal(Value.Int(self.num()))) }
+        if c == '(' { self.pos += 1; self.ws(); let e = self.expr()?; self.ws(); self.expect(")"); return Ok(e) }
+        if c == '[' { return Ok(Expr.Literal(self.array()?)) }
+        if self.kw("true") { return Ok(Expr.Literal(Value.Bool(true))) }
+        if self.kw("false") { return Ok(Expr.Literal(Value.Bool(false))) }
+        if self.kw("null") || self.kw("undefined") { return Ok(Expr.Literal(Value.Null)) }
+        Ok(Expr.Var(self.id()))
+    }
+    
+    fn args() -> Result<[Expr], EjsError> {
+        var a: [Expr] = []
+        while !self.at(")") { a.push(self.expr()?); self.ws(); if self.at(",") { self.pos += 1; self.ws() } }
+        Ok(a)
+    }
+    
+    fn array() -> Result<Value, EjsError> {
+        self.expect("["); self.ws()
+        var items: [Value] = []
+        while !self.at("]") {
+            match self.expr()? { Expr.Literal(v) => items.push(v), _ => {} }
+            self.ws(); if self.at(",") { self.pos += 1; self.ws() }
+        }
+        self.expect("]")
+        Ok(Value.Array(items))
+    }
+    
+    fn id() -> String { let s = self.pos; while self.pos < self.src.len() && (self.peek().is_alphanumeric() || self.peek() == '_' || self.peek() == '$') { self.pos += 1 }; self.src[s..self.pos] }
+    fn str_lit() -> String { let q = self.peek(); self.pos += 1; let s = self.pos; while self.peek() != q { self.pos += 1 }; let r = self.src[s..self.pos]; self.pos += 1; r }
+    fn num() -> Int { let s = self.pos; while self.peek().is_digit() { self.pos += 1 }; self.src[s..self.pos].parse().unwrap_or(0) }
+    fn expect(s: String) { if self.at(s) { self.pos += s.len() } }
+    fn kw(k: String) -> Bool { if self.src[self.pos..].starts_with(k) && !self.src.get(self.pos + k.len()).map(|c| c.is_alphanumeric()).unwrap_or(false) { self.pos += k.len(); self.ws(); true } else { false } }
+    fn ws() { while self.pos < self.src.len() && self.peek().is_whitespace() { self.pos += 1 } }
+    fn peek() -> Char { self.src.get(self.pos).unwrap_or('\0') }
+    fn at(s: String) -> Bool { self.src[self.pos..].starts_with(s) }
+}
+
+struct Renderer {
+    ctx: Context
+    
+    fn new(ctx: Context) -> Self { Renderer { ctx: ctx } }
+    
+    fn render(nodes: [Node]) -> Result<String, EjsError> {
+        var out = ""
+        for node in nodes {
+            match node {
+                Text(s) => out.push_str(s)
+                Output(e, esc) => { let v = self.eval(e)?.as_string(); out.push_str(if esc { html_escape(v) } else { v }) }
+                Code(stmts) => out.push_str(self.exec_stmts(stmts)?)
+                Comment(_) => {}
+            }
+        }
+        Ok(out)
+    }
+    
+    fn exec_stmts(stmts: [Stmt]) -> Result<String, EjsError> {
+        var out = ""
+        for stmt in stmts { out.push_str(self.exec_stmt(stmt)?) }
+        Ok(out)
+    }
+    
+    fn exec_stmt(stmt: Stmt) -> Result<String, EjsError> {
+        match stmt {
+            If(c, body, els) => if self.eval(c)?.is_truthy() { self.exec_stmts(body) } else { els.map(|e| self.exec_stmts(e)).unwrap_or(Ok("")) }
+            For(v, iter, body) => {
+                var out = ""
+                match self.eval(iter)? {
+                    Value.Array(items) => { for item in items { self.ctx.set(v, item); out.push_str(self.exec_stmts(body)?) } }
+                    _ => {}
+                }
+                Ok(out)
+            }
+            Let(n, e) => { let v = self.eval(e)?; self.ctx.set(n, v); Ok("") }
+            Expr(_) => Ok("")
+            Output(e, esc) => { let v = self.eval(e)?.as_string(); Ok(if esc { html_escape(v) } else { v }) }
+            Text(s) => Ok(s)
+        }
+    }
+    
+    fn eval(e: Expr) -> Result<Value, EjsError> {
+        match e {
+            Var(n) => Ok(self.ctx.get(n).unwrap_or(Value.Null))
+            Literal(v) => Ok(v)
+            Member(obj, m) => Ok(self.eval(*obj)?.get(m).unwrap_or(Value.Null))
+            Index(obj, i) => { let idx = match self.eval(*i)? { Value.Int(n) => n, _ => 0 }; Ok(self.eval(*obj)?.index(idx).unwrap_or(Value.Null)) }
+            Binary(l, op, r) => self.eval_binary(*l, op, *r)
+            Unary(UnaryOp.Not, e) => Ok(Value.Bool(!self.eval(*e)?.is_truthy()))
+            Unary(UnaryOp.Neg, e) => match self.eval(*e)? { Value.Int(i) => Ok(Value.Int(-i)), _ => Ok(Value.Null) }
+            Ternary(c, t, e) => if self.eval(*c)?.is_truthy() { self.eval(*t) } else { self.eval(*e) }
+            Call(f, args) => self.eval_call(*f, args)
+        }
+    }
+    
+    fn eval_binary(l: Expr, op: BinOp, r: Expr) -> Result<Value, EjsError> {
+        let lv = self.eval(l)?
+        let rv = self.eval(r)?
+        match op {
+            BinOp.Add => match (lv, rv) { (Value.Int(a), Value.Int(b)) => Ok(Value.Int(a + b)), (Value.String(a), Value.String(b)) => Ok(Value.String(a + b)), _ => Ok(Value.Null) }
+            BinOp.Sub => match (lv, rv) { (Value.Int(a), Value.Int(b)) => Ok(Value.Int(a - b)), _ => Ok(Value.Null) }
+            BinOp.Mul => match (lv, rv) { (Value.Int(a), Value.Int(b)) => Ok(Value.Int(a * b)), _ => Ok(Value.Null) }
+            BinOp.Div => match (lv, rv) { (Value.Int(a), Value.Int(b)) if b != 0 => Ok(Value.Int(a / b)), _ => Ok(Value.Null) }
+            BinOp.Eq => Ok(Value.Bool(val_eq(lv, rv)))
+            BinOp.Ne => Ok(Value.Bool(!val_eq(lv, rv)))
+            BinOp.Lt => match (lv, rv) { (Value.Int(a), Value.Int(b)) => Ok(Value.Bool(a < b)), _ => Ok(Value.Bool(false)) }
+            BinOp.Gt => match (lv, rv) { (Value.Int(a), Value.Int(b)) => Ok(Value.Bool(a > b)), _ => Ok(Value.Bool(false)) }
+            BinOp.And => Ok(Value.Bool(lv.is_truthy() && rv.is_truthy()))
+            BinOp.Or => Ok(Value.Bool(lv.is_truthy() || rv.is_truthy()))
+            _ => Ok(Value.Null)
+        }
+    }
+    
+    fn eval_call(f: Expr, args: [Expr]) -> Result<Value, EjsError> {
+        let vals: [Value] = args.iter().map(|a| self.eval(a)).collect::<Result<_, _>>()?
+        match f {
+            Member(obj, method) => {
+                let o = self.eval(*obj)?
+                match method.as_str() {
+                    "toUpperCase" => Ok(Value.String(o.as_string().to_uppercase()))
+                    "toLowerCase" => Ok(Value.String(o.as_string().to_lowercase()))
+                    "trim" => Ok(Value.String(o.as_string().trim()))
+                    "join" => { let sep = vals.get(0).map(|v| v.as_string()).unwrap_or(","); match o { Value.Array(a) => Ok(Value.String(a.iter().map(|v| v.as_string()).join(sep))), _ => Ok(o) } }
+                    "length" => Ok(Value.Int(o.len()))
+                    _ => Ok(Value.Null)
+                }
+            }
+            _ => Ok(Value.Null)
+        }
+    }
+}
+
+fn val_eq(a: Value, b: Value) -> Bool {
+    match (a, b) { (Value.Int(x), Value.Int(y)) => x == y, (Value.String(x), Value.String(y)) => x == y, (Value.Bool(x), Value.Bool(y)) => x == y, (Value.Null, Value.Null) => true, _ => false }
+}
+
+fn html_escape(s: String) -> String { s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;") }
+
+enum EjsError { ParseError(String), RenderError(String) }
+impl Display for EjsError { fn fmt(f: Formatter) { match self { ParseError(s) | RenderError(s) => f.write(s) } } }
+impl Error for EjsError {}
+
+fn render(tmpl: String, ctx: Value) -> Result<String, EjsError> { Template.parse(tmpl)?.render(ctx) }
+
+test "output" { assert_eq(render("<%= name %>", Value.Object(Map.from([("name", Value.String("World"))])))?, "World")? }
+test "escape" { assert_eq(render("<%= html %>", Value.Object(Map.from([("html", Value.String("<b>"))])))?, "&lt;b&gt;")? }
+test "unescaped" { assert_eq(render("<%- html %>", Value.Object(Map.from([("html", Value.String("<b>"))])))?, "<b>")? }

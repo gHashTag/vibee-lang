@@ -1,0 +1,670 @@
+// =============================================================================
+// Vibee OS — Entity Module
+// ORM Entity definitions and metadata
+// =============================================================================
+
+use uuid::{UUID}
+use datetime::{DateTime}
+
+// =============================================================================
+// Entity Trait
+// =============================================================================
+
+/// Core trait for ORM entities
+trait Entity {
+    /// Returns the table name for this entity
+    fn table_name() -> String
+    
+    /// Returns the primary key column name
+    fn primary_key() -> String { "id" }
+    
+    /// Returns all column definitions
+    fn columns() -> [ColumnDef]
+    
+    /// Creates entity from a database row
+    fn from_row(row: Row) -> Result<Self, EntityError>
+    
+    /// Converts entity to a map of column values
+    fn to_row() -> Map<String, Value>
+    
+    /// Returns the primary key value
+    fn id() -> Option<Value>
+    
+    /// Checks if entity is new (not persisted)
+    fn is_new() -> Bool { self.id().is_none() }
+}
+
+/// Trait for entities with timestamps
+trait Timestamped: Entity {
+    fn created_at() -> Option<DateTime>
+    fn updated_at() -> Option<DateTime>
+    fn set_created_at(dt: DateTime)
+    fn set_updated_at(dt: DateTime)
+}
+
+/// Trait for soft-deletable entities
+trait SoftDeletable: Entity {
+    fn deleted_at() -> Option<DateTime>
+    fn set_deleted_at(dt: DateTime)
+    fn is_deleted() -> Bool { self.deleted_at().is_some() }
+    fn soft_delete() { self.set_deleted_at(DateTime.now()) }
+    fn restore() { self.set_deleted_at(None) }
+}
+
+// =============================================================================
+// Column Definition
+// =============================================================================
+
+/// Column definition for entity mapping
+struct ColumnDef {
+    name: String
+    column_type: ColumnType
+    nullable: Bool
+    primary_key: Bool
+    auto_increment: Bool
+    unique: Bool
+    default: Option<Value>
+    foreign_key: Option<ForeignKey>
+    index: Bool
+    
+    fn new(name: String, column_type: ColumnType) -> Self {
+        ColumnDef {
+            name: name,
+            column_type: column_type,
+            nullable: false,
+            primary_key: false,
+            auto_increment: false,
+            unique: false,
+            default: None,
+            foreign_key: None,
+            index: false
+        }
+    }
+    
+    fn nullable() -> Self { self.nullable = true; self }
+    fn primary() -> Self { self.primary_key = true; self }
+    fn auto_increment() -> Self { self.auto_increment = true; self }
+    fn unique() -> Self { self.unique = true; self }
+    fn default(value: Value) -> Self { self.default = Some(value); self }
+    fn indexed() -> Self { self.index = true; self }
+    fn references(table: String, column: String) -> Self {
+        self.foreign_key = Some(ForeignKey { table: table, column: column, on_delete: FkAction.Restrict, on_update: FkAction.Cascade })
+        self
+    }
+}
+
+/// Column types supported by ORM
+enum ColumnType {
+    Integer
+    BigInt
+    SmallInt
+    Float
+    Double
+    Decimal { precision: Int, scale: Int }
+    String { max_length: Option<Int> }
+    Text
+    Boolean
+    Date
+    Time
+    DateTime
+    Timestamp
+    Binary { max_length: Option<Int> }
+    Blob
+    Json
+    Uuid
+    Enum { values: [String] }
+    Array { element_type: Box<ColumnType> }
+    
+    fn to_sql(dialect: SqlDialect) -> String {
+        match self {
+            Integer => match dialect {
+                SqlDialect.Postgres => "INTEGER"
+                SqlDialect.Mysql => "INT"
+                SqlDialect.Sqlite => "INTEGER"
+            }
+            BigInt => "BIGINT"
+            SmallInt => "SMALLINT"
+            Float => "REAL"
+            Double => "DOUBLE PRECISION"
+            Decimal { precision, scale } => format!("DECIMAL({}, {})", precision, scale)
+            String { max_length } => match max_length {
+                Some(len) => format!("VARCHAR({})", len)
+                None => "VARCHAR(255)"
+            }
+            Text => "TEXT"
+            Boolean => match dialect {
+                SqlDialect.Postgres => "BOOLEAN"
+                SqlDialect.Mysql => "TINYINT(1)"
+                SqlDialect.Sqlite => "INTEGER"
+            }
+            Date => "DATE"
+            Time => "TIME"
+            DateTime => "DATETIME"
+            Timestamp => "TIMESTAMP"
+            Binary { max_length } => match max_length {
+                Some(len) => format!("VARBINARY({})", len)
+                None => "VARBINARY(255)"
+            }
+            Blob => "BLOB"
+            Json => match dialect {
+                SqlDialect.Postgres => "JSONB"
+                SqlDialect.Mysql => "JSON"
+                SqlDialect.Sqlite => "TEXT"
+            }
+            Uuid => match dialect {
+                SqlDialect.Postgres => "UUID"
+                _ => "CHAR(36)"
+            }
+            Enum { values } => match dialect {
+                SqlDialect.Postgres => format!("VARCHAR(255) CHECK (value IN ({}))", 
+                    values.iter().map(|v| format!("'{}'", v)).join(", "))
+                SqlDialect.Mysql => format!("ENUM({})", 
+                    values.iter().map(|v| format!("'{}'", v)).join(", "))
+                SqlDialect.Sqlite => "TEXT"
+            }
+            Array { element_type } => match dialect {
+                SqlDialect.Postgres => format!("{}[]", element_type.to_sql(dialect))
+                _ => "TEXT"  // JSON serialized
+            }
+        }
+    }
+}
+
+/// SQL dialect for different databases
+enum SqlDialect {
+    Postgres
+    Mysql
+    Sqlite
+    
+    fn placeholder(index: Int) -> String {
+        match self {
+            Postgres => format!("${}", index)
+            Mysql => "?"
+            Sqlite => "?"
+        }
+    }
+}
+
+/// Foreign key definition
+struct ForeignKey {
+    table: String
+    column: String
+    on_delete: FkAction
+    on_update: FkAction
+}
+
+/// Foreign key actions
+enum FkAction {
+    Cascade
+    Restrict
+    SetNull
+    SetDefault
+    NoAction
+    
+    fn to_sql() -> String {
+        match self {
+            Cascade => "CASCADE"
+            Restrict => "RESTRICT"
+            SetNull => "SET NULL"
+            SetDefault => "SET DEFAULT"
+            NoAction => "NO ACTION"
+        }
+    }
+}
+
+// =============================================================================
+// Value Types
+// =============================================================================
+
+/// Database value wrapper
+enum Value {
+    Null
+    Int(Int64)
+    Float(Float64)
+    String(String)
+    Bool(Bool)
+    Bytes([UInt8])
+    DateTime(DateTime)
+    Uuid(UUID)
+    Json(JsonValue)
+    Array([Value])
+    
+    fn is_null() -> Bool { matches!(self, Null) }
+    
+    fn as_int() -> Option<Int64> {
+        match self { Int(v) => Some(v), _ => None }
+    }
+    
+    fn as_float() -> Option<Float64> {
+        match self { Float(v) => Some(v), _ => None }
+    }
+    
+    fn as_string() -> Option<String> {
+        match self { String(v) => Some(v), _ => None }
+    }
+    
+    fn as_bool() -> Option<Bool> {
+        match self { Bool(v) => Some(v), _ => None }
+    }
+    
+    fn as_datetime() -> Option<DateTime> {
+        match self { DateTime(v) => Some(v), _ => None }
+    }
+    
+    fn as_uuid() -> Option<UUID> {
+        match self { Uuid(v) => Some(v), _ => None }
+    }
+}
+
+/// Trait for converting to Value
+trait ToValue {
+    fn to_value() -> Value
+}
+
+impl ToValue for Int64 { fn to_value() -> Value { Value.Int(self) } }
+impl ToValue for Int { fn to_value() -> Value { Value.Int(self as Int64) } }
+impl ToValue for Float64 { fn to_value() -> Value { Value.Float(self) } }
+impl ToValue for String { fn to_value() -> Value { Value.String(self) } }
+impl ToValue for Bool { fn to_value() -> Value { Value.Bool(self) } }
+impl ToValue for DateTime { fn to_value() -> Value { Value.DateTime(self) } }
+impl ToValue for UUID { fn to_value() -> Value { Value.Uuid(self) } }
+impl<T: ToValue> ToValue for Option<T> {
+    fn to_value() -> Value {
+        match self { Some(v) => v.to_value(), None => Value.Null }
+    }
+}
+
+/// Trait for converting from Value
+trait FromValue {
+    fn from_value(value: Value) -> Result<Self, EntityError>
+}
+
+impl FromValue for Int64 {
+    fn from_value(value: Value) -> Result<Self, EntityError> {
+        match value { Value.Int(v) => Ok(v), _ => Err(EntityError.TypeMismatch("Expected Int64")) }
+    }
+}
+
+impl FromValue for String {
+    fn from_value(value: Value) -> Result<Self, EntityError> {
+        match value { Value.String(v) => Ok(v), _ => Err(EntityError.TypeMismatch("Expected String")) }
+    }
+}
+
+impl FromValue for Bool {
+    fn from_value(value: Value) -> Result<Self, EntityError> {
+        match value { Value.Bool(v) => Ok(v), _ => Err(EntityError.TypeMismatch("Expected Bool")) }
+    }
+}
+
+impl<T: FromValue> FromValue for Option<T> {
+    fn from_value(value: Value) -> Result<Self, EntityError> {
+        match value { Value.Null => Ok(None), v => Ok(Some(T.from_value(v)?)) }
+    }
+}
+
+// =============================================================================
+// Row
+// =============================================================================
+
+/// Database row representation
+struct Row {
+    columns: [String]
+    values: Map<String, Value>
+    
+    fn new() -> Self {
+        Row { columns: [], values: Map.empty() }
+    }
+    
+    fn from_map(values: Map<String, Value>) -> Self {
+        Row { columns: values.keys().collect(), values: values }
+    }
+    
+    fn get<T: FromValue>(column: String) -> Result<T, EntityError> {
+        match self.values.get(column) {
+            Some(value) => T.from_value(value.clone())
+            None => Err(EntityError.ColumnNotFound(column))
+        }
+    }
+    
+    fn get_opt<T: FromValue>(column: String) -> Result<Option<T>, EntityError> {
+        match self.values.get(column) {
+            Some(Value.Null) => Ok(None)
+            Some(value) => Ok(Some(T.from_value(value.clone())?))
+            None => Ok(None)
+        }
+    }
+    
+    fn set<T: ToValue>(column: String, value: T) {
+        if !self.columns.contains(column) {
+            self.columns.push(column.clone())
+        }
+        self.values.insert(column, value.to_value())
+    }
+    
+    fn has(column: String) -> Bool {
+        self.values.contains_key(column)
+    }
+}
+
+// =============================================================================
+// Entity Metadata
+// =============================================================================
+
+/// Entity metadata for reflection
+struct EntityMeta {
+    table_name: String
+    primary_key: String
+    columns: [ColumnDef]
+    indexes: [IndexDef]
+    unique_constraints: [UniqueConstraint]
+    
+    fn new(table_name: String) -> Self {
+        EntityMeta {
+            table_name: table_name,
+            primary_key: "id",
+            columns: [],
+            indexes: [],
+            unique_constraints: []
+        }
+    }
+    
+    fn column(col: ColumnDef) -> Self {
+        if col.primary_key {
+            self.primary_key = col.name.clone()
+        }
+        self.columns.push(col)
+        self
+    }
+    
+    fn index(name: String, columns: [String]) -> Self {
+        self.indexes.push(IndexDef { name: name, columns: columns, unique: false })
+        self
+    }
+    
+    fn unique_index(name: String, columns: [String]) -> Self {
+        self.indexes.push(IndexDef { name: name, columns: columns, unique: true })
+        self
+    }
+    
+    fn unique(columns: [String]) -> Self {
+        self.unique_constraints.push(UniqueConstraint { columns: columns })
+        self
+    }
+    
+    fn get_column(name: String) -> Option<ColumnDef> {
+        self.columns.iter().find(|c| c.name == name).cloned()
+    }
+    
+    fn column_names() -> [String] {
+        self.columns.iter().map(|c| c.name.clone()).collect()
+    }
+}
+
+/// Index definition
+struct IndexDef {
+    name: String
+    columns: [String]
+    unique: Bool
+}
+
+/// Unique constraint
+struct UniqueConstraint {
+    columns: [String]
+}
+
+// =============================================================================
+// Entity Builder
+// =============================================================================
+
+/// Builder for creating entity metadata
+struct EntityBuilder {
+    meta: EntityMeta
+    
+    fn new(table_name: String) -> Self {
+        EntityBuilder { meta: EntityMeta.new(table_name) }
+    }
+    
+    fn id() -> Self {
+        self.meta.column(ColumnDef.new("id", ColumnType.BigInt).primary().auto_increment())
+        self
+    }
+    
+    fn uuid_id() -> Self {
+        self.meta.column(ColumnDef.new("id", ColumnType.Uuid).primary())
+        self
+    }
+    
+    fn column(name: String, col_type: ColumnType) -> Self {
+        self.meta.column(ColumnDef.new(name, col_type))
+        self
+    }
+    
+    fn nullable_column(name: String, col_type: ColumnType) -> Self {
+        self.meta.column(ColumnDef.new(name, col_type).nullable())
+        self
+    }
+    
+    fn string(name: String, max_length: Int = 255) -> Self {
+        self.meta.column(ColumnDef.new(name, ColumnType.String { max_length: Some(max_length) }))
+        self
+    }
+    
+    fn text(name: String) -> Self {
+        self.meta.column(ColumnDef.new(name, ColumnType.Text))
+        self
+    }
+    
+    fn integer(name: String) -> Self {
+        self.meta.column(ColumnDef.new(name, ColumnType.Integer))
+        self
+    }
+    
+    fn bigint(name: String) -> Self {
+        self.meta.column(ColumnDef.new(name, ColumnType.BigInt))
+        self
+    }
+    
+    fn boolean(name: String) -> Self {
+        self.meta.column(ColumnDef.new(name, ColumnType.Boolean))
+        self
+    }
+    
+    fn datetime(name: String) -> Self {
+        self.meta.column(ColumnDef.new(name, ColumnType.DateTime))
+        self
+    }
+    
+    fn timestamps() -> Self {
+        self.meta.column(ColumnDef.new("created_at", ColumnType.DateTime).nullable())
+        self.meta.column(ColumnDef.new("updated_at", ColumnType.DateTime).nullable())
+        self
+    }
+    
+    fn soft_delete() -> Self {
+        self.meta.column(ColumnDef.new("deleted_at", ColumnType.DateTime).nullable())
+        self
+    }
+    
+    fn foreign_key(name: String, table: String, column: String = "id") -> Self {
+        self.meta.column(
+            ColumnDef.new(name, ColumnType.BigInt)
+                .references(table, column)
+                .indexed()
+        )
+        self
+    }
+    
+    fn index(name: String, columns: [String]) -> Self {
+        self.meta.index(name, columns)
+        self
+    }
+    
+    fn unique(columns: [String]) -> Self {
+        self.meta.unique(columns)
+        self
+    }
+    
+    fn build() -> EntityMeta {
+        self.meta
+    }
+}
+
+// =============================================================================
+// Entity Errors
+// =============================================================================
+
+/// Entity-related errors
+enum EntityError {
+    NotFound(String)
+    ColumnNotFound(String)
+    TypeMismatch(String)
+    ValidationFailed(String)
+    DuplicateKey(String)
+    ForeignKeyViolation(String)
+    NullConstraint(String)
+    DatabaseError(String)
+    
+    fn message() -> String {
+        match self {
+            NotFound(msg) => format!("Entity not found: {}", msg)
+            ColumnNotFound(col) => format!("Column not found: {}", col)
+            TypeMismatch(msg) => format!("Type mismatch: {}", msg)
+            ValidationFailed(msg) => format!("Validation failed: {}", msg)
+            DuplicateKey(msg) => format!("Duplicate key: {}", msg)
+            ForeignKeyViolation(msg) => format!("Foreign key violation: {}", msg)
+            NullConstraint(col) => format!("Null constraint violation: {}", col)
+            DatabaseError(msg) => format!("Database error: {}", msg)
+        }
+    }
+}
+
+impl Display for EntityError {
+    fn fmt(f: Formatter) { f.write(self.message()) }
+}
+
+// =============================================================================
+// Entity Lifecycle Hooks
+// =============================================================================
+
+/// Trait for entity lifecycle hooks
+trait EntityHooks: Entity {
+    /// Called before inserting a new entity
+    fn before_insert() -> Result<(), EntityError> { Ok(()) }
+    
+    /// Called after inserting a new entity
+    fn after_insert() { }
+    
+    /// Called before updating an entity
+    fn before_update() -> Result<(), EntityError> { Ok(()) }
+    
+    /// Called after updating an entity
+    fn after_update() { }
+    
+    /// Called before deleting an entity
+    fn before_delete() -> Result<(), EntityError> { Ok(()) }
+    
+    /// Called after deleting an entity
+    fn after_delete() { }
+    
+    /// Called after loading an entity from database
+    fn after_load() { }
+}
+
+// =============================================================================
+// Entity Validation
+// =============================================================================
+
+/// Trait for entity validation
+trait Validatable: Entity {
+    fn validate() -> Result<(), [ValidationError]>
+}
+
+/// Validation error
+struct ValidationError {
+    field: String
+    message: String
+    code: String
+    
+    fn new(field: String, message: String) -> Self {
+        ValidationError { field: field, message: message, code: "invalid" }
+    }
+    
+    fn with_code(field: String, message: String, code: String) -> Self {
+        ValidationError { field: field, message: message, code: code }
+    }
+}
+
+// =============================================================================
+// JSON Value (simplified)
+// =============================================================================
+
+enum JsonValue {
+    Null
+    Bool(Bool)
+    Number(Float64)
+    String(String)
+    Array([JsonValue])
+    Object(Map<String, JsonValue>)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "column_def_builder" {
+    let col = ColumnDef.new("email", ColumnType.String { max_length: Some(255) })
+        .unique()
+        .nullable()
+    
+    assert_eq(col.name, "email")?
+    assert(col.unique)?
+    assert(col.nullable)?
+}
+
+test "entity_builder" {
+    let meta = EntityBuilder.new("users")
+        .id()
+        .string("name", 100)
+        .string("email", 255)
+        .timestamps()
+        .unique(["email"])
+        .build()
+    
+    assert_eq(meta.table_name, "users")?
+    assert_eq(meta.primary_key, "id")?
+    assert_eq(meta.columns.len(), 5)?  // id, name, email, created_at, updated_at
+}
+
+test "value_conversion" {
+    let int_val = 42.to_value()
+    assert_eq(int_val.as_int(), Some(42))?
+    
+    let str_val = "hello".to_value()
+    assert_eq(str_val.as_string(), Some("hello"))?
+    
+    let null_val: Option<Int> = None
+    assert(null_val.to_value().is_null())?
+}
+
+test "row_operations" {
+    var row = Row.new()
+    row.set("id", 1)
+    row.set("name", "John")
+    row.set("active", true)
+    
+    assert_eq(row.get::<Int64>("id")?, 1)?
+    assert_eq(row.get::<String>("name")?, "John")?
+    assert_eq(row.get::<Bool>("active")?, true)?
+}
+
+test "column_type_to_sql" {
+    let int_type = ColumnType.Integer
+    assert_eq(int_type.to_sql(SqlDialect.Postgres), "INTEGER")?
+    
+    let varchar_type = ColumnType.String { max_length: Some(100) }
+    assert_eq(varchar_type.to_sql(SqlDialect.Mysql), "VARCHAR(100)")?
+    
+    let json_type = ColumnType.Json
+    assert_eq(json_type.to_sql(SqlDialect.Postgres), "JSONB")?
+}

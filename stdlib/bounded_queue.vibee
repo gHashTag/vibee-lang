@@ -1,0 +1,784 @@
+// =============================================================================
+// Vibee OS — Bounded Queue Module
+// Size-limited queues with overflow strategies
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Overflow Strategy
+// -----------------------------------------------------------------------------
+
+/// Strategy when queue is full
+enum OverflowStrategy {
+    /// Block until space available
+    Block
+    /// Drop newest item (don't add)
+    DropNewest
+    /// Drop oldest item (remove from front)
+    DropOldest
+    /// Return error
+    RejectError
+    /// Resize queue (double capacity)
+    Resize
+    
+    fn description() -> String {
+        match self {
+            Block => "Block until space available"
+            DropNewest => "Drop the new item"
+            DropOldest => "Drop the oldest item"
+            RejectError => "Return an error"
+            Resize => "Resize the queue"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Bounded Queue
+// -----------------------------------------------------------------------------
+
+/// Fixed-capacity queue with configurable overflow handling
+struct BoundedQueue<T> {
+    data: [Option<T>]
+    head: Int
+    tail: Int
+    len: Int
+    capacity: Int
+    overflow_strategy: OverflowStrategy
+    dropped_count: Int
+    
+    fn new(capacity: Int) -> Self {
+        Self.with_strategy(capacity, OverflowStrategy.RejectError)
+    }
+    
+    fn with_strategy(capacity: Int, strategy: OverflowStrategy) -> Self {
+        BoundedQueue {
+            data: [None; capacity],
+            head: 0,
+            tail: 0,
+            len: 0,
+            capacity: capacity,
+            overflow_strategy: strategy,
+            dropped_count: 0
+        }
+    }
+    
+    /// Push item to back of queue
+    fn push(item: T) -> Result<(), BoundedQueueError> {
+        if self.len >= self.capacity {
+            match self.overflow_strategy {
+                OverflowStrategy.DropNewest => {
+                    self.dropped_count += 1
+                    return Ok(())  // Silently drop
+                }
+                OverflowStrategy.DropOldest => {
+                    self.pop()  // Remove oldest
+                    self.dropped_count += 1
+                }
+                OverflowStrategy.RejectError => {
+                    return Err(BoundedQueueError.Full)
+                }
+                OverflowStrategy.Resize => {
+                    self.resize(self.capacity * 2)
+                }
+                OverflowStrategy.Block => {
+                    // In non-concurrent context, just error
+                    return Err(BoundedQueueError.Full)
+                }
+            }
+        }
+        
+        self.data[self.tail] = Some(item)
+        self.tail = (self.tail + 1) % self.capacity
+        self.len += 1
+        Ok(())
+    }
+    
+    /// Pop item from front of queue
+    fn pop() -> Option<T> {
+        if self.len == 0 {
+            return None
+        }
+        
+        let item = self.data[self.head].take()
+        self.head = (self.head + 1) % self.capacity
+        self.len -= 1
+        item
+    }
+    
+    /// Peek front item
+    fn peek() -> Option<T> {
+        if self.len == 0 { None } else { self.data[self.head].clone() }
+    }
+    
+    /// Peek back item
+    fn peek_back() -> Option<T> {
+        if self.len == 0 { return None }
+        let idx = if self.tail == 0 { self.capacity - 1 } else { self.tail - 1 }
+        self.data[idx].clone()
+    }
+    
+    /// Resize queue capacity
+    fn resize(new_capacity: Int) {
+        if new_capacity < self.len {
+            return  // Can't shrink below current size
+        }
+        
+        var new_data = [None; new_capacity]
+        for i in 0..self.len {
+            let idx = (self.head + i) % self.capacity
+            new_data[i] = self.data[idx].take()
+        }
+        
+        self.data = new_data
+        self.head = 0
+        self.tail = self.len
+        self.capacity = new_capacity
+    }
+    
+    fn len() -> Int { self.len }
+    fn capacity() -> Int { self.capacity }
+    fn is_empty() -> Bool { self.len == 0 }
+    fn is_full() -> Bool { self.len >= self.capacity }
+    fn available_space() -> Int { self.capacity - self.len }
+    fn dropped_count() -> Int { self.dropped_count }
+    
+    fn clear() {
+        while self.pop().is_some() {}
+    }
+    
+    fn iter() -> BoundedQueueIterator<T> {
+        BoundedQueueIterator { queue: self, index: 0 }
+    }
+    
+    fn to_vec() -> [T] {
+        self.iter().collect()
+    }
+}
+
+struct BoundedQueueIterator<T> {
+    queue: BoundedQueue<T>
+    index: Int
+}
+
+impl<T> Iterator for BoundedQueueIterator<T> {
+    type Item = T
+    
+    fn next() -> Option<T> {
+        if self.index >= self.queue.len {
+            return None
+        }
+        let idx = (self.queue.head + self.index) % self.queue.capacity
+        self.index += 1
+        self.queue.data[idx].clone()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Concurrent Bounded Queue Actor
+// -----------------------------------------------------------------------------
+
+/// Thread-safe bounded queue with blocking operations
+actor ConcurrentBoundedQueue<T> {
+    state queue: BoundedQueue<T>
+    state send_waiters: [fn(Bool)]
+    state recv_waiters: [fn(Option<T>)]
+    state closed: Bool
+    
+    fn new(capacity: Int) -> Self {
+        ConcurrentBoundedQueue {
+            queue: BoundedQueue.new(capacity),
+            send_waiters: [],
+            recv_waiters: [],
+            closed: false
+        }
+    }
+    
+    fn with_strategy(capacity: Int, strategy: OverflowStrategy) -> Self {
+        ConcurrentBoundedQueue {
+            queue: BoundedQueue.with_strategy(capacity, strategy),
+            send_waiters: [],
+            recv_waiters: [],
+            closed: false
+        }
+    }
+    
+    /// Send item (blocking if full with Block strategy)
+    fn send(item: T) -> Result<(), BoundedQueueError> {
+        if self.closed {
+            return Err(BoundedQueueError.Closed)
+        }
+        
+        // If there are waiting receivers, deliver directly
+        if !self.recv_waiters.is_empty() {
+            let waiter = self.recv_waiters.remove(0)
+            waiter(Some(item))
+            return Ok(())
+        }
+        
+        // Try to push
+        match self.queue.push(item) {
+            Ok(()) => Ok(())
+            Err(BoundedQueueError.Full) => {
+                if self.queue.overflow_strategy == OverflowStrategy.Block {
+                    // Block until space available
+                    @native("bounded_queue_wait_send", self, item)
+                } else {
+                    Err(BoundedQueueError.Full)
+                }
+            }
+            Err(e) => Err(e)
+        }
+    }
+    
+    /// Try send without blocking
+    fn try_send(item: T) -> Result<(), BoundedQueueError> {
+        if self.closed {
+            return Err(BoundedQueueError.Closed)
+        }
+        
+        if !self.recv_waiters.is_empty() {
+            let waiter = self.recv_waiters.remove(0)
+            waiter(Some(item))
+            return Ok(())
+        }
+        
+        self.queue.push(item)
+    }
+    
+    /// Send with timeout
+    fn send_timeout(item: T, timeout: Duration) -> Result<(), BoundedQueueError> {
+        if self.closed {
+            return Err(BoundedQueueError.Closed)
+        }
+        
+        if !self.recv_waiters.is_empty() {
+            let waiter = self.recv_waiters.remove(0)
+            waiter(Some(item))
+            return Ok(())
+        }
+        
+        match self.queue.push(item) {
+            Ok(()) => Ok(())
+            Err(BoundedQueueError.Full) => {
+                if self.queue.overflow_strategy == OverflowStrategy.Block {
+                    @native("bounded_queue_wait_send_timeout", self, item, timeout)
+                } else {
+                    Err(BoundedQueueError.Full)
+                }
+            }
+            Err(e) => Err(e)
+        }
+    }
+    
+    /// Receive item (blocking if empty)
+    fn recv() -> Option<T> {
+        if let Some(item) = self.queue.pop() {
+            // Wake up a waiting sender
+            if !self.send_waiters.is_empty() {
+                let waiter = self.send_waiters.remove(0)
+                waiter(true)
+            }
+            return Some(item)
+        }
+        
+        if self.closed {
+            return None
+        }
+        
+        // Block until item available
+        @native("bounded_queue_wait_recv", self)
+    }
+    
+    /// Try receive without blocking
+    fn try_recv() -> Option<T> {
+        let item = self.queue.pop()
+        if item.is_some() && !self.send_waiters.is_empty() {
+            let waiter = self.send_waiters.remove(0)
+            waiter(true)
+        }
+        item
+    }
+    
+    /// Receive with timeout
+    fn recv_timeout(timeout: Duration) -> Option<T> {
+        if let Some(item) = self.queue.pop() {
+            if !self.send_waiters.is_empty() {
+                let waiter = self.send_waiters.remove(0)
+                waiter(true)
+            }
+            return Some(item)
+        }
+        
+        if self.closed {
+            return None
+        }
+        
+        @native("bounded_queue_wait_recv_timeout", self, timeout)
+    }
+    
+    /// Close the queue
+    fn close() {
+        self.closed = true
+        
+        // Wake all waiters
+        for waiter in self.recv_waiters {
+            waiter(None)
+        }
+        self.recv_waiters.clear()
+        
+        for waiter in self.send_waiters {
+            waiter(false)
+        }
+        self.send_waiters.clear()
+    }
+    
+    fn len() -> Int { self.queue.len() }
+    fn capacity() -> Int { self.queue.capacity() }
+    fn is_empty() -> Bool { self.queue.is_empty() }
+    fn is_full() -> Bool { self.queue.is_full() }
+    fn is_closed() -> Bool { self.closed }
+    fn available_space() -> Int { self.queue.available_space() }
+}
+
+// -----------------------------------------------------------------------------
+// Bounded Message Queue
+// -----------------------------------------------------------------------------
+
+/// Bounded message with metadata
+struct BoundedMessage {
+    id: String
+    payload: [Byte]
+    headers: Map<String, String>
+    created_at: Instant
+    size_bytes: Int
+    
+    fn new(payload: [Byte]) -> Self {
+        BoundedMessage {
+            id: UUID.v4(),
+            payload: payload.clone(),
+            headers: Map.empty(),
+            created_at: Instant.now(),
+            size_bytes: payload.len()
+        }
+    }
+    
+    fn text(content: String) -> Self {
+        Self.new(content.bytes())
+    }
+    
+    fn json<T: Serialize>(data: T) -> Self {
+        let mut msg = Self.new(JSON.stringify(data).bytes())
+        msg.headers.set("content-type", "application/json")
+        msg
+    }
+    
+    fn with_header(key: String, value: String) -> Self {
+        self.headers.set(key, value)
+        self
+    }
+    
+    fn as_string() -> Result<String, DecodeError> {
+        String.from_utf8(self.payload)
+    }
+    
+    fn as_json<T: Deserialize>() -> Result<T, DecodeError> {
+        JSON.parse(self.as_string()?)
+    }
+}
+
+/// Bounded message queue with size limits
+actor BoundedMessageQueue {
+    state messages: Deque<BoundedMessage>
+    state max_count: Int
+    state max_bytes: Int
+    state current_bytes: Int
+    state overflow_strategy: OverflowStrategy
+    state pending_acks: Map<String, BoundedMessage>
+    state metrics: BoundedQueueMetrics
+    state closed: Bool
+    
+    fn new(max_count: Int) -> Self {
+        BoundedMessageQueue {
+            messages: Deque.new(),
+            max_count: max_count,
+            max_bytes: Int.MAX,
+            current_bytes: 0,
+            overflow_strategy: OverflowStrategy.RejectError,
+            pending_acks: Map.empty(),
+            metrics: BoundedQueueMetrics.new(),
+            closed: false
+        }
+    }
+    
+    fn with_byte_limit(max_count: Int, max_bytes: Int) -> Self {
+        let mut q = Self.new(max_count)
+        q.max_bytes = max_bytes
+        q
+    }
+    
+    fn with_strategy(max_count: Int, strategy: OverflowStrategy) -> Self {
+        let mut q = Self.new(max_count)
+        q.overflow_strategy = strategy
+        q
+    }
+    
+    /// Send message
+    fn send(message: BoundedMessage) -> Result<String, BoundedQueueError> {
+        if self.closed {
+            return Err(BoundedQueueError.Closed)
+        }
+        
+        // Check limits
+        let would_exceed_count = self.messages.len() >= self.max_count
+        let would_exceed_bytes = self.current_bytes + message.size_bytes > self.max_bytes
+        
+        if would_exceed_count || would_exceed_bytes {
+            match self.overflow_strategy {
+                OverflowStrategy.DropNewest => {
+                    self.metrics.dropped += 1
+                    return Ok(message.id)  // Pretend success
+                }
+                OverflowStrategy.DropOldest => {
+                    while (self.messages.len() >= self.max_count || 
+                           self.current_bytes + message.size_bytes > self.max_bytes) &&
+                          !self.messages.is_empty() {
+                        if let Some(old) = self.messages.pop_front() {
+                            self.current_bytes -= old.size_bytes
+                            self.metrics.dropped += 1
+                        }
+                    }
+                }
+                OverflowStrategy.RejectError => {
+                    return Err(BoundedQueueError.Full)
+                }
+                OverflowStrategy.Block => {
+                    // Wait for space
+                    while self.messages.len() >= self.max_count ||
+                          self.current_bytes + message.size_bytes > self.max_bytes {
+                        if self.closed { return Err(BoundedQueueError.Closed) }
+                        @native("yield")
+                    }
+                }
+                OverflowStrategy.Resize => {
+                    self.max_count *= 2
+                    self.max_bytes *= 2
+                }
+            }
+        }
+        
+        let id = message.id.clone()
+        self.current_bytes += message.size_bytes
+        self.messages.push_back(message)
+        self.metrics.enqueued += 1
+        Ok(id)
+    }
+    
+    /// Receive message (blocking)
+    fn receive() -> Option<BoundedMessage> {
+        loop {
+            if let Some(msg) = self.messages.pop_front() {
+                self.current_bytes -= msg.size_bytes
+                self.pending_acks.set(msg.id.clone(), msg.clone())
+                self.metrics.dequeued += 1
+                return Some(msg)
+            }
+            
+            if self.closed {
+                return None
+            }
+            
+            @native("yield")
+        }
+    }
+    
+    /// Try receive without blocking
+    fn try_receive() -> Option<BoundedMessage> {
+        if let Some(msg) = self.messages.pop_front() {
+            self.current_bytes -= msg.size_bytes
+            self.pending_acks.set(msg.id.clone(), msg.clone())
+            self.metrics.dequeued += 1
+            return Some(msg)
+        }
+        None
+    }
+    
+    /// Acknowledge message
+    fn ack(message_id: String) -> Result<(), BoundedQueueError> {
+        match self.pending_acks.remove(message_id) {
+            Some(_) => {
+                self.metrics.acknowledged += 1
+                Ok(())
+            }
+            None => Err(BoundedQueueError.MessageNotFound)
+        }
+    }
+    
+    /// Negative acknowledge
+    fn nack(message_id: String, requeue: Bool) -> Result<(), BoundedQueueError> {
+        match self.pending_acks.remove(message_id) {
+            Some(msg) => {
+                if requeue {
+                    self.messages.push_front(msg.clone())
+                    self.current_bytes += msg.size_bytes
+                    self.metrics.requeued += 1
+                }
+                Ok(())
+            }
+            None => Err(BoundedQueueError.MessageNotFound)
+        }
+    }
+    
+    /// Get queue stats
+    fn stats() -> BoundedQueueStats {
+        BoundedQueueStats {
+            count: self.messages.len(),
+            max_count: self.max_count,
+            bytes: self.current_bytes,
+            max_bytes: self.max_bytes,
+            pending_acks: self.pending_acks.len(),
+            utilization_percent: (self.messages.len() * 100) / self.max_count
+        }
+    }
+    
+    fn metrics() -> BoundedQueueMetrics {
+        self.metrics.clone()
+    }
+    
+    fn close() {
+        self.closed = true
+    }
+    
+    fn len() -> Int { self.messages.len() }
+    fn bytes() -> Int { self.current_bytes }
+    fn is_full() -> Bool { 
+        self.messages.len() >= self.max_count || self.current_bytes >= self.max_bytes 
+    }
+}
+
+/// Queue statistics
+struct BoundedQueueStats {
+    count: Int
+    max_count: Int
+    bytes: Int
+    max_bytes: Int
+    pending_acks: Int
+    utilization_percent: Int
+}
+
+/// Queue metrics
+struct BoundedQueueMetrics {
+    enqueued: Int
+    dequeued: Int
+    acknowledged: Int
+    requeued: Int
+    dropped: Int
+    
+    fn new() -> Self {
+        BoundedQueueMetrics {
+            enqueued: 0,
+            dequeued: 0,
+            acknowledged: 0,
+            requeued: 0,
+            dropped: 0
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Ring Buffer Queue
+// -----------------------------------------------------------------------------
+
+/// Fixed-size ring buffer (always overwrites oldest)
+struct RingBufferQueue<T> {
+    data: [Option<T>]
+    head: Int
+    tail: Int
+    len: Int
+    capacity: Int
+    
+    fn new(capacity: Int) -> Self {
+        RingBufferQueue {
+            data: [None; capacity],
+            head: 0,
+            tail: 0,
+            len: 0,
+            capacity: capacity
+        }
+    }
+    
+    /// Push item (overwrites oldest if full)
+    fn push(item: T) {
+        if self.len == self.capacity {
+            // Overwrite oldest
+            self.head = (self.head + 1) % self.capacity
+        } else {
+            self.len += 1
+        }
+        
+        self.data[self.tail] = Some(item)
+        self.tail = (self.tail + 1) % self.capacity
+    }
+    
+    /// Pop oldest item
+    fn pop() -> Option<T> {
+        if self.len == 0 {
+            return None
+        }
+        
+        let item = self.data[self.head].take()
+        self.head = (self.head + 1) % self.capacity
+        self.len -= 1
+        item
+    }
+    
+    /// Get item at index (0 = oldest)
+    fn get(index: Int) -> Option<T> {
+        if index >= self.len {
+            return None
+        }
+        let idx = (self.head + index) % self.capacity
+        self.data[idx].clone()
+    }
+    
+    /// Get most recent item
+    fn latest() -> Option<T> {
+        if self.len == 0 { return None }
+        let idx = if self.tail == 0 { self.capacity - 1 } else { self.tail - 1 }
+        self.data[idx].clone()
+    }
+    
+    /// Get oldest item
+    fn oldest() -> Option<T> {
+        if self.len == 0 { None } else { self.data[self.head].clone() }
+    }
+    
+    fn len() -> Int { self.len }
+    fn capacity() -> Int { self.capacity }
+    fn is_empty() -> Bool { self.len == 0 }
+    fn is_full() -> Bool { self.len == self.capacity }
+    
+    fn clear() {
+        while self.pop().is_some() {}
+    }
+    
+    fn to_vec() -> [T] {
+        var result = []
+        for i in 0..self.len {
+            if let Some(item) = self.get(i) {
+                result.push(item)
+            }
+        }
+        result
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum BoundedQueueError {
+    Full
+    Empty
+    Closed
+    MessageNotFound
+    Timeout
+    SizeExceeded
+    
+    fn message() -> String {
+        match self {
+            Full => "Queue is full"
+            Empty => "Queue is empty"
+            Closed => "Queue is closed"
+            MessageNotFound => "Message not found"
+            Timeout => "Operation timed out"
+            SizeExceeded => "Message size exceeds limit"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "bounded queue basic" {
+    var bq = BoundedQueue::<Int>.new(3)
+    
+    bq.push(1)?
+    bq.push(2)?
+    bq.push(3)?
+    
+    assert(bq.is_full())?
+    assert_eq(bq.push(4), Err(BoundedQueueError.Full))?
+    
+    assert_eq(bq.pop(), Some(1))?
+    assert_eq(bq.pop(), Some(2))?
+    assert_eq(bq.pop(), Some(3))?
+    assert(bq.is_empty())?
+}
+
+test "drop oldest strategy" {
+    var bq = BoundedQueue::<Int>.with_strategy(3, OverflowStrategy.DropOldest)
+    
+    bq.push(1)?
+    bq.push(2)?
+    bq.push(3)?
+    bq.push(4)?  // Should drop 1
+    
+    assert_eq(bq.pop(), Some(2))?
+    assert_eq(bq.pop(), Some(3))?
+    assert_eq(bq.pop(), Some(4))?
+    assert_eq(bq.dropped_count(), 1)?
+}
+
+test "drop newest strategy" {
+    var bq = BoundedQueue::<Int>.with_strategy(3, OverflowStrategy.DropNewest)
+    
+    bq.push(1)?
+    bq.push(2)?
+    bq.push(3)?
+    bq.push(4)?  // Should be dropped
+    
+    assert_eq(bq.pop(), Some(1))?
+    assert_eq(bq.pop(), Some(2))?
+    assert_eq(bq.pop(), Some(3))?
+    assert_eq(bq.dropped_count(), 1)?
+}
+
+test "ring buffer" {
+    var rb = RingBufferQueue::<Int>.new(3)
+    
+    rb.push(1)
+    rb.push(2)
+    rb.push(3)
+    rb.push(4)  // Overwrites 1
+    
+    assert_eq(rb.oldest(), Some(2))?
+    assert_eq(rb.latest(), Some(4))?
+    assert_eq(rb.to_vec(), [2, 3, 4])?
+}
+
+test "concurrent bounded queue" {
+    let bq = ConcurrentBoundedQueue::<Int>.new(2)
+    
+    bq.send(1)?
+    bq.send(2)?
+    
+    assert(bq.is_full())?
+    assert_eq(bq.try_send(3), Err(BoundedQueueError.Full))?
+    
+    assert_eq(bq.recv(), Some(1))?
+    bq.send(3)?
+    
+    assert_eq(bq.recv(), Some(2))?
+    assert_eq(bq.recv(), Some(3))?
+}
+
+test "bounded message queue byte limit" {
+    let bmq = BoundedMessageQueue.with_byte_limit(100, 50)
+    
+    bmq.send(BoundedMessage.text("hello"))?  // 5 bytes
+    bmq.send(BoundedMessage.text("world"))?  // 5 bytes
+    
+    let stats = bmq.stats()
+    assert_eq(stats.count, 2)?
+    assert_eq(stats.bytes, 10)?
+}

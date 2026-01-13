@@ -1,0 +1,536 @@
+// =============================================================================
+// Vibee OS — Aggregate Module
+// Data aggregation functions and combinators
+// =============================================================================
+
+use result::{Result, Ok, Err}
+
+// =============================================================================
+// Aggregator Trait
+// =============================================================================
+
+/// Core aggregation trait
+trait Aggregator<T, R> {
+    fn init() -> Self
+    fn accumulate(value: T)
+    fn merge(other: Self)
+    fn finalize() -> R
+    fn reset() { *self = Self.init() }
+}
+
+/// Aggregation error
+enum AggregateError {
+    EmptyInput
+    InvalidValue(String)
+    OverflowError
+    DivisionByZero
+    
+    fn message() -> String {
+        match self {
+            .EmptyInput => "Cannot aggregate empty input"
+            .InvalidValue(msg) => format!("Invalid value: {}", msg)
+            .OverflowError => "Numeric overflow during aggregation"
+            .DivisionByZero => "Division by zero"
+        }
+    }
+}
+
+// =============================================================================
+// Numeric Aggregators
+// =============================================================================
+
+/// Sum aggregator
+struct Sum<T: Num> { total: T }
+impl<T: Num + Clone> Aggregator<T, T> for Sum<T> {
+    fn init() -> Self { Sum { total: T.zero() } }
+    fn accumulate(value: T) { self.total = self.total.clone() + value }
+    fn merge(other: Self) { self.total = self.total.clone() + other.total }
+    fn finalize() -> T { self.total.clone() }
+}
+
+/// Count aggregator
+struct Count { count: Int64 }
+impl<T> Aggregator<T, Int64> for Count {
+    fn init() -> Self { Count { count: 0 } }
+    fn accumulate(_: T) { self.count += 1 }
+    fn merge(other: Self) { self.count += other.count }
+    fn finalize() -> Int64 { self.count }
+}
+
+/// Average aggregator
+struct Avg { sum: Float, count: Int64 }
+impl Aggregator<Float, Option<Float>> for Avg {
+    fn init() -> Self { Avg { sum: 0.0, count: 0 } }
+    fn accumulate(value: Float) { self.sum += value; self.count += 1 }
+    fn merge(other: Self) { self.sum += other.sum; self.count += other.count }
+    fn finalize() -> Option<Float> { if self.count == 0 { None } else { Some(self.sum / self.count as Float) } }
+}
+
+/// Min aggregator
+struct Min<T: Ord + Clone> { min: Option<T> }
+impl<T: Ord + Clone> Aggregator<T, Option<T>> for Min<T> {
+    fn init() -> Self { Min { min: None } }
+    fn accumulate(value: T) {
+        self.min = Some(match self.min.take() {
+            Some(m) if m < value => m
+            _ => value
+        })
+    }
+    fn merge(other: Self) { if let Some(v) = other.min { self.accumulate(v) } }
+    fn finalize() -> Option<T> { self.min.clone() }
+}
+
+/// Max aggregator
+struct Max<T: Ord + Clone> { max: Option<T> }
+impl<T: Ord + Clone> Aggregator<T, Option<T>> for Max<T> {
+    fn init() -> Self { Max { max: None } }
+    fn accumulate(value: T) {
+        self.max = Some(match self.max.take() {
+            Some(m) if m > value => m
+            _ => value
+        })
+    }
+    fn merge(other: Self) { if let Some(v) = other.max { self.accumulate(v) } }
+    fn finalize() -> Option<T> { self.max.clone() }
+}
+
+/// First value aggregator
+struct First<T: Clone> { first: Option<T> }
+impl<T: Clone> Aggregator<T, Option<T>> for First<T> {
+    fn init() -> Self { First { first: None } }
+    fn accumulate(value: T) { if self.first.is_none() { self.first = Some(value) } }
+    fn merge(other: Self) { if self.first.is_none() { self.first = other.first } }
+    fn finalize() -> Option<T> { self.first.clone() }
+}
+
+/// Last value aggregator
+struct Last<T: Clone> { last: Option<T> }
+impl<T: Clone> Aggregator<T, Option<T>> for Last<T> {
+    fn init() -> Self { Last { last: None } }
+    fn accumulate(value: T) { self.last = Some(value) }
+    fn merge(other: Self) { if other.last.is_some() { self.last = other.last } }
+    fn finalize() -> Option<T> { self.last.clone() }
+}
+
+// =============================================================================
+// Statistical Aggregators
+// =============================================================================
+
+/// Variance aggregator (Welford's algorithm)
+struct Variance { count: Int64, mean: Float, m2: Float }
+impl Aggregator<Float, Option<Float>> for Variance {
+    fn init() -> Self { Variance { count: 0, mean: 0.0, m2: 0.0 } }
+    fn accumulate(value: Float) {
+        self.count += 1
+        let delta = value - self.mean
+        self.mean += delta / self.count as Float
+        let delta2 = value - self.mean
+        self.m2 += delta * delta2
+    }
+    fn merge(other: Self) {
+        if other.count == 0 { return }
+        let total = self.count + other.count
+        let delta = other.mean - self.mean
+        self.mean = (self.count as Float * self.mean + other.count as Float * other.mean) / total as Float
+        self.m2 += other.m2 + delta * delta * (self.count as Float * other.count as Float) / total as Float
+        self.count = total
+    }
+    fn finalize() -> Option<Float> { if self.count < 2 { None } else { Some(self.m2 / (self.count - 1) as Float) } }
+}
+
+/// Standard deviation aggregator
+struct StdDev { variance: Variance }
+impl Aggregator<Float, Option<Float>> for StdDev {
+    fn init() -> Self { StdDev { variance: Variance.init() } }
+    fn accumulate(value: Float) { self.variance.accumulate(value) }
+    fn merge(other: Self) { self.variance.merge(other.variance) }
+    fn finalize() -> Option<Float> { self.variance.finalize().map(|v| v.sqrt()) }
+}
+
+/// Median aggregator (requires storing all values)
+struct Median { values: [Float] }
+impl Aggregator<Float, Option<Float>> for Median {
+    fn init() -> Self { Median { values: [] } }
+    fn accumulate(value: Float) { self.values.push(value) }
+    fn merge(other: Self) { self.values.extend(other.values) }
+    fn finalize() -> Option<Float> {
+        if self.values.is_empty() { return None }
+        self.values.sort()
+        let n = self.values.len()
+        if n % 2 == 0 { Some((self.values[n/2 - 1] + self.values[n/2]) / 2.0) }
+        else { Some(self.values[n/2]) }
+    }
+}
+
+/// Percentile aggregator
+struct Percentile { values: [Float], p: Float }
+impl Aggregator<Float, Option<Float>> for Percentile {
+    fn init() -> Self { Percentile { values: [], p: 50.0 } }
+    fn accumulate(value: Float) { self.values.push(value) }
+    fn merge(other: Self) { self.values.extend(other.values) }
+    fn finalize() -> Option<Float> {
+        if self.values.is_empty() { return None }
+        self.values.sort()
+        let idx = (self.p / 100.0) * (self.values.len() - 1) as Float
+        let lower = idx.floor() as Int
+        let upper = idx.ceil() as Int
+        let frac = idx - lower as Float
+        Some(self.values[lower] * (1.0 - frac) + self.values[upper] * frac)
+    }
+}
+
+/// Mode aggregator
+struct Mode<T: Hash + Eq + Clone> { counts: Map<T, Int64> }
+impl<T: Hash + Eq + Clone> Aggregator<T, Option<T>> for Mode<T> {
+    fn init() -> Self { Mode { counts: Map.empty() } }
+    fn accumulate(value: T) { *self.counts.entry(value).or_insert(0) += 1 }
+    fn merge(other: Self) { for (k, v) in other.counts { *self.counts.entry(k).or_insert(0) += v } }
+    fn finalize() -> Option<T> { self.counts.iter().max_by_key(|(_, v)| *v).map(|(k, _)| k.clone()) }
+}
+
+// =============================================================================
+// Collection Aggregators
+// =============================================================================
+
+/// Collect into array
+struct Collect<T: Clone> { items: [T] }
+impl<T: Clone> Aggregator<T, [T]> for Collect<T> {
+    fn init() -> Self { Collect { items: [] } }
+    fn accumulate(value: T) { self.items.push(value) }
+    fn merge(other: Self) { self.items.extend(other.items) }
+    fn finalize() -> [T] { self.items.clone() }
+}
+
+/// Collect unique values
+struct CollectUnique<T: Hash + Eq + Clone> { items: Set<T> }
+impl<T: Hash + Eq + Clone> Aggregator<T, [T]> for CollectUnique<T> {
+    fn init() -> Self { CollectUnique { items: Set.empty() } }
+    fn accumulate(value: T) { self.items.insert(value) }
+    fn merge(other: Self) { self.items.extend(other.items) }
+    fn finalize() -> [T] { self.items.iter().cloned().collect() }
+}
+
+/// Count distinct values
+struct CountDistinct<T: Hash + Eq> { items: Set<T> }
+impl<T: Hash + Eq> Aggregator<T, Int64> for CountDistinct<T> {
+    fn init() -> Self { CountDistinct { items: Set.empty() } }
+    fn accumulate(value: T) { self.items.insert(value) }
+    fn merge(other: Self) { self.items.extend(other.items) }
+    fn finalize() -> Int64 { self.items.len() as Int64 }
+}
+
+/// String concatenation
+struct Concat { parts: [String], separator: String }
+impl Aggregator<String, String> for Concat {
+    fn init() -> Self { Concat { parts: [], separator: "" } }
+    fn accumulate(value: String) { self.parts.push(value) }
+    fn merge(other: Self) { self.parts.extend(other.parts) }
+    fn finalize() -> String { self.parts.join(self.separator) }
+}
+
+// =============================================================================
+// Conditional Aggregators
+// =============================================================================
+
+/// Count if condition
+struct CountIf<T> { count: Int64, predicate: fn(T) -> Bool }
+impl<T> Aggregator<T, Int64> for CountIf<T> {
+    fn init() -> Self { CountIf { count: 0, predicate: |_| true } }
+    fn accumulate(value: T) { if (self.predicate)(value) { self.count += 1 } }
+    fn merge(other: Self) { self.count += other.count }
+    fn finalize() -> Int64 { self.count }
+}
+
+/// Sum if condition
+struct SumIf<T: Num + Clone> { sum: T, predicate: fn(T) -> Bool }
+impl<T: Num + Clone> Aggregator<T, T> for SumIf<T> {
+    fn init() -> Self { SumIf { sum: T.zero(), predicate: |_| true } }
+    fn accumulate(value: T) { if (self.predicate)(value.clone()) { self.sum = self.sum.clone() + value } }
+    fn merge(other: Self) { self.sum = self.sum.clone() + other.sum }
+    fn finalize() -> T { self.sum.clone() }
+}
+
+/// Average if condition
+struct AvgIf { sum: Float, count: Int64, predicate: fn(Float) -> Bool }
+impl Aggregator<Float, Option<Float>> for AvgIf {
+    fn init() -> Self { AvgIf { sum: 0.0, count: 0, predicate: |_| true } }
+    fn accumulate(value: Float) { if (self.predicate)(value) { self.sum += value; self.count += 1 } }
+    fn merge(other: Self) { self.sum += other.sum; self.count += other.count }
+    fn finalize() -> Option<Float> { if self.count == 0 { None } else { Some(self.sum / self.count as Float) } }
+}
+
+// =============================================================================
+// Composite Aggregators
+// =============================================================================
+
+/// Multiple aggregators combined
+struct Multi<A, B> { a: A, b: B }
+impl<T: Clone, A: Aggregator<T, RA>, B: Aggregator<T, RB>, RA, RB> Aggregator<T, (RA, RB)> for Multi<A, B> {
+    fn init() -> Self { Multi { a: A.init(), b: B.init() } }
+    fn accumulate(value: T) { self.a.accumulate(value.clone()); self.b.accumulate(value) }
+    fn merge(other: Self) { self.a.merge(other.a); self.b.merge(other.b) }
+    fn finalize() -> (RA, RB) { (self.a.finalize(), self.b.finalize()) }
+}
+
+/// Summary statistics
+struct Summary {
+    count: Int64
+    sum: Float
+    min: Option<Float>
+    max: Option<Float>
+    mean: Float
+    m2: Float
+}
+
+impl Aggregator<Float, SummaryResult> for Summary {
+    fn init() -> Self { Summary { count: 0, sum: 0.0, min: None, max: None, mean: 0.0, m2: 0.0 } }
+    
+    fn accumulate(value: Float) {
+        self.count += 1
+        self.sum += value
+        self.min = Some(self.min.map(|m| m.min(value)).unwrap_or(value))
+        self.max = Some(self.max.map(|m| m.max(value)).unwrap_or(value))
+        let delta = value - self.mean
+        self.mean += delta / self.count as Float
+        let delta2 = value - self.mean
+        self.m2 += delta * delta2
+    }
+    
+    fn merge(other: Self) {
+        if other.count == 0 { return }
+        let total = self.count + other.count
+        self.sum += other.sum
+        self.min = match (self.min, other.min) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) }
+        self.max = match (self.max, other.max) { (Some(a), Some(b)) => Some(a.max(b)), (a, b) => a.or(b) }
+        let delta = other.mean - self.mean
+        self.mean = (self.count as Float * self.mean + other.count as Float * other.mean) / total as Float
+        self.m2 += other.m2 + delta * delta * (self.count as Float * other.count as Float) / total as Float
+        self.count = total
+    }
+    
+    fn finalize() -> SummaryResult {
+        let variance = if self.count < 2 { None } else { Some(self.m2 / (self.count - 1) as Float) }
+        SummaryResult {
+            count: self.count,
+            sum: self.sum,
+            min: self.min,
+            max: self.max,
+            mean: if self.count == 0 { None } else { Some(self.mean) },
+            variance: variance,
+            std_dev: variance.map(|v| v.sqrt())
+        }
+    }
+}
+
+struct SummaryResult {
+    count: Int64
+    sum: Float
+    min: Option<Float>
+    max: Option<Float>
+    mean: Option<Float>
+    variance: Option<Float>
+    std_dev: Option<Float>
+}
+
+// =============================================================================
+// Group By Aggregation
+// =============================================================================
+
+/// Group by aggregator
+struct GroupByAgg<K: Hash + Eq, T, A: Aggregator<T, R>, R> {
+    groups: Map<K, A>
+    key_fn: fn(T) -> K
+}
+
+impl<K: Hash + Eq + Clone, T: Clone, A: Aggregator<T, R>, R> GroupByAgg<K, T, A, R> {
+    fn new(key_fn: fn(T) -> K) -> Self {
+        GroupByAgg { groups: Map.empty(), key_fn: key_fn }
+    }
+    
+    fn accumulate(value: T) {
+        let key = (self.key_fn)(value.clone())
+        self.groups.entry(key).or_insert_with(|| A.init()).accumulate(value)
+    }
+    
+    fn finalize() -> Map<K, R> {
+        var result = Map.empty()
+        for (key, agg) in self.groups.iter() {
+            result.insert(key.clone(), agg.finalize())
+        }
+        result
+    }
+}
+
+// =============================================================================
+// Window Aggregation
+// =============================================================================
+
+/// Sliding window aggregator
+struct SlidingWindow<T: Clone, A: Aggregator<T, R>, R> {
+    window: [T]
+    size: Int
+    aggregator: A
+}
+
+impl<T: Clone, A: Aggregator<T, R>, R> SlidingWindow<T, A, R> {
+    fn new(size: Int) -> Self {
+        SlidingWindow { window: [], size: size, aggregator: A.init() }
+    }
+    
+    fn push(value: T) -> Option<R> {
+        self.window.push(value)
+        if self.window.len() > self.size {
+            self.window.remove(0)
+        }
+        if self.window.len() == self.size {
+            self.aggregator.reset()
+            for v in self.window.iter() { self.aggregator.accumulate(v.clone()) }
+            Some(self.aggregator.finalize())
+        } else {
+            None
+        }
+    }
+}
+
+/// Tumbling window aggregator
+struct TumblingWindow<T: Clone, A: Aggregator<T, R>, R> {
+    buffer: [T]
+    size: Int
+    aggregator: A
+}
+
+impl<T: Clone, A: Aggregator<T, R>, R> TumblingWindow<T, A, R> {
+    fn new(size: Int) -> Self {
+        TumblingWindow { buffer: [], size: size, aggregator: A.init() }
+    }
+    
+    fn push(value: T) -> Option<R> {
+        self.buffer.push(value)
+        if self.buffer.len() >= self.size {
+            self.aggregator.reset()
+            for v in self.buffer.iter() { self.aggregator.accumulate(v.clone()) }
+            self.buffer.clear()
+            Some(self.aggregator.finalize())
+        } else {
+            None
+        }
+    }
+}
+
+// =============================================================================
+// Aggregate Functions
+// =============================================================================
+
+/// Aggregate a collection
+fn aggregate<T, A: Aggregator<T, R>, R>(items: [T], aggregator: A) -> R {
+    var agg = aggregator
+    for item in items { agg.accumulate(item) }
+    agg.finalize()
+}
+
+/// Aggregate with multiple aggregators
+fn multi_aggregate<T: Clone, A: Aggregator<T, RA>, B: Aggregator<T, RB>, RA, RB>(
+    items: [T], 
+    a: A, 
+    b: B
+) -> (RA, RB) {
+    var agg_a = a
+    var agg_b = b
+    for item in items { agg_a.accumulate(item.clone()); agg_b.accumulate(item) }
+    (agg_a.finalize(), agg_b.finalize())
+}
+
+/// Group and aggregate
+fn group_aggregate<K: Hash + Eq + Clone, T: Clone, A: Aggregator<T, R>, R>(
+    items: [T],
+    key_fn: fn(T) -> K,
+    aggregator: A
+) -> Map<K, R> {
+    var groups: Map<K, A> = Map.empty()
+    for item in items {
+        let key = key_fn(item.clone())
+        groups.entry(key).or_insert_with(|| A.init()).accumulate(item)
+    }
+    var result = Map.empty()
+    for (key, agg) in groups { result.insert(key, agg.finalize()) }
+    result
+}
+
+// =============================================================================
+// Builder Functions
+// =============================================================================
+
+fn sum<T: Num>() -> Sum<T> { Sum.init() }
+fn count<T>() -> Count { Count.init() }
+fn avg() -> Avg { Avg.init() }
+fn min<T: Ord + Clone>() -> Min<T> { Min.init() }
+fn max<T: Ord + Clone>() -> Max<T> { Max.init() }
+fn first<T: Clone>() -> First<T> { First.init() }
+fn last<T: Clone>() -> Last<T> { Last.init() }
+fn variance() -> Variance { Variance.init() }
+fn std_dev() -> StdDev { StdDev.init() }
+fn median() -> Median { Median.init() }
+fn percentile(p: Float) -> Percentile { Percentile { values: [], p: p } }
+fn mode<T: Hash + Eq + Clone>() -> Mode<T> { Mode.init() }
+fn collect<T: Clone>() -> Collect<T> { Collect.init() }
+fn collect_unique<T: Hash + Eq + Clone>() -> CollectUnique<T> { CollectUnique.init() }
+fn count_distinct<T: Hash + Eq>() -> CountDistinct<T> { CountDistinct.init() }
+fn concat(separator: String) -> Concat { Concat { parts: [], separator: separator } }
+fn summary() -> Summary { Summary.init() }
+
+fn count_if<T>(predicate: fn(T) -> Bool) -> CountIf<T> { CountIf { count: 0, predicate: predicate } }
+fn sum_if<T: Num + Clone>(predicate: fn(T) -> Bool) -> SumIf<T> { SumIf { sum: T.zero(), predicate: predicate } }
+fn avg_if(predicate: fn(Float) -> Bool) -> AvgIf { AvgIf { sum: 0.0, count: 0, predicate: predicate } }
+
+fn sliding_window<T: Clone, A: Aggregator<T, R>, R>(size: Int) -> SlidingWindow<T, A, R> { SlidingWindow.new(size) }
+fn tumbling_window<T: Clone, A: Aggregator<T, R>, R>(size: Int) -> TumblingWindow<T, A, R> { TumblingWindow.new(size) }
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "sum" {
+    let result = aggregate([1, 2, 3, 4, 5], Sum::<Int>.init())
+    assert_eq(result, 15)?
+}
+
+test "count" {
+    let result = aggregate([1, 2, 3, 4, 5], Count.init())
+    assert_eq(result, 5)?
+}
+
+test "avg" {
+    let result = aggregate([1.0, 2.0, 3.0, 4.0, 5.0], Avg.init())
+    assert_eq(result, Some(3.0))?
+}
+
+test "min_max" {
+    let data = [3, 1, 4, 1, 5, 9, 2, 6]
+    assert_eq(aggregate(data.clone(), Min::<Int>.init()), Some(1))?
+    assert_eq(aggregate(data, Max::<Int>.init()), Some(9))?
+}
+
+test "variance" {
+    let result = aggregate([2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0], Variance.init())
+    assert(result.is_some())?
+}
+
+test "summary" {
+    let result = aggregate([1.0, 2.0, 3.0, 4.0, 5.0], Summary.init())
+    assert_eq(result.count, 5)?
+    assert_eq(result.sum, 15.0)?
+    assert_eq(result.min, Some(1.0))?
+    assert_eq(result.max, Some(5.0))?
+}
+
+test "count_distinct" {
+    let result = aggregate([1, 2, 2, 3, 3, 3], CountDistinct::<Int>.init())
+    assert_eq(result, 3)?
+}
+
+test "group_aggregate" {
+    let data = [("a", 1), ("b", 2), ("a", 3), ("b", 4)]
+    let result = group_aggregate(data, |(k, _)| k, Sum::<Int>.init())
+    assert_eq(result.get("a"), Some(4))?
+    assert_eq(result.get("b"), Some(6))?
+}

@@ -1,0 +1,717 @@
+// =============================================================================
+// Vibee OS — Graph Traversal Module
+// BFS, DFS and other graph traversal algorithms
+// =============================================================================
+
+use graph_node.{NodeId, NodeState}
+use graph_edge.{AdjacencyList}
+
+/// Breadth-First Search result
+struct BfsResult {
+    order: [NodeId]
+    distances: Map<NodeId, Int>
+    parents: Map<NodeId, NodeId>
+    levels: Map<NodeId, Int>
+    
+    fn path_to(target: NodeId) -> Option<[NodeId]> {
+        if !self.distances.contains(target) { return None }
+        var path = [target]
+        var current = target
+        while let Some(parent) = self.parents.get(current) {
+            path.push(*parent)
+            current = *parent
+        }
+        path.reverse()
+        Some(path)
+    }
+    
+    fn distance_to(target: NodeId) -> Option<Int> {
+        self.distances.get(target).cloned()
+    }
+    
+    fn nodes_at_level(level: Int) -> [NodeId] {
+        self.levels.iter()
+            .filter(|(_, l)| **l == level)
+            .map(|(n, _)| *n)
+            .collect()
+    }
+    
+    fn max_level() -> Int {
+        self.levels.values().max().unwrap_or(0)
+    }
+}
+
+/// Depth-First Search result
+struct DfsResult {
+    order: [NodeId]
+    discovery: Map<NodeId, Int>
+    finish: Map<NodeId, Int>
+    parents: Map<NodeId, NodeId>
+    back_edges: [(NodeId, NodeId)]
+    tree_edges: [(NodeId, NodeId)]
+    forward_edges: [(NodeId, NodeId)]
+    cross_edges: [(NodeId, NodeId)]
+    
+    fn has_cycle() -> Bool {
+        !self.back_edges.is_empty()
+    }
+    
+    fn topological_order() -> Option<[NodeId]> {
+        if self.has_cycle() { return None }
+        var sorted = self.order.clone()
+        sorted.sort_by(|a, b| self.finish.get(b).unwrap().cmp(self.finish.get(a).unwrap()))
+        Some(sorted)
+    }
+    
+    fn path_to(target: NodeId) -> Option<[NodeId]> {
+        if !self.discovery.contains(target) { return None }
+        var path = [target]
+        var current = target
+        while let Some(parent) = self.parents.get(current) {
+            path.push(*parent)
+            current = *parent
+        }
+        path.reverse()
+        Some(path)
+    }
+}
+
+/// Graph traversal algorithms
+struct Traversal;
+
+impl Traversal {
+    /// Breadth-First Search from a single source
+    fn bfs<W>(graph: AdjacencyList<W>, start: NodeId) -> BfsResult {
+        var visited = Set.empty()
+        var queue = [start]
+        var order = []
+        var distances = Map.empty()
+        var parents = Map.empty()
+        var levels = Map.empty()
+        
+        distances.set(start, 0)
+        levels.set(start, 0)
+        
+        while !queue.is_empty() {
+            let node = queue.remove(0)
+            if visited.contains(node) { continue }
+            visited.insert(node)
+            order.push(node)
+            
+            let current_dist = distances.get(node).unwrap_or(0)
+            
+            for (neighbor, _) in graph.neighbors(node) {
+                if !visited.contains(neighbor) && !distances.contains(neighbor) {
+                    distances.set(neighbor, current_dist + 1)
+                    levels.set(neighbor, current_dist + 1)
+                    parents.set(neighbor, node)
+                    queue.push(neighbor)
+                }
+            }
+        }
+        
+        BfsResult { order: order, distances: distances, parents: parents, levels: levels }
+    }
+    
+    /// Multi-source BFS
+    fn bfs_multi<W>(graph: AdjacencyList<W>, sources: [NodeId]) -> BfsResult {
+        var visited = Set.empty()
+        var queue = sources.clone()
+        var order = []
+        var distances = Map.empty()
+        var parents = Map.empty()
+        var levels = Map.empty()
+        
+        for source in sources {
+            distances.set(source, 0)
+            levels.set(source, 0)
+        }
+        
+        while !queue.is_empty() {
+            let node = queue.remove(0)
+            if visited.contains(node) { continue }
+            visited.insert(node)
+            order.push(node)
+            
+            let current_dist = distances.get(node).unwrap_or(0)
+            
+            for (neighbor, _) in graph.neighbors(node) {
+                if !visited.contains(neighbor) && !distances.contains(neighbor) {
+                    distances.set(neighbor, current_dist + 1)
+                    levels.set(neighbor, current_dist + 1)
+                    parents.set(neighbor, node)
+                    queue.push(neighbor)
+                }
+            }
+        }
+        
+        BfsResult { order: order, distances: distances, parents: parents, levels: levels }
+    }
+    
+    /// Depth-First Search from a single source
+    fn dfs<W>(graph: AdjacencyList<W>, start: NodeId) -> DfsResult {
+        var state = Map.empty()
+        var discovery = Map.empty()
+        var finish = Map.empty()
+        var parents = Map.empty()
+        var order = []
+        var back_edges = []
+        var tree_edges = []
+        var forward_edges = []
+        var cross_edges = []
+        var time = 0
+        
+        fn visit(node: NodeId) {
+            state.set(node, NodeState.Visiting)
+            discovery.set(node, time)
+            time += 1
+            order.push(node)
+            
+            for (neighbor, _) in graph.neighbors(node) {
+                match state.get(neighbor) {
+                    None => {
+                        // Tree edge
+                        tree_edges.push((node, neighbor))
+                        parents.set(neighbor, node)
+                        visit(neighbor)
+                    }
+                    Some(NodeState.Visiting) => {
+                        // Back edge (cycle)
+                        back_edges.push((node, neighbor))
+                    }
+                    Some(NodeState.Visited) => {
+                        // Forward or cross edge
+                        if discovery.get(node).unwrap() < discovery.get(neighbor).unwrap() {
+                            forward_edges.push((node, neighbor))
+                        } else {
+                            cross_edges.push((node, neighbor))
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            
+            state.set(node, NodeState.Visited)
+            finish.set(node, time)
+            time += 1
+        }
+        
+        visit(start)
+        
+        DfsResult {
+            order: order,
+            discovery: discovery,
+            finish: finish,
+            parents: parents,
+            back_edges: back_edges,
+            tree_edges: tree_edges,
+            forward_edges: forward_edges,
+            cross_edges: cross_edges
+        }
+    }
+    
+    /// DFS visiting all nodes (for disconnected graphs)
+    fn dfs_all<W>(graph: AdjacencyList<W>) -> DfsResult {
+        var state = Map.empty()
+        var discovery = Map.empty()
+        var finish = Map.empty()
+        var parents = Map.empty()
+        var order = []
+        var back_edges = []
+        var tree_edges = []
+        var forward_edges = []
+        var cross_edges = []
+        var time = 0
+        
+        fn visit(node: NodeId) {
+            state.set(node, NodeState.Visiting)
+            discovery.set(node, time)
+            time += 1
+            order.push(node)
+            
+            for (neighbor, _) in graph.neighbors(node) {
+                match state.get(neighbor) {
+                    None => {
+                        tree_edges.push((node, neighbor))
+                        parents.set(neighbor, node)
+                        visit(neighbor)
+                    }
+                    Some(NodeState.Visiting) => {
+                        back_edges.push((node, neighbor))
+                    }
+                    Some(NodeState.Visited) => {
+                        if discovery.get(node).unwrap() < discovery.get(neighbor).unwrap() {
+                            forward_edges.push((node, neighbor))
+                        } else {
+                            cross_edges.push((node, neighbor))
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            
+            state.set(node, NodeState.Visited)
+            finish.set(node, time)
+            time += 1
+        }
+        
+        for node in graph.nodes() {
+            if !state.contains(node) {
+                visit(node)
+            }
+        }
+        
+        DfsResult {
+            order: order,
+            discovery: discovery,
+            finish: finish,
+            parents: parents,
+            back_edges: back_edges,
+            tree_edges: tree_edges,
+            forward_edges: forward_edges,
+            cross_edges: cross_edges
+        }
+    }
+    
+    /// Iterative DFS (non-recursive)
+    fn dfs_iterative<W>(graph: AdjacencyList<W>, start: NodeId) -> [NodeId] {
+        var visited = Set.empty()
+        var stack = [start]
+        var order = []
+        
+        while !stack.is_empty() {
+            let node = stack.pop().unwrap()
+            if visited.contains(node) { continue }
+            visited.insert(node)
+            order.push(node)
+            
+            // Add neighbors in reverse order for correct traversal
+            let neighbors: [NodeId] = graph.neighbors(node).iter().map(|(n, _)| *n).collect()
+            for neighbor in neighbors.into_iter().rev() {
+                if !visited.contains(neighbor) {
+                    stack.push(neighbor)
+                }
+            }
+        }
+        
+        order
+    }
+    
+    /// Topological sort using DFS
+    fn topological_sort<W>(graph: AdjacencyList<W>) -> Option<[NodeId]> {
+        let result = Self.dfs_all(graph)
+        result.topological_order()
+    }
+    
+    /// Kahn's algorithm for topological sort
+    fn topological_sort_kahn<W>(graph: AdjacencyList<W>) -> Option<[NodeId]> {
+        var in_degree = Map.empty()
+        
+        // Initialize in-degrees
+        for node in graph.nodes() {
+            in_degree.entry(node).or_insert(0)
+        }
+        
+        // Calculate in-degrees
+        for node in graph.nodes() {
+            for (neighbor, _) in graph.neighbors(node) {
+                in_degree.set(neighbor, in_degree.get(neighbor).unwrap_or(0) + 1)
+            }
+        }
+        
+        // Find nodes with no incoming edges
+        var queue: [NodeId] = in_degree.iter()
+            .filter(|(_, d)| **d == 0)
+            .map(|(n, _)| *n)
+            .collect()
+        
+        var result = []
+        
+        while !queue.is_empty() {
+            let node = queue.remove(0)
+            result.push(node)
+            
+            for (neighbor, _) in graph.neighbors(node) {
+                let d = in_degree.get(neighbor).unwrap() - 1
+                in_degree.set(neighbor, d)
+                if d == 0 {
+                    queue.push(neighbor)
+                }
+            }
+        }
+        
+        if result.len() == graph.node_count() {
+            Some(result)
+        } else {
+            None // Cycle detected
+        }
+    }
+    
+    /// Find connected components
+    fn connected_components<W>(graph: AdjacencyList<W>) -> [[NodeId]] {
+        var visited = Set.empty()
+        var components = []
+        
+        for node in graph.nodes() {
+            if !visited.contains(node) {
+                var component = []
+                var stack = [node]
+                
+                while !stack.is_empty() {
+                    let current = stack.pop().unwrap()
+                    if visited.contains(current) { continue }
+                    visited.insert(current)
+                    component.push(current)
+                    
+                    for (neighbor, _) in graph.neighbors(current) {
+                        if !visited.contains(neighbor) {
+                            stack.push(neighbor)
+                        }
+                    }
+                }
+                
+                components.push(component)
+            }
+        }
+        
+        components
+    }
+    
+    /// Find strongly connected components (Kosaraju's algorithm)
+    fn strongly_connected_components<W: Clone>(graph: AdjacencyList<W>) -> [[NodeId]] {
+        // First DFS to get finish order
+        let dfs_result = Self.dfs_all(graph)
+        var finish_order = dfs_result.order.clone()
+        finish_order.sort_by(|a, b| {
+            dfs_result.finish.get(b).unwrap().cmp(dfs_result.finish.get(a).unwrap())
+        })
+        
+        // Build reverse graph
+        var reverse = AdjacencyList.new()
+        for node in graph.nodes() {
+            reverse.add_node(node)
+        }
+        for node in graph.nodes() {
+            for (neighbor, weight) in graph.neighbors(node) {
+                reverse.add_edge(neighbor, node, weight)
+            }
+        }
+        
+        // Second DFS on reverse graph
+        var visited = Set.empty()
+        var components = []
+        
+        for node in finish_order {
+            if !visited.contains(node) {
+                var component = []
+                var stack = [node]
+                
+                while !stack.is_empty() {
+                    let current = stack.pop().unwrap()
+                    if visited.contains(current) { continue }
+                    visited.insert(current)
+                    component.push(current)
+                    
+                    for (neighbor, _) in reverse.neighbors(current) {
+                        if !visited.contains(neighbor) {
+                            stack.push(neighbor)
+                        }
+                    }
+                }
+                
+                components.push(component)
+            }
+        }
+        
+        components
+    }
+    
+    /// Check if graph has a cycle
+    fn has_cycle<W>(graph: AdjacencyList<W>) -> Bool {
+        Self.dfs_all(graph).has_cycle()
+    }
+    
+    /// Find all paths between two nodes
+    fn all_paths<W>(graph: AdjacencyList<W>, start: NodeId, end: NodeId) -> [[NodeId]] {
+        var paths = []
+        var current_path = [start]
+        var visited = Set.empty()
+        visited.insert(start)
+        
+        fn find_paths(node: NodeId) {
+            if node == end {
+                paths.push(current_path.clone())
+                return
+            }
+            
+            for (neighbor, _) in graph.neighbors(node) {
+                if !visited.contains(neighbor) {
+                    visited.insert(neighbor)
+                    current_path.push(neighbor)
+                    find_paths(neighbor)
+                    current_path.pop()
+                    visited.remove(neighbor)
+                }
+            }
+        }
+        
+        find_paths(start)
+        paths
+    }
+    
+    /// Level-order traversal (BFS with levels)
+    fn level_order<W>(graph: AdjacencyList<W>, start: NodeId) -> [[NodeId]] {
+        let bfs = Self.bfs(graph, start)
+        var levels = []
+        let max_level = bfs.max_level()
+        
+        for level in 0..=max_level {
+            levels.push(bfs.nodes_at_level(level))
+        }
+        
+        levels
+    }
+    
+    /// Bidirectional BFS for shortest path
+    fn bidirectional_bfs<W>(graph: AdjacencyList<W>, start: NodeId, end: NodeId) -> Option<[NodeId]> {
+        if start == end { return Some([start]) }
+        
+        var forward_visited = Map.empty()
+        var backward_visited = Map.empty()
+        var forward_queue = [start]
+        var backward_queue = [end]
+        
+        forward_visited.set(start, None)
+        backward_visited.set(end, None)
+        
+        while !forward_queue.is_empty() && !backward_queue.is_empty() {
+            // Expand forward
+            if !forward_queue.is_empty() {
+                let node = forward_queue.remove(0)
+                for (neighbor, _) in graph.neighbors(node) {
+                    if !forward_visited.contains(neighbor) {
+                        forward_visited.set(neighbor, Some(node))
+                        forward_queue.push(neighbor)
+                        
+                        if backward_visited.contains(neighbor) {
+                            return Some(Self.reconstruct_bidirectional_path(
+                                neighbor, forward_visited, backward_visited
+                            ))
+                        }
+                    }
+                }
+            }
+            
+            // Expand backward
+            if !backward_queue.is_empty() {
+                let node = backward_queue.remove(0)
+                for (neighbor, _) in graph.neighbors(node) {
+                    if !backward_visited.contains(neighbor) {
+                        backward_visited.set(neighbor, Some(node))
+                        backward_queue.push(neighbor)
+                        
+                        if forward_visited.contains(neighbor) {
+                            return Some(Self.reconstruct_bidirectional_path(
+                                neighbor, forward_visited, backward_visited
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+        
+        None
+    }
+    
+    fn reconstruct_bidirectional_path(
+        meeting: NodeId,
+        forward: Map<NodeId, Option<NodeId>>,
+        backward: Map<NodeId, Option<NodeId>>
+    ) -> [NodeId] {
+        var path = []
+        
+        // Build forward path
+        var current = meeting
+        while let Some(Some(parent)) = forward.get(current) {
+            path.push(current)
+            current = *parent
+        }
+        path.push(current)
+        path.reverse()
+        
+        // Build backward path
+        current = meeting
+        while let Some(Some(parent)) = backward.get(current) {
+            current = *parent
+            path.push(current)
+        }
+        
+        path
+    }
+}
+
+/// Iterator-based traversal
+struct BfsIterator<W> {
+    graph: AdjacencyList<W>
+    queue: [NodeId]
+    visited: Set<NodeId>
+}
+
+impl<W> BfsIterator<W> {
+    fn new(graph: AdjacencyList<W>, start: NodeId) -> Self {
+        var visited = Set.empty()
+        visited.insert(start)
+        BfsIterator { graph: graph, queue: [start], visited: visited }
+    }
+}
+
+impl<W> Iterator for BfsIterator<W> {
+    type Item = NodeId
+    
+    fn next() -> Option<NodeId> {
+        if self.queue.is_empty() { return None }
+        let node = self.queue.remove(0)
+        
+        for (neighbor, _) in self.graph.neighbors(node) {
+            if !self.visited.contains(neighbor) {
+                self.visited.insert(neighbor)
+                self.queue.push(neighbor)
+            }
+        }
+        
+        Some(node)
+    }
+}
+
+struct DfsIterator<W> {
+    graph: AdjacencyList<W>
+    stack: [NodeId]
+    visited: Set<NodeId>
+}
+
+impl<W> DfsIterator<W> {
+    fn new(graph: AdjacencyList<W>, start: NodeId) -> Self {
+        DfsIterator { graph: graph, stack: [start], visited: Set.empty() }
+    }
+}
+
+impl<W> Iterator for DfsIterator<W> {
+    type Item = NodeId
+    
+    fn next() -> Option<NodeId> {
+        while !self.stack.is_empty() {
+            let node = self.stack.pop().unwrap()
+            if self.visited.contains(node) { continue }
+            self.visited.insert(node)
+            
+            for (neighbor, _) in self.graph.neighbors(node) {
+                if !self.visited.contains(neighbor) {
+                    self.stack.push(neighbor)
+                }
+            }
+            
+            return Some(node)
+        }
+        None
+    }
+}
+
+// Tests
+test "bfs basic" {
+    var graph = AdjacencyList::<Int>.new()
+    graph.add_edge(0, 1, 1)
+    graph.add_edge(0, 2, 1)
+    graph.add_edge(1, 3, 1)
+    graph.add_edge(2, 3, 1)
+    
+    let result = Traversal.bfs(graph, 0)
+    assert_eq(result.order.len(), 4)?
+    assert_eq(result.distance_to(3), Some(2))?
+}
+
+test "bfs path" {
+    var graph = AdjacencyList::<Int>.new()
+    graph.add_edge(0, 1, 1)
+    graph.add_edge(1, 2, 1)
+    graph.add_edge(2, 3, 1)
+    
+    let result = Traversal.bfs(graph, 0)
+    assert_eq(result.path_to(3), Some([0, 1, 2, 3]))?
+}
+
+test "dfs basic" {
+    var graph = AdjacencyList::<Int>.new()
+    graph.add_edge(0, 1, 1)
+    graph.add_edge(0, 2, 1)
+    graph.add_edge(1, 3, 1)
+    graph.add_edge(2, 3, 1)
+    
+    let result = Traversal.dfs(graph, 0)
+    assert_eq(result.order.len(), 4)?
+}
+
+test "cycle detection" {
+    var graph = AdjacencyList::<Int>.new()
+    graph.add_edge(0, 1, 1)
+    graph.add_edge(1, 2, 1)
+    graph.add_edge(2, 0, 1)
+    
+    assert!(Traversal.has_cycle(graph))?
+}
+
+test "topological sort" {
+    var graph = AdjacencyList::<Int>.new()
+    graph.add_node(0)
+    graph.add_node(1)
+    graph.add_node(2)
+    graph.add_edge(0, 1, 1)
+    graph.add_edge(0, 2, 1)
+    graph.add_edge(1, 2, 1)
+    
+    let sorted = Traversal.topological_sort(graph)
+    assert!(sorted.is_some())?
+    let order = sorted.unwrap()
+    assert_eq(order[0], 0)?
+}
+
+test "connected components" {
+    var graph = AdjacencyList::<Int>.new()
+    graph.add_undirected_edge(0, 1, 1)
+    graph.add_undirected_edge(1, 2, 1)
+    graph.add_undirected_edge(3, 4, 1)
+    
+    let components = Traversal.connected_components(graph)
+    assert_eq(components.len(), 2)?
+}
+
+test "bfs iterator" {
+    var graph = AdjacencyList::<Int>.new()
+    graph.add_edge(0, 1, 1)
+    graph.add_edge(0, 2, 1)
+    graph.add_edge(1, 3, 1)
+    
+    let nodes: [NodeId] = BfsIterator.new(graph, 0).collect()
+    assert_eq(nodes.len(), 4)?
+}
+
+test "dfs iterator" {
+    var graph = AdjacencyList::<Int>.new()
+    graph.add_edge(0, 1, 1)
+    graph.add_edge(0, 2, 1)
+    graph.add_edge(1, 3, 1)
+    
+    let nodes: [NodeId] = DfsIterator.new(graph, 0).collect()
+    assert_eq(nodes.len(), 4)?
+}
+
+test "level order" {
+    var graph = AdjacencyList::<Int>.new()
+    graph.add_edge(0, 1, 1)
+    graph.add_edge(0, 2, 1)
+    graph.add_edge(1, 3, 1)
+    graph.add_edge(2, 3, 1)
+    
+    let levels = Traversal.level_order(graph, 0)
+    assert_eq(levels.len(), 3)?
+    assert_eq(levels[0], [0])?
+}

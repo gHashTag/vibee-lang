@@ -1,0 +1,558 @@
+// =============================================================================
+// Vibee OS — Sampler Module
+// Sampling algorithms and utilities
+// =============================================================================
+
+use rng::{Rng, Xoshiro256StarStar, thread_rng, random_float, random_range}
+
+// -----------------------------------------------------------------------------
+// Weighted Sampling
+// -----------------------------------------------------------------------------
+
+/// Weighted random sampler using alias method
+struct WeightedSampler<T> {
+    items: [T]
+    prob: [Float]
+    alias: [Int]
+    
+    fn new(items: [(T, Float)]) -> Self {
+        let n = items.len()
+        if n == 0 { return WeightedSampler { items: [], prob: [], alias: [] } }
+        
+        var values: [T] = []
+        var weights: [Float] = []
+        var total = 0.0
+        
+        for (item, weight) in items {
+            values.push(item)
+            weights.push(weight)
+            total += weight
+        }
+        
+        // Normalize weights
+        for i in 0..n { weights[i] = weights[i] * n as Float / total }
+        
+        var prob = [0.0; n]
+        var alias = [0; n]
+        var small: [Int] = []
+        var large: [Int] = []
+        
+        for i in 0..n {
+            if weights[i] < 1.0 { small.push(i) } else { large.push(i) }
+        }
+        
+        while !small.is_empty() && !large.is_empty() {
+            let l = small.pop().unwrap()
+            let g = large.pop().unwrap()
+            prob[l] = weights[l]
+            alias[l] = g
+            weights[g] = weights[g] + weights[l] - 1.0
+            if weights[g] < 1.0 { small.push(g) } else { large.push(g) }
+        }
+        
+        while !large.is_empty() { prob[large.pop().unwrap()] = 1.0 }
+        while !small.is_empty() { prob[small.pop().unwrap()] = 1.0 }
+        
+        WeightedSampler { items: values, prob: prob, alias: alias }
+    }
+    
+    fn sample<R: Rng>(rng: R) -> Option<T> {
+        if self.items.is_empty() { return None }
+        let i = rng.next_range(0, self.items.len())
+        let p = rng.next_float()
+        if p < self.prob[i] { Some(self.items[i].clone()) }
+        else { Some(self.items[self.alias[i]].clone()) }
+    }
+    
+    fn samples<R: Rng>(rng: R, n: Int) -> [T] {
+        (0..n).filter_map(|_| self.sample(rng)).collect()
+    }
+}
+
+/// Simple weighted sampling without preprocessing
+fn weighted_sample<T, R: Rng>(items: [(T, Float)], rng: R) -> Option<T> {
+    if items.is_empty() { return None }
+    let total: Float = items.iter().map(|(_, w)| w).sum()
+    var r = rng.next_float() * total
+    for (item, weight) in items {
+        r -= weight
+        if r <= 0.0 { return Some(item) }
+    }
+    Some(items.last().unwrap().0)
+}
+
+// -----------------------------------------------------------------------------
+// Reservoir Sampling
+// -----------------------------------------------------------------------------
+
+/// Reservoir sampler for streaming data
+struct ReservoirSampler<T> {
+    reservoir: [T]
+    k: Int
+    count: Int
+    rng: Xoshiro256StarStar
+    
+    fn new(k: Int) -> Self {
+        ReservoirSampler {
+            reservoir: [],
+            k: k,
+            count: 0,
+            rng: Xoshiro256StarStar.from_time()
+        }
+    }
+    
+    fn with_seed(k: Int, seed: UInt64) -> Self {
+        ReservoirSampler {
+            reservoir: [],
+            k: k,
+            count: 0,
+            rng: Xoshiro256StarStar.new(seed)
+        }
+    }
+    
+    fn add(item: T) {
+        self.count += 1
+        if self.reservoir.len() < self.k {
+            self.reservoir.push(item)
+        } else {
+            let j = self.rng.next_range(0, self.count)
+            if j < self.k { self.reservoir[j] = item }
+        }
+    }
+    
+    fn add_all(items: [T]) {
+        for item in items { self.add(item) }
+    }
+    
+    fn sample() -> [T] { self.reservoir.clone() }
+    fn len() -> Int { self.reservoir.len() }
+    fn total_seen() -> Int { self.count }
+    fn reset() { self.reservoir.clear(); self.count = 0 }
+}
+
+/// Weighted reservoir sampling (A-Res algorithm)
+struct WeightedReservoirSampler<T> {
+    reservoir: [(T, Float)]  // (item, key)
+    k: Int
+    rng: Xoshiro256StarStar
+    
+    fn new(k: Int) -> Self {
+        WeightedReservoirSampler {
+            reservoir: [],
+            k: k,
+            rng: Xoshiro256StarStar.from_time()
+        }
+    }
+    
+    fn add(item: T, weight: Float) {
+        let key = self.rng.next_float().pow(1.0 / weight)
+        if self.reservoir.len() < self.k {
+            self.reservoir.push((item, key))
+            self.reservoir.sort_by(|(_, k1), (_, k2)| k2.partial_cmp(k1).unwrap())
+        } else if key > self.reservoir.last().unwrap().1 {
+            self.reservoir.pop()
+            self.reservoir.push((item, key))
+            self.reservoir.sort_by(|(_, k1), (_, k2)| k2.partial_cmp(k1).unwrap())
+        }
+    }
+    
+    fn sample() -> [T] { self.reservoir.iter().map(|(item, _)| item.clone()).collect() }
+}
+
+// -----------------------------------------------------------------------------
+// Stratified Sampling
+// -----------------------------------------------------------------------------
+
+/// Stratified sampler for better coverage
+struct StratifiedSampler {
+    strata: Int
+    
+    fn new(strata: Int) -> Self { StratifiedSampler { strata: strata } }
+    
+    fn sample_1d<R: Rng>(rng: R) -> [Float] {
+        let step = 1.0 / self.strata as Float
+        (0..self.strata).map(|i| {
+            let base = i as Float * step
+            base + rng.next_float() * step
+        }).collect()
+    }
+    
+    fn sample_2d<R: Rng>(rng: R) -> [(Float, Float)] {
+        let step = 1.0 / self.strata as Float
+        var samples = []
+        for i in 0..self.strata {
+            for j in 0..self.strata {
+                let x = (i as Float + rng.next_float()) * step
+                let y = (j as Float + rng.next_float()) * step
+                samples.push((x, y))
+            }
+        }
+        samples
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Latin Hypercube Sampling
+// -----------------------------------------------------------------------------
+
+/// Latin Hypercube sampler for multi-dimensional sampling
+struct LatinHypercubeSampler {
+    dimensions: Int
+    samples: Int
+    
+    fn new(dimensions: Int, samples: Int) -> Self {
+        LatinHypercubeSampler { dimensions: dimensions, samples: samples }
+    }
+    
+    fn sample<R: Rng>(rng: R) -> [[Float]] {
+        let n = self.samples
+        var result: [[Float]] = (0..n).map(|_| [0.0; self.dimensions]).collect()
+        
+        for d in 0..self.dimensions {
+            // Create permutation
+            var perm: [Int] = (0..n).collect()
+            shuffle_with_rng(perm, rng)
+            
+            // Assign stratified samples
+            for i in 0..n {
+                result[i][d] = (perm[i] as Float + rng.next_float()) / n as Float
+            }
+        }
+        result
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Importance Sampling
+// -----------------------------------------------------------------------------
+
+/// Importance sampler with custom proposal distribution
+struct ImportanceSampler<T> {
+    target_pdf: fn(T) -> Float
+    proposal_sample: fn() -> T
+    proposal_pdf: fn(T) -> Float
+    
+    fn new(
+        target: fn(T) -> Float,
+        proposal_sample: fn() -> T,
+        proposal_pdf: fn(T) -> Float
+    ) -> Self {
+        ImportanceSampler {
+            target_pdf: target,
+            proposal_sample: proposal_sample,
+            proposal_pdf: proposal_pdf
+        }
+    }
+    
+    fn sample_with_weight() -> (T, Float) {
+        let x = (self.proposal_sample)()
+        let weight = (self.target_pdf)(x) / (self.proposal_pdf)(x)
+        (x, weight)
+    }
+    
+    fn estimate<F: Fn(T) -> Float>(f: F, n: Int) -> Float {
+        var sum = 0.0
+        var weight_sum = 0.0
+        for _ in 0..n {
+            let (x, w) = self.sample_with_weight()
+            sum += f(x) * w
+            weight_sum += w
+        }
+        sum / weight_sum
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Rejection Sampling
+// -----------------------------------------------------------------------------
+
+/// Rejection sampler
+struct RejectionSampler<T> {
+    target_pdf: fn(T) -> Float
+    proposal_sample: fn() -> T
+    proposal_pdf: fn(T) -> Float
+    m: Float  // Upper bound on target/proposal ratio
+    
+    fn new(
+        target: fn(T) -> Float,
+        proposal_sample: fn() -> T,
+        proposal_pdf: fn(T) -> Float,
+        m: Float
+    ) -> Self {
+        RejectionSampler {
+            target_pdf: target,
+            proposal_sample: proposal_sample,
+            proposal_pdf: proposal_pdf,
+            m: m
+        }
+    }
+    
+    fn sample<R: Rng>(rng: R) -> T {
+        loop {
+            let x = (self.proposal_sample)()
+            let u = rng.next_float()
+            let acceptance = (self.target_pdf)(x) / (self.m * (self.proposal_pdf)(x))
+            if u < acceptance { return x }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Metropolis-Hastings Sampling
+// -----------------------------------------------------------------------------
+
+/// Metropolis-Hastings MCMC sampler
+struct MetropolisHastings<T> {
+    target_log_pdf: fn(T) -> Float
+    proposal: fn(T) -> T
+    current: T
+    rng: Xoshiro256StarStar
+    
+    fn new(target_log_pdf: fn(T) -> Float, proposal: fn(T) -> T, initial: T) -> Self {
+        MetropolisHastings {
+            target_log_pdf: target_log_pdf,
+            proposal: proposal,
+            current: initial,
+            rng: Xoshiro256StarStar.from_time()
+        }
+    }
+    
+    fn step() -> T {
+        let proposed = (self.proposal)(self.current.clone())
+        let log_alpha = (self.target_log_pdf)(proposed) - (self.target_log_pdf)(self.current)
+        
+        if log_alpha >= 0.0 || self.rng.next_float().ln() < log_alpha {
+            self.current = proposed
+        }
+        self.current.clone()
+    }
+    
+    fn sample(n: Int, burn_in: Int, thin: Int) -> [T] {
+        // Burn-in
+        for _ in 0..burn_in { self.step() }
+        
+        // Collect samples with thinning
+        var samples = []
+        for i in 0..(n * thin) {
+            let s = self.step()
+            if i % thin == 0 { samples.push(s) }
+        }
+        samples
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Gibbs Sampling
+// -----------------------------------------------------------------------------
+
+/// Gibbs sampler for multivariate distributions
+struct GibbsSampler<T> {
+    conditionals: [fn(T, Int) -> Float]  // Conditional samplers for each dimension
+    current: T
+    rng: Xoshiro256StarStar
+    
+    fn new(conditionals: [fn(T, Int) -> Float], initial: T) -> Self {
+        GibbsSampler {
+            conditionals: conditionals,
+            current: initial,
+            rng: Xoshiro256StarStar.from_time()
+        }
+    }
+    
+    fn step() -> T {
+        for (i, conditional) in self.conditionals.iter().enumerate() {
+            self.current = conditional(self.current.clone(), i)
+        }
+        self.current.clone()
+    }
+    
+    fn sample(n: Int, burn_in: Int) -> [T] {
+        for _ in 0..burn_in { self.step() }
+        (0..n).map(|_| self.step()).collect()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Bootstrap Sampling
+// -----------------------------------------------------------------------------
+
+/// Bootstrap sampler for statistical inference
+struct Bootstrap<T> {
+    data: [T]
+    rng: Xoshiro256StarStar
+    
+    fn new(data: [T]) -> Self {
+        Bootstrap { data: data, rng: Xoshiro256StarStar.from_time() }
+    }
+    
+    fn with_seed(data: [T], seed: UInt64) -> Self {
+        Bootstrap { data: data, rng: Xoshiro256StarStar.new(seed) }
+    }
+    
+    fn sample() -> [T] {
+        let n = self.data.len()
+        (0..n).map(|_| self.data[self.rng.next_range(0, n)].clone()).collect()
+    }
+    
+    fn estimate<F: Fn([T]) -> Float>(statistic: F, n_bootstrap: Int) -> BootstrapResult {
+        let estimates: [Float] = (0..n_bootstrap).map(|_| statistic(self.sample())).collect()
+        let mean = estimates.iter().sum() / n_bootstrap as Float
+        let sorted = estimates.sorted()
+        
+        BootstrapResult {
+            mean: mean,
+            std_error: std_dev(estimates),
+            ci_lower: sorted[(0.025 * n_bootstrap as Float) as Int],
+            ci_upper: sorted[(0.975 * n_bootstrap as Float) as Int],
+            estimates: estimates
+        }
+    }
+}
+
+struct BootstrapResult {
+    mean: Float
+    std_error: Float
+    ci_lower: Float
+    ci_upper: Float
+    estimates: [Float]
+}
+
+// -----------------------------------------------------------------------------
+// Slice Sampling
+// -----------------------------------------------------------------------------
+
+/// Slice sampler for univariate distributions
+struct SliceSampler {
+    log_pdf: fn(Float) -> Float
+    width: Float
+    current: Float
+    rng: Xoshiro256StarStar
+    
+    fn new(log_pdf: fn(Float) -> Float, initial: Float, width: Float) -> Self {
+        SliceSampler {
+            log_pdf: log_pdf,
+            width: width,
+            current: initial,
+            rng: Xoshiro256StarStar.from_time()
+        }
+    }
+    
+    fn step() -> Float {
+        let y = (self.log_pdf)(self.current) + self.rng.next_float().ln()
+        
+        // Find slice interval
+        var left = self.current - self.rng.next_float() * self.width
+        var right = left + self.width
+        
+        // Expand interval
+        while (self.log_pdf)(left) > y { left -= self.width }
+        while (self.log_pdf)(right) > y { right += self.width }
+        
+        // Sample from interval
+        loop {
+            let x = left + self.rng.next_float() * (right - left)
+            if (self.log_pdf)(x) > y {
+                self.current = x
+                return x
+            }
+            if x < self.current { left = x } else { right = x }
+        }
+    }
+    
+    fn sample(n: Int, burn_in: Int) -> [Float] {
+        for _ in 0..burn_in { self.step() }
+        (0..n).map(|_| self.step()).collect()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Utility Functions
+// -----------------------------------------------------------------------------
+
+fn shuffle_with_rng<T, R: Rng>(arr: [T], rng: R) {
+    for i in (1..arr.len()).rev() {
+        let j = rng.next_range(0, i + 1)
+        arr.swap(i, j)
+    }
+}
+
+fn std_dev(data: [Float]) -> Float {
+    let n = data.len() as Float
+    let mean = data.iter().sum() / n
+    let variance = data.iter().map(|x| (x - mean).pow(2)).sum() / n
+    variance.sqrt()
+}
+
+/// Sample n items from array without replacement
+fn sample_without_replacement<T: Clone, R: Rng>(arr: [T], n: Int, rng: R) -> [T] {
+    if n >= arr.len() { return arr.clone() }
+    var indices: [Int] = (0..arr.len()).collect()
+    shuffle_with_rng(indices, rng)
+    indices.take(n).map(|i| arr[i].clone()).collect()
+}
+
+/// Sample n items from array with replacement
+fn sample_with_replacement<T: Clone, R: Rng>(arr: [T], n: Int, rng: R) -> [T] {
+    (0..n).map(|_| arr[rng.next_range(0, arr.len())].clone()).collect()
+}
+
+/// Random choice from array
+fn choice<T: Clone, R: Rng>(arr: [T], rng: R) -> Option<T> {
+    if arr.is_empty() { None } else { Some(arr[rng.next_range(0, arr.len())].clone()) }
+}
+
+/// Random choices from array
+fn choices<T: Clone, R: Rng>(arr: [T], n: Int, rng: R) -> [T] {
+    sample_with_replacement(arr, n, rng)
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "weighted sampler" {
+    let sampler = WeightedSampler.new([("a", 1.0), ("b", 2.0), ("c", 3.0)])
+    var rng = Xoshiro256StarStar.new(42)
+    var counts = Map.empty()
+    for _ in 0..6000 {
+        let s = sampler.sample(rng).unwrap()
+        counts.entry(s).or_insert(0) += 1
+    }
+    // "c" should appear roughly 3x as often as "a"
+    let ratio = counts["c"] as Float / counts["a"] as Float
+    assert(ratio > 2.5 && ratio < 3.5)?
+}
+
+test "reservoir sampler" {
+    var sampler = ReservoirSampler.new(5)
+    for i in 0..100 { sampler.add(i) }
+    assert_eq(sampler.len(), 5)?
+    assert_eq(sampler.total_seen(), 100)?
+}
+
+test "stratified sampler" {
+    var rng = Xoshiro256StarStar.new(42)
+    let sampler = StratifiedSampler.new(4)
+    let samples = sampler.sample_1d(rng)
+    assert_eq(samples.len(), 4)?
+    for (i, s) in samples.iter().enumerate() {
+        let expected_min = i as Float / 4.0
+        let expected_max = (i + 1) as Float / 4.0
+        assert(s >= expected_min && s < expected_max)?
+    }
+}
+
+test "latin hypercube" {
+    var rng = Xoshiro256StarStar.new(42)
+    let lhs = LatinHypercubeSampler.new(2, 5)
+    let samples = lhs.sample(rng)
+    assert_eq(samples.len(), 5)?
+    for s in samples { assert_eq(s.len(), 2)? }
+}
+
+test "bootstrap" {
+    let data = [1.0, 2.0, 3.0, 4.0, 5.0]
+    let boot = Bootstrap.with_seed(data, 42)
+    let result = boot.estimate(|s| s.iter().sum() / s.len() as Float, 100)
+    assert(result.mean > 2.0 && result.mean < 4.0)?
+}

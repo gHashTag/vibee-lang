@@ -1,0 +1,463 @@
+// =============================================================================
+// Vibee OS — Shuffle Module
+// Array shuffling and permutation algorithms
+// =============================================================================
+
+use rng::{Rng, Xoshiro256StarStar, thread_rng, random_range}
+
+// -----------------------------------------------------------------------------
+// Basic Shuffling
+// -----------------------------------------------------------------------------
+
+/// Fisher-Yates shuffle (in-place)
+fn shuffle<T>(arr: [T]) {
+    shuffle_with_rng(arr, thread_rng.rng)
+}
+
+/// Fisher-Yates shuffle with custom RNG
+fn shuffle_with_rng<T, R: Rng>(arr: [T], rng: R) {
+    let n = arr.len()
+    for i in (1..n).rev() {
+        let j = rng.next_range(0, i + 1)
+        arr.swap(i, j)
+    }
+}
+
+/// Shuffle and return new array
+fn shuffled<T: Clone>(arr: [T]) -> [T] {
+    var result = arr.clone()
+    shuffle(result)
+    result
+}
+
+/// Shuffle with seed for reproducibility
+fn shuffle_seeded<T>(arr: [T], seed: UInt64) {
+    var rng = Xoshiro256StarStar.new(seed)
+    shuffle_with_rng(arr, rng)
+}
+
+// -----------------------------------------------------------------------------
+// Partial Shuffling
+// -----------------------------------------------------------------------------
+
+/// Shuffle only first k elements (partial shuffle)
+fn partial_shuffle<T, R: Rng>(arr: [T], k: Int, rng: R) {
+    let n = arr.len()
+    let k = k.min(n)
+    for i in 0..k {
+        let j = rng.next_range(i, n)
+        arr.swap(i, j)
+    }
+}
+
+/// Get k random elements (selection without full shuffle)
+fn select_random<T: Clone, R: Rng>(arr: [T], k: Int, rng: R) -> [T] {
+    var copy = arr.clone()
+    partial_shuffle(copy, k, rng)
+    copy.take(k).collect()
+}
+
+/// Shuffle a slice of the array
+fn shuffle_slice<T, R: Rng>(arr: [T], start: Int, end: Int, rng: R) {
+    let end = end.min(arr.len())
+    if start >= end { return }
+    for i in (start + 1..end).rev() {
+        let j = rng.next_range(start, i + 1)
+        arr.swap(i, j)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Permutations
+// -----------------------------------------------------------------------------
+
+/// Generate random permutation of 0..n
+fn random_permutation(n: Int) -> [Int] {
+    random_permutation_with_rng(n, thread_rng.rng)
+}
+
+/// Generate random permutation with custom RNG
+fn random_permutation_with_rng<R: Rng>(n: Int, rng: R) -> [Int] {
+    var perm: [Int] = (0..n).collect()
+    shuffle_with_rng(perm, rng)
+    perm
+}
+
+/// Generate all permutations of an array
+fn permutations<T: Clone>(arr: [T]) -> [[T]] {
+    if arr.is_empty() { return [[]] }
+    if arr.len() == 1 { return [arr.clone()] }
+    
+    var result: [[T]] = []
+    for i in 0..arr.len() {
+        let first = arr[i].clone()
+        var rest = arr.clone()
+        rest.remove(i)
+        for perm in permutations(rest) {
+            var new_perm = [first.clone()]
+            new_perm.extend(perm)
+            result.push(new_perm)
+        }
+    }
+    result
+}
+
+/// Generate k random permutations
+fn random_permutations<T: Clone, R: Rng>(arr: [T], k: Int, rng: R) -> [[T]] {
+    (0..k).map(|_| {
+        var copy = arr.clone()
+        shuffle_with_rng(copy, rng)
+        copy
+    }).collect()
+}
+
+/// Check if array is a valid permutation of 0..n
+fn is_permutation(arr: [Int]) -> Bool {
+    let n = arr.len()
+    var seen = [false; n]
+    for x in arr {
+        if x < 0 || x >= n || seen[x] { return false }
+        seen[x] = true
+    }
+    true
+}
+
+/// Inverse permutation
+fn inverse_permutation(perm: [Int]) -> [Int] {
+    var inv = [0; perm.len()]
+    for (i, p) in perm.iter().enumerate() {
+        inv[p] = i
+    }
+    inv
+}
+
+/// Compose two permutations
+fn compose_permutations(p1: [Int], p2: [Int]) -> [Int] {
+    p1.iter().map(|i| p2[i]).collect()
+}
+
+/// Apply permutation to array
+fn apply_permutation<T: Clone>(arr: [T], perm: [Int]) -> [T] {
+    perm.iter().map(|i| arr[i].clone()).collect()
+}
+
+// -----------------------------------------------------------------------------
+// Derangements
+// -----------------------------------------------------------------------------
+
+/// Generate random derangement (permutation with no fixed points)
+fn random_derangement<R: Rng>(n: Int, rng: R) -> Option<[Int]> {
+    if n < 2 { return None }
+    
+    // Rejection sampling
+    for _ in 0..1000 {
+        var perm = random_permutation_with_rng(n, rng)
+        var is_derangement = true
+        for i in 0..n {
+            if perm[i] == i { is_derangement = false; break }
+        }
+        if is_derangement { return Some(perm) }
+    }
+    
+    // Fallback: construct derangement directly
+    var perm: [Int] = (0..n).collect()
+    // Shift by 1
+    let first = perm[0]
+    for i in 0..(n-1) { perm[i] = perm[i + 1] }
+    perm[n - 1] = first
+    Some(perm)
+}
+
+/// Check if permutation is a derangement
+fn is_derangement(perm: [Int]) -> Bool {
+    for (i, p) in perm.iter().enumerate() {
+        if p == i { return false }
+    }
+    true
+}
+
+/// Count derangements of n elements (subfactorial)
+fn count_derangements(n: Int) -> Int {
+    if n == 0 { return 1 }
+    if n == 1 { return 0 }
+    var d0 = 1
+    var d1 = 0
+    for i in 2..=n {
+        let d2 = (i - 1) * (d0 + d1)
+        d0 = d1
+        d1 = d2
+    }
+    d1
+}
+
+// -----------------------------------------------------------------------------
+// Cyclic Permutations
+// -----------------------------------------------------------------------------
+
+/// Generate random cyclic permutation (single cycle)
+fn random_cyclic_permutation<R: Rng>(n: Int, rng: R) -> [Int] {
+    if n <= 1 { return (0..n).collect() }
+    
+    // Sattolo's algorithm
+    var perm: [Int] = (0..n).collect()
+    for i in (1..n).rev() {
+        let j = rng.next_range(0, i)  // Note: exclusive of i
+        perm.swap(i, j)
+    }
+    perm
+}
+
+/// Decompose permutation into cycles
+fn cycle_decomposition(perm: [Int]) -> [[Int]] {
+    let n = perm.len()
+    var visited = [false; n]
+    var cycles: [[Int]] = []
+    
+    for start in 0..n {
+        if visited[start] { continue }
+        var cycle = []
+        var current = start
+        while !visited[current] {
+            visited[current] = true
+            cycle.push(current)
+            current = perm[current]
+        }
+        if cycle.len() > 1 { cycles.push(cycle) }
+    }
+    cycles
+}
+
+/// Create permutation from cycle notation
+fn from_cycles(n: Int, cycles: [[Int]]) -> [Int] {
+    var perm: [Int] = (0..n).collect()
+    for cycle in cycles {
+        if cycle.is_empty() { continue }
+        for i in 0..cycle.len() {
+            let next = (i + 1) % cycle.len()
+            perm[cycle[i]] = cycle[next]
+        }
+    }
+    perm
+}
+
+// -----------------------------------------------------------------------------
+// Shuffle Algorithms
+// -----------------------------------------------------------------------------
+
+/// Riffle shuffle (card shuffle simulation)
+fn riffle_shuffle<T>(arr: [T]) {
+    let n = arr.len()
+    if n < 2 { return }
+    
+    let mid = n / 2
+    var left = arr[..mid].to_vec()
+    var right = arr[mid..].to_vec()
+    
+    var i = 0
+    var l = 0
+    var r = 0
+    
+    while l < left.len() && r < right.len() {
+        if random_bool() {
+            arr[i] = left[l]; l += 1
+        } else {
+            arr[i] = right[r]; r += 1
+        }
+        i += 1
+    }
+    
+    while l < left.len() { arr[i] = left[l]; l += 1; i += 1 }
+    while r < right.len() { arr[i] = right[r]; r += 1; i += 1 }
+}
+
+/// Perfect riffle shuffle (Faro shuffle)
+fn faro_shuffle<T>(arr: [T], out_shuffle: Bool) {
+    let n = arr.len()
+    if n < 2 { return }
+    
+    var result: [T] = []
+    let mid = n / 2
+    
+    if out_shuffle {
+        for i in 0..mid {
+            result.push(arr[i].clone())
+            if mid + i < n { result.push(arr[mid + i].clone()) }
+        }
+    } else {
+        for i in 0..mid {
+            if mid + i < n { result.push(arr[mid + i].clone()) }
+            result.push(arr[i].clone())
+        }
+    }
+    
+    for i in 0..n { arr[i] = result[i].clone() }
+}
+
+/// Overhand shuffle simulation
+fn overhand_shuffle<T, R: Rng>(arr: [T], rng: R) {
+    let n = arr.len()
+    if n < 2 { return }
+    
+    var result: [T] = []
+    var remaining = arr.to_vec()
+    
+    while !remaining.is_empty() {
+        let take = rng.next_range(1, remaining.len().min(5) + 1)
+        let chunk: [T] = remaining.drain(..take).collect()
+        result = chunk.into_iter().chain(result.into_iter()).collect()
+    }
+    
+    for i in 0..n { arr[i] = result[i].clone() }
+}
+
+// -----------------------------------------------------------------------------
+// Shuffle Quality
+// -----------------------------------------------------------------------------
+
+/// Test shuffle quality using chi-square test
+fn test_shuffle_quality<R: Rng>(n: Int, iterations: Int, rng: R) -> Float {
+    var position_counts: [[Int]] = (0..n).map(|_| [0; n]).collect()
+    
+    for _ in 0..iterations {
+        var arr: [Int] = (0..n).collect()
+        shuffle_with_rng(arr, rng)
+        for (pos, val) in arr.iter().enumerate() {
+            position_counts[val][pos] += 1
+        }
+    }
+    
+    let expected = iterations as Float / n as Float
+    var chi_square = 0.0
+    
+    for i in 0..n {
+        for j in 0..n {
+            let observed = position_counts[i][j] as Float
+            chi_square += (observed - expected).pow(2) / expected
+        }
+    }
+    
+    chi_square
+}
+
+// -----------------------------------------------------------------------------
+// Interleaving
+// -----------------------------------------------------------------------------
+
+/// Interleave two arrays
+fn interleave<T>(a: [T], b: [T]) -> [T] {
+    var result = []
+    let max_len = a.len().max(b.len())
+    for i in 0..max_len {
+        if i < a.len() { result.push(a[i].clone()) }
+        if i < b.len() { result.push(b[i].clone()) }
+    }
+    result
+}
+
+/// Random interleave (merge with random selection)
+fn random_interleave<T, R: Rng>(a: [T], b: [T], rng: R) -> [T] {
+    var result = []
+    var i = 0
+    var j = 0
+    
+    while i < a.len() && j < b.len() {
+        if rng.next_bool() {
+            result.push(a[i].clone()); i += 1
+        } else {
+            result.push(b[j].clone()); j += 1
+        }
+    }
+    
+    while i < a.len() { result.push(a[i].clone()); i += 1 }
+    while j < b.len() { result.push(b[j].clone()); j += 1 }
+    
+    result
+}
+
+// -----------------------------------------------------------------------------
+// Rotation
+// -----------------------------------------------------------------------------
+
+/// Rotate array left by k positions
+fn rotate_left<T>(arr: [T], k: Int) {
+    let n = arr.len()
+    if n == 0 { return }
+    let k = ((k % n) + n) % n
+    arr.reverse()
+    arr[..n-k].reverse()
+    arr[n-k..].reverse()
+}
+
+/// Rotate array right by k positions
+fn rotate_right<T>(arr: [T], k: Int) {
+    rotate_left(arr, -k)
+}
+
+/// Random rotation
+fn random_rotate<T, R: Rng>(arr: [T], rng: R) {
+    let k = rng.next_range(0, arr.len())
+    rotate_left(arr, k)
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+fn random_bool() -> Bool { thread_rng.rng.next_bool() }
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "shuffle preserves elements" {
+    var arr = [1, 2, 3, 4, 5]
+    let original_sum: Int = arr.iter().sum()
+    shuffle(arr)
+    let shuffled_sum: Int = arr.iter().sum()
+    assert_eq(original_sum, shuffled_sum)?
+}
+
+test "shuffle with seed is deterministic" {
+    var arr1 = [1, 2, 3, 4, 5]
+    var arr2 = [1, 2, 3, 4, 5]
+    shuffle_seeded(arr1, 42)
+    shuffle_seeded(arr2, 42)
+    assert_eq(arr1, arr2)?
+}
+
+test "random permutation is valid" {
+    let perm = random_permutation(10)
+    assert(is_permutation(perm))?
+}
+
+test "inverse permutation" {
+    let perm = [2, 0, 3, 1]
+    let inv = inverse_permutation(perm)
+    let composed = compose_permutations(perm, inv)
+    assert_eq(composed, [0, 1, 2, 3])?
+}
+
+test "derangement has no fixed points" {
+    var rng = Xoshiro256StarStar.new(42)
+    let d = random_derangement(10, rng).unwrap()
+    assert(is_derangement(d))?
+}
+
+test "cycle decomposition" {
+    let perm = [1, 2, 0, 4, 3]  // (0 1 2)(3 4)
+    let cycles = cycle_decomposition(perm)
+    assert_eq(cycles.len(), 2)?
+}
+
+test "apply permutation" {
+    let arr = ['a', 'b', 'c', 'd']
+    let perm = [2, 0, 3, 1]
+    let result = apply_permutation(arr, perm)
+    assert_eq(result, ['c', 'a', 'd', 'b'])?
+}
+
+test "rotate left" {
+    var arr = [1, 2, 3, 4, 5]
+    rotate_left(arr, 2)
+    assert_eq(arr, [3, 4, 5, 1, 2])?
+}

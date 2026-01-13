@@ -1,0 +1,535 @@
+// =============================================================================
+// Vibee OS — RAR Module
+// RAR archive reading and extraction (RAR4 and RAR5 formats)
+// Note: RAR creation requires proprietary license, only extraction supported
+// =============================================================================
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+const RAR4_SIGNATURE: [UInt8; 7] = [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]
+const RAR5_SIGNATURE: [UInt8; 8] = [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00]
+
+// RAR4 header types
+const RAR4_MARKER_HEAD: UInt8 = 0x72
+const RAR4_ARCHIVE_HEAD: UInt8 = 0x73
+const RAR4_FILE_HEAD: UInt8 = 0x74
+const RAR4_COMMENT_HEAD: UInt8 = 0x75
+const RAR4_EXTRA_HEAD: UInt8 = 0x76
+const RAR4_SUBBLOCK_HEAD: UInt8 = 0x77
+const RAR4_RECOVERY_HEAD: UInt8 = 0x78
+const RAR4_END_HEAD: UInt8 = 0x7b
+
+// RAR5 header types
+const RAR5_MAIN_HEAD: UInt8 = 1
+const RAR5_FILE_HEAD: UInt8 = 2
+const RAR5_SERVICE_HEAD: UInt8 = 3
+const RAR5_ENCRYPTION_HEAD: UInt8 = 4
+const RAR5_END_HEAD: UInt8 = 5
+
+// Compression methods
+const RAR_METHOD_STORE: UInt8 = 0x30
+const RAR_METHOD_FASTEST: UInt8 = 0x31
+const RAR_METHOD_FAST: UInt8 = 0x32
+const RAR_METHOD_NORMAL: UInt8 = 0x33
+const RAR_METHOD_GOOD: UInt8 = 0x34
+const RAR_METHOD_BEST: UInt8 = 0x35
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+/// RAR format version
+enum RarFormat {
+    Rar4    // RAR 4.x format
+    Rar5    // RAR 5.x format
+}
+
+impl RarFormat {
+    fn signature() -> [UInt8] {
+        match self {
+            Rar4 => RAR4_SIGNATURE.to_vec()
+            Rar5 => RAR5_SIGNATURE.to_vec()
+        }
+    }
+}
+
+/// RAR compression method
+enum RarMethod {
+    Store       // No compression
+    Fastest     // Fastest compression
+    Fast        // Fast compression
+    Normal      // Normal compression
+    Good        // Good compression
+    Best        // Best compression
+}
+
+impl RarMethod {
+    fn from_byte(b: UInt8) -> Self {
+        match b {
+            0x30 => Store
+            0x31 => Fastest
+            0x32 => Fast
+            0x33 => Normal
+            0x34 => Good
+            0x35 => Best
+            _ => Normal
+        }
+    }
+    
+    fn name() -> String {
+        match self {
+            Store => "Store"
+            Fastest => "Fastest"
+            Fast => "Fast"
+            Normal => "Normal"
+            Good => "Good"
+            Best => "Best"
+        }
+    }
+}
+
+/// RAR entry type
+enum RarEntryType {
+    File
+    Directory
+    SymLink
+    HardLink
+    Service
+    Unknown
+}
+
+impl RarEntryType {
+    fn is_file() -> Bool { match self { File => true, _ => false } }
+    fn is_dir() -> Bool { match self { Directory => true, _ => false } }
+}
+
+/// RAR host OS
+enum RarHostOS {
+    MsDos
+    OS2
+    Windows
+    Unix
+    MacOS
+    BeOS
+    Unknown(UInt8)
+}
+
+impl RarHostOS {
+    fn from_byte(b: UInt8) -> Self {
+        match b {
+            0 => MsDos
+            1 => OS2
+            2 => Windows
+            3 => Unix
+            4 => MacOS
+            5 => BeOS
+            _ => Unknown(b)
+        }
+    }
+}
+
+// =============================================================================
+// Structs
+// =============================================================================
+
+/// RAR archive entry
+struct RarEntry {
+    name: String
+    compressed_size: UInt64
+    uncompressed_size: UInt64
+    crc32: UInt32
+    method: RarMethod
+    entry_type: RarEntryType
+    modified: DateTime
+    created: Option<DateTime>
+    accessed: Option<DateTime>
+    attributes: UInt32
+    host_os: RarHostOS
+    is_encrypted: Bool
+    is_solid: Bool
+    comment: Option<String>
+    version: Int
+}
+
+impl RarEntry {
+    fn is_file() -> Bool { self.entry_type.is_file() }
+    fn is_dir() -> Bool { self.entry_type.is_dir() }
+    
+    fn compression_ratio() -> Float64 {
+        if self.uncompressed_size == 0 { return 0.0 }
+        1.0 - (self.compressed_size as Float64 / self.uncompressed_size as Float64)
+    }
+    
+    fn is_split() -> Bool { self.version > 0 }
+}
+
+/// RAR archive information
+struct RarInfo {
+    format: RarFormat
+    is_solid: Bool
+    is_locked: Bool
+    is_encrypted: Bool
+    has_recovery: Bool
+    has_auth_info: Bool
+    is_multivolume: Bool
+    is_first_volume: Bool
+    comment: Option<String>
+    total_size: UInt64
+    entry_count: Int
+}
+
+/// RAR archive reader
+struct RarReader {
+    inner: @native("RarReader")
+    info: RarInfo
+    entries: [RarEntry]
+}
+
+impl RarReader {
+    fn new(data: [UInt8]) -> Result<Self, RarError> {
+        if !is_rar(data) {
+            return Err(RarError.InvalidArchive)
+        }
+        let inner = @native("rar_reader_new", data)?
+        let info = @native("rar_reader_info", inner)?
+        let entries = @native("rar_reader_entries", inner)?
+        Ok(RarReader { inner: inner, info: info, entries: entries })
+    }
+    
+    fn open(path: String) -> Result<Self, RarError> {
+        let data = @native("fs_read_bytes", path)?
+        Self.new(data)
+    }
+    
+    fn open_multivolume(paths: [String]) -> Result<Self, RarError> {
+        @native("rar_reader_open_multivolume", paths)
+    }
+    
+    fn info() -> RarInfo { self.info.clone() }
+    
+    fn entries() -> [RarEntry] { self.entries.clone() }
+    
+    fn len() -> Int { self.entries.len() }
+    
+    fn is_empty() -> Bool { self.entries.is_empty() }
+    
+    fn list() -> [String] { self.entries.map(|e| e.name.clone()) }
+    
+    fn find(name: String) -> Option<RarEntry> {
+        for e in self.entries {
+            if e.name == name { return Some(e.clone()) }
+        }
+        None
+    }
+    
+    fn extract(dest: String) -> Result<Int, RarError> {
+        @native("rar_reader_extract", self.inner, dest)
+    }
+    
+    fn extract_with_password(dest: String, password: String) -> Result<Int, RarError> {
+        @native("rar_reader_extract_password", self.inner, dest, password)
+    }
+    
+    fn extract_file(name: String) -> Result<[UInt8], RarError> {
+        @native("rar_reader_extract_file", self.inner, name)
+    }
+    
+    fn extract_file_with_password(name: String, password: String) -> Result<[UInt8], RarError> {
+        @native("rar_reader_extract_file_password", self.inner, name, password)
+    }
+    
+    fn test() -> Result<Bool, RarError> {
+        @native("rar_reader_test", self.inner)
+    }
+    
+    fn test_with_password(password: String) -> Result<Bool, RarError> {
+        @native("rar_reader_test_password", self.inner, password)
+    }
+    
+    fn comment() -> Option<String> { self.info.comment.clone() }
+    
+    fn is_encrypted() -> Bool { self.info.is_encrypted }
+    
+    fn is_solid() -> Bool { self.info.is_solid }
+    
+    fn is_multivolume() -> Bool { self.info.is_multivolume }
+    
+    fn format() -> RarFormat { self.info.format }
+}
+
+impl Iterator for RarReader {
+    type Item = RarEntry
+    fn next() -> Option<Self.Item> {
+        @native("rar_reader_next", self.inner)
+    }
+}
+
+impl Drop for RarReader {
+    fn drop() { @native("rar_reader_close", self.inner) }
+}
+
+/// RAR extraction options
+struct RarExtractOptions {
+    password: Option<String>
+    overwrite: Bool
+    preserve_paths: Bool
+    preserve_attributes: Bool
+    preserve_times: Bool
+    filter: Option<fn(RarEntry) -> Bool>
+}
+
+impl RarExtractOptions {
+    fn new() -> Self {
+        RarExtractOptions {
+            password: None
+            overwrite: false
+            preserve_paths: true
+            preserve_attributes: true
+            preserve_times: true
+            filter: None
+        }
+    }
+    
+    fn password(p: String) -> Self { self.password = Some(p); self }
+    fn overwrite(o: Bool) -> Self { self.overwrite = o; self }
+    fn preserve_paths(p: Bool) -> Self { self.preserve_paths = p; self }
+    fn preserve_attributes(a: Bool) -> Self { self.preserve_attributes = a; self }
+    fn preserve_times(t: Bool) -> Self { self.preserve_times = t; self }
+    fn filter(f: fn(RarEntry) -> Bool) -> Self { self.filter = Some(f); self }
+}
+
+/// RAR volume info for multivolume archives
+struct RarVolume {
+    path: String
+    index: Int
+    size: UInt64
+    is_first: Bool
+    is_last: Bool
+}
+
+// =============================================================================
+// Actor for async operations
+// =============================================================================
+
+actor RarActor {
+    fn extract_async(data: [UInt8], dest: String) -> Result<Int, RarError> {
+        extract(data, dest)
+    }
+    
+    fn extract_encrypted_async(data: [UInt8], dest: String, password: String) -> Result<Int, RarError> {
+        extract_encrypted(data, dest, password)
+    }
+    
+    fn list_async(data: [UInt8]) -> Result<[String], RarError> {
+        list(data)
+    }
+    
+    fn test_async(data: [UInt8]) -> Result<Bool, RarError> {
+        test(data)
+    }
+}
+
+// =============================================================================
+// Trait implementations
+// =============================================================================
+
+trait Archive {
+    fn list() -> [String]
+    fn extract(dest: String) -> Result<Int, RarError>
+    fn extract_file(name: String) -> Result<[UInt8], RarError>
+}
+
+impl Archive for RarReader {
+    fn list() -> [String] { self.list() }
+    fn extract(dest: String) -> Result<Int, RarError> { self.extract(dest) }
+    fn extract_file(name: String) -> Result<[UInt8], RarError> { self.extract_file(name) }
+}
+
+// =============================================================================
+// Public API Functions
+// =============================================================================
+
+/// Check if data is a RAR archive
+fn is_rar(data: [UInt8]) -> Bool {
+    if data.len() < 7 { return false }
+    
+    // Check RAR4 signature
+    if data[0] == 0x52 && data[1] == 0x61 && data[2] == 0x72 && 
+       data[3] == 0x21 && data[4] == 0x1a && data[5] == 0x07 {
+        return true
+    }
+    
+    false
+}
+
+/// Detect RAR format version
+fn detect_format(data: [UInt8]) -> Option<RarFormat> {
+    if data.len() < 8 { return None }
+    
+    if data[0..7] == RAR4_SIGNATURE {
+        if data.len() >= 8 && data[7] == 0x01 {
+            return Some(RarFormat.Rar5)
+        }
+        return Some(RarFormat.Rar4)
+    }
+    
+    None
+}
+
+/// Extract RAR archive to directory
+fn extract(data: [UInt8], dest: String) -> Result<Int, RarError> {
+    let reader = RarReader.new(data)?
+    reader.extract(dest)
+}
+
+/// Extract RAR archive from file
+fn extract_file(path: String, dest: String) -> Result<Int, RarError> {
+    let reader = RarReader.open(path)?
+    reader.extract(dest)
+}
+
+/// Extract password-protected RAR archive
+fn extract_encrypted(data: [UInt8], dest: String, password: String) -> Result<Int, RarError> {
+    let reader = RarReader.new(data)?
+    reader.extract_with_password(dest, password)
+}
+
+/// Extract with options
+fn extract_with_options(data: [UInt8], dest: String, options: RarExtractOptions) -> Result<Int, RarError> {
+    @native("rar_extract_with_options", data, dest, options)
+}
+
+/// List files in RAR archive
+fn list(data: [UInt8]) -> Result<[String], RarError> {
+    let reader = RarReader.new(data)?
+    Ok(reader.list())
+}
+
+/// Get a single file from RAR archive
+fn get_file(data: [UInt8], name: String) -> Result<[UInt8], RarError> {
+    let reader = RarReader.new(data)?
+    reader.extract_file(name)
+}
+
+/// Get a single file with password
+fn get_file_encrypted(data: [UInt8], name: String, password: String) -> Result<[UInt8], RarError> {
+    let reader = RarReader.new(data)?
+    reader.extract_file_with_password(name, password)
+}
+
+/// Test RAR archive integrity
+fn test(data: [UInt8]) -> Result<Bool, RarError> {
+    let reader = RarReader.new(data)?
+    reader.test()
+}
+
+/// Test password-protected RAR archive
+fn test_encrypted(data: [UInt8], password: String) -> Result<Bool, RarError> {
+    let reader = RarReader.new(data)?
+    reader.test_with_password(password)
+}
+
+/// Get archive information
+fn info(data: [UInt8]) -> Result<RarInfo, RarError> {
+    let reader = RarReader.new(data)?
+    Ok(reader.info())
+}
+
+/// Find multivolume archive parts
+fn find_volumes(first_volume: String) -> Result<[String], RarError> {
+    @native("rar_find_volumes", first_volume)
+}
+
+/// Extract multivolume archive
+fn extract_multivolume(volumes: [String], dest: String) -> Result<Int, RarError> {
+    let reader = RarReader.open_multivolume(volumes)?
+    reader.extract(dest)
+}
+
+// =============================================================================
+// Error Type
+// =============================================================================
+
+enum RarError {
+    InvalidArchive
+    InvalidHeader
+    InvalidCrc
+    UnsupportedVersion
+    UnsupportedMethod
+    FileNotFound(String)
+    PasswordRequired
+    WrongPassword
+    CorruptedData
+    UnexpectedEof
+    VolumeNotFound(String)
+    IoError(String)
+    Other(String)
+}
+
+impl Display for RarError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidArchive => f.write("Invalid RAR archive")
+            InvalidHeader => f.write("Invalid RAR header")
+            InvalidCrc => f.write("CRC checksum mismatch")
+            UnsupportedVersion => f.write("Unsupported RAR version")
+            UnsupportedMethod => f.write("Unsupported compression method")
+            FileNotFound(name) => f.write("File not found in archive: " + name)
+            PasswordRequired => f.write("Password required for encrypted archive")
+            WrongPassword => f.write("Wrong password")
+            CorruptedData => f.write("Corrupted archive data")
+            UnexpectedEof => f.write("Unexpected end of archive")
+            VolumeNotFound(path) => f.write("Volume not found: " + path)
+            IoError(msg) => f.write("I/O error: " + msg)
+            Other(msg) => f.write(msg)
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "is_rar detection" {
+    let rar4_data = [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]
+    assert(is_rar(rar4_data))?
+    
+    let rar5_data = [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00]
+    assert(is_rar(rar5_data))?
+    
+    let invalid = [0x00, 0x00, 0x00, 0x00]
+    assert(!is_rar(invalid))?
+}
+
+test "detect format" {
+    let rar4_data = [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00, 0x00]
+    assert_eq(detect_format(rar4_data), Some(RarFormat.Rar4))?
+    
+    let rar5_data = [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00]
+    assert_eq(detect_format(rar5_data), Some(RarFormat.Rar5))?
+}
+
+test "rar entry type" {
+    assert(RarEntryType.File.is_file())?
+    assert(!RarEntryType.File.is_dir())?
+    assert(RarEntryType.Directory.is_dir())?
+}
+
+test "rar method" {
+    assert_eq(RarMethod.from_byte(0x30), RarMethod.Store)?
+    assert_eq(RarMethod.from_byte(0x33), RarMethod.Normal)?
+    assert_eq(RarMethod.Normal.name(), "Normal")?
+}
+
+test "extract options" {
+    let opts = RarExtractOptions.new()
+        .password("secret")
+        .overwrite(true)
+        .preserve_paths(false)
+    
+    assert_eq(opts.password, Some("secret"))?
+    assert(opts.overwrite)?
+    assert(!opts.preserve_paths)?
+}

@@ -1,0 +1,413 @@
+// =============================================================================
+// Vibee OS — Liquid Module
+// Liquid templating engine (Shopify-style)
+// =============================================================================
+
+struct Template {
+    nodes: [Node]
+    
+    fn parse(source: String) -> Result<Self, LiquidError> {
+        Ok(Template { nodes: Parser.new(source).parse()? })
+    }
+    
+    fn render(context: Value) -> Result<String, LiquidError> {
+        Renderer.new(Context.new(context)).render(self.nodes)
+    }
+}
+
+enum Node {
+    Text(String)
+    Output(Expr, [Filter])
+    If(Expr, [Node], Option<[Node]>)
+    Unless(Expr, [Node])
+    Case(Expr, [(Expr, [Node])], Option<[Node]>)
+    For(String, Expr, [Node], Option<[Node]>, ForOpts)
+    Assign(String, Expr)
+    Capture(String, [Node])
+    Comment
+    Raw(String)
+}
+
+struct ForOpts { limit: Option<Int>, offset: Option<Int>, reversed: Bool }
+
+enum Expr {
+    Var(String)
+    Literal(Value)
+    Range(Box<Expr>, Box<Expr>)
+    Binary(Box<Expr>, BinOp, Box<Expr>)
+}
+
+enum BinOp { Eq, Ne, Lt, Gt, Le, Ge, And, Or, Contains }
+
+struct Filter { name: String, args: [Expr] }
+
+enum Value {
+    Nil
+    Bool(Bool)
+    Int(Int)
+    Float(Float)
+    String(String)
+    Array([Value])
+    Object(Map<String, Value>)
+    
+    fn is_truthy() -> Bool {
+        match self { Nil => false, Bool(false) => false, _ => true }
+    }
+    
+    fn as_string() -> String {
+        match self { String(s) => s, Int(i) => i.to_string(), Float(f) => f.to_string(), Bool(b) => b.to_string(), _ => "" }
+    }
+    
+    fn get(k: String) -> Option<Value> { match self { Object(m) => m.get(k), _ => None } }
+}
+
+struct Context {
+    vars: Map<String, Value>
+    
+    fn new(root: Value) -> Self {
+        let v = match root { Value.Object(m) => m, _ => Map.new() }
+        Context { vars: v }
+    }
+    
+    fn get(name: String) -> Option<Value> {
+        let parts = name.split(".")
+        var val = self.vars.get(parts[0])?
+        for p in parts[1..] { val = val.get(p)? }
+        Some(val)
+    }
+    
+    fn set(name: String, value: Value) { self.vars.insert(name, value) }
+}
+
+struct Parser {
+    src: String
+    pos: Int
+    
+    fn new(src: String) -> Self { Parser { src: src, pos: 0 } }
+    
+    fn parse() -> Result<[Node], LiquidError> {
+        var nodes: [Node] = []
+        while self.pos < self.src.len() {
+            if self.at("{{") { nodes.push(self.parse_output()?) }
+            else if self.at("{%") { if let Some(n) = self.parse_tag()? { nodes.push(n) } }
+            else { let t = self.text(); if !t.is_empty() { nodes.push(Node.Text(t)) } }
+        }
+        Ok(nodes)
+    }
+    
+    fn text() -> String {
+        let s = self.pos
+        while self.pos < self.src.len() && !self.at("{{") && !self.at("{%") { self.pos += 1 }
+        self.src[s..self.pos]
+    }
+    
+    fn parse_output() -> Result<Node, LiquidError> {
+        self.pos += 2; self.ws()
+        let expr = self.expr()?
+        let filters = self.filters()?
+        self.ws(); self.expect("}}"); Ok(Node.Output(expr, filters))
+    }
+    
+    fn parse_tag() -> Result<Option<Node>, LiquidError> {
+        self.pos += 2; self.ws()
+        let kw = self.id(); self.ws()
+        let node = match kw.as_str() {
+            "if" => Some(self.parse_if()?)
+            "unless" => Some(self.parse_unless()?)
+            "case" => Some(self.parse_case()?)
+            "for" => Some(self.parse_for()?)
+            "assign" => Some(self.parse_assign()?)
+            "capture" => Some(self.parse_capture()?)
+            "comment" => { self.skip_until("endcomment"); Some(Node.Comment) }
+            "raw" => Some(Node.Raw(self.raw_content()))
+            "endif" | "endunless" | "endcase" | "endfor" | "endcapture" | "else" | "elsif" | "when" => { self.end_tag(); None }
+            _ => { self.end_tag(); None }
+        }
+        Ok(node)
+    }
+    
+    fn parse_if() -> Result<Node, LiquidError> {
+        let cond = self.expr()?; self.end_tag()
+        let body = self.until_tags(["else", "elsif", "endif"])?
+        let els = if self.last_tag == "else" { Some(self.until_tags(["endif"])?) }
+                  else if self.last_tag == "elsif" { Some([self.parse_if()?]) }
+                  else { None }
+        Ok(Node.If(cond, body, els))
+    }
+    
+    fn parse_unless() -> Result<Node, LiquidError> {
+        let cond = self.expr()?; self.end_tag()
+        let body = self.until_tags(["endunless"])?
+        Ok(Node.Unless(cond, body))
+    }
+    
+    fn parse_case() -> Result<Node, LiquidError> {
+        let expr = self.expr()?; self.end_tag()
+        var whens: [(Expr, [Node])] = []
+        var els: Option<[Node]> = None
+        while self.last_tag != "endcase" {
+            self.until_tags(["when", "else", "endcase"])?
+            if self.last_tag == "when" {
+                let val = self.expr()?; self.end_tag()
+                let body = self.until_tags(["when", "else", "endcase"])?
+                whens.push((val, body))
+            } else if self.last_tag == "else" {
+                els = Some(self.until_tags(["endcase"])?)
+            }
+        }
+        Ok(Node.Case(expr, whens, els))
+    }
+    
+    fn parse_for() -> Result<Node, LiquidError> {
+        let var = self.id(); self.ws(); self.expect("in"); self.ws()
+        let iter = self.expr()?
+        let opts = self.for_opts()
+        self.end_tag()
+        let body = self.until_tags(["else", "endfor"])?
+        let els = if self.last_tag == "else" { Some(self.until_tags(["endfor"])?) } else { None }
+        Ok(Node.For(var, iter, body, els, opts))
+    }
+    
+    fn for_opts() -> ForOpts {
+        var opts = ForOpts { limit: None, offset: None, reversed: false }
+        self.ws()
+        while !self.at("%}") {
+            let k = self.id(); self.ws()
+            if k == "limit" { self.expect(":"); self.ws(); opts.limit = Some(self.num()) }
+            else if k == "offset" { self.expect(":"); self.ws(); opts.offset = Some(self.num()) }
+            else if k == "reversed" { opts.reversed = true }
+            self.ws()
+        }
+        opts
+    }
+    
+    fn parse_assign() -> Result<Node, LiquidError> {
+        let name = self.id(); self.ws(); self.expect("="); self.ws()
+        let val = self.expr()?
+        let filters = self.filters()?
+        self.end_tag()
+        Ok(Node.Assign(name, if filters.is_empty() { val } else { val }))
+    }
+    
+    fn parse_capture() -> Result<Node, LiquidError> {
+        let name = self.id(); self.end_tag()
+        let body = self.until_tags(["endcapture"])?
+        Ok(Node.Capture(name, body))
+    }
+    
+    var last_tag: String = ""
+    
+    fn until_tags(tags: [String]) -> Result<[Node], LiquidError> {
+        var nodes: [Node] = []
+        while self.pos < self.src.len() {
+            if self.at("{%") {
+                let saved = self.pos
+                self.pos += 2; self.ws()
+                let kw = self.id()
+                if tags.contains(kw) { self.last_tag = kw; self.ws(); return Ok(nodes) }
+                self.pos = saved
+                if let Some(n) = self.parse_tag()? { nodes.push(n) }
+            } else if self.at("{{") { nodes.push(self.parse_output()?) }
+            else { let t = self.text(); if !t.is_empty() { nodes.push(Node.Text(t)) } }
+        }
+        Ok(nodes)
+    }
+    
+    fn skip_until(end: String) { while !self.at("{%") || !self.src[self.pos+2..].trim_start().starts_with(end) { self.pos += 1 }; self.pos += 2; self.ws(); self.id(); self.end_tag() }
+    fn raw_content() -> String { self.end_tag(); let s = self.pos; self.skip_until("endraw"); self.src[s..self.pos-10].trim_end() }
+    
+    fn expr() -> Result<Expr, LiquidError> { self.or_expr() }
+    
+    fn or_expr() -> Result<Expr, LiquidError> {
+        var l = self.and_expr()?
+        while self.kw("or") { l = Expr.Binary(Box.new(l), BinOp.Or, Box.new(self.and_expr()?)) }
+        Ok(l)
+    }
+    
+    fn and_expr() -> Result<Expr, LiquidError> {
+        var l = self.cmp_expr()?
+        while self.kw("and") { l = Expr.Binary(Box.new(l), BinOp.And, Box.new(self.cmp_expr()?)) }
+        Ok(l)
+    }
+    
+    fn cmp_expr() -> Result<Expr, LiquidError> {
+        let l = self.primary()?; self.ws()
+        let op = if self.at("==") { self.pos += 2; Some(BinOp.Eq) }
+            else if self.at("!=") { self.pos += 2; Some(BinOp.Ne) }
+            else if self.at("<=") { self.pos += 2; Some(BinOp.Le) }
+            else if self.at(">=") { self.pos += 2; Some(BinOp.Ge) }
+            else if self.at("<") { self.pos += 1; Some(BinOp.Lt) }
+            else if self.at(">") { self.pos += 1; Some(BinOp.Gt) }
+            else if self.kw("contains") { Some(BinOp.Contains) }
+            else { None }
+        match op { Some(o) => { self.ws(); Ok(Expr.Binary(Box.new(l), o, Box.new(self.primary()?))) }, None => Ok(l) }
+    }
+    
+    fn primary() -> Result<Expr, LiquidError> {
+        self.ws()
+        let c = self.peek()
+        if c == '"' || c == '\'' { return Ok(Expr.Literal(Value.String(self.str_lit()))) }
+        if c.is_digit() || c == '-' { return Ok(Expr.Literal(Value.Int(self.num()))) }
+        if self.at("(") { self.pos += 1; let s = self.num(); self.expect(".."); let e = self.num(); self.pos += 1; return Ok(Expr.Range(Box.new(Expr.Literal(Value.Int(s))), Box.new(Expr.Literal(Value.Int(e))))) }
+        if self.kw("true") { return Ok(Expr.Literal(Value.Bool(true))) }
+        if self.kw("false") { return Ok(Expr.Literal(Value.Bool(false))) }
+        if self.kw("nil") || self.kw("null") { return Ok(Expr.Literal(Value.Nil)) }
+        Ok(Expr.Var(self.dotted_id()))
+    }
+    
+    fn filters() -> Result<[Filter], LiquidError> {
+        var fs: [Filter] = []
+        self.ws()
+        while self.at("|") {
+            self.pos += 1; self.ws()
+            let name = self.id()
+            var args: [Expr] = []
+            if self.at(":") { self.pos += 1; self.ws(); args.push(self.primary()?) }
+            while self.at(",") { self.pos += 1; self.ws(); args.push(self.primary()?) }
+            fs.push(Filter { name: name, args: args })
+            self.ws()
+        }
+        Ok(fs)
+    }
+    
+    fn id() -> String { let s = self.pos; while self.pos < self.src.len() && (self.peek().is_alphanumeric() || self.peek() == '_') { self.pos += 1 }; self.src[s..self.pos] }
+    fn dotted_id() -> String { let s = self.pos; while self.pos < self.src.len() && (self.peek().is_alphanumeric() || self.peek() == '_' || self.peek() == '.') { self.pos += 1 }; self.src[s..self.pos] }
+    fn str_lit() -> String { let q = self.peek(); self.pos += 1; let s = self.pos; while self.peek() != q { self.pos += 1 }; let r = self.src[s..self.pos]; self.pos += 1; r }
+    fn num() -> Int { let neg = self.peek() == '-'; if neg { self.pos += 1 }; let s = self.pos; while self.peek().is_digit() { self.pos += 1 }; let n = self.src[s..self.pos].parse().unwrap_or(0); if neg { -n } else { n } }
+    fn end_tag() { self.ws(); self.expect("%}") }
+    fn expect(s: String) { self.pos += s.len() }
+    fn kw(k: String) -> Bool { self.ws(); if self.src[self.pos..].starts_with(k) && !self.src.get(self.pos + k.len()).map(|c| c.is_alphanumeric()).unwrap_or(false) { self.pos += k.len(); self.ws(); true } else { false } }
+    fn ws() { while self.pos < self.src.len() && self.peek().is_whitespace() { self.pos += 1 } }
+    fn peek() -> Char { self.src.get(self.pos).unwrap_or('\0') }
+    fn at(s: String) -> Bool { self.src[self.pos..].starts_with(s) }
+}
+
+struct Renderer {
+    ctx: Context
+    
+    fn new(ctx: Context) -> Self { Renderer { ctx: ctx } }
+    
+    fn render(nodes: [Node]) -> Result<String, LiquidError> {
+        var out = ""
+        for node in nodes {
+            match node {
+                Text(s) => out.push_str(s)
+                Output(e, fs) => out.push_str(self.apply_filters(self.eval(e)?, fs).as_string())
+                If(c, body, els) => out.push_str(if self.eval(c)?.is_truthy() { self.render(body)? } else { els.map(|e| self.render(e)).unwrap_or(Ok(""))? })
+                Unless(c, body) => if !self.eval(c)?.is_truthy() { out.push_str(self.render(body)?) }
+                For(v, iter, body, els, opts) => out.push_str(self.render_for(v, iter, body, els, opts)?)
+                Assign(n, e) => { let val = self.eval(e)?; self.ctx.set(n, val) }
+                Capture(n, body) => { let val = self.render(body)?; self.ctx.set(n, Value.String(val)) }
+                Raw(s) => out.push_str(s)
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+    
+    fn render_for(var: String, iter: Expr, body: [Node], els: Option<[Node]>, opts: ForOpts) -> Result<String, LiquidError> {
+        let items = match self.eval(iter)? {
+            Value.Array(a) => a
+            _ => return els.map(|e| self.render(e)).unwrap_or(Ok(""))
+        }
+        if items.is_empty() { return els.map(|e| self.render(e)).unwrap_or(Ok("")) }
+        
+        var arr = items
+        if opts.reversed { arr = arr.iter().rev().collect() }
+        if let Some(off) = opts.offset { arr = arr[off..].to_vec() }
+        if let Some(lim) = opts.limit { arr = arr[..lim.min(arr.len())].to_vec() }
+        
+        var out = ""
+        let len = arr.len()
+        for (i, item) in arr.iter().enumerate() {
+            self.ctx.set(var, item)
+            self.ctx.set("forloop", forloop_obj(i, len))
+            out.push_str(self.render(body)?)
+        }
+        Ok(out)
+    }
+    
+    fn eval(e: Expr) -> Result<Value, LiquidError> {
+        match e {
+            Var(n) => Ok(self.ctx.get(n).unwrap_or(Value.Nil))
+            Literal(v) => Ok(v)
+            Range(s, e) => {
+                let start = match self.eval(*s)? { Value.Int(i) => i, _ => 0 }
+                let end = match self.eval(*e)? { Value.Int(i) => i, _ => 0 }
+                Ok(Value.Array((start..=end).map(|i| Value.Int(i)).collect()))
+            }
+            Binary(l, op, r) => {
+                let lv = self.eval(*l)?
+                let rv = self.eval(*r)?
+                match op {
+                    BinOp.Eq => Ok(Value.Bool(val_eq(lv, rv)))
+                    BinOp.Ne => Ok(Value.Bool(!val_eq(lv, rv)))
+                    BinOp.And => Ok(Value.Bool(lv.is_truthy() && rv.is_truthy()))
+                    BinOp.Or => Ok(Value.Bool(lv.is_truthy() || rv.is_truthy()))
+                    BinOp.Contains => Ok(Value.Bool(contains(lv, rv)))
+                    _ => Ok(Value.Nil)
+                }
+            }
+        }
+    }
+    
+    fn apply_filters(v: Value, filters: [Filter]) -> Value {
+        var val = v
+        for f in filters {
+            val = match f.name.as_str() {
+                "upcase" => Value.String(val.as_string().to_uppercase())
+                "downcase" => Value.String(val.as_string().to_lowercase())
+                "capitalize" => Value.String(capitalize(val.as_string()))
+                "strip" => Value.String(val.as_string().trim())
+                "size" => match val { Value.String(s) => Value.Int(s.len()), Value.Array(a) => Value.Int(a.len()), _ => Value.Int(0) }
+                "first" => match val { Value.Array(a) => a.first().cloned().unwrap_or(Value.Nil), _ => Value.Nil }
+                "last" => match val { Value.Array(a) => a.last().cloned().unwrap_or(Value.Nil), _ => Value.Nil }
+                "reverse" => match val { Value.Array(a) => Value.Array(a.iter().rev().collect()), _ => val }
+                "join" => { let sep = f.args.get(0).map(|e| self.eval(e).ok()?.as_string()).unwrap_or(" "); match val { Value.Array(a) => Value.String(a.iter().map(|v| v.as_string()).join(sep)), _ => val } }
+                "split" => { let sep = f.args.get(0).map(|e| self.eval(e).ok()?.as_string()).unwrap_or(" "); Value.Array(val.as_string().split(sep).map(|s| Value.String(s)).collect()) }
+                "replace" => { let from = f.args.get(0).map(|e| self.eval(e).ok()?.as_string()).unwrap_or(""); let to = f.args.get(1).map(|e| self.eval(e).ok()?.as_string()).unwrap_or(""); Value.String(val.as_string().replace(from, to)) }
+                "append" => Value.String(val.as_string() + f.args.get(0).map(|e| self.eval(e).ok()?.as_string()).unwrap_or(""))
+                "prepend" => Value.String(f.args.get(0).map(|e| self.eval(e).ok()?.as_string()).unwrap_or("") + val.as_string())
+                "default" => if val.is_truthy() { val } else { f.args.get(0).map(|e| self.eval(e).ok()).flatten().unwrap_or(Value.Nil) }
+                "escape" => Value.String(html_escape(val.as_string()))
+                "truncate" => { let n = f.args.get(0).map(|e| match self.eval(e).ok()? { Value.Int(i) => i, _ => 50 }).unwrap_or(50); Value.String(truncate(val.as_string(), n)) }
+                "plus" => { let n = f.args.get(0).map(|e| match self.eval(e).ok()? { Value.Int(i) => i, _ => 0 }).unwrap_or(0); match val { Value.Int(i) => Value.Int(i + n), _ => val } }
+                "minus" => { let n = f.args.get(0).map(|e| match self.eval(e).ok()? { Value.Int(i) => i, _ => 0 }).unwrap_or(0); match val { Value.Int(i) => Value.Int(i - n), _ => val } }
+                "times" => { let n = f.args.get(0).map(|e| match self.eval(e).ok()? { Value.Int(i) => i, _ => 1 }).unwrap_or(1); match val { Value.Int(i) => Value.Int(i * n), _ => val } }
+                _ => val
+            }
+        }
+        val
+    }
+}
+
+fn forloop_obj(i: Int, len: Int) -> Value {
+    Value.Object(Map.from([
+        ("index", Value.Int(i + 1)), ("index0", Value.Int(i)),
+        ("first", Value.Bool(i == 0)), ("last", Value.Bool(i == len - 1)),
+        ("length", Value.Int(len)), ("rindex", Value.Int(len - i)), ("rindex0", Value.Int(len - i - 1))
+    ]))
+}
+
+fn val_eq(a: Value, b: Value) -> Bool {
+    match (a, b) { (Value.Int(x), Value.Int(y)) => x == y, (Value.String(x), Value.String(y)) => x == y, (Value.Bool(x), Value.Bool(y)) => x == y, (Value.Nil, Value.Nil) => true, _ => false }
+}
+
+fn contains(a: Value, b: Value) -> Bool {
+    match a { Value.String(s) => s.contains(b.as_string()), Value.Array(arr) => arr.iter().any(|v| val_eq(v, b)), _ => false }
+}
+
+fn capitalize(s: String) -> String { if s.is_empty() { s } else { s[0..1].to_uppercase() + s[1..].to_lowercase() } }
+fn truncate(s: String, n: Int) -> String { if s.len() <= n { s } else { s[..n-3] + "..." } }
+fn html_escape(s: String) -> String { s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") }
+
+enum LiquidError { ParseError(String), RenderError(String) }
+impl Display for LiquidError { fn fmt(f: Formatter) { match self { ParseError(s) | RenderError(s) => f.write(s) } } }
+impl Error for LiquidError {}
+
+fn render(tmpl: String, ctx: Value) -> Result<String, LiquidError> { Template.parse(tmpl)?.render(ctx) }
+
+test "output" { assert_eq(render("{{ name }}", Value.Object(Map.from([("name", Value.String("World"))])))?, "World")? }
+test "if" { assert_eq(render("{% if show %}yes{% endif %}", Value.Object(Map.from([("show", Value.Bool(true))])))?, "yes")? }
+test "for" { assert_eq(render("{% for x in items %}{{ x }}{% endfor %}", Value.Object(Map.from([("items", Value.Array([Value.String("a"), Value.String("b")]))])))?, "ab")? }
+test "filter" { assert_eq(render("{{ name | upcase }}", Value.Object(Map.from([("name", Value.String("hello"))])))?, "HELLO")? }

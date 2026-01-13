@@ -1,0 +1,861 @@
+// =============================================================================
+// Vibee OS — Migration Module
+// Database migration system for ORM
+// =============================================================================
+
+use entity::{ColumnDef, ColumnType, SqlDialect, ForeignKey, FkAction, IndexDef}
+use datetime::{DateTime}
+
+// =============================================================================
+// Migration Trait
+// =============================================================================
+
+/// Core trait for database migrations
+trait Migration {
+    /// Returns the migration version/timestamp
+    fn version() -> String
+    
+    /// Returns the migration name
+    fn name() -> String
+    
+    /// Applies the migration
+    fn up(schema: SchemaBuilder) -> Result<(), MigrationError>
+    
+    /// Reverts the migration
+    fn down(schema: SchemaBuilder) -> Result<(), MigrationError>
+}
+
+// =============================================================================
+// Schema Builder
+// =============================================================================
+
+/// Schema builder for creating/modifying database schema
+struct SchemaBuilder {
+    dialect: SqlDialect
+    statements: [String]
+    
+    fn new(dialect: SqlDialect) -> Self {
+        SchemaBuilder { dialect: dialect, statements: [] }
+    }
+    
+    /// Creates a new table
+    fn create_table(name: String, builder: fn(TableBuilder) -> TableBuilder) -> Self {
+        let table = builder(TableBuilder.new(name, self.dialect))
+        self.statements.push(table.build_create())
+        self
+    }
+    
+    /// Creates a table if it doesn't exist
+    fn create_table_if_not_exists(name: String, builder: fn(TableBuilder) -> TableBuilder) -> Self {
+        let table = builder(TableBuilder.new(name, self.dialect))
+        self.statements.push(table.build_create_if_not_exists())
+        self
+    }
+    
+    /// Drops a table
+    fn drop_table(name: String) -> Self {
+        self.statements.push(format!("DROP TABLE {}", name))
+        self
+    }
+    
+    /// Drops a table if it exists
+    fn drop_table_if_exists(name: String) -> Self {
+        self.statements.push(format!("DROP TABLE IF EXISTS {}", name))
+        self
+    }
+    
+    /// Renames a table
+    fn rename_table(from: String, to: String) -> Self {
+        self.statements.push(format!("ALTER TABLE {} RENAME TO {}", from, to))
+        self
+    }
+    
+    /// Modifies an existing table
+    fn alter_table(name: String, builder: fn(AlterTableBuilder) -> AlterTableBuilder) -> Self {
+        let alter = builder(AlterTableBuilder.new(name, self.dialect))
+        self.statements.extend(alter.build())
+        self
+    }
+    
+    /// Creates an index
+    fn create_index(name: String, table: String, columns: [String]) -> Self {
+        self.statements.push(format!("CREATE INDEX {} ON {} ({})", name, table, columns.join(", ")))
+        self
+    }
+    
+    /// Creates a unique index
+    fn create_unique_index(name: String, table: String, columns: [String]) -> Self {
+        self.statements.push(format!("CREATE UNIQUE INDEX {} ON {} ({})", name, table, columns.join(", ")))
+        self
+    }
+    
+    /// Drops an index
+    fn drop_index(name: String) -> Self {
+        match self.dialect {
+            SqlDialect.Mysql => self.statements.push(format!("DROP INDEX {} ON table_name", name))
+            _ => self.statements.push(format!("DROP INDEX {}", name))
+        }
+        self
+    }
+    
+    /// Executes raw SQL
+    fn raw(sql: String) -> Self {
+        self.statements.push(sql)
+        self
+    }
+    
+    /// Returns all SQL statements
+    fn get_statements() -> [String] {
+        self.statements.clone()
+    }
+}
+
+// =============================================================================
+// Table Builder
+// =============================================================================
+
+/// Builder for creating table definitions
+struct TableBuilder {
+    name: String
+    columns: [ColumnDefinition]
+    primary_key: Option<[String]>
+    foreign_keys: [ForeignKeyDefinition]
+    indexes: [IndexDefinition]
+    unique_constraints: [[String]]
+    dialect: SqlDialect
+    
+    fn new(name: String, dialect: SqlDialect) -> Self {
+        TableBuilder {
+            name: name,
+            columns: [],
+            primary_key: None,
+            foreign_keys: [],
+            indexes: [],
+            unique_constraints: [],
+            dialect: dialect
+        }
+    }
+    
+    /// Adds auto-incrementing primary key
+    fn id() -> Self {
+        self.columns.push(ColumnDefinition {
+            name: "id",
+            col_type: ColumnType.BigInt,
+            nullable: false,
+            default: None,
+            auto_increment: true
+        })
+        self.primary_key = Some(["id"])
+        self
+    }
+    
+    /// Adds UUID primary key
+    fn uuid_id() -> Self {
+        self.columns.push(ColumnDefinition {
+            name: "id",
+            col_type: ColumnType.Uuid,
+            nullable: false,
+            default: Some("gen_random_uuid()"),
+            auto_increment: false
+        })
+        self.primary_key = Some(["id"])
+        self
+    }
+    
+    /// Adds a column
+    fn column(name: String, col_type: ColumnType) -> Self {
+        self.columns.push(ColumnDefinition {
+            name: name,
+            col_type: col_type,
+            nullable: false,
+            default: None,
+            auto_increment: false
+        })
+        self
+    }
+    
+    /// Adds a nullable column
+    fn nullable_column(name: String, col_type: ColumnType) -> Self {
+        self.columns.push(ColumnDefinition {
+            name: name,
+            col_type: col_type,
+            nullable: true,
+            default: None,
+            auto_increment: false
+        })
+        self
+    }
+    
+    /// Adds a string column
+    fn string(name: String, length: Int = 255) -> Self {
+        self.column(name, ColumnType.String { max_length: Some(length) })
+    }
+    
+    /// Adds a text column
+    fn text(name: String) -> Self {
+        self.column(name, ColumnType.Text)
+    }
+    
+    /// Adds an integer column
+    fn integer(name: String) -> Self {
+        self.column(name, ColumnType.Integer)
+    }
+    
+    /// Adds a big integer column
+    fn bigint(name: String) -> Self {
+        self.column(name, ColumnType.BigInt)
+    }
+    
+    /// Adds a boolean column
+    fn boolean(name: String) -> Self {
+        self.column(name, ColumnType.Boolean)
+    }
+    
+    /// Adds a decimal column
+    fn decimal(name: String, precision: Int = 10, scale: Int = 2) -> Self {
+        self.column(name, ColumnType.Decimal { precision: precision, scale: scale })
+    }
+    
+    /// Adds a datetime column
+    fn datetime(name: String) -> Self {
+        self.column(name, ColumnType.DateTime)
+    }
+    
+    /// Adds a timestamp column
+    fn timestamp(name: String) -> Self {
+        self.column(name, ColumnType.Timestamp)
+    }
+    
+    /// Adds a date column
+    fn date(name: String) -> Self {
+        self.column(name, ColumnType.Date)
+    }
+    
+    /// Adds a JSON column
+    fn json(name: String) -> Self {
+        self.column(name, ColumnType.Json)
+    }
+    
+    /// Adds a binary column
+    fn binary(name: String, length: Int = 255) -> Self {
+        self.column(name, ColumnType.Binary { max_length: Some(length) })
+    }
+    
+    /// Adds created_at and updated_at columns
+    fn timestamps() -> Self {
+        self.nullable_column("created_at", ColumnType.Timestamp)
+        self.nullable_column("updated_at", ColumnType.Timestamp)
+    }
+    
+    /// Adds deleted_at column for soft deletes
+    fn soft_deletes() -> Self {
+        self.nullable_column("deleted_at", ColumnType.Timestamp)
+    }
+    
+    /// Adds a foreign key column
+    fn foreign_key(name: String, references_table: String, references_column: String = "id") -> Self {
+        self.column(name, ColumnType.BigInt)
+        self.foreign_keys.push(ForeignKeyDefinition {
+            column: name,
+            references_table: references_table,
+            references_column: references_column,
+            on_delete: FkAction.Restrict,
+            on_update: FkAction.Cascade
+        })
+        self
+    }
+    
+    /// Adds a foreign key with cascade delete
+    fn foreign_key_cascade(name: String, references_table: String, references_column: String = "id") -> Self {
+        self.column(name, ColumnType.BigInt)
+        self.foreign_keys.push(ForeignKeyDefinition {
+            column: name,
+            references_table: references_table,
+            references_column: references_column,
+            on_delete: FkAction.Cascade,
+            on_update: FkAction.Cascade
+        })
+        self
+    }
+    
+    /// Sets composite primary key
+    fn primary(columns: [String]) -> Self {
+        self.primary_key = Some(columns)
+        self
+    }
+    
+    /// Adds a unique constraint
+    fn unique(columns: [String]) -> Self {
+        self.unique_constraints.push(columns)
+        self
+    }
+    
+    /// Adds an index
+    fn index(columns: [String]) -> Self {
+        self.indexes.push(IndexDefinition {
+            name: format!("idx_{}_{}", self.name, columns.join("_")),
+            columns: columns,
+            unique: false
+        })
+        self
+    }
+    
+    /// Adds a unique index
+    fn unique_index(columns: [String]) -> Self {
+        self.indexes.push(IndexDefinition {
+            name: format!("idx_{}_{}_unique", self.name, columns.join("_")),
+            columns: columns,
+            unique: true
+        })
+        self
+    }
+    
+    fn build_create() -> String {
+        self.build_create_internal(false)
+    }
+    
+    fn build_create_if_not_exists() -> String {
+        self.build_create_internal(true)
+    }
+    
+    fn build_create_internal(if_not_exists: Bool) -> String {
+        var parts: [String] = []
+        
+        // Column definitions
+        for col in self.columns {
+            var def = format!("{} {}", col.name, col.col_type.to_sql(self.dialect))
+            if !col.nullable { def += " NOT NULL" }
+            if col.auto_increment {
+                match self.dialect {
+                    SqlDialect.Postgres => def = format!("{} BIGSERIAL", col.name)
+                    SqlDialect.Mysql => def += " AUTO_INCREMENT"
+                    SqlDialect.Sqlite => {} // INTEGER PRIMARY KEY is auto-increment
+                }
+            }
+            if let Some(default) = col.default {
+                def += format!(" DEFAULT {}", default)
+            }
+            parts.push(def)
+        }
+        
+        // Primary key
+        if let Some(pk_cols) = self.primary_key {
+            parts.push(format!("PRIMARY KEY ({})", pk_cols.join(", ")))
+        }
+        
+        // Foreign keys
+        for fk in self.foreign_keys {
+            parts.push(format!(
+                "FOREIGN KEY ({}) REFERENCES {}({}) ON DELETE {} ON UPDATE {}",
+                fk.column, fk.references_table, fk.references_column,
+                fk.on_delete.to_sql(), fk.on_update.to_sql()
+            ))
+        }
+        
+        // Unique constraints
+        for unique_cols in self.unique_constraints {
+            parts.push(format!("UNIQUE ({})", unique_cols.join(", ")))
+        }
+        
+        let create_stmt = if if_not_exists {
+            format!("CREATE TABLE IF NOT EXISTS {} (\n  {}\n)", self.name, parts.join(",\n  "))
+        } else {
+            format!("CREATE TABLE {} (\n  {}\n)", self.name, parts.join(",\n  "))
+        }
+        
+        create_stmt
+    }
+}
+
+/// Column definition for table builder
+struct ColumnDefinition {
+    name: String
+    col_type: ColumnType
+    nullable: Bool
+    default: Option<String>
+    auto_increment: Bool
+}
+
+/// Foreign key definition
+struct ForeignKeyDefinition {
+    column: String
+    references_table: String
+    references_column: String
+    on_delete: FkAction
+    on_update: FkAction
+}
+
+/// Index definition
+struct IndexDefinition {
+    name: String
+    columns: [String]
+    unique: Bool
+}
+
+// =============================================================================
+// Alter Table Builder
+// =============================================================================
+
+/// Builder for altering existing tables
+struct AlterTableBuilder {
+    table: String
+    operations: [AlterOperation]
+    dialect: SqlDialect
+    
+    fn new(table: String, dialect: SqlDialect) -> Self {
+        AlterTableBuilder { table: table, operations: [], dialect: dialect }
+    }
+    
+    /// Adds a column
+    fn add_column(name: String, col_type: ColumnType) -> Self {
+        self.operations.push(AlterOperation.AddColumn(ColumnDefinition {
+            name: name,
+            col_type: col_type,
+            nullable: true,
+            default: None,
+            auto_increment: false
+        }))
+        self
+    }
+    
+    /// Adds a non-nullable column with default
+    fn add_column_with_default(name: String, col_type: ColumnType, default: String) -> Self {
+        self.operations.push(AlterOperation.AddColumn(ColumnDefinition {
+            name: name,
+            col_type: col_type,
+            nullable: false,
+            default: Some(default),
+            auto_increment: false
+        }))
+        self
+    }
+    
+    /// Drops a column
+    fn drop_column(name: String) -> Self {
+        self.operations.push(AlterOperation.DropColumn(name))
+        self
+    }
+    
+    /// Renames a column
+    fn rename_column(from: String, to: String) -> Self {
+        self.operations.push(AlterOperation.RenameColumn(from, to))
+        self
+    }
+    
+    /// Changes column type
+    fn change_column(name: String, col_type: ColumnType) -> Self {
+        self.operations.push(AlterOperation.ChangeColumn(name, col_type))
+        self
+    }
+    
+    /// Adds a foreign key
+    fn add_foreign_key(column: String, references_table: String, references_column: String) -> Self {
+        self.operations.push(AlterOperation.AddForeignKey(ForeignKeyDefinition {
+            column: column,
+            references_table: references_table,
+            references_column: references_column,
+            on_delete: FkAction.Restrict,
+            on_update: FkAction.Cascade
+        }))
+        self
+    }
+    
+    /// Drops a foreign key
+    fn drop_foreign_key(name: String) -> Self {
+        self.operations.push(AlterOperation.DropForeignKey(name))
+        self
+    }
+    
+    /// Adds an index
+    fn add_index(columns: [String]) -> Self {
+        self.operations.push(AlterOperation.AddIndex(IndexDefinition {
+            name: format!("idx_{}_{}", self.table, columns.join("_")),
+            columns: columns,
+            unique: false
+        }))
+        self
+    }
+    
+    /// Drops an index
+    fn drop_index(name: String) -> Self {
+        self.operations.push(AlterOperation.DropIndex(name))
+        self
+    }
+    
+    fn build() -> [String] {
+        var statements: [String] = []
+        
+        for op in self.operations {
+            match op {
+                AlterOperation.AddColumn(col) => {
+                    var def = format!("{} {}", col.name, col.col_type.to_sql(self.dialect))
+                    if !col.nullable { def += " NOT NULL" }
+                    if let Some(default) = col.default { def += format!(" DEFAULT {}", default) }
+                    statements.push(format!("ALTER TABLE {} ADD COLUMN {}", self.table, def))
+                }
+                AlterOperation.DropColumn(name) => {
+                    statements.push(format!("ALTER TABLE {} DROP COLUMN {}", self.table, name))
+                }
+                AlterOperation.RenameColumn(from, to) => {
+                    match self.dialect {
+                        SqlDialect.Postgres => statements.push(format!("ALTER TABLE {} RENAME COLUMN {} TO {}", self.table, from, to))
+                        SqlDialect.Mysql => statements.push(format!("ALTER TABLE {} CHANGE {} {} VARCHAR(255)", self.table, from, to))
+                        SqlDialect.Sqlite => statements.push(format!("ALTER TABLE {} RENAME COLUMN {} TO {}", self.table, from, to))
+                    }
+                }
+                AlterOperation.ChangeColumn(name, col_type) => {
+                    match self.dialect {
+                        SqlDialect.Postgres => statements.push(format!("ALTER TABLE {} ALTER COLUMN {} TYPE {}", self.table, name, col_type.to_sql(self.dialect)))
+                        SqlDialect.Mysql => statements.push(format!("ALTER TABLE {} MODIFY COLUMN {} {}", self.table, name, col_type.to_sql(self.dialect)))
+                        SqlDialect.Sqlite => {} // SQLite doesn't support ALTER COLUMN
+                    }
+                }
+                AlterOperation.AddForeignKey(fk) => {
+                    statements.push(format!(
+                        "ALTER TABLE {} ADD CONSTRAINT fk_{}_{} FOREIGN KEY ({}) REFERENCES {}({})",
+                        self.table, self.table, fk.column, fk.column, fk.references_table, fk.references_column
+                    ))
+                }
+                AlterOperation.DropForeignKey(name) => {
+                    statements.push(format!("ALTER TABLE {} DROP CONSTRAINT {}", self.table, name))
+                }
+                AlterOperation.AddIndex(idx) => {
+                    let unique = if idx.unique { "UNIQUE " } else { "" }
+                    statements.push(format!("CREATE {}INDEX {} ON {} ({})", unique, idx.name, self.table, idx.columns.join(", ")))
+                }
+                AlterOperation.DropIndex(name) => {
+                    statements.push(format!("DROP INDEX {}", name))
+                }
+            }
+        }
+        
+        statements
+    }
+}
+
+/// Alter table operations
+enum AlterOperation {
+    AddColumn(ColumnDefinition)
+    DropColumn(String)
+    RenameColumn(String, String)
+    ChangeColumn(String, ColumnType)
+    AddForeignKey(ForeignKeyDefinition)
+    DropForeignKey(String)
+    AddIndex(IndexDefinition)
+    DropIndex(String)
+}
+
+// =============================================================================
+// Migration Runner
+// =============================================================================
+
+/// Migration runner for executing migrations
+struct MigrationRunner {
+    connection: Box<dyn MigrationConnection>
+    migrations: [Box<dyn Migration>]
+    dialect: SqlDialect
+    migrations_table: String
+    
+    fn new(connection: Box<dyn MigrationConnection>, dialect: SqlDialect) -> Self {
+        MigrationRunner {
+            connection: connection,
+            migrations: [],
+            dialect: dialect,
+            migrations_table: "migrations"
+        }
+    }
+    
+    /// Registers a migration
+    fn register(migration: Box<dyn Migration>) -> Self {
+        self.migrations.push(migration)
+        self
+    }
+    
+    /// Ensures migrations table exists
+    fn ensure_migrations_table() -> Result<(), MigrationError> {
+        let sql = format!(
+            "CREATE TABLE IF NOT EXISTS {} (
+                id BIGSERIAL PRIMARY KEY,
+                version VARCHAR(255) NOT NULL UNIQUE,
+                name VARCHAR(255) NOT NULL,
+                executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )", self.migrations_table
+        )
+        self.connection.execute(sql)?
+        Ok(())
+    }
+    
+    /// Gets list of executed migrations
+    fn get_executed() -> Result<[String], MigrationError> {
+        let sql = format!("SELECT version FROM {} ORDER BY version", self.migrations_table)
+        self.connection.query_versions(sql)
+    }
+    
+    /// Runs all pending migrations
+    fn migrate() -> Result<MigrationResult, MigrationError> {
+        self.ensure_migrations_table()?
+        let executed = self.get_executed()?
+        
+        var applied: [String] = []
+        
+        // Sort migrations by version
+        self.migrations.sort_by(|a, b| a.version().cmp(b.version()))
+        
+        for migration in self.migrations {
+            if !executed.contains(migration.version()) {
+                println("Running migration: {} - {}", migration.version(), migration.name())
+                
+                let schema = SchemaBuilder.new(self.dialect)
+                migration.up(schema)?
+                
+                for stmt in schema.get_statements() {
+                    self.connection.execute(stmt)?
+                }
+                
+                // Record migration
+                let record_sql = format!(
+                    "INSERT INTO {} (version, name) VALUES ('{}', '{}')",
+                    self.migrations_table, migration.version(), migration.name()
+                )
+                self.connection.execute(record_sql)?
+                
+                applied.push(migration.version())
+            }
+        }
+        
+        Ok(MigrationResult { applied: applied, rolled_back: [] })
+    }
+    
+    /// Rolls back the last migration
+    fn rollback() -> Result<MigrationResult, MigrationError> {
+        self.ensure_migrations_table()?
+        let executed = self.get_executed()?
+        
+        if executed.is_empty() {
+            return Ok(MigrationResult { applied: [], rolled_back: [] })
+        }
+        
+        let last_version = executed.last().unwrap()
+        
+        // Find the migration
+        let migration = self.migrations.iter()
+            .find(|m| m.version() == last_version)
+            .ok_or(MigrationError.MigrationNotFound(last_version.clone()))?
+        
+        println("Rolling back migration: {} - {}", migration.version(), migration.name())
+        
+        let schema = SchemaBuilder.new(self.dialect)
+        migration.down(schema)?
+        
+        for stmt in schema.get_statements() {
+            self.connection.execute(stmt)?
+        }
+        
+        // Remove migration record
+        let delete_sql = format!(
+            "DELETE FROM {} WHERE version = '{}'",
+            self.migrations_table, last_version
+        )
+        self.connection.execute(delete_sql)?
+        
+        Ok(MigrationResult { applied: [], rolled_back: [last_version.clone()] })
+    }
+    
+    /// Rolls back all migrations
+    fn reset() -> Result<MigrationResult, MigrationError> {
+        var rolled_back: [String] = []
+        
+        loop {
+            let result = self.rollback()?
+            if result.rolled_back.is_empty() {
+                break
+            }
+            rolled_back.extend(result.rolled_back)
+        }
+        
+        Ok(MigrationResult { applied: [], rolled_back: rolled_back })
+    }
+    
+    /// Resets and re-runs all migrations
+    fn refresh() -> Result<MigrationResult, MigrationError> {
+        let reset_result = self.reset()?
+        let migrate_result = self.migrate()?
+        
+        Ok(MigrationResult {
+            applied: migrate_result.applied,
+            rolled_back: reset_result.rolled_back
+        })
+    }
+    
+    /// Gets migration status
+    fn status() -> Result<[MigrationStatus], MigrationError> {
+        self.ensure_migrations_table()?
+        let executed = self.get_executed()?
+        
+        var statuses: [MigrationStatus] = []
+        
+        for migration in self.migrations {
+            let is_executed = executed.contains(migration.version())
+            statuses.push(MigrationStatus {
+                version: migration.version(),
+                name: migration.name(),
+                executed: is_executed
+            })
+        }
+        
+        statuses
+    }
+}
+
+/// Migration result
+struct MigrationResult {
+    applied: [String]
+    rolled_back: [String]
+}
+
+/// Migration status
+struct MigrationStatus {
+    version: String
+    name: String
+    executed: Bool
+}
+
+/// Migration connection trait
+trait MigrationConnection {
+    fn execute(sql: String) -> Result<(), MigrationError>
+    fn query_versions(sql: String) -> Result<[String], MigrationError>
+}
+
+// =============================================================================
+// Migration Errors
+// =============================================================================
+
+/// Migration-related errors
+enum MigrationError {
+    ExecutionFailed(String)
+    MigrationNotFound(String)
+    AlreadyExecuted(String)
+    DependencyFailed(String)
+    InvalidVersion(String)
+    
+    fn message() -> String {
+        match self {
+            ExecutionFailed(msg) => format!("Migration execution failed: {}", msg)
+            MigrationNotFound(version) => format!("Migration not found: {}", version)
+            AlreadyExecuted(version) => format!("Migration already executed: {}", version)
+            DependencyFailed(msg) => format!("Migration dependency failed: {}", msg)
+            InvalidVersion(version) => format!("Invalid migration version: {}", version)
+        }
+    }
+}
+
+impl Display for MigrationError {
+    fn fmt(f: Formatter) { f.write(self.message()) }
+}
+
+// =============================================================================
+// Migration Generator
+// =============================================================================
+
+/// Generates migration file content
+struct MigrationGenerator {
+    fn generate(name: String) -> String {
+        let version = DateTime.now().format("%Y%m%d%H%M%S")
+        let struct_name = to_pascal_case(name)
+        
+        format!(r#"// Migration: {}
+// Generated at: {}
+
+use migration::{{Migration, SchemaBuilder, MigrationError}}
+
+struct {} {{}}
+
+impl Migration for {} {{
+    fn version() -> String {{ "{}" }}
+    fn name() -> String {{ "{}" }}
+    
+    fn up(schema: SchemaBuilder) -> Result<(), MigrationError> {{
+        schema.create_table("{}", |t| {{
+            t.id()
+            // Add columns here
+            t.timestamps()
+        }})
+        Ok(())
+    }}
+    
+    fn down(schema: SchemaBuilder) -> Result<(), MigrationError> {{
+        schema.drop_table("{}")
+        Ok(())
+    }}
+}}
+"#, name, DateTime.now().to_string(), struct_name, struct_name, version, name, 
+    to_snake_case(name), to_snake_case(name))
+    }
+}
+
+fn to_pascal_case(s: String) -> String {
+    s.split("_").map(|part| {
+        var chars = part.chars().collect::<[Char]>()
+        if !chars.is_empty() {
+            chars[0] = chars[0].to_uppercase()
+        }
+        chars.iter().collect::<String>()
+    }).join("")
+}
+
+fn to_snake_case(s: String) -> String {
+    s.to_lowercase().replace(" ", "_")
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "table_builder" {
+    let sql = TableBuilder.new("users", SqlDialect.Postgres)
+        .id()
+        .string("name", 100)
+        .string("email", 255)
+        .boolean("active")
+        .timestamps()
+        .unique(["email"])
+        .build_create()
+    
+    assert(sql.contains("CREATE TABLE users"))?
+    assert(sql.contains("id BIGSERIAL"))?
+    assert(sql.contains("name VARCHAR(100)"))?
+    assert(sql.contains("UNIQUE (email)"))?
+}
+
+test "alter_table_builder" {
+    let statements = AlterTableBuilder.new("users", SqlDialect.Postgres)
+        .add_column("phone", ColumnType.String { max_length: Some(20) })
+        .drop_column("fax")
+        .build()
+    
+    assert_eq(statements.len(), 2)?
+    assert(statements[0].contains("ADD COLUMN phone"))?
+    assert(statements[1].contains("DROP COLUMN fax"))?
+}
+
+test "schema_builder" {
+    let schema = SchemaBuilder.new(SqlDialect.Postgres)
+        .create_table("posts", |t| {
+            t.id()
+            .string("title", 200)
+            .text("content")
+            .foreign_key("user_id", "users")
+            .timestamps()
+        })
+        .create_index("idx_posts_user_id", "posts", ["user_id"])
+    
+    let statements = schema.get_statements()
+    assert_eq(statements.len(), 2)?
+}
+
+test "migration_generator" {
+    let content = MigrationGenerator.generate("create_users_table")
+    assert(content.contains("struct CreateUsersTable"))?
+    assert(content.contains("fn up"))?
+    assert(content.contains("fn down"))?
+}

@@ -1,0 +1,832 @@
+// =============================================================================
+// Vibee OS — Log Rotation Module
+// Log file rotation strategies and management
+// =============================================================================
+
+use fs.{File, OpenOptions, Metadata}
+use datetime.{DateTime, Duration}
+use compress.{gzip_compress, Algorithm}
+use path.{Path}
+
+// -----------------------------------------------------------------------------
+// Rotation Policy
+// -----------------------------------------------------------------------------
+
+/// Defines when to rotate log files
+enum RotationPolicy {
+    /// Rotate when file exceeds size in bytes
+    Size(Int64)
+    /// Rotate at specific time intervals
+    Time(RotationInterval)
+    /// Rotate based on both size and time
+    SizeOrTime(Int64, RotationInterval)
+    /// Custom rotation condition
+    Custom(fn(RotationContext) -> Bool)
+}
+
+/// Time-based rotation intervals
+enum RotationInterval {
+    Minutely
+    Hourly
+    Daily
+    Weekly
+    Monthly
+    Yearly
+    
+    fn duration() -> Duration {
+        match self {
+            Minutely => Duration.minutes(1)
+            Hourly => Duration.hours(1)
+            Daily => Duration.days(1)
+            Weekly => Duration.weeks(1)
+            Monthly => Duration.days(30)
+            Yearly => Duration.days(365)
+        }
+    }
+    
+    fn format_pattern() -> String {
+        match self {
+            Minutely => "%Y%m%d%H%M"
+            Hourly => "%Y%m%d%H"
+            Daily => "%Y%m%d"
+            Weekly => "%Y-W%W"
+            Monthly => "%Y%m"
+            Yearly => "%Y"
+        }
+    }
+    
+    fn should_rotate(last: DateTime, now: DateTime) -> Bool {
+        match self {
+            Minutely => last.minute() != now.minute() || last.hour() != now.hour()
+            Hourly => last.hour() != now.hour() || last.day() != now.day()
+            Daily => last.day() != now.day() || last.month() != now.month()
+            Weekly => last.week_of_year() != now.week_of_year()
+            Monthly => last.month() != now.month() || last.year() != now.year()
+            Yearly => last.year() != now.year()
+        }
+    }
+}
+
+/// Context for rotation decisions
+struct RotationContext {
+    current_size: Int64
+    created_at: DateTime
+    last_write: DateTime
+    record_count: Int64
+    file_path: String
+}
+
+impl RotationContext {
+    fn new(path: String) -> Self {
+        let now = DateTime.now()
+        RotationContext {
+            current_size: 0,
+            created_at: now,
+            last_write: now,
+            record_count: 0,
+            file_path: path
+        }
+    }
+    
+    fn age() -> Duration {
+        DateTime.now().diff(self.created_at)
+    }
+    
+    fn since_last_write() -> Duration {
+        DateTime.now().diff(self.last_write)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Retention Policy
+// -----------------------------------------------------------------------------
+
+/// Defines how long to keep rotated files
+enum RetentionPolicy {
+    /// Keep N most recent files
+    Count(Int)
+    /// Keep files for duration
+    Age(Duration)
+    /// Keep files up to total size
+    TotalSize(Int64)
+    /// Keep based on multiple criteria
+    Combined(Int, Duration, Int64)
+    /// Keep all files
+    Forever
+}
+
+impl RetentionPolicy {
+    /// Keep last 7 files
+    fn week() -> Self { RetentionPolicy.Count(7) }
+    
+    /// Keep last 30 files
+    fn month() -> Self { RetentionPolicy.Count(30) }
+    
+    /// Keep files for 90 days
+    fn quarter() -> Self { RetentionPolicy.Age(Duration.days(90)) }
+    
+    /// Keep up to 1GB total
+    fn one_gb() -> Self { RetentionPolicy.TotalSize(1024 * 1024 * 1024) }
+}
+
+// -----------------------------------------------------------------------------
+// Naming Strategy
+// -----------------------------------------------------------------------------
+
+/// Defines how rotated files are named
+trait NamingStrategy {
+    fn generate_name(base_path: String, rotation_time: DateTime, index: Int) -> String
+}
+
+/// Timestamp-based naming: app.log.20240115
+struct TimestampNaming {
+    format: String
+    separator: String
+}
+
+impl TimestampNaming {
+    fn new() -> Self {
+        TimestampNaming {
+            format: "%Y%m%d",
+            separator: "."
+        }
+    }
+    
+    fn with_format(format: String) -> Self {
+        self.format = format
+        self
+    }
+    
+    fn with_separator(sep: String) -> Self {
+        self.separator = sep
+        self
+    }
+    
+    /// ISO format: app.log.2024-01-15
+    fn iso() -> Self {
+        Self.new().with_format("%Y-%m-%d")
+    }
+    
+    /// Full timestamp: app.log.20240115-143022
+    fn full() -> Self {
+        Self.new().with_format("%Y%m%d-%H%M%S")
+    }
+}
+
+impl NamingStrategy for TimestampNaming {
+    fn generate_name(base_path: String, rotation_time: DateTime, _index: Int) -> String {
+        let timestamp = rotation_time.format(self.format)
+        "\(base_path)\(self.separator)\(timestamp)"
+    }
+}
+
+/// Index-based naming: app.log.1, app.log.2
+struct IndexNaming {
+    separator: String
+    zero_pad: Int
+}
+
+impl IndexNaming {
+    fn new() -> Self {
+        IndexNaming {
+            separator: ".",
+            zero_pad: 0
+        }
+    }
+    
+    fn with_separator(sep: String) -> Self {
+        self.separator = sep
+        self
+    }
+    
+    fn with_padding(pad: Int) -> Self {
+        self.zero_pad = pad
+        self
+    }
+}
+
+impl NamingStrategy for IndexNaming {
+    fn generate_name(base_path: String, _rotation_time: DateTime, index: Int) -> String {
+        let idx_str = if self.zero_pad > 0 {
+            format!("{:0>width$}", index, width = self.zero_pad)
+        } else {
+            index.to_string()
+        }
+        "\(base_path)\(self.separator)\(idx_str)"
+    }
+}
+
+/// Combined naming: app.log.20240115.1
+struct CombinedNaming {
+    timestamp_format: String
+    separator: String
+}
+
+impl CombinedNaming {
+    fn new() -> Self {
+        CombinedNaming {
+            timestamp_format: "%Y%m%d",
+            separator: "."
+        }
+    }
+}
+
+impl NamingStrategy for CombinedNaming {
+    fn generate_name(base_path: String, rotation_time: DateTime, index: Int) -> String {
+        let timestamp = rotation_time.format(self.timestamp_format)
+        "\(base_path)\(self.separator)\(timestamp)\(self.separator)\(index)"
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Compression Strategy
+// -----------------------------------------------------------------------------
+
+/// Defines how rotated files are compressed
+enum CompressionStrategy {
+    /// No compression
+    None
+    /// Gzip compression
+    Gzip
+    /// Zstd compression
+    Zstd
+    /// Custom compression
+    Custom(fn([UInt8]) -> Result<[UInt8], Error>)
+}
+
+impl CompressionStrategy {
+    fn extension() -> String {
+        match self {
+            None => ""
+            Gzip => ".gz"
+            Zstd => ".zst"
+            Custom(_) => ".compressed"
+        }
+    }
+    
+    fn compress(data: [UInt8]) -> Result<[UInt8], Error> {
+        match self {
+            None => Ok(data)
+            Gzip => compress::gzip_compress(data).map_err(|e| Error.new(e.to_string()))
+            Zstd => compress::zstd_compress(data).map_err(|e| Error.new(e.to_string()))
+            Custom(f) => f(data)
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Log Rotator
+// -----------------------------------------------------------------------------
+
+/// Main log rotation manager
+struct LogRotator {
+    base_path: String
+    policy: RotationPolicy
+    retention: RetentionPolicy
+    naming: Box<dyn NamingStrategy>
+    compression: CompressionStrategy
+    context: RotationContext
+    current_file: Option<File>
+    compress_on_rotate: Bool
+    delete_original: Bool
+}
+
+impl LogRotator {
+    fn new(path: String) -> Self {
+        LogRotator {
+            base_path: path.clone(),
+            policy: RotationPolicy.Size(10 * 1024 * 1024),  // 10MB default
+            retention: RetentionPolicy.Count(5),
+            naming: Box.new(IndexNaming.new()),
+            compression: CompressionStrategy.None,
+            context: RotationContext.new(path),
+            current_file: None,
+            compress_on_rotate: false,
+            delete_original: true
+        }
+    }
+    
+    fn with_policy(policy: RotationPolicy) -> Self {
+        self.policy = policy
+        self
+    }
+    
+    fn with_retention(retention: RetentionPolicy) -> Self {
+        self.retention = retention
+        self
+    }
+    
+    fn with_naming<N: NamingStrategy>(naming: N) -> Self {
+        self.naming = Box.new(naming)
+        self
+    }
+    
+    fn with_compression(compression: CompressionStrategy) -> Self {
+        self.compression = compression
+        self.compress_on_rotate = true
+        self
+    }
+    
+    fn with_compress_on_rotate(enabled: Bool) -> Self {
+        self.compress_on_rotate = enabled
+        self
+    }
+    
+    /// Size-based rotation (bytes)
+    fn size_based(size: Int64) -> Self {
+        self.policy = RotationPolicy.Size(size)
+        self
+    }
+    
+    /// Time-based rotation
+    fn time_based(interval: RotationInterval) -> Self {
+        self.policy = RotationPolicy.Time(interval)
+        self
+    }
+    
+    /// Daily rotation
+    fn daily() -> Self {
+        self.time_based(RotationInterval.Daily)
+            .with_naming(TimestampNaming.new())
+    }
+    
+    /// Hourly rotation
+    fn hourly() -> Self {
+        self.time_based(RotationInterval.Hourly)
+            .with_naming(TimestampNaming.full())
+    }
+    
+    /// Check if rotation is needed
+    fn should_rotate() -> Bool {
+        match self.policy {
+            RotationPolicy.Size(max_size) => {
+                self.context.current_size >= max_size
+            }
+            RotationPolicy.Time(interval) => {
+                interval.should_rotate(self.context.created_at, DateTime.now())
+            }
+            RotationPolicy.SizeOrTime(max_size, interval) => {
+                self.context.current_size >= max_size ||
+                interval.should_rotate(self.context.created_at, DateTime.now())
+            }
+            RotationPolicy.Custom(check_fn) => {
+                check_fn(self.context.clone())
+            }
+        }
+    }
+    
+    /// Perform rotation
+    fn rotate() -> Result<String, RotationError> {
+        // Close current file
+        self.close_current()
+        
+        // Generate new filename
+        let rotation_time = DateTime.now()
+        let index = self.find_next_index()
+        let new_name = self.naming.generate_name(self.base_path.clone(), rotation_time, index)
+        
+        // Rename current file
+        if fs::exists(self.base_path.clone()) {
+            fs::rename(self.base_path.clone(), new_name.clone())?
+        }
+        
+        // Compress if enabled
+        if self.compress_on_rotate {
+            self.compress_file(new_name.clone())?
+        }
+        
+        // Apply retention policy
+        self.apply_retention()?
+        
+        // Reset context
+        self.context = RotationContext.new(self.base_path.clone())
+        
+        Ok(new_name)
+    }
+    
+    fn close_current() {
+        if let Some(file) = self.current_file.take() {
+            file.flush().ok()
+        }
+    }
+    
+    fn find_next_index() -> Int {
+        var index = 1
+        loop {
+            let name = self.naming.generate_name(self.base_path.clone(), DateTime.now(), index)
+            let compressed_name = name.clone() + self.compression.extension()
+            
+            if !fs::exists(name) && !fs::exists(compressed_name) {
+                break
+            }
+            index += 1
+        }
+        index
+    }
+    
+    fn compress_file(path: String) -> Result<(), RotationError> {
+        if matches!(self.compression, CompressionStrategy.None) {
+            return Ok(())
+        }
+        
+        let data = fs::read_bytes(path.clone())?
+        let compressed = self.compression.compress(data)?
+        let compressed_path = path.clone() + self.compression.extension()
+        
+        fs::write_bytes(compressed_path, compressed)?
+        
+        if self.delete_original {
+            fs::remove(path)?
+        }
+        
+        Ok(())
+    }
+    
+    fn apply_retention() -> Result<(), RotationError> {
+        let files = self.list_rotated_files()?
+        
+        match self.retention {
+            RetentionPolicy.Count(max_count) => {
+                if files.len() > max_count {
+                    let to_delete = files.len() - max_count
+                    for file in files.iter().take(to_delete) {
+                        fs::remove(file.path.clone()).ok()
+                    }
+                }
+            }
+            RetentionPolicy.Age(max_age) => {
+                let cutoff = DateTime.now().sub(max_age)
+                for file in files.iter() {
+                    if file.modified < cutoff {
+                        fs::remove(file.path.clone()).ok()
+                    }
+                }
+            }
+            RetentionPolicy.TotalSize(max_size) => {
+                var total_size: Int64 = 0
+                for file in files.iter().rev() {
+                    total_size += file.size
+                    if total_size > max_size {
+                        fs::remove(file.path.clone()).ok()
+                    }
+                }
+            }
+            RetentionPolicy.Combined(max_count, max_age, max_size) => {
+                let cutoff = DateTime.now().sub(max_age)
+                var total_size: Int64 = 0
+                var count = 0
+                
+                for file in files.iter().rev() {
+                    count += 1
+                    total_size += file.size
+                    
+                    if count > max_count || file.modified < cutoff || total_size > max_size {
+                        fs::remove(file.path.clone()).ok()
+                    }
+                }
+            }
+            RetentionPolicy.Forever => {}
+        }
+        
+        Ok(())
+    }
+    
+    fn list_rotated_files() -> Result<[RotatedFile], RotationError> {
+        let dir = Path.new(self.base_path.clone()).parent().unwrap_or(".")
+        let base_name = Path.new(self.base_path.clone()).file_name().unwrap_or("")
+        
+        var files: [RotatedFile] = []
+        
+        for entry in fs::read_dir(dir)? {
+            let name = entry.name
+            if name.starts_with(base_name) && name != base_name {
+                if let Ok(meta) = fs::metadata(entry.path.clone()) {
+                    files.push(RotatedFile {
+                        path: entry.path,
+                        size: meta.size,
+                        modified: meta.modified.unwrap_or(DateTime.now())
+                    })
+                }
+            }
+        }
+        
+        // Sort by modification time (oldest first)
+        files.sort_by(|a, b| a.modified.cmp(b.modified))
+        
+        Ok(files)
+    }
+    
+    /// Write data and rotate if needed
+    fn write(data: [UInt8]) -> Result<Int, RotationError> {
+        if self.should_rotate() {
+            self.rotate()?
+        }
+        
+        self.ensure_open()?
+        
+        if let Some(file) = self.current_file.as_mut() {
+            let written = file.write(data.clone())?
+            self.context.current_size += written as Int64
+            self.context.last_write = DateTime.now()
+            self.context.record_count += 1
+            Ok(written)
+        } else {
+            Err(RotationError.FileNotOpen)
+        }
+    }
+    
+    fn ensure_open() -> Result<(), RotationError> {
+        if self.current_file.is_none() {
+            let opts = OpenOptions.new().write(true).create(true).append(true)
+            let file = File.open_with(self.base_path.clone(), opts)?
+            
+            // Update context with existing file info
+            if let Ok(meta) = fs::metadata(self.base_path.clone()) {
+                self.context.current_size = meta.size
+            }
+            
+            self.current_file = Some(file)
+        }
+        Ok(())
+    }
+    
+    fn flush() -> Result<(), RotationError> {
+        if let Some(file) = self.current_file.as_mut() {
+            file.flush()?
+        }
+        Ok(())
+    }
+}
+
+impl Drop for LogRotator {
+    fn drop() {
+        self.flush().ok()
+    }
+}
+
+/// Information about a rotated file
+struct RotatedFile {
+    path: String
+    size: Int64
+    modified: DateTime
+}
+
+// -----------------------------------------------------------------------------
+// Rotation Manager Actor
+// -----------------------------------------------------------------------------
+
+/// Async rotation manager
+actor RotationManager {
+    rotators: Map<String, LogRotator>
+    check_interval: Duration
+    
+    fn new() -> Self {
+        RotationManager {
+            rotators: Map.new(),
+            check_interval: Duration.minutes(1)
+        }
+    }
+    
+    fn with_check_interval(interval: Duration) -> Self {
+        self.check_interval = interval
+        self
+    }
+    
+    async fn register(name: String, rotator: LogRotator) {
+        self.rotators.insert(name, rotator)
+    }
+    
+    async fn unregister(name: String) {
+        self.rotators.remove(&name)
+    }
+    
+    async fn check_all() {
+        for (name, rotator) in self.rotators.iter_mut() {
+            if rotator.should_rotate() {
+                match rotator.rotate() {
+                    Ok(new_file) => {
+                        // Log rotation success
+                    }
+                    Err(e) => {
+                        // Log rotation error
+                    }
+                }
+            }
+        }
+    }
+    
+    async fn rotate(name: String) -> Result<String, RotationError> {
+        match self.rotators.get_mut(&name) {
+            Some(rotator) => rotator.rotate()
+            None => Err(RotationError.NotFound(name))
+        }
+    }
+    
+    async fn start() {
+        loop {
+            self.check_all().await
+            sleep(self.check_interval).await
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Rotation Trigger
+// -----------------------------------------------------------------------------
+
+/// External rotation triggers
+enum RotationTrigger {
+    /// Signal-based (e.g., SIGHUP)
+    Signal(Int)
+    /// File-based (touch a file to trigger)
+    File(String)
+    /// HTTP endpoint
+    Http(String, Int)
+    /// Scheduled (cron-like)
+    Scheduled(String)
+}
+
+/// Watches for rotation triggers
+struct TriggerWatcher {
+    triggers: [RotationTrigger]
+    callback: fn(String)
+}
+
+impl TriggerWatcher {
+    fn new() -> Self {
+        TriggerWatcher {
+            triggers: [],
+            callback: |_| {}
+        }
+    }
+    
+    fn on_signal(signal: Int) -> Self {
+        self.triggers.push(RotationTrigger.Signal(signal))
+        self
+    }
+    
+    fn on_file(path: String) -> Self {
+        self.triggers.push(RotationTrigger.File(path))
+        self
+    }
+    
+    fn on_rotate<F: Fn(String)>(callback: F) -> Self {
+        self.callback = callback
+        self
+    }
+    
+    async fn watch() {
+        // Implementation would set up signal handlers, file watchers, etc.
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum RotationError {
+    IoError(String)
+    CompressionError(String)
+    FileNotOpen
+    NotFound(String)
+    InvalidPolicy
+}
+
+impl Display for RotationError {
+    fn fmt(f: Formatter) {
+        match self {
+            IoError(msg) => f.write("IO error: \(msg)")
+            CompressionError(msg) => f.write("Compression error: \(msg)")
+            FileNotOpen => f.write("File not open")
+            NotFound(name) => f.write("Rotator not found: \(name)")
+            InvalidPolicy => f.write("Invalid rotation policy")
+        }
+    }
+}
+
+impl From<fs::IoError> for RotationError {
+    fn from(e: fs::IoError) -> Self {
+        RotationError.IoError(e.to_string())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Utility Functions
+// -----------------------------------------------------------------------------
+
+/// Parse size string (e.g., "10MB", "1GB")
+fn parse_size(s: String) -> Result<Int64, ParseError> {
+    let s = s.trim().to_uppercase()
+    
+    let multipliers = [
+        ("KB", 1024i64),
+        ("MB", 1024i64 * 1024),
+        ("GB", 1024i64 * 1024 * 1024),
+        ("TB", 1024i64 * 1024 * 1024 * 1024),
+        ("K", 1024i64),
+        ("M", 1024i64 * 1024),
+        ("G", 1024i64 * 1024 * 1024),
+        ("T", 1024i64 * 1024 * 1024 * 1024),
+        ("B", 1i64)
+    ]
+    
+    for (suffix, multiplier) in multipliers {
+        if s.ends_with(suffix) {
+            let num_str = s[..s.len() - suffix.len()].trim()
+            let num = Int64.parse(num_str)?
+            return Ok(num * multiplier)
+        }
+    }
+    
+    // No suffix, assume bytes
+    Int64.parse(s)
+}
+
+/// Format size as human-readable string
+fn format_size(bytes: Int64) -> String {
+    let units = ["B", "KB", "MB", "GB", "TB"]
+    var size = bytes as Float
+    var unit_idx = 0
+    
+    while size >= 1024.0 && unit_idx < units.len() - 1 {
+        size /= 1024.0
+        unit_idx += 1
+    }
+    
+    if unit_idx == 0 {
+        "\(bytes) B"
+    } else {
+        format!("{:.2} {}", size, units[unit_idx])
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "rotation policy size" {
+    let rotator = LogRotator.new("/tmp/test.log")
+        .size_based(1024 * 1024)
+    
+    match rotator.policy {
+        RotationPolicy.Size(size) => assert_eq(size, 1024 * 1024)?
+        _ => panic("Expected size policy")?
+    }
+}
+
+test "rotation policy time" {
+    let rotator = LogRotator.new("/tmp/test.log")
+        .daily()
+    
+    match rotator.policy {
+        RotationPolicy.Time(RotationInterval.Daily) => {}
+        _ => panic("Expected daily policy")?
+    }
+}
+
+test "retention policy" {
+    let rotator = LogRotator.new("/tmp/test.log")
+        .with_retention(RetentionPolicy.Count(10))
+    
+    match rotator.retention {
+        RetentionPolicy.Count(n) => assert_eq(n, 10)?
+        _ => panic("Expected count retention")?
+    }
+}
+
+test "parse size" {
+    assert_eq(parse_size("1KB")?, 1024)?
+    assert_eq(parse_size("1MB")?, 1024 * 1024)?
+    assert_eq(parse_size("1GB")?, 1024 * 1024 * 1024)?
+    assert_eq(parse_size("100")?, 100)?
+}
+
+test "format size" {
+    assert_eq(format_size(1024), "1.00 KB")?
+    assert_eq(format_size(1024 * 1024), "1.00 MB")?
+    assert_eq(format_size(500), "500 B")?
+}
+
+test "timestamp naming" {
+    let naming = TimestampNaming.new()
+    let time = DateTime.new(2024, 1, 15, 10, 30, 0)
+    let name = naming.generate_name("/var/log/app.log", time, 1)
+    
+    assert_eq(name, "/var/log/app.log.20240115")?
+}
+
+test "index naming" {
+    let naming = IndexNaming.new().with_padding(3)
+    let time = DateTime.now()
+    let name = naming.generate_name("/var/log/app.log", time, 5)
+    
+    assert_eq(name, "/var/log/app.log.005")?
+}
+
+test "rotation interval" {
+    let daily = RotationInterval.Daily
+    assert_eq(daily.format_pattern(), "%Y%m%d")?
+    
+    let hourly = RotationInterval.Hourly
+    assert_eq(hourly.format_pattern(), "%Y%m%d%H")?
+}

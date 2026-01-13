@@ -1,0 +1,785 @@
+// =============================================================================
+// Vibee OS — Remote Config Module
+// Configuration from remote sources (HTTP, Consul, etcd, etc.)
+// =============================================================================
+
+// =============================================================================
+// Remote Config Source Trait
+// =============================================================================
+
+/// Trait for remote configuration sources
+trait RemoteConfigSource {
+    fn fetch() -> Result<ConfigValue, RemoteConfigError>
+    fn watch(callback: fn(ConfigValue)) -> Result<(), RemoteConfigError>
+    fn name() -> String
+}
+
+// =============================================================================
+// HTTP Config Source
+// =============================================================================
+
+/// HTTP-based configuration source
+struct HttpConfigSource {
+    url: String
+    method: http.Method
+    headers: Map<String, String>
+    format: ConfigFormat
+    timeout_ms: Int64
+    auth: Option<HttpAuth>
+}
+
+enum HttpAuth {
+    Basic { username: String, password: String }
+    Bearer { token: String }
+    ApiKey { header: String, key: String }
+}
+
+impl HttpConfigSource {
+    fn new(url: String) -> Self {
+        HttpConfigSource {
+            url: url,
+            method: http.Method.GET,
+            headers: Map.empty(),
+            format: ConfigFormat.JSON,
+            timeout_ms: 30000,
+            auth: None
+        }
+    }
+    
+    fn method(m: http.Method) -> Self { self.method = m; self }
+    fn header(name: String, value: String) -> Self { self.headers.set(name, value); self }
+    fn format(f: ConfigFormat) -> Self { self.format = f; self }
+    fn timeout(ms: Int64) -> Self { self.timeout_ms = ms; self }
+    
+    fn basic_auth(username: String, password: String) -> Self {
+        self.auth = Some(HttpAuth.Basic { username: username, password: password })
+        self
+    }
+    
+    fn bearer_auth(token: String) -> Self {
+        self.auth = Some(HttpAuth.Bearer { token: token })
+        self
+    }
+    
+    fn api_key(header: String, key: String) -> Self {
+        self.auth = Some(HttpAuth.ApiKey { header: header, key: key })
+        self
+    }
+}
+
+impl RemoteConfigSource for HttpConfigSource {
+    fn fetch() -> Result<ConfigValue, RemoteConfigError> {
+        var req = http.Request.new(self.method, self.url.clone())
+        
+        // Add headers
+        for (k, v) in self.headers {
+            req = req.header(k, v)
+        }
+        
+        // Add auth
+        match self.auth {
+            Some(HttpAuth.Basic { username, password }) => {
+                req = req.basic_auth(username, password)
+            }
+            Some(HttpAuth.Bearer { token }) => {
+                req = req.bearer_token(token)
+            }
+            Some(HttpAuth.ApiKey { header, key }) => {
+                req = req.header(header, key)
+            }
+            None => {}
+        }
+        
+        let client = http.Client.new().timeout(self.timeout_ms)
+        let response = client.send(req)
+            .map_err(|e| RemoteConfigError.NetworkError(e.to_string()))?
+        
+        if !response.is_success() {
+            return Err(RemoteConfigError.HttpError(response.status.code, response.text()))
+        }
+        
+        file_config.parse_content(response.text(), self.format)
+            .map_err(|e| RemoteConfigError.ParseError(e.to_string()))
+    }
+    
+    fn watch(callback: fn(ConfigValue)) -> Result<(), RemoteConfigError> {
+        // HTTP doesn't support native watching, use polling
+        Err(RemoteConfigError.NotSupported("HTTP watch not supported, use polling"))
+    }
+    
+    fn name() -> String { format!("HTTP({})", self.url) }
+}
+
+// =============================================================================
+// Consul Config Source
+// =============================================================================
+
+/// Consul KV configuration source
+struct ConsulConfigSource {
+    address: String
+    key: String
+    token: Option<String>
+    datacenter: Option<String>
+    namespace: Option<String>
+    recursive: Bool
+}
+
+impl ConsulConfigSource {
+    fn new(address: String, key: String) -> Self {
+        ConsulConfigSource {
+            address: address,
+            key: key,
+            token: None,
+            datacenter: None,
+            namespace: None,
+            recursive: false
+        }
+    }
+    
+    fn token(t: String) -> Self { self.token = Some(t); self }
+    fn datacenter(dc: String) -> Self { self.datacenter = Some(dc); self }
+    fn namespace(ns: String) -> Self { self.namespace = Some(ns); self }
+    fn recursive() -> Self { self.recursive = true; self }
+}
+
+impl RemoteConfigSource for ConsulConfigSource {
+    fn fetch() -> Result<ConfigValue, RemoteConfigError> {
+        var url = format!("{}/v1/kv/{}", self.address, self.key)
+        
+        var params = []
+        if self.recursive { params.push("recurse=true") }
+        if let Some(dc) = self.datacenter { params.push(format!("dc={}", dc)) }
+        if let Some(ns) = self.namespace { params.push(format!("ns={}", ns)) }
+        
+        if !params.is_empty() {
+            url = format!("{}?{}", url, params.join("&"))
+        }
+        
+        var req = http.Request.get(url)
+        if let Some(token) = self.token {
+            req = req.header("X-Consul-Token", token)
+        }
+        
+        let response = http.Client.new().send(req)
+            .map_err(|e| RemoteConfigError.NetworkError(e.to_string()))?
+        
+        if response.status.code == 404 {
+            return Ok(ConfigValue.Object(Map.empty()))
+        }
+        
+        if !response.is_success() {
+            return Err(RemoteConfigError.HttpError(response.status.code, response.text()))
+        }
+        
+        parse_consul_response(response.text(), self.recursive)
+    }
+    
+    fn watch(callback: fn(ConfigValue)) -> Result<(), RemoteConfigError> {
+        spawn {
+            var index = 0
+            loop {
+                var url = format!("{}/v1/kv/{}?index={}&wait=30s", 
+                    self.address, self.key, index)
+                
+                if self.recursive { url = format!("{}&recurse=true", url) }
+                
+                var req = http.Request.get(url)
+                if let Some(token) = self.token {
+                    req = req.header("X-Consul-Token", token)
+                }
+                
+                match http.Client.new().timeout(60000).send(req) {
+                    Ok(response) => {
+                        if let Some(new_index) = response.headers.get("X-Consul-Index") {
+                            if let Ok(idx) = Int.parse(new_index) {
+                                if idx > index {
+                                    index = idx
+                                    if let Ok(value) = parse_consul_response(response.text(), self.recursive) {
+                                        callback(value)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => sleep(Duration.seconds(5))
+                }
+            }
+        }
+        Ok(())
+    }
+    
+    fn name() -> String { format!("Consul({}/{})", self.address, self.key) }
+}
+
+fn parse_consul_response(body: String, recursive: Bool) -> Result<ConfigValue, RemoteConfigError> {
+    let entries: [ConsulKVEntry] = @native("json_decode", body)
+        .map_err(|e| RemoteConfigError.ParseError(e))?
+    
+    if !recursive && entries.len() == 1 {
+        let value = base64.decode(entries[0].Value)
+            .map_err(|e| RemoteConfigError.ParseError("Base64 decode failed"))?
+        let content = String.from_utf8(value)
+            .map_err(|_| RemoteConfigError.ParseError("Invalid UTF-8"))?
+        return file_config.parse_content(content, ConfigFormat.Auto)
+            .map_err(|e| RemoteConfigError.ParseError(e.to_string()))
+    }
+    
+    // Build nested structure from recursive keys
+    var result = ConfigValue.Object(Map.empty())
+    for entry in entries {
+        let value = base64.decode(entry.Value).unwrap_or([])
+        let content = String.from_utf8(value).unwrap_or("")
+        let path = entry.Key.replace("/", ".")
+        result = result.set_path(path, ConfigValue.String(content))
+    }
+    
+    Ok(result)
+}
+
+struct ConsulKVEntry {
+    Key: String
+    Value: String
+    ModifyIndex: Int
+}
+
+// =============================================================================
+// Etcd Config Source
+// =============================================================================
+
+/// Etcd configuration source
+struct EtcdConfigSource {
+    endpoints: [String]
+    key: String
+    username: Option<String>
+    password: Option<String>
+    prefix: Bool
+}
+
+impl EtcdConfigSource {
+    fn new(endpoints: [String], key: String) -> Self {
+        EtcdConfigSource {
+            endpoints: endpoints,
+            key: key,
+            username: None,
+            password: None,
+            prefix: false
+        }
+    }
+    
+    fn auth(username: String, password: String) -> Self {
+        self.username = Some(username)
+        self.password = Some(password)
+        self
+    }
+    
+    fn with_prefix() -> Self { self.prefix = true; self }
+}
+
+impl RemoteConfigSource for EtcdConfigSource {
+    fn fetch() -> Result<ConfigValue, RemoteConfigError> {
+        let endpoint = self.endpoints.first()
+            .ok_or(RemoteConfigError.ConfigError("No endpoints configured"))?
+        
+        let url = if self.prefix {
+            format!("{}/v3/kv/range", endpoint)
+        } else {
+            format!("{}/v3/kv/range", endpoint)
+        }
+        
+        let key_base64 = base64.encode(self.key.as_bytes())
+        var body = format!("{{\"key\": \"{}\"}}", key_base64)
+        
+        if self.prefix {
+            // Range end for prefix query
+            let range_end = increment_last_byte(self.key.clone())
+            let range_end_base64 = base64.encode(range_end.as_bytes())
+            body = format!("{{\"key\": \"{}\", \"range_end\": \"{}\"}}", key_base64, range_end_base64)
+        }
+        
+        var req = http.Request.post(url).body(body.as_bytes())
+            .header("Content-Type", "application/json")
+        
+        if let (Some(user), Some(pass)) = (self.username.clone(), self.password.clone()) {
+            // Get auth token first
+            let token = self.get_auth_token(endpoint, user, pass)?
+            req = req.header("Authorization", token)
+        }
+        
+        let response = http.Client.new().send(req)
+            .map_err(|e| RemoteConfigError.NetworkError(e.to_string()))?
+        
+        if !response.is_success() {
+            return Err(RemoteConfigError.HttpError(response.status.code, response.text()))
+        }
+        
+        parse_etcd_response(response.text())
+    }
+    
+    fn watch(callback: fn(ConfigValue)) -> Result<(), RemoteConfigError> {
+        let endpoint = self.endpoints.first()
+            .ok_or(RemoteConfigError.ConfigError("No endpoints configured"))?
+        
+        spawn {
+            let url = format!("{}/v3/watch", endpoint)
+            let key_base64 = base64.encode(self.key.as_bytes())
+            let body = format!("{{\"create_request\": {{\"key\": \"{}\"}}}}", key_base64)
+            
+            // Use streaming HTTP
+            loop {
+                match http.Client.new().timeout(0).send(
+                    http.Request.post(url.clone()).body(body.as_bytes())
+                ) {
+                    Ok(response) => {
+                        // Parse watch events
+                        for line in response.text().lines() {
+                            if let Ok(event) = parse_etcd_watch_event(line) {
+                                callback(event)
+                            }
+                        }
+                    }
+                    Err(_) => sleep(Duration.seconds(5))
+                }
+            }
+        }
+        Ok(())
+    }
+    
+    fn name() -> String { format!("Etcd({}/{})", self.endpoints.join(","), self.key) }
+}
+
+impl EtcdConfigSource {
+    fn get_auth_token(endpoint: String, username: String, password: String) -> Result<String, RemoteConfigError> {
+        let url = format!("{}/v3/auth/authenticate", endpoint)
+        let body = format!("{{\"name\": \"{}\", \"password\": \"{}\"}}", username, password)
+        
+        let response = http.Client.new().send(
+            http.Request.post(url).body(body.as_bytes())
+                .header("Content-Type", "application/json")
+        ).map_err(|e| RemoteConfigError.NetworkError(e.to_string()))?
+        
+        if !response.is_success() {
+            return Err(RemoteConfigError.AuthError("Authentication failed"))
+        }
+        
+        // Parse token from response
+        let data: Map<String, String> = @native("json_decode", response.text())
+            .map_err(|e| RemoteConfigError.ParseError(e))?
+        
+        data.get("token").cloned()
+            .ok_or(RemoteConfigError.AuthError("No token in response"))
+    }
+}
+
+fn increment_last_byte(s: String) -> String {
+    var bytes = s.as_bytes().to_vec()
+    if let Some(last) = bytes.last_mut() {
+        *last += 1
+    }
+    String.from_utf8(bytes).unwrap_or(s)
+}
+
+fn parse_etcd_response(body: String) -> Result<ConfigValue, RemoteConfigError> {
+    let response: EtcdRangeResponse = @native("json_decode", body)
+        .map_err(|e| RemoteConfigError.ParseError(e))?
+    
+    if response.kvs.is_empty() {
+        return Ok(ConfigValue.Object(Map.empty()))
+    }
+    
+    if response.kvs.len() == 1 {
+        let value = base64.decode(response.kvs[0].value)
+            .map_err(|_| RemoteConfigError.ParseError("Base64 decode failed"))?
+        let content = String.from_utf8(value)
+            .map_err(|_| RemoteConfigError.ParseError("Invalid UTF-8"))?
+        return file_config.parse_content(content, ConfigFormat.Auto)
+            .map_err(|e| RemoteConfigError.ParseError(e.to_string()))
+    }
+    
+    // Build nested structure
+    var result = ConfigValue.Object(Map.empty())
+    for kv in response.kvs {
+        let key = base64.decode(kv.key).and_then(|b| String.from_utf8(b).ok()).unwrap_or("")
+        let value = base64.decode(kv.value).and_then(|b| String.from_utf8(b).ok()).unwrap_or("")
+        let path = key.replace("/", ".")
+        result = result.set_path(path, ConfigValue.String(value))
+    }
+    
+    Ok(result)
+}
+
+fn parse_etcd_watch_event(line: String) -> Result<ConfigValue, RemoteConfigError> {
+    let event: EtcdWatchResponse = @native("json_decode", line)
+        .map_err(|e| RemoteConfigError.ParseError(e))?
+    
+    var result = ConfigValue.Object(Map.empty())
+    for ev in event.result.events {
+        let key = base64.decode(ev.kv.key).and_then(|b| String.from_utf8(b).ok()).unwrap_or("")
+        let value = base64.decode(ev.kv.value).and_then(|b| String.from_utf8(b).ok()).unwrap_or("")
+        result = result.set_path(key.replace("/", "."), ConfigValue.String(value))
+    }
+    
+    Ok(result)
+}
+
+struct EtcdRangeResponse { kvs: [EtcdKV] }
+struct EtcdKV { key: String, value: String }
+struct EtcdWatchResponse { result: EtcdWatchResult }
+struct EtcdWatchResult { events: [EtcdEvent] }
+struct EtcdEvent { kv: EtcdKV }
+
+// =============================================================================
+// AWS AppConfig Source
+// =============================================================================
+
+/// AWS AppConfig configuration source
+struct AppConfigSource {
+    application: String
+    environment: String
+    configuration: String
+    region: String
+    poll_interval_seconds: Int
+}
+
+impl AppConfigSource {
+    fn new(application: String, environment: String, configuration: String) -> Self {
+        AppConfigSource {
+            application: application,
+            environment: environment,
+            configuration: configuration,
+            region: "us-east-1",
+            poll_interval_seconds: 30
+        }
+    }
+    
+    fn region(r: String) -> Self { self.region = r; self }
+    fn poll_interval(seconds: Int) -> Self { self.poll_interval_seconds = seconds; self }
+}
+
+impl RemoteConfigSource for AppConfigSource {
+    fn fetch() -> Result<ConfigValue, RemoteConfigError> {
+        @native("aws_appconfig_get", self.application, self.environment, self.configuration, self.region)
+            .map_err(|e| RemoteConfigError.NetworkError(e))
+    }
+    
+    fn watch(callback: fn(ConfigValue)) -> Result<(), RemoteConfigError> {
+        spawn {
+            var last_version = ""
+            loop {
+                match self.fetch() {
+                    Ok(value) => {
+                        let version = @native("aws_appconfig_version")
+                        if version != last_version {
+                            last_version = version
+                            callback(value)
+                        }
+                    }
+                    Err(e) => log.error("AppConfig fetch error: {}", e)
+                }
+                sleep(Duration.seconds(self.poll_interval_seconds))
+            }
+        }
+        Ok(())
+    }
+    
+    fn name() -> String { 
+        format!("AppConfig({}/{}/{})", self.application, self.environment, self.configuration) 
+    }
+}
+
+// =============================================================================
+// Remote Config Manager
+// =============================================================================
+
+/// Manager for multiple remote configuration sources
+actor RemoteConfig {
+    state sources: [Box<dyn RemoteConfigSource>]
+    state values: ConfigValue
+    state cache_ttl_ms: Int64
+    state last_fetch: Int64
+    state watchers: [fn(ConfigValue)]
+    state fallback: Option<ConfigValue>
+    state retry_config: RetryConfig
+}
+
+struct RetryConfig {
+    max_retries: Int
+    initial_delay_ms: Int64
+    max_delay_ms: Int64
+    multiplier: Float
+}
+
+impl RetryConfig {
+    fn default() -> Self {
+        RetryConfig {
+            max_retries: 3,
+            initial_delay_ms: 1000,
+            max_delay_ms: 30000,
+            multiplier: 2.0
+        }
+    }
+}
+
+impl RemoteConfig {
+    fn new() -> Self {
+        RemoteConfig {
+            sources: [],
+            values: ConfigValue.Object(Map.empty()),
+            cache_ttl_ms: 60000,
+            last_fetch: 0,
+            watchers: [],
+            fallback: None,
+            retry_config: RetryConfig.default()
+        }
+    }
+    
+    /// Add configuration source
+    fn add_source<S: RemoteConfigSource>(source: S) -> Self {
+        self.sources.push(Box.new(source))
+        self
+    }
+    
+    /// Add HTTP source
+    fn add_http(url: String) -> Self {
+        self.add_source(HttpConfigSource.new(url))
+    }
+    
+    /// Add Consul source
+    fn add_consul(address: String, key: String) -> Self {
+        self.add_source(ConsulConfigSource.new(address, key))
+    }
+    
+    /// Add etcd source
+    fn add_etcd(endpoints: [String], key: String) -> Self {
+        self.add_source(EtcdConfigSource.new(endpoints, key))
+    }
+    
+    /// Set cache TTL
+    fn cache_ttl(ms: Int64) -> Self {
+        self.cache_ttl_ms = ms
+        self
+    }
+    
+    /// Set fallback configuration
+    fn fallback(value: ConfigValue) -> Self {
+        self.fallback = Some(value)
+        self
+    }
+    
+    /// Set retry configuration
+    fn retry(config: RetryConfig) -> Self {
+        self.retry_config = config
+        self
+    }
+    
+    /// Fetch configuration from all sources
+    fn fetch() -> Result<ConfigValue, RemoteConfigError> {
+        let now = @native("time_now_millis")
+        
+        // Return cached if still valid
+        if now - self.last_fetch < self.cache_ttl_ms {
+            return Ok(self.values.clone())
+        }
+        
+        var merged = ConfigValue.Object(Map.empty())
+        var errors = []
+        
+        for source in self.sources {
+            match self.fetch_with_retry(source) {
+                Ok(value) => merged = merged.merge(value)
+                Err(e) => errors.push((source.name(), e))
+            }
+        }
+        
+        // If all sources failed, use fallback
+        if errors.len() == self.sources.len() {
+            if let Some(fb) = self.fallback {
+                log.warn("All remote sources failed, using fallback")
+                return Ok(fb)
+            }
+            return Err(RemoteConfigError.AllSourcesFailed(errors))
+        }
+        
+        self.values = merged.clone()
+        self.last_fetch = now
+        
+        // Notify watchers
+        for watcher in self.watchers {
+            watcher(merged.clone())
+        }
+        
+        Ok(merged)
+    }
+    
+    fn fetch_with_retry(source: Box<dyn RemoteConfigSource>) -> Result<ConfigValue, RemoteConfigError> {
+        var delay = self.retry_config.initial_delay_ms
+        var last_error = RemoteConfigError.NetworkError("Unknown")
+        
+        for i in 0..self.retry_config.max_retries {
+            match source.fetch() {
+                Ok(value) => return Ok(value)
+                Err(e) => {
+                    last_error = e
+                    if i < self.retry_config.max_retries - 1 {
+                        sleep(Duration.millis(delay))
+                        delay = (delay as Float * self.retry_config.multiplier) as Int64
+                        delay = delay.min(self.retry_config.max_delay_ms)
+                    }
+                }
+            }
+        }
+        
+        Err(last_error)
+    }
+    
+    /// Get value by path
+    fn get(path: String) -> Option<ConfigValue> {
+        // Auto-fetch if cache expired
+        if @native("time_now_millis") - self.last_fetch >= self.cache_ttl_ms {
+            let _ = self.fetch()
+        }
+        self.values.path(path)
+    }
+    
+    /// Get typed values
+    fn get_bool(path: String) -> Option<Bool> { self.values.path_bool(path) }
+    fn get_int(path: String) -> Option<Int> { self.values.path_int(path) }
+    fn get_float(path: String) -> Option<Float> { self.values.path_float(path) }
+    fn get_str(path: String) -> Option<String> { self.values.path_str(path) }
+    
+    /// Watch for changes
+    fn on_change(callback: fn(ConfigValue)) -> Self {
+        self.watchers.push(callback)
+        self
+    }
+    
+    /// Start watching all sources
+    fn start_watching() -> Result<(), RemoteConfigError> {
+        for source in self.sources {
+            let watchers = self.watchers.clone()
+            source.watch(|value| {
+                self.values = self.values.merge(value.clone())
+                for watcher in watchers {
+                    watcher(self.values.clone())
+                }
+            })?
+        }
+        Ok(())
+    }
+    
+    /// Force refresh
+    fn refresh() -> Result<ConfigValue, RemoteConfigError> {
+        self.last_fetch = 0
+        self.fetch()
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum RemoteConfigError {
+    NetworkError(String)
+    HttpError(Int, String)
+    ParseError(String)
+    AuthError(String)
+    ConfigError(String)
+    NotSupported(String)
+    AllSourcesFailed([(String, RemoteConfigError)])
+}
+
+impl Display for RemoteConfigError {
+    fn fmt(f: Formatter) {
+        match self {
+            .NetworkError(msg) => f.write(format!("Network error: {}", msg))
+            .HttpError(code, msg) => f.write(format!("HTTP error {}: {}", code, msg))
+            .ParseError(msg) => f.write(format!("Parse error: {}", msg))
+            .AuthError(msg) => f.write(format!("Auth error: {}", msg))
+            .ConfigError(msg) => f.write(format!("Config error: {}", msg))
+            .NotSupported(msg) => f.write(format!("Not supported: {}", msg))
+            .AllSourcesFailed(errors) => {
+                f.write("All sources failed:\n")
+                for (name, err) in errors {
+                    f.write(format!("  - {}: {}\n", name, err))
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+/// Create HTTP config source
+fn http(url: String) -> HttpConfigSource { HttpConfigSource.new(url) }
+
+/// Create Consul config source
+fn consul(address: String, key: String) -> ConsulConfigSource { 
+    ConsulConfigSource.new(address, key) 
+}
+
+/// Create etcd config source
+fn etcd(endpoints: [String], key: String) -> EtcdConfigSource { 
+    EtcdConfigSource.new(endpoints, key) 
+}
+
+/// Create AppConfig source
+fn appconfig(app: String, env: String, config: String) -> AppConfigSource {
+    AppConfigSource.new(app, env, config)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "http config source" {
+    let source = HttpConfigSource.new("https://config.example.com/app.json")
+        .bearer_auth("token123")
+        .timeout(5000)
+    
+    assert_eq(source.url, "https://config.example.com/app.json")?
+    assert_eq(source.timeout_ms, 5000)?
+}
+
+test "consul config source" {
+    let source = ConsulConfigSource.new("http://localhost:8500", "myapp/config")
+        .token("secret-token")
+        .datacenter("dc1")
+        .recursive()
+    
+    assert_eq(source.key, "myapp/config")?
+    assert(source.recursive)?
+}
+
+test "etcd config source" {
+    let source = EtcdConfigSource.new(["http://localhost:2379"], "/config/myapp")
+        .auth("root", "password")
+        .with_prefix()
+    
+    assert_eq(source.key, "/config/myapp")?
+    assert(source.prefix)?
+}
+
+test "remote config manager" {
+    let config = RemoteConfig.new()
+        .add_http("https://config.example.com/app.json")
+        .cache_ttl(30000)
+        .fallback(ConfigValue.Object(Map.from([
+            ("default", ConfigValue.Bool(true))
+        ])))
+    
+    assert_eq(config.sources.len(), 1)?
+    assert_eq(config.cache_ttl_ms, 30000)?
+}
+
+test "retry config" {
+    let retry = RetryConfig {
+        max_retries: 5,
+        initial_delay_ms: 500,
+        max_delay_ms: 10000,
+        multiplier: 1.5
+    }
+    
+    assert_eq(retry.max_retries, 5)?
+    assert_eq(retry.multiplier, 1.5)?
+}

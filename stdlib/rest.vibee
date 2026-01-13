@@ -1,0 +1,783 @@
+// =============================================================================
+// Vibee OS — REST API Module
+// RESTful API client and server with resource-based routing
+// =============================================================================
+
+use http::{Request, Response, Method, Status, Headers, Client as HttpClient}
+use router::{Router, Params}
+use json::{JsonValue, Serialize, Deserialize}
+
+// =============================================================================
+// REST Client
+// =============================================================================
+
+/// REST API Client with resource-based operations
+actor RestClient {
+    state base_url: String
+    state http: HttpClient
+    state headers: Headers
+    state interceptors: [RequestInterceptor]
+    state retry_config: RetryConfig
+    
+    /// Create new REST client
+    fn new(base_url: String) -> Self {
+        RestClient {
+            base_url: base_url.trim_end("/"),
+            http: HttpClient.new(),
+            headers: Headers.new(),
+            interceptors: [],
+            retry_config: RetryConfig.default()
+        }
+    }
+    
+    /// Set default header
+    fn header(name: String, value: String) -> Self {
+        self.headers.set(name, value)
+        self
+    }
+    
+    /// Set bearer token authentication
+    fn bearer_token(token: String) -> Self {
+        self.header("Authorization", format!("Bearer {}", token))
+    }
+    
+    /// Set basic authentication
+    fn basic_auth(username: String, password: String) -> Self {
+        let encoded = base64.encode(format!("{}:{}", username, password).as_bytes())
+        self.header("Authorization", format!("Basic {}", encoded))
+    }
+    
+    /// Set API key authentication
+    fn api_key(key: String, header_name: String = "X-API-Key") -> Self {
+        self.header(header_name, key)
+    }
+    
+    /// Add request interceptor
+    fn interceptor(interceptor: RequestInterceptor) -> Self {
+        self.interceptors.push(interceptor)
+        self
+    }
+    
+    /// Configure retry behavior
+    fn retry(config: RetryConfig) -> Self {
+        self.retry_config = config
+        self
+    }
+    
+    /// Set timeout
+    fn timeout(ms: Int64) -> Self {
+        self.http = self.http.timeout(ms)
+        self
+    }
+    
+    /// Create resource endpoint
+    fn resource<T: RestResource>(path: String) -> ResourceClient<T> {
+        ResourceClient.new(self, path)
+    }
+    
+    /// GET request
+    fn get<T: Deserialize>(path: String) -> Result<T, RestError> {
+        self.request(Method.GET, path, None)
+    }
+    
+    /// GET request with query parameters
+    fn get_with_query<T: Deserialize>(path: String, query: Map<String, String>) -> Result<T, RestError> {
+        let url = self.build_url_with_query(path, query)
+        self.request(Method.GET, url, None)
+    }
+    
+    /// POST request
+    fn post<T: Deserialize, B: Serialize>(path: String, body: B) -> Result<T, RestError> {
+        self.request(Method.POST, path, Some(body))
+    }
+    
+    /// PUT request
+    fn put<T: Deserialize, B: Serialize>(path: String, body: B) -> Result<T, RestError> {
+        self.request(Method.PUT, path, Some(body))
+    }
+    
+    /// PATCH request
+    fn patch<T: Deserialize, B: Serialize>(path: String, body: B) -> Result<T, RestError> {
+        self.request(Method.PATCH, path, Some(body))
+    }
+    
+    /// DELETE request
+    fn delete(path: String) -> Result<(), RestError> {
+        self.request::<()>(Method.DELETE, path, None).map(|_| ())
+    }
+    
+    /// Execute request with retry logic
+    fn request<T: Deserialize, B: Serialize>(method: Method, path: String, body: Option<B>) -> Result<T, RestError> {
+        let url = format!("{}{}", self.base_url, path)
+        var req = Request.new(method, url)
+        
+        // Apply default headers
+        for (name, value) in self.headers.iter() {
+            req = req.header(name, value)
+        }
+        
+        // Set JSON content type for body
+        if let Some(b) = body {
+            req = req.json(b)
+        }
+        
+        // Apply interceptors
+        for interceptor in self.interceptors {
+            req = interceptor.intercept(req)
+        }
+        
+        // Execute with retry
+        self.execute_with_retry(req)
+    }
+    
+    fn execute_with_retry<T: Deserialize>(req: Request) -> Result<T, RestError> {
+        var attempts = 0
+        var last_error: Option<RestError> = None
+        
+        while attempts <= self.retry_config.max_retries {
+            match self.http.send(req.clone()) {
+                Ok(response) => {
+                    if response.is_success() {
+                        return response.json::<T>().map_err(|e| RestError.ParseError(e.to_string()))
+                    } else if self.retry_config.should_retry(response.status.code) && attempts < self.retry_config.max_retries {
+                        attempts += 1
+                        sleep(self.retry_config.delay_ms(attempts))
+                        continue
+                    } else {
+                        return Err(RestError.from_response(response))
+                    }
+                }
+                Err(e) => {
+                    if attempts < self.retry_config.max_retries {
+                        attempts += 1
+                        sleep(self.retry_config.delay_ms(attempts))
+                        last_error = Some(RestError.NetworkError(e.to_string()))
+                        continue
+                    }
+                    return Err(RestError.NetworkError(e.to_string()))
+                }
+            }
+        }
+        
+        Err(last_error.unwrap_or(RestError.MaxRetriesExceeded))
+    }
+    
+    fn build_url_with_query(path: String, query: Map<String, String>) -> String {
+        if query.is_empty() {
+            return path
+        }
+        let params = query.iter()
+            .map(|(k, v)| format!("{}={}", url.encode(k), url.encode(v)))
+            .join("&")
+        format!("{}?{}", path, params)
+    }
+}
+
+/// Resource client for CRUD operations
+struct ResourceClient<T: RestResource> {
+    client: RestClient
+    path: String
+}
+
+impl<T: RestResource> ResourceClient<T> {
+    fn new(client: RestClient, path: String) -> Self {
+        ResourceClient { client: client, path: path }
+    }
+    
+    /// List all resources
+    fn list() -> Result<[T], RestError> {
+        self.client.get(self.path)
+    }
+    
+    /// List with pagination
+    fn list_paginated(page: Int, per_page: Int) -> Result<PaginatedResponse<T>, RestError> {
+        let query = Map.from([
+            ("page", page.to_string()),
+            ("per_page", per_page.to_string())
+        ])
+        self.client.get_with_query(self.path, query)
+    }
+    
+    /// Get single resource by ID
+    fn get(id: String) -> Result<T, RestError> {
+        self.client.get(format!("{}/{}", self.path, id))
+    }
+    
+    /// Create new resource
+    fn create(resource: T) -> Result<T, RestError> {
+        self.client.post(self.path, resource)
+    }
+    
+    /// Update existing resource
+    fn update(id: String, resource: T) -> Result<T, RestError> {
+        self.client.put(format!("{}/{}", self.path, id), resource)
+    }
+    
+    /// Partial update
+    fn patch(id: String, updates: Map<String, JsonValue>) -> Result<T, RestError> {
+        self.client.patch(format!("{}/{}", self.path, id), updates)
+    }
+    
+    /// Delete resource
+    fn delete(id: String) -> Result<(), RestError> {
+        self.client.delete(format!("{}/{}", self.path, id))
+    }
+    
+    /// Find resources with query
+    fn find(query: Map<String, String>) -> Result<[T], RestError> {
+        self.client.get_with_query(self.path, query)
+    }
+}
+
+/// Trait for REST resources
+trait RestResource: Serialize + Deserialize {
+    fn id() -> Option<String>
+    fn resource_name() -> String
+}
+
+/// Paginated response
+struct PaginatedResponse<T> {
+    data: [T]
+    page: Int
+    per_page: Int
+    total: Int
+    total_pages: Int
+}
+
+impl<T> PaginatedResponse<T> {
+    fn has_next() -> Bool { self.page < self.total_pages }
+    fn has_prev() -> Bool { self.page > 1 }
+}
+
+// =============================================================================
+// REST Server
+// =============================================================================
+
+/// REST API Server
+actor RestServer {
+    state router: Router
+    state resources: Map<String, ResourceHandler>
+    state middleware: [RestMiddleware]
+    state error_handler: fn(RestError) -> Response
+    state cors_config: Option<CorsConfig>
+    
+    /// Create new REST server
+    fn new() -> Self {
+        RestServer {
+            router: Router.new(),
+            resources: Map.empty(),
+            middleware: [],
+            error_handler: Self.default_error_handler,
+            cors_config: None
+        }
+    }
+    
+    /// Register a resource with CRUD endpoints
+    fn resource<T: RestResource>(path: String, handler: impl ResourceController<T>) -> Self {
+        let base_path = format!("/api{}", path)
+        
+        // GET /resources - List all
+        self.router.get(base_path.clone(), |req| {
+            match handler.list(req) {
+                Ok(items) => Response.ok().json(items),
+                Err(e) => self.error_handler(e)
+            }
+        })
+        
+        // GET /resources/:id - Get one
+        self.router.get(format!("{}/:id", base_path), |req| {
+            let id = req.params.get("id").unwrap()
+            match handler.get(id, req) {
+                Ok(item) => Response.ok().json(item),
+                Err(e) => self.error_handler(e)
+            }
+        })
+        
+        // POST /resources - Create
+        self.router.post(base_path.clone(), |req| {
+            match req.json::<T>() {
+                Ok(item) => match handler.create(item, req) {
+                    Ok(created) => Response.new(Status.created()).json(created),
+                    Err(e) => self.error_handler(e)
+                },
+                Err(e) => self.error_handler(RestError.ParseError(e.to_string()))
+            }
+        })
+        
+        // PUT /resources/:id - Update
+        self.router.put(format!("{}/:id", base_path), |req| {
+            let id = req.params.get("id").unwrap()
+            match req.json::<T>() {
+                Ok(item) => match handler.update(id, item, req) {
+                    Ok(updated) => Response.ok().json(updated),
+                    Err(e) => self.error_handler(e)
+                },
+                Err(e) => self.error_handler(RestError.ParseError(e.to_string()))
+            }
+        })
+        
+        // PATCH /resources/:id - Partial update
+        self.router.patch(format!("{}/:id", base_path), |req| {
+            let id = req.params.get("id").unwrap()
+            match req.json::<Map<String, JsonValue>>() {
+                Ok(updates) => match handler.patch(id, updates, req) {
+                    Ok(updated) => Response.ok().json(updated),
+                    Err(e) => self.error_handler(e)
+                },
+                Err(e) => self.error_handler(RestError.ParseError(e.to_string()))
+            }
+        })
+        
+        // DELETE /resources/:id - Delete
+        self.router.delete(format!("{}/:id", base_path), |req| {
+            let id = req.params.get("id").unwrap()
+            match handler.delete(id, req) {
+                Ok(_) => Response.new(Status.no_content()),
+                Err(e) => self.error_handler(e)
+            }
+        })
+        
+        self
+    }
+    
+    /// Add custom route
+    fn route(method: Method, path: String, handler: fn(Request) -> Response) -> Self {
+        self.router.route(method, path, handler)
+        self
+    }
+    
+    /// Add middleware
+    fn use(middleware: RestMiddleware) -> Self {
+        self.middleware.push(middleware)
+        self
+    }
+    
+    /// Enable CORS
+    fn cors(config: CorsConfig) -> Self {
+        self.cors_config = Some(config)
+        self
+    }
+    
+    /// Set custom error handler
+    fn error_handler(handler: fn(RestError) -> Response) -> Self {
+        self.error_handler = handler
+        self
+    }
+    
+    /// Start server
+    fn listen(addr: String) -> Result<(), RestError> {
+        // Apply CORS if configured
+        if let Some(cors) = self.cors_config {
+            self.router.use(cors.middleware())
+        }
+        
+        // Apply middleware
+        for mw in self.middleware {
+            self.router.use(mw.handler())
+        }
+        
+        @native("http_server_listen", addr, self.router)
+    }
+    
+    fn default_error_handler(error: RestError) -> Response {
+        let (status, message) = match error {
+            RestError.NotFound(msg) => (404, msg),
+            RestError.BadRequest(msg) => (400, msg),
+            RestError.Unauthorized(msg) => (401, msg),
+            RestError.Forbidden(msg) => (403, msg),
+            RestError.Conflict(msg) => (409, msg),
+            RestError.ValidationError(errors) => (422, json.encode(errors)),
+            RestError.InternalError(msg) => (500, msg),
+            _ => (500, "Internal Server Error")
+        }
+        
+        Response.new(Status.new(status)).json(ErrorResponse {
+            error: message,
+            status: status
+        })
+    }
+}
+
+/// Resource controller trait
+trait ResourceController<T: RestResource> {
+    fn list(req: Request) -> Result<[T], RestError>
+    fn get(id: String, req: Request) -> Result<T, RestError>
+    fn create(item: T, req: Request) -> Result<T, RestError>
+    fn update(id: String, item: T, req: Request) -> Result<T, RestError>
+    fn patch(id: String, updates: Map<String, JsonValue>, req: Request) -> Result<T, RestError>
+    fn delete(id: String, req: Request) -> Result<(), RestError>
+}
+
+/// Base resource controller with default implementations
+struct BaseController<T: RestResource> {
+    storage: impl Storage<T>
+}
+
+impl<T: RestResource> ResourceController<T> for BaseController<T> {
+    fn list(req: Request) -> Result<[T], RestError> {
+        self.storage.find_all()
+    }
+    
+    fn get(id: String, req: Request) -> Result<T, RestError> {
+        self.storage.find_by_id(id)?.ok_or(RestError.NotFound(format!("Resource {} not found", id)))
+    }
+    
+    fn create(item: T, req: Request) -> Result<T, RestError> {
+        self.storage.insert(item)
+    }
+    
+    fn update(id: String, item: T, req: Request) -> Result<T, RestError> {
+        self.storage.update(id, item)
+    }
+    
+    fn patch(id: String, updates: Map<String, JsonValue>, req: Request) -> Result<T, RestError> {
+        let existing = self.get(id, req)?
+        let merged = json.merge(json.encode(existing), json.encode(updates))
+        let updated = json.decode::<T>(merged)?
+        self.storage.update(id, updated)
+    }
+    
+    fn delete(id: String, req: Request) -> Result<(), RestError> {
+        self.storage.delete(id)
+    }
+}
+
+// =============================================================================
+// Middleware
+// =============================================================================
+
+/// REST middleware trait
+trait RestMiddleware {
+    fn handler() -> fn(Request, fn(Request) -> Response) -> Response
+}
+
+/// Request interceptor for client
+trait RequestInterceptor {
+    fn intercept(req: Request) -> Request
+}
+
+/// Logging middleware
+struct LoggingMiddleware {
+    logger: Logger
+}
+
+impl RestMiddleware for LoggingMiddleware {
+    fn handler() -> fn(Request, fn(Request) -> Response) -> Response {
+        |req, next| {
+            let start = Instant.now()
+            self.logger.info(format!("--> {} {}", req.method, req.url))
+            
+            let response = next(req)
+            
+            let duration = start.elapsed()
+            self.logger.info(format!("<-- {} {} ({}ms)", response.status.code, req.url, duration.as_millis()))
+            
+            response
+        }
+    }
+}
+
+/// Rate limiting middleware
+struct RateLimitMiddleware {
+    requests_per_minute: Int
+    limiter: RateLimiter
+}
+
+impl RateLimitMiddleware {
+    fn new(requests_per_minute: Int) -> Self {
+        RateLimitMiddleware {
+            requests_per_minute: requests_per_minute,
+            limiter: RateLimiter.new(requests_per_minute, Duration.minutes(1))
+        }
+    }
+}
+
+impl RestMiddleware for RateLimitMiddleware {
+    fn handler() -> fn(Request, fn(Request) -> Response) -> Response {
+        |req, next| {
+            let client_ip = req.headers.get("X-Forwarded-For")
+                .or(req.remote_addr())
+                .unwrap_or("unknown")
+            
+            if !self.limiter.allow(client_ip) {
+                return Response.new(Status.new(429))
+                    .header("Retry-After", "60")
+                    .json(ErrorResponse { error: "Too Many Requests", status: 429 })
+            }
+            
+            next(req)
+        }
+    }
+}
+
+/// Authentication middleware
+struct AuthMiddleware {
+    validator: fn(String) -> Result<AuthContext, RestError>
+}
+
+impl AuthMiddleware {
+    fn bearer(validator: fn(String) -> Result<AuthContext, RestError>) -> Self {
+        AuthMiddleware { validator: validator }
+    }
+}
+
+impl RestMiddleware for AuthMiddleware {
+    fn handler() -> fn(Request, fn(Request) -> Response) -> Response {
+        |req, next| {
+            let auth_header = req.headers.get("Authorization");
+            
+            match auth_header {
+                Some(header) if header.starts_with("Bearer ") => {
+                    let token = header[7..]
+                    match (self.validator)(token) {
+                        Ok(ctx) => {
+                            req.extensions.set("auth", ctx)
+                            next(req)
+                        }
+                        Err(e) => Response.new(Status.unauthorized()).json(ErrorResponse {
+                            error: "Invalid token",
+                            status: 401
+                        })
+                    }
+                }
+                _ => Response.new(Status.unauthorized()).json(ErrorResponse {
+                    error: "Authorization required",
+                    status: 401
+                })
+            }
+        }
+    }
+}
+
+/// Authentication context
+struct AuthContext {
+    user_id: String
+    roles: [String]
+    claims: Map<String, JsonValue>
+}
+
+// =============================================================================
+// Configuration
+// =============================================================================
+
+/// Retry configuration
+struct RetryConfig {
+    max_retries: Int
+    base_delay_ms: Int64
+    max_delay_ms: Int64
+    exponential_backoff: Bool
+    retry_on_status: [Int]
+}
+
+impl RetryConfig {
+    fn default() -> Self {
+        RetryConfig {
+            max_retries: 3,
+            base_delay_ms: 1000,
+            max_delay_ms: 30000,
+            exponential_backoff: true,
+            retry_on_status: [408, 429, 500, 502, 503, 504]
+        }
+    }
+    
+    fn no_retry() -> Self {
+        RetryConfig { max_retries: 0, ..Self.default() }
+    }
+    
+    fn should_retry(status_code: Int) -> Bool {
+        self.retry_on_status.contains(status_code)
+    }
+    
+    fn delay_ms(attempt: Int) -> Int64 {
+        if self.exponential_backoff {
+            let delay = self.base_delay_ms * (2 ** (attempt - 1))
+            min(delay, self.max_delay_ms)
+        } else {
+            self.base_delay_ms
+        }
+    }
+}
+
+/// CORS configuration
+struct CorsConfig {
+    allowed_origins: [String]
+    allowed_methods: [Method]
+    allowed_headers: [String]
+    exposed_headers: [String]
+    allow_credentials: Bool
+    max_age: Int
+}
+
+impl CorsConfig {
+    fn permissive() -> Self {
+        CorsConfig {
+            allowed_origins: ["*"],
+            allowed_methods: [Method.GET, Method.POST, Method.PUT, Method.PATCH, Method.DELETE, Method.OPTIONS],
+            allowed_headers: ["*"],
+            exposed_headers: [],
+            allow_credentials: false,
+            max_age: 86400
+        }
+    }
+    
+    fn strict(origins: [String]) -> Self {
+        CorsConfig {
+            allowed_origins: origins,
+            allowed_methods: [Method.GET, Method.POST],
+            allowed_headers: ["Content-Type", "Authorization"],
+            exposed_headers: [],
+            allow_credentials: true,
+            max_age: 3600
+        }
+    }
+    
+    fn middleware() -> fn(Request, fn(Request) -> Response) -> Response {
+        |req, next| {
+            let origin = req.headers.get("Origin").unwrap_or("")
+            
+            // Handle preflight
+            if req.method == Method.OPTIONS {
+                return Response.new(Status.no_content())
+                    .header("Access-Control-Allow-Origin", self.get_allowed_origin(origin))
+                    .header("Access-Control-Allow-Methods", self.allowed_methods.map(|m| m.to_string()).join(", "))
+                    .header("Access-Control-Allow-Headers", self.allowed_headers.join(", "))
+                    .header("Access-Control-Max-Age", self.max_age.to_string())
+            }
+            
+            let response = next(req)
+            response
+                .header("Access-Control-Allow-Origin", self.get_allowed_origin(origin))
+                .header("Access-Control-Expose-Headers", self.exposed_headers.join(", "))
+        }
+    }
+    
+    fn get_allowed_origin(origin: String) -> String {
+        if self.allowed_origins.contains("*") {
+            "*"
+        } else if self.allowed_origins.contains(origin) {
+            origin
+        } else {
+            ""
+        }
+    }
+}
+
+// =============================================================================
+// Error Types
+// =============================================================================
+
+/// REST API Error
+enum RestError {
+    NotFound(String)
+    BadRequest(String)
+    Unauthorized(String)
+    Forbidden(String)
+    Conflict(String)
+    ValidationError([ValidationError])
+    ParseError(String)
+    NetworkError(String)
+    Timeout
+    MaxRetriesExceeded
+    InternalError(String)
+}
+
+impl RestError {
+    fn from_response(response: Response) -> Self {
+        match response.status.code {
+            400 => RestError.BadRequest(response.text()),
+            401 => RestError.Unauthorized(response.text()),
+            403 => RestError.Forbidden(response.text()),
+            404 => RestError.NotFound(response.text()),
+            409 => RestError.Conflict(response.text()),
+            422 => RestError.ValidationError([]),
+            _ => RestError.InternalError(response.text())
+        }
+    }
+    
+    fn status_code() -> Int {
+        match self {
+            NotFound(_) => 404,
+            BadRequest(_) => 400,
+            Unauthorized(_) => 401,
+            Forbidden(_) => 403,
+            Conflict(_) => 409,
+            ValidationError(_) => 422,
+            _ => 500
+        }
+    }
+}
+
+struct ValidationError {
+    field: String
+    message: String
+    code: String
+}
+
+struct ErrorResponse {
+    error: String
+    status: Int
+}
+
+// =============================================================================
+// Storage Trait
+// =============================================================================
+
+trait Storage<T> {
+    fn find_all() -> Result<[T], RestError>
+    fn find_by_id(id: String) -> Result<Option<T>, RestError>
+    fn insert(item: T) -> Result<T, RestError>
+    fn update(id: String, item: T) -> Result<T, RestError>
+    fn delete(id: String) -> Result<(), RestError>
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "rest client basic usage" {
+    let client = RestClient.new("https://api.example.com")
+        .bearer_token("test-token")
+        .timeout(5000)
+    
+    assert_eq(client.base_url, "https://api.example.com")?
+}
+
+test "retry config" {
+    let config = RetryConfig.default()
+    assert_eq(config.max_retries, 3)?
+    assert(config.should_retry(503))?
+    assert(!config.should_retry(200))?
+}
+
+test "cors config permissive" {
+    let cors = CorsConfig.permissive()
+    assert(cors.allowed_origins.contains("*"))?
+    assert_eq(cors.allowed_methods.len(), 6)?
+}
+
+test "resource client" {
+    let client = RestClient.new("https://api.example.com")
+    let users = client.resource::<User>("/users")
+    
+    // Resource path should be set correctly
+    assert_eq(users.path, "/users")?
+}
+
+test "pagination response" {
+    let response = PaginatedResponse {
+        data: [1, 2, 3],
+        page: 1,
+        per_page: 10,
+        total: 25,
+        total_pages: 3
+    }
+    
+    assert(response.has_next())?
+    assert(!response.has_prev())?
+}
+
+test "error status codes" {
+    assert_eq(RestError.NotFound("test").status_code(), 404)?
+    assert_eq(RestError.Unauthorized("test").status_code(), 401)?
+    assert_eq(RestError.BadRequest("test").status_code(), 400)?
+}

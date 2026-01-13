@@ -1,0 +1,699 @@
+// =============================================================================
+// Vibee OS — Log Formatter Module
+// Log message formatting with multiple output formats
+// =============================================================================
+
+use logger.{LogRecord, Level}
+use datetime.{DateTime}
+use json.{Json, JsonValue}
+
+// -----------------------------------------------------------------------------
+// Formatter Trait
+// -----------------------------------------------------------------------------
+
+/// Core formatter interface
+trait Formatter {
+    fn format(record: LogRecord) -> String
+}
+
+// -----------------------------------------------------------------------------
+// Default Text Formatter
+// -----------------------------------------------------------------------------
+
+/// Standard text log formatter
+struct DefaultFormatter {
+    timestamp_format: String
+    show_level: Bool
+    show_timestamp: Bool
+    show_logger: Bool
+    show_location: Bool
+    colored: Bool
+}
+
+impl DefaultFormatter {
+    fn new() -> Self {
+        DefaultFormatter {
+            timestamp_format: "%Y-%m-%d %H:%M:%S%.3f",
+            show_level: true,
+            show_timestamp: true,
+            show_logger: true,
+            show_location: false,
+            colored: true
+        }
+    }
+    
+    fn with_timestamp_format(format: String) -> Self {
+        self.timestamp_format = format
+        self
+    }
+    
+    fn with_level(show: Bool) -> Self {
+        self.show_level = show
+        self
+    }
+    
+    fn with_timestamp(show: Bool) -> Self {
+        self.show_timestamp = show
+        self
+    }
+    
+    fn with_logger(show: Bool) -> Self {
+        self.show_logger = show
+        self
+    }
+    
+    fn with_location(show: Bool) -> Self {
+        self.show_location = show
+        self
+    }
+    
+    fn with_color(colored: Bool) -> Self {
+        self.colored = colored
+        self
+    }
+    
+    fn plain() -> Self {
+        Self.new().with_color(false)
+    }
+}
+
+impl Formatter for DefaultFormatter {
+    fn format(record: LogRecord) -> String {
+        var parts: [String] = []
+        let reset = "\x1b[0m"
+        
+        // Timestamp
+        if self.show_timestamp {
+            let ts = record.timestamp.format(self.timestamp_format)
+            if self.colored {
+                parts.push("\x1b[90m\(ts)\(reset)")
+            } else {
+                parts.push(ts)
+            }
+        }
+        
+        // Level
+        if self.show_level {
+            let level_str = record.level.name()
+            if self.colored {
+                let color = record.level.color()
+                parts.push("\(color)\(level_str)\(reset)")
+            } else {
+                parts.push(level_str)
+            }
+        }
+        
+        // Logger name
+        if self.show_logger && record.logger_name != "root" {
+            if self.colored {
+                parts.push("\x1b[34m[\(record.logger_name)]\(reset)")
+            } else {
+                parts.push("[\(record.logger_name)]")
+            }
+        }
+        
+        // Location
+        if self.show_location {
+            if let (Some(file), Some(line)) = (record.file, record.line) {
+                if self.colored {
+                    parts.push("\x1b[90m\(file):\(line)\(reset)")
+                } else {
+                    parts.push("\(file):\(line)")
+                }
+            }
+        }
+        
+        // Message
+        parts.push(record.message.clone())
+        
+        // Fields
+        if !record.fields.is_empty() {
+            var field_parts: [String] = []
+            for (k, v) in record.fields.iter() {
+                if self.colored {
+                    field_parts.push("\x1b[36m\(k)\(reset)=\(v)")
+                } else {
+                    field_parts.push("\(k)=\(v)")
+                }
+            }
+            parts.push(field_parts.join(" "))
+        }
+        
+        // Error
+        if let Some(err) = record.error {
+            if self.colored {
+                parts.push("\x1b[31merror=\(err)\(reset)")
+            } else {
+                parts.push("error=\(err)")
+            }
+        }
+        
+        parts.join(" ")
+    }
+}
+
+// -----------------------------------------------------------------------------
+// JSON Formatter
+// -----------------------------------------------------------------------------
+
+/// JSON structured log formatter
+struct JsonFormatter {
+    timestamp_key: String
+    level_key: String
+    message_key: String
+    logger_key: String
+    pretty: Bool
+    include_timestamp: Bool
+}
+
+impl JsonFormatter {
+    fn new() -> Self {
+        JsonFormatter {
+            timestamp_key: "timestamp",
+            level_key: "level",
+            message_key: "message",
+            logger_key: "logger",
+            pretty: false,
+            include_timestamp: true
+        }
+    }
+    
+    fn with_timestamp_key(key: String) -> Self {
+        self.timestamp_key = key
+        self
+    }
+    
+    fn with_level_key(key: String) -> Self {
+        self.level_key = key
+        self
+    }
+    
+    fn with_message_key(key: String) -> Self {
+        self.message_key = key
+        self
+    }
+    
+    fn with_logger_key(key: String) -> Self {
+        self.logger_key = key
+        self
+    }
+    
+    fn with_pretty(pretty: Bool) -> Self {
+        self.pretty = pretty
+        self
+    }
+    
+    fn without_timestamp() -> Self {
+        self.include_timestamp = false
+        self
+    }
+    
+    /// ECS (Elastic Common Schema) compatible format
+    fn ecs() -> Self {
+        JsonFormatter {
+            timestamp_key: "@timestamp",
+            level_key: "log.level",
+            message_key: "message",
+            logger_key: "log.logger",
+            pretty: false,
+            include_timestamp: true
+        }
+    }
+    
+    /// Bunyan compatible format
+    fn bunyan() -> Self {
+        JsonFormatter {
+            timestamp_key: "time",
+            level_key: "level",
+            message_key: "msg",
+            logger_key: "name",
+            pretty: false,
+            include_timestamp: true
+        }
+    }
+}
+
+impl Formatter for JsonFormatter {
+    fn format(record: LogRecord) -> String {
+        var obj = Map.new()
+        
+        // Timestamp
+        if self.include_timestamp {
+            obj.insert(self.timestamp_key.clone(), JsonValue.String(record.timestamp.to_iso8601()))
+        }
+        
+        // Level
+        obj.insert(self.level_key.clone(), JsonValue.String(record.level.name().to_lowercase()))
+        
+        // Message
+        obj.insert(self.message_key.clone(), JsonValue.String(record.message.clone()))
+        
+        // Logger
+        if record.logger_name != "root" {
+            obj.insert(self.logger_key.clone(), JsonValue.String(record.logger_name.clone()))
+        }
+        
+        // Module
+        if let Some(module) = record.module {
+            obj.insert("module", JsonValue.String(module))
+        }
+        
+        // Location
+        if let Some(file) = record.file {
+            obj.insert("file", JsonValue.String(file))
+        }
+        if let Some(line) = record.line {
+            obj.insert("line", JsonValue.Number(line as Float))
+        }
+        
+        // Fields
+        for (k, v) in record.fields.iter() {
+            obj.insert(k.clone(), any_to_json(v))
+        }
+        
+        // Error
+        if let Some(err) = record.error {
+            obj.insert("error", JsonValue.String(err.to_string()))
+        }
+        
+        let json = JsonValue.Object(obj)
+        if self.pretty {
+            json.to_pretty_string()
+        } else {
+            json.to_string()
+        }
+    }
+}
+
+fn any_to_json(value: Any) -> JsonValue {
+    match value {
+        v: String => JsonValue.String(v)
+        v: Int => JsonValue.Number(v as Float)
+        v: Float => JsonValue.Number(v)
+        v: Bool => JsonValue.Bool(v)
+        _ => JsonValue.String(value.to_string())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Logfmt Formatter
+// -----------------------------------------------------------------------------
+
+/// Logfmt key=value formatter
+struct LogfmtFormatter {
+    timestamp_key: String
+    level_key: String
+    message_key: String
+    quote_strings: Bool
+}
+
+impl LogfmtFormatter {
+    fn new() -> Self {
+        LogfmtFormatter {
+            timestamp_key: "ts",
+            level_key: "level",
+            message_key: "msg",
+            quote_strings: true
+        }
+    }
+    
+    fn with_timestamp_key(key: String) -> Self {
+        self.timestamp_key = key
+        self
+    }
+    
+    fn with_level_key(key: String) -> Self {
+        self.level_key = key
+        self
+    }
+    
+    fn with_message_key(key: String) -> Self {
+        self.message_key = key
+        self
+    }
+    
+    fn without_quotes() -> Self {
+        self.quote_strings = false
+        self
+    }
+}
+
+impl Formatter for LogfmtFormatter {
+    fn format(record: LogRecord) -> String {
+        var parts: [String] = []
+        
+        // Timestamp
+        parts.push("\(self.timestamp_key)=\(record.timestamp.timestamp_millis())")
+        
+        // Level
+        parts.push("\(self.level_key)=\(record.level.name().to_lowercase())")
+        
+        // Message
+        let msg = escape_logfmt(record.message, self.quote_strings)
+        parts.push("\(self.message_key)=\(msg)")
+        
+        // Logger
+        if record.logger_name != "root" {
+            parts.push("logger=\(record.logger_name)")
+        }
+        
+        // Fields
+        for (k, v) in record.fields.iter() {
+            let val = escape_logfmt(v.to_string(), self.quote_strings)
+            parts.push("\(k)=\(val)")
+        }
+        
+        // Error
+        if let Some(err) = record.error {
+            let err_str = escape_logfmt(err.to_string(), self.quote_strings)
+            parts.push("error=\(err_str)")
+        }
+        
+        parts.join(" ")
+    }
+}
+
+fn escape_logfmt(s: String, quote: Bool) -> String {
+    if !quote { return s }
+    if s.contains(" ") || s.contains("=") || s.contains("\"") {
+        let escaped = s.replace("\\", "\\\\").replace("\"", "\\\"")
+        "\"\(escaped)\""
+    } else {
+        s
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Syslog Formatter
+// -----------------------------------------------------------------------------
+
+/// RFC 5424 Syslog formatter
+struct SyslogFormatter {
+    app_name: String
+    facility: SyslogFacility
+    hostname: Option<String>
+    process_id: Option<Int>
+}
+
+enum SyslogFacility {
+    Kern, User, Mail, Daemon, Auth, Syslog, Lpr, News,
+    Uucp, Cron, Authpriv, Ftp, Local0, Local1, Local2,
+    Local3, Local4, Local5, Local6, Local7
+    
+    fn value() -> Int {
+        match self {
+            Kern => 0, User => 1, Mail => 2, Daemon => 3,
+            Auth => 4, Syslog => 5, Lpr => 6, News => 7,
+            Uucp => 8, Cron => 9, Authpriv => 10, Ftp => 11,
+            Local0 => 16, Local1 => 17, Local2 => 18, Local3 => 19,
+            Local4 => 20, Local5 => 21, Local6 => 22, Local7 => 23
+        }
+    }
+}
+
+impl SyslogFormatter {
+    fn new(app_name: String) -> Self {
+        SyslogFormatter {
+            app_name: app_name,
+            facility: SyslogFacility.User,
+            hostname: None,
+            process_id: None
+        }
+    }
+    
+    fn with_facility(facility: SyslogFacility) -> Self {
+        self.facility = facility
+        self
+    }
+    
+    fn with_hostname(hostname: String) -> Self {
+        self.hostname = Some(hostname)
+        self
+    }
+    
+    fn with_process_id(pid: Int) -> Self {
+        self.process_id = Some(pid)
+        self
+    }
+    
+    fn severity(level: Level) -> Int {
+        match level {
+            Level.Trace => 7  // Debug
+            Level.Debug => 7  // Debug
+            Level.Info => 6   // Informational
+            Level.Warn => 4   // Warning
+            Level.Error => 3  // Error
+            Level.Fatal => 2  // Critical
+        }
+    }
+    
+    fn priority(level: Level) -> Int {
+        self.facility.value() * 8 + Self.severity(level)
+    }
+}
+
+impl Formatter for SyslogFormatter {
+    fn format(record: LogRecord) -> String {
+        let pri = self.priority(record.level)
+        let version = 1
+        let timestamp = record.timestamp.to_iso8601()
+        let hostname = self.hostname.clone().unwrap_or("-")
+        let app_name = self.app_name.clone()
+        let procid = self.process_id.map(|p| p.to_string()).unwrap_or("-")
+        let msgid = "-"
+        let structured_data = "-"
+        
+        "<\(pri)>\(version) \(timestamp) \(hostname) \(app_name) \(procid) \(msgid) \(structured_data) \(record.message)"
+    }
+}
+
+// -----------------------------------------------------------------------------
+// GELF Formatter (Graylog Extended Log Format)
+// -----------------------------------------------------------------------------
+
+/// GELF formatter for Graylog
+struct GelfFormatter {
+    host: String
+    version: String
+}
+
+impl GelfFormatter {
+    fn new(host: String) -> Self {
+        GelfFormatter {
+            host: host,
+            version: "1.1"
+        }
+    }
+    
+    fn gelf_level(level: Level) -> Int {
+        match level {
+            Level.Trace => 7
+            Level.Debug => 7
+            Level.Info => 6
+            Level.Warn => 4
+            Level.Error => 3
+            Level.Fatal => 2
+        }
+    }
+}
+
+impl Formatter for GelfFormatter {
+    fn format(record: LogRecord) -> String {
+        var obj = Map.new()
+        
+        obj.insert("version", JsonValue.String(self.version.clone()))
+        obj.insert("host", JsonValue.String(self.host.clone()))
+        obj.insert("short_message", JsonValue.String(record.message.clone()))
+        obj.insert("timestamp", JsonValue.Number(record.timestamp.timestamp() as Float))
+        obj.insert("level", JsonValue.Number(Self.gelf_level(record.level) as Float))
+        
+        // Additional fields (prefixed with _)
+        if record.logger_name != "root" {
+            obj.insert("_logger", JsonValue.String(record.logger_name.clone()))
+        }
+        
+        if let Some(file) = record.file {
+            obj.insert("_file", JsonValue.String(file))
+        }
+        
+        if let Some(line) = record.line {
+            obj.insert("_line", JsonValue.Number(line as Float))
+        }
+        
+        for (k, v) in record.fields.iter() {
+            obj.insert("_\(k)", any_to_json(v))
+        }
+        
+        JsonValue.Object(obj).to_string()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Pattern Formatter
+// -----------------------------------------------------------------------------
+
+/// Customizable pattern-based formatter
+struct PatternFormatter {
+    pattern: String
+    date_format: String
+}
+
+impl PatternFormatter {
+    fn new(pattern: String) -> Self {
+        PatternFormatter {
+            pattern: pattern,
+            date_format: "%Y-%m-%d %H:%M:%S"
+        }
+    }
+    
+    fn with_date_format(format: String) -> Self {
+        self.date_format = format
+        self
+    }
+    
+    /// Default pattern: "{timestamp} {level} [{logger}] {message}"
+    fn default() -> Self {
+        Self.new("{timestamp} {level} [{logger}] {message}")
+    }
+    
+    /// Simple pattern: "{level}: {message}"
+    fn simple() -> Self {
+        Self.new("{level}: {message}")
+    }
+    
+    /// Full pattern with location
+    fn full() -> Self {
+        Self.new("{timestamp} {level} [{logger}] {file}:{line} - {message}")
+    }
+}
+
+impl Formatter for PatternFormatter {
+    fn format(record: LogRecord) -> String {
+        var result = self.pattern.clone()
+        
+        result = result.replace("{timestamp}", record.timestamp.format(self.date_format))
+        result = result.replace("{level}", record.level.name())
+        result = result.replace("{level_short}", record.level.short_name())
+        result = result.replace("{logger}", record.logger_name)
+        result = result.replace("{message}", record.message)
+        
+        if let Some(module) = record.module {
+            result = result.replace("{module}", module)
+        } else {
+            result = result.replace("{module}", "")
+        }
+        
+        if let Some(file) = record.file {
+            result = result.replace("{file}", file)
+        } else {
+            result = result.replace("{file}", "")
+        }
+        
+        if let Some(line) = record.line {
+            result = result.replace("{line}", line.to_string())
+        } else {
+            result = result.replace("{line}", "")
+        }
+        
+        result
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Composite Formatter
+// -----------------------------------------------------------------------------
+
+/// Combines multiple formatters
+struct CompositeFormatter {
+    formatters: [Box<dyn Formatter>]
+    separator: String
+}
+
+impl CompositeFormatter {
+    fn new() -> Self {
+        CompositeFormatter {
+            formatters: [],
+            separator: " | "
+        }
+    }
+    
+    fn add<F: Formatter>(formatter: F) -> Self {
+        self.formatters.push(Box.new(formatter))
+        self
+    }
+    
+    fn with_separator(sep: String) -> Self {
+        self.separator = sep
+        self
+    }
+}
+
+impl Formatter for CompositeFormatter {
+    fn format(record: LogRecord) -> String {
+        self.formatters
+            .iter()
+            .map(|f| f.format(record.clone()))
+            .collect::<[String]>()
+            .join(self.separator)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "default formatter" {
+    let formatter = DefaultFormatter.new().with_color(false)
+    let record = LogRecord.new(Level.Info, "test message")
+    let output = formatter.format(record)
+    
+    assert(output.contains("INFO"))?
+    assert(output.contains("test message"))?
+}
+
+test "json formatter" {
+    let formatter = JsonFormatter.new()
+    let record = LogRecord.new(Level.Error, "error occurred")
+        .with_field("user_id", "123")
+    let output = formatter.format(record)
+    
+    assert(output.contains("\"level\":\"error\""))?
+    assert(output.contains("\"message\":\"error occurred\""))?
+    assert(output.contains("\"user_id\":\"123\""))?
+}
+
+test "logfmt formatter" {
+    let formatter = LogfmtFormatter.new()
+    let record = LogRecord.new(Level.Warn, "warning message")
+    let output = formatter.format(record)
+    
+    assert(output.contains("level=warn"))?
+    assert(output.contains("msg="))?
+}
+
+test "pattern formatter" {
+    let formatter = PatternFormatter.new("{level}: {message}")
+    let record = LogRecord.new(Level.Debug, "debug info")
+    let output = formatter.format(record)
+    
+    assert_eq(output, "DEBUG: debug info")?
+}
+
+test "syslog formatter" {
+    let formatter = SyslogFormatter.new("myapp")
+        .with_facility(SyslogFacility.Local0)
+    let record = LogRecord.new(Level.Info, "syslog message")
+    let output = formatter.format(record)
+    
+    assert(output.starts_with("<"))?
+    assert(output.contains("myapp"))?
+}
+
+test "gelf formatter" {
+    let formatter = GelfFormatter.new("localhost")
+    let record = LogRecord.new(Level.Error, "gelf message")
+    let output = formatter.format(record)
+    
+    assert(output.contains("\"version\":\"1.1\""))?
+    assert(output.contains("\"short_message\":\"gelf message\""))?
+}

@@ -1,0 +1,804 @@
+// =============================================================================
+// Vibee OS — Fulltext Search Module
+// Full-text search with indexing, tokenization, and relevance scoring
+// =============================================================================
+
+// =============================================================================
+// Tokenization
+// =============================================================================
+
+/// Token from text analysis
+struct Token {
+    text: String
+    position: Int
+    start_offset: Int
+    end_offset: Int
+    
+    fn new(text: String, position: Int, start: Int, end: Int) -> Self {
+        Token { text: text, position: position, start_offset: start, end_offset: end }
+    }
+}
+
+/// Tokenizer trait
+trait Tokenizer {
+    fn tokenize(text: String) -> [Token]
+}
+
+/// Standard whitespace tokenizer
+struct WhitespaceTokenizer {}
+
+impl Tokenizer for WhitespaceTokenizer {
+    fn tokenize(text: String) -> [Token] {
+        var tokens = []
+        var position = 0
+        var start = 0
+        var in_word = false
+        var word_start = 0
+        
+        for (i, c) in text.chars().enumerate() {
+            if c.is_whitespace() {
+                if in_word {
+                    tokens.push(Token.new(text[word_start..i], position, word_start, i))
+                    position += 1
+                    in_word = false
+                }
+            } else {
+                if !in_word {
+                    word_start = i
+                    in_word = true
+                }
+            }
+        }
+        
+        if in_word {
+            tokens.push(Token.new(text[word_start..], position, word_start, text.len()))
+        }
+        
+        tokens
+    }
+}
+
+/// Standard tokenizer with punctuation handling
+struct StandardTokenizer {}
+
+impl Tokenizer for StandardTokenizer {
+    fn tokenize(text: String) -> [Token] {
+        var tokens = []
+        var position = 0
+        var current = ""
+        var word_start = 0
+        
+        for (i, c) in text.chars().enumerate() {
+            if c.is_alphanumeric() || c == '_' {
+                if current.is_empty() { word_start = i }
+                current.push(c)
+            } else if !current.is_empty() {
+                tokens.push(Token.new(current, position, word_start, i))
+                position += 1
+                current = ""
+            }
+        }
+        
+        if !current.is_empty() {
+            tokens.push(Token.new(current, position, word_start, text.len()))
+        }
+        
+        tokens
+    }
+}
+
+/// N-gram tokenizer
+struct NGramTokenizer {
+    min_gram: Int
+    max_gram: Int
+    
+    fn new(min: Int, max: Int) -> Self {
+        NGramTokenizer { min_gram: min, max_gram: max }
+    }
+}
+
+impl Tokenizer for NGramTokenizer {
+    fn tokenize(text: String) -> [Token] {
+        var tokens = []
+        var position = 0
+        let chars: [Char] = text.chars().collect()
+        
+        for n in self.min_gram..=self.max_gram {
+            for i in 0..=(chars.len() - n) {
+                let gram: String = chars[i..i+n].iter().collect()
+                tokens.push(Token.new(gram, position, i, i + n))
+                position += 1
+            }
+        }
+        
+        tokens
+    }
+}
+
+// =============================================================================
+// Token Filters
+// =============================================================================
+
+/// Token filter trait
+trait TokenFilter {
+    fn filter(tokens: [Token]) -> [Token]
+}
+
+/// Lowercase filter
+struct LowercaseFilter {}
+
+impl TokenFilter for LowercaseFilter {
+    fn filter(tokens: [Token]) -> [Token] {
+        tokens.map(|t| Token { text: t.text.to_lowercase(), ..t })
+    }
+}
+
+/// Stop words filter
+struct StopWordsFilter {
+    stop_words: Set<String>
+    
+    fn new(words: [String]) -> Self {
+        StopWordsFilter { stop_words: Set.from_iter(words.iter()) }
+    }
+    
+    fn english() -> Self {
+        Self.new([
+            "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
+            "has", "he", "in", "is", "it", "its", "of", "on", "that", "the",
+            "to", "was", "were", "will", "with"
+        ])
+    }
+}
+
+impl TokenFilter for StopWordsFilter {
+    fn filter(tokens: [Token]) -> [Token] {
+        tokens.filter(|t| !self.stop_words.contains(t.text.to_lowercase()))
+    }
+}
+
+/// Stemmer filter (Porter stemmer simplified)
+struct StemmerFilter {
+    language: String
+    
+    fn new(language: String) -> Self {
+        StemmerFilter { language: language }
+    }
+    
+    fn english() -> Self { Self.new("english") }
+}
+
+impl TokenFilter for StemmerFilter {
+    fn filter(tokens: [Token]) -> [Token] {
+        tokens.map(|t| Token { text: stem(t.text, self.language), ..t })
+    }
+}
+
+/// Simple English stemmer
+fn stem(word: String, language: String) -> String {
+    if language != "english" { return word }
+    
+    var w = word.to_lowercase()
+    
+    // Simple suffix removal
+    let suffixes = ["ing", "ed", "ly", "es", "s", "ment", "ness", "tion", "ation"]
+    for suffix in suffixes {
+        if w.ends_with(suffix) && w.len() > suffix.len() + 2 {
+            w = w[..w.len() - suffix.len()]
+            break
+        }
+    }
+    
+    w
+}
+
+/// Length filter
+struct LengthFilter {
+    min_length: Int
+    max_length: Int
+    
+    fn new(min: Int, max: Int) -> Self {
+        LengthFilter { min_length: min, max_length: max }
+    }
+}
+
+impl TokenFilter for LengthFilter {
+    fn filter(tokens: [Token]) -> [Token] {
+        tokens.filter(|t| t.text.len() >= self.min_length && t.text.len() <= self.max_length)
+    }
+}
+
+// =============================================================================
+// Analyzer
+// =============================================================================
+
+/// Text analyzer combining tokenizer and filters
+struct Analyzer {
+    tokenizer: Box<dyn Tokenizer>
+    filters: [Box<dyn TokenFilter>]
+    
+    fn new(tokenizer: Box<dyn Tokenizer>) -> Self {
+        Analyzer { tokenizer: tokenizer, filters: [] }
+    }
+    
+    fn add_filter(filter: Box<dyn TokenFilter>) -> Self {
+        self.filters.push(filter)
+        self
+    }
+    
+    fn analyze(text: String) -> [Token] {
+        var tokens = self.tokenizer.tokenize(text)
+        for filter in self.filters.iter() {
+            tokens = filter.filter(tokens)
+        }
+        tokens
+    }
+    
+    /// Standard English analyzer
+    fn standard_english() -> Self {
+        Analyzer.new(Box.new(StandardTokenizer {}))
+            .add_filter(Box.new(LowercaseFilter {}))
+            .add_filter(Box.new(StopWordsFilter.english()))
+            .add_filter(Box.new(StemmerFilter.english()))
+    }
+    
+    /// Simple analyzer (lowercase only)
+    fn simple() -> Self {
+        Analyzer.new(Box.new(StandardTokenizer {}))
+            .add_filter(Box.new(LowercaseFilter {}))
+    }
+    
+    /// Keyword analyzer (no tokenization)
+    fn keyword() -> Self {
+        Analyzer.new(Box.new(KeywordTokenizer {}))
+    }
+}
+
+/// Keyword tokenizer (entire input as single token)
+struct KeywordTokenizer {}
+
+impl Tokenizer for KeywordTokenizer {
+    fn tokenize(text: String) -> [Token] {
+        [Token.new(text, 0, 0, text.len())]
+    }
+}
+
+// =============================================================================
+// Inverted Index
+// =============================================================================
+
+/// Document in the index
+struct Document {
+    id: String
+    fields: Map<String, String>
+    boost: Float
+    
+    fn new(id: String) -> Self {
+        Document { id: id, fields: Map.empty(), boost: 1.0 }
+    }
+    
+    fn with_field(field: String, value: String) -> Self {
+        self.fields.set(field, value)
+        self
+    }
+    
+    fn with_boost(boost: Float) -> Self {
+        self.boost = boost
+        self
+    }
+}
+
+/// Posting (document reference in index)
+struct Posting {
+    doc_id: String
+    field: String
+    positions: [Int]
+    term_frequency: Int
+}
+
+/// Inverted index for full-text search
+struct InvertedIndex {
+    index: Map<String, [Posting]>
+    documents: Map<String, Document>
+    field_lengths: Map<String, Map<String, Int>>  // doc_id -> field -> length
+    doc_count: Int
+    analyzer: Analyzer
+    
+    fn new() -> Self {
+        InvertedIndex {
+            index: Map.empty(),
+            documents: Map.empty(),
+            field_lengths: Map.empty(),
+            doc_count: 0,
+            analyzer: Analyzer.standard_english()
+        }
+    }
+    
+    fn with_analyzer(analyzer: Analyzer) -> Self {
+        InvertedIndex { analyzer: analyzer, ..Self.new() }
+    }
+    
+    /// Index a document
+    fn add_document(doc: Document) {
+        let doc_id = doc.id.clone()
+        self.documents.set(doc_id.clone(), doc.clone())
+        self.doc_count += 1
+        
+        var lengths = Map.empty()
+        
+        for (field, content) in doc.fields.iter() {
+            let tokens = self.analyzer.analyze(content)
+            lengths.set(field, tokens.len())
+            
+            var positions = Map.empty()
+            for token in tokens {
+                positions.entry(token.text.clone()).or_insert([]).push(token.position)
+            }
+            
+            for (term, pos) in positions.iter() {
+                let posting = Posting {
+                    doc_id: doc_id.clone(),
+                    field: field.clone(),
+                    positions: pos.clone(),
+                    term_frequency: pos.len()
+                }
+                self.index.entry(term).or_insert([]).push(posting)
+            }
+        }
+        
+        self.field_lengths.set(doc_id, lengths)
+    }
+    
+    /// Remove document from index
+    fn remove_document(doc_id: String) {
+        self.documents.remove(doc_id.clone())
+        self.field_lengths.remove(doc_id.clone())
+        self.doc_count -= 1
+        
+        for (_, postings) in self.index.iter_mut() {
+            postings.retain(|p| p.doc_id != doc_id)
+        }
+    }
+    
+    /// Get postings for a term
+    fn get_postings(term: String) -> [Posting] {
+        self.index.get(term).cloned().unwrap_or([])
+    }
+    
+    /// Get document frequency (number of docs containing term)
+    fn document_frequency(term: String) -> Int {
+        self.get_postings(term).len()
+    }
+    
+    /// Get average field length
+    fn avg_field_length(field: String) -> Float {
+        if self.doc_count == 0 { return 0.0 }
+        let total: Int = self.field_lengths.values()
+            .filter_map(|m| m.get(field))
+            .sum()
+        total as Float / self.doc_count as Float
+    }
+}
+
+// =============================================================================
+// Search Engine
+// =============================================================================
+
+/// Search result
+struct SearchResult {
+    doc_id: String
+    score: Float
+    highlights: Map<String, [String]>
+    
+    fn new(doc_id: String, score: Float) -> Self {
+        SearchResult { doc_id: doc_id, score: score, highlights: Map.empty() }
+    }
+}
+
+/// Scoring algorithm
+enum ScoringAlgorithm {
+    TfIdf
+    BM25 { k1: Float, b: Float }
+    Boolean
+}
+
+impl ScoringAlgorithm {
+    fn default_bm25() -> Self {
+        ScoringAlgorithm.BM25 { k1: 1.2, b: 0.75 }
+    }
+}
+
+/// Full-text search engine
+struct SearchEngine {
+    index: InvertedIndex
+    scoring: ScoringAlgorithm
+    default_field: String
+    
+    fn new() -> Self {
+        SearchEngine {
+            index: InvertedIndex.new(),
+            scoring: ScoringAlgorithm.default_bm25(),
+            default_field: "content"
+        }
+    }
+    
+    fn with_analyzer(analyzer: Analyzer) -> Self {
+        SearchEngine {
+            index: InvertedIndex.with_analyzer(analyzer),
+            ..Self.new()
+        }
+    }
+    
+    fn with_scoring(scoring: ScoringAlgorithm) -> Self {
+        self.scoring = scoring
+        self
+    }
+    
+    /// Add document to index
+    fn index_document(doc: Document) {
+        self.index.add_document(doc)
+    }
+    
+    /// Search with query string
+    fn search(query: String, limit: Int) -> [SearchResult] {
+        self.search_field(query, self.default_field, limit)
+    }
+    
+    /// Search specific field
+    fn search_field(query: String, field: String, limit: Int) -> [SearchResult] {
+        let tokens = self.index.analyzer.analyze(query)
+        let terms: [String] = tokens.map(|t| t.text).collect()
+        
+        if terms.is_empty() { return [] }
+        
+        var scores = Map.empty()
+        
+        for term in terms {
+            let postings = self.index.get_postings(term)
+            let df = postings.len()
+            
+            for posting in postings {
+                if posting.field != field { continue }
+                
+                let score = self.calculate_score(term, posting, df)
+                let doc_boost = self.index.documents.get(posting.doc_id)
+                    .map(|d| d.boost).unwrap_or(1.0)
+                
+                *scores.entry(posting.doc_id.clone()).or_insert(0.0) += score * doc_boost
+            }
+        }
+        
+        var results: [SearchResult] = scores.iter()
+            .map(|(doc_id, score)| SearchResult.new(doc_id, score))
+            .collect()
+        
+        results.sort_by(|a, b| b.score.partial_cmp(a.score).unwrap_or(Ordering.Equal))
+        results.truncate(limit)
+        
+        // Add highlights
+        for result in results.iter_mut() {
+            if let Some(doc) = self.index.documents.get(result.doc_id) {
+                result.highlights = self.highlight(doc, terms.clone(), field)
+            }
+        }
+        
+        results
+    }
+    
+    /// Calculate score for a term-document pair
+    fn calculate_score(term: String, posting: Posting, df: Int) -> Float {
+        match self.scoring {
+            ScoringAlgorithm.TfIdf => {
+                let tf = posting.term_frequency as Float
+                let idf = (self.index.doc_count as Float / (df as Float + 1.0)).ln() + 1.0
+                tf * idf
+            }
+            ScoringAlgorithm.BM25 { k1, b } => {
+                let tf = posting.term_frequency as Float
+                let n = self.index.doc_count as Float
+                let idf = ((n - df as Float + 0.5) / (df as Float + 0.5) + 1.0).ln()
+                
+                let doc_len = self.index.field_lengths
+                    .get(posting.doc_id)
+                    .and_then(|m| m.get(posting.field))
+                    .unwrap_or(0) as Float
+                let avg_len = self.index.avg_field_length(posting.field)
+                
+                let numerator = tf * (k1 + 1.0)
+                let denominator = tf + k1 * (1.0 - b + b * doc_len / avg_len.max(1.0))
+                
+                idf * numerator / denominator
+            }
+            ScoringAlgorithm.Boolean => {
+                if posting.term_frequency > 0 { 1.0 } else { 0.0 }
+            }
+        }
+    }
+    
+    /// Generate highlights for search results
+    fn highlight(doc: Document, terms: [String], field: String) -> Map<String, [String]> {
+        var highlights = Map.empty()
+        
+        if let Some(content) = doc.fields.get(field) {
+            var snippets = []
+            let lower_content = content.to_lowercase()
+            
+            for term in terms {
+                let lower_term = term.to_lowercase()
+                var pos = 0
+                while let Some(idx) = lower_content[pos..].find(lower_term) {
+                    let abs_idx = pos + idx
+                    let start = (abs_idx - 30).max(0)
+                    let end = (abs_idx + term.len() + 30).min(content.len())
+                    let snippet = format!("...{}...", content[start..end])
+                    snippets.push(snippet)
+                    pos = abs_idx + 1
+                    if snippets.len() >= 3 { break }
+                }
+            }
+            
+            highlights.set(field, snippets)
+        }
+        
+        highlights
+    }
+    
+    /// Boolean search with operators
+    fn boolean_search(query: BooleanQuery, limit: Int) -> [SearchResult] {
+        let doc_ids = self.evaluate_boolean(query)
+        
+        var results: [SearchResult] = doc_ids.iter()
+            .map(|id| SearchResult.new(id, 1.0))
+            .collect()
+        
+        results.truncate(limit)
+        results
+    }
+    
+    fn evaluate_boolean(query: BooleanQuery) -> Set<String> {
+        match query {
+            BooleanQuery.Term(term, field) => {
+                let postings = self.index.get_postings(term)
+                Set.from_iter(postings.iter()
+                    .filter(|p| p.field == field)
+                    .map(|p| p.doc_id.clone()))
+            }
+            BooleanQuery.And(left, right) => {
+                let l = self.evaluate_boolean(*left)
+                let r = self.evaluate_boolean(*right)
+                l.intersection(r)
+            }
+            BooleanQuery.Or(left, right) => {
+                let l = self.evaluate_boolean(*left)
+                let r = self.evaluate_boolean(*right)
+                l.union(r)
+            }
+            BooleanQuery.Not(inner) => {
+                let all: Set<String> = self.index.documents.keys().collect()
+                let exclude = self.evaluate_boolean(*inner)
+                all.difference(exclude)
+            }
+        }
+    }
+    
+    /// Phrase search (terms must appear in order)
+    fn phrase_search(phrase: String, field: String, limit: Int) -> [SearchResult] {
+        let tokens = self.index.analyzer.analyze(phrase)
+        let terms: [String] = tokens.map(|t| t.text).collect()
+        
+        if terms.is_empty() { return [] }
+        
+        // Get documents containing all terms
+        var candidate_docs = Set.from_iter(
+            self.index.get_postings(terms[0].clone()).iter()
+                .filter(|p| p.field == field)
+                .map(|p| p.doc_id.clone())
+        )
+        
+        for term in terms[1..].iter() {
+            let docs: Set<String> = self.index.get_postings(term)
+                .iter()
+                .filter(|p| p.field == field)
+                .map(|p| p.doc_id.clone())
+                .collect()
+            candidate_docs = candidate_docs.intersection(docs)
+        }
+        
+        // Check phrase positions
+        var results = []
+        for doc_id in candidate_docs {
+            if self.check_phrase_positions(doc_id.clone(), terms.clone(), field.clone()) {
+                results.push(SearchResult.new(doc_id, 1.0))
+            }
+        }
+        
+        results.truncate(limit)
+        results
+    }
+    
+    fn check_phrase_positions(doc_id: String, terms: [String], field: String) -> Bool {
+        var positions_list: [[Int]] = []
+        
+        for term in terms {
+            let postings = self.index.get_postings(term)
+            let posting = postings.iter()
+                .find(|p| p.doc_id == doc_id && p.field == field)?
+            positions_list.push(posting.positions.clone())
+        }
+        
+        // Check if positions are consecutive
+        for start_pos in positions_list[0].iter() {
+            var valid = true
+            for (i, positions) in positions_list[1..].iter().enumerate() {
+                let expected = start_pos + i as Int + 1
+                if !positions.contains(expected) {
+                    valid = false
+                    break
+                }
+            }
+            if valid { return true }
+        }
+        
+        false
+    }
+    
+    /// Get document by ID
+    fn get_document(doc_id: String) -> Option<Document> {
+        self.index.documents.get(doc_id).cloned()
+    }
+    
+    /// Get total document count
+    fn document_count() -> Int {
+        self.index.doc_count
+    }
+}
+
+/// Boolean query AST
+enum BooleanQuery {
+    Term(String, String)  // term, field
+    And(Box<BooleanQuery>, Box<BooleanQuery>)
+    Or(Box<BooleanQuery>, Box<BooleanQuery>)
+    Not(Box<BooleanQuery>)
+}
+
+impl BooleanQuery {
+    fn term(term: String, field: String) -> Self {
+        BooleanQuery.Term(term, field)
+    }
+    
+    fn and(left: BooleanQuery, right: BooleanQuery) -> Self {
+        BooleanQuery.And(Box.new(left), Box.new(right))
+    }
+    
+    fn or(left: BooleanQuery, right: BooleanQuery) -> Self {
+        BooleanQuery.Or(Box.new(left), Box.new(right))
+    }
+    
+    fn not(inner: BooleanQuery) -> Self {
+        BooleanQuery.Not(Box.new(inner))
+    }
+}
+
+// =============================================================================
+// Query Parser
+// =============================================================================
+
+/// Parse simple query syntax
+fn parse_query(query: String, default_field: String) -> BooleanQuery {
+    let parts: [String] = query.split_whitespace().collect()
+    
+    if parts.is_empty() {
+        return BooleanQuery.term("", default_field)
+    }
+    
+    var result = parse_term(parts[0].clone(), default_field.clone())
+    
+    for part in parts[1..].iter() {
+        let term_query = parse_term(part, default_field.clone())
+        result = BooleanQuery.and(result, term_query)
+    }
+    
+    result
+}
+
+fn parse_term(term: String, default_field: String) -> BooleanQuery {
+    if term.starts_with("-") {
+        BooleanQuery.not(BooleanQuery.term(term[1..], default_field))
+    } else if term.contains(":") {
+        let parts: [String] = term.splitn(":", 2).collect()
+        BooleanQuery.term(parts[1].clone(), parts[0].clone())
+    } else {
+        BooleanQuery.term(term, default_field)
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "tokenizer whitespace" {
+    let tokenizer = WhitespaceTokenizer {}
+    let tokens = tokenizer.tokenize("hello world test")
+    assert_eq(tokens.len(), 3)?
+    assert_eq(tokens[0].text, "hello")?
+    assert_eq(tokens[1].text, "world")?
+}
+
+test "tokenizer standard" {
+    let tokenizer = StandardTokenizer {}
+    let tokens = tokenizer.tokenize("Hello, World! Test-123.")
+    assert_eq(tokens.len(), 4)?
+    assert_eq(tokens[0].text, "Hello")?
+    assert_eq(tokens[3].text, "123")?
+}
+
+test "analyzer with filters" {
+    let analyzer = Analyzer.standard_english()
+    let tokens = analyzer.analyze("The quick brown foxes are jumping")
+    // "the" and "are" should be removed as stop words
+    assert(tokens.iter().all(|t| t.text != "the"))?
+    assert(tokens.iter().all(|t| t.text != "are"))?
+}
+
+test "index and search" {
+    var engine = SearchEngine.new()
+    
+    engine.index_document(
+        Document.new("1")
+            .with_field("content", "The quick brown fox jumps over the lazy dog")
+    )
+    engine.index_document(
+        Document.new("2")
+            .with_field("content", "A fast brown fox leaps over a sleepy cat")
+    )
+    
+    let results = engine.search("brown fox", 10)
+    assert_eq(results.len(), 2)?
+    // Both documents should match
+}
+
+test "phrase search" {
+    var engine = SearchEngine.new()
+    
+    engine.index_document(
+        Document.new("1")
+            .with_field("content", "quick brown fox")
+    )
+    engine.index_document(
+        Document.new("2")
+            .with_field("content", "brown quick fox")
+    )
+    
+    let results = engine.phrase_search("quick brown", "content", 10)
+    assert_eq(results.len(), 1)?
+    assert_eq(results[0].doc_id, "1")?
+}
+
+test "boolean search" {
+    var engine = SearchEngine.new()
+    
+    engine.index_document(Document.new("1").with_field("content", "apple orange"))
+    engine.index_document(Document.new("2").with_field("content", "apple banana"))
+    engine.index_document(Document.new("3").with_field("content", "orange banana"))
+    
+    let query = BooleanQuery.and(
+        BooleanQuery.term("apple", "content"),
+        BooleanQuery.not(BooleanQuery.term("orange", "content"))
+    )
+    
+    let results = engine.boolean_search(query, 10)
+    assert_eq(results.len(), 1)?
+    assert_eq(results[0].doc_id, "2")?
+}
+
+test "stemming" {
+    assert_eq(stem("running", "english"), "runn")?
+    assert_eq(stem("jumped", "english"), "jump")?
+    assert_eq(stem("foxes", "english"), "fox")?
+}
+
+test "ngram tokenizer" {
+    let tokenizer = NGramTokenizer.new(2, 3)
+    let tokens = tokenizer.tokenize("test")
+    // 2-grams: te, es, st (3) + 3-grams: tes, est (2) = 5
+    assert_eq(tokens.len(), 5)?
+}
