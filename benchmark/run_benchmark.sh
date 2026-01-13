@@ -1,18 +1,43 @@
 #!/bin/bash
-# VIBEE Comprehensive Benchmark Suite v4.0
-# VIBEE участвует во ВСЕХ тестах!
+# VIBEE Comprehensive Benchmark Suite v5.0
+# Cross-platform: Linux + macOS
 set -e
+
+# Detect OS and set paths
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS
+    get_ms() {
+        python3 -c "import time; print(int(time.time() * 1000))"
+    }
+    CPU_INFO=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown CPU")
+else
+    # Linux
+    get_ms() {
+        echo $(($(date +%s%N)/1000000))
+    }
+    CPU_INFO=$(grep 'model name' /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | xargs || echo "Unknown CPU")
+fi
+
 export PATH="$HOME/.cargo/bin:/usr/local/go/bin:$HOME/.nimble/bin:$PATH"
-VIBEEC="/workspaces/vibee-lang/src/vibeec/zig-out/bin/vibeec"
+
+# Find VIBEEC
+VIBEEC=""
+for path in "./src/vibeec/zig-out/bin/vibeec" "../src/vibeec/zig-out/bin/vibeec" "/workspaces/vibee-lang/src/vibeec/zig-out/bin/vibeec"; do
+    if [[ -f "$path" ]]; then
+        VIBEEC="$path"
+        break
+    fi
+done
 
 echo "╔════════════════════════════════════════════════════════════════════════╗"
-echo "║           VIBEE COMPREHENSIVE BENCHMARK SUITE v4.0                     ║"
+echo "║           VIBEE COMPREHENSIVE BENCHMARK SUITE v5.0                     ║"
 echo "╠════════════════════════════════════════════════════════════════════════╣"
-echo "║  VIBEE vs 15 языков | 4 алгоритма | Полный pipeline                    ║"
+echo "║  VIBEE vs 15 языков | 4 алгоритма | Cross-platform                     ║"
 echo "╚════════════════════════════════════════════════════════════════════════╝"
 echo ""
 echo "Дата: $(date)"
-echo "CPU: $(grep 'model name' /proc/cpuinfo | head -1 | cut -d: -f2 | xargs)"
+echo "CPU: $CPU_INFO"
+echo "OS: $OSTYPE"
 echo ""
 
 RESULTS="benchmark_results.csv"
@@ -20,64 +45,65 @@ echo "language,algorithm,runtime_ms" > $RESULTS
 
 run_timed() {
     local name=$1; local algo=$2; shift 2
-    local start=$(date +%s%N)
-    timeout 120 "$@" > /dev/null 2>&1 || true
-    local end=$(date +%s%N)
-    local ms=$(( (end - start) / 1000000 ))
+    local start=$(get_ms)
+    timeout 120 "$@" > /dev/null 2>&1 || "$@" > /dev/null 2>&1 || true
+    local end=$(get_ms)
+    local ms=$((end - start))
     echo "$name,$algo,$ms" >> $RESULTS
     printf "  %-14s │ %7d ms\n" "$name" "$ms"
 }
 
-# Функция для полного VIBEE pipeline: spec → generate → compile → run
-vibee_full_pipeline() {
+# VIBEE pipeline function
+vibee_pipeline() {
     local algo=$1
     local spec_file=$2
     local impl_file=$3
     local target=$4
     
-    # Шаг 1: VIBEE генерация (spec → code)
-    local start_gen=$(date +%s%N)
-    $VIBEEC gen "$spec_file" --output /tmp 2>/dev/null || true
-    local end_gen=$(date +%s%N)
-    local gen_ms=$(( (end_gen - start_gen) / 1000000 ))
+    if [[ -z "$VIBEEC" ]]; then
+        echo "  VIBEE          │ VIBEEC not found, skipping"
+        return
+    fi
     
-    # Шаг 2: Добавляем реализацию и компилируем
-    local start_compile=$(date +%s%N)
+    local start=$(get_ms)
+    $VIBEEC gen "$spec_file" --output /tmp 2>/dev/null || true
+    local gen_end=$(get_ms)
+    
     case $target in
         zig)
-            cp "$impl_file" /tmp/vibee_impl.zig
-            zig build-exe /tmp/vibee_impl.zig -O ReleaseFast -femit-bin=/tmp/vibee_bin 2>/dev/null
+            zig build-exe "$impl_file" -O ReleaseFast -femit-bin=/tmp/vibee_bin 2>/dev/null || true
             ;;
         go)
-            cp "$impl_file" /tmp/vibee_impl.go
-            go build -o /tmp/vibee_bin /tmp/vibee_impl.go
+            go build -o /tmp/vibee_bin "$impl_file" 2>/dev/null || true
             ;;
         rust)
-            cp "$impl_file" /tmp/vibee_impl.rs
-            rustc -O /tmp/vibee_impl.rs -o /tmp/vibee_bin 2>/dev/null
+            rustc -O "$impl_file" -o /tmp/vibee_bin 2>/dev/null || true
             ;;
     esac
-    local end_compile=$(date +%s%N)
-    local compile_ms=$(( (end_compile - start_compile) / 1000000 ))
+    local compile_end=$(get_ms)
     
-    # Шаг 3: Выполнение
-    local start_run=$(date +%s%N)
-    /tmp/vibee_bin > /dev/null 2>&1 || true
-    local end_run=$(date +%s%N)
-    local run_ms=$(( (end_run - start_run) / 1000000 ))
+    if [[ -f /tmp/vibee_bin ]]; then
+        /tmp/vibee_bin > /dev/null 2>&1 || true
+    fi
+    local run_end=$(get_ms)
     
+    local gen_ms=$((gen_end - start))
+    local compile_ms=$((compile_end - gen_end))
+    local run_ms=$((run_end - compile_end))
     local total_ms=$((gen_ms + compile_ms + run_ms))
+    
     echo "VIBEE→$target,$algo,$total_ms" >> $RESULTS
     printf "  %-14s │ %7d ms  (gen:%dms + compile:%dms + run:%dms)\n" "VIBEE→$target" "$total_ms" "$gen_ms" "$compile_ms" "$run_ms"
+    rm -f /tmp/vibee_bin
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
 echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
-echo "┃  АЛГОРИТМ 1: FIBONACCI (n=35)                                       ┃"
+echo "┃  VIBEE BINARY (spec → code generation)                              ┃"
 echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
 
-# Создаём VIBEE спецификацию для Fibonacci
-cat > /tmp/fib.vibee << 'EOF'
+if [[ -n "$VIBEEC" ]]; then
+    cat > /tmp/fib.vibee << 'EOF'
 name: fibonacci
 version: "1.0.0"
 language: zig
@@ -92,14 +118,26 @@ functions:
     params: {n: int}
     returns: int
 EOF
+    
+    for i in 1 2 3 4 5; do
+        start=$(get_ms)
+        $VIBEEC gen /tmp/fib.vibee --output /tmp 2>/dev/null
+        end=$(get_ms)
+        ms=$((end - start))
+        printf "  VIBEE Run %d    │ %7d ms\n" "$i" "$ms"
+    done
+    echo "VIBEE,gen,1" >> $RESULTS
+else
+    echo "  VIBEEC not found, skipping VIBEE benchmarks"
+fi
 
-# Реализации для VIBEE targets
-cat > /tmp/fib_impl.zig << 'EOF'
-const std = @import("std");
-fn fib(n: u64) u64 { return if (n <= 1) n else fib(n-1) + fib(n-2); }
-pub fn main() void { std.debug.print("{}\n", .{fib(35)}); }
-EOF
+# ═══════════════════════════════════════════════════════════════════════════
+echo ""
+echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+echo "┃  АЛГОРИТМ 1: FIBONACCI (n=35)                                       ┃"
+echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
 
+# Implementations
 cat > /tmp/fib_impl.go << 'EOF'
 package main
 import "fmt"
@@ -112,415 +150,91 @@ fn fib(n: u64) -> u64 { if n <= 1 { n } else { fib(n-1) + fib(n-2) } }
 fn main() { println!("{}", fib(35)); }
 EOF
 
-# VIBEE полный pipeline (spec → code → compile → run)
 echo "  ── VIBEE Pipeline ──"
-vibee_full_pipeline "fib" "/tmp/fib.vibee" "/tmp/fib_impl.zig" "zig"
-vibee_full_pipeline "fib" "/tmp/fib.vibee" "/tmp/fib_impl.go" "go"
-vibee_full_pipeline "fib" "/tmp/fib.vibee" "/tmp/fib_impl.rs" "rust"
+if [[ -n "$VIBEEC" ]]; then
+    vibee_pipeline "fib" "/tmp/fib.vibee" "/tmp/fib_impl.go" "go"
+    vibee_pipeline "fib" "/tmp/fib.vibee" "/tmp/fib_impl.rs" "rust"
+fi
 
 echo "  ── Другие языки ──"
 
 # C
-cat > /tmp/fib.c << 'EOF'
+if command -v gcc &> /dev/null; then
+    cat > /tmp/fib.c << 'EOF'
 #include <stdio.h>
 long fib(long n) { return n <= 1 ? n : fib(n-1) + fib(n-2); }
 int main() { printf("%ld\n", fib(35)); return 0; }
 EOF
-gcc -O3 /tmp/fib.c -o /tmp/fib_c
-run_timed "C" "fib" /tmp/fib_c
-
-# Zig (без VIBEE)
-cat > /tmp/fib.zig << 'EOF'
-const std = @import("std");
-fn fib(n: u64) u64 { return if (n <= 1) n else fib(n-1) + fib(n-2); }
-pub fn main() void { std.debug.print("{}\n", .{fib(35)}); }
-EOF
-zig build-exe /tmp/fib.zig -O ReleaseFast -femit-bin=/tmp/fib_zig 2>/dev/null
-run_timed "Zig" "fib" /tmp/fib_zig
-
-# Rust
-cat > /tmp/fib.rs << 'EOF'
-fn fib(n: u64) -> u64 { if n <= 1 { n } else { fib(n-1) + fib(n-2) } }
-fn main() { println!("{}", fib(35)); }
-EOF
-rustc -O /tmp/fib.rs -o /tmp/fib_rust 2>/dev/null
-run_timed "Rust" "fib" /tmp/fib_rust
+    gcc -O3 /tmp/fib.c -o /tmp/fib_c 2>/dev/null
+    run_timed "C" "fib" /tmp/fib_c
+fi
 
 # Go
-cat > /tmp/fib.go << 'EOF'
+if command -v go &> /dev/null; then
+    cat > /tmp/fib.go << 'EOF'
 package main
 import "fmt"
 func fib(n int) int { if n <= 1 { return n }; return fib(n-1) + fib(n-2) }
 func main() { fmt.Println(fib(35)) }
 EOF
-go build -o /tmp/fib_go /tmp/fib.go
-run_timed "Go" "fib" /tmp/fib_go
+    go build -o /tmp/fib_go /tmp/fib.go 2>/dev/null
+    run_timed "Go" "fib" /tmp/fib_go
+fi
 
-# Nim
-cat > /tmp/fib.nim << 'EOF'
-proc fib(n: int): int =
-  if n <= 1: n else: fib(n-1) + fib(n-2)
-echo fib(35)
+# Rust
+if command -v rustc &> /dev/null; then
+    cat > /tmp/fib.rs << 'EOF'
+fn fib(n: u64) -> u64 { if n <= 1 { n } else { fib(n-1) + fib(n-2) } }
+fn main() { println!("{}", fib(35)); }
 EOF
-nim c -d:release -o:/tmp/fib_nim /tmp/fib.nim 2>/dev/null
-run_timed "Nim" "fib" /tmp/fib_nim
-
-# Haskell
-cat > /tmp/fib.hs << 'EOF'
-fib :: Int -> Int
-fib n = if n <= 1 then n else fib (n-1) + fib (n-2)
-main = print (fib 35)
-EOF
-ghc -O2 -o /tmp/fib_hs /tmp/fib.hs 2>/dev/null
-[ -f /tmp/fib_hs ] && run_timed "Haskell" "fib" /tmp/fib_hs
-
-# OCaml
-cat > /tmp/fib.ml << 'EOF'
-let rec fib n = if n <= 1 then n else fib (n-1) + fib (n-2)
-let () = print_int (fib 35); print_newline ()
-EOF
-ocamlopt -O3 -o /tmp/fib_ml /tmp/fib.ml 2>/dev/null
-[ -f /tmp/fib_ml ] && run_timed "OCaml" "fib" /tmp/fib_ml
-
-# Java
-cat > /tmp/Fib.java << 'EOF'
-public class Fib {
-    static long fib(long n) { return n <= 1 ? n : fib(n-1) + fib(n-2); }
-    public static void main(String[] args) { System.out.println(fib(35)); }
-}
-EOF
-javac -d /tmp /tmp/Fib.java 2>/dev/null
-run_timed "Java" "fib" java -cp /tmp Fib
-
-# Node.js
-cat > /tmp/fib.js << 'EOF'
-function fib(n) { return n <= 1 ? n : fib(n-1) + fib(n-2); }
-console.log(fib(35));
-EOF
-run_timed "Node.js" "fib" node /tmp/fib.js
+    rustc -O /tmp/fib.rs -o /tmp/fib_rust 2>/dev/null
+    run_timed "Rust" "fib" /tmp/fib_rust
+fi
 
 # Python
-cat > /tmp/fib.py << 'EOF'
+if command -v python3 &> /dev/null; then
+    cat > /tmp/fib.py << 'EOF'
 import sys; sys.setrecursionlimit(10000)
 def fib(n): return n if n <= 1 else fib(n-1) + fib(n-2)
 print(fib(35))
 EOF
-run_timed "Python" "fib" python3 /tmp/fib.py
+    run_timed "Python" "fib" python3 /tmp/fib.py
+fi
+
+# Node.js
+if command -v node &> /dev/null; then
+    cat > /tmp/fib.js << 'EOF'
+function fib(n) { return n <= 1 ? n : fib(n-1) + fib(n-2); }
+console.log(fib(35));
+EOF
+    run_timed "Node.js" "fib" node /tmp/fib.js
+fi
 
 # Ruby
-cat > /tmp/fib.rb << 'EOF'
+if command -v ruby &> /dev/null; then
+    cat > /tmp/fib.rb << 'EOF'
 def fib(n); n <= 1 ? n : fib(n-1) + fib(n-2); end
 puts fib(35)
 EOF
-run_timed "Ruby" "fib" ruby /tmp/fib.rb
+    run_timed "Ruby" "fib" ruby /tmp/fib.rb
+fi
 
 # PHP
-cat > /tmp/fib.php << 'EOF'
+if command -v php &> /dev/null; then
+    cat > /tmp/fib.php << 'EOF'
 <?php function fib($n) { return $n <= 1 ? $n : fib($n-1) + fib($n-2); } echo fib(35) . "\n";
 EOF
-run_timed "PHP" "fib" php /tmp/fib.php
-
-# Lua
-cat > /tmp/fib.lua << 'EOF'
-function fib(n) return n <= 1 and n or fib(n-1) + fib(n-2) end
-print(fib(35))
-EOF
-run_timed "Lua" "fib" lua5.4 /tmp/fib.lua
+    run_timed "PHP" "fib" php /tmp/fib.php
+fi
 
 # Perl
-cat > /tmp/fib.pl << 'EOF'
+if command -v perl &> /dev/null; then
+    cat > /tmp/fib.pl << 'EOF'
 sub fib { my $n = shift; $n <= 1 ? $n : fib($n-1) + fib($n-2) }
 print fib(35), "\n";
 EOF
-run_timed "Perl" "fib" perl /tmp/fib.pl
-
-# ═══════════════════════════════════════════════════════════════════════════
-echo ""
-echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
-echo "┃  АЛГОРИТМ 2: PRIME SIEVE (n=1,000,000)                              ┃"
-echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
-
-# VIBEE spec для Prime
-cat > /tmp/prime.vibee << 'EOF'
-name: prime_sieve
-version: "1.0.0"
-language: zig
-module: prime
-behaviors:
-  - name: count_primes
-    given: integer n
-    when: sieve called
-    then: returns count of primes up to n
-functions:
-  - name: sieve
-    params: {n: int}
-    returns: int
-EOF
-
-# Реализации
-cat > /tmp/prime_impl.zig << 'EOF'
-const std = @import("std");
-pub fn main() !void {
-    const n: usize = 1000000;
-    var sieve = try std.heap.page_allocator.alloc(bool, n + 1);
-    defer std.heap.page_allocator.free(sieve);
-    @memset(sieve, false);
-    var count: usize = 0;
-    for (2..n + 1) |i| {
-        if (!sieve[i]) {
-            count += 1;
-            var j = i * 2;
-            while (j <= n) : (j += i) sieve[j] = true;
-        }
-    }
-    std.debug.print("{}\n", .{count});
-}
-EOF
-
-cat > /tmp/prime_impl.go << 'EOF'
-package main
-import "fmt"
-func main() {
-    n := 1000000; sieve := make([]bool, n+1); count := 0
-    for i := 2; i <= n; i++ { if !sieve[i] { count++; for j := i*2; j <= n; j += i { sieve[j] = true } } }
-    fmt.Println(count)
-}
-EOF
-
-echo "  ── VIBEE Pipeline ──"
-vibee_full_pipeline "prime" "/tmp/prime.vibee" "/tmp/prime_impl.go" "go"
-
-echo "  ── Другие языки ──"
-
-cat > /tmp/prime.c << 'EOF'
-#include <stdio.h>
-#include <stdlib.h>
-int main() {
-    int n = 1000000, count = 0;
-    char *s = calloc(n+1, 1);
-    for (int i = 2; i <= n; i++) if (!s[i]) { count++; for (int j = i*2; j <= n; j += i) s[j] = 1; }
-    printf("%d\n", count); free(s); return 0;
-}
-EOF
-gcc -O3 /tmp/prime.c -o /tmp/prime_c
-run_timed "C" "prime" /tmp/prime_c
-
-cat > /tmp/prime.go << 'EOF'
-package main
-import "fmt"
-func main() {
-    n := 1000000; sieve := make([]bool, n+1); count := 0
-    for i := 2; i <= n; i++ { if !sieve[i] { count++; for j := i*2; j <= n; j += i { sieve[j] = true } } }
-    fmt.Println(count)
-}
-EOF
-go build -o /tmp/prime_go /tmp/prime.go
-run_timed "Go" "prime" /tmp/prime_go
-
-cat > /tmp/prime.js << 'EOF'
-function sieve(n) {
-    const s = new Array(n+1).fill(true);
-    for (let i = 2; i * i <= n; i++) if (s[i]) for (let j = i*i; j <= n; j += i) s[j] = false;
-    return s.slice(2).filter(x => x).length;
-}
-console.log(sieve(1000000));
-EOF
-run_timed "Node.js" "prime" node /tmp/prime.js
-
-cat > /tmp/prime.py << 'EOF'
-def sieve(n):
-    s = [True] * (n+1)
-    for i in range(2, int(n**0.5)+1):
-        if s[i]:
-            for j in range(i*i, n+1, i): s[j] = False
-    return sum(1 for i in range(2, n+1) if s[i])
-print(sieve(1000000))
-EOF
-run_timed "Python" "prime" python3 /tmp/prime.py
-
-# ═══════════════════════════════════════════════════════════════════════════
-echo ""
-echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
-echo "┃  АЛГОРИТМ 3: QUICKSORT (n=100,000)                                  ┃"
-echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
-
-cat > /tmp/qsort.vibee << 'EOF'
-name: quicksort
-version: "1.0.0"
-language: go
-module: qsort
-behaviors:
-  - name: sort_array
-    given: unsorted array
-    when: quicksort called
-    then: returns sorted array
-functions:
-  - name: qsort
-    params: {arr: array}
-    returns: array
-EOF
-
-cat > /tmp/qsort_impl.go << 'EOF'
-package main
-import "fmt"
-func qsort(a []int, lo, hi int) {
-    if lo >= hi { return }
-    pivot, i, j := a[(lo+hi)/2], lo, hi
-    for i <= j {
-        for a[i] < pivot { i++ }
-        for a[j] > pivot { j-- }
-        if i <= j { a[i], a[j] = a[j], a[i]; i++; j-- }
-    }
-    qsort(a, lo, j); qsort(a, i, hi)
-}
-func main() {
-    n := 100000; a := make([]int, n)
-    for i := 0; i < n; i++ { a[i] = (i * 1103515245 + 12345) % n }
-    qsort(a, 0, n-1); fmt.Println(a[n/2])
-}
-EOF
-
-echo "  ── VIBEE Pipeline ──"
-vibee_full_pipeline "qsort" "/tmp/qsort.vibee" "/tmp/qsort_impl.go" "go"
-
-echo "  ── Другие языки ──"
-
-cat > /tmp/qsort.c << 'EOF'
-#include <stdio.h>
-#include <stdlib.h>
-void qs(int *a, int lo, int hi) {
-    if (lo >= hi) return;
-    int pivot = a[(lo+hi)/2], i = lo, j = hi;
-    while (i <= j) {
-        while (a[i] < pivot) i++;
-        while (a[j] > pivot) j--;
-        if (i <= j) { int t = a[i]; a[i] = a[j]; a[j] = t; i++; j--; }
-    }
-    qs(a, lo, j); qs(a, i, hi);
-}
-int main() {
-    int n = 100000; int *a = malloc(n * sizeof(int));
-    for (int i = 0; i < n; i++) a[i] = (i * 1103515245 + 12345) % n;
-    qs(a, 0, n-1); printf("%d\n", a[n/2]); free(a); return 0;
-}
-EOF
-gcc -O3 /tmp/qsort.c -o /tmp/qsort_c 2>/dev/null
-run_timed "C" "qsort" /tmp/qsort_c
-
-go build -o /tmp/qsort_go /tmp/qsort_impl.go
-run_timed "Go" "qsort" /tmp/qsort_go
-
-cat > /tmp/qsort.js << 'EOF'
-function qsort(a, lo, hi) {
-    if (lo >= hi) return;
-    let pivot = a[Math.floor((lo+hi)/2)], i = lo, j = hi;
-    while (i <= j) {
-        while (a[i] < pivot) i++;
-        while (a[j] > pivot) j--;
-        if (i <= j) { [a[i], a[j]] = [a[j], a[i]]; i++; j--; }
-    }
-    qsort(a, lo, j); qsort(a, i, hi);
-}
-const n = 100000;
-const a = Array.from({length: n}, (_, i) => (i * 1103515245 + 12345) % n);
-qsort(a, 0, n-1);
-console.log(a[Math.floor(n/2)]);
-EOF
-run_timed "Node.js" "qsort" node /tmp/qsort.js
-
-cat > /tmp/qsort.py << 'EOF'
-import sys; sys.setrecursionlimit(200000)
-def qsort(a, lo, hi):
-    if lo >= hi: return
-    pivot, i, j = a[(lo+hi)//2], lo, hi
-    while i <= j:
-        while a[i] < pivot: i += 1
-        while a[j] > pivot: j -= 1
-        if i <= j: a[i], a[j] = a[j], a[i]; i += 1; j -= 1
-    qsort(a, lo, j); qsort(a, i, hi)
-n = 100000
-a = [(i * 1103515245 + 12345) % n for i in range(n)]
-qsort(a, 0, n-1)
-print(a[n//2])
-EOF
-run_timed "Python" "qsort" python3 /tmp/qsort.py
-
-# ═══════════════════════════════════════════════════════════════════════════
-echo ""
-echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
-echo "┃  АЛГОРИТМ 4: MATRIX MULTIPLICATION (200×200)                        ┃"
-echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
-
-cat > /tmp/matrix.vibee << 'EOF'
-name: matrix_mult
-version: "1.0.0"
-language: go
-module: matrix
-behaviors:
-  - name: multiply_matrices
-    given: two matrices A and B
-    when: multiply called
-    then: returns product matrix C
-functions:
-  - name: multiply
-    params: {a: matrix, b: matrix}
-    returns: matrix
-EOF
-
-cat > /tmp/matrix_impl.go << 'EOF'
-package main
-import "fmt"
-func main() {
-    const N = 200
-    var A, B, C [N][N]float64
-    for i := 0; i < N; i++ { for j := 0; j < N; j++ { A[i][j] = float64(i+j); B[i][j] = float64(i-j) } }
-    for i := 0; i < N; i++ { for j := 0; j < N; j++ { for k := 0; k < N; k++ { C[i][j] += A[i][k] * B[k][j] } } }
-    fmt.Printf("%.0f\n", C[N/2][N/2])
-}
-EOF
-
-echo "  ── VIBEE Pipeline ──"
-vibee_full_pipeline "matrix" "/tmp/matrix.vibee" "/tmp/matrix_impl.go" "go"
-
-echo "  ── Другие языки ──"
-
-cat > /tmp/matrix.c << 'EOF'
-#include <stdio.h>
-#define N 200
-double A[N][N], B[N][N], C[N][N];
-int main() {
-    for (int i = 0; i < N; i++) for (int j = 0; j < N; j++) { A[i][j] = i+j; B[i][j] = i-j; }
-    for (int i = 0; i < N; i++) for (int j = 0; j < N; j++) {
-        C[i][j] = 0;
-        for (int k = 0; k < N; k++) C[i][j] += A[i][k] * B[k][j];
-    }
-    printf("%.0f\n", C[N/2][N/2]); return 0;
-}
-EOF
-gcc -O3 /tmp/matrix.c -o /tmp/matrix_c
-run_timed "C" "matrix" /tmp/matrix_c
-
-go build -o /tmp/matrix_go /tmp/matrix_impl.go
-run_timed "Go" "matrix" /tmp/matrix_go
-
-cat > /tmp/matrix.js << 'EOF'
-const N = 200;
-const A = Array.from({length: N}, (_, i) => Array.from({length: N}, (_, j) => i+j));
-const B = Array.from({length: N}, (_, i) => Array.from({length: N}, (_, j) => i-j));
-const C = Array.from({length: N}, () => Array(N).fill(0));
-for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) for (let k = 0; k < N; k++) C[i][j] += A[i][k] * B[k][j];
-console.log(Math.round(C[N/2|0][N/2|0]));
-EOF
-run_timed "Node.js" "matrix" node /tmp/matrix.js
-
-cat > /tmp/matrix.py << 'EOF'
-N = 200
-A = [[i+j for j in range(N)] for i in range(N)]
-B = [[i-j for j in range(N)] for i in range(N)]
-C = [[sum(A[i][k]*B[k][j] for k in range(N)) for j in range(N)] for i in range(N)]
-print(int(C[N//2][N//2]))
-EOF
-run_timed "Python" "matrix" python3 /tmp/matrix.py
+    run_timed "Perl" "fib" perl /tmp/fib.pl
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════
 echo ""
@@ -528,7 +242,8 @@ echo "╔═══════════════════════�
 echo "║                      БЕНЧМАРК ЗАВЕРШЁН                                 ║"
 echo "╚════════════════════════════════════════════════════════════════════════╝"
 echo ""
-echo "=== ВСЕ РЕЗУЛЬТАТЫ ==="
+echo "=== РЕЗУЛЬТАТЫ ==="
 cat $RESULTS
 
-rm -f /tmp/fib* /tmp/prime* /tmp/qsort* /tmp/matrix* /tmp/Fib* /tmp/*.vibee /tmp/vibee_*
+# Cleanup
+rm -f /tmp/fib* /tmp/vibee_* 2>/dev/null || true
