@@ -105,7 +105,39 @@ This study evaluates VIBEE across **8 performance criteria** and **7 target lang
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.3 Why This Matters
+### 2.3 Zig: Debug vs Release — Why So Slow?
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  ZIG COMPILATION MODES EXPLAINED                                                │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ⚠️  Zig Release (5.4s) looks slow, but there's a reason!                       │
+│                                                                                 │
+│  Mode        │ Compile │ Runtime │ Use Case                                     │
+│  ────────────┼─────────┼─────────┼──────────────────────────────────────────    │
+│  Debug       │  1.3s   │  91ms   │ Development — fast iteration                 │
+│  Release     │  5.4s   │  27ms   │ Production — 3.4x faster runtime             │
+│                                                                                 │
+│  WHY RELEASE IS SLOW:                                                           │
+│  • LLVM backend performs aggressive optimizations                               │
+│  • Function inlining, dead code elimination, vectorization                      │
+│  • Static linking (no runtime dependencies)                                     │
+│  • Result: smallest, fastest binary possible                                    │
+│                                                                                 │
+│  COMPARISON WITH OTHER LANGUAGES:                                               │
+│  • Go/Rust: ~100ms compile, but less aggressive optimization                    │
+│  • C++ with -O3: Similar 5-10s compile times                                    │
+│  • Zig trades compile time for runtime performance                              │
+│                                                                                 │
+│  RECOMMENDATION:                                                                │
+│  • Use Debug during development (4.3x faster compile)                           │
+│  • Use Release only for final builds and benchmarks                             │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 2.4 Why This Matters
 
 **Compilation time affects developer iteration speed:**
 - VIBEE→WASM: Near-instant compilation (2ms)
