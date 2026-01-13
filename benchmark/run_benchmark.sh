@@ -22,12 +22,32 @@ export PATH="$HOME/.cargo/bin:/usr/local/go/bin:$HOME/.nimble/bin:$PATH"
 
 # Find VIBEEC
 VIBEEC=""
-for path in "./src/vibeec/zig-out/bin/vibeec" "../src/vibeec/zig-out/bin/vibeec" "/workspaces/vibee-lang/src/vibeec/zig-out/bin/vibeec"; do
-    if [[ -f "$path" ]]; then
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+
+for path in \
+    "$REPO_ROOT/src/vibeec/zig-out/bin/vibeec" \
+    "$SCRIPT_DIR/../src/vibeec/zig-out/bin/vibeec" \
+    "./src/vibeec/zig-out/bin/vibeec" \
+    "../src/vibeec/zig-out/bin/vibeec" \
+    "/workspaces/vibee-lang/src/vibeec/zig-out/bin/vibeec" \
+    "$(which vibeec 2>/dev/null)"; do
+    if [[ -n "$path" && -f "$path" ]]; then
         VIBEEC="$path"
         break
     fi
 done
+
+# Try to build VIBEEC if not found and zig is available
+if [[ -z "$VIBEEC" && -d "$REPO_ROOT/src/vibeec" ]]; then
+    if command -v zig &> /dev/null; then
+        echo "Building VIBEEC..."
+        (cd "$REPO_ROOT/src/vibeec" && zig build 2>/dev/null) || true
+        if [[ -f "$REPO_ROOT/src/vibeec/zig-out/bin/vibeec" ]]; then
+            VIBEEC="$REPO_ROOT/src/vibeec/zig-out/bin/vibeec"
+        fi
+    fi
+fi
 
 echo "╔════════════════════════════════════════════════════════════════════════╗"
 echo "║           VIBEE COMPREHENSIVE BENCHMARK SUITE v5.0                     ║"
@@ -38,6 +58,11 @@ echo ""
 echo "Дата: $(date)"
 echo "CPU: $CPU_INFO"
 echo "OS: $OSTYPE"
+if [[ -n "$VIBEEC" ]]; then
+    echo "VIBEEC: $VIBEEC"
+else
+    echo "VIBEEC: NOT FOUND (install zig and run: cd src/vibeec && zig build)"
+fi
 echo ""
 
 RESULTS="benchmark_results.csv"
