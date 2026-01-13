@@ -1,6 +1,7 @@
-# A Novel Relation Between the Hubble Constant and Fundamental Particle Masses
+# A Numerical Relation Between the Hubble Constant and Fundamental Particle Masses
 
-**Draft for arXiv submission**
+**Preprint for arXiv submission**
+**Categories:** astro-ph.CO, hep-th, gr-qc
 
 ---
 
@@ -184,5 +185,38 @@ The search space included 12 fundamental constants with powers ranging from -4 t
 
 ---
 
-*Submitted to arXiv: [date]*
+## Appendix B: Numerical Verification with Different H₀ Values
+
+| H₀ (km/s/Mpc) | Source | Ratio Value | Deviation from 0.5 |
+|---------------|--------|-------------|-------------------|
+| 67.4 ± 0.5 | Planck 2018 | 0.476 | -4.8% |
+| 69.8 ± 1.9 | TRGB | 0.491 | -1.8% |
+| **70.7** | **This work** | **0.500** | **0%** |
+| 73.0 ± 1.0 | SH0ES 2022 | 0.515 | +3.0% |
+
+Our predicted value lies between the early-Universe (CMB) and late-Universe (SNe Ia) measurements, potentially offering insight into the Hubble tension.
+
+---
+
+## Appendix C: Alternative Forms of the Relation
+
+The relation can be expressed in several equivalent forms:
+
+**Form 1: Gravitational coupling**
+$$H_0 = \frac{\alpha_G}{2} \cdot \frac{m_e c^2}{\hbar}$$
+
+where $\alpha_G = G m_p^2/(\hbar c)$ is the gravitational fine structure constant.
+
+**Form 2: Planck ratios**
+$$\frac{t_H}{t_P} = 2 \cdot \frac{m_P}{m_e} \cdot \left(\frac{m_P}{m_p}\right)^2$$
+
+**Form 3: Compton time**
+$$H_0 \cdot t_{C,e} = \frac{\alpha_G}{2}$$
+
+where $t_{C,e} = \hbar/(m_e c^2)$ is the electron Compton time.
+
+---
+
+*Preprint prepared for arXiv submission*
 *Categories: astro-ph.CO, hep-th, gr-qc*
+*Contact: [to be added]*
