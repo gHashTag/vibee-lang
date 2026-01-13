@@ -1,6 +1,6 @@
 # Period 8 Element Properties (Z=119-168)
 
-## S-BLOCK (Z=119-120): Alkali & Alkaline Earth
+## S-BLOCK (Z=119-120): Alkali & Alkaline Earth Metals
 
 | Z | Symbol | Name | Mass | Radius | IE | EN | Ox | Config | Half-life |
 |---|--------|------|------|--------|----|----|----|----|-----------|
@@ -37,7 +37,7 @@
 | 134 | Utq | 349u | +4,+6 | [Og]8s²5g¹⁴ | Superactinide |
 | 135 | Utp | 352u | +3,+4 | [Og]8s²5g¹⁵ | Superactinide |
 | 136 | Uth | 355u | +3 | [Og]8s²5g¹⁶ | Superactinide |
-| 137 | Uts | 357u | +3 | [Og]8s²5g¹⁷ | **FEYNMANIUM LIMIT** |
+| **137** | **Uts** | **357u** | **+3** | [Og]8s²5g¹⁷ | **FEYNMANIUM LIMIT** |
 | 138 | Uto | 360u | +2,+3 | [Og]8s²5g¹⁸ | End of 5g |
 
 **G-block properties:**
@@ -127,3 +127,16 @@
 | p | 6 | 163-168 | 8p | Noble gas at end |
 
 **Total Period 8: 50 elements**
+
+---
+
+## Period 9 (Theoretical Limit)
+
+| Z | Symbol | Block | Notes |
+|---|--------|-------|-------|
+| 169 | Uhe | s | First Period 9 |
+| 170 | Usn | s | Alkaline earth |
+| 171 | Usu | g | Period 9 g-block |
+| 172 | Usb | g | **DIRAC LIMIT - END OF PERIODIC TABLE** |
+
+At Z=172, the 1s orbital "dives" into the nucleus according to the Dirac equation, representing the theoretical end of the periodic table.
