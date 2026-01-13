@@ -1,0 +1,580 @@
+// =============================================================================
+// Vibee OS — Hand Tracking Module
+// Hand and finger tracking for AR/VR applications
+// =============================================================================
+
+use spatial::{Vec3, Quat, SpatialTransform}
+
+// -----------------------------------------------------------------------------
+// Hand Types
+// -----------------------------------------------------------------------------
+
+/// Hand chirality
+enum Handedness {
+    Left
+    Right
+    
+    fn opposite() -> Self {
+        match self {
+            Left => Right,
+            Right => Left
+        }
+    }
+}
+
+/// Finger type
+enum Finger {
+    Thumb
+    Index
+    Middle
+    Ring
+    Pinky
+    
+    fn index() -> Int {
+        match self {
+            Thumb => 0, Index => 1, Middle => 2, Ring => 3, Pinky => 4
+        }
+    }
+}
+
+/// Joint type for each finger
+enum JointType {
+    Metacarpal      // Base of finger
+    Proximal        // First knuckle
+    Intermediate    // Second knuckle (not on thumb)
+    Distal          // Third knuckle
+    Tip             // Fingertip
+    
+    fn index() -> Int {
+        match self {
+            Metacarpal => 0, Proximal => 1, Intermediate => 2, Distal => 3, Tip => 4
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Joint Data
+// -----------------------------------------------------------------------------
+
+/// Single joint data
+struct Joint {
+    position: Vec3
+    rotation: Quat
+    radius: Float
+    
+    fn new(position: Vec3, rotation: Quat) -> Self {
+        Joint { position: position, rotation: rotation, radius: 0.01 }
+    }
+    
+    fn transform() -> SpatialTransform {
+        SpatialTransform.from_position_rotation(self.position, self.rotation)
+    }
+    
+    fn forward() -> Vec3 { self.rotation.rotate(Vec3.forward()) }
+    fn distance_to(other: Joint) -> Float { self.position.distance(other.position) }
+}
+
+/// Finger skeleton
+struct FingerSkeleton {
+    finger: Finger
+    joints: [Joint; 5]  // Metacarpal to Tip
+    
+    fn new(finger: Finger) -> Self {
+        FingerSkeleton {
+            finger: finger,
+            joints: [Joint.new(Vec3.zero(), Quat.identity()); 5]
+        }
+    }
+    
+    fn tip() -> Joint { self.joints[4].clone() }
+    fn base() -> Joint { self.joints[0].clone() }
+    
+    fn get_joint(joint_type: JointType) -> Joint {
+        self.joints[joint_type.index()].clone()
+    }
+    
+    fn length() -> Float {
+        var total = 0.0
+        for i in 0..4 {
+            total += self.joints[i].distance_to(self.joints[i + 1])
+        }
+        total
+    }
+    
+    fn is_extended() -> Bool {
+        let base_to_tip = self.tip().position.sub(self.base().position).normalized()
+        let finger_dir = self.joints[1].forward()
+        base_to_tip.dot(finger_dir) > 0.7
+    }
+    
+    fn curl_amount() -> Float {
+        // 0.0 = fully extended, 1.0 = fully curled
+        let extended_length = self.length()
+        let direct_length = self.base().distance_to(self.tip())
+        1.0 - (direct_length / extended_length).clamp(0.0, 1.0)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Hand Skeleton
+// -----------------------------------------------------------------------------
+
+/// Complete hand skeleton
+struct HandSkeleton {
+    handedness: Handedness
+    wrist: Joint
+    palm: Joint
+    fingers: [FingerSkeleton; 5]
+    
+    fn new(handedness: Handedness) -> Self {
+        HandSkeleton {
+            handedness: handedness,
+            wrist: Joint.new(Vec3.zero(), Quat.identity()),
+            palm: Joint.new(Vec3.zero(), Quat.identity()),
+            fingers: [
+                FingerSkeleton.new(Finger.Thumb),
+                FingerSkeleton.new(Finger.Index),
+                FingerSkeleton.new(Finger.Middle),
+                FingerSkeleton.new(Finger.Ring),
+                FingerSkeleton.new(Finger.Pinky)
+            ]
+        }
+    }
+    
+    fn thumb() -> FingerSkeleton { self.fingers[0].clone() }
+    fn index() -> FingerSkeleton { self.fingers[1].clone() }
+    fn middle() -> FingerSkeleton { self.fingers[2].clone() }
+    fn ring() -> FingerSkeleton { self.fingers[3].clone() }
+    fn pinky() -> FingerSkeleton { self.fingers[4].clone() }
+    
+    fn get_finger(finger: Finger) -> FingerSkeleton {
+        self.fingers[finger.index()].clone()
+    }
+    
+    fn palm_position() -> Vec3 { self.palm.position }
+    fn palm_normal() -> Vec3 { self.palm.rotation.rotate(Vec3.up()) }
+    fn palm_forward() -> Vec3 { self.palm.rotation.rotate(Vec3.forward()) }
+    
+    fn fingertips() -> [Vec3] {
+        self.fingers.iter().map(|f| f.tip().position).collect()
+    }
+    
+    fn all_joints() -> [Joint] {
+        var joints = vec![self.wrist.clone(), self.palm.clone()]
+        for finger in self.fingers {
+            joints.extend(finger.joints.iter().cloned())
+        }
+        joints
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Hand Tracking State
+// -----------------------------------------------------------------------------
+
+/// Tracking confidence
+enum TrackingConfidence {
+    Low
+    High
+    
+    fn value() -> Float {
+        match self {
+            Low => 0.5,
+            High => 1.0
+        }
+    }
+}
+
+/// Tracked hand data
+struct TrackedHand {
+    skeleton: HandSkeleton
+    confidence: TrackingConfidence
+    is_tracked: Bool
+    timestamp: Float64
+    
+    fn new(handedness: Handedness) -> Self {
+        TrackedHand {
+            skeleton: HandSkeleton.new(handedness),
+            confidence: TrackingConfidence.Low,
+            is_tracked: false,
+            timestamp: 0.0
+        }
+    }
+    
+    fn handedness() -> Handedness { self.skeleton.handedness }
+    fn is_left() -> Bool { self.skeleton.handedness == Handedness.Left }
+    fn is_right() -> Bool { self.skeleton.handedness == Handedness.Right }
+}
+
+// -----------------------------------------------------------------------------
+// Gestures
+// -----------------------------------------------------------------------------
+
+/// Hand gesture types
+enum HandGesture {
+    None
+    OpenHand
+    Fist
+    Point
+    Peace
+    ThumbsUp
+    ThumbsDown
+    Pinch
+    Grab
+    OK
+    Rock
+    Call
+    
+    fn requires_two_hands() -> Bool { false }
+}
+
+/// Pinch state
+struct PinchState {
+    is_pinching: Bool
+    strength: Float      // 0.0 - 1.0
+    distance: Float      // Distance between thumb and index
+    position: Vec3       // Midpoint between thumb and index
+    
+    fn new() -> Self {
+        PinchState {
+            is_pinching: false,
+            strength: 0.0,
+            distance: 0.0,
+            position: Vec3.zero()
+        }
+    }
+}
+
+/// Gesture detector
+struct GestureDetector {
+    pinch_threshold: Float
+    
+    fn new() -> Self {
+        GestureDetector { pinch_threshold: 0.02 }
+    }
+    
+    fn detect(hand: TrackedHand) -> HandGesture {
+        if !hand.is_tracked { return HandGesture.None }
+        
+        let skeleton = hand.skeleton
+        let thumb_extended = skeleton.thumb().is_extended()
+        let index_extended = skeleton.index().is_extended()
+        let middle_extended = skeleton.middle().is_extended()
+        let ring_extended = skeleton.ring().is_extended()
+        let pinky_extended = skeleton.pinky().is_extended()
+        
+        // All fingers extended
+        if thumb_extended && index_extended && middle_extended && ring_extended && pinky_extended {
+            return HandGesture.OpenHand
+        }
+        
+        // All fingers curled
+        if !thumb_extended && !index_extended && !middle_extended && !ring_extended && !pinky_extended {
+            return HandGesture.Fist
+        }
+        
+        // Only index extended
+        if !thumb_extended && index_extended && !middle_extended && !ring_extended && !pinky_extended {
+            return HandGesture.Point
+        }
+        
+        // Index and middle extended (peace sign)
+        if !thumb_extended && index_extended && middle_extended && !ring_extended && !pinky_extended {
+            return HandGesture.Peace
+        }
+        
+        // Thumb up
+        if thumb_extended && !index_extended && !middle_extended && !ring_extended && !pinky_extended {
+            let thumb_dir = skeleton.thumb().tip().position.sub(skeleton.thumb().base().position)
+            if thumb_dir.y > 0.0 {
+                return HandGesture.ThumbsUp
+            } else {
+                return HandGesture.ThumbsDown
+            }
+        }
+        
+        // Rock gesture (index and pinky extended)
+        if !thumb_extended && index_extended && !middle_extended && !ring_extended && pinky_extended {
+            return HandGesture.Rock
+        }
+        
+        HandGesture.None
+    }
+    
+    fn detect_pinch(hand: TrackedHand) -> PinchState {
+        if !hand.is_tracked {
+            return PinchState.new()
+        }
+        
+        let thumb_tip = hand.skeleton.thumb().tip().position
+        let index_tip = hand.skeleton.index().tip().position
+        let distance = thumb_tip.distance(index_tip)
+        let midpoint = thumb_tip.lerp(index_tip, 0.5)
+        
+        let is_pinching = distance < self.pinch_threshold
+        let strength = (1.0 - (distance / 0.1)).clamp(0.0, 1.0)
+        
+        PinchState {
+            is_pinching: is_pinching,
+            strength: strength,
+            distance: distance,
+            position: midpoint
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Hand Tracker Actor
+// -----------------------------------------------------------------------------
+
+/// Hand tracking event
+enum HandTrackingEvent {
+    HandDetected(Handedness)
+    HandLost(Handedness)
+    GestureRecognized(Handedness, HandGesture)
+    PinchStarted(Handedness, Vec3)
+    PinchEnded(Handedness)
+    PinchMoved(Handedness, Vec3)
+}
+
+/// Hand tracker actor
+actor HandTracker {
+    state left_hand: TrackedHand
+    state right_hand: TrackedHand
+    state gesture_detector: GestureDetector
+    state is_running: Bool
+    state last_left_gesture: HandGesture
+    state last_right_gesture: HandGesture
+    state left_pinch: PinchState
+    state right_pinch: PinchState
+    state event_handlers: [fn(HandTrackingEvent)]
+    
+    fn new() -> Self {
+        HandTracker {
+            left_hand: TrackedHand.new(Handedness.Left),
+            right_hand: TrackedHand.new(Handedness.Right),
+            gesture_detector: GestureDetector.new(),
+            is_running: false,
+            last_left_gesture: HandGesture.None,
+            last_right_gesture: HandGesture.None,
+            left_pinch: PinchState.new(),
+            right_pinch: PinchState.new(),
+            event_handlers: []
+        }
+    }
+    
+    fn start() -> Result<(), HandTrackingError> {
+        if self.is_running { return Ok(()) }
+        @native("hand_tracking_start")?
+        self.is_running = true
+        Ok(())
+    }
+    
+    fn stop() {
+        if self.is_running {
+            @native("hand_tracking_stop")
+            self.is_running = false
+        }
+    }
+    
+    fn update() {
+        if !self.is_running { return }
+        
+        // Get tracking data from native
+        let left_data: Option<TrackedHand> = @native("hand_tracking_get_left")
+        let right_data: Option<TrackedHand> = @native("hand_tracking_get_right")
+        
+        // Process left hand
+        if let Some(data) = left_data {
+            let was_tracked = self.left_hand.is_tracked
+            self.left_hand = data
+            
+            if !was_tracked && self.left_hand.is_tracked {
+                self.emit(HandTrackingEvent.HandDetected(Handedness.Left))
+            }
+            
+            self.process_gestures(Handedness.Left)
+            self.process_pinch(Handedness.Left)
+        } else if self.left_hand.is_tracked {
+            self.left_hand.is_tracked = false
+            self.emit(HandTrackingEvent.HandLost(Handedness.Left))
+        }
+        
+        // Process right hand
+        if let Some(data) = right_data {
+            let was_tracked = self.right_hand.is_tracked
+            self.right_hand = data
+            
+            if !was_tracked && self.right_hand.is_tracked {
+                self.emit(HandTrackingEvent.HandDetected(Handedness.Right))
+            }
+            
+            self.process_gestures(Handedness.Right)
+            self.process_pinch(Handedness.Right)
+        } else if self.right_hand.is_tracked {
+            self.right_hand.is_tracked = false
+            self.emit(HandTrackingEvent.HandLost(Handedness.Right))
+        }
+    }
+    
+    fn get_hand(handedness: Handedness) -> TrackedHand {
+        match handedness {
+            Handedness.Left => self.left_hand.clone(),
+            Handedness.Right => self.right_hand.clone()
+        }
+    }
+    
+    fn left() -> TrackedHand { self.left_hand.clone() }
+    fn right() -> TrackedHand { self.right_hand.clone() }
+    
+    fn is_hand_tracked(handedness: Handedness) -> Bool {
+        self.get_hand(handedness).is_tracked
+    }
+    
+    fn both_hands_tracked() -> Bool {
+        self.left_hand.is_tracked && self.right_hand.is_tracked
+    }
+    
+    fn any_hand_tracked() -> Bool {
+        self.left_hand.is_tracked || self.right_hand.is_tracked
+    }
+    
+    fn get_gesture(handedness: Handedness) -> HandGesture {
+        match handedness {
+            Handedness.Left => self.last_left_gesture,
+            Handedness.Right => self.last_right_gesture
+        }
+    }
+    
+    fn get_pinch(handedness: Handedness) -> PinchState {
+        match handedness {
+            Handedness.Left => self.left_pinch.clone(),
+            Handedness.Right => self.right_pinch.clone()
+        }
+    }
+    
+    fn on_event(handler: fn(HandTrackingEvent)) {
+        self.event_handlers.push(handler)
+    }
+    
+    // Internal methods
+    fn process_gestures(handedness: Handedness) {
+        let hand = self.get_hand(handedness)
+        let gesture = self.gesture_detector.detect(hand)
+        
+        let last_gesture = match handedness {
+            Handedness.Left => self.last_left_gesture,
+            Handedness.Right => self.last_right_gesture
+        }
+        
+        if gesture != last_gesture && gesture != HandGesture.None {
+            self.emit(HandTrackingEvent.GestureRecognized(handedness, gesture))
+        }
+        
+        match handedness {
+            Handedness.Left => self.last_left_gesture = gesture,
+            Handedness.Right => self.last_right_gesture = gesture
+        }
+    }
+    
+    fn process_pinch(handedness: Handedness) {
+        let hand = self.get_hand(handedness)
+        let new_pinch = self.gesture_detector.detect_pinch(hand)
+        
+        let old_pinch = match handedness {
+            Handedness.Left => self.left_pinch.clone(),
+            Handedness.Right => self.right_pinch.clone()
+        }
+        
+        if !old_pinch.is_pinching && new_pinch.is_pinching {
+            self.emit(HandTrackingEvent.PinchStarted(handedness, new_pinch.position))
+        } else if old_pinch.is_pinching && !new_pinch.is_pinching {
+            self.emit(HandTrackingEvent.PinchEnded(handedness))
+        } else if old_pinch.is_pinching && new_pinch.is_pinching {
+            self.emit(HandTrackingEvent.PinchMoved(handedness, new_pinch.position))
+        }
+        
+        match handedness {
+            Handedness.Left => self.left_pinch = new_pinch,
+            Handedness.Right => self.right_pinch = new_pinch
+        }
+    }
+    
+    fn emit(event: HandTrackingEvent) {
+        for handler in self.event_handlers {
+            handler(event.clone())
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum HandTrackingError {
+    NotSupported
+    CameraAccessDenied
+    InitializationFailed
+    TrackingLost
+    
+    fn message() -> String {
+        match self {
+            NotSupported => "Hand tracking not supported",
+            CameraAccessDenied => "Camera access denied",
+            InitializationFailed => "Failed to initialize hand tracking",
+            TrackingLost => "Hand tracking lost"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+fn is_hand_tracking_supported() -> Bool {
+    @native("hand_tracking_supported")
+}
+
+fn create_hand_tracker() -> Result<HandTracker, HandTrackingError> {
+    if !is_hand_tracking_supported() {
+        return Err(HandTrackingError.NotSupported)
+    }
+    let tracker = HandTracker.new()
+    tracker.start()?
+    Ok(tracker)
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "handedness" {
+    assert_eq(Handedness.Left.opposite(), Handedness.Right)?
+    assert_eq(Handedness.Right.opposite(), Handedness.Left)?
+}
+
+test "finger_index" {
+    assert_eq(Finger.Thumb.index(), 0)?
+    assert_eq(Finger.Pinky.index(), 4)?
+}
+
+test "joint_type_index" {
+    assert_eq(JointType.Metacarpal.index(), 0)?
+    assert_eq(JointType.Tip.index(), 4)?
+}
+
+test "tracking_confidence" {
+    assert_eq(TrackingConfidence.High.value(), 1.0)?
+    assert_eq(TrackingConfidence.Low.value(), 0.5)?
+}
+
+test "pinch_state_default" {
+    let pinch = PinchState.new()
+    assert(!pinch.is_pinching)?
+    assert_eq(pinch.strength, 0.0)?
+}
+
+test "gesture_detector_creation" {
+    let detector = GestureDetector.new()
+    assert_eq(detector.pinch_threshold, 0.02)?
+}

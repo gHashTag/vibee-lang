@@ -1,0 +1,492 @@
+// =============================================================================
+// Vibee OS — Spatial Computing Module
+// 3D spatial calculations for AR/VR applications
+// =============================================================================
+
+use math::{PI, sqrt, sin, cos, acos, atan2, abs, min, max}
+
+// -----------------------------------------------------------------------------
+// 3D Vector
+// -----------------------------------------------------------------------------
+
+struct Vec3 {
+    x: Float
+    y: Float
+    z: Float
+    
+    fn new(x: Float, y: Float, z: Float) -> Self {
+        Vec3 { x: x, y: y, z: z }
+    }
+    
+    fn zero() -> Self { Vec3 { x: 0.0, y: 0.0, z: 0.0 } }
+    fn one() -> Self { Vec3 { x: 1.0, y: 1.0, z: 1.0 } }
+    fn up() -> Self { Vec3 { x: 0.0, y: 1.0, z: 0.0 } }
+    fn down() -> Self { Vec3 { x: 0.0, y: -1.0, z: 0.0 } }
+    fn forward() -> Self { Vec3 { x: 0.0, y: 0.0, z: -1.0 } }
+    fn back() -> Self { Vec3 { x: 0.0, y: 0.0, z: 1.0 } }
+    fn right() -> Self { Vec3 { x: 1.0, y: 0.0, z: 0.0 } }
+    fn left() -> Self { Vec3 { x: -1.0, y: 0.0, z: 0.0 } }
+    
+    fn magnitude() -> Float {
+        sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
+    }
+    
+    fn sqr_magnitude() -> Float {
+        self.x * self.x + self.y * self.y + self.z * self.z
+    }
+    
+    fn normalized() -> Self {
+        let mag = self.magnitude()
+        if mag > 0.0 {
+            Vec3 { x: self.x / mag, y: self.y / mag, z: self.z / mag }
+        } else {
+            Vec3.zero()
+        }
+    }
+    
+    fn dot(other: Vec3) -> Float {
+        self.x * other.x + self.y * other.y + self.z * other.z
+    }
+    
+    fn cross(other: Vec3) -> Self {
+        Vec3 {
+            x: self.y * other.z - self.z * other.y,
+            y: self.z * other.x - self.x * other.z,
+            z: self.x * other.y - self.y * other.x
+        }
+    }
+    
+    fn distance(other: Vec3) -> Float {
+        self.sub(other).magnitude()
+    }
+    
+    fn add(other: Vec3) -> Self {
+        Vec3 { x: self.x + other.x, y: self.y + other.y, z: self.z + other.z }
+    }
+    
+    fn sub(other: Vec3) -> Self {
+        Vec3 { x: self.x - other.x, y: self.y - other.y, z: self.z - other.z }
+    }
+    
+    fn mul(scalar: Float) -> Self {
+        Vec3 { x: self.x * scalar, y: self.y * scalar, z: self.z * scalar }
+    }
+    
+    fn div(scalar: Float) -> Self {
+        Vec3 { x: self.x / scalar, y: self.y / scalar, z: self.z / scalar }
+    }
+    
+    fn lerp(other: Vec3, t: Float) -> Self {
+        self.add(other.sub(self).mul(t))
+    }
+    
+    fn angle(other: Vec3) -> Float {
+        let d = self.dot(other) / (self.magnitude() * other.magnitude())
+        acos(d.clamp(-1.0, 1.0))
+    }
+    
+    fn project(onto: Vec3) -> Self {
+        let d = onto.dot(onto)
+        if d > 0.0 { onto.mul(self.dot(onto) / d) } else { Vec3.zero() }
+    }
+    
+    fn reflect(normal: Vec3) -> Self {
+        self.sub(normal.mul(2.0 * self.dot(normal)))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Quaternion
+// -----------------------------------------------------------------------------
+
+struct Quat {
+    x: Float
+    y: Float
+    z: Float
+    w: Float
+    
+    fn new(x: Float, y: Float, z: Float, w: Float) -> Self {
+        Quat { x: x, y: y, z: z, w: w }
+    }
+    
+    fn identity() -> Self { Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } }
+    
+    fn from_euler(pitch: Float, yaw: Float, roll: Float) -> Self {
+        let cy = cos(yaw * 0.5); let sy = sin(yaw * 0.5)
+        let cp = cos(pitch * 0.5); let sp = sin(pitch * 0.5)
+        let cr = cos(roll * 0.5); let sr = sin(roll * 0.5)
+        
+        Quat {
+            x: sr * cp * cy - cr * sp * sy,
+            y: cr * sp * cy + sr * cp * sy,
+            z: cr * cp * sy - sr * sp * cy,
+            w: cr * cp * cy + sr * sp * sy
+        }
+    }
+    
+    fn from_axis_angle(axis: Vec3, angle: Float) -> Self {
+        let half = angle * 0.5
+        let s = sin(half)
+        let n = axis.normalized()
+        Quat { x: n.x * s, y: n.y * s, z: n.z * s, w: cos(half) }
+    }
+    
+    fn look_rotation(forward: Vec3, up: Vec3) -> Self {
+        let f = forward.normalized()
+        let r = up.cross(f).normalized()
+        let u = f.cross(r)
+        @native("quat_from_matrix", r, u, f)
+    }
+    
+    fn magnitude() -> Float {
+        sqrt(self.x * self.x + self.y * self.y + self.z * self.z + self.w * self.w)
+    }
+    
+    fn normalized() -> Self {
+        let mag = self.magnitude()
+        Quat { x: self.x / mag, y: self.y / mag, z: self.z / mag, w: self.w / mag }
+    }
+    
+    fn conjugate() -> Self {
+        Quat { x: -self.x, y: -self.y, z: -self.z, w: self.w }
+    }
+    
+    fn inverse() -> Self {
+        let sqr = self.x * self.x + self.y * self.y + self.z * self.z + self.w * self.w
+        Quat { x: -self.x / sqr, y: -self.y / sqr, z: -self.z / sqr, w: self.w / sqr }
+    }
+    
+    fn mul(other: Quat) -> Self {
+        Quat {
+            x: self.w * other.x + self.x * other.w + self.y * other.z - self.z * other.y,
+            y: self.w * other.y - self.x * other.z + self.y * other.w + self.z * other.x,
+            z: self.w * other.z + self.x * other.y - self.y * other.x + self.z * other.w,
+            w: self.w * other.w - self.x * other.x - self.y * other.y - self.z * other.z
+        }
+    }
+    
+    fn rotate(v: Vec3) -> Vec3 {
+        let qv = Quat { x: v.x, y: v.y, z: v.z, w: 0.0 }
+        let result = self.mul(qv).mul(self.conjugate())
+        Vec3 { x: result.x, y: result.y, z: result.z }
+    }
+    
+    fn to_euler() -> (Float, Float, Float) {
+        let sinr = 2.0 * (self.w * self.x + self.y * self.z)
+        let cosr = 1.0 - 2.0 * (self.x * self.x + self.y * self.y)
+        let roll = atan2(sinr, cosr)
+        
+        let sinp = 2.0 * (self.w * self.y - self.z * self.x)
+        let pitch = if abs(sinp) >= 1.0 { 
+            if sinp > 0.0 { PI / 2.0 } else { -PI / 2.0 }
+        } else { asin(sinp) }
+        
+        let siny = 2.0 * (self.w * self.z + self.x * self.y)
+        let cosy = 1.0 - 2.0 * (self.y * self.y + self.z * self.z)
+        let yaw = atan2(siny, cosy)
+        
+        (pitch, yaw, roll)
+    }
+    
+    fn slerp(other: Quat, t: Float) -> Self {
+        var dot = self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
+        var other = other
+        if dot < 0.0 {
+            other = Quat { x: -other.x, y: -other.y, z: -other.z, w: -other.w }
+            dot = -dot
+        }
+        
+        if dot > 0.9995 {
+            return Quat {
+                x: self.x + t * (other.x - self.x),
+                y: self.y + t * (other.y - self.y),
+                z: self.z + t * (other.z - self.z),
+                w: self.w + t * (other.w - self.w)
+            }.normalized()
+        }
+        
+        let theta = acos(dot)
+        let sin_theta = sin(theta)
+        let s0 = sin((1.0 - t) * theta) / sin_theta
+        let s1 = sin(t * theta) / sin_theta
+        
+        Quat {
+            x: s0 * self.x + s1 * other.x,
+            y: s0 * self.y + s1 * other.y,
+            z: s0 * self.z + s1 * other.z,
+            w: s0 * self.w + s1 * other.w
+        }
+    }
+    
+    fn angle(other: Quat) -> Float {
+        let dot = abs(self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w)
+        2.0 * acos(dot.min(1.0))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Spatial Transform
+// -----------------------------------------------------------------------------
+
+struct SpatialTransform {
+    position: Vec3
+    rotation: Quat
+    scale: Vec3
+    
+    fn new() -> Self {
+        SpatialTransform {
+            position: Vec3.zero(),
+            rotation: Quat.identity(),
+            scale: Vec3.one()
+        }
+    }
+    
+    fn from_position(pos: Vec3) -> Self {
+        SpatialTransform { position: pos, rotation: Quat.identity(), scale: Vec3.one() }
+    }
+    
+    fn from_position_rotation(pos: Vec3, rot: Quat) -> Self {
+        SpatialTransform { position: pos, rotation: rot, scale: Vec3.one() }
+    }
+    
+    fn forward() -> Vec3 { self.rotation.rotate(Vec3.forward()) }
+    fn up() -> Vec3 { self.rotation.rotate(Vec3.up()) }
+    fn right() -> Vec3 { self.rotation.rotate(Vec3.right()) }
+    
+    fn translate(delta: Vec3) -> Self {
+        SpatialTransform {
+            position: self.position.add(delta),
+            rotation: self.rotation,
+            scale: self.scale
+        }
+    }
+    
+    fn rotate(delta: Quat) -> Self {
+        SpatialTransform {
+            position: self.position,
+            rotation: self.rotation.mul(delta),
+            scale: self.scale
+        }
+    }
+    
+    fn look_at(target: Vec3) {
+        let dir = target.sub(self.position).normalized()
+        self.rotation = Quat.look_rotation(dir, Vec3.up())
+    }
+    
+    fn transform_point(point: Vec3) -> Vec3 {
+        let scaled = Vec3 {
+            x: point.x * self.scale.x,
+            y: point.y * self.scale.y,
+            z: point.z * self.scale.z
+        }
+        self.rotation.rotate(scaled).add(self.position)
+    }
+    
+    fn inverse_transform_point(point: Vec3) -> Vec3 {
+        let local = self.rotation.inverse().rotate(point.sub(self.position))
+        Vec3 {
+            x: local.x / self.scale.x,
+            y: local.y / self.scale.y,
+            z: local.z / self.scale.z
+        }
+    }
+    
+    fn lerp(other: SpatialTransform, t: Float) -> Self {
+        SpatialTransform {
+            position: self.position.lerp(other.position, t),
+            rotation: self.rotation.slerp(other.rotation, t),
+            scale: self.scale.lerp(other.scale, t)
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Bounding Volumes
+// -----------------------------------------------------------------------------
+
+struct BoundingBox {
+    min: Vec3
+    max: Vec3
+    
+    fn new(min: Vec3, max: Vec3) -> Self { BoundingBox { min: min, max: max } }
+    
+    fn from_center_size(center: Vec3, size: Vec3) -> Self {
+        let half = size.mul(0.5)
+        BoundingBox { min: center.sub(half), max: center.add(half) }
+    }
+    
+    fn center() -> Vec3 { self.min.add(self.max).mul(0.5) }
+    fn size() -> Vec3 { self.max.sub(self.min) }
+    fn extents() -> Vec3 { self.size().mul(0.5) }
+    
+    fn contains(point: Vec3) -> Bool {
+        point.x >= self.min.x && point.x <= self.max.x &&
+        point.y >= self.min.y && point.y <= self.max.y &&
+        point.z >= self.min.z && point.z <= self.max.z
+    }
+    
+    fn intersects(other: BoundingBox) -> Bool {
+        self.min.x <= other.max.x && self.max.x >= other.min.x &&
+        self.min.y <= other.max.y && self.max.y >= other.min.y &&
+        self.min.z <= other.max.z && self.max.z >= other.min.z
+    }
+    
+    fn expand(point: Vec3) -> Self {
+        BoundingBox {
+            min: Vec3.new(min(self.min.x, point.x), min(self.min.y, point.y), min(self.min.z, point.z)),
+            max: Vec3.new(max(self.max.x, point.x), max(self.max.y, point.y), max(self.max.z, point.z))
+        }
+    }
+}
+
+struct BoundingSphere {
+    center: Vec3
+    radius: Float
+    
+    fn new(center: Vec3, radius: Float) -> Self {
+        BoundingSphere { center: center, radius: radius }
+    }
+    
+    fn contains(point: Vec3) -> Bool {
+        self.center.distance(point) <= self.radius
+    }
+    
+    fn intersects(other: BoundingSphere) -> Bool {
+        self.center.distance(other.center) <= self.radius + other.radius
+    }
+    
+    fn intersects_box(box: BoundingBox) -> Bool {
+        let closest = Vec3.new(
+            self.center.x.clamp(box.min.x, box.max.x),
+            self.center.y.clamp(box.min.y, box.max.y),
+            self.center.z.clamp(box.min.z, box.max.z)
+        )
+        self.center.distance(closest) <= self.radius
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Ray and Raycasting
+// -----------------------------------------------------------------------------
+
+struct Ray {
+    origin: Vec3
+    direction: Vec3
+    
+    fn new(origin: Vec3, direction: Vec3) -> Self {
+        Ray { origin: origin, direction: direction.normalized() }
+    }
+    
+    fn point_at(t: Float) -> Vec3 {
+        self.origin.add(self.direction.mul(t))
+    }
+    
+    fn intersects_sphere(sphere: BoundingSphere) -> Option<Float> {
+        let oc = self.origin.sub(sphere.center)
+        let a = self.direction.dot(self.direction)
+        let b = 2.0 * oc.dot(self.direction)
+        let c = oc.dot(oc) - sphere.radius * sphere.radius
+        let disc = b * b - 4.0 * a * c
+        
+        if disc < 0.0 { None }
+        else { Some((-b - sqrt(disc)) / (2.0 * a)) }
+    }
+    
+    fn intersects_box(box: BoundingBox) -> Option<Float> {
+        let inv_dir = Vec3.new(1.0 / self.direction.x, 1.0 / self.direction.y, 1.0 / self.direction.z)
+        
+        let t1 = (box.min.x - self.origin.x) * inv_dir.x
+        let t2 = (box.max.x - self.origin.x) * inv_dir.x
+        let t3 = (box.min.y - self.origin.y) * inv_dir.y
+        let t4 = (box.max.y - self.origin.y) * inv_dir.y
+        let t5 = (box.min.z - self.origin.z) * inv_dir.z
+        let t6 = (box.max.z - self.origin.z) * inv_dir.z
+        
+        let tmin = max(max(min(t1, t2), min(t3, t4)), min(t5, t6))
+        let tmax = min(min(max(t1, t2), max(t3, t4)), max(t5, t6))
+        
+        if tmax < 0.0 || tmin > tmax { None } else { Some(tmin) }
+    }
+    
+    fn intersects_plane(normal: Vec3, distance: Float) -> Option<Float> {
+        let denom = normal.dot(self.direction)
+        if abs(denom) < 0.0001 { return None }
+        let t = -(normal.dot(self.origin) + distance) / denom
+        if t >= 0.0 { Some(t) } else { None }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Spatial Queries
+// -----------------------------------------------------------------------------
+
+struct SpatialQuery {
+    fn closest_point_on_line(point: Vec3, line_start: Vec3, line_end: Vec3) -> Vec3 {
+        let line = line_end.sub(line_start)
+        let t = point.sub(line_start).dot(line) / line.sqr_magnitude()
+        let t_clamped = t.clamp(0.0, 1.0)
+        line_start.add(line.mul(t_clamped))
+    }
+    
+    fn point_in_triangle(point: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Bool {
+        let v0 = c.sub(a)
+        let v1 = b.sub(a)
+        let v2 = point.sub(a)
+        
+        let dot00 = v0.dot(v0)
+        let dot01 = v0.dot(v1)
+        let dot02 = v0.dot(v2)
+        let dot11 = v1.dot(v1)
+        let dot12 = v1.dot(v2)
+        
+        let inv = 1.0 / (dot00 * dot11 - dot01 * dot01)
+        let u = (dot11 * dot02 - dot01 * dot12) * inv
+        let v = (dot00 * dot12 - dot01 * dot02) * inv
+        
+        u >= 0.0 && v >= 0.0 && u + v <= 1.0
+    }
+    
+    fn distance_to_plane(point: Vec3, plane_normal: Vec3, plane_point: Vec3) -> Float {
+        plane_normal.dot(point.sub(plane_point))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+fn distance(a: Vec3, b: Vec3) -> Float { a.distance(b) }
+fn lerp_vec3(a: Vec3, b: Vec3, t: Float) -> Vec3 { a.lerp(b, t) }
+fn slerp_quat(a: Quat, b: Quat, t: Float) -> Quat { a.slerp(b, t) }
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "vec3_operations" {
+    let a = Vec3.new(1.0, 0.0, 0.0)
+    let b = Vec3.new(0.0, 1.0, 0.0)
+    assert_eq(a.dot(b), 0.0)?
+    assert_eq(a.cross(b), Vec3.new(0.0, 0.0, 1.0))?
+}
+
+test "quaternion_rotation" {
+    let q = Quat.from_axis_angle(Vec3.up(), PI / 2.0)
+    let v = Vec3.new(1.0, 0.0, 0.0)
+    let rotated = q.rotate(v)
+    assert(abs(rotated.z - (-1.0)) < 0.001)?
+}
+
+test "bounding_box_contains" {
+    let box = BoundingBox.new(Vec3.zero(), Vec3.one())
+    assert(box.contains(Vec3.new(0.5, 0.5, 0.5)))?
+    assert(!box.contains(Vec3.new(2.0, 0.5, 0.5)))?
+}
+
+test "ray_sphere_intersection" {
+    let ray = Ray.new(Vec3.new(0.0, 0.0, -5.0), Vec3.new(0.0, 0.0, 1.0))
+    let sphere = BoundingSphere.new(Vec3.zero(), 1.0)
+    let hit = ray.intersects_sphere(sphere)
+    assert(hit.is_some())?
+}

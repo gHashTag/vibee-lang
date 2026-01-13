@@ -1,0 +1,677 @@
+// =============================================================================
+// Vibee OS — Admin Settings Module
+// System configuration and settings management
+// =============================================================================
+
+use datetime.{DateTime}
+use logger.{Logger}
+use validator.{Validator, ValidationResult}
+
+// =============================================================================
+// Core Types
+// =============================================================================
+
+/// Setting value types
+enum SettingType {
+    String
+    Integer
+    Float
+    Boolean
+    Json
+    Array
+    Secret
+    
+    fn name() -> String {
+        match self {
+            String => "string"
+            Integer => "integer"
+            Float => "float"
+            Boolean => "boolean"
+            Json => "json"
+            Array => "array"
+            Secret => "secret"
+        }
+    }
+}
+
+/// Setting category
+enum SettingCategory {
+    General
+    Security
+    Email
+    Storage
+    Cache
+    Database
+    Api
+    Notification
+    Integration
+    Custom(String)
+    
+    fn name() -> String {
+        match self {
+            General => "general"
+            Security => "security"
+            Email => "email"
+            Storage => "storage"
+            Cache => "cache"
+            Database => "database"
+            Api => "api"
+            Notification => "notification"
+            Integration => "integration"
+            Custom(name) => name
+        }
+    }
+}
+
+/// Setting definition
+struct SettingDefinition {
+    key: String
+    name: String
+    description: Option<String>
+    category: SettingCategory
+    setting_type: SettingType
+    default_value: Option<Any>
+    validation_rules: [ValidationRule]
+    is_required: Bool
+    is_readonly: Bool
+    is_sensitive: Bool
+    depends_on: Option<String>
+    options: Option<[SettingOption]>
+}
+
+impl SettingDefinition {
+    fn new(key: String, name: String, setting_type: SettingType) -> Self {
+        SettingDefinition {
+            key: key,
+            name: name,
+            description: None,
+            category: SettingCategory.General,
+            setting_type: setting_type,
+            default_value: None,
+            validation_rules: [],
+            is_required: false,
+            is_readonly: false,
+            is_sensitive: false,
+            depends_on: None,
+            options: None
+        }
+    }
+    
+    fn with_description(desc: String) -> Self {
+        self.description = Some(desc)
+        self
+    }
+    
+    fn with_category(category: SettingCategory) -> Self {
+        self.category = category
+        self
+    }
+    
+    fn with_default(value: Any) -> Self {
+        self.default_value = Some(value)
+        self
+    }
+    
+    fn required() -> Self {
+        self.is_required = true
+        self
+    }
+    
+    fn readonly() -> Self {
+        self.is_readonly = true
+        self
+    }
+    
+    fn sensitive() -> Self {
+        self.is_sensitive = true
+        self
+    }
+    
+    fn with_validation(rule: ValidationRule) -> Self {
+        self.validation_rules.push(rule)
+        self
+    }
+    
+    fn with_options(options: [SettingOption]) -> Self {
+        self.options = Some(options)
+        self
+    }
+    
+    fn depends(key: String) -> Self {
+        self.depends_on = Some(key)
+        self
+    }
+}
+
+/// Setting option for select fields
+struct SettingOption {
+    value: Any
+    label: String
+    description: Option<String>
+}
+
+impl SettingOption {
+    fn new(value: Any, label: String) -> Self {
+        SettingOption { value: value, label: label, description: None }
+    }
+}
+
+/// Validation rule
+struct ValidationRule {
+    rule_type: ValidationRuleType
+    message: String
+}
+
+enum ValidationRuleType {
+    MinLength(Int)
+    MaxLength(Int)
+    Min(Int64)
+    Max(Int64)
+    Pattern(String)
+    Email
+    Url
+    Custom(fn(Any) -> Bool)
+}
+
+impl ValidationRule {
+    fn min_length(len: Int, message: String) -> Self {
+        ValidationRule { rule_type: ValidationRuleType.MinLength(len), message: message }
+    }
+    
+    fn max_length(len: Int, message: String) -> Self {
+        ValidationRule { rule_type: ValidationRuleType.MaxLength(len), message: message }
+    }
+    
+    fn validate(value: Any) -> Bool {
+        match self.rule_type {
+            ValidationRuleType.MinLength(len) => {
+                match value {
+                    String(s) => s.len() >= len
+                    _ => false
+                }
+            }
+            ValidationRuleType.MaxLength(len) => {
+                match value {
+                    String(s) => s.len() <= len
+                    _ => false
+                }
+            }
+            _ => true
+        }
+    }
+}
+
+// =============================================================================
+// Setting Value
+// =============================================================================
+
+/// Stored setting value
+struct SettingValue {
+    key: String
+    value: Any
+    updated_at: DateTime
+    updated_by: Option<String>
+    version: Int
+}
+
+impl SettingValue {
+    fn new(key: String, value: Any) -> Self {
+        SettingValue {
+            key: key,
+            value: value,
+            updated_at: DateTime.now(),
+            updated_by: None,
+            version: 1
+        }
+    }
+    
+    fn with_user(user_id: String) -> Self {
+        self.updated_by = Some(user_id)
+        self
+    }
+    
+    fn update(value: Any, user_id: Option<String>) -> Self {
+        self.value = value
+        self.updated_at = DateTime.now()
+        self.updated_by = user_id
+        self.version += 1
+        self
+    }
+}
+
+// =============================================================================
+// Settings Storage Trait
+// =============================================================================
+
+trait SettingsStorage {
+    fn get(key: String) -> Result<Option<SettingValue>, SettingsError>
+    fn set(value: SettingValue) -> Result<(), SettingsError>
+    fn delete(key: String) -> Result<(), SettingsError>
+    fn list() -> Result<[SettingValue], SettingsError>
+    fn list_by_category(category: String) -> Result<[SettingValue], SettingsError>
+}
+
+/// In-memory storage
+struct MemorySettingsStorage {
+    values: Map<String, SettingValue>
+}
+
+impl MemorySettingsStorage {
+    fn new() -> Self {
+        MemorySettingsStorage { values: Map.new() }
+    }
+}
+
+impl SettingsStorage for MemorySettingsStorage {
+    fn get(key: String) -> Result<Option<SettingValue>, SettingsError> {
+        Ok(self.values.get(key).cloned())
+    }
+    
+    fn set(value: SettingValue) -> Result<(), SettingsError> {
+        self.values.insert(value.key.clone(), value)
+        Ok(())
+    }
+    
+    fn delete(key: String) -> Result<(), SettingsError> {
+        self.values.remove(key)
+        Ok(())
+    }
+    
+    fn list() -> Result<[SettingValue], SettingsError> {
+        Ok(self.values.values().cloned().collect())
+    }
+    
+    fn list_by_category(category: String) -> Result<[SettingValue], SettingsError> {
+        Ok(self.values.values()
+            .filter(|v| v.key.starts_with("\(category)."))
+            .cloned()
+            .collect())
+    }
+}
+
+// =============================================================================
+// Settings Manager
+// =============================================================================
+
+/// Main settings manager
+struct AdminSettingsManager {
+    definitions: Map<String, SettingDefinition>
+    storage: Box<dyn SettingsStorage>
+    cache: Map<String, SettingValue>
+    logger: Logger
+    change_listeners: [fn(String, Any, Any)]
+}
+
+impl AdminSettingsManager {
+    fn new<S: SettingsStorage>(storage: S) -> Self {
+        var manager = AdminSettingsManager {
+            definitions: Map.new(),
+            storage: Box.new(storage),
+            cache: Map.new(),
+            logger: Logger.new("admin_settings"),
+            change_listeners: []
+        }
+        manager.register_default_settings()
+        manager
+    }
+    
+    fn register_default_settings() {
+        // General settings
+        self.register(SettingDefinition.new("general.site_name", "Site Name", SettingType.String)
+            .with_category(SettingCategory.General)
+            .with_default("My Application")
+            .required())
+        
+        self.register(SettingDefinition.new("general.site_url", "Site URL", SettingType.String)
+            .with_category(SettingCategory.General)
+            .with_validation(ValidationRule { 
+                rule_type: ValidationRuleType.Url, 
+                message: "Must be a valid URL" 
+            }))
+        
+        self.register(SettingDefinition.new("general.timezone", "Timezone", SettingType.String)
+            .with_category(SettingCategory.General)
+            .with_default("UTC"))
+        
+        self.register(SettingDefinition.new("general.locale", "Default Locale", SettingType.String)
+            .with_category(SettingCategory.General)
+            .with_default("en"))
+        
+        // Security settings
+        self.register(SettingDefinition.new("security.session_timeout", "Session Timeout (minutes)", SettingType.Integer)
+            .with_category(SettingCategory.Security)
+            .with_default(120))
+        
+        self.register(SettingDefinition.new("security.max_login_attempts", "Max Login Attempts", SettingType.Integer)
+            .with_category(SettingCategory.Security)
+            .with_default(5))
+        
+        self.register(SettingDefinition.new("security.require_mfa", "Require MFA", SettingType.Boolean)
+            .with_category(SettingCategory.Security)
+            .with_default(false))
+        
+        self.register(SettingDefinition.new("security.password_min_length", "Min Password Length", SettingType.Integer)
+            .with_category(SettingCategory.Security)
+            .with_default(8))
+        
+        // Email settings
+        self.register(SettingDefinition.new("email.smtp_host", "SMTP Host", SettingType.String)
+            .with_category(SettingCategory.Email))
+        
+        self.register(SettingDefinition.new("email.smtp_port", "SMTP Port", SettingType.Integer)
+            .with_category(SettingCategory.Email)
+            .with_default(587))
+        
+        self.register(SettingDefinition.new("email.smtp_username", "SMTP Username", SettingType.String)
+            .with_category(SettingCategory.Email))
+        
+        self.register(SettingDefinition.new("email.smtp_password", "SMTP Password", SettingType.Secret)
+            .with_category(SettingCategory.Email)
+            .sensitive())
+        
+        self.register(SettingDefinition.new("email.from_address", "From Address", SettingType.String)
+            .with_category(SettingCategory.Email)
+            .with_validation(ValidationRule { 
+                rule_type: ValidationRuleType.Email, 
+                message: "Must be a valid email" 
+            }))
+        
+        // Storage settings
+        self.register(SettingDefinition.new("storage.driver", "Storage Driver", SettingType.String)
+            .with_category(SettingCategory.Storage)
+            .with_default("local")
+            .with_options([
+                SettingOption.new("local", "Local Filesystem"),
+                SettingOption.new("s3", "Amazon S3"),
+                SettingOption.new("gcs", "Google Cloud Storage")
+            ]))
+        
+        self.register(SettingDefinition.new("storage.max_upload_size", "Max Upload Size (MB)", SettingType.Integer)
+            .with_category(SettingCategory.Storage)
+            .with_default(10))
+        
+        // Cache settings
+        self.register(SettingDefinition.new("cache.driver", "Cache Driver", SettingType.String)
+            .with_category(SettingCategory.Cache)
+            .with_default("memory")
+            .with_options([
+                SettingOption.new("memory", "In-Memory"),
+                SettingOption.new("redis", "Redis"),
+                SettingOption.new("memcached", "Memcached")
+            ]))
+        
+        self.register(SettingDefinition.new("cache.ttl", "Default TTL (seconds)", SettingType.Integer)
+            .with_category(SettingCategory.Cache)
+            .with_default(3600))
+    }
+    
+    fn register(definition: SettingDefinition) {
+        self.definitions.insert(definition.key.clone(), definition)
+    }
+    
+    fn get_definition(key: String) -> Option<SettingDefinition> {
+        self.definitions.get(key).cloned()
+    }
+    
+    fn get_definitions_by_category(category: SettingCategory) -> [SettingDefinition] {
+        self.definitions.values()
+            .filter(|d| d.category.name() == category.name())
+            .cloned()
+            .collect()
+    }
+    
+    fn get<T>(key: String) -> Result<T, SettingsError> {
+        // Check cache first
+        if let Some(cached) = self.cache.get(key) {
+            return Ok(cached.value.clone() as T)
+        }
+        
+        // Load from storage
+        match self.storage.get(key.clone())? {
+            Some(value) => {
+                self.cache.insert(key, value.clone())
+                Ok(value.value as T)
+            }
+            None => {
+                // Return default if defined
+                match self.definitions.get(key) {
+                    Some(def) => {
+                        match def.default_value.as_ref() {
+                            Some(default) => Ok(default.clone() as T)
+                            None => Err(SettingsError.NotFound(key))
+                        }
+                    }
+                    None => Err(SettingsError.NotFound(key))
+                }
+            }
+        }
+    }
+    
+    fn get_string(key: String) -> Result<String, SettingsError> {
+        self.get::<String>(key)
+    }
+    
+    fn get_int(key: String) -> Result<Int, SettingsError> {
+        self.get::<Int>(key)
+    }
+    
+    fn get_bool(key: String) -> Result<Bool, SettingsError> {
+        self.get::<Bool>(key)
+    }
+    
+    fn set(key: String, value: Any, user_id: Option<String>) -> Result<(), SettingsError> {
+        // Check if setting exists
+        let definition = self.definitions.get(key.clone())
+            .ok_or(SettingsError.NotFound(key.clone()))?
+        
+        // Check if readonly
+        if definition.is_readonly {
+            return Err(SettingsError.ReadOnly(key))
+        }
+        
+        // Validate
+        for rule in definition.validation_rules.iter() {
+            if !rule.validate(value.clone()) {
+                return Err(SettingsError.ValidationFailed(rule.message.clone()))
+            }
+        }
+        
+        // Get old value for change notification
+        let old_value = self.get::<Any>(key.clone()).ok()
+        
+        // Create or update value
+        let setting_value = match self.storage.get(key.clone())? {
+            Some(existing) => existing.update(value.clone(), user_id),
+            None => SettingValue.new(key.clone(), value.clone()).with_user(user_id.unwrap_or("system"))
+        }
+        
+        // Store
+        self.storage.set(setting_value.clone())?
+        
+        // Update cache
+        self.cache.insert(key.clone(), setting_value)
+        
+        // Notify listeners
+        if let Some(old) = old_value {
+            for listener in self.change_listeners.iter() {
+                listener(key.clone(), old.clone(), value.clone())
+            }
+        }
+        
+        self.logger.info_with("Setting updated", {"key": key, "user": user_id})
+        Ok(())
+    }
+    
+    fn reset(key: String) -> Result<(), SettingsError> {
+        let definition = self.definitions.get(key.clone())
+            .ok_or(SettingsError.NotFound(key.clone()))?
+        
+        match definition.default_value.as_ref() {
+            Some(default) => self.set(key, default.clone(), Some("system"))
+            None => {
+                self.storage.delete(key.clone())?
+                self.cache.remove(key)
+                Ok(())
+            }
+        }
+    }
+    
+    fn on_change(listener: fn(String, Any, Any)) {
+        self.change_listeners.push(listener)
+    }
+    
+    fn export() -> Result<Map<String, Any>, SettingsError> {
+        var result = Map.new()
+        for value in self.storage.list()? {
+            let def = self.definitions.get(value.key.clone())
+            // Don't export sensitive values
+            if def.map(|d| !d.is_sensitive).unwrap_or(true) {
+                result.insert(value.key, value.value)
+            }
+        }
+        Ok(result)
+    }
+    
+    fn import(settings: Map<String, Any>, user_id: String) -> Result<Int, SettingsError> {
+        var count = 0
+        for (key, value) in settings {
+            if self.set(key, value, Some(user_id.clone())).is_ok() {
+                count += 1
+            }
+        }
+        Ok(count)
+    }
+}
+
+// =============================================================================
+// Settings Group
+// =============================================================================
+
+/// Group of related settings
+struct SettingsGroup {
+    name: String
+    description: Option<String>
+    category: SettingCategory
+    settings: [SettingDefinition]
+    icon: Option<String>
+    order: Int
+}
+
+impl SettingsGroup {
+    fn new(name: String, category: SettingCategory) -> Self {
+        SettingsGroup {
+            name: name,
+            description: None,
+            category: category,
+            settings: [],
+            icon: None,
+            order: 0
+        }
+    }
+    
+    fn with_setting(setting: SettingDefinition) -> Self {
+        self.settings.push(setting)
+        self
+    }
+}
+
+// =============================================================================
+// Settings Actor
+// =============================================================================
+
+actor AdminSettingsActor {
+    manager: AdminSettingsManager
+    
+    fn new<S: SettingsStorage>(storage: S) -> Self {
+        AdminSettingsActor { manager: AdminSettingsManager.new(storage) }
+    }
+    
+    async fn get(key: String) -> Result<Any, SettingsError> {
+        self.manager.get::<Any>(key)
+    }
+    
+    async fn set(key: String, value: Any, user_id: String) -> Result<(), SettingsError> {
+        self.manager.set(key, value, Some(user_id))
+    }
+    
+    async fn reset(key: String) -> Result<(), SettingsError> {
+        self.manager.reset(key)
+    }
+    
+    async fn export() -> Result<Map<String, Any>, SettingsError> {
+        self.manager.export()
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum SettingsError {
+    NotFound(String)
+    ReadOnly(String)
+    ValidationFailed(String)
+    StorageError(String)
+    
+    fn message() -> String {
+        match self {
+            NotFound(key) => "Setting not found: \(key)"
+            ReadOnly(key) => "Setting is read-only: \(key)"
+            ValidationFailed(msg) => "Validation failed: \(msg)"
+            StorageError(msg) => "Storage error: \(msg)"
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "setting definition" {
+    let def = SettingDefinition.new("test.key", "Test Setting", SettingType.String)
+        .with_default("default")
+        .required()
+    
+    assert_eq(def.key, "test.key")?
+    assert(def.is_required)?
+}
+
+test "settings manager get default" {
+    let storage = MemorySettingsStorage.new()
+    let manager = AdminSettingsManager.new(storage)
+    
+    let site_name = manager.get_string("general.site_name")?
+    assert_eq(site_name, "My Application")?
+}
+
+test "settings manager set and get" {
+    let storage = MemorySettingsStorage.new()
+    var manager = AdminSettingsManager.new(storage)
+    
+    manager.set("general.site_name", "New Name", Some("admin"))?
+    let name = manager.get_string("general.site_name")?
+    
+    assert_eq(name, "New Name")?
+}
+
+test "readonly setting" {
+    let storage = MemorySettingsStorage.new()
+    var manager = AdminSettingsManager.new(storage)
+    
+    manager.register(SettingDefinition.new("test.readonly", "Readonly", SettingType.String)
+        .readonly()
+        .with_default("value"))
+    
+    let result = manager.set("test.readonly", "new", None)
+    assert(result.is_err())?
+}
+
+test "settings export" {
+    let storage = MemorySettingsStorage.new()
+    var manager = AdminSettingsManager.new(storage)
+    
+    manager.set("general.site_name", "Test Site", Some("admin"))?
+    
+    let exported = manager.export()?
+    assert(exported.contains_key("general.site_name"))?
+}

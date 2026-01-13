@@ -1,0 +1,399 @@
+// =============================================================================
+// Vibee OS — Audio Effect Module
+// Professional audio effects processing
+// =============================================================================
+
+use audio::{AudioBuffer, Sample}
+use math::{PI, sin, cos, pow, exp, tanh}
+
+/// Effect trait for all audio effects
+trait AudioEffect {
+    fn process(buffer: AudioBuffer) -> AudioBuffer
+    fn reset()
+    fn get_name() -> String
+}
+
+/// Reverb effect
+struct Reverb {
+    room_size: Float64
+    damping: Float64
+    wet: Float64
+    dry: Float64
+    width: Float64
+    pre_delay_ms: Float64
+    
+    fn new() -> Self {
+        Reverb {
+            room_size: 0.5, damping: 0.5, wet: 0.3,
+            dry: 0.7, width: 1.0, pre_delay_ms: 0.0
+        }
+    }
+    
+    fn hall() -> Self {
+        Reverb { room_size: 0.8, damping: 0.3, wet: 0.4, dry: 0.6, width: 1.0, pre_delay_ms: 20.0 }
+    }
+    
+    fn room() -> Self {
+        Reverb { room_size: 0.4, damping: 0.6, wet: 0.25, dry: 0.75, width: 0.8, pre_delay_ms: 0.0 }
+    }
+    
+    fn plate() -> Self {
+        Reverb { room_size: 0.6, damping: 0.4, wet: 0.35, dry: 0.65, width: 1.0, pre_delay_ms: 10.0 }
+    }
+    
+    fn cathedral() -> Self {
+        Reverb { room_size: 0.95, damping: 0.2, wet: 0.5, dry: 0.5, width: 1.0, pre_delay_ms: 40.0 }
+    }
+}
+
+impl AudioEffect for Reverb {
+    fn process(buffer: AudioBuffer) -> AudioBuffer {
+        @native("reverb_process", buffer, self)
+    }
+    fn reset() {}
+    fn get_name() -> String { "Reverb" }
+}
+
+/// Delay effect
+struct Delay {
+    time_ms: Float64
+    feedback: Float64
+    wet: Float64
+    dry: Float64
+    ping_pong: Bool
+    filter_cutoff: Option<Float64>
+    
+    fn new(time_ms: Float64) -> Self {
+        Delay {
+            time_ms: time_ms, feedback: 0.3, wet: 0.3,
+            dry: 0.7, ping_pong: false, filter_cutoff: None
+        }
+    }
+    
+    fn ping_pong(time_ms: Float64) -> Self {
+        Delay {
+            time_ms: time_ms, feedback: 0.4, wet: 0.35,
+            dry: 0.65, ping_pong: true, filter_cutoff: Some(4000.0)
+        }
+    }
+    
+    fn slapback() -> Self {
+        Delay { time_ms: 80.0, feedback: 0.1, wet: 0.3, dry: 0.7, ping_pong: false, filter_cutoff: None }
+    }
+    
+    fn with_feedback(feedback: Float64) -> Self {
+        self.feedback = feedback.clamp(0.0, 0.95)
+        self
+    }
+}
+
+impl AudioEffect for Delay {
+    fn process(buffer: AudioBuffer) -> AudioBuffer {
+        let delay_samples = (self.time_ms * buffer.sample_rate as Float64 / 1000.0) as Int
+        var result = buffer.clone()
+        
+        for ch in 0..result.channels {
+            var delay_buf = [Sample.new(0.0); delay_samples]
+            var idx = 0
+            
+            for i in 0..result.samples[ch].len() {
+                let dry_sample = result.samples[ch][i].value
+                let delayed = delay_buf[idx].value
+                let output = dry_sample * self.dry + delayed * self.wet
+                delay_buf[idx] = Sample.new(dry_sample + delayed * self.feedback)
+                idx = (idx + 1) % delay_samples
+                result.samples[ch][i] = Sample.new(output)
+            }
+        }
+        result
+    }
+    fn reset() {}
+    fn get_name() -> String { "Delay" }
+}
+
+/// Chorus effect
+struct Chorus {
+    rate: Float64
+    depth: Float64
+    wet: Float64
+    voices: Int
+    
+    fn new() -> Self {
+        Chorus { rate: 1.0, depth: 0.5, wet: 0.5, voices: 2 }
+    }
+    
+    fn rich() -> Self {
+        Chorus { rate: 0.8, depth: 0.7, wet: 0.6, voices: 4 }
+    }
+}
+
+impl AudioEffect for Chorus {
+    fn process(buffer: AudioBuffer) -> AudioBuffer {
+        @native("chorus_process", buffer, self)
+    }
+    fn reset() {}
+    fn get_name() -> String { "Chorus" }
+}
+
+/// Distortion effect
+struct Distortion {
+    drive: Float64
+    tone: Float64
+    output_level: Float64
+    mode: DistortionMode
+    
+    fn new(drive: Float64) -> Self {
+        Distortion { drive: drive, tone: 0.5, output_level: 0.7, mode: DistortionMode.Soft }
+    }
+    
+    fn overdrive() -> Self {
+        Distortion { drive: 2.0, tone: 0.6, output_level: 0.8, mode: DistortionMode.Soft }
+    }
+    
+    fn fuzz() -> Self {
+        Distortion { drive: 5.0, tone: 0.4, output_level: 0.6, mode: DistortionMode.Fuzz }
+    }
+}
+
+enum DistortionMode { Soft, Hard, Fuzz, Tube, Bitcrush }
+
+impl AudioEffect for Distortion {
+    fn process(buffer: AudioBuffer) -> AudioBuffer {
+        var result = buffer.clone()
+        for ch in 0..result.channels {
+            for i in 0..result.samples[ch].len() {
+                var v = result.samples[ch][i].value * self.drive
+                v = match self.mode {
+                    DistortionMode.Soft => tanh(v),
+                    DistortionMode.Hard => v.clamp(-1.0, 1.0),
+                    DistortionMode.Fuzz => if v > 0.0 { 1.0 } else { -1.0 },
+                    DistortionMode.Tube => tanh(v * 0.5) * 1.5,
+                    DistortionMode.Bitcrush => (v * 8.0).round() / 8.0
+                }
+                result.samples[ch][i] = Sample.new(v * self.output_level)
+            }
+        }
+        result
+    }
+    fn reset() {}
+    fn get_name() -> String { "Distortion" }
+}
+
+/// Compressor effect
+struct Compressor {
+    threshold_db: Float64
+    ratio: Float64
+    attack_ms: Float64
+    release_ms: Float64
+    knee_db: Float64
+    makeup_gain_db: Float64
+    
+    fn new() -> Self {
+        Compressor {
+            threshold_db: -20.0, ratio: 4.0, attack_ms: 10.0,
+            release_ms: 100.0, knee_db: 6.0, makeup_gain_db: 0.0
+        }
+    }
+    
+    fn gentle() -> Self {
+        Compressor { threshold_db: -15.0, ratio: 2.0, attack_ms: 20.0, release_ms: 200.0, knee_db: 10.0, makeup_gain_db: 3.0 }
+    }
+    
+    fn limiter() -> Self {
+        Compressor { threshold_db: -1.0, ratio: 20.0, attack_ms: 0.1, release_ms: 50.0, knee_db: 0.0, makeup_gain_db: 0.0 }
+    }
+}
+
+impl AudioEffect for Compressor {
+    fn process(buffer: AudioBuffer) -> AudioBuffer {
+        @native("compressor_process", buffer, self)
+    }
+    fn reset() {}
+    fn get_name() -> String { "Compressor" }
+}
+
+/// Equalizer effect
+struct Equalizer {
+    bands: [EQBand]
+    
+    fn new() -> Self { Equalizer { bands: [] } }
+    
+    fn add_band(band: EQBand) -> Self {
+        self.bands.push(band)
+        self
+    }
+    
+    fn three_band(low: Float64, mid: Float64, high: Float64) -> Self {
+        Equalizer { bands: [
+            EQBand.low_shelf(200.0, low),
+            EQBand.peak(1000.0, mid, 1.0),
+            EQBand.high_shelf(4000.0, high)
+        ]}
+    }
+}
+
+struct EQBand {
+    frequency: Float64
+    gain_db: Float64
+    q: Float64
+    band_type: EQBandType
+    
+    fn low_shelf(freq: Float64, gain: Float64) -> Self {
+        EQBand { frequency: freq, gain_db: gain, q: 0.7, band_type: EQBandType.LowShelf }
+    }
+    
+    fn high_shelf(freq: Float64, gain: Float64) -> Self {
+        EQBand { frequency: freq, gain_db: gain, q: 0.7, band_type: EQBandType.HighShelf }
+    }
+    
+    fn peak(freq: Float64, gain: Float64, q: Float64) -> Self {
+        EQBand { frequency: freq, gain_db: gain, q: q, band_type: EQBandType.Peak }
+    }
+}
+
+enum EQBandType { LowShelf, HighShelf, Peak, LowPass, HighPass, Notch }
+
+impl AudioEffect for Equalizer {
+    fn process(buffer: AudioBuffer) -> AudioBuffer {
+        @native("eq_process", buffer, self)
+    }
+    fn reset() {}
+    fn get_name() -> String { "Equalizer" }
+}
+
+/// Flanger effect
+struct Flanger {
+    rate: Float64
+    depth: Float64
+    feedback: Float64
+    wet: Float64
+    
+    fn new() -> Self {
+        Flanger { rate: 0.5, depth: 0.7, feedback: 0.5, wet: 0.5 }
+    }
+}
+
+impl AudioEffect for Flanger {
+    fn process(buffer: AudioBuffer) -> AudioBuffer {
+        @native("flanger_process", buffer, self)
+    }
+    fn reset() {}
+    fn get_name() -> String { "Flanger" }
+}
+
+/// Phaser effect
+struct Phaser {
+    rate: Float64
+    depth: Float64
+    stages: Int
+    feedback: Float64
+    
+    fn new() -> Self {
+        Phaser { rate: 0.5, depth: 0.5, stages: 4, feedback: 0.3 }
+    }
+}
+
+impl AudioEffect for Phaser {
+    fn process(buffer: AudioBuffer) -> AudioBuffer {
+        @native("phaser_process", buffer, self)
+    }
+    fn reset() {}
+    fn get_name() -> String { "Phaser" }
+}
+
+/// Noise Gate
+struct NoiseGate {
+    threshold_db: Float64
+    attack_ms: Float64
+    hold_ms: Float64
+    release_ms: Float64
+    
+    fn new(threshold_db: Float64) -> Self {
+        NoiseGate { threshold_db: threshold_db, attack_ms: 1.0, hold_ms: 50.0, release_ms: 100.0 }
+    }
+}
+
+impl AudioEffect for NoiseGate {
+    fn process(buffer: AudioBuffer) -> AudioBuffer {
+        @native("gate_process", buffer, self)
+    }
+    fn reset() {}
+    fn get_name() -> String { "Noise Gate" }
+}
+
+/// Tremolo effect
+struct Tremolo {
+    rate: Float64
+    depth: Float64
+    
+    fn new(rate: Float64, depth: Float64) -> Self {
+        Tremolo { rate: rate, depth: depth.clamp(0.0, 1.0) }
+    }
+}
+
+impl AudioEffect for Tremolo {
+    fn process(buffer: AudioBuffer) -> AudioBuffer {
+        var result = buffer.clone()
+        for ch in 0..result.channels {
+            for i in 0..result.samples[ch].len() {
+                let t = i as Float64 / buffer.sample_rate as Float64
+                let mod_val = 1.0 - self.depth * 0.5 * (1.0 + sin(2.0 * PI * self.rate * t))
+                result.samples[ch][i] = result.samples[ch][i].amplify(mod_val)
+            }
+        }
+        result
+    }
+    fn reset() {}
+    fn get_name() -> String { "Tremolo" }
+}
+
+/// Effect chain
+struct EffectChain {
+    effects: [Box<dyn AudioEffect>]
+    bypass: Bool
+    
+    fn new() -> Self {
+        EffectChain { effects: [], bypass: false }
+    }
+    
+    fn add<E: AudioEffect>(effect: E) -> Self {
+        self.effects.push(Box.new(effect))
+        self
+    }
+    
+    fn process(buffer: AudioBuffer) -> AudioBuffer {
+        if self.bypass { return buffer }
+        var result = buffer
+        for effect in self.effects {
+            result = effect.process(result)
+        }
+        result
+    }
+    
+    fn reset() {
+        for effect in self.effects { effect.reset() }
+    }
+}
+
+// Tests
+test "delay effect" {
+    let delay = Delay.new(100.0)
+    assert_eq(delay.time_ms, 100.0)?
+}
+
+test "distortion modes" {
+    let dist = Distortion.overdrive()
+    assert_eq(dist.mode, DistortionMode.Soft)?
+}
+
+test "eq bands" {
+    let eq = Equalizer.three_band(3.0, 0.0, -2.0)
+    assert_eq(eq.bands.len(), 3)?
+}
+
+test "effect chain" {
+    let chain = EffectChain.new()
+        .add(Reverb.room())
+        .add(Delay.new(200.0))
+    assert_eq(chain.effects.len(), 2)?
+}

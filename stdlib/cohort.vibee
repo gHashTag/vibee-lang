@@ -1,0 +1,730 @@
+// =============================================================================
+// Vibee OS — Cohort Module
+// Cohort analysis for user retention and behavior patterns
+// =============================================================================
+
+use datetime::{DateTime, Duration}
+use uuid::{UUID}
+use result::{Result, Ok, Err}
+use event_tracking::{Event, EventQuery}
+
+// =============================================================================
+// Cohort Definition
+// =============================================================================
+
+/// User cohort
+struct Cohort {
+    id: String
+    name: String
+    description: String
+    cohort_type: CohortType
+    definition: CohortDefinition
+    created_at: DateTime
+    updated_at: DateTime
+}
+
+/// Cohort type
+enum CohortType {
+    Acquisition      // Based on when users were acquired
+    Behavioral       // Based on user behavior
+    Property         // Based on user properties
+    Custom           // Custom definition
+}
+
+/// Cohort definition criteria
+struct CohortDefinition {
+    base_event: String
+    base_conditions: [CohortCondition]
+    return_event: Option<String>
+    return_conditions: [CohortCondition]
+    time_granularity: TimeGranularity
+    lookback_periods: Int
+}
+
+/// Cohort condition
+struct CohortCondition {
+    field: String
+    operator: CohortOperator
+    value: CohortValue
+}
+
+enum CohortOperator {
+    Equals
+    NotEquals
+    Contains
+    GreaterThan
+    LessThan
+    Between
+    In
+    NotIn
+    IsSet
+    IsNotSet
+}
+
+enum CohortValue {
+    String(String)
+    Int(Int)
+    Float(Float)
+    Bool(Bool)
+    Array([String])
+    Range(Float, Float)
+}
+
+/// Time granularity for cohort analysis
+enum TimeGranularity {
+    Daily
+    Weekly
+    Monthly
+    Quarterly
+    Yearly
+}
+
+impl Cohort {
+    fn new(name: String) -> Self {
+        Cohort {
+            id: UUID.v4(),
+            name: name,
+            description: "",
+            cohort_type: CohortType.Acquisition,
+            definition: CohortDefinition.default(),
+            created_at: DateTime.now(),
+            updated_at: DateTime.now()
+        }
+    }
+    
+    fn description(desc: String) -> Self { self.description = desc; self }
+    fn cohort_type(t: CohortType) -> Self { self.cohort_type = t; self }
+    fn definition(def: CohortDefinition) -> Self { self.definition = def; self }
+    
+    fn acquisition(base_event: String) -> Self {
+        self.cohort_type = CohortType.Acquisition
+        self.definition.base_event = base_event
+        self
+    }
+    
+    fn behavioral(base_event: String, return_event: String) -> Self {
+        self.cohort_type = CohortType.Behavioral
+        self.definition.base_event = base_event
+        self.definition.return_event = Some(return_event)
+        self
+    }
+    
+    fn granularity(g: TimeGranularity) -> Self {
+        self.definition.time_granularity = g
+        self
+    }
+    
+    fn lookback(periods: Int) -> Self {
+        self.definition.lookback_periods = periods
+        self
+    }
+    
+    fn base_condition(condition: CohortCondition) -> Self {
+        self.definition.base_conditions.push(condition)
+        self
+    }
+    
+    fn return_condition(condition: CohortCondition) -> Self {
+        self.definition.return_conditions.push(condition)
+        self
+    }
+}
+
+impl CohortDefinition {
+    fn default() -> Self {
+        CohortDefinition {
+            base_event: "signup",
+            base_conditions: [],
+            return_event: None,
+            return_conditions: [],
+            time_granularity: TimeGranularity.Weekly,
+            lookback_periods: 12
+        }
+    }
+}
+
+impl CohortCondition {
+    fn new(field: String, operator: CohortOperator, value: CohortValue) -> Self {
+        CohortCondition { field: field, operator: operator, value: value }
+    }
+    
+    fn equals(field: String, value: String) -> Self {
+        Self.new(field, CohortOperator.Equals, CohortValue.String(value))
+    }
+    
+    fn in_list(field: String, values: [String]) -> Self {
+        Self.new(field, CohortOperator.In, CohortValue.Array(values))
+    }
+    
+    fn between(field: String, min: Float, max: Float) -> Self {
+        Self.new(field, CohortOperator.Between, CohortValue.Range(min, max))
+    }
+}
+
+impl TimeGranularity {
+    fn to_duration() -> Duration {
+        match self {
+            .Daily => Duration.days(1)
+            .Weekly => Duration.days(7)
+            .Monthly => Duration.days(30)
+            .Quarterly => Duration.days(90)
+            .Yearly => Duration.days(365)
+        }
+    }
+    
+    fn format_period(date: DateTime) -> String {
+        match self {
+            .Daily => date.format("%Y-%m-%d")
+            .Weekly => format!("{}-W{}", date.year(), date.iso_week())
+            .Monthly => date.format("%Y-%m")
+            .Quarterly => format!("{}-Q{}", date.year(), (date.month() - 1) / 3 + 1)
+            .Yearly => date.format("%Y")
+        }
+    }
+}
+
+// =============================================================================
+// Cohort Analysis
+// =============================================================================
+
+/// Cohort analysis result
+struct CohortAnalysis {
+    cohort_id: String
+    cohort_name: String
+    analysis_type: AnalysisType
+    period_start: DateTime
+    period_end: DateTime
+    granularity: TimeGranularity
+    cohorts: [CohortPeriod]
+    retention_matrix: RetentionMatrix
+    summary: CohortSummary
+}
+
+/// Analysis type
+enum AnalysisType {
+    Retention
+    Churn
+    Revenue
+    Engagement
+    Custom(String)
+}
+
+/// Single cohort period
+struct CohortPeriod {
+    period: String
+    period_start: DateTime
+    period_end: DateTime
+    users: Int
+    retention: [RetentionPoint]
+}
+
+/// Retention data point
+struct RetentionPoint {
+    period_offset: Int
+    users_retained: Int
+    retention_rate: Float
+    value: Option<Float>
+}
+
+/// Retention matrix for visualization
+struct RetentionMatrix {
+    periods: [String]
+    offsets: [Int]
+    data: [[Option<Float>]]
+}
+
+impl RetentionMatrix {
+    fn new(periods: [String], max_offset: Int) -> Self {
+        let offsets: [Int] = (0..=max_offset).collect()
+        let data: [[Option<Float>]] = periods.iter().map(|_| {
+            offsets.iter().map(|_| None).collect()
+        }).collect()
+        
+        RetentionMatrix { periods: periods, offsets: offsets, data: data }
+    }
+    
+    fn set(period_idx: Int, offset: Int, value: Float) {
+        if period_idx < self.data.len() && offset < self.data[period_idx].len() {
+            self.data[period_idx][offset] = Some(value)
+        }
+    }
+    
+    fn get(period_idx: Int, offset: Int) -> Option<Float> {
+        self.data.get(period_idx)?.get(offset)?.clone()
+    }
+    
+    fn to_csv() -> String {
+        var csv = "Cohort," + self.offsets.iter().map(|o| format!("Period {}", o)).collect::<Vec<_>>().join(",") + "\n"
+        
+        for (i, period) in self.periods.iter().enumerate() {
+            var row = period.clone()
+            for value in self.data[i].iter() {
+                row.push(',')
+                if let Some(v) = value {
+                    row.push_str(format!("{:.2}%", v * 100.0))
+                }
+            }
+            csv.push_str(row + "\n")
+        }
+        
+        csv
+    }
+}
+
+/// Cohort summary statistics
+struct CohortSummary {
+    total_cohorts: Int
+    total_users: Int
+    average_retention_week1: Float
+    average_retention_week4: Float
+    average_retention_week12: Float
+    best_cohort: Option<String>
+    worst_cohort: Option<String>
+    trend: RetentionTrend
+}
+
+enum RetentionTrend { Improving, Declining, Stable }
+
+impl CohortSummary {
+    fn new() -> Self {
+        CohortSummary {
+            total_cohorts: 0,
+            total_users: 0,
+            average_retention_week1: 0.0,
+            average_retention_week4: 0.0,
+            average_retention_week12: 0.0,
+            best_cohort: None,
+            worst_cohort: None,
+            trend: RetentionTrend.Stable
+        }
+    }
+}
+
+// =============================================================================
+// Cohort Analyzer Actor
+// =============================================================================
+
+/// Cohort analyzer
+actor CohortAnalyzer {
+    state cohorts: Map<String, Cohort>
+    state event_store: Box<dyn EventStore>
+    state user_store: Box<dyn UserStore>
+    state cache: Map<String, CohortAnalysis>
+    
+    fn new(event_store: Box<dyn EventStore>, user_store: Box<dyn UserStore>) -> Self {
+        CohortAnalyzer {
+            cohorts: Map.empty(),
+            event_store: event_store,
+            user_store: user_store,
+            cache: Map.empty()
+        }
+    }
+    
+    fn register(cohort: Cohort) -> String {
+        let id = cohort.id.clone()
+        self.cohorts.set(id.clone(), cohort)
+        id
+    }
+    
+    fn get(cohort_id: String) -> Option<&Cohort> { self.cohorts.get(&cohort_id) }
+    fn list() -> [&Cohort] { self.cohorts.values().collect() }
+    
+    /// Analyze retention for a cohort
+    fn analyze_retention(cohort_id: String, start: DateTime, end: DateTime) -> Result<CohortAnalysis, CohortError> {
+        let cohort = self.cohorts.get(&cohort_id).ok_or(CohortError.NotFound)?
+        
+        let granularity = cohort.definition.time_granularity
+        let lookback = cohort.definition.lookback_periods
+        
+        // Generate cohort periods
+        var periods: [CohortPeriod] = []
+        var current = start
+        
+        while current < end {
+            let period_end = current.add(granularity.to_duration())
+            let period_name = granularity.format_period(current)
+            
+            // Get users who performed base event in this period
+            let base_users = self.get_base_users(cohort, current, period_end)?
+            
+            // Calculate retention for each subsequent period
+            var retention: [RetentionPoint] = []
+            for offset in 0..=lookback {
+                let offset_start = current.add(granularity.to_duration().multiply(offset))
+                let offset_end = offset_start.add(granularity.to_duration())
+                
+                if offset_end > DateTime.now() { break }
+                
+                let retained = self.get_retained_users(cohort, &base_users, offset_start, offset_end)?
+                let retention_rate = if base_users.len() > 0 {
+                    retained.len() as Float / base_users.len() as Float
+                } else { 0.0 }
+                
+                retention.push(RetentionPoint {
+                    period_offset: offset,
+                    users_retained: retained.len(),
+                    retention_rate: retention_rate,
+                    value: None
+                })
+            }
+            
+            periods.push(CohortPeriod {
+                period: period_name,
+                period_start: current,
+                period_end: period_end,
+                users: base_users.len(),
+                retention: retention
+            })
+            
+            current = period_end
+        }
+        
+        // Build retention matrix
+        let period_names: [String] = periods.iter().map(|p| p.period.clone()).collect()
+        var matrix = RetentionMatrix.new(period_names, lookback)
+        
+        for (i, period) in periods.iter().enumerate() {
+            for point in period.retention.iter() {
+                matrix.set(i, point.period_offset, point.retention_rate)
+            }
+        }
+        
+        // Calculate summary
+        let summary = self.calculate_summary(&periods)
+        
+        Ok(CohortAnalysis {
+            cohort_id: cohort.id.clone(),
+            cohort_name: cohort.name.clone(),
+            analysis_type: AnalysisType.Retention,
+            period_start: start,
+            period_end: end,
+            granularity: granularity,
+            cohorts: periods,
+            retention_matrix: matrix,
+            summary: summary
+        })
+    }
+    
+    fn get_base_users(cohort: &Cohort, start: DateTime, end: DateTime) -> Result<Set<String>, CohortError> {
+        let events = self.event_store.query(
+            EventQuery.new()
+                .events([cohort.definition.base_event.clone()])
+                .from(start)
+                .to(end)
+        ).map_err(|e| CohortError.QueryError(e.to_string()))?
+        
+        let users: Set<String> = events.iter()
+            .filter_map(|e| e.user_id.clone())
+            .collect()
+        
+        Ok(users)
+    }
+    
+    fn get_retained_users(cohort: &Cohort, base_users: &Set<String>, start: DateTime, end: DateTime) -> Result<Set<String>, CohortError> {
+        let return_event = cohort.definition.return_event.clone()
+            .unwrap_or(cohort.definition.base_event.clone())
+        
+        let events = self.event_store.query(
+            EventQuery.new()
+                .events([return_event])
+                .from(start)
+                .to(end)
+        ).map_err(|e| CohortError.QueryError(e.to_string()))?
+        
+        let active_users: Set<String> = events.iter()
+            .filter_map(|e| e.user_id.clone())
+            .collect()
+        
+        let retained: Set<String> = base_users.intersection(&active_users).cloned().collect()
+        
+        Ok(retained)
+    }
+    
+    fn calculate_summary(periods: &[CohortPeriod]) -> CohortSummary {
+        var summary = CohortSummary.new()
+        summary.total_cohorts = periods.len()
+        summary.total_users = periods.iter().map(|p| p.users).sum()
+        
+        // Calculate average retention at different points
+        var week1_rates: [Float] = []
+        var week4_rates: [Float] = []
+        var week12_rates: [Float] = []
+        
+        for period in periods.iter() {
+            if let Some(r) = period.retention.get(1) { week1_rates.push(r.retention_rate) }
+            if let Some(r) = period.retention.get(4) { week4_rates.push(r.retention_rate) }
+            if let Some(r) = period.retention.get(12) { week12_rates.push(r.retention_rate) }
+        }
+        
+        if !week1_rates.is_empty() {
+            summary.average_retention_week1 = week1_rates.iter().sum::<Float>() / week1_rates.len() as Float
+        }
+        if !week4_rates.is_empty() {
+            summary.average_retention_week4 = week4_rates.iter().sum::<Float>() / week4_rates.len() as Float
+        }
+        if !week12_rates.is_empty() {
+            summary.average_retention_week12 = week12_rates.iter().sum::<Float>() / week12_rates.len() as Float
+        }
+        
+        // Find best and worst cohorts (by week 4 retention)
+        var best_rate = 0.0
+        var worst_rate = 1.0
+        
+        for period in periods.iter() {
+            if let Some(r) = period.retention.get(4) {
+                if r.retention_rate > best_rate {
+                    best_rate = r.retention_rate
+                    summary.best_cohort = Some(period.period.clone())
+                }
+                if r.retention_rate < worst_rate {
+                    worst_rate = r.retention_rate
+                    summary.worst_cohort = Some(period.period.clone())
+                }
+            }
+        }
+        
+        // Determine trend
+        if periods.len() >= 3 {
+            let recent: [Float] = periods.iter().rev().take(3)
+                .filter_map(|p| p.retention.get(4).map(|r| r.retention_rate))
+                .collect()
+            
+            if recent.len() >= 2 {
+                let diff = recent[0] - recent[recent.len() - 1]
+                summary.trend = if diff > 0.05 { RetentionTrend.Improving }
+                    else if diff < -0.05 { RetentionTrend.Declining }
+                    else { RetentionTrend.Stable }
+            }
+        }
+        
+        summary
+    }
+    
+    /// Analyze churn
+    fn analyze_churn(cohort_id: String, start: DateTime, end: DateTime) -> Result<ChurnAnalysis, CohortError> {
+        let retention = self.analyze_retention(cohort_id, start, end)?
+        
+        var churn_rates: [ChurnRate] = []
+        for period in retention.cohorts.iter() {
+            for point in period.retention.iter() {
+                let churn_rate = 1.0 - point.retention_rate
+                churn_rates.push(ChurnRate {
+                    cohort: period.period.clone(),
+                    period_offset: point.period_offset,
+                    churn_rate: churn_rate,
+                    churned_users: period.users - point.users_retained
+                })
+            }
+        }
+        
+        Ok(ChurnAnalysis {
+            cohort_id: retention.cohort_id,
+            cohort_name: retention.cohort_name,
+            period_start: start,
+            period_end: end,
+            churn_rates: churn_rates,
+            average_churn_rate: 1.0 - retention.summary.average_retention_week4
+        })
+    }
+    
+    /// Get users in a specific cohort
+    fn get_cohort_users(cohort_id: String, period: String) -> Result<[String], CohortError> {
+        let cohort = self.cohorts.get(&cohort_id).ok_or(CohortError.NotFound)?
+        
+        // Parse period to get date range
+        let (start, end) = self.parse_period(period, cohort.definition.time_granularity)?
+        
+        let users = self.get_base_users(cohort, start, end)?
+        Ok(users.into_iter().collect())
+    }
+    
+    fn parse_period(period: String, granularity: TimeGranularity) -> Result<(DateTime, DateTime), CohortError> {
+        // Simplified period parsing
+        let start = DateTime.parse(period + "-01", "%Y-%m-%d")
+            .map_err(|_| CohortError.InvalidPeriod)?
+        let end = start.add(granularity.to_duration())
+        Ok((start, end))
+    }
+    
+    /// Compare cohorts
+    fn compare_cohorts(cohort_ids: [String], start: DateTime, end: DateTime) -> Result<CohortComparison, CohortError> {
+        var analyses: [CohortAnalysis] = []
+        
+        for id in cohort_ids.iter() {
+            let analysis = self.analyze_retention(id.clone(), start, end)?
+            analyses.push(analysis)
+        }
+        
+        Ok(CohortComparison {
+            analyses: analyses,
+            comparison_period: (start, end)
+        })
+    }
+}
+
+/// Churn analysis result
+struct ChurnAnalysis {
+    cohort_id: String
+    cohort_name: String
+    period_start: DateTime
+    period_end: DateTime
+    churn_rates: [ChurnRate]
+    average_churn_rate: Float
+}
+
+struct ChurnRate {
+    cohort: String
+    period_offset: Int
+    churn_rate: Float
+    churned_users: Int
+}
+
+/// Cohort comparison
+struct CohortComparison {
+    analyses: [CohortAnalysis]
+    comparison_period: (DateTime, DateTime)
+}
+
+impl CohortComparison {
+    fn best_performing() -> Option<&CohortAnalysis> {
+        self.analyses.iter()
+            .max_by(|a, b| a.summary.average_retention_week4.partial_cmp(&b.summary.average_retention_week4).unwrap())
+    }
+}
+
+// =============================================================================
+// User Store Trait
+// =============================================================================
+
+trait UserStore {
+    fn get_user(user_id: String) -> Result<User, StoreError>
+    fn get_users(user_ids: [String]) -> Result<[User], StoreError>
+    fn get_user_property(user_id: String, property: String) -> Result<Option<String>, StoreError>
+}
+
+struct User {
+    id: String
+    properties: Map<String, String>
+    created_at: DateTime
+}
+
+// =============================================================================
+// Predefined Cohorts
+// =============================================================================
+
+/// Standard signup cohort
+fn signup_cohort() -> Cohort {
+    Cohort.new("Signup Cohort")
+        .description("Users grouped by signup date")
+        .acquisition("signup")
+        .granularity(TimeGranularity.Weekly)
+        .lookback(12)
+}
+
+/// Purchase cohort
+fn purchase_cohort() -> Cohort {
+    Cohort.new("First Purchase Cohort")
+        .description("Users grouped by first purchase date")
+        .acquisition("purchase")
+        .granularity(TimeGranularity.Monthly)
+        .lookback(6)
+}
+
+/// Engagement cohort
+fn engagement_cohort() -> Cohort {
+    Cohort.new("Engagement Cohort")
+        .description("Users grouped by first engagement, tracking return visits")
+        .behavioral("first_visit", "page_view")
+        .granularity(TimeGranularity.Weekly)
+        .lookback(8)
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum CohortError {
+    NotFound
+    InvalidPeriod
+    QueryError(String)
+    CalculationError(String)
+}
+
+impl Display for CohortError {
+    fn fmt(f: Formatter) {
+        match self {
+            .NotFound => f.write("Cohort not found")
+            .InvalidPeriod => f.write("Invalid period format")
+            .QueryError(e) => f.write(format!("Query error: {}", e))
+            .CalculationError(e) => f.write(format!("Calculation error: {}", e))
+        }
+    }
+}
+
+// =============================================================================
+// Builder Functions
+// =============================================================================
+
+fn cohort(name: String) -> Cohort { Cohort.new(name) }
+fn cohort_condition(field: String, operator: CohortOperator, value: CohortValue) -> CohortCondition {
+    CohortCondition.new(field, operator, value)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "cohort creation" {
+    let c = Cohort.new("Test Cohort")
+        .acquisition("signup")
+        .granularity(TimeGranularity.Weekly)
+        .lookback(12)
+    
+    assert_eq(c.name, "Test Cohort")?
+    assert_eq(c.definition.base_event, "signup")?
+    assert_eq(c.definition.lookback_periods, 12)?
+}
+
+test "time granularity" {
+    let weekly = TimeGranularity.Weekly
+    assert_eq(weekly.to_duration().as_days(), 7)?
+    
+    let monthly = TimeGranularity.Monthly
+    assert_eq(monthly.to_duration().as_days(), 30)?
+}
+
+test "retention matrix" {
+    var matrix = RetentionMatrix.new(["2024-01", "2024-02"], 4)
+    matrix.set(0, 0, 1.0)
+    matrix.set(0, 1, 0.8)
+    matrix.set(0, 2, 0.6)
+    
+    assert_eq(matrix.get(0, 0), Some(1.0))?
+    assert_eq(matrix.get(0, 1), Some(0.8))?
+}
+
+test "cohort summary" {
+    let summary = CohortSummary.new()
+    assert_eq(summary.total_cohorts, 0)?
+    assert_eq(summary.total_users, 0)?
+}
+
+test "signup cohort preset" {
+    let c = signup_cohort()
+    assert_eq(c.definition.base_event, "signup")?
+}
+
+test "cohort condition" {
+    let cond = CohortCondition.equals("country", "US")
+    assert_eq(cond.field, "country")?
+}
+
+test "retention point" {
+    let point = RetentionPoint {
+        period_offset: 1,
+        users_retained: 80,
+        retention_rate: 0.8,
+        value: None
+    }
+    assert_eq(point.retention_rate, 0.8)?
+}

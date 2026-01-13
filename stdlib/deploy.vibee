@@ -1,0 +1,559 @@
+// =============================================================================
+// Vibee OS — Deploy Module
+// Deployment orchestration and management
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Deployment Configuration
+// -----------------------------------------------------------------------------
+
+struct DeployConfig {
+    name: String
+    version: String
+    environment: Environment
+    replicas: Int
+    image: String
+    ports: [PortConfig]
+    env_vars: Map<String, String>
+    secrets: [String]
+    health_check: HealthCheck?
+    resources: ResourceConfig?
+    strategy: DeployStrategy
+    timeout: Duration
+    labels: Map<String, String>
+    annotations: Map<String, String>
+}
+
+impl DeployConfig {
+    fn default(name: String, image: String) -> Self {
+        DeployConfig {
+            name: name,
+            version: "1.0.0",
+            environment: Environment.Development,
+            replicas: 1,
+            image: image,
+            ports: [],
+            env_vars: Map.empty(),
+            secrets: [],
+            health_check: None,
+            resources: None,
+            strategy: DeployStrategy.RollingUpdate { max_unavailable: 1, max_surge: 1 },
+            timeout: 300.seconds(),
+            labels: Map.empty(),
+            annotations: Map.empty()
+        }
+    }
+}
+
+enum Environment { Development, Staging, Production, Custom(String) }
+
+impl Environment {
+    fn name() -> String {
+        match self {
+            .Development => "development"
+            .Staging => "staging"
+            .Production => "production"
+            .Custom(n) => n
+        }
+    }
+}
+
+struct PortConfig { name: String, container_port: Int, service_port: Int, protocol: Protocol }
+enum Protocol { TCP, UDP, HTTP, HTTPS, GRPC }
+
+struct HealthCheck {
+    path: String
+    port: Int
+    initial_delay: Duration
+    period: Duration
+    timeout: Duration
+    success_threshold: Int
+    failure_threshold: Int
+}
+
+impl HealthCheck {
+    fn http(path: String, port: Int) -> Self {
+        HealthCheck {
+            path: path,
+            port: port,
+            initial_delay: 10.seconds(),
+            period: 10.seconds(),
+            timeout: 5.seconds(),
+            success_threshold: 1,
+            failure_threshold: 3
+        }
+    }
+}
+
+struct ResourceConfig {
+    cpu_request: String
+    cpu_limit: String
+    memory_request: String
+    memory_limit: String
+}
+
+impl ResourceConfig {
+    fn small() -> Self { ResourceConfig { cpu_request: "100m", cpu_limit: "500m", memory_request: "128Mi", memory_limit: "256Mi" } }
+    fn medium() -> Self { ResourceConfig { cpu_request: "250m", cpu_limit: "1000m", memory_request: "256Mi", memory_limit: "512Mi" } }
+    fn large() -> Self { ResourceConfig { cpu_request: "500m", cpu_limit: "2000m", memory_request: "512Mi", memory_limit: "1Gi" } }
+}
+
+enum DeployStrategy {
+    RollingUpdate { max_unavailable: Int, max_surge: Int }
+    Recreate
+    BlueGreen { switch_timeout: Duration }
+    Canary { initial_weight: Int, increment: Int, interval: Duration }
+}
+
+// -----------------------------------------------------------------------------
+// Deployment Builder
+// -----------------------------------------------------------------------------
+
+actor DeployBuilder {
+    state config: DeployConfig
+    
+    init(name: String, image: String) {
+        self.config = DeployConfig.default(name, image)
+    }
+    
+    on version(v: String) -> Self { self.config.version = v; self }
+    on environment(env: Environment) -> Self { self.config.environment = env; self }
+    on replicas(n: Int) -> Self { self.config.replicas = n; self }
+    on port(name: String, container: Int, service: Int, protocol: Protocol = Protocol.TCP) -> Self {
+        self.config.ports.append(PortConfig { name: name, container_port: container, service_port: service, protocol: protocol })
+        self
+    }
+    on env(key: String, value: String) -> Self { self.config.env_vars.set(key, value); self }
+    on secret(name: String) -> Self { self.config.secrets.append(name); self }
+    on health_check(hc: HealthCheck) -> Self { self.config.health_check = Some(hc); self }
+    on resources(r: ResourceConfig) -> Self { self.config.resources = Some(r); self }
+    on strategy(s: DeployStrategy) -> Self { self.config.strategy = s; self }
+    on timeout(t: Duration) -> Self { self.config.timeout = t; self }
+    on label(key: String, value: String) -> Self { self.config.labels.set(key, value); self }
+    on annotation(key: String, value: String) -> Self { self.config.annotations.set(key, value); self }
+    
+    on build() -> DeployConfig { self.config.clone() }
+}
+
+// -----------------------------------------------------------------------------
+// Deployment Manager
+// -----------------------------------------------------------------------------
+
+actor DeploymentManager {
+    state provider: DeployProvider
+    state history: [DeploymentRecord]
+    state hooks: DeployHooks
+    state metrics: DeployMetrics
+    
+    init(provider: DeployProvider) {
+        self.provider = provider
+        self.history = []
+        self.hooks = DeployHooks.empty()
+        self.metrics = DeployMetrics.new()
+    }
+    
+    on with_hooks(hooks: DeployHooks) -> Self { self.hooks = hooks; self }
+    
+    on deploy(config: DeployConfig) -> Result<Deployment, DeployError> {
+        let start_time = DateTime.now()
+        
+        // Pre-deploy hooks
+        self.hooks.run_pre_deploy(config)?
+        
+        // Validate configuration
+        self.validate(config)?
+        
+        // Execute deployment
+        let deployment = self.provider.deploy(config)?
+        
+        // Wait for deployment to be ready
+        self.wait_for_ready(deployment, config.timeout)?
+        
+        // Post-deploy hooks
+        self.hooks.run_post_deploy(deployment)?
+        
+        // Record deployment
+        let record = DeploymentRecord {
+            id: uuid::v4(),
+            config: config,
+            status: DeployStatus.Success,
+            started_at: start_time,
+            completed_at: DateTime.now(),
+            duration: DateTime.now().since(start_time)
+        }
+        self.history.append(record)
+        self.metrics.record_success(record.duration)
+        
+        Ok(deployment)
+    }
+    
+    on validate(config: DeployConfig) -> Result<(), DeployError> {
+        if config.name.is_empty() { return Err(DeployError.ValidationFailed("Name is required")) }
+        if config.image.is_empty() { return Err(DeployError.ValidationFailed("Image is required")) }
+        if config.replicas < 1 { return Err(DeployError.ValidationFailed("Replicas must be at least 1")) }
+        Ok(())
+    }
+    
+    on wait_for_ready(deployment: Deployment, timeout: Duration) -> Result<(), DeployError> {
+        let deadline = DateTime.now() + timeout
+        
+        while DateTime.now() < deadline {
+            let status = self.provider.get_status(deployment.id)?
+            
+            match status {
+                DeployStatus.Success => return Ok(())
+                DeployStatus.Failed(reason) => return Err(DeployError.DeploymentFailed(reason))
+                DeployStatus.InProgress => sleep(2.seconds())
+                _ => sleep(2.seconds())
+            }
+        }
+        
+        Err(DeployError.Timeout)
+    }
+    
+    on get_deployment(id: String) -> Result<Deployment, DeployError> {
+        self.provider.get_deployment(id)
+    }
+    
+    on list_deployments(env: Environment?) -> Result<[Deployment], DeployError> {
+        self.provider.list_deployments(env)
+    }
+    
+    on scale(deployment_id: String, replicas: Int) -> Result<(), DeployError> {
+        self.provider.scale(deployment_id, replicas)
+    }
+    
+    on restart(deployment_id: String) -> Result<(), DeployError> {
+        self.provider.restart(deployment_id)
+    }
+    
+    on delete(deployment_id: String) -> Result<(), DeployError> {
+        self.provider.delete(deployment_id)
+    }
+    
+    on history() -> [DeploymentRecord] { self.history.clone() }
+    on metrics() -> DeployMetrics { self.metrics.clone() }
+}
+
+// -----------------------------------------------------------------------------
+// Deployment Provider Trait
+// -----------------------------------------------------------------------------
+
+trait DeployProvider {
+    fn deploy(config: DeployConfig) -> Result<Deployment, DeployError>
+    fn get_deployment(id: String) -> Result<Deployment, DeployError>
+    fn get_status(id: String) -> Result<DeployStatus, DeployError>
+    fn list_deployments(env: Environment?) -> Result<[Deployment], DeployError>
+    fn scale(id: String, replicas: Int) -> Result<(), DeployError>
+    fn restart(id: String) -> Result<(), DeployError>
+    fn delete(id: String) -> Result<(), DeployError>
+}
+
+// -----------------------------------------------------------------------------
+// Kubernetes Provider
+// -----------------------------------------------------------------------------
+
+actor K8sDeployProvider {
+    state client: K8sClient
+    state namespace: String
+    
+    init(client: K8sClient, namespace: String = "default") {
+        self.client = client
+        self.namespace = namespace
+    }
+}
+
+impl DeployProvider for K8sDeployProvider {
+    fn deploy(config: DeployConfig) -> Result<Deployment, DeployError> {
+        @native("k8s_deploy", self.client, self.namespace, config)
+    }
+    
+    fn get_deployment(id: String) -> Result<Deployment, DeployError> {
+        @native("k8s_get_deployment", self.client, self.namespace, id)
+    }
+    
+    fn get_status(id: String) -> Result<DeployStatus, DeployError> {
+        @native("k8s_get_deployment_status", self.client, self.namespace, id)
+    }
+    
+    fn list_deployments(env: Environment?) -> Result<[Deployment], DeployError> {
+        @native("k8s_list_deployments", self.client, self.namespace, env)
+    }
+    
+    fn scale(id: String, replicas: Int) -> Result<(), DeployError> {
+        @native("k8s_scale_deployment", self.client, self.namespace, id, replicas)
+    }
+    
+    fn restart(id: String) -> Result<(), DeployError> {
+        @native("k8s_restart_deployment", self.client, self.namespace, id)
+    }
+    
+    fn delete(id: String) -> Result<(), DeployError> {
+        @native("k8s_delete_deployment", self.client, self.namespace, id)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Docker Swarm Provider
+// -----------------------------------------------------------------------------
+
+actor SwarmDeployProvider {
+    state client: DockerClient
+    
+    init(client: DockerClient) { self.client = client }
+}
+
+impl DeployProvider for SwarmDeployProvider {
+    fn deploy(config: DeployConfig) -> Result<Deployment, DeployError> {
+        @native("swarm_deploy", self.client, config)
+    }
+    
+    fn get_deployment(id: String) -> Result<Deployment, DeployError> {
+        @native("swarm_get_service", self.client, id)
+    }
+    
+    fn get_status(id: String) -> Result<DeployStatus, DeployError> {
+        @native("swarm_get_service_status", self.client, id)
+    }
+    
+    fn list_deployments(env: Environment?) -> Result<[Deployment], DeployError> {
+        @native("swarm_list_services", self.client, env)
+    }
+    
+    fn scale(id: String, replicas: Int) -> Result<(), DeployError> {
+        @native("swarm_scale_service", self.client, id, replicas)
+    }
+    
+    fn restart(id: String) -> Result<(), DeployError> {
+        @native("swarm_restart_service", self.client, id)
+    }
+    
+    fn delete(id: String) -> Result<(), DeployError> {
+        @native("swarm_delete_service", self.client, id)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Deployment Types
+// -----------------------------------------------------------------------------
+
+struct Deployment {
+    id: String
+    name: String
+    version: String
+    environment: Environment
+    status: DeployStatus
+    replicas: ReplicaStatus
+    created_at: DateTime
+    updated_at: DateTime
+    endpoints: [Endpoint]
+}
+
+struct ReplicaStatus { desired: Int, ready: Int, available: Int, unavailable: Int }
+
+struct Endpoint { name: String, url: String, port: Int, protocol: Protocol }
+
+enum DeployStatus {
+    Pending
+    InProgress
+    Success
+    Failed(String)
+    RollingBack
+    Paused
+    
+    fn is_terminal() -> Bool {
+        match self {
+            .Success | .Failed(_) => true
+            _ => false
+        }
+    }
+    
+    fn is_healthy() -> Bool {
+        match self {
+            .Success => true
+            _ => false
+        }
+    }
+}
+
+struct DeploymentRecord {
+    id: String
+    config: DeployConfig
+    status: DeployStatus
+    started_at: DateTime
+    completed_at: DateTime
+    duration: Duration
+}
+
+// -----------------------------------------------------------------------------
+// Deploy Hooks
+// -----------------------------------------------------------------------------
+
+struct DeployHooks {
+    pre_deploy: [fn(DeployConfig) -> Result<(), DeployError>]
+    post_deploy: [fn(Deployment) -> Result<(), DeployError>]
+    on_failure: [fn(DeployError) -> ()]
+}
+
+impl DeployHooks {
+    fn empty() -> Self {
+        DeployHooks { pre_deploy: [], post_deploy: [], on_failure: [] }
+    }
+    
+    fn run_pre_deploy(config: DeployConfig) -> Result<(), DeployError> {
+        for hook in self.pre_deploy {
+            hook(config)?
+        }
+        Ok(())
+    }
+    
+    fn run_post_deploy(deployment: Deployment) -> Result<(), DeployError> {
+        for hook in self.post_deploy {
+            hook(deployment)?
+        }
+        Ok(())
+    }
+    
+    fn run_on_failure(error: DeployError) {
+        for hook in self.on_failure {
+            hook(error)
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Deploy Metrics
+// -----------------------------------------------------------------------------
+
+actor DeployMetrics {
+    state total_deployments: Int
+    state successful_deployments: Int
+    state failed_deployments: Int
+    state total_duration: Duration
+    state last_deployment: DateTime?
+    
+    init() {
+        self.total_deployments = 0
+        self.successful_deployments = 0
+        self.failed_deployments = 0
+        self.total_duration = 0.seconds()
+    }
+    
+    on record_success(duration: Duration) {
+        self.total_deployments += 1
+        self.successful_deployments += 1
+        self.total_duration += duration
+        self.last_deployment = Some(DateTime.now())
+    }
+    
+    on record_failure() {
+        self.total_deployments += 1
+        self.failed_deployments += 1
+        self.last_deployment = Some(DateTime.now())
+    }
+    
+    on success_rate() -> Float {
+        if self.total_deployments == 0 { return 0.0 }
+        (self.successful_deployments as Float) / (self.total_deployments as Float) * 100.0
+    }
+    
+    on average_duration() -> Duration {
+        if self.successful_deployments == 0 { return 0.seconds() }
+        self.total_duration / self.successful_deployments
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum DeployError {
+    ValidationFailed(String)
+    DeploymentFailed(String)
+    Timeout
+    NotFound(String)
+    AlreadyExists(String)
+    ProviderError(String)
+    HookFailed(String)
+    Unauthorized
+    QuotaExceeded
+    
+    fn message() -> String {
+        match self {
+            .ValidationFailed(m) => "Validation failed: \(m)"
+            .DeploymentFailed(m) => "Deployment failed: \(m)"
+            .Timeout => "Deployment timed out"
+            .NotFound(r) => "Resource not found: \(r)"
+            .AlreadyExists(r) => "Resource already exists: \(r)"
+            .ProviderError(m) => "Provider error: \(m)"
+            .HookFailed(m) => "Hook failed: \(m)"
+            .Unauthorized => "Unauthorized"
+            .QuotaExceeded => "Resource quota exceeded"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+fn deploy(name: String, image: String) -> DeployBuilder {
+    DeployBuilder.new(name, image)
+}
+
+fn quick_deploy(name: String, image: String, port: Int, env: Environment = Environment.Development) -> DeployConfig {
+    DeployBuilder.new(name, image)
+        .environment(env)
+        .port("http", port, port, Protocol.HTTP)
+        .health_check(HealthCheck.http("/health", port))
+        .resources(ResourceConfig.small())
+        .build()
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "deploy builder" {
+    let config = DeployBuilder.new("web-app", "nginx:latest")
+        .version("2.0.0")
+        .environment(Environment.Production)
+        .replicas(3)
+        .port("http", 80, 8080, Protocol.HTTP)
+        .env("NODE_ENV", "production")
+        .health_check(HealthCheck.http("/health", 80))
+        .resources(ResourceConfig.medium())
+        .build()
+    
+    assert(config.name == "web-app")
+    assert(config.version == "2.0.0")
+    assert(config.replicas == 3)
+    assert(config.ports.len() == 1)
+}
+
+test "environment names" {
+    assert(Environment.Development.name() == "development")
+    assert(Environment.Production.name() == "production")
+    assert(Environment.Custom("qa").name() == "qa")
+}
+
+test "deploy status" {
+    assert(DeployStatus.Success.is_terminal())
+    assert(DeployStatus.Success.is_healthy())
+    assert(!DeployStatus.InProgress.is_terminal())
+    assert(DeployStatus.Failed("error").is_terminal())
+}
+
+test "quick deploy" {
+    let config = quick_deploy("api", "api:v1", 3000, Environment.Staging)
+    assert(config.name == "api")
+    assert(config.environment == Environment.Staging)
+    assert(config.health_check.is_some())
+}
+
+test "resource configs" {
+    let small = ResourceConfig.small()
+    let large = ResourceConfig.large()
+    assert(small.cpu_limit == "500m")
+    assert(large.cpu_limit == "2000m")
+}

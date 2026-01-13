@@ -1,0 +1,720 @@
+// =============================================================================
+// Vibee OS — Share Module
+// Content sharing, reposts, and viral distribution
+// =============================================================================
+
+use result::{Result, Ok, Err}
+use datetime::{DateTime, Duration}
+
+// =============================================================================
+// Share Types
+// =============================================================================
+
+/// Share target type
+enum ShareTarget {
+    Post(String),
+    Story(String),
+    Media(String),
+    Link(String),
+    Profile(String),
+    Event(String)
+}
+
+impl ShareTarget {
+    fn id() -> String {
+        match self {
+            ShareTarget.Post(id) => id,
+            ShareTarget.Story(id) => id,
+            ShareTarget.Media(id) => id,
+            ShareTarget.Link(id) => id,
+            ShareTarget.Profile(id) => id,
+            ShareTarget.Event(id) => id
+        }
+    }
+    
+    fn type_name() -> String {
+        match self {
+            ShareTarget.Post(_) => "post",
+            ShareTarget.Story(_) => "story",
+            ShareTarget.Media(_) => "media",
+            ShareTarget.Link(_) => "link",
+            ShareTarget.Profile(_) => "profile",
+            ShareTarget.Event(_) => "event"
+        }
+    }
+}
+
+/// Share destination
+enum ShareDestination {
+    Timeline,
+    DirectMessage(String),
+    Group(String),
+    Story,
+    External(ExternalPlatform)
+}
+
+impl ShareDestination {
+    fn display_name() -> String {
+        match self {
+            ShareDestination.Timeline => "Timeline",
+            ShareDestination.DirectMessage(_) => "Direct Message",
+            ShareDestination.Group(_) => "Group",
+            ShareDestination.Story => "Story",
+            ShareDestination.External(p) => p.name()
+        }
+    }
+}
+
+/// External platform for sharing
+enum ExternalPlatform {
+    Twitter,
+    Facebook,
+    LinkedIn,
+    WhatsApp,
+    Telegram,
+    Email,
+    CopyLink,
+    Other(String)
+}
+
+impl ExternalPlatform {
+    fn name() -> String {
+        match self {
+            ExternalPlatform.Twitter => "Twitter",
+            ExternalPlatform.Facebook => "Facebook",
+            ExternalPlatform.LinkedIn => "LinkedIn",
+            ExternalPlatform.WhatsApp => "WhatsApp",
+            ExternalPlatform.Telegram => "Telegram",
+            ExternalPlatform.Email => "Email",
+            ExternalPlatform.CopyLink => "Copy Link",
+            ExternalPlatform.Other(n) => n
+        }
+    }
+    
+    fn icon() -> String {
+        match self {
+            ExternalPlatform.Twitter => "🐦",
+            ExternalPlatform.Facebook => "📘",
+            ExternalPlatform.LinkedIn => "💼",
+            ExternalPlatform.WhatsApp => "💬",
+            ExternalPlatform.Telegram => "✈️",
+            ExternalPlatform.Email => "📧",
+            ExternalPlatform.CopyLink => "🔗",
+            ExternalPlatform.Other(_) => "🌐"
+        }
+    }
+    
+    fn share_url(content_url: String, text: Option<String>) -> String {
+        let encoded_url = url_encode(content_url.clone())
+        let encoded_text = text.map(|t| url_encode(t)).unwrap_or("")
+        
+        match self {
+            ExternalPlatform.Twitter => 
+                format!("https://twitter.com/intent/tweet?url={}&text={}", encoded_url, encoded_text),
+            ExternalPlatform.Facebook => 
+                format!("https://www.facebook.com/sharer/sharer.php?u={}", encoded_url),
+            ExternalPlatform.LinkedIn => 
+                format!("https://www.linkedin.com/sharing/share-offsite/?url={}", encoded_url),
+            ExternalPlatform.WhatsApp => 
+                format!("https://wa.me/?text={} {}", encoded_text, encoded_url),
+            ExternalPlatform.Telegram => 
+                format!("https://t.me/share/url?url={}&text={}", encoded_url, encoded_text),
+            ExternalPlatform.Email => 
+                format!("mailto:?subject={}&body={}", encoded_text, encoded_url),
+            ExternalPlatform.CopyLink => content_url,
+            ExternalPlatform.Other(_) => content_url
+        }
+    }
+}
+
+// =============================================================================
+// Share Structure
+// =============================================================================
+
+/// Share record
+struct Share {
+    id: String,
+    user_id: String,
+    target: ShareTarget,
+    destination: ShareDestination,
+    comment: Option<String>,
+    original_author_id: String,
+    created_at: DateTime,
+    metadata: Map<String, String>
+}
+
+impl Share {
+    /// Create new share
+    fn new(user_id: String, target: ShareTarget, original_author_id: String) -> Self {
+        Share {
+            id: generate_id(),
+            user_id: user_id,
+            target: target,
+            destination: ShareDestination.Timeline,
+            comment: None,
+            original_author_id: original_author_id,
+            created_at: DateTime.now(),
+            metadata: Map.empty()
+        }
+    }
+    
+    /// Create share with comment (quote repost)
+    fn with_comment(user_id: String, target: ShareTarget, original_author_id: String, comment: String) -> Self {
+        var share = Self.new(user_id, target, original_author_id)
+        share.comment = Some(comment)
+        share
+    }
+    
+    /// Create share to destination
+    fn to_destination(user_id: String, target: ShareTarget, original_author_id: String, destination: ShareDestination) -> Self {
+        var share = Self.new(user_id, target, original_author_id)
+        share.destination = destination
+        share
+    }
+    
+    /// Check if this is a quote share
+    fn is_quote() -> Bool {
+        self.comment.is_some()
+    }
+    
+    /// Check if shared to timeline
+    fn is_timeline_share() -> Bool {
+        match self.destination {
+            ShareDestination.Timeline => true,
+            _ => false
+        }
+    }
+    
+    /// Check if shared externally
+    fn is_external() -> Bool {
+        match self.destination {
+            ShareDestination.External(_) => true,
+            _ => false
+        }
+    }
+    
+    /// Get share age
+    fn age() -> Duration {
+        DateTime.now() - self.created_at
+    }
+    
+    /// Set metadata
+    fn set_metadata(key: String, value: String) {
+        self.metadata.set(key, value)
+    }
+}
+
+// =============================================================================
+// Share Count
+// =============================================================================
+
+/// Share count with breakdown
+struct ShareCount {
+    total: Int64,
+    timeline_shares: Int64,
+    dm_shares: Int64,
+    group_shares: Int64,
+    story_shares: Int64,
+    external_shares: Int64,
+    quote_shares: Int64
+}
+
+impl ShareCount {
+    fn new() -> Self {
+        ShareCount {
+            total: 0,
+            timeline_shares: 0,
+            dm_shares: 0,
+            group_shares: 0,
+            story_shares: 0,
+            external_shares: 0,
+            quote_shares: 0
+        }
+    }
+    
+    fn add(share: Share) {
+        self.total += 1
+        
+        if share.is_quote() {
+            self.quote_shares += 1
+        }
+        
+        match share.destination {
+            ShareDestination.Timeline => self.timeline_shares += 1,
+            ShareDestination.DirectMessage(_) => self.dm_shares += 1,
+            ShareDestination.Group(_) => self.group_shares += 1,
+            ShareDestination.Story => self.story_shares += 1,
+            ShareDestination.External(_) => self.external_shares += 1
+        }
+    }
+    
+    fn remove(share: Share) {
+        if self.total > 0 { self.total -= 1 }
+        
+        if share.is_quote() && self.quote_shares > 0 {
+            self.quote_shares -= 1
+        }
+        
+        match share.destination {
+            ShareDestination.Timeline => if self.timeline_shares > 0 { self.timeline_shares -= 1 },
+            ShareDestination.DirectMessage(_) => if self.dm_shares > 0 { self.dm_shares -= 1 },
+            ShareDestination.Group(_) => if self.group_shares > 0 { self.group_shares -= 1 },
+            ShareDestination.Story => if self.story_shares > 0 { self.story_shares -= 1 },
+            ShareDestination.External(_) => if self.external_shares > 0 { self.external_shares -= 1 }
+        }
+    }
+    
+    fn formatted() -> String {
+        if self.total == 0 { return "" }
+        format_count(self.total)
+    }
+}
+
+// =============================================================================
+// Share Service
+// =============================================================================
+
+/// Share service actor
+actor ShareService {
+    state shares: Map<String, Share>
+    state user_shares: Map<String, [String]>
+    state target_shares: Map<String, [String]>
+    state counts: Map<String, ShareCount>
+    state share_chains: Map<String, ShareChain>
+    
+    fn new() -> Self {
+        ShareService {
+            shares: Map.empty(),
+            user_shares: Map.empty(),
+            target_shares: Map.empty(),
+            counts: Map.empty(),
+            share_chains: Map.empty()
+        }
+    }
+    
+    /// Share content
+    on share(user_id: String, target: ShareTarget, original_author_id: String) -> Result<Share, ShareError> {
+        // Can't share your own content to timeline
+        if user_id == original_author_id {
+            return Err(ShareError.CannotShareOwnContent)
+        }
+        
+        let target_id = target.id()
+        
+        // Check for duplicate timeline share
+        let existing = self.user_shares.get(user_id.clone())
+            .map(|ids| ids.iter().any(|id| {
+                self.shares.get(id)
+                    .map(|s| s.target.id() == target_id && s.is_timeline_share())
+                    .unwrap_or(false)
+            }))
+            .unwrap_or(false)
+        
+        if existing {
+            return Err(ShareError.AlreadyShared)
+        }
+        
+        let share = Share.new(user_id.clone(), target.clone(), original_author_id)
+        
+        self.shares.set(share.id.clone(), share.clone())
+        self.user_shares.entry(user_id).or_insert([]).push(share.id.clone())
+        self.target_shares.entry(target_id.clone()).or_insert([]).push(share.id.clone())
+        self.counts.entry(target_id).or_insert(ShareCount.new()).add(share.clone())
+        
+        // Update share chain
+        self.update_chain(target.id(), share.clone())
+        
+        Ok(share)
+    }
+    
+    /// Share with comment (quote)
+    on quote_share(user_id: String, target: ShareTarget, original_author_id: String, comment: String) -> Result<Share, ShareError> {
+        if comment.is_empty() {
+            return Err(ShareError.EmptyComment)
+        }
+        
+        let target_id = target.id()
+        let share = Share.with_comment(user_id.clone(), target.clone(), original_author_id, comment)
+        
+        self.shares.set(share.id.clone(), share.clone())
+        self.user_shares.entry(user_id).or_insert([]).push(share.id.clone())
+        self.target_shares.entry(target_id.clone()).or_insert([]).push(share.id.clone())
+        self.counts.entry(target_id).or_insert(ShareCount.new()).add(share.clone())
+        
+        self.update_chain(target.id(), share.clone())
+        
+        Ok(share)
+    }
+    
+    /// Share to specific destination
+    on share_to(user_id: String, target: ShareTarget, original_author_id: String, destination: ShareDestination) -> Result<Share, ShareError> {
+        let target_id = target.id()
+        let share = Share.to_destination(user_id.clone(), target.clone(), original_author_id, destination)
+        
+        self.shares.set(share.id.clone(), share.clone())
+        self.user_shares.entry(user_id).or_insert([]).push(share.id.clone())
+        self.target_shares.entry(target_id.clone()).or_insert([]).push(share.id.clone())
+        self.counts.entry(target_id).or_insert(ShareCount.new()).add(share.clone())
+        
+        Ok(share)
+    }
+    
+    /// Unshare content
+    on unshare(share_id: String) -> Result<(), ShareError> {
+        let share = self.shares.get(share_id.clone())
+            .ok_or(ShareError.NotFound)?
+        
+        let target_id = share.target.id()
+        let user_id = share.user_id.clone()
+        
+        self.counts.get_mut(target_id.clone()).map(|c| c.remove(share.clone()))
+        self.shares.remove(share_id.clone())
+        self.user_shares.get_mut(user_id).map(|v| v.retain(|id| *id != share_id))
+        self.target_shares.get_mut(target_id).map(|v| v.retain(|id| *id != share_id))
+        
+        Ok(())
+    }
+    
+    /// Get share count
+    on get_count(target: ShareTarget) -> ShareCount {
+        self.counts.get(target.id()).unwrap_or(ShareCount.new())
+    }
+    
+    /// Get users who shared
+    on get_sharers(target: ShareTarget, limit: Int, offset: Int) -> [String] {
+        self.target_shares.get(target.id())
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| self.shares.get(id).map(|s| s.user_id.clone()))
+                    .skip(offset)
+                    .take(limit)
+                    .collect()
+            })
+            .unwrap_or([])
+    }
+    
+    /// Get shares by user
+    on get_user_shares(user_id: String, limit: Int, offset: Int) -> [Share] {
+        self.user_shares.get(user_id)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| self.shares.get(id))
+                    .skip(offset)
+                    .take(limit)
+                    .collect()
+            })
+            .unwrap_or([])
+    }
+    
+    /// Get quote shares for target
+    on get_quotes(target: ShareTarget, limit: Int, offset: Int) -> [Share] {
+        self.target_shares.get(target.id())
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| self.shares.get(id))
+                    .filter(|s| s.is_quote())
+                    .skip(offset)
+                    .take(limit)
+                    .collect()
+            })
+            .unwrap_or([])
+    }
+    
+    /// Check if user shared target
+    on has_shared(user_id: String, target: ShareTarget) -> Bool {
+        let target_id = target.id()
+        self.user_shares.get(user_id)
+            .map(|ids| ids.iter().any(|id| {
+                self.shares.get(id)
+                    .map(|s| s.target.id() == target_id)
+                    .unwrap_or(false)
+            }))
+            .unwrap_or(false)
+    }
+    
+    /// Get share chain (viral spread)
+    on get_chain(target_id: String) -> Option<ShareChain> {
+        self.share_chains.get(target_id)
+    }
+    
+    /// Update share chain
+    fn update_chain(target_id: String, share: Share) {
+        let chain = self.share_chains.entry(target_id.clone())
+            .or_insert(ShareChain.new(target_id))
+        chain.add_share(share)
+    }
+    
+    /// Get viral score
+    on get_viral_score(target: ShareTarget) -> Float {
+        self.share_chains.get(target.id())
+            .map(|c| c.viral_score())
+            .unwrap_or(0.0)
+    }
+    
+    /// Generate share link
+    on generate_link(target: ShareTarget, base_url: String) -> String {
+        format!("{}/{}/{}", base_url, target.type_name(), target.id())
+    }
+    
+    /// Get external share URL
+    on get_external_url(target: ShareTarget, platform: ExternalPlatform, content_url: String, text: Option<String>) -> String {
+        platform.share_url(content_url, text)
+    }
+}
+
+// =============================================================================
+// Share Chain (Viral Tracking)
+// =============================================================================
+
+/// Share chain for tracking viral spread
+struct ShareChain {
+    original_id: String,
+    shares: [ShareNode],
+    depth: Int,
+    total_reach: Int64,
+    created_at: DateTime
+}
+
+impl ShareChain {
+    fn new(original_id: String) -> Self {
+        ShareChain {
+            original_id: original_id,
+            shares: [],
+            depth: 0,
+            total_reach: 0,
+            created_at: DateTime.now()
+        }
+    }
+    
+    fn add_share(share: Share) {
+        let node = ShareNode {
+            share_id: share.id,
+            user_id: share.user_id,
+            timestamp: share.created_at,
+            is_quote: share.is_quote()
+        }
+        self.shares.push(node)
+        self.total_reach += 1
+    }
+    
+    fn viral_score() -> Float {
+        if self.shares.is_empty() { return 0.0 }
+        
+        let age_hours = (DateTime.now() - self.created_at).as_hours() as Float
+        if age_hours == 0.0 { return self.shares.len() as Float }
+        
+        // Shares per hour * depth bonus
+        let shares_per_hour = self.shares.len() as Float / age_hours
+        let depth_bonus = 1.0 + (self.depth as Float * 0.1)
+        
+        shares_per_hour * depth_bonus
+    }
+    
+    fn is_viral() -> Bool {
+        self.viral_score() > 10.0
+    }
+}
+
+/// Share node in chain
+struct ShareNode {
+    share_id: String,
+    user_id: String,
+    timestamp: DateTime,
+    is_quote: Bool
+}
+
+// =============================================================================
+// Share Analytics
+// =============================================================================
+
+/// Share analytics
+struct ShareAnalytics {
+    target_id: String,
+    total_shares: Int64,
+    unique_sharers: Int64,
+    shares_by_destination: Map<String, Int64>,
+    shares_by_hour: Map<Int, Int64>,
+    shares_by_day: Map<String, Int64>,
+    top_sharers: [(String, Int64)],
+    viral_coefficient: Float
+}
+
+impl ShareAnalytics {
+    fn new(target_id: String) -> Self {
+        ShareAnalytics {
+            target_id: target_id,
+            total_shares: 0,
+            unique_sharers: 0,
+            shares_by_destination: Map.empty(),
+            shares_by_hour: Map.empty(),
+            shares_by_day: Map.empty(),
+            top_sharers: [],
+            viral_coefficient: 0.0
+        }
+    }
+    
+    fn record_share(share: Share) {
+        self.total_shares += 1
+        
+        let dest = share.destination.display_name()
+        self.shares_by_destination.entry(dest).or_insert(0) += 1
+        
+        let hour = share.created_at.hour()
+        self.shares_by_hour.entry(hour).or_insert(0) += 1
+        
+        let day = share.created_at.format("%Y-%m-%d")
+        self.shares_by_day.entry(day).or_insert(0) += 1
+    }
+    
+    fn peak_hour() -> Option<Int> {
+        self.shares_by_hour.iter()
+            .max_by(|a, b| a.1.cmp(b.1))
+            .map(|(h, _)| h)
+    }
+    
+    fn most_popular_destination() -> Option<String> {
+        self.shares_by_destination.iter()
+            .max_by(|a, b| a.1.cmp(b.1))
+            .map(|(d, _)| d)
+    }
+}
+
+// =============================================================================
+// Share Errors
+// =============================================================================
+
+/// Share errors
+enum ShareError {
+    NotFound,
+    AlreadyShared,
+    CannotShareOwnContent,
+    EmptyComment,
+    TargetNotShareable,
+    Unauthorized,
+    RateLimited
+}
+
+impl ShareError {
+    fn message() -> String {
+        match self {
+            ShareError.NotFound => "Share not found",
+            ShareError.AlreadyShared => "Already shared this content",
+            ShareError.CannotShareOwnContent => "Cannot share your own content",
+            ShareError.EmptyComment => "Quote comment cannot be empty",
+            ShareError.TargetNotShareable => "This content cannot be shared",
+            ShareError.Unauthorized => "Not authorized to share this content",
+            ShareError.RateLimited => "Too many shares, please slow down"
+        }
+    }
+}
+
+// =============================================================================
+// Share Events
+// =============================================================================
+
+/// Share events for event sourcing
+enum ShareEvent {
+    Shared { user_id: String, target_id: String, target_type: String, destination: String, timestamp: DateTime },
+    QuoteShared { user_id: String, target_id: String, comment: String, timestamp: DateTime },
+    Unshared { share_id: String, timestamp: DateTime },
+    ExternalShared { user_id: String, target_id: String, platform: String, timestamp: DateTime }
+}
+
+impl ShareEvent {
+    fn timestamp() -> DateTime {
+        match self {
+            ShareEvent.Shared { timestamp, .. } => timestamp,
+            ShareEvent.QuoteShared { timestamp, .. } => timestamp,
+            ShareEvent.Unshared { timestamp, .. } => timestamp,
+            ShareEvent.ExternalShared { timestamp, .. } => timestamp
+        }
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+fn generate_id() -> String {
+    @native("uuid_v4")
+}
+
+fn url_encode(s: String) -> String {
+    @native("url_encode", s)
+}
+
+fn format_count(count: Int64) -> String {
+    if count < 1000 { count.to_string() }
+    else if count < 1_000_000 { format!("{:.1}K", count as Float / 1000.0) }
+    else { format!("{:.1}M", count as Float / 1_000_000.0) }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "share creation" {
+    let share = Share.new("user1", ShareTarget.Post("post1"), "author1")
+    assert_eq(share.user_id, "user1")?
+    assert_eq(share.target.id(), "post1")?
+    assert(!share.is_quote())?
+}
+
+test "quote share" {
+    let share = Share.with_comment("user1", ShareTarget.Post("post1"), "author1", "Great post!")
+    assert(share.is_quote())?
+    assert_eq(share.comment, Some("Great post!"))?
+}
+
+test "share service" {
+    let service = ShareService.new()
+    
+    let result = service.share("user1", ShareTarget.Post("post1"), "author1")
+    assert(result.is_ok())?
+    
+    assert(service.has_shared("user1", ShareTarget.Post("post1")))?
+    
+    let count = service.get_count(ShareTarget.Post("post1"))
+    assert_eq(count.total, 1)?
+}
+
+test "cannot share own content" {
+    let service = ShareService.new()
+    
+    let result = service.share("user1", ShareTarget.Post("post1"), "user1")
+    assert(result.is_err())?
+}
+
+test "share count breakdown" {
+    var count = ShareCount.new()
+    
+    let share1 = Share.new("user1", ShareTarget.Post("post1"), "author1")
+    let share2 = Share.with_comment("user2", ShareTarget.Post("post1"), "author1", "Nice!")
+    
+    count.add(share1)
+    count.add(share2)
+    
+    assert_eq(count.total, 2)?
+    assert_eq(count.timeline_shares, 2)?
+    assert_eq(count.quote_shares, 1)?
+}
+
+test "external platform urls" {
+    let twitter_url = ExternalPlatform.Twitter.share_url("https://example.com/post/1", Some("Check this out!"))
+    assert(twitter_url.contains("twitter.com"))?
+    
+    let facebook_url = ExternalPlatform.Facebook.share_url("https://example.com/post/1", None)
+    assert(facebook_url.contains("facebook.com"))?
+}
+
+test "share chain viral score" {
+    var chain = ShareChain.new("post1")
+    
+    for i in 0..10 {
+        let share = Share.new(format!("user{}", i), ShareTarget.Post("post1"), "author1")
+        chain.add_share(share)
+    }
+    
+    assert(chain.viral_score() > 0.0)?
+    assert_eq(chain.total_reach, 10)?
+}

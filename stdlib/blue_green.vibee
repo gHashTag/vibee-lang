@@ -1,0 +1,577 @@
+// =============================================================================
+// Vibee OS — Blue-Green Deployment Module
+// Blue-green deployment strategy with instant traffic switching
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Blue-Green Configuration
+// -----------------------------------------------------------------------------
+
+struct BlueGreenConfig {
+    name: String
+    blue_version: String
+    green_version: String
+    active_environment: ActiveEnvironment
+    health_check: HealthCheckConfig
+    switch_timeout: Duration
+    rollback_on_failure: Bool
+    pre_switch_tests: [PreSwitchTest]
+    post_switch_validation: Duration
+}
+
+impl BlueGreenConfig {
+    fn default(name: String, blue: String, green: String) -> Self {
+        BlueGreenConfig {
+            name: name,
+            blue_version: blue,
+            green_version: green,
+            active_environment: ActiveEnvironment.Blue,
+            health_check: HealthCheckConfig.default(),
+            switch_timeout: 300.seconds(),
+            rollback_on_failure: true,
+            pre_switch_tests: [],
+            post_switch_validation: 60.seconds()
+        }
+    }
+}
+
+enum ActiveEnvironment { Blue, Green }
+
+impl ActiveEnvironment {
+    fn opposite() -> Self {
+        match self {
+            .Blue => ActiveEnvironment.Green
+            .Green => ActiveEnvironment.Blue
+        }
+    }
+    
+    fn name() -> String {
+        match self {
+            .Blue => "blue"
+            .Green => "green"
+        }
+    }
+}
+
+struct HealthCheckConfig {
+    endpoint: String
+    interval: Duration
+    timeout: Duration
+    healthy_threshold: Int
+    unhealthy_threshold: Int
+}
+
+impl HealthCheckConfig {
+    fn default() -> Self {
+        HealthCheckConfig {
+            endpoint: "/health",
+            interval: 10.seconds(),
+            timeout: 5.seconds(),
+            healthy_threshold: 3,
+            unhealthy_threshold: 3
+        }
+    }
+}
+
+struct PreSwitchTest {
+    name: String
+    test_fn: fn(String) -> Result<(), String>
+    required: Bool
+}
+
+// -----------------------------------------------------------------------------
+// Blue-Green Builder
+// -----------------------------------------------------------------------------
+
+actor BlueGreenBuilder {
+    state config: BlueGreenConfig
+    
+    init(name: String, blue: String, green: String) {
+        self.config = BlueGreenConfig.default(name, blue, green)
+    }
+    
+    on active(env: ActiveEnvironment) -> Self { self.config.active_environment = env; self }
+    on health_check(hc: HealthCheckConfig) -> Self { self.config.health_check = hc; self }
+    on switch_timeout(t: Duration) -> Self { self.config.switch_timeout = t; self }
+    on rollback_on_failure(r: Bool) -> Self { self.config.rollback_on_failure = r; self }
+    on pre_switch_test(name: String, test: fn(String) -> Result<(), String>, required: Bool = true) -> Self {
+        self.config.pre_switch_tests.append(PreSwitchTest { name: name, test_fn: test, required: required })
+        self
+    }
+    on post_switch_validation(d: Duration) -> Self { self.config.post_switch_validation = d; self }
+    
+    on build() -> BlueGreenConfig { self.config.clone() }
+}
+
+// -----------------------------------------------------------------------------
+// Blue-Green Manager
+// -----------------------------------------------------------------------------
+
+actor BlueGreenManager {
+    state provider: BlueGreenProvider
+    state deployments: Map<String, BlueGreenDeployment>
+    state history: [SwitchRecord]
+    state hooks: BlueGreenHooks
+    
+    init(provider: BlueGreenProvider) {
+        self.provider = provider
+        self.deployments = Map.empty()
+        self.history = []
+        self.hooks = BlueGreenHooks.empty()
+    }
+    
+    on with_hooks(hooks: BlueGreenHooks) -> Self { self.hooks = hooks; self }
+    
+    on create(config: BlueGreenConfig) -> Result<BlueGreenDeployment, BlueGreenError> {
+        // Create both environments
+        let blue = self.provider.create_environment(config.name, "blue", config.blue_version)?
+        let green = self.provider.create_environment(config.name, "green", config.green_version)?
+        
+        // Set initial active environment
+        self.provider.set_active(config.name, config.active_environment)?
+        
+        let deployment = BlueGreenDeployment {
+            id: uuid::v4(),
+            name: config.name,
+            config: config.clone(),
+            blue: blue,
+            green: green,
+            active: config.active_environment,
+            status: BlueGreenStatus.Ready,
+            created_at: DateTime.now()
+        }
+        
+        self.deployments.set(deployment.id.clone(), deployment.clone())
+        Ok(deployment)
+    }
+    
+    on switch(deployment_id: String) -> Result<SwitchResult, BlueGreenError> {
+        let deployment = self.deployments.get_mut(deployment_id)
+            .ok_or(BlueGreenError.NotFound(deployment_id))?
+        
+        let start_time = DateTime.now()
+        let target_env = deployment.active.opposite()
+        
+        // Pre-switch hooks
+        self.hooks.run_pre_switch(deployment)?
+        
+        // Run pre-switch tests
+        self.run_pre_switch_tests(deployment, target_env)?
+        
+        // Verify target environment health
+        self.verify_environment_health(deployment, target_env)?
+        
+        // Perform the switch
+        deployment.status = BlueGreenStatus.Switching
+        self.provider.set_active(deployment.name, target_env)?
+        
+        // Post-switch validation
+        self.post_switch_validation(deployment, target_env)?
+        
+        // Update state
+        let previous_env = deployment.active
+        deployment.active = target_env
+        deployment.status = BlueGreenStatus.Ready
+        
+        // Post-switch hooks
+        self.hooks.run_post_switch(deployment)?
+        
+        // Record switch
+        let record = SwitchRecord {
+            id: uuid::v4(),
+            deployment_id: deployment_id,
+            from_environment: previous_env,
+            to_environment: target_env,
+            status: SwitchStatus.Success,
+            started_at: start_time,
+            completed_at: DateTime.now()
+        }
+        self.history.append(record.clone())
+        
+        Ok(SwitchResult {
+            deployment_id: deployment_id,
+            from_environment: previous_env,
+            to_environment: target_env,
+            duration: DateTime.now().since(start_time)
+        })
+    }
+    
+    fn run_pre_switch_tests(deployment: BlueGreenDeployment, target: ActiveEnvironment) -> Result<(), BlueGreenError> {
+        let endpoint = self.get_environment_endpoint(deployment, target)?
+        
+        for test in deployment.config.pre_switch_tests {
+            match (test.test_fn)(endpoint) {
+                Ok(()) => {}
+                Err(e) => {
+                    if test.required {
+                        return Err(BlueGreenError.PreSwitchTestFailed(test.name, e))
+                    }
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    fn verify_environment_health(deployment: BlueGreenDeployment, env: ActiveEnvironment) -> Result<(), BlueGreenError> {
+        let hc = deployment.config.health_check
+        var healthy_count = 0
+        var unhealthy_count = 0
+        
+        while healthy_count < hc.healthy_threshold && unhealthy_count < hc.unhealthy_threshold {
+            let is_healthy = self.provider.check_health(deployment.name, env)?
+            
+            if is_healthy {
+                healthy_count += 1
+                unhealthy_count = 0
+            } else {
+                unhealthy_count += 1
+                healthy_count = 0
+            }
+            
+            sleep(hc.interval)
+        }
+        
+        if healthy_count >= hc.healthy_threshold {
+            Ok(())
+        } else {
+            Err(BlueGreenError.HealthCheckFailed(env.name()))
+        }
+    }
+    
+    fn post_switch_validation(deployment: BlueGreenDeployment, env: ActiveEnvironment) -> Result<(), BlueGreenError> {
+        let deadline = DateTime.now() + deployment.config.post_switch_validation
+        
+        while DateTime.now() < deadline {
+            let is_healthy = self.provider.check_health(deployment.name, env)?
+            
+            if !is_healthy {
+                if deployment.config.rollback_on_failure {
+                    self.provider.set_active(deployment.name, env.opposite())?
+                    return Err(BlueGreenError.PostSwitchValidationFailed("Health check failed after switch"))
+                }
+            }
+            
+            sleep(5.seconds())
+        }
+        
+        Ok(())
+    }
+    
+    fn get_environment_endpoint(deployment: BlueGreenDeployment, env: ActiveEnvironment) -> Result<String, BlueGreenError> {
+        match env {
+            ActiveEnvironment.Blue => Ok(deployment.blue.endpoint.clone())
+            ActiveEnvironment.Green => Ok(deployment.green.endpoint.clone())
+        }
+    }
+    
+    on rollback(deployment_id: String) -> Result<SwitchResult, BlueGreenError> {
+        // Rollback is just a switch to the opposite environment
+        self.switch(deployment_id)
+    }
+    
+    on update_environment(deployment_id: String, env: ActiveEnvironment, version: String) -> Result<(), BlueGreenError> {
+        let deployment = self.deployments.get_mut(deployment_id)
+            .ok_or(BlueGreenError.NotFound(deployment_id))?
+        
+        // Can only update inactive environment
+        if deployment.active == env {
+            return Err(BlueGreenError.CannotUpdateActive)
+        }
+        
+        self.provider.update_environment(deployment.name, env, version)?
+        
+        match env {
+            ActiveEnvironment.Blue => deployment.blue.version = version
+            ActiveEnvironment.Green => deployment.green.version = version
+        }
+        
+        Ok(())
+    }
+    
+    on scale(deployment_id: String, replicas: Int) -> Result<(), BlueGreenError> {
+        let deployment = self.deployments.get(deployment_id)
+            .ok_or(BlueGreenError.NotFound(deployment_id))?
+        
+        self.provider.scale(deployment.name, ActiveEnvironment.Blue, replicas)?
+        self.provider.scale(deployment.name, ActiveEnvironment.Green, replicas)?
+        
+        Ok(())
+    }
+    
+    on get_status(deployment_id: String) -> Result<BlueGreenDeployment, BlueGreenError> {
+        self.deployments.get(deployment_id)
+            .ok_or(BlueGreenError.NotFound(deployment_id))
+            .map(|d| d.clone())
+    }
+    
+    on get_active_environment(deployment_id: String) -> Result<ActiveEnvironment, BlueGreenError> {
+        self.deployments.get(deployment_id)
+            .ok_or(BlueGreenError.NotFound(deployment_id))
+            .map(|d| d.active)
+    }
+    
+    on delete(deployment_id: String) -> Result<(), BlueGreenError> {
+        let deployment = self.deployments.remove(deployment_id)
+            .ok_or(BlueGreenError.NotFound(deployment_id))?
+        
+        self.provider.delete_environment(deployment.name, ActiveEnvironment.Blue)?
+        self.provider.delete_environment(deployment.name, ActiveEnvironment.Green)?
+        
+        Ok(())
+    }
+    
+    on list() -> [BlueGreenDeployment] {
+        self.deployments.values().collect()
+    }
+    
+    on history() -> [SwitchRecord] { self.history.clone() }
+}
+
+// -----------------------------------------------------------------------------
+// Blue-Green Provider Trait
+// -----------------------------------------------------------------------------
+
+trait BlueGreenProvider {
+    fn create_environment(name: String, env: String, version: String) -> Result<EnvironmentInfo, BlueGreenError>
+    fn update_environment(name: String, env: ActiveEnvironment, version: String) -> Result<(), BlueGreenError>
+    fn delete_environment(name: String, env: ActiveEnvironment) -> Result<(), BlueGreenError>
+    fn set_active(name: String, env: ActiveEnvironment) -> Result<(), BlueGreenError>
+    fn check_health(name: String, env: ActiveEnvironment) -> Result<Bool, BlueGreenError>
+    fn scale(name: String, env: ActiveEnvironment, replicas: Int) -> Result<(), BlueGreenError>
+}
+
+// -----------------------------------------------------------------------------
+// Kubernetes Blue-Green Provider
+// -----------------------------------------------------------------------------
+
+actor K8sBlueGreenProvider {
+    state client: K8sClient
+    state namespace: String
+    
+    init(client: K8sClient, namespace: String = "default") {
+        self.client = client
+        self.namespace = namespace
+    }
+}
+
+impl BlueGreenProvider for K8sBlueGreenProvider {
+    fn create_environment(name: String, env: String, version: String) -> Result<EnvironmentInfo, BlueGreenError> {
+        @native("k8s_create_blue_green_env", self.client, self.namespace, name, env, version)
+    }
+    
+    fn update_environment(name: String, env: ActiveEnvironment, version: String) -> Result<(), BlueGreenError> {
+        @native("k8s_update_blue_green_env", self.client, self.namespace, name, env.name(), version)
+    }
+    
+    fn delete_environment(name: String, env: ActiveEnvironment) -> Result<(), BlueGreenError> {
+        @native("k8s_delete_blue_green_env", self.client, self.namespace, name, env.name())
+    }
+    
+    fn set_active(name: String, env: ActiveEnvironment) -> Result<(), BlueGreenError> {
+        @native("k8s_set_active_env", self.client, self.namespace, name, env.name())
+    }
+    
+    fn check_health(name: String, env: ActiveEnvironment) -> Result<Bool, BlueGreenError> {
+        @native("k8s_check_env_health", self.client, self.namespace, name, env.name())
+    }
+    
+    fn scale(name: String, env: ActiveEnvironment, replicas: Int) -> Result<(), BlueGreenError> {
+        @native("k8s_scale_env", self.client, self.namespace, name, env.name(), replicas)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// AWS Blue-Green Provider (ECS/ALB)
+// -----------------------------------------------------------------------------
+
+actor AwsBlueGreenProvider {
+    state cluster: String
+    state target_group_blue: String
+    state target_group_green: String
+    state listener_arn: String
+    
+    init(cluster: String, tg_blue: String, tg_green: String, listener: String) {
+        self.cluster = cluster
+        self.target_group_blue = tg_blue
+        self.target_group_green = tg_green
+        self.listener_arn = listener
+    }
+}
+
+impl BlueGreenProvider for AwsBlueGreenProvider {
+    fn create_environment(name: String, env: String, version: String) -> Result<EnvironmentInfo, BlueGreenError> {
+        @native("aws_ecs_create_service", self.cluster, name, env, version)
+    }
+    
+    fn update_environment(name: String, env: ActiveEnvironment, version: String) -> Result<(), BlueGreenError> {
+        @native("aws_ecs_update_service", self.cluster, name, env.name(), version)
+    }
+    
+    fn delete_environment(name: String, env: ActiveEnvironment) -> Result<(), BlueGreenError> {
+        @native("aws_ecs_delete_service", self.cluster, name, env.name())
+    }
+    
+    fn set_active(name: String, env: ActiveEnvironment) -> Result<(), BlueGreenError> {
+        let target_group = match env {
+            ActiveEnvironment.Blue => self.target_group_blue
+            ActiveEnvironment.Green => self.target_group_green
+        }
+        @native("aws_alb_switch_target_group", self.listener_arn, target_group)
+    }
+    
+    fn check_health(name: String, env: ActiveEnvironment) -> Result<Bool, BlueGreenError> {
+        let target_group = match env {
+            ActiveEnvironment.Blue => self.target_group_blue
+            ActiveEnvironment.Green => self.target_group_green
+        }
+        @native("aws_alb_check_target_health", target_group)
+    }
+    
+    fn scale(name: String, env: ActiveEnvironment, replicas: Int) -> Result<(), BlueGreenError> {
+        @native("aws_ecs_scale_service", self.cluster, name, env.name(), replicas)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Types
+// -----------------------------------------------------------------------------
+
+struct BlueGreenDeployment {
+    id: String
+    name: String
+    config: BlueGreenConfig
+    blue: EnvironmentInfo
+    green: EnvironmentInfo
+    active: ActiveEnvironment
+    status: BlueGreenStatus
+    created_at: DateTime
+}
+
+struct EnvironmentInfo {
+    name: String
+    version: String
+    endpoint: String
+    replicas: Int
+    status: EnvironmentStatus
+}
+
+enum EnvironmentStatus { Pending, Running, Stopped, Failed }
+
+enum BlueGreenStatus { Creating, Ready, Switching, Failed }
+
+struct SwitchResult {
+    deployment_id: String
+    from_environment: ActiveEnvironment
+    to_environment: ActiveEnvironment
+    duration: Duration
+}
+
+struct SwitchRecord {
+    id: String
+    deployment_id: String
+    from_environment: ActiveEnvironment
+    to_environment: ActiveEnvironment
+    status: SwitchStatus
+    started_at: DateTime
+    completed_at: DateTime
+}
+
+enum SwitchStatus { Success, Failed(String), RolledBack }
+
+// -----------------------------------------------------------------------------
+// Blue-Green Hooks
+// -----------------------------------------------------------------------------
+
+struct BlueGreenHooks {
+    pre_switch: [fn(BlueGreenDeployment) -> Result<(), BlueGreenError>]
+    post_switch: [fn(BlueGreenDeployment) -> Result<(), BlueGreenError>]
+    on_failure: [fn(BlueGreenError) -> ()]
+}
+
+impl BlueGreenHooks {
+    fn empty() -> Self {
+        BlueGreenHooks { pre_switch: [], post_switch: [], on_failure: [] }
+    }
+    
+    fn run_pre_switch(deployment: BlueGreenDeployment) -> Result<(), BlueGreenError> {
+        for hook in self.pre_switch { hook(deployment)? }
+        Ok(())
+    }
+    
+    fn run_post_switch(deployment: BlueGreenDeployment) -> Result<(), BlueGreenError> {
+        for hook in self.post_switch { hook(deployment)? }
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum BlueGreenError {
+    NotFound(String)
+    CreationFailed(String)
+    SwitchFailed(String)
+    HealthCheckFailed(String)
+    PreSwitchTestFailed(String, String)
+    PostSwitchValidationFailed(String)
+    CannotUpdateActive
+    ProviderError(String)
+    Timeout
+    
+    fn message() -> String {
+        match self {
+            .NotFound(id) => "Deployment not found: \(id)"
+            .CreationFailed(m) => "Creation failed: \(m)"
+            .SwitchFailed(m) => "Switch failed: \(m)"
+            .HealthCheckFailed(env) => "Health check failed for \(env) environment"
+            .PreSwitchTestFailed(name, err) => "Pre-switch test '\(name)' failed: \(err)"
+            .PostSwitchValidationFailed(m) => "Post-switch validation failed: \(m)"
+            .CannotUpdateActive => "Cannot update active environment"
+            .ProviderError(m) => "Provider error: \(m)"
+            .Timeout => "Operation timed out"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+fn blue_green(name: String, blue: String, green: String) -> BlueGreenBuilder {
+    BlueGreenBuilder.new(name, blue, green)
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "blue green builder" {
+    let config = BlueGreenBuilder.new("web-app", "v1.0", "v2.0")
+        .active(ActiveEnvironment.Blue)
+        .switch_timeout(600.seconds())
+        .rollback_on_failure(true)
+        .build()
+    
+    assert(config.name == "web-app")
+    assert(config.blue_version == "v1.0")
+    assert(config.green_version == "v2.0")
+    assert(config.active_environment == ActiveEnvironment.Blue)
+}
+
+test "active environment opposite" {
+    assert(ActiveEnvironment.Blue.opposite() == ActiveEnvironment.Green)
+    assert(ActiveEnvironment.Green.opposite() == ActiveEnvironment.Blue)
+}
+
+test "active environment name" {
+    assert(ActiveEnvironment.Blue.name() == "blue")
+    assert(ActiveEnvironment.Green.name() == "green")
+}
+
+test "health check config default" {
+    let hc = HealthCheckConfig.default()
+    assert(hc.endpoint == "/health")
+    assert(hc.healthy_threshold == 3)
+}

@@ -1,0 +1,767 @@
+// =============================================================================
+// Vibee OS — Shipping Module
+// Shipping rates, carriers, and delivery management
+// =============================================================================
+
+use money::{Money, usd}
+use currency::{Currency}
+use datetime::{DateTime, Duration}
+use uuid::{UUID}
+use cart::{Address}
+use product::{WeightUnit, Dimensions}
+
+// =============================================================================
+// Shipping Types
+// =============================================================================
+
+/// Shipping carrier
+enum Carrier {
+    USPS
+    UPS
+    FedEx
+    DHL
+    RoyalMail
+    CanadaPost
+    AustraliaPost
+    Custom(String)
+}
+
+impl Carrier {
+    fn name() -> String {
+        match self {
+            Carrier.USPS => "USPS"
+            Carrier.UPS => "UPS"
+            Carrier.FedEx => "FedEx"
+            Carrier.DHL => "DHL"
+            Carrier.RoyalMail => "Royal Mail"
+            Carrier.CanadaPost => "Canada Post"
+            Carrier.AustraliaPost => "Australia Post"
+            Carrier.Custom(name) => name
+        }
+    }
+    
+    fn tracking_url(tracking_number: String) -> Option<String> {
+        match self {
+            Carrier.USPS => Some("https://tools.usps.com/go/TrackConfirmAction?tLabels=\(tracking_number)")
+            Carrier.UPS => Some("https://www.ups.com/track?tracknum=\(tracking_number)")
+            Carrier.FedEx => Some("https://www.fedex.com/fedextrack/?trknbr=\(tracking_number)")
+            Carrier.DHL => Some("https://www.dhl.com/en/express/tracking.html?AWB=\(tracking_number)")
+            _ => None
+        }
+    }
+}
+
+/// Shipping service type
+enum ServiceType {
+    Standard
+    Express
+    Overnight
+    Economy
+    Priority
+    SameDay
+    Freight
+}
+
+impl ServiceType {
+    fn display_name() -> String {
+        match self {
+            ServiceType.Standard => "Standard Shipping"
+            ServiceType.Express => "Express Shipping"
+            ServiceType.Overnight => "Overnight Shipping"
+            ServiceType.Economy => "Economy Shipping"
+            ServiceType.Priority => "Priority Shipping"
+            ServiceType.SameDay => "Same Day Delivery"
+            ServiceType.Freight => "Freight Shipping"
+        }
+    }
+    
+    fn typical_days() -> (Int, Int) {
+        match self {
+            ServiceType.Standard => (5, 7)
+            ServiceType.Express => (2, 3)
+            ServiceType.Overnight => (1, 1)
+            ServiceType.Economy => (7, 14)
+            ServiceType.Priority => (3, 5)
+            ServiceType.SameDay => (0, 0)
+            ServiceType.Freight => (7, 21)
+        }
+    }
+}
+
+// =============================================================================
+// Shipping Rate
+// =============================================================================
+
+/// Shipping rate option
+struct ShippingRate {
+    id: String
+    carrier: Carrier
+    service_type: ServiceType
+    name: String
+    description: Option<String>
+    price: Money
+    currency: Currency
+    estimated_days_min: Int
+    estimated_days_max: Int
+    delivery_date_min: Option<DateTime>
+    delivery_date_max: Option<DateTime>
+    tracking_available: Bool
+    insurance_available: Bool
+    signature_required: Bool
+    metadata: Map<String, String>
+}
+
+impl ShippingRate {
+    fn new(carrier: Carrier, service_type: ServiceType, price: Money) -> Self {
+        let (min_days, max_days) = service_type.typical_days()
+        ShippingRate {
+            id: UUID.v4().to_string(),
+            carrier: carrier,
+            service_type: service_type,
+            name: "\(carrier.name()) \(service_type.display_name())",
+            description: None,
+            price: price,
+            currency: price.currency,
+            estimated_days_min: min_days,
+            estimated_days_max: max_days,
+            delivery_date_min: None,
+            delivery_date_max: None,
+            tracking_available: true,
+            insurance_available: true,
+            signature_required: false,
+            metadata: Map.empty()
+        }
+    }
+    
+    fn with_delivery_estimate() -> Self {
+        let now = DateTime.now()
+        self.delivery_date_min = Some(now + Duration.days(self.estimated_days_min))
+        self.delivery_date_max = Some(now + Duration.days(self.estimated_days_max))
+        self
+    }
+    
+    fn delivery_estimate_text() -> String {
+        if self.estimated_days_min == self.estimated_days_max {
+            if self.estimated_days_min == 0 {
+                "Today"
+            } else if self.estimated_days_min == 1 {
+                "Tomorrow"
+            } else {
+                "\(self.estimated_days_min) business days"
+            }
+        } else {
+            "\(self.estimated_days_min)-\(self.estimated_days_max) business days"
+        }
+    }
+    
+    fn is_free() -> Bool {
+        self.price.is_zero()
+    }
+}
+
+// =============================================================================
+// Shipping Zone
+// =============================================================================
+
+/// Geographic shipping zone
+struct ShippingZone {
+    id: String
+    name: String
+    countries: [String]
+    states: [String]
+    postal_codes: [String]
+    postal_code_ranges: [(String, String)]
+    rates: [ZoneRate]
+}
+
+impl ShippingZone {
+    fn new(name: String) -> Self {
+        ShippingZone {
+            id: UUID.v4().to_string(),
+            name: name,
+            countries: [],
+            states: [],
+            postal_codes: [],
+            postal_code_ranges: [],
+            rates: []
+        }
+    }
+    
+    fn add_country(country: String) -> Self {
+        self.countries.push(country)
+        self
+    }
+    
+    fn add_state(state: String) -> Self {
+        self.states.push(state)
+        self
+    }
+    
+    fn add_postal_range(from: String, to: String) -> Self {
+        self.postal_code_ranges.push((from, to))
+        self
+    }
+    
+    fn add_rate(rate: ZoneRate) -> Self {
+        self.rates.push(rate)
+        self
+    }
+    
+    fn matches(address: Address) -> Bool {
+        // Check country
+        if !self.countries.is_empty() && !self.countries.contains(address.country) {
+            return false
+        }
+        
+        // Check state
+        if !self.states.is_empty() && !self.states.contains(address.state) {
+            return false
+        }
+        
+        // Check postal codes
+        if !self.postal_codes.is_empty() {
+            if !self.postal_codes.contains(address.postal_code) {
+                return false
+            }
+        }
+        
+        // Check postal code ranges
+        if !self.postal_code_ranges.is_empty() {
+            let in_range = self.postal_code_ranges.iter().any(|(from, to)| {
+                address.postal_code >= from && address.postal_code <= to
+            })
+            if !in_range {
+                return false
+            }
+        }
+        
+        true
+    }
+    
+    fn get_rates(weight: Decimal, subtotal: Money) -> [ShippingRate] {
+        self.rates.iter()
+            .filter(|r| r.matches(weight, subtotal))
+            .map(|r| r.to_shipping_rate())
+            .collect()
+    }
+}
+
+/// Rate within a zone
+struct ZoneRate {
+    id: String
+    carrier: Carrier
+    service_type: ServiceType
+    name: String
+    calculation_type: RateCalculationType
+    base_rate: Money
+    per_kg_rate: Option<Money>
+    min_weight: Option<Decimal>
+    max_weight: Option<Decimal>
+    min_order: Option<Money>
+    max_order: Option<Money>
+    free_shipping_threshold: Option<Money>
+}
+
+impl ZoneRate {
+    fn flat_rate(carrier: Carrier, service_type: ServiceType, price: Money) -> Self {
+        ZoneRate {
+            id: UUID.v4().to_string(),
+            carrier: carrier,
+            service_type: service_type,
+            name: "\(carrier.name()) \(service_type.display_name())",
+            calculation_type: RateCalculationType.FlatRate,
+            base_rate: price,
+            per_kg_rate: None,
+            min_weight: None,
+            max_weight: None,
+            min_order: None,
+            max_order: None,
+            free_shipping_threshold: None
+        }
+    }
+    
+    fn weight_based(carrier: Carrier, service_type: ServiceType, base: Money, per_kg: Money) -> Self {
+        ZoneRate {
+            id: UUID.v4().to_string(),
+            carrier: carrier,
+            service_type: service_type,
+            name: "\(carrier.name()) \(service_type.display_name())",
+            calculation_type: RateCalculationType.WeightBased,
+            base_rate: base,
+            per_kg_rate: Some(per_kg),
+            min_weight: None,
+            max_weight: None,
+            min_order: None,
+            max_order: None,
+            free_shipping_threshold: None
+        }
+    }
+    
+    fn with_free_threshold(threshold: Money) -> Self {
+        self.free_shipping_threshold = Some(threshold)
+        self
+    }
+    
+    fn with_weight_limits(min: Decimal, max: Decimal) -> Self {
+        self.min_weight = Some(min)
+        self.max_weight = Some(max)
+        self
+    }
+    
+    fn matches(weight: Decimal, subtotal: Money) -> Bool {
+        if let Some(min) = self.min_weight {
+            if weight < min { return false }
+        }
+        if let Some(max) = self.max_weight {
+            if weight > max { return false }
+        }
+        if let Some(min) = self.min_order {
+            if subtotal < min { return false }
+        }
+        if let Some(max) = self.max_order {
+            if subtotal > max { return false }
+        }
+        true
+    }
+    
+    fn calculate(weight: Decimal, subtotal: Money) -> Money {
+        // Check free shipping threshold
+        if let Some(threshold) = self.free_shipping_threshold {
+            if subtotal >= threshold {
+                return Money.zero(self.base_rate.currency)
+            }
+        }
+        
+        match self.calculation_type {
+            RateCalculationType.FlatRate => self.base_rate
+            RateCalculationType.WeightBased => {
+                if let Some(per_kg) = self.per_kg_rate {
+                    self.base_rate + per_kg.mul(weight)
+                } else {
+                    self.base_rate
+                }
+            }
+            RateCalculationType.PriceBased => self.base_rate
+            RateCalculationType.Free => Money.zero(self.base_rate.currency)
+        }
+    }
+    
+    fn to_shipping_rate() -> ShippingRate {
+        ShippingRate.new(self.carrier, self.service_type, self.base_rate)
+    }
+}
+
+enum RateCalculationType {
+    FlatRate
+    WeightBased
+    PriceBased
+    Free
+}
+
+// =============================================================================
+// Shipment
+// =============================================================================
+
+/// Shipment tracking
+struct Shipment {
+    id: String
+    order_id: String
+    carrier: Carrier
+    service_type: ServiceType
+    tracking_number: Option<String>
+    status: ShipmentStatus
+    label_url: Option<String>
+    weight: Decimal
+    dimensions: Option<Dimensions>
+    items: [ShipmentItem]
+    from_address: Address
+    to_address: Address
+    shipped_at: Option<DateTime>
+    delivered_at: Option<DateTime>
+    estimated_delivery: Option<DateTime>
+    events: [TrackingEvent]
+    created_at: DateTime
+    updated_at: DateTime
+}
+
+impl Shipment {
+    fn new(order_id: String, carrier: Carrier, from: Address, to: Address) -> Self {
+        let now = DateTime.now()
+        Shipment {
+            id: UUID.v4().to_string(),
+            order_id: order_id,
+            carrier: carrier,
+            service_type: ServiceType.Standard,
+            tracking_number: None,
+            status: ShipmentStatus.Pending,
+            label_url: None,
+            weight: Decimal.zero(),
+            dimensions: None,
+            items: [],
+            from_address: from,
+            to_address: to,
+            shipped_at: None,
+            delivered_at: None,
+            estimated_delivery: None,
+            events: [],
+            created_at: now,
+            updated_at: now
+        }
+    }
+    
+    fn add_item(item: ShipmentItem) -> Self {
+        self.items.push(item)
+        self.weight = self.weight + item.weight
+        self
+    }
+    
+    fn set_tracking(number: String) -> Self {
+        self.tracking_number = Some(number)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn mark_shipped() -> Self {
+        self.status = ShipmentStatus.Shipped
+        self.shipped_at = Some(DateTime.now())
+        self.updated_at = DateTime.now()
+        self.add_event(TrackingEvent.new(ShipmentStatus.Shipped, "Package shipped"))
+    }
+    
+    fn mark_in_transit() -> Self {
+        self.status = ShipmentStatus.InTransit
+        self.updated_at = DateTime.now()
+        self.add_event(TrackingEvent.new(ShipmentStatus.InTransit, "Package in transit"))
+    }
+    
+    fn mark_out_for_delivery() -> Self {
+        self.status = ShipmentStatus.OutForDelivery
+        self.updated_at = DateTime.now()
+        self.add_event(TrackingEvent.new(ShipmentStatus.OutForDelivery, "Out for delivery"))
+    }
+    
+    fn mark_delivered() -> Self {
+        self.status = ShipmentStatus.Delivered
+        self.delivered_at = Some(DateTime.now())
+        self.updated_at = DateTime.now()
+        self.add_event(TrackingEvent.new(ShipmentStatus.Delivered, "Package delivered"))
+    }
+    
+    fn add_event(event: TrackingEvent) -> Self {
+        self.events.push(event)
+        self
+    }
+    
+    fn tracking_url() -> Option<String> {
+        self.tracking_number.and_then(|num| self.carrier.tracking_url(num))
+    }
+    
+    fn is_delivered() -> Bool {
+        self.status == ShipmentStatus.Delivered
+    }
+    
+    fn days_in_transit() -> Option<Int> {
+        self.shipped_at.map(|shipped| {
+            let end = self.delivered_at.unwrap_or(DateTime.now())
+            (end - shipped).days()
+        })
+    }
+}
+
+/// Shipment status
+enum ShipmentStatus {
+    Pending
+    LabelCreated
+    Shipped
+    InTransit
+    OutForDelivery
+    Delivered
+    Exception
+    Returned
+}
+
+impl ShipmentStatus {
+    fn display_name() -> String {
+        match self {
+            ShipmentStatus.Pending => "Pending"
+            ShipmentStatus.LabelCreated => "Label Created"
+            ShipmentStatus.Shipped => "Shipped"
+            ShipmentStatus.InTransit => "In Transit"
+            ShipmentStatus.OutForDelivery => "Out for Delivery"
+            ShipmentStatus.Delivered => "Delivered"
+            ShipmentStatus.Exception => "Exception"
+            ShipmentStatus.Returned => "Returned"
+        }
+    }
+}
+
+/// Item in shipment
+struct ShipmentItem {
+    product_id: String
+    variant_id: Option<String>
+    sku: String
+    name: String
+    quantity: Int
+    weight: Decimal
+}
+
+/// Tracking event
+struct TrackingEvent {
+    status: ShipmentStatus
+    description: String
+    location: Option<String>
+    timestamp: DateTime
+}
+
+impl TrackingEvent {
+    fn new(status: ShipmentStatus, description: String) -> Self {
+        TrackingEvent {
+            status: status,
+            description: description,
+            location: None,
+            timestamp: DateTime.now()
+        }
+    }
+    
+    fn with_location(location: String) -> Self {
+        self.location = Some(location)
+        self
+    }
+}
+
+// =============================================================================
+// Shipping Calculator
+// =============================================================================
+
+/// Shipping rate calculator
+struct ShippingCalculator {
+    zones: [ShippingZone]
+    default_rates: [ZoneRate]
+    free_shipping_threshold: Option<Money>
+}
+
+impl ShippingCalculator {
+    fn new() -> Self {
+        ShippingCalculator {
+            zones: [],
+            default_rates: [],
+            free_shipping_threshold: None
+        }
+    }
+    
+    fn add_zone(zone: ShippingZone) -> Self {
+        self.zones.push(zone)
+        self
+    }
+    
+    fn add_default_rate(rate: ZoneRate) -> Self {
+        self.default_rates.push(rate)
+        self
+    }
+    
+    fn set_free_threshold(threshold: Money) -> Self {
+        self.free_shipping_threshold = Some(threshold)
+        self
+    }
+    
+    fn calculate(address: Address, weight: Decimal, subtotal: Money) -> [ShippingRate] {
+        // Find matching zone
+        let zone = self.zones.iter().find(|z| z.matches(address))
+        
+        var rates = if let Some(z) = zone {
+            z.get_rates(weight, subtotal)
+        } else {
+            self.default_rates.iter()
+                .filter(|r| r.matches(weight, subtotal))
+                .map(|r| {
+                    let price = r.calculate(weight, subtotal)
+                    var rate = r.to_shipping_rate()
+                    rate.price = price
+                    rate
+                })
+                .collect()
+        }
+        
+        // Apply global free shipping threshold
+        if let Some(threshold) = self.free_shipping_threshold {
+            if subtotal >= threshold {
+                for rate in rates.iter_mut() {
+                    rate.price = Money.zero(rate.currency)
+                }
+            }
+        }
+        
+        // Sort by price
+        rates.sort_by(|a, b| a.price.cmp(b.price))
+        rates
+    }
+    
+    fn cheapest_rate(address: Address, weight: Decimal, subtotal: Money) -> Option<ShippingRate> {
+        self.calculate(address, weight, subtotal).first()
+    }
+    
+    fn fastest_rate(address: Address, weight: Decimal, subtotal: Money) -> Option<ShippingRate> {
+        var rates = self.calculate(address, weight, subtotal)
+        rates.sort_by(|a, b| a.estimated_days_min.cmp(b.estimated_days_min))
+        rates.first()
+    }
+}
+
+// =============================================================================
+// Shipping Service
+// =============================================================================
+
+actor ShippingService {
+    state shipments: Map<String, Shipment>
+    state by_order: Map<String, [String]>
+    state by_tracking: Map<String, String>
+    state calculator: ShippingCalculator
+    
+    fn new() -> Self {
+        ShippingService {
+            shipments: Map.empty(),
+            by_order: Map.empty(),
+            by_tracking: Map.empty(),
+            calculator: ShippingCalculator.new()
+        }
+    }
+    
+    fn with_calculator(calc: ShippingCalculator) -> Self {
+        self.calculator = calc
+        self
+    }
+    
+    fn get_rates(address: Address, weight: Decimal, subtotal: Money) -> [ShippingRate] {
+        self.calculator.calculate(address, weight, subtotal)
+    }
+    
+    fn create_shipment(order_id: String, carrier: Carrier, from: Address, to: Address) -> Shipment {
+        let shipment = Shipment.new(order_id.clone(), carrier, from, to)
+        
+        self.shipments.insert(shipment.id.clone(), shipment.clone())
+        
+        let ids = self.by_order.get(order_id.clone()).unwrap_or([])
+        ids.push(shipment.id.clone())
+        self.by_order.insert(order_id, ids)
+        
+        shipment
+    }
+    
+    fn get(id: String) -> Option<Shipment> {
+        self.shipments.get(id)
+    }
+    
+    fn get_by_tracking(tracking: String) -> Option<Shipment> {
+        self.by_tracking.get(tracking).and_then(|id| self.shipments.get(id))
+    }
+    
+    fn get_by_order(order_id: String) -> [Shipment] {
+        self.by_order.get(order_id)
+            .unwrap_or([])
+            .iter()
+            .filter_map(|id| self.shipments.get(id))
+            .collect()
+    }
+    
+    fn update(shipment: Shipment) -> Result<Shipment, ShippingError> {
+        if !self.shipments.contains_key(shipment.id) {
+            return Err(ShippingError.NotFound)
+        }
+        
+        // Update tracking index
+        if let Some(tracking) = shipment.tracking_number.clone() {
+            self.by_tracking.insert(tracking, shipment.id.clone())
+        }
+        
+        self.shipments.insert(shipment.id.clone(), shipment.clone())
+        Ok(shipment)
+    }
+    
+    fn track(tracking_number: String) -> Result<[TrackingEvent], ShippingError> {
+        let shipment = self.get_by_tracking(tracking_number)
+            .ok_or(ShippingError.NotFound)?
+        Ok(shipment.events)
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum ShippingError {
+    NotFound
+    InvalidAddress
+    NoRatesAvailable
+    CarrierError(String)
+    TrackingNotAvailable
+}
+
+impl Display for ShippingError {
+    fn fmt(f: Formatter) {
+        f.write(match self {
+            NotFound => "Shipment not found"
+            InvalidAddress => "Invalid shipping address"
+            NoRatesAvailable => "No shipping rates available"
+            CarrierError(msg) => "Carrier error: \(msg)"
+            TrackingNotAvailable => "Tracking not available"
+        })
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "shipping rate calculation" {
+    var calc = ShippingCalculator.new()
+    
+    let domestic = ShippingZone.new("Domestic")
+        .add_country("US")
+        .add_rate(ZoneRate.flat_rate(Carrier.USPS, ServiceType.Standard, usd(5.99)))
+        .add_rate(ZoneRate.flat_rate(Carrier.USPS, ServiceType.Express, usd(12.99)))
+    
+    calc = calc.add_zone(domestic)
+    
+    let address = Address.new("John", "Doe", "123 Main St", "New York", "NY", "10001", "US")
+    let rates = calc.calculate(address, Decimal.from_int(1), usd(50.00))
+    
+    assert_eq(rates.len(), 2)?
+    assert_eq(rates[0].price.format(), "$5.99")?
+}
+
+test "free shipping threshold" {
+    var calc = ShippingCalculator.new()
+        .set_free_threshold(usd(100.00))
+        .add_default_rate(ZoneRate.flat_rate(Carrier.USPS, ServiceType.Standard, usd(9.99)))
+    
+    let address = Address.new("John", "Doe", "123 Main St", "City", "ST", "12345", "US")
+    
+    // Below threshold
+    let rates1 = calc.calculate(address.clone(), Decimal.from_int(1), usd(50.00))
+    assert_eq(rates1[0].price.format(), "$9.99")?
+    
+    // Above threshold
+    let rates2 = calc.calculate(address, Decimal.from_int(1), usd(150.00))
+    assert(rates2[0].is_free())?
+}
+
+test "shipment tracking" {
+    let from = Address.new("Store", "Name", "100 Warehouse St", "City", "ST", "12345", "US")
+    let to = Address.new("John", "Doe", "123 Main St", "City", "ST", "54321", "US")
+    
+    var shipment = Shipment.new("order-123", Carrier.UPS, from, to)
+        .set_tracking("1Z999AA10123456784")
+        .mark_shipped()
+        .mark_in_transit()
+    
+    assert_eq(shipment.status, ShipmentStatus.InTransit)?
+    assert_eq(shipment.events.len(), 2)?
+    assert(shipment.tracking_url().is_some())?
+}
+
+test "weight based rate" {
+    let rate = ZoneRate.weight_based(Carrier.FedEx, ServiceType.Standard, usd(5.00), usd(2.00))
+    
+    let price = rate.calculate(Decimal.from_int(3), usd(100.00))
+    assert_eq(price.format(), "$11.00")?  // 5 + (3 * 2)
+}

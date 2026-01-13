@@ -1,0 +1,929 @@
+// =============================================================================
+// Vibee OS — Debugger UI Module
+// Visual debugger interface with breakpoints, stepping, and variable inspection
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Debugger UI Configuration
+// -----------------------------------------------------------------------------
+
+/// Debugger UI configuration
+struct DebuggerUIConfig {
+    theme: DebuggerTheme
+    show_line_numbers: Bool
+    show_breakpoint_gutter: Bool
+    highlight_current_line: Bool
+    auto_scroll: Bool
+    max_stack_depth: Int
+    variable_expand_depth: Int
+    
+    fn default() -> Self {
+        DebuggerUIConfig {
+            theme: DebuggerTheme.Dark,
+            show_line_numbers: true,
+            show_breakpoint_gutter: true,
+            highlight_current_line: true,
+            auto_scroll: true,
+            max_stack_depth: 50,
+            variable_expand_depth: 3
+        }
+    }
+}
+
+enum DebuggerTheme {
+    Dark
+    Light
+    HighContrast
+    Custom(ThemeColors)
+}
+
+struct ThemeColors {
+    background: Color
+    foreground: Color
+    current_line: Color
+    breakpoint: Color
+    breakpoint_hit: Color
+    error: Color
+    warning: Color
+    success: Color
+    selection: Color
+}
+
+impl ThemeColors {
+    fn dark() -> Self {
+        ThemeColors {
+            background: Color.hex("#1e1e1e"),
+            foreground: Color.hex("#d4d4d4"),
+            current_line: Color.hex("#264f78"),
+            breakpoint: Color.hex("#e51400"),
+            breakpoint_hit: Color.hex("#ffcc00"),
+            error: Color.hex("#f44747"),
+            warning: Color.hex("#cca700"),
+            success: Color.hex("#89d185"),
+            selection: Color.hex("#264f78")
+        }
+    }
+    
+    fn light() -> Self {
+        ThemeColors {
+            background: Color.hex("#ffffff"),
+            foreground: Color.hex("#000000"),
+            current_line: Color.hex("#fff3cd"),
+            breakpoint: Color.hex("#e51400"),
+            breakpoint_hit: Color.hex("#ff8c00"),
+            error: Color.hex("#d32f2f"),
+            warning: Color.hex("#f57c00"),
+            success: Color.hex("#388e3c"),
+            selection: Color.hex("#add6ff")
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Debugger UI State
+// -----------------------------------------------------------------------------
+
+enum DebuggerState {
+    Idle
+    Running
+    Paused(PauseReason)
+    Stepping
+    Terminated
+}
+
+enum PauseReason {
+    Breakpoint(BreakpointInfo)
+    Exception(String)
+    StepComplete
+    UserRequest
+    Watchpoint(String, String, String)  // name, old_value, new_value
+}
+
+struct BreakpointInfo {
+    id: Int
+    file: String
+    line: Int
+    condition: Option<String>
+    hit_count: Int
+    log_message: Option<String>
+    enabled: Bool
+}
+
+impl BreakpointInfo {
+    fn new(file: String, line: Int) -> Self {
+        BreakpointInfo {
+            id: 0,
+            file: file,
+            line: line,
+            condition: None,
+            hit_count: 0,
+            log_message: None,
+            enabled: true
+        }
+    }
+    
+    fn with_condition(condition: String) -> Self {
+        self.condition = Some(condition)
+        self
+    }
+    
+    fn with_log(message: String) -> Self {
+        self.log_message = Some(message)
+        self
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Source View Panel
+// -----------------------------------------------------------------------------
+
+struct SourceLine {
+    number: Int
+    text: String
+    has_breakpoint: Bool
+    is_current: Bool
+    is_error: Bool
+}
+
+actor SourceViewPanel {
+    state file_path: Option<String>
+    state lines: [SourceLine]
+    state current_line: Int
+    state scroll_offset: Int
+    state visible_lines: Int
+    state breakpoints: Map<Int, BreakpointInfo>
+    state config: DebuggerUIConfig
+    
+    fn new(config: DebuggerUIConfig) -> Self {
+        SourceViewPanel {
+            file_path: None,
+            lines: [],
+            current_line: 0,
+            scroll_offset: 0,
+            visible_lines: 30,
+            breakpoints: Map.new(),
+            config: config
+        }
+    }
+    
+    /// Load source file
+    on load_file(path: String) -> Result<(), String> {
+        let content = fs.read_string(path)?
+        self.file_path = Some(path)
+        self.lines = content.lines().enumerate().map(|(i, text)| {
+            SourceLine {
+                number: i + 1,
+                text: text,
+                has_breakpoint: self.breakpoints.contains_key(i + 1),
+                is_current: false,
+                is_error: false
+            }
+        }).collect()
+        Ok(())
+    }
+    
+    /// Set current execution line
+    on set_current_line(line: Int) {
+        self.current_line = line
+        for l in self.lines {
+            l.is_current = l.number == line
+        }
+        
+        if self.config.auto_scroll {
+            self.scroll_to_line(line)
+        }
+    }
+    
+    /// Toggle breakpoint at line
+    on toggle_breakpoint(line: Int) -> Option<BreakpointInfo> {
+        if self.breakpoints.contains_key(line) {
+            self.breakpoints.remove(line)
+            if line <= self.lines.len() {
+                self.lines[line - 1].has_breakpoint = false
+            }
+            None
+        } else {
+            let bp = BreakpointInfo.new(self.file_path.clone().unwrap_or(""), line)
+            self.breakpoints.insert(line, bp.clone())
+            if line <= self.lines.len() {
+                self.lines[line - 1].has_breakpoint = true
+            }
+            Some(bp)
+        }
+    }
+    
+    /// Scroll to specific line
+    on scroll_to_line(line: Int) {
+        let half_visible = self.visible_lines / 2
+        self.scroll_offset = (line - half_visible).max(0)
+    }
+    
+    /// Render source view
+    fn render() -> String {
+        var output = StringBuilder.new()
+        let colors = self.get_theme_colors()
+        
+        let start = self.scroll_offset
+        let end = (start + self.visible_lines).min(self.lines.len())
+        
+        for i in start..end {
+            let line = self.lines[i]
+            output.append(self.render_line(line, colors))
+            output.append("\n")
+        }
+        
+        output.build()
+    }
+    
+    fn render_line(line: SourceLine, colors: ThemeColors) -> String {
+        var prefix = ""
+        
+        // Breakpoint gutter
+        if self.config.show_breakpoint_gutter {
+            if line.has_breakpoint {
+                prefix += if line.is_current { "●→" } else { "● " }
+            } else if line.is_current {
+                prefix += " →"
+            } else {
+                prefix += "  "
+            }
+        }
+        
+        // Line number
+        if self.config.show_line_numbers {
+            prefix += format!("{:4} │ ", line.number)
+        }
+        
+        // Line content with highlighting
+        let bg = if line.is_current && self.config.highlight_current_line {
+            colors.current_line
+        } else {
+            colors.background
+        }
+        
+        format!("{}{}", prefix, line.text)
+    }
+    
+    fn get_theme_colors() -> ThemeColors {
+        match self.config.theme {
+            DebuggerTheme.Dark => ThemeColors.dark()
+            DebuggerTheme.Light => ThemeColors.light()
+            DebuggerTheme.HighContrast => ThemeColors.dark()  // TODO: implement
+            DebuggerTheme.Custom(colors) => colors
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Call Stack Panel
+// -----------------------------------------------------------------------------
+
+struct StackFrame {
+    index: Int
+    function_name: String
+    file: String
+    line: Int
+    column: Int
+    is_current: Bool
+    locals: Map<String, VariableView>
+}
+
+actor CallStackPanel {
+    state frames: [StackFrame]
+    state selected_index: Int
+    state on_frame_selected: Option<fn(StackFrame) -> ()>
+    
+    fn new() -> Self {
+        CallStackPanel {
+            frames: [],
+            selected_index: 0,
+            on_frame_selected: None
+        }
+    }
+    
+    /// Update call stack
+    on update(frames: [StackFrame]) {
+        self.frames = frames
+        if !frames.is_empty() {
+            self.selected_index = 0
+            self.frames[0].is_current = true
+        }
+    }
+    
+    /// Select frame by index
+    on select_frame(index: Int) {
+        if index < self.frames.len() {
+            for f in self.frames {
+                f.is_current = false
+            }
+            self.frames[index].is_current = true
+            self.selected_index = index
+            
+            if let handler = self.on_frame_selected {
+                handler(self.frames[index].clone())
+            }
+        }
+    }
+    
+    /// Set frame selection handler
+    on on_select(handler: fn(StackFrame) -> ()) {
+        self.on_frame_selected = Some(handler)
+    }
+    
+    /// Get current frame
+    fn current_frame() -> Option<StackFrame> {
+        self.frames.get(self.selected_index).cloned()
+    }
+    
+    /// Render call stack
+    fn render() -> String {
+        var output = StringBuilder.new()
+        output.append("═══ Call Stack ═══\n")
+        
+        for frame in self.frames {
+            let marker = if frame.is_current { "▶" } else { " " }
+            let location = format!("{}:{}", frame.file, frame.line)
+            output.append(format!("{} #{} {} ({})\n", 
+                marker, frame.index, frame.function_name, location))
+        }
+        
+        output.build()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Variables Panel
+// -----------------------------------------------------------------------------
+
+struct VariableView {
+    name: String
+    type_name: String
+    value: String
+    children: [VariableView]
+    expanded: Bool
+    depth: Int
+}
+
+impl VariableView {
+    fn new(name: String, type_name: String, value: String) -> Self {
+        VariableView {
+            name: name,
+            type_name: type_name,
+            value: value,
+            children: [],
+            expanded: false,
+            depth: 0
+        }
+    }
+    
+    fn with_children(children: [VariableView]) -> Self {
+        self.children = children
+        self
+    }
+}
+
+actor VariablesPanel {
+    state locals: [VariableView]
+    state globals: [VariableView]
+    state watches: [WatchExpression]
+    state selected_index: Int
+    state view_mode: VariableViewMode
+    
+    fn new() -> Self {
+        VariablesPanel {
+            locals: [],
+            globals: [],
+            watches: [],
+            selected_index: 0,
+            view_mode: VariableViewMode.Locals
+        }
+    }
+    
+    /// Update local variables
+    on update_locals(vars: [VariableView]) {
+        self.locals = vars
+    }
+    
+    /// Update global variables
+    on update_globals(vars: [VariableView]) {
+        self.globals = vars
+    }
+    
+    /// Add watch expression
+    on add_watch(expression: String) {
+        self.watches.push(WatchExpression {
+            expression: expression,
+            result: None,
+            error: None
+        })
+    }
+    
+    /// Remove watch expression
+    on remove_watch(index: Int) {
+        if index < self.watches.len() {
+            self.watches.remove(index)
+        }
+    }
+    
+    /// Evaluate watch expressions
+    on evaluate_watches(evaluator: fn(String) -> Result<String, String>) {
+        for watch in self.watches {
+            match evaluator(watch.expression.clone()) {
+                Ok(result) => {
+                    watch.result = Some(result)
+                    watch.error = None
+                }
+                Err(e) => {
+                    watch.result = None
+                    watch.error = Some(e)
+                }
+            }
+        }
+    }
+    
+    /// Toggle variable expansion
+    on toggle_expand(path: [Int]) {
+        let vars = match self.view_mode {
+            VariableViewMode.Locals => self.locals
+            VariableViewMode.Globals => self.globals
+            VariableViewMode.Watches => return
+        }
+        
+        self.toggle_expand_recursive(vars, path, 0)
+    }
+    
+    fn toggle_expand_recursive(vars: [VariableView], path: [Int], depth: Int) {
+        if depth >= path.len() { return }
+        
+        let index = path[depth]
+        if index >= vars.len() { return }
+        
+        if depth == path.len() - 1 {
+            vars[index].expanded = !vars[index].expanded
+        } else {
+            self.toggle_expand_recursive(vars[index].children, path, depth + 1)
+        }
+    }
+    
+    /// Switch view mode
+    on set_view_mode(mode: VariableViewMode) {
+        self.view_mode = mode
+    }
+    
+    /// Render variables panel
+    fn render() -> String {
+        var output = StringBuilder.new()
+        
+        match self.view_mode {
+            VariableViewMode.Locals => {
+                output.append("═══ Local Variables ═══\n")
+                self.render_variables(self.locals, output, 0)
+            }
+            VariableViewMode.Globals => {
+                output.append("═══ Global Variables ═══\n")
+                self.render_variables(self.globals, output, 0)
+            }
+            VariableViewMode.Watches => {
+                output.append("═══ Watch Expressions ═══\n")
+                self.render_watches(output)
+            }
+        }
+        
+        output.build()
+    }
+    
+    fn render_variables(vars: [VariableView], output: StringBuilder, depth: Int) {
+        let indent = "  ".repeat(depth)
+        
+        for v in vars {
+            let expand_marker = if !v.children.is_empty() {
+                if v.expanded { "▼" } else { "▶" }
+            } else { " " }
+            
+            output.append(format!("{}{} {}: {} = {}\n",
+                indent, expand_marker, v.name, v.type_name, v.value))
+            
+            if v.expanded {
+                self.render_variables(v.children, output, depth + 1)
+            }
+        }
+    }
+    
+    fn render_watches(output: StringBuilder) {
+        for (i, watch) in self.watches.enumerate() {
+            let result = match (watch.result.clone(), watch.error.clone()) {
+                (Some(r), _) => r
+                (_, Some(e)) => format!("Error: {}", e)
+                _ => "..."
+            }
+            output.append(format!("  {} = {}\n", watch.expression, result))
+        }
+    }
+}
+
+enum VariableViewMode {
+    Locals
+    Globals
+    Watches
+}
+
+struct WatchExpression {
+    expression: String
+    result: Option<String>
+    error: Option<String>
+}
+
+// -----------------------------------------------------------------------------
+// Debug Console Panel
+// -----------------------------------------------------------------------------
+
+actor DebugConsolePanel {
+    state history: [ConsoleEntry]
+    state input_history: [String]
+    state input_index: Int
+    state max_entries: Int
+    
+    fn new() -> Self {
+        DebugConsolePanel {
+            history: [],
+            input_history: [],
+            input_index: 0,
+            max_entries: 1000
+        }
+    }
+    
+    /// Log message
+    on log(message: String, level: ConsoleLevel) {
+        self.add_entry(ConsoleEntry {
+            timestamp: Instant.now(),
+            level: level,
+            message: message,
+            source: None
+        })
+    }
+    
+    /// Log with source location
+    on log_with_source(message: String, level: ConsoleLevel, file: String, line: Int) {
+        self.add_entry(ConsoleEntry {
+            timestamp: Instant.now(),
+            level: level,
+            message: message,
+            source: Some(SourceLocation { file: file, line: line })
+        })
+    }
+    
+    /// Execute command
+    on execute(command: String, evaluator: fn(String) -> Result<String, String>) {
+        self.input_history.push(command.clone())
+        self.input_index = self.input_history.len()
+        
+        self.log(format!("> {}", command), ConsoleLevel.Input)
+        
+        match evaluator(command) {
+            Ok(result) => self.log(result, ConsoleLevel.Output)
+            Err(e) => self.log(e, ConsoleLevel.Error)
+        }
+    }
+    
+    fn add_entry(entry: ConsoleEntry) {
+        self.history.push(entry)
+        if self.history.len() > self.max_entries {
+            self.history.remove(0)
+        }
+    }
+    
+    /// Clear console
+    on clear() {
+        self.history.clear()
+    }
+    
+    /// Get previous input
+    fn previous_input() -> Option<String> {
+        if self.input_index > 0 {
+            self.input_index -= 1
+            Some(self.input_history[self.input_index].clone())
+        } else {
+            None
+        }
+    }
+    
+    /// Get next input
+    fn next_input() -> Option<String> {
+        if self.input_index < self.input_history.len() - 1 {
+            self.input_index += 1
+            Some(self.input_history[self.input_index].clone())
+        } else {
+            None
+        }
+    }
+    
+    /// Render console
+    fn render() -> String {
+        var output = StringBuilder.new()
+        output.append("═══ Debug Console ═══\n")
+        
+        for entry in self.history {
+            let prefix = match entry.level {
+                ConsoleLevel.Info => "[INFO]"
+                ConsoleLevel.Warning => "[WARN]"
+                ConsoleLevel.Error => "[ERR]"
+                ConsoleLevel.Input => ">"
+                ConsoleLevel.Output => "<"
+            }
+            
+            let source = entry.source.map(|s| format!(" ({}:{})", s.file, s.line)).unwrap_or("")
+            output.append(format!("{} {}{}\n", prefix, entry.message, source))
+        }
+        
+        output.build()
+    }
+}
+
+struct ConsoleEntry {
+    timestamp: Instant
+    level: ConsoleLevel
+    message: String
+    source: Option<SourceLocation>
+}
+
+enum ConsoleLevel {
+    Info
+    Warning
+    Error
+    Input
+    Output
+}
+
+struct SourceLocation {
+    file: String
+    line: Int
+}
+
+// -----------------------------------------------------------------------------
+// Main Debugger UI
+// -----------------------------------------------------------------------------
+
+actor DebuggerUI {
+    state config: DebuggerUIConfig
+    state state: DebuggerState
+    state source_panel: SourceViewPanel
+    state stack_panel: CallStackPanel
+    state variables_panel: VariablesPanel
+    state console_panel: DebugConsolePanel
+    state breakpoints: Map<String, [BreakpointInfo]>
+    state on_state_change: Option<fn(DebuggerState) -> ()>
+    
+    fn new() -> Self {
+        Self.with_config(DebuggerUIConfig.default())
+    }
+    
+    fn with_config(config: DebuggerUIConfig) -> Self {
+        DebuggerUI {
+            config: config.clone(),
+            state: DebuggerState.Idle,
+            source_panel: SourceViewPanel.new(config),
+            stack_panel: CallStackPanel.new(),
+            variables_panel: VariablesPanel.new(),
+            console_panel: DebugConsolePanel.new(),
+            breakpoints: Map.new(),
+            on_state_change: None
+        }
+    }
+    
+    // -------------------------------------------------------------------------
+    // Debugger Control
+    // -------------------------------------------------------------------------
+    
+    /// Start debugging
+    on start() {
+        self.set_state(DebuggerState.Running)
+        @native("debugger_start")
+    }
+    
+    /// Continue execution
+    on continue() {
+        self.set_state(DebuggerState.Running)
+        @native("debugger_continue")
+    }
+    
+    /// Step into
+    on step_into() {
+        self.set_state(DebuggerState.Stepping)
+        @native("debugger_step_into")
+    }
+    
+    /// Step over
+    on step_over() {
+        self.set_state(DebuggerState.Stepping)
+        @native("debugger_step_over")
+    }
+    
+    /// Step out
+    on step_out() {
+        self.set_state(DebuggerState.Stepping)
+        @native("debugger_step_out")
+    }
+    
+    /// Pause execution
+    on pause() {
+        self.set_state(DebuggerState.Paused(PauseReason.UserRequest))
+        @native("debugger_pause")
+    }
+    
+    /// Stop debugging
+    on stop() {
+        self.set_state(DebuggerState.Terminated)
+        @native("debugger_stop")
+    }
+    
+    /// Restart debugging
+    on restart() {
+        self.stop()
+        self.start()
+    }
+    
+    fn set_state(new_state: DebuggerState) {
+        self.state = new_state.clone()
+        if let handler = self.on_state_change {
+            handler(new_state)
+        }
+    }
+    
+    // -------------------------------------------------------------------------
+    // Breakpoint Management
+    // -------------------------------------------------------------------------
+    
+    /// Add breakpoint
+    on add_breakpoint(file: String, line: Int) -> BreakpointInfo {
+        let bp = BreakpointInfo.new(file.clone(), line)
+        self.breakpoints.entry(file).or_insert([]).push(bp.clone())
+        @native("debugger_set_breakpoint", file, line)
+        bp
+    }
+    
+    /// Add conditional breakpoint
+    on add_conditional_breakpoint(file: String, line: Int, condition: String) -> BreakpointInfo {
+        let bp = BreakpointInfo.new(file.clone(), line).with_condition(condition.clone())
+        self.breakpoints.entry(file).or_insert([]).push(bp.clone())
+        @native("debugger_set_conditional_breakpoint", file, line, condition)
+        bp
+    }
+    
+    /// Remove breakpoint
+    on remove_breakpoint(file: String, line: Int) {
+        if let bps = self.breakpoints.get_mut(file) {
+            bps.retain(|bp| bp.line != line)
+        }
+        @native("debugger_remove_breakpoint", file, line)
+    }
+    
+    /// Toggle breakpoint
+    on toggle_breakpoint(file: String, line: Int) -> Option<BreakpointInfo> {
+        self.source_panel.toggle_breakpoint(line)
+    }
+    
+    /// Get all breakpoints
+    fn get_breakpoints() -> [BreakpointInfo] {
+        self.breakpoints.values().flatten().collect()
+    }
+    
+    // -------------------------------------------------------------------------
+    // Event Handlers
+    // -------------------------------------------------------------------------
+    
+    /// Handle breakpoint hit
+    on on_breakpoint_hit(file: String, line: Int) {
+        self.source_panel.load_file(file.clone())
+        self.source_panel.set_current_line(line)
+        self.update_stack()
+        self.update_variables()
+        
+        let bp = self.breakpoints.get(file)
+            .and_then(|bps| bps.iter().find(|b| b.line == line))
+            .cloned()
+            .unwrap_or(BreakpointInfo.new(file, line))
+        
+        self.set_state(DebuggerState.Paused(PauseReason.Breakpoint(bp)))
+        self.console_panel.log(format!("Breakpoint hit at {}:{}", file, line), ConsoleLevel.Info)
+    }
+    
+    /// Handle exception
+    on on_exception(message: String, file: String, line: Int) {
+        self.source_panel.load_file(file.clone())
+        self.source_panel.set_current_line(line)
+        self.update_stack()
+        
+        self.set_state(DebuggerState.Paused(PauseReason.Exception(message.clone())))
+        self.console_panel.log(format!("Exception: {}", message), ConsoleLevel.Error)
+    }
+    
+    /// Handle step complete
+    on on_step_complete(file: String, line: Int) {
+        self.source_panel.load_file(file)
+        self.source_panel.set_current_line(line)
+        self.update_stack()
+        self.update_variables()
+        
+        self.set_state(DebuggerState.Paused(PauseReason.StepComplete))
+    }
+    
+    fn update_stack() {
+        let frames: [StackFrame] = @native("debugger_get_stack")
+        self.stack_panel.update(frames)
+    }
+    
+    fn update_variables() {
+        let locals: [VariableView] = @native("debugger_get_locals")
+        self.variables_panel.update_locals(locals)
+    }
+    
+    // -------------------------------------------------------------------------
+    // Evaluation
+    // -------------------------------------------------------------------------
+    
+    /// Evaluate expression
+    fn evaluate(expression: String) -> Result<String, String> {
+        @native("debugger_evaluate", expression)
+    }
+    
+    /// Execute in console
+    on execute_console(command: String) {
+        self.console_panel.execute(command, |expr| self.evaluate(expr))
+    }
+    
+    // -------------------------------------------------------------------------
+    // Rendering
+    // -------------------------------------------------------------------------
+    
+    /// Render full debugger UI
+    fn render() -> String {
+        var output = StringBuilder.new()
+        
+        // Header with state
+        output.append(self.render_header())
+        output.append("\n")
+        
+        // Main panels
+        output.append(self.source_panel.render())
+        output.append("\n")
+        output.append(self.stack_panel.render())
+        output.append("\n")
+        output.append(self.variables_panel.render())
+        output.append("\n")
+        output.append(self.console_panel.render())
+        
+        // Toolbar
+        output.append("\n")
+        output.append(self.render_toolbar())
+        
+        output.build()
+    }
+    
+    fn render_header() -> String {
+        let state_str = match self.state {
+            DebuggerState.Idle => "⏹ Idle"
+            DebuggerState.Running => "▶ Running"
+            DebuggerState.Paused(_) => "⏸ Paused"
+            DebuggerState.Stepping => "⏭ Stepping"
+            DebuggerState.Terminated => "⏹ Terminated"
+        }
+        
+        format!("╔══════════════════════════════════════════╗\n║  Vibee Debugger  │  {}  ║\n╚══════════════════════════════════════════╝", state_str)
+    }
+    
+    fn render_toolbar() -> String {
+        "─────────────────────────────────────────────\n[F5] Continue  [F10] Step Over  [F11] Step Into  [Shift+F11] Step Out  [F9] Toggle Breakpoint"
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "breakpoint_info" {
+    let bp = BreakpointInfo.new("main.vibee", 10)
+    assert_eq(bp.file, "main.vibee")?
+    assert_eq(bp.line, 10)?
+    assert(bp.enabled)?
+}
+
+test "variable_view" {
+    let v = VariableView.new("counter", "Int", "42")
+    assert_eq(v.name, "counter")?
+    assert_eq(v.value, "42")?
+    assert(!v.expanded)?
+}
+
+test "debugger_state" {
+    let ui = DebuggerUI.new()
+    match ui.state {
+        DebuggerState.Idle => assert(true)?
+        _ => assert(false)?
+    }
+}
+
+test "theme_colors" {
+    let dark = ThemeColors.dark()
+    let light = ThemeColors.light()
+    assert(dark.background != light.background)?
+}

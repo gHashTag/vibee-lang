@@ -1,0 +1,243 @@
+// =============================================================================
+// Vibee OS — Analytics Dashboard Module
+// Dashboard creation, widgets, and real-time analytics visualization
+// =============================================================================
+
+use datetime::{DateTime, Duration}
+use uuid::{UUID}
+use result::{Result, Ok, Err}
+
+// =============================================================================
+// Dashboard
+// =============================================================================
+
+struct Dashboard {
+    id: String
+    name: String
+    description: String
+    widgets: [Widget]
+    layout: DashboardLayout
+    refresh_interval: Duration
+    filters: [DashboardFilter]
+    created_at: DateTime
+}
+
+struct DashboardLayout { columns: Int, rows: Int, positions: Map<String, WidgetPosition> }
+struct WidgetPosition { x: Int, y: Int, width: Int, height: Int }
+
+impl Dashboard {
+    fn new(name: String) -> Self {
+        Dashboard {
+            id: UUID.v4(), name: name, description: "", widgets: [],
+            layout: DashboardLayout { columns: 12, rows: 8, positions: Map.empty() },
+            refresh_interval: Duration.minutes(5), filters: [], created_at: DateTime.now()
+        }
+    }
+    
+    fn description(d: String) -> Self { self.description = d; self }
+    fn refresh(interval: Duration) -> Self { self.refresh_interval = interval; self }
+    fn columns(c: Int) -> Self { self.layout.columns = c; self }
+    
+    fn add_widget(widget: Widget, x: Int, y: Int, w: Int, h: Int) -> Self {
+        self.layout.positions.set(widget.id.clone(), WidgetPosition { x: x, y: y, width: w, height: h })
+        self.widgets.push(widget)
+        self
+    }
+    
+    fn filter(f: DashboardFilter) -> Self { self.filters.push(f); self }
+}
+
+// =============================================================================
+// Widgets
+// =============================================================================
+
+struct Widget {
+    id: String
+    title: String
+    widget_type: WidgetType
+    data_source: DataSource
+    config: WidgetConfig
+}
+
+enum WidgetType { Metric, LineChart, BarChart, PieChart, Table, Funnel, Map, Heatmap, Text }
+
+struct DataSource { query: String, event_name: Option<String>, aggregation: Aggregation, group_by: Option<String> }
+enum Aggregation { Count, Sum, Avg, Min, Max, Unique, Percentile(Float) }
+
+struct WidgetConfig {
+    colors: [String]
+    show_legend: Bool
+    show_labels: Bool
+    format: ValueFormat
+}
+
+enum ValueFormat { Number, Percent, Currency(String), Duration }
+
+impl Widget {
+    fn metric(title: String, query: String) -> Self {
+        Widget {
+            id: UUID.v4(), title: title, widget_type: WidgetType.Metric,
+            data_source: DataSource { query: query, event_name: None, aggregation: Aggregation.Count, group_by: None },
+            config: WidgetConfig.default()
+        }
+    }
+    
+    fn line_chart(title: String, query: String) -> Self {
+        Widget { id: UUID.v4(), title: title, widget_type: WidgetType.LineChart,
+            data_source: DataSource { query: query, event_name: None, aggregation: Aggregation.Count, group_by: Some("date") },
+            config: WidgetConfig.default() }
+    }
+    
+    fn bar_chart(title: String, query: String) -> Self {
+        Widget { id: UUID.v4(), title: title, widget_type: WidgetType.BarChart,
+            data_source: DataSource { query: query, event_name: None, aggregation: Aggregation.Count, group_by: None },
+            config: WidgetConfig.default() }
+    }
+    
+    fn pie_chart(title: String, query: String) -> Self {
+        Widget { id: UUID.v4(), title: title, widget_type: WidgetType.PieChart,
+            data_source: DataSource { query: query, event_name: None, aggregation: Aggregation.Count, group_by: None },
+            config: WidgetConfig.default() }
+    }
+    
+    fn table(title: String, query: String) -> Self {
+        Widget { id: UUID.v4(), title: title, widget_type: WidgetType.Table,
+            data_source: DataSource { query: query, event_name: None, aggregation: Aggregation.Count, group_by: None },
+            config: WidgetConfig.default() }
+    }
+    
+    fn aggregation(agg: Aggregation) -> Self { self.data_source.aggregation = agg; self }
+    fn group_by(field: String) -> Self { self.data_source.group_by = Some(field); self }
+    fn format(f: ValueFormat) -> Self { self.config.format = f; self }
+}
+
+impl WidgetConfig {
+    fn default() -> Self { WidgetConfig { colors: ["#3B82F6", "#10B981", "#F59E0B", "#EF4444"], show_legend: true, show_labels: true, format: ValueFormat.Number } }
+}
+
+// =============================================================================
+// Filters
+// =============================================================================
+
+struct DashboardFilter { id: String, name: String, field: String, filter_type: FilterType, default_value: Option<String> }
+enum FilterType { DateRange, Select([String]), MultiSelect([String]), Search }
+
+impl DashboardFilter {
+    fn date_range(name: String, field: String) -> Self {
+        DashboardFilter { id: UUID.v4(), name: name, field: field, filter_type: FilterType.DateRange, default_value: None }
+    }
+    
+    fn select(name: String, field: String, options: [String]) -> Self {
+        DashboardFilter { id: UUID.v4(), name: name, field: field, filter_type: FilterType.Select(options), default_value: None }
+    }
+}
+
+// =============================================================================
+// Dashboard Manager Actor
+// =============================================================================
+
+actor DashboardManager {
+    state dashboards: Map<String, Dashboard>
+    state data_provider: Box<dyn DataProvider>
+    
+    fn new(provider: Box<dyn DataProvider>) -> Self {
+        DashboardManager { dashboards: Map.empty(), data_provider: provider }
+    }
+    
+    fn create(dashboard: Dashboard) -> String {
+        let id = dashboard.id.clone()
+        self.dashboards.set(id.clone(), dashboard)
+        id
+    }
+    
+    fn get(id: String) -> Option<&Dashboard> { self.dashboards.get(&id) }
+    fn list() -> [&Dashboard] { self.dashboards.values().collect() }
+    fn delete(id: String) { self.dashboards.remove(&id) }
+    
+    fn render(dashboard_id: String, filters: Map<String, String>) -> Result<RenderedDashboard, DashboardError> {
+        let dashboard = self.dashboards.get(&dashboard_id).ok_or(DashboardError.NotFound)?
+        var rendered_widgets: [RenderedWidget] = []
+        
+        for widget in dashboard.widgets.iter() {
+            let data = self.data_provider.execute(&widget.data_source, &filters)?
+            rendered_widgets.push(RenderedWidget {
+                widget_id: widget.id.clone(), title: widget.title.clone(),
+                widget_type: widget.widget_type.clone(), data: data,
+                position: dashboard.layout.positions.get(&widget.id).cloned()
+            })
+        }
+        
+        Ok(RenderedDashboard { dashboard_id: dashboard_id, name: dashboard.name.clone(), widgets: rendered_widgets, rendered_at: DateTime.now() })
+    }
+}
+
+struct RenderedDashboard { dashboard_id: String, name: String, widgets: [RenderedWidget], rendered_at: DateTime }
+struct RenderedWidget { widget_id: String, title: String, widget_type: WidgetType, data: WidgetData, position: Option<WidgetPosition> }
+
+enum WidgetData {
+    Single(Float)
+    Series([(String, Float)])
+    Table { headers: [String], rows: [[String]] }
+}
+
+// =============================================================================
+// Data Provider Trait
+// =============================================================================
+
+trait DataProvider {
+    fn execute(source: &DataSource, filters: &Map<String, String>) -> Result<WidgetData, DataError>
+}
+
+enum DataError { QueryError(String), ConnectionError(String) }
+
+// =============================================================================
+// Predefined Dashboards
+// =============================================================================
+
+fn overview_dashboard() -> Dashboard {
+    Dashboard.new("Analytics Overview")
+        .add_widget(Widget.metric("Total Users", "SELECT COUNT(DISTINCT user_id) FROM events"), 0, 0, 3, 2)
+        .add_widget(Widget.metric("Page Views", "SELECT COUNT(*) FROM events WHERE name='page_view'"), 3, 0, 3, 2)
+        .add_widget(Widget.line_chart("Daily Active Users", "SELECT date, COUNT(DISTINCT user_id) FROM events GROUP BY date"), 0, 2, 6, 3)
+        .add_widget(Widget.pie_chart("Traffic Sources", "SELECT source, COUNT(*) FROM events GROUP BY source"), 6, 2, 6, 3)
+        .filter(DashboardFilter.date_range("Date Range", "timestamp"))
+}
+
+fn ecommerce_dashboard() -> Dashboard {
+    Dashboard.new("E-commerce Analytics")
+        .add_widget(Widget.metric("Revenue", "SELECT SUM(amount) FROM purchases").format(ValueFormat.Currency("USD")), 0, 0, 3, 2)
+        .add_widget(Widget.metric("Orders", "SELECT COUNT(*) FROM purchases"), 3, 0, 3, 2)
+        .add_widget(Widget.metric("Conversion Rate", "SELECT conversions/visitors FROM funnel").format(ValueFormat.Percent), 6, 0, 3, 2)
+        .add_widget(Widget.line_chart("Revenue Trend", "SELECT date, SUM(amount) FROM purchases GROUP BY date"), 0, 2, 12, 3)
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum DashboardError { NotFound, RenderError(String), DataError(DataError) }
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "dashboard creation" {
+    let d = Dashboard.new("Test").add_widget(Widget.metric("Users", "SELECT COUNT(*)"), 0, 0, 3, 2)
+    assert_eq(d.name, "Test")?
+    assert_eq(d.widgets.len(), 1)?
+}
+
+test "widget creation" {
+    let w = Widget.line_chart("DAU", "query").group_by("date")
+    assert_eq(w.title, "DAU")?
+}
+
+test "filter creation" {
+    let f = DashboardFilter.date_range("Period", "timestamp")
+    assert_eq(f.name, "Period")?
+}
+
+test "overview dashboard" {
+    let d = overview_dashboard()
+    assert_eq(d.widgets.len(), 4)?
+}

@@ -1,0 +1,476 @@
+// =============================================================================
+// Vibee OS — Admin Permission Module
+// Administrative permissions and access control
+// =============================================================================
+
+use datetime.{DateTime}
+use logger.{Logger}
+
+// =============================================================================
+// Core Types
+// =============================================================================
+
+/// Permission action types
+enum PermissionAction {
+    Create
+    Read
+    Update
+    Delete
+    Execute
+    Manage
+    All
+    
+    fn name() -> String {
+        match self {
+            Create => "create"
+            Read => "read"
+            Update => "update"
+            Delete => "delete"
+            Execute => "execute"
+            Manage => "manage"
+            All => "*"
+        }
+    }
+}
+
+/// Admin permission definition
+struct AdminPermission {
+    id: String
+    resource: String
+    action: PermissionAction
+    scope: Option<String>
+    conditions: [PermissionCondition]
+    description: Option<String>
+    created_at: DateTime
+}
+
+impl AdminPermission {
+    fn new(resource: String, action: PermissionAction) -> Self {
+        AdminPermission {
+            id: "\(resource):\(action.name())",
+            resource: resource,
+            action: action,
+            scope: None,
+            conditions: [],
+            description: None,
+            created_at: DateTime.now()
+        }
+    }
+    
+    fn with_scope(scope: String) -> Self {
+        self.scope = Some(scope)
+        self.id = "\(self.resource):\(self.action.name()):\(scope)"
+        self
+    }
+    
+    fn with_condition(condition: PermissionCondition) -> Self {
+        self.conditions.push(condition)
+        self
+    }
+    
+    fn with_description(desc: String) -> Self {
+        self.description = Some(desc)
+        self
+    }
+    
+    fn matches(resource: String, action: PermissionAction) -> Bool {
+        (self.resource == resource || self.resource == "*") &&
+        (self.action == action || self.action == PermissionAction.All)
+    }
+}
+
+/// Permission condition
+struct PermissionCondition {
+    field: String
+    operator: ConditionOperator
+    value: Any
+}
+
+enum ConditionOperator {
+    Equals
+    NotEquals
+    Contains
+    In
+    GreaterThan
+    LessThan
+}
+
+impl PermissionCondition {
+    fn equals(field: String, value: Any) -> Self {
+        PermissionCondition { field: field, operator: ConditionOperator.Equals, value: value }
+    }
+    
+    fn evaluate(context: Map<String, Any>) -> Bool {
+        let field_value = context.get(self.field)
+        match self.operator {
+            ConditionOperator.Equals => field_value == Some(self.value)
+            ConditionOperator.NotEquals => field_value != Some(self.value)
+            _ => false
+        }
+    }
+}
+
+// =============================================================================
+// Admin Role
+// =============================================================================
+
+/// Admin role with permissions
+struct AdminRole {
+    id: String
+    name: String
+    description: Option<String>
+    permissions: Set<String>
+    parent_roles: [String]
+    is_system: Bool
+    created_at: DateTime
+}
+
+impl AdminRole {
+    fn new(id: String, name: String) -> Self {
+        AdminRole {
+            id: id,
+            name: name,
+            description: None,
+            permissions: Set.new(),
+            parent_roles: [],
+            is_system: false,
+            created_at: DateTime.now()
+        }
+    }
+    
+    fn system(id: String, name: String) -> Self {
+        var role = AdminRole.new(id, name)
+        role.is_system = true
+        role
+    }
+    
+    fn with_description(desc: String) -> Self {
+        self.description = Some(desc)
+        self
+    }
+    
+    fn with_permission(permission: String) -> Self {
+        self.permissions.insert(permission)
+        self
+    }
+    
+    fn with_permissions(permissions: [String]) -> Self {
+        for p in permissions {
+            self.permissions.insert(p)
+        }
+        self
+    }
+    
+    fn with_parent(parent_id: String) -> Self {
+        self.parent_roles.push(parent_id)
+        self
+    }
+    
+    fn has_permission(permission: String) -> Bool {
+        self.permissions.contains(permission)
+    }
+}
+
+// =============================================================================
+// Permission Manager
+// =============================================================================
+
+/// Permission manager
+struct AdminPermissionManager {
+    roles: Map<String, AdminRole>
+    user_roles: Map<String, Set<String>>
+    user_permissions: Map<String, Set<String>>
+    logger: Logger
+}
+
+impl AdminPermissionManager {
+    fn new() -> Self {
+        var manager = AdminPermissionManager {
+            roles: Map.new(),
+            user_roles: Map.new(),
+            user_permissions: Map.new(),
+            logger: Logger.new("admin_permission")
+        }
+        manager.init_default_roles()
+        manager
+    }
+    
+    fn init_default_roles() {
+        // Super Admin
+        let super_admin = AdminRole.system("super_admin", "Super Administrator")
+            .with_description("Full system access")
+            .with_permission("*:*")
+        self.roles.insert("super_admin", super_admin)
+        
+        // Admin
+        let admin = AdminRole.system("admin", "Administrator")
+            .with_description("Administrative access")
+            .with_permissions([
+                "users:read", "users:create", "users:update",
+                "settings:read", "settings:update",
+                "audit:read"
+            ])
+        self.roles.insert("admin", admin)
+        
+        // Moderator
+        let moderator = AdminRole.system("moderator", "Moderator")
+            .with_description("Content moderation")
+            .with_permissions(["users:read", "content:read", "content:update", "content:delete"])
+        self.roles.insert("moderator", moderator)
+        
+        // Viewer
+        let viewer = AdminRole.system("viewer", "Viewer")
+            .with_description("Read-only access")
+            .with_permissions(["users:read", "settings:read", "audit:read"])
+        self.roles.insert("viewer", viewer)
+    }
+    
+    fn add_role(role: AdminRole) -> Result<(), PermissionError> {
+        if self.roles.contains_key(role.id) {
+            return Err(PermissionError.RoleExists(role.id))
+        }
+        self.roles.insert(role.id.clone(), role)
+        Ok(())
+    }
+    
+    fn get_role(role_id: String) -> Option<AdminRole> {
+        self.roles.get(role_id).cloned()
+    }
+    
+    fn assign_role(user_id: String, role_id: String) -> Result<(), PermissionError> {
+        if !self.roles.contains_key(role_id) {
+            return Err(PermissionError.RoleNotFound(role_id))
+        }
+        
+        let roles = self.user_roles.entry(user_id).or_insert(Set.new())
+        roles.insert(role_id.clone())
+        
+        self.logger.info_with("Role assigned", {"user_id": user_id, "role_id": role_id})
+        Ok(())
+    }
+    
+    fn revoke_role(user_id: String, role_id: String) -> Result<(), PermissionError> {
+        if let Some(roles) = self.user_roles.get_mut(user_id) {
+            roles.remove(role_id)
+            self.logger.info_with("Role revoked", {"user_id": user_id, "role_id": role_id})
+        }
+        Ok(())
+    }
+    
+    fn grant_permission(user_id: String, permission: String) {
+        let perms = self.user_permissions.entry(user_id).or_insert(Set.new())
+        perms.insert(permission)
+    }
+    
+    fn revoke_permission(user_id: String, permission: String) {
+        if let Some(perms) = self.user_permissions.get_mut(user_id) {
+            perms.remove(permission)
+        }
+    }
+    
+    fn get_user_roles(user_id: String) -> [AdminRole] {
+        match self.user_roles.get(user_id) {
+            Some(role_ids) => {
+                role_ids.iter()
+                    .filter_map(|id| self.roles.get(id).cloned())
+                    .collect()
+            }
+            None => []
+        }
+    }
+    
+    fn get_user_permissions(user_id: String) -> Set<String> {
+        var all_perms = Set.new()
+        
+        // Direct permissions
+        if let Some(perms) = self.user_permissions.get(user_id) {
+            for p in perms.iter() {
+                all_perms.insert(p.clone())
+            }
+        }
+        
+        // Role permissions
+        for role in self.get_user_roles(user_id) {
+            for p in role.permissions.iter() {
+                all_perms.insert(p.clone())
+            }
+        }
+        
+        all_perms
+    }
+    
+    fn has_permission(user_id: String, permission: String) -> Bool {
+        let perms = self.get_user_permissions(user_id)
+        
+        // Check exact match
+        if perms.contains(permission) {
+            return true
+        }
+        
+        // Check wildcard
+        if perms.contains("*:*") {
+            return true
+        }
+        
+        // Check resource wildcard
+        let parts: [String] = permission.split(":")
+        if parts.len() >= 2 {
+            let resource_wildcard = "\(parts[0]):*"
+            if perms.contains(resource_wildcard) {
+                return true
+            }
+        }
+        
+        false
+    }
+    
+    fn check_permission(user_id: String, permission: String) -> Result<(), PermissionError> {
+        if self.has_permission(user_id, permission) {
+            Ok(())
+        } else {
+            Err(PermissionError.AccessDenied(permission))
+        }
+    }
+}
+
+// =============================================================================
+// Permission Guard
+// =============================================================================
+
+/// Permission guard for protecting resources
+struct PermissionGuard {
+    manager: AdminPermissionManager
+    required_permissions: [String]
+    require_all: Bool
+}
+
+impl PermissionGuard {
+    fn new(manager: AdminPermissionManager) -> Self {
+        PermissionGuard {
+            manager: manager,
+            required_permissions: [],
+            require_all: true
+        }
+    }
+    
+    fn require(permission: String) -> Self {
+        self.required_permissions.push(permission)
+        self
+    }
+    
+    fn require_any() -> Self {
+        self.require_all = false
+        self
+    }
+    
+    fn check(user_id: String) -> Result<(), PermissionError> {
+        if self.required_permissions.is_empty() {
+            return Ok(())
+        }
+        
+        if self.require_all {
+            for perm in self.required_permissions.iter() {
+                if !self.manager.has_permission(user_id, perm.clone()) {
+                    return Err(PermissionError.AccessDenied(perm.clone()))
+                }
+            }
+            Ok(())
+        } else {
+            for perm in self.required_permissions.iter() {
+                if self.manager.has_permission(user_id, perm.clone()) {
+                    return Ok(())
+                }
+            }
+            Err(PermissionError.AccessDenied("any required permission"))
+        }
+    }
+}
+
+// =============================================================================
+// Permission Actor
+// =============================================================================
+
+actor AdminPermissionActor {
+    manager: AdminPermissionManager
+    
+    fn new() -> Self {
+        AdminPermissionActor { manager: AdminPermissionManager.new() }
+    }
+    
+    async fn assign_role(user_id: String, role_id: String) -> Result<(), PermissionError> {
+        self.manager.assign_role(user_id, role_id)
+    }
+    
+    async fn revoke_role(user_id: String, role_id: String) -> Result<(), PermissionError> {
+        self.manager.revoke_role(user_id, role_id)
+    }
+    
+    async fn check_permission(user_id: String, permission: String) -> Result<(), PermissionError> {
+        self.manager.check_permission(user_id, permission)
+    }
+    
+    async fn get_permissions(user_id: String) -> Set<String> {
+        self.manager.get_user_permissions(user_id)
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum PermissionError {
+    AccessDenied(String)
+    RoleNotFound(String)
+    RoleExists(String)
+    InvalidPermission(String)
+    
+    fn message() -> String {
+        match self {
+            AccessDenied(perm) => "Access denied: \(perm)"
+            RoleNotFound(id) => "Role not found: \(id)"
+            RoleExists(id) => "Role already exists: \(id)"
+            InvalidPermission(perm) => "Invalid permission: \(perm)"
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "permission creation" {
+    let perm = AdminPermission.new("users", PermissionAction.Read)
+    assert_eq(perm.id, "users:read")?
+}
+
+test "role permissions" {
+    let role = AdminRole.new("editor", "Editor")
+        .with_permission("content:read")
+        .with_permission("content:update")
+    
+    assert(role.has_permission("content:read"))?
+    assert(!role.has_permission("content:delete"))?
+}
+
+test "permission manager" {
+    var manager = AdminPermissionManager.new()
+    manager.assign_role("user-1", "admin")?
+    
+    assert(manager.has_permission("user-1", "users:read"))?
+    assert(!manager.has_permission("user-1", "system:admin"))?
+}
+
+test "super admin wildcard" {
+    var manager = AdminPermissionManager.new()
+    manager.assign_role("user-1", "super_admin")?
+    
+    assert(manager.has_permission("user-1", "any:permission"))?
+}
+
+test "permission guard" {
+    var manager = AdminPermissionManager.new()
+    manager.assign_role("user-1", "viewer")?
+    
+    let guard = PermissionGuard.new(manager).require("users:read")
+    assert(guard.check("user-1").is_ok())?
+}

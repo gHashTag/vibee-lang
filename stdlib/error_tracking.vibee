@@ -1,0 +1,1016 @@
+// =============================================================================
+// Vibee OS — Error Tracking Module
+// Comprehensive error tracking, grouping, and analysis
+// =============================================================================
+
+use datetime.{DateTime, Duration}
+use logger.{Level, LogRecord}
+
+// -----------------------------------------------------------------------------
+// Core Error Types
+// -----------------------------------------------------------------------------
+
+/// Tracked error event
+struct ErrorEvent {
+    id: String
+    fingerprint: String
+    type_: String
+    message: String
+    stack_trace: Option<StackTrace>
+    timestamp: DateTime
+    level: ErrorLevel
+    tags: Map<String, String>
+    extra: Map<String, Any>
+    user: Option<ErrorUser>
+    request: Option<ErrorRequest>
+    contexts: Map<String, Map<String, Any>>
+    breadcrumbs: [Breadcrumb]
+    release: Option<String>
+    environment: String
+    server_name: Option<String>
+    handled: Bool
+}
+
+impl ErrorEvent {
+    fn new(type_: String, message: String) -> Self {
+        ErrorEvent {
+            id: Uuid.v4().to_string(),
+            fingerprint: "",
+            type_: type_,
+            message: message,
+            stack_trace: None,
+            timestamp: DateTime.now(),
+            level: ErrorLevel.Error,
+            tags: Map.new(),
+            extra: Map.new(),
+            user: None,
+            request: None,
+            contexts: Map.new(),
+            breadcrumbs: [],
+            release: None,
+            environment: "production",
+            server_name: None,
+            handled: true
+        }
+    }
+    
+    fn from_error(err: Error) -> Self {
+        var event = ErrorEvent.new(err.type_name(), err.message())
+        event.stack_trace = Some(StackTrace.from_error(err))
+        event.fingerprint = event.compute_fingerprint()
+        event
+    }
+    
+    fn with_stack_trace(trace: StackTrace) -> Self {
+        self.stack_trace = Some(trace)
+        self.fingerprint = self.compute_fingerprint()
+        self
+    }
+    
+    fn with_level(level: ErrorLevel) -> Self {
+        self.level = level
+        self
+    }
+    
+    fn with_tag(key: String, value: String) -> Self {
+        self.tags.insert(key, value)
+        self
+    }
+    
+    fn with_extra(key: String, value: Any) -> Self {
+        self.extra.insert(key, value)
+        self
+    }
+    
+    fn with_user(user: ErrorUser) -> Self {
+        self.user = Some(user)
+        self
+    }
+    
+    fn with_request(request: ErrorRequest) -> Self {
+        self.request = Some(request)
+        self
+    }
+    
+    fn with_context(name: String, data: Map<String, Any>) -> Self {
+        self.contexts.insert(name, data)
+        self
+    }
+    
+    fn with_breadcrumbs(breadcrumbs: [Breadcrumb]) -> Self {
+        self.breadcrumbs = breadcrumbs
+        self
+    }
+    
+    fn add_breadcrumb(breadcrumb: Breadcrumb) -> Self {
+        self.breadcrumbs.push(breadcrumb)
+        self
+    }
+    
+    fn with_release(release: String) -> Self {
+        self.release = Some(release)
+        self
+    }
+    
+    fn with_environment(env: String) -> Self {
+        self.environment = env
+        self
+    }
+    
+    fn mark_unhandled() -> Self {
+        self.handled = false
+        self
+    }
+    
+    fn compute_fingerprint() -> String {
+        var parts: [String] = [self.type_.clone(), self.message.clone()]
+        
+        if let Some(trace) = self.stack_trace.as_ref() {
+            if let Some(frame) = trace.frames.first() {
+                parts.push(frame.function.clone().unwrap_or_default())
+                parts.push(frame.filename.clone().unwrap_or_default())
+            }
+        }
+        
+        Sha256.hash(parts.join(":")).to_hex()
+    }
+}
+
+/// Error severity level
+enum ErrorLevel {
+    Debug
+    Info
+    Warning
+    Error
+    Fatal
+    
+    fn to_string() -> String {
+        match self {
+            Debug => "debug",
+            Info => "info",
+            Warning => "warning",
+            Error => "error",
+            Fatal => "fatal"
+        }
+    }
+    
+    fn from_log_level(level: Level) -> Self {
+        match level {
+            Level.Trace | Level.Debug => ErrorLevel.Debug,
+            Level.Info => ErrorLevel.Info,
+            Level.Warn => ErrorLevel.Warning,
+            Level.Error => ErrorLevel.Error,
+            Level.Fatal => ErrorLevel.Fatal
+        }
+    }
+}
+
+/// Stack trace information
+struct StackTrace {
+    frames: [StackFrame]
+    registers: Option<Map<String, String>>
+}
+
+impl StackTrace {
+    fn new() -> Self {
+        StackTrace { frames: [], registers: None }
+    }
+    
+    fn from_error(err: Error) -> Self {
+        let raw_trace = err.backtrace()
+        StackTrace {
+            frames: raw_trace.frames().iter().map(|f| StackFrame.from_raw(f)).collect(),
+            registers: None
+        }
+    }
+    
+    fn capture() -> Self {
+        let backtrace = Backtrace.capture()
+        StackTrace {
+            frames: backtrace.frames().iter().map(|f| StackFrame.from_raw(f)).collect(),
+            registers: None
+        }
+    }
+    
+    fn with_frame(frame: StackFrame) -> Self {
+        self.frames.push(frame)
+        self
+    }
+    
+    fn top_frame() -> Option<&StackFrame> {
+        self.frames.first()
+    }
+    
+    fn filter_internal() -> Self {
+        self.frames = self.frames.iter()
+            .filter(|f| !f.is_internal())
+            .cloned()
+            .collect()
+        self
+    }
+}
+
+/// Single stack frame
+struct StackFrame {
+    filename: Option<String>
+    function: Option<String>
+    module: Option<String>
+    lineno: Option<Int>
+    colno: Option<Int>
+    abs_path: Option<String>
+    context_line: Option<String>
+    pre_context: [String]
+    post_context: [String]
+    in_app: Bool
+    vars: Map<String, String>
+}
+
+impl StackFrame {
+    fn new() -> Self {
+        StackFrame {
+            filename: None,
+            function: None,
+            module: None,
+            lineno: None,
+            colno: None,
+            abs_path: None,
+            context_line: None,
+            pre_context: [],
+            post_context: [],
+            in_app: true,
+            vars: Map.new()
+        }
+    }
+    
+    fn from_raw(raw: RawFrame) -> Self {
+        StackFrame {
+            filename: raw.filename(),
+            function: raw.function(),
+            module: raw.module(),
+            lineno: raw.line(),
+            colno: raw.column(),
+            abs_path: raw.abs_path(),
+            context_line: None,
+            pre_context: [],
+            post_context: [],
+            in_app: !raw.is_system(),
+            vars: Map.new()
+        }
+    }
+    
+    fn is_internal() -> Bool {
+        self.module.as_ref()
+            .map(|m| m.starts_with("std::") || m.starts_with("core::"))
+            .unwrap_or(false)
+    }
+    
+    fn with_context(pre: [String], line: String, post: [String]) -> Self {
+        self.pre_context = pre
+        self.context_line = Some(line)
+        self.post_context = post
+        self
+    }
+}
+
+// -----------------------------------------------------------------------------
+// User and Request Context
+// -----------------------------------------------------------------------------
+
+/// User information for error context
+struct ErrorUser {
+    id: Option<String>
+    email: Option<String>
+    username: Option<String>
+    ip_address: Option<String>
+    data: Map<String, Any>
+}
+
+impl ErrorUser {
+    fn new() -> Self {
+        ErrorUser {
+            id: None,
+            email: None,
+            username: None,
+            ip_address: None,
+            data: Map.new()
+        }
+    }
+    
+    fn with_id(id: String) -> Self {
+        self.id = Some(id)
+        self
+    }
+    
+    fn with_email(email: String) -> Self {
+        self.email = Some(email)
+        self
+    }
+    
+    fn with_username(username: String) -> Self {
+        self.username = Some(username)
+        self
+    }
+    
+    fn with_ip(ip: String) -> Self {
+        self.ip_address = Some(ip)
+        self
+    }
+}
+
+/// HTTP request context
+struct ErrorRequest {
+    url: String
+    method: String
+    headers: Map<String, String>
+    query_string: Option<String>
+    data: Option<Map<String, Any>>
+    cookies: Map<String, String>
+    env: Map<String, String>
+}
+
+impl ErrorRequest {
+    fn new(method: String, url: String) -> Self {
+        ErrorRequest {
+            url: url,
+            method: method,
+            headers: Map.new(),
+            query_string: None,
+            data: None,
+            cookies: Map.new(),
+            env: Map.new()
+        }
+    }
+    
+    fn from_http_request(req: Request) -> Self {
+        ErrorRequest {
+            url: req.url(),
+            method: req.method(),
+            headers: req.headers().clone(),
+            query_string: req.query_string(),
+            data: req.json_body(),
+            cookies: req.cookies().clone(),
+            env: Map.new()
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Breadcrumbs
+// -----------------------------------------------------------------------------
+
+/// Breadcrumb for tracking events leading to error
+struct Breadcrumb {
+    timestamp: DateTime
+    type_: BreadcrumbType
+    category: String
+    message: Option<String>
+    level: ErrorLevel
+    data: Map<String, Any>
+}
+
+impl Breadcrumb {
+    fn new(type_: BreadcrumbType, category: String) -> Self {
+        Breadcrumb {
+            timestamp: DateTime.now(),
+            type_: type_,
+            category: category,
+            message: None,
+            level: ErrorLevel.Info,
+            data: Map.new()
+        }
+    }
+    
+    fn with_message(message: String) -> Self {
+        self.message = Some(message)
+        self
+    }
+    
+    fn with_level(level: ErrorLevel) -> Self {
+        self.level = level
+        self
+    }
+    
+    fn with_data(key: String, value: Any) -> Self {
+        self.data.insert(key, value)
+        self
+    }
+    
+    // Factory methods
+    fn navigation(from: String, to: String) -> Self {
+        Breadcrumb.new(BreadcrumbType.Navigation, "navigation")
+            .with_data("from", from)
+            .with_data("to", to)
+    }
+    
+    fn http(method: String, url: String, status: Int) -> Self {
+        Breadcrumb.new(BreadcrumbType.Http, "http")
+            .with_data("method", method)
+            .with_data("url", url)
+            .with_data("status_code", status)
+    }
+    
+    fn query(sql: String, duration_ms: Float) -> Self {
+        Breadcrumb.new(BreadcrumbType.Query, "db")
+            .with_message(sql)
+            .with_data("duration_ms", duration_ms)
+    }
+    
+    fn user_action(action: String, element: String) -> Self {
+        Breadcrumb.new(BreadcrumbType.User, "ui")
+            .with_message(action)
+            .with_data("element", element)
+    }
+    
+    fn log(level: ErrorLevel, message: String) -> Self {
+        Breadcrumb.new(BreadcrumbType.Default, "console")
+            .with_level(level)
+            .with_message(message)
+    }
+}
+
+enum BreadcrumbType {
+    Default
+    Http
+    Navigation
+    Query
+    User
+    Transaction
+    Error
+    Debug
+    
+    fn to_string() -> String {
+        match self {
+            Default => "default",
+            Http => "http",
+            Navigation => "navigation",
+            Query => "query",
+            User => "user",
+            Transaction => "transaction",
+            Error => "error",
+            Debug => "debug"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Error Grouping
+// -----------------------------------------------------------------------------
+
+/// Error group for aggregating similar errors
+struct ErrorGroup {
+    fingerprint: String
+    type_: String
+    message: String
+    first_seen: DateTime
+    last_seen: DateTime
+    count: Int
+    users_affected: Int
+    status: GroupStatus
+    assignee: Option<String>
+    tags: Map<String, String>
+    sample_event: ErrorEvent
+}
+
+impl ErrorGroup {
+    fn new(event: ErrorEvent) -> Self {
+        ErrorGroup {
+            fingerprint: event.fingerprint.clone(),
+            type_: event.type_.clone(),
+            message: event.message.clone(),
+            first_seen: event.timestamp,
+            last_seen: event.timestamp,
+            count: 1,
+            users_affected: if event.user.is_some() { 1 } else { 0 },
+            status: GroupStatus.Unresolved,
+            assignee: None,
+            tags: event.tags.clone(),
+            sample_event: event
+        }
+    }
+    
+    fn record_occurrence(event: ErrorEvent) {
+        self.count += 1
+        self.last_seen = event.timestamp
+        
+        if let Some(user) = event.user.as_ref() {
+            // Would track unique users
+            self.users_affected += 1
+        }
+        
+        // Update sample if more recent
+        self.sample_event = event
+    }
+    
+    fn resolve() {
+        self.status = GroupStatus.Resolved
+    }
+    
+    fn ignore() {
+        self.status = GroupStatus.Ignored
+    }
+    
+    fn assign(user: String) {
+        self.assignee = Some(user)
+    }
+    
+    fn is_regression() -> Bool {
+        self.status == GroupStatus.Resolved && self.count > 0
+    }
+}
+
+enum GroupStatus {
+    Unresolved
+    Resolved
+    Ignored
+    
+    fn to_string() -> String {
+        match self {
+            Unresolved => "unresolved",
+            Resolved => "resolved",
+            Ignored => "ignored"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Error Tracker
+// -----------------------------------------------------------------------------
+
+/// Main error tracking agent
+actor ErrorTracker {
+    state config: ErrorTrackerConfig
+    state events: [ErrorEvent]
+    state groups: Map<String, ErrorGroup>
+    state breadcrumb_buffer: [Breadcrumb]
+    state current_user: Option<ErrorUser>
+    state current_tags: Map<String, String>
+    state running: Bool
+    
+    fn new(config: ErrorTrackerConfig) -> Self {
+        ErrorTracker {
+            config: config,
+            events: [],
+            groups: Map.new(),
+            breadcrumb_buffer: [],
+            current_user: None,
+            current_tags: Map.new(),
+            running: false
+        }
+    }
+    
+    async fn start() {
+        self.running = true
+        self.setup_global_handlers()
+        self.start_flush_loop().await
+    }
+    
+    async fn stop() {
+        self.running = false
+        self.flush().await
+    }
+    
+    fn setup_global_handlers() {
+        // Set up panic handler, unhandled rejection handler, etc.
+        Panic.set_hook(|info| {
+            let event = ErrorEvent.new("panic", info.message())
+                .with_stack_trace(StackTrace.capture())
+                .mark_unhandled()
+            self.capture_event(event)
+        })
+    }
+    
+    fn capture_error(err: Error) -> String {
+        let event = ErrorEvent.from_error(err)
+            .with_breadcrumbs(self.breadcrumb_buffer.clone())
+        
+        if let Some(user) = self.current_user.as_ref() {
+            event.user = Some(user.clone())
+        }
+        
+        for (k, v) in self.current_tags.iter() {
+            event.tags.insert(k.clone(), v.clone())
+        }
+        
+        self.capture_event(event)
+    }
+    
+    fn capture_message(message: String, level: ErrorLevel) -> String {
+        let event = ErrorEvent.new("message", message)
+            .with_level(level)
+            .with_breadcrumbs(self.breadcrumb_buffer.clone())
+        
+        self.capture_event(event)
+    }
+    
+    fn capture_event(event: ErrorEvent) -> String {
+        let event_id = event.id.clone()
+        
+        // Apply before_send hook
+        if let Some(hook) = self.config.before_send.as_ref() {
+            if let Some(modified) = hook(event.clone()) {
+                self.process_event(modified)
+            }
+        } else {
+            self.process_event(event)
+        }
+        
+        event_id
+    }
+    
+    fn process_event(event: ErrorEvent) {
+        // Update or create group
+        let fingerprint = event.fingerprint.clone()
+        if let Some(group) = self.groups.get_mut(fingerprint.clone()) {
+            group.record_occurrence(event.clone())
+        } else {
+            self.groups.insert(fingerprint, ErrorGroup.new(event.clone()))
+        }
+        
+        self.events.push(event)
+        
+        // Clear breadcrumbs after capture
+        if self.config.clear_breadcrumbs_on_capture {
+            self.breadcrumb_buffer.clear()
+        }
+    }
+    
+    fn add_breadcrumb(breadcrumb: Breadcrumb) {
+        self.breadcrumb_buffer.push(breadcrumb)
+        
+        // Limit buffer size
+        while self.breadcrumb_buffer.len() > self.config.max_breadcrumbs {
+            self.breadcrumb_buffer.remove(0)
+        }
+    }
+    
+    fn set_user(user: ErrorUser) {
+        self.current_user = Some(user)
+    }
+    
+    fn clear_user() {
+        self.current_user = None
+    }
+    
+    fn set_tag(key: String, value: String) {
+        self.current_tags.insert(key, value)
+    }
+    
+    fn remove_tag(key: String) {
+        self.current_tags.remove(key)
+    }
+    
+    async fn flush() {
+        if self.events.is_empty() { return }
+        
+        let batch = self.events.drain(..).collect()
+        let payload = ErrorPayload {
+            events: batch,
+            sdk: SdkInfo {
+                name: "vibee-error-tracking",
+                version: "1.0.0"
+            }
+        }
+        
+        self.send_payload(payload).await
+    }
+    
+    async fn send_payload(payload: ErrorPayload) {
+        let url = "\(self.config.dsn)/api/store/"
+        let body = Json.encode(payload)
+        
+        match Http.post(url)
+            .header("X-Error-Auth", self.config.api_key.clone())
+            .body(body)
+            .send()
+            .await
+        {
+            Ok(_) => {},
+            Err(e) => Logger.error("Error tracking send failed: \(e)")
+        }
+    }
+    
+    async fn start_flush_loop() {
+        while self.running {
+            Timer.sleep(self.config.flush_interval).await
+            self.flush().await
+        }
+    }
+    
+    fn get_group(fingerprint: String) -> Option<&ErrorGroup> {
+        self.groups.get(fingerprint)
+    }
+    
+    fn get_unresolved_groups() -> [&ErrorGroup] {
+        self.groups.values()
+            .filter(|g| g.status == GroupStatus.Unresolved)
+            .collect()
+    }
+    
+    fn get_stats() -> ErrorStats {
+        ErrorStats {
+            total_events: self.events.len(),
+            total_groups: self.groups.len(),
+            unresolved_groups: self.groups.values().filter(|g| g.status == GroupStatus.Unresolved).count(),
+            events_last_hour: self.events.iter().filter(|e| e.timestamp > DateTime.now() - Duration.hours(1)).count()
+        }
+    }
+}
+
+struct ErrorTrackerConfig {
+    dsn: String
+    api_key: String
+    environment: String
+    release: Option<String>
+    sample_rate: Float
+    max_breadcrumbs: Int
+    flush_interval: Duration
+    before_send: Option<fn(ErrorEvent) -> Option<ErrorEvent>>
+    clear_breadcrumbs_on_capture: Bool
+    attach_stacktrace: Bool
+    send_default_pii: Bool
+    ignored_errors: [String]
+}
+
+impl ErrorTrackerConfig {
+    fn new(dsn: String) -> Self {
+        ErrorTrackerConfig {
+            dsn: dsn,
+            api_key: "",
+            environment: "production",
+            release: None,
+            sample_rate: 1.0,
+            max_breadcrumbs: 100,
+            flush_interval: Duration.seconds(5),
+            before_send: None,
+            clear_breadcrumbs_on_capture: true,
+            attach_stacktrace: true,
+            send_default_pii: false,
+            ignored_errors: []
+        }
+    }
+    
+    fn with_api_key(key: String) -> Self {
+        self.api_key = key
+        self
+    }
+    
+    fn with_environment(env: String) -> Self {
+        self.environment = env
+        self
+    }
+    
+    fn with_release(release: String) -> Self {
+        self.release = Some(release)
+        self
+    }
+    
+    fn with_before_send(hook: fn(ErrorEvent) -> Option<ErrorEvent>) -> Self {
+        self.before_send = Some(hook)
+        self
+    }
+    
+    fn ignore_error(type_: String) -> Self {
+        self.ignored_errors.push(type_)
+        self
+    }
+}
+
+struct ErrorPayload {
+    events: [ErrorEvent]
+    sdk: SdkInfo
+}
+
+struct SdkInfo {
+    name: String
+    version: String
+}
+
+struct ErrorStats {
+    total_events: Int
+    total_groups: Int
+    unresolved_groups: Int
+    events_last_hour: Int
+}
+
+// -----------------------------------------------------------------------------
+// Scope Management
+// -----------------------------------------------------------------------------
+
+/// Scope for contextual error tracking
+struct Scope {
+    user: Option<ErrorUser>
+    tags: Map<String, String>
+    extra: Map<String, Any>
+    breadcrumbs: [Breadcrumb]
+    contexts: Map<String, Map<String, Any>>
+    level: Option<ErrorLevel>
+    fingerprint: Option<[String]>
+    transaction: Option<String>
+}
+
+impl Scope {
+    fn new() -> Self {
+        Scope {
+            user: None,
+            tags: Map.new(),
+            extra: Map.new(),
+            breadcrumbs: [],
+            contexts: Map.new(),
+            level: None,
+            fingerprint: None,
+            transaction: None
+        }
+    }
+    
+    fn set_user(user: ErrorUser) -> Self {
+        self.user = Some(user)
+        self
+    }
+    
+    fn set_tag(key: String, value: String) -> Self {
+        self.tags.insert(key, value)
+        self
+    }
+    
+    fn set_extra(key: String, value: Any) -> Self {
+        self.extra.insert(key, value)
+        self
+    }
+    
+    fn set_context(name: String, data: Map<String, Any>) -> Self {
+        self.contexts.insert(name, data)
+        self
+    }
+    
+    fn set_level(level: ErrorLevel) -> Self {
+        self.level = Some(level)
+        self
+    }
+    
+    fn set_fingerprint(fingerprint: [String]) -> Self {
+        self.fingerprint = Some(fingerprint)
+        self
+    }
+    
+    fn set_transaction(name: String) -> Self {
+        self.transaction = Some(name)
+        self
+    }
+    
+    fn add_breadcrumb(breadcrumb: Breadcrumb) -> Self {
+        self.breadcrumbs.push(breadcrumb)
+        self
+    }
+    
+    fn apply_to_event(event: ErrorEvent) -> ErrorEvent {
+        var modified = event.clone()
+        
+        if let Some(user) = self.user.as_ref() {
+            modified.user = Some(user.clone())
+        }
+        
+        for (k, v) in self.tags.iter() {
+            modified.tags.insert(k.clone(), v.clone())
+        }
+        
+        for (k, v) in self.extra.iter() {
+            modified.extra.insert(k.clone(), v.clone())
+        }
+        
+        for (k, v) in self.contexts.iter() {
+            modified.contexts.insert(k.clone(), v.clone())
+        }
+        
+        if let Some(level) = self.level {
+            modified.level = level
+        }
+        
+        modified.breadcrumbs.extend(self.breadcrumbs.clone())
+        
+        modified
+    }
+    
+    fn clear() {
+        self.user = None
+        self.tags.clear()
+        self.extra.clear()
+        self.breadcrumbs.clear()
+        self.contexts.clear()
+        self.level = None
+        self.fingerprint = None
+        self.transaction = None
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Global Instance
+// -----------------------------------------------------------------------------
+
+static GLOBAL_TRACKER: Mutex<Option<ErrorTracker>> = Mutex.new(None)
+static CURRENT_SCOPE: ThreadLocal<Scope> = ThreadLocal.new(|| Scope.new())
+
+fn init(config: ErrorTrackerConfig) {
+    *GLOBAL_TRACKER.lock() = Some(ErrorTracker.new(config))
+}
+
+fn tracker() -> Option<&ErrorTracker> {
+    GLOBAL_TRACKER.lock().as_ref()
+}
+
+fn capture_error(err: Error) -> Option<String> {
+    tracker().map(|t| t.capture_error(err))
+}
+
+fn capture_message(message: String, level: ErrorLevel) -> Option<String> {
+    tracker().map(|t| t.capture_message(message, level))
+}
+
+fn add_breadcrumb(breadcrumb: Breadcrumb) {
+    if let Some(t) = tracker() {
+        t.add_breadcrumb(breadcrumb)
+    }
+}
+
+fn set_user(user: ErrorUser) {
+    if let Some(t) = tracker() {
+        t.set_user(user)
+    }
+}
+
+fn set_tag(key: String, value: String) {
+    if let Some(t) = tracker() {
+        t.set_tag(key, value)
+    }
+}
+
+fn with_scope<T>(configure: fn(&mut Scope), callback: fn() -> T) -> T {
+    let scope = CURRENT_SCOPE.get_mut()
+    configure(scope)
+    let result = callback()
+    scope.clear()
+    result
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Macros
+// -----------------------------------------------------------------------------
+
+macro capture!(err) {
+    capture_error(err)
+}
+
+macro breadcrumb!(type_, category, message) {
+    add_breadcrumb(Breadcrumb.new(type_, category).with_message(message))
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "error event creation" {
+    let event = ErrorEvent.new("TypeError", "undefined is not a function")
+    assert_eq(event.type_, "TypeError")?
+    assert_eq(event.level, ErrorLevel.Error)?
+}
+
+test "fingerprint computation" {
+    let event1 = ErrorEvent.new("Error", "test").with_stack_trace(StackTrace.new())
+    let event2 = ErrorEvent.new("Error", "test").with_stack_trace(StackTrace.new())
+    
+    assert_eq(event1.fingerprint, event2.fingerprint)?
+}
+
+test "error grouping" {
+    let event = ErrorEvent.new("Error", "test")
+    var group = ErrorGroup.new(event.clone())
+    
+    group.record_occurrence(event.clone())
+    assert_eq(group.count, 2)?
+}
+
+test "breadcrumb creation" {
+    let bc = Breadcrumb.http("GET", "/api/users", 200)
+    assert_eq(bc.category, "http")?
+    assert_eq(bc.data.get("status_code"), Some(200))?
+}
+
+test "scope application" {
+    let scope = Scope.new()
+        .set_tag("env", "test")
+        .set_user(ErrorUser.new().with_id("123"))
+    
+    let event = ErrorEvent.new("Error", "test")
+    let modified = scope.apply_to_event(event)
+    
+    assert_eq(modified.tags.get("env"), Some("test"))?
+    assert(modified.user.is_some())?
+}
+
+test "error user context" {
+    let user = ErrorUser.new()
+        .with_id("user-123")
+        .with_email("test@example.com")
+    
+    assert_eq(user.id, Some("user-123"))?
+    assert_eq(user.email, Some("test@example.com"))?
+}

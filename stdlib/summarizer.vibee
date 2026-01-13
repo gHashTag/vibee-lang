@@ -1,0 +1,736 @@
+// =============================================================================
+// Vibee OS — Text Summarization Module
+// Extractive and abstractive text summarization for NLP
+// =============================================================================
+
+use nlp_tokenizer::{Token, WordTokenizer, SentenceTokenizer, Tokenizer, tokenize, sentences}
+use stemmer::{stem, PorterStemmer}
+
+// =============================================================================
+// Summary Types
+// =============================================================================
+
+/// Summary result
+struct Summary {
+    text: String
+    sentences: [String]
+    compression_ratio: Float
+    word_count: Int
+    original_word_count: Int
+    
+    fn new(sentences: [String], original_word_count: Int) -> Self {
+        let text = sentences.join(" ")
+        let word_count = text.split_whitespace().count()
+        Summary {
+            text: text,
+            sentences: sentences,
+            compression_ratio: word_count as Float / original_word_count as Float,
+            word_count: word_count,
+            original_word_count: original_word_count
+        }
+    }
+}
+
+impl Display for Summary {
+    fn fmt(f: Formatter) {
+        f.write(format!("Summary({} words, {:.1}% compression)", 
+            self.word_count, self.compression_ratio * 100.0))
+    }
+}
+
+/// Sentence with score for ranking
+struct ScoredSentence {
+    text: String
+    index: Int
+    score: Float
+    
+    fn new(text: String, index: Int, score: Float) -> Self {
+        ScoredSentence { text: text, index: index, score: score }
+    }
+}
+
+// =============================================================================
+// Summarizer Trait
+// =============================================================================
+
+/// Base trait for summarizers
+trait Summarizer {
+    fn summarize(text: String, num_sentences: Int) -> Summary
+    fn summarize_ratio(text: String, ratio: Float) -> Summary {
+        let sents = sentences(text)
+        let num = (sents.len() as Float * ratio).ceil() as Int
+        self.summarize(text, num.max(1))
+    }
+}
+
+// =============================================================================
+// Extractive Summarizers
+// =============================================================================
+
+/// TF-IDF based extractive summarizer
+struct TFIDFSummarizer {
+    stop_words: Set<String>
+    
+    fn new() -> Self {
+        TFIDFSummarizer { stop_words: default_stop_words() }
+    }
+    
+    fn with_stop_words(stop_words: Set<String>) -> Self {
+        TFIDFSummarizer { stop_words: stop_words }
+    }
+}
+
+impl Summarizer for TFIDFSummarizer {
+    fn summarize(text: String, num_sentences: Int) -> Summary {
+        let sents = sentences(text)
+        if sents.is_empty() { return Summary.new([], 0) }
+        
+        let original_word_count = text.split_whitespace().count()
+        
+        // Calculate TF-IDF scores
+        let tfidf = calculate_tfidf(sents, self.stop_words)
+        
+        // Score sentences
+        var scored: [ScoredSentence] = []
+        for (i, sent) in sents.iter().enumerate() {
+            let score = sentence_tfidf_score(sent, tfidf, self.stop_words)
+            scored.push(ScoredSentence.new(sent, i, score))
+        }
+        
+        // Select top sentences
+        scored.sort_by(|a, b| b.score.partial_cmp(a.score).unwrap_or(Ordering.Equal))
+        let selected = scored.iter().take(num_sentences).collect::<Vec<_>>()
+        
+        // Restore original order
+        var ordered = selected.clone()
+        ordered.sort_by(|a, b| a.index.cmp(b.index))
+        
+        let summary_sentences = ordered.iter().map(|s| s.text).collect()
+        Summary.new(summary_sentences, original_word_count)
+    }
+}
+
+/// TextRank-based extractive summarizer
+struct TextRankSummarizer {
+    damping: Float
+    iterations: Int
+    stop_words: Set<String>
+    
+    fn new() -> Self {
+        TextRankSummarizer {
+            damping: 0.85,
+            iterations: 30,
+            stop_words: default_stop_words()
+        }
+    }
+    
+    fn with_params(damping: Float, iterations: Int) -> Self {
+        TextRankSummarizer {
+            damping: damping,
+            iterations: iterations,
+            stop_words: default_stop_words()
+        }
+    }
+}
+
+impl Summarizer for TextRankSummarizer {
+    fn summarize(text: String, num_sentences: Int) -> Summary {
+        let sents = sentences(text)
+        if sents.is_empty() { return Summary.new([], 0) }
+        
+        let original_word_count = text.split_whitespace().count()
+        let n = sents.len()
+        
+        // Build similarity matrix
+        var similarity: [[Float]] = vec![vec![0.0; n]; n]
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let sim = sentence_similarity(sents[i], sents[j], self.stop_words)
+                similarity[i][j] = sim
+                similarity[j][i] = sim
+            }
+        }
+        
+        // Normalize similarity matrix
+        for i in 0..n {
+            let row_sum: Float = similarity[i].iter().sum()
+            if row_sum > 0.0 {
+                for j in 0..n {
+                    similarity[i][j] /= row_sum
+                }
+            }
+        }
+        
+        // Run TextRank algorithm
+        var scores = vec![1.0 / n as Float; n]
+        for _ in 0..self.iterations {
+            var new_scores = vec![0.0; n]
+            for i in 0..n {
+                var score = (1.0 - self.damping) / n as Float
+                for j in 0..n {
+                    if i != j {
+                        score += self.damping * similarity[j][i] * scores[j]
+                    }
+                }
+                new_scores[i] = score
+            }
+            scores = new_scores
+        }
+        
+        // Create scored sentences
+        var scored: [ScoredSentence] = []
+        for (i, sent) in sents.iter().enumerate() {
+            scored.push(ScoredSentence.new(sent, i, scores[i]))
+        }
+        
+        // Select top sentences
+        scored.sort_by(|a, b| b.score.partial_cmp(a.score).unwrap_or(Ordering.Equal))
+        let selected = scored.iter().take(num_sentences).collect::<Vec<_>>()
+        
+        // Restore original order
+        var ordered = selected.clone()
+        ordered.sort_by(|a, b| a.index.cmp(b.index))
+        
+        let summary_sentences = ordered.iter().map(|s| s.text).collect()
+        Summary.new(summary_sentences, original_word_count)
+    }
+}
+
+/// LexRank-based summarizer
+struct LexRankSummarizer {
+    threshold: Float
+    damping: Float
+    stop_words: Set<String>
+    
+    fn new() -> Self {
+        LexRankSummarizer {
+            threshold: 0.1,
+            damping: 0.85,
+            stop_words: default_stop_words()
+        }
+    }
+}
+
+impl Summarizer for LexRankSummarizer {
+    fn summarize(text: String, num_sentences: Int) -> Summary {
+        let sents = sentences(text)
+        if sents.is_empty() { return Summary.new([], 0) }
+        
+        let original_word_count = text.split_whitespace().count()
+        let n = sents.len()
+        
+        // Build cosine similarity matrix with threshold
+        var adjacency: [[Float]] = vec![vec![0.0; n]; n]
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let sim = cosine_similarity_sentences(sents[i], sents[j], self.stop_words)
+                if sim > self.threshold {
+                    adjacency[i][j] = sim
+                    adjacency[j][i] = sim
+                }
+            }
+        }
+        
+        // Compute degree centrality
+        var degrees: [Float] = vec![0.0; n]
+        for i in 0..n {
+            degrees[i] = adjacency[i].iter().sum()
+        }
+        
+        // Create transition matrix
+        var transition: [[Float]] = vec![vec![0.0; n]; n]
+        for i in 0..n {
+            if degrees[i] > 0.0 {
+                for j in 0..n {
+                    transition[i][j] = adjacency[i][j] / degrees[i]
+                }
+            }
+        }
+        
+        // Power iteration
+        var scores = vec![1.0 / n as Float; n]
+        for _ in 0..50 {
+            var new_scores = vec![0.0; n]
+            for i in 0..n {
+                for j in 0..n {
+                    new_scores[i] += transition[j][i] * scores[j]
+                }
+                new_scores[i] = self.damping * new_scores[i] + (1.0 - self.damping) / n as Float
+            }
+            scores = new_scores
+        }
+        
+        // Select top sentences
+        var scored: [ScoredSentence] = sents.iter().enumerate()
+            .map(|(i, s)| ScoredSentence.new(s, i, scores[i]))
+            .collect()
+        
+        scored.sort_by(|a, b| b.score.partial_cmp(a.score).unwrap_or(Ordering.Equal))
+        let selected = scored.iter().take(num_sentences).collect::<Vec<_>>()
+        
+        var ordered = selected.clone()
+        ordered.sort_by(|a, b| a.index.cmp(b.index))
+        
+        Summary.new(ordered.iter().map(|s| s.text).collect(), original_word_count)
+    }
+}
+
+/// Position-based summarizer (lead bias)
+struct PositionSummarizer {
+    position_weight: Float
+    
+    fn new() -> Self {
+        PositionSummarizer { position_weight: 0.5 }
+    }
+}
+
+impl Summarizer for PositionSummarizer {
+    fn summarize(text: String, num_sentences: Int) -> Summary {
+        let sents = sentences(text)
+        if sents.is_empty() { return Summary.new([], 0) }
+        
+        let original_word_count = text.split_whitespace().count()
+        let n = sents.len()
+        
+        // Score based on position (earlier = higher score)
+        var scored: [ScoredSentence] = []
+        for (i, sent) in sents.iter().enumerate() {
+            let position_score = 1.0 - (i as Float / n as Float)
+            let length_score = (sent.split_whitespace().count() as Float).min(30.0) / 30.0
+            let score = self.position_weight * position_score + (1.0 - self.position_weight) * length_score
+            scored.push(ScoredSentence.new(sent, i, score))
+        }
+        
+        scored.sort_by(|a, b| b.score.partial_cmp(a.score).unwrap_or(Ordering.Equal))
+        let selected = scored.iter().take(num_sentences).collect::<Vec<_>>()
+        
+        var ordered = selected.clone()
+        ordered.sort_by(|a, b| a.index.cmp(b.index))
+        
+        Summary.new(ordered.iter().map(|s| s.text).collect(), original_word_count)
+    }
+}
+
+/// Frequency-based summarizer
+struct FrequencySummarizer {
+    stop_words: Set<String>
+    
+    fn new() -> Self {
+        FrequencySummarizer { stop_words: default_stop_words() }
+    }
+}
+
+impl Summarizer for FrequencySummarizer {
+    fn summarize(text: String, num_sentences: Int) -> Summary {
+        let sents = sentences(text)
+        if sents.is_empty() { return Summary.new([], 0) }
+        
+        let original_word_count = text.split_whitespace().count()
+        
+        // Calculate word frequencies
+        var word_freq: Map<String, Int> = Map.empty()
+        for sent in sents {
+            for word in tokenize(sent) {
+                let stemmed = stem(word)
+                if !self.stop_words.contains(stemmed.to_lowercase()) {
+                    *word_freq.entry(stemmed).or_insert(0) += 1
+                }
+            }
+        }
+        
+        // Normalize frequencies
+        let max_freq = word_freq.values().max().unwrap_or(1) as Float
+        var normalized: Map<String, Float> = Map.empty()
+        for (word, freq) in word_freq {
+            normalized.insert(word, freq as Float / max_freq)
+        }
+        
+        // Score sentences
+        var scored: [ScoredSentence] = []
+        for (i, sent) in sents.iter().enumerate() {
+            var score = 0.0
+            let words = tokenize(sent)
+            for word in words {
+                let stemmed = stem(word)
+                score += normalized.get(stemmed).unwrap_or(0.0)
+            }
+            score /= words.len().max(1) as Float
+            scored.push(ScoredSentence.new(sent, i, score))
+        }
+        
+        scored.sort_by(|a, b| b.score.partial_cmp(a.score).unwrap_or(Ordering.Equal))
+        let selected = scored.iter().take(num_sentences).collect::<Vec<_>>()
+        
+        var ordered = selected.clone()
+        ordered.sort_by(|a, b| a.index.cmp(b.index))
+        
+        Summary.new(ordered.iter().map(|s| s.text).collect(), original_word_count)
+    }
+}
+
+// =============================================================================
+// Keyword Extraction
+// =============================================================================
+
+/// Extracted keyword with score
+struct Keyword {
+    word: String
+    score: Float
+    frequency: Int
+}
+
+/// Extract keywords from text
+struct KeywordExtractor {
+    stop_words: Set<String>
+    max_keywords: Int
+    
+    fn new() -> Self {
+        KeywordExtractor {
+            stop_words: default_stop_words(),
+            max_keywords: 10
+        }
+    }
+    
+    fn extract(text: String) -> [Keyword] {
+        let words = tokenize(text)
+        var word_freq: Map<String, Int> = Map.empty()
+        var word_positions: Map<String, [Int]> = Map.empty()
+        
+        for (i, word) in words.iter().enumerate() {
+            let lower = word.to_lowercase()
+            if !self.stop_words.contains(lower) && word.len() > 2 {
+                *word_freq.entry(lower.clone()).or_insert(0) += 1
+                word_positions.entry(lower).or_insert([]).push(i)
+            }
+        }
+        
+        // Calculate scores (TF + position bonus)
+        var keywords: [Keyword] = []
+        let total_words = words.len() as Float
+        
+        for (word, freq) in word_freq {
+            let tf = freq as Float / total_words
+            let positions = word_positions.get(word).unwrap_or([])
+            let position_score = if !positions.is_empty() {
+                1.0 - (positions[0] as Float / total_words)
+            } else { 0.0 }
+            
+            let score = tf * 0.7 + position_score * 0.3
+            keywords.push(Keyword { word: word, score: score, frequency: freq })
+        }
+        
+        keywords.sort_by(|a, b| b.score.partial_cmp(a.score).unwrap_or(Ordering.Equal))
+        keywords.iter().take(self.max_keywords).collect()
+    }
+}
+
+// =============================================================================
+// Multi-Document Summarization
+// =============================================================================
+
+/// Multi-document summarizer
+struct MultiDocSummarizer {
+    base_summarizer: TextRankSummarizer
+    
+    fn new() -> Self {
+        MultiDocSummarizer { base_summarizer: TextRankSummarizer.new() }
+    }
+    
+    fn summarize_documents(documents: [String], num_sentences: Int) -> Summary {
+        // Combine all documents
+        let combined = documents.join("\n\n")
+        
+        // Get all sentences with document source
+        var all_sentences: [(String, Int)] = []  // (sentence, doc_index)
+        for (doc_idx, doc) in documents.iter().enumerate() {
+            for sent in sentences(doc) {
+                all_sentences.push((sent, doc_idx))
+            }
+        }
+        
+        // Use TextRank on combined text
+        let summary = self.base_summarizer.summarize(combined, num_sentences * 2)
+        
+        // Ensure diversity (sentences from different documents)
+        var selected: [String] = []
+        var doc_counts: Map<Int, Int> = Map.empty()
+        let max_per_doc = (num_sentences / documents.len()).max(1)
+        
+        for sent in summary.sentences {
+            // Find which document this sentence came from
+            for (orig_sent, doc_idx) in all_sentences {
+                if orig_sent == sent {
+                    let count = doc_counts.get(doc_idx).unwrap_or(0)
+                    if count < max_per_doc {
+                        selected.push(sent)
+                        *doc_counts.entry(doc_idx).or_insert(0) += 1
+                    }
+                    break
+                }
+            }
+            if selected.len() >= num_sentences { break }
+        }
+        
+        let original_word_count = combined.split_whitespace().count()
+        Summary.new(selected, original_word_count)
+    }
+}
+
+// =============================================================================
+// Query-Focused Summarization
+// =============================================================================
+
+/// Query-focused summarizer
+struct QuerySummarizer {
+    stop_words: Set<String>
+    
+    fn new() -> Self {
+        QuerySummarizer { stop_words: default_stop_words() }
+    }
+    
+    fn summarize_with_query(text: String, query: String, num_sentences: Int) -> Summary {
+        let sents = sentences(text)
+        if sents.is_empty() { return Summary.new([], 0) }
+        
+        let original_word_count = text.split_whitespace().count()
+        let query_words: Set<String> = tokenize(query).iter()
+            .map(|w| stem(w.to_lowercase()))
+            .filter(|w| !self.stop_words.contains(w))
+            .collect()
+        
+        // Score sentences by relevance to query
+        var scored: [ScoredSentence] = []
+        for (i, sent) in sents.iter().enumerate() {
+            let sent_words: Set<String> = tokenize(sent).iter()
+                .map(|w| stem(w.to_lowercase()))
+                .collect()
+            
+            // Calculate overlap with query
+            let overlap = query_words.intersection(sent_words).count() as Float
+            let query_coverage = overlap / query_words.len().max(1) as Float
+            let sent_coverage = overlap / sent_words.len().max(1) as Float
+            
+            let score = 0.6 * query_coverage + 0.4 * sent_coverage
+            scored.push(ScoredSentence.new(sent, i, score))
+        }
+        
+        scored.sort_by(|a, b| b.score.partial_cmp(a.score).unwrap_or(Ordering.Equal))
+        let selected = scored.iter().take(num_sentences).collect::<Vec<_>>()
+        
+        var ordered = selected.clone()
+        ordered.sort_by(|a, b| a.index.cmp(b.index))
+        
+        Summary.new(ordered.iter().map(|s| s.text).collect(), original_word_count)
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+fn calculate_tfidf(sentences: [String], stop_words: Set<String>) -> Map<String, Float> {
+    let n = sentences.len() as Float
+    var df: Map<String, Int> = Map.empty()
+    var tf: Map<String, Int> = Map.empty()
+    
+    for sent in sentences {
+        var seen: Set<String> = Set.empty()
+        for word in tokenize(sent) {
+            let stemmed = stem(word.to_lowercase())
+            if !stop_words.contains(stemmed) {
+                *tf.entry(stemmed.clone()).or_insert(0) += 1
+                if !seen.contains(stemmed) {
+                    *df.entry(stemmed.clone()).or_insert(0) += 1
+                    seen.insert(stemmed)
+                }
+            }
+        }
+    }
+    
+    var tfidf: Map<String, Float> = Map.empty()
+    for (word, term_freq) in tf {
+        let doc_freq = df.get(word).unwrap_or(1) as Float
+        let idf = (n / doc_freq).ln() + 1.0
+        tfidf.insert(word, term_freq as Float * idf)
+    }
+    
+    tfidf
+}
+
+fn sentence_tfidf_score(sentence: String, tfidf: Map<String, Float>, stop_words: Set<String>) -> Float {
+    let words = tokenize(sentence)
+    var score = 0.0
+    var count = 0
+    
+    for word in words {
+        let stemmed = stem(word.to_lowercase())
+        if !stop_words.contains(stemmed) {
+            score += tfidf.get(stemmed).unwrap_or(0.0)
+            count += 1
+        }
+    }
+    
+    if count > 0 { score / count as Float } else { 0.0 }
+}
+
+fn sentence_similarity(s1: String, s2: String, stop_words: Set<String>) -> Float {
+    let words1: Set<String> = tokenize(s1).iter()
+        .map(|w| stem(w.to_lowercase()))
+        .filter(|w| !stop_words.contains(w))
+        .collect()
+    
+    let words2: Set<String> = tokenize(s2).iter()
+        .map(|w| stem(w.to_lowercase()))
+        .filter(|w| !stop_words.contains(w))
+        .collect()
+    
+    if words1.is_empty() || words2.is_empty() { return 0.0 }
+    
+    let intersection = words1.intersection(words2).count() as Float
+    let union = words1.union(words2).count() as Float
+    
+    intersection / union  // Jaccard similarity
+}
+
+fn cosine_similarity_sentences(s1: String, s2: String, stop_words: Set<String>) -> Float {
+    let words1 = tokenize(s1).iter()
+        .map(|w| stem(w.to_lowercase()))
+        .filter(|w| !stop_words.contains(w))
+        .collect::<Vec<_>>()
+    
+    let words2 = tokenize(s2).iter()
+        .map(|w| stem(w.to_lowercase()))
+        .filter(|w| !stop_words.contains(w))
+        .collect::<Vec<_>>()
+    
+    // Build vocabulary
+    var vocab: Set<String> = Set.empty()
+    for w in words1.iter().chain(words2.iter()) {
+        vocab.insert(w.clone())
+    }
+    
+    // Create vectors
+    var vec1: [Float] = []
+    var vec2: [Float] = []
+    
+    for word in vocab {
+        vec1.push(words1.iter().filter(|w| w == word).count() as Float)
+        vec2.push(words2.iter().filter(|w| w == word).count() as Float)
+    }
+    
+    // Calculate cosine similarity
+    let dot: Float = vec1.iter().zip(vec2.iter()).map(|(a, b)| a * b).sum()
+    let norm1: Float = vec1.iter().map(|x| x * x).sum::<Float>().sqrt()
+    let norm2: Float = vec2.iter().map(|x| x * x).sum::<Float>().sqrt()
+    
+    if norm1 > 0.0 && norm2 > 0.0 { dot / (norm1 * norm2) } else { 0.0 }
+}
+
+fn default_stop_words() -> Set<String> {
+    Set.from_iter([
+        "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+        "of", "with", "by", "from", "as", "is", "was", "are", "were", "been",
+        "be", "have", "has", "had", "do", "does", "did", "will", "would", "could",
+        "should", "may", "might", "must", "shall", "can", "need", "dare", "ought",
+        "used", "it", "its", "this", "that", "these", "those", "i", "you", "he",
+        "she", "we", "they", "what", "which", "who", "whom", "whose", "where",
+        "when", "why", "how", "all", "each", "every", "both", "few", "more",
+        "most", "other", "some", "such", "no", "nor", "not", "only", "own",
+        "same", "so", "than", "too", "very", "just", "also", "now", "here"
+    ].iter().map(|s| s.to_string()))
+}
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+/// Summarize text to N sentences
+fn summarize(text: String, num_sentences: Int) -> Summary {
+    TextRankSummarizer.new().summarize(text, num_sentences)
+}
+
+/// Summarize text to a ratio of original
+fn summarize_ratio(text: String, ratio: Float) -> Summary {
+    TextRankSummarizer.new().summarize_ratio(text, ratio)
+}
+
+/// Get a quick summary (3 sentences)
+fn quick_summary(text: String) -> String {
+    summarize(text, 3).text
+}
+
+/// Extract keywords from text
+fn extract_keywords(text: String, n: Int) -> [String] {
+    let extractor = KeywordExtractor { stop_words: default_stop_words(), max_keywords: n }
+    extractor.extract(text).iter().map(|k| k.word).collect()
+}
+
+/// Summarize with query focus
+fn summarize_query(text: String, query: String, num_sentences: Int) -> Summary {
+    QuerySummarizer.new().summarize_with_query(text, query, num_sentences)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "tfidf summarizer" {
+    let text = "Machine learning is a subset of artificial intelligence. It enables computers to learn from data. Deep learning is a type of machine learning. Neural networks are used in deep learning. AI is transforming many industries."
+    let summary = TFIDFSummarizer.new().summarize(text, 2)
+    assert_eq(summary.sentences.len(), 2)?
+    assert(summary.compression_ratio < 1.0)?
+}
+
+test "textrank summarizer" {
+    let text = "Natural language processing is a field of AI. It deals with the interaction between computers and humans. NLP enables machines to understand human language. Many applications use NLP today. Chatbots are one example of NLP applications."
+    let summary = TextRankSummarizer.new().summarize(text, 2)
+    assert_eq(summary.sentences.len(), 2)?
+}
+
+test "frequency summarizer" {
+    let text = "Python is a programming language. Python is popular for data science. Many developers use Python. Python has many libraries. Libraries make Python powerful."
+    let summary = FrequencySummarizer.new().summarize(text, 2)
+    assert_eq(summary.sentences.len(), 2)?
+    // Should include sentences with "Python" (most frequent)
+}
+
+test "position summarizer" {
+    let text = "This is the first important sentence. This is the second sentence. This is the third sentence. This is the fourth sentence. This is the last sentence."
+    let summary = PositionSummarizer.new().summarize(text, 2)
+    // Should prefer earlier sentences
+    assert(summary.sentences[0].contains("first"))?
+}
+
+test "keyword extraction" {
+    let text = "Machine learning and deep learning are subsets of artificial intelligence. Machine learning uses algorithms to learn from data."
+    let keywords = extract_keywords(text, 5)
+    assert(keywords.contains("machine") || keywords.contains("learning"))?
+}
+
+test "query summarizer" {
+    let text = "Python is great for web development. Python is also used for data science. Java is popular for enterprise applications. JavaScript runs in browsers."
+    let summary = summarize_query(text, "data science", 1)
+    assert(summary.text.to_lowercase().contains("data"))?
+}
+
+test "summarize ratio" {
+    let text = "First sentence. Second sentence. Third sentence. Fourth sentence. Fifth sentence."
+    let summary = summarize_ratio(text, 0.4)
+    assert(summary.sentences.len() <= 3)?
+}
+
+test "multi document" {
+    let docs = [
+        "AI is transforming healthcare. Machine learning helps diagnose diseases.",
+        "AI is used in finance. Algorithms detect fraud automatically.",
+        "AI powers autonomous vehicles. Self-driving cars use deep learning."
+    ]
+    let summary = MultiDocSummarizer.new().summarize_documents(docs, 3)
+    assert(summary.sentences.len() <= 3)?
+}
+
+test "lexrank summarizer" {
+    let text = "Graph algorithms are important. PageRank is a famous algorithm. LexRank uses similar ideas. Text summarization benefits from graph methods. Sentences can be ranked by importance."
+    let summary = LexRankSummarizer.new().summarize(text, 2)
+    assert_eq(summary.sentences.len(), 2)?
+}

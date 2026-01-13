@@ -1,0 +1,649 @@
+// =============================================================================
+// Vibee OS — Rollback Module
+// Deployment rollback and version management
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Rollback Configuration
+// -----------------------------------------------------------------------------
+
+struct RollbackConfig {
+    deployment_id: String
+    target_version: String?
+    target_revision: Int?
+    strategy: RollbackStrategy
+    timeout: Duration
+    verify_health: Bool
+    preserve_scaling: Bool
+    dry_run: Bool
+}
+
+impl RollbackConfig {
+    fn default(deployment_id: String) -> Self {
+        RollbackConfig {
+            deployment_id: deployment_id,
+            target_version: None,
+            target_revision: None,
+            strategy: RollbackStrategy.Immediate,
+            timeout: 300.seconds(),
+            verify_health: true,
+            preserve_scaling: true,
+            dry_run: false
+        }
+    }
+    
+    fn to_previous(deployment_id: String) -> Self {
+        RollbackConfig {
+            deployment_id: deployment_id,
+            target_version: None,
+            target_revision: Some(-1),  // Previous revision
+            strategy: RollbackStrategy.Immediate,
+            timeout: 300.seconds(),
+            verify_health: true,
+            preserve_scaling: true,
+            dry_run: false
+        }
+    }
+}
+
+enum RollbackStrategy {
+    Immediate                                    // Instant rollback
+    Gradual { batch_size: Int, interval: Duration }  // Gradual rollback
+    Canary { initial_percent: Int, increment: Int }  // Canary-style rollback
+}
+
+// -----------------------------------------------------------------------------
+// Rollback Builder
+// -----------------------------------------------------------------------------
+
+actor RollbackBuilder {
+    state config: RollbackConfig
+    
+    init(deployment_id: String) {
+        self.config = RollbackConfig.default(deployment_id)
+    }
+    
+    on to_version(version: String) -> Self { self.config.target_version = Some(version); self }
+    on to_revision(revision: Int) -> Self { self.config.target_revision = Some(revision); self }
+    on strategy(s: RollbackStrategy) -> Self { self.config.strategy = s; self }
+    on timeout(t: Duration) -> Self { self.config.timeout = t; self }
+    on verify_health(v: Bool) -> Self { self.config.verify_health = v; self }
+    on preserve_scaling(p: Bool) -> Self { self.config.preserve_scaling = p; self }
+    on dry_run(d: Bool) -> Self { self.config.dry_run = d; self }
+    
+    on build() -> RollbackConfig { self.config.clone() }
+}
+
+// -----------------------------------------------------------------------------
+// Rollback Manager
+// -----------------------------------------------------------------------------
+
+actor RollbackManager {
+    state provider: RollbackProvider
+    state history: [RollbackRecord]
+    state hooks: RollbackHooks
+    state auto_rollback_rules: [AutoRollbackRule]
+    
+    init(provider: RollbackProvider) {
+        self.provider = provider
+        self.history = []
+        self.hooks = RollbackHooks.empty()
+        self.auto_rollback_rules = []
+    }
+    
+    on with_hooks(hooks: RollbackHooks) -> Self { self.hooks = hooks; self }
+    on add_auto_rollback_rule(rule: AutoRollbackRule) -> Self { self.auto_rollback_rules.append(rule); self }
+    
+    on rollback(config: RollbackConfig) -> Result<RollbackResult, RollbackError> {
+        let start_time = DateTime.now()
+        
+        // Pre-rollback hooks
+        self.hooks.run_pre_rollback(config)?
+        
+        // Get current deployment state
+        let current_state = self.provider.get_deployment_state(config.deployment_id)?
+        
+        // Determine target revision
+        let target = self.resolve_target(config)?
+        
+        // Dry run check
+        if config.dry_run {
+            return Ok(RollbackResult {
+                deployment_id: config.deployment_id,
+                from_version: current_state.version,
+                to_version: target.version,
+                status: RollbackStatus.DryRun,
+                started_at: start_time,
+                completed_at: DateTime.now(),
+                changes: self.preview_changes(current_state, target)?
+            })
+        }
+        
+        // Execute rollback based on strategy
+        let result = match config.strategy {
+            RollbackStrategy.Immediate => self.immediate_rollback(config, target)?
+            RollbackStrategy.Gradual { batch_size, interval } => self.gradual_rollback(config, target, batch_size, interval)?
+            RollbackStrategy.Canary { initial_percent, increment } => self.canary_rollback(config, target, initial_percent, increment)?
+        }
+        
+        // Verify health if required
+        if config.verify_health {
+            self.verify_deployment_health(config.deployment_id, config.timeout)?
+        }
+        
+        // Post-rollback hooks
+        self.hooks.run_post_rollback(result)?
+        
+        // Record rollback
+        let record = RollbackRecord {
+            id: uuid::v4(),
+            deployment_id: config.deployment_id,
+            from_version: current_state.version,
+            to_version: target.version,
+            status: RollbackStatus.Success,
+            triggered_by: RollbackTrigger.Manual,
+            started_at: start_time,
+            completed_at: DateTime.now()
+        }
+        self.history.append(record)
+        
+        Ok(result)
+    }
+    
+    on rollback_to_previous(deployment_id: String) -> Result<RollbackResult, RollbackError> {
+        let config = RollbackConfig.to_previous(deployment_id)
+        self.rollback(config)
+    }
+    
+    on rollback_to_version(deployment_id: String, version: String) -> Result<RollbackResult, RollbackError> {
+        let config = RollbackBuilder.new(deployment_id).to_version(version).build()
+        self.rollback(config)
+    }
+    
+    fn resolve_target(config: RollbackConfig) -> Result<RevisionInfo, RollbackError> {
+        if let Some(version) = config.target_version {
+            return self.provider.get_revision_by_version(config.deployment_id, version)
+        }
+        
+        if let Some(revision) = config.target_revision {
+            if revision < 0 {
+                // Negative revision means relative to current
+                let revisions = self.provider.list_revisions(config.deployment_id)?
+                let index = revisions.len() as Int + revision
+                if index < 0 { return Err(RollbackError.RevisionNotFound("No previous revision available")) }
+                return Ok(revisions[index as UInt])
+            }
+            return self.provider.get_revision(config.deployment_id, revision)
+        }
+        
+        // Default to previous revision
+        let revisions = self.provider.list_revisions(config.deployment_id)?
+        if revisions.len() < 2 { return Err(RollbackError.RevisionNotFound("No previous revision available")) }
+        Ok(revisions[revisions.len() - 2])
+    }
+    
+    fn immediate_rollback(config: RollbackConfig, target: RevisionInfo) -> Result<RollbackResult, RollbackError> {
+        self.provider.rollback_to_revision(config.deployment_id, target.revision)
+    }
+    
+    fn gradual_rollback(config: RollbackConfig, target: RevisionInfo, batch_size: Int, interval: Duration) -> Result<RollbackResult, RollbackError> {
+        let current_state = self.provider.get_deployment_state(config.deployment_id)?
+        let total_replicas = current_state.replicas
+        var rolled_back = 0
+        
+        while rolled_back < total_replicas {
+            let batch = min(batch_size, total_replicas - rolled_back)
+            self.provider.rollback_batch(config.deployment_id, target.revision, batch)?
+            rolled_back += batch
+            
+            if rolled_back < total_replicas {
+                sleep(interval)
+                self.verify_batch_health(config.deployment_id)?
+            }
+        }
+        
+        self.provider.get_rollback_result(config.deployment_id)
+    }
+    
+    fn canary_rollback(config: RollbackConfig, target: RevisionInfo, initial_percent: Int, increment: Int) -> Result<RollbackResult, RollbackError> {
+        var current_percent = initial_percent
+        
+        while current_percent < 100 {
+            self.provider.rollback_percentage(config.deployment_id, target.revision, current_percent)?
+            sleep(30.seconds())
+            self.verify_deployment_health(config.deployment_id, 60.seconds())?
+            current_percent = min(current_percent + increment, 100)
+        }
+        
+        self.provider.get_rollback_result(config.deployment_id)
+    }
+    
+    fn verify_deployment_health(deployment_id: String, timeout: Duration) -> Result<(), RollbackError> {
+        let deadline = DateTime.now() + timeout
+        
+        while DateTime.now() < deadline {
+            let health = self.provider.check_health(deployment_id)?
+            if health.is_healthy() { return Ok(()) }
+            sleep(5.seconds())
+        }
+        
+        Err(RollbackError.HealthCheckFailed("Deployment health check timed out"))
+    }
+    
+    fn verify_batch_health(deployment_id: String) -> Result<(), RollbackError> {
+        self.verify_deployment_health(deployment_id, 60.seconds())
+    }
+    
+    fn preview_changes(current: DeploymentState, target: RevisionInfo) -> Result<[RollbackChange], RollbackError> {
+        var changes: [RollbackChange] = []
+        
+        if current.image != target.image {
+            changes.append(RollbackChange.ImageChange { from: current.image, to: target.image })
+        }
+        
+        for (key, value) in target.env_vars {
+            if current.env_vars.get(key) != Some(value) {
+                changes.append(RollbackChange.EnvChange { key: key, from: current.env_vars.get(key), to: Some(value) })
+            }
+        }
+        
+        if current.replicas != target.replicas {
+            changes.append(RollbackChange.ReplicaChange { from: current.replicas, to: target.replicas })
+        }
+        
+        Ok(changes)
+    }
+    
+    // Auto-rollback monitoring
+    on start_auto_rollback_monitor(deployment_id: String) -> Result<(), RollbackError> {
+        spawn {
+            loop {
+                sleep(10.seconds())
+                
+                for rule in self.auto_rollback_rules {
+                    if self.should_auto_rollback(deployment_id, rule)? {
+                        let config = RollbackConfig.to_previous(deployment_id)
+                        self.rollback(config)?
+                        
+                        let record = RollbackRecord {
+                            id: uuid::v4(),
+                            deployment_id: deployment_id,
+                            from_version: "current",
+                            to_version: "previous",
+                            status: RollbackStatus.Success,
+                            triggered_by: RollbackTrigger.Automatic(rule.name.clone()),
+                            started_at: DateTime.now(),
+                            completed_at: DateTime.now()
+                        }
+                        self.history.append(record)
+                        break
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    
+    fn should_auto_rollback(deployment_id: String, rule: AutoRollbackRule) -> Result<Bool, RollbackError> {
+        match rule.condition {
+            AutoRollbackCondition.ErrorRateThreshold(threshold) => {
+                let metrics = self.provider.get_metrics(deployment_id)?
+                Ok(metrics.error_rate > threshold)
+            }
+            AutoRollbackCondition.LatencyThreshold(threshold) => {
+                let metrics = self.provider.get_metrics(deployment_id)?
+                Ok(metrics.p99_latency > threshold)
+            }
+            AutoRollbackCondition.HealthCheckFailures(count) => {
+                let health = self.provider.check_health(deployment_id)?
+                Ok(health.consecutive_failures >= count)
+            }
+            AutoRollbackCondition.Custom(check_fn) => {
+                check_fn(deployment_id)
+            }
+        }
+    }
+    
+    on get_revisions(deployment_id: String) -> Result<[RevisionInfo], RollbackError> {
+        self.provider.list_revisions(deployment_id)
+    }
+    
+    on history() -> [RollbackRecord] { self.history.clone() }
+}
+
+// -----------------------------------------------------------------------------
+// Rollback Provider Trait
+// -----------------------------------------------------------------------------
+
+trait RollbackProvider {
+    fn get_deployment_state(id: String) -> Result<DeploymentState, RollbackError>
+    fn list_revisions(id: String) -> Result<[RevisionInfo], RollbackError>
+    fn get_revision(id: String, revision: Int) -> Result<RevisionInfo, RollbackError>
+    fn get_revision_by_version(id: String, version: String) -> Result<RevisionInfo, RollbackError>
+    fn rollback_to_revision(id: String, revision: Int) -> Result<RollbackResult, RollbackError>
+    fn rollback_batch(id: String, revision: Int, batch_size: Int) -> Result<(), RollbackError>
+    fn rollback_percentage(id: String, revision: Int, percent: Int) -> Result<(), RollbackError>
+    fn get_rollback_result(id: String) -> Result<RollbackResult, RollbackError>
+    fn check_health(id: String) -> Result<HealthStatus, RollbackError>
+    fn get_metrics(id: String) -> Result<DeploymentMetrics, RollbackError>
+}
+
+// -----------------------------------------------------------------------------
+// Kubernetes Rollback Provider
+// -----------------------------------------------------------------------------
+
+actor K8sRollbackProvider {
+    state client: K8sClient
+    state namespace: String
+    
+    init(client: K8sClient, namespace: String = "default") {
+        self.client = client
+        self.namespace = namespace
+    }
+}
+
+impl RollbackProvider for K8sRollbackProvider {
+    fn get_deployment_state(id: String) -> Result<DeploymentState, RollbackError> {
+        @native("k8s_get_deployment_state", self.client, self.namespace, id)
+    }
+    
+    fn list_revisions(id: String) -> Result<[RevisionInfo], RollbackError> {
+        @native("k8s_list_replicasets", self.client, self.namespace, id)
+    }
+    
+    fn get_revision(id: String, revision: Int) -> Result<RevisionInfo, RollbackError> {
+        @native("k8s_get_revision", self.client, self.namespace, id, revision)
+    }
+    
+    fn get_revision_by_version(id: String, version: String) -> Result<RevisionInfo, RollbackError> {
+        @native("k8s_get_revision_by_version", self.client, self.namespace, id, version)
+    }
+    
+    fn rollback_to_revision(id: String, revision: Int) -> Result<RollbackResult, RollbackError> {
+        @native("k8s_rollback", self.client, self.namespace, id, revision)
+    }
+    
+    fn rollback_batch(id: String, revision: Int, batch_size: Int) -> Result<(), RollbackError> {
+        @native("k8s_rollback_batch", self.client, self.namespace, id, revision, batch_size)
+    }
+    
+    fn rollback_percentage(id: String, revision: Int, percent: Int) -> Result<(), RollbackError> {
+        @native("k8s_rollback_percentage", self.client, self.namespace, id, revision, percent)
+    }
+    
+    fn get_rollback_result(id: String) -> Result<RollbackResult, RollbackError> {
+        @native("k8s_get_rollback_result", self.client, self.namespace, id)
+    }
+    
+    fn check_health(id: String) -> Result<HealthStatus, RollbackError> {
+        @native("k8s_check_deployment_health", self.client, self.namespace, id)
+    }
+    
+    fn get_metrics(id: String) -> Result<DeploymentMetrics, RollbackError> {
+        @native("k8s_get_deployment_metrics", self.client, self.namespace, id)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Types
+// -----------------------------------------------------------------------------
+
+struct DeploymentState {
+    id: String
+    version: String
+    image: String
+    replicas: Int
+    env_vars: Map<String, String>
+    revision: Int
+}
+
+struct RevisionInfo {
+    revision: Int
+    version: String
+    image: String
+    env_vars: Map<String, String>
+    replicas: Int
+    created_at: DateTime
+    change_cause: String?
+}
+
+struct RollbackResult {
+    deployment_id: String
+    from_version: String
+    to_version: String
+    status: RollbackStatus
+    started_at: DateTime
+    completed_at: DateTime
+    changes: [RollbackChange]
+}
+
+enum RollbackStatus {
+    Pending
+    InProgress
+    Success
+    Failed(String)
+    DryRun
+    
+    fn is_success() -> Bool {
+        match self {
+            .Success => true
+            _ => false
+        }
+    }
+}
+
+enum RollbackChange {
+    ImageChange { from: String, to: String }
+    EnvChange { key: String, from: String?, to: String? }
+    ReplicaChange { from: Int, to: Int }
+    ConfigChange { name: String, from: String, to: String }
+}
+
+struct RollbackRecord {
+    id: String
+    deployment_id: String
+    from_version: String
+    to_version: String
+    status: RollbackStatus
+    triggered_by: RollbackTrigger
+    started_at: DateTime
+    completed_at: DateTime
+}
+
+enum RollbackTrigger {
+    Manual
+    Automatic(String)  // Rule name
+    Pipeline(String)   // Pipeline ID
+    API(String)        // API caller
+}
+
+struct HealthStatus {
+    is_healthy: Bool
+    ready_replicas: Int
+    total_replicas: Int
+    consecutive_failures: Int
+    last_check: DateTime
+    
+    fn is_healthy() -> Bool { self.is_healthy && self.ready_replicas == self.total_replicas }
+}
+
+struct DeploymentMetrics {
+    error_rate: Float
+    p50_latency: Duration
+    p99_latency: Duration
+    requests_per_second: Float
+    cpu_usage: Float
+    memory_usage: Float
+}
+
+// -----------------------------------------------------------------------------
+// Auto-Rollback Rules
+// -----------------------------------------------------------------------------
+
+struct AutoRollbackRule {
+    name: String
+    condition: AutoRollbackCondition
+    cooldown: Duration
+    enabled: Bool
+}
+
+enum AutoRollbackCondition {
+    ErrorRateThreshold(Float)                    // Error rate percentage
+    LatencyThreshold(Duration)                   // P99 latency threshold
+    HealthCheckFailures(Int)                     // Consecutive failures
+    Custom(fn(String) -> Result<Bool, RollbackError>)
+}
+
+impl AutoRollbackRule {
+    fn error_rate(name: String, threshold: Float) -> Self {
+        AutoRollbackRule {
+            name: name,
+            condition: AutoRollbackCondition.ErrorRateThreshold(threshold),
+            cooldown: 5.minutes(),
+            enabled: true
+        }
+    }
+    
+    fn latency(name: String, threshold: Duration) -> Self {
+        AutoRollbackRule {
+            name: name,
+            condition: AutoRollbackCondition.LatencyThreshold(threshold),
+            cooldown: 5.minutes(),
+            enabled: true
+        }
+    }
+    
+    fn health_failures(name: String, count: Int) -> Self {
+        AutoRollbackRule {
+            name: name,
+            condition: AutoRollbackCondition.HealthCheckFailures(count),
+            cooldown: 2.minutes(),
+            enabled: true
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Rollback Hooks
+// -----------------------------------------------------------------------------
+
+struct RollbackHooks {
+    pre_rollback: [fn(RollbackConfig) -> Result<(), RollbackError>]
+    post_rollback: [fn(RollbackResult) -> Result<(), RollbackError>]
+    on_failure: [fn(RollbackError) -> ()]
+}
+
+impl RollbackHooks {
+    fn empty() -> Self {
+        RollbackHooks { pre_rollback: [], post_rollback: [], on_failure: [] }
+    }
+    
+    fn run_pre_rollback(config: RollbackConfig) -> Result<(), RollbackError> {
+        for hook in self.pre_rollback { hook(config)? }
+        Ok(())
+    }
+    
+    fn run_post_rollback(result: RollbackResult) -> Result<(), RollbackError> {
+        for hook in self.post_rollback { hook(result)? }
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum RollbackError {
+    RevisionNotFound(String)
+    DeploymentNotFound(String)
+    RollbackFailed(String)
+    HealthCheckFailed(String)
+    Timeout
+    InvalidConfiguration(String)
+    ProviderError(String)
+    HookFailed(String)
+    
+    fn message() -> String {
+        match self {
+            .RevisionNotFound(m) => "Revision not found: \(m)"
+            .DeploymentNotFound(m) => "Deployment not found: \(m)"
+            .RollbackFailed(m) => "Rollback failed: \(m)"
+            .HealthCheckFailed(m) => "Health check failed: \(m)"
+            .Timeout => "Rollback timed out"
+            .InvalidConfiguration(m) => "Invalid configuration: \(m)"
+            .ProviderError(m) => "Provider error: \(m)"
+            .HookFailed(m) => "Hook failed: \(m)"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+fn rollback(deployment_id: String) -> RollbackBuilder {
+    RollbackBuilder.new(deployment_id)
+}
+
+fn quick_rollback(deployment_id: String) -> Result<RollbackResult, RollbackError> {
+    let provider = K8sRollbackProvider.new(K8sClient.new())
+    let manager = RollbackManager.new(provider)
+    manager.rollback_to_previous(deployment_id)
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "rollback builder" {
+    let config = RollbackBuilder.new("web-app")
+        .to_version("1.0.0")
+        .strategy(RollbackStrategy.Gradual { batch_size: 2, interval: 30.seconds() })
+        .timeout(600.seconds())
+        .verify_health(true)
+        .build()
+    
+    assert(config.deployment_id == "web-app")
+    assert(config.target_version == Some("1.0.0"))
+    assert(config.verify_health == true)
+}
+
+test "rollback config to previous" {
+    let config = RollbackConfig.to_previous("my-deployment")
+    assert(config.target_revision == Some(-1))
+}
+
+test "rollback status" {
+    assert(RollbackStatus.Success.is_success())
+    assert(!RollbackStatus.Failed("error").is_success())
+    assert(!RollbackStatus.InProgress.is_success())
+}
+
+test "auto rollback rules" {
+    let rule = AutoRollbackRule.error_rate("high-error-rate", 5.0)
+    assert(rule.name == "high-error-rate")
+    assert(rule.enabled == true)
+    
+    let latency_rule = AutoRollbackRule.latency("high-latency", 500.milliseconds())
+    assert(latency_rule.cooldown == 5.minutes())
+}
+
+test "health status" {
+    let healthy = HealthStatus {
+        is_healthy: true,
+        ready_replicas: 3,
+        total_replicas: 3,
+        consecutive_failures: 0,
+        last_check: DateTime.now()
+    }
+    assert(healthy.is_healthy())
+    
+    let unhealthy = HealthStatus {
+        is_healthy: true,
+        ready_replicas: 2,
+        total_replicas: 3,
+        consecutive_failures: 0,
+        last_check: DateTime.now()
+    }
+    assert(!unhealthy.is_healthy())
+}

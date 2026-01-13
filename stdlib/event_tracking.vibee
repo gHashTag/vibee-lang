@@ -1,0 +1,853 @@
+// =============================================================================
+// Vibee OS — Event Tracking Module
+// User event tracking, collection, and analysis
+// =============================================================================
+
+use datetime::{DateTime, Duration}
+use uuid::{UUID}
+use result::{Result, Ok, Err}
+use json::{Json, ToJson}
+
+// =============================================================================
+// Event Types
+// =============================================================================
+
+/// Tracked event
+struct Event {
+    id: String
+    name: String
+    category: EventCategory
+    user_id: Option<String>
+    session_id: Option<String>
+    timestamp: DateTime
+    properties: Map<String, EventValue>
+    context: EventContext
+    source: EventSource
+}
+
+/// Event category
+enum EventCategory {
+    PageView
+    Click
+    FormSubmit
+    Purchase
+    SignUp
+    Login
+    Logout
+    Search
+    Share
+    Download
+    VideoPlay
+    Error
+    Custom(String)
+}
+
+/// Event property value
+enum EventValue {
+    String(String)
+    Int(Int)
+    Float(Float)
+    Bool(Bool)
+    Array([EventValue])
+    Object(Map<String, EventValue>)
+    Null
+    
+    fn as_string() -> Option<String> { match self { .String(s) => Some(s), _ => None } }
+    fn as_int() -> Option<Int> { match self { .Int(i) => Some(i), _ => None } }
+    fn as_float() -> Option<Float> { match self { .Float(f) => Some(f), _ => None } }
+    fn as_bool() -> Option<Bool> { match self { .Bool(b) => Some(b), _ => None } }
+}
+
+/// Event context (device, location, etc.)
+struct EventContext {
+    device_type: DeviceType
+    os: String
+    browser: String
+    screen_resolution: Option<String>
+    language: String
+    timezone: String
+    ip_address: Option<String>
+    country: Option<String>
+    city: Option<String>
+    referrer: Option<String>
+    utm_source: Option<String>
+    utm_medium: Option<String>
+    utm_campaign: Option<String>
+}
+
+enum DeviceType { Desktop, Mobile, Tablet, TV, Bot, Unknown }
+
+/// Event source
+enum EventSource {
+    Web
+    iOS
+    Android
+    Server
+    API
+    Webhook
+    Import
+}
+
+impl Event {
+    fn new(name: String) -> Self {
+        Event {
+            id: UUID.v4(),
+            name: name,
+            category: EventCategory.Custom("default"),
+            user_id: None,
+            session_id: None,
+            timestamp: DateTime.now(),
+            properties: Map.empty(),
+            context: EventContext.default(),
+            source: EventSource.Web
+        }
+    }
+    
+    fn category(cat: EventCategory) -> Self { self.category = cat; self }
+    fn user(id: String) -> Self { self.user_id = Some(id); self }
+    fn session(id: String) -> Self { self.session_id = Some(id); self }
+    fn timestamp(ts: DateTime) -> Self { self.timestamp = ts; self }
+    fn source(src: EventSource) -> Self { self.source = src; self }
+    fn context(ctx: EventContext) -> Self { self.context = ctx; self }
+    
+    fn prop(key: String, value: EventValue) -> Self {
+        self.properties.set(key, value)
+        self
+    }
+    
+    fn prop_str(key: String, value: String) -> Self { self.prop(key, EventValue.String(value)) }
+    fn prop_int(key: String, value: Int) -> Self { self.prop(key, EventValue.Int(value)) }
+    fn prop_float(key: String, value: Float) -> Self { self.prop(key, EventValue.Float(value)) }
+    fn prop_bool(key: String, value: Bool) -> Self { self.prop(key, EventValue.Bool(value)) }
+    
+    fn get_prop(key: String) -> Option<EventValue> { self.properties.get(key).cloned() }
+    
+    fn to_json() -> Json {
+        Json.object([
+            ("id", Json.string(self.id.clone())),
+            ("name", Json.string(self.name.clone())),
+            ("category", Json.string(self.category.to_string())),
+            ("user_id", self.user_id.map(|u| Json.string(u)).unwrap_or(Json.null())),
+            ("session_id", self.session_id.map(|s| Json.string(s)).unwrap_or(Json.null())),
+            ("timestamp", Json.string(self.timestamp.to_iso8601())),
+            ("source", Json.string(self.source.to_string()))
+        ])
+    }
+}
+
+impl EventContext {
+    fn default() -> Self {
+        EventContext {
+            device_type: DeviceType.Unknown,
+            os: "unknown",
+            browser: "unknown",
+            screen_resolution: None,
+            language: "en",
+            timezone: "UTC",
+            ip_address: None,
+            country: None,
+            city: None,
+            referrer: None,
+            utm_source: None,
+            utm_medium: None,
+            utm_campaign: None
+        }
+    }
+    
+    fn from_request(req: &HttpRequest) -> Self {
+        let ua = req.header("User-Agent").unwrap_or("")
+        EventContext {
+            device_type: Self.detect_device(ua),
+            os: Self.detect_os(ua),
+            browser: Self.detect_browser(ua),
+            screen_resolution: None,
+            language: req.header("Accept-Language").unwrap_or("en").split(",").first().unwrap_or("en"),
+            timezone: "UTC",
+            ip_address: req.client_ip(),
+            country: None,
+            city: None,
+            referrer: req.header("Referer"),
+            utm_source: req.query("utm_source"),
+            utm_medium: req.query("utm_medium"),
+            utm_campaign: req.query("utm_campaign")
+        }
+    }
+    
+    fn detect_device(ua: String) -> DeviceType {
+        if ua.contains("Mobile") { DeviceType.Mobile }
+        else if ua.contains("Tablet") { DeviceType.Tablet }
+        else if ua.contains("TV") { DeviceType.TV }
+        else if ua.contains("bot") || ua.contains("Bot") { DeviceType.Bot }
+        else { DeviceType.Desktop }
+    }
+    
+    fn detect_os(ua: String) -> String {
+        if ua.contains("Windows") { "Windows" }
+        else if ua.contains("Mac OS") { "macOS" }
+        else if ua.contains("Linux") { "Linux" }
+        else if ua.contains("Android") { "Android" }
+        else if ua.contains("iOS") || ua.contains("iPhone") { "iOS" }
+        else { "Unknown" }
+    }
+    
+    fn detect_browser(ua: String) -> String {
+        if ua.contains("Chrome") { "Chrome" }
+        else if ua.contains("Firefox") { "Firefox" }
+        else if ua.contains("Safari") { "Safari" }
+        else if ua.contains("Edge") { "Edge" }
+        else { "Unknown" }
+    }
+}
+
+impl EventCategory {
+    fn to_string() -> String {
+        match self {
+            .PageView => "page_view"
+            .Click => "click"
+            .FormSubmit => "form_submit"
+            .Purchase => "purchase"
+            .SignUp => "sign_up"
+            .Login => "login"
+            .Logout => "logout"
+            .Search => "search"
+            .Share => "share"
+            .Download => "download"
+            .VideoPlay => "video_play"
+            .Error => "error"
+            .Custom(name) => name
+        }
+    }
+}
+
+// =============================================================================
+// Event Tracker Actor
+// =============================================================================
+
+/// Event tracker with buffering and batching
+actor EventTracker {
+    state buffer: [Event]
+    state buffer_size: Int
+    state flush_interval: Duration
+    state sinks: [Box<dyn EventSink>]
+    state filters: [Box<dyn EventFilter>]
+    state enrichers: [Box<dyn EventEnricher>]
+    state stats: TrackerStats
+    state running: Bool
+    
+    fn new() -> Self {
+        EventTracker {
+            buffer: [],
+            buffer_size: 100,
+            flush_interval: Duration.seconds(30),
+            sinks: [],
+            filters: [],
+            enrichers: [],
+            stats: TrackerStats.new(),
+            running: true
+        }
+    }
+    
+    fn buffer_size(size: Int) -> Self { self.buffer_size = size; self }
+    fn flush_interval(interval: Duration) -> Self { self.flush_interval = interval; self }
+    
+    fn add_sink(sink: Box<dyn EventSink>) -> Self {
+        self.sinks.push(sink)
+        self
+    }
+    
+    fn add_filter(filter: Box<dyn EventFilter>) -> Self {
+        self.filters.push(filter)
+        self
+    }
+    
+    fn add_enricher(enricher: Box<dyn EventEnricher>) -> Self {
+        self.enrichers.push(enricher)
+        self
+    }
+    
+    /// Track an event
+    fn track(event: Event) -> Result<(), TrackingError> {
+        // Apply filters
+        for filter in self.filters.iter() {
+            if !filter.should_track(&event) {
+                self.stats.filtered += 1
+                return Ok(())
+            }
+        }
+        
+        // Apply enrichers
+        var enriched = event
+        for enricher in self.enrichers.iter() {
+            enriched = enricher.enrich(enriched)
+        }
+        
+        // Add to buffer
+        self.buffer.push(enriched)
+        self.stats.tracked += 1
+        
+        // Flush if buffer is full
+        if self.buffer.len() >= self.buffer_size {
+            self.flush()?
+        }
+        
+        Ok(())
+    }
+    
+    /// Track page view
+    fn page_view(url: String, title: String) -> Result<(), TrackingError> {
+        self.track(
+            Event.new("page_view")
+                .category(EventCategory.PageView)
+                .prop_str("url", url)
+                .prop_str("title", title)
+        )
+    }
+    
+    /// Track click
+    fn click(element: String, target: Option<String>) -> Result<(), TrackingError> {
+        var event = Event.new("click")
+            .category(EventCategory.Click)
+            .prop_str("element", element)
+        
+        if let Some(t) = target {
+            event = event.prop_str("target", t)
+        }
+        
+        self.track(event)
+    }
+    
+    /// Track purchase
+    fn purchase(order_id: String, amount: Float, currency: String, items: [PurchaseItem]) -> Result<(), TrackingError> {
+        self.track(
+            Event.new("purchase")
+                .category(EventCategory.Purchase)
+                .prop_str("order_id", order_id)
+                .prop_float("amount", amount)
+                .prop_str("currency", currency)
+                .prop("items", EventValue.Array(items.iter().map(|i| i.to_event_value()).collect()))
+        )
+    }
+    
+    /// Track search
+    fn search(query: String, results_count: Int) -> Result<(), TrackingError> {
+        self.track(
+            Event.new("search")
+                .category(EventCategory.Search)
+                .prop_str("query", query)
+                .prop_int("results_count", results_count)
+        )
+    }
+    
+    /// Track custom event
+    fn custom(name: String, properties: Map<String, EventValue>) -> Result<(), TrackingError> {
+        var event = Event.new(name).category(EventCategory.Custom(name))
+        for (key, value) in properties.iter() {
+            event = event.prop(key.clone(), value.clone())
+        }
+        self.track(event)
+    }
+    
+    /// Flush buffer to sinks
+    fn flush() -> Result<(), TrackingError> {
+        if self.buffer.is_empty() { return Ok(()) }
+        
+        let events = self.buffer.clone()
+        self.buffer.clear()
+        
+        for sink in self.sinks.iter() {
+            match sink.send(events.clone()) {
+                Ok(_) => self.stats.sent += events.len(),
+                Err(e) => {
+                    self.stats.failed += events.len()
+                    return Err(TrackingError.SinkError(e.to_string()))
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Start background flushing
+    fn start_auto_flush() {
+        spawn {
+            while self.running {
+                @native("sleep", self.flush_interval)
+                let _ = self.flush()
+            }
+        }
+    }
+    
+    /// Stop tracker
+    fn stop() -> Result<(), TrackingError> {
+        self.running = false
+        self.flush()
+    }
+    
+    /// Get stats
+    fn stats() -> TrackerStats { self.stats.clone() }
+}
+
+/// Purchase item for tracking
+struct PurchaseItem {
+    id: String
+    name: String
+    price: Float
+    quantity: Int
+    category: Option<String>
+    
+    fn new(id: String, name: String, price: Float, quantity: Int) -> Self {
+        PurchaseItem { id: id, name: name, price: price, quantity: quantity, category: None }
+    }
+    
+    fn category(cat: String) -> Self { self.category = Some(cat); self }
+    
+    fn to_event_value() -> EventValue {
+        var obj = Map.empty()
+        obj.set("id", EventValue.String(self.id.clone()))
+        obj.set("name", EventValue.String(self.name.clone()))
+        obj.set("price", EventValue.Float(self.price))
+        obj.set("quantity", EventValue.Int(self.quantity))
+        if let Some(cat) = self.category.clone() {
+            obj.set("category", EventValue.String(cat))
+        }
+        EventValue.Object(obj)
+    }
+}
+
+/// Tracker statistics
+struct TrackerStats {
+    tracked: Int
+    filtered: Int
+    sent: Int
+    failed: Int
+    
+    fn new() -> Self { TrackerStats { tracked: 0, filtered: 0, sent: 0, failed: 0 } }
+}
+
+// =============================================================================
+// Event Sink Trait
+// =============================================================================
+
+/// Trait for event sinks (destinations)
+trait EventSink {
+    fn send(events: [Event]) -> Result<(), SinkError>
+    fn name() -> String
+}
+
+/// Console sink for debugging
+struct ConsoleSink {}
+
+impl EventSink for ConsoleSink {
+    fn send(events: [Event]) -> Result<(), SinkError> {
+        for event in events.iter() {
+            println("[Event] {} - {} (user: {:?})", event.timestamp.to_iso8601(), event.name, event.user_id)
+        }
+        Ok(())
+    }
+    
+    fn name() -> String { "console" }
+}
+
+/// HTTP sink for sending to analytics backend
+struct HttpSink {
+    endpoint: String
+    api_key: Option<String>
+    batch_size: Int
+    timeout: Duration
+}
+
+impl HttpSink {
+    fn new(endpoint: String) -> Self {
+        HttpSink {
+            endpoint: endpoint,
+            api_key: None,
+            batch_size: 100,
+            timeout: Duration.seconds(30)
+        }
+    }
+    
+    fn api_key(key: String) -> Self { self.api_key = Some(key); self }
+    fn batch_size(size: Int) -> Self { self.batch_size = size; self }
+    fn timeout(t: Duration) -> Self { self.timeout = t; self }
+}
+
+impl EventSink for HttpSink {
+    fn send(events: [Event]) -> Result<(), SinkError> {
+        let payload = Json.array(events.iter().map(|e| e.to_json()).collect())
+        
+        var headers = Map.empty()
+        headers.set("Content-Type", "application/json")
+        if let Some(key) = self.api_key.clone() {
+            headers.set("Authorization", format!("Bearer {}", key))
+        }
+        
+        match @native("http_post", self.endpoint.clone(), payload.to_string(), headers) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(SinkError.NetworkError(e))
+        }
+    }
+    
+    fn name() -> String { "http" }
+}
+
+/// File sink for local storage
+struct FileSink {
+    path: String
+    format: FileFormat
+}
+
+enum FileFormat { Json, Csv, Ndjson }
+
+impl FileSink {
+    fn new(path: String) -> Self { FileSink { path: path, format: FileFormat.Ndjson } }
+    fn format(f: FileFormat) -> Self { self.format = f; self }
+}
+
+impl EventSink for FileSink {
+    fn send(events: [Event]) -> Result<(), SinkError> {
+        let content = match self.format {
+            FileFormat.Json => Json.array(events.iter().map(|e| e.to_json()).collect()).to_string(),
+            FileFormat.Ndjson => events.iter().map(|e| e.to_json().to_string()).collect::<Vec<_>>().join("\n"),
+            FileFormat.Csv => self.to_csv(events)
+        }
+        
+        match @native("file_append", self.path.clone(), content + "\n") {
+            Ok(_) => Ok(()),
+            Err(e) => Err(SinkError.IoError(e))
+        }
+    }
+    
+    fn name() -> String { "file" }
+    
+    fn to_csv(events: [Event]) -> String {
+        events.iter().map(|e| {
+            format!("{},{},{},{}", e.id, e.name, e.timestamp.to_iso8601(), e.user_id.unwrap_or(""))
+        }).collect::<Vec<_>>().join("\n")
+    }
+}
+
+// =============================================================================
+// Event Filter Trait
+// =============================================================================
+
+/// Trait for filtering events
+trait EventFilter {
+    fn should_track(event: &Event) -> Bool
+}
+
+/// Filter by event name
+struct NameFilter {
+    allowed: Set<String>
+    blocked: Set<String>
+}
+
+impl NameFilter {
+    fn allow(names: [String]) -> Self { NameFilter { allowed: Set.from(names), blocked: Set.new() } }
+    fn block(names: [String]) -> Self { NameFilter { allowed: Set.new(), blocked: Set.from(names) } }
+}
+
+impl EventFilter for NameFilter {
+    fn should_track(event: &Event) -> Bool {
+        if !self.blocked.is_empty() && self.blocked.contains(&event.name) {
+            return false
+        }
+        if !self.allowed.is_empty() && !self.allowed.contains(&event.name) {
+            return false
+        }
+        true
+    }
+}
+
+/// Filter by user sampling
+struct SamplingFilter {
+    rate: Float  // 0.0 to 1.0
+}
+
+impl SamplingFilter {
+    fn new(rate: Float) -> Self { SamplingFilter { rate: rate.clamp(0.0, 1.0) } }
+}
+
+impl EventFilter for SamplingFilter {
+    fn should_track(event: &Event) -> Bool {
+        Random.float() < self.rate
+    }
+}
+
+/// Filter bots
+struct BotFilter {}
+
+impl EventFilter for BotFilter {
+    fn should_track(event: &Event) -> Bool {
+        event.context.device_type != DeviceType.Bot
+    }
+}
+
+// =============================================================================
+// Event Enricher Trait
+// =============================================================================
+
+/// Trait for enriching events with additional data
+trait EventEnricher {
+    fn enrich(event: Event) -> Event
+}
+
+/// Add geo data from IP
+struct GeoEnricher {}
+
+impl EventEnricher for GeoEnricher {
+    fn enrich(event: Event) -> Event {
+        if let Some(ip) = event.context.ip_address.clone() {
+            if let Some(geo) = @native("geoip_lookup", ip) {
+                var ctx = event.context.clone()
+                ctx.country = geo.country
+                ctx.city = geo.city
+                event.context = ctx
+            }
+        }
+        event
+    }
+}
+
+/// Add session data
+struct SessionEnricher {
+    session_timeout: Duration
+}
+
+impl SessionEnricher {
+    fn new(timeout: Duration) -> Self { SessionEnricher { session_timeout: timeout } }
+}
+
+impl EventEnricher for SessionEnricher {
+    fn enrich(event: Event) -> Event {
+        if event.session_id.is_none() {
+            event.session_id = Some(UUID.v4())
+        }
+        event
+    }
+}
+
+// =============================================================================
+// Event Query
+// =============================================================================
+
+/// Query builder for events
+struct EventQuery {
+    event_names: Option<[String]>
+    user_ids: Option<[String]>
+    start_time: Option<DateTime>
+    end_time: Option<DateTime>
+    categories: Option<[EventCategory]>
+    properties: Map<String, EventValue>
+    limit: Option<Int>
+    offset: Int
+    order_by: OrderBy
+}
+
+enum OrderBy { TimestampAsc, TimestampDesc, NameAsc, NameDesc }
+
+impl EventQuery {
+    fn new() -> Self {
+        EventQuery {
+            event_names: None,
+            user_ids: None,
+            start_time: None,
+            end_time: None,
+            categories: None,
+            properties: Map.empty(),
+            limit: None,
+            offset: 0,
+            order_by: OrderBy.TimestampDesc
+        }
+    }
+    
+    fn events(names: [String]) -> Self { self.event_names = Some(names); self }
+    fn users(ids: [String]) -> Self { self.user_ids = Some(ids); self }
+    fn from(time: DateTime) -> Self { self.start_time = Some(time); self }
+    fn to(time: DateTime) -> Self { self.end_time = Some(time); self }
+    fn categories(cats: [EventCategory]) -> Self { self.categories = Some(cats); self }
+    fn where_prop(key: String, value: EventValue) -> Self { self.properties.set(key, value); self }
+    fn limit(n: Int) -> Self { self.limit = Some(n); self }
+    fn offset(n: Int) -> Self { self.offset = n; self }
+    fn order(by: OrderBy) -> Self { self.order_by = by; self }
+    
+    fn matches(event: &Event) -> Bool {
+        if let Some(names) = self.event_names.as_ref() {
+            if !names.contains(&event.name) { return false }
+        }
+        if let Some(users) = self.user_ids.as_ref() {
+            if let Some(uid) = event.user_id.as_ref() {
+                if !users.contains(uid) { return false }
+            } else {
+                return false
+            }
+        }
+        if let Some(start) = self.start_time {
+            if event.timestamp < start { return false }
+        }
+        if let Some(end) = self.end_time {
+            if event.timestamp > end { return false }
+        }
+        for (key, value) in self.properties.iter() {
+            if event.get_prop(key.clone()) != Some(value.clone()) {
+                return false
+            }
+        }
+        true
+    }
+}
+
+// =============================================================================
+// Event Aggregation
+// =============================================================================
+
+/// Event aggregation results
+struct EventAggregation {
+    total_events: Int
+    unique_users: Int
+    events_by_name: Map<String, Int>
+    events_by_category: Map<String, Int>
+    events_by_hour: Map<Int, Int>
+    events_by_day: Map<String, Int>
+    top_properties: Map<String, Map<String, Int>>
+}
+
+impl EventAggregation {
+    fn new() -> Self {
+        EventAggregation {
+            total_events: 0,
+            unique_users: 0,
+            events_by_name: Map.empty(),
+            events_by_category: Map.empty(),
+            events_by_hour: Map.empty(),
+            events_by_day: Map.empty(),
+            top_properties: Map.empty()
+        }
+    }
+    
+    fn from_events(events: [Event]) -> Self {
+        var agg = Self.new()
+        var users = Set.new()
+        
+        for event in events.iter() {
+            agg.total_events += 1
+            
+            if let Some(uid) = event.user_id.as_ref() {
+                users.insert(uid.clone())
+            }
+            
+            *agg.events_by_name.entry(event.name.clone()).or_insert(0) += 1
+            *agg.events_by_category.entry(event.category.to_string()).or_insert(0) += 1
+            *agg.events_by_hour.entry(event.timestamp.hour()).or_insert(0) += 1
+            *agg.events_by_day.entry(event.timestamp.format("%Y-%m-%d")).or_insert(0) += 1
+        }
+        
+        agg.unique_users = users.len()
+        agg
+    }
+    
+    fn events_per_user() -> Float {
+        if self.unique_users == 0 { 0.0 }
+        else { self.total_events as Float / self.unique_users as Float }
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum TrackingError {
+    SinkError(String)
+    ValidationError(String)
+    BufferFull
+    Stopped
+}
+
+enum SinkError {
+    NetworkError(String)
+    IoError(String)
+    SerializationError(String)
+}
+
+impl Display for TrackingError {
+    fn fmt(f: Formatter) {
+        match self {
+            .SinkError(e) => f.write(format!("Sink error: {}", e))
+            .ValidationError(e) => f.write(format!("Validation error: {}", e))
+            .BufferFull => f.write("Buffer full")
+            .Stopped => f.write("Tracker stopped")
+        }
+    }
+}
+
+// =============================================================================
+// Builder Functions
+// =============================================================================
+
+fn event(name: String) -> Event { Event.new(name) }
+fn tracker() -> EventTracker { EventTracker.new() }
+fn console_sink() -> ConsoleSink { ConsoleSink {} }
+fn http_sink(endpoint: String) -> HttpSink { HttpSink.new(endpoint) }
+fn file_sink(path: String) -> FileSink { FileSink.new(path) }
+fn event_query() -> EventQuery { EventQuery.new() }
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "event creation" {
+    let e = Event.new("button_click")
+        .category(EventCategory.Click)
+        .user("user123")
+        .prop_str("button_id", "submit")
+        .prop_int("position", 1)
+    
+    assert_eq(e.name, "button_click")?
+    assert_eq(e.user_id, Some("user123"))?
+    assert_eq(e.get_prop("button_id"), Some(EventValue.String("submit")))?
+}
+
+test "event tracker" {
+    let tracker = EventTracker.new()
+        .buffer_size(10)
+        .add_sink(Box.new(ConsoleSink {}))
+    
+    tracker.track(Event.new("test_event").user("user1"))?
+    assert_eq(tracker.stats().tracked, 1)?
+}
+
+test "event query" {
+    let query = EventQuery.new()
+        .events(["click", "purchase"])
+        .from(DateTime.now().subtract(Duration.days(7)))
+    
+    let event = Event.new("click")
+    assert(query.matches(&event))?
+}
+
+test "event aggregation" {
+    let events = [
+        Event.new("click").user("user1"),
+        Event.new("click").user("user2"),
+        Event.new("purchase").user("user1")
+    ]
+    
+    let agg = EventAggregation.from_events(events)
+    assert_eq(agg.total_events, 3)?
+    assert_eq(agg.unique_users, 2)?
+    assert_eq(agg.events_by_name.get("click"), Some(2))?
+}
+
+test "sampling filter" {
+    let filter = SamplingFilter.new(1.0)  // 100% sampling
+    let event = Event.new("test")
+    assert(filter.should_track(&event))?
+}
+
+test "purchase item" {
+    let item = PurchaseItem.new("sku123", "Widget", 29.99, 2).category("Electronics")
+    let value = item.to_event_value()
+    
+    if let EventValue.Object(obj) = value {
+        assert_eq(obj.get("id"), Some(EventValue.String("sku123")))?
+    }
+}

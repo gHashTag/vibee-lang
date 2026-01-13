@@ -1,0 +1,486 @@
+// =============================================================================
+// Vibee OS — Like Module
+// Likes, reactions, and engagement tracking
+// =============================================================================
+
+use result::{Result, Ok, Err}
+use datetime::{DateTime, Duration}
+
+// =============================================================================
+// Like Types
+// =============================================================================
+
+/// Target type for likes
+enum LikeTarget {
+    Post(String),
+    Comment(String),
+    Story(String),
+    Message(String),
+    Media(String)
+}
+
+impl LikeTarget {
+    fn id() -> String {
+        match self {
+            LikeTarget.Post(id) => id,
+            LikeTarget.Comment(id) => id,
+            LikeTarget.Story(id) => id,
+            LikeTarget.Message(id) => id,
+            LikeTarget.Media(id) => id
+        }
+    }
+    
+    fn type_name() -> String {
+        match self {
+            LikeTarget.Post(_) => "post",
+            LikeTarget.Comment(_) => "comment",
+            LikeTarget.Story(_) => "story",
+            LikeTarget.Message(_) => "message",
+            LikeTarget.Media(_) => "media"
+        }
+    }
+}
+
+/// Reaction type
+enum ReactionType {
+    Like,
+    Love,
+    Haha,
+    Wow,
+    Sad,
+    Angry,
+    Custom(String)
+}
+
+impl ReactionType {
+    fn emoji() -> String {
+        match self {
+            ReactionType.Like => "👍",
+            ReactionType.Love => "❤️",
+            ReactionType.Haha => "😂",
+            ReactionType.Wow => "😮",
+            ReactionType.Sad => "😢",
+            ReactionType.Angry => "😠",
+            ReactionType.Custom(e) => e
+        }
+    }
+    
+    fn display_name() -> String {
+        match self {
+            ReactionType.Like => "Like",
+            ReactionType.Love => "Love",
+            ReactionType.Haha => "Haha",
+            ReactionType.Wow => "Wow",
+            ReactionType.Sad => "Sad",
+            ReactionType.Angry => "Angry",
+            ReactionType.Custom(_) => "Custom"
+        }
+    }
+}
+
+// =============================================================================
+// Like Structure
+// =============================================================================
+
+/// Like record
+struct Like {
+    id: String,
+    user_id: String,
+    target: LikeTarget,
+    reaction: ReactionType,
+    created_at: DateTime
+}
+
+impl Like {
+    fn new(user_id: String, target: LikeTarget) -> Self {
+        Like {
+            id: generate_id(),
+            user_id: user_id,
+            target: target,
+            reaction: ReactionType.Like,
+            created_at: DateTime.now()
+        }
+    }
+    
+    fn with_reaction(user_id: String, target: LikeTarget, reaction: ReactionType) -> Self {
+        var like = Self.new(user_id, target)
+        like.reaction = reaction
+        like
+    }
+    
+    fn change_reaction(reaction: ReactionType) {
+        self.reaction = reaction
+    }
+    
+    fn age() -> Duration {
+        DateTime.now() - self.created_at
+    }
+}
+
+// =============================================================================
+// Like Count
+// =============================================================================
+
+/// Like count with breakdown
+struct LikeCount {
+    total: Int64,
+    by_reaction: Map<ReactionType, Int64>
+}
+
+impl LikeCount {
+    fn new() -> Self {
+        LikeCount {
+            total: 0,
+            by_reaction: Map.empty()
+        }
+    }
+    
+    fn add(reaction: ReactionType) {
+        self.total += 1
+        self.by_reaction.entry(reaction).or_insert(0) += 1
+    }
+    
+    fn remove(reaction: ReactionType) {
+        if self.total > 0 { self.total -= 1 }
+        if let Some(count) = self.by_reaction.get_mut(reaction) {
+            if *count > 0 { *count -= 1 }
+        }
+    }
+    
+    fn top_reactions(n: Int) -> [ReactionType] {
+        var sorted: [(ReactionType, Int64)] = self.by_reaction.iter().collect()
+        sorted.sort_by(|a, b| b.1.cmp(a.1))
+        sorted.take(n).map(|(r, _)| r).collect()
+    }
+    
+    fn formatted() -> String {
+        if self.total == 0 { return "" }
+        let emojis = self.top_reactions(3).map(|r| r.emoji()).join("")
+        format!("{} {}", emojis, format_count(self.total))
+    }
+}
+
+// =============================================================================
+// Like Service
+// =============================================================================
+
+/// Like service actor
+actor LikeService {
+    state likes: Map<String, Like>
+    state user_likes: Map<String, Set<String>>
+    state target_likes: Map<String, [String]>
+    state counts: Map<String, LikeCount>
+    
+    fn new() -> Self {
+        LikeService {
+            likes: Map.empty(),
+            user_likes: Map.empty(),
+            target_likes: Map.empty(),
+            counts: Map.empty()
+        }
+    }
+    
+    /// Like a target
+    on like(user_id: String, target: LikeTarget) -> Result<Like, LikeError> {
+        self.react(user_id, target, ReactionType.Like)
+    }
+    
+    /// React to a target
+    on react(user_id: String, target: LikeTarget, reaction: ReactionType) -> Result<Like, LikeError> {
+        let target_id = target.id()
+        let key = format!("{}:{}", user_id, target_id)
+        
+        // Check if already liked
+        if self.likes.contains_key(key.clone()) {
+            return Err(LikeError.AlreadyLiked)
+        }
+        
+        let like = Like.with_reaction(user_id.clone(), target.clone(), reaction.clone())
+        
+        self.likes.set(key.clone(), like.clone())
+        self.user_likes.entry(user_id).or_insert(Set.empty()).insert(target_id.clone())
+        self.target_likes.entry(target_id.clone()).or_insert([]).push(user_id.clone())
+        self.counts.entry(target_id).or_insert(LikeCount.new()).add(reaction)
+        
+        Ok(like)
+    }
+    
+    /// Unlike a target
+    on unlike(user_id: String, target: LikeTarget) -> Result<(), LikeError> {
+        let target_id = target.id()
+        let key = format!("{}:{}", user_id, target_id)
+        
+        let like = self.likes.get(key.clone())
+            .ok_or(LikeError.NotLiked)?
+        
+        let reaction = like.reaction.clone()
+        
+        self.likes.remove(key)
+        self.user_likes.get_mut(user_id).map(|s| s.remove(target_id.clone()))
+        self.target_likes.get_mut(target_id.clone()).map(|v| v.retain(|id| *id != user_id))
+        self.counts.get_mut(target_id).map(|c| c.remove(reaction))
+        
+        Ok(())
+    }
+    
+    /// Change reaction
+    on change_reaction(user_id: String, target: LikeTarget, new_reaction: ReactionType) -> Result<Like, LikeError> {
+        let target_id = target.id()
+        let key = format!("{}:{}", user_id, target_id)
+        
+        let like = self.likes.get_mut(key.clone())
+            .ok_or(LikeError.NotLiked)?
+        
+        let old_reaction = like.reaction.clone()
+        like.change_reaction(new_reaction.clone())
+        
+        // Update counts
+        if let Some(count) = self.counts.get_mut(target_id) {
+            count.remove(old_reaction)
+            count.add(new_reaction)
+        }
+        
+        Ok(like.clone())
+    }
+    
+    /// Check if user liked target
+    on has_liked(user_id: String, target: LikeTarget) -> Bool {
+        let key = format!("{}:{}", user_id, target.id())
+        self.likes.contains_key(key)
+    }
+    
+    /// Get user's reaction to target
+    on get_reaction(user_id: String, target: LikeTarget) -> Option<ReactionType> {
+        let key = format!("{}:{}", user_id, target.id())
+        self.likes.get(key).map(|l| l.reaction.clone())
+    }
+    
+    /// Get like count for target
+    on get_count(target: LikeTarget) -> LikeCount {
+        self.counts.get(target.id()).unwrap_or(LikeCount.new())
+    }
+    
+    /// Get users who liked target
+    on get_likers(target: LikeTarget, limit: Int, offset: Int) -> [String] {
+        self.target_likes.get(target.id())
+            .map(|v| v.skip(offset).take(limit).collect())
+            .unwrap_or([])
+    }
+    
+    /// Get targets liked by user
+    on get_user_likes(user_id: String, limit: Int, offset: Int) -> [Like] {
+        self.user_likes.get(user_id)
+            .map(|set| {
+                set.iter()
+                    .filter_map(|target_id| {
+                        let key = format!("{}:{}", user_id, target_id)
+                        self.likes.get(key)
+                    })
+                    .skip(offset)
+                    .take(limit)
+                    .collect()
+            })
+            .unwrap_or([])
+    }
+    
+    /// Toggle like
+    on toggle(user_id: String, target: LikeTarget) -> Result<Bool, LikeError> {
+        if self.has_liked(user_id.clone(), target.clone()) {
+            self.unlike(user_id, target)?
+            Ok(false)
+        } else {
+            self.like(user_id, target)?
+            Ok(true)
+        }
+    }
+    
+    /// Batch like multiple targets
+    on batch_like(user_id: String, targets: [LikeTarget]) -> [Result<Like, LikeError>] {
+        targets.map(|t| self.like(user_id.clone(), t)).collect()
+    }
+    
+    /// Get reaction breakdown
+    on get_reaction_breakdown(target: LikeTarget) -> Map<ReactionType, Int64> {
+        self.counts.get(target.id())
+            .map(|c| c.by_reaction.clone())
+            .unwrap_or(Map.empty())
+    }
+}
+
+// =============================================================================
+// Like Errors
+// =============================================================================
+
+/// Like errors
+enum LikeError {
+    AlreadyLiked,
+    NotLiked,
+    TargetNotFound,
+    Unauthorized,
+    RateLimited
+}
+
+impl LikeError {
+    fn message() -> String {
+        match self {
+            LikeError.AlreadyLiked => "Already liked this content",
+            LikeError.NotLiked => "Haven't liked this content",
+            LikeError.TargetNotFound => "Content not found",
+            LikeError.Unauthorized => "Not authorized to like this content",
+            LikeError.RateLimited => "Too many likes, please slow down"
+        }
+    }
+}
+
+// =============================================================================
+// Like Events
+// =============================================================================
+
+/// Like events for event sourcing
+enum LikeEvent {
+    Liked { user_id: String, target_id: String, target_type: String, timestamp: DateTime },
+    Unliked { user_id: String, target_id: String, target_type: String, timestamp: DateTime },
+    ReactionChanged { user_id: String, target_id: String, from: ReactionType, to: ReactionType, timestamp: DateTime }
+}
+
+impl LikeEvent {
+    fn timestamp() -> DateTime {
+        match self {
+            LikeEvent.Liked { timestamp, .. } => timestamp,
+            LikeEvent.Unliked { timestamp, .. } => timestamp,
+            LikeEvent.ReactionChanged { timestamp, .. } => timestamp
+        }
+    }
+}
+
+// =============================================================================
+// Like Analytics
+// =============================================================================
+
+/// Like analytics
+struct LikeAnalytics {
+    target_id: String,
+    total_likes: Int64,
+    unique_likers: Int64,
+    likes_by_hour: Map<Int, Int64>,
+    likes_by_day: Map<String, Int64>,
+    top_reactions: [(ReactionType, Int64)],
+    engagement_rate: Float
+}
+
+impl LikeAnalytics {
+    fn new(target_id: String) -> Self {
+        LikeAnalytics {
+            target_id: target_id,
+            total_likes: 0,
+            unique_likers: 0,
+            likes_by_hour: Map.empty(),
+            likes_by_day: Map.empty(),
+            top_reactions: [],
+            engagement_rate: 0.0
+        }
+    }
+    
+    fn record_like(like: Like) {
+        self.total_likes += 1
+        
+        let hour = like.created_at.hour()
+        self.likes_by_hour.entry(hour).or_insert(0) += 1
+        
+        let day = like.created_at.format("%Y-%m-%d")
+        self.likes_by_day.entry(day).or_insert(0) += 1
+    }
+    
+    fn peak_hour() -> Option<Int> {
+        self.likes_by_hour.iter()
+            .max_by(|a, b| a.1.cmp(b.1))
+            .map(|(h, _)| h)
+    }
+    
+    fn peak_day() -> Option<String> {
+        self.likes_by_day.iter()
+            .max_by(|a, b| a.1.cmp(b.1))
+            .map(|(d, _)| d)
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+fn generate_id() -> String {
+    @native("uuid_v4")
+}
+
+fn format_count(count: Int64) -> String {
+    if count < 1000 { count.to_string() }
+    else if count < 1_000_000 { format!("{:.1}K", count as Float / 1000.0) }
+    else { format!("{:.1}M", count as Float / 1_000_000.0) }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "like creation" {
+    let like = Like.new("user1", LikeTarget.Post("post1"))
+    assert_eq(like.user_id, "user1")?
+    assert_eq(like.target.id(), "post1")?
+}
+
+test "reaction types" {
+    assert_eq(ReactionType.Like.emoji(), "👍")?
+    assert_eq(ReactionType.Love.emoji(), "❤️")?
+    assert_eq(ReactionType.Haha.emoji(), "😂")?
+}
+
+test "like service" {
+    let service = LikeService.new()
+    
+    let result = service.like("user1", LikeTarget.Post("post1"))
+    assert(result.is_ok())?
+    
+    assert(service.has_liked("user1", LikeTarget.Post("post1")))?
+    
+    let count = service.get_count(LikeTarget.Post("post1"))
+    assert_eq(count.total, 1)?
+}
+
+test "unlike" {
+    let service = LikeService.new()
+    
+    service.like("user1", LikeTarget.Post("post1")).unwrap()
+    service.unlike("user1", LikeTarget.Post("post1")).unwrap()
+    
+    assert(!service.has_liked("user1", LikeTarget.Post("post1")))?
+}
+
+test "change reaction" {
+    let service = LikeService.new()
+    
+    service.like("user1", LikeTarget.Post("post1")).unwrap()
+    service.change_reaction("user1", LikeTarget.Post("post1"), ReactionType.Love).unwrap()
+    
+    let reaction = service.get_reaction("user1", LikeTarget.Post("post1"))
+    assert_eq(reaction, Some(ReactionType.Love))?
+}
+
+test "toggle like" {
+    let service = LikeService.new()
+    
+    let liked = service.toggle("user1", LikeTarget.Post("post1")).unwrap()
+    assert(liked)?
+    
+    let unliked = service.toggle("user1", LikeTarget.Post("post1")).unwrap()
+    assert(!unliked)?
+}
+
+test "like count formatting" {
+    var count = LikeCount.new()
+    count.add(ReactionType.Like)
+    count.add(ReactionType.Love)
+    count.add(ReactionType.Love)
+    
+    assert_eq(count.total, 3)?
+    assert_eq(count.top_reactions(1), [ReactionType.Love])?
+}

@@ -1,0 +1,507 @@
+// =============================================================================
+// Vibee OS — CRM Activity Module
+// Activity tracking, tasks, notes, and timeline for CRM
+// =============================================================================
+
+use datetime::{DateTime, Duration}
+use uuid::{UUID}
+
+// =============================================================================
+// Activity Types
+// =============================================================================
+
+enum ActivityType {
+    Call
+    Email
+    Meeting
+    Task
+    Note
+    SMS
+    Chat
+    Demo
+    Proposal
+    Contract
+    Custom(String)
+}
+
+enum ActivityStatus { Planned, InProgress, Completed, Cancelled, Overdue }
+
+enum ActivityPriority { Low, Normal, High, Urgent }
+
+enum ActivityOutcome { Successful, Unsuccessful, NoAnswer, LeftMessage, Rescheduled, None }
+
+// =============================================================================
+// Activity
+// =============================================================================
+
+struct Activity {
+    id: String
+    activity_type: ActivityType
+    status: ActivityStatus
+    priority: ActivityPriority
+    outcome: ActivityOutcome
+    
+    // Content
+    subject: String
+    description: Option<String>
+    
+    // Relations
+    contact_id: Option<String>
+    deal_id: Option<String>
+    lead_id: Option<String>
+    company_id: Option<String>
+    
+    // Assignment
+    owner_id: Option<String>
+    assigned_to: Option<String>
+    
+    // Timing
+    due_date: Option<DateTime>
+    start_time: Option<DateTime>
+    end_time: Option<DateTime>
+    duration_minutes: Option<Int>
+    completed_at: Option<DateTime>
+    
+    // Reminders
+    reminder_at: Option<DateTime>
+    reminder_sent: Bool
+    
+    // Custom
+    tags: [String]
+    custom_fields: Map<String, String>
+    
+    // Timestamps
+    created_at: DateTime
+    updated_at: DateTime
+}
+
+impl Activity {
+    fn new(activity_type: ActivityType, subject: String) -> Self {
+        let now = DateTime.now()
+        Activity {
+            id: UUID.v4().to_string(),
+            activity_type: activity_type,
+            status: ActivityStatus.Planned,
+            priority: ActivityPriority.Normal,
+            outcome: ActivityOutcome.None,
+            subject: subject,
+            description: None,
+            contact_id: None,
+            deal_id: None,
+            lead_id: None,
+            company_id: None,
+            owner_id: None,
+            assigned_to: None,
+            due_date: None,
+            start_time: None,
+            end_time: None,
+            duration_minutes: None,
+            completed_at: None,
+            reminder_at: None,
+            reminder_sent: false,
+            tags: [],
+            custom_fields: Map.empty(),
+            created_at: now,
+            updated_at: now
+        }
+    }
+    
+    // Factory methods
+    fn call(subject: String) -> Self { Activity.new(ActivityType.Call, subject) }
+    fn email(subject: String) -> Self { Activity.new(ActivityType.Email, subject) }
+    fn meeting(subject: String) -> Self { Activity.new(ActivityType.Meeting, subject) }
+    fn task(subject: String) -> Self { Activity.new(ActivityType.Task, subject) }
+    fn note(subject: String) -> Self { Activity.new(ActivityType.Note, subject).complete() }
+    
+    // Builder methods
+    fn with_description(d: String) -> Self { self.description = Some(d); self }
+    fn with_contact(id: String) -> Self { self.contact_id = Some(id); self }
+    fn with_deal(id: String) -> Self { self.deal_id = Some(id); self }
+    fn with_lead(id: String) -> Self { self.lead_id = Some(id); self }
+    fn with_company(id: String) -> Self { self.company_id = Some(id); self }
+    fn with_owner(id: String) -> Self { self.owner_id = Some(id); self }
+    fn assign_to(id: String) -> Self { self.assigned_to = Some(id); self }
+    fn with_priority(p: ActivityPriority) -> Self { self.priority = p; self }
+    
+    fn due_at(dt: DateTime) -> Self { self.due_date = Some(dt); self }
+    fn due_today() -> Self { self.due_date = Some(DateTime.now().end_of_day()); self }
+    fn due_tomorrow() -> Self { self.due_date = Some(DateTime.now().add_days(1).end_of_day()); self }
+    fn due_in_days(days: Int) -> Self { self.due_date = Some(DateTime.now().add_days(days)); self }
+    
+    fn scheduled_at(start: DateTime, end: DateTime) -> Self {
+        self.start_time = Some(start)
+        self.end_time = Some(end)
+        self.duration_minutes = Some(end.minutes_since(start) as Int)
+        self
+    }
+    
+    fn with_duration(minutes: Int) -> Self { self.duration_minutes = Some(minutes); self }
+    fn remind_at(dt: DateTime) -> Self { self.reminder_at = Some(dt); self }
+    fn remind_before(minutes: Int) -> Self {
+        if let Some(due) = self.due_date {
+            self.reminder_at = Some(due.sub_minutes(minutes as Int64))
+        }
+        self
+    }
+    
+    fn add_tag(t: String) -> Self { if !self.tags.contains(t) { self.tags.push(t) }; self }
+    
+    // Status transitions
+    fn start() -> Self {
+        self.status = ActivityStatus.InProgress
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn complete() -> Self {
+        self.status = ActivityStatus.Completed
+        self.completed_at = Some(DateTime.now())
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn complete_with_outcome(outcome: ActivityOutcome) -> Self {
+        self.outcome = outcome
+        self.complete()
+    }
+    
+    fn cancel() -> Self {
+        self.status = ActivityStatus.Cancelled
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn reschedule(new_date: DateTime) -> Self {
+        self.due_date = Some(new_date)
+        self.status = ActivityStatus.Planned
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn mark_overdue() -> Self {
+        if self.status == ActivityStatus.Planned || self.status == ActivityStatus.InProgress {
+            self.status = ActivityStatus.Overdue
+        }
+        self
+    }
+    
+    // Getters
+    fn is_completed() -> Bool { self.status == ActivityStatus.Completed }
+    fn is_overdue() -> Bool {
+        self.due_date.map(|d| DateTime.now() > d && !self.is_completed()).unwrap_or(false)
+    }
+    fn is_due_today() -> Bool {
+        self.due_date.map(|d| d.is_same_day(DateTime.now())).unwrap_or(false)
+    }
+    fn has_reminder() -> Bool { self.reminder_at.is_some() && !self.reminder_sent }
+}
+
+// =============================================================================
+// Activity Query
+// =============================================================================
+
+struct ActivityQuery {
+    activity_type: Option<ActivityType>
+    status: Option<ActivityStatus>
+    priority: Option<ActivityPriority>
+    contact_id: Option<String>
+    deal_id: Option<String>
+    lead_id: Option<String>
+    owner_id: Option<String>
+    assigned_to: Option<String>
+    due_after: Option<DateTime>
+    due_before: Option<DateTime>
+    completed_after: Option<DateTime>
+    overdue_only: Bool
+    sort_by: ActivitySortField
+    sort_order: SortOrder
+    limit: Int
+    offset: Int
+}
+
+enum ActivitySortField { DueDate, CreatedAt, Priority, Subject }
+enum SortOrder { Asc, Desc }
+
+impl ActivityQuery {
+    fn new() -> Self {
+        ActivityQuery {
+            activity_type: None, status: None, priority: None,
+            contact_id: None, deal_id: None, lead_id: None,
+            owner_id: None, assigned_to: None,
+            due_after: None, due_before: None, completed_after: None,
+            overdue_only: false,
+            sort_by: ActivitySortField.DueDate, sort_order: SortOrder.Asc,
+            limit: 50, offset: 0
+        }
+    }
+    
+    fn with_type(t: ActivityType) -> Self { self.activity_type = Some(t); self }
+    fn with_status(s: ActivityStatus) -> Self { self.status = Some(s); self }
+    fn with_contact(id: String) -> Self { self.contact_id = Some(id); self }
+    fn with_deal(id: String) -> Self { self.deal_id = Some(id); self }
+    fn with_owner(id: String) -> Self { self.owner_id = Some(id); self }
+    fn assigned_to(id: String) -> Self { self.assigned_to = Some(id); self }
+    fn due_today() -> Self {
+        let now = DateTime.now()
+        self.due_after = Some(now.start_of_day())
+        self.due_before = Some(now.end_of_day())
+        self
+    }
+    fn overdue() -> Self { self.overdue_only = true; self }
+    fn pending() -> Self { self.status = Some(ActivityStatus.Planned); self }
+    fn completed() -> Self { self.status = Some(ActivityStatus.Completed); self }
+    fn limit(n: Int) -> Self { self.limit = n; self }
+}
+
+// =============================================================================
+// Activity Service
+// =============================================================================
+
+actor ActivityService {
+    state activities: Map<String, Activity>
+    state by_contact: Map<String, [String]>
+    state by_deal: Map<String, [String]>
+    state by_lead: Map<String, [String]>
+    state by_owner: Map<String, [String]>
+    
+    fn new() -> Self {
+        ActivityService {
+            activities: Map.empty(),
+            by_contact: Map.empty(),
+            by_deal: Map.empty(),
+            by_lead: Map.empty(),
+            by_owner: Map.empty()
+        }
+    }
+    
+    fn create(activity: Activity) -> Activity {
+        // Index
+        if let Some(id) = activity.contact_id.clone() {
+            let ids = self.by_contact.get(id.clone()).unwrap_or([])
+            ids.push(activity.id.clone())
+            self.by_contact.insert(id, ids)
+        }
+        if let Some(id) = activity.deal_id.clone() {
+            let ids = self.by_deal.get(id.clone()).unwrap_or([])
+            ids.push(activity.id.clone())
+            self.by_deal.insert(id, ids)
+        }
+        if let Some(id) = activity.owner_id.clone() {
+            let ids = self.by_owner.get(id.clone()).unwrap_or([])
+            ids.push(activity.id.clone())
+            self.by_owner.insert(id, ids)
+        }
+        
+        self.activities.insert(activity.id.clone(), activity.clone())
+        activity
+    }
+    
+    fn get(id: String) -> Option<Activity> { self.activities.get(id) }
+    
+    fn get_by_contact(contact_id: String) -> [Activity] {
+        self.by_contact.get(contact_id).unwrap_or([]).iter()
+            .filter_map(|id| self.activities.get(id)).collect()
+    }
+    
+    fn get_by_deal(deal_id: String) -> [Activity] {
+        self.by_deal.get(deal_id).unwrap_or([]).iter()
+            .filter_map(|id| self.activities.get(id)).collect()
+    }
+    
+    fn get_by_owner(owner_id: String) -> [Activity] {
+        self.by_owner.get(owner_id).unwrap_or([]).iter()
+            .filter_map(|id| self.activities.get(id)).collect()
+    }
+    
+    fn update(activity: Activity) -> Result<Activity, ActivityError> {
+        if !self.activities.contains_key(activity.id) { return Err(ActivityError.NotFound) }
+        self.activities.insert(activity.id.clone(), activity.clone())
+        Ok(activity)
+    }
+    
+    fn delete(id: String) -> Result<(), ActivityError> {
+        self.activities.remove(id).ok_or(ActivityError.NotFound)?
+        Ok(())
+    }
+    
+    fn complete(id: String, outcome: ActivityOutcome) -> Result<Activity, ActivityError> {
+        let mut activity = self.activities.get(id.clone()).ok_or(ActivityError.NotFound)?
+        activity = activity.complete_with_outcome(outcome)
+        self.activities.insert(id, activity.clone())
+        Ok(activity)
+    }
+    
+    fn search(query: ActivityQuery) -> [Activity] {
+        self.activities.values().filter(|a| {
+            if let Some(t) = query.activity_type { if a.activity_type != t { return false } }
+            if let Some(s) = query.status { if a.status != s { return false } }
+            if let Some(c) = query.contact_id.clone() { if a.contact_id != Some(c) { return false } }
+            if let Some(d) = query.deal_id.clone() { if a.deal_id != Some(d) { return false } }
+            if let Some(o) = query.owner_id.clone() { if a.owner_id != Some(o) { return false } }
+            if query.overdue_only { if !a.is_overdue() { return false } }
+            true
+        }).take(query.limit).collect()
+    }
+    
+    fn get_due_reminders() -> [Activity] {
+        let now = DateTime.now()
+        self.activities.values()
+            .filter(|a| a.reminder_at.map(|r| r <= now && !a.reminder_sent).unwrap_or(false))
+            .collect()
+    }
+    
+    fn get_overdue() -> [Activity] {
+        self.activities.values().filter(|a| a.is_overdue()).collect()
+    }
+    
+    fn get_due_today(owner_id: Option<String>) -> [Activity] {
+        self.activities.values().filter(|a| {
+            if !a.is_due_today() { return false }
+            if let Some(o) = owner_id.clone() { if a.owner_id != Some(o) { return false } }
+            true
+        }).collect()
+    }
+    
+    fn count() -> Int { self.activities.len() }
+    fn count_pending() -> Int { self.activities.values().filter(|a| a.status == ActivityStatus.Planned).count() }
+    fn count_overdue() -> Int { self.activities.values().filter(|a| a.is_overdue()).count() }
+}
+
+// =============================================================================
+// Timeline
+// =============================================================================
+
+struct Timeline {
+    entity_type: TimelineEntityType
+    entity_id: String
+    entries: [TimelineEntry]
+}
+
+enum TimelineEntityType { Contact, Deal, Lead, Company }
+
+struct TimelineEntry {
+    id: String
+    entry_type: TimelineEntryType
+    title: String
+    description: Option<String>
+    actor_id: Option<String>
+    metadata: Map<String, String>
+    created_at: DateTime
+}
+
+enum TimelineEntryType {
+    ActivityCreated
+    ActivityCompleted
+    StageChanged
+    NoteAdded
+    EmailSent
+    EmailReceived
+    CallMade
+    MeetingHeld
+    DealWon
+    DealLost
+    FieldChanged
+    Custom(String)
+}
+
+impl TimelineEntry {
+    fn new(entry_type: TimelineEntryType, title: String) -> Self {
+        TimelineEntry {
+            id: UUID.v4().to_string(),
+            entry_type: entry_type,
+            title: title,
+            description: None,
+            actor_id: None,
+            metadata: Map.empty(),
+            created_at: DateTime.now()
+        }
+    }
+    
+    fn with_description(d: String) -> Self { self.description = Some(d); self }
+    fn with_actor(id: String) -> Self { self.actor_id = Some(id); self }
+    fn with_meta(key: String, value: String) -> Self { self.metadata.insert(key, value); self }
+}
+
+actor TimelineService {
+    state timelines: Map<String, Timeline>
+    
+    fn new() -> Self { TimelineService { timelines: Map.empty() } }
+    
+    fn get_key(entity_type: TimelineEntityType, entity_id: String) -> String {
+        "\(entity_type):\(entity_id)"
+    }
+    
+    fn add_entry(entity_type: TimelineEntityType, entity_id: String, entry: TimelineEntry) {
+        let key = Self.get_key(entity_type, entity_id.clone())
+        let timeline = self.timelines.get(key.clone()).unwrap_or(Timeline {
+            entity_type: entity_type,
+            entity_id: entity_id,
+            entries: []
+        })
+        timeline.entries.push(entry)
+        self.timelines.insert(key, timeline)
+    }
+    
+    fn get_timeline(entity_type: TimelineEntityType, entity_id: String) -> [TimelineEntry] {
+        let key = Self.get_key(entity_type, entity_id)
+        self.timelines.get(key).map(|t| t.entries.clone()).unwrap_or([])
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum ActivityError { NotFound, ValidationError(String) }
+
+impl Display for ActivityError {
+    fn fmt(f: Formatter) {
+        match self {
+            NotFound => f.write("Activity not found"),
+            ValidationError(e) => f.write("Error: \(e)")
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "activity creation" {
+    let activity = Activity.call("Follow-up call")
+        .with_contact("contact-123")
+        .with_deal("deal-456")
+        .due_tomorrow()
+        .with_priority(ActivityPriority.High)
+    
+    assert_eq(activity.subject, "Follow-up call")?
+    assert(activity.due_date.is_some())?
+}
+
+test "activity completion" {
+    var activity = Activity.task("Send proposal").due_today()
+    activity = activity.complete_with_outcome(ActivityOutcome.Successful)
+    
+    assert(activity.is_completed())?
+    assert(activity.completed_at.is_some())?
+}
+
+test "activity service" {
+    let service = ActivityService.new()
+    let activity = service.create(Activity.note("Initial contact").with_contact("c1"))
+    
+    assert(service.get(activity.id).is_some())?
+    assert_eq(service.get_by_contact("c1").len(), 1)?
+}
+
+test "timeline" {
+    let service = TimelineService.new()
+    service.add_entry(
+        TimelineEntityType.Contact,
+        "contact-123",
+        TimelineEntry.new(TimelineEntryType.NoteAdded, "Added note")
+    )
+    
+    let entries = service.get_timeline(TimelineEntityType.Contact, "contact-123")
+    assert_eq(entries.len(), 1)?
+}

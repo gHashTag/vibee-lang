@@ -1,0 +1,785 @@
+// =============================================================================
+// Vibee OS — Firewall Module
+// Network firewall with packet filtering, rules management, and traffic control
+// =============================================================================
+
+use net.{IpAddr, SocketAddr}
+use datetime.{DateTime}
+
+// =============================================================================
+// Firewall Rule Types
+// =============================================================================
+
+/// Firewall action
+enum FirewallAction {
+    Allow
+    Deny
+    Drop
+    Log
+    Reject(RejectType)
+    RateLimit(Int64)  // packets per second
+    Redirect(SocketAddr)
+}
+
+/// Reject response type
+enum RejectType {
+    IcmpUnreachable
+    TcpReset
+    IcmpProhibited
+    Silent
+}
+
+/// Network protocol
+enum Protocol {
+    Any
+    TCP
+    UDP
+    ICMP
+    ICMPv6
+    GRE
+    ESP
+    AH
+    SCTP
+    Custom(UInt8)
+}
+
+/// Traffic direction
+enum Direction {
+    Inbound
+    Outbound
+    Both
+}
+
+/// Port range specification
+enum PortSpec {
+    Any
+    Single(UInt16)
+    Range(UInt16, UInt16)
+    List([UInt16])
+}
+
+impl PortSpec {
+    fn matches(port: UInt16) -> Bool {
+        match self {
+            Any => true
+            Single(p) => port == p
+            Range(start, end) => port >= start && port <= end
+            List(ports) => ports.contains(port)
+        }
+    }
+}
+
+/// IP address specification
+enum IpSpec {
+    Any
+    Single(IpAddr)
+    Subnet(IpAddr, UInt8)  // CIDR notation
+    Range(IpAddr, IpAddr)
+    List([IpAddr])
+}
+
+impl IpSpec {
+    fn matches(ip: IpAddr) -> Bool {
+        match self {
+            Any => true
+            Single(addr) => ip == addr
+            Subnet(base, prefix) => @native("ip_in_subnet", ip, base, prefix)
+            Range(start, end) => @native("ip_in_range", ip, start, end)
+            List(addrs) => addrs.contains(ip)
+        }
+    }
+    
+    fn from_cidr(cidr: String) -> Result<Self, FirewallError> {
+        let parts = cidr.split("/")
+        if parts.len() != 2 { return Err(FirewallError.InvalidCidr(cidr)) }
+        let ip = IpAddr.parse(parts[0]).map_err(|_| FirewallError.InvalidCidr(cidr))?
+        let prefix = UInt8.parse(parts[1]).map_err(|_| FirewallError.InvalidCidr(cidr))?
+        Ok(IpSpec.Subnet(ip, prefix))
+    }
+}
+
+// =============================================================================
+// Firewall Rule
+// =============================================================================
+
+/// Firewall rule
+struct FirewallRule {
+    id: String
+    name: String
+    description: String
+    priority: Int
+    enabled: Bool
+    direction: Direction
+    protocol: Protocol
+    source_ip: IpSpec
+    source_port: PortSpec
+    dest_ip: IpSpec
+    dest_port: PortSpec
+    action: FirewallAction
+    log_enabled: Bool
+    created_at: DateTime
+    expires_at: Option<DateTime>
+    hit_count: Int64
+    tags: [String]
+}
+
+impl FirewallRule {
+    fn new(name: String, action: FirewallAction) -> Self {
+        FirewallRule {
+            id: @native("uuid_v4"),
+            name: name,
+            description: "",
+            priority: 100,
+            enabled: true,
+            direction: Direction.Both,
+            protocol: Protocol.Any,
+            source_ip: IpSpec.Any,
+            source_port: PortSpec.Any,
+            dest_ip: IpSpec.Any,
+            dest_port: PortSpec.Any,
+            action: action,
+            log_enabled: false,
+            created_at: DateTime.now(),
+            expires_at: None,
+            hit_count: 0,
+            tags: []
+        }
+    }
+    
+    fn allow(name: String) -> Self { Self.new(name, FirewallAction.Allow) }
+    fn deny(name: String) -> Self { Self.new(name, FirewallAction.Deny) }
+    fn drop(name: String) -> Self { Self.new(name, FirewallAction.Drop) }
+    
+    fn with_priority(priority: Int) -> Self { self.priority = priority; self }
+    fn with_direction(dir: Direction) -> Self { self.direction = dir; self }
+    fn with_protocol(proto: Protocol) -> Self { self.protocol = proto; self }
+    fn with_source_ip(ip: IpSpec) -> Self { self.source_ip = ip; self }
+    fn with_source_port(port: PortSpec) -> Self { self.source_port = port; self }
+    fn with_dest_ip(ip: IpSpec) -> Self { self.dest_ip = ip; self }
+    fn with_dest_port(port: PortSpec) -> Self { self.dest_port = port; self }
+    fn with_logging(enabled: Bool) -> Self { self.log_enabled = enabled; self }
+    fn with_expiry(expires: DateTime) -> Self { self.expires_at = Some(expires); self }
+    fn with_tag(tag: String) -> Self { self.tags.push(tag); self }
+    
+    fn is_expired() -> Bool {
+        match self.expires_at {
+            Some(exp) => DateTime.now() > exp
+            None => false
+        }
+    }
+    
+    fn matches(packet: Packet) -> Bool {
+        if !self.enabled || self.is_expired() { return false }
+        
+        // Check direction
+        match self.direction {
+            Direction.Inbound if packet.direction != Direction.Inbound => return false
+            Direction.Outbound if packet.direction != Direction.Outbound => return false
+            _ => {}
+        }
+        
+        // Check protocol
+        match self.protocol {
+            Protocol.Any => {}
+            proto if proto != packet.protocol => return false
+            _ => {}
+        }
+        
+        // Check IPs and ports
+        if !self.source_ip.matches(packet.source_ip) { return false }
+        if !self.dest_ip.matches(packet.dest_ip) { return false }
+        if !self.source_port.matches(packet.source_port) { return false }
+        if !self.dest_port.matches(packet.dest_port) { return false }
+        
+        true
+    }
+}
+
+// =============================================================================
+// Packet Representation
+// =============================================================================
+
+/// Network packet for rule matching
+struct Packet {
+    direction: Direction
+    protocol: Protocol
+    source_ip: IpAddr
+    source_port: UInt16
+    dest_ip: IpAddr
+    dest_port: UInt16
+    payload_size: Int
+    flags: PacketFlags
+    timestamp: DateTime
+}
+
+struct PacketFlags {
+    syn: Bool
+    ack: Bool
+    fin: Bool
+    rst: Bool
+    psh: Bool
+    urg: Bool
+}
+
+impl PacketFlags {
+    fn empty() -> Self {
+        PacketFlags { syn: false, ack: false, fin: false, rst: false, psh: false, urg: false }
+    }
+    
+    fn is_syn_only() -> Bool { self.syn && !self.ack }
+    fn is_syn_ack() -> Bool { self.syn && self.ack }
+    fn is_established() -> Bool { self.ack && !self.syn }
+}
+
+// =============================================================================
+// Firewall Engine
+// =============================================================================
+
+/// Main firewall actor
+actor Firewall {
+    state rules: [FirewallRule]
+    state default_action: FirewallAction
+    state enabled: Bool
+    state stats: FirewallStats
+    state blocked_ips: Map<IpAddr, BlockInfo>
+    state connection_tracking: Map<String, ConnectionState>
+    state log_handler: Option<fn(FirewallLogEntry)>
+    
+    fn new() -> Self {
+        Firewall {
+            rules: [],
+            default_action: FirewallAction.Deny,
+            enabled: true,
+            stats: FirewallStats.new(),
+            blocked_ips: Map.new(),
+            connection_tracking: Map.new(),
+            log_handler: None
+        }
+    }
+    
+    fn with_default_allow() -> Self {
+        let fw = Self.new()
+        fw.default_action = FirewallAction.Allow
+        fw
+    }
+    
+    // Rule management
+    fn add_rule(rule: FirewallRule) {
+        self.rules.push(rule)
+        self.rules.sort_by(|a, b| a.priority.cmp(b.priority))
+    }
+    
+    fn remove_rule(id: String) -> Bool {
+        let idx = self.rules.iter().position(|r| r.id == id)
+        match idx {
+            Some(i) => { self.rules.remove(i); true }
+            None => false
+        }
+    }
+    
+    fn get_rule(id: String) -> Option<FirewallRule> {
+        self.rules.iter().find(|r| r.id == id).cloned()
+    }
+    
+    fn update_rule(id: String, updater: fn(FirewallRule) -> FirewallRule) -> Bool {
+        for rule in self.rules.iter_mut() {
+            if rule.id == id {
+                *rule = updater(*rule)
+                return true
+            }
+        }
+        false
+    }
+    
+    fn enable_rule(id: String) -> Bool {
+        self.update_rule(id, |r| { r.enabled = true; r })
+    }
+    
+    fn disable_rule(id: String) -> Bool {
+        self.update_rule(id, |r| { r.enabled = false; r })
+    }
+    
+    fn clear_rules() { self.rules.clear() }
+    
+    fn list_rules() -> [FirewallRule] { self.rules.clone() }
+    
+    fn rules_by_tag(tag: String) -> [FirewallRule] {
+        self.rules.iter().filter(|r| r.tags.contains(tag)).cloned().collect()
+    }
+    
+    // Packet processing
+    fn process(packet: Packet) -> FirewallAction {
+        if !self.enabled { return FirewallAction.Allow }
+        
+        self.stats.packets_processed += 1
+        
+        // Check blocked IPs first
+        if let Some(block) = self.blocked_ips.get(packet.source_ip) {
+            if !block.is_expired() {
+                self.stats.packets_blocked += 1
+                self.log(packet, FirewallAction.Drop, Some("IP blocked"))
+                return FirewallAction.Drop
+            } else {
+                self.blocked_ips.remove(packet.source_ip)
+            }
+        }
+        
+        // Connection tracking for stateful inspection
+        if let Some(action) = self.check_connection_state(packet) {
+            return action
+        }
+        
+        // Find matching rule
+        for rule in self.rules.iter_mut() {
+            if rule.matches(packet) {
+                rule.hit_count += 1
+                
+                if rule.log_enabled {
+                    self.log(packet, rule.action, Some(rule.name))
+                }
+                
+                match rule.action {
+                    FirewallAction.Allow => self.stats.packets_allowed += 1
+                    FirewallAction.Deny | FirewallAction.Drop => self.stats.packets_blocked += 1
+                    _ => {}
+                }
+                
+                return rule.action
+            }
+        }
+        
+        // Default action
+        match self.default_action {
+            FirewallAction.Allow => self.stats.packets_allowed += 1
+            _ => self.stats.packets_blocked += 1
+        }
+        
+        self.default_action
+    }
+    
+    fn check_connection_state(packet: Packet) -> Option<FirewallAction> {
+        let conn_key = format!("{}:{}-{}:{}", 
+            packet.source_ip, packet.source_port,
+            packet.dest_ip, packet.dest_port)
+        
+        if let Some(state) = self.connection_tracking.get(conn_key) {
+            if state.is_established() && packet.flags.is_established() {
+                return Some(FirewallAction.Allow)
+            }
+        }
+        
+        // Track new connections
+        if packet.flags.is_syn_only() {
+            self.connection_tracking.insert(conn_key, ConnectionState.SynSent)
+        }
+        
+        None
+    }
+    
+    // IP blocking
+    fn block_ip(ip: IpAddr, duration_secs: Int64, reason: String) {
+        let block = BlockInfo {
+            ip: ip,
+            blocked_at: DateTime.now(),
+            expires_at: DateTime.now().add_seconds(duration_secs),
+            reason: reason
+        }
+        self.blocked_ips.insert(ip, block)
+        self.stats.ips_blocked += 1
+    }
+    
+    fn unblock_ip(ip: IpAddr) -> Bool {
+        self.blocked_ips.remove(ip).is_some()
+    }
+    
+    fn is_blocked(ip: IpAddr) -> Bool {
+        match self.blocked_ips.get(ip) {
+            Some(block) => !block.is_expired()
+            None => false
+        }
+    }
+    
+    fn blocked_ips_list() -> [BlockInfo] {
+        self.blocked_ips.values().filter(|b| !b.is_expired()).cloned().collect()
+    }
+    
+    // Logging
+    fn set_log_handler(handler: fn(FirewallLogEntry)) {
+        self.log_handler = Some(handler)
+    }
+    
+    fn log(packet: Packet, action: FirewallAction, rule_name: Option<String>) {
+        if let Some(handler) = self.log_handler {
+            let entry = FirewallLogEntry {
+                timestamp: DateTime.now(),
+                packet: packet,
+                action: action,
+                rule_name: rule_name
+            }
+            handler(entry)
+        }
+    }
+    
+    // Statistics
+    fn stats() -> FirewallStats { self.stats.clone() }
+    fn reset_stats() { self.stats = FirewallStats.new() }
+    
+    // Enable/disable
+    fn enable() { self.enabled = true }
+    fn disable() { self.enabled = false }
+    fn is_enabled() -> Bool { self.enabled }
+    
+    // Cleanup expired entries
+    fn cleanup() {
+        // Remove expired blocked IPs
+        self.blocked_ips.retain(|_, v| !v.is_expired())
+        
+        // Remove expired rules
+        self.rules.retain(|r| !r.is_expired())
+        
+        // Cleanup old connections
+        self.connection_tracking.retain(|_, v| !v.is_timed_out())
+    }
+}
+
+// =============================================================================
+// Supporting Types
+// =============================================================================
+
+struct BlockInfo {
+    ip: IpAddr
+    blocked_at: DateTime
+    expires_at: DateTime
+    reason: String
+}
+
+impl BlockInfo {
+    fn is_expired() -> Bool { DateTime.now() > self.expires_at }
+}
+
+enum ConnectionState {
+    SynSent
+    SynReceived
+    Established
+    FinWait
+    Closed
+}
+
+impl ConnectionState {
+    fn is_established() -> Bool { matches!(self, Established) }
+    fn is_timed_out() -> Bool { false } // Simplified
+}
+
+struct FirewallStats {
+    packets_processed: Int64
+    packets_allowed: Int64
+    packets_blocked: Int64
+    ips_blocked: Int64
+    rules_matched: Int64
+    started_at: DateTime
+}
+
+impl FirewallStats {
+    fn new() -> Self {
+        FirewallStats {
+            packets_processed: 0,
+            packets_allowed: 0,
+            packets_blocked: 0,
+            ips_blocked: 0,
+            rules_matched: 0,
+            started_at: DateTime.now()
+        }
+    }
+    
+    fn block_rate() -> Float {
+        if self.packets_processed == 0 { return 0.0 }
+        (self.packets_blocked as Float) / (self.packets_processed as Float) * 100.0
+    }
+}
+
+struct FirewallLogEntry {
+    timestamp: DateTime
+    packet: Packet
+    action: FirewallAction
+    rule_name: Option<String>
+}
+
+// =============================================================================
+// Rule Builder
+// =============================================================================
+
+/// Fluent rule builder
+struct RuleBuilder {
+    rule: FirewallRule
+}
+
+impl RuleBuilder {
+    fn new(name: String) -> Self {
+        RuleBuilder { rule: FirewallRule.new(name, FirewallAction.Deny) }
+    }
+    
+    fn allow() -> Self { self.rule.action = FirewallAction.Allow; self }
+    fn deny() -> Self { self.rule.action = FirewallAction.Deny; self }
+    fn drop() -> Self { self.rule.action = FirewallAction.Drop; self }
+    fn log_only() -> Self { self.rule.action = FirewallAction.Log; self }
+    
+    fn inbound() -> Self { self.rule.direction = Direction.Inbound; self }
+    fn outbound() -> Self { self.rule.direction = Direction.Outbound; self }
+    
+    fn tcp() -> Self { self.rule.protocol = Protocol.TCP; self }
+    fn udp() -> Self { self.rule.protocol = Protocol.UDP; self }
+    fn icmp() -> Self { self.rule.protocol = Protocol.ICMP; self }
+    
+    fn from_ip(ip: String) -> Result<Self, FirewallError> {
+        self.rule.source_ip = IpSpec.from_cidr(ip)?
+        Ok(self)
+    }
+    
+    fn to_ip(ip: String) -> Result<Self, FirewallError> {
+        self.rule.dest_ip = IpSpec.from_cidr(ip)?
+        Ok(self)
+    }
+    
+    fn from_port(port: UInt16) -> Self {
+        self.rule.source_port = PortSpec.Single(port)
+        self
+    }
+    
+    fn to_port(port: UInt16) -> Self {
+        self.rule.dest_port = PortSpec.Single(port)
+        self
+    }
+    
+    fn to_ports(start: UInt16, end: UInt16) -> Self {
+        self.rule.dest_port = PortSpec.Range(start, end)
+        self
+    }
+    
+    fn priority(p: Int) -> Self { self.rule.priority = p; self }
+    fn with_logging() -> Self { self.rule.log_enabled = true; self }
+    fn tag(t: String) -> Self { self.rule.tags.push(t); self }
+    
+    fn build() -> FirewallRule { self.rule }
+}
+
+// =============================================================================
+// Preset Rules
+// =============================================================================
+
+/// Common firewall rule presets
+struct FirewallPresets {}
+
+impl FirewallPresets {
+    /// Allow established connections
+    fn allow_established() -> FirewallRule {
+        RuleBuilder.new("Allow Established")
+            .allow()
+            .tcp()
+            .priority(10)
+            .build()
+    }
+    
+    /// Allow HTTP/HTTPS
+    fn allow_web() -> [FirewallRule] {
+        [
+            RuleBuilder.new("Allow HTTP").allow().tcp().to_port(80).inbound().build(),
+            RuleBuilder.new("Allow HTTPS").allow().tcp().to_port(443).inbound().build()
+        ]
+    }
+    
+    /// Allow SSH
+    fn allow_ssh() -> FirewallRule {
+        RuleBuilder.new("Allow SSH").allow().tcp().to_port(22).inbound().build()
+    }
+    
+    /// Block common attack ports
+    fn block_dangerous_ports() -> [FirewallRule] {
+        [
+            RuleBuilder.new("Block Telnet").deny().tcp().to_port(23).with_logging().build(),
+            RuleBuilder.new("Block SMB").deny().tcp().to_ports(445, 445).with_logging().build(),
+            RuleBuilder.new("Block RDP").deny().tcp().to_port(3389).with_logging().build()
+        ]
+    }
+    
+    /// Allow DNS
+    fn allow_dns() -> [FirewallRule] {
+        [
+            RuleBuilder.new("Allow DNS TCP").allow().tcp().to_port(53).build(),
+            RuleBuilder.new("Allow DNS UDP").allow().udp().to_port(53).build()
+        ]
+    }
+    
+    /// Allow ping
+    fn allow_ping() -> FirewallRule {
+        RuleBuilder.new("Allow ICMP").allow().icmp().build()
+    }
+    
+    /// Block all inbound by default
+    fn deny_all_inbound() -> FirewallRule {
+        RuleBuilder.new("Deny All Inbound")
+            .deny()
+            .inbound()
+            .priority(1000)
+            .build()
+    }
+}
+
+// =============================================================================
+// Zone-based Firewall
+// =============================================================================
+
+/// Network zone
+struct Zone {
+    name: String
+    networks: [IpSpec]
+    trust_level: TrustLevel
+}
+
+enum TrustLevel {
+    Trusted
+    Internal
+    DMZ
+    External
+    Untrusted
+}
+
+/// Zone-based firewall
+actor ZoneFirewall {
+    state zones: Map<String, Zone>
+    state zone_policies: Map<(String, String), FirewallAction>
+    state firewall: Firewall
+    
+    fn new() -> Self {
+        ZoneFirewall {
+            zones: Map.new(),
+            zone_policies: Map.new(),
+            firewall: Firewall.new()
+        }
+    }
+    
+    fn add_zone(zone: Zone) {
+        self.zones.insert(zone.name.clone(), zone)
+    }
+    
+    fn set_policy(from_zone: String, to_zone: String, action: FirewallAction) {
+        self.zone_policies.insert((from_zone, to_zone), action)
+    }
+    
+    fn get_zone_for_ip(ip: IpAddr) -> Option<String> {
+        for (name, zone) in self.zones.iter() {
+            for network in zone.networks.iter() {
+                if network.matches(ip) {
+                    return Some(name.clone())
+                }
+            }
+        }
+        None
+    }
+    
+    fn process(packet: Packet) -> FirewallAction {
+        let src_zone = self.get_zone_for_ip(packet.source_ip).unwrap_or("external")
+        let dst_zone = self.get_zone_for_ip(packet.dest_ip).unwrap_or("external")
+        
+        // Check zone policy
+        if let Some(action) = self.zone_policies.get((src_zone, dst_zone)) {
+            return *action
+        }
+        
+        // Fall back to regular firewall
+        self.firewall.process(packet)
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum FirewallError {
+    InvalidCidr(String)
+    InvalidPort(String)
+    RuleNotFound(String)
+    InvalidRule(String)
+    ConfigError(String)
+}
+
+impl Display for FirewallError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidCidr(s) => f.write(format!("Invalid CIDR: {}", s))
+            InvalidPort(s) => f.write(format!("Invalid port: {}", s))
+            RuleNotFound(s) => f.write(format!("Rule not found: {}", s))
+            InvalidRule(s) => f.write(format!("Invalid rule: {}", s))
+            ConfigError(s) => f.write(format!("Config error: {}", s))
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "create firewall rule" {
+    let rule = FirewallRule.allow("Test Rule")
+        .with_protocol(Protocol.TCP)
+        .with_dest_port(PortSpec.Single(80))
+    
+    assert_eq(rule.name, "Test Rule")?
+    assert(rule.enabled)?
+}
+
+test "rule builder" {
+    let rule = RuleBuilder.new("Web Server")
+        .allow()
+        .tcp()
+        .to_port(443)
+        .inbound()
+        .with_logging()
+        .build()
+    
+    assert_eq(rule.action, FirewallAction.Allow)?
+    assert(rule.log_enabled)?
+}
+
+test "ip spec matching" {
+    let spec = IpSpec.from_cidr("192.168.1.0/24")?
+    let ip = IpAddr.parse("192.168.1.100")?
+    assert(spec.matches(ip))?
+}
+
+test "port spec matching" {
+    let spec = PortSpec.Range(80, 443)
+    assert(spec.matches(80))?
+    assert(spec.matches(443))?
+    assert(spec.matches(200))?
+    assert(!spec.matches(8080))?
+}
+
+test "firewall process packet" {
+    let fw = Firewall.new()
+    fw.add_rule(RuleBuilder.new("Allow HTTP").allow().tcp().to_port(80).build())
+    
+    let packet = Packet {
+        direction: Direction.Inbound,
+        protocol: Protocol.TCP,
+        source_ip: IpAddr.parse("10.0.0.1")?,
+        source_port: 12345,
+        dest_ip: IpAddr.parse("192.168.1.1")?,
+        dest_port: 80,
+        payload_size: 100,
+        flags: PacketFlags.empty(),
+        timestamp: DateTime.now()
+    }
+    
+    assert_eq(fw.process(packet), FirewallAction.Allow)?
+}
+
+test "block ip" {
+    let fw = Firewall.new()
+    let ip = IpAddr.parse("10.0.0.100")?
+    
+    fw.block_ip(ip, 3600, "Suspicious activity")
+    assert(fw.is_blocked(ip))?
+    
+    fw.unblock_ip(ip)
+    assert(!fw.is_blocked(ip))?
+}

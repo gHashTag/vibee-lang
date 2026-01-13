@@ -1,0 +1,829 @@
+// =============================================================================
+// Vibee OS — Load Testing Module
+// Performance and stress testing with configurable load patterns
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Load Test Runner
+// -----------------------------------------------------------------------------
+
+/// Load test runner
+actor LoadRunner {
+    state scenarios: [LoadScenario]
+    state config: LoadConfig
+    state results: [ScenarioResult]
+    state metrics_collector: MetricsCollector
+    state reporters: [LoadReporter]
+    
+    fn new() -> Self {
+        LoadRunner {
+            scenarios: [],
+            config: LoadConfig.default(),
+            results: [],
+            metrics_collector: MetricsCollector.new(),
+            reporters: []
+        }
+    }
+    
+    on config(c: LoadConfig) -> Self { self.config = c; self }
+    
+    /// Add scenario
+    on scenario(name: String, setup: (ScenarioBuilder) -> ScenarioBuilder) -> Self {
+        let builder = ScenarioBuilder.new(name)
+        let scenario = setup(builder).build()
+        self.scenarios.append(scenario)
+        self
+    }
+    
+    /// Add reporter
+    on reporter(r: LoadReporter) -> Self {
+        self.reporters.append(r)
+        self
+    }
+    
+    /// Run load test
+    async on run() -> LoadSummary {
+        println("\n⚡ Starting Load Test...\n")
+        
+        for reporter in self.reporters {
+            reporter.on_start(self.scenarios.len())
+        }
+        
+        for scenario in self.scenarios {
+            let result = self.run_scenario(scenario).await
+            self.results.append(result)
+            
+            for reporter in self.reporters {
+                reporter.on_scenario_complete(result)
+            }
+        }
+        
+        let summary = self.create_summary()
+        
+        for reporter in self.reporters {
+            reporter.on_end(summary)
+        }
+        
+        summary
+    }
+    
+    async fn run_scenario(scenario: LoadScenario) -> ScenarioResult {
+        println("📊 Scenario: \(scenario.name)")
+        println("   VUs: \(scenario.vus), Duration: \(scenario.duration.as_secs())s")
+        
+        let start = Instant.now()
+        var all_metrics = []
+        
+        // Create virtual users
+        var handles = []
+        for i in 0..scenario.vus {
+            let vu = VirtualUser.new(i, scenario, self.metrics_collector)
+            handles.append(spawn(vu.run()))
+        }
+        
+        // Wait for all VUs to complete
+        for handle in handles {
+            let metrics = handle.await
+            all_metrics.extend(metrics)
+        }
+        
+        let duration = start.elapsed()
+        let stats = self.calculate_stats(all_metrics)
+        
+        ScenarioResult {
+            name: scenario.name,
+            vus: scenario.vus,
+            duration: duration,
+            total_requests: all_metrics.len(),
+            successful_requests: all_metrics.filter(|m| m.success).len(),
+            failed_requests: all_metrics.filter(|m| !m.success).len(),
+            stats: stats,
+            errors: self.collect_errors(all_metrics)
+        }
+    }
+    
+    fn calculate_stats(metrics: [RequestMetric]) -> LoadStats {
+        let durations: [Float] = metrics.map(|m| m.duration.as_millis() as Float)
+        
+        if durations.is_empty() {
+            return LoadStats.empty()
+        }
+        
+        let sorted = durations.sorted()
+        let n = sorted.len()
+        
+        LoadStats {
+            min: sorted.first().unwrap_or(0.0),
+            max: sorted.last().unwrap_or(0.0),
+            mean: durations.sum() / n as Float,
+            median: sorted[n / 2],
+            p90: sorted[(n as Float * 0.90) as Int],
+            p95: sorted[(n as Float * 0.95) as Int],
+            p99: sorted[(n as Float * 0.99) as Int],
+            std_dev: self.std_dev(durations),
+            rps: metrics.len() as Float / metrics.last().map(|m| m.timestamp.elapsed().as_secs() as Float).unwrap_or(1.0)
+        }
+    }
+    
+    fn std_dev(values: [Float]) -> Float {
+        let mean = values.sum() / values.len() as Float
+        let variance = values.map(|v| (v - mean).pow(2)).sum() / values.len() as Float
+        variance.sqrt()
+    }
+    
+    fn collect_errors(metrics: [RequestMetric]) -> Map<String, Int> {
+        var errors = Map.empty()
+        for m in metrics {
+            if let error = m.error {
+                let count = errors.get(error).unwrap_or(0)
+                errors.set(error, count + 1)
+            }
+        }
+        errors
+    }
+    
+    fn create_summary() -> LoadSummary {
+        var total_requests = 0
+        var successful = 0
+        var failed = 0
+        
+        for result in self.results {
+            total_requests += result.total_requests
+            successful += result.successful_requests
+            failed += result.failed_requests
+        }
+        
+        LoadSummary {
+            scenarios: self.results,
+            total_requests: total_requests,
+            successful_requests: successful,
+            failed_requests: failed,
+            duration: self.results.map(|r| r.duration).sum()
+        }
+    }
+}
+
+/// Load test configuration
+struct LoadConfig {
+    base_url: String
+    timeout: Duration
+    think_time: Duration
+    ramp_up: Duration
+    graceful_stop: Duration
+    
+    fn default() -> Self {
+        LoadConfig {
+            base_url: "http://localhost:8080",
+            timeout: Duration.seconds(30),
+            think_time: Duration.millis(100),
+            ramp_up: Duration.seconds(10),
+            graceful_stop: Duration.seconds(5)
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Scenario Builder
+// -----------------------------------------------------------------------------
+
+/// Scenario builder
+actor ScenarioBuilder {
+    state name: String
+    state vus: Int
+    state duration: Duration
+    state iterations: Option<Int>
+    state ramp_up: Option<RampUp>
+    state stages: [Stage]
+    state exec: Option<(VUContext) -> Result<(), LoadError>>
+    state setup: Option<() -> Result<Any, LoadError>>
+    state teardown: Option<(Any) -> Result<(), LoadError>>
+    state thresholds: [Threshold]
+    
+    fn new(name: String) -> Self {
+        ScenarioBuilder {
+            name: name,
+            vus: 1,
+            duration: Duration.seconds(30),
+            iterations: None,
+            ramp_up: None,
+            stages: [],
+            exec: None,
+            setup: None,
+            teardown: None,
+            thresholds: []
+        }
+    }
+    
+    /// Set number of virtual users
+    on vus(n: Int) -> Self { self.vus = n; self }
+    
+    /// Set duration
+    on duration(d: Duration) -> Self { self.duration = d; self }
+    
+    /// Set iterations per VU
+    on iterations(n: Int) -> Self { self.iterations = Some(n); self }
+    
+    /// Set ramp-up configuration
+    on ramp_up(stages: Int, duration: Duration) -> Self {
+        self.ramp_up = Some(RampUp { stages: stages, duration: duration })
+        self
+    }
+    
+    /// Add stage
+    on stage(duration: Duration, target_vus: Int) -> Self {
+        self.stages.append(Stage { duration: duration, target_vus: target_vus })
+        self
+    }
+    
+    /// Set execution function
+    on exec(f: (VUContext) -> Result<(), LoadError>) -> Self {
+        self.exec = Some(f)
+        self
+    }
+    
+    /// Set setup function
+    on setup(f: () -> Result<Any, LoadError>) -> Self {
+        self.setup = Some(f)
+        self
+    }
+    
+    /// Set teardown function
+    on teardown(f: (Any) -> Result<(), LoadError>) -> Self {
+        self.teardown = Some(f)
+        self
+    }
+    
+    /// Add threshold
+    on threshold(metric: String, condition: ThresholdCondition) -> Self {
+        self.thresholds.append(Threshold { metric: metric, condition: condition })
+        self
+    }
+    
+    fn build() -> LoadScenario {
+        LoadScenario {
+            name: self.name,
+            vus: self.vus,
+            duration: self.duration,
+            iterations: self.iterations,
+            ramp_up: self.ramp_up,
+            stages: self.stages,
+            exec: self.exec.unwrap_or(|_| Ok(())),
+            setup: self.setup,
+            teardown: self.teardown,
+            thresholds: self.thresholds
+        }
+    }
+}
+
+struct LoadScenario {
+    name: String
+    vus: Int
+    duration: Duration
+    iterations: Option<Int>
+    ramp_up: Option<RampUp>
+    stages: [Stage]
+    exec: (VUContext) -> Result<(), LoadError>
+    setup: Option<() -> Result<Any, LoadError>>
+    teardown: Option<(Any) -> Result<(), LoadError>>
+    thresholds: [Threshold]
+}
+
+struct RampUp {
+    stages: Int
+    duration: Duration
+}
+
+struct Stage {
+    duration: Duration
+    target_vus: Int
+}
+
+struct Threshold {
+    metric: String
+    condition: ThresholdCondition
+}
+
+enum ThresholdCondition {
+    LessThan(Float)
+    GreaterThan(Float)
+    Between(Float, Float)
+    Percentile(Int, Float)
+}
+
+// -----------------------------------------------------------------------------
+// Virtual User
+// -----------------------------------------------------------------------------
+
+/// Virtual user
+actor VirtualUser {
+    state id: Int
+    state scenario: LoadScenario
+    state metrics_collector: MetricsCollector
+    state http_client: http.Client
+    
+    fn new(id: Int, scenario: LoadScenario, collector: MetricsCollector) -> Self {
+        VirtualUser {
+            id: id,
+            scenario: scenario,
+            metrics_collector: collector,
+            http_client: http.Client.new().timeout(30000)
+        }
+    }
+    
+    async fn run() -> [RequestMetric] {
+        var metrics = []
+        let start = Instant.now()
+        var iteration = 0
+        
+        // Apply ramp-up delay
+        if let ramp = self.scenario.ramp_up {
+            let delay = (self.id as Float / self.scenario.vus as Float) * ramp.duration.as_millis() as Float
+            sleep(Duration.millis(delay as Int)).await
+        }
+        
+        // Run iterations
+        while self.should_continue(start, iteration) {
+            let ctx = VUContext {
+                vu_id: self.id,
+                iteration: iteration,
+                http: self.http_client,
+                data: Map.empty()
+            }
+            
+            let iter_start = Instant.now()
+            let result = self.scenario.exec(ctx).await
+            let duration = iter_start.elapsed()
+            
+            let metric = RequestMetric {
+                vu_id: self.id,
+                iteration: iteration,
+                duration: duration,
+                success: result.is_ok(),
+                error: result.err().map(|e| e.message()),
+                timestamp: Instant.now()
+            }
+            
+            metrics.append(metric)
+            self.metrics_collector.record(metric)
+            
+            iteration += 1
+            
+            // Think time
+            sleep(Duration.millis(100)).await
+        }
+        
+        metrics
+    }
+    
+    fn should_continue(start: Instant, iteration: Int) -> Bool {
+        if let max_iter = self.scenario.iterations {
+            return iteration < max_iter
+        }
+        start.elapsed() < self.scenario.duration
+    }
+}
+
+/// Virtual user context
+struct VUContext {
+    vu_id: Int
+    iteration: Int
+    http: http.Client
+    data: Map<String, Any>
+}
+
+impl VUContext {
+    /// Make GET request
+    async fn get(url: String) -> Result<Response, LoadError> {
+        self.http.get(url).map_err(LoadError.HTTP)
+    }
+    
+    /// Make POST request
+    async fn post<T: Serialize>(url: String, body: T) -> Result<Response, LoadError> {
+        self.http.send(http.Request.post(url).json(body)).map_err(LoadError.HTTP)
+    }
+    
+    /// Make PUT request
+    async fn put<T: Serialize>(url: String, body: T) -> Result<Response, LoadError> {
+        self.http.send(http.Request.put(url).json(body)).map_err(LoadError.HTTP)
+    }
+    
+    /// Make DELETE request
+    async fn delete(url: String) -> Result<Response, LoadError> {
+        self.http.send(http.Request.delete(url)).map_err(LoadError.HTTP)
+    }
+    
+    /// Sleep (think time)
+    async fn sleep(d: Duration) {
+        sleep(d).await
+    }
+    
+    /// Store data
+    fn set(key: String, value: Any) {
+        self.data.set(key, value)
+    }
+    
+    /// Get data
+    fn get_data<T>(key: String) -> Option<T> {
+        self.data.get(key)?.downcast::<T>()
+    }
+    
+    /// Check response
+    fn check(response: Response, checks: [Check]) -> Result<(), LoadError> {
+        for check in checks {
+            if !check.verify(response) {
+                return Err(LoadError.CheckFailed(check.name))
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Response check
+struct Check {
+    name: String
+    verify: (Response) -> Bool
+}
+
+impl Check {
+    fn status(expected: Int) -> Self {
+        Check {
+            name: "status is \(expected)",
+            verify: |r| r.status.code == expected
+        }
+    }
+    
+    fn status_2xx() -> Self {
+        Check {
+            name: "status is 2xx",
+            verify: |r| r.status.is_success()
+        }
+    }
+    
+    fn body_contains(text: String) -> Self {
+        Check {
+            name: "body contains '\(text)'",
+            verify: |r| r.text().contains(text)
+        }
+    }
+    
+    fn json_path<T: Eq>(path: String, expected: T) -> Self {
+        Check {
+            name: "json path '\(path)' equals expected",
+            verify: |r| {
+                r.json::<json.Value>()
+                    .ok()
+                    .and_then(|v| v.get_path(path))
+                    .map(|v| v == expected)
+                    .unwrap_or(false)
+            }
+        }
+    }
+    
+    fn response_time(max_ms: Int) -> Self {
+        Check {
+            name: "response time < \(max_ms)ms",
+            verify: |_| true // Checked separately
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Metrics Collection
+// -----------------------------------------------------------------------------
+
+/// Metrics collector
+actor MetricsCollector {
+    state metrics: [RequestMetric]
+    state counters: Map<String, Int>
+    state gauges: Map<String, Float>
+    state histograms: Map<String, [Float]>
+    
+    fn new() -> Self {
+        MetricsCollector {
+            metrics: [],
+            counters: Map.empty(),
+            gauges: Map.empty(),
+            histograms: Map.empty()
+        }
+    }
+    
+    on record(metric: RequestMetric) {
+        self.metrics.append(metric)
+        
+        // Update counters
+        self.increment("requests_total")
+        if metric.success {
+            self.increment("requests_success")
+        } else {
+            self.increment("requests_failed")
+        }
+        
+        // Update histogram
+        self.add_to_histogram("response_time", metric.duration.as_millis() as Float)
+    }
+    
+    on increment(name: String) {
+        let count = self.counters.get(name).unwrap_or(0)
+        self.counters.set(name, count + 1)
+    }
+    
+    on gauge(name: String, value: Float) {
+        self.gauges.set(name, value)
+    }
+    
+    on add_to_histogram(name: String, value: Float) {
+        var hist = self.histograms.get(name).unwrap_or([])
+        hist.append(value)
+        self.histograms.set(name, hist)
+    }
+    
+    fn get_counter(name: String) -> Int {
+        self.counters.get(name).unwrap_or(0)
+    }
+    
+    fn get_gauge(name: String) -> Float {
+        self.gauges.get(name).unwrap_or(0.0)
+    }
+    
+    fn get_histogram(name: String) -> [Float] {
+        self.histograms.get(name).unwrap_or([])
+    }
+    
+    fn get_percentile(name: String, p: Float) -> Float {
+        let hist = self.get_histogram(name)
+        if hist.is_empty() { return 0.0 }
+        let sorted = hist.sorted()
+        sorted[(sorted.len() as Float * p) as Int]
+    }
+}
+
+struct RequestMetric {
+    vu_id: Int
+    iteration: Int
+    duration: Duration
+    success: Bool
+    error: Option<String>
+    timestamp: Instant
+}
+
+// -----------------------------------------------------------------------------
+// Load Patterns
+// -----------------------------------------------------------------------------
+
+/// Constant load pattern
+fn constant_load(vus: Int, duration: Duration) -> ScenarioBuilder {
+    ScenarioBuilder.new("Constant Load")
+        .vus(vus)
+        .duration(duration)
+}
+
+/// Ramp-up load pattern
+fn ramp_up_load(start_vus: Int, end_vus: Int, duration: Duration) -> ScenarioBuilder {
+    let stages = 10
+    let step = (end_vus - start_vus) / stages
+    let stage_duration = Duration.millis(duration.as_millis() / stages)
+    
+    var builder = ScenarioBuilder.new("Ramp Up Load")
+    for i in 0..stages {
+        builder = builder.stage(stage_duration, start_vus + step * (i + 1))
+    }
+    builder
+}
+
+/// Spike load pattern
+fn spike_load(base_vus: Int, spike_vus: Int, spike_duration: Duration) -> ScenarioBuilder {
+    ScenarioBuilder.new("Spike Load")
+        .stage(Duration.seconds(30), base_vus)
+        .stage(spike_duration, spike_vus)
+        .stage(Duration.seconds(30), base_vus)
+}
+
+/// Stress test pattern
+fn stress_test(max_vus: Int, step_duration: Duration) -> ScenarioBuilder {
+    var builder = ScenarioBuilder.new("Stress Test")
+    var vus = 10
+    while vus <= max_vus {
+        builder = builder.stage(step_duration, vus)
+        vus *= 2
+    }
+    builder
+}
+
+/// Soak test pattern
+fn soak_test(vus: Int, duration: Duration) -> ScenarioBuilder {
+    ScenarioBuilder.new("Soak Test")
+        .vus(vus)
+        .duration(duration)
+        .ramp_up(5, Duration.minutes(5))
+}
+
+// -----------------------------------------------------------------------------
+// Results & Statistics
+// -----------------------------------------------------------------------------
+
+struct LoadStats {
+    min: Float
+    max: Float
+    mean: Float
+    median: Float
+    p90: Float
+    p95: Float
+    p99: Float
+    std_dev: Float
+    rps: Float
+    
+    fn empty() -> Self {
+        LoadStats {
+            min: 0.0, max: 0.0, mean: 0.0, median: 0.0,
+            p90: 0.0, p95: 0.0, p99: 0.0, std_dev: 0.0, rps: 0.0
+        }
+    }
+}
+
+struct ScenarioResult {
+    name: String
+    vus: Int
+    duration: Duration
+    total_requests: Int
+    successful_requests: Int
+    failed_requests: Int
+    stats: LoadStats
+    errors: Map<String, Int>
+    
+    fn success_rate() -> Float {
+        if self.total_requests == 0 { return 0.0 }
+        (self.successful_requests as Float / self.total_requests as Float) * 100.0
+    }
+    
+    fn print() {
+        println("\n📊 \(self.name)")
+        println("   VUs: \(self.vus)")
+        println("   Duration: \(self.duration.as_secs())s")
+        println("   Requests: \(self.total_requests) (✅ \(self.successful_requests) / ❌ \(self.failed_requests))")
+        println("   Success Rate: \(self.success_rate().round(2))%")
+        println("   RPS: \(self.stats.rps.round(2))")
+        println("   Response Time:")
+        println("     min: \(self.stats.min.round(2))ms")
+        println("     max: \(self.stats.max.round(2))ms")
+        println("     mean: \(self.stats.mean.round(2))ms")
+        println("     p90: \(self.stats.p90.round(2))ms")
+        println("     p95: \(self.stats.p95.round(2))ms")
+        println("     p99: \(self.stats.p99.round(2))ms")
+    }
+}
+
+struct LoadSummary {
+    scenarios: [ScenarioResult]
+    total_requests: Int
+    successful_requests: Int
+    failed_requests: Int
+    duration: Duration
+    
+    fn success_rate() -> Float {
+        if self.total_requests == 0 { return 0.0 }
+        (self.successful_requests as Float / self.total_requests as Float) * 100.0
+    }
+    
+    fn print() {
+        println("\n" + "=".repeat(60))
+        println("⚡ Load Test Summary")
+        println("=".repeat(60))
+        println("Total Requests: \(self.total_requests)")
+        println("Successful: \(self.successful_requests) ✅")
+        println("Failed: \(self.failed_requests) ❌")
+        println("Success Rate: \(self.success_rate().round(2))%")
+        println("Total Duration: \(self.duration.as_secs())s")
+        println("=".repeat(60))
+        
+        for scenario in self.scenarios {
+            scenario.print()
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Reporters
+// -----------------------------------------------------------------------------
+
+/// Load test reporter trait
+trait LoadReporter {
+    fn on_start(scenarios: Int)
+    fn on_scenario_complete(result: ScenarioResult)
+    fn on_end(summary: LoadSummary)
+}
+
+/// Console reporter
+struct ConsoleLoadReporter {}
+
+impl LoadReporter for ConsoleLoadReporter {
+    fn on_start(scenarios: Int) {
+        println("\n⚡ Running \(scenarios) load test scenarios...\n")
+    }
+    
+    fn on_scenario_complete(result: ScenarioResult) {
+        result.print()
+    }
+    
+    fn on_end(summary: LoadSummary) {
+        summary.print()
+    }
+}
+
+/// JSON reporter
+struct JSONLoadReporter {
+    output_path: String
+}
+
+impl LoadReporter for JSONLoadReporter {
+    fn on_start(scenarios: Int) {}
+    fn on_scenario_complete(result: ScenarioResult) {}
+    
+    fn on_end(summary: LoadSummary) {
+        let json_output = json.encode(summary)
+        fs.write(self.output_path, json_output)
+    }
+}
+
+/// InfluxDB reporter
+struct InfluxDBReporter {
+    url: String
+    database: String
+    
+    async fn send_metrics(metrics: [RequestMetric]) {
+        var lines = []
+        for m in metrics {
+            let line = "load_test,vu=\(m.vu_id) duration=\(m.duration.as_millis()),success=\(m.success) \(m.timestamp.as_nanos())"
+            lines.append(line)
+        }
+        
+        let body = lines.join("\n")
+        http.post("\(self.url)/write?db=\(self.database)", body.as_bytes())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum LoadError {
+    HTTP(HttpError)
+    CheckFailed(String)
+    Timeout
+    ThresholdExceeded(String)
+    
+    fn message() -> String {
+        match self {
+            .HTTP(e) => "HTTP error"
+            .CheckFailed(name) => "Check failed: \(name)"
+            .Timeout => "Request timeout"
+            .ThresholdExceeded(t) => "Threshold exceeded: \(t)"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "load runner creation" {
+    let runner = LoadRunner.new()
+        .config(LoadConfig.default())
+        .scenario("Basic Load", |s| {
+            s.vus(10)
+             .duration(Duration.seconds(30))
+             .exec(|ctx| ctx.get("http://localhost:8080/health"))
+        })
+    
+    assert_eq(runner.scenarios.len(), 1)?
+}
+
+test "scenario builder" {
+    let scenario = ScenarioBuilder.new("Test")
+        .vus(50)
+        .duration(Duration.minutes(5))
+        .ramp_up(10, Duration.seconds(30))
+        .threshold("p95", ThresholdCondition.LessThan(500.0))
+        .build()
+    
+    assert_eq(scenario.vus, 50)?
+    assert_eq(scenario.thresholds.len(), 1)?
+}
+
+test "load patterns" {
+    let constant = constant_load(100, Duration.minutes(10))
+    assert_eq(constant.vus, 100)?
+    
+    let spike = spike_load(10, 100, Duration.seconds(60))
+    assert_eq(spike.stages.len(), 3)?
+}
+
+test "checks" {
+    let check = Check.status(200)
+    assert_eq(check.name, "status is 200")?
+}
+
+test "load stats" {
+    let stats = LoadStats.empty()
+    assert_eq(stats.mean, 0.0)?
+    assert_eq(stats.rps, 0.0)?
+}

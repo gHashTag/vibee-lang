@@ -1,0 +1,779 @@
+// =============================================================================
+// Vibee OS — SLI/SLO Module
+// Service Level Indicators and Service Level Objectives
+// =============================================================================
+
+use datetime.{DateTime, Duration}
+use metrics.{Counter, Gauge, Histogram}
+
+// -----------------------------------------------------------------------------
+// Service Level Indicators (SLI)
+// -----------------------------------------------------------------------------
+
+/// Base SLI trait
+trait SLI {
+    fn name() -> String
+    fn description() -> String
+    fn calculate() -> Float  // Returns value between 0.0 and 1.0
+    fn record(value: Float)
+}
+
+/// Availability SLI - measures uptime
+struct AvailabilitySLI {
+    name: String
+    total_requests: Counter
+    successful_requests: Counter
+}
+
+impl AvailabilitySLI {
+    fn new(name: String) -> Self {
+        AvailabilitySLI {
+            name: name,
+            total_requests: Counter.new("\(name)_total", "Total requests"),
+            successful_requests: Counter.new("\(name)_success", "Successful requests")
+        }
+    }
+    
+    fn record_success() {
+        self.total_requests.inc()
+        self.successful_requests.inc()
+    }
+    
+    fn record_failure() {
+        self.total_requests.inc()
+    }
+}
+
+impl SLI for AvailabilitySLI {
+    fn name() -> String { self.name.clone() }
+    fn description() -> String { "Percentage of successful requests" }
+    
+    fn calculate() -> Float {
+        let total = self.total_requests.value()
+        if total == 0.0 { return 1.0 }
+        self.successful_requests.value() / total
+    }
+    
+    fn record(value: Float) {
+        if value >= 1.0 { self.record_success() }
+        else { self.record_failure() }
+    }
+}
+
+/// Latency SLI - measures response time
+struct LatencySLI {
+    name: String
+    threshold_ms: Float
+    histogram: Histogram
+    within_threshold: Counter
+    total: Counter
+}
+
+impl LatencySLI {
+    fn new(name: String, threshold_ms: Float) -> Self {
+        LatencySLI {
+            name: name,
+            threshold_ms: threshold_ms,
+            histogram: Histogram.new("\(name)_duration", "Request duration in ms"),
+            within_threshold: Counter.new("\(name)_within_threshold", "Requests within threshold"),
+            total: Counter.new("\(name)_total", "Total requests")
+        }
+    }
+    
+    fn record_latency(ms: Float) {
+        self.histogram.observe(ms)
+        self.total.inc()
+        if ms <= self.threshold_ms {
+            self.within_threshold.inc()
+        }
+    }
+    
+    fn percentile(p: Float) -> Float {
+        self.histogram.percentile(p)
+    }
+}
+
+impl SLI for LatencySLI {
+    fn name() -> String { self.name.clone() }
+    fn description() -> String { "Percentage of requests within \(self.threshold_ms)ms" }
+    
+    fn calculate() -> Float {
+        let total = self.total.value()
+        if total == 0.0 { return 1.0 }
+        self.within_threshold.value() / total
+    }
+    
+    fn record(value: Float) {
+        self.record_latency(value)
+    }
+}
+
+/// Throughput SLI - measures request rate
+struct ThroughputSLI {
+    name: String
+    min_rps: Float
+    requests: Counter
+    window_start: DateTime
+    window_duration: Duration
+}
+
+impl ThroughputSLI {
+    fn new(name: String, min_rps: Float) -> Self {
+        ThroughputSLI {
+            name: name,
+            min_rps: min_rps,
+            requests: Counter.new("\(name)_requests", "Total requests"),
+            window_start: DateTime.now(),
+            window_duration: Duration.minutes(1)
+        }
+    }
+    
+    fn record_request() {
+        self.requests.inc()
+    }
+    
+    fn current_rps() -> Float {
+        let elapsed = DateTime.now().diff_seconds(self.window_start)
+        if elapsed == 0.0 { return 0.0 }
+        self.requests.value() / elapsed
+    }
+}
+
+impl SLI for ThroughputSLI {
+    fn name() -> String { self.name.clone() }
+    fn description() -> String { "Requests per second >= \(self.min_rps)" }
+    
+    fn calculate() -> Float {
+        let rps = self.current_rps()
+        if rps >= self.min_rps { 1.0 } else { rps / self.min_rps }
+    }
+    
+    fn record(value: Float) {
+        self.record_request()
+    }
+}
+
+/// Error Rate SLI
+struct ErrorRateSLI {
+    name: String
+    max_error_rate: Float
+    total: Counter
+    errors: Counter
+}
+
+impl ErrorRateSLI {
+    fn new(name: String, max_error_rate: Float) -> Self {
+        ErrorRateSLI {
+            name: name,
+            max_error_rate: max_error_rate,
+            total: Counter.new("\(name)_total", "Total requests"),
+            errors: Counter.new("\(name)_errors", "Error count")
+        }
+    }
+    
+    fn record_success() { self.total.inc() }
+    fn record_error() { self.total.inc(); self.errors.inc() }
+    
+    fn error_rate() -> Float {
+        let total = self.total.value()
+        if total == 0.0 { return 0.0 }
+        self.errors.value() / total
+    }
+}
+
+impl SLI for ErrorRateSLI {
+    fn name() -> String { self.name.clone() }
+    fn description() -> String { "Error rate <= \(self.max_error_rate * 100.0)%" }
+    
+    fn calculate() -> Float {
+        let rate = self.error_rate()
+        if rate <= self.max_error_rate { 1.0 }
+        else { 1.0 - ((rate - self.max_error_rate) / (1.0 - self.max_error_rate)) }
+    }
+    
+    fn record(value: Float) {
+        if value == 0.0 { self.record_success() }
+        else { self.record_error() }
+    }
+}
+
+/// Saturation SLI - measures resource utilization
+struct SaturationSLI {
+    name: String
+    max_utilization: Float
+    current: Gauge
+}
+
+impl SaturationSLI {
+    fn new(name: String, max_utilization: Float) -> Self {
+        SaturationSLI {
+            name: name,
+            max_utilization: max_utilization,
+            current: Gauge.new("\(name)_utilization", "Current utilization")
+        }
+    }
+    
+    fn set_utilization(value: Float) {
+        self.current.set(value)
+    }
+}
+
+impl SLI for SaturationSLI {
+    fn name() -> String { self.name.clone() }
+    fn description() -> String { "Resource utilization <= \(self.max_utilization * 100.0)%" }
+    
+    fn calculate() -> Float {
+        let util = self.current.value()
+        if util <= self.max_utilization { 1.0 }
+        else { self.max_utilization / util }
+    }
+    
+    fn record(value: Float) {
+        self.set_utilization(value)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Service Level Objectives (SLO)
+// -----------------------------------------------------------------------------
+
+/// SLO definition
+struct SLO {
+    name: String
+    description: String
+    sli: Box<dyn SLI>
+    target: Float           // Target percentage (e.g., 0.999 for 99.9%)
+    window: SLOWindow
+    burn_rate_thresholds: [BurnRateThreshold]
+}
+
+impl SLO {
+    fn new(name: String, sli: Box<dyn SLI>, target: Float) -> Self {
+        SLO {
+            name: name,
+            description: "",
+            sli: sli,
+            target: target,
+            window: SLOWindow.Rolling(Duration.days(30)),
+            burn_rate_thresholds: BurnRateThreshold.defaults()
+        }
+    }
+    
+    fn with_description(desc: String) -> Self {
+        self.description = desc
+        self
+    }
+    
+    fn with_window(window: SLOWindow) -> Self {
+        self.window = window
+        self
+    }
+    
+    fn with_burn_rate_thresholds(thresholds: [BurnRateThreshold]) -> Self {
+        self.burn_rate_thresholds = thresholds
+        self
+    }
+    
+    /// Calculate current SLI value
+    fn current_value() -> Float {
+        self.sli.calculate()
+    }
+    
+    /// Check if SLO is being met
+    fn is_met() -> Bool {
+        self.current_value() >= self.target
+    }
+    
+    /// Calculate error budget
+    fn error_budget() -> ErrorBudget {
+        let current = self.current_value()
+        let allowed_errors = 1.0 - self.target
+        let actual_errors = 1.0 - current
+        
+        ErrorBudget {
+            total: allowed_errors,
+            consumed: actual_errors,
+            remaining: (allowed_errors - actual_errors).max(0.0),
+            percentage_remaining: if allowed_errors > 0.0 {
+                ((allowed_errors - actual_errors) / allowed_errors * 100.0).max(0.0)
+            } else { 0.0 }
+        }
+    }
+    
+    /// Calculate burn rate
+    fn burn_rate() -> Float {
+        let budget = self.error_budget()
+        if budget.total == 0.0 { return 0.0 }
+        budget.consumed / budget.total
+    }
+    
+    /// Check burn rate alerts
+    fn check_alerts() -> [SLOAlert] {
+        let burn_rate = self.burn_rate()
+        var alerts: [SLOAlert] = []
+        
+        for threshold in self.burn_rate_thresholds.iter() {
+            if burn_rate >= threshold.rate {
+                alerts.push(SLOAlert {
+                    slo_name: self.name.clone(),
+                    severity: threshold.severity,
+                    burn_rate: burn_rate,
+                    threshold: threshold.rate,
+                    message: "SLO \(self.name) burn rate \(burn_rate) exceeds threshold \(threshold.rate)"
+                })
+            }
+        }
+        
+        alerts
+    }
+    
+    /// Get SLO status
+    fn status() -> SLOStatus {
+        let current = self.current_value()
+        let budget = self.error_budget()
+        let burn_rate = self.burn_rate()
+        
+        SLOStatus {
+            name: self.name.clone(),
+            target: self.target,
+            current: current,
+            is_met: current >= self.target,
+            error_budget: budget,
+            burn_rate: burn_rate,
+            alerts: self.check_alerts()
+        }
+    }
+}
+
+enum SLOWindow {
+    Rolling(Duration)
+    Calendar(CalendarPeriod)
+}
+
+enum CalendarPeriod {
+    Day
+    Week
+    Month
+    Quarter
+}
+
+struct BurnRateThreshold {
+    rate: Float
+    severity: AlertSeverity
+    window: Duration
+}
+
+impl BurnRateThreshold {
+    fn new(rate: Float, severity: AlertSeverity) -> Self {
+        BurnRateThreshold {
+            rate: rate,
+            severity: severity,
+            window: Duration.hours(1)
+        }
+    }
+    
+    fn defaults() -> [Self] {
+        [
+            BurnRateThreshold { rate: 14.4, severity: AlertSeverity.Critical, window: Duration.hours(1) },
+            BurnRateThreshold { rate: 6.0, severity: AlertSeverity.Warning, window: Duration.hours(6) },
+            BurnRateThreshold { rate: 3.0, severity: AlertSeverity.Info, window: Duration.days(1) },
+            BurnRateThreshold { rate: 1.0, severity: AlertSeverity.Info, window: Duration.days(3) }
+        ]
+    }
+}
+
+enum AlertSeverity {
+    Critical
+    Warning
+    Info
+    
+    fn to_string() -> String {
+        match self {
+            Critical => "critical",
+            Warning => "warning",
+            Info => "info"
+        }
+    }
+}
+
+struct ErrorBudget {
+    total: Float
+    consumed: Float
+    remaining: Float
+    percentage_remaining: Float
+}
+
+impl ErrorBudget {
+    fn is_exhausted() -> Bool {
+        self.remaining <= 0.0
+    }
+    
+    fn consumption_rate() -> Float {
+        if self.total == 0.0 { return 0.0 }
+        self.consumed / self.total
+    }
+}
+
+struct SLOAlert {
+    slo_name: String
+    severity: AlertSeverity
+    burn_rate: Float
+    threshold: Float
+    message: String
+}
+
+struct SLOStatus {
+    name: String
+    target: Float
+    current: Float
+    is_met: Bool
+    error_budget: ErrorBudget
+    burn_rate: Float
+    alerts: [SLOAlert]
+}
+
+// -----------------------------------------------------------------------------
+// SLO Manager
+// -----------------------------------------------------------------------------
+
+/// Manages multiple SLOs
+actor SLOManager {
+    state slos: Map<String, SLO>
+    state history: Map<String, [SLOSnapshot]>
+    state config: SLOManagerConfig
+    state running: Bool
+    
+    fn new(config: SLOManagerConfig) -> Self {
+        SLOManager {
+            slos: Map.new(),
+            history: Map.new(),
+            config: config,
+            running: false
+        }
+    }
+    
+    fn register(slo: SLO) {
+        let name = slo.name.clone()
+        self.slos.insert(name.clone(), slo)
+        self.history.insert(name, [])
+    }
+    
+    fn unregister(name: String) {
+        self.slos.remove(name.clone())
+        self.history.remove(name)
+    }
+    
+    fn get(name: String) -> Option<&SLO> {
+        self.slos.get(name)
+    }
+    
+    async fn start() {
+        self.running = true
+        self.start_snapshot_loop().await
+    }
+    
+    async fn stop() {
+        self.running = false
+    }
+    
+    async fn start_snapshot_loop() {
+        while self.running {
+            Timer.sleep(self.config.snapshot_interval).await
+            self.take_snapshots()
+        }
+    }
+    
+    fn take_snapshots() {
+        let now = DateTime.now()
+        
+        for (name, slo) in self.slos.iter() {
+            let snapshot = SLOSnapshot {
+                timestamp: now,
+                value: slo.current_value(),
+                error_budget_remaining: slo.error_budget().percentage_remaining,
+                burn_rate: slo.burn_rate()
+            }
+            
+            if let Some(history) = self.history.get_mut(name.clone()) {
+                history.push(snapshot)
+                
+                // Trim old snapshots
+                let cutoff = now - self.config.history_retention
+                history.retain(|s| s.timestamp > cutoff)
+            }
+        }
+    }
+    
+    fn get_all_statuses() -> [SLOStatus] {
+        self.slos.values().map(|slo| slo.status()).collect()
+    }
+    
+    fn get_alerts() -> [SLOAlert] {
+        self.slos.values().flat_map(|slo| slo.check_alerts()).collect()
+    }
+    
+    fn get_history(name: String) -> Option<[SLOSnapshot]> {
+        self.history.get(name).cloned()
+    }
+    
+    fn get_summary() -> SLOSummary {
+        let statuses = self.get_all_statuses()
+        let total = statuses.len()
+        let met = statuses.iter().filter(|s| s.is_met).count()
+        let critical = statuses.iter().filter(|s| s.error_budget.is_exhausted()).count()
+        
+        SLOSummary {
+            total_slos: total,
+            slos_met: met,
+            slos_at_risk: total - met - critical,
+            slos_breached: critical,
+            overall_health: if total > 0 { met as Float / total as Float } else { 1.0 }
+        }
+    }
+}
+
+struct SLOManagerConfig {
+    snapshot_interval: Duration
+    history_retention: Duration
+    alert_callback: Option<fn(SLOAlert)>
+}
+
+impl SLOManagerConfig {
+    fn new() -> Self {
+        SLOManagerConfig {
+            snapshot_interval: Duration.minutes(1),
+            history_retention: Duration.days(30),
+            alert_callback: None
+        }
+    }
+}
+
+struct SLOSnapshot {
+    timestamp: DateTime
+    value: Float
+    error_budget_remaining: Float
+    burn_rate: Float
+}
+
+struct SLOSummary {
+    total_slos: Int
+    slos_met: Int
+    slos_at_risk: Int
+    slos_breached: Int
+    overall_health: Float
+}
+
+// -----------------------------------------------------------------------------
+// Composite SLI
+// -----------------------------------------------------------------------------
+
+/// Combines multiple SLIs
+struct CompositeSLI {
+    name: String
+    slis: [(Box<dyn SLI>, Float)]  // SLI with weight
+}
+
+impl CompositeSLI {
+    fn new(name: String) -> Self {
+        CompositeSLI { name: name, slis: [] }
+    }
+    
+    fn add(sli: Box<dyn SLI>, weight: Float) -> Self {
+        self.slis.push((sli, weight))
+        self
+    }
+}
+
+impl SLI for CompositeSLI {
+    fn name() -> String { self.name.clone() }
+    fn description() -> String { "Weighted composite of multiple SLIs" }
+    
+    fn calculate() -> Float {
+        let total_weight: Float = self.slis.iter().map(|(_, w)| *w).sum()
+        if total_weight == 0.0 { return 1.0 }
+        
+        let weighted_sum: Float = self.slis.iter()
+            .map(|(sli, w)| sli.calculate() * w)
+            .sum()
+        
+        weighted_sum / total_weight
+    }
+    
+    fn record(value: Float) {
+        // Composite SLI doesn't record directly
+    }
+}
+
+// -----------------------------------------------------------------------------
+// SLO Builder
+// -----------------------------------------------------------------------------
+
+struct SLOBuilder {
+    name: String
+    description: String
+    sli: Option<Box<dyn SLI>>
+    target: Float
+    window: SLOWindow
+    thresholds: [BurnRateThreshold]
+}
+
+impl SLOBuilder {
+    fn new(name: String) -> Self {
+        SLOBuilder {
+            name: name,
+            description: "",
+            sli: None,
+            target: 0.99,
+            window: SLOWindow.Rolling(Duration.days(30)),
+            thresholds: BurnRateThreshold.defaults()
+        }
+    }
+    
+    fn description(desc: String) -> Self {
+        self.description = desc
+        self
+    }
+    
+    fn availability(success_rate: Float) -> Self {
+        self.sli = Some(Box.new(AvailabilitySLI.new("\(self.name)_availability")))
+        self.target = success_rate
+        self
+    }
+    
+    fn latency(threshold_ms: Float, target: Float) -> Self {
+        self.sli = Some(Box.new(LatencySLI.new("\(self.name)_latency", threshold_ms)))
+        self.target = target
+        self
+    }
+    
+    fn error_rate(max_rate: Float) -> Self {
+        self.sli = Some(Box.new(ErrorRateSLI.new("\(self.name)_errors", max_rate)))
+        self.target = 1.0 - max_rate
+        self
+    }
+    
+    fn target(t: Float) -> Self {
+        self.target = t
+        self
+    }
+    
+    fn rolling_window(duration: Duration) -> Self {
+        self.window = SLOWindow.Rolling(duration)
+        self
+    }
+    
+    fn calendar_window(period: CalendarPeriod) -> Self {
+        self.window = SLOWindow.Calendar(period)
+        self
+    }
+    
+    fn build() -> Result<SLO, String> {
+        let sli = self.sli.ok_or("SLI not configured")?
+        
+        Ok(SLO {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            sli: sli,
+            target: self.target,
+            window: self.window,
+            burn_rate_thresholds: self.thresholds.clone()
+        })
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Global Instance
+// -----------------------------------------------------------------------------
+
+static GLOBAL_MANAGER: Mutex<Option<SLOManager>> = Mutex.new(None)
+
+fn init(config: SLOManagerConfig) {
+    *GLOBAL_MANAGER.lock() = Some(SLOManager.new(config))
+}
+
+fn manager() -> Option<&SLOManager> {
+    GLOBAL_MANAGER.lock().as_ref()
+}
+
+fn register(slo: SLO) {
+    if let Some(m) = manager() { m.register(slo) }
+}
+
+fn get_status(name: String) -> Option<SLOStatus> {
+    manager().and_then(|m| m.get(name)).map(|slo| slo.status())
+}
+
+fn get_all_statuses() -> [SLOStatus] {
+    manager().map(|m| m.get_all_statuses()).unwrap_or([])
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "availability sli" {
+    var sli = AvailabilitySLI.new("test")
+    sli.record_success()
+    sli.record_success()
+    sli.record_failure()
+    
+    let value = sli.calculate()
+    assert((value - 0.666).abs() < 0.01)?
+}
+
+test "latency sli" {
+    var sli = LatencySLI.new("test", 100.0)
+    sli.record_latency(50.0)
+    sli.record_latency(80.0)
+    sli.record_latency(150.0)
+    
+    let value = sli.calculate()
+    assert((value - 0.666).abs() < 0.01)?
+}
+
+test "error budget calculation" {
+    let sli = Box.new(AvailabilitySLI.new("test"))
+    let slo = SLO.new("test_slo", sli, 0.99)
+    
+    let budget = slo.error_budget()
+    assert_eq(budget.total, 0.01)?
+}
+
+test "slo builder" {
+    let slo = SLOBuilder.new("api_availability")
+        .description("API availability SLO")
+        .availability(0.999)
+        .rolling_window(Duration.days(30))
+        .build()
+        .unwrap()
+    
+    assert_eq(slo.name, "api_availability")?
+    assert_eq(slo.target, 0.999)?
+}
+
+test "burn rate thresholds" {
+    let defaults = BurnRateThreshold.defaults()
+    assert_eq(defaults.len(), 4)?
+    assert_eq(defaults[0].severity, AlertSeverity.Critical)?
+}
+
+test "composite sli" {
+    let avail = Box.new(AvailabilitySLI.new("avail"))
+    let latency = Box.new(LatencySLI.new("latency", 100.0))
+    
+    let composite = CompositeSLI.new("composite")
+        .add(avail, 0.7)
+        .add(latency, 0.3)
+    
+    let value = composite.calculate()
+    assert(value >= 0.0 && value <= 1.0)?
+}
+
+test "slo status" {
+    let sli = Box.new(AvailabilitySLI.new("test"))
+    let slo = SLO.new("test_slo", sli, 0.99)
+    
+    let status = slo.status()
+    assert_eq(status.name, "test_slo")?
+    assert_eq(status.target, 0.99)?
+}

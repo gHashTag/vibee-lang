@@ -1,0 +1,829 @@
+// =============================================================================
+// Vibee OS — Audio Mixer Module
+// Professional multi-channel audio mixing with routing and effects
+// =============================================================================
+
+use audio::{AudioBuffer, Sample, AudioError}
+use math::{pow, log10, clamp}
+
+/// Mixer channel strip
+struct Channel {
+    id: String
+    name: String
+    buffer: Option<AudioBuffer>
+    volume: Float64          // 0.0-1.0
+    pan: Float64             // -1.0 (left) to 1.0 (right)
+    mute: Bool
+    solo: Bool
+    inserts: [Insert]
+    sends: [Send]
+    eq: Option<ChannelEQ>
+    compressor: Option<ChannelCompressor>
+    input_gain: Float64      // Pre-fader gain
+    phase_invert: Bool
+    
+    fn new(id: String, name: String) -> Self {
+        Channel {
+            id: id,
+            name: name,
+            buffer: None,
+            volume: 1.0,
+            pan: 0.0,
+            mute: false,
+            solo: false,
+            inserts: [],
+            sends: [],
+            eq: None,
+            compressor: None,
+            input_gain: 1.0,
+            phase_invert: false
+        }
+    }
+    
+    fn set_buffer(buffer: AudioBuffer) {
+        self.buffer = Some(buffer)
+    }
+    
+    fn set_volume(volume: Float64) {
+        self.volume = volume.clamp(0.0, 1.0)
+    }
+    
+    fn set_volume_db(db: Float64) {
+        self.volume = db_to_linear(db)
+    }
+    
+    fn set_pan(pan: Float64) {
+        self.pan = pan.clamp(-1.0, 1.0)
+    }
+    
+    fn set_mute(mute: Bool) {
+        self.mute = mute
+    }
+    
+    fn set_solo(solo: Bool) {
+        self.solo = solo
+    }
+    
+    fn add_insert(insert: Insert) {
+        self.inserts.push(insert)
+    }
+    
+    fn add_send(send: Send) {
+        self.sends.push(send)
+    }
+    
+    fn set_eq(eq: ChannelEQ) {
+        self.eq = Some(eq)
+    }
+    
+    fn set_compressor(comp: ChannelCompressor) {
+        self.compressor = Some(comp)
+    }
+    
+    fn process() -> Option<AudioBuffer> {
+        var buf = self.buffer?.clone()
+        
+        // Phase invert
+        if self.phase_invert {
+            buf = buf.amplify(-1.0)
+        }
+        
+        // Input gain
+        buf = buf.amplify(self.input_gain)
+        
+        // EQ
+        if let Some(eq) = self.eq {
+            buf = eq.process(buf)
+        }
+        
+        // Inserts (pre-fader)
+        for insert in self.inserts {
+            if insert.pre_fader {
+                buf = insert.process(buf)
+            }
+        }
+        
+        // Compressor
+        if let Some(comp) = self.compressor {
+            buf = comp.process(buf)
+        }
+        
+        // Fader (volume)
+        buf = buf.amplify(self.volume)
+        
+        // Inserts (post-fader)
+        for insert in self.inserts {
+            if !insert.pre_fader {
+                buf = insert.process(buf)
+            }
+        }
+        
+        // Pan
+        buf = apply_pan(buf, self.pan)
+        
+        Some(buf)
+    }
+    
+    fn peak_level() -> Float64 {
+        if let Some(buf) = self.buffer {
+            buf.peak()
+        } else { 0.0 }
+    }
+    
+    fn rms_level() -> Float64 {
+        if let Some(buf) = self.buffer {
+            buf.rms()
+        } else { 0.0 }
+    }
+}
+
+/// Insert effect slot
+struct Insert {
+    effect: Effect
+    bypass: Bool
+    pre_fader: Bool
+    wet_dry: Float64     // 0.0 = dry, 1.0 = wet
+    
+    fn new(effect: Effect) -> Self {
+        Insert {
+            effect: effect,
+            bypass: false,
+            pre_fader: true,
+            wet_dry: 1.0
+        }
+    }
+    
+    fn post_fader() -> Self {
+        self.pre_fader = false
+        self
+    }
+    
+    fn with_mix(wet_dry: Float64) -> Self {
+        self.wet_dry = wet_dry.clamp(0.0, 1.0)
+        self
+    }
+    
+    fn process(buffer: AudioBuffer) -> AudioBuffer {
+        if self.bypass { return buffer }
+        
+        let wet = self.effect.process(buffer.clone())
+        if self.wet_dry >= 1.0 { return wet }
+        if self.wet_dry <= 0.0 { return buffer }
+        
+        buffer.mix(wet, self.wet_dry)
+    }
+}
+
+/// Send to aux/bus
+struct Send {
+    target_bus: String
+    level: Float64       // Send level 0.0-1.0
+    pre_fader: Bool
+    
+    fn new(target_bus: String, level: Float64) -> Self {
+        Send {
+            target_bus: target_bus,
+            level: level.clamp(0.0, 1.0),
+            pre_fader: false
+        }
+    }
+    
+    fn pre() -> Self {
+        self.pre_fader = true
+        self
+    }
+}
+
+/// Effect types for inserts
+enum Effect {
+    Reverb(ReverbParams),
+    Delay(DelayParams),
+    Chorus(ChorusParams),
+    Flanger(FlangerParams),
+    Phaser(PhaserParams),
+    Distortion(DistortionParams),
+    Compressor(CompressorParams),
+    Gate(GateParams),
+    EQ(EQParams),
+    Custom(fn(AudioBuffer) -> AudioBuffer)
+    
+    fn process(buffer: AudioBuffer) -> AudioBuffer {
+        match self {
+            Reverb(params) => @native("effect_reverb", buffer, params),
+            Delay(params) => @native("effect_delay", buffer, params),
+            Chorus(params) => @native("effect_chorus", buffer, params),
+            Flanger(params) => @native("effect_flanger", buffer, params),
+            Phaser(params) => @native("effect_phaser", buffer, params),
+            Distortion(params) => apply_distortion(buffer, params),
+            Compressor(params) => @native("effect_compressor", buffer, params),
+            Gate(params) => apply_gate(buffer, params),
+            EQ(params) => @native("effect_eq", buffer, params),
+            Custom(f) => f(buffer)
+        }
+    }
+}
+
+/// Effect parameter structs
+struct ReverbParams {
+    room_size: Float64
+    damping: Float64
+    wet: Float64
+    pre_delay: Float64
+    
+    fn new() -> Self {
+        ReverbParams { room_size: 0.5, damping: 0.5, wet: 0.3, pre_delay: 0.0 }
+    }
+    
+    fn hall() -> Self {
+        ReverbParams { room_size: 0.8, damping: 0.3, wet: 0.4, pre_delay: 0.02 }
+    }
+    
+    fn room() -> Self {
+        ReverbParams { room_size: 0.4, damping: 0.6, wet: 0.25, pre_delay: 0.0 }
+    }
+    
+    fn plate() -> Self {
+        ReverbParams { room_size: 0.6, damping: 0.4, wet: 0.35, pre_delay: 0.01 }
+    }
+}
+
+struct DelayParams {
+    time_ms: Float64
+    feedback: Float64
+    wet: Float64
+    ping_pong: Bool
+    
+    fn new(time_ms: Float64) -> Self {
+        DelayParams { time_ms: time_ms, feedback: 0.3, wet: 0.3, ping_pong: false }
+    }
+}
+
+struct ChorusParams {
+    rate: Float64
+    depth: Float64
+    wet: Float64
+    voices: Int
+    
+    fn new() -> Self {
+        ChorusParams { rate: 1.0, depth: 0.5, wet: 0.5, voices: 2 }
+    }
+}
+
+struct FlangerParams {
+    rate: Float64
+    depth: Float64
+    feedback: Float64
+    wet: Float64
+    
+    fn new() -> Self {
+        FlangerParams { rate: 0.5, depth: 0.7, feedback: 0.5, wet: 0.5 }
+    }
+}
+
+struct PhaserParams {
+    rate: Float64
+    depth: Float64
+    stages: Int
+    feedback: Float64
+    
+    fn new() -> Self {
+        PhaserParams { rate: 0.5, depth: 0.5, stages: 4, feedback: 0.3 }
+    }
+}
+
+struct DistortionParams {
+    drive: Float64
+    tone: Float64
+    output: Float64
+    type_: DistortionType
+    
+    fn new(drive: Float64) -> Self {
+        DistortionParams { drive: drive, tone: 0.5, output: 0.7, type_: DistortionType.Soft }
+    }
+}
+
+enum DistortionType { Soft, Hard, Fuzz, Tube }
+
+struct CompressorParams {
+    threshold: Float64
+    ratio: Float64
+    attack: Float64
+    release: Float64
+    makeup_gain: Float64
+    
+    fn new() -> Self {
+        CompressorParams { threshold: -20.0, ratio: 4.0, attack: 10.0, release: 100.0, makeup_gain: 0.0 }
+    }
+}
+
+struct GateParams {
+    threshold: Float64
+    attack: Float64
+    hold: Float64
+    release: Float64
+    
+    fn new(threshold: Float64) -> Self {
+        GateParams { threshold: threshold, attack: 1.0, hold: 50.0, release: 100.0 }
+    }
+}
+
+struct EQParams {
+    bands: [EQBand]
+    
+    fn new() -> Self {
+        EQParams { bands: [] }
+    }
+    
+    fn add_band(band: EQBand) -> Self {
+        self.bands.push(band)
+        self
+    }
+}
+
+struct EQBand {
+    frequency: Float64
+    gain: Float64
+    q: Float64
+    band_type: EQBandType
+    
+    fn new(frequency: Float64, gain: Float64, q: Float64, band_type: EQBandType) -> Self {
+        EQBand { frequency: frequency, gain: gain, q: q, band_type: band_type }
+    }
+    
+    fn low_shelf(frequency: Float64, gain: Float64) -> Self {
+        EQBand.new(frequency, gain, 0.7, EQBandType.LowShelf)
+    }
+    
+    fn high_shelf(frequency: Float64, gain: Float64) -> Self {
+        EQBand.new(frequency, gain, 0.7, EQBandType.HighShelf)
+    }
+    
+    fn peak(frequency: Float64, gain: Float64, q: Float64) -> Self {
+        EQBand.new(frequency, gain, q, EQBandType.Peak)
+    }
+}
+
+enum EQBandType { LowShelf, HighShelf, Peak, LowPass, HighPass, Notch }
+
+/// Channel EQ (4-band parametric)
+struct ChannelEQ {
+    low_shelf: Option<EQBand>
+    low_mid: Option<EQBand>
+    high_mid: Option<EQBand>
+    high_shelf: Option<EQBand>
+    enabled: Bool
+    
+    fn new() -> Self {
+        ChannelEQ {
+            low_shelf: None,
+            low_mid: None,
+            high_mid: None,
+            high_shelf: None,
+            enabled: true
+        }
+    }
+    
+    fn with_low_shelf(frequency: Float64, gain: Float64) -> Self {
+        self.low_shelf = Some(EQBand.low_shelf(frequency, gain))
+        self
+    }
+    
+    fn with_low_mid(frequency: Float64, gain: Float64, q: Float64) -> Self {
+        self.low_mid = Some(EQBand.peak(frequency, gain, q))
+        self
+    }
+    
+    fn with_high_mid(frequency: Float64, gain: Float64, q: Float64) -> Self {
+        self.high_mid = Some(EQBand.peak(frequency, gain, q))
+        self
+    }
+    
+    fn with_high_shelf(frequency: Float64, gain: Float64) -> Self {
+        self.high_shelf = Some(EQBand.high_shelf(frequency, gain))
+        self
+    }
+    
+    fn process(buffer: AudioBuffer) -> AudioBuffer {
+        if !self.enabled { return buffer }
+        
+        var params = EQParams.new()
+        if let Some(band) = self.low_shelf { params.bands.push(band) }
+        if let Some(band) = self.low_mid { params.bands.push(band) }
+        if let Some(band) = self.high_mid { params.bands.push(band) }
+        if let Some(band) = self.high_shelf { params.bands.push(band) }
+        
+        @native("effect_eq", buffer, params)
+    }
+}
+
+/// Channel compressor
+struct ChannelCompressor {
+    threshold: Float64   // dB
+    ratio: Float64
+    attack: Float64      // ms
+    release: Float64     // ms
+    knee: Float64        // dB
+    makeup_gain: Float64 // dB
+    enabled: Bool
+    
+    fn new() -> Self {
+        ChannelCompressor {
+            threshold: -20.0,
+            ratio: 4.0,
+            attack: 10.0,
+            release: 100.0,
+            knee: 6.0,
+            makeup_gain: 0.0,
+            enabled: true
+        }
+    }
+    
+    fn gentle() -> Self {
+        ChannelCompressor {
+            threshold: -15.0, ratio: 2.0, attack: 20.0, release: 200.0,
+            knee: 10.0, makeup_gain: 3.0, enabled: true
+        }
+    }
+    
+    fn aggressive() -> Self {
+        ChannelCompressor {
+            threshold: -25.0, ratio: 8.0, attack: 5.0, release: 50.0,
+            knee: 3.0, makeup_gain: 6.0, enabled: true
+        }
+    }
+    
+    fn limiter() -> Self {
+        ChannelCompressor {
+            threshold: -3.0, ratio: 20.0, attack: 0.1, release: 50.0,
+            knee: 0.0, makeup_gain: 0.0, enabled: true
+        }
+    }
+    
+    fn process(buffer: AudioBuffer) -> AudioBuffer {
+        if !self.enabled { return buffer }
+        @native("channel_compressor", buffer, self)
+    }
+}
+
+/// Aux/Bus channel for routing
+struct Bus {
+    id: String
+    name: String
+    channels: [String]   // Channel IDs routed to this bus
+    volume: Float64
+    pan: Float64
+    mute: Bool
+    inserts: [Insert]
+    buffer: Option<AudioBuffer>
+    
+    fn new(id: String, name: String) -> Self {
+        Bus {
+            id: id,
+            name: name,
+            channels: [],
+            volume: 1.0,
+            pan: 0.0,
+            mute: false,
+            inserts: [],
+            buffer: None
+        }
+    }
+    
+    fn add_channel(channel_id: String) {
+        self.channels.push(channel_id)
+    }
+    
+    fn add_insert(insert: Insert) {
+        self.inserts.push(insert)
+    }
+    
+    fn set_buffer(buffer: AudioBuffer) {
+        self.buffer = Some(buffer)
+    }
+    
+    fn process() -> Option<AudioBuffer> {
+        var buf = self.buffer?.clone()
+        
+        for insert in self.inserts {
+            buf = insert.process(buf)
+        }
+        
+        buf = buf.amplify(self.volume)
+        buf = apply_pan(buf, self.pan)
+        
+        Some(buf)
+    }
+}
+
+/// Main mixer
+actor Mixer {
+    state sample_rate: Int
+    state channels: Map<String, Channel>
+    state buses: Map<String, Bus>
+    state master: MasterChannel
+    state solo_active: Bool
+    
+    fn new(sample_rate: Int) -> Self {
+        Mixer {
+            sample_rate: sample_rate,
+            channels: Map.new(),
+            buses: Map.new(),
+            master: MasterChannel.new(),
+            solo_active: false
+        }
+    }
+    
+    fn add_channel(name: String) -> String {
+        let id = format!("ch_{}", self.channels.len())
+        self.channels.insert(id.clone(), Channel.new(id.clone(), name))
+        id
+    }
+    
+    fn add_bus(name: String) -> String {
+        let id = format!("bus_{}", self.buses.len())
+        self.buses.insert(id.clone(), Bus.new(id.clone(), name))
+        id
+    }
+    
+    fn get_channel(id: String) -> Option<Channel> {
+        self.channels.get(id)
+    }
+    
+    fn get_bus(id: String) -> Option<Bus> {
+        self.buses.get(id)
+    }
+    
+    fn set_channel_buffer(id: String, buffer: AudioBuffer) {
+        if let Some(ch) = self.channels.get_mut(id) {
+            ch.set_buffer(buffer)
+        }
+    }
+    
+    fn set_channel_volume(id: String, volume: Float64) {
+        if let Some(ch) = self.channels.get_mut(id) {
+            ch.set_volume(volume)
+        }
+    }
+    
+    fn set_channel_pan(id: String, pan: Float64) {
+        if let Some(ch) = self.channels.get_mut(id) {
+            ch.set_pan(pan)
+        }
+    }
+    
+    fn mute_channel(id: String, mute: Bool) {
+        if let Some(ch) = self.channels.get_mut(id) {
+            ch.set_mute(mute)
+        }
+    }
+    
+    fn solo_channel(id: String, solo: Bool) {
+        if let Some(ch) = self.channels.get_mut(id) {
+            ch.set_solo(solo)
+        }
+        self.update_solo_state()
+    }
+    
+    fn update_solo_state() {
+        self.solo_active = self.channels.values().any(|ch| ch.solo)
+    }
+    
+    fn mix() -> Result<AudioBuffer, AudioError> {
+        var output: Option<AudioBuffer> = None
+        
+        // Process sends to buses first
+        for (_, bus) in self.buses {
+            var bus_buffer: Option<AudioBuffer> = None
+            
+            for (ch_id, channel) in self.channels {
+                for send in channel.sends {
+                    if send.target_bus == bus.id {
+                        let send_buffer = if send.pre_fader {
+                            channel.buffer?.clone().amplify(send.level)
+                        } else {
+                            channel.process()?.amplify(send.level)
+                        }
+                        
+                        if let Some(buf) = bus_buffer {
+                            bus_buffer = Some(mix_buffers(buf, send_buffer))
+                        } else {
+                            bus_buffer = Some(send_buffer)
+                        }
+                    }
+                }
+            }
+            
+            if let Some(buf) = bus_buffer {
+                bus.set_buffer(buf)
+            }
+        }
+        
+        // Mix all channels
+        for (_, channel) in self.channels {
+            // Skip muted channels
+            if channel.mute { continue }
+            
+            // If solo is active, only process soloed channels
+            if self.solo_active && !channel.solo { continue }
+            
+            if let Some(processed) = channel.process() {
+                if let Some(out) = output {
+                    output = Some(mix_buffers(out, processed))
+                } else {
+                    output = Some(processed)
+                }
+            }
+        }
+        
+        // Mix buses
+        for (_, bus) in self.buses {
+            if bus.mute { continue }
+            
+            if let Some(processed) = bus.process() {
+                if let Some(out) = output {
+                    output = Some(mix_buffers(out, processed))
+                } else {
+                    output = Some(processed)
+                }
+            }
+        }
+        
+        // Apply master processing
+        if let Some(out) = output {
+            Ok(self.master.process(out))
+        } else {
+            Err(AudioError.InvalidFormat)
+        }
+    }
+    
+    fn get_channel_levels() -> Map<String, (Float64, Float64)> {
+        var levels = Map.new()
+        for (id, channel) in self.channels {
+            levels.insert(id, (channel.peak_level(), channel.rms_level()))
+        }
+        levels
+    }
+    
+    fn get_master_level() -> (Float64, Float64) {
+        self.master.get_levels()
+    }
+}
+
+/// Master channel
+struct MasterChannel {
+    volume: Float64
+    limiter: Option<ChannelCompressor>
+    eq: Option<ChannelEQ>
+    inserts: [Insert]
+    last_peak: Float64
+    last_rms: Float64
+    
+    fn new() -> Self {
+        MasterChannel {
+            volume: 1.0,
+            limiter: Some(ChannelCompressor.limiter()),
+            eq: None,
+            inserts: [],
+            last_peak: 0.0,
+            last_rms: 0.0
+        }
+    }
+    
+    fn set_volume(volume: Float64) {
+        self.volume = volume.clamp(0.0, 1.0)
+    }
+    
+    fn set_limiter(limiter: ChannelCompressor) {
+        self.limiter = Some(limiter)
+    }
+    
+    fn add_insert(insert: Insert) {
+        self.inserts.push(insert)
+    }
+    
+    fn process(buffer: AudioBuffer) -> AudioBuffer {
+        var buf = buffer
+        
+        // EQ
+        if let Some(eq) = self.eq {
+            buf = eq.process(buf)
+        }
+        
+        // Inserts
+        for insert in self.inserts {
+            buf = insert.process(buf)
+        }
+        
+        // Volume
+        buf = buf.amplify(self.volume)
+        
+        // Limiter
+        if let Some(limiter) = self.limiter {
+            buf = limiter.process(buf)
+        }
+        
+        // Update meters
+        self.last_peak = buf.peak()
+        self.last_rms = buf.rms()
+        
+        buf
+    }
+    
+    fn get_levels() -> (Float64, Float64) {
+        (self.last_peak, self.last_rms)
+    }
+}
+
+/// Utility functions
+fn db_to_linear(db: Float64) -> Float64 {
+    pow(10.0, db / 20.0)
+}
+
+fn linear_to_db(linear: Float64) -> Float64 {
+    if linear <= 0.0 { -Float64.INFINITY }
+    else { 20.0 * log10(linear) }
+}
+
+fn apply_pan(buffer: AudioBuffer, pan: Float64) -> AudioBuffer {
+    if buffer.channels != 2 { return buffer }
+    
+    let left_gain = ((1.0 - pan) / 2.0).sqrt()
+    let right_gain = ((1.0 + pan) / 2.0).sqrt()
+    
+    var result = buffer.clone()
+    for i in 0..result.num_samples() {
+        result.samples[0][i] = result.samples[0][i].amplify(left_gain)
+        result.samples[1][i] = result.samples[1][i].amplify(right_gain)
+    }
+    result
+}
+
+fn mix_buffers(a: AudioBuffer, b: AudioBuffer) -> AudioBuffer {
+    a.mix(b, 0.5).amplify(2.0)  // Mix and compensate for level reduction
+}
+
+fn apply_distortion(buffer: AudioBuffer, params: DistortionParams) -> AudioBuffer {
+    var result = buffer.clone()
+    let drive = params.drive
+    
+    for ch in 0..result.channels {
+        for i in 0..result.samples[ch].len() {
+            var v = result.samples[ch][i].value * drive
+            
+            v = match params.type_ {
+                DistortionType.Soft => v.tanh(),
+                DistortionType.Hard => v.clamp(-1.0, 1.0),
+                DistortionType.Fuzz => if v > 0.0 { 1.0 } else { -1.0 },
+                DistortionType.Tube => {
+                    if v > 0.0 { 1.0 - pow(1.0 - v.min(1.0), 2.0) }
+                    else { -(1.0 - pow(1.0 - (-v).min(1.0), 2.0)) }
+                }
+            }
+            
+            result.samples[ch][i] = Sample.new(v * params.output)
+        }
+    }
+    result
+}
+
+fn apply_gate(buffer: AudioBuffer, params: GateParams) -> AudioBuffer {
+    @native("effect_gate", buffer, params)
+}
+
+// Tests
+test "create channel" {
+    let ch = Channel.new("ch_1", "Drums")
+    assert_eq(ch.volume, 1.0)?
+    assert_eq(ch.pan, 0.0)?
+    assert_eq(ch.mute, false)?
+}
+
+test "db conversion" {
+    let linear = db_to_linear(-6.0)
+    assert(linear > 0.49 && linear < 0.51)?
+    let db = linear_to_db(0.5)
+    assert(db > -6.1 && db < -5.9)?
+}
+
+test "mixer add channels" {
+    var mixer = Mixer.new(44100)
+    let ch1 = mixer.add_channel("Drums")
+    let ch2 = mixer.add_channel("Bass")
+    assert(mixer.get_channel(ch1).is_some())?
+    assert(mixer.get_channel(ch2).is_some())?
+}
+
+test "channel eq" {
+    let eq = ChannelEQ.new()
+        .with_low_shelf(100.0, 3.0)
+        .with_high_shelf(8000.0, -2.0)
+    assert(eq.low_shelf.is_some())?
+    assert(eq.high_shelf.is_some())?
+}
+
+test "effect insert" {
+    let reverb = Insert.new(Effect.Reverb(ReverbParams.hall()))
+        .with_mix(0.3)
+    assert_eq(reverb.wet_dry, 0.3)?
+    assert_eq(reverb.bypass, false)?
+}

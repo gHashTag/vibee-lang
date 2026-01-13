@@ -1,0 +1,973 @@
+// =============================================================================
+// Vibee OS — Audit Log Module
+// Comprehensive audit logging and compliance tracking
+// =============================================================================
+
+use datetime.{DateTime, Duration}
+use logger.{Logger, Level}
+use uuid.{uuid}
+use crypto.{hash_sha256}
+
+// =============================================================================
+// Core Types
+// =============================================================================
+
+/// Audit event severity
+enum AuditSeverity {
+    Low
+    Medium
+    High
+    Critical
+    
+    fn value() -> Int {
+        match self {
+            Low => 1
+            Medium => 2
+            High => 3
+            Critical => 4
+        }
+    }
+}
+
+/// Audit event category
+enum AuditCategory {
+    Authentication
+    Authorization
+    DataAccess
+    DataModification
+    DataDeletion
+    Configuration
+    Security
+    System
+    UserManagement
+    Custom(String)
+    
+    fn name() -> String {
+        match self {
+            Authentication => "authentication"
+            Authorization => "authorization"
+            DataAccess => "data_access"
+            DataModification => "data_modification"
+            DataDeletion => "data_deletion"
+            Configuration => "configuration"
+            Security => "security"
+            System => "system"
+            UserManagement => "user_management"
+            Custom(name) => name
+        }
+    }
+}
+
+/// Audit event outcome
+enum AuditOutcome {
+    Success
+    Failure
+    Partial
+    Unknown
+}
+
+/// Actor who performed the action
+struct AuditActor {
+    id: String
+    actor_type: ActorType
+    name: Option<String>
+    email: Option<String>
+    ip_address: Option<String>
+    user_agent: Option<String>
+    session_id: Option<String>
+}
+
+impl AuditActor {
+    fn user(id: String) -> Self {
+        AuditActor {
+            id: id,
+            actor_type: ActorType.User,
+            name: None,
+            email: None,
+            ip_address: None,
+            user_agent: None,
+            session_id: None
+        }
+    }
+    
+    fn system(id: String) -> Self {
+        AuditActor {
+            id: id,
+            actor_type: ActorType.System,
+            name: Some("System"),
+            email: None,
+            ip_address: None,
+            user_agent: None,
+            session_id: None
+        }
+    }
+    
+    fn service(id: String, name: String) -> Self {
+        AuditActor {
+            id: id,
+            actor_type: ActorType.Service,
+            name: Some(name),
+            email: None,
+            ip_address: None,
+            user_agent: None,
+            session_id: None
+        }
+    }
+    
+    fn with_name(name: String) -> Self {
+        self.name = Some(name)
+        self
+    }
+    
+    fn with_email(email: String) -> Self {
+        self.email = Some(email)
+        self
+    }
+    
+    fn with_ip(ip: String) -> Self {
+        self.ip_address = Some(ip)
+        self
+    }
+    
+    fn with_user_agent(ua: String) -> Self {
+        self.user_agent = Some(ua)
+        self
+    }
+    
+    fn with_session(session_id: String) -> Self {
+        self.session_id = Some(session_id)
+        self
+    }
+}
+
+enum ActorType {
+    User
+    System
+    Service
+    Anonymous
+    Api
+}
+
+/// Resource that was affected
+struct AuditResource {
+    resource_type: String
+    resource_id: String
+    name: Option<String>
+    path: Option<String>
+    attributes: Map<String, Any>
+}
+
+impl AuditResource {
+    fn new(resource_type: String, resource_id: String) -> Self {
+        AuditResource {
+            resource_type: resource_type,
+            resource_id: resource_id,
+            name: None,
+            path: None,
+            attributes: Map.new()
+        }
+    }
+    
+    fn with_name(name: String) -> Self {
+        self.name = Some(name)
+        self
+    }
+    
+    fn with_path(path: String) -> Self {
+        self.path = Some(path)
+        self
+    }
+    
+    fn with_attribute(key: String, value: Any) -> Self {
+        self.attributes.insert(key, value)
+        self
+    }
+}
+
+/// Change record for data modifications
+struct AuditChange {
+    field: String
+    old_value: Option<Any>
+    new_value: Option<Any>
+}
+
+impl AuditChange {
+    fn new(field: String, old_value: Any, new_value: Any) -> Self {
+        AuditChange {
+            field: field,
+            old_value: Some(old_value),
+            new_value: Some(new_value)
+        }
+    }
+    
+    fn created(field: String, value: Any) -> Self {
+        AuditChange {
+            field: field,
+            old_value: None,
+            new_value: Some(value)
+        }
+    }
+    
+    fn deleted(field: String, value: Any) -> Self {
+        AuditChange {
+            field: field,
+            old_value: Some(value),
+            new_value: None
+        }
+    }
+}
+
+// =============================================================================
+// Audit Entry
+// =============================================================================
+
+/// Main audit log entry
+struct AuditEntry {
+    id: String
+    timestamp: DateTime
+    category: AuditCategory
+    action: String
+    description: String
+    severity: AuditSeverity
+    outcome: AuditOutcome
+    actor: AuditActor
+    resource: Option<AuditResource>
+    changes: [AuditChange]
+    metadata: Map<String, Any>
+    request_id: Option<String>
+    correlation_id: Option<String>
+    duration_ms: Option<Int64>
+    error_message: Option<String>
+    hash: Option<String>
+}
+
+impl AuditEntry {
+    fn new(category: AuditCategory, action: String, actor: AuditActor) -> Self {
+        AuditEntry {
+            id: uuid(),
+            timestamp: DateTime.now(),
+            category: category,
+            action: action,
+            description: "",
+            severity: AuditSeverity.Low,
+            outcome: AuditOutcome.Unknown,
+            actor: actor,
+            resource: None,
+            changes: [],
+            metadata: Map.new(),
+            request_id: None,
+            correlation_id: None,
+            duration_ms: None,
+            error_message: None,
+            hash: None
+        }
+    }
+    
+    fn with_description(description: String) -> Self {
+        self.description = description
+        self
+    }
+    
+    fn with_severity(severity: AuditSeverity) -> Self {
+        self.severity = severity
+        self
+    }
+    
+    fn with_outcome(outcome: AuditOutcome) -> Self {
+        self.outcome = outcome
+        self
+    }
+    
+    fn with_resource(resource: AuditResource) -> Self {
+        self.resource = Some(resource)
+        self
+    }
+    
+    fn with_change(change: AuditChange) -> Self {
+        self.changes.push(change)
+        self
+    }
+    
+    fn with_changes(changes: [AuditChange]) -> Self {
+        self.changes.extend(changes)
+        self
+    }
+    
+    fn with_metadata(key: String, value: Any) -> Self {
+        self.metadata.insert(key, value)
+        self
+    }
+    
+    fn with_request_id(id: String) -> Self {
+        self.request_id = Some(id)
+        self
+    }
+    
+    fn with_correlation_id(id: String) -> Self {
+        self.correlation_id = Some(id)
+        self
+    }
+    
+    fn with_duration(ms: Int64) -> Self {
+        self.duration_ms = Some(ms)
+        self
+    }
+    
+    fn with_error(message: String) -> Self {
+        self.error_message = Some(message)
+        self.outcome = AuditOutcome.Failure
+        self
+    }
+    
+    fn success() -> Self {
+        self.outcome = AuditOutcome.Success
+        self
+    }
+    
+    fn failure(message: String) -> Self {
+        self.outcome = AuditOutcome.Failure
+        self.error_message = Some(message)
+        self
+    }
+    
+    /// Calculate integrity hash
+    fn calculate_hash() -> Self {
+        let data = "\(self.id)|\(self.timestamp)|\(self.action)|\(self.actor.id)"
+        self.hash = Some(hash_sha256(data))
+        self
+    }
+    
+    /// Verify entry integrity
+    fn verify_integrity() -> Bool {
+        match self.hash.as_ref() {
+            Some(stored_hash) => {
+                let data = "\(self.id)|\(self.timestamp)|\(self.action)|\(self.actor.id)"
+                let calculated = hash_sha256(data)
+                stored_hash == calculated
+            }
+            None => false
+        }
+    }
+}
+
+// =============================================================================
+// Audit Log Storage Trait
+// =============================================================================
+
+/// Storage backend trait
+trait AuditStorage {
+    fn store(entry: AuditEntry) -> Result<(), AuditError>
+    fn get(id: String) -> Result<Option<AuditEntry>, AuditError>
+    fn query(query: AuditQuery) -> Result<AuditQueryResult, AuditError>
+    fn delete_before(timestamp: DateTime) -> Result<Int64, AuditError>
+    fn count() -> Result<Int64, AuditError>
+}
+
+/// In-memory storage for testing
+struct MemoryAuditStorage {
+    entries: [AuditEntry]
+    max_entries: Int
+}
+
+impl MemoryAuditStorage {
+    fn new() -> Self {
+        MemoryAuditStorage {
+            entries: [],
+            max_entries: 10000
+        }
+    }
+    
+    fn with_max_entries(max: Int) -> Self {
+        self.max_entries = max
+        self
+    }
+}
+
+impl AuditStorage for MemoryAuditStorage {
+    fn store(entry: AuditEntry) -> Result<(), AuditError> {
+        if self.entries.len() >= self.max_entries {
+            self.entries.remove(0)
+        }
+        self.entries.push(entry)
+        Ok(())
+    }
+    
+    fn get(id: String) -> Result<Option<AuditEntry>, AuditError> {
+        Ok(self.entries.iter().find(|e| e.id == id).cloned())
+    }
+    
+    fn query(query: AuditQuery) -> Result<AuditQueryResult, AuditError> {
+        var filtered = self.entries.clone()
+        
+        if let Some(actor_id) = query.actor_id.as_ref() {
+            filtered = filtered.iter().filter(|e| e.actor.id == *actor_id).collect()
+        }
+        
+        if let Some(category) = query.category.as_ref() {
+            filtered = filtered.iter().filter(|e| e.category.name() == category.name()).collect()
+        }
+        
+        if let Some(from) = query.from_date.as_ref() {
+            filtered = filtered.iter().filter(|e| e.timestamp >= *from).collect()
+        }
+        
+        if let Some(to) = query.to_date.as_ref() {
+            filtered = filtered.iter().filter(|e| e.timestamp <= *to).collect()
+        }
+        
+        let total = filtered.len() as Int64
+        let offset = query.offset.unwrap_or(0) as Int
+        let limit = query.limit.unwrap_or(100) as Int
+        
+        let entries = filtered.iter()
+            .skip(offset)
+            .take(limit)
+            .cloned()
+            .collect()
+        
+        Ok(AuditQueryResult {
+            entries: entries,
+            total: total,
+            offset: offset as Int64,
+            limit: limit as Int64
+        })
+    }
+    
+    fn delete_before(timestamp: DateTime) -> Result<Int64, AuditError> {
+        let before_count = self.entries.len()
+        self.entries.retain(|e| e.timestamp >= timestamp)
+        Ok((before_count - self.entries.len()) as Int64)
+    }
+    
+    fn count() -> Result<Int64, AuditError> {
+        Ok(self.entries.len() as Int64)
+    }
+}
+
+// =============================================================================
+// Query
+// =============================================================================
+
+/// Audit query parameters
+struct AuditQuery {
+    actor_id: Option<String>
+    category: Option<AuditCategory>
+    action: Option<String>
+    resource_type: Option<String>
+    resource_id: Option<String>
+    severity: Option<AuditSeverity>
+    outcome: Option<AuditOutcome>
+    from_date: Option<DateTime>
+    to_date: Option<DateTime>
+    search_text: Option<String>
+    offset: Option<Int64>
+    limit: Option<Int64>
+    order_by: AuditOrderBy
+    order_dir: OrderDirection
+}
+
+impl AuditQuery {
+    fn new() -> Self {
+        AuditQuery {
+            actor_id: None,
+            category: None,
+            action: None,
+            resource_type: None,
+            resource_id: None,
+            severity: None,
+            outcome: None,
+            from_date: None,
+            to_date: None,
+            search_text: None,
+            offset: None,
+            limit: None,
+            order_by: AuditOrderBy.Timestamp,
+            order_dir: OrderDirection.Desc
+        }
+    }
+    
+    fn by_actor(actor_id: String) -> Self {
+        self.actor_id = Some(actor_id)
+        self
+    }
+    
+    fn by_category(category: AuditCategory) -> Self {
+        self.category = Some(category)
+        self
+    }
+    
+    fn by_action(action: String) -> Self {
+        self.action = Some(action)
+        self
+    }
+    
+    fn by_resource(resource_type: String, resource_id: String) -> Self {
+        self.resource_type = Some(resource_type)
+        self.resource_id = Some(resource_id)
+        self
+    }
+    
+    fn by_severity(severity: AuditSeverity) -> Self {
+        self.severity = Some(severity)
+        self
+    }
+    
+    fn by_outcome(outcome: AuditOutcome) -> Self {
+        self.outcome = Some(outcome)
+        self
+    }
+    
+    fn from(date: DateTime) -> Self {
+        self.from_date = Some(date)
+        self
+    }
+    
+    fn to(date: DateTime) -> Self {
+        self.to_date = Some(date)
+        self
+    }
+    
+    fn last_days(days: Int) -> Self {
+        self.from_date = Some(DateTime.now() - Duration.days(days))
+        self
+    }
+    
+    fn search(text: String) -> Self {
+        self.search_text = Some(text)
+        self
+    }
+    
+    fn paginate(offset: Int64, limit: Int64) -> Self {
+        self.offset = Some(offset)
+        self.limit = Some(limit)
+        self
+    }
+    
+    fn order(by: AuditOrderBy, dir: OrderDirection) -> Self {
+        self.order_by = by
+        self.order_dir = dir
+        self
+    }
+}
+
+enum AuditOrderBy {
+    Timestamp
+    Severity
+    Category
+    Actor
+}
+
+enum OrderDirection {
+    Asc
+    Desc
+}
+
+/// Query result
+struct AuditQueryResult {
+    entries: [AuditEntry]
+    total: Int64
+    offset: Int64
+    limit: Int64
+}
+
+impl AuditQueryResult {
+    fn has_more() -> Bool {
+        self.offset + self.limit < self.total
+    }
+    
+    fn page_count() -> Int64 {
+        if self.limit == 0 { return 0 }
+        (self.total + self.limit - 1) / self.limit
+    }
+    
+    fn current_page() -> Int64 {
+        if self.limit == 0 { return 0 }
+        self.offset / self.limit + 1
+    }
+}
+
+// =============================================================================
+// Audit Logger
+// =============================================================================
+
+/// Main audit logger
+struct AuditLogger {
+    storage: Box<dyn AuditStorage>
+    logger: Logger
+    enabled: Bool
+    min_severity: AuditSeverity
+    auto_hash: Bool
+    hooks: [Box<dyn AuditHook>]
+}
+
+impl AuditLogger {
+    fn new<S: AuditStorage>(storage: S) -> Self {
+        AuditLogger {
+            storage: Box.new(storage),
+            logger: Logger.new("audit"),
+            enabled: true,
+            min_severity: AuditSeverity.Low,
+            auto_hash: true,
+            hooks: []
+        }
+    }
+    
+    fn with_min_severity(severity: AuditSeverity) -> Self {
+        self.min_severity = severity
+        self
+    }
+    
+    fn with_auto_hash(enabled: Bool) -> Self {
+        self.auto_hash = enabled
+        self
+    }
+    
+    fn add_hook<H: AuditHook>(hook: H) -> Self {
+        self.hooks.push(Box.new(hook))
+        self
+    }
+    
+    fn disable() -> Self {
+        self.enabled = false
+        self
+    }
+    
+    fn enable() -> Self {
+        self.enabled = true
+        self
+    }
+    
+    /// Log an audit entry
+    fn log(entry: AuditEntry) -> Result<(), AuditError> {
+        if !self.enabled {
+            return Ok(())
+        }
+        
+        if entry.severity.value() < self.min_severity.value() {
+            return Ok(())
+        }
+        
+        var final_entry = entry
+        
+        // Calculate hash if enabled
+        if self.auto_hash {
+            final_entry = final_entry.calculate_hash()
+        }
+        
+        // Run pre-store hooks
+        for hook in self.hooks.iter() {
+            final_entry = hook.before_store(final_entry)?
+        }
+        
+        // Store entry
+        self.storage.store(final_entry.clone())?
+        
+        // Run post-store hooks
+        for hook in self.hooks.iter() {
+            hook.after_store(final_entry.clone())
+        }
+        
+        // Log to standard logger
+        self.logger.info_with("Audit: \(final_entry.action)", {
+            "audit_id": final_entry.id,
+            "category": final_entry.category.name(),
+            "actor": final_entry.actor.id,
+            "outcome": match final_entry.outcome {
+                AuditOutcome.Success => "success"
+                AuditOutcome.Failure => "failure"
+                AuditOutcome.Partial => "partial"
+                AuditOutcome.Unknown => "unknown"
+            }
+        })
+        
+        Ok(())
+    }
+    
+    /// Convenience methods for common audit events
+    fn log_login(actor: AuditActor, success: Bool) -> Result<(), AuditError> {
+        let entry = AuditEntry.new(AuditCategory.Authentication, "login", actor)
+            .with_description(if success { "User logged in" } else { "Login failed" })
+            .with_severity(if success { AuditSeverity.Low } else { AuditSeverity.Medium })
+            .with_outcome(if success { AuditOutcome.Success } else { AuditOutcome.Failure })
+        
+        self.log(entry)
+    }
+    
+    fn log_logout(actor: AuditActor) -> Result<(), AuditError> {
+        let entry = AuditEntry.new(AuditCategory.Authentication, "logout", actor)
+            .with_description("User logged out")
+            .success()
+        
+        self.log(entry)
+    }
+    
+    fn log_access(actor: AuditActor, resource: AuditResource) -> Result<(), AuditError> {
+        let entry = AuditEntry.new(AuditCategory.DataAccess, "access", actor)
+            .with_description("Accessed \(resource.resource_type)")
+            .with_resource(resource)
+            .success()
+        
+        self.log(entry)
+    }
+    
+    fn log_create(actor: AuditActor, resource: AuditResource, changes: [AuditChange]) -> Result<(), AuditError> {
+        let entry = AuditEntry.new(AuditCategory.DataModification, "create", actor)
+            .with_description("Created \(resource.resource_type)")
+            .with_resource(resource)
+            .with_changes(changes)
+            .with_severity(AuditSeverity.Medium)
+            .success()
+        
+        self.log(entry)
+    }
+    
+    fn log_update(actor: AuditActor, resource: AuditResource, changes: [AuditChange]) -> Result<(), AuditError> {
+        let entry = AuditEntry.new(AuditCategory.DataModification, "update", actor)
+            .with_description("Updated \(resource.resource_type)")
+            .with_resource(resource)
+            .with_changes(changes)
+            .with_severity(AuditSeverity.Medium)
+            .success()
+        
+        self.log(entry)
+    }
+    
+    fn log_delete(actor: AuditActor, resource: AuditResource) -> Result<(), AuditError> {
+        let entry = AuditEntry.new(AuditCategory.DataDeletion, "delete", actor)
+            .with_description("Deleted \(resource.resource_type)")
+            .with_resource(resource)
+            .with_severity(AuditSeverity.High)
+            .success()
+        
+        self.log(entry)
+    }
+    
+    fn log_permission_change(actor: AuditActor, target_user: String, changes: [AuditChange]) -> Result<(), AuditError> {
+        let entry = AuditEntry.new(AuditCategory.Authorization, "permission_change", actor)
+            .with_description("Changed permissions for user \(target_user)")
+            .with_resource(AuditResource.new("user", target_user))
+            .with_changes(changes)
+            .with_severity(AuditSeverity.High)
+            .success()
+        
+        self.log(entry)
+    }
+    
+    fn log_security_event(actor: AuditActor, event: String, details: String) -> Result<(), AuditError> {
+        let entry = AuditEntry.new(AuditCategory.Security, event, actor)
+            .with_description(details)
+            .with_severity(AuditSeverity.Critical)
+        
+        self.log(entry)
+    }
+    
+    /// Query audit logs
+    fn query(query: AuditQuery) -> Result<AuditQueryResult, AuditError> {
+        self.storage.query(query)
+    }
+    
+    /// Get single entry
+    fn get(id: String) -> Result<Option<AuditEntry>, AuditError> {
+        self.storage.get(id)
+    }
+    
+    /// Cleanup old entries
+    fn cleanup(retention_days: Int) -> Result<Int64, AuditError> {
+        let cutoff = DateTime.now() - Duration.days(retention_days)
+        self.storage.delete_before(cutoff)
+    }
+}
+
+// =============================================================================
+// Audit Hook Trait
+// =============================================================================
+
+/// Hook for audit events
+trait AuditHook {
+    fn before_store(entry: AuditEntry) -> Result<AuditEntry, AuditError>
+    fn after_store(entry: AuditEntry)
+}
+
+/// Alert hook for critical events
+struct AlertHook {
+    alert_severity: AuditSeverity
+    alert_callback: fn(AuditEntry)
+}
+
+impl AlertHook {
+    fn new(severity: AuditSeverity, callback: fn(AuditEntry)) -> Self {
+        AlertHook {
+            alert_severity: severity,
+            alert_callback: callback
+        }
+    }
+}
+
+impl AuditHook for AlertHook {
+    fn before_store(entry: AuditEntry) -> Result<AuditEntry, AuditError> {
+        Ok(entry)
+    }
+    
+    fn after_store(entry: AuditEntry) {
+        if entry.severity.value() >= self.alert_severity.value() {
+            (self.alert_callback)(entry)
+        }
+    }
+}
+
+// =============================================================================
+// Audit Logger Actor
+// =============================================================================
+
+/// Async audit logger actor
+actor AuditLoggerActor {
+    logger: AuditLogger
+    buffer: [AuditEntry]
+    buffer_size: Int
+    
+    fn new<S: AuditStorage>(storage: S) -> Self {
+        AuditLoggerActor {
+            logger: AuditLogger.new(storage),
+            buffer: [],
+            buffer_size: 100
+        }
+    }
+    
+    async fn log(entry: AuditEntry) -> Result<(), AuditError> {
+        self.buffer.push(entry)
+        if self.buffer.len() >= self.buffer_size {
+            self.flush().await?
+        }
+        Ok(())
+    }
+    
+    async fn flush() -> Result<(), AuditError> {
+        for entry in self.buffer.drain(..) {
+            self.logger.log(entry)?
+        }
+        Ok(())
+    }
+    
+    async fn query(query: AuditQuery) -> Result<AuditQueryResult, AuditError> {
+        self.logger.query(query)
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+/// Audit errors
+enum AuditError {
+    StorageError(String)
+    ValidationError(String)
+    IntegrityError(String)
+    QueryError(String)
+    
+    fn message() -> String {
+        match self {
+            StorageError(msg) => "Storage error: \(msg)"
+            ValidationError(msg) => "Validation error: \(msg)"
+            IntegrityError(msg) => "Integrity error: \(msg)"
+            QueryError(msg) => "Query error: \(msg)"
+        }
+    }
+}
+
+impl Error for AuditError {
+    fn description() -> String { self.message() }
+}
+
+// =============================================================================
+// Global Audit Logger
+// =============================================================================
+
+static GLOBAL_AUDIT: Mutex<Option<AuditLogger>> = Mutex.new(None)
+
+fn init<S: AuditStorage>(storage: S) {
+    var guard = GLOBAL_AUDIT.lock()
+    *guard = Some(AuditLogger.new(storage))
+}
+
+fn global() -> Option<MutexGuard<AuditLogger>> {
+    let guard = GLOBAL_AUDIT.lock()
+    if guard.is_some() { Some(guard) } else { None }
+}
+
+fn log(entry: AuditEntry) -> Result<(), AuditError> {
+    match global() {
+        Some(logger) => logger.log(entry)
+        None => Err(AuditError.StorageError("Audit logger not initialized"))
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "audit entry creation" {
+    let actor = AuditActor.user("user-1").with_name("John")
+    let entry = AuditEntry.new(AuditCategory.Authentication, "login", actor)
+        .with_description("User logged in")
+        .success()
+    
+    assert_eq(entry.action, "login")?
+    assert_eq(entry.outcome, AuditOutcome.Success)?
+}
+
+test "audit entry with changes" {
+    let actor = AuditActor.user("user-1")
+    let resource = AuditResource.new("user", "user-2")
+    let entry = AuditEntry.new(AuditCategory.DataModification, "update", actor)
+        .with_resource(resource)
+        .with_change(AuditChange.new("email", "old@test.com", "new@test.com"))
+        .with_change(AuditChange.new("name", "Old Name", "New Name"))
+    
+    assert_eq(entry.changes.len(), 2)?
+}
+
+test "audit entry integrity" {
+    let actor = AuditActor.user("user-1")
+    let entry = AuditEntry.new(AuditCategory.Security, "test", actor)
+        .calculate_hash()
+    
+    assert(entry.verify_integrity())?
+}
+
+test "memory storage" {
+    let storage = MemoryAuditStorage.new()
+    let actor = AuditActor.user("user-1")
+    let entry = AuditEntry.new(AuditCategory.Authentication, "login", actor)
+    
+    storage.store(entry.clone())?
+    
+    let retrieved = storage.get(entry.id.clone())?
+    assert(retrieved.is_some())?
+    assert_eq(retrieved.unwrap().id, entry.id)?
+}
+
+test "audit query" {
+    let storage = MemoryAuditStorage.new()
+    let actor = AuditActor.user("user-1")
+    
+    for i in 0..5 {
+        let entry = AuditEntry.new(AuditCategory.Authentication, "login", actor.clone())
+        storage.store(entry)?
+    }
+    
+    let query = AuditQuery.new().by_actor("user-1")
+    let result = storage.query(query)?
+    
+    assert_eq(result.total, 5)?
+}
+
+test "audit logger" {
+    let storage = MemoryAuditStorage.new()
+    let logger = AuditLogger.new(storage)
+    
+    let actor = AuditActor.user("user-1")
+    logger.log_login(actor, true)?
+    
+    let result = logger.query(AuditQuery.new())?
+    assert_eq(result.total, 1)?
+}

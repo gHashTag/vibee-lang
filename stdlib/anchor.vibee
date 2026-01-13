@@ -1,0 +1,776 @@
+// =============================================================================
+// Vibee OS — AR Anchor Module
+// Augmented Reality anchors for persistent spatial content
+// =============================================================================
+
+use spatial::{Vec3, Quat, SpatialTransform, BoundingBox}
+use uuid::{UUID}
+
+// -----------------------------------------------------------------------------
+// Anchor Types
+// -----------------------------------------------------------------------------
+
+/// Anchor type classification
+enum AnchorType {
+    World           // Anchored to world coordinates
+    Plane           // Anchored to detected plane
+    Image           // Anchored to tracked image
+    Face            // Anchored to detected face
+    Body            // Anchored to body tracking
+    Object          // Anchored to recognized object
+    Geo             // Anchored to geographic location
+    Cloud           // Cloud-based persistent anchor
+    
+    fn is_trackable() -> Bool {
+        match self {
+            Image | Face | Body | Object => true,
+            _ => false
+        }
+    }
+    
+    fn requires_tracking() -> Bool {
+        match self {
+            Face | Body => true,
+            _ => false
+        }
+    }
+    
+    fn is_persistent() -> Bool {
+        match self {
+            Cloud | Geo => true,
+            _ => false
+        }
+    }
+}
+
+/// Anchor tracking state
+enum AnchorTrackingState {
+    NotTracking
+    Limited
+    Tracking
+    Paused
+    
+    fn is_valid() -> Bool {
+        match self {
+            Tracking | Limited => true,
+            _ => false
+        }
+    }
+    
+    fn confidence() -> Float {
+        match self {
+            Tracking => 1.0,
+            Limited => 0.5,
+            Paused => 0.3,
+            NotTracking => 0.0
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Anchor
+// -----------------------------------------------------------------------------
+
+/// AR Anchor - represents a fixed point in AR space
+struct Anchor {
+    id: UUID
+    name: String
+    anchor_type: AnchorType
+    transform: SpatialTransform
+    tracking_state: AnchorTrackingState
+    created_at: Float64
+    updated_at: Float64
+    metadata: Map<String, String>
+    parent_id: Option<UUID>
+    children_ids: [UUID]
+    
+    fn new(anchor_type: AnchorType, transform: SpatialTransform) -> Self {
+        let now = @native("time_now")
+        Anchor {
+            id: UUID.new_v4(),
+            name: "",
+            anchor_type: anchor_type,
+            transform: transform,
+            tracking_state: AnchorTrackingState.NotTracking,
+            created_at: now,
+            updated_at: now,
+            metadata: Map.new(),
+            parent_id: None,
+            children_ids: []
+        }
+    }
+    
+    fn with_name(name: String) -> Self {
+        self.name = name
+        self
+    }
+    
+    fn world(position: Vec3) -> Self {
+        Anchor.new(AnchorType.World, SpatialTransform.from_position(position))
+    }
+    
+    fn world_with_rotation(position: Vec3, rotation: Quat) -> Self {
+        Anchor.new(AnchorType.World, SpatialTransform.from_position_rotation(position, rotation))
+    }
+    
+    fn plane(plane_id: String, position: Vec3, rotation: Quat) -> Self {
+        var anchor = Anchor.new(AnchorType.Plane, SpatialTransform.from_position_rotation(position, rotation))
+        anchor.metadata.insert("plane_id", plane_id)
+        anchor
+    }
+    
+    fn image(image_name: String, transform: SpatialTransform) -> Self {
+        var anchor = Anchor.new(AnchorType.Image, transform)
+        anchor.metadata.insert("image_name", image_name)
+        anchor
+    }
+    
+    fn geo(latitude: Float64, longitude: Float64, altitude: Float64) -> Self {
+        var anchor = Anchor.new(AnchorType.Geo, SpatialTransform.new())
+        anchor.metadata.insert("latitude", latitude.to_string())
+        anchor.metadata.insert("longitude", longitude.to_string())
+        anchor.metadata.insert("altitude", altitude.to_string())
+        anchor
+    }
+    
+    fn position() -> Vec3 { self.transform.position }
+    fn rotation() -> Quat { self.transform.rotation }
+    fn scale() -> Vec3 { self.transform.scale }
+    
+    fn set_position(pos: Vec3) {
+        self.transform.position = pos
+        self.updated_at = @native("time_now")
+    }
+    
+    fn set_rotation(rot: Quat) {
+        self.transform.rotation = rot
+        self.updated_at = @native("time_now")
+    }
+    
+    fn set_transform(transform: SpatialTransform) {
+        self.transform = transform
+        self.updated_at = @native("time_now")
+    }
+    
+    fn is_tracking() -> Bool {
+        self.tracking_state.is_valid()
+    }
+    
+    fn distance_to(other: Anchor) -> Float {
+        self.transform.position.distance(other.transform.position)
+    }
+    
+    fn world_position() -> Vec3 {
+        // If has parent, compute world position
+        if self.parent_id.is_some() {
+            @native("anchor_world_position", self.id)
+        } else {
+            self.transform.position
+        }
+    }
+    
+    fn local_to_world(local_point: Vec3) -> Vec3 {
+        self.transform.transform_point(local_point)
+    }
+    
+    fn world_to_local(world_point: Vec3) -> Vec3 {
+        self.transform.inverse_transform_point(world_point)
+    }
+    
+    fn add_child(child_id: UUID) {
+        if !self.children_ids.contains(child_id) {
+            self.children_ids.push(child_id)
+        }
+    }
+    
+    fn remove_child(child_id: UUID) {
+        self.children_ids.retain(|id| *id != child_id)
+    }
+    
+    fn set_metadata(key: String, value: String) {
+        self.metadata.insert(key, value)
+    }
+    
+    fn get_metadata(key: String) -> Option<String> {
+        self.metadata.get(key).cloned()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Image Anchor
+// -----------------------------------------------------------------------------
+
+/// Reference image for image tracking
+struct ReferenceImage {
+    name: String
+    physical_width: Float    // meters
+    physical_height: Float   // meters
+    image_data: Option<[UInt8]>
+    resource_path: Option<String>
+    
+    fn new(name: String, width: Float, height: Float) -> Self {
+        ReferenceImage {
+            name: name,
+            physical_width: width,
+            physical_height: height,
+            image_data: None,
+            resource_path: None
+        }
+    }
+    
+    fn from_resource(name: String, path: String, width: Float) -> Self {
+        ReferenceImage {
+            name: name,
+            physical_width: width,
+            physical_height: 0.0,  // Auto-calculated from aspect ratio
+            image_data: None,
+            resource_path: Some(path)
+        }
+    }
+    
+    fn aspect_ratio() -> Float {
+        if self.physical_height > 0.0 {
+            self.physical_width / self.physical_height
+        } else {
+            1.0
+        }
+    }
+}
+
+/// Image anchor with tracking info
+struct ImageAnchor {
+    anchor: Anchor
+    reference_image: ReferenceImage
+    is_tracked: Bool
+    estimated_scale: Float
+    
+    fn new(reference: ReferenceImage, transform: SpatialTransform) -> Self {
+        ImageAnchor {
+            anchor: Anchor.image(reference.name.clone(), transform),
+            reference_image: reference,
+            is_tracked: false,
+            estimated_scale: 1.0
+        }
+    }
+    
+    fn image_name() -> String { self.reference_image.name.clone() }
+    fn physical_size() -> (Float, Float) {
+        (self.reference_image.physical_width, self.reference_image.physical_height)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Plane Anchor
+// -----------------------------------------------------------------------------
+
+/// Plane classification
+enum PlaneClassification {
+    Unknown
+    Wall
+    Floor
+    Ceiling
+    Table
+    Seat
+    Door
+    Window
+    
+    fn is_horizontal() -> Bool {
+        match self {
+            Floor | Ceiling | Table | Seat => true,
+            _ => false
+        }
+    }
+    
+    fn is_vertical() -> Bool {
+        match self {
+            Wall | Door | Window => true,
+            _ => false
+        }
+    }
+}
+
+/// Plane anchor with geometry
+struct PlaneAnchor {
+    anchor: Anchor
+    classification: PlaneClassification
+    extent: (Float, Float)  // width, height in meters
+    center: Vec3
+    boundary_vertices: [Vec3]
+    
+    fn new(transform: SpatialTransform, extent: (Float, Float)) -> Self {
+        PlaneAnchor {
+            anchor: Anchor.new(AnchorType.Plane, transform),
+            classification: PlaneClassification.Unknown,
+            extent: extent,
+            center: Vec3.zero(),
+            boundary_vertices: []
+        }
+    }
+    
+    fn area() -> Float { self.extent.0 * self.extent.1 }
+    
+    fn contains_point(point: Vec3) -> Bool {
+        let local = self.anchor.world_to_local(point)
+        abs(local.y) < 0.01 &&  // On plane
+        abs(local.x) <= self.extent.0 / 2.0 &&
+        abs(local.z) <= self.extent.1 / 2.0
+    }
+    
+    fn normal() -> Vec3 {
+        self.anchor.rotation().rotate(Vec3.up())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Geo Anchor
+// -----------------------------------------------------------------------------
+
+/// Geographic coordinate
+struct GeoCoordinate {
+    latitude: Float64
+    longitude: Float64
+    altitude: Float64
+    
+    fn new(lat: Float64, lon: Float64, alt: Float64) -> Self {
+        GeoCoordinate { latitude: lat, longitude: lon, altitude: alt }
+    }
+    
+    fn distance_to(other: GeoCoordinate) -> Float64 {
+        // Haversine formula
+        let r = 6371000.0  // Earth radius in meters
+        let lat1 = self.latitude.to_radians()
+        let lat2 = other.latitude.to_radians()
+        let dlat = (other.latitude - self.latitude).to_radians()
+        let dlon = (other.longitude - self.longitude).to_radians()
+        
+        let a = (dlat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2)
+        let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt())
+        r * c
+    }
+}
+
+/// Geo anchor for location-based AR
+struct GeoAnchor {
+    anchor: Anchor
+    coordinate: GeoCoordinate
+    altitude_source: AltitudeSource
+    horizontal_accuracy: Float
+    vertical_accuracy: Float
+    
+    fn new(coordinate: GeoCoordinate) -> Self {
+        GeoAnchor {
+            anchor: Anchor.geo(coordinate.latitude, coordinate.longitude, coordinate.altitude),
+            coordinate: coordinate,
+            altitude_source: AltitudeSource.Unknown,
+            horizontal_accuracy: 0.0,
+            vertical_accuracy: 0.0
+        }
+    }
+    
+    fn with_accuracy(horizontal: Float, vertical: Float) -> Self {
+        self.horizontal_accuracy = horizontal
+        self.vertical_accuracy = vertical
+        self
+    }
+    
+    fn is_accurate() -> Bool {
+        self.horizontal_accuracy < 10.0 && self.vertical_accuracy < 5.0
+    }
+}
+
+/// Altitude source
+enum AltitudeSource {
+    Unknown
+    Coarse
+    Precise
+    UserDefined
+}
+
+// -----------------------------------------------------------------------------
+// Cloud Anchor
+// -----------------------------------------------------------------------------
+
+/// Cloud anchor state
+enum CloudAnchorState {
+    None
+    Hosting
+    Hosted
+    Resolving
+    Resolved
+    ErrorHostingFailed
+    ErrorResolvingFailed
+    ErrorNotAuthorized
+    ErrorServiceUnavailable
+    
+    fn is_ready() -> Bool {
+        match self {
+            Hosted | Resolved => true,
+            _ => false
+        }
+    }
+    
+    fn is_error() -> Bool {
+        match self {
+            ErrorHostingFailed | ErrorResolvingFailed | 
+            ErrorNotAuthorized | ErrorServiceUnavailable => true,
+            _ => false
+        }
+    }
+}
+
+/// Cloud anchor for persistent, shareable anchors
+struct CloudAnchor {
+    anchor: Anchor
+    cloud_id: Option<String>
+    state: CloudAnchorState
+    expiration_days: Int
+    
+    fn new(local_anchor: Anchor) -> Self {
+        CloudAnchor {
+            anchor: local_anchor,
+            cloud_id: None,
+            state: CloudAnchorState.None,
+            expiration_days: 1
+        }
+    }
+    
+    fn with_expiration(days: Int) -> Self {
+        self.expiration_days = days.clamp(1, 365)
+        self
+    }
+    
+    fn host() -> Result<String, AnchorError> {
+        self.state = CloudAnchorState.Hosting
+        let result = @native("cloud_anchor_host", self.anchor, self.expiration_days)?
+        self.cloud_id = Some(result.clone())
+        self.state = CloudAnchorState.Hosted
+        Ok(result)
+    }
+    
+    fn resolve(cloud_id: String) -> Result<Anchor, AnchorError> {
+        self.state = CloudAnchorState.Resolving
+        let anchor = @native("cloud_anchor_resolve", cloud_id)?
+        self.cloud_id = Some(cloud_id)
+        self.state = CloudAnchorState.Resolved
+        self.anchor = anchor.clone()
+        Ok(anchor)
+    }
+    
+    fn is_hosted() -> Bool { self.state == CloudAnchorState.Hosted }
+    fn is_resolved() -> Bool { self.state == CloudAnchorState.Resolved }
+}
+
+// -----------------------------------------------------------------------------
+// Anchor Manager
+// -----------------------------------------------------------------------------
+
+/// Anchor event types
+enum AnchorEvent {
+    Added(UUID)
+    Updated(UUID)
+    Removed(UUID)
+    TrackingChanged(UUID, AnchorTrackingState)
+    CloudStateChanged(UUID, CloudAnchorState)
+}
+
+/// Anchor manager trait
+trait AnchorManagerDelegate {
+    fn on_anchor_event(event: AnchorEvent)
+}
+
+/// Anchor manager actor
+actor AnchorManager {
+    state anchors: Map<UUID, Anchor>
+    state image_anchors: Map<UUID, ImageAnchor>
+    state plane_anchors: Map<UUID, PlaneAnchor>
+    state geo_anchors: Map<UUID, GeoAnchor>
+    state cloud_anchors: Map<UUID, CloudAnchor>
+    state delegates: [AnchorManagerDelegate]
+    state reference_images: [ReferenceImage]
+    
+    fn new() -> Self {
+        AnchorManager {
+            anchors: Map.new(),
+            image_anchors: Map.new(),
+            plane_anchors: Map.new(),
+            geo_anchors: Map.new(),
+            cloud_anchors: Map.new(),
+            delegates: [],
+            reference_images: []
+        }
+    }
+    
+    fn add_anchor(anchor: Anchor) -> UUID {
+        let id = anchor.id
+        self.anchors.insert(id, anchor)
+        self.emit_event(AnchorEvent.Added(id))
+        id
+    }
+    
+    fn add_world_anchor(position: Vec3) -> UUID {
+        self.add_anchor(Anchor.world(position))
+    }
+    
+    fn add_world_anchor_with_rotation(position: Vec3, rotation: Quat) -> UUID {
+        self.add_anchor(Anchor.world_with_rotation(position, rotation))
+    }
+    
+    fn get_anchor(id: UUID) -> Option<Anchor> {
+        self.anchors.get(id).cloned()
+    }
+    
+    fn update_anchor(id: UUID, transform: SpatialTransform) -> Bool {
+        if let Some(anchor) = self.anchors.get_mut(id) {
+            anchor.set_transform(transform)
+            self.emit_event(AnchorEvent.Updated(id))
+            true
+        } else {
+            false
+        }
+    }
+    
+    fn remove_anchor(id: UUID) -> Bool {
+        if self.anchors.remove(id).is_some() {
+            self.image_anchors.remove(id)
+            self.plane_anchors.remove(id)
+            self.geo_anchors.remove(id)
+            self.cloud_anchors.remove(id)
+            self.emit_event(AnchorEvent.Removed(id))
+            true
+        } else {
+            false
+        }
+    }
+    
+    fn clear_all() {
+        let ids: Vec<UUID> = self.anchors.keys().cloned().collect()
+        for id in ids {
+            self.remove_anchor(id)
+        }
+    }
+    
+    fn get_all_anchors() -> [Anchor] {
+        self.anchors.values().cloned().collect()
+    }
+    
+    fn get_anchors_by_type(anchor_type: AnchorType) -> [Anchor] {
+        self.anchors.values()
+            .filter(|a| a.anchor_type == anchor_type)
+            .cloned()
+            .collect()
+    }
+    
+    fn get_tracking_anchors() -> [Anchor] {
+        self.anchors.values()
+            .filter(|a| a.is_tracking())
+            .cloned()
+            .collect()
+    }
+    
+    fn find_nearest_anchor(position: Vec3) -> Option<Anchor> {
+        self.anchors.values()
+            .min_by(|a, b| {
+                a.position().distance(position).partial_cmp(&b.position().distance(position)).unwrap()
+            })
+            .cloned()
+    }
+    
+    fn find_anchors_in_radius(position: Vec3, radius: Float) -> [Anchor] {
+        self.anchors.values()
+            .filter(|a| a.position().distance(position) <= radius)
+            .cloned()
+            .collect()
+    }
+    
+    // Image tracking
+    fn add_reference_image(image: ReferenceImage) {
+        self.reference_images.push(image)
+    }
+    
+    fn add_image_anchor(image_anchor: ImageAnchor) -> UUID {
+        let id = image_anchor.anchor.id
+        self.anchors.insert(id, image_anchor.anchor.clone())
+        self.image_anchors.insert(id, image_anchor)
+        self.emit_event(AnchorEvent.Added(id))
+        id
+    }
+    
+    fn get_image_anchor(id: UUID) -> Option<ImageAnchor> {
+        self.image_anchors.get(id).cloned()
+    }
+    
+    // Plane anchors
+    fn add_plane_anchor(plane_anchor: PlaneAnchor) -> UUID {
+        let id = plane_anchor.anchor.id
+        self.anchors.insert(id, plane_anchor.anchor.clone())
+        self.plane_anchors.insert(id, plane_anchor)
+        self.emit_event(AnchorEvent.Added(id))
+        id
+    }
+    
+    fn get_plane_anchor(id: UUID) -> Option<PlaneAnchor> {
+        self.plane_anchors.get(id).cloned()
+    }
+    
+    fn get_horizontal_planes() -> [PlaneAnchor] {
+        self.plane_anchors.values()
+            .filter(|p| p.classification.is_horizontal())
+            .cloned()
+            .collect()
+    }
+    
+    fn get_vertical_planes() -> [PlaneAnchor] {
+        self.plane_anchors.values()
+            .filter(|p| p.classification.is_vertical())
+            .cloned()
+            .collect()
+    }
+    
+    // Geo anchors
+    fn add_geo_anchor(geo_anchor: GeoAnchor) -> UUID {
+        let id = geo_anchor.anchor.id
+        self.anchors.insert(id, geo_anchor.anchor.clone())
+        self.geo_anchors.insert(id, geo_anchor)
+        self.emit_event(AnchorEvent.Added(id))
+        id
+    }
+    
+    fn get_geo_anchor(id: UUID) -> Option<GeoAnchor> {
+        self.geo_anchors.get(id).cloned()
+    }
+    
+    // Cloud anchors
+    fn host_anchor(id: UUID, expiration_days: Int) -> Result<String, AnchorError> {
+        let anchor = self.anchors.get(id).ok_or(AnchorError.NotFound)?
+        var cloud_anchor = CloudAnchor.new(anchor.clone()).with_expiration(expiration_days)
+        let cloud_id = cloud_anchor.host()?
+        self.cloud_anchors.insert(id, cloud_anchor)
+        self.emit_event(AnchorEvent.CloudStateChanged(id, CloudAnchorState.Hosted))
+        Ok(cloud_id)
+    }
+    
+    fn resolve_cloud_anchor(cloud_id: String) -> Result<UUID, AnchorError> {
+        var cloud_anchor = CloudAnchor.new(Anchor.new(AnchorType.Cloud, SpatialTransform.new()))
+        let anchor = cloud_anchor.resolve(cloud_id)?
+        let id = anchor.id
+        self.anchors.insert(id, anchor)
+        self.cloud_anchors.insert(id, cloud_anchor)
+        self.emit_event(AnchorEvent.Added(id))
+        self.emit_event(AnchorEvent.CloudStateChanged(id, CloudAnchorState.Resolved))
+        Ok(id)
+    }
+    
+    // Delegates
+    fn add_delegate(delegate: AnchorManagerDelegate) {
+        self.delegates.push(delegate)
+    }
+    
+    fn emit_event(event: AnchorEvent) {
+        for delegate in self.delegates {
+            delegate.on_anchor_event(event.clone())
+        }
+    }
+    
+    // Persistence
+    fn save_anchors() -> Result<[UInt8], AnchorError> {
+        @native("anchor_manager_save", self.anchors)
+    }
+    
+    fn load_anchors(data: [UInt8]) -> Result<Int, AnchorError> {
+        let loaded: Map<UUID, Anchor> = @native("anchor_manager_load", data)?
+        let count = loaded.len()
+        for (id, anchor) in loaded {
+            self.anchors.insert(id, anchor)
+            self.emit_event(AnchorEvent.Added(id))
+        }
+        Ok(count)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum AnchorError {
+    NotFound
+    InvalidTransform
+    TrackingFailed
+    CloudHostingFailed(String)
+    CloudResolvingFailed(String)
+    PersistenceFailed(String)
+    NotSupported
+    
+    fn message() -> String {
+        match self {
+            NotFound => "Anchor not found",
+            InvalidTransform => "Invalid transform",
+            TrackingFailed => "Tracking failed",
+            CloudHostingFailed(msg) => format!("Cloud hosting failed: {}", msg),
+            CloudResolvingFailed(msg) => format!("Cloud resolving failed: {}", msg),
+            PersistenceFailed(msg) => format!("Persistence failed: {}", msg),
+            NotSupported => "Operation not supported"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+fn create_world_anchor(position: Vec3) -> Anchor {
+    Anchor.world(position)
+}
+
+fn create_plane_anchor(position: Vec3, rotation: Quat, extent: (Float, Float)) -> PlaneAnchor {
+    PlaneAnchor.new(SpatialTransform.from_position_rotation(position, rotation), extent)
+}
+
+fn create_geo_anchor(lat: Float64, lon: Float64, alt: Float64) -> GeoAnchor {
+    GeoAnchor.new(GeoCoordinate.new(lat, lon, alt))
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "anchor_creation" {
+    let anchor = Anchor.world(Vec3.new(1.0, 0.0, 2.0))
+    assert_eq(anchor.anchor_type, AnchorType.World)?
+    assert_eq(anchor.position(), Vec3.new(1.0, 0.0, 2.0))?
+}
+
+test "anchor_transform" {
+    let mut anchor = Anchor.world(Vec3.zero())
+    anchor.set_position(Vec3.new(5.0, 0.0, 0.0))
+    assert_eq(anchor.position(), Vec3.new(5.0, 0.0, 0.0))?
+}
+
+test "plane_anchor_area" {
+    let plane = PlaneAnchor.new(SpatialTransform.new(), (2.0, 3.0))
+    assert_eq(plane.area(), 6.0)?
+}
+
+test "geo_coordinate_distance" {
+    let nyc = GeoCoordinate.new(40.7128, -74.0060, 0.0)
+    let la = GeoCoordinate.new(34.0522, -118.2437, 0.0)
+    let distance = nyc.distance_to(la)
+    assert(distance > 3900000.0 && distance < 4000000.0)?  // ~3940 km
+}
+
+test "anchor_tracking_state" {
+    assert(AnchorTrackingState.Tracking.is_valid())?
+    assert(!AnchorTrackingState.NotTracking.is_valid())?
+    assert_eq(AnchorTrackingState.Tracking.confidence(), 1.0)?
+}
+
+test "cloud_anchor_state" {
+    assert(CloudAnchorState.Hosted.is_ready())?
+    assert(!CloudAnchorState.Hosting.is_ready())?
+    assert(CloudAnchorState.ErrorHostingFailed.is_error())?
+}
+
+test "anchor_type_properties" {
+    assert(AnchorType.Image.is_trackable())?
+    assert(!AnchorType.World.is_trackable())?
+    assert(AnchorType.Cloud.is_persistent())?
+}
