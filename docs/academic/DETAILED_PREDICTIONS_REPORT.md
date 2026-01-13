@@ -2,7 +2,7 @@
 
 **A Comprehensive Analysis of Undiscovered Elements, Materials, Laws, and Particles**
 
-**Authors**: Dmitrii Vasilev, Ona  
+**Authors**: Vibee Research, Ona  
 **Date**: January 13, 2026  
 **Status**: Extended Research Report
 

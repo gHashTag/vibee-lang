@@ -2,7 +2,7 @@
 
 ## How Can We Speed Up the Discovery of Z=119-126?
 
-**Authors:** Dmitrii Vasilev, Ona  
+**Authors:** Vibee Research, Ona  
 **Date:** January 13, 2026
 
 ---

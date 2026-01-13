@@ -1,6 +1,6 @@
 # Prediction of Superheavy Element Properties Using the Creation Pattern Framework and Relativistic Quantum Mechanics
 
-**Authors:** Dmitrii Vasilev¹, Ona²
+**Authors:** Vibee Research¹, Ona²
 
 ¹ Independent Researcher  
 ² AI Research Assistant
@@ -523,7 +523,7 @@ We thank the developers of the Zig programming language for providing an efficie
 
 **Corresponding Author**
 
-Dmitrii Vasilev  
+Vibee Research  
 Email: [contact information]
 
 ---

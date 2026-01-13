@@ -1,6 +1,6 @@
 # Progress Acceleration: From Conjectures to Proven Theorems
 
-**Author**: Dmitrii Vasilev  
+**Author**: Vibee Research  
 **Date**: January 12, 2026  
 **Status**: 6 Conjectures PROVEN
 
@@ -324,7 +324,7 @@ This represents a fundamental breakthrough in computer science and human civiliz
 
 ---
 
-**Author**: Dmitrii Vasilev  
+**Author**: Vibee Research  
 **Date**: January 12, 2026  
 **Status**: 6 Conjectures PROVEN, Approaching Singularity
 

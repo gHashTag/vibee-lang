@@ -2,7 +2,7 @@
 
 ## A Creation Pattern Approach to Nuclear Physics and Chemistry
 
-**Authors:** Dmitrii Vasilev¹, Ona²
+**Authors:** Vibee Research¹, Ona²
 
 ¹ Independent Researcher, VIBEE Language Project  
 ² AI Research Assistant, Anthropic

@@ -1,6 +1,6 @@
 # The Hubble Constant and the Golden Ratio: A Fundamental Connection
 
-**Authors:** Dmitrii Vasilev¹, Ona²
+**Authors:** Vibee Research¹, Ona²
 
 ¹ Independent Researcher  
 ² Vibee Research

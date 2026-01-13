@@ -1,6 +1,6 @@
 # Empirical Theorems: Generated from Real Development Experience
 
-**Author**: Dmitrii Vasilev  
+**Author**: Vibee Research  
 **Date**: January 12, 2026  
 **Source**: VIBEE development (1 week, $1,000, 4 specs, 800 lines code)  
 **Method**: Pattern extraction from empirical data
@@ -446,7 +446,7 @@ We have derived **10 new theorems** (45-54) from real development experience:
 
 ---
 
-**Author**: Dmitrii Vasilev  
+**Author**: Vibee Research  
 **Date**: January 12, 2026  
 **Status**: Empirically Validated
 

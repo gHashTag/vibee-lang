@@ -3,7 +3,7 @@
 Creation Pattern Mathematical Experiments
 Testing unsolved problems through Source → Transformer → Result framework
 
-Author: Dmitrii Vasilev, Ona
+Author: Vibee Research, Ona
 Date: January 13, 2026
 """
 

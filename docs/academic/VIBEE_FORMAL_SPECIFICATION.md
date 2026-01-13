@@ -2,7 +2,7 @@
 
 **Version**: 1.0.0  
 **Date**: January 12, 2026  
-**Authors**: Dmitrii Vasilev  
+**Authors**: Vibee Research  
 **Status**: Draft Standard
 
 ## Abstract
