@@ -1,0 +1,500 @@
+# ============================================================================
+# GRPC - gRPC Server/Client на Vibee
+# ============================================================================
+# Protobuf, streaming, interceptors, load balancing
+# ============================================================================
+
+Specification GRPC:
+  """gRPC как спецификация RPC коммуникации."""
+
+  # ==========================================================================
+  # PROTOBUF TYPES
+  # ==========================================================================
+
+  Type ProtoFile:
+    syntax: String = "proto3"
+    package: String
+    imports: List<String>
+    options: Map<String, Any>
+    messages: List<Message>
+    enums: List<Enum>
+    services: List<Service>
+
+  Type Message:
+    name: String
+    fields: List<Field>
+    nested_messages: List<Message>
+    nested_enums: List<Enum>
+    oneofs: List<Oneof>
+    options: Map<String, Any>
+
+  Type Field:
+    name: String
+    number: Int
+    type: FieldType
+    label: FieldLabel = Optional
+    options: Map<String, Any>
+
+  Type FieldType:
+    variants:
+      - Double | Float | Int32 | Int64 | UInt32 | UInt64
+      - SInt32 | SInt64 | Fixed32 | Fixed64 | SFixed32 | SFixed64
+      - Bool | String | Bytes
+      - Message: String
+      - Enum: String
+      - Map: (key: FieldType, value: FieldType)
+
+  Type FieldLabel:
+    variants: [Optional, Required, Repeated]
+
+  Type Oneof:
+    name: String
+    fields: List<Field>
+
+  Type Enum:
+    name: String
+    values: List<EnumValue>
+
+  Type EnumValue:
+    name: String
+    number: Int
+
+  Type Service:
+    name: String
+    methods: List<Method>
+    options: Map<String, Any>
+
+  Type Method:
+    name: String
+    input_type: String
+    output_type: String
+    client_streaming: Boolean = false
+    server_streaming: Boolean = false
+    options: Map<String, Any>
+
+  # ==========================================================================
+  # GRPC TYPES
+  # ==========================================================================
+
+  Type ServerConfig:
+    address: String = "0.0.0.0:50051"
+    max_receive_message_size: ByteSize = 4.MB
+    max_send_message_size: ByteSize = 4.MB
+    max_concurrent_streams: Int = 100
+    keepalive: KeepaliveConfig?
+    tls: TLSConfig?
+    interceptors: List<ServerInterceptor>
+
+  Type KeepaliveConfig:
+    time: Duration = 2.hours
+    timeout: Duration = 20.seconds
+    permit_without_stream: Boolean = false
+
+  Type TLSConfig:
+    cert_file: Path
+    key_file: Path
+    ca_file: Path?
+    client_auth: ClientAuth = NoClientCert
+
+  Type ClientAuth:
+    variants: [NoClientCert, RequestClientCert, RequireAnyClientCert, VerifyClientCertIfGiven, RequireAndVerifyClientCert]
+
+  Type ClientConfig:
+    target: String
+    timeout: Duration = 30.seconds
+    max_retry_attempts: Int = 3
+    load_balancing: LoadBalancingPolicy = RoundRobin
+    tls: TLSConfig?
+    interceptors: List<ClientInterceptor>
+
+  Type LoadBalancingPolicy:
+    variants: [RoundRobin, PickFirst, WeightedRoundRobin, Grpclb]
+
+  Type Status:
+    code: StatusCode
+    message: String
+    details: List<Any>
+
+  Type StatusCode:
+    OK: 0
+    CANCELLED: 1
+    UNKNOWN: 2
+    INVALID_ARGUMENT: 3
+    DEADLINE_EXCEEDED: 4
+    NOT_FOUND: 5
+    ALREADY_EXISTS: 6
+    PERMISSION_DENIED: 7
+    RESOURCE_EXHAUSTED: 8
+    FAILED_PRECONDITION: 9
+    ABORTED: 10
+    OUT_OF_RANGE: 11
+    UNIMPLEMENTED: 12
+    INTERNAL: 13
+    UNAVAILABLE: 14
+    DATA_LOSS: 15
+    UNAUTHENTICATED: 16
+
+  Type Metadata:
+    entries: Map<String, List<String>>
+
+  Type CallOptions:
+    timeout: Duration?
+    metadata: Metadata?
+    compression: Compression?
+    wait_for_ready: Boolean = false
+
+  Type Compression:
+    variants: [None, Gzip, Deflate, Snappy]
+
+  # ==========================================================================
+  # SERVER
+  # ==========================================================================
+
+  Behavior Server:
+    State:
+      config: ServerConfig
+      services: Map<String, ServiceImpl>
+      running: Boolean
+
+    When server.register(service):
+      Then: services[service.name] = service
+
+    When server.start():
+      Then:
+        - listener = await bind(config.address)
+        - if config.tls:
+            - listener = wrap_tls(listener, config.tls)
+        - running = true
+        - emit ServerStarted(config.address)
+        - loop while running:
+            - conn = await listener.accept()
+            - spawn handle_connection(conn)
+
+    When handle_connection(conn):
+      Then:
+        - http2_conn = HTTP2Connection(conn)
+        - loop:
+            - stream = await http2_conn.accept_stream()
+            - spawn handle_stream(stream)
+
+    When handle_stream(stream):
+      Then:
+        - headers = await stream.recv_headers()
+        - path = headers[":path"]  # /package.Service/Method
+        - (service_name, method_name) = parse_path(path)
+        
+        - service = services[service_name]
+        - method = service.methods[method_name]
+        
+        - ctx = create_context(headers)
+        - ctx = apply_interceptors(config.interceptors, ctx)
+        
+        - match (method.client_streaming, method.server_streaming):
+            (false, false) -> handle_unary(stream, method, ctx)
+            (true, false) -> handle_client_stream(stream, method, ctx)
+            (false, true) -> handle_server_stream(stream, method, ctx)
+            (true, true) -> handle_bidi_stream(stream, method, ctx)
+
+    When handle_unary(stream, method, ctx):
+      Then:
+        - request = await recv_message(stream, method.input_type)
+        - try:
+            - response = await method.handler(ctx, request)
+            - await send_message(stream, response)
+            - await send_status(stream, Status(OK))
+          catch error:
+            - await send_status(stream, error_to_status(error))
+
+    When handle_server_stream(stream, method, ctx):
+      Then:
+        - request = await recv_message(stream, method.input_type)
+        - try:
+            - async for response in method.handler(ctx, request):
+                - await send_message(stream, response)
+            - await send_status(stream, Status(OK))
+          catch error:
+            - await send_status(stream, error_to_status(error))
+
+    When handle_client_stream(stream, method, ctx):
+      Then:
+        - request_stream = create_stream(() -> recv_message(stream, method.input_type))
+        - try:
+            - response = await method.handler(ctx, request_stream)
+            - await send_message(stream, response)
+            - await send_status(stream, Status(OK))
+          catch error:
+            - await send_status(stream, error_to_status(error))
+
+    When handle_bidi_stream(stream, method, ctx):
+      Then:
+        - request_stream = create_stream(() -> recv_message(stream, method.input_type))
+        - response_stream = method.handler(ctx, request_stream)
+        - try:
+            - async for response in response_stream:
+                - await send_message(stream, response)
+            - await send_status(stream, Status(OK))
+          catch error:
+            - await send_status(stream, error_to_status(error))
+
+  # ==========================================================================
+  # CLIENT
+  # ==========================================================================
+
+  Behavior Client:
+    State:
+      config: ClientConfig
+      channel: Channel
+      interceptors: List<ClientInterceptor>
+
+    When client.connect():
+      Then:
+        - resolver = create_resolver(config.target)
+        - addresses = await resolver.resolve()
+        - channel = Channel(addresses, config.load_balancing)
+        - if config.tls:
+            - channel = wrap_tls(channel, config.tls)
+
+    When client.unary(method, request, options):
+      Then:
+        - ctx = create_context(options)
+        - ctx = apply_interceptors(interceptors, ctx, method)
+        - conn = await channel.pick()
+        - stream = await conn.new_stream(method.full_name)
+        - await send_message(stream, request)
+        - await stream.close_send()
+        - response = await recv_message(stream, method.output_type)
+        - status = await recv_status(stream)
+        - if status.code != OK:
+            - raise GRPCError(status)
+        - return response
+
+    When client.server_stream(method, request, options):
+      Then:
+        - ctx = create_context(options)
+        - conn = await channel.pick()
+        - stream = await conn.new_stream(method.full_name)
+        - await send_message(stream, request)
+        - await stream.close_send()
+        - return AsyncIterator(() ->
+            - msg = await recv_message(stream, method.output_type)
+            - if msg == null:
+                - status = await recv_status(stream)
+                - if status.code != OK: raise GRPCError(status)
+                - return Done
+            - return msg
+          )
+
+    When client.client_stream(method, options):
+      Then:
+        - ctx = create_context(options)
+        - conn = await channel.pick()
+        - stream = await conn.new_stream(method.full_name)
+        - return ClientStreamCall(
+            send: (msg) -> send_message(stream, msg),
+            close_and_recv: () ->
+              await stream.close_send()
+              response = await recv_message(stream, method.output_type)
+              status = await recv_status(stream)
+              if status.code != OK: raise GRPCError(status)
+              response
+          )
+
+    When client.bidi_stream(method, options):
+      Then:
+        - ctx = create_context(options)
+        - conn = await channel.pick()
+        - stream = await conn.new_stream(method.full_name)
+        - return BidiStreamCall(
+            send: (msg) -> send_message(stream, msg),
+            recv: () -> recv_message(stream, method.output_type),
+            close_send: () -> stream.close_send()
+          )
+
+  # ==========================================================================
+  # INTERCEPTORS
+  # ==========================================================================
+
+  Type ServerInterceptor:
+    intercept: (ctx: Context, request: Any, info: MethodInfo, handler: Handler) -> Async<Any>
+
+  Type ClientInterceptor:
+    intercept: (ctx: Context, method: String, request: Any, options: CallOptions, invoker: Invoker) -> Async<Any>
+
+  Behavior CommonInterceptors:
+    When logging_interceptor(ctx, request, info, handler):
+      Then:
+        - start = now()
+        - log.info("gRPC call started", method: info.full_name)
+        - try:
+            - response = await handler(ctx, request)
+            - log.info("gRPC call completed", method: info.full_name, duration: now() - start)
+            - return response
+          catch error:
+            - log.error("gRPC call failed", method: info.full_name, error: error)
+            - raise error
+
+    When auth_interceptor(ctx, request, info, handler):
+      Then:
+        - token = ctx.metadata.get("authorization")
+        - if not token:
+            - raise GRPCError(Status(UNAUTHENTICATED, "Missing token"))
+        - user = await validate_token(token)
+        - ctx.user = user
+        - return await handler(ctx, request)
+
+    When recovery_interceptor(ctx, request, info, handler):
+      Then:
+        - try:
+            - return await handler(ctx, request)
+          catch error:
+            - log.error("Panic recovered", error: error)
+            - raise GRPCError(Status(INTERNAL, "Internal error"))
+
+    When timeout_interceptor(ctx, request, info, handler):
+      Then:
+        - timeout = ctx.deadline ?? 30.seconds
+        - result = await race(
+            handler(ctx, request),
+            sleep(timeout).then(() -> TimeoutError)
+          )
+        - if result is TimeoutError:
+            - raise GRPCError(Status(DEADLINE_EXCEEDED))
+        - return result
+
+    When retry_interceptor(ctx, method, request, options, invoker):
+      Then:
+        - attempts = 0
+        - max_attempts = options.max_retries ?? 3
+        - loop:
+            - try:
+                - return await invoker(ctx, method, request, options)
+              catch error:
+                - if not is_retryable(error.status.code):
+                    - raise error
+                - attempts += 1
+                - if attempts >= max_attempts:
+                    - raise error
+                - await sleep(backoff(attempts))
+
+    When is_retryable(code):
+      Then: code in [UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED]
+
+  # ==========================================================================
+  # PROTOBUF SERIALIZATION
+  # ==========================================================================
+
+  Behavior Protobuf:
+    When encode(message, schema):
+      Then:
+        - buffer = Buffer()
+        - for field in schema.fields:
+            - value = message[field.name]
+            - if value != null:
+                - write_tag(buffer, field.number, wire_type(field.type))
+                - write_value(buffer, value, field.type)
+        - return buffer.bytes()
+
+    When decode(bytes, schema):
+      Then:
+        - message = {}
+        - buffer = Buffer(bytes)
+        - while buffer.has_remaining():
+            - (field_number, wire_type) = read_tag(buffer)
+            - field = schema.fields.find(f -> f.number == field_number)
+            - if field:
+                - value = read_value(buffer, field.type, wire_type)
+                - if field.label == Repeated:
+                    - message[field.name] = (message[field.name] ?? []) + [value]
+                - else:
+                    - message[field.name] = value
+            - else:
+                - skip_field(buffer, wire_type)
+        - return message
+
+    When wire_type(field_type):
+      Then:
+        - match field_type:
+            Int32 | Int64 | UInt32 | UInt64 | SInt32 | SInt64 | Bool | Enum(_) -> 0  # Varint
+            Fixed64 | SFixed64 | Double -> 1  # 64-bit
+            String | Bytes | Message(_) -> 2  # Length-delimited
+            Fixed32 | SFixed32 | Float -> 5  # 32-bit
+
+  # ==========================================================================
+  # SERVICE DSL
+  # ==========================================================================
+
+  Behavior ServiceDSL:
+    When GRPC.service(name, define):
+      Then:
+        - builder = ServiceBuilder(name)
+        - define(builder)
+        - return builder.build()
+
+    When builder.unary(name, input, output, handler):
+      Then:
+        - add Method(name, input, output, false, false, handler) to methods
+
+    When builder.server_stream(name, input, output, handler):
+      Then:
+        - add Method(name, input, output, false, true, handler) to methods
+
+    When builder.client_stream(name, input, output, handler):
+      Then:
+        - add Method(name, input, output, true, false, handler) to methods
+
+    When builder.bidi_stream(name, input, output, handler):
+      Then:
+        - add Method(name, input, output, true, true, handler) to methods
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "gRPC Service":
+    ```vibee
+    # Define service
+    UserService = GRPC.service("UserService", (s) ->
+      s.unary("GetUser", "GetUserRequest", "User", async (ctx, req) ->
+        user = await UserRepository.find(req.id)
+        if not user: raise GRPCError(Status(NOT_FOUND, "User not found"))
+        user
+      )
+      
+      s.server_stream("ListUsers", "ListUsersRequest", "User", async (ctx, req) ->
+        users = UserRepository.stream_all()
+        async for user in users:
+          yield user
+      )
+      
+      s.client_stream("CreateUsers", "User", "CreateUsersResponse", async (ctx, stream) ->
+        count = 0
+        async for user in stream:
+          await UserRepository.create(user)
+          count += 1
+        { created_count: count }
+      )
+      
+      s.bidi_stream("Chat", "ChatMessage", "ChatMessage", async (ctx, stream) ->
+        async for message in stream:
+          response = await process_message(message)
+          yield response
+      )
+    )
+
+    # Server
+    server = GRPC.Server(ServerConfig(
+      address: "0.0.0.0:50051",
+      interceptors: [logging_interceptor, auth_interceptor, recovery_interceptor]
+    ))
+    server.register(UserService)
+    await server.start()
+
+    # Client
+    client = GRPC.Client(ClientConfig(
+      target: "localhost:50051",
+      interceptors: [retry_interceptor]
+    ))
+    await client.connect()
+    
+    user = await client.unary(UserService.GetUser, { id: "123" })
+    ```

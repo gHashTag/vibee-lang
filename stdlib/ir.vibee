@@ -1,0 +1,554 @@
+// =============================================================================
+// Vibee OS — IR Module
+// Intermediate Representation for Vibee Language
+// =============================================================================
+
+use ast::{Span, Identifier}
+
+// =============================================================================
+// IR Types
+// =============================================================================
+
+/// IR Type representation
+enum IrType {
+    Void
+    Bool
+    I8, I16, I32, I64
+    U8, U16, U32, U64
+    F32, F64
+    Ptr(Box<IrType>)
+    Array(Box<IrType>, Int)
+    Struct(StructType)
+    Function(FnType)
+    Named(String)
+}
+
+impl IrType {
+    fn size() -> Int {
+        match self {
+            Void => 0
+            Bool | I8 | U8 => 1
+            I16 | U16 => 2
+            I32 | U32 | F32 => 4
+            I64 | U64 | F64 | Ptr(_) => 8
+            Array(ty, n) => ty.size() * n
+            Struct(s) => s.fields.iter().map(|f| f.ty.size()).sum()
+            Function(_) => 8
+            Named(_) => 8
+        }
+    }
+    
+    fn align() -> Int {
+        match self {
+            Void => 1
+            Bool | I8 | U8 => 1
+            I16 | U16 => 2
+            I32 | U32 | F32 => 4
+            I64 | U64 | F64 | Ptr(_) | Function(_) => 8
+            Array(ty, _) => ty.align()
+            Struct(s) => s.fields.iter().map(|f| f.ty.align()).max().unwrap_or(1)
+            Named(_) => 8
+        }
+    }
+    
+    fn is_integer() -> Bool { match self { I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64 => true, _ => false } }
+    fn is_float() -> Bool { match self { F32 | F64 => true, _ => false } }
+    fn is_signed() -> Bool { match self { I8 | I16 | I32 | I64 => true, _ => false } }
+}
+
+struct StructType { name: String, fields: [IrField] }
+struct IrField { name: String, ty: IrType, offset: Int }
+struct FnType { params: [IrType], ret: Box<IrType>, is_vararg: Bool }
+
+// =============================================================================
+// IR Module
+// =============================================================================
+
+/// IR Module (compilation unit)
+struct IrModule {
+    name: String
+    functions: [IrFunction]
+    globals: [IrGlobal]
+    types: [StructType]
+    constants: [IrConstant]
+}
+
+impl IrModule {
+    fn new(name: String) -> Self { IrModule { name: name, functions: [], globals: [], types: [], constants: [] } }
+    fn add_function(func: IrFunction) { self.functions.push(func) }
+    fn add_global(global: IrGlobal) { self.globals.push(global) }
+    fn add_type(ty: StructType) { self.types.push(ty) }
+    fn get_function(name: String) -> Option<IrFunction> { self.functions.iter().find(|f| f.name == name) }
+}
+
+/// Global variable
+struct IrGlobal {
+    name: String
+    ty: IrType
+    init: Option<IrValue>
+    is_const: Bool
+    linkage: Linkage
+}
+
+/// Constant value
+struct IrConstant {
+    name: String
+    ty: IrType
+    value: IrValue
+}
+
+enum Linkage { Internal, External, Private, Weak }
+
+// =============================================================================
+// IR Function
+// =============================================================================
+
+/// IR Function
+struct IrFunction {
+    name: String
+    params: [IrParam]
+    ret_type: IrType
+    blocks: [BasicBlock]
+    locals: [IrLocal]
+    linkage: Linkage
+    is_extern: Bool
+}
+
+impl IrFunction {
+    fn new(name: String, params: [IrParam], ret: IrType) -> Self {
+        IrFunction { name: name, params: params, ret_type: ret, blocks: [], locals: [], linkage: Linkage.Internal, is_extern: false }
+    }
+    
+    fn add_block(name: String) -> BlockId {
+        let id = self.blocks.len()
+        self.blocks.push(BasicBlock { id: id, name: name, instructions: [], terminator: None })
+        BlockId(id)
+    }
+    
+    fn add_local(name: String, ty: IrType) -> LocalId {
+        let id = self.locals.len()
+        self.locals.push(IrLocal { id: id, name: name, ty: ty })
+        LocalId(id)
+    }
+    
+    fn entry_block() -> Option<BasicBlock> { self.blocks.first() }
+    fn get_block(id: BlockId) -> Option<BasicBlock> { self.blocks.get(id.0) }
+}
+
+struct IrParam { name: String, ty: IrType }
+struct IrLocal { id: Int, name: String, ty: IrType }
+
+struct BlockId(Int)
+struct LocalId(Int)
+struct ValueId(Int)
+
+// =============================================================================
+// Basic Block
+// =============================================================================
+
+/// Basic block (sequence of instructions with single entry/exit)
+struct BasicBlock {
+    id: Int
+    name: String
+    instructions: [Instruction]
+    terminator: Option<Terminator>
+}
+
+impl BasicBlock {
+    fn add_instruction(inst: Instruction) -> ValueId {
+        let id = self.instructions.len()
+        self.instructions.push(inst)
+        ValueId(id)
+    }
+    
+    fn set_terminator(term: Terminator) { self.terminator = Some(term) }
+    fn is_terminated() -> Bool { self.terminator.is_some() }
+}
+
+// =============================================================================
+// Instructions
+// =============================================================================
+
+/// IR Instruction
+enum Instruction {
+    // Arithmetic
+    Add(ValueId, ValueId, IrType)
+    Sub(ValueId, ValueId, IrType)
+    Mul(ValueId, ValueId, IrType)
+    Div(ValueId, ValueId, IrType)
+    Rem(ValueId, ValueId, IrType)
+    Neg(ValueId, IrType)
+    
+    // Bitwise
+    And(ValueId, ValueId)
+    Or(ValueId, ValueId)
+    Xor(ValueId, ValueId)
+    Not(ValueId)
+    Shl(ValueId, ValueId)
+    Shr(ValueId, ValueId)
+    
+    // Comparison
+    Eq(ValueId, ValueId)
+    Ne(ValueId, ValueId)
+    Lt(ValueId, ValueId, Bool)  // Bool = is_signed
+    Le(ValueId, ValueId, Bool)
+    Gt(ValueId, ValueId, Bool)
+    Ge(ValueId, ValueId, Bool)
+    
+    // Memory
+    Alloca(IrType)
+    Load(ValueId, IrType)
+    Store(ValueId, ValueId)
+    GetElementPtr(ValueId, [ValueId], IrType)
+    
+    // Conversions
+    Trunc(ValueId, IrType)
+    ZExt(ValueId, IrType)
+    SExt(ValueId, IrType)
+    FpTrunc(ValueId, IrType)
+    FpExt(ValueId, IrType)
+    FpToSi(ValueId, IrType)
+    FpToUi(ValueId, IrType)
+    SiToFp(ValueId, IrType)
+    UiToFp(ValueId, IrType)
+    PtrToInt(ValueId, IrType)
+    IntToPtr(ValueId, IrType)
+    Bitcast(ValueId, IrType)
+    
+    // Function calls
+    Call(String, [ValueId], IrType)
+    CallIndirect(ValueId, [ValueId], IrType)
+    
+    // Phi node
+    Phi([(BlockId, ValueId)], IrType)
+    
+    // Select
+    Select(ValueId, ValueId, ValueId, IrType)
+    
+    // Constants
+    Const(IrValue)
+    
+    // Struct/Array
+    ExtractValue(ValueId, [Int])
+    InsertValue(ValueId, ValueId, [Int])
+    
+    // Intrinsics
+    Intrinsic(String, [ValueId], IrType)
+}
+
+impl Instruction {
+    fn result_type() -> IrType {
+        match self {
+            Add(_, _, ty) | Sub(_, _, ty) | Mul(_, _, ty) | Div(_, _, ty) | Rem(_, _, ty) | Neg(_, ty) => ty
+            And(_, _) | Or(_, _) | Xor(_, _) | Not(_) | Shl(_, _) | Shr(_, _) => IrType.I64
+            Eq(_, _) | Ne(_, _) | Lt(_, _, _) | Le(_, _, _) | Gt(_, _, _) | Ge(_, _, _) => IrType.Bool
+            Alloca(ty) => IrType.Ptr(Box.new(ty))
+            Load(_, ty) => ty
+            Store(_, _) => IrType.Void
+            GetElementPtr(_, _, ty) => IrType.Ptr(Box.new(ty))
+            Trunc(_, ty) | ZExt(_, ty) | SExt(_, ty) | FpTrunc(_, ty) | FpExt(_, ty) => ty
+            FpToSi(_, ty) | FpToUi(_, ty) | SiToFp(_, ty) | UiToFp(_, ty) => ty
+            PtrToInt(_, ty) | IntToPtr(_, ty) | Bitcast(_, ty) => ty
+            Call(_, _, ty) | CallIndirect(_, _, ty) => ty
+            Phi(_, ty) | Select(_, _, _, ty) => ty
+            Const(v) => v.ty()
+            ExtractValue(_, _) => IrType.I64  // Simplified
+            InsertValue(_, _, _) => IrType.I64
+            Intrinsic(_, _, ty) => ty
+        }
+    }
+}
+
+/// Block terminator
+enum Terminator {
+    Return(Option<ValueId>)
+    Branch(BlockId)
+    CondBranch(ValueId, BlockId, BlockId)
+    Switch(ValueId, BlockId, [(IrValue, BlockId)])
+    Unreachable
+}
+
+// =============================================================================
+// IR Values
+// =============================================================================
+
+/// IR Value
+enum IrValue {
+    Int(Int64, IrType)
+    Float(Float64, IrType)
+    Bool(Bool)
+    Null(IrType)
+    Undef(IrType)
+    String(String)
+    Array([IrValue], IrType)
+    Struct([IrValue], String)
+    GlobalRef(String)
+    FunctionRef(String)
+}
+
+impl IrValue {
+    fn ty() -> IrType {
+        match self {
+            Int(_, ty) => ty
+            Float(_, ty) => ty
+            Bool(_) => IrType.Bool
+            Null(ty) | Undef(ty) => ty
+            String(_) => IrType.Ptr(Box.new(IrType.I8))
+            Array(_, ty) => ty
+            Struct(_, name) => IrType.Named(name)
+            GlobalRef(_) | FunctionRef(_) => IrType.Ptr(Box.new(IrType.Void))
+        }
+    }
+    
+    fn is_constant() -> Bool { true }
+}
+
+// =============================================================================
+// IR Builder
+// =============================================================================
+
+/// IR Builder for constructing IR
+actor IrBuilder {
+    state module: IrModule
+    state current_fn: Option<Int>
+    state current_block: Option<Int>
+    state value_counter: Int
+    
+    fn new(module_name: String) -> Self {
+        IrBuilder { module: IrModule.new(module_name), current_fn: None, current_block: None, value_counter: 0 }
+    }
+    
+    fn build() -> IrModule { self.module }
+    
+    // Function building
+    fn begin_function(name: String, params: [IrParam], ret: IrType) {
+        let func = IrFunction.new(name, params, ret)
+        self.module.add_function(func)
+        self.current_fn = Some(self.module.functions.len() - 1)
+    }
+    
+    fn end_function() { self.current_fn = None; self.current_block = None }
+    
+    fn current_function() -> Option<IrFunction> {
+        self.current_fn.map(|i| self.module.functions[i])
+    }
+    
+    // Block building
+    fn create_block(name: String) -> BlockId {
+        let func = self.current_function()?
+        func.add_block(name)
+    }
+    
+    fn set_block(block: BlockId) { self.current_block = Some(block.0) }
+    
+    fn current_block() -> Option<BasicBlock> {
+        let func = self.current_function()?
+        self.current_block.map(|i| func.blocks[i])
+    }
+    
+    // Instruction emission
+    fn emit(inst: Instruction) -> ValueId {
+        let block = self.current_block()?
+        block.add_instruction(inst)
+    }
+    
+    // Arithmetic
+    fn add(lhs: ValueId, rhs: ValueId, ty: IrType) -> ValueId { self.emit(Instruction.Add(lhs, rhs, ty)) }
+    fn sub(lhs: ValueId, rhs: ValueId, ty: IrType) -> ValueId { self.emit(Instruction.Sub(lhs, rhs, ty)) }
+    fn mul(lhs: ValueId, rhs: ValueId, ty: IrType) -> ValueId { self.emit(Instruction.Mul(lhs, rhs, ty)) }
+    fn div(lhs: ValueId, rhs: ValueId, ty: IrType) -> ValueId { self.emit(Instruction.Div(lhs, rhs, ty)) }
+    fn rem(lhs: ValueId, rhs: ValueId, ty: IrType) -> ValueId { self.emit(Instruction.Rem(lhs, rhs, ty)) }
+    fn neg(val: ValueId, ty: IrType) -> ValueId { self.emit(Instruction.Neg(val, ty)) }
+    
+    // Bitwise
+    fn and(lhs: ValueId, rhs: ValueId) -> ValueId { self.emit(Instruction.And(lhs, rhs)) }
+    fn or(lhs: ValueId, rhs: ValueId) -> ValueId { self.emit(Instruction.Or(lhs, rhs)) }
+    fn xor(lhs: ValueId, rhs: ValueId) -> ValueId { self.emit(Instruction.Xor(lhs, rhs)) }
+    fn not(val: ValueId) -> ValueId { self.emit(Instruction.Not(val)) }
+    fn shl(lhs: ValueId, rhs: ValueId) -> ValueId { self.emit(Instruction.Shl(lhs, rhs)) }
+    fn shr(lhs: ValueId, rhs: ValueId) -> ValueId { self.emit(Instruction.Shr(lhs, rhs)) }
+    
+    // Comparison
+    fn eq(lhs: ValueId, rhs: ValueId) -> ValueId { self.emit(Instruction.Eq(lhs, rhs)) }
+    fn ne(lhs: ValueId, rhs: ValueId) -> ValueId { self.emit(Instruction.Ne(lhs, rhs)) }
+    fn lt(lhs: ValueId, rhs: ValueId, signed: Bool) -> ValueId { self.emit(Instruction.Lt(lhs, rhs, signed)) }
+    fn le(lhs: ValueId, rhs: ValueId, signed: Bool) -> ValueId { self.emit(Instruction.Le(lhs, rhs, signed)) }
+    fn gt(lhs: ValueId, rhs: ValueId, signed: Bool) -> ValueId { self.emit(Instruction.Gt(lhs, rhs, signed)) }
+    fn ge(lhs: ValueId, rhs: ValueId, signed: Bool) -> ValueId { self.emit(Instruction.Ge(lhs, rhs, signed)) }
+    
+    // Memory
+    fn alloca(ty: IrType) -> ValueId { self.emit(Instruction.Alloca(ty)) }
+    fn load(ptr: ValueId, ty: IrType) -> ValueId { self.emit(Instruction.Load(ptr, ty)) }
+    fn store(val: ValueId, ptr: ValueId) -> ValueId { self.emit(Instruction.Store(val, ptr)) }
+    fn gep(ptr: ValueId, indices: [ValueId], ty: IrType) -> ValueId { self.emit(Instruction.GetElementPtr(ptr, indices, ty)) }
+    
+    // Conversions
+    fn trunc(val: ValueId, ty: IrType) -> ValueId { self.emit(Instruction.Trunc(val, ty)) }
+    fn zext(val: ValueId, ty: IrType) -> ValueId { self.emit(Instruction.ZExt(val, ty)) }
+    fn sext(val: ValueId, ty: IrType) -> ValueId { self.emit(Instruction.SExt(val, ty)) }
+    fn bitcast(val: ValueId, ty: IrType) -> ValueId { self.emit(Instruction.Bitcast(val, ty)) }
+    
+    // Calls
+    fn call(name: String, args: [ValueId], ret: IrType) -> ValueId { self.emit(Instruction.Call(name, args, ret)) }
+    fn call_indirect(ptr: ValueId, args: [ValueId], ret: IrType) -> ValueId { self.emit(Instruction.CallIndirect(ptr, args, ret)) }
+    
+    // Constants
+    fn const_int(val: Int64, ty: IrType) -> ValueId { self.emit(Instruction.Const(IrValue.Int(val, ty))) }
+    fn const_float(val: Float64, ty: IrType) -> ValueId { self.emit(Instruction.Const(IrValue.Float(val, ty))) }
+    fn const_bool(val: Bool) -> ValueId { self.emit(Instruction.Const(IrValue.Bool(val))) }
+    fn const_null(ty: IrType) -> ValueId { self.emit(Instruction.Const(IrValue.Null(ty))) }
+    
+    // Phi
+    fn phi(incoming: [(BlockId, ValueId)], ty: IrType) -> ValueId { self.emit(Instruction.Phi(incoming, ty)) }
+    
+    // Select
+    fn select(cond: ValueId, then_val: ValueId, else_val: ValueId, ty: IrType) -> ValueId {
+        self.emit(Instruction.Select(cond, then_val, else_val, ty))
+    }
+    
+    // Terminators
+    fn ret(val: Option<ValueId>) { let block = self.current_block()?; block.set_terminator(Terminator.Return(val)) }
+    fn br(target: BlockId) { let block = self.current_block()?; block.set_terminator(Terminator.Branch(target)) }
+    fn cond_br(cond: ValueId, then_block: BlockId, else_block: BlockId) { let block = self.current_block()?; block.set_terminator(Terminator.CondBranch(cond, then_block, else_block)) }
+    fn switch(val: ValueId, default: BlockId, cases: [(IrValue, BlockId)]) { let block = self.current_block()?; block.set_terminator(Terminator.Switch(val, default, cases)) }
+    fn unreachable() { let block = self.current_block()?; block.set_terminator(Terminator.Unreachable) }
+}
+
+// =============================================================================
+// IR Printer
+// =============================================================================
+
+/// Print IR module to string
+fn print_module(module: IrModule) -> String {
+    var out = ""
+    out.push_str(format!("; Module: {}\n\n", module.name))
+    
+    // Types
+    for ty in module.types {
+        out.push_str(format!("%{} = type {{ ", ty.name))
+        out.push_str(ty.fields.iter().map(|f| print_type(f.ty)).join(", "))
+        out.push_str(" }\n")
+    }
+    if !module.types.is_empty() { out.push('\n') }
+    
+    // Globals
+    for g in module.globals {
+        out.push_str(format!("@{} = {} {} ", g.name, print_linkage(g.linkage), print_type(g.ty)))
+        if let Some(init) = g.init { out.push_str(print_value(init)) }
+        out.push('\n')
+    }
+    if !module.globals.is_empty() { out.push('\n') }
+    
+    // Functions
+    for func in module.functions { out.push_str(print_function(func)); out.push('\n') }
+    
+    out
+}
+
+fn print_function(func: IrFunction) -> String {
+    var out = ""
+    let decl = if func.is_extern { "declare" } else { "define" }
+    out.push_str(format!("{} {} @{}(", decl, print_type(func.ret_type), func.name))
+    out.push_str(func.params.iter().map(|p| format!("{} %{}", print_type(p.ty), p.name)).join(", "))
+    out.push_str(")")
+    
+    if func.is_extern { return out }
+    
+    out.push_str(" {\n")
+    for block in func.blocks {
+        out.push_str(format!("{}:\n", block.name))
+        for (i, inst) in block.instructions.iter().enumerate() {
+            out.push_str(format!("  %{} = {}\n", i, print_instruction(inst)))
+        }
+        if let Some(term) = block.terminator { out.push_str(format!("  {}\n", print_terminator(term))) }
+    }
+    out.push_str("}\n")
+    out
+}
+
+fn print_type(ty: IrType) -> String {
+    match ty {
+        IrType.Void => "void"
+        IrType.Bool => "i1"
+        IrType.I8 => "i8"
+        IrType.I16 => "i16"
+        IrType.I32 => "i32"
+        IrType.I64 => "i64"
+        IrType.U8 => "i8"
+        IrType.U16 => "i16"
+        IrType.U32 => "i32"
+        IrType.U64 => "i64"
+        IrType.F32 => "float"
+        IrType.F64 => "double"
+        IrType.Ptr(inner) => format!("{}*", print_type(*inner))
+        IrType.Array(inner, n) => format!("[{} x {}]", n, print_type(*inner))
+        IrType.Struct(s) => format!("%{}", s.name)
+        IrType.Function(f) => format!("{} ({})", print_type(*f.ret), f.params.iter().map(print_type).join(", "))
+        IrType.Named(n) => format!("%{}", n)
+    }
+}
+
+fn print_instruction(inst: Instruction) -> String {
+    match inst {
+        Instruction.Add(l, r, ty) => format!("add {} %{}, %{}", print_type(ty), l.0, r.0)
+        Instruction.Sub(l, r, ty) => format!("sub {} %{}, %{}", print_type(ty), l.0, r.0)
+        Instruction.Mul(l, r, ty) => format!("mul {} %{}, %{}", print_type(ty), l.0, r.0)
+        Instruction.Div(l, r, ty) => format!("div {} %{}, %{}", print_type(ty), l.0, r.0)
+        Instruction.Load(ptr, ty) => format!("load {}, {}* %{}", print_type(ty), print_type(ty), ptr.0)
+        Instruction.Store(val, ptr) => format!("store %{}, %{}", val.0, ptr.0)
+        Instruction.Alloca(ty) => format!("alloca {}", print_type(ty))
+        Instruction.Call(name, args, ty) => format!("call {} @{}({})", print_type(ty), name, args.iter().map(|a| format!("%{}", a.0)).join(", "))
+        Instruction.Const(v) => print_value(v)
+        _ => "..."
+    }
+}
+
+fn print_terminator(term: Terminator) -> String {
+    match term {
+        Terminator.Return(None) => "ret void"
+        Terminator.Return(Some(v)) => format!("ret %{}", v.0)
+        Terminator.Branch(b) => format!("br label %{}", b.0)
+        Terminator.CondBranch(c, t, f) => format!("br i1 %{}, label %{}, label %{}", c.0, t.0, f.0)
+        Terminator.Unreachable => "unreachable"
+        _ => "..."
+    }
+}
+
+fn print_value(val: IrValue) -> String {
+    match val {
+        IrValue.Int(n, _) => format!("{}", n)
+        IrValue.Float(n, _) => format!("{}", n)
+        IrValue.Bool(b) => if b { "true" } else { "false" }
+        IrValue.Null(_) => "null"
+        IrValue.String(s) => format!("c\"{}\"", s)
+        _ => "..."
+    }
+}
+
+fn print_linkage(l: Linkage) -> String {
+    match l { Linkage.Internal => "internal", Linkage.External => "external", Linkage.Private => "private", Linkage.Weak => "weak" }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "ir type size" {
+    assert_eq(IrType.I32.size(), 4)?
+    assert_eq(IrType.I64.size(), 8)?
+    assert_eq(IrType.Ptr(Box.new(IrType.I8)).size(), 8)?
+}
+
+test "ir builder" {
+    let builder = IrBuilder.new("test")
+    builder.begin_function("main", [], IrType.I32)
+    let entry = builder.create_block("entry")
+    builder.set_block(entry)
+    let a = builder.const_int(10, IrType.I32)
+    let b = builder.const_int(20, IrType.I32)
+    let sum = builder.add(a, b, IrType.I32)
+    builder.ret(Some(sum))
+    builder.end_function()
+    let module = builder.build()
+    assert_eq(module.functions.len(), 1)?
+}

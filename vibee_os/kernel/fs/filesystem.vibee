@@ -1,0 +1,709 @@
+# ============================================================================
+# FILE SYSTEM - Виртуальная файловая система на Vibee
+# ============================================================================
+# VFS, permissions, streams, watchers
+# ============================================================================
+
+Specification FileSystem:
+  """Файловая система как спецификация хранения."""
+
+  # ==========================================================================
+  # TYPES
+  # ==========================================================================
+
+  Type Path:
+    segments: List<String>
+    absolute: Boolean
+
+  Type FileType:
+    variants:
+      - Regular
+      - Directory
+      - Symlink
+      - BlockDevice
+      - CharDevice
+      - FIFO
+      - Socket
+
+  Type FileMode:
+    owner: Permissions
+    group: Permissions
+    other: Permissions
+    setuid: Boolean = false
+    setgid: Boolean = false
+    sticky: Boolean = false
+
+  Type Permissions:
+    read: Boolean
+    write: Boolean
+    execute: Boolean
+
+  Type FileStat:
+    type: FileType
+    size: ByteSize
+    mode: FileMode
+    uid: UserId
+    gid: GroupId
+    atime: Timestamp
+    mtime: Timestamp
+    ctime: Timestamp
+    birthtime: Timestamp
+    inode: Int
+    nlink: Int
+    dev: Int
+    blocks: Int
+    block_size: Int
+
+  Type FileHandle:
+    fd: Int
+    path: Path
+    flags: OpenFlags
+    position: Int
+    lock: FileLock?
+
+  Type OpenFlags:
+    read: Boolean = false
+    write: Boolean = false
+    append: Boolean = false
+    create: Boolean = false
+    truncate: Boolean = false
+    exclusive: Boolean = false
+    sync: Boolean = false
+
+  Type FileLock:
+    type: LockType
+    start: Int
+    length: Int
+    pid: ProcessId
+
+  Type LockType:
+    variants: [Shared, Exclusive]
+
+  Type DirEntry:
+    name: String
+    type: FileType
+    inode: Int
+
+  Type FSEvent:
+    variants:
+      - Create: Path
+      - Modify: Path
+      - Delete: Path
+      - Rename: (from: Path, to: Path)
+      - Chmod: Path
+      - Access: Path
+
+  # ==========================================================================
+  # VFS LAYER
+  # ==========================================================================
+
+  Type VFS:
+    mounts: Map<Path, FileSystem>
+    root: FileSystem
+
+  Type FileSystem:
+    variants:
+      - Local: LocalFS
+      - Memory: MemoryFS
+      - S3: S3FS
+      - SFTP: SFTPFS
+      - Overlay: OverlayFS
+      - Union: UnionFS
+
+  Type LocalFS:
+    root: Path
+    read_only: Boolean = false
+
+  Type MemoryFS:
+    nodes: Map<Path, MemoryNode>
+    max_size: ByteSize?
+
+  Type MemoryNode:
+    variants:
+      - File: (content: Bytes, stat: FileStat)
+      - Directory: (entries: Map<String, MemoryNode>, stat: FileStat)
+      - Symlink: (target: Path, stat: FileStat)
+
+  Type S3FS:
+    bucket: String
+    prefix: String
+    region: String
+    credentials: AWSCredentials
+
+  Type OverlayFS:
+    upper: FileSystem
+    lower: FileSystem
+
+  Behavior VFSBehavior:
+    When vfs.resolve(path):
+      Then:
+        - normalized = normalize_path(path)
+        - mount = find_mount(normalized)
+        - relative = strip_mount_prefix(normalized, mount.path)
+        - return (mount.fs, relative)
+
+    When vfs.mount(path, fs):
+      Then:
+        - mounts[normalize_path(path)] = fs
+        - emit Mounted(path, fs.type)
+
+    When vfs.unmount(path):
+      Then:
+        - fs = mounts.remove(normalize_path(path))
+        - emit Unmounted(path)
+
+  # ==========================================================================
+  # FILE OPERATIONS
+  # ==========================================================================
+
+  Behavior FileOperations:
+    When fs.open(path, flags):
+      Then:
+        - (filesystem, rel_path) = vfs.resolve(path)
+        - stat = await filesystem.stat(rel_path)
+        
+        - # Check permissions
+        - if flags.read and not can_read(stat, current_user()):
+            - raise PermissionDenied(path, "read")
+        - if flags.write and not can_write(stat, current_user()):
+            - raise PermissionDenied(path, "write")
+        
+        - # Handle create/exclusive
+        - if not stat and flags.create:
+            - await filesystem.create_file(rel_path)
+        - elif not stat:
+            - raise FileNotFound(path)
+        - elif flags.exclusive:
+            - raise FileExists(path)
+        
+        - # Handle truncate
+        - if flags.truncate and flags.write:
+            - await filesystem.truncate(rel_path, 0)
+        
+        - fd = allocate_fd()
+        - handle = FileHandle(
+            fd: fd,
+            path: path,
+            flags: flags,
+            position: if flags.append then stat.size else 0
+          )
+        - open_files[fd] = handle
+        - return handle
+
+    When fs.close(handle):
+      Then:
+        - if handle.lock:
+            - await fs.unlock(handle)
+        - await flush_buffers(handle)
+        - open_files.remove(handle.fd)
+        - deallocate_fd(handle.fd)
+
+    When fs.read(handle, size):
+      Then:
+        - if not handle.flags.read:
+            - raise InvalidOperation("File not opened for reading")
+        - (filesystem, rel_path) = vfs.resolve(handle.path)
+        - data = await filesystem.read_at(rel_path, handle.position, size)
+        - handle.position += data.size
+        - return data
+
+    When fs.write(handle, data):
+      Then:
+        - if not handle.flags.write:
+            - raise InvalidOperation("File not opened for writing")
+        - (filesystem, rel_path) = vfs.resolve(handle.path)
+        - if handle.flags.append:
+            - stat = await filesystem.stat(rel_path)
+            - handle.position = stat.size
+        - await filesystem.write_at(rel_path, handle.position, data)
+        - handle.position += data.size
+        - if handle.flags.sync:
+            - await filesystem.sync(rel_path)
+        - return data.size
+
+    When fs.seek(handle, offset, whence):
+      Then:
+        - new_pos = match whence:
+            Start -> offset
+            Current -> handle.position + offset
+            End ->
+              stat = await fs.stat(handle.path)
+              stat.size + offset
+        - if new_pos < 0:
+            - raise InvalidArgument("Negative seek position")
+        - handle.position = new_pos
+        - return new_pos
+
+    When fs.truncate(path, size):
+      Then:
+        - (filesystem, rel_path) = vfs.resolve(path)
+        - await filesystem.truncate(rel_path, size)
+
+    When fs.stat(path):
+      Then:
+        - (filesystem, rel_path) = vfs.resolve(path)
+        - return await filesystem.stat(rel_path)
+
+    When fs.lstat(path):
+      """Stat without following symlinks"""
+      Then:
+        - (filesystem, rel_path) = vfs.resolve(path)
+        - return await filesystem.lstat(rel_path)
+
+    When fs.exists(path):
+      Then:
+        - try:
+            - await fs.stat(path)
+            - return true
+          catch FileNotFound:
+            - return false
+
+    When fs.is_file(path):
+      Then:
+        - stat = await fs.stat(path)
+        - return stat.type == Regular
+
+    When fs.is_directory(path):
+      Then:
+        - stat = await fs.stat(path)
+        - return stat.type == Directory
+
+  # ==========================================================================
+  # DIRECTORY OPERATIONS
+  # ==========================================================================
+
+  Behavior DirectoryOperations:
+    When fs.mkdir(path, options):
+      Then:
+        - (filesystem, rel_path) = vfs.resolve(path)
+        - if options.recursive:
+            - await mkdir_recursive(filesystem, rel_path, options.mode)
+        - else:
+            - await filesystem.mkdir(rel_path, options.mode ?? FileMode.default_dir())
+
+    When mkdir_recursive(filesystem, path, mode):
+      Then:
+        - parent = path.parent()
+        - if parent and not await filesystem.exists(parent):
+            - await mkdir_recursive(filesystem, parent, mode)
+        - if not await filesystem.exists(path):
+            - await filesystem.mkdir(path, mode)
+
+    When fs.rmdir(path):
+      Then:
+        - (filesystem, rel_path) = vfs.resolve(path)
+        - entries = await filesystem.readdir(rel_path)
+        - if entries.is_not_empty():
+            - raise DirectoryNotEmpty(path)
+        - await filesystem.rmdir(rel_path)
+
+    When fs.readdir(path):
+      Then:
+        - (filesystem, rel_path) = vfs.resolve(path)
+        - return await filesystem.readdir(rel_path)
+
+    When fs.readdir_recursive(path, options):
+      Then:
+        - results = []
+        - entries = await fs.readdir(path)
+        - for entry in entries:
+            - full_path = path / entry.name
+            - if options.filter and not options.filter(entry):
+                - continue
+            - add full_path to results
+            - if entry.type == Directory:
+                - sub_entries = await fs.readdir_recursive(full_path, options)
+                - results.extend(sub_entries)
+        - return results
+
+    When fs.glob(pattern):
+      Then:
+        - base = get_glob_base(pattern)
+        - regex = glob_to_regex(pattern)
+        - entries = await fs.readdir_recursive(base, { filter: _ -> true })
+        - return entries.filter(e -> e.to_string().matches(regex))
+
+  # ==========================================================================
+  # FILE MANIPULATION
+  # ==========================================================================
+
+  Behavior FileManipulation:
+    When fs.copy(src, dest, options):
+      Then:
+        - src_stat = await fs.stat(src)
+        
+        - if src_stat.type == Directory:
+            - if options.recursive:
+                - await copy_directory(src, dest, options)
+            - else:
+                - raise IsDirectory(src)
+        - else:
+            - await copy_file(src, dest, options)
+
+    When copy_file(src, dest, options):
+      Then:
+        - # Check if dest is directory
+        - if await fs.is_directory(dest):
+            - dest = dest / src.basename()
+        
+        - # Check overwrite
+        - if await fs.exists(dest) and not options.overwrite:
+            - raise FileExists(dest)
+        
+        - # Copy content
+        - src_handle = await fs.open(src, { read: true })
+        - dest_handle = await fs.open(dest, { write: true, create: true, truncate: true })
+        
+        - try:
+            - buffer_size = 64.KB
+            - loop:
+                - chunk = await fs.read(src_handle, buffer_size)
+                - if chunk.is_empty(): break
+                - await fs.write(dest_handle, chunk)
+          finally:
+            - await fs.close(src_handle)
+            - await fs.close(dest_handle)
+        
+        - # Preserve metadata
+        - if options.preserve_timestamps:
+            - src_stat = await fs.stat(src)
+            - await fs.utimes(dest, src_stat.atime, src_stat.mtime)
+        
+        - if options.preserve_mode:
+            - src_stat = await fs.stat(src)
+            - await fs.chmod(dest, src_stat.mode)
+
+    When copy_directory(src, dest, options):
+      Then:
+        - await fs.mkdir(dest, { recursive: true })
+        - entries = await fs.readdir(src)
+        - for entry in entries:
+            - src_path = src / entry.name
+            - dest_path = dest / entry.name
+            - await fs.copy(src_path, dest_path, options)
+
+    When fs.move(src, dest, options):
+      Then:
+        - (src_fs, src_rel) = vfs.resolve(src)
+        - (dest_fs, dest_rel) = vfs.resolve(dest)
+        
+        - # Same filesystem - use rename
+        - if src_fs == dest_fs:
+            - await src_fs.rename(src_rel, dest_rel)
+        - else:
+            - # Cross-filesystem - copy then delete
+            - await fs.copy(src, dest, options)
+            - await fs.remove(src, { recursive: true })
+
+    When fs.remove(path, options):
+      Then:
+        - stat = await fs.stat(path)
+        
+        - if stat.type == Directory:
+            - if options.recursive:
+                - entries = await fs.readdir(path)
+                - for entry in entries:
+                    - await fs.remove(path / entry.name, options)
+                - await fs.rmdir(path)
+            - else:
+                - raise IsDirectory(path)
+        - else:
+            - await fs.unlink(path)
+
+    When fs.unlink(path):
+      Then:
+        - (filesystem, rel_path) = vfs.resolve(path)
+        - await filesystem.unlink(rel_path)
+
+    When fs.rename(old_path, new_path):
+      Then:
+        - (filesystem, old_rel) = vfs.resolve(old_path)
+        - (_, new_rel) = vfs.resolve(new_path)
+        - await filesystem.rename(old_rel, new_rel)
+
+    When fs.symlink(target, path):
+      Then:
+        - (filesystem, rel_path) = vfs.resolve(path)
+        - await filesystem.symlink(target, rel_path)
+
+    When fs.readlink(path):
+      Then:
+        - (filesystem, rel_path) = vfs.resolve(path)
+        - return await filesystem.readlink(rel_path)
+
+    When fs.realpath(path):
+      Then:
+        - resolved = path
+        - seen = Set()
+        - loop max 40:  # Prevent infinite loops
+            - if resolved in seen:
+                - raise SymlinkLoop(path)
+            - add resolved to seen
+            - stat = await fs.lstat(resolved)
+            - if stat.type != Symlink:
+                - return normalize_path(resolved)
+            - target = await fs.readlink(resolved)
+            - resolved = if target.is_absolute() then target else resolved.parent() / target
+        - raise TooManySymlinks(path)
+
+  # ==========================================================================
+  # PERMISSIONS
+  # ==========================================================================
+
+  Behavior PermissionOperations:
+    When fs.chmod(path, mode):
+      Then:
+        - (filesystem, rel_path) = vfs.resolve(path)
+        - await filesystem.chmod(rel_path, mode)
+
+    When fs.chown(path, uid, gid):
+      Then:
+        - (filesystem, rel_path) = vfs.resolve(path)
+        - await filesystem.chown(rel_path, uid, gid)
+
+    When fs.utimes(path, atime, mtime):
+      Then:
+        - (filesystem, rel_path) = vfs.resolve(path)
+        - await filesystem.utimes(rel_path, atime, mtime)
+
+    When can_read(stat, user):
+      Then:
+        - if user.uid == 0: return true  # Root
+        - if user.uid == stat.uid: return stat.mode.owner.read
+        - if user.gid == stat.gid: return stat.mode.group.read
+        - return stat.mode.other.read
+
+    When can_write(stat, user):
+      Then:
+        - if user.uid == 0: return true
+        - if user.uid == stat.uid: return stat.mode.owner.write
+        - if user.gid == stat.gid: return stat.mode.group.write
+        - return stat.mode.other.write
+
+    When can_execute(stat, user):
+      Then:
+        - if user.uid == 0: return true
+        - if user.uid == stat.uid: return stat.mode.owner.execute
+        - if user.gid == stat.gid: return stat.mode.group.execute
+        - return stat.mode.other.execute
+
+  # ==========================================================================
+  # STREAMS
+  # ==========================================================================
+
+  Behavior StreamOperations:
+    When fs.create_read_stream(path, options):
+      Then:
+        - handle = await fs.open(path, { read: true })
+        - if options.start:
+            - await fs.seek(handle, options.start, Start)
+        - return ReadStream(
+            handle: handle,
+            chunk_size: options.chunk_size ?? 64.KB,
+            end: options.end,
+            encoding: options.encoding
+          )
+
+    When fs.create_write_stream(path, options):
+      Then:
+        - flags = {
+            write: true,
+            create: true,
+            truncate: not options.append,
+            append: options.append ?? false
+          }
+        - handle = await fs.open(path, flags)
+        - return WriteStream(
+            handle: handle,
+            encoding: options.encoding
+          )
+
+    When read_stream.read():
+      Then:
+        - if end and handle.position >= end:
+            - return null
+        - size = if end then min(chunk_size, end - handle.position) else chunk_size
+        - data = await fs.read(handle, size)
+        - if data.is_empty():
+            - return null
+        - if encoding:
+            - return data.decode(encoding)
+        - return data
+
+    When read_stream.pipe(write_stream):
+      Then:
+        - loop:
+            - chunk = await read_stream.read()
+            - if chunk == null: break
+            - await write_stream.write(chunk)
+        - await write_stream.close()
+
+    When write_stream.write(data):
+      Then:
+        - if encoding and data is String:
+            - data = data.encode(encoding)
+        - await fs.write(handle, data)
+
+    When write_stream.close():
+      Then:
+        - await fs.close(handle)
+
+  # ==========================================================================
+  # FILE WATCHING
+  # ==========================================================================
+
+  Behavior FileWatching:
+    State:
+      watchers: Map<WatcherId, Watcher>
+
+    Type Watcher:
+      id: WatcherId
+      path: Path
+      recursive: Boolean
+      callback: (FSEvent) -> Unit
+      filter: (Path) -> Boolean
+
+    When fs.watch(path, options, callback):
+      Then:
+        - watcher = Watcher(
+            id: generate_id(),
+            path: path,
+            recursive: options.recursive ?? false,
+            callback: callback,
+            filter: options.filter ?? (_ -> true)
+          )
+        - watchers[watcher.id] = watcher
+        - start_watching(watcher)
+        - return WatchHandle(() -> stop_watching(watcher.id))
+
+    When emit_fs_event(event):
+      Then:
+        - for watcher in watchers.values():
+            - if should_notify(watcher, event):
+                - watcher.callback(event)
+
+    When should_notify(watcher, event):
+      Then:
+        - event_path = match event:
+            Create(p) -> p
+            Modify(p) -> p
+            Delete(p) -> p
+            Rename(from, _) -> from
+            Chmod(p) -> p
+            Access(p) -> p
+        
+        - if watcher.recursive:
+            - return event_path.starts_with(watcher.path) and watcher.filter(event_path)
+        - else:
+            - return event_path.parent() == watcher.path and watcher.filter(event_path)
+
+  # ==========================================================================
+  # CONVENIENCE METHODS
+  # ==========================================================================
+
+  Behavior ConvenienceMethods:
+    When fs.read_file(path, encoding):
+      Then:
+        - handle = await fs.open(path, { read: true })
+        - try:
+            - stat = await fs.stat(path)
+            - data = await fs.read(handle, stat.size)
+            - if encoding:
+                - return data.decode(encoding)
+            - return data
+          finally:
+            - await fs.close(handle)
+
+    When fs.write_file(path, data, options):
+      Then:
+        - if data is String:
+            - data = data.encode(options.encoding ?? "utf-8")
+        - handle = await fs.open(path, { write: true, create: true, truncate: true })
+        - try:
+            - await fs.write(handle, data)
+          finally:
+            - await fs.close(handle)
+
+    When fs.append_file(path, data, options):
+      Then:
+        - if data is String:
+            - data = data.encode(options.encoding ?? "utf-8")
+        - handle = await fs.open(path, { write: true, create: true, append: true })
+        - try:
+            - await fs.write(handle, data)
+          finally:
+            - await fs.close(handle)
+
+    When fs.read_json(path):
+      Then:
+        - content = await fs.read_file(path, "utf-8")
+        - return JSON.parse(content)
+
+    When fs.write_json(path, data, options):
+      Then:
+        - content = JSON.stringify(data, indent: options.indent ?? 2)
+        - await fs.write_file(path, content)
+
+    When fs.read_lines(path):
+      Then:
+        - content = await fs.read_file(path, "utf-8")
+        - return content.split("\n")
+
+    When fs.temp_file(options):
+      Then:
+        - dir = options.dir ?? "/tmp"
+        - prefix = options.prefix ?? "tmp"
+        - suffix = options.suffix ?? ""
+        - name = "${prefix}${random_string(8)}${suffix}"
+        - path = Path(dir) / name
+        - handle = await fs.open(path, { write: true, create: true, exclusive: true })
+        - return TempFile(path, handle)
+
+    When fs.temp_dir(options):
+      Then:
+        - dir = options.dir ?? "/tmp"
+        - prefix = options.prefix ?? "tmp"
+        - name = "${prefix}${random_string(8)}"
+        - path = Path(dir) / name
+        - await fs.mkdir(path)
+        - return TempDir(path)
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "File System Usage":
+    ```vibee
+    # Basic file operations
+    await fs.write_file("/data/config.json", JSON.stringify({ key: "value" }))
+    config = await fs.read_json("/data/config.json")
+
+    # Streaming large files
+    read_stream = await fs.create_read_stream("/data/large_file.bin")
+    write_stream = await fs.create_write_stream("/backup/large_file.bin")
+    await read_stream.pipe(write_stream)
+
+    # Directory operations
+    await fs.mkdir("/data/new_dir", { recursive: true })
+    entries = await fs.readdir("/data")
+    files = await fs.glob("/data/**/*.json")
+
+    # File watching
+    watcher = await fs.watch("/data", { recursive: true }, (event) ->
+      match event:
+        Create(path) -> log.info("Created: ${path}")
+        Modify(path) -> log.info("Modified: ${path}")
+        Delete(path) -> log.info("Deleted: ${path}")
+    )
+
+    # Permissions
+    await fs.chmod("/data/script.sh", FileMode(
+      owner: Permissions(read: true, write: true, execute: true),
+      group: Permissions(read: true, execute: true),
+      other: Permissions(read: true, execute: true)
+    ))
+
+    # Virtual filesystem
+    vfs.mount("/s3", S3FS(bucket: "my-bucket", region: "us-east-1"))
+    await fs.copy("/local/file.txt", "/s3/backup/file.txt")
+    ```

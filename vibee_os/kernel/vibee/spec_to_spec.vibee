@@ -1,0 +1,536 @@
+name: vibee_os_spec_to_spec
+version: "0.1.0"
+language: gleam
+module: kernel/vibee/spec_to_spec
+description: Spec-to-Spec Compiler - трансляция между различными форматами спецификаций
+
+behaviors:
+  - name: translate_openapi_to_vibee
+    given: OpenAPI specification exists
+    when: translate is called with source=openapi
+    then: Vibee specification is generated with behaviors and types
+    test_cases:
+      - name: translate_petstore
+        input: {source: "petstore.yaml", format: "openapi"}
+        expected: {behaviors: 20, types: 15, functions: 20}
+      - name: translate_with_auth
+        input: {source: "api_with_auth.yaml", format: "openapi"}
+        expected: {has_auth_behaviors: true, security_types: true}
+
+  - name: translate_protobuf_to_vibee
+    given: Protobuf definition exists
+    when: translate is called with source=protobuf
+    then: Vibee specification is generated with types and functions
+    test_cases:
+      - name: translate_grpc_service
+        input: {source: "service.proto", format: "protobuf"}
+        expected: {types_from_messages: true, functions_from_rpcs: true}
+
+  - name: translate_graphql_to_vibee
+    given: GraphQL schema exists
+    when: translate is called with source=graphql
+    then: Vibee specification is generated
+    test_cases:
+      - name: translate_schema
+        input: {source: "schema.graphql", format: "graphql"}
+        expected: {types_from_types: true, behaviors_from_resolvers: true}
+
+  - name: translate_vibee_to_openapi
+    given: Vibee specification exists
+    when: export is called with target=openapi
+    then: OpenAPI specification is generated
+    test_cases:
+      - name: export_api
+        input: {source: "api.vibee", target: "openapi"}
+        expected: {valid_openapi: true, paths_from_behaviors: true}
+
+  - name: translate_sql_to_vibee
+    given: SQL schema exists
+    when: translate is called with source=sql
+    then: Vibee specification with types and CRUD behaviors
+    test_cases:
+      - name: translate_schema
+        input: {source: "schema.sql", format: "sql"}
+        expected: {types_from_tables: true, crud_behaviors: true}
+
+  - name: translate_typescript_to_vibee
+    given: TypeScript types exist
+    when: translate is called with source=typescript
+    then: Vibee types are generated
+    test_cases:
+      - name: translate_interfaces
+        input: {source: "types.ts", format: "typescript"}
+        expected: {types_from_interfaces: true, enums_preserved: true}
+
+types:
+  # Source Formats
+  SourceFormat:
+    variants:
+      - Vibee
+      - OpenAPI: {version: str}       # 3.0, 3.1
+      - Protobuf: {version: str}      # proto2, proto3
+      - GraphQL
+      - SQL: {dialect: SQLDialect}
+      - TypeScript
+      - JSONSchema
+      - AsyncAPI
+      - Avro
+      - Thrift
+      - RAML
+      - WSDL                          # Legacy SOAP
+      - Swagger                       # OpenAPI 2.0
+      - Custom: {parser: str}
+
+  SQLDialect:
+    variants:
+      - PostgreSQL
+      - MySQL
+      - SQLite
+      - MSSQL
+      - Oracle
+
+  # Target Formats
+  TargetFormat:
+    variants:
+      - Vibee
+      - OpenAPI
+      - Protobuf
+      - GraphQL
+      - TypeScript
+      - JSONSchema
+      - Markdown                      # Documentation
+      - Mermaid                       # Diagrams
+
+  # Translation Request
+  TranslationRequest:
+    source: SourceSpec
+    target: TargetFormat
+    options: TranslationOptions
+
+  SourceSpec:
+    format: SourceFormat
+    content: str
+    path: str?
+    metadata: {str: str}
+
+  TranslationOptions:
+    preserve_comments: bool
+    generate_tests: bool
+    infer_behaviors: bool
+    strict_types: bool
+    naming_convention: NamingConvention
+    custom_mappings: [TypeMapping]
+
+  NamingConvention:
+    variants:
+      - SnakeCase
+      - CamelCase
+      - PascalCase
+      - KebabCase
+      - Preserve                      # Keep original
+
+  TypeMapping:
+    source_type: str
+    target_type: str
+    transform: str?
+
+  # Translation Result
+  TranslationResult:
+    success: bool
+    output: str
+    warnings: [TranslationWarning]
+    errors: [TranslationError]
+    stats: TranslationStats
+
+  TranslationWarning:
+    code: str
+    message: str
+    location: str?
+    suggestion: str?
+
+  TranslationError:
+    code: str
+    message: str
+    location: str?
+    fatal: bool
+
+  TranslationStats:
+    types_translated: int
+    behaviors_generated: int
+    functions_generated: int
+    tests_generated: int
+    lines_input: int
+    lines_output: int
+
+  # OpenAPI Specific
+  OpenAPISpec:
+    openapi: str
+    info: OpenAPIInfo
+    paths: {str: PathItem}
+    components: Components?
+
+  OpenAPIInfo:
+    title: str
+    version: str
+    description: str?
+
+  PathItem:
+    get: Operation?
+    post: Operation?
+    put: Operation?
+    delete: Operation?
+    patch: Operation?
+
+  Operation:
+    operationId: str?
+    summary: str?
+    description: str?
+    parameters: [Parameter]?
+    requestBody: RequestBody?
+    responses: {str: Response}
+
+  Parameter:
+    name: str
+    in: str
+    required: bool
+    schema: Schema
+
+  RequestBody:
+    content: {str: MediaType}
+    required: bool
+
+  MediaType:
+    schema: Schema
+
+  Response:
+    description: str
+    content: {str: MediaType}?
+
+  Schema:
+    type: str?
+    format: str?
+    properties: {str: Schema}?
+    items: Schema?
+    enum: [str]?
+    ref: str?
+
+  Components:
+    schemas: {str: Schema}?
+    securitySchemes: {str: SecurityScheme}?
+
+  SecurityScheme:
+    type: str
+    scheme: str?
+    bearerFormat: str?
+
+  # Protobuf Specific
+  ProtoFile:
+    syntax: str
+    package: str
+    imports: [str]
+    messages: [ProtoMessage]
+    services: [ProtoService]
+    enums: [ProtoEnum]
+
+  ProtoMessage:
+    name: str
+    fields: [ProtoField]
+    nested: [ProtoMessage]
+
+  ProtoField:
+    name: str
+    type: str
+    number: int
+    repeated: bool
+    optional: bool
+
+  ProtoService:
+    name: str
+    methods: [ProtoMethod]
+
+  ProtoMethod:
+    name: str
+    input_type: str
+    output_type: str
+    client_streaming: bool
+    server_streaming: bool
+
+  ProtoEnum:
+    name: str
+    values: [{name: str, number: int}]
+
+  # GraphQL Specific
+  GraphQLSchema:
+    types: [GraphQLType]
+    queries: [GraphQLField]
+    mutations: [GraphQLField]
+    subscriptions: [GraphQLField]
+
+  GraphQLType:
+    name: str
+    kind: GraphQLKind
+    fields: [GraphQLField]?
+    values: [str]?                    # For enums
+
+  GraphQLKind:
+    variants:
+      - Object
+      - Input
+      - Interface
+      - Union
+      - Enum
+      - Scalar
+
+  GraphQLField:
+    name: str
+    type: str
+    args: [GraphQLArg]?
+    description: str?
+
+  GraphQLArg:
+    name: str
+    type: str
+    default: str?
+
+  # SQL Specific
+  SQLSchema:
+    tables: [SQLTable]
+    views: [SQLView]
+    indexes: [SQLIndex]
+
+  SQLTable:
+    name: str
+    columns: [SQLColumn]
+    primary_key: [str]
+    foreign_keys: [SQLForeignKey]
+
+  SQLColumn:
+    name: str
+    type: str
+    nullable: bool
+    default: str?
+
+  SQLForeignKey:
+    columns: [str]
+    references_table: str
+    references_columns: [str]
+
+  SQLView:
+    name: str
+    query: str
+
+  SQLIndex:
+    name: str
+    table: str
+    columns: [str]
+    unique: bool
+
+functions:
+  # Main translation
+  - name: translate
+    params: {request: TranslationRequest}
+    returns: TranslationResult
+    description: Translate between specification formats
+
+  - name: translate_file
+    params: {path: str, source_format: SourceFormat, target_format: TargetFormat}
+    returns: TranslationResult
+    description: Translate file
+
+  - name: translate_directory
+    params: {path: str, source_format: SourceFormat, target_format: TargetFormat}
+    returns: [TranslationResult]
+    description: Translate all files in directory
+
+  # Format-specific parsers
+  - name: parse_openapi
+    params: {content: str}
+    returns: OpenAPISpec
+    description: Parse OpenAPI specification
+
+  - name: parse_protobuf
+    params: {content: str}
+    returns: ProtoFile
+    description: Parse Protobuf definition
+
+  - name: parse_graphql
+    params: {content: str}
+    returns: GraphQLSchema
+    description: Parse GraphQL schema
+
+  - name: parse_sql
+    params: {content: str, dialect: SQLDialect}
+    returns: SQLSchema
+    description: Parse SQL schema
+
+  # Format-specific generators
+  - name: generate_vibee
+    params: {spec: SourceSpec}
+    returns: str
+    description: Generate Vibee specification
+
+  - name: generate_openapi
+    params: {spec: Specification}
+    returns: str
+    description: Generate OpenAPI from Vibee
+
+  - name: generate_protobuf
+    params: {spec: Specification}
+    returns: str
+    description: Generate Protobuf from Vibee
+
+  - name: generate_graphql
+    params: {spec: Specification}
+    returns: str
+    description: Generate GraphQL from Vibee
+
+  - name: generate_typescript
+    params: {spec: Specification}
+    returns: str
+    description: Generate TypeScript types from Vibee
+
+  # Inference
+  - name: infer_behaviors
+    params: {types: [TypeDef], functions: [FunctionSig]}
+    returns: [Behavior]
+    description: Infer behaviors from types and functions
+
+  - name: infer_tests
+    params: {behaviors: [Behavior]}
+    returns: [TestCase]
+    description: Infer test cases from behaviors
+
+  # Validation
+  - name: validate_translation
+    params: {source: SourceSpec, result: TranslationResult}
+    returns: {valid: bool, issues: [str]}
+    description: Validate translation preserves semantics
+
+imports:
+  - kernel.vibee.compiler
+  - kernel.vibee.verifier
+
+translation_examples: |
+  # Translation Examples
+  
+  ## OpenAPI → Vibee
+  
+  Input (OpenAPI):
+  ```yaml
+  paths:
+    /users:
+      get:
+        operationId: listUsers
+        responses:
+          200:
+            content:
+              application/json:
+                schema:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/User'
+      post:
+        operationId: createUser
+        requestBody:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateUserRequest'
+  ```
+  
+  Output (Vibee):
+  ```yaml
+  behaviors:
+    - name: list_users
+      given: API is available
+      when: GET /users is called
+      then: Returns list of users
+      test_cases:
+        - name: list_empty
+          input: {}
+          expected: {status: 200, body: []}
+        - name: list_with_users
+          input: {users_exist: true}
+          expected: {status: 200, body_is_array: true}
+  
+    - name: create_user
+      given: Valid user data
+      when: POST /users is called with user data
+      then: User is created and returned
+      test_cases:
+        - name: create_valid
+          input: {name: "John", email: "john@example.com"}
+          expected: {status: 201, has_id: true}
+        - name: create_invalid_email
+          input: {name: "John", email: "invalid"}
+          expected: {status: 400, error: "invalid_email"}
+  ```
+  
+  ## SQL → Vibee
+  
+  Input (SQL):
+  ```sql
+  CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    name VARCHAR(100),
+    created_at TIMESTAMP DEFAULT NOW()
+  );
+  ```
+  
+  Output (Vibee):
+  ```yaml
+  types:
+    User:
+      id: int
+      email: str
+      name: str?
+      created_at: int
+  
+  behaviors:
+    - name: create_user
+      given: Valid user data
+      when: user_create is called
+      then: User is inserted into database
+  
+    - name: get_user_by_id
+      given: User exists
+      when: user_get(id) is called
+      then: User is returned
+  
+    - name: get_user_by_email
+      given: User exists with email
+      when: user_get_by_email(email) is called
+      then: User is returned
+  
+    - name: update_user
+      given: User exists
+      when: user_update(id, data) is called
+      then: User is updated
+  
+    - name: delete_user
+      given: User exists
+      when: user_delete(id) is called
+      then: User is removed
+  ```
+
+bidirectional_translation: |
+  # Bidirectional Translation
+  
+  Vibee can translate TO and FROM other formats:
+  
+  ```
+  OpenAPI ←→ Vibee ←→ Protobuf
+     ↑         ↑         ↑
+     ↓         ↓         ↓
+  GraphQL ←→ Vibee ←→ TypeScript
+     ↑         ↑         ↑
+     ↓         ↓         ↓
+    SQL   ←→ Vibee ←→ JSONSchema
+  ```
+  
+  This enables:
+  1. Import existing APIs into Vibee
+  2. Export Vibee to any format
+  3. Keep specs in sync across formats
+  4. Migrate between technologies

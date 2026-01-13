@@ -1,0 +1,764 @@
+# ============================================================================
+# PAYMENTS - Платёжные системы на Vibee
+# ============================================================================
+# Stripe, PayPal, crypto, subscriptions, invoicing
+# ============================================================================
+
+Specification Payments:
+  """Платёжные системы как спецификация финансовых операций."""
+
+  # ==========================================================================
+  # CORE TYPES
+  # ==========================================================================
+
+  Type Money:
+    amount: Decimal
+    currency: Currency
+
+    Invariant: amount >= 0
+
+    Method add(other: Money) -> Money:
+      Require: self.currency == other.currency
+      Return: Money(self.amount + other.amount, self.currency)
+
+    Method subtract(other: Money) -> Money:
+      Require: self.currency == other.currency
+      Require: self.amount >= other.amount
+      Return: Money(self.amount - other.amount, self.currency)
+
+    Method multiply(factor: Decimal) -> Money:
+      Return: Money(self.amount * factor, self.currency)
+
+    Method format() -> String:
+      Return: "${currency.symbol}${amount.format(2)}"
+
+  Type Currency:
+    code: String
+    symbol: String
+    decimals: Int
+
+    Static USD = Currency("USD", "$", 2)
+    Static EUR = Currency("EUR", "€", 2)
+    Static GBP = Currency("GBP", "£", 2)
+    Static JPY = Currency("JPY", "¥", 0)
+    Static RUB = Currency("RUB", "₽", 2)
+
+  Type PaymentMethod:
+    variants:
+      - Card: CardDetails
+      - BankAccount: BankDetails
+      - Wallet: WalletType
+      - Crypto: CryptoDetails
+
+  Type CardDetails:
+    brand: CardBrand
+    last4: String
+    exp_month: Int
+    exp_year: Int
+    holder_name: String?
+    fingerprint: String
+
+  Type CardBrand:
+    variants: [Visa, Mastercard, Amex, Discover, JCB, UnionPay, Unknown]
+
+  Type BankDetails:
+    bank_name: String
+    account_type: AccountType
+    last4: String
+    routing_number: String?
+    country: String
+
+  Type AccountType:
+    variants: [Checking, Savings]
+
+  Type WalletType:
+    variants: [ApplePay, GooglePay, PayPal, Alipay, WeChatPay]
+
+  Type CryptoDetails:
+    network: CryptoNetwork
+    address: String
+    currency: CryptoCurrency
+
+  Type CryptoNetwork:
+    variants: [Bitcoin, Ethereum, Polygon, Solana, BSC, Tron]
+
+  Type CryptoCurrency:
+    variants: [BTC, ETH, USDT, USDC, SOL, MATIC]
+
+  # ==========================================================================
+  # CUSTOMER
+  # ==========================================================================
+
+  Type Customer:
+    id: CustomerId
+    email: Email
+    name: String?
+    phone: Phone?
+    address: Address?
+    metadata: Map<String, String>
+    payment_methods: List<PaymentMethodId>
+    default_payment_method: PaymentMethodId?
+    created_at: DateTime
+
+  Type Address:
+    line1: String
+    line2: String?
+    city: String
+    state: String?
+    postal_code: String
+    country: String
+
+  Behavior CustomerManagement:
+    When customer.create(data):
+      Then:
+        - validate_email(data.email)
+        - customer = await stripe.customers.create({
+            email: data.email,
+            name: data.name,
+            phone: data.phone,
+            address: data.address,
+            metadata: data.metadata
+          })
+        - return Customer.from_stripe(customer)
+
+    When customer.update(id, data):
+      Then:
+        - customer = await stripe.customers.update(id, data)
+        - return Customer.from_stripe(customer)
+
+    When customer.delete(id):
+      Then:
+        - await stripe.customers.delete(id)
+
+    When customer.get(id):
+      Then:
+        - customer = await stripe.customers.retrieve(id)
+        - return Customer.from_stripe(customer)
+
+    When customer.list(options):
+      Then:
+        - result = await stripe.customers.list(options)
+        - return result.data.map(Customer.from_stripe)
+
+    When customer.attach_payment_method(customer_id, payment_method_id):
+      Then:
+        - await stripe.paymentMethods.attach(payment_method_id, { customer: customer_id })
+
+    When customer.set_default_payment_method(customer_id, payment_method_id):
+      Then:
+        - await stripe.customers.update(customer_id, {
+            invoice_settings: { default_payment_method: payment_method_id }
+          })
+
+  # ==========================================================================
+  # PAYMENTS
+  # ==========================================================================
+
+  Type Payment:
+    id: PaymentId
+    amount: Money
+    status: PaymentStatus
+    customer: CustomerId?
+    payment_method: PaymentMethodId?
+    description: String?
+    metadata: Map<String, String>
+    receipt_email: Email?
+    created_at: DateTime
+    captured_at: DateTime?
+    refunded_amount: Money?
+
+  Type PaymentStatus:
+    variants:
+      - Pending
+      - Processing
+      - RequiresAction: (action: PaymentAction)
+      - RequiresCapture
+      - Succeeded
+      - Failed: (error: PaymentError)
+      - Canceled
+      - Refunded
+
+  Type PaymentAction:
+    type: ActionType
+    url: URL?
+    client_secret: String?
+
+  Type ActionType:
+    variants: [RedirectToUrl, UseSDK, ConfirmWithMicrodeposits]
+
+  Type PaymentError:
+    code: String
+    message: String
+    decline_code: String?
+
+  Behavior PaymentProcessing:
+    When payment.create(data):
+      Then:
+        - intent = await stripe.paymentIntents.create({
+            amount: to_cents(data.amount),
+            currency: data.amount.currency.code.lowercase(),
+            customer: data.customer_id,
+            payment_method: data.payment_method_id,
+            description: data.description,
+            metadata: data.metadata,
+            receipt_email: data.receipt_email,
+            capture_method: if data.capture then "automatic" else "manual",
+            confirm: data.confirm ?? false
+          })
+        - return Payment.from_stripe(intent)
+
+    When payment.confirm(id, options):
+      Then:
+        - intent = await stripe.paymentIntents.confirm(id, {
+            payment_method: options.payment_method_id,
+            return_url: options.return_url
+          })
+        - return Payment.from_stripe(intent)
+
+    When payment.capture(id, amount):
+      Then:
+        - intent = await stripe.paymentIntents.capture(id, {
+            amount_to_capture: if amount then to_cents(amount) else null
+          })
+        - return Payment.from_stripe(intent)
+
+    When payment.cancel(id, reason):
+      Then:
+        - intent = await stripe.paymentIntents.cancel(id, {
+            cancellation_reason: reason
+          })
+        - return Payment.from_stripe(intent)
+
+    When payment.get(id):
+      Then:
+        - intent = await stripe.paymentIntents.retrieve(id)
+        - return Payment.from_stripe(intent)
+
+  # ==========================================================================
+  # REFUNDS
+  # ==========================================================================
+
+  Type Refund:
+    id: RefundId
+    payment_id: PaymentId
+    amount: Money
+    status: RefundStatus
+    reason: RefundReason?
+    created_at: DateTime
+
+  Type RefundStatus:
+    variants: [Pending, Succeeded, Failed, Canceled]
+
+  Type RefundReason:
+    variants: [Duplicate, Fraudulent, RequestedByCustomer, Other]
+
+  Behavior RefundProcessing:
+    When refund.create(payment_id, options):
+      Then:
+        - refund = await stripe.refunds.create({
+            payment_intent: payment_id,
+            amount: if options.amount then to_cents(options.amount) else null,
+            reason: options.reason?.to_stripe()
+          })
+        - return Refund.from_stripe(refund)
+
+    When refund.get(id):
+      Then:
+        - refund = await stripe.refunds.retrieve(id)
+        - return Refund.from_stripe(refund)
+
+    When refund.list(payment_id):
+      Then:
+        - result = await stripe.refunds.list({ payment_intent: payment_id })
+        - return result.data.map(Refund.from_stripe)
+
+  # ==========================================================================
+  # SUBSCRIPTIONS
+  # ==========================================================================
+
+  Type Subscription:
+    id: SubscriptionId
+    customer: CustomerId
+    status: SubscriptionStatus
+    items: List<SubscriptionItem>
+    current_period_start: DateTime
+    current_period_end: DateTime
+    cancel_at_period_end: Boolean
+    canceled_at: DateTime?
+    trial_start: DateTime?
+    trial_end: DateTime?
+    metadata: Map<String, String>
+
+  Type SubscriptionStatus:
+    variants: [Trialing, Active, PastDue, Canceled, Unpaid, Incomplete, IncompleteExpired, Paused]
+
+  Type SubscriptionItem:
+    id: SubscriptionItemId
+    price: Price
+    quantity: Int
+
+  Type Price:
+    id: PriceId
+    product: ProductId
+    amount: Money
+    interval: BillingInterval?
+    interval_count: Int = 1
+    type: PriceType
+
+  Type PriceType:
+    variants: [OneTime, Recurring]
+
+  Type BillingInterval:
+    variants: [Day, Week, Month, Year]
+
+  Type Product:
+    id: ProductId
+    name: String
+    description: String?
+    active: Boolean
+    metadata: Map<String, String>
+    prices: List<Price>
+
+  Behavior SubscriptionManagement:
+    When subscription.create(data):
+      Then:
+        - sub = await stripe.subscriptions.create({
+            customer: data.customer_id,
+            items: data.items.map(i -> { price: i.price_id, quantity: i.quantity }),
+            trial_period_days: data.trial_days,
+            payment_behavior: data.payment_behavior ?? "default_incomplete",
+            expand: ["latest_invoice.payment_intent"]
+          })
+        - return Subscription.from_stripe(sub)
+
+    When subscription.update(id, data):
+      Then:
+        - sub = await stripe.subscriptions.update(id, data)
+        - return Subscription.from_stripe(sub)
+
+    When subscription.cancel(id, options):
+      Then:
+        - if options.at_period_end:
+            - sub = await stripe.subscriptions.update(id, { cancel_at_period_end: true })
+          else:
+            - sub = await stripe.subscriptions.cancel(id)
+        - return Subscription.from_stripe(sub)
+
+    When subscription.pause(id):
+      Then:
+        - sub = await stripe.subscriptions.update(id, {
+            pause_collection: { behavior: "mark_uncollectible" }
+          })
+        - return Subscription.from_stripe(sub)
+
+    When subscription.resume(id):
+      Then:
+        - sub = await stripe.subscriptions.update(id, {
+            pause_collection: null
+          })
+        - return Subscription.from_stripe(sub)
+
+    When subscription.change_plan(id, new_price_id, options):
+      Then:
+        - sub = await stripe.subscriptions.retrieve(id)
+        - item_id = sub.items.data[0].id
+        - updated = await stripe.subscriptions.update(id, {
+            items: [{ id: item_id, price: new_price_id }],
+            proration_behavior: options.proration ?? "create_prorations"
+          })
+        - return Subscription.from_stripe(updated)
+
+    When subscription.get(id):
+      Then:
+        - sub = await stripe.subscriptions.retrieve(id)
+        - return Subscription.from_stripe(sub)
+
+    When subscription.list(customer_id, options):
+      Then:
+        - result = await stripe.subscriptions.list({
+            customer: customer_id,
+            status: options.status,
+            limit: options.limit
+          })
+        - return result.data.map(Subscription.from_stripe)
+
+  # ==========================================================================
+  # INVOICES
+  # ==========================================================================
+
+  Type Invoice:
+    id: InvoiceId
+    customer: CustomerId
+    subscription: SubscriptionId?
+    status: InvoiceStatus
+    amount_due: Money
+    amount_paid: Money
+    amount_remaining: Money
+    lines: List<InvoiceLine>
+    due_date: DateTime?
+    paid_at: DateTime?
+    hosted_invoice_url: URL?
+    invoice_pdf: URL?
+    created_at: DateTime
+
+  Type InvoiceStatus:
+    variants: [Draft, Open, Paid, Void, Uncollectible]
+
+  Type InvoiceLine:
+    description: String
+    amount: Money
+    quantity: Int
+    period_start: DateTime?
+    period_end: DateTime?
+
+  Behavior InvoiceManagement:
+    When invoice.create(data):
+      Then:
+        - invoice = await stripe.invoices.create({
+            customer: data.customer_id,
+            collection_method: data.collection_method ?? "charge_automatically",
+            due_date: data.due_date?.unix(),
+            metadata: data.metadata
+          })
+        
+        - for line in data.lines:
+            - await stripe.invoiceItems.create({
+                customer: data.customer_id,
+                invoice: invoice.id,
+                description: line.description,
+                amount: to_cents(line.amount),
+                currency: line.amount.currency.code.lowercase()
+              })
+        
+        - return Invoice.from_stripe(invoice)
+
+    When invoice.finalize(id):
+      Then:
+        - invoice = await stripe.invoices.finalizeInvoice(id)
+        - return Invoice.from_stripe(invoice)
+
+    When invoice.pay(id, options):
+      Then:
+        - invoice = await stripe.invoices.pay(id, {
+            payment_method: options.payment_method_id
+          })
+        - return Invoice.from_stripe(invoice)
+
+    When invoice.send(id):
+      Then:
+        - invoice = await stripe.invoices.sendInvoice(id)
+        - return Invoice.from_stripe(invoice)
+
+    When invoice.void(id):
+      Then:
+        - invoice = await stripe.invoices.voidInvoice(id)
+        - return Invoice.from_stripe(invoice)
+
+    When invoice.get(id):
+      Then:
+        - invoice = await stripe.invoices.retrieve(id)
+        - return Invoice.from_stripe(invoice)
+
+    When invoice.upcoming(customer_id, options):
+      Then:
+        - invoice = await stripe.invoices.retrieveUpcoming({
+            customer: customer_id,
+            subscription: options.subscription_id
+          })
+        - return Invoice.from_stripe(invoice)
+
+  # ==========================================================================
+  # CHECKOUT
+  # ==========================================================================
+
+  Type CheckoutSession:
+    id: SessionId
+    url: URL
+    status: CheckoutStatus
+    customer: CustomerId?
+    payment_intent: PaymentId?
+    subscription: SubscriptionId?
+    mode: CheckoutMode
+    success_url: URL
+    cancel_url: URL
+    expires_at: DateTime
+
+  Type CheckoutStatus:
+    variants: [Open, Complete, Expired]
+
+  Type CheckoutMode:
+    variants: [Payment, Subscription, Setup]
+
+  Behavior CheckoutManagement:
+    When checkout.create_session(data):
+      Then:
+        - session = await stripe.checkout.sessions.create({
+            mode: data.mode.to_stripe(),
+            customer: data.customer_id,
+            customer_email: data.customer_email,
+            line_items: data.items.map(i -> {
+              price: i.price_id,
+              quantity: i.quantity
+            }),
+            success_url: data.success_url,
+            cancel_url: data.cancel_url,
+            metadata: data.metadata,
+            allow_promotion_codes: data.allow_promo_codes,
+            billing_address_collection: if data.collect_billing then "required" else "auto"
+          })
+        - return CheckoutSession.from_stripe(session)
+
+    When checkout.get_session(id):
+      Then:
+        - session = await stripe.checkout.sessions.retrieve(id)
+        - return CheckoutSession.from_stripe(session)
+
+    When checkout.expire_session(id):
+      Then:
+        - session = await stripe.checkout.sessions.expire(id)
+        - return CheckoutSession.from_stripe(session)
+
+  # ==========================================================================
+  # PAYMENT LINKS
+  # ==========================================================================
+
+  Type PaymentLink:
+    id: PaymentLinkId
+    url: URL
+    active: Boolean
+    line_items: List<LineItem>
+    metadata: Map<String, String>
+
+  Type LineItem:
+    price_id: PriceId
+    quantity: Int
+    adjustable_quantity: Boolean
+
+  Behavior PaymentLinkManagement:
+    When payment_link.create(data):
+      Then:
+        - link = await stripe.paymentLinks.create({
+            line_items: data.items.map(i -> {
+              price: i.price_id,
+              quantity: i.quantity,
+              adjustable_quantity: if i.adjustable then { enabled: true } else null
+            }),
+            after_completion: {
+              type: "redirect",
+              redirect: { url: data.success_url }
+            },
+            metadata: data.metadata
+          })
+        - return PaymentLink.from_stripe(link)
+
+    When payment_link.update(id, data):
+      Then:
+        - link = await stripe.paymentLinks.update(id, data)
+        - return PaymentLink.from_stripe(link)
+
+    When payment_link.deactivate(id):
+      Then:
+        - link = await stripe.paymentLinks.update(id, { active: false })
+        - return PaymentLink.from_stripe(link)
+
+  # ==========================================================================
+  # WEBHOOKS
+  # ==========================================================================
+
+  Behavior WebhookHandling:
+    When webhook.verify(payload, signature, secret):
+      Then:
+        - try:
+            - event = stripe.webhooks.constructEvent(payload, signature, secret)
+            - return Ok(event)
+          catch error:
+            - return Err(WebhookError.InvalidSignature)
+
+    When webhook.handle(event):
+      Then:
+        - match event.type:
+            "payment_intent.succeeded" ->
+              emit PaymentSucceeded(Payment.from_stripe(event.data.object))
+            
+            "payment_intent.payment_failed" ->
+              emit PaymentFailed(Payment.from_stripe(event.data.object))
+            
+            "customer.subscription.created" ->
+              emit SubscriptionCreated(Subscription.from_stripe(event.data.object))
+            
+            "customer.subscription.updated" ->
+              emit SubscriptionUpdated(Subscription.from_stripe(event.data.object))
+            
+            "customer.subscription.deleted" ->
+              emit SubscriptionCanceled(Subscription.from_stripe(event.data.object))
+            
+            "invoice.paid" ->
+              emit InvoicePaid(Invoice.from_stripe(event.data.object))
+            
+            "invoice.payment_failed" ->
+              emit InvoicePaymentFailed(Invoice.from_stripe(event.data.object))
+            
+            "checkout.session.completed" ->
+              emit CheckoutCompleted(CheckoutSession.from_stripe(event.data.object))
+            
+            _ ->
+              log.debug("Unhandled webhook event: ${event.type}")
+
+  # ==========================================================================
+  # PAYPAL INTEGRATION
+  # ==========================================================================
+
+  Behavior PayPalIntegration:
+    When paypal.create_order(data):
+      Then:
+        - order = await paypal.orders.create({
+            intent: "CAPTURE",
+            purchase_units: [{
+              amount: {
+                currency_code: data.amount.currency.code,
+                value: data.amount.amount.to_string()
+              },
+              description: data.description
+            }],
+            application_context: {
+              return_url: data.return_url,
+              cancel_url: data.cancel_url
+            }
+          })
+        - return PayPalOrder.from_response(order)
+
+    When paypal.capture_order(order_id):
+      Then:
+        - result = await paypal.orders.capture(order_id)
+        - return PayPalCapture.from_response(result)
+
+    When paypal.create_subscription(data):
+      Then:
+        - sub = await paypal.subscriptions.create({
+            plan_id: data.plan_id,
+            subscriber: {
+              email_address: data.email
+            },
+            application_context: {
+              return_url: data.return_url,
+              cancel_url: data.cancel_url
+            }
+          })
+        - return PayPalSubscription.from_response(sub)
+
+  # ==========================================================================
+  # CRYPTO PAYMENTS
+  # ==========================================================================
+
+  Behavior CryptoPayments:
+    When crypto.create_charge(data):
+      Then:
+        - charge = await coinbase.charges.create({
+            name: data.name,
+            description: data.description,
+            pricing_type: "fixed_price",
+            local_price: {
+              amount: data.amount.amount.to_string(),
+              currency: data.amount.currency.code
+            },
+            metadata: data.metadata,
+            redirect_url: data.redirect_url,
+            cancel_url: data.cancel_url
+          })
+        - return CryptoCharge.from_response(charge)
+
+    When crypto.get_charge(id):
+      Then:
+        - charge = await coinbase.charges.retrieve(id)
+        - return CryptoCharge.from_response(charge)
+
+    Type CryptoCharge:
+      id: String
+      code: String
+      hosted_url: URL
+      status: CryptoChargeStatus
+      addresses: Map<CryptoNetwork, String>
+      pricing: Map<CryptoCurrency, Decimal>
+      payments: List<CryptoPayment>
+      expires_at: DateTime
+
+    Type CryptoChargeStatus:
+      variants: [New, Pending, Completed, Expired, Unresolved, Resolved, Canceled]
+
+    Type CryptoPayment:
+      network: CryptoNetwork
+      transaction_id: String
+      status: CryptoPaymentStatus
+      value: Decimal
+      currency: CryptoCurrency
+
+    Type CryptoPaymentStatus:
+      variants: [Pending, Confirmed, Failed]
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Payment Processing":
+    ```vibee
+    # Create customer
+    customer = await customer.create({
+      email: "user@example.com",
+      name: "John Doe"
+    })
+
+    # Create payment
+    payment = await payment.create({
+      amount: Money(99.99, Currency.USD),
+      customer_id: customer.id,
+      description: "Premium subscription",
+      confirm: true
+    })
+
+    match payment.status:
+      Succeeded ->
+        log.info("Payment successful!")
+      RequiresAction(action) ->
+        # Redirect to 3D Secure
+        redirect(action.url)
+      Failed(error) ->
+        log.error("Payment failed: ${error.message}")
+
+    # Create subscription
+    subscription = await subscription.create({
+      customer_id: customer.id,
+      items: [{ price_id: "price_premium_monthly", quantity: 1 }],
+      trial_days: 14
+    })
+
+    # Create checkout session
+    session = await checkout.create_session({
+      mode: Subscription,
+      customer_id: customer.id,
+      items: [{ price_id: "price_pro_yearly", quantity: 1 }],
+      success_url: "https://app.com/success",
+      cancel_url: "https://app.com/cancel",
+      allow_promo_codes: true
+    })
+
+    # Redirect to checkout
+    redirect(session.url)
+
+    # Handle webhook
+    @webhook("/stripe")
+    async fn handle_stripe_webhook(req: Request):
+      event = webhook.verify(
+        req.body,
+        req.headers["stripe-signature"],
+        env.STRIPE_WEBHOOK_SECRET
+      )?
+
+      await webhook.handle(event)
+      return Response.ok()
+
+    # Process refund
+    refund = await refund.create(payment.id, {
+      amount: Money(50.00, Currency.USD),
+      reason: RequestedByCustomer
+    })
+    ```

@@ -1,0 +1,326 @@
+// =============================================================================
+// Vibee OS — Terraform Module
+// Infrastructure as Code with Terraform
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Terraform Client
+// -----------------------------------------------------------------------------
+
+actor Terraform {
+    state working_dir: String
+    state backend: Backend?
+    state vars: Map<String, String>
+    state var_files: [String]
+    state parallelism: Int
+    
+    init(working_dir: String = ".") {
+        self.working_dir = working_dir
+        self.vars = Map.empty()
+        self.var_files = []
+        self.parallelism = 10
+    }
+    
+    on backend(b: Backend) -> Self { self.backend = Some(b); self }
+    on var(name: String, value: String) -> Self { self.vars.set(name, value); self }
+    on var_file(path: String) -> Self { self.var_files.append(path); self }
+    on parallelism(n: Int) -> Self { self.parallelism = n; self }
+    
+    on init(opts: InitOptions = InitOptions.default()) -> Result<InitResult, TerraformError> { @native("terraform_init", self.working_dir, opts) }
+    on plan(opts: PlanOptions = PlanOptions.default()) -> Result<Plan, TerraformError> { @native("terraform_plan", self.working_dir, self.vars, self.var_files, opts) }
+    on apply(opts: ApplyOptions = ApplyOptions.default()) -> Result<ApplyResult, TerraformError> { @native("terraform_apply", self.working_dir, self.vars, self.var_files, opts) }
+    on destroy(opts: DestroyOptions = DestroyOptions.default()) -> Result<DestroyResult, TerraformError> { @native("terraform_destroy", self.working_dir, self.vars, self.var_files, opts) }
+    on output(name: String? = None) -> Result<Map<String, OutputValue>, TerraformError> { @native("terraform_output", self.working_dir, name) }
+    on state() -> Result<State, TerraformError> { @native("terraform_state", self.working_dir) }
+    on validate() -> Result<ValidationResult, TerraformError> { @native("terraform_validate", self.working_dir) }
+    on fmt(check: Bool = false) -> Result<FmtResult, TerraformError> { @native("terraform_fmt", self.working_dir, check) }
+    on refresh() -> Result<(), TerraformError> { @native("terraform_refresh", self.working_dir, self.vars, self.var_files) }
+    on import(address: String, id: String) -> Result<(), TerraformError> { @native("terraform_import", self.working_dir, address, id) }
+    on taint(address: String) -> Result<(), TerraformError> { @native("terraform_taint", self.working_dir, address) }
+    on untaint(address: String) -> Result<(), TerraformError> { @native("terraform_untaint", self.working_dir, address) }
+    on workspace_list() -> Result<[String], TerraformError> { @native("terraform_workspace_list", self.working_dir) }
+    on workspace_select(name: String) -> Result<(), TerraformError> { @native("terraform_workspace_select", self.working_dir, name) }
+    on workspace_new(name: String) -> Result<(), TerraformError> { @native("terraform_workspace_new", self.working_dir, name) }
+}
+
+// -----------------------------------------------------------------------------
+// Options
+// -----------------------------------------------------------------------------
+
+struct InitOptions { upgrade: Bool, reconfigure: Bool, migrate_state: Bool, backend_config: Map<String, String> }
+impl InitOptions { fn default() -> Self { InitOptions { upgrade: false, reconfigure: false, migrate_state: false, backend_config: Map.empty() } } }
+
+struct PlanOptions { out: String?, destroy: Bool, refresh: Bool, target: [String] }
+impl PlanOptions { fn default() -> Self { PlanOptions { out: None, destroy: false, refresh: true, target: [] } } }
+
+struct ApplyOptions { auto_approve: Bool, plan_file: String?, target: [String], refresh: Bool }
+impl ApplyOptions { fn default() -> Self { ApplyOptions { auto_approve: false, plan_file: None, target: [], refresh: true } } }
+
+struct DestroyOptions { auto_approve: Bool, target: [String] }
+impl DestroyOptions { fn default() -> Self { DestroyOptions { auto_approve: false, target: [] } } }
+
+// -----------------------------------------------------------------------------
+// Results
+// -----------------------------------------------------------------------------
+
+struct InitResult { success: Bool, providers: [ProviderInfo], modules: [ModuleInfo] }
+struct ProviderInfo { name: String, version: String, source: String }
+struct ModuleInfo { name: String, source: String, version: String? }
+
+struct Plan { changes: PlanChanges, resources: [ResourceChange] }
+struct PlanChanges { add: Int, change: Int, destroy: Int }
+struct ResourceChange { address: String, action: ChangeAction, type_: String, name: String, before: Map<String, Value>?, after: Map<String, Value>? }
+enum ChangeAction { Create, Update, Delete, Replace, NoOp }
+
+struct ApplyResult { success: Bool, resources_created: Int, resources_updated: Int, resources_deleted: Int, outputs: Map<String, OutputValue> }
+struct DestroyResult { success: Bool, resources_deleted: Int }
+struct OutputValue { value: Value, sensitive: Bool, type_: String }
+struct ValidationResult { valid: Bool, errors: [ValidationError], warnings: [String] }
+struct ValidationError { message: String, range: SourceRange? }
+struct SourceRange { filename: String, start_line: Int, end_line: Int }
+struct FmtResult { formatted: Bool, files: [String] }
+
+// -----------------------------------------------------------------------------
+// State
+// -----------------------------------------------------------------------------
+
+struct State { version: Int, terraform_version: String, resources: [StateResource] }
+struct StateResource { type_: String, name: String, provider: String, instances: [StateInstance] }
+struct StateInstance { attributes: Map<String, Value>, dependencies: [String] }
+
+// -----------------------------------------------------------------------------
+// Backend
+// -----------------------------------------------------------------------------
+
+enum Backend {
+    Local(String)
+    S3 { bucket: String, key: String, region: String, encrypt: Bool }
+    GCS { bucket: String, prefix: String }
+    AzureRM { storage_account: String, container: String, key: String }
+    Remote { organization: String, workspaces: WorkspaceConfig }
+    Consul { address: String, path: String }
+    
+    fn to_hcl() -> String {
+        match self {
+            .Local(path) => "backend \"local\" {\n  path = \"\(path)\"\n}"
+            .S3 { bucket, key, region, encrypt } => "backend \"s3\" {\n  bucket = \"\(bucket)\"\n  key = \"\(key)\"\n  region = \"\(region)\"\n  encrypt = \(encrypt)\n}"
+            .GCS { bucket, prefix } => "backend \"gcs\" {\n  bucket = \"\(bucket)\"\n  prefix = \"\(prefix)\"\n}"
+            .AzureRM { storage_account, container, key } => "backend \"azurerm\" {\n  storage_account_name = \"\(storage_account)\"\n  container_name = \"\(container)\"\n  key = \"\(key)\"\n}"
+            .Remote { organization, workspaces } => "backend \"remote\" {\n  organization = \"\(organization)\"\n  workspaces {\n    \(workspaces.to_hcl())\n  }\n}"
+            .Consul { address, path } => "backend \"consul\" {\n  address = \"\(address)\"\n  path = \"\(path)\"\n}"
+        }
+    }
+}
+
+enum WorkspaceConfig { Name(String), Prefix(String) }
+impl WorkspaceConfig {
+    fn to_hcl() -> String {
+        match self {
+            .Name(n) => "name = \"\(n)\""
+            .Prefix(p) => "prefix = \"\(p)\""
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// HCL Builder
+// -----------------------------------------------------------------------------
+
+actor HCLBuilder {
+    state blocks: [String]
+    
+    init() { self.blocks = [] }
+    
+    on terraform(required_version: String?, providers: [ProviderRequirement]) -> Self {
+        var content = "terraform {\n"
+        if let v = required_version { content += "  required_version = \"\(v)\"\n" }
+        if !providers.is_empty() {
+            content += "  required_providers {\n"
+            for p in providers { content += "    \(p.name) = {\n      source = \"\(p.source)\"\n      version = \"\(p.version)\"\n    }\n" }
+            content += "  }\n"
+        }
+        content += "}"
+        self.blocks.append(content)
+        self
+    }
+    
+    on provider(name: String, config: Map<String, Value>) -> Self {
+        var content = "provider \"\(name)\" {\n"
+        for (k, v) in config { content += "  \(k) = \(v.to_hcl())\n" }
+        content += "}"
+        self.blocks.append(content)
+        self
+    }
+    
+    on resource(type_: String, name: String, config: Map<String, Value>) -> Self {
+        var content = "resource \"\(type_)\" \"\(name)\" {\n"
+        for (k, v) in config { content += "  \(k) = \(v.to_hcl())\n" }
+        content += "}"
+        self.blocks.append(content)
+        self
+    }
+    
+    on data(type_: String, name: String, config: Map<String, Value>) -> Self {
+        var content = "data \"\(type_)\" \"\(name)\" {\n"
+        for (k, v) in config { content += "  \(k) = \(v.to_hcl())\n" }
+        content += "}"
+        self.blocks.append(content)
+        self
+    }
+    
+    on variable(name: String, type_: String?, default: Value?, description: String?) -> Self {
+        var content = "variable \"\(name)\" {\n"
+        if let t = type_ { content += "  type = \(t)\n" }
+        if let d = default { content += "  default = \(d.to_hcl())\n" }
+        if let desc = description { content += "  description = \"\(desc)\"\n" }
+        content += "}"
+        self.blocks.append(content)
+        self
+    }
+    
+    on output(name: String, value: String, description: String?, sensitive: Bool = false) -> Self {
+        var content = "output \"\(name)\" {\n  value = \(value)\n"
+        if let d = description { content += "  description = \"\(d)\"\n" }
+        if sensitive { content += "  sensitive = true\n" }
+        content += "}"
+        self.blocks.append(content)
+        self
+    }
+    
+    on module(name: String, source: String, version: String?, vars: Map<String, Value>) -> Self {
+        var content = "module \"\(name)\" {\n  source = \"\(source)\"\n"
+        if let v = version { content += "  version = \"\(v)\"\n" }
+        for (k, v) in vars { content += "  \(k) = \(v.to_hcl())\n" }
+        content += "}"
+        self.blocks.append(content)
+        self
+    }
+    
+    on locals(values: Map<String, Value>) -> Self {
+        var content = "locals {\n"
+        for (k, v) in values { content += "  \(k) = \(v.to_hcl())\n" }
+        content += "}"
+        self.blocks.append(content)
+        self
+    }
+    
+    on build() -> String { self.blocks.join("\n\n") }
+    on save(path: String) -> Result<(), IOError> { fs::write_string(path, self.build()) }
+}
+
+struct ProviderRequirement { name: String, source: String, version: String }
+
+// -----------------------------------------------------------------------------
+// Value Types
+// -----------------------------------------------------------------------------
+
+enum Value {
+    String(String)
+    Number(Float)
+    Bool(Bool)
+    List([Value])
+    Map(Map<String, Value>)
+    Reference(String)
+    
+    fn to_hcl() -> String {
+        match self {
+            .String(s) => "\"\(s)\""
+            .Number(n) => n.to_string()
+            .Bool(b) => b.to_string()
+            .List(items) => "[\(items.map(|v| v.to_hcl()).join(", "))]"
+            .Map(m) => "{\n" + m.iter().map(|(k, v)| "    \(k) = \(v.to_hcl())").join("\n") + "\n  }"
+            .Reference(r) => r
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Resource Helpers
+// -----------------------------------------------------------------------------
+
+struct AWS {
+    fn instance(name: String, ami: String, instance_type: String) -> (String, String, Map<String, Value>) {
+        ("aws_instance", name, Map.from([("ami", Value.String(ami)), ("instance_type", Value.String(instance_type))]))
+    }
+    
+    fn s3_bucket(name: String, bucket: String) -> (String, String, Map<String, Value>) {
+        ("aws_s3_bucket", name, Map.from([("bucket", Value.String(bucket))]))
+    }
+    
+    fn vpc(name: String, cidr: String) -> (String, String, Map<String, Value>) {
+        ("aws_vpc", name, Map.from([("cidr_block", Value.String(cidr))]))
+    }
+    
+    fn security_group(name: String, vpc_id: String) -> (String, String, Map<String, Value>) {
+        ("aws_security_group", name, Map.from([("vpc_id", Value.Reference(vpc_id))]))
+    }
+}
+
+struct GCP {
+    fn compute_instance(name: String, machine_type: String, zone: String) -> (String, String, Map<String, Value>) {
+        ("google_compute_instance", name, Map.from([("machine_type", Value.String(machine_type)), ("zone", Value.String(zone))]))
+    }
+    
+    fn storage_bucket(name: String, location: String) -> (String, String, Map<String, Value>) {
+        ("google_storage_bucket", name, Map.from([("location", Value.String(location))]))
+    }
+}
+
+struct Azure {
+    fn resource_group(name: String, location: String) -> (String, String, Map<String, Value>) {
+        ("azurerm_resource_group", name, Map.from([("location", Value.String(location))]))
+    }
+    
+    fn virtual_machine(name: String, size: String) -> (String, String, Map<String, Value>) {
+        ("azurerm_virtual_machine", name, Map.from([("vm_size", Value.String(size))]))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum TerraformError {
+    NotInitialized, PlanFailed(String), ApplyFailed(String), DestroyFailed(String), ValidationFailed([ValidationError]), StateError(String), BackendError(String), ProviderError(String), CommandFailed(Int, String)
+    
+    fn message() -> String {
+        match self {
+            .NotInitialized => "Terraform not initialized. Run 'terraform init' first."
+            .PlanFailed(m) => "Plan failed: \(m)"
+            .ApplyFailed(m) => "Apply failed: \(m)"
+            .DestroyFailed(m) => "Destroy failed: \(m)"
+            .ValidationFailed(e) => "Validation failed: \(e.len()) errors"
+            .StateError(m) => "State error: \(m)"
+            .BackendError(m) => "Backend error: \(m)"
+            .ProviderError(m) => "Provider error: \(m)"
+            .CommandFailed(c, m) => "Command failed (\(c)): \(m)"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "hcl builder" {
+    let hcl = HCLBuilder.new()
+        .provider("aws", Map.from([("region", Value.String("us-east-1"))]))
+        .resource("aws_instance", "web", Map.from([("ami", Value.String("ami-123")), ("instance_type", Value.String("t2.micro"))]))
+        .build()
+    
+    assert(hcl.contains("provider \"aws\""))
+    assert(hcl.contains("resource \"aws_instance\" \"web\""))
+}
+
+test "backend s3" {
+    let backend = Backend.S3 { bucket: "my-bucket", key: "state.tfstate", region: "us-east-1", encrypt: true }
+    let hcl = backend.to_hcl()
+    assert(hcl.contains("backend \"s3\""))
+    assert(hcl.contains("bucket = \"my-bucket\""))
+}
+
+test "value to hcl" {
+    assert(Value.String("hello").to_hcl() == "\"hello\"")
+    assert(Value.Bool(true).to_hcl() == "true")
+    assert(Value.Reference("var.name").to_hcl() == "var.name")
+}

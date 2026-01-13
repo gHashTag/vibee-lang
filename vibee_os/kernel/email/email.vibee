@@ -1,0 +1,631 @@
+# ============================================================================
+# EMAIL - Электронная почта на Vibee
+# ============================================================================
+# SMTP, templates, attachments, queuing
+# ============================================================================
+
+Specification Email:
+  """Email как спецификация коммуникации."""
+
+  # ==========================================================================
+  # TYPES
+  # ==========================================================================
+
+  Type EmailMessage:
+    id: MessageId
+    from: EmailAddress
+    to: List<EmailAddress>
+    cc: List<EmailAddress>
+    bcc: List<EmailAddress>
+    reply_to: EmailAddress?
+    subject: String
+    text: String?
+    html: String?
+    attachments: List<Attachment>
+    headers: Map<String, String>
+    priority: Priority
+    created_at: Timestamp
+
+  Type MessageId:
+    value: String
+
+  Type EmailAddress:
+    email: String
+    name: String?
+
+  Type Attachment:
+    filename: String
+    content: Bytes
+    content_type: String
+    content_id: String?
+    disposition: Disposition
+
+  Type Disposition:
+    variants:
+      - Attachment
+      - Inline
+
+  Type Priority:
+    variants:
+      - High: 1
+      - Normal: 3
+      - Low: 5
+
+  # ==========================================================================
+  # SMTP CONFIG
+  # ==========================================================================
+
+  Type SMTPConfig:
+    host: String
+    port: Port = 587
+    secure: Boolean = false
+    auth: SMTPAuth?
+    tls: TLSOptions?
+    pool: PoolConfig?
+    timeout: Duration = 30.seconds
+    debug: Boolean = false
+
+  Type SMTPAuth:
+    variants:
+      - Plain: (username: String, password: String)
+      - Login: (username: String, password: String)
+      - OAuth2: OAuth2Config
+      - CRAMMD5: (username: String, password: String)
+
+  Type OAuth2Config:
+    user: String
+    client_id: String
+    client_secret: String
+    refresh_token: String
+    access_token: String?
+    expires_at: Timestamp?
+
+  Type TLSOptions:
+    reject_unauthorized: Boolean = true
+    ca: String?
+    cert: String?
+    key: String?
+    servername: String?
+
+  Type PoolConfig:
+    max_connections: Int = 5
+    max_messages: Int = 100
+    rate_limit: Int?
+    rate_delta: Duration = 1.second
+
+  # ==========================================================================
+  # TRANSPORT
+  # ==========================================================================
+
+  Type Transport:
+    variants:
+      - SMTP: SMTPTransport
+      - SES: SESTransport
+      - SendGrid: SendGridTransport
+      - Mailgun: MailgunTransport
+      - Postmark: PostmarkTransport
+      - Stream: StreamTransport
+      - JSON: JSONTransport
+
+  Type SMTPTransport:
+    config: SMTPConfig
+    connection_pool: Pool<SMTPConnection>
+
+  Type SESTransport:
+    region: String
+    credentials: AWSCredentials
+    configuration_set: String?
+
+  Type SendGridTransport:
+    api_key: String
+    sandbox_mode: Boolean = false
+
+  Type MailgunTransport:
+    api_key: String
+    domain: String
+    region: MailgunRegion = US
+
+  Type MailgunRegion:
+    variants: [US, EU]
+
+  Type PostmarkTransport:
+    server_token: String
+    message_stream: String = "outbound"
+
+  # ==========================================================================
+  # MAILER
+  # ==========================================================================
+
+  Behavior Mailer:
+    State:
+      transport: Transport
+      defaults: MailerDefaults
+      templates: Map<String, Template>
+
+    Type MailerDefaults:
+      from: EmailAddress?
+      reply_to: EmailAddress?
+      headers: Map<String, String>
+
+    When mailer.send(message):
+      Then:
+        - # Apply defaults
+        - message = apply_defaults(message, defaults)
+        
+        - # Validate
+        - validate_message(message)
+        
+        - # Generate message ID
+        - if not message.id:
+            - message.id = generate_message_id()
+        
+        - # Send via transport
+        - result = match transport:
+            SMTP(t) -> await send_smtp(t, message)
+            SES(t) -> await send_ses(t, message)
+            SendGrid(t) -> await send_sendgrid(t, message)
+            Mailgun(t) -> await send_mailgun(t, message)
+            Postmark(t) -> await send_postmark(t, message)
+            Stream(t) -> await send_stream(t, message)
+            JSON(t) -> await send_json(t, message)
+        
+        - emit EmailSent(message.id, message.to)
+        - return result
+
+    When mailer.send_template(template_name, to, data, options):
+      Then:
+        - template = templates[template_name]
+        - if not template:
+            - raise TemplateNotFound(template_name)
+        
+        - rendered = render_template(template, data)
+        
+        - message = EmailMessage(
+            from: options.from ?? defaults.from,
+            to: normalize_recipients(to),
+            subject: rendered.subject,
+            text: rendered.text,
+            html: rendered.html,
+            attachments: options.attachments ?? []
+          )
+        
+        - return await mailer.send(message)
+
+    When mailer.send_bulk(messages):
+      Then:
+        - results = []
+        - for message in messages:
+            - try:
+                - result = await mailer.send(message)
+                - add { success: true, message_id: result.message_id } to results
+              catch error:
+                - add { success: false, error: error.message } to results
+        - return results
+
+    When validate_message(message):
+      Then:
+        - if not message.from:
+            - raise ValidationError("From address is required")
+        - if message.to.is_empty():
+            - raise ValidationError("At least one recipient is required")
+        - if not message.subject:
+            - raise ValidationError("Subject is required")
+        - if not message.text and not message.html:
+            - raise ValidationError("Message body is required")
+        
+        - for addr in [message.from] + message.to + message.cc + message.bcc:
+            - if not is_valid_email(addr.email):
+                - raise ValidationError("Invalid email: ${addr.email}")
+
+  # ==========================================================================
+  # SMTP TRANSPORT
+  # ==========================================================================
+
+  Behavior SMTPTransportBehavior:
+    When send_smtp(transport, message):
+      Then:
+        - conn = await transport.connection_pool.acquire()
+        - try:
+            - # Build MIME message
+            - mime = build_mime_message(message)
+            
+            - # Send envelope
+            - await conn.mail_from(message.from.email)
+            - for recipient in message.to + message.cc + message.bcc:
+                - await conn.rcpt_to(recipient.email)
+            
+            - # Send data
+            - await conn.data(mime)
+            
+            - return SendResult(
+                message_id: message.id,
+                accepted: message.to + message.cc + message.bcc,
+                rejected: []
+              )
+          finally:
+            - transport.connection_pool.release(conn)
+
+    When build_mime_message(message):
+      Then:
+        - boundary = generate_boundary()
+        - parts = []
+        
+        - # Headers
+        - headers = [
+            "From: ${format_address(message.from)}",
+            "To: ${message.to.map(format_address).join(", ")}",
+            "Subject: ${encode_header(message.subject)}",
+            "Date: ${format_date(now())}",
+            "Message-ID: <${message.id}>",
+            "MIME-Version: 1.0"
+          ]
+        
+        - if message.cc.is_not_empty():
+            - add "Cc: ${message.cc.map(format_address).join(", ")}" to headers
+        
+        - if message.reply_to:
+            - add "Reply-To: ${format_address(message.reply_to)}" to headers
+        
+        - for (name, value) in message.headers:
+            - add "${name}: ${value}" to headers
+        
+        - # Body
+        - if message.text and message.html:
+            - # Multipart/alternative
+            - add "Content-Type: multipart/alternative; boundary=\"${boundary}\"" to headers
+            - body = build_multipart_alternative(message.text, message.html, boundary)
+        - elif message.html:
+            - add "Content-Type: text/html; charset=utf-8" to headers
+            - body = message.html
+        - else:
+            - add "Content-Type: text/plain; charset=utf-8" to headers
+            - body = message.text
+        
+        - # Attachments
+        - if message.attachments.is_not_empty():
+            - outer_boundary = generate_boundary()
+            - headers = headers.filter(h -> not h.starts_with("Content-Type"))
+            - add "Content-Type: multipart/mixed; boundary=\"${outer_boundary}\"" to headers
+            - body = build_multipart_mixed(body, message.attachments, outer_boundary)
+        
+        - return headers.join("\r\n") + "\r\n\r\n" + body
+
+    When build_multipart_alternative(text, html, boundary):
+      Then:
+        - return """
+          --${boundary}
+          Content-Type: text/plain; charset=utf-8
+          Content-Transfer-Encoding: quoted-printable
+
+          ${quoted_printable_encode(text)}
+
+          --${boundary}
+          Content-Type: text/html; charset=utf-8
+          Content-Transfer-Encoding: quoted-printable
+
+          ${quoted_printable_encode(html)}
+
+          --${boundary}--
+          """
+
+    When build_multipart_mixed(body, attachments, boundary):
+      Then:
+        - parts = ["--${boundary}\r\n${body}"]
+        
+        - for attachment in attachments:
+            - part = """
+              --${boundary}
+              Content-Type: ${attachment.content_type}; name="${attachment.filename}"
+              Content-Disposition: ${attachment.disposition}; filename="${attachment.filename}"
+              Content-Transfer-Encoding: base64
+              ${if attachment.content_id then "Content-ID: <${attachment.content_id}>" else ""}
+
+              ${base64_encode(attachment.content, line_length: 76)}
+              """
+            - add part to parts
+        
+        - add "--${boundary}--" to parts
+        - return parts.join("\r\n")
+
+  # ==========================================================================
+  # TEMPLATES
+  # ==========================================================================
+
+  Type Template:
+    name: String
+    subject: String
+    text: String?
+    html: String?
+    engine: TemplateEngine
+    layout: String?
+
+  Type TemplateEngine:
+    variants:
+      - Handlebars
+      - Mustache
+      - EJS
+      - Pug
+      - Custom: (String, Map<String, Any>) -> String
+
+  Type RenderedTemplate:
+    subject: String
+    text: String?
+    html: String?
+
+  Behavior TemplateRendering:
+    When mailer.register_template(name, template):
+      Then:
+        - templates[name] = template
+
+    When mailer.register_templates_from_directory(path):
+      Then:
+        - files = await fs.glob("${path}/**/*.{html,txt,hbs,mustache}")
+        - for file in files:
+            - name = file.relative_to(path).without_extension()
+            - content = await fs.read_file(file, "utf-8")
+            - engine = detect_engine(file.extension())
+            - templates[name] = Template(name, "", null, content, engine)
+
+    When render_template(template, data):
+      Then:
+        - subject = render_string(template.subject, data, template.engine)
+        - text = if template.text then render_string(template.text, data, template.engine) else null
+        - html = if template.html then render_string(template.html, data, template.engine) else null
+        
+        - # Apply layout
+        - if template.layout and html:
+            - layout = templates[template.layout]
+            - html = render_string(layout.html, merge(data, { content: html }), layout.engine)
+        
+        - return RenderedTemplate(subject, text, html)
+
+    When render_string(template, data, engine):
+      Then:
+        - match engine:
+            Handlebars -> handlebars_render(template, data)
+            Mustache -> mustache_render(template, data)
+            EJS -> ejs_render(template, data)
+            Pug -> pug_render(template, data)
+            Custom(fn) -> fn(template, data)
+
+  # ==========================================================================
+  # EMAIL QUEUE
+  # ==========================================================================
+
+  Type EmailQueue:
+    name: String
+    config: QueueConfig
+    jobs: List<EmailJob>
+
+  Type QueueConfig:
+    max_retries: Int = 3
+    retry_delay: Duration = 5.minutes
+    rate_limit: Int?
+    rate_window: Duration = 1.minute
+    batch_size: Int = 10
+
+  Type EmailJob:
+    id: JobId
+    message: EmailMessage
+    status: JobStatus
+    attempts: Int
+    last_error: String?
+    scheduled_at: Timestamp
+    sent_at: Timestamp?
+
+  Type JobStatus:
+    variants:
+      - Pending
+      - Processing
+      - Sent
+      - Failed
+      - Cancelled
+
+  Behavior EmailQueueBehavior:
+    When queue.enqueue(message, options):
+      Then:
+        - job = EmailJob(
+            id: generate_id(),
+            message: message,
+            status: Pending,
+            attempts: 0,
+            scheduled_at: options.send_at ?? now()
+          )
+        - add job to jobs
+        - emit EmailQueued(job.id)
+        - return job.id
+
+    When queue.process():
+      Then:
+        - loop:
+            - # Get pending jobs
+            - pending = jobs
+                .filter(j -> j.status == Pending and j.scheduled_at <= now())
+                .take(config.batch_size)
+            
+            - if pending.is_empty():
+                - await sleep(1.second)
+                - continue
+            
+            - # Check rate limit
+            - if config.rate_limit:
+                - await wait_for_rate_limit()
+            
+            - # Process jobs
+            - for job in pending:
+                - job.status = Processing
+                - job.attempts += 1
+                
+                - try:
+                    - await mailer.send(job.message)
+                    - job.status = Sent
+                    - job.sent_at = now()
+                    - emit EmailSentFromQueue(job.id)
+                  catch error:
+                    - job.last_error = error.message
+                    - if job.attempts >= config.max_retries:
+                        - job.status = Failed
+                        - emit EmailFailed(job.id, error.message)
+                    - else:
+                        - job.status = Pending
+                        - job.scheduled_at = now() + config.retry_delay * job.attempts
+
+    When queue.cancel(job_id):
+      Then:
+        - job = jobs.find(j -> j.id == job_id)
+        - if job and job.status == Pending:
+            - job.status = Cancelled
+            - emit EmailCancelled(job_id)
+
+    When queue.retry(job_id):
+      Then:
+        - job = jobs.find(j -> j.id == job_id)
+        - if job and job.status == Failed:
+            - job.status = Pending
+            - job.scheduled_at = now()
+            - job.attempts = 0
+
+  # ==========================================================================
+  # EMAIL VERIFICATION
+  # ==========================================================================
+
+  Behavior EmailVerification:
+    When verify_email_syntax(email):
+      Then:
+        - regex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/
+        - return email.matches(regex)
+
+    When verify_email_mx(email):
+      Then:
+        - domain = email.split("@")[1]
+        - records = await dns.resolve_mx(domain)
+        - return records.is_not_empty()
+
+    When verify_email_smtp(email):
+      """Verify email exists via SMTP (use carefully)"""
+      Then:
+        - domain = email.split("@")[1]
+        - mx_records = await dns.resolve_mx(domain)
+        - if mx_records.is_empty():
+            - return VerificationResult(valid: false, reason: "No MX records")
+        
+        - mx_host = mx_records.sort_by(r -> r.priority).first().exchange
+        
+        - try:
+            - conn = await smtp_connect(mx_host, 25)
+            - await conn.helo("verify.local")
+            - await conn.mail_from("verify@verify.local")
+            - response = await conn.rcpt_to(email)
+            - await conn.quit()
+            
+            - return VerificationResult(
+                valid: response.code == 250,
+                reason: response.message
+              )
+          catch error:
+            - return VerificationResult(valid: false, reason: error.message)
+
+  # ==========================================================================
+  # EVENTS
+  # ==========================================================================
+
+  Events:
+    EmailSent:
+      message_id: MessageId
+      recipients: List<String>
+      timestamp: Timestamp
+
+    EmailFailed:
+      message_id: MessageId
+      error: String
+      timestamp: Timestamp
+
+    EmailQueued:
+      job_id: JobId
+      timestamp: Timestamp
+
+    EmailSentFromQueue:
+      job_id: JobId
+      timestamp: Timestamp
+
+    EmailCancelled:
+      job_id: JobId
+      timestamp: Timestamp
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Email Usage":
+    ```vibee
+    # Configure mailer
+    mailer = Mailer(
+      transport: SMTP(SMTPConfig(
+        host: "smtp.example.com",
+        port: 587,
+        secure: false,
+        auth: Plain("user@example.com", "${SMTP_PASSWORD}")
+      )),
+      defaults: MailerDefaults(
+        from: EmailAddress("noreply@example.com", "My App")
+      )
+    )
+
+    # Send simple email
+    await mailer.send(EmailMessage(
+      to: [EmailAddress("user@example.com", "John Doe")],
+      subject: "Welcome!",
+      text: "Hello, welcome to our service!",
+      html: "<h1>Hello</h1><p>Welcome to our service!</p>"
+    ))
+
+    # Send with attachment
+    await mailer.send(EmailMessage(
+      to: [EmailAddress("user@example.com")],
+      subject: "Your Report",
+      text: "Please find attached your report.",
+      attachments: [
+        Attachment(
+          filename: "report.pdf",
+          content: await fs.read_file("/reports/report.pdf"),
+          content_type: "application/pdf",
+          disposition: Attachment
+        )
+      ]
+    ))
+
+    # Use templates
+    mailer.register_template("welcome", Template(
+      name: "welcome",
+      subject: "Welcome to {{app_name}}, {{user.name}}!",
+      html: """
+        <h1>Welcome, {{user.name}}!</h1>
+        <p>Thanks for joining {{app_name}}.</p>
+        <a href="{{verify_url}}">Verify your email</a>
+      """,
+      engine: Handlebars
+    ))
+
+    await mailer.send_template("welcome", "user@example.com", {
+      app_name: "My App",
+      user: { name: "John" },
+      verify_url: "https://example.com/verify?token=abc123"
+    })
+
+    # Queue emails
+    queue = EmailQueue(QueueConfig(
+      max_retries: 3,
+      rate_limit: 100,
+      rate_window: 1.minute
+    ))
+
+    for user in users:
+      await queue.enqueue(EmailMessage(
+        to: [EmailAddress(user.email, user.name)],
+        subject: "Newsletter",
+        html: newsletter_html
+      ))
+
+    # Start processing
+    spawn queue.process()
+    ```

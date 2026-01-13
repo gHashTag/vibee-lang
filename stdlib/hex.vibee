@@ -1,0 +1,464 @@
+// =============================================================================
+// Vibee OS — Hex Module
+// Hexadecimal encoding and manipulation
+// =============================================================================
+
+const HEX_LOWER: String = "0123456789abcdef"
+const HEX_UPPER: String = "0123456789ABCDEF"
+
+// -----------------------------------------------------------------------------
+// Encoding
+// -----------------------------------------------------------------------------
+
+/// Encode bytes to lowercase hex string
+fn encode(data: [UInt8]) -> String {
+    var result = ""
+    for b in data {
+        result.push(HEX_LOWER[(b >> 4) as Int])
+        result.push(HEX_LOWER[(b & 0x0f) as Int])
+    }
+    result
+}
+
+/// Encode bytes to uppercase hex string
+fn encode_upper(data: [UInt8]) -> String {
+    var result = ""
+    for b in data {
+        result.push(HEX_UPPER[(b >> 4) as Int])
+        result.push(HEX_UPPER[(b & 0x0f) as Int])
+    }
+    result
+}
+
+/// Encode with prefix (0x)
+fn encode_prefixed(data: [UInt8]) -> String {
+    format!("0x{}", encode(data))
+}
+
+/// Encode string to hex
+fn encode_string(s: String) -> String {
+    encode(s.as_bytes())
+}
+
+/// Encode single byte
+fn encode_byte(b: UInt8) -> String {
+    format!("{:02x}", b)
+}
+
+/// Encode with separator
+fn encode_with_separator(data: [UInt8], sep: String) -> String {
+    data.iter()
+        .map(|b| format!("{:02x}", b))
+        .join(sep)
+}
+
+/// Encode with colon separator (MAC address style)
+fn encode_colon(data: [UInt8]) -> String {
+    encode_with_separator(data, ":")
+}
+
+/// Encode with space separator
+fn encode_spaced(data: [UInt8]) -> String {
+    encode_with_separator(data, " ")
+}
+
+// -----------------------------------------------------------------------------
+// Decoding
+// -----------------------------------------------------------------------------
+
+/// Decode hex string to bytes
+fn decode(s: String) -> Result<[UInt8], HexError> {
+    let s = s.trim()
+    
+    // Remove common prefixes
+    let s = if s.starts_with("0x") || s.starts_with("0X") {
+        s[2..]
+    } else {
+        s
+    }
+    
+    // Remove separators
+    let s = s.replace(":", "").replace(" ").replace("-", "")
+    
+    if s.len() % 2 != 0 {
+        return Err(HexError.OddLength)
+    }
+    
+    var result = []
+    var i = 0
+    
+    while i < s.len() {
+        let high = decode_char(s.chars().nth(i).unwrap())?
+        let low = decode_char(s.chars().nth(i + 1).unwrap())?
+        result.push((high << 4) | low)
+        i += 2
+    }
+    
+    Ok(result)
+}
+
+/// Decode hex string to UTF-8 string
+fn decode_string(s: String) -> Result<String, HexError> {
+    let bytes = decode(s)?
+    String.from_utf8(bytes).map_err(|_| HexError.InvalidUtf8)
+}
+
+/// Decode single hex character
+fn decode_char(c: Char) -> Result<UInt8, HexError> {
+    match c {
+        '0'..='9' => Ok((c as UInt8) - ('0' as UInt8))
+        'a'..='f' => Ok((c as UInt8) - ('a' as UInt8) + 10)
+        'A'..='F' => Ok((c as UInt8) - ('A' as UInt8) + 10)
+        _ => Err(HexError.InvalidCharacter(c))
+    }
+}
+
+/// Check if string is valid hex
+fn is_valid(s: String) -> Bool {
+    let s = s.trim()
+    let s = if s.starts_with("0x") || s.starts_with("0X") { s[2..] } else { s }
+    let s = s.replace(":", "").replace(" ").replace("-", "")
+    
+    s.len() % 2 == 0 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+// -----------------------------------------------------------------------------
+// Integer Conversion
+// -----------------------------------------------------------------------------
+
+/// Convert integer to hex string
+fn from_int<T: Int>(value: T) -> String {
+    format!("{:x}", value)
+}
+
+/// Convert integer to hex with minimum width
+fn from_int_padded<T: Int>(value: T, width: Int) -> String {
+    format!("{:0>width$x}", value, width = width)
+}
+
+/// Parse hex string to integer
+fn to_int<T: Int>(s: String) -> Result<T, HexError> {
+    let s = s.trim()
+    let s = if s.starts_with("0x") || s.starts_with("0X") { s[2..] } else { s }
+    T.parse_hex(s).map_err(|_| HexError.ParseError)
+}
+
+/// Convert u8 to hex
+fn from_u8(v: UInt8) -> String { format!("{:02x}", v) }
+
+/// Convert u16 to hex
+fn from_u16(v: UInt16) -> String { format!("{:04x}", v) }
+
+/// Convert u32 to hex
+fn from_u32(v: UInt32) -> String { format!("{:08x}", v) }
+
+/// Convert u64 to hex
+fn from_u64(v: UInt64) -> String { format!("{:016x}", v) }
+
+// -----------------------------------------------------------------------------
+// Hex Dump
+// -----------------------------------------------------------------------------
+
+/// Format bytes as hex dump
+fn dump(data: [UInt8]) -> String {
+    dump_with(data, HexDumpOptions.default())
+}
+
+/// Hex dump options
+struct HexDumpOptions {
+    bytes_per_line: Int
+    show_offset: Bool
+    show_ascii: Bool
+    uppercase: Bool
+    group_size: Int
+    
+    fn default() -> Self {
+        HexDumpOptions {
+            bytes_per_line: 16,
+            show_offset: true,
+            show_ascii: true,
+            uppercase: false,
+            group_size: 2
+        }
+    }
+    
+    fn compact() -> Self {
+        HexDumpOptions {
+            bytes_per_line: 32,
+            show_offset: false,
+            show_ascii: false,
+            uppercase: false,
+            group_size: 0
+        }
+    }
+}
+
+/// Format bytes as hex dump with options
+fn dump_with(data: [UInt8], opts: HexDumpOptions) -> String {
+    var lines = []
+    var offset = 0
+    
+    while offset < data.len() {
+        var line = ""
+        
+        // Offset
+        if opts.show_offset {
+            line.push_str(format!("{:08x}  ", offset))
+        }
+        
+        // Hex bytes
+        var hex_part = ""
+        var ascii_part = ""
+        
+        for i in 0..opts.bytes_per_line {
+            if offset + i < data.len() {
+                let b = data[offset + i]
+                let hex = if opts.uppercase {
+                    format!("{:02X}", b)
+                } else {
+                    format!("{:02x}", b)
+                }
+                hex_part.push_str(hex)
+                
+                // Grouping
+                if opts.group_size > 0 && (i + 1) % opts.group_size == 0 {
+                    hex_part.push(' ')
+                }
+                
+                // ASCII
+                if opts.show_ascii {
+                    if b >= 0x20 && b < 0x7f {
+                        ascii_part.push(b as Char)
+                    } else {
+                        ascii_part.push('.')
+                    }
+                }
+            } else {
+                // Padding
+                hex_part.push_str("  ")
+                if opts.group_size > 0 && (i + 1) % opts.group_size == 0 {
+                    hex_part.push(' ')
+                }
+                if opts.show_ascii {
+                    ascii_part.push(' ')
+                }
+            }
+        }
+        
+        line.push_str(hex_part.trim_end())
+        
+        if opts.show_ascii {
+            line.push_str("  |")
+            line.push_str(ascii_part)
+            line.push('|')
+        }
+        
+        lines.push(line)
+        offset += opts.bytes_per_line
+    }
+    
+    lines.join("\n")
+}
+
+/// Parse hex dump back to bytes
+fn parse_dump(s: String) -> Result<[UInt8], HexError> {
+    var result = []
+    
+    for line in s.lines() {
+        let line = line.trim()
+        if line.is_empty() { continue }
+        
+        // Skip offset if present
+        let hex_start = if line.contains("  ") {
+            line.find("  ").map(|i| i + 2).unwrap_or(0)
+        } else {
+            0
+        }
+        
+        // Find end of hex (before ASCII part)
+        let hex_end = line.rfind("  |").unwrap_or(line.len())
+        
+        let hex_part = line[hex_start..hex_end]
+        let hex_clean = hex_part.replace(" ", "")
+        
+        if !hex_clean.is_empty() {
+            let bytes = decode(hex_clean)?
+            result.extend(bytes)
+        }
+    }
+    
+    Ok(result)
+}
+
+// -----------------------------------------------------------------------------
+// Hex Color
+// -----------------------------------------------------------------------------
+
+/// Parse hex color (#RGB or #RRGGBB)
+fn parse_color(s: String) -> Result<(UInt8, UInt8, UInt8), HexError> {
+    let s = s.trim().trim_start("#")
+    
+    match s.len() {
+        3 => {
+            let r = decode_char(s.chars().nth(0).unwrap())? * 17
+            let g = decode_char(s.chars().nth(1).unwrap())? * 17
+            let b = decode_char(s.chars().nth(2).unwrap())? * 17
+            Ok((r, g, b))
+        }
+        6 => {
+            let bytes = decode(s)?
+            Ok((bytes[0], bytes[1], bytes[2]))
+        }
+        _ => Err(HexError.InvalidColor)
+    }
+}
+
+/// Format RGB as hex color
+fn to_color(r: UInt8, g: UInt8, b: UInt8) -> String {
+    format!("#{:02x}{:02x}{:02x}", r, g, b)
+}
+
+// -----------------------------------------------------------------------------
+// Bitwise Operations on Hex
+// -----------------------------------------------------------------------------
+
+/// XOR two hex strings
+fn xor(a: String, b: String) -> Result<String, HexError> {
+    let a_bytes = decode(a)?
+    let b_bytes = decode(b)?
+    
+    if a_bytes.len() != b_bytes.len() {
+        return Err(HexError.LengthMismatch)
+    }
+    
+    let result = a_bytes.iter()
+        .zip(b_bytes.iter())
+        .map(|(x, y)| x ^ y)
+        .collect()
+    
+    Ok(encode(result))
+}
+
+/// AND two hex strings
+fn and(a: String, b: String) -> Result<String, HexError> {
+    let a_bytes = decode(a)?
+    let b_bytes = decode(b)?
+    
+    if a_bytes.len() != b_bytes.len() {
+        return Err(HexError.LengthMismatch)
+    }
+    
+    let result = a_bytes.iter()
+        .zip(b_bytes.iter())
+        .map(|(x, y)| x & y)
+        .collect()
+    
+    Ok(encode(result))
+}
+
+/// OR two hex strings
+fn or(a: String, b: String) -> Result<String, HexError> {
+    let a_bytes = decode(a)?
+    let b_bytes = decode(b)?
+    
+    if a_bytes.len() != b_bytes.len() {
+        return Err(HexError.LengthMismatch)
+    }
+    
+    let result = a_bytes.iter()
+        .zip(b_bytes.iter())
+        .map(|(x, y)| x | y)
+        .collect()
+    
+    Ok(encode(result))
+}
+
+/// NOT (invert) hex string
+fn not(s: String) -> Result<String, HexError> {
+    let bytes = decode(s)?
+    let result = bytes.iter().map(|b| !b).collect()
+    Ok(encode(result))
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum HexError {
+    InvalidCharacter(Char)
+    OddLength
+    InvalidUtf8
+    ParseError
+    InvalidColor
+    LengthMismatch
+}
+
+impl Display for HexError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidCharacter(c) => f.write(format!("Invalid hex character: '{}'", c))
+            OddLength => f.write("Hex string has odd length")
+            InvalidUtf8 => f.write("Invalid UTF-8 in decoded data")
+            ParseError => f.write("Failed to parse hex number")
+            InvalidColor => f.write("Invalid hex color format")
+            LengthMismatch => f.write("Hex strings have different lengths")
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "encode" {
+    assert_eq(encode([0xde, 0xad, 0xbe, 0xef]), "deadbeef")?
+    assert_eq(encode_upper([0xde, 0xad]), "DEAD")?
+}
+
+test "decode" {
+    assert_eq(decode("deadbeef")?, [0xde, 0xad, 0xbe, 0xef])?
+    assert_eq(decode("DEADBEEF")?, [0xde, 0xad, 0xbe, 0xef])?
+    assert_eq(decode("0xdeadbeef")?, [0xde, 0xad, 0xbe, 0xef])?
+}
+
+test "decode with separators" {
+    assert_eq(decode("de:ad:be:ef")?, [0xde, 0xad, 0xbe, 0xef])?
+    assert_eq(decode("de ad be ef")?, [0xde, 0xad, 0xbe, 0xef])?
+}
+
+test "roundtrip" {
+    let original = [0x00, 0x11, 0x22, 0x33, 0xff]
+    let encoded = encode(original)
+    let decoded = decode(encoded)?
+    assert_eq(decoded, original)?
+}
+
+test "is_valid" {
+    assert(is_valid("deadbeef"))?
+    assert(is_valid("0xDEADBEEF"))?
+    assert(!is_valid("deadbee"))?  // Odd length
+    assert(!is_valid("deadbeeg"))?  // Invalid char
+}
+
+test "integer conversion" {
+    assert_eq(from_u8(255), "ff")?
+    assert_eq(from_u16(0x1234), "1234")?
+    assert_eq(to_int::<UInt8>("ff")?, 255)?
+}
+
+test "hex dump" {
+    let data = "Hello, World!".as_bytes()
+    let dumped = dump(data)
+    assert(dumped.contains("48 65 6c 6c"))?  // "Hell"
+}
+
+test "color parsing" {
+    assert_eq(parse_color("#ff0000")?, (255, 0, 0))?
+    assert_eq(parse_color("#f00")?, (255, 0, 0))?
+    assert_eq(to_color(255, 128, 0), "#ff8000")?
+}
+
+test "xor" {
+    assert_eq(xor("ff00", "00ff")?, "ffff")?
+    assert_eq(xor("ffff", "ffff")?, "0000")?
+}

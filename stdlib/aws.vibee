@@ -1,0 +1,519 @@
+// =============================================================================
+// Vibee OS — AWS Module
+// Amazon Web Services SDK (EC2, IAM, SQS, SNS)
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// AWS Client Configuration
+// -----------------------------------------------------------------------------
+
+struct AwsConfig {
+    region: String
+    access_key_id: String?
+    secret_access_key: String?
+    session_token: String?
+    endpoint_url: String?
+    profile: String?
+}
+
+impl AwsConfig {
+    fn new(region: String) -> Self {
+        AwsConfig {
+            region: region,
+            access_key_id: None,
+            secret_access_key: None,
+            session_token: None,
+            endpoint_url: None,
+            profile: None
+        }
+    }
+    
+    fn from_env() -> Result<Self, AwsError> {
+        @native("aws_config_from_env")
+    }
+    
+    fn from_profile(profile: String) -> Result<Self, AwsError> {
+        @native("aws_config_from_profile", profile)
+    }
+    
+    fn with_credentials(access_key: String, secret_key: String) -> Self {
+        self.access_key_id = Some(access_key)
+        self.secret_access_key = Some(secret_key)
+        self
+    }
+    
+    fn with_session_token(token: String) -> Self {
+        self.session_token = Some(token)
+        self
+    }
+    
+    fn with_endpoint(url: String) -> Self {
+        self.endpoint_url = Some(url)
+        self
+    }
+}
+
+// -----------------------------------------------------------------------------
+// EC2 - Elastic Compute Cloud
+// -----------------------------------------------------------------------------
+
+actor Ec2Client {
+    state config: AwsConfig
+    
+    init(config: AwsConfig) { self.config = config }
+    
+    // Instances
+    on describe_instances(filters: [Filter] = []) -> Result<[Instance], AwsError> {
+        @native("aws_ec2_describe_instances", self.config, filters)
+    }
+    
+    on run_instances(params: RunInstancesParams) -> Result<[Instance], AwsError> {
+        @native("aws_ec2_run_instances", self.config, params)
+    }
+    
+    on start_instances(instance_ids: [String]) -> Result<[InstanceStateChange], AwsError> {
+        @native("aws_ec2_start_instances", self.config, instance_ids)
+    }
+    
+    on stop_instances(instance_ids: [String], force: Bool = false) -> Result<[InstanceStateChange], AwsError> {
+        @native("aws_ec2_stop_instances", self.config, instance_ids, force)
+    }
+    
+    on terminate_instances(instance_ids: [String]) -> Result<[InstanceStateChange], AwsError> {
+        @native("aws_ec2_terminate_instances", self.config, instance_ids)
+    }
+    
+    on reboot_instances(instance_ids: [String]) -> Result<(), AwsError> {
+        @native("aws_ec2_reboot_instances", self.config, instance_ids)
+    }
+    
+    // Security Groups
+    on create_security_group(name: String, description: String, vpc_id: String?) -> Result<String, AwsError> {
+        @native("aws_ec2_create_security_group", self.config, name, description, vpc_id)
+    }
+    
+    on authorize_ingress(group_id: String, rules: [IpPermission]) -> Result<(), AwsError> {
+        @native("aws_ec2_authorize_ingress", self.config, group_id, rules)
+    }
+    
+    on authorize_egress(group_id: String, rules: [IpPermission]) -> Result<(), AwsError> {
+        @native("aws_ec2_authorize_egress", self.config, group_id, rules)
+    }
+    
+    // VPC
+    on describe_vpcs(filters: [Filter] = []) -> Result<[Vpc], AwsError> {
+        @native("aws_ec2_describe_vpcs", self.config, filters)
+    }
+    
+    on create_vpc(cidr_block: String) -> Result<Vpc, AwsError> {
+        @native("aws_ec2_create_vpc", self.config, cidr_block)
+    }
+    
+    // Subnets
+    on describe_subnets(filters: [Filter] = []) -> Result<[Subnet], AwsError> {
+        @native("aws_ec2_describe_subnets", self.config, filters)
+    }
+    
+    on create_subnet(vpc_id: String, cidr_block: String, az: String?) -> Result<Subnet, AwsError> {
+        @native("aws_ec2_create_subnet", self.config, vpc_id, cidr_block, az)
+    }
+    
+    // Key Pairs
+    on create_key_pair(name: String) -> Result<KeyPair, AwsError> {
+        @native("aws_ec2_create_key_pair", self.config, name)
+    }
+    
+    on describe_key_pairs() -> Result<[KeyPairInfo], AwsError> {
+        @native("aws_ec2_describe_key_pairs", self.config)
+    }
+    
+    // AMIs
+    on describe_images(owners: [String] = [], filters: [Filter] = []) -> Result<[Image], AwsError> {
+        @native("aws_ec2_describe_images", self.config, owners, filters)
+    }
+}
+
+struct Instance {
+    instance_id: String
+    instance_type: String
+    state: InstanceState
+    public_ip: String?
+    private_ip: String?
+    vpc_id: String?
+    subnet_id: String?
+    security_groups: [GroupIdentifier]
+    tags: Map<String, String>
+    launch_time: DateTime
+}
+
+struct InstanceState { code: Int, name: String }
+struct InstanceStateChange { instance_id: String, current_state: InstanceState, previous_state: InstanceState }
+struct GroupIdentifier { group_id: String, group_name: String }
+
+struct RunInstancesParams {
+    image_id: String
+    instance_type: String
+    min_count: Int
+    max_count: Int
+    key_name: String?
+    security_group_ids: [String]
+    subnet_id: String?
+    user_data: String?
+    tags: Map<String, String>
+}
+
+impl RunInstancesParams {
+    fn new(image_id: String, instance_type: String) -> Self {
+        RunInstancesParams {
+            image_id: image_id,
+            instance_type: instance_type,
+            min_count: 1,
+            max_count: 1,
+            key_name: None,
+            security_group_ids: [],
+            subnet_id: None,
+            user_data: None,
+            tags: Map.empty()
+        }
+    }
+}
+
+struct IpPermission {
+    protocol: String
+    from_port: Int
+    to_port: Int
+    ip_ranges: [String]
+}
+
+struct Vpc { vpc_id: String, cidr_block: String, state: String, is_default: Bool, tags: Map<String, String> }
+struct Subnet { subnet_id: String, vpc_id: String, cidr_block: String, availability_zone: String, available_ips: Int }
+struct KeyPair { key_name: String, key_fingerprint: String, key_material: String }
+struct KeyPairInfo { key_name: String, key_fingerprint: String }
+struct Image { image_id: String, name: String, description: String?, state: String, architecture: String }
+struct Filter { name: String, values: [String] }
+
+// -----------------------------------------------------------------------------
+// IAM - Identity and Access Management
+// -----------------------------------------------------------------------------
+
+actor IamClient {
+    state config: AwsConfig
+    
+    init(config: AwsConfig) { self.config = config }
+    
+    // Users
+    on create_user(name: String, path: String = "/") -> Result<User, AwsError> {
+        @native("aws_iam_create_user", self.config, name, path)
+    }
+    
+    on get_user(name: String) -> Result<User, AwsError> {
+        @native("aws_iam_get_user", self.config, name)
+    }
+    
+    on list_users(path_prefix: String = "/") -> Result<[User], AwsError> {
+        @native("aws_iam_list_users", self.config, path_prefix)
+    }
+    
+    on delete_user(name: String) -> Result<(), AwsError> {
+        @native("aws_iam_delete_user", self.config, name)
+    }
+    
+    // Roles
+    on create_role(name: String, assume_role_policy: String, path: String = "/") -> Result<Role, AwsError> {
+        @native("aws_iam_create_role", self.config, name, assume_role_policy, path)
+    }
+    
+    on get_role(name: String) -> Result<Role, AwsError> {
+        @native("aws_iam_get_role", self.config, name)
+    }
+    
+    on list_roles(path_prefix: String = "/") -> Result<[Role], AwsError> {
+        @native("aws_iam_list_roles", self.config, path_prefix)
+    }
+    
+    on delete_role(name: String) -> Result<(), AwsError> {
+        @native("aws_iam_delete_role", self.config, name)
+    }
+    
+    on attach_role_policy(role_name: String, policy_arn: String) -> Result<(), AwsError> {
+        @native("aws_iam_attach_role_policy", self.config, role_name, policy_arn)
+    }
+    
+    on detach_role_policy(role_name: String, policy_arn: String) -> Result<(), AwsError> {
+        @native("aws_iam_detach_role_policy", self.config, role_name, policy_arn)
+    }
+    
+    // Policies
+    on create_policy(name: String, document: String, path: String = "/") -> Result<Policy, AwsError> {
+        @native("aws_iam_create_policy", self.config, name, document, path)
+    }
+    
+    on get_policy(arn: String) -> Result<Policy, AwsError> {
+        @native("aws_iam_get_policy", self.config, arn)
+    }
+    
+    on delete_policy(arn: String) -> Result<(), AwsError> {
+        @native("aws_iam_delete_policy", self.config, arn)
+    }
+    
+    // Access Keys
+    on create_access_key(user_name: String) -> Result<AccessKey, AwsError> {
+        @native("aws_iam_create_access_key", self.config, user_name)
+    }
+    
+    on list_access_keys(user_name: String) -> Result<[AccessKeyMetadata], AwsError> {
+        @native("aws_iam_list_access_keys", self.config, user_name)
+    }
+    
+    on delete_access_key(user_name: String, access_key_id: String) -> Result<(), AwsError> {
+        @native("aws_iam_delete_access_key", self.config, user_name, access_key_id)
+    }
+}
+
+struct User { user_name: String, user_id: String, arn: String, path: String, create_date: DateTime }
+struct Role { role_name: String, role_id: String, arn: String, path: String, assume_role_policy_document: String }
+struct Policy { policy_name: String, policy_id: String, arn: String, path: String, default_version_id: String }
+struct AccessKey { access_key_id: String, secret_access_key: String, status: String }
+struct AccessKeyMetadata { access_key_id: String, status: String, create_date: DateTime }
+
+// IAM Policy Builder
+actor PolicyBuilder {
+    state version: String
+    state statements: [Statement]
+    
+    init() { self.version = "2012-10-17"; self.statements = [] }
+    
+    on allow(actions: [String], resources: [String]) -> Self {
+        self.statements.push(Statement { effect: "Allow", actions: actions, resources: resources, conditions: None })
+        self
+    }
+    
+    on deny(actions: [String], resources: [String]) -> Self {
+        self.statements.push(Statement { effect: "Deny", actions: actions, resources: resources, conditions: None })
+        self
+    }
+    
+    on build() -> String {
+        json.encode(PolicyDocument { version: self.version, statement: self.statements })
+    }
+}
+
+struct PolicyDocument { version: String, statement: [Statement] }
+struct Statement { effect: String, actions: [String], resources: [String], conditions: Map<String, Map<String, String>>? }
+
+// -----------------------------------------------------------------------------
+// SQS - Simple Queue Service
+// -----------------------------------------------------------------------------
+
+actor SqsClient {
+    state config: AwsConfig
+    
+    init(config: AwsConfig) { self.config = config }
+    
+    on create_queue(name: String, attrs: QueueAttributes = QueueAttributes.default()) -> Result<String, AwsError> {
+        @native("aws_sqs_create_queue", self.config, name, attrs)
+    }
+    
+    on delete_queue(queue_url: String) -> Result<(), AwsError> {
+        @native("aws_sqs_delete_queue", self.config, queue_url)
+    }
+    
+    on list_queues(prefix: String? = None) -> Result<[String], AwsError> {
+        @native("aws_sqs_list_queues", self.config, prefix)
+    }
+    
+    on get_queue_url(name: String) -> Result<String, AwsError> {
+        @native("aws_sqs_get_queue_url", self.config, name)
+    }
+    
+    on send_message(queue_url: String, body: String, delay: Int = 0) -> Result<SendMessageResult, AwsError> {
+        @native("aws_sqs_send_message", self.config, queue_url, body, delay)
+    }
+    
+    on send_message_batch(queue_url: String, entries: [SendMessageBatchEntry]) -> Result<SendMessageBatchResult, AwsError> {
+        @native("aws_sqs_send_message_batch", self.config, queue_url, entries)
+    }
+    
+    on receive_messages(queue_url: String, max: Int = 1, wait_time: Int = 0) -> Result<[SqsMessage], AwsError> {
+        @native("aws_sqs_receive_messages", self.config, queue_url, max, wait_time)
+    }
+    
+    on delete_message(queue_url: String, receipt_handle: String) -> Result<(), AwsError> {
+        @native("aws_sqs_delete_message", self.config, queue_url, receipt_handle)
+    }
+    
+    on purge_queue(queue_url: String) -> Result<(), AwsError> {
+        @native("aws_sqs_purge_queue", self.config, queue_url)
+    }
+    
+    on get_queue_attributes(queue_url: String) -> Result<QueueAttributes, AwsError> {
+        @native("aws_sqs_get_queue_attributes", self.config, queue_url)
+    }
+}
+
+struct QueueAttributes {
+    visibility_timeout: Int
+    message_retention_period: Int
+    delay_seconds: Int
+    receive_message_wait_time: Int
+    fifo_queue: Bool
+}
+
+impl QueueAttributes {
+    fn default() -> Self {
+        QueueAttributes {
+            visibility_timeout: 30,
+            message_retention_period: 345600,
+            delay_seconds: 0,
+            receive_message_wait_time: 0,
+            fifo_queue: false
+        }
+    }
+    
+    fn fifo() -> Self {
+        var attrs = Self.default()
+        attrs.fifo_queue = true
+        attrs
+    }
+}
+
+struct SqsMessage {
+    message_id: String
+    receipt_handle: String
+    body: String
+    md5_of_body: String
+    attributes: Map<String, String>
+}
+
+struct SendMessageResult { message_id: String, md5_of_body: String }
+struct SendMessageBatchEntry { id: String, body: String, delay_seconds: Int }
+struct SendMessageBatchResult { successful: [SendMessageResult], failed: [BatchResultError] }
+struct BatchResultError { id: String, code: String, message: String }
+
+// -----------------------------------------------------------------------------
+// SNS - Simple Notification Service
+// -----------------------------------------------------------------------------
+
+actor SnsClient {
+    state config: AwsConfig
+    
+    init(config: AwsConfig) { self.config = config }
+    
+    on create_topic(name: String) -> Result<String, AwsError> {
+        @native("aws_sns_create_topic", self.config, name)
+    }
+    
+    on delete_topic(topic_arn: String) -> Result<(), AwsError> {
+        @native("aws_sns_delete_topic", self.config, topic_arn)
+    }
+    
+    on list_topics() -> Result<[String], AwsError> {
+        @native("aws_sns_list_topics", self.config)
+    }
+    
+    on publish(topic_arn: String, message: String, subject: String? = None) -> Result<String, AwsError> {
+        @native("aws_sns_publish", self.config, topic_arn, message, subject)
+    }
+    
+    on publish_json<T: Serialize>(topic_arn: String, data: T) -> Result<String, AwsError> {
+        self.publish(topic_arn, json.encode(data), None)
+    }
+    
+    on subscribe(topic_arn: String, protocol: SnsProtocol, endpoint: String) -> Result<String, AwsError> {
+        @native("aws_sns_subscribe", self.config, topic_arn, protocol.to_string(), endpoint)
+    }
+    
+    on unsubscribe(subscription_arn: String) -> Result<(), AwsError> {
+        @native("aws_sns_unsubscribe", self.config, subscription_arn)
+    }
+    
+    on list_subscriptions(topic_arn: String) -> Result<[Subscription], AwsError> {
+        @native("aws_sns_list_subscriptions", self.config, topic_arn)
+    }
+    
+    on confirm_subscription(topic_arn: String, token: String) -> Result<String, AwsError> {
+        @native("aws_sns_confirm_subscription", self.config, topic_arn, token)
+    }
+}
+
+enum SnsProtocol { Http, Https, Email, EmailJson, Sms, Sqs, Lambda, Application }
+
+impl SnsProtocol {
+    fn to_string() -> String {
+        match self {
+            .Http => "http"
+            .Https => "https"
+            .Email => "email"
+            .EmailJson => "email-json"
+            .Sms => "sms"
+            .Sqs => "sqs"
+            .Lambda => "lambda"
+            .Application => "application"
+        }
+    }
+}
+
+struct Subscription {
+    subscription_arn: String
+    topic_arn: String
+    protocol: String
+    endpoint: String
+    owner: String
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum AwsError {
+    Credentials(String)
+    AccessDenied(String)
+    ResourceNotFound(String)
+    ResourceExists(String)
+    ValidationError(String)
+    ServiceError(String, Int)
+    Timeout
+    NetworkError(String)
+    
+    fn message() -> String {
+        match self {
+            .Credentials(m) => "Credentials error: \(m)"
+            .AccessDenied(m) => "Access denied: \(m)"
+            .ResourceNotFound(m) => "Resource not found: \(m)"
+            .ResourceExists(m) => "Resource already exists: \(m)"
+            .ValidationError(m) => "Validation error: \(m)"
+            .ServiceError(m, c) => "Service error (\(c)): \(m)"
+            .Timeout => "Request timed out"
+            .NetworkError(m) => "Network error: \(m)"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "aws config" {
+    let config = AwsConfig.new("us-east-1").with_credentials("AKID", "SECRET")
+    assert(config.region == "us-east-1")
+    assert(config.access_key_id == Some("AKID"))
+}
+
+test "run instances params" {
+    let params = RunInstancesParams.new("ami-12345", "t2.micro")
+    assert(params.min_count == 1)
+    assert(params.max_count == 1)
+}
+
+test "queue attributes" {
+    let attrs = QueueAttributes.fifo()
+    assert(attrs.fifo_queue == true)
+}
+
+test "policy builder" {
+    let policy = PolicyBuilder.new()
+        .allow(["s3:GetObject"], ["arn:aws:s3:::my-bucket/*"])
+        .build()
+    assert(policy.contains("Allow"))
+    assert(policy.contains("s3:GetObject"))
+}

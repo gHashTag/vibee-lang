@@ -1,0 +1,502 @@
+name: vibee_os_state_machine
+version: "0.1.0"
+language: gleam
+module: kernel/state/state_machine
+description: State Machine - конечные автоматы для UI, бизнес-логики и агентов
+
+behaviors:
+  - name: transition_on_event
+    given: Machine is in state A
+    when: Event triggers transition to B
+    then: Machine moves to state B
+    test_cases:
+      - name: simple_transition
+        input:
+          current_state: "idle"
+          event: "start"
+          transitions: [{from: "idle", event: "start", to: "running"}]
+        expected:
+          new_state: "running"
+      - name: no_valid_transition
+        input:
+          current_state: "idle"
+          event: "stop"
+          transitions: [{from: "running", event: "stop", to: "idle"}]
+        expected:
+          new_state: "idle"
+          transition_occurred: false
+
+  - name: guard_prevents_transition
+    given: Transition has guard condition
+    when: Guard evaluates to false
+    then: Transition is blocked
+    test_cases:
+      - name: guard_blocks
+        input:
+          current_state: "cart"
+          event: "checkout"
+          guard: "cart_not_empty"
+          cart_empty: true
+        expected:
+          transition_blocked: true
+          state_unchanged: true
+      - name: guard_allows
+        input:
+          current_state: "cart"
+          event: "checkout"
+          guard: "cart_not_empty"
+          cart_empty: false
+        expected:
+          transition_allowed: true
+          new_state: "checkout"
+
+  - name: action_on_transition
+    given: Transition has action
+    when: Transition occurs
+    then: Action is executed
+    test_cases:
+      - name: execute_action
+        input:
+          transition: {from: "idle", to: "running", action: "start_timer"}
+        expected:
+          action_executed: true
+          action_name: "start_timer"
+
+  - name: entry_exit_actions
+    given: State has entry/exit actions
+    when: State is entered/exited
+    then: Actions are executed
+    test_cases:
+      - name: entry_action
+        input:
+          entering_state: "loading"
+          entry_action: "show_spinner"
+        expected:
+          entry_executed: true
+      - name: exit_action
+        input:
+          exiting_state: "loading"
+          exit_action: "hide_spinner"
+        expected:
+          exit_executed: true
+
+  - name: hierarchical_states
+    given: State has substates
+    when: Event occurs
+    then: Substate handles or bubbles up
+    test_cases:
+      - name: substate_handles
+        input:
+          parent: "authenticated"
+          current: "authenticated.viewing"
+          event: "edit"
+        expected:
+          new_state: "authenticated.editing"
+      - name: bubbles_to_parent
+        input:
+          parent: "authenticated"
+          current: "authenticated.viewing"
+          event: "logout"
+        expected:
+          new_state: "unauthenticated"
+
+  - name: parallel_states
+    given: Machine has parallel regions
+    when: Event occurs
+    then: All regions process independently
+    test_cases:
+      - name: parallel_regions
+        input:
+          regions: ["playback", "volume"]
+          event: "mute"
+        expected:
+          playback_unchanged: true
+          volume_changed: "muted"
+
+  - name: history_state
+    given: State has history
+    when: Re-entering parent state
+    Then: Returns to last active substate
+    test_cases:
+      - name: shallow_history
+        input:
+          last_substate: "settings.audio"
+          re_enter: "settings"
+          history_type: "shallow"
+        expected:
+          new_state: "settings.audio"
+      - name: deep_history
+        input:
+          last_substate: "settings.audio.equalizer"
+          re_enter: "settings"
+          history_type: "deep"
+        expected:
+          new_state: "settings.audio.equalizer"
+
+types:
+  # State Machine Definition
+  StateMachine:
+    id: str
+    name: str
+    initial: str
+    context: {str: ContextValue}
+    states: {str: State}
+    on: {str: Transition}?            # Global transitions
+
+  ContextValue:
+    variants:
+      - Null
+      - Bool: {value: bool}
+      - Int: {value: int}
+      - Float: {value: float}
+      - String: {value: str}
+      - List: {values: [ContextValue]}
+      - Map: {entries: {str: ContextValue}}
+
+  # State
+  State:
+    type: StateType
+    entry: [Action]?
+    exit: [Action]?
+    on: {str: Transition}?
+    always: [Transition]?             # Eventless transitions
+    after: {int: Transition}?         # Delayed transitions
+    meta: {str: str}?
+
+  StateType:
+    variants:
+      - Atomic                        # Simple state
+      - Compound: CompoundState       # Has substates
+      - Parallel: ParallelState       # Parallel regions
+      - Final                         # Terminal state
+      - History: HistoryType
+
+  CompoundState:
+    initial: str
+    states: {str: State}
+
+  ParallelState:
+    regions: {str: State}
+
+  HistoryType:
+    variants:
+      - Shallow
+      - Deep
+
+  # Transition
+  Transition:
+    target: str?
+    guard: Guard?
+    actions: [Action]?
+    internal: bool?                   # Don't exit/enter state
+
+  Guard:
+    variants:
+      - Expression: {expr: str}
+      - Function: {name: str}
+      - And: {guards: [Guard]}
+      - Or: {guards: [Guard]}
+      - Not: {guard: Guard}
+
+  # Action
+  Action:
+    variants:
+      - Assign: {key: str, value: str}
+      - Send: {event: str, delay_ms: int?}
+      - Raise: {event: str}
+      - Log: {message: str}
+      - Call: {function: str, params: {str: str}}
+      - Choose: {conditions: [ChooseCondition]}
+
+  ChooseCondition:
+    guard: Guard
+    actions: [Action]
+
+  # Machine Instance
+  MachineInstance:
+    machine: StateMachine
+    current_state: str
+    context: {str: ContextValue}
+    history: {str: str}               # State -> last substate
+    event_queue: [Event]
+
+  Event:
+    type: str
+    data: {str: ContextValue}?
+    timestamp: int
+
+  # Transition Result
+  TransitionResult:
+    occurred: bool
+    from_state: str
+    to_state: str
+    actions_executed: [str]
+    context_changes: {str: ContextValue}
+
+  # Interpretation
+  Interpreter:
+    instance: MachineInstance
+    running: bool
+    listeners: [str]
+
+  # Visualization
+  StateChart:
+    nodes: [StateNode]
+    edges: [StateEdge]
+
+  StateNode:
+    id: str
+    label: str
+    type: str
+    parent: str?
+
+  StateEdge:
+    from: str
+    to: str
+    event: str
+    guard: str?
+
+functions:
+  # Machine creation
+  - name: machine_create
+    params: {definition: StateMachine}
+    returns: MachineInstance
+    description: Create machine instance
+
+  - name: machine_from_spec
+    params: {spec: str}
+    returns: StateMachine
+    description: Parse machine from Vibee spec
+
+  # Interpretation
+  - name: interpret
+    params: {instance: MachineInstance}
+    returns: Interpreter
+    description: Create interpreter
+
+  - name: interpreter_start
+    params: {interpreter: Interpreter}
+    returns: void
+    description: Start interpreter
+
+  - name: interpreter_stop
+    params: {interpreter: Interpreter}
+    returns: void
+    description: Stop interpreter
+
+  - name: interpreter_send
+    params: {interpreter: Interpreter, event: Event}
+    returns: TransitionResult
+    description: Send event to interpreter
+
+  # State queries
+  - name: state_matches
+    params: {instance: MachineInstance, state: str}
+    returns: bool
+    description: Check if in state (supports parent states)
+
+  - name: state_can
+    params: {instance: MachineInstance, event: str}
+    returns: bool
+    description: Check if event can trigger transition
+
+  - name: state_next_events
+    params: {instance: MachineInstance}
+    returns: [str]
+    description: Get possible events from current state
+
+  # Context
+  - name: context_get
+    params: {instance: MachineInstance, key: str}
+    returns: ContextValue?
+    description: Get context value
+
+  - name: context_set
+    params: {instance: MachineInstance, key: str, value: ContextValue}
+    returns: void
+    description: Set context value
+
+  # Visualization
+  - name: visualize
+    params: {machine: StateMachine}
+    returns: StateChart
+    description: Generate visualization data
+
+  - name: visualize_mermaid
+    params: {machine: StateMachine}
+    returns: str
+    description: Generate Mermaid diagram
+
+imports:
+  - kernel.ipc.event_bus
+
+state_machine_example: |
+  # State Machine Example: Traffic Light
+  
+  ```vibee
+  state_machine:
+    id: "traffic_light"
+    name: "Traffic Light"
+    initial: "red"
+    
+    context:
+      cycle_count: 0
+    
+    states:
+      red:
+        entry:
+          - Log: {message: "Light is RED"}
+        after:
+          5000:
+            target: "green"
+            actions:
+              - Assign: {key: "cycle_count", value: "${context.cycle_count + 1}"}
+      
+      yellow:
+        entry:
+          - Log: {message: "Light is YELLOW"}
+        after:
+          2000:
+            target: "red"
+      
+      green:
+        entry:
+          - Log: {message: "Light is GREEN"}
+        after:
+          5000:
+            target: "yellow"
+    
+    on:
+      EMERGENCY:
+        target: "red"
+        actions:
+          - Log: {message: "Emergency! Switching to red"}
+  ```
+
+ui_state_machine: |
+  # UI State Machine Example: Form
+  
+  ```vibee
+  state_machine:
+    id: "form_state"
+    name: "Form State Machine"
+    initial: "idle"
+    
+    context:
+      data: {}
+      errors: []
+      touched: []
+    
+    states:
+      idle:
+        on:
+          FOCUS:
+            target: "editing"
+      
+      editing:
+        on:
+          CHANGE:
+            actions:
+              - Assign: {key: "data.${event.field}", value: "${event.value}"}
+              - Call: {function: "validate_field", params: {field: "${event.field}"}}
+          
+          BLUR:
+            actions:
+              - Assign: {key: "touched", value: "${context.touched.concat(event.field)}"}
+          
+          SUBMIT:
+            target: "validating"
+      
+      validating:
+        entry:
+          - Call: {function: "validate_all"}
+        on:
+          VALIDATION_SUCCESS:
+            target: "submitting"
+          VALIDATION_FAILURE:
+            target: "editing"
+            actions:
+              - Assign: {key: "errors", value: "${event.errors}"}
+      
+      submitting:
+        entry:
+          - Call: {function: "submit_form"}
+        on:
+          SUBMIT_SUCCESS:
+            target: "success"
+          SUBMIT_FAILURE:
+            target: "editing"
+            actions:
+              - Assign: {key: "errors", value: ["${event.error}"]}
+      
+      success:
+        type: Final
+        entry:
+          - Log: {message: "Form submitted successfully"}
+  ```
+
+agent_state_machine: |
+  # Agent State Machine
+  
+  ```vibee
+  state_machine:
+    id: "agent_lifecycle"
+    name: "Agent Lifecycle"
+    initial: "idle"
+    
+    context:
+      current_task: null
+      retries: 0
+    
+    states:
+      idle:
+        on:
+          TASK_ASSIGNED:
+            target: "thinking"
+            actions:
+              - Assign: {key: "current_task", value: "${event.task}"}
+              - Assign: {key: "retries", value: 0}
+      
+      thinking:
+        entry:
+          - Call: {function: "analyze_task"}
+        on:
+          PLAN_READY:
+            target: "working"
+          NEED_CLARIFICATION:
+            target: "waiting_for_input"
+      
+      working:
+        entry:
+          - Call: {function: "execute_plan"}
+        on:
+          TASK_COMPLETE:
+            target: "idle"
+            actions:
+              - Assign: {key: "current_task", value: null}
+          TASK_FAILED:
+            target: "error_recovery"
+      
+      error_recovery:
+        entry:
+          - Assign: {key: "retries", value: "${context.retries + 1}"}
+        always:
+          - target: "thinking"
+            guard:
+              Expression: {expr: "context.retries < 3"}
+          - target: "failed"
+            guard:
+              Expression: {expr: "context.retries >= 3"}
+      
+      waiting_for_input:
+        on:
+          INPUT_RECEIVED:
+            target: "thinking"
+          TIMEOUT:
+            target: "failed"
+      
+      failed:
+        type: Final
+        entry:
+          - Send: {event: "AGENT_FAILED"}
+  ```

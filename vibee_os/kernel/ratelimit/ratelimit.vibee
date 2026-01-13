@@ -1,0 +1,667 @@
+# ============================================================================
+# RATE LIMITER - Ограничение запросов на Vibee
+# ============================================================================
+# Token Bucket, Sliding Window, Fixed Window, Leaky Bucket
+# ============================================================================
+
+Specification RateLimiter:
+  """Rate limiting как спецификация контроля частоты запросов."""
+
+  # ==========================================================================
+  # RATE LIMITER TRAIT
+  # ==========================================================================
+
+  Trait RateLimiter:
+    Method try_acquire() -> Boolean
+    Method try_acquire_n(n: Int) -> Boolean
+    Method acquire() -> Promise<()>
+    Method acquire_n(n: Int) -> Promise<()>
+    Method reset()
+
+  Type RateLimitResult:
+    variants:
+      - Allowed(remaining: Int, reset_at: Instant)
+      - Denied(retry_after: Duration, reset_at: Instant)
+
+    Method is_allowed() -> Boolean:
+      match self:
+        Allowed(_, _) -> true
+        Denied(_, _) -> false
+
+  # ==========================================================================
+  # TOKEN BUCKET
+  # ==========================================================================
+
+  Type TokenBucket:
+    capacity: Int
+    refill_rate: Float  # tokens per second
+    tokens: Atomic<Float>
+    last_refill: Atomic<Instant>
+    mutex: Mutex
+
+    Static Method new(capacity: Int, refill_rate: Float) -> TokenBucket:
+      return TokenBucket(
+        capacity: capacity,
+        refill_rate: refill_rate,
+        tokens: Atomic(capacity.to_float()),
+        last_refill: Atomic(Instant.now()),
+        mutex: Mutex.new()
+      )
+
+    Static Method per_second(rate: Int) -> TokenBucket:
+      return TokenBucket.new(rate, rate.to_float())
+
+    Static Method per_minute(rate: Int) -> TokenBucket:
+      return TokenBucket.new(rate, rate.to_float() / 60.0)
+
+    Static Method per_hour(rate: Int) -> TokenBucket:
+      return TokenBucket.new(rate, rate.to_float() / 3600.0)
+
+    Method refill():
+      now = Instant.now()
+      last = self.last_refill.load()
+      elapsed = (now - last).as_secs_float()
+      
+      new_tokens = self.tokens.load() + elapsed * self.refill_rate
+      self.tokens.store(min(new_tokens, self.capacity.to_float()))
+      self.last_refill.store(now)
+
+    Trait RateLimiter:
+      Method try_acquire() -> Boolean:
+        return self.try_acquire_n(1)
+
+      Method try_acquire_n(n: Int) -> Boolean:
+        guard = self.mutex.lock()
+        self.refill()
+        
+        if self.tokens.load() >= n.to_float():
+          self.tokens.fetch_add(-n.to_float())
+          return true
+        return false
+
+      Method acquire() -> Promise<()>:
+        return self.acquire_n(1)
+
+      Method acquire_n(n: Int) -> Promise<()>:
+        return Promise.new((resolve, _) -> {
+          loop:
+            if self.try_acquire_n(n):
+              resolve(())
+              return
+            
+            # Calculate wait time
+            guard = self.mutex.lock()
+            self.refill()
+            needed = n.to_float() - self.tokens.load()
+            wait_time = Duration.secs_float(needed / self.refill_rate)
+            drop(guard)
+            
+            sleep(wait_time)
+        })
+
+      Method reset():
+        guard = self.mutex.lock()
+        self.tokens.store(self.capacity.to_float())
+        self.last_refill.store(Instant.now())
+
+    Method check() -> RateLimitResult:
+      guard = self.mutex.lock()
+      self.refill()
+      
+      remaining = self.tokens.load().floor().to_int()
+      
+      if remaining >= 1:
+        return Allowed(
+          remaining: remaining,
+          reset_at: Instant.now() + Duration.secs_float(
+            (self.capacity.to_float() - self.tokens.load()) / self.refill_rate
+          )
+        )
+      else:
+        wait_time = (1.0 - self.tokens.load()) / self.refill_rate
+        return Denied(
+          retry_after: Duration.secs_float(wait_time),
+          reset_at: Instant.now() + Duration.secs_float(wait_time)
+        )
+
+  # ==========================================================================
+  # SLIDING WINDOW LOG
+  # ==========================================================================
+
+  Type SlidingWindowLog:
+    limit: Int
+    window: Duration
+    timestamps: List<Instant>
+    mutex: Mutex
+
+    Static Method new(limit: Int, window: Duration) -> SlidingWindowLog:
+      return SlidingWindowLog(limit, window, [], Mutex.new())
+
+    Static Method per_second(limit: Int) -> SlidingWindowLog:
+      return SlidingWindowLog.new(limit, Duration.seconds(1))
+
+    Static Method per_minute(limit: Int) -> SlidingWindowLog:
+      return SlidingWindowLog.new(limit, Duration.minutes(1))
+
+    Method cleanup():
+      cutoff = Instant.now() - self.window
+      self.timestamps = self.timestamps.filter(t -> t > cutoff)
+
+    Trait RateLimiter:
+      Method try_acquire() -> Boolean:
+        return self.try_acquire_n(1)
+
+      Method try_acquire_n(n: Int) -> Boolean:
+        guard = self.mutex.lock()
+        self.cleanup()
+        
+        if self.timestamps.length + n <= self.limit:
+          now = Instant.now()
+          for _ in 0..n:
+            self.timestamps.push(now)
+          return true
+        return false
+
+      Method acquire() -> Promise<()>:
+        return self.acquire_n(1)
+
+      Method acquire_n(n: Int) -> Promise<()>:
+        return Promise.new((resolve, _) -> {
+          loop:
+            if self.try_acquire_n(n):
+              resolve(())
+              return
+            
+            # Wait until oldest timestamp expires
+            guard = self.mutex.lock()
+            self.cleanup()
+            
+            if self.timestamps.length > 0:
+              oldest = self.timestamps[0]
+              wait_time = (oldest + self.window) - Instant.now()
+              drop(guard)
+              
+              if wait_time.is_positive():
+                sleep(wait_time)
+            else:
+              drop(guard)
+              sleep(Duration.millis(10))
+        })
+
+      Method reset():
+        guard = self.mutex.lock()
+        self.timestamps.clear()
+
+    Method check() -> RateLimitResult:
+      guard = self.mutex.lock()
+      self.cleanup()
+      
+      remaining = self.limit - self.timestamps.length
+      
+      if remaining > 0:
+        reset_at = if self.timestamps.is_empty():
+          Instant.now() + self.window
+        else:
+          self.timestamps[0] + self.window
+        
+        return Allowed(remaining: remaining, reset_at: reset_at)
+      else:
+        oldest = self.timestamps[0]
+        retry_after = (oldest + self.window) - Instant.now()
+        return Denied(
+          retry_after: max(retry_after, Duration.zero()),
+          reset_at: oldest + self.window
+        )
+
+  # ==========================================================================
+  # SLIDING WINDOW COUNTER
+  # ==========================================================================
+
+  Type SlidingWindowCounter:
+    limit: Int
+    window: Duration
+    precision: Int  # Number of sub-windows
+    counters: List<Atomic<Int>>
+    current_index: Atomic<Int>
+    last_update: Atomic<Instant>
+    mutex: Mutex
+
+    Static Method new(limit: Int, window: Duration) -> SlidingWindowCounter:
+      return SlidingWindowCounter.with_precision(limit, window, 10)
+
+    Static Method with_precision(limit: Int, window: Duration, precision: Int) -> SlidingWindowCounter:
+      return SlidingWindowCounter(
+        limit: limit,
+        window: window,
+        precision: precision,
+        counters: (0..precision).map(_ -> Atomic(0)).to_list(),
+        current_index: Atomic(0),
+        last_update: Atomic(Instant.now()),
+        mutex: Mutex.new()
+      )
+
+    Method advance_window():
+      now = Instant.now()
+      last = self.last_update.load()
+      sub_window = self.window / self.precision
+      
+      elapsed_windows = ((now - last) / sub_window).floor().to_int()
+      
+      if elapsed_windows > 0:
+        current = self.current_index.load()
+        
+        for i in 0..min(elapsed_windows, self.precision):
+          next_index = (current + i + 1) % self.precision
+          self.counters[next_index].store(0)
+        
+        self.current_index.store((current + elapsed_windows) % self.precision)
+        self.last_update.store(now)
+
+    Method current_count() -> Int:
+      self.advance_window()
+      return self.counters.map(c -> c.load()).sum()
+
+    Trait RateLimiter:
+      Method try_acquire() -> Boolean:
+        return self.try_acquire_n(1)
+
+      Method try_acquire_n(n: Int) -> Boolean:
+        guard = self.mutex.lock()
+        self.advance_window()
+        
+        count = self.current_count()
+        
+        if count + n <= self.limit:
+          current = self.current_index.load()
+          self.counters[current].fetch_add(n)
+          return true
+        return false
+
+      Method acquire() -> Promise<()>:
+        return self.acquire_n(1)
+
+      Method acquire_n(n: Int) -> Promise<()>:
+        return Promise.new((resolve, _) -> {
+          loop:
+            if self.try_acquire_n(n):
+              resolve(())
+              return
+            
+            sub_window = self.window / self.precision
+            sleep(sub_window)
+        })
+
+      Method reset():
+        guard = self.mutex.lock()
+        for counter in self.counters:
+          counter.store(0)
+        self.last_update.store(Instant.now())
+
+  # ==========================================================================
+  # FIXED WINDOW COUNTER
+  # ==========================================================================
+
+  Type FixedWindowCounter:
+    limit: Int
+    window: Duration
+    count: Atomic<Int>
+    window_start: Atomic<Instant>
+    mutex: Mutex
+
+    Static Method new(limit: Int, window: Duration) -> FixedWindowCounter:
+      return FixedWindowCounter(
+        limit: limit,
+        window: window,
+        count: Atomic(0),
+        window_start: Atomic(Instant.now()),
+        mutex: Mutex.new()
+      )
+
+    Method maybe_reset_window():
+      now = Instant.now()
+      start = self.window_start.load()
+      
+      if now - start >= self.window:
+        self.count.store(0)
+        self.window_start.store(now)
+
+    Trait RateLimiter:
+      Method try_acquire() -> Boolean:
+        return self.try_acquire_n(1)
+
+      Method try_acquire_n(n: Int) -> Boolean:
+        guard = self.mutex.lock()
+        self.maybe_reset_window()
+        
+        if self.count.load() + n <= self.limit:
+          self.count.fetch_add(n)
+          return true
+        return false
+
+      Method acquire() -> Promise<()>:
+        return self.acquire_n(1)
+
+      Method acquire_n(n: Int) -> Promise<()>:
+        return Promise.new((resolve, _) -> {
+          loop:
+            if self.try_acquire_n(n):
+              resolve(())
+              return
+            
+            # Wait until window resets
+            guard = self.mutex.lock()
+            start = self.window_start.load()
+            wait_time = (start + self.window) - Instant.now()
+            drop(guard)
+            
+            if wait_time.is_positive():
+              sleep(wait_time)
+            else:
+              sleep(Duration.millis(10))
+        })
+
+      Method reset():
+        guard = self.mutex.lock()
+        self.count.store(0)
+        self.window_start.store(Instant.now())
+
+    Method check() -> RateLimitResult:
+      guard = self.mutex.lock()
+      self.maybe_reset_window()
+      
+      remaining = self.limit - self.count.load()
+      reset_at = self.window_start.load() + self.window
+      
+      if remaining > 0:
+        return Allowed(remaining: remaining, reset_at: reset_at)
+      else:
+        retry_after = reset_at - Instant.now()
+        return Denied(
+          retry_after: max(retry_after, Duration.zero()),
+          reset_at: reset_at
+        )
+
+  # ==========================================================================
+  # LEAKY BUCKET
+  # ==========================================================================
+
+  Type LeakyBucket:
+    capacity: Int
+    leak_rate: Float  # requests per second
+    water: Atomic<Float>
+    last_leak: Atomic<Instant>
+    mutex: Mutex
+
+    Static Method new(capacity: Int, leak_rate: Float) -> LeakyBucket:
+      return LeakyBucket(
+        capacity: capacity,
+        leak_rate: leak_rate,
+        water: Atomic(0.0),
+        last_leak: Atomic(Instant.now()),
+        mutex: Mutex.new()
+      )
+
+    Method leak():
+      now = Instant.now()
+      last = self.last_leak.load()
+      elapsed = (now - last).as_secs_float()
+      
+      leaked = elapsed * self.leak_rate
+      new_water = max(0.0, self.water.load() - leaked)
+      self.water.store(new_water)
+      self.last_leak.store(now)
+
+    Trait RateLimiter:
+      Method try_acquire() -> Boolean:
+        return self.try_acquire_n(1)
+
+      Method try_acquire_n(n: Int) -> Boolean:
+        guard = self.mutex.lock()
+        self.leak()
+        
+        if self.water.load() + n.to_float() <= self.capacity.to_float():
+          self.water.fetch_add(n.to_float())
+          return true
+        return false
+
+      Method acquire() -> Promise<()>:
+        return self.acquire_n(1)
+
+      Method acquire_n(n: Int) -> Promise<()>:
+        return Promise.new((resolve, _) -> {
+          loop:
+            if self.try_acquire_n(n):
+              resolve(())
+              return
+            
+            # Wait for bucket to leak
+            guard = self.mutex.lock()
+            self.leak()
+            overflow = self.water.load() + n.to_float() - self.capacity.to_float()
+            wait_time = Duration.secs_float(overflow / self.leak_rate)
+            drop(guard)
+            
+            sleep(wait_time)
+        })
+
+      Method reset():
+        guard = self.mutex.lock()
+        self.water.store(0.0)
+        self.last_leak.store(Instant.now())
+
+  # ==========================================================================
+  # KEYED RATE LIMITER
+  # ==========================================================================
+
+  Type KeyedRateLimiter<K>:
+    factory: () -> RateLimiter
+    limiters: Map<K, RateLimiter>
+    cleanup_interval: Duration
+    max_idle: Duration
+    last_access: Map<K, Instant>
+    mutex: Mutex
+
+    Static Method new(factory: () -> RateLimiter) -> KeyedRateLimiter<K>:
+      limiter = KeyedRateLimiter(
+        factory: factory,
+        limiters: {},
+        cleanup_interval: Duration.minutes(5),
+        max_idle: Duration.hours(1),
+        last_access: {},
+        mutex: Mutex.new()
+      )
+      limiter.start_cleanup()
+      return limiter
+
+    Method get(key: K) -> RateLimiter:
+      guard = self.mutex.lock()
+      
+      if key not in self.limiters:
+        self.limiters[key] = self.factory()
+      
+      self.last_access[key] = Instant.now()
+      return self.limiters[key]
+
+    Method try_acquire(key: K) -> Boolean:
+      return self.get(key).try_acquire()
+
+    Method acquire(key: K) -> Promise<()>:
+      return self.get(key).acquire()
+
+    Method check(key: K) -> RateLimitResult:
+      limiter = self.get(key)
+      
+      # Assume limiter has check method
+      if limiter is TokenBucket:
+        return limiter.check()
+      else if limiter is FixedWindowCounter:
+        return limiter.check()
+      else if limiter is SlidingWindowLog:
+        return limiter.check()
+      else:
+        # Fallback
+        if limiter.try_acquire():
+          return Allowed(remaining: 0, reset_at: Instant.now())
+        else:
+          return Denied(retry_after: Duration.seconds(1), reset_at: Instant.now())
+
+    Method start_cleanup():
+      spawn {
+        loop:
+          sleep(self.cleanup_interval)
+          self.cleanup()
+      }
+
+    Method cleanup():
+      guard = self.mutex.lock()
+      now = Instant.now()
+      
+      keys_to_remove = []
+      for (key, last) in self.last_access:
+        if now - last > self.max_idle:
+          keys_to_remove.push(key)
+      
+      for key in keys_to_remove:
+        self.limiters.remove(key)
+        self.last_access.remove(key)
+
+  # ==========================================================================
+  # COMPOSITE RATE LIMITER
+  # ==========================================================================
+
+  Type CompositeRateLimiter:
+    limiters: List<RateLimiter>
+
+    Static Method new(limiters: List<RateLimiter>) -> CompositeRateLimiter:
+      return CompositeRateLimiter(limiters)
+
+    Trait RateLimiter:
+      Method try_acquire() -> Boolean:
+        # All limiters must allow
+        for limiter in self.limiters:
+          if not limiter.try_acquire():
+            return false
+        return true
+
+      Method try_acquire_n(n: Int) -> Boolean:
+        for limiter in self.limiters:
+          if not limiter.try_acquire_n(n):
+            return false
+        return true
+
+      Method acquire() -> Promise<()>:
+        return Promise.all(self.limiters.map(l -> l.acquire())).map(_ -> ())
+
+      Method acquire_n(n: Int) -> Promise<()>:
+        return Promise.all(self.limiters.map(l -> l.acquire_n(n))).map(_ -> ())
+
+      Method reset():
+        for limiter in self.limiters:
+          limiter.reset()
+
+  # ==========================================================================
+  # HTTP MIDDLEWARE
+  # ==========================================================================
+
+  Behavior RateLimitMiddleware:
+    When rate_limit_middleware(limiter: KeyedRateLimiter<String>, key_extractor: (Request) -> String) -> Middleware:
+      Then:
+        return (req: Request, next: Handler) -> {
+          key = key_extractor(req)
+          result = limiter.check(key)
+          
+          match result:
+            Allowed(remaining, reset_at) ->
+              response = next(req)
+              response.header("X-RateLimit-Remaining", remaining.to_string())
+              response.header("X-RateLimit-Reset", reset_at.to_unix_secs().to_string())
+              return response
+            
+            Denied(retry_after, reset_at) ->
+              return Response.too_many_requests()
+                .header("Retry-After", retry_after.as_secs().to_string())
+                .header("X-RateLimit-Remaining", "0")
+                .header("X-RateLimit-Reset", reset_at.to_unix_secs().to_string())
+                .body("Rate limit exceeded")
+        }
+
+    When by_ip() -> (Request) -> String:
+      Then: (req) -> req.remote_addr().ip().to_string()
+
+    When by_user() -> (Request) -> String:
+      Then: (req) -> req.user()?.id.to_string() ?? req.remote_addr().ip().to_string()
+
+    When by_api_key() -> (Request) -> String:
+      Then: (req) -> req.header("X-API-Key") ?? "anonymous"
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "RateLimiter":
+    ```vibee
+    # Token bucket - smooth rate limiting
+    limiter = TokenBucket.per_second(100)  # 100 requests/second
+    
+    if limiter.try_acquire():
+      process_request()
+    else:
+      return Response.too_many_requests()
+
+    # Wait for token (blocking)
+    await limiter.acquire()
+    process_request()
+
+    # Sliding window - accurate counting
+    limiter = SlidingWindowLog.per_minute(1000)
+    
+    result = limiter.check()
+    match result:
+      Allowed(remaining, reset_at) ->
+        print("Allowed, ${remaining} remaining")
+      Denied(retry_after, reset_at) ->
+        print("Denied, retry after ${retry_after}")
+
+    # Fixed window - simple and fast
+    limiter = FixedWindowCounter.new(100, Duration.minutes(1))
+
+    # Leaky bucket - smooth output rate
+    limiter = LeakyBucket.new(10, 5.0)  # capacity 10, leak 5/sec
+
+    # Per-user rate limiting
+    user_limiter = KeyedRateLimiter.new(() -> {
+      TokenBucket.per_minute(60)
+    })
+
+    user_id = request.user_id()
+    if user_limiter.try_acquire(user_id):
+      handle_request()
+
+    # Composite limiter (multiple limits)
+    limiter = CompositeRateLimiter.new([
+      TokenBucket.per_second(10),    # 10/sec burst
+      TokenBucket.per_minute(100),   # 100/min sustained
+      TokenBucket.per_hour(1000)     # 1000/hour total
+    ])
+
+    # HTTP middleware
+    app.use(rate_limit_middleware(
+      KeyedRateLimiter.new(() -> TokenBucket.per_minute(60)),
+      by_ip()
+    ))
+
+    # API key based limiting
+    api_limiter = KeyedRateLimiter.new(() -> {
+      TokenBucket.new(1000, 100.0)  # 1000 burst, 100/sec refill
+    })
+
+    app.use(rate_limit_middleware(api_limiter, by_api_key()))
+
+    # Different limits for different tiers
+    fn get_limiter_for_tier(tier: String) -> RateLimiter:
+      match tier:
+        "free" -> TokenBucket.per_minute(60)
+        "pro" -> TokenBucket.per_minute(600)
+        "enterprise" -> TokenBucket.per_minute(6000)
+        _ -> TokenBucket.per_minute(10)
+    ```

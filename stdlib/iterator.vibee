@@ -1,0 +1,280 @@
+// =============================================================================
+// Vibee OS — Iterator Module
+// Extended iterator combinators
+// =============================================================================
+
+/// Iterator trait extension
+trait IteratorExt: Iterator {
+    /// Map with index
+    fn enumerate() -> Enumerate<Self> { Enumerate { iter: self, index: 0 } }
+    
+    /// Filter and map
+    fn filter_map<U>(f: fn(Self.Item) -> Option<U>) -> FilterMap<Self, U> {
+        FilterMap { iter: self, f: f }
+    }
+    
+    /// Flat map
+    fn flat_map<U, I: Iterator<Item = U>>(f: fn(Self.Item) -> I) -> FlatMap<Self, U, I> {
+        FlatMap { iter: self, f: f, current: None }
+    }
+    
+    /// Take while predicate is true
+    fn take_while(pred: fn(Self.Item) -> Bool) -> TakeWhile<Self> {
+        TakeWhile { iter: self, pred: pred, done: false }
+    }
+    
+    /// Skip while predicate is true
+    fn skip_while(pred: fn(Self.Item) -> Bool) -> SkipWhile<Self> {
+        SkipWhile { iter: self, pred: pred, done: false }
+    }
+    
+    /// Chain two iterators
+    fn chain<I: Iterator<Item = Self.Item>>(other: I) -> Chain<Self, I> {
+        Chain { first: self, second: other, first_done: false }
+    }
+    
+    /// Zip two iterators
+    fn zip<I: Iterator>(other: I) -> Zip<Self, I> {
+        Zip { a: self, b: other }
+    }
+    
+    /// Peek at next without consuming
+    fn peekable() -> Peekable<Self> {
+        Peekable { iter: self, peeked: None }
+    }
+    
+    /// Cycle infinitely
+    fn cycle() -> Cycle<Self> where Self: Clone {
+        Cycle { orig: self.clone(), iter: self }
+    }
+    
+    /// Step by n
+    fn step_by(n: Int) -> StepBy<Self> {
+        StepBy { iter: self, step: n, first: true }
+    }
+    
+    /// Intersperse with separator
+    fn intersperse(sep: Self.Item) -> Intersperse<Self> where Self.Item: Clone {
+        Intersperse { iter: self, sep: sep, next_sep: false }
+    }
+    
+    /// Unique elements
+    fn unique() -> Unique<Self> where Self.Item: Hash + Eq {
+        Unique { iter: self, seen: Set.empty() }
+    }
+    
+    /// Deduplicate consecutive
+    fn dedup() -> Dedup<Self> where Self.Item: Eq {
+        Dedup { iter: self, last: None }
+    }
+    
+    /// Chunks of n
+    fn chunks(n: Int) -> Chunks<Self> {
+        Chunks { iter: self, size: n }
+    }
+    
+    /// Sliding windows
+    fn windows(n: Int) -> Windows<Self> where Self.Item: Clone {
+        Windows { iter: self, size: n, buffer: [] }
+    }
+    
+    /// Batch into groups
+    fn batches(n: Int) -> Batches<Self> {
+        Batches { iter: self, size: n }
+    }
+    
+    // Consumers
+    fn for_each(f: fn(Self.Item)) { while let Some(x) = self.next() { f(x) } }
+    fn count() -> Int { var n = 0; while self.next().is_some() { n += 1 } n }
+    fn last() -> Option<Self.Item> { var last = None; while let Some(x) = self.next() { last = Some(x) } last }
+    fn nth(n: Int) -> Option<Self.Item> { for _ in 0..n { self.next()? } self.next() }
+    fn find(pred: fn(Self.Item) -> Bool) -> Option<Self.Item> {
+        while let Some(x) = self.next() { if pred(x) { return Some(x) } } None
+    }
+    fn position(pred: fn(Self.Item) -> Bool) -> Option<Int> {
+        var i = 0; while let Some(x) = self.next() { if pred(x) { return Some(i) } i += 1 } None
+    }
+    fn all(pred: fn(Self.Item) -> Bool) -> Bool {
+        while let Some(x) = self.next() { if !pred(x) { return false } } true
+    }
+    fn any(pred: fn(Self.Item) -> Bool) -> Bool {
+        while let Some(x) = self.next() { if pred(x) { return true } } false
+    }
+    fn fold<A>(init: A, f: fn(A, Self.Item) -> A) -> A {
+        var acc = init; while let Some(x) = self.next() { acc = f(acc, x) } acc
+    }
+    fn reduce(f: fn(Self.Item, Self.Item) -> Self.Item) -> Option<Self.Item> {
+        let first = self.next()?; Some(self.fold(first, f))
+    }
+    fn sum() -> Self.Item where Self.Item: Num { self.fold(Self.Item.zero(), |a, b| a + b) }
+    fn product() -> Self.Item where Self.Item: Num { self.fold(Self.Item.one(), |a, b| a * b) }
+    fn min() -> Option<Self.Item> where Self.Item: Ord { self.reduce(|a, b| if a < b { a } else { b }) }
+    fn max() -> Option<Self.Item> where Self.Item: Ord { self.reduce(|a, b| if a > b { a } else { b }) }
+    fn min_by<K: Ord>(f: fn(Self.Item) -> K) -> Option<Self.Item> {
+        self.reduce(|a, b| if f(a) <= f(b) { a } else { b })
+    }
+    fn max_by<K: Ord>(f: fn(Self.Item) -> K) -> Option<Self.Item> {
+        self.reduce(|a, b| if f(a) >= f(b) { a } else { b })
+    }
+    fn partition(pred: fn(Self.Item) -> Bool) -> ([Self.Item], [Self.Item]) {
+        var t = []; var f = []
+        while let Some(x) = self.next() { if pred(x) { t.push(x) } else { f.push(x) } }
+        (t, f)
+    }
+    fn group_by<K: Hash + Eq>(f: fn(Self.Item) -> K) -> Map<K, [Self.Item]> {
+        var groups = Map.empty()
+        while let Some(x) = self.next() {
+            let key = f(x)
+            groups.entry(key).or_insert([]).push(x)
+        }
+        groups
+    }
+}
+
+// Adapter structs
+struct Enumerate<I> { iter: I, index: Int }
+impl<I: Iterator> Iterator for Enumerate<I> {
+    type Item = (Int, I.Item)
+    fn next() -> Option<Self.Item> {
+        let item = self.iter.next()?
+        let i = self.index; self.index += 1
+        Some((i, item))
+    }
+}
+
+struct FilterMap<I, U> { iter: I, f: fn(I.Item) -> Option<U> }
+impl<I: Iterator, U> Iterator for FilterMap<I, U> {
+    type Item = U
+    fn next() -> Option<U> { loop { let x = self.iter.next()?; if let Some(y) = (self.f)(x) { return Some(y) } } }
+}
+
+struct FlatMap<I, U, J> { iter: I, f: fn(I.Item) -> J, current: Option<J> }
+impl<I: Iterator, U, J: Iterator<Item = U>> Iterator for FlatMap<I, U, J> {
+    type Item = U
+    fn next() -> Option<U> {
+        loop {
+            if let Some(ref mut cur) = self.current { if let Some(x) = cur.next() { return Some(x) } }
+            self.current = Some((self.f)(self.iter.next()?))
+        }
+    }
+}
+
+struct TakeWhile<I> { iter: I, pred: fn(I.Item) -> Bool, done: Bool }
+impl<I: Iterator> Iterator for TakeWhile<I> {
+    type Item = I.Item
+    fn next() -> Option<Self.Item> {
+        if self.done { return None }
+        let x = self.iter.next()?
+        if (self.pred)(x) { Some(x) } else { self.done = true; None }
+    }
+}
+
+struct SkipWhile<I> { iter: I, pred: fn(I.Item) -> Bool, done: Bool }
+impl<I: Iterator> Iterator for SkipWhile<I> {
+    type Item = I.Item
+    fn next() -> Option<Self.Item> {
+        if self.done { return self.iter.next() }
+        loop {
+            let x = self.iter.next()?
+            if !(self.pred)(x) { self.done = true; return Some(x) }
+        }
+    }
+}
+
+struct Chain<A, B> { first: A, second: B, first_done: Bool }
+impl<A: Iterator, B: Iterator<Item = A.Item>> Iterator for Chain<A, B> {
+    type Item = A.Item
+    fn next() -> Option<Self.Item> {
+        if !self.first_done { if let Some(x) = self.first.next() { return Some(x) } self.first_done = true }
+        self.second.next()
+    }
+}
+
+struct Zip<A, B> { a: A, b: B }
+impl<A: Iterator, B: Iterator> Iterator for Zip<A, B> {
+    type Item = (A.Item, B.Item)
+    fn next() -> Option<Self.Item> { Some((self.a.next()?, self.b.next()?)) }
+}
+
+struct Peekable<I: Iterator> { iter: I, peeked: Option<Option<I.Item>> }
+impl<I: Iterator> Peekable<I> {
+    fn peek() -> Option<I.Item> {
+        if self.peeked.is_none() { self.peeked = Some(self.iter.next()) }
+        self.peeked.as_ref().unwrap().clone()
+    }
+}
+impl<I: Iterator> Iterator for Peekable<I> {
+    type Item = I.Item
+    fn next() -> Option<Self.Item> {
+        match self.peeked.take() { Some(v) => v, None => self.iter.next() }
+    }
+}
+
+struct Cycle<I: Clone> { orig: I, iter: I }
+impl<I: Iterator + Clone> Iterator for Cycle<I> {
+    type Item = I.Item
+    fn next() -> Option<Self.Item> {
+        match self.iter.next() { Some(x) => Some(x), None => { self.iter = self.orig.clone(); self.iter.next() } }
+    }
+}
+
+struct StepBy<I> { iter: I, step: Int, first: Bool }
+impl<I: Iterator> Iterator for StepBy<I> {
+    type Item = I.Item
+    fn next() -> Option<Self.Item> {
+        if self.first { self.first = false; return self.iter.next() }
+        for _ in 0..(self.step - 1) { self.iter.next()? }
+        self.iter.next()
+    }
+}
+
+struct Unique<I: Iterator> where I.Item: Hash + Eq { iter: I, seen: Set<I.Item> }
+impl<I: Iterator> Iterator for Unique<I> where I.Item: Hash + Eq + Clone {
+    type Item = I.Item
+    fn next() -> Option<Self.Item> {
+        loop { let x = self.iter.next()?; if self.seen.insert(x.clone()) { return Some(x) } }
+    }
+}
+
+struct Chunks<I> { iter: I, size: Int }
+impl<I: Iterator> Iterator for Chunks<I> {
+    type Item = [I.Item]
+    fn next() -> Option<Self.Item> {
+        var chunk = []; for _ in 0..self.size { match self.iter.next() { Some(x) => chunk.push(x), None => break } }
+        if chunk.is_empty() { None } else { Some(chunk) }
+    }
+}
+
+// Generators
+fn range(start: Int, end: Int) -> Range { Range { current: start, end: end } }
+fn range_inclusive(start: Int, end: Int) -> RangeInclusive { RangeInclusive { current: start, end: end } }
+fn repeat<T: Clone>(value: T) -> Repeat<T> { Repeat { value: value } }
+fn once<T>(value: T) -> Once<T> { Once { value: Some(value) } }
+fn empty<T>() -> Empty<T> { Empty {} }
+fn from_fn<T>(f: fn() -> Option<T>) -> FromFn<T> { FromFn { f: f } }
+fn successors<T>(first: Option<T>, f: fn(T) -> Option<T>) -> Successors<T> { Successors { next: first, f: f } }
+
+struct Range { current: Int, end: Int }
+impl Iterator for Range { type Item = Int; fn next() -> Option<Int> { if self.current >= self.end { None } else { let v = self.current; self.current += 1; Some(v) } } }
+
+struct Repeat<T: Clone> { value: T }
+impl<T: Clone> Iterator for Repeat<T> { type Item = T; fn next() -> Option<T> { Some(self.value.clone()) } }
+
+struct Once<T> { value: Option<T> }
+impl<T> Iterator for Once<T> { type Item = T; fn next() -> Option<T> { self.value.take() } }
+
+struct Empty<T> {}
+impl<T> Iterator for Empty<T> { type Item = T; fn next() -> Option<T> { None } }
+
+struct FromFn<T> { f: fn() -> Option<T> }
+impl<T> Iterator for FromFn<T> { type Item = T; fn next() -> Option<T> { (self.f)() } }
+
+struct Successors<T> { next: Option<T>, f: fn(T) -> Option<T> }
+impl<T: Clone> Iterator for Successors<T> { type Item = T; fn next() -> Option<T> { let item = self.next.take()?; self.next = (self.f)(item.clone()); Some(item) } }
+
+// Tests
+test "enumerate" { assert_eq([1, 2, 3].iter().enumerate().collect::<Vec<_>>(), [(0, 1), (1, 2), (2, 3)])? }
+test "filter_map" { assert_eq([1, 2, 3, 4].iter().filter_map(|x| if x % 2 == 0 { Some(x * 2) } else { None }).collect::<Vec<_>>(), [4, 8])? }
+test "chain" { assert_eq([1, 2].iter().chain([3, 4].iter()).collect::<Vec<_>>(), [1, 2, 3, 4])? }
+test "zip" { assert_eq([1, 2].iter().zip([3, 4].iter()).collect::<Vec<_>>(), [(1, 3), (2, 4)])? }
+test "unique" { assert_eq([1, 2, 1, 3, 2].iter().unique().collect::<Vec<_>>(), [1, 2, 3])? }

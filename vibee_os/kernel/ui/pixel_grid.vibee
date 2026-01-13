@@ -1,0 +1,352 @@
+name: vibee_os_pixel_grid
+version: "0.1.0"
+language: gleam
+module: kernel/ui/pixel_grid
+description: Pixel Grid Mask - each pixel is an atomic BEAM process. No frameworks, pure math + OTP.
+
+behaviors:
+  - name: spawn_pixel_actor
+    given: Screen coordinates (x, y) are specified
+    when: pixel_spawn is called
+    then: A new BEAM process is created for that pixel
+    test_cases:
+      - name: spawn_single_pixel
+        input: {x: 100, y: 200}
+        expected: {pid: "pixel_100_200", alive: true}
+      - name: spawn_pixel_grid
+        input: {width: 1920, height: 1080}
+        expected: {total_processes: 2073600, all_alive: true}
+
+  - name: pixel_receives_color
+    given: Pixel actor exists at (x, y)
+    when: Message {:set_color, color} is sent
+    then: Pixel updates its state and emits change event
+    test_cases:
+      - name: set_red
+        input: {x: 100, y: 200, color: 0xFF0000}
+        expected: {color_set: true, event_emitted: true}
+
+  - name: wave_diffusion
+    given: Grid of pixel actors exists
+    when: wave_propagate is called with origin and function
+    then: Wave spreads through pixels using message passing
+    test_cases:
+      - name: circular_wave
+        input: {origin: {x: 960, y: 540}, wave_fn: "sin", radius: 100}
+        expected: {pixels_affected: 31416, pattern: "circular"}
+      - name: emotion_wave
+        input: {emotion: "joy", intensity: 0.8}
+        expected: {color_shift: "warm", wave_speed: "fast"}
+
+  - name: cursor_guidance
+    given: User moves cursor over pixel grid
+    when: Cursor position changes
+    then: Nearby pixels react based on guidance function
+    test_cases:
+      - name: cursor_ripple
+        input: {cursor: {x: 500, y: 300}, radius: 50}
+        expected: {affected_pixels: 7854, effect: "ripple"}
+
+  - name: region_aggregate
+    given: Multiple pixels form a logical region
+    when: region_create is called with bounds
+    then: Supervisor process manages pixel group
+    test_cases:
+      - name: create_button_region
+        input: {x: 100, y: 100, width: 200, height: 50}
+        expected: {region_pid: "region_btn_1", pixel_count: 10000}
+
+types:
+  Pixel:
+    x: int
+    y: int
+    color: int          # 0xRRGGBB
+    alpha: float        # 0.0 - 1.0
+    state: PixelState
+    wave_phase: float   # For diffusion
+    metadata: {str: str}
+
+  PixelState:
+    variants:
+      - Idle
+      - Active
+      - Transitioning
+      - Locked
+
+  PixelMessage:
+    variants:
+      - SetColor: {color: int, alpha: float}
+      - GetState
+      - WavePulse: {phase: float, amplitude: float}
+      - CursorNear: {distance: float, angle: float}
+      - Lock
+      - Unlock
+
+  Grid:
+    width: int
+    height: int
+    pixels: [[Pixel]]   # 2D array of pixel refs
+    supervisor: str     # Supervisor PID
+    render_mode: RenderMode
+
+  RenderMode:
+    variants:
+      - Immediate       # Render every change
+      - Batched         # Batch changes per frame
+      - Diffed          # Only render diffs
+
+  Region:
+    id: str
+    bounds: Rect
+    pixels: [str]       # Pixel PIDs
+    supervisor: str
+    z_index: int
+    visible: bool
+
+  Rect:
+    x: int
+    y: int
+    width: int
+    height: int
+
+  Wave:
+    origin: Point
+    function: WaveFunction
+    speed: float
+    amplitude: float
+    decay: float
+    color_map: ColorMap
+
+  Point:
+    x: int
+    y: int
+
+  WaveFunction:
+    variants:
+      - Sin
+      - Cos
+      - Gaussian
+      - Square
+      - Sawtooth
+      - Custom: {formula: str}
+
+  ColorMap:
+    variants:
+      - Grayscale
+      - Rainbow
+      - Thermal
+      - Emotion: {emotion: str}
+      - Custom: {stops: [{pos: float, color: int}]}
+
+  Emotion:
+    variants:
+      - Joy         # Warm colors, fast waves
+      - Calm        # Cool colors, slow waves
+      - Energy      # Bright, pulsing
+      - Focus       # Sharp, minimal
+      - Creative    # Chaotic, colorful
+
+  CursorState:
+    position: Point
+    velocity: Point
+    pressure: float     # For touch/pen
+    buttons: int        # Bitmask
+
+  RenderCommand:
+    variants:
+      - Clear: {color: int}
+      - SetPixel: {x: int, y: int, color: int}
+      - FillRect: {rect: Rect, color: int}
+      - DrawLine: {from: Point, to: Point, color: int}
+      - BatchPixels: {pixels: [{x: int, y: int, color: int}]}
+
+  FrameBuffer:
+    width: int
+    height: int
+    data: [int]         # Raw pixel data
+    dirty_regions: [Rect]
+
+functions:
+  # Pixel lifecycle
+  - name: pixel_spawn
+    params: {x: int, y: int}
+    returns: str
+    description: Spawn pixel actor, returns PID
+
+  - name: pixel_kill
+    params: {pid: str}
+    returns: bool
+    description: Kill pixel actor
+
+  - name: pixel_send
+    params: {pid: str, message: PixelMessage}
+    returns: void
+    description: Send message to pixel actor
+
+  - name: pixel_get
+    params: {pid: str}
+    returns: Pixel
+    description: Get pixel state
+
+  # Grid management
+  - name: grid_create
+    params: {width: int, height: int}
+    returns: Grid
+    description: Create pixel grid with all actors
+
+  - name: grid_destroy
+    params: {grid: Grid}
+    returns: void
+    description: Destroy grid and all pixel actors
+
+  - name: grid_resize
+    params: {grid: Grid, width: int, height: int}
+    returns: Grid
+    description: Resize grid (spawn/kill pixels)
+
+  # Wave diffusion
+  - name: wave_propagate
+    params: {grid: Grid, wave: Wave}
+    returns: void
+    description: Propagate wave through pixel grid
+
+  - name: wave_emotion
+    params: {grid: Grid, emotion: Emotion, intensity: float}
+    returns: void
+    description: Apply emotion-based wave
+
+  - name: wave_cursor
+    params: {grid: Grid, cursor: CursorState, effect: str}
+    returns: void
+    description: Apply cursor-guided effect
+
+  # Region management
+  - name: region_create
+    params: {grid: Grid, bounds: Rect}
+    returns: Region
+    description: Create supervised region
+
+  - name: region_destroy
+    params: {region: Region}
+    returns: void
+    description: Destroy region (pixels remain)
+
+  - name: region_move
+    params: {region: Region, to: Point}
+    returns: void
+    description: Move region to new position
+
+  # Rendering
+  - name: render_frame
+    params: {grid: Grid}
+    returns: FrameBuffer
+    description: Render current grid state to buffer
+
+  - name: render_diff
+    params: {grid: Grid, previous: FrameBuffer}
+    returns: [RenderCommand]
+    description: Get diff commands since last frame
+
+  - name: render_to_canvas
+    params: {buffer: FrameBuffer, canvas_id: str}
+    returns: void
+    description: Push buffer to browser canvas
+
+imports:
+  - otp.gen_server
+  - otp.supervisor
+
+pixel_actor_implementation: |
+  # Pixel Actor (Gleam/Erlang)
+  
+  Each pixel is a gen_server process:
+  
+  ```gleam
+  pub type PixelState {
+    PixelState(
+      x: Int,
+      y: Int,
+      color: Int,
+      alpha: Float,
+      wave_phase: Float,
+    )
+  }
+  
+  pub fn init(x: Int, y: Int) -> PixelState {
+    PixelState(x, y, 0x000000, 1.0, 0.0)
+  }
+  
+  pub fn handle_call(msg: PixelMessage, state: PixelState) -> PixelState {
+    case msg {
+      SetColor(color, alpha) -> 
+        PixelState(..state, color: color, alpha: alpha)
+      
+      WavePulse(phase, amplitude) -> {
+        let new_phase = state.wave_phase + phase
+        let color = wave_to_color(new_phase, amplitude)
+        PixelState(..state, wave_phase: new_phase, color: color)
+      }
+      
+      CursorNear(distance, angle) -> {
+        let intensity = 1.0 / (distance + 1.0)
+        let color = blend_color(state.color, 0xFFFFFF, intensity)
+        PixelState(..state, color: color)
+      }
+      
+      _ -> state
+    }
+  }
+  ```
+
+wave_diffusion_math: |
+  # Wave Diffusion Mathematics
+  
+  No neural networks - pure mathematical functions:
+  
+  ## Circular Wave
+  ```
+  color(x, y, t) = base_color + amplitude * sin(
+    sqrt((x - cx)² + (y - cy)²) / wavelength - t * speed
+  ) * decay^distance
+  ```
+  
+  ## Emotion Mapping
+  ```
+  Joy:     hue = 30-60° (warm), saturation = high, brightness = high
+  Calm:    hue = 180-240° (cool), saturation = low, brightness = medium
+  Energy:  hue = cycling, saturation = max, brightness = pulsing
+  Focus:   hue = 0° (neutral), saturation = 0, brightness = high contrast
+  ```
+  
+  ## Cursor Guidance (like Classifier-Free Guidance in Diffusion)
+  ```
+  guided_color = base_color + guidance_scale * (cursor_influence - base_color)
+  
+  cursor_influence = f(distance, angle, velocity)
+  ```
+
+beam_advantages: |
+  # Why BEAM for Pixel Grid?
+  
+  1. **Lightweight Processes**
+     - 2 million pixels = 2 million processes
+     - Each process ~2KB memory
+     - Total: ~4GB for full HD grid
+  
+  2. **Message Passing**
+     - No shared state
+     - No race conditions
+     - Natural parallelism
+  
+  3. **Fault Tolerance**
+     - Pixel crashes? Supervisor restarts it
+     - Region crashes? Only that region affected
+     - Self-healing UI
+  
+  4. **Hot Code Reload**
+     - Update wave functions without restart
+     - Live UI evolution
+  
+  5. **Distribution**
+     - Spread pixels across nodes
+     - Cluster rendering

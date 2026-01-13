@@ -1,0 +1,372 @@
+// =============================================================================
+// Vibee OS — Video Module
+// Video processing and manipulation
+// =============================================================================
+
+use image::{Image, Pixel, ImageFormat}
+use audio::{AudioBuffer, AudioClip}
+
+/// Video format enumeration
+enum VideoFormat {
+    MP4,
+    WEBM,
+    AVI,
+    MOV,
+    MKV,
+    GIF
+    
+    fn extension() -> String {
+        match self {
+            MP4 => "mp4", WEBM => "webm", AVI => "avi",
+            MOV => "mov", MKV => "mkv", GIF => "gif"
+        }
+    }
+    
+    fn mime_type() -> String {
+        match self {
+            MP4 => "video/mp4", WEBM => "video/webm", AVI => "video/x-msvideo",
+            MOV => "video/quicktime", MKV => "video/x-matroska", GIF => "image/gif"
+        }
+    }
+}
+
+/// Video codec
+enum VideoCodec { H264, H265, VP8, VP9, AV1, ProRes, MJPEG }
+
+/// Audio codec
+enum AudioCodec { AAC, MP3, Opus, Vorbis, FLAC, PCM }
+
+/// Video frame
+struct Frame {
+    image: Image
+    timestamp: Float64
+    keyframe: Bool
+    
+    fn new(image: Image, timestamp: Float64) -> Self {
+        Frame { image: image, timestamp: timestamp, keyframe: false }
+    }
+    
+    fn width() -> Int { self.image.width }
+    fn height() -> Int { self.image.height }
+}
+
+/// Video clip
+struct Video {
+    frames: [Frame]
+    audio: Option<AudioBuffer>
+    fps: Float64
+    width: Int
+    height: Int
+    metadata: VideoMetadata
+    
+    fn new(width: Int, height: Int, fps: Float64) -> Self {
+        Video {
+            frames: [], audio: None, fps: fps,
+            width: width, height: height, metadata: VideoMetadata.new()
+        }
+    }
+    
+    fn load(path: String) -> Result<Self, VideoError> {
+        @native("video_load", path)
+    }
+    
+    fn save(path: String, format: VideoFormat) -> Result<(), VideoError> {
+        @native("video_save", self, path, format)
+    }
+    
+    fn duration() -> Float64 {
+        self.frames.len() as Float64 / self.fps
+    }
+    
+    fn frame_count() -> Int { self.frames.len() }
+    
+    fn get_frame(index: Int) -> Option<Frame> {
+        if index >= 0 && index < self.frames.len() {
+            Some(self.frames[index])
+        } else { None }
+    }
+    
+    fn get_frame_at(time: Float64) -> Option<Frame> {
+        let index = (time * self.fps) as Int
+        self.get_frame(index)
+    }
+    
+    fn add_frame(frame: Frame) { self.frames.push(frame) }
+    
+    fn set_audio(audio: AudioBuffer) { self.audio = Some(audio) }
+    
+    fn extract_audio() -> Option<AudioBuffer> { self.audio.clone() }
+    
+    fn clone() -> Self {
+        Video {
+            frames: self.frames.clone(), audio: self.audio.clone(),
+            fps: self.fps, width: self.width, height: self.height,
+            metadata: self.metadata.clone()
+        }
+    }
+}
+
+/// Video metadata
+struct VideoMetadata {
+    title: Option<String>
+    author: Option<String>
+    description: Option<String>
+    creation_date: Option<DateTime>
+    
+    fn new() -> Self {
+        VideoMetadata { title: None, author: None, description: None, creation_date: None }
+    }
+    
+    fn clone() -> Self {
+        VideoMetadata {
+            title: self.title.clone(), author: self.author.clone(),
+            description: self.description.clone(), creation_date: self.creation_date
+        }
+    }
+}
+
+/// Video transformations
+impl Video {
+    fn resize(new_width: Int, new_height: Int) -> Self {
+        var result = Video.new(new_width, new_height, self.fps)
+        for frame in self.frames {
+            let resized = frame.image.resize(new_width, new_height)
+            result.add_frame(Frame.new(resized, frame.timestamp))
+        }
+        result.audio = self.audio.clone()
+        result
+    }
+    
+    fn crop(x: Int, y: Int, width: Int, height: Int) -> Self {
+        var result = Video.new(width, height, self.fps)
+        for frame in self.frames {
+            let cropped = frame.image.crop(x, y, width, height)
+            result.add_frame(Frame.new(cropped, frame.timestamp))
+        }
+        result.audio = self.audio.clone()
+        result
+    }
+    
+    fn trim(start: Float64, end: Float64) -> Self {
+        var result = Video.new(self.width, self.height, self.fps)
+        let start_frame = (start * self.fps) as Int
+        let end_frame = (end * self.fps) as Int
+        
+        for i in start_frame..end_frame.min(self.frames.len()) {
+            let mut frame = self.frames[i].clone()
+            frame.timestamp -= start
+            result.add_frame(frame)
+        }
+        
+        if let Some(audio) = self.audio {
+            result.audio = Some(audio.trim_seconds(start, end))
+        }
+        result
+    }
+    
+    fn concat(other: Video) -> Self {
+        var result = self.clone()
+        let offset = self.duration()
+        for frame in other.frames {
+            let mut new_frame = frame.clone()
+            new_frame.timestamp += offset
+            result.add_frame(new_frame)
+        }
+        if let (Some(a1), Some(a2)) = (self.audio, other.audio) {
+            result.audio = Some(a1.append(a2))
+        }
+        result
+    }
+    
+    fn reverse() -> Self {
+        var result = Video.new(self.width, self.height, self.fps)
+        for i in (0..self.frames.len()).rev() {
+            let mut frame = self.frames[i].clone()
+            frame.timestamp = (self.frames.len() - 1 - i) as Float64 / self.fps
+            result.add_frame(frame)
+        }
+        if let Some(audio) = self.audio {
+            result.audio = Some(audio.reverse())
+        }
+        result
+    }
+    
+    fn change_speed(factor: Float64) -> Self {
+        var result = Video.new(self.width, self.height, self.fps * factor)
+        for frame in self.frames {
+            let mut new_frame = frame.clone()
+            new_frame.timestamp /= factor
+            result.add_frame(new_frame)
+        }
+        result
+    }
+    
+    fn rotate_90() -> Self {
+        var result = Video.new(self.height, self.width, self.fps)
+        for frame in self.frames {
+            result.add_frame(Frame.new(frame.image.rotate_90(), frame.timestamp))
+        }
+        result.audio = self.audio.clone()
+        result
+    }
+    
+    fn flip_horizontal() -> Self {
+        var result = Video.new(self.width, self.height, self.fps)
+        for frame in self.frames {
+            result.add_frame(Frame.new(frame.image.flip_horizontal(), frame.timestamp))
+        }
+        result.audio = self.audio.clone()
+        result
+    }
+}
+
+/// Video effects
+impl Video {
+    fn grayscale() -> Self {
+        self.apply_filter(|img| img.grayscale())
+    }
+    
+    fn brightness(factor: Float64) -> Self {
+        self.apply_filter(|img| img.brightness(factor))
+    }
+    
+    fn contrast(factor: Float64) -> Self {
+        self.apply_filter(|img| img.contrast(factor))
+    }
+    
+    fn blur(radius: Int) -> Self {
+        self.apply_filter(|img| img.blur(radius))
+    }
+    
+    fn apply_filter(f: fn(Image) -> Image) -> Self {
+        var result = Video.new(self.width, self.height, self.fps)
+        for frame in self.frames {
+            result.add_frame(Frame.new(f(frame.image), frame.timestamp))
+        }
+        result.audio = self.audio.clone()
+        result
+    }
+    
+    fn fade_in(duration: Float64) -> Self {
+        var result = self.clone()
+        let fade_frames = (duration * self.fps) as Int
+        for i in 0..fade_frames.min(result.frames.len()) {
+            let alpha = i as Float64 / fade_frames as Float64
+            result.frames[i].image = result.frames[i].image.brightness(alpha)
+        }
+        result
+    }
+    
+    fn fade_out(duration: Float64) -> Self {
+        var result = self.clone()
+        let fade_frames = (duration * self.fps) as Int
+        let start = (result.frames.len() - fade_frames).max(0)
+        for i in start..result.frames.len() {
+            let alpha = (result.frames.len() - i) as Float64 / fade_frames as Float64
+            result.frames[i].image = result.frames[i].image.brightness(alpha)
+        }
+        result
+    }
+    
+    fn overlay(other: Video, x: Int, y: Int, start_time: Float64) -> Self {
+        var result = self.clone()
+        let start_frame = (start_time * self.fps) as Int
+        for i in 0..other.frames.len() {
+            let target = start_frame + i
+            if target < result.frames.len() {
+                result.frames[target].image = result.frames[target].image.overlay(other.frames[i].image, x, y)
+            }
+        }
+        result
+    }
+}
+
+/// Video encoder settings
+struct EncoderSettings {
+    codec: VideoCodec
+    bitrate: Int
+    quality: Int
+    keyframe_interval: Int
+    audio_codec: AudioCodec
+    audio_bitrate: Int
+    
+    fn new() -> Self {
+        EncoderSettings {
+            codec: VideoCodec.H264, bitrate: 5000000, quality: 23,
+            keyframe_interval: 30, audio_codec: AudioCodec.AAC, audio_bitrate: 128000
+        }
+    }
+    
+    fn with_codec(codec: VideoCodec) -> Self { self.codec = codec; self }
+    fn with_bitrate(bitrate: Int) -> Self { self.bitrate = bitrate; self }
+    fn with_quality(quality: Int) -> Self { self.quality = quality; self }
+}
+
+/// Video player
+actor VideoPlayer {
+    state video: Option<Video>
+    state playing: Bool
+    state position: Float64
+    state volume: Float64
+    state loop_enabled: Bool
+    
+    fn new() -> Self {
+        VideoPlayer { video: None, playing: false, position: 0.0, volume: 1.0, loop_enabled: false }
+    }
+    
+    fn load(video: Video) { self.video = Some(video); self.position = 0.0 }
+    fn play() { self.playing = true; @native("video_play", self) }
+    fn pause() { self.playing = false }
+    fn stop() { self.playing = false; self.position = 0.0 }
+    fn seek(time: Float64) { self.position = time.max(0.0) }
+    fn set_volume(vol: Float64) { self.volume = vol.clamp(0.0, 1.0) }
+    fn set_loop(enabled: Bool) { self.loop_enabled = enabled }
+    fn is_playing() -> Bool { self.playing }
+    fn get_position() -> Float64 { self.position }
+    fn current_frame() -> Option<Frame> {
+        self.video?.get_frame_at(self.position)
+    }
+}
+
+/// Video error types
+enum VideoError {
+    InvalidFormat, DecodingError(String), EncodingError(String),
+    IoError(String), UnsupportedCodec, FrameError
+}
+
+impl Display for VideoError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidFormat => f.write("Invalid video format"),
+            DecodingError(msg) => f.write(format!("Decoding error: {}", msg)),
+            EncodingError(msg) => f.write(format!("Encoding error: {}", msg)),
+            IoError(msg) => f.write(format!("IO error: {}", msg)),
+            UnsupportedCodec => f.write("Unsupported codec"),
+            FrameError => f.write("Frame error")
+        }
+    }
+}
+
+// Tests
+test "create video" {
+    let video = Video.new(1920, 1080, 30.0)
+    assert_eq(video.width, 1920)?
+    assert_eq(video.height, 1080)?
+    assert_eq(video.fps, 30.0)?
+}
+
+test "add frames" {
+    var video = Video.new(100, 100, 30.0)
+    let img = Image.new(100, 100)
+    video.add_frame(Frame.new(img, 0.0))
+    video.add_frame(Frame.new(img.clone(), 1.0 / 30.0))
+    assert_eq(video.frame_count(), 2)?
+}
+
+test "duration" {
+    var video = Video.new(100, 100, 30.0)
+    for i in 0..90 {
+        video.add_frame(Frame.new(Image.new(100, 100), i as Float64 / 30.0))
+    }
+    assert_eq(video.duration(), 3.0)?
+}

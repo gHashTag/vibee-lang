@@ -1,0 +1,453 @@
+// =============================================================================
+// Vibee OS — Sprite Module
+// Sprite rendering and animation for 2D games
+// =============================================================================
+
+use vector::Vec2
+use color::RGBA
+use image::Image
+use canvas::{Canvas, Rect}
+
+// -----------------------------------------------------------------------------
+// Texture
+// -----------------------------------------------------------------------------
+
+/// Texture wrapper for images
+struct Texture {
+    id: UInt32
+    width: Int
+    height: Int
+    image: Image
+    
+    fn from_image(img: Image) -> Self {
+        Texture { id: @native("texture_create", img), width: img.width, height: img.height, image: img }
+    }
+    
+    fn load(path: String) -> Result<Self, String> {
+        let img = Image.load(path)?
+        Ok(Texture.from_image(img))
+    }
+    
+    fn size() -> Vec2 { Vec2.new(self.width as Float, self.height as Float) }
+    fn drop() { @native("texture_destroy", self.id) }
+}
+
+// -----------------------------------------------------------------------------
+// Sprite
+// -----------------------------------------------------------------------------
+
+/// 2D Sprite for rendering
+struct Sprite {
+    texture: &Texture
+    source_rect: Rect
+    origin: Vec2
+    color: RGBA
+    flip_x: Bool
+    flip_y: Bool
+    
+    fn new(texture: &Texture) -> Self {
+        Sprite {
+            texture: texture,
+            source_rect: Rect.new(0.0, 0.0, texture.width as Float, texture.height as Float),
+            origin: Vec2.new(0.5, 0.5),
+            color: RGBA.white(),
+            flip_x: false, flip_y: false
+        }
+    }
+    
+    fn from_region(texture: &Texture, x: Float, y: Float, w: Float, h: Float) -> Self {
+        Sprite {
+            texture: texture,
+            source_rect: Rect.new(x, y, w, h),
+            origin: Vec2.new(0.5, 0.5),
+            color: RGBA.white(),
+            flip_x: false, flip_y: false
+        }
+    }
+    
+    fn set_origin(x: Float, y: Float) -> Self { self.origin = Vec2.new(x, y); self }
+    fn set_color(c: RGBA) -> Self { self.color = c; self }
+    fn flip_horizontal() -> Self { self.flip_x = !self.flip_x; self }
+    fn flip_vertical() -> Self { self.flip_y = !self.flip_y; self }
+    
+    fn width() -> Float { self.source_rect.width }
+    fn height() -> Float { self.source_rect.height }
+    fn size() -> Vec2 { Vec2.new(self.width(), self.height()) }
+}
+
+// -----------------------------------------------------------------------------
+// Sprite Sheet
+// -----------------------------------------------------------------------------
+
+/// Sprite sheet for managing multiple sprites from one texture
+struct SpriteSheet {
+    texture: Texture
+    tile_width: Int
+    tile_height: Int
+    columns: Int
+    rows: Int
+    spacing: Int
+    margin: Int
+    
+    fn new(texture: Texture, tile_w: Int, tile_h: Int) -> Self {
+        let cols = texture.width / tile_w
+        let rows = texture.height / tile_h
+        SpriteSheet {
+            texture: texture, tile_width: tile_w, tile_height: tile_h,
+            columns: cols, rows: rows, spacing: 0, margin: 0
+        }
+    }
+    
+    fn with_spacing(spacing: Int) -> Self { self.spacing = spacing; self }
+    fn with_margin(margin: Int) -> Self { self.margin = margin; self }
+    
+    fn get_sprite(index: Int) -> Sprite {
+        let col = index % self.columns
+        let row = index / self.columns
+        self.get_sprite_at(col, row)
+    }
+    
+    fn get_sprite_at(col: Int, row: Int) -> Sprite {
+        let x = self.margin + col * (self.tile_width + self.spacing)
+        let y = self.margin + row * (self.tile_height + self.spacing)
+        Sprite.from_region(&self.texture, x as Float, y as Float, self.tile_width as Float, self.tile_height as Float)
+    }
+    
+    fn tile_count() -> Int { self.columns * self.rows }
+}
+
+// -----------------------------------------------------------------------------
+// Animation
+// -----------------------------------------------------------------------------
+
+/// Animation frame
+struct AnimationFrame {
+    sprite_index: Int
+    duration: Float
+}
+
+/// Sprite animation
+struct Animation {
+    name: String
+    frames: [AnimationFrame]
+    looping: Bool
+    
+    fn new(name: String) -> Self {
+        Animation { name: name, frames: [], looping: true }
+    }
+    
+    fn add_frame(index: Int, duration: Float) -> Self {
+        self.frames.push(AnimationFrame { sprite_index: index, duration: duration })
+        self
+    }
+    
+    fn add_frames(indices: [Int], duration: Float) -> Self {
+        for idx in indices { self.frames.push(AnimationFrame { sprite_index: idx, duration: duration }) }
+        self
+    }
+    
+    fn set_looping(loop_anim: Bool) -> Self { self.looping = loop_anim; self }
+    
+    fn total_duration() -> Float {
+        self.frames.iter().map(|f| f.duration).sum()
+    }
+}
+
+/// Animation player
+struct AnimationPlayer {
+    animations: Map<String, Animation>
+    current: Option<String>
+    time: Float
+    frame_index: Int
+    playing: Bool
+    speed: Float
+    
+    fn new() -> Self {
+        AnimationPlayer {
+            animations: Map.new(), current: None, time: 0.0,
+            frame_index: 0, playing: false, speed: 1.0
+        }
+    }
+    
+    fn add(animation: Animation) -> Self {
+        self.animations.insert(animation.name.clone(), animation)
+        self
+    }
+    
+    fn play(name: String) {
+        if self.current != Some(name.clone()) {
+            self.current = Some(name)
+            self.time = 0.0
+            self.frame_index = 0
+            self.playing = true
+        }
+    }
+    
+    fn stop() { self.playing = false }
+    fn pause() { self.playing = false }
+    fn resume() { self.playing = true }
+    fn set_speed(s: Float) { self.speed = s }
+    
+    fn update(dt: Float) {
+        if !self.playing { return }
+        if let Some(name) = &self.current {
+            if let Some(anim) = self.animations.get(name) {
+                self.time += dt * self.speed
+                
+                while self.time >= anim.frames[self.frame_index].duration {
+                    self.time -= anim.frames[self.frame_index].duration
+                    self.frame_index += 1
+                    
+                    if self.frame_index >= anim.frames.len() {
+                        if anim.looping {
+                            self.frame_index = 0
+                        } else {
+                            self.frame_index = anim.frames.len() - 1
+                            self.playing = false
+                            break
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    fn current_frame() -> Option<Int> {
+        if let Some(name) = &self.current {
+            if let Some(anim) = self.animations.get(name) {
+                return Some(anim.frames[self.frame_index].sprite_index)
+            }
+        }
+        None
+    }
+    
+    fn is_playing() -> Bool { self.playing }
+    fn is_finished() -> Bool { !self.playing && self.current.is_some() }
+}
+
+// -----------------------------------------------------------------------------
+// Animated Sprite
+// -----------------------------------------------------------------------------
+
+/// Sprite with built-in animation support
+struct AnimatedSprite {
+    sheet: SpriteSheet
+    player: AnimationPlayer
+    position: Vec2
+    scale: Vec2
+    rotation: Float
+    origin: Vec2
+    color: RGBA
+    flip_x: Bool
+    flip_y: Bool
+    
+    fn new(sheet: SpriteSheet) -> Self {
+        AnimatedSprite {
+            sheet: sheet, player: AnimationPlayer.new(),
+            position: Vec2.zero(), scale: Vec2.one(), rotation: 0.0,
+            origin: Vec2.new(0.5, 0.5), color: RGBA.white(),
+            flip_x: false, flip_y: false
+        }
+    }
+    
+    fn add_animation(anim: Animation) -> Self { self.player.add(anim); self }
+    fn play(name: String) { self.player.play(name) }
+    fn stop() { self.player.stop() }
+    
+    fn update(dt: Float) { self.player.update(dt) }
+    
+    fn current_sprite() -> Sprite {
+        let idx = self.player.current_frame().unwrap_or(0)
+        var sprite = self.sheet.get_sprite(idx)
+        sprite.origin = self.origin
+        sprite.color = self.color
+        sprite.flip_x = self.flip_x
+        sprite.flip_y = self.flip_y
+        sprite
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Sprite Batch
+// -----------------------------------------------------------------------------
+
+/// Batch renderer for efficient sprite drawing
+struct SpriteBatch {
+    vertices: [SpriteVertex]
+    indices: [UInt32]
+    current_texture: Option<UInt32>
+    max_sprites: Int
+    sprite_count: Int
+    
+    fn new(max_sprites: Int) -> Self {
+        SpriteBatch {
+            vertices: [], indices: [],
+            current_texture: None, max_sprites: max_sprites, sprite_count: 0
+        }
+    }
+    
+    fn begin() {
+        self.vertices.clear()
+        self.indices.clear()
+        self.current_texture = None
+        self.sprite_count = 0
+    }
+    
+    fn draw(sprite: &Sprite, pos: Vec2, scale: Vec2, rotation: Float) {
+        if self.sprite_count >= self.max_sprites { self.flush() }
+        
+        let tex_id = sprite.texture.id
+        if self.current_texture.is_some() && self.current_texture.unwrap() != tex_id {
+            self.flush()
+        }
+        self.current_texture = Some(tex_id)
+        
+        let w = sprite.source_rect.width * scale.x
+        let h = sprite.source_rect.height * scale.y
+        let ox = sprite.origin.x * w
+        let oy = sprite.origin.y * h
+        
+        let cos_r = rotation.cos()
+        let sin_r = rotation.sin()
+        
+        let corners = [
+            Vec2.new(-ox, -oy),
+            Vec2.new(w - ox, -oy),
+            Vec2.new(w - ox, h - oy),
+            Vec2.new(-ox, h - oy)
+        ]
+        
+        let tex_w = sprite.texture.width as Float
+        let tex_h = sprite.texture.height as Float
+        let u0 = sprite.source_rect.x / tex_w
+        let v0 = sprite.source_rect.y / tex_h
+        let u1 = (sprite.source_rect.x + sprite.source_rect.width) / tex_w
+        let v1 = (sprite.source_rect.y + sprite.source_rect.height) / tex_h
+        
+        let uvs = if sprite.flip_x && sprite.flip_y {
+            [Vec2.new(u1, v1), Vec2.new(u0, v1), Vec2.new(u0, v0), Vec2.new(u1, v0)]
+        } else if sprite.flip_x {
+            [Vec2.new(u1, v0), Vec2.new(u0, v0), Vec2.new(u0, v1), Vec2.new(u1, v1)]
+        } else if sprite.flip_y {
+            [Vec2.new(u0, v1), Vec2.new(u1, v1), Vec2.new(u1, v0), Vec2.new(u0, v0)]
+        } else {
+            [Vec2.new(u0, v0), Vec2.new(u1, v0), Vec2.new(u1, v1), Vec2.new(u0, v1)]
+        }
+        
+        let base_idx = self.vertices.len() as UInt32
+        
+        for i in 0..4 {
+            let rotated = Vec2.new(
+                corners[i].x * cos_r - corners[i].y * sin_r,
+                corners[i].x * sin_r + corners[i].y * cos_r
+            )
+            self.vertices.push(SpriteVertex {
+                position: pos + rotated,
+                uv: uvs[i],
+                color: sprite.color
+            })
+        }
+        
+        self.indices.push(base_idx)
+        self.indices.push(base_idx + 1)
+        self.indices.push(base_idx + 2)
+        self.indices.push(base_idx)
+        self.indices.push(base_idx + 2)
+        self.indices.push(base_idx + 3)
+        
+        self.sprite_count += 1
+    }
+    
+    fn flush() {
+        if self.sprite_count == 0 { return }
+        if let Some(tex_id) = self.current_texture {
+            @native("sprite_batch_render", tex_id, self.vertices, self.indices)
+        }
+        self.vertices.clear()
+        self.indices.clear()
+        self.sprite_count = 0
+    }
+    
+    fn end() { self.flush() }
+}
+
+struct SpriteVertex {
+    position: Vec2
+    uv: Vec2
+    color: RGBA
+}
+
+// -----------------------------------------------------------------------------
+// Nine Slice
+// -----------------------------------------------------------------------------
+
+/// Nine-slice sprite for scalable UI elements
+struct NineSlice {
+    texture: &Texture
+    left: Float
+    right: Float
+    top: Float
+    bottom: Float
+    
+    fn new(texture: &Texture, left: Float, right: Float, top: Float, bottom: Float) -> Self {
+        NineSlice { texture: texture, left: left, right: right, top: top, bottom: bottom }
+    }
+    
+    fn draw(batch: &mut SpriteBatch, x: Float, y: Float, w: Float, h: Float) {
+        let tw = self.texture.width as Float
+        let th = self.texture.height as Float
+        let mw = tw - self.left - self.right
+        let mh = th - self.top - self.bottom
+        let cw = w - self.left - self.right
+        let ch = h - self.top - self.bottom
+        
+        // Corners
+        self.draw_region(batch, 0.0, 0.0, self.left, self.top, x, y, self.left, self.top)
+        self.draw_region(batch, tw - self.right, 0.0, self.right, self.top, x + w - self.right, y, self.right, self.top)
+        self.draw_region(batch, 0.0, th - self.bottom, self.left, self.bottom, x, y + h - self.bottom, self.left, self.bottom)
+        self.draw_region(batch, tw - self.right, th - self.bottom, self.right, self.bottom, x + w - self.right, y + h - self.bottom, self.right, self.bottom)
+        
+        // Edges
+        self.draw_region(batch, self.left, 0.0, mw, self.top, x + self.left, y, cw, self.top)
+        self.draw_region(batch, self.left, th - self.bottom, mw, self.bottom, x + self.left, y + h - self.bottom, cw, self.bottom)
+        self.draw_region(batch, 0.0, self.top, self.left, mh, x, y + self.top, self.left, ch)
+        self.draw_region(batch, tw - self.right, self.top, self.right, mh, x + w - self.right, y + self.top, self.right, ch)
+        
+        // Center
+        self.draw_region(batch, self.left, self.top, mw, mh, x + self.left, y + self.top, cw, ch)
+    }
+    
+    fn draw_region(batch: &mut SpriteBatch, sx: Float, sy: Float, sw: Float, sh: Float, dx: Float, dy: Float, dw: Float, dh: Float) {
+        let sprite = Sprite.from_region(self.texture, sx, sy, sw, sh)
+        batch.draw(&sprite, Vec2.new(dx, dy), Vec2.new(dw / sw, dh / sh), 0.0)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "sprite sheet" {
+    let img = Image.with_color(64, 64, Pixel.new(255, 0, 0, 255))
+    let tex = Texture.from_image(img)
+    let sheet = SpriteSheet.new(tex, 16, 16)
+    assert_eq(sheet.columns, 4)?
+    assert_eq(sheet.rows, 4)?
+    assert_eq(sheet.tile_count(), 16)?
+}
+
+test "animation" {
+    var anim = Animation.new("walk")
+        .add_frames([0, 1, 2, 3], 0.1)
+        .set_looping(true)
+    assert_eq(anim.frames.len(), 4)?
+    assert_eq(anim.total_duration(), 0.4)?
+}
+
+test "animation player" {
+    var player = AnimationPlayer.new()
+        .add(Animation.new("idle").add_frames([0, 1], 0.5))
+    player.play("idle")
+    player.update(0.6)
+    assert_eq(player.current_frame(), Some(1))?
+}

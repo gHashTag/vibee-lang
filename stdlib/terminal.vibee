@@ -1,0 +1,758 @@
+// =============================================================================
+// Vibee OS — Terminal Module
+// ANSI escape codes, colors, cursor control, and terminal UI
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Terminal Detection
+// -----------------------------------------------------------------------------
+
+/// Terminal capabilities
+actor Terminal {
+    /// Check if stdout is a TTY
+    fn is_tty() -> Bool {
+        @native("terminal_is_tty")
+    }
+    
+    /// Get terminal size
+    fn size() -> Option<(Int, Int)> {
+        @native("terminal_size")
+    }
+    
+    /// Get terminal width
+    fn width() -> Int {
+        self.size().map(|(w, _)| w).unwrap_or(80)
+    }
+    
+    /// Get terminal height
+    fn height() -> Int {
+        self.size().map(|(_, h)| h).unwrap_or(24)
+    }
+    
+    /// Check color support
+    fn supports_color() -> Bool {
+        if !self.is_tty() { return false }
+        
+        let term = Environment.get("TERM").unwrap_or("")
+        let color_term = Environment.get("COLORTERM")
+        
+        color_term.is_some() ||
+        term.contains("color") ||
+        term.contains("256") ||
+        term == "xterm" ||
+        term == "screen"
+    }
+    
+    /// Check 256 color support
+    fn supports_256_colors() -> Bool {
+        let term = Environment.get("TERM").unwrap_or("")
+        term.contains("256color")
+    }
+    
+    /// Check true color support
+    fn supports_true_color() -> Bool {
+        let color_term = Environment.get("COLORTERM").unwrap_or("")
+        color_term == "truecolor" || color_term == "24bit"
+    }
+}
+
+// -----------------------------------------------------------------------------
+// ANSI Escape Codes
+// -----------------------------------------------------------------------------
+
+/// ANSI escape sequence builder
+module ANSI {
+    const ESC = "\x1b"
+    const CSI = "\x1b["
+    
+    /// Reset all attributes
+    const RESET = "\x1b[0m"
+    
+    // Text styles
+    const BOLD = "\x1b[1m"
+    const DIM = "\x1b[2m"
+    const ITALIC = "\x1b[3m"
+    const UNDERLINE = "\x1b[4m"
+    const BLINK = "\x1b[5m"
+    const REVERSE = "\x1b[7m"
+    const HIDDEN = "\x1b[8m"
+    const STRIKETHROUGH = "\x1b[9m"
+    
+    // Reset specific styles
+    const RESET_BOLD = "\x1b[22m"
+    const RESET_DIM = "\x1b[22m"
+    const RESET_ITALIC = "\x1b[23m"
+    const RESET_UNDERLINE = "\x1b[24m"
+    const RESET_BLINK = "\x1b[25m"
+    const RESET_REVERSE = "\x1b[27m"
+    const RESET_HIDDEN = "\x1b[28m"
+    const RESET_STRIKETHROUGH = "\x1b[29m"
+    
+    // Foreground colors (basic)
+    const BLACK = "\x1b[30m"
+    const RED = "\x1b[31m"
+    const GREEN = "\x1b[32m"
+    const YELLOW = "\x1b[33m"
+    const BLUE = "\x1b[34m"
+    const MAGENTA = "\x1b[35m"
+    const CYAN = "\x1b[36m"
+    const WHITE = "\x1b[37m"
+    const DEFAULT_FG = "\x1b[39m"
+    
+    // Bright foreground colors
+    const BRIGHT_BLACK = "\x1b[90m"
+    const BRIGHT_RED = "\x1b[91m"
+    const BRIGHT_GREEN = "\x1b[92m"
+    const BRIGHT_YELLOW = "\x1b[93m"
+    const BRIGHT_BLUE = "\x1b[94m"
+    const BRIGHT_MAGENTA = "\x1b[95m"
+    const BRIGHT_CYAN = "\x1b[96m"
+    const BRIGHT_WHITE = "\x1b[97m"
+    
+    // Background colors (basic)
+    const BG_BLACK = "\x1b[40m"
+    const BG_RED = "\x1b[41m"
+    const BG_GREEN = "\x1b[42m"
+    const BG_YELLOW = "\x1b[43m"
+    const BG_BLUE = "\x1b[44m"
+    const BG_MAGENTA = "\x1b[45m"
+    const BG_CYAN = "\x1b[46m"
+    const BG_WHITE = "\x1b[47m"
+    const DEFAULT_BG = "\x1b[49m"
+    
+    // Bright background colors
+    const BG_BRIGHT_BLACK = "\x1b[100m"
+    const BG_BRIGHT_RED = "\x1b[101m"
+    const BG_BRIGHT_GREEN = "\x1b[102m"
+    const BG_BRIGHT_YELLOW = "\x1b[103m"
+    const BG_BRIGHT_BLUE = "\x1b[104m"
+    const BG_BRIGHT_MAGENTA = "\x1b[105m"
+    const BG_BRIGHT_CYAN = "\x1b[106m"
+    const BG_BRIGHT_WHITE = "\x1b[107m"
+    
+    /// 256 color foreground
+    fn fg256(code: Int) -> String {
+        "\x1b[38;5;\(code)m"
+    }
+    
+    /// 256 color background
+    fn bg256(code: Int) -> String {
+        "\x1b[48;5;\(code)m"
+    }
+    
+    /// RGB foreground (true color)
+    fn fg_rgb(r: Int, g: Int, b: Int) -> String {
+        "\x1b[38;2;\(r);\(g);\(b)m"
+    }
+    
+    /// RGB background (true color)
+    fn bg_rgb(r: Int, g: Int, b: Int) -> String {
+        "\x1b[48;2;\(r);\(g);\(b)m"
+    }
+    
+    /// Hex color foreground
+    fn fg_hex(hex: String) -> String {
+        let (r, g, b) = Color.from_hex(hex).to_rgb()
+        fg_rgb(r, g, b)
+    }
+    
+    /// Hex color background
+    fn bg_hex(hex: String) -> String {
+        let (r, g, b) = Color.from_hex(hex).to_rgb()
+        bg_rgb(r, g, b)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Color Type
+// -----------------------------------------------------------------------------
+
+/// Color representation
+enum Color {
+    Basic(BasicColor)
+    Bright(BasicColor)
+    Palette(Int)  // 0-255
+    RGB(Int, Int, Int)
+    
+    /// Parse hex color
+    fn from_hex(hex: String) -> Self {
+        let h = hex.trim_start("#")
+        let r = Int.parse_hex(h[0..2]).unwrap_or(0)
+        let g = Int.parse_hex(h[2..4]).unwrap_or(0)
+        let b = Int.parse_hex(h[4..6]).unwrap_or(0)
+        .RGB(r, g, b)
+    }
+    
+    /// Convert to RGB tuple
+    fn to_rgb() -> (Int, Int, Int) {
+        match self {
+            .RGB(r, g, b) => (r, g, b)
+            .Basic(c) => c.to_rgb()
+            .Bright(c) => c.to_bright_rgb()
+            .Palette(n) => palette_to_rgb(n)
+        }
+    }
+    
+    /// Get foreground escape code
+    fn fg() -> String {
+        match self {
+            .Basic(c) => "\x1b[\(30 + c.code())m"
+            .Bright(c) => "\x1b[\(90 + c.code())m"
+            .Palette(n) => ANSI.fg256(n)
+            .RGB(r, g, b) => ANSI.fg_rgb(r, g, b)
+        }
+    }
+    
+    /// Get background escape code
+    fn bg() -> String {
+        match self {
+            .Basic(c) => "\x1b[\(40 + c.code())m"
+            .Bright(c) => "\x1b[\(100 + c.code())m"
+            .Palette(n) => ANSI.bg256(n)
+            .RGB(r, g, b) => ANSI.bg_rgb(r, g, b)
+        }
+    }
+}
+
+enum BasicColor {
+    Black, Red, Green, Yellow, Blue, Magenta, Cyan, White
+    
+    fn code() -> Int {
+        match self {
+            .Black => 0
+            .Red => 1
+            .Green => 2
+            .Yellow => 3
+            .Blue => 4
+            .Magenta => 5
+            .Cyan => 6
+            .White => 7
+        }
+    }
+    
+    fn to_rgb() -> (Int, Int, Int) {
+        match self {
+            .Black => (0, 0, 0)
+            .Red => (128, 0, 0)
+            .Green => (0, 128, 0)
+            .Yellow => (128, 128, 0)
+            .Blue => (0, 0, 128)
+            .Magenta => (128, 0, 128)
+            .Cyan => (0, 128, 128)
+            .White => (192, 192, 192)
+        }
+    }
+    
+    fn to_bright_rgb() -> (Int, Int, Int) {
+        match self {
+            .Black => (128, 128, 128)
+            .Red => (255, 0, 0)
+            .Green => (0, 255, 0)
+            .Yellow => (255, 255, 0)
+            .Blue => (0, 0, 255)
+            .Magenta => (255, 0, 255)
+            .Cyan => (0, 255, 255)
+            .White => (255, 255, 255)
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Styled Text
+// -----------------------------------------------------------------------------
+
+/// Styled text builder
+actor Style {
+    state text: String
+    state fg_color: Option<Color>
+    state bg_color: Option<Color>
+    state bold: Bool
+    state dim: Bool
+    state italic: Bool
+    state underline: Bool
+    state blink: Bool
+    state reverse: Bool
+    state strikethrough: Bool
+    
+    /// Create styled text
+    init(text: String) {
+        self.text = text
+        self.bold = false
+        self.dim = false
+        self.italic = false
+        self.underline = false
+        self.blink = false
+        self.reverse = false
+        self.strikethrough = false
+    }
+    
+    // Color methods
+    on fg(color: Color) -> Self { self.fg_color = Some(color); self }
+    on bg(color: Color) -> Self { self.bg_color = Some(color); self }
+    
+    // Basic color shortcuts
+    on black() -> Self { self.fg(Color.Basic(.Black)) }
+    on red() -> Self { self.fg(Color.Basic(.Red)) }
+    on green() -> Self { self.fg(Color.Basic(.Green)) }
+    on yellow() -> Self { self.fg(Color.Basic(.Yellow)) }
+    on blue() -> Self { self.fg(Color.Basic(.Blue)) }
+    on magenta() -> Self { self.fg(Color.Basic(.Magenta)) }
+    on cyan() -> Self { self.fg(Color.Basic(.Cyan)) }
+    on white() -> Self { self.fg(Color.Basic(.White)) }
+    
+    // Bright color shortcuts
+    on bright_red() -> Self { self.fg(Color.Bright(.Red)) }
+    on bright_green() -> Self { self.fg(Color.Bright(.Green)) }
+    on bright_yellow() -> Self { self.fg(Color.Bright(.Yellow)) }
+    on bright_blue() -> Self { self.fg(Color.Bright(.Blue)) }
+    
+    // Background shortcuts
+    on on_red() -> Self { self.bg(Color.Basic(.Red)) }
+    on on_green() -> Self { self.bg(Color.Basic(.Green)) }
+    on on_blue() -> Self { self.bg(Color.Basic(.Blue)) }
+    on on_yellow() -> Self { self.bg(Color.Basic(.Yellow)) }
+    on on_white() -> Self { self.bg(Color.Basic(.White)) }
+    on on_black() -> Self { self.bg(Color.Basic(.Black)) }
+    
+    // Style methods
+    on bold() -> Self { self.bold = true; self }
+    on dim() -> Self { self.dim = true; self }
+    on italic() -> Self { self.italic = true; self }
+    on underline() -> Self { self.underline = true; self }
+    on blink() -> Self { self.blink = true; self }
+    on reverse() -> Self { self.reverse = true; self }
+    on strikethrough() -> Self { self.strikethrough = true; self }
+    
+    /// Render to string with ANSI codes
+    on render() -> String {
+        if !Terminal.supports_color() {
+            return self.text
+        }
+        
+        var codes = []
+        
+        if self.bold { codes.append(ANSI.BOLD) }
+        if self.dim { codes.append(ANSI.DIM) }
+        if self.italic { codes.append(ANSI.ITALIC) }
+        if self.underline { codes.append(ANSI.UNDERLINE) }
+        if self.blink { codes.append(ANSI.BLINK) }
+        if self.reverse { codes.append(ANSI.REVERSE) }
+        if self.strikethrough { codes.append(ANSI.STRIKETHROUGH) }
+        
+        if let fg = self.fg_color {
+            codes.append(fg.fg())
+        }
+        if let bg = self.bg_color {
+            codes.append(bg.bg())
+        }
+        
+        if codes.is_empty() {
+            self.text
+        } else {
+            codes.join("") + self.text + ANSI.RESET
+        }
+    }
+}
+
+/// Quick style function
+fn style(text: String) -> Style {
+    Style.new(text)
+}
+
+// Convenience functions
+fn red(text: String) -> String { style(text).red().render() }
+fn green(text: String) -> String { style(text).green().render() }
+fn yellow(text: String) -> String { style(text).yellow().render() }
+fn blue(text: String) -> String { style(text).blue().render() }
+fn cyan(text: String) -> String { style(text).cyan().render() }
+fn magenta(text: String) -> String { style(text).magenta().render() }
+fn bold(text: String) -> String { style(text).bold().render() }
+fn dim(text: String) -> String { style(text).dim().render() }
+fn underline(text: String) -> String { style(text).underline().render() }
+
+// -----------------------------------------------------------------------------
+// Cursor Control
+// -----------------------------------------------------------------------------
+
+module Cursor {
+    /// Move cursor up
+    fn up(n: Int = 1) -> String { "\x1b[\(n)A" }
+    
+    /// Move cursor down
+    fn down(n: Int = 1) -> String { "\x1b[\(n)B" }
+    
+    /// Move cursor forward (right)
+    fn forward(n: Int = 1) -> String { "\x1b[\(n)C" }
+    
+    /// Move cursor backward (left)
+    fn backward(n: Int = 1) -> String { "\x1b[\(n)D" }
+    
+    /// Move to beginning of line n lines down
+    fn next_line(n: Int = 1) -> String { "\x1b[\(n)E" }
+    
+    /// Move to beginning of line n lines up
+    fn prev_line(n: Int = 1) -> String { "\x1b[\(n)F" }
+    
+    /// Move to column
+    fn column(n: Int) -> String { "\x1b[\(n)G" }
+    
+    /// Move to position (1-indexed)
+    fn goto(row: Int, col: Int) -> String { "\x1b[\(row);\(col)H" }
+    
+    /// Move to home position
+    fn home() -> String { "\x1b[H" }
+    
+    /// Save cursor position
+    fn save() -> String { "\x1b[s" }
+    
+    /// Restore cursor position
+    fn restore() -> String { "\x1b[u" }
+    
+    /// Hide cursor
+    fn hide() -> String { "\x1b[?25l" }
+    
+    /// Show cursor
+    fn show() -> String { "\x1b[?25h" }
+    
+    /// Request cursor position (response: ESC[row;colR)
+    fn request_position() -> String { "\x1b[6n" }
+}
+
+// -----------------------------------------------------------------------------
+// Screen Control
+// -----------------------------------------------------------------------------
+
+module Screen {
+    /// Clear entire screen
+    fn clear() -> String { "\x1b[2J" }
+    
+    /// Clear from cursor to end of screen
+    fn clear_below() -> String { "\x1b[0J" }
+    
+    /// Clear from cursor to beginning of screen
+    fn clear_above() -> String { "\x1b[1J" }
+    
+    /// Clear entire line
+    fn clear_line() -> String { "\x1b[2K" }
+    
+    /// Clear from cursor to end of line
+    fn clear_line_right() -> String { "\x1b[0K" }
+    
+    /// Clear from cursor to beginning of line
+    fn clear_line_left() -> String { "\x1b[1K" }
+    
+    /// Scroll up
+    fn scroll_up(n: Int = 1) -> String { "\x1b[\(n)S" }
+    
+    /// Scroll down
+    fn scroll_down(n: Int = 1) -> String { "\x1b[\(n)T" }
+    
+    /// Enable alternative screen buffer
+    fn alt_buffer() -> String { "\x1b[?1049h" }
+    
+    /// Disable alternative screen buffer
+    fn main_buffer() -> String { "\x1b[?1049l" }
+    
+    /// Set scrolling region
+    fn set_scroll_region(top: Int, bottom: Int) -> String {
+        "\x1b[\(top);\(bottom)r"
+    }
+    
+    /// Reset scrolling region
+    fn reset_scroll_region() -> String { "\x1b[r" }
+}
+
+// -----------------------------------------------------------------------------
+// Terminal Input
+// -----------------------------------------------------------------------------
+
+/// Raw terminal mode for input handling
+actor RawMode {
+    state original_termios: Any?
+    
+    /// Enable raw mode
+    on enable() -> Result<(), TerminalError> {
+        self.original_termios = @native("terminal_get_termios")
+        @native("terminal_set_raw")
+    }
+    
+    /// Disable raw mode (restore original)
+    on disable() -> Result<(), TerminalError> {
+        if let termios = self.original_termios {
+            @native("terminal_restore_termios", termios)
+        }
+        Ok(())
+    }
+    
+    /// Run function in raw mode
+    fn with_raw<T>(f: () -> T) -> Result<T, TerminalError> {
+        let mode = RawMode.new()
+        mode.enable()?
+        let result = f()
+        mode.disable()?
+        Ok(result)
+    }
+}
+
+/// Key event
+enum Key {
+    Char(Char)
+    Enter
+    Tab
+    Backspace
+    Delete
+    Escape
+    Up
+    Down
+    Left
+    Right
+    Home
+    End
+    PageUp
+    PageDown
+    Insert
+    F(Int)  // F1-F12
+    Ctrl(Char)
+    Alt(Char)
+    Shift(Key)
+    Unknown([Byte])
+    
+    /// Parse key from bytes
+    fn from_bytes(bytes: [Byte]) -> Self {
+        match bytes {
+            [13] => .Enter
+            [9] => .Tab
+            [127] => .Backspace
+            [27] => .Escape
+            [27, 91, 65] => .Up
+            [27, 91, 66] => .Down
+            [27, 91, 67] => .Right
+            [27, 91, 68] => .Left
+            [27, 91, 72] => .Home
+            [27, 91, 70] => .End
+            [27, 91, 53, 126] => .PageUp
+            [27, 91, 54, 126] => .PageDown
+            [27, 91, 50, 126] => .Insert
+            [27, 91, 51, 126] => .Delete
+            [c] if c >= 1 && c <= 26 => .Ctrl(Char.from_byte(c + 96))
+            [c] if c >= 32 && c < 127 => .Char(Char.from_byte(c))
+            _ => .Unknown(bytes)
+        }
+    }
+}
+
+/// Read single key press
+fn read_key() -> Result<Key, TerminalError> {
+    @native("terminal_read_key")
+}
+
+/// Read key with timeout
+fn read_key_timeout(timeout: Duration) -> Result<Option<Key>, TerminalError> {
+    @native("terminal_read_key_timeout", timeout)
+}
+
+// -----------------------------------------------------------------------------
+// Progress Indicators
+// -----------------------------------------------------------------------------
+
+/// Progress bar
+actor ProgressBar {
+    state total: Int
+    state current: Int
+    state width: Int
+    state message: String
+    state fill_char: Char
+    state empty_char: Char
+    state show_percent: Bool
+    state show_count: Bool
+    
+    /// Create progress bar
+    init(total: Int) {
+        self.total = total
+        self.current = 0
+        self.width = 40
+        self.message = ""
+        self.fill_char = '█'
+        self.empty_char = '░'
+        self.show_percent = true
+        self.show_count = true
+    }
+    
+    on width(w: Int) -> Self { self.width = w; self }
+    on message(msg: String) -> Self { self.message = msg; self }
+    on fill(c: Char) -> Self { self.fill_char = c; self }
+    on empty(c: Char) -> Self { self.empty_char = c; self }
+    
+    /// Update progress
+    on update(n: Int) {
+        self.current = n.min(self.total)
+        self.render()
+    }
+    
+    /// Increment progress
+    on inc(n: Int = 1) {
+        self.update(self.current + n)
+    }
+    
+    /// Render progress bar
+    on render() {
+        let percent = (self.current * 100) / self.total
+        let filled = (self.current * self.width) / self.total
+        let empty = self.width - filled
+        
+        var bar = String.repeat(self.fill_char, filled)
+        bar += String.repeat(self.empty_char, empty)
+        
+        var line = "\r"
+        if !self.message.is_empty() {
+            line += "\(self.message) "
+        }
+        line += "[\(bar)]"
+        
+        if self.show_percent {
+            line += " \(percent)%"
+        }
+        if self.show_count {
+            line += " (\(self.current)/\(self.total))"
+        }
+        
+        print(line, terminator: "")
+        IO.flush()
+    }
+    
+    /// Complete progress bar
+    on finish() {
+        self.update(self.total)
+        println()
+    }
+}
+
+/// Spinner animation
+actor Spinner {
+    state frames: [String]
+    state current: Int
+    state message: String
+    state running: Bool
+    
+    /// Create spinner
+    init(style: SpinnerStyle = .Dots) {
+        self.frames = style.frames()
+        self.current = 0
+        self.message = ""
+        self.running = false
+    }
+    
+    on message(msg: String) -> Self { self.message = msg; self }
+    
+    /// Start spinning
+    on start() {
+        self.running = true
+        print(Cursor.hide())
+        
+        async {
+            while self.running {
+                self.render()
+                sleep(Duration.millis(80))
+                self.current = (self.current + 1) % self.frames.len()
+            }
+        }
+    }
+    
+    /// Render current frame
+    on render() {
+        let frame = self.frames[self.current]
+        print("\r\(frame) \(self.message)", terminator: "")
+        IO.flush()
+    }
+    
+    /// Stop with success
+    on success(msg: String = "") {
+        self.stop()
+        let message = if msg.is_empty() { self.message } else { msg }
+        println("\r\(green("✓")) \(message)")
+    }
+    
+    /// Stop with failure
+    on fail(msg: String = "") {
+        self.stop()
+        let message = if msg.is_empty() { self.message } else { msg }
+        println("\r\(red("✗")) \(message)")
+    }
+    
+    /// Stop spinner
+    on stop() {
+        self.running = false
+        print(Cursor.show())
+        print(Screen.clear_line())
+    }
+}
+
+enum SpinnerStyle {
+    Dots
+    Line
+    Circle
+    Arrow
+    Bounce
+    
+    fn frames() -> [String] {
+        match self {
+            .Dots => ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+            .Line => ["-", "\\", "|", "/"]
+            .Circle => ["◐", "◓", "◑", "◒"]
+            .Arrow => ["←", "↖", "↑", "↗", "→", "↘", "↓", "↙"]
+            .Bounce => ["⠁", "⠂", "⠄", "⠂"]
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Terminal Errors
+// -----------------------------------------------------------------------------
+
+enum TerminalError {
+    NotATTY
+    IOError(String)
+    UnsupportedOperation
+    
+    fn message() -> String {
+        match self {
+            .NotATTY => "Not a terminal"
+            .IOError(msg) => "I/O error: \(msg)"
+            .UnsupportedOperation => "Operation not supported"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "style builder" {
+    let styled = style("hello").red().bold().render()
+    assert(styled.contains("\x1b[31m"))
+    assert(styled.contains("\x1b[1m"))
+    assert(styled.contains("\x1b[0m"))
+}
+
+test "cursor movement" {
+    assert(Cursor.up(5) == "\x1b[5A")
+    assert(Cursor.goto(10, 20) == "\x1b[10;20H")
+}
+
+test "color from hex" {
+    let color = Color.from_hex("#FF5500")
+    match color {
+        .RGB(r, g, b) => {
+            assert(r == 255)
+            assert(g == 85)
+            assert(b == 0)
+        }
+        _ => assert(false)
+    }
+}
+
+test "key parsing" {
+    assert(Key.from_bytes([13]) == .Enter)
+    assert(Key.from_bytes([27, 91, 65]) == .Up)
+    assert(Key.from_bytes([1]) == .Ctrl('a'))
+}

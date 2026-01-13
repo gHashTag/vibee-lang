@@ -1,0 +1,605 @@
+// =============================================================================
+// Vibee OS — Locale Module
+// Internationalization locale handling and configuration
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Locale
+// -----------------------------------------------------------------------------
+
+/// Represents a locale with language, region, and script
+struct Locale {
+    language: String        // ISO 639-1 language code (e.g., "en", "ru", "zh")
+    region: Option<String>  // ISO 3166-1 alpha-2 region code (e.g., "US", "RU", "CN")
+    script: Option<String>  // ISO 15924 script code (e.g., "Latn", "Cyrl", "Hans")
+    variant: Option<String> // Variant subtag (e.g., "valencia", "posix")
+    
+    /// Create locale from language code only
+    fn from_language(language: String) -> Self {
+        Locale {
+            language: language.to_lower(),
+            region: None,
+            script: None,
+            variant: None
+        }
+    }
+    
+    /// Create locale from language and region
+    fn new(language: String, region: String) -> Self {
+        Locale {
+            language: language.to_lower(),
+            region: Some(region.to_upper()),
+            script: None,
+            variant: None
+        }
+    }
+    
+    /// Create locale with all components
+    fn full(language: String, region: String, script: String) -> Self {
+        Locale {
+            language: language.to_lower(),
+            region: Some(region.to_upper()),
+            script: Some(script),
+            variant: None
+        }
+    }
+    
+    /// Parse locale from BCP 47 tag (e.g., "en-US", "zh-Hans-CN", "ru-RU")
+    fn parse(tag: String) -> Result<Self, LocaleError> {
+        let tag = tag.trim().replace("_", "-")
+        if tag.is_empty() { return Err(LocaleError.InvalidFormat) }
+        
+        let parts = tag.split("-")
+        if parts.is_empty() { return Err(LocaleError.InvalidFormat) }
+        
+        let language = parts[0].to_lower()
+        if language.len() < 2 || language.len() > 3 {
+            return Err(LocaleError.InvalidLanguage)
+        }
+        
+        var region: Option<String> = None
+        var script: Option<String> = None
+        var variant: Option<String> = None
+        
+        for i in 1..parts.len() {
+            let part = parts[i]
+            if part.len() == 4 && part[0].is_uppercase() {
+                // Script (4 letters, title case)
+                script = Some(part)
+            } else if part.len() == 2 && part.chars().all(|c| c.is_uppercase()) {
+                // Region (2 uppercase letters)
+                region = Some(part)
+            } else if part.len() == 3 && part.chars().all(|c| c.is_digit()) {
+                // Region (3 digits - UN M.49)
+                region = Some(part)
+            } else {
+                // Variant
+                variant = Some(part.to_lower())
+            }
+        }
+        
+        Ok(Locale { language: language, region: region, script: script, variant: variant })
+    }
+    
+    /// Get system default locale
+    fn default() -> Self {
+        let tag = @native("locale_get_default")
+        Self.parse(tag).unwrap_or(Locales.en_US())
+    }
+    
+    /// Get current locale
+    fn current() -> Self {
+        CURRENT_LOCALE.get()
+    }
+    
+    /// Set current locale
+    fn set_current(locale: Locale) {
+        CURRENT_LOCALE.set(locale)
+    }
+    
+    /// Format as BCP 47 tag
+    fn to_tag() -> String {
+        var tag = self.language
+        if let Some(script) = self.script {
+            tag = tag + "-" + script
+        }
+        if let Some(region) = self.region {
+            tag = tag + "-" + region
+        }
+        if let Some(variant) = self.variant {
+            tag = tag + "-" + variant
+        }
+        tag
+    }
+    
+    /// Format as POSIX locale (e.g., "en_US.UTF-8")
+    fn to_posix() -> String {
+        var locale = self.language
+        if let Some(region) = self.region {
+            locale = locale + "_" + region
+        }
+        locale + ".UTF-8"
+    }
+    
+    /// Get language name in English
+    fn language_name() -> String {
+        LANGUAGE_NAMES.get(self.language).unwrap_or(self.language)
+    }
+    
+    /// Get language name in native language
+    fn native_language_name() -> String {
+        NATIVE_LANGUAGE_NAMES.get(self.language).unwrap_or(self.language)
+    }
+    
+    /// Get region name in English
+    fn region_name() -> Option<String> {
+        self.region.and_then(|r| REGION_NAMES.get(r))
+    }
+    
+    /// Get text direction
+    fn text_direction() -> TextDirection {
+        match self.language {
+            "ar" | "he" | "fa" | "ur" | "yi" | "ps" | "sd" => TextDirection.RightToLeft
+            _ => TextDirection.LeftToRight
+        }
+    }
+    
+    /// Check if RTL language
+    fn is_rtl() -> Bool {
+        self.text_direction() == TextDirection.RightToLeft
+    }
+    
+    /// Get fallback locales for resource lookup
+    fn fallback_chain() -> [Locale] {
+        var chain = [self.clone()]
+        
+        // Remove variant
+        if self.variant.is_some() {
+            chain.push(Locale {
+                language: self.language,
+                region: self.region,
+                script: self.script,
+                variant: None
+            })
+        }
+        
+        // Remove region
+        if self.region.is_some() {
+            chain.push(Locale {
+                language: self.language,
+                region: None,
+                script: self.script,
+                variant: None
+            })
+        }
+        
+        // Remove script
+        if self.script.is_some() {
+            chain.push(Locale.from_language(self.language))
+        }
+        
+        // Add English as ultimate fallback
+        if self.language != "en" {
+            chain.push(Locales.en())
+        }
+        
+        chain
+    }
+    
+    /// Check if locale matches another (with wildcards)
+    fn matches(other: Locale) -> Bool {
+        if self.language != other.language { return false }
+        
+        if let Some(region) = other.region {
+            if self.region != Some(region) { return false }
+        }
+        
+        if let Some(script) = other.script {
+            if self.script != Some(script) { return false }
+        }
+        
+        true
+    }
+    
+    fn to_string() -> String { self.to_tag() }
+}
+
+impl Eq for Locale {
+    fn eq(other: Locale) -> Bool {
+        self.language == other.language &&
+        self.region == other.region &&
+        self.script == other.script &&
+        self.variant == other.variant
+    }
+}
+
+impl Hash for Locale {
+    fn hash(h: Hasher) {
+        h.write(self.to_tag().as_bytes())
+    }
+}
+
+impl Clone for Locale {
+    fn clone() -> Self {
+        Locale {
+            language: self.language.clone(),
+            region: self.region.clone(),
+            script: self.script.clone(),
+            variant: self.variant.clone()
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Text Direction
+// -----------------------------------------------------------------------------
+
+enum TextDirection {
+    LeftToRight
+    RightToLeft
+    
+    fn is_ltr() -> Bool { self == .LeftToRight }
+    fn is_rtl() -> Bool { self == .RightToLeft }
+    
+    fn css_value() -> String {
+        match self {
+            .LeftToRight => "ltr"
+            .RightToLeft => "rtl"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Common Locales
+// -----------------------------------------------------------------------------
+
+module Locales {
+    // English
+    fn en() -> Locale { Locale.from_language("en") }
+    fn en_US() -> Locale { Locale.new("en", "US") }
+    fn en_GB() -> Locale { Locale.new("en", "GB") }
+    fn en_AU() -> Locale { Locale.new("en", "AU") }
+    fn en_CA() -> Locale { Locale.new("en", "CA") }
+    
+    // Russian
+    fn ru() -> Locale { Locale.from_language("ru") }
+    fn ru_RU() -> Locale { Locale.new("ru", "RU") }
+    
+    // German
+    fn de() -> Locale { Locale.from_language("de") }
+    fn de_DE() -> Locale { Locale.new("de", "DE") }
+    fn de_AT() -> Locale { Locale.new("de", "AT") }
+    fn de_CH() -> Locale { Locale.new("de", "CH") }
+    
+    // French
+    fn fr() -> Locale { Locale.from_language("fr") }
+    fn fr_FR() -> Locale { Locale.new("fr", "FR") }
+    fn fr_CA() -> Locale { Locale.new("fr", "CA") }
+    fn fr_CH() -> Locale { Locale.new("fr", "CH") }
+    
+    // Spanish
+    fn es() -> Locale { Locale.from_language("es") }
+    fn es_ES() -> Locale { Locale.new("es", "ES") }
+    fn es_MX() -> Locale { Locale.new("es", "MX") }
+    fn es_AR() -> Locale { Locale.new("es", "AR") }
+    
+    // Portuguese
+    fn pt() -> Locale { Locale.from_language("pt") }
+    fn pt_BR() -> Locale { Locale.new("pt", "BR") }
+    fn pt_PT() -> Locale { Locale.new("pt", "PT") }
+    
+    // Italian
+    fn it() -> Locale { Locale.from_language("it") }
+    fn it_IT() -> Locale { Locale.new("it", "IT") }
+    
+    // Chinese
+    fn zh() -> Locale { Locale.from_language("zh") }
+    fn zh_CN() -> Locale { Locale.full("zh", "CN", "Hans") }
+    fn zh_TW() -> Locale { Locale.full("zh", "TW", "Hant") }
+    fn zh_HK() -> Locale { Locale.full("zh", "HK", "Hant") }
+    
+    // Japanese
+    fn ja() -> Locale { Locale.from_language("ja") }
+    fn ja_JP() -> Locale { Locale.new("ja", "JP") }
+    
+    // Korean
+    fn ko() -> Locale { Locale.from_language("ko") }
+    fn ko_KR() -> Locale { Locale.new("ko", "KR") }
+    
+    // Arabic
+    fn ar() -> Locale { Locale.from_language("ar") }
+    fn ar_SA() -> Locale { Locale.new("ar", "SA") }
+    fn ar_EG() -> Locale { Locale.new("ar", "EG") }
+    
+    // Hebrew
+    fn he() -> Locale { Locale.from_language("he") }
+    fn he_IL() -> Locale { Locale.new("he", "IL") }
+    
+    // Hindi
+    fn hi() -> Locale { Locale.from_language("hi") }
+    fn hi_IN() -> Locale { Locale.new("hi", "IN") }
+    
+    // Turkish
+    fn tr() -> Locale { Locale.from_language("tr") }
+    fn tr_TR() -> Locale { Locale.new("tr", "TR") }
+    
+    // Polish
+    fn pl() -> Locale { Locale.from_language("pl") }
+    fn pl_PL() -> Locale { Locale.new("pl", "PL") }
+    
+    // Ukrainian
+    fn uk() -> Locale { Locale.from_language("uk") }
+    fn uk_UA() -> Locale { Locale.new("uk", "UA") }
+    
+    // Dutch
+    fn nl() -> Locale { Locale.from_language("nl") }
+    fn nl_NL() -> Locale { Locale.new("nl", "NL") }
+    fn nl_BE() -> Locale { Locale.new("nl", "BE") }
+    
+    // Swedish
+    fn sv() -> Locale { Locale.from_language("sv") }
+    fn sv_SE() -> Locale { Locale.new("sv", "SE") }
+    
+    // Norwegian
+    fn no() -> Locale { Locale.from_language("no") }
+    fn nb_NO() -> Locale { Locale.new("nb", "NO") }
+    
+    // Danish
+    fn da() -> Locale { Locale.from_language("da") }
+    fn da_DK() -> Locale { Locale.new("da", "DK") }
+    
+    // Finnish
+    fn fi() -> Locale { Locale.from_language("fi") }
+    fn fi_FI() -> Locale { Locale.new("fi", "FI") }
+    
+    // Thai
+    fn th() -> Locale { Locale.from_language("th") }
+    fn th_TH() -> Locale { Locale.new("th", "TH") }
+    
+    // Vietnamese
+    fn vi() -> Locale { Locale.from_language("vi") }
+    fn vi_VN() -> Locale { Locale.new("vi", "VN") }
+    
+    // Indonesian
+    fn id() -> Locale { Locale.from_language("id") }
+    fn id_ID() -> Locale { Locale.new("id", "ID") }
+    
+    // Malay
+    fn ms() -> Locale { Locale.from_language("ms") }
+    fn ms_MY() -> Locale { Locale.new("ms", "MY") }
+}
+
+// -----------------------------------------------------------------------------
+// Locale Data
+// -----------------------------------------------------------------------------
+
+var LANGUAGE_NAMES: Map<String, String> = Map.from([
+    ("en", "English"), ("ru", "Russian"), ("de", "German"), ("fr", "French"),
+    ("es", "Spanish"), ("pt", "Portuguese"), ("it", "Italian"), ("zh", "Chinese"),
+    ("ja", "Japanese"), ("ko", "Korean"), ("ar", "Arabic"), ("he", "Hebrew"),
+    ("hi", "Hindi"), ("tr", "Turkish"), ("pl", "Polish"), ("uk", "Ukrainian"),
+    ("nl", "Dutch"), ("sv", "Swedish"), ("no", "Norwegian"), ("da", "Danish"),
+    ("fi", "Finnish"), ("th", "Thai"), ("vi", "Vietnamese"), ("id", "Indonesian"),
+    ("ms", "Malay"), ("cs", "Czech"), ("hu", "Hungarian"), ("ro", "Romanian"),
+    ("bg", "Bulgarian"), ("el", "Greek"), ("sk", "Slovak"), ("sl", "Slovenian"),
+    ("hr", "Croatian"), ("sr", "Serbian"), ("lt", "Lithuanian"), ("lv", "Latvian"),
+    ("et", "Estonian"), ("fa", "Persian"), ("ur", "Urdu"), ("bn", "Bengali"),
+    ("ta", "Tamil"), ("te", "Telugu"), ("ml", "Malayalam"), ("kn", "Kannada"),
+    ("mr", "Marathi"), ("gu", "Gujarati"), ("pa", "Punjabi"), ("sw", "Swahili")
+])
+
+var NATIVE_LANGUAGE_NAMES: Map<String, String> = Map.from([
+    ("en", "English"), ("ru", "Русский"), ("de", "Deutsch"), ("fr", "Français"),
+    ("es", "Español"), ("pt", "Português"), ("it", "Italiano"), ("zh", "中文"),
+    ("ja", "日本語"), ("ko", "한국어"), ("ar", "العربية"), ("he", "עברית"),
+    ("hi", "हिन्दी"), ("tr", "Türkçe"), ("pl", "Polski"), ("uk", "Українська"),
+    ("nl", "Nederlands"), ("sv", "Svenska"), ("no", "Norsk"), ("da", "Dansk"),
+    ("fi", "Suomi"), ("th", "ไทย"), ("vi", "Tiếng Việt"), ("id", "Bahasa Indonesia"),
+    ("ms", "Bahasa Melayu"), ("cs", "Čeština"), ("hu", "Magyar"), ("ro", "Română"),
+    ("bg", "Български"), ("el", "Ελληνικά"), ("sk", "Slovenčina"), ("sl", "Slovenščina"),
+    ("hr", "Hrvatski"), ("sr", "Српски"), ("lt", "Lietuvių"), ("lv", "Latviešu"),
+    ("et", "Eesti"), ("fa", "فارسی"), ("ur", "اردو"), ("bn", "বাংলা"),
+    ("ta", "தமிழ்"), ("te", "తెలుగు"), ("ml", "മലയാളം"), ("kn", "ಕನ್ನಡ")
+])
+
+var REGION_NAMES: Map<String, String> = Map.from([
+    ("US", "United States"), ("GB", "United Kingdom"), ("CA", "Canada"),
+    ("AU", "Australia"), ("NZ", "New Zealand"), ("DE", "Germany"),
+    ("FR", "France"), ("ES", "Spain"), ("IT", "Italy"), ("PT", "Portugal"),
+    ("BR", "Brazil"), ("MX", "Mexico"), ("AR", "Argentina"), ("RU", "Russia"),
+    ("CN", "China"), ("TW", "Taiwan"), ("HK", "Hong Kong"), ("JP", "Japan"),
+    ("KR", "South Korea"), ("IN", "India"), ("SA", "Saudi Arabia"),
+    ("AE", "United Arab Emirates"), ("IL", "Israel"), ("EG", "Egypt"),
+    ("ZA", "South Africa"), ("NG", "Nigeria"), ("KE", "Kenya"),
+    ("TR", "Turkey"), ("PL", "Poland"), ("UA", "Ukraine"), ("NL", "Netherlands"),
+    ("BE", "Belgium"), ("CH", "Switzerland"), ("AT", "Austria"),
+    ("SE", "Sweden"), ("NO", "Norway"), ("DK", "Denmark"), ("FI", "Finland"),
+    ("TH", "Thailand"), ("VN", "Vietnam"), ("ID", "Indonesia"), ("MY", "Malaysia"),
+    ("SG", "Singapore"), ("PH", "Philippines")
+])
+
+// -----------------------------------------------------------------------------
+// Current Locale State
+// -----------------------------------------------------------------------------
+
+actor CurrentLocale {
+    state locale: Locale = Locale.default()
+    
+    fn get() -> Locale { self.locale.clone() }
+    fn set(locale: Locale) { self.locale = locale }
+}
+
+var CURRENT_LOCALE = CurrentLocale.new()
+
+// -----------------------------------------------------------------------------
+// Locale Matcher
+// -----------------------------------------------------------------------------
+
+/// Find best matching locale from available locales
+struct LocaleMatcher {
+    available: [Locale]
+    default_locale: Locale
+    
+    fn new(available: [Locale], default_locale: Locale) -> Self {
+        LocaleMatcher { available: available, default_locale: default_locale }
+    }
+    
+    /// Find best match for requested locale
+    fn find_best_match(requested: Locale) -> Locale {
+        // Exact match
+        for locale in self.available {
+            if locale == requested { return locale }
+        }
+        
+        // Match language and region
+        for locale in self.available {
+            if locale.language == requested.language && locale.region == requested.region {
+                return locale
+            }
+        }
+        
+        // Match language only
+        for locale in self.available {
+            if locale.language == requested.language {
+                return locale
+            }
+        }
+        
+        // Return default
+        self.default_locale.clone()
+    }
+    
+    /// Find best match from list of requested locales (e.g., Accept-Language header)
+    fn find_best_match_from_list(requested: [Locale]) -> Locale {
+        for req in requested {
+            let match_result = self.find_best_match(req)
+            if match_result.language == req.language {
+                return match_result
+            }
+        }
+        self.default_locale.clone()
+    }
+    
+    /// Parse Accept-Language header and find best match
+    fn from_accept_language(header: String) -> Locale {
+        let locales = parse_accept_language(header)
+        self.find_best_match_from_list(locales)
+    }
+}
+
+/// Parse Accept-Language header
+fn parse_accept_language(header: String) -> [Locale] {
+    var result: [(Locale, Float)] = []
+    
+    for part in header.split(",") {
+        let part = part.trim()
+        let (tag, quality) = if part.contains(";q=") {
+            let parts = part.split(";q=")
+            (parts[0].trim(), Float.parse(parts[1].trim()).unwrap_or(1.0))
+        } else {
+            (part, 1.0)
+        }
+        
+        if let Ok(locale) = Locale.parse(tag) {
+            result.push((locale, quality))
+        }
+    }
+    
+    // Sort by quality descending
+    result.sort_by(|(_, q1), (_, q2)| q2.partial_cmp(q1).unwrap_or(Ordering.Equal))
+    result.map(|(locale, _)| locale)
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum LocaleError {
+    InvalidFormat
+    InvalidLanguage
+    InvalidRegion
+    InvalidScript
+    
+    fn message() -> String {
+        match self {
+            .InvalidFormat => "Invalid locale format"
+            .InvalidLanguage => "Invalid language code"
+            .InvalidRegion => "Invalid region code"
+            .InvalidScript => "Invalid script code"
+        }
+    }
+}
+
+impl Display for LocaleError {
+    fn fmt(f: Formatter) {
+        f.write(self.message())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Locale-Aware Trait
+// -----------------------------------------------------------------------------
+
+/// Trait for types that can be formatted according to locale
+trait LocaleAware {
+    fn format_locale(locale: Locale) -> String
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "parse locale" {
+    let locale = Locale.parse("en-US")?
+    assert_eq(locale.language, "en")?
+    assert_eq(locale.region, Some("US"))?
+    
+    let locale2 = Locale.parse("zh-Hans-CN")?
+    assert_eq(locale2.language, "zh")?
+    assert_eq(locale2.script, Some("Hans"))?
+    assert_eq(locale2.region, Some("CN"))?
+}
+
+test "locale to tag" {
+    let locale = Locale.new("en", "US")
+    assert_eq(locale.to_tag(), "en-US")?
+    
+    let locale2 = Locale.full("zh", "CN", "Hans")
+    assert_eq(locale2.to_tag(), "zh-Hans-CN")?
+}
+
+test "text direction" {
+    assert_eq(Locales.en_US().text_direction(), TextDirection.LeftToRight)?
+    assert_eq(Locales.ar_SA().text_direction(), TextDirection.RightToLeft)?
+    assert(Locales.he_IL().is_rtl())?
+}
+
+test "fallback chain" {
+    let locale = Locale.full("zh", "CN", "Hans")
+    let chain = locale.fallback_chain()
+    
+    assert_eq(chain.len(), 4)?
+    assert_eq(chain[0].to_tag(), "zh-Hans-CN")?
+    assert_eq(chain[1].to_tag(), "zh-CN")?
+    assert_eq(chain[2].to_tag(), "zh")?
+    assert_eq(chain[3].to_tag(), "en")?
+}
+
+test "locale matcher" {
+    let available = [Locales.en_US(), Locales.en_GB(), Locales.de_DE(), Locales.fr_FR()]
+    let matcher = LocaleMatcher.new(available, Locales.en_US())
+    
+    assert_eq(matcher.find_best_match(Locales.en_GB()).to_tag(), "en-GB")?
+    assert_eq(matcher.find_best_match(Locales.en_AU()).to_tag(), "en-US")?  // Falls back to en-US
+    assert_eq(matcher.find_best_match(Locales.es_ES()).to_tag(), "en-US")?  // Default
+}
+
+test "accept language parsing" {
+    let header = "en-US,en;q=0.9,de;q=0.8"
+    let locales = parse_accept_language(header)
+    
+    assert_eq(locales.len(), 3)?
+    assert_eq(locales[0].to_tag(), "en-US")?
+    assert_eq(locales[1].to_tag(), "en")?
+    assert_eq(locales[2].to_tag(), "de")?
+}

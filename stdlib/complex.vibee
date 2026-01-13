@@ -1,0 +1,607 @@
+// =============================================================================
+// Vibee OS — Complex Module
+// Complex number arithmetic and operations
+// =============================================================================
+
+use math::{PI, TAU, E, sqrt, sin, cos, atan2, exp, ln, pow, hypot, approx_eq}
+
+// -----------------------------------------------------------------------------
+// Complex Number Type
+// -----------------------------------------------------------------------------
+
+/// Complex number with real and imaginary parts
+struct Complex {
+    re: Float   // Real part
+    im: Float   // Imaginary part
+    
+    /// Create new complex number
+    fn new(re: Float, im: Float) -> Self {
+        Complex { re: re, im: im }
+    }
+    
+    /// Create from real number
+    fn from_real(re: Float) -> Self {
+        Complex { re: re, im: 0.0 }
+    }
+    
+    /// Create from imaginary number
+    fn from_imag(im: Float) -> Self {
+        Complex { re: 0.0, im: im }
+    }
+    
+    /// Create from polar coordinates (r, θ)
+    fn from_polar(r: Float, theta: Float) -> Self {
+        Complex { re: r * cos(theta), im: r * sin(theta) }
+    }
+    
+    /// Zero
+    fn zero() -> Self { Complex { re: 0.0, im: 0.0 } }
+    
+    /// One
+    fn one() -> Self { Complex { re: 1.0, im: 0.0 } }
+    
+    /// Imaginary unit i
+    fn i() -> Self { Complex { re: 0.0, im: 1.0 } }
+    
+    /// Negative imaginary unit -i
+    fn neg_i() -> Self { Complex { re: 0.0, im: -1.0 } }
+    
+    // -------------------------------------------------------------------------
+    // Properties
+    // -------------------------------------------------------------------------
+    
+    /// Real part
+    fn real() -> Float { self.re }
+    
+    /// Imaginary part
+    fn imag() -> Float { self.im }
+    
+    /// Magnitude (absolute value) |z|
+    fn abs() -> Float {
+        hypot(self.re, self.im)
+    }
+    
+    /// Magnitude squared |z|²
+    fn abs_squared() -> Float {
+        self.re * self.re + self.im * self.im
+    }
+    
+    /// Argument (phase angle) in radians
+    fn arg() -> Float {
+        atan2(self.im, self.re)
+    }
+    
+    /// Argument in degrees
+    fn arg_degrees() -> Float {
+        self.arg() * 180.0 / PI
+    }
+    
+    /// Convert to polar form (r, θ)
+    fn to_polar() -> (Float, Float) {
+        (self.abs(), self.arg())
+    }
+    
+    /// Check if zero
+    fn is_zero() -> Bool {
+        self.re == 0.0 && self.im == 0.0
+    }
+    
+    /// Check if real (imaginary part is zero)
+    fn is_real() -> Bool {
+        self.im == 0.0
+    }
+    
+    /// Check if purely imaginary (real part is zero)
+    fn is_imaginary() -> Bool {
+        self.re == 0.0 && self.im != 0.0
+    }
+    
+    /// Check if finite
+    fn is_finite() -> Bool {
+        self.re.is_finite() && self.im.is_finite()
+    }
+    
+    /// Check if NaN
+    fn is_nan() -> Bool {
+        self.re.is_nan() || self.im.is_nan()
+    }
+    
+    // -------------------------------------------------------------------------
+    // Basic Operations
+    // -------------------------------------------------------------------------
+    
+    /// Complex conjugate
+    fn conj() -> Self {
+        Complex { re: self.re, im: -self.im }
+    }
+    
+    /// Negate
+    fn neg() -> Self {
+        Complex { re: -self.re, im: -self.im }
+    }
+    
+    /// Reciprocal (1/z)
+    fn recip() -> Self {
+        let denom = self.abs_squared()
+        Complex { re: self.re / denom, im: -self.im / denom }
+    }
+    
+    /// Normalize to unit magnitude
+    fn normalize() -> Self {
+        let mag = self.abs()
+        if mag == 0.0 { Complex.zero() }
+        else { Complex { re: self.re / mag, im: self.im / mag } }
+    }
+    
+    /// Scale by real number
+    fn scale(s: Float) -> Self {
+        Complex { re: self.re * s, im: self.im * s }
+    }
+    
+    // -------------------------------------------------------------------------
+    // Power and Roots
+    // -------------------------------------------------------------------------
+    
+    /// Square
+    fn square() -> Self {
+        Complex {
+            re: self.re * self.re - self.im * self.im,
+            im: 2.0 * self.re * self.im
+        }
+    }
+    
+    /// Cube
+    fn cube() -> Self {
+        self.square() * self
+    }
+    
+    /// Integer power
+    fn powi(n: Int) -> Self {
+        if n == 0 { return Complex.one() }
+        if n < 0 { return self.recip().powi(-n) }
+        
+        var result = Complex.one()
+        var base = self.clone()
+        var exp = n
+        
+        while exp > 0 {
+            if exp & 1 == 1 { result = result * base }
+            base = base.square()
+            exp >>= 1
+        }
+        result
+    }
+    
+    /// Complex power z^w
+    fn pow(w: Complex) -> Self {
+        if self.is_zero() {
+            if w.re > 0.0 { Complex.zero() }
+            else { Complex { re: Float.infinity(), im: 0.0 } }
+        } else {
+            (self.ln() * w).exp()
+        }
+    }
+    
+    /// Real power z^r
+    fn powr(r: Float) -> Self {
+        self.pow(Complex.from_real(r))
+    }
+    
+    /// Square root (principal)
+    fn sqrt() -> Self {
+        let (r, theta) = self.to_polar()
+        Complex.from_polar(sqrt(r), theta / 2.0)
+    }
+    
+    /// Cube root (principal)
+    fn cbrt() -> Self {
+        let (r, theta) = self.to_polar()
+        Complex.from_polar(pow(r, 1.0/3.0), theta / 3.0)
+    }
+    
+    /// Nth root (principal)
+    fn nroot(n: Int) -> Self {
+        let (r, theta) = self.to_polar()
+        Complex.from_polar(pow(r, 1.0 / n as Float), theta / n as Float)
+    }
+    
+    /// All nth roots
+    fn all_roots(n: Int) -> [Complex] {
+        let (r, theta) = self.to_polar()
+        let root_r = pow(r, 1.0 / n as Float)
+        
+        var roots = []
+        for k in 0..n {
+            let angle = (theta + TAU * k as Float) / n as Float
+            roots.append(Complex.from_polar(root_r, angle))
+        }
+        roots
+    }
+    
+    // -------------------------------------------------------------------------
+    // Exponential and Logarithmic
+    // -------------------------------------------------------------------------
+    
+    /// Exponential e^z
+    fn exp() -> Self {
+        let r = exp(self.re)
+        Complex { re: r * cos(self.im), im: r * sin(self.im) }
+    }
+    
+    /// Natural logarithm (principal branch)
+    fn ln() -> Self {
+        Complex { re: ln(self.abs()), im: self.arg() }
+    }
+    
+    /// Logarithm base 10
+    fn log10() -> Self {
+        self.ln().scale(1.0 / ln(10.0))
+    }
+    
+    /// Logarithm with arbitrary base
+    fn log(base: Complex) -> Self {
+        self.ln() / base.ln()
+    }
+    
+    // -------------------------------------------------------------------------
+    // Trigonometric Functions
+    // -------------------------------------------------------------------------
+    
+    /// Sine
+    fn sin() -> Self {
+        Complex {
+            re: sin(self.re) * cosh(self.im),
+            im: cos(self.re) * sinh(self.im)
+        }
+    }
+    
+    /// Cosine
+    fn cos() -> Self {
+        Complex {
+            re: cos(self.re) * cosh(self.im),
+            im: -sin(self.re) * sinh(self.im)
+        }
+    }
+    
+    /// Tangent
+    fn tan() -> Self {
+        self.sin() / self.cos()
+    }
+    
+    /// Cotangent
+    fn cot() -> Self {
+        self.cos() / self.sin()
+    }
+    
+    /// Secant
+    fn sec() -> Self {
+        self.cos().recip()
+    }
+    
+    /// Cosecant
+    fn csc() -> Self {
+        self.sin().recip()
+    }
+    
+    // -------------------------------------------------------------------------
+    // Inverse Trigonometric Functions
+    // -------------------------------------------------------------------------
+    
+    /// Arcsine
+    fn asin() -> Self {
+        let iz = Complex.i() * self
+        Complex.neg_i() * (iz + (Complex.one() - self.square()).sqrt()).ln()
+    }
+    
+    /// Arccosine
+    fn acos() -> Self {
+        let iz = Complex.i() * self
+        Complex.neg_i() * (self + (self.square() - Complex.one()).sqrt()).ln()
+    }
+    
+    /// Arctangent
+    fn atan() -> Self {
+        let iz = Complex.i() * self
+        let one = Complex.one()
+        Complex.i().scale(0.5) * ((one - iz).ln() - (one + iz).ln())
+    }
+    
+    // -------------------------------------------------------------------------
+    // Hyperbolic Functions
+    // -------------------------------------------------------------------------
+    
+    /// Hyperbolic sine
+    fn sinh() -> Self {
+        Complex {
+            re: sinh(self.re) * cos(self.im),
+            im: cosh(self.re) * sin(self.im)
+        }
+    }
+    
+    /// Hyperbolic cosine
+    fn cosh() -> Self {
+        Complex {
+            re: cosh(self.re) * cos(self.im),
+            im: sinh(self.re) * sin(self.im)
+        }
+    }
+    
+    /// Hyperbolic tangent
+    fn tanh() -> Self {
+        self.sinh() / self.cosh()
+    }
+    
+    // -------------------------------------------------------------------------
+    // Inverse Hyperbolic Functions
+    // -------------------------------------------------------------------------
+    
+    /// Inverse hyperbolic sine
+    fn asinh() -> Self {
+        (self + (self.square() + Complex.one()).sqrt()).ln()
+    }
+    
+    /// Inverse hyperbolic cosine
+    fn acosh() -> Self {
+        (self + (self.square() - Complex.one()).sqrt()).ln()
+    }
+    
+    /// Inverse hyperbolic tangent
+    fn atanh() -> Self {
+        let one = Complex.one()
+        ((one + self) / (one - self)).ln().scale(0.5)
+    }
+    
+    // -------------------------------------------------------------------------
+    // Display
+    // -------------------------------------------------------------------------
+    
+    /// Convert to string
+    fn to_string() -> String {
+        if self.im == 0.0 {
+            format!("{}", self.re)
+        } else if self.re == 0.0 {
+            if self.im == 1.0 { "i" }
+            else if self.im == -1.0 { "-i" }
+            else { format!("{}i", self.im) }
+        } else if self.im > 0.0 {
+            if self.im == 1.0 { format!("{} + i", self.re) }
+            else { format!("{} + {}i", self.re, self.im) }
+        } else {
+            if self.im == -1.0 { format!("{} - i", self.re) }
+            else { format!("{} - {}i", self.re, -self.im) }
+        }
+    }
+    
+    /// Format with precision
+    fn format(precision: Int) -> String {
+        let re_str = format!("{:.prec$}", self.re, prec = precision)
+        let im_str = format!("{:.prec$}", self.im.abs(), prec = precision)
+        
+        if self.im == 0.0 { re_str }
+        else if self.re == 0.0 { format!("{}i", if self.im < 0.0 { "-" } else { "" } + im_str) }
+        else if self.im > 0.0 { format!("{} + {}i", re_str, im_str) }
+        else { format!("{} - {}i", re_str, im_str) }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Arithmetic Operators
+// -----------------------------------------------------------------------------
+
+impl Add for Complex {
+    fn add(other: Complex) -> Complex {
+        Complex { re: self.re + other.re, im: self.im + other.im }
+    }
+}
+
+impl Sub for Complex {
+    fn sub(other: Complex) -> Complex {
+        Complex { re: self.re - other.re, im: self.im - other.im }
+    }
+}
+
+impl Mul for Complex {
+    fn mul(other: Complex) -> Complex {
+        Complex {
+            re: self.re * other.re - self.im * other.im,
+            im: self.re * other.im + self.im * other.re
+        }
+    }
+}
+
+impl Div for Complex {
+    fn div(other: Complex) -> Complex {
+        let denom = other.abs_squared()
+        Complex {
+            re: (self.re * other.re + self.im * other.im) / denom,
+            im: (self.im * other.re - self.re * other.im) / denom
+        }
+    }
+}
+
+impl Neg for Complex {
+    fn neg() -> Complex {
+        Complex { re: -self.re, im: -self.im }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Comparison
+// -----------------------------------------------------------------------------
+
+impl Eq for Complex {
+    fn eq(other: Complex) -> Bool {
+        self.re == other.re && self.im == other.im
+    }
+}
+
+impl Complex {
+    /// Approximately equal
+    fn approx_eq(other: Complex, epsilon: Float = 1e-10) -> Bool {
+        approx_eq(self.re, other.re, epsilon) && approx_eq(self.im, other.im, epsilon)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Helper Functions (Hyperbolic)
+// -----------------------------------------------------------------------------
+
+fn sinh(x: Float) -> Float { (exp(x) - exp(-x)) / 2.0 }
+fn cosh(x: Float) -> Float { (exp(x) + exp(-x)) / 2.0 }
+
+// -----------------------------------------------------------------------------
+// Utility Functions
+// -----------------------------------------------------------------------------
+
+/// Parse complex number from string
+fn parse_complex(s: String) -> Result<Complex, ParseError> {
+    let s = s.trim().replace(" ", "")
+    
+    // Handle pure imaginary
+    if s.ends_with("i") {
+        let coef = s[..s.len()-1]
+        if coef.is_empty() || coef == "+" { return Ok(Complex.i()) }
+        if coef == "-" { return Ok(Complex.neg_i()) }
+        let im = Float.parse(coef)?
+        return Ok(Complex.from_imag(im))
+    }
+    
+    // Find + or - that separates real and imaginary
+    var split_pos = None
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (c == '+' || c == '-') {
+            split_pos = Some(i)
+            break
+        }
+    }
+    
+    match split_pos {
+        Some(pos) => {
+            let re = Float.parse(s[..pos])?
+            let im_str = s[pos..]
+            if im_str.ends_with("i") {
+                let coef = im_str[..im_str.len()-1]
+                let im = if coef == "+" { 1.0 }
+                    else if coef == "-" { -1.0 }
+                    else { Float.parse(coef)? }
+                Ok(Complex.new(re, im))
+            } else {
+                Err(ParseError.InvalidFormat)
+            }
+        }
+        None => {
+            let re = Float.parse(s)?
+            Ok(Complex.from_real(re))
+        }
+    }
+}
+
+/// Euler's formula: e^(iθ) = cos(θ) + i·sin(θ)
+fn euler(theta: Float) -> Complex {
+    Complex.from_polar(1.0, theta)
+}
+
+/// Roots of unity: e^(2πik/n) for k = 0, 1, ..., n-1
+fn roots_of_unity(n: Int) -> [Complex] {
+    var roots = []
+    for k in 0..n {
+        roots.append(euler(TAU * k as Float / n as Float))
+    }
+    roots
+}
+
+/// Solve quadratic equation az² + bz + c = 0
+fn solve_quadratic(a: Complex, b: Complex, c: Complex) -> (Complex, Complex) {
+    let discriminant = b.square() - a.scale(4.0) * c
+    let sqrt_d = discriminant.sqrt()
+    let two_a = a.scale(2.0)
+    ((-b + sqrt_d) / two_a, (-b - sqrt_d) / two_a)
+}
+
+/// Distance between two complex numbers
+fn distance(z1: Complex, z2: Complex) -> Float {
+    (z1 - z2).abs()
+}
+
+/// Midpoint between two complex numbers
+fn midpoint(z1: Complex, z2: Complex) -> Complex {
+    (z1 + z2).scale(0.5)
+}
+
+/// Linear interpolation between complex numbers
+fn lerp(z1: Complex, z2: Complex, t: Float) -> Complex {
+    z1.scale(1.0 - t) + z2.scale(t)
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum ParseError {
+    Empty
+    InvalidFormat
+    InvalidNumber
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "creation" {
+    let z = Complex.new(3.0, 4.0)
+    assert_eq(z.re, 3.0)?
+    assert_eq(z.im, 4.0)?
+    assert(approx_eq(z.abs(), 5.0))
+}
+
+test "polar conversion" {
+    let z = Complex.from_polar(2.0, PI / 4.0)
+    assert(z.approx_eq(Complex.new(sqrt(2.0), sqrt(2.0))))
+}
+
+test "arithmetic" {
+    let a = Complex.new(1.0, 2.0)
+    let b = Complex.new(3.0, 4.0)
+    
+    assert((a + b).approx_eq(Complex.new(4.0, 6.0)))
+    assert((a - b).approx_eq(Complex.new(-2.0, -2.0)))
+    assert((a * b).approx_eq(Complex.new(-5.0, 10.0)))
+}
+
+test "conjugate" {
+    let z = Complex.new(3.0, 4.0)
+    let conj = z.conj()
+    assert_eq(conj.re, 3.0)?
+    assert_eq(conj.im, -4.0)?
+}
+
+test "euler formula" {
+    let z = euler(PI)
+    assert(z.approx_eq(Complex.new(-1.0, 0.0), 1e-10))
+}
+
+test "roots of unity" {
+    let roots = roots_of_unity(4)
+    assert_eq(roots.len(), 4)?
+    assert(roots[0].approx_eq(Complex.one()))
+    assert(roots[1].approx_eq(Complex.i()))
+}
+
+test "sqrt of negative" {
+    let z = Complex.from_real(-1.0)
+    let root = z.sqrt()
+    assert(root.approx_eq(Complex.i()))
+}
+
+test "exp and ln" {
+    let z = Complex.new(1.0, PI)
+    let exp_z = z.exp()
+    assert(exp_z.approx_eq(Complex.from_real(-E), 1e-10))
+}
+
+test "quadratic solver" {
+    // z² + 1 = 0 => z = ±i
+    let (r1, r2) = solve_quadratic(Complex.one(), Complex.zero(), Complex.one())
+    assert(r1.approx_eq(Complex.i()) || r1.approx_eq(Complex.neg_i()))
+    assert(r2.approx_eq(Complex.i()) || r2.approx_eq(Complex.neg_i()))
+}

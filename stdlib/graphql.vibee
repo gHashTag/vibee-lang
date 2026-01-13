@@ -1,0 +1,962 @@
+// =============================================================================
+// Vibee OS — GraphQL Module
+// GraphQL client, schema definition, and query execution
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// GraphQL Client
+// -----------------------------------------------------------------------------
+
+/// GraphQL client
+actor GraphQLClient {
+    state endpoint: String
+    state headers: Map<String, String>
+    state http_client: HTTPClient
+    
+    /// Create client
+    fn new(endpoint: String) -> Self {
+        GraphQLClient {
+            endpoint: endpoint,
+            headers: Map.empty(),
+            http_client: HTTPClient.new()
+        }
+    }
+    
+    /// Set authorization header
+    on auth(token: String) -> Self {
+        self.headers.set("Authorization", "Bearer \(token)")
+        self
+    }
+    
+    /// Set custom header
+    on header(name: String, value: String) -> Self {
+        self.headers.set(name, value)
+        self
+    }
+    
+    /// Execute query
+    on query<T: Deserialize>(query: String, variables: Map<String, Any> = Map.empty()) -> Result<T, GraphQLError> {
+        self.execute(query, variables, None)
+    }
+    
+    /// Execute mutation
+    on mutate<T: Deserialize>(mutation: String, variables: Map<String, Any> = Map.empty()) -> Result<T, GraphQLError> {
+        self.execute(mutation, variables, None)
+    }
+    
+    /// Execute with operation name
+    on execute<T: Deserialize>(
+        query: String,
+        variables: Map<String, Any>,
+        operation_name: Option<String>
+    ) -> Result<T, GraphQLError> {
+        let body = JSON.object()
+            .set("query", query)
+            .set("variables", variables)
+        
+        if let op = operation_name {
+            body.set("operationName", op)
+        }
+        
+        let response = self.http_client
+            .post(self.endpoint)
+            .headers(self.headers)
+            .header("Content-Type", "application/json")
+            .json(body)
+            .send()?
+        
+        let result: GraphQLResponse<T> = response.json()?
+        
+        if let errors = result.errors {
+            if !errors.is_empty() {
+                return Err(GraphQLError.QueryErrors(errors))
+            }
+        }
+        
+        result.data.ok_or(GraphQLError.NoData)
+    }
+    
+    /// Execute batch queries
+    on batch<T: Deserialize>(queries: [BatchQuery]) -> Result<[T], GraphQLError> {
+        let body = queries.map(|q| {
+            JSON.object()
+                .set("query", q.query)
+                .set("variables", q.variables)
+                .set("operationName", q.operation_name)
+        })
+        
+        let response = self.http_client
+            .post(self.endpoint)
+            .headers(self.headers)
+            .header("Content-Type", "application/json")
+            .json(body)
+            .send()?
+        
+        let results: [GraphQLResponse<T>] = response.json()?
+        
+        results.map(|r| {
+            if let errors = r.errors {
+                if !errors.is_empty() {
+                    return Err(GraphQLError.QueryErrors(errors))
+                }
+            }
+            r.data.ok_or(GraphQLError.NoData)
+        }).collect()
+    }
+    
+    /// Subscribe to subscription (requires WebSocket)
+    on subscribe<T: Deserialize>(
+        subscription: String,
+        variables: Map<String, Any> = Map.empty()
+    ) -> Stream<Result<T, GraphQLError>> {
+        // Convert HTTP endpoint to WebSocket
+        let ws_endpoint = self.endpoint
+            .replace("http://", "ws://")
+            .replace("https://", "wss://")
+        
+        let ws = WebSocket.builder(ws_endpoint)
+            .protocol("graphql-ws")
+            .connect()?
+        
+        // Send connection init
+        ws.send(JSON.stringify({
+            "type": "connection_init",
+            "payload": self.headers
+        }))?
+        
+        // Send subscription
+        let id = UUID.v4()
+        ws.send(JSON.stringify({
+            "id": id,
+            "type": "subscribe",
+            "payload": {
+                "query": subscription,
+                "variables": variables
+            }
+        }))?
+        
+        // Return stream of results
+        Stream.from_fn(|| {
+            match ws.receive() {
+                Ok(Message.Text(text)) => {
+                    let msg: SubscriptionMessage<T> = JSON.parse(text)?
+                    match msg.type_ {
+                        "next" => Some(Ok(msg.payload.data))
+                        "error" => Some(Err(GraphQLError.QueryErrors(msg.payload.errors)))
+                        "complete" => None
+                        _ => None
+                    }
+                }
+                Err(e) => Some(Err(GraphQLError.ConnectionError(e.message())))
+            }
+        })
+    }
+}
+
+/// Batch query
+struct BatchQuery {
+    query: String
+    variables: Map<String, Any>
+    operation_name: Option<String>
+}
+
+/// GraphQL response
+struct GraphQLResponse<T> {
+    data: Option<T>
+    errors: Option<[QueryError]>
+    extensions: Option<Map<String, Any>>
+}
+
+/// Subscription message
+struct SubscriptionMessage<T> {
+    id: String
+    type_: String  // "next", "error", "complete"
+    payload: GraphQLResponse<T>
+}
+
+/// Query error
+struct QueryError {
+    message: String
+    locations: Option<[ErrorLocation]>
+    path: Option<[PathSegment]>
+    extensions: Option<Map<String, Any>>
+}
+
+struct ErrorLocation {
+    line: Int
+    column: Int
+}
+
+enum PathSegment {
+    Field(String)
+    Index(Int)
+}
+
+// -----------------------------------------------------------------------------
+// Query Builder
+// -----------------------------------------------------------------------------
+
+/// GraphQL query builder
+actor QueryBuilder {
+    state operation: OperationType
+    state name: Option<String>
+    state variables: [VariableDef]
+    state selections: [Selection]
+    state fragments: [Fragment]
+    
+    /// Create query
+    fn query() -> Self {
+        QueryBuilder {
+            operation: .Query,
+            variables: [],
+            selections: [],
+            fragments: []
+        }
+    }
+    
+    /// Create mutation
+    fn mutation() -> Self {
+        QueryBuilder {
+            operation: .Mutation,
+            variables: [],
+            selections: [],
+            fragments: []
+        }
+    }
+    
+    /// Create subscription
+    fn subscription() -> Self {
+        QueryBuilder {
+            operation: .Subscription,
+            variables: [],
+            selections: [],
+            fragments: []
+        }
+    }
+    
+    /// Set operation name
+    on name(n: String) -> Self {
+        self.name = Some(n)
+        self
+    }
+    
+    /// Add variable definition
+    on variable(name: String, type_: String, default: Option<Any> = None) -> Self {
+        self.variables.append(VariableDef {
+            name: name,
+            type_: type_,
+            default_value: default
+        })
+        self
+    }
+    
+    /// Add field selection
+    on field(name: String) -> FieldBuilder {
+        FieldBuilder.new(self, name)
+    }
+    
+    /// Add fragment
+    on fragment(f: Fragment) -> Self {
+        self.fragments.append(f)
+        self
+    }
+    
+    /// Add fragment spread
+    on spread(fragment_name: String) -> Self {
+        self.selections.append(Selection.FragmentSpread(fragment_name))
+        self
+    }
+    
+    /// Build query string
+    on build() -> String {
+        var query = ""
+        
+        // Operation type and name
+        query += self.operation.to_string()
+        if let n = self.name {
+            query += " \(n)"
+        }
+        
+        // Variables
+        if !self.variables.is_empty() {
+            let vars = self.variables.map(|v| {
+                var def = "$\(v.name): \(v.type_)"
+                if let d = v.default_value {
+                    def += " = \(format_value(d))"
+                }
+                def
+            }).join(", ")
+            query += "(\(vars))"
+        }
+        
+        // Selections
+        query += " {\n"
+        for selection in self.selections {
+            query += "  \(selection.to_string())\n"
+        }
+        query += "}"
+        
+        // Fragments
+        for fragment in self.fragments {
+            query += "\n\n\(fragment.to_string())"
+        }
+        
+        query
+    }
+    
+    fn add_selection(selection: Selection) {
+        self.selections.append(selection)
+    }
+}
+
+/// Field builder
+actor FieldBuilder {
+    state parent: QueryBuilder
+    state name: String
+    state alias: Option<String>
+    state arguments: Map<String, Any>
+    state selections: [Selection]
+    state directives: [Directive]
+    
+    fn new(parent: QueryBuilder, name: String) -> Self {
+        FieldBuilder {
+            parent: parent,
+            name: name,
+            arguments: Map.empty(),
+            selections: [],
+            directives: []
+        }
+    }
+    
+    /// Set alias
+    on alias(a: String) -> Self {
+        self.alias = Some(a)
+        self
+    }
+    
+    /// Add argument
+    on arg(name: String, value: Any) -> Self {
+        self.arguments.set(name, value)
+        self
+    }
+    
+    /// Add variable reference as argument
+    on var_arg(name: String, var_name: String) -> Self {
+        self.arguments.set(name, VariableRef(var_name))
+        self
+    }
+    
+    /// Add nested field
+    on field(name: String) -> FieldBuilder {
+        FieldBuilder.new_nested(self, name)
+    }
+    
+    /// Add directive
+    on directive(name: String, args: Map<String, Any> = Map.empty()) -> Self {
+        self.directives.append(Directive { name: name, arguments: args })
+        self
+    }
+    
+    /// Include directive
+    on include_if(condition: String) -> Self {
+        self.directive("include", Map.from([("if", VariableRef(condition))]))
+    }
+    
+    /// Skip directive
+    on skip_if(condition: String) -> Self {
+        self.directive("skip", Map.from([("if", VariableRef(condition))]))
+    }
+    
+    /// Finish field and return to parent
+    on done() -> QueryBuilder {
+        let selection = Selection.Field(FieldSelection {
+            alias: self.alias,
+            name: self.name,
+            arguments: self.arguments,
+            directives: self.directives,
+            selections: self.selections
+        })
+        self.parent.add_selection(selection)
+        self.parent
+    }
+    
+    fn add_selection(selection: Selection) {
+        self.selections.append(selection)
+    }
+}
+
+enum OperationType {
+    Query
+    Mutation
+    Subscription
+    
+    fn to_string() -> String {
+        match self {
+            .Query => "query"
+            .Mutation => "mutation"
+            .Subscription => "subscription"
+        }
+    }
+}
+
+struct VariableDef {
+    name: String
+    type_: String
+    default_value: Option<Any>
+}
+
+struct VariableRef(String)
+
+enum Selection {
+    Field(FieldSelection)
+    FragmentSpread(String)
+    InlineFragment(InlineFragment)
+    
+    fn to_string() -> String {
+        match self {
+            .Field(f) => f.to_string()
+            .FragmentSpread(name) => "...\(name)"
+            .InlineFragment(f) => f.to_string()
+        }
+    }
+}
+
+struct FieldSelection {
+    alias: Option<String>
+    name: String
+    arguments: Map<String, Any>
+    directives: [Directive]
+    selections: [Selection]
+    
+    fn to_string() -> String {
+        var s = ""
+        
+        if let a = self.alias {
+            s += "\(a): "
+        }
+        s += self.name
+        
+        if !self.arguments.is_empty() {
+            let args = self.arguments.map(|(k, v)| "\(k): \(format_value(v))").join(", ")
+            s += "(\(args))"
+        }
+        
+        for directive in self.directives {
+            s += " \(directive.to_string())"
+        }
+        
+        if !self.selections.is_empty() {
+            s += " {\n"
+            for sel in self.selections {
+                s += "    \(sel.to_string())\n"
+            }
+            s += "  }"
+        }
+        
+        s
+    }
+}
+
+struct Directive {
+    name: String
+    arguments: Map<String, Any>
+    
+    fn to_string() -> String {
+        var s = "@\(self.name)"
+        if !self.arguments.is_empty() {
+            let args = self.arguments.map(|(k, v)| "\(k): \(format_value(v))").join(", ")
+            s += "(\(args))"
+        }
+        s
+    }
+}
+
+struct Fragment {
+    name: String
+    type_condition: String
+    selections: [Selection]
+    
+    fn to_string() -> String {
+        var s = "fragment \(self.name) on \(self.type_condition) {\n"
+        for sel in self.selections {
+            s += "  \(sel.to_string())\n"
+        }
+        s += "}"
+        s
+    }
+}
+
+struct InlineFragment {
+    type_condition: Option<String>
+    directives: [Directive]
+    selections: [Selection]
+    
+    fn to_string() -> String {
+        var s = "..."
+        if let tc = self.type_condition {
+            s += " on \(tc)"
+        }
+        for d in self.directives {
+            s += " \(d.to_string())"
+        }
+        s += " {\n"
+        for sel in self.selections {
+            s += "    \(sel.to_string())\n"
+        }
+        s += "  }"
+        s
+    }
+}
+
+fn format_value(value: Any) -> String {
+    match value {
+        VariableRef(name) => "$\(name)"
+        String(s) => "\"\(s.escape())\""
+        Int(n) => "\(n)"
+        Float(f) => "\(f)"
+        Bool(b) => if b { "true" } else { "false" }
+        None => "null"
+        [Any](arr) => "[\(arr.map(format_value).join(", "))]"
+        Map(m) => "{\(m.map(|(k, v)| "\(k): \(format_value(v))").join(", "))}"
+        _ => "\(value)"
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Schema Definition
+// -----------------------------------------------------------------------------
+
+/// GraphQL schema
+actor Schema {
+    state types: Map<String, TypeDef>
+    state query_type: String
+    state mutation_type: Option<String>
+    state subscription_type: Option<String>
+    state directives: [DirectiveDef]
+    
+    fn new() -> Self {
+        Schema {
+            types: Map.empty(),
+            query_type: "Query",
+            directives: []
+        }
+    }
+    
+    /// Add type definition
+    on type_(def: TypeDef) -> Self {
+        self.types.set(def.name(), def)
+        self
+    }
+    
+    /// Set query type name
+    on query(name: String) -> Self {
+        self.query_type = name
+        self
+    }
+    
+    /// Set mutation type name
+    on mutation(name: String) -> Self {
+        self.mutation_type = Some(name)
+        self
+    }
+    
+    /// Set subscription type name
+    on subscription(name: String) -> Self {
+        self.subscription_type = Some(name)
+        self
+    }
+    
+    /// Add directive definition
+    on directive(def: DirectiveDef) -> Self {
+        self.directives.append(def)
+        self
+    }
+    
+    /// Build SDL string
+    on to_sdl() -> String {
+        var sdl = ""
+        
+        // Schema definition
+        sdl += "schema {\n"
+        sdl += "  query: \(self.query_type)\n"
+        if let m = self.mutation_type {
+            sdl += "  mutation: \(m)\n"
+        }
+        if let s = self.subscription_type {
+            sdl += "  subscription: \(s)\n"
+        }
+        sdl += "}\n\n"
+        
+        // Type definitions
+        for (_, type_def) in self.types.sorted_by_key() {
+            sdl += type_def.to_sdl() + "\n\n"
+        }
+        
+        // Directive definitions
+        for directive in self.directives {
+            sdl += directive.to_sdl() + "\n\n"
+        }
+        
+        sdl.trim()
+    }
+    
+    /// Parse SDL
+    fn from_sdl(sdl: String) -> Result<Schema, ParseError> {
+        @native("graphql_parse_schema", sdl)
+    }
+}
+
+/// Type definition
+enum TypeDef {
+    Object(ObjectType)
+    Interface(InterfaceType)
+    Union(UnionType)
+    Enum(EnumType)
+    Input(InputType)
+    Scalar(ScalarType)
+    
+    fn name() -> String {
+        match self {
+            .Object(t) => t.name
+            .Interface(t) => t.name
+            .Union(t) => t.name
+            .Enum(t) => t.name
+            .Input(t) => t.name
+            .Scalar(t) => t.name
+        }
+    }
+    
+    fn to_sdl() -> String {
+        match self {
+            .Object(t) => t.to_sdl()
+            .Interface(t) => t.to_sdl()
+            .Union(t) => t.to_sdl()
+            .Enum(t) => t.to_sdl()
+            .Input(t) => t.to_sdl()
+            .Scalar(t) => t.to_sdl()
+        }
+    }
+}
+
+struct ObjectType {
+    name: String
+    description: Option<String>
+    interfaces: [String]
+    fields: [FieldDef]
+    
+    fn to_sdl() -> String {
+        var sdl = ""
+        if let desc = self.description {
+            sdl += "\"\"\"\(desc)\"\"\"\n"
+        }
+        sdl += "type \(self.name)"
+        if !self.interfaces.is_empty() {
+            sdl += " implements \(self.interfaces.join(" & "))"
+        }
+        sdl += " {\n"
+        for field in self.fields {
+            sdl += "  \(field.to_sdl())\n"
+        }
+        sdl += "}"
+        sdl
+    }
+}
+
+struct InterfaceType {
+    name: String
+    description: Option<String>
+    fields: [FieldDef]
+    
+    fn to_sdl() -> String {
+        var sdl = ""
+        if let desc = self.description {
+            sdl += "\"\"\"\(desc)\"\"\"\n"
+        }
+        sdl += "interface \(self.name) {\n"
+        for field in self.fields {
+            sdl += "  \(field.to_sdl())\n"
+        }
+        sdl += "}"
+        sdl
+    }
+}
+
+struct UnionType {
+    name: String
+    description: Option<String>
+    members: [String]
+    
+    fn to_sdl() -> String {
+        var sdl = ""
+        if let desc = self.description {
+            sdl += "\"\"\"\(desc)\"\"\"\n"
+        }
+        sdl += "union \(self.name) = \(self.members.join(" | "))"
+        sdl
+    }
+}
+
+struct EnumType {
+    name: String
+    description: Option<String>
+    values: [EnumValue]
+    
+    fn to_sdl() -> String {
+        var sdl = ""
+        if let desc = self.description {
+            sdl += "\"\"\"\(desc)\"\"\"\n"
+        }
+        sdl += "enum \(self.name) {\n"
+        for value in self.values {
+            sdl += "  \(value.to_sdl())\n"
+        }
+        sdl += "}"
+        sdl
+    }
+}
+
+struct EnumValue {
+    name: String
+    description: Option<String>
+    deprecated: Option<String>
+    
+    fn to_sdl() -> String {
+        var sdl = self.name
+        if let reason = self.deprecated {
+            sdl += " @deprecated(reason: \"\(reason)\")"
+        }
+        sdl
+    }
+}
+
+struct InputType {
+    name: String
+    description: Option<String>
+    fields: [InputFieldDef]
+    
+    fn to_sdl() -> String {
+        var sdl = ""
+        if let desc = self.description {
+            sdl += "\"\"\"\(desc)\"\"\"\n"
+        }
+        sdl += "input \(self.name) {\n"
+        for field in self.fields {
+            sdl += "  \(field.to_sdl())\n"
+        }
+        sdl += "}"
+        sdl
+    }
+}
+
+struct ScalarType {
+    name: String
+    description: Option<String>
+    
+    fn to_sdl() -> String {
+        var sdl = ""
+        if let desc = self.description {
+            sdl += "\"\"\"\(desc)\"\"\"\n"
+        }
+        sdl += "scalar \(self.name)"
+        sdl
+    }
+}
+
+struct FieldDef {
+    name: String
+    description: Option<String>
+    arguments: [ArgumentDef]
+    type_: TypeRef
+    deprecated: Option<String>
+    
+    fn to_sdl() -> String {
+        var sdl = ""
+        if let desc = self.description {
+            sdl += "\"\(desc)\"\n  "
+        }
+        sdl += self.name
+        if !self.arguments.is_empty() {
+            let args = self.arguments.map(|a| a.to_sdl()).join(", ")
+            sdl += "(\(args))"
+        }
+        sdl += ": \(self.type_.to_sdl())"
+        if let reason = self.deprecated {
+            sdl += " @deprecated(reason: \"\(reason)\")"
+        }
+        sdl
+    }
+}
+
+struct ArgumentDef {
+    name: String
+    type_: TypeRef
+    default_value: Option<Any>
+    
+    fn to_sdl() -> String {
+        var sdl = "\(self.name): \(self.type_.to_sdl())"
+        if let d = self.default_value {
+            sdl += " = \(format_value(d))"
+        }
+        sdl
+    }
+}
+
+struct InputFieldDef {
+    name: String
+    type_: TypeRef
+    default_value: Option<Any>
+    
+    fn to_sdl() -> String {
+        var sdl = "\(self.name): \(self.type_.to_sdl())"
+        if let d = self.default_value {
+            sdl += " = \(format_value(d))"
+        }
+        sdl
+    }
+}
+
+/// Type reference
+enum TypeRef {
+    Named(String)
+    NonNull(Box<TypeRef>)
+    List(Box<TypeRef>)
+    
+    fn to_sdl() -> String {
+        match self {
+            .Named(name) => name
+            .NonNull(inner) => "\(inner.to_sdl())!"
+            .List(inner) => "[\(inner.to_sdl())]"
+        }
+    }
+}
+
+struct DirectiveDef {
+    name: String
+    description: Option<String>
+    arguments: [ArgumentDef]
+    locations: [DirectiveLocation]
+    repeatable: Bool
+    
+    fn to_sdl() -> String {
+        var sdl = ""
+        if let desc = self.description {
+            sdl += "\"\"\"\(desc)\"\"\"\n"
+        }
+        sdl += "directive @\(self.name)"
+        if !self.arguments.is_empty() {
+            let args = self.arguments.map(|a| a.to_sdl()).join(", ")
+            sdl += "(\(args))"
+        }
+        if self.repeatable {
+            sdl += " repeatable"
+        }
+        sdl += " on \(self.locations.map(|l| l.to_string()).join(" | "))"
+        sdl
+    }
+}
+
+enum DirectiveLocation {
+    Query, Mutation, Subscription, Field, FragmentDefinition,
+    FragmentSpread, InlineFragment, Schema, Scalar, Object,
+    FieldDefinition, ArgumentDefinition, Interface, Union,
+    Enum, EnumValue, InputObject, InputFieldDefinition
+    
+    fn to_string() -> String {
+        match self {
+            .Query => "QUERY"
+            .Mutation => "MUTATION"
+            .Subscription => "SUBSCRIPTION"
+            .Field => "FIELD"
+            .FragmentDefinition => "FRAGMENT_DEFINITION"
+            .FragmentSpread => "FRAGMENT_SPREAD"
+            .InlineFragment => "INLINE_FRAGMENT"
+            .Schema => "SCHEMA"
+            .Scalar => "SCALAR"
+            .Object => "OBJECT"
+            .FieldDefinition => "FIELD_DEFINITION"
+            .ArgumentDefinition => "ARGUMENT_DEFINITION"
+            .Interface => "INTERFACE"
+            .Union => "UNION"
+            .Enum => "ENUM"
+            .EnumValue => "ENUM_VALUE"
+            .InputObject => "INPUT_OBJECT"
+            .InputFieldDefinition => "INPUT_FIELD_DEFINITION"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum GraphQLError {
+    QueryErrors([QueryError])
+    NoData
+    ConnectionError(String)
+    ParseError(String)
+    ValidationError(String)
+    
+    fn message() -> String {
+        match self {
+            .QueryErrors(errors) => errors.map(|e| e.message).join("; ")
+            .NoData => "No data returned"
+            .ConnectionError(msg) => "Connection error: \(msg)"
+            .ParseError(msg) => "Parse error: \(msg)"
+            .ValidationError(msg) => "Validation error: \(msg)"
+        }
+    }
+}
+
+enum ParseError {
+    InvalidSyntax(String, Int, Int)
+    UnexpectedToken(String)
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "query builder" {
+    let query = QueryBuilder.query()
+        .name("GetUser")
+        .variable("id", "ID!")
+        .field("user")
+            .var_arg("id", "id")
+            .field("name").done()
+            .field("email").done()
+        .done()
+        .build()
+    
+    assert(query.contains("query GetUser"))
+    assert(query.contains("$id: ID!"))
+    assert(query.contains("user(id: $id)"))
+}
+
+test "schema sdl" {
+    let schema = Schema.new()
+        .type_(TypeDef.Object(ObjectType {
+            name: "User",
+            description: Some("A user"),
+            interfaces: [],
+            fields: [
+                FieldDef {
+                    name: "id",
+                    type_: TypeRef.NonNull(Box.new(TypeRef.Named("ID"))),
+                    arguments: [],
+                    description: None,
+                    deprecated: None
+                },
+                FieldDef {
+                    name: "name",
+                    type_: TypeRef.Named("String"),
+                    arguments: [],
+                    description: None,
+                    deprecated: None
+                }
+            ]
+        }))
+    
+    let sdl = schema.to_sdl()
+    assert(sdl.contains("type User"))
+    assert(sdl.contains("id: ID!"))
+}

@@ -1,0 +1,165 @@
+name: vibee_os_syscall
+version: "0.1.0"
+language: zig
+module: kernel/syscall
+description: Системные вызовы VIBEE OS — интерфейс между user space и ядром
+
+behaviors:
+  - name: syscall_dispatch
+    given: Процесс выполняет системный вызов
+    when: Вызывается syscall_handler с номером и аргументами
+    then: Вызов направляется в соответствующий обработчик
+    test_cases:
+      - name: dispatch_write
+        input: {syscall_num: 1, args: [1, "hello"]}
+        expected: {handled: true, result: 5}
+      - name: invalid_syscall
+        input: {syscall_num: 999, args: []}
+        expected: {handled: false, error: "unknown_syscall"}
+
+  - name: sys_write_behavior
+    given: Процесс хочет записать данные
+    when: Вызывается sys_write с handle и данными
+    then: Данные записываются и возвращается количество байт
+    test_cases:
+      - name: write_to_stdout
+        input: {handle: 1, data: "Hello, VIBEE OS!"}
+        expected: {bytes_written: 16}
+
+  - name: sys_read_behavior
+    given: Процесс хочет прочитать данные
+    when: Вызывается sys_read с handle и буфером
+    then: Данные читаются в буфер и возвращается количество байт
+    test_cases:
+      - name: read_from_stdin
+        input: {handle: 0, buffer_size: 256}
+        expected: {bytes_read: 0}  # Нет данных
+
+  - name: sys_open_behavior
+    given: Процесс хочет открыть ресурс по схеме
+    when: Вызывается sys_open с URL схемы
+    then: Возвращается handle для доступа к ресурсу
+    test_cases:
+      - name: open_console
+        input: {url: "console://stdout", flags: ["write"]}
+        expected: {handle: 1}
+      - name: open_file
+        input: {url: "file://test.txt", flags: ["read"]}
+        expected: {handle: 3}
+
+types:
+  SyscallNumber:
+    variants:
+      - SYS_EXIT      # 0
+      - SYS_WRITE     # 1
+      - SYS_READ      # 2
+      - SYS_OPEN      # 3
+      - SYS_CLOSE     # 4
+      - SYS_SPAWN     # 5
+      - SYS_YIELD     # 6
+      - SYS_GETPID    # 7
+      - SYS_ALLOC     # 8
+      - SYS_FREE      # 9
+      - SYS_SEND      # 10
+      - SYS_RECV      # 11
+      - SYS_CHANNEL   # 12
+
+  SyscallResult:
+    success: bool
+    value: int
+    error: str?
+
+  Handle:
+    id: int
+    scheme: str
+    flags: [OpenFlag]
+
+  OpenFlag:
+    variants:
+      - Read
+      - Write
+      - Create
+      - Append
+      - Truncate
+
+  SyscallArgs:
+    arg0: int
+    arg1: int
+    arg2: int
+    arg3: int
+
+functions:
+  - name: syscall_handler
+    params: {num: int, args: SyscallArgs}
+    returns: SyscallResult
+    description: Главный диспетчер системных вызовов
+
+  - name: sys_exit
+    params: {code: int}
+    returns: void
+    description: Завершение процесса
+
+  - name: sys_write
+    params: {handle: int, data: str}
+    returns: int
+    description: Запись данных
+
+  - name: sys_read
+    params: {handle: int, size: int}
+    returns: str
+    description: Чтение данных
+
+  - name: sys_open
+    params: {url: str, flags: [OpenFlag]}
+    returns: Handle
+    description: Открытие ресурса по URL схемы
+
+  - name: sys_close
+    params: {handle: int}
+    returns: bool
+    description: Закрытие handle
+
+  - name: sys_spawn
+    params: {name: str, args: [str]}
+    returns: int
+    description: Создание нового процесса
+
+  - name: sys_yield
+    params: {}
+    returns: void
+    description: Передача управления планировщику
+
+  - name: sys_getpid
+    params: {}
+    returns: int
+    description: Получение PID текущего процесса
+
+  - name: sys_alloc
+    params: {size: int}
+    returns: int
+    description: Выделение памяти
+
+  - name: sys_free
+    params: {ptr: int}
+    returns: bool
+    description: Освобождение памяти
+
+  - name: sys_channel_create
+    params: {}
+    returns: {sender: int, receiver: int}
+    description: Создание канала IPC
+
+  - name: sys_send
+    params: {channel: int, message: str}
+    returns: bool
+    description: Отправка сообщения
+
+  - name: sys_recv
+    params: {channel: int}
+    returns: str?
+    description: Получение сообщения
+
+imports:
+  - kernel.process
+  - kernel.memory
+  - kernel.ipc

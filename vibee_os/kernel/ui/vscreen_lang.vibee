@@ -1,0 +1,623 @@
+name: vibee_os_vscreen_language
+version: "0.1.0"
+language: gleam
+module: kernel/ui/vscreen
+description: VScreen Language - Domain Specific Language for screen specifications. .vscreen files compile to pixel behaviors.
+
+behaviors:
+  - name: parse_vscreen_file
+    given: A .vscreen file with screen specification
+    when: vscreen_parse is called
+    then: File is parsed into ScreenSpec AST
+    test_cases:
+      - name: parse_simple_screen
+        input: {file: "button.vscreen"}
+        expected: {parsed: true, regions: 1, behaviors: 3}
+      - name: parse_complex_screen
+        input: {file: "dashboard.vscreen"}
+        expected: {parsed: true, regions: 20, behaviors: 50}
+      - name: parse_syntax_error
+        input: {file: "invalid.vscreen", has_error: true}
+        expected: {parsed: false, error_line: 15, error_msg: "unexpected token"}
+
+  - name: compile_vscreen_to_pixels
+    given: Valid ScreenSpec AST
+    when: vscreen_compile is called
+    then: Pixel actors are generated with attached behaviors
+    test_cases:
+      - name: compile_button
+        input: {spec: "button_spec"}
+        expected: {compiled: true, pixels: 10000, behaviors_attached: 3}
+
+  - name: vscreen_hot_reload
+    given: Screen is running
+    when: .vscreen file changes
+    then: Screen recompiles and updates without restart
+    test_cases:
+      - name: hot_reload_color_change
+        input: {change: "background: 0xFF0000 -> 0x00FF00"}
+        expected: {reloaded: true, downtime_ms: 0, pixels_updated: 10000}
+
+  - name: vscreen_to_vibee
+    given: .vscreen specification
+    when: vscreen_to_vibee is called
+    then: Equivalent .vibee specification is generated
+    test_cases:
+      - name: convert_button
+        input: {vscreen: "button.vscreen"}
+        expected: {vibee_generated: true, behaviors_preserved: true}
+
+types:
+  VScreenAST:
+    screen: ScreenNode
+    imports: [str]
+    constants: {str: str}
+
+  ScreenNode:
+    name: str
+    version: str
+    canvas: CanvasNode
+    palette: PaletteNode?
+    behaviors: [BehaviorNode]
+    regions: [RegionNode]
+    animations: [AnimationNode]
+    tests: [TestNode]
+
+  CanvasNode:
+    width: PlasticUnit              # Plastic! Can be 100vw, 100%, etc.
+    height: PlasticUnit             # Plastic! Can be 100vh, 100%, etc.
+    background: ColorExpr
+    fps: int?
+    min_width: PlasticUnit?         # Minimum constraint
+    max_width: PlasticUnit?         # Maximum constraint
+    min_height: PlasticUnit?
+    max_height: PlasticUnit?
+    aspect_ratio: float?            # Maintain aspect ratio
+
+  PaletteNode:
+    colors: {str: int}
+
+  ColorExpr:
+    variants:
+      - Hex: {value: int}
+      - Named: {name: str}
+      - RGB: {r: int, g: int, b: int}
+      - HSL: {h: float, s: float, l: float}
+      - Gradient: {from: ColorExpr, to: ColorExpr, angle: float}
+      - Var: {name: str}
+
+  BehaviorNode:
+    name: str
+    given: GivenClause
+    when: WhenClause
+    then: ThenClause
+    test_cases: [TestCaseNode]
+
+  GivenClause:
+    conditions: [ConditionExpr]
+
+  ConditionExpr:
+    variants:
+      - StateIs: {state: str}
+      - RegionIs: {region: str}
+      - CursorAt: {distance: str}
+      - TimeIs: {ms: int}
+      - And: {left: ConditionExpr, right: ConditionExpr}
+      - Or: {left: ConditionExpr, right: ConditionExpr}
+
+  WhenClause:
+    trigger: TriggerExpr
+
+  TriggerExpr:
+    variants:
+      - Event: {name: str}
+      - CursorEnter
+      - CursorLeave
+      - Click
+      - DoubleClick
+      - KeyPress: {key: str}
+      - Time: {every_ms: int}
+      - Message: {type: str}
+
+  ThenClause:
+    outcomes: [OutcomeExpr]
+
+  OutcomeExpr:
+    variants:
+      - SetState: {state: str}
+      - Transition: {to: ColorExpr, duration: int, easing: str}
+      - Emit: {event: str}
+      - Wave: {type: str, params: {str: float}}
+      - Action: {name: str, params: {str: str}}
+      - Animate: {name: str}
+
+  RegionNode:
+    id: str
+    bounds: BoundsExpr
+    behavior: str?
+    style: StyleNode
+    children: [RegionNode]
+    text: TextNode?
+
+  BoundsExpr:
+    variants:
+      # PLASTIC BOUNDS - все размеры относительные!
+      - Plastic: {x: PlasticUnit, y: PlasticUnit, w: PlasticUnit, h: PlasticUnit}
+      - Relative: {parent: str, anchor: str, offset: {x: PlasticUnit, y: PlasticUnit}}
+      - Flex: {grow: float, shrink: float, basis: PlasticUnit}
+      - Grid: {row: int, col: int, span_row: int, span_col: int}
+      - Flow: {order: int}                    # Flow layout order
+      - Stack: {index: int}                   # Stack position
+      - Responsive: {breakpoints: {str: BoundsExpr}}  # Different bounds per breakpoint
+      # DEPRECATED - only for legacy support
+      - Absolute: {x: int, y: int, w: int, h: int}  # ⚠️ DEPRECATED: Use Plastic
+
+  StyleNode:
+    background: ColorExpr?
+    foreground: ColorExpr?
+    border: BorderNode?
+    shadow: ShadowNode?
+    opacity: float?
+    transform: TransformNode?
+    # PLASTIC SPACING
+    margin: PlasticSpacing?
+    padding: PlasticSpacing?
+    gap: PlasticUnit?
+    # PLASTIC LAYOUT
+    layout: LayoutNode?
+
+  PlasticSpacing:
+    top: PlasticUnit
+    right: PlasticUnit
+    bottom: PlasticUnit
+    left: PlasticUnit
+
+  PlasticUnit:
+    variants:
+      - Percent: {value: float}           # % of parent
+      - Vw: {value: float}                # viewport width
+      - Vh: {value: float}                # viewport height
+      - Vmin: {value: float}              # min(vw, vh)
+      - Vmax: {value: float}              # max(vw, vh)
+      - Fr: {value: float}                # fraction
+      - Rem: {value: float}               # root em
+      - Em: {value: float}                # em
+      - Ch: {value: float}                # character width
+      - Auto                              # auto
+      - MinContent                        # min-content
+      - MaxContent                        # max-content
+      - FitContent: {max: PlasticUnit}    # fit-content
+      - Clamp: {min: PlasticUnit, preferred: PlasticUnit, max: PlasticUnit}
+      - Calc: {expr: str}                 # calc(50% - 1rem)
+      # Constraints only (accessibility)
+      - Px: {value: int}                  # ⚠️ Only for min/max constraints!
+
+  LayoutNode:
+    variants:
+      - Flex: FlexLayoutNode
+      - Grid: GridLayoutNode
+      - Flow: FlowLayoutNode
+      - Stack: StackLayoutNode
+
+  FlexLayoutNode:
+    direction: str                        # row, column, row-reverse, column-reverse
+    wrap: str                             # nowrap, wrap, wrap-reverse
+    justify: str                          # start, end, center, space-between, space-around, space-evenly
+    align: str                            # start, end, center, stretch, baseline
+    gap: PlasticUnit
+
+  GridLayoutNode:
+    columns: [PlasticUnit]                # e.g., [1fr, 1fr, 1fr]
+    rows: [PlasticUnit]
+    gap: PlasticUnit
+    auto_flow: str                        # row, column, dense
+
+  FlowLayoutNode:
+    direction: str                        # ltr, rtl, ttb
+    gap: PlasticUnit
+    line_gap: PlasticUnit
+
+  StackLayoutNode:
+    direction: str                        # horizontal, vertical, z
+    gap: PlasticUnit
+    distribution: str                     # start, end, center, space-between, equal
+
+  BorderNode:
+    color: ColorExpr
+    width: PlasticUnit                    # Plastic border width
+    radius: PlasticUnit?                  # Plastic border radius
+    style: str?
+
+  ShadowNode:
+    color: ColorExpr
+    offset_x: PlasticUnit                 # Plastic offset
+    offset_y: PlasticUnit
+    blur: PlasticUnit
+
+  TransformNode:
+    rotate: float?
+    scale: float?
+    translate: {x: PlasticUnit, y: PlasticUnit}?
+
+  TextNode:
+    content: str
+    font_size: PlasticUnit                # Plastic font size (rem, em, vw, etc.)
+    font_weight: str?
+    align: str?
+    color: ColorExpr?
+    line_height: PlasticUnit?             # Plastic line height
+
+  AnimationNode:
+    name: str
+    duration_ms: int
+    easing: str
+    keyframes: [KeyframeNode]
+    loop: bool?
+
+  KeyframeNode:
+    at: float
+    properties: {str: str}
+
+  TestCaseNode:
+    name: str
+    input: {str: str}
+    expected: {str: str}
+
+  TestNode:
+    name: str
+    setup: [str]
+    steps: [str]
+    assert: [str]
+
+  ParseError:
+    line: int
+    column: int
+    message: str
+    suggestion: str?
+
+  CompileResult:
+    success: bool
+    pixels_generated: int
+    behaviors_attached: int
+    warnings: [str]
+    errors: [ParseError]
+
+functions:
+  # Parsing
+  - name: vscreen_parse
+    params: {source: str}
+    returns: VScreenAST
+    description: Parse .vscreen source to AST
+
+  - name: vscreen_parse_file
+    params: {path: str}
+    returns: VScreenAST
+    description: Parse .vscreen file
+
+  - name: vscreen_validate
+    params: {ast: VScreenAST}
+    returns: {valid: bool, errors: [ParseError]}
+    description: Validate AST
+
+  # Compilation
+  - name: vscreen_compile
+    params: {ast: VScreenAST}
+    returns: CompileResult
+    description: Compile AST to pixel actors
+
+  - name: vscreen_compile_file
+    params: {path: str}
+    returns: CompileResult
+    description: Parse and compile .vscreen file
+
+  # Hot reload
+  - name: vscreen_watch
+    params: {path: str, callback: str}
+    returns: str
+    description: Watch file for changes
+
+  - name: vscreen_reload
+    params: {path: str}
+    returns: CompileResult
+    description: Reload and recompile
+
+  # Conversion
+  - name: vscreen_to_vibee
+    params: {ast: VScreenAST}
+    returns: str
+    description: Convert to .vibee format
+
+  - name: vibee_to_vscreen
+    params: {vibee: str}
+    returns: str
+    description: Convert from .vibee format
+
+  # Utilities
+  - name: vscreen_format
+    params: {source: str}
+    returns: str
+    description: Format .vscreen source
+
+  - name: vscreen_lint
+    params: {ast: VScreenAST}
+    returns: [str]
+    description: Lint for best practices
+
+imports:
+  - kernel.ui.screen_spec
+  - kernel.ui.pixel_grid
+  - kernel.ui.plastic_screen
+  - kernel.ui.plastic_layout
+
+vscreen_syntax: |
+  # VScreen Language Syntax - PLASTIC EDITION
+  
+  ## File Structure
+  
+  ```vscreen
+  # Comments start with #
+  
+  screen LoginScreen {
+    version: "1.0.0"
+    
+    # PLASTIC CANVAS - adapts to ANY size!
+    canvas {
+      width: 100vw                    # Full viewport width
+      height: 100vh                   # Full viewport height
+      min_width: 320px                # Accessibility minimum
+      max_width: 1920px               # Optional maximum
+      background: #1a1a2e
+      fps: 60
+    }
+    
+    palette {
+      primary: #4CAF50
+      secondary: #2196F3
+      error: #f44336
+      text: #ffffff
+      muted: #888888
+    }
+    
+    # Behaviors define visual interactions
+    behavior button_hover {
+      given: state is Idle, region is button
+      when: cursor_enter
+      then: 
+        set_state Hover
+        transition to $primary duration 200ms ease_out
+        wave ripple amplitude 0.3
+    }
+    
+    behavior button_click {
+      given: state is Hover
+      when: click
+      then:
+        set_state Active
+        emit "button_clicked"
+        wave pulse amplitude 1.0
+        action submit_form
+    }
+    
+    # PLASTIC REGIONS - all sizes relative!
+    region form_container {
+      bounds: 50% - 200px, 30vh, 400px, auto  # Centered, 30% from top
+      style {
+        layout: flex {
+          direction: column
+          gap: 1.5rem
+          align: stretch
+        }
+        padding: 2rem
+      }
+      
+      region email_input {
+        bounds: flex { grow: 0, basis: 3rem }
+        behavior: input_focus
+        style {
+          background: #ffffff
+          border: 0.0625rem #cccccc radius 0.25rem
+          padding: 0.75rem 1rem
+        }
+        text {
+          content: "Email"
+          size: 1rem
+          color: $muted
+        }
+      }
+      
+      region submit_btn {
+        bounds: flex { grow: 0, basis: 3rem }
+        behavior: button_hover
+        style {
+          background: $primary
+          border: none radius 0.25rem
+          shadow: 0 0.125rem 0.25rem rgba(0,0,0,0.2)
+          min_height: 44px            # Accessibility minimum
+        }
+        text {
+          content: "Sign In"
+          size: 1.125rem
+          weight: bold
+          align: center
+          color: $text
+        }
+      }
+    }
+    
+    # RESPONSIVE RULES
+    responsive {
+      breakpoint xs (max-width: 575px) {
+        region form_container {
+          bounds: 5%, 10vh, 90%, auto
+          style {
+            padding: 1rem
+          }
+        }
+      }
+      
+      breakpoint lg (min-width: 992px) {
+        region form_container {
+          bounds: 50% - 250px, 25vh, 500px, auto
+        }
+      }
+    }
+    
+    # Animations
+    animation pulse {
+      duration: 300ms
+      easing: ease_out
+      keyframes {
+        0%: { scale: 1.0 }
+        50%: { scale: 1.1 }
+        100%: { scale: 1.0 }
+      }
+    }
+    
+    # Tests
+    test "button hover changes color" {
+      setup: set_state submit_btn Idle
+      steps:
+        move_cursor center_of submit_btn    # Relative position!
+        wait 200ms
+      assert:
+        state submit_btn is Hover
+        region submit_btn has background $primary
+    }
+  }
+  ```
+
+vscreen_keywords: |
+  # VScreen Keywords
+  
+  ## Structure
+  - screen, canvas, palette, behavior, region, animation, test, responsive, breakpoint
+  
+  ## Behavior
+  - given, when, then
+  - state, is, region, cursor, time
+  
+  ## Triggers
+  - cursor_enter, cursor_leave, click, double_click
+  - key_press, time_elapsed, message
+  
+  ## Outcomes
+  - set_state, transition, emit, wave, action, animate
+  
+  ## Style
+  - background, foreground, border, shadow, opacity, transform
+  - margin, padding, gap, layout
+  
+  ## Layout
+  - flex, grid, flow, stack
+  - direction, wrap, justify, align, gap
+  - row, column, start, end, center, stretch
+  - space-between, space-around, space-evenly
+  
+  ## PLASTIC UNITS (preferred!)
+  - %      - percent of parent
+  - vw     - viewport width
+  - vh     - viewport height
+  - vmin   - min(vw, vh)
+  - vmax   - max(vw, vh)
+  - fr     - fraction
+  - rem    - root em
+  - em     - em
+  - ch     - character width
+  - auto   - automatic
+  - min-content, max-content, fit-content
+  - clamp(min, preferred, max)
+  - calc(expression)
+  
+  ## DEPRECATED UNITS (avoid!)
+  - px     - ⚠️ Only for min/max accessibility constraints!
+  
+  ## Easing
+  - linear, ease_in, ease_out, ease_in_out, bounce, elastic
+  
+  ## Colors
+  - #RRGGBB, rgb(r,g,b), hsl(h,s,l), $variable
+
+compilation_pipeline: |
+  # VScreen Compilation Pipeline - PLASTIC EDITION
+  
+  ```
+  .vscreen file
+       │
+       ▼
+  ┌─────────────┐
+  │   Lexer     │  Tokenize source
+  └──────┬──────┘
+         │
+         ▼
+  ┌─────────────┐
+  │   Parser    │  Build AST
+  └──────┬──────┘
+         │
+         ▼
+  ┌─────────────┐
+  │  Validator  │  Check semantics + NO FIXED PIXELS!
+  └──────┬──────┘
+         │
+         ▼
+  ┌─────────────────┐
+  │ Plastic Resolver│  Resolve units to constraints
+  └────────┬────────┘
+           │
+           ▼
+  ┌─────────────────┐
+  │ Layout Computer │  Compute flex/grid/flow layouts
+  └────────┬────────┘
+           │
+           ▼
+  ┌─────────────┐
+  │  Optimizer  │  Optimize behaviors
+  └──────┬──────┘
+         │
+         ▼
+  ┌─────────────┐
+  │  CodeGen    │  Generate Gleam/Erlang
+  └──────┬──────┘
+         │
+         ▼
+  ┌─────────────┐
+  │  Spawner    │  Spawn pixel actors
+  └──────┬──────┘
+         │
+         ▼
+  ┌─────────────┐
+  │  Attacher   │  Attach behaviors
+  └──────┬──────┘
+         │
+         ▼
+  ┌─────────────────┐
+  │ Resize Listener │  Re-layout on viewport change
+  └────────┬────────┘
+           │
+           ▼
+    PLASTIC Running Screen
+    (adapts to ANY size!)
+  ```
+
+plastic_validation: |
+  # Plastic Validation Rules
+  
+  ## ❌ REJECTED (fixed pixels)
+  ```vscreen
+  bounds: 760, 400, 400, 50        # Fixed pixels!
+  font_size: 16                     # Fixed pixels!
+  padding: 20                       # Fixed pixels!
+  ```
+  
+  ## ✅ ACCEPTED (plastic units)
+  ```vscreen
+  bounds: 50% - 200px, 30vh, clamp(300px, 80%, 500px), auto
+  font_size: 1rem
+  padding: 1.25rem
+  ```
+  
+  ## ⚠️ ALLOWED (accessibility constraints only)
+  ```vscreen
+  min_width: 44px                   # Touch target minimum
+  min_height: 44px                  # Touch target minimum
+  min_width: 320px                  # Viewport minimum
+  ```

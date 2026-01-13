@@ -1,0 +1,344 @@
+// =============================================================================
+// Vibee OS — Redis Module
+// Redis in-memory data store client
+// =============================================================================
+
+// =============================================================================
+// Connection Configuration
+// =============================================================================
+
+/// Redis connection configuration
+struct RedisConfig {
+    host: String
+    port: UInt16
+    password: Option<String>
+    database: Int
+    tls: Bool
+    connect_timeout_ms: Int64
+    read_timeout_ms: Option<Int64>
+    write_timeout_ms: Option<Int64>
+}
+
+impl RedisConfig {
+    fn new() -> Self {
+        RedisConfig {
+            host: "localhost", port: 6379, password: None, database: 0,
+            tls: false, connect_timeout_ms: 5000, read_timeout_ms: None, write_timeout_ms: None
+        }
+    }
+    
+    fn from_url(url: String) -> Result<Self, RedisError> {
+        @native("redis_parse_url", url)
+    }
+    
+    fn host(h: String) -> Self { self.host = h; self }
+    fn port(p: UInt16) -> Self { self.port = p; self }
+    fn password(p: String) -> Self { self.password = Some(p); self }
+    fn database(db: Int) -> Self { self.database = db; self }
+    fn tls(enabled: Bool) -> Self { self.tls = enabled; self }
+    fn timeout(ms: Int64) -> Self { self.connect_timeout_ms = ms; self }
+}
+
+// =============================================================================
+// Connection
+// =============================================================================
+
+/// Redis connection
+struct RedisConnection {
+    inner: @native("RedisConn")
+}
+
+impl RedisConnection {
+    fn connect(config: RedisConfig) -> Result<Self, RedisError> {
+        let inner = @native("redis_connect", config)?
+        Ok(RedisConnection { inner: inner })
+    }
+    
+    fn connect_url(url: String) -> Result<Self, RedisError> {
+        Self.connect(RedisConfig.from_url(url)?)
+    }
+    
+    // String commands
+    fn get(key: String) -> Result<Option<String>, RedisError> { @native("redis_get", self.inner, key) }
+    fn set(key: String, value: String) -> Result<(), RedisError> { @native("redis_set", self.inner, key, value) }
+    fn setex(key: String, seconds: Int64, value: String) -> Result<(), RedisError> { @native("redis_setex", self.inner, key, seconds, value) }
+    fn setnx(key: String, value: String) -> Result<Bool, RedisError> { @native("redis_setnx", self.inner, key, value) }
+    fn mget(keys: [String]) -> Result<[Option<String>], RedisError> { @native("redis_mget", self.inner, keys) }
+    fn mset(pairs: [(String, String)]) -> Result<(), RedisError> { @native("redis_mset", self.inner, pairs) }
+    fn incr(key: String) -> Result<Int64, RedisError> { @native("redis_incr", self.inner, key) }
+    fn incrby(key: String, amount: Int64) -> Result<Int64, RedisError> { @native("redis_incrby", self.inner, key, amount) }
+    fn decr(key: String) -> Result<Int64, RedisError> { @native("redis_decr", self.inner, key) }
+    fn append(key: String, value: String) -> Result<Int64, RedisError> { @native("redis_append", self.inner, key, value) }
+    fn strlen(key: String) -> Result<Int64, RedisError> { @native("redis_strlen", self.inner, key) }
+    
+    // Key commands
+    fn del(keys: [String]) -> Result<Int64, RedisError> { @native("redis_del", self.inner, keys) }
+    fn exists(keys: [String]) -> Result<Int64, RedisError> { @native("redis_exists", self.inner, keys) }
+    fn expire(key: String, seconds: Int64) -> Result<Bool, RedisError> { @native("redis_expire", self.inner, key, seconds) }
+    fn expireat(key: String, timestamp: Int64) -> Result<Bool, RedisError> { @native("redis_expireat", self.inner, key, timestamp) }
+    fn ttl(key: String) -> Result<Int64, RedisError> { @native("redis_ttl", self.inner, key) }
+    fn pttl(key: String) -> Result<Int64, RedisError> { @native("redis_pttl", self.inner, key) }
+    fn persist(key: String) -> Result<Bool, RedisError> { @native("redis_persist", self.inner, key) }
+    fn keys(pattern: String) -> Result<[String], RedisError> { @native("redis_keys", self.inner, pattern) }
+    fn scan(cursor: Int64, pattern: Option<String>, count: Option<Int>) -> Result<(Int64, [String]), RedisError> { @native("redis_scan", self.inner, cursor, pattern, count) }
+    fn type_(key: String) -> Result<String, RedisError> { @native("redis_type", self.inner, key) }
+    fn rename(key: String, newkey: String) -> Result<(), RedisError> { @native("redis_rename", self.inner, key, newkey) }
+    
+    // Hash commands
+    fn hget(key: String, field: String) -> Result<Option<String>, RedisError> { @native("redis_hget", self.inner, key, field) }
+    fn hset(key: String, field: String, value: String) -> Result<Bool, RedisError> { @native("redis_hset", self.inner, key, field, value) }
+    fn hmget(key: String, fields: [String]) -> Result<[Option<String>], RedisError> { @native("redis_hmget", self.inner, key, fields) }
+    fn hmset(key: String, pairs: [(String, String)]) -> Result<(), RedisError> { @native("redis_hmset", self.inner, key, pairs) }
+    fn hdel(key: String, fields: [String]) -> Result<Int64, RedisError> { @native("redis_hdel", self.inner, key, fields) }
+    fn hexists(key: String, field: String) -> Result<Bool, RedisError> { @native("redis_hexists", self.inner, key, field) }
+    fn hgetall(key: String) -> Result<Map<String, String>, RedisError> { @native("redis_hgetall", self.inner, key) }
+    fn hkeys(key: String) -> Result<[String], RedisError> { @native("redis_hkeys", self.inner, key) }
+    fn hvals(key: String) -> Result<[String], RedisError> { @native("redis_hvals", self.inner, key) }
+    fn hlen(key: String) -> Result<Int64, RedisError> { @native("redis_hlen", self.inner, key) }
+    fn hincrby(key: String, field: String, amount: Int64) -> Result<Int64, RedisError> { @native("redis_hincrby", self.inner, key, field, amount) }
+    
+    // List commands
+    fn lpush(key: String, values: [String]) -> Result<Int64, RedisError> { @native("redis_lpush", self.inner, key, values) }
+    fn rpush(key: String, values: [String]) -> Result<Int64, RedisError> { @native("redis_rpush", self.inner, key, values) }
+    fn lpop(key: String) -> Result<Option<String>, RedisError> { @native("redis_lpop", self.inner, key) }
+    fn rpop(key: String) -> Result<Option<String>, RedisError> { @native("redis_rpop", self.inner, key) }
+    fn lrange(key: String, start: Int64, stop: Int64) -> Result<[String], RedisError> { @native("redis_lrange", self.inner, key, start, stop) }
+    fn llen(key: String) -> Result<Int64, RedisError> { @native("redis_llen", self.inner, key) }
+    fn lindex(key: String, index: Int64) -> Result<Option<String>, RedisError> { @native("redis_lindex", self.inner, key, index) }
+    fn lset(key: String, index: Int64, value: String) -> Result<(), RedisError> { @native("redis_lset", self.inner, key, index, value) }
+    fn lrem(key: String, count: Int64, value: String) -> Result<Int64, RedisError> { @native("redis_lrem", self.inner, key, count, value) }
+    fn blpop(keys: [String], timeout: Int64) -> Result<Option<(String, String)>, RedisError> { @native("redis_blpop", self.inner, keys, timeout) }
+    fn brpop(keys: [String], timeout: Int64) -> Result<Option<(String, String)>, RedisError> { @native("redis_brpop", self.inner, keys, timeout) }
+    
+    // Set commands
+    fn sadd(key: String, members: [String]) -> Result<Int64, RedisError> { @native("redis_sadd", self.inner, key, members) }
+    fn srem(key: String, members: [String]) -> Result<Int64, RedisError> { @native("redis_srem", self.inner, key, members) }
+    fn smembers(key: String) -> Result<[String], RedisError> { @native("redis_smembers", self.inner, key) }
+    fn sismember(key: String, member: String) -> Result<Bool, RedisError> { @native("redis_sismember", self.inner, key, member) }
+    fn scard(key: String) -> Result<Int64, RedisError> { @native("redis_scard", self.inner, key) }
+    fn sinter(keys: [String]) -> Result<[String], RedisError> { @native("redis_sinter", self.inner, keys) }
+    fn sunion(keys: [String]) -> Result<[String], RedisError> { @native("redis_sunion", self.inner, keys) }
+    fn sdiff(keys: [String]) -> Result<[String], RedisError> { @native("redis_sdiff", self.inner, keys) }
+    fn spop(key: String) -> Result<Option<String>, RedisError> { @native("redis_spop", self.inner, key) }
+    fn srandmember(key: String, count: Int) -> Result<[String], RedisError> { @native("redis_srandmember", self.inner, key, count) }
+    
+    // Sorted set commands
+    fn zadd(key: String, members: [(Float64, String)]) -> Result<Int64, RedisError> { @native("redis_zadd", self.inner, key, members) }
+    fn zrem(key: String, members: [String]) -> Result<Int64, RedisError> { @native("redis_zrem", self.inner, key, members) }
+    fn zscore(key: String, member: String) -> Result<Option<Float64>, RedisError> { @native("redis_zscore", self.inner, key, member) }
+    fn zrank(key: String, member: String) -> Result<Option<Int64>, RedisError> { @native("redis_zrank", self.inner, key, member) }
+    fn zrevrank(key: String, member: String) -> Result<Option<Int64>, RedisError> { @native("redis_zrevrank", self.inner, key, member) }
+    fn zrange(key: String, start: Int64, stop: Int64) -> Result<[String], RedisError> { @native("redis_zrange", self.inner, key, start, stop) }
+    fn zrevrange(key: String, start: Int64, stop: Int64) -> Result<[String], RedisError> { @native("redis_zrevrange", self.inner, key, start, stop) }
+    fn zrangebyscore(key: String, min: Float64, max: Float64) -> Result<[String], RedisError> { @native("redis_zrangebyscore", self.inner, key, min, max) }
+    fn zcard(key: String) -> Result<Int64, RedisError> { @native("redis_zcard", self.inner, key) }
+    fn zcount(key: String, min: Float64, max: Float64) -> Result<Int64, RedisError> { @native("redis_zcount", self.inner, key, min, max) }
+    fn zincrby(key: String, increment: Float64, member: String) -> Result<Float64, RedisError> { @native("redis_zincrby", self.inner, key, increment, member) }
+    
+    // Pub/Sub
+    fn publish(channel: String, message: String) -> Result<Int64, RedisError> { @native("redis_publish", self.inner, channel, message) }
+    fn subscribe(channels: [String]) -> Result<RedisPubSub, RedisError> {
+        let inner = @native("redis_subscribe", self.inner, channels)?
+        Ok(RedisPubSub { inner: inner })
+    }
+    fn psubscribe(patterns: [String]) -> Result<RedisPubSub, RedisError> {
+        let inner = @native("redis_psubscribe", self.inner, patterns)?
+        Ok(RedisPubSub { inner: inner })
+    }
+    
+    // Transactions
+    fn multi() -> Result<RedisPipeline, RedisError> {
+        Ok(RedisPipeline { conn: self, commands: [], is_transaction: true })
+    }
+    
+    fn pipeline() -> RedisPipeline {
+        RedisPipeline { conn: self, commands: [], is_transaction: false }
+    }
+    
+    // Scripts
+    fn eval(script: String, keys: [String], args: [String]) -> Result<RedisValue, RedisError> { @native("redis_eval", self.inner, script, keys, args) }
+    fn evalsha(sha: String, keys: [String], args: [String]) -> Result<RedisValue, RedisError> { @native("redis_evalsha", self.inner, sha, keys, args) }
+    fn script_load(script: String) -> Result<String, RedisError> { @native("redis_script_load", self.inner, script) }
+    
+    // Server commands
+    fn ping() -> Result<String, RedisError> { @native("redis_ping", self.inner) }
+    fn info() -> Result<String, RedisError> { @native("redis_info", self.inner) }
+    fn dbsize() -> Result<Int64, RedisError> { @native("redis_dbsize", self.inner) }
+    fn flushdb() -> Result<(), RedisError> { @native("redis_flushdb", self.inner) }
+    fn flushall() -> Result<(), RedisError> { @native("redis_flushall", self.inner) }
+    fn select(db: Int) -> Result<(), RedisError> { @native("redis_select", self.inner, db) }
+    
+    fn close() { @native("redis_close", self.inner) }
+}
+
+impl Drop for RedisConnection { fn drop() { self.close() } }
+
+// =============================================================================
+// Pipeline and Transactions
+// =============================================================================
+
+struct RedisPipeline {
+    conn: RedisConnection
+    commands: [(String, [String])]
+    is_transaction: Bool
+}
+
+impl RedisPipeline {
+    fn cmd(name: String, args: [String]) -> Self { self.commands.push((name, args)); self }
+    fn get(key: String) -> Self { self.cmd("GET", [key]) }
+    fn set(key: String, value: String) -> Self { self.cmd("SET", [key, value]) }
+    fn incr(key: String) -> Self { self.cmd("INCR", [key]) }
+    fn del(keys: [String]) -> Self { self.cmd("DEL", keys) }
+    fn hset(key: String, field: String, value: String) -> Self { self.cmd("HSET", [key, field, value]) }
+    fn lpush(key: String, value: String) -> Self { self.cmd("LPUSH", [key, value]) }
+    fn sadd(key: String, member: String) -> Self { self.cmd("SADD", [key, member]) }
+    fn zadd(key: String, score: String, member: String) -> Self { self.cmd("ZADD", [key, score, member]) }
+    fn expire(key: String, seconds: String) -> Self { self.cmd("EXPIRE", [key, seconds]) }
+    
+    fn execute() -> Result<[RedisValue], RedisError> {
+        if self.is_transaction {
+            @native("redis_exec_transaction", self.conn.inner, self.commands)
+        } else {
+            @native("redis_exec_pipeline", self.conn.inner, self.commands)
+        }
+    }
+}
+
+// =============================================================================
+// Pub/Sub
+// =============================================================================
+
+struct RedisPubSub {
+    inner: @native("RedisPubSub")
+}
+
+impl RedisPubSub {
+    fn receive() -> Result<PubSubMessage, RedisError> { @native("redis_pubsub_receive", self.inner) }
+    fn try_receive() -> Result<Option<PubSubMessage>, RedisError> { @native("redis_pubsub_try_receive", self.inner) }
+    fn subscribe(channels: [String]) -> Result<(), RedisError> { @native("redis_pubsub_subscribe", self.inner, channels) }
+    fn unsubscribe(channels: [String]) -> Result<(), RedisError> { @native("redis_pubsub_unsubscribe", self.inner, channels) }
+    fn close() { @native("redis_pubsub_close", self.inner) }
+}
+
+enum PubSubMessage {
+    Message { channel: String, payload: String }
+    PMessage { pattern: String, channel: String, payload: String }
+    Subscribe { channel: String, count: Int64 }
+    Unsubscribe { channel: String, count: Int64 }
+}
+
+// =============================================================================
+// Values
+// =============================================================================
+
+enum RedisValue {
+    Nil
+    Int(Int64)
+    String(String)
+    Bulk([UInt8])
+    Array([RedisValue])
+    Status(String)
+    Error(String)
+}
+
+impl RedisValue {
+    fn as_str() -> Option<String> { match self { RedisValue.String(s) | RedisValue.Status(s) => Some(s), _ => None } }
+    fn as_int() -> Option<Int64> { match self { RedisValue.Int(n) => Some(n), _ => None } }
+    fn as_bytes() -> Option<[UInt8]> { match self { RedisValue.Bulk(b) => Some(b), _ => None } }
+    fn as_array() -> Option<[RedisValue]> { match self { RedisValue.Array(a) => Some(a), _ => None } }
+    fn is_nil() -> Bool { matches!(self, RedisValue.Nil) }
+    fn is_error() -> Bool { matches!(self, RedisValue.Error(_)) }
+}
+
+// =============================================================================
+// Connection Pool
+// =============================================================================
+
+actor RedisPool {
+    state config: RedisConfig
+    state connections: [RedisConnection]
+    state available: [RedisConnection]
+    state max_size: Int
+    
+    fn new(config: RedisConfig, max_size: Int) -> Result<Self, RedisError> {
+        Ok(RedisPool { config: config, connections: [], available: [], max_size: max_size })
+    }
+    
+    fn acquire() -> Result<RedisPooledConnection, RedisError> {
+        if let Some(conn) = self.available.pop() {
+            return Ok(RedisPooledConnection { conn: conn, pool: self })
+        }
+        if self.connections.len() < self.max_size {
+            let conn = RedisConnection.connect(self.config.clone())?
+            self.connections.push(conn.clone())
+            return Ok(RedisPooledConnection { conn: conn, pool: self })
+        }
+        @native("redis_pool_wait", self)
+    }
+    
+    fn release(conn: RedisConnection) { self.available.push(conn) }
+    fn size() -> Int { self.connections.len() }
+    fn close() { for conn in self.connections { conn.close() } }
+}
+
+struct RedisPooledConnection {
+    conn: RedisConnection
+    pool: RedisPool
+}
+
+impl Drop for RedisPooledConnection { fn drop() { self.pool.release(self.conn) } }
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum RedisError {
+    ConnectionFailed(String)
+    AuthFailed
+    CommandFailed(String)
+    Timeout
+    InvalidResponse
+    Io(String)
+}
+
+impl Display for RedisError {
+    fn fmt(f: Formatter) {
+        match self {
+            ConnectionFailed(s) => f.write(format!("Connection failed: {}", s))
+            AuthFailed => f.write("Authentication failed")
+            CommandFailed(s) => f.write(format!("Command failed: {}", s))
+            Timeout => f.write("Operation timed out")
+            InvalidResponse => f.write("Invalid response")
+            Io(s) => f.write(format!("IO error: {}", s))
+        }
+    }
+}
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+fn connect(url: String) -> Result<RedisConnection, RedisError> { RedisConnection.connect_url(url) }
+fn pool(url: String, size: Int) -> Result<RedisPool, RedisError> { RedisPool.new(RedisConfig.from_url(url)?, size) }
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "config builder" {
+    let config = RedisConfig.new().host("localhost").port(6379).password("secret").database(1)
+    assert_eq(config.host, "localhost")?
+    assert_eq(config.database, 1)?
+}
+
+test "redis value" {
+    let v = RedisValue.String("hello")
+    assert_eq(v.as_str(), Some("hello"))?
+    assert(!v.is_nil())?
+}
+
+test "pipeline builder" {
+    let conn = RedisConnection { inner: @native("mock") }
+    let pipeline = conn.pipeline().set("key1", "value1").incr("counter").get("key1")
+    assert_eq(pipeline.commands.len(), 3)?
+}

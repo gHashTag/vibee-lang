@@ -1,0 +1,484 @@
+// =============================================================================
+// Vibee OS — Decimal Module
+// Arbitrary precision decimal arithmetic for financial calculations
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Decimal Type
+// -----------------------------------------------------------------------------
+
+/// Fixed-point decimal number
+struct Decimal {
+    coefficient: BigInt
+    scale: Int  // Number of decimal places
+    
+    /// Create from integer
+    fn from_int(n: Int) -> Self {
+        Decimal { coefficient: BigInt.from_int(n), scale: 0 }
+    }
+    
+    /// Create from integer with scale
+    fn from_int_scale(n: Int, scale: Int) -> Self {
+        Decimal { coefficient: BigInt.from_int(n), scale: scale }
+    }
+    
+    /// Create from float (may lose precision)
+    fn from_float(f: Float) -> Self {
+        Self.from_string(f.to_string()).unwrap_or(Decimal.zero())
+    }
+    
+    /// Create from string
+    fn from_string(s: String) -> Result<Self, ParseError> {
+        let s = s.trim()
+        if s.is_empty() { return Err(ParseError.Empty) }
+        
+        var negative = false
+        var start = 0
+        
+        if s[0] == '-' { negative = true; start = 1 }
+        else if s[0] == '+' { start = 1 }
+        
+        // Find decimal point
+        let dot_pos = s[start..].find('.')
+        
+        let (int_part, frac_part, scale) = match dot_pos {
+            Some(pos) => {
+                let int_str = s[start..(start + pos)]
+                let frac_str = s[(start + pos + 1)..]
+                (int_str, frac_str, frac_str.len() as Int)
+            }
+            None => (s[start..], "", 0)
+        }
+        
+        // Parse coefficient
+        let coef_str = int_part + frac_part
+        let coefficient = BigInt.from_string(coef_str)?
+        
+        Ok(Decimal {
+            coefficient: if negative { coefficient.negate() } else { coefficient },
+            scale: scale
+        })
+    }
+    
+    /// Parse with specific scale
+    fn from_string_scale(s: String, scale: Int) -> Result<Self, ParseError> {
+        let d = Self.from_string(s)?
+        Ok(d.rescale(scale))
+    }
+    
+    /// Zero
+    fn zero() -> Self { Decimal { coefficient: BigInt.zero(), scale: 0 } }
+    
+    /// One
+    fn one() -> Self { Decimal { coefficient: BigInt.one(), scale: 0 } }
+    
+    /// Create from parts
+    fn new(coefficient: BigInt, scale: Int) -> Self {
+        Decimal { coefficient: coefficient, scale: scale }
+    }
+    
+    /// Check if zero
+    fn is_zero() -> Bool { self.coefficient.is_zero() }
+    
+    /// Check if negative
+    fn is_negative() -> Bool { self.coefficient.is_negative() }
+    
+    /// Check if positive
+    fn is_positive() -> Bool { self.coefficient.is_positive() }
+    
+    /// Sign (-1, 0, or 1)
+    fn signum() -> Int { self.coefficient.signum() }
+    
+    /// Absolute value
+    fn abs() -> Self {
+        Decimal { coefficient: self.coefficient.abs(), scale: self.scale }
+    }
+    
+    /// Negate
+    fn negate() -> Self {
+        Decimal { coefficient: self.coefficient.negate(), scale: self.scale }
+    }
+    
+    /// Get scale (decimal places)
+    fn scale() -> Int { self.scale }
+    
+    /// Get precision (total digits)
+    fn precision() -> Int {
+        self.coefficient.abs().to_string().len() as Int
+    }
+    
+    /// Rescale to different number of decimal places
+    fn rescale(new_scale: Int) -> Self {
+        if new_scale == self.scale { return self.clone() }
+        
+        let diff = new_scale - self.scale
+        let coefficient = if diff > 0 {
+            self.coefficient * BigInt.from_int(10).pow(diff)
+        } else {
+            self.coefficient / BigInt.from_int(10).pow(-diff)
+        }
+        
+        Decimal { coefficient: coefficient, scale: new_scale }
+    }
+    
+    /// Round to n decimal places
+    fn round(places: Int) -> Self {
+        self.round_with_mode(places, RoundingMode.HalfUp)
+    }
+    
+    /// Round with specific mode
+    fn round_with_mode(places: Int, mode: RoundingMode) -> Self {
+        if places >= self.scale { return self.rescale(places) }
+        
+        let diff = self.scale - places
+        let divisor = BigInt.from_int(10).pow(diff)
+        let (quotient, remainder) = self.coefficient.div_rem(divisor)
+        
+        let should_round_up = match mode {
+            .Down => false
+            .Up => !remainder.is_zero()
+            .Ceiling => !remainder.is_zero() && self.is_positive()
+            .Floor => !remainder.is_zero() && self.is_negative()
+            .HalfUp => {
+                let half = divisor / BigInt.from_int(2)
+                remainder.abs() >= half
+            }
+            .HalfDown => {
+                let half = divisor / BigInt.from_int(2)
+                remainder.abs() > half
+            }
+            .HalfEven => {
+                let half = divisor / BigInt.from_int(2)
+                let cmp = remainder.abs().cmp(half)
+                cmp > 0 || (cmp == 0 && quotient.is_odd())
+            }
+        }
+        
+        let final_coef = if should_round_up {
+            if self.is_negative() { quotient - BigInt.one() }
+            else { quotient + BigInt.one() }
+        } else {
+            quotient
+        }
+        
+        Decimal { coefficient: final_coef, scale: places }
+    }
+    
+    /// Truncate to n decimal places
+    fn truncate(places: Int) -> Self {
+        self.round_with_mode(places, RoundingMode.Down)
+    }
+    
+    /// Floor
+    fn floor() -> Self {
+        self.round_with_mode(0, RoundingMode.Floor)
+    }
+    
+    /// Ceiling
+    fn ceil() -> Self {
+        self.round_with_mode(0, RoundingMode.Ceiling)
+    }
+    
+    /// Convert to float
+    fn to_float() -> Float {
+        let s = self.to_string()
+        Float.parse(s).unwrap_or(0.0)
+    }
+    
+    /// Convert to integer (truncates)
+    fn to_int() -> Option<Int> {
+        self.truncate(0).coefficient.to_int()
+    }
+    
+    /// Convert to string
+    fn to_string() -> String {
+        if self.scale == 0 {
+            return self.coefficient.to_string()
+        }
+        
+        let negative = self.is_negative()
+        let coef_str = self.coefficient.abs().to_string()
+        
+        let result = if coef_str.len() as Int <= self.scale {
+            let zeros = "0".repeat(self.scale - coef_str.len() as Int + 1)
+            "0." + zeros[1..] + coef_str
+        } else {
+            let int_len = coef_str.len() as Int - self.scale
+            coef_str[..int_len] + "." + coef_str[int_len..]
+        }
+        
+        if negative { "-" + result } else { result }
+    }
+    
+    /// Format with specific decimal places
+    fn format(places: Int) -> String {
+        self.round(places).to_string()
+    }
+    
+    /// Format as currency
+    fn format_currency(symbol: String = "$", places: Int = 2) -> String {
+        let rounded = self.round(places)
+        let formatted = rounded.to_string()
+        
+        // Add thousand separators
+        let parts = formatted.split(".")
+        let int_part = parts[0]
+        let frac_part = parts.get(1).unwrap_or("00")
+        
+        var with_commas = ""
+        let start = if int_part.starts_with("-") { 1 } else { 0 }
+        let digits = int_part[start..]
+        
+        for (i, c) in digits.chars().rev().enumerate() {
+            if i > 0 && i % 3 == 0 { with_commas = "," + with_commas }
+            with_commas = c.to_string() + with_commas
+        }
+        
+        let sign = if int_part.starts_with("-") { "-" } else { "" }
+        "\(sign)\(symbol)\(with_commas).\(frac_part)"
+    }
+}
+
+/// Rounding mode
+enum RoundingMode {
+    Down        // Toward zero
+    Up          // Away from zero
+    Ceiling     // Toward positive infinity
+    Floor       // Toward negative infinity
+    HalfUp      // Round half away from zero (standard)
+    HalfDown    // Round half toward zero
+    HalfEven    // Round half to nearest even (banker's rounding)
+}
+
+// -----------------------------------------------------------------------------
+// Arithmetic Operations
+// -----------------------------------------------------------------------------
+
+impl Add for Decimal {
+    fn add(other: Decimal) -> Decimal {
+        let (a, b) = align_scales(self, other)
+        Decimal { coefficient: a.coefficient + b.coefficient, scale: a.scale }
+    }
+}
+
+impl Sub for Decimal {
+    fn sub(other: Decimal) -> Decimal {
+        let (a, b) = align_scales(self, other)
+        Decimal { coefficient: a.coefficient - b.coefficient, scale: a.scale }
+    }
+}
+
+impl Mul for Decimal {
+    fn mul(other: Decimal) -> Decimal {
+        Decimal {
+            coefficient: self.coefficient * other.coefficient,
+            scale: self.scale + other.scale
+        }
+    }
+}
+
+impl Div for Decimal {
+    fn div(other: Decimal) -> Decimal {
+        self.div_with_scale(other, 28)  // Default precision
+    }
+}
+
+impl Decimal {
+    /// Division with specific scale
+    fn div_with_scale(other: Decimal, result_scale: Int) -> Decimal {
+        if other.is_zero() { panic("Division by zero") }
+        
+        // Scale up dividend for precision
+        let scale_diff = result_scale + other.scale - self.scale
+        let scaled_dividend = if scale_diff > 0 {
+            self.coefficient * BigInt.from_int(10).pow(scale_diff)
+        } else {
+            self.coefficient
+        }
+        
+        let quotient = scaled_dividend / other.coefficient
+        Decimal { coefficient: quotient, scale: result_scale }
+    }
+    
+    /// Remainder
+    fn rem(other: Decimal) -> Decimal {
+        let (a, b) = align_scales(self, other)
+        Decimal { coefficient: a.coefficient % b.coefficient, scale: a.scale }
+    }
+    
+    /// Power (integer exponent)
+    fn pow(exp: Int) -> Decimal {
+        if exp == 0 { return Decimal.one() }
+        if exp < 0 { return Decimal.one().div_with_scale(self.pow(-exp), 28) }
+        
+        Decimal {
+            coefficient: self.coefficient.pow(exp),
+            scale: self.scale * exp
+        }
+    }
+    
+    /// Square root
+    fn sqrt() -> Decimal {
+        self.sqrt_with_scale(28)
+    }
+    
+    fn sqrt_with_scale(result_scale: Int) -> Decimal {
+        if self.is_negative() { panic("Square root of negative") }
+        if self.is_zero() { return Decimal.zero() }
+        
+        // Newton's method
+        var x = Decimal.from_float(self.to_float().sqrt())
+        let two = Decimal.from_int(2)
+        
+        for _ in 0..50 {
+            let next = (x + self.div_with_scale(x, result_scale + 5)).div_with_scale(two, result_scale + 5)
+            if (next - x).abs().coefficient.is_zero() { break }
+            x = next
+        }
+        
+        x.round(result_scale)
+    }
+}
+
+fn align_scales(a: Decimal, b: Decimal) -> (Decimal, Decimal) {
+    let max_scale = max(a.scale, b.scale)
+    (a.rescale(max_scale), b.rescale(max_scale))
+}
+
+// -----------------------------------------------------------------------------
+// Comparison
+// -----------------------------------------------------------------------------
+
+impl Eq for Decimal {
+    fn eq(other: Decimal) -> Bool {
+        let (a, b) = align_scales(self, other)
+        a.coefficient == b.coefficient
+    }
+}
+
+impl Ord for Decimal {
+    fn cmp(other: Decimal) -> Ordering {
+        let (a, b) = align_scales(self, other)
+        a.coefficient.cmp(b.coefficient)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Constants
+// -----------------------------------------------------------------------------
+
+module DecimalConstants {
+    fn pi() -> Decimal {
+        Decimal.from_string("3.14159265358979323846264338327950288").unwrap()
+    }
+    
+    fn e() -> Decimal {
+        Decimal.from_string("2.71828182845904523536028747135266250").unwrap()
+    }
+    
+    fn one_hundred() -> Decimal {
+        Decimal.from_int(100)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Financial Functions
+// -----------------------------------------------------------------------------
+
+/// Calculate percentage
+fn percent(value: Decimal, percentage: Decimal) -> Decimal {
+    value * percentage / Decimal.from_int(100)
+}
+
+/// Calculate compound interest
+fn compound_interest(principal: Decimal, rate: Decimal, periods: Int) -> Decimal {
+    let one = Decimal.one()
+    let rate_per_period = rate / Decimal.from_int(100)
+    principal * (one + rate_per_period).pow(periods)
+}
+
+/// Calculate present value
+fn present_value(future_value: Decimal, rate: Decimal, periods: Int) -> Decimal {
+    let one = Decimal.one()
+    let rate_per_period = rate / Decimal.from_int(100)
+    future_value / (one + rate_per_period).pow(periods)
+}
+
+/// Calculate payment for loan
+fn loan_payment(principal: Decimal, annual_rate: Decimal, months: Int) -> Decimal {
+    let monthly_rate = annual_rate / Decimal.from_int(1200)
+    let one = Decimal.one()
+    
+    if monthly_rate.is_zero() {
+        return principal / Decimal.from_int(months)
+    }
+    
+    let factor = (one + monthly_rate).pow(months)
+    principal * monthly_rate * factor / (factor - one)
+}
+
+/// Sum of decimals
+fn sum(values: [Decimal]) -> Decimal {
+    values.fold(Decimal.zero(), |acc, v| acc + v)
+}
+
+/// Average of decimals
+fn average(values: [Decimal]) -> Decimal {
+    if values.is_empty() { return Decimal.zero() }
+    sum(values) / Decimal.from_int(values.len())
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum ParseError {
+    Empty
+    InvalidChar(Char)
+    InvalidFormat
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "from_string" {
+    let d = Decimal.from_string("123.456")?
+    assert(d.to_string() == "123.456")
+    assert(d.scale() == 3)
+}
+
+test "arithmetic" {
+    let a = Decimal.from_string("10.5")?
+    let b = Decimal.from_string("3.2")?
+    
+    assert((a + b).to_string() == "13.7")
+    assert((a - b).to_string() == "7.3")
+    assert((a * b).to_string() == "33.60")
+}
+
+test "rounding" {
+    let d = Decimal.from_string("3.14159")?
+    assert(d.round(2).to_string() == "3.14")
+    assert(d.round(3).to_string() == "3.142")
+}
+
+test "banker's rounding" {
+    let d1 = Decimal.from_string("2.5")?
+    let d2 = Decimal.from_string("3.5")?
+    
+    assert(d1.round_with_mode(0, RoundingMode.HalfEven).to_string() == "2")
+    assert(d2.round_with_mode(0, RoundingMode.HalfEven).to_string() == "4")
+}
+
+test "currency format" {
+    let d = Decimal.from_string("1234567.89")?
+    assert(d.format_currency() == "$1,234,567.89")
+}
+
+test "compound interest" {
+    let principal = Decimal.from_int(1000)
+    let rate = Decimal.from_int(5)
+    let result = compound_interest(principal, rate, 10)
+    assert(result.round(2).to_string() == "1628.89")
+}

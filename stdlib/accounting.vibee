@@ -1,0 +1,398 @@
+// =============================================================================
+// Vibee OS — Accounting Module
+// Double-entry bookkeeping and financial statements
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Account Types
+// -----------------------------------------------------------------------------
+
+/// Account type in chart of accounts
+enum AccountType {
+    Asset           // Debit increases
+    Liability       // Credit increases
+    Equity          // Credit increases
+    Revenue         // Credit increases
+    Expense         // Debit increases
+    ContraAsset     // Credit increases (e.g., depreciation)
+    ContraLiability // Debit increases
+    ContraEquity    // Debit increases
+}
+
+impl AccountType {
+    fn is_debit_normal() -> Bool {
+        match self {
+            Asset | Expense | ContraLiability | ContraEquity => true
+            _ => false
+        }
+    }
+    
+    fn is_credit_normal() -> Bool { !self.is_debit_normal() }
+}
+
+// -----------------------------------------------------------------------------
+// Account
+// -----------------------------------------------------------------------------
+
+/// Ledger account
+struct Account {
+    code: String
+    name: String
+    type_: AccountType
+    parent: Option<String>
+    currency: Currency
+    balance: Money
+    
+    fn new(code: String, name: String, type_: AccountType, currency: Currency) -> Self {
+        Account {
+            code: code, name: name, type_: type_,
+            parent: None, currency: currency,
+            balance: Money.zero(currency)
+        }
+    }
+    
+    fn with_parent(code: String, name: String, type_: AccountType, currency: Currency, parent: String) -> Self {
+        var acc = Self.new(code, name, type_, currency)
+        acc.parent = Some(parent)
+        acc
+    }
+    
+    fn debit(amount: Money) {
+        if self.type_.is_debit_normal() {
+            self.balance = self.balance + amount
+        } else {
+            self.balance = self.balance - amount
+        }
+    }
+    
+    fn credit(amount: Money) {
+        if self.type_.is_credit_normal() {
+            self.balance = self.balance + amount
+        } else {
+            self.balance = self.balance - amount
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Journal Entry
+// -----------------------------------------------------------------------------
+
+/// Single line in a journal entry
+struct JournalLine {
+    account_code: String
+    description: String
+    debit: Option<Money>
+    credit: Option<Money>
+}
+
+/// Complete journal entry
+struct JournalEntry {
+    id: String
+    date: Date
+    description: String
+    lines: [JournalLine]
+    reference: Option<String>
+    posted: Bool
+    
+    fn new(date: Date, description: String) -> Self {
+        JournalEntry {
+            id: uuid.v4(), date: date, description: description,
+            lines: [], reference: None, posted: false
+        }
+    }
+    
+    fn debit(account: String, amount: Money, desc: String) -> Self {
+        self.lines.push(JournalLine {
+            account_code: account, description: desc,
+            debit: Some(amount), credit: None
+        })
+        self
+    }
+    
+    fn credit(account: String, amount: Money, desc: String) -> Self {
+        self.lines.push(JournalLine {
+            account_code: account, description: desc,
+            debit: None, credit: Some(amount)
+        })
+        self
+    }
+    
+    fn is_balanced() -> Bool {
+        let debits = self.lines.filter_map(|l| l.debit).fold(Decimal.zero(), |a, m| a + m.as_decimal())
+        let credits = self.lines.filter_map(|l| l.credit).fold(Decimal.zero(), |a, m| a + m.as_decimal())
+        debits == credits
+    }
+    
+    fn total_debits() -> Money {
+        let currency = self.lines[0].debit.or(self.lines[0].credit).unwrap().currency
+        self.lines.filter_map(|l| l.debit).fold(Money.zero(currency), |a, m| a + m)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// General Ledger
+// -----------------------------------------------------------------------------
+
+/// General ledger
+struct Ledger {
+    accounts: Map<String, Account>
+    entries: [JournalEntry]
+    currency: Currency
+    
+    fn new(currency: Currency) -> Self {
+        Ledger { accounts: Map.empty(), entries: [], currency: currency }
+    }
+    
+    fn add_account(account: Account) {
+        self.accounts.insert(account.code.clone(), account)
+    }
+    
+    fn get_account(code: String) -> Option<Account> {
+        self.accounts.get(code)
+    }
+    
+    fn post(entry: JournalEntry) -> Result<(), AccountingError> {
+        if !entry.is_balanced() {
+            return Err(AccountingError.UnbalancedEntry)
+        }
+        
+        for line in entry.lines {
+            let account = self.accounts.get_mut(line.account_code)
+                .ok_or(AccountingError.AccountNotFound)?
+            
+            if let Some(debit) = line.debit { account.debit(debit) }
+            if let Some(credit) = line.credit { account.credit(credit) }
+        }
+        
+        var posted_entry = entry
+        posted_entry.posted = true
+        self.entries.push(posted_entry)
+        Ok(())
+    }
+    
+    fn trial_balance() -> TrialBalance {
+        var debits = Money.zero(self.currency)
+        var credits = Money.zero(self.currency)
+        var lines = []
+        
+        for (_, account) in self.accounts {
+            if account.balance.is_zero() { continue }
+            
+            let (d, c) = if account.type_.is_debit_normal() {
+                if account.balance.is_positive() {
+                    (account.balance, Money.zero(self.currency))
+                } else {
+                    (Money.zero(self.currency), account.balance.abs())
+                }
+            } else {
+                if account.balance.is_positive() {
+                    (Money.zero(self.currency), account.balance)
+                } else {
+                    (account.balance.abs(), Money.zero(self.currency))
+                }
+            }
+            
+            debits = debits + d
+            credits = credits + c
+            lines.push(TrialBalanceLine { account: account.clone(), debit: d, credit: c })
+        }
+        
+        TrialBalance { lines: lines, total_debits: debits, total_credits: credits }
+    }
+}
+
+struct TrialBalance {
+    lines: [TrialBalanceLine]
+    total_debits: Money
+    total_credits: Money
+    
+    fn is_balanced() -> Bool { self.total_debits == self.total_credits }
+}
+
+struct TrialBalanceLine {
+    account: Account
+    debit: Money
+    credit: Money
+}
+
+// -----------------------------------------------------------------------------
+// Financial Statements
+// -----------------------------------------------------------------------------
+
+/// Balance Sheet
+struct BalanceSheet {
+    date: Date
+    assets: Money
+    liabilities: Money
+    equity: Money
+    
+    fn from_ledger(ledger: Ledger, date: Date) -> Self {
+        var assets = Money.zero(ledger.currency)
+        var liabilities = Money.zero(ledger.currency)
+        var equity = Money.zero(ledger.currency)
+        
+        for (_, account) in ledger.accounts {
+            match account.type_ {
+                Asset | ContraLiability => assets = assets + account.balance
+                ContraAsset => assets = assets - account.balance
+                Liability | ContraEquity => liabilities = liabilities + account.balance
+                Equity => equity = equity + account.balance
+                _ => {}
+            }
+        }
+        
+        BalanceSheet { date: date, assets: assets, liabilities: liabilities, equity: equity }
+    }
+    
+    fn is_balanced() -> Bool {
+        self.assets == self.liabilities + self.equity
+    }
+}
+
+/// Income Statement
+struct IncomeStatement {
+    period_start: Date
+    period_end: Date
+    revenue: Money
+    expenses: Money
+    net_income: Money
+    
+    fn from_ledger(ledger: Ledger, start: Date, end: Date) -> Self {
+        var revenue = Money.zero(ledger.currency)
+        var expenses = Money.zero(ledger.currency)
+        
+        for (_, account) in ledger.accounts {
+            match account.type_ {
+                Revenue => revenue = revenue + account.balance
+                Expense => expenses = expenses + account.balance
+                _ => {}
+            }
+        }
+        
+        IncomeStatement {
+            period_start: start, period_end: end,
+            revenue: revenue, expenses: expenses,
+            net_income: revenue - expenses
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Invoice
+// -----------------------------------------------------------------------------
+
+struct Invoice {
+    number: String
+    date: Date
+    due_date: Date
+    customer: String
+    lines: [InvoiceLine]
+    tax_rate: Decimal
+    status: InvoiceStatus
+    
+    fn new(number: String, customer: String, date: Date, due_days: Int) -> Self {
+        Invoice {
+            number: number, customer: customer, date: date,
+            due_date: date + Duration.days(due_days),
+            lines: [], tax_rate: Decimal.zero(),
+            status: InvoiceStatus.Draft
+        }
+    }
+    
+    fn add_line(description: String, quantity: Decimal, unit_price: Money) -> Self {
+        self.lines.push(InvoiceLine { description: description, quantity: quantity, unit_price: unit_price })
+        self
+    }
+    
+    fn subtotal() -> Money {
+        let currency = self.lines[0].unit_price.currency
+        self.lines.fold(Money.zero(currency), |acc, line| acc + line.total())
+    }
+    
+    fn tax() -> Money { self.subtotal().percent(self.tax_rate) }
+    fn total() -> Money { self.subtotal() + self.tax() }
+    fn is_overdue() -> Bool { Date.today() > self.due_date && self.status != InvoiceStatus.Paid }
+}
+
+struct InvoiceLine {
+    description: String
+    quantity: Decimal
+    unit_price: Money
+    
+    fn total() -> Money { self.unit_price.mul(self.quantity) }
+}
+
+enum InvoiceStatus { Draft, Sent, Paid, Overdue, Cancelled }
+
+// -----------------------------------------------------------------------------
+// Depreciation
+// -----------------------------------------------------------------------------
+
+enum DepreciationMethod { StraightLine, DecliningBalance, SumOfYears, Units }
+
+struct Asset {
+    name: String
+    cost: Money
+    salvage_value: Money
+    useful_life: Int
+    method: DepreciationMethod
+    
+    fn annual_depreciation() -> Money {
+        match self.method {
+            StraightLine => (self.cost - self.salvage_value).div_int(self.useful_life)
+            _ => (self.cost - self.salvage_value).div_int(self.useful_life)
+        }
+    }
+    
+    fn book_value(year: Int) -> Money {
+        let depreciation = self.annual_depreciation().mul_int(year)
+        let book = self.cost - depreciation
+        if book < self.salvage_value { self.salvage_value } else { book }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum AccountingError {
+    UnbalancedEntry
+    AccountNotFound
+    InvalidAmount
+    DuplicateAccount
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "journal entry balanced" {
+    let entry = JournalEntry.new(Date.today(), "Sale")
+        .debit("1000", usd(100.00), "Cash")
+        .credit("4000", usd(100.00), "Revenue")
+    
+    assert(entry.is_balanced())?
+}
+
+test "balance sheet equation" {
+    var ledger = Ledger.new(Currency.USD)
+    ledger.add_account(Account.new("1000", "Cash", AccountType.Asset, Currency.USD))
+    ledger.add_account(Account.new("2000", "Loan", AccountType.Liability, Currency.USD))
+    ledger.add_account(Account.new("3000", "Capital", AccountType.Equity, Currency.USD))
+    
+    ledger.post(JournalEntry.new(Date.today(), "Initial")
+        .debit("1000", usd(10000.00), "")
+        .credit("3000", usd(10000.00), ""))?
+    
+    let bs = BalanceSheet.from_ledger(ledger, Date.today())
+    assert(bs.is_balanced())?
+}
+
+test "invoice total" {
+    let invoice = Invoice.new("INV-001", "Customer", Date.today(), 30)
+        .add_line("Service", Decimal.from_int(1), usd(500.00))
+        .add_line("Product", Decimal.from_int(2), usd(100.00))
+    
+    assert_eq(invoice.subtotal().format(), "$700.00")?
+}

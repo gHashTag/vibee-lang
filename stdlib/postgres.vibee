@@ -1,0 +1,771 @@
+// =============================================================================
+// Vibee OS — PostgreSQL Module
+// PostgreSQL database client
+// =============================================================================
+
+// =============================================================================
+// Connection Configuration
+// =============================================================================
+
+/// PostgreSQL connection configuration
+struct PgConfig {
+    host: String
+    port: UInt16
+    database: String
+    user: String
+    password: Option<String>
+    ssl_mode: SslMode
+    connect_timeout_ms: Int64
+    application_name: Option<String>
+    options: Map<String, String>
+}
+
+impl PgConfig {
+    fn new(database: String) -> Self {
+        PgConfig {
+            host: "localhost",
+            port: 5432,
+            database: database,
+            user: "postgres",
+            password: None,
+            ssl_mode: SslMode.Prefer,
+            connect_timeout_ms: 30000,
+            application_name: None,
+            options: Map.empty()
+        }
+    }
+    
+    fn from_url(url: String) -> Result<Self, PgError> {
+        // postgres://user:password@host:port/database?options
+        let parsed = @native("pg_parse_url", url)?
+        Ok(parsed)
+    }
+    
+    fn host(h: String) -> Self { self.host = h; self }
+    fn port(p: UInt16) -> Self { self.port = p; self }
+    fn user(u: String) -> Self { self.user = u; self }
+    fn password(p: String) -> Self { self.password = Some(p); self }
+    fn ssl_mode(m: SslMode) -> Self { self.ssl_mode = m; self }
+    fn timeout(ms: Int64) -> Self { self.connect_timeout_ms = ms; self }
+    fn application_name(name: String) -> Self { self.application_name = Some(name); self }
+    fn option(key: String, value: String) -> Self { self.options.set(key, value); self }
+    
+    fn connection_string() -> String {
+        var parts = [format!("host={} port={} dbname={} user={}", self.host, self.port, self.database, self.user)]
+        if let Some(p) = self.password { parts.push(format!("password={}", p)) }
+        parts.push(format!("sslmode={}", self.ssl_mode.to_string()))
+        if let Some(app) = self.application_name { parts.push(format!("application_name={}", app)) }
+        parts.join(" ")
+    }
+}
+
+enum SslMode { Disable, Allow, Prefer, Require, VerifyCa, VerifyFull }
+impl SslMode {
+    fn to_string() -> String {
+        match self {
+            Disable => "disable", Allow => "allow", Prefer => "prefer",
+            Require => "require", VerifyCa => "verify-ca", VerifyFull => "verify-full"
+        }
+    }
+}
+
+// =============================================================================
+// Connection
+// =============================================================================
+
+/// PostgreSQL connection
+struct PgConnection {
+    inner: @native("PgConn")
+    config: PgConfig
+    in_transaction: Bool
+}
+
+impl PgConnection {
+    fn connect(config: PgConfig) -> Result<Self, PgError> {
+        let inner = @native("pg_connect", config)?
+        Ok(PgConnection { inner: inner, config: config, in_transaction: false })
+    }
+    
+    fn connect_url(url: String) -> Result<Self, PgError> {
+        Self.connect(PgConfig.from_url(url)?)
+    }
+    
+    /// Execute a query without returning rows
+    fn execute(sql: String, params: [PgValue]) -> Result<Int64, PgError> {
+        @native("pg_execute", self.inner, sql, params)
+    }
+    
+    /// Execute a query and return rows
+    fn query(sql: String, params: [PgValue]) -> Result<PgRows, PgError> {
+        let rows = @native("pg_query", self.inner, sql, params)?
+        Ok(PgRows { inner: rows })
+    }
+    
+    /// Execute a query and return a single row
+    fn query_one(sql: String, params: [PgValue]) -> Result<PgRow, PgError> {
+        let rows = self.query(sql, params)?
+        rows.next().ok_or(PgError.NoRows)
+    }
+    
+    /// Execute a query and return an optional row
+    fn query_opt(sql: String, params: [PgValue]) -> Result<Option<PgRow>, PgError> {
+        let rows = self.query(sql, params)?
+        Ok(rows.next())
+    }
+    
+    /// Prepare a statement
+    fn prepare(sql: String) -> Result<PgStatement, PgError> {
+        let stmt = @native("pg_prepare", self.inner, sql)?
+        Ok(PgStatement { inner: stmt, conn: self })
+    }
+    
+    /// Begin a transaction
+    fn begin() -> Result<PgTransaction, PgError> {
+        self.execute("BEGIN", [])?
+        self.in_transaction = true
+        Ok(PgTransaction { conn: self, committed: false })
+    }
+    
+    /// Execute multiple statements in a batch
+    fn batch(statements: [(String, [PgValue])]) -> Result<[Int64], PgError> {
+        var results = []
+        for (sql, params) in statements {
+            results.push(self.execute(sql, params)?)
+        }
+        Ok(results)
+    }
+    
+    /// Copy data from STDIN
+    fn copy_in(table: String, columns: [String], data: [[PgValue]]) -> Result<Int64, PgError> {
+        let cols = columns.join(", ")
+        let sql = format!("COPY {} ({}) FROM STDIN", table, cols)
+        @native("pg_copy_in", self.inner, sql, data)
+    }
+    
+    /// Copy data to STDOUT
+    fn copy_out(sql: String) -> Result<[[PgValue]], PgError> {
+        @native("pg_copy_out", self.inner, sql)
+    }
+    
+    /// Check if connection is alive
+    fn is_alive() -> Bool { @native("pg_is_alive", self.inner) }
+    
+    /// Close the connection
+    fn close() { @native("pg_close", self.inner) }
+    
+    /// Get server version
+    fn server_version() -> String { @native("pg_server_version", self.inner) }
+    
+    /// Cancel current query
+    fn cancel() -> Result<(), PgError> { @native("pg_cancel", self.inner) }
+}
+
+impl Drop for PgConnection {
+    fn drop() { self.close() }
+}
+
+// =============================================================================
+// Prepared Statement
+// =============================================================================
+
+/// Prepared statement
+struct PgStatement {
+    inner: @native("PgStmt")
+    conn: PgConnection
+}
+
+impl PgStatement {
+    fn execute(params: [PgValue]) -> Result<Int64, PgError> {
+        @native("pg_stmt_execute", self.inner, params)
+    }
+    
+    fn query(params: [PgValue]) -> Result<PgRows, PgError> {
+        let rows = @native("pg_stmt_query", self.inner, params)?
+        Ok(PgRows { inner: rows })
+    }
+    
+    fn query_one(params: [PgValue]) -> Result<PgRow, PgError> {
+        self.query(params)?.next().ok_or(PgError.NoRows)
+    }
+}
+
+// =============================================================================
+// Transaction
+// =============================================================================
+
+/// Transaction handle
+struct PgTransaction {
+    conn: PgConnection
+    committed: Bool
+}
+
+impl PgTransaction {
+    fn execute(sql: String, params: [PgValue]) -> Result<Int64, PgError> {
+        self.conn.execute(sql, params)
+    }
+    
+    fn query(sql: String, params: [PgValue]) -> Result<PgRows, PgError> {
+        self.conn.query(sql, params)
+    }
+    
+    fn query_one(sql: String, params: [PgValue]) -> Result<PgRow, PgError> {
+        self.conn.query_one(sql, params)
+    }
+    
+    fn commit() -> Result<(), PgError> {
+        self.conn.execute("COMMIT", [])?
+        self.conn.in_transaction = false
+        self.committed = true
+        Ok(())
+    }
+    
+    fn rollback() -> Result<(), PgError> {
+        self.conn.execute("ROLLBACK", [])?
+        self.conn.in_transaction = false
+        self.committed = true
+        Ok(())
+    }
+    
+    /// Create a savepoint
+    fn savepoint(name: String) -> Result<PgSavepoint, PgError> {
+        self.conn.execute(format!("SAVEPOINT {}", name), [])?
+        Ok(PgSavepoint { tx: self, name: name })
+    }
+}
+
+impl Drop for PgTransaction {
+    fn drop() {
+        if !self.committed {
+            let _ = self.rollback()
+        }
+    }
+}
+
+/// Savepoint within a transaction
+struct PgSavepoint {
+    tx: PgTransaction
+    name: String
+}
+
+impl PgSavepoint {
+    fn release() -> Result<(), PgError> {
+        self.tx.conn.execute(format!("RELEASE SAVEPOINT {}", self.name), [])?
+        Ok(())
+    }
+    
+    fn rollback() -> Result<(), PgError> {
+        self.tx.conn.execute(format!("ROLLBACK TO SAVEPOINT {}", self.name), [])?
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Rows and Values
+// =============================================================================
+
+/// Query result rows
+struct PgRows {
+    inner: @native("PgRows")
+}
+
+impl PgRows {
+    fn next() -> Option<PgRow> {
+        @native("pg_rows_next", self.inner).map(|r| PgRow { inner: r })
+    }
+    
+    fn columns() -> [PgColumn] {
+        @native("pg_rows_columns", self.inner)
+    }
+    
+    fn affected_rows() -> Int64 {
+        @native("pg_rows_affected", self.inner)
+    }
+}
+
+impl Iterator for PgRows {
+    type Item = PgRow
+    fn next() -> Option<PgRow> { self.next() }
+}
+
+/// Single row
+struct PgRow {
+    inner: @native("PgRow")
+}
+
+impl PgRow {
+    fn get<T: FromPgValue>(index: Int) -> Result<T, PgError> {
+        let value = @native("pg_row_get", self.inner, index)?
+        T.from_pg_value(value)
+    }
+    
+    fn get_by_name<T: FromPgValue>(name: String) -> Result<T, PgError> {
+        let value = @native("pg_row_get_by_name", self.inner, name)?
+        T.from_pg_value(value)
+    }
+    
+    fn try_get<T: FromPgValue>(index: Int) -> Option<T> {
+        self.get(index).ok()
+    }
+    
+    fn try_get_by_name<T: FromPgValue>(name: String) -> Option<T> {
+        self.get_by_name(name).ok()
+    }
+    
+    fn is_null(index: Int) -> Bool {
+        @native("pg_row_is_null", self.inner, index)
+    }
+    
+    fn len() -> Int {
+        @native("pg_row_len", self.inner)
+    }
+}
+
+/// Column metadata
+struct PgColumn {
+    name: String
+    type_oid: Int
+    type_name: String
+}
+
+/// PostgreSQL value types
+enum PgValue {
+    Null
+    Bool(Bool)
+    Int16(Int16)
+    Int32(Int32)
+    Int64(Int64)
+    Float32(Float32)
+    Float64(Float64)
+    Text(String)
+    Bytea([UInt8])
+    Timestamp(DateTime)
+    Date(Date)
+    Time(Time)
+    Interval(Duration)
+    Uuid(Uuid)
+    Json(JsonValue)
+    Jsonb(JsonValue)
+    Array([PgValue])
+    Point(Float64, Float64)
+    Numeric(Decimal)
+}
+
+impl PgValue {
+    fn null() -> Self { PgValue.Null }
+    fn bool(v: Bool) -> Self { PgValue.Bool(v) }
+    fn int(v: Int64) -> Self { PgValue.Int64(v) }
+    fn float(v: Float64) -> Self { PgValue.Float64(v) }
+    fn text(v: String) -> Self { PgValue.Text(v) }
+    fn bytes(v: [UInt8]) -> Self { PgValue.Bytea(v) }
+    fn timestamp(v: DateTime) -> Self { PgValue.Timestamp(v) }
+    fn uuid(v: Uuid) -> Self { PgValue.Uuid(v) }
+    fn json(v: JsonValue) -> Self { PgValue.Json(v) }
+    fn jsonb(v: JsonValue) -> Self { PgValue.Jsonb(v) }
+    
+    fn is_null() -> Bool { matches!(self, Null) }
+}
+
+/// Trait for converting from PgValue
+trait FromPgValue {
+    fn from_pg_value(value: PgValue) -> Result<Self, PgError>
+}
+
+impl FromPgValue for Bool {
+    fn from_pg_value(value: PgValue) -> Result<Self, PgError> {
+        match value { PgValue.Bool(v) => Ok(v), _ => Err(PgError.TypeMismatch) }
+    }
+}
+
+impl FromPgValue for Int64 {
+    fn from_pg_value(value: PgValue) -> Result<Self, PgError> {
+        match value {
+            PgValue.Int16(v) => Ok(v as Int64),
+            PgValue.Int32(v) => Ok(v as Int64),
+            PgValue.Int64(v) => Ok(v),
+            _ => Err(PgError.TypeMismatch)
+        }
+    }
+}
+
+impl FromPgValue for String {
+    fn from_pg_value(value: PgValue) -> Result<Self, PgError> {
+        match value { PgValue.Text(v) => Ok(v), _ => Err(PgError.TypeMismatch) }
+    }
+}
+
+impl<T: FromPgValue> FromPgValue for Option<T> {
+    fn from_pg_value(value: PgValue) -> Result<Self, PgError> {
+        match value {
+            PgValue.Null => Ok(None),
+            v => Ok(Some(T.from_pg_value(v)?))
+        }
+    }
+}
+
+/// Trait for converting to PgValue
+trait ToPgValue {
+    fn to_pg_value() -> PgValue
+}
+
+impl ToPgValue for Bool { fn to_pg_value() -> PgValue { PgValue.Bool(self) } }
+impl ToPgValue for Int64 { fn to_pg_value() -> PgValue { PgValue.Int64(self) } }
+impl ToPgValue for String { fn to_pg_value() -> PgValue { PgValue.Text(self) } }
+impl<T: ToPgValue> ToPgValue for Option<T> {
+    fn to_pg_value() -> PgValue {
+        match self { Some(v) => v.to_pg_value(), None => PgValue.Null }
+    }
+}
+
+// =============================================================================
+// Connection Pool
+// =============================================================================
+
+/// Connection pool
+actor PgPool {
+    state config: PgConfig
+    state connections: [PgConnection]
+    state available: [PgConnection]
+    state min_size: Int
+    state max_size: Int
+    state waiting: [fn(PgConnection)]
+    
+    fn new(config: PgConfig) -> Result<Self, PgError> {
+        Self.with_size(config, 5, 20)
+    }
+    
+    fn with_size(config: PgConfig, min: Int, max: Int) -> Result<Self, PgError> {
+        var pool = PgPool {
+            config: config,
+            connections: [],
+            available: [],
+            min_size: min,
+            max_size: max,
+            waiting: []
+        }
+        
+        // Create minimum connections
+        for _ in 0..min {
+            let conn = PgConnection.connect(config.clone())?
+            pool.connections.push(conn.clone())
+            pool.available.push(conn)
+        }
+        
+        Ok(pool)
+    }
+    
+    fn acquire() -> Result<PgPooledConnection, PgError> {
+        if let Some(conn) = self.available.pop() {
+            if conn.is_alive() {
+                return Ok(PgPooledConnection { conn: conn, pool: self })
+            }
+            // Connection dead, remove from pool
+            self.connections.retain(|c| c != conn)
+        }
+        
+        // Create new connection if under max
+        if self.connections.len() < self.max_size {
+            let conn = PgConnection.connect(self.config.clone())?
+            self.connections.push(conn.clone())
+            return Ok(PgPooledConnection { conn: conn, pool: self })
+        }
+        
+        // Wait for available connection
+        @native("pg_pool_wait", self)
+    }
+    
+    fn release(conn: PgConnection) {
+        if conn.is_alive() && !conn.in_transaction {
+            self.available.push(conn)
+            // Wake up waiting acquirers
+            if let Some(waiter) = self.waiting.pop() {
+                if let Some(c) = self.available.pop() {
+                    waiter(c)
+                }
+            }
+        } else {
+            self.connections.retain(|c| c != conn)
+        }
+    }
+    
+    fn size() -> Int { self.connections.len() }
+    fn available_count() -> Int { self.available.len() }
+    
+    fn close() {
+        for conn in self.connections {
+            conn.close()
+        }
+        self.connections.clear()
+        self.available.clear()
+    }
+}
+
+/// Pooled connection wrapper
+struct PgPooledConnection {
+    conn: PgConnection
+    pool: PgPool
+}
+
+impl PgPooledConnection {
+    fn execute(sql: String, params: [PgValue]) -> Result<Int64, PgError> {
+        self.conn.execute(sql, params)
+    }
+    
+    fn query(sql: String, params: [PgValue]) -> Result<PgRows, PgError> {
+        self.conn.query(sql, params)
+    }
+    
+    fn query_one(sql: String, params: [PgValue]) -> Result<PgRow, PgError> {
+        self.conn.query_one(sql, params)
+    }
+    
+    fn begin() -> Result<PgTransaction, PgError> {
+        self.conn.begin()
+    }
+}
+
+impl Drop for PgPooledConnection {
+    fn drop() {
+        self.pool.release(self.conn)
+    }
+}
+
+// =============================================================================
+// Query Builder
+// =============================================================================
+
+/// SQL query builder
+struct PgQueryBuilder {
+    parts: [String]
+    params: [PgValue]
+    param_count: Int
+}
+
+impl PgQueryBuilder {
+    fn new() -> Self { PgQueryBuilder { parts: [], params: [], param_count: 0 } }
+    
+    fn select(columns: [String]) -> Self {
+        self.parts.push(format!("SELECT {}", columns.join(", ")))
+        self
+    }
+    
+    fn from(table: String) -> Self {
+        self.parts.push(format!("FROM {}", table))
+        self
+    }
+    
+    fn where_(condition: String, params: [PgValue]) -> Self {
+        let placeholders = self.make_placeholders(params.len())
+        self.parts.push(format!("WHERE {}", self.replace_placeholders(condition, placeholders)))
+        self.params.extend(params)
+        self
+    }
+    
+    fn and(condition: String, params: [PgValue]) -> Self {
+        let placeholders = self.make_placeholders(params.len())
+        self.parts.push(format!("AND {}", self.replace_placeholders(condition, placeholders)))
+        self.params.extend(params)
+        self
+    }
+    
+    fn or(condition: String, params: [PgValue]) -> Self {
+        let placeholders = self.make_placeholders(params.len())
+        self.parts.push(format!("OR {}", self.replace_placeholders(condition, placeholders)))
+        self.params.extend(params)
+        self
+    }
+    
+    fn order_by(column: String, direction: String) -> Self {
+        self.parts.push(format!("ORDER BY {} {}", column, direction))
+        self
+    }
+    
+    fn limit(n: Int) -> Self {
+        self.parts.push(format!("LIMIT {}", n))
+        self
+    }
+    
+    fn offset(n: Int) -> Self {
+        self.parts.push(format!("OFFSET {}", n))
+        self
+    }
+    
+    fn join(table: String, condition: String) -> Self {
+        self.parts.push(format!("JOIN {} ON {}", table, condition))
+        self
+    }
+    
+    fn left_join(table: String, condition: String) -> Self {
+        self.parts.push(format!("LEFT JOIN {} ON {}", table, condition))
+        self
+    }
+    
+    fn group_by(columns: [String]) -> Self {
+        self.parts.push(format!("GROUP BY {}", columns.join(", ")))
+        self
+    }
+    
+    fn having(condition: String, params: [PgValue]) -> Self {
+        let placeholders = self.make_placeholders(params.len())
+        self.parts.push(format!("HAVING {}", self.replace_placeholders(condition, placeholders)))
+        self.params.extend(params)
+        self
+    }
+    
+    fn insert_into(table: String, columns: [String]) -> Self {
+        self.parts.push(format!("INSERT INTO {} ({})", table, columns.join(", ")))
+        self
+    }
+    
+    fn values(values: [PgValue]) -> Self {
+        let placeholders = self.make_placeholders(values.len())
+        self.parts.push(format!("VALUES ({})", placeholders.join(", ")))
+        self.params.extend(values)
+        self
+    }
+    
+    fn update(table: String) -> Self {
+        self.parts.push(format!("UPDATE {}", table))
+        self
+    }
+    
+    fn set(assignments: [(String, PgValue)]) -> Self {
+        var sets = []
+        for (col, val) in assignments {
+            self.param_count += 1
+            sets.push(format!("{} = ${}", col, self.param_count))
+            self.params.push(val)
+        }
+        self.parts.push(format!("SET {}", sets.join(", ")))
+        self
+    }
+    
+    fn delete_from(table: String) -> Self {
+        self.parts.push(format!("DELETE FROM {}", table))
+        self
+    }
+    
+    fn returning(columns: [String]) -> Self {
+        self.parts.push(format!("RETURNING {}", columns.join(", ")))
+        self
+    }
+    
+    fn build() -> (String, [PgValue]) {
+        (self.parts.join(" "), self.params)
+    }
+    
+    fn make_placeholders(count: Int) -> [String] {
+        var result = []
+        for _ in 0..count {
+            self.param_count += 1
+            result.push(format!("${}", self.param_count))
+        }
+        result
+    }
+    
+    fn replace_placeholders(s: String, placeholders: [String]) -> String {
+        var result = s
+        for (i, p) in placeholders.iter().enumerate() {
+            result = result.replace(format!("?{}", i + 1), p)
+        }
+        result.replace("?", placeholders.get(0).unwrap_or("$1"))
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum PgError {
+    ConnectionFailed(String)
+    QueryFailed(String)
+    NoRows
+    TypeMismatch
+    TransactionFailed
+    PoolExhausted
+    Timeout
+    InvalidConfig(String)
+    Io(String)
+}
+
+impl Display for PgError {
+    fn fmt(f: Formatter) {
+        match self {
+            ConnectionFailed(s) => f.write(format!("Connection failed: {}", s))
+            QueryFailed(s) => f.write(format!("Query failed: {}", s))
+            NoRows => f.write("No rows returned")
+            TypeMismatch => f.write("Type mismatch")
+            TransactionFailed => f.write("Transaction failed")
+            PoolExhausted => f.write("Connection pool exhausted")
+            Timeout => f.write("Operation timed out")
+            InvalidConfig(s) => f.write(format!("Invalid config: {}", s))
+            Io(s) => f.write(format!("IO error: {}", s))
+        }
+    }
+}
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+/// Quick connect
+fn connect(url: String) -> Result<PgConnection, PgError> {
+    PgConnection.connect_url(url)
+}
+
+/// Create a connection pool
+fn pool(url: String) -> Result<PgPool, PgError> {
+    PgPool.new(PgConfig.from_url(url)?)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "config builder" {
+    let config = PgConfig.new("mydb")
+        .host("localhost")
+        .port(5432)
+        .user("admin")
+        .password("secret")
+        .ssl_mode(SslMode.Require)
+    
+    assert_eq(config.database, "mydb")?
+    assert_eq(config.host, "localhost")?
+    assert_eq(config.user, "admin")?
+}
+
+test "query builder" {
+    let (sql, params) = PgQueryBuilder.new()
+        .select(["id", "name", "email"])
+        .from("users")
+        .where_("active = ?", [PgValue.bool(true)])
+        .order_by("created_at", "DESC")
+        .limit(10)
+        .build()
+    
+    assert(sql.contains("SELECT id, name, email"))?
+    assert(sql.contains("FROM users"))?
+    assert(sql.contains("LIMIT 10"))?
+}
+
+test "pg value types" {
+    let v1 = PgValue.text("hello")
+    let v2 = PgValue.int(42)
+    let v3 = PgValue.null()
+    
+    assert(!v1.is_null())?
+    assert(!v2.is_null())?
+    assert(v3.is_null())?
+}
+
+test "insert builder" {
+    let (sql, params) = PgQueryBuilder.new()
+        .insert_into("users", ["name", "email"])
+        .values([PgValue.text("John"), PgValue.text("john@example.com")])
+        .returning(["id"])
+        .build()
+    
+    assert(sql.contains("INSERT INTO users"))?
+    assert(sql.contains("RETURNING id"))?
+    assert_eq(params.len(), 2)?
+}

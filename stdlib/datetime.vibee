@@ -1,0 +1,453 @@
+// =============================================================================
+// Vibee OS — DateTime Module
+// Date, time, and duration handling
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// DateTime
+// -----------------------------------------------------------------------------
+
+/// Date and time with timezone
+struct DateTime {
+    timestamp: Int64    // Unix timestamp in milliseconds
+    offset: Int         // UTC offset in minutes
+    
+    /// Current date/time in UTC
+    fn now() -> Self {
+        DateTime { timestamp: @native("time_now_millis"), offset: 0 }
+    }
+    
+    /// Current date/time in local timezone
+    fn now_local() -> Self {
+        let ts = @native("time_now_millis")
+        let offset = @native("time_local_offset")
+        DateTime { timestamp: ts, offset: offset }
+    }
+    
+    /// Create from components (UTC)
+    fn new(year: Int, month: Int, day: Int, hour: Int = 0, minute: Int = 0, second: Int = 0, millis: Int = 0) -> Self {
+        let ts = components_to_timestamp(year, month, day, hour, minute, second, millis)
+        DateTime { timestamp: ts, offset: 0 }
+    }
+    
+    /// Create from Unix timestamp (seconds)
+    fn from_timestamp(secs: Int64) -> Self {
+        DateTime { timestamp: secs * 1000, offset: 0 }
+    }
+    
+    /// Create from Unix timestamp (milliseconds)
+    fn from_millis(millis: Int64) -> Self {
+        DateTime { timestamp: millis, offset: 0 }
+    }
+    
+    /// Parse from ISO 8601 string
+    fn parse(s: String) -> Result<Self, ParseError> {
+        parse_iso8601(s)
+    }
+    
+    /// Parse with custom format
+    fn parse_format(s: String, format: String) -> Result<Self, ParseError> {
+        parse_with_format(s, format)
+    }
+    
+    // Component getters
+    fn year() -> Int { self.components().0 }
+    fn month() -> Int { self.components().1 }
+    fn day() -> Int { self.components().2 }
+    fn hour() -> Int { self.components().3 }
+    fn minute() -> Int { self.components().4 }
+    fn second() -> Int { self.components().5 }
+    fn millisecond() -> Int { self.components().6 }
+    
+    fn components() -> (Int, Int, Int, Int, Int, Int, Int) {
+        timestamp_to_components(self.timestamp + self.offset as Int64 * 60000)
+    }
+    
+    /// Day of week (1=Monday, 7=Sunday)
+    fn weekday() -> Weekday {
+        let days = (self.timestamp / 86400000 + 4) % 7  // Jan 1, 1970 was Thursday
+        Weekday.from_int(if days == 0 { 7 } else { days as Int })
+    }
+    
+    /// Day of year (1-366)
+    fn day_of_year() -> Int {
+        let (year, month, day, _, _, _, _) = self.components()
+        var doy = day
+        for m in 1..month { doy += days_in_month(year, m) }
+        doy
+    }
+    
+    /// Week of year (ISO 8601)
+    fn week_of_year() -> Int {
+        let doy = self.day_of_year()
+        let dow = self.weekday().to_int()
+        let week = (doy - dow + 10) / 7
+        if week < 1 { 52 } else if week > 52 { 1 } else { week }
+    }
+    
+    /// Check if leap year
+    fn is_leap_year() -> Bool {
+        is_leap(self.year())
+    }
+    
+    /// Unix timestamp in seconds
+    fn timestamp() -> Int64 { self.timestamp / 1000 }
+    
+    /// Unix timestamp in milliseconds
+    fn timestamp_millis() -> Int64 { self.timestamp }
+    
+    // Arithmetic
+    fn add(duration: Duration) -> Self {
+        DateTime { timestamp: self.timestamp + duration.millis, offset: self.offset }
+    }
+    
+    fn sub(duration: Duration) -> Self {
+        DateTime { timestamp: self.timestamp - duration.millis, offset: self.offset }
+    }
+    
+    fn diff(other: DateTime) -> Duration {
+        Duration { millis: self.timestamp - other.timestamp }
+    }
+    
+    // Comparison
+    fn is_before(other: DateTime) -> Bool { self.timestamp < other.timestamp }
+    fn is_after(other: DateTime) -> Bool { self.timestamp > other.timestamp }
+    fn is_same(other: DateTime) -> Bool { self.timestamp == other.timestamp }
+    
+    // Manipulation
+    fn with_year(year: Int) -> Self {
+        let (_, m, d, h, mi, s, ms) = self.components()
+        DateTime.new(year, m, d, h, mi, s, ms)
+    }
+    
+    fn with_month(month: Int) -> Self {
+        let (y, _, d, h, mi, s, ms) = self.components()
+        DateTime.new(y, month, d, h, mi, s, ms)
+    }
+    
+    fn with_day(day: Int) -> Self {
+        let (y, m, _, h, mi, s, ms) = self.components()
+        DateTime.new(y, m, day, h, mi, s, ms)
+    }
+    
+    fn with_time(hour: Int, minute: Int, second: Int) -> Self {
+        let (y, m, d, _, _, _, _) = self.components()
+        DateTime.new(y, m, d, hour, minute, second, 0)
+    }
+    
+    fn start_of_day() -> Self { self.with_time(0, 0, 0) }
+    fn end_of_day() -> Self { self.with_time(23, 59, 59) }
+    fn start_of_month() -> Self { self.with_day(1).start_of_day() }
+    fn end_of_month() -> Self { self.with_day(days_in_month(self.year(), self.month())).end_of_day() }
+    fn start_of_year() -> Self { DateTime.new(self.year(), 1, 1) }
+    fn end_of_year() -> Self { DateTime.new(self.year(), 12, 31, 23, 59, 59) }
+    
+    // Formatting
+    fn to_iso8601() -> String {
+        let (y, m, d, h, mi, s, ms) = self.components()
+        let date = format!("{:04}-{:02}-{:02}", y, m, d)
+        let time = format!("{:02}:{:02}:{:02}", h, mi, s)
+        let tz = if self.offset == 0 { "Z" } else { format_offset(self.offset) }
+        "\(date)T\(time)\(tz)"
+    }
+    
+    fn format(pattern: String) -> String {
+        format_datetime(self, pattern)
+    }
+    
+    fn to_string() -> String { self.to_iso8601() }
+    
+    // Timezone
+    fn to_utc() -> Self {
+        DateTime { timestamp: self.timestamp, offset: 0 }
+    }
+    
+    fn to_offset(offset_minutes: Int) -> Self {
+        DateTime { timestamp: self.timestamp, offset: offset_minutes }
+    }
+    
+    fn to_timezone(tz: Timezone) -> Self {
+        DateTime { timestamp: self.timestamp, offset: tz.offset_at(self) }
+    }
+}
+
+impl Add<Duration> for DateTime {
+    fn add(d: Duration) -> DateTime { self.add(d) }
+}
+
+impl Sub<Duration> for DateTime {
+    fn sub(d: Duration) -> DateTime { self.sub(d) }
+}
+
+impl Sub for DateTime {
+    fn sub(other: DateTime) -> Duration { self.diff(other) }
+}
+
+impl Eq for DateTime {
+    fn eq(other: DateTime) -> Bool { self.timestamp == other.timestamp }
+}
+
+impl Ord for DateTime {
+    fn cmp(other: DateTime) -> Ordering { self.timestamp.cmp(other.timestamp) }
+}
+
+// -----------------------------------------------------------------------------
+// Date (without time)
+// -----------------------------------------------------------------------------
+
+struct Date {
+    year: Int
+    month: Int
+    day: Int
+    
+    fn new(year: Int, month: Int, day: Int) -> Self {
+        Date { year: year, month: month, day: day }
+    }
+    
+    fn today() -> Self {
+        let dt = DateTime.now_local()
+        Date { year: dt.year(), month: dt.month(), day: dt.day() }
+    }
+    
+    fn parse(s: String) -> Result<Self, ParseError> {
+        let parts = s.split("-")
+        if parts.len() != 3 { return Err(ParseError.InvalidFormat) }
+        Ok(Date {
+            year: Int.parse(parts[0])?,
+            month: Int.parse(parts[1])?,
+            day: Int.parse(parts[2])?
+        })
+    }
+    
+    fn to_datetime() -> DateTime { DateTime.new(self.year, self.month, self.day) }
+    fn weekday() -> Weekday { self.to_datetime().weekday() }
+    fn is_leap_year() -> Bool { is_leap(self.year) }
+    fn days_in_month() -> Int { days_in_month(self.year, self.month) }
+    
+    fn add_days(n: Int) -> Self { (self.to_datetime() + Duration.days(n)).date() }
+    fn add_months(n: Int) -> Self {
+        var m = self.month + n
+        var y = self.year
+        while m > 12 { m -= 12; y += 1 }
+        while m < 1 { m += 12; y -= 1 }
+        let d = min(self.day, days_in_month(y, m))
+        Date { year: y, month: m, day: d }
+    }
+    fn add_years(n: Int) -> Self { Date { year: self.year + n, month: self.month, day: self.day } }
+    
+    fn to_string() -> String { format!("{:04}-{:02}-{:02}", self.year, self.month, self.day) }
+}
+
+impl DateTime {
+    fn date() -> Date { Date { year: self.year(), month: self.month(), day: self.day() } }
+}
+
+// -----------------------------------------------------------------------------
+// Time (without date)
+// -----------------------------------------------------------------------------
+
+struct Time {
+    hour: Int
+    minute: Int
+    second: Int
+    millisecond: Int
+    
+    fn new(hour: Int, minute: Int, second: Int = 0, millis: Int = 0) -> Self {
+        Time { hour: hour, minute: minute, second: second, millisecond: millis }
+    }
+    
+    fn now() -> Self {
+        let dt = DateTime.now_local()
+        Time { hour: dt.hour(), minute: dt.minute(), second: dt.second(), millisecond: dt.millisecond() }
+    }
+    
+    fn midnight() -> Self { Time { hour: 0, minute: 0, second: 0, millisecond: 0 } }
+    fn noon() -> Self { Time { hour: 12, minute: 0, second: 0, millisecond: 0 } }
+    
+    fn parse(s: String) -> Result<Self, ParseError> {
+        let parts = s.split(":")
+        if parts.len() < 2 { return Err(ParseError.InvalidFormat) }
+        Ok(Time {
+            hour: Int.parse(parts[0])?,
+            minute: Int.parse(parts[1])?,
+            second: parts.get(2).and_then(|s| Int.parse(s).ok()).unwrap_or(0),
+            millisecond: 0
+        })
+    }
+    
+    fn total_seconds() -> Int { self.hour * 3600 + self.minute * 60 + self.second }
+    fn total_millis() -> Int { self.total_seconds() * 1000 + self.millisecond }
+    
+    fn to_string() -> String { format!("{:02}:{:02}:{:02}", self.hour, self.minute, self.second) }
+    fn format_12h() -> String {
+        let h = if self.hour == 0 { 12 } else if self.hour > 12 { self.hour - 12 } else { self.hour }
+        let ampm = if self.hour < 12 { "AM" } else { "PM" }
+        format!("{:02}:{:02} {}", h, self.minute, ampm)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Duration
+// -----------------------------------------------------------------------------
+
+struct Duration {
+    millis: Int64
+    
+    fn zero() -> Self { Duration { millis: 0 } }
+    fn millis(n: Int64) -> Self { Duration { millis: n } }
+    fn seconds(n: Int64) -> Self { Duration { millis: n * 1000 } }
+    fn minutes(n: Int64) -> Self { Duration { millis: n * 60000 } }
+    fn hours(n: Int64) -> Self { Duration { millis: n * 3600000 } }
+    fn days(n: Int64) -> Self { Duration { millis: n * 86400000 } }
+    fn weeks(n: Int64) -> Self { Duration { millis: n * 604800000 } }
+    
+    fn as_millis() -> Int64 { self.millis }
+    fn as_seconds() -> Float { self.millis as Float / 1000.0 }
+    fn as_minutes() -> Float { self.millis as Float / 60000.0 }
+    fn as_hours() -> Float { self.millis as Float / 3600000.0 }
+    fn as_days() -> Float { self.millis as Float / 86400000.0 }
+    
+    fn is_zero() -> Bool { self.millis == 0 }
+    fn is_negative() -> Bool { self.millis < 0 }
+    fn abs() -> Self { Duration { millis: self.millis.abs() } }
+    
+    fn to_string() -> String {
+        let total_secs = self.millis.abs() / 1000
+        let days = total_secs / 86400
+        let hours = (total_secs % 86400) / 3600
+        let mins = (total_secs % 3600) / 60
+        let secs = total_secs % 60
+        
+        var parts = []
+        if days > 0 { parts.append("\(days)d") }
+        if hours > 0 { parts.append("\(hours)h") }
+        if mins > 0 { parts.append("\(mins)m") }
+        if secs > 0 || parts.is_empty() { parts.append("\(secs)s") }
+        
+        let sign = if self.millis < 0 { "-" } else { "" }
+        sign + parts.join(" ")
+    }
+    
+    fn humanize() -> String {
+        let secs = self.millis.abs() / 1000
+        if secs < 60 { return "a few seconds" }
+        if secs < 3600 { return "\(secs / 60) minutes" }
+        if secs < 86400 { return "\(secs / 3600) hours" }
+        if secs < 2592000 { return "\(secs / 86400) days" }
+        if secs < 31536000 { return "\(secs / 2592000) months" }
+        "\(secs / 31536000) years"
+    }
+}
+
+impl Add for Duration { fn add(o: Duration) -> Duration { Duration { millis: self.millis + o.millis } } }
+impl Sub for Duration { fn sub(o: Duration) -> Duration { Duration { millis: self.millis - o.millis } } }
+impl Mul<Int64> for Duration { fn mul(n: Int64) -> Duration { Duration { millis: self.millis * n } } }
+impl Div<Int64> for Duration { fn div(n: Int64) -> Duration { Duration { millis: self.millis / n } } }
+
+// -----------------------------------------------------------------------------
+// Weekday
+// -----------------------------------------------------------------------------
+
+enum Weekday {
+    Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday
+    
+    fn from_int(n: Int) -> Self {
+        match n { 1 => .Monday, 2 => .Tuesday, 3 => .Wednesday, 4 => .Thursday, 5 => .Friday, 6 => .Saturday, _ => .Sunday }
+    }
+    fn to_int() -> Int {
+        match self { .Monday => 1, .Tuesday => 2, .Wednesday => 3, .Thursday => 4, .Friday => 5, .Saturday => 6, .Sunday => 7 }
+    }
+    fn name() -> String {
+        match self { .Monday => "Monday", .Tuesday => "Tuesday", .Wednesday => "Wednesday", .Thursday => "Thursday", .Friday => "Friday", .Saturday => "Saturday", .Sunday => "Sunday" }
+    }
+    fn short_name() -> String { self.name()[..3] }
+    fn is_weekend() -> Bool { self == .Saturday || self == .Sunday }
+    fn is_weekday() -> Bool { !self.is_weekend() }
+}
+
+// -----------------------------------------------------------------------------
+// Month
+// -----------------------------------------------------------------------------
+
+enum Month {
+    January, February, March, April, May, June, July, August, September, October, November, December
+    
+    fn from_int(n: Int) -> Self {
+        match n { 1 => .January, 2 => .February, 3 => .March, 4 => .April, 5 => .May, 6 => .June, 7 => .July, 8 => .August, 9 => .September, 10 => .October, 11 => .November, _ => .December }
+    }
+    fn to_int() -> Int {
+        match self { .January => 1, .February => 2, .March => 3, .April => 4, .May => 5, .June => 6, .July => 7, .August => 8, .September => 9, .October => 10, .November => 11, .December => 12 }
+    }
+    fn name() -> String {
+        match self { .January => "January", .February => "February", .March => "March", .April => "April", .May => "May", .June => "June", .July => "July", .August => "August", .September => "September", .October => "October", .November => "November", .December => "December" }
+    }
+    fn short_name() -> String { self.name()[..3] }
+    fn days(year: Int) -> Int { days_in_month(year, self.to_int()) }
+}
+
+// -----------------------------------------------------------------------------
+// Helpers
+// -----------------------------------------------------------------------------
+
+fn is_leap(year: Int) -> Bool { year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) }
+
+fn days_in_month(year: Int, month: Int) -> Int {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31
+        4 | 6 | 9 | 11 => 30
+        2 => if is_leap(year) { 29 } else { 28 }
+        _ => 0
+    }
+}
+
+fn components_to_timestamp(y: Int, m: Int, d: Int, h: Int, mi: Int, s: Int, ms: Int) -> Int64 {
+    @native("datetime_to_timestamp", y, m, d, h, mi, s, ms)
+}
+
+fn timestamp_to_components(ts: Int64) -> (Int, Int, Int, Int, Int, Int, Int) {
+    @native("timestamp_to_datetime", ts)
+}
+
+fn format_offset(offset: Int) -> String {
+    let sign = if offset >= 0 { "+" } else { "-" }
+    let h = offset.abs() / 60
+    let m = offset.abs() % 60
+    format!("{}{:02}:{:02}", sign, h, m)
+}
+
+fn parse_iso8601(s: String) -> Result<DateTime, ParseError> {
+    @native("parse_iso8601", s)
+}
+
+fn parse_with_format(s: String, format: String) -> Result<DateTime, ParseError> {
+    @native("parse_datetime_format", s, format)
+}
+
+fn format_datetime(dt: DateTime, pattern: String) -> String {
+    @native("format_datetime", dt, pattern)
+}
+
+enum ParseError { InvalidFormat, InvalidValue }
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "datetime creation" {
+    let dt = DateTime.new(2024, 6, 15, 10, 30, 0)
+    assert_eq(dt.year(), 2024)?
+    assert_eq(dt.month(), 6)?
+    assert_eq(dt.day(), 15)?
+}
+
+test "duration" {
+    let d = Duration.hours(2) + Duration.minutes(30)
+    assert_eq(d.as_minutes() as Int, 150)?
+}
+
+test "date arithmetic" {
+    let d = Date.new(2024, 1, 31)
+    let next = d.add_months(1)
+    assert_eq(next.month, 2)?
+    assert_eq(next.day, 29)?  // Leap year
+}

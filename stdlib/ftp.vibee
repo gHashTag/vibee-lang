@@ -1,0 +1,626 @@
+// =============================================================================
+// Vibee OS — FTP Module
+// FTP client implementation
+// =============================================================================
+
+use net.{SocketAddr, TcpStream, NetError}
+use tcp.{TcpConnection, TcpError}
+use tls.{TlsStream, TlsConfig}
+
+/// FTP Client
+struct FtpClient {
+    control: TcpConnection
+    data: Option<TcpConnection>
+    host: String
+    port: Int
+    passive: Bool
+    transfer_type: TransferType
+    timeout_ms: Int64
+    tls: Bool
+}
+
+impl FtpClient {
+    /// Connect to FTP server
+    fn connect(host: String) -> Result<Self, FtpError> {
+        Self.connect_port(host, 21)
+    }
+    
+    /// Connect to FTP server on specific port
+    fn connect_port(host: String, port: Int) -> Result<Self, FtpError> {
+        let control = TcpConnection.connect(format!("{}:{}", host, port))?
+        var client = FtpClient {
+            control: control,
+            data: None,
+            host: host,
+            port: port,
+            passive: true,
+            transfer_type: TransferType.Binary,
+            timeout_ms: 30000,
+            tls: false
+        }
+        client.read_response()?  // Read welcome message
+        Ok(client)
+    }
+    
+    /// Connect with TLS (FTPS implicit)
+    fn connect_tls(host: String) -> Result<Self, FtpError> {
+        Self.connect_tls_port(host, 990)
+    }
+    
+    /// Connect with TLS on specific port
+    fn connect_tls_port(host: String, port: Int) -> Result<Self, FtpError> {
+        let tcp = TcpConnection.connect(format!("{}:{}", host, port))?
+        let tls = tcp.upgrade_tls(TlsConfig.client().sni(host))?
+        // Wrap TLS stream in FTP client
+        @native("ftp_wrap_tls", host, port, tls)
+    }
+    
+    /// Set timeout
+    fn timeout(ms: Int64) -> Self {
+        self.timeout_ms = ms
+        self.control.read_timeout(ms)
+        self.control.write_timeout(ms)
+        self
+    }
+    
+    /// Login with username and password
+    fn login(username: String, password: String) -> Result<(), FtpError> {
+        self.send_command(format!("USER {}", username))?
+        let response = self.read_response()?
+        
+        if response.code == 331 {
+            self.send_command(format!("PASS {}", password))?
+            let response = self.read_response()?
+            if response.code != 230 {
+                return Err(FtpError.AuthFailed)
+            }
+        } else if response.code != 230 {
+            return Err(FtpError.AuthFailed)
+        }
+        
+        Ok(())
+    }
+    
+    /// Login anonymously
+    fn login_anonymous() -> Result<(), FtpError> {
+        self.login("anonymous", "anonymous@")
+    }
+    
+    /// Upgrade to TLS (FTPS explicit / AUTH TLS)
+    fn auth_tls() -> Result<(), FtpError> {
+        self.send_command("AUTH TLS")?
+        let response = self.read_response()?
+        if response.code != 234 {
+            return Err(FtpError.TlsError("AUTH TLS not supported"))
+        }
+        self.tls = true
+        @native("ftp_upgrade_tls", self.control, self.host)
+    }
+    
+    /// Set transfer type
+    fn transfer_type(t: TransferType) -> Result<(), FtpError> {
+        let cmd = match t {
+            TransferType.Ascii => "TYPE A"
+            TransferType.Binary => "TYPE I"
+        }
+        self.send_command(cmd)?
+        let response = self.read_response()?
+        if response.code != 200 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        self.transfer_type = t
+        Ok(())
+    }
+    
+    /// Set passive mode
+    fn passive(enabled: Bool) -> Self {
+        self.passive = enabled
+        self
+    }
+    
+    /// Get current working directory
+    fn pwd() -> Result<String, FtpError> {
+        self.send_command("PWD")?
+        let response = self.read_response()?
+        if response.code != 257 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        // Parse directory from response like: 257 "/home/user" is current directory
+        let start = response.message.find("\"").unwrap_or(0) + 1
+        let end = response.message.rfind("\"").unwrap_or(response.message.len())
+        Ok(response.message[start..end].to_string())
+    }
+    
+    /// Change directory
+    fn cd(path: String) -> Result<(), FtpError> {
+        self.send_command(format!("CWD {}", path))?
+        let response = self.read_response()?
+        if response.code != 250 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        Ok(())
+    }
+    
+    /// Change to parent directory
+    fn cdup() -> Result<(), FtpError> {
+        self.send_command("CDUP")?
+        let response = self.read_response()?
+        if response.code != 250 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        Ok(())
+    }
+    
+    /// List directory contents
+    fn list() -> Result<[FtpEntry], FtpError> {
+        self.list_path("")
+    }
+    
+    /// List specific directory
+    fn list_path(path: String) -> Result<[FtpEntry], FtpError> {
+        let data_conn = self.open_data_connection()?
+        
+        let cmd = if path.is_empty() { "LIST" } else { format!("LIST {}", path) }
+        self.send_command(cmd)?
+        let response = self.read_response()?
+        
+        if response.code != 150 && response.code != 125 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        
+        // Read data
+        var buf = [0u8; 65536]
+        var data = []
+        loop {
+            let n = data_conn.read(buf)?
+            if n == 0 { break }
+            data.extend(buf[0..n])
+        }
+        
+        let response = self.read_response()?
+        if response.code != 226 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        
+        // Parse listing
+        let text = String.from_utf8(data).map_err(|_| FtpError.InvalidResponse)?
+        Ok(self.parse_listing(text))
+    }
+    
+    /// List directory names only
+    fn nlst() -> Result<[String], FtpError> {
+        self.nlst_path("")
+    }
+    
+    /// List specific directory names only
+    fn nlst_path(path: String) -> Result<[String], FtpError> {
+        let data_conn = self.open_data_connection()?
+        
+        let cmd = if path.is_empty() { "NLST" } else { format!("NLST {}", path) }
+        self.send_command(cmd)?
+        let response = self.read_response()?
+        
+        if response.code != 150 && response.code != 125 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        
+        var buf = [0u8; 65536]
+        var data = []
+        loop {
+            let n = data_conn.read(buf)?
+            if n == 0 { break }
+            data.extend(buf[0..n])
+        }
+        
+        let response = self.read_response()?
+        let text = String.from_utf8(data).map_err(|_| FtpError.InvalidResponse)?
+        Ok(text.lines().filter(|l| !l.is_empty()).collect())
+    }
+    
+    /// Download a file
+    fn download(remote_path: String) -> Result<[UInt8], FtpError> {
+        let data_conn = self.open_data_connection()?
+        
+        self.send_command(format!("RETR {}", remote_path))?
+        let response = self.read_response()?
+        
+        if response.code != 150 && response.code != 125 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        
+        var buf = [0u8; 65536]
+        var data = []
+        loop {
+            let n = data_conn.read(buf)?
+            if n == 0 { break }
+            data.extend(buf[0..n])
+        }
+        
+        let response = self.read_response()?
+        if response.code != 226 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        
+        Ok(data)
+    }
+    
+    /// Download file to local path
+    fn download_to(remote_path: String, local_path: String) -> Result<Int64, FtpError> {
+        let data = self.download(remote_path)?
+        @native("write_file_bytes", local_path, data)?
+        Ok(data.len() as Int64)
+    }
+    
+    /// Upload a file
+    fn upload(remote_path: String, data: [UInt8]) -> Result<(), FtpError> {
+        let data_conn = self.open_data_connection()?
+        
+        self.send_command(format!("STOR {}", remote_path))?
+        let response = self.read_response()?
+        
+        if response.code != 150 && response.code != 125 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        
+        data_conn.write_all(data)?
+        data_conn.close()
+        
+        let response = self.read_response()?
+        if response.code != 226 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        
+        Ok(())
+    }
+    
+    /// Upload from local file
+    fn upload_from(local_path: String, remote_path: String) -> Result<(), FtpError> {
+        let data = @native("read_file_bytes", local_path)?
+        self.upload(remote_path, data)
+    }
+    
+    /// Append to a file
+    fn append(remote_path: String, data: [UInt8]) -> Result<(), FtpError> {
+        let data_conn = self.open_data_connection()?
+        
+        self.send_command(format!("APPE {}", remote_path))?
+        let response = self.read_response()?
+        
+        if response.code != 150 && response.code != 125 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        
+        data_conn.write_all(data)?
+        data_conn.close()
+        
+        let response = self.read_response()?
+        if response.code != 226 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        
+        Ok(())
+    }
+    
+    /// Delete a file
+    fn delete(path: String) -> Result<(), FtpError> {
+        self.send_command(format!("DELE {}", path))?
+        let response = self.read_response()?
+        if response.code != 250 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        Ok(())
+    }
+    
+    /// Rename a file
+    fn rename(from: String, to: String) -> Result<(), FtpError> {
+        self.send_command(format!("RNFR {}", from))?
+        let response = self.read_response()?
+        if response.code != 350 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        
+        self.send_command(format!("RNTO {}", to))?
+        let response = self.read_response()?
+        if response.code != 250 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        
+        Ok(())
+    }
+    
+    /// Create directory
+    fn mkdir(path: String) -> Result<(), FtpError> {
+        self.send_command(format!("MKD {}", path))?
+        let response = self.read_response()?
+        if response.code != 257 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        Ok(())
+    }
+    
+    /// Remove directory
+    fn rmdir(path: String) -> Result<(), FtpError> {
+        self.send_command(format!("RMD {}", path))?
+        let response = self.read_response()?
+        if response.code != 250 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        Ok(())
+    }
+    
+    /// Get file size
+    fn size(path: String) -> Result<Int64, FtpError> {
+        self.send_command(format!("SIZE {}", path))?
+        let response = self.read_response()?
+        if response.code != 213 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        Int64.parse(response.message.trim()).map_err(|_| FtpError.InvalidResponse)
+    }
+    
+    /// Get file modification time
+    fn mdtm(path: String) -> Result<DateTime, FtpError> {
+        self.send_command(format!("MDTM {}", path))?
+        let response = self.read_response()?
+        if response.code != 213 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        // Parse YYYYMMDDHHMMSS format
+        DateTime.parse(response.message.trim(), "%Y%m%d%H%M%S")
+            .map_err(|_| FtpError.InvalidResponse)
+    }
+    
+    /// Check if file exists
+    fn exists(path: String) -> Bool {
+        self.size(path).is_ok()
+    }
+    
+    /// Send NOOP (keep-alive)
+    fn noop() -> Result<(), FtpError> {
+        self.send_command("NOOP")?
+        let response = self.read_response()?
+        if response.code != 200 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        Ok(())
+    }
+    
+    /// Get server features
+    fn features() -> Result<[String], FtpError> {
+        self.send_command("FEAT")?
+        let response = self.read_multiline_response()?
+        if response.code != 211 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        Ok(response.message.lines()
+            .skip(1)
+            .take_while(|l| !l.starts_with("211"))
+            .map(|l| l.trim().to_string())
+            .collect())
+    }
+    
+    /// Get server system type
+    fn system() -> Result<String, FtpError> {
+        self.send_command("SYST")?
+        let response = self.read_response()?
+        if response.code != 215 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        Ok(response.message)
+    }
+    
+    /// Quit and close connection
+    fn quit() -> Result<(), FtpError> {
+        self.send_command("QUIT")?
+        self.read_response()?
+        self.control.close()
+        Ok(())
+    }
+    
+    // Private methods
+    
+    fn send_command(cmd: String) -> Result<(), FtpError> {
+        self.control.write_line(cmd).map_err(FtpError.from_tcp)
+    }
+    
+    fn read_response() -> Result<FtpResponse, FtpError> {
+        let line = self.control.read_line().map_err(FtpError.from_tcp)?
+        if line.len() < 4 {
+            return Err(FtpError.InvalidResponse)
+        }
+        
+        let code = Int.parse(line[0..3]).map_err(|_| FtpError.InvalidResponse)?
+        let message = line[4..].to_string()
+        
+        // Check for multiline response
+        if line.chars().nth(3) == Some('-') {
+            return self.read_multiline_response_with(code, message)
+        }
+        
+        Ok(FtpResponse { code: code, message: message })
+    }
+    
+    fn read_multiline_response() -> Result<FtpResponse, FtpError> {
+        let first = self.control.read_line().map_err(FtpError.from_tcp)?
+        let code = Int.parse(first[0..3]).map_err(|_| FtpError.InvalidResponse)?
+        self.read_multiline_response_with(code, first)
+    }
+    
+    fn read_multiline_response_with(code: Int, first_line: String) -> Result<FtpResponse, FtpError> {
+        var message = first_line
+        loop {
+            let line = self.control.read_line().map_err(FtpError.from_tcp)?
+            message = format!("{}\n{}", message, line)
+            if line.len() >= 4 && line[0..3] == format!("{}", code) && line.chars().nth(3) == Some(' ') {
+                break
+            }
+        }
+        Ok(FtpResponse { code: code, message: message })
+    }
+    
+    fn open_data_connection() -> Result<TcpConnection, FtpError> {
+        if self.passive {
+            self.open_passive_connection()
+        } else {
+            self.open_active_connection()
+        }
+    }
+    
+    fn open_passive_connection() -> Result<TcpConnection, FtpError> {
+        self.send_command("PASV")?
+        let response = self.read_response()?
+        
+        if response.code != 227 {
+            return Err(FtpError.CommandFailed(response.message))
+        }
+        
+        // Parse response like: 227 Entering Passive Mode (h1,h2,h3,h4,p1,p2)
+        let start = response.message.find("(").ok_or(FtpError.InvalidResponse)? + 1
+        let end = response.message.find(")").ok_or(FtpError.InvalidResponse)?
+        let parts: [Int] = response.message[start..end]
+            .split(",")
+            .filter_map(|s| Int.parse(s.trim()).ok())
+            .collect()
+        
+        if parts.len() != 6 {
+            return Err(FtpError.InvalidResponse)
+        }
+        
+        let ip = format!("{}.{}.{}.{}", parts[0], parts[1], parts[2], parts[3])
+        let port = parts[4] * 256 + parts[5]
+        
+        TcpConnection.connect(format!("{}:{}", ip, port)).map_err(FtpError.from_tcp)
+    }
+    
+    fn open_active_connection() -> Result<TcpConnection, FtpError> {
+        // Active mode requires server to connect to client
+        // This is more complex and less commonly used
+        Err(FtpError.NotSupported("Active mode not implemented"))
+    }
+    
+    fn parse_listing(text: String) -> [FtpEntry] {
+        text.lines()
+            .filter(|l| !l.is_empty())
+            .filter_map(|l| FtpEntry.parse(l).ok())
+            .collect()
+    }
+}
+
+/// FTP Response
+struct FtpResponse {
+    code: Int
+    message: String
+}
+
+impl FtpResponse {
+    fn is_success() -> Bool { self.code >= 200 && self.code < 300 }
+    fn is_intermediate() -> Bool { self.code >= 300 && self.code < 400 }
+    fn is_error() -> Bool { self.code >= 400 }
+}
+
+/// FTP Directory Entry
+struct FtpEntry {
+    name: String
+    size: Int64
+    is_dir: Bool
+    permissions: String
+    modified: Option<DateTime>
+    owner: String
+    group: String
+}
+
+impl FtpEntry {
+    fn parse(line: String) -> Result<Self, FtpError> {
+        // Parse Unix-style listing: drwxr-xr-x 2 owner group 4096 Jan 1 12:00 filename
+        let parts: [String] = line.split_whitespace().collect()
+        if parts.len() < 9 {
+            return Err(FtpError.InvalidResponse)
+        }
+        
+        let permissions = parts[0].clone()
+        let is_dir = permissions.starts_with("d")
+        let owner = parts[2].clone()
+        let group = parts[3].clone()
+        let size = Int64.parse(parts[4]).unwrap_or(0)
+        let name = parts[8..].join(" ")
+        
+        Ok(FtpEntry {
+            name: name,
+            size: size,
+            is_dir: is_dir,
+            permissions: permissions,
+            modified: None,
+            owner: owner,
+            group: group
+        })
+    }
+}
+
+/// Transfer type
+enum TransferType {
+    Ascii
+    Binary
+}
+
+/// FTP Error
+enum FtpError {
+    ConnectionFailed
+    AuthFailed
+    CommandFailed(String)
+    TransferFailed
+    InvalidResponse
+    NotSupported(String)
+    TlsError(String)
+    Io(String)
+}
+
+impl FtpError {
+    fn from_tcp(e: TcpError) -> Self {
+        FtpError.Io(e.to_string())
+    }
+}
+
+impl Display for FtpError {
+    fn fmt(f: Formatter) {
+        match self {
+            ConnectionFailed => f.write("FTP connection failed")
+            AuthFailed => f.write("FTP authentication failed")
+            CommandFailed(s) => f.write(format!("FTP command failed: {}", s))
+            TransferFailed => f.write("FTP transfer failed")
+            InvalidResponse => f.write("Invalid FTP response")
+            NotSupported(s) => f.write(format!("Not supported: {}", s))
+            TlsError(s) => f.write(format!("TLS error: {}", s))
+            Io(s) => f.write(format!("IO error: {}", s))
+        }
+    }
+}
+
+/// Quick connect function
+fn connect(host: String) -> Result<FtpClient, FtpError> {
+    FtpClient.connect(host)
+}
+
+/// Connect with credentials
+fn connect_auth(host: String, user: String, pass: String) -> Result<FtpClient, FtpError> {
+    let client = FtpClient.connect(host)?
+    client.login(user, pass)?
+    Ok(client)
+}
+
+// Tests
+test "ftp response" {
+    let response = FtpResponse { code: 220, message: "Welcome" }
+    assert(response.is_success())?
+}
+
+test "ftp entry parse" {
+    let line = "drwxr-xr-x 2 user group 4096 Jan 1 12:00 mydir"
+    let entry = FtpEntry.parse(line)?
+    assert(entry.is_dir)?
+    assert_eq(entry.name, "mydir")?
+}
+
+test "transfer type" {
+    let t = TransferType.Binary
+    assert(matches!(t, TransferType.Binary))?
+}

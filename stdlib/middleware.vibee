@@ -1,0 +1,911 @@
+// =============================================================================
+// Vibee OS — Middleware Module
+// HTTP middleware system for request/response processing
+// =============================================================================
+
+// =============================================================================
+// Core Middleware Types
+// =============================================================================
+
+/// Middleware handler type
+type Handler = fn(Context) -> Response
+type Next = fn(Context) -> Response
+type MiddlewareFn = fn(Context, Next) -> Response
+
+/// Middleware trait for custom middleware
+trait Middleware {
+    fn handle(ctx: Context, next: Next) -> Response
+}
+
+/// Middleware chain builder
+struct MiddlewareChain {
+    middleware: [MiddlewareFn]
+}
+
+impl MiddlewareChain {
+    /// Create empty chain
+    fn new() -> Self {
+        MiddlewareChain { middleware: [] }
+    }
+    
+    /// Add middleware to chain
+    fn use(mw: MiddlewareFn) -> Self {
+        self.middleware.push(mw)
+        self
+    }
+    
+    /// Add middleware implementing Middleware trait
+    fn use_trait<M: Middleware>(mw: M) -> Self {
+        self.middleware.push(|ctx, next| mw.handle(ctx, next))
+        self
+    }
+    
+    /// Add conditional middleware
+    fn use_if(condition: Bool, mw: MiddlewareFn) -> Self {
+        if condition {
+            self.middleware.push(mw)
+        }
+        self
+    }
+    
+    /// Add middleware for specific paths
+    fn use_path(path_prefix: String, mw: MiddlewareFn) -> Self {
+        self.middleware.push(|ctx, next| {
+            if ctx.path.starts_with(path_prefix) {
+                mw(ctx, next)
+            } else {
+                next(ctx)
+            }
+        })
+        self
+    }
+    
+    /// Add middleware for specific methods
+    fn use_method(method: http.Method, mw: MiddlewareFn) -> Self {
+        self.middleware.push(|ctx, next| {
+            if ctx.method() == method {
+                mw(ctx, next)
+            } else {
+                next(ctx)
+            }
+        })
+        self
+    }
+    
+    /// Build final handler
+    fn build(handler: Handler) -> Handler {
+        self.middleware.iter().rev().fold(
+            handler,
+            |next, mw| |ctx| mw(ctx, next)
+        )
+    }
+    
+    /// Execute chain with handler
+    fn execute(ctx: Context, handler: Handler) -> Response {
+        self.build(handler)(ctx)
+    }
+    
+    /// Get middleware count
+    fn len() -> Int {
+        self.middleware.len()
+    }
+}
+
+// =============================================================================
+// Built-in Middleware
+// =============================================================================
+
+/// Logging middleware
+struct Logger {
+    format: LogFormat
+    skip_paths: [String]
+}
+
+enum LogFormat { Combined, Common, Short, Dev, Custom(String) }
+
+impl Logger {
+    fn new() -> Self {
+        Logger { format: LogFormat.Dev, skip_paths: [] }
+    }
+    
+    fn format(fmt: LogFormat) -> Self {
+        self.format = fmt
+        self
+    }
+    
+    fn skip(path: String) -> Self {
+        self.skip_paths.push(path)
+        self
+    }
+    
+    fn middleware() -> MiddlewareFn {
+        let format = self.format.clone()
+        let skip = self.skip_paths.clone()
+        
+        |ctx, next| {
+            // Skip logging for certain paths
+            if skip.iter().any(|p| ctx.path.starts_with(p)) {
+                return next(ctx)
+            }
+            
+            let start = @native("timestamp_ms")
+            let method = ctx.method().to_string()
+            let path = ctx.path.clone()
+            
+            let response = next(ctx)
+            
+            let duration = @native("timestamp_ms") - start
+            let status = response.status.code
+            
+            match format {
+                LogFormat.Dev => {
+                    let color = if status < 400 { "\x1b[32m" } else if status < 500 { "\x1b[33m" } else { "\x1b[31m" }
+                    println!("{}{}\x1b[0m {} {} - {}ms", color, status, method, path, duration)
+                }
+                LogFormat.Short => {
+                    println!("{} {} {} {}ms", method, path, status, duration)
+                }
+                LogFormat.Common => {
+                    let ip = ctx.client_ip().unwrap_or("-")
+                    let time = datetime.DateTime.now().format("%d/%b/%Y:%H:%M:%S %z")
+                    println!("{} - - [{}] \"{} {} HTTP/1.1\" {} -", ip, time, method, path, status)
+                }
+                LogFormat.Combined => {
+                    let ip = ctx.client_ip().unwrap_or("-")
+                    let time = datetime.DateTime.now().format("%d/%b/%Y:%H:%M:%S %z")
+                    let referer = ctx.header("Referer").unwrap_or("-")
+                    let ua = ctx.header("User-Agent").unwrap_or("-")
+                    println!("{} - - [{}] \"{} {} HTTP/1.1\" {} - \"{}\" \"{}\"", ip, time, method, path, status, referer, ua)
+                }
+                LogFormat.Custom(fmt) => {
+                    let log = fmt
+                        .replace(":method", method)
+                        .replace(":path", path)
+                        .replace(":status", status.to_string())
+                        .replace(":duration", format!("{}ms", duration))
+                    println!("{}", log)
+                }
+            }
+            
+            response
+        }
+    }
+}
+
+impl Middleware for Logger {
+    fn handle(ctx: Context, next: Next) -> Response {
+        self.middleware()(ctx, next)
+    }
+}
+
+/// Request timeout middleware
+struct Timeout {
+    duration_ms: Int64
+    message: String
+}
+
+impl Timeout {
+    fn new(ms: Int64) -> Self {
+        Timeout { duration_ms: ms, message: "Request timeout" }
+    }
+    
+    fn seconds(s: Int) -> Self {
+        Self.new(s as Int64 * 1000)
+    }
+    
+    fn message(msg: String) -> Self {
+        self.message = msg
+        self
+    }
+    
+    fn middleware() -> MiddlewareFn {
+        let timeout = self.duration_ms
+        let msg = self.message.clone()
+        
+        |ctx, next| {
+            match @native("with_timeout", timeout, || next(ctx)) {
+                Ok(response) => response,
+                Err(_) => Response.error(408).json({"error": msg})
+            }
+        }
+    }
+}
+
+/// Recovery middleware (panic handler)
+struct Recovery {
+    handler: Option<fn(Any) -> Response>
+    log_errors: Bool
+}
+
+impl Recovery {
+    fn new() -> Self {
+        Recovery { handler: None, log_errors: true }
+    }
+    
+    fn handler(h: fn(Any) -> Response) -> Self {
+        self.handler = Some(h)
+        self
+    }
+    
+    fn silent() -> Self {
+        self.log_errors = false
+        self
+    }
+    
+    fn middleware() -> MiddlewareFn {
+        let handler = self.handler.clone()
+        let log = self.log_errors
+        
+        |ctx, next| {
+            match @native("catch_panic", || next(ctx)) {
+                Ok(response) => response,
+                Err(panic) => {
+                    if log {
+                        eprintln!("Panic recovered: {:?}", panic)
+                    }
+                    match handler {
+                        Some(h) => h(panic),
+                        None => Response.error(500).json({"error": "Internal Server Error"})
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Request ID middleware
+struct RequestId {
+    header_name: String
+    generator: fn() -> String
+}
+
+impl RequestId {
+    fn new() -> Self {
+        RequestId {
+            header_name: "X-Request-ID",
+            generator: || uuid.v4()
+        }
+    }
+    
+    fn header(name: String) -> Self {
+        self.header_name = name
+        self
+    }
+    
+    fn generator(gen: fn() -> String) -> Self {
+        self.generator = gen
+        self
+    }
+    
+    fn middleware() -> MiddlewareFn {
+        let header = self.header_name.clone()
+        let gen = self.generator
+        
+        |ctx, next| {
+            let request_id = ctx.header(header.clone()).unwrap_or_else(|| gen())
+            ctx.set("request_id", request_id.clone())
+            
+            let response = next(ctx)
+            response.header(header, request_id)
+        }
+    }
+}
+
+/// Rate limiting middleware
+struct RateLimiter {
+    requests: Int
+    window_ms: Int64
+    key_fn: fn(Context) -> String
+    store: RateLimitStore
+}
+
+impl RateLimiter {
+    fn new(requests: Int, window_ms: Int64) -> Self {
+        RateLimiter {
+            requests: requests,
+            window_ms: window_ms,
+            key_fn: |ctx| ctx.client_ip().unwrap_or("unknown"),
+            store: RateLimitStore.memory()
+        }
+    }
+    
+    fn per_second(requests: Int) -> Self {
+        Self.new(requests, 1000)
+    }
+    
+    fn per_minute(requests: Int) -> Self {
+        Self.new(requests, 60000)
+    }
+    
+    fn per_hour(requests: Int) -> Self {
+        Self.new(requests, 3600000)
+    }
+    
+    fn key_by(f: fn(Context) -> String) -> Self {
+        self.key_fn = f
+        self
+    }
+    
+    fn key_by_ip() -> Self {
+        self.key_fn = |ctx| ctx.client_ip().unwrap_or("unknown")
+        self
+    }
+    
+    fn key_by_user(user_key: String) -> Self {
+        self.key_fn = |ctx| ctx.get::<String>(user_key).unwrap_or("anonymous")
+        self
+    }
+    
+    fn store(s: RateLimitStore) -> Self {
+        self.store = s
+        self
+    }
+    
+    fn middleware() -> MiddlewareFn {
+        let max_requests = self.requests
+        let window = self.window_ms
+        let key_fn = self.key_fn
+        let store = self.store.clone()
+        
+        |ctx, next| {
+            let key = key_fn(ctx)
+            let now = @native("timestamp_ms")
+            
+            let (count, reset_at) = store.increment(key.clone(), window, now)
+            
+            let remaining = (max_requests - count).max(0)
+            let reset_seconds = ((reset_at - now) / 1000).max(0)
+            
+            if count > max_requests {
+                return Response.error(429)
+                    .header("X-RateLimit-Limit", max_requests.to_string())
+                    .header("X-RateLimit-Remaining", "0")
+                    .header("X-RateLimit-Reset", reset_seconds.to_string())
+                    .header("Retry-After", reset_seconds.to_string())
+                    .json({"error": "Too Many Requests"})
+            }
+            
+            let response = next(ctx)
+            response
+                .header("X-RateLimit-Limit", max_requests.to_string())
+                .header("X-RateLimit-Remaining", remaining.to_string())
+                .header("X-RateLimit-Reset", reset_seconds.to_string())
+        }
+    }
+}
+
+/// Rate limit storage
+enum RateLimitStore {
+    Memory(actor MemoryStore)
+    Redis(redis.RedisConnection)
+}
+
+impl RateLimitStore {
+    fn memory() -> Self {
+        RateLimitStore.Memory(MemoryStore.new())
+    }
+    
+    fn redis(conn: redis.RedisConnection) -> Self {
+        RateLimitStore.Redis(conn)
+    }
+    
+    fn increment(key: String, window_ms: Int64, now: Int64) -> (Int, Int64) {
+        match self {
+            Memory(store) => store.increment(key, window_ms, now),
+            Redis(conn) => {
+                let redis_key = format!("ratelimit:{}", key)
+                let count = conn.incr(redis_key.clone()).unwrap_or(1)
+                if count == 1 {
+                    conn.pexpire(redis_key, window_ms as Int).ok()
+                }
+                let ttl = conn.pttl(redis_key).unwrap_or(window_ms)
+                (count, now + ttl)
+            }
+        }
+    }
+}
+
+actor MemoryStore {
+    state entries: Map<String, RateLimitEntry>
+    
+    fn new() -> Self {
+        MemoryStore { entries: Map.empty() }
+    }
+    
+    fn increment(key: String, window_ms: Int64, now: Int64) -> (Int, Int64) {
+        let entry = self.entries.entry(key).or_insert(RateLimitEntry { count: 0, reset_at: now + window_ms })
+        
+        if now >= entry.reset_at {
+            entry.count = 1
+            entry.reset_at = now + window_ms
+        } else {
+            entry.count += 1
+        }
+        
+        (entry.count, entry.reset_at)
+    }
+    
+    fn cleanup(now: Int64) {
+        let expired: [String] = self.entries.iter()
+            .filter(|(_, e)| now >= e.reset_at)
+            .map(|(k, _)| k.clone())
+            .collect()
+        for k in expired {
+            self.entries.remove(k)
+        }
+    }
+}
+
+struct RateLimitEntry {
+    count: Int
+    reset_at: Int64
+}
+
+/// Compression middleware
+struct Compress {
+    level: Int
+    min_size: Int
+    types: [String]
+}
+
+impl Compress {
+    fn new() -> Self {
+        Compress {
+            level: 6,
+            min_size: 1024,
+            types: ["text/", "application/json", "application/javascript", "application/xml"]
+        }
+    }
+    
+    fn level(l: Int) -> Self {
+        self.level = l.clamp(1, 9)
+        self
+    }
+    
+    fn min_size(size: Int) -> Self {
+        self.min_size = size
+        self
+    }
+    
+    fn middleware() -> MiddlewareFn {
+        let level = self.level
+        let min_size = self.min_size
+        let types = self.types.clone()
+        
+        |ctx, next| {
+            let accept_encoding = ctx.header("Accept-Encoding").unwrap_or("")
+            let response = next(ctx)
+            
+            // Check if compression is applicable
+            let content_type = response.headers.content_type().unwrap_or("")
+            let should_compress = response.body.len() >= min_size &&
+                types.iter().any(|t| content_type.starts_with(t))
+            
+            if !should_compress {
+                return response
+            }
+            
+            // Choose compression algorithm
+            if accept_encoding.contains("br") {
+                let compressed = compress.brotli_compress(response.body, level)
+                return response
+                    .header("Content-Encoding", "br")
+                    .body(compressed)
+            }
+            
+            if accept_encoding.contains("gzip") {
+                let compressed = compress.gzip_compress(response.body, level)
+                return response
+                    .header("Content-Encoding", "gzip")
+                    .body(compressed)
+            }
+            
+            if accept_encoding.contains("deflate") {
+                let compressed = compress.deflate_compress(response.body, level)
+                return response
+                    .header("Content-Encoding", "deflate")
+                    .body(compressed)
+            }
+            
+            response
+        }
+    }
+}
+
+/// Security headers middleware
+struct SecureHeaders {
+    headers: Map<String, String>
+}
+
+impl SecureHeaders {
+    fn new() -> Self {
+        var headers = Map.empty()
+        headers.set("X-Content-Type-Options", "nosniff")
+        headers.set("X-Frame-Options", "SAMEORIGIN")
+        headers.set("X-XSS-Protection", "1; mode=block")
+        headers.set("Referrer-Policy", "strict-origin-when-cross-origin")
+        SecureHeaders { headers: headers }
+    }
+    
+    fn strict() -> Self {
+        var headers = Map.empty()
+        headers.set("X-Content-Type-Options", "nosniff")
+        headers.set("X-Frame-Options", "DENY")
+        headers.set("X-XSS-Protection", "1; mode=block")
+        headers.set("Referrer-Policy", "no-referrer")
+        headers.set("Content-Security-Policy", "default-src 'self'")
+        headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        headers.set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+        SecureHeaders { headers: headers }
+    }
+    
+    fn hsts(max_age: Int) -> Self {
+        self.headers.set("Strict-Transport-Security", format!("max-age={}; includeSubDomains", max_age))
+        self
+    }
+    
+    fn csp(policy: String) -> Self {
+        self.headers.set("Content-Security-Policy", policy)
+        self
+    }
+    
+    fn frame_options(option: String) -> Self {
+        self.headers.set("X-Frame-Options", option)
+        self
+    }
+    
+    fn header(name: String, value: String) -> Self {
+        self.headers.set(name, value)
+        self
+    }
+    
+    fn middleware() -> MiddlewareFn {
+        let headers = self.headers.clone()
+        
+        |ctx, next| {
+            var response = next(ctx)
+            for (name, value) in headers.iter() {
+                response = response.header(name, value)
+            }
+            response
+        }
+    }
+}
+
+/// Body parser middleware
+struct BodyParser {
+    json_limit: Int
+    form_limit: Int
+    text_limit: Int
+}
+
+impl BodyParser {
+    fn new() -> Self {
+        BodyParser {
+            json_limit: 1024 * 1024,      // 1MB
+            form_limit: 1024 * 1024,      // 1MB
+            text_limit: 1024 * 1024       // 1MB
+        }
+    }
+    
+    fn json_limit(limit: Int) -> Self {
+        self.json_limit = limit
+        self
+    }
+    
+    fn form_limit(limit: Int) -> Self {
+        self.form_limit = limit
+        self
+    }
+    
+    fn middleware() -> MiddlewareFn {
+        let json_limit = self.json_limit
+        let form_limit = self.form_limit
+        
+        |ctx, next| {
+            let content_type = ctx.content_type().unwrap_or("")
+            let body_len = ctx.request.body.len()
+            
+            if content_type.contains("application/json") {
+                if body_len > json_limit {
+                    return Response.error(413).json({"error": "Request body too large"})
+                }
+                // Parse JSON and store in context
+                match json.decode::<JsonValue>(ctx.body_text()) {
+                    Ok(value) => ctx.set("body", value),
+                    Err(_) => return Response.error(400).json({"error": "Invalid JSON"})
+                }
+            } else if content_type.contains("application/x-www-form-urlencoded") {
+                if body_len > form_limit {
+                    return Response.error(413).json({"error": "Request body too large"})
+                }
+                let params = url.parse_query(ctx.body_text())
+                ctx.set("form", params)
+            }
+            
+            next(ctx)
+        }
+    }
+}
+
+/// Basic authentication middleware
+struct BasicAuth {
+    realm: String
+    validator: fn(String, String) -> Bool
+}
+
+impl BasicAuth {
+    fn new(validator: fn(String, String) -> Bool) -> Self {
+        BasicAuth { realm: "Restricted", validator: validator }
+    }
+    
+    fn realm(r: String) -> Self {
+        self.realm = r
+        self
+    }
+    
+    fn users(credentials: Map<String, String>) -> Self {
+        self.validator = |user, pass| {
+            credentials.get(user).map(|p| p == pass).unwrap_or(false)
+        }
+        self
+    }
+    
+    fn middleware() -> MiddlewareFn {
+        let realm = self.realm.clone()
+        let validate = self.validator
+        
+        |ctx, next| {
+            let auth_header = match ctx.header("Authorization") {
+                Some(h) => h,
+                None => return Response.error(401)
+                    .header("WWW-Authenticate", format!("Basic realm=\"{}\"", realm))
+                    .json({"error": "Authentication required"})
+            }
+            
+            if !auth_header.starts_with("Basic ") {
+                return Response.error(401).json({"error": "Invalid authentication"})
+            }
+            
+            let encoded = auth_header[6..]
+            let decoded = match base64.decode(encoded.as_bytes()) {
+                Ok(d) => String.from_utf8(d).unwrap_or(""),
+                Err(_) => return Response.error(401).json({"error": "Invalid credentials"})
+            }
+            
+            let parts: [String] = decoded.splitn(2, ":").collect()
+            if parts.len() != 2 {
+                return Response.error(401).json({"error": "Invalid credentials"})
+            }
+            
+            let (username, password) = (parts[0].clone(), parts[1].clone())
+            
+            if !validate(username.clone(), password) {
+                return Response.error(401)
+                    .header("WWW-Authenticate", format!("Basic realm=\"{}\"", realm))
+                    .json({"error": "Invalid credentials"})
+            }
+            
+            ctx.set("user", username)
+            next(ctx)
+        }
+    }
+}
+
+/// JWT authentication middleware
+struct JwtAuth {
+    secret: String
+    header_name: String
+    query_param: Option<String>
+    algorithms: [jwt.Algorithm]
+}
+
+impl JwtAuth {
+    fn new(secret: String) -> Self {
+        JwtAuth {
+            secret: secret,
+            header_name: "Authorization",
+            query_param: None,
+            algorithms: [jwt.Algorithm.HS256]
+        }
+    }
+    
+    fn header(name: String) -> Self {
+        self.header_name = name
+        self
+    }
+    
+    fn query_param(param: String) -> Self {
+        self.query_param = Some(param)
+        self
+    }
+    
+    fn algorithms(algs: [jwt.Algorithm]) -> Self {
+        self.algorithms = algs
+        self
+    }
+    
+    fn middleware() -> MiddlewareFn {
+        let secret = self.secret.clone()
+        let header = self.header_name.clone()
+        let query = self.query_param.clone()
+        
+        |ctx, next| {
+            // Extract token
+            let token = ctx.header(header.clone())
+                .and_then(|h| {
+                    if h.starts_with("Bearer ") {
+                        Some(h[7..].to_string())
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| query.and_then(|q| ctx.query(q)));
+            
+            let token = match token {
+                Some(t) => t,
+                None => return Response.error(401).json({"error": "No token provided"})
+            }
+            
+            // Verify token
+            match jwt.Jwt.verify(token, jwt.JwtKey.hmac_str(secret)) {
+                Ok(jwt) => {
+                    ctx.set("jwt", jwt.claims.clone())
+                    if let Some(sub) = jwt.claims.sub {
+                        ctx.set("user_id", sub)
+                    }
+                    next(ctx)
+                }
+                Err(jwt.JwtError.Expired) => {
+                    Response.error(401).json({"error": "Token expired"})
+                }
+                Err(_) => {
+                    Response.error(401).json({"error": "Invalid token"})
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Middleware Helpers
+// =============================================================================
+
+/// Create logging middleware
+fn logger() -> MiddlewareFn {
+    Logger.new().middleware()
+}
+
+/// Create recovery middleware
+fn recovery() -> MiddlewareFn {
+    Recovery.new().middleware()
+}
+
+/// Create request ID middleware
+fn request_id() -> MiddlewareFn {
+    RequestId.new().middleware()
+}
+
+/// Create rate limiter middleware
+fn rate_limit(requests: Int, window_ms: Int64) -> MiddlewareFn {
+    RateLimiter.new(requests, window_ms).middleware()
+}
+
+/// Create compression middleware
+fn compress() -> MiddlewareFn {
+    Compress.new().middleware()
+}
+
+/// Create secure headers middleware
+fn secure_headers() -> MiddlewareFn {
+    SecureHeaders.new().middleware()
+}
+
+/// Create body parser middleware
+fn body_parser() -> MiddlewareFn {
+    BodyParser.new().middleware()
+}
+
+/// Create basic auth middleware
+fn basic_auth(validator: fn(String, String) -> Bool) -> MiddlewareFn {
+    BasicAuth.new(validator).middleware()
+}
+
+/// Create JWT auth middleware
+fn jwt_auth(secret: String) -> MiddlewareFn {
+    JwtAuth.new(secret).middleware()
+}
+
+/// Create timeout middleware
+fn timeout(ms: Int64) -> MiddlewareFn {
+    Timeout.new(ms).middleware()
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "middleware chain" {
+    var calls = []
+    
+    let chain = MiddlewareChain.new()
+        .use(|ctx, next| {
+            calls.push("before1")
+            let res = next(ctx)
+            calls.push("after1")
+            res
+        })
+        .use(|ctx, next| {
+            calls.push("before2")
+            let res = next(ctx)
+            calls.push("after2")
+            res
+        })
+    
+    let handler = |ctx| {
+        calls.push("handler")
+        Response.ok()
+    }
+    
+    let ctx = Context { request: http.Request.get("/"), params: Params.new(), query: Map.empty(), state: Map.empty(), path: "/" }
+    chain.execute(ctx, handler)
+    
+    assert_eq(calls, ["before1", "before2", "handler", "after2", "after1"])?
+}
+
+test "conditional middleware" {
+    var called = false
+    
+    let chain = MiddlewareChain.new()
+        .use_if(false, |ctx, next| {
+            called = true
+            next(ctx)
+        })
+    
+    let ctx = Context { request: http.Request.get("/"), params: Params.new(), query: Map.empty(), state: Map.empty(), path: "/" }
+    chain.execute(ctx, |_| Response.ok())
+    
+    assert(!called)?
+}
+
+test "path-based middleware" {
+    var api_called = false
+    
+    let chain = MiddlewareChain.new()
+        .use_path("/api", |ctx, next| {
+            api_called = true
+            next(ctx)
+        })
+    
+    let ctx = Context { request: http.Request.get("/api/users"), params: Params.new(), query: Map.empty(), state: Map.empty(), path: "/api/users" }
+    chain.execute(ctx, |_| Response.ok())
+    
+    assert(api_called)?
+}
+
+test "rate limiter" {
+    let store = MemoryStore.new()
+    let now = 1000000i64
+    
+    // First request
+    let (count1, _) = store.increment("key1", 60000, now)
+    assert_eq(count1, 1)?
+    
+    // Second request
+    let (count2, _) = store.increment("key1", 60000, now + 1000)
+    assert_eq(count2, 2)?
+    
+    // After window reset
+    let (count3, _) = store.increment("key1", 60000, now + 70000)
+    assert_eq(count3, 1)?
+}
+
+test "secure headers" {
+    let mw = SecureHeaders.new().middleware()
+    let ctx = Context { request: http.Request.get("/"), params: Params.new(), query: Map.empty(), state: Map.empty(), path: "/" }
+    
+    let response = mw(ctx, |_| Response.ok())
+    
+    assert_eq(response.headers.get("X-Content-Type-Options"), Some("nosniff"))?
+    assert_eq(response.headers.get("X-Frame-Options"), Some("SAMEORIGIN"))?
+}

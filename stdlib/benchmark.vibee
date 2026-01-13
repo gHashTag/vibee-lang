@@ -1,0 +1,490 @@
+// =============================================================================
+// Vibee OS — Benchmark Module
+// Performance benchmarking and measurement
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Benchmark Runner
+// -----------------------------------------------------------------------------
+
+/// Benchmark runner
+actor BenchmarkRunner {
+    state benchmarks: [Benchmark]
+    state config: BenchConfig
+    state results: [BenchResult]
+    
+    fn new() -> Self {
+        BenchmarkRunner {
+            benchmarks: [],
+            config: BenchConfig.default(),
+            results: []
+        }
+    }
+    
+    on config(c: BenchConfig) -> Self { self.config = c; self }
+    
+    /// Add benchmark
+    on bench(name: String, f: () -> ()) -> Self {
+        self.benchmarks.append(Benchmark { name: name, func: f, setup: None, teardown: None })
+        self
+    }
+    
+    /// Add benchmark with setup
+    on bench_with_setup<T>(name: String, setup: () -> T, f: (T) -> ()) -> Self {
+        self.benchmarks.append(Benchmark {
+            name: name,
+            func: || { let ctx = setup(); f(ctx) },
+            setup: None,
+            teardown: None
+        })
+        self
+    }
+    
+    /// Run all benchmarks
+    on run() -> [BenchResult] {
+        println("\nRunning benchmarks...\n")
+        
+        for bench in self.benchmarks {
+            let result = self.run_benchmark(bench)
+            self.results.append(result)
+            self.print_result(result)
+        }
+        
+        println()
+        self.results
+    }
+    
+    fn run_benchmark(bench: Benchmark) -> BenchResult {
+        // Warmup
+        for _ in 0..self.config.warmup_iterations {
+            bench.func()
+        }
+        
+        // Collect samples
+        var samples = []
+        var total_iterations = 0
+        let start = Instant.now()
+        
+        while samples.len() < self.config.sample_count {
+            let sample_start = Instant.now()
+            var iterations = 0
+            
+            while sample_start.elapsed() < self.config.sample_time {
+                bench.func()
+                iterations += 1
+            }
+            
+            let elapsed = sample_start.elapsed()
+            let ns_per_iter = elapsed.as_nanos() / iterations
+            samples.append(ns_per_iter)
+            total_iterations += iterations
+        }
+        
+        let total_time = start.elapsed()
+        
+        // Calculate statistics
+        samples.sort()
+        let stats = Statistics.from_samples(samples)
+        
+        BenchResult {
+            name: bench.name,
+            iterations: total_iterations,
+            total_time: total_time,
+            stats: stats
+        }
+    }
+    
+    fn print_result(result: BenchResult) {
+        let time_str = format_time(result.stats.mean)
+        let throughput = 1_000_000_000.0 / result.stats.mean
+        
+        println("\(result.name)")
+        println("  time:   \(time_str) ± \(format_time(result.stats.std_dev))")
+        println("  thrpt:  \(format_number(throughput)) ops/sec")
+        
+        if self.config.verbose {
+            println("  min:    \(format_time(result.stats.min))")
+            println("  max:    \(format_time(result.stats.max))")
+            println("  median: \(format_time(result.stats.median))")
+            println("  p95:    \(format_time(result.stats.p95))")
+            println("  p99:    \(format_time(result.stats.p99))")
+        }
+        println()
+    }
+}
+
+/// Benchmark configuration
+struct BenchConfig {
+    warmup_iterations: Int
+    sample_count: Int
+    sample_time: Duration
+    verbose: Bool
+    
+    fn default() -> Self {
+        BenchConfig {
+            warmup_iterations: 3,
+            sample_count: 100,
+            sample_time: Duration.millis(100),
+            verbose: false
+        }
+    }
+    
+    fn quick() -> Self {
+        BenchConfig {
+            warmup_iterations: 1,
+            sample_count: 10,
+            sample_time: Duration.millis(50),
+            verbose: false
+        }
+    }
+    
+    fn thorough() -> Self {
+        BenchConfig {
+            warmup_iterations: 10,
+            sample_count: 1000,
+            sample_time: Duration.millis(200),
+            verbose: true
+        }
+    }
+}
+
+struct Benchmark {
+    name: String
+    func: () -> ()
+    setup: Option<() -> Any>
+    teardown: Option<(Any) -> ()>
+}
+
+// -----------------------------------------------------------------------------
+// Results & Statistics
+// -----------------------------------------------------------------------------
+
+struct BenchResult {
+    name: String
+    iterations: Int
+    total_time: Duration
+    stats: Statistics
+}
+
+struct Statistics {
+    samples: [Float]
+    min: Float
+    max: Float
+    mean: Float
+    median: Float
+    std_dev: Float
+    variance: Float
+    p95: Float
+    p99: Float
+    
+    fn from_samples(samples: [Float]) -> Self {
+        let n = samples.len() as Float
+        let sorted = samples.sorted()
+        
+        let min = sorted.first().unwrap_or(0.0)
+        let max = sorted.last().unwrap_or(0.0)
+        let mean = samples.sum() / n
+        let median = sorted[sorted.len() / 2]
+        
+        let variance = samples.map(|s| (s - mean).pow(2)).sum() / n
+        let std_dev = variance.sqrt()
+        
+        let p95 = sorted[(sorted.len() as Float * 0.95) as Int]
+        let p99 = sorted[(sorted.len() as Float * 0.99) as Int]
+        
+        Statistics {
+            samples: samples,
+            min: min,
+            max: max,
+            mean: mean,
+            median: median,
+            std_dev: std_dev,
+            variance: variance,
+            p95: p95,
+            p99: p99
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Quick Benchmarking
+// -----------------------------------------------------------------------------
+
+/// Measure single execution time
+fn measure<T>(f: () -> T) -> (T, Duration) {
+    let start = Instant.now()
+    let result = f()
+    let elapsed = start.elapsed()
+    (result, elapsed)
+}
+
+/// Measure average time over iterations
+fn measure_avg(iterations: Int, f: () -> ()) -> Duration {
+    let start = Instant.now()
+    for _ in 0..iterations { f() }
+    let elapsed = start.elapsed()
+    Duration.nanos(elapsed.as_nanos() / iterations)
+}
+
+/// Time a block and print result
+fn time(name: String, f: () -> ()) {
+    let start = Instant.now()
+    f()
+    let elapsed = start.elapsed()
+    println("\(name): \(format_time(elapsed.as_nanos() as Float))")
+}
+
+/// Compare two implementations
+fn compare(name_a: String, f_a: () -> (), name_b: String, f_b: () -> ()) {
+    let runner = BenchmarkRunner.new()
+        .config(BenchConfig.quick())
+        .bench(name_a, f_a)
+        .bench(name_b, f_b)
+    
+    let results = runner.run()
+    
+    if results.len() == 2 {
+        let ratio = results[0].stats.mean / results[1].stats.mean
+        if ratio > 1.0 {
+            println("\(name_b) is \(format_number(ratio))x faster than \(name_a)")
+        } else {
+            println("\(name_a) is \(format_number(1.0 / ratio))x faster than \(name_b)")
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Memory Benchmarking
+// -----------------------------------------------------------------------------
+
+/// Memory statistics
+struct MemoryStats {
+    allocated: Int
+    freed: Int
+    peak: Int
+    current: Int
+}
+
+/// Measure memory usage
+fn measure_memory<T>(f: () -> T) -> (T, MemoryStats) {
+    let before = @native("memory_stats")
+    let result = f()
+    let after = @native("memory_stats")
+    
+    let stats = MemoryStats {
+        allocated: after.allocated - before.allocated,
+        freed: after.freed - before.freed,
+        peak: after.peak,
+        current: after.current
+    }
+    
+    (result, stats)
+}
+
+/// Memory benchmark
+actor MemoryBenchmark {
+    state name: String
+    state func: () -> ()
+    state iterations: Int
+    
+    fn new(name: String, f: () -> ()) -> Self {
+        MemoryBenchmark { name: name, func: f, iterations: 100 }
+    }
+    
+    on iterations(n: Int) -> Self { self.iterations = n; self }
+    
+    on run() -> MemoryBenchResult {
+        var samples = []
+        
+        for _ in 0..self.iterations {
+            @native("gc_collect")
+            let (_, stats) = measure_memory(self.func)
+            samples.append(stats.allocated as Float)
+        }
+        
+        MemoryBenchResult {
+            name: self.name,
+            stats: Statistics.from_samples(samples)
+        }
+    }
+}
+
+struct MemoryBenchResult {
+    name: String
+    stats: Statistics
+}
+
+// -----------------------------------------------------------------------------
+// Criterion-style Groups
+// -----------------------------------------------------------------------------
+
+/// Benchmark group
+actor BenchmarkGroup {
+    state name: String
+    state benchmarks: [Benchmark]
+    state baseline: Option<String>
+    
+    fn new(name: String) -> Self {
+        BenchmarkGroup { name: name, benchmarks: [], baseline: None }
+    }
+    
+    /// Add benchmark to group
+    on bench(name: String, f: () -> ()) -> Self {
+        self.benchmarks.append(Benchmark { name: name, func: f, setup: None, teardown: None })
+        self
+    }
+    
+    /// Set baseline for comparison
+    on baseline(name: String) -> Self {
+        self.baseline = Some(name)
+        self
+    }
+    
+    /// Run group
+    on run() -> GroupResult {
+        println("\n\(bold(self.name))\n")
+        
+        let runner = BenchmarkRunner.new()
+        for bench in self.benchmarks {
+            runner.benchmarks.append(bench)
+        }
+        
+        let results = runner.run()
+        
+        // Compare to baseline
+        if let base_name = self.baseline {
+            if let base = results.find(|r| r.name == base_name) {
+                println("Comparison to baseline (\(base_name)):")
+                for result in results {
+                    if result.name != base_name {
+                        let ratio = result.stats.mean / base.stats.mean
+                        let change = (ratio - 1.0) * 100.0
+                        let indicator = if change > 5.0 { red("slower") }
+                            else if change < -5.0 { green("faster") }
+                            else { "~same" }
+                        println("  \(result.name): \(format_percent(change)) (\(indicator))")
+                    }
+                }
+            }
+        }
+        
+        GroupResult { name: self.name, results: results }
+    }
+}
+
+struct GroupResult {
+    name: String
+    results: [BenchResult]
+}
+
+// -----------------------------------------------------------------------------
+// Parameterized Benchmarks
+// -----------------------------------------------------------------------------
+
+/// Run benchmark with different input sizes
+fn bench_with_sizes<T>(name: String, sizes: [Int], setup: (Int) -> T, f: (T) -> ()) {
+    println("\n\(bold(name)) (varying input size)\n")
+    
+    for size in sizes {
+        let input = setup(size)
+        let runner = BenchmarkRunner.new()
+            .config(BenchConfig.quick())
+            .bench("n=\(size)", || f(input))
+        
+        runner.run()
+    }
+}
+
+/// Run benchmark with different parameters
+fn bench_parameterized<P: Debug, T>(
+    name: String,
+    params: [P],
+    setup: (P) -> T,
+    f: (T) -> ()
+) {
+    println("\n\(bold(name)) (parameterized)\n")
+    
+    for param in params {
+        let input = setup(param)
+        let runner = BenchmarkRunner.new()
+            .config(BenchConfig.quick())
+            .bench("\(param.debug())", || f(input))
+        
+        runner.run()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Formatting Helpers
+// -----------------------------------------------------------------------------
+
+fn format_time(ns: Float) -> String {
+    if ns < 1000.0 { "\(ns.round(2)) ns" }
+    else if ns < 1_000_000.0 { "\((ns / 1000.0).round(2)) µs" }
+    else if ns < 1_000_000_000.0 { "\((ns / 1_000_000.0).round(2)) ms" }
+    else { "\((ns / 1_000_000_000.0).round(2)) s" }
+}
+
+fn format_number(n: Float) -> String {
+    if n < 1000.0 { "\(n.round(2))" }
+    else if n < 1_000_000.0 { "\((n / 1000.0).round(2))K" }
+    else if n < 1_000_000_000.0 { "\((n / 1_000_000.0).round(2))M" }
+    else { "\((n / 1_000_000_000.0).round(2))B" }
+}
+
+fn format_percent(p: Float) -> String {
+    let sign = if p >= 0.0 { "+" } else { "" }
+    "\(sign)\(p.round(2))%"
+}
+
+fn format_bytes(bytes: Int) -> String {
+    if bytes < 1024 { "\(bytes) B" }
+    else if bytes < 1024 * 1024 { "\((bytes / 1024).round(2)) KB" }
+    else if bytes < 1024 * 1024 * 1024 { "\((bytes / (1024 * 1024)).round(2)) MB" }
+    else { "\((bytes / (1024 * 1024 * 1024)).round(2)) GB" }
+}
+
+// -----------------------------------------------------------------------------
+// Black Box
+// -----------------------------------------------------------------------------
+
+/// Prevent compiler from optimizing away value
+fn black_box<T>(value: T) -> T {
+    @native("black_box", value)
+}
+
+/// Prevent compiler from optimizing away computation
+fn consume<T>(value: T) {
+    black_box(value)
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "measure" {
+    let (result, duration) = measure(|| {
+        var sum = 0
+        for i in 0..1000 { sum += i }
+        sum
+    })
+    
+    assert_eq(result, 499500)?
+    assert(duration.as_nanos() > 0)
+}
+
+test "statistics" {
+    let samples = [1.0, 2.0, 3.0, 4.0, 5.0]
+    let stats = Statistics.from_samples(samples)
+    
+    assert_eq(stats.min, 1.0)?
+    assert_eq(stats.max, 5.0)?
+    assert_eq(stats.mean, 3.0)?
+    assert_eq(stats.median, 3.0)?
+}
+
+test "format_time" {
+    assert_eq(format_time(500.0), "500 ns")?
+    assert_eq(format_time(1500.0), "1.5 µs")?
+    assert_eq(format_time(1_500_000.0), "1.5 ms")?
+}

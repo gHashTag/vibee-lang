@@ -1,0 +1,650 @@
+# ============================================================================
+# ENCRYPTION - Шифрование на Vibee
+# ============================================================================
+# AES, ChaCha20, RSA, ECC, Digital Signatures
+# ============================================================================
+
+Specification Encryption:
+  """Шифрование как спецификация защиты данных."""
+
+  # ==========================================================================
+  # SYMMETRIC ENCRYPTION - AES
+  # ==========================================================================
+
+  Behavior AES:
+    When aes.encrypt(plaintext: Bytes, key: Bytes) -> EncryptedData:
+      Then: aes.encrypt_gcm(plaintext, key)
+
+    When aes.decrypt(encrypted: EncryptedData, key: Bytes) -> Result<Bytes, CryptoError>:
+      Then: aes.decrypt_gcm(encrypted, key)
+
+    # AES-GCM (recommended)
+    When aes.encrypt_gcm(plaintext: Bytes, key: Bytes) -> EncryptedData:
+      Then:
+        validate_aes_key(key)
+        nonce = random.bytes(12)  # 96-bit nonce for GCM
+        
+        ciphertext, tag = native_aes_gcm_encrypt(plaintext, key, nonce, Bytes([]))
+        
+        return EncryptedData(
+          algorithm: EncryptionAlgorithm.AES_GCM,
+          ciphertext: ciphertext,
+          nonce: nonce,
+          tag: tag
+        )
+
+    When aes.encrypt_gcm_aad(plaintext: Bytes, key: Bytes, aad: Bytes) -> EncryptedData:
+      Then:
+        validate_aes_key(key)
+        nonce = random.bytes(12)
+        
+        ciphertext, tag = native_aes_gcm_encrypt(plaintext, key, nonce, aad)
+        
+        return EncryptedData(
+          algorithm: EncryptionAlgorithm.AES_GCM,
+          ciphertext: ciphertext,
+          nonce: nonce,
+          tag: tag,
+          aad: aad
+        )
+
+    When aes.decrypt_gcm(encrypted: EncryptedData, key: Bytes) -> Result<Bytes, CryptoError>:
+      Then:
+        validate_aes_key(key)
+        
+        result = native_aes_gcm_decrypt(
+          encrypted.ciphertext,
+          key,
+          encrypted.nonce,
+          encrypted.tag,
+          encrypted.aad ?? Bytes([])
+        )
+        
+        if result == null:
+          return Err(CryptoError("Authentication failed"))
+        
+        return Ok(result)
+
+    # AES-CBC (legacy)
+    When aes.encrypt_cbc(plaintext: Bytes, key: Bytes) -> EncryptedData:
+      Then:
+        validate_aes_key(key)
+        iv = random.bytes(16)
+        
+        # PKCS7 padding
+        padded = pkcs7_pad(plaintext, 16)
+        ciphertext = native_aes_cbc_encrypt(padded, key, iv)
+        
+        return EncryptedData(
+          algorithm: EncryptionAlgorithm.AES_CBC,
+          ciphertext: ciphertext,
+          nonce: iv
+        )
+
+    When aes.decrypt_cbc(encrypted: EncryptedData, key: Bytes) -> Result<Bytes, CryptoError>:
+      Then:
+        validate_aes_key(key)
+        
+        padded = native_aes_cbc_decrypt(encrypted.ciphertext, key, encrypted.nonce)
+        return pkcs7_unpad(padded)
+
+    # AES-CTR (streaming)
+    When aes.encrypt_ctr(plaintext: Bytes, key: Bytes) -> EncryptedData:
+      Then:
+        validate_aes_key(key)
+        nonce = random.bytes(16)
+        
+        ciphertext = native_aes_ctr_encrypt(plaintext, key, nonce)
+        
+        return EncryptedData(
+          algorithm: EncryptionAlgorithm.AES_CTR,
+          ciphertext: ciphertext,
+          nonce: nonce
+        )
+
+    When aes.decrypt_ctr(encrypted: EncryptedData, key: Bytes) -> Result<Bytes, CryptoError>:
+      Then:
+        validate_aes_key(key)
+        # CTR decryption is same as encryption
+        return Ok(native_aes_ctr_encrypt(encrypted.ciphertext, key, encrypted.nonce))
+
+    When validate_aes_key(key: Bytes):
+      Then:
+        if key.length not in [16, 24, 32]:
+          panic("AES key must be 128, 192, or 256 bits")
+
+  # ==========================================================================
+  # SYMMETRIC ENCRYPTION - ChaCha20
+  # ==========================================================================
+
+  Behavior ChaCha20:
+    When chacha20.encrypt(plaintext: Bytes, key: Bytes) -> EncryptedData:
+      Then: chacha20_poly1305.encrypt(plaintext, key)
+
+    When chacha20.decrypt(encrypted: EncryptedData, key: Bytes) -> Result<Bytes, CryptoError>:
+      Then: chacha20_poly1305.decrypt(encrypted, key)
+
+  Behavior ChaCha20Poly1305:
+    When chacha20_poly1305.encrypt(plaintext: Bytes, key: Bytes) -> EncryptedData:
+      Then:
+        if key.length != 32:
+          panic("ChaCha20-Poly1305 key must be 256 bits")
+        
+        nonce = random.bytes(12)
+        ciphertext, tag = native_chacha20_poly1305_encrypt(plaintext, key, nonce, Bytes([]))
+        
+        return EncryptedData(
+          algorithm: EncryptionAlgorithm.ChaCha20_Poly1305,
+          ciphertext: ciphertext,
+          nonce: nonce,
+          tag: tag
+        )
+
+    When chacha20_poly1305.encrypt_aad(plaintext: Bytes, key: Bytes, aad: Bytes) -> EncryptedData:
+      Then:
+        if key.length != 32:
+          panic("ChaCha20-Poly1305 key must be 256 bits")
+        
+        nonce = random.bytes(12)
+        ciphertext, tag = native_chacha20_poly1305_encrypt(plaintext, key, nonce, aad)
+        
+        return EncryptedData(
+          algorithm: EncryptionAlgorithm.ChaCha20_Poly1305,
+          ciphertext: ciphertext,
+          nonce: nonce,
+          tag: tag,
+          aad: aad
+        )
+
+    When chacha20_poly1305.decrypt(encrypted: EncryptedData, key: Bytes) -> Result<Bytes, CryptoError>:
+      Then:
+        result = native_chacha20_poly1305_decrypt(
+          encrypted.ciphertext,
+          key,
+          encrypted.nonce,
+          encrypted.tag,
+          encrypted.aad ?? Bytes([])
+        )
+        
+        if result == null:
+          return Err(CryptoError("Authentication failed"))
+        
+        return Ok(result)
+
+  Behavior XChaCha20Poly1305:
+    When xchacha20_poly1305.encrypt(plaintext: Bytes, key: Bytes) -> EncryptedData:
+      Then:
+        if key.length != 32:
+          panic("XChaCha20-Poly1305 key must be 256 bits")
+        
+        nonce = random.bytes(24)  # Extended nonce
+        ciphertext, tag = native_xchacha20_poly1305_encrypt(plaintext, key, nonce, Bytes([]))
+        
+        return EncryptedData(
+          algorithm: EncryptionAlgorithm.XChaCha20_Poly1305,
+          ciphertext: ciphertext,
+          nonce: nonce,
+          tag: tag
+        )
+
+    When xchacha20_poly1305.decrypt(encrypted: EncryptedData, key: Bytes) -> Result<Bytes, CryptoError>:
+      Then:
+        result = native_xchacha20_poly1305_decrypt(
+          encrypted.ciphertext,
+          key,
+          encrypted.nonce,
+          encrypted.tag,
+          encrypted.aad ?? Bytes([])
+        )
+        
+        if result == null:
+          return Err(CryptoError("Authentication failed"))
+        
+        return Ok(result)
+
+  # ==========================================================================
+  # ENCRYPTED DATA TYPE
+  # ==========================================================================
+
+  Type EncryptedData:
+    algorithm: EncryptionAlgorithm
+    ciphertext: Bytes
+    nonce: Bytes
+    tag: Option<Bytes>
+    aad: Option<Bytes>
+
+    Method to_bytes() -> Bytes:
+      # Serialize for storage/transmission
+      return serialize_encrypted_data(self)
+
+    Static Method from_bytes(data: Bytes) -> Result<EncryptedData, CryptoError>:
+      return deserialize_encrypted_data(data)
+
+    Method to_base64() -> String:
+      return base64.encode(self.to_bytes())
+
+    Static Method from_base64(input: String) -> Result<EncryptedData, CryptoError>:
+      bytes = base64.decode(input)?
+      return EncryptedData.from_bytes(bytes)
+
+  Type EncryptionAlgorithm:
+    variants:
+      - AES_GCM
+      - AES_CBC
+      - AES_CTR
+      - ChaCha20_Poly1305
+      - XChaCha20_Poly1305
+
+  # ==========================================================================
+  # ASYMMETRIC ENCRYPTION - RSA
+  # ==========================================================================
+
+  Behavior RSA:
+    When rsa.generate_keypair(bits: Int) -> RSAKeyPair:
+      Then:
+        if bits < 2048:
+          panic("RSA key size must be at least 2048 bits")
+        
+        return native_rsa_generate(bits)
+
+    When rsa.encrypt(plaintext: Bytes, public_key: RSAPublicKey) -> Bytes:
+      Then: rsa.encrypt_oaep(plaintext, public_key, HashAlgorithm.SHA256)
+
+    When rsa.encrypt_oaep(plaintext: Bytes, public_key: RSAPublicKey, hash: HashAlgorithm) -> Bytes:
+      Then: native_rsa_encrypt_oaep(plaintext, public_key, hash)
+
+    When rsa.encrypt_pkcs1(plaintext: Bytes, public_key: RSAPublicKey) -> Bytes:
+      Then: native_rsa_encrypt_pkcs1(plaintext, public_key)
+
+    When rsa.decrypt(ciphertext: Bytes, private_key: RSAPrivateKey) -> Result<Bytes, CryptoError>:
+      Then: rsa.decrypt_oaep(ciphertext, private_key, HashAlgorithm.SHA256)
+
+    When rsa.decrypt_oaep(ciphertext: Bytes, private_key: RSAPrivateKey, hash: HashAlgorithm) -> Result<Bytes, CryptoError>:
+      Then: native_rsa_decrypt_oaep(ciphertext, private_key, hash)
+
+    When rsa.decrypt_pkcs1(ciphertext: Bytes, private_key: RSAPrivateKey) -> Result<Bytes, CryptoError>:
+      Then: native_rsa_decrypt_pkcs1(ciphertext, private_key)
+
+    When rsa.sign(message: Bytes, private_key: RSAPrivateKey) -> Bytes:
+      Then: rsa.sign_pss(message, private_key, HashAlgorithm.SHA256)
+
+    When rsa.sign_pss(message: Bytes, private_key: RSAPrivateKey, hash: HashAlgorithm) -> Bytes:
+      Then: native_rsa_sign_pss(message, private_key, hash)
+
+    When rsa.sign_pkcs1(message: Bytes, private_key: RSAPrivateKey, hash: HashAlgorithm) -> Bytes:
+      Then: native_rsa_sign_pkcs1(message, private_key, hash)
+
+    When rsa.verify(message: Bytes, signature: Bytes, public_key: RSAPublicKey) -> Boolean:
+      Then: rsa.verify_pss(message, signature, public_key, HashAlgorithm.SHA256)
+
+    When rsa.verify_pss(message: Bytes, signature: Bytes, public_key: RSAPublicKey, hash: HashAlgorithm) -> Boolean:
+      Then: native_rsa_verify_pss(message, signature, public_key, hash)
+
+    When rsa.verify_pkcs1(message: Bytes, signature: Bytes, public_key: RSAPublicKey, hash: HashAlgorithm) -> Boolean:
+      Then: native_rsa_verify_pkcs1(message, signature, public_key, hash)
+
+  Type RSAKeyPair:
+    public_key: RSAPublicKey
+    private_key: RSAPrivateKey
+
+    Method to_pem() -> (String, String):
+      return (self.public_key.to_pem(), self.private_key.to_pem())
+
+  Type RSAPublicKey:
+    n: BigInt  # Modulus
+    e: BigInt  # Public exponent
+
+    Method to_pem() -> String:
+      return encode_pem("RSA PUBLIC KEY", self.to_der())
+
+    Method to_der() -> Bytes:
+      return native_rsa_public_to_der(self)
+
+    Static Method from_pem(pem: String) -> Result<RSAPublicKey, CryptoError>:
+      return decode_pem_rsa_public(pem)
+
+  Type RSAPrivateKey:
+    n: BigInt
+    e: BigInt
+    d: BigInt  # Private exponent
+    p: BigInt  # Prime 1
+    q: BigInt  # Prime 2
+
+    Method to_pem() -> String:
+      return encode_pem("RSA PRIVATE KEY", self.to_der())
+
+    Method to_der() -> Bytes:
+      return native_rsa_private_to_der(self)
+
+    Static Method from_pem(pem: String) -> Result<RSAPrivateKey, CryptoError>:
+      return decode_pem_rsa_private(pem)
+
+    Method public_key() -> RSAPublicKey:
+      return RSAPublicKey(n: self.n, e: self.e)
+
+  # ==========================================================================
+  # ELLIPTIC CURVE CRYPTOGRAPHY
+  # ==========================================================================
+
+  Behavior ECC:
+    When ecc.generate_keypair(curve: Curve) -> ECKeyPair:
+      Then: native_ecc_generate(curve)
+
+    When ecdsa.sign(message: Bytes, private_key: ECPrivateKey) -> Bytes:
+      Then: native_ecdsa_sign(message, private_key)
+
+    When ecdsa.verify(message: Bytes, signature: Bytes, public_key: ECPublicKey) -> Boolean:
+      Then: native_ecdsa_verify(message, signature, public_key)
+
+    When ecdh.derive_shared_secret(private_key: ECPrivateKey, public_key: ECPublicKey) -> Bytes:
+      Then: native_ecdh_derive(private_key, public_key)
+
+  Type Curve:
+    variants:
+      - P256      # NIST P-256 / secp256r1
+      - P384      # NIST P-384 / secp384r1
+      - P521      # NIST P-521 / secp521r1
+      - Secp256k1 # Bitcoin curve
+      - Curve25519
+      - Ed25519
+
+    Method key_size() -> Int:
+      match self:
+        P256 -> 32
+        P384 -> 48
+        P521 -> 66
+        Secp256k1 -> 32
+        Curve25519 -> 32
+        Ed25519 -> 32
+
+  Type ECKeyPair:
+    public_key: ECPublicKey
+    private_key: ECPrivateKey
+    curve: Curve
+
+  Type ECPublicKey:
+    x: Bytes
+    y: Bytes
+    curve: Curve
+
+    Method to_pem() -> String:
+      return encode_pem("PUBLIC KEY", self.to_der())
+
+    Method to_der() -> Bytes:
+      return native_ec_public_to_der(self)
+
+    Method to_compressed() -> Bytes:
+      # Compressed point format
+      prefix = if self.y.last() % 2 == 0 then 0x02 else 0x03
+      return Bytes([prefix]) + self.x
+
+    Static Method from_pem(pem: String) -> Result<ECPublicKey, CryptoError>:
+      return decode_pem_ec_public(pem)
+
+  Type ECPrivateKey:
+    d: Bytes
+    curve: Curve
+
+    Method to_pem() -> String:
+      return encode_pem("EC PRIVATE KEY", self.to_der())
+
+    Method to_der() -> Bytes:
+      return native_ec_private_to_der(self)
+
+    Static Method from_pem(pem: String) -> Result<ECPrivateKey, CryptoError>:
+      return decode_pem_ec_private(pem)
+
+    Method public_key() -> ECPublicKey:
+      return native_ec_derive_public(self)
+
+  # ==========================================================================
+  # ED25519 SIGNATURES
+  # ==========================================================================
+
+  Behavior Ed25519:
+    When ed25519.generate_keypair() -> Ed25519KeyPair:
+      Then: native_ed25519_generate()
+
+    When ed25519.sign(message: Bytes, private_key: Ed25519PrivateKey) -> Bytes:
+      Then: native_ed25519_sign(message, private_key)
+
+    When ed25519.verify(message: Bytes, signature: Bytes, public_key: Ed25519PublicKey) -> Boolean:
+      Then: native_ed25519_verify(message, signature, public_key)
+
+    When ed25519.from_seed(seed: Bytes) -> Ed25519KeyPair:
+      Then:
+        if seed.length != 32:
+          panic("Ed25519 seed must be 32 bytes")
+        return native_ed25519_from_seed(seed)
+
+  Type Ed25519KeyPair:
+    public_key: Ed25519PublicKey
+    private_key: Ed25519PrivateKey
+
+  Type Ed25519PublicKey:
+    bytes: Bytes  # 32 bytes
+
+    Method to_hex() -> String:
+      return self.bytes.to_hex()
+
+    Static Method from_bytes(bytes: Bytes) -> Result<Ed25519PublicKey, CryptoError>:
+      if bytes.length != 32:
+        return Err(CryptoError("Ed25519 public key must be 32 bytes"))
+      return Ok(Ed25519PublicKey(bytes))
+
+  Type Ed25519PrivateKey:
+    bytes: Bytes  # 64 bytes (seed + public key)
+
+    Method public_key() -> Ed25519PublicKey:
+      return Ed25519PublicKey(self.bytes.slice(32, 64))
+
+    Method seed() -> Bytes:
+      return self.bytes.slice(0, 32)
+
+  # ==========================================================================
+  # X25519 KEY EXCHANGE
+  # ==========================================================================
+
+  Behavior X25519:
+    When x25519.generate_keypair() -> X25519KeyPair:
+      Then: native_x25519_generate()
+
+    When x25519.derive_shared_secret(private_key: X25519PrivateKey, public_key: X25519PublicKey) -> Bytes:
+      Then: native_x25519_derive(private_key, public_key)
+
+    When x25519.from_seed(seed: Bytes) -> X25519KeyPair:
+      Then:
+        if seed.length != 32:
+          panic("X25519 seed must be 32 bytes")
+        return native_x25519_from_seed(seed)
+
+  Type X25519KeyPair:
+    public_key: X25519PublicKey
+    private_key: X25519PrivateKey
+
+  Type X25519PublicKey:
+    bytes: Bytes  # 32 bytes
+
+  Type X25519PrivateKey:
+    bytes: Bytes  # 32 bytes
+
+  # ==========================================================================
+  # HYBRID ENCRYPTION
+  # ==========================================================================
+
+  Behavior HybridEncryption:
+    When hybrid.encrypt(plaintext: Bytes, recipient_public_key: ECPublicKey) -> HybridCiphertext:
+      Then:
+        # Generate ephemeral keypair
+        ephemeral = ecc.generate_keypair(recipient_public_key.curve)
+        
+        # Derive shared secret
+        shared = ecdh.derive_shared_secret(ephemeral.private_key, recipient_public_key)
+        
+        # Derive encryption key
+        key = hkdf_sha256(shared, Bytes([]), "hybrid-encryption".to_bytes(), 32)
+        
+        # Encrypt with symmetric cipher
+        encrypted = chacha20_poly1305.encrypt(plaintext, key)
+        
+        return HybridCiphertext(
+          ephemeral_public_key: ephemeral.public_key,
+          encrypted: encrypted
+        )
+
+    When hybrid.decrypt(ciphertext: HybridCiphertext, private_key: ECPrivateKey) -> Result<Bytes, CryptoError>:
+      Then:
+        # Derive shared secret
+        shared = ecdh.derive_shared_secret(private_key, ciphertext.ephemeral_public_key)
+        
+        # Derive encryption key
+        key = hkdf_sha256(shared, Bytes([]), "hybrid-encryption".to_bytes(), 32)
+        
+        # Decrypt
+        return chacha20_poly1305.decrypt(ciphertext.encrypted, key)
+
+  Type HybridCiphertext:
+    ephemeral_public_key: ECPublicKey
+    encrypted: EncryptedData
+
+  # ==========================================================================
+  # SECURE KEY GENERATION
+  # ==========================================================================
+
+  Behavior KeyGeneration:
+    When generate_key(bits: Int) -> Bytes:
+      Then: random.bytes(bits / 8)
+
+    When generate_aes_key(size: AESKeySize) -> Bytes:
+      Then:
+        match size:
+          AES128 -> random.bytes(16)
+          AES192 -> random.bytes(24)
+          AES256 -> random.bytes(32)
+
+    When generate_chacha_key() -> Bytes:
+      Then: random.bytes(32)
+
+    Type AESKeySize:
+      variants:
+        - AES128
+        - AES192
+        - AES256
+
+  # ==========================================================================
+  # UTILITIES
+  # ==========================================================================
+
+  Behavior CryptoUtils:
+    When pkcs7_pad(data: Bytes, block_size: Int) -> Bytes:
+      Then:
+        padding_len = block_size - (data.length % block_size)
+        padding = Bytes(padding_len).fill(padding_len)
+        return data + padding
+
+    When pkcs7_unpad(data: Bytes) -> Result<Bytes, CryptoError>:
+      Then:
+        if data.length == 0:
+          return Err(CryptoError("Empty data"))
+        
+        padding_len = data.last()
+        
+        if padding_len == 0 or padding_len > data.length:
+          return Err(CryptoError("Invalid padding"))
+        
+        # Verify padding
+        for i in (data.length - padding_len)..data.length:
+          if data[i] != padding_len:
+            return Err(CryptoError("Invalid padding"))
+        
+        return Ok(data.slice(0, data.length - padding_len))
+
+    When encode_pem(label: String, data: Bytes) -> String:
+      Then:
+        encoded = base64.encode(data)
+        lines = encoded.chunks(64).join("\n")
+        return "-----BEGIN ${label}-----\n${lines}\n-----END ${label}-----"
+
+    When decode_pem(pem: String) -> Result<Bytes, CryptoError>:
+      Then:
+        # Remove headers and whitespace
+        content = pem
+          .replace_regex("-----BEGIN [^-]+-----", "")
+          .replace_regex("-----END [^-]+-----", "")
+          .replace_regex("\\s", "")
+        
+        return base64.decode(content)
+          .map_err(e -> CryptoError("Invalid PEM: ${e}"))
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Encryption":
+    ```vibee
+    # Symmetric encryption (AES-GCM recommended)
+    key = generate_aes_key(AES256)
+    plaintext = "Secret message".to_bytes()
+
+    encrypted = aes.encrypt(plaintext, key)
+    decrypted = aes.decrypt(encrypted, key)?
+
+    assert(decrypted == plaintext)
+
+    # With additional authenticated data
+    aad = "metadata".to_bytes()
+    encrypted = aes.encrypt_gcm_aad(plaintext, key, aad)
+    decrypted = aes.decrypt(encrypted, key)?
+
+    # ChaCha20-Poly1305 (faster on devices without AES-NI)
+    key = generate_chacha_key()
+    encrypted = chacha20_poly1305.encrypt(plaintext, key)
+    decrypted = chacha20_poly1305.decrypt(encrypted, key)?
+
+    # RSA encryption
+    keypair = rsa.generate_keypair(4096)
+    
+    encrypted = rsa.encrypt(plaintext, keypair.public_key)
+    decrypted = rsa.decrypt(encrypted, keypair.private_key)?
+
+    # RSA signatures
+    signature = rsa.sign(message, keypair.private_key)
+    is_valid = rsa.verify(message, signature, keypair.public_key)
+
+    # ECDSA signatures
+    keypair = ecc.generate_keypair(Curve.P256)
+    
+    signature = ecdsa.sign(message, keypair.private_key)
+    is_valid = ecdsa.verify(message, signature, keypair.public_key)
+
+    # Ed25519 (recommended for signatures)
+    keypair = ed25519.generate_keypair()
+    
+    signature = ed25519.sign(message, keypair.private_key)
+    is_valid = ed25519.verify(message, signature, keypair.public_key)
+
+    # ECDH key exchange
+    alice = ecc.generate_keypair(Curve.P256)
+    bob = ecc.generate_keypair(Curve.P256)
+
+    alice_shared = ecdh.derive_shared_secret(alice.private_key, bob.public_key)
+    bob_shared = ecdh.derive_shared_secret(bob.private_key, alice.public_key)
+
+    assert(alice_shared == bob_shared)
+
+    # X25519 key exchange (recommended)
+    alice = x25519.generate_keypair()
+    bob = x25519.generate_keypair()
+
+    shared = x25519.derive_shared_secret(alice.private_key, bob.public_key)
+
+    # Hybrid encryption (asymmetric + symmetric)
+    recipient = ecc.generate_keypair(Curve.P256)
+    
+    ciphertext = hybrid.encrypt(plaintext, recipient.public_key)
+    decrypted = hybrid.decrypt(ciphertext, recipient.private_key)?
+
+    # Key serialization
+    pem = keypair.private_key.to_pem()
+    loaded = ECPrivateKey.from_pem(pem)?
+    ```

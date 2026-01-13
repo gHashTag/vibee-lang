@@ -1,0 +1,800 @@
+# ============================================================================
+# MIGRATIONS - Версионирование схемы данных на Vibee
+# ============================================================================
+# Миграции, rollback, seeding, schema snapshots
+# ============================================================================
+
+Specification Migrations:
+  """
+  Миграции как спецификация эволюции схемы данных.
+  Каждая миграция - это поведение трансформации.
+  """
+
+  # ==========================================================================
+  # ТИПЫ ДАННЫХ
+  # ==========================================================================
+
+  Type Migration:
+    id: MigrationId
+    name: String
+    version: String
+    batch: Int
+    up: Schema -> Schema
+    down: Schema -> Schema
+    created_at: Timestamp
+    executed_at: Timestamp?
+
+  Type MigrationId:
+    """Формат: YYYYMMDDHHMMSS_name"""
+    value: String
+
+  Type MigrationStatus:
+    variants:
+      - Pending
+      - Running
+      - Completed
+      - Failed: String
+      - RolledBack
+
+  Type MigrationBatch:
+    batch_number: Int
+    migrations: List<Migration>
+    executed_at: Timestamp
+
+  Type Schema:
+    tables: Map<String, Table>
+    views: Map<String, View>
+    functions: Map<String, Function>
+    triggers: Map<String, Trigger>
+    extensions: List<String>
+
+  Type View:
+    name: String
+    query: String
+    materialized: Boolean = false
+
+  Type Function:
+    name: String
+    params: List<(String, ColumnType)>
+    returns: ColumnType
+    body: String
+    language: String = "sql"
+
+  Type Trigger:
+    name: String
+    table: String
+    timing: TriggerTiming
+    event: TriggerEvent
+    function: String
+
+  Type TriggerTiming:
+    variants: [Before, After, InsteadOf]
+
+  Type TriggerEvent:
+    variants: [Insert, Update, Delete, Truncate]
+
+  # ==========================================================================
+  # SCHEMA BUILDER
+  # ==========================================================================
+
+  Behavior SchemaBuilder:
+    """DSL для определения схемы"""
+
+    When Schema.create(table_name, define):
+      Then:
+        - builder = TableBuilder(table_name)
+        - define(builder)
+        - return CreateTable(builder.build())
+
+    When Schema.table(table_name, modify):
+      Then:
+        - builder = TableModifier(table_name)
+        - modify(builder)
+        - return AlterTable(builder.build())
+
+    When Schema.drop(table_name):
+      Then: return DropTable(table_name)
+
+    When Schema.drop_if_exists(table_name):
+      Then: return DropTableIfExists(table_name)
+
+    When Schema.rename(from, to):
+      Then: return RenameTable(from, to)
+
+    When Schema.has_table(table_name):
+      Then: return await query_schema_has_table(table_name)
+
+    When Schema.has_column(table_name, column_name):
+      Then: return await query_schema_has_column(table_name, column_name)
+
+  Behavior TableBuilder:
+    """Построение таблицы"""
+
+    State:
+      name: String
+      columns: List<Column> = []
+      indexes: List<Index> = []
+      foreign_keys: List<ForeignKey> = []
+      primary_key: List<String>?
+
+    # ID columns
+    When builder.id():
+      Then: builder.big_increments("id").primary()
+
+    When builder.uuid():
+      Then: builder.column("id", UUID).primary().default("gen_random_uuid()")
+
+    When builder.ulid():
+      Then: builder.column("id", String(26)).primary()
+
+    # Integer types
+    When builder.integer(name):
+      Then: builder.column(name, Integer)
+
+    When builder.big_integer(name):
+      Then: builder.column(name, BigInt)
+
+    When builder.small_integer(name):
+      Then: builder.column(name, SmallInt)
+
+    When builder.tiny_integer(name):
+      Then: builder.column(name, TinyInt)
+
+    When builder.increments(name):
+      Then: builder.column(name, Integer).auto_increment()
+
+    When builder.big_increments(name):
+      Then: builder.column(name, BigInt).auto_increment()
+
+    # String types
+    When builder.string(name, length):
+      Then: builder.column(name, String(length ?? 255))
+
+    When builder.text(name):
+      Then: builder.column(name, Text)
+
+    When builder.char(name, length):
+      Then: builder.column(name, Char(length))
+
+    # Numeric types
+    When builder.float(name, precision, scale):
+      Then: builder.column(name, Float)
+
+    When builder.double(name):
+      Then: builder.column(name, Double)
+
+    When builder.decimal(name, precision, scale):
+      Then: builder.column(name, Decimal(precision ?? 8, scale ?? 2))
+
+    When builder.money(name):
+      Then: builder.decimal(name, 19, 4)
+
+    # Boolean
+    When builder.boolean(name):
+      Then: builder.column(name, Boolean)
+
+    # Date/Time
+    When builder.date(name):
+      Then: builder.column(name, Date)
+
+    When builder.time(name):
+      Then: builder.column(name, Time)
+
+    When builder.datetime(name):
+      Then: builder.column(name, DateTime)
+
+    When builder.timestamp(name):
+      Then: builder.column(name, Timestamp)
+
+    When builder.timestamps():
+      Then:
+        - builder.timestamp("created_at").nullable()
+        - builder.timestamp("updated_at").nullable()
+
+    When builder.soft_deletes():
+      Then: builder.timestamp("deleted_at").nullable()
+
+    # JSON
+    When builder.json(name):
+      Then: builder.column(name, JSON)
+
+    When builder.jsonb(name):
+      Then: builder.column(name, JSONB)
+
+    # Binary
+    When builder.binary(name, length):
+      Then: builder.column(name, Binary(length))
+
+    When builder.blob(name):
+      Then: builder.column(name, Blob)
+
+    # Special
+    When builder.enum(name, values):
+      Then: builder.column(name, Enum(values))
+
+    When builder.uuid_column(name):
+      Then: builder.column(name, UUID)
+
+    When builder.ip_address(name):
+      Then: builder.column(name, InetAddress)
+
+    When builder.mac_address(name):
+      Then: builder.column(name, MacAddress)
+
+    When builder.geometry(name):
+      Then: builder.column(name, Geometry)
+
+    When builder.point(name):
+      Then: builder.column(name, Point)
+
+    # Column modifiers
+    When column.nullable():
+      Then: column with nullable = true
+
+    When column.default(value):
+      Then: column with default = value
+
+    When column.unique():
+      Then: column with unique = true
+
+    When column.primary():
+      Then:
+        - builder.primary_key = [column.name]
+        - column
+
+    When column.auto_increment():
+      Then: column with auto_increment = true
+
+    When column.unsigned():
+      Then: column with unsigned = true
+
+    When column.comment(text):
+      Then: column with comment = text
+
+    When column.after(other_column):
+      Then: column with position = After(other_column)
+
+    When column.first():
+      Then: column with position = First
+
+    # Indexes
+    When builder.index(columns, name):
+      Then: add Index(name ?? auto_name(columns), columns, false) to indexes
+
+    When builder.unique_index(columns, name):
+      Then: add Index(name ?? auto_name(columns), columns, true) to indexes
+
+    When builder.spatial_index(column):
+      Then: add Index(auto_name([column]), [column], false, Spatial) to indexes
+
+    When builder.fulltext_index(columns):
+      Then: add Index(auto_name(columns), columns, false, FullText) to indexes
+
+    # Foreign keys
+    When builder.foreign(column):
+      Then: return ForeignKeyBuilder(column)
+
+    When fk_builder.references(column):
+      Then: fk_builder with references_column = column
+
+    When fk_builder.on(table):
+      Then: fk_builder with references_table = table
+
+    When fk_builder.on_delete(action):
+      Then: fk_builder with on_delete = action
+
+    When fk_builder.on_update(action):
+      Then: fk_builder with on_update = action
+
+    When fk_builder.cascade():
+      Then: fk_builder.on_delete(Cascade).on_update(Cascade)
+
+    When fk_builder.restrict():
+      Then: fk_builder.on_delete(Restrict).on_update(Restrict)
+
+    When fk_builder.set_null():
+      Then: fk_builder.on_delete(SetNull)
+
+    # Shorthand for foreign key
+    When builder.foreign_id(name):
+      Then:
+        - builder.big_integer(name).unsigned()
+        - return ForeignKeyBuilder(name)
+
+    When builder.foreign_uuid(name):
+      Then:
+        - builder.uuid_column(name)
+        - return ForeignKeyBuilder(name)
+
+  Behavior TableModifier:
+    """Модификация существующей таблицы"""
+
+    When modifier.add_column(name, type):
+      Then: add AddColumn(Column(name, type)) to changes
+
+    When modifier.drop_column(name):
+      Then: add DropColumn(name) to changes
+
+    When modifier.rename_column(from, to):
+      Then: add RenameColumn(from, to) to changes
+
+    When modifier.modify_column(name, type):
+      Then: add ModifyColumn(name, type) to changes
+
+    When modifier.add_index(columns, name):
+      Then: add AddIndex(Index(name, columns)) to changes
+
+    When modifier.drop_index(name):
+      Then: add DropIndex(name) to changes
+
+    When modifier.add_foreign(column):
+      Then: return ForeignKeyBuilder(column, modifier)
+
+    When modifier.drop_foreign(name):
+      Then: add DropForeignKey(name) to changes
+
+    When modifier.add_primary(columns):
+      Then: add AddPrimaryKey(columns) to changes
+
+    When modifier.drop_primary():
+      Then: add DropPrimaryKey to changes
+
+  # ==========================================================================
+  # MIGRATION RUNNER
+  # ==========================================================================
+
+  Behavior MigrationRunner:
+    """Выполнение миграций"""
+
+    State:
+      migrations_table: String = "migrations"
+      migrations_path: Path
+      executed: List<MigrationId>
+
+    When runner.migrate():
+      """Выполнить все pending миграции"""
+      Then:
+        - await ensure_migrations_table()
+        - pending = await get_pending_migrations()
+        - if pending.is_empty():
+            - log.info("Nothing to migrate")
+            - return
+        
+        - batch = await get_next_batch_number()
+        
+        - for migration in pending:
+            - log.info("Migrating: ${migration.name}")
+            - start = now()
+            
+            - await DB.transaction((tx) ->
+                - await migration.up(tx)
+                - await record_migration(migration, batch)
+              )
+            
+            - duration = now() - start
+            - log.info("Migrated: ${migration.name} (${duration.ms}ms)")
+            - emit MigrationExecuted(migration, duration)
+        
+        - log.info("Migrated ${pending.size} migrations")
+
+    When runner.rollback(steps):
+      """Откатить последние N батчей"""
+      Then:
+        - steps = steps ?? 1
+        - batches = await get_last_batches(steps)
+        
+        - for batch in batches.reverse():
+            - for migration in batch.migrations.reverse():
+                - log.info("Rolling back: ${migration.name}")
+                - start = now()
+                
+                - await DB.transaction((tx) ->
+                    - await migration.down(tx)
+                    - await remove_migration_record(migration)
+                  )
+                
+                - duration = now() - start
+                - log.info("Rolled back: ${migration.name} (${duration.ms}ms)")
+                - emit MigrationRolledBack(migration, duration)
+
+    When runner.reset():
+      """Откатить все миграции"""
+      Then:
+        - all_batches = await get_all_batches()
+        - for batch in all_batches.reverse():
+            - await runner.rollback(1)
+
+    When runner.refresh():
+      """Reset + migrate"""
+      Then:
+        - await runner.reset()
+        - await runner.migrate()
+
+    When runner.fresh():
+      """Drop all tables + migrate"""
+      Then:
+        - await drop_all_tables()
+        - await runner.migrate()
+
+    When runner.status():
+      """Показать статус миграций"""
+      Then:
+        - all = await get_all_migrations()
+        - executed = await get_executed_migrations()
+        
+        - return all.map(m -> {
+            name: m.name,
+            batch: executed.find(e -> e.id == m.id)?.batch,
+            status: if executed.has(m.id) then Completed else Pending
+          })
+
+    When ensure_migrations_table():
+      Then:
+        - if not await Schema.has_table(migrations_table):
+            - await Schema.create(migrations_table, (t) ->
+                t.id()
+                t.string("migration")
+                t.integer("batch")
+                t.timestamp("executed_at").default("now()")
+              )
+
+  # ==========================================================================
+  # MIGRATION GENERATOR
+  # ==========================================================================
+
+  Behavior MigrationGenerator:
+    """Генерация миграций"""
+
+    When generate(name):
+      Then:
+        - timestamp = format_timestamp(now(), "YYYYMMDDHHmmss")
+        - filename = "${timestamp}_${snake_case(name)}.vibee"
+        - path = migrations_path / filename
+        
+        - content = generate_migration_template(name)
+        - await write_file(path, content)
+        
+        - log.info("Created migration: ${filename}")
+        - return path
+
+    When generate_migration_template(name):
+      Then:
+        - return """
+          Migration "${name}":
+            version: "${now().format("YYYY-MM-DD")}"
+            
+            up: (schema) ->
+              # Define your migration here
+              schema.create("table_name", (t) ->
+                t.id()
+                t.string("name")
+                t.timestamps()
+              )
+            
+            down: (schema) ->
+              # Reverse the migration
+              schema.drop("table_name")
+          """
+
+    When generate_from_model(model):
+      """Генерация миграции из модели"""
+      Then:
+        - name = "create_${model.table}_table"
+        - content = """
+          Migration "${name}":
+            up: (schema) ->
+              schema.create("${model.table}", (t) ->
+                ${generate_columns_from_model(model)}
+              )
+            
+            down: (schema) ->
+              schema.drop("${model.table}")
+          """
+        - return await generate_with_content(name, content)
+
+    When diff_schema(current, target):
+      """Генерация миграции из разницы схем"""
+      Then:
+        - changes = []
+        
+        # New tables
+        - for table in target.tables - current.tables:
+            - add CreateTable(table) to changes
+        
+        # Dropped tables
+        - for table in current.tables - target.tables:
+            - add DropTable(table) to changes
+        
+        # Modified tables
+        - for table in current.tables & target.tables:
+            - current_table = current.tables[table]
+            - target_table = target.tables[table]
+            - table_changes = diff_table(current_table, target_table)
+            - if table_changes.is_not_empty():
+                - add AlterTable(table, table_changes) to changes
+        
+        - return changes
+
+  # ==========================================================================
+  # SEEDING
+  # ==========================================================================
+
+  Behavior Seeder:
+    """Заполнение базы тестовыми данными"""
+
+    Type Seeder:
+      name: String
+      run: () -> Async<Unit>
+      depends_on: List<String> = []
+
+    When DB.seed():
+      """Запустить все сидеры"""
+      Then:
+        - seeders = await load_seeders()
+        - sorted = topological_sort(seeders)
+        
+        - for seeder in sorted:
+            - log.info("Seeding: ${seeder.name}")
+            - await seeder.run()
+            - emit SeederExecuted(seeder.name)
+
+    When DB.seed(name):
+      """Запустить конкретный сидер"""
+      Then:
+        - seeder = await load_seeder(name)
+        - await seeder.run()
+
+    When factory(model, count):
+      """Фабрика для создания тестовых данных"""
+      Then:
+        - return FactoryBuilder(model, count)
+
+    When factory_builder.create():
+      Then:
+        - records = []
+        - for i in 1..count:
+            - data = generate_fake_data(model)
+            - record = await model.create(data)
+            - add record to records
+        - return records
+
+    When factory_builder.make():
+      """Создать без сохранения"""
+      Then:
+        - records = []
+        - for i in 1..count:
+            - data = generate_fake_data(model)
+            - record = model.new(data)
+            - add record to records
+        - return records
+
+    When factory_builder.state(overrides):
+      Then: factory_builder with overrides = overrides
+
+  Behavior FakeDataGenerator:
+    """Генерация фейковых данных"""
+
+    When fake.name():
+      Then: random_choice(["John", "Jane", "Bob", "Alice", ...])
+
+    When fake.email():
+      Then: "${fake.username()}@${fake.domain()}"
+
+    When fake.username():
+      Then: "${fake.word()}${random_int(100, 999)}"
+
+    When fake.password():
+      Then: random_string(16)
+
+    When fake.phone():
+      Then: "+1${random_digits(10)}"
+
+    When fake.address():
+      Then: "${random_int(1, 9999)} ${fake.street()}"
+
+    When fake.city():
+      Then: random_choice(cities)
+
+    When fake.country():
+      Then: random_choice(countries)
+
+    When fake.text(sentences):
+      Then: generate_lorem_ipsum(sentences ?? 3)
+
+    When fake.paragraph():
+      Then: fake.text(random_int(3, 7))
+
+    When fake.uuid():
+      Then: generate_uuid_v4()
+
+    When fake.date(start, end):
+      Then: random_date_between(start ?? 1970-01-01, end ?? now())
+
+    When fake.boolean():
+      Then: random_choice([true, false])
+
+    When fake.number(min, max):
+      Then: random_int(min ?? 0, max ?? 1000000)
+
+    When fake.decimal(min, max, precision):
+      Then: random_decimal(min, max, precision ?? 2)
+
+    When fake.json():
+      Then: { key: fake.word(), value: fake.number() }
+
+    When fake.image_url(width, height):
+      Then: "https://picsum.photos/${width ?? 200}/${height ?? 200}"
+
+  # ==========================================================================
+  # SCHEMA SNAPSHOTS
+  # ==========================================================================
+
+  Behavior SchemaSnapshots:
+    """Снимки схемы для сравнения"""
+
+    When snapshot_schema():
+      Then:
+        - tables = await get_all_tables()
+        - schema = Schema(tables: {})
+        
+        - for table_name in tables:
+            - columns = await get_table_columns(table_name)
+            - indexes = await get_table_indexes(table_name)
+            - foreign_keys = await get_table_foreign_keys(table_name)
+            
+            - schema.tables[table_name] = Table(
+                name: table_name,
+                columns: columns,
+                indexes: indexes,
+                foreign_keys: foreign_keys
+              )
+        
+        - return schema
+
+    When save_snapshot(name):
+      Then:
+        - schema = await snapshot_schema()
+        - path = snapshots_path / "${name}.json"
+        - await write_file(path, JSON.stringify(schema, indent: 2))
+        - log.info("Saved schema snapshot: ${name}")
+
+    When load_snapshot(name):
+      Then:
+        - path = snapshots_path / "${name}.json"
+        - content = await read_file(path)
+        - return JSON.parse(content) as Schema
+
+    When compare_snapshots(name1, name2):
+      Then:
+        - schema1 = await load_snapshot(name1)
+        - schema2 = await load_snapshot(name2)
+        - return diff_schema(schema1, schema2)
+
+    When generate_migration_from_snapshots(from_name, to_name):
+      Then:
+        - changes = await compare_snapshots(from_name, to_name)
+        - if changes.is_empty():
+            - log.info("No changes detected")
+            - return null
+        
+        - migration_name = "migrate_${from_name}_to_${to_name}"
+        - return await generate_migration_from_changes(migration_name, changes)
+
+  # ==========================================================================
+  # СОБЫТИЯ
+  # ==========================================================================
+
+  Events:
+    MigrationExecuted:
+      migration: MigrationId
+      name: String
+      duration: Duration
+      batch: Int
+
+    MigrationRolledBack:
+      migration: MigrationId
+      name: String
+      duration: Duration
+
+    MigrationFailed:
+      migration: MigrationId
+      error: String
+
+    SeederExecuted:
+      name: String
+      records_created: Int
+
+    SchemaSnapshotCreated:
+      name: String
+      tables_count: Int
+
+  # ==========================================================================
+  # ПРИМЕР ИСПОЛЬЗОВАНИЯ
+  # ==========================================================================
+
+  Example "Create Users Table":
+    ```vibee
+    Migration "create_users_table":
+      version: "2024-01-15"
+      
+      up: (schema) ->
+        schema.create("users", (t) ->
+          t.id()
+          t.string("name", 100)
+          t.string("email").unique()
+          t.string("password")
+          t.enum("role", ["user", "admin", "moderator"]).default("user")
+          t.json("settings").nullable()
+          t.timestamp("email_verified_at").nullable()
+          t.timestamps()
+          t.soft_deletes()
+          
+          t.index(["email"])
+          t.index(["created_at"])
+        )
+        
+        schema.create("profiles", (t) ->
+          t.id()
+          t.foreign_id("user_id").references("id").on("users").cascade()
+          t.string("avatar").nullable()
+          t.text("bio").nullable()
+          t.date("birthday").nullable()
+          t.timestamps()
+        )
+      
+      down: (schema) ->
+        schema.drop("profiles")
+        schema.drop("users")
+    ```
+
+  Example "Add Column Migration":
+    ```vibee
+    Migration "add_phone_to_users":
+      version: "2024-01-20"
+      
+      up: (schema) ->
+        schema.table("users", (t) ->
+          t.add_column("phone", String(20)).nullable().after("email")
+          t.add_index(["phone"])
+        )
+      
+      down: (schema) ->
+        schema.table("users", (t) ->
+          t.drop_index("users_phone_index")
+          t.drop_column("phone")
+        )
+    ```
+
+  Example "Seeder":
+    ```vibee
+    Seeder "users":
+      depends_on: []
+      
+      run: () ->
+        # Create admin
+        await User.create({
+          name: "Admin",
+          email: "admin@example.com",
+          password: hash("secret"),
+          role: "admin"
+        })
+        
+        # Create test users
+        await factory(User, 50)
+          .state({ role: "user" })
+          .create()
+        
+        log.info("Created 51 users")
+    
+    Seeder "posts":
+      depends_on: ["users"]
+      
+      run: () ->
+        users = await User.all()
+        
+        for user in users:
+          count = fake.number(1, 10)
+          await factory(Post, count)
+            .state({ user_id: user.id })
+            .create()
+    ```

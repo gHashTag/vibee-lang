@@ -1,0 +1,229 @@
+// =============================================================================
+// Vibee OS — Color Module
+// Color manipulation and conversion
+// =============================================================================
+
+/// RGB color (0-255 per channel)
+struct RGB {
+    r: UInt8
+    g: UInt8
+    b: UInt8
+    
+    fn new(r: UInt8, g: UInt8, b: UInt8) -> Self {
+        RGB { r: r, g: g, b: b }
+    }
+    
+    fn from_hex(hex: String) -> Option<Self> {
+        let h = hex.trim_start("#")
+        if h.len() != 6 { return None }
+        let r = UInt8.parse_hex(h[0..2]).ok()?
+        let g = UInt8.parse_hex(h[2..4]).ok()?
+        let b = UInt8.parse_hex(h[4..6]).ok()?
+        Some(RGB { r: r, g: g, b: b })
+    }
+    
+    fn to_hex() -> String {
+        format!("#{:02x}{:02x}{:02x}", self.r, self.g, self.b)
+    }
+    
+    fn to_hsl() -> HSL { rgb_to_hsl(self) }
+    fn to_hsv() -> HSV { rgb_to_hsv(self) }
+    fn to_rgba(a: Float64) -> RGBA { RGBA { r: self.r, g: self.g, b: self.b, a: a } }
+    
+    fn lighten(amount: Float64) -> Self { self.to_hsl().lighten(amount).to_rgb() }
+    fn darken(amount: Float64) -> Self { self.to_hsl().darken(amount).to_rgb() }
+    fn saturate(amount: Float64) -> Self { self.to_hsl().saturate(amount).to_rgb() }
+    fn desaturate(amount: Float64) -> Self { self.to_hsl().desaturate(amount).to_rgb() }
+    fn invert() -> Self { RGB { r: 255 - self.r, g: 255 - self.g, b: 255 - self.b } }
+    fn grayscale() -> Self { self.desaturate(1.0) }
+    
+    fn luminance() -> Float64 {
+        let r = (self.r as Float64 / 255.0).pow(2.2)
+        let g = (self.g as Float64 / 255.0).pow(2.2)
+        let b = (self.b as Float64 / 255.0).pow(2.2)
+        0.2126 * r + 0.7152 * g + 0.0722 * b
+    }
+    
+    fn contrast_ratio(other: RGB) -> Float64 {
+        let l1 = self.luminance().max(other.luminance())
+        let l2 = self.luminance().min(other.luminance())
+        (l1 + 0.05) / (l2 + 0.05)
+    }
+    
+    fn mix(other: RGB, weight: Float64) -> Self {
+        let w = weight.clamp(0.0, 1.0)
+        RGB {
+            r: ((1.0 - w) * self.r as Float64 + w * other.r as Float64) as UInt8,
+            g: ((1.0 - w) * self.g as Float64 + w * other.g as Float64) as UInt8,
+            b: ((1.0 - w) * self.b as Float64 + w * other.b as Float64) as UInt8
+        }
+    }
+}
+
+/// RGBA color with alpha
+struct RGBA {
+    r: UInt8
+    g: UInt8
+    b: UInt8
+    a: Float64
+    
+    fn new(r: UInt8, g: UInt8, b: UInt8, a: Float64) -> Self {
+        RGBA { r: r, g: g, b: b, a: a.clamp(0.0, 1.0) }
+    }
+    
+    fn to_rgb() -> RGB { RGB { r: self.r, g: self.g, b: self.b } }
+    fn to_css() -> String { format!("rgba({},{},{},{})", self.r, self.g, self.b, self.a) }
+}
+
+/// HSL color (hue 0-360, saturation/lightness 0-1)
+struct HSL {
+    h: Float64
+    s: Float64
+    l: Float64
+    
+    fn new(h: Float64, s: Float64, l: Float64) -> Self {
+        HSL { h: h % 360.0, s: s.clamp(0.0, 1.0), l: l.clamp(0.0, 1.0) }
+    }
+    
+    fn to_rgb() -> RGB { hsl_to_rgb(self) }
+    fn lighten(amount: Float64) -> Self { HSL { h: self.h, s: self.s, l: (self.l + amount).clamp(0.0, 1.0) } }
+    fn darken(amount: Float64) -> Self { HSL { h: self.h, s: self.s, l: (self.l - amount).clamp(0.0, 1.0) } }
+    fn saturate(amount: Float64) -> Self { HSL { h: self.h, s: (self.s + amount).clamp(0.0, 1.0), l: self.l } }
+    fn desaturate(amount: Float64) -> Self { HSL { h: self.h, s: (self.s - amount).clamp(0.0, 1.0), l: self.l } }
+    fn rotate(degrees: Float64) -> Self { HSL { h: (self.h + degrees) % 360.0, s: self.s, l: self.l } }
+    fn complement() -> Self { self.rotate(180.0) }
+}
+
+/// HSV color
+struct HSV {
+    h: Float64
+    s: Float64
+    v: Float64
+    
+    fn new(h: Float64, s: Float64, v: Float64) -> Self {
+        HSV { h: h % 360.0, s: s.clamp(0.0, 1.0), v: v.clamp(0.0, 1.0) }
+    }
+    
+    fn to_rgb() -> RGB { hsv_to_rgb(self) }
+}
+
+// Conversions
+fn rgb_to_hsl(c: RGB) -> HSL {
+    let r = c.r as Float64 / 255.0
+    let g = c.g as Float64 / 255.0
+    let b = c.b as Float64 / 255.0
+    let max = r.max(g).max(b)
+    let min = r.min(g).min(b)
+    let l = (max + min) / 2.0
+    
+    if max == min { return HSL { h: 0.0, s: 0.0, l: l } }
+    
+    let d = max - min
+    let s = if l > 0.5 { d / (2.0 - max - min) } else { d / (max + min) }
+    let h = if max == r { ((g - b) / d + (if g < b { 6.0 } else { 0.0 })) * 60.0 }
+            else if max == g { ((b - r) / d + 2.0) * 60.0 }
+            else { ((r - g) / d + 4.0) * 60.0 }
+    HSL { h: h, s: s, l: l }
+}
+
+fn hsl_to_rgb(c: HSL) -> RGB {
+    if c.s == 0.0 {
+        let v = (c.l * 255.0) as UInt8
+        return RGB { r: v, g: v, b: v }
+    }
+    let q = if c.l < 0.5 { c.l * (1.0 + c.s) } else { c.l + c.s - c.l * c.s }
+    let p = 2.0 * c.l - q
+    fn hue_to_rgb(p: Float64, q: Float64, t: Float64) -> Float64 {
+        let t = if t < 0.0 { t + 1.0 } else if t > 1.0 { t - 1.0 } else { t }
+        if t < 1.0/6.0 { p + (q - p) * 6.0 * t }
+        else if t < 0.5 { q }
+        else if t < 2.0/3.0 { p + (q - p) * (2.0/3.0 - t) * 6.0 }
+        else { p }
+    }
+    RGB {
+        r: (hue_to_rgb(p, q, c.h/360.0 + 1.0/3.0) * 255.0) as UInt8,
+        g: (hue_to_rgb(p, q, c.h/360.0) * 255.0) as UInt8,
+        b: (hue_to_rgb(p, q, c.h/360.0 - 1.0/3.0) * 255.0) as UInt8
+    }
+}
+
+fn rgb_to_hsv(c: RGB) -> HSV {
+    let r = c.r as Float64 / 255.0
+    let g = c.g as Float64 / 255.0
+    let b = c.b as Float64 / 255.0
+    let max = r.max(g).max(b)
+    let min = r.min(g).min(b)
+    let d = max - min
+    let s = if max == 0.0 { 0.0 } else { d / max }
+    if max == min { return HSV { h: 0.0, s: s, v: max } }
+    let h = if max == r { ((g - b) / d + (if g < b { 6.0 } else { 0.0 })) * 60.0 }
+            else if max == g { ((b - r) / d + 2.0) * 60.0 }
+            else { ((r - g) / d + 4.0) * 60.0 }
+    HSV { h: h, s: s, v: max }
+}
+
+fn hsv_to_rgb(c: HSV) -> RGB {
+    let h = c.h / 60.0
+    let i = h.floor() as Int
+    let f = h - i as Float64
+    let p = c.v * (1.0 - c.s)
+    let q = c.v * (1.0 - c.s * f)
+    let t = c.v * (1.0 - c.s * (1.0 - f))
+    let (r, g, b) = match i % 6 {
+        0 => (c.v, t, p), 1 => (q, c.v, p), 2 => (p, c.v, t),
+        3 => (p, q, c.v), 4 => (t, p, c.v), _ => (c.v, p, q)
+    }
+    RGB { r: (r * 255.0) as UInt8, g: (g * 255.0) as UInt8, b: (b * 255.0) as UInt8 }
+}
+
+// Named colors
+module Colors {
+    fn black() -> RGB { RGB.new(0, 0, 0) }
+    fn white() -> RGB { RGB.new(255, 255, 255) }
+    fn red() -> RGB { RGB.new(255, 0, 0) }
+    fn green() -> RGB { RGB.new(0, 128, 0) }
+    fn blue() -> RGB { RGB.new(0, 0, 255) }
+    fn yellow() -> RGB { RGB.new(255, 255, 0) }
+    fn cyan() -> RGB { RGB.new(0, 255, 255) }
+    fn magenta() -> RGB { RGB.new(255, 0, 255) }
+    fn orange() -> RGB { RGB.new(255, 165, 0) }
+    fn purple() -> RGB { RGB.new(128, 0, 128) }
+    fn pink() -> RGB { RGB.new(255, 192, 203) }
+    fn gray() -> RGB { RGB.new(128, 128, 128) }
+}
+
+// Palette generation
+fn complementary(base: RGB) -> [RGB] { [base, base.to_hsl().complement().to_rgb()] }
+
+fn triadic(base: RGB) -> [RGB] {
+    let hsl = base.to_hsl()
+    [base, hsl.rotate(120.0).to_rgb(), hsl.rotate(240.0).to_rgb()]
+}
+
+fn analogous(base: RGB) -> [RGB] {
+    let hsl = base.to_hsl()
+    [hsl.rotate(-30.0).to_rgb(), base, hsl.rotate(30.0).to_rgb()]
+}
+
+// Tests
+test "hex conversion" {
+    let c = RGB.from_hex("#ff5500")?
+    assert_eq(c.r, 255)?
+    assert_eq(c.g, 85)?
+    assert_eq(c.b, 0)?
+    assert_eq(c.to_hex(), "#ff5500")?
+}
+
+test "hsl roundtrip" {
+    let rgb = RGB.new(100, 150, 200)
+    let back = rgb.to_hsl().to_rgb()
+    assert((rgb.r as Int - back.r as Int).abs() <= 1)?
+}
+
+test "lighten darken" {
+    let c = RGB.new(100, 100, 100)
+    let lighter = c.lighten(0.2)
+    let darker = c.darken(0.2)
+    assert(lighter.to_hsl().l > c.to_hsl().l)?
+    assert(darker.to_hsl().l < c.to_hsl().l)?
+}

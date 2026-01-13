@@ -1,0 +1,781 @@
+name: vibee_os_multimodal_input
+version: "0.1.0"
+language: gleam
+module: kernel/ui/multimodal_input
+description: Multi-Modal Input - голос, жесты, взгляд, мозговые волны как равноправные триггеры в Given/When/Then
+
+behaviors:
+  - name: voice_triggers_action
+    given: Voice recognition is active
+    when: User says command
+    then: Command is executed as if clicked
+    test_cases:
+      - name: voice_submit
+        input: {transcript: "submit form", confidence: 0.95}
+        expected: {action: "submit", element: "form", executed: true}
+      - name: voice_navigate
+        input: {transcript: "go to settings", confidence: 0.9}
+        expected: {action: "navigate", target: "settings"}
+      - name: low_confidence_confirm
+        input: {transcript: "delete all", confidence: 0.6}
+        expected: {action: "confirm", prompt: "Did you say 'delete all'?"}
+
+  - name: gaze_selects_element
+    given: Eye tracking is active
+    when: User gazes at element for duration
+    then: Element is selected/activated
+    test_cases:
+      - name: gaze_dwell_select
+        input: {element: "button", dwell_time_ms: 1000}
+        expected: {selected: true, feedback: "visual_highlight"}
+      - name: gaze_quick_no_select
+        input: {element: "button", dwell_time_ms: 200}
+        expected: {selected: false, reason: "dwell_too_short"}
+
+  - name: brain_interface_intent
+    given: BCI device is connected
+    when: User thinks intent
+    then: Intent is translated to action
+    test_cases:
+      - name: bci_select
+        input: {signal: "motor_imagery_left", confidence: 0.8}
+        expected: {action: "select_previous"}
+      - name: bci_confirm
+        input: {signal: "p300_response", target: "button_3"}
+        expected: {action: "activate", element: "button_3"}
+
+  - name: multimodal_fusion
+    given: Multiple input modalities are active
+    when: Inputs from different modalities arrive
+    then: Inputs are fused for disambiguation
+    test_cases:
+      - name: voice_plus_gaze
+        input: {voice: "click this", gaze_target: "submit_btn"}
+        expected: {action: "click", element: "submit_btn", confidence: 0.99}
+      - name: gesture_plus_voice
+        input: {gesture: "point", voice: "open that"}
+        expected: {action: "open", element: "pointed_element"}
+
+  - name: modality_fallback
+    given: Primary modality fails
+    when: Input is not recognized
+    then: System falls back to alternative modality
+    test_cases:
+      - name: voice_fails_use_touch
+        input: {voice_failed: true, touch_available: true}
+        expected: {prompt: "Voice not recognized. Please tap the button."}
+
+types:
+  # Input Modalities
+  InputModality:
+    variants:
+      - Touch: TouchInput
+      - Mouse: MouseInput
+      - Keyboard: KeyboardInput
+      - Voice: VoiceInput
+      - Gaze: GazeInput
+      - Gesture: GestureInput
+      - Pen: PenInput
+      - Controller: ControllerInput
+      - BCI: BCIInput                 # Brain-Computer Interface
+      - Haptic: HapticInput
+      - Proximity: ProximityInput
+      - Biometric: BiometricInput
+
+  # Voice Input
+  VoiceInput:
+    transcript: str
+    confidence: float
+    language: str
+    alternatives: [VoiceAlternative]
+    intent: VoiceIntent?
+    entities: [VoiceEntity]
+    audio_features: AudioFeatures?
+
+  VoiceAlternative:
+    transcript: str
+    confidence: float
+
+  VoiceIntent:
+    name: str
+    confidence: float
+    slots: {str: str}
+
+  VoiceEntity:
+    type: str
+    value: str
+    start: int
+    end: int
+    confidence: float
+
+  AudioFeatures:
+    volume: float
+    pitch: float
+    speed: float
+    emotion: VoiceEmotion?
+
+  VoiceEmotion:
+    variants:
+      - Neutral
+      - Happy
+      - Sad
+      - Angry
+      - Surprised
+      - Fearful
+
+  VoiceCommand:
+    pattern: str                      # "click {element}"
+    action: str
+    parameters: [VoiceParameter]
+    confirmation_required: bool
+    min_confidence: float
+
+  VoiceParameter:
+    name: str
+    type: str
+    required: bool
+    default: str?
+
+  # Eye Gaze Input
+  GazeInput:
+    point: GazePoint
+    fixation: Fixation?
+    saccade: Saccade?
+    pupil: PupilData?
+    blink: BlinkData?
+
+  GazePoint:
+    x: float
+    y: float
+    timestamp: int
+    confidence: float
+    eye: Eye
+
+  Eye:
+    variants:
+      - Left
+      - Right
+      - Both
+
+  Fixation:
+    center: GazePoint
+    duration_ms: int
+    dispersion: float
+
+  Saccade:
+    start: GazePoint
+    end: GazePoint
+    velocity: float
+    amplitude: float
+
+  PupilData:
+    diameter_left: float
+    diameter_right: float
+    dilation_change: float            # Indicates cognitive load
+
+  BlinkData:
+    is_blinking: bool
+    duration_ms: int?
+    rate_per_minute: float
+
+  GazeGesture:
+    variants:
+      - Dwell: {duration_ms: int}
+      - Wink: {eye: Eye}
+      - DoubleBlink
+      - LookAway
+      - Squint
+      - Smooth_Pursuit: {path: [GazePoint]}
+
+  # Gesture Input (Air/Body)
+  GestureInput:
+    type: BodyGesture
+    confidence: float
+    skeleton: Skeleton?
+    hand_pose: HandPose?
+
+  BodyGesture:
+    variants:
+      # Hand gestures
+      - Wave
+      - Point: {direction: Direction}
+      - Thumbs_Up
+      - Thumbs_Down
+      - Peace
+      - Fist
+      - Open_Palm
+      - Pinch
+      - Grab
+      - Release
+      - Swipe: {direction: Direction}
+      - Circle: {direction: RotationDirection}
+      
+      # Head gestures
+      - Nod
+      - Shake
+      - Tilt: {direction: Direction}
+      
+      # Body gestures
+      - Lean: {direction: Direction}
+      - Step: {direction: Direction}
+      - Jump
+      - Crouch
+      
+      # Custom
+      - Custom: {name: str}
+
+  Direction:
+    variants:
+      - Up
+      - Down
+      - Left
+      - Right
+      - Forward
+      - Backward
+
+  RotationDirection:
+    variants:
+      - Clockwise
+      - CounterClockwise
+
+  Skeleton:
+    joints: {str: Joint}
+    confidence: float
+
+  Joint:
+    x: float
+    y: float
+    z: float
+    confidence: float
+
+  HandPose:
+    fingers: [FingerState]
+    palm_position: Point3D
+    palm_normal: Point3D
+    grab_strength: float
+    pinch_strength: float
+
+  FingerState:
+    finger: Finger
+    extended: bool
+    tip_position: Point3D
+
+  Finger:
+    variants:
+      - Thumb
+      - Index
+      - Middle
+      - Ring
+      - Pinky
+
+  Point3D:
+    x: float
+    y: float
+    z: float
+
+  # Brain-Computer Interface
+  BCIInput:
+    signal_type: BCISignalType
+    channels: [BCIChannel]
+    classification: BCIClassification?
+    raw_data: [float]?
+
+  BCISignalType:
+    variants:
+      - EEG                           # Electroencephalography
+      - EMG                           # Electromyography
+      - EOG                           # Electrooculography
+      - fNIRS                         # Functional near-infrared spectroscopy
+
+  BCIChannel:
+    name: str
+    value: float
+    quality: float
+
+  BCIClassification:
+    intent: BCIIntent
+    confidence: float
+    latency_ms: int
+
+  BCIIntent:
+    variants:
+      - Motor_Imagery_Left
+      - Motor_Imagery_Right
+      - Motor_Imagery_Both
+      - Mental_Subtraction
+      - Mental_Rotation
+      - Word_Association
+      - Relaxation
+      - Concentration
+      - P300_Response: {target: str}
+      - SSVEP_Response: {frequency: float}
+      - Error_Related_Negativity      # User noticed error
+      - Custom: {name: str}
+
+  # Haptic Input
+  HapticInput:
+    pressure: float
+    location: Point3D
+    texture_feedback: bool
+    temperature: float?
+
+  # Proximity Input
+  ProximityInput:
+    distance: float
+    direction: Direction?
+    object_type: str?
+
+  # Biometric Input
+  BiometricInput:
+    heart_rate: float?
+    skin_conductance: float?
+    temperature: float?
+    stress_level: float?
+    attention_level: float?
+
+  # Controller Input (Gamepad, VR)
+  ControllerInput:
+    type: ControllerType
+    buttons: {str: bool}
+    axes: {str: float}
+    triggers: {str: float}
+    pose: ControllerPose?
+
+  ControllerType:
+    variants:
+      - Gamepad
+      - VR_Controller
+      - Motion_Controller
+      - Custom: {name: str}
+
+  ControllerPose:
+    position: Point3D
+    rotation: Rotation
+    velocity: Point3D
+    angular_velocity: Point3D
+
+  Rotation:
+    x: float
+    y: float
+    z: float
+    w: float
+
+  # Touch/Mouse/Keyboard (from gesture_language)
+  TouchInput:
+    touches: [TouchPoint]
+    gesture: str?
+
+  TouchPoint:
+    id: int
+    x: float
+    y: float
+    pressure: float
+
+  MouseInput:
+    x: float
+    y: float
+    buttons: int
+    wheel_delta: float?
+
+  KeyboardInput:
+    key: str
+    code: str
+    modifiers: [Modifier]
+    repeat: bool
+
+  Modifier:
+    variants:
+      - Shift
+      - Control
+      - Alt
+      - Meta
+
+  PenInput:
+    x: float
+    y: float
+    pressure: float
+    tilt_x: float
+    tilt_y: float
+    twist: float
+    button: int
+
+  # Multimodal Fusion
+  FusedInput:
+    modalities: [InputModality]
+    primary: InputModality
+    intent: FusedIntent
+    confidence: float
+    disambiguation: Disambiguation?
+
+  FusedIntent:
+    action: str
+    target: str?
+    parameters: {str: str}
+    source_modalities: [str]
+
+  Disambiguation:
+    ambiguous_inputs: [InputModality]
+    resolution_method: ResolutionMethod
+    user_confirmation: bool?
+
+  ResolutionMethod:
+    variants:
+      - Highest_Confidence
+      - Most_Recent
+      - Spatial_Alignment            # Gaze + Voice = "this"
+      - Temporal_Alignment           # Inputs within time window
+      - Semantic_Alignment           # Meaning matches
+      - User_Preference
+      - Ask_User
+
+  # Multimodal Specification
+  MultimodalSpec:
+    name: str
+    given: MultimodalGiven
+    when: MultimodalWhen
+    then: MultimodalThen
+    fallbacks: [ModalityFallback]
+
+  MultimodalGiven:
+    conditions: [ModalityCondition]
+
+  ModalityCondition:
+    variants:
+      - ModalityActive: {modality: str}
+      - ModalityAvailable: {modality: str}
+      - ConfidenceAbove: {modality: str, threshold: float}
+      - UserPrefers: {modality: str}
+      - EnvironmentSuitable: {modality: str}
+      - Custom: {predicate: str}
+
+  MultimodalWhen:
+    triggers: [ModalityTrigger]
+    fusion_mode: FusionMode
+
+  ModalityTrigger:
+    modality: str
+    event: str
+    parameters: {str: str}
+
+  FusionMode:
+    variants:
+      - Any                           # Any modality triggers
+      - All                           # All modalities must agree
+      - Weighted                      # Weighted combination
+      - Sequential                    # One after another
+      - Complementary                 # Different info from each
+
+  MultimodalThen:
+    outcomes: [MultimodalOutcome]
+
+  MultimodalOutcome:
+    variants:
+      - Execute: {action: str, params: {str: str}}
+      - Confirm: {prompt: str, modality: str}
+      - Feedback: {modality: str, type: str}
+      - SwitchModality: {to: str}
+      - Custom: {handler: str}
+
+  ModalityFallback:
+    from_modality: str
+    to_modality: str
+    condition: str
+    prompt: str?
+
+functions:
+  # Modality management
+  - name: modality_register
+    params: {modality: InputModality, config: {str: str}}
+    returns: bool
+    description: Register input modality
+
+  - name: modality_enable
+    params: {modality: str}
+    returns: bool
+    description: Enable modality
+
+  - name: modality_disable
+    params: {modality: str}
+    returns: bool
+    description: Disable modality
+
+  - name: modality_available
+    params: {}
+    returns: [str]
+    description: List available modalities
+
+  # Voice
+  - name: voice_start_listening
+    params: {language: str, continuous: bool}
+    returns: bool
+    description: Start voice recognition
+
+  - name: voice_stop_listening
+    params: {}
+    returns: void
+    description: Stop voice recognition
+
+  - name: voice_register_command
+    params: {command: VoiceCommand}
+    returns: bool
+    description: Register voice command
+
+  - name: voice_process
+    params: {input: VoiceInput}
+    returns: FusedIntent?
+    description: Process voice input
+
+  # Gaze
+  - name: gaze_start_tracking
+    params: {calibrate: bool}
+    returns: bool
+    description: Start eye tracking
+
+  - name: gaze_stop_tracking
+    params: {}
+    returns: void
+    description: Stop eye tracking
+
+  - name: gaze_calibrate
+    params: {}
+    returns: bool
+    description: Calibrate eye tracker
+
+  - name: gaze_process
+    params: {input: GazeInput}
+    returns: FusedIntent?
+    description: Process gaze input
+
+  # Gesture
+  - name: gesture_start_tracking
+    params: {body_parts: [str]}
+    returns: bool
+    description: Start gesture tracking
+
+  - name: gesture_stop_tracking
+    params: {}
+    returns: void
+    description: Stop gesture tracking
+
+  - name: gesture_register
+    params: {gesture: BodyGesture, action: str}
+    returns: bool
+    description: Register gesture mapping
+
+  - name: gesture_process
+    params: {input: GestureInput}
+    returns: FusedIntent?
+    description: Process gesture input
+
+  # BCI
+  - name: bci_connect
+    params: {device: str}
+    returns: bool
+    description: Connect to BCI device
+
+  - name: bci_disconnect
+    params: {}
+    returns: void
+    description: Disconnect BCI device
+
+  - name: bci_calibrate
+    params: {paradigm: str}
+    returns: bool
+    description: Calibrate BCI
+
+  - name: bci_process
+    params: {input: BCIInput}
+    returns: FusedIntent?
+    description: Process BCI input
+
+  # Fusion
+  - name: fusion_process
+    params: {inputs: [InputModality]}
+    returns: FusedInput
+    description: Fuse multiple inputs
+
+  - name: fusion_disambiguate
+    params: {inputs: [InputModality], method: ResolutionMethod}
+    returns: FusedIntent
+    description: Disambiguate conflicting inputs
+
+  # Feedback
+  - name: feedback_haptic
+    params: {pattern: str, intensity: float}
+    returns: void
+    description: Provide haptic feedback
+
+  - name: feedback_audio
+    params: {sound: str, volume: float}
+    returns: void
+    description: Provide audio feedback
+
+  - name: feedback_visual
+    params: {element: str, effect: str}
+    returns: void
+    description: Provide visual feedback
+
+imports:
+  - kernel.ui.gesture_language
+  - kernel.ui.accessibility_core
+  - kernel.ui.semantic_pixel
+
+multimodal_philosophy: |
+  # Multi-Modal Input Philosophy
+  
+  ## The Problem
+  
+  Traditional UIs assume:
+  - Mouse and keyboard only
+  - One input at a time
+  - Same input for everyone
+  
+  Reality:
+  - Users have different abilities
+  - Context changes (hands busy, noisy environment)
+  - Future inputs we can't predict
+  
+  ## The Solution
+  
+  All inputs are equal triggers in Given/When/Then:
+  
+  ```vscreen
+  behavior universal_activate {
+    given: element is activatable
+    
+    when:
+      click on element OR
+      key_press Enter on element OR
+      voice "activate" while gaze on element OR
+      gaze_dwell 1000ms on element OR
+      air_tap toward element OR
+      bci motor_imagery while focus on element
+    
+    then:
+      activate element
+      feedback appropriate_for_modality
+  }
+  ```
+  
+  ## Benefits
+  
+  1. **Accessibility by Default**
+     - Every action has multiple input paths
+     - No user is excluded
+  
+  2. **Context Adaptation**
+     - Hands busy? Use voice
+     - Noisy? Use gaze
+     - Can't speak? Use gestures
+  
+  3. **Future-Proof**
+     - New input devices just add triggers
+     - No code changes needed
+
+fusion_examples: |
+  # Multimodal Fusion Examples
+  
+  ## Voice + Gaze = "This"
+  
+  User says "open this" while looking at file icon
+  
+  ```
+  Voice: "open this" → action: open, target: ?
+  Gaze: fixation on file_icon → target: file_icon
+  Fusion: action: open, target: file_icon, confidence: 0.99
+  ```
+  
+  ## Gesture + Voice = Disambiguation
+  
+  User points and says "delete that one"
+  
+  ```
+  Gesture: point toward items[3]
+  Voice: "delete that one"
+  Fusion: delete items[3]
+  ```
+  
+  ## BCI + Gaze = Hands-Free Selection
+  
+  User looks at button, thinks "select"
+  
+  ```
+  Gaze: dwell on submit_btn
+  BCI: motor_imagery_right (trained as "confirm")
+  Fusion: activate submit_btn
+  ```
+
+voice_commands_example: |
+  # Voice Commands Example
+  
+  ```vscreen
+  voice_commands {
+    # Navigation
+    command "go to {page}" {
+      action: navigate
+      parameter page: page_name
+    }
+    
+    command "scroll {direction}" {
+      action: scroll
+      parameter direction: [up, down, left, right]
+    }
+    
+    # Actions
+    command "click {element}" {
+      action: click
+      parameter element: element_name
+      requires_confirmation: false
+    }
+    
+    command "delete {item}" {
+      action: delete
+      parameter item: item_name
+      requires_confirmation: true
+      confirmation_prompt: "Are you sure you want to delete {item}?"
+    }
+    
+    # Context-aware
+    command "submit" {
+      given: focus is in form
+      action: submit_form
+    }
+    
+    command "cancel" {
+      given: dialog is open
+      action: close_dialog
+    }
+    
+    # Dictation
+    command "type {text}" {
+      given: focus is in text_field
+      action: insert_text
+      parameter text: free_text
+    }
+  }
+  ```
+
+accessibility_integration: |
+  # Accessibility Integration
+  
+  Multi-modal input IS accessibility:
+  
+  | Disability | Primary Modality | Alternatives |
+  |------------|------------------|--------------|
+  | Blind | Voice, BCI | Haptic feedback |
+  | Deaf | Gaze, Gesture | Visual feedback |
+  | Motor impaired | Voice, Gaze, BCI | Switch access |
+  | Cognitive | Simplified voice | Guided gaze |
+  
+  ## Automatic Adaptation
+  
+  ```vscreen
+  behavior adapt_to_user {
+    given: user_profile is loaded
+    when: session starts
+    then:
+      enable_modalities user.preferred_modalities
+      set_thresholds user.calibration
+      load_custom_commands user.voice_commands
+  }
+  ```

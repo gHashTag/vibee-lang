@@ -1,0 +1,675 @@
+# ============================================================================
+# PLUGIN - Система плагинов на Vibee
+# ============================================================================
+# Plugin loading, Lifecycle, Dependencies, Hooks
+# ============================================================================
+
+Specification Plugin:
+  """Плагины как спецификация расширяемости системы."""
+
+  # ==========================================================================
+  # PLUGIN TRAIT
+  # ==========================================================================
+
+  Trait Plugin:
+    Method name() -> String
+    Method version() -> Version
+    Method description() -> String
+    Method dependencies() -> List<PluginDependency>
+    
+    Method on_load(context: PluginContext) -> Result<(), PluginError>
+    Method on_unload(context: PluginContext) -> Result<(), PluginError>
+    Method on_enable(context: PluginContext) -> Result<(), PluginError>
+    Method on_disable(context: PluginContext) -> Result<(), PluginError>
+
+  # ==========================================================================
+  # PLUGIN MANAGER
+  # ==========================================================================
+
+  Type PluginManager:
+    plugins: Map<String, LoadedPlugin>
+    hooks: HookRegistry
+    config: PluginManagerConfig
+    event_bus: EventBus
+    mutex: Mutex
+
+    Static Method new() -> PluginManager:
+      return PluginManager.with_config(PluginManagerConfig.default())
+
+    Static Method with_config(config: PluginManagerConfig) -> PluginManager:
+      return PluginManager(
+        plugins: {},
+        hooks: HookRegistry.new(),
+        config: config,
+        event_bus: EventBus.new(),
+        mutex: Mutex.new()
+      )
+
+    Method load(plugin: Plugin) -> Result<(), PluginError>:
+      guard = self.mutex.lock()
+      
+      name = plugin.name()
+      
+      if name in self.plugins:
+        return Err(PluginError.AlreadyLoaded(name))
+      
+      # Check dependencies
+      self.check_dependencies(plugin)?
+      
+      # Create context
+      context = PluginContext(
+        manager: self,
+        plugin_name: name,
+        config: self.get_plugin_config(name),
+        data_dir: self.config.data_dir.join(name)
+      )
+      
+      # Load plugin
+      plugin.on_load(context)?
+      
+      loaded = LoadedPlugin(
+        plugin: plugin,
+        state: PluginState.Loaded,
+        context: context,
+        loaded_at: Instant.now()
+      )
+      
+      self.plugins[name] = loaded
+      self.event_bus.publish("plugin.loaded", Event.new("plugin.loaded", { "name": name }))
+      
+      return Ok(())
+
+    Method unload(name: String) -> Result<(), PluginError>:
+      guard = self.mutex.lock()
+      
+      loaded = self.plugins.get(name)?
+      
+      if loaded == null:
+        return Err(PluginError.NotFound(name))
+      
+      # Check if other plugins depend on this
+      for (other_name, other) in self.plugins:
+        if other_name == name:
+          continue
+        
+        for dep in other.plugin.dependencies():
+          if dep.name == name:
+            return Err(PluginError.DependencyRequired(name, other_name))
+      
+      # Disable if enabled
+      if loaded.state == PluginState.Enabled:
+        self.disable(name)?
+      
+      # Unload
+      loaded.plugin.on_unload(loaded.context)?
+      
+      self.plugins.remove(name)
+      self.event_bus.publish("plugin.unloaded", Event.new("plugin.unloaded", { "name": name }))
+      
+      return Ok(())
+
+    Method enable(name: String) -> Result<(), PluginError>:
+      guard = self.mutex.lock()
+      
+      loaded = self.plugins.get(name)?
+      
+      if loaded == null:
+        return Err(PluginError.NotFound(name))
+      
+      if loaded.state == PluginState.Enabled:
+        return Ok(())
+      
+      # Enable dependencies first
+      for dep in loaded.plugin.dependencies():
+        if dep.required:
+          self.enable(dep.name)?
+      
+      loaded.plugin.on_enable(loaded.context)?
+      loaded.state = PluginState.Enabled
+      
+      self.event_bus.publish("plugin.enabled", Event.new("plugin.enabled", { "name": name }))
+      
+      return Ok(())
+
+    Method disable(name: String) -> Result<(), PluginError>:
+      guard = self.mutex.lock()
+      
+      loaded = self.plugins.get(name)?
+      
+      if loaded == null:
+        return Err(PluginError.NotFound(name))
+      
+      if loaded.state != PluginState.Enabled:
+        return Ok(())
+      
+      # Disable dependents first
+      for (other_name, other) in self.plugins:
+        if other.state != PluginState.Enabled:
+          continue
+        
+        for dep in other.plugin.dependencies():
+          if dep.name == name and dep.required:
+            self.disable(other_name)?
+      
+      loaded.plugin.on_disable(loaded.context)?
+      loaded.state = PluginState.Disabled
+      
+      self.event_bus.publish("plugin.disabled", Event.new("plugin.disabled", { "name": name }))
+      
+      return Ok(())
+
+    Method reload(name: String) -> Result<(), PluginError>:
+      loaded = self.plugins.get(name)?
+      
+      if loaded == null:
+        return Err(PluginError.NotFound(name))
+      
+      was_enabled = loaded.state == PluginState.Enabled
+      plugin = loaded.plugin
+      
+      self.unload(name)?
+      self.load(plugin)?
+      
+      if was_enabled:
+        self.enable(name)?
+      
+      return Ok(())
+
+    Method check_dependencies(plugin: Plugin) -> Result<(), PluginError>:
+      for dep in plugin.dependencies():
+        if dep.required:
+          loaded = self.plugins.get(dep.name)
+          
+          if loaded == null:
+            return Err(PluginError.MissingDependency(dep.name))
+          
+          if dep.version is Some(v):
+            if not loaded.plugin.version().satisfies(v):
+              return Err(PluginError.IncompatibleVersion(dep.name, v))
+      
+      return Ok(())
+
+    Method get_plugin(name: String) -> Option<Plugin>:
+      return self.plugins.get(name).map(l -> l.plugin)
+
+    Method get_plugin_config(name: String) -> Map<String, Any>:
+      return self.config.plugin_configs.get(name).unwrap_or({})
+
+    Method list_plugins() -> List<PluginInfo>:
+      return self.plugins.values().map(l -> PluginInfo(
+        name: l.plugin.name(),
+        version: l.plugin.version(),
+        description: l.plugin.description(),
+        state: l.state,
+        loaded_at: l.loaded_at
+      )).to_list()
+
+    Method is_loaded(name: String) -> Boolean:
+      return name in self.plugins
+
+    Method is_enabled(name: String) -> Boolean:
+      return self.plugins.get(name).map(l -> l.state == PluginState.Enabled).unwrap_or(false)
+
+    # Hook management
+    Method register_hook<T>(name: String, handler: (T) -> T) -> HookHandle:
+      return self.hooks.register(name, handler)
+
+    Method call_hook<T>(name: String, value: T) -> T:
+      return self.hooks.call(name, value)
+
+    Method call_hook_async<T>(name: String, value: T) -> Promise<T>:
+      return self.hooks.call_async(name, value)
+
+  Type LoadedPlugin:
+    plugin: Plugin
+    state: PluginState
+    context: PluginContext
+    loaded_at: Instant
+
+  Type PluginState:
+    variants:
+      - Loaded
+      - Enabled
+      - Disabled
+      - Error(String)
+
+  Type PluginInfo:
+    name: String
+    version: Version
+    description: String
+    state: PluginState
+    loaded_at: Instant
+
+  Type PluginDependency:
+    name: String
+    version: Option<VersionRequirement>
+    required: Boolean
+
+    Static Method required(name: String) -> PluginDependency:
+      return PluginDependency(name, null, true)
+
+    Static Method optional(name: String) -> PluginDependency:
+      return PluginDependency(name, null, false)
+
+    Static Method with_version(name: String, version: VersionRequirement) -> PluginDependency:
+      return PluginDependency(name, Some(version), true)
+
+  Type PluginError:
+    variants:
+      - NotFound(String)
+      - AlreadyLoaded(String)
+      - MissingDependency(String)
+      - IncompatibleVersion(String, VersionRequirement)
+      - DependencyRequired(String, String)
+      - LoadError(String)
+      - Custom(String)
+
+    Method message() -> String:
+      match self:
+        NotFound(n) -> "Plugin not found: ${n}"
+        AlreadyLoaded(n) -> "Plugin already loaded: ${n}"
+        MissingDependency(n) -> "Missing dependency: ${n}"
+        IncompatibleVersion(n, v) -> "Incompatible version for ${n}: requires ${v}"
+        DependencyRequired(n, by) -> "Plugin ${n} is required by ${by}"
+        LoadError(msg) -> "Load error: ${msg}"
+        Custom(msg) -> msg
+
+  # ==========================================================================
+  # PLUGIN CONTEXT
+  # ==========================================================================
+
+  Type PluginContext:
+    manager: PluginManager
+    plugin_name: String
+    config: Map<String, Any>
+    data_dir: Path
+
+    Method get_config<T>(key: String) -> Option<T>:
+      return self.config.get(key).map(v -> v as T)
+
+    Method get_config_or<T>(key: String, default: T) -> T:
+      return self.get_config(key).unwrap_or(default)
+
+    Method get_plugin(name: String) -> Option<Plugin>:
+      return self.manager.get_plugin(name)
+
+    Method register_hook<T>(name: String, handler: (T) -> T) -> HookHandle:
+      return self.manager.register_hook(name, handler)
+
+    Method call_hook<T>(name: String, value: T) -> T:
+      return self.manager.call_hook(name, value)
+
+    Method emit_event(event_type: String, data: Any):
+      self.manager.event_bus.publish(
+        "plugin.${self.plugin_name}.${event_type}",
+        Event.new(event_type, data).with_source(self.plugin_name)
+      )
+
+    Method subscribe(event_type: String, handler: (Event) -> ()) -> Subscription:
+      return self.manager.event_bus.subscribe(event_type, handler)
+
+    Method data_path(filename: String) -> Path:
+      return self.data_dir.join(filename)
+
+    Method ensure_data_dir() -> Result<(), IOError>:
+      return self.data_dir.create_dir_all()
+
+  Type PluginManagerConfig:
+    plugin_dir: Path
+    data_dir: Path
+    plugin_configs: Map<String, Map<String, Any>>
+    auto_enable: Boolean
+
+    Static Method default() -> PluginManagerConfig:
+      return PluginManagerConfig(
+        plugin_dir: Path("plugins"),
+        data_dir: Path("data/plugins"),
+        plugin_configs: {},
+        auto_enable: true
+      )
+
+  # ==========================================================================
+  # HOOK SYSTEM
+  # ==========================================================================
+
+  Type HookRegistry:
+    hooks: Map<String, List<HookHandler>>
+    mutex: Mutex
+
+    Static Method new() -> HookRegistry:
+      return HookRegistry({}, Mutex.new())
+
+    Method register<T>(name: String, handler: (T) -> T) -> HookHandle:
+      guard = self.mutex.lock()
+      
+      if name not in self.hooks:
+        self.hooks[name] = []
+      
+      hook_handler = HookHandler(
+        id: UUID.v4().to_string(),
+        priority: 10,
+        handler: handler as (Any) -> Any
+      )
+      
+      self.hooks[name].push(hook_handler)
+      self.hooks[name].sort_by(h -> h.priority)
+      
+      return HookHandle(self, name, hook_handler.id)
+
+    Method register_with_priority<T>(name: String, priority: Int, handler: (T) -> T) -> HookHandle:
+      guard = self.mutex.lock()
+      
+      if name not in self.hooks:
+        self.hooks[name] = []
+      
+      hook_handler = HookHandler(
+        id: UUID.v4().to_string(),
+        priority: priority,
+        handler: handler as (Any) -> Any
+      )
+      
+      self.hooks[name].push(hook_handler)
+      self.hooks[name].sort_by(h -> h.priority)
+      
+      return HookHandle(self, name, hook_handler.id)
+
+    Method unregister(name: String, id: String):
+      guard = self.mutex.lock()
+      
+      if self.hooks.get(name) is Some(handlers):
+        self.hooks[name] = handlers.filter(h -> h.id != id)
+
+    Method call<T>(name: String, value: T) -> T:
+      guard = self.mutex.lock()
+      
+      handlers = self.hooks.get(name).unwrap_or([])
+      
+      result = value as Any
+      for handler in handlers:
+        result = handler.handler(result)
+      
+      return result as T
+
+    Method call_async<T>(name: String, value: T) -> Promise<T>:
+      return Promise.resolve(self.call(name, value))
+
+    Method has_hooks(name: String) -> Boolean:
+      return self.hooks.get(name).map(h -> h.length > 0).unwrap_or(false)
+
+  Type HookHandler:
+    id: String
+    priority: Int
+    handler: (Any) -> Any
+
+  Type HookHandle:
+    registry: HookRegistry
+    hook_name: String
+    handler_id: String
+
+    Method unregister():
+      self.registry.unregister(self.hook_name, self.handler_id)
+
+  # ==========================================================================
+  # PLUGIN LOADER
+  # ==========================================================================
+
+  Type PluginLoader:
+    search_paths: List<Path>
+
+    Static Method new() -> PluginLoader:
+      return PluginLoader([Path("plugins")])
+
+    Method add_search_path(path: Path):
+      self.search_paths.push(path)
+
+    Method discover() -> List<PluginManifest>:
+      manifests = []
+      
+      for search_path in self.search_paths:
+        if not search_path.exists():
+          continue
+        
+        for entry in search_path.read_dir():
+          manifest_path = entry.join("plugin.vibee.toml")
+          
+          if manifest_path.exists():
+            manifest = PluginManifest.load(manifest_path)
+            if manifest is Ok(m):
+              manifests.push(m)
+      
+      return manifests
+
+    Method load_from_manifest(manifest: PluginManifest) -> Result<Plugin, PluginError>:
+      # Load plugin module
+      module_path = manifest.path.parent().join(manifest.entry_point)
+      
+      # Dynamic loading (implementation depends on runtime)
+      plugin = native_load_plugin(module_path)?
+      
+      return Ok(plugin)
+
+  Type PluginManifest:
+    name: String
+    version: Version
+    description: String
+    author: String
+    entry_point: String
+    dependencies: List<PluginDependency>
+    path: Path
+
+    Static Method load(path: Path) -> Result<PluginManifest, ParseError>:
+      content = File.read_string(path)?
+      toml = toml.parse(content)?
+      
+      return Ok(PluginManifest(
+        name: toml["name"],
+        version: Version.parse(toml["version"])?,
+        description: toml.get("description").unwrap_or(""),
+        author: toml.get("author").unwrap_or(""),
+        entry_point: toml.get("entry_point").unwrap_or("main.vibee"),
+        dependencies: parse_dependencies(toml.get("dependencies")),
+        path: path
+      ))
+
+  # ==========================================================================
+  # VERSION
+  # ==========================================================================
+
+  Type Version:
+    major: Int
+    minor: Int
+    patch: Int
+    prerelease: Option<String>
+
+    Static Method new(major: Int, minor: Int, patch: Int) -> Version:
+      return Version(major, minor, patch, null)
+
+    Static Method parse(s: String) -> Result<Version, ParseError>:
+      # Parse semver: 1.2.3 or 1.2.3-beta.1
+      parts = s.split("-")
+      version_parts = parts[0].split(".")
+      
+      if version_parts.length < 3:
+        return Err(ParseError("Invalid version format"))
+      
+      return Ok(Version(
+        major: parse_int(version_parts[0])?,
+        minor: parse_int(version_parts[1])?,
+        patch: parse_int(version_parts[2])?,
+        prerelease: if parts.length > 1 then Some(parts[1]) else null
+      ))
+
+    Method to_string() -> String:
+      base = "${self.major}.${self.minor}.${self.patch}"
+      if self.prerelease is Some(pre):
+        return "${base}-${pre}"
+      return base
+
+    Method satisfies(requirement: VersionRequirement) -> Boolean:
+      match requirement:
+        Exact(v) -> self == v
+        GreaterThan(v) -> self > v
+        GreaterOrEqual(v) -> self >= v
+        LessThan(v) -> self < v
+        LessOrEqual(v) -> self <= v
+        Range(min, max) -> self >= min and self <= max
+        Caret(v) -> self.major == v.major and self >= v
+        Tilde(v) -> self.major == v.major and self.minor == v.minor and self >= v
+
+    Method > (other: Version) -> Boolean:
+      if self.major != other.major:
+        return self.major > other.major
+      if self.minor != other.minor:
+        return self.minor > other.minor
+      return self.patch > other.patch
+
+    Method >= (other: Version) -> Boolean:
+      return self > other or self == other
+
+    Method == (other: Version) -> Boolean:
+      return self.major == other.major and
+             self.minor == other.minor and
+             self.patch == other.patch
+
+  Type VersionRequirement:
+    variants:
+      - Exact(Version)
+      - GreaterThan(Version)
+      - GreaterOrEqual(Version)
+      - LessThan(Version)
+      - LessOrEqual(Version)
+      - Range(Version, Version)
+      - Caret(Version)  # ^1.2.3 = >=1.2.3 <2.0.0
+      - Tilde(Version)  # ~1.2.3 = >=1.2.3 <1.3.0
+
+    Static Method parse(s: String) -> Result<VersionRequirement, ParseError>:
+      if s.starts_with("^"):
+        v = Version.parse(s.slice(1))?
+        return Ok(Caret(v))
+      else if s.starts_with("~"):
+        v = Version.parse(s.slice(1))?
+        return Ok(Tilde(v))
+      else if s.starts_with(">="):
+        v = Version.parse(s.slice(2))?
+        return Ok(GreaterOrEqual(v))
+      else if s.starts_with(">"):
+        v = Version.parse(s.slice(1))?
+        return Ok(GreaterThan(v))
+      else if s.starts_with("<="):
+        v = Version.parse(s.slice(2))?
+        return Ok(LessOrEqual(v))
+      else if s.starts_with("<"):
+        v = Version.parse(s.slice(1))?
+        return Ok(LessThan(v))
+      else:
+        v = Version.parse(s)?
+        return Ok(Exact(v))
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Plugin":
+    ```vibee
+    # Define a plugin
+    Type MyPlugin:
+      Trait Plugin:
+        Method name() -> String:
+          return "my-plugin"
+
+        Method version() -> Version:
+          return Version.new(1, 0, 0)
+
+        Method description() -> String:
+          return "My awesome plugin"
+
+        Method dependencies() -> List<PluginDependency>:
+          return [
+            PluginDependency.required("core"),
+            PluginDependency.optional("analytics")
+          ]
+
+        Method on_load(context: PluginContext) -> Result<(), PluginError>:
+          context.ensure_data_dir()?
+          
+          # Register hooks
+          context.register_hook("request.before", (req: Request) -> {
+            req.with_header("X-Plugin", "my-plugin")
+          })
+          
+          return Ok(())
+
+        Method on_unload(context: PluginContext) -> Result<(), PluginError>:
+          return Ok(())
+
+        Method on_enable(context: PluginContext) -> Result<(), PluginError>:
+          log.info("Plugin enabled")
+          return Ok(())
+
+        Method on_disable(context: PluginContext) -> Result<(), PluginError>:
+          log.info("Plugin disabled")
+          return Ok(())
+
+    # Use plugin manager
+    manager = PluginManager.new()
+
+    # Load plugin
+    manager.load(MyPlugin())?
+    manager.enable("my-plugin")?
+
+    # List plugins
+    for plugin in manager.list_plugins():
+      print("${plugin.name} v${plugin.version} - ${plugin.state}")
+
+    # Use hooks
+    request = Request.new("GET", "/api/data")
+    request = manager.call_hook("request.before", request)
+
+    # Plugin events
+    manager.event_bus.subscribe("plugin.*", event -> {
+      log.info("Plugin event: ${event.type}")
+    })
+
+    # Disable/unload
+    manager.disable("my-plugin")?
+    manager.unload("my-plugin")?
+
+    # Plugin manifest (plugin.vibee.toml)
+    # name = "my-plugin"
+    # version = "1.0.0"
+    # description = "My awesome plugin"
+    # author = "Developer"
+    # entry_point = "main.vibee"
+    #
+    # [dependencies]
+    # core = "^1.0.0"
+    # analytics = { version = "^2.0.0", optional = true }
+
+    # Auto-discover plugins
+    loader = PluginLoader.new()
+    loader.add_search_path(Path("./plugins"))
+
+    manifests = loader.discover()
+    for manifest in manifests:
+      plugin = loader.load_from_manifest(manifest)?
+      manager.load(plugin)?
+
+    # Plugin with configuration
+    config = PluginManagerConfig(
+      plugin_dir: Path("plugins"),
+      data_dir: Path("data/plugins"),
+      plugin_configs: {
+        "my-plugin": {
+          "api_key": "secret",
+          "max_retries": 3
+        }
+      },
+      auto_enable: true
+    )
+
+    manager = PluginManager.with_config(config)
+
+    # Access config in plugin
+    # context.get_config<String>("api_key")  # Some("secret")
+    # context.get_config_or("max_retries", 1)  # 3
+    ```

@@ -1,0 +1,491 @@
+name: vibee_os_plastic_layout
+version: "0.1.0"
+language: gleam
+module: kernel/ui/plastic_layout
+description: Plastic Layouts - FlexGrid, FlowLayout, адаптивная компоновка для любого размера экрана
+
+behaviors:
+  - name: flex_adapts_to_space
+    given: FlexContainer has children
+    when: available_space changes
+    then: Children resize and reflow according to flex rules
+    test_cases:
+      - name: shrink_wraps
+        input: {space: "small", children: 5, wrap: true}
+        expected: {rows: 2, items_wrapped: true}
+      - name: expand_fills
+        input: {space: "large", children: 5, wrap: false}
+        expected: {rows: 1, items_stretched: true}
+      - name: gap_scales
+        input: {space: "medium", gap: "1rem"}
+        expected: {gap_computed: true, gap_relative: true}
+
+  - name: grid_reflows_columns
+    given: GridContainer has columns defined as fractions
+    when: viewport_width changes
+    then: Columns resize proportionally, may collapse on small screens
+    test_cases:
+      - name: three_columns_desktop
+        input: {viewport: 1200, columns: "[1fr, 1fr, 1fr]"}
+        expected: {column_count: 3, column_width: 400}
+      - name: three_columns_mobile
+        input: {viewport: 375, columns: "[1fr, 1fr, 1fr]", breakpoint: "xs"}
+        expected: {column_count: 1, stacked: true}
+
+  - name: flow_wraps_naturally
+    given: FlowContainer has inline elements
+    when: line_width is exceeded
+    then: Elements wrap to next line
+    test_cases:
+      - name: tags_wrap
+        input: {elements: ["tag1", "tag2", "tag3", "tag4"], container_width: 200}
+        expected: {lines: 2, wrapped: true}
+
+  - name: stack_distributes_evenly
+    given: StackContainer has children
+    when: distribution is "even"
+    then: Children get equal space
+    test_cases:
+      - name: horizontal_stack
+        input: {direction: "horizontal", children: 4, width: 400}
+        expected: {child_width: 100}
+
+types:
+  # FlexBox - полный flexbox
+  FlexBox:
+    direction: FlexDirection
+    wrap: FlexWrap
+    justify_content: JustifyContent
+    align_items: AlignItems
+    align_content: AlignContent
+    gap: PlasticUnit
+    row_gap: PlasticUnit?
+    column_gap: PlasticUnit?
+
+  FlexDirection:
+    variants:
+      - Row
+      - RowReverse
+      - Column
+      - ColumnReverse
+
+  FlexWrap:
+    variants:
+      - NoWrap
+      - Wrap
+      - WrapReverse
+
+  JustifyContent:
+    variants:
+      - FlexStart
+      - FlexEnd
+      - Center
+      - SpaceBetween
+      - SpaceAround
+      - SpaceEvenly
+
+  AlignItems:
+    variants:
+      - FlexStart
+      - FlexEnd
+      - Center
+      - Stretch
+      - Baseline
+
+  AlignContent:
+    variants:
+      - FlexStart
+      - FlexEnd
+      - Center
+      - SpaceBetween
+      - SpaceAround
+      - Stretch
+
+  FlexChild:
+    grow: float                           # flex-grow
+    shrink: float                         # flex-shrink
+    basis: PlasticUnit                    # flex-basis
+    align_self: AlignItems?               # override parent align
+
+  # Grid - CSS Grid style
+  PlasticGrid:
+    template_columns: [GridTrack]
+    template_rows: [GridTrack]
+    auto_columns: GridTrack
+    auto_rows: GridTrack
+    auto_flow: GridAutoFlow
+    gap: PlasticUnit
+    row_gap: PlasticUnit?
+    column_gap: PlasticUnit?
+    justify_items: JustifyItems
+    align_items: AlignItems
+    justify_content: JustifyContent
+    align_content: AlignContent
+
+  GridTrack:
+    variants:
+      - Fixed: {value: PlasticUnit}
+      - Fraction: {value: float}          # fr
+      - MinMax: {min: PlasticUnit, max: PlasticUnit}
+      - FitContent: {max: PlasticUnit}
+      - Auto
+      - MinContent
+      - MaxContent
+      - Repeat: {count: RepeatCount, tracks: [GridTrack]}
+
+  RepeatCount:
+    variants:
+      - Count: {n: int}
+      - AutoFill
+      - AutoFit
+
+  GridAutoFlow:
+    variants:
+      - Row
+      - Column
+      - RowDense
+      - ColumnDense
+
+  JustifyItems:
+    variants:
+      - Start
+      - End
+      - Center
+      - Stretch
+
+  GridChild:
+    column_start: GridLine
+    column_end: GridLine
+    row_start: GridLine
+    row_end: GridLine
+    justify_self: JustifyItems?
+    align_self: AlignItems?
+
+  GridLine:
+    variants:
+      - Line: {n: int}
+      - Span: {n: int}
+      - Name: {name: str}
+      - Auto
+
+  # Flow Layout - для inline элементов
+  FlowBox:
+    direction: FlowDirection
+    wrap: bool
+    gap: PlasticUnit
+    line_gap: PlasticUnit
+    justify: FlowJustify
+    align: FlowAlign
+
+  FlowDirection:
+    variants:
+      - LeftToRight
+      - RightToLeft
+      - TopToBottom
+      - BottomToTop
+
+  FlowJustify:
+    variants:
+      - Start
+      - End
+      - Center
+      - SpaceBetween
+      - SpaceAround
+
+  FlowAlign:
+    variants:
+      - Start
+      - End
+      - Center
+      - Baseline
+
+  # Stack Layout - простой стек
+  StackBox:
+    direction: StackDirection
+    gap: PlasticUnit
+    distribution: StackDistribution
+    alignment: StackAlignment
+
+  StackDirection:
+    variants:
+      - Horizontal
+      - Vertical
+      - Depth                             # Z-axis stacking
+
+  StackDistribution:
+    variants:
+      - Start
+      - End
+      - Center
+      - SpaceBetween
+      - SpaceAround
+      - SpaceEvenly
+      - Equal                             # Equal sizes
+
+  StackAlignment:
+    variants:
+      - Start
+      - End
+      - Center
+      - Stretch
+
+  # Responsive Grid - автоматически адаптируется
+  ResponsiveGrid:
+    min_column_width: PlasticUnit         # Минимальная ширина колонки
+    max_columns: int?                     # Максимум колонок
+    gap: PlasticUnit
+    row_gap: PlasticUnit?
+
+  # Masonry Layout - для карточек разной высоты
+  MasonryBox:
+    columns: MasonryColumns
+    gap: PlasticUnit
+    align: MasonryAlign
+
+  MasonryColumns:
+    variants:
+      - Count: {n: int}
+      - MinWidth: {width: PlasticUnit}    # Auto columns based on min width
+
+  MasonryAlign:
+    variants:
+      - Start
+      - Center
+      - End
+
+  # Container Queries - адаптация к контейнеру
+  ContainerQuery:
+    name: str
+    min_width: PlasticUnit?
+    max_width: PlasticUnit?
+    min_height: PlasticUnit?
+    max_height: PlasticUnit?
+
+  ContainerRule:
+    query: str                            # Container query name
+    styles: {str: PlasticUnit}
+
+  # Layout Result
+  LayoutResult:
+    children: [ChildLayout]
+    total_width: int
+    total_height: int
+    overflow: Overflow
+
+  ChildLayout:
+    id: str
+    x: int
+    y: int
+    width: int
+    height: int
+
+  Overflow:
+    variants:
+      - None
+      - Horizontal
+      - Vertical
+      - Both
+
+functions:
+  # FlexBox
+  - name: compute_flex
+    params: {container: FlexBox, children: [FlexChild], available: Size}
+    returns: LayoutResult
+    description: Compute flexbox layout
+
+  - name: flex_main_axis_size
+    params: {direction: FlexDirection, available: Size}
+    returns: int
+    description: Get main axis available size
+
+  - name: flex_cross_axis_size
+    params: {direction: FlexDirection, available: Size}
+    returns: int
+    description: Get cross axis available size
+
+  - name: distribute_flex_space
+    params: {children: [FlexChild], available: int, gap: int}
+    returns: [int]
+    description: Distribute space among flex children
+
+  # Grid
+  - name: compute_grid
+    params: {grid: PlasticGrid, children: [GridChild], available: Size}
+    returns: LayoutResult
+    description: Compute grid layout
+
+  - name: resolve_grid_tracks
+    params: {tracks: [GridTrack], available: int, gap: int}
+    returns: [int]
+    description: Resolve track sizes to pixels
+
+  - name: place_grid_child
+    params: {child: GridChild, columns: [int], rows: [int]}
+    returns: ChildLayout
+    description: Place child in grid
+
+  - name: auto_place_grid
+    params: {children: [GridChild], grid: PlasticGrid, available: Size}
+    returns: [ChildLayout]
+    description: Auto-place children in grid
+
+  # Flow
+  - name: compute_flow
+    params: {flow: FlowBox, children: [Size], available: Size}
+    returns: LayoutResult
+    description: Compute flow layout with wrapping
+
+  - name: wrap_flow_line
+    params: {children: [Size], available_width: int, gap: int}
+    returns: [[Size]]
+    description: Wrap children into lines
+
+  # Stack
+  - name: compute_stack
+    params: {stack: StackBox, children: [Size], available: Size}
+    returns: LayoutResult
+    description: Compute stack layout
+
+  # Responsive Grid
+  - name: compute_responsive_grid
+    params: {grid: ResponsiveGrid, children: int, available: Size}
+    returns: LayoutResult
+    description: Compute responsive grid with auto columns
+
+  - name: calculate_column_count
+    params: {available_width: int, min_column_width: int, gap: int, max_columns: int?}
+    returns: int
+    description: Calculate optimal column count
+
+  # Masonry
+  - name: compute_masonry
+    params: {masonry: MasonryBox, children: [Size], available: Size}
+    returns: LayoutResult
+    description: Compute masonry layout
+
+  # Container Queries
+  - name: evaluate_container_query
+    params: {query: ContainerQuery, container_size: Size}
+    returns: bool
+    description: Check if container query matches
+
+  - name: apply_container_rules
+    params: {rules: [ContainerRule], container_size: Size}
+    returns: {str: PlasticUnit}
+    description: Get applicable style overrides
+
+  Size:
+    width: int
+    height: int
+
+imports:
+  - kernel.ui.plastic_screen
+
+layout_examples: |
+  # Layout Examples
+  
+  ## 1. Responsive Card Grid
+  
+  ```yaml
+  layout:
+    type: ResponsiveGrid
+    min_column_width: {Rem: 20}    # Min 20rem per card
+    max_columns: 4
+    gap: {Rem: 1.5}
+  ```
+  
+  Result:
+  - 4 columns on desktop
+  - 2 columns on tablet
+  - 1 column on mobile
+  
+  ## 2. Navigation Bar (Flex)
+  
+  ```yaml
+  layout:
+    type: FlexBox
+    direction: Row
+    justify_content: SpaceBetween
+    align_items: Center
+    gap: {Rem: 1}
+    wrap: Wrap                     # Wraps on small screens
+  ```
+  
+  ## 3. Tag Cloud (Flow)
+  
+  ```yaml
+  layout:
+    type: FlowBox
+    direction: LeftToRight
+    wrap: true
+    gap: {Rem: 0.5}
+    line_gap: {Rem: 0.5}
+  ```
+  
+  ## 4. Sidebar + Content (Grid)
+  
+  ```yaml
+  layout:
+    type: PlasticGrid
+    template_columns:
+      - {MinMax: {min: {Rem: 15}, max: {Fraction: 1}}}  # Sidebar
+      - {Fraction: 3}                                    # Content
+    gap: {Rem: 2}
+    
+  responsive_rules:
+    - breakpoint: sm
+      overrides:
+        template_columns: [{Fraction: 1}]  # Stack on mobile
+  ```
+  
+  ## 5. Equal Height Cards (Stack)
+  
+  ```yaml
+  layout:
+    type: StackBox
+    direction: Horizontal
+    distribution: Equal
+    gap: {Rem: 1}
+    alignment: Stretch
+  ```
+
+auto_responsive_grid: |
+  # Auto-Responsive Grid
+  
+  The ResponsiveGrid automatically calculates columns:
+  
+  ```
+  columns = floor((available_width + gap) / (min_column_width + gap))
+  columns = min(columns, max_columns)
+  columns = max(columns, 1)
+  
+  column_width = (available_width - (columns - 1) * gap) / columns
+  ```
+  
+  Example with min_column_width = 300px, gap = 20px:
+  
+  | Viewport | Columns | Column Width |
+  |----------|---------|--------------|
+  | 1200px   | 3       | 386px        |
+  | 900px    | 2       | 440px        |
+  | 600px    | 1       | 600px        |
+  | 375px    | 1       | 375px        |
+
+flex_algorithm: |
+  # Flex Layout Algorithm
+  
+  1. Calculate available space on main axis
+  2. Sum flex-basis of all children
+  3. Calculate remaining space = available - sum(basis)
+  4. If remaining > 0: distribute by flex-grow
+  5. If remaining < 0: shrink by flex-shrink
+  6. Handle wrapping if enabled
+  7. Align on cross axis
+  
+  ```
+  for child in children:
+    if remaining > 0:
+      child.size = child.basis + (remaining * child.grow / total_grow)
+    else:
+      child.size = child.basis + (remaining * child.shrink / total_shrink)
+  ```

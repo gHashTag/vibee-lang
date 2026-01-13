@@ -1,0 +1,572 @@
+// =============================================================================
+// Vibee OS — URL Module
+// URL parsing and building
+// =============================================================================
+
+/// URL
+struct URL {
+    scheme: String
+    username: Option<String>
+    password: Option<String>
+    host: Option<String>
+    port: Option<Int>
+    path: String
+    query: Option<String>
+    fragment: Option<String>
+    
+    /// Parse URL string
+    fn parse(s: String) -> Result<Self, URLError> {
+        let s = s.trim()
+        var rest = s
+        
+        // Scheme
+        let scheme_end = rest.find("://").ok_or(URLError.MissingScheme)?
+        let scheme = rest[0..scheme_end].to_lower()
+        rest = rest[(scheme_end + 3)..]
+        
+        // Fragment
+        let (rest, fragment) = match rest.rfind("#") {
+            Some(idx) => (rest[0..idx], Some(rest[(idx + 1)..]))
+            None => (rest, None)
+        }
+        
+        // Query
+        let (rest, query) = match rest.find("?") {
+            Some(idx) => (rest[0..idx], Some(rest[(idx + 1)..]))
+            None => (rest, None)
+        }
+        
+        // Path
+        let (authority, path) = match rest.find("/") {
+            Some(idx) => (rest[0..idx], rest[idx..])
+            None => (rest, "/")
+        }
+        
+        // User info
+        let (userinfo, hostport) = match authority.find("@") {
+            Some(idx) => (Some(authority[0..idx]), authority[(idx + 1)..])
+            None => (None, authority)
+        }
+        
+        let (username, password) = match userinfo {
+            Some(ui) => match ui.find(":") {
+                Some(idx) => (Some(ui[0..idx]), Some(ui[(idx + 1)..]))
+                None => (Some(ui), None)
+            }
+            None => (None, None)
+        }
+        
+        // Host and port
+        let (host, port) = if hostport.starts_with("[") {
+            // IPv6
+            match hostport.find("]") {
+                Some(idx) => {
+                    let h = hostport[1..idx]
+                    let rest = hostport[(idx + 1)..]
+                    let p = if rest.starts_with(":") {
+                        Int.parse(rest[1..]).ok()
+                    } else {
+                        None
+                    }
+                    (Some(h), p)
+                }
+                None => return Err(URLError.InvalidHost)
+            }
+        } else {
+            match hostport.rfind(":") {
+                Some(idx) => {
+                    let h = hostport[0..idx]
+                    let p = Int.parse(hostport[(idx + 1)..]).ok()
+                    (if h.is_empty() { None } else { Some(h) }, p)
+                }
+                None => (if hostport.is_empty() { None } else { Some(hostport) }, None)
+            }
+        }
+        
+        Ok(URL {
+            scheme: scheme,
+            username: username.map(|s| percent_decode(s)),
+            password: password.map(|s| percent_decode(s)),
+            host: host.map(|s| s.to_lower()),
+            port: port,
+            path: path,
+            query: query,
+            fragment: fragment
+        })
+    }
+    
+    /// Create new URL
+    fn new(scheme: String, host: String) -> Self {
+        URL {
+            scheme: scheme,
+            username: None,
+            password: None,
+            host: Some(host),
+            port: None,
+            path: "/",
+            query: None,
+            fragment: None
+        }
+    }
+    
+    /// Set path
+    fn with_path(path: String) -> Self {
+        URL { path: path, ..self }
+    }
+    
+    /// Set query string
+    fn with_query(query: String) -> Self {
+        URL { query: Some(query), ..self }
+    }
+    
+    /// Set query parameters
+    fn with_params(params: Map<String, String>) -> Self {
+        let query = params.iter()
+            .map(|(k, v)| format!("{}={}", percent_encode(k), percent_encode(v)))
+            .join("&")
+        URL { query: Some(query), ..self }
+    }
+    
+    /// Add query parameter
+    fn add_param(key: String, value: String) -> Self {
+        let param = format!("{}={}", percent_encode(key), percent_encode(value))
+        let query = match self.query {
+            Some(q) => format!("{}&{}", q, param)
+            None => param
+        }
+        URL { query: Some(query), ..self }
+    }
+    
+    /// Set fragment
+    fn with_fragment(fragment: String) -> Self {
+        URL { fragment: Some(fragment), ..self }
+    }
+    
+    /// Set port
+    fn with_port(port: Int) -> Self {
+        URL { port: Some(port), ..self }
+    }
+    
+    /// Set credentials
+    fn with_credentials(username: String, password: Option<String>) -> Self {
+        URL { username: Some(username), password: password, ..self }
+    }
+    
+    /// Get origin (scheme + host + port)
+    fn origin() -> String {
+        var s = format!("{}://", self.scheme)
+        if let Some(h) = self.host {
+            s.push_str(h)
+        }
+        if let Some(p) = self.port {
+            s.push_str(format!(":{}", p))
+        }
+        s
+    }
+    
+    /// Get authority (userinfo + host + port)
+    fn authority() -> String {
+        var s = ""
+        if let Some(u) = self.username {
+            s.push_str(percent_encode(u))
+            if let Some(p) = self.password {
+                s.push_str(":")
+                s.push_str(percent_encode(p))
+            }
+            s.push_str("@")
+        }
+        if let Some(h) = self.host {
+            s.push_str(h)
+        }
+        if let Some(p) = self.port {
+            s.push_str(format!(":{}", p))
+        }
+        s
+    }
+    
+    /// Get path and query
+    fn path_and_query() -> String {
+        match self.query {
+            Some(q) => format!("{}?{}", self.path, q)
+            None => self.path
+        }
+    }
+    
+    /// Parse query parameters
+    fn query_params() -> Map<String, String> {
+        match self.query {
+            Some(q) => parse_query(q)
+            None => Map.empty()
+        }
+    }
+    
+    /// Get default port for scheme
+    fn default_port() -> Option<Int> {
+        match self.scheme {
+            "http" => Some(80)
+            "https" => Some(443)
+            "ftp" => Some(21)
+            "ssh" => Some(22)
+            "ws" => Some(80)
+            "wss" => Some(443)
+            _ => None
+        }
+    }
+    
+    /// Get effective port
+    fn effective_port() -> Option<Int> {
+        self.port.or_else(|| self.default_port())
+    }
+    
+    /// Resolve relative URL
+    fn resolve(relative: String) -> Result<Self, URLError> {
+        if relative.contains("://") {
+            return URL.parse(relative)
+        }
+        
+        if relative.starts_with("//") {
+            return URL.parse(format!("{}:{}", self.scheme, relative))
+        }
+        
+        if relative.starts_with("/") {
+            return Ok(URL { path: relative, query: None, fragment: None, ..self })
+        }
+        
+        if relative.starts_with("?") {
+            return Ok(URL { query: Some(relative[1..]), fragment: None, ..self })
+        }
+        
+        if relative.starts_with("#") {
+            return Ok(URL { fragment: Some(relative[1..]), ..self })
+        }
+        
+        // Relative path
+        let base_path = match self.path.rfind("/") {
+            Some(idx) => self.path[0..(idx + 1)]
+            None => "/"
+        }
+        let new_path = normalize_path(format!("{}{}", base_path, relative))
+        Ok(URL { path: new_path, query: None, fragment: None, ..self })
+    }
+    
+    /// Convert to string
+    fn to_string() -> String {
+        var s = format!("{}://", self.scheme)
+        
+        if let Some(u) = self.username {
+            s.push_str(percent_encode(u))
+            if let Some(p) = self.password {
+                s.push_str(":")
+                s.push_str(percent_encode(p))
+            }
+            s.push_str("@")
+        }
+        
+        if let Some(h) = self.host {
+            if h.contains(":") {
+                s.push_str(format!("[{}]", h))
+            } else {
+                s.push_str(h)
+            }
+        }
+        
+        if let Some(p) = self.port {
+            if Some(p) != self.default_port() {
+                s.push_str(format!(":{}", p))
+            }
+        }
+        
+        s.push_str(self.path)
+        
+        if let Some(q) = self.query {
+            s.push_str("?")
+            s.push_str(q)
+        }
+        
+        if let Some(f) = self.fragment {
+            s.push_str("#")
+            s.push_str(f)
+        }
+        
+        s
+    }
+}
+
+impl Display for URL {
+    fn fmt(f: Formatter) {
+        f.write(self.to_string())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Query String
+// -----------------------------------------------------------------------------
+
+/// Parse query string
+fn parse_query(s: String) -> Map<String, String> {
+    var params = Map.empty()
+    
+    for pair in s.split("&") {
+        if pair.is_empty() { continue }
+        
+        match pair.find("=") {
+            Some(idx) => {
+                let key = percent_decode(pair[0..idx])
+                let value = percent_decode(pair[(idx + 1)..])
+                params.set(key, value)
+            }
+            None => {
+                params.set(percent_decode(pair), "")
+            }
+        }
+    }
+    
+    params
+}
+
+/// Build query string
+fn build_query(params: Map<String, String>) -> String {
+    params.iter()
+        .map(|(k, v)| format!("{}={}", percent_encode(k), percent_encode(v)))
+        .join("&")
+}
+
+// -----------------------------------------------------------------------------
+// Percent Encoding
+// -----------------------------------------------------------------------------
+
+/// Percent-encode string
+fn percent_encode(s: String) -> String {
+    var result = ""
+    
+    for c in s.chars() {
+        if is_unreserved(c) {
+            result.push(c)
+        } else {
+            for b in c.to_string().as_bytes() {
+                result.push_str(format!("%{:02X}", b))
+            }
+        }
+    }
+    
+    result
+}
+
+/// Percent-decode string
+fn percent_decode(s: String) -> String {
+    var result = []
+    var i = 0
+    let bytes = s.as_bytes()
+    
+    while i < bytes.len() {
+        if bytes[i] == '%' as UInt8 && i + 2 < bytes.len() {
+            let hex = String.from_utf8([bytes[i + 1], bytes[i + 2]]).unwrap_or("")
+            if let Ok(b) = UInt8.parse_hex(hex) {
+                result.push(b)
+                i += 3
+                continue
+            }
+        }
+        if bytes[i] == '+' as UInt8 {
+            result.push(' ' as UInt8)
+        } else {
+            result.push(bytes[i])
+        }
+        i += 1
+    }
+    
+    String.from_utf8(result).unwrap_or(s)
+}
+
+fn is_unreserved(c: Char) -> Bool {
+    c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '~'
+}
+
+/// Encode URI component
+fn encode_uri_component(s: String) -> String {
+    percent_encode(s)
+}
+
+/// Decode URI component
+fn decode_uri_component(s: String) -> String {
+    percent_decode(s)
+}
+
+// -----------------------------------------------------------------------------
+// Path Normalization
+// -----------------------------------------------------------------------------
+
+fn normalize_path(path: String) -> String {
+    let segments = path.split("/")
+    var stack = []
+    
+    for seg in segments {
+        match seg {
+            "" | "." => {}
+            ".." => { stack.pop() }
+            _ => stack.push(seg)
+        }
+    }
+    
+    format!("/{}", stack.join("/"))
+}
+
+// -----------------------------------------------------------------------------
+// URL Builder
+// -----------------------------------------------------------------------------
+
+/// Fluent URL builder
+struct URLBuilder {
+    scheme: String
+    host: Option<String>
+    port: Option<Int>
+    path_segments: [String]
+    params: Map<String, String>
+    fragment: Option<String>
+    
+    fn new(scheme: String) -> Self {
+        URLBuilder {
+            scheme: scheme,
+            host: None,
+            port: None,
+            path_segments: [],
+            params: Map.empty(),
+            fragment: None
+        }
+    }
+    
+    fn http() -> Self { Self.new("http") }
+    fn https() -> Self { Self.new("https") }
+    
+    fn host(h: String) -> Self {
+        URLBuilder { host: Some(h), ..self }
+    }
+    
+    fn port(p: Int) -> Self {
+        URLBuilder { port: Some(p), ..self }
+    }
+    
+    fn path(segment: String) -> Self {
+        self.path_segments.push(segment)
+        self
+    }
+    
+    fn param(key: String, value: String) -> Self {
+        self.params.set(key, value)
+        self
+    }
+    
+    fn fragment(f: String) -> Self {
+        URLBuilder { fragment: Some(f), ..self }
+    }
+    
+    fn build() -> URL {
+        let path = if self.path_segments.is_empty() {
+            "/"
+        } else {
+            format!("/{}", self.path_segments.join("/"))
+        }
+        
+        let query = if self.params.is_empty() {
+            None
+        } else {
+            Some(build_query(self.params))
+        }
+        
+        URL {
+            scheme: self.scheme,
+            username: None,
+            password: None,
+            host: self.host,
+            port: self.port,
+            path: path,
+            query: query,
+            fragment: self.fragment
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum URLError {
+    MissingScheme
+    InvalidHost
+    InvalidPort
+    InvalidPath
+    ParseError(String)
+}
+
+impl Display for URLError {
+    fn fmt(f: Formatter) {
+        match self {
+            MissingScheme => f.write("Missing URL scheme")
+            InvalidHost => f.write("Invalid host")
+            InvalidPort => f.write("Invalid port")
+            InvalidPath => f.write("Invalid path")
+            ParseError(s) => f.write(format!("Parse error: {}", s))
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "parse simple" {
+    let url = URL.parse("https://example.com/path")?
+    assert_eq(url.scheme, "https")?
+    assert_eq(url.host, Some("example.com"))?
+    assert_eq(url.path, "/path")?
+}
+
+test "parse with port" {
+    let url = URL.parse("http://localhost:8080/api")?
+    assert_eq(url.host, Some("localhost"))?
+    assert_eq(url.port, Some(8080))?
+}
+
+test "parse with query" {
+    let url = URL.parse("https://example.com/search?q=hello&page=1")?
+    let params = url.query_params()
+    assert_eq(params.get("q"), Some("hello"))?
+    assert_eq(params.get("page"), Some("1"))?
+}
+
+test "parse with fragment" {
+    let url = URL.parse("https://example.com/page#section")?
+    assert_eq(url.fragment, Some("section"))?
+}
+
+test "parse with credentials" {
+    let url = URL.parse("https://user:pass@example.com/")?
+    assert_eq(url.username, Some("user"))?
+    assert_eq(url.password, Some("pass"))?
+}
+
+test "percent encoding" {
+    assert_eq(percent_encode("hello world"), "hello%20world")?
+    assert_eq(percent_decode("hello%20world"), "hello world")?
+}
+
+test "resolve relative" {
+    let base = URL.parse("https://example.com/a/b/c")?
+    
+    let abs = base.resolve("/d/e")?
+    assert_eq(abs.path, "/d/e")?
+    
+    let rel = base.resolve("../d")?
+    assert_eq(rel.path, "/a/d")?
+}
+
+test "builder" {
+    let url = URLBuilder.https()
+        .host("api.example.com")
+        .path("v1")
+        .path("users")
+        .param("limit", "10")
+        .build()
+    
+    assert_eq(url.to_string(), "https://api.example.com/v1/users?limit=10")?
+}

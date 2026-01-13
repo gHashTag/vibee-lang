@@ -1,0 +1,546 @@
+// =============================================================================
+// Vibee OS — Alerting Module
+// Alert management, notifications, and incident response
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Alert Types
+// -----------------------------------------------------------------------------
+
+/// Alert severity levels
+enum Severity { Critical, High, Medium, Low, Info
+    fn to_string() -> String {
+        match self { .Critical => "critical", .High => "high", .Medium => "medium", .Low => "low", .Info => "info" }
+    }
+    fn priority() -> Int {
+        match self { .Critical => 1, .High => 2, .Medium => 3, .Low => 4, .Info => 5 }
+    }
+}
+
+/// Alert status
+enum AlertStatus { Firing, Resolved, Acknowledged, Silenced }
+
+/// Alert definition
+struct Alert {
+    id: String
+    name: String
+    severity: Severity
+    status: AlertStatus
+    message: String
+    labels: Map<String, String>
+    annotations: Map<String, String>
+    starts_at: Instant
+    ends_at: Option<Instant>
+    fingerprint: String
+}
+
+impl Alert {
+    fn new(name: String, severity: Severity, message: String) -> Self {
+        let id = Uuid.v4().to_string()
+        Alert {
+            id: id, name: name, severity: severity, status: AlertStatus.Firing,
+            message: message, labels: Map.empty(), annotations: Map.empty(),
+            starts_at: Instant.now(), ends_at: None,
+            fingerprint: Self.compute_fingerprint(name, Map.empty())
+        }
+    }
+    
+    fn label(key: String, value: String) -> Self { self.labels.set(key, value); self }
+    fn annotate(key: String, value: String) -> Self { self.annotations.set(key, value); self }
+    
+    fn resolve() -> Self { self.status = AlertStatus.Resolved; self.ends_at = Some(Instant.now()); self }
+    fn acknowledge() -> Self { self.status = AlertStatus.Acknowledged; self }
+    fn silence() -> Self { self.status = AlertStatus.Silenced; self }
+    
+    fn is_firing() -> Bool { self.status == AlertStatus.Firing }
+    fn duration() -> Duration { self.ends_at.unwrap_or(Instant.now()).duration_since(self.starts_at) }
+    
+    fn compute_fingerprint(name: String, labels: Map<String, String>) -> String {
+        let data = "\(name):\(labels.iter().sorted().map(|(k,v)| "\(k)=\(v)").join(","))"
+        crypto.sha256(data.as_bytes()).to_hex()[0..16]
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Alert Rule
+// -----------------------------------------------------------------------------
+
+struct AlertRule {
+    name: String
+    expr: String
+    for_duration: Duration
+    severity: Severity
+    labels: Map<String, String>
+    annotations: Map<String, String>
+    
+    fn new(name: String, expr: String) -> Self {
+        AlertRule {
+            name: name, expr: expr, for_duration: Duration.zero(),
+            severity: Severity.Medium, labels: Map.empty(), annotations: Map.empty()
+        }
+    }
+    
+    fn for_(duration: Duration) -> Self { AlertRule { ...self, for_duration: duration } }
+    fn severity(s: Severity) -> Self { AlertRule { ...self, severity: s } }
+    fn label(k: String, v: String) -> Self { self.labels.set(k, v); self }
+    fn summary(s: String) -> Self { self.annotations.set("summary", s); self }
+    fn description(d: String) -> Self { self.annotations.set("description", d); self }
+}
+
+// -----------------------------------------------------------------------------
+// Alert Manager
+// -----------------------------------------------------------------------------
+
+actor AlertManager {
+    state alerts: Map<String, Alert>
+    state rules: [AlertRule]
+    state notifiers: [Notifier]
+    state silences: [Silence]
+    state inhibitions: [Inhibition]
+    state group_wait: Duration
+    state group_interval: Duration
+    state repeat_interval: Duration
+    
+    fn new() -> Self {
+        AlertManager {
+            alerts: Map.empty(), rules: [], notifiers: [], silences: [], inhibitions: [],
+            group_wait: Duration.from_secs(30),
+            group_interval: Duration.from_mins(5),
+            repeat_interval: Duration.from_hours(4)
+        }
+    }
+    
+    on add_rule(rule: AlertRule) { self.rules.push(rule) }
+    on add_notifier(notifier: Notifier) { self.notifiers.push(notifier) }
+    on add_silence(silence: Silence) { self.silences.push(silence) }
+    on add_inhibition(inhibition: Inhibition) { self.inhibitions.push(inhibition) }
+    
+    on fire(alert: Alert) {
+        let fp = alert.fingerprint
+        if self.is_silenced(alert) { return }
+        if self.is_inhibited(alert) { return }
+        
+        self.alerts.set(fp, alert.clone())
+        self.notify(alert)
+    }
+    
+    on resolve(fingerprint: String) {
+        if let alert = self.alerts.get_mut(fingerprint) {
+            alert.resolve()
+            self.notify(alert.clone())
+        }
+    }
+    
+    fn is_silenced(alert: Alert) -> Bool {
+        self.silences.any(|s| s.matches(alert) && s.is_active())
+    }
+    
+    fn is_inhibited(alert: Alert) -> Bool {
+        self.inhibitions.any(|i| i.inhibits(alert, self.alerts.values()))
+    }
+    
+    fn notify(alert: Alert) {
+        for notifier in self.notifiers {
+            spawn { notifier.send(alert.clone()) }
+        }
+    }
+    
+    fn get_alerts(status: Option<AlertStatus> = None) -> [Alert] {
+        self.alerts.values().filter(|a| status.map(|s| a.status == s).unwrap_or(true)).collect()
+    }
+    
+    fn get_firing() -> [Alert] { self.get_alerts(Some(AlertStatus.Firing)) }
+    fn get_resolved() -> [Alert] { self.get_alerts(Some(AlertStatus.Resolved)) }
+}
+
+// -----------------------------------------------------------------------------
+// Silence
+// -----------------------------------------------------------------------------
+
+struct Silence {
+    id: String
+    matchers: [Matcher]
+    starts_at: Instant
+    ends_at: Instant
+    created_by: String
+    comment: String
+    
+    fn new(duration: Duration, created_by: String, comment: String) -> Self {
+        Silence {
+            id: Uuid.v4().to_string(), matchers: [],
+            starts_at: Instant.now(), ends_at: Instant.now() + duration,
+            created_by: created_by, comment: comment
+        }
+    }
+    
+    fn matcher(name: String, value: String, is_regex: Bool = false) -> Self {
+        self.matchers.push(Matcher { name: name, value: value, is_regex: is_regex })
+        self
+    }
+    
+    fn is_active() -> Bool { Instant.now() >= self.starts_at && Instant.now() < self.ends_at }
+    
+    fn matches(alert: Alert) -> Bool {
+        self.matchers.all(|m| m.matches(alert))
+    }
+}
+
+struct Matcher {
+    name: String
+    value: String
+    is_regex: Bool
+    
+    fn matches(alert: Alert) -> Bool {
+        let actual = if self.name == "alertname" { Some(alert.name) } else { alert.labels.get(self.name) }
+        match actual {
+            Some(v) => if self.is_regex { Regex.new(self.value).is_match(v) } else { v == self.value },
+            None => false
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Inhibition
+// -----------------------------------------------------------------------------
+
+struct Inhibition {
+    source_matchers: [Matcher]
+    target_matchers: [Matcher]
+    equal: [String]
+    
+    fn inhibits(target: Alert, all_alerts: impl Iterator<Item = Alert>) -> Bool {
+        if !self.target_matchers.all(|m| m.matches(target)) { return false }
+        
+        all_alerts.any(|source| {
+            source.is_firing() &&
+            self.source_matchers.all(|m| m.matches(source)) &&
+            self.equal.all(|label| source.labels.get(label) == target.labels.get(label))
+        })
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Notifiers
+// -----------------------------------------------------------------------------
+
+trait Notifier {
+    fn send(alert: Alert) -> Result<(), NotifyError>
+}
+
+/// Slack notifier
+actor SlackNotifier {
+    state webhook_url: String
+    state channel: Option<String>
+    state username: String
+    
+    fn new(webhook_url: String) -> Self {
+        SlackNotifier { webhook_url: webhook_url, channel: None, username: "AlertManager" }
+    }
+    
+    on channel(c: String) -> Self { self.channel = Some(c); self }
+    on username(u: String) -> Self { self.username = u; self }
+    
+    fn color_for(severity: Severity) -> String {
+        match severity { .Critical => "#FF0000", .High => "#FF6600", .Medium => "#FFCC00", .Low => "#00FF00", .Info => "#0066FF" }
+    }
+}
+
+impl Notifier for SlackNotifier {
+    fn send(alert: Alert) -> Result<(), NotifyError> {
+        let color = Self.color_for(alert.severity)
+        let status_emoji = if alert.is_firing() { "🔥" } else { "✅" }
+        
+        let payload = SlackMessage {
+            channel: self.channel, username: self.username,
+            attachments: [SlackAttachment {
+                color: color, title: "\(status_emoji) \(alert.name)",
+                text: alert.message,
+                fields: [
+                    SlackField { title: "Severity", value: alert.severity.to_string(), short: true },
+                    SlackField { title: "Status", value: alert.status.to_string(), short: true }
+                ],
+                ts: alert.starts_at.as_secs()
+            }]
+        }
+        
+        let resp = Client.new().send(Request.post(self.webhook_url).json(payload))?
+        if !resp.is_success() { return Err(NotifyError.HttpError(resp.status.code)) }
+        Ok(())
+    }
+}
+
+struct SlackMessage { channel: Option<String>, username: String, attachments: [SlackAttachment] }
+struct SlackAttachment { color: String, title: String, text: String, fields: [SlackField], ts: Int64 }
+struct SlackField { title: String, value: String, short: Bool }
+
+/// PagerDuty notifier
+actor PagerDutyNotifier {
+    state routing_key: String
+    state api_url: String
+    
+    fn new(routing_key: String) -> Self {
+        PagerDutyNotifier { routing_key: routing_key, api_url: "https://events.pagerduty.com/v2/enqueue" }
+    }
+}
+
+impl Notifier for PagerDutyNotifier {
+    fn send(alert: Alert) -> Result<(), NotifyError> {
+        let event_action = if alert.is_firing() { "trigger" } else { "resolve" }
+        let severity = match alert.severity { .Critical => "critical", .High => "error", .Medium => "warning", _ => "info" }
+        
+        let payload = PagerDutyEvent {
+            routing_key: self.routing_key, event_action: event_action, dedup_key: alert.fingerprint,
+            payload: PagerDutyPayload {
+                summary: alert.message, source: alert.labels.get("instance").unwrap_or("unknown"),
+                severity: severity, timestamp: alert.starts_at.to_iso8601(),
+                custom_details: alert.labels
+            }
+        }
+        
+        let resp = Client.new().send(Request.post(self.api_url).json(payload))?
+        if !resp.is_success() { return Err(NotifyError.HttpError(resp.status.code)) }
+        Ok(())
+    }
+}
+
+struct PagerDutyEvent { routing_key: String, event_action: String, dedup_key: String, payload: PagerDutyPayload }
+struct PagerDutyPayload { summary: String, source: String, severity: String, timestamp: String, custom_details: Map<String, String> }
+
+/// Email notifier
+actor EmailNotifier {
+    state smtp_host: String
+    state smtp_port: Int
+    state from: String
+    state to: [String]
+    state username: Option<String>
+    state password: Option<String>
+    
+    fn new(smtp_host: String, from: String, to: [String]) -> Self {
+        EmailNotifier { smtp_host: smtp_host, smtp_port: 587, from: from, to: to, username: None, password: None }
+    }
+    
+    on auth(username: String, password: String) -> Self { self.username = Some(username); self.password = Some(password); self }
+}
+
+impl Notifier for EmailNotifier {
+    fn send(alert: Alert) -> Result<(), NotifyError> {
+        let subject = "[\(alert.severity)] \(alert.name)"
+        let body = "Alert: \(alert.name)\nSeverity: \(alert.severity)\nStatus: \(alert.status)\n\n\(alert.message)"
+        
+        let email = Email.new()
+            .from(self.from)
+            .to(self.to)
+            .subject(subject)
+            .body(body)
+        
+        var smtp = SmtpClient.new(self.smtp_host, self.smtp_port)
+        if let (u, p) = (self.username, self.password) { smtp = smtp.auth(u, p) }
+        smtp.send(email)?
+        Ok(())
+    }
+}
+
+/// Webhook notifier
+actor WebhookNotifier {
+    state url: String
+    state headers: Map<String, String>
+    
+    fn new(url: String) -> Self { WebhookNotifier { url: url, headers: Map.empty() } }
+    on header(k: String, v: String) -> Self { self.headers.set(k, v); self }
+}
+
+impl Notifier for WebhookNotifier {
+    fn send(alert: Alert) -> Result<(), NotifyError> {
+        var req = Request.post(self.url).json(alert)
+        for (k, v) in self.headers { req = req.header(k, v) }
+        let resp = Client.new().send(req)?
+        if !resp.is_success() { return Err(NotifyError.HttpError(resp.status.code)) }
+        Ok(())
+    }
+}
+
+/// Telegram notifier
+actor TelegramNotifier {
+    state bot_token: String
+    state chat_id: String
+    
+    fn new(bot_token: String, chat_id: String) -> Self {
+        TelegramNotifier { bot_token: bot_token, chat_id: chat_id }
+    }
+}
+
+impl Notifier for TelegramNotifier {
+    fn send(alert: Alert) -> Result<(), NotifyError> {
+        let emoji = match alert.severity { .Critical => "🚨", .High => "⚠️", .Medium => "📢", .Low => "ℹ️", .Info => "📝" }
+        let text = "\(emoji) *\(alert.name)*\n\nSeverity: \(alert.severity)\nStatus: \(alert.status)\n\n\(alert.message)"
+        
+        let url = "https://api.telegram.org/bot\(self.bot_token)/sendMessage"
+        let payload = TelegramMessage { chat_id: self.chat_id, text: text, parse_mode: "Markdown" }
+        
+        let resp = Client.new().send(Request.post(url).json(payload))?
+        if !resp.is_success() { return Err(NotifyError.HttpError(resp.status.code)) }
+        Ok(())
+    }
+}
+
+struct TelegramMessage { chat_id: String, text: String, parse_mode: String }
+
+enum NotifyError { HttpError(Int), SmtpError(String), NetworkError(String) }
+
+// -----------------------------------------------------------------------------
+// Alert Conditions
+// -----------------------------------------------------------------------------
+
+/// Threshold-based alert condition
+struct ThresholdCondition {
+    metric: String
+    operator: CompareOp
+    threshold: Float
+    for_duration: Duration
+    
+    fn above(metric: String, threshold: Float) -> Self {
+        ThresholdCondition { metric: metric, operator: CompareOp.Gt, threshold: threshold, for_duration: Duration.zero() }
+    }
+    
+    fn below(metric: String, threshold: Float) -> Self {
+        ThresholdCondition { metric: metric, operator: CompareOp.Lt, threshold: threshold, for_duration: Duration.zero() }
+    }
+    
+    fn for_(duration: Duration) -> Self { ThresholdCondition { ...self, for_duration: duration } }
+    
+    fn evaluate(value: Float) -> Bool {
+        match self.operator {
+            .Gt => value > self.threshold,
+            .Gte => value >= self.threshold,
+            .Lt => value < self.threshold,
+            .Lte => value <= self.threshold,
+            .Eq => value == self.threshold,
+            .Neq => value != self.threshold
+        }
+    }
+}
+
+enum CompareOp { Gt, Gte, Lt, Lte, Eq, Neq }
+
+/// Rate of change condition
+struct RateCondition {
+    metric: String
+    rate_threshold: Float
+    window: Duration
+    increasing: Bool
+}
+
+/// Absence condition (no data)
+struct AbsenceCondition {
+    metric: String
+    for_duration: Duration
+}
+
+// -----------------------------------------------------------------------------
+// Alert Watcher
+// -----------------------------------------------------------------------------
+
+actor AlertWatcher {
+    state manager: AlertManager
+    state conditions: [(String, ThresholdCondition)]
+    state check_interval: Duration
+    state running: Bool
+    state pending: Map<String, Instant>
+    
+    fn new(manager: AlertManager) -> Self {
+        AlertWatcher { manager: manager, conditions: [], check_interval: Duration.from_secs(15), running: false, pending: Map.empty() }
+    }
+    
+    on watch(name: String, condition: ThresholdCondition) { self.conditions.push((name, condition)) }
+    on interval(d: Duration) -> Self { self.check_interval = d; self }
+    
+    on start() {
+        self.running = true
+        spawn { self.check_loop() }
+    }
+    
+    on stop() { self.running = false }
+    
+    async fn check_loop() {
+        while self.running {
+            for (name, condition) in self.conditions {
+                self.check_condition(name, condition)
+            }
+            await sleep(self.check_interval)
+        }
+    }
+    
+    fn check_condition(name: String, condition: ThresholdCondition) {
+        let value = self.get_metric_value(condition.metric)
+        let is_firing = condition.evaluate(value)
+        let fp = Alert.compute_fingerprint(name, Map.empty())
+        
+        if is_firing {
+            if let pending_since = self.pending.get(fp) {
+                if Instant.now().duration_since(pending_since) >= condition.for_duration {
+                    let alert = Alert.new(name, Severity.High, "Threshold exceeded: \(condition.metric) = \(value)")
+                    self.manager.fire(alert)
+                    self.pending.remove(fp)
+                }
+            } else {
+                self.pending.set(fp, Instant.now())
+            }
+        } else {
+            self.pending.remove(fp)
+            self.manager.resolve(fp)
+        }
+    }
+    
+    fn get_metric_value(metric: String) -> Float {
+        @native("get_metric_value", metric)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Global Alert Manager
+// -----------------------------------------------------------------------------
+
+var ALERT_MANAGER = AlertManager.new()
+
+fn fire(alert: Alert) { ALERT_MANAGER.fire(alert) }
+fn resolve(fingerprint: String) { ALERT_MANAGER.resolve(fingerprint) }
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "alert creation" {
+    let alert = Alert.new("HighCPU", Severity.Critical, "CPU usage above 90%")
+        .label("instance", "server1")
+    
+    assert_eq(alert.name, "HighCPU")?
+    assert_eq(alert.severity, Severity.Critical)?
+    assert(alert.is_firing())?
+}
+
+test "alert resolve" {
+    var alert = Alert.new("Test", Severity.Low, "Test alert")
+    alert = alert.resolve()
+    
+    assert_eq(alert.status, AlertStatus.Resolved)?
+    assert(alert.ends_at.is_some())?
+}
+
+test "threshold condition" {
+    let cond = ThresholdCondition.above("cpu_usage", 80.0)
+    assert(cond.evaluate(90.0))?
+    assert(!cond.evaluate(70.0))?
+}
+
+test "silence matching" {
+    let silence = Silence.new(Duration.from_hours(1), "admin", "Maintenance")
+        .matcher("alertname", "HighCPU", false)
+    
+    let alert = Alert.new("HighCPU", Severity.High, "CPU high")
+    assert(silence.matches(alert))?
+}
+
+test "severity priority" {
+    assert(Severity.Critical.priority() < Severity.High.priority())?
+    assert(Severity.High.priority() < Severity.Medium.priority())?
+}

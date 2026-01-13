@@ -1,0 +1,592 @@
+// =============================================================================
+// Vibee OS — Chemistry Module
+// Chemical elements, compounds, and calculations
+// =============================================================================
+
+use math::{PI, sqrt, pow, ln, exp, abs}
+
+// -----------------------------------------------------------------------------
+// Physical Constants
+// -----------------------------------------------------------------------------
+
+/// Avogadro's number (mol⁻¹)
+const AVOGADRO: Float = 6.02214076e23
+
+/// Boltzmann constant (J/K)
+const BOLTZMANN: Float = 1.380649e-23
+
+/// Gas constant (J/(mol·K))
+const GAS_CONSTANT: Float = 8.314462618
+
+/// Faraday constant (C/mol)
+const FARADAY: Float = 96485.33212
+
+/// Elementary charge (C)
+const ELEMENTARY_CHARGE: Float = 1.602176634e-19
+
+/// Atomic mass unit (kg)
+const ATOMIC_MASS_UNIT: Float = 1.66053906660e-27
+
+/// Standard temperature (K)
+const STANDARD_TEMP: Float = 273.15
+
+/// Standard pressure (Pa)
+const STANDARD_PRESSURE: Float = 101325.0
+
+// -----------------------------------------------------------------------------
+// Chemical Element
+// -----------------------------------------------------------------------------
+
+enum ElementCategory {
+    AlkaliMetal,
+    AlkalineEarth,
+    TransitionMetal,
+    PostTransitionMetal,
+    Metalloid,
+    ReactiveNonmetal,
+    NobleGas,
+    Lanthanide,
+    Actinide
+}
+
+struct Element {
+    symbol: String
+    name: String
+    atomic_number: Int
+    atomic_mass: Float
+    electronegativity: Float
+    category: ElementCategory
+    period: Int
+    group: Int
+    
+    fn new(symbol: String, name: String, z: Int, mass: Float, en: Float,
+           cat: ElementCategory, period: Int, group: Int) -> Self {
+        Element {
+            symbol: symbol, name: name, atomic_number: z, atomic_mass: mass,
+            electronegativity: en, category: cat, period: period, group: group
+        }
+    }
+    
+    fn protons() -> Int { self.atomic_number }
+    fn neutrons() -> Int { (self.atomic_mass.round() as Int) - self.atomic_number }
+    fn electrons() -> Int { self.atomic_number }
+    
+    fn is_metal() -> Bool {
+        match self.category {
+            AlkaliMetal | AlkalineEarth | TransitionMetal | PostTransitionMetal => true,
+            _ => false
+        }
+    }
+    
+    fn is_nonmetal() -> Bool {
+        match self.category {
+            ReactiveNonmetal | NobleGas => true,
+            _ => false
+        }
+    }
+    
+    fn valence_electrons() -> Int {
+        match self.group {
+            1 => 1, 2 => 2, 13 => 3, 14 => 4, 15 => 5, 16 => 6, 17 => 7, 18 => 8,
+            _ => 0
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Periodic Table - Common Elements
+// -----------------------------------------------------------------------------
+
+fn hydrogen() -> Element { Element.new("H", "Hydrogen", 1, 1.008, 2.20, ReactiveNonmetal, 1, 1) }
+fn helium() -> Element { Element.new("He", "Helium", 2, 4.003, 0.0, NobleGas, 1, 18) }
+fn lithium() -> Element { Element.new("Li", "Lithium", 3, 6.941, 0.98, AlkaliMetal, 2, 1) }
+fn beryllium() -> Element { Element.new("Be", "Beryllium", 4, 9.012, 1.57, AlkalineEarth, 2, 2) }
+fn boron() -> Element { Element.new("B", "Boron", 5, 10.81, 2.04, Metalloid, 2, 13) }
+fn carbon() -> Element { Element.new("C", "Carbon", 6, 12.011, 2.55, ReactiveNonmetal, 2, 14) }
+fn nitrogen() -> Element { Element.new("N", "Nitrogen", 7, 14.007, 3.04, ReactiveNonmetal, 2, 15) }
+fn oxygen() -> Element { Element.new("O", "Oxygen", 8, 15.999, 3.44, ReactiveNonmetal, 2, 16) }
+fn fluorine() -> Element { Element.new("F", "Fluorine", 9, 18.998, 3.98, ReactiveNonmetal, 2, 17) }
+fn neon() -> Element { Element.new("Ne", "Neon", 10, 20.180, 0.0, NobleGas, 2, 18) }
+fn sodium() -> Element { Element.new("Na", "Sodium", 11, 22.990, 0.93, AlkaliMetal, 3, 1) }
+fn magnesium() -> Element { Element.new("Mg", "Magnesium", 12, 24.305, 1.31, AlkalineEarth, 3, 2) }
+fn aluminum() -> Element { Element.new("Al", "Aluminum", 13, 26.982, 1.61, PostTransitionMetal, 3, 13) }
+fn silicon() -> Element { Element.new("Si", "Silicon", 14, 28.086, 1.90, Metalloid, 3, 14) }
+fn phosphorus() -> Element { Element.new("P", "Phosphorus", 15, 30.974, 2.19, ReactiveNonmetal, 3, 15) }
+fn sulfur() -> Element { Element.new("S", "Sulfur", 16, 32.065, 2.58, ReactiveNonmetal, 3, 16) }
+fn chlorine() -> Element { Element.new("Cl", "Chlorine", 17, 35.453, 3.16, ReactiveNonmetal, 3, 17) }
+fn argon() -> Element { Element.new("Ar", "Argon", 18, 39.948, 0.0, NobleGas, 3, 18) }
+fn potassium() -> Element { Element.new("K", "Potassium", 19, 39.098, 0.82, AlkaliMetal, 4, 1) }
+fn calcium() -> Element { Element.new("Ca", "Calcium", 20, 40.078, 1.00, AlkalineEarth, 4, 2) }
+fn iron() -> Element { Element.new("Fe", "Iron", 26, 55.845, 1.83, TransitionMetal, 4, 8) }
+fn copper() -> Element { Element.new("Cu", "Copper", 29, 63.546, 1.90, TransitionMetal, 4, 11) }
+fn zinc() -> Element { Element.new("Zn", "Zinc", 30, 65.38, 1.65, TransitionMetal, 4, 12) }
+fn silver() -> Element { Element.new("Ag", "Silver", 47, 107.87, 1.93, TransitionMetal, 5, 11) }
+fn gold() -> Element { Element.new("Au", "Gold", 79, 196.97, 2.54, TransitionMetal, 6, 11) }
+fn mercury() -> Element { Element.new("Hg", "Mercury", 80, 200.59, 2.00, TransitionMetal, 6, 12) }
+fn lead() -> Element { Element.new("Pb", "Lead", 82, 207.2, 2.33, PostTransitionMetal, 6, 14) }
+fn uranium() -> Element { Element.new("U", "Uranium", 92, 238.03, 1.38, Actinide, 7, 0) }
+
+/// Get element by symbol
+fn get_element(symbol: String) -> Option<Element> {
+    match symbol.as_str() {
+        "H" => Some(hydrogen()), "He" => Some(helium()), "Li" => Some(lithium()),
+        "Be" => Some(beryllium()), "B" => Some(boron()), "C" => Some(carbon()),
+        "N" => Some(nitrogen()), "O" => Some(oxygen()), "F" => Some(fluorine()),
+        "Ne" => Some(neon()), "Na" => Some(sodium()), "Mg" => Some(magnesium()),
+        "Al" => Some(aluminum()), "Si" => Some(silicon()), "P" => Some(phosphorus()),
+        "S" => Some(sulfur()), "Cl" => Some(chlorine()), "Ar" => Some(argon()),
+        "K" => Some(potassium()), "Ca" => Some(calcium()), "Fe" => Some(iron()),
+        "Cu" => Some(copper()), "Zn" => Some(zinc()), "Ag" => Some(silver()),
+        "Au" => Some(gold()), "Hg" => Some(mercury()), "Pb" => Some(lead()),
+        "U" => Some(uranium()),
+        _ => None
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Molecule / Compound
+// -----------------------------------------------------------------------------
+
+struct Molecule {
+    formula: String
+    name: String
+    composition: [(String, Int)]
+    
+    fn new(formula: String, name: String, composition: [(String, Int)]) -> Self {
+        Molecule { formula: formula, name: name, composition: composition }
+    }
+    
+    /// Calculate molecular mass (g/mol)
+    fn molecular_mass() -> Float {
+        var mass = 0.0
+        for (symbol, count) in self.composition.iter() {
+            if let Some(element) = get_element(symbol.clone()) {
+                mass += element.atomic_mass * count as Float
+            }
+        }
+        mass
+    }
+    
+    /// Get total number of atoms
+    fn atom_count() -> Int {
+        self.composition.iter().map(|(_, c)| c).sum()
+    }
+    
+    /// Get mass percent of element
+    fn mass_percent(symbol: String) -> Float {
+        let total = self.molecular_mass()
+        for (sym, count) in self.composition.iter() {
+            if sym == symbol {
+                if let Some(element) = get_element(symbol.clone()) {
+                    return (element.atomic_mass * count as Float / total) * 100.0
+                }
+            }
+        }
+        0.0
+    }
+    
+    /// Convert mass to moles
+    fn mass_to_moles(mass_g: Float) -> Float {
+        mass_g / self.molecular_mass()
+    }
+    
+    /// Convert moles to mass
+    fn moles_to_mass(moles: Float) -> Float {
+        moles * self.molecular_mass()
+    }
+    
+    /// Convert moles to number of molecules
+    fn moles_to_molecules(moles: Float) -> Float {
+        moles * AVOGADRO
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Common Molecules
+// -----------------------------------------------------------------------------
+
+fn water() -> Molecule { Molecule.new("H2O", "Water", [("H", 2), ("O", 1)]) }
+fn carbon_dioxide() -> Molecule { Molecule.new("CO2", "Carbon Dioxide", [("C", 1), ("O", 2)]) }
+fn methane() -> Molecule { Molecule.new("CH4", "Methane", [("C", 1), ("H", 4)]) }
+fn ammonia() -> Molecule { Molecule.new("NH3", "Ammonia", [("N", 1), ("H", 3)]) }
+fn glucose() -> Molecule { Molecule.new("C6H12O6", "Glucose", [("C", 6), ("H", 12), ("O", 6)]) }
+fn ethanol() -> Molecule { Molecule.new("C2H6O", "Ethanol", [("C", 2), ("H", 6), ("O", 1)]) }
+fn sulfuric_acid() -> Molecule { Molecule.new("H2SO4", "Sulfuric Acid", [("H", 2), ("S", 1), ("O", 4)]) }
+fn sodium_chloride() -> Molecule { Molecule.new("NaCl", "Sodium Chloride", [("Na", 1), ("Cl", 1)]) }
+fn hydrochloric_acid() -> Molecule { Molecule.new("HCl", "Hydrochloric Acid", [("H", 1), ("Cl", 1)]) }
+fn sodium_hydroxide() -> Molecule { Molecule.new("NaOH", "Sodium Hydroxide", [("Na", 1), ("O", 1), ("H", 1)]) }
+fn calcium_carbonate() -> Molecule { Molecule.new("CaCO3", "Calcium Carbonate", [("Ca", 1), ("C", 1), ("O", 3)]) }
+fn aspirin() -> Molecule { Molecule.new("C9H8O4", "Aspirin", [("C", 9), ("H", 8), ("O", 4)]) }
+fn caffeine() -> Molecule { Molecule.new("C8H10N4O2", "Caffeine", [("C", 8), ("H", 10), ("N", 4), ("O", 2)]) }
+fn oxygen_gas() -> Molecule { Molecule.new("O2", "Oxygen Gas", [("O", 2)]) }
+fn nitrogen_gas() -> Molecule { Molecule.new("N2", "Nitrogen Gas", [("N", 2)]) }
+fn hydrogen_gas() -> Molecule { Molecule.new("H2", "Hydrogen Gas", [("H", 2)]) }
+
+// -----------------------------------------------------------------------------
+// Solution Chemistry
+// -----------------------------------------------------------------------------
+
+struct Solution {
+    solute: Molecule
+    molarity: Float         // mol/L
+    volume_liters: Float
+    
+    fn new(solute: Molecule, molarity: Float, volume: Float) -> Self {
+        Solution { solute: solute, molarity: molarity, volume_liters: volume }
+    }
+    
+    /// Moles of solute
+    fn moles() -> Float {
+        self.molarity * self.volume_liters
+    }
+    
+    /// Mass of solute (g)
+    fn solute_mass() -> Float {
+        self.moles() * self.solute.molecular_mass()
+    }
+    
+    /// Dilute solution to new volume
+    fn dilute(new_volume: Float) -> Solution {
+        let new_molarity = (self.molarity * self.volume_liters) / new_volume
+        Solution.new(self.solute.clone(), new_molarity, new_volume)
+    }
+    
+    /// Mix two solutions of same solute
+    fn mix(other: Solution) -> Solution {
+        let total_moles = self.moles() + other.moles()
+        let total_volume = self.volume_liters + other.volume_liters
+        Solution.new(self.solute.clone(), total_moles / total_volume, total_volume)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Acid-Base Chemistry
+// -----------------------------------------------------------------------------
+
+fn log10(x: Float) -> Float { ln(x) / ln(10.0) }
+
+/// Calculate pH from H+ concentration
+fn ph_from_h(h_concentration: Float) -> Float {
+    -log10(h_concentration)
+}
+
+/// Calculate H+ concentration from pH
+fn h_from_ph(ph: Float) -> Float {
+    pow(10.0, -ph)
+}
+
+/// Calculate pOH from OH- concentration
+fn poh_from_oh(oh_concentration: Float) -> Float {
+    -log10(oh_concentration)
+}
+
+/// Calculate OH- concentration from pOH
+fn oh_from_poh(poh: Float) -> Float {
+    pow(10.0, -poh)
+}
+
+/// pH + pOH = 14 at 25°C
+fn ph_to_poh(ph: Float) -> Float { 14.0 - ph }
+fn poh_to_ph(poh: Float) -> Float { 14.0 - poh }
+
+/// Calculate pH of strong acid
+fn strong_acid_ph(concentration: Float) -> Float {
+    ph_from_h(concentration)
+}
+
+/// Calculate pH of strong base
+fn strong_base_ph(concentration: Float) -> Float {
+    14.0 - poh_from_oh(concentration)
+}
+
+/// Calculate pH of weak acid (Ka = acid dissociation constant)
+fn weak_acid_ph(concentration: Float, ka: Float) -> Float {
+    let h = sqrt(ka * concentration)
+    ph_from_h(h)
+}
+
+/// Calculate pH of buffer solution (Henderson-Hasselbalch)
+fn buffer_ph(pka: Float, acid_conc: Float, conjugate_base_conc: Float) -> Float {
+    pka + log10(conjugate_base_conc / acid_conc)
+}
+
+/// Common pKa values
+fn pka_acetic_acid() -> Float { 4.76 }
+fn pka_carbonic_acid() -> Float { 6.35 }
+fn pka_phosphoric_acid() -> Float { 2.15 }
+fn pka_ammonia() -> Float { 9.25 }
+
+// -----------------------------------------------------------------------------
+// Gas Laws
+// -----------------------------------------------------------------------------
+
+/// Ideal gas law: PV = nRT - Calculate pressure
+fn ideal_gas_pressure(n: Float, v: Float, t: Float) -> Float {
+    n * GAS_CONSTANT * t / v
+}
+
+/// Ideal gas law: Calculate volume
+fn ideal_gas_volume(n: Float, p: Float, t: Float) -> Float {
+    n * GAS_CONSTANT * t / p
+}
+
+/// Ideal gas law: Calculate moles
+fn ideal_gas_moles(p: Float, v: Float, t: Float) -> Float {
+    p * v / (GAS_CONSTANT * t)
+}
+
+/// Ideal gas law: Calculate temperature
+fn ideal_gas_temp(p: Float, v: Float, n: Float) -> Float {
+    p * v / (n * GAS_CONSTANT)
+}
+
+/// Combined gas law: P1V1/T1 = P2V2/T2 - Returns T2
+fn combined_gas_law(p1: Float, v1: Float, t1: Float, p2: Float, v2: Float) -> Float {
+    (p2 * v2 * t1) / (p1 * v1)
+}
+
+/// Graham's law of effusion - rate ratio
+fn effusion_rate_ratio(m1: Float, m2: Float) -> Float {
+    sqrt(m2 / m1)
+}
+
+/// Calculate gas density (kg/m³)
+fn gas_density(pressure: Float, molar_mass: Float, temperature: Float) -> Float {
+    pressure * molar_mass / (GAS_CONSTANT * temperature * 1000.0)
+}
+
+// -----------------------------------------------------------------------------
+// Thermochemistry
+// -----------------------------------------------------------------------------
+
+/// Calculate Gibbs free energy (kJ/mol)
+fn gibbs_free_energy(delta_h: Float, delta_s: Float, temp_k: Float) -> Float {
+    delta_h - (temp_k * delta_s / 1000.0)
+}
+
+/// Check if reaction is spontaneous
+fn is_spontaneous(delta_g: Float) -> Bool {
+    delta_g < 0.0
+}
+
+/// Calculate equilibrium constant from Gibbs energy
+fn equilibrium_constant(delta_g: Float, temp_k: Float) -> Float {
+    exp(-delta_g * 1000.0 / (GAS_CONSTANT * temp_k))
+}
+
+/// Calculate activation energy from rate constants (Arrhenius)
+fn activation_energy(k1: Float, k2: Float, t1: Float, t2: Float) -> Float {
+    GAS_CONSTANT * ln(k2 / k1) / (1.0/t1 - 1.0/t2)
+}
+
+/// Arrhenius equation: k = A * exp(-Ea/RT)
+fn rate_constant(a: Float, ea: Float, t: Float) -> Float {
+    a * exp(-ea / (GAS_CONSTANT * t))
+}
+
+// -----------------------------------------------------------------------------
+// Electrochemistry
+// -----------------------------------------------------------------------------
+
+struct ElectrochemicalCell {
+    anode: String
+    cathode: String
+    e_anode: Float      // Standard reduction potential (V)
+    e_cathode: Float
+    
+    fn new(anode: String, e_anode: Float, cathode: String, e_cathode: Float) -> Self {
+        ElectrochemicalCell { anode: anode, cathode: cathode, e_anode: e_anode, e_cathode: e_cathode }
+    }
+    
+    /// Calculate cell potential
+    fn cell_potential() -> Float {
+        self.e_cathode - self.e_anode
+    }
+    
+    /// Check if cell is spontaneous
+    fn is_spontaneous() -> Bool {
+        self.cell_potential() > 0.0
+    }
+    
+    /// Calculate Gibbs energy from cell potential
+    fn gibbs_energy(n_electrons: Int) -> Float {
+        -n_electrons as Float * FARADAY * self.cell_potential() / 1000.0
+    }
+}
+
+/// Nernst equation
+fn nernst_potential(e_standard: Float, n: Int, q: Float, temp: Float) -> Float {
+    e_standard - (GAS_CONSTANT * temp / (n as Float * FARADAY)) * ln(q)
+}
+
+/// Faraday's law of electrolysis - mass deposited
+fn electrolysis_mass(current: Float, time: Float, molar_mass: Float, n_electrons: Int) -> Float {
+    (current * time * molar_mass) / (n_electrons as Float * FARADAY)
+}
+
+/// Standard reduction potentials (V)
+fn e_standard_li() -> Float { -3.04 }
+fn e_standard_na() -> Float { -2.71 }
+fn e_standard_zn() -> Float { -0.76 }
+fn e_standard_fe() -> Float { -0.44 }
+fn e_standard_h() -> Float { 0.00 }
+fn e_standard_cu() -> Float { 0.34 }
+fn e_standard_ag() -> Float { 0.80 }
+fn e_standard_au() -> Float { 1.50 }
+
+// -----------------------------------------------------------------------------
+// Nuclear Chemistry
+// -----------------------------------------------------------------------------
+
+enum DecayMode {
+    Stable,
+    Alpha,
+    BetaMinus,
+    BetaPlus,
+    Gamma,
+    ElectronCapture,
+    Fission
+}
+
+struct Isotope {
+    symbol: String
+    mass_number: Int
+    half_life: Float        // seconds (0 for stable)
+    decay_mode: DecayMode
+    
+    fn new(symbol: String, mass_number: Int, half_life: Float, decay_mode: DecayMode) -> Self {
+        Isotope { symbol: symbol, mass_number: mass_number, half_life: half_life, decay_mode: decay_mode }
+    }
+    
+    fn is_stable() -> Bool {
+        self.half_life == 0.0
+    }
+    
+    /// Calculate decay constant (λ)
+    fn decay_constant() -> Float {
+        if self.is_stable() { return 0.0 }
+        ln(2.0) / self.half_life
+    }
+    
+    /// Calculate remaining amount after time
+    fn remaining(initial: Float, time: Float) -> Float {
+        if self.is_stable() { return initial }
+        initial * pow(0.5, time / self.half_life)
+    }
+    
+    /// Calculate activity (Bq)
+    fn activity(amount_moles: Float) -> Float {
+        self.decay_constant() * amount_moles * AVOGADRO
+    }
+    
+    /// Time for amount to decay to target
+    fn time_to_decay(initial: Float, target: Float) -> Float {
+        if self.is_stable() { return Float.infinity() }
+        -self.half_life * ln(target / initial) / ln(2.0)
+    }
+}
+
+/// Common isotopes
+fn carbon_14() -> Isotope { Isotope.new("C", 14, 5730.0 * 365.25 * 24.0 * 3600.0, BetaMinus) }
+fn uranium_238() -> Isotope { Isotope.new("U", 238, 4.468e9 * 365.25 * 24.0 * 3600.0, Alpha) }
+fn potassium_40() -> Isotope { Isotope.new("K", 40, 1.248e9 * 365.25 * 24.0 * 3600.0, BetaMinus) }
+fn iodine_131() -> Isotope { Isotope.new("I", 131, 8.02 * 24.0 * 3600.0, BetaMinus) }
+fn cobalt_60() -> Isotope { Isotope.new("Co", 60, 5.27 * 365.25 * 24.0 * 3600.0, BetaMinus) }
+
+/// Carbon-14 dating
+fn carbon_14_age(current_ratio: Float, initial_ratio: Float) -> Float {
+    let c14 = carbon_14()
+    c14.time_to_decay(initial_ratio, current_ratio)
+}
+
+/// Calculate binding energy per nucleon (MeV)
+fn binding_energy_per_nucleon(z: Int, n: Int, atomic_mass: Float) -> Float {
+    let mass_defect = z as Float * 1.007825 + n as Float * 1.008665 - atomic_mass
+    (mass_defect * 931.5) / (z + n) as Float
+}
+
+// -----------------------------------------------------------------------------
+// Chemical Kinetics
+// -----------------------------------------------------------------------------
+
+enum ReactionOrder { Zero, First, Second }
+
+/// Calculate concentration at time t
+fn concentration_at_time(c0: Float, k: Float, t: Float, order: ReactionOrder) -> Float {
+    match order {
+        Zero => c0 - k * t,
+        First => c0 * exp(-k * t),
+        Second => c0 / (1.0 + k * c0 * t)
+    }
+}
+
+/// Calculate half-life for reaction
+fn reaction_half_life(c0: Float, k: Float, order: ReactionOrder) -> Float {
+    match order {
+        Zero => c0 / (2.0 * k),
+        First => ln(2.0) / k,
+        Second => 1.0 / (k * c0)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "element properties" {
+    let h = hydrogen()
+    assert_eq(h.atomic_number, 1)?
+    assert((h.atomic_mass - 1.008).abs() < 0.001)?
+    assert(h.is_nonmetal())?
+}
+
+test "molecular mass" {
+    let h2o = water()
+    assert((h2o.molecular_mass() - 18.015).abs() < 0.01)?
+    
+    let gluc = glucose()
+    assert((gluc.molecular_mass() - 180.156).abs() < 0.1)?
+}
+
+test "pH calculations" {
+    let ph = ph_from_h(1e-7)
+    assert((ph - 7.0).abs() < 0.01)?
+    
+    let h = h_from_ph(3.0)
+    assert((h - 0.001).abs() < 0.0001)?
+    
+    let poh = ph_to_poh(7.0)
+    assert((poh - 7.0).abs() < 0.01)?
+}
+
+test "ideal gas law" {
+    // 1 mol at STP should be ~22.4 L
+    let v = ideal_gas_volume(1.0, STANDARD_PRESSURE, STANDARD_TEMP)
+    assert((v - 0.0224).abs() < 0.001)?
+}
+
+test "gibbs free energy" {
+    let dg = gibbs_free_energy(-100.0, 200.0, 298.0)
+    assert((dg - (-159.6)).abs() < 0.1)?
+    assert(is_spontaneous(dg))?
+}
+
+test "electrochemical cell" {
+    let cell = ElectrochemicalCell.new("Zn", e_standard_zn(), "Cu", e_standard_cu())
+    assert((cell.cell_potential() - 1.10).abs() < 0.01)?
+    assert(cell.is_spontaneous())?
+}
+
+test "radioactive decay" {
+    let c14 = carbon_14()
+    let remaining = c14.remaining(100.0, c14.half_life)
+    assert((remaining - 50.0).abs() < 0.1)?
+}
+
+test "solution chemistry" {
+    let sol = Solution.new(sodium_chloride(), 1.0, 0.5)
+    assert((sol.moles() - 0.5).abs() < 0.001)?
+    
+    let diluted = sol.dilute(1.0)
+    assert((diluted.molarity - 0.5).abs() < 0.001)?
+}

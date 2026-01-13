@@ -1,0 +1,554 @@
+// =============================================================================
+// Vibee OS — Progress Module
+// Progress bars and indicators for CLI applications
+// =============================================================================
+
+use terminal::{Style, Cursor, Screen, Terminal}
+
+// -----------------------------------------------------------------------------
+// Progress Bar Styles
+// -----------------------------------------------------------------------------
+
+/// Progress bar style configuration
+struct ProgressStyle {
+    template: String
+    fill_char: Char
+    empty_char: Char
+    head_char: Char
+    prefix: String
+    suffix: String
+    
+    fn default() -> Self {
+        ProgressStyle {
+            template: "{prefix} [{bar}] {percent}% {suffix}",
+            fill_char: '█',
+            empty_char: '░',
+            head_char: '▓',
+            prefix: "",
+            suffix: ""
+        }
+    }
+    
+    fn ascii() -> Self {
+        ProgressStyle {
+            template: "{prefix} [{bar}] {percent}% {suffix}",
+            fill_char: '#',
+            empty_char: '-',
+            head_char: '>',
+            prefix: "",
+            suffix: ""
+        }
+    }
+    
+    fn minimal() -> Self {
+        ProgressStyle {
+            template: "{bar} {percent}%",
+            fill_char: '━',
+            empty_char: '─',
+            head_char: '╸',
+            prefix: "",
+            suffix: ""
+        }
+    }
+    
+    fn dots() -> Self {
+        ProgressStyle {
+            template: "{prefix} {bar} {pos}/{len}",
+            fill_char: '●',
+            empty_char: '○',
+            head_char: '◐',
+            prefix: "",
+            suffix: ""
+        }
+    }
+    
+    fn blocks() -> Self {
+        ProgressStyle {
+            template: "{prefix} {bar} {percent}%",
+            fill_char: '▓',
+            empty_char: '░',
+            head_char: '▒',
+            prefix: "",
+            suffix: ""
+        }
+    }
+    
+    fn template(t: String) -> Self { self.template = t; self }
+    fn fill(c: Char) -> Self { self.fill_char = c; self }
+    fn empty(c: Char) -> Self { self.empty_char = c; self }
+    fn head(c: Char) -> Self { self.head_char = c; self }
+    fn prefix(s: String) -> Self { self.prefix = s; self }
+    fn suffix(s: String) -> Self { self.suffix = s; self }
+}
+
+// -----------------------------------------------------------------------------
+// Progress Bar
+// -----------------------------------------------------------------------------
+
+/// Progress bar
+actor ProgressBar {
+    state total: Int
+    state current: Int
+    state width: Int
+    state style: ProgressStyle
+    state message: String
+    state started_at: Option<Instant>
+    state finished: Bool
+    state hidden: Bool
+    
+    /// Create progress bar with total count
+    init(total: Int) {
+        self.total = total
+        self.current = 0
+        self.width = 40
+        self.style = ProgressStyle.default()
+        self.message = ""
+        self.started_at = None
+        self.finished = false
+        self.hidden = false
+    }
+    
+    /// Set bar width
+    on width(w: Int) -> Self { self.width = w; self }
+    
+    /// Set style
+    on style(s: ProgressStyle) -> Self { self.style = s; self }
+    
+    /// Set message
+    on message(m: String) -> Self { self.message = m; self }
+    
+    /// Set prefix
+    on prefix(p: String) -> Self { self.style.prefix = p; self }
+    
+    /// Set suffix
+    on suffix(s: String) -> Self { self.style.suffix = s; self }
+    
+    /// Start the progress bar
+    on start() {
+        self.started_at = Some(Instant.now())
+        print!("{}", Cursor.hide())
+        self.render()
+    }
+    
+    /// Update progress to specific value
+    on set(n: Int) {
+        self.current = n.clamp(0, self.total)
+        self.render()
+    }
+    
+    /// Increment progress
+    on inc(n: Int = 1) {
+        self.set(self.current + n)
+    }
+    
+    /// Update message
+    on set_message(m: String) {
+        self.message = m
+        self.render()
+    }
+    
+    /// Get current progress
+    fn position() -> Int { self.current }
+    
+    /// Get total
+    fn length() -> Int { self.total }
+    
+    /// Get progress percentage
+    fn percent() -> Float64 {
+        if self.total == 0 { return 0.0 }
+        (self.current as Float64 / self.total as Float64) * 100.0
+    }
+    
+    /// Get elapsed time
+    fn elapsed() -> Duration {
+        self.started_at.map(|s| s.elapsed()).unwrap_or(Duration.zero())
+    }
+    
+    /// Get estimated time remaining
+    fn eta() -> Duration {
+        if self.current == 0 { return Duration.zero() }
+        let elapsed = self.elapsed()
+        let rate = self.current as Float64 / elapsed.as_secs_f64()
+        let remaining = self.total - self.current
+        Duration.secs_f64(remaining as Float64 / rate)
+    }
+    
+    /// Render the progress bar
+    fn render() {
+        if self.hidden { return }
+        
+        let percent = self.percent()
+        let filled = ((percent / 100.0) * self.width as Float64) as Int
+        let empty = self.width - filled - 1
+        
+        var bar = String.new()
+        bar.push_str(String.repeat(self.style.fill_char, filled))
+        if filled < self.width {
+            bar.push(self.style.head_char)
+            bar.push_str(String.repeat(self.style.empty_char, empty.max(0)))
+        }
+        
+        // Apply color based on progress
+        let colored_bar = if percent < 30.0 {
+            Style.new(bar).red().render()
+        } else if percent < 70.0 {
+            Style.new(bar).yellow().render()
+        } else {
+            Style.new(bar).green().render()
+        }
+        
+        // Format output
+        var output = self.style.template.clone()
+        output = output.replace("{bar}", colored_bar)
+        output = output.replace("{percent}", format!("{:.1}", percent))
+        output = output.replace("{pos}", self.current.to_string())
+        output = output.replace("{len}", self.total.to_string())
+        output = output.replace("{prefix}", self.style.prefix)
+        output = output.replace("{suffix}", self.style.suffix)
+        output = output.replace("{msg}", self.message)
+        output = output.replace("{elapsed}", self.format_duration(self.elapsed()))
+        output = output.replace("{eta}", self.format_duration(self.eta()))
+        
+        print!("\r{}{}", Screen.clear_line_right(), output)
+        stdout().flush()
+    }
+    
+    /// Format duration for display
+    fn format_duration(d: Duration) -> String {
+        let secs = d.as_secs()
+        if secs < 60 {
+            format!("{}s", secs)
+        } else if secs < 3600 {
+            format!("{}m{}s", secs / 60, secs % 60)
+        } else {
+            format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+        }
+    }
+    
+    /// Finish the progress bar
+    on finish() {
+        self.finished = true
+        self.current = self.total
+        self.render()
+        println!()
+        print!("{}", Cursor.show())
+    }
+    
+    /// Finish with message
+    on finish_with_message(msg: String) {
+        self.message = msg
+        self.finish()
+    }
+    
+    /// Abandon the progress bar
+    on abandon() {
+        self.finished = true
+        println!()
+        print!("{}", Cursor.show())
+    }
+    
+    /// Hide the progress bar
+    on hide() {
+        self.hidden = true
+        print!("\r{}", Screen.clear_line())
+    }
+    
+    /// Show the progress bar
+    on show() {
+        self.hidden = false
+        self.render()
+    }
+    
+    /// Wrap an iterator with progress
+    fn wrap<I: Iterator>(iter: I) -> ProgressIterator<I> {
+        ProgressIterator { inner: iter, bar: self }
+    }
+}
+
+/// Iterator wrapper with progress
+struct ProgressIterator<I> {
+    inner: I
+    bar: ProgressBar
+}
+
+impl<I: Iterator> Iterator for ProgressIterator<I> {
+    type Item = I.Item
+    
+    fn next() -> Option<Self.Item> {
+        let item = self.inner.next()?
+        self.bar.inc(1)
+        Some(item)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Multi Progress
+// -----------------------------------------------------------------------------
+
+/// Multiple progress bars
+actor MultiProgress {
+    state bars: [ProgressBar]
+    state draw_target: DrawTarget
+    
+    init() {
+        self.bars = []
+        self.draw_target = DrawTarget.Stderr
+    }
+    
+    /// Add a progress bar
+    on add(bar: ProgressBar) -> ProgressBar {
+        self.bars.push(bar)
+        bar
+    }
+    
+    /// Create and add a new progress bar
+    on create(total: Int) -> ProgressBar {
+        let bar = ProgressBar.new(total)
+        self.add(bar)
+    }
+    
+    /// Remove a progress bar
+    on remove(bar: ProgressBar) {
+        self.bars.retain(|b| b != bar)
+    }
+    
+    /// Clear all progress bars
+    on clear() {
+        for _ in 0..self.bars.len() {
+            print!("{}", Cursor.up(1))
+            print!("{}", Screen.clear_line())
+        }
+        self.bars.clear()
+    }
+    
+    /// Join and wait for all bars to finish
+    on join() {
+        while self.bars.iter().any(|b| !b.finished) {
+            sleep(Duration.millis(50))
+        }
+    }
+}
+
+enum DrawTarget {
+    Stdout
+    Stderr
+    Hidden
+}
+
+// -----------------------------------------------------------------------------
+// Spinner Progress
+// -----------------------------------------------------------------------------
+
+/// Spinner with optional progress
+actor SpinnerProgress {
+    state message: String
+    state frames: [String]
+    state interval: Duration
+    state current_frame: Int
+    state running: Bool
+    state style: SpinnerStyle
+    
+    init(message: String) {
+        self.message = message
+        self.frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self.interval = Duration.millis(80)
+        self.current_frame = 0
+        self.running = false
+        self.style = SpinnerStyle.Dots
+    }
+    
+    on style(s: SpinnerStyle) -> Self {
+        self.frames = s.frames()
+        self.interval = s.interval()
+        self
+    }
+    
+    on message(m: String) -> Self { self.message = m; self }
+    
+    on start() {
+        self.running = true
+        print!("{}", Cursor.hide())
+        spawn { self.animate() }
+    }
+    
+    on stop() {
+        self.running = false
+        print!("\r{}", Screen.clear_line())
+        print!("{}", Cursor.show())
+    }
+    
+    on success(msg: String) {
+        self.stop()
+        println!("{} {}", Style.new("✔").green().render(), msg)
+    }
+    
+    on fail(msg: String) {
+        self.stop()
+        println!("{} {}", Style.new("✖").red().render(), msg)
+    }
+    
+    on warn(msg: String) {
+        self.stop()
+        println!("{} {}", Style.new("⚠").yellow().render(), msg)
+    }
+    
+    on info(msg: String) {
+        self.stop()
+        println!("{} {}", Style.new("ℹ").blue().render(), msg)
+    }
+    
+    fn animate() {
+        while self.running {
+            let frame = self.frames[self.current_frame % self.frames.len()]
+            print!("\r{} {}", Style.new(frame).cyan().render(), self.message)
+            stdout().flush()
+            self.current_frame += 1
+            sleep(self.interval)
+        }
+    }
+}
+
+/// Spinner styles
+enum SpinnerStyle {
+    Dots
+    Line
+    Dots2
+    Dots3
+    Arc
+    Moon
+    Clock
+    Bounce
+    
+    fn frames() -> [String] {
+        match self {
+            .Dots => ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+            .Line => ["-", "\\", "|", "/"]
+            .Dots2 => ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
+            .Dots3 => ["⠁", "⠂", "⠄", "⡀", "⢀", "⠠", "⠐", "⠈"]
+            .Arc => ["◜", "◠", "◝", "◞", "◡", "◟"]
+            .Moon => ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"]
+            .Clock => ["🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚", "🕛"]
+            .Bounce => ["⠁", "⠂", "⠄", "⠂"]
+        }
+    }
+    
+    fn interval() -> Duration {
+        match self {
+            .Dots | .Dots2 | .Dots3 | .Arc | .Bounce => Duration.millis(80)
+            .Line => Duration.millis(100)
+            .Moon | .Clock => Duration.millis(200)
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Download Progress
+// -----------------------------------------------------------------------------
+
+/// Download progress bar with speed and ETA
+actor DownloadProgress {
+    state bar: ProgressBar
+    state bytes_per_sec: Float64
+    state last_update: Instant
+    state last_bytes: Int
+    
+    init(total_bytes: Int) {
+        self.bar = ProgressBar.new(total_bytes)
+            .style(ProgressStyle.default().template("{prefix} [{bar}] {percent}% {suffix}"))
+        self.bytes_per_sec = 0.0
+        self.last_update = Instant.now()
+        self.last_bytes = 0
+    }
+    
+    on start() {
+        self.bar.start()
+    }
+    
+    on update(bytes: Int) {
+        let now = Instant.now()
+        let elapsed = now.duration_since(self.last_update).as_secs_f64()
+        
+        if elapsed >= 0.5 {
+            let delta = bytes - self.last_bytes
+            self.bytes_per_sec = delta as Float64 / elapsed
+            self.last_update = now
+            self.last_bytes = bytes
+        }
+        
+        self.bar.set(bytes)
+        self.bar.suffix(format!("{}/s", self.format_bytes(self.bytes_per_sec as Int)))
+    }
+    
+    on finish() {
+        self.bar.finish()
+    }
+    
+    fn format_bytes(bytes: Int) -> String {
+        if bytes < 1024 { format!("{}B", bytes) }
+        else if bytes < 1024 * 1024 { format!("{:.1}KB", bytes as Float64 / 1024.0) }
+        else if bytes < 1024 * 1024 * 1024 { format!("{:.1}MB", bytes as Float64 / (1024.0 * 1024.0)) }
+        else { format!("{:.1}GB", bytes as Float64 / (1024.0 * 1024.0 * 1024.0)) }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+/// Create a progress bar
+fn progress(total: Int) -> ProgressBar {
+    ProgressBar.new(total)
+}
+
+/// Create a spinner
+fn spinner(message: String) -> SpinnerProgress {
+    SpinnerProgress.new(message)
+}
+
+/// Create multi-progress
+fn multi_progress() -> MultiProgress {
+    MultiProgress.new()
+}
+
+/// Create download progress
+fn download_progress(total: Int) -> DownloadProgress {
+    DownloadProgress.new(total)
+}
+
+/// Iterate with progress
+fn with_progress<I: Iterator + ExactSizeIterator>(iter: I) -> ProgressIterator<I> {
+    let bar = ProgressBar.new(iter.len())
+    bar.start()
+    bar.wrap(iter)
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "progress bar percentage" {
+    let bar = ProgressBar.new(100)
+    bar.set(50)
+    assert_eq(bar.percent(), 50.0)?
+}
+
+test "progress bar increment" {
+    let bar = ProgressBar.new(10)
+    bar.inc(3)
+    bar.inc(2)
+    assert_eq(bar.position(), 5)?
+}
+
+test "progress style" {
+    let style = ProgressStyle.ascii()
+    assert_eq(style.fill_char, '#')?
+    assert_eq(style.empty_char, '-')?
+}
+
+test "spinner styles" {
+    let dots = SpinnerStyle.Dots.frames()
+    assert_eq(dots.len(), 10)?
+    
+    let moon = SpinnerStyle.Moon.frames()
+    assert_eq(moon.len(), 8)?
+}

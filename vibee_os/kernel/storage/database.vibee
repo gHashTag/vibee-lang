@@ -1,0 +1,520 @@
+# ============================================================================
+# DATABASE - Персистентное хранилище на Vibee
+# ============================================================================
+# ORM, Query Builder, транзакции, миграции
+# ============================================================================
+
+Specification Database:
+  """База данных как спецификация поведения данных."""
+
+  # ==========================================================================
+  # ТИПЫ ДАННЫХ
+  # ==========================================================================
+
+  Type DatabaseType:
+    variants:
+      - SQLite: Path
+      - PostgreSQL: ConnectionString
+      - MySQL: ConnectionString
+      - Memory
+
+  Type ConnectionPool:
+    min_connections: Int = 1
+    max_connections: Int = 10
+    idle_timeout: Duration = 5.minutes
+    max_lifetime: Duration = 30.minutes
+
+  Type Connection:
+    id: ConnectionId
+    state: ConnectionState
+    database: DatabaseType
+    created_at: Timestamp
+    last_used: Timestamp
+
+  Type ConnectionState:
+    variants: [Idle, Active, InTransaction, Closed]
+
+  Type Transaction:
+    id: TransactionId
+    connection: Connection
+    isolation: IsolationLevel
+    savepoints: List<Savepoint>
+    started_at: Timestamp
+
+  Type IsolationLevel:
+    variants:
+      - ReadUncommitted
+      - ReadCommitted
+      - RepeatableRead
+      - Serializable
+
+  Type Savepoint:
+    name: String
+    created_at: Timestamp
+
+  # ==========================================================================
+  # SCHEMA TYPES
+  # ==========================================================================
+
+  Type Table:
+    name: String
+    columns: List<Column>
+    primary_key: List<String>
+    indexes: List<Index>
+    foreign_keys: List<ForeignKey>
+    constraints: List<Constraint>
+
+  Type Column:
+    name: String
+    type: ColumnType
+    nullable: Boolean = false
+    default: Any?
+    unique: Boolean = false
+    auto_increment: Boolean = false
+
+  Type ColumnType:
+    variants:
+      - Integer
+      - BigInt
+      - Float
+      - Double
+      - Decimal: (precision: Int, scale: Int)
+      - String: Int?  # max length
+      - Text
+      - Boolean
+      - Date
+      - Time
+      - DateTime
+      - Timestamp
+      - JSON
+      - UUID
+      - Binary: Int?
+      - Enum: List<String>
+
+  Type Index:
+    name: String
+    columns: List<String>
+    unique: Boolean = false
+    type: IndexType = BTree
+
+  Type IndexType:
+    variants: [BTree, Hash, GiST, GIN]
+
+  Type ForeignKey:
+    columns: List<String>
+    references_table: String
+    references_columns: List<String>
+    on_delete: ReferentialAction = NoAction
+    on_update: ReferentialAction = NoAction
+
+  Type ReferentialAction:
+    variants: [NoAction, Restrict, Cascade, SetNull, SetDefault]
+
+  Type Constraint:
+    variants:
+      - Check: String
+      - Unique: List<String>
+      - NotNull: String
+
+  # ==========================================================================
+  # QUERY BUILDER
+  # ==========================================================================
+
+  Type Query:
+    variants:
+      - Select: SelectQuery
+      - Insert: InsertQuery
+      - Update: UpdateQuery
+      - Delete: DeleteQuery
+      - Raw: (sql: String, params: List<Any>)
+
+  Type SelectQuery:
+    columns: List<SelectColumn>
+    from: FromClause
+    joins: List<Join> = []
+    where: Condition?
+    group_by: List<String> = []
+    having: Condition?
+    order_by: List<OrderBy> = []
+    limit: Int?
+    offset: Int?
+    distinct: Boolean = false
+    for_update: Boolean = false
+
+  Type SelectColumn:
+    variants:
+      - All
+      - Column: String
+      - Aliased: (expr: String, alias: String)
+      - Aggregate: (func: AggregateFunc, column: String, alias: String?)
+
+  Type AggregateFunc:
+    variants: [Count, Sum, Avg, Min, Max]
+
+  Type FromClause:
+    variants:
+      - Table: String
+      - Subquery: (query: SelectQuery, alias: String)
+      - Aliased: (table: String, alias: String)
+
+  Type Join:
+    type: JoinType
+    table: String
+    alias: String?
+    on: Condition
+
+  Type JoinType:
+    variants: [Inner, Left, Right, Full, Cross]
+
+  Type Condition:
+    variants:
+      - Eq: (column: String, value: Any)
+      - Ne: (column: String, value: Any)
+      - Lt: (column: String, value: Any)
+      - Le: (column: String, value: Any)
+      - Gt: (column: String, value: Any)
+      - Ge: (column: String, value: Any)
+      - Like: (column: String, pattern: String)
+      - In: (column: String, values: List<Any>)
+      - NotIn: (column: String, values: List<Any>)
+      - IsNull: String
+      - IsNotNull: String
+      - Between: (column: String, low: Any, high: Any)
+      - And: List<Condition>
+      - Or: List<Condition>
+      - Not: Condition
+      - Raw: String
+
+  Type OrderBy:
+    column: String
+    direction: Direction = Asc
+
+  Type Direction:
+    variants: [Asc, Desc]
+
+  Type InsertQuery:
+    table: String
+    columns: List<String>
+    values: List<List<Any>>
+    on_conflict: OnConflict?
+    returning: List<String>?
+
+  Type OnConflict:
+    variants:
+      - DoNothing
+      - DoUpdate: List<(String, Any)>
+
+  Type UpdateQuery:
+    table: String
+    set: List<(String, Any)>
+    where: Condition?
+    returning: List<String>?
+
+  Type DeleteQuery:
+    table: String
+    where: Condition?
+    returning: List<String>?
+
+  # ==========================================================================
+  # QUERY BUILDER DSL
+  # ==========================================================================
+
+  Behavior QueryBuilder:
+    """Fluent API для построения запросов"""
+
+    When DB.table(name):
+      Then: return QueryBuilder(from: Table(name))
+
+    When builder.select(columns...):
+      Then: return builder with columns = columns
+
+    When builder.where(column, op, value):
+      Then:
+        - condition = match op:
+            "=" -> Eq(column, value)
+            "!=" -> Ne(column, value)
+            "<" -> Lt(column, value)
+            "<=" -> Le(column, value)
+            ">" -> Gt(column, value)
+            ">=" -> Ge(column, value)
+            "like" -> Like(column, value)
+        - return builder with where = And([builder.where, condition])
+
+    When builder.where_in(column, values):
+      Then: return builder with where = And([builder.where, In(column, values)])
+
+    When builder.where_null(column):
+      Then: return builder with where = And([builder.where, IsNull(column)])
+
+    When builder.or_where(column, op, value):
+      Then: return builder with where = Or([builder.where, make_condition(column, op, value)])
+
+    When builder.join(table, left, right):
+      Then: return builder with joins += Join(Inner, table, null, Eq(left, right))
+
+    When builder.left_join(table, left, right):
+      Then: return builder with joins += Join(Left, table, null, Eq(left, right))
+
+    When builder.order_by(column, direction):
+      Then: return builder with order_by += OrderBy(column, direction)
+
+    When builder.group_by(columns...):
+      Then: return builder with group_by = columns
+
+    When builder.having(condition):
+      Then: return builder with having = condition
+
+    When builder.limit(n):
+      Then: return builder with limit = n
+
+    When builder.offset(n):
+      Then: return builder with offset = n
+
+    When builder.distinct():
+      Then: return builder with distinct = true
+
+    When builder.for_update():
+      Then: return builder with for_update = true
+
+    # Execution
+    When builder.get():
+      Then: return await execute_select(builder.build())
+
+    When builder.first():
+      Then: return (await builder.limit(1).get()).first()
+
+    When builder.count():
+      Then: return await builder.select(Count("*")).get_scalar()
+
+    When builder.exists():
+      Then: return (await builder.limit(1).get()).is_not_empty()
+
+    When builder.pluck(column):
+      Then: return (await builder.select(column).get()).map(r -> r[column])
+
+  # ==========================================================================
+  # ORM / MODEL
+  # ==========================================================================
+
+  Behavior Model:
+    """Active Record паттерн"""
+
+    Type ModelDefinition:
+      table: String
+      primary_key: String = "id"
+      timestamps: Boolean = true
+      soft_deletes: Boolean = false
+      fillable: List<String> = []
+      hidden: List<String> = []
+      casts: Map<String, Type> = {}
+      relations: Map<String, Relation> = {}
+
+    Type Relation:
+      variants:
+        - HasOne: (model: String, foreign_key: String, local_key: String)
+        - HasMany: (model: String, foreign_key: String, local_key: String)
+        - BelongsTo: (model: String, foreign_key: String, owner_key: String)
+        - BelongsToMany: (model: String, pivot: String, foreign_key: String, related_key: String)
+
+    When Model.find(id):
+      Then:
+        - return await DB.table(model.table)
+            .where(model.primary_key, "=", id)
+            .first()
+            .then(hydrate)
+
+    When Model.find_or_fail(id):
+      Then:
+        - result = await Model.find(id)
+        - if not result: raise ModelNotFound(model.table, id)
+        - return result
+
+    When Model.all():
+      Then: return await DB.table(model.table).get().then(hydrate_all)
+
+    When Model.where(column, op, value):
+      Then: return ModelQuery(model).where(column, op, value)
+
+    When Model.create(attributes):
+      Then:
+        - filtered = filter_fillable(attributes)
+        - if model.timestamps:
+            - filtered.created_at = now()
+            - filtered.updated_at = now()
+        - id = await DB.table(model.table)
+            .insert(filtered)
+            .returning(model.primary_key)
+        - return await Model.find(id)
+
+    When instance.save():
+      Then:
+        - if instance.is_new:
+            - return await Model.create(instance.attributes)
+        - else:
+            - if model.timestamps:
+                - instance.updated_at = now()
+            - await DB.table(model.table)
+                .where(model.primary_key, "=", instance.id)
+                .update(instance.dirty_attributes)
+            - instance.sync_original()
+            - return instance
+
+    When instance.delete():
+      Then:
+        - if model.soft_deletes:
+            - instance.deleted_at = now()
+            - await instance.save()
+        - else:
+            - await DB.table(model.table)
+                .where(model.primary_key, "=", instance.id)
+                .delete()
+
+    When instance.refresh():
+      Then:
+        - fresh = await Model.find(instance.id)
+        - instance.attributes = fresh.attributes
+        - instance.sync_original()
+
+    # Relations
+    When instance.load(relations...):
+      Then:
+        - for relation in relations:
+            - instance[relation] = await load_relation(instance, relation)
+        - return instance
+
+    When load_relation(instance, relation_name):
+      Then:
+        - relation = model.relations[relation_name]
+        - match relation:
+            HasOne(m, fk, lk) ->
+              DB.table(m.table).where(fk, "=", instance[lk]).first()
+            HasMany(m, fk, lk) ->
+              DB.table(m.table).where(fk, "=", instance[lk]).get()
+            BelongsTo(m, fk, ok) ->
+              DB.table(m.table).where(ok, "=", instance[fk]).first()
+            BelongsToMany(m, pivot, fk, rk) ->
+              DB.table(m.table)
+                .join(pivot, "${m.table}.id", "${pivot}.${rk}")
+                .where("${pivot}.${fk}", "=", instance.id)
+                .get()
+
+  # ==========================================================================
+  # TRANSACTIONS
+  # ==========================================================================
+
+  Behavior Transactions:
+    """Управление транзакциями"""
+
+    When DB.transaction(callback):
+      Then:
+        - conn = await pool.acquire()
+        - tx = await conn.begin_transaction()
+        - try:
+            - result = await callback(tx)
+            - await tx.commit()
+            - return result
+          catch error:
+            - await tx.rollback()
+            - raise error
+          finally:
+            - pool.release(conn)
+
+    When DB.transaction_with_isolation(level, callback):
+      Then:
+        - conn = await pool.acquire()
+        - tx = await conn.begin_transaction(level)
+        - try:
+            - result = await callback(tx)
+            - await tx.commit()
+            - return result
+          catch error:
+            - await tx.rollback()
+            - raise error
+
+    When tx.savepoint(name):
+      Then:
+        - await execute("SAVEPOINT ${name}")
+        - add Savepoint(name, now()) to tx.savepoints
+
+    When tx.rollback_to(name):
+      Then:
+        - await execute("ROLLBACK TO SAVEPOINT ${name}")
+
+    When tx.release_savepoint(name):
+      Then:
+        - await execute("RELEASE SAVEPOINT ${name}")
+        - remove savepoint from tx.savepoints
+
+  # ==========================================================================
+  # СОБЫТИЯ
+  # ==========================================================================
+
+  Events:
+    QueryExecuted:
+      sql: String
+      params: List<Any>
+      duration: Duration
+
+    TransactionStarted:
+      transaction_id: TransactionId
+      isolation: IsolationLevel
+
+    TransactionCommitted:
+      transaction_id: TransactionId
+      duration: Duration
+
+    TransactionRolledBack:
+      transaction_id: TransactionId
+      reason: String?
+
+    ModelCreated:
+      model: String
+      id: Any
+
+    ModelUpdated:
+      model: String
+      id: Any
+      changes: Map<String, (old: Any, new: Any)>
+
+    ModelDeleted:
+      model: String
+      id: Any
+
+  # ==========================================================================
+  # ПРИМЕР
+  # ==========================================================================
+
+  Example "User Model":
+    ```vibee
+    Model User:
+      table: "users"
+      timestamps: true
+      soft_deletes: true
+      fillable: ["name", "email", "password"]
+      hidden: ["password"]
+      casts:
+        settings: JSON
+        email_verified_at: DateTime
+      relations:
+        posts: HasMany(Post, "user_id", "id")
+        profile: HasOne(Profile, "user_id", "id")
+
+    # Usage
+    user = await User.create({
+      name: "John",
+      email: "john@example.com"
+    })
+
+    users = await User.where("active", "=", true)
+      .order_by("created_at", Desc)
+      .limit(10)
+      .get()
+
+    await DB.transaction((tx) ->
+      user = await User.find(1)
+      user.balance -= 100
+      await user.save()
+      
+      await Payment.create({ user_id: user.id, amount: 100 })
+    )
+    ```

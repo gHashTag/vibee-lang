@@ -1,0 +1,739 @@
+# ============================================================================
+# TEMPLATE - Шаблонизатор на Vibee
+# ============================================================================
+# Template engine, Variables, Loops, Conditionals, Filters
+# ============================================================================
+
+Specification Template:
+  """Шаблоны как спецификация генерации текста из данных."""
+
+  # ==========================================================================
+  # TEMPLATE ENGINE
+  # ==========================================================================
+
+  Type TemplateEngine:
+    templates: Map<String, CompiledTemplate>
+    filters: Map<String, FilterFn>
+    globals: Map<String, Any>
+    config: TemplateConfig
+    loader: Option<TemplateLoader>
+
+    Static Method new() -> TemplateEngine:
+      engine = TemplateEngine(
+        templates: {},
+        filters: {},
+        globals: {},
+        config: TemplateConfig.default(),
+        loader: null
+      )
+      engine.register_builtin_filters()
+      return engine
+
+    Static Method with_config(config: TemplateConfig) -> TemplateEngine:
+      engine = TemplateEngine(
+        templates: {},
+        filters: {},
+        globals: {},
+        config: config,
+        loader: null
+      )
+      engine.register_builtin_filters()
+      return engine
+
+    Method set_loader(loader: TemplateLoader):
+      self.loader = Some(loader)
+
+    Method add_global(name: String, value: Any):
+      self.globals[name] = value
+
+    Method add_filter(name: String, filter: FilterFn):
+      self.filters[name] = filter
+
+    Method compile(source: String) -> Result<CompiledTemplate, TemplateError>:
+      parser = TemplateParser.new(source, self.config)
+      ast = parser.parse()?
+      return Ok(CompiledTemplate(ast, self.config))
+
+    Method register(name: String, source: String) -> Result<(), TemplateError>:
+      template = self.compile(source)?
+      self.templates[name] = template
+      return Ok(())
+
+    Method register_file(name: String, path: Path) -> Result<(), TemplateError>:
+      source = File.read_string(path)?
+      return self.register(name, source)
+
+    Method get(name: String) -> Result<CompiledTemplate, TemplateError>:
+      if self.templates.get(name) is Some(t):
+        return Ok(t)
+      
+      # Try loader
+      if self.loader is Some(loader):
+        source = loader.load(name)?
+        template = self.compile(source)?
+        self.templates[name] = template
+        return Ok(template)
+      
+      return Err(TemplateError.NotFound(name))
+
+    Method render(name: String, context: Map<String, Any>) -> Result<String, TemplateError>:
+      template = self.get(name)?
+      return self.render_template(template, context)
+
+    Method render_string(source: String, context: Map<String, Any>) -> Result<String, TemplateError>:
+      template = self.compile(source)?
+      return self.render_template(template, context)
+
+    Method render_template(template: CompiledTemplate, context: Map<String, Any>) -> Result<String, TemplateError>:
+      render_context = RenderContext(
+        variables: self.globals.merge(context),
+        filters: self.filters,
+        engine: self,
+        output: StringBuilder()
+      )
+      
+      template.render(render_context)?
+      return Ok(render_context.output.to_string())
+
+    Method register_builtin_filters():
+      # String filters
+      self.add_filter("upper", v -> v.to_string().uppercase())
+      self.add_filter("lower", v -> v.to_string().lowercase())
+      self.add_filter("capitalize", v -> v.to_string().capitalize())
+      self.add_filter("title", v -> v.to_string().title_case())
+      self.add_filter("trim", v -> v.to_string().trim())
+      self.add_filter("strip", v -> v.to_string().trim())
+      self.add_filter("truncate", (v, args) -> {
+        s = v.to_string()
+        len = args.get(0).map(a -> a.to_int()).unwrap_or(50)
+        suffix = args.get(1).map(a -> a.to_string()).unwrap_or("...")
+        if s.length > len:
+          s.slice(0, len - suffix.length) + suffix
+        else:
+          s
+      })
+      self.add_filter("replace", (v, args) -> {
+        v.to_string().replace(args[0].to_string(), args[1].to_string())
+      })
+      self.add_filter("split", (v, args) -> {
+        sep = args.get(0).map(a -> a.to_string()).unwrap_or(" ")
+        v.to_string().split(sep)
+      })
+      self.add_filter("join", (v, args) -> {
+        sep = args.get(0).map(a -> a.to_string()).unwrap_or("")
+        (v as List<Any>).map(x -> x.to_string()).join(sep)
+      })
+      
+      # Number filters
+      self.add_filter("abs", v -> abs(v.to_float()))
+      self.add_filter("round", (v, args) -> {
+        precision = args.get(0).map(a -> a.to_int()).unwrap_or(0)
+        round(v.to_float(), precision)
+      })
+      self.add_filter("floor", v -> floor(v.to_float()))
+      self.add_filter("ceil", v -> ceil(v.to_float()))
+      
+      # Collection filters
+      self.add_filter("length", v -> {
+        match v:
+          s: String -> s.length
+          l: List<_> -> l.length
+          m: Map<_, _> -> m.length
+          _ -> 0
+      })
+      self.add_filter("first", v -> (v as List<Any>).first())
+      self.add_filter("last", v -> (v as List<Any>).last())
+      self.add_filter("reverse", v -> (v as List<Any>).reverse())
+      self.add_filter("sort", v -> (v as List<Any>).sorted())
+      self.add_filter("unique", v -> (v as List<Any>).unique())
+      self.add_filter("map", (v, args) -> {
+        attr = args[0].to_string()
+        (v as List<Any>).map(item -> get_attr(item, attr))
+      })
+      self.add_filter("select", (v, args) -> {
+        attr = args[0].to_string()
+        (v as List<Any>).filter(item -> get_attr(item, attr).to_bool())
+      })
+      self.add_filter("reject", (v, args) -> {
+        attr = args[0].to_string()
+        (v as List<Any>).filter(item -> not get_attr(item, attr).to_bool())
+      })
+      
+      # Date filters
+      self.add_filter("date", (v, args) -> {
+        format = args.get(0).map(a -> a.to_string()).unwrap_or("%Y-%m-%d")
+        (v as DateTime).format(format)
+      })
+      
+      # Escape filters
+      self.add_filter("escape", v -> html.escape(v.to_string()))
+      self.add_filter("e", v -> html.escape(v.to_string()))
+      self.add_filter("url_encode", v -> url.encode(v.to_string()))
+      self.add_filter("json", v -> json.encode(v))
+      
+      # Default filter
+      self.add_filter("default", (v, args) -> {
+        if v == null or v == "" or v == false:
+          args.get(0).unwrap_or("")
+        else:
+          v
+      })
+
+  Type FilterFn = (Any, List<Any>) -> Any
+
+  Type TemplateConfig:
+    variable_start: String
+    variable_end: String
+    block_start: String
+    block_end: String
+    comment_start: String
+    comment_end: String
+    auto_escape: Boolean
+    trim_blocks: Boolean
+    lstrip_blocks: Boolean
+
+    Static Method default() -> TemplateConfig:
+      return TemplateConfig(
+        variable_start: "{{",
+        variable_end: "}}",
+        block_start: "{%",
+        block_end: "%}",
+        comment_start: "{#",
+        comment_end: "#}",
+        auto_escape: true,
+        trim_blocks: false,
+        lstrip_blocks: false
+      )
+
+    Static Method erb_style() -> TemplateConfig:
+      return TemplateConfig(
+        variable_start: "<%=",
+        variable_end: "%>",
+        block_start: "<%",
+        block_end: "%>",
+        comment_start: "<%#",
+        comment_end: "%>",
+        auto_escape: true,
+        trim_blocks: false,
+        lstrip_blocks: false
+      )
+
+  # ==========================================================================
+  # TEMPLATE LOADER
+  # ==========================================================================
+
+  Trait TemplateLoader:
+    Method load(name: String) -> Result<String, TemplateError>
+    Method exists(name: String) -> Boolean
+
+  Type FileSystemLoader:
+    search_paths: List<Path>
+    extensions: List<String>
+
+    Static Method new(path: Path) -> FileSystemLoader:
+      return FileSystemLoader([path], [".html", ".txt", ".vibee"])
+
+    Static Method with_paths(paths: List<Path>) -> FileSystemLoader:
+      return FileSystemLoader(paths, [".html", ".txt", ".vibee"])
+
+    Trait TemplateLoader:
+      Method load(name: String) -> Result<String, TemplateError>:
+        for search_path in self.search_paths:
+          # Try exact name
+          path = search_path.join(name)
+          if path.exists():
+            return Ok(File.read_string(path)?)
+          
+          # Try with extensions
+          for ext in self.extensions:
+            path = search_path.join(name + ext)
+            if path.exists():
+              return Ok(File.read_string(path)?)
+        
+        return Err(TemplateError.NotFound(name))
+
+      Method exists(name: String) -> Boolean:
+        for search_path in self.search_paths:
+          if search_path.join(name).exists():
+            return true
+          for ext in self.extensions:
+            if search_path.join(name + ext).exists():
+              return true
+        return false
+
+  Type MemoryLoader:
+    templates: Map<String, String>
+
+    Static Method new() -> MemoryLoader:
+      return MemoryLoader({})
+
+    Method add(name: String, source: String):
+      self.templates[name] = source
+
+    Trait TemplateLoader:
+      Method load(name: String) -> Result<String, TemplateError>:
+        if self.templates.get(name) is Some(source):
+          return Ok(source)
+        return Err(TemplateError.NotFound(name))
+
+      Method exists(name: String) -> Boolean:
+        return name in self.templates
+
+  # ==========================================================================
+  # AST NODES
+  # ==========================================================================
+
+  Type TemplateNode:
+    variants:
+      - Text(String)
+      - Variable(Expression, List<Filter>)
+      - If(Expression, List<TemplateNode>, List<(Expression, List<TemplateNode>)>, Option<List<TemplateNode>>)
+      - For(String, Option<String>, Expression, List<TemplateNode>, Option<List<TemplateNode>>)
+      - Block(String, List<TemplateNode>)
+      - Extends(String)
+      - Include(String, Boolean)
+      - Set(String, Expression)
+      - Macro(String, List<String>, List<TemplateNode>)
+      - Call(String, List<Expression>)
+      - Raw(String)
+
+  Type Expression:
+    variants:
+      - Literal(Any)
+      - Variable(String)
+      - Attribute(Expression, String)
+      - Index(Expression, Expression)
+      - BinaryOp(Expression, BinaryOperator, Expression)
+      - UnaryOp(UnaryOperator, Expression)
+      - Call(Expression, List<Expression>)
+      - Ternary(Expression, Expression, Expression)
+
+  Type BinaryOperator:
+    variants:
+      - Add | Sub | Mul | Div | Mod
+      - Eq | Ne | Lt | Le | Gt | Ge
+      - And | Or
+      - In | NotIn
+      - Concat
+
+  Type UnaryOperator:
+    variants:
+      - Not | Neg
+
+  Type Filter:
+    name: String
+    args: List<Expression>
+
+  # ==========================================================================
+  # COMPILED TEMPLATE
+  # ==========================================================================
+
+  Type CompiledTemplate:
+    nodes: List<TemplateNode>
+    config: TemplateConfig
+
+    Method render(context: RenderContext) -> Result<(), TemplateError>:
+      for node in self.nodes:
+        self.render_node(node, context)?
+      return Ok(())
+
+    Method render_node(node: TemplateNode, context: RenderContext) -> Result<(), TemplateError>:
+      match node:
+        Text(text) ->
+          context.output.append(text)
+        
+        Variable(expr, filters) ->
+          value = self.evaluate(expr, context)?
+          value = self.apply_filters(value, filters, context)?
+          
+          output = if self.config.auto_escape and not is_safe(value):
+            html.escape(value.to_string())
+          else:
+            value.to_string()
+          
+          context.output.append(output)
+        
+        If(condition, then_nodes, elif_branches, else_nodes) ->
+          if self.evaluate(condition, context)?.to_bool():
+            for n in then_nodes:
+              self.render_node(n, context)?
+          else:
+            matched = false
+            for (elif_cond, elif_nodes) in elif_branches:
+              if self.evaluate(elif_cond, context)?.to_bool():
+                for n in elif_nodes:
+                  self.render_node(n, context)?
+                matched = true
+                break
+            
+            if not matched and else_nodes is Some(nodes):
+              for n in nodes:
+                self.render_node(n, context)?
+        
+        For(item_name, index_name, iterable_expr, body, else_body) ->
+          iterable = self.evaluate(iterable_expr, context)?
+          items = iterable.to_list()
+          
+          if items.is_empty() and else_body is Some(nodes):
+            for n in nodes:
+              self.render_node(n, context)?
+          else:
+            for (i, item) in items.enumerate():
+              context.variables[item_name] = item
+              if index_name is Some(idx):
+                context.variables[idx] = i
+              
+              # Loop variable
+              context.variables["loop"] = LoopInfo(
+                index: i,
+                index0: i,
+                index1: i + 1,
+                first: i == 0,
+                last: i == items.length - 1,
+                length: items.length
+              )
+              
+              for n in body:
+                self.render_node(n, context)?
+        
+        Block(name, nodes) ->
+          # Blocks are handled during inheritance
+          for n in nodes:
+            self.render_node(n, context)?
+        
+        Include(template_name, with_context) ->
+          included = context.engine.get(template_name)?
+          
+          if with_context:
+            included.render(context)?
+          else:
+            new_context = RenderContext(
+              variables: context.engine.globals.clone(),
+              filters: context.filters,
+              engine: context.engine,
+              output: context.output
+            )
+            included.render(new_context)?
+        
+        Set(name, expr) ->
+          value = self.evaluate(expr, context)?
+          context.variables[name] = value
+        
+        Macro(name, params, body) ->
+          context.variables[name] = MacroFn(params, body)
+        
+        Call(name, args) ->
+          macro_fn = context.variables.get(name)? as MacroFn
+          
+          # Bind arguments
+          for (i, param) in macro_fn.params.enumerate():
+            value = if i < args.length:
+              self.evaluate(args[i], context)?
+            else:
+              null
+            context.variables[param] = value
+          
+          for n in macro_fn.body:
+            self.render_node(n, context)?
+        
+        Raw(text) ->
+          context.output.append(text)
+      
+      return Ok(())
+
+    Method evaluate(expr: Expression, context: RenderContext) -> Result<Any, TemplateError>:
+      match expr:
+        Literal(value) -> Ok(value)
+        
+        Variable(name) ->
+          if context.variables.get(name) is Some(v):
+            Ok(v)
+          else:
+            Ok(null)
+        
+        Attribute(obj_expr, attr) ->
+          obj = self.evaluate(obj_expr, context)?
+          Ok(get_attr(obj, attr))
+        
+        Index(obj_expr, index_expr) ->
+          obj = self.evaluate(obj_expr, context)?
+          index = self.evaluate(index_expr, context)?
+          Ok(get_index(obj, index))
+        
+        BinaryOp(left_expr, op, right_expr) ->
+          left = self.evaluate(left_expr, context)?
+          right = self.evaluate(right_expr, context)?
+          Ok(self.apply_binary_op(left, op, right))
+        
+        UnaryOp(op, expr) ->
+          value = self.evaluate(expr, context)?
+          Ok(self.apply_unary_op(op, value))
+        
+        Call(func_expr, args) ->
+          func = self.evaluate(func_expr, context)?
+          evaluated_args = args.map(a -> self.evaluate(a, context)?).to_list()
+          Ok(call_function(func, evaluated_args))
+        
+        Ternary(cond, then_expr, else_expr) ->
+          if self.evaluate(cond, context)?.to_bool():
+            self.evaluate(then_expr, context)
+          else:
+            self.evaluate(else_expr, context)
+
+    Method apply_binary_op(left: Any, op: BinaryOperator, right: Any) -> Any:
+      match op:
+        Add -> left.to_float() + right.to_float()
+        Sub -> left.to_float() - right.to_float()
+        Mul -> left.to_float() * right.to_float()
+        Div -> left.to_float() / right.to_float()
+        Mod -> left.to_int() % right.to_int()
+        Eq -> left == right
+        Ne -> left != right
+        Lt -> left.to_float() < right.to_float()
+        Le -> left.to_float() <= right.to_float()
+        Gt -> left.to_float() > right.to_float()
+        Ge -> left.to_float() >= right.to_float()
+        And -> left.to_bool() and right.to_bool()
+        Or -> left.to_bool() or right.to_bool()
+        In -> (right as List<Any>).contains(left)
+        NotIn -> not (right as List<Any>).contains(left)
+        Concat -> left.to_string() + right.to_string()
+
+    Method apply_unary_op(op: UnaryOperator, value: Any) -> Any:
+      match op:
+        Not -> not value.to_bool()
+        Neg -> -value.to_float()
+
+    Method apply_filters(value: Any, filters: List<Filter>, context: RenderContext) -> Result<Any, TemplateError>:
+      result = value
+      
+      for filter in filters:
+        filter_fn = context.filters.get(filter.name)
+        
+        if filter_fn == null:
+          return Err(TemplateError.UnknownFilter(filter.name))
+        
+        args = filter.args.map(a -> self.evaluate(a, context)?).to_list()
+        result = filter_fn(result, args)
+      
+      return Ok(result)
+
+  Type RenderContext:
+    variables: Map<String, Any>
+    filters: Map<String, FilterFn>
+    engine: TemplateEngine
+    output: StringBuilder
+
+  Type LoopInfo:
+    index: Int
+    index0: Int
+    index1: Int
+    first: Boolean
+    last: Boolean
+    length: Int
+
+  Type MacroFn:
+    params: List<String>
+    body: List<TemplateNode>
+
+  # ==========================================================================
+  # PARSER
+  # ==========================================================================
+
+  Type TemplateParser:
+    source: String
+    config: TemplateConfig
+    pos: Int
+
+    Static Method new(source: String, config: TemplateConfig) -> TemplateParser:
+      return TemplateParser(source, config, 0)
+
+    Method parse() -> Result<List<TemplateNode>, TemplateError>:
+      nodes = []
+      
+      while self.pos < self.source.length:
+        if self.matches(self.config.comment_start):
+          self.skip_comment()
+        else if self.matches(self.config.variable_start):
+          nodes.push(self.parse_variable()?)
+        else if self.matches(self.config.block_start):
+          node = self.parse_block()?
+          if node is Some(n):
+            nodes.push(n)
+        else:
+          nodes.push(self.parse_text())
+      
+      return Ok(nodes)
+
+    # ... parser implementation details ...
+
+  # ==========================================================================
+  # TEMPLATE ERROR
+  # ==========================================================================
+
+  Type TemplateError:
+    variants:
+      - NotFound(String)
+      - ParseError(String, Int, Int)
+      - RenderError(String)
+      - UnknownFilter(String)
+      - TypeError(String)
+
+    Method message() -> String:
+      match self:
+        NotFound(name) -> "Template not found: ${name}"
+        ParseError(msg, line, col) -> "Parse error at ${line}:${col}: ${msg}"
+        RenderError(msg) -> "Render error: ${msg}"
+        UnknownFilter(name) -> "Unknown filter: ${name}"
+        TypeError(msg) -> "Type error: ${msg}"
+
+  # ==========================================================================
+  # SAFE STRING
+  # ==========================================================================
+
+  Type SafeString:
+    value: String
+
+    Static Method new(value: String) -> SafeString:
+      return SafeString(value)
+
+    Method to_string() -> String:
+      return self.value
+
+  Behavior SafeStringUtils:
+    When is_safe(value: Any) -> Boolean:
+      Then: value is SafeString
+
+    When mark_safe(value: String) -> SafeString:
+      Then: SafeString.new(value)
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Template":
+    ```vibee
+    # Create engine
+    engine = TemplateEngine.new()
+
+    # Register template
+    engine.register("greeting", "Hello, {{ name }}!")?
+
+    # Render
+    result = engine.render("greeting", { "name": "World" })?
+    # "Hello, World!"
+
+    # Variables and filters
+    engine.register("user", """
+      <h1>{{ user.name | upper }}</h1>
+      <p>Email: {{ user.email | default("N/A") }}</p>
+      <p>Joined: {{ user.created_at | date("%B %d, %Y") }}</p>
+    """)?
+
+    result = engine.render("user", {
+      "user": {
+        "name": "John Doe",
+        "email": "john@example.com",
+        "created_at": DateTime.now()
+      }
+    })?
+
+    # Conditionals
+    engine.register("status", """
+      {% if user.is_admin %}
+        <span class="admin">Admin</span>
+      {% elif user.is_moderator %}
+        <span class="mod">Moderator</span>
+      {% else %}
+        <span class="user">User</span>
+      {% endif %}
+    """)?
+
+    # Loops
+    engine.register("list", """
+      <ul>
+      {% for item in items %}
+        <li class="{{ 'first' if loop.first else '' }}">
+          {{ loop.index1 }}. {{ item.name }}
+        </li>
+      {% else %}
+        <li>No items found</li>
+      {% endfor %}
+      </ul>
+    """)?
+
+    # Include
+    engine.register("base", """
+      <html>
+        <head><title>{{ title }}</title></head>
+        <body>
+          {% include "header" %}
+          {{ content }}
+          {% include "footer" %}
+        </body>
+      </html>
+    """)?
+
+    # Macros
+    engine.register("forms", """
+      {% macro input(name, type="text", value="") %}
+        <input type="{{ type }}" name="{{ name }}" value="{{ value }}">
+      {% endmacro %}
+
+      {{ input("username") }}
+      {{ input("password", type="password") }}
+      {{ input("email", type="email", value=user.email) }}
+    """)?
+
+    # Set variables
+    engine.register("calc", """
+      {% set total = items | map("price") | sum %}
+      Total: {{ total | round(2) }}
+    """)?
+
+    # Raw (no escaping)
+    engine.register("raw", """
+      {% raw %}
+        {{ this will not be parsed }}
+      {% endraw %}
+    """)?
+
+    # File system loader
+    loader = FileSystemLoader.new(Path("templates"))
+    engine.set_loader(loader)
+
+    # Now can load templates from files
+    result = engine.render("pages/home", { "title": "Home" })?
+
+    # Custom filters
+    engine.add_filter("currency", (v, args) -> {
+      amount = v.to_float()
+      symbol = args.get(0).map(a -> a.to_string()).unwrap_or("$")
+      "${symbol}${amount.to_string().pad_decimal(2)}"
+    })
+
+    # Global variables
+    engine.add_global("site_name", "My Website")
+    engine.add_global("current_year", DateTime.now().year())
+
+    # Render string directly
+    result = engine.render_string(
+      "Welcome to {{ site_name }}, {{ user.name }}!",
+      { "user": { "name": "Alice" } }
+    )?
+    # "Welcome to My Website, Alice!"
+
+    # Auto-escaping (enabled by default)
+    result = engine.render_string(
+      "{{ content }}",
+      { "content": "<script>alert('xss')</script>" }
+    )?
+    # "&lt;script&gt;alert('xss')&lt;/script&gt;"
+
+    # Disable escaping for specific value
+    result = engine.render_string(
+      "{{ content | safe }}",
+      { "content": "<b>Bold</b>" }
+    )?
+    # "<b>Bold</b>"
+    ```

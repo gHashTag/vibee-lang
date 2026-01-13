@@ -1,0 +1,180 @@
+// =============================================================================
+// Vibee OS — Matrix Module
+// Matrix operations
+// =============================================================================
+
+/// 2D Matrix
+struct Matrix<T: Num> {
+    data: [T]
+    rows: Int
+    cols: Int
+    
+    fn new(rows: Int, cols: Int, default: T) -> Self {
+        Matrix { data: [default; rows * cols], rows: rows, cols: cols }
+    }
+    
+    fn zeros(rows: Int, cols: Int) -> Self { Self.new(rows, cols, T.zero()) }
+    fn ones(rows: Int, cols: Int) -> Self { Self.new(rows, cols, T.one()) }
+    
+    fn identity(n: Int) -> Self {
+        var m = Self.zeros(n, n)
+        for i in 0..n { m.set(i, i, T.one()) }
+        m
+    }
+    
+    fn from_rows(rows: [[T]]) -> Self {
+        let r = rows.len()
+        let c = rows.first().map(|r| r.len()).unwrap_or(0)
+        var m = Self.new(r, c, T.zero())
+        for (i, row) in rows.iter().enumerate() {
+            for (j, val) in row.iter().enumerate() {
+                m.set(i, j, *val)
+            }
+        }
+        m
+    }
+    
+    fn get(row: Int, col: Int) -> T { self.data[row * self.cols + col] }
+    fn set(row: Int, col: Int, value: T) { self.data[row * self.cols + col] = value }
+    
+    fn row(i: Int) -> [T] { self.data[(i * self.cols)..((i + 1) * self.cols)].to_vec() }
+    fn col(j: Int) -> [T] { (0..self.rows).map(|i| self.get(i, j)).collect() }
+    
+    fn transpose() -> Self {
+        var result = Self.new(self.cols, self.rows, T.zero())
+        for i in 0..self.rows {
+            for j in 0..self.cols {
+                result.set(j, i, self.get(i, j))
+            }
+        }
+        result
+    }
+    
+    fn add(other: Matrix<T>) -> Self {
+        var result = Self.new(self.rows, self.cols, T.zero())
+        for i in 0..self.data.len() {
+            result.data[i] = self.data[i] + other.data[i]
+        }
+        result
+    }
+    
+    fn sub(other: Matrix<T>) -> Self {
+        var result = Self.new(self.rows, self.cols, T.zero())
+        for i in 0..self.data.len() {
+            result.data[i] = self.data[i] - other.data[i]
+        }
+        result
+    }
+    
+    fn mul(other: Matrix<T>) -> Self {
+        var result = Self.new(self.rows, other.cols, T.zero())
+        for i in 0..self.rows {
+            for j in 0..other.cols {
+                var sum = T.zero()
+                for k in 0..self.cols {
+                    sum = sum + self.get(i, k) * other.get(k, j)
+                }
+                result.set(i, j, sum)
+            }
+        }
+        result
+    }
+    
+    fn scale(scalar: T) -> Self {
+        var result = Self.new(self.rows, self.cols, T.zero())
+        for i in 0..self.data.len() {
+            result.data[i] = self.data[i] * scalar
+        }
+        result
+    }
+    
+    fn determinant() -> T {
+        if self.rows != self.cols { panic("Not square") }
+        if self.rows == 1 { return self.get(0, 0) }
+        if self.rows == 2 {
+            return self.get(0, 0) * self.get(1, 1) - self.get(0, 1) * self.get(1, 0)
+        }
+        var det = T.zero()
+        for j in 0..self.cols {
+            let minor = self.minor(0, j)
+            let sign = if j % 2 == 0 { T.one() } else { -T.one() }
+            det = det + sign * self.get(0, j) * minor.determinant()
+        }
+        det
+    }
+    
+    fn minor(row: Int, col: Int) -> Self {
+        var result = Self.new(self.rows - 1, self.cols - 1, T.zero())
+        var ri = 0
+        for i in 0..self.rows {
+            if i == row { continue }
+            var ci = 0
+            for j in 0..self.cols {
+                if j == col { continue }
+                result.set(ri, ci, self.get(i, j))
+                ci += 1
+            }
+            ri += 1
+        }
+        result
+    }
+    
+    fn trace() -> T {
+        var sum = T.zero()
+        for i in 0..self.rows.min(self.cols) {
+            sum = sum + self.get(i, i)
+        }
+        sum
+    }
+    
+    fn shape() -> (Int, Int) { (self.rows, self.cols) }
+    fn is_square() -> Bool { self.rows == self.cols }
+}
+
+impl<T: Num + Display> Display for Matrix<T> {
+    fn fmt(f: Formatter) {
+        for i in 0..self.rows {
+            f.write("[")
+            for j in 0..self.cols {
+                if j > 0 { f.write(", ") }
+                f.write(format!("{}", self.get(i, j)))
+            }
+            f.write("]\n")
+        }
+    }
+}
+
+// Tests
+test "create and access" {
+    var m = Matrix::<Int>.zeros(2, 3)
+    m.set(0, 1, 5)
+    assert_eq(m.get(0, 1), 5)?
+    assert_eq(m.get(0, 0), 0)?
+}
+
+test "transpose" {
+    let m = Matrix.from_rows([[1, 2, 3], [4, 5, 6]])
+    let t = m.transpose()
+    assert_eq(t.shape(), (3, 2))?
+    assert_eq(t.get(0, 1), 4)?
+}
+
+test "multiply" {
+    let a = Matrix.from_rows([[1, 2], [3, 4]])
+    let b = Matrix.from_rows([[5, 6], [7, 8]])
+    let c = a.mul(b)
+    assert_eq(c.get(0, 0), 19)?
+    assert_eq(c.get(1, 1), 50)?
+}
+
+test "determinant" {
+    let m = Matrix.from_rows([[1, 2], [3, 4]])
+    assert_eq(m.determinant(), -2)?
+}
+
+test "identity" {
+    let i = Matrix::<Int>.identity(3)
+    assert_eq(i.get(0, 0), 1)?
+    assert_eq(i.get(0, 1), 0)?
+    assert_eq(i.trace(), 3)?
+}

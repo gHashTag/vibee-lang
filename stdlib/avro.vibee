@@ -1,0 +1,406 @@
+// =============================================================================
+// Vibee OS — Apache Avro Module
+// Apache Avro serialization with schema support
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Schema Types
+// -----------------------------------------------------------------------------
+
+enum SchemaType {
+    Null
+    Boolean
+    Int
+    Long
+    Float
+    Double
+    Bytes
+    String
+    Record(RecordSchema)
+    Enum(EnumSchema)
+    Array(Schema)
+    Map(Schema)
+    Union([Schema])
+    Fixed(FixedSchema)
+    
+    fn name() -> String {
+        match self {
+            .Null => "null"
+            .Boolean => "boolean"
+            .Int => "int"
+            .Long => "long"
+            .Float => "float"
+            .Double => "double"
+            .Bytes => "bytes"
+            .String => "string"
+            .Record(r) => r.name
+            .Enum(e) => e.name
+            .Array(_) => "array"
+            .Map(_) => "map"
+            .Union(_) => "union"
+            .Fixed(f) => f.name
+        }
+    }
+}
+
+struct Schema {
+    schema_type: SchemaType
+    
+    fn null() -> Self { Schema { schema_type: SchemaType.Null } }
+    fn boolean() -> Self { Schema { schema_type: SchemaType.Boolean } }
+    fn int() -> Self { Schema { schema_type: SchemaType.Int } }
+    fn long() -> Self { Schema { schema_type: SchemaType.Long } }
+    fn float() -> Self { Schema { schema_type: SchemaType.Float } }
+    fn double() -> Self { Schema { schema_type: SchemaType.Double } }
+    fn bytes() -> Self { Schema { schema_type: SchemaType.Bytes } }
+    fn string() -> Self { Schema { schema_type: SchemaType.String } }
+    fn array(items: Schema) -> Self { Schema { schema_type: SchemaType.Array(items) } }
+    fn map(values: Schema) -> Self { Schema { schema_type: SchemaType.Map(values) } }
+    fn union(types: [Schema]) -> Self { Schema { schema_type: SchemaType.Union(types) } }
+    fn optional(inner: Schema) -> Self { Self.union([Self.null(), inner]) }
+}
+
+struct RecordSchema {
+    name: String
+    namespace: Option<String>
+    doc: Option<String>
+    fields: [FieldSchema]
+    
+    fn new(name: String) -> Self {
+        RecordSchema { name: name, namespace: None, doc: None, fields: [] }
+    }
+    
+    fn add_field(field: FieldSchema) { self.fields.push(field) }
+}
+
+struct FieldSchema {
+    name: String
+    schema: Schema
+    doc: Option<String>
+    default: Option<Value>
+    order: FieldOrder
+    
+    fn new(name: String, schema: Schema) -> Self {
+        FieldSchema { name: name, schema: schema, doc: None, default: None, order: FieldOrder.Ascending }
+    }
+}
+
+enum FieldOrder { Ascending, Descending, Ignore }
+
+struct EnumSchema {
+    name: String
+    namespace: Option<String>
+    symbols: [String]
+    default: Option<String>
+    
+    fn new(name: String, symbols: [String]) -> Self {
+        EnumSchema { name: name, namespace: None, symbols: symbols, default: None }
+    }
+}
+
+struct FixedSchema {
+    name: String
+    namespace: Option<String>
+    size: Int
+    
+    fn new(name: String, size: Int) -> Self {
+        FixedSchema { name: name, namespace: None, size: size }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Value Type
+// -----------------------------------------------------------------------------
+
+enum Value {
+    Null
+    Boolean(Bool)
+    Int(Int32)
+    Long(Int64)
+    Float(Float32)
+    Double(Float64)
+    Bytes([UInt8])
+    String(String)
+    Record(Map<String, Value>)
+    Enum(Int, String)
+    Array([Value])
+    Map(Map<String, Value>)
+    Union(Int, Value)
+    Fixed([UInt8])
+    
+    fn is_null() -> Bool { match self { .Null => true, _ => false } }
+    fn as_bool() -> Option<Bool> { match self { .Boolean(b) => Some(b), _ => None } }
+    fn as_int() -> Option<Int32> { match self { .Int(i) => Some(i), _ => None } }
+    fn as_long() -> Option<Int64> { match self { .Long(l) => Some(l), .Int(i) => Some(i as Int64), _ => None } }
+    fn as_float() -> Option<Float32> { match self { .Float(f) => Some(f), _ => None } }
+    fn as_double() -> Option<Float64> { match self { .Double(d) => Some(d), .Float(f) => Some(f as Float64), _ => None } }
+    fn as_bytes() -> Option<[UInt8]> { match self { .Bytes(b) => Some(b), .Fixed(f) => Some(f), _ => None } }
+    fn as_string() -> Option<String> { match self { .String(s) => Some(s), _ => None } }
+    fn as_array() -> Option<[Value]> { match self { .Array(a) => Some(a), _ => None } }
+    fn as_map() -> Option<Map<String, Value>> { match self { .Map(m) => Some(m), .Record(r) => Some(r), _ => None } }
+}
+
+// -----------------------------------------------------------------------------
+// Encoder
+// -----------------------------------------------------------------------------
+
+actor Encoder {
+    state buffer: [UInt8]
+    state schema: Schema
+    
+    fn new(schema: Schema) -> Self { Encoder { buffer: [], schema: schema } }
+    
+    fn encode(value: Value) -> Result<[UInt8], AvroError> {
+        self.buffer.clear()
+        self.write_value(value, self.schema)?
+        Ok(self.buffer.clone())
+    }
+    
+    fn write_value(value: Value, schema: Schema) -> Result<(), AvroError> {
+        match (value, schema.schema_type) {
+            (Value.Null, SchemaType.Null) => Ok(())
+            (Value.Boolean(b), SchemaType.Boolean) => { self.buffer.push(if b { 1 } else { 0 }); Ok(()) }
+            (Value.Int(i), SchemaType.Int) => { self.write_varint(zigzag_encode32(i)); Ok(()) }
+            (Value.Long(l), SchemaType.Long) => { self.write_varlong(zigzag_encode64(l)); Ok(()) }
+            (Value.Float(f), SchemaType.Float) => { self.write_le32(f.to_bits()); Ok(()) }
+            (Value.Double(d), SchemaType.Double) => { self.write_le64(d.to_bits()); Ok(()) }
+            (Value.Bytes(b), SchemaType.Bytes) => { self.write_varlong(b.len() as UInt64); self.buffer.extend(b); Ok(()) }
+            (Value.String(s), SchemaType.String) => { let b = s.as_bytes(); self.write_varlong(b.len() as UInt64); self.buffer.extend(b); Ok(()) }
+            (Value.Array(arr), SchemaType.Array(items)) => self.write_array(arr, items)
+            (Value.Map(m), SchemaType.Map(values)) => self.write_map(m, values)
+            (Value.Record(r), SchemaType.Record(rec)) => self.write_record(r, rec)
+            (Value.Enum(idx, _), SchemaType.Enum(_)) => { self.write_varint(idx as UInt32); Ok(()) }
+            (Value.Union(idx, inner), SchemaType.Union(types)) => {
+                self.write_varlong(idx as UInt64)
+                self.write_value(*inner, types[idx])
+            }
+            (Value.Fixed(f), SchemaType.Fixed(fs)) => {
+                if f.len() != fs.size { return Err(AvroError.SchemaMismatch("Fixed size mismatch")) }
+                self.buffer.extend(f); Ok(())
+            }
+            _ => Err(AvroError.SchemaMismatch("Value doesn't match schema"))
+        }
+    }
+    
+    fn write_array(arr: [Value], items: Schema) -> Result<(), AvroError> {
+        if arr.len() > 0 {
+            self.write_varlong(arr.len() as UInt64)
+            for v in arr { self.write_value(v, items)? }
+        }
+        self.write_varlong(0)
+        Ok(())
+    }
+    
+    fn write_map(m: Map<String, Value>, values: Schema) -> Result<(), AvroError> {
+        if m.len() > 0 {
+            self.write_varlong(m.len() as UInt64)
+            for (k, v) in m {
+                let kb = k.as_bytes()
+                self.write_varlong(kb.len() as UInt64)
+                self.buffer.extend(kb)
+                self.write_value(v, values)?
+            }
+        }
+        self.write_varlong(0)
+        Ok(())
+    }
+    
+    fn write_record(r: Map<String, Value>, rec: RecordSchema) -> Result<(), AvroError> {
+        for field in rec.fields {
+            let value = r.get(field.name).ok_or(AvroError.MissingField(field.name))?
+            self.write_value(value, field.schema)?
+        }
+        Ok(())
+    }
+    
+    fn write_varint(v: UInt32) {
+        var n = v
+        while n >= 0x80 { self.buffer.push(((n & 0x7F) | 0x80) as UInt8); n >>= 7 }
+        self.buffer.push(n as UInt8)
+    }
+    
+    fn write_varlong(v: UInt64) {
+        var n = v
+        while n >= 0x80 { self.buffer.push(((n & 0x7F) | 0x80) as UInt8); n >>= 7 }
+        self.buffer.push(n as UInt8)
+    }
+    
+    fn write_le32(v: UInt32) { for i in 0..4 { self.buffer.push(((v >> (i * 8)) & 0xFF) as UInt8) } }
+    fn write_le64(v: UInt64) { for i in 0..8 { self.buffer.push(((v >> (i * 8)) & 0xFF) as UInt8) } }
+}
+
+// -----------------------------------------------------------------------------
+// Decoder
+// -----------------------------------------------------------------------------
+
+actor Decoder {
+    state data: [UInt8]
+    state pos: Int
+    state schema: Schema
+    
+    fn new(data: [UInt8], schema: Schema) -> Self { Decoder { data: data, pos: 0, schema: schema } }
+    
+    fn decode(data: [UInt8], schema: Schema) -> Result<Value, AvroError> {
+        var d = Decoder.new(data, schema)
+        d.read_value(schema)
+    }
+    
+    fn read_value(schema: Schema) -> Result<Value, AvroError> {
+        match schema.schema_type {
+            SchemaType.Null => Ok(Value.Null)
+            SchemaType.Boolean => Ok(Value.Boolean(self.read_byte()? != 0))
+            SchemaType.Int => Ok(Value.Int(zigzag_decode32(self.read_varint()?)))
+            SchemaType.Long => Ok(Value.Long(zigzag_decode64(self.read_varlong()?)))
+            SchemaType.Float => Ok(Value.Float(Float32.from_bits(self.read_le32()?)))
+            SchemaType.Double => Ok(Value.Double(Float64.from_bits(self.read_le64()?)))
+            SchemaType.Bytes => { let len = self.read_varlong()? as Int; Ok(Value.Bytes(self.read_bytes(len)?)) }
+            SchemaType.String => { let len = self.read_varlong()? as Int; Ok(Value.String(String.from_utf8(self.read_bytes(len)?)?)) }
+            SchemaType.Array(items) => self.read_array(items)
+            SchemaType.Map(values) => self.read_map(values)
+            SchemaType.Record(rec) => self.read_record(rec)
+            SchemaType.Enum(e) => { let idx = self.read_varint()? as Int; Ok(Value.Enum(idx, e.symbols[idx].clone())) }
+            SchemaType.Union(types) => { let idx = self.read_varlong()? as Int; Ok(Value.Union(idx, self.read_value(types[idx])?)) }
+            SchemaType.Fixed(f) => Ok(Value.Fixed(self.read_bytes(f.size)?))
+        }
+    }
+    
+    fn read_array(items: Schema) -> Result<Value, AvroError> {
+        var arr = []
+        loop {
+            let count = self.read_varlong()? as Int64
+            if count == 0 { break }
+            let count = if count < 0 { self.read_varlong()?; -count } else { count } as Int
+            for _ in 0..count { arr.push(self.read_value(items)?) }
+        }
+        Ok(Value.Array(arr))
+    }
+    
+    fn read_map(values: Schema) -> Result<Value, AvroError> {
+        var map = Map.new()
+        loop {
+            let count = self.read_varlong()? as Int64
+            if count == 0 { break }
+            let count = if count < 0 { self.read_varlong()?; -count } else { count } as Int
+            for _ in 0..count {
+                let klen = self.read_varlong()? as Int
+                let key = String.from_utf8(self.read_bytes(klen)?)?
+                map.insert(key, self.read_value(values)?)
+            }
+        }
+        Ok(Value.Map(map))
+    }
+    
+    fn read_record(rec: RecordSchema) -> Result<Value, AvroError> {
+        var fields = Map.new()
+        for field in rec.fields {
+            fields.insert(field.name.clone(), self.read_value(field.schema)?)
+        }
+        Ok(Value.Record(fields))
+    }
+    
+    fn read_byte() -> Result<UInt8, AvroError> {
+        if self.pos >= self.data.len() { return Err(AvroError.UnexpectedEof) }
+        let b = self.data[self.pos]; self.pos += 1; Ok(b)
+    }
+    
+    fn read_bytes(len: Int) -> Result<[UInt8], AvroError> {
+        if self.pos + len > self.data.len() { return Err(AvroError.UnexpectedEof) }
+        let r = self.data[self.pos..(self.pos + len)].to_vec(); self.pos += len; Ok(r)
+    }
+    
+    fn read_varint() -> Result<UInt32, AvroError> {
+        var r: UInt32 = 0; var shift = 0
+        loop {
+            let b = self.read_byte()?
+            r |= ((b & 0x7F) as UInt32) << shift
+            if (b & 0x80) == 0 { break }
+            shift += 7
+        }
+        Ok(r)
+    }
+    
+    fn read_varlong() -> Result<UInt64, AvroError> {
+        var r: UInt64 = 0; var shift = 0
+        loop {
+            let b = self.read_byte()?
+            r |= ((b & 0x7F) as UInt64) << shift
+            if (b & 0x80) == 0 { break }
+            shift += 7
+        }
+        Ok(r)
+    }
+    
+    fn read_le32() -> Result<UInt32, AvroError> {
+        let b = self.read_bytes(4)?
+        Ok((b[0] as UInt32) | ((b[1] as UInt32) << 8) | ((b[2] as UInt32) << 16) | ((b[3] as UInt32) << 24))
+    }
+    
+    fn read_le64() -> Result<UInt64, AvroError> {
+        let b = self.read_bytes(8)?
+        var r: UInt64 = 0
+        for i in 0..8 { r |= (b[i] as UInt64) << (i * 8) }
+        Ok(r)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// ZigZag Encoding
+// -----------------------------------------------------------------------------
+
+fn zigzag_encode32(n: Int32) -> UInt32 { ((n << 1) ^ (n >> 31)) as UInt32 }
+fn zigzag_decode32(n: UInt32) -> Int32 { ((n >> 1) ^ (-(n & 1) as UInt32)) as Int32 }
+fn zigzag_encode64(n: Int64) -> UInt64 { ((n << 1) ^ (n >> 63)) as UInt64 }
+fn zigzag_decode64(n: UInt64) -> Int64 { ((n >> 1) ^ (-(n & 1) as UInt64)) as Int64 }
+
+// -----------------------------------------------------------------------------
+// Object Container Files
+// -----------------------------------------------------------------------------
+
+struct ContainerFile {
+    schema: Schema
+    codec: Codec
+    sync_marker: [UInt8]
+    blocks: [Block]
+}
+
+enum Codec { Null, Deflate, Snappy }
+
+struct Block {
+    count: Int64
+    data: [UInt8]
+}
+
+// -----------------------------------------------------------------------------
+// Errors & API
+// -----------------------------------------------------------------------------
+
+enum AvroError {
+    UnexpectedEof
+    InvalidUtf8
+    SchemaMismatch(String)
+    MissingField(String)
+    InvalidSchema(String)
+}
+
+fn encode(value: Value, schema: Schema) -> Result<[UInt8], AvroError> { Encoder.new(schema).encode(value) }
+fn decode(data: [UInt8], schema: Schema) -> Result<Value, AvroError> { Decoder.decode(data, schema) }
+
+trait AvroSerializable {
+    fn avro_schema() -> Schema
+    fn to_avro() -> Value
+    fn from_avro(v: Value) -> Result<Self, AvroError>
+}
+
+test "roundtrip primitives" {
+    let schema = Schema.long()
+    let encoded = encode(Value.Long(42), schema)?
+    let decoded = decode(encoded, schema)?
+    assert(decoded.as_long() == Some(42))
+}
+
+test "roundtrip string" {
+    let schema = Schema.string()
+    let encoded = encode(Value.String("hello"), schema)?
+    let decoded = decode(encoded, schema)?
+    assert(decoded.as_string() == Some("hello"))
+}

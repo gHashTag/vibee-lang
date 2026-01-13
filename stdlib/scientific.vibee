@@ -1,0 +1,690 @@
+// =============================================================================
+// Vibee OS — Scientific Module
+// Scientific computing: numerical methods, signal processing, optimization
+// =============================================================================
+
+use math::{PI, TAU, sin, cos, exp, ln, sqrt, pow, abs, floor, ceil}
+use complex::{Complex}
+
+// -----------------------------------------------------------------------------
+// Physical Constants (SI Units)
+// -----------------------------------------------------------------------------
+
+/// Speed of light in vacuum (m/s)
+const C: Float = 299792458.0
+
+/// Planck constant (J·s)
+const PLANCK: Float = 6.62607015e-34
+
+/// Reduced Planck constant (J·s)
+const HBAR: Float = 1.054571817e-34
+
+/// Gravitational constant (m³/(kg·s²))
+const G: Float = 6.67430e-11
+
+/// Elementary charge (C)
+const E_CHARGE: Float = 1.602176634e-19
+
+/// Electron mass (kg)
+const M_ELECTRON: Float = 9.1093837015e-31
+
+/// Proton mass (kg)
+const M_PROTON: Float = 1.67262192369e-27
+
+/// Neutron mass (kg)
+const M_NEUTRON: Float = 1.67492749804e-27
+
+/// Boltzmann constant (J/K)
+const K_BOLTZMANN: Float = 1.380649e-23
+
+/// Avogadro constant (mol⁻¹)
+const N_AVOGADRO: Float = 6.02214076e23
+
+/// Gas constant (J/(mol·K))
+const R_GAS: Float = 8.314462618
+
+/// Vacuum permittivity (F/m)
+const EPSILON_0: Float = 8.8541878128e-12
+
+/// Vacuum permeability (H/m)
+const MU_0: Float = 1.25663706212e-6
+
+/// Fine structure constant
+const ALPHA: Float = 7.2973525693e-3
+
+/// Stefan-Boltzmann constant (W/(m²·K⁴))
+const SIGMA: Float = 5.670374419e-8
+
+// -----------------------------------------------------------------------------
+// Numerical Integration
+// -----------------------------------------------------------------------------
+
+trait Integrable {
+    fn call(x: Float) -> Float
+}
+
+/// Trapezoidal rule integration
+fn integrate_trapezoid<F: Fn(Float) -> Float>(f: F, a: Float, b: Float, n: Int) -> Float {
+    let h = (b - a) / n as Float
+    var sum = (f(a) + f(b)) / 2.0
+    for i in 1..n {
+        sum += f(a + i as Float * h)
+    }
+    sum * h
+}
+
+/// Simpson's rule integration
+fn integrate_simpson<F: Fn(Float) -> Float>(f: F, a: Float, b: Float, n: Int) -> Float {
+    let n = if n % 2 == 1 { n + 1 } else { n }
+    let h = (b - a) / n as Float
+    var sum = f(a) + f(b)
+    for i in 1..n {
+        let x = a + i as Float * h
+        sum += if i % 2 == 0 { 2.0 * f(x) } else { 4.0 * f(x) }
+    }
+    sum * h / 3.0
+}
+
+/// Romberg integration
+fn integrate_romberg<F: Fn(Float) -> Float>(f: F, a: Float, b: Float, max_iter: Int, tol: Float) -> Float {
+    var r = vec![vec![0.0; max_iter]; max_iter]
+    r[0][0] = (b - a) * (f(a) + f(b)) / 2.0
+    
+    for i in 1..max_iter {
+        let h = (b - a) / pow(2.0, i as Float)
+        var sum = 0.0
+        for k in 1..pow(2.0, (i - 1) as Float) as Int + 1 {
+            sum += f(a + (2 * k - 1) as Float * h)
+        }
+        r[i][0] = r[i-1][0] / 2.0 + h * sum
+        
+        for j in 1..=i {
+            let factor = pow(4.0, j as Float)
+            r[i][j] = (factor * r[i][j-1] - r[i-1][j-1]) / (factor - 1.0)
+        }
+        
+        if i > 0 && abs(r[i][i] - r[i-1][i-1]) < tol {
+            return r[i][i]
+        }
+    }
+    r[max_iter-1][max_iter-1]
+}
+
+/// Gaussian quadrature (5-point)
+fn integrate_gauss<F: Fn(Float) -> Float>(f: F, a: Float, b: Float) -> Float {
+    let nodes = [-0.9061798459, -0.5384693101, 0.0, 0.5384693101, 0.9061798459]
+    let weights = [0.2369268851, 0.4786286705, 0.5688888889, 0.4786286705, 0.2369268851]
+    
+    let mid = (a + b) / 2.0
+    let half = (b - a) / 2.0
+    
+    var sum = 0.0
+    for i in 0..5 {
+        sum += weights[i] * f(mid + half * nodes[i])
+    }
+    sum * half
+}
+
+// -----------------------------------------------------------------------------
+// Numerical Differentiation
+// -----------------------------------------------------------------------------
+
+/// Forward difference derivative
+fn derivative_forward<F: Fn(Float) -> Float>(f: F, x: Float, h: Float) -> Float {
+    (f(x + h) - f(x)) / h
+}
+
+/// Central difference derivative
+fn derivative_central<F: Fn(Float) -> Float>(f: F, x: Float, h: Float) -> Float {
+    (f(x + h) - f(x - h)) / (2.0 * h)
+}
+
+/// Five-point stencil derivative
+fn derivative_5point<F: Fn(Float) -> Float>(f: F, x: Float, h: Float) -> Float {
+    (-f(x + 2.0*h) + 8.0*f(x + h) - 8.0*f(x - h) + f(x - 2.0*h)) / (12.0 * h)
+}
+
+/// Second derivative
+fn derivative2<F: Fn(Float) -> Float>(f: F, x: Float, h: Float) -> Float {
+    (f(x + h) - 2.0 * f(x) + f(x - h)) / (h * h)
+}
+
+/// Gradient (numerical)
+fn gradient<F: Fn([Float]) -> Float>(f: F, x: [Float], h: Float) -> [Float] {
+    let n = x.len()
+    var grad = vec![0.0; n]
+    for i in 0..n {
+        var x_plus = x.clone()
+        var x_minus = x.clone()
+        x_plus[i] += h
+        x_minus[i] -= h
+        grad[i] = (f(x_plus) - f(x_minus)) / (2.0 * h)
+    }
+    grad
+}
+
+// -----------------------------------------------------------------------------
+// Root Finding
+// -----------------------------------------------------------------------------
+
+/// Bisection method
+fn root_bisection<F: Fn(Float) -> Float>(f: F, a: Float, b: Float, tol: Float, max_iter: Int) -> Option<Float> {
+    var a = a; var b = b
+    if f(a) * f(b) > 0.0 { return None }
+    
+    for _ in 0..max_iter {
+        let c = (a + b) / 2.0
+        if abs(f(c)) < tol || (b - a) / 2.0 < tol {
+            return Some(c)
+        }
+        if f(c) * f(a) < 0.0 { b = c } else { a = c }
+    }
+    Some((a + b) / 2.0)
+}
+
+/// Newton-Raphson method
+fn root_newton<F: Fn(Float) -> Float, G: Fn(Float) -> Float>(
+    f: F, df: G, x0: Float, tol: Float, max_iter: Int
+) -> Option<Float> {
+    var x = x0
+    for _ in 0..max_iter {
+        let fx = f(x)
+        let dfx = df(x)
+        if abs(dfx) < 1e-15 { return None }
+        let x_new = x - fx / dfx
+        if abs(x_new - x) < tol { return Some(x_new) }
+        x = x_new
+    }
+    Some(x)
+}
+
+/// Secant method
+fn root_secant<F: Fn(Float) -> Float>(f: F, x0: Float, x1: Float, tol: Float, max_iter: Int) -> Option<Float> {
+    var x_prev = x0
+    var x_curr = x1
+    
+    for _ in 0..max_iter {
+        let f_prev = f(x_prev)
+        let f_curr = f(x_curr)
+        if abs(f_curr - f_prev) < 1e-15 { return None }
+        
+        let x_next = x_curr - f_curr * (x_curr - x_prev) / (f_curr - f_prev)
+        if abs(x_next - x_curr) < tol { return Some(x_next) }
+        
+        x_prev = x_curr
+        x_curr = x_next
+    }
+    Some(x_curr)
+}
+
+/// Brent's method
+fn root_brent<F: Fn(Float) -> Float>(f: F, a: Float, b: Float, tol: Float, max_iter: Int) -> Option<Float> {
+    var a = a; var b = b
+    var fa = f(a); var fb = f(b)
+    if fa * fb > 0.0 { return None }
+    
+    if abs(fa) < abs(fb) { 
+        let tmp = a; a = b; b = tmp
+        let tmp = fa; fa = fb; fb = tmp
+    }
+    
+    var c = a; var fc = fa
+    var d = b - a
+    var mflag = true
+    
+    for _ in 0..max_iter {
+        if abs(fb) < tol { return Some(b) }
+        if abs(b - a) < tol { return Some(b) }
+        
+        var s: Float
+        if fa != fc && fb != fc {
+            s = a * fb * fc / ((fa - fb) * (fa - fc)) +
+                b * fa * fc / ((fb - fa) * (fb - fc)) +
+                c * fa * fb / ((fc - fa) * (fc - fb))
+        } else {
+            s = b - fb * (b - a) / (fb - fa)
+        }
+        
+        let cond1 = (s < (3.0 * a + b) / 4.0 || s > b)
+        let cond2 = mflag && abs(s - b) >= abs(b - c) / 2.0
+        let cond3 = !mflag && abs(s - b) >= abs(c - d) / 2.0
+        
+        if cond1 || cond2 || cond3 {
+            s = (a + b) / 2.0
+            mflag = true
+        } else {
+            mflag = false
+        }
+        
+        let fs = f(s)
+        d = c; c = b; fc = fb
+        
+        if fa * fs < 0.0 { b = s; fb = fs }
+        else { a = s; fa = fs }
+        
+        if abs(fa) < abs(fb) {
+            let tmp = a; a = b; b = tmp
+            let tmp = fa; fa = fb; fb = tmp
+        }
+    }
+    Some(b)
+}
+
+// -----------------------------------------------------------------------------
+// Optimization
+// -----------------------------------------------------------------------------
+
+/// Golden section search (1D minimization)
+fn minimize_golden<F: Fn(Float) -> Float>(f: F, a: Float, b: Float, tol: Float) -> Float {
+    let phi = (1.0 + sqrt(5.0)) / 2.0
+    let resphi = 2.0 - phi
+    
+    var a = a; var b = b
+    var x1 = a + resphi * (b - a)
+    var x2 = b - resphi * (b - a)
+    var f1 = f(x1)
+    var f2 = f(x2)
+    
+    while abs(b - a) > tol {
+        if f1 < f2 {
+            b = x2
+            x2 = x1
+            f2 = f1
+            x1 = a + resphi * (b - a)
+            f1 = f(x1)
+        } else {
+            a = x1
+            x1 = x2
+            f1 = f2
+            x2 = b - resphi * (b - a)
+            f2 = f(x2)
+        }
+    }
+    (a + b) / 2.0
+}
+
+/// Gradient descent
+fn minimize_gradient_descent<F: Fn([Float]) -> Float>(
+    f: F, x0: [Float], learning_rate: Float, tol: Float, max_iter: Int
+) -> [Float] {
+    var x = x0.clone()
+    let h = 1e-8
+    
+    for _ in 0..max_iter {
+        let grad = gradient(f, x.clone(), h)
+        var max_grad = 0.0
+        for g in grad.iter() { if abs(*g) > max_grad { max_grad = abs(*g) } }
+        if max_grad < tol { break }
+        
+        for i in 0..x.len() {
+            x[i] -= learning_rate * grad[i]
+        }
+    }
+    x
+}
+
+/// Nelder-Mead simplex method
+fn minimize_nelder_mead<F: Fn([Float]) -> Float>(
+    f: F, x0: [Float], tol: Float, max_iter: Int
+) -> [Float] {
+    let n = x0.len()
+    let alpha = 1.0; let gamma = 2.0; let rho = 0.5; let sigma = 0.5
+    
+    // Initialize simplex
+    var simplex = vec![x0.clone(); n + 1]
+    for i in 0..n {
+        simplex[i + 1][i] += 1.0
+    }
+    
+    for _ in 0..max_iter {
+        // Sort by function value
+        simplex.sort_by(|a, b| f(a.clone()).partial_cmp(&f(b.clone())).unwrap())
+        
+        // Check convergence
+        let range = f(simplex[n].clone()) - f(simplex[0].clone())
+        if range < tol { break }
+        
+        // Centroid
+        var centroid = vec![0.0; n]
+        for i in 0..n {
+            for j in 0..n { centroid[j] += simplex[i][j] }
+        }
+        for j in 0..n { centroid[j] /= n as Float }
+        
+        // Reflection
+        var reflected = vec![0.0; n]
+        for j in 0..n { reflected[j] = centroid[j] + alpha * (centroid[j] - simplex[n][j]) }
+        let f_reflected = f(reflected.clone())
+        
+        if f_reflected < f(simplex[n-1].clone()) && f_reflected >= f(simplex[0].clone()) {
+            simplex[n] = reflected
+        } else if f_reflected < f(simplex[0].clone()) {
+            // Expansion
+            var expanded = vec![0.0; n]
+            for j in 0..n { expanded[j] = centroid[j] + gamma * (reflected[j] - centroid[j]) }
+            if f(expanded.clone()) < f_reflected { simplex[n] = expanded }
+            else { simplex[n] = reflected }
+        } else {
+            // Contraction
+            var contracted = vec![0.0; n]
+            for j in 0..n { contracted[j] = centroid[j] + rho * (simplex[n][j] - centroid[j]) }
+            if f(contracted.clone()) < f(simplex[n].clone()) {
+                simplex[n] = contracted
+            } else {
+                // Shrink
+                for i in 1..=n {
+                    for j in 0..n {
+                        simplex[i][j] = simplex[0][j] + sigma * (simplex[i][j] - simplex[0][j])
+                    }
+                }
+            }
+        }
+    }
+    simplex[0].clone()
+}
+
+// -----------------------------------------------------------------------------
+// Interpolation
+// -----------------------------------------------------------------------------
+
+/// Linear interpolation
+fn interp_linear(x: [Float], y: [Float], xi: Float) -> Float {
+    for i in 0..x.len()-1 {
+        if xi >= x[i] && xi <= x[i+1] {
+            let t = (xi - x[i]) / (x[i+1] - x[i])
+            return y[i] + t * (y[i+1] - y[i])
+        }
+    }
+    if xi < x[0] { y[0] } else { y[y.len()-1] }
+}
+
+/// Lagrange interpolation
+fn interp_lagrange(x: [Float], y: [Float], xi: Float) -> Float {
+    let n = x.len()
+    var result = 0.0
+    for i in 0..n {
+        var term = y[i]
+        for j in 0..n {
+            if i != j {
+                term *= (xi - x[j]) / (x[i] - x[j])
+            }
+        }
+        result += term
+    }
+    result
+}
+
+/// Cubic spline interpolation (natural spline)
+fn interp_cubic_spline(x: [Float], y: [Float], xi: Float) -> Float {
+    let n = x.len()
+    var h = vec![0.0; n-1]
+    for i in 0..n-1 { h[i] = x[i+1] - x[i] }
+    
+    // Solve tridiagonal system for second derivatives
+    var alpha = vec![0.0; n-1]
+    for i in 1..n-1 {
+        alpha[i] = 3.0 / h[i] * (y[i+1] - y[i]) - 3.0 / h[i-1] * (y[i] - y[i-1])
+    }
+    
+    var l = vec![1.0; n]
+    var mu = vec![0.0; n]
+    var z = vec![0.0; n]
+    
+    for i in 1..n-1 {
+        l[i] = 2.0 * (x[i+1] - x[i-1]) - h[i-1] * mu[i-1]
+        mu[i] = h[i] / l[i]
+        z[i] = (alpha[i] - h[i-1] * z[i-1]) / l[i]
+    }
+    
+    var c = vec![0.0; n]
+    var b = vec![0.0; n-1]
+    var d = vec![0.0; n-1]
+    
+    for j in (0..n-1).rev() {
+        c[j] = z[j] - mu[j] * c[j+1]
+        b[j] = (y[j+1] - y[j]) / h[j] - h[j] * (c[j+1] + 2.0 * c[j]) / 3.0
+        d[j] = (c[j+1] - c[j]) / (3.0 * h[j])
+    }
+    
+    // Find interval and evaluate
+    for i in 0..n-1 {
+        if xi >= x[i] && xi <= x[i+1] {
+            let dx = xi - x[i]
+            return y[i] + b[i] * dx + c[i] * dx * dx + d[i] * dx * dx * dx
+        }
+    }
+    if xi < x[0] { y[0] } else { y[n-1] }
+}
+
+// -----------------------------------------------------------------------------
+// Signal Processing
+// -----------------------------------------------------------------------------
+
+/// Discrete Fourier Transform
+fn dft(signal: [Float]) -> [Complex] {
+    let n = signal.len()
+    var result = vec![Complex.zero(); n]
+    
+    for k in 0..n {
+        var sum = Complex.zero()
+        for t in 0..n {
+            let angle = -TAU * k as Float * t as Float / n as Float
+            sum = sum + Complex.new(signal[t] * cos(angle), signal[t] * sin(angle))
+        }
+        result[k] = sum
+    }
+    result
+}
+
+/// Inverse Discrete Fourier Transform
+fn idft(spectrum: [Complex]) -> [Float] {
+    let n = spectrum.len()
+    var result = vec![0.0; n]
+    
+    for t in 0..n {
+        var sum = Complex.zero()
+        for k in 0..n {
+            let angle = TAU * k as Float * t as Float / n as Float
+            let exp_factor = Complex.new(cos(angle), sin(angle))
+            sum = sum + spectrum[k] * exp_factor
+        }
+        result[t] = sum.re / n as Float
+    }
+    result
+}
+
+/// Fast Fourier Transform (Cooley-Tukey)
+fn fft(signal: [Complex]) -> [Complex] {
+    let n = signal.len()
+    if n <= 1 { return signal }
+    
+    // Check if n is power of 2
+    if n & (n - 1) != 0 {
+        // Pad to next power of 2
+        let next_pow2 = (1 << ((n as Float).log2().ceil() as Int))
+        var padded = signal.clone()
+        padded.resize(next_pow2, Complex.zero())
+        return fft(padded)
+    }
+    
+    // Divide
+    var even = vec![Complex.zero(); n/2]
+    var odd = vec![Complex.zero(); n/2]
+    for i in 0..n/2 {
+        even[i] = signal[2*i]
+        odd[i] = signal[2*i + 1]
+    }
+    
+    // Conquer
+    let even_fft = fft(even)
+    let odd_fft = fft(odd)
+    
+    // Combine
+    var result = vec![Complex.zero(); n]
+    for k in 0..n/2 {
+        let angle = -TAU * k as Float / n as Float
+        let twiddle = Complex.new(cos(angle), sin(angle))
+        let t = twiddle * odd_fft[k]
+        result[k] = even_fft[k] + t
+        result[k + n/2] = even_fft[k] - t
+    }
+    result
+}
+
+/// Convolution
+fn convolve(a: [Float], b: [Float]) -> [Float] {
+    let n = a.len() + b.len() - 1
+    var result = vec![0.0; n]
+    for i in 0..a.len() {
+        for j in 0..b.len() {
+            result[i + j] += a[i] * b[j]
+        }
+    }
+    result
+}
+
+/// Moving average filter
+fn moving_average(signal: [Float], window: Int) -> [Float] {
+    let n = signal.len()
+    var result = vec![0.0; n]
+    for i in 0..n {
+        var sum = 0.0
+        var count = 0
+        for j in (i as Int - window/2).max(0)..(i + window/2 + 1).min(n) {
+            sum += signal[j]
+            count += 1
+        }
+        result[i] = sum / count as Float
+    }
+    result
+}
+
+// -----------------------------------------------------------------------------
+// Linear Algebra Helpers
+// -----------------------------------------------------------------------------
+
+/// Dot product
+fn dot(a: [Float], b: [Float]) -> Float {
+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+}
+
+/// Vector norm
+fn norm(v: [Float]) -> Float {
+    sqrt(dot(v.clone(), v))
+}
+
+/// Normalize vector
+fn normalize(v: [Float]) -> [Float] {
+    let n = norm(v.clone())
+    v.iter().map(|x| x / n).collect()
+}
+
+// -----------------------------------------------------------------------------
+// Special Functions
+// -----------------------------------------------------------------------------
+
+/// Gamma function (Lanczos approximation)
+fn gamma(z: Float) -> Float {
+    let g = 7
+    let c = [
+        0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+        771.32342877765313, -176.61502916214059, 12.507343278686905,
+        -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7
+    ]
+    
+    if z < 0.5 {
+        PI / (sin(PI * z) * gamma(1.0 - z))
+    } else {
+        let z = z - 1.0
+        var x = c[0]
+        for i in 1..g+2 {
+            x += c[i] / (z + i as Float)
+        }
+        let t = z + g as Float + 0.5
+        sqrt(TAU) * pow(t, z + 0.5) * exp(-t) * x
+    }
+}
+
+/// Beta function
+fn beta(a: Float, b: Float) -> Float {
+    gamma(a) * gamma(b) / gamma(a + b)
+}
+
+/// Error function
+fn erf(x: Float) -> Float {
+    let a1 =  0.254829592
+    let a2 = -0.284496736
+    let a3 =  1.421413741
+    let a4 = -1.453152027
+    let a5 =  1.061405429
+    let p  =  0.3275911
+    
+    let sign = if x < 0.0 { -1.0 } else { 1.0 }
+    let x = abs(x)
+    let t = 1.0 / (1.0 + p * x)
+    let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * exp(-x * x)
+    sign * y
+}
+
+/// Bessel function J0
+fn bessel_j0(x: Float) -> Float {
+    if abs(x) < 8.0 {
+        let y = x * x
+        let ans1 = 57568490574.0 + y * (-13362590354.0 + y * (651619640.7 +
+            y * (-11214424.18 + y * (77392.33017 + y * (-184.9052456)))))
+        let ans2 = 57568490411.0 + y * (1029532985.0 + y * (9494680.718 +
+            y * (59272.64853 + y * (267.8532712 + y * 1.0))))
+        ans1 / ans2
+    } else {
+        let ax = abs(x)
+        let z = 8.0 / ax
+        let y = z * z
+        let xx = ax - 0.785398164
+        let ans1 = 1.0 + y * (-0.1098628627e-2 + y * (0.2734510407e-4 +
+            y * (-0.2073370639e-5 + y * 0.2093887211e-6)))
+        let ans2 = -0.1562499995e-1 + y * (0.1430488765e-3 +
+            y * (-0.6911147651e-5 + y * (0.7621095161e-6 - y * 0.934935152e-7)))
+        sqrt(0.636619772 / ax) * (cos(xx) * ans1 - z * sin(xx) * ans2)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "integration" {
+    // ∫₀¹ x² dx = 1/3
+    let result = integrate_simpson(|x| x * x, 0.0, 1.0, 100)
+    assert((result - 1.0/3.0).abs() < 1e-6)?
+}
+
+test "root finding" {
+    // x² - 2 = 0 => x = √2
+    let root = root_newton(|x| x*x - 2.0, |x| 2.0*x, 1.0, 1e-10, 100).unwrap()
+    assert((root - sqrt(2.0)).abs() < 1e-8)?
+}
+
+test "optimization" {
+    // Minimize x² => x = 0
+    let min = minimize_golden(|x| x * x, -10.0, 10.0, 1e-8)
+    assert(abs(min) < 1e-6)?
+}
+
+test "interpolation" {
+    let x = [0.0, 1.0, 2.0, 3.0]
+    let y = [0.0, 1.0, 4.0, 9.0]  // y = x²
+    let yi = interp_lagrange(x, y, 1.5)
+    assert((yi - 2.25).abs() < 0.01)?
+}
+
+test "gamma function" {
+    // Γ(5) = 4! = 24
+    assert((gamma(5.0) - 24.0).abs() < 0.001)?
+    // Γ(0.5) = √π
+    assert((gamma(0.5) - sqrt(PI)).abs() < 0.001)?
+}
+
+test "erf function" {
+    assert((erf(0.0) - 0.0).abs() < 1e-10)?
+    assert((erf(1.0) - 0.8427).abs() < 0.001)?
+}

@@ -1,0 +1,186 @@
+// =============================================================================
+// Vibee OS — LRU Cache Module
+// Least Recently Used cache
+// =============================================================================
+
+/// LRU Cache
+struct LRUCache<K: Hash + Eq, V> {
+    capacity: Int
+    map: Map<K, LRUNode<K, V>>
+    order: [K]
+    
+    /// Create with capacity
+    fn new(capacity: Int) -> Self {
+        LRUCache { capacity: capacity, map: Map.empty(), order: [] }
+    }
+    
+    /// Get value (marks as recently used)
+    fn get(key: K) -> Option<V> {
+        if let Some(node) = self.map.get(key) {
+            self.touch(key)
+            Some(node.value.clone())
+        } else {
+            None
+        }
+    }
+    
+    /// Peek value (doesn't update order)
+    fn peek(key: K) -> Option<V> {
+        self.map.get(key).map(|n| n.value.clone())
+    }
+    
+    /// Put value
+    fn put(key: K, value: V) {
+        if self.map.contains(key) {
+            self.map.get_mut(key).unwrap().value = value
+            self.touch(key)
+        } else {
+            if self.len() >= self.capacity {
+                self.evict()
+            }
+            self.map.set(key, LRUNode { key: key, value: value })
+            self.order.push(key)
+        }
+    }
+    
+    /// Remove key
+    fn remove(key: K) -> Option<V> {
+        if let Some(node) = self.map.remove(key) {
+            self.order.retain(|k| k != key)
+            Some(node.value)
+        } else {
+            None
+        }
+    }
+    
+    /// Check if contains key
+    fn contains(key: K) -> Bool {
+        self.map.contains(key)
+    }
+    
+    /// Clear cache
+    fn clear() {
+        self.map.clear()
+        self.order.clear()
+    }
+    
+    fn len() -> Int { self.map.len() }
+    fn capacity() -> Int { self.capacity }
+    fn is_empty() -> Bool { self.map.is_empty() }
+    
+    /// Get or insert with function
+    fn get_or_insert(key: K, f: fn() -> V) -> V {
+        if let Some(v) = self.get(key) { return v }
+        let value = f()
+        self.put(key, value.clone())
+        value
+    }
+    
+    /// Most recently used key
+    fn mru() -> Option<K> {
+        self.order.last().cloned()
+    }
+    
+    /// Least recently used key
+    fn lru() -> Option<K> {
+        self.order.first().cloned()
+    }
+    
+    /// Keys in LRU order
+    fn keys() -> [K] {
+        self.order.clone()
+    }
+    
+    fn touch(key: K) {
+        self.order.retain(|k| k != key)
+        self.order.push(key)
+    }
+    
+    fn evict() {
+        if let Some(key) = self.order.first().cloned() {
+            self.map.remove(key)
+            self.order.remove(0)
+        }
+    }
+}
+
+struct LRUNode<K, V> {
+    key: K
+    value: V
+}
+
+// -----------------------------------------------------------------------------
+// TTL LRU Cache
+// -----------------------------------------------------------------------------
+
+/// LRU Cache with TTL
+struct TTLCache<K: Hash + Eq, V> {
+    cache: LRUCache<K, (V, Int64)>
+    ttl_ms: Int64
+    
+    fn new(capacity: Int, ttl_ms: Int64) -> Self {
+        TTLCache { cache: LRUCache.new(capacity), ttl_ms: ttl_ms }
+    }
+    
+    fn get(key: K) -> Option<V> {
+        let now = @native("timestamp_ms")
+        if let Some((value, expires)) = self.cache.get(key) {
+            if now < expires {
+                return Some(value)
+            }
+            self.cache.remove(key)
+        }
+        None
+    }
+    
+    fn put(key: K, value: V) {
+        let expires = @native("timestamp_ms") + self.ttl_ms
+        self.cache.put(key, (value, expires))
+    }
+    
+    fn remove(key: K) -> Option<V> {
+        self.cache.remove(key).map(|(v, _)| v)
+    }
+    
+    /// Remove expired entries
+    fn cleanup() {
+        let now = @native("timestamp_ms")
+        let expired: [K] = self.cache.keys().iter()
+            .filter(|k| self.cache.peek(*k).map(|(_, e)| e <= now).unwrap_or(true))
+            .collect()
+        for k in expired { self.cache.remove(k) }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "basic operations" {
+    var cache = LRUCache::<String, Int>.new(3)
+    cache.put("a", 1)
+    cache.put("b", 2)
+    cache.put("c", 3)
+    assert_eq(cache.get("a"), Some(1))?
+    assert_eq(cache.get("d"), None)?
+}
+
+test "eviction" {
+    var cache = LRUCache::<String, Int>.new(2)
+    cache.put("a", 1)
+    cache.put("b", 2)
+    cache.put("c", 3)  // Evicts "a"
+    assert_eq(cache.get("a"), None)?
+    assert_eq(cache.get("b"), Some(2))?
+}
+
+test "lru order" {
+    var cache = LRUCache::<String, Int>.new(3)
+    cache.put("a", 1)
+    cache.put("b", 2)
+    cache.put("c", 3)
+    cache.get("a")  // Touch "a"
+    cache.put("d", 4)  // Evicts "b" (LRU)
+    assert_eq(cache.get("b"), None)?
+    assert_eq(cache.get("a"), Some(1))?
+}

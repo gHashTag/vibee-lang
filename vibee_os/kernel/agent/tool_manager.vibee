@@ -1,0 +1,333 @@
+name: vibee_os_tool_manager
+version: "0.1.0"
+language: zig
+module: kernel/agent/tools
+description: Tool Manager - manages agent capabilities and tool execution (MCP-compatible)
+
+behaviors:
+  - name: register_tool
+    given: A new tool/capability needs to be available to agents
+    when: tool_register is called with tool definition
+    then: Tool is registered and available for use
+    test_cases:
+      - name: register_file_tool
+        input: {name: "file_read", description: "Read file contents", params: {path: "string"}}
+        expected: {success: true, tool_id: "tool_file_read"}
+      - name: register_duplicate
+        input: {name: "file_read", already_exists: true}
+        expected: {success: false, error: "tool_already_exists"}
+
+  - name: execute_tool
+    given: Agent requests tool execution
+    when: tool_execute is called with tool name and parameters
+    then: Tool is executed and result returned
+    test_cases:
+      - name: execute_file_read
+        input: {tool: "file_read", params: {path: "/home/user/test.txt"}}
+        expected: {success: true, result: "file contents here"}
+      - name: execute_permission_denied
+        input: {tool: "file_write", params: {path: "/etc/passwd"}, has_permission: false}
+        expected: {success: false, error: "permission_denied"}
+
+  - name: discover_tools
+    given: Agent needs to know available tools
+    when: tool_list is called with optional filter
+    then: List of available tools with descriptions returned
+    test_cases:
+      - name: list_all_tools
+        input: {filter: null}
+        expected: {success: true, count: 15}
+      - name: list_file_tools
+        input: {filter: {category: "filesystem"}}
+        expected: {success: true, count: 4}
+
+  - name: tool_permission_check
+    given: Agent wants to use a tool
+    when: tool_can_use is called
+    then: Permission is checked against agent capabilities
+    test_cases:
+      - name: check_allowed
+        input: {agent_id: "swe", tool: "file_read"}
+        expected: {allowed: true}
+      - name: check_denied
+        input: {agent_id: "test", tool: "network_request", agent_capabilities: ["filesystem"]}
+        expected: {allowed: false, reason: "missing_capability"}
+
+types:
+  Tool:
+    id: str
+    name: str
+    description: str
+    category: ToolCategory
+    parameters: [ToolParameter]
+    returns: ToolReturn
+    requires_confirmation: bool
+    capabilities_required: [str]
+    rate_limit: RateLimit?
+    handler: str  # Function reference or MCP endpoint
+
+  ToolParameter:
+    name: str
+    type: ParamType
+    description: str
+    required: bool
+    default: str?
+    enum_values: [str]?
+    validation: str?  # Regex or validation function
+
+  ParamType:
+    variants:
+      - String
+      - Integer
+      - Float
+      - Boolean
+      - Array
+      - Object
+      - File
+      - Path
+
+  ToolReturn:
+    type: ParamType
+    description: str
+    schema: str?  # JSON schema
+
+  ToolCategory:
+    variants:
+      - Filesystem
+      - Network
+      - Process
+      - Vibee        # Vibee-specific tools
+      - Database
+      - Search
+      - Communication
+      - System
+      - Custom
+
+  RateLimit:
+    max_calls: int
+    window_seconds: int
+    current_calls: int
+    window_start: int
+
+  ToolExecution:
+    id: str
+    tool_id: str
+    agent_id: str
+    parameters: {str: str}
+    started_at: int
+    completed_at: int?
+    status: ExecutionStatus
+    result: str?
+    error: str?
+    tokens_used: int
+
+  ExecutionStatus:
+    variants:
+      - Pending
+      - Running
+      - Completed
+      - Failed
+      - Cancelled
+      - TimedOut
+
+  ToolRegistry:
+    tools: [Tool]
+    by_category: {str: [str]}
+    by_capability: {str: [str]}
+
+  MCPServer:
+    name: str
+    endpoint: str
+    tools: [str]
+    status: ServerStatus
+
+  ServerStatus:
+    variants:
+      - Connected
+      - Disconnected
+      - Error
+
+  ToolPermission:
+    agent_id: str
+    tool_id: str
+    allowed: bool
+    restrictions: [str]?
+
+functions:
+  # Registration
+  - name: tool_register
+    params: {tool: Tool}
+    returns: str
+    description: Register a new tool, returns tool ID
+
+  - name: tool_unregister
+    params: {tool_id: str}
+    returns: bool
+    description: Unregister a tool
+
+  - name: tool_update
+    params: {tool_id: str, updates: Tool}
+    returns: bool
+    description: Update tool definition
+
+  # Discovery
+  - name: tool_list
+    params: {category: ToolCategory?, capability: str?}
+    returns: [Tool]
+    description: List available tools
+
+  - name: tool_get
+    params: {tool_id: str}
+    returns: Tool?
+    description: Get tool by ID
+
+  - name: tool_search
+    params: {query: str}
+    returns: [Tool]
+    description: Search tools by description
+
+  # Execution
+  - name: tool_execute
+    params: {agent_id: str, tool_id: str, parameters: {str: str}}
+    returns: ToolExecution
+    description: Execute a tool
+
+  - name: tool_execute_async
+    params: {agent_id: str, tool_id: str, parameters: {str: str}}
+    returns: str
+    description: Execute tool asynchronously, returns execution ID
+
+  - name: tool_cancel
+    params: {execution_id: str}
+    returns: bool
+    description: Cancel running tool execution
+
+  - name: tool_status
+    params: {execution_id: str}
+    returns: ToolExecution
+    description: Get execution status
+
+  # Permissions
+  - name: tool_can_use
+    params: {agent_id: str, tool_id: str}
+    returns: bool
+    description: Check if agent can use tool
+
+  - name: tool_grant
+    params: {agent_id: str, tool_id: str}
+    returns: bool
+    description: Grant tool access to agent
+
+  - name: tool_revoke
+    params: {agent_id: str, tool_id: str}
+    returns: bool
+    description: Revoke tool access
+
+  # MCP Integration
+  - name: mcp_connect
+    params: {server: MCPServer}
+    returns: bool
+    description: Connect to MCP server
+
+  - name: mcp_disconnect
+    params: {server_name: str}
+    returns: bool
+    description: Disconnect from MCP server
+
+  - name: mcp_list_servers
+    params: {}
+    returns: [MCPServer]
+    description: List connected MCP servers
+
+imports:
+  - kernel.agent.core
+  - kernel.security.capability
+
+builtin_tools: |
+  Built-in Tools for VIBEE OS:
+  
+  === Filesystem ===
+  file_read(path: str) -> str
+    Read file contents
+  
+  file_write(path: str, content: str) -> bool
+    Write content to file
+  
+  file_delete(path: str) -> bool
+    Delete file
+  
+  file_list(path: str) -> [FileInfo]
+    List directory contents
+  
+  file_exists(path: str) -> bool
+    Check if file exists
+  
+  === Vibee ===
+  vibee_parse(content: str) -> AST
+    Parse Vibee specification
+  
+  vibee_validate(ast: AST) -> ValidationResult
+    Validate specification
+  
+  vibee_generate(ast: AST, target: str) -> str
+    Generate code for target
+  
+  vibee_test(spec: str) -> TestResult
+    Run specification tests
+  
+  === Process ===
+  exec_command(cmd: str, args: [str]) -> ExecResult
+    Execute shell command
+  
+  process_list() -> [ProcessInfo]
+    List running processes
+  
+  process_kill(pid: int) -> bool
+    Kill process
+  
+  === Search ===
+  memory_search(query: str) -> [Memory]
+    Search semantic memory
+  
+  code_search(query: str, path: str) -> [CodeMatch]
+    Search code in repository
+  
+  web_search(query: str) -> [WebResult]
+    Search the web (if enabled)
+  
+  === Communication ===
+  agent_message(to: str, content: str) -> bool
+    Send message to another agent
+  
+  user_ask(question: str) -> str
+    Ask user for input
+  
+  user_notify(message: str) -> void
+    Notify user
+
+mcp_protocol: |
+  MCP (Model Context Protocol) Integration:
+  
+  VIBEE OS supports MCP for tool extensibility.
+  
+  MCP Server Registration:
+  ```json
+  {
+    "name": "github",
+    "endpoint": "mcp://github.local:8080",
+    "tools": ["create_issue", "list_prs", "merge_pr"]
+  }
+  ```
+  
+  Tool Call Flow:
+  1. Agent requests tool execution
+  2. Tool Manager checks permissions
+  3. If MCP tool, forward to MCP server
+  4. If builtin, execute locally
+  5. Return result to agent
+  
+  Benefits:
+  - Extensible tool ecosystem
+  - Standardized protocol
+  - Remote tool execution
+  - Tool discovery

@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VIBEE OS - Демонстрация</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #0a0a0a;
+            color: #00ff00;
+            font-family: 'Courier New', monospace;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        
+        .header h1 {
+            color: #00ff00;
+            text-shadow: 0 0 10px #00ff00;
+            font-size: 2em;
+        }
+        
+        .header p {
+            color: #888;
+            margin-top: 5px;
+        }
+        
+        .terminal {
+            background: #111;
+            border: 2px solid #333;
+            border-radius: 8px;
+            width: 100%;
+            max-width: 900px;
+            height: 500px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: 0 0 20px rgba(0, 255, 0, 0.2);
+        }
+        
+        .terminal-header {
+            background: #222;
+            padding: 8px 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-bottom: 1px solid #333;
+        }
+        
+        .terminal-btn {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+        
+        .btn-red { background: #ff5f56; }
+        .btn-yellow { background: #ffbd2e; }
+        .btn-green { background: #27ca40; }
+        
+        .terminal-title {
+            color: #888;
+            margin-left: 10px;
+            font-size: 0.9em;
+        }
+        
+        .terminal-body {
+            flex: 1;
+            padding: 15px;
+            overflow-y: auto;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        
+        .terminal-body::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        .terminal-body::-webkit-scrollbar-track {
+            background: #111;
+        }
+        
+        .terminal-body::-webkit-scrollbar-thumb {
+            background: #333;
+            border-radius: 4px;
+        }
+        
+        .output {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        
+        .output .error {
+            color: #ff5555;
+        }
+        
+        .output .success {
+            color: #50fa7b;
+        }
+        
+        .output .info {
+            color: #8be9fd;
+        }
+        
+        .output .warning {
+            color: #f1fa8c;
+        }
+        
+        .input-line {
+            display: flex;
+            align-items: center;
+        }
+        
+        .prompt {
+            color: #50fa7b;
+            margin-right: 8px;
+        }
+        
+        #input {
+            background: transparent;
+            border: none;
+            color: #00ff00;
+            font-family: inherit;
+            font-size: inherit;
+            flex: 1;
+            outline: none;
+            caret-color: #00ff00;
+        }
+        
+        .cursor {
+            display: inline-block;
+            width: 8px;
+            height: 16px;
+            background: #00ff00;
+            animation: blink 1s infinite;
+        }
+        
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+        
+        .stats {
+            display: flex;
+            gap: 20px;
+            margin-top: 20px;
+            color: #888;
+            font-size: 0.9em;
+        }
+        
+        .stat {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .stat-value {
+            color: #00ff00;
+        }
+        
+        .footer {
+            margin-top: 20px;
+            color: #555;
+            font-size: 0.8em;
+            text-align: center;
+        }
+        
+        .footer a {
+            color: #00ff00;
+            text-decoration: none;
+        }
+        
+        .footer a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>VIBEE OS</h1>
+        <p>Behavioral Specification Operating System v0.1.0</p>
+    </div>
+    
+    <div class="terminal">
+        <div class="terminal-header">
+            <div class="terminal-btn btn-red"></div>
+            <div class="terminal-btn btn-yellow"></div>
+            <div class="terminal-btn btn-green"></div>
+            <span class="terminal-title">vibee-os — shell</span>
+        </div>
+        <div class="terminal-body" id="terminal">
+            <div class="output" id="output"></div>
+            <div class="input-line">
+                <span class="prompt" id="prompt">vibee&gt;</span>
+                <input type="text" id="input" autofocus autocomplete="off" spellcheck="false">
+            </div>
+        </div>
+    </div>
+    
+    <div class="stats">
+        <div class="stat">Процессы: <span class="stat-value" id="proc-count">2</span></div>
+        <div class="stat">Память: <span class="stat-value" id="mem-usage">128</span> KB</div>
+        <div class="stat">Uptime: <span class="stat-value" id="uptime">0</span>s</div>
+    </div>
+    
+    <div class="footer">
+        <p>Написано на языке <a href="https://github.com/gHashTag/vibee-lang">Vibee</a> | Работает в браузере через WASM эмуляцию</p>
+    </div>
+
+    <script>
+        // VIBEE OS Эмулятор
+        const VibeeOS = {
+            version: '0.1.0',
+            startTime: Date.now(),
+            currentDir: '/home/user',
+            processes: [
+                { pid: 1, name: 'init', state: 'running', memory: 32 },
+                { pid: 2, name: 'shell', state: 'running', memory: 64 }
+            ],
+            nextPid: 3,
+            history: [],
+            historyIndex: -1,
+            env: {
+                'USER': 'user',
+                'HOME': '/home/user',
+                'PATH': '/bin:/usr/bin',
+                'SHELL': '/bin/vsh',
+                'TERM': 'vibee-term'
+            },
+            filesystem: {
+                '/': { type: 'dir', children: ['home', 'bin', 'etc', 'tmp'] },
+                '/home': { type: 'dir', children: ['user'] },
+                '/home/user': { type: 'dir', children: ['readme.txt', 'hello.vibee', 'documents'] },
+                '/home/user/documents': { type: 'dir', children: ['notes.txt'] },
+                '/home/user/readme.txt': { type: 'file', content: 'Добро пожаловать в VIBEE OS!\n\nЭто операционная система, написанная на языке спецификаций Vibee.\nВведите "help" для списка команд.' },
+                '/home/user/hello.vibee': { type: 'file', content: 'name: hello\nversion: "1.0.0"\nlanguage: zig\n\nbehaviors:\n  - name: greet\n    given: User name provided\n    when: greet called\n    then: Returns greeting\n    test_cases:\n      - name: greet_world\n        input: {name: "World"}\n        expected: {message: "Hello, World!"}' },
+                '/home/user/documents/notes.txt': { type: 'file', content: 'Заметки:\n- Изучить Vibee\n- Создать свою программу\n- Запустить на WASM' },
+                '/bin': { type: 'dir', children: ['vsh', 'ls', 'cat'] },
+                '/etc': { type: 'dir', children: ['vibee.conf'] },
+                '/etc/vibee.conf': { type: 'file', content: '# VIBEE OS Configuration\nkernel.scheduler=round_robin\nkernel.memory_limit=1048576\nshell.prompt=vibee>' },
+                '/tmp': { type: 'dir', children: [] }
+            },
+            
+            resolvePath(path) {
+                if (path.startsWith('/')) return path;
+                if (path === '~') return '/home/user';
+                if (path.startsWith('~/')) return '/home/user' + path.slice(1);
+                if (path === '..') {
+                    const parts = this.currentDir.split('/').filter(p => p);
+                    parts.pop();
+                    return '/' + parts.join('/') || '/';
+                }
+                if (path === '.') return this.currentDir;
+                return this.currentDir + '/' + path;
+            },
+            
+            getNode(path) {
+                const resolved = this.resolvePath(path);
+                return this.filesystem[resolved];
+            }
+        };
+
+        const output = document.getElementById('output');
+        const input = document.getElementById('input');
+        const prompt = document.getElementById('prompt');
+        const terminal = document.getElementById('terminal');
+
+        // Баннер при загрузке
+        const banner = `<span class="info">╔═══════════════════════════════════════════════════════════╗
+║                                                           ║
+║   ██╗   ██╗██╗██████╗ ███████╗███████╗     ██████╗ ███████╗║
+║   ██║   ██║██║██╔══██╗██╔════╝██╔════╝    ██╔═══██╗██╔════╝║
+║   ██║   ██║██║██████╔╝█████╗  █████╗      ██║   ██║███████╗║
+║   ╚██╗ ██╔╝██║██╔══██╗██╔══╝  ██╔══╝      ██║   ██║╚════██║║
+║    ╚████╔╝ ██║██████╔╝███████╗███████╗    ╚██████╔╝███████║║
+║     ╚═══╝  ╚═╝╚═════╝ ╚══════╝╚══════╝     ╚═════╝ ╚══════╝║
+║                                                           ║
+║   Behavioral Specification Operating System v0.1.0        ║
+║   Введите 'help' для списка команд                        ║
+║                                                           ║
+╚═══════════════════════════════════════════════════════════╝</span>
+
+<span class="success">Система загружена успешно.</span>
+<span class="info">Платформа: WASM (браузер)</span>
+<span class="info">Память: 1 MB | Процессы: 2</span>
+
+`;
+
+        function print(text, className = '') {
+            const span = document.createElement('span');
+            if (className) span.className = className;
+            span.innerHTML = text;
+            output.appendChild(span);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        function println(text, className = '') {
+            print(text + '\n', className);
+        }
+
+        function updateStats() {
+            document.getElementById('proc-count').textContent = VibeeOS.processes.length;
+            document.getElementById('mem-usage').textContent = VibeeOS.processes.reduce((sum, p) => sum + p.memory, 0);
+            document.getElementById('uptime').textContent = Math.floor((Date.now() - VibeeOS.startTime) / 1000);
+        }
+
+        const commands = {
+            help() {
+                return `<span class="info">Доступные команды VIBEE OS:</span>
+
+  <span class="success">help</span>              - показать эту справку
+  <span class="success">version</span>           - версия системы
+  <span class="success">uptime</span>            - время работы
+  <span class="success">clear</span>             - очистить экран
+  <span class="success">echo</span> [текст]      - вывести текст
+  <span class="success">pwd</span>               - текущая директория
+  <span class="success">cd</span> [путь]         - сменить директорию
+  <span class="success">ls</span> [путь]         - список файлов
+  <span class="success">cat</span> [файл]        - содержимое файла
+  <span class="success">ps</span>                - список процессов
+  <span class="success">kill</span> [pid]        - завершить процесс
+  <span class="success">env</span>               - переменные окружения
+  <span class="success">export</span> NAME=VALUE - установить переменную
+  <span class="success">mem</span>               - использование памяти
+  <span class="success">history</span>           - история команд
+  <span class="success">scheme</span>            - список схем
+  <span class="success">exit</span>              - выход (перезагрузка)`;
+            },
+            
+            version() {
+                return `VIBEE OS v${VibeeOS.version}
+Ядро: vibee-kernel 0.1.0
+Платформа: WASM32
+Компилятор: vibeec 0.1.0`;
+            },
+            
+            uptime() {
+                const seconds = Math.floor((Date.now() - VibeeOS.startTime) / 1000);
+                const minutes = Math.floor(seconds / 60);
+                const hours = Math.floor(minutes / 60);
+                return `Время работы: ${hours}ч ${minutes % 60}м ${seconds % 60}с`;
+            },
+            
+            clear() {
+                output.innerHTML = '';
+                return null;
+            },
+            
+            echo(args) {
+                return args.join(' ');
+            },
+            
+            pwd() {
+                return VibeeOS.currentDir;
+            },
+            
+            cd(args) {
+                const path = args[0] || '/home/user';
+                const resolved = VibeeOS.resolvePath(path);
+                const node = VibeeOS.filesystem[resolved];
+                
+                if (!node) {
+                    return `<span class="error">cd: ${path}: Директория не найдена</span>`;
+                }
+                if (node.type !== 'dir') {
+                    return `<span class="error">cd: ${path}: Не директория</span>`;
+                }
+                
+                VibeeOS.currentDir = resolved;
+                return null;
+            },
+            
+            ls(args) {
+                const path = args[0] || VibeeOS.currentDir;
+                const resolved = VibeeOS.resolvePath(path);
+                const node = VibeeOS.filesystem[resolved];
+                
+                if (!node) {
+                    return `<span class="error">ls: ${path}: Не найдено</span>`;
+                }
+                
+                if (node.type === 'file') {
+                    return path;
+                }
+                
+                if (!node.children || node.children.length === 0) {
+                    return '<span class="info">(пусто)</span>';
+                }
+                
+                return node.children.map(name => {
+                    const childPath = resolved === '/' ? '/' + name : resolved + '/' + name;
+                    const child = VibeeOS.filesystem[childPath];
+                    if (child && child.type === 'dir') {
+                        return `<span class="info">${name}/</span>`;
+                    }
+                    return name;
+                }).join('  ');
+            },
+            
+            cat(args) {
+                if (args.length === 0) {
+                    return `<span class="error">cat: укажите файл</span>`;
+                }
+                
+                const results = [];
+                for (const path of args) {
+                    const resolved = VibeeOS.resolvePath(path);
+                    const node = VibeeOS.filesystem[resolved];
+                    
+                    if (!node) {
+                        results.push(`<span class="error">cat: ${path}: Файл не найден</span>`);
+                    } else if (node.type === 'dir') {
+                        results.push(`<span class="error">cat: ${path}: Это директория</span>`);
+                    } else {
+                        results.push(node.content);
+                    }
+                }
+                return results.join('\n');
+            },
+            
+            ps() {
+                let result = '<span class="info">  PID  STATE     MEM    NAME</span>\n';
+                for (const proc of VibeeOS.processes) {
+                    const pid = proc.pid.toString().padStart(5);
+                    const state = proc.state.padEnd(9);
+                    const mem = (proc.memory + ' KB').padStart(6);
+                    result += `${pid}  ${state} ${mem}    ${proc.name}\n`;
+                }
+                return result.trim();
+            },
+            
+            kill(args) {
+                if (args.length === 0) {
+                    return `<span class="error">kill: укажите PID</span>`;
+                }
+                
+                const pid = parseInt(args[0]);
+                if (pid === 1) {
+                    return `<span class="error">kill: нельзя завершить init (PID 1)</span>`;
+                }
+                if (pid === 2) {
+                    return `<span class="error">kill: нельзя завершить shell (PID 2)</span>`;
+                }
+                
+                const index = VibeeOS.processes.findIndex(p => p.pid === pid);
+                if (index === -1) {
+                    return `<span class="error">kill: процесс ${pid} не найден</span>`;
+                }
+                
+                const proc = VibeeOS.processes[index];
+                VibeeOS.processes.splice(index, 1);
+                return `<span class="success">Процесс ${proc.name} (PID ${pid}) завершён</span>`;
+            },
+            
+            env() {
+                return Object.entries(VibeeOS.env)
+                    .map(([k, v]) => `${k}=${v}`)
+                    .join('\n');
+            },
+            
+            export(args) {
+                if (args.length === 0) {
+                    return commands.env();
+                }
+                
+                const match = args.join(' ').match(/^(\w+)=(.*)$/);
+                if (!match) {
+                    return `<span class="error">export: неверный формат. Используйте: export NAME=VALUE</span>`;
+                }
+                
+                VibeeOS.env[match[1]] = match[2];
+                return null;
+            },
+            
+            mem() {
+                const used = VibeeOS.processes.reduce((sum, p) => sum + p.memory, 0);
+                const total = 1024;
+                const free = total - used;
+                const percent = Math.round((used / total) * 100);
+                
+                const bar = '█'.repeat(Math.round(percent / 5)) + '░'.repeat(20 - Math.round(percent / 5));
+                
+                return `<span class="info">Использование памяти:</span>
+  Всего:      ${total} KB
+  Занято:     ${used} KB (${percent}%)
+  Свободно:   ${free} KB
+  
+  [${bar}] ${percent}%`;
+            },
+            
+            history() {
+                if (VibeeOS.history.length === 0) {
+                    return '<span class="info">(история пуста)</span>';
+                }
+                return VibeeOS.history.map((cmd, i) => `  ${i + 1}  ${cmd}`).join('\n');
+            },
+            
+            scheme() {
+                return `<span class="info">Зарегистрированные схемы:</span>
+
+  <span class="success">file://</span>      - файловая система
+  <span class="success">console://</span>   - консольный ввод/вывод
+  <span class="success">null://</span>      - /dev/null
+  <span class="success">zero://</span>      - бесконечные нули
+  <span class="success">random://</span>    - случайные данные
+  <span class="success">proc://</span>      - информация о процессах
+  <span class="success">mem://</span>       - информация о памяти`;
+            },
+            
+            exit() {
+                println('<span class="warning">Перезагрузка системы...</span>');
+                setTimeout(() => {
+                    location.reload();
+                }, 1000);
+                return null;
+            }
+        };
+
+        function executeCommand(line) {
+            const trimmed = line.trim();
+            if (!trimmed) return;
+            
+            VibeeOS.history.push(trimmed);
+            VibeeOS.historyIndex = VibeeOS.history.length;
+            
+            println(`<span class="prompt">vibee&gt;</span> ${trimmed}`);
+            
+            const parts = trimmed.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+            const cmd = parts[0]?.toLowerCase();
+            const args = parts.slice(1).map(a => a.replace(/^"|"$/g, ''));
+            
+            if (!cmd) return;
+            
+            if (commands[cmd]) {
+                const result = commands[cmd](args);
+                if (result !== null) {
+                    println(result);
+                }
+            } else {
+                // Попытка запустить как процесс
+                println(`<span class="info">Запуск: ${cmd}...</span>`);
+                const newProc = {
+                    pid: VibeeOS.nextPid++,
+                    name: cmd,
+                    state: 'running',
+                    memory: Math.floor(Math.random() * 32) + 16
+                };
+                VibeeOS.processes.push(newProc);
+                
+                setTimeout(() => {
+                    newProc.state = 'zombie';
+                    setTimeout(() => {
+                        const idx = VibeeOS.processes.indexOf(newProc);
+                        if (idx !== -1) VibeeOS.processes.splice(idx, 1);
+                        updateStats();
+                    }, 500);
+                }, 1000 + Math.random() * 2000);
+                
+                println(`<span class="success">Процесс ${cmd} запущен (PID ${newProc.pid})</span>`);
+            }
+            
+            updateStats();
+        }
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                executeCommand(input.value);
+                input.value = '';
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (VibeeOS.historyIndex > 0) {
+                    VibeeOS.historyIndex--;
+                    input.value = VibeeOS.history[VibeeOS.historyIndex] || '';
+                }
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (VibeeOS.historyIndex < VibeeOS.history.length - 1) {
+                    VibeeOS.historyIndex++;
+                    input.value = VibeeOS.history[VibeeOS.historyIndex] || '';
+                } else {
+                    VibeeOS.historyIndex = VibeeOS.history.length;
+                    input.value = '';
+                }
+            } else if (e.key === 'Tab') {
+                e.preventDefault();
+                // Простое автодополнение
+                const partial = input.value.split(' ').pop();
+                if (partial) {
+                    const matches = Object.keys(commands).filter(c => c.startsWith(partial));
+                    if (matches.length === 1) {
+                        const parts = input.value.split(' ');
+                        parts[parts.length - 1] = matches[0];
+                        input.value = parts.join(' ');
+                    }
+                }
+            } else if (e.ctrlKey && e.key === 'l') {
+                e.preventDefault();
+                commands.clear();
+            } else if (e.ctrlKey && e.key === 'c') {
+                e.preventDefault();
+                println('^C');
+                input.value = '';
+            }
+        });
+
+        terminal.addEventListener('click', () => {
+            input.focus();
+        });
+
+        // Инициализация
+        output.innerHTML = banner;
+        setInterval(updateStats, 1000);
+        updateStats();
+    </script>
+</body>
+</html>

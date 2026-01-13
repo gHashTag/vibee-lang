@@ -1,0 +1,380 @@
+name: vibee_os_mcp_integration
+version: "0.1.0"
+language: zig
+module: kernel/agent/mcp
+description: MCP (Model Context Protocol) Integration - standardized tool extensibility (Anthropic protocol)
+
+behaviors:
+  - name: connect_mcp_server
+    given: An MCP server is available
+    when: mcp_connect is called with server configuration
+    then: Connection is established and tools are discovered
+    test_cases:
+      - name: connect_github_server
+        input: {server: "github", endpoint: "mcp://github.local:8080"}
+        expected: {connected: true, tools_discovered: 5}
+      - name: connect_filesystem_server
+        input: {server: "filesystem", endpoint: "mcp://fs.local:8081"}
+        expected: {connected: true, tools_discovered: 10}
+      - name: connect_failed
+        input: {server: "invalid", endpoint: "mcp://invalid:9999"}
+        expected: {connected: false, error: "connection_refused"}
+
+  - name: discover_tools
+    given: MCP server is connected
+    when: mcp_list_tools is called
+    then: All available tools are returned with schemas
+    test_cases:
+      - name: list_github_tools
+        input: {server: "github"}
+        expected: {tools: ["create_issue", "list_prs", "merge_pr", "create_branch", "get_file"]}
+
+  - name: execute_mcp_tool
+    given: Tool is available on connected server
+    when: mcp_call is called with tool name and parameters
+    then: Tool is executed and result returned
+    test_cases:
+      - name: create_github_issue
+        input: {server: "github", tool: "create_issue", params: {title: "Bug", body: "Description"}}
+        expected: {success: true, result: {issue_number: 123}}
+      - name: tool_not_found
+        input: {server: "github", tool: "invalid_tool", params: {}}
+        expected: {success: false, error: "tool_not_found"}
+
+  - name: handle_mcp_resources
+    given: MCP server provides resources
+    when: mcp_read_resource is called
+    then: Resource content is returned
+    test_cases:
+      - name: read_github_repo
+        input: {server: "github", resource: "repo://owner/repo"}
+        expected: {success: true, content_type: "repository"}
+
+  - name: subscribe_to_updates
+    given: MCP server supports subscriptions
+    when: mcp_subscribe is called
+    then: Updates are received when resource changes
+    test_cases:
+      - name: subscribe_to_file
+        input: {server: "filesystem", resource: "file:///config.yaml"}
+        expected: {subscribed: true, subscription_id: "sub_123"}
+
+types:
+  MCPServer:
+    id: str
+    name: str
+    endpoint: str
+    protocol_version: str
+    status: ServerStatus
+    capabilities: ServerCapabilities
+    tools: [MCPTool]
+    resources: [MCPResource]
+    connected_at: int?
+
+  ServerStatus:
+    variants:
+      - Disconnected
+      - Connecting
+      - Connected
+      - Error
+      - Reconnecting
+
+  ServerCapabilities:
+    tools: bool
+    resources: bool
+    prompts: bool
+    subscriptions: bool
+    logging: bool
+
+  MCPTool:
+    name: str
+    description: str
+    input_schema: JSONSchema
+    server_id: str
+
+  JSONSchema:
+    type: str
+    properties: {str: SchemaProperty}
+    required: [str]
+
+  SchemaProperty:
+    type: str
+    description: str
+    enum_values: [str]?
+    default: str?
+
+  MCPResource:
+    uri: str
+    name: str
+    description: str?
+    mime_type: str?
+    server_id: str
+
+  MCPRequest:
+    id: str
+    method: str
+    params: {str: str}
+
+  MCPResponse:
+    id: str
+    result: str?
+    error: MCPError?
+
+  MCPError:
+    code: int
+    message: str
+    data: str?
+
+  ToolCall:
+    server_id: str
+    tool_name: str
+    arguments: {str: str}
+    timeout_ms: int
+
+  ToolResult:
+    success: bool
+    content: [ContentBlock]
+    error: str?
+    duration_ms: int
+
+  ContentBlock:
+    type: ContentType
+    text: str?
+    data: str?
+    mime_type: str?
+
+  ContentType:
+    variants:
+      - Text
+      - Image
+      - Resource
+
+  ResourceRead:
+    uri: str
+    content: str
+    mime_type: str
+
+  Subscription:
+    id: str
+    server_id: str
+    resource_uri: str
+    callback: str
+    created_at: int
+
+  MCPConfig:
+    servers: [ServerConfig]
+    auto_reconnect: bool
+    reconnect_interval_ms: int
+    default_timeout_ms: int
+
+  ServerConfig:
+    name: str
+    endpoint: str
+    auth: AuthConfig?
+    auto_connect: bool
+
+  AuthConfig:
+    type: AuthType
+    credentials: {str: str}
+
+  AuthType:
+    variants:
+      - None
+      - ApiKey
+      - OAuth
+      - Certificate
+
+functions:
+  # Connection management
+  - name: mcp_connect
+    params: {config: ServerConfig}
+    returns: MCPServer
+    description: Connect to MCP server
+
+  - name: mcp_disconnect
+    params: {server_id: str}
+    returns: bool
+    description: Disconnect from MCP server
+
+  - name: mcp_reconnect
+    params: {server_id: str}
+    returns: bool
+    description: Reconnect to MCP server
+
+  - name: mcp_status
+    params: {server_id: str}
+    returns: ServerStatus
+    description: Get server connection status
+
+  - name: mcp_list_servers
+    params: {}
+    returns: [MCPServer]
+    description: List all configured servers
+
+  # Tool operations
+  - name: mcp_list_tools
+    params: {server_id: str?}
+    returns: [MCPTool]
+    description: List available tools (all servers if no ID)
+
+  - name: mcp_get_tool
+    params: {server_id: str, tool_name: str}
+    returns: MCPTool?
+    description: Get tool definition
+
+  - name: mcp_call
+    params: {call: ToolCall}
+    returns: ToolResult
+    description: Execute tool on MCP server
+
+  - name: mcp_call_async
+    params: {call: ToolCall}
+    returns: str
+    description: Execute tool asynchronously, returns request ID
+
+  - name: mcp_get_result
+    params: {request_id: str}
+    returns: ToolResult?
+    description: Get result of async tool call
+
+  # Resource operations
+  - name: mcp_list_resources
+    params: {server_id: str}
+    returns: [MCPResource]
+    description: List available resources
+
+  - name: mcp_read_resource
+    params: {server_id: str, uri: str}
+    returns: ResourceRead
+    description: Read resource content
+
+  # Subscriptions
+  - name: mcp_subscribe
+    params: {server_id: str, uri: str, callback: str}
+    returns: Subscription
+    description: Subscribe to resource updates
+
+  - name: mcp_unsubscribe
+    params: {subscription_id: str}
+    returns: bool
+    description: Unsubscribe from updates
+
+  # Configuration
+  - name: mcp_configure
+    params: {config: MCPConfig}
+    returns: bool
+    description: Configure MCP integration
+
+  - name: mcp_add_server
+    params: {config: ServerConfig}
+    returns: bool
+    description: Add new server configuration
+
+  - name: mcp_remove_server
+    params: {server_id: str}
+    returns: bool
+    description: Remove server configuration
+
+imports:
+  - kernel.agent.tool_manager
+
+mcp_architecture: |
+  MCP Integration Architecture:
+  
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                      VIBEE OS                                   │
+  │                                                                 │
+  │  ┌───────────────────────────────────────────────────────────┐ │
+  │  │                    Agent Core                              │ │
+  │  │                                                            │ │
+  │  │  "Use GitHub to create an issue"                          │ │
+  │  │           │                                                │ │
+  │  │           ▼                                                │ │
+  │  │  ┌─────────────────┐                                      │ │
+  │  │  │  Tool Manager   │                                      │ │
+  │  │  └────────┬────────┘                                      │ │
+  │  │           │                                                │ │
+  │  │           ▼                                                │ │
+  │  │  ┌─────────────────┐                                      │ │
+  │  │  │ MCP Integration │                                      │ │
+  │  │  └────────┬────────┘                                      │ │
+  │  └───────────┼────────────────────────────────────────────────┘ │
+  │              │                                                  │
+  │              │ MCP Protocol (JSON-RPC)                         │
+  │              │                                                  │
+  │  ┌───────────┼────────────────────────────────────────────────┐ │
+  │  │           ▼                                                │ │
+  │  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │ │
+  │  │  │   GitHub    │  │ Filesystem  │  │  Database   │        │ │
+  │  │  │   Server    │  │   Server    │  │   Server    │        │ │
+  │  │  └─────────────┘  └─────────────┘  └─────────────┘        │ │
+  │  │                                                            │ │
+  │  │                    MCP Servers                             │ │
+  │  └────────────────────────────────────────────────────────────┘ │
+  │                                                                 │
+  └─────────────────────────────────────────────────────────────────┘
+  
+  Benefits:
+  
+  1. STANDARDIZED PROTOCOL
+     - Any MCP-compatible server works
+     - No custom integration needed
+     - Community ecosystem
+  
+  2. TOOL DISCOVERY
+     - Automatic tool discovery
+     - Schema-based validation
+     - Self-documenting
+  
+  3. RESOURCE ACCESS
+     - Unified resource model
+     - Subscriptions for updates
+     - Caching support
+  
+  4. EXTENSIBILITY
+     - Add new servers easily
+     - No code changes needed
+     - Hot-pluggable
+
+builtin_servers: |
+  Built-in MCP Servers:
+  
+  1. FILESYSTEM SERVER
+     Tools:
+     - read_file(path) -> content
+     - write_file(path, content) -> success
+     - list_directory(path) -> files
+     - search_files(query) -> matches
+     
+     Resources:
+     - file:///path/to/file
+     - directory:///path/to/dir
+  
+  2. PROCESS SERVER
+     Tools:
+     - exec(command, args) -> output
+     - spawn(command, args) -> pid
+     - kill(pid) -> success
+     - list_processes() -> processes
+  
+  3. VIBEE SERVER
+     Tools:
+     - parse_spec(content) -> ast
+     - validate_spec(ast) -> result
+     - generate_code(ast, target) -> code
+     - run_tests(spec) -> results
+  
+  4. GIT SERVER
+     Tools:
+     - status() -> changes
+     - commit(message) -> hash
+     - push() -> success
+     - pull() -> success
+     - diff(ref) -> changes
+  
+  External Servers (examples):
+  - GitHub: Issues, PRs, Actions
+  - Slack: Messages, Channels
+  - Jira: Tickets, Sprints
+  - AWS: S3, Lambda, EC2
+  - Database: SQL queries

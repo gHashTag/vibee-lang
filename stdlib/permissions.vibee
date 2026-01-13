@@ -1,0 +1,738 @@
+// =============================================================================
+// Vibee OS — Permissions Module
+// Access control, capabilities, and security permissions
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Permission Types
+// -----------------------------------------------------------------------------
+
+/// System permission
+enum Permission {
+    // File system
+    FileRead(String)      // Read file/directory
+    FileWrite(String)     // Write file/directory
+    FileExecute(String)   // Execute file
+    FileDelete(String)    // Delete file/directory
+    
+    // Network
+    NetConnect(String, Int)  // Connect to host:port
+    NetListen(Int)           // Listen on port
+    NetAll                   // All network access
+    
+    // Process
+    ProcessSpawn            // Spawn child processes
+    ProcessSignal           // Send signals to processes
+    ProcessInfo             // Read process information
+    
+    // Environment
+    EnvRead(String)         // Read env variable
+    EnvWrite(String)        // Write env variable
+    EnvAll                  // All env access
+    
+    // System
+    SystemTime              // Access system time
+    SystemInfo              // Read system information
+    HighResolutionTime      // High-resolution timers
+    
+    // FFI
+    FFI                     // Foreign function interface
+    DynamicLibrary(String)  // Load dynamic library
+    
+    // Special
+    All                     // All permissions (dangerous)
+    
+    /// Check if permission matches request
+    fn matches(request: Permission) -> Bool {
+        match (self, request) {
+            (.All, _) => true
+            (.NetAll, .NetConnect(_, _)) => true
+            (.NetAll, .NetListen(_)) => true
+            (.EnvAll, .EnvRead(_)) => true
+            (.EnvAll, .EnvWrite(_)) => true
+            (.FileRead(pattern), .FileRead(path)) => glob_match(pattern, path)
+            (.FileWrite(pattern), .FileWrite(path)) => glob_match(pattern, path)
+            (.FileExecute(pattern), .FileExecute(path)) => glob_match(pattern, path)
+            (.FileDelete(pattern), .FileDelete(path)) => glob_match(pattern, path)
+            (.NetConnect(host, port), .NetConnect(h, p)) => {
+                (host == "*" || host == h) && (port == 0 || port == p)
+            }
+            (.NetListen(port), .NetListen(p)) => port == 0 || port == p
+            (.EnvRead(name), .EnvRead(n)) => name == "*" || name == n
+            (.EnvWrite(name), .EnvWrite(n)) => name == "*" || name == n
+            (.DynamicLibrary(pattern), .DynamicLibrary(lib)) => glob_match(pattern, lib)
+            (a, b) => a == b
+        }
+    }
+    
+    /// Convert to string representation
+    fn to_string() -> String {
+        match self {
+            .FileRead(p) => "file:read:\(p)"
+            .FileWrite(p) => "file:write:\(p)"
+            .FileExecute(p) => "file:execute:\(p)"
+            .FileDelete(p) => "file:delete:\(p)"
+            .NetConnect(h, p) => "net:connect:\(h):\(p)"
+            .NetListen(p) => "net:listen:\(p)"
+            .NetAll => "net:all"
+            .ProcessSpawn => "process:spawn"
+            .ProcessSignal => "process:signal"
+            .ProcessInfo => "process:info"
+            .EnvRead(n) => "env:read:\(n)"
+            .EnvWrite(n) => "env:write:\(n)"
+            .EnvAll => "env:all"
+            .SystemTime => "system:time"
+            .SystemInfo => "system:info"
+            .HighResolutionTime => "system:hrtime"
+            .FFI => "ffi"
+            .DynamicLibrary(l) => "ffi:dylib:\(l)"
+            .All => "all"
+        }
+    }
+    
+    /// Parse from string
+    fn parse(s: String) -> Result<Permission, ParseError> {
+        let parts = s.split(":")
+        match parts.as_slice() {
+            ["all"] => Ok(.All)
+            ["file", "read", path] => Ok(.FileRead(path))
+            ["file", "write", path] => Ok(.FileWrite(path))
+            ["file", "execute", path] => Ok(.FileExecute(path))
+            ["file", "delete", path] => Ok(.FileDelete(path))
+            ["net", "all"] => Ok(.NetAll)
+            ["net", "connect", host, port] => {
+                let p = Int.parse(port)?
+                Ok(.NetConnect(host, p))
+            }
+            ["net", "listen", port] => {
+                let p = Int.parse(port)?
+                Ok(.NetListen(p))
+            }
+            ["process", "spawn"] => Ok(.ProcessSpawn)
+            ["process", "signal"] => Ok(.ProcessSignal)
+            ["process", "info"] => Ok(.ProcessInfo)
+            ["env", "all"] => Ok(.EnvAll)
+            ["env", "read", name] => Ok(.EnvRead(name))
+            ["env", "write", name] => Ok(.EnvWrite(name))
+            ["system", "time"] => Ok(.SystemTime)
+            ["system", "info"] => Ok(.SystemInfo)
+            ["system", "hrtime"] => Ok(.HighResolutionTime)
+            ["ffi"] => Ok(.FFI)
+            ["ffi", "dylib", lib] => Ok(.DynamicLibrary(lib))
+            _ => Err(ParseError.InvalidPermission(s))
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Permission Set
+// -----------------------------------------------------------------------------
+
+/// Set of permissions
+actor PermissionSet {
+    state permissions: [Permission]
+    state denied: [Permission]
+    
+    /// Create empty permission set
+    fn new() -> Self {
+        PermissionSet {
+            permissions: [],
+            denied: []
+        }
+    }
+    
+    /// Create with all permissions
+    fn all() -> Self {
+        PermissionSet {
+            permissions: [Permission.All],
+            denied: []
+        }
+    }
+    
+    /// Create from list
+    fn from(perms: [Permission]) -> Self {
+        PermissionSet {
+            permissions: perms,
+            denied: []
+        }
+    }
+    
+    /// Grant permission
+    on grant(perm: Permission) -> Self {
+        self.permissions.append(perm)
+        self
+    }
+    
+    /// Deny permission (overrides grants)
+    on deny(perm: Permission) -> Self {
+        self.denied.append(perm)
+        self
+    }
+    
+    /// Check if permission is allowed
+    fn check(request: Permission) -> Bool {
+        // Check denials first
+        for denied in self.denied {
+            if denied.matches(request) {
+                return false
+            }
+        }
+        
+        // Check grants
+        for granted in self.permissions {
+            if granted.matches(request) {
+                return true
+            }
+        }
+        
+        false
+    }
+    
+    /// Request permission (may prompt user)
+    fn request(perm: Permission) -> Result<(), PermissionError> {
+        if self.check(perm) {
+            return Ok(())
+        }
+        
+        // Could prompt user here
+        Err(PermissionError.Denied(perm))
+    }
+    
+    /// Merge with another set
+    fn merge(other: PermissionSet) -> PermissionSet {
+        PermissionSet {
+            permissions: self.permissions + other.permissions,
+            denied: self.denied + other.denied
+        }
+    }
+    
+    /// Intersect with another set (only common permissions)
+    fn intersect(other: PermissionSet) -> PermissionSet {
+        let common = self.permissions.filter(|p| {
+            other.permissions.any(|o| o.matches(p))
+        })
+        PermissionSet.from(common)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Permission Guard
+// -----------------------------------------------------------------------------
+
+/// Permission guard for scoped access
+actor PermissionGuard {
+    state original: PermissionSet
+    state current: PermissionSet
+    
+    /// Create guard with restricted permissions
+    fn restrict(perms: PermissionSet) -> Self {
+        let original = Permissions.current()
+        Permissions.set(perms)
+        PermissionGuard {
+            original: original,
+            current: perms
+        }
+    }
+    
+    /// Restore original permissions
+    on drop() {
+        Permissions.set(self.original)
+    }
+}
+
+/// Run code with restricted permissions
+fn with_permissions<T>(perms: PermissionSet, f: () -> T) -> T {
+    let guard = PermissionGuard.restrict(perms)
+    let result = f()
+    drop(guard)
+    result
+}
+
+/// Run code with no permissions (sandbox)
+fn sandboxed<T>(f: () -> T) -> T {
+    with_permissions(PermissionSet.new(), f)
+}
+
+// -----------------------------------------------------------------------------
+// Global Permission Manager
+// -----------------------------------------------------------------------------
+
+/// Global permission manager
+module Permissions {
+    state current_set: PermissionSet = PermissionSet.all()
+    state prompt_handler: Option<(Permission) -> Bool>
+    
+    /// Get current permission set
+    fn current() -> PermissionSet {
+        self.current_set
+    }
+    
+    /// Set current permissions
+    fn set(perms: PermissionSet) {
+        self.current_set = perms
+    }
+    
+    /// Check permission
+    fn check(perm: Permission) -> Bool {
+        self.current_set.check(perm)
+    }
+    
+    /// Require permission (throws if denied)
+    fn require(perm: Permission) -> Result<(), PermissionError> {
+        if self.check(perm) {
+            Ok(())
+        } else {
+            // Try prompting
+            if let handler = self.prompt_handler {
+                if handler(perm) {
+                    self.current_set.grant(perm)
+                    return Ok(())
+                }
+            }
+            Err(PermissionError.Denied(perm))
+        }
+    }
+    
+    /// Set prompt handler for permission requests
+    fn set_prompt_handler(handler: (Permission) -> Bool) {
+        self.prompt_handler = Some(handler)
+    }
+    
+    /// Grant permission
+    fn grant(perm: Permission) {
+        self.current_set.grant(perm)
+    }
+    
+    /// Revoke permission
+    fn revoke(perm: Permission) {
+        self.current_set.deny(perm)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// File Permissions (Unix-style)
+// -----------------------------------------------------------------------------
+
+/// Unix file permission mode
+struct FileMode {
+    value: Int
+    
+    // Permission bits
+    const OWNER_READ = 0o400
+    const OWNER_WRITE = 0o200
+    const OWNER_EXEC = 0o100
+    const GROUP_READ = 0o040
+    const GROUP_WRITE = 0o020
+    const GROUP_EXEC = 0o010
+    const OTHER_READ = 0o004
+    const OTHER_WRITE = 0o002
+    const OTHER_EXEC = 0o001
+    
+    // Special bits
+    const SETUID = 0o4000
+    const SETGID = 0o2000
+    const STICKY = 0o1000
+    
+    // Common modes
+    fn readable() -> Self { FileMode { value: 0o644 } }
+    fn writable() -> Self { FileMode { value: 0o666 } }
+    fn executable() -> Self { FileMode { value: 0o755 } }
+    fn private() -> Self { FileMode { value: 0o600 } }
+    fn directory() -> Self { FileMode { value: 0o755 } }
+    
+    /// Create from octal value
+    fn from_octal(value: Int) -> Self {
+        FileMode { value: value }
+    }
+    
+    /// Parse from string (e.g., "rwxr-xr-x")
+    fn parse(s: String) -> Result<Self, ParseError> {
+        if s.len() != 9 {
+            return Err(ParseError.InvalidMode(s))
+        }
+        
+        var mode = 0
+        
+        // Owner
+        if s[0] == 'r' { mode |= OWNER_READ }
+        if s[1] == 'w' { mode |= OWNER_WRITE }
+        if s[2] == 'x' { mode |= OWNER_EXEC }
+        else if s[2] == 's' { mode |= OWNER_EXEC | SETUID }
+        else if s[2] == 'S' { mode |= SETUID }
+        
+        // Group
+        if s[3] == 'r' { mode |= GROUP_READ }
+        if s[4] == 'w' { mode |= GROUP_WRITE }
+        if s[5] == 'x' { mode |= GROUP_EXEC }
+        else if s[5] == 's' { mode |= GROUP_EXEC | SETGID }
+        else if s[5] == 'S' { mode |= SETGID }
+        
+        // Other
+        if s[6] == 'r' { mode |= OTHER_READ }
+        if s[7] == 'w' { mode |= OTHER_WRITE }
+        if s[8] == 'x' { mode |= OTHER_EXEC }
+        else if s[8] == 't' { mode |= OTHER_EXEC | STICKY }
+        else if s[8] == 'T' { mode |= STICKY }
+        
+        Ok(FileMode { value: mode })
+    }
+    
+    /// Convert to string representation
+    fn to_string() -> String {
+        var s = ""
+        
+        // Owner
+        s += if self.value & OWNER_READ != 0 { "r" } else { "-" }
+        s += if self.value & OWNER_WRITE != 0 { "w" } else { "-" }
+        s += if self.value & SETUID != 0 {
+            if self.value & OWNER_EXEC != 0 { "s" } else { "S" }
+        } else {
+            if self.value & OWNER_EXEC != 0 { "x" } else { "-" }
+        }
+        
+        // Group
+        s += if self.value & GROUP_READ != 0 { "r" } else { "-" }
+        s += if self.value & GROUP_WRITE != 0 { "w" } else { "-" }
+        s += if self.value & SETGID != 0 {
+            if self.value & GROUP_EXEC != 0 { "s" } else { "S" }
+        } else {
+            if self.value & GROUP_EXEC != 0 { "x" } else { "-" }
+        }
+        
+        // Other
+        s += if self.value & OTHER_READ != 0 { "r" } else { "-" }
+        s += if self.value & OTHER_WRITE != 0 { "w" } else { "-" }
+        s += if self.value & STICKY != 0 {
+            if self.value & OTHER_EXEC != 0 { "t" } else { "T" }
+        } else {
+            if self.value & OTHER_EXEC != 0 { "x" } else { "-" }
+        }
+        
+        s
+    }
+    
+    /// Check if owner can read
+    fn owner_can_read() -> Bool { self.value & OWNER_READ != 0 }
+    fn owner_can_write() -> Bool { self.value & OWNER_WRITE != 0 }
+    fn owner_can_execute() -> Bool { self.value & OWNER_EXEC != 0 }
+    
+    fn group_can_read() -> Bool { self.value & GROUP_READ != 0 }
+    fn group_can_write() -> Bool { self.value & GROUP_WRITE != 0 }
+    fn group_can_execute() -> Bool { self.value & GROUP_EXEC != 0 }
+    
+    fn other_can_read() -> Bool { self.value & OTHER_READ != 0 }
+    fn other_can_write() -> Bool { self.value & OTHER_WRITE != 0 }
+    fn other_can_execute() -> Bool { self.value & OTHER_EXEC != 0 }
+    
+    fn is_setuid() -> Bool { self.value & SETUID != 0 }
+    fn is_setgid() -> Bool { self.value & SETGID != 0 }
+    fn is_sticky() -> Bool { self.value & STICKY != 0 }
+}
+
+// -----------------------------------------------------------------------------
+// Access Control List (ACL)
+// -----------------------------------------------------------------------------
+
+/// Access control entry
+struct ACLEntry {
+    principal: Principal
+    permissions: [ACLPermission]
+    effect: ACLEffect
+}
+
+/// Principal (who the rule applies to)
+enum Principal {
+    User(String)
+    Group(String)
+    Role(String)
+    Everyone
+    
+    fn matches(user: User) -> Bool {
+        match self {
+            .User(name) => user.name == name
+            .Group(name) => user.groups.contains(name)
+            .Role(name) => user.roles.contains(name)
+            .Everyone => true
+        }
+    }
+}
+
+/// ACL permission
+enum ACLPermission {
+    Read
+    Write
+    Execute
+    Delete
+    Admin
+    Custom(String)
+}
+
+/// ACL effect
+enum ACLEffect {
+    Allow
+    Deny
+}
+
+/// Access Control List
+actor ACL {
+    state entries: [ACLEntry]
+    state default_effect: ACLEffect
+    
+    fn new() -> Self {
+        ACL {
+            entries: [],
+            default_effect: .Deny
+        }
+    }
+    
+    /// Add allow rule
+    on allow(principal: Principal, perms: [ACLPermission]) -> Self {
+        self.entries.append(ACLEntry {
+            principal: principal,
+            permissions: perms,
+            effect: .Allow
+        })
+        self
+    }
+    
+    /// Add deny rule
+    on deny(principal: Principal, perms: [ACLPermission]) -> Self {
+        self.entries.append(ACLEntry {
+            principal: principal,
+            permissions: perms,
+            effect: .Deny
+        })
+        self
+    }
+    
+    /// Check if user has permission
+    fn check(user: User, perm: ACLPermission) -> Bool {
+        // Explicit denies take precedence
+        for entry in self.entries {
+            if entry.effect == .Deny && 
+               entry.principal.matches(user) &&
+               entry.permissions.contains(perm) {
+                return false
+            }
+        }
+        
+        // Check allows
+        for entry in self.entries {
+            if entry.effect == .Allow &&
+               entry.principal.matches(user) &&
+               entry.permissions.contains(perm) {
+                return true
+            }
+        }
+        
+        // Default
+        self.default_effect == .Allow
+    }
+    
+    /// Set default effect
+    on default(effect: ACLEffect) -> Self {
+        self.default_effect = effect
+        self
+    }
+}
+
+/// User context
+struct User {
+    name: String
+    groups: [String]
+    roles: [String]
+}
+
+// -----------------------------------------------------------------------------
+// Capability-based Security
+// -----------------------------------------------------------------------------
+
+/// Capability token
+struct Capability<T> {
+    resource: T
+    permissions: Set<String>
+    expiry: Option<Instant>
+    revoked: Bool
+    
+    /// Create capability
+    fn new(resource: T, permissions: [String]) -> Self {
+        Capability {
+            resource: resource,
+            permissions: Set.from(permissions),
+            expiry: None,
+            revoked: false
+        }
+    }
+    
+    /// Set expiry
+    fn expires_at(time: Instant) -> Self {
+        self.expiry = Some(time)
+        self
+    }
+    
+    /// Set TTL
+    fn expires_in(duration: Duration) -> Self {
+        self.expiry = Some(Instant.now() + duration)
+        self
+    }
+    
+    /// Check if capability is valid
+    fn is_valid() -> Bool {
+        if self.revoked {
+            return false
+        }
+        if let exp = self.expiry {
+            if Instant.now() > exp {
+                return false
+            }
+        }
+        true
+    }
+    
+    /// Check if has permission
+    fn has(permission: String) -> Bool {
+        self.is_valid() && self.permissions.contains(permission)
+    }
+    
+    /// Use capability to access resource
+    fn use<R>(permission: String, f: (T) -> R) -> Result<R, CapabilityError> {
+        if !self.is_valid() {
+            return Err(CapabilityError.Invalid)
+        }
+        if !self.permissions.contains(permission) {
+            return Err(CapabilityError.PermissionDenied(permission))
+        }
+        Ok(f(self.resource))
+    }
+    
+    /// Revoke capability
+    on revoke() {
+        self.revoked = true
+    }
+    
+    /// Attenuate (create restricted copy)
+    fn attenuate(permissions: [String]) -> Capability<T> {
+        let restricted = self.permissions.intersection(Set.from(permissions))
+        Capability {
+            resource: self.resource,
+            permissions: restricted,
+            expiry: self.expiry,
+            revoked: self.revoked
+        }
+    }
+}
+
+enum CapabilityError {
+    Invalid
+    Expired
+    Revoked
+    PermissionDenied(String)
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum PermissionError {
+    Denied(Permission)
+    InvalidPermission(String)
+    
+    fn message() -> String {
+        match self {
+            .Denied(perm) => "Permission denied: \(perm.to_string())"
+            .InvalidPermission(s) => "Invalid permission: \(s)"
+        }
+    }
+}
+
+enum ParseError {
+    InvalidPermission(String)
+    InvalidMode(String)
+}
+
+// -----------------------------------------------------------------------------
+// Helper Functions
+// -----------------------------------------------------------------------------
+
+/// Glob pattern matching
+fn glob_match(pattern: String, path: String) -> Bool {
+    if pattern == "*" {
+        return true
+    }
+    
+    if pattern.ends_with("/*") {
+        let prefix = pattern[..(pattern.len() - 2)]
+        return path.starts_with(prefix)
+    }
+    
+    if pattern.ends_with("/**") {
+        let prefix = pattern[..(pattern.len() - 3)]
+        return path.starts_with(prefix)
+    }
+    
+    pattern == path
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "permission matching" {
+    let perm = Permission.FileRead("/home/*")
+    assert(perm.matches(Permission.FileRead("/home/user")))
+    assert(!perm.matches(Permission.FileRead("/etc/passwd")))
+}
+
+test "permission set" {
+    let perms = PermissionSet.new()
+        .grant(Permission.FileRead("/tmp/*"))
+        .grant(Permission.NetConnect("*", 443))
+        .deny(Permission.FileRead("/tmp/secret"))
+    
+    assert(perms.check(Permission.FileRead("/tmp/file.txt")))
+    assert(!perms.check(Permission.FileRead("/tmp/secret")))
+    assert(perms.check(Permission.NetConnect("example.com", 443)))
+}
+
+test "file mode parsing" {
+    let mode = FileMode.parse("rwxr-xr-x")?
+    assert(mode.value == 0o755)
+    assert(mode.owner_can_read())
+    assert(mode.owner_can_write())
+    assert(mode.owner_can_execute())
+    assert(mode.group_can_read())
+    assert(!mode.group_can_write())
+}
+
+test "file mode to string" {
+    let mode = FileMode.from_octal(0o644)
+    assert(mode.to_string() == "rw-r--r--")
+}
+
+test "acl" {
+    let acl = ACL.new()
+        .allow(Principal.User("admin"), [.Read, .Write, .Admin])
+        .allow(Principal.Group("users"), [.Read])
+        .deny(Principal.User("banned"), [.Read, .Write])
+    
+    let admin = User { name: "admin", groups: [], roles: [] }
+    let user = User { name: "bob", groups: ["users"], roles: [] }
+    let banned = User { name: "banned", groups: ["users"], roles: [] }
+    
+    assert(acl.check(admin, .Write))
+    assert(acl.check(user, .Read))
+    assert(!acl.check(user, .Write))
+    assert(!acl.check(banned, .Read))
+}
+
+test "capability" {
+    let cap = Capability.new("resource", ["read", "write"])
+    
+    assert(cap.has("read"))
+    assert(cap.has("write"))
+    assert(!cap.has("delete"))
+    
+    let restricted = cap.attenuate(["read"])
+    assert(restricted.has("read"))
+    assert(!restricted.has("write"))
+}

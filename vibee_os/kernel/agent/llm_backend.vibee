@@ -1,0 +1,369 @@
+name: vibee_os_llm_backend
+version: "0.1.0"
+language: zig
+module: kernel/agent/llm
+description: LLM Backend - real integration with Claude, GPT, and local models
+
+behaviors:
+  - name: send_completion_request
+    given: Agent needs LLM response
+    when: llm_complete is called with messages
+    then: LLM generates completion and returns response
+    test_cases:
+      - name: simple_completion
+        input: {messages: [{role: "user", content: "Hello"}], model: "claude-3-sonnet"}
+        expected: {success: true, has_content: true, tokens_used: 50}
+      - name: with_tools
+        input: {messages: [{role: "user", content: "Read file.txt"}], tools: ["file_read"]}
+        expected: {success: true, has_tool_call: true}
+      - name: rate_limited
+        input: {messages: [...], rate_limit_exceeded: true}
+        expected: {success: false, error: "rate_limited", retry_after_ms: 60000}
+
+  - name: stream_completion
+    given: Agent needs streaming response
+    when: llm_stream is called
+    then: Response is streamed token by token
+    test_cases:
+      - name: stream_response
+        input: {messages: [{role: "user", content: "Write a poem"}]}
+        expected: {streaming: true, chunks_received: true}
+
+  - name: handle_tool_calls
+    given: LLM requests tool execution
+    when: Response contains tool_calls
+    then: Tools are executed and results sent back
+    test_cases:
+      - name: execute_file_read
+        input: {tool_call: {name: "file_read", args: {path: "/test.txt"}}}
+        expected: {executed: true, result_sent: true}
+
+  - name: fallback_to_local
+    given: Remote API is unavailable
+    when: Connection fails
+    then: System falls back to local model
+    test_cases:
+      - name: fallback_on_error
+        input: {primary: "claude", primary_error: "connection_refused"}
+        expected: {fallback_used: true, fallback_model: "llama3"}
+
+types:
+  LLMConfig:
+    provider: Provider
+    model: str
+    api_key: str?
+    api_endpoint: str?
+    max_tokens: int
+    temperature: float
+    timeout_ms: int
+    retry_count: int
+    fallback: LLMConfig?
+
+  Provider:
+    variants:
+      - DeepSeek    # DeepSeek (DEFAULT - cheapest, fast, good quality)
+      - Anthropic   # Claude
+      - OpenAI      # GPT
+      - Google      # Gemini
+      - Local       # Ollama, llama.cpp
+      - Azure       # Azure OpenAI
+      - Custom      # Custom endpoint
+
+  Message:
+    role: Role
+    content: str
+    name: str?
+    tool_calls: [ToolCall]?
+    tool_call_id: str?
+
+  Role:
+    variants:
+      - System
+      - User
+      - Assistant
+      - Tool
+
+  ToolCall:
+    id: str
+    type: str  # "function"
+    function: FunctionCall
+
+  FunctionCall:
+    name: str
+    arguments: str  # JSON string
+
+  ToolDefinition:
+    type: str  # "function"
+    function: FunctionDef
+
+  FunctionDef:
+    name: str
+    description: str
+    parameters: JSONSchema
+
+  JSONSchema:
+    type: str
+    properties: {str: PropertyDef}
+    required: [str]
+
+  PropertyDef:
+    type: str
+    description: str
+    enum: [str]?
+
+  CompletionRequest:
+    model: str
+    messages: [Message]
+    tools: [ToolDefinition]?
+    tool_choice: ToolChoice?
+    max_tokens: int
+    temperature: float
+    stream: bool
+
+  ToolChoice:
+    variants:
+      - Auto
+      - None
+      - Required
+      - Specific: {name: str}
+
+  CompletionResponse:
+    id: str
+    model: str
+    choices: [Choice]
+    usage: Usage
+    created: int
+
+  Choice:
+    index: int
+    message: Message
+    finish_reason: FinishReason
+
+  FinishReason:
+    variants:
+      - Stop
+      - Length
+      - ToolCalls
+      - ContentFilter
+
+  Usage:
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+  StreamChunk:
+    id: str
+    delta: Delta
+    finish_reason: FinishReason?
+
+  Delta:
+    role: Role?
+    content: str?
+    tool_calls: [ToolCallDelta]?
+
+  ToolCallDelta:
+    index: int
+    id: str?
+    function: FunctionDelta?
+
+  FunctionDelta:
+    name: str?
+    arguments: str?
+
+  LLMError:
+    variants:
+      - RateLimited: {retry_after_ms: int}
+      - InvalidRequest: {message: str}
+      - AuthenticationError
+      - ConnectionError
+      - Timeout
+      - ModelNotFound
+      - ContentFiltered
+      - InternalError
+
+  LLMResult:
+    success: bool
+    response: CompletionResponse?
+    error: LLMError?
+
+  LLMStats:
+    total_requests: int
+    total_tokens: int
+    total_cost_usd: float
+    average_latency_ms: int
+    error_rate: float
+
+functions:
+  # Core completion
+  - name: llm_complete
+    params: {request: CompletionRequest}
+    returns: LLMResult
+    description: Send completion request to LLM
+
+  - name: llm_stream
+    params: {request: CompletionRequest, callback: str}
+    returns: bool
+    description: Stream completion response
+
+  - name: llm_complete_with_tools
+    params: {request: CompletionRequest, tool_executor: str}
+    returns: LLMResult
+    description: Complete with automatic tool execution loop
+
+  # Configuration
+  - name: llm_configure
+    params: {config: LLMConfig}
+    returns: bool
+    description: Configure LLM backend
+
+  - name: llm_set_provider
+    params: {provider: Provider, config: LLMConfig}
+    returns: bool
+    description: Set specific provider
+
+  - name: llm_get_config
+    params: {}
+    returns: LLMConfig
+    description: Get current configuration
+
+  # Health and stats
+  - name: llm_health_check
+    params: {}
+    returns: bool
+    description: Check if LLM is available
+
+  - name: llm_stats
+    params: {}
+    returns: LLMStats
+    description: Get usage statistics
+
+  - name: llm_reset_stats
+    params: {}
+    returns: void
+    description: Reset statistics
+
+  # Rate limiting
+  - name: llm_check_rate_limit
+    params: {}
+    returns: {allowed: bool, retry_after_ms: int?}
+    description: Check if request is allowed
+
+  - name: llm_set_rate_limit
+    params: {tokens_per_minute: int, requests_per_minute: int}
+    returns: void
+    description: Set rate limits
+
+  # Cost tracking
+  - name: llm_estimate_cost
+    params: {request: CompletionRequest}
+    returns: float
+    description: Estimate cost in USD
+
+  - name: llm_set_cost_limit
+    params: {daily_limit_usd: float}
+    returns: void
+    description: Set daily cost limit
+
+imports:
+  - kernel.agent.core
+
+provider_configs: |
+  Provider Configurations:
+  
+  DEEPSEEK (DEFAULT - Recommended):
+  ```yaml
+  provider: DeepSeek
+  model: "deepseek-chat"           # or "deepseek-reasoner" for R1
+  api_key: "${DEEPSEEK_API_KEY}"   # From secrets store
+  api_endpoint: "https://api.deepseek.com/v1/chat/completions"
+  max_tokens: 8192
+  temperature: 0.7
+  # Cheapest option: $0.0001/1K input, $0.0002/1K output
+  # Supports: function_calling, streaming, json_mode
+  ```
+  
+  ANTHROPIC (Claude):
+  ```yaml
+  provider: Anthropic
+  model: "claude-3-5-sonnet-20241022"
+  api_endpoint: "https://api.anthropic.com/v1/messages"
+  max_tokens: 8192
+  temperature: 0.7
+  ```
+  
+  OPENAI (GPT):
+  ```yaml
+  provider: OpenAI
+  model: "gpt-4-turbo"
+  api_endpoint: "https://api.openai.com/v1/chat/completions"
+  max_tokens: 4096
+  temperature: 0.7
+  ```
+  
+  LOCAL (Ollama):
+  ```yaml
+  provider: Local
+  model: "llama3:8b"
+  api_endpoint: "http://localhost:11434/api/chat"
+  max_tokens: 4096
+  temperature: 0.7
+  ```
+  
+  HYBRID (Recommended for Production):
+  ```yaml
+  provider: DeepSeek
+  model: "deepseek-chat"
+  api_key: "${DEEPSEEK_API_KEY}"   # From secrets store
+  fallback:
+    provider: Local
+    model: "llama3:8b"
+  ```
+
+deepseek_models: |
+  DeepSeek Models:
+  
+  1. deepseek-chat
+     - General purpose chat model
+     - Fast, cheap, good quality
+     - Best for: code generation, Q&A, general tasks
+  
+  2. deepseek-reasoner (R1)
+     - Advanced reasoning model
+     - Chain-of-thought reasoning
+     - Best for: complex problems, math, logic
+  
+  API Features:
+  - Function calling (tools)
+  - Streaming responses
+  - JSON mode
+  - System prompts
+  - Multi-turn conversations
+
+tool_calling_flow: |
+  Tool Calling Flow:
+  
+  1. User sends message
+  2. LLM decides to call tool
+  3. Response contains tool_calls
+  4. System executes tools
+  5. Tool results sent back as tool messages
+  6. LLM generates final response
+  
+  ┌─────────┐     ┌─────────┐     ┌─────────┐
+  │  User   │────▶│   LLM   │────▶│  Tools  │
+  │ Message │     │         │     │         │
+  └─────────┘     └────┬────┘     └────┬────┘
+                       │               │
+                       │  tool_calls   │
+                       │◀──────────────┤
+                       │               │
+                       │  tool_results │
+                       │──────────────▶│
+                       │               │
+                       │  final_response
+                       │◀──────────────┤
+                       ▼
+                  ┌─────────┐
+                  │  User   │
+                  │Response │
+                  └─────────┘

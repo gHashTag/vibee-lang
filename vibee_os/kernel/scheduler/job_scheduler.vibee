@@ -1,0 +1,680 @@
+# ============================================================================
+# JOB SCHEDULER - Планировщик задач на Vibee
+# ============================================================================
+# Cron jobs, delayed jobs, recurring tasks, workflows
+# ============================================================================
+
+Specification JobScheduler:
+  """Планировщик задач как спецификация выполнения."""
+
+  # ==========================================================================
+  # JOB TYPES
+  # ==========================================================================
+
+  Type Job:
+    id: JobId
+    name: String
+    type: JobType
+    handler: String
+    payload: Any
+    options: JobOptions
+    state: JobState
+    attempts: Int
+    max_attempts: Int
+    created_at: Timestamp
+    scheduled_at: Timestamp?
+    started_at: Timestamp?
+    completed_at: Timestamp?
+    failed_at: Timestamp?
+    error: String?
+    result: Any?
+    progress: Float?
+    metadata: Map<String, Any>
+
+  Type JobId:
+    value: UUID
+
+  Type JobType:
+    variants:
+      - Immediate
+      - Delayed: Duration
+      - Scheduled: Timestamp
+      - Recurring: Schedule
+
+  Type Schedule:
+    variants:
+      - Cron: CronExpression
+      - Interval: Duration
+      - Daily: Time
+      - Weekly: (day: DayOfWeek, time: Time)
+      - Monthly: (day: Int, time: Time)
+
+  Type CronExpression:
+    """Standard cron: minute hour day month weekday"""
+    minute: CronField
+    hour: CronField
+    day_of_month: CronField
+    month: CronField
+    day_of_week: CronField
+
+  Type CronField:
+    variants:
+      - Any                           # *
+      - Value: Int                    # 5
+      - Range: (start: Int, end: Int) # 1-5
+      - Step: (base: CronField, step: Int)  # */5
+      - List: List<CronField>         # 1,3,5
+
+  Type JobOptions:
+    queue: String = "default"
+    priority: Priority = Normal
+    timeout: Duration = 30.minutes
+    retry_delay: Duration = 1.minute
+    retry_backoff: BackoffStrategy = Exponential
+    unique: UniqueConstraint?
+    depends_on: List<JobId>?
+    tags: List<String>?
+
+  Type Priority:
+    variants:
+      - Critical: 0
+      - High: 1
+      - Normal: 2
+      - Low: 3
+
+  Type BackoffStrategy:
+    variants:
+      - Fixed: Duration
+      - Linear: Duration
+      - Exponential: (base: Duration, max: Duration)
+      - Custom: (attempt: Int) -> Duration
+
+  Type UniqueConstraint:
+    key: String
+    period: Duration?
+    on_conflict: OnConflict = Skip
+
+  Type OnConflict:
+    variants: [Skip, Replace, Fail]
+
+  Type JobState:
+    variants:
+      - Pending
+      - Scheduled
+      - Queued
+      - Running
+      - Completed
+      - Failed
+      - Retrying
+      - Cancelled
+      - Paused
+
+  # ==========================================================================
+  # QUEUE TYPES
+  # ==========================================================================
+
+  Type Queue:
+    name: String
+    config: QueueConfig
+    jobs: PriorityQueue<Job>
+    workers: List<Worker>
+    paused: Boolean
+    stats: QueueStats
+
+  Type QueueConfig:
+    concurrency: Int = 1
+    rate_limit: RateLimit?
+    default_priority: Priority = Normal
+    default_timeout: Duration = 30.minutes
+    default_attempts: Int = 3
+    stalled_interval: Duration = 30.seconds
+    lock_duration: Duration = 30.seconds
+
+  Type RateLimit:
+    max: Int
+    duration: Duration
+
+  Type QueueStats:
+    waiting: Int
+    active: Int
+    completed: Int
+    failed: Int
+    delayed: Int
+    paused: Int
+
+  Type Worker:
+    id: WorkerId
+    queue: String
+    state: WorkerState
+    current_job: JobId?
+    processed: Int
+    failed: Int
+    started_at: Timestamp
+
+  Type WorkerId:
+    value: UUID
+
+  Type WorkerState:
+    variants: [Idle, Processing, Paused, Stopped]
+
+  # ==========================================================================
+  # SCHEDULER BEHAVIOR
+  # ==========================================================================
+
+  Behavior Scheduler:
+    State:
+      queues: Map<String, Queue>
+      jobs: Map<JobId, Job>
+      recurring_jobs: Map<String, RecurringJob>
+      handlers: Map<String, JobHandler>
+      middleware: List<JobMiddleware>
+
+    Type RecurringJob:
+      name: String
+      schedule: Schedule
+      handler: String
+      payload: Any
+      options: JobOptions
+      last_run: Timestamp?
+      next_run: Timestamp
+      enabled: Boolean
+
+    Type JobHandler:
+      name: String
+      function: (Job, Context) -> Async<Any>
+
+    Type JobMiddleware:
+      before: (Job) -> Async<Job>?
+      after: (Job, Any) -> Async<Unit>?
+      error: (Job, Error) -> Async<Unit>?
+
+    When scheduler.start():
+      Then:
+        - for queue in queues.values():
+            - start_workers(queue)
+        - start_scheduler_loop()
+        - start_stalled_check_loop()
+        - emit SchedulerStarted()
+
+    When scheduler.stop(graceful):
+      Then:
+        - if graceful:
+            - wait_for_active_jobs(timeout: 30.seconds)
+        - for queue in queues.values():
+            - stop_workers(queue)
+        - emit SchedulerStopped()
+
+    When scheduler.enqueue(name, payload, options):
+      Then:
+        - job = Job(
+            id: generate_id(),
+            name: name,
+            type: Immediate,
+            handler: name,
+            payload: payload,
+            options: options ?? JobOptions(),
+            state: Pending,
+            attempts: 0,
+            max_attempts: options?.max_attempts ?? 3,
+            created_at: now()
+          )
+        
+        - # Check unique constraint
+        - if options?.unique:
+            - existing = find_unique_job(options.unique)
+            - if existing:
+                - match options.unique.on_conflict:
+                    Skip -> return existing.id
+                    Replace -> cancel_job(existing.id)
+                    Fail -> raise DuplicateJobError
+        
+        - # Check dependencies
+        - if options?.depends_on:
+            - job.state = Scheduled
+            - await_dependencies(job, options.depends_on)
+        - else:
+            - add_to_queue(job)
+        
+        - jobs[job.id] = job
+        - emit JobEnqueued(job)
+        - return job.id
+
+    When scheduler.schedule(name, payload, at, options):
+      Then:
+        - job = Job(
+            id: generate_id(),
+            name: name,
+            type: Scheduled(at),
+            handler: name,
+            payload: payload,
+            options: options ?? JobOptions(),
+            state: Scheduled,
+            attempts: 0,
+            max_attempts: options?.max_attempts ?? 3,
+            created_at: now(),
+            scheduled_at: at
+          )
+        - jobs[job.id] = job
+        - emit JobScheduled(job, at)
+        - return job.id
+
+    When scheduler.delay(name, payload, delay, options):
+      Then:
+        - scheduler.schedule(name, payload, now() + delay, options)
+
+    When scheduler.recurring(name, schedule, handler, payload, options):
+      Then:
+        - recurring = RecurringJob(
+            name: name,
+            schedule: schedule,
+            handler: handler,
+            payload: payload,
+            options: options ?? JobOptions(),
+            next_run: calculate_next_run(schedule, now()),
+            enabled: true
+          )
+        - recurring_jobs[name] = recurring
+        - emit RecurringJobCreated(name, schedule)
+
+    When scheduler_loop():
+      Then:
+        - loop every 1.second:
+            - now_ts = now()
+            
+            - # Process scheduled jobs
+            - for job in jobs.values():
+                - if job.state == Scheduled and job.scheduled_at <= now_ts:
+                    - job.state = Pending
+                    - add_to_queue(job)
+            
+            - # Process recurring jobs
+            - for recurring in recurring_jobs.values():
+                - if recurring.enabled and recurring.next_run <= now_ts:
+                    - spawn_recurring_job(recurring)
+                    - recurring.last_run = now_ts
+                    - recurring.next_run = calculate_next_run(recurring.schedule, now_ts)
+
+    When spawn_recurring_job(recurring):
+      Then:
+        - scheduler.enqueue(recurring.handler, recurring.payload, recurring.options)
+
+    When add_to_queue(job):
+      Then:
+        - queue = queues[job.options.queue]
+        - job.state = Queued
+        - queue.jobs.push(job, job.options.priority)
+        - queue.stats.waiting += 1
+
+  # ==========================================================================
+  # WORKER BEHAVIOR
+  # ==========================================================================
+
+  Behavior WorkerBehavior:
+    When start_workers(queue):
+      Then:
+        - for i in 0..queue.config.concurrency:
+            - worker = Worker(
+                id: generate_id(),
+                queue: queue.name,
+                state: Idle,
+                started_at: now()
+              )
+            - queue.workers.push(worker)
+            - spawn worker_loop(worker, queue)
+
+    When worker_loop(worker, queue):
+      Then:
+        - loop while worker.state != Stopped:
+            - if queue.paused or worker.state == Paused:
+                - await sleep(100.ms)
+                - continue
+            
+            - # Check rate limit
+            - if queue.config.rate_limit:
+                - await wait_for_rate_limit(queue)
+            
+            - # Get next job
+            - job = queue.jobs.pop()
+            - if not job:
+                - await sleep(100.ms)
+                - continue
+            
+            - # Process job
+            - worker.state = Processing
+            - worker.current_job = job.id
+            - queue.stats.waiting -= 1
+            - queue.stats.active += 1
+            
+            - await process_job(worker, job)
+            
+            - worker.state = Idle
+            - worker.current_job = null
+            - queue.stats.active -= 1
+
+    When process_job(worker, job):
+      Then:
+        - job.state = Running
+        - job.started_at = now()
+        - job.attempts += 1
+        - emit JobStarted(job)
+        
+        - # Apply middleware (before)
+        - for mw in middleware:
+            - if mw.before:
+                - job = await mw.before(job) ?? job
+        
+        - # Execute handler
+        - handler = handlers[job.handler]
+        - if not handler:
+            - fail_job(job, "Handler not found: ${job.handler}")
+            - return
+        
+        - context = JobContext(job, worker)
+        
+        - try:
+            - result = await with_timeout(
+                handler.function(job, context),
+                job.options.timeout
+              )
+            
+            - # Apply middleware (after)
+            - for mw in middleware:
+                - if mw.after:
+                    - await mw.after(job, result)
+            
+            - complete_job(job, result)
+          
+          catch error:
+            - # Apply middleware (error)
+            - for mw in middleware:
+                - if mw.error:
+                    - await mw.error(job, error)
+            
+            - if job.attempts < job.max_attempts:
+                - retry_job(job, error)
+            - else:
+                - fail_job(job, error.message)
+
+    When complete_job(job, result):
+      Then:
+        - job.state = Completed
+        - job.completed_at = now()
+        - job.result = result
+        - queues[job.options.queue].stats.completed += 1
+        - emit JobCompleted(job, result)
+        - check_dependent_jobs(job.id)
+
+    When fail_job(job, error):
+      Then:
+        - job.state = Failed
+        - job.failed_at = now()
+        - job.error = error
+        - queues[job.options.queue].stats.failed += 1
+        - emit JobFailed(job, error)
+
+    When retry_job(job, error):
+      Then:
+        - job.state = Retrying
+        - job.error = error
+        - delay = calculate_retry_delay(job)
+        - job.scheduled_at = now() + delay
+        - job.state = Scheduled
+        - emit JobRetrying(job, job.attempts, delay)
+
+    When calculate_retry_delay(job):
+      Then:
+        - match job.options.retry_backoff:
+            Fixed(d) -> d
+            Linear(d) -> d * job.attempts
+            Exponential(base, max) -> min(base * (2 ** (job.attempts - 1)), max)
+            Custom(fn) -> fn(job.attempts)
+
+  # ==========================================================================
+  # CRON PARSING
+  # ==========================================================================
+
+  Behavior CronParsing:
+    When parse_cron(expression):
+      """Parse cron expression: "0 0 * * *" """
+      Then:
+        - parts = expression.split(" ")
+        - if parts.size != 5:
+            - raise InvalidCronExpression(expression)
+        
+        - return CronExpression(
+            minute: parse_cron_field(parts[0], 0, 59),
+            hour: parse_cron_field(parts[1], 0, 23),
+            day_of_month: parse_cron_field(parts[2], 1, 31),
+            month: parse_cron_field(parts[3], 1, 12),
+            day_of_week: parse_cron_field(parts[4], 0, 6)
+          )
+
+    When parse_cron_field(field, min, max):
+      Then:
+        - if field == "*":
+            - return Any
+        
+        - if field.contains(","):
+            - return List(field.split(",").map(f -> parse_cron_field(f, min, max)))
+        
+        - if field.contains("/"):
+            - parts = field.split("/")
+            - base = parse_cron_field(parts[0], min, max)
+            - step = parts[1].to_int()
+            - return Step(base, step)
+        
+        - if field.contains("-"):
+            - parts = field.split("-")
+            - return Range(parts[0].to_int(), parts[1].to_int())
+        
+        - return Value(field.to_int())
+
+    When calculate_next_run(schedule, from):
+      Then:
+        - match schedule:
+            Cron(expr) -> next_cron_time(expr, from)
+            Interval(d) -> from + d
+            Daily(time) -> next_daily(time, from)
+            Weekly(day, time) -> next_weekly(day, time, from)
+            Monthly(day, time) -> next_monthly(day, time, from)
+
+    When next_cron_time(expr, from):
+      Then:
+        - candidate = from + 1.minute
+        - candidate = candidate.truncate_to_minute()
+        
+        - loop max 366 * 24 * 60:  # Max 1 year
+            - if matches_cron(expr, candidate):
+                - return candidate
+            - candidate = candidate + 1.minute
+        
+        - raise NoCronMatchFound
+
+    When matches_cron(expr, time):
+      Then:
+        - matches_field(expr.minute, time.minute) and
+          matches_field(expr.hour, time.hour) and
+          matches_field(expr.day_of_month, time.day) and
+          matches_field(expr.month, time.month) and
+          matches_field(expr.day_of_week, time.day_of_week)
+
+    When matches_field(field, value):
+      Then:
+        - match field:
+            Any -> true
+            Value(v) -> v == value
+            Range(s, e) -> value >= s and value <= e
+            Step(base, step) ->
+              if matches_field(base, value):
+                match base:
+                  Any -> value % step == 0
+                  Range(s, _) -> (value - s) % step == 0
+                  _ -> true
+              else:
+                false
+            List(fields) -> fields.any(f -> matches_field(f, value))
+
+  # ==========================================================================
+  # JOB CONTEXT
+  # ==========================================================================
+
+  Type JobContext:
+    job: Job
+    worker: Worker
+    logger: Logger
+    progress: (Float) -> Unit
+    heartbeat: () -> Unit
+
+  Behavior JobContextBehavior:
+    When context.progress(percent):
+      Then:
+        - context.job.progress = percent
+        - emit JobProgress(context.job.id, percent)
+
+    When context.heartbeat():
+      Then:
+        - extend_lock(context.job)
+
+    When context.log(level, message, data):
+      Then:
+        - context.logger.log(level, message, merge(data, {
+            job_id: context.job.id,
+            job_name: context.job.name
+          }))
+
+  # ==========================================================================
+  # EVENTS
+  # ==========================================================================
+
+  Events:
+    SchedulerStarted:
+      timestamp: Timestamp
+
+    SchedulerStopped:
+      timestamp: Timestamp
+
+    JobEnqueued:
+      job_id: JobId
+      name: String
+      queue: String
+
+    JobScheduled:
+      job_id: JobId
+      scheduled_at: Timestamp
+
+    JobStarted:
+      job_id: JobId
+      worker_id: WorkerId
+      attempt: Int
+
+    JobCompleted:
+      job_id: JobId
+      duration: Duration
+      result: Any?
+
+    JobFailed:
+      job_id: JobId
+      error: String
+      attempts: Int
+
+    JobRetrying:
+      job_id: JobId
+      attempt: Int
+      delay: Duration
+
+    JobProgress:
+      job_id: JobId
+      progress: Float
+
+    RecurringJobCreated:
+      name: String
+      schedule: String
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Job Scheduler Usage":
+    ```vibee
+    # Define handlers
+    scheduler.define("send_email", async (job, ctx) ->
+      email = job.payload
+      ctx.log("info", "Sending email to ${email.to}")
+      await EmailService.send(email)
+      ctx.progress(100)
+      { sent: true, message_id: generate_id() }
+    )
+
+    scheduler.define("process_video", async (job, ctx) ->
+      video = job.payload
+      
+      ctx.progress(10)
+      await download_video(video.url)
+      
+      ctx.progress(50)
+      ctx.heartbeat()  # Extend lock for long jobs
+      await transcode_video(video)
+      
+      ctx.progress(90)
+      await upload_to_cdn(video)
+      
+      ctx.progress(100)
+      { processed: true }
+    )
+
+    # Enqueue immediate job
+    await scheduler.enqueue("send_email", {
+      to: "user@example.com",
+      subject: "Welcome!",
+      body: "Hello..."
+    })
+
+    # Schedule delayed job
+    await scheduler.delay("send_email", {
+      to: "user@example.com",
+      subject: "Reminder"
+    }, 1.hour)
+
+    # Schedule at specific time
+    await scheduler.schedule("generate_report", {
+      type: "daily"
+    }, tomorrow_at(9, 0))
+
+    # Recurring jobs
+    scheduler.recurring("cleanup_old_files",
+      Cron(parse_cron("0 3 * * *")),  # Every day at 3 AM
+      "cleanup_old_files",
+      { older_than: 30.days }
+    )
+
+    scheduler.recurring("send_weekly_digest",
+      Weekly(Monday, Time(9, 0)),
+      "send_weekly_digest",
+      {}
+    )
+
+    scheduler.recurring("health_check",
+      Interval(5.minutes),
+      "health_check",
+      {}
+    )
+
+    # Job with dependencies
+    job1 = await scheduler.enqueue("step1", { data: "..." })
+    job2 = await scheduler.enqueue("step2", { data: "..." })
+    await scheduler.enqueue("final_step", { data: "..." }, JobOptions(
+      depends_on: [job1, job2]
+    ))
+
+    # Unique job (prevent duplicates)
+    await scheduler.enqueue("sync_user", { user_id: 123 }, JobOptions(
+      unique: UniqueConstraint(
+        key: "sync_user:123",
+        period: 5.minutes,
+        on_conflict: Skip
+      )
+    ))
+
+    # Start scheduler
+    await scheduler.start()
+    ```

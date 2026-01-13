@@ -1,0 +1,258 @@
+// =============================================================================
+// Vibee OS — Fixture Module
+// Test fixtures for setup, teardown, and test data management
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Fixture Trait
+// -----------------------------------------------------------------------------
+
+/// Trait for test fixtures
+trait Fixture {
+    fn setup() -> Result<Self, FixtureError>
+    fn teardown(self) -> Result<(), FixtureError> { Ok(()) }
+}
+
+/// Async fixture trait
+trait AsyncFixture {
+    async fn setup() -> Result<Self, FixtureError>
+    async fn teardown(self) -> Result<(), FixtureError> { Ok(()) }
+}
+
+// -----------------------------------------------------------------------------
+// Fixture Registry
+// -----------------------------------------------------------------------------
+
+/// Fixture scope
+enum FixtureScope {
+    Test      // New instance per test
+    Module    // Shared within module
+    Session   // Shared across entire test session
+}
+
+/// Global fixture registry
+actor FixtureRegistry {
+    state fixtures: Map<String, Box<dyn Any>>
+    state scopes: Map<String, FixtureScope>
+    
+    fn new() -> Self {
+        FixtureRegistry { fixtures: Map.empty(), scopes: Map.empty() }
+    }
+    
+    on register<T: Fixture>(name: String, scope: FixtureScope, instance: T) -> Self {
+        self.fixtures.set(name, Box.new(instance))
+        self.scopes.set(name, scope)
+        self
+    }
+    
+    fn get<T>(name: String) -> Option<T> {
+        self.fixtures.get(name)?.downcast::<T>()
+    }
+    
+    on clear_scope(scope: FixtureScope) {
+        let to_remove: [String] = self.scopes
+            .iter()
+            .filter(|(_, s)| *s == scope)
+            .map(|(n, _)| n)
+            .collect()
+        for name in to_remove {
+            self.fixtures.remove(name)
+            self.scopes.remove(name)
+        }
+    }
+    
+    on clear_all() {
+        self.fixtures.clear()
+        self.scopes.clear()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Common Fixtures
+// -----------------------------------------------------------------------------
+
+/// Temporary directory fixture
+struct TempDir { path: String }
+
+impl Fixture for TempDir {
+    fn setup() -> Result<Self, FixtureError> {
+        let path = @native("create_temp_dir")
+            .map_err(|e| FixtureError.SetupFailed(e.to_string()))?
+        Ok(TempDir { path: path })
+    }
+    
+    fn teardown(self) -> Result<(), FixtureError> {
+        @native("remove_dir_all", self.path)
+            .map_err(|e| FixtureError.TeardownFailed(e.to_string()))
+    }
+}
+
+impl TempDir {
+    fn path() -> String { self.path }
+    
+    fn create_file(name: String, content: String) -> Result<String, FixtureError> {
+        let file_path = format!("{}/{}", self.path, name)
+        @native("write_file", file_path, content)
+            .map_err(|e| FixtureError.SetupFailed(e.to_string()))?
+        Ok(file_path)
+    }
+    
+    fn create_dir(name: String) -> Result<String, FixtureError> {
+        let dir_path = format!("{}/{}", self.path, name)
+        @native("create_dir", dir_path)
+            .map_err(|e| FixtureError.SetupFailed(e.to_string()))?
+        Ok(dir_path)
+    }
+}
+
+/// Temporary file fixture
+struct TempFile { path: String }
+
+impl Fixture for TempFile {
+    fn setup() -> Result<Self, FixtureError> {
+        let path = @native("create_temp_file")
+            .map_err(|e| FixtureError.SetupFailed(e.to_string()))?
+        Ok(TempFile { path: path })
+    }
+    
+    fn teardown(self) -> Result<(), FixtureError> {
+        @native("remove_file", self.path)
+            .map_err(|e| FixtureError.TeardownFailed(e.to_string()))
+    }
+}
+
+impl TempFile {
+    fn with_content(content: String) -> Result<Self, FixtureError> {
+        let file = TempFile.setup()?
+        @native("write_file", file.path, content)
+            .map_err(|e| FixtureError.SetupFailed(e.to_string()))?
+        Ok(file)
+    }
+    
+    fn path() -> String { self.path }
+    fn read() -> Result<String, FixtureError> {
+        @native("read_file", self.path).map_err(|e| FixtureError.Other(e.to_string()))
+    }
+    fn write(content: String) -> Result<(), FixtureError> {
+        @native("write_file", self.path, content).map_err(|e| FixtureError.Other(e.to_string()))
+    }
+}
+
+/// Database fixture with transaction rollback
+struct DatabaseFixture {
+    connection: @native("DbConnection")
+    transaction: @native("DbTransaction")
+}
+
+impl Fixture for DatabaseFixture {
+    fn setup() -> Result<Self, FixtureError> {
+        let conn = @native("db_connect_test").map_err(|e| FixtureError.SetupFailed(e.to_string()))?
+        let tx = @native("db_begin", conn).map_err(|e| FixtureError.SetupFailed(e.to_string()))?
+        Ok(DatabaseFixture { connection: conn, transaction: tx })
+    }
+    
+    fn teardown(self) -> Result<(), FixtureError> {
+        @native("db_rollback", self.transaction).map_err(|e| FixtureError.TeardownFailed(e.to_string()))?
+        @native("db_close", self.connection).map_err(|e| FixtureError.TeardownFailed(e.to_string()))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Factory Pattern
+// -----------------------------------------------------------------------------
+
+/// Factory for creating test objects
+actor Factory<T> {
+    state defaults: Map<String, Any>
+    state sequence_counter: Int
+    state builder: (Map<String, Any>) -> T
+    
+    fn new(builder: (Map<String, Any>) -> T) -> Self {
+        Factory { defaults: Map.empty(), sequence_counter: 0, builder: builder }
+    }
+    
+    on default(key: String, value: Any) -> Self {
+        self.defaults.set(key, value)
+        self
+    }
+    
+    fn build(overrides: Map<String, Any>) -> T {
+        var attrs = self.defaults.clone()
+        for (k, v) in overrides { attrs.set(k, v) }
+        (self.builder)(attrs)
+    }
+    
+    fn create() -> T { self.build(Map.empty()) }
+    
+    fn create_batch(count: Int) -> [T] {
+        (0..count).map(|_| self.create()).collect()
+    }
+    
+    fn next_sequence() -> Int {
+        let n = self.sequence_counter
+        self.sequence_counter += 1
+        n
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Fixture Helpers
+// -----------------------------------------------------------------------------
+
+/// Use fixture in test
+fn with_fixture<T: Fixture, R>(f: (T) -> R) -> Result<R, FixtureError> {
+    let fixture = T.setup()?
+    let result = f(fixture)
+    fixture.teardown()?
+    Ok(result)
+}
+
+/// Use multiple fixtures
+fn with_fixtures2<A: Fixture, B: Fixture, R>(f: (A, B) -> R) -> Result<R, FixtureError> {
+    let a = A.setup()?
+    let b = B.setup()?
+    let result = f(a, b)
+    b.teardown()?
+    a.teardown()?
+    Ok(result)
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum FixtureError {
+    NotFound(String)
+    TypeMismatch(String)
+    SetupFailed(String)
+    TeardownFailed(String)
+    Other(String)
+    
+    fn message() -> String {
+        match self {
+            .NotFound(n) => format!("Fixture '{}' not found", n)
+            .TypeMismatch(n) => format!("Type mismatch for '{}'", n)
+            .SetupFailed(m) => format!("Setup failed: {}", m)
+            .TeardownFailed(m) => format!("Teardown failed: {}", m)
+            .Other(m) => m
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "temp_dir fixture" {
+    with_fixture::<TempDir, _>(|dir| {
+        let path = dir.create_file("test.txt", "hello")?
+        assert(fs.exists(path))
+    })?
+}
+
+test "factory" {
+    struct User { id: Int, name: String }
+    let factory = Factory.new(|a| User { id: a.get("id").unwrap_or(0), name: a.get("name").unwrap_or("Test") })
+    let user = factory.create()
+    assert_eq(user.name, "Test")?
+}

@@ -1,0 +1,464 @@
+name: vibee_os_error_recovery
+version: "0.1.0"
+language: gleam
+module: kernel/agent/error_recovery
+description: Error Recovery - стратегии восстановления после ошибок для агентов
+
+behaviors:
+  - name: retry_on_transient_error
+    given: Transient error occurred (network, rate limit)
+    when: Error is detected
+    then: Operation is retried with exponential backoff
+    test_cases:
+      - name: retry_network_error
+        input:
+          error: "connection_refused"
+          max_retries: 3
+        expected:
+          retried: true
+          retry_count: 3
+          backoff_applied: true
+      - name: retry_rate_limit
+        input:
+          error: "rate_limited"
+          retry_after_ms: 1000
+        expected:
+          waited: true
+          wait_time_ms: 1000
+          retried: true
+      - name: no_retry_permanent_error
+        input:
+          error: "invalid_api_key"
+        expected:
+          retried: false
+          error_propagated: true
+
+  - name: fallback_on_failure
+    given: Primary operation failed
+    when: Fallback is configured
+    then: Fallback operation is attempted
+    test_cases:
+      - name: fallback_to_local_llm
+        input:
+          primary: "deepseek"
+          primary_error: "unavailable"
+          fallback: "local"
+        expected:
+          fallback_used: true
+          result_from_fallback: true
+      - name: fallback_chain
+        input:
+          chain: ["deepseek", "openai", "local"]
+          failures: ["deepseek", "openai"]
+        expected:
+          final_provider: "local"
+          success: true
+
+  - name: decompose_on_complex_failure
+    given: Complex task failed
+    when: Error suggests task too complex
+    then: Task is decomposed into smaller subtasks
+    test_cases:
+      - name: decompose_large_spec
+        input:
+          task: "Create full e-commerce system"
+          error: "context_length_exceeded"
+        expected:
+          decomposed: true
+          subtasks: ["user_service", "product_service", "order_service"]
+      - name: decompose_and_retry
+        input:
+          task: "Complex analysis"
+          error: "timeout"
+        expected:
+          decomposed: true
+          subtasks_succeeded: true
+
+  - name: ask_human_on_ambiguity
+    given: Agent cannot resolve ambiguity
+    when: Confidence is below threshold
+    then: Human is asked for clarification
+    test_cases:
+      - name: ask_for_clarification
+        input:
+          task: "Create API"
+          confidence: 0.3
+          threshold: 0.5
+        expected:
+          asked_human: true
+          question: "What type of API? REST, GraphQL, or gRPC?"
+      - name: proceed_with_high_confidence
+        input:
+          task: "Create REST API for users"
+          confidence: 0.9
+          threshold: 0.5
+        expected:
+          asked_human: false
+          proceeded: true
+
+  - name: rollback_on_partial_failure
+    given: Multi-step operation partially completed
+    when: Later step fails
+    then: Previous steps are rolled back
+    test_cases:
+      - name: rollback_file_changes
+        input:
+          steps: ["create_file", "write_content", "update_index"]
+          failed_step: "update_index"
+        expected:
+          rolled_back: true
+          files_restored: true
+      - name: rollback_with_compensation
+        input:
+          steps: ["create_user", "send_email", "update_stats"]
+          failed_step: "update_stats"
+        expected:
+          compensation_actions: ["delete_user"]
+
+  - name: learn_from_failure
+    given: Error occurred
+    when: Error is resolved
+    then: Pattern is stored to prevent future errors
+    test_cases:
+      - name: learn_fix_pattern
+        input:
+          error: "missing_import"
+          fix: "add import statement"
+        expected:
+          pattern_stored: true
+          future_prevention: true
+      - name: apply_learned_pattern
+        input:
+          error: "missing_import"
+          pattern_exists: true
+        expected:
+          auto_fixed: true
+          no_human_intervention: true
+
+types:
+  # Error Types
+  Error:
+    code: str
+    message: str
+    category: ErrorCategory
+    severity: Severity
+    context: ErrorContext
+    timestamp: int
+    recoverable: bool
+
+  ErrorCategory:
+    variants:
+      - Network                       # Connection, timeout
+      - RateLimit                     # API rate limiting
+      - Authentication                # Invalid credentials
+      - Validation                    # Invalid input
+      - Resource                      # Not found, conflict
+      - Capacity                      # Context length, memory
+      - Logic                         # Bug in logic
+      - External                      # Third-party failure
+      - Unknown
+
+  Severity:
+    variants:
+      - Warning
+      - Error
+      - Critical
+      - Fatal
+
+  ErrorContext:
+    operation: str
+    input: str?
+    stack_trace: [str]?
+    related_errors: [str]?
+
+  # Recovery Strategies
+  RecoveryStrategy:
+    variants:
+      - Retry: RetryConfig
+      - Fallback: FallbackConfig
+      - Decompose: DecomposeConfig
+      - AskHuman: AskHumanConfig
+      - Rollback: RollbackConfig
+      - Skip: SkipConfig
+      - Abort: AbortConfig
+
+  RetryConfig:
+    max_retries: int
+    initial_delay_ms: int
+    max_delay_ms: int
+    backoff_multiplier: float
+    jitter: bool
+    retry_on: [ErrorCategory]
+
+  FallbackConfig:
+    fallbacks: [FallbackOption]
+    timeout_ms: int
+
+  FallbackOption:
+    name: str
+    provider: str
+    config: {str: str}
+
+  DecomposeConfig:
+    max_subtasks: int
+    min_subtask_size: int
+    decomposition_strategy: DecomposeStrategy
+
+  DecomposeStrategy:
+    variants:
+      - ByFunction                    # Split by function
+      - ByModule                      # Split by module
+      - ByComplexity                  # Split complex parts
+      - Custom: {strategy: str}
+
+  AskHumanConfig:
+    confidence_threshold: float
+    timeout_ms: int
+    default_action: str?
+
+  RollbackConfig:
+    checkpoint_interval: int
+    max_rollback_steps: int
+    compensation_actions: [str]
+
+  SkipConfig:
+    log_skipped: bool
+    continue_on_skip: bool
+
+  AbortConfig:
+    cleanup_actions: [str]
+    notify: [str]
+
+  # Recovery Plan
+  RecoveryPlan:
+    error_patterns: [ErrorPattern]
+    default_strategy: RecoveryStrategy
+
+  ErrorPattern:
+    pattern: str
+    category: ErrorCategory?
+    message_contains: str?
+    strategy: RecoveryStrategy
+
+  # Recovery Result
+  RecoveryResult:
+    success: bool
+    strategy_used: RecoveryStrategy
+    attempts: int
+    final_error: Error?
+    result: str?
+    duration_ms: int
+
+  # Checkpoint
+  Checkpoint:
+    id: str
+    state: {str: str}
+    timestamp: int
+    operation: str
+
+  # Learning
+  ErrorFix:
+    error_pattern: str
+    fix_action: str
+    success_rate: float
+    times_applied: int
+
+functions:
+  # Recovery execution
+  - name: recover
+    params: {error: Error, plan: RecoveryPlan}
+    returns: RecoveryResult
+    description: Execute recovery for error
+
+  - name: recover_with_strategy
+    params: {error: Error, strategy: RecoveryStrategy}
+    returns: RecoveryResult
+    description: Execute specific recovery strategy
+
+  # Retry
+  - name: retry
+    params: {operation: str, config: RetryConfig}
+    returns: RecoveryResult
+    description: Retry operation with backoff
+
+  - name: calculate_backoff
+    params: {attempt: int, config: RetryConfig}
+    returns: int
+    description: Calculate backoff delay
+
+  # Fallback
+  - name: fallback
+    params: {operation: str, config: FallbackConfig}
+    returns: RecoveryResult
+    description: Try fallback options
+
+  # Decompose
+  - name: decompose
+    params: {task: str, config: DecomposeConfig}
+    returns: [str]
+    description: Decompose task into subtasks
+
+  - name: execute_subtasks
+    params: {subtasks: [str]}
+    returns: RecoveryResult
+    description: Execute subtasks and combine results
+
+  # Human interaction
+  - name: ask_human
+    params: {question: str, config: AskHumanConfig}
+    returns: str
+    description: Ask human for input
+
+  # Rollback
+  - name: checkpoint_create
+    params: {state: {str: str}}
+    returns: Checkpoint
+    description: Create checkpoint
+
+  - name: rollback_to
+    params: {checkpoint: Checkpoint}
+    returns: bool
+    description: Rollback to checkpoint
+
+  # Learning
+  - name: learn_fix
+    params: {error: Error, fix: str}
+    returns: ErrorFix
+    description: Learn fix for error pattern
+
+  - name: apply_learned_fix
+    params: {error: Error}
+    returns: str?
+    description: Apply learned fix if available
+
+  - name: get_fix_suggestions
+    params: {error: Error}
+    returns: [ErrorFix]
+    description: Get fix suggestions for error
+
+  # Plan management
+  - name: plan_create
+    params: {patterns: [ErrorPattern]}
+    returns: RecoveryPlan
+    description: Create recovery plan
+
+  - name: plan_default
+    params: {}
+    returns: RecoveryPlan
+    description: Get default recovery plan
+
+imports:
+  - kernel.agent.llm_client
+  - kernel.safety.human_loop
+
+default_recovery_plan: |
+  # Default Recovery Plan
+  
+  ```yaml
+  error_patterns:
+    # Network errors - retry
+    - pattern: "connection_*"
+      category: Network
+      strategy:
+        Retry:
+          max_retries: 3
+          initial_delay_ms: 1000
+          backoff_multiplier: 2.0
+    
+    # Rate limits - wait and retry
+    - pattern: "rate_limit*"
+      category: RateLimit
+      strategy:
+        Retry:
+          max_retries: 5
+          initial_delay_ms: 60000
+    
+    # Auth errors - no retry, abort
+    - pattern: "auth*"
+      category: Authentication
+      strategy:
+        Abort:
+          notify: ["admin"]
+    
+    # Context too long - decompose
+    - pattern: "context_length*"
+      category: Capacity
+      strategy:
+        Decompose:
+          max_subtasks: 5
+    
+    # Ambiguous - ask human
+    - pattern: "ambiguous*"
+      strategy:
+        AskHuman:
+          confidence_threshold: 0.5
+          timeout_ms: 300000
+  
+  default_strategy:
+    Retry:
+      max_retries: 2
+      initial_delay_ms: 1000
+  ```
+
+exponential_backoff: |
+  # Exponential Backoff Algorithm
+  
+  ```
+  delay = min(initial_delay * (multiplier ^ attempt), max_delay)
+  
+  With jitter:
+  delay = delay * (0.5 + random(0, 0.5))
+  ```
+  
+  Example (initial=1s, multiplier=2, max=60s):
+  
+  | Attempt | Base Delay | With Jitter |
+  |---------|------------|-------------|
+  | 1 | 1s | 0.5-1s |
+  | 2 | 2s | 1-2s |
+  | 3 | 4s | 2-4s |
+  | 4 | 8s | 4-8s |
+  | 5 | 16s | 8-16s |
+  | 6 | 32s | 16-32s |
+  | 7 | 60s (max) | 30-60s |
+
+recovery_flow: |
+  # Recovery Flow
+  
+  ```
+  Error Occurred
+       │
+       ▼
+  ┌─────────────┐
+  │ Categorize  │
+  │   Error     │
+  └──────┬──────┘
+         │
+         ▼
+  ┌─────────────┐     ┌─────────────┐
+  │ Match       │────▶│ Apply       │
+  │ Pattern     │     │ Strategy    │
+  └──────┬──────┘     └──────┬──────┘
+         │                   │
+         │ No match          │
+         ▼                   ▼
+  ┌─────────────┐     ┌─────────────┐
+  │ Default     │     │ Execute     │
+  │ Strategy    │     │ Recovery    │
+  └──────┬──────┘     └──────┬──────┘
+         │                   │
+         └───────┬───────────┘
+                 │
+                 ▼
+          ┌─────────────┐
+          │  Success?   │
+          └──────┬──────┘
+                 │
+        ┌────────┴────────┐
+        │ Yes            │ No
+        ▼                ▼
+  ┌─────────────┐  ┌─────────────┐
+  │ Learn Fix   │  │ Escalate    │
+  │ Continue    │  │ or Abort    │
+  └─────────────┘  └─────────────┘
+  ```

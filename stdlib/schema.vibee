@@ -1,0 +1,673 @@
+// =============================================================================
+// Vibee OS — Schema Module
+// Validation schemas for data structures
+// =============================================================================
+
+// =============================================================================
+// Schema Types
+// =============================================================================
+
+/// Schema definition for validating data structures
+enum Schema {
+    String(StringSchema)
+    Number(NumberSchema)
+    Integer(IntegerSchema)
+    Boolean
+    Array(ArraySchema)
+    Object(ObjectSchema)
+    Enum(EnumSchema)
+    Union([Schema])
+    Optional(Box<Schema>)
+    Nullable(Box<Schema>)
+    Any
+    Custom(fn(JsonValue) -> Result<(), SchemaError>)
+}
+
+impl Schema {
+    /// Validate a JSON value against this schema
+    fn validate(value: JsonValue) -> Result<(), SchemaError> {
+        match self {
+            String(s) => s.validate(value)
+            Number(n) => n.validate(value)
+            Integer(i) => i.validate(value)
+            Boolean => match value {
+                JsonValue.Bool(_) => Ok(())
+                _ => Err(SchemaError.TypeMismatch { expected: "boolean", got: value.type_name() })
+            }
+            Array(a) => a.validate(value)
+            Object(o) => o.validate(value)
+            Enum(e) => e.validate(value)
+            Union(schemas) => {
+                for schema in schemas {
+                    if schema.validate(value.clone()).is_ok() {
+                        return Ok(())
+                    }
+                }
+                Err(SchemaError.NoMatchingUnion)
+            }
+            Optional(inner) => {
+                if value == JsonValue.Null { Ok(()) }
+                else { inner.validate(value) }
+            }
+            Nullable(inner) => {
+                if value == JsonValue.Null { Ok(()) }
+                else { inner.validate(value) }
+            }
+            Any => Ok(())
+            Custom(validator) => validator(value)
+        }
+    }
+    
+    /// Create string schema
+    fn string() -> Self { Schema.String(StringSchema.new()) }
+    
+    /// Create number schema
+    fn number() -> Self { Schema.Number(NumberSchema.new()) }
+    
+    /// Create integer schema
+    fn integer() -> Self { Schema.Integer(IntegerSchema.new()) }
+    
+    /// Create boolean schema
+    fn boolean() -> Self { Schema.Boolean }
+    
+    /// Create array schema
+    fn array(items: Schema) -> Self { Schema.Array(ArraySchema.new(items)) }
+    
+    /// Create object schema
+    fn object() -> Self { Schema.Object(ObjectSchema.new()) }
+    
+    /// Create enum schema
+    fn enum_of(values: [JsonValue]) -> Self { Schema.Enum(EnumSchema { values: values }) }
+    
+    /// Create union schema
+    fn union(schemas: [Schema]) -> Self { Schema.Union(schemas) }
+    
+    /// Make schema optional
+    fn optional() -> Self { Schema.Optional(Box.new(self)) }
+    
+    /// Make schema nullable
+    fn nullable() -> Self { Schema.Nullable(Box.new(self)) }
+    
+    /// Create any schema
+    fn any() -> Self { Schema.Any }
+    
+    /// Create custom schema
+    fn custom(validator: fn(JsonValue) -> Result<(), SchemaError>) -> Self {
+        Schema.Custom(validator)
+    }
+}
+
+// =============================================================================
+// String Schema
+// =============================================================================
+
+struct StringSchema {
+    min_length: Option<Int>
+    max_length: Option<Int>
+    pattern: Option<Regex>
+    format: Option<StringFormat>
+    enum_values: Option<[String]>
+}
+
+enum StringFormat {
+    Email
+    Url
+    Uuid
+    Date
+    DateTime
+    Time
+    IpV4
+    IpV6
+    Phone
+    CreditCard
+    Slug
+    Alphanumeric
+}
+
+impl StringSchema {
+    fn new() -> Self {
+        StringSchema {
+            min_length: None,
+            max_length: None,
+            pattern: None,
+            format: None,
+            enum_values: None
+        }
+    }
+    
+    fn min(length: Int) -> Self { self.min_length = Some(length); self }
+    fn max(length: Int) -> Self { self.max_length = Some(length); self }
+    fn length(exact: Int) -> Self { self.min_length = Some(exact); self.max_length = Some(exact); self }
+    fn between(min: Int, max: Int) -> Self { self.min_length = Some(min); self.max_length = Some(max); self }
+    fn pattern(regex: String) -> Self { self.pattern = Regex.new(regex).ok(); self }
+    fn format(fmt: StringFormat) -> Self { self.format = Some(fmt); self }
+    fn email() -> Self { self.format(StringFormat.Email) }
+    fn url() -> Self { self.format(StringFormat.Url) }
+    fn uuid() -> Self { self.format(StringFormat.Uuid) }
+    fn one_of(values: [String]) -> Self { self.enum_values = Some(values); self }
+    
+    fn validate(value: JsonValue) -> Result<(), SchemaError> {
+        let s = match value {
+            JsonValue.String(s) => s
+            _ => return Err(SchemaError.TypeMismatch { expected: "string", got: value.type_name() })
+        }
+        
+        if let Some(min) = self.min_length {
+            if s.len() < min {
+                return Err(SchemaError.StringTooShort { min: min, actual: s.len() })
+            }
+        }
+        
+        if let Some(max) = self.max_length {
+            if s.len() > max {
+                return Err(SchemaError.StringTooLong { max: max, actual: s.len() })
+            }
+        }
+        
+        if let Some(pattern) = self.pattern {
+            if !pattern.is_match(s) {
+                return Err(SchemaError.PatternMismatch { pattern: pattern.pattern })
+            }
+        }
+        
+        if let Some(fmt) = self.format {
+            if !validate_format(s, fmt) {
+                return Err(SchemaError.FormatMismatch { format: fmt })
+            }
+        }
+        
+        if let Some(values) = self.enum_values {
+            if !values.contains(s) {
+                return Err(SchemaError.NotInEnum { allowed: values })
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+fn validate_format(s: String, format: StringFormat) -> Bool {
+    match format {
+        Email => regex.is_match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", s)
+        Url => regex.is_match(r"^https?://[^\s]+$", s)
+        Uuid => regex.is_match(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", s)
+        Date => regex.is_match(r"^\d{4}-\d{2}-\d{2}$", s)
+        DateTime => regex.is_match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", s)
+        Time => regex.is_match(r"^\d{2}:\d{2}(:\d{2})?$", s)
+        IpV4 => regex.is_match(r"^(\d{1,3}\.){3}\d{1,3}$", s)
+        IpV6 => regex.is_match(r"^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$", s)
+        Phone => regex.is_match(r"^\+?[\d\s\-\(\)]{10,}$", s)
+        CreditCard => validate_credit_card(s)
+        Slug => regex.is_match(r"^[a-z0-9]+(?:-[a-z0-9]+)*$", s)
+        Alphanumeric => regex.is_match(r"^[a-zA-Z0-9]+$", s)
+    }
+}
+
+fn validate_credit_card(s: String) -> Bool {
+    let digits = s.chars().filter(|c| c.is_digit()).collect::<String>()
+    if digits.len() < 13 || digits.len() > 19 { return false }
+    
+    // Luhn algorithm
+    var sum = 0
+    var double = false
+    for c in digits.chars().rev() {
+        var digit = c.to_digit().unwrap()
+        if double {
+            digit *= 2
+            if digit > 9 { digit -= 9 }
+        }
+        sum += digit
+        double = !double
+    }
+    sum % 10 == 0
+}
+
+// =============================================================================
+// Number Schema
+// =============================================================================
+
+struct NumberSchema {
+    min: Option<Float>
+    max: Option<Float>
+    exclusive_min: Option<Float>
+    exclusive_max: Option<Float>
+    multiple_of: Option<Float>
+    positive: Bool
+    negative: Bool
+    finite: Bool
+}
+
+impl NumberSchema {
+    fn new() -> Self {
+        NumberSchema {
+            min: None, max: None, exclusive_min: None, exclusive_max: None,
+            multiple_of: None, positive: false, negative: false, finite: true
+        }
+    }
+    
+    fn min(value: Float) -> Self { self.min = Some(value); self }
+    fn max(value: Float) -> Self { self.max = Some(value); self }
+    fn between(min: Float, max: Float) -> Self { self.min = Some(min); self.max = Some(max); self }
+    fn exclusive_min(value: Float) -> Self { self.exclusive_min = Some(value); self }
+    fn exclusive_max(value: Float) -> Self { self.exclusive_max = Some(value); self }
+    fn multiple_of(value: Float) -> Self { self.multiple_of = Some(value); self }
+    fn positive() -> Self { self.positive = true; self }
+    fn negative() -> Self { self.negative = true; self }
+    fn non_negative() -> Self { self.min = Some(0.0); self }
+    fn allow_infinity() -> Self { self.finite = false; self }
+    
+    fn validate(value: JsonValue) -> Result<(), SchemaError> {
+        let n = match value {
+            JsonValue.Number(n) => n
+            _ => return Err(SchemaError.TypeMismatch { expected: "number", got: value.type_name() })
+        }
+        
+        if self.finite && (n.is_infinite() || n.is_nan()) {
+            return Err(SchemaError.NotFinite)
+        }
+        
+        if self.positive && n <= 0.0 {
+            return Err(SchemaError.NotPositive)
+        }
+        
+        if self.negative && n >= 0.0 {
+            return Err(SchemaError.NotNegative)
+        }
+        
+        if let Some(min) = self.min {
+            if n < min { return Err(SchemaError.NumberTooSmall { min: min, actual: n }) }
+        }
+        
+        if let Some(max) = self.max {
+            if n > max { return Err(SchemaError.NumberTooLarge { max: max, actual: n }) }
+        }
+        
+        if let Some(ex_min) = self.exclusive_min {
+            if n <= ex_min { return Err(SchemaError.NumberTooSmall { min: ex_min, actual: n }) }
+        }
+        
+        if let Some(ex_max) = self.exclusive_max {
+            if n >= ex_max { return Err(SchemaError.NumberTooLarge { max: ex_max, actual: n }) }
+        }
+        
+        if let Some(mult) = self.multiple_of {
+            if n % mult != 0.0 { return Err(SchemaError.NotMultipleOf { multiple: mult }) }
+        }
+        
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Integer Schema
+// =============================================================================
+
+struct IntegerSchema {
+    min: Option<Int>
+    max: Option<Int>
+    positive: Bool
+    negative: Bool
+}
+
+impl IntegerSchema {
+    fn new() -> Self { IntegerSchema { min: None, max: None, positive: false, negative: false } }
+    
+    fn min(value: Int) -> Self { self.min = Some(value); self }
+    fn max(value: Int) -> Self { self.max = Some(value); self }
+    fn between(min: Int, max: Int) -> Self { self.min = Some(min); self.max = Some(max); self }
+    fn positive() -> Self { self.positive = true; self }
+    fn negative() -> Self { self.negative = true; self }
+    fn non_negative() -> Self { self.min = Some(0); self }
+    fn port() -> Self { self.between(1, 65535) }
+    
+    fn validate(value: JsonValue) -> Result<(), SchemaError> {
+        let n = match value {
+            JsonValue.Number(n) => {
+                if n.fract() != 0.0 {
+                    return Err(SchemaError.NotInteger)
+                }
+                n as Int
+            }
+            _ => return Err(SchemaError.TypeMismatch { expected: "integer", got: value.type_name() })
+        }
+        
+        if self.positive && n <= 0 {
+            return Err(SchemaError.NotPositive)
+        }
+        
+        if self.negative && n >= 0 {
+            return Err(SchemaError.NotNegative)
+        }
+        
+        if let Some(min) = self.min {
+            if n < min { return Err(SchemaError.IntegerTooSmall { min: min, actual: n }) }
+        }
+        
+        if let Some(max) = self.max {
+            if n > max { return Err(SchemaError.IntegerTooLarge { max: max, actual: n }) }
+        }
+        
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Array Schema
+// =============================================================================
+
+struct ArraySchema {
+    items: Box<Schema>
+    min_items: Option<Int>
+    max_items: Option<Int>
+    unique: Bool
+}
+
+impl ArraySchema {
+    fn new(items: Schema) -> Self {
+        ArraySchema { items: Box.new(items), min_items: None, max_items: None, unique: false }
+    }
+    
+    fn min(count: Int) -> Self { self.min_items = Some(count); self }
+    fn max(count: Int) -> Self { self.max_items = Some(count); self }
+    fn length(exact: Int) -> Self { self.min_items = Some(exact); self.max_items = Some(exact); self }
+    fn non_empty() -> Self { self.min_items = Some(1); self }
+    fn unique() -> Self { self.unique = true; self }
+    
+    fn validate(value: JsonValue) -> Result<(), SchemaError> {
+        let arr = match value {
+            JsonValue.Array(a) => a
+            _ => return Err(SchemaError.TypeMismatch { expected: "array", got: value.type_name() })
+        }
+        
+        if let Some(min) = self.min_items {
+            if arr.len() < min {
+                return Err(SchemaError.ArrayTooShort { min: min, actual: arr.len() })
+            }
+        }
+        
+        if let Some(max) = self.max_items {
+            if arr.len() > max {
+                return Err(SchemaError.ArrayTooLong { max: max, actual: arr.len() })
+            }
+        }
+        
+        if self.unique {
+            var seen = Set.new()
+            for item in arr {
+                let key = json.encode(item)
+                if seen.contains(key) {
+                    return Err(SchemaError.DuplicateItems)
+                }
+                seen.insert(key)
+            }
+        }
+        
+        for (i, item) in arr.iter().enumerate() {
+            self.items.validate(item).map_err(|e| SchemaError.ArrayItemError { index: i, error: Box.new(e) })?
+        }
+        
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Object Schema
+// =============================================================================
+
+struct ObjectSchema {
+    properties: Map<String, Schema>
+    required: Set<String>
+    additional_properties: Bool
+    min_properties: Option<Int>
+    max_properties: Option<Int>
+}
+
+impl ObjectSchema {
+    fn new() -> Self {
+        ObjectSchema {
+            properties: Map.new(),
+            required: Set.new(),
+            additional_properties: true,
+            min_properties: None,
+            max_properties: None
+        }
+    }
+    
+    fn field(name: String, schema: Schema) -> Self {
+        self.properties.insert(name, schema)
+        self
+    }
+    
+    fn required_field(name: String, schema: Schema) -> Self {
+        self.properties.insert(name.clone(), schema)
+        self.required.insert(name)
+        self
+    }
+    
+    fn require(names: [String]) -> Self {
+        for name in names { self.required.insert(name) }
+        self
+    }
+    
+    fn strict() -> Self { self.additional_properties = false; self }
+    fn min_props(count: Int) -> Self { self.min_properties = Some(count); self }
+    fn max_props(count: Int) -> Self { self.max_properties = Some(count); self }
+    
+    fn validate(value: JsonValue) -> Result<(), SchemaError> {
+        let obj = match value {
+            JsonValue.Object(o) => o
+            _ => return Err(SchemaError.TypeMismatch { expected: "object", got: value.type_name() })
+        }
+        
+        // Check required fields
+        for name in self.required {
+            if !obj.contains_key(name) {
+                return Err(SchemaError.MissingField { field: name })
+            }
+        }
+        
+        // Check property count
+        if let Some(min) = self.min_properties {
+            if obj.len() < min {
+                return Err(SchemaError.TooFewProperties { min: min, actual: obj.len() })
+            }
+        }
+        
+        if let Some(max) = self.max_properties {
+            if obj.len() > max {
+                return Err(SchemaError.TooManyProperties { max: max, actual: obj.len() })
+            }
+        }
+        
+        // Validate each property
+        for (key, val) in obj {
+            if let Some(schema) = self.properties.get(key) {
+                schema.validate(val).map_err(|e| SchemaError.FieldError { field: key, error: Box.new(e) })?
+            } else if !self.additional_properties {
+                return Err(SchemaError.UnknownField { field: key })
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Enum Schema
+// =============================================================================
+
+struct EnumSchema {
+    values: [JsonValue]
+}
+
+impl EnumSchema {
+    fn validate(value: JsonValue) -> Result<(), SchemaError> {
+        if self.values.contains(value) {
+            Ok(())
+        } else {
+            Err(SchemaError.NotInEnum { allowed: self.values.iter().map(|v| json.encode(v)).collect() })
+        }
+    }
+}
+
+// =============================================================================
+// Schema Builder
+// =============================================================================
+
+struct SchemaBuilder {
+    schema: Schema
+}
+
+impl SchemaBuilder {
+    fn string() -> StringSchemaBuilder { StringSchemaBuilder { schema: StringSchema.new() } }
+    fn number() -> NumberSchemaBuilder { NumberSchemaBuilder { schema: NumberSchema.new() } }
+    fn integer() -> IntegerSchemaBuilder { IntegerSchemaBuilder { schema: IntegerSchema.new() } }
+    fn boolean() -> Self { SchemaBuilder { schema: Schema.Boolean } }
+    fn array(items: Schema) -> ArraySchemaBuilder { ArraySchemaBuilder { schema: ArraySchema.new(items) } }
+    fn object() -> ObjectSchemaBuilder { ObjectSchemaBuilder { schema: ObjectSchema.new() } }
+    
+    fn build() -> Schema { self.schema }
+}
+
+struct StringSchemaBuilder { schema: StringSchema }
+impl StringSchemaBuilder {
+    fn min(length: Int) -> Self { self.schema = self.schema.min(length); self }
+    fn max(length: Int) -> Self { self.schema = self.schema.max(length); self }
+    fn email() -> Self { self.schema = self.schema.email(); self }
+    fn url() -> Self { self.schema = self.schema.url(); self }
+    fn uuid() -> Self { self.schema = self.schema.uuid(); self }
+    fn pattern(regex: String) -> Self { self.schema = self.schema.pattern(regex); self }
+    fn build() -> Schema { Schema.String(self.schema) }
+}
+
+struct NumberSchemaBuilder { schema: NumberSchema }
+impl NumberSchemaBuilder {
+    fn min(value: Float) -> Self { self.schema = self.schema.min(value); self }
+    fn max(value: Float) -> Self { self.schema = self.schema.max(value); self }
+    fn positive() -> Self { self.schema = self.schema.positive(); self }
+    fn build() -> Schema { Schema.Number(self.schema) }
+}
+
+struct IntegerSchemaBuilder { schema: IntegerSchema }
+impl IntegerSchemaBuilder {
+    fn min(value: Int) -> Self { self.schema = self.schema.min(value); self }
+    fn max(value: Int) -> Self { self.schema = self.schema.max(value); self }
+    fn positive() -> Self { self.schema = self.schema.positive(); self }
+    fn port() -> Self { self.schema = self.schema.port(); self }
+    fn build() -> Schema { Schema.Integer(self.schema) }
+}
+
+struct ArraySchemaBuilder { schema: ArraySchema }
+impl ArraySchemaBuilder {
+    fn min(count: Int) -> Self { self.schema = self.schema.min(count); self }
+    fn max(count: Int) -> Self { self.schema = self.schema.max(count); self }
+    fn non_empty() -> Self { self.schema = self.schema.non_empty(); self }
+    fn unique() -> Self { self.schema = self.schema.unique(); self }
+    fn build() -> Schema { Schema.Array(self.schema) }
+}
+
+struct ObjectSchemaBuilder { schema: ObjectSchema }
+impl ObjectSchemaBuilder {
+    fn field(name: String, schema: Schema) -> Self { self.schema = self.schema.field(name, schema); self }
+    fn required_field(name: String, schema: Schema) -> Self { self.schema = self.schema.required_field(name, schema); self }
+    fn strict() -> Self { self.schema = self.schema.strict(); self }
+    fn build() -> Schema { Schema.Object(self.schema) }
+}
+
+// =============================================================================
+// Schema Errors
+// =============================================================================
+
+enum SchemaError {
+    TypeMismatch { expected: String, got: String }
+    StringTooShort { min: Int, actual: Int }
+    StringTooLong { max: Int, actual: Int }
+    PatternMismatch { pattern: String }
+    FormatMismatch { format: StringFormat }
+    NotInEnum { allowed: [String] }
+    NumberTooSmall { min: Float, actual: Float }
+    NumberTooLarge { max: Float, actual: Float }
+    IntegerTooSmall { min: Int, actual: Int }
+    IntegerTooLarge { max: Int, actual: Int }
+    NotInteger
+    NotFinite
+    NotPositive
+    NotNegative
+    NotMultipleOf { multiple: Float }
+    ArrayTooShort { min: Int, actual: Int }
+    ArrayTooLong { max: Int, actual: Int }
+    DuplicateItems
+    ArrayItemError { index: Int, error: Box<SchemaError> }
+    MissingField { field: String }
+    UnknownField { field: String }
+    FieldError { field: String, error: Box<SchemaError> }
+    TooFewProperties { min: Int, actual: Int }
+    TooManyProperties { max: Int, actual: Int }
+    NoMatchingUnion
+    Custom(String)
+}
+
+impl Display for SchemaError {
+    fn fmt(f: Formatter) {
+        match self {
+            TypeMismatch { expected, got } => f.write(format!("Expected {}, got {}", expected, got))
+            StringTooShort { min, actual } => f.write(format!("String too short: min {}, got {}", min, actual))
+            StringTooLong { max, actual } => f.write(format!("String too long: max {}, got {}", max, actual))
+            PatternMismatch { pattern } => f.write(format!("Does not match pattern: {}", pattern))
+            FormatMismatch { format } => f.write(format!("Invalid format: {:?}", format))
+            MissingField { field } => f.write(format!("Missing required field: {}", field))
+            FieldError { field, error } => f.write(format!("Field '{}': {}", field, error))
+            _ => f.write("Schema validation error")
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "string schema" {
+    let schema = Schema.string().min(3).max(10)
+    assert(schema.validate(JsonValue.String("hello")).is_ok())?
+    assert(schema.validate(JsonValue.String("hi")).is_err())?
+}
+
+test "email format" {
+    let schema = StringSchema.new().email()
+    assert(Schema.String(schema).validate(JsonValue.String("test@example.com")).is_ok())?
+    assert(Schema.String(schema).validate(JsonValue.String("invalid")).is_err())?
+}
+
+test "number schema" {
+    let schema = Schema.number().min(0.0).max(100.0)
+    assert(schema.validate(JsonValue.Number(50.0)).is_ok())?
+    assert(schema.validate(JsonValue.Number(150.0)).is_err())?
+}
+
+test "object schema" {
+    let schema = ObjectSchema.new()
+        .required_field("name", Schema.string())
+        .required_field("age", Schema.integer().positive())
+        .field("email", Schema.string().email())
+    
+    let valid = json.parse(r#"{"name": "John", "age": 25}"#)?
+    assert(Schema.Object(schema).validate(valid).is_ok())?
+}
+
+test "array schema" {
+    let schema = Schema.array(Schema.integer()).non_empty().unique()
+    assert(schema.validate(json.parse("[1, 2, 3]")?).is_ok())?
+    assert(schema.validate(json.parse("[1, 1, 2]")?).is_err())?  // duplicates
+    assert(schema.validate(json.parse("[]")?).is_err())?  // empty
+}
+
+test "builder pattern" {
+    let schema = SchemaBuilder.object()
+        .required_field("username", SchemaBuilder.string().min(3).max(20).build())
+        .required_field("email", SchemaBuilder.string().email().build())
+        .strict()
+        .build()
+    
+    let valid = json.parse(r#"{"username": "john", "email": "john@example.com"}"#)?
+    assert(schema.validate(valid).is_ok())?
+}

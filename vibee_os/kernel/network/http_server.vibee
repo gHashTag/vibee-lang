@@ -1,0 +1,985 @@
+# ============================================================================
+# HTTP SERVER - Веб-сервер на Vibee
+# ============================================================================
+# Полнофункциональный HTTP/1.1 и HTTP/2 сервер, определённый как спецификация
+# ============================================================================
+
+Specification HTTPServer:
+  """
+  HTTP сервер как спецификация поведения.
+  Каждый запрос - это событие, каждый ответ - это результат поведения.
+  """
+
+  # ==========================================================================
+  # ТИПЫ ДАННЫХ
+  # ==========================================================================
+
+  Type HTTPMethod:
+    variants:
+      - GET
+      - POST
+      - PUT
+      - PATCH
+      - DELETE
+      - HEAD
+      - OPTIONS
+      - TRACE
+      - CONNECT
+
+  Type HTTPVersion:
+    variants:
+      - HTTP_1_0: "HTTP/1.0"
+      - HTTP_1_1: "HTTP/1.1"
+      - HTTP_2: "HTTP/2"
+      - HTTP_3: "HTTP/3"
+
+  Type HTTPStatus:
+    # Informational
+    CONTINUE: 100
+    SWITCHING_PROTOCOLS: 101
+    PROCESSING: 102
+    
+    # Success
+    OK: 200
+    CREATED: 201
+    ACCEPTED: 202
+    NO_CONTENT: 204
+    PARTIAL_CONTENT: 206
+    
+    # Redirection
+    MOVED_PERMANENTLY: 301
+    FOUND: 302
+    SEE_OTHER: 303
+    NOT_MODIFIED: 304
+    TEMPORARY_REDIRECT: 307
+    PERMANENT_REDIRECT: 308
+    
+    # Client Errors
+    BAD_REQUEST: 400
+    UNAUTHORIZED: 401
+    FORBIDDEN: 403
+    NOT_FOUND: 404
+    METHOD_NOT_ALLOWED: 405
+    CONFLICT: 409
+    GONE: 410
+    UNPROCESSABLE_ENTITY: 422
+    TOO_MANY_REQUESTS: 429
+    
+    # Server Errors
+    INTERNAL_SERVER_ERROR: 500
+    NOT_IMPLEMENTED: 501
+    BAD_GATEWAY: 502
+    SERVICE_UNAVAILABLE: 503
+    GATEWAY_TIMEOUT: 504
+
+  Type Header:
+    name: String
+    value: String
+
+  Type Cookie:
+    name: String
+    value: String
+    domain: String?
+    path: String = "/"
+    expires: Timestamp?
+    max_age: Duration?
+    secure: Boolean = false
+    http_only: Boolean = true
+    same_site: SameSite = Lax
+
+  Type SameSite:
+    variants:
+      - Strict
+      - Lax
+      - None
+
+  Type Request:
+    id: RequestId
+    method: HTTPMethod
+    path: String
+    query: Map<String, String>
+    headers: List<Header>
+    cookies: Map<String, Cookie>
+    body: Body
+    version: HTTPVersion
+    remote_addr: IPAddress
+    timestamp: Timestamp
+    context: RequestContext
+
+  Type RequestContext:
+    """Контекст запроса для передачи данных между middleware"""
+    values: Map<String, Any>
+    user: User?
+    session: Session?
+    trace_id: TraceId
+    span_id: SpanId
+
+  Type Body:
+    variants:
+      - Empty
+      - Text: String
+      - JSON: JSONValue
+      - Form: Map<String, String>
+      - Multipart: List<Part>
+      - Binary: Bytes
+      - Stream: AsyncStream<Bytes>
+
+  Type Part:
+    """Часть multipart запроса"""
+    name: String
+    filename: String?
+    content_type: String
+    data: Bytes
+
+  Type Response:
+    status: HTTPStatus
+    headers: List<Header>
+    cookies: List<Cookie>
+    body: Body
+    
+  Type ResponseBuilder:
+    """Fluent builder для создания ответов"""
+    status: HTTPStatus = OK
+    headers: List<Header> = []
+    cookies: List<Cookie> = []
+    body: Body = Empty
+
+  # ==========================================================================
+  # МАРШРУТИЗАЦИЯ
+  # ==========================================================================
+
+  Type Route:
+    method: HTTPMethod
+    pattern: RoutePattern
+    handler: Handler
+    middleware: List<Middleware> = []
+    name: String?
+    metadata: Map<String, Any> = {}
+
+  Type RoutePattern:
+    """Паттерн маршрута с поддержкой параметров"""
+    segments: List<Segment>
+    
+  Type Segment:
+    variants:
+      - Static: String           # /users
+      - Param: String            # /:id
+      - Wildcard                 # /*
+      - Regex: (name: String, pattern: Regex)  # /:id<[0-9]+>
+      - Optional: Segment        # /:id?
+
+  Type RouteMatch:
+    route: Route
+    params: Map<String, String>
+    query: Map<String, String>
+
+  Type Router:
+    routes: List<Route>
+    not_found_handler: Handler
+    method_not_allowed_handler: Handler
+    prefix: String = ""
+    middleware: List<Middleware> = []
+
+  # ==========================================================================
+  # ОБРАБОТЧИКИ И MIDDLEWARE
+  # ==========================================================================
+
+  Type Handler:
+    """Обработчик запроса"""
+    function: (Request, RouteParams) -> Async<Response>
+
+  Type RouteParams:
+    path_params: Map<String, String>
+    query_params: Map<String, String>
+
+  Type Middleware:
+    """Middleware для обработки запросов"""
+    name: String
+    priority: Int = 0
+    function: (Request, NextHandler) -> Async<Response>
+
+  Type NextHandler:
+    """Следующий обработчик в цепочке"""
+    call: (Request) -> Async<Response>
+
+  Type MiddlewareChain:
+    middleware: List<Middleware>
+    handler: Handler
+
+  # ==========================================================================
+  # КОНФИГУРАЦИЯ СЕРВЕРА
+  # ==========================================================================
+
+  Type ServerConfig:
+    host: String = "0.0.0.0"
+    port: Port = 8080
+    
+    # TLS
+    tls: TLSConfig?
+    
+    # Limits
+    max_connections: Int = 10000
+    max_request_size: ByteSize = 10.MB
+    max_header_size: ByteSize = 8.KB
+    request_timeout: Duration = 30.seconds
+    keep_alive_timeout: Duration = 60.seconds
+    
+    # HTTP/2
+    http2_enabled: Boolean = true
+    http2_max_streams: Int = 100
+    
+    # Compression
+    compression: CompressionConfig = default
+    
+    # CORS
+    cors: CORSConfig?
+    
+    # Logging
+    access_log: Boolean = true
+    error_log: Boolean = true
+
+  Type TLSConfig:
+    cert_path: Path
+    key_path: Path
+    ca_path: Path?
+    min_version: TLSVersion = TLS_1_2
+    ciphers: List<String>?
+
+  Type TLSVersion:
+    variants:
+      - TLS_1_0
+      - TLS_1_1
+      - TLS_1_2
+      - TLS_1_3
+
+  Type CompressionConfig:
+    enabled: Boolean = true
+    algorithms: List<CompressionAlgorithm> = [Gzip, Brotli, Deflate]
+    min_size: ByteSize = 1.KB
+    mime_types: List<String> = ["text/*", "application/json", "application/xml"]
+
+  Type CompressionAlgorithm:
+    variants:
+      - Gzip
+      - Brotli
+      - Deflate
+      - Zstd
+
+  Type CORSConfig:
+    allowed_origins: List<String> = ["*"]
+    allowed_methods: List<HTTPMethod> = [GET, POST, PUT, DELETE, OPTIONS]
+    allowed_headers: List<String> = ["*"]
+    exposed_headers: List<String> = []
+    allow_credentials: Boolean = false
+    max_age: Duration = 24.hours
+
+  # ==========================================================================
+  # СОСТОЯНИЕ СЕРВЕРА
+  # ==========================================================================
+
+  Type ServerState:
+    status: ServerStatus
+    config: ServerConfig
+    router: Router
+    connections: Map<ConnectionId, Connection>
+    stats: ServerStats
+    started_at: Timestamp?
+
+  Type ServerStatus:
+    variants:
+      - Stopped
+      - Starting
+      - Running
+      - Stopping
+      - Error: String
+
+  Type Connection:
+    id: ConnectionId
+    remote_addr: IPAddress
+    local_addr: IPAddress
+    protocol: HTTPVersion
+    state: ConnectionState
+    requests_count: Int
+    bytes_received: Int
+    bytes_sent: Int
+    connected_at: Timestamp
+    last_activity: Timestamp
+
+  Type ConnectionState:
+    variants:
+      - Idle
+      - Reading
+      - Processing
+      - Writing
+      - Closing
+      - Closed
+
+  Type ServerStats:
+    total_requests: Int
+    active_connections: Int
+    requests_per_second: Float
+    average_response_time: Duration
+    bytes_received: Int
+    bytes_sent: Int
+    errors_count: Int
+    status_codes: Map<Int, Int>
+
+  # ==========================================================================
+  # ПОВЕДЕНИЯ СЕРВЕРА
+  # ==========================================================================
+
+  Behavior ServerLifecycle:
+    """Жизненный цикл HTTP сервера"""
+
+    Given server with config:
+      state.config = config
+      state.status = Stopped
+      state.router = Router.empty()
+      state.connections = {}
+      state.stats = ServerStats.zero()
+
+    When server.start():
+      Given state.status is Stopped
+      Then:
+        - set state.status to Starting
+        - bind to (config.host, config.port)
+        - if config.tls then setup_tls(config.tls)
+        - start accept_loop()
+        - set state.status to Running
+        - set state.started_at to now()
+        - emit ServerStarted(config.host, config.port)
+
+    When server.stop():
+      Given state.status is Running
+      Then:
+        - set state.status to Stopping
+        - stop accepting new connections
+        - gracefully close all connections with timeout 30.seconds
+        - emit ServerStopped(stats)
+        - set state.status to Stopped
+
+    When server.restart():
+      Then:
+        - await server.stop()
+        - await server.start()
+
+  Behavior ConnectionHandling:
+    """Обработка соединений"""
+
+    When connection accepted from remote_addr:
+      Given state.connections.size < config.max_connections
+      Then:
+        - create connection = Connection.new(remote_addr)
+        - add connection to state.connections
+        - increment state.stats.active_connections
+        - start handle_connection(connection)
+        - emit ConnectionOpened(connection.id, remote_addr)
+
+    When connection accepted but limit reached:
+      Given state.connections.size >= config.max_connections
+      Then:
+        - respond with 503 Service Unavailable
+        - close connection immediately
+        - emit ConnectionRejected(remote_addr, "max_connections")
+
+    When handle_connection(connection):
+      Then:
+        - loop while connection.state != Closed:
+            - set connection.state to Reading
+            - read request with timeout config.request_timeout
+            - if timeout then close connection
+            - set connection.state to Processing
+            - response = await process_request(request)
+            - set connection.state to Writing
+            - write response
+            - increment connection.requests_count
+            - update connection.last_activity
+            - if not keep_alive then break
+        - close connection
+
+    When connection closed:
+      Then:
+        - remove connection from state.connections
+        - decrement state.stats.active_connections
+        - emit ConnectionClosed(connection.id, connection.stats)
+
+  Behavior RequestProcessing:
+    """Обработка HTTP запросов"""
+
+    When process_request(request):
+      Then:
+        - start_time = now()
+        - trace_id = generate_trace_id()
+        - request.context.trace_id = trace_id
+        
+        # Parse request
+        - parsed = parse_request(request)
+        - if parsed.error then return error_response(400, parsed.error)
+        
+        # Find route
+        - match = router.match(request.method, request.path)
+        
+        # Build middleware chain
+        - chain = build_chain(match.route, router.middleware)
+        
+        # Execute chain
+        - response = await chain.execute(request)
+        
+        # Post-processing
+        - add_server_headers(response)
+        - compress_if_needed(response, request)
+        
+        # Stats
+        - duration = now() - start_time
+        - update_stats(request, response, duration)
+        - emit RequestCompleted(request, response, duration)
+        
+        - return response
+
+    When router.match(method, path):
+      Then:
+        - for route in routes:
+            - if route.method == method:
+                - if params = route.pattern.match(path):
+                    - return RouteMatch(route, params)
+        
+        # Check if path exists with different method
+        - for route in routes:
+            - if route.pattern.match(path):
+                - return MethodNotAllowed(allowed_methods)
+        
+        - return NotFound
+
+    When build_chain(route, global_middleware):
+      Then:
+        - middleware = sort_by_priority(
+            global_middleware + route.middleware
+          )
+        - return MiddlewareChain(middleware, route.handler)
+
+    When chain.execute(request):
+      Given middleware is not empty
+      Then:
+        - current = middleware.first()
+        - rest = middleware.rest()
+        - next = NextHandler(() -> 
+            MiddlewareChain(rest, handler).execute(request)
+          )
+        - return await current.function(request, next)
+
+    When chain.execute(request):
+      Given middleware is empty
+      Then:
+        - params = RouteParams(match.path_params, request.query)
+        - return await handler.function(request, params)
+
+  # ==========================================================================
+  # ВСТРОЕННЫЕ MIDDLEWARE
+  # ==========================================================================
+
+  Behavior LoggingMiddleware:
+    """Логирование запросов"""
+
+    When logging_middleware(request, next):
+      Then:
+        - start = now()
+        - log.info("[${request.method}] ${request.path} - started",
+            trace_id: request.context.trace_id,
+            remote_addr: request.remote_addr
+          )
+        
+        - response = await next.call(request)
+        
+        - duration = now() - start
+        - log.info("[${request.method}] ${request.path} - ${response.status}",
+            trace_id: request.context.trace_id,
+            duration_ms: duration.milliseconds,
+            status: response.status
+          )
+        
+        - return response
+
+  Behavior CORSMiddleware:
+    """Cross-Origin Resource Sharing"""
+
+    When cors_middleware(request, next):
+      Given config.cors is defined
+      Then:
+        - origin = request.header("Origin")
+        
+        # Preflight request
+        - if request.method == OPTIONS:
+            - return preflight_response(origin, request)
+        
+        # Actual request
+        - response = await next.call(request)
+        - add_cors_headers(response, origin)
+        - return response
+
+    When preflight_response(origin, request):
+      Then:
+        - if not is_origin_allowed(origin):
+            - return Response(status: FORBIDDEN)
+        
+        - return Response(
+            status: NO_CONTENT,
+            headers: [
+              ("Access-Control-Allow-Origin", origin),
+              ("Access-Control-Allow-Methods", config.cors.allowed_methods.join(", ")),
+              ("Access-Control-Allow-Headers", request.header("Access-Control-Request-Headers")),
+              ("Access-Control-Max-Age", config.cors.max_age.seconds.toString())
+            ]
+          )
+
+  Behavior CompressionMiddleware:
+    """Сжатие ответов"""
+
+    When compression_middleware(request, next):
+      Given config.compression.enabled
+      Then:
+        - response = await next.call(request)
+        
+        - if should_compress(response):
+            - encoding = select_encoding(request.header("Accept-Encoding"))
+            - if encoding:
+                - response.body = compress(response.body, encoding)
+                - response.headers.add("Content-Encoding", encoding)
+                - response.headers.remove("Content-Length")
+        
+        - return response
+
+    When should_compress(response):
+      Then:
+        - return response.body.size >= config.compression.min_size
+            and response.content_type matches config.compression.mime_types
+            and not response.headers.has("Content-Encoding")
+
+  Behavior RateLimitMiddleware:
+    """Ограничение частоты запросов"""
+
+    State:
+      buckets: Map<String, TokenBucket>
+
+    When rate_limit_middleware(request, next):
+      Given rate_limit_config is defined
+      Then:
+        - key = extract_key(request)  # IP, user_id, API key
+        - bucket = buckets.get_or_create(key, rate_limit_config)
+        
+        - if bucket.try_consume(1):
+            - response = await next.call(request)
+            - add_rate_limit_headers(response, bucket)
+            - return response
+        - else:
+            - return Response(
+                status: TOO_MANY_REQUESTS,
+                headers: [
+                  ("Retry-After", bucket.reset_time.seconds.toString()),
+                  ("X-RateLimit-Limit", bucket.limit.toString()),
+                  ("X-RateLimit-Remaining", "0"),
+                  ("X-RateLimit-Reset", bucket.reset_time.unix.toString())
+                ]
+              )
+
+  Behavior AuthMiddleware:
+    """Аутентификация"""
+
+    When auth_middleware(request, next):
+      Given auth_config is defined
+      Then:
+        - token = extract_token(request)
+        
+        - if not token:
+            - return Response(status: UNAUTHORIZED)
+        
+        - user = await validate_token(token)
+        
+        - if not user:
+            - return Response(status: UNAUTHORIZED)
+        
+        - request.context.user = user
+        - return await next.call(request)
+
+    When extract_token(request):
+      Then:
+        # Bearer token
+        - auth_header = request.header("Authorization")
+        - if auth_header.starts_with("Bearer "):
+            - return auth_header.substring(7)
+        
+        # Cookie
+        - if cookie = request.cookies.get("session"):
+            - return cookie.value
+        
+        # Query param (for WebSocket)
+        - if token = request.query.get("token"):
+            - return token
+        
+        - return null
+
+  Behavior TimeoutMiddleware:
+    """Таймаут запросов"""
+
+    When timeout_middleware(request, next):
+      Then:
+        - timeout = request.context.get("timeout") ?? config.request_timeout
+        
+        - result = await race(
+            next.call(request),
+            sleep(timeout).then(() -> TimeoutError)
+          )
+        
+        - match result:
+            - Response(r) -> return r
+            - TimeoutError -> return Response(
+                status: GATEWAY_TIMEOUT,
+                body: JSON({ error: "Request timeout" })
+              )
+
+  Behavior RecoveryMiddleware:
+    """Восстановление после паники"""
+
+    When recovery_middleware(request, next):
+      Then:
+        - try:
+            - return await next.call(request)
+          catch error:
+            - log.error("Request panic recovered",
+                error: error.message,
+                stack: error.stack,
+                trace_id: request.context.trace_id
+              )
+            - emit RequestPanic(request, error)
+            - return Response(
+                status: INTERNAL_SERVER_ERROR,
+                body: JSON({ error: "Internal server error" })
+              )
+
+  # ==========================================================================
+  # RESPONSE BUILDER
+  # ==========================================================================
+
+  Behavior ResponseBuilding:
+    """Fluent API для создания ответов"""
+
+    When Response.ok():
+      Then: return ResponseBuilder(status: OK)
+
+    When Response.created():
+      Then: return ResponseBuilder(status: CREATED)
+
+    When Response.no_content():
+      Then: return ResponseBuilder(status: NO_CONTENT)
+
+    When Response.bad_request():
+      Then: return ResponseBuilder(status: BAD_REQUEST)
+
+    When Response.unauthorized():
+      Then: return ResponseBuilder(status: UNAUTHORIZED)
+
+    When Response.forbidden():
+      Then: return ResponseBuilder(status: FORBIDDEN)
+
+    When Response.not_found():
+      Then: return ResponseBuilder(status: NOT_FOUND)
+
+    When Response.error():
+      Then: return ResponseBuilder(status: INTERNAL_SERVER_ERROR)
+
+    When builder.status(code):
+      Then: return builder with status = code
+
+    When builder.header(name, value):
+      Then: return builder with headers += Header(name, value)
+
+    When builder.cookie(cookie):
+      Then: return builder with cookies += cookie
+
+    When builder.json(data):
+      Then: 
+        - return builder
+            .header("Content-Type", "application/json")
+            .body(JSON(data))
+
+    When builder.html(content):
+      Then:
+        - return builder
+            .header("Content-Type", "text/html; charset=utf-8")
+            .body(Text(content))
+
+    When builder.text(content):
+      Then:
+        - return builder
+            .header("Content-Type", "text/plain; charset=utf-8")
+            .body(Text(content))
+
+    When builder.file(path):
+      Then:
+        - content_type = mime_type_for(path)
+        - return builder
+            .header("Content-Type", content_type)
+            .body(Stream(file_stream(path)))
+
+    When builder.redirect(url, permanent):
+      Then:
+        - status = if permanent then PERMANENT_REDIRECT else TEMPORARY_REDIRECT
+        - return builder
+            .status(status)
+            .header("Location", url)
+
+    When builder.build():
+      Then: return Response(
+        status: builder.status,
+        headers: builder.headers,
+        cookies: builder.cookies,
+        body: builder.body
+      )
+
+  # ==========================================================================
+  # ROUTER BUILDER
+  # ==========================================================================
+
+  Behavior RouterBuilding:
+    """DSL для определения маршрутов"""
+
+    When Router.new():
+      Then: return Router(routes: [], prefix: "")
+
+    When router.get(path, handler):
+      Then: return router.route(GET, path, handler)
+
+    When router.post(path, handler):
+      Then: return router.route(POST, path, handler)
+
+    When router.put(path, handler):
+      Then: return router.route(PUT, path, handler)
+
+    When router.patch(path, handler):
+      Then: return router.route(PATCH, path, handler)
+
+    When router.delete(path, handler):
+      Then: return router.route(DELETE, path, handler)
+
+    When router.route(method, path, handler):
+      Then:
+        - pattern = parse_pattern(router.prefix + path)
+        - route = Route(method, pattern, handler, router.middleware)
+        - return router with routes += route
+
+    When router.group(prefix, configure):
+      Then:
+        - sub_router = Router(prefix: router.prefix + prefix)
+        - configure(sub_router)
+        - return router with routes += sub_router.routes
+
+    When router.use(middleware):
+      Then: return router with middleware += middleware
+
+    When router.mount(prefix, sub_router):
+      Then:
+        - prefixed_routes = sub_router.routes.map(r ->
+            r with pattern = parse_pattern(prefix + r.pattern.to_string())
+          )
+        - return router with routes += prefixed_routes
+
+  # ==========================================================================
+  # STATIC FILES
+  # ==========================================================================
+
+  Behavior StaticFileServer:
+    """Сервер статических файлов"""
+
+    Type StaticConfig:
+      root: Path
+      index: List<String> = ["index.html"]
+      cache_control: String = "public, max-age=3600"
+      etag: Boolean = true
+      last_modified: Boolean = true
+      directory_listing: Boolean = false
+
+    When static_handler(config):
+      Then: return Handler((request, params) ->
+        serve_static(config, request.path)
+      )
+
+    When serve_static(config, path):
+      Then:
+        - file_path = config.root / sanitize_path(path)
+        
+        # Security: prevent directory traversal
+        - if not file_path.starts_with(config.root):
+            - return Response.forbidden().build()
+        
+        # Check if directory
+        - if file_path.is_directory():
+            - for index in config.index:
+                - index_path = file_path / index
+                - if index_path.exists():
+                    - return serve_file(config, index_path)
+            - if config.directory_listing:
+                - return directory_listing(file_path)
+            - return Response.not_found().build()
+        
+        # Check if file exists
+        - if not file_path.exists():
+            - return Response.not_found().build()
+        
+        - return serve_file(config, file_path)
+
+    When serve_file(config, path):
+      Then:
+        - stat = path.stat()
+        - etag = compute_etag(stat) if config.etag else null
+        - last_modified = stat.mtime if config.last_modified else null
+        
+        - return Response.ok()
+            .header("Content-Type", mime_type_for(path))
+            .header("Content-Length", stat.size.toString())
+            .header("Cache-Control", config.cache_control)
+            .header_if(etag, "ETag", etag)
+            .header_if(last_modified, "Last-Modified", format_http_date(last_modified))
+            .body(Stream(file_stream(path)))
+            .build()
+
+  # ==========================================================================
+  # СОБЫТИЯ
+  # ==========================================================================
+
+  Events:
+    ServerStarted:
+      host: String
+      port: Port
+      timestamp: Timestamp
+
+    ServerStopped:
+      stats: ServerStats
+      uptime: Duration
+      timestamp: Timestamp
+
+    ConnectionOpened:
+      connection_id: ConnectionId
+      remote_addr: IPAddress
+      timestamp: Timestamp
+
+    ConnectionClosed:
+      connection_id: ConnectionId
+      requests_count: Int
+      bytes_transferred: Int
+      duration: Duration
+
+    ConnectionRejected:
+      remote_addr: IPAddress
+      reason: String
+
+    RequestReceived:
+      request_id: RequestId
+      method: HTTPMethod
+      path: String
+      trace_id: TraceId
+
+    RequestCompleted:
+      request_id: RequestId
+      method: HTTPMethod
+      path: String
+      status: HTTPStatus
+      duration: Duration
+      bytes_sent: Int
+
+    RequestPanic:
+      request_id: RequestId
+      error: Error
+      stack_trace: String
+
+  # ==========================================================================
+  # ПРИМЕР ИСПОЛЬЗОВАНИЯ
+  # ==========================================================================
+
+  Example "Basic HTTP Server":
+    ```vibee
+    # Создание роутера
+    router = Router.new()
+      .get("/", home_handler)
+      .get("/health", health_handler)
+      .group("/api/v1", (api) ->
+        api
+          .use(auth_middleware)
+          .get("/users", list_users)
+          .get("/users/:id", get_user)
+          .post("/users", create_user)
+          .put("/users/:id", update_user)
+          .delete("/users/:id", delete_user)
+      )
+      .use(logging_middleware)
+      .use(cors_middleware)
+      .use(recovery_middleware)
+
+    # Обработчики
+    home_handler = Handler((req, params) ->
+      Response.ok()
+        .html("<h1>Welcome to Vibee Server</h1>")
+        .build()
+    )
+
+    health_handler = Handler((req, params) ->
+      Response.ok()
+        .json({ status: "healthy", uptime: server.uptime })
+        .build()
+    )
+
+    list_users = Handler((req, params) ->
+      users = await UserRepository.find_all()
+      Response.ok().json(users).build()
+    )
+
+    get_user = Handler((req, params) ->
+      user = await UserRepository.find_by_id(params.path_params["id"])
+      match user:
+        Some(u) -> Response.ok().json(u).build()
+        None -> Response.not_found().json({ error: "User not found" }).build()
+    )
+
+    # Конфигурация сервера
+    config = ServerConfig(
+      host: "0.0.0.0",
+      port: 8080,
+      tls: TLSConfig(
+        cert_path: "/certs/server.crt",
+        key_path: "/certs/server.key"
+      ),
+      cors: CORSConfig(
+        allowed_origins: ["https://example.com"],
+        allow_credentials: true
+      )
+    )
+
+    # Запуск
+    server = HTTPServer(config, router)
+    await server.start()
+    ```
+
+  Example "REST API with Validation":
+    ```vibee
+    # Схема валидации
+    CreateUserSchema = Schema(
+      name: String.min(1).max(100),
+      email: String.email(),
+      age: Int.min(0).max(150).optional()
+    )
+
+    create_user = Handler((req, params) ->
+      # Валидация
+      validation = CreateUserSchema.validate(req.body.json)
+      if validation.errors:
+        return Response.bad_request()
+          .json({ errors: validation.errors })
+          .build()
+      
+      # Создание пользователя
+      user = await UserRepository.create(validation.data)
+      
+      Response.created()
+        .header("Location", "/api/v1/users/${user.id}")
+        .json(user)
+        .build()
+    )
+    ```

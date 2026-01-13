@@ -1,0 +1,694 @@
+// =============================================================================
+// Vibee OS — Universal Pub/Sub Module
+// Unified publish/subscribe abstraction for multiple backends
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Core Traits
+// -----------------------------------------------------------------------------
+
+/// Universal message broker trait
+trait MessageBroker {
+    fn publish(topic: String, message: PubSubMessage) -> Result<PublishResult, PubSubError>
+    fn subscribe(topic: String) -> Result<Subscription, PubSubError>
+    fn unsubscribe(subscription_id: String) -> Result<(), PubSubError>
+    fn close() -> Result<(), PubSubError>
+}
+
+/// Subscription trait
+trait Subscription {
+    fn id() -> String
+    fn topic() -> String
+    fn receive() -> Result<PubSubMessage, PubSubError>
+    fn receive_timeout(timeout: Duration) -> Result<Option<PubSubMessage>, PubSubError>
+    fn close() -> Result<(), PubSubError>
+}
+
+// -----------------------------------------------------------------------------
+// Messages
+// -----------------------------------------------------------------------------
+
+/// Universal pub/sub message
+struct PubSubMessage {
+    id: String
+    topic: String
+    payload: [Byte]
+    headers: Map<String, String>
+    timestamp: Int64
+    source: Option<String>
+    
+    fn new(payload: [Byte]) -> Self {
+        PubSubMessage {
+            id: UUID.v4(),
+            topic: "",
+            payload: payload,
+            headers: Map.empty(),
+            timestamp: Instant.now().as_millis(),
+            source: None
+        }
+    }
+    
+    fn text(content: String) -> Self {
+        PubSubMessage.new(content.bytes())
+            .with_header("content-type", "text/plain")
+    }
+    
+    fn json<T: Serialize>(data: T) -> Self {
+        PubSubMessage.new(JSON.stringify(data).bytes())
+            .with_header("content-type", "application/json")
+    }
+    
+    fn binary(data: [Byte]) -> Self {
+        PubSubMessage.new(data)
+            .with_header("content-type", "application/octet-stream")
+    }
+    
+    fn with_topic(topic: String) -> Self { self.topic = topic; self }
+    fn with_header(key: String, value: String) -> Self { self.headers.set(key, value); self }
+    fn with_source(source: String) -> Self { self.source = Some(source); self }
+    
+    fn as_string() -> Result<String, DecodeError> { String.from_utf8(self.payload) }
+    fn as_json<T: Deserialize>() -> Result<T, DecodeError> { JSON.parse(self.as_string()?) }
+    
+    fn content_type() -> Option<String> { self.headers.get("content-type") }
+}
+
+struct PublishResult {
+    message_id: String
+    timestamp: Int64
+}
+
+// -----------------------------------------------------------------------------
+// In-Memory Broker
+// -----------------------------------------------------------------------------
+
+/// In-memory pub/sub broker for testing and local use
+actor MemoryBroker: MessageBroker {
+    state topics: Map<String, [MemorySubscription]>
+    state subscriptions: Map<String, MemorySubscription>
+    
+    fn new() -> Self {
+        MemoryBroker { topics: Map.empty(), subscriptions: Map.empty() }
+    }
+    
+    fn publish(topic: String, message: PubSubMessage) -> Result<PublishResult, PubSubError> {
+        var msg = message
+        msg.topic = topic
+        
+        // Direct topic subscribers
+        if let subs = self.topics.get(topic) {
+            for sub in subs { sub.deliver(msg.clone()) }
+        }
+        
+        // Pattern matching subscribers
+        for (pattern, subs) in self.topics {
+            if pattern != topic && self.matches_pattern(pattern, topic) {
+                for sub in subs { sub.deliver(msg.clone()) }
+            }
+        }
+        
+        Ok(PublishResult { message_id: msg.id, timestamp: msg.timestamp })
+    }
+    
+    fn subscribe(topic: String) -> Result<Subscription, PubSubError> {
+        let sub = MemorySubscription.new(topic)
+        self.topics.entry(topic).or_default().push(sub)
+        self.subscriptions.set(sub.id(), sub)
+        Ok(sub)
+    }
+    
+    fn unsubscribe(subscription_id: String) -> Result<(), PubSubError> {
+        if let sub = self.subscriptions.remove(subscription_id) {
+            sub.close()?
+        }
+        Ok(())
+    }
+    
+    fn close() -> Result<(), PubSubError> {
+        for (_, sub) in self.subscriptions { let _ = sub.close(); }
+        self.topics.clear()
+        self.subscriptions.clear()
+        Ok(())
+    }
+    
+    fn matches_pattern(pattern: String, topic: String) -> Bool {
+        let p = pattern.split(".")
+        let t = topic.split(".")
+        Self.match_parts(p, t)
+    }
+    
+    fn match_parts(pattern: [String], topic: [String]) -> Bool {
+        if pattern.is_empty() && topic.is_empty() { return true }
+        if pattern.is_empty() { return false }
+        match pattern[0] {
+            "#" | ">" => true
+            "*" => !topic.is_empty() && Self.match_parts(pattern[1..], topic[1..])
+            s => !topic.is_empty() && topic[0] == s && Self.match_parts(pattern[1..], topic[1..])
+        }
+    }
+}
+
+actor MemorySubscription: Subscription {
+    state sub_id: String
+    state sub_topic: String
+    state messages: Channel<PubSubMessage>
+    state active: Bool
+    
+    fn new(topic: String) -> Self {
+        MemorySubscription {
+            sub_id: UUID.v4(), sub_topic: topic,
+            messages: Channel.unbounded(), active: true
+        }
+    }
+    
+    fn deliver(msg: PubSubMessage) { if self.active { self.messages.send(msg) } }
+    fn id() -> String { self.sub_id }
+    fn topic() -> String { self.sub_topic }
+    
+    fn receive() -> Result<PubSubMessage, PubSubError> {
+        if !self.active { return Err(PubSubError.SubscriptionClosed) }
+        self.messages.recv().map_err(|_| PubSubError.SubscriptionClosed)
+    }
+    
+    fn receive_timeout(timeout: Duration) -> Result<Option<PubSubMessage>, PubSubError> {
+        if !self.active { return Err(PubSubError.SubscriptionClosed) }
+        match self.messages.recv_timeout(timeout) {
+            Ok(msg) => Ok(Some(msg))
+            Err(RecvError.Timeout) => Ok(None)
+            Err(_) => Err(PubSubError.SubscriptionClosed)
+        }
+    }
+    
+    fn close() -> Result<(), PubSubError> {
+        self.active = false
+        self.messages.close()
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Multi-Backend Broker
+// -----------------------------------------------------------------------------
+
+/// Backend type for multi-broker
+enum BackendType { Memory, Redis, Kafka, RabbitMQ, NATS, MQTT }
+
+/// Multi-backend broker that can route to different backends
+actor MultiBroker: MessageBroker {
+    state backends: Map<String, Box<dyn MessageBroker>>
+    state default_backend: String
+    state routing_rules: [RoutingRule]
+    
+    fn new() -> Self {
+        let broker = MultiBroker {
+            backends: Map.empty(),
+            default_backend: "memory",
+            routing_rules: []
+        }
+        broker.backends.set("memory", Box.new(MemoryBroker.new()))
+        broker
+    }
+    
+    fn add_backend(name: String, broker: Box<dyn MessageBroker>) -> Self {
+        self.backends.set(name, broker)
+        self
+    }
+    
+    fn set_default(name: String) -> Self {
+        self.default_backend = name
+        self
+    }
+    
+    fn add_route(rule: RoutingRule) -> Self {
+        self.routing_rules.push(rule)
+        self
+    }
+    
+    fn get_backend(topic: String) -> Option<&dyn MessageBroker> {
+        for rule in self.routing_rules {
+            if rule.matches(topic) {
+                return self.backends.get(rule.backend)
+            }
+        }
+        self.backends.get(self.default_backend)
+    }
+    
+    fn publish(topic: String, message: PubSubMessage) -> Result<PublishResult, PubSubError> {
+        let backend = self.get_backend(topic).ok_or(PubSubError.NoBackend)?
+        backend.publish(topic, message)
+    }
+    
+    fn subscribe(topic: String) -> Result<Subscription, PubSubError> {
+        let backend = self.get_backend(topic).ok_or(PubSubError.NoBackend)?
+        backend.subscribe(topic)
+    }
+    
+    fn unsubscribe(subscription_id: String) -> Result<(), PubSubError> {
+        for (_, backend) in self.backends {
+            let _ = backend.unsubscribe(subscription_id)
+        }
+        Ok(())
+    }
+    
+    fn close() -> Result<(), PubSubError> {
+        for (_, backend) in self.backends { let _ = backend.close(); }
+        Ok(())
+    }
+}
+
+struct RoutingRule {
+    pattern: String
+    backend: String
+    
+    fn new(pattern: String, backend: String) -> Self {
+        RoutingRule { pattern: pattern, backend: backend }
+    }
+    
+    fn matches(topic: String) -> Bool {
+        if self.pattern.ends_with("*") {
+            topic.starts_with(self.pattern[..self.pattern.len()-1])
+        } else {
+            topic == self.pattern
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Publisher
+// -----------------------------------------------------------------------------
+
+/// High-level publisher
+actor Publisher<B: MessageBroker> {
+    state broker: B
+    state default_topic: Option<String>
+    state middleware: [fn(PubSubMessage) -> PubSubMessage]
+    state retry_config: RetryConfig
+    
+    fn new(broker: B) -> Self {
+        Publisher {
+            broker: broker, default_topic: None,
+            middleware: [], retry_config: RetryConfig.default()
+        }
+    }
+    
+    fn with_topic(topic: String) -> Self { self.default_topic = Some(topic); self }
+    fn with_middleware(f: fn(PubSubMessage) -> PubSubMessage) -> Self { self.middleware.push(f); self }
+    fn with_retry(config: RetryConfig) -> Self { self.retry_config = config; self }
+    
+    on publish(message: PubSubMessage) -> Result<PublishResult, PubSubError> {
+        let topic = if message.topic.is_empty() {
+            self.default_topic.clone().ok_or(PubSubError.NoTopic)?
+        } else { message.topic }
+        
+        var msg = message.with_topic(topic)
+        for mw in self.middleware { msg = mw(msg) }
+        
+        self.publish_with_retry(msg)
+    }
+    
+    fn publish_with_retry(message: PubSubMessage) -> Result<PublishResult, PubSubError> {
+        var attempts = 0
+        var last_error = PubSubError.Unknown
+        
+        while attempts < self.retry_config.max_retries {
+            match self.broker.publish(message.topic, message.clone()) {
+                Ok(result) => return Ok(result)
+                Err(e) => {
+                    last_error = e
+                    attempts += 1
+                    if attempts < self.retry_config.max_retries {
+                        let delay = self.retry_config.delay * (2 ^ (attempts - 1))
+                        @native("sleep", delay.as_millis())
+                    }
+                }
+            }
+        }
+        Err(last_error)
+    }
+    
+    on publish_text(topic: String, text: String) -> Result<PublishResult, PubSubError> {
+        self.publish(PubSubMessage.text(text).with_topic(topic))
+    }
+    
+    on publish_json<T: Serialize>(topic: String, data: T) -> Result<PublishResult, PubSubError> {
+        self.publish(PubSubMessage.json(data).with_topic(topic))
+    }
+    
+    on publish_batch(messages: [PubSubMessage]) -> Result<[PublishResult], PubSubError> {
+        var results = []
+        for msg in messages { results.push(self.publish(msg)?) }
+        Ok(results)
+    }
+}
+
+struct RetryConfig {
+    max_retries: Int
+    delay: Duration
+    
+    fn default() -> Self { RetryConfig { max_retries: 3, delay: Duration.millis(100) } }
+    fn no_retry() -> Self { RetryConfig { max_retries: 1, delay: Duration.zero() } }
+}
+
+// -----------------------------------------------------------------------------
+// Subscriber
+// -----------------------------------------------------------------------------
+
+/// High-level subscriber
+actor Subscriber<B: MessageBroker> {
+    state broker: B
+    state subscriptions: Map<String, Subscription>
+    state handlers: Map<String, fn(PubSubMessage) -> Result<(), String>>
+    state error_handler: Option<fn(PubSubError)>
+    state running: Bool
+    
+    fn new(broker: B) -> Self {
+        Subscriber {
+            broker: broker, subscriptions: Map.empty(),
+            handlers: Map.empty(), error_handler: None, running: false
+        }
+    }
+    
+    on on(topic: String, handler: fn(PubSubMessage) -> Result<(), String>) -> Result<Self, PubSubError> {
+        let sub = self.broker.subscribe(topic)?
+        self.subscriptions.set(topic, sub)
+        self.handlers.set(topic, handler)
+        Ok(self)
+    }
+    
+    on on_error(handler: fn(PubSubError)) -> Self {
+        self.error_handler = Some(handler)
+        self
+    }
+    
+    on start() {
+        self.running = true
+        for (topic, sub) in self.subscriptions {
+            let handlers = self.handlers
+            let error_handler = self.error_handler
+            async {
+                while self.running {
+                    match sub.receive() {
+                        Ok(msg) => {
+                            if let handler = handlers.get(msg.topic) {
+                                if let Err(e) = handler(msg) {
+                                    // Handler error - could log or handle
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            if let h = error_handler { h(e) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    on stop() {
+        self.running = false
+        for (_, sub) in self.subscriptions { let _ = sub.close(); }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Event Bus
+// -----------------------------------------------------------------------------
+
+/// Local event bus for in-process pub/sub
+actor EventBus {
+    state handlers: Map<String, [fn(PubSubMessage)]>
+    state async_handlers: Map<String, [fn(PubSubMessage)]>
+    
+    fn new() -> Self {
+        EventBus { handlers: Map.empty(), async_handlers: Map.empty() }
+    }
+    
+    on subscribe(event: String, handler: fn(PubSubMessage)) {
+        self.handlers.entry(event).or_default().push(handler)
+    }
+    
+    on subscribe_async(event: String, handler: fn(PubSubMessage)) {
+        self.async_handlers.entry(event).or_default().push(handler)
+    }
+    
+    on emit(event: String, message: PubSubMessage) {
+        let msg = message.with_topic(event)
+        
+        // Sync handlers
+        if let handlers = self.handlers.get(event) {
+            for handler in handlers { handler(msg.clone()) }
+        }
+        
+        // Async handlers
+        if let handlers = self.async_handlers.get(event) {
+            for handler in handlers {
+                let m = msg.clone()
+                async { handler(m) }
+            }
+        }
+        
+        // Wildcard handlers
+        for (pattern, handlers) in self.handlers {
+            if pattern.ends_with("*") && event.starts_with(pattern[..pattern.len()-1]) {
+                for handler in handlers { handler(msg.clone()) }
+            }
+        }
+    }
+    
+    on emit_text(event: String, text: String) {
+        self.emit(event, PubSubMessage.text(text))
+    }
+    
+    on emit_json<T: Serialize>(event: String, data: T) {
+        self.emit(event, PubSubMessage.json(data))
+    }
+    
+    on unsubscribe(event: String) {
+        self.handlers.remove(event)
+        self.async_handlers.remove(event)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Topic Router
+// -----------------------------------------------------------------------------
+
+/// Topic-based message router
+actor TopicRouter<B: MessageBroker> {
+    state broker: B
+    state routes: [Route]
+    state dead_letter_topic: Option<String>
+    
+    fn new(broker: B) -> Self {
+        TopicRouter { broker: broker, routes: [], dead_letter_topic: None }
+    }
+    
+    fn route(pattern: String, handler: fn(PubSubMessage) -> Result<Option<PubSubMessage>, String>) -> Self {
+        self.routes.push(Route { pattern: pattern, handler: handler, transform: None })
+        self
+    }
+    
+    fn route_to(pattern: String, target_topic: String) -> Self {
+        self.routes.push(Route {
+            pattern: pattern,
+            handler: |msg| Ok(Some(msg)),
+            transform: Some(|msg| msg.with_topic(target_topic))
+        })
+        self
+    }
+    
+    fn with_dead_letter(topic: String) -> Self {
+        self.dead_letter_topic = Some(topic)
+        self
+    }
+    
+    on process(message: PubSubMessage) -> Result<(), PubSubError> {
+        var handled = false
+        
+        for route in self.routes {
+            if route.matches(message.topic) {
+                handled = true
+                match (route.handler)(message.clone()) {
+                    Ok(Some(mut result)) => {
+                        if let transform = route.transform {
+                            result = transform(result)
+                        }
+                        self.broker.publish(result.topic, result)?
+                    }
+                    Ok(None) => {}  // Message consumed, no output
+                    Err(e) => {
+                        if let dlq = self.dead_letter_topic {
+                            let dlq_msg = message.clone()
+                                .with_topic(dlq)
+                                .with_header("error", e)
+                                .with_header("original-topic", message.topic)
+                            self.broker.publish(dlq, dlq_msg)?
+                        }
+                    }
+                }
+            }
+        }
+        
+        if !handled {
+            if let dlq = self.dead_letter_topic {
+                let dlq_msg = message.with_topic(dlq).with_header("reason", "no-route")
+                self.broker.publish(dlq, dlq_msg)?
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+struct Route {
+    pattern: String
+    handler: fn(PubSubMessage) -> Result<Option<PubSubMessage>, String>
+    transform: Option<fn(PubSubMessage) -> PubSubMessage>
+    
+    fn matches(topic: String) -> Bool {
+        if self.pattern == "*" { return true }
+        if self.pattern.ends_with("*") {
+            topic.starts_with(self.pattern[..self.pattern.len()-1])
+        } else {
+            topic == self.pattern
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Message Aggregator
+// -----------------------------------------------------------------------------
+
+/// Aggregates messages by key
+actor MessageAggregator<B: MessageBroker> {
+    state broker: B
+    state buffers: Map<String, [PubSubMessage]>
+    state config: AggregatorConfig
+    state timers: Map<String, Int64>
+    
+    fn new(broker: B, config: AggregatorConfig) -> Self {
+        MessageAggregator {
+            broker: broker, buffers: Map.empty(),
+            config: config, timers: Map.empty()
+        }
+    }
+    
+    on add(key: String, message: PubSubMessage) -> Result<Option<[PubSubMessage]>, PubSubError> {
+        let buffer = self.buffers.entry(key).or_default()
+        buffer.push(message)
+        
+        // Check if we should flush
+        let should_flush = buffer.len() >= self.config.max_count ||
+            (self.timers.get(key).map(|t| Instant.now().as_millis() - t >= self.config.max_wait.as_millis()).unwrap_or(false))
+        
+        if should_flush {
+            let messages = self.buffers.remove(key).unwrap_or([])
+            self.timers.remove(key)
+            Ok(Some(messages))
+        } else {
+            if !self.timers.contains_key(key) {
+                self.timers.set(key, Instant.now().as_millis())
+            }
+            Ok(None)
+        }
+    }
+    
+    on flush(key: String) -> Option<[PubSubMessage]> {
+        self.timers.remove(key)
+        self.buffers.remove(key)
+    }
+    
+    on flush_all() -> Map<String, [PubSubMessage]> {
+        let result = self.buffers.clone()
+        self.buffers.clear()
+        self.timers.clear()
+        result
+    }
+}
+
+struct AggregatorConfig {
+    max_count: Int
+    max_wait: Duration
+    
+    fn default() -> Self { AggregatorConfig { max_count: 100, max_wait: Duration.seconds(5) } }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum PubSubError {
+    NotConnected
+    ConnectionFailed(String)
+    SubscriptionClosed
+    NoTopic
+    NoBackend
+    Timeout
+    SerializationError(String)
+    Unknown
+}
+
+impl ToString for PubSubError {
+    fn to_string() -> String {
+        match self {
+            .NotConnected => "Not connected"
+            .ConnectionFailed(msg) => "Connection failed: \(msg)"
+            .SubscriptionClosed => "Subscription closed"
+            .NoTopic => "No topic specified"
+            .NoBackend => "No backend available"
+            .Timeout => "Operation timed out"
+            .SerializationError(msg) => "Serialization error: \(msg)"
+            .Unknown => "Unknown error"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "message creation" {
+    let msg = PubSubMessage.text("Hello")
+    assert_eq(msg.as_string()?, "Hello")?
+    assert_eq(msg.content_type(), Some("text/plain"))?
+}
+
+test "json message" {
+    struct Data { value: Int }
+    let msg = PubSubMessage.json(Data { value: 42 })
+    let data: Data = msg.as_json()?
+    assert_eq(data.value, 42)?
+}
+
+test "memory broker pub/sub" {
+    let broker = MemoryBroker.new()
+    let sub = broker.subscribe("test.topic")?
+    
+    broker.publish("test.topic", PubSubMessage.text("Hello"))?
+    
+    let msg = sub.receive()?
+    assert_eq(msg.as_string()?, "Hello")?
+}
+
+test "pattern matching" {
+    let broker = MemoryBroker.new()
+    assert(broker.matches_pattern("test.*", "test.foo"))?
+    assert(broker.matches_pattern("test.#", "test.foo.bar"))?
+    assert(!broker.matches_pattern("test.*", "other.foo"))?
+}
+
+test "routing rule" {
+    let rule = RoutingRule.new("events.*", "kafka")
+    assert(rule.matches("events.user.created"))?
+    assert(!rule.matches("logs.error"))?
+}
+
+test "event bus" {
+    let bus = EventBus.new()
+    var received = false
+    
+    bus.subscribe("test.event", |msg| { received = true })
+    bus.emit_text("test.event", "Hello")
+    
+    assert(received)?
+}

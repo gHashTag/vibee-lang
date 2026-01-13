@@ -1,0 +1,653 @@
+# ============================================================================
+# RESILIENCE - Отказоустойчивость на Vibee
+# ============================================================================
+# Circuit Breaker, Retry, Timeout, Bulkhead, Fallback
+# ============================================================================
+
+Specification Resilience:
+  """Отказоустойчивость как спецификация защиты от сбоев."""
+
+  # ==========================================================================
+  # CIRCUIT BREAKER
+  # ==========================================================================
+
+  Type CircuitBreaker:
+    name: String
+    state: Atomic<CircuitState>
+    failure_count: Atomic<Int>
+    success_count: Atomic<Int>
+    last_failure_time: Atomic<Option<Instant>>
+    config: CircuitBreakerConfig
+    listeners: List<CircuitBreakerListener>
+    mutex: Mutex
+
+    Static Method new(name: String) -> CircuitBreaker:
+      return CircuitBreaker.with_config(name, CircuitBreakerConfig.default())
+
+    Static Method with_config(name: String, config: CircuitBreakerConfig) -> CircuitBreaker:
+      return CircuitBreaker(
+        name: name,
+        state: Atomic(CircuitState.Closed),
+        failure_count: Atomic(0),
+        success_count: Atomic(0),
+        last_failure_time: Atomic(null),
+        config: config,
+        listeners: [],
+        mutex: Mutex.new()
+      )
+
+    Method call<T>(f: () -> Result<T, Error>) -> Result<T, CircuitBreakerError>:
+      if not self.allow_request():
+        return Err(CircuitBreakerError.Open(self.name))
+      
+      result = f()
+      
+      match result:
+        Ok(value) ->
+          self.record_success()
+          return Ok(value)
+        Err(error) ->
+          self.record_failure(error)
+          return Err(CircuitBreakerError.ExecutionFailed(error))
+
+    Method call_async<T>(f: () -> Promise<Result<T, Error>>) -> Promise<Result<T, CircuitBreakerError>>:
+      if not self.allow_request():
+        return Promise.resolve(Err(CircuitBreakerError.Open(self.name)))
+      
+      return f().then(result -> {
+        match result:
+          Ok(value) ->
+            self.record_success()
+            Ok(value)
+          Err(error) ->
+            self.record_failure(error)
+            Err(CircuitBreakerError.ExecutionFailed(error))
+      })
+
+    Method allow_request() -> Boolean:
+      state = self.state.load()
+      
+      match state:
+        Closed -> true
+        Open ->
+          if self.should_attempt_reset():
+            self.transition_to(CircuitState.HalfOpen)
+            true
+          else:
+            false
+        HalfOpen -> true
+
+    Method should_attempt_reset() -> Boolean:
+      if self.last_failure_time.load() is Some(last):
+        return Instant.now() - last >= self.config.reset_timeout
+      return false
+
+    Method record_success():
+      guard = self.mutex.lock()
+      state = self.state.load()
+      
+      match state:
+        Closed ->
+          self.failure_count.store(0)
+        HalfOpen ->
+          self.success_count.fetch_add(1)
+          if self.success_count.load() >= self.config.success_threshold:
+            self.transition_to(CircuitState.Closed)
+        Open ->
+          pass
+
+    Method record_failure(error: Error):
+      guard = self.mutex.lock()
+      state = self.state.load()
+      
+      self.last_failure_time.store(Some(Instant.now()))
+      
+      match state:
+        Closed ->
+          self.failure_count.fetch_add(1)
+          if self.failure_count.load() >= self.config.failure_threshold:
+            self.transition_to(CircuitState.Open)
+        HalfOpen ->
+          self.transition_to(CircuitState.Open)
+        Open ->
+          pass
+
+    Method transition_to(new_state: CircuitState):
+      old_state = self.state.load()
+      self.state.store(new_state)
+      
+      match new_state:
+        Closed ->
+          self.failure_count.store(0)
+          self.success_count.store(0)
+        HalfOpen ->
+          self.success_count.store(0)
+        Open ->
+          pass
+      
+      for listener in self.listeners:
+        listener.on_state_change(self.name, old_state, new_state)
+
+    Method state() -> CircuitState:
+      return self.state.load()
+
+    Method is_closed() -> Boolean:
+      return self.state.load() == CircuitState.Closed
+
+    Method is_open() -> Boolean:
+      return self.state.load() == CircuitState.Open
+
+    Method is_half_open() -> Boolean:
+      return self.state.load() == CircuitState.HalfOpen
+
+    Method reset():
+      guard = self.mutex.lock()
+      self.transition_to(CircuitState.Closed)
+
+    Method add_listener(listener: CircuitBreakerListener):
+      self.listeners.push(listener)
+
+  Type CircuitState:
+    variants:
+      - Closed    # Normal operation
+      - Open      # Failing fast
+      - HalfOpen  # Testing recovery
+
+  Type CircuitBreakerConfig:
+    failure_threshold: Int
+    success_threshold: Int
+    reset_timeout: Duration
+    failure_rate_threshold: Option<Float>
+    slow_call_duration_threshold: Option<Duration>
+    slow_call_rate_threshold: Option<Float>
+
+    Static Method default() -> CircuitBreakerConfig:
+      return CircuitBreakerConfig(
+        failure_threshold: 5,
+        success_threshold: 3,
+        reset_timeout: Duration.seconds(30),
+        failure_rate_threshold: null,
+        slow_call_duration_threshold: null,
+        slow_call_rate_threshold: null
+      )
+
+  Type CircuitBreakerError:
+    variants:
+      - Open(String)
+      - ExecutionFailed(Error)
+
+    Method message() -> String:
+      match self:
+        Open(name) -> "Circuit breaker '${name}' is open"
+        ExecutionFailed(e) -> e.message()
+
+  Trait CircuitBreakerListener:
+    Method on_state_change(name: String, from: CircuitState, to: CircuitState)
+
+  # ==========================================================================
+  # RETRY
+  # ==========================================================================
+
+  Type Retry:
+    config: RetryConfig
+
+    Static Method new() -> Retry:
+      return Retry(RetryConfig.default())
+
+    Static Method with_config(config: RetryConfig) -> Retry:
+      return Retry(config)
+
+    Method call<T>(f: () -> Result<T, Error>) -> Result<T, Error>:
+      last_error = null
+      
+      for attempt in 0..self.config.max_attempts:
+        if attempt > 0:
+          delay = self.calculate_delay(attempt)
+          sleep(delay)
+        
+        result = f()
+        
+        match result:
+          Ok(value) -> return Ok(value)
+          Err(error) ->
+            if not self.should_retry(error, attempt):
+              return Err(error)
+            last_error = error
+      
+      return Err(last_error ?? Error("Max retries exceeded"))
+
+    Method call_async<T>(f: () -> Promise<Result<T, Error>>) -> Promise<Result<T, Error>>:
+      return self.retry_async(f, 0, null)
+
+    Method retry_async<T>(f: () -> Promise<Result<T, Error>>, attempt: Int, last_error: Option<Error>) -> Promise<Result<T, Error>>:
+      if attempt >= self.config.max_attempts:
+        return Promise.resolve(Err(last_error ?? Error("Max retries exceeded")))
+      
+      delay_promise = if attempt > 0:
+        delay = self.calculate_delay(attempt)
+        sleep_async(delay)
+      else:
+        Promise.resolve(())
+      
+      return delay_promise.then(_ -> f()).then(result -> {
+        match result:
+          Ok(value) -> Promise.resolve(Ok(value))
+          Err(error) ->
+            if self.should_retry(error, attempt):
+              self.retry_async(f, attempt + 1, Some(error))
+            else:
+              Promise.resolve(Err(error))
+      })
+
+    Method calculate_delay(attempt: Int) -> Duration:
+      base = self.config.initial_delay
+      
+      delay = match self.config.backoff:
+        Fixed -> base
+        Linear -> base * attempt
+        Exponential(factor) -> base * pow(factor, attempt - 1)
+        ExponentialWithJitter(factor) ->
+          base_delay = base * pow(factor, attempt - 1)
+          jitter = random.float() * base_delay.as_millis().to_float() * 0.2
+          base_delay + Duration.millis(jitter.to_int())
+      
+      if self.config.max_delay is Some(max):
+        return min(delay, max)
+      return delay
+
+    Method should_retry(error: Error, attempt: Int) -> Boolean:
+      if attempt >= self.config.max_attempts - 1:
+        return false
+      
+      if self.config.retry_on is Some(predicate):
+        return predicate(error)
+      
+      return true
+
+  Type RetryConfig:
+    max_attempts: Int
+    initial_delay: Duration
+    max_delay: Option<Duration>
+    backoff: BackoffStrategy
+    retry_on: Option<(Error) -> Boolean>
+
+    Static Method default() -> RetryConfig:
+      return RetryConfig(
+        max_attempts: 3,
+        initial_delay: Duration.millis(100),
+        max_delay: Some(Duration.seconds(10)),
+        backoff: BackoffStrategy.ExponentialWithJitter(2.0),
+        retry_on: null
+      )
+
+  Type BackoffStrategy:
+    variants:
+      - Fixed
+      - Linear
+      - Exponential(Float)
+      - ExponentialWithJitter(Float)
+
+  # ==========================================================================
+  # TIMEOUT
+  # ==========================================================================
+
+  Type Timeout:
+    duration: Duration
+
+    Static Method new(duration: Duration) -> Timeout:
+      return Timeout(duration)
+
+    Method call<T>(f: () -> T) -> Result<T, TimeoutError>:
+      result_channel = Channel.bounded(1)
+      
+      task = spawn {
+        result = f()
+        result_channel.send(result)
+      }
+      
+      select:
+        result = result_channel.recv():
+          return Ok(result)
+        timeout(self.duration):
+          task.cancel()
+          return Err(TimeoutError(self.duration))
+
+    Method call_async<T>(f: () -> Promise<T>) -> Promise<Result<T, TimeoutError>>:
+      return Promise.race([
+        f().then(v -> Ok(v)),
+        sleep_async(self.duration).then(_ -> Err(TimeoutError(self.duration)))
+      ])
+
+  Type TimeoutError:
+    duration: Duration
+
+    Method message() -> String:
+      return "Operation timed out after ${self.duration}"
+
+  # ==========================================================================
+  # BULKHEAD
+  # ==========================================================================
+
+  Type Bulkhead:
+    name: String
+    max_concurrent: Int
+    max_wait: Duration
+    semaphore: Semaphore
+    queue_size: Atomic<Int>
+
+    Static Method new(name: String, max_concurrent: Int) -> Bulkhead:
+      return Bulkhead(
+        name: name,
+        max_concurrent: max_concurrent,
+        max_wait: Duration.seconds(0),
+        semaphore: Semaphore.new(max_concurrent),
+        queue_size: Atomic(0)
+      )
+
+    Static Method with_queue(name: String, max_concurrent: Int, max_wait: Duration) -> Bulkhead:
+      return Bulkhead(
+        name: name,
+        max_concurrent: max_concurrent,
+        max_wait: max_wait,
+        semaphore: Semaphore.new(max_concurrent),
+        queue_size: Atomic(0)
+      )
+
+    Method call<T>(f: () -> T) -> Result<T, BulkheadError>:
+      if self.max_wait.is_zero():
+        if not self.semaphore.try_acquire():
+          return Err(BulkheadError.Full(self.name))
+      else:
+        self.queue_size.fetch_add(1)
+        acquired = self.semaphore.try_acquire_timeout(self.max_wait)
+        self.queue_size.fetch_add(-1)
+        
+        if not acquired:
+          return Err(BulkheadError.Timeout(self.name))
+      
+      try:
+        return Ok(f())
+      finally:
+        self.semaphore.release()
+
+    Method call_async<T>(f: () -> Promise<T>) -> Promise<Result<T, BulkheadError>>:
+      return self.acquire_async().then(acquired -> {
+        if not acquired:
+          return Promise.resolve(Err(BulkheadError.Full(self.name)))
+        
+        f().then(result -> {
+          self.semaphore.release()
+          Ok(result)
+        }).catch(error -> {
+          self.semaphore.release()
+          throw error
+        })
+      })
+
+    Method acquire_async() -> Promise<Boolean>:
+      if self.max_wait.is_zero():
+        return Promise.resolve(self.semaphore.try_acquire())
+      
+      return self.semaphore.acquire_timeout_async(self.max_wait)
+
+    Method available_permits() -> Int:
+      return self.semaphore.available_permits()
+
+    Method queue_length() -> Int:
+      return self.queue_size.load()
+
+  Type BulkheadError:
+    variants:
+      - Full(String)
+      - Timeout(String)
+
+    Method message() -> String:
+      match self:
+        Full(name) -> "Bulkhead '${name}' is full"
+        Timeout(name) -> "Bulkhead '${name}' wait timeout"
+
+  # ==========================================================================
+  # FALLBACK
+  # ==========================================================================
+
+  Type Fallback<T>:
+    fallback_fn: (Error) -> T
+
+    Static Method new(fallback: (Error) -> T) -> Fallback<T>:
+      return Fallback(fallback)
+
+    Static Method value(default: T) -> Fallback<T>:
+      return Fallback(_ -> default)
+
+    Method call(f: () -> Result<T, Error>) -> T:
+      match f():
+        Ok(value) -> value
+        Err(error) -> self.fallback_fn(error)
+
+    Method call_async(f: () -> Promise<Result<T, Error>>) -> Promise<T>:
+      return f().then(result -> {
+        match result:
+          Ok(value) -> value
+          Err(error) -> self.fallback_fn(error)
+      })
+
+  # ==========================================================================
+  # RESILIENCE BUILDER
+  # ==========================================================================
+
+  Type ResilienceBuilder<T>:
+    circuit_breaker: Option<CircuitBreaker>
+    retry: Option<Retry>
+    timeout: Option<Timeout>
+    bulkhead: Option<Bulkhead>
+    fallback: Option<Fallback<T>>
+
+    Static Method new() -> ResilienceBuilder<T>:
+      return ResilienceBuilder(null, null, null, null, null)
+
+    Method with_circuit_breaker(cb: CircuitBreaker) -> ResilienceBuilder<T>:
+      return ResilienceBuilder(..self, circuit_breaker: Some(cb))
+
+    Method with_retry(retry: Retry) -> ResilienceBuilder<T>:
+      return ResilienceBuilder(..self, retry: Some(retry))
+
+    Method with_timeout(timeout: Timeout) -> ResilienceBuilder<T>:
+      return ResilienceBuilder(..self, timeout: Some(timeout))
+
+    Method with_bulkhead(bulkhead: Bulkhead) -> ResilienceBuilder<T>:
+      return ResilienceBuilder(..self, bulkhead: Some(bulkhead))
+
+    Method with_fallback(fallback: Fallback<T>) -> ResilienceBuilder<T>:
+      return ResilienceBuilder(..self, fallback: Some(fallback))
+
+    Method build() -> Resilience<T>:
+      return Resilience(
+        circuit_breaker: self.circuit_breaker,
+        retry: self.retry,
+        timeout: self.timeout,
+        bulkhead: self.bulkhead,
+        fallback: self.fallback
+      )
+
+  Type Resilience<T>:
+    circuit_breaker: Option<CircuitBreaker>
+    retry: Option<Retry>
+    timeout: Option<Timeout>
+    bulkhead: Option<Bulkhead>
+    fallback: Option<Fallback<T>>
+
+    Method call(f: () -> Result<T, Error>) -> Result<T, Error>:
+      # Apply bulkhead
+      wrapped = if self.bulkhead is Some(bh):
+        () -> bh.call(f).map_err(e -> Error(e.message()))
+      else:
+        f
+      
+      # Apply timeout
+      wrapped = if self.timeout is Some(to):
+        () -> to.call(wrapped).map_err(e -> Error(e.message()))
+      else:
+        wrapped
+      
+      # Apply circuit breaker
+      wrapped = if self.circuit_breaker is Some(cb):
+        () -> cb.call(wrapped).map_err(e -> Error(e.message()))
+      else:
+        wrapped
+      
+      # Apply retry
+      wrapped = if self.retry is Some(r):
+        () -> r.call(wrapped)
+      else:
+        wrapped
+      
+      # Execute
+      result = wrapped()
+      
+      # Apply fallback
+      if self.fallback is Some(fb):
+        match result:
+          Ok(v) -> Ok(v)
+          Err(e) -> Ok(fb.fallback_fn(e))
+      else:
+        result
+
+  # ==========================================================================
+  # DECORATORS
+  # ==========================================================================
+
+  Behavior ResilienceDecorators:
+    @circuit_breaker(failure_threshold: 5, reset_timeout: Duration.seconds(30))
+    fn call_external_service() -> Result<Response, Error>:
+      return http.get("https://api.example.com/data").send()
+
+    @retry(max_attempts: 3, backoff: Exponential(2.0))
+    fn fetch_with_retry() -> Result<Data, Error>:
+      return fetch_data()
+
+    @timeout(Duration.seconds(5))
+    fn slow_operation() -> Result<Data, Error>:
+      return compute_slowly()
+
+    @bulkhead(max_concurrent: 10)
+    fn limited_operation() -> Result<Data, Error>:
+      return process_request()
+
+    @resilient(
+      circuit_breaker: CircuitBreakerConfig.default(),
+      retry: RetryConfig.default(),
+      timeout: Duration.seconds(10)
+    )
+    fn resilient_call() -> Result<Data, Error>:
+      return external_api_call()
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Resilience":
+    ```vibee
+    # Circuit Breaker
+    cb = CircuitBreaker.new("external-api")
+    
+    result = cb.call(() -> {
+      http.get("https://api.example.com").send()
+    })
+    
+    match result:
+      Ok(response) -> process(response)
+      Err(CircuitBreakerError.Open(_)) -> 
+        print("Service unavailable, circuit is open")
+      Err(CircuitBreakerError.ExecutionFailed(e)) ->
+        print("Request failed: ${e}")
+
+    # Check circuit state
+    if cb.is_open():
+      print("Circuit is open, using fallback")
+
+    # Custom config
+    cb = CircuitBreaker.with_config("payment-service", CircuitBreakerConfig(
+      failure_threshold: 3,
+      success_threshold: 2,
+      reset_timeout: Duration.minutes(1)
+    ))
+
+    # Retry with exponential backoff
+    retry = Retry.with_config(RetryConfig(
+      max_attempts: 5,
+      initial_delay: Duration.millis(100),
+      max_delay: Some(Duration.seconds(5)),
+      backoff: BackoffStrategy.ExponentialWithJitter(2.0),
+      retry_on: Some(e -> e.is_retryable())
+    ))
+
+    result = retry.call(() -> {
+      fetch_data_from_api()
+    })
+
+    # Timeout
+    timeout = Timeout.new(Duration.seconds(5))
+    
+    result = timeout.call(() -> {
+      slow_database_query()
+    })
+    
+    match result:
+      Ok(data) -> use(data)
+      Err(TimeoutError(_)) -> print("Query timed out")
+
+    # Bulkhead (limit concurrent calls)
+    bulkhead = Bulkhead.new("database", 10)
+    
+    result = bulkhead.call(() -> {
+      execute_query()
+    })
+    
+    match result:
+      Ok(data) -> use(data)
+      Err(BulkheadError.Full(_)) -> print("Too many concurrent requests")
+
+    # Bulkhead with queue
+    bulkhead = Bulkhead.with_queue("api", 10, Duration.seconds(5))
+
+    # Fallback
+    fallback = Fallback.new(error -> {
+      print("Using cached data due to: ${error}")
+      get_cached_data()
+    })
+
+    data = fallback.call(() -> fetch_fresh_data())
+
+    # Combine patterns
+    resilience = ResilienceBuilder<Response>.new()
+      .with_circuit_breaker(CircuitBreaker.new("api"))
+      .with_retry(Retry.new())
+      .with_timeout(Timeout.new(Duration.seconds(10)))
+      .with_bulkhead(Bulkhead.new("api", 20))
+      .with_fallback(Fallback.value(Response.empty()))
+      .build()
+
+    result = resilience.call(() -> {
+      http.get("https://api.example.com").send()
+    })
+
+    # Async usage
+    result = await cb.call_async(async () -> {
+      await http.get("https://api.example.com").send_async()
+    })
+
+    # Listen to circuit breaker events
+    cb.add_listener(LoggingListener())
+
+    Type LoggingListener:
+      Trait CircuitBreakerListener:
+        Method on_state_change(name: String, from: CircuitState, to: CircuitState):
+          log.info("Circuit '${name}' changed from ${from} to ${to}")
+
+    # Decorator-based
+    @circuit_breaker(failure_threshold: 5)
+    @retry(max_attempts: 3)
+    @timeout(Duration.seconds(10))
+    fn resilient_api_call() -> Result<Data, Error>:
+      return external_service.fetch()
+    ```

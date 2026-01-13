@@ -1,0 +1,282 @@
+// =============================================================================
+// Vibee OS — Kubernetes Module
+// Kubernetes cluster management and orchestration
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Kubernetes Client
+// -----------------------------------------------------------------------------
+
+actor K8sClient {
+    state config: KubeConfig
+    state namespace: String
+    
+    init() { self.config = KubeConfig.default(); self.namespace = "default" }
+    init(config: KubeConfig) { self.config = config; self.namespace = "default" }
+    
+    on namespace(ns: String) -> Self { self.namespace = ns; self }
+    
+    // Core resources
+    on pods() -> PodApi { PodApi { client: self, namespace: self.namespace } }
+    on services() -> ServiceApi { ServiceApi { client: self, namespace: self.namespace } }
+    on deployments() -> DeploymentApi { DeploymentApi { client: self, namespace: self.namespace } }
+    on configmaps() -> ConfigMapApi { ConfigMapApi { client: self, namespace: self.namespace } }
+    on secrets() -> SecretApi { SecretApi { client: self, namespace: self.namespace } }
+    on namespaces() -> NamespaceApi { NamespaceApi { client: self } }
+    on nodes() -> NodeApi { NodeApi { client: self } }
+    on ingresses() -> IngressApi { IngressApi { client: self, namespace: self.namespace } }
+    
+    on apply(manifest: String) -> Result<(), K8sError> { @native("k8s_apply", self.config, manifest) }
+    on delete(manifest: String) -> Result<(), K8sError> { @native("k8s_delete", self.config, manifest) }
+}
+
+struct KubeConfig { path: String?, context: String?, cluster: String?, token: String? }
+impl KubeConfig {
+    fn default() -> Self { KubeConfig { path: None, context: None, cluster: None, token: None } }
+    fn from_file(path: String) -> Result<Self, K8sError> { @native("k8s_load_config", path) }
+    fn in_cluster() -> Result<Self, K8sError> { @native("k8s_in_cluster_config") }
+}
+
+// -----------------------------------------------------------------------------
+// Pod API
+// -----------------------------------------------------------------------------
+
+struct PodApi { client: K8sClient, namespace: String }
+impl PodApi {
+    fn list() -> Result<[Pod], K8sError> { @native("k8s_list_pods", self.client.config, self.namespace) }
+    fn get(name: String) -> Result<Pod, K8sError> { @native("k8s_get_pod", self.client.config, self.namespace, name) }
+    fn create(pod: Pod) -> Result<Pod, K8sError> { @native("k8s_create_pod", self.client.config, self.namespace, pod) }
+    fn delete(name: String) -> Result<(), K8sError> { @native("k8s_delete_pod", self.client.config, self.namespace, name) }
+    fn logs(name: String, opts: LogOptions = LogOptions.default()) -> Result<String, K8sError> { @native("k8s_pod_logs", self.client.config, self.namespace, name, opts) }
+    fn exec(name: String, cmd: [String]) -> Result<ExecResult, K8sError> { @native("k8s_pod_exec", self.client.config, self.namespace, name, cmd) }
+}
+
+struct Pod { metadata: ObjectMeta, spec: PodSpec, status: PodStatus? }
+struct PodSpec { containers: [Container], volumes: [Volume]?, restart_policy: String?, service_account: String? }
+struct PodStatus { phase: PodPhase, conditions: [PodCondition], container_statuses: [ContainerStatus]? }
+enum PodPhase { Pending, Running, Succeeded, Failed, Unknown }
+struct PodCondition { type_: String, status: String, reason: String? }
+struct ContainerStatus { name: String, ready: Bool, restart_count: Int, state: ContainerState }
+enum ContainerState { Waiting(String?), Running(DateTime), Terminated(Int, String?) }
+
+// -----------------------------------------------------------------------------
+// Deployment API
+// -----------------------------------------------------------------------------
+
+struct DeploymentApi { client: K8sClient, namespace: String }
+impl DeploymentApi {
+    fn list() -> Result<[Deployment], K8sError> { @native("k8s_list_deployments", self.client.config, self.namespace) }
+    fn get(name: String) -> Result<Deployment, K8sError> { @native("k8s_get_deployment", self.client.config, self.namespace, name) }
+    fn create(dep: Deployment) -> Result<Deployment, K8sError> { @native("k8s_create_deployment", self.client.config, self.namespace, dep) }
+    fn update(dep: Deployment) -> Result<Deployment, K8sError> { @native("k8s_update_deployment", self.client.config, self.namespace, dep) }
+    fn delete(name: String) -> Result<(), K8sError> { @native("k8s_delete_deployment", self.client.config, self.namespace, name) }
+    fn scale(name: String, replicas: Int) -> Result<(), K8sError> { @native("k8s_scale_deployment", self.client.config, self.namespace, name, replicas) }
+    fn restart(name: String) -> Result<(), K8sError> { @native("k8s_restart_deployment", self.client.config, self.namespace, name) }
+}
+
+struct Deployment { metadata: ObjectMeta, spec: DeploymentSpec, status: DeploymentStatus? }
+struct DeploymentSpec { replicas: Int, selector: LabelSelector, template: PodTemplateSpec, strategy: DeploymentStrategy? }
+struct DeploymentStatus { replicas: Int, ready_replicas: Int, available_replicas: Int, updated_replicas: Int }
+struct DeploymentStrategy { type_: String, rolling_update: RollingUpdate? }
+struct RollingUpdate { max_unavailable: IntOrString, max_surge: IntOrString }
+enum IntOrString { Int(Int), String(String) }
+
+// -----------------------------------------------------------------------------
+// Service API
+// -----------------------------------------------------------------------------
+
+struct ServiceApi { client: K8sClient, namespace: String }
+impl ServiceApi {
+    fn list() -> Result<[Service], K8sError> { @native("k8s_list_services", self.client.config, self.namespace) }
+    fn get(name: String) -> Result<Service, K8sError> { @native("k8s_get_service", self.client.config, self.namespace, name) }
+    fn create(svc: Service) -> Result<Service, K8sError> { @native("k8s_create_service", self.client.config, self.namespace, svc) }
+    fn delete(name: String) -> Result<(), K8sError> { @native("k8s_delete_service", self.client.config, self.namespace, name) }
+}
+
+struct Service { metadata: ObjectMeta, spec: ServiceSpec, status: ServiceStatus? }
+struct ServiceSpec { type_: ServiceType, selector: Map<String, String>, ports: [ServicePort], cluster_ip: String? }
+enum ServiceType { ClusterIP, NodePort, LoadBalancer, ExternalName }
+struct ServicePort { name: String?, port: Int, target_port: IntOrString, protocol: String, node_port: Int? }
+struct ServiceStatus { load_balancer: LoadBalancerStatus? }
+struct LoadBalancerStatus { ingress: [LoadBalancerIngress] }
+struct LoadBalancerIngress { ip: String?, hostname: String? }
+
+// -----------------------------------------------------------------------------
+// ConfigMap & Secret API
+// -----------------------------------------------------------------------------
+
+struct ConfigMapApi { client: K8sClient, namespace: String }
+impl ConfigMapApi {
+    fn list() -> Result<[ConfigMap], K8sError> { @native("k8s_list_configmaps", self.client.config, self.namespace) }
+    fn get(name: String) -> Result<ConfigMap, K8sError> { @native("k8s_get_configmap", self.client.config, self.namespace, name) }
+    fn create(cm: ConfigMap) -> Result<ConfigMap, K8sError> { @native("k8s_create_configmap", self.client.config, self.namespace, cm) }
+    fn delete(name: String) -> Result<(), K8sError> { @native("k8s_delete_configmap", self.client.config, self.namespace, name) }
+}
+
+struct ConfigMap { metadata: ObjectMeta, data: Map<String, String> }
+
+struct SecretApi { client: K8sClient, namespace: String }
+impl SecretApi {
+    fn list() -> Result<[Secret], K8sError> { @native("k8s_list_secrets", self.client.config, self.namespace) }
+    fn get(name: String) -> Result<Secret, K8sError> { @native("k8s_get_secret", self.client.config, self.namespace, name) }
+    fn create(secret: Secret) -> Result<Secret, K8sError> { @native("k8s_create_secret", self.client.config, self.namespace, secret) }
+    fn delete(name: String) -> Result<(), K8sError> { @native("k8s_delete_secret", self.client.config, self.namespace, name) }
+}
+
+struct Secret { metadata: ObjectMeta, type_: String, data: Map<String, [Byte]> }
+
+// -----------------------------------------------------------------------------
+// Common Types
+// -----------------------------------------------------------------------------
+
+struct ObjectMeta { name: String, namespace: String?, labels: Map<String, String>, annotations: Map<String, String> }
+struct LabelSelector { match_labels: Map<String, String> }
+struct PodTemplateSpec { metadata: ObjectMeta, spec: PodSpec }
+
+struct Container {
+    name: String
+    image: String
+    ports: [ContainerPort]?
+    env: [EnvVar]?
+    resources: ResourceRequirements?
+    volume_mounts: [VolumeMount]?
+    command: [String]?
+    args: [String]?
+}
+
+struct ContainerPort { name: String?, container_port: Int, protocol: String }
+struct EnvVar { name: String, value: String?, value_from: EnvVarSource? }
+struct EnvVarSource { config_map_key_ref: ConfigMapKeyRef?, secret_key_ref: SecretKeyRef? }
+struct ConfigMapKeyRef { name: String, key: String }
+struct SecretKeyRef { name: String, key: String }
+struct ResourceRequirements { limits: Map<String, String>?, requests: Map<String, String>? }
+struct VolumeMount { name: String, mount_path: String, read_only: Bool }
+struct Volume { name: String, config_map: ConfigMapVolumeSource?, secret: SecretVolumeSource?, persistent_volume_claim: PVCVolumeSource? }
+struct ConfigMapVolumeSource { name: String }
+struct SecretVolumeSource { secret_name: String }
+struct PVCVolumeSource { claim_name: String }
+
+// -----------------------------------------------------------------------------
+// Namespace & Node API
+// -----------------------------------------------------------------------------
+
+struct NamespaceApi { client: K8sClient }
+impl NamespaceApi {
+    fn list() -> Result<[Namespace], K8sError> { @native("k8s_list_namespaces", self.client.config) }
+    fn get(name: String) -> Result<Namespace, K8sError> { @native("k8s_get_namespace", self.client.config, name) }
+    fn create(name: String) -> Result<Namespace, K8sError> { @native("k8s_create_namespace", self.client.config, name) }
+    fn delete(name: String) -> Result<(), K8sError> { @native("k8s_delete_namespace", self.client.config, name) }
+}
+
+struct Namespace { metadata: ObjectMeta, status: NamespaceStatus }
+struct NamespaceStatus { phase: String }
+
+struct NodeApi { client: K8sClient }
+impl NodeApi {
+    fn list() -> Result<[Node], K8sError> { @native("k8s_list_nodes", self.client.config) }
+    fn get(name: String) -> Result<Node, K8sError> { @native("k8s_get_node", self.client.config, name) }
+}
+
+struct Node { metadata: ObjectMeta, status: NodeStatus }
+struct NodeStatus { conditions: [NodeCondition], capacity: Map<String, String>, allocatable: Map<String, String> }
+struct NodeCondition { type_: String, status: String, reason: String? }
+
+// -----------------------------------------------------------------------------
+// Ingress API
+// -----------------------------------------------------------------------------
+
+struct IngressApi { client: K8sClient, namespace: String }
+impl IngressApi {
+    fn list() -> Result<[Ingress], K8sError> { @native("k8s_list_ingresses", self.client.config, self.namespace) }
+    fn get(name: String) -> Result<Ingress, K8sError> { @native("k8s_get_ingress", self.client.config, self.namespace, name) }
+    fn create(ing: Ingress) -> Result<Ingress, K8sError> { @native("k8s_create_ingress", self.client.config, self.namespace, ing) }
+    fn delete(name: String) -> Result<(), K8sError> { @native("k8s_delete_ingress", self.client.config, self.namespace, name) }
+}
+
+struct Ingress { metadata: ObjectMeta, spec: IngressSpec }
+struct IngressSpec { rules: [IngressRule], tls: [IngressTLS]? }
+struct IngressRule { host: String, http: HTTPIngressRuleValue }
+struct HTTPIngressRuleValue { paths: [HTTPIngressPath] }
+struct HTTPIngressPath { path: String, path_type: String, backend: IngressBackend }
+struct IngressBackend { service: IngressServiceBackend }
+struct IngressServiceBackend { name: String, port: ServiceBackendPort }
+struct ServiceBackendPort { number: Int }
+struct IngressTLS { hosts: [String], secret_name: String }
+
+// -----------------------------------------------------------------------------
+// Manifest Builders
+// -----------------------------------------------------------------------------
+
+actor DeploymentBuilder {
+    state name: String
+    state namespace: String
+    state replicas: Int
+    state image: String
+    state labels: Map<String, String>
+    state env: [EnvVar]
+    state ports: [ContainerPort]
+    state resources: ResourceRequirements?
+    
+    init(name: String, image: String) {
+        self.name = name; self.image = image; self.namespace = "default"
+        self.replicas = 1; self.labels = Map.empty(); self.env = []; self.ports = []
+    }
+    
+    on namespace(ns: String) -> Self { self.namespace = ns; self }
+    on replicas(n: Int) -> Self { self.replicas = n; self }
+    on label(k: String, v: String) -> Self { self.labels.set(k, v); self }
+    on env(name: String, value: String) -> Self { self.env.append(EnvVar { name: name, value: Some(value), value_from: None }); self }
+    on port(p: Int) -> Self { self.ports.append(ContainerPort { name: None, container_port: p, protocol: "TCP" }); self }
+    on cpu(req: String, limit: String) -> Self { self.resources = Some(ResourceRequirements { requests: Some(Map.from([("cpu", req)])), limits: Some(Map.from([("cpu", limit)])) }); self }
+    on memory(req: String, limit: String) -> Self { self.resources = Some(ResourceRequirements { requests: Some(Map.from([("memory", req)])), limits: Some(Map.from([("memory", limit)])) }); self }
+    
+    on build() -> Deployment {
+        let container = Container { name: self.name, image: self.image, ports: Some(self.ports), env: Some(self.env), resources: self.resources, volume_mounts: None, command: None, args: None }
+        Deployment {
+            metadata: ObjectMeta { name: self.name, namespace: Some(self.namespace), labels: self.labels.clone(), annotations: Map.empty() },
+            spec: DeploymentSpec { replicas: self.replicas, selector: LabelSelector { match_labels: self.labels.clone() }, template: PodTemplateSpec { metadata: ObjectMeta { name: self.name, namespace: None, labels: self.labels.clone(), annotations: Map.empty() }, spec: PodSpec { containers: [container], volumes: None, restart_policy: None, service_account: None } }, strategy: None },
+            status: None
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors & Options
+// -----------------------------------------------------------------------------
+
+struct LogOptions { container: String?, follow: Bool, tail_lines: Int?, since_seconds: Int? }
+impl LogOptions { fn default() -> Self { LogOptions { container: None, follow: false, tail_lines: None, since_seconds: None } } }
+
+struct ExecResult { exit_code: Int, stdout: String, stderr: String }
+
+enum K8sError {
+    NotFound(String), AlreadyExists(String), Forbidden(String), Unauthorized, Timeout, ConnectionFailed(String), InvalidManifest(String), ApiError(Int, String)
+    
+    fn message() -> String {
+        match self {
+            .NotFound(r) => "Resource not found: \(r)"
+            .AlreadyExists(r) => "Resource already exists: \(r)"
+            .Forbidden(r) => "Forbidden: \(r)"
+            .Unauthorized => "Unauthorized"
+            .Timeout => "Operation timed out"
+            .ConnectionFailed(m) => "Connection failed: \(m)"
+            .InvalidManifest(m) => "Invalid manifest: \(m)"
+            .ApiError(c, m) => "API error (\(c)): \(m)"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "deployment builder" {
+    let dep = DeploymentBuilder.new("web", "nginx:latest").replicas(3).port(80).label("app", "web").build()
+    assert(dep.metadata.name == "web")
+    assert(dep.spec.replicas == 3)
+}
+
+test "kubeconfig default" {
+    let config = KubeConfig.default()
+    assert(config.path == None)
+}

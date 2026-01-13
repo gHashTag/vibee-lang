@@ -1,0 +1,232 @@
+name: vibee_os_hal
+version: "0.1.0"
+language: zig
+module: kernel/hal
+description: Hardware Abstraction Layer — абстракция над платформой для портативности
+
+behaviors:
+  - name: hal_platform_detection
+    given: Система запускается на неизвестной платформе
+    when: Вызывается hal_detect_platform
+    then: Определяется тип платформы и её возможности
+    test_cases:
+      - name: detect_wasm
+        input: {}
+        expected: {platform: "wasm", has_threads: false, has_filesystem: true}
+      - name: detect_native
+        input: {}
+        expected: {platform: "native", has_threads: true, has_filesystem: true}
+
+  - name: hal_memory_operations
+    given: Нужно выделить память на платформе
+    when: Вызывается hal_alloc
+    then: Память выделяется платформо-специфичным способом
+    test_cases:
+      - name: alloc_wasm
+        input: {size: 4096, platform: "wasm"}
+        expected: {success: true, method: "memory.grow"}
+      - name: alloc_native
+        input: {size: 4096, platform: "native"}
+        expected: {success: true, method: "mmap"}
+
+  - name: hal_console_output
+    given: Нужно вывести текст на консоль
+    when: Вызывается hal_print
+    then: Текст выводится через платформенный механизм
+    test_cases:
+      - name: print_wasm
+        input: {text: "hello", platform: "wasm"}
+        expected: {success: true, method: "fd_write"}
+      - name: print_native
+        input: {text: "hello", platform: "native"}
+        expected: {success: true, method: "write"}
+
+  - name: hal_time_operations
+    given: Нужно получить текущее время
+    when: Вызывается hal_time_now
+    then: Возвращается время в миллисекундах
+    test_cases:
+      - name: get_time
+        input: {}
+        expected: {success: true, unit: "milliseconds"}
+
+types:
+  Platform:
+    variants:
+      - WASM
+      - Native_x86_64
+      - Native_aarch64
+      - Hosted_Linux
+      - Hosted_MacOS
+      - Hosted_Windows
+
+  PlatformCapabilities:
+    has_threads: bool
+    has_filesystem: bool
+    has_network: bool
+    has_graphics: bool
+    has_audio: bool
+    max_memory: int
+    page_size: int
+    endianness: Endianness
+
+  Endianness:
+    variants:
+      - Little
+      - Big
+
+  HalError:
+    variants:
+      - NotSupported
+      - OutOfMemory
+      - IoError
+      - InvalidArgument
+      - PermissionDenied
+
+  HalResult:
+    success: bool
+    value: int?
+    error: HalError?
+
+  # Абстрактные интерфейсы для платформ
+  MemoryOps:
+    alloc: fn(size: int) -> HalResult
+    free: fn(ptr: int) -> HalResult
+    copy: fn(dst: int, src: int, size: int) -> HalResult
+    set: fn(ptr: int, value: int, size: int) -> HalResult
+
+  ConsoleOps:
+    write: fn(data: str) -> int
+    read: fn(size: int) -> str
+    flush: fn() -> void
+
+  TimeOps:
+    now_ms: fn() -> int
+    sleep_ms: fn(ms: int) -> void
+
+  FileOps:
+    open: fn(path: str, flags: int) -> HalResult
+    close: fn(fd: int) -> HalResult
+    read: fn(fd: int, size: int) -> {data: str, bytes: int}
+    write: fn(fd: int, data: str) -> int
+
+functions:
+  # Инициализация
+  - name: hal_init
+    params: {}
+    returns: bool
+    description: Инициализация HAL для текущей платформы
+
+  - name: hal_detect_platform
+    params: {}
+    returns: Platform
+    description: Определение текущей платформы
+
+  - name: hal_get_capabilities
+    params: {}
+    returns: PlatformCapabilities
+    description: Получение возможностей платформы
+
+  # Память
+  - name: hal_alloc
+    params: {size: int}
+    returns: HalResult
+    description: Выделение памяти
+
+  - name: hal_free
+    params: {ptr: int}
+    returns: HalResult
+    description: Освобождение памяти
+
+  - name: hal_memory_copy
+    params: {dst: int, src: int, size: int}
+    returns: void
+    description: Копирование памяти
+
+  - name: hal_memory_set
+    params: {ptr: int, value: int, size: int}
+    returns: void
+    description: Заполнение памяти
+
+  # Консоль
+  - name: hal_print
+    params: {text: str}
+    returns: int
+    description: Вывод текста
+
+  - name: hal_print_err
+    params: {text: str}
+    returns: int
+    description: Вывод ошибки
+
+  - name: hal_read_line
+    params: {}
+    returns: str
+    description: Чтение строки
+
+  # Время
+  - name: hal_time_now
+    params: {}
+    returns: int
+    description: Текущее время в мс
+
+  - name: hal_sleep
+    params: {ms: int}
+    returns: void
+    description: Пауза
+
+  # Файлы (если поддерживается)
+  - name: hal_file_open
+    params: {path: str, flags: int}
+    returns: HalResult
+    description: Открытие файла
+
+  - name: hal_file_close
+    params: {fd: int}
+    returns: HalResult
+    description: Закрытие файла
+
+  - name: hal_file_read
+    params: {fd: int, size: int}
+    returns: {data: str, bytes: int}
+    description: Чтение из файла
+
+  - name: hal_file_write
+    params: {fd: int, data: str}
+    returns: int
+    description: Запись в файл
+
+  # Атомарные операции
+  - name: hal_atomic_load
+    params: {ptr: int}
+    returns: int
+    description: Атомарное чтение
+
+  - name: hal_atomic_store
+    params: {ptr: int, value: int}
+    returns: void
+    description: Атомарная запись
+
+  - name: hal_atomic_cas
+    params: {ptr: int, expected: int, desired: int}
+    returns: bool
+    description: Compare-and-swap
+
+imports:
+  - std
+
+hal_contract: |
+  Контракт HAL:
+  
+  Каждая платформа ДОЛЖНА реализовать:
+  1. hal_init() — инициализация
+  2. hal_alloc/hal_free — управление памятью
+  3. hal_print — вывод текста
+  4. hal_time_now — получение времени
+  
+  Каждая платформа МОЖЕТ реализовать:
+  1. hal_file_* — файловые операции
+  2. hal_atomic_* — атомарные операции
+  3. Потоки и синхронизация
+  
+  Если функция не поддерживается, возвращается HalError.NotSupported

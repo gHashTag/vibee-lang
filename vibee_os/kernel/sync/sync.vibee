@@ -1,0 +1,708 @@
+# ============================================================================
+# SYNC - Примитивы синхронизации на Vibee
+# ============================================================================
+# Mutex, RwLock, Semaphore, Barrier, Condition Variable
+# ============================================================================
+
+Specification Sync:
+  """Синхронизация как спецификация координации параллельных операций."""
+
+  # ==========================================================================
+  # MUTEX
+  # ==========================================================================
+
+  Type Mutex<T>:
+    value: T
+    locked: Atomic<Boolean>
+    owner: Atomic<Option<ThreadId>>
+    waiters: WaitQueue
+
+    Static Method new(value: T) -> Mutex<T>:
+      return Mutex(value, Atomic(false), Atomic(null), WaitQueue.new())
+
+    Method lock() -> MutexGuard<T>:
+      while not self.locked.compare_exchange(false, true):
+        self.waiters.wait()
+      
+      self.owner.store(Some(current_thread_id()))
+      return MutexGuard(self)
+
+    Method try_lock() -> Option<MutexGuard<T>>:
+      if self.locked.compare_exchange(false, true):
+        self.owner.store(Some(current_thread_id()))
+        return Some(MutexGuard(self))
+      return null
+
+    Method try_lock_for(timeout: Duration) -> Option<MutexGuard<T>>:
+      deadline = Instant.now() + timeout
+      
+      while Instant.now() < deadline:
+        if self.locked.compare_exchange(false, true):
+          self.owner.store(Some(current_thread_id()))
+          return Some(MutexGuard(self))
+        
+        remaining = deadline - Instant.now()
+        self.waiters.wait_timeout(remaining)
+      
+      return null
+
+    Method unlock():
+      self.owner.store(null)
+      self.locked.store(false)
+      self.waiters.notify_one()
+
+    Method is_locked() -> Boolean:
+      return self.locked.load()
+
+  Type MutexGuard<T>:
+    mutex: Mutex<T>
+
+    Method get() -> T:
+      return self.mutex.value
+
+    Method get_mut() -> T:
+      return self.mutex.value
+
+    Method set(value: T):
+      self.mutex.value = value
+
+    Method drop():
+      self.mutex.unlock()
+
+  # ==========================================================================
+  # RWLOCK
+  # ==========================================================================
+
+  Type RwLock<T>:
+    value: T
+    readers: Atomic<Int>
+    writer: Atomic<Boolean>
+    writer_waiting: Atomic<Boolean>
+    read_waiters: WaitQueue
+    write_waiters: WaitQueue
+
+    Static Method new(value: T) -> RwLock<T>:
+      return RwLock(
+        value,
+        Atomic(0),
+        Atomic(false),
+        Atomic(false),
+        WaitQueue.new(),
+        WaitQueue.new()
+      )
+
+    Method read() -> ReadGuard<T>:
+      loop:
+        # Wait if writer is active or waiting
+        while self.writer.load() or self.writer_waiting.load():
+          self.read_waiters.wait()
+        
+        # Try to acquire read lock
+        old_readers = self.readers.fetch_add(1)
+        
+        # Check if writer snuck in
+        if self.writer.load():
+          self.readers.fetch_add(-1)
+          continue
+        
+        return ReadGuard(self)
+
+    Method try_read() -> Option<ReadGuard<T>>:
+      if self.writer.load() or self.writer_waiting.load():
+        return null
+      
+      self.readers.fetch_add(1)
+      
+      if self.writer.load():
+        self.readers.fetch_add(-1)
+        return null
+      
+      return Some(ReadGuard(self))
+
+    Method write() -> WriteGuard<T>:
+      # Signal that writer is waiting
+      self.writer_waiting.store(true)
+      
+      loop:
+        # Wait for no readers and no writer
+        while self.readers.load() > 0 or self.writer.load():
+          self.write_waiters.wait()
+        
+        # Try to acquire write lock
+        if self.writer.compare_exchange(false, true):
+          self.writer_waiting.store(false)
+          return WriteGuard(self)
+
+    Method try_write() -> Option<WriteGuard<T>>:
+      if self.readers.load() > 0:
+        return null
+      
+      if self.writer.compare_exchange(false, true):
+        return Some(WriteGuard(self))
+      
+      return null
+
+    Method unlock_read():
+      if self.readers.fetch_add(-1) == 1:
+        # Last reader, notify writers
+        self.write_waiters.notify_one()
+
+    Method unlock_write():
+      self.writer.store(false)
+      # Notify all readers and one writer
+      self.read_waiters.notify_all()
+      self.write_waiters.notify_one()
+
+  Type ReadGuard<T>:
+    lock: RwLock<T>
+
+    Method get() -> T:
+      return self.lock.value
+
+    Method drop():
+      self.lock.unlock_read()
+
+  Type WriteGuard<T>:
+    lock: RwLock<T>
+
+    Method get() -> T:
+      return self.lock.value
+
+    Method get_mut() -> T:
+      return self.lock.value
+
+    Method set(value: T):
+      self.lock.value = value
+
+    Method drop():
+      self.lock.unlock_write()
+
+  # ==========================================================================
+  # SEMAPHORE
+  # ==========================================================================
+
+  Type Semaphore:
+    permits: Atomic<Int>
+    max_permits: Int
+    waiters: WaitQueue
+
+    Static Method new(permits: Int) -> Semaphore:
+      return Semaphore(Atomic(permits), permits, WaitQueue.new())
+
+    Static Method binary() -> Semaphore:
+      return Semaphore.new(1)
+
+    Method acquire():
+      self.acquire_n(1)
+
+    Method acquire_n(n: Int):
+      loop:
+        current = self.permits.load()
+        
+        if current >= n:
+          if self.permits.compare_exchange(current, current - n):
+            return
+        else:
+          self.waiters.wait()
+
+    Method try_acquire() -> Boolean:
+      return self.try_acquire_n(1)
+
+    Method try_acquire_n(n: Int) -> Boolean:
+      loop:
+        current = self.permits.load()
+        
+        if current >= n:
+          if self.permits.compare_exchange(current, current - n):
+            return true
+        else:
+          return false
+
+    Method try_acquire_timeout(timeout: Duration) -> Boolean:
+      return self.try_acquire_n_timeout(1, timeout)
+
+    Method try_acquire_n_timeout(n: Int, timeout: Duration) -> Boolean:
+      deadline = Instant.now() + timeout
+      
+      while Instant.now() < deadline:
+        if self.try_acquire_n(n):
+          return true
+        
+        remaining = deadline - Instant.now()
+        self.waiters.wait_timeout(remaining)
+      
+      return false
+
+    Method release():
+      self.release_n(1)
+
+    Method release_n(n: Int):
+      old = self.permits.fetch_add(n)
+      
+      # Wake up waiters
+      for _ in 0..n:
+        self.waiters.notify_one()
+
+    Method available_permits() -> Int:
+      return self.permits.load()
+
+    Method with_permit<T>(f: () -> T) -> T:
+      self.acquire()
+      try:
+        return f()
+      finally:
+        self.release()
+
+    Method acquire_async() -> Promise<()>:
+      return Promise.new((resolve, _) -> {
+        self.acquire()
+        resolve(())
+      })
+
+    Method acquire_timeout_async(timeout: Duration) -> Promise<Boolean>:
+      return Promise.new((resolve, _) -> {
+        result = self.try_acquire_timeout(timeout)
+        resolve(result)
+      })
+
+  # ==========================================================================
+  # BARRIER
+  # ==========================================================================
+
+  Type Barrier:
+    count: Int
+    waiting: Atomic<Int>
+    generation: Atomic<Int>
+    waiters: WaitQueue
+
+    Static Method new(count: Int) -> Barrier:
+      return Barrier(count, Atomic(0), Atomic(0), WaitQueue.new())
+
+    Method wait() -> BarrierWaitResult:
+      gen = self.generation.load()
+      
+      waiting = self.waiting.fetch_add(1) + 1
+      
+      if waiting == self.count:
+        # Last one to arrive
+        self.waiting.store(0)
+        self.generation.fetch_add(1)
+        self.waiters.notify_all()
+        return BarrierWaitResult(true)
+      else:
+        # Wait for others
+        while self.generation.load() == gen:
+          self.waiters.wait()
+        return BarrierWaitResult(false)
+
+    Method is_leader(result: BarrierWaitResult) -> Boolean:
+      return result.is_leader
+
+  Type BarrierWaitResult:
+    is_leader: Boolean
+
+  # ==========================================================================
+  # CONDITION VARIABLE
+  # ==========================================================================
+
+  Type Condvar:
+    waiters: WaitQueue
+
+    Static Method new() -> Condvar:
+      return Condvar(WaitQueue.new())
+
+    Method wait<T>(guard: MutexGuard<T>) -> MutexGuard<T>:
+      mutex = guard.mutex
+      mutex.unlock()
+      
+      self.waiters.wait()
+      
+      return mutex.lock()
+
+    Method wait_while<T>(guard: MutexGuard<T>, condition: () -> Boolean) -> MutexGuard<T>:
+      while condition():
+        guard = self.wait(guard)
+      return guard
+
+    Method wait_timeout<T>(guard: MutexGuard<T>, timeout: Duration) -> (MutexGuard<T>, Boolean):
+      mutex = guard.mutex
+      mutex.unlock()
+      
+      timed_out = not self.waiters.wait_timeout(timeout)
+      
+      return (mutex.lock(), timed_out)
+
+    Method notify_one():
+      self.waiters.notify_one()
+
+    Method notify_all():
+      self.waiters.notify_all()
+
+  # ==========================================================================
+  # ONCE
+  # ==========================================================================
+
+  Type Once:
+    done: Atomic<Boolean>
+    running: Atomic<Boolean>
+    waiters: WaitQueue
+
+    Static Method new() -> Once:
+      return Once(Atomic(false), Atomic(false), WaitQueue.new())
+
+    Method call(f: () -> ()):
+      if self.done.load():
+        return
+      
+      if self.running.compare_exchange(false, true):
+        # We're the one to run it
+        f()
+        self.done.store(true)
+        self.waiters.notify_all()
+      else:
+        # Wait for completion
+        while not self.done.load():
+          self.waiters.wait()
+
+    Method is_completed() -> Boolean:
+      return self.done.load()
+
+  Type OnceCell<T>:
+    value: Option<T>
+    once: Once
+
+    Static Method new() -> OnceCell<T>:
+      return OnceCell(null, Once.new())
+
+    Method get() -> Option<T>:
+      return self.value
+
+    Method get_or_init(f: () -> T) -> T:
+      if self.value is Some(v):
+        return v
+      
+      self.once.call(() -> {
+        self.value = Some(f())
+      })
+      
+      return self.value.unwrap()
+
+    Method set(value: T) -> Result<(), T>:
+      if self.value != null:
+        return Err(value)
+      
+      self.once.call(() -> {
+        self.value = Some(value)
+      })
+      
+      return Ok(())
+
+  # ==========================================================================
+  # LATCH
+  # ==========================================================================
+
+  Type CountDownLatch:
+    count: Atomic<Int>
+    waiters: WaitQueue
+
+    Static Method new(count: Int) -> CountDownLatch:
+      return CountDownLatch(Atomic(count), WaitQueue.new())
+
+    Method count_down():
+      if self.count.fetch_add(-1) == 1:
+        self.waiters.notify_all()
+
+    Method wait():
+      while self.count.load() > 0:
+        self.waiters.wait()
+
+    Method wait_timeout(timeout: Duration) -> Boolean:
+      deadline = Instant.now() + timeout
+      
+      while self.count.load() > 0:
+        if Instant.now() >= deadline:
+          return false
+        
+        remaining = deadline - Instant.now()
+        self.waiters.wait_timeout(remaining)
+      
+      return true
+
+    Method get_count() -> Int:
+      return self.count.load()
+
+  # ==========================================================================
+  # WAIT GROUP
+  # ==========================================================================
+
+  Type WaitGroup:
+    counter: Atomic<Int>
+    waiters: WaitQueue
+
+    Static Method new() -> WaitGroup:
+      return WaitGroup(Atomic(0), WaitQueue.new())
+
+    Method add(delta: Int):
+      self.counter.fetch_add(delta)
+
+    Method done():
+      if self.counter.fetch_add(-1) == 1:
+        self.waiters.notify_all()
+
+    Method wait():
+      while self.counter.load() > 0:
+        self.waiters.wait()
+
+  # ==========================================================================
+  # SPINLOCK
+  # ==========================================================================
+
+  Type SpinLock<T>:
+    value: T
+    locked: Atomic<Boolean>
+
+    Static Method new(value: T) -> SpinLock<T>:
+      return SpinLock(value, Atomic(false))
+
+    Method lock() -> SpinLockGuard<T>:
+      while not self.locked.compare_exchange(false, true):
+        # Spin with backoff
+        spin_hint()
+      
+      return SpinLockGuard(self)
+
+    Method try_lock() -> Option<SpinLockGuard<T>>:
+      if self.locked.compare_exchange(false, true):
+        return Some(SpinLockGuard(self))
+      return null
+
+    Method unlock():
+      self.locked.store(false)
+
+  Type SpinLockGuard<T>:
+    lock: SpinLock<T>
+
+    Method get() -> T:
+      return self.lock.value
+
+    Method get_mut() -> T:
+      return self.lock.value
+
+    Method drop():
+      self.lock.unlock()
+
+  # ==========================================================================
+  # WAIT QUEUE
+  # ==========================================================================
+
+  Type WaitQueue:
+    waiters: List<Waiter>
+    mutex: SpinLock<()>
+
+    Static Method new() -> WaitQueue:
+      return WaitQueue([], SpinLock.new(()))
+
+    Method wait():
+      waiter = Waiter.new()
+      
+      guard = self.mutex.lock()
+      self.waiters.push(waiter)
+      drop(guard)
+      
+      waiter.wait()
+
+    Method wait_timeout(timeout: Duration) -> Boolean:
+      waiter = Waiter.new()
+      
+      guard = self.mutex.lock()
+      self.waiters.push(waiter)
+      drop(guard)
+      
+      return waiter.wait_timeout(timeout)
+
+    Method notify_one():
+      guard = self.mutex.lock()
+      
+      if self.waiters.length > 0:
+        waiter = self.waiters.remove_first()
+        waiter.wake()
+
+    Method notify_all():
+      guard = self.mutex.lock()
+      
+      waiters = self.waiters
+      self.waiters = []
+      
+      drop(guard)
+      
+      for waiter in waiters:
+        waiter.wake()
+
+  Type Waiter:
+    signaled: Atomic<Boolean>
+    parker: Parker
+
+    Static Method new() -> Waiter:
+      return Waiter(Atomic(false), Parker.new())
+
+    Method wait():
+      while not self.signaled.load():
+        self.parker.park()
+
+    Method wait_timeout(timeout: Duration) -> Boolean:
+      deadline = Instant.now() + timeout
+      
+      while not self.signaled.load():
+        if Instant.now() >= deadline:
+          return false
+        
+        remaining = deadline - Instant.now()
+        self.parker.park_timeout(remaining)
+      
+      return true
+
+    Method wake():
+      self.signaled.store(true)
+      self.parker.unpark()
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Sync":
+    ```vibee
+    # Mutex
+    counter = Mutex.new(0)
+
+    threads = (0..10).map(_ -> spawn {
+      for _ in 0..1000:
+        guard = counter.lock()
+        guard.set(guard.get() + 1)
+        # Guard automatically released when dropped
+    })
+
+    for t in threads:
+      t.join()
+
+    print(counter.lock().get())  # 10000
+
+    # Try lock with timeout
+    if counter.try_lock_for(Duration.seconds(1)) is Some(guard):
+      guard.set(42)
+    else:
+      print("Could not acquire lock")
+
+    # RwLock
+    data = RwLock.new({ "count": 0 })
+
+    # Multiple readers
+    readers = (0..5).map(_ -> spawn {
+      guard = data.read()
+      print(guard.get()["count"])
+    })
+
+    # Single writer
+    writer = spawn {
+      guard = data.write()
+      value = guard.get()
+      value["count"] += 1
+      guard.set(value)
+    }
+
+    # Semaphore
+    sem = Semaphore.new(3)  # Allow 3 concurrent
+
+    workers = (0..10).map(i -> spawn {
+      sem.acquire()
+      print("Worker ${i} running")
+      sleep(Duration.seconds(1))
+      sem.release()
+    })
+
+    # With permit helper
+    sem.with_permit(() -> {
+      do_work()
+    })
+
+    # Barrier
+    barrier = Barrier.new(5)
+
+    workers = (0..5).map(i -> spawn {
+      print("Worker ${i} preparing")
+      sleep(Duration.millis(random.int_range(100, 500)))
+      
+      result = barrier.wait()
+      
+      if result.is_leader:
+        print("All workers ready!")
+      
+      print("Worker ${i} proceeding")
+    })
+
+    # Condition Variable
+    queue = Mutex.new([])
+    not_empty = Condvar.new()
+
+    producer = spawn {
+      for i in 0..10:
+        guard = queue.lock()
+        guard.get().push(i)
+        not_empty.notify_one()
+        drop(guard)
+        sleep(Duration.millis(100))
+    }
+
+    consumer = spawn {
+      for _ in 0..10:
+        guard = queue.lock()
+        guard = not_empty.wait_while(guard, () -> guard.get().is_empty())
+        item = guard.get().remove_first()
+        print("Consumed: ${item}")
+    }
+
+    # Once
+    once = Once.new()
+    initialized = false
+
+    threads = (0..10).map(_ -> spawn {
+      once.call(() -> {
+        print("Initializing...")
+        initialized = true
+      })
+      print("Using resource")
+    })
+
+    # OnceCell
+    config = OnceCell<Config>.new()
+
+    fn get_config() -> Config:
+      return config.get_or_init(() -> {
+        load_config_from_file()
+      })
+
+    # CountDownLatch
+    latch = CountDownLatch.new(3)
+
+    workers = (0..3).map(i -> spawn {
+      print("Worker ${i} starting")
+      sleep(Duration.seconds(1))
+      print("Worker ${i} done")
+      latch.count_down()
+    })
+
+    latch.wait()
+    print("All workers completed")
+
+    # WaitGroup
+    wg = WaitGroup.new()
+
+    for i in 0..5:
+      wg.add(1)
+      spawn {
+        do_work(i)
+        wg.done()
+      }
+
+    wg.wait()
+    print("All work done")
+    ```

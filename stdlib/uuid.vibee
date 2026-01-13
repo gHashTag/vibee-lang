@@ -1,0 +1,433 @@
+// =============================================================================
+// Vibee OS — UUID Module
+// UUID generation and manipulation
+// =============================================================================
+
+/// UUID (Universally Unique Identifier)
+struct UUID {
+    bytes: [UInt8; 16]
+    
+    /// Generate random UUID (v4)
+    fn v4() -> Self {
+        var bytes = @native("random_bytes", 16)
+        bytes[6] = (bytes[6] & 0x0f) | 0x40  // Version 4
+        bytes[8] = (bytes[8] & 0x3f) | 0x80  // Variant 1
+        UUID { bytes: bytes }
+    }
+    
+    /// Generate time-based UUID (v1)
+    fn v1() -> Self {
+        let timestamp = @native("uuid_timestamp")
+        let node = @native("uuid_node")
+        var bytes = [0u8; 16]
+        
+        // Time low
+        bytes[0] = ((timestamp >> 24) & 0xff) as UInt8
+        bytes[1] = ((timestamp >> 16) & 0xff) as UInt8
+        bytes[2] = ((timestamp >> 8) & 0xff) as UInt8
+        bytes[3] = (timestamp & 0xff) as UInt8
+        
+        // Time mid
+        bytes[4] = ((timestamp >> 40) & 0xff) as UInt8
+        bytes[5] = ((timestamp >> 32) & 0xff) as UInt8
+        
+        // Time high and version
+        bytes[6] = (((timestamp >> 56) & 0x0f) | 0x10) as UInt8
+        bytes[7] = ((timestamp >> 48) & 0xff) as UInt8
+        
+        // Clock seq and variant
+        let clock_seq = @native("random_u16")
+        bytes[8] = (((clock_seq >> 8) & 0x3f) | 0x80) as UInt8
+        bytes[9] = (clock_seq & 0xff) as UInt8
+        
+        // Node
+        for i in 0..6 {
+            bytes[10 + i] = node[i]
+        }
+        
+        UUID { bytes: bytes }
+    }
+    
+    /// Generate name-based UUID using MD5 (v3)
+    fn v3(namespace: UUID, name: String) -> Self {
+        let data = namespace.bytes.to_vec()
+        data.extend(name.as_bytes())
+        let hash = @native("md5", data)
+        
+        var bytes = [0u8; 16]
+        for i in 0..16 { bytes[i] = hash[i] }
+        bytes[6] = (bytes[6] & 0x0f) | 0x30  // Version 3
+        bytes[8] = (bytes[8] & 0x3f) | 0x80  // Variant 1
+        UUID { bytes: bytes }
+    }
+    
+    /// Generate name-based UUID using SHA-1 (v5)
+    fn v5(namespace: UUID, name: String) -> Self {
+        let data = namespace.bytes.to_vec()
+        data.extend(name.as_bytes())
+        let hash = @native("sha1", data)
+        
+        var bytes = [0u8; 16]
+        for i in 0..16 { bytes[i] = hash[i] }
+        bytes[6] = (bytes[6] & 0x0f) | 0x50  // Version 5
+        bytes[8] = (bytes[8] & 0x3f) | 0x80  // Variant 1
+        UUID { bytes: bytes }
+    }
+    
+    /// Generate ordered UUID (v7) - time-sortable
+    fn v7() -> Self {
+        let ms = @native("timestamp_millis") as UInt64
+        var bytes = @native("random_bytes", 16)
+        
+        // 48-bit timestamp
+        bytes[0] = ((ms >> 40) & 0xff) as UInt8
+        bytes[1] = ((ms >> 32) & 0xff) as UInt8
+        bytes[2] = ((ms >> 24) & 0xff) as UInt8
+        bytes[3] = ((ms >> 16) & 0xff) as UInt8
+        bytes[4] = ((ms >> 8) & 0xff) as UInt8
+        bytes[5] = (ms & 0xff) as UInt8
+        
+        bytes[6] = (bytes[6] & 0x0f) | 0x70  // Version 7
+        bytes[8] = (bytes[8] & 0x3f) | 0x80  // Variant 1
+        UUID { bytes: bytes }
+    }
+    
+    /// Nil UUID (all zeros)
+    fn nil() -> Self {
+        UUID { bytes: [0u8; 16] }
+    }
+    
+    /// Max UUID (all ones)
+    fn max() -> Self {
+        UUID { bytes: [0xffu8; 16] }
+    }
+    
+    /// Parse from string
+    fn parse(s: String) -> Result<Self, UUIDError> {
+        let s = s.trim().to_lower()
+        let s = s.trim_start("{").trim_end("}")
+        let s = s.replace("-", "")
+        
+        if s.len() != 32 {
+            return Err(UUIDError.InvalidFormat)
+        }
+        
+        var bytes = [0u8; 16]
+        for i in 0..16 {
+            let hex = s[(i*2)..(i*2+2)]
+            bytes[i] = UInt8.parse_hex(hex)
+                .map_err(|_| UUIDError.InvalidHex)?
+        }
+        
+        Ok(UUID { bytes: bytes })
+    }
+    
+    /// Create from bytes
+    fn from_bytes(bytes: [UInt8; 16]) -> Self {
+        UUID { bytes: bytes }
+    }
+    
+    /// Create from u128
+    fn from_u128(value: UInt128) -> Self {
+        var bytes = [0u8; 16]
+        for i in 0..16 {
+            bytes[15 - i] = ((value >> (i * 8)) & 0xff) as UInt8
+        }
+        UUID { bytes: bytes }
+    }
+    
+    /// Convert to string (lowercase with hyphens)
+    fn to_string() -> String {
+        format!("{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            self.bytes[0], self.bytes[1], self.bytes[2], self.bytes[3],
+            self.bytes[4], self.bytes[5],
+            self.bytes[6], self.bytes[7],
+            self.bytes[8], self.bytes[9],
+            self.bytes[10], self.bytes[11], self.bytes[12], self.bytes[13], self.bytes[14], self.bytes[15])
+    }
+    
+    /// Convert to uppercase string
+    fn to_string_upper() -> String {
+        self.to_string().to_upper()
+    }
+    
+    /// Convert to URN format
+    fn to_urn() -> String {
+        format!("urn:uuid:{}", self.to_string())
+    }
+    
+    /// Convert to braced format
+    fn to_braced() -> String {
+        format!("{{{}}}", self.to_string())
+    }
+    
+    /// Convert to simple format (no hyphens)
+    fn to_simple() -> String {
+        var s = ""
+        for b in self.bytes {
+            s.push_str(format!("{:02x}", b))
+        }
+        s
+    }
+    
+    /// Convert to u128
+    fn to_u128() -> UInt128 {
+        var value: UInt128 = 0
+        for i in 0..16 {
+            value = (value << 8) | self.bytes[i] as UInt128
+        }
+        value
+    }
+    
+    /// Get version
+    fn version() -> Int {
+        ((self.bytes[6] >> 4) & 0x0f) as Int
+    }
+    
+    /// Get variant
+    fn variant() -> UUIDVariant {
+        let b = self.bytes[8]
+        if (b & 0x80) == 0 { UUIDVariant.NCS }
+        else if (b & 0xc0) == 0x80 { UUIDVariant.RFC4122 }
+        else if (b & 0xe0) == 0xc0 { UUIDVariant.Microsoft }
+        else { UUIDVariant.Future }
+    }
+    
+    /// Check if nil
+    fn is_nil() -> Bool {
+        self.bytes.iter().all(|b| b == 0)
+    }
+    
+    /// Check if max
+    fn is_max() -> Bool {
+        self.bytes.iter().all(|b| b == 0xff)
+    }
+    
+    /// Get timestamp (for v1 and v7)
+    fn timestamp() -> Option<Int64> {
+        match self.version() {
+            1 => {
+                let time_low = (self.bytes[0] as Int64) << 24 |
+                               (self.bytes[1] as Int64) << 16 |
+                               (self.bytes[2] as Int64) << 8 |
+                               (self.bytes[3] as Int64)
+                let time_mid = (self.bytes[4] as Int64) << 8 |
+                               (self.bytes[5] as Int64)
+                let time_high = ((self.bytes[6] & 0x0f) as Int64) << 8 |
+                                (self.bytes[7] as Int64)
+                Some((time_high << 48) | (time_mid << 32) | time_low)
+            }
+            7 => {
+                let ms = (self.bytes[0] as Int64) << 40 |
+                         (self.bytes[1] as Int64) << 32 |
+                         (self.bytes[2] as Int64) << 24 |
+                         (self.bytes[3] as Int64) << 16 |
+                         (self.bytes[4] as Int64) << 8 |
+                         (self.bytes[5] as Int64)
+                Some(ms)
+            }
+            _ => None
+        }
+    }
+}
+
+impl Eq for UUID {
+    fn eq(other: UUID) -> Bool {
+        self.bytes == other.bytes
+    }
+}
+
+impl Ord for UUID {
+    fn cmp(other: UUID) -> Ordering {
+        self.bytes.cmp(other.bytes)
+    }
+}
+
+impl Hash for UUID {
+    fn hash(hasher: Hasher) {
+        hasher.write(self.bytes)
+    }
+}
+
+impl Display for UUID {
+    fn fmt(f: Formatter) {
+        f.write(self.to_string())
+    }
+}
+
+/// UUID variant
+enum UUIDVariant {
+    NCS
+    RFC4122
+    Microsoft
+    Future
+}
+
+/// UUID errors
+enum UUIDError {
+    InvalidFormat
+    InvalidHex
+    InvalidVersion
+}
+
+impl Display for UUIDError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidFormat => f.write("Invalid UUID format")
+            InvalidHex => f.write("Invalid hex character")
+            InvalidVersion => f.write("Invalid UUID version")
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Namespace UUIDs
+// -----------------------------------------------------------------------------
+
+module Namespace {
+    /// DNS namespace UUID
+    fn DNS() -> UUID {
+        UUID.parse("6ba7b810-9dad-11d1-80b4-00c04fd430c8").unwrap()
+    }
+    
+    /// URL namespace UUID
+    fn URL() -> UUID {
+        UUID.parse("6ba7b811-9dad-11d1-80b4-00c04fd430c8").unwrap()
+    }
+    
+    /// OID namespace UUID
+    fn OID() -> UUID {
+        UUID.parse("6ba7b812-9dad-11d1-80b4-00c04fd430c8").unwrap()
+    }
+    
+    /// X.500 namespace UUID
+    fn X500() -> UUID {
+        UUID.parse("6ba7b814-9dad-11d1-80b4-00c04fd430c8").unwrap()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// UUID Generator
+// -----------------------------------------------------------------------------
+
+/// UUID generator with configurable options
+actor UUIDGenerator {
+    state version: Int
+    state namespace: Option<UUID>
+    
+    fn new() -> Self {
+        UUIDGenerator { version: 4, namespace: None }
+    }
+    
+    fn v1() -> Self {
+        UUIDGenerator { version: 1, namespace: None }
+    }
+    
+    fn v4() -> Self {
+        UUIDGenerator { version: 4, namespace: None }
+    }
+    
+    fn v5(namespace: UUID) -> Self {
+        UUIDGenerator { version: 5, namespace: Some(namespace) }
+    }
+    
+    fn v7() -> Self {
+        UUIDGenerator { version: 7, namespace: None }
+    }
+    
+    fn generate() -> UUID {
+        match self.version {
+            1 => UUID.v1()
+            4 => UUID.v4()
+            7 => UUID.v7()
+            _ => UUID.v4()
+        }
+    }
+    
+    fn generate_named(name: String) -> UUID {
+        match (self.version, self.namespace) {
+            (3, Some(ns)) => UUID.v3(ns, name)
+            (5, Some(ns)) => UUID.v5(ns, name)
+            _ => UUID.v4()
+        }
+    }
+    
+    fn generate_batch(count: Int) -> [UUID] {
+        (0..count).map(|_| self.generate()).collect()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Utility Functions
+// -----------------------------------------------------------------------------
+
+/// Generate a new v4 UUID
+fn uuid() -> UUID {
+    UUID.v4()
+}
+
+/// Generate a new v7 UUID (time-sortable)
+fn uuid_ordered() -> UUID {
+    UUID.v7()
+}
+
+/// Check if string is valid UUID
+fn is_valid_uuid(s: String) -> Bool {
+    UUID.parse(s).is_ok()
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "v4 generation" {
+    let id = UUID.v4()
+    assert_eq(id.version(), 4)?
+    assert_eq(id.variant(), UUIDVariant.RFC4122)?
+}
+
+test "v7 generation" {
+    let id = UUID.v7()
+    assert_eq(id.version(), 7)?
+    assert(id.timestamp().is_some())?
+}
+
+test "parse and format" {
+    let s = "550e8400-e29b-41d4-a716-446655440000"
+    let id = UUID.parse(s)?
+    assert_eq(id.to_string(), s)?
+}
+
+test "parse formats" {
+    let canonical = "550e8400-e29b-41d4-a716-446655440000"
+    let simple = "550e8400e29b41d4a716446655440000"
+    let braced = "{550e8400-e29b-41d4-a716-446655440000}"
+    
+    let id1 = UUID.parse(canonical)?
+    let id2 = UUID.parse(simple)?
+    let id3 = UUID.parse(braced)?
+    
+    assert_eq(id1, id2)?
+    assert_eq(id2, id3)?
+}
+
+test "nil uuid" {
+    let nil = UUID.nil()
+    assert(nil.is_nil())?
+    assert_eq(nil.to_string(), "00000000-0000-0000-0000-000000000000")?
+}
+
+test "v5 deterministic" {
+    let ns = Namespace.DNS()
+    let id1 = UUID.v5(ns, "example.com")
+    let id2 = UUID.v5(ns, "example.com")
+    assert_eq(id1, id2)?
+    assert_eq(id1.version(), 5)?
+}
+
+test "ordering" {
+    let id1 = UUID.v7()
+    // Small delay
+    let id2 = UUID.v7()
+    assert(id1 < id2 || id1 == id2)?
+}

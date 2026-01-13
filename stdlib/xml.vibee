@@ -1,0 +1,899 @@
+// =============================================================================
+// Vibee OS — XML Module
+// XML parsing, generation, and manipulation
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// XML Document
+// -----------------------------------------------------------------------------
+
+/// XML document
+struct Document {
+    declaration: Option<Declaration>
+    root: Element
+    
+    /// Parse XML string
+    fn parse(xml: String) -> Result<Document, XMLError> {
+        let parser = Parser.new(xml)
+        parser.parse_document()
+    }
+    
+    /// Parse XML file
+    fn parse_file(path: String) -> Result<Document, XMLError> {
+        let content = File.read_string(path)?
+        Self.parse(content)
+    }
+    
+    /// Create new document
+    fn new(root: Element) -> Self {
+        Document {
+            declaration: Some(Declaration.default()),
+            root: root
+        }
+    }
+    
+    /// Create without declaration
+    fn without_declaration(root: Element) -> Self {
+        Document {
+            declaration: None,
+            root: root
+        }
+    }
+    
+    /// Get root element
+    fn root() -> Element {
+        self.root
+    }
+    
+    /// Set declaration
+    fn with_declaration(decl: Declaration) -> Self {
+        self.declaration = Some(decl)
+        self
+    }
+    
+    /// Convert to string
+    fn to_string() -> String {
+        self.format(FormatOptions.default())
+    }
+    
+    /// Format with options
+    fn format(options: FormatOptions) -> String {
+        var output = ""
+        
+        if let decl = self.declaration {
+            output += decl.to_string() + options.newline
+        }
+        
+        output += self.root.format(options, 0)
+        output
+    }
+    
+    /// Write to file
+    fn write_file(path: String) -> Result<(), IOError> {
+        File.write(path, self.to_string())
+    }
+}
+
+/// XML declaration
+struct Declaration {
+    version: String
+    encoding: Option<String>
+    standalone: Option<Bool>
+    
+    fn default() -> Self {
+        Declaration {
+            version: "1.0",
+            encoding: Some("UTF-8"),
+            standalone: None
+        }
+    }
+    
+    fn to_string() -> String {
+        var decl = "<?xml version=\"\(self.version)\""
+        
+        if let enc = self.encoding {
+            decl += " encoding=\"\(enc)\""
+        }
+        
+        if let sa = self.standalone {
+            decl += " standalone=\"\(if sa { "yes" } else { "no" })\""
+        }
+        
+        decl += "?>"
+        decl
+    }
+}
+
+// -----------------------------------------------------------------------------
+// XML Element
+// -----------------------------------------------------------------------------
+
+/// XML element
+actor Element {
+    state name: String
+    state namespace: Option<String>
+    state prefix: Option<String>
+    state attributes: Map<String, String>
+    state children: [Node]
+    
+    /// Create element
+    fn new(name: String) -> Self {
+        Element {
+            name: name,
+            namespace: None,
+            prefix: None,
+            attributes: Map.empty(),
+            children: []
+        }
+    }
+    
+    /// Create with namespace
+    fn with_ns(name: String, ns: String) -> Self {
+        Element {
+            name: name,
+            namespace: Some(ns),
+            prefix: None,
+            attributes: Map.empty(),
+            children: []
+        }
+    }
+    
+    /// Set attribute
+    on attr(name: String, value: String) -> Self {
+        self.attributes.set(name, value)
+        self
+    }
+    
+    /// Set multiple attributes
+    on attrs(attrs: Map<String, String>) -> Self {
+        for (k, v) in attrs {
+            self.attributes.set(k, v)
+        }
+        self
+    }
+    
+    /// Set namespace
+    on namespace(ns: String) -> Self {
+        self.namespace = Some(ns)
+        self
+    }
+    
+    /// Set prefix
+    on prefix(p: String) -> Self {
+        self.prefix = Some(p)
+        self
+    }
+    
+    /// Add child element
+    on child(element: Element) -> Self {
+        self.children.append(Node.Element(element))
+        self
+    }
+    
+    /// Add text content
+    on text(content: String) -> Self {
+        self.children.append(Node.Text(content))
+        self
+    }
+    
+    /// Add CDATA section
+    on cdata(content: String) -> Self {
+        self.children.append(Node.CData(content))
+        self
+    }
+    
+    /// Add comment
+    on comment(content: String) -> Self {
+        self.children.append(Node.Comment(content))
+        self
+    }
+    
+    /// Add processing instruction
+    on pi(target: String, data: String) -> Self {
+        self.children.append(Node.ProcessingInstruction(target, data))
+        self
+    }
+    
+    // Query methods
+    
+    /// Get attribute value
+    fn get_attr(name: String) -> Option<String> {
+        self.attributes.get(name)
+    }
+    
+    /// Get attribute or default
+    fn get_attr_or(name: String, default: String) -> String {
+        self.attributes.get(name).unwrap_or(default)
+    }
+    
+    /// Check if has attribute
+    fn has_attr(name: String) -> Bool {
+        self.attributes.contains_key(name)
+    }
+    
+    /// Get text content
+    fn text_content() -> String {
+        self.children.filter_map(|node| {
+            match node {
+                .Text(t) => Some(t)
+                .CData(c) => Some(c)
+                .Element(e) => Some(e.text_content())
+                _ => None
+            }
+        }).join("")
+    }
+    
+    /// Get child elements
+    fn elements() -> [Element] {
+        self.children.filter_map(|node| {
+            match node {
+                .Element(e) => Some(e)
+                _ => None
+            }
+        })
+    }
+    
+    /// Get child elements by name
+    fn elements_by_name(name: String) -> [Element] {
+        self.elements().filter(|e| e.name == name)
+    }
+    
+    /// Get first child element by name
+    fn element(name: String) -> Option<Element> {
+        self.elements_by_name(name).first()
+    }
+    
+    /// Find elements by path (simple XPath-like)
+    fn find(path: String) -> [Element] {
+        let parts = path.split("/").filter(|p| !p.is_empty())
+        self.find_by_path(parts)
+    }
+    
+    fn find_by_path(parts: [String]) -> [Element] {
+        if parts.is_empty() {
+            return [self]
+        }
+        
+        let first = parts[0]
+        let rest = parts[1..]
+        
+        if first == "*" {
+            self.elements().flat_map(|e| e.find_by_path(rest))
+        } else if first == "**" {
+            // Recursive descent
+            var results = self.find_by_path(rest)
+            for child in self.elements() {
+                results.extend(child.find_by_path(parts))
+            }
+            results
+        } else {
+            self.elements_by_name(first).flat_map(|e| e.find_by_path(rest))
+        }
+    }
+    
+    /// Find first element by path
+    fn find_one(path: String) -> Option<Element> {
+        self.find(path).first()
+    }
+    
+    /// Get qualified name
+    fn qualified_name() -> String {
+        if let Some(p) = self.prefix {
+            "\(p):\(self.name)"
+        } else {
+            self.name
+        }
+    }
+    
+    /// Format element
+    fn format(options: FormatOptions, depth: Int) -> String {
+        let indent = if options.pretty {
+            options.indent.repeat(depth)
+        } else {
+            ""
+        }
+        let newline = if options.pretty { options.newline } else { "" }
+        
+        var output = indent + "<" + self.qualified_name()
+        
+        // Namespace declarations
+        if let ns = self.namespace {
+            if let p = self.prefix {
+                output += " xmlns:\(p)=\"\(escape_attr(ns))\""
+            } else {
+                output += " xmlns=\"\(escape_attr(ns))\""
+            }
+        }
+        
+        // Attributes
+        for (name, value) in self.attributes.sorted_by_key() {
+            output += " \(name)=\"\(escape_attr(value))\""
+        }
+        
+        if self.children.is_empty() {
+            if options.self_closing {
+                output += "/>" + newline
+            } else {
+                output += "></" + self.qualified_name() + ">" + newline
+            }
+        } else {
+            output += ">"
+            
+            let has_element_children = self.children.any(|n| n.is_element())
+            
+            if has_element_children {
+                output += newline
+            }
+            
+            for child in self.children {
+                output += child.format(options, depth + 1)
+            }
+            
+            if has_element_children {
+                output += indent
+            }
+            
+            output += "</" + self.qualified_name() + ">" + newline
+        }
+        
+        output
+    }
+    
+    /// Convert to string
+    fn to_string() -> String {
+        self.format(FormatOptions.default(), 0)
+    }
+}
+
+/// XML node types
+enum Node {
+    Element(Element)
+    Text(String)
+    CData(String)
+    Comment(String)
+    ProcessingInstruction(String, String)
+    
+    fn is_element() -> Bool {
+        match self { .Element(_) => true, _ => false }
+    }
+    
+    fn format(options: FormatOptions, depth: Int) -> String {
+        let indent = if options.pretty { options.indent.repeat(depth) } else { "" }
+        let newline = if options.pretty { options.newline } else { "" }
+        
+        match self {
+            .Element(e) => e.format(options, depth)
+            .Text(t) => escape_text(t)
+            .CData(c) => "<![CDATA[\(c)]]>"
+            .Comment(c) => indent + "<!--\(c)-->" + newline
+            .ProcessingInstruction(target, data) => 
+                indent + "<?\(target) \(data)?>" + newline
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// XML Builder
+// -----------------------------------------------------------------------------
+
+/// Fluent XML builder
+actor XMLBuilder {
+    state stack: [Element]
+    state current: Element
+    
+    /// Start building with root element
+    fn root(name: String) -> Self {
+        XMLBuilder {
+            stack: [],
+            current: Element.new(name)
+        }
+    }
+    
+    /// Add attribute to current element
+    on attr(name: String, value: String) -> Self {
+        self.current.attr(name, value)
+        self
+    }
+    
+    /// Start child element
+    on start(name: String) -> Self {
+        self.stack.append(self.current)
+        self.current = Element.new(name)
+        self
+    }
+    
+    /// End current element and return to parent
+    on end() -> Self {
+        if let parent = self.stack.pop() {
+            parent.child(self.current)
+            self.current = parent
+        }
+        self
+    }
+    
+    /// Add text content
+    on text(content: String) -> Self {
+        self.current.text(content)
+        self
+    }
+    
+    /// Add CDATA
+    on cdata(content: String) -> Self {
+        self.current.cdata(content)
+        self
+    }
+    
+    /// Add comment
+    on comment(content: String) -> Self {
+        self.current.comment(content)
+        self
+    }
+    
+    /// Add empty element
+    on empty(name: String) -> Self {
+        self.current.child(Element.new(name))
+        self
+    }
+    
+    /// Add element with text
+    on element(name: String, text: String) -> Self {
+        self.current.child(Element.new(name).text(text))
+        self
+    }
+    
+    /// Build document
+    on build() -> Document {
+        // Close any unclosed elements
+        while !self.stack.is_empty() {
+            self.end()
+        }
+        Document.new(self.current)
+    }
+    
+    /// Build element only
+    on build_element() -> Element {
+        while !self.stack.is_empty() {
+            self.end()
+        }
+        self.current
+    }
+}
+
+// -----------------------------------------------------------------------------
+// XML Parser
+// -----------------------------------------------------------------------------
+
+/// XML parser
+actor Parser {
+    state input: String
+    state pos: Int
+    state line: Int
+    state column: Int
+    
+    fn new(input: String) -> Self {
+        Parser {
+            input: input,
+            pos: 0,
+            line: 1,
+            column: 1
+        }
+    }
+    
+    /// Parse complete document
+    fn parse_document() -> Result<Document, XMLError> {
+        self.skip_whitespace()
+        
+        // Parse declaration if present
+        let declaration = if self.peek_str("<?xml") {
+            Some(self.parse_declaration()?)
+        } else {
+            None
+        }
+        
+        self.skip_whitespace()
+        self.skip_misc()?
+        
+        // Parse root element
+        let root = self.parse_element()?
+        
+        self.skip_whitespace()
+        self.skip_misc()?
+        
+        if self.pos < self.input.len() {
+            return Err(XMLError.UnexpectedContent(self.line, self.column))
+        }
+        
+        Ok(Document { declaration: declaration, root: root })
+    }
+    
+    /// Parse XML declaration
+    fn parse_declaration() -> Result<Declaration, XMLError> {
+        self.expect("<?xml")?
+        self.skip_whitespace()
+        
+        var version = "1.0"
+        var encoding = None
+        var standalone = None
+        
+        // Parse attributes
+        while !self.peek_str("?>") {
+            self.skip_whitespace()
+            let name = self.parse_name()?
+            self.skip_whitespace()
+            self.expect("=")?
+            self.skip_whitespace()
+            let value = self.parse_quoted_value()?
+            
+            match name {
+                "version" => version = value
+                "encoding" => encoding = Some(value)
+                "standalone" => standalone = Some(value == "yes")
+                _ => {}
+            }
+            
+            self.skip_whitespace()
+        }
+        
+        self.expect("?>")?
+        
+        Ok(Declaration { version: version, encoding: encoding, standalone: standalone })
+    }
+    
+    /// Parse element
+    fn parse_element() -> Result<Element, XMLError> {
+        self.expect("<")?
+        let name = self.parse_name()?
+        
+        var element = Element.new(name)
+        
+        // Parse attributes
+        loop {
+            self.skip_whitespace()
+            
+            if self.peek_str("/>") {
+                self.expect("/>")?
+                return Ok(element)
+            }
+            
+            if self.peek_str(">") {
+                self.expect(">")?
+                break
+            }
+            
+            let attr_name = self.parse_name()?
+            self.skip_whitespace()
+            self.expect("=")?
+            self.skip_whitespace()
+            let attr_value = self.parse_quoted_value()?
+            
+            element.attr(attr_name, unescape(attr_value))
+        }
+        
+        // Parse children
+        loop {
+            if self.peek_str("</") {
+                break
+            }
+            
+            if self.peek_str("<!--") {
+                let comment = self.parse_comment()?
+                element.children.append(Node.Comment(comment))
+            } else if self.peek_str("<![CDATA[") {
+                let cdata = self.parse_cdata()?
+                element.children.append(Node.CData(cdata))
+            } else if self.peek_str("<?") {
+                let (target, data) = self.parse_pi()?
+                element.children.append(Node.ProcessingInstruction(target, data))
+            } else if self.peek_str("<") {
+                let child = self.parse_element()?
+                element.children.append(Node.Element(child))
+            } else {
+                let text = self.parse_text()?
+                if !text.trim().is_empty() {
+                    element.children.append(Node.Text(unescape(text)))
+                }
+            }
+        }
+        
+        // Parse closing tag
+        self.expect("</")?
+        let close_name = self.parse_name()?
+        self.skip_whitespace()
+        self.expect(">")?
+        
+        if close_name != name {
+            return Err(XMLError.MismatchedTag(name, close_name, self.line))
+        }
+        
+        Ok(element)
+    }
+    
+    fn parse_name() -> Result<String, XMLError> {
+        let start = self.pos
+        
+        while self.pos < self.input.len() {
+            let c = self.input[self.pos]
+            if c.is_alphanumeric() || c == '_' || c == '-' || c == '.' || c == ':' {
+                self.advance()
+            } else {
+                break
+            }
+        }
+        
+        if self.pos == start {
+            return Err(XMLError.ExpectedName(self.line, self.column))
+        }
+        
+        Ok(self.input[start..self.pos])
+    }
+    
+    fn parse_quoted_value() -> Result<String, XMLError> {
+        let quote = self.current_char().ok_or(XMLError.UnexpectedEOF)?
+        if quote != '"' && quote != '\'' {
+            return Err(XMLError.ExpectedQuote(self.line, self.column))
+        }
+        
+        self.advance()
+        let start = self.pos
+        
+        while self.pos < self.input.len() && self.input[self.pos] != quote {
+            self.advance()
+        }
+        
+        let value = self.input[start..self.pos]
+        self.expect(quote.to_string())?
+        
+        Ok(value)
+    }
+    
+    fn parse_text() -> Result<String, XMLError> {
+        let start = self.pos
+        
+        while self.pos < self.input.len() && self.input[self.pos] != '<' {
+            self.advance()
+        }
+        
+        Ok(self.input[start..self.pos])
+    }
+    
+    fn parse_comment() -> Result<String, XMLError> {
+        self.expect("<!--")?
+        let start = self.pos
+        
+        while !self.peek_str("-->") {
+            if self.pos >= self.input.len() {
+                return Err(XMLError.UnterminatedComment(self.line))
+            }
+            self.advance()
+        }
+        
+        let content = self.input[start..self.pos]
+        self.expect("-->")?
+        
+        Ok(content)
+    }
+    
+    fn parse_cdata() -> Result<String, XMLError> {
+        self.expect("<![CDATA[")?
+        let start = self.pos
+        
+        while !self.peek_str("]]>") {
+            if self.pos >= self.input.len() {
+                return Err(XMLError.UnterminatedCData(self.line))
+            }
+            self.advance()
+        }
+        
+        let content = self.input[start..self.pos]
+        self.expect("]]>")?
+        
+        Ok(content)
+    }
+    
+    fn parse_pi() -> Result<(String, String), XMLError> {
+        self.expect("<?")?
+        let target = self.parse_name()?
+        self.skip_whitespace()
+        
+        let start = self.pos
+        while !self.peek_str("?>") {
+            if self.pos >= self.input.len() {
+                return Err(XMLError.UnterminatedPI(self.line))
+            }
+            self.advance()
+        }
+        
+        let data = self.input[start..self.pos].trim()
+        self.expect("?>")?
+        
+        Ok((target, data))
+    }
+    
+    fn skip_misc() -> Result<(), XMLError> {
+        loop {
+            self.skip_whitespace()
+            if self.peek_str("<!--") {
+                self.parse_comment()?
+            } else if self.peek_str("<?") {
+                self.parse_pi()?
+            } else {
+                break
+            }
+        }
+        Ok(())
+    }
+    
+    fn skip_whitespace() {
+        while self.pos < self.input.len() && self.input[self.pos].is_whitespace() {
+            self.advance()
+        }
+    }
+    
+    fn advance() {
+        if self.pos < self.input.len() {
+            if self.input[self.pos] == '\n' {
+                self.line += 1
+                self.column = 1
+            } else {
+                self.column += 1
+            }
+            self.pos += 1
+        }
+    }
+    
+    fn current_char() -> Option<Char> {
+        if self.pos < self.input.len() {
+            Some(self.input[self.pos])
+        } else {
+            None
+        }
+    }
+    
+    fn peek_str(s: String) -> Bool {
+        self.input[self.pos..].starts_with(s)
+    }
+    
+    fn expect(s: String) -> Result<(), XMLError> {
+        if self.peek_str(s) {
+            for _ in 0..s.len() {
+                self.advance()
+            }
+            Ok(())
+        } else {
+            Err(XMLError.Expected(s, self.line, self.column))
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Format Options
+// -----------------------------------------------------------------------------
+
+struct FormatOptions {
+    pretty: Bool
+    indent: String
+    newline: String
+    self_closing: Bool
+    
+    fn default() -> Self {
+        FormatOptions {
+            pretty: true,
+            indent: "  ",
+            newline: "\n",
+            self_closing: true
+        }
+    }
+    
+    fn compact() -> Self {
+        FormatOptions {
+            pretty: false,
+            indent: "",
+            newline: "",
+            self_closing: true
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Escape Functions
+// -----------------------------------------------------------------------------
+
+fn escape_text(s: String) -> String {
+    s.replace("&", "&amp;")
+     .replace("<", "&lt;")
+     .replace(">", "&gt;")
+}
+
+fn escape_attr(s: String) -> String {
+    s.replace("&", "&amp;")
+     .replace("<", "&lt;")
+     .replace(">", "&gt;")
+     .replace("\"", "&quot;")
+     .replace("'", "&apos;")
+}
+
+fn unescape(s: String) -> String {
+    s.replace("&lt;", "<")
+     .replace("&gt;", ">")
+     .replace("&quot;", "\"")
+     .replace("&apos;", "'")
+     .replace("&amp;", "&")
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum XMLError {
+    UnexpectedEOF
+    UnexpectedContent(Int, Int)
+    Expected(String, Int, Int)
+    ExpectedName(Int, Int)
+    ExpectedQuote(Int, Int)
+    MismatchedTag(String, String, Int)
+    UnterminatedComment(Int)
+    UnterminatedCData(Int)
+    UnterminatedPI(Int)
+    IOError(String)
+    
+    fn message() -> String {
+        match self {
+            .UnexpectedEOF => "Unexpected end of file"
+            .UnexpectedContent(l, c) => "Unexpected content at \(l):\(c)"
+            .Expected(s, l, c) => "Expected '\(s)' at \(l):\(c)"
+            .ExpectedName(l, c) => "Expected name at \(l):\(c)"
+            .ExpectedQuote(l, c) => "Expected quote at \(l):\(c)"
+            .MismatchedTag(o, c, l) => "Mismatched tags: <\(o)> closed with </\(c)> at line \(l)"
+            .UnterminatedComment(l) => "Unterminated comment at line \(l)"
+            .UnterminatedCData(l) => "Unterminated CDATA at line \(l)"
+            .UnterminatedPI(l) => "Unterminated processing instruction at line \(l)"
+            .IOError(msg) => "I/O error: \(msg)"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "parse simple xml" {
+    let xml = "<root><child>text</child></root>"
+    let doc = Document.parse(xml)?
+    
+    assert(doc.root.name == "root")
+    assert(doc.root.element("child").is_some())
+    assert(doc.root.element("child").unwrap().text_content() == "text")
+}
+
+test "parse with attributes" {
+    let xml = "<person name=\"Alice\" age=\"30\"/>"
+    let doc = Document.parse(xml)?
+    
+    assert(doc.root.get_attr("name") == Some("Alice"))
+    assert(doc.root.get_attr("age") == Some("30"))
+}
+
+test "builder" {
+    let doc = XMLBuilder.root("root")
+        .attr("version", "1.0")
+        .start("item")
+            .attr("id", "1")
+            .text("First")
+        .end()
+        .start("item")
+            .attr("id", "2")
+            .text("Second")
+        .end()
+        .build()
+    
+    let items = doc.root.elements_by_name("item")
+    assert(items.len() == 2)
+}
+
+test "find elements" {
+    let xml = "<root><a><b>1</b></a><a><b>2</b></a></root>"
+    let doc = Document.parse(xml)?
+    
+    let bs = doc.root.find("a/b")
+    assert(bs.len() == 2)
+}

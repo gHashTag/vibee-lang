@@ -1,0 +1,898 @@
+# ============================================================================
+# AI/ML INFERENCE - Запуск моделей машинного обучения на Vibee
+# ============================================================================
+# Model serving, batching, GPU acceleration, model versioning
+# ============================================================================
+
+Specification MLInference:
+  """
+  ML Inference как спецификация поведения моделей.
+  Каждая модель - актор, каждый запрос - событие.
+  """
+
+  # ==========================================================================
+  # ТИПЫ ДАННЫХ
+  # ==========================================================================
+
+  Type Model:
+    id: ModelId
+    name: String
+    version: String
+    framework: Framework
+    format: ModelFormat
+    path: Path
+    metadata: ModelMetadata
+    state: ModelState
+    loaded_at: Timestamp?
+
+  Type ModelId:
+    value: UUID
+
+  Type Framework:
+    variants:
+      - PyTorch
+      - TensorFlow
+      - ONNX
+      - TensorRT
+      - OpenVINO
+      - CoreML
+      - Triton
+      - Custom: String
+
+  Type ModelFormat:
+    variants:
+      - SavedModel      # TensorFlow
+      - TorchScript     # PyTorch
+      - ONNX            # Open Neural Network Exchange
+      - TensorRT        # NVIDIA optimized
+      - OpenVINO_IR     # Intel optimized
+      - GGML            # CPU optimized (llama.cpp)
+      - SafeTensors     # Safe serialization
+      - Pickle          # Python pickle (legacy)
+
+  Type ModelMetadata:
+    description: String?
+    author: String?
+    license: String?
+    tags: List<String>
+    input_schema: TensorSchema
+    output_schema: TensorSchema
+    metrics: Map<String, Float>
+    created_at: Timestamp
+    trained_on: String?
+    parameters_count: Int?
+    size_bytes: Int
+
+  Type ModelState:
+    variants:
+      - Unloaded
+      - Loading
+      - Ready
+      - Busy
+      - Error: String
+      - Unloading
+
+  Type TensorSchema:
+    tensors: List<TensorSpec>
+
+  Type TensorSpec:
+    name: String
+    dtype: DataType
+    shape: List<Dimension>
+    description: String?
+
+  Type Dimension:
+    variants:
+      - Fixed: Int
+      - Dynamic: (min: Int?, max: Int?)
+      - Batch
+
+  Type DataType:
+    variants:
+      - Float16
+      - Float32
+      - Float64
+      - Int8
+      - Int16
+      - Int32
+      - Int64
+      - UInt8
+      - Bool
+      - String
+      - BFloat16
+
+  # ==========================================================================
+  # TENSOR OPERATIONS
+  # ==========================================================================
+
+  Type Tensor:
+    data: Bytes
+    dtype: DataType
+    shape: List<Int>
+    device: Device
+    requires_grad: Boolean = false
+
+  Type Device:
+    variants:
+      - CPU
+      - CUDA: Int      # GPU index
+      - MPS            # Apple Metal
+      - TPU: Int       # Google TPU
+      - NPU: Int       # Neural Processing Unit
+
+  Behavior TensorOps:
+    """Операции с тензорами"""
+
+    When Tensor.zeros(shape, dtype, device):
+      Then: create_tensor(zeros, shape, dtype, device)
+
+    When Tensor.ones(shape, dtype, device):
+      Then: create_tensor(ones, shape, dtype, device)
+
+    When Tensor.rand(shape, dtype, device):
+      Then: create_tensor(random, shape, dtype, device)
+
+    When Tensor.from_array(array, dtype, device):
+      Then: create_tensor_from_data(array, dtype, device)
+
+    When tensor.to(device):
+      Then: copy_tensor_to_device(tensor, device)
+
+    When tensor.to_dtype(dtype):
+      Then: cast_tensor(tensor, dtype)
+
+    When tensor.reshape(shape):
+      Then: reshape_tensor(tensor, shape)
+
+    When tensor.transpose(dims):
+      Then: transpose_tensor(tensor, dims)
+
+    When tensor.squeeze(dim):
+      Then: squeeze_tensor(tensor, dim)
+
+    When tensor.unsqueeze(dim):
+      Then: unsqueeze_tensor(tensor, dim)
+
+    When tensor.slice(ranges):
+      Then: slice_tensor(tensor, ranges)
+
+    # Math operations
+    When tensor + other:
+      Then: add_tensors(tensor, other)
+
+    When tensor - other:
+      Then: subtract_tensors(tensor, other)
+
+    When tensor * other:
+      Then: multiply_tensors(tensor, other)
+
+    When tensor / other:
+      Then: divide_tensors(tensor, other)
+
+    When tensor @ other:
+      Then: matmul_tensors(tensor, other)
+
+    When tensor.sum(dim, keepdim):
+      Then: reduce_sum(tensor, dim, keepdim)
+
+    When tensor.mean(dim, keepdim):
+      Then: reduce_mean(tensor, dim, keepdim)
+
+    When tensor.max(dim, keepdim):
+      Then: reduce_max(tensor, dim, keepdim)
+
+    When tensor.softmax(dim):
+      Then: softmax(tensor, dim)
+
+    When tensor.argmax(dim):
+      Then: argmax(tensor, dim)
+
+  # ==========================================================================
+  # INFERENCE ENGINE
+  # ==========================================================================
+
+  Type InferenceConfig:
+    # Device
+    device: Device = CPU
+    device_memory_limit: ByteSize?
+    
+    # Batching
+    max_batch_size: Int = 32
+    batch_timeout: Duration = 50.ms
+    dynamic_batching: Boolean = true
+    
+    # Optimization
+    use_fp16: Boolean = false
+    use_int8: Boolean = false
+    optimize_for_inference: Boolean = true
+    
+    # Concurrency
+    num_workers: Int = 4
+    max_concurrent_requests: Int = 100
+    
+    # Caching
+    cache_enabled: Boolean = true
+    cache_size: Int = 1000
+    cache_ttl: Duration = 1.hour
+
+  Type InferenceRequest:
+    id: RequestId
+    model_id: ModelId
+    inputs: Map<String, Tensor>
+    options: InferenceOptions
+    created_at: Timestamp
+
+  Type InferenceOptions:
+    timeout: Duration = 30.seconds
+    priority: Priority = Normal
+    return_probabilities: Boolean = false
+    top_k: Int?
+    temperature: Float?
+    max_tokens: Int?
+
+  Type Priority:
+    variants: [Low, Normal, High, Critical]
+
+  Type InferenceResponse:
+    request_id: RequestId
+    outputs: Map<String, Tensor>
+    latency: Duration
+    model_version: String
+    metadata: Map<String, Any>
+
+  Type InferenceError:
+    variants:
+      - ModelNotFound: ModelId
+      - ModelNotReady: ModelId
+      - InvalidInput: String
+      - Timeout
+      - OutOfMemory
+      - DeviceError: String
+      - InternalError: String
+
+  # ==========================================================================
+  # MODEL SERVER
+  # ==========================================================================
+
+  Behavior ModelServer:
+    """Сервер для обслуживания моделей"""
+
+    State:
+      config: InferenceConfig
+      models: Map<ModelId, LoadedModel>
+      request_queue: PriorityQueue<InferenceRequest>
+      batch_accumulator: Map<ModelId, List<InferenceRequest>>
+      cache: LRUCache<CacheKey, InferenceResponse>
+      stats: ServerStats
+
+    Type LoadedModel:
+      model: Model
+      runtime: Runtime
+      device: Device
+      memory_usage: ByteSize
+      request_count: Int
+      avg_latency: Duration
+
+    Type Runtime:
+      variants:
+        - ONNXRuntime: ONNXSession
+        - TorchRuntime: TorchModule
+        - TFRuntime: TFSession
+        - TritonRuntime: TritonClient
+        - CustomRuntime: Any
+
+    When server.start():
+      Then:
+        - initialize_device(config.device)
+        - start request_processor_loop()
+        - start batch_processor_loop()
+        - start health_check_loop()
+        - emit ServerStarted(config)
+
+    When server.load_model(model_spec):
+      Then:
+        - model = Model(
+            id: generate_id(),
+            name: model_spec.name,
+            version: model_spec.version,
+            framework: model_spec.framework,
+            format: model_spec.format,
+            path: model_spec.path,
+            metadata: model_spec.metadata,
+            state: Loading
+          )
+        
+        - emit ModelLoading(model.id, model.name)
+        
+        - runtime = await load_runtime(model, config.device)
+        
+        - if config.optimize_for_inference:
+            - runtime = optimize_runtime(runtime, config)
+        
+        - loaded = LoadedModel(
+            model: model with state = Ready,
+            runtime: runtime,
+            device: config.device,
+            memory_usage: get_memory_usage(runtime)
+          )
+        
+        - add loaded to models
+        - emit ModelLoaded(model.id, model.name, loaded.memory_usage)
+        - return model.id
+
+    When server.unload_model(model_id):
+      Then:
+        - loaded = models[model_id]
+        - set loaded.model.state to Unloading
+        
+        # Wait for pending requests
+        - await wait_for_pending_requests(model_id)
+        
+        - release_runtime(loaded.runtime)
+        - remove model_id from models
+        - emit ModelUnloaded(model_id)
+
+    When server.infer(request):
+      Then:
+        - # Check cache
+        - cache_key = compute_cache_key(request)
+        - if config.cache_enabled:
+            - cached = cache.get(cache_key)
+            - if cached:
+                - emit CacheHit(request.id)
+                - return cached
+
+        - # Validate request
+        - loaded = models[request.model_id]
+        - if not loaded:
+            - return Error(ModelNotFound(request.model_id))
+        - if loaded.model.state != Ready:
+            - return Error(ModelNotReady(request.model_id))
+        
+        - validate_inputs(request.inputs, loaded.model.metadata.input_schema)
+        
+        - # Add to batch or process immediately
+        - if config.dynamic_batching:
+            - return await add_to_batch(request)
+        - else:
+            - return await process_single(request)
+
+    When add_to_batch(request):
+      Then:
+        - promise = create_promise()
+        - batch = batch_accumulator.get_or_create(request.model_id, [])
+        - add (request, promise) to batch
+        
+        - if batch.size >= config.max_batch_size:
+            - process_batch(request.model_id)
+        
+        - return await promise.with_timeout(request.options.timeout)
+
+    When batch_processor_loop():
+      Then:
+        - loop every config.batch_timeout:
+            - for (model_id, batch) in batch_accumulator:
+                - if batch.is_not_empty():
+                    - process_batch(model_id)
+
+    When process_batch(model_id):
+      Then:
+        - batch = batch_accumulator[model_id]
+        - clear batch_accumulator[model_id]
+        
+        - if batch.is_empty():
+            - return
+        
+        - loaded = models[model_id]
+        - start_time = now()
+        
+        # Combine inputs into batched tensors
+        - batched_inputs = batch_inputs(batch.map(b -> b.request.inputs))
+        
+        # Run inference
+        - try:
+            - outputs = await run_inference(loaded.runtime, batched_inputs)
+            - unbatched = unbatch_outputs(outputs, batch.size)
+            
+            - for (i, (request, promise)) in batch.enumerate():
+                - response = InferenceResponse(
+                    request_id: request.id,
+                    outputs: unbatched[i],
+                    latency: now() - start_time,
+                    model_version: loaded.model.version
+                  )
+                - cache.put(compute_cache_key(request), response)
+                - promise.resolve(response)
+            
+            - update_stats(model_id, batch.size, now() - start_time)
+          catch error:
+            - for (request, promise) in batch:
+                - promise.reject(InternalError(error.message))
+
+    When run_inference(runtime, inputs):
+      Then:
+        - match runtime:
+            ONNXRuntime(session) ->
+              session.run(inputs)
+            TorchRuntime(module) ->
+              with torch.no_grad():
+                module.forward(inputs)
+            TFRuntime(session) ->
+              session.run(outputs, feed_dict: inputs)
+            TritonRuntime(client) ->
+              client.infer(inputs)
+
+  # ==========================================================================
+  # MODEL REGISTRY
+  # ==========================================================================
+
+  Behavior ModelRegistry:
+    """Реестр моделей с версионированием"""
+
+    Type RegisteredModel:
+      name: String
+      versions: List<ModelVersion>
+      latest: String
+      production: String?
+      staging: String?
+      metadata: Map<String, Any>
+
+    Type ModelVersion:
+      version: String
+      artifact_path: Path
+      metrics: Map<String, Float>
+      tags: List<String>
+      stage: ModelStage
+      created_at: Timestamp
+      created_by: String
+
+    Type ModelStage:
+      variants:
+        - None
+        - Staging
+        - Production
+        - Archived
+
+    State:
+      models: Map<String, RegisteredModel>
+      storage: ArtifactStorage
+
+    When registry.register(name, artifact_path, metadata):
+      Then:
+        - version = generate_version()
+        - model = models.get_or_create(name, RegisteredModel(name))
+        
+        - # Upload artifact
+        - stored_path = await storage.upload(artifact_path, "${name}/${version}")
+        
+        - model_version = ModelVersion(
+            version: version,
+            artifact_path: stored_path,
+            metrics: metadata.metrics ?? {},
+            tags: metadata.tags ?? [],
+            stage: None,
+            created_at: now(),
+            created_by: current_user()
+          )
+        
+        - add model_version to model.versions
+        - set model.latest to version
+        
+        - emit ModelRegistered(name, version)
+        - return version
+
+    When registry.transition_stage(name, version, stage):
+      Then:
+        - model = models[name]
+        - model_version = model.versions.find(v -> v.version == version)
+        
+        - # Remove previous model from stage
+        - if stage == Production:
+            - if model.production:
+                - old = model.versions.find(v -> v.version == model.production)
+                - set old.stage to Archived
+            - set model.production to version
+        - elif stage == Staging:
+            - if model.staging:
+                - old = model.versions.find(v -> v.version == model.staging)
+                - set old.stage to None
+            - set model.staging to version
+        
+        - set model_version.stage to stage
+        - emit ModelStageTransition(name, version, stage)
+
+    When registry.get_model(name, version):
+      Then:
+        - model = models[name]
+        - if not model:
+            - return Error("Model not found")
+        
+        - version = version ?? model.production ?? model.latest
+        - model_version = model.versions.find(v -> v.version == version)
+        
+        - return model_version
+
+    When registry.download(name, version, destination):
+      Then:
+        - model_version = await registry.get_model(name, version)
+        - await storage.download(model_version.artifact_path, destination)
+
+  # ==========================================================================
+  # SPECIALIZED INFERENCE
+  # ==========================================================================
+
+  Behavior TextGeneration:
+    """Генерация текста (LLM)"""
+
+    Type GenerationConfig:
+      max_tokens: Int = 256
+      temperature: Float = 0.7
+      top_p: Float = 0.9
+      top_k: Int = 50
+      repetition_penalty: Float = 1.0
+      stop_sequences: List<String> = []
+      stream: Boolean = false
+
+    Type GenerationRequest:
+      prompt: String
+      config: GenerationConfig
+      system_prompt: String?
+
+    Type GenerationResponse:
+      text: String
+      tokens_generated: Int
+      finish_reason: FinishReason
+      usage: TokenUsage
+
+    Type FinishReason:
+      variants:
+        - Stop
+        - MaxTokens
+        - StopSequence: String
+
+    Type TokenUsage:
+      prompt_tokens: Int
+      completion_tokens: Int
+      total_tokens: Int
+
+    When generate(model_id, request):
+      Then:
+        - loaded = models[model_id]
+        - tokenizer = loaded.tokenizer
+        
+        - # Tokenize input
+        - input_ids = tokenizer.encode(request.prompt)
+        - if request.system_prompt:
+            - input_ids = prepend_system(input_ids, request.system_prompt)
+        
+        - # Generate
+        - generated = []
+        - for i in 0..request.config.max_tokens:
+            - logits = await run_inference(loaded.runtime, input_ids)
+            - next_token = sample(logits, request.config)
+            
+            - if next_token == tokenizer.eos_token:
+                - break
+            
+            - add next_token to generated
+            - add next_token to input_ids
+            
+            - if request.config.stream:
+                - yield tokenizer.decode([next_token])
+            
+            - decoded = tokenizer.decode(generated)
+            - if request.config.stop_sequences.any(s -> decoded.ends_with(s)):
+                - break
+        
+        - return GenerationResponse(
+            text: tokenizer.decode(generated),
+            tokens_generated: generated.size,
+            finish_reason: determine_finish_reason(generated, request.config),
+            usage: TokenUsage(
+              prompt_tokens: input_ids.size - generated.size,
+              completion_tokens: generated.size,
+              total_tokens: input_ids.size
+            )
+          )
+
+    When sample(logits, config):
+      Then:
+        - # Apply temperature
+        - logits = logits / config.temperature
+        
+        - # Apply top-k
+        - if config.top_k > 0:
+            - top_k_logits = top_k_filter(logits, config.top_k)
+        
+        - # Apply top-p (nucleus sampling)
+        - if config.top_p < 1.0:
+            - logits = top_p_filter(logits, config.top_p)
+        
+        - # Sample
+        - probs = softmax(logits)
+        - return multinomial_sample(probs)
+
+  Behavior ImageGeneration:
+    """Генерация изображений (Diffusion)"""
+
+    Type ImageGenConfig:
+      width: Int = 512
+      height: Int = 512
+      num_inference_steps: Int = 50
+      guidance_scale: Float = 7.5
+      negative_prompt: String?
+      seed: Int?
+      scheduler: Scheduler = DDPM
+
+    Type Scheduler:
+      variants:
+        - DDPM
+        - DDIM
+        - PNDM
+        - EulerDiscrete
+        - DPMSolverMultistep
+
+    When generate_image(model_id, prompt, config):
+      Then:
+        - loaded = models[model_id]
+        - text_encoder = loaded.text_encoder
+        - unet = loaded.unet
+        - vae = loaded.vae
+        - scheduler = create_scheduler(config.scheduler)
+        
+        - # Encode text
+        - text_embeddings = text_encoder.encode(prompt)
+        - if config.negative_prompt:
+            - uncond_embeddings = text_encoder.encode(config.negative_prompt)
+        - else:
+            - uncond_embeddings = text_encoder.encode("")
+        
+        - # Initialize latents
+        - latents = Tensor.rand(
+            [1, 4, config.height / 8, config.width / 8],
+            dtype: Float32,
+            device: config.device
+          )
+        - if config.seed:
+            - set_seed(config.seed)
+        
+        - # Denoising loop
+        - scheduler.set_timesteps(config.num_inference_steps)
+        - for t in scheduler.timesteps:
+            - latent_input = concat([latents, latents])
+            - noise_pred = unet(latent_input, t, concat([uncond_embeddings, text_embeddings]))
+            
+            - # Classifier-free guidance
+            - noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            - noise_pred = noise_pred_uncond + config.guidance_scale * (noise_pred_text - noise_pred_uncond)
+            
+            - latents = scheduler.step(noise_pred, t, latents)
+        
+        - # Decode latents
+        - image = vae.decode(latents)
+        - image = postprocess(image)
+        
+        - return image
+
+  Behavior Embeddings:
+    """Генерация эмбеддингов"""
+
+    Type EmbeddingRequest:
+      texts: List<String>
+      model: String = "default"
+      normalize: Boolean = true
+
+    Type EmbeddingResponse:
+      embeddings: List<List<Float>>
+      model: String
+      dimensions: Int
+      usage: TokenUsage
+
+    When embed(request):
+      Then:
+        - loaded = models[request.model]
+        - tokenizer = loaded.tokenizer
+        
+        - # Tokenize all texts
+        - all_tokens = request.texts.map(t -> tokenizer.encode(t))
+        
+        - # Pad to same length
+        - max_len = all_tokens.map(t -> t.size).max()
+        - padded = all_tokens.map(t -> pad(t, max_len))
+        
+        - # Run model
+        - input_tensor = Tensor.from_array(padded, dtype: Int64)
+        - outputs = await run_inference(loaded.runtime, { input_ids: input_tensor })
+        
+        - # Mean pooling
+        - embeddings = mean_pool(outputs.last_hidden_state, attention_mask)
+        
+        - # Normalize
+        - if request.normalize:
+            - embeddings = normalize_l2(embeddings)
+        
+        - return EmbeddingResponse(
+            embeddings: embeddings.to_list(),
+            model: request.model,
+            dimensions: embeddings.shape[1],
+            usage: TokenUsage(
+              prompt_tokens: all_tokens.map(t -> t.size).sum(),
+              completion_tokens: 0,
+              total_tokens: all_tokens.map(t -> t.size).sum()
+            )
+          )
+
+  Behavior Classification:
+    """Классификация"""
+
+    Type ClassificationRequest:
+      inputs: List<Any>  # Text, Image, etc.
+      top_k: Int = 5
+      return_all: Boolean = false
+
+    Type ClassificationResponse:
+      predictions: List<Prediction>
+
+    Type Prediction:
+      label: String
+      score: Float
+      index: Int
+
+    When classify(model_id, request):
+      Then:
+        - loaded = models[model_id]
+        - preprocessed = preprocess(request.inputs, loaded.preprocessor)
+        
+        - outputs = await run_inference(loaded.runtime, preprocessed)
+        - logits = outputs.logits
+        - probs = softmax(logits, dim: -1)
+        
+        - predictions = []
+        - for (i, input_probs) in probs.enumerate():
+            - if request.return_all:
+                - top = input_probs.enumerate().sort_by(p -> -p.1)
+            - else:
+                - top = input_probs.topk(request.top_k)
+            
+            - add top.map((idx, score) -> Prediction(
+                label: loaded.labels[idx],
+                score: score,
+                index: idx
+              )) to predictions
+        
+        - return ClassificationResponse(predictions)
+
+  # ==========================================================================
+  # СОБЫТИЯ
+  # ==========================================================================
+
+  Events:
+    ServerStarted:
+      config: InferenceConfig
+      timestamp: Timestamp
+
+    ModelLoading:
+      model_id: ModelId
+      name: String
+
+    ModelLoaded:
+      model_id: ModelId
+      name: String
+      memory_usage: ByteSize
+      load_time: Duration
+
+    ModelUnloaded:
+      model_id: ModelId
+
+    InferenceStarted:
+      request_id: RequestId
+      model_id: ModelId
+      batch_size: Int
+
+    InferenceCompleted:
+      request_id: RequestId
+      latency: Duration
+      tokens: Int?
+
+    InferenceFailed:
+      request_id: RequestId
+      error: String
+
+    CacheHit:
+      request_id: RequestId
+
+    ModelRegistered:
+      name: String
+      version: String
+
+    ModelStageTransition:
+      name: String
+      version: String
+      stage: ModelStage
+
+  # ==========================================================================
+  # ПРИМЕР ИСПОЛЬЗОВАНИЯ
+  # ==========================================================================
+
+  Example "LLM Inference Server":
+    ```vibee
+    # Конфигурация сервера
+    server = ModelServer(
+      config: InferenceConfig(
+        device: CUDA(0),
+        max_batch_size: 8,
+        batch_timeout: 100.ms,
+        use_fp16: true,
+        cache_enabled: true
+      )
+    )
+
+    # Загрузка модели
+    model_id = await server.load_model(ModelSpec(
+      name: "llama-7b",
+      version: "1.0",
+      framework: ONNX,
+      format: ONNX,
+      path: "/models/llama-7b.onnx"
+    ))
+
+    # Генерация текста
+    response = await server.generate(model_id, GenerationRequest(
+      prompt: "Explain quantum computing in simple terms:",
+      config: GenerationConfig(
+        max_tokens: 256,
+        temperature: 0.7,
+        stream: true
+      )
+    ))
+
+    # Streaming
+    for chunk in response.stream():
+      print(chunk, end: "")
+    ```
+
+  Example "Image Classification API":
+    ```vibee
+    # HTTP endpoint
+    router.post("/classify", async (req, params) ->
+      image = req.body.file("image")
+      
+      # Preprocess
+      tensor = preprocess_image(image, size: (224, 224))
+      
+      # Classify
+      result = await server.classify(model_id, ClassificationRequest(
+        inputs: [tensor],
+        top_k: 5
+      ))
+      
+      Response.ok().json({
+        predictions: result.predictions[0].map(p -> {
+          label: p.label,
+          confidence: p.score
+        })
+      }).build()
+    )
+    ```
+
+  Example "Embedding Service":
+    ```vibee
+    # Batch embedding
+    texts = [
+      "Machine learning is fascinating",
+      "Deep learning uses neural networks",
+      "AI is transforming industries"
+    ]
+
+    embeddings = await server.embed(EmbeddingRequest(
+      texts: texts,
+      model: "sentence-transformer",
+      normalize: true
+    ))
+
+    # Compute similarity
+    similarity = cosine_similarity(
+      embeddings.embeddings[0],
+      embeddings.embeddings[1]
+    )
+    ```

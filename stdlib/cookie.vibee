@@ -1,0 +1,931 @@
+// =============================================================================
+// Vibee OS — Cookie Module
+// HTTP cookie parsing, building, and management
+// =============================================================================
+
+// =============================================================================
+// Cookie Structure
+// =============================================================================
+
+/// HTTP Cookie
+struct Cookie {
+    name: String
+    value: String
+    domain: Option<String>
+    path: Option<String>
+    expires: Option<DateTime>
+    max_age: Option<Int64>
+    secure: Bool
+    http_only: Bool
+    same_site: Option<SameSite>
+    partitioned: Bool
+}
+
+impl Cookie {
+    /// Create a new cookie
+    fn new(name: String, value: String) -> Self {
+        Cookie {
+            name: name,
+            value: value,
+            domain: None,
+            path: None,
+            expires: None,
+            max_age: None,
+            secure: false,
+            http_only: false,
+            same_site: None,
+            partitioned: false
+        }
+    }
+    
+    /// Create a session cookie (no expiration)
+    fn session(name: String, value: String) -> Self {
+        Self.new(name, value)
+    }
+    
+    /// Create a persistent cookie
+    fn persistent(name: String, value: String, max_age: Int64) -> Self {
+        Self.new(name, value).max_age(max_age)
+    }
+    
+    /// Create a secure cookie with recommended settings
+    fn secure_cookie(name: String, value: String) -> Self {
+        Self.new(name, value)
+            .secure(true)
+            .http_only(true)
+            .same_site(SameSite.Strict)
+    }
+    
+    // -------------------------------------------------------------------------
+    // Builder Methods
+    // -------------------------------------------------------------------------
+    
+    /// Set cookie domain
+    fn domain(d: String) -> Self {
+        self.domain = Some(d)
+        self
+    }
+    
+    /// Set cookie path
+    fn path(p: String) -> Self {
+        self.path = Some(p)
+        self
+    }
+    
+    /// Set expiration date
+    fn expires(dt: DateTime) -> Self {
+        self.expires = Some(dt)
+        self
+    }
+    
+    /// Set expiration from now
+    fn expires_in(seconds: Int64) -> Self {
+        self.expires = Some(datetime.DateTime.now().add_seconds(seconds))
+        self
+    }
+    
+    /// Set max age in seconds
+    fn max_age(seconds: Int64) -> Self {
+        self.max_age = Some(seconds)
+        self
+    }
+    
+    /// Set secure flag
+    fn secure(s: Bool) -> Self {
+        self.secure = s
+        self
+    }
+    
+    /// Set HTTP only flag
+    fn http_only(h: Bool) -> Self {
+        self.http_only = h
+        self
+    }
+    
+    /// Set SameSite attribute
+    fn same_site(s: SameSite) -> Self {
+        self.same_site = Some(s)
+        self
+    }
+    
+    /// Set partitioned attribute (CHIPS)
+    fn partitioned(p: Bool) -> Self {
+        self.partitioned = p
+        self
+    }
+    
+    // -------------------------------------------------------------------------
+    // Cookie Properties
+    // -------------------------------------------------------------------------
+    
+    /// Check if cookie is expired
+    fn is_expired() -> Bool {
+        if let Some(exp) = self.expires {
+            return exp < datetime.DateTime.now()
+        }
+        if let Some(age) = self.max_age {
+            return age <= 0
+        }
+        false
+    }
+    
+    /// Check if cookie is session cookie
+    fn is_session() -> Bool {
+        self.expires.is_none() && self.max_age.is_none()
+    }
+    
+    /// Check if cookie is persistent
+    fn is_persistent() -> Bool {
+        self.expires.is_some() || self.max_age.is_some()
+    }
+    
+    /// Check if cookie is secure
+    fn is_secure() -> Bool {
+        self.secure
+    }
+    
+    /// Check if cookie is HTTP only
+    fn is_http_only() -> Bool {
+        self.http_only
+    }
+    
+    /// Get effective path
+    fn effective_path() -> String {
+        self.path.clone().unwrap_or("/")
+    }
+    
+    // -------------------------------------------------------------------------
+    // Serialization
+    // -------------------------------------------------------------------------
+    
+    /// Convert to Set-Cookie header value
+    fn to_string() -> String {
+        var parts = [format!("{}={}", encode_name(self.name.clone()), encode_value(self.value.clone()))]
+        
+        if let Some(d) = self.domain {
+            parts.push(format!("Domain={}", d))
+        }
+        
+        if let Some(p) = self.path {
+            parts.push(format!("Path={}", p))
+        }
+        
+        if let Some(exp) = self.expires {
+            parts.push(format!("Expires={}", exp.format_http()))
+        }
+        
+        if let Some(age) = self.max_age {
+            parts.push(format!("Max-Age={}", age))
+        }
+        
+        if self.secure {
+            parts.push("Secure")
+        }
+        
+        if self.http_only {
+            parts.push("HttpOnly")
+        }
+        
+        if let Some(ss) = self.same_site {
+            parts.push(format!("SameSite={}", ss.to_string()))
+        }
+        
+        if self.partitioned {
+            parts.push("Partitioned")
+        }
+        
+        parts.join("; ")
+    }
+    
+    /// Convert to Cookie header value (name=value only)
+    fn to_header_value() -> String {
+        format!("{}={}", encode_name(self.name.clone()), encode_value(self.value.clone()))
+    }
+    
+    // -------------------------------------------------------------------------
+    // Parsing
+    // -------------------------------------------------------------------------
+    
+    /// Parse a Set-Cookie header
+    fn parse(header: String) -> Result<Self, CookieError> {
+        let parts: [String] = header.split(";").map(|s| s.trim()).collect()
+        
+        if parts.is_empty() {
+            return Err(CookieError.InvalidFormat("Empty cookie header"))
+        }
+        
+        // Parse name=value
+        let name_value = parts[0].clone()
+        let eq_idx = name_value.find("=").ok_or(CookieError.InvalidFormat("Missing = in cookie"))?
+        
+        let name = decode_name(name_value[0..eq_idx].trim())
+        let value = decode_value(name_value[(eq_idx + 1)..].trim())
+        
+        if name.is_empty() {
+            return Err(CookieError.InvalidName("Cookie name cannot be empty"))
+        }
+        
+        var cookie = Cookie.new(name, value)
+        
+        // Parse attributes
+        for i in 1..parts.len() {
+            let attr = parts[i].clone()
+            let (attr_name, attr_value) = match attr.find("=") {
+                Some(idx) => (attr[0..idx].trim().to_lower(), Some(attr[(idx + 1)..].trim())),
+                None => (attr.to_lower(), None)
+            }
+            
+            match attr_name {
+                "domain" => {
+                    if let Some(v) = attr_value {
+                        cookie.domain = Some(v.trim_start("."))
+                    }
+                }
+                "path" => {
+                    if let Some(v) = attr_value {
+                        cookie.path = Some(v)
+                    }
+                }
+                "expires" => {
+                    if let Some(v) = attr_value {
+                        if let Ok(dt) = datetime.DateTime.parse_http(v) {
+                            cookie.expires = Some(dt)
+                        }
+                    }
+                }
+                "max-age" => {
+                    if let Some(v) = attr_value {
+                        if let Ok(age) = Int64.parse(v) {
+                            cookie.max_age = Some(age)
+                        }
+                    }
+                }
+                "secure" => cookie.secure = true,
+                "httponly" => cookie.http_only = true,
+                "samesite" => {
+                    if let Some(v) = attr_value {
+                        cookie.same_site = SameSite.from_str(v)
+                    }
+                }
+                "partitioned" => cookie.partitioned = true,
+                _ => {} // Ignore unknown attributes
+            }
+        }
+        
+        Ok(cookie)
+    }
+    
+    /// Parse Cookie header (multiple cookies)
+    fn parse_all(header: String) -> [Cookie] {
+        if header.is_empty() {
+            return []
+        }
+        
+        header.split(";")
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .filter_map(|pair| {
+                let eq_idx = pair.find("=")?
+                let name = decode_name(pair[0..eq_idx].trim())
+                let value = decode_value(pair[(eq_idx + 1)..].trim())
+                if name.is_empty() { return None }
+                Some(Cookie.new(name, value))
+            })
+            .collect()
+    }
+    
+    /// Create deletion cookie
+    fn delete(name: String) -> Self {
+        Cookie.new(name, "")
+            .max_age(0)
+            .expires(datetime.DateTime.unix(0))
+    }
+    
+    /// Create deletion cookie with path
+    fn delete_with_path(name: String, path: String) -> Self {
+        Self.delete(name).path(path)
+    }
+}
+
+impl Display for Cookie {
+    fn fmt(f: Formatter) {
+        f.write(self.to_string())
+    }
+}
+
+impl Eq for Cookie {
+    fn eq(other: Cookie) -> Bool {
+        self.name == other.name && 
+        self.value == other.value &&
+        self.domain == other.domain &&
+        self.path == other.path
+    }
+}
+
+// =============================================================================
+// SameSite Attribute
+// =============================================================================
+
+/// SameSite cookie attribute
+enum SameSite {
+    Strict
+    Lax
+    None
+}
+
+impl SameSite {
+    fn from_str(s: String) -> Option<Self> {
+        match s.to_lower() {
+            "strict" => Some(SameSite.Strict),
+            "lax" => Some(SameSite.Lax),
+            "none" => Some(SameSite.None),
+            _ => None
+        }
+    }
+    
+    fn to_string() -> String {
+        match self {
+            Strict => "Strict",
+            Lax => "Lax",
+            None => "None"
+        }
+    }
+}
+
+impl Display for SameSite {
+    fn fmt(f: Formatter) {
+        f.write(self.to_string())
+    }
+}
+
+// =============================================================================
+// Cookie Jar
+// =============================================================================
+
+/// Cookie jar for managing multiple cookies
+struct CookieJar {
+    cookies: Map<String, Cookie>
+    changes: [CookieChange]
+}
+
+enum CookieChange {
+    Added(Cookie)
+    Removed(String)
+    Modified(Cookie)
+}
+
+impl CookieJar {
+    /// Create empty cookie jar
+    fn new() -> Self {
+        CookieJar {
+            cookies: Map.empty(),
+            changes: []
+        }
+    }
+    
+    /// Create cookie jar from Cookie header
+    fn from_header(header: String) -> Self {
+        var jar = Self.new()
+        for cookie in Cookie.parse_all(header) {
+            jar.cookies.set(cookie.name.clone(), cookie)
+        }
+        jar
+    }
+    
+    /// Create cookie jar from request
+    fn from_request(req: http.Request) -> Self {
+        let header = req.headers.get("Cookie").unwrap_or("")
+        Self.from_header(header)
+    }
+    
+    /// Get cookie by name
+    fn get(name: String) -> Option<Cookie> {
+        self.cookies.get(name)
+    }
+    
+    /// Get cookie value by name
+    fn get_value(name: String) -> Option<String> {
+        self.cookies.get(name).map(|c| c.value.clone())
+    }
+    
+    /// Add or update cookie
+    fn add(cookie: Cookie) {
+        let name = cookie.name.clone()
+        let is_new = !self.cookies.contains(name.clone())
+        self.cookies.set(name.clone(), cookie.clone())
+        
+        if is_new {
+            self.changes.push(CookieChange.Added(cookie))
+        } else {
+            self.changes.push(CookieChange.Modified(cookie))
+        }
+    }
+    
+    /// Remove cookie
+    fn remove(name: String) {
+        if self.cookies.remove(name.clone()).is_some() {
+            self.changes.push(CookieChange.Removed(name))
+        }
+    }
+    
+    /// Remove cookie and create deletion cookie
+    fn delete(name: String) -> Cookie {
+        self.remove(name.clone())
+        Cookie.delete(name)
+    }
+    
+    /// Check if cookie exists
+    fn contains(name: String) -> Bool {
+        self.cookies.contains(name)
+    }
+    
+    /// Get all cookies
+    fn all() -> [Cookie] {
+        self.cookies.values().collect()
+    }
+    
+    /// Get all cookie names
+    fn names() -> [String] {
+        self.cookies.keys().collect()
+    }
+    
+    /// Get number of cookies
+    fn len() -> Int {
+        self.cookies.len()
+    }
+    
+    /// Check if jar is empty
+    fn is_empty() -> Bool {
+        self.cookies.is_empty()
+    }
+    
+    /// Clear all cookies
+    fn clear() {
+        for name in self.names() {
+            self.changes.push(CookieChange.Removed(name))
+        }
+        self.cookies.clear()
+    }
+    
+    /// Get changes since creation
+    fn changes() -> [CookieChange] {
+        self.changes.clone()
+    }
+    
+    /// Clear change tracking
+    fn clear_changes() {
+        self.changes.clear()
+    }
+    
+    /// Build Cookie header value
+    fn to_header() -> String {
+        self.cookies.values()
+            .map(|c| c.to_header_value())
+            .join("; ")
+    }
+    
+    /// Get Set-Cookie headers for changes
+    fn set_cookie_headers() -> [String] {
+        self.changes.iter().filter_map(|change| {
+            match change {
+                CookieChange.Added(c) | CookieChange.Modified(c) => Some(c.to_string()),
+                CookieChange.Removed(name) => Some(Cookie.delete(name).to_string())
+            }
+        }).collect()
+    }
+    
+    /// Apply cookies to response
+    fn apply_to_response(response: http.Response) -> http.Response {
+        var res = response
+        for header in self.set_cookie_headers() {
+            res = res.header("Set-Cookie", header)
+        }
+        res
+    }
+    
+    /// Iterate over cookies
+    fn iter() -> impl Iterator<Item = Cookie> {
+        self.cookies.values()
+    }
+}
+
+// =============================================================================
+// Signed Cookies
+// =============================================================================
+
+/// Signed cookie jar for tamper-proof cookies
+struct SignedCookieJar {
+    jar: CookieJar
+    key: [UInt8]
+}
+
+impl SignedCookieJar {
+    /// Create signed cookie jar with secret key
+    fn new(key: [UInt8]) -> Self {
+        SignedCookieJar {
+            jar: CookieJar.new(),
+            key: key
+        }
+    }
+    
+    /// Create from string key
+    fn with_key(key: String) -> Self {
+        Self.new(key.as_bytes())
+    }
+    
+    /// Create from request with key
+    fn from_request(req: http.Request, key: [UInt8]) -> Self {
+        var signed_jar = Self.new(key)
+        let header = req.headers.get("Cookie").unwrap_or("")
+        
+        for cookie in Cookie.parse_all(header) {
+            // Verify signature
+            if let Some(verified) = signed_jar.verify_cookie(cookie) {
+                signed_jar.jar.cookies.set(verified.name.clone(), verified)
+            }
+        }
+        
+        signed_jar
+    }
+    
+    /// Sign a cookie value
+    fn sign_value(value: String) -> String {
+        let signature = crypto.hmac_sha256(self.key.clone(), value.as_bytes())
+        let sig_b64 = base64.encode_url_safe(signature.to_vec())
+        format!("{}.{}", value, sig_b64)
+    }
+    
+    /// Verify and extract cookie value
+    fn verify_value(signed_value: String) -> Option<String> {
+        let dot_idx = signed_value.rfind(".")?
+        let value = signed_value[0..dot_idx].to_string()
+        let signature = signed_value[(dot_idx + 1)..].to_string()
+        
+        let expected_sig = crypto.hmac_sha256(self.key.clone(), value.as_bytes())
+        let expected_b64 = base64.encode_url_safe(expected_sig.to_vec())
+        
+        if crypto.constant_time_eq(signature.as_bytes(), expected_b64.as_bytes()) {
+            Some(value)
+        } else {
+            None
+        }
+    }
+    
+    /// Verify a cookie
+    fn verify_cookie(cookie: Cookie) -> Option<Cookie> {
+        let value = self.verify_value(cookie.value.clone())?
+        Some(Cookie { value: value, ..cookie })
+    }
+    
+    /// Get signed cookie
+    fn get(name: String) -> Option<Cookie> {
+        self.jar.get(name)
+    }
+    
+    /// Get signed cookie value
+    fn get_value(name: String) -> Option<String> {
+        self.jar.get_value(name)
+    }
+    
+    /// Add signed cookie
+    fn add(cookie: Cookie) {
+        let signed_value = self.sign_value(cookie.value.clone())
+        let signed_cookie = Cookie { value: signed_value, ..cookie }
+        self.jar.add(signed_cookie)
+    }
+    
+    /// Remove cookie
+    fn remove(name: String) {
+        self.jar.remove(name)
+    }
+    
+    /// Apply to response
+    fn apply_to_response(response: http.Response) -> http.Response {
+        self.jar.apply_to_response(response)
+    }
+}
+
+// =============================================================================
+// Encrypted Cookies
+// =============================================================================
+
+/// Encrypted cookie jar for confidential cookies
+struct EncryptedCookieJar {
+    jar: CookieJar
+    key: [UInt8; 32]
+}
+
+impl EncryptedCookieJar {
+    /// Create encrypted cookie jar with 32-byte key
+    fn new(key: [UInt8; 32]) -> Self {
+        EncryptedCookieJar {
+            jar: CookieJar.new(),
+            key: key
+        }
+    }
+    
+    /// Derive key from password
+    fn from_password(password: String) -> Self {
+        let key = crypto.pbkdf2_sha256(
+            password.as_bytes(),
+            "cookie-encryption-salt".as_bytes(),
+            100000,
+            32
+        )
+        Self.new(key.try_into().unwrap())
+    }
+    
+    /// Encrypt cookie value
+    fn encrypt_value(value: String) -> Result<String, CookieError> {
+        let nonce = crypto.random_bytes(12)
+        let ciphertext = crypto.aes_gcm_encrypt(
+            self.key.to_vec(),
+            nonce.clone(),
+            value.as_bytes(),
+            []
+        ).map_err(|_| CookieError.EncryptionError)?
+        
+        // Combine nonce + ciphertext
+        var combined = nonce
+        combined.extend(ciphertext)
+        
+        Ok(base64.encode_url_safe(combined))
+    }
+    
+    /// Decrypt cookie value
+    fn decrypt_value(encrypted: String) -> Result<String, CookieError> {
+        let combined = base64.decode_url_safe(encrypted.as_bytes())
+            .map_err(|_| CookieError.DecryptionError)?
+        
+        if combined.len() < 12 {
+            return Err(CookieError.DecryptionError)
+        }
+        
+        let nonce = combined[0..12].to_vec()
+        let ciphertext = combined[12..].to_vec()
+        
+        let plaintext = crypto.aes_gcm_decrypt(
+            self.key.to_vec(),
+            nonce,
+            ciphertext,
+            []
+        ).map_err(|_| CookieError.DecryptionError)?
+        
+        String.from_utf8(plaintext).map_err(|_| CookieError.DecryptionError)
+    }
+    
+    /// Get decrypted cookie
+    fn get(name: String) -> Option<Cookie> {
+        let cookie = self.jar.get(name)?
+        let value = self.decrypt_value(cookie.value.clone()).ok()?
+        Some(Cookie { value: value, ..cookie })
+    }
+    
+    /// Get decrypted cookie value
+    fn get_value(name: String) -> Option<String> {
+        self.get(name).map(|c| c.value)
+    }
+    
+    /// Add encrypted cookie
+    fn add(cookie: Cookie) -> Result<(), CookieError> {
+        let encrypted_value = self.encrypt_value(cookie.value.clone())?
+        let encrypted_cookie = Cookie { value: encrypted_value, ..cookie }
+        self.jar.add(encrypted_cookie)
+        Ok(())
+    }
+    
+    /// Remove cookie
+    fn remove(name: String) {
+        self.jar.remove(name)
+    }
+    
+    /// Apply to response
+    fn apply_to_response(response: http.Response) -> http.Response {
+        self.jar.apply_to_response(response)
+    }
+}
+
+// =============================================================================
+// Encoding/Decoding
+// =============================================================================
+
+/// Encode cookie name
+fn encode_name(name: String) -> String {
+    // Cookie names have limited allowed characters
+    name.chars()
+        .map(|c| {
+            if is_valid_name_char(c) {
+                c.to_string()
+            } else {
+                format!("%{:02X}", c as UInt8)
+            }
+        })
+        .join("")
+}
+
+/// Decode cookie name
+fn decode_name(encoded: String) -> String {
+    url.percent_decode(encoded)
+}
+
+/// Encode cookie value
+fn encode_value(value: String) -> String {
+    // Check if value needs quoting
+    let needs_quotes = value.chars().any(|c| !is_valid_value_char(c))
+    
+    if needs_quotes {
+        // Use percent encoding for special characters
+        let encoded = value.chars()
+            .map(|c| {
+                if is_valid_value_char(c) {
+                    c.to_string()
+                } else {
+                    format!("%{:02X}", c as UInt8)
+                }
+            })
+            .join("")
+        encoded
+    } else {
+        value
+    }
+}
+
+/// Decode cookie value
+fn decode_value(encoded: String) -> String {
+    // Remove surrounding quotes if present
+    let value = if encoded.starts_with("\"") && encoded.ends_with("\"") {
+        encoded[1..(encoded.len() - 1)].to_string()
+    } else {
+        encoded
+    }
+    
+    url.percent_decode(value)
+}
+
+fn is_valid_name_char(c: Char) -> Bool {
+    c.is_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c)
+}
+
+fn is_valid_value_char(c: Char) -> Bool {
+    c.is_alphanumeric() || "!#$%&'()*+-./:<=>?@[]^_`{|}~".contains(c)
+}
+
+// =============================================================================
+// DateTime Extension
+// =============================================================================
+
+impl datetime.DateTime {
+    /// Format for HTTP cookie Expires attribute
+    fn format_http() -> String {
+        self.format("%a, %d %b %Y %H:%M:%S GMT")
+    }
+    
+    /// Parse HTTP date format
+    fn parse_http(s: String) -> Result<Self, DateTimeError> {
+        // Try RFC 1123 format first
+        Self.parse(s.clone(), "%a, %d %b %Y %H:%M:%S GMT")
+            .or_else(|_| Self.parse(s.clone(), "%A, %d-%b-%y %H:%M:%S GMT"))
+            .or_else(|_| Self.parse(s, "%a %b %d %H:%M:%S %Y"))
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum CookieError {
+    InvalidFormat(String)
+    InvalidName(String)
+    InvalidValue(String)
+    EncryptionError
+    DecryptionError
+    SignatureInvalid
+}
+
+impl Display for CookieError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidFormat(s) => f.write(format!("Invalid cookie format: {}", s)),
+            InvalidName(s) => f.write(format!("Invalid cookie name: {}", s)),
+            InvalidValue(s) => f.write(format!("Invalid cookie value: {}", s)),
+            EncryptionError => f.write("Cookie encryption failed"),
+            DecryptionError => f.write("Cookie decryption failed"),
+            SignatureInvalid => f.write("Cookie signature invalid")
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "cookie creation" {
+    let cookie = Cookie.new("session", "abc123")
+    assert_eq(cookie.name, "session")?
+    assert_eq(cookie.value, "abc123")?
+    assert(cookie.is_session())?
+}
+
+test "cookie builder" {
+    let cookie = Cookie.new("user", "john")
+        .domain("example.com")
+        .path("/app")
+        .max_age(3600)
+        .secure(true)
+        .http_only(true)
+        .same_site(SameSite.Strict)
+    
+    assert_eq(cookie.domain, Some("example.com"))?
+    assert_eq(cookie.path, Some("/app"))?
+    assert_eq(cookie.max_age, Some(3600))?
+    assert(cookie.secure)?
+    assert(cookie.http_only)?
+    assert(cookie.is_persistent())?
+}
+
+test "cookie to string" {
+    let cookie = Cookie.new("id", "123")
+        .path("/")
+        .secure(true)
+        .http_only(true)
+        .same_site(SameSite.Lax)
+    
+    let s = cookie.to_string()
+    assert(s.contains("id=123"))?
+    assert(s.contains("Path=/"))?
+    assert(s.contains("Secure"))?
+    assert(s.contains("HttpOnly"))?
+    assert(s.contains("SameSite=Lax"))?
+}
+
+test "cookie parsing" {
+    let cookie = Cookie.parse("session=abc123; Path=/; Secure; HttpOnly; SameSite=Strict")?
+    
+    assert_eq(cookie.name, "session")?
+    assert_eq(cookie.value, "abc123")?
+    assert_eq(cookie.path, Some("/"))?
+    assert(cookie.secure)?
+    assert(cookie.http_only)?
+    assert_eq(cookie.same_site, Some(SameSite.Strict))?
+}
+
+test "parse multiple cookies" {
+    let cookies = Cookie.parse_all("session=abc; user=john; theme=dark")
+    
+    assert_eq(cookies.len(), 3)?
+    assert_eq(cookies[0].name, "session")?
+    assert_eq(cookies[1].name, "user")?
+    assert_eq(cookies[2].name, "theme")?
+}
+
+test "cookie jar" {
+    var jar = CookieJar.new()
+    
+    jar.add(Cookie.new("a", "1"))
+    jar.add(Cookie.new("b", "2"))
+    
+    assert_eq(jar.len(), 2)?
+    assert_eq(jar.get_value("a"), Some("1"))?
+    assert_eq(jar.get_value("b"), Some("2"))?
+    
+    jar.remove("a")
+    assert_eq(jar.len(), 1)?
+    assert(jar.get("a").is_none())?
+}
+
+test "signed cookies" {
+    let jar = SignedCookieJar.with_key("secret-key")
+    
+    jar.add(Cookie.new("data", "sensitive"))
+    
+    // Value should be signed
+    let raw_cookie = jar.jar.get("data")?
+    assert(raw_cookie.value.contains("."))?
+    
+    // Should verify and return original value
+    assert_eq(jar.get_value("data"), Some("sensitive"))?
+}
+
+test "cookie deletion" {
+    let delete_cookie = Cookie.delete("session")
+    
+    assert_eq(delete_cookie.name, "session")?
+    assert_eq(delete_cookie.value, "")?
+    assert_eq(delete_cookie.max_age, Some(0))?
+    assert(delete_cookie.is_expired())?
+}
+
+test "same_site parsing" {
+    assert_eq(SameSite.from_str("strict"), Some(SameSite.Strict))?
+    assert_eq(SameSite.from_str("Lax"), Some(SameSite.Lax))?
+    assert_eq(SameSite.from_str("NONE"), Some(SameSite.None))?
+    assert_eq(SameSite.from_str("invalid"), None)?
+}
+
+test "encoding" {
+    let encoded = encode_value("hello world")
+    assert_eq(encoded, "hello%20world")?
+    
+    let decoded = decode_value("hello%20world")
+    assert_eq(decoded, "hello world")?
+}

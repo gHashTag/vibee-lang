@@ -1,0 +1,677 @@
+// =============================================================================
+// Vibee OS — Exchange Module
+// Currency exchange rates and conversion
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Exchange Rate
+// -----------------------------------------------------------------------------
+
+/// Single exchange rate
+struct ExchangeRate {
+    pair: CurrencyPair
+    rate: Decimal
+    timestamp: DateTime
+    source: String
+    
+    fn new(base: Currency, quote: Currency, rate: Decimal) -> Self {
+        ExchangeRate {
+            pair: CurrencyPair.new(base, quote),
+            rate: rate,
+            timestamp: DateTime.now(),
+            source: "manual"
+        }
+    }
+    
+    fn with_timestamp(base: Currency, quote: Currency, rate: Decimal, timestamp: DateTime) -> Self {
+        ExchangeRate {
+            pair: CurrencyPair.new(base, quote),
+            rate: rate,
+            timestamp: timestamp,
+            source: "manual"
+        }
+    }
+    
+    /// Get inverse rate
+    fn inverse() -> Self {
+        ExchangeRate {
+            pair: self.pair.inverse(),
+            rate: Decimal.one() / self.rate,
+            timestamp: self.timestamp,
+            source: self.source
+        }
+    }
+    
+    /// Convert amount from base to quote currency
+    fn convert(amount: Money) -> Result<Money, ExchangeError> {
+        if amount.currency != self.pair.base {
+            return Err(ExchangeError.CurrencyMismatch)
+        }
+        let converted = amount.as_decimal() * self.rate
+        Ok(Money.from_decimal(converted, self.pair.quote))
+    }
+    
+    /// Convert amount from quote to base currency
+    fn convert_reverse(amount: Money) -> Result<Money, ExchangeError> {
+        if amount.currency != self.pair.quote {
+            return Err(ExchangeError.CurrencyMismatch)
+        }
+        let converted = amount.as_decimal() / self.rate
+        Ok(Money.from_decimal(converted, self.pair.base))
+    }
+    
+    /// Check if rate is stale
+    fn is_stale(max_age: Duration) -> Bool {
+        DateTime.now() - self.timestamp > max_age
+    }
+    
+    /// Calculate cross rate
+    fn cross(other: ExchangeRate) -> Option<ExchangeRate> {
+        // A/B * B/C = A/C
+        if self.pair.quote == other.pair.base {
+            Some(ExchangeRate {
+                pair: CurrencyPair.new(self.pair.base, other.pair.quote),
+                rate: self.rate * other.rate,
+                timestamp: min(self.timestamp, other.timestamp),
+                source: "cross"
+            })
+        } else if self.pair.base == other.pair.quote {
+            // B/A * C/B = C/A -> invert to get A/C
+            Some(ExchangeRate {
+                pair: CurrencyPair.new(other.pair.base, self.pair.quote),
+                rate: other.rate * self.rate,
+                timestamp: min(self.timestamp, other.timestamp),
+                source: "cross"
+            })
+        } else {
+            None
+        }
+    }
+}
+
+impl Display for ExchangeRate {
+    fn fmt(f: Formatter) {
+        f.write("\(self.pair.to_string()) = \(self.rate.format(6))")
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Exchange Rates Collection
+// -----------------------------------------------------------------------------
+
+/// Collection of exchange rates
+struct ExchangeRates {
+    rates: Map<CurrencyPair, ExchangeRate>
+    base_currency: Currency
+    updated_at: DateTime
+    
+    fn empty() -> Self {
+        ExchangeRates {
+            rates: Map.empty(),
+            base_currency: Currency.USD,
+            updated_at: DateTime.now()
+        }
+    }
+    
+    fn with_base(base: Currency) -> Self {
+        ExchangeRates {
+            rates: Map.empty(),
+            base_currency: base,
+            updated_at: DateTime.now()
+        }
+    }
+    
+    /// Add or update rate
+    fn set(rate: ExchangeRate) {
+        self.rates.insert(rate.pair, rate)
+        // Also store inverse
+        self.rates.insert(rate.pair.inverse(), rate.inverse())
+        self.updated_at = DateTime.now()
+    }
+    
+    /// Set rate from values
+    fn set_rate(base: Currency, quote: Currency, rate: Decimal) {
+        self.set(ExchangeRate.new(base, quote, rate))
+    }
+    
+    /// Get direct rate
+    fn get(base: Currency, quote: Currency) -> Option<ExchangeRate> {
+        if base == quote {
+            return Some(ExchangeRate.new(base, quote, Decimal.one()))
+        }
+        self.rates.get(CurrencyPair.new(base, quote))
+    }
+    
+    /// Get rate with cross-rate calculation
+    fn get_rate(base: Currency, quote: Currency) -> Option<ExchangeRate> {
+        // Try direct rate first
+        if let Some(rate) = self.get(base, quote) {
+            return Some(rate)
+        }
+        
+        // Try through base currency
+        if base != self.base_currency && quote != self.base_currency {
+            let to_base = self.get(base, self.base_currency)?
+            let from_base = self.get(self.base_currency, quote)?
+            return to_base.cross(from_base)
+        }
+        
+        None
+    }
+    
+    /// Convert money to target currency
+    fn convert(money: Money, target: Currency) -> Result<Money, ExchangeError> {
+        if money.currency == target {
+            return Ok(money)
+        }
+        
+        let rate = self.get_rate(money.currency, target)
+            .ok_or(ExchangeError.RateNotFound)?
+        
+        rate.convert(money)
+    }
+    
+    /// Convert with specific rate
+    fn convert_at_rate(money: Money, target: Currency, rate: Decimal) -> Money {
+        if money.currency == target {
+            return money
+        }
+        Money.from_decimal(money.as_decimal() * rate, target)
+    }
+    
+    /// Get all available pairs
+    fn pairs() -> [CurrencyPair] {
+        self.rates.keys().collect()
+    }
+    
+    /// Get all currencies
+    fn currencies() -> [Currency] {
+        var currencies = Set.empty()
+        for pair in self.pairs() {
+            currencies.insert(pair.base)
+            currencies.insert(pair.quote)
+        }
+        currencies.into_iter().collect()
+    }
+    
+    /// Check if rates are stale
+    fn is_stale(max_age: Duration) -> Bool {
+        DateTime.now() - self.updated_at > max_age
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Rate Provider Trait
+// -----------------------------------------------------------------------------
+
+/// Interface for exchange rate providers
+trait RateProvider {
+    fn name() -> String
+    fn fetch_rate(pair: CurrencyPair) -> Result<ExchangeRate, ExchangeError>
+    fn fetch_rates(base: Currency) -> Result<ExchangeRates, ExchangeError>
+    fn supported_currencies() -> [Currency]
+}
+
+// -----------------------------------------------------------------------------
+// Rate Provider Implementations
+// -----------------------------------------------------------------------------
+
+/// Fixed rate provider (for testing)
+struct FixedRateProvider {
+    rates: ExchangeRates
+    
+    fn new() -> Self {
+        FixedRateProvider { rates: ExchangeRates.empty() }
+    }
+    
+    fn with_rates(rates: ExchangeRates) -> Self {
+        FixedRateProvider { rates: rates }
+    }
+    
+    fn set_rate(base: Currency, quote: Currency, rate: Decimal) {
+        self.rates.set_rate(base, quote, rate)
+    }
+}
+
+impl RateProvider for FixedRateProvider {
+    fn name() -> String { "Fixed" }
+    
+    fn fetch_rate(pair: CurrencyPair) -> Result<ExchangeRate, ExchangeError> {
+        self.rates.get(pair.base, pair.quote)
+            .ok_or(ExchangeError.RateNotFound)
+    }
+    
+    fn fetch_rates(base: Currency) -> Result<ExchangeRates, ExchangeError> {
+        Ok(self.rates.clone())
+    }
+    
+    fn supported_currencies() -> [Currency] {
+        self.rates.currencies()
+    }
+}
+
+/// HTTP-based rate provider
+struct HttpRateProvider {
+    base_url: String
+    api_key: Option<String>
+    timeout: Duration
+    
+    fn new(base_url: String) -> Self {
+        HttpRateProvider {
+            base_url: base_url,
+            api_key: None,
+            timeout: Duration.seconds(30)
+        }
+    }
+    
+    fn with_api_key(base_url: String, api_key: String) -> Self {
+        HttpRateProvider {
+            base_url: base_url,
+            api_key: Some(api_key),
+            timeout: Duration.seconds(30)
+        }
+    }
+}
+
+/// Open Exchange Rates provider
+struct OpenExchangeRates {
+    api_key: String
+    
+    fn new(api_key: String) -> Self {
+        OpenExchangeRates { api_key: api_key }
+    }
+}
+
+impl RateProvider for OpenExchangeRates {
+    fn name() -> String { "Open Exchange Rates" }
+    
+    fn fetch_rate(pair: CurrencyPair) -> Result<ExchangeRate, ExchangeError> {
+        let rates = self.fetch_rates(pair.base)?
+        rates.get(pair.base, pair.quote)
+            .ok_or(ExchangeError.RateNotFound)
+    }
+    
+    fn fetch_rates(base: Currency) -> Result<ExchangeRates, ExchangeError> {
+        let url = "https://openexchangerates.org/api/latest.json?app_id=\(self.api_key)&base=\(base.code())"
+        let response = http.get(url)
+            .timeout(Duration.seconds(30))
+            .send()
+            .map_err(|_| ExchangeError.NetworkError)?
+        
+        if response.status != 200 {
+            return Err(ExchangeError.ApiError(response.status))
+        }
+        
+        let json = response.json().map_err(|_| ExchangeError.ParseError)?
+        let rates_obj = json["rates"].as_object().ok_or(ExchangeError.ParseError)?
+        
+        var rates = ExchangeRates.with_base(base)
+        for (code, value) in rates_obj {
+            if let Some(currency) = Currency.from_code(code) {
+                let rate = Decimal.from_float(value.as_float().unwrap_or(0.0))
+                rates.set_rate(base, currency, rate)
+            }
+        }
+        
+        Ok(rates)
+    }
+    
+    fn supported_currencies() -> [Currency] {
+        fiat_currencies()
+    }
+}
+
+/// European Central Bank provider (free, no API key)
+struct ECBRateProvider {}
+
+impl ECBRateProvider {
+    fn new() -> Self { ECBRateProvider {} }
+}
+
+impl RateProvider for ECBRateProvider {
+    fn name() -> String { "European Central Bank" }
+    
+    fn fetch_rate(pair: CurrencyPair) -> Result<ExchangeRate, ExchangeError> {
+        let rates = self.fetch_rates(Currency.EUR)?
+        rates.get_rate(pair.base, pair.quote)
+            .ok_or(ExchangeError.RateNotFound)
+    }
+    
+    fn fetch_rates(base: Currency) -> Result<ExchangeRates, ExchangeError> {
+        let url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
+        let response = http.get(url)
+            .timeout(Duration.seconds(30))
+            .send()
+            .map_err(|_| ExchangeError.NetworkError)?
+        
+        if response.status != 200 {
+            return Err(ExchangeError.ApiError(response.status))
+        }
+        
+        // Parse XML response
+        let xml = xml.parse(response.text()).map_err(|_| ExchangeError.ParseError)?
+        var rates = ExchangeRates.with_base(Currency.EUR)
+        
+        for cube in xml.find_all("Cube[@currency]") {
+            let code = cube.attr("currency").unwrap_or("")
+            let rate_str = cube.attr("rate").unwrap_or("0")
+            
+            if let Some(currency) = Currency.from_code(code) {
+                let rate = Decimal.from_string(rate_str).unwrap_or(Decimal.zero())
+                rates.set_rate(Currency.EUR, currency, rate)
+            }
+        }
+        
+        // Add EUR/EUR = 1
+        rates.set_rate(Currency.EUR, Currency.EUR, Decimal.one())
+        
+        Ok(rates)
+    }
+    
+    fn supported_currencies() -> [Currency] {
+        [Currency.EUR, Currency.USD, Currency.GBP, Currency.JPY, Currency.CHF,
+         Currency.AUD, Currency.CAD, Currency.SEK, Currency.NOK, Currency.DKK,
+         Currency.PLN, Currency.CZK, Currency.HUF, Currency.RON, Currency.BGN,
+         Currency.TRY, Currency.CNY, Currency.HKD, Currency.SGD, Currency.KRW,
+         Currency.INR, Currency.MXN, Currency.BRL, Currency.ZAR]
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Caching Rate Provider
+// -----------------------------------------------------------------------------
+
+/// Rate provider with caching
+struct CachedRateProvider<P: RateProvider> {
+    provider: P
+    cache: Map<CurrencyPair, ExchangeRate>
+    cache_duration: Duration
+    
+    fn new(provider: P, cache_duration: Duration) -> Self {
+        CachedRateProvider {
+            provider: provider,
+            cache: Map.empty(),
+            cache_duration: cache_duration
+        }
+    }
+    
+    fn clear_cache() {
+        self.cache.clear()
+    }
+    
+    fn invalidate(pair: CurrencyPair) {
+        self.cache.remove(pair)
+    }
+}
+
+impl<P: RateProvider> RateProvider for CachedRateProvider<P> {
+    fn name() -> String { "Cached(\(self.provider.name()))" }
+    
+    fn fetch_rate(pair: CurrencyPair) -> Result<ExchangeRate, ExchangeError> {
+        // Check cache
+        if let Some(cached) = self.cache.get(pair) {
+            if !cached.is_stale(self.cache_duration) {
+                return Ok(cached)
+            }
+        }
+        
+        // Fetch fresh rate
+        let rate = self.provider.fetch_rate(pair)?
+        self.cache.insert(pair, rate.clone())
+        Ok(rate)
+    }
+    
+    fn fetch_rates(base: Currency) -> Result<ExchangeRates, ExchangeError> {
+        self.provider.fetch_rates(base)
+    }
+    
+    fn supported_currencies() -> [Currency] {
+        self.provider.supported_currencies()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Exchange Service
+// -----------------------------------------------------------------------------
+
+/// High-level exchange service
+actor ExchangeService {
+    provider: Box<dyn RateProvider>
+    rates: ExchangeRates
+    auto_refresh: Bool
+    refresh_interval: Duration
+    
+    fn new(provider: Box<dyn RateProvider>) -> Self {
+        ExchangeService {
+            provider: provider,
+            rates: ExchangeRates.empty(),
+            auto_refresh: false,
+            refresh_interval: Duration.hours(1)
+        }
+    }
+    
+    fn with_auto_refresh(provider: Box<dyn RateProvider>, interval: Duration) -> Self {
+        var service = Self.new(provider)
+        service.auto_refresh = true
+        service.refresh_interval = interval
+        service.start_refresh_loop()
+        service
+    }
+    
+    /// Refresh rates from provider
+    async fn refresh(base: Currency) -> Result<(), ExchangeError> {
+        self.rates = self.provider.fetch_rates(base)?
+        Ok(())
+    }
+    
+    /// Convert money
+    async fn convert(money: Money, target: Currency) -> Result<Money, ExchangeError> {
+        // Refresh if stale
+        if self.rates.is_stale(self.refresh_interval) {
+            self.refresh(Currency.USD).await?
+        }
+        self.rates.convert(money, target)
+    }
+    
+    /// Get current rate
+    async fn rate(base: Currency, quote: Currency) -> Result<ExchangeRate, ExchangeError> {
+        if self.rates.is_stale(self.refresh_interval) {
+            self.refresh(Currency.USD).await?
+        }
+        self.rates.get_rate(base, quote)
+            .ok_or(ExchangeError.RateNotFound)
+    }
+    
+    fn start_refresh_loop() {
+        spawn async {
+            loop {
+                sleep(self.refresh_interval).await
+                if let Err(e) = self.refresh(Currency.USD).await {
+                    log.warn("Failed to refresh rates: \(e)")
+                }
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Spread and Markup
+// -----------------------------------------------------------------------------
+
+/// Calculate bid/ask spread
+struct Spread {
+    mid: Decimal
+    bid: Decimal
+    ask: Decimal
+    
+    fn from_mid_spread(mid: Decimal, spread_percent: Decimal) -> Self {
+        let half_spread = mid * spread_percent / Decimal.from_int(200)
+        Spread {
+            mid: mid,
+            bid: mid - half_spread,
+            ask: mid + half_spread
+        }
+    }
+    
+    fn spread_amount() -> Decimal {
+        self.ask - self.bid
+    }
+    
+    fn spread_percent() -> Decimal {
+        (self.ask - self.bid) / self.mid * Decimal.from_int(100)
+    }
+}
+
+/// Apply markup to exchange rate
+fn apply_markup(rate: ExchangeRate, markup_percent: Decimal) -> ExchangeRate {
+    let markup = rate.rate * markup_percent / Decimal.from_int(100)
+    ExchangeRate {
+        pair: rate.pair,
+        rate: rate.rate + markup,
+        timestamp: rate.timestamp,
+        source: rate.source
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Historical Rates
+// -----------------------------------------------------------------------------
+
+/// Historical exchange rate
+struct HistoricalRate {
+    pair: CurrencyPair
+    date: Date
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    
+    fn average() -> Decimal {
+        (self.high + self.low) / Decimal.from_int(2)
+    }
+    
+    fn range() -> Decimal {
+        self.high - self.low
+    }
+    
+    fn change() -> Decimal {
+        self.close - self.open
+    }
+    
+    fn change_percent() -> Decimal {
+        (self.close - self.open) / self.open * Decimal.from_int(100)
+    }
+}
+
+/// Time series of exchange rates
+struct RateTimeSeries {
+    pair: CurrencyPair
+    rates: [HistoricalRate]
+    
+    fn from_date(date: Date) -> Option<HistoricalRate> {
+        self.rates.find(|r| r.date == date)
+    }
+    
+    fn latest() -> Option<HistoricalRate> {
+        self.rates.last()
+    }
+    
+    fn average_rate() -> Option<Decimal> {
+        if self.rates.is_empty() { return None }
+        let sum = self.rates.map(|r| r.close).fold(Decimal.zero(), |a, b| a + b)
+        Some(sum / Decimal.from_int(self.rates.len()))
+    }
+    
+    fn volatility() -> Option<Decimal> {
+        if self.rates.len() < 2 { return None }
+        let closes = self.rates.map(|r| r.close.to_float())
+        let std = stats.sample_std_dev(closes)?
+        Some(Decimal.from_float(std))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum ExchangeError {
+    RateNotFound
+    CurrencyMismatch
+    NetworkError
+    ApiError(Int)
+    ParseError
+    InvalidRate
+    Timeout
+}
+
+impl Display for ExchangeError {
+    fn fmt(f: Formatter) {
+        f.write(match self {
+            RateNotFound => "Exchange rate not found"
+            CurrencyMismatch => "Currency mismatch"
+            NetworkError => "Network error"
+            ApiError(code) => "API error: \(code)"
+            ParseError => "Failed to parse response"
+            InvalidRate => "Invalid exchange rate"
+            Timeout => "Request timeout"
+        })
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "exchange rate" {
+    let rate = ExchangeRate.new(Currency.EUR, Currency.USD, Decimal.from_string("1.10")?)
+    
+    let money = Money.from_decimal(Decimal.from_int(100), Currency.EUR)
+    let converted = rate.convert(money)?
+    
+    assert_eq(converted.currency, Currency.USD)?
+    assert_eq(converted.format(), "$110.00")?
+}
+
+test "inverse rate" {
+    let rate = ExchangeRate.new(Currency.EUR, Currency.USD, Decimal.from_string("1.10")?)
+    let inverse = rate.inverse()
+    
+    assert_eq(inverse.pair.base, Currency.USD)?
+    assert_eq(inverse.pair.quote, Currency.EUR)?
+    
+    // 1 / 1.10 ≈ 0.909091
+    let expected = Decimal.from_string("0.909091")?
+    assert((inverse.rate - expected).abs() < Decimal.from_string("0.0001")?)?
+}
+
+test "cross rate" {
+    let eur_usd = ExchangeRate.new(Currency.EUR, Currency.USD, Decimal.from_string("1.10")?)
+    let usd_jpy = ExchangeRate.new(Currency.USD, Currency.JPY, Decimal.from_string("150.00")?)
+    
+    let eur_jpy = eur_usd.cross(usd_jpy)?
+    
+    assert_eq(eur_jpy.pair.base, Currency.EUR)?
+    assert_eq(eur_jpy.pair.quote, Currency.JPY)?
+    assert_eq(eur_jpy.rate, Decimal.from_string("165.00")?)?
+}
+
+test "exchange rates collection" {
+    var rates = ExchangeRates.with_base(Currency.USD)
+    rates.set_rate(Currency.USD, Currency.EUR, Decimal.from_string("0.91")?)
+    rates.set_rate(Currency.USD, Currency.GBP, Decimal.from_string("0.79")?)
+    
+    let money = usd(100.00)
+    let eur = rates.convert(money, Currency.EUR)?
+    
+    assert_eq(eur.format(), "€91.00")?
+}
+
+test "spread calculation" {
+    let spread = Spread.from_mid_spread(
+        Decimal.from_string("1.1000")?,
+        Decimal.from_string("0.1")?  // 0.1% spread
+    )
+    
+    assert_eq(spread.bid, Decimal.from_string("1.0995")?)?
+    assert_eq(spread.ask, Decimal.from_string("1.1005")?)?
+}

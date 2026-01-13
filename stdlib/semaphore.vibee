@@ -1,0 +1,181 @@
+// =============================================================================
+// Vibee OS — Semaphore Module
+// Counting semaphores
+// =============================================================================
+
+/// Counting semaphore
+actor Semaphore {
+    state permits: Int
+    state waiters: [fn()]
+    
+    fn new(permits: Int) -> Self { Semaphore { permits: permits, waiters: [] } }
+    
+    /// Acquire one permit (blocking)
+    fn acquire() {
+        while self.permits <= 0 { @native("semaphore_wait", self) }
+        self.permits -= 1
+    }
+    
+    /// Acquire multiple permits
+    fn acquire_many(n: Int) {
+        for _ in 0..n { self.acquire() }
+    }
+    
+    /// Try to acquire (non-blocking)
+    fn try_acquire() -> Bool {
+        if self.permits > 0 { self.permits -= 1; true } else { false }
+    }
+    
+    /// Try to acquire with timeout
+    fn try_acquire_timeout(ms: Int64) -> Bool {
+        let deadline = @native("timestamp_ms") + ms
+        while self.permits <= 0 {
+            if @native("timestamp_ms") >= deadline { return false }
+            @native("yield")
+        }
+        self.permits -= 1
+        true
+    }
+    
+    /// Release one permit
+    fn release() {
+        self.permits += 1
+        if !self.waiters.is_empty() { let w = self.waiters.remove(0); w() }
+    }
+    
+    /// Release multiple permits
+    fn release_many(n: Int) {
+        for _ in 0..n { self.release() }
+    }
+    
+    /// Get available permits
+    fn available() -> Int { self.permits }
+    
+    /// Acquire and return guard
+    fn guard() -> SemaphoreGuard {
+        self.acquire()
+        SemaphoreGuard { sem: self }
+    }
+    
+    /// Execute with permit
+    fn with<R>(f: fn() -> R) -> R {
+        self.acquire()
+        let result = f()
+        self.release()
+        result
+    }
+}
+
+struct SemaphoreGuard { sem: Semaphore }
+impl Drop for SemaphoreGuard { fn drop() { self.sem.release() } }
+
+/// Binary semaphore (mutex-like)
+struct BinarySemaphore { sem: Semaphore }
+impl BinarySemaphore {
+    fn new() -> Self { BinarySemaphore { sem: Semaphore.new(1) } }
+    fn locked() -> Self { BinarySemaphore { sem: Semaphore.new(0) } }
+    fn acquire() { self.sem.acquire() }
+    fn release() { self.sem.release() }
+    fn try_acquire() -> Bool { self.sem.try_acquire() }
+    fn is_locked() -> Bool { self.sem.available() == 0 }
+}
+
+/// Rate limiter using semaphore
+actor RateLimiter {
+    state sem: Semaphore
+    state rate: Int
+    state interval_ms: Int64
+    
+    fn new(rate: Int, interval_ms: Int64) -> Self {
+        let limiter = RateLimiter { sem: Semaphore.new(rate), rate: rate, interval_ms: interval_ms }
+        spawn { limiter.refill_loop() }
+        limiter
+    }
+    
+    fn per_second(rate: Int) -> Self { Self.new(rate, 1000) }
+    fn per_minute(rate: Int) -> Self { Self.new(rate, 60000) }
+    
+    fn acquire() { self.sem.acquire() }
+    fn try_acquire() -> Bool { self.sem.try_acquire() }
+    
+    fn refill_loop() {
+        loop {
+            @native("sleep_ms", self.interval_ms)
+            let to_add = self.rate - self.sem.available()
+            self.sem.release_many(to_add)
+        }
+    }
+}
+
+/// Resource pool using semaphore
+actor ResourcePool<T> {
+    state resources: [T]
+    state sem: Semaphore
+    
+    fn new(resources: [T]) -> Self {
+        let count = resources.len()
+        ResourcePool { resources: resources, sem: Semaphore.new(count) }
+    }
+    
+    fn acquire() -> PooledResource<T> {
+        self.sem.acquire()
+        let resource = self.resources.pop().unwrap()
+        PooledResource { pool: self, resource: Some(resource) }
+    }
+    
+    fn try_acquire() -> Option<PooledResource<T>> {
+        if !self.sem.try_acquire() { return None }
+        let resource = self.resources.pop().unwrap()
+        Some(PooledResource { pool: self, resource: Some(resource) })
+    }
+    
+    fn release(resource: T) {
+        self.resources.push(resource)
+        self.sem.release()
+    }
+    
+    fn available() -> Int { self.sem.available() }
+    fn size() -> Int { self.resources.len() + (self.sem.available() - self.resources.len()).abs() }
+}
+
+struct PooledResource<T> { pool: ResourcePool<T>, resource: Option<T> }
+impl<T> PooledResource<T> {
+    fn get() -> T { self.resource.as_ref().unwrap() }
+}
+impl<T> Drop for PooledResource<T> {
+    fn drop() { if let Some(r) = self.resource.take() { self.pool.release(r) } }
+}
+impl<T> Deref for PooledResource<T> { type Target = T; fn deref() -> T { self.get() } }
+
+// Tests
+test "semaphore basic" {
+    let sem = Semaphore.new(2)
+    assert(sem.try_acquire())?
+    assert(sem.try_acquire())?
+    assert(!sem.try_acquire())?
+    sem.release()
+    assert(sem.try_acquire())?
+}
+
+test "semaphore guard" {
+    let sem = Semaphore.new(1)
+    { let _g = sem.guard(); assert_eq(sem.available(), 0)? }
+    assert_eq(sem.available(), 1)?
+}
+
+test "binary semaphore" {
+    let bs = BinarySemaphore.new()
+    assert(bs.try_acquire())?
+    assert(!bs.try_acquire())?
+    bs.release()
+    assert(bs.try_acquire())?
+}
+
+test "resource pool" {
+    let pool = ResourcePool.new([1, 2, 3])
+    let r1 = pool.acquire()
+    let r2 = pool.acquire()
+    assert_eq(pool.available(), 1)?
+    drop(r1)
+    assert_eq(pool.available(), 2)?
+}

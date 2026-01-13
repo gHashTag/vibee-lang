@@ -1,0 +1,692 @@
+// =============================================================================
+// Vibee OS — Grafana Module
+// Grafana API client for dashboards, alerts, and data sources
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Grafana Client
+// -----------------------------------------------------------------------------
+
+actor GrafanaClient {
+    state base_url: String
+    state api_key: String
+    state org_id: Option<Int>
+    
+    fn new(base_url: String, api_key: String) -> Self {
+        GrafanaClient { base_url: base_url.trim_end("/"), api_key: api_key, org_id: None }
+    }
+    
+    fn with_org(org_id: Int) -> Self {
+        GrafanaClient { base_url: self.base_url, api_key: self.api_key, org_id: Some(org_id) }
+    }
+    
+    fn request(method: Method, path: String) -> Request {
+        var req = Request.new(method, "\(self.base_url)/api\(path)")
+            .header("Authorization", "Bearer \(self.api_key)")
+            .header("Content-Type", "application/json")
+        if let org = self.org_id {
+            req = req.header("X-Grafana-Org-Id", org.to_string())
+        }
+        req
+    }
+    
+    // Dashboard API
+    on dashboards() -> DashboardApi { DashboardApi { client: self } }
+    on folders() -> FolderApi { FolderApi { client: self } }
+    on datasources() -> DataSourceApi { DataSourceApi { client: self } }
+    on alerts() -> AlertApi { AlertApi { client: self } }
+    on annotations() -> AnnotationApi { AnnotationApi { client: self } }
+    on users() -> UserApi { UserApi { client: self } }
+    on orgs() -> OrgApi { OrgApi { client: self } }
+    
+    // Health check
+    fn health() -> Result<HealthResponse, GrafanaError> {
+        let resp = Client.new().send(self.request(Method.GET, "/health"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+}
+
+struct HealthResponse { commit: String, database: String, version: String }
+
+// -----------------------------------------------------------------------------
+// Dashboard API
+// -----------------------------------------------------------------------------
+
+struct DashboardApi { client: GrafanaClient }
+impl DashboardApi {
+    fn search(query: String = "", tags: [String] = [], folder_ids: [Int] = []) -> Result<[DashboardSearchResult], GrafanaError> {
+        var params = []
+        if !query.is_empty() { params.push("query=\(url_encode(query))") }
+        for tag in tags { params.push("tag=\(url_encode(tag))") }
+        for id in folder_ids { params.push("folderIds=\(id)") }
+        
+        let path = if params.is_empty() { "/search" } else { "/search?\(params.join("&"))" }
+        let resp = Client.new().send(self.client.request(Method.GET, path))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn get_by_uid(uid: String) -> Result<Dashboard, GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.GET, "/dashboards/uid/\(uid)"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn create(dashboard: DashboardPayload) -> Result<DashboardResponse, GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.POST, "/dashboards/db").json(dashboard))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn update(dashboard: DashboardPayload) -> Result<DashboardResponse, GrafanaError> {
+        self.create(dashboard)
+    }
+    
+    fn delete_by_uid(uid: String) -> Result<(), GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.DELETE, "/dashboards/uid/\(uid)"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        Ok(())
+    }
+    
+    fn get_home() -> Result<Dashboard, GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.GET, "/dashboards/home"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn get_tags() -> Result<[DashboardTag], GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.GET, "/dashboards/tags"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+}
+
+struct DashboardSearchResult {
+    id: Int
+    uid: String
+    title: String
+    uri: String
+    url: String
+    type_: String
+    tags: [String]
+    is_starred: Bool
+    folder_id: Option<Int>
+    folder_uid: Option<String>
+    folder_title: Option<String>
+}
+
+struct Dashboard {
+    meta: DashboardMeta
+    dashboard: DashboardModel
+}
+
+struct DashboardMeta {
+    is_starred: Bool
+    url: String
+    folder_id: Int
+    folder_uid: String
+    folder_title: String
+    can_save: Bool
+    can_edit: Bool
+    can_admin: Bool
+    can_star: Bool
+    can_delete: Bool
+    created: String
+    updated: String
+    created_by: String
+    updated_by: String
+    version: Int
+}
+
+struct DashboardModel {
+    id: Option<Int>
+    uid: Option<String>
+    title: String
+    tags: [String]
+    timezone: String
+    schema_version: Int
+    version: Int
+    refresh: Option<String>
+    panels: [Panel]
+    time: TimeRange
+    templating: Templating
+    annotations: AnnotationList
+}
+
+struct DashboardPayload {
+    dashboard: DashboardModel
+    folder_id: Option<Int>
+    folder_uid: Option<String>
+    message: Option<String>
+    overwrite: Bool
+}
+
+struct DashboardResponse {
+    id: Int
+    uid: String
+    url: String
+    status: String
+    version: Int
+}
+
+struct DashboardTag { term: String, count: Int }
+
+// -----------------------------------------------------------------------------
+// Panel Types
+// -----------------------------------------------------------------------------
+
+struct Panel {
+    id: Int
+    type_: String
+    title: String
+    grid_pos: GridPos
+    datasource: Option<DataSourceRef>
+    targets: [Target]
+    options: Map<String, Any>
+    field_config: Option<FieldConfig>
+}
+
+struct GridPos { x: Int, y: Int, w: Int, h: Int }
+struct DataSourceRef { type_: String, uid: String }
+struct Target { ref_id: String, expr: String, legend_format: Option<String>, interval: Option<String> }
+struct FieldConfig { defaults: FieldDefaults, overrides: [FieldOverride] }
+struct FieldDefaults { unit: Option<String>, min: Option<Float>, max: Option<Float>, thresholds: Option<Thresholds> }
+struct FieldOverride { matcher: Matcher, properties: [Property] }
+struct Matcher { id: String, options: Any }
+struct Property { id: String, value: Any }
+struct Thresholds { mode: String, steps: [ThresholdStep] }
+struct ThresholdStep { value: Option<Float>, color: String }
+
+struct TimeRange { from: String, to: String }
+struct Templating { list: [TemplateVar] }
+struct TemplateVar { name: String, type_: String, query: String, current: TemplateVarCurrent }
+struct TemplateVarCurrent { text: String, value: String }
+struct AnnotationList { list: [AnnotationQuery] }
+struct AnnotationQuery { name: String, datasource: DataSourceRef, enable: Bool }
+
+// -----------------------------------------------------------------------------
+// Panel Builder
+// -----------------------------------------------------------------------------
+
+actor PanelBuilder {
+    state id: Int
+    state type_: String
+    state title: String
+    state grid_pos: GridPos
+    state datasource: Option<DataSourceRef>
+    state targets: [Target]
+    state options: Map<String, Any>
+    
+    fn new(id: Int, type_: String, title: String) -> Self {
+        PanelBuilder {
+            id: id, type_: type_, title: title,
+            grid_pos: GridPos { x: 0, y: 0, w: 12, h: 8 },
+            datasource: None, targets: [], options: Map.empty()
+        }
+    }
+    
+    fn graph(id: Int, title: String) -> Self { Self.new(id, "timeseries", title) }
+    fn stat(id: Int, title: String) -> Self { Self.new(id, "stat", title) }
+    fn gauge(id: Int, title: String) -> Self { Self.new(id, "gauge", title) }
+    fn table(id: Int, title: String) -> Self { Self.new(id, "table", title) }
+    fn text(id: Int, title: String) -> Self { Self.new(id, "text", title) }
+    fn heatmap(id: Int, title: String) -> Self { Self.new(id, "heatmap", title) }
+    fn logs(id: Int, title: String) -> Self { Self.new(id, "logs", title) }
+    
+    on position(x: Int, y: Int, w: Int, h: Int) -> Self {
+        self.grid_pos = GridPos { x: x, y: y, w: w, h: h }
+        self
+    }
+    
+    on datasource(type_: String, uid: String) -> Self {
+        self.datasource = Some(DataSourceRef { type_: type_, uid: uid })
+        self
+    }
+    
+    on prometheus(uid: String) -> Self { self.datasource("prometheus", uid) }
+    on loki(uid: String) -> Self { self.datasource("loki", uid) }
+    
+    on query(expr: String, legend: String = "") -> Self {
+        let ref_id = String.from_char(('A' as Int + self.targets.len()) as Char)
+        self.targets.push(Target { ref_id: ref_id, expr: expr, legend_format: Some(legend), interval: None })
+        self
+    }
+    
+    on option(key: String, value: Any) -> Self {
+        self.options.set(key, value)
+        self
+    }
+    
+    fn build() -> Panel {
+        Panel {
+            id: self.id, type_: self.type_, title: self.title,
+            grid_pos: self.grid_pos, datasource: self.datasource,
+            targets: self.targets, options: self.options, field_config: None
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Dashboard Builder
+// -----------------------------------------------------------------------------
+
+actor DashboardBuilder {
+    state title: String
+    state uid: Option<String>
+    state tags: [String]
+    state panels: [Panel]
+    state refresh: Option<String>
+    state time_from: String
+    state time_to: String
+    state variables: [TemplateVar]
+    
+    fn new(title: String) -> Self {
+        DashboardBuilder {
+            title: title, uid: None, tags: [], panels: [],
+            refresh: Some("5s"), time_from: "now-1h", time_to: "now", variables: []
+        }
+    }
+    
+    on uid(uid: String) -> Self { self.uid = Some(uid); self }
+    on tag(tag: String) -> Self { self.tags.push(tag); self }
+    on refresh(interval: String) -> Self { self.refresh = Some(interval); self }
+    on time_range(from: String, to: String) -> Self { self.time_from = from; self.time_to = to; self }
+    on panel(panel: Panel) -> Self { self.panels.push(panel); self }
+    
+    on variable(name: String, query: String, datasource_uid: String) -> Self {
+        self.variables.push(TemplateVar {
+            name: name, type_: "query", query: query,
+            current: TemplateVarCurrent { text: "", value: "" }
+        })
+        self
+    }
+    
+    fn build() -> DashboardModel {
+        DashboardModel {
+            id: None, uid: self.uid, title: self.title, tags: self.tags,
+            timezone: "browser", schema_version: 36, version: 0,
+            refresh: self.refresh, panels: self.panels,
+            time: TimeRange { from: self.time_from, to: self.time_to },
+            templating: Templating { list: self.variables },
+            annotations: AnnotationList { list: [] }
+        }
+    }
+    
+    fn build_payload(folder_uid: Option<String> = None, message: String = "") -> DashboardPayload {
+        DashboardPayload {
+            dashboard: self.build(),
+            folder_id: None, folder_uid: folder_uid,
+            message: if message.is_empty() { None } else { Some(message) },
+            overwrite: false
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Folder API
+// -----------------------------------------------------------------------------
+
+struct FolderApi { client: GrafanaClient }
+impl FolderApi {
+    fn list() -> Result<[Folder], GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.GET, "/folders"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn get_by_uid(uid: String) -> Result<Folder, GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.GET, "/folders/\(uid)"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn create(title: String, uid: Option<String> = None) -> Result<Folder, GrafanaError> {
+        let payload = FolderCreate { title: title, uid: uid }
+        let resp = Client.new().send(self.client.request(Method.POST, "/folders").json(payload))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn delete(uid: String) -> Result<(), GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.DELETE, "/folders/\(uid)"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        Ok(())
+    }
+}
+
+struct Folder { id: Int, uid: String, title: String, url: String, has_acl: Bool, can_save: Bool, can_edit: Bool, can_admin: Bool }
+struct FolderCreate { title: String, uid: Option<String> }
+
+// -----------------------------------------------------------------------------
+// Data Source API
+// -----------------------------------------------------------------------------
+
+struct DataSourceApi { client: GrafanaClient }
+impl DataSourceApi {
+    fn list() -> Result<[DataSource], GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.GET, "/datasources"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn get_by_uid(uid: String) -> Result<DataSource, GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.GET, "/datasources/uid/\(uid)"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn get_by_name(name: String) -> Result<DataSource, GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.GET, "/datasources/name/\(url_encode(name))"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn create(ds: DataSourceCreate) -> Result<DataSource, GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.POST, "/datasources").json(ds))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn delete(uid: String) -> Result<(), GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.DELETE, "/datasources/uid/\(uid)"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        Ok(())
+    }
+    
+    fn test(uid: String) -> Result<DataSourceTestResult, GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.GET, "/datasources/uid/\(uid)/health"))?
+        resp.json()
+    }
+}
+
+struct DataSource {
+    id: Int
+    uid: String
+    name: String
+    type_: String
+    url: String
+    access: String
+    is_default: Bool
+    database: Option<String>
+    basic_auth: Bool
+    json_data: Map<String, Any>
+}
+
+struct DataSourceCreate {
+    name: String
+    type_: String
+    url: String
+    access: String
+    is_default: Bool
+    basic_auth: Bool
+    basic_auth_user: Option<String>
+    json_data: Map<String, Any>
+    secure_json_data: Map<String, String>
+}
+
+struct DataSourceTestResult { status: String, message: String }
+
+// Convenience constructors
+impl DataSourceCreate {
+    fn prometheus(name: String, url: String) -> Self {
+        DataSourceCreate {
+            name: name, type_: "prometheus", url: url, access: "proxy",
+            is_default: false, basic_auth: false, basic_auth_user: None,
+            json_data: Map.empty(), secure_json_data: Map.empty()
+        }
+    }
+    
+    fn loki(name: String, url: String) -> Self {
+        DataSourceCreate {
+            name: name, type_: "loki", url: url, access: "proxy",
+            is_default: false, basic_auth: false, basic_auth_user: None,
+            json_data: Map.empty(), secure_json_data: Map.empty()
+        }
+    }
+    
+    fn influxdb(name: String, url: String, database: String) -> Self {
+        var json_data = Map.empty()
+        json_data.set("database", database)
+        DataSourceCreate {
+            name: name, type_: "influxdb", url: url, access: "proxy",
+            is_default: false, basic_auth: false, basic_auth_user: None,
+            json_data: json_data, secure_json_data: Map.empty()
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Alert API
+// -----------------------------------------------------------------------------
+
+struct AlertApi { client: GrafanaClient }
+impl AlertApi {
+    fn list_rules() -> Result<[AlertRule], GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.GET, "/v1/provisioning/alert-rules"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn get_rule(uid: String) -> Result<AlertRule, GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.GET, "/v1/provisioning/alert-rules/\(uid)"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn create_rule(rule: AlertRule) -> Result<AlertRule, GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.POST, "/v1/provisioning/alert-rules").json(rule))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn delete_rule(uid: String) -> Result<(), GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.DELETE, "/v1/provisioning/alert-rules/\(uid)"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        Ok(())
+    }
+    
+    fn list_contact_points() -> Result<[ContactPoint], GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.GET, "/v1/provisioning/contact-points"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn create_contact_point(cp: ContactPoint) -> Result<ContactPoint, GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.POST, "/v1/provisioning/contact-points").json(cp))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+}
+
+struct AlertRule {
+    uid: Option<String>
+    title: String
+    condition: String
+    data: [AlertQuery]
+    folder_uid: String
+    rule_group: String
+    for_: String
+    annotations: Map<String, String>
+    labels: Map<String, String>
+    no_data_state: String
+    exec_err_state: String
+}
+
+struct AlertQuery {
+    ref_id: String
+    query_type: String
+    relative_time_range: RelativeTimeRange
+    datasource_uid: String
+    model: Map<String, Any>
+}
+
+struct RelativeTimeRange { from: Int, to: Int }
+
+struct ContactPoint {
+    uid: Option<String>
+    name: String
+    type_: String
+    settings: Map<String, Any>
+    disable_resolve_message: Bool
+}
+
+// -----------------------------------------------------------------------------
+// Annotation API
+// -----------------------------------------------------------------------------
+
+struct AnnotationApi { client: GrafanaClient }
+impl AnnotationApi {
+    fn list(from: Int64, to: Int64, dashboard_id: Option<Int> = None) -> Result<[Annotation], GrafanaError> {
+        var path = "/annotations?from=\(from)&to=\(to)"
+        if let id = dashboard_id { path += "&dashboardId=\(id)" }
+        let resp = Client.new().send(self.client.request(Method.GET, path))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn create(annotation: AnnotationCreate) -> Result<AnnotationResponse, GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.POST, "/annotations").json(annotation))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn delete(id: Int) -> Result<(), GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.DELETE, "/annotations/\(id)"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        Ok(())
+    }
+}
+
+struct Annotation {
+    id: Int
+    dashboard_id: Int
+    panel_id: Int
+    time: Int64
+    time_end: Int64
+    text: String
+    tags: [String]
+}
+
+struct AnnotationCreate {
+    dashboard_uid: Option<String>
+    panel_id: Option<Int>
+    time: Int64
+    time_end: Option<Int64>
+    text: String
+    tags: [String]
+}
+
+struct AnnotationResponse { id: Int, message: String }
+
+// -----------------------------------------------------------------------------
+// User & Org API
+// -----------------------------------------------------------------------------
+
+struct UserApi { client: GrafanaClient }
+impl UserApi {
+    fn get_current() -> Result<User, GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.GET, "/user"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn list() -> Result<[User], GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.GET, "/users"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+}
+
+struct User { id: Int, email: String, name: String, login: String, is_admin: Bool }
+
+struct OrgApi { client: GrafanaClient }
+impl OrgApi {
+    fn get_current() -> Result<Org, GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.GET, "/org"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+    
+    fn list() -> Result<[Org], GrafanaError> {
+        let resp = Client.new().send(self.client.request(Method.GET, "/orgs"))?
+        if !resp.is_success() { return Err(GrafanaError.from_response(resp)) }
+        resp.json()
+    }
+}
+
+struct Org { id: Int, name: String }
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum GrafanaError {
+    NotFound(String)
+    Unauthorized
+    Forbidden
+    BadRequest(String)
+    Conflict(String)
+    ServerError(String)
+    NetworkError(String)
+    
+    fn from_response(resp: Response) -> Self {
+        let body = resp.text()
+        match resp.status.code {
+            400 => GrafanaError.BadRequest(body),
+            401 => GrafanaError.Unauthorized,
+            403 => GrafanaError.Forbidden,
+            404 => GrafanaError.NotFound(body),
+            409 => GrafanaError.Conflict(body),
+            _ => GrafanaError.ServerError(body)
+        }
+    }
+    
+    fn message() -> String {
+        match self {
+            .NotFound(m) => "Not found: \(m)",
+            .Unauthorized => "Unauthorized",
+            .Forbidden => "Forbidden",
+            .BadRequest(m) => "Bad request: \(m)",
+            .Conflict(m) => "Conflict: \(m)",
+            .ServerError(m) => "Server error: \(m)",
+            .NetworkError(m) => "Network error: \(m)"
+        }
+    }
+}
+
+fn url_encode(s: String) -> String { @native("url_encode", s) }
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "panel builder" {
+    let panel = PanelBuilder.graph(1, "CPU Usage")
+        .position(0, 0, 12, 8)
+        .prometheus("prometheus-uid")
+        .query("rate(cpu_usage[5m])", "{{instance}}")
+        .build()
+    
+    assert_eq(panel.title, "CPU Usage")?
+    assert_eq(panel.type_, "timeseries")?
+    assert_eq(panel.targets.len(), 1)?
+}
+
+test "dashboard builder" {
+    let dashboard = DashboardBuilder.new("My Dashboard")
+        .uid("my-dashboard")
+        .tag("production")
+        .refresh("10s")
+        .build()
+    
+    assert_eq(dashboard.title, "My Dashboard")?
+    assert_eq(dashboard.uid, Some("my-dashboard"))?
+    assert_eq(dashboard.tags, ["production"])?
+}
+
+test "datasource create" {
+    let ds = DataSourceCreate.prometheus("Prometheus", "http://prometheus:9090")
+    assert_eq(ds.type_, "prometheus")?
+    assert_eq(ds.access, "proxy")?
+}

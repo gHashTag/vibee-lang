@@ -1,0 +1,360 @@
+name: vibee_os_embedding_model
+version: "0.1.0"
+language: gleam
+module: kernel/agent/embedding_model
+description: Embedding Model - преобразование текста в векторы для семантического поиска
+
+behaviors:
+  - name: embed_text
+    given: Text string
+    when: embed is called
+    then: Returns embedding vector
+    test_cases:
+      - name: embed_simple
+        input: {text: "Hello world"}
+        expected:
+          dimension: 1536
+          is_normalized: true
+      - name: embed_code
+        input: {text: "fn add(a, b) { a + b }"}
+        expected:
+          dimension: 1536
+          is_normalized: true
+      - name: embed_empty
+        input: {text: ""}
+        expected:
+          error: "empty_text"
+
+  - name: embed_batch
+    given: Multiple texts
+    when: embed_batch is called
+    then: Returns embeddings for all texts
+    test_cases:
+      - name: batch_10
+        input:
+          texts: ["text1", "text2", "text3", "text4", "text5", "text6", "text7", "text8", "text9", "text10"]
+        expected:
+          count: 10
+          all_same_dimension: true
+      - name: batch_efficient
+        input:
+          texts: 100
+        expected:
+          faster_than_sequential: true
+
+  - name: similarity_meaningful
+    given: Two related texts
+    when: Embeddings are compared
+    then: Similarity is high
+    test_cases:
+      - name: similar_texts
+        input:
+          text_a: "The cat sat on the mat"
+          text_b: "A cat is sitting on a mat"
+        expected:
+          similarity_above: 0.8
+      - name: different_texts
+        input:
+          text_a: "The cat sat on the mat"
+          text_b: "Quantum physics explains particle behavior"
+        expected:
+          similarity_below: 0.3
+      - name: code_similarity
+        input:
+          text_a: "function add(a, b) { return a + b; }"
+          text_b: "fn add(x, y) { x + y }"
+        expected:
+          similarity_above: 0.7
+
+  - name: chunking
+    given: Long text exceeds model limit
+    when: embed_long is called
+    then: Text is chunked and embeddings averaged
+    test_cases:
+      - name: chunk_long_text
+        input:
+          text_length: 10000
+          max_tokens: 512
+        expected:
+          chunked: true
+          final_dimension: 1536
+      - name: overlap_chunks
+        input:
+          text_length: 5000
+          chunk_size: 512
+          overlap: 50
+        expected:
+          chunks_overlap: true
+
+  - name: caching
+    given: Same text embedded before
+    when: embed is called again
+    then: Cached result is returned
+    test_cases:
+      - name: cache_hit
+        input:
+          text: "cached text"
+          already_cached: true
+        expected:
+          from_cache: true
+          no_api_call: true
+      - name: cache_miss
+        input:
+          text: "new text"
+          already_cached: false
+        expected:
+          from_cache: false
+          api_called: true
+
+types:
+  # Embedding Result
+  EmbeddingResult:
+    vector: [float]
+    dimension: int
+    model: str
+    tokens_used: int
+    cached: bool
+
+  # Batch Result
+  BatchEmbeddingResult:
+    embeddings: [EmbeddingResult]
+    total_tokens: int
+    duration_ms: int
+
+  # Model Configuration
+  EmbeddingConfig:
+    provider: EmbeddingProvider
+    model: str
+    api_key_env: str
+    api_endpoint: str
+    dimension: int
+    max_tokens: int
+    batch_size: int
+    cache_enabled: bool
+    cache_ttl_seconds: int
+    normalize: bool
+
+  EmbeddingProvider:
+    variants:
+      - OpenAI                        # text-embedding-3-small/large
+      - DeepSeek                      # DeepSeek embeddings
+      - Cohere                        # embed-english-v3.0
+      - Voyage                        # voyage-2
+      - Local                         # sentence-transformers
+      - Custom: {endpoint: str}
+
+  # Chunking Configuration
+  ChunkConfig:
+    max_tokens: int
+    overlap_tokens: int
+    separator: str
+    combine_method: CombineMethod
+
+  CombineMethod:
+    variants:
+      - Average                       # Average all chunk embeddings
+      - First                         # Use first chunk only
+      - Max                           # Max pooling
+      - Weighted                      # Weight by chunk position
+
+  # Cache
+  EmbeddingCache:
+    backend: CacheBackend
+    max_size: int
+    ttl_seconds: int
+
+  CacheBackend:
+    variants:
+      - Memory
+      - SQLite: {path: str}
+      - Redis: {url: str}
+
+  # Statistics
+  EmbeddingStats:
+    total_requests: int
+    total_tokens: int
+    cache_hits: int
+    cache_misses: int
+    avg_latency_ms: float
+    total_cost_usd: float
+
+  # Error
+  EmbeddingError:
+    variants:
+      - EmptyText
+      - TextTooLong: {length: int, max: int}
+      - RateLimited: {retry_after_ms: int}
+      - APIError: {status: int, message: str}
+      - InvalidModel: {model: str}
+
+functions:
+  # Core embedding
+  - name: embed
+    params: {text: str}
+    returns: EmbeddingResult
+    description: Embed single text
+
+  - name: embed_batch
+    params: {texts: [str]}
+    returns: BatchEmbeddingResult
+    description: Embed multiple texts
+
+  - name: embed_long
+    params: {text: str, chunk_config: ChunkConfig}
+    returns: EmbeddingResult
+    description: Embed long text with chunking
+
+  # Configuration
+  - name: config_default
+    params: {}
+    returns: EmbeddingConfig
+    description: Get default configuration
+
+  - name: config_set
+    params: {config: EmbeddingConfig}
+    returns: bool
+    description: Set configuration
+
+  # Similarity
+  - name: similarity
+    params: {a: [float], b: [float]}
+    returns: float
+    description: Calculate cosine similarity
+
+  - name: most_similar
+    params: {query: [float], candidates: [[float]], top_k: int}
+    returns: [{index: int, similarity: float}]
+    description: Find most similar vectors
+
+  # Chunking
+  - name: chunk_text
+    params: {text: str, config: ChunkConfig}
+    returns: [str]
+    description: Split text into chunks
+
+  - name: combine_embeddings
+    params: {embeddings: [[float]], method: CombineMethod}
+    returns: [float]
+    description: Combine multiple embeddings
+
+  # Cache
+  - name: cache_get
+    params: {text: str}
+    returns: EmbeddingResult?
+    description: Get from cache
+
+  - name: cache_set
+    params: {text: str, embedding: EmbeddingResult}
+    returns: bool
+    description: Store in cache
+
+  - name: cache_clear
+    params: {}
+    returns: int
+    description: Clear cache, returns count cleared
+
+  # Statistics
+  - name: stats
+    params: {}
+    returns: EmbeddingStats
+    description: Get usage statistics
+
+  # Normalization
+  - name: normalize
+    params: {vector: [float]}
+    returns: [float]
+    description: L2 normalize vector
+
+imports:
+  - kernel.agent.llm_client
+  - config.llm_providers
+
+default_config: |
+  # Default Configuration
+  
+  ```yaml
+  provider: OpenAI
+  model: "text-embedding-3-small"
+  api_key_env: "OPENAI_API_KEY"
+  api_endpoint: "https://api.openai.com/v1/embeddings"
+  dimension: 1536
+  max_tokens: 8191
+  batch_size: 100
+  cache_enabled: true
+  cache_ttl_seconds: 86400
+  normalize: true
+  ```
+  
+  ## Alternative: DeepSeek
+  ```yaml
+  provider: DeepSeek
+  model: "deepseek-embed"
+  api_key_env: "DEEPSEEK_API_KEY"
+  api_endpoint: "https://api.deepseek.com/v1/embeddings"
+  ```
+  
+  ## Alternative: Local
+  ```yaml
+  provider: Local
+  model: "all-MiniLM-L6-v2"
+  api_endpoint: "http://localhost:8080/embed"
+  dimension: 384
+  ```
+
+model_comparison: |
+  # Embedding Model Comparison
+  
+  | Model | Dimension | Max Tokens | Cost/1M | Quality |
+  |-------|-----------|------------|---------|---------|
+  | text-embedding-3-small | 1536 | 8191 | $0.02 | Good |
+  | text-embedding-3-large | 3072 | 8191 | $0.13 | Best |
+  | text-embedding-ada-002 | 1536 | 8191 | $0.10 | Good |
+  | voyage-2 | 1024 | 4000 | $0.10 | Great |
+  | embed-english-v3.0 | 1024 | 512 | $0.10 | Great |
+  | all-MiniLM-L6-v2 | 384 | 256 | Free | OK |
+  
+  Recommendation:
+  - Production: text-embedding-3-small (best cost/quality)
+  - Quality critical: text-embedding-3-large
+  - Local/free: all-MiniLM-L6-v2
+
+chunking_strategy: |
+  # Chunking Strategy for Long Texts
+  
+  ## Problem
+  Most embedding models have token limits (512-8K).
+  Long documents need to be split.
+  
+  ## Solution: Overlapping Chunks
+  
+  ```
+  Document: [===========================================]
+  
+  Chunk 1:  [==========]
+  Chunk 2:       [==========]
+  Chunk 3:            [==========]
+  Chunk 4:                 [==========]
+  
+  Overlap ensures context is preserved at boundaries.
+  ```
+  
+  ## Combining Embeddings
+  
+  1. **Average** (default): Mean of all chunk embeddings
+     - Best for general similarity
+  
+  2. **Weighted**: Weight by position
+     - Beginning/end more important
+  
+  3. **Max Pooling**: Max value per dimension
+     - Captures strongest signals
+  
+  ## Recommended Settings
+  
+  ```yaml
+  chunk_config:
+    max_tokens: 512
+    overlap_tokens: 50
+    separator: "\n\n"
+    combine_method: Average
+  ```

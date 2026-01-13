@@ -1,0 +1,207 @@
+// =============================================================================
+// Vibee OS — IO Module
+// Input/Output traits and utilities
+// =============================================================================
+
+/// Reader trait
+trait Read {
+    fn read(buf: [UInt8]) -> Result<Int, IoError>
+    
+    fn read_exact(buf: [UInt8]) -> Result<(), IoError> {
+        var offset = 0
+        while offset < buf.len() {
+            let n = self.read(buf[offset..])?
+            if n == 0 { return Err(IoError.UnexpectedEof) }
+            offset += n
+        }
+        Ok(())
+    }
+    
+    fn read_to_end(buf: [UInt8]) -> Result<Int, IoError> {
+        var total = 0
+        var chunk = [0u8; 8192]
+        loop {
+            let n = self.read(chunk)?
+            if n == 0 { break }
+            buf.extend(chunk[0..n])
+            total += n
+        }
+        Ok(total)
+    }
+    
+    fn read_to_string() -> Result<String, IoError> {
+        var buf = []
+        self.read_to_end(buf)?
+        String.from_utf8(buf).map_err(|_| IoError.InvalidData)
+    }
+    
+    fn bytes() -> Bytes<Self> { Bytes { reader: self } }
+    fn chain<R: Read>(other: R) -> Chain<Self, R> { Chain { first: self, second: other, first_done: false } }
+    fn take(limit: Int64) -> Take<Self> { Take { reader: self, remaining: limit } }
+}
+
+/// Writer trait
+trait Write {
+    fn write(data: [UInt8]) -> Result<Int, IoError>
+    fn flush() -> Result<(), IoError>
+    
+    fn write_all(data: [UInt8]) -> Result<(), IoError> {
+        var offset = 0
+        while offset < data.len() {
+            let n = self.write(data[offset..])?
+            if n == 0 { return Err(IoError.WriteZero) }
+            offset += n
+        }
+        Ok(())
+    }
+    
+    fn write_fmt(args: String) -> Result<(), IoError> { self.write_all(args.as_bytes()) }
+}
+
+/// Seek trait
+trait Seek {
+    fn seek(pos: SeekFrom) -> Result<Int64, IoError>
+    fn rewind() -> Result<(), IoError> { self.seek(SeekFrom.Start(0)).map(|_| ()) }
+    fn stream_position() -> Result<Int64, IoError> { self.seek(SeekFrom.Current(0)) }
+    fn stream_len() -> Result<Int64, IoError> {
+        let pos = self.stream_position()?
+        let len = self.seek(SeekFrom.End(0))?
+        self.seek(SeekFrom.Start(pos))?
+        Ok(len)
+    }
+}
+
+/// BufRead trait
+trait BufRead: Read {
+    fn fill_buf() -> Result<[UInt8], IoError>
+    fn consume(amt: Int)
+    
+    fn read_until(byte: UInt8, buf: [UInt8]) -> Result<Int, IoError> {
+        var total = 0
+        loop {
+            let available = self.fill_buf()?
+            if available.is_empty() { break }
+            match available.iter().position(|b| b == byte) {
+                Some(i) => { buf.extend(available[0..=i]); self.consume(i + 1); total += i + 1; break }
+                None => { buf.extend(available); let len = available.len(); self.consume(len); total += len }
+            }
+        }
+        Ok(total)
+    }
+    
+    fn read_line(buf: String) -> Result<Int, IoError> {
+        var bytes = []
+        let n = self.read_until('\n' as UInt8, bytes)?
+        buf.push_str(String.from_utf8_lossy(bytes))
+        Ok(n)
+    }
+    
+    fn lines() -> Lines<Self> { Lines { reader: self } }
+    fn split(byte: UInt8) -> Split<Self> { Split { reader: self, delim: byte } }
+}
+
+/// Buffered reader
+struct BufReader<R: Read> { inner: R, buf: [UInt8], pos: Int, cap: Int }
+impl<R: Read> BufReader<R> {
+    fn new(inner: R) -> Self { Self.with_capacity(8192, inner) }
+    fn with_capacity(cap: Int, inner: R) -> Self { BufReader { inner: inner, buf: [0u8; cap], pos: 0, cap: 0 } }
+    fn get_ref() -> R { self.inner }
+    fn buffer() -> [UInt8] { self.buf[self.pos..self.cap] }
+}
+impl<R: Read> Read for BufReader<R> {
+    fn read(buf: [UInt8]) -> Result<Int, IoError> {
+        if self.pos >= self.cap {
+            if buf.len() >= self.buf.len() { return self.inner.read(buf) }
+            self.cap = self.inner.read(self.buf)?
+            self.pos = 0
+        }
+        let n = (self.cap - self.pos).min(buf.len())
+        buf[0..n].copy_from(self.buf[self.pos..(self.pos + n)])
+        self.pos += n
+        Ok(n)
+    }
+}
+impl<R: Read> BufRead for BufReader<R> {
+    fn fill_buf() -> Result<[UInt8], IoError> {
+        if self.pos >= self.cap { self.cap = self.inner.read(self.buf)?; self.pos = 0 }
+        Ok(self.buf[self.pos..self.cap])
+    }
+    fn consume(amt: Int) { self.pos = (self.pos + amt).min(self.cap) }
+}
+
+/// Buffered writer
+struct BufWriter<W: Write> { inner: W, buf: [UInt8], cap: Int }
+impl<W: Write> BufWriter<W> {
+    fn new(inner: W) -> Self { Self.with_capacity(8192, inner) }
+    fn with_capacity(cap: Int, inner: W) -> Self { BufWriter { inner: inner, buf: [], cap: cap } }
+    fn get_ref() -> W { self.inner }
+    fn buffer() -> [UInt8] { self.buf.clone() }
+}
+impl<W: Write> Write for BufWriter<W> {
+    fn write(data: [UInt8]) -> Result<Int, IoError> {
+        if self.buf.len() + data.len() > self.cap { self.flush()? }
+        if data.len() >= self.cap { return self.inner.write(data) }
+        self.buf.extend(data)
+        Ok(data.len())
+    }
+    fn flush() -> Result<(), IoError> {
+        self.inner.write_all(self.buf)?
+        self.buf.clear()
+        self.inner.flush()
+    }
+}
+impl<W: Write> Drop for BufWriter<W> { fn drop() { self.flush().ok() } }
+
+/// Adapters
+struct Bytes<R> { reader: R }
+impl<R: Read> Iterator for Bytes<R> { type Item = Result<UInt8, IoError>; fn next() -> Option<Self.Item> { var buf = [0u8]; match self.reader.read(buf) { Ok(0) => None, Ok(_) => Some(Ok(buf[0])), Err(e) => Some(Err(e)) } } }
+
+struct Chain<A, B> { first: A, second: B, first_done: Bool }
+impl<A: Read, B: Read> Read for Chain<A, B> { fn read(buf: [UInt8]) -> Result<Int, IoError> { if !self.first_done { let n = self.first.read(buf)?; if n > 0 { return Ok(n) } self.first_done = true } self.second.read(buf) } }
+
+struct Take<R> { reader: R, remaining: Int64 }
+impl<R: Read> Read for Take<R> { fn read(buf: [UInt8]) -> Result<Int, IoError> { if self.remaining == 0 { return Ok(0) } let max = buf.len().min(self.remaining as Int); let n = self.reader.read(buf[0..max])?; self.remaining -= n as Int64; Ok(n) } }
+
+struct Lines<R> { reader: R }
+impl<R: BufRead> Iterator for Lines<R> { type Item = Result<String, IoError>; fn next() -> Option<Self.Item> { var line = ""; match self.reader.read_line(line) { Ok(0) => None, Ok(_) => Some(Ok(line.trim_end_matches('\n').trim_end_matches('\r').to_string())), Err(e) => Some(Err(e)) } } }
+
+struct Split<R> { reader: R, delim: UInt8 }
+impl<R: BufRead> Iterator for Split<R> { type Item = Result<[UInt8], IoError>; fn next() -> Option<Self.Item> { var buf = []; match self.reader.read_until(self.delim, buf) { Ok(0) => None, Ok(_) => { if buf.last() == Some(self.delim) { buf.pop() } Some(Ok(buf)) }, Err(e) => Some(Err(e)) } } }
+
+/// Standard streams
+fn stdin() -> Stdin { Stdin {} }
+fn stdout() -> Stdout { Stdout {} }
+fn stderr() -> Stderr { Stderr {} }
+
+struct Stdin {}
+impl Read for Stdin { fn read(buf: [UInt8]) -> Result<Int, IoError> { @native("stdin_read", buf) } }
+impl BufRead for Stdin { fn fill_buf() -> Result<[UInt8], IoError> { @native("stdin_fill_buf") } fn consume(amt: Int) { @native("stdin_consume", amt) } }
+
+struct Stdout {}
+impl Write for Stdout { fn write(data: [UInt8]) -> Result<Int, IoError> { @native("stdout_write", data) } fn flush() -> Result<(), IoError> { @native("stdout_flush") } }
+
+struct Stderr {}
+impl Write for Stderr { fn write(data: [UInt8]) -> Result<Int, IoError> { @native("stderr_write", data) } fn flush() -> Result<(), IoError> { @native("stderr_flush") } }
+
+/// Copy reader to writer
+fn copy<R: Read, W: Write>(reader: R, writer: W) -> Result<Int64, IoError> {
+    var total: Int64 = 0
+    var buf = [0u8; 8192]
+    loop { let n = reader.read(buf)?; if n == 0 { break } writer.write_all(buf[0..n])?; total += n as Int64 }
+    Ok(total)
+}
+
+/// Cursor for in-memory I/O
+struct Cursor<T> { inner: T, pos: Int64 }
+impl<T> Cursor<T> { fn new(inner: T) -> Self { Cursor { inner: inner, pos: 0 } } fn position() -> Int64 { self.pos } fn set_position(pos: Int64) { self.pos = pos } fn into_inner() -> T { self.inner } fn get_ref() -> T { self.inner } }
+impl Cursor<[UInt8]> { fn read(buf: [UInt8]) -> Result<Int, IoError> { let n = (self.inner.len() as Int64 - self.pos).min(buf.len() as Int64) as Int; buf[0..n].copy_from(self.inner[self.pos as Int..(self.pos as Int + n)]); self.pos += n as Int64; Ok(n) } }
+
+enum IoError { NotFound, PermissionDenied, AlreadyExists, InvalidInput, InvalidData, UnexpectedEof, WriteZero, Interrupted, Other(String) }
+
+// Tests
+test "buf reader" {
+    let data = "hello\nworld\n".as_bytes()
+    let reader = BufReader.new(Cursor.new(data))
+    let lines: [String] = reader.lines().filter_map(|r| r.ok()).collect()
+    assert_eq(lines, ["hello", "world"])?
+}

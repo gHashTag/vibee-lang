@@ -1,0 +1,591 @@
+// =============================================================================
+// Vibee OS — Optimizer Module
+// Optimization algorithms for neural network training
+// =============================================================================
+
+use tensor::{Tensor, Shape}
+
+// -----------------------------------------------------------------------------
+// Optimizer Trait
+// -----------------------------------------------------------------------------
+
+/// Base trait for all optimizers
+trait Optimizer {
+    fn step()
+    fn zero_grad()
+    fn state_dict() -> Map<String, Any>
+    fn load_state_dict(state: Map<String, Any>)
+}
+
+// -----------------------------------------------------------------------------
+// SGD Optimizer
+// -----------------------------------------------------------------------------
+
+/// Stochastic Gradient Descent with momentum
+struct SGD {
+    params: [Tensor]
+    lr: Float
+    momentum: Float
+    dampening: Float
+    weight_decay: Float
+    nesterov: Bool
+    velocity: [Tensor]
+    
+    fn new(params: [Tensor], lr: Float, momentum: Float = 0.0, dampening: Float = 0.0, weight_decay: Float = 0.0, nesterov: Bool = false) -> Self {
+        let velocity = params.iter().map(|p| Tensor.zeros(p.shape.clone())).collect()
+        SGD {
+            params: params, lr: lr, momentum: momentum, dampening: dampening,
+            weight_decay: weight_decay, nesterov: nesterov, velocity: velocity
+        }
+    }
+}
+
+impl Optimizer for SGD {
+    fn step() {
+        for (i, param) in self.params.iter().enumerate() {
+            if let Some(grad) = param.grad.as_ref() {
+                var g = grad.clone()
+                
+                // Weight decay
+                if self.weight_decay != 0.0 {
+                    g = g.add(param.mul_scalar(self.weight_decay))
+                }
+                
+                // Momentum
+                if self.momentum != 0.0 {
+                    let v = self.velocity[i].mul_scalar(self.momentum).add(g.mul_scalar(1.0 - self.dampening))
+                    self.velocity[i] = v.clone()
+                    
+                    if self.nesterov {
+                        g = g.add(v.mul_scalar(self.momentum))
+                    } else {
+                        g = v
+                    }
+                }
+                
+                // Update parameter
+                self.params[i] = param.sub(g.mul_scalar(self.lr))
+            }
+        }
+    }
+    
+    fn zero_grad() {
+        for param in self.params { param.zero_grad() }
+    }
+    
+    fn state_dict() -> Map<String, Any> {
+        Map.from([
+            ("lr", self.lr),
+            ("momentum", self.momentum),
+            ("velocity", self.velocity.clone())
+        ])
+    }
+    
+    fn load_state_dict(state: Map<String, Any>) {
+        if let Some(lr) = state.get("lr") { self.lr = lr }
+        if let Some(momentum) = state.get("momentum") { self.momentum = momentum }
+        if let Some(velocity) = state.get("velocity") { self.velocity = velocity }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Adam Optimizer
+// -----------------------------------------------------------------------------
+
+/// Adam optimizer
+struct Adam {
+    params: [Tensor]
+    lr: Float
+    betas: (Float, Float)
+    eps: Float
+    weight_decay: Float
+    amsgrad: Bool
+    m: [Tensor]  // First moment
+    v: [Tensor]  // Second moment
+    v_max: [Tensor]  // Max second moment (for amsgrad)
+    step_count: Int
+    
+    fn new(params: [Tensor], lr: Float = 0.001, betas: (Float, Float) = (0.9, 0.999), eps: Float = 1e-8, weight_decay: Float = 0.0, amsgrad: Bool = false) -> Self {
+        let m = params.iter().map(|p| Tensor.zeros(p.shape.clone())).collect()
+        let v = params.iter().map(|p| Tensor.zeros(p.shape.clone())).collect()
+        let v_max = params.iter().map(|p| Tensor.zeros(p.shape.clone())).collect()
+        Adam {
+            params: params, lr: lr, betas: betas, eps: eps,
+            weight_decay: weight_decay, amsgrad: amsgrad,
+            m: m, v: v, v_max: v_max, step_count: 0
+        }
+    }
+}
+
+impl Optimizer for Adam {
+    fn step() {
+        self.step_count += 1
+        let (beta1, beta2) = self.betas
+        
+        for (i, param) in self.params.iter().enumerate() {
+            if let Some(grad) = param.grad.as_ref() {
+                var g = grad.clone()
+                
+                // Weight decay (decoupled)
+                if self.weight_decay != 0.0 {
+                    self.params[i] = param.sub(param.mul_scalar(self.lr * self.weight_decay))
+                }
+                
+                // Update biased first moment estimate
+                self.m[i] = self.m[i].mul_scalar(beta1).add(g.mul_scalar(1.0 - beta1))
+                
+                // Update biased second raw moment estimate
+                self.v[i] = self.v[i].mul_scalar(beta2).add(g.mul(g).mul_scalar(1.0 - beta2))
+                
+                // Bias correction
+                let bias_correction1 = 1.0 - beta1.pow(self.step_count as Float)
+                let bias_correction2 = 1.0 - beta2.pow(self.step_count as Float)
+                
+                let m_hat = self.m[i].mul_scalar(1.0 / bias_correction1)
+                var v_hat = self.v[i].mul_scalar(1.0 / bias_correction2)
+                
+                // AMSGrad
+                if self.amsgrad {
+                    self.v_max[i] = self.v_max[i].binary_op(v_hat, |a, b| a.max(b))
+                    v_hat = self.v_max[i].clone()
+                }
+                
+                // Update parameter
+                let denom = v_hat.sqrt().add_scalar(self.eps)
+                self.params[i] = self.params[i].sub(m_hat.div(denom).mul_scalar(self.lr))
+            }
+        }
+    }
+    
+    fn zero_grad() {
+        for param in self.params { param.zero_grad() }
+    }
+    
+    fn state_dict() -> Map<String, Any> {
+        Map.from([
+            ("lr", self.lr),
+            ("betas", self.betas),
+            ("step_count", self.step_count),
+            ("m", self.m.clone()),
+            ("v", self.v.clone())
+        ])
+    }
+    
+    fn load_state_dict(state: Map<String, Any>) {
+        if let Some(lr) = state.get("lr") { self.lr = lr }
+        if let Some(step_count) = state.get("step_count") { self.step_count = step_count }
+        if let Some(m) = state.get("m") { self.m = m }
+        if let Some(v) = state.get("v") { self.v = v }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// AdamW Optimizer
+// -----------------------------------------------------------------------------
+
+/// AdamW optimizer (Adam with decoupled weight decay)
+struct AdamW {
+    params: [Tensor]
+    lr: Float
+    betas: (Float, Float)
+    eps: Float
+    weight_decay: Float
+    m: [Tensor]
+    v: [Tensor]
+    step_count: Int
+    
+    fn new(params: [Tensor], lr: Float = 0.001, betas: (Float, Float) = (0.9, 0.999), eps: Float = 1e-8, weight_decay: Float = 0.01) -> Self {
+        let m = params.iter().map(|p| Tensor.zeros(p.shape.clone())).collect()
+        let v = params.iter().map(|p| Tensor.zeros(p.shape.clone())).collect()
+        AdamW {
+            params: params, lr: lr, betas: betas, eps: eps,
+            weight_decay: weight_decay, m: m, v: v, step_count: 0
+        }
+    }
+}
+
+impl Optimizer for AdamW {
+    fn step() {
+        self.step_count += 1
+        let (beta1, beta2) = self.betas
+        
+        for (i, param) in self.params.iter().enumerate() {
+            if let Some(grad) = param.grad.as_ref() {
+                // Decoupled weight decay
+                self.params[i] = param.mul_scalar(1.0 - self.lr * self.weight_decay)
+                
+                // Update moments
+                self.m[i] = self.m[i].mul_scalar(beta1).add(grad.mul_scalar(1.0 - beta1))
+                self.v[i] = self.v[i].mul_scalar(beta2).add(grad.mul(grad).mul_scalar(1.0 - beta2))
+                
+                // Bias correction
+                let bias_correction1 = 1.0 - beta1.pow(self.step_count as Float)
+                let bias_correction2 = 1.0 - beta2.pow(self.step_count as Float)
+                
+                let m_hat = self.m[i].mul_scalar(1.0 / bias_correction1)
+                let v_hat = self.v[i].mul_scalar(1.0 / bias_correction2)
+                
+                // Update
+                let denom = v_hat.sqrt().add_scalar(self.eps)
+                self.params[i] = self.params[i].sub(m_hat.div(denom).mul_scalar(self.lr))
+            }
+        }
+    }
+    
+    fn zero_grad() { for param in self.params { param.zero_grad() } }
+    fn state_dict() -> Map<String, Any> { Map.empty() }
+    fn load_state_dict(state: Map<String, Any>) {}
+}
+
+// -----------------------------------------------------------------------------
+// RMSprop Optimizer
+// -----------------------------------------------------------------------------
+
+/// RMSprop optimizer
+struct RMSprop {
+    params: [Tensor]
+    lr: Float
+    alpha: Float
+    eps: Float
+    weight_decay: Float
+    momentum: Float
+    centered: Bool
+    v: [Tensor]
+    g: [Tensor]  // Gradient average (for centered)
+    buf: [Tensor]  // Momentum buffer
+    
+    fn new(params: [Tensor], lr: Float = 0.01, alpha: Float = 0.99, eps: Float = 1e-8, weight_decay: Float = 0.0, momentum: Float = 0.0, centered: Bool = false) -> Self {
+        let v = params.iter().map(|p| Tensor.zeros(p.shape.clone())).collect()
+        let g = params.iter().map(|p| Tensor.zeros(p.shape.clone())).collect()
+        let buf = params.iter().map(|p| Tensor.zeros(p.shape.clone())).collect()
+        RMSprop {
+            params: params, lr: lr, alpha: alpha, eps: eps,
+            weight_decay: weight_decay, momentum: momentum, centered: centered,
+            v: v, g: g, buf: buf
+        }
+    }
+}
+
+impl Optimizer for RMSprop {
+    fn step() {
+        for (i, param) in self.params.iter().enumerate() {
+            if let Some(grad) = param.grad.as_ref() {
+                var g = grad.clone()
+                
+                if self.weight_decay != 0.0 {
+                    g = g.add(param.mul_scalar(self.weight_decay))
+                }
+                
+                // Update running average of squared gradients
+                self.v[i] = self.v[i].mul_scalar(self.alpha).add(g.mul(g).mul_scalar(1.0 - self.alpha))
+                
+                var avg = self.v[i].clone()
+                if self.centered {
+                    self.g[i] = self.g[i].mul_scalar(self.alpha).add(g.mul_scalar(1.0 - self.alpha))
+                    avg = avg.sub(self.g[i].mul(self.g[i]))
+                }
+                
+                avg = avg.sqrt().add_scalar(self.eps)
+                
+                if self.momentum > 0.0 {
+                    self.buf[i] = self.buf[i].mul_scalar(self.momentum).add(g.div(avg))
+                    self.params[i] = param.sub(self.buf[i].mul_scalar(self.lr))
+                } else {
+                    self.params[i] = param.sub(g.div(avg).mul_scalar(self.lr))
+                }
+            }
+        }
+    }
+    
+    fn zero_grad() { for param in self.params { param.zero_grad() } }
+    fn state_dict() -> Map<String, Any> { Map.empty() }
+    fn load_state_dict(state: Map<String, Any>) {}
+}
+
+// -----------------------------------------------------------------------------
+// Adagrad Optimizer
+// -----------------------------------------------------------------------------
+
+/// Adagrad optimizer
+struct Adagrad {
+    params: [Tensor]
+    lr: Float
+    lr_decay: Float
+    weight_decay: Float
+    eps: Float
+    sum: [Tensor]
+    step_count: Int
+    
+    fn new(params: [Tensor], lr: Float = 0.01, lr_decay: Float = 0.0, weight_decay: Float = 0.0, eps: Float = 1e-10) -> Self {
+        let sum = params.iter().map(|p| Tensor.zeros(p.shape.clone())).collect()
+        Adagrad {
+            params: params, lr: lr, lr_decay: lr_decay,
+            weight_decay: weight_decay, eps: eps, sum: sum, step_count: 0
+        }
+    }
+}
+
+impl Optimizer for Adagrad {
+    fn step() {
+        self.step_count += 1
+        let clr = self.lr / (1.0 + (self.step_count - 1) as Float * self.lr_decay)
+        
+        for (i, param) in self.params.iter().enumerate() {
+            if let Some(grad) = param.grad.as_ref() {
+                var g = grad.clone()
+                
+                if self.weight_decay != 0.0 {
+                    g = g.add(param.mul_scalar(self.weight_decay))
+                }
+                
+                self.sum[i] = self.sum[i].add(g.mul(g))
+                let std = self.sum[i].sqrt().add_scalar(self.eps)
+                self.params[i] = param.sub(g.div(std).mul_scalar(clr))
+            }
+        }
+    }
+    
+    fn zero_grad() { for param in self.params { param.zero_grad() } }
+    fn state_dict() -> Map<String, Any> { Map.empty() }
+    fn load_state_dict(state: Map<String, Any>) {}
+}
+
+// -----------------------------------------------------------------------------
+// Learning Rate Schedulers
+// -----------------------------------------------------------------------------
+
+/// Base trait for learning rate schedulers
+trait LRScheduler {
+    fn step()
+    fn get_lr() -> Float
+    fn get_last_lr() -> Float
+}
+
+/// Step learning rate scheduler
+struct StepLR {
+    optimizer: Box<dyn Optimizer>
+    step_size: Int
+    gamma: Float
+    last_epoch: Int
+    base_lr: Float
+    
+    fn new(optimizer: Box<dyn Optimizer>, step_size: Int, gamma: Float = 0.1) -> Self {
+        let base_lr = optimizer.state_dict().get("lr").unwrap_or(0.001)
+        StepLR { optimizer: optimizer, step_size: step_size, gamma: gamma, last_epoch: 0, base_lr: base_lr }
+    }
+}
+
+impl LRScheduler for StepLR {
+    fn step() {
+        self.last_epoch += 1
+        if self.last_epoch % self.step_size == 0 {
+            let new_lr = self.get_lr() * self.gamma
+            // Update optimizer lr
+        }
+    }
+    fn get_lr() -> Float { self.base_lr * self.gamma.pow((self.last_epoch / self.step_size) as Float) }
+    fn get_last_lr() -> Float { self.get_lr() }
+}
+
+/// Exponential learning rate scheduler
+struct ExponentialLR {
+    optimizer: Box<dyn Optimizer>
+    gamma: Float
+    last_epoch: Int
+    base_lr: Float
+    
+    fn new(optimizer: Box<dyn Optimizer>, gamma: Float) -> Self {
+        let base_lr = optimizer.state_dict().get("lr").unwrap_or(0.001)
+        ExponentialLR { optimizer: optimizer, gamma: gamma, last_epoch: 0, base_lr: base_lr }
+    }
+}
+
+impl LRScheduler for ExponentialLR {
+    fn step() { self.last_epoch += 1 }
+    fn get_lr() -> Float { self.base_lr * self.gamma.pow(self.last_epoch as Float) }
+    fn get_last_lr() -> Float { self.get_lr() }
+}
+
+/// Cosine annealing learning rate scheduler
+struct CosineAnnealingLR {
+    optimizer: Box<dyn Optimizer>
+    t_max: Int
+    eta_min: Float
+    last_epoch: Int
+    base_lr: Float
+    
+    fn new(optimizer: Box<dyn Optimizer>, t_max: Int, eta_min: Float = 0.0) -> Self {
+        let base_lr = optimizer.state_dict().get("lr").unwrap_or(0.001)
+        CosineAnnealingLR { optimizer: optimizer, t_max: t_max, eta_min: eta_min, last_epoch: 0, base_lr: base_lr }
+    }
+}
+
+impl LRScheduler for CosineAnnealingLR {
+    fn step() { self.last_epoch += 1 }
+    fn get_lr() -> Float {
+        self.eta_min + (self.base_lr - self.eta_min) * (1.0 + (PI * self.last_epoch as Float / self.t_max as Float).cos()) / 2.0
+    }
+    fn get_last_lr() -> Float { self.get_lr() }
+}
+
+/// Reduce learning rate on plateau
+struct ReduceLROnPlateau {
+    optimizer: Box<dyn Optimizer>
+    mode: String  // "min" or "max"
+    factor: Float
+    patience: Int
+    threshold: Float
+    cooldown: Int
+    min_lr: Float
+    best: Float
+    num_bad_epochs: Int
+    cooldown_counter: Int
+    
+    fn new(optimizer: Box<dyn Optimizer>, mode: String = "min", factor: Float = 0.1, patience: Int = 10, threshold: Float = 1e-4, cooldown: Int = 0, min_lr: Float = 0.0) -> Self {
+        let best = if mode == "min" { Float.INFINITY } else { Float.NEG_INFINITY }
+        ReduceLROnPlateau {
+            optimizer: optimizer, mode: mode, factor: factor, patience: patience,
+            threshold: threshold, cooldown: cooldown, min_lr: min_lr,
+            best: best, num_bad_epochs: 0, cooldown_counter: 0
+        }
+    }
+    
+    fn step_with_metric(metric: Float) {
+        if self.cooldown_counter > 0 {
+            self.cooldown_counter -= 1
+            self.num_bad_epochs = 0
+            return
+        }
+        
+        let is_better = if self.mode == "min" {
+            metric < self.best - self.threshold
+        } else {
+            metric > self.best + self.threshold
+        }
+        
+        if is_better {
+            self.best = metric
+            self.num_bad_epochs = 0
+        } else {
+            self.num_bad_epochs += 1
+        }
+        
+        if self.num_bad_epochs > self.patience {
+            // Reduce learning rate
+            self.cooldown_counter = self.cooldown
+            self.num_bad_epochs = 0
+        }
+    }
+}
+
+/// Warmup scheduler wrapper
+struct WarmupScheduler {
+    scheduler: Box<dyn LRScheduler>
+    warmup_epochs: Int
+    warmup_lr: Float
+    current_epoch: Int
+    base_lr: Float
+    
+    fn new(scheduler: Box<dyn LRScheduler>, warmup_epochs: Int, warmup_lr: Float = 0.0) -> Self {
+        let base_lr = scheduler.get_lr()
+        WarmupScheduler {
+            scheduler: scheduler, warmup_epochs: warmup_epochs,
+            warmup_lr: warmup_lr, current_epoch: 0, base_lr: base_lr
+        }
+    }
+}
+
+impl LRScheduler for WarmupScheduler {
+    fn step() {
+        self.current_epoch += 1
+        if self.current_epoch > self.warmup_epochs {
+            self.scheduler.step()
+        }
+    }
+    
+    fn get_lr() -> Float {
+        if self.current_epoch <= self.warmup_epochs {
+            let alpha = self.current_epoch as Float / self.warmup_epochs as Float
+            self.warmup_lr + (self.base_lr - self.warmup_lr) * alpha
+        } else {
+            self.scheduler.get_lr()
+        }
+    }
+    
+    fn get_last_lr() -> Float { self.get_lr() }
+}
+
+// -----------------------------------------------------------------------------
+// Gradient Clipping
+// -----------------------------------------------------------------------------
+
+/// Clip gradients by norm
+fn clip_grad_norm(params: [Tensor], max_norm: Float, norm_type: Float = 2.0) -> Float {
+    var total_norm = 0.0
+    for param in params {
+        if let Some(grad) = param.grad.as_ref() {
+            let param_norm = grad.norm(norm_type)
+            total_norm += param_norm.pow(norm_type)
+        }
+    }
+    total_norm = total_norm.pow(1.0 / norm_type)
+    
+    let clip_coef = max_norm / (total_norm + 1e-6)
+    if clip_coef < 1.0 {
+        for param in params {
+            if let Some(grad) = param.grad.as_ref() {
+                param.grad = Some(Box.new(grad.mul_scalar(clip_coef)))
+            }
+        }
+    }
+    total_norm
+}
+
+/// Clip gradients by value
+fn clip_grad_value(params: [Tensor], clip_value: Float) {
+    for param in params {
+        if let Some(grad) = param.grad.as_ref() {
+            param.grad = Some(Box.new(grad.clamp(-clip_value, clip_value)))
+        }
+    }
+}
+
+// Constants
+const PI: Float = 3.141592653589793
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "sgd optimizer" {
+    let param = Tensor.randn(Shape.vector(10)).requires_grad_(true)
+    param.grad = Some(Box.new(Tensor.ones(Shape.vector(10))))
+    
+    var optimizer = SGD.new([param.clone()], 0.1)
+    optimizer.step()
+    
+    // Parameter should have changed
+    assert(param.data[0] != optimizer.params[0].data[0])
+}
+
+test "adam optimizer" {
+    let param = Tensor.randn(Shape.vector(10)).requires_grad_(true)
+    param.grad = Some(Box.new(Tensor.ones(Shape.vector(10))))
+    
+    var optimizer = Adam.new([param.clone()], 0.001)
+    optimizer.step()
+    
+    assert_eq(optimizer.step_count, 1)?
+}
+
+test "cosine annealing" {
+    let param = Tensor.randn(Shape.vector(10))
+    let optimizer = Box.new(SGD.new([param], 0.1))
+    var scheduler = CosineAnnealingLR.new(optimizer, 100)
+    
+    let initial_lr = scheduler.get_lr()
+    for _ in 0..50 { scheduler.step() }
+    let mid_lr = scheduler.get_lr()
+    
+    assert(mid_lr < initial_lr)
+}

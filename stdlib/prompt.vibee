@@ -1,0 +1,509 @@
+// =============================================================================
+// Vibee OS — Prompt Module
+// Interactive command-line prompts
+// =============================================================================
+
+use terminal::{Style, Cursor, Screen, Key, read_key, RawMode}
+
+// -----------------------------------------------------------------------------
+// Prompt Types
+// -----------------------------------------------------------------------------
+
+/// Prompt result
+enum PromptResult<T> {
+    Value(T)
+    Cancelled
+    Error(String)
+}
+
+/// Prompt theme
+struct Theme {
+    prompt_prefix: String
+    prompt_suffix: String
+    error_prefix: String
+    success_prefix: String
+    hint_style: Style
+    error_style: Style
+    
+    fn default() -> Self {
+        Theme {
+            prompt_prefix: "? ",
+            prompt_suffix: " › ",
+            error_prefix: "✖ ",
+            success_prefix: "✔ ",
+            hint_style: Style.new("").dim(),
+            error_style: Style.new("").red()
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Text Input
+// -----------------------------------------------------------------------------
+
+/// Text input prompt
+actor Input {
+    state message: String
+    state default_value: Option<String>
+    state placeholder: String
+    state validator: Option<fn(String) -> Result<(), String>>
+    state password: Bool
+    state theme: Theme
+    
+    init(message: String) {
+        self.message = message
+        self.default_value = None
+        self.placeholder = ""
+        self.validator = None
+        self.password = false
+        self.theme = Theme.default()
+    }
+    
+    on default(value: String) -> Self { self.default_value = Some(value); self }
+    on placeholder(p: String) -> Self { self.placeholder = p; self }
+    on validate(f: fn(String) -> Result<(), String>) -> Self { self.validator = Some(f); self }
+    on password(b: Bool = true) -> Self { self.password = b; self }
+    on theme(t: Theme) -> Self { self.theme = t; self }
+    
+    on run() -> PromptResult<String> {
+        print!("{}{}{}", self.theme.prompt_prefix, self.message, self.theme.prompt_suffix)
+        if let Some(d) = self.default_value {
+            print!("{}", Style.new(format!("({})", d)).dim().render())
+        }
+        
+        var input = String.new()
+        var cursor_pos = 0
+        
+        RawMode.with_raw(|| {
+            loop {
+                match read_key()? {
+                    Key.Enter => {
+                        println!()
+                        let value = if input.is_empty() {
+                            self.default_value.clone().unwrap_or_default()
+                        } else { input.clone() }
+                        
+                        if let Some(v) = self.validator {
+                            match v(value.clone()) {
+                                Ok(_) => return PromptResult.Value(value)
+                                Err(e) => {
+                                    println!("{}{}", self.theme.error_prefix, e)
+                                    return PromptResult.Error(e)
+                                }
+                            }
+                        }
+                        return PromptResult.Value(value)
+                    }
+                    Key.Escape => { println!(); return PromptResult.Cancelled }
+                    Key.Backspace => {
+                        if cursor_pos > 0 {
+                            input.remove(cursor_pos - 1)
+                            cursor_pos -= 1
+                            self.redraw_input(input, cursor_pos)
+                        }
+                    }
+                    Key.Delete => {
+                        if cursor_pos < input.len() {
+                            input.remove(cursor_pos)
+                            self.redraw_input(input, cursor_pos)
+                        }
+                    }
+                    Key.Left => { if cursor_pos > 0 { cursor_pos -= 1; print!("{}", Cursor.backward(1)) } }
+                    Key.Right => { if cursor_pos < input.len() { cursor_pos += 1; print!("{}", Cursor.forward(1)) } }
+                    Key.Home => { cursor_pos = 0; print!("{}", Cursor.column(1)) }
+                    Key.End => { cursor_pos = input.len(); print!("{}", Cursor.column(input.len() + 1)) }
+                    Key.Char(c) => {
+                        input.insert(cursor_pos, c)
+                        cursor_pos += 1
+                        if self.password { print!("*") } else { print!("{}", c) }
+                    }
+                    _ => {}
+                }
+            }
+        }).unwrap_or(PromptResult.Cancelled)
+    }
+    
+    fn redraw_input(input: String, cursor: Int) {
+        print!("{}", Screen.clear_line())
+        print!("\r{}{}{}", self.theme.prompt_prefix, self.message, self.theme.prompt_suffix)
+        if self.password {
+            print!("{}", "*".repeat(input.len()))
+        } else {
+            print!("{}", input)
+        }
+        let back = input.len() - cursor
+        if back > 0 { print!("{}", Cursor.backward(back)) }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Confirm Prompt
+// -----------------------------------------------------------------------------
+
+/// Yes/No confirmation prompt
+actor Confirm {
+    state message: String
+    state default_value: Option<Bool>
+    state theme: Theme
+    
+    init(message: String) {
+        self.message = message
+        self.default_value = None
+        self.theme = Theme.default()
+    }
+    
+    on default(value: Bool) -> Self { self.default_value = Some(value); self }
+    on theme(t: Theme) -> Self { self.theme = t; self }
+    
+    on run() -> PromptResult<Bool> {
+        let hint = match self.default_value {
+            Some(true) => "(Y/n)"
+            Some(false) => "(y/N)"
+            None => "(y/n)"
+        }
+        print!("{}{}{} {} ", self.theme.prompt_prefix, self.message, self.theme.prompt_suffix, hint)
+        
+        RawMode.with_raw(|| {
+            loop {
+                match read_key()? {
+                    Key.Char('y') | Key.Char('Y') => { println!("yes"); return PromptResult.Value(true) }
+                    Key.Char('n') | Key.Char('N') => { println!("no"); return PromptResult.Value(false) }
+                    Key.Enter => {
+                        if let Some(d) = self.default_value {
+                            println!("{}", if d { "yes" } else { "no" })
+                            return PromptResult.Value(d)
+                        }
+                    }
+                    Key.Escape => { println!(); return PromptResult.Cancelled }
+                    _ => {}
+                }
+            }
+        }).unwrap_or(PromptResult.Cancelled)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Select Prompt
+// -----------------------------------------------------------------------------
+
+/// Single selection prompt
+actor Select<T> {
+    state message: String
+    state options: [(String, T)]
+    state selected: Int
+    state page_size: Int
+    state theme: Theme
+    
+    init(message: String) {
+        self.message = message
+        self.options = []
+        self.selected = 0
+        self.page_size = 10
+        self.theme = Theme.default()
+    }
+    
+    on option(label: String, value: T) -> Self { self.options.push((label, value)); self }
+    on options(opts: [(String, T)]) -> Self { self.options.extend(opts); self }
+    on default(index: Int) -> Self { self.selected = index; self }
+    on page_size(n: Int) -> Self { self.page_size = n; self }
+    
+    on run() -> PromptResult<T> {
+        if self.options.is_empty() { return PromptResult.Error("No options") }
+        
+        println!("{}{}", self.theme.prompt_prefix, self.message)
+        
+        RawMode.with_raw(|| {
+            self.render()
+            loop {
+                match read_key()? {
+                    Key.Up | Key.Char('k') => {
+                        self.selected = (self.selected - 1 + self.options.len()) % self.options.len()
+                        self.render()
+                    }
+                    Key.Down | Key.Char('j') => {
+                        self.selected = (self.selected + 1) % self.options.len()
+                        self.render()
+                    }
+                    Key.Enter => {
+                        self.clear_options()
+                        let (label, value) = self.options[self.selected].clone()
+                        println!("{} {}", self.theme.success_prefix, label)
+                        return PromptResult.Value(value)
+                    }
+                    Key.Escape => { self.clear_options(); return PromptResult.Cancelled }
+                    _ => {}
+                }
+            }
+        }).unwrap_or(PromptResult.Cancelled)
+    }
+    
+    fn render() {
+        print!("{}", Cursor.hide())
+        for (i, (label, _)) in self.options.iter().enumerate() {
+            let prefix = if i == self.selected { "❯ " } else { "  " }
+            let style = if i == self.selected { Style.new(label).cyan().bold() } else { Style.new(label) }
+            println!("{}{}", prefix, style.render())
+        }
+        print!("{}", Cursor.up(self.options.len()))
+        print!("{}", Cursor.show())
+    }
+    
+    fn clear_options() {
+        for _ in 0..self.options.len() { println!("{}", Screen.clear_line()) }
+        print!("{}", Cursor.up(self.options.len()))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Multi-Select Prompt
+// -----------------------------------------------------------------------------
+
+/// Multiple selection prompt
+actor MultiSelect<T> {
+    state message: String
+    state options: [(String, T, Bool)]
+    state cursor: Int
+    state theme: Theme
+    
+    init(message: String) {
+        self.message = message
+        self.options = []
+        self.cursor = 0
+        self.theme = Theme.default()
+    }
+    
+    on option(label: String, value: T, selected: Bool = false) -> Self {
+        self.options.push((label, value, selected)); self
+    }
+    
+    on run() -> PromptResult<[T]> {
+        if self.options.is_empty() { return PromptResult.Error("No options") }
+        
+        println!("{}{} (space to select, enter to confirm)", self.theme.prompt_prefix, self.message)
+        
+        RawMode.with_raw(|| {
+            self.render()
+            loop {
+                match read_key()? {
+                    Key.Up | Key.Char('k') => {
+                        self.cursor = (self.cursor - 1 + self.options.len()) % self.options.len()
+                        self.render()
+                    }
+                    Key.Down | Key.Char('j') => {
+                        self.cursor = (self.cursor + 1) % self.options.len()
+                        self.render()
+                    }
+                    Key.Char(' ') => {
+                        self.options[self.cursor].2 = !self.options[self.cursor].2
+                        self.render()
+                    }
+                    Key.Char('a') => {
+                        let all_selected = self.options.iter().all(|(_, _, s)| s)
+                        for opt in self.options.iter_mut() { opt.2 = !all_selected }
+                        self.render()
+                    }
+                    Key.Enter => {
+                        self.clear_options()
+                        let selected: [T] = self.options.iter()
+                            .filter(|(_, _, s)| s)
+                            .map(|(_, v, _)| v.clone())
+                            .collect()
+                        return PromptResult.Value(selected)
+                    }
+                    Key.Escape => { self.clear_options(); return PromptResult.Cancelled }
+                    _ => {}
+                }
+            }
+        }).unwrap_or(PromptResult.Cancelled)
+    }
+    
+    fn render() {
+        print!("{}", Cursor.hide())
+        for (i, (label, _, selected)) in self.options.iter().enumerate() {
+            let cursor = if i == self.cursor { "❯" } else { " " }
+            let check = if selected { "◉" } else { "○" }
+            let style = if i == self.cursor { Style.new(label).cyan() } else { Style.new(label) }
+            println!("{} {} {}", cursor, check, style.render())
+        }
+        print!("{}", Cursor.up(self.options.len()))
+        print!("{}", Cursor.show())
+    }
+    
+    fn clear_options() {
+        for _ in 0..self.options.len() { println!("{}", Screen.clear_line()) }
+        print!("{}", Cursor.up(self.options.len()))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Number Input
+// -----------------------------------------------------------------------------
+
+/// Number input prompt
+actor Number {
+    state message: String
+    state default_value: Option<Int>
+    state min: Option<Int>
+    state max: Option<Int>
+    state theme: Theme
+    
+    init(message: String) {
+        self.message = message
+        self.default_value = None
+        self.min = None
+        self.max = None
+        self.theme = Theme.default()
+    }
+    
+    on default(v: Int) -> Self { self.default_value = Some(v); self }
+    on min(v: Int) -> Self { self.min = Some(v); self }
+    on max(v: Int) -> Self { self.max = Some(v); self }
+    on range(min: Int, max: Int) -> Self { self.min = Some(min); self.max = Some(max); self }
+    
+    on run() -> PromptResult<Int> {
+        let input = Input.new(self.message.clone())
+            .validate(|s| {
+                let n = s.parse_int().map_err(|_| "Please enter a valid number")?
+                if let Some(min) = self.min { if n < min { return Err(format!("Must be >= {}", min)) } }
+                if let Some(max) = self.max { if n > max { return Err(format!("Must be <= {}", max)) } }
+                Ok(())
+            })
+        
+        if let Some(d) = self.default_value { input.default(d.to_string()) }
+        
+        match input.run() {
+            PromptResult.Value(s) => PromptResult.Value(s.parse_int().unwrap())
+            PromptResult.Cancelled => PromptResult.Cancelled
+            PromptResult.Error(e) => PromptResult.Error(e)
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Password Input
+// -----------------------------------------------------------------------------
+
+/// Password input prompt
+actor Password {
+    state message: String
+    state confirm: Bool
+    state theme: Theme
+    
+    init(message: String) {
+        self.message = message
+        self.confirm = false
+        self.theme = Theme.default()
+    }
+    
+    on confirm(b: Bool = true) -> Self { self.confirm = b; self }
+    
+    on run() -> PromptResult<String> {
+        let result = Input.new(self.message.clone()).password(true).run()
+        
+        if self.confirm {
+            if let PromptResult.Value(pass) = result {
+                match Input.new("Confirm password").password(true).run() {
+                    PromptResult.Value(confirm) => {
+                        if pass == confirm {
+                            return PromptResult.Value(pass)
+                        } else {
+                            return PromptResult.Error("Passwords do not match")
+                        }
+                    }
+                    other => return other
+                }
+            }
+        }
+        result
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Spinner
+// -----------------------------------------------------------------------------
+
+/// Loading spinner
+actor Spinner {
+    state message: String
+    state frames: [String]
+    state interval: Duration
+    state running: Bool
+    state frame_index: Int
+    
+    init(message: String) {
+        self.message = message
+        self.frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self.interval = Duration.millis(80)
+        self.running = false
+        self.frame_index = 0
+    }
+    
+    on frames(f: [String]) -> Self { self.frames = f; self }
+    on interval(d: Duration) -> Self { self.interval = d; self }
+    
+    on start() {
+        self.running = true
+        print!("{}", Cursor.hide())
+        spawn { self.animate() }
+    }
+    
+    on stop() {
+        self.running = false
+        print!("{}", Screen.clear_line())
+        print!("\r")
+        print!("{}", Cursor.show())
+    }
+    
+    on success(msg: String) {
+        self.stop()
+        println!("✔ {}", Style.new(msg).green().render())
+    }
+    
+    on fail(msg: String) {
+        self.stop()
+        println!("✖ {}", Style.new(msg).red().render())
+    }
+    
+    fn animate() {
+        while self.running {
+            let frame = self.frames[self.frame_index % self.frames.len()]
+            print!("\r{} {}", Style.new(frame).cyan().render(), self.message)
+            stdout().flush()
+            self.frame_index += 1
+            sleep(self.interval)
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+fn input(message: String) -> Input { Input.new(message) }
+fn confirm(message: String) -> Confirm { Confirm.new(message) }
+fn select<T>(message: String) -> Select<T> { Select.new(message) }
+fn multiselect<T>(message: String) -> MultiSelect<T> { MultiSelect.new(message) }
+fn number(message: String) -> Number { Number.new(message) }
+fn password(message: String) -> Password { Password.new(message) }
+fn spinner(message: String) -> Spinner { Spinner.new(message) }
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "input default" {
+    let input = Input.new("Name").default("John")
+    assert_eq(input.default_value, Some("John"))?
+}
+
+test "confirm default" {
+    let confirm = Confirm.new("Continue?").default(true)
+    assert_eq(confirm.default_value, Some(true))?
+}
+
+test "select options" {
+    let select = Select.new("Choose")
+        .option("Option 1", 1)
+        .option("Option 2", 2)
+    assert_eq(select.options.len(), 2)?
+}

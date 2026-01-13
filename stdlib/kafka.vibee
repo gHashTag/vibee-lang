@@ -1,0 +1,769 @@
+// =============================================================================
+// Vibee OS — Apache Kafka Module
+// High-performance distributed event streaming platform
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Configuration
+// -----------------------------------------------------------------------------
+
+/// Kafka client configuration
+struct KafkaConfig {
+    brokers: [String]
+    client_id: String
+    security: SecurityConfig
+    request_timeout_ms: Int64
+    metadata_max_age_ms: Int64
+    
+    fn new(brokers: [String]) -> Self {
+        KafkaConfig {
+            brokers: brokers,
+            client_id: "vibee-kafka-client",
+            security: SecurityConfig.None,
+            request_timeout_ms: 30000,
+            metadata_max_age_ms: 300000
+        }
+    }
+    
+    fn with_client_id(id: String) -> Self {
+        self.client_id = id
+        self
+    }
+    
+    fn with_security(sec: SecurityConfig) -> Self {
+        self.security = sec
+        self
+    }
+}
+
+/// Security configuration
+enum SecurityConfig {
+    None
+    SASL { mechanism: SASLMechanism, username: String, password: String }
+    SSL { cert_path: String, key_path: String, ca_path: String }
+    SASL_SSL { mechanism: SASLMechanism, username: String, password: String, ca_path: String }
+}
+
+enum SASLMechanism { Plain, ScramSHA256, ScramSHA512 }
+
+// -----------------------------------------------------------------------------
+// Producer
+// -----------------------------------------------------------------------------
+
+/// Kafka producer configuration
+struct ProducerConfig {
+    acks: Acks
+    retries: Int
+    batch_size: Int
+    linger_ms: Int64
+    compression: Compression
+    idempotent: Bool
+    
+    fn default() -> Self {
+        ProducerConfig {
+            acks: Acks.All,
+            retries: 3,
+            batch_size: 16384,
+            linger_ms: 5,
+            compression: Compression.None,
+            idempotent: false
+        }
+    }
+}
+
+enum Acks { None, Leader, All }
+enum Compression { None, Gzip, Snappy, Lz4, Zstd }
+
+/// Kafka producer
+actor KafkaProducer {
+    state config: KafkaConfig
+    state producer_config: ProducerConfig
+    state connected: Bool
+    state pending: Map<String, Channel<ProduceResult>>
+    
+    fn new(config: KafkaConfig) -> Self {
+        KafkaProducer {
+            config: config,
+            producer_config: ProducerConfig.default(),
+            connected: false,
+            pending: Map.empty()
+        }
+    }
+    
+    fn with_config(cfg: ProducerConfig) -> Self {
+        self.producer_config = cfg
+        self
+    }
+    
+    /// Connect to Kafka cluster
+    on connect() -> Result<(), KafkaError> {
+        @native("kafka_producer_connect", self.config, self.producer_config)
+        self.connected = true
+        Ok(())
+    }
+    
+    /// Send record to topic
+    on send(record: ProducerRecord) -> Result<RecordMetadata, KafkaError> {
+        if !self.connected {
+            return Err(KafkaError.NotConnected)
+        }
+        @native("kafka_producer_send", record)
+    }
+    
+    /// Send record asynchronously
+    on send_async(record: ProducerRecord) -> Future<RecordMetadata, KafkaError> {
+        Future.spawn(|| self.send(record))
+    }
+    
+    /// Send batch of records
+    on send_batch(records: [ProducerRecord]) -> Result<[RecordMetadata], KafkaError> {
+        if !self.connected {
+            return Err(KafkaError.NotConnected)
+        }
+        
+        var results = []
+        for record in records {
+            results.push(self.send(record)?)
+        }
+        Ok(results)
+    }
+    
+    /// Flush pending records
+    on flush() -> Result<(), KafkaError> {
+        @native("kafka_producer_flush")
+    }
+    
+    /// Close producer
+    on close() -> Result<(), KafkaError> {
+        self.flush()?
+        @native("kafka_producer_close")
+        self.connected = false
+        Ok(())
+    }
+}
+
+/// Producer record
+struct ProducerRecord {
+    topic: String
+    key: Option<[Byte]>
+    value: [Byte]
+    partition: Option<Int>
+    timestamp: Option<Int64>
+    headers: Map<String, [Byte]>
+    
+    fn new(topic: String, value: [Byte]) -> Self {
+        ProducerRecord {
+            topic: topic,
+            key: None,
+            value: value,
+            partition: None,
+            timestamp: None,
+            headers: Map.empty()
+        }
+    }
+    
+    fn with_key(key: [Byte]) -> Self {
+        self.key = Some(key)
+        self
+    }
+    
+    fn with_string_key(key: String) -> Self {
+        self.key = Some(key.bytes())
+        self
+    }
+    
+    fn with_partition(p: Int) -> Self {
+        self.partition = Some(p)
+        self
+    }
+    
+    fn with_header(key: String, value: [Byte]) -> Self {
+        self.headers.set(key, value)
+        self
+    }
+    
+    fn text(topic: String, value: String) -> Self {
+        ProducerRecord.new(topic, value.bytes())
+    }
+    
+    fn json<T: Serialize>(topic: String, value: T) -> Self {
+        ProducerRecord.new(topic, JSON.stringify(value).bytes())
+    }
+}
+
+/// Record metadata (result of send)
+struct RecordMetadata {
+    topic: String
+    partition: Int
+    offset: Int64
+    timestamp: Int64
+}
+
+// -----------------------------------------------------------------------------
+// Consumer
+// -----------------------------------------------------------------------------
+
+/// Consumer configuration
+struct ConsumerConfig {
+    group_id: String
+    auto_offset_reset: OffsetReset
+    enable_auto_commit: Bool
+    auto_commit_interval_ms: Int64
+    max_poll_records: Int
+    session_timeout_ms: Int64
+    heartbeat_interval_ms: Int64
+    
+    fn new(group_id: String) -> Self {
+        ConsumerConfig {
+            group_id: group_id,
+            auto_offset_reset: OffsetReset.Latest,
+            enable_auto_commit: true,
+            auto_commit_interval_ms: 5000,
+            max_poll_records: 500,
+            session_timeout_ms: 10000,
+            heartbeat_interval_ms: 3000
+        }
+    }
+}
+
+enum OffsetReset { Earliest, Latest, None }
+
+/// Kafka consumer
+actor KafkaConsumer {
+    state config: KafkaConfig
+    state consumer_config: ConsumerConfig
+    state subscriptions: [String]
+    state running: Bool
+    
+    fn new(config: KafkaConfig, consumer_config: ConsumerConfig) -> Self {
+        KafkaConsumer {
+            config: config,
+            consumer_config: consumer_config,
+            subscriptions: [],
+            running: false
+        }
+    }
+    
+    /// Subscribe to topics
+    on subscribe(topics: [String]) -> Result<(), KafkaError> {
+        self.subscriptions = topics
+        @native("kafka_consumer_subscribe", topics)
+    }
+    
+    /// Poll for records
+    on poll(timeout: Duration) -> Result<ConsumerRecords, KafkaError> {
+        @native("kafka_consumer_poll", timeout.as_millis())
+    }
+    
+    /// Commit offsets synchronously
+    on commit() -> Result<(), KafkaError> {
+        @native("kafka_consumer_commit")
+    }
+    
+    /// Commit specific offsets
+    on commit_offsets(offsets: Map<TopicPartition, Int64>) -> Result<(), KafkaError> {
+        @native("kafka_consumer_commit_offsets", offsets)
+    }
+    
+    /// Seek to offset
+    on seek(tp: TopicPartition, offset: Int64) -> Result<(), KafkaError> {
+        @native("kafka_consumer_seek", tp, offset)
+    }
+    
+    /// Seek to beginning
+    on seek_to_beginning(partitions: [TopicPartition]) -> Result<(), KafkaError> {
+        @native("kafka_consumer_seek_beginning", partitions)
+    }
+    
+    /// Seek to end
+    on seek_to_end(partitions: [TopicPartition]) -> Result<(), KafkaError> {
+        @native("kafka_consumer_seek_end", partitions)
+    }
+    
+    /// Pause consumption
+    on pause(partitions: [TopicPartition]) -> Result<(), KafkaError> {
+        @native("kafka_consumer_pause", partitions)
+    }
+    
+    /// Resume consumption
+    on resume(partitions: [TopicPartition]) -> Result<(), KafkaError> {
+        @native("kafka_consumer_resume", partitions)
+    }
+    
+    /// Start consuming with handler
+    on consume(handler: fn(ConsumerRecord) -> Result<(), String>) {
+        self.running = true
+        while self.running {
+            match self.poll(Duration.millis(100)) {
+                Ok(records) => {
+                    for record in records {
+                        if let Err(e) = handler(record) {
+                            // Handle error - could implement retry logic
+                        }
+                    }
+                    if !self.consumer_config.enable_auto_commit {
+                        let _ = self.commit()
+                    }
+                }
+                Err(e) => {
+                    // Log error, continue polling
+                }
+            }
+        }
+    }
+    
+    /// Stop consuming
+    on stop() {
+        self.running = false
+    }
+    
+    /// Close consumer
+    on close() -> Result<(), KafkaError> {
+        self.running = false
+        @native("kafka_consumer_close")
+    }
+}
+
+/// Topic partition
+struct TopicPartition {
+    topic: String
+    partition: Int
+    
+    fn new(topic: String, partition: Int) -> Self {
+        TopicPartition { topic: topic, partition: partition }
+    }
+}
+
+/// Consumer record
+struct ConsumerRecord {
+    topic: String
+    partition: Int
+    offset: Int64
+    timestamp: Int64
+    key: Option<[Byte]>
+    value: [Byte]
+    headers: Map<String, [Byte]>
+    
+    fn key_string() -> Option<String> {
+        self.key.map(|k| String.from_utf8_lossy(k))
+    }
+    
+    fn value_string() -> Result<String, DecodeError> {
+        String.from_utf8(self.value)
+    }
+    
+    fn value_json<T: Deserialize>() -> Result<T, DecodeError> {
+        let text = self.value_string()?
+        JSON.parse(text)
+    }
+}
+
+/// Consumer records batch
+struct ConsumerRecords {
+    records: [ConsumerRecord]
+    
+    fn count() -> Int { self.records.len() }
+    fn is_empty() -> Bool { self.records.is_empty() }
+    fn iter() -> Iterator<ConsumerRecord> { self.records.iter() }
+    
+    fn for_topic(topic: String) -> [ConsumerRecord] {
+        self.records.filter(|r| r.topic == topic)
+    }
+}
+
+impl Iterator for ConsumerRecords {
+    type Item = ConsumerRecord
+    fn next() -> Option<ConsumerRecord> { self.records.iter().next() }
+}
+
+// -----------------------------------------------------------------------------
+// Admin Client
+// -----------------------------------------------------------------------------
+
+/// Kafka admin client
+actor KafkaAdmin {
+    state config: KafkaConfig
+    
+    fn new(config: KafkaConfig) -> Self {
+        KafkaAdmin { config: config }
+    }
+    
+    /// Create topics
+    on create_topics(topics: [NewTopic]) -> Result<(), KafkaError> {
+        @native("kafka_admin_create_topics", topics)
+    }
+    
+    /// Delete topics
+    on delete_topics(topics: [String]) -> Result<(), KafkaError> {
+        @native("kafka_admin_delete_topics", topics)
+    }
+    
+    /// List topics
+    on list_topics() -> Result<[TopicInfo], KafkaError> {
+        @native("kafka_admin_list_topics")
+    }
+    
+    /// Describe topics
+    on describe_topics(topics: [String]) -> Result<[TopicDescription], KafkaError> {
+        @native("kafka_admin_describe_topics", topics)
+    }
+    
+    /// List consumer groups
+    on list_consumer_groups() -> Result<[ConsumerGroupInfo], KafkaError> {
+        @native("kafka_admin_list_groups")
+    }
+    
+    /// Describe consumer group
+    on describe_consumer_group(group_id: String) -> Result<ConsumerGroupDescription, KafkaError> {
+        @native("kafka_admin_describe_group", group_id)
+    }
+    
+    /// Delete consumer group
+    on delete_consumer_group(group_id: String) -> Result<(), KafkaError> {
+        @native("kafka_admin_delete_group", group_id)
+    }
+}
+
+/// New topic specification
+struct NewTopic {
+    name: String
+    partitions: Int
+    replication_factor: Int
+    config: Map<String, String>
+    
+    fn new(name: String, partitions: Int, replication: Int) -> Self {
+        NewTopic {
+            name: name,
+            partitions: partitions,
+            replication_factor: replication,
+            config: Map.empty()
+        }
+    }
+    
+    fn with_config(key: String, value: String) -> Self {
+        self.config.set(key, value)
+        self
+    }
+    
+    fn with_retention(duration: Duration) -> Self {
+        self.config.set("retention.ms", duration.as_millis().to_string())
+        self
+    }
+    
+    fn with_cleanup_policy(policy: CleanupPolicy) -> Self {
+        self.config.set("cleanup.policy", policy.to_string())
+        self
+    }
+}
+
+enum CleanupPolicy { Delete, Compact, DeleteAndCompact }
+
+impl ToString for CleanupPolicy {
+    fn to_string() -> String {
+        match self {
+            .Delete => "delete"
+            .Compact => "compact"
+            .DeleteAndCompact => "compact,delete"
+        }
+    }
+}
+
+/// Topic info
+struct TopicInfo {
+    name: String
+    internal: Bool
+}
+
+/// Topic description
+struct TopicDescription {
+    name: String
+    partitions: [PartitionInfo]
+    internal: Bool
+}
+
+/// Partition info
+struct PartitionInfo {
+    partition: Int
+    leader: Int
+    replicas: [Int]
+    isr: [Int]
+}
+
+/// Consumer group info
+struct ConsumerGroupInfo {
+    group_id: String
+    state: String
+}
+
+/// Consumer group description
+struct ConsumerGroupDescription {
+    group_id: String
+    state: String
+    members: [MemberDescription]
+    coordinator: Int
+}
+
+/// Member description
+struct MemberDescription {
+    member_id: String
+    client_id: String
+    host: String
+    assignments: [TopicPartition]
+}
+
+// -----------------------------------------------------------------------------
+// Streams (Kafka Streams-like API)
+// -----------------------------------------------------------------------------
+
+/// Kafka stream builder
+struct KStreamBuilder {
+    config: KafkaConfig
+    topology: [StreamNode]
+    
+    fn new(config: KafkaConfig) -> Self {
+        KStreamBuilder { config: config, topology: [] }
+    }
+    
+    /// Create stream from topic
+    fn stream(topic: String) -> KStream {
+        KStream {
+            source: StreamSource.Topic(topic),
+            operations: []
+        }
+    }
+    
+    /// Create table from topic
+    fn table(topic: String) -> KTable {
+        KTable {
+            source: topic,
+            operations: []
+        }
+    }
+    
+    /// Build and start topology
+    fn build() -> KafkaStreams {
+        KafkaStreams {
+            config: self.config,
+            topology: self.topology,
+            running: false
+        }
+    }
+}
+
+enum StreamSource {
+    Topic(String)
+    Topics([String])
+}
+
+enum StreamOp {
+    Map(fn([Byte]) -> [Byte])
+    Filter(fn([Byte]) -> Bool)
+    FlatMap(fn([Byte]) -> [[Byte]])
+    GroupByKey
+    Aggregate(fn([Byte], [Byte]) -> [Byte])
+    To(String)
+}
+
+/// Kafka stream
+struct KStream {
+    source: StreamSource
+    operations: [StreamOp]
+    
+    fn map(f: fn([Byte]) -> [Byte]) -> Self {
+        self.operations.push(StreamOp.Map(f))
+        self
+    }
+    
+    fn filter(pred: fn([Byte]) -> Bool) -> Self {
+        self.operations.push(StreamOp.Filter(pred))
+        self
+    }
+    
+    fn flat_map(f: fn([Byte]) -> [[Byte]]) -> Self {
+        self.operations.push(StreamOp.FlatMap(f))
+        self
+    }
+    
+    fn map_values<V, R>(f: fn(V) -> R) -> Self where V: Deserialize, R: Serialize {
+        self.map(|bytes| {
+            let v: V = JSON.parse(String.from_utf8_lossy(bytes)).unwrap()
+            JSON.stringify(f(v)).bytes()
+        })
+    }
+    
+    fn filter_values<V>(pred: fn(V) -> Bool) -> Self where V: Deserialize {
+        self.filter(|bytes| {
+            let v: V = JSON.parse(String.from_utf8_lossy(bytes)).unwrap()
+            pred(v)
+        })
+    }
+    
+    fn group_by_key() -> KGroupedStream {
+        KGroupedStream { stream: self }
+    }
+    
+    fn to(topic: String) {
+        self.operations.push(StreamOp.To(topic))
+    }
+    
+    fn branch(predicates: [fn([Byte]) -> Bool]) -> [KStream] {
+        predicates.iter().map(|pred| {
+            KStream {
+                source: self.source.clone(),
+                operations: self.operations.clone() + [StreamOp.Filter(pred)]
+            }
+        }).collect()
+    }
+}
+
+/// Grouped stream
+struct KGroupedStream {
+    stream: KStream
+    
+    fn count() -> KTable {
+        KTable {
+            source: "",
+            operations: [StreamOp.Aggregate(|_, acc| {
+                let count = Int64.from_bytes(acc).unwrap_or(0) + 1
+                count.to_bytes()
+            })]
+        }
+    }
+    
+    fn reduce(reducer: fn([Byte], [Byte]) -> [Byte]) -> KTable {
+        KTable {
+            source: "",
+            operations: [StreamOp.Aggregate(reducer)]
+        }
+    }
+    
+    fn aggregate<A: Serialize + Deserialize>(
+        init: fn() -> A,
+        aggregator: fn(A, [Byte]) -> A
+    ) -> KTable {
+        KTable {
+            source: "",
+            operations: [StreamOp.Aggregate(|value, acc| {
+                let current: A = if acc.is_empty() {
+                    init()
+                } else {
+                    JSON.parse(String.from_utf8_lossy(acc)).unwrap()
+                }
+                let next = aggregator(current, value)
+                JSON.stringify(next).bytes()
+            })]
+        }
+    }
+}
+
+/// Kafka table
+struct KTable {
+    source: String
+    operations: [StreamOp]
+    
+    fn to_stream() -> KStream {
+        KStream {
+            source: StreamSource.Topic(self.source),
+            operations: self.operations
+        }
+    }
+}
+
+/// Kafka streams application
+actor KafkaStreams {
+    state config: KafkaConfig
+    state topology: [StreamNode]
+    state running: Bool
+    
+    on start() -> Result<(), KafkaError> {
+        self.running = true
+        @native("kafka_streams_start", self.topology)
+    }
+    
+    on stop() {
+        self.running = false
+        @native("kafka_streams_stop")
+    }
+    
+    fn state() -> StreamsState {
+        @native("kafka_streams_state")
+    }
+}
+
+struct StreamNode {
+    id: String
+    operation: StreamOp
+    children: [String]
+}
+
+enum StreamsState { Created, Running, Rebalancing, Pending, Error, NotRunning }
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum KafkaError {
+    NotConnected
+    ConnectionFailed(String)
+    Timeout
+    TopicNotFound(String)
+    PartitionNotFound(Int)
+    SerializationError(String)
+    AuthenticationFailed
+    AuthorizationFailed
+    InvalidConfig(String)
+    ProducerFenced
+    UnknownError(String)
+}
+
+impl ToString for KafkaError {
+    fn to_string() -> String {
+        match self {
+            .NotConnected => "Not connected to Kafka"
+            .ConnectionFailed(msg) => "Connection failed: \(msg)"
+            .Timeout => "Operation timed out"
+            .TopicNotFound(t) => "Topic not found: \(t)"
+            .PartitionNotFound(p) => "Partition not found: \(p)"
+            .SerializationError(msg) => "Serialization error: \(msg)"
+            .AuthenticationFailed => "Authentication failed"
+            .AuthorizationFailed => "Authorization failed"
+            .InvalidConfig(msg) => "Invalid configuration: \(msg)"
+            .ProducerFenced => "Producer fenced"
+            .UnknownError(msg) => "Unknown error: \(msg)"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "producer record creation" {
+    let record = ProducerRecord.text("my-topic", "Hello Kafka")
+    assert_eq(record.topic, "my-topic")?
+    assert_eq(record.value, "Hello Kafka".bytes())?
+}
+
+test "producer record with key" {
+    let record = ProducerRecord.new("topic", [1, 2, 3])
+        .with_string_key("my-key")
+        .with_partition(0)
+    
+    assert_eq(record.key, Some("my-key".bytes()))?
+    assert_eq(record.partition, Some(0))?
+}
+
+test "consumer config defaults" {
+    let config = ConsumerConfig.new("my-group")
+    assert_eq(config.group_id, "my-group")?
+    assert(config.enable_auto_commit)?
+}
+
+test "new topic creation" {
+    let topic = NewTopic.new("events", 3, 2)
+        .with_retention(Duration.days(7))
+        .with_cleanup_policy(CleanupPolicy.Compact)
+    
+    assert_eq(topic.name, "events")?
+    assert_eq(topic.partitions, 3)?
+}

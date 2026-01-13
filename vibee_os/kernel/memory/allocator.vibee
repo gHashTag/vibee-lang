@@ -1,0 +1,132 @@
+name: vibee_os_memory_allocator
+version: "0.1.0"
+language: zig
+module: kernel/memory/allocator
+description: Аллокатор памяти VIBEE OS — управление кучей и страницами
+
+behaviors:
+  - name: allocate_memory_block
+    given: Процесс запрашивает блок памяти определённого размера
+    when: Вызывается alloc с размером
+    then: Возвращается указатель на выделенный блок или null при нехватке памяти
+    test_cases:
+      - name: allocate_small_block
+        input: {size: 64}
+        expected: {success: true, aligned: true}
+      - name: allocate_large_block
+        input: {size: 4096}
+        expected: {success: true, aligned: true}
+      - name: allocate_zero_size
+        input: {size: 0}
+        expected: {success: false, error: "invalid_size"}
+
+  - name: free_memory_block
+    given: Процесс освобождает ранее выделенный блок
+    when: Вызывается free с указателем
+    then: Блок возвращается в пул свободной памяти
+    test_cases:
+      - name: free_valid_block
+        input: {ptr: 0x1000}
+        expected: {success: true}
+      - name: free_null_ptr
+        input: {ptr: 0}
+        expected: {success: false, error: "null_pointer"}
+      - name: double_free
+        input: {ptr: 0x1000, already_freed: true}
+        expected: {success: false, error: "double_free"}
+
+  - name: memory_statistics
+    given: Система работает и выделяет память
+    when: Запрашивается статистика памяти
+    then: Возвращается информация об использовании памяти
+    test_cases:
+      - name: initial_stats
+        input: {}
+        expected: {total: 1048576, used: 0, free: 1048576}
+
+  - name: heap_initialization
+    given: Ядро запускается
+    when: Вызывается heap_init с начальным адресом и размером
+    then: Куча инициализируется и готова к использованию
+    test_cases:
+      - name: init_1mb_heap
+        input: {base: 0x100000, size: 1048576}
+        expected: {initialized: true, capacity: 1048576}
+
+types:
+  MemoryBlock:
+    address: int
+    size: int
+    is_free: bool
+    next: MemoryBlock?
+
+  HeapState:
+    base_address: int
+    total_size: int
+    used_size: int
+    free_size: int
+    block_count: int
+    free_block_count: int
+
+  AllocResult:
+    ptr: int?
+    error: str?
+
+  MemoryStats:
+    total: int
+    used: int
+    free: int
+    largest_free_block: int
+    fragmentation_percent: float
+
+  Alignment:
+    variants:
+      - Byte1
+      - Byte4
+      - Byte8
+      - Byte16
+      - Page4K
+
+functions:
+  - name: heap_init
+    params: {base: int, size: int}
+    returns: bool
+    description: Инициализация кучи
+
+  - name: alloc
+    params: {size: int}
+    returns: AllocResult
+    description: Выделение блока памяти
+
+  - name: alloc_aligned
+    params: {size: int, alignment: Alignment}
+    returns: AllocResult
+    description: Выделение выровненного блока памяти
+
+  - name: free
+    params: {ptr: int}
+    returns: bool
+    description: Освобождение блока памяти
+
+  - name: realloc
+    params: {ptr: int, new_size: int}
+    returns: AllocResult
+    description: Изменение размера блока
+
+  - name: memory_stats
+    params: {}
+    returns: MemoryStats
+    description: Получение статистики памяти
+
+  - name: heap_compact
+    params: {}
+    returns: int
+    description: Дефрагментация кучи, возвращает освобождённые байты
+
+  - name: is_valid_ptr
+    params: {ptr: int}
+    returns: bool
+    description: Проверка валидности указателя
+
+imports:
+  - std

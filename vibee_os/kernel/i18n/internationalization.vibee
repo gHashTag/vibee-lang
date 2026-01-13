@@ -1,0 +1,546 @@
+# ============================================================================
+# INTERNATIONALIZATION - i18n на Vibee
+# ============================================================================
+# Locales, translations, pluralization, formatting
+# ============================================================================
+
+Specification Internationalization:
+  """Интернационализация как спецификация локализации."""
+
+  # ==========================================================================
+  # TYPES
+  # ==========================================================================
+
+  Type Locale:
+    language: String      # ISO 639-1 (en, ru, zh)
+    region: String?       # ISO 3166-1 (US, GB, CN)
+    script: String?       # ISO 15924 (Latn, Cyrl)
+    variant: String?
+
+  Type LocaleConfig:
+    default_locale: Locale
+    fallback_locale: Locale?
+    supported_locales: List<Locale>
+    load_path: Path?
+    missing_key_handler: MissingKeyHandler
+
+  Type MissingKeyHandler:
+    variants:
+      - ReturnKey
+      - ReturnEmpty
+      - ThrowError
+      - Custom: (String, Locale) -> String
+
+  Type Translation:
+    key: String
+    value: TranslationValue
+    locale: Locale
+    namespace: String?
+
+  Type TranslationValue:
+    variants:
+      - Simple: String
+      - Plural: PluralForms
+      - Nested: Map<String, TranslationValue>
+      - Array: List<String>
+
+  Type PluralForms:
+    zero: String?
+    one: String?
+    two: String?
+    few: String?
+    many: String?
+    other: String
+
+  Type PluralCategory:
+    variants: [Zero, One, Two, Few, Many, Other]
+
+  # ==========================================================================
+  # I18N CORE
+  # ==========================================================================
+
+  Behavior I18nCore:
+    State:
+      config: LocaleConfig
+      translations: Map<Locale, Map<String, TranslationValue>>
+      current_locale: Locale
+      formatters: Map<String, Formatter>
+
+    When i18n.init(config):
+      Then:
+        - state.config = config
+        - state.current_locale = config.default_locale
+        - if config.load_path:
+            - await load_translations_from_path(config.load_path)
+
+    When i18n.set_locale(locale):
+      Then:
+        - if locale not in config.supported_locales:
+            - raise UnsupportedLocale(locale)
+        - state.current_locale = locale
+        - emit LocaleChanged(locale)
+
+    When i18n.t(key, options):
+      """Translate a key"""
+      Then:
+        - locale = options.locale ?? current_locale
+        - namespace = options.namespace
+        - full_key = if namespace then "${namespace}.${key}" else key
+        
+        - # Try current locale
+        - value = lookup(full_key, locale)
+        
+        - # Try fallback
+        - if not value and config.fallback_locale:
+            - value = lookup(full_key, config.fallback_locale)
+        
+        - # Handle missing
+        - if not value:
+            - return handle_missing_key(full_key, locale)
+        
+        - # Process value
+        - return process_value(value, options)
+
+    When lookup(key, locale):
+      Then:
+        - locale_translations = translations.get(locale)
+        - if not locale_translations:
+            - return null
+        
+        - # Support nested keys: "user.profile.name"
+        - parts = key.split(".")
+        - current = locale_translations
+        
+        - for part in parts:
+            - match current:
+                Map(m) ->
+                  current = m.get(part)
+                  if not current: return null
+                _ -> return null
+        
+        - return current
+
+    When process_value(value, options):
+      Then:
+        - match value:
+            Simple(s) -> interpolate(s, options.variables ?? {})
+            Plural(forms) -> 
+              count = options.count ?? 0
+              category = get_plural_category(current_locale, count)
+              form = get_plural_form(forms, category)
+              interpolate(form, merge(options.variables ?? {}, { count: count }))
+            Array(arr) -> arr.map(s -> interpolate(s, options.variables ?? {}))
+            Nested(m) -> m  # Return as-is for nested access
+
+    When interpolate(template, variables):
+      Then:
+        - result = template
+        - for (key, value) in variables:
+            - result = result.replace("{{${key}}}", format_value(value))
+            - result = result.replace("{${key}}", format_value(value))
+            - result = result.replace("%{${key}}", format_value(value))
+        - return result
+
+    When handle_missing_key(key, locale):
+      Then:
+        - match config.missing_key_handler:
+            ReturnKey -> key
+            ReturnEmpty -> ""
+            ThrowError -> raise MissingTranslation(key, locale)
+            Custom(fn) -> fn(key, locale)
+
+  # ==========================================================================
+  # PLURALIZATION
+  # ==========================================================================
+
+  Behavior Pluralization:
+    When get_plural_category(locale, count):
+      Then:
+        - rules = get_plural_rules(locale.language)
+        - return rules(count)
+
+    When get_plural_rules(language):
+      """CLDR plural rules"""
+      Then:
+        - match language:
+            # English, German, etc.
+            "en" | "de" | "es" | "it" | "pt" | "nl" ->
+              (n) -> if n == 1 then One else Other
+            
+            # Russian, Ukrainian, etc.
+            "ru" | "uk" | "be" ->
+              (n) ->
+                mod10 = n % 10
+                mod100 = n % 100
+                if mod10 == 1 and mod100 != 11:
+                  One
+                elif mod10 >= 2 and mod10 <= 4 and (mod100 < 12 or mod100 > 14):
+                  Few
+                elif mod10 == 0 or (mod10 >= 5 and mod10 <= 9) or (mod100 >= 11 and mod100 <= 14):
+                  Many
+                else:
+                  Other
+            
+            # Arabic
+            "ar" ->
+              (n) ->
+                if n == 0: Zero
+                elif n == 1: One
+                elif n == 2: Two
+                elif n % 100 >= 3 and n % 100 <= 10: Few
+                elif n % 100 >= 11 and n % 100 <= 99: Many
+                else: Other
+            
+            # Chinese, Japanese, Korean (no plural)
+            "zh" | "ja" | "ko" ->
+              (n) -> Other
+            
+            # Polish
+            "pl" ->
+              (n) ->
+                mod10 = n % 10
+                mod100 = n % 100
+                if n == 1: One
+                elif mod10 >= 2 and mod10 <= 4 and (mod100 < 12 or mod100 > 14): Few
+                elif n != 1 and (mod10 == 0 or mod10 == 1) or (mod10 >= 5 and mod10 <= 9) or (mod100 >= 12 and mod100 <= 14): Many
+                else: Other
+            
+            # French
+            "fr" ->
+              (n) -> if n == 0 or n == 1 then One else Other
+            
+            # Default
+            _ ->
+              (n) -> if n == 1 then One else Other
+
+    When get_plural_form(forms, category):
+      Then:
+        - match category:
+            Zero -> forms.zero ?? forms.other
+            One -> forms.one ?? forms.other
+            Two -> forms.two ?? forms.other
+            Few -> forms.few ?? forms.other
+            Many -> forms.many ?? forms.other
+            Other -> forms.other
+
+  # ==========================================================================
+  # NUMBER FORMATTING
+  # ==========================================================================
+
+  Type NumberFormatOptions:
+    style: NumberStyle = Decimal
+    minimum_integer_digits: Int = 1
+    minimum_fraction_digits: Int?
+    maximum_fraction_digits: Int?
+    use_grouping: Boolean = true
+    currency: String?
+    currency_display: CurrencyDisplay = Symbol
+    unit: String?
+    unit_display: UnitDisplay = Short
+    notation: Notation = Standard
+    sign_display: SignDisplay = Auto
+
+  Type NumberStyle:
+    variants: [Decimal, Currency, Percent, Unit]
+
+  Type CurrencyDisplay:
+    variants: [Symbol, NarrowSymbol, Code, Name]
+
+  Type UnitDisplay:
+    variants: [Short, Narrow, Long]
+
+  Type Notation:
+    variants: [Standard, Scientific, Engineering, Compact]
+
+  Type SignDisplay:
+    variants: [Auto, Always, ExceptZero, Never]
+
+  Behavior NumberFormatting:
+    When i18n.format_number(value, options):
+      Then:
+        - locale = options.locale ?? current_locale
+        - formatter = get_number_formatter(locale, options)
+        - return formatter.format(value)
+
+    When get_number_formatter(locale, options):
+      Then:
+        - locale_data = get_locale_data(locale)
+        
+        - return NumberFormatter(
+            decimal_separator: locale_data.decimal_separator,
+            grouping_separator: locale_data.grouping_separator,
+            grouping_size: locale_data.grouping_size,
+            minus_sign: locale_data.minus_sign,
+            plus_sign: locale_data.plus_sign,
+            percent_sign: locale_data.percent_sign,
+            currency_symbols: locale_data.currency_symbols,
+            options: options
+          )
+
+    When number_formatter.format(value):
+      Then:
+        - match options.style:
+            Decimal -> format_decimal(value)
+            Currency -> format_currency(value, options.currency)
+            Percent -> format_percent(value)
+            Unit -> format_unit(value, options.unit)
+
+    When format_decimal(value):
+      Then:
+        - # Handle sign
+        - sign = if value < 0 then minus_sign else if options.sign_display == Always then plus_sign else ""
+        - abs_value = abs(value)
+        
+        - # Split integer and fraction
+        - (integer_part, fraction_part) = split_number(abs_value)
+        
+        - # Apply grouping
+        - if options.use_grouping:
+            - integer_part = apply_grouping(integer_part, grouping_separator, grouping_size)
+        
+        - # Apply fraction digits
+        - fraction_part = format_fraction(fraction_part, options)
+        
+        - # Combine
+        - if fraction_part:
+            - return "${sign}${integer_part}${decimal_separator}${fraction_part}"
+        - else:
+            - return "${sign}${integer_part}"
+
+  # ==========================================================================
+  # DATE/TIME FORMATTING
+  # ==========================================================================
+
+  Type DateTimeFormatOptions:
+    date_style: DateStyle?
+    time_style: TimeStyle?
+    calendar: String?
+    numbering_system: String?
+    time_zone: String?
+    hour12: Boolean?
+    hour_cycle: HourCycle?
+    weekday: TextWidth?
+    era: TextWidth?
+    year: NumericWidth?
+    month: MonthWidth?
+    day: NumericWidth?
+    hour: NumericWidth?
+    minute: NumericWidth?
+    second: NumericWidth?
+    fractional_second_digits: Int?
+    time_zone_name: TimeZoneName?
+
+  Type DateStyle:
+    variants: [Full, Long, Medium, Short]
+
+  Type TimeStyle:
+    variants: [Full, Long, Medium, Short]
+
+  Type TextWidth:
+    variants: [Narrow, Short, Long]
+
+  Type NumericWidth:
+    variants: [Numeric, TwoDigit]
+
+  Type MonthWidth:
+    variants: [Numeric, TwoDigit, Narrow, Short, Long]
+
+  Type HourCycle:
+    variants: [H11, H12, H23, H24]
+
+  Type TimeZoneName:
+    variants: [Short, Long, ShortOffset, LongOffset, ShortGeneric, LongGeneric]
+
+  Behavior DateTimeFormatting:
+    When i18n.format_date(date, options):
+      Then:
+        - locale = options.locale ?? current_locale
+        - formatter = get_datetime_formatter(locale, options)
+        - return formatter.format(date)
+
+    When i18n.format_time(date, options):
+      Then:
+        - i18n.format_date(date, options with { date_style: null })
+
+    When i18n.format_datetime(date, options):
+      Then:
+        - i18n.format_date(date, options)
+
+    When i18n.format_relative(date, options):
+      """Format relative time (e.g., '2 days ago')"""
+      Then:
+        - locale = options.locale ?? current_locale
+        - diff = now() - date
+        
+        - (value, unit) = get_relative_unit(diff)
+        - return format_relative_time(locale, value, unit, options.style ?? Long)
+
+    When get_relative_unit(diff):
+      Then:
+        - seconds = diff.total_seconds()
+        - if abs(seconds) < 60:
+            - return (round(seconds), Second)
+        - minutes = seconds / 60
+        - if abs(minutes) < 60:
+            - return (round(minutes), Minute)
+        - hours = minutes / 60
+        - if abs(hours) < 24:
+            - return (round(hours), Hour)
+        - days = hours / 24
+        - if abs(days) < 7:
+            - return (round(days), Day)
+        - weeks = days / 7
+        - if abs(weeks) < 4:
+            - return (round(weeks), Week)
+        - months = days / 30
+        - if abs(months) < 12:
+            - return (round(months), Month)
+        - years = days / 365
+        - return (round(years), Year)
+
+    When format_relative_time(locale, value, unit, style):
+      Then:
+        - locale_data = get_locale_data(locale)
+        - patterns = locale_data.relative_time[unit][style]
+        
+        - if value == 0:
+            - return patterns.now ?? "now"
+        - elif value > 0:
+            - pattern = select_plural(locale, value, patterns.future)
+        - else:
+            - pattern = select_plural(locale, abs(value), patterns.past)
+        
+        - return pattern.replace("{0}", abs(value).to_string())
+
+  # ==========================================================================
+  # LIST FORMATTING
+  # ==========================================================================
+
+  Type ListFormatOptions:
+    style: ListStyle = Long
+    type: ListType = Conjunction
+
+  Type ListStyle:
+    variants: [Long, Short, Narrow]
+
+  Type ListType:
+    variants: [Conjunction, Disjunction, Unit]
+
+  Behavior ListFormatting:
+    When i18n.format_list(items, options):
+      Then:
+        - locale = options.locale ?? current_locale
+        - locale_data = get_locale_data(locale)
+        - patterns = locale_data.list_patterns[options.type][options.style]
+        
+        - match items.size:
+            0 -> ""
+            1 -> items[0]
+            2 -> patterns.two.replace("{0}", items[0]).replace("{1}", items[1])
+            _ ->
+              result = patterns.start.replace("{0}", items[0]).replace("{1}", items[1])
+              for i in 2..(items.size - 1):
+                result = patterns.middle.replace("{0}", result).replace("{1}", items[i])
+              patterns.end.replace("{0}", result).replace("{1}", items.last())
+
+  # ==========================================================================
+  # TRANSLATION LOADING
+  # ==========================================================================
+
+  Behavior TranslationLoading:
+    When load_translations_from_path(path):
+      Then:
+        - files = await fs.glob("${path}/**/*.{json,yaml,yml}")
+        - for file in files:
+            - locale = extract_locale_from_path(file)
+            - content = await load_translation_file(file)
+            - merge_translations(locale, content)
+
+    When load_translation_file(path):
+      Then:
+        - content = await fs.read_file(path, "utf-8")
+        - match path.extension():
+            ".json" -> JSON.parse(content)
+            ".yaml" | ".yml" -> YAML.parse(content)
+
+    When merge_translations(locale, content):
+      Then:
+        - existing = translations.get(locale) ?? {}
+        - translations[locale] = deep_merge(existing, content)
+
+    When i18n.add_translations(locale, translations_map):
+      Then:
+        - merge_translations(locale, translations_map)
+
+    When i18n.has_translation(key, locale):
+      Then:
+        - return lookup(key, locale ?? current_locale) != null
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "i18n Usage":
+    ```vibee
+    # Initialize
+    await i18n.init(LocaleConfig(
+      default_locale: Locale("en", "US"),
+      fallback_locale: Locale("en"),
+      supported_locales: [
+        Locale("en", "US"),
+        Locale("en", "GB"),
+        Locale("ru"),
+        Locale("zh", "CN")
+      ],
+      load_path: "/locales"
+    ))
+
+    # Add translations
+    i18n.add_translations(Locale("en"), {
+      "greeting": "Hello, {{name}}!",
+      "items": {
+        "one": "{{count}} item",
+        "other": "{{count}} items"
+      },
+      "user": {
+        "profile": {
+          "title": "User Profile"
+        }
+      }
+    })
+
+    i18n.add_translations(Locale("ru"), {
+      "greeting": "Привет, {{name}}!",
+      "items": {
+        "one": "{{count}} элемент",
+        "few": "{{count}} элемента",
+        "many": "{{count}} элементов",
+        "other": "{{count}} элементов"
+      }
+    })
+
+    # Translate
+    i18n.t("greeting", variables: { name: "John" })  # "Hello, John!"
+    
+    i18n.set_locale(Locale("ru"))
+    i18n.t("greeting", variables: { name: "Иван" })  # "Привет, Иван!"
+
+    # Pluralization
+    i18n.t("items", count: 1)   # "1 элемент"
+    i18n.t("items", count: 3)   # "3 элемента"
+    i18n.t("items", count: 5)   # "5 элементов"
+    i18n.t("items", count: 21)  # "21 элемент"
+
+    # Number formatting
+    i18n.format_number(1234567.89)  # "1 234 567,89" (ru)
+    i18n.format_number(1234.56, style: Currency, currency: "USD")  # "$1,234.56"
+    i18n.format_number(0.75, style: Percent)  # "75%"
+
+    # Date formatting
+    i18n.format_date(now(), date_style: Long)  # "12 января 2024 г."
+    i18n.format_relative(yesterday())  # "вчера"
+    i18n.format_relative(now() - 3.days)  # "3 дня назад"
+
+    # List formatting
+    i18n.format_list(["яблоки", "бананы", "апельсины"])  # "яблоки, бананы и апельсины"
+    ```

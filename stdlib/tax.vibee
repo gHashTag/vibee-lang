@@ -1,0 +1,683 @@
+// =============================================================================
+// Vibee OS — Tax Module
+// Tax calculations, rates, and compliance
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Tax Rate
+// -----------------------------------------------------------------------------
+
+/// Tax rate with optional brackets
+struct TaxRate {
+    name: String
+    rate: Decimal           // Percentage (e.g., 20 for 20%)
+    type_: TaxType
+    
+    fn new(name: String, rate: Decimal, type_: TaxType) -> Self {
+        TaxRate { name: name, rate: rate, type_: type_ }
+    }
+    
+    fn flat(rate: Decimal) -> Self {
+        TaxRate { name: "Flat Tax", rate: rate, type_: TaxType.Flat }
+    }
+    
+    /// Calculate tax amount
+    fn calculate(amount: Money) -> Money {
+        amount.percent(self.rate)
+    }
+    
+    /// Calculate amount including tax
+    fn add_tax(amount: Money) -> Money {
+        amount.add_percent(self.rate)
+    }
+    
+    /// Extract tax from gross amount
+    fn extract_tax(gross: Money) -> Money {
+        let divisor = Decimal.from_int(100) + self.rate
+        gross.as_decimal() * self.rate / divisor
+            |> |d| Money.from_decimal(d, gross.currency)
+    }
+    
+    /// Get net amount from gross
+    fn net_from_gross(gross: Money) -> Money {
+        gross - self.extract_tax(gross)
+    }
+}
+
+/// Tax type
+enum TaxType {
+    Flat            // Single rate
+    Progressive     // Bracketed rates
+    Regressive      // Decreasing rates
+    VAT             // Value Added Tax
+    Sales           // Sales tax
+    Withholding     // Withholding tax
+    Capital         // Capital gains
+    Property        // Property tax
+    Excise          // Excise duty
+    Custom          // Custom duty
+}
+
+// -----------------------------------------------------------------------------
+// Progressive Tax (Brackets)
+// -----------------------------------------------------------------------------
+
+/// Tax bracket
+struct TaxBracket {
+    min: Money
+    max: Option<Money>      // None for unlimited
+    rate: Decimal           // Percentage
+    
+    fn new(min: Money, max: Option<Money>, rate: Decimal) -> Self {
+        TaxBracket { min: min, max: max, rate: rate }
+    }
+    
+    /// Check if amount falls in this bracket
+    fn contains(amount: Money) -> Bool {
+        amount >= self.min && match self.max {
+            Some(max) => amount < max
+            None => true
+        }
+    }
+    
+    /// Get taxable amount in this bracket
+    fn taxable_amount(income: Money) -> Money {
+        if income < self.min {
+            return Money.zero(income.currency)
+        }
+        
+        let bracket_income = income - self.min
+        match self.max {
+            Some(max) => {
+                let bracket_size = max - self.min
+                if bracket_income > bracket_size {
+                    bracket_size
+                } else {
+                    bracket_income
+                }
+            }
+            None => bracket_income
+        }
+    }
+    
+    /// Calculate tax for this bracket
+    fn calculate_tax(income: Money) -> Money {
+        self.taxable_amount(income).percent(self.rate)
+    }
+}
+
+/// Progressive tax system with brackets
+struct ProgressiveTax {
+    name: String
+    brackets: [TaxBracket]
+    currency: Currency
+    
+    fn new(name: String, currency: Currency) -> Self {
+        ProgressiveTax { name: name, brackets: [], currency: currency }
+    }
+    
+    fn add_bracket(min: Float, max: Option<Float>, rate: Float) -> Self {
+        let min_money = Money.from_decimal(Decimal.from_float(min), self.currency)
+        let max_money = max.map(|m| Money.from_decimal(Decimal.from_float(m), self.currency))
+        self.brackets.push(TaxBracket.new(min_money, max_money, Decimal.from_float(rate)))
+        self
+    }
+    
+    /// Calculate total tax
+    fn calculate(income: Money) -> TaxCalculation {
+        var total_tax = Money.zero(income.currency)
+        var breakdown = []
+        
+        for bracket in self.brackets {
+            let bracket_tax = bracket.calculate_tax(income)
+            if !bracket_tax.is_zero() {
+                total_tax = total_tax + bracket_tax
+                breakdown.push(BracketBreakdown {
+                    bracket: bracket,
+                    taxable: bracket.taxable_amount(income),
+                    tax: bracket_tax
+                })
+            }
+        }
+        
+        TaxCalculation {
+            gross_income: income,
+            total_tax: total_tax,
+            net_income: income - total_tax,
+            effective_rate: if income.is_zero() { 
+                Decimal.zero() 
+            } else { 
+                total_tax.as_decimal() / income.as_decimal() * Decimal.from_int(100)
+            },
+            marginal_rate: self.marginal_rate(income),
+            breakdown: breakdown
+        }
+    }
+    
+    /// Get marginal tax rate for income level
+    fn marginal_rate(income: Money) -> Decimal {
+        for bracket in self.brackets.rev() {
+            if bracket.contains(income) {
+                return bracket.rate
+            }
+        }
+        Decimal.zero()
+    }
+}
+
+/// Tax calculation result
+struct TaxCalculation {
+    gross_income: Money
+    total_tax: Money
+    net_income: Money
+    effective_rate: Decimal
+    marginal_rate: Decimal
+    breakdown: [BracketBreakdown]
+    
+    fn print() {
+        println("Gross Income:    \(self.gross_income.format())")
+        println("Total Tax:       \(self.total_tax.format())")
+        println("Net Income:      \(self.net_income.format())")
+        println("Effective Rate:  \(self.effective_rate.format(2))%")
+        println("Marginal Rate:   \(self.marginal_rate.format(2))%")
+        println("\nBreakdown:")
+        for b in self.breakdown {
+            println("  \(b.bracket.rate.format(1))%: \(b.taxable.format()) -> \(b.tax.format())")
+        }
+    }
+}
+
+/// Bracket breakdown
+struct BracketBreakdown {
+    bracket: TaxBracket
+    taxable: Money
+    tax: Money
+}
+
+// -----------------------------------------------------------------------------
+// VAT (Value Added Tax)
+// -----------------------------------------------------------------------------
+
+/// VAT rates
+struct VATRates {
+    standard: Decimal
+    reduced: Decimal
+    super_reduced: Option<Decimal>
+    zero_rated: Bool
+    
+    fn new(standard: Decimal) -> Self {
+        VATRates {
+            standard: standard,
+            reduced: standard,
+            super_reduced: None,
+            zero_rated: true
+        }
+    }
+    
+    fn with_reduced(standard: Decimal, reduced: Decimal) -> Self {
+        VATRates {
+            standard: standard,
+            reduced: reduced,
+            super_reduced: None,
+            zero_rated: true
+        }
+    }
+}
+
+/// VAT calculation
+struct VAT {
+    rates: VATRates
+    
+    fn new(rates: VATRates) -> Self {
+        VAT { rates: rates }
+    }
+    
+    /// Calculate VAT on net amount
+    fn calculate(net: Money, rate_type: VATRateType) -> VATResult {
+        let rate = match rate_type {
+            .Standard => self.rates.standard
+            .Reduced => self.rates.reduced
+            .SuperReduced => self.rates.super_reduced.unwrap_or(Decimal.zero())
+            .Zero => Decimal.zero()
+        }
+        
+        let vat = net.percent(rate)
+        VATResult {
+            net: net,
+            vat: vat,
+            gross: net + vat,
+            rate: rate
+        }
+    }
+    
+    /// Extract VAT from gross amount
+    fn extract(gross: Money, rate_type: VATRateType) -> VATResult {
+        let rate = match rate_type {
+            .Standard => self.rates.standard
+            .Reduced => self.rates.reduced
+            .SuperReduced => self.rates.super_reduced.unwrap_or(Decimal.zero())
+            .Zero => Decimal.zero()
+        }
+        
+        let divisor = Decimal.from_int(100) + rate
+        let vat_amount = gross.as_decimal() * rate / divisor
+        let vat = Money.from_decimal(vat_amount, gross.currency)
+        
+        VATResult {
+            net: gross - vat,
+            vat: vat,
+            gross: gross,
+            rate: rate
+        }
+    }
+}
+
+enum VATRateType {
+    Standard
+    Reduced
+    SuperReduced
+    Zero
+}
+
+struct VATResult {
+    net: Money
+    vat: Money
+    gross: Money
+    rate: Decimal
+}
+
+// -----------------------------------------------------------------------------
+// Country Tax Systems
+// -----------------------------------------------------------------------------
+
+/// US Federal Income Tax (2024)
+fn us_federal_tax() -> ProgressiveTax {
+    ProgressiveTax.new("US Federal Income Tax", Currency.USD)
+        .add_bracket(0.0, Some(11600.0), 10.0)
+        .add_bracket(11600.0, Some(47150.0), 12.0)
+        .add_bracket(47150.0, Some(100525.0), 22.0)
+        .add_bracket(100525.0, Some(191950.0), 24.0)
+        .add_bracket(191950.0, Some(243725.0), 32.0)
+        .add_bracket(243725.0, Some(609350.0), 35.0)
+        .add_bracket(609350.0, None, 37.0)
+}
+
+/// UK Income Tax (2024)
+fn uk_income_tax() -> ProgressiveTax {
+    ProgressiveTax.new("UK Income Tax", Currency.GBP)
+        .add_bracket(0.0, Some(12570.0), 0.0)        // Personal allowance
+        .add_bracket(12570.0, Some(50270.0), 20.0)   // Basic rate
+        .add_bracket(50270.0, Some(125140.0), 40.0)  // Higher rate
+        .add_bracket(125140.0, None, 45.0)           // Additional rate
+}
+
+/// German Income Tax (simplified)
+fn german_income_tax() -> ProgressiveTax {
+    ProgressiveTax.new("German Income Tax", Currency.EUR)
+        .add_bracket(0.0, Some(11604.0), 0.0)        // Tax-free
+        .add_bracket(11604.0, Some(17005.0), 14.0)   // Entry zone
+        .add_bracket(17005.0, Some(66760.0), 24.0)   // Progressive zone
+        .add_bracket(66760.0, Some(277825.0), 42.0)  // Top rate
+        .add_bracket(277825.0, None, 45.0)           // Wealth tax
+}
+
+/// Russian Income Tax (flat)
+fn russian_income_tax() -> TaxRate {
+    TaxRate.new("Russian Income Tax", Decimal.from_int(13), TaxType.Flat)
+}
+
+/// EU VAT rates by country
+fn eu_vat_rates(country: String) -> VATRates {
+    match country.to_upper() {
+        "DE" => VATRates.with_reduced(Decimal.from_int(19), Decimal.from_int(7))
+        "FR" => VATRates.with_reduced(Decimal.from_string("20").unwrap(), Decimal.from_string("5.5").unwrap())
+        "UK" => VATRates.with_reduced(Decimal.from_int(20), Decimal.from_int(5))
+        "IT" => VATRates.with_reduced(Decimal.from_int(22), Decimal.from_int(10))
+        "ES" => VATRates.with_reduced(Decimal.from_int(21), Decimal.from_int(10))
+        "NL" => VATRates.with_reduced(Decimal.from_int(21), Decimal.from_int(9))
+        "PL" => VATRates.with_reduced(Decimal.from_int(23), Decimal.from_int(8))
+        "SE" => VATRates.with_reduced(Decimal.from_int(25), Decimal.from_int(12))
+        _ => VATRates.new(Decimal.from_int(20))  // Default
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Deductions and Credits
+// -----------------------------------------------------------------------------
+
+/// Tax deduction
+struct Deduction {
+    name: String
+    amount: Money
+    type_: DeductionType
+    limit: Option<Money>
+    
+    fn new(name: String, amount: Money, type_: DeductionType) -> Self {
+        Deduction { name: name, amount: amount, type_: type_, limit: None }
+    }
+    
+    fn with_limit(name: String, amount: Money, type_: DeductionType, limit: Money) -> Self {
+        Deduction { name: name, amount: amount, type_: type_, limit: Some(limit) }
+    }
+    
+    fn effective_amount() -> Money {
+        match self.limit {
+            Some(limit) => if self.amount > limit { limit } else { self.amount }
+            None => self.amount
+        }
+    }
+}
+
+enum DeductionType {
+    Standard        // Standard deduction
+    Itemized        // Itemized deduction
+    AboveLine       // Above-the-line deduction
+    BelowLine       // Below-the-line deduction
+    Business        // Business expense
+    Medical         // Medical expense
+    Charitable      // Charitable contribution
+    Mortgage        // Mortgage interest
+    Education       // Education expense
+    Retirement      // Retirement contribution
+}
+
+/// Tax credit
+struct TaxCredit {
+    name: String
+    amount: Money
+    refundable: Bool
+    
+    fn new(name: String, amount: Money, refundable: Bool) -> Self {
+        TaxCredit { name: name, amount: amount, refundable: refundable }
+    }
+    
+    fn non_refundable(name: String, amount: Money) -> Self {
+        TaxCredit.new(name, amount, false)
+    }
+    
+    fn refundable(name: String, amount: Money) -> Self {
+        TaxCredit.new(name, amount, true)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tax Return
+// -----------------------------------------------------------------------------
+
+/// Complete tax return calculation
+struct TaxReturn {
+    year: Int
+    filing_status: FilingStatus
+    gross_income: Money
+    deductions: [Deduction]
+    credits: [TaxCredit]
+    withholdings: Money
+    
+    fn new(year: Int, status: FilingStatus, income: Money) -> Self {
+        TaxReturn {
+            year: year,
+            filing_status: status,
+            gross_income: income,
+            deductions: [],
+            credits: [],
+            withholdings: Money.zero(income.currency)
+        }
+    }
+    
+    fn add_deduction(deduction: Deduction) -> Self {
+        self.deductions.push(deduction)
+        self
+    }
+    
+    fn add_credit(credit: TaxCredit) -> Self {
+        self.credits.push(credit)
+        self
+    }
+    
+    fn set_withholdings(amount: Money) -> Self {
+        self.withholdings = amount
+        self
+    }
+    
+    /// Calculate total deductions
+    fn total_deductions() -> Money {
+        self.deductions.fold(Money.zero(self.gross_income.currency), |acc, d| {
+            acc + d.effective_amount()
+        })
+    }
+    
+    /// Calculate taxable income
+    fn taxable_income() -> Money {
+        let taxable = self.gross_income - self.total_deductions()
+        if taxable.is_negative() {
+            Money.zero(self.gross_income.currency)
+        } else {
+            taxable
+        }
+    }
+    
+    /// Calculate with tax system
+    fn calculate(tax_system: ProgressiveTax) -> TaxReturnResult {
+        let taxable = self.taxable_income()
+        let tax_calc = tax_system.calculate(taxable)
+        
+        // Apply credits
+        var tax_after_credits = tax_calc.total_tax
+        var refundable_credits = Money.zero(self.gross_income.currency)
+        
+        for credit in self.credits {
+            if credit.refundable {
+                refundable_credits = refundable_credits + credit.amount
+            } else {
+                tax_after_credits = tax_after_credits - credit.amount
+                if tax_after_credits.is_negative() {
+                    tax_after_credits = Money.zero(self.gross_income.currency)
+                }
+            }
+        }
+        
+        let total_tax = tax_after_credits - refundable_credits
+        let balance = self.withholdings - total_tax
+        
+        TaxReturnResult {
+            gross_income: self.gross_income,
+            total_deductions: self.total_deductions(),
+            taxable_income: taxable,
+            tax_before_credits: tax_calc.total_tax,
+            total_credits: self.credits.fold(Money.zero(self.gross_income.currency), |acc, c| acc + c.amount),
+            total_tax: if total_tax.is_negative() { Money.zero(self.gross_income.currency) } else { total_tax },
+            withholdings: self.withholdings,
+            refund_or_owed: balance,
+            effective_rate: tax_calc.effective_rate
+        }
+    }
+}
+
+enum FilingStatus {
+    Single
+    MarriedFilingJointly
+    MarriedFilingSeparately
+    HeadOfHousehold
+    QualifyingWidow
+}
+
+struct TaxReturnResult {
+    gross_income: Money
+    total_deductions: Money
+    taxable_income: Money
+    tax_before_credits: Money
+    total_credits: Money
+    total_tax: Money
+    withholdings: Money
+    refund_or_owed: Money       // Positive = refund, negative = owed
+    effective_rate: Decimal
+    
+    fn is_refund() -> Bool { self.refund_or_owed.is_positive() }
+    fn is_owed() -> Bool { self.refund_or_owed.is_negative() }
+    
+    fn print() {
+        println("=== Tax Return Summary ===")
+        println("Gross Income:      \(self.gross_income.format())")
+        println("Deductions:        \(self.total_deductions.format())")
+        println("Taxable Income:    \(self.taxable_income.format())")
+        println("Tax (before):      \(self.tax_before_credits.format())")
+        println("Credits:           \(self.total_credits.format())")
+        println("Total Tax:         \(self.total_tax.format())")
+        println("Withholdings:      \(self.withholdings.format())")
+        println("Effective Rate:    \(self.effective_rate.format(2))%")
+        println("")
+        if self.is_refund() {
+            println("REFUND:            \(self.refund_or_owed.format())")
+        } else {
+            println("AMOUNT OWED:       \(self.refund_or_owed.abs().format())")
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Withholding Calculator
+// -----------------------------------------------------------------------------
+
+/// Calculate payroll withholding
+struct WithholdingCalculator {
+    tax_system: ProgressiveTax
+    pay_periods: Int            // 12 = monthly, 26 = bi-weekly, 52 = weekly
+    
+    fn new(tax_system: ProgressiveTax, pay_periods: Int) -> Self {
+        WithholdingCalculator { tax_system: tax_system, pay_periods: pay_periods }
+    }
+    
+    /// Calculate withholding for single paycheck
+    fn calculate(gross_pay: Money, ytd_gross: Money) -> Money {
+        // Annualize income
+        let annual_income = gross_pay.mul_int(self.pay_periods)
+        
+        // Calculate annual tax
+        let annual_tax = self.tax_system.calculate(annual_income).total_tax
+        
+        // Per-period withholding
+        annual_tax.div_int(self.pay_periods)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Capital Gains
+// -----------------------------------------------------------------------------
+
+/// Capital gains calculation
+struct CapitalGains {
+    purchase_price: Money
+    sale_price: Money
+    holding_period: Duration
+    
+    fn new(purchase: Money, sale: Money, holding: Duration) -> Self {
+        CapitalGains {
+            purchase_price: purchase,
+            sale_price: sale,
+            holding_period: holding
+        }
+    }
+    
+    fn gain() -> Money {
+        self.sale_price - self.purchase_price
+    }
+    
+    fn gain_percent() -> Decimal {
+        if self.purchase_price.is_zero() { return Decimal.zero() }
+        self.gain().as_decimal() / self.purchase_price.as_decimal() * Decimal.from_int(100)
+    }
+    
+    fn is_long_term() -> Bool {
+        self.holding_period > Duration.days(365)
+    }
+    
+    fn is_short_term() -> Bool {
+        !self.is_long_term()
+    }
+    
+    /// Calculate tax (US rates)
+    fn calculate_tax_us(income_bracket: Decimal) -> Money {
+        let gain = self.gain()
+        if gain.is_negative() {
+            return Money.zero(gain.currency)
+        }
+        
+        let rate = if self.is_long_term() {
+            // Long-term rates based on income
+            if income_bracket <= Decimal.from_int(44625) {
+                Decimal.zero()
+            } else if income_bracket <= Decimal.from_int(492300) {
+                Decimal.from_int(15)
+            } else {
+                Decimal.from_int(20)
+            }
+        } else {
+            // Short-term = ordinary income rate
+            income_bracket
+        }
+        
+        gain.percent(rate)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "flat tax" {
+    let tax = TaxRate.flat(Decimal.from_int(20))
+    let amount = usd(1000.00)
+    
+    assert_eq(tax.calculate(amount).format(), "$200.00")?
+    assert_eq(tax.add_tax(amount).format(), "$1,200.00")?
+}
+
+test "progressive tax" {
+    let tax = us_federal_tax()
+    let income = usd(75000.00)
+    let result = tax.calculate(income)
+    
+    assert(result.total_tax > Money.zero(Currency.USD))?
+    assert(result.effective_rate < result.marginal_rate)?
+}
+
+test "vat calculation" {
+    let vat = VAT.new(eu_vat_rates("DE"))
+    let net = eur(100.00)
+    
+    let result = vat.calculate(net, VATRateType.Standard)
+    assert_eq(result.vat.format(), "€19.00")?
+    assert_eq(result.gross.format(), "€119.00")?
+}
+
+test "vat extraction" {
+    let vat = VAT.new(eu_vat_rates("UK"))
+    let gross = gbp(120.00)
+    
+    let result = vat.extract(gross, VATRateType.Standard)
+    assert_eq(result.vat.format(), "£20.00")?
+    assert_eq(result.net.format(), "£100.00")?
+}
+
+test "tax return" {
+    let tax_return = TaxReturn.new(2024, FilingStatus.Single, usd(80000.00))
+        .add_deduction(Deduction.new("Standard", usd(14600.00), DeductionType.Standard))
+        .set_withholdings(usd(12000.00))
+    
+    let result = tax_return.calculate(us_federal_tax())
+    
+    assert_eq(result.taxable_income.format(), "$65,400.00")?
+    assert(result.total_tax > Money.zero(Currency.USD))?
+}
+
+test "capital gains" {
+    let gains = CapitalGains.new(
+        usd(10000.00),
+        usd(15000.00),
+        Duration.days(400)
+    )
+    
+    assert(gains.is_long_term())?
+    assert_eq(gains.gain().format(), "$5,000.00")?
+    assert_eq(gains.gain_percent(), Decimal.from_int(50))?
+}

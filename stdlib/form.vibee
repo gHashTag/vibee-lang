@@ -1,0 +1,884 @@
+// =============================================================================
+// Vibee OS — Form Module
+// Form validation and handling
+// =============================================================================
+
+use validator::{ValidationResult, ValidationError, Validator, StringValidator, NumberValidator, IntegerValidator}
+use sanitizer::{Sanitizer, StringSanitizer}
+use rules::{Rule, RuleEngine, RuleBuilder}
+use schema::{Schema, SchemaError}
+
+// =============================================================================
+// Form Definition
+// =============================================================================
+
+/// Form definition with fields and validation rules
+struct Form {
+    fields: Map<String, FormField>
+    values: Map<String, FormValue>
+    errors: Map<String, [ValidationError]>
+    submitted: Bool
+}
+
+impl Form {
+    fn new() -> Self {
+        Form {
+            fields: Map.new(),
+            values: Map.new(),
+            errors: Map.new(),
+            submitted: false
+        }
+    }
+    
+    /// Add a field to the form
+    fn field(name: String, field: FormField) -> Self {
+        self.fields.insert(name, field)
+        self
+    }
+    
+    /// Add a text field
+    fn text(name: String) -> Self {
+        self.field(name, FormField.text())
+    }
+    
+    /// Add an email field
+    fn email(name: String) -> Self {
+        self.field(name, FormField.email())
+    }
+    
+    /// Add a password field
+    fn password(name: String) -> Self {
+        self.field(name, FormField.password())
+    }
+    
+    /// Add a number field
+    fn number(name: String) -> Self {
+        self.field(name, FormField.number())
+    }
+    
+    /// Add a checkbox field
+    fn checkbox(name: String) -> Self {
+        self.field(name, FormField.checkbox())
+    }
+    
+    /// Add a select field
+    fn select(name: String, options: [SelectOption]) -> Self {
+        self.field(name, FormField.select(options))
+    }
+    
+    /// Add a textarea field
+    fn textarea(name: String) -> Self {
+        self.field(name, FormField.textarea())
+    }
+    
+    /// Add a hidden field
+    fn hidden(name: String, value: String) -> Self {
+        self.field(name, FormField.hidden(value))
+    }
+    
+    /// Set form values from a map
+    fn fill(values: Map<String, String>) -> Self {
+        for (key, value) in values {
+            self.values.insert(key, FormValue.String(value))
+        }
+        self
+    }
+    
+    /// Set a single value
+    fn set(name: String, value: FormValue) -> Self {
+        self.values.insert(name, value)
+        self
+    }
+    
+    /// Get a value
+    fn get(name: String) -> Option<FormValue> {
+        self.values.get(name).cloned()
+    }
+    
+    /// Get string value
+    fn get_string(name: String) -> Option<String> {
+        match self.values.get(name) {
+            Some(FormValue.String(s)) => Some(s.clone())
+            _ => None
+        }
+    }
+    
+    /// Get integer value
+    fn get_int(name: String) -> Option<Int> {
+        match self.values.get(name) {
+            Some(FormValue.Int(n)) => Some(*n)
+            Some(FormValue.String(s)) => Int.parse(s).ok()
+            _ => None
+        }
+    }
+    
+    /// Get boolean value
+    fn get_bool(name: String) -> Option<Bool> {
+        match self.values.get(name) {
+            Some(FormValue.Bool(b)) => Some(*b)
+            Some(FormValue.String(s)) => Some(s == "true" || s == "1" || s == "on")
+            _ => None
+        }
+    }
+    
+    /// Validate the form
+    fn validate() -> ValidationResult {
+        self.submitted = true
+        self.errors.clear()
+        var all_errors = []
+        
+        for (name, field) in self.fields {
+            let value = self.values.get(name).cloned().unwrap_or(FormValue.Empty)
+            let result = field.validate(value)
+            
+            if !result.errors.is_empty() {
+                self.errors.insert(name.clone(), result.errors.clone())
+                for err in result.errors {
+                    all_errors.push(err.with_path(name.clone()))
+                }
+            }
+        }
+        
+        ValidationResult { errors: all_errors }
+    }
+    
+    /// Check if form is valid
+    fn is_valid() -> Bool {
+        self.validate().is_ok()
+    }
+    
+    /// Get errors for a specific field
+    fn field_errors(name: String) -> [ValidationError] {
+        self.errors.get(name).cloned().unwrap_or([])
+    }
+    
+    /// Check if a field has errors
+    fn has_errors(name: String) -> Bool {
+        self.errors.get(name).map(|e| !e.is_empty()).unwrap_or(false)
+    }
+    
+    /// Get first error for a field
+    fn first_error(name: String) -> Option<String> {
+        self.errors.get(name)?.first().map(|e| e.message.clone())
+    }
+    
+    /// Get all errors as a flat list
+    fn all_errors() -> [ValidationError] {
+        var errors = []
+        for (name, field_errors) in self.errors {
+            for err in field_errors {
+                errors.push(err.with_path(name.clone()))
+            }
+        }
+        errors
+    }
+    
+    /// Clear all errors
+    fn clear_errors() {
+        self.errors.clear()
+    }
+    
+    /// Reset form to initial state
+    fn reset() {
+        self.values.clear()
+        self.errors.clear()
+        self.submitted = false
+    }
+    
+    /// Get sanitized values
+    fn sanitized_values() -> Map<String, FormValue> {
+        var result = Map.new()
+        for (name, field) in self.fields {
+            let value = self.values.get(name).cloned().unwrap_or(FormValue.Empty)
+            result.insert(name, field.sanitize(value))
+        }
+        result
+    }
+    
+    /// Convert to JSON
+    fn to_json() -> JsonValue {
+        var obj = Map.new()
+        for (name, value) in self.values {
+            obj.insert(name, value.to_json())
+        }
+        JsonValue.Object(obj)
+    }
+    
+    /// Parse from request body
+    fn from_request(body: String, content_type: String) -> Result<Self, FormError> {
+        if content_type.contains("application/json") {
+            Self.from_json(body)
+        } else if content_type.contains("application/x-www-form-urlencoded") {
+            Self.from_urlencoded(body)
+        } else if content_type.contains("multipart/form-data") {
+            Err(FormError.UnsupportedContentType)  // Would need boundary parsing
+        } else {
+            Err(FormError.UnsupportedContentType)
+        }
+    }
+    
+    /// Parse from JSON
+    fn from_json(json_str: String) -> Result<Self, FormError> {
+        let json = json.parse(json_str).map_err(|_| FormError.ParseError)?
+        var form = Form.new()
+        
+        match json {
+            JsonValue.Object(obj) => {
+                for (key, value) in obj {
+                    form.values.insert(key, FormValue.from_json(value))
+                }
+            }
+            _ => return Err(FormError.ParseError)
+        }
+        
+        Ok(form)
+    }
+    
+    /// Parse from URL-encoded body
+    fn from_urlencoded(body: String) -> Result<Self, FormError> {
+        var form = Form.new()
+        
+        for pair in body.split("&") {
+            if pair.is_empty() { continue }
+            
+            let parts = pair.split("=")
+            if parts.len() != 2 { continue }
+            
+            let key = url.decode_uri_component(parts[0])
+            let value = url.decode_uri_component(parts[1])
+            form.values.insert(key, FormValue.String(value))
+        }
+        
+        Ok(form)
+    }
+}
+
+// =============================================================================
+// Form Value
+// =============================================================================
+
+/// Value that can be stored in a form field
+enum FormValue {
+    Empty
+    String(String)
+    Int(Int)
+    Float(Float)
+    Bool(Bool)
+    Array([FormValue])
+    File(FormFile)
+}
+
+impl FormValue {
+    fn is_empty() -> Bool {
+        match self {
+            Empty => true
+            String(s) => s.is_empty()
+            Array(a) => a.is_empty()
+            _ => false
+        }
+    }
+    
+    fn as_string() -> Option<String> {
+        match self {
+            String(s) => Some(s.clone())
+            Int(n) => Some(n.to_string())
+            Float(f) => Some(f.to_string())
+            Bool(b) => Some(b.to_string())
+            _ => None
+        }
+    }
+    
+    fn to_json() -> JsonValue {
+        match self {
+            Empty => JsonValue.Null
+            String(s) => JsonValue.String(s)
+            Int(n) => JsonValue.Number(n as Float)
+            Float(f) => JsonValue.Number(f)
+            Bool(b) => JsonValue.Bool(b)
+            Array(a) => JsonValue.Array(a.iter().map(|v| v.to_json()).collect())
+            File(_) => JsonValue.Null
+        }
+    }
+    
+    fn from_json(json: JsonValue) -> Self {
+        match json {
+            JsonValue.Null => FormValue.Empty
+            JsonValue.String(s) => FormValue.String(s)
+            JsonValue.Number(n) => {
+                if n.fract() == 0.0 { FormValue.Int(n as Int) }
+                else { FormValue.Float(n) }
+            }
+            JsonValue.Bool(b) => FormValue.Bool(b)
+            JsonValue.Array(a) => FormValue.Array(a.iter().map(|v| FormValue.from_json(v.clone())).collect())
+            JsonValue.Object(_) => FormValue.Empty
+        }
+    }
+}
+
+/// Uploaded file
+struct FormFile {
+    name: String
+    content_type: String
+    size: Int
+    data: [UInt8]
+}
+
+impl FormFile {
+    fn new(name: String, content_type: String, data: [UInt8]) -> Self {
+        FormFile { name: name, content_type: content_type, size: data.len(), data: data }
+    }
+    
+    fn extension() -> Option<String> {
+        self.name.rsplit(".").next().map(|s| s.to_lower())
+    }
+    
+    fn is_image() -> Bool {
+        self.content_type.starts_with("image/")
+    }
+    
+    fn is_pdf() -> Bool {
+        self.content_type == "application/pdf"
+    }
+}
+
+// =============================================================================
+// Form Field
+// =============================================================================
+
+/// Form field definition
+struct FormField {
+    field_type: FieldType
+    label: Option<String>
+    placeholder: Option<String>
+    default_value: Option<FormValue>
+    required: Bool
+    disabled: Bool
+    readonly: Bool
+    validators: [Box<dyn Validator<FormValue>>]
+    sanitizers: [Box<dyn Sanitizer<FormValue>>]
+    rules: RuleEngine<String>
+    attributes: Map<String, String>
+}
+
+enum FieldType {
+    Text
+    Email
+    Password
+    Number
+    Checkbox
+    Radio
+    Select([SelectOption])
+    Textarea
+    Hidden
+    File
+    Date
+    DateTime
+    Time
+    Color
+    Range
+    Tel
+    Url
+}
+
+struct SelectOption {
+    value: String
+    label: String
+    disabled: Bool
+}
+
+impl SelectOption {
+    fn new(value: String, label: String) -> Self {
+        SelectOption { value: value, label: label, disabled: false }
+    }
+    
+    fn disabled() -> Self {
+        self.disabled = true
+        self
+    }
+}
+
+impl FormField {
+    fn new(field_type: FieldType) -> Self {
+        FormField {
+            field_type: field_type,
+            label: None,
+            placeholder: None,
+            default_value: None,
+            required: false,
+            disabled: false,
+            readonly: false,
+            validators: [],
+            sanitizers: [],
+            rules: RuleEngine.new(),
+            attributes: Map.new()
+        }
+    }
+    
+    // Field type constructors
+    fn text() -> Self { Self.new(FieldType.Text) }
+    fn email() -> Self { Self.new(FieldType.Email).add_email_validation() }
+    fn password() -> Self { Self.new(FieldType.Password) }
+    fn number() -> Self { Self.new(FieldType.Number) }
+    fn checkbox() -> Self { Self.new(FieldType.Checkbox) }
+    fn radio() -> Self { Self.new(FieldType.Radio) }
+    fn select(options: [SelectOption]) -> Self { Self.new(FieldType.Select(options)) }
+    fn textarea() -> Self { Self.new(FieldType.Textarea) }
+    fn hidden(value: String) -> Self { Self.new(FieldType.Hidden).default(FormValue.String(value)) }
+    fn file() -> Self { Self.new(FieldType.File) }
+    fn date() -> Self { Self.new(FieldType.Date) }
+    fn datetime() -> Self { Self.new(FieldType.DateTime) }
+    fn time() -> Self { Self.new(FieldType.Time) }
+    fn color() -> Self { Self.new(FieldType.Color) }
+    fn range() -> Self { Self.new(FieldType.Range) }
+    fn tel() -> Self { Self.new(FieldType.Tel) }
+    fn url() -> Self { Self.new(FieldType.Url).add_url_validation() }
+    
+    // Configuration methods
+    fn label(text: String) -> Self { self.label = Some(text); self }
+    fn placeholder(text: String) -> Self { self.placeholder = Some(text); self }
+    fn default(value: FormValue) -> Self { self.default_value = Some(value); self }
+    fn required() -> Self { self.required = true; self }
+    fn disabled() -> Self { self.disabled = true; self }
+    fn readonly() -> Self { self.readonly = true; self }
+    fn attr(name: String, value: String) -> Self { self.attributes.insert(name, value); self }
+    
+    // Validation methods
+    fn min_length(min: Int) -> Self {
+        self.rules = self.rules.add(rules.MinLengthRule.new(min))
+        self
+    }
+    
+    fn max_length(max: Int) -> Self {
+        self.rules = self.rules.add(rules.MaxLengthRule.new(max))
+        self
+    }
+    
+    fn pattern(regex: String, message: String) -> Self {
+        if let Ok(rule) = rules.PatternRule.new(regex, message) {
+            self.rules = self.rules.add(rule)
+        }
+        self
+    }
+    
+    fn min(value: Float) -> Self {
+        self.rules = self.rules.add(rules.RangeRule.min(value))
+        self
+    }
+    
+    fn max(value: Float) -> Self {
+        self.rules = self.rules.add(rules.RangeRule.max(value))
+        self
+    }
+    
+    fn between(min: Float, max: Float) -> Self {
+        self.rules = self.rules.add(rules.RangeRule.between(min, max))
+        self
+    }
+    
+    fn one_of(values: [String]) -> Self {
+        self.rules = self.rules.add(rules.InRule.new(values))
+        self
+    }
+    
+    fn custom_rule(rule: impl Rule<String>) -> Self {
+        self.rules = self.rules.add(rule)
+        self
+    }
+    
+    fn add_email_validation() -> Self {
+        self.rules = self.rules.add(rules.EmailRule.new())
+        self
+    }
+    
+    fn add_url_validation() -> Self {
+        self.rules = self.rules.add(rules.UrlRule.new())
+        self
+    }
+    
+    fn strong_password() -> Self {
+        self.rules = self.rules.add(rules.PasswordRule.strong())
+        self
+    }
+    
+    // Sanitization methods
+    fn trim() -> Self {
+        self.sanitizers.push(Box.new(FormValueSanitizer.trim()))
+        self
+    }
+    
+    fn lowercase() -> Self {
+        self.sanitizers.push(Box.new(FormValueSanitizer.lowercase()))
+        self
+    }
+    
+    fn uppercase() -> Self {
+        self.sanitizers.push(Box.new(FormValueSanitizer.uppercase()))
+        self
+    }
+    
+    fn strip_html() -> Self {
+        self.sanitizers.push(Box.new(FormValueSanitizer.strip_html()))
+        self
+    }
+    
+    /// Validate a form value
+    fn validate(value: FormValue) -> ValidationResult {
+        var errors = []
+        
+        // Check required
+        if self.required && value.is_empty() {
+            errors.push(ValidationError.with_code("required", "This field is required"))
+            return ValidationResult { errors: errors }
+        }
+        
+        // Skip validation for empty non-required fields
+        if value.is_empty() {
+            return ValidationResult.ok()
+        }
+        
+        // Run rule-based validation
+        if let Some(s) = value.as_string() {
+            let result = self.rules.validate(s)
+            errors.extend(result.errors)
+        }
+        
+        // Run custom validators
+        for validator in self.validators {
+            let result = validator.validate(value.clone())
+            errors.extend(result.errors)
+        }
+        
+        ValidationResult { errors: errors }
+    }
+    
+    /// Sanitize a form value
+    fn sanitize(value: FormValue) -> FormValue {
+        var result = value
+        for sanitizer in self.sanitizers {
+            result = sanitizer.sanitize(result)
+        }
+        result
+    }
+}
+
+/// Sanitizer for FormValue
+struct FormValueSanitizer {
+    string_sanitizer: StringSanitizer
+}
+
+impl FormValueSanitizer {
+    fn new() -> Self { FormValueSanitizer { string_sanitizer: StringSanitizer.new() } }
+    fn trim() -> Self { FormValueSanitizer { string_sanitizer: StringSanitizer.new().trim() } }
+    fn lowercase() -> Self { FormValueSanitizer { string_sanitizer: StringSanitizer.new().lowercase() } }
+    fn uppercase() -> Self { FormValueSanitizer { string_sanitizer: StringSanitizer.new().uppercase() } }
+    fn strip_html() -> Self { FormValueSanitizer { string_sanitizer: StringSanitizer.new().strip_html() } }
+}
+
+impl Sanitizer<FormValue> for FormValueSanitizer {
+    fn sanitize(value: FormValue) -> FormValue {
+        match value {
+            FormValue.String(s) => FormValue.String(self.string_sanitizer.sanitize(s))
+            other => other
+        }
+    }
+}
+
+// =============================================================================
+// Form Builder
+// =============================================================================
+
+/// Fluent form builder
+struct FormBuilder {
+    form: Form
+}
+
+impl FormBuilder {
+    fn new() -> Self { FormBuilder { form: Form.new() } }
+    
+    fn text(name: String) -> Self {
+        self.form = self.form.field(name, FormField.text())
+        self
+    }
+    
+    fn email(name: String) -> Self {
+        self.form = self.form.field(name, FormField.email())
+        self
+    }
+    
+    fn password(name: String) -> Self {
+        self.form = self.form.field(name, FormField.password())
+        self
+    }
+    
+    fn number(name: String) -> Self {
+        self.form = self.form.field(name, FormField.number())
+        self
+    }
+    
+    fn checkbox(name: String) -> Self {
+        self.form = self.form.field(name, FormField.checkbox())
+        self
+    }
+    
+    fn select(name: String, options: [SelectOption]) -> Self {
+        self.form = self.form.field(name, FormField.select(options))
+        self
+    }
+    
+    fn textarea(name: String) -> Self {
+        self.form = self.form.field(name, FormField.textarea())
+        self
+    }
+    
+    fn hidden(name: String, value: String) -> Self {
+        self.form = self.form.field(name, FormField.hidden(value))
+        self
+    }
+    
+    fn custom(name: String, field: FormField) -> Self {
+        self.form = self.form.field(name, field)
+        self
+    }
+    
+    fn build() -> Form { self.form }
+}
+
+// =============================================================================
+// Common Form Presets
+// =============================================================================
+
+/// Login form
+fn login_form() -> Form {
+    Form.new()
+        .field("email", FormField.email().required().trim().lowercase())
+        .field("password", FormField.password().required().min_length(8))
+        .field("remember", FormField.checkbox())
+}
+
+/// Registration form
+fn registration_form() -> Form {
+    Form.new()
+        .field("username", FormField.text().required().min_length(3).max_length(30).trim())
+        .field("email", FormField.email().required().trim().lowercase())
+        .field("password", FormField.password().required().strong_password())
+        .field("password_confirmation", FormField.password().required())
+        .field("terms", FormField.checkbox().required())
+}
+
+/// Contact form
+fn contact_form() -> Form {
+    Form.new()
+        .field("name", FormField.text().required().min_length(2).max_length(100).trim())
+        .field("email", FormField.email().required().trim().lowercase())
+        .field("subject", FormField.text().required().min_length(5).max_length(200).trim())
+        .field("message", FormField.textarea().required().min_length(10).max_length(5000).trim().strip_html())
+}
+
+/// Profile form
+fn profile_form() -> Form {
+    Form.new()
+        .field("first_name", FormField.text().required().min_length(1).max_length(50).trim())
+        .field("last_name", FormField.text().required().min_length(1).max_length(50).trim())
+        .field("email", FormField.email().required().trim().lowercase())
+        .field("phone", FormField.tel().pattern(r"^\+?[\d\s\-\(\)]{10,}$", "Invalid phone number"))
+        .field("bio", FormField.textarea().max_length(500).trim().strip_html())
+        .field("website", FormField.url())
+}
+
+/// Password change form
+fn password_change_form() -> Form {
+    Form.new()
+        .field("current_password", FormField.password().required())
+        .field("new_password", FormField.password().required().strong_password())
+        .field("confirm_password", FormField.password().required())
+}
+
+/// Search form
+fn search_form() -> Form {
+    Form.new()
+        .field("query", FormField.text().required().min_length(1).max_length(200).trim().strip_html())
+        .field("category", FormField.select([]))
+        .field("sort", FormField.select([
+            SelectOption.new("relevance", "Relevance"),
+            SelectOption.new("date", "Date"),
+            SelectOption.new("popularity", "Popularity")
+        ]))
+}
+
+// =============================================================================
+// Form Errors
+// =============================================================================
+
+enum FormError {
+    ParseError
+    UnsupportedContentType
+    ValidationFailed([ValidationError])
+    FieldNotFound(String)
+}
+
+impl Display for FormError {
+    fn fmt(f: Formatter) {
+        match self {
+            ParseError => f.write("Failed to parse form data")
+            UnsupportedContentType => f.write("Unsupported content type")
+            ValidationFailed(errors) => f.write(format!("Validation failed: {} errors", errors.len()))
+            FieldNotFound(name) => f.write(format!("Field not found: {}", name))
+        }
+    }
+}
+
+// =============================================================================
+// Form Request Handler
+// =============================================================================
+
+/// Handle form submission in HTTP context
+actor FormHandler {
+    state form: Form
+    state csrf_token: Option<String>
+    
+    fn new(form: Form) -> Self {
+        FormHandler { form: form, csrf_token: None }
+    }
+    
+    fn with_csrf(token: String) -> Self {
+        self.csrf_token = Some(token)
+        self
+    }
+    
+    fn handle(request: http.Request) -> Result<Map<String, FormValue>, FormError> {
+        // Parse form data
+        let content_type = request.headers.get("Content-Type").unwrap_or("")
+        let body = String.from_utf8(request.body).unwrap_or("")
+        
+        let parsed = Form.from_request(body, content_type)?
+        
+        // Copy values to our form
+        for (key, value) in parsed.values {
+            self.form.set(key, value)
+        }
+        
+        // Validate CSRF if enabled
+        if let Some(expected) = self.csrf_token {
+            let provided = self.form.get_string("_csrf").unwrap_or("")
+            if provided != expected {
+                return Err(FormError.ValidationFailed([
+                    ValidationError.with_code("csrf", "Invalid CSRF token")
+                ]))
+            }
+        }
+        
+        // Validate form
+        let result = self.form.validate()
+        if !result.is_ok() {
+            return Err(FormError.ValidationFailed(result.errors))
+        }
+        
+        // Return sanitized values
+        Ok(self.form.sanitized_values())
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "form creation" {
+    let form = Form.new()
+        .text("name")
+        .email("email")
+        .password("password")
+    
+    assert_eq(form.fields.len(), 3)?
+}
+
+test "form validation" {
+    let form = Form.new()
+        .field("email", FormField.email().required())
+        .fill(Map.from([("email", "test@example.com")]))
+    
+    assert(form.is_valid())?
+}
+
+test "form validation failure" {
+    let form = Form.new()
+        .field("email", FormField.email().required())
+        .fill(Map.from([("email", "invalid")]))
+    
+    assert(!form.is_valid())?
+    assert(form.has_errors("email"))?
+}
+
+test "form sanitization" {
+    let form = Form.new()
+        .field("name", FormField.text().trim().lowercase())
+        .fill(Map.from([("name", "  HELLO  ")]))
+    
+    let sanitized = form.sanitized_values()
+    assert_eq(sanitized.get("name")?.as_string(), Some("hello"))?
+}
+
+test "login form preset" {
+    let form = login_form()
+        .fill(Map.from([
+            ("email", "user@example.com"),
+            ("password", "password123")
+        ]))
+    
+    assert(form.is_valid())?
+}
+
+test "form builder" {
+    let form = FormBuilder.new()
+        .text("username")
+        .email("email")
+        .password("password")
+        .build()
+    
+    assert_eq(form.fields.len(), 3)?
+}
+
+test "form value conversion" {
+    let value = FormValue.String("hello")
+    assert_eq(value.as_string(), Some("hello"))?
+    
+    let int_value = FormValue.Int(42)
+    assert_eq(int_value.as_string(), Some("42"))?
+}
+
+test "form from json" {
+    let json = r#"{"name": "John", "age": 30}"#
+    let form = Form.from_json(json)?
+    
+    assert_eq(form.get_string("name"), Some("John"))?
+    assert_eq(form.get_int("age"), Some(30))?
+}
+
+test "form from urlencoded" {
+    let body = "name=John&email=john%40example.com"
+    let form = Form.from_urlencoded(body)?
+    
+    assert_eq(form.get_string("name"), Some("John"))?
+    assert_eq(form.get_string("email"), Some("john@example.com"))?
+}
+
+test "required field validation" {
+    let field = FormField.text().required()
+    
+    assert(field.validate(FormValue.String("hello")).is_ok())?
+    assert(!field.validate(FormValue.Empty).is_ok())?
+    assert(!field.validate(FormValue.String("")).is_ok())?
+}
+
+test "min length validation" {
+    let field = FormField.text().min_length(5)
+    
+    assert(field.validate(FormValue.String("hello")).is_ok())?
+    assert(!field.validate(FormValue.String("hi")).is_ok())?
+}
+
+test "email field validation" {
+    let field = FormField.email()
+    
+    assert(field.validate(FormValue.String("test@example.com")).is_ok())?
+    assert(!field.validate(FormValue.String("invalid")).is_ok())?
+}

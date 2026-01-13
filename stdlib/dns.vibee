@@ -1,0 +1,593 @@
+// =============================================================================
+// Vibee OS — DNS Module
+// DNS resolution and query operations
+// =============================================================================
+
+use net.{IpAddr, SocketAddr}
+use udp.{UdpDatagram}
+
+/// DNS Record types
+enum RecordType {
+    A        // IPv4 address
+    AAAA     // IPv6 address
+    CNAME    // Canonical name
+    MX       // Mail exchange
+    TXT      // Text record
+    NS       // Name server
+    SOA      // Start of authority
+    PTR      // Pointer (reverse DNS)
+    SRV      // Service locator
+    CAA      // Certification Authority Authorization
+    NAPTR    // Naming Authority Pointer
+    DNSKEY   // DNS Key
+    DS       // Delegation Signer
+    RRSIG    // Resource Record Signature
+    NSEC     // Next Secure
+    TLSA     // TLS Authentication
+    ANY      // Any record type
+}
+
+impl RecordType {
+    fn to_code() -> UInt16 {
+        match self {
+            A => 1, AAAA => 28, CNAME => 5, MX => 15, TXT => 16,
+            NS => 2, SOA => 6, PTR => 12, SRV => 33, CAA => 257,
+            NAPTR => 35, DNSKEY => 48, DS => 43, RRSIG => 46,
+            NSEC => 47, TLSA => 52, ANY => 255
+        }
+    }
+    
+    fn from_code(code: UInt16) -> Option<Self> {
+        match code {
+            1 => Some(A), 28 => Some(AAAA), 5 => Some(CNAME), 15 => Some(MX),
+            16 => Some(TXT), 2 => Some(NS), 6 => Some(SOA), 12 => Some(PTR),
+            33 => Some(SRV), 257 => Some(CAA), 35 => Some(NAPTR), 48 => Some(DNSKEY),
+            43 => Some(DS), 46 => Some(RRSIG), 47 => Some(NSEC), 52 => Some(TLSA),
+            255 => Some(ANY), _ => None
+        }
+    }
+}
+
+/// DNS Record
+enum DnsRecord {
+    A(IpAddr)
+    AAAA(IpAddr)
+    CNAME(String)
+    MX { priority: Int, exchange: String }
+    TXT(String)
+    NS(String)
+    SOA { mname: String, rname: String, serial: UInt32, refresh: UInt32, retry: UInt32, expire: UInt32, minimum: UInt32 }
+    PTR(String)
+    SRV { priority: Int, weight: Int, port: Int, target: String }
+    CAA { flags: UInt8, tag: String, value: String }
+    NAPTR { order: Int, preference: Int, flags: String, service: String, regexp: String, replacement: String }
+    TLSA { usage: UInt8, selector: UInt8, matching_type: UInt8, data: [UInt8] }
+    Unknown { type_code: UInt16, data: [UInt8] }
+}
+
+impl DnsRecord {
+    fn record_type() -> RecordType {
+        match self {
+            A(_) => RecordType.A
+            AAAA(_) => RecordType.AAAA
+            CNAME(_) => RecordType.CNAME
+            MX { .. } => RecordType.MX
+            TXT(_) => RecordType.TXT
+            NS(_) => RecordType.NS
+            SOA { .. } => RecordType.SOA
+            PTR(_) => RecordType.PTR
+            SRV { .. } => RecordType.SRV
+            CAA { .. } => RecordType.CAA
+            NAPTR { .. } => RecordType.NAPTR
+            TLSA { .. } => RecordType.TLSA
+            Unknown { type_code, .. } => RecordType.from_code(type_code).unwrap_or(RecordType.ANY)
+        }
+    }
+    
+    fn ttl() -> Option<UInt32> {
+        @native("dns_record_ttl", self)
+    }
+}
+
+/// DNS Resolver
+struct Resolver {
+    servers: [SocketAddr]
+    timeout_ms: Int64
+    cache: Option<DnsCache>
+}
+
+impl Resolver {
+    fn new() -> Self { Resolver { servers: Self.system_servers(), timeout_ms: 5000, cache: None } }
+    fn with_servers(servers: [String]) -> Self {
+        let addrs = servers.iter().filter_map(|s| SocketAddr.parse(format!("{}:53", s)).ok()).collect()
+        Resolver { servers: addrs, timeout_ms: 5000, cache: None }
+    }
+    fn google() -> Self { Self.with_servers(["8.8.8.8", "8.8.4.4"]) }
+    fn cloudflare() -> Self { Self.with_servers(["1.1.1.1", "1.0.0.1"]) }
+    fn with_cache(capacity: Int) -> Self { self.cache = Some(DnsCache.new(capacity)); self }
+    fn timeout(ms: Int64) -> Self { self.timeout_ms = ms; self }
+    
+    fn system_servers() -> [SocketAddr] { @native("dns_system_servers") }
+    
+    /// Lookup hostname to IP addresses
+    fn lookup(hostname: String) -> Result<[IpAddr], DnsError> {
+        if let Some(cache) = self.cache {
+            if let Some(addrs) = cache.get(hostname) { return Ok(addrs) }
+        }
+        let result = @native("dns_lookup", hostname, self.servers, self.timeout_ms)?
+        if let Some(cache) = self.cache { cache.set(hostname, result.clone()) }
+        Ok(result)
+    }
+    
+    /// Lookup with specific record type
+    fn query(hostname: String, record_type: RecordType) -> Result<[DnsRecord], DnsError> {
+        @native("dns_query", hostname, record_type, self.servers, self.timeout_ms)
+    }
+    
+    /// Reverse lookup (IP to hostname)
+    fn reverse(ip: IpAddr) -> Result<String, DnsError> {
+        @native("dns_reverse", ip, self.servers, self.timeout_ms)
+    }
+    
+    /// Lookup A records
+    fn lookup_a(hostname: String) -> Result<[IpAddr], DnsError> {
+        self.query(hostname, RecordType.A)?.iter()
+            .filter_map(|r| match r { DnsRecord.A(ip) => Some(ip), _ => None })
+            .collect()
+    }
+    
+    /// Lookup AAAA records
+    fn lookup_aaaa(hostname: String) -> Result<[IpAddr], DnsError> {
+        self.query(hostname, RecordType.AAAA)?.iter()
+            .filter_map(|r| match r { DnsRecord.AAAA(ip) => Some(ip), _ => None })
+            .collect()
+    }
+    
+    /// Lookup MX records
+    fn lookup_mx(hostname: String) -> Result<[(Int, String)], DnsError> {
+        self.query(hostname, RecordType.MX)?.iter()
+            .filter_map(|r| match r { DnsRecord.MX { priority, exchange } => Some((priority, exchange)), _ => None })
+            .sorted_by(|(a, _), (b, _)| a.cmp(b))
+            .collect()
+    }
+    
+    /// Lookup TXT records
+    fn lookup_txt(hostname: String) -> Result<[String], DnsError> {
+        self.query(hostname, RecordType.TXT)?.iter()
+            .filter_map(|r| match r { DnsRecord.TXT(s) => Some(s), _ => None })
+            .collect()
+    }
+    
+    /// Lookup SRV records
+    fn lookup_srv(service: String, protocol: String, domain: String) -> Result<[DnsRecord], DnsError> {
+        let name = format!("_{}._{}.{}", service, protocol, domain)
+        self.query(name, RecordType.SRV)
+    }
+}
+
+/// DNS Cache
+actor DnsCache {
+    state entries: Map<String, CacheEntry>
+    state capacity: Int
+    state ttl_ms: Int64
+    
+    fn new(capacity: Int) -> Self { DnsCache { entries: Map.empty(), capacity: capacity, ttl_ms: 300000 } }
+    fn with_ttl(capacity: Int, ttl_ms: Int64) -> Self { DnsCache { entries: Map.empty(), capacity: capacity, ttl_ms: ttl_ms } }
+    
+    fn get(hostname: String) -> Option<[IpAddr]> {
+        let entry = self.entries.get(hostname)?
+        if @native("timestamp_ms") > entry.expires { self.entries.remove(hostname); return None }
+        Some(entry.addrs.clone())
+    }
+    
+    fn set(hostname: String, addrs: [IpAddr]) {
+        if self.entries.len() >= self.capacity { self.evict() }
+        self.entries.set(hostname, CacheEntry { addrs: addrs, expires: @native("timestamp_ms") + self.ttl_ms })
+    }
+    
+    fn clear() { self.entries.clear() }
+    fn evict() { if let Some(oldest) = self.entries.iter().min_by(|(_, a), (_, b)| a.expires.cmp(b.expires)) { self.entries.remove(oldest.0) } }
+}
+
+struct CacheEntry { addrs: [IpAddr], expires: Int64 }
+
+enum DnsError { NotFound, Timeout, ServerFailure, InvalidName, Other(String) }
+impl Display for DnsError {
+    fn fmt(f: Formatter) {
+        match self { NotFound => f.write("DNS name not found"), Timeout => f.write("DNS timeout"), ServerFailure => f.write("DNS server failure"), InvalidName => f.write("Invalid DNS name"), Other(s) => f.write(s) }
+    }
+}
+
+/// DNS Query class
+enum QueryClass {
+    IN   // Internet
+    CH   // Chaos
+    HS   // Hesiod
+    ANY  // Any class
+}
+
+impl QueryClass {
+    fn to_code() -> UInt16 {
+        match self { IN => 1, CH => 3, HS => 4, ANY => 255 }
+    }
+}
+
+/// DNS Message for low-level operations
+struct DnsMessage {
+    id: UInt16
+    flags: DnsFlags
+    questions: [DnsQuestion]
+    answers: [DnsResourceRecord]
+    authority: [DnsResourceRecord]
+    additional: [DnsResourceRecord]
+}
+
+impl DnsMessage {
+    fn new_query(name: String, record_type: RecordType) -> Self {
+        DnsMessage {
+            id: @native("random_u16"),
+            flags: DnsFlags.query(),
+            questions: [DnsQuestion { name: name, qtype: record_type, qclass: QueryClass.IN }],
+            answers: [],
+            authority: [],
+            additional: []
+        }
+    }
+    
+    fn encode() -> [UInt8] {
+        @native("dns_encode_message", self)
+    }
+    
+    fn decode(data: [UInt8]) -> Result<Self, DnsError> {
+        @native("dns_decode_message", data)
+    }
+    
+    fn is_response() -> Bool { self.flags.qr }
+    fn is_authoritative() -> Bool { self.flags.aa }
+    fn is_truncated() -> Bool { self.flags.tc }
+    fn response_code() -> DnsResponseCode { self.flags.rcode }
+}
+
+/// DNS Flags
+struct DnsFlags {
+    qr: Bool      // Query/Response
+    opcode: UInt8 // Operation code
+    aa: Bool      // Authoritative Answer
+    tc: Bool      // Truncated
+    rd: Bool      // Recursion Desired
+    ra: Bool      // Recursion Available
+    z: UInt8      // Reserved
+    rcode: DnsResponseCode
+}
+
+impl DnsFlags {
+    fn query() -> Self {
+        DnsFlags { qr: false, opcode: 0, aa: false, tc: false, rd: true, ra: false, z: 0, rcode: DnsResponseCode.NoError }
+    }
+}
+
+/// DNS Response Code
+enum DnsResponseCode {
+    NoError
+    FormatError
+    ServerFailure
+    NameError
+    NotImplemented
+    Refused
+    Other(UInt8)
+}
+
+impl DnsResponseCode {
+    fn from_code(code: UInt8) -> Self {
+        match code {
+            0 => NoError, 1 => FormatError, 2 => ServerFailure,
+            3 => NameError, 4 => NotImplemented, 5 => Refused,
+            _ => Other(code)
+        }
+    }
+    
+    fn is_error() -> Bool {
+        !matches!(self, NoError)
+    }
+}
+
+/// DNS Question
+struct DnsQuestion {
+    name: String
+    qtype: RecordType
+    qclass: QueryClass
+}
+
+/// DNS Resource Record
+struct DnsResourceRecord {
+    name: String
+    rtype: RecordType
+    rclass: QueryClass
+    ttl: UInt32
+    rdata: DnsRecord
+}
+
+/// DNS over HTTPS (DoH) client
+struct DohClient {
+    url: String
+    timeout_ms: Int64
+}
+
+impl DohClient {
+    fn new(url: String) -> Self {
+        DohClient { url: url, timeout_ms: 5000 }
+    }
+    
+    fn google() -> Self { Self.new("https://dns.google/dns-query") }
+    fn cloudflare() -> Self { Self.new("https://cloudflare-dns.com/dns-query") }
+    fn quad9() -> Self { Self.new("https://dns.quad9.net/dns-query") }
+    
+    fn timeout(ms: Int64) -> Self { self.timeout_ms = ms; self }
+    
+    fn query(name: String, record_type: RecordType) -> Result<[DnsRecord], DnsError> {
+        let message = DnsMessage.new_query(name, record_type)
+        let data = message.encode()
+        
+        let response = @native("http_post", self.url, data, [
+            ("Content-Type", "application/dns-message"),
+            ("Accept", "application/dns-message")
+        ], self.timeout_ms)?
+        
+        let reply = DnsMessage.decode(response)?
+        Ok(reply.answers.iter().map(|rr| rr.rdata.clone()).collect())
+    }
+    
+    fn lookup(hostname: String) -> Result<[IpAddr], DnsError> {
+        let records = self.query(hostname, RecordType.A)?
+        Ok(records.iter().filter_map(|r| match r { DnsRecord.A(ip) => Some(ip), _ => None }).collect())
+    }
+}
+
+/// DNS over TLS (DoT) client
+struct DotClient {
+    server: String
+    port: Int
+    timeout_ms: Int64
+}
+
+impl DotClient {
+    fn new(server: String) -> Self {
+        DotClient { server: server, port: 853, timeout_ms: 5000 }
+    }
+    
+    fn google() -> Self { Self.new("dns.google") }
+    fn cloudflare() -> Self { Self.new("1.1.1.1") }
+    fn quad9() -> Self { Self.new("dns.quad9.net") }
+    
+    fn port(p: Int) -> Self { self.port = p; self }
+    fn timeout(ms: Int64) -> Self { self.timeout_ms = ms; self }
+    
+    fn query(name: String, record_type: RecordType) -> Result<[DnsRecord], DnsError> {
+        @native("dot_query", self.server, self.port, name, record_type, self.timeout_ms)
+    }
+    
+    fn lookup(hostname: String) -> Result<[IpAddr], DnsError> {
+        let records = self.query(hostname, RecordType.A)?
+        Ok(records.iter().filter_map(|r| match r { DnsRecord.A(ip) => Some(ip), _ => None }).collect())
+    }
+}
+
+/// Async DNS Resolver
+actor AsyncResolver {
+    state resolver: Resolver
+    state pending: Map<UInt16, Channel<Result<[DnsRecord], DnsError>>>
+}
+
+impl AsyncResolver {
+    fn new() -> Self {
+        AsyncResolver { resolver: Resolver.new(), pending: Map.empty() }
+    }
+    
+    fn with_resolver(resolver: Resolver) -> Self {
+        AsyncResolver { resolver: resolver, pending: Map.empty() }
+    }
+    
+    async fn lookup(hostname: String) -> Result<[IpAddr], DnsError> {
+        self.resolver.lookup(hostname)
+    }
+    
+    async fn query(hostname: String, record_type: RecordType) -> Result<[DnsRecord], DnsError> {
+        self.resolver.query(hostname, record_type)
+    }
+    
+    async fn lookup_all(hostnames: [String]) -> [Result<[IpAddr], DnsError>] {
+        hostnames.iter().map(|h| self.lookup(h)).collect_async().await
+    }
+}
+
+/// DNS Utilities
+struct DnsUtils {}
+
+impl DnsUtils {
+    /// Check if a hostname is valid
+    fn is_valid_hostname(hostname: String) -> Bool {
+        if hostname.is_empty() || hostname.len() > 253 { return false }
+        let labels = hostname.split(".")
+        for label in labels.iter() {
+            if label.is_empty() || label.len() > 63 { return false }
+            if !label.chars().all(|c| c.is_alphanumeric() || c == '-') { return false }
+            if label.starts_with("-") || label.ends_with("-") { return false }
+        }
+        true
+    }
+    
+    /// Convert IP to reverse DNS name
+    fn ip_to_ptr(ip: IpAddr) -> String {
+        match ip {
+            IpAddr.V4(a, b, c, d) => format!("{}.{}.{}.{}.in-addr.arpa", d, c, b, a)
+            IpAddr.V6(parts) => {
+                let hex = parts.iter().flat_map(|p| [
+                    format!("{:x}", (p >> 12) & 0xf),
+                    format!("{:x}", (p >> 8) & 0xf),
+                    format!("{:x}", (p >> 4) & 0xf),
+                    format!("{:x}", p & 0xf)
+                ]).rev().join(".")
+                format!("{}.ip6.arpa", hex)
+            }
+        }
+    }
+    
+    /// Parse DKIM record
+    fn parse_dkim(txt: String) -> Option<DkimRecord> {
+        var record = DkimRecord { version: "", key_type: "", public_key: "", hash_algorithms: [], service_types: [], flags: [] }
+        
+        for part in txt.split(";") {
+            let part = part.trim()
+            if let Some(idx) = part.find("=") {
+                let key = part[0..idx].trim()
+                let value = part[(idx+1)..].trim()
+                match key {
+                    "v" => record.version = value
+                    "k" => record.key_type = value
+                    "p" => record.public_key = value
+                    "h" => record.hash_algorithms = value.split(":").collect()
+                    "s" => record.service_types = value.split(":").collect()
+                    "t" => record.flags = value.split(":").collect()
+                    _ => {}
+                }
+            }
+        }
+        
+        if record.public_key.is_empty() { None } else { Some(record) }
+    }
+    
+    /// Parse SPF record
+    fn parse_spf(txt: String) -> Option<SpfRecord> {
+        if !txt.starts_with("v=spf1") { return None }
+        
+        var record = SpfRecord { version: "spf1", mechanisms: [], modifiers: Map.empty() }
+        
+        for part in txt.split_whitespace().skip(1) {
+            if part.contains("=") {
+                let idx = part.find("=").unwrap()
+                record.modifiers.set(part[0..idx].to_string(), part[(idx+1)..].to_string())
+            } else {
+                record.mechanisms.push(part.to_string())
+            }
+        }
+        
+        Some(record)
+    }
+    
+    /// Parse DMARC record
+    fn parse_dmarc(txt: String) -> Option<DmarcRecord> {
+        if !txt.starts_with("v=DMARC1") { return None }
+        
+        var record = DmarcRecord { version: "DMARC1", policy: "", subdomain_policy: None, percentage: 100, rua: [], ruf: [], adkim: "r", aspf: "r" }
+        
+        for part in txt.split(";") {
+            let part = part.trim()
+            if let Some(idx) = part.find("=") {
+                let key = part[0..idx].trim()
+                let value = part[(idx+1)..].trim()
+                match key {
+                    "p" => record.policy = value
+                    "sp" => record.subdomain_policy = Some(value)
+                    "pct" => record.percentage = Int.parse(value).unwrap_or(100)
+                    "rua" => record.rua = value.split(",").map(|s| s.trim().to_string()).collect()
+                    "ruf" => record.ruf = value.split(",").map(|s| s.trim().to_string()).collect()
+                    "adkim" => record.adkim = value
+                    "aspf" => record.aspf = value
+                    _ => {}
+                }
+            }
+        }
+        
+        Some(record)
+    }
+}
+
+/// DKIM Record
+struct DkimRecord {
+    version: String
+    key_type: String
+    public_key: String
+    hash_algorithms: [String]
+    service_types: [String]
+    flags: [String]
+}
+
+/// SPF Record
+struct SpfRecord {
+    version: String
+    mechanisms: [String]
+    modifiers: Map<String, String>
+}
+
+/// DMARC Record
+struct DmarcRecord {
+    version: String
+    policy: String
+    subdomain_policy: Option<String>
+    percentage: Int
+    rua: [String]
+    ruf: [String]
+    adkim: String
+    aspf: String
+}
+
+/// Quick lookup
+fn lookup(hostname: String) -> Result<[IpAddr], DnsError> { Resolver.new().lookup(hostname) }
+fn reverse(ip: IpAddr) -> Result<String, DnsError> { Resolver.new().reverse(ip) }
+fn query(hostname: String, record_type: RecordType) -> Result<[DnsRecord], DnsError> { Resolver.new().query(hostname, record_type) }
+
+/// Lookup with specific resolver
+fn lookup_with(hostname: String, servers: [String]) -> Result<[IpAddr], DnsError> {
+    Resolver.with_servers(servers).lookup(hostname)
+}
+
+/// Check if hostname resolves
+fn resolves(hostname: String) -> Bool {
+    lookup(hostname).is_ok()
+}
+
+// Tests
+test "lookup localhost" {
+    let addrs = lookup("localhost")?
+    assert(!addrs.is_empty())?
+}
+
+test "resolver google" {
+    let resolver = Resolver.google()
+    assert_eq(resolver.servers.len(), 2)?
+}
+
+test "record types" {
+    assert_eq(RecordType.A.to_code(), 1)?
+    assert_eq(RecordType.AAAA.to_code(), 28)?
+    assert_eq(RecordType.MX.to_code(), 15)?
+}
+
+test "valid hostname" {
+    assert(DnsUtils.is_valid_hostname("example.com"))?
+    assert(DnsUtils.is_valid_hostname("sub.example.com"))?
+    assert(!DnsUtils.is_valid_hostname("-invalid.com"))?
+    assert(!DnsUtils.is_valid_hostname(""))?
+}
+
+test "ip to ptr" {
+    let ip = IpAddr.V4(192, 168, 1, 1)
+    assert_eq(DnsUtils.ip_to_ptr(ip), "1.1.168.192.in-addr.arpa")?
+}
+
+test "parse spf" {
+    let txt = "v=spf1 include:_spf.google.com ~all"
+    let spf = DnsUtils.parse_spf(txt)?
+    assert_eq(spf.version, "spf1")?
+    assert(spf.mechanisms.contains("include:_spf.google.com"))?
+}
+
+test "doh client" {
+    let client = DohClient.google()
+    assert_eq(client.url, "https://dns.google/dns-query")?
+}
+
+test "dot client" {
+    let client = DotClient.cloudflare()
+    assert_eq(client.server, "1.1.1.1")?
+}

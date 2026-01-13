@@ -1,0 +1,175 @@
+// =============================================================================
+// Vibee OS — HTTP Module
+// HTTP client and server
+// =============================================================================
+
+/// HTTP Method
+enum Method { GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS, CONNECT, TRACE }
+impl Method {
+    fn from_str(s: String) -> Option<Self> {
+        match s.to_upper() {
+            "GET" => Some(GET), "POST" => Some(POST), "PUT" => Some(PUT), "DELETE" => Some(DELETE),
+            "PATCH" => Some(PATCH), "HEAD" => Some(HEAD), "OPTIONS" => Some(OPTIONS), _ => None
+        }
+    }
+    fn to_string() -> String { match self { GET => "GET", POST => "POST", PUT => "PUT", DELETE => "DELETE", PATCH => "PATCH", HEAD => "HEAD", OPTIONS => "OPTIONS", CONNECT => "CONNECT", TRACE => "TRACE" } }
+}
+
+/// HTTP Status
+struct Status { code: Int, reason: String }
+impl Status {
+    fn new(code: Int) -> Self { Status { code: code, reason: Self.reason_for(code) } }
+    fn ok() -> Self { Self.new(200) }
+    fn created() -> Self { Self.new(201) }
+    fn no_content() -> Self { Self.new(204) }
+    fn bad_request() -> Self { Self.new(400) }
+    fn unauthorized() -> Self { Self.new(401) }
+    fn forbidden() -> Self { Self.new(403) }
+    fn not_found() -> Self { Self.new(404) }
+    fn internal_error() -> Self { Self.new(500) }
+    
+    fn is_success() -> Bool { self.code >= 200 && self.code < 300 }
+    fn is_redirect() -> Bool { self.code >= 300 && self.code < 400 }
+    fn is_client_error() -> Bool { self.code >= 400 && self.code < 500 }
+    fn is_server_error() -> Bool { self.code >= 500 }
+    
+    fn reason_for(code: Int) -> String {
+        match code {
+            200 => "OK", 201 => "Created", 204 => "No Content", 301 => "Moved Permanently", 302 => "Found",
+            400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden", 404 => "Not Found",
+            500 => "Internal Server Error", 502 => "Bad Gateway", 503 => "Service Unavailable", _ => "Unknown"
+        }
+    }
+}
+
+/// HTTP Headers
+struct Headers { inner: Map<String, [String]> }
+impl Headers {
+    fn new() -> Self { Headers { inner: Map.empty() } }
+    fn get(name: String) -> Option<String> { self.inner.get(name.to_lower())?.first().cloned() }
+    fn get_all(name: String) -> [String] { self.inner.get(name.to_lower()).cloned().unwrap_or([]) }
+    fn set(name: String, value: String) { self.inner.set(name.to_lower(), [value]) }
+    fn append(name: String, value: String) { self.inner.entry(name.to_lower()).or_insert([]).push(value) }
+    fn remove(name: String) { self.inner.remove(name.to_lower()) }
+    fn contains(name: String) -> Bool { self.inner.contains(name.to_lower()) }
+    fn iter() -> impl Iterator<Item = (String, String)> { self.inner.iter().flat_map(|(k, vs)| vs.iter().map(|v| (k.clone(), v.clone()))) }
+    fn content_type() -> Option<String> { self.get("content-type") }
+    fn content_length() -> Option<Int> { self.get("content-length").and_then(|s| Int.parse(s).ok()) }
+}
+
+/// HTTP Request
+struct Request {
+    method: Method
+    url: String
+    headers: Headers
+    body: [UInt8]
+}
+impl Request {
+    fn new(method: Method, url: String) -> Self { Request { method: method, url: url, headers: Headers.new(), body: [] } }
+    fn get(url: String) -> Self { Self.new(Method.GET, url) }
+    fn post(url: String) -> Self { Self.new(Method.POST, url) }
+    fn put(url: String) -> Self { Self.new(Method.PUT, url) }
+    fn delete(url: String) -> Self { Self.new(Method.DELETE, url) }
+    
+    fn header(name: String, value: String) -> Self { self.headers.set(name, value); self }
+    fn body(data: [UInt8]) -> Self { self.body = data; self }
+    fn json<T: Serialize>(data: T) -> Self { self.headers.set("Content-Type", "application/json"); self.body = json.encode(data).as_bytes(); self }
+    fn form(data: Map<String, String>) -> Self { self.headers.set("Content-Type", "application/x-www-form-urlencoded"); self.body = url.build_query(data).as_bytes(); self }
+    fn bearer_token(token: String) -> Self { self.header("Authorization", format!("Bearer {}", token)) }
+    fn basic_auth(user: String, pass: String) -> Self { self.header("Authorization", format!("Basic {}", base64.encode(format!("{}:{}", user, pass).as_bytes()))) }
+}
+
+/// HTTP Response
+struct Response {
+    status: Status
+    headers: Headers
+    body: [UInt8]
+}
+impl Response {
+    fn new(status: Status) -> Self { Response { status: status, headers: Headers.new(), body: [] } }
+    fn ok() -> Self { Self.new(Status.ok()) }
+    fn not_found() -> Self { Self.new(Status.not_found()) }
+    fn error(code: Int) -> Self { Self.new(Status.new(code)) }
+    
+    fn header(name: String, value: String) -> Self { self.headers.set(name, value); self }
+    fn body(data: [UInt8]) -> Self { self.body = data; self }
+    fn text(s: String) -> Self { self.headers.set("Content-Type", "text/plain"); self.body = s.as_bytes(); self }
+    fn html(s: String) -> Self { self.headers.set("Content-Type", "text/html"); self.body = s.as_bytes(); self }
+    fn json<T: Serialize>(data: T) -> Self { self.headers.set("Content-Type", "application/json"); self.body = json.encode(data).as_bytes(); self }
+    
+    fn text() -> String { String.from_utf8(self.body).unwrap_or("") }
+    fn json<T: Deserialize>() -> Result<T, JsonError> { json.decode(self.text()) }
+    fn is_success() -> Bool { self.status.is_success() }
+}
+
+/// HTTP Client
+struct Client {
+    timeout_ms: Int64
+    headers: Headers
+    follow_redirects: Bool
+    max_redirects: Int
+}
+impl Client {
+    fn new() -> Self { Client { timeout_ms: 30000, headers: Headers.new(), follow_redirects: true, max_redirects: 10 } }
+    fn timeout(ms: Int64) -> Self { self.timeout_ms = ms; self }
+    fn default_header(name: String, value: String) -> Self { self.headers.set(name, value); self }
+    fn no_redirects() -> Self { self.follow_redirects = false; self }
+    
+    fn send(req: Request) -> Result<Response, HttpError> {
+        for (k, v) in self.headers.iter() { if !req.headers.contains(k) { req.headers.set(k, v) } }
+        @native("http_send", req, self.timeout_ms, self.follow_redirects, self.max_redirects)
+    }
+    
+    fn get(url: String) -> Result<Response, HttpError> { self.send(Request.get(url)) }
+    fn post(url: String, body: [UInt8]) -> Result<Response, HttpError> { self.send(Request.post(url).body(body)) }
+    fn put(url: String, body: [UInt8]) -> Result<Response, HttpError> { self.send(Request.put(url).body(body)) }
+    fn delete(url: String) -> Result<Response, HttpError> { self.send(Request.delete(url)) }
+}
+
+/// Quick functions
+fn get(url: String) -> Result<Response, HttpError> { Client.new().get(url) }
+fn post(url: String, body: [UInt8]) -> Result<Response, HttpError> { Client.new().post(url, body) }
+
+/// HTTP Server
+actor Server {
+    state addr: SocketAddr
+    state routes: [Route]
+    state middleware: [fn(Request, fn(Request) -> Response) -> Response]
+    
+    fn new(addr: String) -> Result<Self, HttpError> {
+        let addr = SocketAddr.parse(addr)?
+        Ok(Server { addr: addr, routes: [], middleware: [] })
+    }
+    
+    fn route(method: Method, path: String, handler: fn(Request) -> Response) -> Self { self.routes.push(Route { method: method, path: path, handler: handler }); self }
+    fn get(path: String, handler: fn(Request) -> Response) -> Self { self.route(Method.GET, path, handler) }
+    fn post(path: String, handler: fn(Request) -> Response) -> Self { self.route(Method.POST, path, handler) }
+    fn put(path: String, handler: fn(Request) -> Response) -> Self { self.route(Method.PUT, path, handler) }
+    fn delete(path: String, handler: fn(Request) -> Response) -> Self { self.route(Method.DELETE, path, handler) }
+    fn use(mw: fn(Request, fn(Request) -> Response) -> Response) -> Self { self.middleware.push(mw); self }
+    
+    fn run() -> Result<(), HttpError> { @native("http_server_run", self.addr, self.routes, self.middleware) }
+}
+
+struct Route { method: Method, path: String, handler: fn(Request) -> Response }
+
+enum HttpError { Network(NetError), Timeout, InvalidResponse, TooManyRedirects, Other(String) }
+
+// Tests
+test "request builder" {
+    let req = Request.get("https://api.example.com").header("Accept", "application/json").bearer_token("token123")
+    assert_eq(req.method, Method.GET)?
+    assert_eq(req.headers.get("Authorization"), Some("Bearer token123"))?
+}
+
+test "response builder" {
+    let res = Response.ok().json({"message": "hello"})
+    assert(res.is_success())?
+    assert_eq(res.headers.content_type(), Some("application/json"))?
+}
+
+test "status codes" {
+    assert(Status.ok().is_success())?
+    assert(Status.not_found().is_client_error())?
+    assert(Status.internal_error().is_server_error())?
+}

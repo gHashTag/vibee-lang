@@ -1,0 +1,525 @@
+// =============================================================================
+// Vibee OS — Geometry Module
+// 2D and 3D geometric primitives and operations
+// =============================================================================
+
+use math::{PI, sqrt, sin, cos, atan2, abs, min, max, approx_eq}
+
+// -----------------------------------------------------------------------------
+// 2D Point
+// -----------------------------------------------------------------------------
+
+struct Point2D {
+    x: Float
+    y: Float
+    
+    fn new(x: Float, y: Float) -> Self { Point2D { x: x, y: y } }
+    fn origin() -> Self { Point2D { x: 0.0, y: 0.0 } }
+    
+    fn distance(other: Point2D) -> Float {
+        sqrt((self.x - other.x) * (self.x - other.x) + (self.y - other.y) * (self.y - other.y))
+    }
+    
+    fn midpoint(other: Point2D) -> Self {
+        Point2D { x: (self.x + other.x) / 2.0, y: (self.y + other.y) / 2.0 }
+    }
+    
+    fn translate(dx: Float, dy: Float) -> Self {
+        Point2D { x: self.x + dx, y: self.y + dy }
+    }
+    
+    fn rotate(angle: Float, center: Point2D = Point2D.origin()) -> Self {
+        let dx = self.x - center.x
+        let dy = self.y - center.y
+        let c = cos(angle)
+        let s = sin(angle)
+        Point2D { x: center.x + dx * c - dy * s, y: center.y + dx * s + dy * c }
+    }
+    
+    fn scale(factor: Float, center: Point2D = Point2D.origin()) -> Self {
+        Point2D {
+            x: center.x + (self.x - center.x) * factor,
+            y: center.y + (self.y - center.y) * factor
+        }
+    }
+    
+    fn to_string() -> String { format!("({}, {})", self.x, self.y) }
+}
+
+impl Eq for Point2D {
+    fn eq(other: Point2D) -> Bool { approx_eq(self.x, other.x) && approx_eq(self.y, other.y) }
+}
+
+// -----------------------------------------------------------------------------
+// 2D Line
+// -----------------------------------------------------------------------------
+
+struct Line2D {
+    p1: Point2D
+    p2: Point2D
+    
+    fn new(p1: Point2D, p2: Point2D) -> Self { Line2D { p1: p1, p2: p2 } }
+    
+    fn from_points(x1: Float, y1: Float, x2: Float, y2: Float) -> Self {
+        Line2D { p1: Point2D.new(x1, y1), p2: Point2D.new(x2, y2) }
+    }
+    
+    fn length() -> Float { self.p1.distance(self.p2) }
+    
+    fn midpoint() -> Point2D { self.p1.midpoint(self.p2) }
+    
+    fn slope() -> Option<Float> {
+        let dx = self.p2.x - self.p1.x
+        if dx == 0.0 { None } else { Some((self.p2.y - self.p1.y) / dx) }
+    }
+    
+    fn angle() -> Float { atan2(self.p2.y - self.p1.y, self.p2.x - self.p1.x) }
+    
+    fn point_at(t: Float) -> Point2D {
+        Point2D {
+            x: self.p1.x + t * (self.p2.x - self.p1.x),
+            y: self.p1.y + t * (self.p2.y - self.p1.y)
+        }
+    }
+    
+    fn intersects(other: Line2D) -> Option<Point2D> {
+        let d = (self.p1.x - self.p2.x) * (other.p1.y - other.p2.y) -
+                (self.p1.y - self.p2.y) * (other.p1.x - other.p2.x)
+        if abs(d) < 1e-10 { return None }
+        
+        let t = ((self.p1.x - other.p1.x) * (other.p1.y - other.p2.y) -
+                 (self.p1.y - other.p1.y) * (other.p1.x - other.p2.x)) / d
+        Some(self.point_at(t))
+    }
+    
+    fn distance_to_point(p: Point2D) -> Float {
+        let len_sq = (self.p2.x - self.p1.x) * (self.p2.x - self.p1.x) +
+                     (self.p2.y - self.p1.y) * (self.p2.y - self.p1.y)
+        if len_sq == 0.0 { return self.p1.distance(p) }
+        
+        let t = max(0.0, min(1.0, ((p.x - self.p1.x) * (self.p2.x - self.p1.x) +
+                                    (p.y - self.p1.y) * (self.p2.y - self.p1.y)) / len_sq))
+        self.point_at(t).distance(p)
+    }
+    
+    fn is_parallel(other: Line2D) -> Bool {
+        let d = (self.p2.x - self.p1.x) * (other.p2.y - other.p1.y) -
+                (self.p2.y - self.p1.y) * (other.p2.x - other.p1.x)
+        abs(d) < 1e-10
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Circle
+// -----------------------------------------------------------------------------
+
+struct Circle {
+    center: Point2D
+    radius: Float
+    
+    fn new(center: Point2D, radius: Float) -> Self { Circle { center: center, radius: radius } }
+    
+    fn from_coords(x: Float, y: Float, r: Float) -> Self {
+        Circle { center: Point2D.new(x, y), radius: r }
+    }
+    
+    fn unit() -> Self { Circle { center: Point2D.origin(), radius: 1.0 } }
+    
+    fn diameter() -> Float { self.radius * 2.0 }
+    fn circumference() -> Float { 2.0 * PI * self.radius }
+    fn area() -> Float { PI * self.radius * self.radius }
+    
+    fn contains(p: Point2D) -> Bool { self.center.distance(p) <= self.radius }
+    
+    fn point_at_angle(angle: Float) -> Point2D {
+        Point2D {
+            x: self.center.x + self.radius * cos(angle),
+            y: self.center.y + self.radius * sin(angle)
+        }
+    }
+    
+    fn intersects_circle(other: Circle) -> Bool {
+        let d = self.center.distance(other.center)
+        d <= self.radius + other.radius && d >= abs(self.radius - other.radius)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Rectangle
+// -----------------------------------------------------------------------------
+
+struct Rectangle {
+    x: Float
+    y: Float
+    width: Float
+    height: Float
+    
+    fn new(x: Float, y: Float, width: Float, height: Float) -> Self {
+        Rectangle { x: x, y: y, width: width, height: height }
+    }
+    
+    fn from_points(p1: Point2D, p2: Point2D) -> Self {
+        let x = min(p1.x, p2.x)
+        let y = min(p1.y, p2.y)
+        Rectangle { x: x, y: y, width: abs(p2.x - p1.x), height: abs(p2.y - p1.y) }
+    }
+    
+    fn center() -> Point2D { Point2D.new(self.x + self.width / 2.0, self.y + self.height / 2.0) }
+    fn area() -> Float { self.width * self.height }
+    fn perimeter() -> Float { 2.0 * (self.width + self.height) }
+    fn diagonal() -> Float { sqrt(self.width * self.width + self.height * self.height) }
+    
+    fn contains(p: Point2D) -> Bool {
+        p.x >= self.x && p.x <= self.x + self.width &&
+        p.y >= self.y && p.y <= self.y + self.height
+    }
+    
+    fn intersects(other: Rectangle) -> Bool {
+        self.x < other.x + other.width && self.x + self.width > other.x &&
+        self.y < other.y + other.height && self.y + self.height > other.y
+    }
+    
+    fn corners() -> [Point2D] {
+        [
+            Point2D.new(self.x, self.y),
+            Point2D.new(self.x + self.width, self.y),
+            Point2D.new(self.x + self.width, self.y + self.height),
+            Point2D.new(self.x, self.y + self.height)
+        ]
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Triangle
+// -----------------------------------------------------------------------------
+
+struct Triangle {
+    a: Point2D
+    b: Point2D
+    c: Point2D
+    
+    fn new(a: Point2D, b: Point2D, c: Point2D) -> Self { Triangle { a: a, b: b, c: c } }
+    
+    fn area() -> Float {
+        abs((self.b.x - self.a.x) * (self.c.y - self.a.y) -
+            (self.c.x - self.a.x) * (self.b.y - self.a.y)) / 2.0
+    }
+    
+    fn perimeter() -> Float {
+        self.a.distance(self.b) + self.b.distance(self.c) + self.c.distance(self.a)
+    }
+    
+    fn centroid() -> Point2D {
+        Point2D.new((self.a.x + self.b.x + self.c.x) / 3.0,
+                    (self.a.y + self.b.y + self.c.y) / 3.0)
+    }
+    
+    fn contains(p: Point2D) -> Bool {
+        let d1 = sign(p, self.a, self.b)
+        let d2 = sign(p, self.b, self.c)
+        let d3 = sign(p, self.c, self.a)
+        let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0
+        let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0
+        !(has_neg && has_pos)
+    }
+    
+    fn circumcircle() -> Circle {
+        let ax = self.a.x; let ay = self.a.y
+        let bx = self.b.x; let by = self.b.y
+        let cx = self.c.x; let cy = self.c.y
+        
+        let d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+        let ux = ((ax*ax + ay*ay) * (by - cy) + (bx*bx + by*by) * (cy - ay) + (cx*cx + cy*cy) * (ay - by)) / d
+        let uy = ((ax*ax + ay*ay) * (cx - bx) + (bx*bx + by*by) * (ax - cx) + (cx*cx + cy*cy) * (bx - ax)) / d
+        
+        let center = Point2D.new(ux, uy)
+        Circle.new(center, center.distance(self.a))
+    }
+    
+    fn incircle() -> Circle {
+        let a_len = self.b.distance(self.c)
+        let b_len = self.a.distance(self.c)
+        let c_len = self.a.distance(self.b)
+        let p = a_len + b_len + c_len
+        
+        let center = Point2D.new(
+            (a_len * self.a.x + b_len * self.b.x + c_len * self.c.x) / p,
+            (a_len * self.a.y + b_len * self.b.y + c_len * self.c.y) / p
+        )
+        Circle.new(center, 2.0 * self.area() / p)
+    }
+}
+
+fn sign(p1: Point2D, p2: Point2D, p3: Point2D) -> Float {
+    (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y)
+}
+
+// -----------------------------------------------------------------------------
+// Polygon
+// -----------------------------------------------------------------------------
+
+struct Polygon {
+    vertices: [Point2D]
+    
+    fn new(vertices: [Point2D]) -> Self { Polygon { vertices: vertices } }
+    
+    fn regular(n: Int, radius: Float, center: Point2D = Point2D.origin()) -> Self {
+        var vertices = []
+        for i in 0..n {
+            let angle = 2.0 * PI * i as Float / n as Float - PI / 2.0
+            vertices.append(Point2D.new(
+                center.x + radius * cos(angle),
+                center.y + radius * sin(angle)
+            ))
+        }
+        Polygon { vertices: vertices }
+    }
+    
+    fn vertex_count() -> Int { self.vertices.len() }
+    
+    fn area() -> Float {
+        var sum = 0.0
+        let n = self.vertices.len()
+        for i in 0..n {
+            let j = (i + 1) % n
+            sum += self.vertices[i].x * self.vertices[j].y
+            sum -= self.vertices[j].x * self.vertices[i].y
+        }
+        abs(sum) / 2.0
+    }
+    
+    fn perimeter() -> Float {
+        var sum = 0.0
+        let n = self.vertices.len()
+        for i in 0..n {
+            sum += self.vertices[i].distance(self.vertices[(i + 1) % n])
+        }
+        sum
+    }
+    
+    fn centroid() -> Point2D {
+        var cx = 0.0; var cy = 0.0
+        for v in self.vertices { cx += v.x; cy += v.y }
+        let n = self.vertices.len() as Float
+        Point2D.new(cx / n, cy / n)
+    }
+    
+    fn contains(p: Point2D) -> Bool {
+        var inside = false
+        let n = self.vertices.len()
+        var j = n - 1
+        for i in 0..n {
+            let vi = self.vertices[i]
+            let vj = self.vertices[j]
+            if (vi.y > p.y) != (vj.y > p.y) &&
+               p.x < (vj.x - vi.x) * (p.y - vi.y) / (vj.y - vi.y) + vi.x {
+                inside = !inside
+            }
+            j = i
+        }
+        inside
+    }
+    
+    fn is_convex() -> Bool {
+        let n = self.vertices.len()
+        if n < 3 { return false }
+        var sign = 0
+        for i in 0..n {
+            let d = cross_product_sign(
+                self.vertices[i],
+                self.vertices[(i + 1) % n],
+                self.vertices[(i + 2) % n]
+            )
+            if d != 0 {
+                if sign == 0 { sign = d }
+                else if sign != d { return false }
+            }
+        }
+        true
+    }
+    
+    fn bounding_box() -> Rectangle {
+        var min_x = self.vertices[0].x
+        var max_x = self.vertices[0].x
+        var min_y = self.vertices[0].y
+        var max_y = self.vertices[0].y
+        for v in self.vertices {
+            min_x = min(min_x, v.x); max_x = max(max_x, v.x)
+            min_y = min(min_y, v.y); max_y = max(max_y, v.y)
+        }
+        Rectangle.new(min_x, min_y, max_x - min_x, max_y - min_y)
+    }
+}
+
+fn cross_product_sign(o: Point2D, a: Point2D, b: Point2D) -> Int {
+    let val = (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+    if val > 0.0 { 1 } else if val < 0.0 { -1 } else { 0 }
+}
+
+// -----------------------------------------------------------------------------
+// 3D Point
+// -----------------------------------------------------------------------------
+
+struct Point3D {
+    x: Float
+    y: Float
+    z: Float
+    
+    fn new(x: Float, y: Float, z: Float) -> Self { Point3D { x: x, y: y, z: z } }
+    fn origin() -> Self { Point3D { x: 0.0, y: 0.0, z: 0.0 } }
+    
+    fn distance(other: Point3D) -> Float {
+        sqrt((self.x - other.x) * (self.x - other.x) +
+             (self.y - other.y) * (self.y - other.y) +
+             (self.z - other.z) * (self.z - other.z))
+    }
+    
+    fn midpoint(other: Point3D) -> Self {
+        Point3D {
+            x: (self.x + other.x) / 2.0,
+            y: (self.y + other.y) / 2.0,
+            z: (self.z + other.z) / 2.0
+        }
+    }
+    
+    fn translate(dx: Float, dy: Float, dz: Float) -> Self {
+        Point3D { x: self.x + dx, y: self.y + dy, z: self.z + dz }
+    }
+    
+    fn to_string() -> String { format!("({}, {}, {})", self.x, self.y, self.z) }
+}
+
+// -----------------------------------------------------------------------------
+// Sphere
+// -----------------------------------------------------------------------------
+
+struct Sphere {
+    center: Point3D
+    radius: Float
+    
+    fn new(center: Point3D, radius: Float) -> Self { Sphere { center: center, radius: radius } }
+    fn unit() -> Self { Sphere { center: Point3D.origin(), radius: 1.0 } }
+    
+    fn diameter() -> Float { self.radius * 2.0 }
+    fn surface_area() -> Float { 4.0 * PI * self.radius * self.radius }
+    fn volume() -> Float { 4.0 / 3.0 * PI * self.radius * self.radius * self.radius }
+    
+    fn contains(p: Point3D) -> Bool { self.center.distance(p) <= self.radius }
+}
+
+// -----------------------------------------------------------------------------
+// Box3D
+// -----------------------------------------------------------------------------
+
+struct Box3D {
+    x: Float
+    y: Float
+    z: Float
+    width: Float
+    height: Float
+    depth: Float
+    
+    fn new(x: Float, y: Float, z: Float, w: Float, h: Float, d: Float) -> Self {
+        Box3D { x: x, y: y, z: z, width: w, height: h, depth: d }
+    }
+    
+    fn center() -> Point3D {
+        Point3D.new(self.x + self.width / 2.0, self.y + self.height / 2.0, self.z + self.depth / 2.0)
+    }
+    
+    fn volume() -> Float { self.width * self.height * self.depth }
+    fn surface_area() -> Float {
+        2.0 * (self.width * self.height + self.height * self.depth + self.depth * self.width)
+    }
+    
+    fn diagonal() -> Float {
+        sqrt(self.width * self.width + self.height * self.height + self.depth * self.depth)
+    }
+    
+    fn contains(p: Point3D) -> Bool {
+        p.x >= self.x && p.x <= self.x + self.width &&
+        p.y >= self.y && p.y <= self.y + self.height &&
+        p.z >= self.z && p.z <= self.z + self.depth
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Utility Functions
+// -----------------------------------------------------------------------------
+
+fn convex_hull(points: [Point2D]) -> [Point2D] {
+    if points.len() < 3 { return points.clone() }
+    
+    var sorted = points.clone()
+    sorted.sort_by(|a, b| if a.x != b.x { a.x.cmp(b.x) } else { a.y.cmp(b.y) })
+    
+    var lower = []
+    for p in sorted {
+        while lower.len() >= 2 && cross_product_sign(lower[lower.len()-2], lower[lower.len()-1], p) <= 0 {
+            lower.pop()
+        }
+        lower.append(p)
+    }
+    
+    var upper = []
+    for p in sorted.iter().rev() {
+        while upper.len() >= 2 && cross_product_sign(upper[upper.len()-2], upper[upper.len()-1], *p) <= 0 {
+            upper.pop()
+        }
+        upper.append(*p)
+    }
+    
+    lower.pop()
+    upper.pop()
+    lower.extend(upper)
+    lower
+}
+
+fn triangulate(polygon: Polygon) -> [Triangle] {
+    // Simple ear clipping for convex polygons
+    var triangles = []
+    let n = polygon.vertices.len()
+    if n < 3 { return triangles }
+    
+    let v0 = polygon.vertices[0]
+    for i in 1..n-1 {
+        triangles.append(Triangle.new(v0, polygon.vertices[i], polygon.vertices[i+1]))
+    }
+    triangles
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "point distance" {
+    let p1 = Point2D.new(0.0, 0.0)
+    let p2 = Point2D.new(3.0, 4.0)
+    assert(approx_eq(p1.distance(p2), 5.0))
+}
+
+test "circle area" {
+    let c = Circle.from_coords(0.0, 0.0, 1.0)
+    assert(approx_eq(c.area(), PI))
+}
+
+test "triangle area" {
+    let t = Triangle.new(Point2D.new(0.0, 0.0), Point2D.new(4.0, 0.0), Point2D.new(0.0, 3.0))
+    assert(approx_eq(t.area(), 6.0))
+}
+
+test "polygon area" {
+    let square = Polygon.regular(4, 1.0)
+    assert(approx_eq(square.area(), 2.0))
+}
+
+test "rectangle contains" {
+    let r = Rectangle.new(0.0, 0.0, 10.0, 10.0)
+    assert(r.contains(Point2D.new(5.0, 5.0)))
+    assert(!r.contains(Point2D.new(15.0, 5.0)))
+}
+
+test "sphere volume" {
+    let s = Sphere.unit()
+    assert(approx_eq(s.volume(), 4.0 / 3.0 * PI))
+}

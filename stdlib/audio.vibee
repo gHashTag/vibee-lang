@@ -1,0 +1,803 @@
+// =============================================================================
+// Vibee OS — Audio Module
+// Audio processing and manipulation
+// =============================================================================
+
+/// Audio format enumeration
+enum AudioFormat {
+    WAV,
+    MP3,
+    OGG,
+    FLAC,
+    AAC,
+    OPUS,
+    AIFF
+    
+    fn extension() -> String {
+        match self {
+            WAV => "wav",
+            MP3 => "mp3",
+            OGG => "ogg",
+            FLAC => "flac",
+            AAC => "aac",
+            OPUS => "opus",
+            AIFF => "aiff"
+        }
+    }
+    
+    fn mime_type() -> String {
+        match self {
+            WAV => "audio/wav",
+            MP3 => "audio/mpeg",
+            OGG => "audio/ogg",
+            FLAC => "audio/flac",
+            AAC => "audio/aac",
+            OPUS => "audio/opus",
+            AIFF => "audio/aiff"
+        }
+    }
+    
+    fn from_extension(ext: String) -> Option<Self> {
+        match ext.to_lowercase() {
+            "wav" => Some(WAV),
+            "mp3" => Some(MP3),
+            "ogg" => Some(OGG),
+            "flac" => Some(FLAC),
+            "aac" | "m4a" => Some(AAC),
+            "opus" => Some(OPUS),
+            "aiff" | "aif" => Some(AIFF),
+            _ => None
+        }
+    }
+}
+
+/// Sample format
+enum SampleFormat {
+    U8,      // Unsigned 8-bit
+    I16,     // Signed 16-bit
+    I24,     // Signed 24-bit
+    I32,     // Signed 32-bit
+    F32,     // 32-bit float
+    F64      // 64-bit float
+    
+    fn bits_per_sample() -> Int {
+        match self {
+            U8 => 8,
+            I16 => 16,
+            I24 => 24,
+            I32 => 32,
+            F32 => 32,
+            F64 => 64
+        }
+    }
+    
+    fn bytes_per_sample() -> Int {
+        self.bits_per_sample() / 8
+    }
+}
+
+/// Audio channel layout
+enum ChannelLayout {
+    Mono,
+    Stereo,
+    Surround21,    // 2.1
+    Surround51,    // 5.1
+    Surround71,    // 7.1
+    Custom(Int)
+    
+    fn channels() -> Int {
+        match self {
+            Mono => 1,
+            Stereo => 2,
+            Surround21 => 3,
+            Surround51 => 6,
+            Surround71 => 8,
+            Custom(n) => n
+        }
+    }
+}
+
+/// Audio sample (normalized to -1.0 to 1.0)
+struct Sample {
+    value: Float64
+    
+    fn new(value: Float64) -> Self {
+        Sample { value: value.clamp(-1.0, 1.0) }
+    }
+    
+    fn from_i16(v: Int16) -> Self {
+        Sample { value: v as Float64 / 32768.0 }
+    }
+    
+    fn from_u8(v: UInt8) -> Self {
+        Sample { value: (v as Float64 - 128.0) / 128.0 }
+    }
+    
+    fn to_i16() -> Int16 {
+        (self.value * 32767.0).clamp(-32768.0, 32767.0) as Int16
+    }
+    
+    fn to_u8() -> UInt8 {
+        ((self.value + 1.0) * 127.5).clamp(0.0, 255.0) as UInt8
+    }
+    
+    fn to_f32() -> Float32 {
+        self.value as Float32
+    }
+    
+    fn abs() -> Float64 {
+        self.value.abs()
+    }
+    
+    fn amplify(gain: Float64) -> Self {
+        Sample.new(self.value * gain)
+    }
+}
+
+/// Audio buffer containing samples
+struct AudioBuffer {
+    samples: [[Sample]]  // samples[channel][sample_index]
+    sample_rate: Int
+    channels: Int
+    
+    fn new(channels: Int, sample_rate: Int) -> Self {
+        var samples = []
+        for _ in 0..channels {
+            samples.push([])
+        }
+        AudioBuffer { samples: samples, sample_rate: sample_rate, channels: channels }
+    }
+    
+    fn with_capacity(channels: Int, sample_rate: Int, num_samples: Int) -> Self {
+        var samples = []
+        for _ in 0..channels {
+            samples.push(Vec.with_capacity(num_samples))
+        }
+        AudioBuffer { samples: samples, sample_rate: sample_rate, channels: channels }
+    }
+    
+    fn from_mono(data: [Sample], sample_rate: Int) -> Self {
+        AudioBuffer { samples: [data], sample_rate: sample_rate, channels: 1 }
+    }
+    
+    fn from_stereo(left: [Sample], right: [Sample], sample_rate: Int) -> Self {
+        AudioBuffer { samples: [left, right], sample_rate: sample_rate, channels: 2 }
+    }
+    
+    fn num_samples() -> Int {
+        if self.samples.is_empty() { 0 }
+        else { self.samples[0].len() }
+    }
+    
+    fn duration() -> Float64 {
+        self.num_samples() as Float64 / self.sample_rate as Float64
+    }
+    
+    fn duration_ms() -> Int64 {
+        (self.duration() * 1000.0) as Int64
+    }
+    
+    fn get_sample(channel: Int, index: Int) -> Option<Sample> {
+        if channel < 0 || channel >= self.channels { return None }
+        if index < 0 || index >= self.samples[channel].len() { return None }
+        Some(self.samples[channel][index])
+    }
+    
+    fn set_sample(channel: Int, index: Int, sample: Sample) {
+        if channel >= 0 && channel < self.channels {
+            if index >= 0 && index < self.samples[channel].len() {
+                self.samples[channel][index] = sample
+            }
+        }
+    }
+    
+    fn push_sample(channel: Int, sample: Sample) {
+        if channel >= 0 && channel < self.channels {
+            self.samples[channel].push(sample)
+        }
+    }
+    
+    fn push_frame(frame: [Sample]) {
+        for i in 0..self.channels.min(frame.len()) {
+            self.samples[i].push(frame[i])
+        }
+    }
+    
+    fn clone() -> Self {
+        AudioBuffer {
+            samples: self.samples.clone(),
+            sample_rate: self.sample_rate,
+            channels: self.channels
+        }
+    }
+}
+
+/// Audio clip with metadata
+struct AudioClip {
+    buffer: AudioBuffer
+    format: SampleFormat
+    layout: ChannelLayout
+    metadata: AudioMetadata
+    
+    fn new(buffer: AudioBuffer) -> Self {
+        AudioClip {
+            buffer: buffer,
+            format: SampleFormat.F32,
+            layout: if buffer.channels == 1 { ChannelLayout.Mono } else { ChannelLayout.Stereo },
+            metadata: AudioMetadata.new()
+        }
+    }
+    
+    fn from_bytes(data: [UInt8]) -> Result<Self, AudioError> {
+        @native("audio_decode", data)
+    }
+    
+    fn load(path: String) -> Result<Self, AudioError> {
+        let data = fs.read_bytes(path)?
+        Self.from_bytes(data)
+    }
+    
+    fn save(path: String, format: AudioFormat) -> Result<(), AudioError> {
+        let data = self.encode(format)?
+        fs.write_bytes(path, data)?
+        Ok(())
+    }
+    
+    fn encode(format: AudioFormat) -> Result<[UInt8], AudioError> {
+        @native("audio_encode", self, format)
+    }
+    
+    fn sample_rate() -> Int { self.buffer.sample_rate }
+    fn channels() -> Int { self.buffer.channels }
+    fn duration() -> Float64 { self.buffer.duration() }
+    fn num_samples() -> Int { self.buffer.num_samples() }
+}
+
+/// Audio metadata
+struct AudioMetadata {
+    title: Option<String>
+    artist: Option<String>
+    album: Option<String>
+    year: Option<Int>
+    track: Option<Int>
+    genre: Option<String>
+    comment: Option<String>
+    
+    fn new() -> Self {
+        AudioMetadata {
+            title: None,
+            artist: None,
+            album: None,
+            year: None,
+            track: None,
+            genre: None,
+            comment: None
+        }
+    }
+}
+
+/// Audio transformations
+impl AudioBuffer {
+    fn amplify(gain: Float64) -> Self {
+        var result = self.clone()
+        for ch in 0..result.channels {
+            for i in 0..result.samples[ch].len() {
+                result.samples[ch][i] = result.samples[ch][i].amplify(gain)
+            }
+        }
+        result
+    }
+    
+    fn normalize() -> Self {
+        var max_val = 0.0
+        for ch in 0..self.channels {
+            for sample in self.samples[ch] {
+                max_val = max_val.max(sample.abs())
+            }
+        }
+        if max_val == 0.0 { return self.clone() }
+        self.amplify(1.0 / max_val)
+    }
+    
+    fn fade_in(duration_samples: Int) -> Self {
+        var result = self.clone()
+        for ch in 0..result.channels {
+            for i in 0..duration_samples.min(result.samples[ch].len()) {
+                let factor = i as Float64 / duration_samples as Float64
+                result.samples[ch][i] = result.samples[ch][i].amplify(factor)
+            }
+        }
+        result
+    }
+    
+    fn fade_out(duration_samples: Int) -> Self {
+        var result = self.clone()
+        let len = result.num_samples()
+        let start = (len - duration_samples).max(0)
+        for ch in 0..result.channels {
+            for i in start..len {
+                let factor = (len - i) as Float64 / duration_samples as Float64
+                result.samples[ch][i] = result.samples[ch][i].amplify(factor)
+            }
+        }
+        result
+    }
+    
+    fn reverse() -> Self {
+        var result = self.clone()
+        for ch in 0..result.channels {
+            result.samples[ch].reverse()
+        }
+        result
+    }
+    
+    fn trim(start_sample: Int, end_sample: Int) -> Self {
+        var result = AudioBuffer.new(self.channels, self.sample_rate)
+        let start = start_sample.max(0)
+        let end = end_sample.min(self.num_samples())
+        for ch in 0..self.channels {
+            result.samples[ch] = self.samples[ch][start..end].to_vec()
+        }
+        result
+    }
+    
+    fn trim_seconds(start: Float64, end: Float64) -> Self {
+        let start_sample = (start * self.sample_rate as Float64) as Int
+        let end_sample = (end * self.sample_rate as Float64) as Int
+        self.trim(start_sample, end_sample)
+    }
+    
+    fn append(other: AudioBuffer) -> Self {
+        if self.channels != other.channels || self.sample_rate != other.sample_rate {
+            return self.clone()
+        }
+        var result = self.clone()
+        for ch in 0..result.channels {
+            result.samples[ch].extend(other.samples[ch].clone())
+        }
+        result
+    }
+    
+    fn mix(other: AudioBuffer, ratio: Float64) -> Self {
+        if self.channels != other.channels { return self.clone() }
+        var result = self.clone()
+        let len = result.num_samples().min(other.num_samples())
+        let r = ratio.clamp(0.0, 1.0)
+        for ch in 0..result.channels {
+            for i in 0..len {
+                let v1 = result.samples[ch][i].value * (1.0 - r)
+                let v2 = other.samples[ch][i].value * r
+                result.samples[ch][i] = Sample.new(v1 + v2)
+            }
+        }
+        result
+    }
+    
+    fn to_mono() -> Self {
+        if self.channels == 1 { return self.clone() }
+        var result = AudioBuffer.new(1, self.sample_rate)
+        for i in 0..self.num_samples() {
+            var sum = 0.0
+            for ch in 0..self.channels {
+                sum += self.samples[ch][i].value
+            }
+            result.samples[0].push(Sample.new(sum / self.channels as Float64))
+        }
+        result
+    }
+    
+    fn to_stereo() -> Self {
+        if self.channels == 2 { return self.clone() }
+        if self.channels == 1 {
+            return AudioBuffer.from_stereo(
+                self.samples[0].clone(),
+                self.samples[0].clone(),
+                self.sample_rate
+            )
+        }
+        // Downmix to stereo
+        var left = []
+        var right = []
+        for i in 0..self.num_samples() {
+            var l = 0.0
+            var r = 0.0
+            for ch in 0..self.channels {
+                if ch % 2 == 0 { l += self.samples[ch][i].value }
+                else { r += self.samples[ch][i].value }
+            }
+            left.push(Sample.new(l / (self.channels / 2) as Float64))
+            right.push(Sample.new(r / (self.channels / 2) as Float64))
+        }
+        AudioBuffer.from_stereo(left, right, self.sample_rate)
+    }
+    
+    fn resample(new_sample_rate: Int) -> Self {
+        @native("audio_resample", self, new_sample_rate)
+    }
+}
+
+/// Audio effects
+impl AudioBuffer {
+    fn low_pass(cutoff_hz: Float64) -> Self {
+        self.apply_filter(Filter.low_pass(cutoff_hz, self.sample_rate))
+    }
+    
+    fn high_pass(cutoff_hz: Float64) -> Self {
+        self.apply_filter(Filter.high_pass(cutoff_hz, self.sample_rate))
+    }
+    
+    fn band_pass(low_hz: Float64, high_hz: Float64) -> Self {
+        self.apply_filter(Filter.band_pass(low_hz, high_hz, self.sample_rate))
+    }
+    
+    fn apply_filter(filter: Filter) -> Self {
+        @native("audio_filter", self, filter)
+    }
+    
+    fn reverb(room_size: Float64, damping: Float64, wet: Float64) -> Self {
+        @native("audio_reverb", self, room_size, damping, wet)
+    }
+    
+    fn delay(delay_ms: Int, feedback: Float64, wet: Float64) -> Self {
+        let delay_samples = (delay_ms as Float64 * self.sample_rate as Float64 / 1000.0) as Int
+        var result = self.clone()
+        
+        for ch in 0..result.channels {
+            var delay_buffer = [Sample.new(0.0); delay_samples]
+            var delay_index = 0
+            
+            for i in 0..result.samples[ch].len() {
+                let dry = result.samples[ch][i].value
+                let delayed = delay_buffer[delay_index].value
+                let output = dry * (1.0 - wet) + delayed * wet
+                
+                delay_buffer[delay_index] = Sample.new(dry + delayed * feedback)
+                delay_index = (delay_index + 1) % delay_samples
+                
+                result.samples[ch][i] = Sample.new(output)
+            }
+        }
+        result
+    }
+    
+    fn chorus(rate_hz: Float64, depth_ms: Float64, wet: Float64) -> Self {
+        @native("audio_chorus", self, rate_hz, depth_ms, wet)
+    }
+    
+    fn distortion(gain: Float64, threshold: Float64) -> Self {
+        var result = self.clone()
+        for ch in 0..result.channels {
+            for i in 0..result.samples[ch].len() {
+                var v = result.samples[ch][i].value * gain
+                if v > threshold { v = threshold }
+                else if v < -threshold { v = -threshold }
+                result.samples[ch][i] = Sample.new(v)
+            }
+        }
+        result
+    }
+    
+    fn compressor(threshold: Float64, ratio: Float64, attack_ms: Float64, release_ms: Float64) -> Self {
+        @native("audio_compress", self, threshold, ratio, attack_ms, release_ms)
+    }
+    
+    fn eq(bands: [EqBand]) -> Self {
+        @native("audio_eq", self, bands)
+    }
+}
+
+/// Audio filter
+struct Filter {
+    coefficients: [Float64]
+    filter_type: FilterType
+    
+    fn low_pass(cutoff_hz: Float64, sample_rate: Int) -> Self {
+        @native("filter_lowpass", cutoff_hz, sample_rate)
+    }
+    
+    fn high_pass(cutoff_hz: Float64, sample_rate: Int) -> Self {
+        @native("filter_highpass", cutoff_hz, sample_rate)
+    }
+    
+    fn band_pass(low_hz: Float64, high_hz: Float64, sample_rate: Int) -> Self {
+        @native("filter_bandpass", low_hz, high_hz, sample_rate)
+    }
+    
+    fn notch(freq_hz: Float64, q: Float64, sample_rate: Int) -> Self {
+        @native("filter_notch", freq_hz, q, sample_rate)
+    }
+}
+
+enum FilterType {
+    LowPass,
+    HighPass,
+    BandPass,
+    Notch,
+    AllPass,
+    LowShelf,
+    HighShelf,
+    Peaking
+}
+
+/// EQ band
+struct EqBand {
+    frequency: Float64
+    gain_db: Float64
+    q: Float64
+    
+    fn new(frequency: Float64, gain_db: Float64, q: Float64) -> Self {
+        EqBand { frequency: frequency, gain_db: gain_db, q: q }
+    }
+}
+
+/// Audio analysis
+impl AudioBuffer {
+    fn peak() -> Float64 {
+        var max_val = 0.0
+        for ch in 0..self.channels {
+            for sample in self.samples[ch] {
+                max_val = max_val.max(sample.abs())
+            }
+        }
+        max_val
+    }
+    
+    fn rms() -> Float64 {
+        var sum = 0.0
+        var count = 0
+        for ch in 0..self.channels {
+            for sample in self.samples[ch] {
+                sum += sample.value * sample.value
+                count += 1
+            }
+        }
+        if count == 0 { 0.0 } else { (sum / count as Float64).sqrt() }
+    }
+    
+    fn db_peak() -> Float64 {
+        let peak = self.peak()
+        if peak == 0.0 { -Float64.INFINITY }
+        else { 20.0 * peak.log10() }
+    }
+    
+    fn db_rms() -> Float64 {
+        let rms = self.rms()
+        if rms == 0.0 { -Float64.INFINITY }
+        else { 20.0 * rms.log10() }
+    }
+    
+    fn fft(window_size: Int) -> [Complex] {
+        @native("audio_fft", self, window_size)
+    }
+    
+    fn spectrum(window_size: Int) -> [Float64] {
+        let fft_result = self.fft(window_size)
+        fft_result.iter().map(|c| c.magnitude()).collect()
+    }
+    
+    fn detect_bpm() -> Option<Float64> {
+        @native("audio_detect_bpm", self)
+    }
+    
+    fn detect_pitch() -> Option<Float64> {
+        @native("audio_detect_pitch", self)
+    }
+}
+
+/// Complex number for FFT
+struct Complex {
+    real: Float64
+    imag: Float64
+    
+    fn new(real: Float64, imag: Float64) -> Self {
+        Complex { real: real, imag: imag }
+    }
+    
+    fn magnitude() -> Float64 {
+        (self.real * self.real + self.imag * self.imag).sqrt()
+    }
+    
+    fn phase() -> Float64 {
+        self.imag.atan2(self.real)
+    }
+}
+
+/// Audio generator
+struct AudioGenerator {
+    sample_rate: Int
+    
+    fn new(sample_rate: Int) -> Self {
+        AudioGenerator { sample_rate: sample_rate }
+    }
+    
+    fn sine(frequency: Float64, duration: Float64, amplitude: Float64) -> AudioBuffer {
+        let num_samples = (duration * self.sample_rate as Float64) as Int
+        var samples = []
+        for i in 0..num_samples {
+            let t = i as Float64 / self.sample_rate as Float64
+            let value = amplitude * (2.0 * 3.14159265359 * frequency * t).sin()
+            samples.push(Sample.new(value))
+        }
+        AudioBuffer.from_mono(samples, self.sample_rate)
+    }
+    
+    fn square(frequency: Float64, duration: Float64, amplitude: Float64) -> AudioBuffer {
+        let num_samples = (duration * self.sample_rate as Float64) as Int
+        let period = self.sample_rate as Float64 / frequency
+        var samples = []
+        for i in 0..num_samples {
+            let phase = (i as Float64 % period) / period
+            let value = if phase < 0.5 { amplitude } else { -amplitude }
+            samples.push(Sample.new(value))
+        }
+        AudioBuffer.from_mono(samples, self.sample_rate)
+    }
+    
+    fn sawtooth(frequency: Float64, duration: Float64, amplitude: Float64) -> AudioBuffer {
+        let num_samples = (duration * self.sample_rate as Float64) as Int
+        let period = self.sample_rate as Float64 / frequency
+        var samples = []
+        for i in 0..num_samples {
+            let phase = (i as Float64 % period) / period
+            let value = amplitude * (2.0 * phase - 1.0)
+            samples.push(Sample.new(value))
+        }
+        AudioBuffer.from_mono(samples, self.sample_rate)
+    }
+    
+    fn triangle(frequency: Float64, duration: Float64, amplitude: Float64) -> AudioBuffer {
+        let num_samples = (duration * self.sample_rate as Float64) as Int
+        let period = self.sample_rate as Float64 / frequency
+        var samples = []
+        for i in 0..num_samples {
+            let phase = (i as Float64 % period) / period
+            let value = amplitude * (4.0 * (phase - 0.5).abs() - 1.0)
+            samples.push(Sample.new(value))
+        }
+        AudioBuffer.from_mono(samples, self.sample_rate)
+    }
+    
+    fn noise(duration: Float64, amplitude: Float64) -> AudioBuffer {
+        let num_samples = (duration * self.sample_rate as Float64) as Int
+        var samples = []
+        for _ in 0..num_samples {
+            let value = amplitude * (2.0 * @native("random_float") - 1.0)
+            samples.push(Sample.new(value))
+        }
+        AudioBuffer.from_mono(samples, self.sample_rate)
+    }
+    
+    fn silence(duration: Float64) -> AudioBuffer {
+        let num_samples = (duration * self.sample_rate as Float64) as Int
+        var samples = []
+        for _ in 0..num_samples {
+            samples.push(Sample.new(0.0))
+        }
+        AudioBuffer.from_mono(samples, self.sample_rate)
+    }
+}
+
+/// Audio player (async)
+actor AudioPlayer {
+    state playing: Bool
+    state volume: Float64
+    state position: Int
+    state buffer: Option<AudioBuffer>
+    
+    fn new() -> Self {
+        AudioPlayer {
+            playing: false,
+            volume: 1.0,
+            position: 0,
+            buffer: None
+        }
+    }
+    
+    fn load(buffer: AudioBuffer) {
+        self.buffer = Some(buffer)
+        self.position = 0
+    }
+    
+    fn play() {
+        self.playing = true
+        @native("audio_play", self)
+    }
+    
+    fn pause() {
+        self.playing = false
+        @native("audio_pause", self)
+    }
+    
+    fn stop() {
+        self.playing = false
+        self.position = 0
+        @native("audio_stop", self)
+    }
+    
+    fn seek(position_seconds: Float64) {
+        if let Some(buf) = self.buffer {
+            self.position = (position_seconds * buf.sample_rate as Float64) as Int
+        }
+    }
+    
+    fn set_volume(volume: Float64) {
+        self.volume = volume.clamp(0.0, 1.0)
+    }
+    
+    fn is_playing() -> Bool { self.playing }
+    fn get_volume() -> Float64 { self.volume }
+    fn get_position() -> Float64 {
+        if let Some(buf) = self.buffer {
+            self.position as Float64 / buf.sample_rate as Float64
+        } else { 0.0 }
+    }
+}
+
+/// Audio error types
+enum AudioError {
+    InvalidFormat,
+    DecodingError(String),
+    EncodingError(String),
+    IoError(String),
+    UnsupportedFormat,
+    DeviceError(String),
+    PlaybackError(String)
+}
+
+impl Display for AudioError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidFormat => f.write("Invalid audio format"),
+            DecodingError(msg) => f.write(format!("Decoding error: {}", msg)),
+            EncodingError(msg) => f.write(format!("Encoding error: {}", msg)),
+            IoError(msg) => f.write(format!("IO error: {}", msg)),
+            UnsupportedFormat => f.write("Unsupported format"),
+            DeviceError(msg) => f.write(format!("Device error: {}", msg)),
+            PlaybackError(msg) => f.write(format!("Playback error: {}", msg))
+        }
+    }
+}
+
+// Tests
+test "create audio buffer" {
+    let buf = AudioBuffer.new(2, 44100)
+    assert_eq(buf.channels, 2)?
+    assert_eq(buf.sample_rate, 44100)?
+}
+
+test "sample conversion" {
+    let sample = Sample.from_i16(16384)
+    assert(sample.value > 0.4 && sample.value < 0.6)?
+    let back = sample.to_i16()
+    assert((back - 16384).abs() < 2)?
+}
+
+test "generate sine wave" {
+    let gen = AudioGenerator.new(44100)
+    let buf = gen.sine(440.0, 1.0, 0.5)
+    assert_eq(buf.num_samples(), 44100)?
+    assert_eq(buf.channels, 1)?
+}
+
+test "amplify" {
+    let gen = AudioGenerator.new(44100)
+    let buf = gen.sine(440.0, 0.1, 0.5)
+    let amplified = buf.amplify(2.0)
+    assert(amplified.peak() > buf.peak())?
+}
+
+test "normalize" {
+    let gen = AudioGenerator.new(44100)
+    let buf = gen.sine(440.0, 0.1, 0.3)
+    let normalized = buf.normalize()
+    assert(normalized.peak() > 0.99)?
+}
+
+test "to mono" {
+    let left = [Sample.new(0.5); 100]
+    let right = [Sample.new(-0.5); 100]
+    let stereo = AudioBuffer.from_stereo(left, right, 44100)
+    let mono = stereo.to_mono()
+    assert_eq(mono.channels, 1)?
+    assert(mono.samples[0][0].value.abs() < 0.01)?  // Should average to ~0
+}

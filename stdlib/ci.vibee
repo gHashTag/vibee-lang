@@ -1,0 +1,495 @@
+// =============================================================================
+// Vibee OS — CI/CD Module
+// Continuous Integration and Deployment pipelines
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Pipeline Builder
+// -----------------------------------------------------------------------------
+
+actor Pipeline {
+    state name: String
+    state stages: [Stage]
+    state env: Map<String, String>
+    state triggers: [Trigger]
+    state options: PipelineOptions
+    
+    init(name: String) {
+        self.name = name
+        self.stages = []
+        self.env = Map.empty()
+        self.triggers = []
+        self.options = PipelineOptions.default()
+    }
+    
+    on stage(s: Stage) -> Self { self.stages.append(s); self }
+    on env(key: String, value: String) -> Self { self.env.set(key, value); self }
+    on trigger(t: Trigger) -> Self { self.triggers.append(t); self }
+    on options(o: PipelineOptions) -> Self { self.options = o; self }
+    
+    on to_github_actions() -> String { GitHubActionsExporter.export(self) }
+    on to_gitlab_ci() -> String { GitLabCIExporter.export(self) }
+    on to_jenkins() -> String { JenkinsExporter.export(self) }
+    on to_azure_pipelines() -> String { AzurePipelinesExporter.export(self) }
+    on to_circleci() -> String { CircleCIExporter.export(self) }
+    
+    on save_github(path: String = ".github/workflows/ci.yml") -> Result<(), IOError> { fs::write_string(path, self.to_github_actions()) }
+    on save_gitlab(path: String = ".gitlab-ci.yml") -> Result<(), IOError> { fs::write_string(path, self.to_gitlab_ci()) }
+    on save_jenkins(path: String = "Jenkinsfile") -> Result<(), IOError> { fs::write_string(path, self.to_jenkins()) }
+}
+
+struct PipelineOptions { timeout: Duration?, concurrency: ConcurrencyOptions?, cache: CacheOptions? }
+impl PipelineOptions { fn default() -> Self { PipelineOptions { timeout: None, concurrency: None, cache: None } } }
+
+struct ConcurrencyOptions { group: String, cancel_in_progress: Bool }
+struct CacheOptions { key: String, paths: [String], restore_keys: [String] }
+
+// -----------------------------------------------------------------------------
+// Stage & Job
+// -----------------------------------------------------------------------------
+
+struct Stage { name: String, jobs: [Job], needs: [String], condition: String? }
+impl Stage {
+    fn new(name: String) -> Self { Stage { name: name, jobs: [], needs: [], condition: None } }
+    fn job(j: Job) -> Self { self.jobs.append(j); self }
+    fn needs(stage: String) -> Self { self.needs.append(stage); self }
+    fn when(cond: String) -> Self { self.condition = Some(cond); self }
+}
+
+struct Job {
+    name: String
+    runs_on: Runner
+    steps: [Step]
+    env: Map<String, String>
+    services: [Service]
+    matrix: Matrix?
+    timeout: Duration?
+    continue_on_error: Bool
+    condition: String?
+}
+
+impl Job {
+    fn new(name: String) -> Self {
+        Job { name: name, runs_on: Runner.Ubuntu("latest"), steps: [], env: Map.empty(), services: [], matrix: None, timeout: None, continue_on_error: false, condition: None }
+    }
+    fn runs_on(r: Runner) -> Self { self.runs_on = r; self }
+    fn step(s: Step) -> Self { self.steps.append(s); self }
+    fn env(k: String, v: String) -> Self { self.env.set(k, v); self }
+    fn service(s: Service) -> Self { self.services.append(s); self }
+    fn matrix(m: Matrix) -> Self { self.matrix = Some(m); self }
+    fn timeout(d: Duration) -> Self { self.timeout = Some(d); self }
+    fn continue_on_error(c: Bool) -> Self { self.continue_on_error = c; self }
+    fn when(cond: String) -> Self { self.condition = Some(cond); self }
+}
+
+enum Runner {
+    Ubuntu(String), MacOS(String), Windows(String), SelfHosted([String]), Docker(String)
+    
+    fn to_github() -> String {
+        match self {
+            .Ubuntu(v) => "ubuntu-\(v)"
+            .MacOS(v) => "macos-\(v)"
+            .Windows(v) => "windows-\(v)"
+            .SelfHosted(labels) => "[\(labels.map(|l| "\"\(l)\"").join(", "))]"
+            .Docker(img) => img
+        }
+    }
+}
+
+struct Matrix { include: [Map<String, String>], exclude: [Map<String, String>]?, fail_fast: Bool }
+impl Matrix {
+    fn new() -> Self { Matrix { include: [], exclude: None, fail_fast: true } }
+    fn add(vars: Map<String, String>) -> Self { self.include.append(vars); self }
+    fn exclude(vars: Map<String, String>) -> Self { self.exclude = Some(self.exclude.unwrap_or([]).append(vars)); self }
+    fn fail_fast(f: Bool) -> Self { self.fail_fast = f; self }
+}
+
+// -----------------------------------------------------------------------------
+// Steps
+// -----------------------------------------------------------------------------
+
+enum Step {
+    Run { name: String, run: String, shell: String?, working_dir: String?, env: Map<String, String>, continue_on_error: Bool }
+    Uses { name: String, uses: String, with: Map<String, String>, env: Map<String, String> }
+    Checkout { ref_: String?, fetch_depth: Int? }
+    Cache { key: String, paths: [String], restore_keys: [String] }
+    Artifact { name: String, path: String, retention_days: Int? }
+    DownloadArtifact { name: String, path: String? }
+}
+
+impl Step {
+    fn run(name: String, cmd: String) -> Self { Step.Run { name: name, run: cmd, shell: None, working_dir: None, env: Map.empty(), continue_on_error: false } }
+    fn shell(name: String, cmd: String, shell: String) -> Self { Step.Run { name: name, run: cmd, shell: Some(shell), working_dir: None, env: Map.empty(), continue_on_error: false } }
+    fn uses(name: String, action: String) -> Self { Step.Uses { name: name, uses: action, with: Map.empty(), env: Map.empty() } }
+    fn checkout() -> Self { Step.Checkout { ref_: None, fetch_depth: None } }
+    fn checkout_ref(ref_: String) -> Self { Step.Checkout { ref_: Some(ref_), fetch_depth: None } }
+    fn cache(key: String, paths: [String]) -> Self { Step.Cache { key: key, paths: paths, restore_keys: [] } }
+    fn upload_artifact(name: String, path: String) -> Self { Step.Artifact { name: name, path: path, retention_days: None } }
+    fn download_artifact(name: String) -> Self { Step.DownloadArtifact { name: name, path: None } }
+}
+
+// -----------------------------------------------------------------------------
+// Common Actions
+// -----------------------------------------------------------------------------
+
+struct Actions {
+    fn setup_node(version: String) -> Step { Step.uses("Setup Node.js", "actions/setup-node@v4").with("node-version", version) }
+    fn setup_python(version: String) -> Step { Step.uses("Setup Python", "actions/setup-python@v5").with("python-version", version) }
+    fn setup_go(version: String) -> Step { Step.uses("Setup Go", "actions/setup-go@v5").with("go-version", version) }
+    fn setup_rust() -> Step { Step.uses("Setup Rust", "dtolnay/rust-toolchain@stable") }
+    fn setup_java(version: String, distribution: String = "temurin") -> Step { Step.uses("Setup Java", "actions/setup-java@v4").with("java-version", version).with("distribution", distribution) }
+    fn setup_dotnet(version: String) -> Step { Step.uses("Setup .NET", "actions/setup-dotnet@v4").with("dotnet-version", version) }
+    
+    fn docker_login(registry: String, username: String, password: String) -> Step {
+        Step.uses("Docker Login", "docker/login-action@v3").with("registry", registry).with("username", username).with("password", password)
+    }
+    fn docker_build_push(context: String, tags: [String], push: Bool = true) -> Step {
+        Step.uses("Build and Push", "docker/build-push-action@v5").with("context", context).with("push", push.to_string()).with("tags", tags.join(","))
+    }
+    
+    fn aws_credentials(access_key: String, secret_key: String, region: String) -> Step {
+        Step.uses("Configure AWS", "aws-actions/configure-aws-credentials@v4").with("aws-access-key-id", access_key).with("aws-secret-access-key", secret_key).with("aws-region", region)
+    }
+    fn gcp_auth(credentials: String) -> Step { Step.uses("Authenticate to GCP", "google-github-actions/auth@v2").with("credentials_json", credentials) }
+    fn azure_login(creds: String) -> Step { Step.uses("Azure Login", "azure/login@v1").with("creds", creds) }
+    
+    fn slack_notify(webhook: String, status: String) -> Step {
+        Step.uses("Slack Notification", "8398a7/action-slack@v3").with("status", status).with("webhook_url", webhook)
+    }
+    
+    fn codecov(token: String) -> Step { Step.uses("Upload to Codecov", "codecov/codecov-action@v4").with("token", token) }
+    fn sonarqube(host: String, token: String) -> Step { Step.uses("SonarQube Scan", "sonarsource/sonarqube-scan-action@master").with("host", host).with("token", token) }
+}
+
+impl Step {
+    fn with(key: String, value: String) -> Self {
+        match self {
+            .Uses { name, uses, with, env } => { with.set(key, value); Step.Uses { name: name, uses: uses, with: with, env: env } }
+            _ => self
+        }
+    }
+    
+    fn env(key: String, value: String) -> Self {
+        match self {
+            .Run { name, run, shell, working_dir, env, continue_on_error } => { env.set(key, value); Step.Run { name: name, run: run, shell: shell, working_dir: working_dir, env: env, continue_on_error: continue_on_error } }
+            .Uses { name, uses, with, env } => { env.set(key, value); Step.Uses { name: name, uses: uses, with: with, env: env } }
+            _ => self
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Triggers
+// -----------------------------------------------------------------------------
+
+enum Trigger {
+    Push { branches: [String], tags: [String], paths: [String] }
+    PullRequest { branches: [String], types: [String] }
+    Schedule(String)
+    WorkflowDispatch { inputs: Map<String, WorkflowInput> }
+    WorkflowCall { inputs: Map<String, WorkflowInput>, secrets: [String] }
+    Release { types: [String] }
+    Manual
+}
+
+impl Trigger {
+    fn push() -> Self { Trigger.Push { branches: ["main"], tags: [], paths: [] } }
+    fn push_branches(branches: [String]) -> Self { Trigger.Push { branches: branches, tags: [], paths: [] } }
+    fn push_tags(tags: [String]) -> Self { Trigger.Push { branches: [], tags: tags, paths: [] } }
+    fn pull_request() -> Self { Trigger.PullRequest { branches: ["main"], types: ["opened", "synchronize"] } }
+    fn schedule(cron: String) -> Self { Trigger.Schedule(cron) }
+    fn manual() -> Self { Trigger.WorkflowDispatch { inputs: Map.empty() } }
+    fn release() -> Self { Trigger.Release { types: ["published"] } }
+}
+
+struct WorkflowInput { description: String, required: Bool, default: String?, type_: InputType }
+enum InputType { String, Boolean, Choice([String]), Environment }
+
+// -----------------------------------------------------------------------------
+// Services
+// -----------------------------------------------------------------------------
+
+struct Service { name: String, image: String, ports: [String], env: Map<String, String>, options: String? }
+impl Service {
+    fn new(name: String, image: String) -> Self { Service { name: name, image: image, ports: [], env: Map.empty(), options: None } }
+    fn port(p: String) -> Self { self.ports.append(p); self }
+    fn env(k: String, v: String) -> Self { self.env.set(k, v); self }
+    fn options(o: String) -> Self { self.options = Some(o); self }
+    
+    fn postgres(version: String = "15") -> Self { Service.new("postgres", "postgres:\(version)").port("5432:5432").env("POSTGRES_PASSWORD", "postgres") }
+    fn mysql(version: String = "8") -> Self { Service.new("mysql", "mysql:\(version)").port("3306:3306").env("MYSQL_ROOT_PASSWORD", "root") }
+    fn redis(version: String = "7") -> Self { Service.new("redis", "redis:\(version)").port("6379:6379") }
+    fn mongodb(version: String = "6") -> Self { Service.new("mongodb", "mongo:\(version)").port("27017:27017") }
+    fn elasticsearch(version: String = "8") -> Self { Service.new("elasticsearch", "elasticsearch:\(version)").port("9200:9200").env("discovery.type", "single-node") }
+}
+
+// -----------------------------------------------------------------------------
+// Exporters
+// -----------------------------------------------------------------------------
+
+struct GitHubActionsExporter {
+    fn export(pipeline: Pipeline) -> String {
+        var yaml = "name: \(pipeline.name)\n\n"
+        
+        // Triggers
+        yaml += "on:\n"
+        for trigger in pipeline.triggers {
+            yaml += Self.export_trigger(trigger)
+        }
+        
+        // Environment
+        if !pipeline.env.is_empty() {
+            yaml += "\nenv:\n"
+            for (k, v) in pipeline.env { yaml += "  \(k): \(v)\n" }
+        }
+        
+        // Jobs
+        yaml += "\njobs:\n"
+        for stage in pipeline.stages {
+            for job in stage.jobs {
+                yaml += Self.export_job(job, stage.needs)
+            }
+        }
+        
+        yaml
+    }
+    
+    fn export_trigger(trigger: Trigger) -> String {
+        match trigger {
+            .Push { branches, tags, paths } => {
+                var s = "  push:\n"
+                if !branches.is_empty() { s += "    branches: [\(branches.map(|b| "\"\(b)\"").join(", "))]\n" }
+                if !tags.is_empty() { s += "    tags: [\(tags.map(|t| "\"\(t)\"").join(", "))]\n" }
+                s
+            }
+            .PullRequest { branches, types } => "  pull_request:\n    branches: [\(branches.map(|b| "\"\(b)\"").join(", "))]\n"
+            .Schedule(cron) => "  schedule:\n    - cron: '\(cron)'\n"
+            .WorkflowDispatch { inputs } => "  workflow_dispatch:\n"
+            .Release { types } => "  release:\n    types: [\(types.join(", "))]\n"
+            _ => ""
+        }
+    }
+    
+    fn export_job(job: Job, needs: [String]) -> String {
+        var s = "  \(job.name.to_snake_case()):\n"
+        s += "    runs-on: \(job.runs_on.to_github())\n"
+        
+        if !needs.is_empty() { s += "    needs: [\(needs.join(", "))]\n" }
+        if let cond = job.condition { s += "    if: \(cond)\n" }
+        
+        if !job.services.is_empty() {
+            s += "    services:\n"
+            for svc in job.services {
+                s += "      \(svc.name):\n        image: \(svc.image)\n"
+                if !svc.ports.is_empty() { s += "        ports:\n"; for p in svc.ports { s += "          - \(p)\n" } }
+            }
+        }
+        
+        s += "    steps:\n"
+        for step in job.steps { s += Self.export_step(step) }
+        s
+    }
+    
+    fn export_step(step: Step) -> String {
+        match step {
+            .Run { name, run, shell, working_dir, env, continue_on_error } => {
+                var s = "      - name: \(name)\n        run: |\n"
+                for line in run.lines() { s += "          \(line)\n" }
+                if let sh = shell { s += "        shell: \(sh)\n" }
+                s
+            }
+            .Uses { name, uses, with, env } => {
+                var s = "      - name: \(name)\n        uses: \(uses)\n"
+                if !with.is_empty() { s += "        with:\n"; for (k, v) in with { s += "          \(k): \(v)\n" } }
+                s
+            }
+            .Checkout { ref_, fetch_depth } => "      - uses: actions/checkout@v4\n"
+            .Cache { key, paths, restore_keys } => "      - uses: actions/cache@v4\n        with:\n          key: \(key)\n          path: |\n" + paths.map(|p| "            \(p)").join("\n") + "\n"
+            .Artifact { name, path, retention_days } => "      - uses: actions/upload-artifact@v4\n        with:\n          name: \(name)\n          path: \(path)\n"
+            .DownloadArtifact { name, path } => "      - uses: actions/download-artifact@v4\n        with:\n          name: \(name)\n"
+        }
+    }
+}
+
+struct GitLabCIExporter {
+    fn export(pipeline: Pipeline) -> String {
+        var yaml = ""
+        
+        // Stages
+        yaml += "stages:\n"
+        for stage in pipeline.stages { yaml += "  - \(stage.name)\n" }
+        yaml += "\n"
+        
+        // Variables
+        if !pipeline.env.is_empty() {
+            yaml += "variables:\n"
+            for (k, v) in pipeline.env { yaml += "  \(k): \"\(v)\"\n" }
+            yaml += "\n"
+        }
+        
+        // Jobs
+        for stage in pipeline.stages {
+            for job in stage.jobs {
+                yaml += "\(job.name):\n"
+                yaml += "  stage: \(stage.name)\n"
+                yaml += "  script:\n"
+                for step in job.steps {
+                    match step {
+                        .Run { name, run, .. } => { for line in run.lines() { yaml += "    - \(line)\n" } }
+                        _ => {}
+                    }
+                }
+                if !stage.needs.is_empty() { yaml += "  needs: [\(stage.needs.join(", "))]\n" }
+                yaml += "\n"
+            }
+        }
+        
+        yaml
+    }
+}
+
+struct JenkinsExporter {
+    fn export(pipeline: Pipeline) -> String {
+        var groovy = "pipeline {\n"
+        groovy += "    agent any\n\n"
+        
+        if !pipeline.env.is_empty() {
+            groovy += "    environment {\n"
+            for (k, v) in pipeline.env { groovy += "        \(k) = '\(v)'\n" }
+            groovy += "    }\n\n"
+        }
+        
+        groovy += "    stages {\n"
+        for stage in pipeline.stages {
+            groovy += "        stage('\(stage.name)') {\n"
+            groovy += "            steps {\n"
+            for job in stage.jobs {
+                for step in job.steps {
+                    match step {
+                        .Run { name, run, .. } => groovy += "                sh '''\n\(run)\n'''\n"
+                        _ => {}
+                    }
+                }
+            }
+            groovy += "            }\n"
+            groovy += "        }\n"
+        }
+        groovy += "    }\n"
+        groovy += "}\n"
+        
+        groovy
+    }
+}
+
+struct AzurePipelinesExporter {
+    fn export(pipeline: Pipeline) -> String {
+        var yaml = "trigger:\n  - main\n\n"
+        yaml += "pool:\n  vmImage: 'ubuntu-latest'\n\n"
+        yaml += "stages:\n"
+        
+        for stage in pipeline.stages {
+            yaml += "  - stage: \(stage.name)\n"
+            yaml += "    jobs:\n"
+            for job in stage.jobs {
+                yaml += "      - job: \(job.name)\n"
+                yaml += "        steps:\n"
+                for step in job.steps {
+                    match step {
+                        .Run { name, run, .. } => yaml += "          - script: |\n              \(run.replace("\n", "\n              "))\n            displayName: '\(name)'\n"
+                        .Checkout { .. } => yaml += "          - checkout: self\n"
+                        _ => {}
+                    }
+                }
+            }
+        }
+        
+        yaml
+    }
+}
+
+struct CircleCIExporter {
+    fn export(pipeline: Pipeline) -> String {
+        var yaml = "version: 2.1\n\njobs:\n"
+        
+        for stage in pipeline.stages {
+            for job in stage.jobs {
+                yaml += "  \(job.name):\n"
+                yaml += "    docker:\n      - image: cimg/base:stable\n"
+                yaml += "    steps:\n      - checkout\n"
+                for step in job.steps {
+                    match step {
+                        .Run { name, run, .. } => yaml += "      - run:\n          name: \(name)\n          command: |\n            \(run.replace("\n", "\n            "))\n"
+                        _ => {}
+                    }
+                }
+            }
+        }
+        
+        yaml += "\nworkflows:\n  \(pipeline.name):\n    jobs:\n"
+        for stage in pipeline.stages {
+            for job in stage.jobs {
+                yaml += "      - \(job.name)"
+                if !stage.needs.is_empty() { yaml += ":\n          requires:\n"; for n in stage.needs { yaml += "            - \(n)\n" } }
+                else { yaml += "\n" }
+            }
+        }
+        
+        yaml
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum CIError {
+    InvalidPipeline(String), ExportFailed(String), ValidationFailed([String])
+    
+    fn message() -> String {
+        match self {
+            .InvalidPipeline(m) => "Invalid pipeline: \(m)"
+            .ExportFailed(m) => "Export failed: \(m)"
+            .ValidationFailed(e) => "Validation failed: \(e.join(", "))"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "pipeline builder" {
+    let pipeline = Pipeline.new("CI")
+        .trigger(Trigger.push())
+        .stage(Stage.new("build")
+            .job(Job.new("build")
+                .step(Step.checkout())
+                .step(Actions.setup_node("20"))
+                .step(Step.run("Install", "npm install"))
+                .step(Step.run("Build", "npm run build"))))
+        .stage(Stage.new("test")
+            .needs("build")
+            .job(Job.new("test")
+                .step(Step.checkout())
+                .step(Step.run("Test", "npm test"))))
+    
+    assert(pipeline.stages.len() == 2)
+}
+
+test "github actions export" {
+    let pipeline = Pipeline.new("Test")
+        .trigger(Trigger.push())
+        .stage(Stage.new("test").job(Job.new("test").step(Step.checkout()).step(Step.run("Test", "echo hello"))))
+    
+    let yaml = pipeline.to_github_actions()
+    assert(yaml.contains("name: Test"))
+    assert(yaml.contains("runs-on:"))
+}
+
+test "common actions" {
+    let step = Actions.setup_node("20")
+    match step {
+        .Uses { uses, .. } => assert(uses.contains("setup-node"))
+        _ => assert(false)
+    }
+}

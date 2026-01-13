@@ -1,0 +1,740 @@
+// =============================================================================
+// Vibee OS — S3 Module
+// S3-Compatible Object Storage (AWS S3, MinIO, DigitalOcean Spaces, etc.)
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// S3 Client Configuration
+// -----------------------------------------------------------------------------
+
+struct S3Config {
+    endpoint: String
+    region: String
+    access_key: String
+    secret_key: String
+    use_ssl: Bool
+    path_style: Bool
+}
+
+impl S3Config {
+    fn new(endpoint: String, access_key: String, secret_key: String) -> Self {
+        S3Config {
+            endpoint: endpoint,
+            region: "us-east-1",
+            access_key: access_key,
+            secret_key: secret_key,
+            use_ssl: true,
+            path_style: false
+        }
+    }
+    
+    fn aws(region: String, access_key: String, secret_key: String) -> Self {
+        S3Config {
+            endpoint: "s3.\(region).amazonaws.com",
+            region: region,
+            access_key: access_key,
+            secret_key: secret_key,
+            use_ssl: true,
+            path_style: false
+        }
+    }
+    
+    fn minio(endpoint: String, access_key: String, secret_key: String) -> Self {
+        S3Config {
+            endpoint: endpoint,
+            region: "us-east-1",
+            access_key: access_key,
+            secret_key: secret_key,
+            use_ssl: false,
+            path_style: true
+        }
+    }
+    
+    fn digitalocean(region: String, access_key: String, secret_key: String) -> Self {
+        S3Config {
+            endpoint: "\(region).digitaloceanspaces.com",
+            region: region,
+            access_key: access_key,
+            secret_key: secret_key,
+            use_ssl: true,
+            path_style: false
+        }
+    }
+    
+    fn backblaze(region: String, access_key: String, secret_key: String) -> Self {
+        S3Config {
+            endpoint: "s3.\(region).backblazeb2.com",
+            region: region,
+            access_key: access_key,
+            secret_key: secret_key,
+            use_ssl: true,
+            path_style: false
+        }
+    }
+    
+    fn cloudflare_r2(account_id: String, access_key: String, secret_key: String) -> Self {
+        S3Config {
+            endpoint: "\(account_id).r2.cloudflarestorage.com",
+            region: "auto",
+            access_key: access_key,
+            secret_key: secret_key,
+            use_ssl: true,
+            path_style: false
+        }
+    }
+    
+    fn from_env() -> Result<Self, S3Error> {
+        @native("s3_config_from_env")
+    }
+    
+    fn with_region(region: String) -> Self {
+        self.region = region
+        self
+    }
+    
+    fn with_path_style(enabled: Bool) -> Self {
+        self.path_style = enabled
+        self
+    }
+    
+    fn with_ssl(enabled: Bool) -> Self {
+        self.use_ssl = enabled
+        self
+    }
+}
+
+// -----------------------------------------------------------------------------
+// S3 Client
+// -----------------------------------------------------------------------------
+
+actor S3Client {
+    state config: S3Config
+    
+    init(config: S3Config) { self.config = config }
+    
+    // Bucket Operations
+    on list_buckets() -> Result<[Bucket], S3Error> {
+        @native("s3_list_buckets", self.config)
+    }
+    
+    on bucket_exists(name: String) -> Result<Bool, S3Error> {
+        @native("s3_bucket_exists", self.config, name)
+    }
+    
+    on create_bucket(name: String, acl: BucketAcl = BucketAcl.Private) -> Result<(), S3Error> {
+        @native("s3_create_bucket", self.config, name, acl)
+    }
+    
+    on delete_bucket(name: String) -> Result<(), S3Error> {
+        @native("s3_delete_bucket", self.config, name)
+    }
+    
+    on get_bucket_location(name: String) -> Result<String, S3Error> {
+        @native("s3_get_bucket_location", self.config, name)
+    }
+    
+    // Object Operations
+    on list_objects(bucket: String, opts: ListObjectsOptions = ListObjectsOptions.default()) -> Result<ListObjectsResult, S3Error> {
+        @native("s3_list_objects", self.config, bucket, opts)
+    }
+    
+    on list_all_objects(bucket: String, prefix: String? = None) -> Result<[S3Object], S3Error> {
+        var all_objects: [S3Object] = []
+        var continuation_token: String? = None
+        
+        loop {
+            let opts = ListObjectsOptions { prefix: prefix, continuation_token: continuation_token, max_keys: 1000, delimiter: None }
+            let result = self.list_objects(bucket, opts)?
+            all_objects.extend(result.contents)
+            
+            if !result.is_truncated { break }
+            continuation_token = result.next_continuation_token
+        }
+        
+        Ok(all_objects)
+    }
+    
+    on get_object(bucket: String, key: String) -> Result<GetObjectResult, S3Error> {
+        @native("s3_get_object", self.config, bucket, key)
+    }
+    
+    on get_object_bytes(bucket: String, key: String) -> Result<[Byte], S3Error> {
+        let result = self.get_object(bucket, key)?
+        Ok(result.body)
+    }
+    
+    on get_object_string(bucket: String, key: String) -> Result<String, S3Error> {
+        let bytes = self.get_object_bytes(bucket, key)?
+        String.from_utf8(bytes).map_err(|e| S3Error.DecodeError(e.to_string()))
+    }
+    
+    on head_object(bucket: String, key: String) -> Result<ObjectMetadata, S3Error> {
+        @native("s3_head_object", self.config, bucket, key)
+    }
+    
+    on put_object(bucket: String, key: String, body: [Byte], opts: PutObjectOptions = PutObjectOptions.default()) -> Result<PutObjectResult, S3Error> {
+        @native("s3_put_object", self.config, bucket, key, body, opts)
+    }
+    
+    on put_object_string(bucket: String, key: String, content: String, content_type: String = "text/plain") -> Result<PutObjectResult, S3Error> {
+        let opts = PutObjectOptions.default().with_content_type(content_type)
+        self.put_object(bucket, key, content.bytes(), opts)
+    }
+    
+    on put_object_json<T: Serialize>(bucket: String, key: String, data: T) -> Result<PutObjectResult, S3Error> {
+        let json_str = json.encode(data)
+        let opts = PutObjectOptions.default().with_content_type("application/json")
+        self.put_object(bucket, key, json_str.bytes(), opts)
+    }
+    
+    on delete_object(bucket: String, key: String) -> Result<(), S3Error> {
+        @native("s3_delete_object", self.config, bucket, key)
+    }
+    
+    on delete_objects(bucket: String, keys: [String]) -> Result<DeleteObjectsResult, S3Error> {
+        @native("s3_delete_objects", self.config, bucket, keys)
+    }
+    
+    on copy_object(src_bucket: String, src_key: String, dst_bucket: String, dst_key: String) -> Result<CopyObjectResult, S3Error> {
+        @native("s3_copy_object", self.config, src_bucket, src_key, dst_bucket, dst_key)
+    }
+    
+    // Multipart Upload
+    on create_multipart_upload(bucket: String, key: String, opts: PutObjectOptions = PutObjectOptions.default()) -> Result<String, S3Error> {
+        @native("s3_create_multipart_upload", self.config, bucket, key, opts)
+    }
+    
+    on upload_part(bucket: String, key: String, upload_id: String, part_number: Int, body: [Byte]) -> Result<UploadPartResult, S3Error> {
+        @native("s3_upload_part", self.config, bucket, key, upload_id, part_number, body)
+    }
+    
+    on complete_multipart_upload(bucket: String, key: String, upload_id: String, parts: [CompletedPart]) -> Result<CompleteMultipartResult, S3Error> {
+        @native("s3_complete_multipart_upload", self.config, bucket, key, upload_id, parts)
+    }
+    
+    on abort_multipart_upload(bucket: String, key: String, upload_id: String) -> Result<(), S3Error> {
+        @native("s3_abort_multipart_upload", self.config, bucket, key, upload_id)
+    }
+    
+    // Presigned URLs
+    on presigned_get_url(bucket: String, key: String, expires: Duration = 1.hours()) -> Result<String, S3Error> {
+        @native("s3_presigned_get_url", self.config, bucket, key, expires)
+    }
+    
+    on presigned_put_url(bucket: String, key: String, expires: Duration = 1.hours(), content_type: String? = None) -> Result<String, S3Error> {
+        @native("s3_presigned_put_url", self.config, bucket, key, expires, content_type)
+    }
+    
+    // Bucket Policy & ACL
+    on get_bucket_policy(bucket: String) -> Result<String, S3Error> {
+        @native("s3_get_bucket_policy", self.config, bucket)
+    }
+    
+    on put_bucket_policy(bucket: String, policy: String) -> Result<(), S3Error> {
+        @native("s3_put_bucket_policy", self.config, bucket, policy)
+    }
+    
+    on delete_bucket_policy(bucket: String) -> Result<(), S3Error> {
+        @native("s3_delete_bucket_policy", self.config, bucket)
+    }
+    
+    // Versioning
+    on get_bucket_versioning(bucket: String) -> Result<VersioningStatus, S3Error> {
+        @native("s3_get_bucket_versioning", self.config, bucket)
+    }
+    
+    on put_bucket_versioning(bucket: String, status: VersioningStatus) -> Result<(), S3Error> {
+        @native("s3_put_bucket_versioning", self.config, bucket, status)
+    }
+    
+    on list_object_versions(bucket: String, prefix: String? = None) -> Result<[ObjectVersion], S3Error> {
+        @native("s3_list_object_versions", self.config, bucket, prefix)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Bucket Types
+// -----------------------------------------------------------------------------
+
+struct Bucket {
+    name: String
+    creation_date: DateTime
+}
+
+enum BucketAcl {
+    Private
+    PublicRead
+    PublicReadWrite
+    AuthenticatedRead
+    
+    fn to_string() -> String {
+        match self {
+            .Private => "private"
+            .PublicRead => "public-read"
+            .PublicReadWrite => "public-read-write"
+            .AuthenticatedRead => "authenticated-read"
+        }
+    }
+}
+
+enum VersioningStatus { Enabled, Suspended, Disabled }
+
+// -----------------------------------------------------------------------------
+// Object Types
+// -----------------------------------------------------------------------------
+
+struct S3Object {
+    key: String
+    size: Int64
+    etag: String
+    last_modified: DateTime
+    storage_class: String
+    owner: Owner?
+}
+
+struct Owner { id: String, display_name: String }
+
+struct ObjectMetadata {
+    content_length: Int64
+    content_type: String
+    etag: String
+    last_modified: DateTime
+    metadata: Map<String, String>
+    version_id: String?
+}
+
+struct ObjectVersion {
+    key: String
+    version_id: String
+    is_latest: Bool
+    last_modified: DateTime
+    size: Int64
+    etag: String
+    is_delete_marker: Bool
+}
+
+// -----------------------------------------------------------------------------
+// List Objects
+// -----------------------------------------------------------------------------
+
+struct ListObjectsOptions {
+    prefix: String?
+    delimiter: String?
+    max_keys: Int
+    continuation_token: String?
+}
+
+impl ListObjectsOptions {
+    fn default() -> Self {
+        ListObjectsOptions {
+            prefix: None,
+            delimiter: None,
+            max_keys: 1000,
+            continuation_token: None
+        }
+    }
+    
+    fn with_prefix(prefix: String) -> Self {
+        self.prefix = Some(prefix)
+        self
+    }
+    
+    fn with_delimiter(delimiter: String) -> Self {
+        self.delimiter = Some(delimiter)
+        self
+    }
+    
+    fn with_max_keys(max: Int) -> Self {
+        self.max_keys = max
+        self
+    }
+}
+
+struct ListObjectsResult {
+    contents: [S3Object]
+    common_prefixes: [String]
+    is_truncated: Bool
+    next_continuation_token: String?
+    key_count: Int
+}
+
+// -----------------------------------------------------------------------------
+// Get/Put Object
+// -----------------------------------------------------------------------------
+
+struct GetObjectResult {
+    body: [Byte]
+    content_type: String
+    content_length: Int64
+    etag: String
+    last_modified: DateTime
+    metadata: Map<String, String>
+    version_id: String?
+}
+
+struct PutObjectOptions {
+    content_type: String?
+    content_encoding: String?
+    content_disposition: String?
+    cache_control: String?
+    metadata: Map<String, String>
+    acl: ObjectAcl?
+    storage_class: StorageClass?
+    server_side_encryption: String?
+}
+
+impl PutObjectOptions {
+    fn default() -> Self {
+        PutObjectOptions {
+            content_type: None,
+            content_encoding: None,
+            content_disposition: None,
+            cache_control: None,
+            metadata: Map.empty(),
+            acl: None,
+            storage_class: None,
+            server_side_encryption: None
+        }
+    }
+    
+    fn with_content_type(ct: String) -> Self {
+        self.content_type = Some(ct)
+        self
+    }
+    
+    fn with_metadata(key: String, value: String) -> Self {
+        self.metadata.set(key, value)
+        self
+    }
+    
+    fn with_acl(acl: ObjectAcl) -> Self {
+        self.acl = Some(acl)
+        self
+    }
+    
+    fn with_storage_class(sc: StorageClass) -> Self {
+        self.storage_class = Some(sc)
+        self
+    }
+    
+    fn with_cache_control(cc: String) -> Self {
+        self.cache_control = Some(cc)
+        self
+    }
+}
+
+struct PutObjectResult {
+    etag: String
+    version_id: String?
+}
+
+enum ObjectAcl {
+    Private
+    PublicRead
+    PublicReadWrite
+    AuthenticatedRead
+    BucketOwnerRead
+    BucketOwnerFullControl
+}
+
+enum StorageClass {
+    Standard
+    ReducedRedundancy
+    StandardIA
+    OnezoneIA
+    IntelligentTiering
+    Glacier
+    DeepArchive
+    GlacierIR
+}
+
+// -----------------------------------------------------------------------------
+// Delete Objects
+// -----------------------------------------------------------------------------
+
+struct DeleteObjectsResult {
+    deleted: [DeletedObject]
+    errors: [DeleteError]
+}
+
+struct DeletedObject { key: String, version_id: String? }
+struct DeleteError { key: String, code: String, message: String }
+
+// -----------------------------------------------------------------------------
+// Copy Object
+// -----------------------------------------------------------------------------
+
+struct CopyObjectResult {
+    etag: String
+    last_modified: DateTime
+    version_id: String?
+}
+
+// -----------------------------------------------------------------------------
+// Multipart Upload
+// -----------------------------------------------------------------------------
+
+struct UploadPartResult {
+    etag: String
+    part_number: Int
+}
+
+struct CompletedPart {
+    etag: String
+    part_number: Int
+}
+
+struct CompleteMultipartResult {
+    location: String
+    bucket: String
+    key: String
+    etag: String
+    version_id: String?
+}
+
+// -----------------------------------------------------------------------------
+// High-Level Upload/Download
+// -----------------------------------------------------------------------------
+
+actor S3Transfer {
+    state client: S3Client
+    state part_size: Int64
+    state concurrency: Int
+    
+    init(client: S3Client) {
+        self.client = client
+        self.part_size = 5 * 1024 * 1024  // 5MB
+        self.concurrency = 4
+    }
+    
+    on with_part_size(size: Int64) -> Self {
+        self.part_size = size
+        self
+    }
+    
+    on with_concurrency(n: Int) -> Self {
+        self.concurrency = n
+        self
+    }
+    
+    on upload_file(bucket: String, key: String, file_path: String, opts: PutObjectOptions = PutObjectOptions.default()) -> Result<PutObjectResult, S3Error> {
+        let file_size = fs.file_size(file_path)?
+        
+        if file_size <= self.part_size {
+            // Simple upload
+            let data = fs.read_bytes(file_path)?
+            self.client.put_object(bucket, key, data, opts)
+        } else {
+            // Multipart upload
+            self.multipart_upload_file(bucket, key, file_path, opts)
+        }
+    }
+    
+    on multipart_upload_file(bucket: String, key: String, file_path: String, opts: PutObjectOptions) -> Result<PutObjectResult, S3Error> {
+        let upload_id = self.client.create_multipart_upload(bucket, key, opts)?
+        var parts: [CompletedPart] = []
+        var part_number = 1
+        
+        let file = fs.open(file_path, "r")?
+        defer { file.close() }
+        
+        loop {
+            let chunk = file.read_bytes(self.part_size)?
+            if chunk.is_empty() { break }
+            
+            let result = self.client.upload_part(bucket, key, upload_id, part_number, chunk)?
+            parts.push(CompletedPart { etag: result.etag, part_number: part_number })
+            part_number += 1
+        }
+        
+        let result = self.client.complete_multipart_upload(bucket, key, upload_id, parts)?
+        Ok(PutObjectResult { etag: result.etag, version_id: result.version_id })
+    }
+    
+    on download_file(bucket: String, key: String, file_path: String) -> Result<(), S3Error> {
+        let result = self.client.get_object(bucket, key)?
+        fs.write_bytes(file_path, result.body)?
+        Ok(())
+    }
+    
+    on sync_directory(local_dir: String, bucket: String, prefix: String = "") -> Result<SyncResult, S3Error> {
+        var uploaded = 0
+        var skipped = 0
+        var errors: [String] = []
+        
+        let files = fs.walk_dir(local_dir)?
+        for file in files {
+            if file.is_dir { continue }
+            
+            let relative_path = file.path.strip_prefix(local_dir)
+            let key = if prefix.is_empty() { relative_path } else { "\(prefix)/\(relative_path)" }
+            
+            // Check if object exists and has same size
+            match self.client.head_object(bucket, key) {
+                Ok(meta) if meta.content_length == file.size => {
+                    skipped += 1
+                    continue
+                }
+                _ => {}
+            }
+            
+            match self.upload_file(bucket, key, file.path, PutObjectOptions.default()) {
+                Ok(_) => uploaded += 1
+                Err(e) => errors.push("\(file.path): \(e.message())")
+            }
+        }
+        
+        Ok(SyncResult { uploaded: uploaded, skipped: skipped, errors: errors })
+    }
+}
+
+struct SyncResult { uploaded: Int, skipped: Int, errors: [String] }
+
+// -----------------------------------------------------------------------------
+// Bucket Policy Builder
+// -----------------------------------------------------------------------------
+
+actor BucketPolicyBuilder {
+    state version: String
+    state statements: [PolicyStatement]
+    
+    init() { self.version = "2012-10-17"; self.statements = [] }
+    
+    on allow_public_read(bucket: String) -> Self {
+        self.statements.push(PolicyStatement {
+            sid: "PublicRead",
+            effect: "Allow",
+            principal: "*",
+            action: ["s3:GetObject"],
+            resource: ["arn:aws:s3:::\(bucket)/*"]
+        })
+        self
+    }
+    
+    on allow_list(bucket: String, principal: String) -> Self {
+        self.statements.push(PolicyStatement {
+            sid: "AllowList",
+            effect: "Allow",
+            principal: principal,
+            action: ["s3:ListBucket"],
+            resource: ["arn:aws:s3:::\(bucket)"]
+        })
+        self
+    }
+    
+    on allow_read_write(bucket: String, principal: String) -> Self {
+        self.statements.push(PolicyStatement {
+            sid: "AllowReadWrite",
+            effect: "Allow",
+            principal: principal,
+            action: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+            resource: ["arn:aws:s3:::\(bucket)/*"]
+        })
+        self
+    }
+    
+    on deny_unencrypted_uploads(bucket: String) -> Self {
+        self.statements.push(PolicyStatement {
+            sid: "DenyUnencrypted",
+            effect: "Deny",
+            principal: "*",
+            action: ["s3:PutObject"],
+            resource: ["arn:aws:s3:::\(bucket)/*"],
+            condition: Some(Map.from([("StringNotEquals", Map.from([("s3:x-amz-server-side-encryption", "AES256")]))]))
+        })
+        self
+    }
+    
+    on build() -> String {
+        json.encode(BucketPolicy { version: self.version, statement: self.statements })
+    }
+}
+
+struct BucketPolicy { version: String, statement: [PolicyStatement] }
+struct PolicyStatement { 
+    sid: String
+    effect: String
+    principal: String
+    action: [String]
+    resource: [String]
+    condition: Map<String, Map<String, String>>?
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum S3Error {
+    AccessDenied(String)
+    NoSuchBucket(String)
+    NoSuchKey(String)
+    BucketAlreadyExists(String)
+    BucketNotEmpty(String)
+    InvalidBucketName(String)
+    InvalidAccessKeyId
+    SignatureDoesNotMatch
+    RequestTimeout
+    SlowDown
+    ServiceUnavailable
+    NetworkError(String)
+    DecodeError(String)
+    IOError(String)
+    
+    fn message() -> String {
+        match self {
+            .AccessDenied(m) => "Access denied: \(m)"
+            .NoSuchBucket(b) => "Bucket not found: \(b)"
+            .NoSuchKey(k) => "Object not found: \(k)"
+            .BucketAlreadyExists(b) => "Bucket already exists: \(b)"
+            .BucketNotEmpty(b) => "Bucket not empty: \(b)"
+            .InvalidBucketName(b) => "Invalid bucket name: \(b)"
+            .InvalidAccessKeyId => "Invalid access key ID"
+            .SignatureDoesNotMatch => "Signature does not match"
+            .RequestTimeout => "Request timed out"
+            .SlowDown => "Slow down - too many requests"
+            .ServiceUnavailable => "Service unavailable"
+            .NetworkError(m) => "Network error: \(m)"
+            .DecodeError(m) => "Decode error: \(m)"
+            .IOError(m) => "IO error: \(m)"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "s3 config aws" {
+    let config = S3Config.aws("us-west-2", "AKID", "SECRET")
+    assert(config.endpoint == "s3.us-west-2.amazonaws.com")
+    assert(config.region == "us-west-2")
+    assert(config.path_style == false)
+}
+
+test "s3 config minio" {
+    let config = S3Config.minio("localhost:9000", "minioadmin", "minioadmin")
+    assert(config.path_style == true)
+    assert(config.use_ssl == false)
+}
+
+test "list objects options" {
+    let opts = ListObjectsOptions.default().with_prefix("images/").with_max_keys(100)
+    assert(opts.prefix == Some("images/"))
+    assert(opts.max_keys == 100)
+}
+
+test "put object options" {
+    let opts = PutObjectOptions.default()
+        .with_content_type("image/png")
+        .with_cache_control("max-age=31536000")
+        .with_acl(ObjectAcl.PublicRead)
+    assert(opts.content_type == Some("image/png"))
+}
+
+test "bucket policy builder" {
+    let policy = BucketPolicyBuilder.new()
+        .allow_public_read("my-bucket")
+        .build()
+    assert(policy.contains("s3:GetObject"))
+    assert(policy.contains("my-bucket"))
+}

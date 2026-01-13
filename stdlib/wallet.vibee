@@ -1,0 +1,260 @@
+// =============================================================================
+// Vibee OS — Wallet Module
+// Cryptocurrency wallet management
+// =============================================================================
+
+/// Private key for signing transactions
+struct PrivateKey {
+    bytes: [UInt8; 32]
+    
+    fn generate() -> Self { PrivateKey { bytes: @native("crypto_random_bytes", 32) } }
+    fn from_bytes(bytes: [UInt8; 32]) -> Self { PrivateKey { bytes: bytes } }
+    
+    fn from_hex(s: String) -> Result<Self, WalletError> {
+        let bytes = hex.decode(s)?
+        if bytes.len() != 32 { return Err(WalletError.InvalidKeyLength) }
+        Ok(PrivateKey { bytes: bytes.try_into().unwrap() })
+    }
+    
+    fn from_mnemonic(mnemonic: String, passphrase: String) -> Result<Self, WalletError> {
+        let seed = @native("bip39_to_seed", mnemonic, passphrase)
+        if seed.is_none() { return Err(WalletError.InvalidMnemonic) }
+        Ok(PrivateKey { bytes: seed.unwrap()[0..32].try_into().unwrap() })
+    }
+    
+    fn public_key() -> PublicKey {
+        PublicKey { bytes: @native("secp256k1_pubkey", self.bytes) }
+    }
+    
+    fn sign(hash: [UInt8; 32]) -> Signature {
+        let sig = @native("secp256k1_sign", self.bytes, hash)
+        Signature { r: sig.0, s: sig.1, v: sig.2 }
+    }
+    
+    fn sign_message(msg: [UInt8]) -> Signature {
+        let prefix = format!("\x19Ethereum Signed Message:\n{}", msg.len())
+        self.sign(crypto.keccak256(prefix.as_bytes() + msg))
+    }
+    
+    fn to_hex() -> String { hex.encode(self.bytes) }
+    fn zeroize() { @native("secure_zero", self.bytes) }
+}
+
+/// Public key for verification
+struct PublicKey {
+    bytes: [UInt8; 65]
+    
+    fn from_bytes(bytes: [UInt8]) -> Result<Self, WalletError> {
+        if bytes.len() == 65 && bytes[0] == 0x04 {
+            Ok(PublicKey { bytes: bytes.try_into().unwrap() })
+        } else if bytes.len() == 33 {
+            Ok(PublicKey { bytes: @native("secp256k1_decompress", bytes) })
+        } else { Err(WalletError.InvalidPublicKey) }
+    }
+    
+    fn compressed() -> [UInt8; 33] { @native("secp256k1_compress", self.bytes) }
+    
+    fn to_eth_address() -> Address {
+        let hash = crypto.keccak256(self.bytes[1..])
+        Address { bytes: hash[12..32].try_into().unwrap() }
+    }
+    
+    fn verify(hash: [UInt8; 32], sig: Signature) -> Bool {
+        @native("secp256k1_verify", self.bytes, hash, sig.to_bytes())
+    }
+    
+    fn to_hex() -> String { hex.encode(self.bytes) }
+}
+
+/// ECDSA Signature
+struct Signature {
+    r: [UInt8; 32]
+    s: [UInt8; 32]
+    v: UInt8
+    
+    fn from_bytes(bytes: [UInt8; 65]) -> Self {
+        Signature { r: bytes[0..32].try_into().unwrap(), s: bytes[32..64].try_into().unwrap(), v: bytes[64] }
+    }
+    
+    fn to_bytes() -> [UInt8; 65] {
+        var result = [0u8; 65]
+        result[0..32].copy_from_slice(self.r)
+        result[32..64].copy_from_slice(self.s)
+        result[64] = self.v
+        result
+    }
+    
+    fn to_hex() -> String { hex.encode(self.to_bytes()) }
+    
+    fn recover(hash: [UInt8; 32]) -> Result<PublicKey, WalletError> {
+        let pk = @native("secp256k1_recover", hash, self.to_bytes())
+        if pk.is_none() { return Err(WalletError.RecoveryFailed) }
+        Ok(PublicKey { bytes: pk.unwrap() })
+    }
+}
+
+/// Ethereum-style address (20 bytes)
+struct Address {
+    bytes: [UInt8; 20]
+    
+    fn from_bytes(bytes: [UInt8; 20]) -> Self { Address { bytes: bytes } }
+    
+    fn from_hex(s: String) -> Result<Self, WalletError> {
+        let s = s.trim().trim_start("0x")
+        let bytes = hex.decode(s)?
+        if bytes.len() != 20 { return Err(WalletError.InvalidAddress) }
+        Ok(Address { bytes: bytes.try_into().unwrap() })
+    }
+    
+    fn zero() -> Self { Address { bytes: [0u8; 20] } }
+    fn is_zero() -> Bool { self.bytes.iter().all(|b| b == 0) }
+    
+    fn to_checksum_hex() -> String {
+        let hex_addr = hex.encode(self.bytes)
+        let hash = hex.encode(crypto.keccak256(hex_addr.as_bytes()))
+        var result = "0x"
+        for (i, c) in hex_addr.chars().enumerate() {
+            let h = hash.chars().nth(i).unwrap()
+            result.push(if c >= 'a' && c <= 'f' && h >= '8' { c.to_upper() } else { c })
+        }
+        result
+    }
+    
+    fn to_hex() -> String { format!("0x{}", hex.encode(self.bytes)) }
+}
+
+impl Eq for Address { fn eq(other: Address) -> Bool { self.bytes == other.bytes } }
+impl Hash for Address { fn hash(h: Hasher) { h.write(self.bytes) } }
+impl Display for Address { fn fmt(f: Formatter) { f.write(self.to_checksum_hex()) } }
+
+/// HD Wallet (BIP32/BIP44)
+struct Wallet {
+    master_key: ExtendedKey
+    accounts: Map<Int, Account>
+    
+    fn from_mnemonic(mnemonic: String, passphrase: String) -> Result<Self, WalletError> {
+        let seed = @native("bip39_to_seed", mnemonic, passphrase)
+        if seed.is_none() { return Err(WalletError.InvalidMnemonic) }
+        Ok(Wallet { master_key: ExtendedKey.from_seed(seed.unwrap())?, accounts: Map.empty() })
+    }
+    
+    fn generate(words: Int) -> Result<(Self, String), WalletError> {
+        let mnemonic = @native("bip39_generate", words)
+        Ok((Self.from_mnemonic(mnemonic, "")?, mnemonic))
+    }
+    
+    fn derive_eth_account(index: Int) -> Result<Account, WalletError> {
+        self.derive_account(format!("m/44'/60'/0'/0/{}", index))
+    }
+    
+    fn derive_account(path: String) -> Result<Account, WalletError> {
+        let derived = self.master_key.derive_path(path)?
+        let pk = PrivateKey { bytes: derived.key }
+        let pubkey = pk.public_key()
+        Ok(Account { path: path, private_key: pk, public_key: pubkey, address: pubkey.to_eth_address() })
+    }
+}
+
+/// Extended key for HD derivation
+struct ExtendedKey {
+    key: [UInt8; 32]
+    chain_code: [UInt8; 32]
+    depth: UInt8
+    
+    fn from_seed(seed: [UInt8]) -> Result<Self, WalletError> {
+        let hmac = crypto.hmac_sha512("Bitcoin seed".as_bytes(), seed)
+        Ok(ExtendedKey { key: hmac[0..32].try_into().unwrap(), chain_code: hmac[32..64].try_into().unwrap(), depth: 0 })
+    }
+    
+    fn derive(index: UInt32) -> Result<Self, WalletError> {
+        let hardened = index >= 0x80000000
+        var data = if hardened { [0x00].extend(self.key) } else { PrivateKey { bytes: self.key }.public_key().compressed().to_vec() }
+        data.extend(index.to_be_bytes())
+        let hmac = crypto.hmac_sha512(self.chain_code, data)
+        let child = @native("secp256k1_add_scalar", self.key, hmac[0..32])
+        if child.is_none() { return Err(WalletError.DerivationFailed) }
+        Ok(ExtendedKey { key: child.unwrap(), chain_code: hmac[32..64].try_into().unwrap(), depth: self.depth + 1 })
+    }
+    
+    fn derive_path(path: String) -> Result<Self, WalletError> {
+        var current = self.clone()
+        for (i, part) in path.split("/").enumerate() {
+            if i == 0 && part == "m" { continue }
+            let hardened = part.ends_with("'")
+            let idx = UInt32.parse(part.trim_end("'")).map_err(|_| WalletError.InvalidPath)?
+            current = current.derive(if hardened { idx + 0x80000000 } else { idx })?
+        }
+        Ok(current)
+    }
+}
+
+/// Account derived from wallet
+struct Account {
+    path: String
+    private_key: PrivateKey
+    public_key: PublicKey
+    address: Address
+    
+    fn sign(hash: [UInt8; 32]) -> Signature { self.private_key.sign(hash) }
+    fn sign_message(msg: [UInt8]) -> Signature { self.private_key.sign_message(msg) }
+}
+
+/// Encrypted keystore (Web3 Secret Storage)
+struct Keystore {
+    address: Address
+    ciphertext: [UInt8]
+    salt: [UInt8]
+    iv: [UInt8]
+    mac: [UInt8; 32]
+    
+    fn encrypt(pk: PrivateKey, password: String) -> Result<Self, WalletError> {
+        let salt = @native("crypto_random_bytes", 32)
+        let iv = @native("crypto_random_bytes", 16)
+        let derived = crypto.scrypt(password.as_bytes(), salt, 262144, 8, 1, 32)?
+        let ciphertext = @native("aes_ctr_encrypt", derived[0..16], iv, pk.bytes)
+        let mac = crypto.keccak256(derived[16..32].to_vec().extend(ciphertext))
+        Ok(Keystore { address: pk.public_key().to_eth_address(), ciphertext: ciphertext, salt: salt, iv: iv, mac: mac })
+    }
+    
+    fn decrypt(password: String) -> Result<PrivateKey, WalletError> {
+        let derived = crypto.scrypt(password.as_bytes(), self.salt, 262144, 8, 1, 32)?
+        let mac = crypto.keccak256(derived[16..32].to_vec().extend(self.ciphertext))
+        if mac != self.mac { return Err(WalletError.InvalidPassword) }
+        let plaintext = @native("aes_ctr_decrypt", derived[0..16], self.iv, self.ciphertext)
+        Ok(PrivateKey { bytes: plaintext.try_into().unwrap() })
+    }
+}
+
+/// Multi-signature wallet
+struct MultiSigWallet {
+    owners: [Address]
+    threshold: Int
+    nonce: UInt64
+    
+    fn new(owners: [Address], threshold: Int) -> Result<Self, WalletError> {
+        if threshold == 0 || threshold > owners.len() { return Err(WalletError.InvalidThreshold) }
+        Ok(MultiSigWallet { owners: owners, threshold: threshold, nonce: 0 })
+    }
+    
+    fn is_owner(addr: Address) -> Bool { self.owners.contains(addr) }
+    
+    fn verify_signatures(hash: [UInt8; 32], sigs: [Signature]) -> Result<Bool, WalletError> {
+        var signers = Set.empty()
+        for sig in sigs {
+            let addr = sig.recover(hash)?.to_eth_address()
+            if self.is_owner(addr) { signers.insert(addr) }
+        }
+        Ok(signers.len() >= self.threshold)
+    }
+}
+
+enum Network { Mainnet, Testnet }
+impl Network { fn chain_id() -> UInt64 { match self { Mainnet => 1, Testnet => 5 } } }
+
+enum WalletError { InvalidKeyLength, InvalidPublicKey, InvalidAddress, InvalidSignature, InvalidMnemonic, InvalidPassword, InvalidPath, InvalidThreshold, DerivationFailed, RecoveryFailed }
+impl Display for WalletError { fn fmt(f: Formatter) { f.write(match self { InvalidKeyLength => "Invalid key length", InvalidPublicKey => "Invalid public key", InvalidAddress => "Invalid address", InvalidSignature => "Invalid signature", InvalidMnemonic => "Invalid mnemonic", InvalidPassword => "Invalid password", InvalidPath => "Invalid path", InvalidThreshold => "Invalid threshold", DerivationFailed => "Derivation failed", RecoveryFailed => "Recovery failed" }) } }
+
+test "generate key" { let pk = PrivateKey.generate(); assert_eq(pk.bytes.len(), 32)? }
+test "derive address" { let pk = PrivateKey.generate(); assert_eq(pk.public_key().to_eth_address().bytes.len(), 20)? }
+test "sign verify" { let pk = PrivateKey.generate(); let h = crypto.keccak256("test".as_bytes()); assert(pk.public_key().verify(h, pk.sign(h)))? }
+test "checksum" { let a = Address.from_hex("0xde0b295669a9fd93d5f28d9ec85e40f4cb697bae")?; assert_eq(a.to_checksum_hex(), "0xDe0B295669a9FD93d5F28D9Ec85E40f4cb697BAe")? }

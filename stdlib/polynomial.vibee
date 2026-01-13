@@ -1,0 +1,780 @@
+// =============================================================================
+// Vibee OS — Polynomial Module
+// Polynomial arithmetic, evaluation, and root finding
+// =============================================================================
+
+use math::{sqrt, abs, pow, PI, cos, approx_eq}
+use complex::{Complex}
+
+// -----------------------------------------------------------------------------
+// Polynomial Type
+// -----------------------------------------------------------------------------
+
+/// Polynomial with real coefficients
+/// Coefficients are stored from lowest to highest degree: [a₀, a₁, a₂, ...] = a₀ + a₁x + a₂x² + ...
+struct Polynomial {
+    coeffs: [Float]
+    
+    /// Create polynomial from coefficients (lowest degree first)
+    fn new(coefficients: [Float]) -> Self {
+        let p = Polynomial { coeffs: coefficients }
+        p.normalize()
+    }
+    
+    /// Create from coefficients (highest degree first)
+    fn from_descending(coefficients: [Float]) -> Self {
+        var reversed = coefficients.clone()
+        reversed.reverse()
+        Polynomial.new(reversed)
+    }
+    
+    /// Create zero polynomial
+    fn zero() -> Self { Polynomial { coeffs: [0.0] } }
+    
+    /// Create constant polynomial
+    fn constant(c: Float) -> Self { Polynomial { coeffs: [c] } }
+    
+    /// Create monomial x^n
+    fn monomial(n: Int) -> Self {
+        var coeffs = vec![0.0; n + 1]
+        coeffs[n] = 1.0
+        Polynomial { coeffs: coeffs }
+    }
+    
+    /// Create monomial c·x^n
+    fn term(coeff: Float, degree: Int) -> Self {
+        var coeffs = vec![0.0; degree + 1]
+        coeffs[degree] = coeff
+        Polynomial { coeffs: coeffs }
+    }
+    
+    /// Create polynomial x
+    fn x() -> Self { Polynomial { coeffs: [0.0, 1.0] } }
+    
+    /// Create polynomial 1
+    fn one() -> Self { Polynomial { coeffs: [1.0] } }
+    
+    /// Create from roots: (x - r₁)(x - r₂)...(x - rₙ)
+    fn from_roots(roots: [Float]) -> Self {
+        var result = Polynomial.one()
+        for r in roots {
+            result = result * Polynomial.new([-r, 1.0])
+        }
+        result
+    }
+    
+    /// Parse from string like "3x^2 + 2x - 1"
+    fn from_string(s: String) -> Result<Self, ParseError> {
+        // Simplified parser - handles basic polynomial notation
+        let s = s.replace(" ", "").replace("-", "+-")
+        var coeffs = [0.0; 100]  // Max degree 99
+        var max_degree = 0
+        
+        for term in s.split("+") {
+            if term.is_empty() { continue }
+            
+            let (coeff, degree) = parse_term(term)?
+            if degree > max_degree { max_degree = degree }
+            coeffs[degree] += coeff
+        }
+        
+        Ok(Polynomial.new(coeffs[..max_degree+1].to_vec()))
+    }
+    
+    // -------------------------------------------------------------------------
+    // Properties
+    // -------------------------------------------------------------------------
+    
+    /// Degree of polynomial (-1 for zero polynomial)
+    fn degree() -> Int {
+        if self.is_zero() { -1 }
+        else { self.coeffs.len() as Int - 1 }
+    }
+    
+    /// Leading coefficient
+    fn leading_coeff() -> Float {
+        self.coeffs.last().unwrap_or(0.0)
+    }
+    
+    /// Constant term
+    fn constant_term() -> Float {
+        self.coeffs.first().unwrap_or(0.0)
+    }
+    
+    /// Get coefficient at degree n
+    fn coeff(n: Int) -> Float {
+        self.coeffs.get(n).unwrap_or(0.0)
+    }
+    
+    /// Check if zero polynomial
+    fn is_zero() -> Bool {
+        self.coeffs.len() == 1 && self.coeffs[0] == 0.0
+    }
+    
+    /// Check if constant polynomial
+    fn is_constant() -> Bool {
+        self.coeffs.len() == 1
+    }
+    
+    /// Check if monic (leading coefficient is 1)
+    fn is_monic() -> Bool {
+        self.leading_coeff() == 1.0
+    }
+    
+    /// Remove leading zeros
+    fn normalize() -> Self {
+        var coeffs = self.coeffs.clone()
+        while coeffs.len() > 1 && coeffs.last() == Some(0.0) {
+            coeffs.pop()
+        }
+        Polynomial { coeffs: coeffs }
+    }
+    
+    /// Make monic (divide by leading coefficient)
+    fn monic() -> Self {
+        let lc = self.leading_coeff()
+        if lc == 0.0 { return self.clone() }
+        self.scale(1.0 / lc)
+    }
+    
+    // -------------------------------------------------------------------------
+    // Evaluation
+    // -------------------------------------------------------------------------
+    
+    /// Evaluate at point x using Horner's method
+    fn eval(x: Float) -> Float {
+        var result = 0.0
+        for c in self.coeffs.iter().rev() {
+            result = result * x + c
+        }
+        result
+    }
+    
+    /// Evaluate at complex point
+    fn eval_complex(z: Complex) -> Complex {
+        var result = Complex.zero()
+        for c in self.coeffs.iter().rev() {
+            result = result * z + Complex.from_real(*c)
+        }
+        result
+    }
+    
+    /// Evaluate derivative at point
+    fn eval_derivative(x: Float) -> Float {
+        self.derivative().eval(x)
+    }
+    
+    /// Evaluate polynomial and derivative simultaneously (for Newton's method)
+    fn eval_with_derivative(x: Float) -> (Float, Float) {
+        var p = 0.0
+        var dp = 0.0
+        let n = self.degree()
+        
+        for i in (0..=n).rev() {
+            dp = dp * x + p
+            p = p * x + self.coeffs[i]
+        }
+        (p, dp)
+    }
+    
+    // -------------------------------------------------------------------------
+    // Calculus
+    // -------------------------------------------------------------------------
+    
+    /// Derivative
+    fn derivative() -> Self {
+        if self.degree() <= 0 { return Polynomial.zero() }
+        
+        var coeffs = []
+        for i in 1..self.coeffs.len() {
+            coeffs.append(self.coeffs[i] * i as Float)
+        }
+        Polynomial { coeffs: coeffs }
+    }
+    
+    /// Nth derivative
+    fn nth_derivative(n: Int) -> Self {
+        var result = self.clone()
+        for _ in 0..n {
+            result = result.derivative()
+        }
+        result
+    }
+    
+    /// Indefinite integral (constant term = 0)
+    fn integral() -> Self {
+        var coeffs = [0.0]
+        for (i, c) in self.coeffs.iter().enumerate() {
+            coeffs.append(*c / (i + 1) as Float)
+        }
+        Polynomial { coeffs: coeffs }
+    }
+    
+    /// Definite integral from a to b
+    fn definite_integral(a: Float, b: Float) -> Float {
+        let antiderivative = self.integral()
+        antiderivative.eval(b) - antiderivative.eval(a)
+    }
+    
+    // -------------------------------------------------------------------------
+    // Arithmetic
+    // -------------------------------------------------------------------------
+    
+    /// Scale by constant
+    fn scale(c: Float) -> Self {
+        Polynomial { coeffs: self.coeffs.iter().map(|x| x * c).collect() }.normalize()
+    }
+    
+    /// Negate
+    fn negate() -> Self {
+        self.scale(-1.0)
+    }
+    
+    /// Compose p(q(x))
+    fn compose(other: Polynomial) -> Self {
+        var result = Polynomial.zero()
+        var power = Polynomial.one()
+        
+        for c in self.coeffs {
+            result = result + power.scale(c)
+            power = power * other
+        }
+        result
+    }
+    
+    /// Shift: p(x + c)
+    fn shift(c: Float) -> Self {
+        self.compose(Polynomial.new([c, 1.0]))
+    }
+    
+    /// Stretch: p(cx)
+    fn stretch(c: Float) -> Self {
+        var coeffs = []
+        var factor = 1.0
+        for coeff in self.coeffs {
+            coeffs.append(coeff * factor)
+            factor *= c
+        }
+        Polynomial { coeffs: coeffs }
+    }
+    
+    // -------------------------------------------------------------------------
+    // Division
+    // -------------------------------------------------------------------------
+    
+    /// Polynomial division: returns (quotient, remainder)
+    fn div_rem(divisor: Polynomial) -> (Polynomial, Polynomial) {
+        if divisor.is_zero() { panic("Division by zero polynomial") }
+        
+        if self.degree() < divisor.degree() {
+            return (Polynomial.zero(), self.clone())
+        }
+        
+        var remainder = self.coeffs.clone()
+        let divisor_lead = divisor.leading_coeff()
+        let degree_diff = self.degree() - divisor.degree()
+        var quotient = vec![0.0; degree_diff + 1]
+        
+        for i in (0..=degree_diff).rev() {
+            let coeff = remainder[i + divisor.degree()] / divisor_lead
+            quotient[i] = coeff
+            
+            for j in 0..=divisor.degree() {
+                remainder[i + j] -= coeff * divisor.coeffs[j]
+            }
+        }
+        
+        (Polynomial.new(quotient), Polynomial.new(remainder))
+    }
+    
+    /// GCD of two polynomials
+    fn gcd(other: Polynomial) -> Polynomial {
+        var a = self.clone()
+        var b = other.clone()
+        
+        while !b.is_zero() {
+            let (_, r) = a.div_rem(b)
+            a = b
+            b = r
+        }
+        a.monic()
+    }
+    
+    // -------------------------------------------------------------------------
+    // Root Finding
+    // -------------------------------------------------------------------------
+    
+    /// Find one real root using Newton's method
+    fn find_root(initial_guess: Float = 0.0, tolerance: Float = 1e-10, max_iter: Int = 100) -> Option<Float> {
+        var x = initial_guess
+        
+        for _ in 0..max_iter {
+            let (fx, dfx) = self.eval_with_derivative(x)
+            if abs(fx) < tolerance { return Some(x) }
+            if abs(dfx) < 1e-15 { return None }  // Derivative too small
+            x = x - fx / dfx
+        }
+        
+        if abs(self.eval(x)) < tolerance { Some(x) }
+        else { None }
+    }
+    
+    /// Find all real roots using Durand-Kerner method
+    fn find_all_roots(tolerance: Float = 1e-10, max_iter: Int = 1000) -> [Complex] {
+        let n = self.degree()
+        if n <= 0 { return [] }
+        
+        let p = self.monic()
+        
+        // Initial guesses on unit circle
+        var roots = []
+        for k in 0..n {
+            let angle = 2.0 * PI * k as Float / n as Float + 0.1
+            roots.append(Complex.from_polar(1.0, angle))
+        }
+        
+        // Iterate
+        for _ in 0..max_iter {
+            var max_change = 0.0
+            
+            for i in 0..n {
+                let zi = roots[i]
+                var denom = Complex.one()
+                
+                for j in 0..n {
+                    if i != j {
+                        denom = denom * (zi - roots[j])
+                    }
+                }
+                
+                let delta = p.eval_complex(zi) / denom
+                roots[i] = zi - delta
+                max_change = max_change.max(delta.abs())
+            }
+            
+            if max_change < tolerance { break }
+        }
+        
+        roots
+    }
+    
+    /// Find real roots only
+    fn find_real_roots(tolerance: Float = 1e-10) -> [Float] {
+        self.find_all_roots(tolerance)
+            .filter(|z| abs(z.im) < tolerance)
+            .map(|z| z.re)
+    }
+    
+    /// Solve quadratic ax² + bx + c = 0
+    fn solve_quadratic() -> [Complex] {
+        if self.degree() != 2 { panic("Not a quadratic polynomial") }
+        
+        let a = self.coeffs[2]
+        let b = self.coeffs[1]
+        let c = self.coeffs[0]
+        
+        let discriminant = b * b - 4.0 * a * c
+        
+        if discriminant >= 0.0 {
+            let sqrt_d = sqrt(discriminant)
+            [
+                Complex.from_real((-b + sqrt_d) / (2.0 * a)),
+                Complex.from_real((-b - sqrt_d) / (2.0 * a))
+            ]
+        } else {
+            let sqrt_d = sqrt(-discriminant)
+            [
+                Complex.new(-b / (2.0 * a), sqrt_d / (2.0 * a)),
+                Complex.new(-b / (2.0 * a), -sqrt_d / (2.0 * a))
+            ]
+        }
+    }
+    
+    /// Solve cubic using Cardano's formula
+    fn solve_cubic() -> [Complex] {
+        if self.degree() != 3 { panic("Not a cubic polynomial") }
+        
+        let p = self.monic()
+        let a = p.coeffs[2]
+        let b = p.coeffs[1]
+        let c = p.coeffs[0]
+        
+        // Substitute x = t - a/3 to get depressed cubic t³ + pt + q = 0
+        let p_coef = b - a * a / 3.0
+        let q_coef = 2.0 * a * a * a / 27.0 - a * b / 3.0 + c
+        
+        let discriminant = q_coef * q_coef / 4.0 + p_coef * p_coef * p_coef / 27.0
+        
+        var roots = []
+        
+        if discriminant > 0.0 {
+            // One real root, two complex conjugates
+            let sqrt_d = sqrt(discriminant)
+            let u = cbrt(-q_coef / 2.0 + sqrt_d)
+            let v = cbrt(-q_coef / 2.0 - sqrt_d)
+            
+            let t1 = u + v
+            let t2_re = -(u + v) / 2.0
+            let t2_im = (u - v) * sqrt(3.0) / 2.0
+            
+            roots.append(Complex.from_real(t1 - a / 3.0))
+            roots.append(Complex.new(t2_re - a / 3.0, t2_im))
+            roots.append(Complex.new(t2_re - a / 3.0, -t2_im))
+        } else {
+            // Three real roots (use trigonometric method)
+            let r = sqrt(-p_coef * p_coef * p_coef / 27.0)
+            let phi = acos(-q_coef / (2.0 * r))
+            let cube_root_r = pow(r, 1.0/3.0)
+            
+            for k in 0..3 {
+                let t = 2.0 * cube_root_r * cos((phi + 2.0 * PI * k as Float) / 3.0)
+                roots.append(Complex.from_real(t - a / 3.0))
+            }
+        }
+        
+        roots
+    }
+    
+    // -------------------------------------------------------------------------
+    // Display
+    // -------------------------------------------------------------------------
+    
+    /// Convert to string
+    fn to_string() -> String {
+        if self.is_zero() { return "0" }
+        
+        var terms = []
+        for (i, c) in self.coeffs.iter().enumerate() {
+            if *c == 0.0 { continue }
+            
+            let coeff_str = if i == 0 {
+                format!("{}", c)
+            } else if *c == 1.0 {
+                ""
+            } else if *c == -1.0 {
+                "-"
+            } else {
+                format!("{}", c)
+            }
+            
+            let var_str = if i == 0 {
+                ""
+            } else if i == 1 {
+                "x"
+            } else {
+                format!("x^{}", i)
+            }
+            
+            terms.append(coeff_str + var_str)
+        }
+        
+        terms.rev().join(" + ").replace("+ -", "- ")
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Arithmetic Operators
+// -----------------------------------------------------------------------------
+
+impl Add for Polynomial {
+    fn add(other: Polynomial) -> Polynomial {
+        let max_len = self.coeffs.len().max(other.coeffs.len())
+        var coeffs = vec![0.0; max_len]
+        
+        for (i, c) in self.coeffs.iter().enumerate() { coeffs[i] += c }
+        for (i, c) in other.coeffs.iter().enumerate() { coeffs[i] += c }
+        
+        Polynomial.new(coeffs)
+    }
+}
+
+impl Sub for Polynomial {
+    fn sub(other: Polynomial) -> Polynomial {
+        self + other.negate()
+    }
+}
+
+impl Mul for Polynomial {
+    fn mul(other: Polynomial) -> Polynomial {
+        if self.is_zero() || other.is_zero() { return Polynomial.zero() }
+        
+        let result_len = self.coeffs.len() + other.coeffs.len() - 1
+        var coeffs = vec![0.0; result_len]
+        
+        for (i, a) in self.coeffs.iter().enumerate() {
+            for (j, b) in other.coeffs.iter().enumerate() {
+                coeffs[i + j] += a * b
+            }
+        }
+        
+        Polynomial.new(coeffs)
+    }
+}
+
+impl Div for Polynomial {
+    fn div(other: Polynomial) -> Polynomial {
+        self.div_rem(other).0
+    }
+}
+
+impl Rem for Polynomial {
+    fn rem(other: Polynomial) -> Polynomial {
+        self.div_rem(other).1
+    }
+}
+
+impl Neg for Polynomial {
+    fn neg() -> Polynomial {
+        self.negate()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Comparison
+// -----------------------------------------------------------------------------
+
+impl Eq for Polynomial {
+    fn eq(other: Polynomial) -> Bool {
+        let a = self.normalize()
+        let b = other.normalize()
+        a.coeffs == b.coeffs
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Special Polynomials
+// -----------------------------------------------------------------------------
+
+/// Chebyshev polynomial of the first kind T_n(x)
+fn chebyshev_t(n: Int) -> Polynomial {
+    if n == 0 { return Polynomial.one() }
+    if n == 1 { return Polynomial.x() }
+    
+    var t_prev = Polynomial.one()
+    var t_curr = Polynomial.x()
+    let two_x = Polynomial.new([0.0, 2.0])
+    
+    for _ in 2..=n {
+        let t_next = two_x * t_curr - t_prev
+        t_prev = t_curr
+        t_curr = t_next
+    }
+    t_curr
+}
+
+/// Chebyshev polynomial of the second kind U_n(x)
+fn chebyshev_u(n: Int) -> Polynomial {
+    if n == 0 { return Polynomial.one() }
+    if n == 1 { return Polynomial.new([0.0, 2.0]) }
+    
+    var u_prev = Polynomial.one()
+    var u_curr = Polynomial.new([0.0, 2.0])
+    let two_x = Polynomial.new([0.0, 2.0])
+    
+    for _ in 2..=n {
+        let u_next = two_x * u_curr - u_prev
+        u_prev = u_curr
+        u_curr = u_next
+    }
+    u_curr
+}
+
+/// Legendre polynomial P_n(x)
+fn legendre(n: Int) -> Polynomial {
+    if n == 0 { return Polynomial.one() }
+    if n == 1 { return Polynomial.x() }
+    
+    var p_prev = Polynomial.one()
+    var p_curr = Polynomial.x()
+    
+    for k in 2..=n {
+        let k_f = k as Float
+        let two_k_minus_1 = Polynomial.new([0.0, (2.0 * k_f - 1.0) / k_f])
+        let factor = (k_f - 1.0) / k_f
+        
+        let p_next = two_k_minus_1 * p_curr - p_prev.scale(factor)
+        p_prev = p_curr
+        p_curr = p_next
+    }
+    p_curr
+}
+
+/// Hermite polynomial H_n(x) (physicist's convention)
+fn hermite(n: Int) -> Polynomial {
+    if n == 0 { return Polynomial.one() }
+    if n == 1 { return Polynomial.new([0.0, 2.0]) }
+    
+    var h_prev = Polynomial.one()
+    var h_curr = Polynomial.new([0.0, 2.0])
+    let two_x = Polynomial.new([0.0, 2.0])
+    
+    for k in 2..=n {
+        let h_next = two_x * h_curr - h_prev.scale(2.0 * (k - 1) as Float)
+        h_prev = h_curr
+        h_curr = h_next
+    }
+    h_curr
+}
+
+/// Laguerre polynomial L_n(x)
+fn laguerre(n: Int) -> Polynomial {
+    if n == 0 { return Polynomial.one() }
+    if n == 1 { return Polynomial.new([1.0, -1.0]) }
+    
+    var l_prev = Polynomial.one()
+    var l_curr = Polynomial.new([1.0, -1.0])
+    
+    for k in 2..=n {
+        let k_f = k as Float
+        let factor1 = Polynomial.new([(2.0 * k_f - 1.0) / k_f, -1.0 / k_f])
+        let factor2 = (k_f - 1.0) / k_f
+        
+        let l_next = factor1 * l_curr - l_prev.scale(factor2)
+        l_prev = l_curr
+        l_curr = l_next
+    }
+    l_curr
+}
+
+/// Bernstein basis polynomial B_{i,n}(x)
+fn bernstein(i: Int, n: Int) -> Polynomial {
+    let binom = binomial(n, i) as Float
+    let x = Polynomial.x()
+    let one_minus_x = Polynomial.new([1.0, -1.0])
+    
+    one_minus_x.pow_int(n - i) * x.pow_int(i).scale(binom)
+}
+
+// -----------------------------------------------------------------------------
+// Helper Functions
+// -----------------------------------------------------------------------------
+
+fn parse_term(s: String) -> Result<(Float, Int), ParseError> {
+    if s.is_empty() { return Err(ParseError.Empty) }
+    
+    // Handle constant term
+    if !s.contains("x") {
+        let coeff = Float.parse(s)?
+        return Ok((coeff, 0))
+    }
+    
+    // Handle x^n terms
+    let parts = s.split("x")
+    let coeff_str = parts[0]
+    let coeff = if coeff_str.is_empty() { 1.0 }
+        else if coeff_str == "-" { -1.0 }
+        else { Float.parse(coeff_str)? }
+    
+    let degree = if parts.len() == 1 || parts[1].is_empty() { 1 }
+        else {
+            let exp_str = parts[1].trim_start_matches("^")
+            Int.parse(exp_str)?
+        }
+    
+    Ok((coeff, degree))
+}
+
+fn cbrt(x: Float) -> Float { pow(x, 1.0/3.0) }
+fn acos(x: Float) -> Float { @native("math_acos", x) }
+fn binomial(n: Int, k: Int) -> Int {
+    if k > n { return 0 }
+    if k == 0 || k == n { return 1 }
+    var result = 1
+    for i in 0..k { result = result * (n - i) / (i + 1) }
+    result
+}
+
+impl Polynomial {
+    fn pow_int(n: Int) -> Self {
+        if n == 0 { return Polynomial.one() }
+        var result = Polynomial.one()
+        var base = self.clone()
+        var exp = n
+        while exp > 0 {
+            if exp & 1 == 1 { result = result * base }
+            base = base * base
+            exp >>= 1
+        }
+        result
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum ParseError {
+    Empty
+    InvalidFormat
+    InvalidNumber
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "creation" {
+    let p = Polynomial.new([1.0, 2.0, 3.0])  // 1 + 2x + 3x²
+    assert_eq(p.degree(), 2)?
+    assert_eq(p.coeff(0), 1.0)?
+    assert_eq(p.coeff(2), 3.0)?
+}
+
+test "evaluation" {
+    let p = Polynomial.new([1.0, 2.0, 1.0])  // 1 + 2x + x² = (1+x)²
+    assert_eq(p.eval(0.0), 1.0)?
+    assert_eq(p.eval(1.0), 4.0)?
+    assert_eq(p.eval(2.0), 9.0)?
+}
+
+test "arithmetic" {
+    let p = Polynomial.new([1.0, 1.0])  // 1 + x
+    let q = Polynomial.new([1.0, -1.0]) // 1 - x
+    
+    let sum = p + q
+    assert_eq(sum, Polynomial.new([2.0]))?  // 2
+    
+    let prod = p * q
+    assert_eq(prod, Polynomial.new([1.0, 0.0, -1.0]))?  // 1 - x²
+}
+
+test "derivative" {
+    let p = Polynomial.new([1.0, 2.0, 3.0])  // 1 + 2x + 3x²
+    let dp = p.derivative()
+    assert_eq(dp, Polynomial.new([2.0, 6.0]))?  // 2 + 6x
+}
+
+test "integral" {
+    let p = Polynomial.new([2.0, 6.0])  // 2 + 6x
+    let ip = p.integral()
+    assert_eq(ip.coeff(1), 2.0)?
+    assert_eq(ip.coeff(2), 3.0)?
+}
+
+test "from_roots" {
+    let p = Polynomial.from_roots([1.0, 2.0, 3.0])
+    assert(approx_eq(p.eval(1.0), 0.0))
+    assert(approx_eq(p.eval(2.0), 0.0))
+    assert(approx_eq(p.eval(3.0), 0.0))
+}
+
+test "division" {
+    let p = Polynomial.new([-6.0, 11.0, -6.0, 1.0])  // x³ - 6x² + 11x - 6 = (x-1)(x-2)(x-3)
+    let d = Polynomial.new([-1.0, 1.0])  // x - 1
+    let (q, r) = p.div_rem(d)
+    assert(r.is_zero())
+    assert_eq(q.degree(), 2)?
+}
+
+test "quadratic solver" {
+    let p = Polynomial.new([1.0, 0.0, 1.0])  // x² + 1
+    let roots = p.solve_quadratic()
+    assert(roots[0].approx_eq(Complex.i()) || roots[0].approx_eq(Complex.neg_i()))
+}
+
+test "chebyshev" {
+    let t3 = chebyshev_t(3)
+    // T₃(x) = 4x³ - 3x
+    assert_eq(t3.coeff(3), 4.0)?
+    assert_eq(t3.coeff(1), -3.0)?
+}

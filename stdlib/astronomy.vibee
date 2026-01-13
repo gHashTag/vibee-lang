@@ -1,0 +1,470 @@
+// =============================================================================
+// Vibee OS — Astronomy Module
+// Astronomical calculations, celestial mechanics, and cosmology
+// =============================================================================
+
+use math::{PI, TAU, sin, cos, tan, asin, acos, atan2, sqrt, pow, ln, exp, abs}
+
+// -----------------------------------------------------------------------------
+// Astronomical Constants
+// -----------------------------------------------------------------------------
+
+/// Speed of light (m/s)
+const SPEED_OF_LIGHT: Float = 299792458.0
+
+/// Gravitational constant (m³/(kg·s²))
+const G: Float = 6.67430e-11
+
+/// Astronomical Unit (m)
+const AU: Float = 1.495978707e11
+
+/// Parsec (m)
+const PARSEC: Float = 3.0856775814913673e16
+
+/// Light year (m)
+const LIGHT_YEAR: Float = 9.4607304725808e15
+
+/// Solar mass (kg)
+const SOLAR_MASS: Float = 1.98892e30
+
+/// Earth mass (kg)
+const EARTH_MASS: Float = 5.9722e24
+
+/// Solar radius (m)
+const SOLAR_RADIUS: Float = 6.96340e8
+
+/// Earth radius (m)
+const EARTH_RADIUS: Float = 6.371e6
+
+/// Solar luminosity (W)
+const SOLAR_LUMINOSITY: Float = 3.828e26
+
+/// Stefan-Boltzmann constant (W/(m²·K⁴))
+const STEFAN_BOLTZMANN: Float = 5.670374419e-8
+
+/// Hubble constant (km/s/Mpc)
+const HUBBLE_CONSTANT: Float = 70.0
+
+/// Julian year (seconds)
+const JULIAN_YEAR: Float = 365.25 * 24.0 * 3600.0
+
+// -----------------------------------------------------------------------------
+// Distance Units
+// -----------------------------------------------------------------------------
+
+fn au_to_meters(au: Float) -> Float { au * AU }
+fn meters_to_au(m: Float) -> Float { m / AU }
+fn parsec_to_meters(pc: Float) -> Float { pc * PARSEC }
+fn meters_to_parsec(m: Float) -> Float { m / PARSEC }
+fn light_year_to_meters(ly: Float) -> Float { ly * LIGHT_YEAR }
+fn meters_to_light_year(m: Float) -> Float { m / LIGHT_YEAR }
+fn parsec_to_light_year(pc: Float) -> Float { pc * PARSEC / LIGHT_YEAR }
+fn light_year_to_parsec(ly: Float) -> Float { ly * LIGHT_YEAR / PARSEC }
+
+// -----------------------------------------------------------------------------
+// Celestial Coordinates
+// -----------------------------------------------------------------------------
+
+/// Equatorial coordinates (Right Ascension, Declination)
+struct EquatorialCoord {
+    ra: Float       // Right Ascension in hours (0-24)
+    dec: Float      // Declination in degrees (-90 to +90)
+    
+    fn new(ra: Float, dec: Float) -> Self {
+        EquatorialCoord { ra: ra, dec: dec }
+    }
+    
+    fn ra_degrees() -> Float { self.ra * 15.0 }
+    fn ra_radians() -> Float { self.ra * 15.0 * PI / 180.0 }
+    fn dec_radians() -> Float { self.dec * PI / 180.0 }
+    
+    fn to_horizontal(lat: Float, lst: Float) -> HorizontalCoord {
+        let ha = (lst - self.ra) * 15.0 * PI / 180.0
+        let lat_rad = lat * PI / 180.0
+        let dec_rad = self.dec_radians()
+        
+        let sin_alt = sin(dec_rad) * sin(lat_rad) + cos(dec_rad) * cos(lat_rad) * cos(ha)
+        let alt = asin(sin_alt)
+        
+        let cos_az = (sin(dec_rad) - sin(alt) * sin(lat_rad)) / (cos(alt) * cos(lat_rad))
+        var az = acos(cos_az)
+        if sin(ha) > 0.0 { az = TAU - az }
+        
+        HorizontalCoord { alt: alt * 180.0 / PI, az: az * 180.0 / PI }
+    }
+    
+    fn angular_separation(other: EquatorialCoord) -> Float {
+        let d1 = self.dec_radians()
+        let d2 = other.dec_radians()
+        let ra_diff = (self.ra - other.ra) * 15.0 * PI / 180.0
+        
+        let cos_sep = sin(d1) * sin(d2) + cos(d1) * cos(d2) * cos(ra_diff)
+        acos(cos_sep) * 180.0 / PI
+    }
+}
+
+/// Horizontal coordinates (Altitude, Azimuth)
+struct HorizontalCoord {
+    alt: Float      // Altitude in degrees (-90 to +90)
+    az: Float       // Azimuth in degrees (0-360, N=0, E=90)
+    
+    fn new(alt: Float, az: Float) -> Self {
+        HorizontalCoord { alt: alt, az: az }
+    }
+    
+    fn is_visible() -> Bool { self.alt > 0.0 }
+    fn alt_radians() -> Float { self.alt * PI / 180.0 }
+    fn az_radians() -> Float { self.az * PI / 180.0 }
+}
+
+/// Ecliptic coordinates
+struct EclipticCoord {
+    lon: Float      // Ecliptic longitude (degrees)
+    lat: Float      // Ecliptic latitude (degrees)
+    
+    fn new(lon: Float, lat: Float) -> Self {
+        EclipticCoord { lon: lon, lat: lat }
+    }
+    
+    fn to_equatorial(obliquity: Float) -> EquatorialCoord {
+        let eps = obliquity * PI / 180.0
+        let lon_rad = self.lon * PI / 180.0
+        let lat_rad = self.lat * PI / 180.0
+        
+        let sin_dec = sin(lat_rad) * cos(eps) + cos(lat_rad) * sin(eps) * sin(lon_rad)
+        let dec = asin(sin_dec)
+        
+        let y = sin(lon_rad) * cos(eps) - tan(lat_rad) * sin(eps)
+        let x = cos(lon_rad)
+        var ra = atan2(y, x) * 180.0 / PI / 15.0
+        if ra < 0.0 { ra += 24.0 }
+        
+        EquatorialCoord { ra: ra, dec: dec * 180.0 / PI }
+    }
+}
+
+/// Galactic coordinates
+struct GalacticCoord {
+    l: Float        // Galactic longitude (degrees)
+    b: Float        // Galactic latitude (degrees)
+    
+    fn new(l: Float, b: Float) -> Self {
+        GalacticCoord { l: l, b: b }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Orbital Mechanics
+// -----------------------------------------------------------------------------
+
+struct OrbitalElements {
+    a: Float        // Semi-major axis (m)
+    e: Float        // Eccentricity
+    i: Float        // Inclination (degrees)
+    omega: Float    // Longitude of ascending node (degrees)
+    w: Float        // Argument of periapsis (degrees)
+    m0: Float       // Mean anomaly at epoch (degrees)
+    epoch: Float    // Epoch (Julian date)
+    
+    fn new(a: Float, e: Float, i: Float, omega: Float, w: Float, m0: Float, epoch: Float) -> Self {
+        OrbitalElements { a: a, e: e, i: i, omega: omega, w: w, m0: m0, epoch: epoch }
+    }
+    
+    /// Calculate orbital period (seconds)
+    fn period(central_mass: Float) -> Float {
+        TAU * sqrt(pow(self.a, 3.0) / (G * central_mass))
+    }
+    
+    /// Calculate periapsis distance
+    fn periapsis() -> Float { self.a * (1.0 - self.e) }
+    
+    /// Calculate apoapsis distance
+    fn apoapsis() -> Float { self.a * (1.0 + self.e) }
+    
+    /// Calculate velocity at distance r
+    fn velocity_at(r: Float, central_mass: Float) -> Float {
+        sqrt(G * central_mass * (2.0 / r - 1.0 / self.a))
+    }
+    
+    /// Calculate mean anomaly at time t
+    fn mean_anomaly(t: Float, central_mass: Float) -> Float {
+        let n = TAU / self.period(central_mass)
+        let dt = (t - self.epoch) * 86400.0
+        var m = self.m0 * PI / 180.0 + n * dt
+        m = m % TAU
+        if m < 0.0 { m += TAU }
+        m * 180.0 / PI
+    }
+    
+    /// Solve Kepler's equation for eccentric anomaly
+    fn eccentric_anomaly(mean_anom: Float) -> Float {
+        let m = mean_anom * PI / 180.0
+        var e_anom = m
+        for _ in 0..50 {
+            let delta = e_anom - self.e * sin(e_anom) - m
+            e_anom -= delta / (1.0 - self.e * cos(e_anom))
+            if abs(delta) < 1e-12 { break }
+        }
+        e_anom * 180.0 / PI
+    }
+    
+    /// Calculate true anomaly from eccentric anomaly
+    fn true_anomaly(ecc_anom: Float) -> Float {
+        let e_rad = ecc_anom * PI / 180.0
+        let nu = 2.0 * atan2(
+            sqrt(1.0 + self.e) * sin(e_rad / 2.0),
+            sqrt(1.0 - self.e) * cos(e_rad / 2.0)
+        )
+        nu * 180.0 / PI
+    }
+    
+    /// Calculate distance from central body at true anomaly
+    fn radius_at_true_anomaly(nu: Float) -> Float {
+        let nu_rad = nu * PI / 180.0
+        self.a * (1.0 - self.e * self.e) / (1.0 + self.e * cos(nu_rad))
+    }
+}
+
+/// Kepler's third law: T² = (4π²/GM) * a³
+fn orbital_period(semi_major_axis: Float, central_mass: Float) -> Float {
+    TAU * sqrt(pow(semi_major_axis, 3.0) / (G * central_mass))
+}
+
+/// Calculate escape velocity
+fn escape_velocity(mass: Float, radius: Float) -> Float {
+    sqrt(2.0 * G * mass / radius)
+}
+
+/// Calculate orbital velocity for circular orbit
+fn circular_orbital_velocity(mass: Float, radius: Float) -> Float {
+    sqrt(G * mass / radius)
+}
+
+/// Calculate Hill sphere radius
+fn hill_sphere(a: Float, m_planet: Float, m_star: Float) -> Float {
+    a * pow(m_planet / (3.0 * m_star), 1.0 / 3.0)
+}
+
+/// Calculate Roche limit
+fn roche_limit(r_primary: Float, rho_primary: Float, rho_secondary: Float) -> Float {
+    r_primary * pow(2.0 * rho_primary / rho_secondary, 1.0 / 3.0)
+}
+
+// -----------------------------------------------------------------------------
+// Stellar Physics
+// -----------------------------------------------------------------------------
+
+struct Star {
+    mass: Float         // Solar masses
+    radius: Float       // Solar radii
+    luminosity: Float   // Solar luminosities
+    temperature: Float  // Kelvin
+    
+    fn new(mass: Float, radius: Float, luminosity: Float, temp: Float) -> Self {
+        Star { mass: mass, radius: radius, luminosity: luminosity, temperature: temp }
+    }
+    
+    fn mass_kg() -> Float { self.mass * SOLAR_MASS }
+    fn radius_m() -> Float { self.radius * SOLAR_RADIUS }
+    fn luminosity_w() -> Float { self.luminosity * SOLAR_LUMINOSITY }
+    
+    /// Calculate surface gravity (m/s²)
+    fn surface_gravity() -> Float {
+        G * self.mass_kg() / pow(self.radius_m(), 2.0)
+    }
+    
+    /// Calculate escape velocity (m/s)
+    fn escape_velocity() -> Float {
+        sqrt(2.0 * G * self.mass_kg() / self.radius_m())
+    }
+    
+    /// Calculate absolute magnitude
+    fn absolute_magnitude() -> Float {
+        4.83 - 2.5 * log10(self.luminosity)
+    }
+    
+    /// Calculate apparent magnitude at distance (parsecs)
+    fn apparent_magnitude(distance_pc: Float) -> Float {
+        self.absolute_magnitude() + 5.0 * log10(distance_pc / 10.0)
+    }
+    
+    /// Calculate main sequence lifetime (years)
+    fn main_sequence_lifetime() -> Float {
+        1e10 * self.mass / self.luminosity
+    }
+    
+    /// Calculate habitable zone inner edge (AU)
+    fn habitable_zone_inner() -> Float {
+        sqrt(self.luminosity / 1.1)
+    }
+    
+    /// Calculate habitable zone outer edge (AU)
+    fn habitable_zone_outer() -> Float {
+        sqrt(self.luminosity / 0.53)
+    }
+}
+
+/// Stefan-Boltzmann law: L = 4πR²σT⁴
+fn luminosity_from_temp_radius(temp: Float, radius: Float) -> Float {
+    4.0 * PI * pow(radius, 2.0) * STEFAN_BOLTZMANN * pow(temp, 4.0)
+}
+
+/// Calculate effective temperature from luminosity and radius
+fn effective_temperature(luminosity: Float, radius: Float) -> Float {
+    pow(luminosity / (4.0 * PI * pow(radius, 2.0) * STEFAN_BOLTZMANN), 0.25)
+}
+
+/// Wien's displacement law: λ_max = b/T
+fn peak_wavelength(temperature: Float) -> Float {
+    2.897771955e-3 / temperature
+}
+
+/// Distance modulus: m - M = 5 log₁₀(d/10pc)
+fn distance_from_magnitudes(apparent: Float, absolute: Float) -> Float {
+    pow(10.0, (apparent - absolute + 5.0) / 5.0)
+}
+
+fn log10(x: Float) -> Float { ln(x) / ln(10.0) }
+
+// -----------------------------------------------------------------------------
+// Cosmology
+// -----------------------------------------------------------------------------
+
+/// Hubble's law: v = H₀ × d
+fn recession_velocity(distance_mpc: Float) -> Float {
+    HUBBLE_CONSTANT * distance_mpc
+}
+
+/// Calculate distance from redshift (simplified)
+fn distance_from_redshift(z: Float) -> Float {
+    SPEED_OF_LIGHT * z / (HUBBLE_CONSTANT * 1000.0)  // Mpc
+}
+
+/// Calculate redshift from recession velocity
+fn redshift_from_velocity(v: Float) -> Float {
+    v / SPEED_OF_LIGHT
+}
+
+/// Calculate lookback time (simplified, Gyr)
+fn lookback_time(z: Float) -> Float {
+    let h0_per_gyr = HUBBLE_CONSTANT * 1.022e-3
+    (1.0 / h0_per_gyr) * z / (1.0 + z)
+}
+
+/// Age of universe (Gyr)
+fn universe_age() -> Float {
+    1.0 / (HUBBLE_CONSTANT * 1.022e-3)
+}
+
+/// Critical density of universe (kg/m³)
+fn critical_density() -> Float {
+    3.0 * pow(HUBBLE_CONSTANT * 1000.0 / (PARSEC * 1e6), 2.0) / (8.0 * PI * G)
+}
+
+// -----------------------------------------------------------------------------
+// Solar System Bodies
+// -----------------------------------------------------------------------------
+
+struct Planet {
+    name: String
+    mass: Float             // kg
+    radius: Float           // m
+    semi_major_axis: Float  // AU
+    eccentricity: Float
+    orbital_period: Float   // Earth years
+    rotation_period: Float  // hours
+    
+    fn surface_gravity() -> Float {
+        G * self.mass / pow(self.radius, 2.0)
+    }
+    
+    fn escape_velocity() -> Float {
+        sqrt(2.0 * G * self.mass / self.radius)
+    }
+    
+    fn orbital_velocity() -> Float {
+        TAU * self.semi_major_axis * AU / (self.orbital_period * JULIAN_YEAR)
+    }
+}
+
+fn mercury() -> Planet { Planet { name: "Mercury", mass: 3.301e23, radius: 2.4397e6, semi_major_axis: 0.387, eccentricity: 0.206, orbital_period: 0.241, rotation_period: 1407.6 } }
+fn venus() -> Planet { Planet { name: "Venus", mass: 4.867e24, radius: 6.0518e6, semi_major_axis: 0.723, eccentricity: 0.007, orbital_period: 0.615, rotation_period: -5832.5 } }
+fn earth() -> Planet { Planet { name: "Earth", mass: EARTH_MASS, radius: EARTH_RADIUS, semi_major_axis: 1.0, eccentricity: 0.017, orbital_period: 1.0, rotation_period: 23.934 } }
+fn mars() -> Planet { Planet { name: "Mars", mass: 6.417e23, radius: 3.3895e6, semi_major_axis: 1.524, eccentricity: 0.093, orbital_period: 1.881, rotation_period: 24.623 } }
+fn jupiter() -> Planet { Planet { name: "Jupiter", mass: 1.898e27, radius: 6.9911e7, semi_major_axis: 5.203, eccentricity: 0.048, orbital_period: 11.86, rotation_period: 9.925 } }
+fn saturn() -> Planet { Planet { name: "Saturn", mass: 5.683e26, radius: 5.8232e7, semi_major_axis: 9.537, eccentricity: 0.054, orbital_period: 29.46, rotation_period: 10.656 } }
+fn uranus() -> Planet { Planet { name: "Uranus", mass: 8.681e25, radius: 2.5362e7, semi_major_axis: 19.19, eccentricity: 0.047, orbital_period: 84.01, rotation_period: -17.24 } }
+fn neptune() -> Planet { Planet { name: "Neptune", mass: 1.024e26, radius: 2.4622e7, semi_major_axis: 30.07, eccentricity: 0.009, orbital_period: 164.8, rotation_period: 16.11 } }
+
+fn sun() -> Star { Star.new(1.0, 1.0, 1.0, 5778.0) }
+
+// -----------------------------------------------------------------------------
+// Time Calculations
+// -----------------------------------------------------------------------------
+
+/// Convert calendar date to Julian Date
+fn to_julian_date(year: Int, month: Int, day: Float) -> Float {
+    var y = year; var m = month
+    if m <= 2 { y -= 1; m += 12 }
+    let a = y / 100
+    let b = 2 - a + a / 4
+    (365.25 * (y + 4716) as Float).floor() + (30.6001 * (m + 1) as Float).floor() + day + b as Float - 1524.5
+}
+
+/// Calculate Local Sidereal Time (hours)
+fn local_sidereal_time(jd: Float, longitude: Float) -> Float {
+    let t = (jd - 2451545.0) / 36525.0
+    var gmst = 280.46061837 + 360.98564736629 * (jd - 2451545.0) + 0.000387933 * t * t
+    gmst = gmst % 360.0
+    if gmst < 0.0 { gmst += 360.0 }
+    var lst = gmst + longitude
+    lst = lst % 360.0
+    if lst < 0.0 { lst += 360.0 }
+    lst / 15.0
+}
+
+/// Calculate equation of time (minutes)
+fn equation_of_time(day_of_year: Int) -> Float {
+    let b = TAU * (day_of_year - 81) as Float / 365.0
+    9.87 * sin(2.0 * b) - 7.53 * cos(b) - 1.5 * sin(b)
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "distance conversions" {
+    let pc = 1.0
+    let ly = parsec_to_light_year(pc)
+    assert((ly - 3.26156).abs() < 0.001)?
+}
+
+test "orbital period" {
+    let period = orbital_period(AU, SOLAR_MASS)
+    let years = period / JULIAN_YEAR
+    assert((years - 1.0).abs() < 0.01)?
+}
+
+test "escape velocity" {
+    let v = escape_velocity(EARTH_MASS, EARTH_RADIUS)
+    assert((v - 11186.0).abs() < 100.0)?
+}
+
+test "stellar magnitude" {
+    let star = sun()
+    let abs_mag = star.absolute_magnitude()
+    assert((abs_mag - 4.83).abs() < 0.01)?
+}
+
+test "angular separation" {
+    let c1 = EquatorialCoord.new(0.0, 0.0)
+    let c2 = EquatorialCoord.new(6.0, 0.0)
+    let sep = c1.angular_separation(c2)
+    assert((sep - 90.0).abs() < 0.1)?
+}
+
+test "kepler equation" {
+    let orbit = OrbitalElements.new(AU, 0.0167, 0.0, 0.0, 0.0, 0.0, 2451545.0)
+    let period = orbit.period(SOLAR_MASS)
+    assert((period / JULIAN_YEAR - 1.0).abs() < 0.01)?
+}

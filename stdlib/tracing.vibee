@@ -1,0 +1,681 @@
+// =============================================================================
+// Vibee OS — Tracing Module
+// Distributed tracing with OpenTelemetry compatibility
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Core Types
+// -----------------------------------------------------------------------------
+
+/// Trace ID - 128-bit unique identifier
+struct TraceId { high: UInt64, low: UInt64 }
+impl TraceId {
+    fn generate() -> Self {
+        TraceId { high: Random.uint64(), low: Random.uint64() }
+    }
+    
+    fn from_hex(s: String) -> Option<Self> {
+        if s.len() != 32 { return None }
+        let high = UInt64.from_hex(s[0..16])?
+        let low = UInt64.from_hex(s[16..32])?
+        Some(TraceId { high: high, low: low })
+    }
+    
+    fn to_hex() -> String {
+        format!("{:016x}{:016x}", self.high, self.low)
+    }
+    
+    fn is_valid() -> Bool { self.high != 0 || self.low != 0 }
+}
+
+/// Span ID - 64-bit unique identifier
+struct SpanId { value: UInt64 }
+impl SpanId {
+    fn generate() -> Self { SpanId { value: Random.uint64() } }
+    fn from_hex(s: String) -> Option<Self> { UInt64.from_hex(s).map(|v| SpanId { value: v }) }
+    fn to_hex() -> String { format!("{:016x}", self.value) }
+    fn is_valid() -> Bool { self.value != 0 }
+}
+
+/// Trace context for propagation
+struct TraceContext {
+    trace_id: TraceId
+    span_id: SpanId
+    trace_flags: TraceFlags
+    trace_state: TraceState
+}
+
+struct TraceFlags { sampled: Bool }
+impl TraceFlags {
+    fn default() -> Self { TraceFlags { sampled: true } }
+    fn to_byte() -> UInt8 { if self.sampled { 0x01 } else { 0x00 } }
+    fn from_byte(b: UInt8) -> Self { TraceFlags { sampled: (b & 0x01) != 0 } }
+}
+
+struct TraceState { entries: [(String, String)] }
+impl TraceState {
+    fn empty() -> Self { TraceState { entries: [] } }
+    fn get(key: String) -> Option<String> { self.entries.find(|(k, _)| k == key).map(|(_, v)| v) }
+    fn set(key: String, value: String) -> Self {
+        var entries = self.entries.filter(|(k, _)| k != key)
+        entries.insert(0, (key, value))
+        TraceState { entries: entries }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Span
+// -----------------------------------------------------------------------------
+
+/// Span represents a unit of work
+actor Span {
+    state context: SpanContext
+    state name: String
+    state kind: SpanKind
+    state start_time: Instant
+    state end_time: Option<Instant>
+    state attributes: Map<String, AttributeValue>
+    state events: [SpanEvent]
+    state links: [SpanLink]
+    state status: SpanStatus
+    state parent_span_id: Option<SpanId>
+    
+    fn new(name: String, trace_id: TraceId, parent_span_id: Option<SpanId>) -> Self {
+        Span {
+            context: SpanContext {
+                trace_id: trace_id,
+                span_id: SpanId.generate(),
+                trace_flags: TraceFlags.default(),
+                is_remote: false
+            },
+            name: name,
+            kind: SpanKind.Internal,
+            start_time: Instant.now(),
+            end_time: None,
+            attributes: Map.empty(),
+            events: [],
+            links: [],
+            status: SpanStatus.Unset,
+            parent_span_id: parent_span_id
+        }
+    }
+    
+    fn context() -> SpanContext { self.context }
+    fn trace_id() -> TraceId { self.context.trace_id }
+    fn span_id() -> SpanId { self.context.span_id }
+    fn is_recording() -> Bool { self.end_time.is_none() }
+    
+    on set_name(name: String) { self.name = name }
+    on set_kind(kind: SpanKind) { self.kind = kind }
+    
+    on set_attribute(key: String, value: AttributeValue) {
+        if self.is_recording() { self.attributes.set(key, value) }
+    }
+    
+    on set_string(key: String, value: String) { self.set_attribute(key, AttributeValue.String(value)) }
+    on set_int(key: String, value: Int64) { self.set_attribute(key, AttributeValue.Int(value)) }
+    on set_float(key: String, value: Float) { self.set_attribute(key, AttributeValue.Float(value)) }
+    on set_bool(key: String, value: Bool) { self.set_attribute(key, AttributeValue.Bool(value)) }
+    
+    on add_event(name: String, attributes: Map<String, AttributeValue> = Map.empty()) {
+        if self.is_recording() {
+            self.events.push(SpanEvent { name: name, timestamp: Instant.now(), attributes: attributes })
+        }
+    }
+    
+    on add_link(context: SpanContext, attributes: Map<String, AttributeValue> = Map.empty()) {
+        if self.is_recording() {
+            self.links.push(SpanLink { context: context, attributes: attributes })
+        }
+    }
+    
+    on set_status(status: SpanStatus) { self.status = status }
+    on set_ok() { self.status = SpanStatus.Ok }
+    on set_error(message: String) { self.status = SpanStatus.Error(message) }
+    
+    on record_exception(error: Error, escaped: Bool = false) {
+        var attrs = Map.empty()
+        attrs.set("exception.type", AttributeValue.String(error.type_name()))
+        attrs.set("exception.message", AttributeValue.String(error.message()))
+        attrs.set("exception.escaped", AttributeValue.Bool(escaped))
+        if let stack = error.stack_trace() {
+            attrs.set("exception.stacktrace", AttributeValue.String(stack))
+        }
+        self.add_event("exception", attrs)
+    }
+    
+    on end() {
+        if self.is_recording() {
+            self.end_time = Some(Instant.now())
+            TRACER.export_span(self)
+        }
+    }
+    
+    fn duration() -> Duration {
+        let end = self.end_time.unwrap_or(Instant.now())
+        end.duration_since(self.start_time)
+    }
+}
+
+struct SpanContext {
+    trace_id: TraceId
+    span_id: SpanId
+    trace_flags: TraceFlags
+    is_remote: Bool
+}
+
+enum SpanKind { Internal, Server, Client, Producer, Consumer }
+enum SpanStatus { Unset, Ok, Error(String) }
+struct SpanEvent { name: String, timestamp: Instant, attributes: Map<String, AttributeValue> }
+struct SpanLink { context: SpanContext, attributes: Map<String, AttributeValue> }
+
+enum AttributeValue {
+    String(String)
+    Int(Int64)
+    Float(Float)
+    Bool(Bool)
+    StringArray([String])
+    IntArray([Int64])
+    FloatArray([Float])
+    BoolArray([Bool])
+}
+
+// -----------------------------------------------------------------------------
+// Tracer
+// -----------------------------------------------------------------------------
+
+/// Tracer creates spans
+actor Tracer {
+    state name: String
+    state version: String
+    state exporters: [SpanExporter]
+    state sampler: Sampler
+    state current_context: Option<SpanContext>
+    
+    fn new(name: String, version: String = "1.0.0") -> Self {
+        Tracer {
+            name: name, version: version,
+            exporters: [], sampler: Sampler.AlwaysOn,
+            current_context: None
+        }
+    }
+    
+    on add_exporter(exporter: SpanExporter) { self.exporters.push(exporter) }
+    on set_sampler(sampler: Sampler) { self.sampler = sampler }
+    
+    fn start_span(name: String) -> Span {
+        let trace_id = self.current_context.map(|c| c.trace_id).unwrap_or(TraceId.generate())
+        let parent_id = self.current_context.map(|c| c.span_id)
+        let span = Span.new(name, trace_id, parent_id)
+        self.current_context = Some(span.context())
+        span
+    }
+    
+    fn start_span_with_context(name: String, parent: SpanContext) -> Span {
+        let span = Span.new(name, parent.trace_id, Some(parent.span_id))
+        self.current_context = Some(span.context())
+        span
+    }
+    
+    fn current_span() -> Option<SpanContext> { self.current_context }
+    
+    on export_span(span: Span) {
+        if self.sampler.should_sample(span.trace_id()) {
+            for exporter in self.exporters {
+                exporter.export([span])
+            }
+        }
+    }
+    
+    /// Execute function within a span
+    fn with_span<T>(name: String, f: fn(Span) -> T) -> T {
+        let span = self.start_span(name)
+        defer { span.end() }
+        try {
+            f(span)
+        } catch e {
+            span.record_exception(e, true)
+            span.set_error(e.message())
+            throw e
+        }
+    }
+    
+    /// Execute async function within a span
+    async fn with_span_async<T>(name: String, f: async fn(Span) -> T) -> T {
+        let span = self.start_span(name)
+        defer { span.end() }
+        try {
+            await f(span)
+        } catch e {
+            span.record_exception(e, true)
+            span.set_error(e.message())
+            throw e
+        }
+    }
+}
+
+// Global tracer
+var TRACER = Tracer.new("default")
+
+// -----------------------------------------------------------------------------
+// Sampler
+// -----------------------------------------------------------------------------
+
+enum Sampler {
+    AlwaysOn
+    AlwaysOff
+    TraceIdRatio(Float)
+    ParentBased(Box<Sampler>)
+    
+    fn should_sample(trace_id: TraceId) -> Bool {
+        match self {
+            .AlwaysOn => true,
+            .AlwaysOff => false,
+            .TraceIdRatio(ratio) => {
+                let threshold = (ratio * UInt64.MAX as Float) as UInt64
+                trace_id.low < threshold
+            },
+            .ParentBased(root) => root.should_sample(trace_id)
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Span Exporters
+// -----------------------------------------------------------------------------
+
+trait SpanExporter {
+    fn export(spans: [Span]) -> Result<(), ExportError>
+    fn shutdown() -> Result<(), ExportError>
+}
+
+/// Console exporter for debugging
+struct ConsoleExporter { pretty: Bool }
+impl ConsoleExporter {
+    fn new(pretty: Bool = true) -> Self { ConsoleExporter { pretty: pretty } }
+}
+impl SpanExporter for ConsoleExporter {
+    fn export(spans: [Span]) -> Result<(), ExportError> {
+        for span in spans {
+            if self.pretty {
+                println("┌─ Span: \(span.name)")
+                println("│  TraceID: \(span.trace_id().to_hex())")
+                println("│  SpanID:  \(span.span_id().to_hex())")
+                println("│  Duration: \(span.duration().as_millis())ms")
+                println("│  Kind: \(span.kind)")
+                println("│  Status: \(span.status)")
+                if !span.attributes.is_empty() {
+                    println("│  Attributes:")
+                    for (k, v) in span.attributes { println("│    \(k): \(v)") }
+                }
+                if !span.events.is_empty() {
+                    println("│  Events:")
+                    for e in span.events { println("│    - \(e.name)") }
+                }
+                println("└─")
+            } else {
+                println(json.encode(span))
+            }
+        }
+        Ok(())
+    }
+    
+    fn shutdown() -> Result<(), ExportError> { Ok(()) }
+}
+
+/// OTLP exporter (OpenTelemetry Protocol)
+actor OtlpExporter {
+    state endpoint: String
+    state headers: Map<String, String>
+    state batch: [Span]
+    state batch_size: Int
+    state flush_interval: Duration
+    
+    fn new(endpoint: String) -> Self {
+        OtlpExporter {
+            endpoint: endpoint, headers: Map.empty(),
+            batch: [], batch_size: 512, flush_interval: Duration.from_secs(5)
+        }
+    }
+    
+    on header(key: String, value: String) -> Self { self.headers.set(key, value); self }
+    on batch_size(size: Int) -> Self { self.batch_size = size; self }
+    
+    fn to_otlp_spans(spans: [Span]) -> OtlpSpans {
+        OtlpSpans {
+            resource_spans: [ResourceSpans {
+                resource: Resource { attributes: [] },
+                scope_spans: [ScopeSpans {
+                    scope: InstrumentationScope { name: TRACER.name, version: TRACER.version },
+                    spans: spans.map(|s| OtlpSpan {
+                        trace_id: s.trace_id().to_hex(),
+                        span_id: s.span_id().to_hex(),
+                        parent_span_id: s.parent_span_id.map(|id| id.to_hex()),
+                        name: s.name,
+                        kind: s.kind as Int,
+                        start_time_unix_nano: s.start_time.as_nanos(),
+                        end_time_unix_nano: s.end_time.map(|t| t.as_nanos()).unwrap_or(0),
+                        attributes: s.attributes.iter().map(|(k, v)| KeyValue { key: k, value: v }).collect(),
+                        events: s.events.map(|e| OtlpEvent { name: e.name, time_unix_nano: e.timestamp.as_nanos() }),
+                        status: OtlpStatus { code: match s.status { .Unset => 0, .Ok => 1, .Error(_) => 2 } }
+                    })
+                }]
+            }]
+        }
+    }
+}
+
+impl SpanExporter for OtlpExporter {
+    fn export(spans: [Span]) -> Result<(), ExportError> {
+        self.batch.extend(spans)
+        
+        if self.batch.len() >= self.batch_size {
+            self.flush()?
+        }
+        Ok(())
+    }
+    
+    fn flush() -> Result<(), ExportError> {
+        if self.batch.is_empty() { return Ok(()) }
+        
+        let payload = Self.to_otlp_spans(self.batch)
+        self.batch.clear()
+        
+        var req = Request.post("\(self.endpoint)/v1/traces")
+            .header("Content-Type", "application/json")
+            .json(payload)
+        
+        for (k, v) in self.headers { req = req.header(k, v) }
+        
+        let resp = Client.new().send(req)?
+        if !resp.is_success() {
+            return Err(ExportError.HttpError(resp.status.code))
+        }
+        Ok(())
+    }
+    
+    fn shutdown() -> Result<(), ExportError> { self.flush() }
+}
+
+// OTLP types
+struct OtlpSpans { resource_spans: [ResourceSpans] }
+struct ResourceSpans { resource: Resource, scope_spans: [ScopeSpans] }
+struct Resource { attributes: [KeyValue] }
+struct ScopeSpans { scope: InstrumentationScope, spans: [OtlpSpan] }
+struct InstrumentationScope { name: String, version: String }
+struct OtlpSpan {
+    trace_id: String, span_id: String, parent_span_id: Option<String>,
+    name: String, kind: Int, start_time_unix_nano: Int64, end_time_unix_nano: Int64,
+    attributes: [KeyValue], events: [OtlpEvent], status: OtlpStatus
+}
+struct KeyValue { key: String, value: AttributeValue }
+struct OtlpEvent { name: String, time_unix_nano: Int64 }
+struct OtlpStatus { code: Int }
+
+/// Jaeger exporter
+actor JaegerExporter {
+    state endpoint: String
+    state service_name: String
+    
+    fn new(endpoint: String, service_name: String) -> Self {
+        JaegerExporter { endpoint: endpoint, service_name: service_name }
+    }
+}
+
+impl SpanExporter for JaegerExporter {
+    fn export(spans: [Span]) -> Result<(), ExportError> {
+        let payload = JaegerBatch {
+            process: JaegerProcess { service_name: self.service_name, tags: [] },
+            spans: spans.map(|s| JaegerSpan {
+                trace_id_low: s.trace_id().low as Int64,
+                trace_id_high: s.trace_id().high as Int64,
+                span_id: s.span_id().value as Int64,
+                parent_span_id: s.parent_span_id.map(|id| id.value as Int64).unwrap_or(0),
+                operation_name: s.name,
+                start_time: s.start_time.as_micros(),
+                duration: s.duration().as_micros()
+            })
+        }
+        
+        let resp = Client.new().send(
+            Request.post("\(self.endpoint)/api/traces")
+                .header("Content-Type", "application/json")
+                .json(payload)
+        )?
+        
+        if !resp.is_success() { return Err(ExportError.HttpError(resp.status.code)) }
+        Ok(())
+    }
+    
+    fn shutdown() -> Result<(), ExportError> { Ok(()) }
+}
+
+struct JaegerBatch { process: JaegerProcess, spans: [JaegerSpan] }
+struct JaegerProcess { service_name: String, tags: [JaegerTag] }
+struct JaegerSpan { trace_id_low: Int64, trace_id_high: Int64, span_id: Int64, parent_span_id: Int64, operation_name: String, start_time: Int64, duration: Int64 }
+struct JaegerTag { key: String, value: String }
+
+/// Zipkin exporter
+actor ZipkinExporter {
+    state endpoint: String
+    state service_name: String
+    
+    fn new(endpoint: String, service_name: String) -> Self {
+        ZipkinExporter { endpoint: endpoint, service_name: service_name }
+    }
+}
+
+impl SpanExporter for ZipkinExporter {
+    fn export(spans: [Span]) -> Result<(), ExportError> {
+        let zipkin_spans = spans.map(|s| ZipkinSpan {
+            trace_id: s.trace_id().to_hex(),
+            id: s.span_id().to_hex(),
+            parent_id: s.parent_span_id.map(|id| id.to_hex()),
+            name: s.name,
+            timestamp: s.start_time.as_micros(),
+            duration: s.duration().as_micros(),
+            local_endpoint: ZipkinEndpoint { service_name: self.service_name },
+            kind: match s.kind { .Server => "SERVER", .Client => "CLIENT", .Producer => "PRODUCER", .Consumer => "CONSUMER", _ => None }
+        })
+        
+        let resp = Client.new().send(
+            Request.post("\(self.endpoint)/api/v2/spans")
+                .header("Content-Type", "application/json")
+                .json(zipkin_spans)
+        )?
+        
+        if !resp.is_success() { return Err(ExportError.HttpError(resp.status.code)) }
+        Ok(())
+    }
+    
+    fn shutdown() -> Result<(), ExportError> { Ok(()) }
+}
+
+struct ZipkinSpan { trace_id: String, id: String, parent_id: Option<String>, name: String, timestamp: Int64, duration: Int64, local_endpoint: ZipkinEndpoint, kind: Option<String> }
+struct ZipkinEndpoint { service_name: String }
+
+enum ExportError { HttpError(Int), NetworkError(String), Timeout }
+
+// -----------------------------------------------------------------------------
+// Context Propagation
+// -----------------------------------------------------------------------------
+
+trait Propagator {
+    fn inject(context: SpanContext, carrier: Map<String, String>)
+    fn extract(carrier: Map<String, String>) -> Option<SpanContext>
+}
+
+/// W3C Trace Context propagator
+struct TraceContextPropagator {}
+impl Propagator for TraceContextPropagator {
+    fn inject(context: SpanContext, carrier: Map<String, String>) {
+        let traceparent = format!("00-{}-{}-{:02x}",
+            context.trace_id.to_hex(),
+            context.span_id.to_hex(),
+            context.trace_flags.to_byte()
+        )
+        carrier.set("traceparent", traceparent)
+    }
+    
+    fn extract(carrier: Map<String, String>) -> Option<SpanContext> {
+        let traceparent = carrier.get("traceparent")?
+        let parts = traceparent.split("-")
+        if parts.len() != 4 { return None }
+        
+        let trace_id = TraceId.from_hex(parts[1])?
+        let span_id = SpanId.from_hex(parts[2])?
+        let flags = UInt8.from_hex(parts[3])?
+        
+        Some(SpanContext {
+            trace_id: trace_id,
+            span_id: span_id,
+            trace_flags: TraceFlags.from_byte(flags),
+            is_remote: true
+        })
+    }
+}
+
+/// B3 propagator (Zipkin format)
+struct B3Propagator { single_header: Bool }
+impl B3Propagator {
+    fn new() -> Self { B3Propagator { single_header: false } }
+    fn single() -> Self { B3Propagator { single_header: true } }
+}
+
+impl Propagator for B3Propagator {
+    fn inject(context: SpanContext, carrier: Map<String, String>) {
+        if self.single_header {
+            let b3 = format!("{}-{}-{}",
+                context.trace_id.to_hex(),
+                context.span_id.to_hex(),
+                if context.trace_flags.sampled { "1" } else { "0" }
+            )
+            carrier.set("b3", b3)
+        } else {
+            carrier.set("X-B3-TraceId", context.trace_id.to_hex())
+            carrier.set("X-B3-SpanId", context.span_id.to_hex())
+            carrier.set("X-B3-Sampled", if context.trace_flags.sampled { "1" } else { "0" })
+        }
+    }
+    
+    fn extract(carrier: Map<String, String>) -> Option<SpanContext> {
+        if let b3 = carrier.get("b3") {
+            let parts = b3.split("-")
+            if parts.len() >= 2 {
+                let trace_id = TraceId.from_hex(parts[0])?
+                let span_id = SpanId.from_hex(parts[1])?
+                let sampled = parts.get(2).map(|s| s == "1").unwrap_or(true)
+                return Some(SpanContext {
+                    trace_id: trace_id, span_id: span_id,
+                    trace_flags: TraceFlags { sampled: sampled }, is_remote: true
+                })
+            }
+        }
+        
+        let trace_id = TraceId.from_hex(carrier.get("X-B3-TraceId")?)?
+        let span_id = SpanId.from_hex(carrier.get("X-B3-SpanId")?)?
+        let sampled = carrier.get("X-B3-Sampled").map(|s| s == "1").unwrap_or(true)
+        
+        Some(SpanContext {
+            trace_id: trace_id, span_id: span_id,
+            trace_flags: TraceFlags { sampled: sampled }, is_remote: true
+        })
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Macros
+// -----------------------------------------------------------------------------
+
+/// Create a span for the current function
+macro span!(name = @function()) {
+    let span = TRACER.start_span(name)
+    defer { span.end() }
+    span
+}
+
+/// Add attribute to current span
+macro attr!(key, value) {
+    if let Some(span) = TRACER.current_span() {
+        span.set_attribute(key, value)
+    }
+}
+
+/// Add event to current span
+macro event!(name, ...attrs) {
+    if let Some(span) = TRACER.current_span() {
+        span.add_event(name, Map.from(attrs))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// HTTP Middleware
+// -----------------------------------------------------------------------------
+
+fn http_tracing_middleware(propagator: impl Propagator = TraceContextPropagator {}) -> fn(Request, fn(Request) -> Response) -> Response {
+    |req, next| {
+        let parent = propagator.extract(req.headers.to_map())
+        let span = if let Some(ctx) = parent {
+            TRACER.start_span_with_context(req.url, ctx)
+        } else {
+            TRACER.start_span(req.url)
+        }
+        
+        span.set_kind(SpanKind.Server)
+        span.set_string("http.method", req.method.to_string())
+        span.set_string("http.url", req.url)
+        
+        defer { span.end() }
+        
+        let resp = next(req)
+        span.set_int("http.status_code", resp.status.code as Int64)
+        
+        if resp.status.is_server_error() {
+            span.set_error("HTTP \(resp.status.code)")
+        }
+        
+        resp
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "trace id generation" {
+    let id = TraceId.generate()
+    assert(id.is_valid())?
+    assert_eq(id.to_hex().len(), 32)?
+}
+
+test "span id generation" {
+    let id = SpanId.generate()
+    assert(id.is_valid())?
+    assert_eq(id.to_hex().len(), 16)?
+}
+
+test "trace context propagation" {
+    let ctx = SpanContext {
+        trace_id: TraceId { high: 0x0123456789abcdef, low: 0xfedcba9876543210 },
+        span_id: SpanId { value: 0x1234567890abcdef },
+        trace_flags: TraceFlags { sampled: true },
+        is_remote: false
+    }
+    
+    var carrier = Map.empty()
+    TraceContextPropagator {}.inject(ctx, carrier)
+    
+    let extracted = TraceContextPropagator {}.extract(carrier).unwrap()
+    assert_eq(extracted.trace_id.to_hex(), ctx.trace_id.to_hex())?
+    assert_eq(extracted.span_id.to_hex(), ctx.span_id.to_hex())?
+}
+
+test "span creation" {
+    let span = TRACER.start_span("test-operation")
+    span.set_string("key", "value")
+    span.add_event("test-event")
+    span.set_ok()
+    span.end()
+    
+    assert(!span.is_recording())?
+}

@@ -1,0 +1,686 @@
+// =============================================================================
+// Vibee OS — Metrics Module
+// Application metrics collection and aggregation
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Core Metric Types
+// -----------------------------------------------------------------------------
+
+/// Generic metric value
+enum MetricValue {
+    Counter(Float)
+    Gauge(Float)
+    Histogram(HistogramData)
+    Summary(SummaryData)
+    
+    fn as_float() -> Option<Float> {
+        match self {
+            .Counter(v) | .Gauge(v) => Some(v),
+            _ => None
+        }
+    }
+}
+
+struct HistogramData {
+    count: Int
+    sum: Float
+    buckets: [(Float, Int)]  // (upper_bound, count)
+    min: Float
+    max: Float
+}
+
+struct SummaryData {
+    count: Int
+    sum: Float
+    quantiles: [(Float, Float)]  // (quantile, value)
+}
+
+/// Metric with metadata
+struct MetricPoint {
+    name: String
+    value: MetricValue
+    labels: Map<String, String>
+    timestamp: Instant
+    unit: Option<String>
+    description: Option<String>
+}
+
+// -----------------------------------------------------------------------------
+// Metric Collector
+// -----------------------------------------------------------------------------
+
+/// Collects and aggregates metrics
+actor MetricCollector {
+    state metrics: Map<String, [MetricPoint]>
+    state aggregators: Map<String, Aggregator>
+    state retention: Duration
+    state max_points: Int
+    
+    fn new() -> Self {
+        MetricCollector {
+            metrics: Map.empty(),
+            aggregators: Map.empty(),
+            retention: Duration.from_hours(1),
+            max_points: 10000
+        }
+    }
+    
+    on retention(duration: Duration) -> Self { self.retention = duration; self }
+    on max_points(n: Int) -> Self { self.max_points = n; self }
+    
+    on record(point: MetricPoint) {
+        let key = self.metric_key(point.name, point.labels)
+        let points = self.metrics.entry(key).or_insert([])
+        points.push(point)
+        
+        // Cleanup old points
+        self.cleanup(key)
+    }
+    
+    on record_counter(name: String, value: Float, labels: Map<String, String> = Map.empty()) {
+        self.record(MetricPoint {
+            name: name, value: MetricValue.Counter(value),
+            labels: labels, timestamp: Instant.now(),
+            unit: None, description: None
+        })
+    }
+    
+    on record_gauge(name: String, value: Float, labels: Map<String, String> = Map.empty()) {
+        self.record(MetricPoint {
+            name: name, value: MetricValue.Gauge(value),
+            labels: labels, timestamp: Instant.now(),
+            unit: None, description: None
+        })
+    }
+    
+    on record_histogram(name: String, value: Float, buckets: [Float] = DEFAULT_BUCKETS, labels: Map<String, String> = Map.empty()) {
+        let key = self.metric_key(name, labels)
+        let agg = self.aggregators.entry(key).or_insert(Aggregator.histogram(buckets))
+        agg.add(value)
+        
+        self.record(MetricPoint {
+            name: name, value: MetricValue.Histogram(agg.histogram_data()),
+            labels: labels, timestamp: Instant.now(),
+            unit: None, description: None
+        })
+    }
+    
+    fn metric_key(name: String, labels: Map<String, String>) -> String {
+        let label_str = labels.iter()
+            .sorted_by(|(a, _), (b, _)| a.cmp(b))
+            .map(|(k, v)| "\(k)=\(v)")
+            .join(",")
+        "\(name){\(label_str)}"
+    }
+    
+    fn cleanup(key: String) {
+        let cutoff = Instant.now() - self.retention
+        if let points = self.metrics.get_mut(key) {
+            points.retain(|p| p.timestamp > cutoff)
+            if points.len() > self.max_points {
+                points.drain(0..(points.len() - self.max_points))
+            }
+        }
+    }
+    
+    fn get(name: String, labels: Map<String, String> = Map.empty()) -> [MetricPoint] {
+        let key = self.metric_key(name, labels)
+        self.metrics.get(key).cloned().unwrap_or([])
+    }
+    
+    fn get_latest(name: String, labels: Map<String, String> = Map.empty()) -> Option<MetricPoint> {
+        self.get(name, labels).last().cloned()
+    }
+    
+    fn list_metrics() -> [String] {
+        self.metrics.keys().collect()
+    }
+    
+    fn query(query: MetricQuery) -> QueryResult {
+        var results = []
+        
+        for (key, points) in self.metrics {
+            if !query.name_matches(key) { continue }
+            
+            let filtered = points.filter(|p| {
+                p.timestamp >= query.start && p.timestamp <= query.end &&
+                query.labels_match(p.labels)
+            })
+            
+            if !filtered.is_empty() {
+                results.push(TimeSeries { key: key, points: filtered })
+            }
+        }
+        
+        QueryResult { series: results }
+    }
+}
+
+const DEFAULT_BUCKETS: [Float] = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
+
+// -----------------------------------------------------------------------------
+// Aggregator
+// -----------------------------------------------------------------------------
+
+actor Aggregator {
+    state type_: AggregatorType
+    state count: Int
+    state sum: Float
+    state min: Float
+    state max: Float
+    state buckets: [Float]
+    state bucket_counts: [Int]
+    state values: [Float]
+    
+    fn counter() -> Self {
+        Aggregator { type_: AggregatorType.Counter, count: 0, sum: 0.0, min: 0.0, max: 0.0, buckets: [], bucket_counts: [], values: [] }
+    }
+    
+    fn gauge() -> Self {
+        Aggregator { type_: AggregatorType.Gauge, count: 0, sum: 0.0, min: Float.MAX, max: Float.MIN, buckets: [], bucket_counts: [], values: [] }
+    }
+    
+    fn histogram(buckets: [Float]) -> Self {
+        Aggregator {
+            type_: AggregatorType.Histogram, count: 0, sum: 0.0,
+            min: Float.MAX, max: Float.MIN,
+            buckets: buckets.sorted(), bucket_counts: [0].repeat(buckets.len()),
+            values: []
+        }
+    }
+    
+    fn summary(max_values: Int = 1000) -> Self {
+        Aggregator { type_: AggregatorType.Summary, count: 0, sum: 0.0, min: Float.MAX, max: Float.MIN, buckets: [], bucket_counts: [], values: [] }
+    }
+    
+    on add(value: Float) {
+        self.count += 1
+        self.sum += value
+        self.min = self.min.min(value)
+        self.max = self.max.max(value)
+        
+        match self.type_ {
+            .Histogram => {
+                for (i, bound) in self.buckets.enumerate() {
+                    if value <= bound { self.bucket_counts[i] += 1 }
+                }
+            },
+            .Summary => {
+                self.values.push(value)
+                if self.values.len() > 10000 {
+                    self.values.remove(0)
+                }
+            },
+            _ => {}
+        }
+    }
+    
+    on reset() {
+        self.count = 0
+        self.sum = 0.0
+        self.min = Float.MAX
+        self.max = Float.MIN
+        self.bucket_counts = [0].repeat(self.buckets.len())
+        self.values.clear()
+    }
+    
+    fn mean() -> Float { if self.count > 0 { self.sum / self.count as Float } else { 0.0 } }
+    fn rate(duration: Duration) -> Float { self.sum / duration.as_secs_f64() }
+    
+    fn histogram_data() -> HistogramData {
+        HistogramData {
+            count: self.count, sum: self.sum,
+            buckets: self.buckets.zip(self.bucket_counts).collect(),
+            min: self.min, max: self.max
+        }
+    }
+    
+    fn summary_data(quantiles: [Float] = [0.5, 0.9, 0.95, 0.99]) -> SummaryData {
+        let sorted = self.values.sorted()
+        let qs = quantiles.map(|q| {
+            let idx = ((sorted.len() as Float - 1.0) * q).round() as Int
+            (q, sorted.get(idx.clamp(0, sorted.len() - 1)).unwrap_or(0.0))
+        })
+        SummaryData { count: self.count, sum: self.sum, quantiles: qs }
+    }
+}
+
+enum AggregatorType { Counter, Gauge, Histogram, Summary }
+
+// -----------------------------------------------------------------------------
+// Metric Query
+// -----------------------------------------------------------------------------
+
+struct MetricQuery {
+    name_pattern: String
+    labels: Map<String, String>
+    start: Instant
+    end: Instant
+    
+    fn new(name: String) -> Self {
+        MetricQuery {
+            name_pattern: name,
+            labels: Map.empty(),
+            start: Instant.now() - Duration.from_hours(1),
+            end: Instant.now()
+        }
+    }
+    
+    fn label(key: String, value: String) -> Self {
+        self.labels.set(key, value)
+        self
+    }
+    
+    fn time_range(start: Instant, end: Instant) -> Self {
+        MetricQuery { ...self, start: start, end: end }
+    }
+    
+    fn last(duration: Duration) -> Self {
+        MetricQuery { ...self, start: Instant.now() - duration, end: Instant.now() }
+    }
+    
+    fn name_matches(key: String) -> Bool {
+        if self.name_pattern.contains("*") {
+            let pattern = self.name_pattern.replace("*", ".*")
+            Regex.new(pattern).is_match(key)
+        } else {
+            key.starts_with(self.name_pattern)
+        }
+    }
+    
+    fn labels_match(point_labels: Map<String, String>) -> Bool {
+        for (k, v) in self.labels {
+            if point_labels.get(k) != Some(v) { return false }
+        }
+        true
+    }
+}
+
+struct QueryResult {
+    series: [TimeSeries]
+    
+    fn is_empty() -> Bool { self.series.is_empty() }
+    fn len() -> Int { self.series.len() }
+    
+    fn aggregate(agg: AggregateFunc) -> Float {
+        let all_values = self.series.flat_map(|s| s.points.filter_map(|p| p.value.as_float()))
+        match agg {
+            .Sum => all_values.sum(),
+            .Avg => all_values.sum() / all_values.len() as Float,
+            .Min => all_values.min().unwrap_or(0.0),
+            .Max => all_values.max().unwrap_or(0.0),
+            .Count => all_values.len() as Float
+        }
+    }
+}
+
+struct TimeSeries {
+    key: String
+    points: [MetricPoint]
+    
+    fn latest() -> Option<MetricPoint> { self.points.last().cloned() }
+    fn first() -> Option<MetricPoint> { self.points.first().cloned() }
+    fn values() -> [Float] { self.points.filter_map(|p| p.value.as_float()) }
+}
+
+enum AggregateFunc { Sum, Avg, Min, Max, Count }
+
+// -----------------------------------------------------------------------------
+// System Metrics
+// -----------------------------------------------------------------------------
+
+/// Collect system metrics
+actor SystemMetrics {
+    state collector: MetricCollector
+    state interval: Duration
+    state running: Bool
+    
+    fn new(collector: MetricCollector) -> Self {
+        SystemMetrics { collector: collector, interval: Duration.from_secs(10), running: false }
+    }
+    
+    on interval(d: Duration) -> Self { self.interval = d; self }
+    
+    on start() {
+        self.running = true
+        spawn { self.collect_loop() }
+    }
+    
+    on stop() { self.running = false }
+    
+    async fn collect_loop() {
+        while self.running {
+            self.collect_cpu()
+            self.collect_memory()
+            self.collect_disk()
+            self.collect_network()
+            self.collect_process()
+            
+            await sleep(self.interval)
+        }
+    }
+    
+    fn collect_cpu() {
+        let stats = @native("system_cpu_stats") as CpuStats
+        self.collector.record_gauge("system_cpu_usage_percent", stats.usage_percent)
+        self.collector.record_gauge("system_cpu_user_percent", stats.user_percent)
+        self.collector.record_gauge("system_cpu_system_percent", stats.system_percent)
+        self.collector.record_gauge("system_cpu_idle_percent", stats.idle_percent)
+        self.collector.record_gauge("system_cpu_cores", stats.cores as Float)
+    }
+    
+    fn collect_memory() {
+        let stats = @native("system_memory_stats") as MemoryStats
+        self.collector.record_gauge("system_memory_total_bytes", stats.total as Float)
+        self.collector.record_gauge("system_memory_used_bytes", stats.used as Float)
+        self.collector.record_gauge("system_memory_free_bytes", stats.free as Float)
+        self.collector.record_gauge("system_memory_usage_percent", stats.usage_percent)
+        self.collector.record_gauge("system_swap_total_bytes", stats.swap_total as Float)
+        self.collector.record_gauge("system_swap_used_bytes", stats.swap_used as Float)
+    }
+    
+    fn collect_disk() {
+        let disks = @native("system_disk_stats") as [DiskStats]
+        for disk in disks {
+            let labels = Map.from([("device", disk.device), ("mount", disk.mount_point)])
+            self.collector.record_gauge("system_disk_total_bytes", disk.total as Float, labels.clone())
+            self.collector.record_gauge("system_disk_used_bytes", disk.used as Float, labels.clone())
+            self.collector.record_gauge("system_disk_free_bytes", disk.free as Float, labels.clone())
+            self.collector.record_gauge("system_disk_usage_percent", disk.usage_percent, labels)
+        }
+    }
+    
+    fn collect_network() {
+        let interfaces = @native("system_network_stats") as [NetworkStats]
+        for iface in interfaces {
+            let labels = Map.from([("interface", iface.name)])
+            self.collector.record_counter("system_network_bytes_recv", iface.bytes_recv as Float, labels.clone())
+            self.collector.record_counter("system_network_bytes_sent", iface.bytes_sent as Float, labels.clone())
+            self.collector.record_counter("system_network_packets_recv", iface.packets_recv as Float, labels.clone())
+            self.collector.record_counter("system_network_packets_sent", iface.packets_sent as Float, labels.clone())
+            self.collector.record_counter("system_network_errors_recv", iface.errors_recv as Float, labels.clone())
+            self.collector.record_counter("system_network_errors_sent", iface.errors_sent as Float, labels)
+        }
+    }
+    
+    fn collect_process() {
+        let stats = @native("process_stats") as ProcessStats
+        self.collector.record_gauge("process_cpu_percent", stats.cpu_percent)
+        self.collector.record_gauge("process_memory_bytes", stats.memory_bytes as Float)
+        self.collector.record_gauge("process_threads", stats.threads as Float)
+        self.collector.record_gauge("process_open_fds", stats.open_fds as Float)
+        self.collector.record_counter("process_cpu_seconds_total", stats.cpu_seconds)
+    }
+}
+
+struct CpuStats { usage_percent: Float, user_percent: Float, system_percent: Float, idle_percent: Float, cores: Int }
+struct MemoryStats { total: Int64, used: Int64, free: Int64, usage_percent: Float, swap_total: Int64, swap_used: Int64 }
+struct DiskStats { device: String, mount_point: String, total: Int64, used: Int64, free: Int64, usage_percent: Float }
+struct NetworkStats { name: String, bytes_recv: Int64, bytes_sent: Int64, packets_recv: Int64, packets_sent: Int64, errors_recv: Int64, errors_sent: Int64 }
+struct ProcessStats { cpu_percent: Float, cpu_seconds: Float, memory_bytes: Int64, threads: Int, open_fds: Int }
+
+// -----------------------------------------------------------------------------
+// Application Metrics
+// -----------------------------------------------------------------------------
+
+/// HTTP metrics collector
+actor HttpMetrics {
+    state request_counter: Map<String, Int>
+    state request_duration: Map<String, Aggregator>
+    state active_requests: Int
+    state collector: MetricCollector
+    
+    fn new(collector: MetricCollector) -> Self {
+        HttpMetrics {
+            request_counter: Map.empty(),
+            request_duration: Map.empty(),
+            active_requests: 0,
+            collector: collector
+        }
+    }
+    
+    on request_start() { self.active_requests += 1 }
+    on request_end() { self.active_requests -= 1 }
+    
+    on record_request(method: String, path: String, status: Int, duration: Duration) {
+        let key = "\(method):\(path):\(status)"
+        
+        self.request_counter.entry(key).or_insert(0) += 1
+        self.request_duration.entry(key).or_insert(Aggregator.histogram(DEFAULT_BUCKETS)).add(duration.as_secs_f64())
+        
+        let labels = Map.from([("method", method), ("path", path), ("status", status.to_string())])
+        self.collector.record_counter("http_requests_total", 1.0, labels.clone())
+        self.collector.record_histogram("http_request_duration_seconds", duration.as_secs_f64(), DEFAULT_BUCKETS, labels)
+    }
+    
+    fn middleware() -> fn(Request, fn(Request) -> Response) -> Response {
+        |req, next| {
+            self.request_start()
+            let start = Instant.now()
+            
+            defer {
+                self.request_end()
+                let duration = start.elapsed()
+                self.record_request(req.method.to_string(), req.url, resp.status.code, duration)
+            }
+            
+            next(req)
+        }
+    }
+}
+
+/// Database metrics collector
+actor DbMetrics {
+    state query_duration: Aggregator
+    state query_count: Int
+    state error_count: Int
+    state active_connections: Int
+    state collector: MetricCollector
+    
+    fn new(collector: MetricCollector) -> Self {
+        DbMetrics {
+            query_duration: Aggregator.histogram(DEFAULT_BUCKETS),
+            query_count: 0, error_count: 0, active_connections: 0,
+            collector: collector
+        }
+    }
+    
+    on record_query(operation: String, table: String, duration: Duration, success: Bool) {
+        self.query_count += 1
+        if !success { self.error_count += 1 }
+        self.query_duration.add(duration.as_secs_f64())
+        
+        let labels = Map.from([("operation", operation), ("table", table)])
+        self.collector.record_counter("db_queries_total", 1.0, labels.clone())
+        self.collector.record_histogram("db_query_duration_seconds", duration.as_secs_f64(), DEFAULT_BUCKETS, labels)
+        
+        if !success {
+            self.collector.record_counter("db_query_errors_total", 1.0, labels)
+        }
+    }
+    
+    on connection_opened() { self.active_connections += 1 }
+    on connection_closed() { self.active_connections -= 1 }
+}
+
+/// Cache metrics collector
+actor CacheMetrics {
+    state hits: Int
+    state misses: Int
+    state evictions: Int
+    state size: Int
+    state collector: MetricCollector
+    
+    fn new(collector: MetricCollector) -> Self {
+        CacheMetrics { hits: 0, misses: 0, evictions: 0, size: 0, collector: collector }
+    }
+    
+    on hit(cache_name: String) {
+        self.hits += 1
+        self.collector.record_counter("cache_hits_total", 1.0, Map.from([("cache", cache_name)]))
+    }
+    
+    on miss(cache_name: String) {
+        self.misses += 1
+        self.collector.record_counter("cache_misses_total", 1.0, Map.from([("cache", cache_name)]))
+    }
+    
+    on eviction(cache_name: String) {
+        self.evictions += 1
+        self.collector.record_counter("cache_evictions_total", 1.0, Map.from([("cache", cache_name)]))
+    }
+    
+    fn hit_rate() -> Float {
+        let total = self.hits + self.misses
+        if total > 0 { self.hits as Float / total as Float } else { 0.0 }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Metric Exporters
+// -----------------------------------------------------------------------------
+
+trait MetricExporter {
+    fn export(metrics: [MetricPoint]) -> Result<(), ExportError>
+}
+
+/// StatsD exporter
+actor StatsDExporter {
+    state host: String
+    state port: Int
+    state prefix: String
+    state socket: UdpSocket
+    
+    fn new(host: String, port: Int = 8125) -> Result<Self, IoError> {
+        let socket = UdpSocket.bind("0.0.0.0:0")?
+        Ok(StatsDExporter { host: host, port: port, prefix: "", socket: socket })
+    }
+    
+    on prefix(p: String) -> Self { self.prefix = p; self }
+    
+    fn format_metric(point: MetricPoint) -> String {
+        let name = if self.prefix.is_empty() { point.name } else { "\(self.prefix).\(point.name)" }
+        let value = point.value.as_float().unwrap_or(0.0)
+        let type_char = match point.value {
+            .Counter(_) => "c",
+            .Gauge(_) => "g",
+            .Histogram(_) => "ms",
+            .Summary(_) => "ms"
+        }
+        "\(name):\(value)|\(type_char)"
+    }
+}
+
+impl MetricExporter for StatsDExporter {
+    fn export(metrics: [MetricPoint]) -> Result<(), ExportError> {
+        for point in metrics {
+            let msg = self.format_metric(point)
+            self.socket.send_to(msg.as_bytes(), "\(self.host):\(self.port)")?
+        }
+        Ok(())
+    }
+}
+
+/// InfluxDB exporter
+actor InfluxDBExporter {
+    state url: String
+    state database: String
+    state token: Option<String>
+    
+    fn new(url: String, database: String) -> Self {
+        InfluxDBExporter { url: url, database: database, token: None }
+    }
+    
+    on token(t: String) -> Self { self.token = Some(t); self }
+    
+    fn format_line(point: MetricPoint) -> String {
+        let tags = point.labels.iter().map(|(k, v)| "\(k)=\(v)").join(",")
+        let value = point.value.as_float().unwrap_or(0.0)
+        let timestamp = point.timestamp.as_nanos()
+        
+        if tags.is_empty() {
+            "\(point.name) value=\(value) \(timestamp)"
+        } else {
+            "\(point.name),\(tags) value=\(value) \(timestamp)"
+        }
+    }
+}
+
+impl MetricExporter for InfluxDBExporter {
+    fn export(metrics: [MetricPoint]) -> Result<(), ExportError> {
+        let body = metrics.map(|p| self.format_line(p)).join("\n")
+        
+        var req = Request.post("\(self.url)/write?db=\(self.database)")
+            .header("Content-Type", "text/plain")
+            .body(body.as_bytes())
+        
+        if let t = self.token {
+            req = req.header("Authorization", "Token \(t)")
+        }
+        
+        let resp = Client.new().send(req)?
+        if !resp.is_success() {
+            return Err(ExportError.HttpError(resp.status.code))
+        }
+        Ok(())
+    }
+}
+
+enum ExportError { HttpError(Int), NetworkError(String), IoError(IoError) }
+
+// -----------------------------------------------------------------------------
+// Global Collector
+// -----------------------------------------------------------------------------
+
+var COLLECTOR = MetricCollector.new()
+
+fn record_counter(name: String, value: Float, labels: Map<String, String> = Map.empty()) {
+    COLLECTOR.record_counter(name, value, labels)
+}
+
+fn record_gauge(name: String, value: Float, labels: Map<String, String> = Map.empty()) {
+    COLLECTOR.record_gauge(name, value, labels)
+}
+
+fn record_histogram(name: String, value: Float, labels: Map<String, String> = Map.empty()) {
+    COLLECTOR.record_histogram(name, value, DEFAULT_BUCKETS, labels)
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "metric collector" {
+    let collector = MetricCollector.new()
+    collector.record_counter("test_counter", 1.0)
+    collector.record_counter("test_counter", 2.0)
+    
+    let points = collector.get("test_counter")
+    assert_eq(points.len(), 2)?
+}
+
+test "aggregator histogram" {
+    let agg = Aggregator.histogram([0.1, 0.5, 1.0])
+    agg.add(0.05)
+    agg.add(0.3)
+    agg.add(0.8)
+    agg.add(1.5)
+    
+    assert_eq(agg.count, 4)?
+    assert(agg.mean() > 0.0)?
+}
+
+test "metric query" {
+    let collector = MetricCollector.new()
+    collector.record_gauge("cpu_usage", 50.0, Map.from([("host", "server1")]))
+    collector.record_gauge("cpu_usage", 60.0, Map.from([("host", "server2")]))
+    
+    let result = collector.query(MetricQuery.new("cpu_usage").label("host", "server1"))
+    assert_eq(result.len(), 1)?
+}
+
+test "system metrics types" {
+    let cpu = CpuStats { usage_percent: 50.0, user_percent: 30.0, system_percent: 20.0, idle_percent: 50.0, cores: 4 }
+    assert_eq(cpu.cores, 4)?
+}

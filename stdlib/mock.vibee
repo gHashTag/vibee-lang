@@ -1,0 +1,551 @@
+// =============================================================================
+// Vibee OS — Mock Module
+// Mocks, stubs, spies, and fakes for testing
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Mock Builder
+// -----------------------------------------------------------------------------
+
+/// Mock object builder
+actor Mock<T> {
+    state expectations: [Expectation]
+    state stubs: Map<String, StubBehavior>
+    state calls: [Call]
+    state strict: Bool
+    
+    fn new() -> Self {
+        Mock { expectations: [], stubs: Map.empty(), calls: [], strict: false }
+    }
+    
+    /// Enable strict mode (fail on unexpected calls)
+    on strict() -> Self { self.strict = true; self }
+    
+    /// Expect method call
+    on expect(method: String) -> ExpectationBuilder<T> {
+        ExpectationBuilder.new(self, method)
+    }
+    
+    /// Stub method to return value
+    on stub(method: String) -> StubBuilder<T> {
+        StubBuilder.new(self, method)
+    }
+    
+    /// Record a call
+    on record_call(method: String, args: [Any]) {
+        self.calls.append(Call { method: method, args: args, timestamp: Instant.now() })
+    }
+    
+    /// Get return value for method
+    fn get_return(method: String, args: [Any]) -> Option<Any> {
+        // Check expectations first
+        for exp in self.expectations {
+            if exp.method == method && exp.matches_args(args) && !exp.satisfied() {
+                exp.record_call()
+                return exp.return_value
+            }
+        }
+        
+        // Check stubs
+        if let stub = self.stubs.get(method) {
+            return Some(stub.get_return(args))
+        }
+        
+        if self.strict {
+            panic("Unexpected call to \(method)")
+        }
+        
+        None
+    }
+    
+    /// Verify all expectations were met
+    fn verify() -> Result<(), MockError> {
+        for exp in self.expectations {
+            if !exp.satisfied() {
+                return Err(MockError.ExpectationNotMet(exp.method, exp.expected_calls, exp.actual_calls))
+            }
+        }
+        Ok(())
+    }
+    
+    /// Check if method was called
+    fn was_called(method: String) -> Bool {
+        self.calls.any(|c| c.method == method)
+    }
+    
+    /// Get call count for method
+    fn call_count(method: String) -> Int {
+        self.calls.filter(|c| c.method == method).len()
+    }
+    
+    /// Get calls for method
+    fn calls_for(method: String) -> [Call] {
+        self.calls.filter(|c| c.method == method)
+    }
+    
+    /// Get all calls
+    fn all_calls() -> [Call] {
+        self.calls
+    }
+    
+    /// Reset mock state
+    on reset() {
+        self.calls = []
+        for exp in self.expectations { exp.reset() }
+    }
+}
+
+/// Call record
+struct Call {
+    method: String
+    args: [Any]
+    timestamp: Instant
+}
+
+// -----------------------------------------------------------------------------
+// Expectation
+// -----------------------------------------------------------------------------
+
+struct Expectation {
+    method: String
+    arg_matchers: [ArgMatcher]
+    return_value: Option<Any>
+    return_fn: Option<([Any]) -> Any>
+    throw_error: Option<Any>
+    expected_calls: CallCount
+    actual_calls: Int
+    in_order: Bool
+    
+    fn matches_args(args: [Any]) -> Bool {
+        if self.arg_matchers.is_empty() { return true }
+        if args.len() != self.arg_matchers.len() { return false }
+        
+        for (i, matcher) in self.arg_matchers.enumerate() {
+            if !matcher.matches(args[i]) { return false }
+        }
+        true
+    }
+    
+    fn satisfied() -> Bool {
+        match self.expected_calls {
+            .Exactly(n) => self.actual_calls == n
+            .AtLeast(n) => self.actual_calls >= n
+            .AtMost(n) => self.actual_calls <= n
+            .Between(min, max) => self.actual_calls >= min && self.actual_calls <= max
+            .Any => true
+        }
+    }
+    
+    fn record_call() { self.actual_calls += 1 }
+    fn reset() { self.actual_calls = 0 }
+}
+
+enum CallCount {
+    Exactly(Int)
+    AtLeast(Int)
+    AtMost(Int)
+    Between(Int, Int)
+    Any
+}
+
+/// Expectation builder
+actor ExpectationBuilder<T> {
+    state mock: Mock<T>
+    state method: String
+    state arg_matchers: [ArgMatcher]
+    state return_value: Option<Any>
+    state return_fn: Option<([Any]) -> Any>
+    state throw_error: Option<Any>
+    state expected_calls: CallCount
+    
+    fn new(mock: Mock<T>, method: String) -> Self {
+        ExpectationBuilder {
+            mock: mock,
+            method: method,
+            arg_matchers: [],
+            expected_calls: .Exactly(1)
+        }
+    }
+    
+    /// Match specific arguments
+    on with_args(args: [Any]) -> Self {
+        self.arg_matchers = args.map(|a| ArgMatcher.Eq(a))
+        self
+    }
+    
+    /// Match with matchers
+    on with(matchers: [ArgMatcher]) -> Self {
+        self.arg_matchers = matchers
+        self
+    }
+    
+    /// Match any arguments
+    on with_any_args() -> Self {
+        self.arg_matchers = []
+        self
+    }
+    
+    /// Return value
+    on returns(value: Any) -> Self {
+        self.return_value = Some(value)
+        self
+    }
+    
+    /// Return computed value
+    on returns_fn(f: ([Any]) -> Any) -> Self {
+        self.return_fn = Some(f)
+        self
+    }
+    
+    /// Throw error
+    on throws(error: Any) -> Self {
+        self.throw_error = Some(error)
+        self
+    }
+    
+    /// Expect exactly n calls
+    on times(n: Int) -> Self {
+        self.expected_calls = .Exactly(n)
+        self
+    }
+    
+    /// Expect exactly once
+    on once() -> Self { self.times(1) }
+    
+    /// Expect exactly twice
+    on twice() -> Self { self.times(2) }
+    
+    /// Expect never called
+    on never() -> Self { self.times(0) }
+    
+    /// Expect at least n calls
+    on at_least(n: Int) -> Self {
+        self.expected_calls = .AtLeast(n)
+        self
+    }
+    
+    /// Expect at most n calls
+    on at_most(n: Int) -> Self {
+        self.expected_calls = .AtMost(n)
+        self
+    }
+    
+    /// Expect any number of calls
+    on any_times() -> Self {
+        self.expected_calls = .Any
+        self
+    }
+    
+    /// Build and register expectation
+    on build() -> Mock<T> {
+        let exp = Expectation {
+            method: self.method,
+            arg_matchers: self.arg_matchers,
+            return_value: self.return_value,
+            return_fn: self.return_fn,
+            throw_error: self.throw_error,
+            expected_calls: self.expected_calls,
+            actual_calls: 0,
+            in_order: false
+        }
+        self.mock.expectations.append(exp)
+        self.mock
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Stub
+// -----------------------------------------------------------------------------
+
+struct StubBehavior {
+    return_value: Option<Any>
+    return_fn: Option<([Any]) -> Any>
+    return_sequence: [Any]
+    sequence_idx: Int
+    
+    fn get_return(args: [Any]) -> Any {
+        if let f = self.return_fn { return f(args) }
+        if !self.return_sequence.is_empty() {
+            let idx = self.sequence_idx % self.return_sequence.len()
+            self.sequence_idx += 1
+            return self.return_sequence[idx]
+        }
+        self.return_value.unwrap_or(())
+    }
+}
+
+/// Stub builder
+actor StubBuilder<T> {
+    state mock: Mock<T>
+    state method: String
+    state behavior: StubBehavior
+    
+    fn new(mock: Mock<T>, method: String) -> Self {
+        StubBuilder {
+            mock: mock,
+            method: method,
+            behavior: StubBehavior { return_value: None, return_fn: None, return_sequence: [], sequence_idx: 0 }
+        }
+    }
+    
+    /// Return fixed value
+    on returns(value: Any) -> Mock<T> {
+        self.behavior.return_value = Some(value)
+        self.mock.stubs.set(self.method, self.behavior)
+        self.mock
+    }
+    
+    /// Return computed value
+    on returns_fn(f: ([Any]) -> Any) -> Mock<T> {
+        self.behavior.return_fn = Some(f)
+        self.mock.stubs.set(self.method, self.behavior)
+        self.mock
+    }
+    
+    /// Return values in sequence
+    on returns_sequence(values: [Any]) -> Mock<T> {
+        self.behavior.return_sequence = values
+        self.mock.stubs.set(self.method, self.behavior)
+        self.mock
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Argument Matchers
+// -----------------------------------------------------------------------------
+
+enum ArgMatcher {
+    Any
+    Eq(Any)
+    NotEq(Any)
+    Gt(Any)
+    Lt(Any)
+    Gte(Any)
+    Lte(Any)
+    Contains(String)
+    StartsWith(String)
+    EndsWith(String)
+    Matches(String)
+    InstanceOf(String)
+    Predicate(String, (Any) -> Bool)
+    
+    fn matches(value: Any) -> Bool {
+        match self {
+            .Any => true
+            .Eq(expected) => value == expected
+            .NotEq(expected) => value != expected
+            .Gt(expected) => value > expected
+            .Lt(expected) => value < expected
+            .Gte(expected) => value >= expected
+            .Lte(expected) => value <= expected
+            .Contains(s) => value.to_string().contains(s)
+            .StartsWith(s) => value.to_string().starts_with(s)
+            .EndsWith(s) => value.to_string().ends_with(s)
+            .Matches(pattern) => Regex.new(pattern).map(|r| r.is_match(value.to_string())).unwrap_or(false)
+            .InstanceOf(type_name) => @native("type_name", value) == type_name
+            .Predicate(_, f) => f(value)
+        }
+    }
+}
+
+// Matcher shortcuts
+fn any() -> ArgMatcher { ArgMatcher.Any }
+fn eq(v: Any) -> ArgMatcher { ArgMatcher.Eq(v) }
+fn not_eq(v: Any) -> ArgMatcher { ArgMatcher.NotEq(v) }
+fn gt(v: Any) -> ArgMatcher { ArgMatcher.Gt(v) }
+fn lt(v: Any) -> ArgMatcher { ArgMatcher.Lt(v) }
+fn contains(s: String) -> ArgMatcher { ArgMatcher.Contains(s) }
+fn starts_with(s: String) -> ArgMatcher { ArgMatcher.StartsWith(s) }
+fn matches(pattern: String) -> ArgMatcher { ArgMatcher.Matches(pattern) }
+fn instance_of(type_name: String) -> ArgMatcher { ArgMatcher.InstanceOf(type_name) }
+fn satisfies(name: String, f: (Any) -> Bool) -> ArgMatcher { ArgMatcher.Predicate(name, f) }
+
+// -----------------------------------------------------------------------------
+// Spy
+// -----------------------------------------------------------------------------
+
+/// Spy wraps real object and records calls
+actor Spy<T> {
+    state target: T
+    state calls: [Call]
+    state call_through: Bool
+    
+    fn new(target: T) -> Self {
+        Spy { target: target, calls: [], call_through: true }
+    }
+    
+    /// Disable call-through (don't call real method)
+    on no_call_through() -> Self {
+        self.call_through = false
+        self
+    }
+    
+    /// Record call and optionally call through
+    fn intercept<R>(method: String, args: [Any], real_call: () -> R) -> R {
+        self.calls.append(Call { method: method, args: args, timestamp: Instant.now() })
+        if self.call_through { real_call() }
+        else { @native("default_value") }
+    }
+    
+    fn was_called(method: String) -> Bool { self.calls.any(|c| c.method == method) }
+    fn call_count(method: String) -> Int { self.calls.filter(|c| c.method == method).len() }
+    fn calls_for(method: String) -> [Call] { self.calls.filter(|c| c.method == method) }
+    fn last_call(method: String) -> Option<Call> { self.calls_for(method).last() }
+    fn all_calls() -> [Call] { self.calls }
+    on reset() { self.calls = [] }
+}
+
+// -----------------------------------------------------------------------------
+// Fake
+// -----------------------------------------------------------------------------
+
+/// Fake HTTP client
+actor FakeHTTPClient {
+    state responses: Map<String, HTTPResponse>
+    state requests: [HTTPRequest]
+    
+    fn new() -> Self { FakeHTTPClient { responses: Map.empty(), requests: [] } }
+    
+    on when_get(url: String, response: HTTPResponse) -> Self {
+        self.responses.set("GET:\(url)", response)
+        self
+    }
+    
+    on when_post(url: String, response: HTTPResponse) -> Self {
+        self.responses.set("POST:\(url)", response)
+        self
+    }
+    
+    fn get(url: String) -> Result<HTTPResponse, HTTPError> {
+        self.requests.append(HTTPRequest { method: "GET", url: url, body: None })
+        self.responses.get("GET:\(url)").ok_or(HTTPError.NotFound)
+    }
+    
+    fn post(url: String, body: String) -> Result<HTTPResponse, HTTPError> {
+        self.requests.append(HTTPRequest { method: "POST", url: url, body: Some(body) })
+        self.responses.get("POST:\(url)").ok_or(HTTPError.NotFound)
+    }
+    
+    fn received_requests() -> [HTTPRequest] { self.requests }
+}
+
+struct HTTPRequest { method: String, url: String, body: Option<String> }
+struct HTTPResponse { status: Int, body: String }
+enum HTTPError { NotFound }
+
+/// Fake time
+actor FakeTime {
+    state current: Instant
+    
+    fn new() -> Self { FakeTime { current: Instant.from_millis(0) } }
+    fn at(instant: Instant) -> Self { FakeTime { current: instant } }
+    
+    fn now() -> Instant { self.current }
+    on advance(duration: Duration) { self.current = self.current + duration }
+    on set(instant: Instant) { self.current = instant }
+}
+
+/// Fake file system
+actor FakeFileSystem {
+    state files: Map<String, String>
+    state directories: Set<String>
+    
+    fn new() -> Self { FakeFileSystem { files: Map.empty(), directories: Set.from(["/"]) } }
+    
+    on add_file(path: String, content: String) -> Self {
+        self.files.set(path, content)
+        self
+    }
+    
+    on add_dir(path: String) -> Self {
+        self.directories.insert(path)
+        self
+    }
+    
+    fn read(path: String) -> Result<String, IOError> {
+        self.files.get(path).ok_or(IOError.NotFound(path))
+    }
+    
+    fn write(path: String, content: String) -> Result<(), IOError> {
+        self.files.set(path, content)
+        Ok(())
+    }
+    
+    fn exists(path: String) -> Bool {
+        self.files.contains_key(path) || self.directories.contains(path)
+    }
+    
+    fn is_file(path: String) -> Bool { self.files.contains_key(path) }
+    fn is_dir(path: String) -> Bool { self.directories.contains(path) }
+}
+
+enum IOError { NotFound(String) }
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum MockError {
+    ExpectationNotMet(String, CallCount, Int)
+    UnexpectedCall(String)
+    
+    fn message() -> String {
+        match self {
+            .ExpectationNotMet(method, expected, actual) => 
+                "Expectation not met for '\(method)': expected \(expected.describe()), got \(actual) calls"
+            .UnexpectedCall(method) => "Unexpected call to '\(method)'"
+        }
+    }
+}
+
+impl CallCount {
+    fn describe() -> String {
+        match self {
+            .Exactly(n) => "exactly \(n)"
+            .AtLeast(n) => "at least \(n)"
+            .AtMost(n) => "at most \(n)"
+            .Between(min, max) => "between \(min) and \(max)"
+            .Any => "any number of"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "mock expectations" {
+    let mock = Mock.new()
+        .expect("get_user")
+        .with_args([1])
+        .returns(User { id: 1, name: "Alice" })
+        .once()
+        .build()
+    
+    mock.record_call("get_user", [1])
+    mock.verify()?
+}
+
+test "stub returns" {
+    let mock = Mock.new()
+        .stub("random")
+        .returns(42)
+    
+    assert_eq(mock.get_return("random", []), Some(42))?
+}
+
+test "arg matchers" {
+    assert(any().matches(42))
+    assert(eq(42).matches(42))
+    assert(!eq(42).matches(43))
+    assert(gt(10).matches(15))
+    assert(contains("ell").matches("hello"))
+}
+
+test "spy" {
+    let spy = Spy.new(Calculator.new())
+    spy.intercept("add", [1, 2], || 3)
+    
+    assert(spy.was_called("add"))
+    assert_eq(spy.call_count("add"), 1)?
+}

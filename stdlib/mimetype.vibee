@@ -1,0 +1,443 @@
+// =============================================================================
+// Vibee OS — MIME Type Module
+// MIME type detection and handling
+// =============================================================================
+
+/// MIME type
+struct MimeType {
+    type_: String
+    subtype: String
+    params: Map<String, String>
+    
+    /// Parse MIME type string
+    fn parse(s: String) -> Result<Self, MimeError> {
+        let s = s.trim()
+        
+        // Split params
+        let parts = s.split(";")
+        let type_part = parts[0].trim()
+        
+        var params = Map.empty()
+        for i in 1..parts.len() {
+            let param = parts[i].trim()
+            if let Some(idx) = param.find("=") {
+                let key = param[0..idx].trim().to_lower()
+                let value = param[(idx + 1)..].trim().trim_matches('"')
+                params.set(key, value)
+            }
+        }
+        
+        // Split type/subtype
+        let slash_idx = type_part.find("/").ok_or(MimeError.InvalidFormat)?
+        let type_ = type_part[0..slash_idx].to_lower()
+        let subtype = type_part[(slash_idx + 1)..].to_lower()
+        
+        if type_.is_empty() || subtype.is_empty() {
+            return Err(MimeError.InvalidFormat)
+        }
+        
+        Ok(MimeType { type_: type_, subtype: subtype, params: params })
+    }
+    
+    /// Create new MIME type
+    fn new(type_: String, subtype: String) -> Self {
+        MimeType { type_: type_, subtype: subtype, params: Map.empty() }
+    }
+    
+    /// Add parameter
+    fn with_param(key: String, value: String) -> Self {
+        self.params.set(key, value)
+        self
+    }
+    
+    /// Set charset
+    fn with_charset(charset: String) -> Self {
+        self.with_param("charset", charset)
+    }
+    
+    /// Get charset
+    fn charset() -> Option<String> {
+        self.params.get("charset")
+    }
+    
+    /// Get essence (type/subtype without params)
+    fn essence() -> String {
+        format!("{}/{}", self.type_, self.subtype)
+    }
+    
+    /// Check if text type
+    fn is_text() -> Bool {
+        self.type_ == "text" || 
+        self.subtype.ends_with("+xml") ||
+        self.subtype.ends_with("+json") ||
+        self == MIME.APPLICATION_JSON ||
+        self == MIME.APPLICATION_XML
+    }
+    
+    /// Check if image type
+    fn is_image() -> Bool {
+        self.type_ == "image"
+    }
+    
+    /// Check if audio type
+    fn is_audio() -> Bool {
+        self.type_ == "audio"
+    }
+    
+    /// Check if video type
+    fn is_video() -> Bool {
+        self.type_ == "video"
+    }
+    
+    /// Check if application type
+    fn is_application() -> Bool {
+        self.type_ == "application"
+    }
+    
+    /// Check if matches pattern (supports wildcards)
+    fn matches(pattern: String) -> Bool {
+        let parts = pattern.split("/")
+        if parts.len() != 2 { return false }
+        
+        let type_match = parts[0] == "*" || parts[0] == self.type_
+        let subtype_match = parts[1] == "*" || parts[1] == self.subtype
+        
+        type_match && subtype_match
+    }
+    
+    /// Convert to string
+    fn to_string() -> String {
+        var s = self.essence()
+        for (k, v) in self.params {
+            if v.contains(" ") || v.contains(";") {
+                s.push_str(format!("; {}=\"{}\"", k, v))
+            } else {
+                s.push_str(format!("; {}={}", k, v))
+            }
+        }
+        s
+    }
+}
+
+impl Eq for MimeType {
+    fn eq(other: MimeType) -> Bool {
+        self.type_ == other.type_ && self.subtype == other.subtype
+    }
+}
+
+impl Display for MimeType {
+    fn fmt(f: Formatter) {
+        f.write(self.to_string())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Common MIME Types
+// -----------------------------------------------------------------------------
+
+module MIME {
+    // Text
+    fn TEXT_PLAIN() -> MimeType { MimeType.new("text", "plain") }
+    fn TEXT_HTML() -> MimeType { MimeType.new("text", "html") }
+    fn TEXT_CSS() -> MimeType { MimeType.new("text", "css") }
+    fn TEXT_JAVASCRIPT() -> MimeType { MimeType.new("text", "javascript") }
+    fn TEXT_CSV() -> MimeType { MimeType.new("text", "csv") }
+    fn TEXT_XML() -> MimeType { MimeType.new("text", "xml") }
+    fn TEXT_MARKDOWN() -> MimeType { MimeType.new("text", "markdown") }
+    
+    // Application
+    fn APPLICATION_JSON() -> MimeType { MimeType.new("application", "json") }
+    fn APPLICATION_XML() -> MimeType { MimeType.new("application", "xml") }
+    fn APPLICATION_PDF() -> MimeType { MimeType.new("application", "pdf") }
+    fn APPLICATION_ZIP() -> MimeType { MimeType.new("application", "zip") }
+    fn APPLICATION_GZIP() -> MimeType { MimeType.new("application", "gzip") }
+    fn APPLICATION_OCTET_STREAM() -> MimeType { MimeType.new("application", "octet-stream") }
+    fn APPLICATION_FORM() -> MimeType { MimeType.new("application", "x-www-form-urlencoded") }
+    fn APPLICATION_WASM() -> MimeType { MimeType.new("application", "wasm") }
+    
+    // Multipart
+    fn MULTIPART_FORM() -> MimeType { MimeType.new("multipart", "form-data") }
+    fn MULTIPART_MIXED() -> MimeType { MimeType.new("multipart", "mixed") }
+    
+    // Image
+    fn IMAGE_PNG() -> MimeType { MimeType.new("image", "png") }
+    fn IMAGE_JPEG() -> MimeType { MimeType.new("image", "jpeg") }
+    fn IMAGE_GIF() -> MimeType { MimeType.new("image", "gif") }
+    fn IMAGE_WEBP() -> MimeType { MimeType.new("image", "webp") }
+    fn IMAGE_SVG() -> MimeType { MimeType.new("image", "svg+xml") }
+    fn IMAGE_ICO() -> MimeType { MimeType.new("image", "x-icon") }
+    fn IMAGE_AVIF() -> MimeType { MimeType.new("image", "avif") }
+    
+    // Audio
+    fn AUDIO_MP3() -> MimeType { MimeType.new("audio", "mpeg") }
+    fn AUDIO_WAV() -> MimeType { MimeType.new("audio", "wav") }
+    fn AUDIO_OGG() -> MimeType { MimeType.new("audio", "ogg") }
+    fn AUDIO_WEBM() -> MimeType { MimeType.new("audio", "webm") }
+    fn AUDIO_FLAC() -> MimeType { MimeType.new("audio", "flac") }
+    
+    // Video
+    fn VIDEO_MP4() -> MimeType { MimeType.new("video", "mp4") }
+    fn VIDEO_WEBM() -> MimeType { MimeType.new("video", "webm") }
+    fn VIDEO_OGG() -> MimeType { MimeType.new("video", "ogg") }
+    fn VIDEO_AVI() -> MimeType { MimeType.new("video", "x-msvideo") }
+    
+    // Font
+    fn FONT_WOFF() -> MimeType { MimeType.new("font", "woff") }
+    fn FONT_WOFF2() -> MimeType { MimeType.new("font", "woff2") }
+    fn FONT_TTF() -> MimeType { MimeType.new("font", "ttf") }
+    fn FONT_OTF() -> MimeType { MimeType.new("font", "otf") }
+}
+
+// -----------------------------------------------------------------------------
+// Extension Mapping
+// -----------------------------------------------------------------------------
+
+/// Get MIME type from file extension
+fn from_extension(ext: String) -> Option<MimeType> {
+    let ext = ext.trim_start(".").to_lower()
+    
+    match ext {
+        // Text
+        "txt" => Some(MIME.TEXT_PLAIN())
+        "html" | "htm" => Some(MIME.TEXT_HTML())
+        "css" => Some(MIME.TEXT_CSS())
+        "js" | "mjs" => Some(MIME.TEXT_JAVASCRIPT())
+        "csv" => Some(MIME.TEXT_CSV())
+        "xml" => Some(MIME.TEXT_XML())
+        "md" | "markdown" => Some(MIME.TEXT_MARKDOWN())
+        
+        // Application
+        "json" => Some(MIME.APPLICATION_JSON())
+        "pdf" => Some(MIME.APPLICATION_PDF())
+        "zip" => Some(MIME.APPLICATION_ZIP())
+        "gz" | "gzip" => Some(MIME.APPLICATION_GZIP())
+        "tar" => Some(MimeType.new("application", "x-tar"))
+        "wasm" => Some(MIME.APPLICATION_WASM())
+        
+        // Image
+        "png" => Some(MIME.IMAGE_PNG())
+        "jpg" | "jpeg" => Some(MIME.IMAGE_JPEG())
+        "gif" => Some(MIME.IMAGE_GIF())
+        "webp" => Some(MIME.IMAGE_WEBP())
+        "svg" => Some(MIME.IMAGE_SVG())
+        "ico" => Some(MIME.IMAGE_ICO())
+        "avif" => Some(MIME.IMAGE_AVIF())
+        "bmp" => Some(MimeType.new("image", "bmp"))
+        "tiff" | "tif" => Some(MimeType.new("image", "tiff"))
+        
+        // Audio
+        "mp3" => Some(MIME.AUDIO_MP3())
+        "wav" => Some(MIME.AUDIO_WAV())
+        "ogg" | "oga" => Some(MIME.AUDIO_OGG())
+        "flac" => Some(MIME.AUDIO_FLAC())
+        "m4a" | "aac" => Some(MimeType.new("audio", "aac"))
+        
+        // Video
+        "mp4" | "m4v" => Some(MIME.VIDEO_MP4())
+        "webm" => Some(MIME.VIDEO_WEBM())
+        "ogv" => Some(MIME.VIDEO_OGG())
+        "avi" => Some(MIME.VIDEO_AVI())
+        "mov" => Some(MimeType.new("video", "quicktime"))
+        "mkv" => Some(MimeType.new("video", "x-matroska"))
+        
+        // Font
+        "woff" => Some(MIME.FONT_WOFF())
+        "woff2" => Some(MIME.FONT_WOFF2())
+        "ttf" => Some(MIME.FONT_TTF())
+        "otf" => Some(MIME.FONT_OTF())
+        "eot" => Some(MimeType.new("application", "vnd.ms-fontobject"))
+        
+        // Documents
+        "doc" => Some(MimeType.new("application", "msword"))
+        "docx" => Some(MimeType.new("application", "vnd.openxmlformats-officedocument.wordprocessingml.document"))
+        "xls" => Some(MimeType.new("application", "vnd.ms-excel"))
+        "xlsx" => Some(MimeType.new("application", "vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+        "ppt" => Some(MimeType.new("application", "vnd.ms-powerpoint"))
+        "pptx" => Some(MimeType.new("application", "vnd.openxmlformats-officedocument.presentationml.presentation"))
+        
+        // Archives
+        "7z" => Some(MimeType.new("application", "x-7z-compressed"))
+        "rar" => Some(MimeType.new("application", "vnd.rar"))
+        "bz2" => Some(MimeType.new("application", "x-bzip2"))
+        "xz" => Some(MimeType.new("application", "x-xz"))
+        
+        _ => None
+    }
+}
+
+/// Get file extension from MIME type
+fn to_extension(mime: MimeType) -> Option<String> {
+    match (mime.type_, mime.subtype) {
+        ("text", "plain") => Some("txt")
+        ("text", "html") => Some("html")
+        ("text", "css") => Some("css")
+        ("text", "javascript") => Some("js")
+        ("text", "csv") => Some("csv")
+        ("text", "xml") => Some("xml")
+        ("text", "markdown") => Some("md")
+        
+        ("application", "json") => Some("json")
+        ("application", "pdf") => Some("pdf")
+        ("application", "zip") => Some("zip")
+        ("application", "gzip") => Some("gz")
+        ("application", "wasm") => Some("wasm")
+        
+        ("image", "png") => Some("png")
+        ("image", "jpeg") => Some("jpg")
+        ("image", "gif") => Some("gif")
+        ("image", "webp") => Some("webp")
+        ("image", "svg+xml") => Some("svg")
+        ("image", "x-icon") => Some("ico")
+        
+        ("audio", "mpeg") => Some("mp3")
+        ("audio", "wav") => Some("wav")
+        ("audio", "ogg") => Some("ogg")
+        
+        ("video", "mp4") => Some("mp4")
+        ("video", "webm") => Some("webm")
+        
+        ("font", "woff") => Some("woff")
+        ("font", "woff2") => Some("woff2")
+        ("font", "ttf") => Some("ttf")
+        ("font", "otf") => Some("otf")
+        
+        _ => None
+    }
+}
+
+/// Get MIME type from file path
+fn from_path(path: String) -> Option<MimeType> {
+    let ext = path.rsplit(".").next()?
+    from_extension(ext)
+}
+
+// -----------------------------------------------------------------------------
+// Magic Number Detection
+// -----------------------------------------------------------------------------
+
+/// Detect MIME type from file content (magic numbers)
+fn from_bytes(data: [UInt8]) -> Option<MimeType> {
+    if data.len() < 4 { return None }
+    
+    // PNG
+    if data.starts_with([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+        return Some(MIME.IMAGE_PNG())
+    }
+    
+    // JPEG
+    if data.starts_with([0xFF, 0xD8, 0xFF]) {
+        return Some(MIME.IMAGE_JPEG())
+    }
+    
+    // GIF
+    if data.starts_with([0x47, 0x49, 0x46, 0x38]) {
+        return Some(MIME.IMAGE_GIF())
+    }
+    
+    // WebP
+    if data.len() >= 12 && data[0..4] == [0x52, 0x49, 0x46, 0x46] && data[8..12] == [0x57, 0x45, 0x42, 0x50] {
+        return Some(MIME.IMAGE_WEBP())
+    }
+    
+    // PDF
+    if data.starts_with([0x25, 0x50, 0x44, 0x46]) {
+        return Some(MIME.APPLICATION_PDF())
+    }
+    
+    // ZIP
+    if data.starts_with([0x50, 0x4B, 0x03, 0x04]) {
+        return Some(MIME.APPLICATION_ZIP())
+    }
+    
+    // GZIP
+    if data.starts_with([0x1F, 0x8B]) {
+        return Some(MIME.APPLICATION_GZIP())
+    }
+    
+    // MP3
+    if data.starts_with([0xFF, 0xFB]) || data.starts_with([0x49, 0x44, 0x33]) {
+        return Some(MIME.AUDIO_MP3())
+    }
+    
+    // WAV
+    if data.len() >= 12 && data[0..4] == [0x52, 0x49, 0x46, 0x46] && data[8..12] == [0x57, 0x41, 0x56, 0x45] {
+        return Some(MIME.AUDIO_WAV())
+    }
+    
+    // MP4
+    if data.len() >= 8 && (data[4..8] == [0x66, 0x74, 0x79, 0x70]) {
+        return Some(MIME.VIDEO_MP4())
+    }
+    
+    // WebM
+    if data.starts_with([0x1A, 0x45, 0xDF, 0xA3]) {
+        return Some(MIME.VIDEO_WEBM())
+    }
+    
+    // WASM
+    if data.starts_with([0x00, 0x61, 0x73, 0x6D]) {
+        return Some(MIME.APPLICATION_WASM())
+    }
+    
+    None
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum MimeError {
+    InvalidFormat
+    UnknownType
+}
+
+impl Display for MimeError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidFormat => f.write("Invalid MIME type format")
+            UnknownType => f.write("Unknown MIME type")
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "parse simple" {
+    let mime = MimeType.parse("text/html")?
+    assert_eq(mime.type_, "text")?
+    assert_eq(mime.subtype, "html")?
+}
+
+test "parse with params" {
+    let mime = MimeType.parse("text/html; charset=utf-8")?
+    assert_eq(mime.charset(), Some("utf-8"))?
+}
+
+test "from extension" {
+    assert_eq(from_extension("png")?.essence(), "image/png")?
+    assert_eq(from_extension("json")?.essence(), "application/json")?
+}
+
+test "from path" {
+    assert_eq(from_path("/images/photo.jpg")?.essence(), "image/jpeg")?
+}
+
+test "is_text" {
+    assert(MIME.TEXT_HTML().is_text())?
+    assert(MIME.APPLICATION_JSON().is_text())?
+    assert(!MIME.IMAGE_PNG().is_text())?
+}
+
+test "matches" {
+    let mime = MIME.IMAGE_PNG()
+    assert(mime.matches("image/*"))?
+    assert(mime.matches("image/png"))?
+    assert(!mime.matches("text/*"))?
+}
+
+test "to_string" {
+    let mime = MIME.TEXT_HTML().with_charset("utf-8")
+    assert_eq(mime.to_string(), "text/html; charset=utf-8")?
+}

@@ -1,0 +1,169 @@
+// =============================================================================
+// Vibee OS — Net Module
+// Network primitives
+// =============================================================================
+
+/// IP Address
+enum IpAddr {
+    V4(UInt8, UInt8, UInt8, UInt8)
+    V6([UInt16; 8])
+    
+    fn parse(s: String) -> Result<Self, NetError> {
+        if s.contains(":") { Self.parse_v6(s) } else { Self.parse_v4(s) }
+    }
+    
+    fn parse_v4(s: String) -> Result<Self, NetError> {
+        let parts = s.split(".")
+        if parts.len() != 4 { return Err(NetError.InvalidAddress) }
+        let a = UInt8.parse(parts[0]).map_err(|_| NetError.InvalidAddress)?
+        let b = UInt8.parse(parts[1]).map_err(|_| NetError.InvalidAddress)?
+        let c = UInt8.parse(parts[2]).map_err(|_| NetError.InvalidAddress)?
+        let d = UInt8.parse(parts[3]).map_err(|_| NetError.InvalidAddress)?
+        Ok(IpAddr.V4(a, b, c, d))
+    }
+    
+    fn parse_v6(s: String) -> Result<Self, NetError> {
+        @native("parse_ipv6", s).map_err(|_| NetError.InvalidAddress)
+    }
+    
+    fn localhost() -> Self { IpAddr.V4(127, 0, 0, 1) }
+    fn any() -> Self { IpAddr.V4(0, 0, 0, 0) }
+    fn broadcast() -> Self { IpAddr.V4(255, 255, 255, 255) }
+    fn localhost_v6() -> Self { IpAddr.V6([0, 0, 0, 0, 0, 0, 0, 1]) }
+    
+    fn is_loopback() -> Bool { match self { V4(127, _, _, _) => true, V6(a) if a[7] == 1 => true, _ => false } }
+    fn is_private() -> Bool { match self { V4(10, _, _, _) | V4(172, 16..=31, _, _) | V4(192, 168, _, _) => true, _ => false } }
+    fn is_v4() -> Bool { matches!(self, V4(..)) }
+    fn is_v6() -> Bool { matches!(self, V6(..)) }
+    
+    fn to_string() -> String {
+        match self {
+            V4(a, b, c, d) => format!("{}.{}.{}.{}", a, b, c, d)
+            V6(parts) => parts.iter().map(|p| format!("{:x}", p)).join(":")
+        }
+    }
+}
+
+/// Socket address
+struct SocketAddr { ip: IpAddr, port: UInt16 }
+impl SocketAddr {
+    fn new(ip: IpAddr, port: UInt16) -> Self { SocketAddr { ip: ip, port: port } }
+    fn parse(s: String) -> Result<Self, NetError> {
+        let idx = s.rfind(":").ok_or(NetError.InvalidAddress)?
+        let ip = IpAddr.parse(s[0..idx])?
+        let port = UInt16.parse(s[(idx+1)..]).map_err(|_| NetError.InvalidAddress)?
+        Ok(SocketAddr { ip: ip, port: port })
+    }
+    fn to_string() -> String { format!("{}:{}", self.ip.to_string(), self.port) }
+}
+
+/// TCP Stream
+struct TcpStream { fd: @native("Socket") }
+impl TcpStream {
+    fn connect(addr: SocketAddr) -> Result<Self, NetError> {
+        let fd = @native("tcp_connect", addr)?
+        Ok(TcpStream { fd: fd })
+    }
+    
+    fn connect_timeout(addr: SocketAddr, timeout_ms: Int64) -> Result<Self, NetError> {
+        @native("tcp_connect_timeout", addr, timeout_ms)
+    }
+    
+    fn read(buf: [UInt8]) -> Result<Int, NetError> { @native("tcp_read", self.fd, buf) }
+    fn write(data: [UInt8]) -> Result<Int, NetError> { @native("tcp_write", self.fd, data) }
+    fn read_exact(buf: [UInt8]) -> Result<(), NetError> { @native("tcp_read_exact", self.fd, buf) }
+    fn write_all(data: [UInt8]) -> Result<(), NetError> { @native("tcp_write_all", self.fd, data) }
+    fn flush() -> Result<(), NetError> { @native("tcp_flush", self.fd) }
+    fn shutdown(how: Shutdown) -> Result<(), NetError> { @native("tcp_shutdown", self.fd, how) }
+    fn close() { @native("tcp_close", self.fd) }
+    
+    fn set_read_timeout(ms: Option<Int64>) { @native("tcp_set_read_timeout", self.fd, ms) }
+    fn set_write_timeout(ms: Option<Int64>) { @native("tcp_set_write_timeout", self.fd, ms) }
+    fn set_nodelay(nodelay: Bool) { @native("tcp_set_nodelay", self.fd, nodelay) }
+    fn set_keepalive(keepalive: Option<Int64>) { @native("tcp_set_keepalive", self.fd, keepalive) }
+    
+    fn local_addr() -> Result<SocketAddr, NetError> { @native("tcp_local_addr", self.fd) }
+    fn peer_addr() -> Result<SocketAddr, NetError> { @native("tcp_peer_addr", self.fd) }
+}
+impl Drop for TcpStream { fn drop() { self.close() } }
+
+/// TCP Listener
+struct TcpListener { fd: @native("Socket") }
+impl TcpListener {
+    fn bind(addr: SocketAddr) -> Result<Self, NetError> {
+        let fd = @native("tcp_bind", addr)?
+        Ok(TcpListener { fd: fd })
+    }
+    
+    fn accept() -> Result<(TcpStream, SocketAddr), NetError> { @native("tcp_accept", self.fd) }
+    fn incoming() -> TcpIncoming { TcpIncoming { listener: self } }
+    fn local_addr() -> Result<SocketAddr, NetError> { @native("tcp_local_addr", self.fd) }
+    fn set_nonblocking(nonblocking: Bool) { @native("tcp_set_nonblocking", self.fd, nonblocking) }
+}
+
+struct TcpIncoming { listener: TcpListener }
+impl Iterator for TcpIncoming {
+    type Item = Result<TcpStream, NetError>
+    fn next() -> Option<Self.Item> { Some(self.listener.accept().map(|(s, _)| s)) }
+}
+
+/// UDP Socket
+struct UdpSocket { fd: @native("Socket") }
+impl UdpSocket {
+    fn bind(addr: SocketAddr) -> Result<Self, NetError> { Ok(UdpSocket { fd: @native("udp_bind", addr)? }) }
+    fn connect(addr: SocketAddr) -> Result<(), NetError> { @native("udp_connect", self.fd, addr) }
+    fn send(data: [UInt8]) -> Result<Int, NetError> { @native("udp_send", self.fd, data) }
+    fn recv(buf: [UInt8]) -> Result<Int, NetError> { @native("udp_recv", self.fd, buf) }
+    fn send_to(data: [UInt8], addr: SocketAddr) -> Result<Int, NetError> { @native("udp_send_to", self.fd, data, addr) }
+    fn recv_from(buf: [UInt8]) -> Result<(Int, SocketAddr), NetError> { @native("udp_recv_from", self.fd, buf) }
+    fn local_addr() -> Result<SocketAddr, NetError> { @native("udp_local_addr", self.fd) }
+    fn set_broadcast(broadcast: Bool) { @native("udp_set_broadcast", self.fd, broadcast) }
+    fn set_multicast_loop(loop_: Bool) { @native("udp_set_multicast_loop", self.fd, loop_) }
+    fn join_multicast(addr: IpAddr) -> Result<(), NetError> { @native("udp_join_multicast", self.fd, addr) }
+    fn leave_multicast(addr: IpAddr) -> Result<(), NetError> { @native("udp_leave_multicast", self.fd, addr) }
+}
+
+enum Shutdown { Read, Write, Both }
+
+enum NetError {
+    InvalidAddress
+    ConnectionRefused
+    ConnectionReset
+    ConnectionAborted
+    NotConnected
+    AddrInUse
+    AddrNotAvailable
+    Timeout
+    WouldBlock
+    Interrupted
+    Other(String)
+}
+
+impl Display for NetError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidAddress => f.write("Invalid address")
+            ConnectionRefused => f.write("Connection refused")
+            ConnectionReset => f.write("Connection reset")
+            Timeout => f.write("Operation timed out")
+            Other(s) => f.write(s)
+            _ => f.write("Network error")
+        }
+    }
+}
+
+// Tests
+test "ip parse" {
+    let ip = IpAddr.parse("192.168.1.1")?
+    assert(ip.is_private())?
+    assert(ip.is_v4())?
+}
+
+test "socket addr" {
+    let addr = SocketAddr.parse("127.0.0.1:8080")?
+    assert_eq(addr.port, 8080)?
+}
+
+test "localhost" {
+    assert(IpAddr.localhost().is_loopback())?
+}

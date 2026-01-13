@@ -1,0 +1,722 @@
+# ============================================================================
+# DISTRIBUTED TRACING - Распределённая трассировка на Vibee
+# ============================================================================
+# OpenTelemetry compatible, spans, context propagation, exporters
+# ============================================================================
+
+Specification DistributedTracing:
+  """
+  Трассировка как спецификация наблюдаемости.
+  Каждый запрос отслеживается через все сервисы.
+  """
+
+  # ==========================================================================
+  # ТИПЫ ДАННЫХ
+  # ==========================================================================
+
+  Type Trace:
+    trace_id: TraceId
+    spans: List<Span>
+    root_span: SpanId
+    start_time: Timestamp
+    end_time: Timestamp?
+    status: TraceStatus
+
+  Type TraceId:
+    """128-bit trace identifier"""
+    high: Int64
+    low: Int64
+
+  Type SpanId:
+    """64-bit span identifier"""
+    value: Int64
+
+  Type Span:
+    trace_id: TraceId
+    span_id: SpanId
+    parent_span_id: SpanId?
+    name: String
+    kind: SpanKind
+    start_time: Timestamp
+    end_time: Timestamp?
+    status: SpanStatus
+    attributes: Map<String, AttributeValue>
+    events: List<SpanEvent>
+    links: List<SpanLink>
+    resource: Resource
+
+  Type SpanKind:
+    variants:
+      - Internal    # Default, internal operation
+      - Server      # Server-side of RPC
+      - Client      # Client-side of RPC
+      - Producer    # Message producer
+      - Consumer    # Message consumer
+
+  Type SpanStatus:
+    code: StatusCode
+    message: String?
+
+  Type StatusCode:
+    variants:
+      - Unset
+      - Ok
+      - Error
+
+  Type AttributeValue:
+    variants:
+      - String: String
+      - Bool: Boolean
+      - Int: Int64
+      - Float: Float64
+      - StringArray: List<String>
+      - BoolArray: List<Boolean>
+      - IntArray: List<Int64>
+      - FloatArray: List<Float64>
+
+  Type SpanEvent:
+    name: String
+    timestamp: Timestamp
+    attributes: Map<String, AttributeValue>
+
+  Type SpanLink:
+    trace_id: TraceId
+    span_id: SpanId
+    attributes: Map<String, AttributeValue>
+
+  Type Resource:
+    """Describes the entity producing telemetry"""
+    attributes: Map<String, AttributeValue>
+
+  Type TraceStatus:
+    variants:
+      - InProgress
+      - Completed
+      - Error: String
+
+  # ==========================================================================
+  # CONTEXT PROPAGATION
+  # ==========================================================================
+
+  Type SpanContext:
+    trace_id: TraceId
+    span_id: SpanId
+    trace_flags: TraceFlags
+    trace_state: TraceState
+    is_remote: Boolean
+
+  Type TraceFlags:
+    sampled: Boolean
+
+  Type TraceState:
+    """Vendor-specific trace information"""
+    entries: List<(String, String)>
+
+  Type Propagator:
+    variants:
+      - W3CTraceContext
+      - W3CBaggage
+      - B3
+      - B3Multi
+      - Jaeger
+      - XRay
+      - Composite: List<Propagator>
+
+  Behavior ContextPropagation:
+    """Context propagation across service boundaries"""
+
+    When propagator.inject(context, carrier):
+      """Inject context into carrier (headers)"""
+      Then:
+        - match propagator:
+            W3CTraceContext ->
+              carrier["traceparent"] = format_traceparent(context)
+              if context.trace_state.entries.is_not_empty():
+                carrier["tracestate"] = format_tracestate(context.trace_state)
+            
+            B3 ->
+              carrier["b3"] = "${context.trace_id}-${context.span_id}-${if context.trace_flags.sampled then 1 else 0}"
+            
+            B3Multi ->
+              carrier["X-B3-TraceId"] = context.trace_id.to_hex()
+              carrier["X-B3-SpanId"] = context.span_id.to_hex()
+              carrier["X-B3-Sampled"] = if context.trace_flags.sampled then "1" else "0"
+              if context.parent_span_id:
+                carrier["X-B3-ParentSpanId"] = context.parent_span_id.to_hex()
+            
+            Jaeger ->
+              carrier["uber-trace-id"] = "${context.trace_id}:${context.span_id}:0:${if context.trace_flags.sampled then 1 else 0}"
+            
+            XRay ->
+              carrier["X-Amzn-Trace-Id"] = "Root=${format_xray_trace_id(context.trace_id)};Parent=${context.span_id};Sampled=${if context.trace_flags.sampled then 1 else 0}"
+            
+            Composite(propagators) ->
+              for p in propagators:
+                p.inject(context, carrier)
+
+    When propagator.extract(carrier):
+      """Extract context from carrier (headers)"""
+      Then:
+        - match propagator:
+            W3CTraceContext ->
+              traceparent = carrier["traceparent"]
+              if not traceparent:
+                return null
+              context = parse_traceparent(traceparent)
+              if carrier["tracestate"]:
+                context.trace_state = parse_tracestate(carrier["tracestate"])
+              context
+            
+            B3 ->
+              b3 = carrier["b3"]
+              if not b3:
+                return null
+              parse_b3_single(b3)
+            
+            B3Multi ->
+              trace_id = carrier["X-B3-TraceId"]
+              span_id = carrier["X-B3-SpanId"]
+              if not trace_id or not span_id:
+                return null
+              SpanContext(
+                trace_id: TraceId.from_hex(trace_id),
+                span_id: SpanId.from_hex(span_id),
+                trace_flags: TraceFlags(sampled: carrier["X-B3-Sampled"] == "1"),
+                is_remote: true
+              )
+            
+            Composite(propagators) ->
+              for p in propagators:
+                context = p.extract(carrier)
+                if context:
+                  return context
+              null
+
+    When format_traceparent(context):
+      Then:
+        - version = "00"
+        - trace_id = context.trace_id.to_hex(32)
+        - span_id = context.span_id.to_hex(16)
+        - flags = if context.trace_flags.sampled then "01" else "00"
+        - return "${version}-${trace_id}-${span_id}-${flags}"
+
+    When parse_traceparent(header):
+      Then:
+        - parts = header.split("-")
+        - if parts.size != 4:
+            - return null
+        - return SpanContext(
+            trace_id: TraceId.from_hex(parts[1]),
+            span_id: SpanId.from_hex(parts[2]),
+            trace_flags: TraceFlags(sampled: parts[3] == "01"),
+            is_remote: true
+          )
+
+  # ==========================================================================
+  # TRACER
+  # ==========================================================================
+
+  Type TracerConfig:
+    service_name: String
+    service_version: String?
+    environment: String?
+    sampler: Sampler = AlwaysOn
+    propagator: Propagator = W3CTraceContext
+    exporters: List<Exporter> = []
+    resource_attributes: Map<String, AttributeValue> = {}
+    span_limits: SpanLimits = default
+    batch_config: BatchConfig = default
+
+  Type SpanLimits:
+    max_attributes: Int = 128
+    max_events: Int = 128
+    max_links: Int = 128
+    max_attribute_length: Int = 1024
+
+  Type BatchConfig:
+    max_queue_size: Int = 2048
+    max_export_batch_size: Int = 512
+    export_timeout: Duration = 30.seconds
+    schedule_delay: Duration = 5.seconds
+
+  Type Sampler:
+    variants:
+      - AlwaysOn
+      - AlwaysOff
+      - TraceIdRatio: Float  # 0.0 to 1.0
+      - ParentBased: Sampler
+      - RateLimiting: (rate: Int, per: Duration)
+      - Custom: (SpanContext, String, SpanKind, Map<String, AttributeValue>) -> SamplingResult
+
+  Type SamplingResult:
+    decision: SamplingDecision
+    attributes: Map<String, AttributeValue>
+    trace_state: TraceState?
+
+  Type SamplingDecision:
+    variants:
+      - Drop
+      - RecordOnly
+      - RecordAndSample
+
+  Behavior Tracer:
+    """Main tracer interface"""
+
+    State:
+      config: TracerConfig
+      active_spans: Map<SpanId, Span>
+      context_stack: List<SpanContext>
+      resource: Resource
+
+    When tracer.start_span(name, options):
+      Then:
+        - # Get parent context
+        - parent = options.parent ?? current_span_context()
+        
+        - # Generate IDs
+        - trace_id = parent?.trace_id ?? generate_trace_id()
+        - span_id = generate_span_id()
+        
+        - # Sample
+        - sampling = config.sampler.should_sample(parent, name, options.kind, options.attributes)
+        - if sampling.decision == Drop:
+            - return NoOpSpan(trace_id, span_id)
+        
+        - # Create span
+        - span = Span(
+            trace_id: trace_id,
+            span_id: span_id,
+            parent_span_id: parent?.span_id,
+            name: name,
+            kind: options.kind ?? Internal,
+            start_time: options.start_time ?? now(),
+            status: SpanStatus(code: Unset),
+            attributes: merge(sampling.attributes, options.attributes ?? {}),
+            events: [],
+            links: options.links ?? [],
+            resource: resource
+          )
+        
+        - add span to active_spans
+        - push span.context to context_stack
+        
+        - return span
+
+    When tracer.with_span(name, options, callback):
+      """Execute callback within a span"""
+      Then:
+        - span = tracer.start_span(name, options)
+        - try:
+            - result = await callback(span)
+            - span.set_status(Ok)
+            - return result
+          catch error:
+            - span.record_exception(error)
+            - span.set_status(Error, error.message)
+            - raise error
+          finally:
+            - span.end()
+
+    When span.set_attribute(key, value):
+      Then:
+        - if span.attributes.size >= config.span_limits.max_attributes:
+            - return  # Drop attribute
+        - span.attributes[key] = value
+
+    When span.set_attributes(attributes):
+      Then:
+        - for (key, value) in attributes:
+            - span.set_attribute(key, value)
+
+    When span.add_event(name, attributes, timestamp):
+      Then:
+        - if span.events.size >= config.span_limits.max_events:
+            - return  # Drop event
+        - event = SpanEvent(
+            name: name,
+            timestamp: timestamp ?? now(),
+            attributes: attributes ?? {}
+          )
+        - add event to span.events
+
+    When span.record_exception(exception, attributes):
+      Then:
+        - span.add_event("exception", merge({
+            "exception.type": exception.type,
+            "exception.message": exception.message,
+            "exception.stacktrace": exception.stacktrace
+          }, attributes ?? {}))
+
+    When span.set_status(code, message):
+      Then:
+        - span.status = SpanStatus(code: code, message: message)
+
+    When span.update_name(name):
+      Then:
+        - span.name = name
+
+    When span.add_link(context, attributes):
+      Then:
+        - if span.links.size >= config.span_limits.max_links:
+            - return
+        - link = SpanLink(
+            trace_id: context.trace_id,
+            span_id: context.span_id,
+            attributes: attributes ?? {}
+          )
+        - add link to span.links
+
+    When span.end(timestamp):
+      Then:
+        - span.end_time = timestamp ?? now()
+        - remove span from active_spans
+        - pop from context_stack
+        
+        - # Export
+        - for exporter in config.exporters:
+            - exporter.export([span])
+        
+        - emit SpanEnded(span)
+
+    When span.context():
+      Then:
+        - return SpanContext(
+            trace_id: span.trace_id,
+            span_id: span.span_id,
+            trace_flags: TraceFlags(sampled: true),
+            trace_state: TraceState(entries: []),
+            is_remote: false
+          )
+
+  # ==========================================================================
+  # EXPORTERS
+  # ==========================================================================
+
+  Type Exporter:
+    variants:
+      - Console: ConsoleExporterConfig
+      - OTLP: OTLPExporterConfig
+      - Jaeger: JaegerExporterConfig
+      - Zipkin: ZipkinExporterConfig
+      - XRay: XRayExporterConfig
+      - Datadog: DatadogExporterConfig
+      - Custom: CustomExporter
+
+  Type OTLPExporterConfig:
+    endpoint: String = "http://localhost:4317"
+    protocol: OTLPProtocol = GRPC
+    headers: Map<String, String> = {}
+    compression: Compression = None
+    timeout: Duration = 10.seconds
+    certificate: String?
+
+  Type OTLPProtocol:
+    variants: [GRPC, HTTPProtobuf, HTTPJson]
+
+  Type JaegerExporterConfig:
+    agent_host: String = "localhost"
+    agent_port: Int = 6831
+    collector_endpoint: String?
+    username: String?
+    password: String?
+
+  Type ZipkinExporterConfig:
+    endpoint: String = "http://localhost:9411/api/v2/spans"
+    local_endpoint: ZipkinEndpoint?
+
+  Type ZipkinEndpoint:
+    service_name: String
+    ipv4: String?
+    ipv6: String?
+    port: Int?
+
+  Behavior ExporterBehavior:
+    """Span exporters"""
+
+    When console_exporter.export(spans):
+      Then:
+        - for span in spans:
+            - log.info("Span: ${span.name}",
+                trace_id: span.trace_id.to_hex(),
+                span_id: span.span_id.to_hex(),
+                parent_span_id: span.parent_span_id?.to_hex(),
+                duration_ms: (span.end_time - span.start_time).milliseconds,
+                status: span.status.code,
+                attributes: span.attributes
+              )
+
+    When otlp_exporter.export(spans):
+      Then:
+        - request = build_otlp_request(spans)
+        
+        - match config.protocol:
+            GRPC ->
+              await grpc_client.export(request)
+            HTTPProtobuf ->
+              await http.post(config.endpoint, {
+                body: protobuf_encode(request),
+                headers: merge(config.headers, {
+                  "Content-Type": "application/x-protobuf"
+                })
+              })
+            HTTPJson ->
+              await http.post(config.endpoint, {
+                body: JSON.stringify(request),
+                headers: merge(config.headers, {
+                  "Content-Type": "application/json"
+                })
+              })
+
+    When jaeger_exporter.export(spans):
+      Then:
+        - batch = build_jaeger_batch(spans)
+        
+        - if config.collector_endpoint:
+            - await http.post(config.collector_endpoint, {
+                body: thrift_encode(batch),
+                headers: { "Content-Type": "application/x-thrift" }
+              })
+        - else:
+            - await udp_send(config.agent_host, config.agent_port, compact_thrift_encode(batch))
+
+    When zipkin_exporter.export(spans):
+      Then:
+        - zipkin_spans = spans.map(s -> convert_to_zipkin(s))
+        - await http.post(config.endpoint, {
+            body: JSON.stringify(zipkin_spans),
+            headers: { "Content-Type": "application/json" }
+          })
+
+  # ==========================================================================
+  # INSTRUMENTATION
+  # ==========================================================================
+
+  Behavior AutoInstrumentation:
+    """Automatic instrumentation for common libraries"""
+
+    When instrument_http_client():
+      Then:
+        - wrap http.request with (original, url, options) ->
+            tracer.with_span("HTTP ${options.method ?? 'GET'} ${url.host}", {
+              kind: Client,
+              attributes: {
+                "http.method": options.method ?? "GET",
+                "http.url": url.to_string(),
+                "http.target": url.path,
+                "http.host": url.host,
+                "net.peer.name": url.host,
+                "net.peer.port": url.port
+              }
+            }, async (span) ->
+              # Inject context
+              propagator.inject(span.context(), options.headers)
+              
+              response = await original(url, options)
+              
+              span.set_attribute("http.status_code", response.status)
+              span.set_attribute("http.response_content_length", response.headers["content-length"])
+              
+              if response.status >= 400:
+                span.set_status(Error, "HTTP ${response.status}")
+              
+              response
+            )
+
+    When instrument_http_server():
+      Then:
+        - wrap server.handle_request with (original, request) ->
+            # Extract context
+            parent = propagator.extract(request.headers)
+            
+            tracer.with_span("${request.method} ${request.path}", {
+              kind: Server,
+              parent: parent,
+              attributes: {
+                "http.method": request.method,
+                "http.url": request.url,
+                "http.target": request.path,
+                "http.host": request.headers["host"],
+                "http.scheme": request.scheme,
+                "http.user_agent": request.headers["user-agent"],
+                "net.peer.ip": request.remote_addr
+              }
+            }, async (span) ->
+              response = await original(request)
+              
+              span.set_attribute("http.status_code", response.status)
+              span.set_attribute("http.response_content_length", response.body.size)
+              
+              if response.status >= 500:
+                span.set_status(Error, "HTTP ${response.status}")
+              
+              response
+            )
+
+    When instrument_database():
+      Then:
+        - wrap db.query with (original, sql, params) ->
+            tracer.with_span("DB ${extract_operation(sql)}", {
+              kind: Client,
+              attributes: {
+                "db.system": db.type,
+                "db.name": db.database,
+                "db.statement": sanitize_sql(sql),
+                "db.operation": extract_operation(sql)
+              }
+            }, async (span) ->
+              result = await original(sql, params)
+              span.set_attribute("db.rows_affected", result.rows_affected)
+              result
+            )
+
+    When instrument_message_queue():
+      Then:
+        - # Producer
+        - wrap producer.send with (original, topic, message) ->
+            tracer.with_span("${topic} send", {
+              kind: Producer,
+              attributes: {
+                "messaging.system": mq.type,
+                "messaging.destination": topic,
+                "messaging.destination_kind": "topic"
+              }
+            }, async (span) ->
+              # Inject context into message headers
+              propagator.inject(span.context(), message.headers)
+              await original(topic, message)
+            )
+        
+        - # Consumer
+        - wrap consumer.process with (original, message) ->
+            parent = propagator.extract(message.headers)
+            
+            tracer.with_span("${message.topic} process", {
+              kind: Consumer,
+              parent: parent,
+              links: [SpanLink(parent.trace_id, parent.span_id)] if parent,
+              attributes: {
+                "messaging.system": mq.type,
+                "messaging.destination": message.topic,
+                "messaging.message_id": message.id
+              }
+            }, async (span) ->
+              await original(message)
+            )
+
+  # ==========================================================================
+  # СОБЫТИЯ
+  # ==========================================================================
+
+  Events:
+    SpanStarted:
+      trace_id: TraceId
+      span_id: SpanId
+      name: String
+      kind: SpanKind
+
+    SpanEnded:
+      trace_id: TraceId
+      span_id: SpanId
+      name: String
+      duration: Duration
+      status: StatusCode
+
+    SpanExported:
+      trace_id: TraceId
+      span_id: SpanId
+      exporter: String
+
+    ExportFailed:
+      exporter: String
+      error: String
+      spans_count: Int
+
+  # ==========================================================================
+  # ПРИМЕР ИСПОЛЬЗОВАНИЯ
+  # ==========================================================================
+
+  Example "Distributed Tracing Setup":
+    ```vibee
+    # Configure tracer
+    tracer = Tracer(TracerConfig(
+      service_name: "order-service",
+      service_version: "1.2.0",
+      environment: "production",
+      sampler: TraceIdRatio(0.1),  # Sample 10%
+      propagator: Composite([W3CTraceContext, B3]),
+      exporters: [
+        OTLP(OTLPExporterConfig(
+          endpoint: "http://otel-collector:4317",
+          protocol: GRPC
+        )),
+        Console(ConsoleExporterConfig())
+      ],
+      resource_attributes: {
+        "deployment.environment": "production",
+        "host.name": hostname()
+      }
+    ))
+
+    # Auto-instrument
+    instrument_http_client()
+    instrument_http_server()
+    instrument_database()
+    ```
+
+  Example "Manual Instrumentation":
+    ```vibee
+    # Create span manually
+    process_order = async (order_id) ->
+      await tracer.with_span("process_order", {
+        kind: Internal,
+        attributes: {
+          "order.id": order_id
+        }
+      }, async (span) ->
+        # Validate order
+        span.add_event("validating_order")
+        order = await validate_order(order_id)
+        span.set_attribute("order.total", order.total)
+        
+        # Process payment
+        await tracer.with_span("process_payment", {
+          attributes: { "payment.amount": order.total }
+        }, async (payment_span) ->
+          result = await payment_service.charge(order)
+          payment_span.set_attribute("payment.transaction_id", result.transaction_id)
+        )
+        
+        # Ship order
+        await tracer.with_span("ship_order", async (ship_span) ->
+          tracking = await shipping_service.create_shipment(order)
+          ship_span.set_attribute("shipping.tracking_number", tracking.number)
+        )
+        
+        span.add_event("order_completed")
+      )
+    ```
+
+  Example "Context Propagation":
+    ```vibee
+    # HTTP client with context propagation
+    call_external_service = async (data) ->
+      span = tracer.start_span("external_api_call", { kind: Client })
+      
+      headers = {}
+      propagator.inject(span.context(), headers)
+      
+      try:
+        response = await http.post("https://api.external.com/process", {
+          body: JSON.stringify(data),
+          headers: headers
+        })
+        
+        span.set_attribute("http.status_code", response.status)
+        return response.json()
+      catch error:
+        span.record_exception(error)
+        span.set_status(Error, error.message)
+        raise error
+      finally:
+        span.end()
+    ```

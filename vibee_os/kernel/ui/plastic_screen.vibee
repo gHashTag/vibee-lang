@@ -1,0 +1,500 @@
+name: vibee_os_plastic_screen
+version: "0.1.0"
+language: gleam
+module: kernel/ui/plastic_screen
+description: Plastic Screen - экран любого размера, пластичный и адаптивный
+
+behaviors:
+  - name: screen_adapts_to_any_size
+    given: Screen exists
+    when: viewport_size changes to ANY size
+    then: All elements reflow and resize proportionally
+    test_cases:
+      - name: tiny_screen
+        input: {width: 320, height: 240}
+        expected: {adapted: true, all_visible: true, no_overflow: true}
+      - name: phone_portrait
+        input: {width: 375, height: 812}
+        expected: {adapted: true, layout: "vertical"}
+      - name: phone_landscape
+        input: {width: 812, height: 375}
+        expected: {adapted: true, layout: "horizontal"}
+      - name: tablet
+        input: {width: 1024, height: 768}
+        expected: {adapted: true, layout: "mixed"}
+      - name: desktop
+        input: {width: 1920, height: 1080}
+        expected: {adapted: true, layout: "full"}
+      - name: ultrawide
+        input: {width: 3440, height: 1440}
+        expected: {adapted: true, layout: "expanded"}
+      - name: 4k
+        input: {width: 3840, height: 2160}
+        expected: {adapted: true, dpi_scaled: true}
+      - name: arbitrary
+        input: {width: 1337, height: 777}
+        expected: {adapted: true, no_hardcoded_values: true}
+
+  - name: elements_use_relative_units
+    given: Element has size
+    when: size is specified
+    then: Size uses relative units, not fixed pixels
+    test_cases:
+      - name: percentage_width
+        input: {width: "50%"}
+        expected: {computed_width: "parent.width * 0.5"}
+      - name: viewport_height
+        input: {height: "100vh"}
+        expected: {computed_height: "viewport.height"}
+      - name: fractional_unit
+        input: {width: "1fr"}
+        expected: {computed_width: "available_space / total_fractions"}
+
+  - name: layout_reflows_on_resize
+    given: Layout contains elements
+    when: container_size changes
+    then: Elements reflow to fit new size
+    test_cases:
+      - name: shrink_wraps
+        input: {container: "shrink", elements: 5}
+        expected: {wrapped: true, rows_increased: true}
+      - name: expand_fills
+        input: {container: "expand", elements: 5}
+        expected: {elements_grew: true, spacing_increased: true}
+
+  - name: no_fixed_pixel_values
+    given: Specification exists
+    when: specification is validated
+    then: No hardcoded pixel values exist (except min/max constraints)
+    test_cases:
+      - name: reject_fixed_width
+        input: {spec: "width: 300px"}
+        expected: {valid: false, error: "Use relative units"}
+      - name: allow_min_constraint
+        input: {spec: "min-width: 44px"}
+        expected: {valid: true, reason: "Accessibility minimum"}
+
+types:
+  # Relative Units - NO FIXED PIXELS!
+  PlasticUnit:
+    variants:
+      - Percent: {value: float}           # % of parent
+      - ViewportWidth: {value: float}     # vw - % of viewport width
+      - ViewportHeight: {value: float}    # vh - % of viewport height
+      - ViewportMin: {value: float}       # vmin - % of smaller viewport dimension
+      - ViewportMax: {value: float}       # vmax - % of larger viewport dimension
+      - Fraction: {value: float}          # fr - fraction of available space
+      - Em: {value: float}                # em - relative to font size
+      - Rem: {value: float}               # rem - relative to root font size
+      - Ch: {value: float}                # ch - width of "0" character
+      - Auto                              # auto - content-based
+      - MinContent                        # min-content
+      - MaxContent                        # max-content
+      - FitContent: {max: PlasticUnit}    # fit-content(max)
+      # Constraints (only place pixels allowed)
+      - Min: {value: int, unit: str}      # min constraint (accessibility)
+      - Max: {value: int, unit: str}      # max constraint
+      - Clamp: {min: PlasticUnit, preferred: PlasticUnit, max: PlasticUnit}
+
+  PlasticSize:
+    width: PlasticUnit
+    height: PlasticUnit
+    min_width: PlasticUnit?
+    max_width: PlasticUnit?
+    min_height: PlasticUnit?
+    max_height: PlasticUnit?
+    aspect_ratio: float?                  # Maintain aspect ratio
+
+  PlasticPosition:
+    x: PlasticUnit
+    y: PlasticUnit
+    anchor: Anchor                        # Reference point
+
+  Anchor:
+    variants:
+      - TopLeft
+      - TopCenter
+      - TopRight
+      - CenterLeft
+      - Center
+      - CenterRight
+      - BottomLeft
+      - BottomCenter
+      - BottomRight
+
+  PlasticSpacing:
+    top: PlasticUnit
+    right: PlasticUnit
+    bottom: PlasticUnit
+    left: PlasticUnit
+
+  # Viewport - the plastic canvas
+  Viewport:
+    width: int                            # Actual pixels (computed)
+    height: int
+    dpi: float
+    scale_factor: float
+    orientation: Orientation
+    safe_area: SafeArea                   # Notches, rounded corners
+
+  Orientation:
+    variants:
+      - Portrait
+      - Landscape
+      - Square
+
+  SafeArea:
+    top: int
+    right: int
+    bottom: int
+    left: int
+
+  # Plastic Element
+  PlasticElement:
+    id: str
+    size: PlasticSize
+    position: PlasticPosition?
+    margin: PlasticSpacing
+    padding: PlasticSpacing
+    children: [PlasticElement]
+    layout: PlasticLayout?
+    behaviors: [str]
+    computed: ComputedBounds?             # Resolved pixel values
+
+  ComputedBounds:
+    x: int
+    y: int
+    width: int
+    height: int
+
+  # Layouts
+  PlasticLayout:
+    variants:
+      - Flex: FlexLayout
+      - Grid: GridLayout
+      - Flow: FlowLayout
+      - Stack: StackLayout
+      - Absolute: AbsoluteLayout
+
+  FlexLayout:
+    direction: FlexDirection
+    wrap: FlexWrap
+    justify: JustifyContent
+    align: AlignItems
+    gap: PlasticUnit
+
+  FlexDirection:
+    variants:
+      - Row
+      - RowReverse
+      - Column
+      - ColumnReverse
+
+  FlexWrap:
+    variants:
+      - NoWrap
+      - Wrap
+      - WrapReverse
+
+  JustifyContent:
+    variants:
+      - Start
+      - End
+      - Center
+      - SpaceBetween
+      - SpaceAround
+      - SpaceEvenly
+
+  AlignItems:
+    variants:
+      - Start
+      - End
+      - Center
+      - Stretch
+      - Baseline
+
+  GridLayout:
+    columns: [PlasticUnit]                # e.g., [1fr, 1fr, 1fr]
+    rows: [PlasticUnit]
+    column_gap: PlasticUnit
+    row_gap: PlasticUnit
+    auto_flow: GridAutoFlow
+    auto_columns: PlasticUnit
+    auto_rows: PlasticUnit
+
+  GridAutoFlow:
+    variants:
+      - Row
+      - Column
+      - RowDense
+      - ColumnDense
+
+  FlowLayout:
+    direction: FlowDirection
+    gap: PlasticUnit
+    line_gap: PlasticUnit
+
+  FlowDirection:
+    variants:
+      - LeftToRight
+      - RightToLeft
+      - TopToBottom
+
+  StackLayout:
+    direction: StackDirection
+    gap: PlasticUnit
+    alignment: AlignItems
+
+  StackDirection:
+    variants:
+      - Horizontal
+      - Vertical
+      - ZStack                            # Layered
+
+  AbsoluteLayout:
+    reference: AbsoluteReference
+
+  AbsoluteReference:
+    variants:
+      - Parent
+      - Viewport
+      - Screen
+
+  # Breakpoints for responsive behavior
+  Breakpoint:
+    name: str
+    min_width: int?
+    max_width: int?
+    min_height: int?
+    max_height: int?
+    orientation: Orientation?
+
+  ResponsiveRule:
+    breakpoint: str
+    overrides: {str: PlasticUnit}
+
+  # Plastic Screen Specification
+  PlasticScreen:
+    name: str
+    version: str
+    root: PlasticElement
+    breakpoints: [Breakpoint]
+    responsive_rules: [ResponsiveRule]
+    default_font_size: PlasticUnit
+    default_spacing: PlasticUnit
+
+functions:
+  # Unit resolution
+  - name: resolve_unit
+    params: {unit: PlasticUnit, context: ResolutionContext}
+    returns: int
+    description: Resolve plastic unit to actual pixels
+
+  - name: resolve_size
+    params: {size: PlasticSize, context: ResolutionContext}
+    returns: ComputedBounds
+    description: Resolve plastic size to pixel bounds
+
+  - name: resolve_element
+    params: {element: PlasticElement, viewport: Viewport}
+    returns: PlasticElement
+    description: Resolve all units in element tree
+
+  # Layout computation
+  - name: compute_flex_layout
+    params: {container: PlasticElement, viewport: Viewport}
+    returns: [ComputedBounds]
+    description: Compute flex layout positions
+
+  - name: compute_grid_layout
+    params: {container: PlasticElement, viewport: Viewport}
+    returns: [ComputedBounds]
+    description: Compute grid layout positions
+
+  - name: compute_flow_layout
+    params: {container: PlasticElement, viewport: Viewport}
+    returns: [ComputedBounds]
+    description: Compute flow layout with wrapping
+
+  # Viewport handling
+  - name: create_viewport
+    params: {width: int, height: int, dpi: float}
+    returns: Viewport
+    description: Create viewport from physical dimensions
+
+  - name: viewport_resize
+    params: {viewport: Viewport, new_width: int, new_height: int}
+    returns: Viewport
+    description: Handle viewport resize
+
+  - name: get_active_breakpoint
+    params: {viewport: Viewport, breakpoints: [Breakpoint]}
+    returns: Breakpoint?
+    description: Get currently active breakpoint
+
+  # Responsive
+  - name: apply_responsive_rules
+    params: {element: PlasticElement, breakpoint: Breakpoint, rules: [ResponsiveRule]}
+    returns: PlasticElement
+    description: Apply responsive overrides
+
+  # Validation
+  - name: validate_no_fixed_pixels
+    params: {screen: PlasticScreen}
+    returns: ValidationResult
+    description: Ensure no hardcoded pixel values
+
+  - name: validate_accessibility_minimums
+    params: {screen: PlasticScreen}
+    returns: ValidationResult
+    description: Ensure touch targets meet minimums
+
+  ValidationResult:
+    valid: bool
+    errors: [str]
+    warnings: [str]
+
+  ResolutionContext:
+    viewport: Viewport
+    parent_width: int
+    parent_height: int
+    font_size: int
+    root_font_size: int
+
+imports:
+  - kernel.ui.screen_spec
+  - kernel.ui.visual_behavior
+
+default_breakpoints: |
+  # Default Breakpoints
+  
+  ```yaml
+  breakpoints:
+    - name: xs
+      max_width: 575
+      
+    - name: sm
+      min_width: 576
+      max_width: 767
+      
+    - name: md
+      min_width: 768
+      max_width: 991
+      
+    - name: lg
+      min_width: 992
+      max_width: 1199
+      
+    - name: xl
+      min_width: 1200
+      max_width: 1399
+      
+    - name: xxl
+      min_width: 1400
+      
+    - name: portrait
+      orientation: Portrait
+      
+    - name: landscape
+      orientation: Landscape
+  ```
+
+plastic_principles: |
+  # Plastic Screen Principles
+  
+  ## 1. NO FIXED PIXELS
+  
+  ❌ WRONG:
+  ```yaml
+  width: 300
+  height: 200
+  margin: 16
+  ```
+  
+  ✅ RIGHT:
+  ```yaml
+  width: 50%
+  height: 25vh
+  margin: 1rem
+  ```
+  
+  ## 2. EVERYTHING IS RELATIVE
+  
+  - Sizes relative to parent or viewport
+  - Spacing relative to root font size
+  - Positions relative to anchors
+  
+  ## 3. LAYOUTS REFLOW
+  
+  - Flex wraps when needed
+  - Grid adjusts columns
+  - Flow reorganizes content
+  
+  ## 4. CONSTRAINTS, NOT VALUES
+  
+  ```yaml
+  width: clamp(20%, 50%, 80%)
+  min_width: 44px  # Accessibility only!
+  ```
+  
+  ## 5. BREAKPOINTS FOR MAJOR CHANGES
+  
+  ```yaml
+  responsive_rules:
+    - breakpoint: xs
+      overrides:
+        layout: {direction: Column}
+    - breakpoint: lg
+      overrides:
+        layout: {direction: Row}
+  ```
+
+unit_reference: |
+  # Plastic Unit Reference
+  
+  | Unit | Description | Example |
+  |------|-------------|---------|
+  | % | Percent of parent | width: 50% |
+  | vw | Viewport width | width: 100vw |
+  | vh | Viewport height | height: 100vh |
+  | vmin | Smaller of vw/vh | size: 50vmin |
+  | vmax | Larger of vw/vh | size: 50vmax |
+  | fr | Fraction | grid: [1fr, 2fr, 1fr] |
+  | em | Font size | padding: 1em |
+  | rem | Root font size | margin: 1.5rem |
+  | ch | Character width | width: 60ch |
+  | auto | Content-based | height: auto |
+  | min-content | Minimum | width: min-content |
+  | max-content | Maximum | width: max-content |
+  | fit-content | Fit with max | width: fit-content(80%) |
+  | clamp | Constrained | width: clamp(200px, 50%, 800px) |
+
+example_plastic_screen: |
+  # Example: Plastic Button
+  
+  ```yaml
+  element:
+    id: submit_button
+    size:
+      width: {Clamp: {min: {Min: 44, unit: px}, preferred: {Percent: 80}, max: {Percent: 100}}}
+      height: {Rem: 3}
+      min_width: {Min: 44, unit: px}  # Accessibility
+      min_height: {Min: 44, unit: px}  # Accessibility
+    margin:
+      top: {Rem: 1}
+      right: {Percent: 10}
+      bottom: {Rem: 1}
+      left: {Percent: 10}
+    padding:
+      top: {Em: 0.75}
+      right: {Em: 1.5}
+      bottom: {Em: 0.75}
+      left: {Em: 1.5}
+  ```
+  
+  This button:
+  - Is 80% of parent width, clamped between 44px and 100%
+  - Has height of 3rem (scales with font)
+  - Has 10% horizontal margins (centers itself)
+  - Has padding that scales with font size
+  - Meets 44px minimum for touch accessibility

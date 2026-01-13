@@ -1,0 +1,485 @@
+// =============================================================================
+// Vibee OS — Slug Module
+// URL-friendly string generation
+// =============================================================================
+
+/// Slug options
+struct SlugOptions {
+    separator: String
+    lowercase: Bool
+    max_length: Option<Int>
+    trim_separator: Bool
+    transliterate: Bool
+    custom_replacements: Map<String, String>
+    allowed_chars: Option<String>
+    
+    fn default() -> Self {
+        SlugOptions {
+            separator: "-",
+            lowercase: true,
+            max_length: None,
+            trim_separator: true,
+            transliterate: true,
+            custom_replacements: Map.empty(),
+            allowed_chars: None
+        }
+    }
+    
+    fn with_separator(sep: String) -> Self {
+        SlugOptions { separator: sep, ..Self.default() }
+    }
+    
+    fn with_max_length(len: Int) -> Self {
+        SlugOptions { max_length: Some(len), ..Self.default() }
+    }
+    
+    fn preserve_case() -> Self {
+        SlugOptions { lowercase: false, ..Self.default() }
+    }
+}
+
+/// Generate slug from string
+fn slugify(s: String) -> String {
+    slugify_with(s, SlugOptions.default())
+}
+
+/// Generate slug with options
+fn slugify_with(s: String, opts: SlugOptions) -> String {
+    var result = s
+    
+    // Apply custom replacements first
+    for (from, to) in opts.custom_replacements {
+        result = result.replace(from, to)
+    }
+    
+    // Transliterate non-ASCII characters
+    if opts.transliterate {
+        result = transliterate(result)
+    }
+    
+    // Convert to lowercase
+    if opts.lowercase {
+        result = result.to_lower()
+    }
+    
+    // Replace non-alphanumeric with separator
+    var chars = []
+    var prev_sep = false
+    
+    for c in result.chars() {
+        if is_allowed_char(c, opts.allowed_chars) {
+            chars.push(c)
+            prev_sep = false
+        } else if !prev_sep {
+            chars.push(opts.separator.chars().next().unwrap_or('-'))
+            prev_sep = true
+        }
+    }
+    
+    result = chars.iter().collect::<String>()
+    
+    // Trim separators from ends
+    if opts.trim_separator {
+        result = result.trim_matches(opts.separator.chars().next().unwrap_or('-'))
+    }
+    
+    // Collapse multiple separators
+    let sep = opts.separator
+    let double_sep = format!("{}{}", sep, sep)
+    while result.contains(double_sep) {
+        result = result.replace(double_sep, sep)
+    }
+    
+    // Apply max length
+    if let Some(max) = opts.max_length {
+        if result.len() > max {
+            result = result[0..max]
+            // Don't end with separator
+            if opts.trim_separator {
+                result = result.trim_end_matches(opts.separator.chars().next().unwrap_or('-'))
+            }
+        }
+    }
+    
+    result
+}
+
+fn is_allowed_char(c: Char, allowed: Option<String>) -> Bool {
+    match allowed {
+        Some(chars) => chars.contains(c)
+        None => c.is_alphanumeric()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Transliteration
+// -----------------------------------------------------------------------------
+
+fn transliterate(s: String) -> String {
+    var result = ""
+    
+    for c in s.chars() {
+        result.push_str(transliterate_char(c))
+    }
+    
+    result
+}
+
+fn transliterate_char(c: Char) -> String {
+    // Common transliterations
+    match c {
+        // Latin extended
+        'À' | 'Á' | 'Â' | 'Ã' | 'Ä' | 'Å' | 'Ā' | 'Ă' | 'Ą' => "A"
+        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => "a"
+        'Æ' => "AE"
+        'æ' => "ae"
+        'Ç' | 'Ć' | 'Ĉ' | 'Ċ' | 'Č' => "C"
+        'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => "c"
+        'Ð' | 'Ď' | 'Đ' => "D"
+        'ð' | 'ď' | 'đ' => "d"
+        'È' | 'É' | 'Ê' | 'Ë' | 'Ē' | 'Ĕ' | 'Ė' | 'Ę' | 'Ě' => "E"
+        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => "e"
+        'Ĝ' | 'Ğ' | 'Ġ' | 'Ģ' => "G"
+        'ĝ' | 'ğ' | 'ġ' | 'ģ' => "g"
+        'Ĥ' | 'Ħ' => "H"
+        'ĥ' | 'ħ' => "h"
+        'Ì' | 'Í' | 'Î' | 'Ï' | 'Ĩ' | 'Ī' | 'Ĭ' | 'Į' | 'İ' => "I"
+        'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' => "i"
+        'Ĵ' => "J"
+        'ĵ' => "j"
+        'Ķ' => "K"
+        'ķ' | 'ĸ' => "k"
+        'Ĺ' | 'Ļ' | 'Ľ' | 'Ŀ' | 'Ł' => "L"
+        'ĺ' | 'ļ' | 'ľ' | 'ŀ' | 'ł' => "l"
+        'Ñ' | 'Ń' | 'Ņ' | 'Ň' | 'Ŋ' => "N"
+        'ñ' | 'ń' | 'ņ' | 'ň' | 'ŉ' | 'ŋ' => "n"
+        'Ò' | 'Ó' | 'Ô' | 'Õ' | 'Ö' | 'Ø' | 'Ō' | 'Ŏ' | 'Ő' => "O"
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => "o"
+        'Œ' => "OE"
+        'œ' => "oe"
+        'Ŕ' | 'Ŗ' | 'Ř' => "R"
+        'ŕ' | 'ŗ' | 'ř' => "r"
+        'Ś' | 'Ŝ' | 'Ş' | 'Š' => "S"
+        'ś' | 'ŝ' | 'ş' | 'š' | 'ſ' => "s"
+        'ß' => "ss"
+        'Ţ' | 'Ť' | 'Ŧ' => "T"
+        'ţ' | 'ť' | 'ŧ' => "t"
+        'Þ' => "TH"
+        'þ' => "th"
+        'Ù' | 'Ú' | 'Û' | 'Ü' | 'Ũ' | 'Ū' | 'Ŭ' | 'Ů' | 'Ű' | 'Ų' => "U"
+        'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => "u"
+        'Ŵ' => "W"
+        'ŵ' => "w"
+        'Ý' | 'Ŷ' | 'Ÿ' => "Y"
+        'ý' | 'ÿ' | 'ŷ' => "y"
+        'Ź' | 'Ż' | 'Ž' => "Z"
+        'ź' | 'ż' | 'ž' => "z"
+        
+        // Cyrillic
+        'А' => "A", 'а' => "a"
+        'Б' => "B", 'б' => "b"
+        'В' => "V", 'в' => "v"
+        'Г' => "G", 'г' => "g"
+        'Д' => "D", 'д' => "d"
+        'Е' | 'Ё' => "E", 'е' | 'ё' => "e"
+        'Ж' => "Zh", 'ж' => "zh"
+        'З' => "Z", 'з' => "z"
+        'И' | 'Й' => "I", 'и' | 'й' => "i"
+        'К' => "K", 'к' => "k"
+        'Л' => "L", 'л' => "l"
+        'М' => "M", 'м' => "m"
+        'Н' => "N", 'н' => "n"
+        'О' => "O", 'о' => "o"
+        'П' => "P", 'п' => "p"
+        'Р' => "R", 'р' => "r"
+        'С' => "S", 'с' => "s"
+        'Т' => "T", 'т' => "t"
+        'У' => "U", 'у' => "u"
+        'Ф' => "F", 'ф' => "f"
+        'Х' => "Kh", 'х' => "kh"
+        'Ц' => "Ts", 'ц' => "ts"
+        'Ч' => "Ch", 'ч' => "ch"
+        'Ш' => "Sh", 'ш' => "sh"
+        'Щ' => "Shch", 'щ' => "shch"
+        'Ъ' | 'ъ' => ""
+        'Ы' => "Y", 'ы' => "y"
+        'Ь' | 'ь' => ""
+        'Э' => "E", 'э' => "e"
+        'Ю' => "Yu", 'ю' => "yu"
+        'Я' => "Ya", 'я' => "ya"
+        
+        // Greek
+        'Α' => "A", 'α' => "a"
+        'Β' => "B", 'β' => "b"
+        'Γ' => "G", 'γ' => "g"
+        'Δ' => "D", 'δ' => "d"
+        'Ε' => "E", 'ε' => "e"
+        'Ζ' => "Z", 'ζ' => "z"
+        'Η' => "H", 'η' => "h"
+        'Θ' => "Th", 'θ' => "th"
+        'Ι' => "I", 'ι' => "i"
+        'Κ' => "K", 'κ' => "k"
+        'Λ' => "L", 'λ' => "l"
+        'Μ' => "M", 'μ' => "m"
+        'Ν' => "N", 'ν' => "n"
+        'Ξ' => "X", 'ξ' => "x"
+        'Ο' => "O", 'ο' => "o"
+        'Π' => "P", 'π' => "p"
+        'Ρ' => "R", 'ρ' => "r"
+        'Σ' | 'ς' => "S", 'σ' => "s"
+        'Τ' => "T", 'τ' => "t"
+        'Υ' => "Y", 'υ' => "y"
+        'Φ' => "Ph", 'φ' => "ph"
+        'Χ' => "Ch", 'χ' => "ch"
+        'Ψ' => "Ps", 'ψ' => "ps"
+        'Ω' => "O", 'ω' => "o"
+        
+        // Symbols
+        '&' => "and"
+        '@' => "at"
+        '©' => "c"
+        '®' => "r"
+        '™' => "tm"
+        '€' => "euro"
+        '£' => "pound"
+        '¥' => "yen"
+        '$' => "dollar"
+        '°' => "deg"
+        '№' => "no"
+        
+        // Default: keep ASCII, drop others
+        _ => {
+            if c.is_ascii() {
+                c.to_string()
+            } else {
+                ""
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Specialized Slugifiers
+// -----------------------------------------------------------------------------
+
+/// Generate filename-safe slug
+fn filename(s: String) -> String {
+    slugify_with(s, SlugOptions {
+        separator: "_",
+        lowercase: true,
+        max_length: Some(255),
+        trim_separator: true,
+        transliterate: true,
+        custom_replacements: Map.empty(),
+        allowed_chars: None
+    })
+}
+
+/// Generate URL path slug
+fn url_path(s: String) -> String {
+    slugify_with(s, SlugOptions {
+        separator: "-",
+        lowercase: true,
+        max_length: Some(100),
+        trim_separator: true,
+        transliterate: true,
+        custom_replacements: Map.empty(),
+        allowed_chars: None
+    })
+}
+
+/// Generate anchor/ID slug
+fn anchor(s: String) -> String {
+    slugify_with(s, SlugOptions {
+        separator: "-",
+        lowercase: true,
+        max_length: None,
+        trim_separator: true,
+        transliterate: true,
+        custom_replacements: Map.empty(),
+        allowed_chars: None
+    })
+}
+
+/// Generate variable name slug
+fn variable(s: String) -> String {
+    let slug = slugify_with(s, SlugOptions {
+        separator: "_",
+        lowercase: true,
+        max_length: None,
+        trim_separator: true,
+        transliterate: true,
+        custom_replacements: Map.empty(),
+        allowed_chars: None
+    })
+    
+    // Ensure doesn't start with number
+    if slug.chars().next().map(|c| c.is_digit()).unwrap_or(false) {
+        format!("_{}", slug)
+    } else {
+        slug
+    }
+}
+
+/// Generate camelCase slug
+fn camel_case(s: String) -> String {
+    let parts = slugify(s).split("-")
+    var result = ""
+    
+    for (i, part) in parts.iter().enumerate() {
+        if i == 0 {
+            result.push_str(part)
+        } else {
+            result.push_str(capitalize(part))
+        }
+    }
+    
+    result
+}
+
+/// Generate PascalCase slug
+fn pascal_case(s: String) -> String {
+    slugify(s).split("-")
+        .map(|p| capitalize(p))
+        .join("")
+}
+
+/// Generate snake_case slug
+fn snake_case(s: String) -> String {
+    slugify_with(s, SlugOptions.with_separator("_"))
+}
+
+/// Generate SCREAMING_SNAKE_CASE slug
+fn screaming_snake(s: String) -> String {
+    slugify_with(s, SlugOptions {
+        separator: "_",
+        lowercase: false,
+        ..SlugOptions.default()
+    }).to_upper()
+}
+
+/// Generate kebab-case slug
+fn kebab_case(s: String) -> String {
+    slugify(s)
+}
+
+fn capitalize(s: String) -> String {
+    if s.is_empty() { return s }
+    let first = s[0..1].to_upper()
+    let rest = s[1..]
+    format!("{}{}", first, rest)
+}
+
+// -----------------------------------------------------------------------------
+// Unique Slug Generation
+// -----------------------------------------------------------------------------
+
+/// Generate unique slug with counter
+fn unique(s: String, existing: [String]) -> String {
+    let base = slugify(s)
+    
+    if !existing.contains(base) {
+        return base
+    }
+    
+    var counter = 1
+    loop {
+        let candidate = format!("{}-{}", base, counter)
+        if !existing.contains(candidate) {
+            return candidate
+        }
+        counter += 1
+    }
+}
+
+/// Slug generator with uniqueness tracking
+actor SlugGenerator {
+    state used: Set<String>
+    state opts: SlugOptions
+    
+    fn new() -> Self {
+        SlugGenerator { used: Set.empty(), opts: SlugOptions.default() }
+    }
+    
+    fn with_options(opts: SlugOptions) -> Self {
+        SlugGenerator { used: Set.empty(), opts: opts }
+    }
+    
+    fn generate(s: String) -> String {
+        let base = slugify_with(s, self.opts)
+        
+        if !self.used.contains(base) {
+            self.used.insert(base)
+            return base
+        }
+        
+        var counter = 1
+        loop {
+            let candidate = format!("{}{}{}", base, self.opts.separator, counter)
+            if !self.used.contains(candidate) {
+                self.used.insert(candidate)
+                return candidate
+            }
+            counter += 1
+        }
+    }
+    
+    fn reset() {
+        self.used.clear()
+    }
+    
+    fn reserve(slug: String) {
+        self.used.insert(slug)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "basic slugify" {
+    assert_eq(slugify("Hello World"), "hello-world")?
+    assert_eq(slugify("  Hello   World  "), "hello-world")?
+}
+
+test "special characters" {
+    assert_eq(slugify("Hello & World"), "hello-and-world")?
+    assert_eq(slugify("Price: $100"), "price-dollar100")?
+}
+
+test "transliteration" {
+    assert_eq(slugify("Привет мир"), "privet-mir")?
+    assert_eq(slugify("Café résumé"), "cafe-resume")?
+    assert_eq(slugify("Ñoño"), "nono")?
+}
+
+test "max length" {
+    let opts = SlugOptions.with_max_length(10)
+    assert_eq(slugify_with("This is a very long title", opts), "this-is-a")?
+}
+
+test "custom separator" {
+    let opts = SlugOptions.with_separator("_")
+    assert_eq(slugify_with("Hello World", opts), "hello_world")?
+}
+
+test "case variants" {
+    assert_eq(camel_case("hello world"), "helloWorld")?
+    assert_eq(pascal_case("hello world"), "HelloWorld")?
+    assert_eq(snake_case("Hello World"), "hello_world")?
+    assert_eq(screaming_snake("hello world"), "HELLO_WORLD")?
+}
+
+test "unique slugs" {
+    let existing = ["hello-world", "hello-world-1"]
+    assert_eq(unique("Hello World", existing), "hello-world-2")?
+}
+
+test "filename" {
+    assert_eq(filename("My Document (1).pdf"), "my_document_1_pdf")?
+}
+
+test "variable name" {
+    assert_eq(variable("123 test"), "_123_test")?
+    assert_eq(variable("my variable"), "my_variable")?
+}

@@ -1,0 +1,835 @@
+# ============================================================================
+# EVENTS - События и подписки на Vibee
+# ============================================================================
+# EventEmitter, Pub/Sub, Event Bus, Reactive Streams
+# ============================================================================
+
+Specification Events:
+  """События как спецификация асинхронного взаимодействия компонентов."""
+
+  # ==========================================================================
+  # EVENT EMITTER
+  # ==========================================================================
+
+  Type EventEmitter<E>:
+    listeners: Map<String, List<EventListener<E>>>
+    once_listeners: Map<String, List<EventListener<E>>>
+    max_listeners: Int
+    mutex: Mutex
+
+    Static Method new() -> EventEmitter<E>:
+      return EventEmitter({}, {}, 10, Mutex.new())
+
+    Method on(event: String, handler: (E) -> ()) -> Subscription:
+      guard = self.mutex.lock()
+      
+      if event not in self.listeners:
+        self.listeners[event] = []
+      
+      listener = EventListener(handler)
+      self.listeners[event].push(listener)
+      
+      self.check_max_listeners(event)
+      
+      return Subscription(() -> self.off(event, listener))
+
+    Method once(event: String, handler: (E) -> ()) -> Subscription:
+      guard = self.mutex.lock()
+      
+      if event not in self.once_listeners:
+        self.once_listeners[event] = []
+      
+      listener = EventListener(handler)
+      self.once_listeners[event].push(listener)
+      
+      return Subscription(() -> self.off_once(event, listener))
+
+    Method off(event: String, listener: EventListener<E>):
+      guard = self.mutex.lock()
+      
+      if self.listeners.get(event) is Some(list):
+        self.listeners[event] = list.filter(l -> l != listener)
+
+    Method off_once(event: String, listener: EventListener<E>):
+      guard = self.mutex.lock()
+      
+      if self.once_listeners.get(event) is Some(list):
+        self.once_listeners[event] = list.filter(l -> l != listener)
+
+    Method off_all(event: String):
+      guard = self.mutex.lock()
+      self.listeners.remove(event)
+      self.once_listeners.remove(event)
+
+    Method emit(event: String, data: E):
+      guard = self.mutex.lock()
+      
+      # Regular listeners
+      if self.listeners.get(event) is Some(list):
+        for listener in list:
+          listener.handler(data)
+      
+      # Once listeners
+      if self.once_listeners.get(event) is Some(list):
+        for listener in list:
+          listener.handler(data)
+        self.once_listeners.remove(event)
+
+    Method emit_async(event: String, data: E) -> Promise<()>:
+      guard = self.mutex.lock()
+      promises = []
+      
+      if self.listeners.get(event) is Some(list):
+        for listener in list:
+          promises.push(Promise.resolve(()).then(_ -> listener.handler(data)))
+      
+      if self.once_listeners.get(event) is Some(list):
+        for listener in list:
+          promises.push(Promise.resolve(()).then(_ -> listener.handler(data)))
+        self.once_listeners.remove(event)
+      
+      return Promise.all(promises).map(_ -> ())
+
+    Method listener_count(event: String) -> Int:
+      regular = self.listeners.get(event).map(l -> l.length).unwrap_or(0)
+      once = self.once_listeners.get(event).map(l -> l.length).unwrap_or(0)
+      return regular + once
+
+    Method event_names() -> List<String>:
+      names = Set()
+      for key in self.listeners.keys():
+        names.add(key)
+      for key in self.once_listeners.keys():
+        names.add(key)
+      return names.to_list()
+
+    Method set_max_listeners(n: Int):
+      self.max_listeners = n
+
+    Method check_max_listeners(event: String):
+      count = self.listener_count(event)
+      if count > self.max_listeners:
+        warn("Possible memory leak: ${count} listeners for '${event}'")
+
+    Method wait_for(event: String) -> Promise<E>:
+      return Promise.new((resolve, _) -> {
+        self.once(event, data -> resolve(data))
+      })
+
+    Method wait_for_timeout(event: String, timeout: Duration) -> Promise<Option<E>>:
+      return Promise.race([
+        self.wait_for(event).then(e -> Some(e)),
+        sleep_async(timeout).then(_ -> null)
+      ])
+
+  Type EventListener<E>:
+    handler: (E) -> ()
+    id: Int
+
+    Static Method new(handler: (E) -> ()) -> EventListener<E>:
+      return EventListener(handler, generate_listener_id())
+
+  Type Subscription:
+    unsubscribe: () -> ()
+
+    Method cancel():
+      self.unsubscribe()
+
+  # ==========================================================================
+  # TYPED EVENT EMITTER
+  # ==========================================================================
+
+  Type TypedEventEmitter<Events>:
+    emitter: EventEmitter<Any>
+
+    Static Method new() -> TypedEventEmitter<Events>:
+      return TypedEventEmitter(EventEmitter.new())
+
+    Method on<K: keyof Events>(event: K, handler: (Events[K]) -> ()) -> Subscription:
+      return self.emitter.on(event.to_string(), handler as (Any) -> ())
+
+    Method once<K: keyof Events>(event: K, handler: (Events[K]) -> ()) -> Subscription:
+      return self.emitter.once(event.to_string(), handler as (Any) -> ())
+
+    Method emit<K: keyof Events>(event: K, data: Events[K]):
+      self.emitter.emit(event.to_string(), data as Any)
+
+    Method off<K: keyof Events>(event: K):
+      self.emitter.off_all(event.to_string())
+
+  # ==========================================================================
+  # EVENT BUS
+  # ==========================================================================
+
+  Type EventBus:
+    channels: Map<String, Channel<Event>>
+    subscribers: Map<String, List<(Event) -> ()>>
+    wildcard_subscribers: List<(String, Event) -> ()>
+    mutex: Mutex
+
+    Static Method new() -> EventBus:
+      return EventBus({}, {}, [], Mutex.new())
+
+    Static Method global() -> EventBus:
+      return GLOBAL_EVENT_BUS
+
+    Method publish(topic: String, event: Event):
+      guard = self.mutex.lock()
+      
+      # Direct subscribers
+      if self.subscribers.get(topic) is Some(subs):
+        for handler in subs:
+          spawn { handler(event) }
+      
+      # Wildcard subscribers
+      for handler in self.wildcard_subscribers:
+        if self.matches_pattern(topic, handler.pattern):
+          spawn { handler.callback(topic, event) }
+      
+      # Channel subscribers
+      if self.channels.get(topic) is Some(ch):
+        ch.try_send(event)
+
+    Method subscribe(topic: String, handler: (Event) -> ()) -> Subscription:
+      guard = self.mutex.lock()
+      
+      if topic not in self.subscribers:
+        self.subscribers[topic] = []
+      
+      self.subscribers[topic].push(handler)
+      
+      return Subscription(() -> {
+        guard = self.mutex.lock()
+        if self.subscribers.get(topic) is Some(list):
+          self.subscribers[topic] = list.filter(h -> h != handler)
+      })
+
+    Method subscribe_pattern(pattern: String, handler: (String, Event) -> ()) -> Subscription:
+      guard = self.mutex.lock()
+      
+      entry = WildcardSubscriber(pattern, handler)
+      self.wildcard_subscribers.push(entry)
+      
+      return Subscription(() -> {
+        guard = self.mutex.lock()
+        self.wildcard_subscribers = self.wildcard_subscribers.filter(e -> e != entry)
+      })
+
+    Method subscribe_channel(topic: String) -> Channel<Event>:
+      guard = self.mutex.lock()
+      
+      if topic not in self.channels:
+        self.channels[topic] = Channel.unbounded()
+      
+      return self.channels[topic]
+
+    Method matches_pattern(topic: String, pattern: String) -> Boolean:
+      # Support wildcards: user.* matches user.created, user.updated
+      # Support **: user.** matches user.profile.updated
+      regex_pattern = pattern
+        .replace(".", "\\.")
+        .replace("**", ".*")
+        .replace("*", "[^.]+")
+      
+      return Regex("^${regex_pattern}$").is_match(topic)
+
+    Method unsubscribe_all(topic: String):
+      guard = self.mutex.lock()
+      self.subscribers.remove(topic)
+      self.channels.remove(topic)
+
+  Type WildcardSubscriber:
+    pattern: String
+    callback: (String, Event) -> ()
+
+  Type Event:
+    id: String
+    type: String
+    timestamp: Instant
+    source: String
+    data: Any
+    metadata: Map<String, Any>
+
+    Static Method new(type: String, data: Any) -> Event:
+      return Event(
+        id: UUID.v4().to_string(),
+        type: type,
+        timestamp: Instant.now(),
+        source: "",
+        data: data,
+        metadata: {}
+      )
+
+    Method with_source(source: String) -> Event:
+      return Event(..self, source: source)
+
+    Method with_metadata(key: String, value: Any) -> Event:
+      return Event(..self, metadata: self.metadata.set(key, value))
+
+  # ==========================================================================
+  # OBSERVABLE
+  # ==========================================================================
+
+  Type Observable<T>:
+    subscribe_fn: (Observer<T>) -> Subscription
+
+    Static Method new(subscribe: (Observer<T>) -> Subscription) -> Observable<T>:
+      return Observable(subscribe)
+
+    Static Method from_value(value: T) -> Observable<T>:
+      return Observable(observer -> {
+        observer.next(value)
+        observer.complete()
+        Subscription(() -> {})
+      })
+
+    Static Method from_list(values: List<T>) -> Observable<T>:
+      return Observable(observer -> {
+        for value in values:
+          observer.next(value)
+        observer.complete()
+        Subscription(() -> {})
+      })
+
+    Static Method from_promise(promise: Promise<T>) -> Observable<T>:
+      return Observable(observer -> {
+        promise
+          .then(value -> {
+            observer.next(value)
+            observer.complete()
+          })
+          .catch(error -> observer.error(error))
+        Subscription(() -> {})
+      })
+
+    Static Method interval(period: Duration) -> Observable<Int>:
+      return Observable(observer -> {
+        count = 0
+        cancelled = Atomic(false)
+        
+        spawn {
+          while not cancelled.load():
+            observer.next(count)
+            count += 1
+            sleep(period)
+        }
+        
+        Subscription(() -> cancelled.store(true))
+      })
+
+    Static Method timer(delay: Duration) -> Observable<Int>:
+      return Observable(observer -> {
+        cancelled = Atomic(false)
+        
+        spawn {
+          sleep(delay)
+          if not cancelled.load():
+            observer.next(0)
+            observer.complete()
+        }
+        
+        Subscription(() -> cancelled.store(true))
+      })
+
+    Static Method empty() -> Observable<T>:
+      return Observable(observer -> {
+        observer.complete()
+        Subscription(() -> {})
+      })
+
+    Static Method never() -> Observable<T>:
+      return Observable(_ -> Subscription(() -> {}))
+
+    Static Method throw(error: Error) -> Observable<T>:
+      return Observable(observer -> {
+        observer.error(error)
+        Subscription(() -> {})
+      })
+
+    Method subscribe(observer: Observer<T>) -> Subscription:
+      return self.subscribe_fn(observer)
+
+    Method subscribe_next(on_next: (T) -> ()) -> Subscription:
+      return self.subscribe(Observer(on_next, _ -> {}, () -> {}))
+
+    # Operators
+    Method map<U>(f: (T) -> U) -> Observable<U>:
+      return Observable(observer -> {
+        self.subscribe(Observer(
+          next: value -> observer.next(f(value)),
+          error: e -> observer.error(e),
+          complete: () -> observer.complete()
+        ))
+      })
+
+    Method filter(predicate: (T) -> Boolean) -> Observable<T>:
+      return Observable(observer -> {
+        self.subscribe(Observer(
+          next: value -> {
+            if predicate(value):
+              observer.next(value)
+          },
+          error: e -> observer.error(e),
+          complete: () -> observer.complete()
+        ))
+      })
+
+    Method flat_map<U>(f: (T) -> Observable<U>) -> Observable<U>:
+      return Observable(observer -> {
+        active = Atomic(1)
+        
+        self.subscribe(Observer(
+          next: value -> {
+            active.fetch_add(1)
+            f(value).subscribe(Observer(
+              next: inner -> observer.next(inner),
+              error: e -> observer.error(e),
+              complete: () -> {
+                if active.fetch_add(-1) == 1:
+                  observer.complete()
+              }
+            ))
+          },
+          error: e -> observer.error(e),
+          complete: () -> {
+            if active.fetch_add(-1) == 1:
+              observer.complete()
+          }
+        ))
+      })
+
+    Method take(count: Int) -> Observable<T>:
+      return Observable(observer -> {
+        taken = Atomic(0)
+        
+        self.subscribe(Observer(
+          next: value -> {
+            if taken.fetch_add(1) < count:
+              observer.next(value)
+              if taken.load() >= count:
+                observer.complete()
+          },
+          error: e -> observer.error(e),
+          complete: () -> observer.complete()
+        ))
+      })
+
+    Method skip(count: Int) -> Observable<T>:
+      return Observable(observer -> {
+        skipped = Atomic(0)
+        
+        self.subscribe(Observer(
+          next: value -> {
+            if skipped.fetch_add(1) >= count:
+              observer.next(value)
+          },
+          error: e -> observer.error(e),
+          complete: () -> observer.complete()
+        ))
+      })
+
+    Method debounce(duration: Duration) -> Observable<T>:
+      return Observable(observer -> {
+        timer_task = Atomic<Option<Task>>(null)
+        
+        self.subscribe(Observer(
+          next: value -> {
+            if timer_task.load() is Some(t):
+              t.cancel()
+            
+            timer_task.store(Some(spawn {
+              sleep(duration)
+              observer.next(value)
+            }))
+          },
+          error: e -> observer.error(e),
+          complete: () -> observer.complete()
+        ))
+      })
+
+    Method throttle(duration: Duration) -> Observable<T>:
+      return Observable(observer -> {
+        last_emit = Atomic<Option<Instant>>(null)
+        
+        self.subscribe(Observer(
+          next: value -> {
+            now = Instant.now()
+            should_emit = match last_emit.load():
+              null -> true
+              Some(last) -> now - last >= duration
+            
+            if should_emit:
+              last_emit.store(Some(now))
+              observer.next(value)
+          },
+          error: e -> observer.error(e),
+          complete: () -> observer.complete()
+        ))
+      })
+
+    Method distinct() -> Observable<T>:
+      return Observable(observer -> {
+        seen = Set()
+        
+        self.subscribe(Observer(
+          next: value -> {
+            if value not in seen:
+              seen.add(value)
+              observer.next(value)
+          },
+          error: e -> observer.error(e),
+          complete: () -> observer.complete()
+        ))
+      })
+
+    Method distinct_until_changed() -> Observable<T>:
+      return Observable(observer -> {
+        last = Atomic<Option<T>>(null)
+        
+        self.subscribe(Observer(
+          next: value -> {
+            if last.load() != Some(value):
+              last.store(Some(value))
+              observer.next(value)
+          },
+          error: e -> observer.error(e),
+          complete: () -> observer.complete()
+        ))
+      })
+
+    Method merge(other: Observable<T>) -> Observable<T>:
+      return Observable(observer -> {
+        completed = Atomic(0)
+        
+        check_complete = () -> {
+          if completed.fetch_add(1) == 1:
+            observer.complete()
+        }
+        
+        sub1 = self.subscribe(Observer(
+          next: v -> observer.next(v),
+          error: e -> observer.error(e),
+          complete: check_complete
+        ))
+        
+        sub2 = other.subscribe(Observer(
+          next: v -> observer.next(v),
+          error: e -> observer.error(e),
+          complete: check_complete
+        ))
+        
+        Subscription(() -> {
+          sub1.cancel()
+          sub2.cancel()
+        })
+      })
+
+    Method combine_latest<U>(other: Observable<U>) -> Observable<(T, U)>:
+      return Observable(observer -> {
+        latest_self = Atomic<Option<T>>(null)
+        latest_other = Atomic<Option<U>>(null)
+        completed = Atomic(0)
+        
+        emit_if_both = () -> {
+          if latest_self.load() is Some(s) and latest_other.load() is Some(o):
+            observer.next((s, o))
+        }
+        
+        sub1 = self.subscribe(Observer(
+          next: v -> {
+            latest_self.store(Some(v))
+            emit_if_both()
+          },
+          error: e -> observer.error(e),
+          complete: () -> {
+            if completed.fetch_add(1) == 1:
+              observer.complete()
+          }
+        ))
+        
+        sub2 = other.subscribe(Observer(
+          next: v -> {
+            latest_other.store(Some(v))
+            emit_if_both()
+          },
+          error: e -> observer.error(e),
+          complete: () -> {
+            if completed.fetch_add(1) == 1:
+              observer.complete()
+          }
+        ))
+        
+        Subscription(() -> {
+          sub1.cancel()
+          sub2.cancel()
+        })
+      })
+
+    Method to_promise() -> Promise<T>:
+      return Promise.new((resolve, reject) -> {
+        last_value = null
+        
+        self.subscribe(Observer(
+          next: v -> last_value = v,
+          error: e -> reject(e),
+          complete: () -> {
+            if last_value != null:
+              resolve(last_value)
+            else:
+              reject(Error("Observable completed without emitting"))
+          }
+        ))
+      })
+
+    Method to_list() -> Promise<List<T>>:
+      return Promise.new((resolve, reject) -> {
+        values = []
+        
+        self.subscribe(Observer(
+          next: v -> values.push(v),
+          error: e -> reject(e),
+          complete: () -> resolve(values)
+        ))
+      })
+
+  Type Observer<T>:
+    next: (T) -> ()
+    error: (Error) -> ()
+    complete: () -> ()
+
+  # ==========================================================================
+  # SUBJECT
+  # ==========================================================================
+
+  Type Subject<T>:
+    observers: List<Observer<T>>
+    completed: Boolean
+    error_value: Option<Error>
+    mutex: Mutex
+
+    Static Method new() -> Subject<T>:
+      return Subject([], false, null, Mutex.new())
+
+    Method subscribe(observer: Observer<T>) -> Subscription:
+      guard = self.mutex.lock()
+      
+      if self.completed:
+        observer.complete()
+        return Subscription(() -> {})
+      
+      if self.error_value is Some(e):
+        observer.error(e)
+        return Subscription(() -> {})
+      
+      self.observers.push(observer)
+      
+      return Subscription(() -> {
+        guard = self.mutex.lock()
+        self.observers = self.observers.filter(o -> o != observer)
+      })
+
+    Method next(value: T):
+      guard = self.mutex.lock()
+      
+      if self.completed or self.error_value != null:
+        return
+      
+      for observer in self.observers:
+        observer.next(value)
+
+    Method error(e: Error):
+      guard = self.mutex.lock()
+      
+      if self.completed:
+        return
+      
+      self.error_value = Some(e)
+      
+      for observer in self.observers:
+        observer.error(e)
+
+    Method complete():
+      guard = self.mutex.lock()
+      
+      if self.completed:
+        return
+      
+      self.completed = true
+      
+      for observer in self.observers:
+        observer.complete()
+
+    Method as_observable() -> Observable<T>:
+      return Observable(observer -> self.subscribe(observer))
+
+  Type BehaviorSubject<T>:
+    current_value: T
+    subject: Subject<T>
+
+    Static Method new(initial: T) -> BehaviorSubject<T>:
+      return BehaviorSubject(initial, Subject.new())
+
+    Method subscribe(observer: Observer<T>) -> Subscription:
+      observer.next(self.current_value)
+      return self.subject.subscribe(observer)
+
+    Method next(value: T):
+      self.current_value = value
+      self.subject.next(value)
+
+    Method value() -> T:
+      return self.current_value
+
+    Method as_observable() -> Observable<T>:
+      return Observable(observer -> self.subscribe(observer))
+
+  Type ReplaySubject<T>:
+    buffer: List<T>
+    buffer_size: Int
+    subject: Subject<T>
+
+    Static Method new(buffer_size: Int) -> ReplaySubject<T>:
+      return ReplaySubject([], buffer_size, Subject.new())
+
+    Method subscribe(observer: Observer<T>) -> Subscription:
+      for value in self.buffer:
+        observer.next(value)
+      return self.subject.subscribe(observer)
+
+    Method next(value: T):
+      self.buffer.push(value)
+      if self.buffer.length > self.buffer_size:
+        self.buffer.remove_first()
+      self.subject.next(value)
+
+    Method as_observable() -> Observable<T>:
+      return Observable(observer -> self.subscribe(observer))
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Events":
+    ```vibee
+    # Basic EventEmitter
+    emitter = EventEmitter<String>.new()
+    
+    sub = emitter.on("message", msg -> {
+      print("Received: ${msg}")
+    })
+    
+    emitter.emit("message", "Hello!")
+    
+    sub.cancel()  # Unsubscribe
+
+    # Once listener
+    emitter.once("ready", _ -> {
+      print("Ready!")
+    })
+
+    # Wait for event
+    data = await emitter.wait_for("data")
+
+    # With timeout
+    result = await emitter.wait_for_timeout("response", Duration.seconds(5))
+    match result:
+      Some(data) -> process(data)
+      null -> print("Timeout")
+
+    # Typed events
+    Type AppEvents:
+      user_login: User
+      user_logout: UserId
+      message: Message
+
+    emitter = TypedEventEmitter<AppEvents>.new()
+    
+    emitter.on("user_login", user -> {
+      print("User logged in: ${user.name}")
+    })
+    
+    emitter.emit("user_login", user)
+
+    # Event Bus (pub/sub)
+    bus = EventBus.new()
+    
+    bus.subscribe("user.created", event -> {
+      send_welcome_email(event.data)
+    })
+    
+    bus.subscribe_pattern("user.*", (topic, event) -> {
+      log.info("User event: ${topic}")
+    })
+    
+    bus.publish("user.created", Event.new("user.created", user))
+
+    # Channel subscription
+    channel = bus.subscribe_channel("notifications")
+    
+    spawn {
+      for event in channel:
+        handle_notification(event)
+    }
+
+    # Observable
+    clicks = Observable.new(observer -> {
+      button.on_click(e -> observer.next(e))
+      Subscription(() -> button.off_click())
+    })
+
+    clicks
+      .filter(e -> e.target.id == "submit")
+      .debounce(Duration.millis(300))
+      .subscribe_next(e -> handle_submit(e))
+
+    # Operators
+    numbers = Observable.from_list([1, 2, 3, 4, 5])
+    
+    numbers
+      .map(n -> n * 2)
+      .filter(n -> n > 4)
+      .subscribe_next(n -> print(n))  # 6, 8, 10
+
+    # Interval
+    Observable.interval(Duration.seconds(1))
+      .take(5)
+      .subscribe_next(i -> print("Tick ${i}"))
+
+    # Combine streams
+    mouse_x = Observable.from_events(window, "mousemove").map(e -> e.x)
+    mouse_y = Observable.from_events(window, "mousemove").map(e -> e.y)
+    
+    mouse_x.combine_latest(mouse_y)
+      .subscribe_next((x, y) -> print("Position: ${x}, ${y}"))
+
+    # Subject
+    subject = Subject<Int>.new()
+    
+    subject.subscribe(Observer(
+      next: v -> print("A: ${v}"),
+      error: _ -> {},
+      complete: () -> print("A complete")
+    ))
+    
+    subject.next(1)
+    subject.next(2)
+    subject.complete()
+
+    # BehaviorSubject (has current value)
+    state = BehaviorSubject.new(0)
+    
+    state.subscribe_next(v -> print("State: ${v}"))  # Prints 0 immediately
+    
+    state.next(1)  # Prints 1
+    print(state.value())  # 1
+
+    # ReplaySubject (replays last N values)
+    replay = ReplaySubject.new(3)
+    
+    replay.next(1)
+    replay.next(2)
+    replay.next(3)
+    replay.next(4)
+    
+    replay.subscribe_next(v -> print(v))  # Prints 2, 3, 4
+    ```

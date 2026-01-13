@@ -1,0 +1,725 @@
+// =============================================================================
+// Vibee OS — Merkle Module
+// Merkle tree data structures and proofs
+// =============================================================================
+
+// =============================================================================
+// Merkle Tree
+// =============================================================================
+
+/// Merkle tree with configurable hash function
+struct MerkleTree<H: Hasher = Keccak256Hasher> {
+    leaves: [[UInt8; 32]]
+    layers: [[[UInt8; 32]]]
+    hasher: H
+    
+    /// Create empty tree
+    fn new() -> Self {
+        MerkleTree { leaves: [], layers: [], hasher: H.new() }
+    }
+    
+    /// Create from leaf data
+    fn from_leaves(leaves: [[UInt8]]) -> Self {
+        var tree = Self.new()
+        for leaf in leaves {
+            tree.add_leaf(leaf)
+        }
+        tree.build()
+        tree
+    }
+    
+    /// Create from pre-hashed leaves
+    fn from_hashes(hashes: [[UInt8; 32]]) -> Self {
+        var tree = MerkleTree { leaves: hashes, layers: [], hasher: H.new() }
+        tree.build()
+        tree
+    }
+    
+    /// Add leaf data (will be hashed)
+    fn add_leaf(data: [UInt8]) {
+        let hash = self.hasher.hash_leaf(data)
+        self.leaves.push(hash)
+    }
+    
+    /// Add pre-hashed leaf
+    fn add_hash(hash: [UInt8; 32]) {
+        self.leaves.push(hash)
+    }
+    
+    /// Build tree from leaves
+    fn build() {
+        if self.leaves.is_empty() { return }
+        
+        self.layers = [self.leaves.clone()]
+        var current = self.leaves.clone()
+        
+        while current.len() > 1 {
+            var next = []
+            var i = 0
+            while i < current.len() {
+                let left = current[i]
+                let right = if i + 1 < current.len() { current[i + 1] } else { left }
+                next.push(self.hasher.hash_pair(left, right))
+                i += 2
+            }
+            self.layers.push(next.clone())
+            current = next
+        }
+    }
+    
+    /// Get root hash
+    fn root() -> Option<[UInt8; 32]> {
+        self.layers.last()?.first().cloned()
+    }
+    
+    /// Get root hash as hex
+    fn root_hex() -> Option<String> {
+        self.root().map(|r| hex.encode(r))
+    }
+    
+    /// Get proof for leaf at index
+    fn proof(index: Int) -> Option<MerkleProof> {
+        if index >= self.leaves.len() { return None }
+        
+        var proof_hashes = []
+        var proof_positions = []
+        var idx = index
+        
+        for layer in self.layers[0..self.layers.len()-1] {
+            let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 }
+            
+            if sibling_idx < layer.len() {
+                proof_hashes.push(layer[sibling_idx])
+                proof_positions.push(idx % 2 == 0)  // true = sibling is on right
+            }
+            
+            idx /= 2
+        }
+        
+        Some(MerkleProof {
+            leaf: self.leaves[index],
+            proof: proof_hashes,
+            positions: proof_positions
+        })
+    }
+    
+    /// Get proof for leaf data
+    fn proof_for(data: [UInt8]) -> Option<MerkleProof> {
+        let hash = self.hasher.hash_leaf(data)
+        self.proof_for_hash(hash)
+    }
+    
+    /// Get proof for leaf hash
+    fn proof_for_hash(hash: [UInt8; 32]) -> Option<MerkleProof> {
+        let index = self.leaves.iter().position(|h| h == hash)?
+        self.proof(index)
+    }
+    
+    /// Verify proof
+    fn verify(proof: MerkleProof) -> Bool {
+        let computed = proof.compute_root(self.hasher)
+        self.root() == Some(computed)
+    }
+    
+    /// Get leaf count
+    fn leaf_count() -> Int { self.leaves.len() }
+    
+    /// Get tree depth
+    fn depth() -> Int { self.layers.len() }
+    
+    /// Get all leaves
+    fn leaves() -> [[UInt8; 32]] { self.leaves.clone() }
+    
+    /// Check if tree contains leaf
+    fn contains(data: [UInt8]) -> Bool {
+        let hash = self.hasher.hash_leaf(data)
+        self.leaves.contains(hash)
+    }
+    
+    /// Check if tree contains hash
+    fn contains_hash(hash: [UInt8; 32]) -> Bool {
+        self.leaves.contains(hash)
+    }
+}
+
+/// Merkle proof
+struct MerkleProof {
+    leaf: [UInt8; 32]
+    proof: [[UInt8; 32]]
+    positions: [Bool]  // true = sibling on right
+    
+    /// Compute root from proof
+    fn compute_root<H: Hasher>(hasher: H) -> [UInt8; 32] {
+        var current = self.leaf
+        for (i, sibling) in self.proof.iter().enumerate() {
+            if self.positions[i] {
+                current = hasher.hash_pair(current, sibling)
+            } else {
+                current = hasher.hash_pair(sibling, current)
+            }
+        }
+        current
+    }
+    
+    /// Verify against expected root
+    fn verify<H: Hasher>(root: [UInt8; 32], hasher: H) -> Bool {
+        self.compute_root(hasher) == root
+    }
+    
+    /// Serialize proof
+    fn to_bytes() -> [UInt8] {
+        var result = self.leaf.to_vec()
+        result.push(self.proof.len() as UInt8)
+        for (hash, pos) in self.proof.iter().zip(self.positions.iter()) {
+            result.extend(hash)
+            result.push(if pos { 1 } else { 0 })
+        }
+        result
+    }
+    
+    /// Deserialize proof
+    fn from_bytes(data: [UInt8]) -> Result<Self, MerkleError> {
+        if data.len() < 33 { return Err(MerkleError.InvalidProof) }
+        
+        let leaf = data[0..32].try_into().unwrap()
+        let count = data[32] as Int
+        
+        var proof = []
+        var positions = []
+        var offset = 33
+        
+        for _ in 0..count {
+            if offset + 33 > data.len() { return Err(MerkleError.InvalidProof) }
+            proof.push(data[offset..offset+32].try_into().unwrap())
+            positions.push(data[offset + 32] == 1)
+            offset += 33
+        }
+        
+        Ok(MerkleProof { leaf: leaf, proof: proof, positions: positions })
+    }
+    
+    /// Convert to hex strings
+    fn to_hex() -> MerkleProofHex {
+        MerkleProofHex {
+            leaf: hex.encode(self.leaf),
+            proof: self.proof.iter().map(|h| hex.encode(h)).collect(),
+            positions: self.positions.clone()
+        }
+    }
+}
+
+struct MerkleProofHex {
+    leaf: String
+    proof: [String]
+    positions: [Bool]
+}
+
+// =============================================================================
+// Hasher Trait
+// =============================================================================
+
+trait Hasher {
+    fn new() -> Self
+    fn hash_leaf(data: [UInt8]) -> [UInt8; 32]
+    fn hash_pair(left: [UInt8; 32], right: [UInt8; 32]) -> [UInt8; 32]
+}
+
+/// Keccak256 hasher (Ethereum style)
+struct Keccak256Hasher {}
+
+impl Hasher for Keccak256Hasher {
+    fn new() -> Self { Keccak256Hasher {} }
+    
+    fn hash_leaf(data: [UInt8]) -> [UInt8; 32] {
+        crypto.keccak256(data)
+    }
+    
+    fn hash_pair(left: [UInt8; 32], right: [UInt8; 32]) -> [UInt8; 32] {
+        // Sort for consistent ordering (OpenZeppelin style)
+        if left < right {
+            crypto.keccak256(left.to_vec().extend(right))
+        } else {
+            crypto.keccak256(right.to_vec().extend(left))
+        }
+    }
+}
+
+/// SHA256 hasher (Bitcoin style)
+struct Sha256Hasher {}
+
+impl Hasher for Sha256Hasher {
+    fn new() -> Self { Sha256Hasher {} }
+    
+    fn hash_leaf(data: [UInt8]) -> [UInt8; 32] {
+        crypto.sha256(crypto.sha256(data))  // Double SHA256
+    }
+    
+    fn hash_pair(left: [UInt8; 32], right: [UInt8; 32]) -> [UInt8; 32] {
+        var combined = left.to_vec()
+        combined.extend(right)
+        crypto.sha256(crypto.sha256(combined))
+    }
+}
+
+/// Blake3 hasher
+struct Blake3Hasher {}
+
+impl Hasher for Blake3Hasher {
+    fn new() -> Self { Blake3Hasher {} }
+    
+    fn hash_leaf(data: [UInt8]) -> [UInt8; 32] {
+        crypto.blake3(data)
+    }
+    
+    fn hash_pair(left: [UInt8; 32], right: [UInt8; 32]) -> [UInt8; 32] {
+        var combined = left.to_vec()
+        combined.extend(right)
+        crypto.blake3(combined)
+    }
+}
+
+// =============================================================================
+// Sparse Merkle Tree
+// =============================================================================
+
+/// Sparse Merkle Tree for efficient proofs of non-membership
+struct SparseMerkleTree<H: Hasher = Keccak256Hasher> {
+    root: [UInt8; 32]
+    depth: Int
+    nodes: Map<[UInt8; 32], [UInt8; 32]>
+    hasher: H
+    default_nodes: [[UInt8; 32]]
+    
+    /// Create new sparse tree with given depth
+    fn new(depth: Int) -> Self {
+        let hasher = H.new()
+        var default_nodes = [[0u8; 32]]
+        
+        // Precompute default nodes for each level
+        for i in 0..depth {
+            let prev = default_nodes[i]
+            default_nodes.push(hasher.hash_pair(prev, prev))
+        }
+        
+        SparseMerkleTree {
+            root: default_nodes[depth],
+            depth: depth,
+            nodes: Map.empty(),
+            hasher: hasher,
+            default_nodes: default_nodes
+        }
+    }
+    
+    /// Insert key-value pair
+    fn insert(key: [UInt8; 32], value: [UInt8; 32]) {
+        let leaf_hash = self.hasher.hash_pair(key, value)
+        self.nodes.set(key, value)
+        self.update_path(key, leaf_hash)
+    }
+    
+    /// Update path from leaf to root
+    fn update_path(key: [UInt8; 32], leaf_hash: [UInt8; 32]) {
+        var current = leaf_hash
+        var path = key
+        
+        for level in 0..self.depth {
+            let bit = (path[level / 8] >> (7 - level % 8)) & 1
+            let sibling = self.get_node(path, level, 1 - bit)
+            
+            current = if bit == 0 {
+                self.hasher.hash_pair(current, sibling)
+            } else {
+                self.hasher.hash_pair(sibling, current)
+            }
+        }
+        
+        self.root = current
+    }
+    
+    /// Get node at path and level
+    fn get_node(path: [UInt8; 32], level: Int, side: UInt8) -> [UInt8; 32] {
+        // Implementation would look up stored nodes or return default
+        self.default_nodes[level]
+    }
+    
+    /// Get value for key
+    fn get(key: [UInt8; 32]) -> Option<[UInt8; 32]> {
+        self.nodes.get(key).cloned()
+    }
+    
+    /// Generate proof for key
+    fn proof(key: [UInt8; 32]) -> SparseMerkleProof {
+        var siblings = []
+        var path = key
+        
+        for level in 0..self.depth {
+            let bit = (path[level / 8] >> (7 - level % 8)) & 1
+            siblings.push(self.get_node(path, level, 1 - bit))
+        }
+        
+        SparseMerkleProof {
+            key: key,
+            value: self.nodes.get(key).cloned(),
+            siblings: siblings
+        }
+    }
+    
+    /// Verify proof
+    fn verify(proof: SparseMerkleProof) -> Bool {
+        let leaf_hash = match proof.value {
+            Some(v) => self.hasher.hash_pair(proof.key, v),
+            None => [0u8; 32]
+        }
+        
+        var current = leaf_hash
+        
+        for (level, sibling) in proof.siblings.iter().enumerate() {
+            let bit = (proof.key[level / 8] >> (7 - level % 8)) & 1
+            current = if bit == 0 {
+                self.hasher.hash_pair(current, sibling)
+            } else {
+                self.hasher.hash_pair(sibling, current)
+            }
+        }
+        
+        current == self.root
+    }
+    
+    /// Get root
+    fn root() -> [UInt8; 32] { self.root }
+}
+
+/// Sparse Merkle proof
+struct SparseMerkleProof {
+    key: [UInt8; 32]
+    value: Option<[UInt8; 32]>
+    siblings: [[UInt8; 32]]
+    
+    fn is_inclusion() -> Bool { self.value.is_some() }
+    fn is_exclusion() -> Bool { self.value.is_none() }
+}
+
+// =============================================================================
+// Merkle Patricia Trie
+// =============================================================================
+
+/// Merkle Patricia Trie (Ethereum state trie)
+struct PatriciaTrie {
+    root: Option<TrieNode>
+    db: Map<[UInt8; 32], [UInt8]>
+    
+    fn new() -> Self {
+        PatriciaTrie { root: None, db: Map.empty() }
+    }
+    
+    fn insert(key: [UInt8], value: [UInt8]) {
+        let path = key_to_nibbles(key)
+        self.root = Some(self.insert_node(self.root.clone(), path, value))
+    }
+    
+    fn insert_node(node: Option<TrieNode>, path: [UInt8], value: [UInt8]) -> TrieNode {
+        match node {
+            None => TrieNode.Leaf { path: path, value: value }
+            Some(TrieNode.Leaf { path: existing_path, value: existing_value }) => {
+                let common = common_prefix(path, existing_path)
+                if common.len() == path.len() && common.len() == existing_path.len() {
+                    TrieNode.Leaf { path: path, value: value }
+                } else {
+                    var branch = TrieNode.Branch { children: [None; 16], value: None }
+                    // Insert both leaves into branch
+                    branch
+                }
+            }
+            Some(TrieNode.Branch { children, value: v }) => {
+                if path.is_empty() {
+                    TrieNode.Branch { children: children, value: Some(value) }
+                } else {
+                    var new_children = children.clone()
+                    let idx = path[0] as Int
+                    new_children[idx] = Some(Box.new(self.insert_node(children[idx].map(|c| *c), path[1..].to_vec(), value)))
+                    TrieNode.Branch { children: new_children, value: v }
+                }
+            }
+            Some(TrieNode.Extension { path: ext_path, child }) => {
+                let common = common_prefix(path, ext_path)
+                if common.len() == ext_path.len() {
+                    TrieNode.Extension {
+                        path: ext_path,
+                        child: Box.new(self.insert_node(Some(*child), path[common.len()..].to_vec(), value))
+                    }
+                } else {
+                    // Split extension
+                    TrieNode.Extension { path: ext_path, child: child }
+                }
+            }
+        }
+    }
+    
+    fn get(key: [UInt8]) -> Option<[UInt8]> {
+        let path = key_to_nibbles(key)
+        self.get_node(self.root.as_ref(), path)
+    }
+    
+    fn get_node(node: Option<&TrieNode>, path: [UInt8]) -> Option<[UInt8]> {
+        match node {
+            None => None
+            Some(TrieNode.Leaf { path: leaf_path, value }) => {
+                if path == *leaf_path { Some(value.clone()) } else { None }
+            }
+            Some(TrieNode.Branch { children, value }) => {
+                if path.is_empty() {
+                    value.clone()
+                } else {
+                    let idx = path[0] as Int
+                    self.get_node(children[idx].as_ref().map(|c| c.as_ref()), path[1..].to_vec())
+                }
+            }
+            Some(TrieNode.Extension { path: ext_path, child }) => {
+                if path.starts_with(ext_path) {
+                    self.get_node(Some(child.as_ref()), path[ext_path.len()..].to_vec())
+                } else {
+                    None
+                }
+            }
+        }
+    }
+    
+    fn root_hash() -> [UInt8; 32] {
+        match self.root {
+            None => crypto.keccak256([0x80])  // Empty trie
+            Some(ref node) => self.hash_node(node)
+        }
+    }
+    
+    fn hash_node(node: &TrieNode) -> [UInt8; 32] {
+        let encoded = self.encode_node(node)
+        if encoded.len() < 32 {
+            crypto.keccak256(encoded)
+        } else {
+            let hash = crypto.keccak256(encoded.clone())
+            self.db.set(hash, encoded)
+            hash
+        }
+    }
+    
+    fn encode_node(node: &TrieNode) -> [UInt8] {
+        match node {
+            TrieNode.Leaf { path, value } => {
+                rlp.encode([
+                    rlp.encode_bytes(compact_encode(path, true)),
+                    rlp.encode_bytes(value)
+                ])
+            }
+            TrieNode.Extension { path, child } => {
+                rlp.encode([
+                    rlp.encode_bytes(compact_encode(path, false)),
+                    rlp.encode_bytes(self.hash_node(child))
+                ])
+            }
+            TrieNode.Branch { children, value } => {
+                var items = []
+                for child in children {
+                    match child {
+                        Some(c) => items.push(rlp.encode_bytes(self.hash_node(c))),
+                        None => items.push(rlp.encode_bytes([]))
+                    }
+                }
+                items.push(rlp.encode_bytes(value.clone().unwrap_or([])))
+                rlp.encode(items)
+            }
+        }
+    }
+}
+
+enum TrieNode {
+    Leaf { path: [UInt8], value: [UInt8] }
+    Extension { path: [UInt8], child: Box<TrieNode> }
+    Branch { children: [Option<Box<TrieNode>>; 16], value: Option<[UInt8]> }
+}
+
+fn key_to_nibbles(key: [UInt8]) -> [UInt8] {
+    var nibbles = []
+    for b in key {
+        nibbles.push(b >> 4)
+        nibbles.push(b & 0x0f)
+    }
+    nibbles
+}
+
+fn common_prefix(a: [UInt8], b: [UInt8]) -> [UInt8] {
+    var result = []
+    for (x, y) in a.iter().zip(b.iter()) {
+        if x == y { result.push(*x) } else { break }
+    }
+    result
+}
+
+fn compact_encode(nibbles: [UInt8], is_leaf: Bool) -> [UInt8] {
+    let odd = nibbles.len() % 2 == 1
+    let flag = if is_leaf { 2 } else { 0 } + if odd { 1 } else { 0 }
+    
+    var result = []
+    if odd {
+        result.push((flag << 4) | nibbles[0])
+        for i in (1..nibbles.len()).step_by(2) {
+            result.push((nibbles[i] << 4) | nibbles[i + 1])
+        }
+    } else {
+        result.push(flag << 4)
+        for i in (0..nibbles.len()).step_by(2) {
+            result.push((nibbles[i] << 4) | nibbles[i + 1])
+        }
+    }
+    result
+}
+
+// =============================================================================
+// Merkle Mountain Range
+// =============================================================================
+
+/// Merkle Mountain Range for append-only logs
+struct MerkleMountainRange<H: Hasher = Keccak256Hasher> {
+    peaks: [[UInt8; 32]]
+    size: UInt64
+    hasher: H
+    
+    fn new() -> Self {
+        MerkleMountainRange { peaks: [], size: 0, hasher: H.new() }
+    }
+    
+    fn append(data: [UInt8]) -> [UInt8; 32] {
+        let leaf = self.hasher.hash_leaf(data)
+        self.append_hash(leaf)
+    }
+    
+    fn append_hash(hash: [UInt8; 32]) -> [UInt8; 32] {
+        self.peaks.push(hash)
+        self.size += 1
+        
+        // Merge peaks of same height
+        while self.peaks.len() >= 2 {
+            let height1 = self.peak_height(self.peaks.len() - 1)
+            let height2 = self.peak_height(self.peaks.len() - 2)
+            
+            if height1 != height2 { break }
+            
+            let right = self.peaks.pop().unwrap()
+            let left = self.peaks.pop().unwrap()
+            self.peaks.push(self.hasher.hash_pair(left, right))
+        }
+        
+        self.root()
+    }
+    
+    fn peak_height(index: Int) -> Int {
+        // Calculate height based on position
+        var height = 0
+        var pos = self.size
+        for i in 0..=index {
+            while pos & 1 == 0 {
+                height += 1
+                pos >>= 1
+            }
+            pos >>= 1
+        }
+        height
+    }
+    
+    fn root() -> [UInt8; 32] {
+        if self.peaks.is_empty() { return [0u8; 32] }
+        if self.peaks.len() == 1 { return self.peaks[0] }
+        
+        // Bag the peaks
+        var root = self.peaks[self.peaks.len() - 1]
+        for i in (0..self.peaks.len() - 1).rev() {
+            root = self.hasher.hash_pair(self.peaks[i], root)
+        }
+        root
+    }
+    
+    fn size() -> UInt64 { self.size }
+    fn peak_count() -> Int { self.peaks.len() }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum MerkleError {
+    InvalidProof
+    InvalidIndex
+    EmptyTree
+}
+
+impl Display for MerkleError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidProof => f.write("Invalid proof")
+            InvalidIndex => f.write("Invalid index")
+            EmptyTree => f.write("Empty tree")
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "merkle tree basic" {
+    let tree = MerkleTree::<Keccak256Hasher>.from_leaves([
+        "a".as_bytes(),
+        "b".as_bytes(),
+        "c".as_bytes(),
+        "d".as_bytes()
+    ])
+    assert(tree.root().is_some())?
+    assert_eq(tree.leaf_count(), 4)?
+}
+
+test "merkle proof" {
+    let tree = MerkleTree::<Keccak256Hasher>.from_leaves([
+        "a".as_bytes(),
+        "b".as_bytes(),
+        "c".as_bytes(),
+        "d".as_bytes()
+    ])
+    let proof = tree.proof(0).unwrap()
+    assert(tree.verify(proof))?
+}
+
+test "merkle proof verification" {
+    let tree = MerkleTree::<Keccak256Hasher>.from_leaves([
+        "hello".as_bytes(),
+        "world".as_bytes()
+    ])
+    let root = tree.root().unwrap()
+    let proof = tree.proof(0).unwrap()
+    assert(proof.verify(root, Keccak256Hasher.new()))?
+}
+
+test "sparse merkle tree" {
+    var smt = SparseMerkleTree::<Keccak256Hasher>.new(256)
+    let key = crypto.keccak256("key".as_bytes())
+    let value = crypto.keccak256("value".as_bytes())
+    smt.insert(key, value)
+    assert_eq(smt.get(key), Some(value))?
+}
+
+test "mmr append" {
+    var mmr = MerkleMountainRange::<Keccak256Hasher>.new()
+    mmr.append("a".as_bytes())
+    mmr.append("b".as_bytes())
+    mmr.append("c".as_bytes())
+    assert_eq(mmr.size(), 3)?
+}
+
+test "proof serialization" {
+    let tree = MerkleTree::<Keccak256Hasher>.from_leaves([
+        "a".as_bytes(),
+        "b".as_bytes()
+    ])
+    let proof = tree.proof(0).unwrap()
+    let bytes = proof.to_bytes()
+    let restored = MerkleProof.from_bytes(bytes)?
+    assert_eq(restored.leaf, proof.leaf)?
+}

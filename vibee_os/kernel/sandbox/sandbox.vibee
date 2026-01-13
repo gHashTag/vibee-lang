@@ -1,0 +1,435 @@
+name: vibee_os_sandbox
+version: "0.1.0"
+language: gleam
+module: kernel/sandbox/sandbox
+description: Sandbox - изолированное выполнение спецификаций с ограничениями ресурсов
+
+behaviors:
+  - name: isolate_execution
+    given: Untrusted code needs to run
+    when: Sandbox is created
+    then: Code runs in isolated environment
+    test_cases:
+      - name: isolated_memory
+        input: {code: "allocate_memory(1GB)"}
+        expected: {isolated: true, host_memory_unchanged: true}
+      - name: isolated_filesystem
+        input: {code: "write_file('/etc/passwd', 'hacked')"}
+        expected: {blocked: true, error: "permission_denied"}
+      - name: isolated_network
+        input: {code: "http_get('http://evil.com')"}
+        expected: {blocked: true, error: "network_disabled"}
+
+  - name: limit_resources
+    given: Resource limits are set
+    when: Code exceeds limits
+    Then: Execution is terminated
+    test_cases:
+      - name: memory_limit
+        input: {limit: "100MB", usage: "150MB"}
+        expected: {terminated: true, reason: "memory_exceeded"}
+      - name: cpu_limit
+        input: {limit: "1s", usage: "2s"}
+        expected: {terminated: true, reason: "timeout"}
+      - name: within_limits
+        input: {limit: "100MB", usage: "50MB"}
+        expected: {completed: true}
+
+  - name: capability_based_access
+    given: Sandbox has capabilities
+    when: Code requests resource
+    Then: Access granted only if capability exists
+    test_cases:
+      - name: has_capability
+        input: {capability: "fs:read:/tmp", action: "read /tmp/file"}
+        expected: {allowed: true}
+      - name: missing_capability
+        input: {capability: "fs:read:/tmp", action: "read /etc/passwd"}
+        expected: {denied: true}
+      - name: network_capability
+        input: {capability: "net:https:api.example.com", action: "https://api.example.com"}
+        expected: {allowed: true}
+
+  - name: secure_communication
+    given: Sandbox needs to communicate with host
+    when: Message is sent
+    Then: Only allowed messages pass through
+    test_cases:
+      - name: allowed_message
+        input: {message: "result", allowed_types: ["result", "log"]}
+        expected: {delivered: true}
+      - name: blocked_message
+        input: {message: "exec_shell", allowed_types: ["result"]}
+        expected: {blocked: true}
+
+  - name: snapshot_and_restore
+    given: Sandbox state exists
+    when: Snapshot is taken
+    Then: State can be restored later
+    test_cases:
+      - name: snapshot_restore
+        input: {state: {x: 42}, snapshot: true, modify: {x: 100}}
+        expected: {restored_x: 42}
+
+  - name: deterministic_execution
+    given: Same input
+    When: Code runs multiple times
+    Then: Same output every time
+    test_cases:
+      - name: deterministic
+        input: {code: "add(2, 3)", runs: 10}
+        expected: {all_results_equal: true, result: 5}
+      - name: random_seeded
+        input: {code: "random()", seed: 42, runs: 10}
+        expected: {all_results_equal: true}
+
+types:
+  # Sandbox
+  Sandbox:
+    id: str
+    config: SandboxConfig
+    state: SandboxState
+    capabilities: [Capability]
+    resources: ResourceUsage
+    created_at: int
+
+  SandboxConfig:
+    memory_limit_bytes: int
+    cpu_time_limit_ms: int
+    wall_time_limit_ms: int
+    max_processes: int
+    max_file_handles: int
+    max_network_connections: int
+    filesystem: FilesystemConfig
+    network: NetworkConfig
+    capabilities: [Capability]
+    deterministic: bool
+    random_seed: int?
+
+  SandboxState:
+    variants:
+      - Created
+      - Running
+      - Paused
+      - Terminated: {reason: TerminationReason}
+
+  TerminationReason:
+    variants:
+      - Completed
+      - MemoryExceeded
+      - TimeoutCPU
+      - TimeoutWall
+      - Killed
+      - Error: {message: str}
+
+  # Capabilities
+  Capability:
+    variants:
+      - FileRead: {paths: [str]}
+      - FileWrite: {paths: [str]}
+      - NetworkConnect: {hosts: [str], ports: [int]?}
+      - NetworkListen: {ports: [int]}
+      - ProcessSpawn: {allowed: [str]}
+      - EnvRead: {vars: [str]}
+      - Custom: {name: str, params: {str: str}}
+
+  # Filesystem
+  FilesystemConfig:
+    root: str                         # Virtual root
+    mounts: [Mount]
+    read_only: bool
+    max_file_size_bytes: int
+    max_total_size_bytes: int
+
+  Mount:
+    host_path: str
+    sandbox_path: str
+    read_only: bool
+
+  # Network
+  NetworkConfig:
+    enabled: bool
+    allowed_hosts: [str]
+    allowed_ports: [int]
+    dns_enabled: bool
+    max_bandwidth_bytes_per_sec: int?
+
+  # Resources
+  ResourceUsage:
+    memory_bytes: int
+    cpu_time_ms: int
+    wall_time_ms: int
+    processes: int
+    file_handles: int
+    network_connections: int
+    bytes_read: int
+    bytes_written: int
+
+  ResourceLimits:
+    memory_bytes: int
+    cpu_time_ms: int
+    wall_time_ms: int
+    processes: int
+    file_handles: int
+    network_connections: int
+
+  # Execution
+  ExecutionRequest:
+    code: str
+    input: {str: SandboxValue}
+    timeout_ms: int?
+
+  ExecutionResult:
+    success: bool
+    output: SandboxValue?
+    error: str?
+    resources: ResourceUsage
+    duration_ms: int
+    logs: [str]
+
+  SandboxValue:
+    variants:
+      - Null
+      - Bool: {value: bool}
+      - Int: {value: int}
+      - Float: {value: float}
+      - String: {value: str}
+      - Bytes: {data: [int]}
+      - List: {values: [SandboxValue]}
+      - Map: {entries: {str: SandboxValue}}
+
+  # Snapshot
+  Snapshot:
+    id: str
+    sandbox_id: str
+    state: [int]                      # Serialized state
+    created_at: int
+    size_bytes: int
+
+  # Communication
+  SandboxMessage:
+    type: str
+    payload: SandboxValue
+    timestamp: int
+
+  MessageFilter:
+    allowed_types: [str]
+    max_size_bytes: int
+    rate_limit_per_sec: int?
+
+  # Pool
+  SandboxPool:
+    sandboxes: [Sandbox]
+    config: PoolConfig
+    stats: PoolStats
+
+  PoolConfig:
+    min_sandboxes: int
+    max_sandboxes: int
+    idle_timeout_ms: int
+    default_config: SandboxConfig
+
+  PoolStats:
+    total_created: int
+    active: int
+    idle: int
+    total_executions: int
+
+functions:
+  # Lifecycle
+  - name: sandbox_create
+    params: {config: SandboxConfig}
+    returns: Sandbox
+    description: Create new sandbox
+
+  - name: sandbox_destroy
+    params: {sandbox: Sandbox}
+    returns: void
+    description: Destroy sandbox
+
+  - name: sandbox_reset
+    params: {sandbox: Sandbox}
+    returns: void
+    description: Reset sandbox to initial state
+
+  # Execution
+  - name: sandbox_execute
+    params: {sandbox: Sandbox, request: ExecutionRequest}
+    returns: ExecutionResult
+    description: Execute code in sandbox
+
+  - name: sandbox_execute_spec
+    params: {sandbox: Sandbox, spec: str, behavior: str, input: {str: SandboxValue}}
+    returns: ExecutionResult
+    description: Execute Vibee spec in sandbox
+
+  # Control
+  - name: sandbox_pause
+    params: {sandbox: Sandbox}
+    returns: void
+    description: Pause execution
+
+  - name: sandbox_resume
+    params: {sandbox: Sandbox}
+    returns: void
+    description: Resume execution
+
+  - name: sandbox_kill
+    params: {sandbox: Sandbox}
+    returns: void
+    description: Kill sandbox
+
+  # Capabilities
+  - name: capability_grant
+    params: {sandbox: Sandbox, capability: Capability}
+    returns: bool
+    description: Grant capability
+
+  - name: capability_revoke
+    params: {sandbox: Sandbox, capability: Capability}
+    returns: bool
+    description: Revoke capability
+
+  - name: capability_check
+    params: {sandbox: Sandbox, capability: Capability}
+    returns: bool
+    description: Check if has capability
+
+  # Snapshots
+  - name: snapshot_create
+    params: {sandbox: Sandbox}
+    returns: Snapshot
+    description: Create snapshot
+
+  - name: snapshot_restore
+    params: {sandbox: Sandbox, snapshot: Snapshot}
+    returns: bool
+    description: Restore from snapshot
+
+  # Communication
+  - name: sandbox_send
+    params: {sandbox: Sandbox, message: SandboxMessage}
+    returns: bool
+    description: Send message to sandbox
+
+  - name: sandbox_receive
+    params: {sandbox: Sandbox, timeout_ms: int?}
+    returns: SandboxMessage?
+    description: Receive message from sandbox
+
+  # Resources
+  - name: resources_get
+    params: {sandbox: Sandbox}
+    returns: ResourceUsage
+    description: Get resource usage
+
+  - name: resources_limit
+    params: {sandbox: Sandbox, limits: ResourceLimits}
+    returns: void
+    description: Set resource limits
+
+  # Pool
+  - name: pool_create
+    params: {config: PoolConfig}
+    returns: SandboxPool
+    description: Create sandbox pool
+
+  - name: pool_acquire
+    params: {pool: SandboxPool}
+    returns: Sandbox
+    description: Get sandbox from pool
+
+  - name: pool_release
+    params: {pool: SandboxPool, sandbox: Sandbox}
+    returns: void
+    description: Return sandbox to pool
+
+imports:
+  - kernel.security.secrets_manager
+  - kernel.process.process
+
+security_model: |
+  # Sandbox Security Model
+  
+  ## Layers of Isolation
+  
+  1. **Memory Isolation**
+     - Separate address space
+     - No access to host memory
+     - Memory limits enforced
+  
+  2. **Filesystem Isolation**
+     - Virtual filesystem root
+     - Explicit mounts only
+     - Read-only by default
+  
+  3. **Network Isolation**
+     - Disabled by default
+     - Whitelist-based access
+     - Bandwidth limits
+  
+  4. **Process Isolation**
+     - Cannot spawn processes (default)
+     - Limited to allowed executables
+  
+  5. **Capability-Based Access**
+     - Explicit grants required
+     - Fine-grained permissions
+     - Revocable at runtime
+
+use_cases: |
+  # Sandbox Use Cases
+  
+  ## 1. Running Untrusted Plugins
+  ```vibee
+  sandbox = sandbox_create({
+    memory_limit_bytes: 100_000_000,
+    cpu_time_limit_ms: 5000,
+    capabilities: [
+      FileRead: {paths: ["/plugins/data"]},
+    ]
+  })
+  
+  result = sandbox_execute_spec(sandbox, plugin_spec, "process", {data: input})
+  ```
+  
+  ## 2. Testing in Isolation
+  ```vibee
+  sandbox = sandbox_create({
+    deterministic: true,
+    random_seed: 42,
+    network: {enabled: false}
+  })
+  
+  # Tests always produce same results
+  result = sandbox_execute_spec(sandbox, test_spec, "run_tests", {})
+  ```
+  
+  ## 3. LLM-Generated Code Execution
+  ```vibee
+  # Very restrictive for AI-generated code
+  sandbox = sandbox_create({
+    memory_limit_bytes: 10_000_000,
+    cpu_time_limit_ms: 1000,
+    capabilities: []  # No capabilities!
+  })
+  
+  result = sandbox_execute(sandbox, {
+    code: llm_generated_code,
+    input: {x: 5}
+  })
+  ```
+  
+  ## 4. Multi-tenant Execution
+  ```vibee
+  pool = pool_create({
+    min_sandboxes: 10,
+    max_sandboxes: 100,
+    default_config: tenant_config
+  })
+  
+  # Each tenant gets isolated sandbox
+  sandbox = pool_acquire(pool)
+  result = sandbox_execute_spec(sandbox, tenant_spec, "handle", request)
+  pool_release(pool, sandbox)
+  ```

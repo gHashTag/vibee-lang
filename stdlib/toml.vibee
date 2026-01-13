@@ -1,0 +1,439 @@
+// =============================================================================
+// Vibee OS — TOML Module
+// TOML parsing and generation
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// TOML Value
+// -----------------------------------------------------------------------------
+
+enum Value {
+    String(String)
+    Int(Int)
+    Float(Float)
+    Bool(Bool)
+    DateTime(DateTime)
+    Array([Value])
+    Table(Map<String, Value>)
+    
+    fn parse(toml: String) -> Result<Value, TOMLError> {
+        Parser.new(toml).parse()
+    }
+    
+    fn parse_file(path: String) -> Result<Value, TOMLError> {
+        let content = File.read_string(path)?
+        Self.parse(content)
+    }
+    
+    fn is_string() -> Bool { match self { .String(_) => true, _ => false } }
+    fn is_int() -> Bool { match self { .Int(_) => true, _ => false } }
+    fn is_table() -> Bool { match self { .Table(_) => true, _ => false } }
+    fn is_array() -> Bool { match self { .Array(_) => true, _ => false } }
+    
+    fn as_str() -> Option<String> { match self { .String(s) => Some(s), _ => None } }
+    fn as_int() -> Option<Int> { match self { .Int(i) => Some(i), _ => None } }
+    fn as_float() -> Option<Float> { match self { .Float(f) => Some(f), _ => None } }
+    fn as_bool() -> Option<Bool> { match self { .Bool(b) => Some(b), _ => None } }
+    fn as_array() -> Option<[Value]> { match self { .Array(a) => Some(a), _ => None } }
+    fn as_table() -> Option<Map<String, Value>> { match self { .Table(t) => Some(t), _ => None } }
+    
+    fn get(key: String) -> Option<Value> {
+        match self { .Table(t) => t.get(key), _ => None }
+    }
+    
+    fn at(idx: Int) -> Option<Value> {
+        match self { .Array(a) if idx >= 0 && idx < a.len() => Some(a[idx]), _ => None }
+    }
+    
+    fn path(p: String) -> Option<Value> {
+        let parts = p.split(".")
+        var current = self
+        for part in parts {
+            current = current.get(part)?
+        }
+        Some(current)
+    }
+    
+    fn to_toml() -> String { Emitter.new().emit(self) }
+}
+
+impl Index<String> for Value {
+    type Output = Option<Value>
+    fn index(key: String) -> Option<Value> { self.get(key) }
+}
+
+// -----------------------------------------------------------------------------
+// Parser
+// -----------------------------------------------------------------------------
+
+actor Parser {
+    state input: String
+    state pos: Int
+    state line: Int
+    
+    fn new(input: String) -> Self {
+        Parser { input: input, pos: 0, line: 1 }
+    }
+    
+    fn parse() -> Result<Value, TOMLError> {
+        var root = Map.empty()
+        var current_table = root
+        
+        while self.pos < self.input.len() {
+            self.skip_whitespace_and_comments()
+            if self.pos >= self.input.len() { break }
+            
+            if self.peek_str("[[") {
+                let path = self.parse_array_table_header()?
+                current_table = self.ensure_array_table(root, path)?
+            } else if self.peek_char() == Some('[') {
+                let path = self.parse_table_header()?
+                current_table = self.ensure_table(root, path)?
+            } else {
+                let (key, value) = self.parse_key_value()?
+                current_table.set(key, value)
+            }
+        }
+        
+        Ok(Value.Table(root))
+    }
+    
+    fn parse_table_header() -> Result<[String], TOMLError> {
+        self.expect("[")?
+        let path = self.parse_key_path()?
+        self.expect("]")?
+        self.skip_to_eol()
+        Ok(path)
+    }
+    
+    fn parse_array_table_header() -> Result<[String], TOMLError> {
+        self.expect("[[")?
+        let path = self.parse_key_path()?
+        self.expect("]]")?
+        self.skip_to_eol()
+        Ok(path)
+    }
+    
+    fn parse_key_path() -> Result<[String], TOMLError> {
+        var path = []
+        loop {
+            self.skip_whitespace_inline()
+            path.append(self.parse_key()?)
+            self.skip_whitespace_inline()
+            if self.peek_char() != Some('.') { break }
+            self.advance(1)
+        }
+        Ok(path)
+    }
+    
+    fn parse_key() -> Result<String, TOMLError> {
+        match self.peek_char() {
+            Some('"') => self.parse_basic_string()
+            Some('\'') => self.parse_literal_string()
+            _ => self.parse_bare_key()
+        }
+    }
+    
+    fn parse_bare_key() -> Result<String, TOMLError> {
+        let start = self.pos
+        while self.pos < self.input.len() {
+            let c = self.input[self.pos]
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                self.pos += 1
+            } else { break }
+        }
+        if self.pos == start { return Err(TOMLError.ExpectedKey(self.line)) }
+        Ok(self.input[start..self.pos])
+    }
+    
+    fn parse_key_value() -> Result<(String, Value), TOMLError> {
+        let key = self.parse_key()?
+        self.skip_whitespace_inline()
+        self.expect("=")?
+        self.skip_whitespace_inline()
+        let value = self.parse_value()?
+        self.skip_to_eol()
+        Ok((key, value))
+    }
+    
+    fn parse_value() -> Result<Value, TOMLError> {
+        match self.peek_char() {
+            Some('"') => {
+                if self.peek_str("\"\"\"") { self.parse_multiline_basic_string() }
+                else { Ok(Value.String(self.parse_basic_string()?)) }
+            }
+            Some('\'') => {
+                if self.peek_str("'''") { self.parse_multiline_literal_string() }
+                else { Ok(Value.String(self.parse_literal_string()?)) }
+            }
+            Some('[') => self.parse_array()
+            Some('{') => self.parse_inline_table()
+            Some('t') | Some('f') => self.parse_bool()
+            Some(c) if c.is_digit() || c == '-' || c == '+' => self.parse_number_or_date()
+            _ => Err(TOMLError.UnexpectedChar(self.line))
+        }
+    }
+    
+    fn parse_basic_string() -> Result<String, TOMLError> {
+        self.expect("\"")?
+        var result = StringBuilder.new()
+        while self.pos < self.input.len() {
+            let c = self.input[self.pos]
+            self.pos += 1
+            if c == '"' { return Ok(result.build()) }
+            if c == '\\' { result.append(self.parse_escape()?) }
+            else { result.append(c) }
+        }
+        Err(TOMLError.UnterminatedString(self.line))
+    }
+    
+    fn parse_literal_string() -> Result<String, TOMLError> {
+        self.expect("'")?
+        let start = self.pos
+        while self.pos < self.input.len() && self.input[self.pos] != '\'' { self.pos += 1 }
+        let result = self.input[start..self.pos]
+        self.expect("'")?
+        Ok(result)
+    }
+    
+    fn parse_multiline_basic_string() -> Result<Value, TOMLError> {
+        self.expect("\"\"\"")?
+        if self.peek_char() == Some('\n') { self.advance(1) }
+        var result = StringBuilder.new()
+        while !self.peek_str("\"\"\"") {
+            if self.pos >= self.input.len() { return Err(TOMLError.UnterminatedString(self.line)) }
+            let c = self.input[self.pos]
+            self.pos += 1
+            if c == '\\' { result.append(self.parse_escape()?) }
+            else { result.append(c) }
+        }
+        self.expect("\"\"\"")?
+        Ok(Value.String(result.build()))
+    }
+    
+    fn parse_multiline_literal_string() -> Result<Value, TOMLError> {
+        self.expect("'''")?
+        if self.peek_char() == Some('\n') { self.advance(1) }
+        let start = self.pos
+        while !self.peek_str("'''") {
+            if self.pos >= self.input.len() { return Err(TOMLError.UnterminatedString(self.line)) }
+            self.pos += 1
+        }
+        let result = self.input[start..self.pos]
+        self.expect("'''")?
+        Ok(Value.String(result))
+    }
+    
+    fn parse_array() -> Result<Value, TOMLError> {
+        self.expect("[")?
+        var items = []
+        self.skip_whitespace_and_comments()
+        while self.peek_char() != Some(']') {
+            items.append(self.parse_value()?)
+            self.skip_whitespace_and_comments()
+            if self.peek_char() == Some(',') { self.advance(1); self.skip_whitespace_and_comments() }
+        }
+        self.expect("]")?
+        Ok(Value.Array(items))
+    }
+    
+    fn parse_inline_table() -> Result<Value, TOMLError> {
+        self.expect("{")?
+        var table = Map.empty()
+        self.skip_whitespace_inline()
+        while self.peek_char() != Some('}') {
+            let (key, value) = self.parse_key_value_inline()?
+            table.set(key, value)
+            self.skip_whitespace_inline()
+            if self.peek_char() == Some(',') { self.advance(1); self.skip_whitespace_inline() }
+        }
+        self.expect("}")?
+        Ok(Value.Table(table))
+    }
+    
+    fn parse_key_value_inline() -> Result<(String, Value), TOMLError> {
+        let key = self.parse_key()?
+        self.skip_whitespace_inline()
+        self.expect("=")?
+        self.skip_whitespace_inline()
+        let value = self.parse_value()?
+        Ok((key, value))
+    }
+    
+    fn parse_bool() -> Result<Value, TOMLError> {
+        if self.peek_str("true") { self.advance(4); Ok(Value.Bool(true)) }
+        else if self.peek_str("false") { self.advance(5); Ok(Value.Bool(false)) }
+        else { Err(TOMLError.InvalidBool(self.line)) }
+    }
+    
+    fn parse_number_or_date() -> Result<Value, TOMLError> {
+        let start = self.pos
+        while self.pos < self.input.len() {
+            let c = self.input[self.pos]
+            if c.is_alphanumeric() || c == '_' || c == '-' || c == '+' || c == '.' || c == ':' || c == 'T' || c == 'Z' {
+                self.pos += 1
+            } else { break }
+        }
+        let s = self.input[start..self.pos].replace("_", "")
+        
+        if s.contains("T") || s.contains(":") { return Ok(Value.DateTime(DateTime.parse(s)?)) }
+        if s.contains(".") || s.contains("e") || s.contains("E") {
+            return Ok(Value.Float(Float.parse(s)?))
+        }
+        Ok(Value.Int(Int.parse(s)?))
+    }
+    
+    fn parse_escape() -> Result<Char, TOMLError> {
+        let c = self.input[self.pos]
+        self.pos += 1
+        match c {
+            'n' => Ok('\n')
+            't' => Ok('\t')
+            'r' => Ok('\r')
+            '\\' => Ok('\\')
+            '"' => Ok('"')
+            _ => Ok(c)
+        }
+    }
+    
+    fn ensure_table(root: Map<String, Value>, path: [String]) -> Result<Map<String, Value>, TOMLError> {
+        var current = root
+        for key in path {
+            current = current.entry(key).or_insert(Value.Table(Map.empty())).as_table()?
+        }
+        Ok(current)
+    }
+    
+    fn ensure_array_table(root: Map<String, Value>, path: [String]) -> Result<Map<String, Value>, TOMLError> {
+        var current = root
+        for (i, key) in path.enumerate() {
+            if i == path.len() - 1 {
+                let arr = current.entry(key).or_insert(Value.Array([]))
+                match arr {
+                    Value.Array(a) => { let t = Map.empty(); a.append(Value.Table(t)); return Ok(t) }
+                    _ => return Err(TOMLError.InvalidTable(self.line))
+                }
+            } else {
+                current = current.entry(key).or_insert(Value.Table(Map.empty())).as_table()?
+            }
+        }
+        Err(TOMLError.InvalidTable(self.line))
+    }
+    
+    fn peek_char() -> Option<Char> { if self.pos < self.input.len() { Some(self.input[self.pos]) } else { None } }
+    fn peek_str(s: String) -> Bool { self.input[self.pos..].starts_with(s) }
+    fn advance(n: Int) { self.pos += n }
+    fn expect(s: String) -> Result<(), TOMLError> {
+        if self.peek_str(s) { self.advance(s.len()); Ok(()) }
+        else { Err(TOMLError.Expected(s, self.line)) }
+    }
+    fn skip_whitespace_inline() { while self.peek_char() == Some(' ') || self.peek_char() == Some('\t') { self.pos += 1 } }
+    fn skip_whitespace_and_comments() {
+        while self.pos < self.input.len() {
+            let c = self.input[self.pos]
+            if c == ' ' || c == '\t' || c == '\r' { self.pos += 1 }
+            else if c == '\n' { self.pos += 1; self.line += 1 }
+            else if c == '#' { while self.pos < self.input.len() && self.input[self.pos] != '\n' { self.pos += 1 } }
+            else { break }
+        }
+    }
+    fn skip_to_eol() {
+        self.skip_whitespace_inline()
+        if self.peek_char() == Some('#') { while self.pos < self.input.len() && self.input[self.pos] != '\n' { self.pos += 1 } }
+        if self.peek_char() == Some('\n') { self.pos += 1; self.line += 1 }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Emitter
+// -----------------------------------------------------------------------------
+
+actor Emitter {
+    fn new() -> Self { Emitter {} }
+    
+    fn emit(value: Value) -> String {
+        match value {
+            .Table(t) => self.emit_table(t, [])
+            _ => self.emit_value(value)
+        }
+    }
+    
+    fn emit_value(value: Value) -> String {
+        match value {
+            .String(s) => self.emit_string(s)
+            .Int(i) => "\(i)"
+            .Float(f) => "\(f)"
+            .Bool(b) => if b { "true" } else { "false" }
+            .DateTime(dt) => dt.to_string()
+            .Array(a) => "[" + a.map(|v| self.emit_value(v)).join(", ") + "]"
+            .Table(t) => "{" + t.map(|(k, v)| "\(k) = \(self.emit_value(v))").join(", ") + "}"
+        }
+    }
+    
+    fn emit_string(s: String) -> String {
+        if s.contains("\n") { "'''\n\(s)'''" }
+        else { "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"" }
+    }
+    
+    fn emit_table(table: Map<String, Value>, path: [String]) -> String {
+        var result = ""
+        var subtables = []
+        
+        for (key, value) in table {
+            match value {
+                .Table(t) => subtables.append((key, t))
+                _ => result += "\(key) = \(self.emit_value(value))\n"
+            }
+        }
+        
+        for (key, t) in subtables {
+            let new_path = path + [key]
+            result += "\n[\(new_path.join("."))]\n"
+            result += self.emit_table(t, new_path)
+        }
+        
+        result
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors & Tests
+// -----------------------------------------------------------------------------
+
+enum TOMLError {
+    ExpectedKey(Int)
+    Expected(String, Int)
+    UnterminatedString(Int)
+    UnexpectedChar(Int)
+    InvalidBool(Int)
+    InvalidTable(Int)
+    IOError(String)
+    
+    fn message() -> String {
+        match self {
+            .ExpectedKey(l) => "Expected key at line \(l)"
+            .Expected(s, l) => "Expected '\(s)' at line \(l)"
+            .UnterminatedString(l) => "Unterminated string at line \(l)"
+            .UnexpectedChar(l) => "Unexpected character at line \(l)"
+            .InvalidBool(l) => "Invalid boolean at line \(l)"
+            .InvalidTable(l) => "Invalid table at line \(l)"
+            .IOError(m) => "I/O error: \(m)"
+        }
+    }
+}
+
+fn parse(toml: String) -> Result<Value, TOMLError> { Value.parse(toml) }
+fn parse_file(path: String) -> Result<Value, TOMLError> { Value.parse_file(path) }
+
+test "parse basic" {
+    let toml = "name = \"test\"\nvalue = 42"
+    let v = parse(toml)?
+    assert(v["name"]?.as_str() == Some("test"))
+    assert(v["value"]?.as_int() == Some(42))
+}
+
+test "parse table" {
+    let toml = "[server]\nhost = \"localhost\"\nport = 8080"
+    let v = parse(toml)?
+    assert(v.path("server.host")?.as_str() == Some("localhost"))
+}

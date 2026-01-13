@@ -1,0 +1,617 @@
+// =============================================================================
+// Vibee OS — Translation Module
+// Internationalization translation and message formatting
+// =============================================================================
+
+use locale.{Locale, Locales, CURRENT_LOCALE}
+use pluralization.{PluralRules, PluralCategory}
+
+// -----------------------------------------------------------------------------
+// Translation Bundle
+// -----------------------------------------------------------------------------
+
+/// Collection of translations for a locale
+struct TranslationBundle {
+    locale: Locale
+    messages: Map<String, Message>
+    fallback: Option<TranslationBundle>
+    
+    /// Create empty bundle
+    fn empty(locale: Locale) -> Self {
+        TranslationBundle {
+            locale: locale,
+            messages: Map.empty(),
+            fallback: None
+        }
+    }
+    
+    /// Create bundle from map
+    fn from_map(locale: Locale, messages: Map<String, String>) -> Self {
+        var bundle = Self.empty(locale)
+        for (key, value) in messages {
+            bundle.add(key, Message.simple(value))
+        }
+        bundle
+    }
+    
+    /// Load bundle from JSON
+    fn from_json(locale: Locale, json: String) -> Result<Self, TranslationError> {
+        let data = Json.parse(json).map_err(|_| TranslationError.InvalidFormat)?
+        var bundle = Self.empty(locale)
+        
+        fn load_object(bundle: TranslationBundle, obj: JsonObject, prefix: String) {
+            for (key, value) in obj {
+                let full_key = if prefix.is_empty() { key } else { prefix + "." + key }
+                match value {
+                    JsonValue.String(s) => bundle.add(full_key, Message.simple(s))
+                    JsonValue.Object(nested) => load_object(bundle, nested, full_key)
+                    _ => {}
+                }
+            }
+        }
+        
+        if let JsonValue.Object(obj) = data {
+            load_object(bundle, obj, "")
+        }
+        
+        Ok(bundle)
+    }
+    
+    /// Load bundle from YAML
+    fn from_yaml(locale: Locale, yaml: String) -> Result<Self, TranslationError> {
+        let data = Yaml.parse(yaml).map_err(|_| TranslationError.InvalidFormat)?
+        // Similar to JSON loading
+        Self.from_json(locale, data.to_json())
+    }
+    
+    /// Add message
+    fn add(key: String, message: Message) {
+        self.messages.insert(key, message)
+    }
+    
+    /// Add simple string message
+    fn add_string(key: String, value: String) {
+        self.add(key, Message.simple(value))
+    }
+    
+    /// Add plural message
+    fn add_plural(key: String, forms: Map<PluralCategory, String>) {
+        self.add(key, Message.plural(forms))
+    }
+    
+    /// Set fallback bundle
+    fn with_fallback(fallback: TranslationBundle) -> Self {
+        TranslationBundle {
+            locale: self.locale,
+            messages: self.messages,
+            fallback: Some(fallback)
+        }
+    }
+    
+    /// Get message by key
+    fn get(key: String) -> Option<Message> {
+        self.messages.get(key).or_else(|| {
+            self.fallback.and_then(|fb| fb.get(key))
+        })
+    }
+    
+    /// Translate key with arguments
+    fn translate(key: String, args: Map<String, Any> = Map.empty()) -> String {
+        match self.get(key) {
+            Some(message) => message.format(args, self.locale)
+            None => self.fallback.map(|fb| fb.translate(key, args)).unwrap_or(key)
+        }
+    }
+    
+    /// Translate with plural
+    fn translate_plural(key: String, count: Int, args: Map<String, Any> = Map.empty()) -> String {
+        var full_args = args.clone()
+        full_args.insert("count", count)
+        
+        match self.get(key) {
+            Some(message) => message.format_plural(count, full_args, self.locale)
+            None => self.fallback.map(|fb| fb.translate_plural(key, count, args)).unwrap_or(key)
+        }
+    }
+    
+    /// Check if key exists
+    fn has(key: String) -> Bool {
+        self.messages.contains_key(key) || 
+            self.fallback.map(|fb| fb.has(key)).unwrap_or(false)
+    }
+    
+    /// Get all keys
+    fn keys() -> [String] {
+        var all_keys = self.messages.keys().collect()
+        if let Some(fb) = self.fallback {
+            for key in fb.keys() {
+                if !all_keys.contains(key) {
+                    all_keys.push(key)
+                }
+            }
+        }
+        all_keys
+    }
+    
+    /// Merge with another bundle
+    fn merge(other: TranslationBundle) -> Self {
+        var merged = self.clone()
+        for (key, message) in other.messages {
+            merged.messages.insert(key, message)
+        }
+        merged
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Message
+// -----------------------------------------------------------------------------
+
+/// A translatable message with optional placeholders and plural forms
+enum Message {
+    Simple(String)
+    Plural(Map<PluralCategory, String>)
+    Select(String, Map<String, Message>)  // Gender/select
+    
+    /// Create simple message
+    fn simple(text: String) -> Self {
+        Message.Simple(text)
+    }
+    
+    /// Create plural message
+    fn plural(forms: Map<PluralCategory, String>) -> Self {
+        Message.Plural(forms)
+    }
+    
+    /// Create select message (for gender, etc.)
+    fn select(variable: String, options: Map<String, Message>) -> Self {
+        Message.Select(variable, options)
+    }
+    
+    /// Format message with arguments
+    fn format(args: Map<String, Any>, locale: Locale) -> String {
+        match self {
+            .Simple(text) => interpolate(text, args, locale)
+            .Plural(forms) => {
+                let count = args.get("count").and_then(|v| v.as_int()).unwrap_or(1)
+                self.format_plural(count, args, locale)
+            }
+            .Select(variable, options) => {
+                let value = args.get(variable).map(|v| v.to_string()).unwrap_or("other")
+                let message = options.get(value).or_else(|| options.get("other")).unwrap_or(Message.simple(""))
+                message.format(args, locale)
+            }
+        }
+    }
+    
+    /// Format plural message
+    fn format_plural(count: Int, args: Map<String, Any>, locale: Locale) -> String {
+        match self {
+            .Plural(forms) => {
+                let category = PluralRules.for_locale(locale).select(count)
+                let text = forms.get(category)
+                    .or_else(|| forms.get(PluralCategory.Other))
+                    .unwrap_or("")
+                interpolate(text, args, locale)
+            }
+            _ => self.format(args, locale)
+        }
+    }
+}
+
+/// Interpolate placeholders in text
+fn interpolate(text: String, args: Map<String, Any>, locale: Locale) -> String {
+    var result = text
+    
+    // Simple placeholders: {name}
+    for (key, value) in args {
+        let placeholder = "{" + key + "}"
+        let formatted = format_value(value, locale)
+        result = result.replace(placeholder, formatted)
+    }
+    
+    // Formatted placeholders: {name, type, format}
+    // e.g., {count, number}, {date, date, short}, {amount, currency, USD}
+    let pattern = Regex.new(r"\{(\w+),\s*(\w+)(?:,\s*(\w+))?\}")
+    result = pattern.replace_all(result, |m| {
+        let name = m.group(1)
+        let type_name = m.group(2)
+        let format = m.group(3)
+        
+        let value = args.get(name)
+        match value {
+            Some(v) => format_typed_value(v, type_name, format, locale)
+            None => m.group(0)  // Keep original if not found
+        }
+    })
+    
+    result
+}
+
+/// Format value for interpolation
+fn format_value(value: Any, locale: Locale) -> String {
+    match value {
+        v: Int => v.to_string()
+        v: Float => v.to_string()
+        v: String => v
+        v: Bool => v.to_string()
+        v: DateTime => v.format_locale(locale)
+        v: Decimal => v.to_string()
+        _ => value.to_string()
+    }
+}
+
+/// Format typed value with format specifier
+fn format_typed_value(value: Any, type_name: String, format: Option<String>, locale: Locale) -> String {
+    match type_name {
+        "number" => {
+            let num = value.as_float().unwrap_or(0.0)
+            NumberFormat.for_locale(locale).format(num)
+        }
+        "integer" => {
+            let num = value.as_int().unwrap_or(0)
+            NumberFormat.for_locale(locale).format_integer(num)
+        }
+        "currency" => {
+            let num = value.as_decimal().unwrap_or(Decimal.zero())
+            let currency = format.unwrap_or("USD")
+            NumberFormat.for_locale(locale).format_currency(num, currency)
+        }
+        "percent" => {
+            let num = value.as_float().unwrap_or(0.0)
+            NumberFormat.for_locale(locale).format_percent(num)
+        }
+        "date" => {
+            let dt = value.as_datetime().unwrap_or(DateTime.now())
+            let style = format.unwrap_or("medium")
+            DateTimeFormat.for_locale(locale).format_date(dt, style)
+        }
+        "time" => {
+            let dt = value.as_datetime().unwrap_or(DateTime.now())
+            let style = format.unwrap_or("medium")
+            DateTimeFormat.for_locale(locale).format_time(dt, style)
+        }
+        "datetime" => {
+            let dt = value.as_datetime().unwrap_or(DateTime.now())
+            let style = format.unwrap_or("medium")
+            DateTimeFormat.for_locale(locale).format(dt, style, style)
+        }
+        "relative" => {
+            let dt = value.as_datetime().unwrap_or(DateTime.now())
+            RelativeTimeFormat.for_locale(locale).format(dt)
+        }
+        _ => format_value(value, locale)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Translator
+// -----------------------------------------------------------------------------
+
+/// Global translator with multiple locale bundles
+actor Translator {
+    state bundles: Map<String, TranslationBundle>
+    state default_locale: Locale
+    
+    fn new() -> Self {
+        Translator {
+            bundles: Map.empty(),
+            default_locale: Locales.en_US()
+        }
+    }
+    
+    /// Set default locale
+    fn set_default(locale: Locale) {
+        self.default_locale = locale
+    }
+    
+    /// Add bundle for locale
+    fn add_bundle(bundle: TranslationBundle) {
+        self.bundles.insert(bundle.locale.to_tag(), bundle)
+    }
+    
+    /// Load translations from directory
+    fn load_directory(path: String) -> Result<(), TranslationError> {
+        let files = fs.read_dir(path)?
+        for file in files {
+            if file.extension() == "json" {
+                let locale_tag = file.stem()
+                let locale = Locale.parse(locale_tag)?
+                let content = fs.read_string(file.path())?
+                let bundle = TranslationBundle.from_json(locale, content)?
+                self.add_bundle(bundle)
+            }
+        }
+        Ok(())
+    }
+    
+    /// Get bundle for locale (with fallback chain)
+    fn get_bundle(locale: Locale) -> Option<TranslationBundle> {
+        // Try exact match first
+        if let Some(bundle) = self.bundles.get(locale.to_tag()) {
+            return Some(bundle)
+        }
+        
+        // Try fallback chain
+        for fallback in locale.fallback_chain() {
+            if let Some(bundle) = self.bundles.get(fallback.to_tag()) {
+                return Some(bundle)
+            }
+        }
+        
+        // Try default locale
+        self.bundles.get(self.default_locale.to_tag())
+    }
+    
+    /// Translate key for current locale
+    fn t(key: String, args: Map<String, Any> = Map.empty()) -> String {
+        let locale = Locale.current()
+        self.translate(key, locale, args)
+    }
+    
+    /// Translate key for specific locale
+    fn translate(key: String, locale: Locale, args: Map<String, Any> = Map.empty()) -> String {
+        match self.get_bundle(locale) {
+            Some(bundle) => bundle.translate(key, args)
+            None => key
+        }
+    }
+    
+    /// Translate with plural for current locale
+    fn tn(key: String, count: Int, args: Map<String, Any> = Map.empty()) -> String {
+        let locale = Locale.current()
+        self.translate_plural(key, count, locale, args)
+    }
+    
+    /// Translate with plural for specific locale
+    fn translate_plural(key: String, count: Int, locale: Locale, args: Map<String, Any> = Map.empty()) -> String {
+        match self.get_bundle(locale) {
+            Some(bundle) => bundle.translate_plural(key, count, args)
+            None => key
+        }
+    }
+    
+    /// Check if key exists
+    fn has(key: String, locale: Locale) -> Bool {
+        self.get_bundle(locale).map(|b| b.has(key)).unwrap_or(false)
+    }
+    
+    /// Get all available locales
+    fn available_locales() -> [Locale] {
+        self.bundles.keys().filter_map(|tag| Locale.parse(tag).ok()).collect()
+    }
+}
+
+/// Global translator instance
+var TRANSLATOR = Translator.new()
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+/// Translate key using current locale
+fn t(key: String, args: Map<String, Any> = Map.empty()) -> String {
+    TRANSLATOR.t(key, args)
+}
+
+/// Translate with plural using current locale
+fn tn(key: String, count: Int, args: Map<String, Any> = Map.empty()) -> String {
+    TRANSLATOR.tn(key, count, args)
+}
+
+/// Translate key for specific locale
+fn translate(key: String, locale: Locale, args: Map<String, Any> = Map.empty()) -> String {
+    TRANSLATOR.translate(key, locale, args)
+}
+
+/// Translate with plural for specific locale
+fn translate_plural(key: String, count: Int, locale: Locale, args: Map<String, Any> = Map.empty()) -> String {
+    TRANSLATOR.translate_plural(key, count, locale, args)
+}
+
+// -----------------------------------------------------------------------------
+// ICU Message Format Parser
+// -----------------------------------------------------------------------------
+
+/// Parse ICU MessageFormat string
+struct MessageParser {
+    fn parse(text: String) -> Result<Message, TranslationError> {
+        // Simple implementation - full ICU would be more complex
+        if text.contains("{") && text.contains(",") {
+            // Check for plural/select
+            if text.contains("plural,") {
+                return Self.parse_plural(text)
+            }
+            if text.contains("select,") {
+                return Self.parse_select(text)
+            }
+        }
+        Ok(Message.simple(text))
+    }
+    
+    fn parse_plural(text: String) -> Result<Message, TranslationError> {
+        // Parse: {count, plural, one {# item} other {# items}}
+        let pattern = Regex.new(r"\{(\w+),\s*plural,\s*(.+)\}")
+        
+        if let Some(m) = pattern.find(text) {
+            let variable = m.group(1)
+            let forms_str = m.group(2)
+            
+            var forms: Map<PluralCategory, String> = Map.empty()
+            let form_pattern = Regex.new(r"(\w+)\s*\{([^}]*)\}")
+            
+            for fm in form_pattern.find_all(forms_str) {
+                let category_str = fm.group(1)
+                let form_text = fm.group(2)
+                
+                let category = match category_str {
+                    "zero" => PluralCategory.Zero
+                    "one" => PluralCategory.One
+                    "two" => PluralCategory.Two
+                    "few" => PluralCategory.Few
+                    "many" => PluralCategory.Many
+                    _ => PluralCategory.Other
+                }
+                
+                forms.insert(category, form_text.replace("#", "{" + variable + "}"))
+            }
+            
+            return Ok(Message.plural(forms))
+        }
+        
+        Err(TranslationError.InvalidFormat)
+    }
+    
+    fn parse_select(text: String) -> Result<Message, TranslationError> {
+        // Parse: {gender, select, male {He} female {She} other {They}}
+        let pattern = Regex.new(r"\{(\w+),\s*select,\s*(.+)\}")
+        
+        if let Some(m) = pattern.find(text) {
+            let variable = m.group(1)
+            let options_str = m.group(2)
+            
+            var options: Map<String, Message> = Map.empty()
+            let option_pattern = Regex.new(r"(\w+)\s*\{([^}]*)\}")
+            
+            for om in option_pattern.find_all(options_str) {
+                let key = om.group(1)
+                let value = om.group(2)
+                options.insert(key, Message.simple(value))
+            }
+            
+            return Ok(Message.select(variable, options))
+        }
+        
+        Err(TranslationError.InvalidFormat)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Translation Context
+// -----------------------------------------------------------------------------
+
+/// Context for scoped translations
+struct TranslationContext {
+    prefix: String
+    bundle: TranslationBundle
+    
+    fn new(prefix: String, bundle: TranslationBundle) -> Self {
+        TranslationContext { prefix: prefix, bundle: bundle }
+    }
+    
+    fn t(key: String, args: Map<String, Any> = Map.empty()) -> String {
+        let full_key = self.prefix + "." + key
+        self.bundle.translate(full_key, args)
+    }
+    
+    fn tn(key: String, count: Int, args: Map<String, Any> = Map.empty()) -> String {
+        let full_key = self.prefix + "." + key
+        self.bundle.translate_plural(full_key, count, args)
+    }
+    
+    fn scope(sub_prefix: String) -> Self {
+        TranslationContext {
+            prefix: self.prefix + "." + sub_prefix,
+            bundle: self.bundle
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum TranslationError {
+    InvalidFormat
+    MissingKey(String)
+    InvalidLocale
+    LoadError(String)
+    
+    fn message() -> String {
+        match self {
+            .InvalidFormat => "Invalid translation format"
+            .MissingKey(key) => "Missing translation key: " + key
+            .InvalidLocale => "Invalid locale"
+            .LoadError(msg) => "Failed to load translations: " + msg
+        }
+    }
+}
+
+impl Display for TranslationError {
+    fn fmt(f: Formatter) {
+        f.write(self.message())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "simple translation" {
+    var bundle = TranslationBundle.empty(Locales.en_US())
+    bundle.add_string("greeting", "Hello, {name}!")
+    
+    let result = bundle.translate("greeting", Map.from([("name", "World")]))
+    assert_eq(result, "Hello, World!")?
+}
+
+test "plural translation" {
+    var bundle = TranslationBundle.empty(Locales.en_US())
+    bundle.add_plural("items", Map.from([
+        (PluralCategory.One, "{count} item"),
+        (PluralCategory.Other, "{count} items")
+    ]))
+    
+    assert_eq(bundle.translate_plural("items", 1), "1 item")?
+    assert_eq(bundle.translate_plural("items", 5), "5 items")?
+}
+
+test "fallback" {
+    var en_bundle = TranslationBundle.empty(Locales.en())
+    en_bundle.add_string("hello", "Hello")
+    en_bundle.add_string("goodbye", "Goodbye")
+    
+    var en_us_bundle = TranslationBundle.empty(Locales.en_US())
+    en_us_bundle.add_string("hello", "Hi")
+    
+    let bundle = en_us_bundle.with_fallback(en_bundle)
+    
+    assert_eq(bundle.translate("hello"), "Hi")?      // Uses en-US
+    assert_eq(bundle.translate("goodbye"), "Goodbye")?  // Falls back to en
+}
+
+test "nested keys" {
+    let json = r#"{
+        "user": {
+            "profile": {
+                "name": "Name",
+                "email": "Email"
+            }
+        }
+    }"#
+    
+    let bundle = TranslationBundle.from_json(Locales.en_US(), json)?
+    
+    assert_eq(bundle.translate("user.profile.name"), "Name")?
+    assert_eq(bundle.translate("user.profile.email"), "Email")?
+}
+
+test "message format" {
+    let text = "{count, plural, one {# item} other {# items}}"
+    let message = MessageParser.parse(text)?
+    
+    let result1 = message.format_plural(1, Map.from([("count", 1)]), Locales.en_US())
+    let result5 = message.format_plural(5, Map.from([("count", 5)]), Locales.en_US())
+    
+    assert_eq(result1, "1 item")?
+    assert_eq(result5, "5 items")?
+}
+
+test "typed formatting" {
+    var bundle = TranslationBundle.empty(Locales.en_US())
+    bundle.add_string("price", "Price: {amount, currency, USD}")
+    
+    let result = bundle.translate("price", Map.from([("amount", Decimal.from_string("99.99")?)]))
+    assert(result.contains("$"))?
+    assert(result.contains("99.99"))?
+}

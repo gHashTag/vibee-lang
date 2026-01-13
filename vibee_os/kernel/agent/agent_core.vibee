@@ -1,0 +1,371 @@
+name: vibee_os_agent_core
+version: "0.1.0"
+language: zig
+module: kernel/agent/core
+description: SWE Agent Core - the central kernel of VIBEE OS. LLM-powered intelligent decision making.
+
+behaviors:
+  - name: agent_initialization
+    given: VIBEE OS boots and LLM backend is available
+    when: agent_init is called with configuration
+    then: Agent core initializes and becomes ready to process requests
+    test_cases:
+      - name: init_with_local_llm
+        input: {backend: "local", model: "llama3"}
+        expected: {success: true, state: "ready"}
+      - name: init_with_remote_llm
+        input: {backend: "remote", model: "claude-4", api_key: "***"}
+        expected: {success: true, state: "ready"}
+      - name: init_without_llm
+        input: {backend: "none"}
+        expected: {success: true, state: "limited", fallback: "rule_based"}
+
+  - name: process_vibee_specification
+    given: Agent is ready and receives a .vibee specification
+    when: agent_process_spec is called with specification content
+    then: Agent parses, validates, and generates code from specification
+    test_cases:
+      - name: process_simple_spec
+        input: {spec: "name: hello\nbehaviors:\n  - name: greet"}
+        expected: {success: true, code_generated: true, tests_passed: true}
+      - name: process_invalid_spec
+        input: {spec: "invalid yaml content"}
+        expected: {success: false, error: "parse_error"}
+
+  - name: execute_user_intent
+    given: User provides natural language request
+    when: agent_execute is called with user intent
+    then: Agent understands intent, plans actions, and executes them
+    test_cases:
+      - name: create_file_intent
+        input: {intent: "create a new file called hello.txt with content 'Hello World'"}
+        expected: {success: true, actions: ["create_file"], result: "file_created"}
+      - name: run_tests_intent
+        input: {intent: "run all tests for the calculator module"}
+        expected: {success: true, actions: ["find_tests", "execute_tests"], result: "tests_passed"}
+
+  - name: self_improvement
+    given: Agent detects suboptimal behavior or receives feedback
+    when: agent_improve is called with feedback
+    then: Agent updates its strategies and improves future performance
+    test_cases:
+      - name: improve_from_failure
+        input: {feedback: "code generation failed due to missing import", context: "..."}
+        expected: {learned: true, strategy_updated: true}
+
+  - name: multi_agent_coordination
+    given: Multiple agents need to collaborate on a task
+    when: agent_coordinate is called with task and agent list
+    then: Agents communicate and divide work efficiently
+    test_cases:
+      - name: coordinate_swe_and_test
+        input: {task: "implement and test calculator", agents: ["swe", "test"]}
+        expected: {success: true, subtasks_assigned: true}
+
+types:
+  AgentCore:
+    id: str
+    state: AgentState
+    llm_backend: LLMBackend
+    context: ContextWindow
+    memory: SemanticMemory
+    tools: [Tool]
+    capabilities: [Capability]
+
+  AgentState:
+    variants:
+      - Initializing
+      - Ready
+      - Processing
+      - Waiting
+      - Error
+      - Limited  # No LLM, rule-based fallback
+
+  LLMBackend:
+    type: BackendType
+    model: str
+    api_endpoint: str?
+    api_key: str?
+    max_tokens: int
+    temperature: float
+
+  BackendType:
+    variants:
+      - Local      # Local LLM (llama, mistral)
+      - Remote     # Remote API (Claude, GPT)
+      - Hybrid     # Local + Remote fallback
+      - None       # Rule-based fallback
+
+  ContextWindow:
+    max_tokens: int
+    current_tokens: int
+    messages: [Message]
+    system_prompt: str
+
+  Message:
+    role: MessageRole
+    content: str
+    timestamp: int
+    tokens: int
+
+  MessageRole:
+    variants:
+      - System
+      - User
+      - Assistant
+      - Tool
+
+  SemanticMemory:
+    short_term: [MemoryEntry]
+    long_term: [MemoryEntry]
+    working: [MemoryEntry]
+    embeddings_index: str  # Vector DB reference
+
+  MemoryEntry:
+    id: str
+    content: str
+    embedding: [float]?
+    importance: float
+    timestamp: int
+    access_count: int
+    links: [str]  # Related memory IDs
+    tags: [str]
+
+  Tool:
+    name: str
+    description: str
+    parameters: {str: ToolParam}
+    handler: str  # Function reference
+
+  ToolParam:
+    type: str
+    description: str
+    required: bool
+    default: str?
+
+  Capability:
+    variants:
+      - CodeGeneration
+      - CodeExecution
+      - FileSystem
+      - Network
+      - ProcessManagement
+      - SpecificationParsing
+      - TestExecution
+      - SelfImprovement
+
+  Intent:
+    raw_text: str
+    parsed_action: Action
+    confidence: float
+    context: [str]
+
+  Action:
+    type: ActionType
+    parameters: {str: str}
+    requires_confirmation: bool
+
+  ActionType:
+    variants:
+      - CreateFile
+      - ReadFile
+      - WriteFile
+      - DeleteFile
+      - ExecuteCommand
+      - GenerateCode
+      - RunTests
+      - ParseSpec
+      - SearchMemory
+      - Coordinate
+      - Learn
+
+  AgentResponse:
+    success: bool
+    result: str?
+    actions_taken: [Action]
+    tokens_used: int
+    thinking: str?  # Chain of thought
+    error: str?
+
+  Feedback:
+    type: FeedbackType
+    content: str
+    context: str
+    severity: int
+
+  FeedbackType:
+    variants:
+      - Success
+      - Failure
+      - Correction
+      - Suggestion
+      - UserRating
+
+functions:
+  # Core lifecycle
+  - name: agent_init
+    params: {config: LLMBackend}
+    returns: AgentCore
+    description: Initialize the agent core with LLM backend
+
+  - name: agent_shutdown
+    params: {agent: AgentCore}
+    returns: bool
+    description: Gracefully shutdown the agent
+
+  - name: agent_state
+    params: {agent: AgentCore}
+    returns: AgentState
+    description: Get current agent state
+
+  # Main processing
+  - name: agent_process
+    params: {agent: AgentCore, input: str}
+    returns: AgentResponse
+    description: Process any input (natural language or specification)
+
+  - name: agent_process_spec
+    params: {agent: AgentCore, spec: str}
+    returns: AgentResponse
+    description: Process a Vibee specification
+
+  - name: agent_execute
+    params: {agent: AgentCore, intent: str}
+    returns: AgentResponse
+    description: Execute user intent
+
+  # Context management
+  - name: context_add
+    params: {agent: AgentCore, message: Message}
+    returns: bool
+    description: Add message to context window
+
+  - name: context_clear
+    params: {agent: AgentCore}
+    returns: void
+    description: Clear context window
+
+  - name: context_summarize
+    params: {agent: AgentCore}
+    returns: str
+    description: Summarize and compress context
+
+  # Memory management
+  - name: memory_store
+    params: {agent: AgentCore, content: str, importance: float}
+    returns: str
+    description: Store in semantic memory, returns memory ID
+
+  - name: memory_retrieve
+    params: {agent: AgentCore, query: str, limit: int}
+    returns: [MemoryEntry]
+    description: Retrieve relevant memories
+
+  - name: memory_forget
+    params: {agent: AgentCore, id: str}
+    returns: bool
+    description: Remove memory entry
+
+  # Tool management
+  - name: tool_register
+    params: {agent: AgentCore, tool: Tool}
+    returns: bool
+    description: Register a new tool
+
+  - name: tool_execute
+    params: {agent: AgentCore, tool_name: str, params: {str: str}}
+    returns: str
+    description: Execute a tool
+
+  - name: tool_list
+    params: {agent: AgentCore}
+    returns: [Tool]
+    description: List available tools
+
+  # Learning and improvement
+  - name: agent_improve
+    params: {agent: AgentCore, feedback: Feedback}
+    returns: bool
+    description: Learn from feedback
+
+  - name: agent_reflect
+    params: {agent: AgentCore}
+    returns: str
+    description: Reflect on recent actions and generate insights
+
+  # Multi-agent
+  - name: agent_coordinate
+    params: {agent: AgentCore, task: str, agents: [str]}
+    returns: AgentResponse
+    description: Coordinate with other agents
+
+  - name: agent_message
+    params: {from_agent: AgentCore, to_agent: str, message: str}
+    returns: bool
+    description: Send message to another agent
+
+imports:
+  - kernel.hal
+  - kernel.memory
+  - kernel.ipc
+
+agent_system_prompt: |
+  You are the VIBEE OS Agent Core - the central intelligence of the operating system.
+  
+  Your responsibilities:
+  1. Parse and validate Vibee specifications (.vibee files)
+  2. Generate code from specifications following Given/When/Then semantics
+  3. Execute user intents expressed in natural language
+  4. Manage system resources intelligently
+  5. Coordinate with other agents when needed
+  6. Learn and improve from feedback
+  
+  Core principles:
+  - Specification Primacy: All code must come from specifications
+  - Behavioral Semantics: Use Given/When/Then for all behaviors
+  - No Manual Code: Reject any attempt to write code directly
+  - Multi-Target: Generate for multiple platforms when possible
+  
+  You have access to these tools:
+  - file_read, file_write, file_delete: File operations
+  - exec_command: Execute shell commands
+  - parse_vibee: Parse Vibee specifications
+  - generate_code: Generate code from AST
+  - run_tests: Execute test cases
+  - search_memory: Search semantic memory
+  
+  Always think step by step and explain your reasoning.
+
+agent_architecture: |
+  VIBEE OS Agent Core Architecture:
+  
+  ┌─────────────────────────────────────────────────────────┐
+  │                    Agent Core                           │
+  │  ┌─────────────────────────────────────────────────┐   │
+  │  │              LLM Backend                         │   │
+  │  │  (Claude/GPT/Llama - the "brain")               │   │
+  │  └─────────────────────────────────────────────────┘   │
+  │                         │                               │
+  │  ┌──────────┬──────────┼──────────┬──────────┐        │
+  │  │          │          │          │          │        │
+  │  ▼          ▼          ▼          ▼          ▼        │
+  │ Context   Memory     Tools    Planner   Executor      │
+  │ Manager   Manager   Manager              (Actions)     │
+  │  │          │          │          │          │        │
+  │  └──────────┴──────────┴──────────┴──────────┘        │
+  │                         │                               │
+  │  ┌─────────────────────────────────────────────────┐   │
+  │  │           Vibee Integration Layer                │   │
+  │  │  • Spec Parser  • Code Generator  • Test Runner │   │
+  │  └─────────────────────────────────────────────────┘   │
+  └─────────────────────────────────────────────────────────┘
+  
+  Data Flow:
+  1. User Input (Natural Language or .vibee spec)
+  2. → Context Manager (add to context window)
+  3. → LLM Backend (reasoning and planning)
+  4. → Planner (break into actions)
+  5. → Tool Manager (select tools)
+  6. → Executor (execute actions)
+  7. → Memory Manager (store results)
+  8. → Response to user

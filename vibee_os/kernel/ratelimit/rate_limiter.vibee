@@ -1,0 +1,533 @@
+# ============================================================================
+# RATE LIMITING - Ограничение частоты запросов на Vibee
+# ============================================================================
+# Token bucket, sliding window, leaky bucket
+# ============================================================================
+
+Specification RateLimiting:
+  """Rate limiting как спецификация контроля нагрузки."""
+
+  # ==========================================================================
+  # TYPES
+  # ==========================================================================
+
+  Type RateLimiter:
+    algorithm: Algorithm
+    config: RateLimitConfig
+    store: Store
+
+  Type Algorithm:
+    variants:
+      - TokenBucket
+      - SlidingWindow
+      - SlidingWindowLog
+      - FixedWindow
+      - LeakyBucket
+
+  Type RateLimitConfig:
+    limit: Int
+    window: Duration
+    burst: Int?
+    key_prefix: String = "ratelimit"
+
+  Type Store:
+    variants:
+      - Memory: MemoryStore
+      - Redis: RedisStore
+      - Custom: CustomStore
+
+  Type MemoryStore:
+    buckets: Map<String, BucketState>
+    cleanup_interval: Duration = 1.minute
+
+  Type RedisStore:
+    client: RedisClient
+    key_prefix: String
+
+  Type BucketState:
+    tokens: Float
+    last_update: Timestamp
+    window_start: Timestamp?
+    request_log: List<Timestamp>?
+
+  Type RateLimitResult:
+    allowed: Boolean
+    limit: Int
+    remaining: Int
+    reset_at: Timestamp
+    retry_after: Duration?
+
+  Type RateLimitInfo:
+    key: String
+    limit: Int
+    remaining: Int
+    reset_at: Timestamp
+    window: Duration
+
+  # ==========================================================================
+  # TOKEN BUCKET
+  # ==========================================================================
+
+  Behavior TokenBucket:
+    """
+    Token bucket algorithm:
+    - Tokens are added at a fixed rate
+    - Each request consumes one token
+    - Allows bursts up to bucket capacity
+    """
+
+    When token_bucket.check(key, cost):
+      Then:
+        - state = await store.get(key) ?? BucketState(
+            tokens: config.limit,
+            last_update: now()
+          )
+        
+        - # Refill tokens
+        - elapsed = now() - state.last_update
+        - refill_rate = config.limit / config.window.seconds
+        - new_tokens = min(
+            config.burst ?? config.limit,
+            state.tokens + elapsed.seconds * refill_rate
+          )
+        
+        - # Check if request allowed
+        - if new_tokens >= cost:
+            - state.tokens = new_tokens - cost
+            - state.last_update = now()
+            - await store.set(key, state, ttl: config.window * 2)
+            
+            - return RateLimitResult(
+                allowed: true,
+                limit: config.limit,
+                remaining: floor(state.tokens),
+                reset_at: now() + config.window
+              )
+        - else:
+            - # Calculate retry time
+            - tokens_needed = cost - new_tokens
+            - retry_after = Duration.seconds(tokens_needed / refill_rate)
+            
+            - return RateLimitResult(
+                allowed: false,
+                limit: config.limit,
+                remaining: 0,
+                reset_at: now() + retry_after,
+                retry_after: retry_after
+              )
+
+  # ==========================================================================
+  # SLIDING WINDOW
+  # ==========================================================================
+
+  Behavior SlidingWindow:
+    """
+    Sliding window algorithm:
+    - Combines current and previous window counts
+    - Weighted by time position in current window
+    - Smoother than fixed window
+    """
+
+    When sliding_window.check(key, cost):
+      Then:
+        - window_size = config.window.seconds
+        - current_window = floor(now().unix / window_size)
+        - previous_window = current_window - 1
+        
+        - current_key = "${key}:${current_window}"
+        - previous_key = "${key}:${previous_window}"
+        
+        - current_count = await store.get(current_key) ?? 0
+        - previous_count = await store.get(previous_key) ?? 0
+        
+        - # Calculate weighted count
+        - window_position = (now().unix % window_size) / window_size
+        - weighted_count = previous_count * (1 - window_position) + current_count
+        
+        - if weighted_count + cost <= config.limit:
+            - await store.incr(current_key, cost, ttl: config.window * 2)
+            
+            - return RateLimitResult(
+                allowed: true,
+                limit: config.limit,
+                remaining: floor(config.limit - weighted_count - cost),
+                reset_at: Timestamp.from_unix((current_window + 1) * window_size)
+              )
+        - else:
+            - retry_after = Duration.seconds(window_size * (1 - window_position))
+            
+            - return RateLimitResult(
+                allowed: false,
+                limit: config.limit,
+                remaining: 0,
+                reset_at: Timestamp.from_unix((current_window + 1) * window_size),
+                retry_after: retry_after
+              )
+
+  # ==========================================================================
+  # SLIDING WINDOW LOG
+  # ==========================================================================
+
+  Behavior SlidingWindowLog:
+    """
+    Sliding window log algorithm:
+    - Stores timestamp of each request
+    - Most accurate but memory intensive
+    - Good for low-volume, high-precision needs
+    """
+
+    When sliding_window_log.check(key, cost):
+      Then:
+        - state = await store.get(key) ?? BucketState(request_log: [])
+        - window_start = now() - config.window
+        
+        - # Remove old entries
+        - state.request_log = state.request_log.filter(t -> t > window_start)
+        
+        - # Check limit
+        - current_count = state.request_log.size
+        
+        - if current_count + cost <= config.limit:
+            - # Add new timestamps
+            - for i in 0..cost:
+                - add now() to state.request_log
+            - await store.set(key, state, ttl: config.window * 2)
+            
+            - return RateLimitResult(
+                allowed: true,
+                limit: config.limit,
+                remaining: config.limit - current_count - cost,
+                reset_at: if state.request_log.is_not_empty() 
+                  then state.request_log.first() + config.window 
+                  else now() + config.window
+              )
+        - else:
+            - oldest = state.request_log.first()
+            - retry_after = oldest + config.window - now()
+            
+            - return RateLimitResult(
+                allowed: false,
+                limit: config.limit,
+                remaining: 0,
+                reset_at: oldest + config.window,
+                retry_after: retry_after
+              )
+
+  # ==========================================================================
+  # FIXED WINDOW
+  # ==========================================================================
+
+  Behavior FixedWindow:
+    """
+    Fixed window algorithm:
+    - Simple counter per time window
+    - Can allow 2x burst at window boundaries
+    - Most efficient
+    """
+
+    When fixed_window.check(key, cost):
+      Then:
+        - window_size = config.window.seconds
+        - current_window = floor(now().unix / window_size)
+        - window_key = "${key}:${current_window}"
+        
+        - current_count = await store.get(window_key) ?? 0
+        
+        - if current_count + cost <= config.limit:
+            - await store.incr(window_key, cost, ttl: config.window)
+            
+            - return RateLimitResult(
+                allowed: true,
+                limit: config.limit,
+                remaining: config.limit - current_count - cost,
+                reset_at: Timestamp.from_unix((current_window + 1) * window_size)
+              )
+        - else:
+            - reset_at = Timestamp.from_unix((current_window + 1) * window_size)
+            
+            - return RateLimitResult(
+                allowed: false,
+                limit: config.limit,
+                remaining: 0,
+                reset_at: reset_at,
+                retry_after: reset_at - now()
+              )
+
+  # ==========================================================================
+  # LEAKY BUCKET
+  # ==========================================================================
+
+  Behavior LeakyBucket:
+    """
+    Leaky bucket algorithm:
+    - Requests are processed at a fixed rate
+    - Excess requests are queued or rejected
+    - Smooths out bursts
+    """
+
+    When leaky_bucket.check(key, cost):
+      Then:
+        - state = await store.get(key) ?? BucketState(
+            tokens: 0,  # Queue size
+            last_update: now()
+          )
+        
+        - # Drain the bucket
+        - elapsed = now() - state.last_update
+        - drain_rate = config.limit / config.window.seconds
+        - drained = elapsed.seconds * drain_rate
+        - queue_size = max(0, state.tokens - drained)
+        
+        - # Check if can add to queue
+        - max_queue = config.burst ?? config.limit
+        
+        - if queue_size + cost <= max_queue:
+            - state.tokens = queue_size + cost
+            - state.last_update = now()
+            - await store.set(key, state, ttl: config.window * 2)
+            
+            - # Calculate wait time
+            - wait_time = Duration.seconds(queue_size / drain_rate)
+            
+            - return RateLimitResult(
+                allowed: true,
+                limit: config.limit,
+                remaining: floor(max_queue - queue_size - cost),
+                reset_at: now() + Duration.seconds(state.tokens / drain_rate)
+              )
+        - else:
+            - retry_after = Duration.seconds((queue_size + cost - max_queue) / drain_rate)
+            
+            - return RateLimitResult(
+                allowed: false,
+                limit: config.limit,
+                remaining: 0,
+                reset_at: now() + retry_after,
+                retry_after: retry_after
+              )
+
+  # ==========================================================================
+  # RATE LIMITER API
+  # ==========================================================================
+
+  Behavior RateLimiterAPI:
+    When rate_limiter.allow(key, cost):
+      """Check if request is allowed"""
+      Then:
+        - result = match algorithm:
+            TokenBucket -> token_bucket.check(key, cost ?? 1)
+            SlidingWindow -> sliding_window.check(key, cost ?? 1)
+            SlidingWindowLog -> sliding_window_log.check(key, cost ?? 1)
+            FixedWindow -> fixed_window.check(key, cost ?? 1)
+            LeakyBucket -> leaky_bucket.check(key, cost ?? 1)
+        
+        - emit RateLimitChecked(key, result)
+        - return result
+
+    When rate_limiter.consume(key, cost):
+      """Consume tokens, throw if not allowed"""
+      Then:
+        - result = await rate_limiter.allow(key, cost)
+        - if not result.allowed:
+            - raise RateLimitExceeded(result)
+        - return result
+
+    When rate_limiter.get_info(key):
+      """Get current rate limit info without consuming"""
+      Then:
+        - # Implementation depends on algorithm
+        - state = await store.get(key)
+        - if not state:
+            - return RateLimitInfo(
+                key: key,
+                limit: config.limit,
+                remaining: config.limit,
+                reset_at: now() + config.window,
+                window: config.window
+              )
+        - # Calculate remaining based on algorithm
+        - return calculate_info(state)
+
+    When rate_limiter.reset(key):
+      """Reset rate limit for a key"""
+      Then:
+        - await store.delete(key)
+        - emit RateLimitReset(key)
+
+  # ==========================================================================
+  # MIDDLEWARE
+  # ==========================================================================
+
+  Behavior RateLimitMiddleware:
+    When rate_limit_middleware(config):
+      Then:
+        - limiter = RateLimiter(config.algorithm, config, config.store)
+        
+        - return async (request, next) ->
+            - key = config.key_generator(request)
+            - result = await limiter.allow(key)
+            
+            - # Add headers
+            - response_headers = {
+                "X-RateLimit-Limit": result.limit.to_string(),
+                "X-RateLimit-Remaining": result.remaining.to_string(),
+                "X-RateLimit-Reset": result.reset_at.unix.to_string()
+              }
+            
+            - if not result.allowed:
+                - response_headers["Retry-After"] = result.retry_after.seconds.to_string()
+                - return Response(
+                    status: 429,
+                    headers: response_headers,
+                    body: JSON({ error: "Too Many Requests" })
+                  )
+            
+            - response = await next.call(request)
+            - for (name, value) in response_headers:
+                - response.headers[name] = value
+            - return response
+
+    When default_key_generator(request):
+      Then:
+        - # Use IP address by default
+        - ip = request.headers["X-Forwarded-For"]?.split(",")[0] 
+            ?? request.headers["X-Real-IP"]
+            ?? request.remote_addr
+        - return "ip:${ip}"
+
+    When user_key_generator(request):
+      Then:
+        - if request.context.user:
+            - return "user:${request.context.user.id}"
+        - return default_key_generator(request)
+
+    When endpoint_key_generator(request):
+      Then:
+        - base_key = default_key_generator(request)
+        - return "${base_key}:${request.method}:${request.path}"
+
+  # ==========================================================================
+  # DISTRIBUTED RATE LIMITING
+  # ==========================================================================
+
+  Behavior DistributedRateLimiting:
+    """Rate limiting across multiple instances using Redis"""
+
+    When redis_token_bucket.check(key, cost):
+      Then:
+        - script = """
+          local key = KEYS[1]
+          local limit = tonumber(ARGV[1])
+          local window = tonumber(ARGV[2])
+          local cost = tonumber(ARGV[3])
+          local now = tonumber(ARGV[4])
+          
+          local bucket = redis.call('HMGET', key, 'tokens', 'last_update')
+          local tokens = tonumber(bucket[1]) or limit
+          local last_update = tonumber(bucket[2]) or now
+          
+          local elapsed = now - last_update
+          local refill_rate = limit / window
+          local new_tokens = math.min(limit, tokens + elapsed * refill_rate)
+          
+          if new_tokens >= cost then
+            new_tokens = new_tokens - cost
+            redis.call('HMSET', key, 'tokens', new_tokens, 'last_update', now)
+            redis.call('EXPIRE', key, window * 2)
+            return {1, math.floor(new_tokens)}
+          else
+            local retry = (cost - new_tokens) / refill_rate
+            return {0, 0, retry}
+          end
+          """
+        
+        - result = await redis.eval(script, [key], [
+            config.limit,
+            config.window.seconds,
+            cost,
+            now().unix
+          ])
+        
+        - return RateLimitResult(
+            allowed: result[0] == 1,
+            limit: config.limit,
+            remaining: result[1],
+            reset_at: now() + config.window,
+            retry_after: if result[2] then Duration.seconds(result[2]) else null
+          )
+
+  # ==========================================================================
+  # EVENTS
+  # ==========================================================================
+
+  Events:
+    RateLimitChecked:
+      key: String
+      allowed: Boolean
+      remaining: Int
+      timestamp: Timestamp
+
+    RateLimitExceeded:
+      key: String
+      limit: Int
+      retry_after: Duration
+      timestamp: Timestamp
+
+    RateLimitReset:
+      key: String
+      timestamp: Timestamp
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Rate Limiting Usage":
+    ```vibee
+    # Create rate limiter
+    limiter = RateLimiter(
+      algorithm: TokenBucket,
+      config: RateLimitConfig(
+        limit: 100,
+        window: 1.minute,
+        burst: 150
+      ),
+      store: Memory(MemoryStore())
+    )
+
+    # Check rate limit
+    result = await limiter.allow("user:123")
+    if result.allowed:
+      process_request()
+    else:
+      log.warn("Rate limited, retry after ${result.retry_after}")
+
+    # Use as middleware
+    router.use(rate_limit_middleware(RateLimitMiddlewareConfig(
+      algorithm: SlidingWindow,
+      limit: 1000,
+      window: 1.hour,
+      key_generator: user_key_generator,
+      store: Redis(redis_client)
+    )))
+
+    # Different limits for different endpoints
+    router.get("/api/search", 
+      rate_limit_middleware(RateLimitConfig(limit: 10, window: 1.minute)),
+      search_handler
+    )
+
+    router.post("/api/upload",
+      rate_limit_middleware(RateLimitConfig(limit: 5, window: 1.hour)),
+      upload_handler
+    )
+
+    # Tiered rate limiting
+    get_limit_for_user = (user) ->
+      match user.plan:
+        "free" -> RateLimitConfig(limit: 100, window: 1.hour)
+        "pro" -> RateLimitConfig(limit: 1000, window: 1.hour)
+        "enterprise" -> RateLimitConfig(limit: 10000, window: 1.hour)
+
+    # Cost-based rate limiting (e.g., for AI API)
+    result = await limiter.allow("user:123", cost: token_count)
+    ```

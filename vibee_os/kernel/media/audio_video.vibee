@@ -1,0 +1,654 @@
+# ============================================================================
+# AUDIO/VIDEO - Медиа обработка на Vibee
+# ============================================================================
+# Encoding, decoding, streaming, transcoding
+# ============================================================================
+
+Specification AudioVideo:
+  """Обработка аудио и видео как спецификация медиа-операций."""
+
+  # ==========================================================================
+  # AUDIO TYPES
+  # ==========================================================================
+
+  Type AudioFile:
+    path: Path
+    format: AudioFormat
+    duration: Duration
+    sample_rate: Int
+    channels: Int
+    bit_depth: Int
+    bitrate: Int?
+    metadata: AudioMetadata?
+
+  Type AudioFormat:
+    variants:
+      - MP3: MP3Options
+      - AAC: AACOptions
+      - WAV
+      - FLAC
+      - OGG: OGGOptions
+      - OPUS: OpusOptions
+      - M4A
+      - WMA
+      - AIFF
+
+  Type MP3Options:
+    bitrate: Int = 192
+    vbr: Boolean = false
+    quality: Int = 2
+
+  Type AACOptions:
+    bitrate: Int = 128
+    profile: AACProfile = LC
+
+  Type AACProfile:
+    variants: [LC, HE, HEv2]
+
+  Type OGGOptions:
+    quality: Float = 0.5
+
+  Type OpusOptions:
+    bitrate: Int = 96
+    application: OpusApplication = Audio
+
+  Type OpusApplication:
+    variants: [Audio, VoIP, LowDelay]
+
+  Type AudioMetadata:
+    title: String?
+    artist: String?
+    album: String?
+    year: Int?
+    track: Int?
+    genre: String?
+    cover: Bytes?
+    custom: Map<String, String>
+
+  Type AudioStream:
+    sample_rate: Int
+    channels: Int
+    format: SampleFormat
+    data: Stream<AudioFrame>
+
+  Type AudioFrame:
+    samples: List<Float>
+    timestamp: Duration
+    duration: Duration
+
+  Type SampleFormat:
+    variants: [S16, S32, F32, F64]
+
+  # ==========================================================================
+  # VIDEO TYPES
+  # ==========================================================================
+
+  Type VideoFile:
+    path: Path
+    format: VideoContainer
+    duration: Duration
+    width: Int
+    height: Int
+    frame_rate: Float
+    video_codec: VideoCodec
+    audio_codec: AudioCodec?
+    bitrate: Int
+    metadata: VideoMetadata?
+
+  Type VideoContainer:
+    variants: [MP4, MKV, WebM, AVI, MOV, FLV, TS, M3U8]
+
+  Type VideoCodec:
+    variants:
+      - H264: H264Options
+      - H265: H265Options
+      - VP8
+      - VP9: VP9Options
+      - AV1: AV1Options
+      - ProRes: ProResProfile
+
+  Type H264Options:
+    profile: H264Profile = High
+    level: String = "4.1"
+    preset: EncodingPreset = Medium
+    crf: Int = 23
+    bitrate: Int?
+
+  Type H264Profile:
+    variants: [Baseline, Main, High, High10, High422, High444]
+
+  Type H265Options:
+    preset: EncodingPreset = Medium
+    crf: Int = 28
+    bitrate: Int?
+
+  Type VP9Options:
+    crf: Int = 31
+    bitrate: Int?
+    speed: Int = 1
+
+  Type AV1Options:
+    crf: Int = 30
+    preset: Int = 6
+    bitrate: Int?
+
+  Type ProResProfile:
+    variants: [Proxy, LT, Standard, HQ, 4444, 4444XQ]
+
+  Type EncodingPreset:
+    variants: [UltraFast, SuperFast, VeryFast, Faster, Fast, Medium, Slow, Slower, VerySlow]
+
+  Type AudioCodec:
+    variants: [AAC, MP3, Opus, Vorbis, FLAC, PCM, AC3, EAC3]
+
+  Type VideoMetadata:
+    title: String?
+    description: String?
+    author: String?
+    copyright: String?
+    creation_time: DateTime?
+    custom: Map<String, String>
+
+  Type VideoFrame:
+    width: Int
+    height: Int
+    format: PixelFormat
+    data: Bytes
+    timestamp: Duration
+    keyframe: Boolean
+
+  Type PixelFormat:
+    variants: [YUV420P, YUV422P, YUV444P, RGB24, RGBA, NV12, NV21]
+
+  # ==========================================================================
+  # AUDIO LOADING & SAVING
+  # ==========================================================================
+
+  Behavior AudioIO:
+    When audio.load(path):
+      Then:
+        - probe = await ffprobe(path)
+        - return AudioFile(
+            path: path,
+            format: detect_audio_format(probe),
+            duration: probe.duration,
+            sample_rate: probe.sample_rate,
+            channels: probe.channels,
+            bit_depth: probe.bit_depth,
+            bitrate: probe.bitrate,
+            metadata: extract_audio_metadata(probe)
+          )
+
+    When audio.decode(file):
+      Then:
+        - return decode_audio_stream(file.path)
+
+    When audio.encode(stream, path, format, options):
+      Then:
+        - encoder = create_audio_encoder(format, options)
+        - await encode_audio_stream(stream, encoder, path)
+
+    When audio.transcode(input, output, format, options):
+      Then:
+        - stream = audio.decode(input)
+        - await audio.encode(stream, output, format, options)
+
+    When audio.extract_from_video(video, output, format):
+      Then:
+        - await ffmpeg_extract_audio(video.path, output, format)
+
+  # ==========================================================================
+  # AUDIO PROCESSING
+  # ==========================================================================
+
+  Behavior AudioProcessing:
+    When audio.trim(file, start, end):
+      Then: await ffmpeg_trim(file.path, start, end)
+
+    When audio.concat(files, output):
+      Then: await ffmpeg_concat_audio(files.map(f -> f.path), output)
+
+    When audio.mix(tracks, output, options):
+      Then:
+        - volumes = options.volumes ?? tracks.map(_ -> 1.0)
+        - await ffmpeg_mix_audio(tracks, volumes, output)
+
+    When audio.normalize(file, target_db):
+      Then:
+        - loudness = await analyze_loudness(file.path)
+        - adjustment = target_db - loudness.integrated
+        - await ffmpeg_adjust_volume(file.path, adjustment)
+
+    When audio.fade(file, fade_in, fade_out):
+      Then: await ffmpeg_audio_fade(file.path, fade_in, fade_out)
+
+    When audio.change_speed(file, factor):
+      Then: await ffmpeg_atempo(file.path, factor)
+
+    When audio.change_pitch(file, semitones):
+      Then: await ffmpeg_pitch_shift(file.path, semitones)
+
+    When audio.resample(file, sample_rate):
+      Then: await ffmpeg_resample(file.path, sample_rate)
+
+    When audio.convert_channels(file, channels):
+      Then: await ffmpeg_convert_channels(file.path, channels)
+
+    When audio.apply_filter(file, filter):
+      Then:
+        - match filter:
+            LowPass(freq) -> await ffmpeg_lowpass(file.path, freq)
+            HighPass(freq) -> await ffmpeg_highpass(file.path, freq)
+            BandPass(low, high) -> await ffmpeg_bandpass(file.path, low, high)
+            Equalizer(bands) -> await ffmpeg_equalizer(file.path, bands)
+            Compressor(opts) -> await ffmpeg_compressor(file.path, opts)
+            Reverb(opts) -> await ffmpeg_reverb(file.path, opts)
+            NoiseReduction(amount) -> await ffmpeg_noise_reduction(file.path, amount)
+
+    Type AudioFilter:
+      variants:
+        - LowPass: (frequency: Int)
+        - HighPass: (frequency: Int)
+        - BandPass: (low: Int, high: Int)
+        - Equalizer: (bands: List<EQBand>)
+        - Compressor: CompressorOptions
+        - Reverb: ReverbOptions
+        - NoiseReduction: (amount: Float)
+
+    Type EQBand:
+      frequency: Int
+      gain: Float
+      q: Float
+
+    Type CompressorOptions:
+      threshold: Float = -20
+      ratio: Float = 4
+      attack: Float = 20
+      release: Float = 250
+
+    Type ReverbOptions:
+      room_size: Float = 0.5
+      damping: Float = 0.5
+      wet: Float = 0.3
+      dry: Float = 0.7
+
+  # ==========================================================================
+  # VIDEO LOADING & SAVING
+  # ==========================================================================
+
+  Behavior VideoIO:
+    When video.load(path):
+      Then:
+        - probe = await ffprobe(path)
+        - return VideoFile(
+            path: path,
+            format: detect_video_container(probe),
+            duration: probe.duration,
+            width: probe.width,
+            height: probe.height,
+            frame_rate: probe.frame_rate,
+            video_codec: detect_video_codec(probe),
+            audio_codec: detect_audio_codec(probe),
+            bitrate: probe.bitrate,
+            metadata: extract_video_metadata(probe)
+          )
+
+    When video.decode(file):
+      Then: decode_video_stream(file.path)
+
+    When video.encode(frames, audio, path, options):
+      Then:
+        - encoder = create_video_encoder(options)
+        - await encode_video_stream(frames, audio, encoder, path)
+
+    When video.transcode(input, output, options):
+      Then:
+        - await ffmpeg_transcode(input.path, output, options)
+
+  # ==========================================================================
+  # VIDEO PROCESSING
+  # ==========================================================================
+
+  Behavior VideoProcessing:
+    When video.trim(file, start, end):
+      Then: await ffmpeg_trim_video(file.path, start, end)
+
+    When video.concat(files, output):
+      Then: await ffmpeg_concat_video(files.map(f -> f.path), output)
+
+    When video.resize(file, width, height, options):
+      Then:
+        - scale_filter = build_scale_filter(width, height, options)
+        - await ffmpeg_filter(file.path, scale_filter)
+
+    When video.crop(file, x, y, width, height):
+      Then: await ffmpeg_crop(file.path, x, y, width, height)
+
+    When video.rotate(file, angle):
+      Then: await ffmpeg_rotate(file.path, angle)
+
+    When video.flip(file, direction):
+      Then:
+        - filter = match direction:
+            Horizontal -> "hflip"
+            Vertical -> "vflip"
+        - await ffmpeg_filter(file.path, filter)
+
+    When video.change_speed(file, factor, options):
+      Then:
+        - video_filter = "setpts=${1/factor}*PTS"
+        - audio_filter = if options.adjust_audio then "atempo=${factor}" else null
+        - await ffmpeg_speed(file.path, video_filter, audio_filter)
+
+    When video.extract_frames(file, options):
+      Then:
+        - fps = options.fps ?? file.frame_rate
+        - format = options.format ?? PNG
+        - await ffmpeg_extract_frames(file.path, fps, format, options.output_pattern)
+
+    When video.extract_frame(file, timestamp):
+      Then: await ffmpeg_extract_single_frame(file.path, timestamp)
+
+    When video.create_from_images(images, fps, output, options):
+      Then: await ffmpeg_images_to_video(images, fps, output, options)
+
+    When video.add_audio(video, audio, output, options):
+      Then:
+        - replace = options.replace ?? true
+        - await ffmpeg_add_audio(video.path, audio.path, output, replace)
+
+    When video.remove_audio(file):
+      Then: await ffmpeg_remove_audio(file.path)
+
+    When video.overlay(base, overlay, position, options):
+      Then:
+        - x = position.x
+        - y = position.y
+        - await ffmpeg_overlay(base.path, overlay.path, x, y, options)
+
+    When video.watermark(file, image, position, options):
+      Then:
+        - pos = calculate_watermark_position(file, image, position)
+        - opacity = options.opacity ?? 1.0
+        - await ffmpeg_watermark(file.path, image, pos, opacity)
+
+    When video.add_subtitles(file, subtitles, options):
+      Then:
+        - match subtitles:
+            File(path) -> await ffmpeg_add_subtitle_file(file.path, path, options)
+            Embedded(track) -> await ffmpeg_burn_subtitles(file.path, track, options)
+            SRT(content) -> await ffmpeg_add_srt(file.path, content, options)
+
+    Type SubtitleSource:
+      variants:
+        - File: Path
+        - Embedded: Int
+        - SRT: String
+
+  # ==========================================================================
+  # VIDEO FILTERS & EFFECTS
+  # ==========================================================================
+
+  Behavior VideoFilters:
+    When video.apply_filter(file, filter):
+      Then:
+        - filter_string = build_filter_string(filter)
+        - await ffmpeg_filter(file.path, filter_string)
+
+    Type VideoFilter:
+      variants:
+        - Blur: (radius: Float)
+        - Sharpen: (amount: Float)
+        - Brightness: (factor: Float)
+        - Contrast: (factor: Float)
+        - Saturation: (factor: Float)
+        - Hue: (degrees: Float)
+        - Grayscale
+        - Sepia
+        - Vignette: (intensity: Float)
+        - ColorBalance: (shadows: RGB, midtones: RGB, highlights: RGB)
+        - LUT: Path
+        - Denoise: DenoiseOptions
+        - Stabilize: StabilizeOptions
+        - Custom: String
+
+    Type DenoiseOptions:
+      strength: Float = 5
+      temporal: Boolean = true
+
+    Type StabilizeOptions:
+      smoothing: Int = 10
+      crop: Boolean = true
+
+    When video.fade(file, fade_in, fade_out):
+      Then: await ffmpeg_video_fade(file.path, fade_in, fade_out)
+
+    When video.transition(clip1, clip2, transition, duration):
+      Then:
+        - match transition:
+            Crossfade -> await ffmpeg_crossfade(clip1.path, clip2.path, duration)
+            Wipe(direction) -> await ffmpeg_wipe(clip1.path, clip2.path, direction, duration)
+            Dissolve -> await ffmpeg_dissolve(clip1.path, clip2.path, duration)
+            Zoom -> await ffmpeg_zoom_transition(clip1.path, clip2.path, duration)
+
+    Type Transition:
+      variants:
+        - Crossfade
+        - Wipe: Direction
+        - Dissolve
+        - Zoom
+
+    Type Direction:
+      variants: [Left, Right, Up, Down]
+
+  # ==========================================================================
+  # STREAMING
+  # ==========================================================================
+
+  Behavior Streaming:
+    When stream.create_hls(file, output_dir, options):
+      Then:
+        - segment_duration = options.segment_duration ?? 10
+        - variants = options.variants ?? default_hls_variants()
+        - await ffmpeg_create_hls(file.path, output_dir, segment_duration, variants)
+
+    When stream.create_dash(file, output_dir, options):
+      Then:
+        - segment_duration = options.segment_duration ?? 4
+        - await ffmpeg_create_dash(file.path, output_dir, segment_duration, options)
+
+    Type HLSVariant:
+      width: Int
+      height: Int
+      bitrate: Int
+      audio_bitrate: Int
+
+    When stream.rtmp_push(source, url, options):
+      Then:
+        - await ffmpeg_rtmp_push(source, url, options)
+
+    When stream.rtmp_pull(url, output):
+      Then:
+        - await ffmpeg_rtmp_pull(url, output)
+
+    When stream.capture_screen(output, options):
+      Then:
+        - fps = options.fps ?? 30
+        - region = options.region
+        - await ffmpeg_screen_capture(output, fps, region, options)
+
+    When stream.capture_camera(device, output, options):
+      Then:
+        - await ffmpeg_camera_capture(device, output, options)
+
+    When stream.capture_audio(device, output, options):
+      Then:
+        - await ffmpeg_audio_capture(device, output, options)
+
+  # ==========================================================================
+  # THUMBNAILS & PREVIEWS
+  # ==========================================================================
+
+  Behavior ThumbnailsAndPreviews:
+    When video.thumbnail(file, timestamp, options):
+      Then:
+        - frame = await video.extract_frame(file, timestamp)
+        - if options.width or options.height:
+            - return image.resize(frame, options.width, options.height)
+        - return frame
+
+    When video.thumbnails(file, count, options):
+      Then:
+        - interval = file.duration / (count + 1)
+        - timestamps = (1..count).map(i -> interval * i)
+        - return await Promise.all(timestamps.map(t -> video.thumbnail(file, t, options)))
+
+    When video.sprite_sheet(file, columns, rows, options):
+      Then:
+        - count = columns * rows
+        - thumbnails = await video.thumbnails(file, count, options)
+        - return create_sprite_sheet(thumbnails, columns, rows)
+
+    When video.preview_gif(file, options):
+      Then:
+        - start = options.start ?? Duration.zero
+        - duration = options.duration ?? 5.seconds
+        - fps = options.fps ?? 10
+        - width = options.width ?? 320
+        - await ffmpeg_create_gif(file.path, start, duration, fps, width)
+
+    When video.preview_webp(file, options):
+      Then:
+        - start = options.start ?? Duration.zero
+        - duration = options.duration ?? 5.seconds
+        - await ffmpeg_create_animated_webp(file.path, start, duration, options)
+
+  # ==========================================================================
+  # ANALYSIS
+  # ==========================================================================
+
+  Behavior MediaAnalysis:
+    When audio.analyze_loudness(file):
+      Then:
+        - result = await ffmpeg_loudnorm_analyze(file.path)
+        - return LoudnessInfo(
+            integrated: result.input_i,
+            true_peak: result.input_tp,
+            lra: result.input_lra,
+            threshold: result.input_thresh
+          )
+
+    Type LoudnessInfo:
+      integrated: Float
+      true_peak: Float
+      lra: Float
+      threshold: Float
+
+    When audio.detect_silence(file, threshold, min_duration):
+      Then: await ffmpeg_detect_silence(file.path, threshold ?? -50, min_duration ?? 0.5)
+
+    When audio.waveform(file, options):
+      Then:
+        - width = options.width ?? 1800
+        - height = options.height ?? 140
+        - color = options.color ?? "#00ff00"
+        - await ffmpeg_generate_waveform(file.path, width, height, color)
+
+    When audio.spectrum(file, options):
+      Then: await ffmpeg_generate_spectrum(file.path, options)
+
+    When video.scene_detect(file, threshold):
+      Then: await ffmpeg_scene_detect(file.path, threshold ?? 0.3)
+
+    When video.motion_detect(file, options):
+      Then: await ffmpeg_motion_detect(file.path, options)
+
+    When video.black_detect(file, options):
+      Then: await ffmpeg_black_detect(file.path, options)
+
+    When video.quality_metrics(file):
+      Then:
+        - return VideoQualityMetrics(
+            bitrate: file.bitrate,
+            resolution: "${file.width}x${file.height}",
+            frame_rate: file.frame_rate,
+            codec: file.video_codec,
+            profile: extract_profile(file),
+            level: extract_level(file)
+          )
+
+    Type VideoQualityMetrics:
+      bitrate: Int
+      resolution: String
+      frame_rate: Float
+      codec: VideoCodec
+      profile: String?
+      level: String?
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Audio/Video Processing":
+    ```vibee
+    # Audio processing
+    audio_file = await audio.load(Path("/music/song.mp3"))
+    
+    # Transcode to different format
+    await audio.transcode(
+      audio_file,
+      "/music/song.opus",
+      OPUS(bitrate: 128)
+    )
+
+    # Apply audio filters
+    processed = audio_file
+      |> audio.normalize(-14)
+      |> audio.apply_filter(Compressor(threshold: -20, ratio: 4))
+      |> audio.fade(2.seconds, 3.seconds)
+
+    # Video processing
+    video_file = await video.load(Path("/videos/raw.mp4"))
+    
+    # Transcode with options
+    await video.transcode(
+      video_file,
+      "/videos/output.mp4",
+      {
+        video_codec: H264(preset: Fast, crf: 23),
+        audio_codec: AAC(bitrate: 128),
+        width: 1920,
+        height: 1080
+      }
+    )
+
+    # Apply video filters
+    edited = video_file
+      |> video.trim(10.seconds, 60.seconds)
+      |> video.resize(1280, 720)
+      |> video.apply_filter(ColorBalance(...))
+      |> video.fade(1.second, 2.seconds)
+
+    # Generate thumbnails
+    thumbnails = await video.thumbnails(video_file, 10, width: 320)
+
+    # Create HLS stream
+    await stream.create_hls(video_file, "/streams/video", {
+      variants: [
+        HLSVariant(1920, 1080, 5000000, 192000),
+        HLSVariant(1280, 720, 2500000, 128000),
+        HLSVariant(854, 480, 1000000, 96000)
+      ]
+    })
+
+    # Extract audio from video
+    await audio.extract_from_video(video_file, "/audio/extracted.aac", AAC())
+
+    # Create preview GIF
+    await video.preview_gif(video_file, {
+      start: 30.seconds,
+      duration: 5.seconds,
+      fps: 15,
+      width: 480
+    })
+    ```

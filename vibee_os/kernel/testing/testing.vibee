@@ -1,0 +1,851 @@
+# ============================================================================
+# TESTING FRAMEWORK - Тестирование на Vibee
+# ============================================================================
+# Unit tests, integration tests, mocking, assertions, coverage
+# ============================================================================
+
+Specification Testing:
+  """Тестирование как спецификация проверки поведения."""
+
+  # ==========================================================================
+  # CORE TYPES
+  # ==========================================================================
+
+  Type Test:
+    name: String
+    fn: () -> Promise<Void>
+    options: TestOptions
+    file: String
+    line: Int
+
+  Type TestOptions:
+    timeout: Duration = 5.seconds
+    retry: Int = 0
+    skip: Boolean = false
+    only: Boolean = false
+    tags: List<String> = []
+
+  Type TestSuite:
+    name: String
+    tests: List<Test>
+    before_all: (() -> Promise<Void>)?
+    after_all: (() -> Promise<Void>)?
+    before_each: (() -> Promise<Void>)?
+    after_each: (() -> Promise<Void>)?
+    options: SuiteOptions
+
+  Type SuiteOptions:
+    parallel: Boolean = false
+    timeout: Duration = 30.seconds
+    skip: Boolean = false
+    only: Boolean = false
+
+  Type TestResult:
+    test: Test
+    status: TestStatus
+    duration: Duration
+    error: TestError?
+    retries: Int
+
+  Type TestStatus:
+    variants: [Passed, Failed, Skipped, Timeout]
+
+  Type TestError:
+    message: String
+    expected: Any?
+    actual: Any?
+    diff: String?
+    stack: String
+
+  Type TestReport:
+    suites: List<SuiteResult>
+    total: Int
+    passed: Int
+    failed: Int
+    skipped: Int
+    duration: Duration
+    coverage: CoverageReport?
+
+  Type SuiteResult:
+    suite: TestSuite
+    results: List<TestResult>
+    duration: Duration
+
+  # ==========================================================================
+  # TEST DEFINITION
+  # ==========================================================================
+
+  Behavior TestDefinition:
+    When test(name, fn):
+      Then:
+        - current_suite.add_test(Test(
+            name: name,
+            fn: fn,
+            options: TestOptions(),
+            file: caller_file(),
+            line: caller_line()
+          ))
+
+    When test(name, options, fn):
+      Then:
+        - current_suite.add_test(Test(
+            name: name,
+            fn: fn,
+            options: options,
+            file: caller_file(),
+            line: caller_line()
+          ))
+
+    When test.skip(name, fn):
+      Then:
+        - test(name, { skip: true }, fn)
+
+    When test.only(name, fn):
+      Then:
+        - test(name, { only: true }, fn)
+
+    When test.todo(name):
+      Then:
+        - test(name, { skip: true }, async () -> {
+            throw TodoError("Test not implemented")
+          })
+
+    When describe(name, fn):
+      Then:
+        - suite = TestSuite(name: name, tests: [], options: SuiteOptions())
+        - push_suite(suite)
+        - fn()
+        - pop_suite()
+
+    When describe.skip(name, fn):
+      Then:
+        - suite = TestSuite(name: name, tests: [], options: SuiteOptions(skip: true))
+        - push_suite(suite)
+        - fn()
+        - pop_suite()
+
+    When describe.only(name, fn):
+      Then:
+        - suite = TestSuite(name: name, tests: [], options: SuiteOptions(only: true))
+        - push_suite(suite)
+        - fn()
+        - pop_suite()
+
+    When before_all(fn):
+      Then:
+        - current_suite.before_all = fn
+
+    When after_all(fn):
+      Then:
+        - current_suite.after_all = fn
+
+    When before_each(fn):
+      Then:
+        - current_suite.before_each = fn
+
+    When after_each(fn):
+      Then:
+        - current_suite.after_each = fn
+
+  # ==========================================================================
+  # ASSERTIONS
+  # ==========================================================================
+
+  Behavior Assertions:
+    When expect(actual):
+      Then:
+        - return Expectation(actual)
+
+    Type Expectation<T>:
+      actual: T
+      negated: Boolean = false
+
+      Method not() -> Expectation<T>:
+        Return: Expectation(actual, negated: true)
+
+      Method to_be(expected: T):
+        if negated:
+          assert actual != expected, "Expected ${actual} not to be ${expected}"
+        else:
+          assert actual == expected, "Expected ${expected}, got ${actual}"
+
+      Method to_equal(expected: T):
+        if negated:
+          assert !deep_equal(actual, expected), "Expected values not to be equal"
+        else:
+          assert deep_equal(actual, expected), diff_message(expected, actual)
+
+      Method to_be_truthy():
+        if negated:
+          assert !actual, "Expected ${actual} to be falsy"
+        else:
+          assert actual, "Expected ${actual} to be truthy"
+
+      Method to_be_falsy():
+        if negated:
+          assert actual, "Expected ${actual} to be truthy"
+        else:
+          assert !actual, "Expected ${actual} to be falsy"
+
+      Method to_be_null():
+        if negated:
+          assert actual != null, "Expected value not to be null"
+        else:
+          assert actual == null, "Expected null, got ${actual}"
+
+      Method to_be_defined():
+        if negated:
+          assert actual == undefined, "Expected value to be undefined"
+        else:
+          assert actual != undefined, "Expected value to be defined"
+
+      Method to_be_instance_of(type: Type):
+        if negated:
+          assert !(actual is type), "Expected ${actual} not to be instance of ${type}"
+        else:
+          assert actual is type, "Expected instance of ${type}, got ${typeof(actual)}"
+
+      Method to_contain(item: Any):
+        if negated:
+          assert item not in actual, "Expected ${actual} not to contain ${item}"
+        else:
+          assert item in actual, "Expected ${actual} to contain ${item}"
+
+      Method to_have_length(length: Int):
+        if negated:
+          assert actual.length != length, "Expected length not to be ${length}"
+        else:
+          assert actual.length == length, "Expected length ${length}, got ${actual.length}"
+
+      Method to_match(pattern: Regex):
+        if negated:
+          assert !pattern.test(actual), "Expected ${actual} not to match ${pattern}"
+        else:
+          assert pattern.test(actual), "Expected ${actual} to match ${pattern}"
+
+      Method to_throw(error_type: Type?):
+        try:
+          actual()
+          if not negated:
+            fail("Expected function to throw")
+        catch e:
+          if negated:
+            fail("Expected function not to throw, but threw ${e}")
+          if error_type and !(e is error_type):
+            fail("Expected ${error_type}, got ${typeof(e)}")
+
+      Method to_be_greater_than(expected: Number):
+        if negated:
+          assert actual <= expected, "Expected ${actual} not to be greater than ${expected}"
+        else:
+          assert actual > expected, "Expected ${actual} to be greater than ${expected}"
+
+      Method to_be_less_than(expected: Number):
+        if negated:
+          assert actual >= expected, "Expected ${actual} not to be less than ${expected}"
+        else:
+          assert actual < expected, "Expected ${actual} to be less than ${expected}"
+
+      Method to_be_close_to(expected: Float, precision: Int = 2):
+        diff = abs(actual - expected)
+        threshold = 10 ** (-precision) / 2
+        if negated:
+          assert diff >= threshold, "Expected ${actual} not to be close to ${expected}"
+        else:
+          assert diff < threshold, "Expected ${actual} to be close to ${expected}"
+
+      Method to_have_property(key: String, value: Any?):
+        if negated:
+          if value:
+            assert actual[key] != value, "Expected property ${key} not to be ${value}"
+          else:
+            assert key not in actual, "Expected not to have property ${key}"
+        else:
+          assert key in actual, "Expected to have property ${key}"
+          if value:
+            assert actual[key] == value, "Expected ${key} to be ${value}, got ${actual[key]}"
+
+      Method to_have_been_called():
+        assert actual.calls.length > 0, "Expected mock to have been called"
+
+      Method to_have_been_called_times(count: Int):
+        assert actual.calls.length == count, 
+          "Expected ${count} calls, got ${actual.calls.length}"
+
+      Method to_have_been_called_with(...args):
+        found = actual.calls.any(call -> deep_equal(call.args, args))
+        assert found, "Expected mock to have been called with ${args}"
+
+      Method to_resolve():
+        result = await actual
+        return Expectation(result)
+
+      Method to_reject(error_type: Type?):
+        try:
+          await actual
+          fail("Expected promise to reject")
+        catch e:
+          if error_type and !(e is error_type):
+            fail("Expected ${error_type}, got ${typeof(e)}")
+
+  # ==========================================================================
+  # MOCKING
+  # ==========================================================================
+
+  Behavior Mocking:
+    When mock.fn(implementation):
+      Then:
+        - return MockFunction(implementation)
+
+    Type MockFunction<T>:
+      implementation: T?
+      calls: List<MockCall>
+      return_values: List<Any>
+      return_index: Int = 0
+
+      Method call(...args) -> Any:
+        calls.push(MockCall(args: args, timestamp: now()))
+        
+        if return_values.length > return_index:
+          result = return_values[return_index]
+          return_index += 1
+          return result
+        
+        if implementation:
+          return implementation(...args)
+        
+        return undefined
+
+      Method returns(value: Any) -> MockFunction:
+        return_values.push(value)
+        return self
+
+      Method returns_once(value: Any) -> MockFunction:
+        return_values.push(value)
+        return self
+
+      Method throws(error: Error) -> MockFunction:
+        implementation = () -> throw error
+        return self
+
+      Method resolves(value: Any) -> MockFunction:
+        implementation = async () -> value
+        return self
+
+      Method rejects(error: Error) -> MockFunction:
+        implementation = async () -> throw error
+        return self
+
+      Method reset():
+        calls = []
+        return_values = []
+        return_index = 0
+
+      Method restore():
+        # Restore original implementation if spying
+
+    Type MockCall:
+      args: List<Any>
+      timestamp: DateTime
+      result: Any?
+      error: Error?
+
+    When mock.spy(object, method):
+      Then:
+        - original = object[method]
+        - spy = MockFunction(original)
+        - object[method] = spy
+        - spy.restore = () -> object[method] = original
+        - return spy
+
+    When mock.module(path, factory):
+      Then:
+        - mocked = factory()
+        - module_mocks[path] = mocked
+        - return mocked
+
+    When mock.clear_all():
+      Then:
+        - module_mocks.clear()
+        - for mock in active_mocks:
+            - mock.restore()
+        - active_mocks.clear()
+
+  # ==========================================================================
+  # STUBS & FAKES
+  # ==========================================================================
+
+  Behavior StubsAndFakes:
+    When stub.http(config):
+      Then:
+        - return HttpStub(config)
+
+    Type HttpStub:
+      routes: List<StubRoute>
+
+      Method get(path, response) -> HttpStub:
+        routes.push(StubRoute("GET", path, response))
+        return self
+
+      Method post(path, response) -> HttpStub:
+        routes.push(StubRoute("POST", path, response))
+        return self
+
+      Method put(path, response) -> HttpStub:
+        routes.push(StubRoute("PUT", path, response))
+        return self
+
+      Method delete(path, response) -> HttpStub:
+        routes.push(StubRoute("DELETE", path, response))
+        return self
+
+      Method reply(status, body, headers) -> StubResponse:
+        return StubResponse(status, body, headers)
+
+      Method start() -> URL:
+        server = create_stub_server(routes)
+        return server.url
+
+      Method stop():
+        server.close()
+
+    Type StubRoute:
+      method: String
+      path: String | Regex
+      response: StubResponse | (() -> StubResponse)
+
+    Type StubResponse:
+      status: Int
+      body: Any
+      headers: Map<String, String>
+
+    When stub.time(fixed_time):
+      Then:
+        - original_now = Date.now
+        - Date.now = () -> fixed_time
+        - return TimeStub(
+            restore: () -> Date.now = original_now,
+            advance: (duration) -> fixed_time += duration
+          )
+
+    Type TimeStub:
+      restore: () -> Void
+      advance: (Duration) -> Void
+      set: (DateTime) -> Void
+
+    When fake.database():
+      Then:
+        - return InMemoryDatabase()
+
+    Type InMemoryDatabase:
+      tables: Map<String, List<Map<String, Any>>>
+
+      Method query(sql) -> List<Map<String, Any>>:
+        # Parse and execute SQL against in-memory data
+        return execute_sql(sql, tables)
+
+      Method insert(table, data) -> Map<String, Any>:
+        if table not in tables:
+          tables[table] = []
+        record = { id: generate_id(), ...data }
+        tables[table].push(record)
+        return record
+
+      Method clear():
+        tables.clear()
+
+  # ==========================================================================
+  # TEST RUNNER
+  # ==========================================================================
+
+  Behavior TestRunner:
+    When run_tests(options):
+      Then:
+        - suites = collect_test_suites(options.patterns)
+        - filtered = filter_suites(suites, options)
+        - results = []
+        
+        - for suite in filtered:
+            - suite_result = await run_suite(suite, options)
+            - results.push(suite_result)
+            - report_suite_result(suite_result)
+        
+        - report = generate_report(results, options)
+        - output_report(report, options.reporter)
+        - return report
+
+    When run_suite(suite, options):
+      Then:
+        - if suite.options.skip:
+            - return skip_suite(suite)
+        
+        - await suite.before_all?()
+        - results = []
+        
+        - tests = if suite.options.parallel then
+            - await Promise.all(suite.tests.map(t -> run_test(t, suite, options)))
+          else:
+            - for test in suite.tests:
+                - results.push(await run_test(test, suite, options))
+            - results
+        
+        - await suite.after_all?()
+        - return SuiteResult(suite, results, sum_duration(results))
+
+    When run_test(test, suite, options):
+      Then:
+        - if test.options.skip:
+            - return TestResult(test, Skipped, 0.ms, null, 0)
+        
+        - retries = 0
+        - max_retries = test.options.retry
+        
+        - while retries <= max_retries:
+            - await suite.before_each?()
+            - start = now()
+            
+            - try:
+                - await with_timeout(test.fn(), test.options.timeout)
+                - duration = now() - start
+                - await suite.after_each?()
+                - return TestResult(test, Passed, duration, null, retries)
+              catch error:
+                - duration = now() - start
+                - await suite.after_each?()
+                
+                - if error is TimeoutError:
+                    - return TestResult(test, Timeout, duration, format_error(error), retries)
+                
+                - if retries < max_retries:
+                    - retries += 1
+                    - continue
+                
+                - return TestResult(test, Failed, duration, format_error(error), retries)
+
+  # ==========================================================================
+  # COVERAGE
+  # ==========================================================================
+
+  Type CoverageReport:
+    files: List<FileCoverage>
+    summary: CoverageSummary
+
+  Type FileCoverage:
+    path: String
+    lines: LineCoverage
+    branches: BranchCoverage
+    functions: FunctionCoverage
+
+  Type LineCoverage:
+    total: Int
+    covered: Int
+    percentage: Float
+    uncovered_lines: List<Int>
+
+  Type BranchCoverage:
+    total: Int
+    covered: Int
+    percentage: Float
+
+  Type FunctionCoverage:
+    total: Int
+    covered: Int
+    percentage: Float
+    uncovered_functions: List<String>
+
+  Type CoverageSummary:
+    lines: Float
+    branches: Float
+    functions: Float
+    statements: Float
+
+  Behavior CoverageCollection:
+    When coverage.start():
+      Then:
+        - instrument_code()
+        - coverage_data = CoverageData()
+
+    When coverage.stop():
+      Then:
+        - return generate_coverage_report(coverage_data)
+
+    When coverage.report(format):
+      Then:
+        - report = coverage.stop()
+        - match format:
+            Text -> print_text_report(report)
+            HTML -> generate_html_report(report)
+            LCOV -> generate_lcov_report(report)
+            JSON -> generate_json_report(report)
+
+  # ==========================================================================
+  # SNAPSHOT TESTING
+  # ==========================================================================
+
+  Behavior SnapshotTesting:
+    When expect(actual).to_match_snapshot():
+      Then:
+        - snapshot_path = get_snapshot_path(current_test)
+        - serialized = serialize_snapshot(actual)
+        
+        - if snapshot_exists(snapshot_path):
+            - existing = read_snapshot(snapshot_path)
+            - if serialized != existing:
+                - if update_snapshots_mode:
+                    - write_snapshot(snapshot_path, serialized)
+                  else:
+                    - fail(snapshot_diff(existing, serialized))
+          else:
+            - write_snapshot(snapshot_path, serialized)
+
+    When expect(actual).to_match_inline_snapshot(snapshot):
+      Then:
+        - serialized = serialize_snapshot(actual)
+        - if snapshot == null:
+            - update_inline_snapshot(current_test, serialized)
+          else if serialized != snapshot:
+            - if update_snapshots_mode:
+                - update_inline_snapshot(current_test, serialized)
+              else:
+                - fail(snapshot_diff(snapshot, serialized))
+
+  # ==========================================================================
+  # PROPERTY-BASED TESTING
+  # ==========================================================================
+
+  Behavior PropertyBasedTesting:
+    When property(name, generators, predicate):
+      Then:
+        - test(name, async () -> {
+            - for i in 0..100:
+                - args = generators.map(g -> g.generate())
+                - try:
+                    - result = predicate(...args)
+                    - if not result:
+                        - fail("Property failed for input: ${args}")
+                  catch e:
+                    - fail("Property threw for input: ${args}: ${e}")
+          })
+
+    Type Generator<T>:
+      generate: () -> T
+
+    When gen.int(min, max):
+      Then:
+        - return Generator(() -> random_int(min ?? -1000000, max ?? 1000000))
+
+    When gen.float(min, max):
+      Then:
+        - return Generator(() -> random_float(min ?? -1000000, max ?? 1000000))
+
+    When gen.string(length, charset):
+      Then:
+        - return Generator(() -> random_string(length ?? gen.int(0, 100).generate(), charset))
+
+    When gen.bool():
+      Then:
+        - return Generator(() -> random_bool())
+
+    When gen.array(element_gen, length):
+      Then:
+        - return Generator(() -> {
+            - len = length ?? gen.int(0, 20).generate()
+            - return (0..len).map(_ -> element_gen.generate())
+          })
+
+    When gen.one_of(...values):
+      Then:
+        - return Generator(() -> values[random_int(0, values.length - 1)])
+
+    When gen.object(schema):
+      Then:
+        - return Generator(() -> {
+            - result = {}
+            - for (key, gen) in schema:
+                - result[key] = gen.generate()
+            - return result
+          })
+
+  # ==========================================================================
+  # FIXTURES
+  # ==========================================================================
+
+  Behavior Fixtures:
+    When fixture(name, factory):
+      Then:
+        - fixtures[name] = Fixture(name, factory, null)
+
+    When fixture(name, factory, teardown):
+      Then:
+        - fixtures[name] = Fixture(name, factory, teardown)
+
+    Type Fixture<T>:
+      name: String
+      factory: () -> T | Promise<T>
+      teardown: ((T) -> Void | Promise<Void>)?
+      instance: T?
+
+      Method get() -> T:
+        if instance == null:
+          instance = await factory()
+        return instance
+
+      Method reset():
+        if instance != null and teardown:
+          await teardown(instance)
+        instance = null
+
+    When use_fixture(name):
+      Then:
+        - fixture = fixtures[name]
+        - return await fixture.get()
+
+    # Common fixtures
+    Fixture "database":
+      factory: async () -> {
+        db = await create_test_database()
+        await db.migrate()
+        return db
+      }
+      teardown: async (db) -> {
+        await db.drop()
+        await db.close()
+      }
+
+    Fixture "http_client":
+      factory: () -> create_test_http_client()
+
+    Fixture "user":
+      factory: async () -> {
+        db = await use_fixture("database")
+        return await db.users.create({ email: "test@example.com", name: "Test User" })
+      }
+
+  # ==========================================================================
+  # REPORTERS
+  # ==========================================================================
+
+  Type Reporter:
+    variants:
+      - Spec
+      - Dot
+      - JSON
+      - JUnit
+      - TAP
+      - HTML
+
+  Behavior Reporters:
+    When reporter.spec(result):
+      Then:
+        - for suite in result.suites:
+            - print("${suite.suite.name}")
+            - for test in suite.results:
+                - icon = match test.status:
+                    Passed -> "✓"
+                    Failed -> "✗"
+                    Skipped -> "○"
+                    Timeout -> "⏱"
+                - color = match test.status:
+                    Passed -> green
+                    Failed -> red
+                    Skipped -> yellow
+                    Timeout -> red
+                - print("  ${icon} ${test.test.name} (${test.duration}ms)", color)
+                - if test.error:
+                    - print("    ${test.error.message}", red)
+        
+        - print("")
+        - print("${result.passed} passing, ${result.failed} failing, ${result.skipped} skipped")
+        - print("Duration: ${result.duration}ms")
+
+    When reporter.junit(result):
+      Then:
+        - xml = build_junit_xml(result)
+        - return xml
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Testing":
+    ```vibee
+    describe "UserService":
+      db: Database
+      service: UserService
+
+      before_all async ():
+        db = await use_fixture("database")
+        service = UserService(db)
+
+      after_each async ():
+        await db.users.delete_all()
+
+      test "creates user with valid data" async ():
+        user = await service.create({
+          email: "test@example.com",
+          name: "Test User"
+        })
+
+        expect(user.id).to_be_defined()
+        expect(user.email).to_be("test@example.com")
+        expect(user.name).to_be("Test User")
+
+      test "throws on duplicate email" async ():
+        await service.create({ email: "test@example.com", name: "User 1" })
+
+        expect(async () -> {
+          await service.create({ email: "test@example.com", name: "User 2" })
+        }).to_reject(DuplicateEmailError)
+
+      test "finds user by id" async ():
+        created = await service.create({ email: "test@example.com", name: "Test" })
+        found = await service.find_by_id(created.id)
+
+        expect(found).to_equal(created)
+
+      test.skip "sends welcome email":
+        # TODO: implement email testing
+
+    describe "Calculator":
+      test "adds numbers":
+        expect(add(2, 3)).to_be(5)
+
+      test "subtracts numbers":
+        expect(subtract(5, 3)).to_be(2)
+
+      property "addition is commutative" (gen.int(), gen.int()) (a, b):
+        return add(a, b) == add(b, a)
+
+      property "addition identity" (gen.int()) (a):
+        return add(a, 0) == a
+
+    describe "API Integration":
+      http_stub: HttpStub
+
+      before_all ():
+        http_stub = stub.http()
+          .get("/users/1", { id: 1, name: "John" })
+          .post("/users", { id: 2, name: "Jane" })
+        
+        api_url = http_stub.start()
+
+      after_all ():
+        http_stub.stop()
+
+      test "fetches user" async ():
+        client = ApiClient(api_url)
+        user = await client.get_user(1)
+
+        expect(user.name).to_be("John")
+
+    # Run tests
+    report = await run_tests({
+      patterns: ["**/*.test.vibee"],
+      reporter: Spec,
+      coverage: true,
+      parallel: true
+    })
+
+    if report.failed > 0:
+      exit(1)
+    ```

@@ -1,0 +1,857 @@
+// =============================================================================
+// Vibee OS — REPL Module
+// Read-Eval-Print Loop and interactive interpreter framework
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// REPL Core
+// -----------------------------------------------------------------------------
+
+/// Interactive REPL
+actor REPL<T> {
+    state prompt: String
+    state continuation_prompt: String
+    state evaluator: (String) -> Result<T, EvalError>
+    state printer: (T) -> String
+    state history: History
+    state completer: Option<Completer>
+    state highlighter: Option<Highlighter>
+    state validator: Option<(String) -> ValidationResult>
+    state commands: Map<String, REPLCommand>
+    state running: Bool
+    state context: Map<String, Any>
+    
+    /// Create new REPL
+    init(evaluator: (String) -> Result<T, EvalError>) {
+        self.prompt = ">>> "
+        self.continuation_prompt = "... "
+        self.evaluator = evaluator
+        self.printer = |v| "\(v)"
+        self.history = History.new()
+        self.commands = Map.empty()
+        self.running = false
+        self.context = Map.empty()
+        
+        // Register built-in commands
+        self.register_builtins()
+    }
+    
+    on prompt(p: String) -> Self { self.prompt = p; self }
+    on continuation(p: String) -> Self { self.continuation_prompt = p; self }
+    on printer(f: (T) -> String) -> Self { self.printer = f; self }
+    on completer(c: Completer) -> Self { self.completer = Some(c); self }
+    on highlighter(h: Highlighter) -> Self { self.highlighter = Some(h); self }
+    on validator(v: (String) -> ValidationResult) -> Self { self.validator = Some(v); self }
+    
+    /// Register REPL command
+    on command(name: String, cmd: REPLCommand) -> Self {
+        self.commands.set(name, cmd)
+        self
+    }
+    
+    /// Set context value
+    on set_context<V>(key: String, value: V) {
+        self.context.set(key, value)
+    }
+    
+    /// Get context value
+    fn get_context<V>(key: String) -> Option<V> {
+        self.context.get(key)
+    }
+    
+    /// Register built-in commands
+    fn register_builtins() {
+        self.commands.set("help", REPLCommand {
+            description: "Show help",
+            action: |repl, _| {
+                repl.print_help()
+                Ok(())
+            }
+        })
+        
+        self.commands.set("quit", REPLCommand {
+            description: "Exit REPL",
+            action: |repl, _| {
+                repl.running = false
+                Ok(())
+            }
+        })
+        
+        self.commands.set("exit", REPLCommand {
+            description: "Exit REPL",
+            action: |repl, _| {
+                repl.running = false
+                Ok(())
+            }
+        })
+        
+        self.commands.set("history", REPLCommand {
+            description: "Show command history",
+            action: |repl, _| {
+                for (i, entry) in repl.history.entries().enumerate() {
+                    println("\(i + 1): \(entry)")
+                }
+                Ok(())
+            }
+        })
+        
+        self.commands.set("clear", REPLCommand {
+            description: "Clear screen",
+            action: |_, _| {
+                print(Screen.clear())
+                print(Cursor.home())
+                Ok(())
+            }
+        })
+    }
+    
+    /// Print help
+    fn print_help() {
+        println(bold("REPL Commands:"))
+        println()
+        
+        for (name, cmd) in self.commands.sorted_by_key() {
+            println("  :\(name)  - \(cmd.description)")
+        }
+        
+        println()
+        println("Enter expressions to evaluate, or :command for REPL commands")
+    }
+    
+    /// Start REPL loop
+    on run() {
+        self.running = true
+        self.print_banner()
+        
+        while self.running {
+            match self.read_input() {
+                Ok(input) => {
+                    if input.is_empty() {
+                        continue
+                    }
+                    
+                    // Check for REPL command
+                    if input.starts_with(":") {
+                        self.handle_command(input[1..])
+                        continue
+                    }
+                    
+                    // Add to history
+                    self.history.add(input)
+                    
+                    // Evaluate
+                    match self.evaluator(input) {
+                        Ok(result) => {
+                            let output = self.printer(result)
+                            if !output.is_empty() {
+                                println(output)
+                            }
+                        }
+                        Err(error) => {
+                            println(red("Error: \(error.message())"))
+                        }
+                    }
+                }
+                Err(ReadError.EOF) => {
+                    println()
+                    self.running = false
+                }
+                Err(error) => {
+                    println(red("Read error: \(error)"))
+                }
+            }
+        }
+        
+        println("Goodbye!")
+    }
+    
+    /// Print welcome banner
+    fn print_banner() {
+        println(bold("Vibee REPL"))
+        println("Type :help for commands, :quit to exit")
+        println()
+    }
+    
+    /// Read input with line editing
+    fn read_input() -> Result<String, ReadError> {
+        let editor = LineEditor.new()
+            .prompt(self.prompt)
+            .history(self.history)
+        
+        if let c = self.completer {
+            editor.completer(c)
+        }
+        if let h = self.highlighter {
+            editor.highlighter(h)
+        }
+        
+        var input = editor.read_line()?
+        
+        // Handle multi-line input
+        if let validator = self.validator {
+            while validator(input) == .Incomplete {
+                let continuation = LineEditor.new()
+                    .prompt(self.continuation_prompt)
+                    .read_line()?
+                input += "\n" + continuation
+            }
+        }
+        
+        Ok(input)
+    }
+    
+    /// Handle REPL command
+    fn handle_command(input: String) {
+        let parts = input.split_whitespace()
+        let cmd_name = parts.first().unwrap_or("")
+        let args = parts[1..]
+        
+        if let cmd = self.commands.get(cmd_name) {
+            match cmd.action(self, args) {
+                Ok(()) => {}
+                Err(e) => println(red("Command error: \(e)"))
+            }
+        } else {
+            println(red("Unknown command: \(cmd_name)"))
+            println("Type :help for available commands")
+        }
+    }
+}
+
+/// REPL command
+struct REPLCommand {
+    description: String
+    action: (REPL<Any>, [String]) -> Result<(), String>
+}
+
+/// Input validation result
+enum ValidationResult {
+    Valid
+    Invalid(String)
+    Incomplete
+}
+
+// -----------------------------------------------------------------------------
+// Line Editor
+// -----------------------------------------------------------------------------
+
+/// Interactive line editor with history and completion
+actor LineEditor {
+    state prompt_str: String
+    state buffer: String
+    state cursor: Int
+    state history_ref: Option<History>
+    state history_pos: Int
+    state completer_ref: Option<Completer>
+    state highlighter_ref: Option<Highlighter>
+    state completion_state: Option<CompletionState>
+    
+    fn new() -> Self {
+        LineEditor {
+            prompt_str: "> ",
+            buffer: "",
+            cursor: 0,
+            history_pos: -1
+        }
+    }
+    
+    on prompt(p: String) -> Self { self.prompt_str = p; self }
+    on history(h: History) -> Self { self.history_ref = Some(h); self }
+    on completer(c: Completer) -> Self { self.completer_ref = Some(c); self }
+    on highlighter(h: Highlighter) -> Self { self.highlighter_ref = Some(h); self }
+    
+    /// Read a line with editing
+    on read_line() -> Result<String, ReadError> {
+        self.buffer = ""
+        self.cursor = 0
+        self.history_pos = -1
+        
+        self.render()
+        
+        RawMode.with_raw(|| {
+            loop {
+                let key = read_key()?
+                
+                match key {
+                    .Enter => {
+                        println()
+                        return Ok(self.buffer)
+                    }
+                    .Ctrl('c') => {
+                        println("^C")
+                        self.buffer = ""
+                        self.cursor = 0
+                        self.render()
+                    }
+                    .Ctrl('d') => {
+                        if self.buffer.is_empty() {
+                            return Err(ReadError.EOF)
+                        }
+                        self.delete_char()
+                    }
+                    .Ctrl('a') | .Home => {
+                        self.cursor = 0
+                        self.render()
+                    }
+                    .Ctrl('e') | .End => {
+                        self.cursor = self.buffer.len()
+                        self.render()
+                    }
+                    .Ctrl('k') => {
+                        self.buffer = self.buffer[..self.cursor]
+                        self.render()
+                    }
+                    .Ctrl('u') => {
+                        self.buffer = self.buffer[self.cursor..]
+                        self.cursor = 0
+                        self.render()
+                    }
+                    .Ctrl('w') => {
+                        self.delete_word()
+                    }
+                    .Ctrl('l') => {
+                        print(Screen.clear())
+                        print(Cursor.home())
+                        self.render()
+                    }
+                    .Tab => {
+                        self.complete()
+                    }
+                    .Backspace => {
+                        self.backspace()
+                    }
+                    .Delete => {
+                        self.delete_char()
+                    }
+                    .Left => {
+                        if self.cursor > 0 {
+                            self.cursor -= 1
+                            self.render()
+                        }
+                    }
+                    .Right => {
+                        if self.cursor < self.buffer.len() {
+                            self.cursor += 1
+                            self.render()
+                        }
+                    }
+                    .Up => {
+                        self.history_prev()
+                    }
+                    .Down => {
+                        self.history_next()
+                    }
+                    .Char(c) => {
+                        self.insert_char(c)
+                    }
+                    _ => {}
+                }
+            }
+        })
+    }
+    
+    /// Render current line
+    fn render() {
+        print("\r")
+        print(Screen.clear_line())
+        print(self.prompt_str)
+        
+        // Apply highlighting if available
+        let display = if let h = self.highlighter_ref {
+            h.highlight(self.buffer)
+        } else {
+            self.buffer
+        }
+        
+        print(display)
+        
+        // Position cursor
+        let cursor_pos = self.prompt_str.len() + self.cursor
+        print("\r")
+        print(Cursor.forward(cursor_pos))
+        
+        IO.flush()
+    }
+    
+    fn insert_char(c: Char) {
+        self.buffer = self.buffer[..self.cursor] + c.to_string() + self.buffer[self.cursor..]
+        self.cursor += 1
+        self.render()
+    }
+    
+    fn backspace() {
+        if self.cursor > 0 {
+            self.buffer = self.buffer[..(self.cursor - 1)] + self.buffer[self.cursor..]
+            self.cursor -= 1
+            self.render()
+        }
+    }
+    
+    fn delete_char() {
+        if self.cursor < self.buffer.len() {
+            self.buffer = self.buffer[..self.cursor] + self.buffer[(self.cursor + 1)..]
+            self.render()
+        }
+    }
+    
+    fn delete_word() {
+        // Delete word before cursor
+        var pos = self.cursor
+        while pos > 0 && self.buffer[pos - 1].is_whitespace() {
+            pos -= 1
+        }
+        while pos > 0 && !self.buffer[pos - 1].is_whitespace() {
+            pos -= 1
+        }
+        self.buffer = self.buffer[..pos] + self.buffer[self.cursor..]
+        self.cursor = pos
+        self.render()
+    }
+    
+    fn history_prev() {
+        if let history = self.history_ref {
+            let entries = history.entries()
+            if self.history_pos < entries.len() - 1 {
+                self.history_pos += 1
+                self.buffer = entries[entries.len() - 1 - self.history_pos]
+                self.cursor = self.buffer.len()
+                self.render()
+            }
+        }
+    }
+    
+    fn history_next() {
+        if self.history_pos > 0 {
+            self.history_pos -= 1
+            if let history = self.history_ref {
+                let entries = history.entries()
+                self.buffer = entries[entries.len() - 1 - self.history_pos]
+                self.cursor = self.buffer.len()
+                self.render()
+            }
+        } else if self.history_pos == 0 {
+            self.history_pos = -1
+            self.buffer = ""
+            self.cursor = 0
+            self.render()
+        }
+    }
+    
+    fn complete() {
+        if let completer = self.completer_ref {
+            let (start, completions) = completer.complete(self.buffer, self.cursor)
+            
+            if completions.is_empty() {
+                return
+            }
+            
+            if completions.len() == 1 {
+                // Single completion - insert it
+                let completion = completions[0]
+                self.buffer = self.buffer[..start] + completion + self.buffer[self.cursor..]
+                self.cursor = start + completion.len()
+                self.render()
+            } else {
+                // Multiple completions - show them
+                println()
+                for c in completions {
+                    print("\(c)  ")
+                }
+                println()
+                self.render()
+            }
+        }
+    }
+}
+
+/// Read error
+enum ReadError {
+    EOF
+    Interrupted
+    IOError(String)
+}
+
+// -----------------------------------------------------------------------------
+// History
+// -----------------------------------------------------------------------------
+
+/// Command history
+actor History {
+    state entries: [String]
+    state max_size: Int
+    state file_path: Option<String>
+    state dedup: Bool
+    
+    fn new() -> Self {
+        History {
+            entries: [],
+            max_size: 1000,
+            dedup: true
+        }
+    }
+    
+    on max_size(n: Int) -> Self { self.max_size = n; self }
+    on file(path: String) -> Self { self.file_path = Some(path); self }
+    on dedup(enabled: Bool) -> Self { self.dedup = enabled; self }
+    
+    /// Add entry to history
+    on add(entry: String) {
+        let trimmed = entry.trim()
+        if trimmed.is_empty() {
+            return
+        }
+        
+        // Remove duplicate if dedup enabled
+        if self.dedup {
+            self.entries.retain(|e| e != trimmed)
+        }
+        
+        self.entries.append(trimmed)
+        
+        // Trim to max size
+        if self.entries.len() > self.max_size {
+            self.entries = self.entries[(self.entries.len() - self.max_size)..]
+        }
+    }
+    
+    /// Get all entries
+    fn entries() -> [String] {
+        self.entries
+    }
+    
+    /// Search history
+    fn search(prefix: String) -> [String] {
+        self.entries.filter(|e| e.starts_with(prefix))
+    }
+    
+    /// Reverse search
+    fn reverse_search(query: String) -> [String] {
+        self.entries.rev().filter(|e| e.contains(query))
+    }
+    
+    /// Load from file
+    on load() -> Result<(), IOError> {
+        if let path = self.file_path {
+            if File.exists(path) {
+                let content = File.read_string(path)?
+                self.entries = content.lines().collect()
+            }
+        }
+        Ok(())
+    }
+    
+    /// Save to file
+    on save() -> Result<(), IOError> {
+        if let path = self.file_path {
+            let content = self.entries.join("\n")
+            File.write(path, content)?
+        }
+        Ok(())
+    }
+    
+    /// Clear history
+    on clear() {
+        self.entries = []
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Completion
+// -----------------------------------------------------------------------------
+
+/// Tab completion provider
+trait Completer {
+    /// Get completions for input at cursor position
+    /// Returns (start_position, completions)
+    fn complete(input: String, cursor: Int) -> (Int, [String])
+}
+
+/// Word-based completer
+actor WordCompleter: Completer {
+    state words: Set<String>
+    
+    fn new(words: [String]) -> Self {
+        WordCompleter { words: Set.from(words) }
+    }
+    
+    on add(word: String) {
+        self.words.insert(word)
+    }
+    
+    fn complete(input: String, cursor: Int) -> (Int, [String]) {
+        // Find word start
+        var start = cursor
+        while start > 0 && !input[start - 1].is_whitespace() {
+            start -= 1
+        }
+        
+        let prefix = input[start..cursor]
+        let matches = self.words
+            .filter(|w| w.starts_with(prefix))
+            .sorted()
+        
+        (start, matches)
+    }
+}
+
+/// Path completer
+actor PathCompleter: Completer {
+    fn complete(input: String, cursor: Int) -> (Int, [String]) {
+        // Find path start
+        var start = cursor
+        while start > 0 && !input[start - 1].is_whitespace() {
+            start -= 1
+        }
+        
+        let path = input[start..cursor]
+        let expanded = expand_tilde(path)
+        
+        let (dir, prefix) = if expanded.ends_with("/") {
+            (expanded, "")
+        } else {
+            let parts = expanded.rsplit_once("/")
+            parts.unwrap_or((".", expanded))
+        }
+        
+        let entries = Directory.list(dir)
+            .unwrap_or([])
+            .filter(|e| e.name.starts_with(prefix))
+            .map(|e| {
+                let name = e.name
+                if e.is_dir { name + "/" } else { name }
+            })
+        
+        (start, entries)
+    }
+}
+
+/// Chained completer
+actor ChainedCompleter: Completer {
+    state completers: [Completer]
+    
+    fn new(completers: [Completer]) -> Self {
+        ChainedCompleter { completers: completers }
+    }
+    
+    fn complete(input: String, cursor: Int) -> (Int, [String]) {
+        var all_completions = []
+        var start = cursor
+        
+        for completer in self.completers {
+            let (s, completions) = completer.complete(input, cursor)
+            if !completions.is_empty() {
+                start = s
+                all_completions.extend(completions)
+            }
+        }
+        
+        (start, all_completions.unique())
+    }
+}
+
+/// Completion state for cycling through options
+struct CompletionState {
+    start: Int
+    completions: [String]
+    index: Int
+}
+
+// -----------------------------------------------------------------------------
+// Syntax Highlighting
+// -----------------------------------------------------------------------------
+
+/// Syntax highlighter
+trait Highlighter {
+    fn highlight(input: String) -> String
+}
+
+/// Keyword-based highlighter
+actor KeywordHighlighter: Highlighter {
+    state keywords: Map<String, Color>
+    state string_color: Color
+    state number_color: Color
+    state comment_prefix: String?
+    state comment_color: Color
+    
+    fn new() -> Self {
+        KeywordHighlighter {
+            keywords: Map.empty(),
+            string_color: Color.Basic(.Green),
+            number_color: Color.Basic(.Cyan),
+            comment_color: Color.Basic(.White)
+        }
+    }
+    
+    on keyword(word: String, color: Color) -> Self {
+        self.keywords.set(word, color)
+        self
+    }
+    
+    on keywords(words: [String], color: Color) -> Self {
+        for word in words {
+            self.keywords.set(word, color)
+        }
+        self
+    }
+    
+    on strings(color: Color) -> Self { self.string_color = color; self }
+    on numbers(color: Color) -> Self { self.number_color = color; self }
+    on comments(prefix: String, color: Color) -> Self {
+        self.comment_prefix = Some(prefix)
+        self.comment_color = color
+        self
+    }
+    
+    fn highlight(input: String) -> String {
+        // Check for comment
+        if let prefix = self.comment_prefix {
+            if input.trim().starts_with(prefix) {
+                return self.comment_color.fg() + input + ANSI.RESET
+            }
+        }
+        
+        var result = StringBuilder.new()
+        var in_string = false
+        var string_char = '"'
+        var current_word = StringBuilder.new()
+        
+        for char in input.chars() {
+            if in_string {
+                result.append(char)
+                if char == string_char {
+                    result.append(ANSI.RESET)
+                    in_string = false
+                }
+            } else if char == '"' || char == '\'' {
+                self.flush_word(current_word, result)
+                result.append(self.string_color.fg())
+                result.append(char)
+                in_string = true
+                string_char = char
+            } else if char.is_alphanumeric() || char == '_' {
+                current_word.append(char)
+            } else {
+                self.flush_word(current_word, result)
+                result.append(char)
+            }
+        }
+        
+        self.flush_word(current_word, result)
+        result.build()
+    }
+    
+    fn flush_word(word: StringBuilder, result: StringBuilder) {
+        let w = word.build()
+        if w.is_empty() {
+            return
+        }
+        
+        if let color = self.keywords.get(w) {
+            result.append(color.fg())
+            result.append(w)
+            result.append(ANSI.RESET)
+        } else if w.chars().all(|c| c.is_digit()) {
+            result.append(self.number_color.fg())
+            result.append(w)
+            result.append(ANSI.RESET)
+        } else {
+            result.append(w)
+        }
+        
+        word.clear()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Evaluation Errors
+// -----------------------------------------------------------------------------
+
+/// Evaluation error
+enum EvalError {
+    SyntaxError(String, Int)  // message, position
+    RuntimeError(String)
+    TypeError(String)
+    NameError(String)
+    
+    fn message() -> String {
+        match self {
+            .SyntaxError(msg, pos) => "Syntax error at \(pos): \(msg)"
+            .RuntimeError(msg) => "Runtime error: \(msg)"
+            .TypeError(msg) => "Type error: \(msg)"
+            .NameError(name) => "Name '\(name)' is not defined"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Simple Calculator REPL Example
+// -----------------------------------------------------------------------------
+
+/// Example: Simple calculator REPL
+fn calculator_repl() {
+    let repl = REPL.new(|input| {
+        // Simple expression evaluator
+        eval_math(input)
+    })
+    .prompt("calc> ")
+    .command("vars", REPLCommand {
+        description: "Show variables",
+        action: |repl, _| {
+            if let vars = repl.get_context::<Map<String, Float>>("vars") {
+                for (name, value) in vars {
+                    println("  \(name) = \(value)")
+                }
+            }
+            Ok(())
+        }
+    })
+    
+    repl.run()
+}
+
+fn eval_math(expr: String) -> Result<Float, EvalError> {
+    // Simplified math expression evaluator
+    @native("eval_math_expression", expr)
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "history" {
+    let history = History.new()
+    history.add("first")
+    history.add("second")
+    history.add("third")
+    
+    assert(history.entries().len() == 3)
+    assert(history.entries()[0] == "first")
+}
+
+test "history dedup" {
+    let history = History.new().dedup(true)
+    history.add("same")
+    history.add("different")
+    history.add("same")
+    
+    assert(history.entries().len() == 2)
+    assert(history.entries()[1] == "same")
+}
+
+test "word completer" {
+    let completer = WordCompleter.new(["hello", "help", "world"])
+    let (start, completions) = completer.complete("hel", 3)
+    
+    assert(start == 0)
+    assert(completions.len() == 2)
+    assert(completions.contains("hello"))
+    assert(completions.contains("help"))
+}
+
+test "keyword highlighter" {
+    let highlighter = KeywordHighlighter.new()
+        .keywords(["if", "else", "while"], Color.Basic(.Blue))
+    
+    let result = highlighter.highlight("if x")
+    assert(result.contains("\x1b[34m"))  // Blue color code
+}

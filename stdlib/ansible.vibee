@@ -1,0 +1,348 @@
+// =============================================================================
+// Vibee OS — Ansible Module
+// Configuration management and automation
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Ansible Runner
+// -----------------------------------------------------------------------------
+
+actor Ansible {
+    state inventory: Inventory
+    state config: AnsibleConfig
+    state extra_vars: Map<String, Value>
+    
+    init() { self.inventory = Inventory.empty(); self.config = AnsibleConfig.default(); self.extra_vars = Map.empty() }
+    init(inventory: Inventory) { self.inventory = inventory; self.config = AnsibleConfig.default(); self.extra_vars = Map.empty() }
+    
+    on config(c: AnsibleConfig) -> Self { self.config = c; self }
+    on var(name: String, value: Value) -> Self { self.extra_vars.set(name, value); self }
+    on vars(v: Map<String, Value>) -> Self { self.extra_vars.extend(v); self }
+    
+    on playbook(path: String, opts: PlaybookOptions = PlaybookOptions.default()) -> Result<PlaybookResult, AnsibleError> {
+        @native("ansible_playbook", path, self.inventory, self.extra_vars, opts)
+    }
+    
+    on adhoc(pattern: String, module: String, args: String?, opts: AdhocOptions = AdhocOptions.default()) -> Result<AdhocResult, AnsibleError> {
+        @native("ansible_adhoc", pattern, module, args, self.inventory, opts)
+    }
+    
+    on ping(pattern: String = "all") -> Result<Map<String, Bool>, AnsibleError> {
+        let result = self.adhoc(pattern, "ping", None)?
+        Ok(result.hosts.map(|(h, r)| (h, r.success)))
+    }
+    
+    on gather_facts(pattern: String = "all") -> Result<Map<String, Facts>, AnsibleError> {
+        @native("ansible_gather_facts", pattern, self.inventory)
+    }
+    
+    on vault_encrypt(data: String, password: String) -> Result<String, AnsibleError> { @native("ansible_vault_encrypt", data, password) }
+    on vault_decrypt(data: String, password: String) -> Result<String, AnsibleError> { @native("ansible_vault_decrypt", data, password) }
+    on vault_encrypt_file(path: String, password: String) -> Result<(), AnsibleError> { @native("ansible_vault_encrypt_file", path, password) }
+    on vault_decrypt_file(path: String, password: String) -> Result<(), AnsibleError> { @native("ansible_vault_decrypt_file", path, password) }
+}
+
+struct AnsibleConfig { forks: Int, timeout: Int, become: Bool, become_method: String, become_user: String, private_key: String?, remote_user: String? }
+impl AnsibleConfig {
+    fn default() -> Self { AnsibleConfig { forks: 5, timeout: 30, become: false, become_method: "sudo", become_user: "root", private_key: None, remote_user: None } }
+}
+
+// -----------------------------------------------------------------------------
+// Inventory
+// -----------------------------------------------------------------------------
+
+struct Inventory { hosts: Map<String, Host>, groups: Map<String, Group> }
+impl Inventory {
+    fn empty() -> Self { Inventory { hosts: Map.empty(), groups: Map.empty() } }
+    fn from_file(path: String) -> Result<Self, AnsibleError> { @native("ansible_load_inventory", path) }
+    fn from_yaml(content: String) -> Result<Self, AnsibleError> { yaml::parse(content).map_err(|e| AnsibleError.ParseError(e.to_string())) }
+    
+    fn add_host(host: Host) -> Self { self.hosts.set(host.name.clone(), host); self }
+    fn add_group(group: Group) -> Self { self.groups.set(group.name.clone(), group); self }
+    fn get_host(name: String) -> Option<Host> { self.hosts.get(name) }
+    fn get_group(name: String) -> Option<Group> { self.groups.get(name) }
+    fn hosts_in_group(group: String) -> [Host] { self.groups.get(group).map(|g| g.hosts.iter().filter_map(|n| self.hosts.get(n)).collect()).unwrap_or([]) }
+    
+    fn to_ini() -> String {
+        var result = ""
+        for (name, host) in self.hosts { result += "\(host.address) ansible_host=\(host.address)\n" }
+        for (name, group) in self.groups {
+            result += "\n[\(name)]\n"
+            for h in group.hosts { result += "\(h)\n" }
+            if !group.vars.is_empty() {
+                result += "\n[\(name):vars]\n"
+                for (k, v) in group.vars { result += "\(k)=\(v.to_string())\n" }
+            }
+        }
+        result
+    }
+    
+    fn to_yaml() -> String { yaml::stringify(self) }
+}
+
+struct Host { name: String, address: String, port: Int, vars: Map<String, Value> }
+impl Host {
+    fn new(name: String, address: String) -> Self { Host { name: name, address: address, port: 22, vars: Map.empty() } }
+    fn port(p: Int) -> Self { self.port = p; self }
+    fn var(k: String, v: Value) -> Self { self.vars.set(k, v); self }
+}
+
+struct Group { name: String, hosts: [String], children: [String], vars: Map<String, Value> }
+impl Group {
+    fn new(name: String) -> Self { Group { name: name, hosts: [], children: [], vars: Map.empty() } }
+    fn host(h: String) -> Self { self.hosts.append(h); self }
+    fn child(c: String) -> Self { self.children.append(c); self }
+    fn var(k: String, v: Value) -> Self { self.vars.set(k, v); self }
+}
+
+// -----------------------------------------------------------------------------
+// Playbook Builder
+// -----------------------------------------------------------------------------
+
+actor PlaybookBuilder {
+    state plays: [Play]
+    
+    init() { self.plays = [] }
+    
+    on play(p: Play) -> Self { self.plays.append(p); self }
+    on build() -> Playbook { Playbook { plays: self.plays } }
+    on to_yaml() -> String { yaml::stringify(self.plays) }
+    on save(path: String) -> Result<(), IOError> { fs::write_string(path, self.to_yaml()) }
+}
+
+struct Playbook { plays: [Play] }
+
+struct Play {
+    name: String
+    hosts: String
+    become: Bool
+    gather_facts: Bool
+    vars: Map<String, Value>
+    tasks: [Task]
+    handlers: [Handler]
+    roles: [String]
+}
+
+impl Play {
+    fn new(name: String, hosts: String) -> Self {
+        Play { name: name, hosts: hosts, become: false, gather_facts: true, vars: Map.empty(), tasks: [], handlers: [], roles: [] }
+    }
+    fn become(b: Bool) -> Self { self.become = b; self }
+    fn gather_facts(g: Bool) -> Self { self.gather_facts = g; self }
+    fn var(k: String, v: Value) -> Self { self.vars.set(k, v); self }
+    fn task(t: Task) -> Self { self.tasks.append(t); self }
+    fn handler(h: Handler) -> Self { self.handlers.append(h); self }
+    fn role(r: String) -> Self { self.roles.append(r); self }
+}
+
+// -----------------------------------------------------------------------------
+// Tasks
+// -----------------------------------------------------------------------------
+
+struct Task {
+    name: String
+    module: String
+    args: Map<String, Value>
+    when: String?
+    register: String?
+    notify: [String]
+    loop_: [Value]?
+    become: Bool?
+    ignore_errors: Bool
+    tags: [String]
+}
+
+impl Task {
+    fn new(name: String, module: String) -> Self {
+        Task { name: name, module: module, args: Map.empty(), when: None, register: None, notify: [], loop_: None, become: None, ignore_errors: false, tags: [] }
+    }
+    fn arg(k: String, v: Value) -> Self { self.args.set(k, v); self }
+    fn args(a: Map<String, Value>) -> Self { self.args.extend(a); self }
+    fn when(cond: String) -> Self { self.when = Some(cond); self }
+    fn register(var: String) -> Self { self.register = Some(var); self }
+    fn notify(handler: String) -> Self { self.notify.append(handler); self }
+    fn loop_over(items: [Value]) -> Self { self.loop_ = Some(items); self }
+    fn become(b: Bool) -> Self { self.become = Some(b); self }
+    fn ignore_errors(i: Bool) -> Self { self.ignore_errors = i; self }
+    fn tag(t: String) -> Self { self.tags.append(t); self }
+}
+
+struct Handler { name: String, module: String, args: Map<String, Value> }
+impl Handler {
+    fn new(name: String, module: String) -> Self { Handler { name: name, module: module, args: Map.empty() } }
+    fn arg(k: String, v: Value) -> Self { self.args.set(k, v); self }
+}
+
+// -----------------------------------------------------------------------------
+// Common Modules
+// -----------------------------------------------------------------------------
+
+struct Modules {
+    fn apt(name: String, state: String = "present") -> Task {
+        Task.new("Install \(name)", "apt").arg("name", Value.String(name)).arg("state", Value.String(state))
+    }
+    
+    fn yum(name: String, state: String = "present") -> Task {
+        Task.new("Install \(name)", "yum").arg("name", Value.String(name)).arg("state", Value.String(state))
+    }
+    
+    fn package(name: String, state: String = "present") -> Task {
+        Task.new("Install \(name)", "package").arg("name", Value.String(name)).arg("state", Value.String(state))
+    }
+    
+    fn service(name: String, state: String, enabled: Bool = true) -> Task {
+        Task.new("Manage \(name) service", "service").arg("name", Value.String(name)).arg("state", Value.String(state)).arg("enabled", Value.Bool(enabled))
+    }
+    
+    fn copy(src: String, dest: String, mode: String? = None) -> Task {
+        var t = Task.new("Copy \(src)", "copy").arg("src", Value.String(src)).arg("dest", Value.String(dest))
+        if let m = mode { t = t.arg("mode", Value.String(m)) }
+        t
+    }
+    
+    fn template(src: String, dest: String, mode: String? = None) -> Task {
+        var t = Task.new("Template \(src)", "template").arg("src", Value.String(src)).arg("dest", Value.String(dest))
+        if let m = mode { t = t.arg("mode", Value.String(m)) }
+        t
+    }
+    
+    fn file(path: String, state: String, mode: String? = None, owner: String? = None) -> Task {
+        var t = Task.new("Manage \(path)", "file").arg("path", Value.String(path)).arg("state", Value.String(state))
+        if let m = mode { t = t.arg("mode", Value.String(m)) }
+        if let o = owner { t = t.arg("owner", Value.String(o)) }
+        t
+    }
+    
+    fn command(cmd: String) -> Task { Task.new("Run command", "command").arg("cmd", Value.String(cmd)) }
+    fn shell(cmd: String) -> Task { Task.new("Run shell", "shell").arg("cmd", Value.String(cmd)) }
+    
+    fn user(name: String, state: String = "present", groups: [String]? = None) -> Task {
+        var t = Task.new("Manage user \(name)", "user").arg("name", Value.String(name)).arg("state", Value.String(state))
+        if let g = groups { t = t.arg("groups", Value.List(g.map(|s| Value.String(s)))) }
+        t
+    }
+    
+    fn group(name: String, state: String = "present") -> Task {
+        Task.new("Manage group \(name)", "group").arg("name", Value.String(name)).arg("state", Value.String(state))
+    }
+    
+    fn lineinfile(path: String, line: String, regexp: String? = None) -> Task {
+        var t = Task.new("Ensure line in \(path)", "lineinfile").arg("path", Value.String(path)).arg("line", Value.String(line))
+        if let r = regexp { t = t.arg("regexp", Value.String(r)) }
+        t
+    }
+    
+    fn git(repo: String, dest: String, version: String = "HEAD") -> Task {
+        Task.new("Clone \(repo)", "git").arg("repo", Value.String(repo)).arg("dest", Value.String(dest)).arg("version", Value.String(version))
+    }
+    
+    fn docker_container(name: String, image: String, state: String = "started") -> Task {
+        Task.new("Docker container \(name)", "docker_container").arg("name", Value.String(name)).arg("image", Value.String(image)).arg("state", Value.String(state))
+    }
+    
+    fn docker_image(name: String, source: String = "pull") -> Task {
+        Task.new("Docker image \(name)", "docker_image").arg("name", Value.String(name)).arg("source", Value.String(source))
+    }
+    
+    fn debug(msg: String) -> Task { Task.new("Debug", "debug").arg("msg", Value.String(msg)) }
+    fn pause(seconds: Int) -> Task { Task.new("Pause", "pause").arg("seconds", Value.Number(seconds as Float)) }
+    fn wait_for(port: Int, host: String = "localhost", timeout: Int = 300) -> Task {
+        Task.new("Wait for port \(port)", "wait_for").arg("port", Value.Number(port as Float)).arg("host", Value.String(host)).arg("timeout", Value.Number(timeout as Float))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Results
+// -----------------------------------------------------------------------------
+
+struct PlaybookResult { success: Bool, plays: [PlayResult], stats: Map<String, HostStats> }
+struct PlayResult { name: String, tasks: [TaskResult] }
+struct TaskResult { name: String, host: String, status: TaskStatus, changed: Bool, msg: String? }
+enum TaskStatus { Ok, Changed, Failed, Skipped, Unreachable }
+struct HostStats { ok: Int, changed: Int, unreachable: Int, failed: Int, skipped: Int }
+
+struct AdhocResult { success: Bool, hosts: Map<String, HostResult> }
+struct HostResult { success: Bool, changed: Bool, msg: String?, stdout: String?, stderr: String? }
+
+struct Facts { ansible_hostname: String, ansible_os_family: String, ansible_distribution: String, ansible_distribution_version: String, ansible_architecture: String, ansible_memtotal_mb: Int, ansible_processor_vcpus: Int, ansible_default_ipv4: Map<String, String> }
+
+struct PlaybookOptions { tags: [String], skip_tags: [String], limit: String?, check: Bool, diff: Bool, verbose: Int }
+impl PlaybookOptions { fn default() -> Self { PlaybookOptions { tags: [], skip_tags: [], limit: None, check: false, diff: false, verbose: 0 } } }
+
+struct AdhocOptions { become: Bool, become_user: String?, forks: Int }
+impl AdhocOptions { fn default() -> Self { AdhocOptions { become: false, become_user: None, forks: 5 } } }
+
+// -----------------------------------------------------------------------------
+// Value Type
+// -----------------------------------------------------------------------------
+
+enum Value {
+    String(String), Number(Float), Bool(Bool), List([Value]), Map(Map<String, Value>)
+    
+    fn to_string() -> String {
+        match self {
+            .String(s) => s
+            .Number(n) => n.to_string()
+            .Bool(b) => b.to_string()
+            .List(l) => "[\(l.map(|v| v.to_string()).join(", "))]"
+            .Map(m) => "{\(m.iter().map(|(k, v)| "\(k): \(v.to_string())").join(", "))}"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum AnsibleError {
+    PlaybookFailed(String), HostUnreachable(String), ModuleError(String, String), ParseError(String), VaultError(String), InventoryError(String), ConnectionError(String)
+    
+    fn message() -> String {
+        match self {
+            .PlaybookFailed(m) => "Playbook failed: \(m)"
+            .HostUnreachable(h) => "Host unreachable: \(h)"
+            .ModuleError(m, e) => "Module \(m) error: \(e)"
+            .ParseError(m) => "Parse error: \(m)"
+            .VaultError(m) => "Vault error: \(m)"
+            .InventoryError(m) => "Inventory error: \(m)"
+            .ConnectionError(m) => "Connection error: \(m)"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "inventory builder" {
+    let inv = Inventory.empty()
+        .add_host(Host.new("web1", "192.168.1.10").port(22))
+        .add_host(Host.new("web2", "192.168.1.11"))
+        .add_group(Group.new("webservers").host("web1").host("web2"))
+    
+    assert(inv.hosts.len() == 2)
+    assert(inv.groups.contains_key("webservers"))
+}
+
+test "playbook builder" {
+    let playbook = PlaybookBuilder.new()
+        .play(Play.new("Setup web servers", "webservers")
+            .become(true)
+            .task(Modules.apt("nginx"))
+            .task(Modules.service("nginx", "started")))
+        .build()
+    
+    assert(playbook.plays.len() == 1)
+    assert(playbook.plays[0].tasks.len() == 2)
+}
+
+test "task builder" {
+    let task = Task.new("Install packages", "apt")
+        .arg("name", Value.List([Value.String("nginx"), Value.String("vim")]))
+        .arg("state", Value.String("present"))
+        .when("ansible_os_family == 'Debian'")
+        .become(true)
+    
+    assert(task.module == "apt")
+    assert(task.when == Some("ansible_os_family == 'Debian'"))
+}

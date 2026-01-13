@@ -1,0 +1,246 @@
+// =============================================================================
+// Vibee OS — Docker Module
+// Docker container management and orchestration
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Docker Client
+// -----------------------------------------------------------------------------
+
+actor DockerClient {
+    state host: String
+    state api_version: String
+    
+    init() { self.host = "unix:///var/run/docker.sock"; self.api_version = "v1.43" }
+    init(host: String) { self.host = host; self.api_version = "v1.43" }
+    
+    on containers(all: Bool = false) -> Result<[Container], DockerError> { @native("docker_list_containers", self.host, all) }
+    on container(id: String) -> Result<Container, DockerError> { @native("docker_get_container", self.host, id) }
+    on images() -> Result<[Image], DockerError> { @native("docker_list_images", self.host) }
+    on pull(image: String, tag: String = "latest") -> Result<Image, DockerError> { @native("docker_pull_image", self.host, image, tag) }
+    on build(context: String, opts: BuildOptions = BuildOptions.default()) -> Result<Image, DockerError> { @native("docker_build_image", self.host, context, opts) }
+    on create_network(name: String, driver: String = "bridge") -> Result<Network, DockerError> { @native("docker_create_network", self.host, name, driver) }
+    on networks() -> Result<[Network], DockerError> { @native("docker_list_networks", self.host) }
+    on create_volume(name: String) -> Result<Volume, DockerError> { @native("docker_create_volume", self.host, name) }
+    on volumes() -> Result<[Volume], DockerError> { @native("docker_list_volumes", self.host) }
+    on info() -> Result<SystemInfo, DockerError> { @native("docker_info", self.host) }
+    on ping() -> Result<(), DockerError> { @native("docker_ping", self.host) }
+}
+
+// -----------------------------------------------------------------------------
+// Container
+// -----------------------------------------------------------------------------
+
+struct Container {
+    id: String
+    name: String
+    image: String
+    status: ContainerStatus
+    created: DateTime
+    ports: [PortBinding]
+    labels: Map<String, String>
+}
+
+impl Container {
+    fn start() -> Result<(), DockerError> { @native("docker_start_container", self.id) }
+    fn stop(timeout: Duration = 10.seconds()) -> Result<(), DockerError> { @native("docker_stop_container", self.id, timeout) }
+    fn restart(timeout: Duration = 10.seconds()) -> Result<(), DockerError> { @native("docker_restart_container", self.id, timeout) }
+    fn kill(signal: String = "SIGKILL") -> Result<(), DockerError> { @native("docker_kill_container", self.id, signal) }
+    fn remove(force: Bool = false) -> Result<(), DockerError> { @native("docker_remove_container", self.id, force) }
+    fn pause() -> Result<(), DockerError> { @native("docker_pause_container", self.id) }
+    fn unpause() -> Result<(), DockerError> { @native("docker_unpause_container", self.id) }
+    fn exec(cmd: [String], opts: ExecOptions = ExecOptions.default()) -> Result<ExecResult, DockerError> { @native("docker_exec", self.id, cmd, opts) }
+    fn logs(opts: LogOptions = LogOptions.default()) -> Result<String, DockerError> { @native("docker_logs", self.id, opts) }
+    fn logs_stream(opts: LogOptions = LogOptions.default()) -> Stream<LogEntry> { @native("docker_logs_stream", self.id, opts) }
+    fn inspect() -> Result<ContainerInspect, DockerError> { @native("docker_inspect_container", self.id) }
+    fn stats() -> Result<ContainerStats, DockerError> { @native("docker_stats", self.id) }
+    fn copy_to(src: String, dest: String) -> Result<(), DockerError> { @native("docker_copy_to", self.id, src, dest) }
+    fn copy_from(src: String, dest: String) -> Result<(), DockerError> { @native("docker_copy_from", self.id, src, dest) }
+    fn wait() -> Result<Int, DockerError> { @native("docker_wait", self.id) }
+}
+
+enum ContainerStatus { Created, Running, Paused, Restarting, Exited, Dead }
+
+// -----------------------------------------------------------------------------
+// Container Builder
+// -----------------------------------------------------------------------------
+
+actor ContainerBuilder {
+    state image: String
+    state name: String?
+    state cmd: [String]
+    state env: Map<String, String>
+    state ports: [PortMapping]
+    state volumes: [VolumeMount]
+    state labels: Map<String, String>
+    state network: String?
+    state restart_policy: RestartPolicy
+    state resources: ResourceLimits?
+    
+    init(image: String) {
+        self.image = image
+        self.cmd = []
+        self.env = Map.empty()
+        self.ports = []
+        self.volumes = []
+        self.labels = Map.empty()
+        self.restart_policy = RestartPolicy.No
+    }
+    
+    on name(n: String) -> Self { self.name = Some(n); self }
+    on cmd(c: [String]) -> Self { self.cmd = c; self }
+    on env(key: String, value: String) -> Self { self.env.set(key, value); self }
+    on port(host: Int, container: Int) -> Self { self.ports.append(PortMapping { host: host, container: container, protocol: "tcp" }); self }
+    on volume(host: String, container: String) -> Self { self.volumes.append(VolumeMount { source: host, target: container, mode: "rw" }); self }
+    on label(key: String, value: String) -> Self { self.labels.set(key, value); self }
+    on network(n: String) -> Self { self.network = Some(n); self }
+    on restart(policy: RestartPolicy) -> Self { self.restart_policy = policy; self }
+    on memory(limit: Int) -> Self { self.resources = Some(ResourceLimits { memory: Some(limit), cpus: None }); self }
+    on cpus(limit: Float) -> Self { self.resources = Some(ResourceLimits { memory: None, cpus: Some(limit) }); self }
+    
+    on create() -> Result<Container, DockerError> { @native("docker_create_container", self) }
+    on run() -> Result<Container, DockerError> { let c = self.create()?; c.start()?; Ok(c) }
+}
+
+struct PortMapping { host: Int, container: Int, protocol: String }
+struct PortBinding { host_ip: String, host_port: Int, container_port: Int, protocol: String }
+struct VolumeMount { source: String, target: String, mode: String }
+enum RestartPolicy { No, Always, OnFailure(Int), UnlessStopped }
+struct ResourceLimits { memory: Int?, cpus: Float? }
+
+// -----------------------------------------------------------------------------
+// Image
+// -----------------------------------------------------------------------------
+
+struct Image { id: String, tags: [String], size: Int64, created: DateTime, labels: Map<String, String> }
+
+impl Image {
+    fn tag(new_tag: String) -> Result<(), DockerError> { @native("docker_tag_image", self.id, new_tag) }
+    fn push(registry: String?) -> Result<(), DockerError> { @native("docker_push_image", self.id, registry) }
+    fn remove(force: Bool = false) -> Result<(), DockerError> { @native("docker_remove_image", self.id, force) }
+    fn inspect() -> Result<ImageInspect, DockerError> { @native("docker_inspect_image", self.id) }
+}
+
+struct ImageInspect { id: String, config: ImageConfig, architecture: String, os: String }
+struct ImageConfig { env: [String], cmd: [String], working_dir: String }
+struct BuildOptions { dockerfile: String, tags: [String], build_args: Map<String, String>, no_cache: Bool }
+impl BuildOptions { fn default() -> Self { BuildOptions { dockerfile: "Dockerfile", tags: [], build_args: Map.empty(), no_cache: false } } }
+
+// -----------------------------------------------------------------------------
+// Network & Volume
+// -----------------------------------------------------------------------------
+
+struct Network { id: String, name: String, driver: String, scope: String }
+impl Network {
+    fn connect(container_id: String) -> Result<(), DockerError> { @native("docker_network_connect", self.id, container_id) }
+    fn disconnect(container_id: String) -> Result<(), DockerError> { @native("docker_network_disconnect", self.id, container_id) }
+    fn remove() -> Result<(), DockerError> { @native("docker_remove_network", self.id) }
+}
+
+struct Volume { name: String, driver: String, mountpoint: String }
+impl Volume { fn remove() -> Result<(), DockerError> { @native("docker_remove_volume", self.name) } }
+
+// -----------------------------------------------------------------------------
+// Exec & Logs
+// -----------------------------------------------------------------------------
+
+struct ExecOptions { tty: Bool, stdin: Bool, privileged: Bool, user: String?, env: [String] }
+impl ExecOptions { fn default() -> Self { ExecOptions { tty: false, stdin: false, privileged: false, user: None, env: [] } } }
+
+struct ExecResult { exit_code: Int, stdout: String, stderr: String }
+struct LogOptions { stdout: Bool, stderr: Bool, tail: Int?, follow: Bool, timestamps: Bool }
+impl LogOptions { fn default() -> Self { LogOptions { stdout: true, stderr: true, tail: None, follow: false, timestamps: false } } }
+
+struct LogEntry { timestamp: DateTime?, stream: LogStream, message: String }
+enum LogStream { Stdout, Stderr }
+
+// -----------------------------------------------------------------------------
+// Stats & Info
+// -----------------------------------------------------------------------------
+
+struct ContainerStats { cpu_percent: Float, memory_usage: Int64, memory_limit: Int64, memory_percent: Float, network_rx: Int64, network_tx: Int64 }
+struct ContainerInspect { id: String, name: String, state: ContainerState, config: ContainerConfig }
+struct ContainerState { running: Bool, paused: Bool, exit_code: Int }
+struct ContainerConfig { image: String, env: [String], cmd: [String], hostname: String }
+struct SystemInfo { containers: Int, containers_running: Int, images: Int, docker_version: String, os: String, cpus: Int }
+
+// -----------------------------------------------------------------------------
+// Dockerfile Builder
+// -----------------------------------------------------------------------------
+
+actor Dockerfile {
+    state instructions: [String]
+    
+    init() { self.instructions = [] }
+    
+    on from(image: String) -> Self { self.instructions.append("FROM \(image)"); self }
+    on run(cmd: String) -> Self { self.instructions.append("RUN \(cmd)"); self }
+    on copy(src: String, dest: String) -> Self { self.instructions.append("COPY \(src) \(dest)"); self }
+    on add(src: String, dest: String) -> Self { self.instructions.append("ADD \(src) \(dest)"); self }
+    on workdir(dir: String) -> Self { self.instructions.append("WORKDIR \(dir)"); self }
+    on env(key: String, value: String) -> Self { self.instructions.append("ENV \(key)=\(value)"); self }
+    on arg(name: String) -> Self { self.instructions.append("ARG \(name)"); self }
+    on expose(port: Int) -> Self { self.instructions.append("EXPOSE \(port)"); self }
+    on volume(path: String) -> Self { self.instructions.append("VOLUME \(path)"); self }
+    on user(u: String) -> Self { self.instructions.append("USER \(u)"); self }
+    on label(key: String, value: String) -> Self { self.instructions.append("LABEL \(key)=\"\(value)\""); self }
+    on cmd(args: [String]) -> Self { self.instructions.append("CMD [\(args.map(|a| "\"\(a)\"").join(", "))]"); self }
+    on entrypoint(args: [String]) -> Self { self.instructions.append("ENTRYPOINT [\(args.map(|a| "\"\(a)\"").join(", "))]"); self }
+    on healthcheck(cmd: String) -> Self { self.instructions.append("HEALTHCHECK CMD \(cmd)"); self }
+    
+    on build() -> String { self.instructions.join("\n") }
+    on save(path: String) -> Result<(), IOError> { fs::write_string(path, self.build()) }
+}
+
+// -----------------------------------------------------------------------------
+// Docker Compose
+// -----------------------------------------------------------------------------
+
+struct ComposeFile { version: String, services: Map<String, ComposeService>, networks: Map<String, ComposeNetwork>, volumes: Map<String, ComposeVolume> }
+impl ComposeFile {
+    fn parse(content: String) -> Result<Self, DockerError> { yaml::parse(content).map_err(|e| DockerError.ParseError(e.to_string())) }
+    fn parse_file(path: String) -> Result<Self, DockerError> { let c = fs::read_string(path)?; Self.parse(c) }
+    fn to_yaml() -> String { yaml::stringify(self) }
+}
+
+struct ComposeService { image: String?, build: ComposeBuild?, command: [String]?, environment: Map<String, String>, ports: [String], volumes: [String], depends_on: [String], networks: [String], restart: String? }
+struct ComposeBuild { context: String, dockerfile: String? }
+struct ComposeNetwork { driver: String? }
+struct ComposeVolume { driver: String? }
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum DockerError {
+    ConnectionFailed(String), ContainerNotFound(String), ImageNotFound(String), NetworkNotFound(String), VolumeNotFound(String), PermissionDenied, Timeout, ParseError(String), ApiError(Int, String), IOError(String)
+    
+    fn message() -> String {
+        match self {
+            .ConnectionFailed(msg) => "Docker connection failed: \(msg)"
+            .ContainerNotFound(id) => "Container not found: \(id)"
+            .ImageNotFound(name) => "Image not found: \(name)"
+            .PermissionDenied => "Permission denied"
+            .Timeout => "Operation timed out"
+            .ParseError(msg) => "Parse error: \(msg)"
+            .ApiError(code, msg) => "API error (\(code)): \(msg)"
+            _ => "Docker error"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "container builder" {
+    let builder = ContainerBuilder.new("nginx:latest").name("web").port(8080, 80).env("ENV", "production")
+    assert(builder.image == "nginx:latest")
+    assert(builder.name == Some("web"))
+}
+
+test "dockerfile builder" {
+    let df = Dockerfile.new().from("node:18-alpine").workdir("/app").copy(".", ".").expose(3000).cmd(["node", "server.js"]).build()
+    assert(df.contains("FROM node:18-alpine"))
+    assert(df.contains("EXPOSE 3000"))
+}

@@ -1,0 +1,587 @@
+// =============================================================================
+// Vibee OS — Debug Module
+// Debugging, inspection, and diagnostic utilities
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Debug Printing
+// -----------------------------------------------------------------------------
+
+/// Debug print with source location
+macro dbg(expr) {
+    let value = expr
+    let file = @file()
+    let line = @line()
+    eprintln("[\(file):\(line)] \(stringify!(expr)) = \(value.debug())")
+    value
+}
+
+/// Debug print multiple values
+macro dbg_all(...exprs) {
+    let file = @file()
+    let line = @line()
+    eprint("[\(file):\(line)] ")
+    for (i, expr) in exprs.enumerate() {
+        if i > 0 { eprint(", ") }
+        eprint("\(stringify!(expr)) = \(expr.debug())")
+    }
+    eprintln()
+}
+
+/// Conditional debug print
+macro dbg_if(condition, expr) {
+    if condition {
+        dbg!(expr)
+    } else {
+        expr
+    }
+}
+
+/// Pretty print value
+fn pp<T: Debug>(value: T) {
+    println(pretty_format(value, 0))
+}
+
+fn pretty_format<T: Debug>(value: T, indent: Int) -> String {
+    let prefix = "  ".repeat(indent)
+    let debug_str = value.debug()
+    
+    // Try to format as structured data
+    if debug_str.starts_with("{") || debug_str.starts_with("[") {
+        format_structured(debug_str, indent)
+    } else {
+        "\(prefix)\(debug_str)"
+    }
+}
+
+fn format_structured(s: String, indent: Int) -> String {
+    var result = StringBuilder.new()
+    var depth = 0
+    var in_string = false
+    
+    for c in s.chars() {
+        if c == '"' && !in_string { in_string = true }
+        else if c == '"' && in_string { in_string = false }
+        
+        if !in_string {
+            match c {
+                '{' | '[' => {
+                    result.append(c)
+                    depth += 1
+                    result.append("\n")
+                    result.append("  ".repeat(indent + depth))
+                }
+                '}' | ']' => {
+                    depth -= 1
+                    result.append("\n")
+                    result.append("  ".repeat(indent + depth))
+                    result.append(c)
+                }
+                ',' => {
+                    result.append(c)
+                    result.append("\n")
+                    result.append("  ".repeat(indent + depth))
+                }
+                ':' => {
+                    result.append(": ")
+                }
+                ' ' => {}
+                _ => result.append(c)
+            }
+        } else {
+            result.append(c)
+        }
+    }
+    
+    result.build()
+}
+
+// -----------------------------------------------------------------------------
+// Inspection
+// -----------------------------------------------------------------------------
+
+/// Inspect value type and structure
+fn inspect<T>(value: T) -> Inspector<T> {
+    Inspector.new(value)
+}
+
+actor Inspector<T> {
+    state value: T
+    
+    fn new(value: T) -> Self { Inspector { value: value } }
+    
+    /// Get type name
+    fn type_name() -> String { @native("type_name", self.value) }
+    
+    /// Get type info
+    fn type_info() -> TypeInfo { @native("type_info", self.value) }
+    
+    /// Get size in bytes
+    fn size() -> Int { @native("size_of", self.value) }
+    
+    /// Get alignment
+    fn align() -> Int { @native("align_of", self.value) }
+    
+    /// Get memory address
+    fn address() -> Int { @native("address_of", self.value) }
+    
+    /// Get fields (for structs)
+    fn fields() -> [FieldInfo] { @native("fields_of", self.value) }
+    
+    /// Get variants (for enums)
+    fn variants() -> [String] { @native("variants_of", self.value) }
+    
+    /// Get current variant (for enums)
+    fn variant() -> Option<String> { @native("current_variant", self.value) }
+    
+    /// Check if value is default
+    fn is_default() -> Bool where T: Default { self.value == T.default() }
+    
+    /// Print inspection report
+    fn report() {
+        println("=== Inspection Report ===")
+        println("Type:    \(self.type_name())")
+        println("Size:    \(self.size()) bytes")
+        println("Align:   \(self.align()) bytes")
+        println("Address: 0x\(self.address().to_hex())")
+        
+        let fields = self.fields()
+        if !fields.is_empty() {
+            println("\nFields:")
+            for field in fields {
+                println("  \(field.name): \(field.type_name) = \(field.value.debug())")
+            }
+        }
+        
+        if let v = self.variant() {
+            println("\nVariant: \(v)")
+        }
+        
+        println("=========================")
+    }
+}
+
+struct TypeInfo {
+    name: String
+    kind: TypeKind
+    size: Int
+    align: Int
+    generics: [String]
+}
+
+enum TypeKind {
+    Primitive
+    Struct
+    Enum
+    Actor
+    Trait
+    Function
+    Array
+    Map
+    Option
+    Result
+}
+
+struct FieldInfo {
+    name: String
+    type_name: String
+    value: Any
+    offset: Int
+}
+
+// -----------------------------------------------------------------------------
+// Stack Traces
+// -----------------------------------------------------------------------------
+
+/// Get current stack trace
+fn stack_trace() -> StackTrace {
+    @native("capture_stack_trace")
+}
+
+/// Stack trace
+struct StackTrace {
+    frames: [StackFrame]
+    
+    fn to_string() -> String {
+        var result = "Stack trace:\n"
+        for (i, frame) in self.frames.enumerate() {
+            result += "  \(i): \(frame.to_string())\n"
+        }
+        result
+    }
+    
+    fn print() {
+        println(self.to_string())
+    }
+    
+    /// Filter to only user code
+    fn user_frames() -> StackTrace {
+        StackTrace {
+            frames: self.frames.filter(|f| !f.is_stdlib())
+        }
+    }
+}
+
+struct StackFrame {
+    function: String
+    file: String
+    line: Int
+    column: Int
+    module: String
+    
+    fn to_string() -> String {
+        "\(self.function) at \(self.file):\(self.line):\(self.column)"
+    }
+    
+    fn is_stdlib() -> Bool {
+        self.module.starts_with("std::") || self.file.contains("/stdlib/")
+    }
+}
+
+/// Print stack trace at current location
+fn print_stack_trace() {
+    stack_trace().print()
+}
+
+// -----------------------------------------------------------------------------
+// Assertions with Context
+// -----------------------------------------------------------------------------
+
+/// Assert with detailed context on failure
+macro assert_ctx(condition, ...context) {
+    if !condition {
+        eprintln("Assertion failed!")
+        eprintln("  Location: \(@file()):\(@line())")
+        eprintln("  Condition: \(stringify!(condition))")
+        eprintln("  Context:")
+        for (name, value) in context {
+            eprintln("    \(name) = \(value.debug())")
+        }
+        stack_trace().user_frames().print()
+        panic("Assertion failed")
+    }
+}
+
+/// Debug assert (only in debug builds)
+macro debug_assert(condition, message = "Debug assertion failed") {
+    if @debug_mode() {
+        if !condition {
+            panic("\(message): \(stringify!(condition))")
+        }
+    }
+}
+
+/// Unreachable code marker
+macro unreachable(message = "Entered unreachable code") {
+    eprintln("UNREACHABLE: \(message)")
+    eprintln("  Location: \(@file()):\(@line())")
+    stack_trace().print()
+    panic(message)
+}
+
+/// Todo marker (panics with location)
+macro todo(message = "Not yet implemented") {
+    panic("TODO at \(@file()):\(@line()): \(message)")
+}
+
+// -----------------------------------------------------------------------------
+// Logging & Tracing
+// -----------------------------------------------------------------------------
+
+/// Trace function entry/exit
+macro trace_fn() {
+    let fn_name = @function()
+    let file = @file()
+    let line = @line()
+    eprintln("--> \(fn_name) (\(file):\(line))")
+    defer { eprintln("<-- \(fn_name)") }
+}
+
+/// Trace with timing
+macro trace_timed() {
+    let fn_name = @function()
+    let start = Instant.now()
+    eprintln("--> \(fn_name)")
+    defer {
+        let elapsed = start.elapsed()
+        eprintln("<-- \(fn_name) (\(elapsed.as_millis())ms)")
+    }
+}
+
+/// Conditional trace
+actor Tracer {
+    state enabled: Bool
+    state indent: Int
+    state filter: Option<String>
+    
+    fn new() -> Self { Tracer { enabled: true, indent: 0, filter: None } }
+    
+    on enable() { self.enabled = true }
+    on disable() { self.enabled = false }
+    on filter(pattern: String) { self.filter = Some(pattern) }
+    
+    fn should_trace(name: String) -> Bool {
+        if !self.enabled { return false }
+        if let f = self.filter {
+            return name.contains(f)
+        }
+        true
+    }
+    
+    on enter(name: String) {
+        if self.should_trace(name) {
+            eprintln("\("  ".repeat(self.indent))--> \(name)")
+            self.indent += 1
+        }
+    }
+    
+    on exit(name: String) {
+        if self.should_trace(name) {
+            self.indent -= 1
+            eprintln("\("  ".repeat(self.indent))<-- \(name)")
+        }
+    }
+    
+    on log(message: String) {
+        if self.enabled {
+            eprintln("\("  ".repeat(self.indent))    \(message)")
+        }
+    }
+}
+
+// Global tracer
+var TRACER = Tracer.new()
+
+// -----------------------------------------------------------------------------
+// Watch & Breakpoints
+// -----------------------------------------------------------------------------
+
+/// Watch variable changes
+actor Watcher<T: Eq + Debug> {
+    state name: String
+    state value: T
+    state history: [(T, Instant)]
+    state on_change: Option<(T, T) -> ()>
+    
+    fn new(name: String, initial: T) -> Self {
+        Watcher {
+            name: name,
+            value: initial,
+            history: [(initial, Instant.now())],
+            on_change: None
+        }
+    }
+    
+    on on_change(f: (T, T) -> ()) -> Self {
+        self.on_change = Some(f)
+        self
+    }
+    
+    on set(new_value: T) {
+        if new_value != self.value {
+            let old = self.value
+            self.value = new_value
+            self.history.append((new_value, Instant.now()))
+            
+            eprintln("[WATCH] \(self.name): \(old.debug()) -> \(new_value.debug())")
+            
+            if let handler = self.on_change {
+                handler(old, new_value)
+            }
+        }
+    }
+    
+    fn get() -> T { self.value }
+    fn history() -> [(T, Instant)] { self.history }
+}
+
+/// Software breakpoint
+fn breakpoint() {
+    if @debug_mode() {
+        eprintln("=== BREAKPOINT ===")
+        eprintln("Location: \(@file()):\(@line())")
+        stack_trace().user_frames().print()
+        
+        // Wait for debugger or user input
+        @native("debug_break")
+    }
+}
+
+/// Conditional breakpoint
+macro break_if(condition) {
+    if condition {
+        breakpoint()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Memory Debugging
+// -----------------------------------------------------------------------------
+
+/// Memory debugger
+module MemoryDebug {
+    /// Check for memory leaks
+    fn check_leaks() -> [LeakInfo] {
+        @native("memory_check_leaks")
+    }
+    
+    /// Get allocation stats
+    fn stats() -> MemoryStats {
+        @native("memory_stats")
+    }
+    
+    /// Dump heap
+    fn dump_heap(path: String) {
+        @native("memory_dump_heap", path)
+    }
+    
+    /// Track allocations
+    fn start_tracking() {
+        @native("memory_start_tracking")
+    }
+    
+    fn stop_tracking() -> [Allocation] {
+        @native("memory_stop_tracking")
+    }
+    
+    /// Print memory report
+    fn report() {
+        let stats = self.stats()
+        println("=== Memory Report ===")
+        println("Allocated:  \(format_bytes(stats.allocated))")
+        println("Freed:      \(format_bytes(stats.freed))")
+        println("In use:     \(format_bytes(stats.current))")
+        println("Peak:       \(format_bytes(stats.peak))")
+        println("Alloc count: \(stats.alloc_count)")
+        println("Free count:  \(stats.free_count)")
+        println("=====================")
+    }
+}
+
+struct LeakInfo {
+    address: Int
+    size: Int
+    allocation_site: StackFrame
+}
+
+struct Allocation {
+    address: Int
+    size: Int
+    timestamp: Instant
+    stack: StackTrace
+}
+
+struct MemoryStats {
+    allocated: Int
+    freed: Int
+    current: Int
+    peak: Int
+    alloc_count: Int
+    free_count: Int
+}
+
+fn format_bytes(bytes: Int) -> String {
+    if bytes < 1024 { "\(bytes) B" }
+    else if bytes < 1024 * 1024 { "\((bytes as Float / 1024.0).round(2)) KB" }
+    else if bytes < 1024 * 1024 * 1024 { "\((bytes as Float / (1024.0 * 1024.0)).round(2)) MB" }
+    else { "\((bytes as Float / (1024.0 * 1024.0 * 1024.0)).round(2)) GB" }
+}
+
+// -----------------------------------------------------------------------------
+// Hex Dump
+// -----------------------------------------------------------------------------
+
+/// Hex dump of bytes
+fn hex_dump(data: [Byte], bytes_per_line: Int = 16) -> String {
+    var result = StringBuilder.new()
+    
+    for (i, chunk) in data.chunks(bytes_per_line).enumerate() {
+        // Address
+        result.append(format!("{:08x}  ", i * bytes_per_line))
+        
+        // Hex bytes
+        for (j, byte) in chunk.enumerate() {
+            result.append(format!("{:02x} ", byte))
+            if j == 7 { result.append(" ") }
+        }
+        
+        // Padding
+        for _ in chunk.len()..bytes_per_line {
+            result.append("   ")
+        }
+        if chunk.len() <= 8 { result.append(" ") }
+        
+        // ASCII
+        result.append(" |")
+        for byte in chunk {
+            let c = if byte >= 32 && byte < 127 { byte as Char } else { '.' }
+            result.append(c)
+        }
+        result.append("|\n")
+    }
+    
+    result.build()
+}
+
+/// Print hex dump
+fn print_hex(data: [Byte]) {
+    println(hex_dump(data))
+}
+
+// -----------------------------------------------------------------------------
+// Diff & Comparison
+// -----------------------------------------------------------------------------
+
+/// Compare two values and show differences
+fn diff<T: Debug>(a: T, b: T) -> String {
+    let a_str = a.debug()
+    let b_str = b.debug()
+    
+    if a_str == b_str {
+        return "Values are equal"
+    }
+    
+    var result = "Differences:\n"
+    result += "  - \(red(a_str))\n"
+    result += "  + \(green(b_str))\n"
+    result
+}
+
+/// Assert equal with diff on failure
+fn assert_eq_diff<T: Eq + Debug>(actual: T, expected: T) -> Result<(), String> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(diff(expected, actual))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "inspect" {
+    struct Point { x: Int, y: Int }
+    let p = Point { x: 10, y: 20 }
+    let i = inspect(p)
+    
+    assert(i.type_name().contains("Point"))
+    assert(i.size() > 0)
+}
+
+test "hex_dump" {
+    let data = [0x48, 0x65, 0x6c, 0x6c, 0x6f]  // "Hello"
+    let dump = hex_dump(data)
+    
+    assert(dump.contains("48 65 6c 6c 6f"))
+    assert(dump.contains("|Hello|"))
+}
+
+test "watcher" {
+    let w = Watcher.new("counter", 0)
+    w.set(1)
+    w.set(2)
+    w.set(2)  // No change
+    
+    assert_eq(w.history().len(), 3)?  // Initial + 2 changes
+}

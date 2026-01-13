@@ -1,0 +1,504 @@
+// =============================================================================
+// Vibee OS — Model Module
+// High-level ML models and training utilities
+// =============================================================================
+
+use tensor::{Tensor, Shape}
+use nn::{Module, Linear, ReLU, Sigmoid, Softmax, Sequential, Dropout, BatchNorm1d, MSELoss, CrossEntropyLoss}
+use optimizer::{Optimizer, Adam, SGD}
+use dataset::{Dataset, DataLoader, Batch}
+
+// -----------------------------------------------------------------------------
+// Model Trait
+// -----------------------------------------------------------------------------
+
+trait Model: Module {
+    fn fit(train_loader: DataLoader, epochs: Int, optimizer: Box<dyn Optimizer>)
+    fn predict(input: Tensor) -> Tensor
+    fn evaluate(test_loader: DataLoader) -> Map<String, Float>
+    fn save(path: String)
+    fn load(path: String) -> Self
+}
+
+// -----------------------------------------------------------------------------
+// MLP Classifier
+// -----------------------------------------------------------------------------
+
+struct MLPClassifier {
+    layers: Sequential
+    num_classes: Int
+    
+    fn new(input_size: Int, hidden_sizes: [Int], num_classes: Int, dropout: Float = 0.0) -> Self {
+        var modules: [Box<dyn Module>] = []
+        var in_size = input_size
+        
+        for h in hidden_sizes {
+            modules.push(Box.new(Linear.new(in_size, h)))
+            modules.push(Box.new(ReLU {}))
+            if dropout > 0.0 { modules.push(Box.new(Dropout.new(dropout))) }
+            in_size = h
+        }
+        modules.push(Box.new(Linear.new(in_size, num_classes)))
+        
+        MLPClassifier { layers: Sequential.new(modules), num_classes: num_classes }
+    }
+}
+
+impl Module for MLPClassifier {
+    fn forward(input: Tensor) -> Tensor { self.layers.forward(input) }
+    fn parameters() -> [Tensor] { self.layers.parameters() }
+    fn train() { self.layers.train() }
+    fn eval() { self.layers.eval() }
+}
+
+impl Model for MLPClassifier {
+    fn fit(train_loader: DataLoader, epochs: Int, optimizer: Box<dyn Optimizer>) {
+        let loss_fn = CrossEntropyLoss.new()
+        self.train()
+        
+        for epoch in 0..epochs {
+            var total_loss = 0.0
+            var batches = 0
+            train_loader.reset()
+            
+            while let Some(batch) = train_loader.next() {
+                optimizer.zero_grad()
+                let output = self.forward(batch.data)
+                let loss = loss_fn.forward(output, batch.targets)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+                batches += 1
+            }
+            println("Epoch \(epoch + 1)/\(epochs), Loss: \(total_loss / batches as Float)")
+        }
+    }
+    
+    fn predict(input: Tensor) -> Tensor {
+        self.eval()
+        let output = self.forward(input)
+        Tensor.scalar(output.argmax() as Float)
+    }
+    
+    fn evaluate(test_loader: DataLoader) -> Map<String, Float> {
+        self.eval()
+        var correct = 0; var total = 0
+        test_loader.reset()
+        
+        while let Some(batch) = test_loader.next() {
+            let output = self.forward(batch.data)
+            for i in 0..batch.targets.numel() {
+                let pred = output.data[(i * self.num_classes)..((i + 1) * self.num_classes)]
+                    .iter().enumerate().max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap()).unwrap().0
+                if pred as Float == batch.targets.data[i] { correct += 1 }
+                total += 1
+            }
+        }
+        Map.from([("accuracy", correct as Float / total as Float)])
+    }
+    
+    fn save(path: String) { @native("save_model", path, self.parameters()) }
+    fn load(path: String) -> Self { @native("load_model", path) }
+}
+
+// -----------------------------------------------------------------------------
+// MLP Regressor
+// -----------------------------------------------------------------------------
+
+struct MLPRegressor {
+    layers: Sequential
+    
+    fn new(input_size: Int, hidden_sizes: [Int], output_size: Int = 1) -> Self {
+        var modules: [Box<dyn Module>] = []
+        var in_size = input_size
+        
+        for h in hidden_sizes {
+            modules.push(Box.new(Linear.new(in_size, h)))
+            modules.push(Box.new(ReLU {}))
+            in_size = h
+        }
+        modules.push(Box.new(Linear.new(in_size, output_size)))
+        
+        MLPRegressor { layers: Sequential.new(modules) }
+    }
+}
+
+impl Module for MLPRegressor {
+    fn forward(input: Tensor) -> Tensor { self.layers.forward(input) }
+    fn parameters() -> [Tensor] { self.layers.parameters() }
+}
+
+impl Model for MLPRegressor {
+    fn fit(train_loader: DataLoader, epochs: Int, optimizer: Box<dyn Optimizer>) {
+        let loss_fn = MSELoss.new()
+        
+        for epoch in 0..epochs {
+            var total_loss = 0.0; var batches = 0
+            train_loader.reset()
+            
+            while let Some(batch) = train_loader.next() {
+                optimizer.zero_grad()
+                let output = self.forward(batch.data)
+                let loss = loss_fn.forward(output.flatten(), batch.targets)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+                batches += 1
+            }
+            println("Epoch \(epoch + 1), MSE: \(total_loss / batches as Float)")
+        }
+    }
+    
+    fn predict(input: Tensor) -> Tensor { self.forward(input) }
+    
+    fn evaluate(test_loader: DataLoader) -> Map<String, Float> {
+        var mse = 0.0; var total = 0
+        test_loader.reset()
+        
+        while let Some(batch) = test_loader.next() {
+            let output = self.forward(batch.data).flatten()
+            for i in 0..batch.targets.numel() {
+                let diff = output.data[i] - batch.targets.data[i]
+                mse += diff * diff
+                total += 1
+            }
+        }
+        Map.from([("mse", mse / total as Float), ("rmse", (mse / total as Float).sqrt())])
+    }
+    
+    fn save(path: String) { @native("save_model", path, self.parameters()) }
+    fn load(path: String) -> Self { @native("load_model", path) }
+}
+
+// -----------------------------------------------------------------------------
+// Logistic Regression
+// -----------------------------------------------------------------------------
+
+struct LogisticRegression {
+    linear: Linear
+    
+    fn new(input_size: Int, num_classes: Int = 2) -> Self {
+        LogisticRegression { linear: Linear.new(input_size, num_classes) }
+    }
+}
+
+impl Module for LogisticRegression {
+    fn forward(input: Tensor) -> Tensor { self.linear.forward(input).sigmoid() }
+    fn parameters() -> [Tensor] { self.linear.parameters() }
+}
+
+// -----------------------------------------------------------------------------
+// Linear Regression
+// -----------------------------------------------------------------------------
+
+struct LinearRegression {
+    linear: Linear
+    
+    fn new(input_size: Int, output_size: Int = 1) -> Self {
+        LinearRegression { linear: Linear.new(input_size, output_size) }
+    }
+}
+
+impl Module for LinearRegression {
+    fn forward(input: Tensor) -> Tensor { self.linear.forward(input) }
+    fn parameters() -> [Tensor] { self.linear.parameters() }
+}
+
+// -----------------------------------------------------------------------------
+// K-Nearest Neighbors
+// -----------------------------------------------------------------------------
+
+struct KNNClassifier {
+    k: Int
+    train_data: Option<Tensor>
+    train_labels: Option<Tensor>
+    
+    fn new(k: Int = 5) -> Self {
+        KNNClassifier { k: k, train_data: None, train_labels: None }
+    }
+    
+    fn fit(data: Tensor, labels: Tensor) {
+        self.train_data = Some(data)
+        self.train_labels = Some(labels)
+    }
+    
+    fn predict(input: Tensor) -> Tensor {
+        let train_data = self.train_data.as_ref().expect("Model not fitted")
+        let train_labels = self.train_labels.as_ref().expect("Model not fitted")
+        
+        var predictions = []
+        let n_samples = input.shape.rows()
+        let n_train = train_data.shape.rows()
+        let n_features = input.shape.cols()
+        
+        for i in 0..n_samples {
+            var distances = []
+            for j in 0..n_train {
+                var dist = 0.0
+                for f in 0..n_features {
+                    let diff = input.data[i * n_features + f] - train_data.data[j * n_features + f]
+                    dist += diff * diff
+                }
+                distances.push((dist.sqrt(), train_labels.data[j]))
+            }
+            distances.sort_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap())
+            
+            var votes = Map.empty()
+            for (_, label) in distances[0..self.k] {
+                *votes.entry(label as Int).or_insert(0) += 1
+            }
+            let pred = votes.iter().max_by(|(_, a), (_, b)| a.cmp(b)).unwrap().0
+            predictions.push(pred as Float)
+        }
+        Tensor.from_vec(predictions)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Decision Tree
+// -----------------------------------------------------------------------------
+
+struct DecisionTreeClassifier {
+    max_depth: Int
+    min_samples_split: Int
+    tree: Option<Box<TreeNode>>
+    
+    fn new(max_depth: Int = 10, min_samples_split: Int = 2) -> Self {
+        DecisionTreeClassifier { max_depth: max_depth, min_samples_split: min_samples_split, tree: None }
+    }
+    
+    fn fit(data: Tensor, labels: Tensor) {
+        self.tree = Some(Box.new(self.build_tree(data, labels, 0)))
+    }
+    
+    fn build_tree(data: Tensor, labels: Tensor, depth: Int) -> TreeNode {
+        let n_samples = data.shape.rows()
+        
+        if depth >= self.max_depth || n_samples < self.min_samples_split {
+            return TreeNode.leaf(self.most_common_label(labels))
+        }
+        
+        let (feature, threshold, gain) = self.best_split(data, labels)
+        if gain == 0.0 { return TreeNode.leaf(self.most_common_label(labels)) }
+        
+        TreeNode.split(feature, threshold, 
+            Box.new(self.build_tree(data.clone(), labels.clone(), depth + 1)),
+            Box.new(self.build_tree(data, labels, depth + 1)))
+    }
+    
+    fn best_split(data: Tensor, labels: Tensor) -> (Int, Float, Float) { (0, 0.0, 0.0) }
+    fn most_common_label(labels: Tensor) -> Float { labels.data[0] }
+    
+    fn predict(input: Tensor) -> Tensor {
+        let tree = self.tree.as_ref().expect("Model not fitted")
+        var predictions = []
+        for i in 0..input.shape.rows() {
+            predictions.push(tree.predict_one(input, i))
+        }
+        Tensor.from_vec(predictions)
+    }
+}
+
+enum TreeNode {
+    Leaf { value: Float }
+    Split { feature: Int, threshold: Float, left: Box<TreeNode>, right: Box<TreeNode> }
+    
+    fn leaf(value: Float) -> Self { TreeNode.Leaf { value: value } }
+    fn split(feature: Int, threshold: Float, left: Box<TreeNode>, right: Box<TreeNode>) -> Self {
+        TreeNode.Split { feature: feature, threshold: threshold, left: left, right: right }
+    }
+    
+    fn predict_one(input: Tensor, row: Int) -> Float {
+        match self {
+            Leaf { value } => value,
+            Split { feature, threshold, left, right } => {
+                let val = input.data[row * input.shape.cols() + feature]
+                if val <= threshold { left.predict_one(input, row) }
+                else { right.predict_one(input, row) }
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Random Forest
+// -----------------------------------------------------------------------------
+
+struct RandomForestClassifier {
+    n_estimators: Int
+    max_depth: Int
+    trees: [DecisionTreeClassifier]
+    
+    fn new(n_estimators: Int = 100, max_depth: Int = 10) -> Self {
+        RandomForestClassifier { n_estimators: n_estimators, max_depth: max_depth, trees: [] }
+    }
+    
+    fn fit(data: Tensor, labels: Tensor) {
+        for _ in 0..self.n_estimators {
+            var tree = DecisionTreeClassifier.new(self.max_depth)
+            tree.fit(data.clone(), labels.clone())
+            self.trees.push(tree)
+        }
+    }
+    
+    fn predict(input: Tensor) -> Tensor {
+        var all_preds = []
+        for tree in self.trees { all_preds.push(tree.predict(input.clone())) }
+        
+        var final_preds = []
+        for i in 0..input.shape.rows() {
+            var votes = Map.empty()
+            for pred in all_preds { *votes.entry(pred.data[i] as Int).or_insert(0) += 1 }
+            let winner = votes.iter().max_by(|(_, a), (_, b)| a.cmp(b)).unwrap().0
+            final_preds.push(winner as Float)
+        }
+        Tensor.from_vec(final_preds)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Training Utilities
+// -----------------------------------------------------------------------------
+
+struct Trainer {
+    model: Box<dyn Model>
+    optimizer: Box<dyn Optimizer>
+    loss_fn: Box<dyn Fn(Tensor, Tensor) -> Tensor>
+    
+    fn new(model: Box<dyn Model>, optimizer: Box<dyn Optimizer>) -> Self {
+        Trainer { model: model, optimizer: optimizer, loss_fn: Box.new(|a, b| MSELoss.new().forward(a, b)) }
+    }
+    
+    fn train_epoch(train_loader: DataLoader) -> Float {
+        self.model.train()
+        var total_loss = 0.0; var batches = 0
+        train_loader.reset()
+        
+        while let Some(batch) = train_loader.next() {
+            self.optimizer.zero_grad()
+            let output = self.model.forward(batch.data)
+            let loss = (self.loss_fn)(output, batch.targets)
+            loss.backward()
+            self.optimizer.step()
+            total_loss += loss.item()
+            batches += 1
+        }
+        total_loss / batches as Float
+    }
+    
+    fn validate(val_loader: DataLoader) -> Float {
+        self.model.eval()
+        var total_loss = 0.0; var batches = 0
+        val_loader.reset()
+        
+        while let Some(batch) = val_loader.next() {
+            let output = self.model.forward(batch.data)
+            let loss = (self.loss_fn)(output, batch.targets)
+            total_loss += loss.item()
+            batches += 1
+        }
+        total_loss / batches as Float
+    }
+    
+    fn fit(train_loader: DataLoader, val_loader: Option<DataLoader>, epochs: Int) {
+        for epoch in 0..epochs {
+            let train_loss = self.train_epoch(train_loader)
+            print("Epoch \(epoch + 1)/\(epochs) - train_loss: \(train_loss)")
+            
+            if let Some(val) = val_loader {
+                let val_loss = self.validate(val)
+                println(" - val_loss: \(val_loss)")
+            } else { println("") }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Metrics
+// -----------------------------------------------------------------------------
+
+fn accuracy(predictions: Tensor, targets: Tensor) -> Float {
+    var correct = 0
+    for i in 0..predictions.numel() {
+        if predictions.data[i] == targets.data[i] { correct += 1 }
+    }
+    correct as Float / predictions.numel() as Float
+}
+
+fn precision(predictions: Tensor, targets: Tensor, positive_class: Float = 1.0) -> Float {
+    var tp = 0; var fp = 0
+    for i in 0..predictions.numel() {
+        if predictions.data[i] == positive_class {
+            if targets.data[i] == positive_class { tp += 1 } else { fp += 1 }
+        }
+    }
+    if tp + fp == 0 { 0.0 } else { tp as Float / (tp + fp) as Float }
+}
+
+fn recall(predictions: Tensor, targets: Tensor, positive_class: Float = 1.0) -> Float {
+    var tp = 0; var fn_count = 0
+    for i in 0..predictions.numel() {
+        if targets.data[i] == positive_class {
+            if predictions.data[i] == positive_class { tp += 1 } else { fn_count += 1 }
+        }
+    }
+    if tp + fn_count == 0 { 0.0 } else { tp as Float / (tp + fn_count) as Float }
+}
+
+fn f1_score(predictions: Tensor, targets: Tensor, positive_class: Float = 1.0) -> Float {
+    let p = precision(predictions, targets, positive_class)
+    let r = recall(predictions, targets, positive_class)
+    if p + r == 0.0 { 0.0 } else { 2.0 * p * r / (p + r) }
+}
+
+fn mse(predictions: Tensor, targets: Tensor) -> Float {
+    var sum = 0.0
+    for i in 0..predictions.numel() {
+        let diff = predictions.data[i] - targets.data[i]
+        sum += diff * diff
+    }
+    sum / predictions.numel() as Float
+}
+
+fn rmse(predictions: Tensor, targets: Tensor) -> Float { mse(predictions, targets).sqrt() }
+
+fn mae(predictions: Tensor, targets: Tensor) -> Float {
+    var sum = 0.0
+    for i in 0..predictions.numel() {
+        sum += (predictions.data[i] - targets.data[i]).abs()
+    }
+    sum / predictions.numel() as Float
+}
+
+fn r2_score(predictions: Tensor, targets: Tensor) -> Float {
+    let mean = targets.mean()
+    var ss_res = 0.0; var ss_tot = 0.0
+    for i in 0..predictions.numel() {
+        ss_res += (targets.data[i] - predictions.data[i]).pow(2.0)
+        ss_tot += (targets.data[i] - mean).pow(2.0)
+    }
+    1.0 - ss_res / ss_tot
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "mlp_classifier" {
+    let model = MLPClassifier.new(10, [32, 16], 2)
+    let input = Tensor.randn(Shape.matrix(4, 10))
+    let output = model.forward(input)
+    assert_eq(output.shape.dims, [4, 2])?
+}
+
+test "accuracy" {
+    let preds = Tensor.from_vec([1.0, 0.0, 1.0, 1.0])
+    let targets = Tensor.from_vec([1.0, 0.0, 0.0, 1.0])
+    assert_eq(accuracy(preds, targets), 0.75)?
+}
+
+test "mse" {
+    let preds = Tensor.from_vec([1.0, 2.0, 3.0])
+    let targets = Tensor.from_vec([1.0, 2.0, 3.0])
+    assert_eq(mse(preds, targets), 0.0)?
+}

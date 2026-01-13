@@ -1,0 +1,597 @@
+// =============================================================================
+// Vibee OS — Layout Module
+// Layout systems: Flexbox, Grid, and positioning
+// =============================================================================
+
+use component::{Component, Constraints, Size, EdgeInsets, Alignment}
+use canvas::Rect
+
+// -----------------------------------------------------------------------------
+// Flex Layout (Flexbox)
+// -----------------------------------------------------------------------------
+
+/// Flex container for flexible layouts
+struct Flex {
+    children: [FlexChild]
+    direction: FlexDirection
+    main_axis_alignment: MainAxisAlignment
+    cross_axis_alignment: CrossAxisAlignment
+    main_axis_size: MainAxisSize
+    spacing: Float64
+    wrap: FlexWrap
+    
+    fn row() -> Self {
+        Flex {
+            children: [],
+            direction: FlexDirection.Row,
+            main_axis_alignment: MainAxisAlignment.Start,
+            cross_axis_alignment: CrossAxisAlignment.Center,
+            main_axis_size: MainAxisSize.Max,
+            spacing: 0.0,
+            wrap: FlexWrap.NoWrap
+        }
+    }
+    
+    fn column() -> Self {
+        Flex {
+            children: [],
+            direction: FlexDirection.Column,
+            main_axis_alignment: MainAxisAlignment.Start,
+            cross_axis_alignment: CrossAxisAlignment.Stretch,
+            main_axis_size: MainAxisSize.Max,
+            spacing: 0.0,
+            wrap: FlexWrap.NoWrap
+        }
+    }
+    
+    fn add(child: Box<dyn Component>) -> Self {
+        self.children.push(FlexChild { child: child, flex: 0, fit: FlexFit.Loose })
+        self
+    }
+    
+    fn add_flex(child: Box<dyn Component>, flex: Int) -> Self {
+        self.children.push(FlexChild { child: child, flex: flex, fit: FlexFit.Tight })
+        self
+    }
+    
+    fn add_expanded(child: Box<dyn Component>) -> Self {
+        self.add_flex(child, 1)
+    }
+    
+    fn spacing(s: Float64) -> Self { self.spacing = s; self }
+    fn main_axis(a: MainAxisAlignment) -> Self { self.main_axis_alignment = a; self }
+    fn cross_axis(a: CrossAxisAlignment) -> Self { self.cross_axis_alignment = a; self }
+    fn wrap(w: FlexWrap) -> Self { self.wrap = w; self }
+    
+    fn measure(constraints: Constraints) -> Size {
+        let is_horizontal = self.direction == FlexDirection.Row || self.direction == FlexDirection.RowReverse
+        var total_flex = 0
+        var allocated_size = 0.0
+        var cross_size = 0.0
+        
+        // First pass: measure non-flex children
+        for child in &self.children {
+            if child.flex == 0 {
+                let child_size = child.child.measure(constraints)
+                if is_horizontal {
+                    allocated_size += child_size.width
+                    cross_size = cross_size.max(child_size.height)
+                } else {
+                    allocated_size += child_size.height
+                    cross_size = cross_size.max(child_size.width)
+                }
+            } else {
+                total_flex += child.flex
+            }
+        }
+        
+        allocated_size += self.spacing * (self.children.len() - 1) as Float64
+        
+        if is_horizontal {
+            Size { width: constraints.max_width, height: cross_size }
+        } else {
+            Size { width: cross_size, height: constraints.max_height }
+        }
+    }
+}
+
+struct FlexChild {
+    child: Box<dyn Component>
+    flex: Int
+    fit: FlexFit
+}
+
+enum FlexDirection { Row, RowReverse, Column, ColumnReverse }
+enum MainAxisAlignment { Start, End, Center, SpaceBetween, SpaceAround, SpaceEvenly }
+enum CrossAxisAlignment { Start, End, Center, Stretch, Baseline }
+enum MainAxisSize { Min, Max }
+enum FlexFit { Tight, Loose }
+enum FlexWrap { NoWrap, Wrap, WrapReverse }
+
+/// Row shorthand
+fn Row() -> Flex { Flex.row() }
+
+/// Column shorthand
+fn Column() -> Flex { Flex.column() }
+
+/// Expanded wrapper
+struct Expanded {
+    child: Box<dyn Component>
+    flex: Int
+    
+    fn new(child: Box<dyn Component>) -> Self { Expanded { child: child, flex: 1 } }
+    fn flex(f: Int) -> Self { self.flex = f; self }
+}
+
+/// Flexible wrapper
+struct Flexible {
+    child: Box<dyn Component>
+    flex: Int
+    fit: FlexFit
+    
+    fn new(child: Box<dyn Component>) -> Self {
+        Flexible { child: child, flex: 1, fit: FlexFit.Loose }
+    }
+    fn flex(f: Int) -> Self { self.flex = f; self }
+    fn tight() -> Self { self.fit = FlexFit.Tight; self }
+}
+
+/// Spacer for flex layouts
+struct Spacer {
+    flex: Int
+    
+    fn new() -> Self { Spacer { flex: 1 } }
+    fn flex(f: Int) -> Self { self.flex = f; self }
+}
+
+// -----------------------------------------------------------------------------
+// Grid Layout
+// -----------------------------------------------------------------------------
+
+/// CSS Grid-like layout
+struct Grid {
+    children: [GridChild]
+    columns: GridTemplate
+    rows: GridTemplate
+    column_gap: Float64
+    row_gap: Float64
+    auto_flow: GridAutoFlow
+    justify_items: JustifyItems
+    align_items: AlignItems
+    
+    fn new() -> Self {
+        Grid {
+            children: [],
+            columns: GridTemplate.auto(),
+            rows: GridTemplate.auto(),
+            column_gap: 0.0,
+            row_gap: 0.0,
+            auto_flow: GridAutoFlow.Row,
+            justify_items: JustifyItems.Stretch,
+            align_items: AlignItems.Stretch
+        }
+    }
+    
+    fn columns(template: GridTemplate) -> Self { self.columns = template; self }
+    fn rows(template: GridTemplate) -> Self { self.rows = template; self }
+    fn gap(g: Float64) -> Self { self.column_gap = g; self.row_gap = g; self }
+    fn column_gap(g: Float64) -> Self { self.column_gap = g; self }
+    fn row_gap(g: Float64) -> Self { self.row_gap = g; self }
+    
+    fn add(child: Box<dyn Component>) -> Self {
+        self.children.push(GridChild { child: child, column: None, row: None, column_span: 1, row_span: 1 })
+        self
+    }
+    
+    fn add_at(child: Box<dyn Component>, col: Int, row: Int) -> Self {
+        self.children.push(GridChild { child: child, column: Some(col), row: Some(row), column_span: 1, row_span: 1 })
+        self
+    }
+    
+    fn add_span(child: Box<dyn Component>, col: Int, row: Int, col_span: Int, row_span: Int) -> Self {
+        self.children.push(GridChild { child: child, column: Some(col), row: Some(row), column_span: col_span, row_span: row_span })
+        self
+    }
+}
+
+struct GridChild {
+    child: Box<dyn Component>
+    column: Option<Int>
+    row: Option<Int>
+    column_span: Int
+    row_span: Int
+}
+
+/// Grid track template
+struct GridTemplate {
+    tracks: [GridTrack]
+    
+    fn auto() -> Self { GridTemplate { tracks: [GridTrack.Auto] } }
+    
+    fn fixed(sizes: [Float64]) -> Self {
+        GridTemplate { tracks: sizes.iter().map(|s| GridTrack.Fixed(s)).collect() }
+    }
+    
+    fn repeat(count: Int, track: GridTrack) -> Self {
+        GridTemplate { tracks: [track; count] }
+    }
+    
+    fn fr(fractions: [Float64]) -> Self {
+        GridTemplate { tracks: fractions.iter().map(|f| GridTrack.Fr(f)).collect() }
+    }
+    
+    fn min_max(min: Float64, max: Float64) -> Self {
+        GridTemplate { tracks: [GridTrack.MinMax(min, max)] }
+    }
+}
+
+enum GridTrack {
+    Fixed(Float64),
+    Fr(Float64),
+    Auto,
+    MinContent,
+    MaxContent,
+    MinMax(Float64, Float64)
+}
+
+enum GridAutoFlow { Row, Column, RowDense, ColumnDense }
+enum JustifyItems { Start, End, Center, Stretch }
+enum AlignItems { Start, End, Center, Stretch, Baseline }
+
+// -----------------------------------------------------------------------------
+// Stack Layout
+// -----------------------------------------------------------------------------
+
+/// Stack for overlapping children
+struct Stack {
+    children: [StackChild]
+    alignment: Alignment
+    fit: StackFit
+    clip: Bool
+    
+    fn new() -> Self {
+        Stack { children: [], alignment: Alignment.top_left(), fit: StackFit.Loose, clip: true }
+    }
+    
+    fn add(child: Box<dyn Component>) -> Self {
+        self.children.push(StackChild { child: child, position: None })
+        self
+    }
+    
+    fn add_positioned(child: Box<dyn Component>, pos: Position) -> Self {
+        self.children.push(StackChild { child: child, position: Some(pos) })
+        self
+    }
+    
+    fn alignment(a: Alignment) -> Self { self.alignment = a; self }
+    fn fit(f: StackFit) -> Self { self.fit = f; self }
+    fn clip(c: Bool) -> Self { self.clip = c; self }
+}
+
+struct StackChild {
+    child: Box<dyn Component>
+    position: Option<Position>
+}
+
+struct Position {
+    top: Option<Float64>
+    right: Option<Float64>
+    bottom: Option<Float64>
+    left: Option<Float64>
+    
+    fn all(t: Float64, r: Float64, b: Float64, l: Float64) -> Self {
+        Position { top: Some(t), right: Some(r), bottom: Some(b), left: Some(l) }
+    }
+    
+    fn top_left(t: Float64, l: Float64) -> Self {
+        Position { top: Some(t), right: None, bottom: None, left: Some(l) }
+    }
+    
+    fn top_right(t: Float64, r: Float64) -> Self {
+        Position { top: Some(t), right: Some(r), bottom: None, left: None }
+    }
+    
+    fn bottom_left(b: Float64, l: Float64) -> Self {
+        Position { top: None, right: None, bottom: Some(b), left: Some(l) }
+    }
+    
+    fn bottom_right(b: Float64, r: Float64) -> Self {
+        Position { top: None, right: Some(r), bottom: Some(b), left: None }
+    }
+    
+    fn fill() -> Self {
+        Position { top: Some(0.0), right: Some(0.0), bottom: Some(0.0), left: Some(0.0) }
+    }
+}
+
+enum StackFit { Loose, Expand, Passthrough }
+
+/// Positioned widget for Stack
+struct Positioned {
+    child: Box<dyn Component>
+    position: Position
+    
+    fn new(child: Box<dyn Component>, pos: Position) -> Self {
+        Positioned { child: child, position: pos }
+    }
+    
+    fn fill(child: Box<dyn Component>) -> Self {
+        Positioned { child: child, position: Position.fill() }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Wrap Layout
+// -----------------------------------------------------------------------------
+
+/// Wrap layout for flowing children
+struct Wrap {
+    children: [Box<dyn Component>]
+    direction: WrapDirection
+    alignment: WrapAlignment
+    spacing: Float64
+    run_spacing: Float64
+    
+    fn new() -> Self {
+        Wrap {
+            children: [],
+            direction: WrapDirection.Horizontal,
+            alignment: WrapAlignment.Start,
+            spacing: 0.0,
+            run_spacing: 0.0
+        }
+    }
+    
+    fn add(child: Box<dyn Component>) -> Self { self.children.push(child); self }
+    fn spacing(s: Float64) -> Self { self.spacing = s; self }
+    fn run_spacing(s: Float64) -> Self { self.run_spacing = s; self }
+    fn vertical() -> Self { self.direction = WrapDirection.Vertical; self }
+    fn alignment(a: WrapAlignment) -> Self { self.alignment = a; self }
+}
+
+enum WrapDirection { Horizontal, Vertical }
+enum WrapAlignment { Start, End, Center, SpaceBetween, SpaceAround, SpaceEvenly }
+
+// -----------------------------------------------------------------------------
+// Sizing Widgets
+// -----------------------------------------------------------------------------
+
+/// Constrained box
+struct ConstrainedBox {
+    child: Box<dyn Component>
+    constraints: BoxConstraints
+    
+    fn new(child: Box<dyn Component>, constraints: BoxConstraints) -> Self {
+        ConstrainedBox { child: child, constraints: constraints }
+    }
+}
+
+struct BoxConstraints {
+    min_width: Option<Float64>
+    max_width: Option<Float64>
+    min_height: Option<Float64>
+    max_height: Option<Float64>
+    
+    fn new() -> Self {
+        BoxConstraints { min_width: None, max_width: None, min_height: None, max_height: None }
+    }
+    
+    fn min_width(w: Float64) -> Self { self.min_width = Some(w); self }
+    fn max_width(w: Float64) -> Self { self.max_width = Some(w); self }
+    fn min_height(h: Float64) -> Self { self.min_height = Some(h); self }
+    fn max_height(h: Float64) -> Self { self.max_height = Some(h); self }
+}
+
+/// Sized box with explicit dimensions
+struct SizedBox {
+    child: Option<Box<dyn Component>>
+    width: Option<Float64>
+    height: Option<Float64>
+    
+    fn new(width: Float64, height: Float64) -> Self {
+        SizedBox { child: None, width: Some(width), height: Some(height) }
+    }
+    
+    fn expand() -> Self {
+        SizedBox { child: None, width: None, height: None }
+    }
+    
+    fn shrink() -> Self {
+        SizedBox { child: None, width: Some(0.0), height: Some(0.0) }
+    }
+    
+    fn child(c: Box<dyn Component>) -> Self { self.child = Some(c); self }
+    fn width(w: Float64) -> Self { self.width = Some(w); self }
+    fn height(h: Float64) -> Self { self.height = Some(h); self }
+}
+
+/// Fractional sized box
+struct FractionallySizedBox {
+    child: Option<Box<dyn Component>>
+    width_factor: Option<Float64>
+    height_factor: Option<Float64>
+    alignment: Alignment
+    
+    fn new() -> Self {
+        FractionallySizedBox { child: None, width_factor: None, height_factor: None, alignment: Alignment.center() }
+    }
+    
+    fn width_factor(f: Float64) -> Self { self.width_factor = Some(f); self }
+    fn height_factor(f: Float64) -> Self { self.height_factor = Some(f); self }
+    fn child(c: Box<dyn Component>) -> Self { self.child = Some(c); self }
+}
+
+/// Aspect ratio box
+struct AspectRatio {
+    child: Option<Box<dyn Component>>
+    ratio: Float64
+    
+    fn new(ratio: Float64) -> Self { AspectRatio { child: None, ratio: ratio } }
+    fn child(c: Box<dyn Component>) -> Self { self.child = Some(c); self }
+    fn square() -> Self { AspectRatio { child: None, ratio: 1.0 } }
+    fn widescreen() -> Self { AspectRatio { child: None, ratio: 16.0 / 9.0 } }
+}
+
+// -----------------------------------------------------------------------------
+// Alignment Widgets
+// -----------------------------------------------------------------------------
+
+/// Center widget
+struct Center {
+    child: Box<dyn Component>
+    width_factor: Option<Float64>
+    height_factor: Option<Float64>
+    
+    fn new(child: Box<dyn Component>) -> Self {
+        Center { child: child, width_factor: None, height_factor: None }
+    }
+}
+
+/// Align widget
+struct Align {
+    child: Box<dyn Component>
+    alignment: Alignment
+    
+    fn new(child: Box<dyn Component>, alignment: Alignment) -> Self {
+        Align { child: child, alignment: alignment }
+    }
+    
+    fn top_left(child: Box<dyn Component>) -> Self { Align.new(child, Alignment.top_left()) }
+    fn top_center(child: Box<dyn Component>) -> Self { Align.new(child, Alignment.top_center()) }
+    fn top_right(child: Box<dyn Component>) -> Self { Align.new(child, Alignment.top_right()) }
+    fn center_left(child: Box<dyn Component>) -> Self { Align.new(child, Alignment.center_left()) }
+    fn center(child: Box<dyn Component>) -> Self { Align.new(child, Alignment.center()) }
+    fn center_right(child: Box<dyn Component>) -> Self { Align.new(child, Alignment.center_right()) }
+    fn bottom_left(child: Box<dyn Component>) -> Self { Align.new(child, Alignment.bottom_left()) }
+    fn bottom_center(child: Box<dyn Component>) -> Self { Align.new(child, Alignment.bottom_center()) }
+    fn bottom_right(child: Box<dyn Component>) -> Self { Align.new(child, Alignment.bottom_right()) }
+}
+
+/// Padding widget
+struct Padding {
+    child: Box<dyn Component>
+    padding: EdgeInsets
+    
+    fn new(child: Box<dyn Component>, padding: EdgeInsets) -> Self {
+        Padding { child: child, padding: padding }
+    }
+    
+    fn all(child: Box<dyn Component>, value: Float64) -> Self {
+        Padding { child: child, padding: EdgeInsets.all(value) }
+    }
+    
+    fn symmetric(child: Box<dyn Component>, h: Float64, v: Float64) -> Self {
+        Padding { child: child, padding: EdgeInsets.symmetric(h, v) }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// List Layouts
+// -----------------------------------------------------------------------------
+
+/// ListView for scrollable lists
+struct ListView {
+    children: [Box<dyn Component>]
+    direction: ScrollDirection
+    padding: EdgeInsets
+    item_extent: Option<Float64>
+    separator: Option<Box<dyn Component>>
+    
+    fn new() -> Self {
+        ListView {
+            children: [],
+            direction: ScrollDirection.Vertical,
+            padding: EdgeInsets.zero(),
+            item_extent: None,
+            separator: None
+        }
+    }
+    
+    fn add(child: Box<dyn Component>) -> Self { self.children.push(child); self }
+    fn horizontal() -> Self { self.direction = ScrollDirection.Horizontal; self }
+    fn padding(p: EdgeInsets) -> Self { self.padding = p; self }
+    fn item_extent(e: Float64) -> Self { self.item_extent = Some(e); self }
+    fn separated(sep: Box<dyn Component>) -> Self { self.separator = Some(sep); self }
+    
+    fn builder<T>(items: [T], builder: fn(T, Int) -> Box<dyn Component>) -> Self {
+        var list = ListView.new()
+        for (i, item) in items.iter().enumerate() {
+            list.children.push(builder(item, i))
+        }
+        list
+    }
+}
+
+enum ScrollDirection { Vertical, Horizontal }
+
+/// GridView for grid-based scrollable lists
+struct GridView {
+    children: [Box<dyn Component>]
+    cross_axis_count: Int
+    main_axis_spacing: Float64
+    cross_axis_spacing: Float64
+    child_aspect_ratio: Float64
+    padding: EdgeInsets
+    
+    fn count(cross_axis_count: Int) -> Self {
+        GridView {
+            children: [],
+            cross_axis_count: cross_axis_count,
+            main_axis_spacing: 0.0,
+            cross_axis_spacing: 0.0,
+            child_aspect_ratio: 1.0,
+            padding: EdgeInsets.zero()
+        }
+    }
+    
+    fn add(child: Box<dyn Component>) -> Self { self.children.push(child); self }
+    fn spacing(main: Float64, cross: Float64) -> Self {
+        self.main_axis_spacing = main
+        self.cross_axis_spacing = cross
+        self
+    }
+    fn aspect_ratio(r: Float64) -> Self { self.child_aspect_ratio = r; self }
+    fn padding(p: EdgeInsets) -> Self { self.padding = p; self }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "flex row" {
+    let row = Flex.row()
+        .add(Box.new(Text.new("A")))
+        .add(Box.new(Text.new("B")))
+        .spacing(8.0)
+    assert_eq(row.children.len(), 2)?
+    assert_eq(row.spacing, 8.0)?
+}
+
+test "flex column" {
+    let col = Flex.column()
+        .main_axis(MainAxisAlignment.SpaceBetween)
+        .cross_axis(CrossAxisAlignment.Center)
+    assert_eq(col.direction, FlexDirection.Column)?
+}
+
+test "grid template" {
+    let template = GridTemplate.fr([1.0, 2.0, 1.0])
+    assert_eq(template.tracks.len(), 3)?
+}
+
+test "stack positioning" {
+    let pos = Position.top_left(10.0, 20.0)
+    assert_eq(pos.top, Some(10.0))?
+    assert_eq(pos.left, Some(20.0))?
+}
+
+test "sized box" {
+    let box = SizedBox.new(100.0, 50.0)
+    assert_eq(box.width, Some(100.0))?
+    assert_eq(box.height, Some(50.0))?
+}
+
+test "aspect ratio" {
+    let ar = AspectRatio.widescreen()
+    assert((ar.ratio - 16.0/9.0).abs() < 0.01)?
+}

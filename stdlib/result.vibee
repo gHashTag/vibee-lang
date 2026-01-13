@@ -1,0 +1,125 @@
+// =============================================================================
+// Vibee OS — Result Module
+// Extended Result type utilities
+// =============================================================================
+
+/// Result extensions
+impl<T, E> Result<T, E> {
+    // Transformations
+    fn map<U>(f: fn(T) -> U) -> Result<U, E> { match self { Ok(x) => Ok(f(x)), Err(e) => Err(e) } }
+    fn map_err<F>(f: fn(E) -> F) -> Result<T, F> { match self { Ok(x) => Ok(x), Err(e) => Err(f(e)) } }
+    fn map_or<U>(default: U, f: fn(T) -> U) -> U { match self { Ok(x) => f(x), Err(_) => default } }
+    fn map_or_else<U>(default: fn(E) -> U, f: fn(T) -> U) -> U { match self { Ok(x) => f(x), Err(e) => default(e) } }
+    fn and_then<U>(f: fn(T) -> Result<U, E>) -> Result<U, E> { match self { Ok(x) => f(x), Err(e) => Err(e) } }
+    fn or_else<F>(f: fn(E) -> Result<T, F>) -> Result<T, F> { match self { Ok(x) => Ok(x), Err(e) => f(e) } }
+    fn flatten() -> Result<U, E> where T = Result<U, E> { match self { Ok(inner) => inner, Err(e) => Err(e) } }
+    
+    // Unwrapping
+    fn unwrap() -> T { match self { Ok(x) => x, Err(_) => panic("unwrap on Err") } }
+    fn unwrap_err() -> E { match self { Ok(_) => panic("unwrap_err on Ok"), Err(e) => e } }
+    fn unwrap_or(default: T) -> T { match self { Ok(x) => x, Err(_) => default } }
+    fn unwrap_or_else(f: fn(E) -> T) -> T { match self { Ok(x) => x, Err(e) => f(e) } }
+    fn unwrap_or_default() -> T where T: Default { match self { Ok(x) => x, Err(_) => T.default() } }
+    fn expect(msg: String) -> T { match self { Ok(x) => x, Err(_) => panic(msg) } }
+    fn expect_err(msg: String) -> E { match self { Ok(_) => panic(msg), Err(e) => e } }
+    
+    // Inspection
+    fn is_ok() -> Bool { match self { Ok(_) => true, Err(_) => false } }
+    fn is_err() -> Bool { match self { Ok(_) => false, Err(_) => true } }
+    fn is_ok_and(pred: fn(T) -> Bool) -> Bool { match self { Ok(x) => pred(x), Err(_) => false } }
+    fn is_err_and(pred: fn(E) -> Bool) -> Bool { match self { Ok(_) => false, Err(e) => pred(e) } }
+    fn inspect(f: fn(T)) -> Result<T, E> { if let Ok(x) = self { f(x) } self }
+    fn inspect_err(f: fn(E)) -> Result<T, E> { if let Err(e) = self { f(e) } self }
+    
+    // Conversion
+    fn ok() -> Option<T> { match self { Ok(x) => Some(x), Err(_) => None } }
+    fn err() -> Option<E> { match self { Ok(_) => None, Err(e) => Some(e) } }
+    fn as_ref() -> Result<T, E> { self }
+    
+    // Combining
+    fn and<U>(other: Result<U, E>) -> Result<U, E> { match self { Ok(_) => other, Err(e) => Err(e) } }
+    fn or<F>(other: Result<T, F>) -> Result<T, F> { match self { Ok(x) => Ok(x), Err(_) => other } }
+    
+    // Iterator
+    fn iter() -> ResultIterator<T> { ResultIterator { result: self.ok() } }
+}
+
+struct ResultIterator<T> { result: Option<T> }
+impl<T> Iterator for ResultIterator<T> {
+    type Item = T
+    fn next() -> Option<T> { self.result.take() }
+}
+
+// Utility functions
+fn ok<T, E>(value: T) -> Result<T, E> { Ok(value) }
+fn err<T, E>(error: E) -> Result<T, E> { Err(error) }
+
+/// Transpose Result<Option> to Option<Result>
+fn transpose<T, E>(result: Result<Option<T>, E>) -> Option<Result<T, E>> {
+    match result { Ok(Some(x)) => Some(Ok(x)), Ok(None) => None, Err(e) => Some(Err(e)) }
+}
+
+/// Collect Results into Result of collection
+fn collect_results<T, E>(results: [Result<T, E>]) -> Result<[T], E> {
+    var collected = []
+    for r in results { collected.push(r?) }
+    Ok(collected)
+}
+
+/// Partition results into oks and errs
+fn partition_results<T, E>(results: [Result<T, E>]) -> ([T], [E]) {
+    var oks = []
+    var errs = []
+    for r in results {
+        match r { Ok(x) => oks.push(x), Err(e) => errs.push(e) }
+    }
+    (oks, errs)
+}
+
+/// Try multiple operations, return first Ok
+fn first_ok<T, E>(results: [Result<T, E>]) -> Option<T> {
+    for r in results { if let Ok(x) = r { return Some(x) } }
+    None
+}
+
+/// Combine two results
+fn zip<A, B, E>(a: Result<A, E>, b: Result<B, E>) -> Result<(A, B), E> {
+    Ok((a?, b?))
+}
+
+/// Combine with function
+fn zip_with<A, B, C, E>(a: Result<A, E>, b: Result<B, E>, f: fn(A, B) -> C) -> Result<C, E> {
+    Ok(f(a?, b?))
+}
+
+// Error trait
+trait Error: Display {
+    fn source() -> Option<Box<dyn Error>> { None }
+}
+
+/// Wrap error with context
+fn context<T, E: Error>(result: Result<T, E>, ctx: String) -> Result<T, ContextError<E>> {
+    result.map_err(|e| ContextError { context: ctx, source: e })
+}
+
+struct ContextError<E> {
+    context: String
+    source: E
+}
+
+impl<E: Error> Error for ContextError<E> {
+    fn source() -> Option<Box<dyn Error>> { Some(Box.new(self.source)) }
+}
+
+impl<E: Display> Display for ContextError<E> {
+    fn fmt(f: Formatter) { f.write(format!("{}: {}", self.context, self.source)) }
+}
+
+// Tests
+test "map" { assert_eq(Ok::<Int, String>(2).map(|x| x * 2), Ok(4))? }
+test "map_err" { assert_eq(Err::<Int, String>("err").map_err(|e| e.len()), Err(3))? }
+test "and_then" { assert_eq(Ok::<Int, String>(2).and_then(|x| Ok(x + 1)), Ok(3))? }
+test "unwrap_or" { assert_eq(Err::<Int, String>("err").unwrap_or(5), 5)? }
+test "ok err" { assert_eq(Ok::<Int, String>(1).ok(), Some(1))?; assert_eq(Err::<Int, String>("e").err(), Some("e"))? }
+test "collect" { assert_eq(collect_results([Ok(1), Ok(2), Ok(3)]), Ok([1, 2, 3]))? }
+test "flatten" { assert_eq(Ok::<Result<Int, String>, String>(Ok(1)).flatten(), Ok(1))? }

@@ -1,0 +1,271 @@
+// =============================================================================
+// Vibee OS — Barrier Module
+// Synchronization barriers
+// =============================================================================
+
+/// Barrier - synchronization point for multiple threads
+actor Barrier {
+    state count: Int
+    state waiting: Int
+    state generation: Int
+    
+    fn new(count: Int) -> Self { Barrier { count: count, waiting: 0, generation: 0 } }
+    
+    /// Wait at barrier
+    fn wait() -> BarrierWaitResult {
+        let gen = self.generation
+        self.waiting += 1
+        
+        if self.waiting == self.count {
+            self.waiting = 0
+            self.generation += 1
+            @native("barrier_notify_all", self)
+            BarrierWaitResult { is_leader: true }
+        } else {
+            while self.generation == gen { @native("barrier_wait", self) }
+            BarrierWaitResult { is_leader: false }
+        }
+    }
+    
+    /// Check if all threads arrived
+    fn is_complete() -> Bool { self.waiting == 0 }
+    
+    /// Get number of waiting threads
+    fn waiting_count() -> Int { self.waiting }
+}
+
+struct BarrierWaitResult { is_leader: Bool }
+impl BarrierWaitResult {
+    fn is_leader() -> Bool { self.is_leader }
+}
+
+/// Reusable barrier with callback
+actor CyclicBarrier {
+    state count: Int
+    state waiting: Int
+    state generation: Int
+    state action: Option<fn()>
+    
+    fn new(count: Int) -> Self { CyclicBarrier { count: count, waiting: 0, generation: 0, action: None } }
+    
+    fn with_action(count: Int, action: fn()) -> Self {
+        CyclicBarrier { count: count, waiting: 0, generation: 0, action: Some(action) }
+    }
+    
+    fn wait() -> Int {
+        let gen = self.generation
+        let index = self.waiting
+        self.waiting += 1
+        
+        if self.waiting == self.count {
+            if let Some(action) = self.action { action() }
+            self.waiting = 0
+            self.generation += 1
+            @native("barrier_notify_all", self)
+        } else {
+            while self.generation == gen { @native("barrier_wait", self) }
+        }
+        index
+    }
+    
+    fn reset() { self.waiting = 0; self.generation += 1 }
+    fn parties() -> Int { self.count }
+    fn waiting() -> Int { self.waiting }
+}
+
+/// Latch - one-time barrier
+actor Latch {
+    state count: Int
+    
+    fn new(count: Int) -> Self { Latch { count: count } }
+    
+    /// Decrement count
+    fn count_down() {
+        if self.count > 0 {
+            self.count -= 1
+            if self.count == 0 { @native("latch_notify_all", self) }
+        }
+    }
+    
+    /// Wait until count reaches zero
+    fn wait() {
+        while self.count > 0 { @native("latch_wait", self) }
+    }
+    
+    /// Wait with timeout
+    fn wait_timeout(ms: Int64) -> Bool {
+        let deadline = @native("timestamp_ms") + ms
+        while self.count > 0 {
+            if @native("timestamp_ms") >= deadline { return false }
+            @native("yield")
+        }
+        true
+    }
+    
+    fn count() -> Int { self.count }
+    fn is_done() -> Bool { self.count == 0 }
+}
+
+/// Phaser - flexible barrier with phases
+actor Phaser {
+    state registered: Int
+    state arrived: Int
+    state phase: Int
+    state terminated: Bool
+    
+    fn new() -> Self { Phaser { registered: 0, arrived: 0, phase: 0, terminated: false } }
+    fn with_parties(parties: Int) -> Self { Phaser { registered: parties, arrived: 0, phase: 0, terminated: false } }
+    
+    /// Register new party
+    fn register() -> Int {
+        self.registered += 1
+        self.phase
+    }
+    
+    /// Bulk register
+    fn bulk_register(parties: Int) -> Int {
+        self.registered += parties
+        self.phase
+    }
+    
+    /// Arrive and wait
+    fn arrive_and_await() -> Int {
+        self.arrived += 1
+        if self.arrived == self.registered {
+            self.advance()
+        } else {
+            let current = self.phase
+            while self.phase == current && !self.terminated { @native("yield") }
+        }
+        self.phase
+    }
+    
+    /// Arrive without waiting
+    fn arrive() -> Int {
+        self.arrived += 1
+        if self.arrived == self.registered { self.advance() }
+        self.phase
+    }
+    
+    /// Arrive and deregister
+    fn arrive_and_deregister() -> Int {
+        self.arrived += 1
+        self.registered -= 1
+        if self.arrived == self.registered { self.advance() }
+        self.phase
+    }
+    
+    /// Await advance
+    fn await_advance(phase: Int) -> Int {
+        while self.phase == phase && !self.terminated { @native("yield") }
+        self.phase
+    }
+    
+    fn advance() {
+        self.arrived = 0
+        self.phase += 1
+        if self.registered == 0 { self.terminated = true }
+        @native("phaser_notify_all", self)
+    }
+    
+    fn terminate() { self.terminated = true; @native("phaser_notify_all", self) }
+    fn phase() -> Int { self.phase }
+    fn registered_parties() -> Int { self.registered }
+    fn arrived_parties() -> Int { self.arrived }
+    fn unarrived_parties() -> Int { self.registered - self.arrived }
+    fn is_terminated() -> Bool { self.terminated }
+}
+
+/// Exchanger - exchange data between two threads
+actor Exchanger<T> {
+    state slot: Option<T>
+    state waiting: Bool
+    
+    fn new() -> Self { Exchanger { slot: None, waiting: false } }
+    
+    fn exchange(value: T) -> T {
+        if self.waiting {
+            let other = self.slot.take().unwrap()
+            self.slot = Some(value)
+            self.waiting = false
+            @native("exchanger_notify", self)
+            other
+        } else {
+            self.slot = Some(value)
+            self.waiting = true
+            while self.waiting { @native("exchanger_wait", self) }
+            self.slot.take().unwrap()
+        }
+    }
+    
+    fn try_exchange(value: T, timeout_ms: Int64) -> Option<T> {
+        let deadline = @native("timestamp_ms") + timeout_ms
+        if self.waiting {
+            let other = self.slot.take().unwrap()
+            self.slot = Some(value)
+            self.waiting = false
+            @native("exchanger_notify", self)
+            Some(other)
+        } else {
+            self.slot = Some(value)
+            self.waiting = true
+            while self.waiting {
+                if @native("timestamp_ms") >= deadline {
+                    self.slot.take()
+                    self.waiting = false
+                    return None
+                }
+                @native("yield")
+            }
+            Some(self.slot.take().unwrap())
+        }
+    }
+}
+
+// Tests
+test "barrier" {
+    let barrier = Barrier.new(3)
+    var count = 0
+    
+    for _ in 0..3 {
+        spawn {
+            count += 1
+            barrier.wait()
+        }
+    }
+    
+    @native("sleep_ms", 100)
+    assert_eq(count, 3)?
+}
+
+test "latch" {
+    let latch = Latch.new(3)
+    
+    for _ in 0..3 { spawn { latch.count_down() } }
+    
+    latch.wait()
+    assert(latch.is_done())?
+}
+
+test "cyclic barrier" {
+    let barrier = CyclicBarrier.new(2)
+    var phase = 0
+    
+    spawn { barrier.wait(); phase = 1 }
+    barrier.wait()
+    
+    @native("sleep_ms", 50)
+    assert_eq(phase, 1)?
+}
+
+test "exchanger" {
+    let ex = Exchanger::<Int>.new()
+    var result = 0
+    
+    spawn { result = ex.exchange(1) }
+    let got = ex.exchange(2)
+    
+    @native("sleep_ms", 50)
+    assert_eq(got, 1)?
+    assert_eq(result, 2)?
+}

@@ -1,0 +1,638 @@
+// =============================================================================
+// Vibee OS — Input Module
+// Player input handling for games
+// =============================================================================
+
+use vector::Vec2
+
+// -----------------------------------------------------------------------------
+// Key Codes
+// -----------------------------------------------------------------------------
+
+enum Key {
+    // Letters
+    A, B, C, D, E, F, G, H, I, J, K, L, M,
+    N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
+    
+    // Numbers
+    Num0, Num1, Num2, Num3, Num4, Num5, Num6, Num7, Num8, Num9,
+    
+    // Function keys
+    F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+    
+    // Arrow keys
+    Up, Down, Left, Right,
+    
+    // Modifiers
+    LShift, RShift, LCtrl, RCtrl, LAlt, RAlt,
+    
+    // Special keys
+    Space, Enter, Escape, Tab, Backspace, Delete, Insert,
+    Home, End, PageUp, PageDown,
+    CapsLock, NumLock, ScrollLock,
+    
+    // Punctuation
+    Comma, Period, Slash, Backslash, Semicolon, Quote,
+    LeftBracket, RightBracket, Minus, Equals, Grave,
+    
+    // Numpad
+    Numpad0, Numpad1, Numpad2, Numpad3, Numpad4,
+    Numpad5, Numpad6, Numpad7, Numpad8, Numpad9,
+    NumpadAdd, NumpadSubtract, NumpadMultiply, NumpadDivide,
+    NumpadEnter, NumpadDecimal
+}
+
+impl Key {
+    fn from_code(code: Int) -> Option<Key> {
+        @native("key_from_code", code)
+    }
+    
+    fn to_code() -> Int {
+        @native("key_to_code", self)
+    }
+    
+    fn name() -> String {
+        match self {
+            A => "A", B => "B", C => "C", D => "D", E => "E",
+            F => "F", G => "G", H => "H", I => "I", J => "J",
+            K => "K", L => "L", M => "M", N => "N", O => "O",
+            P => "P", Q => "Q", R => "R", S => "S", T => "T",
+            U => "U", V => "V", W => "W", X => "X", Y => "Y", Z => "Z",
+            Space => "Space", Enter => "Enter", Escape => "Escape",
+            Up => "Up", Down => "Down", Left => "Left", Right => "Right",
+            _ => "Unknown"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Mouse Buttons
+// -----------------------------------------------------------------------------
+
+enum MouseButton {
+    Left,
+    Right,
+    Middle,
+    Button4,
+    Button5
+}
+
+// -----------------------------------------------------------------------------
+// Gamepad
+// -----------------------------------------------------------------------------
+
+enum GamepadButton {
+    A, B, X, Y,
+    LeftBumper, RightBumper,
+    Back, Start, Guide,
+    LeftStick, RightStick,
+    DPadUp, DPadDown, DPadLeft, DPadRight
+}
+
+enum GamepadAxis {
+    LeftX, LeftY,
+    RightX, RightY,
+    LeftTrigger, RightTrigger
+}
+
+struct GamepadState {
+    id: Int
+    connected: Bool
+    buttons: [Bool; 16]
+    axes: [Float; 6]
+    
+    fn is_pressed(button: GamepadButton) -> Bool {
+        self.buttons[button as Int]
+    }
+    
+    fn axis(axis: GamepadAxis) -> Float {
+        self.axes[axis as Int]
+    }
+    
+    fn left_stick() -> Vec2 {
+        Vec2.new(self.axes[0], self.axes[1])
+    }
+    
+    fn right_stick() -> Vec2 {
+        Vec2.new(self.axes[2], self.axes[3])
+    }
+    
+    fn left_trigger() -> Float { self.axes[4] }
+    fn right_trigger() -> Float { self.axes[5] }
+}
+
+// -----------------------------------------------------------------------------
+// Input State
+// -----------------------------------------------------------------------------
+
+/// Main input state manager
+struct Input {
+    keys_current: [Bool; 256]
+    keys_previous: [Bool; 256]
+    
+    mouse_current: [Bool; 5]
+    mouse_previous: [Bool; 5]
+    mouse_position: Vec2
+    mouse_delta: Vec2
+    scroll_delta: Vec2
+    
+    gamepads: [GamepadState; 4]
+    gamepads_previous: [[Bool; 16]; 4]
+    
+    text_input: String
+    
+    fn new() -> Self {
+        Input {
+            keys_current: [false; 256],
+            keys_previous: [false; 256],
+            mouse_current: [false; 5],
+            mouse_previous: [false; 5],
+            mouse_position: Vec2.zero(),
+            mouse_delta: Vec2.zero(),
+            scroll_delta: Vec2.zero(),
+            gamepads: [GamepadState { id: i, connected: false, buttons: [false; 16], axes: [0.0; 6] } for i in 0..4],
+            gamepads_previous: [[false; 16]; 4],
+            text_input: ""
+        }
+    }
+    
+    /// Update input state (call once per frame)
+    fn update() {
+        // Copy current to previous
+        self.keys_previous = self.keys_current
+        self.mouse_previous = self.mouse_current
+        for i in 0..4 {
+            self.gamepads_previous[i] = self.gamepads[i].buttons
+        }
+        
+        // Reset deltas
+        self.mouse_delta = Vec2.zero()
+        self.scroll_delta = Vec2.zero()
+        self.text_input = ""
+        
+        // Poll native input
+        @native("input_poll", self)
+    }
+    
+    // --- Keyboard ---
+    
+    fn key_pressed(key: Key) -> Bool {
+        let code = key.to_code()
+        self.keys_current[code] && !self.keys_previous[code]
+    }
+    
+    fn key_released(key: Key) -> Bool {
+        let code = key.to_code()
+        !self.keys_current[code] && self.keys_previous[code]
+    }
+    
+    fn key_down(key: Key) -> Bool {
+        self.keys_current[key.to_code()]
+    }
+    
+    fn key_up(key: Key) -> Bool {
+        !self.keys_current[key.to_code()]
+    }
+    
+    fn any_key_pressed() -> Bool {
+        for i in 0..256 {
+            if self.keys_current[i] && !self.keys_previous[i] { return true }
+        }
+        false
+    }
+    
+    fn get_pressed_keys() -> [Key] {
+        var keys = []
+        for i in 0..256 {
+            if self.keys_current[i] && !self.keys_previous[i] {
+                if let Some(key) = Key.from_code(i) {
+                    keys.push(key)
+                }
+            }
+        }
+        keys
+    }
+    
+    // --- Mouse ---
+    
+    fn mouse_pressed(button: MouseButton) -> Bool {
+        let idx = button as Int
+        self.mouse_current[idx] && !self.mouse_previous[idx]
+    }
+    
+    fn mouse_released(button: MouseButton) -> Bool {
+        let idx = button as Int
+        !self.mouse_current[idx] && self.mouse_previous[idx]
+    }
+    
+    fn mouse_down(button: MouseButton) -> Bool {
+        self.mouse_current[button as Int]
+    }
+    
+    fn mouse_up(button: MouseButton) -> Bool {
+        !self.mouse_current[button as Int]
+    }
+    
+    fn mouse_pos() -> Vec2 { self.mouse_position }
+    fn mouse_x() -> Float { self.mouse_position.x }
+    fn mouse_y() -> Float { self.mouse_position.y }
+    fn mouse_movement() -> Vec2 { self.mouse_delta }
+    fn scroll() -> Vec2 { self.scroll_delta }
+    
+    // --- Gamepad ---
+    
+    fn gamepad(id: Int) -> Option<&GamepadState> {
+        if id >= 0 && id < 4 && self.gamepads[id].connected {
+            Some(&self.gamepads[id])
+        } else { None }
+    }
+    
+    fn gamepad_connected(id: Int) -> Bool {
+        id >= 0 && id < 4 && self.gamepads[id].connected
+    }
+    
+    fn gamepad_pressed(id: Int, button: GamepadButton) -> Bool {
+        if id < 0 || id >= 4 { return false }
+        let idx = button as Int
+        self.gamepads[id].buttons[idx] && !self.gamepads_previous[id][idx]
+    }
+    
+    fn gamepad_released(id: Int, button: GamepadButton) -> Bool {
+        if id < 0 || id >= 4 { return false }
+        let idx = button as Int
+        !self.gamepads[id].buttons[idx] && self.gamepads_previous[id][idx]
+    }
+    
+    fn gamepad_down(id: Int, button: GamepadButton) -> Bool {
+        if id < 0 || id >= 4 { return false }
+        self.gamepads[id].buttons[button as Int]
+    }
+    
+    fn gamepad_axis(id: Int, axis: GamepadAxis) -> Float {
+        if id < 0 || id >= 4 { return 0.0 }
+        self.gamepads[id].axes[axis as Int]
+    }
+    
+    // --- Text Input ---
+    
+    fn get_text_input() -> String { self.text_input.clone() }
+}
+
+// -----------------------------------------------------------------------------
+// Input Actions
+// -----------------------------------------------------------------------------
+
+/// Input action for binding multiple inputs
+struct InputAction {
+    name: String
+    keys: [Key]
+    mouse_buttons: [MouseButton]
+    gamepad_buttons: [(Int, GamepadButton)]
+    gamepad_axes: [(Int, GamepadAxis, Float)]  // (gamepad_id, axis, threshold)
+    
+    fn new(name: String) -> Self {
+        InputAction {
+            name: name, keys: [], mouse_buttons: [],
+            gamepad_buttons: [], gamepad_axes: []
+        }
+    }
+    
+    fn add_key(key: Key) -> Self { self.keys.push(key); self }
+    fn add_keys(keys: [Key]) -> Self { for k in keys { self.keys.push(k) }; self }
+    fn add_mouse(button: MouseButton) -> Self { self.mouse_buttons.push(button); self }
+    fn add_gamepad_button(id: Int, button: GamepadButton) -> Self { 
+        self.gamepad_buttons.push((id, button)); self 
+    }
+    fn add_gamepad_axis(id: Int, axis: GamepadAxis, threshold: Float) -> Self {
+        self.gamepad_axes.push((id, axis, threshold)); self
+    }
+    
+    fn is_pressed(input: &Input) -> Bool {
+        for key in self.keys.iter() {
+            if input.key_pressed(*key) { return true }
+        }
+        for btn in self.mouse_buttons.iter() {
+            if input.mouse_pressed(*btn) { return true }
+        }
+        for (id, btn) in self.gamepad_buttons.iter() {
+            if input.gamepad_pressed(*id, *btn) { return true }
+        }
+        false
+    }
+    
+    fn is_released(input: &Input) -> Bool {
+        for key in self.keys.iter() {
+            if input.key_released(*key) { return true }
+        }
+        for btn in self.mouse_buttons.iter() {
+            if input.mouse_released(*btn) { return true }
+        }
+        for (id, btn) in self.gamepad_buttons.iter() {
+            if input.gamepad_released(*id, *btn) { return true }
+        }
+        false
+    }
+    
+    fn is_down(input: &Input) -> Bool {
+        for key in self.keys.iter() {
+            if input.key_down(*key) { return true }
+        }
+        for btn in self.mouse_buttons.iter() {
+            if input.mouse_down(*btn) { return true }
+        }
+        for (id, btn) in self.gamepad_buttons.iter() {
+            if input.gamepad_down(*id, *btn) { return true }
+        }
+        for (id, axis, threshold) in self.gamepad_axes.iter() {
+            let value = input.gamepad_axis(*id, *axis)
+            if value.abs() >= threshold.abs() {
+                if (*threshold > 0.0 && value > 0.0) || (*threshold < 0.0 && value < 0.0) {
+                    return true
+                }
+            }
+        }
+        false
+    }
+    
+    fn value(input: &Input) -> Float {
+        if self.is_down(input) { return 1.0 }
+        for (id, axis, _) in self.gamepad_axes.iter() {
+            let v = input.gamepad_axis(*id, *axis)
+            if v.abs() > 0.1 { return v }
+        }
+        0.0
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Input Map
+// -----------------------------------------------------------------------------
+
+/// Collection of input actions
+struct InputMap {
+    actions: Map<String, InputAction>
+    
+    fn new() -> Self { InputMap { actions: Map.new() } }
+    
+    fn add(action: InputAction) -> Self {
+        self.actions.insert(action.name.clone(), action)
+        self
+    }
+    
+    fn pressed(name: String, input: &Input) -> Bool {
+        self.actions.get(name).map(|a| a.is_pressed(input)).unwrap_or(false)
+    }
+    
+    fn released(name: String, input: &Input) -> Bool {
+        self.actions.get(name).map(|a| a.is_released(input)).unwrap_or(false)
+    }
+    
+    fn down(name: String, input: &Input) -> Bool {
+        self.actions.get(name).map(|a| a.is_down(input)).unwrap_or(false)
+    }
+    
+    fn value(name: String, input: &Input) -> Float {
+        self.actions.get(name).map(|a| a.value(input)).unwrap_or(0.0)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Virtual Axis
+// -----------------------------------------------------------------------------
+
+/// Virtual axis from two actions (e.g., left/right movement)
+struct VirtualAxis {
+    negative: InputAction
+    positive: InputAction
+    
+    fn new(neg: InputAction, pos: InputAction) -> Self {
+        VirtualAxis { negative: neg, positive: pos }
+    }
+    
+    fn from_keys(neg_key: Key, pos_key: Key) -> Self {
+        VirtualAxis {
+            negative: InputAction.new("neg").add_key(neg_key),
+            positive: InputAction.new("pos").add_key(pos_key)
+        }
+    }
+    
+    fn value(input: &Input) -> Float {
+        var v = 0.0
+        if self.negative.is_down(input) { v -= 1.0 }
+        if self.positive.is_down(input) { v += 1.0 }
+        v
+    }
+}
+
+/// 2D virtual stick from four actions
+struct VirtualStick {
+    left: InputAction
+    right: InputAction
+    up: InputAction
+    down: InputAction
+    
+    fn from_wasd() -> Self {
+        VirtualStick {
+            left: InputAction.new("left").add_key(Key.A),
+            right: InputAction.new("right").add_key(Key.D),
+            up: InputAction.new("up").add_key(Key.W),
+            down: InputAction.new("down").add_key(Key.S)
+        }
+    }
+    
+    fn from_arrows() -> Self {
+        VirtualStick {
+            left: InputAction.new("left").add_key(Key.Left),
+            right: InputAction.new("right").add_key(Key.Right),
+            up: InputAction.new("up").add_key(Key.Up),
+            down: InputAction.new("down").add_key(Key.Down)
+        }
+    }
+    
+    fn value(input: &Input) -> Vec2 {
+        var x = 0.0
+        var y = 0.0
+        if self.left.is_down(input) { x -= 1.0 }
+        if self.right.is_down(input) { x += 1.0 }
+        if self.up.is_down(input) { y -= 1.0 }
+        if self.down.is_down(input) { y += 1.0 }
+        
+        let v = Vec2.new(x, y)
+        if v.length_squared() > 1.0 { v.normalize() } else { v }
+    }
+    
+    fn with_gamepad(gamepad_id: Int) -> Self {
+        self.left.add_gamepad_axis(gamepad_id, GamepadAxis.LeftX, -0.5)
+        self.right.add_gamepad_axis(gamepad_id, GamepadAxis.LeftX, 0.5)
+        self.up.add_gamepad_axis(gamepad_id, GamepadAxis.LeftY, -0.5)
+        self.down.add_gamepad_axis(gamepad_id, GamepadAxis.LeftY, 0.5)
+        self
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Touch Input
+// -----------------------------------------------------------------------------
+
+struct Touch {
+    id: Int
+    position: Vec2
+    start_position: Vec2
+    delta: Vec2
+    phase: TouchPhase
+    pressure: Float
+}
+
+enum TouchPhase { Began, Moved, Stationary, Ended, Cancelled }
+
+struct TouchInput {
+    touches: [Touch]
+    
+    fn new() -> Self { TouchInput { touches: [] } }
+    
+    fn update() { @native("touch_poll", self) }
+    
+    fn count() -> Int { self.touches.len() }
+    
+    fn get(index: Int) -> Option<&Touch> {
+        if index >= 0 && index < self.touches.len() {
+            Some(&self.touches[index])
+        } else { None }
+    }
+    
+    fn get_by_id(id: Int) -> Option<&Touch> {
+        self.touches.iter().find(|t| t.id == id)
+    }
+    
+    fn any_touch() -> Bool { !self.touches.is_empty() }
+    
+    fn began() -> [&Touch] {
+        self.touches.iter().filter(|t| t.phase == TouchPhase.Began).collect()
+    }
+    
+    fn ended() -> [&Touch] {
+        self.touches.iter().filter(|t| t.phase == TouchPhase.Ended).collect()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Gesture Recognition
+// -----------------------------------------------------------------------------
+
+enum Gesture {
+    Tap { position: Vec2, count: Int },
+    DoubleTap { position: Vec2 },
+    LongPress { position: Vec2, duration: Float },
+    Swipe { start: Vec2, end: Vec2, direction: SwipeDirection },
+    Pinch { center: Vec2, scale: Float },
+    Rotate { center: Vec2, angle: Float },
+    Pan { start: Vec2, current: Vec2, delta: Vec2 }
+}
+
+enum SwipeDirection { Up, Down, Left, Right }
+
+struct GestureRecognizer {
+    min_swipe_distance: Float
+    long_press_duration: Float
+    double_tap_interval: Float
+    
+    pending_taps: [(Vec2, Float)]  // (position, time)
+    long_press_start: Option<(Vec2, Float)>
+    
+    fn new() -> Self {
+        GestureRecognizer {
+            min_swipe_distance: 50.0,
+            long_press_duration: 0.5,
+            double_tap_interval: 0.3,
+            pending_taps: [],
+            long_press_start: None
+        }
+    }
+    
+    fn recognize(touches: &TouchInput, dt: Float) -> [Gesture] {
+        var gestures = []
+        
+        // Detect tap/double tap
+        for touch in touches.ended() {
+            let dist = (touch.position - touch.start_position).length()
+            if dist < self.min_swipe_distance {
+                // Check for double tap
+                var is_double = false
+                for (pos, time) in self.pending_taps.iter() {
+                    if (touch.position - *pos).length() < 30.0 {
+                        gestures.push(Gesture.DoubleTap { position: touch.position })
+                        is_double = true
+                        break
+                    }
+                }
+                if !is_double {
+                    gestures.push(Gesture.Tap { position: touch.position, count: 1 })
+                    self.pending_taps.push((touch.position, 0.0))
+                }
+            } else {
+                // Swipe detection
+                let delta = touch.position - touch.start_position
+                let direction = if delta.x.abs() > delta.y.abs() {
+                    if delta.x > 0.0 { SwipeDirection.Right } else { SwipeDirection.Left }
+                } else {
+                    if delta.y > 0.0 { SwipeDirection.Down } else { SwipeDirection.Up }
+                }
+                gestures.push(Gesture.Swipe { 
+                    start: touch.start_position, 
+                    end: touch.position, 
+                    direction: direction 
+                })
+            }
+        }
+        
+        // Update pending taps timeout
+        self.pending_taps.retain(|(_, time)| *time < self.double_tap_interval)
+        for (_, time) in self.pending_taps.iter_mut() { *time += dt }
+        
+        // Pinch detection (two fingers)
+        if touches.count() == 2 {
+            let t1 = touches.get(0).unwrap()
+            let t2 = touches.get(1).unwrap()
+            let center = (t1.position + t2.position) * 0.5
+            let current_dist = (t1.position - t2.position).length()
+            let prev_dist = ((t1.position - t1.delta) - (t2.position - t2.delta)).length()
+            if prev_dist > 0.0 {
+                let scale = current_dist / prev_dist
+                if (scale - 1.0).abs() > 0.01 {
+                    gestures.push(Gesture.Pinch { center: center, scale: scale })
+                }
+            }
+        }
+        
+        gestures
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "input action" {
+    let action = InputAction.new("jump")
+        .add_key(Key.Space)
+        .add_key(Key.W)
+        .add_gamepad_button(0, GamepadButton.A)
+    
+    assert_eq(action.keys.len(), 2)?
+    assert_eq(action.gamepad_buttons.len(), 1)?
+}
+
+test "virtual stick" {
+    let stick = VirtualStick.from_wasd()
+    assert_eq(stick.left.keys[0], Key.A)?
+    assert_eq(stick.right.keys[0], Key.D)?
+}
+
+test "input map" {
+    let map = InputMap.new()
+        .add(InputAction.new("jump").add_key(Key.Space))
+        .add(InputAction.new("fire").add_key(Key.LCtrl))
+    
+    assert(map.actions.contains_key("jump"))?
+    assert(map.actions.contains_key("fire"))?
+}

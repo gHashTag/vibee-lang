@@ -1,0 +1,603 @@
+# ============================================================================
+# ARCHIVE - Работа с архивами на Vibee
+# ============================================================================
+# Tar, Zip, Gzip, 7z, Rar
+# ============================================================================
+
+Specification Archive:
+  """Архивы как спецификация упаковки и распаковки файлов."""
+
+  # ==========================================================================
+  # TAR ARCHIVE
+  # ==========================================================================
+
+  Type TarArchive:
+    entries: List<TarEntry>
+    path: Option<Path>
+
+    Static Method create() -> TarArchive:
+      return TarArchive([], null)
+
+    Static Method open(path: Path) -> Result<TarArchive, ArchiveError>:
+      data = File.read_bytes(path)?
+      return TarArchive.from_bytes(data).map(a -> TarArchive(a.entries, Some(path)))
+
+    Static Method open_gzip(path: Path) -> Result<TarArchive, ArchiveError>:
+      data = File.read_bytes(path)?
+      decompressed = gzip.decompress(data)?
+      return TarArchive.from_bytes(decompressed).map(a -> TarArchive(a.entries, Some(path)))
+
+    Static Method from_bytes(data: Bytes) -> Result<TarArchive, ArchiveError>:
+      entries = parse_tar(data)?
+      return Ok(TarArchive(entries, null))
+
+    Method add_file(archive_path: String, content: Bytes) -> TarArchive:
+      entry = TarEntry(
+        path: archive_path,
+        entry_type: TarEntryType.File,
+        mode: 0o644,
+        uid: 0,
+        gid: 0,
+        size: content.length,
+        mtime: Instant.now(),
+        content: content
+      )
+      return TarArchive(self.entries + [entry], self.path)
+
+    Method add_file_from_path(archive_path: String, file_path: Path) -> Result<TarArchive, ArchiveError>:
+      content = File.read_bytes(file_path)?
+      stat = file_path.metadata()?
+      
+      entry = TarEntry(
+        path: archive_path,
+        entry_type: TarEntryType.File,
+        mode: stat.mode,
+        uid: stat.uid,
+        gid: stat.gid,
+        size: content.length,
+        mtime: stat.modified,
+        content: content
+      )
+      return Ok(TarArchive(self.entries + [entry], self.path))
+
+    Method add_directory(archive_path: String) -> TarArchive:
+      path = if archive_path.ends_with("/") then archive_path else archive_path + "/"
+      
+      entry = TarEntry(
+        path: path,
+        entry_type: TarEntryType.Directory,
+        mode: 0o755,
+        uid: 0,
+        gid: 0,
+        size: 0,
+        mtime: Instant.now(),
+        content: Bytes([])
+      )
+      return TarArchive(self.entries + [entry], self.path)
+
+    Method add_symlink(archive_path: String, target: String) -> TarArchive:
+      entry = TarEntry(
+        path: archive_path,
+        entry_type: TarEntryType.Symlink(target),
+        mode: 0o777,
+        uid: 0,
+        gid: 0,
+        size: 0,
+        mtime: Instant.now(),
+        content: Bytes([])
+      )
+      return TarArchive(self.entries + [entry], self.path)
+
+    Method add_dir_recursive(archive_prefix: String, dir_path: Path) -> Result<TarArchive, ArchiveError>:
+      archive = self
+      
+      for entry in dir_path.walk():
+        relative = entry.strip_prefix(dir_path)
+        archive_path = Path(archive_prefix).join(relative).to_string()
+        
+        if entry.is_dir():
+          archive = archive.add_directory(archive_path)
+        else if entry.is_file():
+          archive = archive.add_file_from_path(archive_path, entry)?
+        else if entry.is_symlink():
+          target = entry.read_link()?
+          archive = archive.add_symlink(archive_path, target.to_string())
+      
+      return Ok(archive)
+
+    Method list() -> List<String>:
+      return self.entries.map(e -> e.path)
+
+    Method get(path: String) -> Option<TarEntry>:
+      return self.entries.find(e -> e.path == path or e.path == path + "/")
+
+    Method extract(path: String) -> Option<Bytes>:
+      return self.get(path).map(e -> e.content)
+
+    Method extract_to(dest: Path) -> Result<(), ArchiveError>:
+      for entry in self.entries:
+        target = dest.join(entry.path)
+        
+        match entry.entry_type:
+          Directory ->
+            target.create_dir_all()?
+          File ->
+            target.parent().create_dir_all()?
+            File.write_bytes(target, entry.content)?
+            target.set_permissions(entry.mode)?
+          Symlink(link_target) ->
+            target.parent().create_dir_all()?
+            symlink(link_target, target)?
+          _ -> pass
+      
+      return Ok(())
+
+    Method to_bytes() -> Bytes:
+      return serialize_tar(self.entries)
+
+    Method write(path: Path) -> Result<(), ArchiveError>:
+      data = self.to_bytes()
+      return File.write_bytes(path, data)
+
+    Method write_gzip(path: Path) -> Result<(), ArchiveError>:
+      data = self.to_bytes()
+      compressed = gzip.compress(data)
+      return File.write_bytes(path, compressed)
+
+    Method entries() -> List<TarEntry>:
+      return self.entries.clone()
+
+  Type TarEntry:
+    path: String
+    entry_type: TarEntryType
+    mode: Int
+    uid: Int
+    gid: Int
+    size: Int
+    mtime: Instant
+    content: Bytes
+
+    Method is_file() -> Boolean:
+      return self.entry_type == TarEntryType.File
+
+    Method is_directory() -> Boolean:
+      return self.entry_type == TarEntryType.Directory
+
+    Method is_symlink() -> Boolean:
+      match self.entry_type:
+        Symlink(_) -> true
+        _ -> false
+
+  Type TarEntryType:
+    variants:
+      - File
+      - Directory
+      - Symlink(String)
+      - Hardlink(String)
+      - CharDevice
+      - BlockDevice
+      - Fifo
+
+  # ==========================================================================
+  # ZIP ARCHIVE
+  # ==========================================================================
+
+  Type ZipArchive:
+    entries: Map<String, ZipEntry>
+    path: Option<Path>
+    comment: String
+
+    Static Method create() -> ZipArchive:
+      return ZipArchive({}, null, "")
+
+    Static Method open(path: Path) -> Result<ZipArchive, ArchiveError>:
+      data = File.read_bytes(path)?
+      return ZipArchive.from_bytes(data).map(a -> ZipArchive(a.entries, Some(path), a.comment))
+
+    Static Method from_bytes(data: Bytes) -> Result<ZipArchive, ArchiveError>:
+      (entries, comment) = parse_zip(data)?
+      return Ok(ZipArchive(entries, null, comment))
+
+    Method add_file(archive_path: String, content: Bytes) -> ZipArchive:
+      return self.add_file_with_options(archive_path, content, ZipOptions.default())
+
+    Method add_file_with_options(archive_path: String, content: Bytes, options: ZipOptions) -> ZipArchive:
+      entry = ZipEntry(
+        path: archive_path,
+        content: content,
+        compression: options.compression,
+        mtime: Instant.now(),
+        comment: "",
+        external_attrs: 0o644 << 16
+      )
+      return ZipArchive(self.entries.set(archive_path, entry), self.path, self.comment)
+
+    Method add_file_from_path(archive_path: String, file_path: Path) -> Result<ZipArchive, ArchiveError>:
+      content = File.read_bytes(file_path)?
+      return Ok(self.add_file(archive_path, content))
+
+    Method add_directory(archive_path: String) -> ZipArchive:
+      path = if archive_path.ends_with("/") then archive_path else archive_path + "/"
+      
+      entry = ZipEntry(
+        path: path,
+        content: Bytes([]),
+        compression: ZipCompression.Store,
+        mtime: Instant.now(),
+        comment: "",
+        external_attrs: (0o755 << 16) | 0x10  # Directory flag
+      )
+      return ZipArchive(self.entries.set(path, entry), self.path, self.comment)
+
+    Method add_dir_recursive(archive_prefix: String, dir_path: Path) -> Result<ZipArchive, ArchiveError>:
+      archive = self
+      
+      for entry in dir_path.walk():
+        relative = entry.strip_prefix(dir_path)
+        archive_path = Path(archive_prefix).join(relative).to_string()
+        
+        if entry.is_dir():
+          archive = archive.add_directory(archive_path)
+        else if entry.is_file():
+          archive = archive.add_file_from_path(archive_path, entry)?
+      
+      return Ok(archive)
+
+    Method set_comment(comment: String) -> ZipArchive:
+      return ZipArchive(self.entries, self.path, comment)
+
+    Method list() -> List<String>:
+      return self.entries.keys().to_list()
+
+    Method get(path: String) -> Option<ZipEntry>:
+      return self.entries.get(path)
+
+    Method extract(path: String) -> Option<Bytes>:
+      entry = self.get(path)?
+      return Some(entry.decompress())
+
+    Method extract_to(dest: Path) -> Result<(), ArchiveError>:
+      for (path, entry) in self.entries:
+        target = dest.join(path)
+        
+        if path.ends_with("/"):
+          target.create_dir_all()?
+        else:
+          target.parent().create_dir_all()?
+          content = entry.decompress()
+          File.write_bytes(target, content)?
+      
+      return Ok(())
+
+    Method to_bytes() -> Bytes:
+      return serialize_zip(self.entries, self.comment)
+
+    Method write(path: Path) -> Result<(), ArchiveError>:
+      data = self.to_bytes()
+      return File.write_bytes(path, data)
+
+    Method entries() -> List<ZipEntry>:
+      return self.entries.values().to_list()
+
+    Method size() -> Int:
+      return self.entries.length
+
+  Type ZipEntry:
+    path: String
+    content: Bytes
+    compression: ZipCompression
+    mtime: Instant
+    comment: String
+    external_attrs: Int
+
+    Method is_directory() -> Boolean:
+      return self.path.ends_with("/")
+
+    Method decompress() -> Bytes:
+      match self.compression:
+        Store -> self.content
+        Deflate -> deflate.decompress(self.content).unwrap_or(self.content)
+        Bzip2 -> bzip2.decompress(self.content).unwrap_or(self.content)
+        Lzma -> lzma.decompress(self.content).unwrap_or(self.content)
+        Zstd -> zstd.decompress(self.content).unwrap_or(self.content)
+
+    Method compressed_size() -> Int:
+      return self.content.length
+
+    Method uncompressed_size() -> Int:
+      return self.decompress().length
+
+  Type ZipCompression:
+    variants:
+      - Store     # No compression
+      - Deflate   # Standard deflate
+      - Bzip2     # Bzip2 compression
+      - Lzma      # LZMA compression
+      - Zstd      # Zstandard compression
+
+  Type ZipOptions:
+    compression: ZipCompression
+    compression_level: Int
+
+    Static Method default() -> ZipOptions:
+      return ZipOptions(ZipCompression.Deflate, 6)
+
+    Static Method store() -> ZipOptions:
+      return ZipOptions(ZipCompression.Store, 0)
+
+    Static Method best() -> ZipOptions:
+      return ZipOptions(ZipCompression.Deflate, 9)
+
+    Static Method fast() -> ZipOptions:
+      return ZipOptions(ZipCompression.Deflate, 1)
+
+  # ==========================================================================
+  # ARCHIVE BUILDER
+  # ==========================================================================
+
+  Type ArchiveBuilder:
+    format: ArchiveFormat
+    entries: List<ArchiveEntry>
+    compression: Option<CompressionType>
+
+    Static Method tar() -> ArchiveBuilder:
+      return ArchiveBuilder(ArchiveFormat.Tar, [], null)
+
+    Static Method tar_gz() -> ArchiveBuilder:
+      return ArchiveBuilder(ArchiveFormat.Tar, [], Some(CompressionType.Gzip))
+
+    Static Method tar_bz2() -> ArchiveBuilder:
+      return ArchiveBuilder(ArchiveFormat.Tar, [], Some(CompressionType.Bzip2))
+
+    Static Method tar_xz() -> ArchiveBuilder:
+      return ArchiveBuilder(ArchiveFormat.Tar, [], Some(CompressionType.Xz))
+
+    Static Method zip() -> ArchiveBuilder:
+      return ArchiveBuilder(ArchiveFormat.Zip, [], null)
+
+    Method add(archive_path: String, content: Bytes) -> ArchiveBuilder:
+      entry = ArchiveEntry.file(archive_path, content)
+      return ArchiveBuilder(self.format, self.entries + [entry], self.compression)
+
+    Method add_file(archive_path: String, file_path: Path) -> Result<ArchiveBuilder, ArchiveError>:
+      content = File.read_bytes(file_path)?
+      return Ok(self.add(archive_path, content))
+
+    Method add_dir(archive_path: String) -> ArchiveBuilder:
+      entry = ArchiveEntry.directory(archive_path)
+      return ArchiveBuilder(self.format, self.entries + [entry], self.compression)
+
+    Method add_dir_recursive(archive_prefix: String, dir_path: Path) -> Result<ArchiveBuilder, ArchiveError>:
+      builder = self
+      
+      for entry in dir_path.walk():
+        relative = entry.strip_prefix(dir_path)
+        archive_path = Path(archive_prefix).join(relative).to_string()
+        
+        if entry.is_dir():
+          builder = builder.add_dir(archive_path)
+        else if entry.is_file():
+          builder = builder.add_file(archive_path, entry)?
+      
+      return Ok(builder)
+
+    Method build() -> Bytes:
+      data = match self.format:
+        Tar -> self.build_tar()
+        Zip -> self.build_zip()
+      
+      if self.compression is Some(comp):
+        return match comp:
+          Gzip -> gzip.compress(data)
+          Bzip2 -> bzip2.compress(data)
+          Xz -> xz.compress(data)
+          Zstd -> zstd.compress(data)
+      
+      return data
+
+    Method build_tar() -> Bytes:
+      tar = TarArchive.create()
+      for entry in self.entries:
+        tar = match entry.entry_type:
+          File -> tar.add_file(entry.path, entry.content)
+          Directory -> tar.add_directory(entry.path)
+      return tar.to_bytes()
+
+    Method build_zip() -> Bytes:
+      zip = ZipArchive.create()
+      for entry in self.entries:
+        zip = match entry.entry_type:
+          File -> zip.add_file(entry.path, entry.content)
+          Directory -> zip.add_directory(entry.path)
+      return zip.to_bytes()
+
+    Method write(path: Path) -> Result<(), ArchiveError>:
+      data = self.build()
+      return File.write_bytes(path, data)
+
+  Type ArchiveEntry:
+    path: String
+    entry_type: ArchiveEntryType
+    content: Bytes
+
+    Static Method file(path: String, content: Bytes) -> ArchiveEntry:
+      return ArchiveEntry(path, ArchiveEntryType.File, content)
+
+    Static Method directory(path: String) -> ArchiveEntry:
+      return ArchiveEntry(path, ArchiveEntryType.Directory, Bytes([]))
+
+  Type ArchiveEntryType:
+    variants:
+      - File
+      - Directory
+
+  Type ArchiveFormat:
+    variants:
+      - Tar
+      - Zip
+
+  Type CompressionType:
+    variants:
+      - Gzip
+      - Bzip2
+      - Xz
+      - Zstd
+
+  # ==========================================================================
+  # ARCHIVE EXTRACTOR
+  # ==========================================================================
+
+  Type ArchiveExtractor:
+    Static Method extract(path: Path, dest: Path) -> Result<(), ArchiveError>:
+      format = ArchiveExtractor.detect_format(path)?
+      
+      match format:
+        (Tar, null) -> TarArchive.open(path)?.extract_to(dest)
+        (Tar, Some(Gzip)) -> TarArchive.open_gzip(path)?.extract_to(dest)
+        (Tar, Some(Bzip2)) ->
+          data = bzip2.decompress(File.read_bytes(path)?)?
+          TarArchive.from_bytes(data)?.extract_to(dest)
+        (Tar, Some(Xz)) ->
+          data = xz.decompress(File.read_bytes(path)?)?
+          TarArchive.from_bytes(data)?.extract_to(dest)
+        (Zip, _) -> ZipArchive.open(path)?.extract_to(dest)
+
+    Static Method detect_format(path: Path) -> Result<(ArchiveFormat, Option<CompressionType>), ArchiveError>:
+      ext = path.extension().lowercase()
+      
+      match ext:
+        "tar" -> Ok((Tar, null))
+        "gz" | "tgz" ->
+          if path.stem().ends_with(".tar") or ext == "tgz":
+            Ok((Tar, Some(Gzip)))
+          else:
+            Err(ArchiveError.UnsupportedFormat(ext))
+        "bz2" | "tbz2" ->
+          if path.stem().ends_with(".tar") or ext == "tbz2":
+            Ok((Tar, Some(Bzip2)))
+          else:
+            Err(ArchiveError.UnsupportedFormat(ext))
+        "xz" | "txz" ->
+          if path.stem().ends_with(".tar") or ext == "txz":
+            Ok((Tar, Some(Xz)))
+          else:
+            Err(ArchiveError.UnsupportedFormat(ext))
+        "zip" -> Ok((Zip, null))
+        _ -> Err(ArchiveError.UnsupportedFormat(ext))
+
+    Static Method list(path: Path) -> Result<List<String>, ArchiveError>:
+      format = ArchiveExtractor.detect_format(path)?
+      
+      match format:
+        (Tar, null) -> Ok(TarArchive.open(path)?.list())
+        (Tar, Some(Gzip)) -> Ok(TarArchive.open_gzip(path)?.list())
+        (Zip, _) -> Ok(ZipArchive.open(path)?.list())
+        _ -> Err(ArchiveError.UnsupportedFormat(""))
+
+  # ==========================================================================
+  # ARCHIVE ERROR
+  # ==========================================================================
+
+  Type ArchiveError:
+    variants:
+      - IOError(IOError)
+      - InvalidFormat(String)
+      - UnsupportedFormat(String)
+      - CorruptedArchive(String)
+      - EntryNotFound(String)
+      - CompressionError(String)
+
+    Method message() -> String:
+      match self:
+        IOError(e) -> "I/O error: ${e.message()}"
+        InvalidFormat(msg) -> "Invalid archive format: ${msg}"
+        UnsupportedFormat(fmt) -> "Unsupported format: ${fmt}"
+        CorruptedArchive(msg) -> "Corrupted archive: ${msg}"
+        EntryNotFound(path) -> "Entry not found: ${path}"
+        CompressionError(msg) -> "Compression error: ${msg}"
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Archive":
+    ```vibee
+    # Create tar archive
+    tar = TarArchive.create()
+      .add_file("hello.txt", "Hello, World!".to_bytes())
+      .add_file("data/config.json", json.encode(config).to_bytes())
+      .add_directory("empty_dir/")
+
+    tar.write(Path("archive.tar"))?
+
+    # Create tar.gz
+    tar.write_gzip(Path("archive.tar.gz"))?
+
+    # Add directory recursively
+    tar = TarArchive.create()
+      .add_dir_recursive("project", Path("./src"))?
+
+    tar.write_gzip(Path("project.tar.gz"))?
+
+    # Open and extract tar
+    tar = TarArchive.open_gzip(Path("archive.tar.gz"))?
+
+    # List contents
+    for path in tar.list():
+      print(path)
+
+    # Extract single file
+    content = tar.extract("hello.txt")?
+    print(String.from_utf8(content)?)
+
+    # Extract all
+    tar.extract_to(Path("./extracted"))?
+
+    # Create zip archive
+    zip = ZipArchive.create()
+      .add_file("readme.txt", "Read me!".to_bytes())
+      .add_file_with_options("large.bin", data, ZipOptions.best())
+      .add_directory("subdir/")
+      .set_comment("My archive")
+
+    zip.write(Path("archive.zip"))?
+
+    # Open zip
+    zip = ZipArchive.open(Path("archive.zip"))?
+
+    # Get entry info
+    entry = zip.get("readme.txt")?
+    print("Compressed: ${entry.compressed_size()}")
+    print("Uncompressed: ${entry.uncompressed_size()}")
+
+    # Extract
+    zip.extract_to(Path("./output"))?
+
+    # Archive builder (fluent API)
+    ArchiveBuilder.tar_gz()
+      .add("file1.txt", content1)
+      .add("file2.txt", content2)
+      .add_dir("empty/")
+      .add_dir_recursive("src", Path("./src"))?
+      .write(Path("backup.tar.gz"))?
+
+    ArchiveBuilder.zip()
+      .add_dir_recursive("", Path("./project"))?
+      .write(Path("project.zip"))?
+
+    # Auto-detect and extract
+    ArchiveExtractor.extract(Path("archive.tar.gz"), Path("./output"))?
+    ArchiveExtractor.extract(Path("archive.zip"), Path("./output"))?
+
+    # List without extracting
+    files = ArchiveExtractor.list(Path("archive.tar.gz"))?
+    for file in files:
+      print(file)
+
+    # Stream processing (for large archives)
+    reader = TarReader.open(Path("large.tar.gz"))?
+    
+    for entry in reader:
+      if entry.path.ends_with(".log"):
+        process_log(entry.content)
+    ```

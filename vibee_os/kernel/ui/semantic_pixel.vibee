@@ -1,0 +1,562 @@
+name: vibee_os_semantic_pixel
+version: "0.1.0"
+language: gleam
+module: kernel/ui/semantic_pixel
+description: Semantic Pixel - каждый пиксель знает ЧТО он представляет, не только КАК выглядит
+
+behaviors:
+  - name: pixel_has_meaning
+    given: Pixel exists at (x, y)
+    when: pixel is queried for semantics
+    then: Pixel returns its semantic role and context
+    test_cases:
+      - name: button_pixel
+        input: {x: 500, y: 300}
+        expected: {role: "button", label: "Submit", action: "submit_form"}
+      - name: text_pixel
+        input: {x: 100, y: 50}
+        expected: {role: "text", content: "H", word: "Hello", sentence: "Hello World"}
+      - name: image_pixel
+        input: {x: 800, y: 400}
+        expected: {role: "image", alt: "User avatar", part: "face"}
+
+  - name: pixel_knows_neighbors
+    given: Pixel has semantic role
+    when: pixel queries its semantic neighbors
+    then: Pixel returns related semantic elements
+    test_cases:
+      - name: letter_knows_word
+        input: {pixel: "H", query: "word"}
+        expected: {word: "Hello", letters: ["H", "e", "l", "l", "o"]}
+      - name: button_knows_form
+        input: {pixel: "submit_btn", query: "form"}
+        expected: {form: "login_form", fields: ["email", "password"]}
+
+  - name: semantic_query
+    given: Screen has semantic pixels
+    when: query "find all buttons" is executed
+    then: All pixels with role=button are returned
+    test_cases:
+      - name: find_buttons
+        input: {query: "role:button"}
+        expected: {count: 3, regions: ["submit", "cancel", "help"]}
+      - name: find_by_label
+        input: {query: "label:Submit"}
+        expected: {count: 1, region: "submit_btn"}
+      - name: find_by_action
+        input: {query: "action:navigate"}
+        expected: {count: 5, regions: ["home", "about", "contact", "blog", "login"]}
+
+  - name: semantic_hierarchy
+    given: Pixels form semantic tree
+    when: hierarchy is queried
+    then: Returns parent-child relationships
+    test_cases:
+      - name: form_hierarchy
+        input: {root: "login_form"}
+        expected: {children: ["email_field", "password_field", "submit_btn"]}
+      - name: page_hierarchy
+        input: {root: "page"}
+        expected: {children: ["header", "main", "footer"]}
+
+  - name: semantic_announcement
+    given: Pixel state changes
+    when: change is semantically significant
+    then: Announcement is generated for screen readers
+    test_cases:
+      - name: button_pressed
+        input: {pixel: "submit_btn", event: "click"}
+        expected: {announcement: "Submit button pressed"}
+      - name: field_error
+        input: {pixel: "email_field", event: "validation_error"}
+        expected: {announcement: "Email field: Invalid email format"}
+
+types:
+  SemanticPixel:
+    # Visual properties (from pixel_grid)
+    x: int
+    y: int
+    color: int
+    alpha: float
+    # Semantic properties (NEW!)
+    semantics: PixelSemantics
+
+  PixelSemantics:
+    role: SemanticRole
+    label: str?                       # Human-readable label
+    description: str?                 # Detailed description
+    value: str?                       # Current value (for inputs)
+    action: str?                      # Associated action
+    state: SemanticState?             # Current semantic state
+    relations: [SemanticRelation]     # Relationships to other elements
+    hierarchy: HierarchyInfo?         # Position in semantic tree
+    accessibility: AccessibilityInfo  # A11y metadata
+
+  SemanticRole:
+    variants:
+      # Interactive
+      - Button: {action: str}
+      - Link: {href: str}
+      - Input: {type: InputType}
+      - Checkbox: {checked: bool}
+      - Radio: {group: str, selected: bool}
+      - Slider: {min: float, max: float, value: float}
+      - Toggle: {on: bool}
+      - Menu: {expanded: bool}
+      - MenuItem: {parent: str}
+      - Tab: {selected: bool, panel: str}
+      - TabPanel: {tab: str}
+      
+      # Content
+      - Text: {content: str, level: TextLevel}
+      - Heading: {level: int, content: str}
+      - Paragraph: {content: str}
+      - List: {type: ListType}
+      - ListItem: {index: int}
+      - Image: {alt: str, src: str}
+      - Icon: {name: str, meaning: str}
+      - Video: {title: str, duration: int}
+      - Audio: {title: str, duration: int}
+      
+      # Structure
+      - Container: {name: str}
+      - Region: {name: str}
+      - Navigation: {name: str}
+      - Main
+      - Header
+      - Footer
+      - Aside
+      - Article
+      - Section
+      - Form: {name: str}
+      - Dialog: {title: str, modal: bool}
+      - Alert: {type: AlertType}
+      - Tooltip: {for: str}
+      - Progress: {value: float, max: float}
+      - Status: {message: str}
+      
+      # Decorative (no semantic meaning)
+      - Decorative
+      - Background
+      - Border
+      - Shadow
+
+  InputType:
+    variants:
+      - Text
+      - Password
+      - Email
+      - Number
+      - Phone
+      - Date
+      - Time
+      - Search
+      - Url
+
+  TextLevel:
+    variants:
+      - Character
+      - Word
+      - Sentence
+      - Paragraph
+      - Document
+
+  ListType:
+    variants:
+      - Ordered
+      - Unordered
+      - Definition
+
+  AlertType:
+    variants:
+      - Info
+      - Success
+      - Warning
+      - Error
+
+  SemanticState:
+    variants:
+      - Default
+      - Hover
+      - Focus
+      - Active
+      - Disabled
+      - Selected
+      - Expanded
+      - Collapsed
+      - Loading
+      - Error
+      - Success
+
+  SemanticRelation:
+    type: RelationType
+    target: str                       # Target element ID
+    description: str?
+
+  RelationType:
+    variants:
+      - LabelledBy                    # aria-labelledby
+      - DescribedBy                   # aria-describedby
+      - Controls                      # aria-controls
+      - Owns                          # aria-owns
+      - FlowsTo                       # aria-flowto
+      - ErrorMessage                  # aria-errormessage
+      - Details                       # aria-details
+      - PartOf                        # Custom: part of larger element
+      - Contains                      # Custom: contains elements
+      - NextTo                        # Custom: spatial relationship
+      - SameAs                        # Custom: semantic equivalence
+
+  HierarchyInfo:
+    parent: str?
+    children: [str]
+    siblings: [str]
+    depth: int
+    index: int                        # Position among siblings
+    path: [str]                       # Full path from root
+
+  AccessibilityInfo:
+    focusable: bool
+    tab_index: int?
+    keyboard_shortcut: str?
+    live_region: LiveRegion?
+    announcements: [str]              # Pending announcements
+
+  LiveRegion:
+    type: LiveRegionType
+    atomic: bool
+    relevant: [str]                   # additions, removals, text, all
+
+  LiveRegionType:
+    variants:
+      - Off
+      - Polite
+      - Assertive
+
+  # Semantic Query Language
+  SemanticQuery:
+    selector: QuerySelector
+    filters: [QueryFilter]
+    sort: QuerySort?
+    limit: int?
+
+  QuerySelector:
+    variants:
+      - All
+      - ByRole: {role: str}
+      - ByLabel: {label: str}
+      - ById: {id: str}
+      - ByAction: {action: str}
+      - ByState: {state: str}
+      - ByPath: {path: str}
+      - Custom: {predicate: str}
+
+  QueryFilter:
+    field: str
+    operator: FilterOperator
+    value: str
+
+  FilterOperator:
+    variants:
+      - Equals
+      - Contains
+      - StartsWith
+      - EndsWith
+      - Matches                       # Regex
+      - GreaterThan
+      - LessThan
+
+  QuerySort:
+    field: str
+    direction: SortDirection
+
+  SortDirection:
+    variants:
+      - Ascending
+      - Descending
+
+  QueryResult:
+    pixels: [SemanticPixel]
+    regions: [SemanticRegion]
+    count: int
+    query_time_ms: int
+
+  SemanticRegion:
+    id: str
+    bounds: Rect
+    role: SemanticRole
+    pixels: [str]                     # Pixel IDs
+    semantics: PixelSemantics
+
+  Rect:
+    x: int
+    y: int
+    width: int
+    height: int
+
+  # Semantic Events
+  SemanticEvent:
+    type: SemanticEventType
+    source: str                       # Element ID
+    timestamp: int
+    details: {str: str}
+
+  SemanticEventType:
+    variants:
+      - Focus
+      - Blur
+      - Activate                      # Click, Enter, Space
+      - ValueChange
+      - StateChange
+      - Expand
+      - Collapse
+      - Select
+      - Navigate
+      - Announce
+
+  # Semantic Diff (for screen reader updates)
+  SemanticDiff:
+    added: [SemanticRegion]
+    removed: [str]                    # IDs
+    changed: [SemanticChange]
+    announcements: [str]
+
+  SemanticChange:
+    id: str
+    field: str
+    old_value: str
+    new_value: str
+
+functions:
+  # Semantic assignment
+  - name: pixel_set_semantics
+    params: {x: int, y: int, semantics: PixelSemantics}
+    returns: bool
+    description: Assign semantic meaning to pixel
+
+  - name: region_set_semantics
+    params: {bounds: Rect, semantics: PixelSemantics}
+    returns: SemanticRegion
+    description: Assign semantic meaning to region
+
+  - name: semantics_from_spec
+    params: {spec: str}
+    returns: PixelSemantics
+    description: Parse semantics from VScreen specification
+
+  # Semantic queries
+  - name: semantic_query
+    params: {query: SemanticQuery}
+    returns: QueryResult
+    description: Query pixels by semantic properties
+
+  - name: semantic_find
+    params: {selector: str}
+    returns: [SemanticRegion]
+    description: Find regions by CSS-like selector
+
+  - name: semantic_at
+    params: {x: int, y: int}
+    returns: PixelSemantics?
+    description: Get semantics at coordinates
+
+  # Hierarchy
+  - name: semantic_parent
+    params: {id: str}
+    returns: SemanticRegion?
+    description: Get parent region
+
+  - name: semantic_children
+    params: {id: str}
+    returns: [SemanticRegion]
+    description: Get child regions
+
+  - name: semantic_path
+    params: {id: str}
+    returns: [str]
+    description: Get path from root to element
+
+  - name: semantic_tree
+    params: {}
+    returns: SemanticRegion
+    description: Get full semantic tree
+
+  # Accessibility
+  - name: announce
+    params: {message: str, priority: LiveRegionType}
+    returns: void
+    description: Announce message to screen readers
+
+  - name: focus_next
+    params: {}
+    returns: str?
+    description: Move focus to next focusable element
+
+  - name: focus_previous
+    params: {}
+    returns: str?
+    description: Move focus to previous focusable element
+
+  - name: focus_element
+    params: {id: str}
+    returns: bool
+    description: Focus specific element
+
+  - name: get_focused
+    params: {}
+    returns: str?
+    description: Get currently focused element
+
+  # Semantic diff
+  - name: semantic_diff
+    params: {before: SemanticRegion, after: SemanticRegion}
+    returns: SemanticDiff
+    description: Calculate semantic changes
+
+  - name: apply_diff
+    params: {diff: SemanticDiff}
+    returns: void
+    description: Apply semantic diff and announce changes
+
+imports:
+  - kernel.ui.pixel_grid
+  - kernel.ui.plastic_screen
+
+semantic_pixel_philosophy: |
+  # Semantic Pixel Philosophy
+  
+  ## The Problem
+  
+  Traditional pixels know only:
+  - Color (0xRRGGBB)
+  - Position (x, y)
+  - Alpha (0.0-1.0)
+  
+  They don't know:
+  - What they represent
+  - Why they exist
+  - How they relate to other pixels
+  - What happens when interacted with
+  
+  ## The Solution: Semantic Pixels
+  
+  Every pixel knows:
+  
+  ```
+  WHAT: role (button, text, image, etc.)
+  WHY: action (submit, navigate, display)
+  WHO: label (human-readable name)
+  WHERE: hierarchy (parent, children, siblings)
+  HOW: accessibility (focusable, shortcuts, announcements)
+  ```
+  
+  ## Benefits
+  
+  1. **Screen Readers Work Automatically**
+     - No separate accessibility layer
+     - Semantics are built-in
+  
+  2. **Agent Understanding**
+     - Agent can query "find all buttons"
+     - Agent understands UI structure
+  
+  3. **Testing**
+     - Test by semantics, not coordinates
+     - "Click Submit button" not "Click at (500, 300)"
+  
+  4. **Evolution**
+     - Evolve semantics, not just visuals
+     - Preserve meaning across mutations
+
+semantic_query_examples: |
+  # Semantic Query Examples
+  
+  ## Find by Role
+  ```
+  query: role:button
+  result: [submit_btn, cancel_btn, help_btn]
+  ```
+  
+  ## Find by Label
+  ```
+  query: label:"Submit"
+  result: [submit_btn]
+  ```
+  
+  ## Find by State
+  ```
+  query: state:disabled
+  result: [submit_btn, save_btn]
+  ```
+  
+  ## Find by Hierarchy
+  ```
+  query: parent:login_form
+  result: [email_field, password_field, submit_btn]
+  ```
+  
+  ## Complex Query
+  ```
+  query: role:input AND state:error AND parent:form
+  result: [email_field]
+  ```
+  
+  ## CSS-like Selector
+  ```
+  selector: "form#login > input[type=email]"
+  result: [email_field]
+  ```
+
+vscreen_semantic_integration: |
+  # VScreen Semantic Integration
+  
+  ## Before (visual only)
+  ```vscreen
+  region submit_btn {
+    bounds: 50%, 80%, 200px, 50px
+    style {
+      background: $primary
+    }
+  }
+  ```
+  
+  ## After (with semantics)
+  ```vscreen
+  region submit_btn {
+    bounds: 50%, 80%, 200px, 50px
+    style {
+      background: $primary
+    }
+    
+    # NEW: Semantic properties
+    semantics {
+      role: button
+      label: "Submit"
+      action: submit_form
+      description: "Submit the login form"
+      keyboard_shortcut: "Enter"
+      
+      relations {
+        labelled_by: form_title
+        controls: login_form
+      }
+      
+      accessibility {
+        focusable: true
+        tab_index: 3
+        live_region: polite
+      }
+    }
+  }
+  ```
+  
+  ## Semantic Behaviors
+  ```vscreen
+  behavior button_announce {
+    given: button has focus
+    when: state changes to Active
+    then:
+      announce "{label} button activated"
+      emit semantic_event Activate
+  }
+  ```

@@ -1,0 +1,158 @@
+// =============================================================================
+// Vibee OS — Atomic Module
+// Atomic operations
+// =============================================================================
+
+/// Atomic integer
+struct AtomicInt {
+    value: @native("AtomicI64")
+    
+    fn new(value: Int) -> Self { AtomicInt { value: @native("atomic_new", value) } }
+    
+    fn load() -> Int { @native("atomic_load", self.value) }
+    fn store(value: Int) { @native("atomic_store", self.value, value) }
+    fn swap(value: Int) -> Int { @native("atomic_swap", self.value, value) }
+    
+    fn compare_exchange(current: Int, new: Int) -> Result<Int, Int> {
+        @native("atomic_compare_exchange", self.value, current, new)
+    }
+    
+    fn fetch_add(delta: Int) -> Int { @native("atomic_fetch_add", self.value, delta) }
+    fn fetch_sub(delta: Int) -> Int { @native("atomic_fetch_sub", self.value, delta) }
+    fn fetch_and(mask: Int) -> Int { @native("atomic_fetch_and", self.value, mask) }
+    fn fetch_or(mask: Int) -> Int { @native("atomic_fetch_or", self.value, mask) }
+    fn fetch_xor(mask: Int) -> Int { @native("atomic_fetch_xor", self.value, mask) }
+    fn fetch_max(value: Int) -> Int { @native("atomic_fetch_max", self.value, value) }
+    fn fetch_min(value: Int) -> Int { @native("atomic_fetch_min", self.value, value) }
+    
+    fn add(delta: Int) -> Int { self.fetch_add(delta) + delta }
+    fn sub(delta: Int) -> Int { self.fetch_sub(delta) - delta }
+    fn increment() -> Int { self.add(1) }
+    fn decrement() -> Int { self.sub(1) }
+}
+
+/// Atomic boolean
+struct AtomicBool {
+    value: AtomicInt
+    
+    fn new(value: Bool) -> Self { AtomicBool { value: AtomicInt.new(if value { 1 } else { 0 }) } }
+    fn load() -> Bool { self.value.load() != 0 }
+    fn store(value: Bool) { self.value.store(if value { 1 } else { 0 }) }
+    fn swap(value: Bool) -> Bool { self.value.swap(if value { 1 } else { 0 }) != 0 }
+    fn compare_exchange(current: Bool, new: Bool) -> Result<Bool, Bool> {
+        self.value.compare_exchange(if current { 1 } else { 0 }, if new { 1 } else { 0 }).map(|v| v != 0).map_err(|v| v != 0)
+    }
+    fn fetch_and(value: Bool) -> Bool { self.value.fetch_and(if value { 1 } else { 0 }) != 0 }
+    fn fetch_or(value: Bool) -> Bool { self.value.fetch_or(if value { 1 } else { 0 }) != 0 }
+    fn fetch_xor(value: Bool) -> Bool { self.value.fetch_xor(if value { 1 } else { 0 }) != 0 }
+}
+
+/// Atomic pointer
+struct AtomicPtr<T> {
+    ptr: @native("AtomicPtr")
+    
+    fn new(ptr: *T) -> Self { AtomicPtr { ptr: @native("atomic_ptr_new", ptr) } }
+    fn null() -> Self { Self.new(null()) }
+    fn load() -> *T { @native("atomic_ptr_load", self.ptr) }
+    fn store(ptr: *T) { @native("atomic_ptr_store", self.ptr, ptr) }
+    fn swap(ptr: *T) -> *T { @native("atomic_ptr_swap", self.ptr, ptr) }
+    fn compare_exchange(current: *T, new: *T) -> Result<*T, *T> {
+        @native("atomic_ptr_compare_exchange", self.ptr, current, new)
+    }
+    fn is_null() -> Bool { self.load() == null() }
+}
+
+/// Atomic reference (Arc-like)
+struct AtomicRef<T> {
+    ptr: AtomicPtr<RefCounted<T>>
+    
+    fn new(value: T) -> Self {
+        let rc = Box.new(RefCounted { value: value, count: AtomicInt.new(1) })
+        AtomicRef { ptr: AtomicPtr.new(rc.into_raw()) }
+    }
+    
+    fn clone() -> Self {
+        let p = self.ptr.load()
+        if !p.is_null() { (*p).count.increment() }
+        AtomicRef { ptr: AtomicPtr.new(p) }
+    }
+    
+    fn get() -> T { (*self.ptr.load()).value }
+    
+    fn strong_count() -> Int {
+        let p = self.ptr.load()
+        if p.is_null() { 0 } else { (*p).count.load() }
+    }
+}
+
+impl<T> Drop for AtomicRef<T> {
+    fn drop() {
+        let p = self.ptr.load()
+        if !p.is_null() && (*p).count.decrement() == 0 {
+            drop(Box.from_raw(p))
+        }
+    }
+}
+
+struct RefCounted<T> { value: T, count: AtomicInt }
+
+/// Spin lock
+struct SpinLock {
+    locked: AtomicBool
+    
+    fn new() -> Self { SpinLock { locked: AtomicBool.new(false) } }
+    
+    fn lock() {
+        while self.locked.compare_exchange(false, true).is_err() {
+            while self.locked.load() { @native("spin_hint") }
+        }
+    }
+    
+    fn try_lock() -> Bool { self.locked.compare_exchange(false, true).is_ok() }
+    fn unlock() { self.locked.store(false) }
+    fn is_locked() -> Bool { self.locked.load() }
+}
+
+/// Atomic counter
+struct Counter {
+    value: AtomicInt
+    
+    fn new() -> Self { Counter { value: AtomicInt.new(0) } }
+    fn from(value: Int) -> Self { Counter { value: AtomicInt.new(value) } }
+    fn get() -> Int { self.value.load() }
+    fn set(value: Int) { self.value.store(value) }
+    fn inc() -> Int { self.value.increment() }
+    fn dec() -> Int { self.value.decrement() }
+    fn add(n: Int) -> Int { self.value.add(n) }
+    fn reset() -> Int { self.value.swap(0) }
+}
+
+// Tests
+test "atomic int" {
+    let a = AtomicInt.new(0)
+    assert_eq(a.fetch_add(5), 0)?
+    assert_eq(a.load(), 5)?
+    assert_eq(a.increment(), 6)?
+}
+
+test "atomic bool" {
+    let b = AtomicBool.new(false)
+    assert(!b.load())?
+    b.store(true)
+    assert(b.load())?
+}
+
+test "compare exchange" {
+    let a = AtomicInt.new(5)
+    assert(a.compare_exchange(5, 10).is_ok())?
+    assert_eq(a.load(), 10)?
+    assert(a.compare_exchange(5, 15).is_err())?
+}
+
+test "counter" {
+    let c = Counter.new()
+    c.inc(); c.inc(); c.inc()
+    assert_eq(c.get(), 3)?
+    assert_eq(c.reset(), 3)?
+    assert_eq(c.get(), 0)?
+}

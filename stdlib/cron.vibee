@@ -1,0 +1,496 @@
+// =============================================================================
+// Vibee OS — Cron Module
+// Cron expression parsing and scheduling
+// =============================================================================
+
+/// Cron expression
+struct CronExpr {
+    minutes: CronField
+    hours: CronField
+    days: CronField
+    months: CronField
+    weekdays: CronField
+    
+    /// Parse cron expression (5 fields: min hour day month weekday)
+    fn parse(s: String) -> Result<Self, CronError> {
+        let s = s.trim()
+        
+        // Handle predefined expressions
+        match s {
+            "@yearly" | "@annually" => return Self.parse("0 0 1 1 *")
+            "@monthly" => return Self.parse("0 0 1 * *")
+            "@weekly" => return Self.parse("0 0 * * 0")
+            "@daily" | "@midnight" => return Self.parse("0 0 * * *")
+            "@hourly" => return Self.parse("0 * * * *")
+            _ => {}
+        }
+        
+        let parts = s.split_whitespace().collect::<Vec<_>>()
+        if parts.len() != 5 {
+            return Err(CronError.InvalidFieldCount(parts.len()))
+        }
+        
+        Ok(CronExpr {
+            minutes: CronField.parse(parts[0], 0, 59)?,
+            hours: CronField.parse(parts[1], 0, 23)?,
+            days: CronField.parse(parts[2], 1, 31)?,
+            months: CronField.parse_month(parts[3])?,
+            weekdays: CronField.parse_weekday(parts[4])?
+        })
+    }
+    
+    /// Check if datetime matches expression
+    fn matches(dt: DateTime) -> Bool {
+        self.minutes.contains(dt.minute()) &&
+        self.hours.contains(dt.hour()) &&
+        self.days.contains(dt.day()) &&
+        self.months.contains(dt.month()) &&
+        self.weekdays.contains(dt.weekday())
+    }
+    
+    /// Get next occurrence after datetime
+    fn next(after: DateTime) -> Option<DateTime> {
+        var dt = after + Duration.minutes(1)
+        dt = dt.with_second(0)
+        
+        for _ in 0..366*24*60 {  // Max 1 year search
+            if self.matches(dt) {
+                return Some(dt)
+            }
+            dt = dt + Duration.minutes(1)
+        }
+        None
+    }
+    
+    /// Get previous occurrence before datetime
+    fn prev(before: DateTime) -> Option<DateTime> {
+        var dt = before - Duration.minutes(1)
+        dt = dt.with_second(0)
+        
+        for _ in 0..366*24*60 {
+            if self.matches(dt) {
+                return Some(dt)
+            }
+            dt = dt - Duration.minutes(1)
+        }
+        None
+    }
+    
+    /// Get next N occurrences
+    fn next_n(after: DateTime, n: Int) -> [DateTime] {
+        var results = []
+        var dt = after
+        
+        for _ in 0..n {
+            match self.next(dt) {
+                Some(next) => {
+                    results.push(next)
+                    dt = next
+                }
+                None => break
+            }
+        }
+        results
+    }
+    
+    /// Convert to string
+    fn to_string() -> String {
+        format!("{} {} {} {} {}",
+            self.minutes.to_string(),
+            self.hours.to_string(),
+            self.days.to_string(),
+            self.months.to_string(),
+            self.weekdays.to_string())
+    }
+    
+    /// Human-readable description
+    fn describe() -> String {
+        var parts = []
+        
+        // Minutes
+        match self.minutes {
+            CronField.Any => {}
+            CronField.Value(v) => parts.push(format!("at minute {}", v))
+            CronField.Range(a, b) => parts.push(format!("minutes {}-{}", a, b))
+            CronField.Step(_, s) => parts.push(format!("every {} minutes", s))
+            CronField.List(vals) => parts.push(format!("at minutes {}", vals.join(", ")))
+        }
+        
+        // Hours
+        match self.hours {
+            CronField.Any => {}
+            CronField.Value(v) => parts.push(format!("at {}:00", v))
+            CronField.Range(a, b) => parts.push(format!("hours {}-{}", a, b))
+            CronField.Step(_, s) => parts.push(format!("every {} hours", s))
+            _ => {}
+        }
+        
+        // Days
+        match self.days {
+            CronField.Any => {}
+            CronField.Value(v) => parts.push(format!("on day {}", v))
+            _ => {}
+        }
+        
+        // Months
+        match self.months {
+            CronField.Any => {}
+            CronField.Value(v) => parts.push(format!("in {}", month_name(v)))
+            _ => {}
+        }
+        
+        // Weekdays
+        match self.weekdays {
+            CronField.Any => {}
+            CronField.Value(v) => parts.push(format!("on {}", weekday_name(v)))
+            _ => {}
+        }
+        
+        if parts.is_empty() {
+            "every minute"
+        } else {
+            parts.join(", ")
+        }
+    }
+}
+
+/// Cron field
+enum CronField {
+    Any                     // *
+    Value(Int)              // 5
+    Range(Int, Int)         // 1-5
+    Step(Box<CronField>, Int)  // */5 or 1-10/2
+    List([Int])             // 1,3,5
+    
+    fn parse(s: String, min: Int, max: Int) -> Result<Self, CronError> {
+        let s = s.trim()
+        
+        if s == "*" {
+            return Ok(CronField.Any)
+        }
+        
+        // Handle step
+        if s.contains("/") {
+            let parts = s.split("/")
+            if parts.len() != 2 {
+                return Err(CronError.InvalidStep)
+            }
+            let base = if parts[0] == "*" {
+                CronField.Any
+            } else {
+                Self.parse(parts[0], min, max)?
+            }
+            let step = Int.parse(parts[1]).map_err(|_| CronError.InvalidNumber)?
+            if step <= 0 {
+                return Err(CronError.InvalidStep)
+            }
+            return Ok(CronField.Step(Box.new(base), step))
+        }
+        
+        // Handle list
+        if s.contains(",") {
+            let values = s.split(",")
+                .map(|p| Int.parse(p.trim()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| CronError.InvalidNumber)?
+            for v in values {
+                if v < min || v > max {
+                    return Err(CronError.OutOfRange(v, min, max))
+                }
+            }
+            return Ok(CronField.List(values))
+        }
+        
+        // Handle range
+        if s.contains("-") {
+            let parts = s.split("-")
+            if parts.len() != 2 {
+                return Err(CronError.InvalidRange)
+            }
+            let start = Int.parse(parts[0]).map_err(|_| CronError.InvalidNumber)?
+            let end = Int.parse(parts[1]).map_err(|_| CronError.InvalidNumber)?
+            if start < min || end > max || start > end {
+                return Err(CronError.InvalidRange)
+            }
+            return Ok(CronField.Range(start, end))
+        }
+        
+        // Single value
+        let value = Int.parse(s).map_err(|_| CronError.InvalidNumber)?
+        if value < min || value > max {
+            return Err(CronError.OutOfRange(value, min, max))
+        }
+        Ok(CronField.Value(value))
+    }
+    
+    fn parse_month(s: String) -> Result<Self, CronError> {
+        let s = s.to_upper()
+        let s = s.replace("JAN", "1").replace("FEB", "2").replace("MAR", "3")
+                 .replace("APR", "4").replace("MAY", "5").replace("JUN", "6")
+                 .replace("JUL", "7").replace("AUG", "8").replace("SEP", "9")
+                 .replace("OCT", "10").replace("NOV", "11").replace("DEC", "12")
+        Self.parse(s, 1, 12)
+    }
+    
+    fn parse_weekday(s: String) -> Result<Self, CronError> {
+        let s = s.to_upper()
+        let s = s.replace("SUN", "0").replace("MON", "1").replace("TUE", "2")
+                 .replace("WED", "3").replace("THU", "4").replace("FRI", "5")
+                 .replace("SAT", "6")
+        Self.parse(s, 0, 6)
+    }
+    
+    fn contains(value: Int) -> Bool {
+        match self {
+            Any => true
+            Value(v) => value == v
+            Range(start, end) => value >= start && value <= end
+            Step(base, step) => {
+                if !base.contains(value) { return false }
+                match base {
+                    Any => value % step == 0
+                    Range(start, _) => (value - start) % step == 0
+                    _ => true
+                }
+            }
+            List(values) => values.contains(value)
+        }
+    }
+    
+    fn to_string() -> String {
+        match self {
+            Any => "*"
+            Value(v) => v.to_string()
+            Range(a, b) => format!("{}-{}", a, b)
+            Step(base, s) => format!("{}/{}", base.to_string(), s)
+            List(vals) => vals.iter().map(|v| v.to_string()).join(",")
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Cron Scheduler
+// -----------------------------------------------------------------------------
+
+/// Scheduled job
+struct CronJob {
+    id: String
+    expr: CronExpr
+    callback: fn()
+    enabled: Bool
+    last_run: Option<DateTime>
+    next_run: Option<DateTime>
+}
+
+/// Cron scheduler
+actor CronScheduler {
+    state jobs: Map<String, CronJob>
+    state running: Bool
+    
+    fn new() -> Self {
+        CronScheduler { jobs: Map.empty(), running: false }
+    }
+    
+    /// Add job
+    fn add(id: String, expr: String, callback: fn()) -> Result<(), CronError> {
+        let cron = CronExpr.parse(expr)?
+        let next = cron.next(DateTime.now())
+        
+        self.jobs.set(id, CronJob {
+            id: id,
+            expr: cron,
+            callback: callback,
+            enabled: true,
+            last_run: None,
+            next_run: next
+        })
+        Ok(())
+    }
+    
+    /// Remove job
+    fn remove(id: String) -> Bool {
+        self.jobs.remove(id).is_some()
+    }
+    
+    /// Enable job
+    fn enable(id: String) {
+        if let Some(job) = self.jobs.get_mut(id) {
+            job.enabled = true
+            job.next_run = job.expr.next(DateTime.now())
+        }
+    }
+    
+    /// Disable job
+    fn disable(id: String) {
+        if let Some(job) = self.jobs.get_mut(id) {
+            job.enabled = false
+        }
+    }
+    
+    /// Start scheduler
+    fn start() {
+        self.running = true
+        self.run_loop()
+    }
+    
+    /// Stop scheduler
+    fn stop() {
+        self.running = false
+    }
+    
+    fn run_loop() {
+        while self.running {
+            let now = DateTime.now()
+            
+            for (_, job) in self.jobs.iter_mut() {
+                if !job.enabled { continue }
+                
+                if let Some(next) = job.next_run {
+                    if now >= next {
+                        // Run job
+                        spawn { job.callback() }
+                        job.last_run = Some(now)
+                        job.next_run = job.expr.next(now)
+                    }
+                }
+            }
+            
+            // Sleep until next minute
+            let next_minute = now.with_second(0) + Duration.minutes(1)
+            let sleep_ms = (next_minute.timestamp() - now.timestamp()) as Int
+            @native("sleep_ms", sleep_ms.max(100))
+        }
+    }
+    
+    /// List all jobs
+    fn list() -> [CronJob] {
+        self.jobs.values().collect()
+    }
+    
+    /// Get job by ID
+    fn get(id: String) -> Option<CronJob> {
+        self.jobs.get(id).cloned()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum CronError {
+    InvalidFieldCount(Int)
+    InvalidNumber
+    InvalidRange
+    InvalidStep
+    OutOfRange(Int, Int, Int)
+}
+
+impl Display for CronError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidFieldCount(n) => f.write(format!("Expected 5 fields, got {}", n))
+            InvalidNumber => f.write("Invalid number")
+            InvalidRange => f.write("Invalid range")
+            InvalidStep => f.write("Invalid step")
+            OutOfRange(v, min, max) => f.write(format!("{} out of range [{}, {}]", v, min, max))
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Helpers
+// -----------------------------------------------------------------------------
+
+fn month_name(m: Int) -> String {
+    match m {
+        1 => "January", 2 => "February", 3 => "March", 4 => "April",
+        5 => "May", 6 => "June", 7 => "July", 8 => "August",
+        9 => "September", 10 => "October", 11 => "November", 12 => "December",
+        _ => "Unknown"
+    }
+}
+
+fn weekday_name(d: Int) -> String {
+    match d {
+        0 => "Sunday", 1 => "Monday", 2 => "Tuesday", 3 => "Wednesday",
+        4 => "Thursday", 5 => "Friday", 6 => "Saturday",
+        _ => "Unknown"
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+/// Parse cron expression
+fn parse(s: String) -> Result<CronExpr, CronError> {
+    CronExpr.parse(s)
+}
+
+/// Check if expression matches datetime
+fn matches(expr: String, dt: DateTime) -> Result<Bool, CronError> {
+    let cron = CronExpr.parse(expr)?
+    Ok(cron.matches(dt))
+}
+
+/// Get next occurrence
+fn next(expr: String) -> Result<Option<DateTime>, CronError> {
+    let cron = CronExpr.parse(expr)?
+    Ok(cron.next(DateTime.now()))
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "parse simple" {
+    let cron = CronExpr.parse("0 0 * * *")?
+    assert_eq(cron.minutes, CronField.Value(0))?
+    assert_eq(cron.hours, CronField.Value(0))?
+}
+
+test "parse predefined" {
+    let daily = CronExpr.parse("@daily")?
+    assert_eq(daily.to_string(), "0 0 * * *")?
+    
+    let hourly = CronExpr.parse("@hourly")?
+    assert_eq(hourly.to_string(), "0 * * * *")?
+}
+
+test "parse step" {
+    let cron = CronExpr.parse("*/15 * * * *")?
+    assert(cron.minutes.contains(0))?
+    assert(cron.minutes.contains(15))?
+    assert(cron.minutes.contains(30))?
+    assert(!cron.minutes.contains(10))?
+}
+
+test "parse range" {
+    let cron = CronExpr.parse("0 9-17 * * *")?
+    assert(cron.hours.contains(9))?
+    assert(cron.hours.contains(12))?
+    assert(cron.hours.contains(17))?
+    assert(!cron.hours.contains(8))?
+}
+
+test "parse list" {
+    let cron = CronExpr.parse("0 0 1,15 * *")?
+    assert(cron.days.contains(1))?
+    assert(cron.days.contains(15))?
+    assert(!cron.days.contains(10))?
+}
+
+test "parse weekday names" {
+    let cron = CronExpr.parse("0 0 * * MON-FRI")?
+    assert(cron.weekdays.contains(1))?
+    assert(cron.weekdays.contains(5))?
+    assert(!cron.weekdays.contains(0))?
+}
+
+test "next occurrence" {
+    let cron = CronExpr.parse("0 12 * * *")?
+    let now = DateTime.new(2024, 1, 1, 10, 0, 0)
+    let next = cron.next(now)?
+    assert_eq(next.hour(), 12)?
+    assert_eq(next.minute(), 0)?
+}

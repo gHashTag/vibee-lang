@@ -1,0 +1,633 @@
+# ============================================================================
+# FEATURE FLAGS - Управление фичами на Vibee
+# ============================================================================
+# Toggles, A/B testing, gradual rollouts
+# ============================================================================
+
+Specification FeatureFlags:
+  """Feature flags как спецификация управления функциональностью."""
+
+  # ==========================================================================
+  # TYPES
+  # ==========================================================================
+
+  Type Feature:
+    key: String
+    name: String
+    description: String?
+    type: FeatureType
+    enabled: Boolean
+    rules: List<Rule>
+    variants: List<Variant>?
+    default_variant: String?
+    tags: List<String>
+    metadata: Map<String, Any>
+    created_at: Timestamp
+    updated_at: Timestamp
+
+  Type FeatureType:
+    variants:
+      - Boolean
+      - Multivariate
+      - Percentage
+      - Experiment
+
+  Type Variant:
+    key: String
+    name: String
+    weight: Int
+    payload: Any?
+
+  Type Rule:
+    id: String
+    priority: Int
+    conditions: List<Condition>
+    variant: String?
+    percentage: Int?
+    enabled: Boolean = true
+
+  Type Condition:
+    attribute: String
+    operator: Operator
+    value: Any
+
+  Type Operator:
+    variants:
+      - Equals
+      - NotEquals
+      - Contains
+      - NotContains
+      - StartsWith
+      - EndsWith
+      - GreaterThan
+      - LessThan
+      - GreaterThanOrEqual
+      - LessThanOrEqual
+      - In
+      - NotIn
+      - Matches
+      - SemverEquals
+      - SemverGreaterThan
+      - SemverLessThan
+
+  Type EvaluationContext:
+    user_id: String?
+    attributes: Map<String, Any>
+    groups: List<String>?
+
+  Type EvaluationResult:
+    enabled: Boolean
+    variant: String?
+    payload: Any?
+    reason: EvaluationReason
+    rule_id: String?
+
+  Type EvaluationReason:
+    variants:
+      - Default
+      - TargetingMatch
+      - PercentageRollout
+      - Experiment
+      - Override
+      - Disabled
+      - Error: String
+
+  # ==========================================================================
+  # FEATURE FLAG CLIENT
+  # ==========================================================================
+
+  Behavior FeatureFlagClient:
+    State:
+      features: Map<String, Feature>
+      overrides: Map<String, Map<String, EvaluationResult>>
+      cache: Cache<String, EvaluationResult>?
+      provider: Provider
+
+    Type Provider:
+      variants:
+        - Memory
+        - File: Path
+        - Remote: RemoteConfig
+        - LaunchDarkly: LaunchDarklyConfig
+        - Unleash: UnleashConfig
+        - Custom: CustomProvider
+
+    When client.init(config):
+      Then:
+        - provider = config.provider
+        - await load_features()
+        - if config.polling_interval:
+            - start_polling(config.polling_interval)
+        - emit ClientInitialized()
+
+    When client.is_enabled(key, context):
+      Then:
+        - result = await client.evaluate(key, context)
+        - return result.enabled
+
+    When client.evaluate(key, context):
+      Then:
+        - # Check cache
+        - cache_key = "${key}:${hash(context)}"
+        - if cache:
+            - cached = cache.get(cache_key)
+            - if cached: return cached
+        
+        - # Check overrides
+        - if overrides.has(key):
+            - user_override = overrides[key].get(context.user_id)
+            - if user_override: return user_override
+        
+        - # Get feature
+        - feature = features.get(key)
+        - if not feature:
+            - return EvaluationResult(
+                enabled: false,
+                reason: Error("Feature not found")
+              )
+        
+        - # Evaluate
+        - result = evaluate_feature(feature, context)
+        
+        - # Cache result
+        - if cache:
+            - cache.set(cache_key, result, ttl: 1.minute)
+        
+        - emit FeatureEvaluated(key, context, result)
+        - return result
+
+    When evaluate_feature(feature, context):
+      Then:
+        - # Check if globally disabled
+        - if not feature.enabled:
+            - return EvaluationResult(enabled: false, reason: Disabled)
+        
+        - # Evaluate rules in priority order
+        - sorted_rules = feature.rules.sort_by(r -> r.priority)
+        
+        - for rule in sorted_rules:
+            - if not rule.enabled: continue
+            
+            - if evaluate_conditions(rule.conditions, context):
+                - # Rule matched
+                - if rule.percentage:
+                    - # Percentage rollout
+                    - if is_in_percentage(context, feature.key, rule.percentage):
+                        - variant = rule.variant ?? feature.default_variant
+                        - return EvaluationResult(
+                            enabled: true,
+                            variant: variant,
+                            payload: get_variant_payload(feature, variant),
+                            reason: PercentageRollout,
+                            rule_id: rule.id
+                          )
+                - else:
+                    - variant = rule.variant ?? feature.default_variant
+                    - return EvaluationResult(
+                        enabled: true,
+                        variant: variant,
+                        payload: get_variant_payload(feature, variant),
+                        reason: TargetingMatch,
+                        rule_id: rule.id
+                      )
+        
+        - # No rules matched, use default
+        - match feature.type:
+            Boolean ->
+              EvaluationResult(enabled: feature.enabled, reason: Default)
+            Multivariate ->
+              variant = select_variant(feature, context)
+              EvaluationResult(
+                enabled: true,
+                variant: variant,
+                payload: get_variant_payload(feature, variant),
+                reason: Default
+              )
+            Percentage ->
+              enabled = is_in_percentage(context, feature.key, feature.percentage ?? 0)
+              EvaluationResult(enabled: enabled, reason: PercentageRollout)
+            Experiment ->
+              variant = select_experiment_variant(feature, context)
+              EvaluationResult(
+                enabled: true,
+                variant: variant,
+                payload: get_variant_payload(feature, variant),
+                reason: Experiment
+              )
+
+    When evaluate_conditions(conditions, context):
+      Then:
+        - for condition in conditions:
+            - value = get_attribute(context, condition.attribute)
+            - if not evaluate_condition(condition, value):
+                - return false
+        - return true
+
+    When evaluate_condition(condition, value):
+      Then:
+        - match condition.operator:
+            Equals -> value == condition.value
+            NotEquals -> value != condition.value
+            Contains -> value.contains(condition.value)
+            NotContains -> not value.contains(condition.value)
+            StartsWith -> value.starts_with(condition.value)
+            EndsWith -> value.ends_with(condition.value)
+            GreaterThan -> value > condition.value
+            LessThan -> value < condition.value
+            GreaterThanOrEqual -> value >= condition.value
+            LessThanOrEqual -> value <= condition.value
+            In -> value in condition.value
+            NotIn -> value not in condition.value
+            Matches -> value.matches(condition.value)
+            SemverEquals -> semver_compare(value, condition.value) == 0
+            SemverGreaterThan -> semver_compare(value, condition.value) > 0
+            SemverLessThan -> semver_compare(value, condition.value) < 0
+
+    When get_attribute(context, attribute):
+      Then:
+        - match attribute:
+            "user_id" -> context.user_id
+            "groups" -> context.groups
+            _ -> context.attributes.get(attribute)
+
+    When is_in_percentage(context, feature_key, percentage):
+      Then:
+        - # Consistent hashing based on user_id and feature_key
+        - hash_input = "${context.user_id ?? 'anonymous'}:${feature_key}"
+        - hash_value = murmur3_hash(hash_input) % 100
+        - return hash_value < percentage
+
+    When select_variant(feature, context):
+      Then:
+        - # Weighted random selection based on user hash
+        - hash_input = "${context.user_id ?? 'anonymous'}:${feature.key}"
+        - hash_value = murmur3_hash(hash_input) % 100
+        
+        - total_weight = feature.variants.sum(v -> v.weight)
+        - normalized_hash = hash_value * total_weight / 100
+        
+        - cumulative = 0
+        - for variant in feature.variants:
+            - cumulative += variant.weight
+            - if normalized_hash < cumulative:
+                - return variant.key
+        
+        - return feature.default_variant ?? feature.variants.last().key
+
+  # ==========================================================================
+  # A/B TESTING
+  # ==========================================================================
+
+  Behavior ABTesting:
+    Type Experiment:
+      key: String
+      name: String
+      hypothesis: String?
+      variants: List<ExperimentVariant>
+      metrics: List<Metric>
+      traffic_allocation: Int  # 0-100
+      status: ExperimentStatus
+      start_date: Timestamp?
+      end_date: Timestamp?
+      winner: String?
+
+    Type ExperimentVariant:
+      key: String
+      name: String
+      weight: Int
+      is_control: Boolean
+
+    Type Metric:
+      key: String
+      name: String
+      type: MetricType
+      goal: MetricGoal
+
+    Type MetricType:
+      variants:
+        - Conversion
+        - Revenue
+        - Count
+        - Duration
+        - Custom
+
+    Type MetricGoal:
+      variants:
+        - Increase
+        - Decrease
+
+    Type ExperimentStatus:
+      variants:
+        - Draft
+        - Running
+        - Paused
+        - Completed
+        - Archived
+
+    Type ExperimentResult:
+      variant: String
+      is_control: Boolean
+      sample_size: Int
+      conversion_rate: Float?
+      mean: Float?
+      confidence_interval: (Float, Float)?
+      p_value: Float?
+      is_significant: Boolean
+
+    When experiment.assign(context):
+      Then:
+        - # Check if user already assigned
+        - existing = await get_assignment(experiment.key, context.user_id)
+        - if existing: return existing
+        
+        - # Check traffic allocation
+        - if not is_in_percentage(context, experiment.key, experiment.traffic_allocation):
+            - return null  # Not in experiment
+        
+        - # Assign variant
+        - variant = select_variant(experiment, context)
+        
+        - # Store assignment
+        - await store_assignment(experiment.key, context.user_id, variant)
+        
+        - emit ExperimentAssignment(experiment.key, context.user_id, variant)
+        - return variant
+
+    When experiment.track(context, metric_key, value):
+      Then:
+        - assignment = await get_assignment(experiment.key, context.user_id)
+        - if not assignment: return
+        
+        - await store_metric_event(
+            experiment_key: experiment.key,
+            variant: assignment,
+            user_id: context.user_id,
+            metric_key: metric_key,
+            value: value,
+            timestamp: now()
+          )
+        
+        - emit MetricTracked(experiment.key, metric_key, value)
+
+    When experiment.get_results():
+      Then:
+        - results = []
+        
+        - for variant in experiment.variants:
+            - events = await get_metric_events(experiment.key, variant.key)
+            - stats = calculate_statistics(events, experiment.metrics)
+            
+            - add ExperimentResult(
+                variant: variant.key,
+                is_control: variant.is_control,
+                sample_size: events.unique_users.size,
+                conversion_rate: stats.conversion_rate,
+                mean: stats.mean,
+                confidence_interval: stats.confidence_interval,
+                p_value: stats.p_value,
+                is_significant: stats.p_value < 0.05
+              ) to results
+        
+        - return results
+
+    When calculate_statistics(events, metrics):
+      Then:
+        - # Calculate conversion rate
+        - unique_users = events.map(e -> e.user_id).unique()
+        - conversions = events.filter(e -> e.metric_key == "conversion").unique_by(e -> e.user_id)
+        - conversion_rate = conversions.size / unique_users.size
+        
+        - # Calculate mean and standard deviation
+        - values = events.map(e -> e.value)
+        - mean = values.sum() / values.size
+        - variance = values.map(v -> (v - mean) ** 2).sum() / values.size
+        - std_dev = sqrt(variance)
+        
+        - # Calculate confidence interval (95%)
+        - margin = 1.96 * std_dev / sqrt(values.size)
+        - confidence_interval = (mean - margin, mean + margin)
+        
+        - # Calculate p-value (simplified t-test)
+        - # In production, use proper statistical library
+        - p_value = calculate_p_value(events)
+        
+        - return {
+            conversion_rate: conversion_rate,
+            mean: mean,
+            std_dev: std_dev,
+            confidence_interval: confidence_interval,
+            p_value: p_value
+          }
+
+  # ==========================================================================
+  # GRADUAL ROLLOUT
+  # ==========================================================================
+
+  Behavior GradualRollout:
+    Type Rollout:
+      feature_key: String
+      stages: List<RolloutStage>
+      current_stage: Int
+      status: RolloutStatus
+
+    Type RolloutStage:
+      percentage: Int
+      duration: Duration?
+      conditions: List<Condition>?
+
+    Type RolloutStatus:
+      variants:
+        - Scheduled
+        - InProgress
+        - Paused
+        - Completed
+        - RolledBack
+
+    When rollout.start(feature_key, stages):
+      Then:
+        - rollout = Rollout(
+            feature_key: feature_key,
+            stages: stages,
+            current_stage: 0,
+            status: InProgress
+          )
+        
+        - await apply_stage(rollout, 0)
+        - emit RolloutStarted(feature_key)
+        
+        - # Schedule automatic progression
+        - if stages[0].duration:
+            - schedule_next_stage(rollout, stages[0].duration)
+
+    When rollout.advance():
+      Then:
+        - if rollout.current_stage >= rollout.stages.size - 1:
+            - rollout.status = Completed
+            - emit RolloutCompleted(rollout.feature_key)
+            - return
+        
+        - rollout.current_stage += 1
+        - await apply_stage(rollout, rollout.current_stage)
+        - emit RolloutAdvanced(rollout.feature_key, rollout.current_stage)
+        
+        - stage = rollout.stages[rollout.current_stage]
+        - if stage.duration:
+            - schedule_next_stage(rollout, stage.duration)
+
+    When rollout.rollback():
+      Then:
+        - rollout.status = RolledBack
+        - await update_feature(rollout.feature_key, { enabled: false })
+        - emit RolloutRolledBack(rollout.feature_key)
+
+    When apply_stage(rollout, stage_index):
+      Then:
+        - stage = rollout.stages[stage_index]
+        - feature = await get_feature(rollout.feature_key)
+        
+        - # Update feature with stage settings
+        - if stage.conditions:
+            - feature.rules = [Rule(
+                id: "rollout_stage_${stage_index}",
+                priority: 0,
+                conditions: stage.conditions,
+                percentage: stage.percentage
+              )]
+        - else:
+            - feature.rules = [Rule(
+                id: "rollout_stage_${stage_index}",
+                priority: 0,
+                conditions: [],
+                percentage: stage.percentage
+              )]
+        
+        - await update_feature(rollout.feature_key, feature)
+
+  # ==========================================================================
+  # EVENTS
+  # ==========================================================================
+
+  Events:
+    ClientInitialized:
+      timestamp: Timestamp
+
+    FeatureEvaluated:
+      feature_key: String
+      user_id: String?
+      enabled: Boolean
+      variant: String?
+      reason: String
+
+    FeatureUpdated:
+      feature_key: String
+      changes: Map<String, Any>
+
+    ExperimentAssignment:
+      experiment_key: String
+      user_id: String
+      variant: String
+
+    MetricTracked:
+      experiment_key: String
+      metric_key: String
+      value: Float
+
+    RolloutStarted:
+      feature_key: String
+
+    RolloutAdvanced:
+      feature_key: String
+      stage: Int
+
+    RolloutCompleted:
+      feature_key: String
+
+    RolloutRolledBack:
+      feature_key: String
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Feature Flags Usage":
+    ```vibee
+    # Initialize client
+    client = FeatureFlagClient(FeatureFlagConfig(
+      provider: Remote(RemoteConfig(
+        url: "https://flags.example.com/api",
+        api_key: "${FEATURE_FLAG_API_KEY}"
+      )),
+      polling_interval: 30.seconds
+    ))
+    await client.init()
+
+    # Simple boolean flag
+    if await client.is_enabled("new_checkout", context):
+      show_new_checkout()
+    else:
+      show_old_checkout()
+
+    # Multivariate flag
+    result = await client.evaluate("button_color", context)
+    button_color = result.payload ?? "blue"
+
+    # A/B Testing
+    experiment = Experiment(
+      key: "pricing_page_v2",
+      name: "New Pricing Page",
+      variants: [
+        ExperimentVariant(key: "control", name: "Current", weight: 50, is_control: true),
+        ExperimentVariant(key: "variant_a", name: "New Design", weight: 50, is_control: false)
+      ],
+      metrics: [
+        Metric(key: "signup", type: Conversion, goal: Increase),
+        Metric(key: "revenue", type: Revenue, goal: Increase)
+      ],
+      traffic_allocation: 100
+    )
+
+    variant = await experiment.assign(context)
+    if variant == "variant_a":
+      show_new_pricing_page()
+    else:
+      show_current_pricing_page()
+
+    # Track conversion
+    await experiment.track(context, "signup", 1)
+    await experiment.track(context, "revenue", 99.99)
+
+    # Gradual rollout
+    await rollout.start("new_feature", [
+      RolloutStage(percentage: 1, duration: 1.day),   # 1% for 1 day
+      RolloutStage(percentage: 10, duration: 3.days), # 10% for 3 days
+      RolloutStage(percentage: 50, duration: 7.days), # 50% for 1 week
+      RolloutStage(percentage: 100)                    # 100% final
+    ])
+
+    # Targeting rules
+    Feature new_dashboard:
+      key: "new_dashboard"
+      type: Boolean
+      enabled: true
+      rules:
+        - id: "beta_users"
+          priority: 1
+          conditions:
+            - attribute: "groups"
+              operator: Contains
+              value: "beta"
+          enabled: true
+        
+        - id: "enterprise_customers"
+          priority: 2
+          conditions:
+            - attribute: "plan"
+              operator: Equals
+              value: "enterprise"
+          enabled: true
+        
+        - id: "gradual_rollout"
+          priority: 3
+          conditions: []
+          percentage: 25
+    ```

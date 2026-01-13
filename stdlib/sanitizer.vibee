@@ -1,0 +1,765 @@
+// =============================================================================
+// Vibee OS — Sanitizer Module
+// Data sanitization and cleaning utilities
+// =============================================================================
+
+// =============================================================================
+// Sanitizer Trait
+// =============================================================================
+
+/// Trait for types that can sanitize values
+trait Sanitizer<T> {
+    fn sanitize(value: T) -> T
+}
+
+// =============================================================================
+// String Sanitizers
+// =============================================================================
+
+/// String sanitizer with chainable operations
+struct StringSanitizer {
+    operations: [fn(String) -> String]
+}
+
+impl StringSanitizer {
+    fn new() -> Self { StringSanitizer { operations: [] } }
+    
+    /// Trim whitespace from both ends
+    fn trim() -> Self {
+        self.operations.push(|s| s.trim())
+        self
+    }
+    
+    /// Trim whitespace from start
+    fn trim_start() -> Self {
+        self.operations.push(|s| s.trim_start())
+        self
+    }
+    
+    /// Trim whitespace from end
+    fn trim_end() -> Self {
+        self.operations.push(|s| s.trim_end())
+        self
+    }
+    
+    /// Convert to lowercase
+    fn lowercase() -> Self {
+        self.operations.push(|s| s.to_lower())
+        self
+    }
+    
+    /// Convert to uppercase
+    fn uppercase() -> Self {
+        self.operations.push(|s| s.to_upper())
+        self
+    }
+    
+    /// Capitalize first letter
+    fn capitalize() -> Self {
+        self.operations.push(|s| {
+            if s.is_empty() { return s }
+            let first = s.chars().next().unwrap().to_upper()
+            format!("{}{}", first, s[1..])
+        })
+        self
+    }
+    
+    /// Title case (capitalize each word)
+    fn title_case() -> Self {
+        self.operations.push(|s| {
+            s.split(" ")
+                .map(|word| {
+                    if word.is_empty() { return word }
+                    let first = word.chars().next().unwrap().to_upper()
+                    format!("{}{}", first, word[1..].to_lower())
+                })
+                .join(" ")
+        })
+        self
+    }
+    
+    /// Collapse multiple whitespace to single space
+    fn collapse_whitespace() -> Self {
+        self.operations.push(|s| {
+            var result = ""
+            var prev_space = false
+            for c in s.chars() {
+                if c.is_whitespace() {
+                    if !prev_space {
+                        result.push(' ')
+                        prev_space = true
+                    }
+                } else {
+                    result.push(c)
+                    prev_space = false
+                }
+            }
+            result
+        })
+        self
+    }
+    
+    /// Remove all whitespace
+    fn remove_whitespace() -> Self {
+        self.operations.push(|s| s.chars().filter(|c| !c.is_whitespace()).collect())
+        self
+    }
+    
+    /// Strip HTML tags
+    fn strip_html() -> Self {
+        self.operations.push(|s| strip_html_tags(s))
+        self
+    }
+    
+    /// Escape HTML entities
+    fn escape_html() -> Self {
+        self.operations.push(|s| escape_html(s))
+        self
+    }
+    
+    /// Unescape HTML entities
+    fn unescape_html() -> Self {
+        self.operations.push(|s| unescape_html(s))
+        self
+    }
+    
+    /// Escape for SQL (basic)
+    fn escape_sql() -> Self {
+        self.operations.push(|s| escape_sql(s))
+        self
+    }
+    
+    /// Escape for JavaScript string
+    fn escape_js() -> Self {
+        self.operations.push(|s| escape_js(s))
+        self
+    }
+    
+    /// Remove non-printable characters
+    fn remove_non_printable() -> Self {
+        self.operations.push(|s| s.chars().filter(|c| c.is_printable()).collect())
+        self
+    }
+    
+    /// Remove control characters
+    fn remove_control_chars() -> Self {
+        self.operations.push(|s| s.chars().filter(|c| !c.is_control()).collect())
+        self
+    }
+    
+    /// Keep only alphanumeric characters
+    fn alphanumeric_only() -> Self {
+        self.operations.push(|s| s.chars().filter(|c| c.is_alphanumeric()).collect())
+        self
+    }
+    
+    /// Keep only alphabetic characters
+    fn alpha_only() -> Self {
+        self.operations.push(|s| s.chars().filter(|c| c.is_alphabetic()).collect())
+        self
+    }
+    
+    /// Keep only numeric characters
+    fn numeric_only() -> Self {
+        self.operations.push(|s| s.chars().filter(|c| c.is_digit()).collect())
+        self
+    }
+    
+    /// Keep only ASCII characters
+    fn ascii_only() -> Self {
+        self.operations.push(|s| s.chars().filter(|c| c.is_ascii()).collect())
+        self
+    }
+    
+    /// Normalize unicode (NFC)
+    fn normalize_unicode() -> Self {
+        self.operations.push(|s| @native("unicode_normalize_nfc", s))
+        self
+    }
+    
+    /// Convert to slug
+    fn slugify() -> Self {
+        self.operations.push(|s| slugify(s))
+        self
+    }
+    
+    /// Truncate to max length
+    fn truncate(max_length: Int) -> Self {
+        self.operations.push(move |s| {
+            if s.len() <= max_length { s }
+            else { s[0..max_length].to_string() }
+        })
+        self
+    }
+    
+    /// Truncate with ellipsis
+    fn truncate_ellipsis(max_length: Int) -> Self {
+        self.operations.push(move |s| {
+            if s.len() <= max_length { s }
+            else if max_length <= 3 { s[0..max_length].to_string() }
+            else { format!("{}...", s[0..(max_length - 3)]) }
+        })
+        self
+    }
+    
+    /// Replace substring
+    fn replace(from: String, to: String) -> Self {
+        self.operations.push(move |s| s.replace(from.clone(), to.clone()))
+        self
+    }
+    
+    /// Replace with regex
+    fn replace_regex(pattern: String, replacement: String) -> Self {
+        let re = Regex.new(pattern).ok()
+        self.operations.push(move |s| {
+            match re {
+                Some(r) => r.replace_all(s, replacement.clone())
+                None => s
+            }
+        })
+        self
+    }
+    
+    /// Remove characters matching pattern
+    fn remove_pattern(pattern: String) -> Self {
+        self.replace_regex(pattern, "")
+    }
+    
+    /// Default value if empty
+    fn default_if_empty(default: String) -> Self {
+        self.operations.push(move |s| {
+            if s.is_empty() { default.clone() }
+            else { s }
+        })
+        self
+    }
+    
+    /// Custom sanitization function
+    fn custom(f: fn(String) -> String) -> Self {
+        self.operations.push(f)
+        self
+    }
+}
+
+impl Sanitizer<String> for StringSanitizer {
+    fn sanitize(value: String) -> String {
+        var result = value
+        for op in self.operations {
+            result = op(result)
+        }
+        result
+    }
+}
+
+// =============================================================================
+// HTML Sanitization
+// =============================================================================
+
+/// Strip all HTML tags
+fn strip_html_tags(s: String) -> String {
+    var result = ""
+    var in_tag = false
+    
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true
+            '>' => in_tag = false
+            _ if !in_tag => result.push(c)
+            _ => {}
+        }
+    }
+    result
+}
+
+/// Escape HTML special characters
+fn escape_html(s: String) -> String {
+    var result = ""
+    for c in s.chars() {
+        match c {
+            '&' => result.push_str("&amp;")
+            '<' => result.push_str("&lt;")
+            '>' => result.push_str("&gt;")
+            '"' => result.push_str("&quot;")
+            '\'' => result.push_str("&#x27;")
+            '/' => result.push_str("&#x2F;")
+            _ => result.push(c)
+        }
+    }
+    result
+}
+
+/// Unescape HTML entities
+fn unescape_html(s: String) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&#x2F;", "/")
+        .replace("&nbsp;", " ")
+}
+
+/// HTML sanitizer with allowed tags
+struct HtmlSanitizer {
+    allowed_tags: Set<String>
+    allowed_attributes: Map<String, Set<String>>
+    strip_comments: Bool
+}
+
+impl HtmlSanitizer {
+    fn new() -> Self {
+        HtmlSanitizer {
+            allowed_tags: Set.new(),
+            allowed_attributes: Map.new(),
+            strip_comments: true
+        }
+    }
+    
+    /// Allow basic formatting tags
+    fn basic() -> Self {
+        self.allowed_tags = Set.from(["b", "i", "u", "em", "strong", "br", "p"])
+        self
+    }
+    
+    /// Allow common safe tags
+    fn relaxed() -> Self {
+        self.allowed_tags = Set.from([
+            "a", "b", "i", "u", "em", "strong", "br", "p", "div", "span",
+            "ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6",
+            "blockquote", "pre", "code", "hr"
+        ])
+        self.allowed_attributes.insert("a", Set.from(["href", "title"]))
+        self
+    }
+    
+    /// Allow specific tag
+    fn allow_tag(tag: String) -> Self {
+        self.allowed_tags.insert(tag)
+        self
+    }
+    
+    /// Allow specific attribute on tag
+    fn allow_attribute(tag: String, attr: String) -> Self {
+        self.allowed_attributes.entry(tag).or_insert(Set.new()).insert(attr)
+        self
+    }
+    
+    /// Keep comments
+    fn keep_comments() -> Self {
+        self.strip_comments = false
+        self
+    }
+    
+    fn sanitize(html: String) -> String {
+        @native("html_sanitize", html, self.allowed_tags, self.allowed_attributes, self.strip_comments)
+    }
+}
+
+// =============================================================================
+// SQL Sanitization
+// =============================================================================
+
+/// Escape SQL special characters
+fn escape_sql(s: String) -> String {
+    var result = ""
+    for c in s.chars() {
+        match c {
+            '\'' => result.push_str("''")
+            '\\' => result.push_str("\\\\")
+            '\0' => result.push_str("\\0")
+            '\n' => result.push_str("\\n")
+            '\r' => result.push_str("\\r")
+            '\x1a' => result.push_str("\\Z")
+            _ => result.push(c)
+        }
+    }
+    result
+}
+
+/// Escape for LIKE pattern
+fn escape_sql_like(s: String) -> String {
+    s.replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+}
+
+// =============================================================================
+// JavaScript Sanitization
+// =============================================================================
+
+/// Escape for JavaScript string
+fn escape_js(s: String) -> String {
+    var result = ""
+    for c in s.chars() {
+        match c {
+            '\\' => result.push_str("\\\\")
+            '\'' => result.push_str("\\'")
+            '"' => result.push_str("\\\"")
+            '\n' => result.push_str("\\n")
+            '\r' => result.push_str("\\r")
+            '\t' => result.push_str("\\t")
+            '<' => result.push_str("\\x3C")
+            '>' => result.push_str("\\x3E")
+            '/' => result.push_str("\\/")
+            _ => result.push(c)
+        }
+    }
+    result
+}
+
+/// Escape for JSON string
+fn escape_json(s: String) -> String {
+    var result = ""
+    for c in s.chars() {
+        match c {
+            '\\' => result.push_str("\\\\")
+            '"' => result.push_str("\\\"")
+            '\n' => result.push_str("\\n")
+            '\r' => result.push_str("\\r")
+            '\t' => result.push_str("\\t")
+            c if c.is_control() => result.push_str(format!("\\u{:04x}", c as Int))
+            _ => result.push(c)
+        }
+    }
+    result
+}
+
+// =============================================================================
+// URL Sanitization
+// =============================================================================
+
+/// Sanitize URL
+fn sanitize_url(url: String) -> Option<String> {
+    let url = url.trim()
+    
+    // Check for dangerous protocols
+    let lower = url.to_lower()
+    if lower.starts_with("javascript:") ||
+       lower.starts_with("data:") ||
+       lower.starts_with("vbscript:") {
+        return None
+    }
+    
+    // Allow http, https, mailto, tel
+    if lower.starts_with("http://") ||
+       lower.starts_with("https://") ||
+       lower.starts_with("mailto:") ||
+       lower.starts_with("tel:") ||
+       lower.starts_with("/") ||
+       lower.starts_with("#") {
+        return Some(url)
+    }
+    
+    // Assume https for bare domains
+    if url.contains(".") && !url.contains(" ") {
+        return Some(format!("https://{}", url))
+    }
+    
+    None
+}
+
+/// URL encode
+fn url_encode(s: String) -> String {
+    var result = ""
+    for c in s.chars() {
+        if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '~' {
+            result.push(c)
+        } else {
+            for b in c.to_string().as_bytes() {
+                result.push_str(format!("%{:02X}", b))
+            }
+        }
+    }
+    result
+}
+
+/// URL decode
+fn url_decode(s: String) -> String {
+    var result = []
+    var i = 0
+    let bytes = s.as_bytes()
+    
+    while i < bytes.len() {
+        if bytes[i] == '%' as UInt8 && i + 2 < bytes.len() {
+            let hex = String.from_utf8([bytes[i + 1], bytes[i + 2]]).unwrap_or("")
+            if let Ok(b) = UInt8.parse_hex(hex) {
+                result.push(b)
+                i += 3
+                continue
+            }
+        }
+        if bytes[i] == '+' as UInt8 {
+            result.push(' ' as UInt8)
+        } else {
+            result.push(bytes[i])
+        }
+        i += 1
+    }
+    
+    String.from_utf8(result).unwrap_or(s)
+}
+
+// =============================================================================
+// Slug Generation
+// =============================================================================
+
+/// Convert string to URL-safe slug
+fn slugify(s: String) -> String {
+    var result = ""
+    var prev_dash = false
+    
+    for c in s.to_lower().chars() {
+        if c.is_alphanumeric() {
+            result.push(c)
+            prev_dash = false
+        } else if c.is_whitespace() || c == '-' || c == '_' {
+            if !prev_dash && !result.is_empty() {
+                result.push('-')
+                prev_dash = true
+            }
+        }
+        // Skip other characters
+    }
+    
+    // Remove trailing dash
+    result.trim_end_matches('-').to_string()
+}
+
+/// Convert to slug with transliteration
+fn slugify_transliterate(s: String) -> String {
+    let transliterated = transliterate(s)
+    slugify(transliterated)
+}
+
+/// Basic transliteration (accented chars to ASCII)
+fn transliterate(s: String) -> String {
+    var result = ""
+    for c in s.chars() {
+        result.push_str(match c {
+            'á' | 'à' | 'â' | 'ä' | 'ã' | 'å' => "a"
+            'é' | 'è' | 'ê' | 'ë' => "e"
+            'í' | 'ì' | 'î' | 'ï' => "i"
+            'ó' | 'ò' | 'ô' | 'ö' | 'õ' => "o"
+            'ú' | 'ù' | 'û' | 'ü' => "u"
+            'ñ' => "n"
+            'ç' => "c"
+            'ß' => "ss"
+            'æ' => "ae"
+            'œ' => "oe"
+            'ø' => "o"
+            _ => c.to_string()
+        })
+    }
+    result
+}
+
+// =============================================================================
+// Number Sanitization
+// =============================================================================
+
+/// Parse and sanitize integer
+fn sanitize_int(s: String) -> Option<Int> {
+    let cleaned = s.chars().filter(|c| c.is_digit() || c == '-').collect::<String>()
+    Int.parse(cleaned).ok()
+}
+
+/// Parse and sanitize float
+fn sanitize_float(s: String) -> Option<Float> {
+    let cleaned = s.chars().filter(|c| c.is_digit() || c == '-' || c == '.').collect::<String>()
+    Float.parse(cleaned).ok()
+}
+
+/// Sanitize phone number (keep only digits and +)
+fn sanitize_phone(s: String) -> String {
+    s.chars().filter(|c| c.is_digit() || c == '+').collect()
+}
+
+/// Sanitize credit card number (keep only digits)
+fn sanitize_credit_card(s: String) -> String {
+    s.chars().filter(|c| c.is_digit()).collect()
+}
+
+// =============================================================================
+// Email Sanitization
+// =============================================================================
+
+/// Sanitize email address
+fn sanitize_email(s: String) -> Option<String> {
+    let email = s.trim().to_lower()
+    
+    // Basic validation
+    let parts = email.split("@")
+    if parts.len() != 2 { return None }
+    
+    let local = parts[0]
+    let domain = parts[1]
+    
+    if local.is_empty() || domain.is_empty() { return None }
+    if !domain.contains(".") { return None }
+    
+    Some(email)
+}
+
+// =============================================================================
+// Path Sanitization
+// =============================================================================
+
+/// Sanitize file path (prevent directory traversal)
+fn sanitize_path(s: String) -> String {
+    s.replace("..", "")
+        .replace("//", "/")
+        .trim_start_matches('/')
+        .to_string()
+}
+
+/// Sanitize filename
+fn sanitize_filename(s: String) -> String {
+    var result = ""
+    for c in s.chars() {
+        if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
+            result.push(c)
+        } else if c.is_whitespace() {
+            result.push('_')
+        }
+    }
+    
+    // Remove leading dots (hidden files)
+    result.trim_start_matches('.').to_string()
+}
+
+// =============================================================================
+// XSS Prevention
+// =============================================================================
+
+/// Comprehensive XSS sanitization
+fn sanitize_xss(s: String) -> String {
+    StringSanitizer.new()
+        .strip_html()
+        .escape_html()
+        .remove_control_chars()
+        .sanitize(s)
+}
+
+/// Sanitize for attribute value
+fn sanitize_attribute(s: String) -> String {
+    escape_html(s)
+        .replace("'", "&#x27;")
+        .replace("`", "&#x60;")
+}
+
+// =============================================================================
+// Composite Sanitizer
+// =============================================================================
+
+/// Sanitizer that applies multiple sanitizers in sequence
+struct ChainSanitizer<T> {
+    sanitizers: [Box<dyn Sanitizer<T>>]
+}
+
+impl<T> ChainSanitizer<T> {
+    fn new() -> Self { ChainSanitizer { sanitizers: [] } }
+    
+    fn add(sanitizer: impl Sanitizer<T>) -> Self {
+        self.sanitizers.push(Box.new(sanitizer))
+        self
+    }
+}
+
+impl<T: Clone> Sanitizer<T> for ChainSanitizer<T> {
+    fn sanitize(value: T) -> T {
+        var result = value
+        for sanitizer in self.sanitizers {
+            result = sanitizer.sanitize(result)
+        }
+        result
+    }
+}
+
+// =============================================================================
+// Presets
+// =============================================================================
+
+/// Standard text input sanitizer
+fn text_input() -> StringSanitizer {
+    StringSanitizer.new()
+        .trim()
+        .collapse_whitespace()
+        .remove_control_chars()
+}
+
+/// Username sanitizer
+fn username() -> StringSanitizer {
+    StringSanitizer.new()
+        .trim()
+        .lowercase()
+        .alphanumeric_only()
+        .truncate(50)
+}
+
+/// Search query sanitizer
+fn search_query() -> StringSanitizer {
+    StringSanitizer.new()
+        .trim()
+        .collapse_whitespace()
+        .strip_html()
+        .truncate(200)
+}
+
+/// Rich text sanitizer (allows basic HTML)
+fn rich_text() -> HtmlSanitizer {
+    HtmlSanitizer.new().relaxed()
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "trim and lowercase" {
+    let sanitizer = StringSanitizer.new().trim().lowercase()
+    assert_eq(sanitizer.sanitize("  HELLO  "), "hello")?
+}
+
+test "escape html" {
+    assert_eq(escape_html("<script>alert('xss')</script>"), "&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;")?
+}
+
+test "strip html" {
+    assert_eq(strip_html_tags("<p>Hello <b>World</b></p>"), "Hello World")?
+}
+
+test "slugify" {
+    assert_eq(slugify("Hello World!"), "hello-world")?
+    assert_eq(slugify("  Multiple   Spaces  "), "multiple-spaces")?
+}
+
+test "sanitize url" {
+    assert_eq(sanitize_url("https://example.com"), Some("https://example.com"))?
+    assert_eq(sanitize_url("javascript:alert(1)"), None)?
+}
+
+test "sanitize email" {
+    assert_eq(sanitize_email("  TEST@EXAMPLE.COM  "), Some("test@example.com"))?
+    assert_eq(sanitize_email("invalid"), None)?
+}
+
+test "sanitize filename" {
+    assert_eq(sanitize_filename("../../../etc/passwd"), "etcpasswd")?
+    assert_eq(sanitize_filename("my file.txt"), "my_file.txt")?
+}
+
+test "url encode decode" {
+    let original = "hello world & more"
+    let encoded = url_encode(original)
+    let decoded = url_decode(encoded)
+    assert_eq(decoded, original)?
+}
+
+test "text input preset" {
+    let sanitizer = text_input()
+    assert_eq(sanitizer.sanitize("  hello   world  "), "hello world")?
+}
+
+test "transliterate" {
+    assert_eq(transliterate("café"), "cafe")?
+    assert_eq(transliterate("naïve"), "naive")?
+}

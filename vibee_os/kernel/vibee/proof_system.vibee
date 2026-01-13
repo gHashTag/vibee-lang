@@ -1,0 +1,460 @@
+name: vibee_os_proof_system
+version: "0.1.0"
+language: gleam
+module: kernel/vibee/proof
+description: Proof System - формальная верификация спецификаций, доказательство корректности
+
+behaviors:
+  - name: prove_behavior_correct
+    given: Behavior has preconditions and postconditions
+    when: prove is called
+    then: Formal proof is generated or counterexample found
+    test_cases:
+      - name: prove_add_commutative
+        input: {behavior: "add", property: "a + b == b + a"}
+        expected: {proven: true, proof_steps: 3}
+      - name: disprove_subtract_commutative
+        input: {behavior: "subtract", property: "a - b == b - a"}
+        expected: {proven: false, counterexample: {a: 5, b: 3}}
+
+  - name: verify_type_invariants
+    given: Type has invariants defined
+    when: verify_invariants is called
+    then: All invariants are checked
+    test_cases:
+      - name: verify_positive_balance
+        input: {type: "Account", invariant: "balance >= 0"}
+        expected: {verified: true}
+      - name: find_invariant_violation
+        input: {type: "Account", operation: "withdraw", amount: 1000, balance: 500}
+        expected: {verified: false, violation: "balance would be -500"}
+
+  - name: check_termination
+    given: Function has recursive calls
+    when: check_termination is called
+    then: Termination is proven or potential infinite loop found
+    test_cases:
+      - name: factorial_terminates
+        input: {function: "factorial", decreasing: "n"}
+        expected: {terminates: true}
+      - name: infinite_loop_detected
+        input: {function: "bad_recursion"}
+        expected: {terminates: false, reason: "no decreasing argument"}
+
+  - name: verify_no_runtime_errors
+    given: Function implementation exists
+    when: verify_safety is called
+    then: Absence of runtime errors is proven
+    test_cases:
+      - name: no_division_by_zero
+        input: {function: "divide", precondition: "b != 0"}
+        expected: {safe: true}
+      - name: potential_overflow
+        input: {function: "multiply_large", types: "i32"}
+        expected: {safe: false, risk: "integer_overflow"}
+
+  - name: prove_refinement
+    given: Two specifications exist
+    when: prove_refinement is called
+    then: One spec is proven to refine the other
+    test_cases:
+      - name: impl_refines_spec
+        input: {abstract: "stack_spec", concrete: "array_stack"}
+        expected: {refines: true}
+
+  - name: generate_proof_certificate
+    given: Proof is complete
+    when: certificate is requested
+    then: Machine-checkable proof certificate is generated
+    test_cases:
+      - name: generate_coq_proof
+        input: {proof: "add_commutative", format: "coq"}
+        expected: {certificate: true, checkable: true}
+
+types:
+  # Propositions
+  Proposition:
+    variants:
+      - True
+      - False
+      - Var: {name: str}
+      - Not: {prop: Proposition}
+      - And: {left: Proposition, right: Proposition}
+      - Or: {left: Proposition, right: Proposition}
+      - Implies: {antecedent: Proposition, consequent: Proposition}
+      - Iff: {left: Proposition, right: Proposition}
+      - ForAll: {var: str, type: str, body: Proposition}
+      - Exists: {var: str, type: str, body: Proposition}
+      - Equals: {left: Term, right: Term}
+      - LessThan: {left: Term, right: Term}
+      - LessOrEqual: {left: Term, right: Term}
+      - GreaterThan: {left: Term, right: Term}
+      - GreaterOrEqual: {left: Term, right: Term}
+
+  Term:
+    variants:
+      - Const: {value: str}
+      - Var: {name: str}
+      - App: {func: str, args: [Term]}
+      - If: {cond: Proposition, then_term: Term, else_term: Term}
+      - Let: {var: str, value: Term, body: Term}
+
+  # Proof
+  Proof:
+    id: str
+    proposition: Proposition
+    steps: [ProofStep]
+    status: ProofStatus
+    time_ms: int
+
+  ProofStep:
+    id: int
+    tactic: Tactic
+    goal_before: Proposition
+    goal_after: Proposition?
+    justification: str
+
+  Tactic:
+    variants:
+      - Intro: {var: str}
+      - Apply: {lemma: str}
+      - Rewrite: {equation: str, direction: Direction}
+      - Split
+      - Left
+      - Right
+      - Exists: {witness: Term}
+      - Induction: {var: str}
+      - Cases: {term: Term}
+      - Contradiction
+      - Reflexivity
+      - Symmetry
+      - Transitivity: {middle: Term}
+      - Auto
+      - SMT                           # Use SMT solver
+      - Custom: {name: str, args: [str]}
+
+  Direction:
+    variants:
+      - LeftToRight
+      - RightToLeft
+
+  ProofStatus:
+    variants:
+      - Proven
+      - Disproven: {counterexample: Counterexample}
+      - Unknown: {reason: str}
+      - Timeout
+      - InProgress
+
+  Counterexample:
+    values: {str: str}
+    trace: [str]?
+
+  # Verification Conditions
+  VerificationCondition:
+    id: str
+    description: str
+    precondition: Proposition
+    postcondition: Proposition
+    context: [Proposition]
+
+  VCResult:
+    vc: VerificationCondition
+    status: ProofStatus
+    proof: Proof?
+
+  # Invariants
+  Invariant:
+    name: str
+    type_name: str
+    condition: Proposition
+    description: str
+
+  InvariantCheck:
+    invariant: Invariant
+    operation: str
+    preserved: bool
+    violation: Counterexample?
+
+  # Termination
+  TerminationProof:
+    function: str
+    measure: Term
+    decreasing: bool
+    well_founded: bool
+    proof: Proof?
+
+  # Refinement
+  RefinementProof:
+    abstract_spec: str
+    concrete_spec: str
+    simulation_relation: Proposition
+    proof: Proof?
+
+  # Safety Properties
+  SafetyProperty:
+    variants:
+      - NoDivisionByZero
+      - NoNullDereference
+      - NoArrayOutOfBounds
+      - NoIntegerOverflow
+      - NoDeadlock
+      - NoDataRace
+      - Custom: {name: str, condition: Proposition}
+
+  SafetyResult:
+    property: SafetyProperty
+    safe: bool
+    violations: [Violation]?
+
+  Violation:
+    location: str
+    property: SafetyProperty
+    trace: [str]
+    fix_suggestion: str?
+
+  # Proof Certificate
+  ProofCertificate:
+    format: CertificateFormat
+    content: str
+    checkable: bool
+    checker: str?
+
+  CertificateFormat:
+    variants:
+      - Coq
+      - Lean
+      - Isabelle
+      - Agda
+      - SMTLib
+      - Custom: {name: str}
+
+  # Theorem
+  Theorem:
+    name: str
+    statement: Proposition
+    proof: Proof?
+    dependencies: [str]
+
+  # Lemma Library
+  LemmaLibrary:
+    lemmas: [Theorem]
+    axioms: [Proposition]
+
+functions:
+  # Core proving
+  - name: prove
+    params: {proposition: Proposition, timeout_ms: int?}
+    returns: Proof
+    description: Attempt to prove proposition
+
+  - name: prove_with_tactics
+    params: {proposition: Proposition, tactics: [Tactic]}
+    returns: Proof
+    description: Prove using specified tactics
+
+  - name: disprove
+    params: {proposition: Proposition}
+    returns: Counterexample?
+    description: Find counterexample
+
+  # Verification conditions
+  - name: generate_vcs
+    params: {behavior: Behavior}
+    returns: [VerificationCondition]
+    description: Generate verification conditions from behavior
+
+  - name: verify_vc
+    params: {vc: VerificationCondition}
+    returns: VCResult
+    description: Verify single VC
+
+  - name: verify_all_vcs
+    params: {spec: Specification}
+    returns: [VCResult]
+    description: Verify all VCs in spec
+
+  # Invariants
+  - name: check_invariant
+    params: {invariant: Invariant, operation: str}
+    returns: InvariantCheck
+    description: Check if operation preserves invariant
+
+  - name: infer_invariants
+    params: {type_name: str}
+    returns: [Invariant]
+    description: Infer likely invariants
+
+  # Termination
+  - name: prove_termination
+    params: {function: str}
+    returns: TerminationProof
+    description: Prove function terminates
+
+  - name: find_measure
+    params: {function: str}
+    returns: Term?
+    description: Find termination measure
+
+  # Refinement
+  - name: prove_refinement
+    params: {abstract: str, concrete: str}
+    returns: RefinementProof
+    description: Prove refinement relation
+
+  # Safety
+  - name: verify_safety
+    params: {function: str, properties: [SafetyProperty]}
+    returns: [SafetyResult]
+    description: Verify safety properties
+
+  - name: verify_memory_safety
+    params: {function: str}
+    returns: SafetyResult
+    description: Verify memory safety
+
+  # Certificates
+  - name: generate_certificate
+    params: {proof: Proof, format: CertificateFormat}
+    returns: ProofCertificate
+    description: Generate proof certificate
+
+  - name: check_certificate
+    params: {certificate: ProofCertificate}
+    returns: bool
+    description: Verify proof certificate
+
+  # SMT Integration
+  - name: smt_check
+    params: {proposition: Proposition}
+    returns: ProofStatus
+    description: Check with SMT solver
+
+  - name: smt_model
+    params: {proposition: Proposition}
+    returns: {str: str}?
+    description: Get satisfying model
+
+imports:
+  - kernel.vibee.compiler
+  - kernel.vibee.verifier
+
+proof_examples: |
+  # Proof Examples
+  
+  ## 1. Prove Addition is Commutative
+  
+  ```yaml
+  theorem: add_commutative
+  statement: forall a b: int. add(a, b) == add(b, a)
+  
+  proof:
+    - tactic: Intro
+      var: a
+    - tactic: Intro
+      var: b
+    - tactic: Induction
+      var: a
+    - tactic: Auto
+      # Base case: add(0, b) == add(b, 0)
+    - tactic: Auto
+      # Inductive case: add(succ(a), b) == add(b, succ(a))
+  
+  status: Proven
+  ```
+  
+  ## 2. Verify No Division by Zero
+  
+  ```yaml
+  behavior: divide
+  precondition: b != 0
+  postcondition: result == a / b
+  
+  verification_condition:
+    description: "Division is safe when b != 0"
+    context:
+      - b != 0
+    goal: no_division_by_zero(a / b)
+  
+  result:
+    status: Proven
+    proof: "By precondition b != 0, division is safe"
+  ```
+  
+  ## 3. Check Invariant Preservation
+  
+  ```yaml
+  type: BankAccount
+  invariant: balance >= 0
+  
+  operation: withdraw(amount)
+  precondition: amount <= balance
+  postcondition: balance' == balance - amount
+  
+  check:
+    # Need to prove: balance >= 0 ∧ amount <= balance → balance - amount >= 0
+    status: Proven
+    proof: "By precondition amount <= balance, new balance >= 0"
+  ```
+  
+  ## 4. Prove Termination
+  
+  ```yaml
+  function: factorial(n)
+  body: if n == 0 then 1 else n * factorial(n - 1)
+  
+  termination_proof:
+    measure: n
+    well_founded: natural numbers with <
+    decreasing: n - 1 < n when n > 0
+    status: Proven
+  ```
+
+smt_integration: |
+  # SMT Solver Integration
+  
+  Vibee uses SMT solvers (Z3, CVC5) for automated proving:
+  
+  ```
+  Proposition → SMT-LIB → Z3 → SAT/UNSAT/UNKNOWN
+  ```
+  
+  ## Example
+  
+  Vibee proposition:
+  ```yaml
+  forall x: int. x > 0 implies x * x > 0
+  ```
+  
+  SMT-LIB:
+  ```smt2
+  (declare-const x Int)
+  (assert (not (=> (> x 0) (> (* x x) 0))))
+  (check-sat)
+  ; Result: unsat (proposition is valid)
+  ```
+
+formal_verification_levels: |
+  # Formal Verification Levels
+  
+  ## Level 0: Type Checking
+  - Basic type correctness
+  - Automatic, always on
+  
+  ## Level 1: Test Verification
+  - All test cases pass
+  - Property-based testing
+  
+  ## Level 2: Invariant Checking
+  - Type invariants preserved
+  - Pre/postconditions verified
+  
+  ## Level 3: Full Verification
+  - Termination proven
+  - Safety properties verified
+  - Refinement checked
+  
+  ## Level 4: Certified
+  - Machine-checkable proofs
+  - Proof certificates generated
+  - External verification possible

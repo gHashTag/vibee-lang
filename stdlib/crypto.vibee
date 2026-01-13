@@ -1,0 +1,169 @@
+// =============================================================================
+// Vibee OS — Crypto Module
+// Cryptographic primitives
+// =============================================================================
+
+// =============================================================================
+// Hashing
+// =============================================================================
+
+fn md5(data: [UInt8]) -> [UInt8; 16] { @native("md5", data) }
+fn sha1(data: [UInt8]) -> [UInt8; 20] { @native("sha1", data) }
+fn sha256(data: [UInt8]) -> [UInt8; 32] { @native("sha256", data) }
+fn sha384(data: [UInt8]) -> [UInt8; 48] { @native("sha384", data) }
+fn sha512(data: [UInt8]) -> [UInt8; 64] { @native("sha512", data) }
+fn sha3_256(data: [UInt8]) -> [UInt8; 32] { @native("sha3_256", data) }
+fn sha3_512(data: [UInt8]) -> [UInt8; 64] { @native("sha3_512", data) }
+fn blake2b(data: [UInt8], size: Int) -> [UInt8] { @native("blake2b", data, size) }
+fn blake2s(data: [UInt8], size: Int) -> [UInt8] { @native("blake2s", data, size) }
+fn blake3(data: [UInt8]) -> [UInt8; 32] { @native("blake3", data) }
+
+fn md5_hex(data: [UInt8]) -> String { hex.encode(md5(data)) }
+fn sha256_hex(data: [UInt8]) -> String { hex.encode(sha256(data)) }
+fn sha512_hex(data: [UInt8]) -> String { hex.encode(sha512(data)) }
+
+/// Incremental hasher
+struct Hasher { inner: @native("Hasher"), algo: HashAlgorithm }
+enum HashAlgorithm { MD5, SHA1, SHA256, SHA384, SHA512, SHA3_256, SHA3_512, BLAKE2b, BLAKE3 }
+
+impl Hasher {
+    fn new(algo: HashAlgorithm) -> Self { Hasher { inner: @native("hasher_new", algo), algo: algo } }
+    fn sha256() -> Self { Self.new(HashAlgorithm.SHA256) }
+    fn sha512() -> Self { Self.new(HashAlgorithm.SHA512) }
+    fn update(data: [UInt8]) -> Self { @native("hasher_update", self.inner, data); self }
+    fn update_str(s: String) -> Self { self.update(s.as_bytes()) }
+    fn finalize() -> [UInt8] { @native("hasher_finalize", self.inner) }
+    fn finalize_hex() -> String { hex.encode(self.finalize()) }
+    fn reset() { @native("hasher_reset", self.inner) }
+}
+
+// =============================================================================
+// HMAC
+// =============================================================================
+
+fn hmac_sha256(key: [UInt8], data: [UInt8]) -> [UInt8; 32] { @native("hmac_sha256", key, data) }
+fn hmac_sha512(key: [UInt8], data: [UInt8]) -> [UInt8; 64] { @native("hmac_sha512", key, data) }
+fn hmac_sha256_hex(key: [UInt8], data: [UInt8]) -> String { hex.encode(hmac_sha256(key, data)) }
+
+struct Hmac { inner: @native("Hmac") }
+impl Hmac {
+    fn sha256(key: [UInt8]) -> Self { Hmac { inner: @native("hmac_new", "sha256", key) } }
+    fn sha512(key: [UInt8]) -> Self { Hmac { inner: @native("hmac_new", "sha512", key) } }
+    fn update(data: [UInt8]) -> Self { @native("hmac_update", self.inner, data); self }
+    fn finalize() -> [UInt8] { @native("hmac_finalize", self.inner) }
+    fn verify(expected: [UInt8]) -> Bool { constant_time_eq(self.finalize(), expected) }
+}
+
+// =============================================================================
+// Symmetric Encryption
+// =============================================================================
+
+/// AES-GCM encryption
+fn aes_gcm_encrypt(key: [UInt8], nonce: [UInt8], plaintext: [UInt8], aad: [UInt8]) -> Result<[UInt8], CryptoError> { @native("aes_gcm_encrypt", key, nonce, plaintext, aad) }
+fn aes_gcm_decrypt(key: [UInt8], nonce: [UInt8], ciphertext: [UInt8], aad: [UInt8]) -> Result<[UInt8], CryptoError> { @native("aes_gcm_decrypt", key, nonce, ciphertext, aad) }
+
+/// ChaCha20-Poly1305
+fn chacha20_poly1305_encrypt(key: [UInt8], nonce: [UInt8], plaintext: [UInt8], aad: [UInt8]) -> Result<[UInt8], CryptoError> { @native("chacha20_poly1305_encrypt", key, nonce, plaintext, aad) }
+fn chacha20_poly1305_decrypt(key: [UInt8], nonce: [UInt8], ciphertext: [UInt8], aad: [UInt8]) -> Result<[UInt8], CryptoError> { @native("chacha20_poly1305_decrypt", key, nonce, ciphertext, aad) }
+
+/// AES-CBC (legacy)
+fn aes_cbc_encrypt(key: [UInt8], iv: [UInt8], plaintext: [UInt8]) -> Result<[UInt8], CryptoError> { @native("aes_cbc_encrypt", key, iv, plaintext) }
+fn aes_cbc_decrypt(key: [UInt8], iv: [UInt8], ciphertext: [UInt8]) -> Result<[UInt8], CryptoError> { @native("aes_cbc_decrypt", key, iv, ciphertext) }
+
+// =============================================================================
+// Asymmetric Encryption
+// =============================================================================
+
+/// RSA key pair
+struct RsaKeyPair { public_key: RsaPublicKey, private_key: RsaPrivateKey }
+impl RsaKeyPair {
+    fn generate(bits: Int) -> Result<Self, CryptoError> { @native("rsa_generate", bits) }
+    fn generate_2048() -> Result<Self, CryptoError> { Self.generate(2048) }
+    fn generate_4096() -> Result<Self, CryptoError> { Self.generate(4096) }
+}
+
+struct RsaPublicKey { der: [UInt8] }
+impl RsaPublicKey {
+    fn from_pem(pem: String) -> Result<Self, CryptoError> { @native("rsa_public_from_pem", pem) }
+    fn from_der(der: [UInt8]) -> Self { RsaPublicKey { der: der } }
+    fn to_pem() -> String { @native("rsa_public_to_pem", self.der) }
+    fn encrypt(plaintext: [UInt8]) -> Result<[UInt8], CryptoError> { @native("rsa_encrypt", self.der, plaintext) }
+    fn verify(message: [UInt8], signature: [UInt8]) -> Bool { @native("rsa_verify", self.der, message, signature) }
+}
+
+struct RsaPrivateKey { der: [UInt8] }
+impl RsaPrivateKey {
+    fn from_pem(pem: String) -> Result<Self, CryptoError> { @native("rsa_private_from_pem", pem) }
+    fn to_pem() -> String { @native("rsa_private_to_pem", self.der) }
+    fn decrypt(ciphertext: [UInt8]) -> Result<[UInt8], CryptoError> { @native("rsa_decrypt", self.der, ciphertext) }
+    fn sign(message: [UInt8]) -> Result<[UInt8], CryptoError> { @native("rsa_sign", self.der, message) }
+}
+
+/// ECDSA
+struct EcdsaKeyPair { public_key: EcdsaPublicKey, private_key: EcdsaPrivateKey, curve: EcCurve }
+enum EcCurve { P256, P384, P521, Secp256k1 }
+impl EcdsaKeyPair {
+    fn generate(curve: EcCurve) -> Result<Self, CryptoError> { @native("ecdsa_generate", curve) }
+    fn p256() -> Result<Self, CryptoError> { Self.generate(EcCurve.P256) }
+    fn secp256k1() -> Result<Self, CryptoError> { Self.generate(EcCurve.Secp256k1) }
+}
+
+struct EcdsaPublicKey { der: [UInt8] }
+impl EcdsaPublicKey {
+    fn from_pem(pem: String) -> Result<Self, CryptoError> { @native("ecdsa_public_from_pem", pem) }
+    fn verify(message: [UInt8], signature: [UInt8]) -> Bool { @native("ecdsa_verify", self.der, message, signature) }
+}
+
+struct EcdsaPrivateKey { der: [UInt8] }
+impl EcdsaPrivateKey {
+    fn from_pem(pem: String) -> Result<Self, CryptoError> { @native("ecdsa_private_from_pem", pem) }
+    fn sign(message: [UInt8]) -> Result<[UInt8], CryptoError> { @native("ecdsa_sign", self.der, message) }
+}
+
+/// Ed25519
+struct Ed25519KeyPair { public_key: [UInt8; 32], private_key: [UInt8; 64] }
+impl Ed25519KeyPair {
+    fn generate() -> Self { @native("ed25519_generate") }
+    fn from_seed(seed: [UInt8; 32]) -> Self { @native("ed25519_from_seed", seed) }
+    fn sign(message: [UInt8]) -> [UInt8; 64] { @native("ed25519_sign", self.private_key, message) }
+    fn verify(message: [UInt8], signature: [UInt8; 64]) -> Bool { @native("ed25519_verify", self.public_key, message, signature) }
+}
+
+/// X25519 key exchange
+fn x25519_generate() -> ([UInt8; 32], [UInt8; 32]) { @native("x25519_generate") }
+fn x25519_shared_secret(private_key: [UInt8; 32], public_key: [UInt8; 32]) -> [UInt8; 32] { @native("x25519_shared_secret", private_key, public_key) }
+
+// =============================================================================
+// Key Derivation
+// =============================================================================
+
+fn pbkdf2_sha256(password: [UInt8], salt: [UInt8], iterations: Int, key_len: Int) -> [UInt8] { @native("pbkdf2_sha256", password, salt, iterations, key_len) }
+fn pbkdf2_sha512(password: [UInt8], salt: [UInt8], iterations: Int, key_len: Int) -> [UInt8] { @native("pbkdf2_sha512", password, salt, iterations, key_len) }
+fn hkdf_sha256(ikm: [UInt8], salt: [UInt8], info: [UInt8], len: Int) -> [UInt8] { @native("hkdf_sha256", ikm, salt, info, len) }
+fn scrypt(password: [UInt8], salt: [UInt8], n: Int, r: Int, p: Int, len: Int) -> Result<[UInt8], CryptoError> { @native("scrypt", password, salt, n, r, p, len) }
+fn argon2id(password: [UInt8], salt: [UInt8], m_cost: Int, t_cost: Int, p: Int, len: Int) -> Result<[UInt8], CryptoError> { @native("argon2id", password, salt, m_cost, t_cost, p, len) }
+
+// =============================================================================
+// Random
+// =============================================================================
+
+fn random_bytes(len: Int) -> [UInt8] { @native("crypto_random_bytes", len) }
+fn random_u32() -> UInt32 { @native("crypto_random_u32") }
+fn random_u64() -> UInt64 { @native("crypto_random_u64") }
+fn random_fill(buf: [UInt8]) { @native("crypto_random_fill", buf) }
+
+// =============================================================================
+// Utilities
+// =============================================================================
+
+fn constant_time_eq(a: [UInt8], b: [UInt8]) -> Bool { @native("constant_time_eq", a, b) }
+fn secure_zero(buf: [UInt8]) { @native("secure_zero", buf) }
+
+enum CryptoError { InvalidKey, InvalidNonce, DecryptionFailed, SignatureInvalid, KeyGenerationFailed, Other(String) }
+impl Display for CryptoError { fn fmt(f: Formatter) { match self { InvalidKey => f.write("Invalid key"), InvalidNonce => f.write("Invalid nonce"), DecryptionFailed => f.write("Decryption failed"), SignatureInvalid => f.write("Invalid signature"), KeyGenerationFailed => f.write("Key generation failed"), Other(s) => f.write(s) } } }
+
+// Tests
+test "sha256" { assert_eq(sha256_hex("hello".as_bytes()), "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")? }
+test "hmac" { let mac = hmac_sha256("key".as_bytes(), "message".as_bytes()); assert_eq(mac.len(), 32)? }
+test "aes_gcm" { let key = random_bytes(32); let nonce = random_bytes(12); let ct = aes_gcm_encrypt(key, nonce, "hello".as_bytes(), [])?; let pt = aes_gcm_decrypt(key, nonce, ct, [])?; assert_eq(pt, "hello".as_bytes())? }
+test "ed25519" { let kp = Ed25519KeyPair.generate(); let sig = kp.sign("test".as_bytes()); assert(kp.verify("test".as_bytes(), sig))? }

@@ -1,0 +1,935 @@
+// =============================================================================
+// Vibee OS — RabbitMQ Module
+// Advanced Message Queuing Protocol (AMQP) client
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Connection Configuration
+// -----------------------------------------------------------------------------
+
+/// RabbitMQ connection configuration
+struct RabbitConfig {
+    host: String
+    port: UInt16
+    username: String
+    password: String
+    vhost: String
+    tls: Option<TLSConfig>
+    heartbeat: Int
+    connection_timeout: Duration
+    
+    fn new(host: String) -> Self {
+        RabbitConfig {
+            host: host,
+            port: 5672,
+            username: "guest",
+            password: "guest",
+            vhost: "/",
+            tls: None,
+            heartbeat: 60,
+            connection_timeout: Duration.seconds(30)
+        }
+    }
+    
+    fn with_credentials(username: String, password: String) -> Self {
+        self.username = username
+        self.password = password
+        self
+    }
+    
+    fn with_vhost(vhost: String) -> Self {
+        self.vhost = vhost
+        self
+    }
+    
+    fn with_tls(config: TLSConfig) -> Self {
+        self.tls = Some(config)
+        self.port = 5671
+        self
+    }
+    
+    fn from_url(url: String) -> Result<Self, RabbitError> {
+        // Parse amqp://user:pass@host:port/vhost
+        @native("rabbitmq_parse_url", url)
+    }
+}
+
+/// TLS configuration
+struct TLSConfig {
+    cert_path: Option<String>
+    key_path: Option<String>
+    ca_path: Option<String>
+    verify: Bool
+    
+    fn default() -> Self {
+        TLSConfig {
+            cert_path: None,
+            key_path: None,
+            ca_path: None,
+            verify: true
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Connection
+// -----------------------------------------------------------------------------
+
+/// RabbitMQ connection
+actor RabbitConnection {
+    state config: RabbitConfig
+    state connected: Bool
+    state channels: Map<Int, RabbitChannel>
+    state next_channel_id: Int
+    
+    fn new(config: RabbitConfig) -> Self {
+        RabbitConnection {
+            config: config,
+            connected: false,
+            channels: Map.empty(),
+            next_channel_id: 1
+        }
+    }
+    
+    /// Connect to RabbitMQ server
+    on connect() -> Result<(), RabbitError> {
+        @native("rabbitmq_connect", self.config)
+        self.connected = true
+        Ok(())
+    }
+    
+    /// Create a new channel
+    on channel() -> Result<RabbitChannel, RabbitError> {
+        if !self.connected {
+            return Err(RabbitError.NotConnected)
+        }
+        
+        let id = self.next_channel_id
+        self.next_channel_id += 1
+        
+        let channel = RabbitChannel.new(id)
+        @native("rabbitmq_channel_open", id)
+        
+        self.channels.set(id, channel)
+        Ok(channel)
+    }
+    
+    /// Close connection
+    on close() -> Result<(), RabbitError> {
+        for (_, channel) in self.channels {
+            let _ = channel.close()
+        }
+        @native("rabbitmq_close")
+        self.connected = false
+        Ok(())
+    }
+    
+    fn is_connected() -> Bool { self.connected }
+}
+
+// -----------------------------------------------------------------------------
+// Channel
+// -----------------------------------------------------------------------------
+
+/// RabbitMQ channel
+actor RabbitChannel {
+    state id: Int
+    state prefetch_count: Int
+    state consumers: Map<String, Consumer>
+    
+    fn new(id: Int) -> Self {
+        RabbitChannel {
+            id: id,
+            prefetch_count: 0,
+            consumers: Map.empty()
+        }
+    }
+    
+    /// Set QoS prefetch count
+    on qos(prefetch: Int) -> Result<(), RabbitError> {
+        self.prefetch_count = prefetch
+        @native("rabbitmq_qos", self.id, prefetch)
+    }
+    
+    // -------------------------------------------------------------------------
+    // Exchange Operations
+    // -------------------------------------------------------------------------
+    
+    /// Declare exchange
+    on exchange_declare(name: String, kind: ExchangeType, options: ExchangeOptions) -> Result<(), RabbitError> {
+        @native("rabbitmq_exchange_declare", self.id, name, kind, options)
+    }
+    
+    /// Delete exchange
+    on exchange_delete(name: String, if_unused: Bool) -> Result<(), RabbitError> {
+        @native("rabbitmq_exchange_delete", self.id, name, if_unused)
+    }
+    
+    /// Bind exchange to exchange
+    on exchange_bind(destination: String, source: String, routing_key: String) -> Result<(), RabbitError> {
+        @native("rabbitmq_exchange_bind", self.id, destination, source, routing_key)
+    }
+    
+    // -------------------------------------------------------------------------
+    // Queue Operations
+    // -------------------------------------------------------------------------
+    
+    /// Declare queue
+    on queue_declare(name: String, options: QueueOptions) -> Result<QueueInfo, RabbitError> {
+        @native("rabbitmq_queue_declare", self.id, name, options)
+    }
+    
+    /// Declare anonymous queue
+    on queue_declare_anonymous(options: QueueOptions) -> Result<QueueInfo, RabbitError> {
+        @native("rabbitmq_queue_declare", self.id, "", options)
+    }
+    
+    /// Delete queue
+    on queue_delete(name: String, if_unused: Bool, if_empty: Bool) -> Result<Int, RabbitError> {
+        @native("rabbitmq_queue_delete", self.id, name, if_unused, if_empty)
+    }
+    
+    /// Purge queue
+    on queue_purge(name: String) -> Result<Int, RabbitError> {
+        @native("rabbitmq_queue_purge", self.id, name)
+    }
+    
+    /// Bind queue to exchange
+    on queue_bind(queue: String, exchange: String, routing_key: String) -> Result<(), RabbitError> {
+        @native("rabbitmq_queue_bind", self.id, queue, exchange, routing_key)
+    }
+    
+    /// Unbind queue from exchange
+    on queue_unbind(queue: String, exchange: String, routing_key: String) -> Result<(), RabbitError> {
+        @native("rabbitmq_queue_unbind", self.id, queue, exchange, routing_key)
+    }
+    
+    // -------------------------------------------------------------------------
+    // Publishing
+    // -------------------------------------------------------------------------
+    
+    /// Publish message
+    on publish(exchange: String, routing_key: String, message: RabbitMessage) -> Result<(), RabbitError> {
+        @native("rabbitmq_publish", self.id, exchange, routing_key, message)
+    }
+    
+    /// Publish with confirmation
+    on publish_confirm(exchange: String, routing_key: String, message: RabbitMessage) -> Result<Bool, RabbitError> {
+        @native("rabbitmq_publish_confirm", self.id, exchange, routing_key, message)
+    }
+    
+    /// Enable publisher confirms
+    on confirm_select() -> Result<(), RabbitError> {
+        @native("rabbitmq_confirm_select", self.id)
+    }
+    
+    // -------------------------------------------------------------------------
+    // Consuming
+    // -------------------------------------------------------------------------
+    
+    /// Start consuming from queue
+    on consume(queue: String, options: ConsumeOptions) -> Result<Consumer, RabbitError> {
+        let consumer_tag = options.consumer_tag.unwrap_or(UUID.v4())
+        let consumer = Consumer.new(consumer_tag, queue)
+        
+        @native("rabbitmq_consume", self.id, queue, consumer_tag, options)
+        
+        self.consumers.set(consumer_tag, consumer)
+        Ok(consumer)
+    }
+    
+    /// Cancel consumer
+    on cancel(consumer_tag: String) -> Result<(), RabbitError> {
+        @native("rabbitmq_cancel", self.id, consumer_tag)
+        self.consumers.remove(consumer_tag)
+        Ok(())
+    }
+    
+    /// Get single message (polling)
+    on get(queue: String, auto_ack: Bool) -> Result<Option<Delivery>, RabbitError> {
+        @native("rabbitmq_get", self.id, queue, auto_ack)
+    }
+    
+    /// Acknowledge message
+    on ack(delivery_tag: UInt64, multiple: Bool) -> Result<(), RabbitError> {
+        @native("rabbitmq_ack", self.id, delivery_tag, multiple)
+    }
+    
+    /// Negative acknowledge
+    on nack(delivery_tag: UInt64, multiple: Bool, requeue: Bool) -> Result<(), RabbitError> {
+        @native("rabbitmq_nack", self.id, delivery_tag, multiple, requeue)
+    }
+    
+    /// Reject message
+    on reject(delivery_tag: UInt64, requeue: Bool) -> Result<(), RabbitError> {
+        @native("rabbitmq_reject", self.id, delivery_tag, requeue)
+    }
+    
+    /// Close channel
+    on close() -> Result<(), RabbitError> {
+        @native("rabbitmq_channel_close", self.id)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Exchange Types and Options
+// -----------------------------------------------------------------------------
+
+enum ExchangeType {
+    Direct
+    Fanout
+    Topic
+    Headers
+    
+    fn to_string() -> String {
+        match self {
+            .Direct => "direct"
+            .Fanout => "fanout"
+            .Topic => "topic"
+            .Headers => "headers"
+        }
+    }
+}
+
+struct ExchangeOptions {
+    durable: Bool
+    auto_delete: Bool
+    internal: Bool
+    arguments: Map<String, Any>
+    
+    fn default() -> Self {
+        ExchangeOptions {
+            durable: true,
+            auto_delete: false,
+            internal: false,
+            arguments: Map.empty()
+        }
+    }
+    
+    fn transient() -> Self {
+        ExchangeOptions {
+            durable: false,
+            auto_delete: true,
+            internal: false,
+            arguments: Map.empty()
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Queue Options
+// -----------------------------------------------------------------------------
+
+struct QueueOptions {
+    durable: Bool
+    exclusive: Bool
+    auto_delete: Bool
+    arguments: Map<String, Any>
+    
+    fn default() -> Self {
+        QueueOptions {
+            durable: true,
+            exclusive: false,
+            auto_delete: false,
+            arguments: Map.empty()
+        }
+    }
+    
+    fn transient() -> Self {
+        QueueOptions {
+            durable: false,
+            exclusive: true,
+            auto_delete: true,
+            arguments: Map.empty()
+        }
+    }
+    
+    fn with_ttl(ttl: Duration) -> Self {
+        self.arguments.set("x-message-ttl", ttl.as_millis())
+        self
+    }
+    
+    fn with_max_length(max: Int) -> Self {
+        self.arguments.set("x-max-length", max)
+        self
+    }
+    
+    fn with_dead_letter_exchange(exchange: String) -> Self {
+        self.arguments.set("x-dead-letter-exchange", exchange)
+        self
+    }
+    
+    fn with_dead_letter_routing_key(key: String) -> Self {
+        self.arguments.set("x-dead-letter-routing-key", key)
+        self
+    }
+    
+    fn with_priority(max_priority: Int) -> Self {
+        self.arguments.set("x-max-priority", max_priority)
+        self
+    }
+    
+    fn quorum() -> Self {
+        self.arguments.set("x-queue-type", "quorum")
+        self
+    }
+}
+
+struct QueueInfo {
+    name: String
+    message_count: Int
+    consumer_count: Int
+}
+
+// -----------------------------------------------------------------------------
+// Messages
+// -----------------------------------------------------------------------------
+
+/// RabbitMQ message
+struct RabbitMessage {
+    body: [Byte]
+    properties: MessageProperties
+    
+    fn new(body: [Byte]) -> Self {
+        RabbitMessage {
+            body: body,
+            properties: MessageProperties.default()
+        }
+    }
+    
+    fn text(content: String) -> Self {
+        RabbitMessage.new(content.bytes())
+            .with_content_type("text/plain")
+    }
+    
+    fn json<T: Serialize>(data: T) -> Self {
+        RabbitMessage.new(JSON.stringify(data).bytes())
+            .with_content_type("application/json")
+    }
+    
+    fn with_content_type(ct: String) -> Self {
+        self.properties.content_type = Some(ct)
+        self
+    }
+    
+    fn with_correlation_id(id: String) -> Self {
+        self.properties.correlation_id = Some(id)
+        self
+    }
+    
+    fn with_reply_to(queue: String) -> Self {
+        self.properties.reply_to = Some(queue)
+        self
+    }
+    
+    fn with_expiration(ttl: Duration) -> Self {
+        self.properties.expiration = Some(ttl.as_millis().to_string())
+        self
+    }
+    
+    fn with_priority(p: UInt8) -> Self {
+        self.properties.priority = Some(p)
+        self
+    }
+    
+    fn with_header(key: String, value: Any) -> Self {
+        self.properties.headers.set(key, value)
+        self
+    }
+    
+    fn persistent() -> Self {
+        self.properties.delivery_mode = Some(2)
+        self
+    }
+    
+    fn transient() -> Self {
+        self.properties.delivery_mode = Some(1)
+        self
+    }
+}
+
+/// Message properties
+struct MessageProperties {
+    content_type: Option<String>
+    content_encoding: Option<String>
+    headers: Map<String, Any>
+    delivery_mode: Option<UInt8>
+    priority: Option<UInt8>
+    correlation_id: Option<String>
+    reply_to: Option<String>
+    expiration: Option<String>
+    message_id: Option<String>
+    timestamp: Option<Int64>
+    type_name: Option<String>
+    user_id: Option<String>
+    app_id: Option<String>
+    
+    fn default() -> Self {
+        MessageProperties {
+            content_type: None,
+            content_encoding: None,
+            headers: Map.empty(),
+            delivery_mode: Some(2),  // Persistent by default
+            priority: None,
+            correlation_id: None,
+            reply_to: None,
+            expiration: None,
+            message_id: Some(UUID.v4()),
+            timestamp: Some(Instant.now().as_millis()),
+            type_name: None,
+            user_id: None,
+            app_id: None
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Consumer
+// -----------------------------------------------------------------------------
+
+struct ConsumeOptions {
+    consumer_tag: Option<String>
+    no_local: Bool
+    no_ack: Bool
+    exclusive: Bool
+    arguments: Map<String, Any>
+    
+    fn default() -> Self {
+        ConsumeOptions {
+            consumer_tag: None,
+            no_local: false,
+            no_ack: false,
+            exclusive: false,
+            arguments: Map.empty()
+        }
+    }
+    
+    fn auto_ack() -> Self {
+        ConsumeOptions {
+            consumer_tag: None,
+            no_local: false,
+            no_ack: true,
+            exclusive: false,
+            arguments: Map.empty()
+        }
+    }
+}
+
+/// Consumer
+actor Consumer {
+    state tag: String
+    state queue: String
+    state deliveries: Channel<Delivery>
+    state running: Bool
+    
+    fn new(tag: String, queue: String) -> Self {
+        Consumer {
+            tag: tag,
+            queue: queue,
+            deliveries: Channel.unbounded(),
+            running: true
+        }
+    }
+    
+    /// Receive next delivery
+    on recv() -> Result<Delivery, RabbitError> {
+        if !self.running {
+            return Err(RabbitError.ConsumerCancelled)
+        }
+        self.deliveries.recv().map_err(|_| RabbitError.ConsumerCancelled)
+    }
+    
+    /// Receive with timeout
+    on recv_timeout(timeout: Duration) -> Result<Option<Delivery>, RabbitError> {
+        if !self.running {
+            return Err(RabbitError.ConsumerCancelled)
+        }
+        match self.deliveries.recv_timeout(timeout) {
+            Ok(d) => Ok(Some(d))
+            Err(RecvError.Timeout) => Ok(None)
+            Err(_) => Err(RabbitError.ConsumerCancelled)
+        }
+    }
+    
+    /// Iterate over deliveries
+    fn iter() -> ConsumerIterator {
+        ConsumerIterator { consumer: self }
+    }
+    
+    /// Process deliveries with handler
+    on for_each(handler: fn(Delivery) -> Result<(), String>) {
+        while self.running {
+            match self.recv() {
+                Ok(delivery) => {
+                    if let Err(e) = handler(delivery) {
+                        // Handle error
+                    }
+                }
+                Err(_) => break
+            }
+        }
+    }
+}
+
+struct ConsumerIterator {
+    consumer: Consumer
+}
+
+impl Iterator for ConsumerIterator {
+    type Item = Delivery
+    fn next() -> Option<Delivery> {
+        self.consumer.recv().ok()
+    }
+}
+
+/// Delivery
+struct Delivery {
+    delivery_tag: UInt64
+    redelivered: Bool
+    exchange: String
+    routing_key: String
+    message: RabbitMessage
+    
+    fn body() -> [Byte] { self.message.body }
+    
+    fn body_string() -> Result<String, DecodeError> {
+        String.from_utf8(self.message.body)
+    }
+    
+    fn body_json<T: Deserialize>() -> Result<T, DecodeError> {
+        let text = self.body_string()?
+        JSON.parse(text)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// RPC Pattern
+// -----------------------------------------------------------------------------
+
+/// RPC client
+actor RpcClient {
+    state channel: RabbitChannel
+    state reply_queue: String
+    state pending: Map<String, Channel<RabbitMessage>>
+    state timeout: Duration
+    
+    fn new(channel: RabbitChannel) -> Result<Self, RabbitError> {
+        let queue_info = channel.queue_declare_anonymous(QueueOptions.transient())?
+        let reply_queue = queue_info.name
+        
+        let client = RpcClient {
+            channel: channel,
+            reply_queue: reply_queue,
+            pending: Map.empty(),
+            timeout: Duration.seconds(30)
+        }
+        
+        // Start consuming replies
+        let consumer = channel.consume(reply_queue, ConsumeOptions.auto_ack())?
+        async {
+            for delivery in consumer.iter() {
+                if let corr_id = delivery.message.properties.correlation_id {
+                    if let ch = client.pending.remove(corr_id) {
+                        ch.send(delivery.message)
+                    }
+                }
+            }
+        }
+        
+        Ok(client)
+    }
+    
+    fn with_timeout(timeout: Duration) -> Self {
+        self.timeout = timeout
+        self
+    }
+    
+    /// Call remote procedure
+    on call(exchange: String, routing_key: String, message: RabbitMessage) -> Result<RabbitMessage, RabbitError> {
+        let corr_id = UUID.v4()
+        let reply_ch = Channel.bounded(1)
+        
+        self.pending.set(corr_id, reply_ch)
+        
+        let msg = message
+            .with_correlation_id(corr_id)
+            .with_reply_to(self.reply_queue)
+        
+        self.channel.publish(exchange, routing_key, msg)?
+        
+        match reply_ch.recv_timeout(self.timeout) {
+            Ok(reply) => Ok(reply)
+            Err(RecvError.Timeout) => {
+                self.pending.remove(corr_id)
+                Err(RabbitError.Timeout)
+            }
+            Err(_) => Err(RabbitError.ChannelClosed)
+        }
+    }
+}
+
+/// RPC server
+actor RpcServer {
+    state channel: RabbitChannel
+    state handlers: Map<String, fn(RabbitMessage) -> Result<RabbitMessage, String>>
+    state running: Bool
+    
+    fn new(channel: RabbitChannel) -> Self {
+        RpcServer {
+            channel: channel,
+            handlers: Map.empty(),
+            running: false
+        }
+    }
+    
+    /// Register handler for queue
+    on handle(queue: String, handler: fn(RabbitMessage) -> Result<RabbitMessage, String>) -> Result<(), RabbitError> {
+        self.handlers.set(queue, handler)
+        
+        let consumer = self.channel.consume(queue, ConsumeOptions.default())?
+        let channel = self.channel
+        let handlers = self.handlers
+        
+        async {
+            for delivery in consumer.iter() {
+                if let reply_to = delivery.message.properties.reply_to {
+                    if let corr_id = delivery.message.properties.correlation_id {
+                        if let handler = handlers.get(delivery.routing_key) {
+                            let reply = match handler(delivery.message) {
+                                Ok(response) => response.with_correlation_id(corr_id)
+                                Err(error) => RabbitMessage.text(error)
+                                    .with_correlation_id(corr_id)
+                                    .with_header("error", true)
+                            }
+                            let _ = channel.publish("", reply_to, reply)
+                        }
+                    }
+                }
+                let _ = channel.ack(delivery.delivery_tag, false)
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Work Queue Pattern
+// -----------------------------------------------------------------------------
+
+/// Work queue producer
+actor WorkProducer {
+    state channel: RabbitChannel
+    state queue: String
+    
+    fn new(channel: RabbitChannel, queue: String) -> Result<Self, RabbitError> {
+        channel.queue_declare(queue, QueueOptions.default())?
+        Ok(WorkProducer { channel: channel, queue: queue })
+    }
+    
+    on submit(message: RabbitMessage) -> Result<(), RabbitError> {
+        self.channel.publish("", self.queue, message.persistent())
+    }
+    
+    on submit_json<T: Serialize>(data: T) -> Result<(), RabbitError> {
+        self.submit(RabbitMessage.json(data))
+    }
+}
+
+/// Work queue consumer
+actor WorkConsumer {
+    state channel: RabbitChannel
+    state queue: String
+    state prefetch: Int
+    
+    fn new(channel: RabbitChannel, queue: String, prefetch: Int) -> Result<Self, RabbitError> {
+        channel.qos(prefetch)?
+        channel.queue_declare(queue, QueueOptions.default())?
+        Ok(WorkConsumer { channel: channel, queue: queue, prefetch: prefetch })
+    }
+    
+    on process(handler: fn(Delivery) -> Result<(), String>) -> Result<(), RabbitError> {
+        let consumer = self.channel.consume(self.queue, ConsumeOptions.default())?
+        
+        for delivery in consumer.iter() {
+            match handler(delivery) {
+                Ok(_) => {
+                    self.channel.ack(delivery.delivery_tag, false)?
+                }
+                Err(_) => {
+                    self.channel.nack(delivery.delivery_tag, false, true)?
+                }
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Pub/Sub Pattern
+// -----------------------------------------------------------------------------
+
+/// Publisher for fanout exchange
+actor FanoutPublisher {
+    state channel: RabbitChannel
+    state exchange: String
+    
+    fn new(channel: RabbitChannel, exchange: String) -> Result<Self, RabbitError> {
+        channel.exchange_declare(exchange, ExchangeType.Fanout, ExchangeOptions.default())?
+        Ok(FanoutPublisher { channel: channel, exchange: exchange })
+    }
+    
+    on publish(message: RabbitMessage) -> Result<(), RabbitError> {
+        self.channel.publish(self.exchange, "", message)
+    }
+}
+
+/// Subscriber for fanout exchange
+actor FanoutSubscriber {
+    state channel: RabbitChannel
+    state exchange: String
+    state queue: String
+    
+    fn new(channel: RabbitChannel, exchange: String) -> Result<Self, RabbitError> {
+        channel.exchange_declare(exchange, ExchangeType.Fanout, ExchangeOptions.default())?
+        let queue_info = channel.queue_declare_anonymous(QueueOptions.transient())?
+        channel.queue_bind(queue_info.name, exchange, "")?
+        
+        Ok(FanoutSubscriber {
+            channel: channel,
+            exchange: exchange,
+            queue: queue_info.name
+        })
+    }
+    
+    on subscribe(handler: fn(Delivery)) -> Result<(), RabbitError> {
+        let consumer = self.channel.consume(self.queue, ConsumeOptions.auto_ack())?
+        consumer.for_each(|d| { handler(d); Ok(()) })
+        Ok(())
+    }
+}
+
+/// Topic publisher
+actor TopicPublisher {
+    state channel: RabbitChannel
+    state exchange: String
+    
+    fn new(channel: RabbitChannel, exchange: String) -> Result<Self, RabbitError> {
+        channel.exchange_declare(exchange, ExchangeType.Topic, ExchangeOptions.default())?
+        Ok(TopicPublisher { channel: channel, exchange: exchange })
+    }
+    
+    on publish(routing_key: String, message: RabbitMessage) -> Result<(), RabbitError> {
+        self.channel.publish(self.exchange, routing_key, message)
+    }
+}
+
+/// Topic subscriber
+actor TopicSubscriber {
+    state channel: RabbitChannel
+    state exchange: String
+    state queue: String
+    state bindings: [String]
+    
+    fn new(channel: RabbitChannel, exchange: String) -> Result<Self, RabbitError> {
+        channel.exchange_declare(exchange, ExchangeType.Topic, ExchangeOptions.default())?
+        let queue_info = channel.queue_declare_anonymous(QueueOptions.transient())?
+        
+        Ok(TopicSubscriber {
+            channel: channel,
+            exchange: exchange,
+            queue: queue_info.name,
+            bindings: []
+        })
+    }
+    
+    on bind(pattern: String) -> Result<Self, RabbitError> {
+        self.channel.queue_bind(self.queue, self.exchange, pattern)?
+        self.bindings.push(pattern)
+        Ok(self)
+    }
+    
+    on subscribe(handler: fn(Delivery)) -> Result<(), RabbitError> {
+        let consumer = self.channel.consume(self.queue, ConsumeOptions.auto_ack())?
+        consumer.for_each(|d| { handler(d); Ok(()) })
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum RabbitError {
+    NotConnected
+    ConnectionFailed(String)
+    ChannelClosed
+    Timeout
+    QueueNotFound(String)
+    ExchangeNotFound(String)
+    ConsumerCancelled
+    AccessRefused
+    NotAllowed
+    FrameError
+    UnexpectedFrame
+    ChannelError(Int, String)
+    ConnectionError(Int, String)
+}
+
+impl ToString for RabbitError {
+    fn to_string() -> String {
+        match self {
+            .NotConnected => "Not connected to RabbitMQ"
+            .ConnectionFailed(msg) => "Connection failed: \(msg)"
+            .ChannelClosed => "Channel closed"
+            .Timeout => "Operation timed out"
+            .QueueNotFound(q) => "Queue not found: \(q)"
+            .ExchangeNotFound(e) => "Exchange not found: \(e)"
+            .ConsumerCancelled => "Consumer cancelled"
+            .AccessRefused => "Access refused"
+            .NotAllowed => "Operation not allowed"
+            .FrameError => "Frame error"
+            .UnexpectedFrame => "Unexpected frame"
+            .ChannelError(code, msg) => "Channel error \(code): \(msg)"
+            .ConnectionError(code, msg) => "Connection error \(code): \(msg)"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "message creation" {
+    let msg = RabbitMessage.text("Hello RabbitMQ")
+    assert_eq(msg.body, "Hello RabbitMQ".bytes())?
+    assert_eq(msg.properties.content_type, Some("text/plain"))?
+}
+
+test "message with properties" {
+    let msg = RabbitMessage.json({"key": "value"})
+        .with_correlation_id("123")
+        .with_priority(5)
+        .persistent()
+    
+    assert_eq(msg.properties.correlation_id, Some("123"))?
+    assert_eq(msg.properties.priority, Some(5))?
+    assert_eq(msg.properties.delivery_mode, Some(2))?
+}
+
+test "queue options" {
+    let opts = QueueOptions.default()
+        .with_ttl(Duration.minutes(5))
+        .with_max_length(1000)
+        .with_dead_letter_exchange("dlx")
+    
+    assert(opts.durable)?
+    assert_eq(opts.arguments.get("x-message-ttl"), Some(300000))?
+}
+
+test "exchange types" {
+    assert_eq(ExchangeType.Direct.to_string(), "direct")?
+    assert_eq(ExchangeType.Fanout.to_string(), "fanout")?
+    assert_eq(ExchangeType.Topic.to_string(), "topic")?
+}

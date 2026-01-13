@@ -1,0 +1,683 @@
+# ============================================================================
+# SERIALIZATION - Сериализация данных на Vibee
+# ============================================================================
+# JSON, YAML, TOML, MessagePack, Protocol Buffers
+# ============================================================================
+
+Specification Serialization:
+  """Сериализация как спецификация преобразования данных."""
+
+  # ==========================================================================
+  # CORE TRAITS
+  # ==========================================================================
+
+  Trait Serialize:
+    Method serialize<W: Writer>(writer: W, options: SerializeOptions?) -> Result<Unit, SerializeError>
+
+  Trait Deserialize:
+    Static Method deserialize<R: Reader>(reader: R, options: DeserializeOptions?) -> Result<Self, DeserializeError>
+
+  Trait Serializer:
+    Method serialize_bool(value: Boolean) -> Result<Unit, SerializeError>
+    Method serialize_int(value: Int) -> Result<Unit, SerializeError>
+    Method serialize_float(value: Float) -> Result<Unit, SerializeError>
+    Method serialize_string(value: String) -> Result<Unit, SerializeError>
+    Method serialize_bytes(value: Bytes) -> Result<Unit, SerializeError>
+    Method serialize_null() -> Result<Unit, SerializeError>
+    Method serialize_array(len: Int?) -> Result<ArraySerializer, SerializeError>
+    Method serialize_object(len: Int?) -> Result<ObjectSerializer, SerializeError>
+
+  Trait Deserializer:
+    Method deserialize_bool() -> Result<Boolean, DeserializeError>
+    Method deserialize_int() -> Result<Int, DeserializeError>
+    Method deserialize_float() -> Result<Float, DeserializeError>
+    Method deserialize_string() -> Result<String, DeserializeError>
+    Method deserialize_bytes() -> Result<Bytes, DeserializeError>
+    Method deserialize_null() -> Result<Unit, DeserializeError>
+    Method deserialize_array() -> Result<ArrayDeserializer, DeserializeError>
+    Method deserialize_object() -> Result<ObjectDeserializer, DeserializeError>
+    Method deserialize_any() -> Result<Any, DeserializeError>
+
+  Type SerializeOptions:
+    pretty: Boolean = false
+    indent: Int = 2
+    sort_keys: Boolean = false
+    skip_null: Boolean = false
+
+  Type DeserializeOptions:
+    strict: Boolean = false
+    allow_unknown_fields: Boolean = true
+
+  Type SerializeError:
+    message: String
+    path: String?
+    cause: Error?
+
+  Type DeserializeError:
+    message: String
+    path: String?
+    position: Int?
+    expected: String?
+    found: String?
+
+  # ==========================================================================
+  # JSON
+  # ==========================================================================
+
+  Behavior JSON:
+    When json.stringify(value: Any, options: SerializeOptions?) -> String:
+      Then:
+        - serializer = JSONSerializer(options)
+        - serialize_value(serializer, value)
+        - return serializer.output()
+
+    When json.parse<T>(input: String, options: DeserializeOptions?) -> Result<T, DeserializeError>:
+      Then:
+        - deserializer = JSONDeserializer(input, options)
+        - return deserializer.deserialize<T>()
+
+    When json.parse_any(input: String) -> Result<Any, DeserializeError>:
+      Then:
+        - deserializer = JSONDeserializer(input)
+        - return deserializer.deserialize_any()
+
+    Type JSONSerializer:
+      buffer: StringBuilder
+      options: SerializeOptions
+      depth: Int = 0
+
+      Method output() -> String:
+        return buffer.to_string()
+
+      Method serialize_bool(value: Boolean) -> Result<Unit, SerializeError>:
+        buffer.append(if value then "true" else "false")
+        return Ok(())
+
+      Method serialize_int(value: Int) -> Result<Unit, SerializeError>:
+        buffer.append(value.to_string())
+        return Ok(())
+
+      Method serialize_float(value: Float) -> Result<Unit, SerializeError>:
+        if value.is_nan() or value.is_infinite():
+          return Err(SerializeError("Cannot serialize NaN or Infinity"))
+        buffer.append(value.to_string())
+        return Ok(())
+
+      Method serialize_string(value: String) -> Result<Unit, SerializeError>:
+        buffer.append('"')
+        buffer.append(escape_json_string(value))
+        buffer.append('"')
+        return Ok(())
+
+      Method serialize_null() -> Result<Unit, SerializeError>:
+        buffer.append("null")
+        return Ok(())
+
+      Method serialize_array(values: List<Any>) -> Result<Unit, SerializeError>:
+        buffer.append('[')
+        if options.pretty:
+          depth += 1
+        
+        for (i, value) in values.enumerate():
+          if i > 0:
+            buffer.append(',')
+          if options.pretty:
+            buffer.append('\n')
+            buffer.append(' '.repeat(depth * options.indent))
+          serialize_value(self, value)?
+        
+        if options.pretty and values.length > 0:
+          depth -= 1
+          buffer.append('\n')
+          buffer.append(' '.repeat(depth * options.indent))
+        
+        buffer.append(']')
+        return Ok(())
+
+      Method serialize_object(obj: Map<String, Any>) -> Result<Unit, SerializeError>:
+        buffer.append('{')
+        if options.pretty:
+          depth += 1
+        
+        entries = if options.sort_keys then obj.entries().sort_by((k, _) -> k) else obj.entries()
+        
+        first = true
+        for (key, value) in entries:
+          if options.skip_null and value == null:
+            continue
+          
+          if not first:
+            buffer.append(',')
+          first = false
+          
+          if options.pretty:
+            buffer.append('\n')
+            buffer.append(' '.repeat(depth * options.indent))
+          
+          serialize_string(key)?
+          buffer.append(':')
+          if options.pretty:
+            buffer.append(' ')
+          serialize_value(self, value)?
+        
+        if options.pretty and not first:
+          depth -= 1
+          buffer.append('\n')
+          buffer.append(' '.repeat(depth * options.indent))
+        
+        buffer.append('}')
+        return Ok(())
+
+    Type JSONDeserializer:
+      input: String
+      position: Int = 0
+      options: DeserializeOptions
+
+      Method deserialize<T>() -> Result<T, DeserializeError>:
+        value = deserialize_any()?
+        return coerce<T>(value)
+
+      Method deserialize_any() -> Result<Any, DeserializeError>:
+        skip_whitespace()
+        
+        if position >= input.length:
+          return Err(DeserializeError("Unexpected end of input"))
+        
+        char = input[position]
+        
+        match char:
+          '"' -> deserialize_string()
+          't', 'f' -> deserialize_bool()
+          'n' -> deserialize_null()
+          '[' -> deserialize_array()
+          '{' -> deserialize_object()
+          '-', '0'..'9' -> deserialize_number()
+          _ -> Err(DeserializeError("Unexpected character: ${char}", position: position))
+
+      Method deserialize_string() -> Result<String, DeserializeError>:
+        expect('"')?
+        result = StringBuilder()
+        
+        while position < input.length:
+          char = input[position]
+          position += 1
+          
+          if char == '"':
+            return Ok(result.to_string())
+          
+          if char == '\\':
+            if position >= input.length:
+              return Err(DeserializeError("Unexpected end of escape sequence"))
+            
+            escaped = input[position]
+            position += 1
+            
+            match escaped:
+              '"' -> result.append('"')
+              '\\' -> result.append('\\')
+              '/' -> result.append('/')
+              'b' -> result.append('\b')
+              'f' -> result.append('\f')
+              'n' -> result.append('\n')
+              'r' -> result.append('\r')
+              't' -> result.append('\t')
+              'u' -> 
+                hex = input.slice(position, position + 4)
+                position += 4
+                result.append(char_from_code(parse_hex(hex)))
+              _ -> return Err(DeserializeError("Invalid escape sequence: \\${escaped}"))
+          else:
+            result.append(char)
+        
+        return Err(DeserializeError("Unterminated string"))
+
+      Method deserialize_number() -> Result<Float, DeserializeError>:
+        start = position
+        
+        if input[position] == '-':
+          position += 1
+        
+        while position < input.length and input[position].is_digit():
+          position += 1
+        
+        if position < input.length and input[position] == '.':
+          position += 1
+          while position < input.length and input[position].is_digit():
+            position += 1
+        
+        if position < input.length and input[position] in ['e', 'E']:
+          position += 1
+          if position < input.length and input[position] in ['+', '-']:
+            position += 1
+          while position < input.length and input[position].is_digit():
+            position += 1
+        
+        num_str = input.slice(start, position)
+        return Ok(parse_float(num_str))
+
+      Method deserialize_bool() -> Result<Boolean, DeserializeError>:
+        if input.slice(position, position + 4) == "true":
+          position += 4
+          return Ok(true)
+        if input.slice(position, position + 5) == "false":
+          position += 5
+          return Ok(false)
+        return Err(DeserializeError("Expected boolean"))
+
+      Method deserialize_null() -> Result<Unit, DeserializeError>:
+        if input.slice(position, position + 4) == "null":
+          position += 4
+          return Ok(())
+        return Err(DeserializeError("Expected null"))
+
+      Method deserialize_array() -> Result<List<Any>, DeserializeError>:
+        expect('[')?
+        skip_whitespace()
+        
+        result = []
+        
+        if input[position] == ']':
+          position += 1
+          return Ok(result)
+        
+        while true:
+          value = deserialize_any()?
+          result.push(value)
+          
+          skip_whitespace()
+          
+          if input[position] == ']':
+            position += 1
+            return Ok(result)
+          
+          expect(',')?
+          skip_whitespace()
+
+      Method deserialize_object() -> Result<Map<String, Any>, DeserializeError>:
+        expect('{')?
+        skip_whitespace()
+        
+        result = {}
+        
+        if input[position] == '}':
+          position += 1
+          return Ok(result)
+        
+        while true:
+          key = deserialize_string()?
+          skip_whitespace()
+          expect(':')?
+          skip_whitespace()
+          value = deserialize_any()?
+          
+          result[key] = value
+          
+          skip_whitespace()
+          
+          if input[position] == '}':
+            position += 1
+            return Ok(result)
+          
+          expect(',')?
+          skip_whitespace()
+
+  # ==========================================================================
+  # YAML
+  # ==========================================================================
+
+  Behavior YAML:
+    When yaml.stringify(value: Any, options: YAMLOptions?) -> String:
+      Then:
+        - serializer = YAMLSerializer(options)
+        - return serializer.serialize(value)
+
+    When yaml.parse<T>(input: String) -> Result<T, DeserializeError>:
+      Then:
+        - deserializer = YAMLDeserializer(input)
+        - return deserializer.deserialize<T>()
+
+    Type YAMLOptions:
+      indent: Int = 2
+      flow_level: Int = -1  # -1 = block style
+      default_style: YAMLStyle = Block
+      line_width: Int = 80
+
+    Type YAMLStyle:
+      variants: [Block, Flow, Literal, Folded]
+
+  # ==========================================================================
+  # TOML
+  # ==========================================================================
+
+  Behavior TOML:
+    When toml.stringify(value: Any, options: TOMLOptions?) -> String:
+      Then:
+        - serializer = TOMLSerializer(options)
+        - return serializer.serialize(value)
+
+    When toml.parse<T>(input: String) -> Result<T, DeserializeError>:
+      Then:
+        - deserializer = TOMLDeserializer(input)
+        - return deserializer.deserialize<T>()
+
+    Type TOMLOptions:
+      inline_tables: Boolean = false
+
+  # ==========================================================================
+  # MESSAGEPACK
+  # ==========================================================================
+
+  Behavior MessagePack:
+    When msgpack.encode(value: Any) -> Bytes:
+      Then:
+        - encoder = MessagePackEncoder()
+        - return encoder.encode(value)
+
+    When msgpack.decode<T>(data: Bytes) -> Result<T, DeserializeError>:
+      Then:
+        - decoder = MessagePackDecoder(data)
+        - return decoder.decode<T>()
+
+    Type MessagePackEncoder:
+      buffer: ByteBuffer
+
+      Method encode(value: Any) -> Bytes:
+        encode_value(value)
+        return buffer.to_bytes()
+
+      Method encode_value(value: Any):
+        match value:
+          null -> buffer.write_byte(0xc0)
+          Boolean(b) -> buffer.write_byte(if b then 0xc3 else 0xc2)
+          Int(n) -> encode_int(n)
+          Float(f) -> encode_float(f)
+          String(s) -> encode_string(s)
+          Bytes(b) -> encode_bytes(b)
+          List(arr) -> encode_array(arr)
+          Map(obj) -> encode_map(obj)
+
+      Method encode_int(n: Int):
+        if n >= 0:
+          if n < 128:
+            buffer.write_byte(n)
+          else if n < 256:
+            buffer.write_byte(0xcc)
+            buffer.write_byte(n)
+          else if n < 65536:
+            buffer.write_byte(0xcd)
+            buffer.write_uint16_be(n)
+          else if n < 4294967296:
+            buffer.write_byte(0xce)
+            buffer.write_uint32_be(n)
+          else:
+            buffer.write_byte(0xcf)
+            buffer.write_uint64_be(n)
+        else:
+          if n >= -32:
+            buffer.write_byte(0xe0 | (n + 32))
+          else if n >= -128:
+            buffer.write_byte(0xd0)
+            buffer.write_int8(n)
+          else if n >= -32768:
+            buffer.write_byte(0xd1)
+            buffer.write_int16_be(n)
+          else if n >= -2147483648:
+            buffer.write_byte(0xd2)
+            buffer.write_int32_be(n)
+          else:
+            buffer.write_byte(0xd3)
+            buffer.write_int64_be(n)
+
+  # ==========================================================================
+  # PROTOCOL BUFFERS
+  # ==========================================================================
+
+  Behavior ProtoBuf:
+    When protobuf.encode<T: Message>(message: T) -> Bytes:
+      Then:
+        - encoder = ProtoBufEncoder()
+        - return encoder.encode(message)
+
+    When protobuf.decode<T: Message>(data: Bytes) -> Result<T, DeserializeError>:
+      Then:
+        - decoder = ProtoBufDecoder(data)
+        - return decoder.decode<T>()
+
+    Trait Message:
+      Static descriptor: MessageDescriptor
+      Method encode(encoder: ProtoBufEncoder)
+      Static Method decode(decoder: ProtoBufDecoder) -> Self
+
+    Type MessageDescriptor:
+      name: String
+      fields: List<FieldDescriptor>
+
+    Type FieldDescriptor:
+      number: Int
+      name: String
+      type: FieldType
+      repeated: Boolean
+      optional: Boolean
+
+    Type FieldType:
+      variants:
+        - Double
+        - Float
+        - Int32
+        - Int64
+        - UInt32
+        - UInt64
+        - SInt32
+        - SInt64
+        - Fixed32
+        - Fixed64
+        - SFixed32
+        - SFixed64
+        - Bool
+        - String
+        - Bytes
+        - Message: Type
+        - Enum: Type
+
+  # ==========================================================================
+  # DECORATORS
+  # ==========================================================================
+
+  Behavior SerializationDecorators:
+    When @serialize(options: FieldOptions?):
+      Then:
+        - return SerializeDecorator(options)
+
+    When @deserialize(options: FieldOptions?):
+      Then:
+        - return DeserializeDecorator(options)
+
+    When @rename(name: String):
+      Then:
+        - return RenameDecorator(name)
+
+    When @skip():
+      Then:
+        - return SkipDecorator()
+
+    When @skip_if(predicate: (Any) -> Boolean):
+      Then:
+        - return SkipIfDecorator(predicate)
+
+    When @default(value: Any):
+      Then:
+        - return DefaultDecorator(value)
+
+    When @flatten():
+      Then:
+        - return FlattenDecorator()
+
+    When @with(serializer: Serializer, deserializer: Deserializer):
+      Then:
+        - return WithDecorator(serializer, deserializer)
+
+    Type FieldOptions:
+      rename: String?
+      skip: Boolean = false
+      skip_if_null: Boolean = false
+      default: Any?
+      flatten: Boolean = false
+      format: String?
+
+  # ==========================================================================
+  # SCHEMA GENERATION
+  # ==========================================================================
+
+  Behavior SchemaGeneration:
+    When json_schema.generate<T>() -> JSONSchema:
+      Then:
+        - return generate_schema_for_type(T)
+
+    Type JSONSchema:
+      type: String?
+      properties: Map<String, JSONSchema>?
+      required: List<String>?
+      items: JSONSchema?
+      enum: List<Any>?
+      format: String?
+      minimum: Float?
+      maximum: Float?
+      min_length: Int?
+      max_length: Int?
+      pattern: String?
+      description: String?
+      default: Any?
+      additional_properties: Boolean | JSONSchema?
+
+    When generate_schema_for_type(type: Type) -> JSONSchema:
+      Then:
+        - match type:
+            String -> JSONSchema(type: "string")
+            Int -> JSONSchema(type: "integer")
+            Float -> JSONSchema(type: "number")
+            Boolean -> JSONSchema(type: "boolean")
+            List(inner) -> JSONSchema(type: "array", items: generate_schema_for_type(inner))
+            Map(key, value) -> JSONSchema(type: "object", additional_properties: generate_schema_for_type(value))
+            Option(inner) -> generate_schema_for_type(inner)  # nullable
+            _ -> generate_object_schema(type)
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Serialization":
+    ```vibee
+    # Define serializable type
+    @serialize
+    @deserialize
+    class User:
+      @rename("user_id")
+      id: String
+
+      @rename("full_name")
+      name: String
+
+      email: String
+
+      @skip_if_null
+      phone: String?
+
+      @default([])
+      roles: List<String>
+
+      @skip
+      password_hash: String
+
+      @with(
+        serializer: (date) -> date.to_iso_string(),
+        deserializer: (str) -> DateTime.parse(str)
+      )
+      created_at: DateTime
+
+    # JSON serialization
+    user = User(
+      id: "123",
+      name: "John Doe",
+      email: "john@example.com",
+      roles: ["admin", "user"],
+      created_at: now()
+    )
+
+    json_str = json.stringify(user, { pretty: true })
+    # {
+    #   "user_id": "123",
+    #   "full_name": "John Doe",
+    #   "email": "john@example.com",
+    #   "roles": ["admin", "user"],
+    #   "created_at": "2024-01-15T10:30:00Z"
+    # }
+
+    # JSON deserialization
+    parsed = json.parse<User>(json_str)?
+    log.info("User: ${parsed.name}")
+
+    # YAML
+    yaml_str = yaml.stringify(user)
+    parsed_yaml = yaml.parse<User>(yaml_str)?
+
+    # TOML
+    config = toml.parse<Config>("""
+      [database]
+      host = "localhost"
+      port = 5432
+      name = "myapp"
+
+      [server]
+      port = 3000
+      workers = 4
+    """)?
+
+    # MessagePack (binary)
+    packed = msgpack.encode(user)
+    unpacked = msgpack.decode<User>(packed)?
+
+    # Protocol Buffers
+    @protobuf
+    message UserProto:
+      string id = 1
+      string name = 2
+      string email = 3
+      repeated string roles = 4
+
+    proto_bytes = protobuf.encode(user_proto)
+    decoded = protobuf.decode<UserProto>(proto_bytes)?
+
+    # Generate JSON Schema
+    schema = json_schema.generate<User>()
+    # {
+    #   "type": "object",
+    #   "properties": {
+    #     "user_id": { "type": "string" },
+    #     "full_name": { "type": "string" },
+    #     "email": { "type": "string", "format": "email" },
+    #     "roles": { "type": "array", "items": { "type": "string" } }
+    #   },
+    #   "required": ["user_id", "full_name", "email"]
+    # }
+
+    # Custom serialization
+    class Money:
+      amount: Decimal
+      currency: String
+
+      Method serialize() -> String:
+        return "${currency} ${amount}"
+
+      Static Method deserialize(str: String) -> Money:
+        parts = str.split(" ")
+        return Money(currency: parts[0], amount: Decimal(parts[1]))
+
+    # Streaming JSON
+    async fn process_large_json(path: Path):
+      stream = await fs.read_stream(path)
+      parser = json.stream_parser()
+      
+      for await chunk in stream:
+        for item in parser.feed(chunk):
+          process_item(item)
+    ```

@@ -1,0 +1,752 @@
+// =============================================================================
+// Vibee OS — Image Module
+// Image processing and manipulation
+// =============================================================================
+
+use color::{RGB, RGBA}
+
+/// Image format enumeration
+enum ImageFormat {
+    PNG,
+    JPEG,
+    GIF,
+    BMP,
+    WEBP,
+    TIFF,
+    ICO,
+    AVIF
+    
+    fn extension() -> String {
+        match self {
+            PNG => "png",
+            JPEG => "jpg",
+            GIF => "gif",
+            BMP => "bmp",
+            WEBP => "webp",
+            TIFF => "tiff",
+            ICO => "ico",
+            AVIF => "avif"
+        }
+    }
+    
+    fn mime_type() -> String {
+        match self {
+            PNG => "image/png",
+            JPEG => "image/jpeg",
+            GIF => "image/gif",
+            BMP => "image/bmp",
+            WEBP => "image/webp",
+            TIFF => "image/tiff",
+            ICO => "image/x-icon",
+            AVIF => "image/avif"
+        }
+    }
+    
+    fn from_extension(ext: String) -> Option<Self> {
+        match ext.to_lowercase() {
+            "png" => Some(PNG),
+            "jpg" | "jpeg" => Some(JPEG),
+            "gif" => Some(GIF),
+            "bmp" => Some(BMP),
+            "webp" => Some(WEBP),
+            "tiff" | "tif" => Some(TIFF),
+            "ico" => Some(ICO),
+            "avif" => Some(AVIF),
+            _ => None
+        }
+    }
+}
+
+/// Color mode for images
+enum ColorMode {
+    Grayscale,
+    GrayscaleAlpha,
+    RGB,
+    RGBA,
+    Indexed,
+    CMYK
+    
+    fn channels() -> Int {
+        match self {
+            Grayscale => 1,
+            GrayscaleAlpha => 2,
+            RGB => 3,
+            RGBA => 4,
+            Indexed => 1,
+            CMYK => 4
+        }
+    }
+}
+
+/// Pixel representation
+struct Pixel {
+    r: UInt8
+    g: UInt8
+    b: UInt8
+    a: UInt8
+    
+    fn new(r: UInt8, g: UInt8, b: UInt8, a: UInt8) -> Self {
+        Pixel { r: r, g: g, b: b, a: a }
+    }
+    
+    fn from_rgb(rgb: RGB) -> Self {
+        Pixel { r: rgb.r, g: rgb.g, b: rgb.b, a: 255 }
+    }
+    
+    fn from_rgba(rgba: RGBA) -> Self {
+        Pixel { r: rgba.r, g: rgba.g, b: rgba.b, a: (rgba.a * 255.0) as UInt8 }
+    }
+    
+    fn to_rgb() -> RGB {
+        RGB { r: self.r, g: self.g, b: self.b }
+    }
+    
+    fn to_rgba() -> RGBA {
+        RGBA { r: self.r, g: self.g, b: self.b, a: self.a as Float64 / 255.0 }
+    }
+    
+    fn grayscale() -> UInt8 {
+        ((self.r as Float64 * 0.299) + (self.g as Float64 * 0.587) + (self.b as Float64 * 0.114)) as UInt8
+    }
+    
+    fn blend(other: Pixel, alpha: Float64) -> Self {
+        let a = alpha.clamp(0.0, 1.0)
+        Pixel {
+            r: ((1.0 - a) * self.r as Float64 + a * other.r as Float64) as UInt8,
+            g: ((1.0 - a) * self.g as Float64 + a * other.g as Float64) as UInt8,
+            b: ((1.0 - a) * self.b as Float64 + a * other.b as Float64) as UInt8,
+            a: ((1.0 - a) * self.a as Float64 + a * other.a as Float64) as UInt8
+        }
+    }
+    
+    fn invert() -> Self {
+        Pixel { r: 255 - self.r, g: 255 - self.g, b: 255 - self.b, a: self.a }
+    }
+}
+
+/// Image structure
+struct Image {
+    width: Int
+    height: Int
+    pixels: [Pixel]
+    color_mode: ColorMode
+    
+    fn new(width: Int, height: Int) -> Self {
+        let pixels = Vec.with_capacity(width * height)
+        for _ in 0..(width * height) {
+            pixels.push(Pixel.new(0, 0, 0, 255))
+        }
+        Image { width: width, height: height, pixels: pixels, color_mode: ColorMode.RGBA }
+    }
+    
+    fn with_color(width: Int, height: Int, color: Pixel) -> Self {
+        let pixels = Vec.with_capacity(width * height)
+        for _ in 0..(width * height) {
+            pixels.push(color)
+        }
+        Image { width: width, height: height, pixels: pixels, color_mode: ColorMode.RGBA }
+    }
+    
+    fn from_bytes(data: [UInt8]) -> Result<Self, ImageError> {
+        @native("image_decode", data)
+    }
+    
+    fn load(path: String) -> Result<Self, ImageError> {
+        let data = fs.read_bytes(path)?
+        Self.from_bytes(data)
+    }
+    
+    fn save(path: String, format: ImageFormat) -> Result<(), ImageError> {
+        let data = self.encode(format)?
+        fs.write_bytes(path, data)?
+        Ok(())
+    }
+    
+    fn encode(format: ImageFormat) -> Result<[UInt8], ImageError> {
+        @native("image_encode", self, format)
+    }
+    
+    fn get_pixel(x: Int, y: Int) -> Option<Pixel> {
+        if x < 0 || x >= self.width || y < 0 || y >= self.height {
+            return None
+        }
+        Some(self.pixels[y * self.width + x])
+    }
+    
+    fn set_pixel(x: Int, y: Int, pixel: Pixel) {
+        if x >= 0 && x < self.width && y >= 0 && y < self.height {
+            self.pixels[y * self.width + x] = pixel
+        }
+    }
+    
+    fn dimensions() -> (Int, Int) {
+        (self.width, self.height)
+    }
+    
+    fn aspect_ratio() -> Float64 {
+        self.width as Float64 / self.height as Float64
+    }
+    
+    fn clone() -> Self {
+        Image {
+            width: self.width,
+            height: self.height,
+            pixels: self.pixels.clone(),
+            color_mode: self.color_mode
+        }
+    }
+}
+
+/// Image transformations
+impl Image {
+    fn resize(new_width: Int, new_height: Int) -> Self {
+        self.resize_with(new_width, new_height, ResizeFilter.Bilinear)
+    }
+    
+    fn resize_with(new_width: Int, new_height: Int, filter: ResizeFilter) -> Self {
+        @native("image_resize", self, new_width, new_height, filter)
+    }
+    
+    fn scale(factor: Float64) -> Self {
+        let new_width = (self.width as Float64 * factor) as Int
+        let new_height = (self.height as Float64 * factor) as Int
+        self.resize(new_width, new_height)
+    }
+    
+    fn thumbnail(max_width: Int, max_height: Int) -> Self {
+        let ratio = (max_width as Float64 / self.width as Float64)
+            .min(max_height as Float64 / self.height as Float64)
+        if ratio >= 1.0 { return self.clone() }
+        self.scale(ratio)
+    }
+    
+    fn crop(x: Int, y: Int, width: Int, height: Int) -> Self {
+        var result = Image.new(width, height)
+        for dy in 0..height {
+            for dx in 0..width {
+                if let Some(pixel) = self.get_pixel(x + dx, y + dy) {
+                    result.set_pixel(dx, dy, pixel)
+                }
+            }
+        }
+        result
+    }
+    
+    fn rotate_90() -> Self {
+        var result = Image.new(self.height, self.width)
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let pixel = self.pixels[y * self.width + x]
+                result.set_pixel(self.height - 1 - y, x, pixel)
+            }
+        }
+        result
+    }
+    
+    fn rotate_180() -> Self {
+        var result = Image.new(self.width, self.height)
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let pixel = self.pixels[y * self.width + x]
+                result.set_pixel(self.width - 1 - x, self.height - 1 - y, pixel)
+            }
+        }
+        result
+    }
+    
+    fn rotate_270() -> Self {
+        var result = Image.new(self.height, self.width)
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let pixel = self.pixels[y * self.width + x]
+                result.set_pixel(y, self.width - 1 - x, pixel)
+            }
+        }
+        result
+    }
+    
+    fn flip_horizontal() -> Self {
+        var result = Image.new(self.width, self.height)
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let pixel = self.pixels[y * self.width + x]
+                result.set_pixel(self.width - 1 - x, y, pixel)
+            }
+        }
+        result
+    }
+    
+    fn flip_vertical() -> Self {
+        var result = Image.new(self.width, self.height)
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let pixel = self.pixels[y * self.width + x]
+                result.set_pixel(x, self.height - 1 - y, pixel)
+            }
+        }
+        result
+    }
+}
+
+/// Image filters and effects
+impl Image {
+    fn grayscale() -> Self {
+        var result = self.clone()
+        for i in 0..result.pixels.len() {
+            let gray = result.pixels[i].grayscale()
+            result.pixels[i] = Pixel.new(gray, gray, gray, result.pixels[i].a)
+        }
+        result
+    }
+    
+    fn invert() -> Self {
+        var result = self.clone()
+        for i in 0..result.pixels.len() {
+            result.pixels[i] = result.pixels[i].invert()
+        }
+        result
+    }
+    
+    fn brightness(factor: Float64) -> Self {
+        var result = self.clone()
+        for i in 0..result.pixels.len() {
+            let p = result.pixels[i]
+            result.pixels[i] = Pixel.new(
+                (p.r as Float64 * factor).clamp(0.0, 255.0) as UInt8,
+                (p.g as Float64 * factor).clamp(0.0, 255.0) as UInt8,
+                (p.b as Float64 * factor).clamp(0.0, 255.0) as UInt8,
+                p.a
+            )
+        }
+        result
+    }
+    
+    fn contrast(factor: Float64) -> Self {
+        var result = self.clone()
+        let f = (259.0 * (factor + 255.0)) / (255.0 * (259.0 - factor))
+        for i in 0..result.pixels.len() {
+            let p = result.pixels[i]
+            result.pixels[i] = Pixel.new(
+                (f * (p.r as Float64 - 128.0) + 128.0).clamp(0.0, 255.0) as UInt8,
+                (f * (p.g as Float64 - 128.0) + 128.0).clamp(0.0, 255.0) as UInt8,
+                (f * (p.b as Float64 - 128.0) + 128.0).clamp(0.0, 255.0) as UInt8,
+                p.a
+            )
+        }
+        result
+    }
+    
+    fn saturate(factor: Float64) -> Self {
+        var result = self.clone()
+        for i in 0..result.pixels.len() {
+            let p = result.pixels[i]
+            let gray = p.grayscale() as Float64
+            result.pixels[i] = Pixel.new(
+                (gray + factor * (p.r as Float64 - gray)).clamp(0.0, 255.0) as UInt8,
+                (gray + factor * (p.g as Float64 - gray)).clamp(0.0, 255.0) as UInt8,
+                (gray + factor * (p.b as Float64 - gray)).clamp(0.0, 255.0) as UInt8,
+                p.a
+            )
+        }
+        result
+    }
+    
+    fn sepia() -> Self {
+        var result = self.clone()
+        for i in 0..result.pixels.len() {
+            let p = result.pixels[i]
+            let r = p.r as Float64
+            let g = p.g as Float64
+            let b = p.b as Float64
+            result.pixels[i] = Pixel.new(
+                (0.393 * r + 0.769 * g + 0.189 * b).clamp(0.0, 255.0) as UInt8,
+                (0.349 * r + 0.686 * g + 0.168 * b).clamp(0.0, 255.0) as UInt8,
+                (0.272 * r + 0.534 * g + 0.131 * b).clamp(0.0, 255.0) as UInt8,
+                p.a
+            )
+        }
+        result
+    }
+    
+    fn blur(radius: Int) -> Self {
+        self.apply_kernel(Kernel.gaussian(radius))
+    }
+    
+    fn sharpen() -> Self {
+        self.apply_kernel(Kernel.sharpen())
+    }
+    
+    fn edge_detect() -> Self {
+        self.apply_kernel(Kernel.sobel_x()).add(self.apply_kernel(Kernel.sobel_y()))
+    }
+    
+    fn emboss() -> Self {
+        self.apply_kernel(Kernel.emboss())
+    }
+    
+    fn apply_kernel(kernel: Kernel) -> Self {
+        @native("image_convolve", self, kernel)
+    }
+    
+    fn add(other: Image) -> Self {
+        var result = self.clone()
+        for i in 0..result.pixels.len().min(other.pixels.len()) {
+            let p1 = result.pixels[i]
+            let p2 = other.pixels[i]
+            result.pixels[i] = Pixel.new(
+                (p1.r as Int + p2.r as Int).min(255) as UInt8,
+                (p1.g as Int + p2.g as Int).min(255) as UInt8,
+                (p1.b as Int + p2.b as Int).min(255) as UInt8,
+                p1.a
+            )
+        }
+        result
+    }
+}
+
+/// Resize filter algorithms
+enum ResizeFilter {
+    Nearest,
+    Bilinear,
+    Bicubic,
+    Lanczos3
+}
+
+/// Convolution kernel
+struct Kernel {
+    data: [[Float64]]
+    width: Int
+    height: Int
+    
+    fn new(data: [[Float64]]) -> Self {
+        Kernel {
+            data: data,
+            width: data[0].len(),
+            height: data.len()
+        }
+    }
+    
+    fn gaussian(radius: Int) -> Self {
+        let size = radius * 2 + 1
+        var data = []
+        let sigma = radius as Float64 / 3.0
+        var sum = 0.0
+        
+        for y in 0..size {
+            var row = []
+            for x in 0..size {
+                let dx = x - radius
+                let dy = y - radius
+                let value = (-((dx * dx + dy * dy) as Float64) / (2.0 * sigma * sigma)).exp()
+                row.push(value)
+                sum += value
+            }
+            data.push(row)
+        }
+        
+        // Normalize
+        for y in 0..size {
+            for x in 0..size {
+                data[y][x] /= sum
+            }
+        }
+        
+        Kernel.new(data)
+    }
+    
+    fn sharpen() -> Self {
+        Kernel.new([
+            [0.0, -1.0, 0.0],
+            [-1.0, 5.0, -1.0],
+            [0.0, -1.0, 0.0]
+        ])
+    }
+    
+    fn sobel_x() -> Self {
+        Kernel.new([
+            [-1.0, 0.0, 1.0],
+            [-2.0, 0.0, 2.0],
+            [-1.0, 0.0, 1.0]
+        ])
+    }
+    
+    fn sobel_y() -> Self {
+        Kernel.new([
+            [-1.0, -2.0, -1.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 2.0, 1.0]
+        ])
+    }
+    
+    fn emboss() -> Self {
+        Kernel.new([
+            [-2.0, -1.0, 0.0],
+            [-1.0, 1.0, 1.0],
+            [0.0, 1.0, 2.0]
+        ])
+    }
+    
+    fn box_blur(size: Int) -> Self {
+        let value = 1.0 / (size * size) as Float64
+        var data = []
+        for _ in 0..size {
+            var row = []
+            for _ in 0..size {
+                row.push(value)
+            }
+            data.push(row)
+        }
+        Kernel.new(data)
+    }
+}
+
+/// Image composition and blending
+impl Image {
+    fn overlay(other: Image, x: Int, y: Int) -> Self {
+        var result = self.clone()
+        for dy in 0..other.height {
+            for dx in 0..other.width {
+                let px = x + dx
+                let py = y + dy
+                if px >= 0 && px < result.width && py >= 0 && py < result.height {
+                    if let Some(src) = other.get_pixel(dx, dy) {
+                        if let Some(dst) = result.get_pixel(px, py) {
+                            let alpha = src.a as Float64 / 255.0
+                            result.set_pixel(px, py, dst.blend(src, alpha))
+                        }
+                    }
+                }
+            }
+        }
+        result
+    }
+    
+    fn blend_mode(other: Image, mode: BlendMode) -> Self {
+        @native("image_blend", self, other, mode)
+    }
+    
+    fn mask(mask_image: Image) -> Self {
+        var result = self.clone()
+        for i in 0..result.pixels.len().min(mask_image.pixels.len()) {
+            let mask_alpha = mask_image.pixels[i].grayscale()
+            result.pixels[i].a = ((result.pixels[i].a as Int * mask_alpha as Int) / 255) as UInt8
+        }
+        result
+    }
+}
+
+/// Blend modes
+enum BlendMode {
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion
+}
+
+/// Histogram analysis
+struct Histogram {
+    red: [Int; 256]
+    green: [Int; 256]
+    blue: [Int; 256]
+    luminance: [Int; 256]
+}
+
+impl Image {
+    fn histogram() -> Histogram {
+        var hist = Histogram {
+            red: [0; 256],
+            green: [0; 256],
+            blue: [0; 256],
+            luminance: [0; 256]
+        }
+        
+        for pixel in self.pixels {
+            hist.red[pixel.r as Int] += 1
+            hist.green[pixel.g as Int] += 1
+            hist.blue[pixel.b as Int] += 1
+            hist.luminance[pixel.grayscale() as Int] += 1
+        }
+        
+        hist
+    }
+    
+    fn auto_contrast() -> Self {
+        let hist = self.histogram()
+        var min_val = 0
+        var max_val = 255
+        
+        // Find min
+        for i in 0..256 {
+            if hist.luminance[i] > 0 {
+                min_val = i
+                break
+            }
+        }
+        
+        // Find max
+        for i in (0..256).rev() {
+            if hist.luminance[i] > 0 {
+                max_val = i
+                break
+            }
+        }
+        
+        if max_val <= min_val { return self.clone() }
+        
+        let scale = 255.0 / (max_val - min_val) as Float64
+        var result = self.clone()
+        
+        for i in 0..result.pixels.len() {
+            let p = result.pixels[i]
+            result.pixels[i] = Pixel.new(
+                ((p.r as Int - min_val) as Float64 * scale).clamp(0.0, 255.0) as UInt8,
+                ((p.g as Int - min_val) as Float64 * scale).clamp(0.0, 255.0) as UInt8,
+                ((p.b as Int - min_val) as Float64 * scale).clamp(0.0, 255.0) as UInt8,
+                p.a
+            )
+        }
+        
+        result
+    }
+}
+
+/// Image drawing primitives
+impl Image {
+    fn draw_line(x1: Int, y1: Int, x2: Int, y2: Int, color: Pixel) {
+        let dx = (x2 - x1).abs()
+        let dy = (y2 - y1).abs()
+        let sx = if x1 < x2 { 1 } else { -1 }
+        let sy = if y1 < y2 { 1 } else { -1 }
+        var err = dx - dy
+        var x = x1
+        var y = y1
+        
+        loop {
+            self.set_pixel(x, y, color)
+            if x == x2 && y == y2 { break }
+            let e2 = 2 * err
+            if e2 > -dy { err -= dy; x += sx }
+            if e2 < dx { err += dx; y += sy }
+        }
+    }
+    
+    fn draw_rect(x: Int, y: Int, width: Int, height: Int, color: Pixel) {
+        self.draw_line(x, y, x + width - 1, y, color)
+        self.draw_line(x + width - 1, y, x + width - 1, y + height - 1, color)
+        self.draw_line(x + width - 1, y + height - 1, x, y + height - 1, color)
+        self.draw_line(x, y + height - 1, x, y, color)
+    }
+    
+    fn fill_rect(x: Int, y: Int, width: Int, height: Int, color: Pixel) {
+        for dy in 0..height {
+            for dx in 0..width {
+                self.set_pixel(x + dx, y + dy, color)
+            }
+        }
+    }
+    
+    fn draw_circle(cx: Int, cy: Int, radius: Int, color: Pixel) {
+        var x = radius
+        var y = 0
+        var err = 0
+        
+        while x >= y {
+            self.set_pixel(cx + x, cy + y, color)
+            self.set_pixel(cx + y, cy + x, color)
+            self.set_pixel(cx - y, cy + x, color)
+            self.set_pixel(cx - x, cy + y, color)
+            self.set_pixel(cx - x, cy - y, color)
+            self.set_pixel(cx - y, cy - x, color)
+            self.set_pixel(cx + y, cy - x, color)
+            self.set_pixel(cx + x, cy - y, color)
+            
+            y += 1
+            err += 1 + 2 * y
+            if 2 * (err - x) + 1 > 0 {
+                x -= 1
+                err += 1 - 2 * x
+            }
+        }
+    }
+    
+    fn fill_circle(cx: Int, cy: Int, radius: Int, color: Pixel) {
+        for y in (cy - radius)..(cy + radius + 1) {
+            for x in (cx - radius)..(cx + radius + 1) {
+                let dx = x - cx
+                let dy = y - cy
+                if dx * dx + dy * dy <= radius * radius {
+                    self.set_pixel(x, y, color)
+                }
+            }
+        }
+    }
+}
+
+/// Image error types
+enum ImageError {
+    InvalidFormat,
+    DecodingError(String),
+    EncodingError(String),
+    IoError(String),
+    InvalidDimensions,
+    UnsupportedFormat
+}
+
+impl Display for ImageError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidFormat => f.write("Invalid image format"),
+            DecodingError(msg) => f.write(format!("Decoding error: {}", msg)),
+            EncodingError(msg) => f.write(format!("Encoding error: {}", msg)),
+            IoError(msg) => f.write(format!("IO error: {}", msg)),
+            InvalidDimensions => f.write("Invalid dimensions"),
+            UnsupportedFormat => f.write("Unsupported format")
+        }
+    }
+}
+
+// Tests
+test "create image" {
+    let img = Image.new(100, 100)
+    assert_eq(img.width, 100)?
+    assert_eq(img.height, 100)?
+    assert_eq(img.pixels.len(), 10000)?
+}
+
+test "pixel operations" {
+    var img = Image.new(10, 10)
+    let red = Pixel.new(255, 0, 0, 255)
+    img.set_pixel(5, 5, red)
+    let p = img.get_pixel(5, 5)?
+    assert_eq(p.r, 255)?
+    assert_eq(p.g, 0)?
+}
+
+test "grayscale" {
+    let pixel = Pixel.new(100, 150, 200, 255)
+    let gray = pixel.grayscale()
+    assert(gray > 0 && gray < 255)?
+}
+
+test "flip horizontal" {
+    var img = Image.new(10, 10)
+    img.set_pixel(0, 0, Pixel.new(255, 0, 0, 255))
+    let flipped = img.flip_horizontal()
+    let p = flipped.get_pixel(9, 0)?
+    assert_eq(p.r, 255)?
+}
+
+test "crop" {
+    let img = Image.with_color(100, 100, Pixel.new(255, 0, 0, 255))
+    let cropped = img.crop(10, 10, 50, 50)
+    assert_eq(cropped.width, 50)?
+    assert_eq(cropped.height, 50)?
+}

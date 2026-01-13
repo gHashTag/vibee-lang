@@ -1,0 +1,408 @@
+name: vibee_os_semantic_fs
+version: "0.1.0"
+language: zig
+module: services/vfs/semantic
+description: Semantic File System - access files by meaning, not paths (inspired by LSFS paper, ICLR 2025)
+
+behaviors:
+  - name: semantic_file_search
+    given: User wants to find files by description
+    when: semantic_search is called with natural language query
+    then: Most relevant files are returned ranked by semantic similarity
+    test_cases:
+      - name: find_config_files
+        input: {query: "database configuration settings"}
+        expected: {success: true, top_result: "config/database.yaml", similarity: 0.92}
+      - name: find_by_content
+        input: {query: "function that calculates fibonacci numbers"}
+        expected: {success: true, top_result: "src/math/fibonacci.zig", similarity: 0.88}
+      - name: find_related_code
+        input: {query: "error handling for network requests"}
+        expected: {success: true, results_count: 5}
+
+  - name: semantic_file_create
+    given: User describes what file should contain
+    when: semantic_create is called with description
+    then: File is created with appropriate content and location
+    test_cases:
+      - name: create_from_description
+        input: {description: "a Python script that downloads images from URLs"}
+        expected: {success: true, path: "scripts/image_downloader.py", content_generated: true}
+      - name: create_config
+        input: {description: "nginx configuration for reverse proxy to port 3000"}
+        expected: {success: true, path: "config/nginx.conf", valid_config: true}
+
+  - name: semantic_file_organize
+    given: Files exist in disorganized structure
+    when: semantic_organize is called
+    then: Files are reorganized based on semantic relationships
+    test_cases:
+      - name: organize_project
+        input: {path: "/messy_project", strategy: "by_purpose"}
+        expected: {success: true, directories_created: 5, files_moved: 23}
+
+  - name: semantic_diff
+    given: Two versions of a file exist
+    when: semantic_diff is called
+    then: Semantic differences are explained in natural language
+    test_cases:
+      - name: diff_code_changes
+        input: {file_a: "v1/main.zig", file_b: "v2/main.zig"}
+        expected: {success: true, summary: "Added error handling for null pointers"}
+
+  - name: semantic_versioning
+    given: File has multiple versions
+    when: semantic_history is called
+    then: Version history is explained semantically
+    test_cases:
+      - name: explain_history
+        input: {file: "src/auth.zig"}
+        expected: {success: true, versions: 5, summary: "Evolution from basic auth to OAuth2"}
+
+types:
+  SemanticFile:
+    id: str
+    path: str
+    content: str
+    embedding: [float]
+    summary: str
+    tags: [str]
+    concepts: [Concept]
+    relationships: [FileRelation]
+    metadata: FileMetadata
+
+  Concept:
+    name: str
+    confidence: float
+    category: ConceptCategory
+
+  ConceptCategory:
+    variants:
+      - Code
+      - Configuration
+      - Documentation
+      - Data
+      - Media
+      - Script
+      - Test
+
+  FileRelation:
+    target_id: str
+    relation_type: RelationType
+    strength: float
+
+  RelationType:
+    variants:
+      - Imports
+      - ImportedBy
+      - Tests
+      - TestedBy
+      - Documents
+      - DocumentedBy
+      - ConfiguresFor
+      - SimilarTo
+      - DependsOn
+      - DependedOnBy
+
+  FileMetadata:
+    size_bytes: int
+    created_at: int
+    modified_at: int
+    accessed_at: int
+    author: str?
+    language: str?
+    purpose: str?
+
+  SearchResult:
+    file: SemanticFile
+    similarity: float
+    relevance_explanation: str
+    snippet: str?
+
+  SearchQuery:
+    text: str
+    filters: SearchFilters?
+    limit: int
+    include_content: bool
+
+  SearchFilters:
+    file_types: [str]?
+    directories: [str]?
+    date_range: {start: int, end: int}?
+    min_similarity: float?
+    concepts: [str]?
+    languages: [str]?
+
+  OrganizationStrategy:
+    variants:
+      - ByPurpose      # Group by what files do
+      - ByDomain       # Group by business domain
+      - ByLanguage     # Group by programming language
+      - ByDependency   # Group by dependency graph
+      - Custom         # User-defined rules
+
+  OrganizationPlan:
+    moves: [FileMove]
+    creates: [DirectoryCreate]
+    summary: str
+    requires_approval: bool
+
+  FileMove:
+    from_path: str
+    to_path: str
+    reason: str
+
+  DirectoryCreate:
+    path: str
+    purpose: str
+
+  SemanticDiff:
+    file_a: str
+    file_b: str
+    summary: str
+    changes: [SemanticChange]
+    impact: ImpactLevel
+
+  SemanticChange:
+    description: str
+    location: str
+    change_type: ChangeType
+    importance: float
+
+  ChangeType:
+    variants:
+      - Addition
+      - Deletion
+      - Modification
+      - Refactoring
+      - BugFix
+      - FeatureAdd
+      - Optimization
+
+  ImpactLevel:
+    variants:
+      - None
+      - Low
+      - Medium
+      - High
+      - Breaking
+
+  VersionHistory:
+    file: str
+    versions: [FileVersion]
+    evolution_summary: str
+    key_milestones: [Milestone]
+
+  FileVersion:
+    version: int
+    timestamp: int
+    author: str?
+    summary: str
+    changes_from_previous: str?
+
+  Milestone:
+    version: int
+    description: str
+    significance: str
+
+functions:
+  # Semantic search
+  - name: semantic_search
+    params: {query: SearchQuery}
+    returns: [SearchResult]
+    description: Search files by semantic meaning
+
+  - name: semantic_find
+    params: {description: str}
+    returns: SemanticFile?
+    description: Find single best matching file
+
+  - name: semantic_related
+    params: {file_id: str, limit: int}
+    returns: [SemanticFile]
+    description: Find semantically related files
+
+  # Semantic CRUD
+  - name: semantic_create
+    params: {description: str, content: str?}
+    returns: SemanticFile
+    description: Create file from semantic description
+
+  - name: semantic_read
+    params: {query: str}
+    returns: str
+    description: Read file content by semantic query
+
+  - name: semantic_update
+    params: {file_id: str, instruction: str}
+    returns: SemanticFile
+    description: Update file based on natural language instruction
+
+  - name: semantic_delete
+    params: {query: str, confirm: bool}
+    returns: bool
+    description: Delete files matching semantic query
+
+  # Organization
+  - name: semantic_organize
+    params: {path: str, strategy: OrganizationStrategy}
+    returns: OrganizationPlan
+    description: Generate organization plan
+
+  - name: semantic_apply_organization
+    params: {plan: OrganizationPlan}
+    returns: bool
+    description: Apply organization plan
+
+  - name: semantic_suggest_location
+    params: {file_content: str, file_name: str}
+    returns: str
+    description: Suggest best location for new file
+
+  # Diff and history
+  - name: semantic_diff
+    params: {file_a: str, file_b: str}
+    returns: SemanticDiff
+    description: Generate semantic diff between files
+
+  - name: semantic_history
+    params: {file: str}
+    returns: VersionHistory
+    description: Get semantic version history
+
+  - name: semantic_blame
+    params: {file: str, line: int}
+    returns: str
+    description: Explain why a line exists (semantic git blame)
+
+  # Indexing
+  - name: index_file
+    params: {path: str}
+    returns: SemanticFile
+    description: Index a file for semantic search
+
+  - name: index_directory
+    params: {path: str, recursive: bool}
+    returns: int
+    description: Index all files in directory
+
+  - name: reindex_all
+    params: {}
+    returns: int
+    description: Reindex entire filesystem
+
+  # Relationships
+  - name: build_dependency_graph
+    params: {root: str}
+    returns: {nodes: [str], edges: [FileRelation]}
+    description: Build dependency graph from root
+
+  - name: find_unused_files
+    params: {root: str}
+    returns: [SemanticFile]
+    description: Find files not referenced by others
+
+  - name: find_duplicates
+    params: {root: str, threshold: float}
+    returns: [[SemanticFile]]
+    description: Find semantically duplicate files
+
+imports:
+  - kernel.agent.semantic_memory
+  - services.vfs.vfs
+
+semantic_fs_architecture: |
+  Semantic File System Architecture (LSFS-inspired):
+  
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                    Semantic File System                         │
+  │                                                                 │
+  │  ┌───────────────────────────────────────────────────────────┐ │
+  │  │                   Query Interface                          │ │
+  │  │  "find files about authentication"                        │ │
+  │  │  "create a config for Redis connection"                   │ │
+  │  │  "what changed in the auth module?"                       │ │
+  │  └───────────────────────────────────────────────────────────┘ │
+  │                            │                                    │
+  │                            ▼                                    │
+  │  ┌───────────────────────────────────────────────────────────┐ │
+  │  │                   LLM Processing                           │ │
+  │  │  • Query understanding                                     │ │
+  │  │  • Content generation                                      │ │
+  │  │  • Diff summarization                                      │ │
+  │  └───────────────────────────────────────────────────────────┘ │
+  │                            │                                    │
+  │         ┌──────────────────┼──────────────────┐                │
+  │         ▼                  ▼                  ▼                │
+  │  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐          │
+  │  │  Embedding  │   │   Vector    │   │  Relation   │          │
+  │  │   Engine    │   │   Index     │   │   Graph     │          │
+  │  └─────────────┘   └─────────────┘   └─────────────┘          │
+  │         │                  │                  │                │
+  │         └──────────────────┼──────────────────┘                │
+  │                            ▼                                    │
+  │  ┌───────────────────────────────────────────────────────────┐ │
+  │  │                Traditional VFS                             │ │
+  │  │  scheme://path/to/file                                     │ │
+  │  └───────────────────────────────────────────────────────────┘ │
+  │                                                                 │
+  └─────────────────────────────────────────────────────────────────┘
+  
+  Key Operations:
+  
+  1. SEMANTIC SEARCH
+     Query: "database connection code"
+     → Embed query
+     → ANN search in vector index
+     → Rank by similarity + recency + importance
+     → Return top results with explanations
+  
+  2. SEMANTIC CREATE
+     Query: "create a REST API for users"
+     → LLM generates appropriate code
+     → Suggest location based on project structure
+     → Create file with proper naming
+     → Index for future search
+  
+  3. SEMANTIC ORGANIZE
+     Query: "organize this messy project"
+     → Analyze all files semantically
+     → Cluster by purpose/domain
+     → Generate reorganization plan
+     → Apply with user approval
+  
+  4. SEMANTIC DIFF
+     Query: "what changed between v1 and v2?"
+     → Load both versions
+     → LLM analyzes differences
+     → Generate human-readable summary
+     → Highlight breaking changes
+
+traditional_vs_semantic: |
+  Traditional FS vs Semantic FS:
+  
+  Traditional:
+    open("/home/user/projects/myapp/src/auth/oauth.py")
+    → Must know exact path
+    → No understanding of content
+    → Manual organization
+  
+  Semantic:
+    semantic_find("OAuth authentication implementation")
+    → Finds by meaning
+    → Understands content
+    → Self-organizing
+  
+  Use Cases:
+  
+  1. "Find all files related to payment processing"
+     → Returns: payment.py, stripe_client.py, invoice.py, ...
+  
+  2. "Create a unit test for the User model"
+     → Creates: tests/test_user.py with appropriate tests
+  
+  3. "What files would be affected if I change the database schema?"
+     → Returns: models.py, migrations/, api/users.py, ...
+  
+  4. "Explain the difference between these two config files"
+     → Returns: "Production config has SSL enabled and uses Redis cluster"

@@ -1,0 +1,707 @@
+# ============================================================================
+# DIFF - Сравнение данных на Vibee
+# ============================================================================
+# Text diff, Object diff, Patch, Merge
+# ============================================================================
+
+Specification Diff:
+  """Diff как спецификация сравнения и слияния данных."""
+
+  # ==========================================================================
+  # TEXT DIFF
+  # ==========================================================================
+
+  Type TextDiff:
+    hunks: List<DiffHunk>
+
+    Static Method compute(old_text: String, new_text: String) -> TextDiff:
+      old_lines = old_text.lines()
+      new_lines = new_text.lines()
+      
+      hunks = compute_diff_hunks(old_lines, new_lines)
+      return TextDiff(hunks)
+
+    Static Method compute_words(old_text: String, new_text: String) -> TextDiff:
+      old_words = old_text.split_whitespace()
+      new_words = new_text.split_whitespace()
+      
+      hunks = compute_diff_hunks(old_words, new_words)
+      return TextDiff(hunks)
+
+    Static Method compute_chars(old_text: String, new_text: String) -> TextDiff:
+      old_chars = old_text.chars().map(c -> c.to_string()).to_list()
+      new_chars = new_text.chars().map(c -> c.to_string()).to_list()
+      
+      hunks = compute_diff_hunks(old_chars, new_chars)
+      return TextDiff(hunks)
+
+    Method is_empty() -> Boolean:
+      return self.hunks.is_empty()
+
+    Method has_changes() -> Boolean:
+      return self.hunks.any(h -> h.changes.any(c -> c.type != ChangeType.Equal))
+
+    Method to_unified(context_lines: Int = 3) -> String:
+      return format_unified_diff(self.hunks, context_lines)
+
+    Method to_side_by_side(width: Int = 80) -> String:
+      return format_side_by_side(self.hunks, width)
+
+    Method to_html() -> String:
+      return format_html_diff(self.hunks)
+
+    Method apply(text: String) -> Result<String, DiffError>:
+      return apply_diff(text.lines(), self.hunks)
+
+    Method reverse() -> TextDiff:
+      reversed_hunks = self.hunks.map(h -> DiffHunk(
+        old_start: h.new_start,
+        old_count: h.new_count,
+        new_start: h.old_start,
+        new_count: h.old_count,
+        changes: h.changes.map(c -> DiffChange(
+          type: match c.type:
+            Added -> Removed
+            Removed -> Added
+            Equal -> Equal,
+          content: c.content,
+          old_line: c.new_line,
+          new_line: c.old_line
+        ))
+      ))
+      return TextDiff(reversed_hunks)
+
+    Method stats() -> DiffStats:
+      added = 0
+      removed = 0
+      
+      for hunk in self.hunks:
+        for change in hunk.changes:
+          match change.type:
+            Added -> added += 1
+            Removed -> removed += 1
+            Equal -> pass
+      
+      return DiffStats(added, removed)
+
+  Type DiffHunk:
+    old_start: Int
+    old_count: Int
+    new_start: Int
+    new_count: Int
+    changes: List<DiffChange>
+
+  Type DiffChange:
+    type: ChangeType
+    content: String
+    old_line: Option<Int>
+    new_line: Option<Int>
+
+  Type ChangeType:
+    variants:
+      - Added
+      - Removed
+      - Equal
+
+  Type DiffStats:
+    additions: Int
+    deletions: Int
+
+    Method total() -> Int:
+      return self.additions + self.deletions
+
+  # ==========================================================================
+  # DIFF ALGORITHM (Myers)
+  # ==========================================================================
+
+  Behavior DiffAlgorithm:
+    When compute_diff_hunks<T: Eq>(old: List<T>, new: List<T>) -> List<DiffHunk>:
+      Then:
+        # Myers diff algorithm
+        n = old.length
+        m = new.length
+        max = n + m
+        
+        v = Map<Int, Int>()
+        v[1] = 0
+        
+        trace = []
+        
+        for d in 0..=max:
+          trace.push(v.clone())
+          
+          for k in (-d..=d).step_by(2):
+            x = if k == -d or (k != d and v[k - 1] < v[k + 1]):
+              v[k + 1]
+            else:
+              v[k - 1] + 1
+            
+            y = x - k
+            
+            while x < n and y < m and old[x] == new[y]:
+              x += 1
+              y += 1
+            
+            v[k] = x
+            
+            if x >= n and y >= m:
+              return backtrack(trace, old, new)
+        
+        return []
+
+    When backtrack<T: Eq>(trace: List<Map<Int, Int>>, old: List<T>, new: List<T>) -> List<DiffHunk>:
+      Then:
+        changes = []
+        x = old.length
+        y = new.length
+        
+        for d in (trace.length - 1)..0 by -1:
+          v = trace[d]
+          k = x - y
+          
+          prev_k = if k == -d or (k != d and v.get(k - 1).unwrap_or(-1) < v.get(k + 1).unwrap_or(-1)):
+            k + 1
+          else:
+            k - 1
+          
+          prev_x = v.get(prev_k).unwrap_or(0)
+          prev_y = prev_x - prev_k
+          
+          while x > prev_x and y > prev_y:
+            x -= 1
+            y -= 1
+            changes.push(DiffChange(Equal, old[x].to_string(), Some(x), Some(y)))
+          
+          if d > 0:
+            if x == prev_x:
+              changes.push(DiffChange(Added, new[prev_y].to_string(), null, Some(prev_y)))
+            else:
+              changes.push(DiffChange(Removed, old[prev_x].to_string(), Some(prev_x), null))
+          
+          x = prev_x
+          y = prev_y
+        
+        changes.reverse()
+        return group_into_hunks(changes)
+
+    When group_into_hunks(changes: List<DiffChange>) -> List<DiffHunk>:
+      Then:
+        if changes.is_empty():
+          return []
+        
+        hunks = []
+        current_hunk = null
+        context_before = []
+        
+        for change in changes:
+          if change.type == Equal:
+            if current_hunk != null:
+              current_hunk.changes.push(change)
+              
+              # Check if we should close the hunk
+              equal_count = current_hunk.changes
+                .reverse()
+                .take_while(c -> c.type == Equal)
+                .length
+              
+              if equal_count >= 6:
+                # Close hunk, keep 3 context lines
+                current_hunk.changes = current_hunk.changes
+                  .slice(0, current_hunk.changes.length - equal_count + 3)
+                hunks.push(current_hunk)
+                current_hunk = null
+                context_before = []
+            else:
+              context_before.push(change)
+              if context_before.length > 3:
+                context_before.remove_first()
+          else:
+            if current_hunk == null:
+              current_hunk = DiffHunk(
+                old_start: change.old_line.unwrap_or(0) - context_before.length,
+                old_count: 0,
+                new_start: change.new_line.unwrap_or(0) - context_before.length,
+                new_count: 0,
+                changes: context_before.clone()
+              )
+              context_before = []
+            
+            current_hunk.changes.push(change)
+        
+        if current_hunk != null:
+          hunks.push(current_hunk)
+        
+        # Update counts
+        for hunk in hunks:
+          hunk.old_count = hunk.changes.filter(c -> c.type != Added).length
+          hunk.new_count = hunk.changes.filter(c -> c.type != Removed).length
+        
+        return hunks
+
+  # ==========================================================================
+  # UNIFIED DIFF FORMAT
+  # ==========================================================================
+
+  Behavior UnifiedDiff:
+    When format_unified_diff(hunks: List<DiffHunk>, context: Int) -> String:
+      Then:
+        output = StringBuilder()
+        
+        for hunk in hunks:
+          # Hunk header
+          output.append("@@ -${hunk.old_start + 1},${hunk.old_count} +${hunk.new_start + 1},${hunk.new_count} @@\n")
+          
+          for change in hunk.changes:
+            prefix = match change.type:
+              Added -> "+"
+              Removed -> "-"
+              Equal -> " "
+            
+            output.append("${prefix}${change.content}\n")
+        
+        return output.to_string()
+
+    When parse_unified_diff(diff_text: String) -> Result<TextDiff, DiffError>:
+      Then:
+        hunks = []
+        lines = diff_text.lines()
+        i = 0
+        
+        while i < lines.length:
+          line = lines[i]
+          
+          if line.starts_with("@@"):
+            hunk = parse_hunk_header(line)?
+            i += 1
+            
+            while i < lines.length and not lines[i].starts_with("@@"):
+              change_line = lines[i]
+              
+              if change_line.starts_with("+"):
+                hunk.changes.push(DiffChange(Added, change_line.slice(1), null, null))
+              else if change_line.starts_with("-"):
+                hunk.changes.push(DiffChange(Removed, change_line.slice(1), null, null))
+              else if change_line.starts_with(" "):
+                hunk.changes.push(DiffChange(Equal, change_line.slice(1), null, null))
+              
+              i += 1
+            
+            hunks.push(hunk)
+          else:
+            i += 1
+        
+        return Ok(TextDiff(hunks))
+
+  # ==========================================================================
+  # OBJECT DIFF
+  # ==========================================================================
+
+  Type ObjectDiff:
+    changes: List<ObjectChange>
+
+    Static Method compute(old: Any, new: Any) -> ObjectDiff:
+      changes = compute_object_diff(old, new, "")
+      return ObjectDiff(changes)
+
+    Method is_empty() -> Boolean:
+      return self.changes.is_empty()
+
+    Method apply(obj: Any) -> Any:
+      return apply_object_diff(obj, self.changes)
+
+    Method to_json() -> String:
+      return json.encode(self.changes)
+
+  Type ObjectChange:
+    path: String
+    type: ObjectChangeType
+    old_value: Option<Any>
+    new_value: Option<Any>
+
+  Type ObjectChangeType:
+    variants:
+      - Added
+      - Removed
+      - Modified
+      - ArrayInsert(Int)
+      - ArrayRemove(Int)
+      - ArrayMove(Int, Int)
+
+  Behavior ObjectDiffAlgorithm:
+    When compute_object_diff(old: Any, new: Any, path: String) -> List<ObjectChange>:
+      Then:
+        changes = []
+        
+        if old == new:
+          return changes
+        
+        match (old, new):
+          (null, _) ->
+            changes.push(ObjectChange(path, Added, null, Some(new)))
+          
+          (_, null) ->
+            changes.push(ObjectChange(path, Removed, Some(old), null))
+          
+          (o: Map<String, Any>, n: Map<String, Any>) ->
+            # Check removed keys
+            for key in o.keys():
+              if key not in n:
+                changes.push(ObjectChange(
+                  join_path(path, key),
+                  Removed,
+                  Some(o[key]),
+                  null
+                ))
+            
+            # Check added and modified keys
+            for key in n.keys():
+              child_path = join_path(path, key)
+              
+              if key not in o:
+                changes.push(ObjectChange(child_path, Added, null, Some(n[key])))
+              else if o[key] != n[key]:
+                child_changes = compute_object_diff(o[key], n[key], child_path)
+                
+                if child_changes.is_empty():
+                  changes.push(ObjectChange(child_path, Modified, Some(o[key]), Some(n[key])))
+                else:
+                  changes.extend(child_changes)
+          
+          (o: List<Any>, n: List<Any>) ->
+            # Use LCS for array diff
+            array_changes = compute_array_diff(o, n, path)
+            changes.extend(array_changes)
+          
+          _ ->
+            changes.push(ObjectChange(path, Modified, Some(old), Some(new)))
+        
+        return changes
+
+    When compute_array_diff(old: List<Any>, new: List<Any>, path: String) -> List<ObjectChange>:
+      Then:
+        changes = []
+        
+        # Simple approach: compare by index
+        max_len = max(old.length, new.length)
+        
+        for i in 0..max_len:
+          item_path = "${path}[${i}]"
+          
+          if i >= old.length:
+            changes.push(ObjectChange(item_path, ArrayInsert(i), null, Some(new[i])))
+          else if i >= new.length:
+            changes.push(ObjectChange(item_path, ArrayRemove(i), Some(old[i]), null))
+          else if old[i] != new[i]:
+            child_changes = compute_object_diff(old[i], new[i], item_path)
+            changes.extend(child_changes)
+        
+        return changes
+
+    When join_path(base: String, key: String) -> String:
+      Then:
+        if base.is_empty():
+          key
+        else:
+          "${base}.${key}"
+
+    When apply_object_diff(obj: Any, changes: List<ObjectChange>) -> Any:
+      Then:
+        result = deep_clone(obj)
+        
+        for change in changes:
+          match change.type:
+            Added ->
+              set_at_path(result, change.path, change.new_value.unwrap())
+            Removed ->
+              delete_at_path(result, change.path)
+            Modified ->
+              set_at_path(result, change.path, change.new_value.unwrap())
+            ArrayInsert(index) ->
+              insert_at_path(result, change.path, index, change.new_value.unwrap())
+            ArrayRemove(index) ->
+              remove_at_path(result, change.path, index)
+            ArrayMove(from, to) ->
+              move_at_path(result, change.path, from, to)
+        
+        return result
+
+  # ==========================================================================
+  # PATCH
+  # ==========================================================================
+
+  Type Patch:
+    operations: List<PatchOperation>
+
+    Static Method from_diff(diff: ObjectDiff) -> Patch:
+      operations = diff.changes.map(c -> {
+        match c.type:
+          Added -> PatchOperation.Add(c.path, c.new_value.unwrap())
+          Removed -> PatchOperation.Remove(c.path)
+          Modified -> PatchOperation.Replace(c.path, c.new_value.unwrap())
+          ArrayInsert(i) -> PatchOperation.Add("${c.path}/${i}", c.new_value.unwrap())
+          ArrayRemove(i) -> PatchOperation.Remove("${c.path}/${i}")
+          ArrayMove(from, to) -> PatchOperation.Move("${c.path}/${from}", "${c.path}/${to}")
+      })
+      return Patch(operations)
+
+    Method apply(obj: Any) -> Result<Any, PatchError>:
+      result = deep_clone(obj)
+      
+      for op in self.operations:
+        result = op.apply(result)?
+      
+      return Ok(result)
+
+    Method to_json_patch() -> String:
+      # RFC 6902 JSON Patch format
+      ops = self.operations.map(op -> {
+        match op:
+          Add(path, value) -> { "op": "add", "path": path, "value": value }
+          Remove(path) -> { "op": "remove", "path": path }
+          Replace(path, value) -> { "op": "replace", "path": path, "value": value }
+          Move(from, to) -> { "op": "move", "from": from, "path": to }
+          Copy(from, to) -> { "op": "copy", "from": from, "path": to }
+          Test(path, value) -> { "op": "test", "path": path, "value": value }
+      })
+      return json.encode(ops)
+
+    Static Method from_json_patch(json_str: String) -> Result<Patch, PatchError>:
+      ops = json.parse(json_str)? as List<Map<String, Any>>
+      
+      operations = ops.map(op -> {
+        match op["op"]:
+          "add" -> PatchOperation.Add(op["path"], op["value"])
+          "remove" -> PatchOperation.Remove(op["path"])
+          "replace" -> PatchOperation.Replace(op["path"], op["value"])
+          "move" -> PatchOperation.Move(op["from"], op["path"])
+          "copy" -> PatchOperation.Copy(op["from"], op["path"])
+          "test" -> PatchOperation.Test(op["path"], op["value"])
+          _ -> return Err(PatchError("Unknown operation: ${op["op"]}"))
+      })
+      
+      return Ok(Patch(operations))
+
+  Type PatchOperation:
+    variants:
+      - Add(String, Any)
+      - Remove(String)
+      - Replace(String, Any)
+      - Move(String, String)
+      - Copy(String, String)
+      - Test(String, Any)
+
+    Method apply(obj: Any) -> Result<Any, PatchError>:
+      match self:
+        Add(path, value) ->
+          set_at_path(obj, path, value)
+          Ok(obj)
+        Remove(path) ->
+          delete_at_path(obj, path)
+          Ok(obj)
+        Replace(path, value) ->
+          if not path_exists(obj, path):
+            return Err(PatchError("Path not found: ${path}"))
+          set_at_path(obj, path, value)
+          Ok(obj)
+        Move(from, to) ->
+          value = get_at_path(obj, from)?
+          delete_at_path(obj, from)
+          set_at_path(obj, to, value)
+          Ok(obj)
+        Copy(from, to) ->
+          value = get_at_path(obj, from)?
+          set_at_path(obj, to, deep_clone(value))
+          Ok(obj)
+        Test(path, expected) ->
+          actual = get_at_path(obj, path)?
+          if actual != expected:
+            return Err(PatchError("Test failed at ${path}"))
+          Ok(obj)
+
+  Type PatchError:
+    message: String
+
+  # ==========================================================================
+  # THREE-WAY MERGE
+  # ==========================================================================
+
+  Type MergeResult<T>:
+    variants:
+      - Success(T)
+      - Conflict(List<MergeConflict>)
+
+  Type MergeConflict:
+    path: String
+    base: Any
+    ours: Any
+    theirs: Any
+
+  Behavior ThreeWayMerge:
+    When merge_text(base: String, ours: String, theirs: String) -> MergeResult<String>:
+      Then:
+        base_lines = base.lines()
+        our_lines = ours.lines()
+        their_lines = theirs.lines()
+        
+        our_diff = TextDiff.compute(base, ours)
+        their_diff = TextDiff.compute(base, theirs)
+        
+        # Check for conflicts
+        conflicts = find_text_conflicts(our_diff, their_diff)
+        
+        if conflicts.is_empty():
+          # Apply both diffs
+          result = apply_both_diffs(base_lines, our_diff, their_diff)
+          return Success(result.join("\n"))
+        else:
+          return Conflict(conflicts)
+
+    When merge_objects(base: Any, ours: Any, theirs: Any) -> MergeResult<Any>:
+      Then:
+        our_diff = ObjectDiff.compute(base, ours)
+        their_diff = ObjectDiff.compute(base, theirs)
+        
+        conflicts = []
+        merged = deep_clone(base)
+        
+        # Apply non-conflicting changes
+        for change in our_diff.changes:
+          conflicting = their_diff.changes.find(c -> paths_conflict(change.path, c.path))
+          
+          if conflicting is Some(c):
+            if change.new_value != c.new_value:
+              conflicts.push(MergeConflict(
+                path: change.path,
+                base: get_at_path(base, change.path),
+                ours: change.new_value,
+                theirs: c.new_value
+              ))
+          else:
+            apply_change(merged, change)
+        
+        # Apply their non-conflicting changes
+        for change in their_diff.changes:
+          if not our_diff.changes.any(c -> paths_conflict(change.path, c.path)):
+            apply_change(merged, change)
+        
+        if conflicts.is_empty():
+          return Success(merged)
+        else:
+          return Conflict(conflicts)
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Diff":
+    ```vibee
+    # Text diff
+    old_text = """
+    Hello World
+    This is a test
+    Goodbye
+    """
+
+    new_text = """
+    Hello Vibee
+    This is a test
+    This is new
+    Goodbye
+    """
+
+    diff = TextDiff.compute(old_text, new_text)
+
+    # Unified diff format
+    print(diff.to_unified())
+    # @@ -1,3 +1,4 @@
+    # -Hello World
+    # +Hello Vibee
+    #  This is a test
+    # +This is new
+    #  Goodbye
+
+    # Stats
+    stats = diff.stats()
+    print("Added: ${stats.additions}, Removed: ${stats.deletions}")
+
+    # Apply diff
+    result = diff.apply(old_text)?
+    assert(result == new_text)
+
+    # Reverse diff
+    reverse = diff.reverse()
+    original = reverse.apply(new_text)?
+    assert(original == old_text)
+
+    # Object diff
+    old_obj = {
+      "name": "John",
+      "age": 30,
+      "address": {
+        "city": "NYC"
+      }
+    }
+
+    new_obj = {
+      "name": "John",
+      "age": 31,
+      "address": {
+        "city": "LA",
+        "zip": "90001"
+      },
+      "email": "john@example.com"
+    }
+
+    obj_diff = ObjectDiff.compute(old_obj, new_obj)
+
+    for change in obj_diff.changes:
+      print("${change.type}: ${change.path}")
+    # Modified: age
+    # Modified: address.city
+    # Added: address.zip
+    # Added: email
+
+    # Apply object diff
+    result = obj_diff.apply(old_obj)
+    assert(result == new_obj)
+
+    # JSON Patch (RFC 6902)
+    patch = Patch.from_diff(obj_diff)
+    json_patch = patch.to_json_patch()
+    # [
+    #   {"op": "replace", "path": "/age", "value": 31},
+    #   {"op": "replace", "path": "/address/city", "value": "LA"},
+    #   {"op": "add", "path": "/address/zip", "value": "90001"},
+    #   {"op": "add", "path": "/email", "value": "john@example.com"}
+    # ]
+
+    # Apply JSON Patch
+    patch = Patch.from_json_patch(json_patch)?
+    result = patch.apply(old_obj)?
+
+    # Three-way merge
+    base = "Hello World"
+    ours = "Hello Vibee"
+    theirs = "Hello World!"
+
+    result = merge_text(base, ours, theirs)
+    match result:
+      Success(merged) -> print(merged)  # "Hello Vibee!"
+      Conflict(conflicts) -> 
+        for c in conflicts:
+          print("Conflict at ${c.path}")
+
+    # Object merge
+    base_obj = { "a": 1, "b": 2 }
+    our_obj = { "a": 1, "b": 3, "c": 4 }
+    their_obj = { "a": 2, "b": 2, "d": 5 }
+
+    result = merge_objects(base_obj, our_obj, their_obj)
+    match result:
+      Success(merged) ->
+        # { "a": 2, "b": 3, "c": 4, "d": 5 }
+        # (conflict on "a" if both changed differently)
+      Conflict(conflicts) ->
+        for c in conflicts:
+          print("Conflict: ${c.path} - base: ${c.base}, ours: ${c.ours}, theirs: ${c.theirs}")
+    ```

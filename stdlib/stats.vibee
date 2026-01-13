@@ -1,0 +1,483 @@
+// =============================================================================
+// Vibee OS — Stats Module
+// Statistics and probability functions
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Descriptive Statistics
+// -----------------------------------------------------------------------------
+
+/// Calculate mean (average)
+fn mean(data: [Float]) -> Option<Float> {
+    if data.is_empty() { return None }
+    Some(data.sum() / data.len() as Float)
+}
+
+/// Calculate median
+fn median(data: [Float]) -> Option<Float> {
+    if data.is_empty() { return None }
+    let sorted = data.sorted()
+    let n = sorted.len()
+    if n % 2 == 0 {
+        Some((sorted[n/2 - 1] + sorted[n/2]) / 2.0)
+    } else {
+        Some(sorted[n/2])
+    }
+}
+
+/// Calculate mode (most frequent value)
+fn mode(data: [Float]) -> Option<Float> {
+    if data.is_empty() { return None }
+    var counts = Map.empty()
+    for x in data { counts.entry(x).or_insert(0) += 1 }
+    counts.max_by_value().map(|(k, _)| k)
+}
+
+/// Calculate variance (population)
+fn variance(data: [Float]) -> Option<Float> {
+    let m = mean(data)?
+    let sq_diff = data.map(|x| (x - m).pow(2))
+    mean(sq_diff)
+}
+
+/// Calculate variance (sample)
+fn sample_variance(data: [Float]) -> Option<Float> {
+    if data.len() < 2 { return None }
+    let m = mean(data)?
+    let sq_diff_sum = data.map(|x| (x - m).pow(2)).sum()
+    Some(sq_diff_sum / (data.len() - 1) as Float)
+}
+
+/// Calculate standard deviation (population)
+fn std_dev(data: [Float]) -> Option<Float> {
+    variance(data).map(|v| v.sqrt())
+}
+
+/// Calculate standard deviation (sample)
+fn sample_std_dev(data: [Float]) -> Option<Float> {
+    sample_variance(data).map(|v| v.sqrt())
+}
+
+/// Calculate range
+fn range(data: [Float]) -> Option<Float> {
+    if data.is_empty() { return None }
+    let min = data.min()?
+    let max = data.max()?
+    Some(max - min)
+}
+
+/// Calculate percentile
+fn percentile(data: [Float], p: Float) -> Option<Float> {
+    if data.is_empty() || p < 0.0 || p > 100.0 { return None }
+    let sorted = data.sorted()
+    let idx = (p / 100.0) * (sorted.len() - 1) as Float
+    let lower = idx.floor() as Int
+    let upper = idx.ceil() as Int
+    let frac = idx - lower as Float
+    Some(sorted[lower] * (1.0 - frac) + sorted[upper] * frac)
+}
+
+/// Calculate quartiles (Q1, Q2, Q3)
+fn quartiles(data: [Float]) -> Option<(Float, Float, Float)> {
+    Some((percentile(data, 25.0)?, percentile(data, 50.0)?, percentile(data, 75.0)?))
+}
+
+/// Calculate interquartile range
+fn iqr(data: [Float]) -> Option<Float> {
+    let (q1, _, q3) = quartiles(data)?
+    Some(q3 - q1)
+}
+
+/// Calculate skewness
+fn skewness(data: [Float]) -> Option<Float> {
+    if data.len() < 3 { return None }
+    let m = mean(data)?
+    let s = sample_std_dev(data)?
+    let n = data.len() as Float
+    let sum = data.map(|x| ((x - m) / s).pow(3)).sum()
+    Some(n / ((n - 1.0) * (n - 2.0)) * sum)
+}
+
+/// Calculate kurtosis
+fn kurtosis(data: [Float]) -> Option<Float> {
+    if data.len() < 4 { return None }
+    let m = mean(data)?
+    let s = sample_std_dev(data)?
+    let n = data.len() as Float
+    let sum = data.map(|x| ((x - m) / s).pow(4)).sum()
+    let k = (n * (n + 1.0)) / ((n - 1.0) * (n - 2.0) * (n - 3.0)) * sum
+    Some(k - 3.0 * (n - 1.0).pow(2) / ((n - 2.0) * (n - 3.0)))
+}
+
+/// Calculate covariance
+fn covariance(x: [Float], y: [Float]) -> Option<Float> {
+    if x.len() != y.len() || x.is_empty() { return None }
+    let mx = mean(x)?
+    let my = mean(y)?
+    let sum = x.zip(y).map(|(xi, yi)| (xi - mx) * (yi - my)).sum()
+    Some(sum / x.len() as Float)
+}
+
+/// Calculate Pearson correlation coefficient
+fn correlation(x: [Float], y: [Float]) -> Option<Float> {
+    let cov = covariance(x, y)?
+    let sx = std_dev(x)?
+    let sy = std_dev(y)?
+    if sx == 0.0 || sy == 0.0 { return None }
+    Some(cov / (sx * sy))
+}
+
+// -----------------------------------------------------------------------------
+// Summary Statistics
+// -----------------------------------------------------------------------------
+
+struct Summary {
+    count: Int
+    min: Float
+    max: Float
+    mean: Float
+    median: Float
+    std_dev: Float
+    variance: Float
+    q1: Float
+    q3: Float
+    
+    fn from_data(data: [Float]) -> Option<Self> {
+        if data.is_empty() { return None }
+        let (q1, med, q3) = quartiles(data)?
+        Some(Summary {
+            count: data.len(),
+            min: data.min()?,
+            max: data.max()?,
+            mean: mean(data)?,
+            median: med,
+            std_dev: sample_std_dev(data)?,
+            variance: sample_variance(data)?,
+            q1: q1,
+            q3: q3
+        })
+    }
+    
+    fn print() {
+        println("Count:    \(self.count)")
+        println("Min:      \(self.min)")
+        println("Max:      \(self.max)")
+        println("Mean:     \(self.mean)")
+        println("Median:   \(self.median)")
+        println("Std Dev:  \(self.std_dev)")
+        println("Variance: \(self.variance)")
+        println("Q1:       \(self.q1)")
+        println("Q3:       \(self.q3)")
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Probability Distributions
+// -----------------------------------------------------------------------------
+
+/// Normal (Gaussian) distribution
+struct Normal {
+    mean: Float
+    std_dev: Float
+    
+    fn standard() -> Self { Normal { mean: 0.0, std_dev: 1.0 } }
+    fn new(mean: Float, std_dev: Float) -> Self { Normal { mean: mean, std_dev: std_dev } }
+    
+    /// Probability density function
+    fn pdf(x: Float) -> Float {
+        let z = (x - self.mean) / self.std_dev
+        (1.0 / (self.std_dev * (2.0 * PI).sqrt())) * (-0.5 * z * z).exp()
+    }
+    
+    /// Cumulative distribution function
+    fn cdf(x: Float) -> Float {
+        let z = (x - self.mean) / (self.std_dev * SQRT2)
+        0.5 * (1.0 + erf(z))
+    }
+    
+    /// Inverse CDF (quantile function)
+    fn quantile(p: Float) -> Float {
+        self.mean + self.std_dev * SQRT2 * erfinv(2.0 * p - 1.0)
+    }
+    
+    /// Generate random sample
+    fn sample() -> Float {
+        // Box-Muller transform
+        let u1 = Random.float()
+        let u2 = Random.float()
+        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
+        self.mean + self.std_dev * z
+    }
+    
+    fn samples(n: Int) -> [Float] {
+        (0..n).map(|_| self.sample()).collect()
+    }
+}
+
+/// Uniform distribution
+struct Uniform {
+    min: Float
+    max: Float
+    
+    fn new(min: Float, max: Float) -> Self { Uniform { min: min, max: max } }
+    fn unit() -> Self { Uniform { min: 0.0, max: 1.0 } }
+    
+    fn pdf(x: Float) -> Float {
+        if x >= self.min && x <= self.max { 1.0 / (self.max - self.min) }
+        else { 0.0 }
+    }
+    
+    fn cdf(x: Float) -> Float {
+        if x < self.min { 0.0 }
+        else if x > self.max { 1.0 }
+        else { (x - self.min) / (self.max - self.min) }
+    }
+    
+    fn sample() -> Float {
+        self.min + Random.float() * (self.max - self.min)
+    }
+}
+
+/// Exponential distribution
+struct Exponential {
+    lambda: Float  // Rate parameter
+    
+    fn new(lambda: Float) -> Self { Exponential { lambda: lambda } }
+    
+    fn pdf(x: Float) -> Float {
+        if x < 0.0 { 0.0 }
+        else { self.lambda * (-self.lambda * x).exp() }
+    }
+    
+    fn cdf(x: Float) -> Float {
+        if x < 0.0 { 0.0 }
+        else { 1.0 - (-self.lambda * x).exp() }
+    }
+    
+    fn sample() -> Float {
+        -Random.float().ln() / self.lambda
+    }
+}
+
+/// Poisson distribution
+struct Poisson {
+    lambda: Float  // Expected value
+    
+    fn new(lambda: Float) -> Self { Poisson { lambda: lambda } }
+    
+    fn pmf(k: Int) -> Float {
+        self.lambda.pow(k as Float) * (-self.lambda).exp() / factorial(k) as Float
+    }
+    
+    fn cdf(k: Int) -> Float {
+        (0..=k).map(|i| self.pmf(i)).sum()
+    }
+    
+    fn sample() -> Int {
+        let l = (-self.lambda).exp()
+        var k = 0
+        var p = 1.0
+        while p > l {
+            k += 1
+            p *= Random.float()
+        }
+        k - 1
+    }
+}
+
+/// Binomial distribution
+struct Binomial {
+    n: Int      // Number of trials
+    p: Float    // Success probability
+    
+    fn new(n: Int, p: Float) -> Self { Binomial { n: n, p: p } }
+    
+    fn pmf(k: Int) -> Float {
+        if k < 0 || k > self.n { return 0.0 }
+        binomial(self.n, k) as Float * self.p.pow(k as Float) * (1.0 - self.p).pow((self.n - k) as Float)
+    }
+    
+    fn cdf(k: Int) -> Float {
+        (0..=k.min(self.n)).map(|i| self.pmf(i)).sum()
+    }
+    
+    fn mean() -> Float { self.n as Float * self.p }
+    fn variance() -> Float { self.n as Float * self.p * (1.0 - self.p) }
+    
+    fn sample() -> Int {
+        (0..self.n).filter(|_| Random.float() < self.p).len()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Hypothesis Testing
+// -----------------------------------------------------------------------------
+
+/// T-test result
+struct TTestResult {
+    t_statistic: Float
+    p_value: Float
+    degrees_of_freedom: Int
+}
+
+/// One-sample t-test
+fn t_test_one_sample(data: [Float], population_mean: Float) -> Option<TTestResult> {
+    let n = data.len()
+    if n < 2 { return None }
+    
+    let m = mean(data)?
+    let s = sample_std_dev(data)?
+    let se = s / (n as Float).sqrt()
+    let t = (m - population_mean) / se
+    let df = n - 1
+    
+    // Approximate p-value using normal distribution for large samples
+    let p = 2.0 * (1.0 - Normal.standard().cdf(t.abs()))
+    
+    Some(TTestResult { t_statistic: t, p_value: p, degrees_of_freedom: df })
+}
+
+/// Two-sample t-test (independent samples)
+fn t_test_two_sample(x: [Float], y: [Float]) -> Option<TTestResult> {
+    let nx = x.len(); let ny = y.len()
+    if nx < 2 || ny < 2 { return None }
+    
+    let mx = mean(x)?; let my = mean(y)?
+    let vx = sample_variance(x)?; let vy = sample_variance(y)?
+    
+    // Welch's t-test
+    let se = (vx / nx as Float + vy / ny as Float).sqrt()
+    let t = (mx - my) / se
+    
+    // Welch-Satterthwaite degrees of freedom
+    let num = (vx / nx as Float + vy / ny as Float).pow(2)
+    let denom = (vx / nx as Float).pow(2) / (nx - 1) as Float + 
+                (vy / ny as Float).pow(2) / (ny - 1) as Float
+    let df = (num / denom).floor() as Int
+    
+    let p = 2.0 * (1.0 - Normal.standard().cdf(t.abs()))
+    
+    Some(TTestResult { t_statistic: t, p_value: p, degrees_of_freedom: df })
+}
+
+/// Chi-square test result
+struct ChiSquareResult {
+    chi_square: Float
+    p_value: Float
+    degrees_of_freedom: Int
+}
+
+/// Chi-square goodness of fit test
+fn chi_square_test(observed: [Float], expected: [Float]) -> Option<ChiSquareResult> {
+    if observed.len() != expected.len() || observed.is_empty() { return None }
+    
+    let chi_sq = observed.zip(expected)
+        .map(|(o, e)| (o - e).pow(2) / e)
+        .sum()
+    
+    let df = observed.len() - 1
+    
+    // Approximate p-value
+    let p = 1.0 - chi_square_cdf(chi_sq, df)
+    
+    Some(ChiSquareResult { chi_square: chi_sq, p_value: p, degrees_of_freedom: df })
+}
+
+// -----------------------------------------------------------------------------
+// Regression
+// -----------------------------------------------------------------------------
+
+/// Linear regression result
+struct LinearRegression {
+    slope: Float
+    intercept: Float
+    r_squared: Float
+    std_error: Float
+}
+
+/// Simple linear regression
+fn linear_regression(x: [Float], y: [Float]) -> Option<LinearRegression> {
+    if x.len() != y.len() || x.len() < 2 { return None }
+    
+    let n = x.len() as Float
+    let mx = mean(x)?
+    let my = mean(y)?
+    
+    let num = x.zip(y).map(|(xi, yi)| (xi - mx) * (yi - my)).sum()
+    let denom = x.map(|xi| (xi - mx).pow(2)).sum()
+    
+    let slope = num / denom
+    let intercept = my - slope * mx
+    
+    // R-squared
+    let y_pred = x.map(|xi| slope * xi + intercept)
+    let ss_res = y.zip(y_pred).map(|(yi, yp)| (yi - yp).pow(2)).sum()
+    let ss_tot = y.map(|yi| (yi - my).pow(2)).sum()
+    let r_squared = 1.0 - ss_res / ss_tot
+    
+    // Standard error
+    let std_error = (ss_res / (n - 2.0)).sqrt()
+    
+    Some(LinearRegression { slope: slope, intercept: intercept, r_squared: r_squared, std_error: std_error })
+}
+
+/// Predict value using linear regression
+fn predict(reg: LinearRegression, x: Float) -> Float {
+    reg.slope * x + reg.intercept
+}
+
+// -----------------------------------------------------------------------------
+// Helper Functions
+// -----------------------------------------------------------------------------
+
+fn factorial(n: Int) -> Int {
+    if n <= 1 { 1 } else { n * factorial(n - 1) }
+}
+
+fn binomial(n: Int, k: Int) -> Int {
+    if k > n { return 0 }
+    if k == 0 || k == n { return 1 }
+    let k = min(k, n - k)
+    var result = 1
+    for i in 0..k { result = result * (n - i) / (i + 1) }
+    result
+}
+
+fn erf(x: Float) -> Float { @native("math_erf", x) }
+fn erfinv(x: Float) -> Float { @native("math_erfinv", x) }
+fn chi_square_cdf(x: Float, df: Int) -> Float { @native("math_chi_square_cdf", x, df) }
+
+const PI: Float = 3.141592653589793
+const SQRT2: Float = 1.4142135623730951
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "mean and std_dev" {
+    let data = [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]
+    assert(approx_eq(mean(data).unwrap(), 5.0))
+    assert(approx_eq(std_dev(data).unwrap(), 2.0))
+}
+
+test "percentile" {
+    let data = [1.0, 2.0, 3.0, 4.0, 5.0]
+    assert(approx_eq(percentile(data, 50.0).unwrap(), 3.0))
+}
+
+test "normal distribution" {
+    let n = Normal.standard()
+    assert(approx_eq(n.cdf(0.0), 0.5))
+    assert(approx_eq(n.pdf(0.0), 0.3989, 0.001))
+}
+
+test "linear regression" {
+    let x = [1.0, 2.0, 3.0, 4.0, 5.0]
+    let y = [2.0, 4.0, 6.0, 8.0, 10.0]
+    let reg = linear_regression(x, y).unwrap()
+    assert(approx_eq(reg.slope, 2.0))
+    assert(approx_eq(reg.intercept, 0.0))
+    assert(approx_eq(reg.r_squared, 1.0))
+}
+
+fn approx_eq(a: Float, b: Float, eps: Float = 0.0001) -> Bool { (a - b).abs() < eps }

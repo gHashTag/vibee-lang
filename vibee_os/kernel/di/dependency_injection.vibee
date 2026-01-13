@@ -1,0 +1,718 @@
+# ============================================================================
+# DEPENDENCY INJECTION - DI контейнер на Vibee
+# ============================================================================
+# IoC container, service registration, lifecycle management
+# ============================================================================
+
+Specification DependencyInjection:
+  """Dependency Injection как спецификация управления зависимостями."""
+
+  # ==========================================================================
+  # CORE TYPES
+  # ==========================================================================
+
+  Type ServiceDescriptor:
+    service_type: Type
+    implementation_type: Type?
+    factory: Factory?
+    instance: Any?
+    lifetime: ServiceLifetime
+    tags: List<String>
+
+  Type ServiceLifetime:
+    variants:
+      - Singleton    # One instance for entire application
+      - Scoped       # One instance per scope
+      - Transient    # New instance every time
+
+  Type Factory:
+    (Container) -> Any | Promise<Any>
+
+  Type ServiceKey:
+    type: Type
+    name: String?
+
+  Type Scope:
+    id: ScopeId
+    parent: Scope?
+    instances: Map<ServiceKey, Any>
+    disposed: Boolean
+
+  # ==========================================================================
+  # CONTAINER
+  # ==========================================================================
+
+  Behavior Container:
+    When container.create():
+      Then:
+        - return Container()
+
+    Type Container:
+      descriptors: Map<ServiceKey, ServiceDescriptor> = {}
+      singletons: Map<ServiceKey, Any> = {}
+      root_scope: Scope
+      resolving: Set<ServiceKey> = {}  # For circular dependency detection
+
+      # Registration
+      Method register<T>(options: RegistrationOptions?) -> RegistrationBuilder<T>:
+        return RegistrationBuilder<T>(self, options)
+
+      Method register_singleton<T, TImpl>(factory: Factory?):
+        key = ServiceKey(T, null)
+        descriptors[key] = ServiceDescriptor(
+          service_type: T,
+          implementation_type: TImpl ?? T,
+          factory: factory,
+          lifetime: Singleton
+        )
+
+      Method register_scoped<T, TImpl>(factory: Factory?):
+        key = ServiceKey(T, null)
+        descriptors[key] = ServiceDescriptor(
+          service_type: T,
+          implementation_type: TImpl ?? T,
+          factory: factory,
+          lifetime: Scoped
+        )
+
+      Method register_transient<T, TImpl>(factory: Factory?):
+        key = ServiceKey(T, null)
+        descriptors[key] = ServiceDescriptor(
+          service_type: T,
+          implementation_type: TImpl ?? T,
+          factory: factory,
+          lifetime: Transient
+        )
+
+      Method register_instance<T>(instance: T):
+        key = ServiceKey(T, null)
+        descriptors[key] = ServiceDescriptor(
+          service_type: T,
+          instance: instance,
+          lifetime: Singleton
+        )
+        singletons[key] = instance
+
+      Method register_factory<T>(factory: Factory, lifetime: ServiceLifetime = Transient):
+        key = ServiceKey(T, null)
+        descriptors[key] = ServiceDescriptor(
+          service_type: T,
+          factory: factory,
+          lifetime: lifetime
+        )
+
+      # Resolution
+      Method resolve<T>(name: String? = null) -> T:
+        return await resolve_internal<T>(ServiceKey(T, name), root_scope)
+
+      Method resolve_optional<T>(name: String? = null) -> T?:
+        key = ServiceKey(T, name)
+        if key not in descriptors:
+          return null
+        return await resolve<T>(name)
+
+      Method resolve_all<T>() -> List<T>:
+        results = []
+        for (key, descriptor) in descriptors:
+          if descriptor.service_type == T:
+            instance = await resolve_internal<T>(key, root_scope)
+            results.push(instance)
+        return results
+
+      Method resolve_internal<T>(key: ServiceKey, scope: Scope) -> T:
+        # Check for circular dependency
+        if key in resolving:
+          throw CircularDependencyError(key)
+        
+        descriptor = descriptors[key]
+        if descriptor == null:
+          throw ServiceNotFoundError(key)
+        
+        # Check if already resolved
+        match descriptor.lifetime:
+          Singleton ->
+            if key in singletons:
+              return singletons[key] as T
+          Scoped ->
+            if key in scope.instances:
+              return scope.instances[key] as T
+          Transient ->
+            # Always create new
+        
+        # Resolve
+        resolving.add(key)
+        try:
+          instance = await create_instance(descriptor, scope)
+          
+          # Store based on lifetime
+          match descriptor.lifetime:
+            Singleton ->
+              singletons[key] = instance
+            Scoped ->
+              scope.instances[key] = instance
+            Transient ->
+              # Don't store
+          
+          return instance as T
+        finally:
+          resolving.delete(key)
+
+      Method create_instance(descriptor: ServiceDescriptor, scope: Scope) -> Any:
+        # If instance is pre-registered
+        if descriptor.instance != null:
+          return descriptor.instance
+        
+        # If factory is provided
+        if descriptor.factory != null:
+          return await descriptor.factory(self)
+        
+        # Auto-resolve constructor dependencies
+        impl_type = descriptor.implementation_type ?? descriptor.service_type
+        constructor = get_constructor(impl_type)
+        
+        # Resolve constructor parameters
+        params = []
+        for param in constructor.parameters:
+          param_key = ServiceKey(param.type, param.name)
+          
+          if param.optional:
+            params.push(resolve_optional(param.type, param.name))
+          else:
+            params.push(await resolve_internal(param_key, scope))
+        
+        # Create instance
+        instance = new impl_type(...params)
+        
+        # Property injection
+        for property in get_injectable_properties(impl_type):
+          prop_key = ServiceKey(property.type, property.name)
+          if prop_key in descriptors:
+            instance[property.name] = await resolve_internal(prop_key, scope)
+        
+        # Method injection
+        for method in get_injectable_methods(impl_type):
+          method_params = []
+          for param in method.parameters:
+            param_key = ServiceKey(param.type, param.name)
+            method_params.push(await resolve_internal(param_key, scope))
+          instance[method.name](...method_params)
+        
+        # Call post-construct if exists
+        if has_method(instance, "on_init"):
+          await instance.on_init()
+        
+        return instance
+
+      # Scopes
+      Method create_scope() -> Scope:
+        return Scope(
+          id: generate_scope_id(),
+          parent: root_scope,
+          instances: {},
+          disposed: false
+        )
+
+      Method dispose_scope(scope: Scope):
+        if scope.disposed:
+          return
+        
+        # Dispose all scoped instances
+        for instance in scope.instances.values():
+          if has_method(instance, "dispose"):
+            await instance.dispose()
+        
+        scope.instances.clear()
+        scope.disposed = true
+
+      # Validation
+      Method validate():
+        errors = []
+        
+        for (key, descriptor) in descriptors:
+          # Check if implementation exists
+          if descriptor.implementation_type:
+            if not type_exists(descriptor.implementation_type):
+              errors.push(ValidationError.TypeNotFound(descriptor.implementation_type))
+          
+          # Check constructor dependencies
+          if descriptor.factory == null and descriptor.instance == null:
+            impl_type = descriptor.implementation_type ?? descriptor.service_type
+            constructor = get_constructor(impl_type)
+            
+            for param in constructor.parameters:
+              if not param.optional:
+                param_key = ServiceKey(param.type, null)
+                if param_key not in descriptors:
+                  errors.push(ValidationError.MissingDependency(key, param_key))
+        
+        # Check for circular dependencies
+        for key in descriptors.keys():
+          try:
+            check_circular(key, Set())
+          catch e:
+            errors.push(ValidationError.CircularDependency(e.path))
+        
+        if errors.length > 0:
+          throw ContainerValidationError(errors)
+
+      Method check_circular(key: ServiceKey, visited: Set<ServiceKey>):
+        if key in visited:
+          throw CircularDependencyError(visited.to_list() + [key])
+        
+        visited.add(key)
+        
+        descriptor = descriptors[key]
+        if descriptor and descriptor.implementation_type:
+          constructor = get_constructor(descriptor.implementation_type)
+          for param in constructor.parameters:
+            param_key = ServiceKey(param.type, null)
+            if param_key in descriptors:
+              check_circular(param_key, visited.clone())
+        
+        visited.delete(key)
+
+      # Disposal
+      Method dispose():
+        # Dispose all singletons
+        for instance in singletons.values():
+          if has_method(instance, "dispose"):
+            await instance.dispose()
+        
+        singletons.clear()
+        descriptors.clear()
+
+  # ==========================================================================
+  # REGISTRATION BUILDER
+  # ==========================================================================
+
+  Behavior RegistrationBuilder:
+    Type RegistrationBuilder<T>:
+      container: Container
+      service_type: Type = T
+      implementation_type: Type?
+      factory: Factory?
+      lifetime: ServiceLifetime = Transient
+      name: String?
+      tags: List<String> = []
+
+      Method as<TImpl>() -> RegistrationBuilder<T>:
+        implementation_type = TImpl
+        return self
+
+      Method with_factory(factory: Factory) -> RegistrationBuilder<T>:
+        self.factory = factory
+        return self
+
+      Method singleton() -> RegistrationBuilder<T>:
+        lifetime = Singleton
+        return self
+
+      Method scoped() -> RegistrationBuilder<T>:
+        lifetime = Scoped
+        return self
+
+      Method transient() -> RegistrationBuilder<T>:
+        lifetime = Transient
+        return self
+
+      Method named(name: String) -> RegistrationBuilder<T>:
+        self.name = name
+        return self
+
+      Method tagged(...tags: String) -> RegistrationBuilder<T>:
+        self.tags = tags
+        return self
+
+      Method build():
+        key = ServiceKey(service_type, name)
+        container.descriptors[key] = ServiceDescriptor(
+          service_type: service_type,
+          implementation_type: implementation_type,
+          factory: factory,
+          lifetime: lifetime,
+          tags: tags
+        )
+
+  # ==========================================================================
+  # DECORATORS
+  # ==========================================================================
+
+  Behavior Decorators:
+    When @injectable(options: InjectableOptions?):
+      Then:
+        - return InjectableDecorator(options)
+
+    When @inject(type: Type?, name: String?):
+      Then:
+        - return InjectDecorator(type, name)
+
+    When @inject_all(type: Type):
+      Then:
+        - return InjectAllDecorator(type)
+
+    When @optional():
+      Then:
+        - return OptionalDecorator()
+
+    When @post_construct():
+      Then:
+        - return PostConstructDecorator()
+
+    When @pre_destroy():
+      Then:
+        - return PreDestroyDecorator()
+
+    Type InjectableOptions:
+      lifetime: ServiceLifetime?
+      name: String?
+      tags: List<String>?
+
+  # ==========================================================================
+  # MODULE SYSTEM
+  # ==========================================================================
+
+  Behavior Modules:
+    Type Module:
+      name: String
+      imports: List<Module>
+      providers: List<Provider>
+      exports: List<Type>
+
+      Method configure(container: Container):
+        # Import other modules
+        for imported in imports:
+          imported.configure(container)
+        
+        # Register providers
+        for provider in providers:
+          register_provider(container, provider)
+
+    Type Provider:
+      variants:
+        - Class: (type: Type, options: ProviderOptions?)
+        - Factory: (type: Type, factory: Factory, options: ProviderOptions?)
+        - Value: (type: Type, value: Any)
+        - Existing: (type: Type, existing: Type)
+
+    Type ProviderOptions:
+      lifetime: ServiceLifetime?
+      name: String?
+
+    When module.create(config: ModuleConfig) -> Module:
+      Then:
+        - return Module(
+            name: config.name,
+            imports: config.imports ?? [],
+            providers: config.providers ?? [],
+            exports: config.exports ?? []
+          )
+
+    When register_provider(container: Container, provider: Provider):
+      Then:
+        - match provider:
+            Class(type, options) ->
+              container.register<type>()
+                .as<type>()
+                .with_lifetime(options?.lifetime ?? Transient)
+                .named(options?.name)
+                .build()
+            
+            Factory(type, factory, options) ->
+              container.register<type>()
+                .with_factory(factory)
+                .with_lifetime(options?.lifetime ?? Transient)
+                .named(options?.name)
+                .build()
+            
+            Value(type, value) ->
+              container.register_instance<type>(value)
+            
+            Existing(type, existing) ->
+              container.register<type>()
+                .with_factory((c) -> c.resolve<existing>())
+                .singleton()
+                .build()
+
+  # ==========================================================================
+  # AUTO-WIRING
+  # ==========================================================================
+
+  Behavior AutoWiring:
+    When container.auto_register(assembly: Assembly, options: AutoRegisterOptions?):
+      Then:
+        - types = scan_types(assembly, options?.filter)
+        
+        - for type in types:
+            - if has_decorator(type, Injectable):
+                - options = get_decorator_options(type, Injectable)
+                - container.register(type)
+                    .with_lifetime(options.lifetime ?? Transient)
+                    .named(options.name)
+                    .build()
+
+    When container.auto_register_from_namespace(namespace: String, options: AutoRegisterOptions?):
+      Then:
+        - types = get_types_in_namespace(namespace)
+        - for type in types:
+            - if matches_convention(type, options):
+                - lifetime = infer_lifetime(type, options)
+                - container.register(type).with_lifetime(lifetime).build()
+
+    Type AutoRegisterOptions:
+      filter: ((Type) -> Boolean)?
+      lifetime: ServiceLifetime?
+      convention: NamingConvention?
+
+    Type NamingConvention:
+      variants:
+        - Suffix: String  # e.g., "Service", "Repository"
+        - Prefix: String
+        - Interface: String  # e.g., "I" prefix for interfaces
+
+  # ==========================================================================
+  # INTERCEPTION
+  # ==========================================================================
+
+  Behavior Interception:
+    Type Interceptor:
+      intercept: (InvocationContext, () -> Any) -> Any
+
+    Type InvocationContext:
+      target: Any
+      method: String
+      arguments: List<Any>
+      return_type: Type
+
+    When container.add_interceptor<T>(interceptor: Interceptor):
+      Then:
+        - interceptors[T] = interceptors[T] ?? []
+        - interceptors[T].push(interceptor)
+
+    When create_proxy(instance: Any, interceptors: List<Interceptor>) -> Any:
+      Then:
+        - return Proxy(instance, {
+            get: (target, prop) -> {
+              value = target[prop]
+              if typeof(value) == "function":
+                return (...args) -> {
+                  context = InvocationContext(
+                    target: target,
+                    method: prop,
+                    arguments: args,
+                    return_type: get_return_type(target, prop)
+                  )
+                  
+                  # Build interceptor chain
+                  chain = interceptors.reverse().reduce(
+                    (next, interceptor) -> () -> interceptor.intercept(context, next),
+                    () -> value.apply(target, args)
+                  )
+                  
+                  return chain()
+                }
+              return value
+            }
+          })
+
+    # Common interceptors
+    Type LoggingInterceptor:
+      Method intercept(context: InvocationContext, next: () -> Any) -> Any:
+        log.debug("Calling ${context.method} with ${context.arguments}")
+        start = now()
+        try:
+          result = next()
+          log.debug("${context.method} returned in ${now() - start}ms")
+          return result
+        catch e:
+          log.error("${context.method} threw ${e}")
+          throw e
+
+    Type CachingInterceptor:
+      cache: Cache
+
+      Method intercept(context: InvocationContext, next: () -> Any) -> Any:
+        key = "${context.method}:${hash(context.arguments)}"
+        cached = cache.get(key)
+        if cached:
+          return cached
+        result = next()
+        cache.set(key, result)
+        return result
+
+    Type RetryInterceptor:
+      max_retries: Int = 3
+      delay: Duration = 1.second
+
+      Method intercept(context: InvocationContext, next: () -> Any) -> Any:
+        for attempt in 1..max_retries:
+          try:
+            return next()
+          catch e:
+            if attempt == max_retries:
+              throw e
+            await sleep(delay * attempt)
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Dependency Injection":
+    ```vibee
+    # Define services
+    @injectable(lifetime: Singleton)
+    class DatabaseConnection:
+      config: DatabaseConfig
+
+      constructor(@inject() config: DatabaseConfig):
+        self.config = config
+
+      async connect():
+        # Connect to database
+
+      async dispose():
+        # Close connection
+
+    @injectable(lifetime: Scoped)
+    class UserRepository:
+      db: DatabaseConnection
+
+      constructor(@inject() db: DatabaseConnection):
+        self.db = db
+
+      async find_by_id(id: String) -> User?:
+        # Query database
+
+      async save(user: User):
+        # Save to database
+
+    @injectable()
+    class UserService:
+      repo: UserRepository
+      cache: CacheService
+      events: EventBus
+
+      constructor(
+        @inject() repo: UserRepository,
+        @inject() cache: CacheService,
+        @inject() events: EventBus
+      ):
+        self.repo = repo
+        self.cache = cache
+        self.events = events
+
+      async get_user(id: String) -> User?:
+        # Check cache
+        cached = await cache.get("user:${id}")
+        if cached:
+          return cached
+
+        # Get from repo
+        user = await repo.find_by_id(id)
+        if user:
+          await cache.set("user:${id}", user, ttl: 5.minutes)
+
+        return user
+
+      async create_user(data: CreateUserData) -> User:
+        user = User.from_data(data)
+        await repo.save(user)
+        await events.publish(UserCreated(user))
+        return user
+
+    # Create container
+    container = container.create()
+
+    # Register services
+    container.register<DatabaseConfig>()
+      .with_factory((c) -> load_config())
+      .singleton()
+      .build()
+
+    container.register<DatabaseConnection>()
+      .singleton()
+      .build()
+
+    container.register<CacheService>()
+      .as<RedisCacheService>()
+      .singleton()
+      .build()
+
+    container.register<EventBus>()
+      .as<InMemoryEventBus>()
+      .singleton()
+      .build()
+
+    container.register<UserRepository>()
+      .scoped()
+      .build()
+
+    container.register<UserService>()
+      .scoped()
+      .build()
+
+    # Add interceptors
+    container.add_interceptor<UserService>(LoggingInterceptor())
+    container.add_interceptor<UserRepository>(RetryInterceptor(max_retries: 3))
+
+    # Validate container
+    container.validate()
+
+    # Resolve services
+    user_service = await container.resolve<UserService>()
+    user = await user_service.get_user("123")
+
+    # Use scopes for request handling
+    app.use(async (req, res, next) -> {
+      scope = container.create_scope()
+      req.scope = scope
+      
+      try:
+        await next()
+      finally:
+        await container.dispose_scope(scope)
+    })
+
+    app.get("/users/:id", async (req, res) -> {
+      user_service = await req.scope.resolve<UserService>()
+      user = await user_service.get_user(req.params.id)
+      res.json(user)
+    })
+
+    # Module-based registration
+    database_module = module.create({
+      name: "DatabaseModule",
+      providers: [
+        Class(DatabaseConnection, lifetime: Singleton),
+        Class(UserRepository, lifetime: Scoped),
+        Class(PostRepository, lifetime: Scoped)
+      ],
+      exports: [UserRepository, PostRepository]
+    })
+
+    app_module = module.create({
+      name: "AppModule",
+      imports: [database_module],
+      providers: [
+        Class(UserService),
+        Class(PostService),
+        Factory(Logger, (c) -> create_logger(c.resolve<Config>()))
+      ]
+    })
+
+    container = container.create()
+    app_module.configure(container)
+
+    # Auto-registration
+    container.auto_register_from_namespace("app.services", {
+      convention: Suffix("Service"),
+      lifetime: Scoped
+    })
+
+    container.auto_register_from_namespace("app.repositories", {
+      convention: Suffix("Repository"),
+      lifetime: Scoped
+    })
+
+    # Cleanup
+    await container.dispose()
+    ```

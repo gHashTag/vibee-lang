@@ -1,0 +1,459 @@
+name: vibee_os_metrics
+version: "0.1.0"
+language: gleam
+module: kernel/telemetry/metrics
+description: Metrics & Telemetry - мониторинг производительности и состояния Vibee OS
+
+behaviors:
+  - name: record_metric
+    given: Metric value is available
+    when: record is called
+    then: Metric is stored with timestamp
+    test_cases:
+      - name: record_counter
+        input:
+          name: "llm.requests.total"
+          type: "counter"
+          value: 1
+        expected:
+          recorded: true
+          aggregated: true
+      - name: record_gauge
+        input:
+          name: "memory.used_bytes"
+          type: "gauge"
+          value: 1048576
+        expected:
+          recorded: true
+          current_value: 1048576
+      - name: record_histogram
+        input:
+          name: "llm.latency_ms"
+          type: "histogram"
+          value: 150
+        expected:
+          recorded: true
+          bucket_updated: true
+
+  - name: query_metrics
+    given: Metrics are recorded
+    when: query is called
+    then: Aggregated metrics are returned
+    test_cases:
+      - name: query_counter
+        input:
+          name: "llm.requests.total"
+          range: "1h"
+        expected:
+          has_value: true
+          has_rate: true
+      - name: query_percentiles
+        input:
+          name: "llm.latency_ms"
+          percentiles: [50, 90, 99]
+        expected:
+          p50: true
+          p90: true
+          p99: true
+
+  - name: alert_on_threshold
+    given: Alert rule is configured
+    when: Metric exceeds threshold
+    then: Alert is triggered
+    test_cases:
+      - name: high_error_rate
+        input:
+          metric: "errors.rate"
+          threshold: 0.05
+          current: 0.1
+        expected:
+          alert_triggered: true
+          severity: "critical"
+      - name: below_threshold
+        input:
+          metric: "errors.rate"
+          threshold: 0.05
+          current: 0.01
+        expected:
+          alert_triggered: false
+
+  - name: export_metrics
+    given: Metrics are collected
+    when: export is called
+    then: Metrics are exported in requested format
+    test_cases:
+      - name: export_prometheus
+        input:
+          format: "prometheus"
+        expected:
+          valid_prometheus: true
+          has_help: true
+          has_type: true
+      - name: export_json
+        input:
+          format: "json"
+        expected:
+          valid_json: true
+
+  - name: trace_request
+    given: Request is made
+    when: Tracing is enabled
+    then: Full trace is recorded
+    test_cases:
+      - name: trace_llm_request
+        input:
+          operation: "llm.chat"
+          spans: ["parse", "cache_check", "api_call", "response"]
+        expected:
+          trace_id: true
+          spans_recorded: 4
+          duration_calculated: true
+
+types:
+  # Metric Types
+  Metric:
+    name: str
+    type: MetricType
+    description: str
+    labels: {str: str}
+    unit: str?
+
+  MetricType:
+    variants:
+      - Counter                       # Monotonically increasing
+      - Gauge                         # Can go up or down
+      - Histogram                     # Distribution of values
+      - Summary                       # Similar to histogram, client-side
+
+  MetricValue:
+    metric: str
+    value: float
+    timestamp: int
+    labels: {str: str}
+
+  # Counter
+  Counter:
+    name: str
+    value: float
+    labels: {str: str}
+
+  # Gauge
+  Gauge:
+    name: str
+    value: float
+    labels: {str: str}
+
+  # Histogram
+  Histogram:
+    name: str
+    buckets: [HistogramBucket]
+    sum: float
+    count: int
+    labels: {str: str}
+
+  HistogramBucket:
+    le: float                         # Less than or equal
+    count: int
+
+  # Summary
+  Summary:
+    name: str
+    quantiles: [Quantile]
+    sum: float
+    count: int
+    labels: {str: str}
+
+  Quantile:
+    quantile: float
+    value: float
+
+  # Tracing
+  Trace:
+    trace_id: str
+    spans: [Span]
+    start_time: int
+    end_time: int
+    duration_ms: int
+
+  Span:
+    span_id: str
+    parent_id: str?
+    operation: str
+    start_time: int
+    end_time: int
+    duration_ms: int
+    status: SpanStatus
+    attributes: {str: str}
+    events: [SpanEvent]
+
+  SpanStatus:
+    variants:
+      - Ok
+      - Error: {message: str}
+
+  SpanEvent:
+    name: str
+    timestamp: int
+    attributes: {str: str}
+
+  # Alerting
+  AlertRule:
+    name: str
+    metric: str
+    condition: AlertCondition
+    duration: int                     # Seconds condition must be true
+    severity: AlertSeverity
+    labels: {str: str}
+    annotations: {str: str}
+
+  AlertCondition:
+    operator: CompareOperator
+    threshold: float
+
+  CompareOperator:
+    variants:
+      - GreaterThan
+      - LessThan
+      - GreaterOrEqual
+      - LessOrEqual
+      - Equal
+      - NotEqual
+
+  AlertSeverity:
+    variants:
+      - Info
+      - Warning
+      - Critical
+
+  Alert:
+    rule: str
+    status: AlertStatus
+    value: float
+    started_at: int
+    resolved_at: int?
+    labels: {str: str}
+    annotations: {str: str}
+
+  AlertStatus:
+    variants:
+      - Pending
+      - Firing
+      - Resolved
+
+  # Export
+  ExportFormat:
+    variants:
+      - Prometheus
+      - JSON
+      - OpenMetrics
+      - StatsD
+
+  # Configuration
+  MetricsConfig:
+    enabled: bool
+    retention_hours: int
+    export_interval_seconds: int
+    histogram_buckets: [float]
+    default_labels: {str: str}
+
+  TracingConfig:
+    enabled: bool
+    sample_rate: float
+    export_endpoint: str?
+
+  AlertingConfig:
+    enabled: bool
+    check_interval_seconds: int
+    notification_channels: [str]
+
+functions:
+  # Recording
+  - name: counter_inc
+    params: {name: str, labels: {str: str}?, value: float?}
+    returns: void
+    description: Increment counter
+
+  - name: gauge_set
+    params: {name: str, value: float, labels: {str: str}?}
+    returns: void
+    description: Set gauge value
+
+  - name: histogram_observe
+    params: {name: str, value: float, labels: {str: str}?}
+    returns: void
+    description: Record histogram observation
+
+  - name: summary_observe
+    params: {name: str, value: float, labels: {str: str}?}
+    returns: void
+    description: Record summary observation
+
+  # Querying
+  - name: metric_get
+    params: {name: str, labels: {str: str}?}
+    returns: MetricValue?
+    description: Get current metric value
+
+  - name: metric_query
+    params: {query: str, start: int, end: int, step: int}
+    returns: [MetricValue]
+    description: Query metrics over time range
+
+  - name: metric_list
+    params: {}
+    returns: [Metric]
+    description: List all metrics
+
+  # Tracing
+  - name: trace_start
+    params: {operation: str}
+    returns: Trace
+    description: Start new trace
+
+  - name: span_start
+    params: {trace: Trace, operation: str, parent: str?}
+    returns: Span
+    description: Start new span
+
+  - name: span_end
+    params: {span: Span, status: SpanStatus?}
+    returns: void
+    description: End span
+
+  - name: span_add_event
+    params: {span: Span, name: str, attributes: {str: str}?}
+    returns: void
+    description: Add event to span
+
+  # Alerting
+  - name: alert_rule_add
+    params: {rule: AlertRule}
+    returns: bool
+    description: Add alert rule
+
+  - name: alert_rule_remove
+    params: {name: str}
+    returns: bool
+    description: Remove alert rule
+
+  - name: alert_list
+    params: {status: AlertStatus?}
+    returns: [Alert]
+    description: List alerts
+
+  # Export
+  - name: export
+    params: {format: ExportFormat}
+    returns: str
+    description: Export metrics
+
+  - name: export_to_endpoint
+    params: {endpoint: str, format: ExportFormat}
+    returns: bool
+    description: Push metrics to endpoint
+
+  # Lifecycle
+  - name: metrics_init
+    params: {config: MetricsConfig}
+    returns: bool
+    description: Initialize metrics system
+
+  - name: metrics_shutdown
+    params: {}
+    returns: bool
+    description: Shutdown metrics system
+
+imports:
+  - kernel.ipc.event_bus
+
+standard_metrics: |
+  # Standard Vibee OS Metrics
+  
+  ## System
+  - vibee.uptime_seconds (counter)
+  - vibee.memory.used_bytes (gauge)
+  - vibee.memory.total_bytes (gauge)
+  - vibee.cpu.usage_percent (gauge)
+  
+  ## LLM
+  - vibee.llm.requests_total (counter) [provider, model, status]
+  - vibee.llm.tokens_total (counter) [provider, model, type]
+  - vibee.llm.latency_ms (histogram) [provider, model]
+  - vibee.llm.cost_usd_total (counter) [provider, model]
+  - vibee.llm.cache_hits_total (counter)
+  - vibee.llm.cache_misses_total (counter)
+  
+  ## Specs
+  - vibee.specs.parsed_total (counter) [status]
+  - vibee.specs.compiled_total (counter) [status, target]
+  - vibee.specs.parse_duration_ms (histogram)
+  - vibee.specs.compile_duration_ms (histogram)
+  
+  ## Tests
+  - vibee.tests.run_total (counter) [status]
+  - vibee.tests.duration_ms (histogram)
+  - vibee.tests.pass_rate (gauge)
+  
+  ## Agents
+  - vibee.agents.active (gauge) [persona]
+  - vibee.agents.tasks_total (counter) [persona, status]
+  - vibee.agents.task_duration_ms (histogram) [persona]
+  
+  ## Events
+  - vibee.events.published_total (counter) [type]
+  - vibee.events.delivered_total (counter) [type, status]
+
+prometheus_format: |
+  # Prometheus Export Format
+  
+  ```
+  # HELP vibee_llm_requests_total Total LLM requests
+  # TYPE vibee_llm_requests_total counter
+  vibee_llm_requests_total{provider="deepseek",model="deepseek-chat",status="success"} 1234
+  vibee_llm_requests_total{provider="deepseek",model="deepseek-chat",status="error"} 12
+  
+  # HELP vibee_llm_latency_ms LLM request latency
+  # TYPE vibee_llm_latency_ms histogram
+  vibee_llm_latency_ms_bucket{le="100"} 500
+  vibee_llm_latency_ms_bucket{le="500"} 1100
+  vibee_llm_latency_ms_bucket{le="1000"} 1200
+  vibee_llm_latency_ms_bucket{le="+Inf"} 1246
+  vibee_llm_latency_ms_sum 456789
+  vibee_llm_latency_ms_count 1246
+  
+  # HELP vibee_tests_pass_rate Current test pass rate
+  # TYPE vibee_tests_pass_rate gauge
+  vibee_tests_pass_rate 0.95
+  ```
+
+alert_examples: |
+  # Alert Rule Examples
+  
+  ```yaml
+  # High error rate
+  - name: high_llm_error_rate
+    metric: vibee_llm_requests_total{status="error"}
+    condition: {operator: GreaterThan, threshold: 0.05}
+    duration: 300
+    severity: Critical
+    annotations:
+      summary: "LLM error rate above 5%"
+  
+  # Slow responses
+  - name: slow_llm_responses
+    metric: vibee_llm_latency_ms_p99
+    condition: {operator: GreaterThan, threshold: 5000}
+    duration: 60
+    severity: Warning
+    annotations:
+      summary: "LLM p99 latency above 5s"
+  
+  # Low test pass rate
+  - name: low_test_pass_rate
+    metric: vibee_tests_pass_rate
+    condition: {operator: LessThan, threshold: 0.9}
+    duration: 0
+    severity: Critical
+    annotations:
+      summary: "Test pass rate below 90%"
+  ```

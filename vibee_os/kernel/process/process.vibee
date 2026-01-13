@@ -1,0 +1,167 @@
+name: vibee_os_process
+version: "0.1.0"
+language: zig
+module: kernel/process
+description: Управление процессами VIBEE OS — создание, завершение, состояния
+
+behaviors:
+  - name: create_process
+    given: Система запускает новую программу
+    when: Вызывается process_create с именем и аргументами
+    then: Создаётся новый процесс с уникальным PID
+    test_cases:
+      - name: create_init_process
+        input: {name: "init", args: []}
+        expected: {pid: 1, state: "ready"}
+      - name: create_shell_process
+        input: {name: "shell", args: ["--interactive"]}
+        expected: {pid: 2, state: "ready"}
+
+  - name: terminate_process
+    given: Процесс завершает работу
+    when: Вызывается process_exit с кодом возврата
+    then: Процесс переходит в состояние zombie и освобождает ресурсы
+    test_cases:
+      - name: normal_exit
+        input: {pid: 2, code: 0}
+        expected: {state: "zombie", code: 0}
+      - name: error_exit
+        input: {pid: 3, code: 1}
+        expected: {state: "zombie", code: 1}
+
+  - name: get_process_info
+    given: Запрашивается информация о процессе
+    when: Вызывается process_info с PID
+    then: Возвращается структура с информацией о процессе
+    test_cases:
+      - name: get_init_info
+        input: {pid: 1}
+        expected: {name: "init", state: "running", parent_pid: 0}
+      - name: get_nonexistent
+        input: {pid: 999}
+        expected: {error: "not_found"}
+
+  - name: list_all_processes
+    given: Пользователь запрашивает список процессов
+    when: Вызывается process_list
+    then: Возвращается список всех процессов
+    test_cases:
+      - name: list_after_boot
+        input: {}
+        expected: {count: 2, processes: [{pid: 1, name: "init"}, {pid: 2, name: "shell"}]}
+
+types:
+  Process:
+    pid: int
+    parent_pid: int
+    name: str
+    state: ProcessState
+    priority: int
+    cpu_time: int
+    memory_usage: int
+    created_at: int
+    exit_code: int?
+
+  ProcessState:
+    variants:
+      - New
+      - Ready
+      - Running
+      - Blocked
+      - Zombie
+      - Terminated
+
+  ProcessInfo:
+    pid: int
+    parent_pid: int
+    name: str
+    state: ProcessState
+    priority: int
+    cpu_time: int
+    memory_usage: int
+    thread_count: int
+    open_files: int
+
+  Thread:
+    tid: int
+    pid: int
+    state: ThreadState
+    priority: int
+    stack_pointer: int
+    instruction_pointer: int
+
+  ThreadState:
+    variants:
+      - Ready
+      - Running
+      - Blocked
+      - Terminated
+
+  SpawnOptions:
+    name: str
+    args: [str]
+    env: {str: str}?
+    working_dir: str?
+    stdin: int?
+    stdout: int?
+    stderr: int?
+
+  ProcessResult:
+    success: bool
+    pid: int?
+    error: str?
+
+functions:
+  - name: process_create
+    params: {options: SpawnOptions}
+    returns: ProcessResult
+    description: Создание нового процесса
+
+  - name: process_exit
+    params: {code: int}
+    returns: void
+    description: Завершение текущего процесса
+
+  - name: process_kill
+    params: {pid: int, signal: int}
+    returns: bool
+    description: Отправка сигнала процессу
+
+  - name: process_wait
+    params: {pid: int}
+    returns: int
+    description: Ожидание завершения процесса
+
+  - name: process_info
+    params: {pid: int}
+    returns: ProcessInfo?
+    description: Получение информации о процессе
+
+  - name: process_list
+    params: {}
+    returns: [ProcessInfo]
+    description: Список всех процессов
+
+  - name: process_current
+    params: {}
+    returns: int
+    description: PID текущего процесса
+
+  - name: thread_create
+    params: {entry: int, arg: int}
+    returns: int
+    description: Создание потока в текущем процессе
+
+  - name: thread_exit
+    params: {}
+    returns: void
+    description: Завершение текущего потока
+
+  - name: thread_yield
+    params: {}
+    returns: void
+    description: Передача управления планировщику
+
+imports:
+  - kernel.memory
+  - kernel.ipc

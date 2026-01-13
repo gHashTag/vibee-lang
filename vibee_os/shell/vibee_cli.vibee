@@ -1,0 +1,430 @@
+name: vibee_os_cli
+version: "0.1.0"
+language: gleam
+module: shell/vibee_cli
+description: Vibee CLI - командная строка для работы с Vibee OS
+
+behaviors:
+  - name: parse_command
+    given: User enters command in terminal
+    when: Command is parsed
+    then: Command and arguments are extracted
+    test_cases:
+      - name: parse_gen
+        input: {args: ["vibee", "gen", "spec.vibee"]}
+        expected: {command: "gen", file: "spec.vibee"}
+      - name: parse_test
+        input: {args: ["vibee", "test", "spec.vibee"]}
+        expected: {command: "test", file: "spec.vibee"}
+      - name: parse_chat
+        input: {args: ["vibee", "chat", "Create a REST API"]}
+        expected: {command: "chat", message: "Create a REST API"}
+      - name: parse_help
+        input: {args: ["vibee", "help"]}
+        expected: {command: "help"}
+      - name: parse_version
+        input: {args: ["vibee", "--version"]}
+        expected: {command: "version"}
+
+  - name: execute_gen
+    given: Valid .vibee file path
+    when: vibee gen is called
+    then: Code is generated for target language
+    test_cases:
+      - name: gen_gleam
+        input: {file: "calculator.vibee", target: "gleam"}
+        expected: {success: true, output_file: "calculator.gleam"}
+      - name: gen_zig
+        input: {file: "calculator.vibee", target: "zig"}
+        expected: {success: true, output_file: "calculator.zig"}
+      - name: gen_invalid_file
+        input: {file: "nonexistent.vibee"}
+        expected: {success: false, error: "file_not_found"}
+
+  - name: execute_test
+    given: Valid .vibee file with test_cases
+    when: vibee test is called
+    then: All test_cases are executed and results reported
+    test_cases:
+      - name: test_all_pass
+        input: {file: "calculator.vibee", tests_pass: true}
+        expected: {success: true, passed: 5, failed: 0}
+      - name: test_some_fail
+        input: {file: "calculator.vibee", tests_pass: false}
+        expected: {success: false, passed: 3, failed: 2}
+      - name: test_no_tests
+        input: {file: "empty.vibee", has_tests: false}
+        expected: {success: true, passed: 0, failed: 0, warning: "no_tests"}
+
+  - name: execute_chat
+    given: LLM client is configured
+    when: vibee chat is called with message
+    then: LLM generates response or Vibee spec
+    test_cases:
+      - name: chat_simple
+        input: {message: "Hello"}
+        expected: {success: true, has_response: true}
+      - name: chat_generate_spec
+        input: {message: "Create a calculator API", generate_spec: true}
+        expected: {success: true, has_spec: true, spec_valid: true}
+      - name: chat_no_api_key
+        input: {message: "Hello", api_key_set: false}
+        expected: {success: false, error: "api_key_not_set"}
+
+  - name: execute_check
+    given: Valid .vibee file path
+    when: vibee check is called
+    then: Specification is validated
+    test_cases:
+      - name: check_valid
+        input: {file: "valid.vibee"}
+        expected: {valid: true, errors: 0, warnings: 0}
+      - name: check_invalid_yaml
+        input: {file: "invalid.vibee"}
+        expected: {valid: false, errors: 1, error_type: "yaml_parse"}
+      - name: check_missing_tests
+        input: {file: "no_tests.vibee"}
+        expected: {valid: true, warnings: 1, warning_type: "missing_tests"}
+
+  - name: execute_run
+    given: Valid .vibee file with main behavior
+    when: vibee run is called
+    then: Specification is compiled and executed
+    test_cases:
+      - name: run_hello
+        input: {file: "hello.vibee"}
+        expected: {success: true, output: "Hello, World!"}
+      - name: run_with_args
+        input: {file: "greet.vibee", args: ["Alice"]}
+        expected: {success: true, output: "Hello, Alice!"}
+
+  - name: execute_watch
+    given: Valid .vibee file path
+    when: vibee watch is called
+    then: File is watched for changes and recompiled
+    test_cases:
+      - name: watch_recompile
+        input: {file: "app.vibee", file_changed: true}
+        expected: {recompiled: true, success: true}
+
+  - name: execute_init
+    given: Empty directory
+    when: vibee init is called
+    then: New Vibee project is created
+    test_cases:
+      - name: init_new_project
+        input: {name: "my_app"}
+        expected: {created: true, files: ["my_app.vibee", "README.md"]}
+
+  - name: execute_stats
+    given: Directory with .vibee files
+    when: vibee stats is called
+    then: Statistics are displayed
+    test_cases:
+      - name: stats_directory
+        input: {dir: "./vibee_os"}
+        expected: {files: 52, behaviors: 200, tests: 500, lines: 18000}
+
+types:
+  # CLI Types
+  Command:
+    variants:
+      - Gen: GenOptions
+      - Test: TestOptions
+      - Check: CheckOptions
+      - Run: RunOptions
+      - Chat: ChatOptions
+      - Watch: WatchOptions
+      - Init: InitOptions
+      - Stats: StatsOptions
+      - Help: HelpOptions
+      - Version
+
+  GenOptions:
+    file: str
+    output: str?
+    target: TargetLanguage
+    watch: bool
+
+  TargetLanguage:
+    variants:
+      - Gleam
+      - Zig
+      - Rust
+      - TypeScript
+      - Python
+
+  TestOptions:
+    file: str
+    filter: str?
+    verbose: bool
+    watch: bool
+
+  CheckOptions:
+    file: str
+    strict: bool
+
+  RunOptions:
+    file: str
+    args: [str]
+
+  ChatOptions:
+    message: str
+    generate_spec: bool
+    output: str?
+    model: str?
+
+  WatchOptions:
+    file: str
+    command: str
+
+  InitOptions:
+    name: str
+    template: str?
+
+  StatsOptions:
+    dir: str
+    format: OutputFormat
+
+  HelpOptions:
+    command: str?
+
+  OutputFormat:
+    variants:
+      - Text
+      - JSON
+      - Markdown
+
+  # CLI Result
+  CLIResult:
+    success: bool
+    output: str?
+    error: str?
+    exit_code: int
+
+  # Test Results
+  TestResults:
+    total: int
+    passed: int
+    failed: int
+    skipped: int
+    duration_ms: int
+    results: [TestResult]
+
+  TestResult:
+    behavior: str
+    test_case: str
+    passed: bool
+    expected: str
+    actual: str?
+    error: str?
+    duration_ms: int
+
+  # Stats
+  ProjectStats:
+    files: int
+    behaviors: int
+    types: int
+    functions: int
+    test_cases: int
+    lines: int
+
+functions:
+  # Main entry point
+  - name: main
+    params: {args: [str]}
+    returns: int
+    description: CLI entry point, returns exit code
+
+  # Command parsing
+  - name: parse_args
+    params: {args: [str]}
+    returns: Command
+    description: Parse command line arguments
+
+  # Command execution
+  - name: execute
+    params: {command: Command}
+    returns: CLIResult
+    description: Execute parsed command
+
+  - name: execute_gen
+    params: {options: GenOptions}
+    returns: CLIResult
+    description: Generate code from spec
+
+  - name: execute_test
+    params: {options: TestOptions}
+    returns: CLIResult
+    description: Run tests
+
+  - name: execute_check
+    params: {options: CheckOptions}
+    returns: CLIResult
+    description: Validate spec
+
+  - name: execute_run
+    params: {options: RunOptions}
+    returns: CLIResult
+    description: Run spec
+
+  - name: execute_chat
+    params: {options: ChatOptions}
+    returns: CLIResult
+    description: Chat with LLM
+
+  - name: execute_watch
+    params: {options: WatchOptions}
+    returns: CLIResult
+    description: Watch and recompile
+
+  - name: execute_init
+    params: {options: InitOptions}
+    returns: CLIResult
+    description: Initialize project
+
+  - name: execute_stats
+    params: {options: StatsOptions}
+    returns: CLIResult
+    description: Show statistics
+
+  - name: execute_help
+    params: {options: HelpOptions}
+    returns: CLIResult
+    description: Show help
+
+  - name: execute_version
+    params: {}
+    returns: CLIResult
+    description: Show version
+
+  # Output formatting
+  - name: print_test_results
+    params: {results: TestResults}
+    returns: str
+    description: Format test results for display
+
+  - name: print_stats
+    params: {stats: ProjectStats, format: OutputFormat}
+    returns: str
+    description: Format stats for display
+
+  - name: print_error
+    params: {error: str}
+    returns: str
+    description: Format error message
+
+imports:
+  - kernel.vibee.compiler
+  - kernel.vibee.verifier
+  - kernel.agent.llm_client
+  - shell.shell
+
+usage: |
+  # Vibee CLI Usage
+  
+  ```
+  vibee <command> [options]
+  
+  Commands:
+    gen <file.vibee>      Generate code from specification
+    test <file.vibee>     Run test cases
+    check <file.vibee>    Validate specification
+    run <file.vibee>      Compile and run
+    chat <message>        Chat with LLM / generate specs
+    watch <file.vibee>    Watch and recompile on changes
+    init <name>           Create new project
+    stats [dir]           Show project statistics
+    help [command]        Show help
+    version               Show version
+  
+  Options:
+    -o, --output <path>   Output path
+    -t, --target <lang>   Target language (gleam, zig, rust)
+    -v, --verbose         Verbose output
+    -w, --watch           Watch mode
+    --json                JSON output
+  
+  Examples:
+    vibee gen calculator.vibee -t gleam
+    vibee test calculator.vibee -v
+    vibee chat "Create a REST API for users"
+    vibee chat "Create a todo app" --output todo.vibee
+    vibee stats ./vibee_os
+    vibee init my_project
+  ```
+
+examples: |
+  # CLI Examples
+  
+  ## Generate Code
+  ```bash
+  $ vibee gen calculator.vibee
+  ✓ Parsed calculator.vibee
+  ✓ Generated calculator.gleam (245 lines)
+  ✓ Generated calculator_test.gleam (89 lines)
+  ```
+  
+  ## Run Tests
+  ```bash
+  $ vibee test calculator.vibee
+  
+  📋 calculator v1.0.0
+  ──────────────────────────────────────────────────
+  
+  ✅ add_numbers (2/2)
+    ✓ add_positive (1ms)
+    ✓ add_negative (1ms)
+  
+  ✅ subtract_numbers (2/2)
+    ✓ subtract_positive (1ms)
+    ✓ subtract_negative (1ms)
+  
+  ❌ divide_numbers (1/2)
+    ✓ divide_normal (1ms)
+    ✗ divide_by_zero (1ms)
+      └─ expected: {error: "division_by_zero"}, got: {crash: true}
+  
+  ──────────────────────────────────────────────────
+  Total: 5 | ✅ Passed: 4 | ❌ Failed: 1
+  Duration: 5ms
+  ```
+  
+  ## Chat with LLM
+  ```bash
+  $ vibee chat "Create a simple calculator"
+  
+  🤖 Generating specification...
+  
+  name: calculator
+  version: "1.0.0"
+  language: gleam
+  
+  behaviors:
+    - name: add
+      given: Two numbers a and b
+      when: add(a, b) is called
+      then: Returns a + b
+      test_cases:
+        - name: add_positive
+          input: {a: 2, b: 3}
+          expected: {result: 5}
+  ...
+  
+  ✓ Saved to calculator.vibee
+  ```
+  
+  ## Project Stats
+  ```bash
+  $ vibee stats ./vibee_os
+  
+  📊 Vibee OS Statistics
+  ──────────────────────────────────────────────────
+  Files:        52
+  Behaviors:    287
+  Types:        412
+  Functions:    198
+  Test Cases:   543
+  Lines:        18,554
+  ──────────────────────────────────────────────────
+  ```

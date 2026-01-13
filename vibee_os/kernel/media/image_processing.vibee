@@ -1,0 +1,528 @@
+# ============================================================================
+# IMAGE PROCESSING - Обработка изображений на Vibee
+# ============================================================================
+# Resize, crop, filters, transformations
+# ============================================================================
+
+Specification ImageProcessing:
+  """Обработка изображений как спецификация трансформаций."""
+
+  # ==========================================================================
+  # TYPES
+  # ==========================================================================
+
+  Type Image:
+    width: Int
+    height: Int
+    format: ImageFormat
+    color_space: ColorSpace
+    channels: Int
+    bit_depth: Int
+    data: Bytes
+    metadata: ImageMetadata?
+
+  Type ImageFormat:
+    variants:
+      - JPEG: JPEGOptions
+      - PNG: PNGOptions
+      - WebP: WebPOptions
+      - GIF
+      - BMP
+      - TIFF
+      - AVIF: AVIFOptions
+      - SVG
+      - RAW
+
+  Type JPEGOptions:
+    quality: Int = 85
+    progressive: Boolean = false
+    optimize: Boolean = true
+
+  Type PNGOptions:
+    compression: Int = 6
+    interlaced: Boolean = false
+
+  Type WebPOptions:
+    quality: Int = 80
+    lossless: Boolean = false
+    alpha_quality: Int = 100
+
+  Type AVIFOptions:
+    quality: Int = 50
+    speed: Int = 6
+
+  Type ColorSpace:
+    variants: [RGB, RGBA, CMYK, Grayscale, LAB, HSL, HSV]
+
+  Type ImageMetadata:
+    exif: Map<String, Any>?
+    iptc: Map<String, Any>?
+    xmp: Map<String, Any>?
+    icc_profile: Bytes?
+
+  Type Point:
+    x: Int
+    y: Int
+
+  Type Size:
+    width: Int
+    height: Int
+
+  Type Rectangle:
+    x: Int
+    y: Int
+    width: Int
+    height: Int
+
+  Type Color:
+    variants:
+      - RGB: (r: Int, g: Int, b: Int)
+      - RGBA: (r: Int, g: Int, b: Int, a: Int)
+      - Hex: String
+      - HSL: (h: Float, s: Float, l: Float)
+
+  # ==========================================================================
+  # IMAGE LOADING
+  # ==========================================================================
+
+  Behavior ImageLoading:
+    When image.load(source):
+      Then:
+        - bytes = match source:
+            Path(p) -> await fs.read_file(p)
+            URL(u) -> await http.get(u).bytes()
+            Bytes(b) -> b
+            Base64(s) -> base64_decode(s)
+        
+        - format = detect_format(bytes)
+        - return decode_image(bytes, format)
+
+    When image.save(img, path, options):
+      Then:
+        - format = options.format ?? detect_format_from_extension(path)
+        - bytes = encode_image(img, format, options)
+        - await fs.write_file(path, bytes)
+
+    When image.to_buffer(img, format, options):
+      Then:
+        - return encode_image(img, format ?? JPEG(JPEGOptions()), options)
+
+    When image.to_base64(img, format):
+      Then:
+        - bytes = image.to_buffer(img, format)
+        - return base64_encode(bytes)
+
+    When image.to_data_url(img, format):
+      Then:
+        - base64 = image.to_base64(img, format)
+        - mime = get_mime_type(format)
+        - return "data:${mime};base64,${base64}"
+
+  # ==========================================================================
+  # RESIZE & CROP
+  # ==========================================================================
+
+  Behavior ResizeAndCrop:
+    When image.resize(img, width, height, options):
+      Then:
+        - fit = options.fit ?? Contain
+        - (new_width, new_height) = calculate_dimensions(img, width, height, fit)
+        - resampler = options.resampler ?? Lanczos3
+        - return resample(img, new_width, new_height, resampler)
+
+    When calculate_dimensions(img, target_width, target_height, fit):
+      Then:
+        - aspect = img.width / img.height
+        - target_aspect = target_width / target_height
+        
+        - match fit:
+            Contain ->
+              if aspect > target_aspect:
+                (target_width, round(target_width / aspect))
+              else:
+                (round(target_height * aspect), target_height)
+            Cover ->
+              if aspect > target_aspect:
+                (round(target_height * aspect), target_height)
+              else:
+                (target_width, round(target_width / aspect))
+            Fill ->
+              (target_width, target_height)
+            Inside ->
+              if img.width <= target_width and img.height <= target_height:
+                (img.width, img.height)
+              else:
+                calculate_dimensions(img, target_width, target_height, Contain)
+            Outside ->
+              if img.width >= target_width and img.height >= target_height:
+                (img.width, img.height)
+              else:
+                calculate_dimensions(img, target_width, target_height, Cover)
+
+    Type ResizeFit:
+      variants: [Contain, Cover, Fill, Inside, Outside]
+
+    Type Resampler:
+      variants: [Nearest, Bilinear, Bicubic, Lanczos3, Mitchell]
+
+    When image.crop(img, rect):
+      Then:
+        - validate_rect(img, rect)
+        - return extract_region(img, rect)
+
+    When image.crop_center(img, width, height):
+      Then:
+        - x = (img.width - width) / 2
+        - y = (img.height - height) / 2
+        - return image.crop(img, Rectangle(x, y, width, height))
+
+    When image.thumbnail(img, size, options):
+      Then:
+        - resized = image.resize(img, size, size, fit: Contain)
+        - if options.crop_to_square:
+            - return image.crop_center(resized, size, size)
+        - return resized
+
+    When image.extend(img, top, right, bottom, left, color):
+      Then:
+        - new_width = img.width + left + right
+        - new_height = img.height + top + bottom
+        - canvas = create_canvas(new_width, new_height, color ?? RGBA(0, 0, 0, 0))
+        - return composite(canvas, img, Point(left, top))
+
+    When image.trim(img, threshold):
+      Then:
+        - bounds = find_content_bounds(img, threshold ?? 10)
+        - return image.crop(img, bounds)
+
+  # ==========================================================================
+  # TRANSFORMATIONS
+  # ==========================================================================
+
+  Behavior Transformations:
+    When image.rotate(img, angle, options):
+      Then:
+        - background = options.background ?? RGBA(0, 0, 0, 0)
+        - return rotate_image(img, angle, background)
+
+    When image.flip(img, direction):
+      Then:
+        - match direction:
+            Horizontal -> flip_horizontal(img)
+            Vertical -> flip_vertical(img)
+            Both -> flip_horizontal(flip_vertical(img))
+
+    Type FlipDirection:
+      variants: [Horizontal, Vertical, Both]
+
+    When image.transpose(img):
+      Then: transpose_image(img)
+
+    When image.affine(img, matrix, options):
+      Then:
+        - return apply_affine_transform(img, matrix, options)
+
+    When image.perspective(img, src_points, dst_points):
+      Then:
+        - matrix = compute_perspective_matrix(src_points, dst_points)
+        - return apply_perspective_transform(img, matrix)
+
+    When image.skew(img, x_angle, y_angle):
+      Then:
+        - matrix = create_skew_matrix(x_angle, y_angle)
+        - return image.affine(img, matrix)
+
+  # ==========================================================================
+  # FILTERS & EFFECTS
+  # ==========================================================================
+
+  Behavior FiltersAndEffects:
+    When image.blur(img, radius):
+      Then: apply_gaussian_blur(img, radius)
+
+    When image.sharpen(img, amount):
+      Then: apply_unsharp_mask(img, amount ?? 1.0, 1.0, 0)
+
+    When image.grayscale(img):
+      Then: convert_to_grayscale(img)
+
+    When image.sepia(img, intensity):
+      Then: apply_sepia_filter(img, intensity ?? 1.0)
+
+    When image.invert(img):
+      Then: invert_colors(img)
+
+    When image.brightness(img, factor):
+      Then: adjust_brightness(img, factor)
+
+    When image.contrast(img, factor):
+      Then: adjust_contrast(img, factor)
+
+    When image.saturation(img, factor):
+      Then: adjust_saturation(img, factor)
+
+    When image.hue(img, degrees):
+      Then: rotate_hue(img, degrees)
+
+    When image.gamma(img, value):
+      Then: apply_gamma_correction(img, value)
+
+    When image.threshold(img, value):
+      Then: apply_threshold(img, value)
+
+    When image.posterize(img, levels):
+      Then: posterize_image(img, levels)
+
+    When image.pixelate(img, size):
+      Then: pixelate_image(img, size)
+
+    When image.vignette(img, intensity, radius):
+      Then: apply_vignette(img, intensity ?? 0.5, radius ?? 0.5)
+
+    When image.noise(img, amount, type):
+      Then: add_noise(img, amount, type ?? Gaussian)
+
+    Type NoiseType:
+      variants: [Gaussian, Uniform, Salt, Pepper, SaltAndPepper]
+
+    When image.emboss(img):
+      Then: apply_convolution(img, EMBOSS_KERNEL)
+
+    When image.edge_detect(img, method):
+      Then:
+        - match method:
+            Sobel -> apply_sobel(img)
+            Canny(low, high) -> apply_canny(img, low, high)
+            Laplacian -> apply_laplacian(img)
+
+    Type EdgeMethod:
+      variants:
+        - Sobel
+        - Canny: (low: Float, high: Float)
+        - Laplacian
+
+    When image.oil_paint(img, radius, levels):
+      Then: apply_oil_paint_effect(img, radius ?? 3, levels ?? 20)
+
+    When image.cartoon(img):
+      Then:
+        - edges = image.edge_detect(img, Canny(100, 200))
+        - quantized = image.posterize(img, 8)
+        - return composite(quantized, edges, BlendMode.Multiply)
+
+  # ==========================================================================
+  # COLOR OPERATIONS
+  # ==========================================================================
+
+  Behavior ColorOperations:
+    When image.convert(img, color_space):
+      Then: convert_color_space(img, color_space)
+
+    When image.channel(img, channel):
+      Then: extract_channel(img, channel)
+
+    Type Channel:
+      variants: [Red, Green, Blue, Alpha, Luminance]
+
+    When image.split_channels(img):
+      Then:
+        - return {
+            red: image.channel(img, Red),
+            green: image.channel(img, Green),
+            blue: image.channel(img, Blue),
+            alpha: if img.channels == 4 then image.channel(img, Alpha) else null
+          }
+
+    When image.merge_channels(channels):
+      Then: merge_channels(channels.red, channels.green, channels.blue, channels.alpha)
+
+    When image.replace_color(img, from_color, to_color, tolerance):
+      Then: replace_color_range(img, from_color, to_color, tolerance ?? 10)
+
+    When image.color_balance(img, shadows, midtones, highlights):
+      Then: apply_color_balance(img, shadows, midtones, highlights)
+
+    When image.levels(img, input_black, input_white, output_black, output_white, gamma):
+      Then: apply_levels(img, input_black, input_white, output_black, output_white, gamma ?? 1.0)
+
+    When image.curves(img, curve_points):
+      Then: apply_curves(img, curve_points)
+
+    When image.histogram(img):
+      Then: calculate_histogram(img)
+
+    When image.equalize(img):
+      Then: histogram_equalization(img)
+
+    When image.auto_contrast(img):
+      Then: auto_contrast_stretch(img)
+
+    When image.auto_levels(img):
+      Then: auto_levels_adjustment(img)
+
+  # ==========================================================================
+  # COMPOSITING
+  # ==========================================================================
+
+  Behavior Compositing:
+    When image.composite(base, overlay, position, options):
+      Then:
+        - blend_mode = options.blend_mode ?? Normal
+        - opacity = options.opacity ?? 1.0
+        - return blend_images(base, overlay, position, blend_mode, opacity)
+
+    Type BlendMode:
+      variants:
+        - Normal
+        - Multiply
+        - Screen
+        - Overlay
+        - Darken
+        - Lighten
+        - ColorDodge
+        - ColorBurn
+        - HardLight
+        - SoftLight
+        - Difference
+        - Exclusion
+        - Hue
+        - Saturation
+        - Color
+        - Luminosity
+
+    When image.mask(img, mask, options):
+      Then: apply_mask(img, mask, options.invert ?? false)
+
+    When image.watermark(img, watermark, options):
+      Then:
+        - position = options.position ?? BottomRight
+        - opacity = options.opacity ?? 0.5
+        - margin = options.margin ?? 10
+        - pos = calculate_watermark_position(img, watermark, position, margin)
+        - return image.composite(img, watermark, pos, opacity: opacity)
+
+    Type WatermarkPosition:
+      variants: [TopLeft, TopRight, BottomLeft, BottomRight, Center, Tile]
+
+    When image.tile(img, pattern, opacity):
+      Then: tile_pattern(img, pattern, opacity ?? 1.0)
+
+  # ==========================================================================
+  # TEXT & DRAWING
+  # ==========================================================================
+
+  Behavior TextAndDrawing:
+    When image.draw_text(img, text, position, options):
+      Then:
+        - font = options.font ?? "Arial"
+        - size = options.size ?? 12
+        - color = options.color ?? RGB(0, 0, 0)
+        - return render_text(img, text, position, font, size, color, options)
+
+    When image.draw_line(img, start, end, options):
+      Then:
+        - color = options.color ?? RGB(0, 0, 0)
+        - width = options.width ?? 1
+        - return draw_line(img, start, end, color, width)
+
+    When image.draw_rect(img, rect, options):
+      Then:
+        - fill = options.fill
+        - stroke = options.stroke ?? RGB(0, 0, 0)
+        - stroke_width = options.stroke_width ?? 1
+        - return draw_rectangle(img, rect, fill, stroke, stroke_width)
+
+    When image.draw_circle(img, center, radius, options):
+      Then:
+        - fill = options.fill
+        - stroke = options.stroke ?? RGB(0, 0, 0)
+        - stroke_width = options.stroke_width ?? 1
+        - return draw_circle(img, center, radius, fill, stroke, stroke_width)
+
+    When image.draw_polygon(img, points, options):
+      Then:
+        - fill = options.fill
+        - stroke = options.stroke ?? RGB(0, 0, 0)
+        - return draw_polygon(img, points, fill, stroke, options.stroke_width ?? 1)
+
+  # ==========================================================================
+  # ANALYSIS
+  # ==========================================================================
+
+  Behavior ImageAnalysis:
+    When image.dominant_colors(img, count):
+      Then: extract_dominant_colors(img, count ?? 5)
+
+    When image.average_color(img):
+      Then: calculate_average_color(img)
+
+    When image.is_grayscale(img):
+      Then: check_is_grayscale(img)
+
+    When image.has_transparency(img):
+      Then: check_has_transparency(img)
+
+    When image.entropy(img):
+      Then: calculate_entropy(img)
+
+    When image.sharpness(img):
+      Then: measure_sharpness(img)
+
+    When image.compare(img1, img2, method):
+      Then:
+        - match method:
+            MSE -> calculate_mse(img1, img2)
+            PSNR -> calculate_psnr(img1, img2)
+            SSIM -> calculate_ssim(img1, img2)
+            Histogram -> compare_histograms(img1, img2)
+
+    Type CompareMethod:
+      variants: [MSE, PSNR, SSIM, Histogram]
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Image Processing":
+    ```vibee
+    # Load and resize
+    img = await image.load(Path("/photos/original.jpg"))
+    
+    thumbnail = img
+      |> image.resize(300, 300, fit: Cover)
+      |> image.crop_center(300, 300)
+    
+    await image.save(thumbnail, "/photos/thumb.jpg", JPEG(quality: 80))
+
+    # Apply filters
+    edited = img
+      |> image.brightness(1.1)
+      |> image.contrast(1.2)
+      |> image.saturation(1.1)
+      |> image.sharpen(0.5)
+      |> image.vignette(0.3)
+
+    # Add watermark
+    watermark = await image.load(Path("/watermark.png"))
+    final = image.watermark(edited, watermark, position: BottomRight, opacity: 0.5)
+
+    # Generate multiple sizes
+    sizes = [
+      { name: "large", width: 1200 },
+      { name: "medium", width: 800 },
+      { name: "small", width: 400 },
+      { name: "thumb", width: 150 }
+    ]
+
+    for size in sizes:
+      resized = image.resize(img, size.width, null, fit: Contain)
+      await image.save(resized, "/photos/${size.name}.webp", WebP(quality: 85))
+
+    # Analyze image
+    colors = image.dominant_colors(img, 5)
+    log.info("Dominant colors: ${colors}")
+
+    # Compare images
+    similarity = image.compare(img1, img2, SSIM)
+    log.info("SSIM: ${similarity}")
+    ```

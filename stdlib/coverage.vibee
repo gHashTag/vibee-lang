@@ -1,0 +1,552 @@
+// =============================================================================
+// Vibee OS — Coverage Module
+// Code coverage tracking and reporting
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Coverage Tracker
+// -----------------------------------------------------------------------------
+
+/// Global coverage tracker
+actor CoverageTracker {
+    state enabled: Bool
+    state files: Map<String, FileCoverage>
+    state functions: Map<String, FunctionCoverage>
+    state branches: Map<String, BranchCoverage>
+    state start_time: Option<Instant>
+    
+    fn new() -> Self {
+        CoverageTracker {
+            enabled: false,
+            files: Map.empty(),
+            functions: Map.empty(),
+            branches: Map.empty(),
+            start_time: None
+        }
+    }
+    
+    /// Enable coverage tracking
+    on enable() {
+        self.enabled = true
+        self.start_time = Some(Instant.now())
+    }
+    
+    /// Disable coverage tracking
+    on disable() {
+        self.enabled = false
+    }
+    
+    /// Reset all coverage data
+    on reset() {
+        self.files.clear()
+        self.functions.clear()
+        self.branches.clear()
+        self.start_time = None
+    }
+    
+    /// Record line hit
+    on record_line(file: String, line: Int) {
+        if !self.enabled { return }
+        
+        let file_cov = self.files.get_or_insert(file, || FileCoverage.new(file))
+        file_cov.record_line(line)
+    }
+    
+    /// Record function entry
+    on record_function(file: String, name: String, line: Int) {
+        if !self.enabled { return }
+        
+        let key = format!("{}:{}", file, name)
+        let func_cov = self.functions.get_or_insert(key, || FunctionCoverage.new(file, name, line))
+        func_cov.record_call()
+    }
+    
+    /// Record branch taken
+    on record_branch(file: String, line: Int, branch_id: Int, taken: Bool) {
+        if !self.enabled { return }
+        
+        let key = format!("{}:{}:{}", file, line, branch_id)
+        let branch_cov = self.branches.get_or_insert(key, || BranchCoverage.new(file, line, branch_id))
+        branch_cov.record(taken)
+    }
+    
+    /// Get coverage report
+    fn report() -> CoverageReport {
+        let total_lines = self.files.values().map(|f| f.total_lines).sum()
+        let covered_lines = self.files.values().map(|f| f.covered_lines()).sum()
+        
+        let total_functions = self.functions.len()
+        let covered_functions = self.functions.values().filter(|f| f.call_count > 0).count()
+        
+        let total_branches = self.branches.len() * 2
+        let covered_branches = self.branches.values().map(|b| b.covered_count()).sum()
+        
+        CoverageReport {
+            files: self.files.clone(),
+            functions: self.functions.clone(),
+            branches: self.branches.clone(),
+            summary: CoverageSummary {
+                line_coverage: if total_lines > 0 { covered_lines as Float / total_lines as Float * 100.0 } else { 0.0 },
+                function_coverage: if total_functions > 0 { covered_functions as Float / total_functions as Float * 100.0 } else { 0.0 },
+                branch_coverage: if total_branches > 0 { covered_branches as Float / total_branches as Float * 100.0 } else { 0.0 },
+                total_lines: total_lines,
+                covered_lines: covered_lines,
+                total_functions: total_functions,
+                covered_functions: covered_functions,
+                total_branches: total_branches,
+                covered_branches: covered_branches
+            },
+            duration: self.start_time.map(|s| s.elapsed())
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Coverage Data Structures
+// -----------------------------------------------------------------------------
+
+/// File coverage data
+struct FileCoverage {
+    path: String
+    lines: Map<Int, Int>  // line -> hit count
+    total_lines: Int
+    
+    fn new(path: String) -> Self {
+        FileCoverage { path: path, lines: Map.empty(), total_lines: 0 }
+    }
+    
+    fn record_line(line: Int) {
+        let count = self.lines.get(line).unwrap_or(0)
+        self.lines.set(line, count + 1)
+        if count == 0 { self.total_lines += 1 }
+    }
+    
+    fn covered_lines() -> Int {
+        self.lines.values().filter(|c| *c > 0).count()
+    }
+    
+    fn line_coverage() -> Float {
+        if self.total_lines == 0 { return 0.0 }
+        self.covered_lines() as Float / self.total_lines as Float * 100.0
+    }
+    
+    fn uncovered_lines() -> [Int] {
+        self.lines.iter()
+            .filter(|(_, count)| *count == 0)
+            .map(|(line, _)| *line)
+            .sorted()
+            .collect()
+    }
+}
+
+/// Function coverage data
+struct FunctionCoverage {
+    file: String
+    name: String
+    line: Int
+    call_count: Int
+    
+    fn new(file: String, name: String, line: Int) -> Self {
+        FunctionCoverage { file: file, name: name, line: line, call_count: 0 }
+    }
+    
+    fn record_call() {
+        self.call_count += 1
+    }
+    
+    fn is_covered() -> Bool {
+        self.call_count > 0
+    }
+}
+
+/// Branch coverage data
+struct BranchCoverage {
+    file: String
+    line: Int
+    branch_id: Int
+    true_count: Int
+    false_count: Int
+    
+    fn new(file: String, line: Int, branch_id: Int) -> Self {
+        BranchCoverage { file: file, line: line, branch_id: branch_id, true_count: 0, false_count: 0 }
+    }
+    
+    fn record(taken: Bool) {
+        if taken { self.true_count += 1 }
+        else { self.false_count += 1 }
+    }
+    
+    fn covered_count() -> Int {
+        var count = 0
+        if self.true_count > 0 { count += 1 }
+        if self.false_count > 0 { count += 1 }
+        count
+    }
+    
+    fn is_fully_covered() -> Bool {
+        self.true_count > 0 && self.false_count > 0
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Coverage Report
+// -----------------------------------------------------------------------------
+
+/// Coverage report
+struct CoverageReport {
+    files: Map<String, FileCoverage>
+    functions: Map<String, FunctionCoverage>
+    branches: Map<String, BranchCoverage>
+    summary: CoverageSummary
+    duration: Option<Duration>
+}
+
+impl CoverageReport {
+    /// Print summary to console
+    fn print_summary() {
+        println("\n=== Coverage Summary ===\n")
+        println("Lines:     {:.1}% ({}/{})", self.summary.line_coverage, self.summary.covered_lines, self.summary.total_lines)
+        println("Functions: {:.1}% ({}/{})", self.summary.function_coverage, self.summary.covered_functions, self.summary.total_functions)
+        println("Branches:  {:.1}% ({}/{})", self.summary.branch_coverage, self.summary.covered_branches, self.summary.total_branches)
+        
+        if let Some(d) = self.duration {
+            println("\nDuration: {:?}", d)
+        }
+    }
+    
+    /// Print detailed file coverage
+    fn print_files() {
+        println("\n=== File Coverage ===\n")
+        
+        let sorted_files = self.files.values().sorted_by(|a, b| a.path.cmp(b.path))
+        
+        for file in sorted_files {
+            let pct = file.line_coverage()
+            let indicator = if pct >= 80.0 { green("✓") }
+                else if pct >= 50.0 { yellow("~") }
+                else { red("✗") }
+            
+            println("{} {:>6.1}% {}", indicator, pct, file.path)
+        }
+    }
+    
+    /// Get uncovered functions
+    fn uncovered_functions() -> [FunctionCoverage] {
+        self.functions.values()
+            .filter(|f| !f.is_covered())
+            .collect()
+    }
+    
+    /// Export to JSON
+    fn to_json() -> String {
+        @native("json_encode", self)
+    }
+    
+    /// Export to LCOV format
+    fn to_lcov() -> String {
+        var output = ""
+        
+        for (path, file) in self.files {
+            output += format!("SF:{}\n", path)
+            
+            for (line, count) in file.lines {
+                output += format!("DA:{},{}\n", line, count)
+            }
+            
+            output += format!("LF:{}\n", file.total_lines)
+            output += format!("LH:{}\n", file.covered_lines())
+            output += "end_of_record\n"
+        }
+        
+        output
+    }
+    
+    /// Export to Cobertura XML
+    fn to_cobertura() -> String {
+        var xml = "<?xml version=\"1.0\"?>\n"
+        xml += "<coverage version=\"1.0\">\n"
+        xml += format!("  <line-rate>{}</line-rate>\n", self.summary.line_coverage / 100.0)
+        xml += format!("  <branch-rate>{}</branch-rate>\n", self.summary.branch_coverage / 100.0)
+        xml += "  <packages>\n"
+        xml += "    <package name=\".\">\n"
+        xml += "      <classes>\n"
+        
+        for (path, file) in self.files {
+            xml += format!("        <class name=\"{}\" filename=\"{}\">\n", path, path)
+            xml += "          <lines>\n"
+            for (line, count) in file.lines {
+                xml += format!("            <line number=\"{}\" hits=\"{}\"/>\n", line, count)
+            }
+            xml += "          </lines>\n"
+            xml += "        </class>\n"
+        }
+        
+        xml += "      </classes>\n"
+        xml += "    </package>\n"
+        xml += "  </packages>\n"
+        xml += "</coverage>\n"
+        xml
+    }
+}
+
+/// Coverage summary
+struct CoverageSummary {
+    line_coverage: Float
+    function_coverage: Float
+    branch_coverage: Float
+    total_lines: Int
+    covered_lines: Int
+    total_functions: Int
+    covered_functions: Int
+    total_branches: Int
+    covered_branches: Int
+}
+
+impl CoverageSummary {
+    fn meets_threshold(threshold: CoverageThreshold) -> Bool {
+        self.line_coverage >= threshold.line &&
+        self.function_coverage >= threshold.function &&
+        self.branch_coverage >= threshold.branch
+    }
+}
+
+/// Coverage thresholds
+struct CoverageThreshold {
+    line: Float
+    function: Float
+    branch: Float
+    
+    fn default() -> Self {
+        CoverageThreshold { line: 80.0, function: 80.0, branch: 80.0 }
+    }
+    
+    fn strict() -> Self {
+        CoverageThreshold { line: 90.0, function: 90.0, branch: 90.0 }
+    }
+    
+    fn relaxed() -> Self {
+        CoverageThreshold { line: 50.0, function: 50.0, branch: 50.0 }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Coverage Runner
+// -----------------------------------------------------------------------------
+
+/// Run tests with coverage
+actor CoverageRunner {
+    state tracker: CoverageTracker
+    state config: CoverageConfig
+    
+    fn new() -> Self {
+        CoverageRunner {
+            tracker: CoverageTracker.new(),
+            config: CoverageConfig.default()
+        }
+    }
+    
+    on config(c: CoverageConfig) -> Self {
+        self.config = c
+        self
+    }
+    
+    /// Run with coverage
+    fn run<T>(f: () -> T) -> (T, CoverageReport) {
+        self.tracker.enable()
+        @native("install_coverage_hooks", self.tracker)
+        
+        let result = f()
+        
+        @native("remove_coverage_hooks")
+        self.tracker.disable()
+        
+        let report = self.tracker.report()
+        (result, report)
+    }
+    
+    /// Run and check thresholds
+    fn run_with_threshold<T>(threshold: CoverageThreshold, f: () -> T) -> Result<(T, CoverageReport), CoverageError> {
+        let (result, report) = self.run(f)
+        
+        if !report.summary.meets_threshold(threshold) {
+            return Err(CoverageError.ThresholdNotMet(threshold, report.summary))
+        }
+        
+        Ok((result, report))
+    }
+}
+
+/// Coverage configuration
+struct CoverageConfig {
+    include_patterns: [String]
+    exclude_patterns: [String]
+    track_branches: Bool
+    track_functions: Bool
+    output_format: CoverageFormat
+    output_path: Option<String>
+    
+    fn default() -> Self {
+        CoverageConfig {
+            include_patterns: ["**/*.vibee"],
+            exclude_patterns: ["**/test/**", "**/tests/**"],
+            track_branches: true,
+            track_functions: true,
+            output_format: CoverageFormat.Console,
+            output_path: None
+        }
+    }
+}
+
+enum CoverageFormat {
+    Console
+    Json
+    Lcov
+    Cobertura
+    Html
+}
+
+// -----------------------------------------------------------------------------
+// Instrumentation
+// -----------------------------------------------------------------------------
+
+/// Source code instrumenter
+struct Instrumenter {
+    source: String
+    file_path: String
+}
+
+impl Instrumenter {
+    fn new(source: String, file_path: String) -> Self {
+        Instrumenter { source: source, file_path: file_path }
+    }
+    
+    /// Instrument source code for coverage
+    fn instrument() -> String {
+        @native("instrument_source", self.source, self.file_path)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Diff Coverage
+// -----------------------------------------------------------------------------
+
+/// Calculate coverage for changed lines only
+fn diff_coverage(report: CoverageReport, diff: GitDiff) -> DiffCoverageReport {
+    var covered_changed = 0
+    var total_changed = 0
+    var file_reports = []
+    
+    for file_diff in diff.files {
+        if let Some(file_cov) = report.files.get(file_diff.path) {
+            var file_covered = 0
+            var file_total = 0
+            
+            for line in file_diff.added_lines {
+                total_changed += 1
+                file_total += 1
+                
+                if file_cov.lines.get(line).unwrap_or(0) > 0 {
+                    covered_changed += 1
+                    file_covered += 1
+                }
+            }
+            
+            file_reports.append(DiffFileCoverage {
+                path: file_diff.path,
+                covered: file_covered,
+                total: file_total
+            })
+        }
+    }
+    
+    DiffCoverageReport {
+        coverage: if total_changed > 0 { covered_changed as Float / total_changed as Float * 100.0 } else { 100.0 },
+        covered_lines: covered_changed,
+        total_lines: total_changed,
+        files: file_reports
+    }
+}
+
+struct GitDiff {
+    files: [FileDiff]
+}
+
+struct FileDiff {
+    path: String
+    added_lines: [Int]
+    removed_lines: [Int]
+}
+
+struct DiffCoverageReport {
+    coverage: Float
+    covered_lines: Int
+    total_lines: Int
+    files: [DiffFileCoverage]
+}
+
+struct DiffFileCoverage {
+    path: String
+    covered: Int
+    total: Int
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum CoverageError {
+    ThresholdNotMet(CoverageThreshold, CoverageSummary)
+    InstrumentationFailed(String)
+    ReportFailed(String)
+    
+    fn message() -> String {
+        match self {
+            .ThresholdNotMet(t, s) => format!(
+                "Coverage threshold not met: line {:.1}% < {:.1}%, function {:.1}% < {:.1}%, branch {:.1}% < {:.1}%",
+                s.line_coverage, t.line, s.function_coverage, t.function, s.branch_coverage, t.branch
+            )
+            .InstrumentationFailed(m) => format!("Instrumentation failed: {}", m)
+            .ReportFailed(m) => format!("Report generation failed: {}", m)
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "file coverage" {
+    var file = FileCoverage.new("test.vibee")
+    file.record_line(1)
+    file.record_line(2)
+    file.record_line(1)
+    
+    assert_eq(file.covered_lines(), 2)?
+    assert_eq(file.lines.get(1), Some(2))?
+}
+
+test "branch coverage" {
+    var branch = BranchCoverage.new("test.vibee", 10, 0)
+    branch.record(true)
+    branch.record(false)
+    
+    assert(branch.is_fully_covered())
+    assert_eq(branch.covered_count(), 2)?
+}
+
+test "coverage threshold" {
+    let summary = CoverageSummary {
+        line_coverage: 85.0,
+        function_coverage: 90.0,
+        branch_coverage: 75.0,
+        total_lines: 100,
+        covered_lines: 85,
+        total_functions: 10,
+        covered_functions: 9,
+        total_branches: 20,
+        covered_branches: 15
+    }
+    
+    assert(summary.meets_threshold(CoverageThreshold.relaxed()))
+    assert(!summary.meets_threshold(CoverageThreshold.strict()))
+}

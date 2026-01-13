@@ -1,0 +1,672 @@
+# ============================================================================
+# I18N - Интернационализация на Vibee
+# ============================================================================
+# Translations, Localization, Pluralization, Formatting
+# ============================================================================
+
+Specification I18n:
+  """Интернационализация как спецификация многоязычной поддержки."""
+
+  # ==========================================================================
+  # LOCALE
+  # ==========================================================================
+
+  Type Locale:
+    language: String      # ISO 639-1 (en, ru, de)
+    region: Option<String>  # ISO 3166-1 (US, GB, DE)
+    script: Option<String>  # ISO 15924 (Latn, Cyrl)
+
+    Static Method parse(tag: String) -> Result<Locale, ParseError>:
+      # Parse BCP 47 language tag: en-US, zh-Hans-CN
+      parts = tag.split("-")
+      
+      if parts.length == 0:
+        return Err(ParseError("Empty locale tag"))
+      
+      language = parts[0].lowercase()
+      region = null
+      script = null
+      
+      for i in 1..parts.length:
+        part = parts[i]
+        if part.length == 2 and part.all(c -> c.is_uppercase()):
+          region = Some(part)
+        else if part.length == 4 and part[0].is_uppercase():
+          script = Some(part)
+      
+      return Ok(Locale(language, region, script))
+
+    Static Method from_language(language: String) -> Locale:
+      return Locale(language.lowercase(), null, null)
+
+    Method to_string() -> String:
+      result = self.language
+      if self.script is Some(s):
+        result += "-${s}"
+      if self.region is Some(r):
+        result += "-${r}"
+      return result
+
+    Method matches(other: Locale) -> Boolean:
+      if self.language != other.language:
+        return false
+      
+      if self.region is Some(r1) and other.region is Some(r2):
+        if r1 != r2:
+          return false
+      
+      return true
+
+    Method fallback() -> Option<Locale>:
+      if self.region != null:
+        return Some(Locale(self.language, null, self.script))
+      if self.script != null:
+        return Some(Locale(self.language, null, null))
+      return null
+
+    # Common locales
+    Static Method en() -> Locale: Locale.from_language("en")
+    Static Method en_US() -> Locale: Locale("en", Some("US"), null)
+    Static Method en_GB() -> Locale: Locale("en", Some("GB"), null)
+    Static Method ru() -> Locale: Locale.from_language("ru")
+    Static Method de() -> Locale: Locale.from_language("de")
+    Static Method fr() -> Locale: Locale.from_language("fr")
+    Static Method es() -> Locale: Locale.from_language("es")
+    Static Method zh_CN() -> Locale: Locale("zh", Some("CN"), Some("Hans"))
+    Static Method zh_TW() -> Locale: Locale("zh", Some("TW"), Some("Hant"))
+    Static Method ja() -> Locale: Locale.from_language("ja")
+    Static Method ko() -> Locale: Locale.from_language("ko")
+
+  # ==========================================================================
+  # I18N MANAGER
+  # ==========================================================================
+
+  Type I18n:
+    translations: Map<String, TranslationBundle>
+    current_locale: Locale
+    fallback_locale: Locale
+    missing_key_handler: Option<(String, Locale) -> String>
+    interpolation_pattern: Regex
+
+    Static Method new() -> I18n:
+      return I18n(
+        translations: {},
+        current_locale: Locale.en(),
+        fallback_locale: Locale.en(),
+        missing_key_handler: null,
+        interpolation_pattern: Regex("\\{\\{\\s*([\\w.]+)\\s*\\}\\}")
+      )
+
+    Static Method global() -> I18n:
+      return GLOBAL_I18N
+
+    Method set_locale(locale: Locale):
+      self.current_locale = locale
+
+    Method set_fallback_locale(locale: Locale):
+      self.fallback_locale = locale
+
+    Method locale() -> Locale:
+      return self.current_locale
+
+    Method load_translations(locale: Locale, translations: Map<String, Any>):
+      bundle = TranslationBundle.from_map(translations)
+      self.translations[locale.to_string()] = bundle
+
+    Method load_from_file(locale: Locale, path: Path) -> Result<(), I18nError>:
+      content = File.read_string(path)?
+      
+      translations = if path.extension() == "json":
+        json.parse(content)?
+      else if path.extension() == "yaml" or path.extension() == "yml":
+        yaml.parse(content)?
+      else:
+        return Err(I18nError("Unsupported file format"))
+      
+      self.load_translations(locale, translations)
+      return Ok(())
+
+    Method load_directory(dir: Path) -> Result<(), I18nError>:
+      for entry in dir.read_dir():
+        if entry.is_file():
+          filename = entry.file_stem()
+          locale = Locale.parse(filename)?
+          self.load_from_file(locale, entry)?
+      
+      return Ok(())
+
+    Method t(key: String) -> String:
+      return self.translate(key, {})
+
+    Method t_with(key: String, params: Map<String, Any>) -> String:
+      return self.translate(key, params)
+
+    Method translate(key: String, params: Map<String, Any>) -> String:
+      # Try current locale
+      if self.get_translation(self.current_locale, key) is Some(value):
+        return self.interpolate(value, params)
+      
+      # Try locale fallbacks
+      locale = self.current_locale
+      while locale.fallback() is Some(fallback):
+        if self.get_translation(fallback, key) is Some(value):
+          return self.interpolate(value, params)
+        locale = fallback
+      
+      # Try fallback locale
+      if self.get_translation(self.fallback_locale, key) is Some(value):
+        return self.interpolate(value, params)
+      
+      # Handle missing key
+      if self.missing_key_handler is Some(handler):
+        return handler(key, self.current_locale)
+      
+      return key
+
+    Method get_translation(locale: Locale, key: String) -> Option<String>:
+      bundle = self.translations.get(locale.to_string())?
+      return bundle.get(key)
+
+    Method interpolate(template: String, params: Map<String, Any>) -> String:
+      return self.interpolation_pattern.replace_all(template, match -> {
+        param_name = match.group(1).unwrap()
+        value = params.get(param_name)
+        
+        if value is Some(v):
+          return format_value(v, self.current_locale)
+        else:
+          return match.group(0).unwrap()
+      })
+
+    Method exists(key: String) -> Boolean:
+      return self.get_translation(self.current_locale, key) != null or
+             self.get_translation(self.fallback_locale, key) != null
+
+    Method on_missing_key(handler: (String, Locale) -> String):
+      self.missing_key_handler = Some(handler)
+
+    # Pluralization
+    Method t_plural(key: String, count: Int) -> String:
+      return self.t_plural_with(key, count, { "count": count })
+
+    Method t_plural_with(key: String, count: Int, params: Map<String, Any>) -> String:
+      plural_form = self.get_plural_form(self.current_locale, count)
+      plural_key = "${key}.${plural_form}"
+      
+      if self.exists(plural_key):
+        return self.translate(plural_key, params)
+      
+      # Fallback to base key
+      return self.translate(key, params)
+
+    Method get_plural_form(locale: Locale, count: Int) -> String:
+      # Simplified plural rules (full CLDR rules are more complex)
+      match locale.language:
+        "en" | "de" | "es" | "it" | "pt" ->
+          if count == 1 then "one" else "other"
+        "ru" | "uk" | "pl" ->
+          self.slavic_plural(count)
+        "ar" ->
+          self.arabic_plural(count)
+        "zh" | "ja" | "ko" | "vi" ->
+          "other"  # No plural forms
+        _ ->
+          if count == 1 then "one" else "other"
+
+    Method slavic_plural(count: Int) -> String:
+      n = abs(count)
+      mod10 = n % 10
+      mod100 = n % 100
+      
+      if mod10 == 1 and mod100 != 11:
+        return "one"
+      else if mod10 >= 2 and mod10 <= 4 and (mod100 < 10 or mod100 >= 20):
+        return "few"
+      else:
+        return "many"
+
+    Method arabic_plural(count: Int) -> String:
+      n = abs(count)
+      
+      if n == 0:
+        return "zero"
+      else if n == 1:
+        return "one"
+      else if n == 2:
+        return "two"
+      else if n % 100 >= 3 and n % 100 <= 10:
+        return "few"
+      else if n % 100 >= 11:
+        return "many"
+      else:
+        return "other"
+
+  Type TranslationBundle:
+    translations: Map<String, String>
+
+    Static Method from_map(map: Map<String, Any>) -> TranslationBundle:
+      translations = {}
+      flatten_map(map, "", translations)
+      return TranslationBundle(translations)
+
+    Method get(key: String) -> Option<String>:
+      return self.translations.get(key)
+
+  Behavior FlattenMap:
+    When flatten_map(map: Map<String, Any>, prefix: String, result: Map<String, String>):
+      Then:
+        for (key, value) in map:
+          full_key = if prefix.is_empty() then key else "${prefix}.${key}"
+          
+          match value:
+            s: String -> result[full_key] = s
+            m: Map<String, Any> -> flatten_map(m, full_key, result)
+            _ -> result[full_key] = value.to_string()
+
+  Type I18nError:
+    message: String
+
+  # ==========================================================================
+  # LOCALIZATION (L10N)
+  # ==========================================================================
+
+  Type L10n:
+    locale: Locale
+    number_format: NumberFormat
+    date_format: DateFormat
+    currency_format: CurrencyFormat
+
+    Static Method for_locale(locale: Locale) -> L10n:
+      return L10n(
+        locale: locale,
+        number_format: NumberFormat.for_locale(locale),
+        date_format: DateFormat.for_locale(locale),
+        currency_format: CurrencyFormat.for_locale(locale)
+      )
+
+    Method format_number(n: Number) -> String:
+      return self.number_format.format(n)
+
+    Method format_number_with(n: Number, options: NumberFormatOptions) -> String:
+      return self.number_format.format_with(n, options)
+
+    Method format_percent(n: Float) -> String:
+      return self.number_format.format_percent(n)
+
+    Method format_currency(amount: Float, currency: String) -> String:
+      return self.currency_format.format(amount, currency)
+
+    Method format_date(date: DateTime) -> String:
+      return self.date_format.format(date)
+
+    Method format_date_with(date: DateTime, style: DateStyle) -> String:
+      return self.date_format.format_with(date, style)
+
+    Method format_time(time: DateTime) -> String:
+      return self.date_format.format_time(time)
+
+    Method format_datetime(dt: DateTime) -> String:
+      return self.date_format.format_datetime(dt)
+
+    Method format_relative(date: DateTime) -> String:
+      return self.date_format.format_relative(date)
+
+  # ==========================================================================
+  # NUMBER FORMATTING
+  # ==========================================================================
+
+  Type NumberFormat:
+    locale: Locale
+    decimal_separator: String
+    grouping_separator: String
+    grouping_size: Int
+
+    Static Method for_locale(locale: Locale) -> NumberFormat:
+      match locale.language:
+        "en" -> NumberFormat(locale, ".", ",", 3)
+        "de" | "ru" | "es" | "fr" | "it" -> NumberFormat(locale, ",", " ", 3)
+        "zh" | "ja" | "ko" -> NumberFormat(locale, ".", ",", 4)
+        _ -> NumberFormat(locale, ".", ",", 3)
+
+    Method format(n: Number) -> String:
+      return self.format_with(n, NumberFormatOptions.default())
+
+    Method format_with(n: Number, options: NumberFormatOptions) -> String:
+      # Handle sign
+      is_negative = n < 0
+      abs_n = abs(n)
+      
+      # Split integer and decimal parts
+      str_n = abs_n.to_string()
+      parts = str_n.split(".")
+      integer_part = parts[0]
+      decimal_part = if parts.length > 1 then parts[1] else ""
+      
+      # Apply grouping
+      if options.use_grouping:
+        integer_part = self.apply_grouping(integer_part)
+      
+      # Apply decimal places
+      if options.min_fraction_digits is Some(min):
+        while decimal_part.length < min:
+          decimal_part += "0"
+      
+      if options.max_fraction_digits is Some(max):
+        if decimal_part.length > max:
+          decimal_part = decimal_part.slice(0, max)
+      
+      # Build result
+      result = integer_part
+      if decimal_part.length > 0:
+        result += self.decimal_separator + decimal_part
+      
+      if is_negative:
+        result = "-" + result
+      
+      return result
+
+    Method apply_grouping(s: String) -> String:
+      result = StringBuilder()
+      
+      for (i, char) in s.reverse().enumerate():
+        if i > 0 and i % self.grouping_size == 0:
+          result.prepend(self.grouping_separator)
+        result.prepend(char)
+      
+      return result.to_string()
+
+    Method format_percent(n: Float) -> String:
+      return self.format(n * 100) + "%"
+
+  Type NumberFormatOptions:
+    use_grouping: Boolean
+    min_fraction_digits: Option<Int>
+    max_fraction_digits: Option<Int>
+
+    Static Method default() -> NumberFormatOptions:
+      return NumberFormatOptions(true, null, null)
+
+    Static Method integer() -> NumberFormatOptions:
+      return NumberFormatOptions(true, Some(0), Some(0))
+
+    Static Method decimal(places: Int) -> NumberFormatOptions:
+      return NumberFormatOptions(true, Some(places), Some(places))
+
+  # ==========================================================================
+  # CURRENCY FORMATTING
+  # ==========================================================================
+
+  Type CurrencyFormat:
+    locale: Locale
+    number_format: NumberFormat
+
+    Static Method for_locale(locale: Locale) -> CurrencyFormat:
+      return CurrencyFormat(locale, NumberFormat.for_locale(locale))
+
+    Method format(amount: Float, currency: String) -> String:
+      symbol = self.get_currency_symbol(currency)
+      formatted = self.number_format.format_with(amount, NumberFormatOptions.decimal(2))
+      
+      # Position varies by locale
+      match self.locale.language:
+        "en" -> "${symbol}${formatted}"
+        "de" | "fr" | "es" | "ru" -> "${formatted} ${symbol}"
+        _ -> "${symbol}${formatted}"
+
+    Method get_currency_symbol(code: String) -> String:
+      match code.uppercase():
+        "USD" -> "$"
+        "EUR" -> "€"
+        "GBP" -> "£"
+        "JPY" -> "¥"
+        "CNY" -> "¥"
+        "RUB" -> "₽"
+        "INR" -> "₹"
+        "KRW" -> "₩"
+        "BTC" -> "₿"
+        _ -> code
+
+  # ==========================================================================
+  # DATE FORMATTING
+  # ==========================================================================
+
+  Type DateFormat:
+    locale: Locale
+    patterns: DatePatterns
+
+    Static Method for_locale(locale: Locale) -> DateFormat:
+      patterns = match locale.language:
+        "en" -> DatePatterns(
+          short_date: "M/d/yyyy",
+          medium_date: "MMM d, yyyy",
+          long_date: "MMMM d, yyyy",
+          short_time: "h:mm a",
+          medium_time: "h:mm:ss a"
+        )
+        "de" -> DatePatterns(
+          short_date: "dd.MM.yyyy",
+          medium_date: "d. MMM yyyy",
+          long_date: "d. MMMM yyyy",
+          short_time: "HH:mm",
+          medium_time: "HH:mm:ss"
+        )
+        "ru" -> DatePatterns(
+          short_date: "dd.MM.yyyy",
+          medium_date: "d MMM yyyy",
+          long_date: "d MMMM yyyy г.",
+          short_time: "HH:mm",
+          medium_time: "HH:mm:ss"
+        )
+        _ -> DatePatterns(
+          short_date: "yyyy-MM-dd",
+          medium_date: "MMM d, yyyy",
+          long_date: "MMMM d, yyyy",
+          short_time: "HH:mm",
+          medium_time: "HH:mm:ss"
+        )
+      
+      return DateFormat(locale, patterns)
+
+    Method format(date: DateTime) -> String:
+      return self.format_with(date, DateStyle.Medium)
+
+    Method format_with(date: DateTime, style: DateStyle) -> String:
+      pattern = match style:
+        Short -> self.patterns.short_date
+        Medium -> self.patterns.medium_date
+        Long -> self.patterns.long_date
+        Full -> self.patterns.long_date
+      
+      return self.format_pattern(date, pattern)
+
+    Method format_time(time: DateTime) -> String:
+      return self.format_pattern(time, self.patterns.short_time)
+
+    Method format_datetime(dt: DateTime) -> String:
+      date_str = self.format(dt)
+      time_str = self.format_time(dt)
+      return "${date_str} ${time_str}"
+
+    Method format_pattern(dt: DateTime, pattern: String) -> String:
+      return pattern
+        .replace("yyyy", dt.year().to_string().pad_start(4, '0'))
+        .replace("yy", (dt.year() % 100).to_string().pad_start(2, '0'))
+        .replace("MMMM", self.month_name(dt.month(), false))
+        .replace("MMM", self.month_name(dt.month(), true))
+        .replace("MM", dt.month().to_string().pad_start(2, '0'))
+        .replace("M", dt.month().to_string())
+        .replace("dd", dt.day().to_string().pad_start(2, '0'))
+        .replace("d", dt.day().to_string())
+        .replace("HH", dt.hour().to_string().pad_start(2, '0'))
+        .replace("H", dt.hour().to_string())
+        .replace("hh", ((dt.hour() - 1) % 12 + 1).to_string().pad_start(2, '0'))
+        .replace("h", ((dt.hour() - 1) % 12 + 1).to_string())
+        .replace("mm", dt.minute().to_string().pad_start(2, '0'))
+        .replace("ss", dt.second().to_string().pad_start(2, '0'))
+        .replace("a", if dt.hour() < 12 then "AM" else "PM")
+
+    Method month_name(month: Int, short: Boolean) -> String:
+      names = self.get_month_names()
+      name = names[month - 1]
+      if short:
+        return name.slice(0, 3)
+      return name
+
+    Method get_month_names() -> List<String>:
+      match self.locale.language:
+        "en" -> ["January", "February", "March", "April", "May", "June",
+                 "July", "August", "September", "October", "November", "December"]
+        "ru" -> ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+                 "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
+        "de" -> ["Januar", "Februar", "März", "April", "Mai", "Juni",
+                 "Juli", "August", "September", "Oktober", "November", "Dezember"]
+        _ -> ["January", "February", "March", "April", "May", "June",
+              "July", "August", "September", "October", "November", "December"]
+
+    Method format_relative(date: DateTime) -> String:
+      now = DateTime.now()
+      diff = now - date
+      
+      if diff.abs() < Duration.minutes(1):
+        return self.relative_text("now")
+      else if diff.abs() < Duration.hours(1):
+        minutes = diff.as_minutes().abs().to_int()
+        return self.relative_text(if diff.is_negative() then "in_minutes" else "minutes_ago", minutes)
+      else if diff.abs() < Duration.days(1):
+        hours = diff.as_hours().abs().to_int()
+        return self.relative_text(if diff.is_negative() then "in_hours" else "hours_ago", hours)
+      else if diff.abs() < Duration.days(7):
+        days = diff.as_days().abs().to_int()
+        return self.relative_text(if diff.is_negative() then "in_days" else "days_ago", days)
+      else:
+        return self.format(date)
+
+    Method relative_text(key: String, count: Int = 0) -> String:
+      # Would use i18n translations in real implementation
+      match (self.locale.language, key):
+        ("en", "now") -> "just now"
+        ("en", "minutes_ago") -> "${count} minute${if count != 1 then "s" else ""} ago"
+        ("en", "hours_ago") -> "${count} hour${if count != 1 then "s" else ""} ago"
+        ("en", "days_ago") -> "${count} day${if count != 1 then "s" else ""} ago"
+        ("ru", "now") -> "только что"
+        ("ru", "minutes_ago") -> "${count} ${self.slavic_unit(count, "минуту", "минуты", "минут")} назад"
+        _ -> key
+
+    Method slavic_unit(count: Int, one: String, few: String, many: String) -> String:
+      mod10 = count % 10
+      mod100 = count % 100
+      
+      if mod10 == 1 and mod100 != 11:
+        return one
+      else if mod10 >= 2 and mod10 <= 4 and (mod100 < 10 or mod100 >= 20):
+        return few
+      else:
+        return many
+
+  Type DatePatterns:
+    short_date: String
+    medium_date: String
+    long_date: String
+    short_time: String
+    medium_time: String
+
+  Type DateStyle:
+    variants:
+      - Short
+      - Medium
+      - Long
+      - Full
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "I18n":
+    ```vibee
+    # Setup i18n
+    i18n = I18n.new()
+    
+    # Load translations
+    i18n.load_translations(Locale.en(), {
+      "greeting": "Hello, {{name}}!",
+      "items": {
+        "one": "{{count}} item",
+        "other": "{{count}} items"
+      },
+      "welcome": "Welcome to our app"
+    })
+    
+    i18n.load_translations(Locale.ru(), {
+      "greeting": "Привет, {{name}}!",
+      "items": {
+        "one": "{{count}} элемент",
+        "few": "{{count}} элемента",
+        "many": "{{count}} элементов"
+      },
+      "welcome": "Добро пожаловать в наше приложение"
+    })
+
+    # Or load from files
+    i18n.load_directory(Path("locales"))?
+    # locales/en.json, locales/ru.json, etc.
+
+    # Set locale
+    i18n.set_locale(Locale.en())
+
+    # Translate
+    text = i18n.t("welcome")  # "Welcome to our app"
+    
+    # With interpolation
+    text = i18n.t_with("greeting", { "name": "John" })  # "Hello, John!"
+
+    # Pluralization
+    text = i18n.t_plural("items", 1)   # "1 item"
+    text = i18n.t_plural("items", 5)   # "5 items"
+
+    # Russian pluralization
+    i18n.set_locale(Locale.ru())
+    text = i18n.t_plural("items", 1)   # "1 элемент"
+    text = i18n.t_plural("items", 2)   # "2 элемента"
+    text = i18n.t_plural("items", 5)   # "5 элементов"
+    text = i18n.t_plural("items", 21)  # "21 элемент"
+
+    # Localization
+    l10n = L10n.for_locale(Locale.en_US())
+
+    # Numbers
+    l10n.format_number(1234567.89)  # "1,234,567.89"
+    l10n.format_percent(0.156)      # "15.6%"
+
+    # Currency
+    l10n.format_currency(1234.56, "USD")  # "$1,234.56"
+    l10n.format_currency(1234.56, "EUR")  # "$1,234.56"
+
+    # German formatting
+    l10n_de = L10n.for_locale(Locale.de())
+    l10n_de.format_number(1234567.89)     # "1 234 567,89"
+    l10n_de.format_currency(1234.56, "EUR")  # "1 234,56 €"
+
+    # Dates
+    date = DateTime.parse("2024-03-15 14:30:00")
+    
+    l10n.format_date(date)                    # "Mar 15, 2024"
+    l10n.format_date_with(date, DateStyle.Short)  # "3/15/2024"
+    l10n.format_date_with(date, DateStyle.Long)   # "March 15, 2024"
+    l10n.format_time(date)                    # "2:30 PM"
+    l10n.format_datetime(date)                # "Mar 15, 2024 2:30 PM"
+
+    # Relative time
+    l10n.format_relative(DateTime.now() - Duration.minutes(5))  # "5 minutes ago"
+    l10n.format_relative(DateTime.now() - Duration.hours(2))    # "2 hours ago"
+    l10n.format_relative(DateTime.now() + Duration.days(1))     # "in 1 day"
+
+    # Missing key handler
+    i18n.on_missing_key((key, locale) -> {
+      log.warn("Missing translation: ${key} for ${locale}")
+      return "[${key}]"
+    })
+
+    # Global instance
+    I18n.global().set_locale(Locale.parse(user.language)?)
+    text = I18n.global().t("welcome")
+    ```

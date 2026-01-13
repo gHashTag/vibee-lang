@@ -1,0 +1,193 @@
+// =============================================================================
+// Vibee OS — Channel Module
+// Communication channels for concurrency
+// =============================================================================
+
+/// Unbounded channel
+actor Channel<T> {
+    state queue: [T]
+    state closed: Bool
+    state receivers: [fn(Option<T>)]
+    
+    fn new() -> (Sender<T>, Receiver<T>) {
+        let ch = Channel { queue: [], closed: false, receivers: [] }
+        (Sender { ch: ch }, Receiver { ch: ch })
+    }
+    
+    fn send(value: T) -> Bool {
+        if self.closed { return false }
+        if !self.receivers.is_empty() {
+            let recv = self.receivers.remove(0)
+            recv(Some(value))
+        } else {
+            self.queue.push(value)
+        }
+        true
+    }
+    
+    fn recv() -> Option<T> {
+        if !self.queue.is_empty() { return Some(self.queue.remove(0)) }
+        if self.closed { return None }
+        // Block until message
+        @native("channel_wait", self)
+    }
+    
+    fn try_recv() -> Option<T> {
+        if !self.queue.is_empty() { Some(self.queue.remove(0)) } else { None }
+    }
+    
+    fn close() {
+        self.closed = true
+        for recv in self.receivers { recv(None) }
+        self.receivers.clear()
+    }
+    
+    fn is_closed() -> Bool { self.closed }
+    fn len() -> Int { self.queue.len() }
+    fn is_empty() -> Bool { self.queue.is_empty() }
+}
+
+struct Sender<T> { ch: Channel<T> }
+impl<T> Sender<T> {
+    fn send(value: T) -> Bool { self.ch.send(value) }
+    fn close() { self.ch.close() }
+    fn is_closed() -> Bool { self.ch.is_closed() }
+}
+
+struct Receiver<T> { ch: Channel<T> }
+impl<T> Receiver<T> {
+    fn recv() -> Option<T> { self.ch.recv() }
+    fn try_recv() -> Option<T> { self.ch.try_recv() }
+    fn iter() -> ChannelIterator<T> { ChannelIterator { ch: self.ch } }
+    fn is_closed() -> Bool { self.ch.is_closed() }
+}
+
+struct ChannelIterator<T> { ch: Channel<T> }
+impl<T> Iterator for ChannelIterator<T> {
+    type Item = T
+    fn next() -> Option<T> { self.ch.recv() }
+}
+
+/// Bounded channel
+actor BoundedChannel<T> {
+    state queue: [T]
+    state capacity: Int
+    state closed: Bool
+    
+    fn new(capacity: Int) -> (BoundedSender<T>, Receiver<T>) {
+        let ch = BoundedChannel { queue: [], capacity: capacity, closed: false }
+        (BoundedSender { ch: ch }, Receiver { ch: Channel { queue: [], closed: false, receivers: [] } })
+    }
+    
+    fn send(value: T) -> Bool {
+        if self.closed { return false }
+        while self.queue.len() >= self.capacity { @native("yield") }
+        self.queue.push(value)
+        true
+    }
+    
+    fn try_send(value: T) -> Bool {
+        if self.closed || self.queue.len() >= self.capacity { return false }
+        self.queue.push(value)
+        true
+    }
+}
+
+struct BoundedSender<T> { ch: BoundedChannel<T> }
+impl<T> BoundedSender<T> {
+    fn send(value: T) -> Bool { self.ch.send(value) }
+    fn try_send(value: T) -> Bool { self.ch.try_send(value) }
+}
+
+/// One-shot channel (single value)
+actor Oneshot<T> {
+    state value: Option<T>
+    state sent: Bool
+    
+    fn new() -> (OneshotSender<T>, OneshotReceiver<T>) {
+        let ch = Oneshot { value: None, sent: false }
+        (OneshotSender { ch: ch }, OneshotReceiver { ch: ch })
+    }
+    
+    fn send(v: T) -> Bool {
+        if self.sent { return false }
+        self.value = Some(v)
+        self.sent = true
+        true
+    }
+    
+    fn recv() -> Option<T> {
+        while !self.sent { @native("yield") }
+        self.value.take()
+    }
+}
+
+struct OneshotSender<T> { ch: Oneshot<T> }
+impl<T> OneshotSender<T> { fn send(value: T) -> Bool { self.ch.send(value) } }
+
+struct OneshotReceiver<T> { ch: Oneshot<T> }
+impl<T> OneshotReceiver<T> { fn recv() -> Option<T> { self.ch.recv() } }
+
+/// Broadcast channel (multiple receivers)
+actor Broadcast<T: Clone> {
+    state subscribers: [fn(T)]
+    state closed: Bool
+    
+    fn new() -> Self { Broadcast { subscribers: [], closed: false } }
+    
+    fn send(value: T) {
+        if self.closed { return }
+        for sub in self.subscribers { sub(value.clone()) }
+    }
+    
+    fn subscribe() -> BroadcastReceiver<T> {
+        let (tx, rx) = Channel.new()
+        self.subscribers.push(|v| tx.send(v))
+        BroadcastReceiver { rx: rx }
+    }
+    
+    fn close() { self.closed = true }
+}
+
+struct BroadcastReceiver<T> { rx: Receiver<T> }
+impl<T> BroadcastReceiver<T> {
+    fn recv() -> Option<T> { self.rx.recv() }
+    fn iter() -> ChannelIterator<T> { self.rx.iter() }
+}
+
+/// Select from multiple channels
+fn select<T>(receivers: [Receiver<T>]) -> (Int, T) {
+    loop {
+        for (i, rx) in receivers.iter().enumerate() {
+            if let Some(v) = rx.try_recv() { return (i, v) }
+        }
+        @native("yield")
+    }
+}
+
+// Tests
+test "send recv" {
+    let (tx, rx) = Channel::<Int>.new()
+    tx.send(42)
+    assert_eq(rx.recv(), Some(42))?
+}
+
+test "close" {
+    let (tx, rx) = Channel::<Int>.new()
+    tx.send(1)
+    tx.close()
+    assert_eq(rx.recv(), Some(1))?
+    assert_eq(rx.recv(), None)?
+}
+
+test "iter" {
+    let (tx, rx) = Channel::<Int>.new()
+    tx.send(1); tx.send(2); tx.send(3); tx.close()
+    assert_eq(rx.iter().collect::<Vec<_>>(), [1, 2, 3])?
+}
+
+test "oneshot" {
+    let (tx, rx) = Oneshot::<Int>.new()
+    tx.send(42)
+    assert_eq(rx.recv(), Some(42))?
+}

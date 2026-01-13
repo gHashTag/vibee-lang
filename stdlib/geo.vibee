@@ -1,0 +1,739 @@
+// =============================================================================
+// Vibee OS — Geo Module
+// Geolocation, coordinates, and geographic calculations
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Coordinates
+// -----------------------------------------------------------------------------
+
+/// Geographic coordinate (latitude, longitude)
+struct Coordinate {
+    lat: Float64   // Latitude in degrees (-90 to 90)
+    lon: Float64   // Longitude in degrees (-180 to 180)
+    
+    /// Create new coordinate
+    fn new(lat: Float64, lon: Float64) -> Result<Self, GeoError> {
+        if lat < -90.0 || lat > 90.0 {
+            return Err(GeoError.InvalidLatitude(lat))
+        }
+        if lon < -180.0 || lon > 180.0 {
+            return Err(GeoError.InvalidLongitude(lon))
+        }
+        Ok(Coordinate { lat: lat, lon: lon })
+    }
+    
+    /// Create without validation
+    fn unchecked(lat: Float64, lon: Float64) -> Self {
+        Coordinate { lat: lat, lon: lon }
+    }
+    
+    /// Parse from string "lat,lon"
+    fn parse(s: String) -> Result<Self, GeoError> {
+        let parts = s.split(",")
+        if parts.len() != 2 {
+            return Err(GeoError.ParseError("Expected 'lat,lon' format"))
+        }
+        let lat = Float64.parse(parts[0].trim())
+            .map_err(|_| GeoError.ParseError("Invalid latitude"))?
+        let lon = Float64.parse(parts[1].trim())
+            .map_err(|_| GeoError.ParseError("Invalid longitude"))?
+        Self.new(lat, lon)
+    }
+    
+    /// Parse from DMS string (e.g., "40°44'55\"N 73°59'11\"W")
+    fn from_dms(s: String) -> Result<Self, GeoError> {
+        let parts = s.split_whitespace()
+        if parts.len() != 2 {
+            return Err(GeoError.ParseError("Expected 'lat lon' in DMS format"))
+        }
+        let lat = parse_dms_component(parts[0])?
+        let lon = parse_dms_component(parts[1])?
+        Self.new(lat, lon)
+    }
+    
+    /// Convert to DMS string
+    fn to_dms() -> String {
+        let lat_dir = if self.lat >= 0.0 { "N" } else { "S" }
+        let lon_dir = if self.lon >= 0.0 { "E" } else { "W" }
+        
+        let (lat_d, lat_m, lat_s) = decimal_to_dms(self.lat.abs())
+        let (lon_d, lon_m, lon_s) = decimal_to_dms(self.lon.abs())
+        
+        format!("{}°{}'{}\"{}  {}°{}'{}\"{}",
+            lat_d, lat_m, lat_s, lat_dir,
+            lon_d, lon_m, lon_s, lon_dir)
+    }
+    
+    /// Distance to another coordinate (in meters)
+    fn distance_to(other: Coordinate) -> Float64 {
+        haversine(self, other)
+    }
+    
+    /// Bearing to another coordinate (in degrees, 0-360)
+    fn bearing_to(other: Coordinate) -> Float64 {
+        initial_bearing(self, other)
+    }
+    
+    /// Destination point given bearing and distance
+    fn destination(bearing: Float64, distance: Float64) -> Coordinate {
+        destination_point(self, bearing, distance)
+    }
+    
+    /// Midpoint between this and another coordinate
+    fn midpoint(other: Coordinate) -> Coordinate {
+        midpoint(self, other)
+    }
+    
+    /// Check if within bounding box
+    fn within(bbox: BoundingBox) -> Bool {
+        bbox.contains(self)
+    }
+    
+    /// Convert to GeoJSON point
+    fn to_geojson() -> String {
+        format!("{{\"type\":\"Point\",\"coordinates\":[{},{}]}}", self.lon, self.lat)
+    }
+}
+
+impl Display for Coordinate {
+    fn fmt(f: Formatter) {
+        f.write(format!("{:.6}, {:.6}", self.lat, self.lon))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Bounding Box
+// -----------------------------------------------------------------------------
+
+/// Geographic bounding box
+struct BoundingBox {
+    min: Coordinate  // Southwest corner
+    max: Coordinate  // Northeast corner
+    
+    /// Create from corners
+    fn new(sw: Coordinate, ne: Coordinate) -> Self {
+        BoundingBox { min: sw, max: ne }
+    }
+    
+    /// Create from center and radius (meters)
+    fn from_center(center: Coordinate, radius: Float64) -> Self {
+        let north = center.destination(0.0, radius)
+        let south = center.destination(180.0, radius)
+        let east = center.destination(90.0, radius)
+        let west = center.destination(270.0, radius)
+        
+        BoundingBox {
+            min: Coordinate.unchecked(south.lat, west.lon),
+            max: Coordinate.unchecked(north.lat, east.lon)
+        }
+    }
+    
+    /// Create from list of coordinates
+    fn from_coordinates(coords: [Coordinate]) -> Option<Self> {
+        if coords.is_empty() { return None }
+        
+        var min_lat = 90.0
+        var max_lat = -90.0
+        var min_lon = 180.0
+        var max_lon = -180.0
+        
+        for c in coords {
+            min_lat = min_lat.min(c.lat)
+            max_lat = max_lat.max(c.lat)
+            min_lon = min_lon.min(c.lon)
+            max_lon = max_lon.max(c.lon)
+        }
+        
+        Some(BoundingBox {
+            min: Coordinate.unchecked(min_lat, min_lon),
+            max: Coordinate.unchecked(max_lat, max_lon)
+        })
+    }
+    
+    /// Check if contains coordinate
+    fn contains(coord: Coordinate) -> Bool {
+        coord.lat >= self.min.lat && coord.lat <= self.max.lat &&
+        coord.lon >= self.min.lon && coord.lon <= self.max.lon
+    }
+    
+    /// Check if intersects another bounding box
+    fn intersects(other: BoundingBox) -> Bool {
+        !(other.max.lat < self.min.lat || other.min.lat > self.max.lat ||
+          other.max.lon < self.min.lon || other.min.lon > self.max.lon)
+    }
+    
+    /// Get center point
+    fn center() -> Coordinate {
+        Coordinate.unchecked(
+            (self.min.lat + self.max.lat) / 2.0,
+            (self.min.lon + self.max.lon) / 2.0
+        )
+    }
+    
+    /// Get width in meters
+    fn width() -> Float64 {
+        let center_lat = (self.min.lat + self.max.lat) / 2.0
+        let west = Coordinate.unchecked(center_lat, self.min.lon)
+        let east = Coordinate.unchecked(center_lat, self.max.lon)
+        west.distance_to(east)
+    }
+    
+    /// Get height in meters
+    fn height() -> Float64 {
+        let south = Coordinate.unchecked(self.min.lat, self.min.lon)
+        let north = Coordinate.unchecked(self.max.lat, self.min.lon)
+        south.distance_to(north)
+    }
+    
+    /// Expand by distance (meters)
+    fn expand(distance: Float64) -> BoundingBox {
+        let sw = self.min.destination(225.0, distance * 1.414)
+        let ne = self.max.destination(45.0, distance * 1.414)
+        BoundingBox { min: sw, max: ne }
+    }
+    
+    /// Convert to GeoJSON polygon
+    fn to_geojson() -> String {
+        format!("{{\"type\":\"Polygon\",\"coordinates\":[[[{},{}],[{},{}],[{},{}],[{},{}],[{},{}]]]}}",
+            self.min.lon, self.min.lat,
+            self.max.lon, self.min.lat,
+            self.max.lon, self.max.lat,
+            self.min.lon, self.max.lat,
+            self.min.lon, self.min.lat)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Polygon
+// -----------------------------------------------------------------------------
+
+/// Geographic polygon
+struct Polygon {
+    exterior: [Coordinate]
+    holes: [[Coordinate]]
+    
+    fn new(exterior: [Coordinate]) -> Self {
+        Polygon { exterior: exterior, holes: [] }
+    }
+    
+    fn with_holes(exterior: [Coordinate], holes: [[Coordinate]]) -> Self {
+        Polygon { exterior: exterior, holes: holes }
+    }
+    
+    /// Check if point is inside polygon (ray casting)
+    fn contains(point: Coordinate) -> Bool {
+        if !point_in_ring(point, self.exterior) {
+            return false
+        }
+        for hole in self.holes {
+            if point_in_ring(point, hole) {
+                return false
+            }
+        }
+        true
+    }
+    
+    /// Get bounding box
+    fn bounds() -> Option<BoundingBox> {
+        BoundingBox.from_coordinates(self.exterior)
+    }
+    
+    /// Calculate area in square meters
+    fn area() -> Float64 {
+        var total = ring_area(self.exterior)
+        for hole in self.holes {
+            total -= ring_area(hole)
+        }
+        total.abs()
+    }
+    
+    /// Calculate perimeter in meters
+    fn perimeter() -> Float64 {
+        ring_perimeter(self.exterior)
+    }
+    
+    /// Get centroid
+    fn centroid() -> Coordinate {
+        ring_centroid(self.exterior)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// LineString
+// -----------------------------------------------------------------------------
+
+/// Geographic line string
+struct LineString {
+    points: [Coordinate]
+    
+    fn new(points: [Coordinate]) -> Self {
+        LineString { points: points }
+    }
+    
+    /// Total length in meters
+    fn length() -> Float64 {
+        var total = 0.0
+        for i in 0..(self.points.len() - 1) {
+            total += self.points[i].distance_to(self.points[i + 1])
+        }
+        total
+    }
+    
+    /// Get bounding box
+    fn bounds() -> Option<BoundingBox> {
+        BoundingBox.from_coordinates(self.points)
+    }
+    
+    /// Point at distance along line
+    fn point_at_distance(distance: Float64) -> Option<Coordinate> {
+        var remaining = distance
+        for i in 0..(self.points.len() - 1) {
+            let segment_length = self.points[i].distance_to(self.points[i + 1])
+            if remaining <= segment_length {
+                let fraction = remaining / segment_length
+                return Some(interpolate(self.points[i], self.points[i + 1], fraction))
+            }
+            remaining -= segment_length
+        }
+        self.points.last()
+    }
+    
+    /// Simplify using Douglas-Peucker algorithm
+    fn simplify(tolerance: Float64) -> LineString {
+        LineString { points: douglas_peucker(self.points, tolerance) }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Distance Calculations
+// -----------------------------------------------------------------------------
+
+const EARTH_RADIUS: Float64 = 6371008.8  // meters
+
+/// Haversine distance between two coordinates (meters)
+fn haversine(c1: Coordinate, c2: Coordinate) -> Float64 {
+    let lat1 = c1.lat.to_radians()
+    let lat2 = c2.lat.to_radians()
+    let dlat = (c2.lat - c1.lat).to_radians()
+    let dlon = (c2.lon - c1.lon).to_radians()
+    
+    let a = (dlat / 2.0).sin().pow(2) +
+            lat1.cos() * lat2.cos() * (dlon / 2.0).sin().pow(2)
+    let c = 2.0 * a.sqrt().asin()
+    
+    EARTH_RADIUS * c
+}
+
+/// Vincenty distance (more accurate, slower)
+fn vincenty(c1: Coordinate, c2: Coordinate) -> Float64 {
+    // WGS84 ellipsoid
+    let a = 6378137.0
+    let f = 1.0 / 298.257223563
+    let b = a * (1.0 - f)
+    
+    let lat1 = c1.lat.to_radians()
+    let lat2 = c2.lat.to_radians()
+    let lon1 = c1.lon.to_radians()
+    let lon2 = c2.lon.to_radians()
+    
+    let U1 = ((1.0 - f) * lat1.tan()).atan()
+    let U2 = ((1.0 - f) * lat2.tan()).atan()
+    let L = lon2 - lon1
+    
+    var lambda = L
+    var iterations = 0
+    
+    while iterations < 100 {
+        let sin_lambda = lambda.sin()
+        let cos_lambda = lambda.cos()
+        
+        let sin_sigma = ((U2.cos() * sin_lambda).pow(2) +
+            (U1.cos() * U2.sin() - U1.sin() * U2.cos() * cos_lambda).pow(2)).sqrt()
+        
+        let cos_sigma = U1.sin() * U2.sin() + U1.cos() * U2.cos() * cos_lambda
+        let sigma = sin_sigma.atan2(cos_sigma)
+        
+        let sin_alpha = U1.cos() * U2.cos() * sin_lambda / sin_sigma
+        let cos2_alpha = 1.0 - sin_alpha.pow(2)
+        
+        let cos_2sigma_m = cos_sigma - 2.0 * U1.sin() * U2.sin() / cos2_alpha
+        
+        let C = f / 16.0 * cos2_alpha * (4.0 + f * (4.0 - 3.0 * cos2_alpha))
+        
+        let lambda_prev = lambda
+        lambda = L + (1.0 - C) * f * sin_alpha *
+            (sigma + C * sin_sigma * (cos_2sigma_m + C * cos_sigma * (-1.0 + 2.0 * cos_2sigma_m.pow(2))))
+        
+        if (lambda - lambda_prev).abs() < 1e-12 {
+            break
+        }
+        iterations += 1
+    }
+    
+    let u2 = (a.pow(2) - b.pow(2)) / b.pow(2)
+    let A = 1.0 + u2 / 16384.0 * (4096.0 + u2 * (-768.0 + u2 * (320.0 - 175.0 * u2)))
+    let B = u2 / 1024.0 * (256.0 + u2 * (-128.0 + u2 * (74.0 - 47.0 * u2)))
+    
+    b * A * lambda
+}
+
+/// Initial bearing from c1 to c2 (degrees)
+fn initial_bearing(c1: Coordinate, c2: Coordinate) -> Float64 {
+    let lat1 = c1.lat.to_radians()
+    let lat2 = c2.lat.to_radians()
+    let dlon = (c2.lon - c1.lon).to_radians()
+    
+    let x = dlon.sin() * lat2.cos()
+    let y = lat1.cos() * lat2.sin() - lat1.sin() * lat2.cos() * dlon.cos()
+    
+    let bearing = x.atan2(y).to_degrees()
+    (bearing + 360.0) % 360.0
+}
+
+/// Destination point from start given bearing and distance
+fn destination_point(start: Coordinate, bearing: Float64, distance: Float64) -> Coordinate {
+    let lat1 = start.lat.to_radians()
+    let lon1 = start.lon.to_radians()
+    let brng = bearing.to_radians()
+    let d = distance / EARTH_RADIUS
+    
+    let lat2 = (lat1.sin() * d.cos() + lat1.cos() * d.sin() * brng.cos()).asin()
+    let lon2 = lon1 + (brng.sin() * d.sin() * lat1.cos()).atan2(d.cos() - lat1.sin() * lat2.sin())
+    
+    Coordinate.unchecked(lat2.to_degrees(), lon2.to_degrees())
+}
+
+/// Midpoint between two coordinates
+fn midpoint(c1: Coordinate, c2: Coordinate) -> Coordinate {
+    let lat1 = c1.lat.to_radians()
+    let lon1 = c1.lon.to_radians()
+    let lat2 = c2.lat.to_radians()
+    let dlon = (c2.lon - c1.lon).to_radians()
+    
+    let Bx = lat2.cos() * dlon.cos()
+    let By = lat2.cos() * dlon.sin()
+    
+    let lat3 = (lat1.sin() + lat2.sin()).atan2(((lat1.cos() + Bx).pow(2) + By.pow(2)).sqrt())
+    let lon3 = lon1 + By.atan2(lat1.cos() + Bx)
+    
+    Coordinate.unchecked(lat3.to_degrees(), lon3.to_degrees())
+}
+
+/// Interpolate between two coordinates
+fn interpolate(c1: Coordinate, c2: Coordinate, fraction: Float64) -> Coordinate {
+    let d = c1.distance_to(c2)
+    let bearing = c1.bearing_to(c2)
+    c1.destination(bearing, d * fraction)
+}
+
+// -----------------------------------------------------------------------------
+// Polygon Utilities
+// -----------------------------------------------------------------------------
+
+fn point_in_ring(point: Coordinate, ring: [Coordinate]) -> Bool {
+    var inside = false
+    var j = ring.len() - 1
+    
+    for i in 0..ring.len() {
+        let xi = ring[i].lon
+        let yi = ring[i].lat
+        let xj = ring[j].lon
+        let yj = ring[j].lat
+        
+        if ((yi > point.lat) != (yj > point.lat)) &&
+           (point.lon < (xj - xi) * (point.lat - yi) / (yj - yi) + xi) {
+            inside = !inside
+        }
+        j = i
+    }
+    inside
+}
+
+fn ring_area(ring: [Coordinate]) -> Float64 {
+    // Shoelace formula with spherical correction
+    var area = 0.0
+    let n = ring.len()
+    
+    for i in 0..n {
+        let j = (i + 1) % n
+        area += ring[i].lon.to_radians() * ring[j].lat.to_radians()
+        area -= ring[j].lon.to_radians() * ring[i].lat.to_radians()
+    }
+    
+    (area.abs() / 2.0) * EARTH_RADIUS * EARTH_RADIUS
+}
+
+fn ring_perimeter(ring: [Coordinate]) -> Float64 {
+    var total = 0.0
+    for i in 0..ring.len() {
+        let j = (i + 1) % ring.len()
+        total += ring[i].distance_to(ring[j])
+    }
+    total
+}
+
+fn ring_centroid(ring: [Coordinate]) -> Coordinate {
+    var lat_sum = 0.0
+    var lon_sum = 0.0
+    for c in ring {
+        lat_sum += c.lat
+        lon_sum += c.lon
+    }
+    Coordinate.unchecked(lat_sum / ring.len() as Float64, lon_sum / ring.len() as Float64)
+}
+
+// -----------------------------------------------------------------------------
+// Douglas-Peucker Simplification
+// -----------------------------------------------------------------------------
+
+fn douglas_peucker(points: [Coordinate], tolerance: Float64) -> [Coordinate] {
+    if points.len() < 3 {
+        return points
+    }
+    
+    var max_dist = 0.0
+    var max_idx = 0
+    
+    let first = points[0]
+    let last = points[points.len() - 1]
+    
+    for i in 1..(points.len() - 1) {
+        let dist = perpendicular_distance(points[i], first, last)
+        if dist > max_dist {
+            max_dist = dist
+            max_idx = i
+        }
+    }
+    
+    if max_dist > tolerance {
+        let left = douglas_peucker(points[0..=max_idx], tolerance)
+        let right = douglas_peucker(points[max_idx..], tolerance)
+        
+        var result = left[0..(left.len() - 1)]
+        result.extend(right)
+        result
+    } else {
+        [first, last]
+    }
+}
+
+fn perpendicular_distance(point: Coordinate, line_start: Coordinate, line_end: Coordinate) -> Float64 {
+    let d = line_start.distance_to(line_end)
+    if d == 0.0 {
+        return point.distance_to(line_start)
+    }
+    
+    let d1 = line_start.distance_to(point)
+    let d2 = line_end.distance_to(point)
+    let s = (d + d1 + d2) / 2.0
+    let area = (s * (s - d) * (s - d1) * (s - d2)).sqrt()
+    
+    2.0 * area / d
+}
+
+// -----------------------------------------------------------------------------
+// DMS Parsing
+// -----------------------------------------------------------------------------
+
+fn parse_dms_component(s: String) -> Result<Float64, GeoError> {
+    // Parse "40°44'55\"N" format
+    let s = s.trim()
+    let dir = s.chars().last().unwrap_or('X')
+    let sign = match dir {
+        'N' | 'E' => 1.0
+        'S' | 'W' => -1.0
+        _ => return Err(GeoError.ParseError("Invalid direction"))
+    }
+    
+    let num_part = s[0..(s.len() - 1)]
+    let parts = num_part.split(['°', '\'', '"'])
+    
+    let degrees = Float64.parse(parts.get(0).unwrap_or("0"))
+        .map_err(|_| GeoError.ParseError("Invalid degrees"))?
+    let minutes = Float64.parse(parts.get(1).unwrap_or("0"))
+        .map_err(|_| GeoError.ParseError("Invalid minutes"))?
+    let seconds = Float64.parse(parts.get(2).unwrap_or("0"))
+        .map_err(|_| GeoError.ParseError("Invalid seconds"))?
+    
+    Ok(sign * (degrees + minutes / 60.0 + seconds / 3600.0))
+}
+
+fn decimal_to_dms(decimal: Float64) -> (Int, Int, Float64) {
+    let d = decimal.floor() as Int
+    let m_full = (decimal - d as Float64) * 60.0
+    let m = m_full.floor() as Int
+    let s = (m_full - m as Float64) * 60.0
+    (d, m, s)
+}
+
+// -----------------------------------------------------------------------------
+// Geohash
+// -----------------------------------------------------------------------------
+
+const GEOHASH_CHARS: String = "0123456789bcdefghjkmnpqrstuvwxyz"
+
+/// Encode coordinate to geohash
+fn geohash_encode(coord: Coordinate, precision: Int) -> String {
+    var lat_range = (-90.0, 90.0)
+    var lon_range = (-180.0, 180.0)
+    var hash = ""
+    var bits = 0
+    var ch = 0
+    var even = true
+    
+    while hash.len() < precision {
+        if even {
+            let mid = (lon_range.0 + lon_range.1) / 2.0
+            if coord.lon >= mid {
+                ch = ch * 2 + 1
+                lon_range = (mid, lon_range.1)
+            } else {
+                ch = ch * 2
+                lon_range = (lon_range.0, mid)
+            }
+        } else {
+            let mid = (lat_range.0 + lat_range.1) / 2.0
+            if coord.lat >= mid {
+                ch = ch * 2 + 1
+                lat_range = (mid, lat_range.1)
+            } else {
+                ch = ch * 2
+                lat_range = (lat_range.0, mid)
+            }
+        }
+        even = !even
+        bits += 1
+        
+        if bits == 5 {
+            hash.push(GEOHASH_CHARS[ch])
+            bits = 0
+            ch = 0
+        }
+    }
+    hash
+}
+
+/// Decode geohash to coordinate
+fn geohash_decode(hash: String) -> Result<Coordinate, GeoError> {
+    var lat_range = (-90.0, 90.0)
+    var lon_range = (-180.0, 180.0)
+    var even = true
+    
+    for c in hash.chars() {
+        let idx = GEOHASH_CHARS.find(c)
+            .ok_or(GeoError.ParseError("Invalid geohash character"))?
+        
+        for i in (0..5).rev() {
+            let bit = (idx >> i) & 1
+            if even {
+                let mid = (lon_range.0 + lon_range.1) / 2.0
+                if bit == 1 {
+                    lon_range = (mid, lon_range.1)
+                } else {
+                    lon_range = (lon_range.0, mid)
+                }
+            } else {
+                let mid = (lat_range.0 + lat_range.1) / 2.0
+                if bit == 1 {
+                    lat_range = (mid, lat_range.1)
+                } else {
+                    lat_range = (lat_range.0, mid)
+                }
+            }
+            even = !even
+        }
+    }
+    
+    Ok(Coordinate.unchecked(
+        (lat_range.0 + lat_range.1) / 2.0,
+        (lon_range.0 + lon_range.1) / 2.0
+    ))
+}
+
+/// Get geohash neighbors
+fn geohash_neighbors(hash: String) -> [String] {
+    // Returns 8 neighboring geohashes
+    @native("geohash_neighbors", hash)
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum GeoError {
+    InvalidLatitude(Float64)
+    InvalidLongitude(Float64)
+    ParseError(String)
+    OutOfBounds
+}
+
+impl Display for GeoError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidLatitude(v) => f.write(format!("Invalid latitude: {}", v))
+            InvalidLongitude(v) => f.write(format!("Invalid longitude: {}", v))
+            ParseError(msg) => f.write(format!("Parse error: {}", msg))
+            OutOfBounds => f.write("Coordinate out of bounds")
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "coordinate creation" {
+    let c = Coordinate.new(40.7128, -74.0060)?
+    assert_eq(c.lat, 40.7128)?
+    assert_eq(c.lon, -74.0060)?
+}
+
+test "invalid coordinates" {
+    assert(Coordinate.new(91.0, 0.0).is_err())?
+    assert(Coordinate.new(0.0, 181.0).is_err())?
+}
+
+test "haversine distance" {
+    let nyc = Coordinate.unchecked(40.7128, -74.0060)
+    let la = Coordinate.unchecked(34.0522, -118.2437)
+    let dist = nyc.distance_to(la)
+    // ~3935 km
+    assert(dist > 3900000.0 && dist < 4000000.0)?
+}
+
+test "bearing" {
+    let london = Coordinate.unchecked(51.5074, -0.1278)
+    let paris = Coordinate.unchecked(48.8566, 2.3522)
+    let bearing = london.bearing_to(paris)
+    // Should be roughly southeast (~148°)
+    assert(bearing > 140.0 && bearing < 160.0)?
+}
+
+test "geohash" {
+    let coord = Coordinate.unchecked(40.7128, -74.0060)
+    let hash = geohash_encode(coord, 6)
+    let decoded = geohash_decode(hash)?
+    assert((decoded.lat - coord.lat).abs() < 0.01)?
+    assert((decoded.lon - coord.lon).abs() < 0.01)?
+}
+
+test "bounding box" {
+    let bbox = BoundingBox.new(
+        Coordinate.unchecked(40.0, -75.0),
+        Coordinate.unchecked(41.0, -73.0)
+    )
+    assert(bbox.contains(Coordinate.unchecked(40.5, -74.0)))?
+    assert(!bbox.contains(Coordinate.unchecked(42.0, -74.0)))?
+}
+
+test "polygon contains" {
+    let poly = Polygon.new([
+        Coordinate.unchecked(0.0, 0.0),
+        Coordinate.unchecked(0.0, 10.0),
+        Coordinate.unchecked(10.0, 10.0),
+        Coordinate.unchecked(10.0, 0.0)
+    ])
+    assert(poly.contains(Coordinate.unchecked(5.0, 5.0)))?
+    assert(!poly.contains(Coordinate.unchecked(15.0, 5.0)))?
+}

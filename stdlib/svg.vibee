@@ -1,0 +1,440 @@
+// =============================================================================
+// Vibee OS — SVG Module
+// SVG graphics creation and manipulation
+// =============================================================================
+
+use color::{RGB, RGBA}
+use canvas::{Point, Rect, Transform, Path, PathCommand, Gradient, ColorStop}
+
+/// SVG Document
+struct SVG {
+    width: Float64
+    height: Float64
+    viewbox: Option<ViewBox>
+    elements: [SVGElement]
+    defs: [SVGDef]
+    
+    fn new(width: Float64, height: Float64) -> Self {
+        SVG { width: width, height: height, viewbox: None, elements: [], defs: [] }
+    }
+    
+    fn with_viewbox(width: Float64, height: Float64, vb: ViewBox) -> Self {
+        SVG { width: width, height: height, viewbox: Some(vb), elements: [], defs: [] }
+    }
+    
+    fn add(element: SVGElement) -> Self { self.elements.push(element); self }
+    fn add_def(def: SVGDef) -> Self { self.defs.push(def); self }
+    
+    fn to_string() -> String {
+        var s = format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\"", self.width, self.height)
+        if let Some(vb) = self.viewbox {
+            s += format!(" viewBox=\"{} {} {} {}\"", vb.min_x, vb.min_y, vb.width, vb.height)
+        }
+        s += ">\n"
+        
+        if !self.defs.is_empty() {
+            s += "  <defs>\n"
+            for def in self.defs { s += format!("    {}\n", def.to_string()) }
+            s += "  </defs>\n"
+        }
+        
+        for elem in self.elements { s += format!("  {}\n", elem.to_string()) }
+        s += "</svg>"
+        s
+    }
+    
+    fn save(path: String) -> Result<(), IoError> {
+        fs.write_string(path, self.to_string())
+    }
+    
+    fn parse(content: String) -> Result<Self, SVGError> {
+        @native("svg_parse", content)
+    }
+    
+    fn load(path: String) -> Result<Self, SVGError> {
+        let content = fs.read_string(path)?
+        Self.parse(content)
+    }
+}
+
+struct ViewBox { min_x: Float64, min_y: Float64, width: Float64, height: Float64 }
+
+/// SVG Element
+enum SVGElement {
+    Rect { x: Float64, y: Float64, width: Float64, height: Float64, rx: Float64, ry: Float64, style: SVGStyle },
+    Circle { cx: Float64, cy: Float64, r: Float64, style: SVGStyle },
+    Ellipse { cx: Float64, cy: Float64, rx: Float64, ry: Float64, style: SVGStyle },
+    Line { x1: Float64, y1: Float64, x2: Float64, y2: Float64, style: SVGStyle },
+    Polyline { points: [Point], style: SVGStyle },
+    Polygon { points: [Point], style: SVGStyle },
+    Path { d: String, style: SVGStyle },
+    Text { x: Float64, y: Float64, content: String, style: SVGStyle },
+    Image { x: Float64, y: Float64, width: Float64, height: Float64, href: String },
+    Group { elements: [SVGElement], transform: Option<String>, id: Option<String> },
+    Use { href: String, x: Float64, y: Float64 }
+}
+
+impl SVGElement {
+    fn to_string() -> String {
+        match self {
+            Rect { x, y, width, height, rx, ry, style } => {
+                var s = format!("<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"", x, y, width, height)
+                if rx > 0.0 { s += format!(" rx=\"{}\"", rx) }
+                if ry > 0.0 { s += format!(" ry=\"{}\"", ry) }
+                s += style.to_attr()
+                s += "/>"
+                s
+            },
+            Circle { cx, cy, r, style } => format!("<circle cx=\"{}\" cy=\"{}\" r=\"{}\"{}/>", cx, cy, r, style.to_attr()),
+            Ellipse { cx, cy, rx, ry, style } => format!("<ellipse cx=\"{}\" cy=\"{}\" rx=\"{}\" ry=\"{}\"{}/>", cx, cy, rx, ry, style.to_attr()),
+            Line { x1, y1, x2, y2, style } => format!("<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\"{}/>", x1, y1, x2, y2, style.to_attr()),
+            Polyline { points, style } => {
+                let pts = points.iter().map(|p| format!("{},{}", p.x, p.y)).join(" ")
+                format!("<polyline points=\"{}\"{}/>", pts, style.to_attr())
+            },
+            Polygon { points, style } => {
+                let pts = points.iter().map(|p| format!("{},{}", p.x, p.y)).join(" ")
+                format!("<polygon points=\"{}\"{}/>", pts, style.to_attr())
+            },
+            Path { d, style } => format!("<path d=\"{}\"{}/>", d, style.to_attr()),
+            Text { x, y, content, style } => format!("<text x=\"{}\" y=\"{}\"{}>{}</text>", x, y, style.to_attr(), content),
+            Image { x, y, width, height, href } => format!("<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" href=\"{}\"/>", x, y, width, height, href),
+            Group { elements, transform, id } => {
+                var s = "<g"
+                if let Some(t) = transform { s += format!(" transform=\"{}\"", t) }
+                if let Some(i) = id { s += format!(" id=\"{}\"", i) }
+                s += ">\n"
+                for elem in elements { s += format!("    {}\n", elem.to_string()) }
+                s += "  </g>"
+                s
+            },
+            Use { href, x, y } => format!("<use href=\"#{}\" x=\"{}\" y=\"{}\"/>", href, x, y)
+        }
+    }
+}
+
+/// SVG Style
+struct SVGStyle {
+    fill: Option<String>
+    stroke: Option<String>
+    stroke_width: Option<Float64>
+    stroke_linecap: Option<String>
+    stroke_linejoin: Option<String>
+    stroke_dasharray: Option<String>
+    opacity: Option<Float64>
+    fill_opacity: Option<Float64>
+    stroke_opacity: Option<Float64>
+    font_family: Option<String>
+    font_size: Option<Float64>
+    font_weight: Option<String>
+    text_anchor: Option<String>
+    transform: Option<String>
+    
+    fn new() -> Self {
+        SVGStyle {
+            fill: None, stroke: None, stroke_width: None, stroke_linecap: None,
+            stroke_linejoin: None, stroke_dasharray: None, opacity: None,
+            fill_opacity: None, stroke_opacity: None, font_family: None,
+            font_size: None, font_weight: None, text_anchor: None, transform: None
+        }
+    }
+    
+    fn fill(color: String) -> Self { self.fill = Some(color); self }
+    fn fill_rgb(r: UInt8, g: UInt8, b: UInt8) -> Self { self.fill = Some(format!("rgb({},{},{})", r, g, b)); self }
+    fn fill_none() -> Self { self.fill = Some("none".to_string()); self }
+    fn stroke(color: String) -> Self { self.stroke = Some(color); self }
+    fn stroke_rgb(r: UInt8, g: UInt8, b: UInt8) -> Self { self.stroke = Some(format!("rgb({},{},{})", r, g, b)); self }
+    fn stroke_width(w: Float64) -> Self { self.stroke_width = Some(w); self }
+    fn stroke_linecap(cap: String) -> Self { self.stroke_linecap = Some(cap); self }
+    fn stroke_linejoin(join: String) -> Self { self.stroke_linejoin = Some(join); self }
+    fn stroke_dasharray(arr: String) -> Self { self.stroke_dasharray = Some(arr); self }
+    fn opacity(o: Float64) -> Self { self.opacity = Some(o); self }
+    fn font(family: String, size: Float64) -> Self { self.font_family = Some(family); self.font_size = Some(size); self }
+    fn font_weight(w: String) -> Self { self.font_weight = Some(w); self }
+    fn text_anchor(a: String) -> Self { self.text_anchor = Some(a); self }
+    fn transform(t: String) -> Self { self.transform = Some(t); self }
+    
+    fn to_attr() -> String {
+        var attrs = []
+        if let Some(f) = self.fill { attrs.push(format!("fill=\"{}\"", f)) }
+        if let Some(s) = self.stroke { attrs.push(format!("stroke=\"{}\"", s)) }
+        if let Some(w) = self.stroke_width { attrs.push(format!("stroke-width=\"{}\"", w)) }
+        if let Some(c) = self.stroke_linecap { attrs.push(format!("stroke-linecap=\"{}\"", c)) }
+        if let Some(j) = self.stroke_linejoin { attrs.push(format!("stroke-linejoin=\"{}\"", j)) }
+        if let Some(d) = self.stroke_dasharray { attrs.push(format!("stroke-dasharray=\"{}\"", d)) }
+        if let Some(o) = self.opacity { attrs.push(format!("opacity=\"{}\"", o)) }
+        if let Some(o) = self.fill_opacity { attrs.push(format!("fill-opacity=\"{}\"", o)) }
+        if let Some(o) = self.stroke_opacity { attrs.push(format!("stroke-opacity=\"{}\"", o)) }
+        if let Some(f) = self.font_family { attrs.push(format!("font-family=\"{}\"", f)) }
+        if let Some(s) = self.font_size { attrs.push(format!("font-size=\"{}\"", s)) }
+        if let Some(w) = self.font_weight { attrs.push(format!("font-weight=\"{}\"", w)) }
+        if let Some(a) = self.text_anchor { attrs.push(format!("text-anchor=\"{}\"", a)) }
+        if let Some(t) = self.transform { attrs.push(format!("transform=\"{}\"", t)) }
+        if attrs.is_empty() { "" } else { " " + attrs.join(" ") }
+    }
+}
+
+/// SVG Definitions (gradients, patterns, etc.)
+enum SVGDef {
+    LinearGradient { id: String, x1: Float64, y1: Float64, x2: Float64, y2: Float64, stops: [GradientStop] },
+    RadialGradient { id: String, cx: Float64, cy: Float64, r: Float64, stops: [GradientStop] },
+    Pattern { id: String, width: Float64, height: Float64, elements: [SVGElement] },
+    ClipPath { id: String, elements: [SVGElement] },
+    Mask { id: String, elements: [SVGElement] },
+    Symbol { id: String, viewbox: Option<ViewBox>, elements: [SVGElement] }
+}
+
+struct GradientStop { offset: Float64, color: String, opacity: Option<Float64> }
+
+impl SVGDef {
+    fn to_string() -> String {
+        match self {
+            LinearGradient { id, x1, y1, x2, y2, stops } => {
+                var s = format!("<linearGradient id=\"{}\" x1=\"{}%\" y1=\"{}%\" x2=\"{}%\" y2=\"{}%\">\n", id, x1 * 100.0, y1 * 100.0, x2 * 100.0, y2 * 100.0)
+                for stop in stops {
+                    s += format!("      <stop offset=\"{}%\" stop-color=\"{}\"", stop.offset * 100.0, stop.color)
+                    if let Some(o) = stop.opacity { s += format!(" stop-opacity=\"{}\"", o) }
+                    s += "/>\n"
+                }
+                s += "    </linearGradient>"
+                s
+            },
+            RadialGradient { id, cx, cy, r, stops } => {
+                var s = format!("<radialGradient id=\"{}\" cx=\"{}%\" cy=\"{}%\" r=\"{}%\">\n", id, cx * 100.0, cy * 100.0, r * 100.0)
+                for stop in stops { s += format!("      <stop offset=\"{}%\" stop-color=\"{}\"/>\n", stop.offset * 100.0, stop.color) }
+                s += "    </radialGradient>"
+                s
+            },
+            Pattern { id, width, height, elements } => {
+                var s = format!("<pattern id=\"{}\" width=\"{}\" height=\"{}\" patternUnits=\"userSpaceOnUse\">\n", id, width, height)
+                for elem in elements { s += format!("      {}\n", elem.to_string()) }
+                s += "    </pattern>"
+                s
+            },
+            ClipPath { id, elements } => {
+                var s = format!("<clipPath id=\"{}\">\n", id)
+                for elem in elements { s += format!("      {}\n", elem.to_string()) }
+                s += "    </clipPath>"
+                s
+            },
+            Mask { id, elements } => {
+                var s = format!("<mask id=\"{}\">\n", id)
+                for elem in elements { s += format!("      {}\n", elem.to_string()) }
+                s += "    </mask>"
+                s
+            },
+            Symbol { id, viewbox, elements } => {
+                var s = format!("<symbol id=\"{}\"", id)
+                if let Some(vb) = viewbox { s += format!(" viewBox=\"{} {} {} {}\"", vb.min_x, vb.min_y, vb.width, vb.height) }
+                s += ">\n"
+                for elem in elements { s += format!("      {}\n", elem.to_string()) }
+                s += "    </symbol>"
+                s
+            }
+        }
+    }
+}
+
+/// SVG Path Builder
+struct PathBuilder {
+    commands: String
+    
+    fn new() -> Self { PathBuilder { commands: "" } }
+    fn move_to(x: Float64, y: Float64) -> Self { self.commands += format!("M{} {} ", x, y); self }
+    fn move_to_rel(dx: Float64, dy: Float64) -> Self { self.commands += format!("m{} {} ", dx, dy); self }
+    fn line_to(x: Float64, y: Float64) -> Self { self.commands += format!("L{} {} ", x, y); self }
+    fn line_to_rel(dx: Float64, dy: Float64) -> Self { self.commands += format!("l{} {} ", dx, dy); self }
+    fn horizontal(x: Float64) -> Self { self.commands += format!("H{} ", x); self }
+    fn horizontal_rel(dx: Float64) -> Self { self.commands += format!("h{} ", dx); self }
+    fn vertical(y: Float64) -> Self { self.commands += format!("V{} ", y); self }
+    fn vertical_rel(dy: Float64) -> Self { self.commands += format!("v{} ", dy); self }
+    fn quad_to(cx: Float64, cy: Float64, x: Float64, y: Float64) -> Self { self.commands += format!("Q{} {} {} {} ", cx, cy, x, y); self }
+    fn cubic_to(c1x: Float64, c1y: Float64, c2x: Float64, c2y: Float64, x: Float64, y: Float64) -> Self {
+        self.commands += format!("C{} {} {} {} {} {} ", c1x, c1y, c2x, c2y, x, y); self
+    }
+    fn arc(rx: Float64, ry: Float64, rotation: Float64, large: Bool, sweep: Bool, x: Float64, y: Float64) -> Self {
+        let l = if large { 1 } else { 0 }
+        let s = if sweep { 1 } else { 0 }
+        self.commands += format!("A{} {} {} {} {} {} {} ", rx, ry, rotation, l, s, x, y); self
+    }
+    fn close() -> Self { self.commands += "Z "; self }
+    fn build() -> String { self.commands.trim() }
+}
+
+/// SVG Builder helpers
+module svg {
+    fn rect(x: Float64, y: Float64, w: Float64, h: Float64) -> SVGElement {
+        SVGElement.Rect { x: x, y: y, width: w, height: h, rx: 0.0, ry: 0.0, style: SVGStyle.new() }
+    }
+    
+    fn rounded_rect(x: Float64, y: Float64, w: Float64, h: Float64, r: Float64) -> SVGElement {
+        SVGElement.Rect { x: x, y: y, width: w, height: h, rx: r, ry: r, style: SVGStyle.new() }
+    }
+    
+    fn circle(cx: Float64, cy: Float64, r: Float64) -> SVGElement {
+        SVGElement.Circle { cx: cx, cy: cy, r: r, style: SVGStyle.new() }
+    }
+    
+    fn ellipse(cx: Float64, cy: Float64, rx: Float64, ry: Float64) -> SVGElement {
+        SVGElement.Ellipse { cx: cx, cy: cy, rx: rx, ry: ry, style: SVGStyle.new() }
+    }
+    
+    fn line(x1: Float64, y1: Float64, x2: Float64, y2: Float64) -> SVGElement {
+        SVGElement.Line { x1: x1, y1: y1, x2: x2, y2: y2, style: SVGStyle.new() }
+    }
+    
+    fn polyline(points: [Point]) -> SVGElement {
+        SVGElement.Polyline { points: points, style: SVGStyle.new() }
+    }
+    
+    fn polygon(points: [Point]) -> SVGElement {
+        SVGElement.Polygon { points: points, style: SVGStyle.new() }
+    }
+    
+    fn path(d: String) -> SVGElement {
+        SVGElement.Path { d: d, style: SVGStyle.new() }
+    }
+    
+    fn text(x: Float64, y: Float64, content: String) -> SVGElement {
+        SVGElement.Text { x: x, y: y, content: content, style: SVGStyle.new() }
+    }
+    
+    fn image(x: Float64, y: Float64, w: Float64, h: Float64, href: String) -> SVGElement {
+        SVGElement.Image { x: x, y: y, width: w, height: h, href: href }
+    }
+    
+    fn group(elements: [SVGElement]) -> SVGElement {
+        SVGElement.Group { elements: elements, transform: None, id: None }
+    }
+    
+    fn use_symbol(id: String, x: Float64, y: Float64) -> SVGElement {
+        SVGElement.Use { href: id, x: x, y: y }
+    }
+}
+
+/// Apply style to element
+impl SVGElement {
+    fn with_style(style: SVGStyle) -> Self {
+        match self {
+            Rect { x, y, width, height, rx, ry, .. } => Rect { x: x, y: y, width: width, height: height, rx: rx, ry: ry, style: style },
+            Circle { cx, cy, r, .. } => Circle { cx: cx, cy: cy, r: r, style: style },
+            Ellipse { cx, cy, rx, ry, .. } => Ellipse { cx: cx, cy: cy, rx: rx, ry: ry, style: style },
+            Line { x1, y1, x2, y2, .. } => Line { x1: x1, y1: y1, x2: x2, y2: y2, style: style },
+            Polyline { points, .. } => Polyline { points: points, style: style },
+            Polygon { points, .. } => Polygon { points: points, style: style },
+            Path { d, .. } => Path { d: d, style: style },
+            Text { x, y, content, .. } => Text { x: x, y: y, content: content, style: style },
+            other => other
+        }
+    }
+    
+    fn fill(color: String) -> Self {
+        self.with_style(self.get_style().fill(color))
+    }
+    
+    fn stroke(color: String, width: Float64) -> Self {
+        self.with_style(self.get_style().stroke(color).stroke_width(width))
+    }
+    
+    fn get_style() -> SVGStyle {
+        match self {
+            Rect { style, .. } | Circle { style, .. } | Ellipse { style, .. } |
+            Line { style, .. } | Polyline { style, .. } | Polygon { style, .. } |
+            Path { style, .. } | Text { style, .. } => style.clone(),
+            _ => SVGStyle.new()
+        }
+    }
+}
+
+/// SVG Animation
+struct SVGAnimation {
+    attribute: String
+    from: String
+    to: String
+    duration: Float64
+    repeat: AnimationRepeat
+    
+    fn new(attr: String, from: String, to: String, dur: Float64) -> Self {
+        SVGAnimation { attribute: attr, from: from, to: to, duration: dur, repeat: AnimationRepeat.Once }
+    }
+    
+    fn repeat_count(count: Int) -> Self { self.repeat = AnimationRepeat.Count(count); self }
+    fn repeat_indefinite() -> Self { self.repeat = AnimationRepeat.Indefinite; self }
+    
+    fn to_string() -> String {
+        let rep = match self.repeat {
+            AnimationRepeat.Once => "",
+            AnimationRepeat.Count(n) => format!(" repeatCount=\"{}\"", n),
+            AnimationRepeat.Indefinite => " repeatCount=\"indefinite\""
+        }
+        format!("<animate attributeName=\"{}\" from=\"{}\" to=\"{}\" dur=\"{}s\"{}/>", 
+            self.attribute, self.from, self.to, self.duration, rep)
+    }
+}
+
+enum AnimationRepeat { Once, Count(Int), Indefinite }
+
+/// SVG Error
+enum SVGError {
+    ParseError(String),
+    InvalidElement(String),
+    IoError(String)
+}
+
+impl Display for SVGError {
+    fn fmt(f: Formatter) {
+        match self {
+            ParseError(msg) => f.write(format!("Parse error: {}", msg)),
+            InvalidElement(msg) => f.write(format!("Invalid element: {}", msg)),
+            IoError(msg) => f.write(format!("IO error: {}", msg))
+        }
+    }
+}
+
+// Tests
+test "create svg" {
+    let doc = SVG.new(100.0, 100.0)
+        .add(svg.circle(50.0, 50.0, 40.0).fill("red"))
+    let s = doc.to_string()
+    assert(s.contains("<svg"))?
+    assert(s.contains("<circle"))?
+    assert(s.contains("fill=\"red\""))?
+}
+
+test "path builder" {
+    let path = PathBuilder.new()
+        .move_to(0.0, 0.0)
+        .line_to(100.0, 0.0)
+        .line_to(100.0, 100.0)
+        .close()
+        .build()
+    assert(path.contains("M0 0"))?
+    assert(path.contains("L100 0"))?
+    assert(path.contains("Z"))?
+}
+
+test "gradient" {
+    let grad = SVGDef.LinearGradient {
+        id: "grad1".to_string(),
+        x1: 0.0, y1: 0.0, x2: 1.0, y2: 0.0,
+        stops: [
+            GradientStop { offset: 0.0, color: "red".to_string(), opacity: None },
+            GradientStop { offset: 1.0, color: "blue".to_string(), opacity: None }
+        ]
+    }
+    let s = grad.to_string()
+    assert(s.contains("linearGradient"))?
+    assert(s.contains("stop"))?
+}
+
+test "style" {
+    let style = SVGStyle.new()
+        .fill("blue")
+        .stroke("black")
+        .stroke_width(2.0)
+        .opacity(0.5)
+    let attr = style.to_attr()
+    assert(attr.contains("fill=\"blue\""))?
+    assert(attr.contains("stroke=\"black\""))?
+    assert(attr.contains("stroke-width=\"2\""))?
+}

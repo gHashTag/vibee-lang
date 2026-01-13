@@ -1,0 +1,765 @@
+// =============================================================================
+// Vibee OS — Server-Sent Events Module
+// SSE client and server implementation
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// SSE Client
+// -----------------------------------------------------------------------------
+
+/// Server-Sent Events client
+actor EventSource {
+    state url: String
+    state ready_state: ReadyState
+    state last_event_id: String
+    state reconnect_time: Duration
+    state headers: Map<String, String>
+    state on_open: Option<() -> ()>
+    state on_message: Option<(ServerEvent) -> ()>
+    state on_error: Option<(SSEError) -> ()>
+    state event_handlers: Map<String, (ServerEvent) -> ()>
+    state connection: Option<HTTPResponse>
+    state should_reconnect: Bool
+    
+    /// Create EventSource
+    fn new(url: String) -> Self {
+        EventSource {
+            url: url,
+            ready_state: .Connecting,
+            last_event_id: "",
+            reconnect_time: Duration.seconds(3),
+            headers: Map.empty(),
+            event_handlers: Map.empty(),
+            should_reconnect: true
+        }
+    }
+    
+    /// Set custom header
+    on header(name: String, value: String) -> Self {
+        self.headers.set(name, value)
+        self
+    }
+    
+    /// Set authorization
+    on auth(token: String) -> Self {
+        self.headers.set("Authorization", "Bearer \(token)")
+        self
+    }
+    
+    /// Set reconnect time
+    on reconnect_time(d: Duration) -> Self {
+        self.reconnect_time = d
+        self
+    }
+    
+    /// Disable auto-reconnect
+    on no_reconnect() -> Self {
+        self.should_reconnect = false
+        self
+    }
+    
+    /// Set open handler
+    on on_open(handler: () -> ()) -> Self {
+        self.on_open = Some(handler)
+        self
+    }
+    
+    /// Set message handler (for unnamed events)
+    on on_message(handler: (ServerEvent) -> ()) -> Self {
+        self.on_message = Some(handler)
+        self
+    }
+    
+    /// Set error handler
+    on on_error(handler: (SSEError) -> ()) -> Self {
+        self.on_error = Some(handler)
+        self
+    }
+    
+    /// Add event type handler
+    on on(event_type: String, handler: (ServerEvent) -> ()) -> Self {
+        self.event_handlers.set(event_type, handler)
+        self
+    }
+    
+    /// Connect and start receiving events
+    on connect() -> Result<(), SSEError> {
+        self.establish_connection()?
+        self.start_event_loop()
+        Ok(())
+    }
+    
+    fn establish_connection() -> Result<(), SSEError> {
+        self.ready_state = .Connecting
+        
+        var request = HTTPClient.new()
+            .get(self.url)
+            .header("Accept", "text/event-stream")
+            .header("Cache-Control", "no-cache")
+        
+        for (name, value) in self.headers {
+            request = request.header(name, value)
+        }
+        
+        if !self.last_event_id.is_empty() {
+            request = request.header("Last-Event-ID", self.last_event_id)
+        }
+        
+        let response = request.send_streaming()?
+        
+        if response.status != 200 {
+            return Err(SSEError.HTTPError(response.status))
+        }
+        
+        let content_type = response.headers.get("content-type").unwrap_or("")
+        if !content_type.contains("text/event-stream") {
+            return Err(SSEError.InvalidContentType(content_type))
+        }
+        
+        self.connection = Some(response)
+        self.ready_state = .Open
+        
+        if let handler = self.on_open {
+            handler()
+        }
+        
+        Ok(())
+    }
+    
+    fn start_event_loop() {
+        async {
+            let parser = EventParser.new()
+            
+            while self.ready_state == .Open {
+                guard let conn = self.connection else { break }
+                
+                match conn.read_chunk() {
+                    Ok(chunk) if !chunk.is_empty() => {
+                        parser.feed(chunk)
+                        
+                        while let Some(event) = parser.next_event() {
+                            self.handle_event(event)
+                        }
+                    }
+                    Ok(_) => {
+                        // Empty chunk, connection closed
+                        self.handle_disconnect()
+                    }
+                    Err(e) => {
+                        self.handle_error(SSEError.ReadError(e.message()))
+                    }
+                }
+            }
+        }
+    }
+    
+    fn handle_event(event: ServerEvent) {
+        // Update last event ID
+        if !event.id.is_empty() {
+            self.last_event_id = event.id
+        }
+        
+        // Update reconnect time if specified
+        if let retry = event.retry {
+            self.reconnect_time = Duration.millis(retry)
+        }
+        
+        // Dispatch to handler
+        if event.event.is_empty() || event.event == "message" {
+            if let handler = self.on_message {
+                handler(event)
+            }
+        } else if let handler = self.event_handlers.get(event.event) {
+            handler(event)
+        }
+    }
+    
+    fn handle_disconnect() {
+        self.ready_state = .Closed
+        self.connection = None
+        
+        if self.should_reconnect {
+            sleep(self.reconnect_time)
+            match self.establish_connection() {
+                Ok(()) => self.start_event_loop()
+                Err(e) => self.handle_error(e)
+            }
+        }
+    }
+    
+    fn handle_error(error: SSEError) {
+        if let handler = self.on_error {
+            handler(error)
+        }
+        
+        if self.should_reconnect {
+            self.handle_disconnect()
+        } else {
+            self.ready_state = .Closed
+        }
+    }
+    
+    /// Close connection
+    on close() {
+        self.should_reconnect = false
+        self.ready_state = .Closed
+        self.connection = None
+    }
+    
+    /// Get ready state
+    fn state() -> ReadyState {
+        self.ready_state
+    }
+}
+
+/// Connection ready state
+enum ReadyState {
+    Connecting  // 0
+    Open        // 1
+    Closed      // 2
+    
+    fn value() -> Int {
+        match self {
+            .Connecting => 0
+            .Open => 1
+            .Closed => 2
+        }
+    }
+}
+
+/// Server event
+struct ServerEvent {
+    id: String
+    event: String
+    data: String
+    retry: Option<Int>
+    
+    /// Parse data as JSON
+    fn json<T: Deserialize>() -> Result<T, ParseError> {
+        JSON.parse(self.data)
+    }
+    
+    /// Get data lines
+    fn lines() -> [String] {
+        self.data.lines().collect()
+    }
+}
+
+/// Event parser
+actor EventParser {
+    state buffer: String
+    state current_event: PartialEvent
+    state events: [ServerEvent]
+    
+    fn new() -> Self {
+        EventParser {
+            buffer: "",
+            current_event: PartialEvent.new(),
+            events: []
+        }
+    }
+    
+    /// Feed data to parser
+    on feed(data: String) {
+        self.buffer += data
+        self.parse_buffer()
+    }
+    
+    fn parse_buffer() {
+        while let Some(line_end) = self.buffer.find("\n") {
+            let line = self.buffer[..line_end].trim_end("\r")
+            self.buffer = self.buffer[(line_end + 1)..]
+            
+            self.process_line(line)
+        }
+    }
+    
+    fn process_line(line: String) {
+        if line.is_empty() {
+            // Empty line = dispatch event
+            if self.current_event.has_data() {
+                self.events.append(self.current_event.build())
+                self.current_event = PartialEvent.new()
+            }
+            return
+        }
+        
+        if line.starts_with(":") {
+            // Comment, ignore
+            return
+        }
+        
+        let (field, value) = if let colon = line.find(":") {
+            let f = line[..colon]
+            let v = line[(colon + 1)..].trim_start(" ")
+            (f, v)
+        } else {
+            (line, "")
+        }
+        
+        match field {
+            "event" => self.current_event.event = value
+            "data" => {
+                if !self.current_event.data.is_empty() {
+                    self.current_event.data += "\n"
+                }
+                self.current_event.data += value
+            }
+            "id" => {
+                if !value.contains("\0") {
+                    self.current_event.id = value
+                }
+            }
+            "retry" => {
+                if let ms = Int.parse(value) {
+                    self.current_event.retry = Some(ms)
+                }
+            }
+            _ => {}  // Ignore unknown fields
+        }
+    }
+    
+    /// Get next parsed event
+    fn next_event() -> Option<ServerEvent> {
+        if self.events.is_empty() {
+            None
+        } else {
+            Some(self.events.remove(0))
+        }
+    }
+}
+
+struct PartialEvent {
+    id: String
+    event: String
+    data: String
+    retry: Option<Int>
+    
+    fn new() -> Self {
+        PartialEvent {
+            id: "",
+            event: "",
+            data: "",
+            retry: None
+        }
+    }
+    
+    fn has_data() -> Bool {
+        !self.data.is_empty()
+    }
+    
+    fn build() -> ServerEvent {
+        ServerEvent {
+            id: self.id,
+            event: self.event,
+            data: self.data,
+            retry: self.retry
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// SSE Server
+// -----------------------------------------------------------------------------
+
+/// SSE server endpoint
+actor SSEServer {
+    state clients: Map<String, SSEClient>
+    state on_connect: Option<(String) -> ()>
+    state on_disconnect: Option<(String) -> ()>
+    
+    fn new() -> Self {
+        SSEServer {
+            clients: Map.empty()
+        }
+    }
+    
+    on on_connect(handler: (String) -> ()) -> Self {
+        self.on_connect = Some(handler)
+        self
+    }
+    
+    on on_disconnect(handler: (String) -> ()) -> Self {
+        self.on_disconnect = Some(handler)
+        self
+    }
+    
+    /// Handle HTTP request (returns response writer)
+    on handle(request: HTTPRequest, response: HTTPResponse) -> Result<String, SSEError> {
+        // Set SSE headers
+        response.header("Content-Type", "text/event-stream")
+        response.header("Cache-Control", "no-cache")
+        response.header("Connection", "keep-alive")
+        response.header("X-Accel-Buffering", "no")  // Disable nginx buffering
+        
+        // Get last event ID
+        let last_id = request.headers.get("Last-Event-ID").unwrap_or("")
+        
+        // Create client
+        let client_id = UUID.v4()
+        let client = SSEClient.new(client_id, response, last_id)
+        
+        self.clients.set(client_id, client)
+        
+        if let handler = self.on_connect {
+            handler(client_id)
+        }
+        
+        // Start keep-alive
+        async {
+            while self.clients.contains_key(client_id) {
+                sleep(Duration.seconds(15))
+                if let c = self.clients.get(client_id) {
+                    let _ = c.send_comment("keep-alive")
+                }
+            }
+        }
+        
+        Ok(client_id)
+    }
+    
+    /// Send event to specific client
+    on send(client_id: String, event: SSEEvent) -> Result<(), SSEError> {
+        let client = self.clients.get(client_id)
+            .ok_or(SSEError.ClientNotFound(client_id))?
+        client.send(event)
+    }
+    
+    /// Send event to all clients
+    on broadcast(event: SSEEvent) {
+        for (_, client) in self.clients {
+            let _ = client.send(event.clone())
+        }
+    }
+    
+    /// Send to clients matching predicate
+    on send_to<F: Fn(String) -> Bool>(predicate: F, event: SSEEvent) {
+        for (id, client) in self.clients {
+            if predicate(id) {
+                let _ = client.send(event.clone())
+            }
+        }
+    }
+    
+    /// Disconnect client
+    on disconnect(client_id: String) {
+        if let client = self.clients.remove(client_id) {
+            client.close()
+            if let handler = self.on_disconnect {
+                handler(client_id)
+            }
+        }
+    }
+    
+    /// Get connected client count
+    fn client_count() -> Int {
+        self.clients.len()
+    }
+    
+    /// Get all client IDs
+    fn client_ids() -> [String] {
+        self.clients.keys().collect()
+    }
+}
+
+/// SSE client connection
+actor SSEClient {
+    state id: String
+    state response: HTTPResponse
+    state last_event_id: String
+    state event_counter: Int
+    
+    fn new(id: String, response: HTTPResponse, last_id: String) -> Self {
+        SSEClient {
+            id: id,
+            response: response,
+            last_event_id: last_id,
+            event_counter: 0
+        }
+    }
+    
+    /// Send event
+    on send(event: SSEEvent) -> Result<(), SSEError> {
+        let data = event.format()
+        self.response.write(data).map_err(|e| SSEError.WriteError(e.message()))
+    }
+    
+    /// Send comment (for keep-alive)
+    on send_comment(comment: String) -> Result<(), SSEError> {
+        self.response.write(": \(comment)\n\n")
+            .map_err(|e| SSEError.WriteError(e.message()))
+    }
+    
+    /// Close connection
+    on close() {
+        let _ = self.response.close()
+    }
+    
+    /// Get last event ID
+    fn last_id() -> String {
+        self.last_event_id
+    }
+}
+
+/// SSE event to send
+struct SSEEvent {
+    id: Option<String>
+    event: Option<String>
+    data: String
+    retry: Option<Int>
+    
+    /// Create simple data event
+    fn data(content: String) -> Self {
+        SSEEvent {
+            id: None,
+            event: None,
+            data: content,
+            retry: None
+        }
+    }
+    
+    /// Create named event
+    fn named(event_type: String, data: String) -> Self {
+        SSEEvent {
+            id: None,
+            event: Some(event_type),
+            data: data,
+            retry: None
+        }
+    }
+    
+    /// Create JSON event
+    fn json<T: Serialize>(data: T) -> Self {
+        SSEEvent {
+            id: None,
+            event: None,
+            data: JSON.stringify(data),
+            retry: None
+        }
+    }
+    
+    /// Set event ID
+    fn with_id(id: String) -> Self {
+        self.id = Some(id)
+        self
+    }
+    
+    /// Set event type
+    fn with_event(event: String) -> Self {
+        self.event = Some(event)
+        self
+    }
+    
+    /// Set retry time
+    fn with_retry(ms: Int) -> Self {
+        self.retry = Some(ms)
+        self
+    }
+    
+    /// Format as SSE wire format
+    fn format() -> String {
+        var output = ""
+        
+        if let id = self.id {
+            output += "id: \(id)\n"
+        }
+        
+        if let event = self.event {
+            output += "event: \(event)\n"
+        }
+        
+        if let retry = self.retry {
+            output += "retry: \(retry)\n"
+        }
+        
+        // Data can be multi-line
+        for line in self.data.lines() {
+            output += "data: \(line)\n"
+        }
+        
+        output += "\n"
+        output
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Channel-based SSE
+// -----------------------------------------------------------------------------
+
+/// SSE channel for pub/sub style events
+actor SSEChannel {
+    state name: String
+    state clients: Map<String, SSEClient>
+    state history: [SSEEvent]
+    state history_size: Int
+    state event_counter: Int
+    
+    fn new(name: String) -> Self {
+        SSEChannel {
+            name: name,
+            clients: Map.empty(),
+            history: [],
+            history_size: 100,
+            event_counter: 0
+        }
+    }
+    
+    /// Set history size
+    on history_size(size: Int) -> Self {
+        self.history_size = size
+        self
+    }
+    
+    /// Subscribe client to channel
+    on subscribe(client: SSEClient) {
+        // Send missed events if client has last event ID
+        let last_id = client.last_id()
+        if !last_id.is_empty() {
+            if let start_idx = self.find_event_index(last_id) {
+                for event in self.history[(start_idx + 1)..] {
+                    let _ = client.send(event)
+                }
+            }
+        }
+        
+        self.clients.set(client.id, client)
+    }
+    
+    /// Unsubscribe client
+    on unsubscribe(client_id: String) {
+        self.clients.remove(client_id)
+    }
+    
+    /// Publish event to channel
+    on publish(event: SSEEvent) {
+        self.event_counter += 1
+        let event_with_id = event.with_id("\(self.event_counter)")
+        
+        // Add to history
+        self.history.append(event_with_id)
+        if self.history.len() > self.history_size {
+            self.history.remove(0)
+        }
+        
+        // Broadcast to clients
+        for (_, client) in self.clients {
+            let _ = client.send(event_with_id.clone())
+        }
+    }
+    
+    fn find_event_index(id: String) -> Option<Int> {
+        for (i, event) in self.history.enumerate() {
+            if event.id == Some(id) {
+                return Some(i)
+            }
+        }
+        None
+    }
+    
+    /// Get subscriber count
+    fn subscriber_count() -> Int {
+        self.clients.len()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// HTTP Handler Integration
+// -----------------------------------------------------------------------------
+
+/// Create SSE handler for HTTP server
+fn sse_handler(server: SSEServer) -> HTTPHandler {
+    |request, response| {
+        match server.handle(request, response) {
+            Ok(client_id) => {
+                // Keep connection open
+                // The response is now streaming
+            }
+            Err(e) => {
+                response.status(500)
+                response.body(e.message())
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum SSEError {
+    HTTPError(Int)
+    InvalidContentType(String)
+    ReadError(String)
+    WriteError(String)
+    ClientNotFound(String)
+    ConnectionClosed
+    
+    fn message() -> String {
+        match self {
+            .HTTPError(status) => "HTTP error: \(status)"
+            .InvalidContentType(ct) => "Invalid content type: \(ct)"
+            .ReadError(msg) => "Read error: \(msg)"
+            .WriteError(msg) => "Write error: \(msg)"
+            .ClientNotFound(id) => "Client not found: \(id)"
+            .ConnectionClosed => "Connection closed"
+        }
+    }
+}
+
+enum ParseError {
+    InvalidJSON(String)
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "event formatting" {
+    let event = SSEEvent.named("update", "hello world")
+        .with_id("123")
+    
+    let formatted = event.format()
+    assert(formatted.contains("id: 123"))
+    assert(formatted.contains("event: update"))
+    assert(formatted.contains("data: hello world"))
+}
+
+test "multiline data" {
+    let event = SSEEvent.data("line1\nline2\nline3")
+    let formatted = event.format()
+    
+    assert(formatted.contains("data: line1"))
+    assert(formatted.contains("data: line2"))
+    assert(formatted.contains("data: line3"))
+}
+
+test "event parser" {
+    let parser = EventParser.new()
+    
+    parser.feed("event: message\n")
+    parser.feed("data: hello\n")
+    parser.feed("\n")
+    
+    let event = parser.next_event()
+    assert(event.is_some())
+    assert(event.unwrap().event == "message")
+    assert(event.unwrap().data == "hello")
+}
+
+test "parser with id and retry" {
+    let parser = EventParser.new()
+    
+    parser.feed("id: 42\nretry: 5000\ndata: test\n\n")
+    
+    let event = parser.next_event().unwrap()
+    assert(event.id == "42")
+    assert(event.retry == Some(5000))
+    assert(event.data == "test")
+}
+
+test "json event" {
+    struct Data { value: Int }
+    
+    let event = SSEEvent.json(Data { value: 42 })
+    assert(event.data.contains("42"))
+}

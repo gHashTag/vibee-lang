@@ -1,0 +1,662 @@
+# ============================================================================
+# DISTRIBUTED CACHE - Распределённый кэш на Vibee
+# ============================================================================
+# In-memory cache, Redis-like, invalidation, pub/sub
+# ============================================================================
+
+Specification DistributedCache:
+  """Распределённый кэш как спецификация хранения."""
+
+  # ==========================================================================
+  # TYPES
+  # ==========================================================================
+
+  Type CacheConfig:
+    max_memory: ByteSize = 100.MB
+    eviction_policy: EvictionPolicy = LRU
+    default_ttl: Duration?
+    max_entries: Int?
+    persistence: PersistenceConfig?
+    cluster: ClusterConfig?
+
+  Type EvictionPolicy:
+    variants:
+      - LRU          # Least Recently Used
+      - LFU          # Least Frequently Used
+      - FIFO         # First In First Out
+      - Random
+      - TTL          # Expire by TTL only
+      - NoEviction   # Return error when full
+
+  Type PersistenceConfig:
+    enabled: Boolean = false
+    path: Path
+    sync_interval: Duration = 1.second
+    strategy: PersistenceStrategy = AOF
+
+  Type PersistenceStrategy:
+    variants:
+      - RDB: (interval: Duration)  # Snapshot
+      - AOF                         # Append-only file
+      - Both
+
+  Type ClusterConfig:
+    nodes: List<NodeAddress>
+    replication_factor: Int = 1
+    read_preference: ReadPreference = Primary
+    hash_slots: Int = 16384
+
+  Type ReadPreference:
+    variants: [Primary, PrimaryPreferred, Secondary, SecondaryPreferred, Nearest]
+
+  Type CacheEntry:
+    key: String
+    value: CacheValue
+    ttl: Duration?
+    created_at: Timestamp
+    accessed_at: Timestamp
+    access_count: Int
+    size: ByteSize
+    tags: Set<String>
+
+  Type CacheValue:
+    variants:
+      - String: String
+      - Int: Int64
+      - Float: Float64
+      - Bytes: Bytes
+      - List: List<CacheValue>
+      - Set: Set<CacheValue>
+      - Hash: Map<String, CacheValue>
+      - SortedSet: SortedSet<(Float, String)>
+      - Stream: List<StreamEntry>
+      - JSON: Any
+
+  Type StreamEntry:
+    id: StreamId
+    fields: Map<String, String>
+
+  Type StreamId:
+    timestamp: Int64
+    sequence: Int
+
+  # ==========================================================================
+  # CORE OPERATIONS
+  # ==========================================================================
+
+  Behavior CacheOperations:
+    State:
+      entries: Map<String, CacheEntry>
+      memory_used: ByteSize
+      stats: CacheStats
+
+    # String operations
+    When cache.get(key):
+      Then:
+        - entry = entries.get(key)
+        - if not entry: return null
+        - if is_expired(entry): 
+            - delete(key)
+            - return null
+        - update_access(entry)
+        - stats.hits += 1
+        - return entry.value
+
+    When cache.set(key, value, options):
+      Then:
+        - ensure_capacity(size_of(value))
+        - entry = CacheEntry(
+            key: key,
+            value: value,
+            ttl: options.ttl ?? config.default_ttl,
+            created_at: now(),
+            accessed_at: now(),
+            access_count: 0,
+            size: size_of(value),
+            tags: options.tags ?? {}
+          )
+        - entries[key] = entry
+        - memory_used += entry.size
+        - if config.persistence: append_aof("SET", key, value, options)
+        - emit CacheSet(key)
+
+    When cache.set_nx(key, value, options):
+      """Set if not exists"""
+      Then:
+        - if entries.has(key) and not is_expired(entries[key]):
+            - return false
+        - cache.set(key, value, options)
+        - return true
+
+    When cache.set_xx(key, value, options):
+      """Set if exists"""
+      Then:
+        - if not entries.has(key) or is_expired(entries[key]):
+            - return false
+        - cache.set(key, value, options)
+        - return true
+
+    When cache.get_set(key, value):
+      Then:
+        - old = cache.get(key)
+        - cache.set(key, value)
+        - return old
+
+    When cache.mget(keys):
+      Then: keys.map(k -> cache.get(k))
+
+    When cache.mset(pairs):
+      Then:
+        - for (key, value) in pairs:
+            - cache.set(key, value)
+
+    When cache.incr(key):
+      Then:
+        - entry = entries.get(key)
+        - if not entry:
+            - cache.set(key, Int(1))
+            - return 1
+        - match entry.value:
+            Int(n) ->
+              entry.value = Int(n + 1)
+              n + 1
+            _ -> raise TypeError("Value is not an integer")
+
+    When cache.incr_by(key, delta):
+      Then:
+        - entry = entries.get(key)
+        - if not entry:
+            - cache.set(key, Int(delta))
+            - return delta
+        - match entry.value:
+            Int(n) ->
+              entry.value = Int(n + delta)
+              n + delta
+            _ -> raise TypeError("Value is not an integer")
+
+    When cache.decr(key):
+      Then: cache.incr_by(key, -1)
+
+    When cache.append(key, value):
+      Then:
+        - entry = entries.get(key)
+        - if not entry:
+            - cache.set(key, String(value))
+            - return value.length
+        - match entry.value:
+            String(s) ->
+              new_value = s + value
+              entry.value = String(new_value)
+              new_value.length
+            _ -> raise TypeError("Value is not a string")
+
+    # Key operations
+    When cache.delete(key):
+      Then:
+        - entry = entries.remove(key)
+        - if entry:
+            - memory_used -= entry.size
+            - if config.persistence: append_aof("DEL", key)
+            - emit CacheDelete(key)
+            - return true
+        - return false
+
+    When cache.exists(keys):
+      Then: keys.count(k -> entries.has(k) and not is_expired(entries[k]))
+
+    When cache.expire(key, ttl):
+      Then:
+        - entry = entries.get(key)
+        - if not entry: return false
+        - entry.ttl = ttl
+        - entry.created_at = now()
+        - return true
+
+    When cache.ttl(key):
+      Then:
+        - entry = entries.get(key)
+        - if not entry: return -2
+        - if not entry.ttl: return -1
+        - remaining = entry.ttl - (now() - entry.created_at)
+        - if remaining <= 0: return -2
+        - return remaining
+
+    When cache.keys(pattern):
+      Then:
+        - entries.keys().filter(k -> matches_pattern(k, pattern))
+
+    When cache.scan(cursor, pattern, count):
+      Then:
+        - keys = entries.keys().to_list()
+        - start = cursor
+        - end = min(cursor + count, keys.size)
+        - matched = keys.slice(start, end).filter(k -> matches_pattern(k, pattern))
+        - next_cursor = if end >= keys.size then 0 else end
+        - return (next_cursor, matched)
+
+    # Hash operations
+    When cache.hget(key, field):
+      Then:
+        - entry = entries.get(key)
+        - if not entry: return null
+        - match entry.value:
+            Hash(h) -> h.get(field)
+            _ -> raise TypeError("Value is not a hash")
+
+    When cache.hset(key, field, value):
+      Then:
+        - entry = entries.get_or_create(key, CacheEntry(value: Hash({})))
+        - match entry.value:
+            Hash(h) ->
+              is_new = not h.has(field)
+              h[field] = value
+              is_new
+            _ -> raise TypeError("Value is not a hash")
+
+    When cache.hmset(key, pairs):
+      Then:
+        - for (field, value) in pairs:
+            - cache.hset(key, field, value)
+
+    When cache.hgetall(key):
+      Then:
+        - entry = entries.get(key)
+        - if not entry: return {}
+        - match entry.value:
+            Hash(h) -> h
+            _ -> raise TypeError("Value is not a hash")
+
+    When cache.hdel(key, fields):
+      Then:
+        - entry = entries.get(key)
+        - if not entry: return 0
+        - match entry.value:
+            Hash(h) -> fields.count(f -> h.remove(f) != null)
+            _ -> raise TypeError("Value is not a hash")
+
+    # List operations
+    When cache.lpush(key, values):
+      Then:
+        - entry = entries.get_or_create(key, CacheEntry(value: List([])))
+        - match entry.value:
+            List(l) ->
+              for v in values.reverse():
+                l.prepend(v)
+              l.size
+            _ -> raise TypeError("Value is not a list")
+
+    When cache.rpush(key, values):
+      Then:
+        - entry = entries.get_or_create(key, CacheEntry(value: List([])))
+        - match entry.value:
+            List(l) ->
+              for v in values:
+                l.append(v)
+              l.size
+            _ -> raise TypeError("Value is not a list")
+
+    When cache.lpop(key, count):
+      Then:
+        - entry = entries.get(key)
+        - if not entry: return null
+        - match entry.value:
+            List(l) ->
+              if count == 1:
+                l.remove_first()
+              else:
+                l.splice(0, count)
+            _ -> raise TypeError("Value is not a list")
+
+    When cache.lrange(key, start, stop):
+      Then:
+        - entry = entries.get(key)
+        - if not entry: return []
+        - match entry.value:
+            List(l) -> l.slice(start, stop + 1)
+            _ -> raise TypeError("Value is not a list")
+
+    # Set operations
+    When cache.sadd(key, members):
+      Then:
+        - entry = entries.get_or_create(key, CacheEntry(value: Set({})))
+        - match entry.value:
+            Set(s) ->
+              added = 0
+              for m in members:
+                if s.add(m): added += 1
+              added
+            _ -> raise TypeError("Value is not a set")
+
+    When cache.smembers(key):
+      Then:
+        - entry = entries.get(key)
+        - if not entry: return {}
+        - match entry.value:
+            Set(s) -> s
+            _ -> raise TypeError("Value is not a set")
+
+    When cache.sismember(key, member):
+      Then:
+        - entry = entries.get(key)
+        - if not entry: return false
+        - match entry.value:
+            Set(s) -> s.has(member)
+            _ -> raise TypeError("Value is not a set")
+
+    # Sorted set operations
+    When cache.zadd(key, members):
+      """members: List<(score, member)>"""
+      Then:
+        - entry = entries.get_or_create(key, CacheEntry(value: SortedSet([])))
+        - match entry.value:
+            SortedSet(ss) ->
+              added = 0
+              for (score, member) in members:
+                if ss.add(score, member): added += 1
+              added
+            _ -> raise TypeError("Value is not a sorted set")
+
+    When cache.zrange(key, start, stop, with_scores):
+      Then:
+        - entry = entries.get(key)
+        - if not entry: return []
+        - match entry.value:
+            SortedSet(ss) ->
+              range = ss.range(start, stop)
+              if with_scores: range else range.map(r -> r.member)
+            _ -> raise TypeError("Value is not a sorted set")
+
+    When cache.zrank(key, member):
+      Then:
+        - entry = entries.get(key)
+        - if not entry: return null
+        - match entry.value:
+            SortedSet(ss) -> ss.rank(member)
+            _ -> raise TypeError("Value is not a sorted set")
+
+  # ==========================================================================
+  # EVICTION
+  # ==========================================================================
+
+  Behavior Eviction:
+    When ensure_capacity(needed):
+      Then:
+        - while memory_used + needed > config.max_memory:
+            - match config.eviction_policy:
+                LRU -> evict_lru()
+                LFU -> evict_lfu()
+                FIFO -> evict_fifo()
+                Random -> evict_random()
+                TTL -> evict_expired()
+                NoEviction -> raise OutOfMemoryError
+
+    When evict_lru():
+      Then:
+        - oldest = entries.values().min_by(e -> e.accessed_at)
+        - cache.delete(oldest.key)
+        - stats.evictions += 1
+
+    When evict_lfu():
+      Then:
+        - least_used = entries.values().min_by(e -> e.access_count)
+        - cache.delete(least_used.key)
+        - stats.evictions += 1
+
+    When evict_fifo():
+      Then:
+        - oldest = entries.values().min_by(e -> e.created_at)
+        - cache.delete(oldest.key)
+        - stats.evictions += 1
+
+    When evict_random():
+      Then:
+        - key = entries.keys().random()
+        - cache.delete(key)
+        - stats.evictions += 1
+
+    When evict_expired():
+      Then:
+        - expired = entries.values().filter(e -> is_expired(e))
+        - for entry in expired:
+            - cache.delete(entry.key)
+        - stats.evictions += expired.size
+
+  # ==========================================================================
+  # INVALIDATION
+  # ==========================================================================
+
+  Behavior Invalidation:
+    State:
+      tags_index: Map<String, Set<String>>  # tag -> keys
+      patterns_index: Map<String, Set<String>>  # pattern -> keys
+
+    When cache.tag(key, tags):
+      Then:
+        - entry = entries.get(key)
+        - if entry:
+            - entry.tags = entry.tags.union(tags)
+            - for tag in tags:
+                - tags_index.get_or_create(tag, Set()).add(key)
+
+    When cache.invalidate_by_tag(tag):
+      Then:
+        - keys = tags_index.get(tag) ?? Set()
+        - for key in keys:
+            - cache.delete(key)
+        - tags_index.remove(tag)
+        - emit TagInvalidated(tag, keys.size)
+
+    When cache.invalidate_by_tags(tags):
+      Then:
+        - for tag in tags:
+            - cache.invalidate_by_tag(tag)
+
+    When cache.invalidate_by_pattern(pattern):
+      Then:
+        - keys = cache.keys(pattern)
+        - for key in keys:
+            - cache.delete(key)
+        - emit PatternInvalidated(pattern, keys.size)
+
+    When cache.invalidate_all():
+      Then:
+        - count = entries.size
+        - entries.clear()
+        - tags_index.clear()
+        - memory_used = 0
+        - emit CacheCleared(count)
+
+  # ==========================================================================
+  # PUB/SUB
+  # ==========================================================================
+
+  Behavior PubSub:
+    State:
+      channels: Map<String, Set<Subscriber>>
+      patterns: Map<String, Set<Subscriber>>
+
+    When cache.subscribe(channel, callback):
+      Then:
+        - subscriber = Subscriber(generate_id(), callback)
+        - channels.get_or_create(channel, Set()).add(subscriber)
+        - return () -> channels.get(channel).remove(subscriber)
+
+    When cache.psubscribe(pattern, callback):
+      Then:
+        - subscriber = Subscriber(generate_id(), callback)
+        - patterns.get_or_create(pattern, Set()).add(subscriber)
+        - return () -> patterns.get(pattern).remove(subscriber)
+
+    When cache.publish(channel, message):
+      Then:
+        - count = 0
+        - # Direct subscribers
+        - for subscriber in channels.get(channel) ?? []:
+            - subscriber.callback(channel, message)
+            - count += 1
+        - # Pattern subscribers
+        - for (pattern, subscribers) in patterns:
+            - if matches_pattern(channel, pattern):
+                - for subscriber in subscribers:
+                    - subscriber.callback(channel, message)
+                    - count += 1
+        - return count
+
+  # ==========================================================================
+  # DISTRIBUTED
+  # ==========================================================================
+
+  Behavior DistributedOperations:
+    State:
+      nodes: Map<NodeId, NodeConnection>
+      hash_ring: ConsistentHashRing
+      local_slots: Set<Int>
+
+    When get_node_for_key(key):
+      Then:
+        - slot = crc16(key) % config.cluster.hash_slots
+        - return hash_ring.get_node(slot)
+
+    When distributed_get(key):
+      Then:
+        - node = get_node_for_key(key)
+        - if node == self:
+            - return cache.get(key)
+        - return await nodes[node].get(key)
+
+    When distributed_set(key, value, options):
+      Then:
+        - node = get_node_for_key(key)
+        - if node == self:
+            - cache.set(key, value, options)
+            - # Replicate to replicas
+            - for replica in get_replicas(key):
+                - spawn nodes[replica].replicate_set(key, value, options)
+        - else:
+            - await nodes[node].set(key, value, options)
+
+    When handle_node_failure(failed_node):
+      Then:
+        - # Promote replicas
+        - for slot in failed_node.slots:
+            - replica = get_replica_for_slot(slot)
+            - promote_to_primary(replica, slot)
+        - # Rebalance
+        - rebalance_slots()
+
+  # ==========================================================================
+  # CACHE ASIDE PATTERN
+  # ==========================================================================
+
+  Behavior CacheAside:
+    When cache.get_or_set(key, loader, options):
+      Then:
+        - value = cache.get(key)
+        - if value != null:
+            - return value
+        - value = await loader()
+        - cache.set(key, value, options)
+        - return value
+
+    When cache.get_or_set_many(keys, loader, options):
+      Then:
+        - result = {}
+        - missing = []
+        - for key in keys:
+            - value = cache.get(key)
+            - if value != null:
+                - result[key] = value
+            - else:
+                - missing.push(key)
+        - if missing.is_not_empty():
+            - loaded = await loader(missing)
+            - for (key, value) in loaded:
+                - cache.set(key, value, options)
+                - result[key] = value
+        - return result
+
+    When cache.refresh(key, loader, options):
+      Then:
+        - value = await loader()
+        - cache.set(key, value, options)
+        - return value
+
+  # ==========================================================================
+  # EVENTS
+  # ==========================================================================
+
+  Events:
+    CacheSet:
+      key: String
+      size: ByteSize
+
+    CacheDelete:
+      key: String
+
+    CacheHit:
+      key: String
+
+    CacheMiss:
+      key: String
+
+    TagInvalidated:
+      tag: String
+      keys_count: Int
+
+    PatternInvalidated:
+      pattern: String
+      keys_count: Int
+
+    CacheCleared:
+      entries_count: Int
+
+    EvictionTriggered:
+      policy: EvictionPolicy
+      freed: ByteSize
+
+  # ==========================================================================
+  # EXAMPLE
+  # ==========================================================================
+
+  Example "Cache Usage":
+    ```vibee
+    cache = DistributedCache(CacheConfig(
+      max_memory: 1.GB,
+      eviction_policy: LRU,
+      default_ttl: 1.hour,
+      cluster: ClusterConfig(
+        nodes: ["cache1:6379", "cache2:6379", "cache3:6379"],
+        replication_factor: 2
+      )
+    ))
+
+    # Basic operations
+    await cache.set("user:123", JSON({ name: "John", age: 30 }), ttl: 30.minutes)
+    user = await cache.get("user:123")
+
+    # Cache-aside pattern
+    user = await cache.get_or_set("user:123", 
+      () -> UserRepository.find(123),
+      ttl: 1.hour,
+      tags: ["users", "user:123"]
+    )
+
+    # Invalidation
+    await cache.invalidate_by_tag("users")
+    await cache.invalidate_by_pattern("user:*")
+
+    # Pub/Sub
+    cache.subscribe("notifications", (channel, message) ->
+      log.info("Received: ${message}")
+    )
+    await cache.publish("notifications", "Hello!")
+
+    # Hash operations
+    await cache.hset("session:abc", "user_id", "123")
+    await cache.hset("session:abc", "expires", now() + 1.hour)
+    session = await cache.hgetall("session:abc")
+
+    # Sorted set for leaderboard
+    await cache.zadd("leaderboard", [(100, "player1"), (200, "player2"), (150, "player3")])
+    top_players = await cache.zrange("leaderboard", 0, 9, with_scores: true)
+    ```

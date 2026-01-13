@@ -1,0 +1,774 @@
+// =============================================================================
+// Vibee OS — Consensus Module
+// Blockchain consensus algorithms
+// =============================================================================
+
+// =============================================================================
+// Consensus Trait
+// =============================================================================
+
+/// Base trait for consensus algorithms
+trait Consensus {
+    type Block
+    type Vote
+    type State
+    
+    fn validate_block(block: Self.Block, state: Self.State) -> Result<Bool, ConsensusError>
+    fn process_vote(vote: Self.Vote, state: Self.State) -> Result<Self.State, ConsensusError>
+    fn is_finalized(block: Self.Block, state: Self.State) -> Bool
+    fn select_proposer(state: Self.State) -> Address
+}
+
+// =============================================================================
+// Proof of Work (PoW)
+// =============================================================================
+
+/// Proof of Work consensus
+struct ProofOfWork {
+    difficulty: UInt256
+    target: UInt256
+    block_time: UInt64  // Target block time in seconds
+    adjustment_interval: UInt64  // Blocks between difficulty adjustments
+    
+    fn new(initial_difficulty: UInt256) -> Self {
+        let target = UInt256.max() / initial_difficulty
+        ProofOfWork {
+            difficulty: initial_difficulty,
+            target: target,
+            block_time: 600,  // 10 minutes (Bitcoin)
+            adjustment_interval: 2016
+        }
+    }
+    
+    fn with_block_time(time: UInt64) -> Self {
+        self.block_time = time
+        self
+    }
+    
+    fn with_adjustment_interval(interval: UInt64) -> Self {
+        self.adjustment_interval = interval
+        self
+    }
+    
+    /// Validate block meets difficulty target
+    fn validate(block: PowBlock) -> Bool {
+        let hash = block.hash()
+        let hash_value = UInt256.from_be_bytes(hash)
+        hash_value <= self.target
+    }
+    
+    /// Mine block (find valid nonce)
+    fn mine(block: PowBlock) -> PowBlock {
+        var nonce = 0u64
+        loop {
+            let candidate = PowBlock { nonce: nonce, ..block }
+            if self.validate(candidate) {
+                return candidate
+            }
+            nonce += 1
+        }
+    }
+    
+    /// Mine with callback for progress
+    fn mine_with_callback(block: PowBlock, callback: fn(UInt64)) -> PowBlock {
+        var nonce = 0u64
+        loop {
+            let candidate = PowBlock { nonce: nonce, ..block }
+            if self.validate(candidate) {
+                return candidate
+            }
+            nonce += 1
+            if nonce % 100000 == 0 {
+                callback(nonce)
+            }
+        }
+    }
+    
+    /// Adjust difficulty based on actual vs target time
+    fn adjust_difficulty(blocks: [PowBlock]) -> UInt256 {
+        if blocks.len() < 2 { return self.difficulty }
+        
+        let actual_time = blocks.last().unwrap().timestamp - blocks.first().unwrap().timestamp
+        let expected_time = self.block_time * (blocks.len() - 1) as UInt64
+        
+        // Limit adjustment to 4x in either direction
+        let ratio = if actual_time < expected_time / 4 {
+            4
+        } else if actual_time > expected_time * 4 {
+            1 / 4
+        } else {
+            expected_time / actual_time
+        }
+        
+        self.difficulty * UInt256.from(ratio)
+    }
+    
+    /// Calculate hash rate from recent blocks
+    fn hash_rate(blocks: [PowBlock]) -> UInt256 {
+        if blocks.len() < 2 { return UInt256.zero() }
+        
+        let time_span = blocks.last().unwrap().timestamp - blocks.first().unwrap().timestamp
+        if time_span == 0 { return UInt256.zero() }
+        
+        self.difficulty * UInt256.from(blocks.len() - 1) / UInt256.from(time_span)
+    }
+}
+
+/// Proof of Work block
+struct PowBlock {
+    version: UInt32
+    prev_hash: [UInt8; 32]
+    merkle_root: [UInt8; 32]
+    timestamp: UInt64
+    difficulty: UInt256
+    nonce: UInt64
+    transactions: [Transaction]
+    
+    fn hash() -> [UInt8; 32] {
+        let header = self.header_bytes()
+        crypto.sha256(crypto.sha256(header))
+    }
+    
+    fn header_bytes() -> [UInt8] {
+        var data = []
+        data.extend(self.version.to_le_bytes())
+        data.extend(self.prev_hash)
+        data.extend(self.merkle_root)
+        data.extend(self.timestamp.to_le_bytes())
+        data.extend(self.difficulty.to_be_bytes())
+        data.extend(self.nonce.to_le_bytes())
+        data
+    }
+}
+
+// =============================================================================
+// Proof of Stake (PoS)
+// =============================================================================
+
+/// Proof of Stake consensus
+struct ProofOfStake {
+    validators: Map<Address, Validator>
+    total_stake: UInt256
+    min_stake: UInt256
+    epoch_length: UInt64
+    slash_fraction: UInt256  // Fraction of stake to slash (in basis points)
+    
+    fn new(min_stake: UInt256) -> Self {
+        ProofOfStake {
+            validators: Map.empty(),
+            total_stake: UInt256.zero(),
+            min_stake: min_stake,
+            epoch_length: 32,
+            slash_fraction: UInt256.from(1000)  // 10%
+        }
+    }
+    
+    /// Register new validator
+    fn register(address: Address, stake: UInt256, pubkey: PublicKey) -> Result<(), ConsensusError> {
+        if stake < self.min_stake {
+            return Err(ConsensusError.InsufficientStake)
+        }
+        
+        let validator = Validator {
+            address: address,
+            stake: stake,
+            pubkey: pubkey,
+            active: true,
+            slashed: false,
+            exit_epoch: None
+        }
+        
+        self.validators.set(address, validator)
+        self.total_stake += stake
+        Ok(())
+    }
+    
+    /// Unregister validator (initiate exit)
+    fn unregister(address: Address, current_epoch: UInt64) -> Result<(), ConsensusError> {
+        let validator = self.validators.get_mut(address)
+            .ok_or(ConsensusError.ValidatorNotFound)?
+        
+        validator.exit_epoch = Some(current_epoch + 4)  // Exit delay
+        validator.active = false
+        Ok(())
+    }
+    
+    /// Select proposer for slot
+    fn select_proposer(slot: UInt64, seed: [UInt8; 32]) -> Address {
+        let active_validators: Vec<_> = self.validators.values()
+            .filter(|v| v.active && !v.slashed)
+            .collect()
+        
+        if active_validators.is_empty() {
+            return Address.zero()
+        }
+        
+        // Weighted random selection based on stake
+        let mut hash_input = seed.to_vec()
+        hash_input.extend(slot.to_le_bytes())
+        let random = UInt256.from_be_bytes(crypto.keccak256(hash_input))
+        
+        let selection = random % self.total_stake
+        var cumulative = UInt256.zero()
+        
+        for validator in active_validators {
+            cumulative += validator.stake
+            if cumulative > selection {
+                return validator.address
+            }
+        }
+        
+        active_validators.last().unwrap().address
+    }
+    
+    /// Slash validator for misbehavior
+    fn slash(address: Address, evidence: SlashingEvidence) -> Result<UInt256, ConsensusError> {
+        let validator = self.validators.get_mut(address)
+            .ok_or(ConsensusError.ValidatorNotFound)?
+        
+        if validator.slashed {
+            return Err(ConsensusError.AlreadySlashed)
+        }
+        
+        let slash_amount = validator.stake * self.slash_fraction / UInt256.from(10000)
+        validator.stake -= slash_amount
+        validator.slashed = true
+        validator.active = false
+        self.total_stake -= slash_amount
+        
+        Ok(slash_amount)
+    }
+    
+    /// Get validator by address
+    fn get_validator(address: Address) -> Option<Validator> {
+        self.validators.get(address).cloned()
+    }
+    
+    /// Get active validator count
+    fn active_count() -> Int {
+        self.validators.values().filter(|v| v.active && !v.slashed).count()
+    }
+}
+
+/// Validator info
+struct Validator {
+    address: Address
+    stake: UInt256
+    pubkey: PublicKey
+    active: Bool
+    slashed: Bool
+    exit_epoch: Option<UInt64>
+}
+
+/// Slashing evidence
+enum SlashingEvidence {
+    DoubleVote { vote1: Vote, vote2: Vote }
+    SurroundVote { vote1: Vote, vote2: Vote }
+    InvalidBlock { block: PosBlock }
+}
+
+/// Proof of Stake block
+struct PosBlock {
+    slot: UInt64
+    proposer: Address
+    parent_hash: [UInt8; 32]
+    state_root: [UInt8; 32]
+    body: BlockBody
+    signature: Signature
+    
+    fn hash() -> [UInt8; 32] {
+        crypto.keccak256(self.encode())
+    }
+    
+    fn encode() -> [UInt8] {
+        var data = []
+        data.extend(self.slot.to_le_bytes())
+        data.extend(self.proposer.bytes)
+        data.extend(self.parent_hash)
+        data.extend(self.state_root)
+        data.extend(self.body.encode())
+        data
+    }
+    
+    fn verify_signature(pubkey: PublicKey) -> Bool {
+        let hash = self.hash()
+        pubkey.verify(hash, self.signature)
+    }
+}
+
+struct BlockBody {
+    transactions: [Transaction]
+    attestations: [Attestation]
+    
+    fn encode() -> [UInt8] {
+        var data = []
+        for tx in self.transactions {
+            data.extend(tx.encode())
+        }
+        for att in self.attestations {
+            data.extend(att.encode())
+        }
+        data
+    }
+}
+
+// =============================================================================
+// BFT Consensus (PBFT-style)
+// =============================================================================
+
+/// Practical Byzantine Fault Tolerance
+struct PBFT {
+    nodes: [Address]
+    view: UInt64
+    sequence: UInt64
+    prepared: Map<[UInt8; 32], Set<Address>>
+    committed: Map<[UInt8; 32], Set<Address>>
+    
+    fn new(nodes: [Address]) -> Self {
+        PBFT {
+            nodes: nodes,
+            view: 0,
+            sequence: 0,
+            prepared: Map.empty(),
+            committed: Map.empty()
+        }
+    }
+    
+    /// Get current primary
+    fn primary() -> Address {
+        self.nodes[(self.view % self.nodes.len() as UInt64) as Int]
+    }
+    
+    /// Required votes for quorum (2f + 1)
+    fn quorum() -> Int {
+        (self.nodes.len() * 2 / 3) + 1
+    }
+    
+    /// Maximum faulty nodes (f)
+    fn max_faulty() -> Int {
+        (self.nodes.len() - 1) / 3
+    }
+    
+    /// Process pre-prepare message
+    fn pre_prepare(msg: PrePrepare) -> Result<Prepare, ConsensusError> {
+        if msg.view != self.view {
+            return Err(ConsensusError.InvalidView)
+        }
+        if msg.sequence != self.sequence + 1 {
+            return Err(ConsensusError.InvalidSequence)
+        }
+        
+        // Verify from primary
+        if msg.sender != self.primary() {
+            return Err(ConsensusError.NotPrimary)
+        }
+        
+        self.sequence = msg.sequence
+        
+        Ok(Prepare {
+            view: self.view,
+            sequence: msg.sequence,
+            digest: msg.digest,
+            sender: Address.zero()  // Will be set by caller
+        })
+    }
+    
+    /// Process prepare message
+    fn prepare(msg: Prepare) -> Option<Commit> {
+        if msg.view != self.view || msg.sequence != self.sequence {
+            return None
+        }
+        
+        let prepared = self.prepared.entry(msg.digest).or_insert(Set.empty())
+        prepared.insert(msg.sender)
+        
+        if prepared.len() >= self.quorum() {
+            Some(Commit {
+                view: self.view,
+                sequence: msg.sequence,
+                digest: msg.digest,
+                sender: Address.zero()
+            })
+        } else {
+            None
+        }
+    }
+    
+    /// Process commit message
+    fn commit(msg: Commit) -> Bool {
+        if msg.view != self.view || msg.sequence != self.sequence {
+            return false
+        }
+        
+        let committed = self.committed.entry(msg.digest).or_insert(Set.empty())
+        committed.insert(msg.sender)
+        
+        committed.len() >= self.quorum()
+    }
+    
+    /// Initiate view change
+    fn view_change() -> ViewChange {
+        ViewChange {
+            new_view: self.view + 1,
+            sequence: self.sequence,
+            sender: Address.zero()
+        }
+    }
+    
+    /// Process view change
+    fn process_view_change(msg: ViewChange) -> Bool {
+        if msg.new_view <= self.view {
+            return false
+        }
+        
+        self.view = msg.new_view
+        self.prepared.clear()
+        self.committed.clear()
+        true
+    }
+}
+
+/// PBFT messages
+struct PrePrepare {
+    view: UInt64
+    sequence: UInt64
+    digest: [UInt8; 32]
+    sender: Address
+    request: [UInt8]
+}
+
+struct Prepare {
+    view: UInt64
+    sequence: UInt64
+    digest: [UInt8; 32]
+    sender: Address
+}
+
+struct Commit {
+    view: UInt64
+    sequence: UInt64
+    digest: [UInt8; 32]
+    sender: Address
+}
+
+struct ViewChange {
+    new_view: UInt64
+    sequence: UInt64
+    sender: Address
+}
+
+// =============================================================================
+// Tendermint-style Consensus
+// =============================================================================
+
+/// Tendermint BFT consensus
+struct Tendermint {
+    validators: [ValidatorInfo]
+    height: UInt64
+    round: UInt32
+    step: TendermintStep
+    locked_value: Option<[UInt8; 32]>
+    locked_round: Option<UInt32>
+    valid_value: Option<[UInt8; 32]>
+    valid_round: Option<UInt32>
+    
+    fn new(validators: [ValidatorInfo]) -> Self {
+        Tendermint {
+            validators: validators,
+            height: 0,
+            round: 0,
+            step: TendermintStep.Propose,
+            locked_value: None,
+            locked_round: None,
+            valid_value: None,
+            valid_round: None
+        }
+    }
+    
+    /// Get proposer for current round
+    fn proposer() -> Address {
+        let index = ((self.height + self.round as UInt64) % self.validators.len() as UInt64) as Int
+        self.validators[index].address
+    }
+    
+    /// Total voting power
+    fn total_power() -> UInt64 {
+        self.validators.iter().map(|v| v.voting_power).sum()
+    }
+    
+    /// Required voting power for quorum (2/3+)
+    fn quorum_power() -> UInt64 {
+        self.total_power() * 2 / 3 + 1
+    }
+    
+    /// Process proposal
+    fn on_proposal(proposal: Proposal) -> Option<Prevote> {
+        if proposal.height != self.height || proposal.round != self.round {
+            return None
+        }
+        if self.step != TendermintStep.Propose {
+            return None
+        }
+        
+        self.step = TendermintStep.Prevote
+        
+        // Vote for proposal if valid and not locked on different value
+        let vote_value = if self.locked_value.is_none() || self.locked_value == Some(proposal.block_hash) {
+            Some(proposal.block_hash)
+        } else {
+            None
+        }
+        
+        Some(Prevote {
+            height: self.height,
+            round: self.round,
+            block_hash: vote_value,
+            validator: Address.zero()
+        })
+    }
+    
+    /// Process prevote
+    fn on_prevote(prevote: Prevote, votes: [Prevote]) -> Option<Precommit> {
+        if prevote.height != self.height || prevote.round != self.round {
+            return None
+        }
+        if self.step != TendermintStep.Prevote {
+            return None
+        }
+        
+        // Check for 2/3+ prevotes for a value
+        let power_for_value = self.count_voting_power(votes.iter()
+            .filter(|v| v.block_hash == prevote.block_hash)
+            .map(|v| v.validator)
+            .collect())
+        
+        if power_for_value >= self.quorum_power() {
+            self.step = TendermintStep.Precommit
+            
+            if let Some(hash) = prevote.block_hash {
+                self.valid_value = Some(hash)
+                self.valid_round = Some(self.round)
+                
+                if self.locked_value.is_none() {
+                    self.locked_value = Some(hash)
+                    self.locked_round = Some(self.round)
+                }
+            }
+            
+            Some(Precommit {
+                height: self.height,
+                round: self.round,
+                block_hash: prevote.block_hash,
+                validator: Address.zero()
+            })
+        } else {
+            None
+        }
+    }
+    
+    /// Process precommit
+    fn on_precommit(precommit: Precommit, votes: [Precommit]) -> Option<Decision> {
+        if precommit.height != self.height || precommit.round != self.round {
+            return None
+        }
+        
+        // Check for 2/3+ precommits for a value
+        let power_for_value = self.count_voting_power(votes.iter()
+            .filter(|v| v.block_hash == precommit.block_hash)
+            .map(|v| v.validator)
+            .collect())
+        
+        if power_for_value >= self.quorum_power() {
+            if let Some(hash) = precommit.block_hash {
+                self.height += 1
+                self.round = 0
+                self.step = TendermintStep.Propose
+                self.locked_value = None
+                self.locked_round = None
+                self.valid_value = None
+                self.valid_round = None
+                
+                return Some(Decision { height: self.height - 1, block_hash: hash })
+            }
+        }
+        
+        None
+    }
+    
+    /// Move to next round
+    fn next_round() {
+        self.round += 1
+        self.step = TendermintStep.Propose
+    }
+    
+    fn count_voting_power(validators: [Address]) -> UInt64 {
+        validators.iter()
+            .filter_map(|addr| self.validators.iter().find(|v| v.address == *addr))
+            .map(|v| v.voting_power)
+            .sum()
+    }
+}
+
+struct ValidatorInfo {
+    address: Address
+    voting_power: UInt64
+    pubkey: PublicKey
+}
+
+enum TendermintStep {
+    Propose
+    Prevote
+    Precommit
+}
+
+struct Proposal {
+    height: UInt64
+    round: UInt32
+    block_hash: [UInt8; 32]
+    pol_round: Option<UInt32>  // Proof of lock round
+    proposer: Address
+    signature: Signature
+}
+
+struct Prevote {
+    height: UInt64
+    round: UInt32
+    block_hash: Option<[UInt8; 32]>
+    validator: Address
+}
+
+struct Precommit {
+    height: UInt64
+    round: UInt32
+    block_hash: Option<[UInt8; 32]>
+    validator: Address
+}
+
+struct Decision {
+    height: UInt64
+    block_hash: [UInt8; 32]
+}
+
+// =============================================================================
+// Attestation (for PoS)
+// =============================================================================
+
+struct Attestation {
+    slot: UInt64
+    beacon_block_root: [UInt8; 32]
+    source: Checkpoint
+    target: Checkpoint
+    aggregation_bits: [UInt8]
+    signature: Signature
+    
+    fn encode() -> [UInt8] {
+        var data = []
+        data.extend(self.slot.to_le_bytes())
+        data.extend(self.beacon_block_root)
+        data.extend(self.source.encode())
+        data.extend(self.target.encode())
+        data.extend(self.aggregation_bits)
+        data
+    }
+}
+
+struct Checkpoint {
+    epoch: UInt64
+    root: [UInt8; 32]
+    
+    fn encode() -> [UInt8] {
+        var data = self.epoch.to_le_bytes().to_vec()
+        data.extend(self.root)
+        data
+    }
+}
+
+struct Vote {
+    validator: Address
+    slot: UInt64
+    block_hash: [UInt8; 32]
+    signature: Signature
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum ConsensusError {
+    InsufficientStake
+    ValidatorNotFound
+    AlreadySlashed
+    InvalidView
+    InvalidSequence
+    NotPrimary
+    InvalidSignature
+    InvalidBlock
+    Timeout
+}
+
+impl Display for ConsensusError {
+    fn fmt(f: Formatter) {
+        match self {
+            InsufficientStake => f.write("Insufficient stake")
+            ValidatorNotFound => f.write("Validator not found")
+            AlreadySlashed => f.write("Already slashed")
+            InvalidView => f.write("Invalid view")
+            InvalidSequence => f.write("Invalid sequence")
+            NotPrimary => f.write("Not primary")
+            InvalidSignature => f.write("Invalid signature")
+            InvalidBlock => f.write("Invalid block")
+            Timeout => f.write("Timeout")
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "pow difficulty" {
+    let pow = ProofOfWork.new(UInt256.from(1000))
+    assert(pow.target > UInt256.zero())?
+}
+
+test "pos validator registration" {
+    var pos = ProofOfStake.new(UInt256.from(32_000_000_000_000_000_000u128))
+    let addr = Address.from_hex("0x1234567890123456789012345678901234567890")?
+    let pk = PrivateKey.generate().public_key()
+    pos.register(addr, UInt256.from(32_000_000_000_000_000_000u128), pk)?
+    assert_eq(pos.active_count(), 1)?
+}
+
+test "pbft quorum" {
+    let nodes = [
+        Address.from_hex("0x1111111111111111111111111111111111111111")?,
+        Address.from_hex("0x2222222222222222222222222222222222222222")?,
+        Address.from_hex("0x3333333333333333333333333333333333333333")?,
+        Address.from_hex("0x4444444444444444444444444444444444444444")?
+    ]
+    let pbft = PBFT.new(nodes)
+    assert_eq(pbft.quorum(), 3)?  // 2f + 1 where f = 1
+    assert_eq(pbft.max_faulty(), 1)?
+}
+
+test "tendermint proposer rotation" {
+    let validators = [
+        ValidatorInfo { address: Address.zero(), voting_power: 100, pubkey: PrivateKey.generate().public_key() }
+    ]
+    let tm = Tendermint.new(validators)
+    assert_eq(tm.proposer(), Address.zero())?
+}
+
+test "pow block hash" {
+    let block = PowBlock {
+        version: 1,
+        prev_hash: [0u8; 32],
+        merkle_root: [0u8; 32],
+        timestamp: 0,
+        difficulty: UInt256.from(1),
+        nonce: 0,
+        transactions: []
+    }
+    let hash = block.hash()
+    assert_eq(hash.len(), 32)?
+}
