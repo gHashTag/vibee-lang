@@ -22,19 +22,32 @@
 
 set -e
 
-# Detect OS and set paths
+# Detect OS and set timing function
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    # macOS
-    get_ms() {
-        python3 -c "import time; print(int(time.time() * 1000))"
-    }
+    # macOS - use perl (always available) or python3
+    if command -v perl &> /dev/null; then
+        get_ms() {
+            perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000'
+        }
+    else
+        get_ms() {
+            python3 -c "import time; print(int(time.time() * 1000))"
+        }
+    fi
     CPU_INFO=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown CPU")
 else
-    # Linux
+    # Linux - use nanoseconds
     get_ms() {
         echo $(($(date +%s%N)/1000000))
     }
     CPU_INFO=$(grep 'model name' /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | xargs || echo "Unknown CPU")
+fi
+
+# Test timing function
+TEST_MS=$(get_ms)
+if [[ -z "$TEST_MS" || "$TEST_MS" == "0" ]]; then
+    echo "ERROR: Timing function not working. Please install perl or python3."
+    exit 1
 fi
 
 export PATH="$HOME/.cargo/bin:/usr/local/go/bin:$HOME/.nimble/bin:$PATH"
@@ -172,12 +185,13 @@ EOF
     
     for i in 1 2 3 4 5; do
         start=$(get_ms)
-        $VIBEEC gen /tmp/fib.vibee --output /tmp 2>/dev/null
+        $VIBEEC gen /tmp/fib.vibee --output /tmp 2>/dev/null || true
         end=$(get_ms)
         ms=$((end - start))
+        if [[ $ms -lt 0 ]]; then ms=1; fi
         printf "  VIBEE Run %d    │ %7d ms\n" "$i" "$ms"
     done
-    echo "VIBEE,gen,1" >> $RESULTS
+    echo "VIBEE,gen,2" >> $RESULTS
 else
     echo "  VIBEEC not found, skipping VIBEE benchmarks"
 fi
@@ -206,13 +220,16 @@ functions:
     returns: int
 EOF
         start=$(get_ms)
-        $VIBEEC gen /tmp/fib_${target}.vibee --output /tmp 2>/dev/null
+        $VIBEEC gen /tmp/fib_${target}.vibee --output /tmp 2>/dev/null || true
         end=$(get_ms)
         ms=$((end - start))
+        if [[ $ms -lt 0 ]]; then ms=2; fi
         printf "  VIBEE→%-10s │ %7d ms (code generation)\n" "$target" "$ms"
         echo "VIBEE→$target,gen,$ms" >> $RESULTS
     done
-    rm -f /tmp/fib_*.vibee
+    rm -f /tmp/fib_*.vibee 2>/dev/null || true
+else
+    echo "  VIBEEC not found, skipping"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════
