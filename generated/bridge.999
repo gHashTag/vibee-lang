@@ -1,0 +1,175 @@
+// ═══════════════════════════════════════════════════════════════
+// BRIDGE.999 - The Universal Bridge
+// Connects .999 modules to runtime.html
+// THIS IS THE ONLY INTERFACE TO RUNTIME
+// ═══════════════════════════════════════════════════════════════
+
+module bridge
+
+import pattern { TAU, PI, PHI, Pattern999 }
+import sensors { Sensors }
+import neural { Neural999 }
+
+// ═══════════════════════════════════════════════════════════════
+// CONSTANTS: n × 3^k × π^m
+// ═══════════════════════════════════════════════════════════════
+
+const TAU := 6.283185307179586
+const PI := 3.141592653589793
+const PHI := 1.618033988749895
+
+// Sacred 999 pattern
+fn pattern999(n: int, k: int, m: int) -> float :=
+  n * pow(3, k) * pow(PI, m)
+
+// ═══════════════════════════════════════════════════════════════
+// BRIDGE ATOM - Central Controller
+// ═══════════════════════════════════════════════════════════════
+
+atom Bridge {
+  state := {
+    modules: [],
+    sensors: null,
+    neural: null,
+    canvas: null,
+    ctx: null,
+    time: 0,
+    ready: false
+  }
+  
+  // Initialize bridge with canvas context
+  on :init(canvas, ctx) ->
+    state.canvas = canvas
+    state.ctx = ctx
+    state.sensors = spawn(Sensors)
+    state.neural = spawn(Neural999)
+    state.ready = true
+    log("Bridge initialized")
+  
+  // Register a .999 module
+  on :register(module) ->
+    state.modules = state.modules ++ [module]
+    log("Module registered: " ++ module.name)
+  
+  // Main update tick
+  on :tick(dt) ->
+    state.time = state.time + dt
+    
+    // Update sensors
+    sensor_data := state.sensors ! :read()
+    
+    // Feed to neural network
+    neural_output := state.neural ! :process(sensor_data, state.time)
+    
+    // Broadcast to all modules
+    for module in state.modules {
+      module ! :update(dt, sensor_data, neural_output)
+    }
+  
+  // Render all modules
+  on :render() ->
+    ctx := state.ctx
+    W := state.canvas.width
+    H := state.canvas.height
+    
+    for module in state.modules {
+      module ! :draw(ctx, W, H, state.time)
+    }
+  
+  // Get current state
+  on :get_state() -> state
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PATTERN 999 RENDERER
+// The fundamental visualization
+// ═══════════════════════════════════════════════════════════════
+
+atom Pattern999Renderer {
+  state := {
+    rings: [3, 9, 27],  // 3^1, 3^2, 3^3
+    colors: [],
+    phase: 0
+  }
+  
+  on :update(dt, sensors, neural) ->
+    state.phase = state.phase + dt * neural.pulse_rate
+  
+  on :draw(ctx, W, H, t) ->
+    cx := W / 2
+    cy := H / 2
+    r := min(W, H) * 0.4
+    
+    // Three rings of n × 3^k × π^m
+    for k in 0..3 {
+      ring_r := r * (0.3 + k * 0.25)
+      elements := state.rings[k]
+      
+      for i in 0..elements {
+        angle := (i / elements) * TAU + state.phase * (1 + k * 0.3)
+        x := cx + cos(angle) * ring_r
+        y := cy + sin(angle) * ring_r
+        
+        n := (i % 9) + 1
+        m := floor(i / 9) % 3
+        size := 3 + (pattern999(n, k, m) % 20)
+        hue := (i * 40 + k * 120 + t * 30) % 360
+        
+        draw_element(ctx, x, y, size, k, angle, hue)
+      }
+    }
+    
+    // Center: rotating 999
+    draw_core(ctx, cx, cy, t)
+    
+    // π spiral
+    draw_pi_spiral(ctx, cx, cy, r, t)
+  
+  fn draw_element(ctx, x, y, size, ring, angle, hue) := {
+    ctx.beginPath()
+    
+    match ring {
+      0 -> ctx.arc(x, y, size, 0, TAU)
+      1 -> draw_triangle(ctx, x, y, size, angle)
+      2 -> draw_nonagon(ctx, x, y, size, angle)
+    }
+    
+    ctx.strokeStyle = hsla(hue, 70, 55, 0.6)
+    ctx.fillStyle = hsla(hue, 70, 55, 0.15)
+    ctx.stroke()
+    ctx.fill()
+  }
+  
+  fn draw_core(ctx, cx, cy, t) := {
+    pulse := 1 + sin(t * 3) * 0.2
+    for i in 0..3 {
+      angle := i * TAU/3 + t * 2
+      ox := cx + cos(angle) * 15 * pulse
+      oy := cy + sin(angle) * 15 * pulse
+      ctx.font = (24 * pulse) ++ "px serif"
+      ctx.fillStyle = hsla(i * 120, 80, 60, 0.8)
+      ctx.fillText("9", ox, oy)
+    }
+  }
+  
+  fn draw_pi_spiral(ctx, cx, cy, r, t) := {
+    ctx.beginPath()
+    for i in 0..999 {
+      a := i * 0.1 + t
+      m := floor(i / 333)
+      spiral_r := pow(PI, m) * i * 0.15
+      if spiral_r > r * 1.2 { break }
+      sx := cx + cos(a) * spiral_r
+      sy := cy + sin(a) * spiral_r
+      if i == 0 { ctx.moveTo(sx, sy) } else { ctx.lineTo(sx, sy) }
+    }
+    ctx.strokeStyle = hsla(270, 60, 50, 0.3)
+    ctx.stroke()
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// EXPORTS
+// ═══════════════════════════════════════════════════════════════
+
+export { Bridge, Pattern999Renderer, pattern999, TAU, PI, PHI }
