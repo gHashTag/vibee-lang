@@ -1,0 +1,366 @@
+╔══════════════════════════════════════════════════════════════════╗
+║  ◬ allocator.999 - Аллокатор памяти 999 OS                       ║
+║  Троичный аллокатор с buddy-системой на степенях 3               ║
+╚══════════════════════════════════════════════════════════════════╝
+
+▲ use os.hal.hal
+
+║ ═══════════════════════════════════════════════════════════════════
+║  КОНСТАНТЫ
+║ ═══════════════════════════════════════════════════════════════════
+
+║ Размеры блоков — степени 3 (троичная buddy-система)
+◇ MIN_BLOCK_SIZE = 27       ║ 3^3 = 27 тритов
+◇ MAX_BLOCK_ORDER = 9       ║ 3^9 = 19683 тритов
+◇ BLOCK_MAGIC = 0x999       ║ Магическое число для проверки
+
+║ ═══════════════════════════════════════════════════════════════════
+║  БЛОК ПАМЯТИ
+║ ═══════════════════════════════════════════════════════════════════
+
+⬡ MemoryBlock {
+    magic: Int27            ║ Магическое число для валидации
+    size: Int27             ║ Размер в тритах
+    order: Int9             ║ Порядок (степень 3)
+    is_free: Trit
+    next: ?*MemoryBlock
+    prev: ?*MemoryBlock
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  МЕНЕДЖЕР ПАМЯТИ
+║ ═══════════════════════════════════════════════════════════════════
+
+⬡ MemoryManager {
+    base: Int27             ║ Базовый адрес кучи
+    total_size: Int27       ║ Общий размер
+    used_size: Int27        ║ Использовано
+    
+    ║ Списки свободных блоков по порядкам (0-9)
+    free_lists: [?*MemoryBlock; 10]
+    
+    ║ Статистика
+    alloc_count: Int27
+    free_count: Int27
+    
+    ◬ new(base: Int27, size: Int27) → MemoryManager {
+        ◇ mm = MemoryManager {
+            base: base
+            total_size: size
+            used_size: 0
+            free_lists: [∅; 10]
+            alloc_count: 0
+            free_count: 0
+        }
+        
+        ║ Создаём начальный свободный блок максимального размера
+        ◇ order = size_to_order(size)
+        ◇ block = base as *MemoryBlock
+        block.magic = BLOCK_MAGIC
+        block.size = pow3(order)
+        block.order = order
+        block.is_free = △
+        block.next = ∅
+        block.prev = ∅
+        
+        mm.free_lists[order] = block
+        
+        ⟵ mm
+    }
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ИНИЦИАЛИЗАЦИЯ
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ memory_init(size: Int27) → Result[*MemoryManager, MemoryError] {
+    ◇ base = hal_get_heap_base()
+    ⊜ base == 0 {
+        ⟵ Err(MemoryError.init_failed { message: "No heap available" })
+    }
+    
+    ◇ mm = alloc[MemoryManager](1)
+    mm.* = MemoryManager.new(base, size)
+    
+    ⟵ Ok(mm)
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ВЫДЕЛЕНИЕ ПАМЯТИ
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ alloc(mm: *MemoryManager, size: Int27) → Result[Int27, MemoryError] {
+    ⊜ size == 0 {
+        ⟵ Err(MemoryError.invalid_size {})
+    }
+    
+    ║ Находим нужный порядок (округляем вверх до степени 3)
+    ◇ order = size_to_order(size + sizeof[MemoryBlock]())
+    ⊜ order > MAX_BLOCK_ORDER {
+        ⟵ Err(MemoryError.too_large { requested: size })
+    }
+    
+    ║ Ищем свободный блок нужного или большего размера
+    ◇ found_order = order
+    ⟲ found_order <= MAX_BLOCK_ORDER ∧ mm.free_lists[found_order] == ∅ {
+        found_order += 1
+    }
+    
+    ⊜ found_order > MAX_BLOCK_ORDER {
+        ⟵ Err(MemoryError.out_of_memory {})
+    }
+    
+    ║ Разбиваем блок если нужно (buddy split)
+    ⟲ found_order > order {
+        split_block(mm, found_order)
+        found_order -= 1
+    }
+    
+    ║ Берём блок из списка
+    ◇ block = mm.free_lists[order]
+    mm.free_lists[order] = block.next
+    ⊜ block.next ≠ ∅ {
+        block.next.prev = ∅
+    }
+    
+    block.is_free = ▽
+    mm.used_size += block.size
+    mm.alloc_count += 1
+    
+    ║ Возвращаем адрес после заголовка
+    ⟵ Ok((block as Int27) + sizeof[MemoryBlock]())
+}
+
+◬ alloc_aligned(mm: *MemoryManager, size: Int27, align: Int27) → Result[Int27, MemoryError] {
+    ║ Выделяем с запасом для выравнивания
+    ◇ total = size + align
+    ◇ ptr = alloc(mm, total)?
+    
+    ║ Выравниваем
+    ◇ aligned = (ptr + align - 1) / align × align
+    
+    ⟵ Ok(aligned)
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ОСВОБОЖДЕНИЕ ПАМЯТИ
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ free(mm: *MemoryManager, ptr: Int27) → Result[(), MemoryError] {
+    ⊜ ptr == 0 {
+        ⟵ Err(MemoryError.null_pointer {})
+    }
+    
+    ║ Получаем заголовок блока
+    ◇ block = (ptr - sizeof[MemoryBlock]()) as *MemoryBlock
+    
+    ║ Проверяем магическое число
+    ⊜ block.magic ≠ BLOCK_MAGIC {
+        ⟵ Err(MemoryError.invalid_pointer {})
+    }
+    
+    ⊜ block.is_free == △ {
+        ⟵ Err(MemoryError.double_free {})
+    }
+    
+    block.is_free = △
+    mm.used_size -= block.size
+    mm.free_count += 1
+    
+    ║ Пытаемся объединить с buddy (coalesce)
+    coalesce_buddies(mm, block)
+    
+    ⟵ Ok(())
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  BUDDY ОПЕРАЦИИ
+║ ═══════════════════════════════════════════════════════════════════
+
+║ Разбиение блока на 3 части (троичный buddy)
+◬ split_block(mm: *MemoryManager, order: Int9) {
+    ◇ block = mm.free_lists[order]
+    mm.free_lists[order] = block.next
+    
+    ◇ new_order = order - 1
+    ◇ new_size = pow3(new_order)
+    
+    ║ Создаём 3 блока меньшего размера
+    ⟳ i ∈ 0..3 {
+        ◇ new_block = ((block as Int27) + i × new_size) as *MemoryBlock
+        new_block.magic = BLOCK_MAGIC
+        new_block.size = new_size
+        new_block.order = new_order
+        new_block.is_free = △
+        
+        ║ Добавляем в список свободных
+        new_block.next = mm.free_lists[new_order]
+        new_block.prev = ∅
+        ⊜ mm.free_lists[new_order] ≠ ∅ {
+            mm.free_lists[new_order].prev = new_block
+        }
+        mm.free_lists[new_order] = new_block
+    }
+}
+
+║ Объединение buddy-блоков
+◬ coalesce_buddies(mm: *MemoryManager, block: *MemoryBlock) {
+    ◇ order = block.order
+    
+    ⟲ order < MAX_BLOCK_ORDER {
+        ║ Находим адреса двух других buddy
+        ◇ block_addr = block as Int27
+        ◇ block_size = pow3(order)
+        ◇ group_base = (block_addr - mm.base) / (block_size × 3) × (block_size × 3) + mm.base
+        
+        ◇ buddy1 = group_base as *MemoryBlock
+        ◇ buddy2 = (group_base + block_size) as *MemoryBlock
+        ◇ buddy3 = (group_base + block_size × 2) as *MemoryBlock
+        
+        ║ Проверяем, все ли 3 buddy свободны
+        ⊜ buddy1.is_free == △ ∧ buddy2.is_free == △ ∧ buddy3.is_free == △ ∧
+           buddy1.order == order ∧ buddy2.order == order ∧ buddy3.order == order {
+            
+            ║ Удаляем все 3 из списка свободных
+            remove_from_free_list(mm, buddy1)
+            remove_from_free_list(mm, buddy2)
+            remove_from_free_list(mm, buddy3)
+            
+            ║ Создаём объединённый блок
+            ◇ merged = group_base as *MemoryBlock
+            merged.magic = BLOCK_MAGIC
+            merged.size = block_size × 3
+            merged.order = order + 1
+            merged.is_free = △
+            
+            ║ Добавляем в список большего порядка
+            add_to_free_list(mm, merged)
+            
+            block = merged
+            order += 1
+        } ⊝ {
+            ║ Не можем объединить, добавляем текущий блок
+            add_to_free_list(mm, block)
+            ⊗
+        }
+    }
+}
+
+◬ remove_from_free_list(mm: *MemoryManager, block: *MemoryBlock) {
+    ⊜ block.prev ≠ ∅ {
+        block.prev.next = block.next
+    } ⊝ {
+        mm.free_lists[block.order] = block.next
+    }
+    ⊜ block.next ≠ ∅ {
+        block.next.prev = block.prev
+    }
+}
+
+◬ add_to_free_list(mm: *MemoryManager, block: *MemoryBlock) {
+    ◇ order = block.order
+    block.next = mm.free_lists[order]
+    block.prev = ∅
+    ⊜ mm.free_lists[order] ≠ ∅ {
+        mm.free_lists[order].prev = block
+    }
+    mm.free_lists[order] = block
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+║ ═══════════════════════════════════════════════════════════════════
+
+║ Степень 3
+◬ pow3(n: Int9) → Int27 {
+    ◇ result: Int27 = 1
+    ⟳ _ ∈ 0..n { result *= 3 }
+    ⟵ result
+}
+
+║ Логарифм по основанию 3 (округление вверх)
+◬ size_to_order(size: Int27) → Int9 {
+    ◇ order: Int9 = 0
+    ◇ s = MIN_BLOCK_SIZE
+    ⟲ s < size ∧ order < MAX_BLOCK_ORDER {
+        s *= 3
+        order += 1
+    }
+    ⟵ order
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  СТАТИСТИКА
+║ ═══════════════════════════════════════════════════════════════════
+
+⬡ MemoryStats {
+    total: Int27
+    used: Int27
+    free: Int27
+    alloc_count: Int27
+    free_count: Int27
+    fragmentation: Int27    ║ Процент фрагментации
+}
+
+◬ memory_stats(mm: *MemoryManager) → MemoryStats {
+    ◇ free_size = mm.total_size - mm.used_size
+    ◇ frag = ⊜ free_size > 0 {
+        ║ Считаем фрагментацию как отношение количества блоков к размеру
+        ◇ block_count = 0
+        ⟳ order ∈ 0..10 {
+            ◇ b = mm.free_lists[order]
+            ⟲ b ≠ ∅ {
+                block_count += 1
+                b = b.next
+            }
+        }
+        block_count × 100 / (free_size / MIN_BLOCK_SIZE)
+    } ⊝ { 0 }
+    
+    ⟵ MemoryStats {
+        total: mm.total_size
+        used: mm.used_size
+        free: free_size
+        alloc_count: mm.alloc_count
+        free_count: mm.free_count
+        fragmentation: frag
+    }
+}
+
+◬ memory_cleanup(mm: *MemoryManager) {
+    ║ Очистка всех структур
+    mm.used_size = 0
+    ⟳ i ∈ 0..10 {
+        mm.free_lists[i] = ∅
+    }
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ОШИБКИ
+║ ═══════════════════════════════════════════════════════════════════
+
+⬢ MemoryError {
+    △ init_failed { message: String }
+    ○ out_of_memory {}
+    ▽ invalid_size {}
+    ◇ too_large { requested: Int27 }
+    ◆ null_pointer {}
+    ⬡ invalid_pointer {}
+    ⬢ double_free {}
+}
+
+║ Тесты
+⊡ test "pow3" {
+    ⊜! pow3(0) == 1
+    ⊜! pow3(1) == 3
+    ⊜! pow3(2) == 9
+    ⊜! pow3(3) == 27
+    ⊜! pow3(6) == 729
+}
+
+⊡ test "size_to_order" {
+    ⊜! size_to_order(1) == 0
+    ⊜! size_to_order(27) == 0
+    ⊜! size_to_order(28) == 1
+    ⊜! size_to_order(81) == 1
+}
