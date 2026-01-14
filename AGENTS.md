@@ -6,6 +6,47 @@
 
 This document provides guidelines for AI agents working on the VIBEE project. All agents must follow the **Creation Pattern** and **Predictive Algorithmic Systematics (PAS)** methodology.
 
+---
+
+## ⛔ CRITICAL PROHIBITIONS
+
+### NEVER CREATE THESE FILE TYPES DIRECTLY:
+
+```
+❌ .html files (except runtime/runtime.html)
+❌ .css files
+❌ .js files  
+❌ .ts files
+❌ .jsx files
+❌ .tsx files
+```
+
+### WHY?
+
+These are **legacy technologies**. VIBEE uses:
+
+```
+.vibee (specification) → .999 (generated code) → runtime.html (interpreter)
+```
+
+### THE ONLY ALLOWED HTML FILE:
+
+```
+runtime/runtime.html - THE SINGLE UNIFIED RUNTIME
+```
+
+All features, technologies, and visualizations MUST be integrated into this ONE file.
+
+### IF YOU NEED NEW FUNCTIONALITY:
+
+1. Create `.vibee` specification in `specs/`
+2. Generate `.999` code
+3. Integrate into `runtime/runtime.html`
+
+**VIOLATION OF THIS RULE IS A COMPILER ERROR.**
+
+---
+
 ## Core Principles
 
 ### 1. Creation Pattern

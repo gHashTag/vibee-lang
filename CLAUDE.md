@@ -2,6 +2,39 @@
 
 **Author**: Dmitrii Vasilev
 
+---
+
+## ⛔ ABSOLUTE PROHIBITION - READ FIRST
+
+### NEVER CREATE THESE FILES:
+
+| Forbidden | Reason |
+|-----------|--------|
+| `*.html` | Legacy web technology |
+| `*.css` | Legacy styling |
+| `*.js` | Legacy scripting |
+| `*.ts` | Legacy TypeScript |
+| `*.jsx` | Legacy React |
+| `*.tsx` | Legacy React+TS |
+
+### THE ONLY EXCEPTION:
+
+```
+runtime/runtime.html - THE SINGLE UNIFIED RUNTIME
+```
+
+This is the ONLY HTML file in the entire project. ALL functionality integrates here.
+
+### VIBEE ARCHITECTURE:
+
+```
+.vibee (spec) → .999 (code) → runtime.html (interpreter)
+```
+
+**Creating separate HTML/CSS/JS files is a COMPILATION ERROR.**
+
+---
+
 ## Project Overview
 
 VIBEE is a specification-first programming language that generates code from behavioral specifications (.vibee files). The project uses the **Creation Pattern** as its foundational paradigm.
