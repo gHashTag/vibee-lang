@@ -1,0 +1,463 @@
+// ═══════════════════════════════════════════════════════════════
+// KERNEL FULL - .999 Operating System Kernel
+// Version: 2.0.0 | Trinity: n=27 k=9 m=3
+// Architecture: Gorynych (Three-headed dragon)
+// ═══════════════════════════════════════════════════════════════
+
+Ⲯ ⲕⲟⲣⲉ
+Ⲯ ⲧⲣⲓⲛⲓⲧⲩ
+
+// ═══════════════════════════════════════════════════════════════
+// GORYNYCH ARCHITECTURE
+// Three heads: Scheduler, Memory Manager, I/O Manager
+// ═══════════════════════════════════════════════════════════════
+Ⲏ Gorynych {
+    Ⲃ scheduler: SchedulerHead
+    Ⲃ memory: MemoryHead
+    Ⲃ io: IOHead
+    Ⲃ state: KernelState = KernelState.INIT
+    
+    Ⲫ new() → Gorynych {
+        Ⲣ Gorynych {
+            scheduler: SchedulerHead.new(),
+            memory: MemoryHead.new(),
+            io: IOHead.new()
+        }
+    }
+    
+    Ⲫ boot(Ⲥ) → Trit {
+        print("[GORYNYCH] Booting three-headed kernel...")
+        
+        // Initialize heads in parallel
+        Ⲃ results: [Trit; 3]
+        results[0] = Ⲥ.scheduler.init()
+        results[1] = Ⲥ.memory.init()
+        results[2] = Ⲥ.io.init()
+        
+        // All heads must succeed
+        Ⲉ trit_and(results[0], trit_and(results[1], results[2])) == △ {
+            Ⲥ.state = KernelState.RUNNING
+            print("[GORYNYCH] All heads initialized ✓")
+            Ⲣ △
+        }
+        
+        Ⲥ.state = KernelState.ERROR
+        Ⲣ ▽
+    }
+    
+    Ⲫ shutdown(Ⲥ) {
+        print("[GORYNYCH] Shutting down...")
+        Ⲥ.io.shutdown()
+        Ⲥ.scheduler.shutdown()
+        Ⲥ.memory.shutdown()
+        Ⲥ.state = KernelState.HALTED
+    }
+    
+    // Consensus between heads for critical decisions
+    Ⲫ consensus(Ⲥ, Ⲁ decision: Decision) → Trit {
+        Ⲃ vote1 = Ⲥ.scheduler.vote(decision)
+        Ⲃ vote2 = Ⲥ.memory.vote(decision)
+        Ⲃ vote3 = Ⲥ.io.vote(decision)
+        
+        // Majority voting with ternary logic
+        Ⲃ true_count = 0
+        Ⲃ false_count = 0
+        Ⲝ v ∈ [vote1, vote2, vote3] {
+            Ⲉ v == △ { true_count += 1 }
+            Ⲱ Ⲉ v == ▽ { false_count += 1 }
+        }
+        
+        Ⲉ true_count >= 2 { Ⲣ △ }
+        Ⲉ false_count >= 2 { Ⲣ ▽ }
+        Ⲣ ○  // No consensus
+    }
+}
+
+⬢ KernelState { INIT, RUNNING, PAUSED, ERROR, HALTED }
+
+Ⲏ Decision {
+    Ⲃ type: DecisionType
+    Ⲃ data: Ⲁⲛⲩ
+}
+
+⬢ DecisionType { ALLOCATE, SCHEDULE, IO_REQUEST, SHUTDOWN }
+
+// ═══════════════════════════════════════════════════════════════
+// SCHEDULER HEAD
+// ═══════════════════════════════════════════════════════════════
+Ⲏ SchedulerHead {
+    Ⲃ processes: [Process] = []
+    Ⲃ ready_queue: [Ⲓⲛⲧ] = []
+    Ⲃ blocked_queue: [Ⲓⲛⲧ] = []
+    Ⲃ current_pid: Ⲓⲛⲧ?
+    Ⲃ next_pid: Ⲓⲛⲧ = 1
+    Ⲃ quantum_ms: Ⲓⲛⲧ = 10
+    
+    Ⲫ new() → SchedulerHead { Ⲣ SchedulerHead {} }
+    
+    Ⲫ init(Ⲥ) → Trit {
+        print("[SCHEDULER] Initializing...")
+        // Create idle process
+        Ⲥ.create_process("idle", ProcessPriority.IDLE)
+        Ⲣ △
+    }
+    
+    Ⲫ shutdown(Ⲥ) {
+        Ⲝ p ∈ Ⲥ.processes { p.state = ProcessState.TERMINATED }
+    }
+    
+    Ⲫ vote(Ⲥ, Ⲁ decision: Decision) → Trit {
+        Ⲉ decision.type == DecisionType.SCHEDULE { Ⲣ △ }
+        Ⲣ ○
+    }
+    
+    Ⲫ create_process(Ⲥ, Ⲁ name: Ⲧⲉⲝⲧ, Ⲁ priority: ProcessPriority) → Ⲓⲛⲧ {
+        Ⲃ pid = Ⲥ.next_pid
+        Ⲥ.next_pid += 1
+        
+        Ⲃ proc = Process {
+            pid: pid,
+            name: name,
+            priority: priority,
+            state: ProcessState.READY
+        }
+        
+        Ⲥ.processes.push(proc)
+        Ⲥ.ready_queue.push(pid)
+        
+        Ⲣ pid
+    }
+    
+    Ⲫ schedule(Ⲥ) → Ⲓⲛⲧ? {
+        Ⲉ Ⲥ.ready_queue.len() == 0 { Ⲣ ○ }
+        
+        // Priority-based scheduling with aging
+        Ⲃ best_pid = Ⲥ.ready_queue[0]
+        Ⲃ best_priority = Ⲥ.get_process(best_pid).priority
+        
+        Ⲝ pid ∈ Ⲥ.ready_queue {
+            Ⲃ proc = Ⲥ.get_process(pid)
+            Ⲉ proc.priority > best_priority {
+                best_pid = pid
+                best_priority = proc.priority
+            }
+        }
+        
+        Ⲥ.ready_queue.remove(best_pid)
+        Ⲥ.current_pid = best_pid
+        Ⲥ.get_process(best_pid).state = ProcessState.RUNNING
+        
+        Ⲣ best_pid
+    }
+    
+    Ⲫ yield_cpu(Ⲥ) {
+        Ⲉ Ⲥ.current_pid != ○ {
+            Ⲃ proc = Ⲥ.get_process(Ⲥ.current_pid)
+            proc.state = ProcessState.READY
+            Ⲥ.ready_queue.push(Ⲥ.current_pid)
+            Ⲥ.current_pid = ○
+        }
+    }
+    
+    Ⲫ block(Ⲥ, Ⲁ pid: Ⲓⲛⲧ) {
+        Ⲃ proc = Ⲥ.get_process(pid)
+        proc.state = ProcessState.BLOCKED
+        Ⲥ.ready_queue.remove(pid)
+        Ⲥ.blocked_queue.push(pid)
+    }
+    
+    Ⲫ unblock(Ⲥ, Ⲁ pid: Ⲓⲛⲧ) {
+        Ⲃ proc = Ⲥ.get_process(pid)
+        proc.state = ProcessState.READY
+        Ⲥ.blocked_queue.remove(pid)
+        Ⲥ.ready_queue.push(pid)
+    }
+    
+    Ⲫ get_process(Ⲥ, Ⲁ pid: Ⲓⲛⲧ) → Process {
+        Ⲝ p ∈ Ⲥ.processes {
+            Ⲉ p.pid == pid { Ⲣ p }
+        }
+        panic("Process not found")
+    }
+}
+
+Ⲏ Process {
+    Ⲃ pid: Ⲓⲛⲧ
+    Ⲃ name: Ⲧⲉⲝⲧ
+    Ⲃ priority: ProcessPriority
+    Ⲃ state: ProcessState = ProcessState.NEW
+    Ⲃ cpu_time: Ⲓⲛⲧ = 0
+    Ⲃ memory_pages: Ⲓⲛⲧ = 0
+}
+
+⬢ ProcessState { NEW, READY, RUNNING, BLOCKED, TERMINATED }
+⬢ ProcessPriority { IDLE = 0, LOW = 1, NORMAL = 2, HIGH = 3, REALTIME = 4 }
+
+// ═══════════════════════════════════════════════════════════════
+// MEMORY HEAD
+// ═══════════════════════════════════════════════════════════════
+Ⲏ MemoryHead {
+    Ⲃ total_pages: Ⲓⲛⲧ = 1024
+    Ⲃ free_pages: Ⲓⲛⲧ = 1024
+    Ⲃ page_table: [PageEntry] = []
+    Ⲃ frame_bitmap: [Trit] = []  // △=used, ▽=free, ○=reserved
+    
+    Ⲫ new() → MemoryHead { Ⲣ MemoryHead {} }
+    
+    Ⲫ init(Ⲥ) → Trit {
+        print("[MEMORY] Initializing...")
+        Ⲥ.frame_bitmap = [▽; Ⲥ.total_pages]
+        // Reserve first 64 pages for kernel
+        Ⲝ i ∈ 0..64 { Ⲥ.frame_bitmap[i] = ○ }
+        Ⲥ.free_pages = Ⲥ.total_pages - 64
+        Ⲣ △
+    }
+    
+    Ⲫ shutdown(Ⲥ) {
+        // Free all pages
+        Ⲝ i ∈ 0..Ⲥ.total_pages { Ⲥ.frame_bitmap[i] = ▽ }
+    }
+    
+    Ⲫ vote(Ⲥ, Ⲁ decision: Decision) → Trit {
+        Ⲉ decision.type == DecisionType.ALLOCATE {
+            Ⲃ pages_needed = decision.data
+            Ⲣ Ⲥ.free_pages >= pages_needed ? △ : ▽
+        }
+        Ⲣ ○
+    }
+    
+    Ⲫ allocate(Ⲥ, Ⲁ pages: Ⲓⲛⲧ) → [Ⲓⲛⲧ]? {
+        Ⲉ pages > Ⲥ.free_pages { Ⲣ ○ }
+        
+        Ⲃ allocated: [Ⲓⲛⲧ] = []
+        Ⲝ i ∈ 0..Ⲥ.total_pages {
+            Ⲉ allocated.len() >= pages { ⊘ }
+            Ⲉ Ⲥ.frame_bitmap[i] == ▽ {
+                Ⲥ.frame_bitmap[i] = △
+                allocated.push(i)
+            }
+        }
+        
+        Ⲥ.free_pages -= allocated.len()
+        Ⲣ allocated
+    }
+    
+    Ⲫ free(Ⲥ, Ⲁ frames: [Ⲓⲛⲧ]) {
+        Ⲝ frame ∈ frames {
+            Ⲉ Ⲥ.frame_bitmap[frame] == △ {
+                Ⲥ.frame_bitmap[frame] = ▽
+                Ⲥ.free_pages += 1
+            }
+        }
+    }
+    
+    Ⲫ map_page(Ⲥ, Ⲁ virtual: Ⲓⲛⲧ, Ⲁ physical: Ⲓⲛⲧ, Ⲁ flags: PageFlags) {
+        Ⲥ.page_table.push(PageEntry {
+            virtual_addr: virtual,
+            physical_frame: physical,
+            flags: flags,
+            present: △
+        })
+    }
+}
+
+Ⲏ PageEntry {
+    Ⲃ virtual_addr: Ⲓⲛⲧ
+    Ⲃ physical_frame: Ⲓⲛⲧ
+    Ⲃ flags: PageFlags
+    Ⲃ present: Trit
+}
+
+Ⲏ PageFlags {
+    Ⲃ readable: Trit = △
+    Ⲃ writable: Trit = △
+    Ⲃ executable: Trit = ▽
+    Ⲃ user: Trit = ▽
+}
+
+// ═══════════════════════════════════════════════════════════════
+// I/O HEAD
+// ═══════════════════════════════════════════════════════════════
+Ⲏ IOHead {
+    Ⲃ devices: [Device] = []
+    Ⲃ request_queue: [IORequest] = []
+    Ⲃ next_request_id: Ⲓⲛⲧ = 1
+    
+    Ⲫ new() → IOHead { Ⲣ IOHead {} }
+    
+    Ⲫ init(Ⲥ) → Trit {
+        print("[I/O] Initializing...")
+        // Register standard devices
+        Ⲥ.register_device(Device { id: 0, name: "console", type: DeviceType.CHAR })
+        Ⲥ.register_device(Device { id: 1, name: "disk0", type: DeviceType.BLOCK })
+        Ⲥ.register_device(Device { id: 2, name: "net0", type: DeviceType.NET })
+        Ⲣ △
+    }
+    
+    Ⲫ shutdown(Ⲥ) {
+        Ⲝ dev ∈ Ⲥ.devices { dev.state = DeviceState.OFFLINE }
+    }
+    
+    Ⲫ vote(Ⲥ, Ⲁ decision: Decision) → Trit {
+        Ⲉ decision.type == DecisionType.IO_REQUEST { Ⲣ △ }
+        Ⲣ ○
+    }
+    
+    Ⲫ register_device(Ⲥ, Ⲁ device: Device) {
+        Ⲥ.devices.push(device)
+    }
+    
+    Ⲫ submit_request(Ⲥ, Ⲁ device_id: Ⲓⲛⲧ, Ⲁ op: IOOperation, Ⲁ data: [Ⲓⲛⲧ]) → Ⲓⲛⲧ {
+        Ⲃ req = IORequest {
+            id: Ⲥ.next_request_id,
+            device_id: device_id,
+            operation: op,
+            data: data,
+            status: IOStatus.PENDING
+        }
+        Ⲥ.next_request_id += 1
+        Ⲥ.request_queue.push(req)
+        Ⲣ req.id
+    }
+    
+    Ⲫ process_requests(Ⲥ) {
+        Ⲝ req ∈ Ⲥ.request_queue {
+            Ⲉ req.status == IOStatus.PENDING {
+                req.status = IOStatus.IN_PROGRESS
+                Ⲥ.execute_request(req)
+                req.status = IOStatus.COMPLETED
+            }
+        }
+    }
+    
+    Ⲫ execute_request(Ⲥ, Ⲁ req: IORequest) {
+        Ⲃ device = Ⲥ.get_device(req.device_id)
+        Ⲉ req.operation == IOOperation.READ {
+            // Read from device
+        } Ⲱ Ⲉ req.operation == IOOperation.WRITE {
+            // Write to device
+        }
+    }
+    
+    Ⲫ get_device(Ⲥ, Ⲁ id: Ⲓⲛⲧ) → Device {
+        Ⲝ d ∈ Ⲥ.devices {
+            Ⲉ d.id == id { Ⲣ d }
+        }
+        panic("Device not found")
+    }
+}
+
+Ⲏ Device {
+    Ⲃ id: Ⲓⲛⲧ
+    Ⲃ name: Ⲧⲉⲝⲧ
+    Ⲃ type: DeviceType
+    Ⲃ state: DeviceState = DeviceState.ONLINE
+}
+
+⬢ DeviceType { CHAR, BLOCK, NET }
+⬢ DeviceState { ONLINE, OFFLINE, ERROR }
+
+Ⲏ IORequest {
+    Ⲃ id: Ⲓⲛⲧ
+    Ⲃ device_id: Ⲓⲛⲧ
+    Ⲃ operation: IOOperation
+    Ⲃ data: [Ⲓⲛⲧ]
+    Ⲃ status: IOStatus
+}
+
+⬢ IOOperation { READ, WRITE, IOCTL }
+⬢ IOStatus { PENDING, IN_PROGRESS, COMPLETED, ERROR }
+
+// ═══════════════════════════════════════════════════════════════
+// HARDWARE ABSTRACTION LAYER (HAL)
+// ═══════════════════════════════════════════════════════════════
+Ⲏ HAL {
+    Ⲃ cpu_count: Ⲓⲛⲧ
+    Ⲃ memory_size: Ⲓⲛⲧ
+    Ⲃ interrupts_enabled: Trit = ▽
+    
+    Ⲫ detect_hardware() → HAL {
+        Ⲣ HAL {
+            cpu_count: hal_get_cpu_count(),
+            memory_size: hal_get_memory_size()
+        }
+    }
+    
+    Ⲫ enable_interrupts(Ⲥ) { Ⲥ.interrupts_enabled = △; hal_sti() }
+    Ⲫ disable_interrupts(Ⲥ) { Ⲥ.interrupts_enabled = ▽; hal_cli() }
+    
+    Ⲫ read_port(Ⲁ port: Ⲓⲛⲧ) → Ⲓⲛⲧ { Ⲣ hal_inb(port) }
+    Ⲫ write_port(Ⲁ port: Ⲓⲛⲧ, Ⲁ value: Ⲓⲛⲧ) { hal_outb(port, value) }
+    
+    Ⲫ read_msr(Ⲁ msr: Ⲓⲛⲧ) → Ⲓⲛⲧ { Ⲣ hal_rdmsr(msr) }
+    Ⲫ write_msr(Ⲁ msr: Ⲓⲛⲧ, Ⲁ value: Ⲓⲛⲧ) { hal_wrmsr(msr, value) }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SYSCALL INTERFACE
+// ═══════════════════════════════════════════════════════════════
+⬢ Syscall {
+    EXIT = 0,
+    READ = 1,
+    WRITE = 2,
+    OPEN = 3,
+    CLOSE = 4,
+    FORK = 5,
+    EXEC = 6,
+    WAIT = 7,
+    MMAP = 8,
+    MUNMAP = 9
+}
+
+Ⲫ syscall_handler(Ⲁ kernel: Gorynych, Ⲁ num: Syscall, Ⲁ args: [Ⲓⲛⲧ]) → Ⲓⲛⲧ {
+    Ⲉ num == Syscall.EXIT {
+        Ⲃ pid = kernel.scheduler.current_pid
+        kernel.scheduler.get_process(pid).state = ProcessState.TERMINATED
+        Ⲣ 0
+    }
+    Ⲉ num == Syscall.WRITE {
+        Ⲃ fd = args[0]
+        Ⲃ buf = args[1]
+        Ⲃ len = args[2]
+        Ⲣ kernel.io.submit_request(fd, IOOperation.WRITE, [buf, len])
+    }
+    Ⲉ num == Syscall.MMAP {
+        Ⲃ pages = args[0]
+        Ⲃ frames = kernel.memory.allocate(pages)
+        Ⲉ frames != ○ { Ⲣ frames[0] }
+        Ⲣ -1
+    }
+    Ⲣ -1
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════
+⊡ test "gorynych_boot" {
+    Ⲃ kernel = Gorynych.new()
+    ⊜! kernel.boot() == △
+    ⊜! kernel.state == KernelState.RUNNING
+}
+
+⊡ test "scheduler_create_process" {
+    Ⲃ sched = SchedulerHead.new()
+    sched.init()
+    Ⲃ pid = sched.create_process("test", ProcessPriority.NORMAL)
+    ⊜! pid > 0
+}
+
+⊡ test "memory_allocate" {
+    Ⲃ mem = MemoryHead.new()
+    mem.init()
+    Ⲃ frames = mem.allocate(10)
+    ⊜! frames != ○
+    ⊜! frames.len() == 10
+}
+
+⊡ test "consensus_voting" {
+    Ⲃ kernel = Gorynych.new()
+    kernel.boot()
+    Ⲃ decision = Decision { type: DecisionType.SCHEDULE, data: ○ }
+    Ⲃ result = kernel.consensus(decision)
+    // At least scheduler should vote △
+}

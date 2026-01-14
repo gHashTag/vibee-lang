@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>BEAM Agent - Screen-Aware Diffusion</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:#080810;color:#fff;font-family:'SF Mono',monospace;display:flex;height:100vh}
+    #main{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;position:relative}
+    canvas{image-rendering:pixelated;cursor:none}
+    #ui{width:280px;background:#0a0a12;padding:20px;border-left:1px solid #222;display:flex;flex-direction:column}
+    h1{font-size:16px;color:#0af;margin-bottom:5px}
+    .sub{font-size:10px;color:#444;margin-bottom:20px}
+    h2{font-size:10px;color:#555;margin:15px 0 8px;text-transform:uppercase;letter-spacing:1px}
+    .btn{display:block;width:100%;padding:10px;margin:4px 0;background:#151520;border:1px solid #252530;color:#888;font-size:11px;cursor:pointer;border-radius:6px;transition:all .2s}
+    .btn:hover{background:#1a1a2a;border-color:#333}
+    .btn.on{border-color:#0af;color:#fff;background:linear-gradient(135deg,#0a2040,#1a3050)}
+    .row{display:flex;gap:5px}
+    .row .btn{flex:1;padding:8px}
+    #agent-log{flex:1;background:#0c0c14;border:1px solid #1a1a25;border-radius:6px;padding:10px;font-size:10px;overflow-y:auto;line-height:1.6}
+    .log-entry{margin:5px 0;padding:5px;border-radius:4px}
+    .log-entry.action{background:#0a1a2a;border-left:2px solid #0af}
+    .log-entry.emotion{background:#1a0a2a;border-left:2px solid #a0f}
+    .log-entry.cursor{background:#0a2a1a;border-left:2px solid #0fa}
+    .log-entry.system{background:#1a1a0a;border-left:2px solid #fa0}
+    #cursor{position:absolute;pointer-events:none;width:20px;height:20px;border:2px solid #0af;border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 20px #0af}
+    #cursor-trail{position:absolute;pointer-events:none}
+    .trail{position:absolute;width:8px;height:8px;background:#0af;border-radius:50%;opacity:0;transform:translate(-50%,-50%)}
+    #stats{font-size:9px;color:#444;padding:10px;background:#0c0c14;border-radius:6px;margin-top:10px}
+    #stats b{color:#0af}
+    #awareness{margin-top:10px;padding:10px;background:#0c0c14;border-radius:6px;font-size:9px}
+    .aware-item{display:flex;justify-content:space-between;margin:3px 0}
+    .aware-label{color:#555}
+    .aware-value{color:#0af}
+  </style>
+</head>
+<body>
+<div id="main">
+  <canvas id="c"></canvas>
+  <div id="cursor"></div>
+  <div id="cursor-trail"></div>
+</div>
+<div id="ui">
+  <h1>BEAM Agent</h1>
+  <div class="sub">Screen-Aware Pixel Diffusion</div>
+  
+  <h2>Agent Mode</h2>
+  <div class="row">
+    <button class="btn on" data-mode="follow">Follow</button>
+    <button class="btn" data-mode="avoid">Avoid</button>
+    <button class="btn" data-mode="orbit">Orbit</button>
+  </div>
+  
+  <h2>Auto Emotion</h2>
+  <button class="btn on" id="auto-emotion">Emotion from Movement</button>
+  
+  <h2>Agent Awareness</h2>
+  <div id="awareness">
+    <div class="aware-item"><span class="aware-label">Cursor X:</span><span class="aware-value" id="aw-x">0</span></div>
+    <div class="aware-item"><span class="aware-label">Cursor Y:</span><span class="aware-value" id="aw-y">0</span></div>
+    <div class="aware-item"><span class="aware-label">Velocity:</span><span class="aware-value" id="aw-vel">0</span></div>
+    <div class="aware-item"><span class="aware-label">Direction:</span><span class="aware-value" id="aw-dir">-</span></div>
+    <div class="aware-item"><span class="aware-label">Quadrant:</span><span class="aware-value" id="aw-quad">-</span></div>
+    <div class="aware-item"><span class="aware-label">Activity:</span><span class="aware-value" id="aw-act">idle</span></div>
+    <div class="aware-item"><span class="aware-label">Emotion:</span><span class="aware-value" id="aw-emo">calm</span></div>
+  </div>
+  
+  <h2>Agent Log</h2>
+  <div id="agent-log"></div>
+  
+  <div id="stats">
+    <b id="fps">0</b> FPS | <b id="procs">0</b> processes | Flow: <b id="flow">0</b>%
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// BEAM Agent - Screen-Aware Diffusion System
+// Agent understands: cursor position, velocity, direction, patterns
+// ═══════════════════════════════════════════════════════════════
+
+const S = 128, SC = 4, TAU = Math.PI * 2;
+
+// Emotions
+const EMOTIONS = {
+  calm:    { c: [0.2, 0.5, 0.9], f: 0.6, a: 0.7, t: 0.1 },
+  joy:     { c: [1.0, 0.8, 0.2], f: 1.2, a: 1.0, t: 0.3 },
+  energy:  { c: [1.0, 0.3, 0.1], f: 2.0, a: 1.5, t: 0.8 },
+  mystery: { c: [0.5, 0.2, 0.8], f: 0.8, a: 0.9, t: 0.5 },
+  fire:    { c: [1.0, 0.4, 0.0], f: 3.0, a: 2.0, t: 1.0 },
+  cosmic:  { c: [0.1, 0.1, 0.4], f: 0.4, a: 1.2, t: 0.6 }
+};
+
+// SDF Functions
+const SDF = {
+  circle: (x, y, r) => Math.sqrt(x*x + y*y) - r,
+  morph: (x, y, t, r) => {
+    // Morphing shape based on time
+    const c = SDF.circle(x, y, r);
+    const s = Math.sin(t * 0.5) * 0.5 + 0.5;
+    const box = Math.max(Math.abs(x), Math.abs(y)) - r * 0.8;
+    return c * (1 - s) + box * s;
+  }
+};
+
+// Noise
+function hash(x, y) {
+  let p = (x * 0.3183099 + y * 0.1) % 1;
+  if (p < 0) p += 1;
+  p *= 17;
+  return (p * (p + 33.33)) % 1;
+}
+
+function noise(x, y) {
+  const i = Math.floor(x), j = Math.floor(y);
+  const f = x - i, g = y - j;
+  const u = f * f * (3 - 2 * f), v = g * g * (3 - 2 * g);
+  return (hash(i,j) + (hash(i+1,j) - hash(i,j)) * u) + 
+         ((hash(i,j+1) + (hash(i+1,j+1) - hash(i,j+1)) * u) - 
+          (hash(i,j) + (hash(i+1,j) - hash(i,j)) * u)) * v;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// AGENT - Screen Awareness System
+// ─────────────────────────────────────────────────────────────────
+
+class Agent {
+  constructor() {
+    // Cursor tracking
+    this.cursorX = 0;
+    this.cursorY = 0;
+    this.lastX = 0;
+    this.lastY = 0;
+    this.velocityX = 0;
+    this.velocityY = 0;
+    this.speed = 0;
+    this.direction = 'none';
+    this.quadrant = 'center';
+    this.activity = 'idle';
+    
+    // History for pattern detection
+    this.history = [];
+    this.maxHistory = 60;
+    
+    // Agent state
+    this.mode = 'follow';
+    this.autoEmotion = true;
+    this.currentEmotion = 'calm';
+    this.targetX = 0;
+    this.targetY = 0;
+    
+    // Interaction patterns
+    this.circlePattern = 0;
+    this.zigzagPattern = 0;
+    this.idleTime = 0;
+    
+    this.log = [];
+  }
+  
+  update(dt, mouseX, mouseY) {
+    // Update cursor position
+    this.lastX = this.cursorX;
+    this.lastY = this.cursorY;
+    this.cursorX = mouseX;
+    this.cursorY = mouseY;
+    
+    // Calculate velocity
+    this.velocityX = (this.cursorX - this.lastX) / dt;
+    this.velocityY = (this.cursorY - this.lastY) / dt;
+    this.speed = Math.sqrt(this.velocityX ** 2 + this.velocityY ** 2);
+    
+    // Determine direction
+    if (this.speed > 0.1) {
+      const angle = Math.atan2(this.velocityY, this.velocityX);
+      if (angle > -Math.PI/4 && angle <= Math.PI/4) this.direction = 'right';
+      else if (angle > Math.PI/4 && angle <= 3*Math.PI/4) this.direction = 'down';
+      else if (angle > -3*Math.PI/4 && angle <= -Math.PI/4) this.direction = 'up';
+      else this.direction = 'left';
+    }
+    
+    // Determine quadrant
+    if (this.cursorX < -0.33) {
+      this.quadrant = this.cursorY < -0.33 ? 'top-left' : this.cursorY > 0.33 ? 'bottom-left' : 'left';
+    } else if (this.cursorX > 0.33) {
+      this.quadrant = this.cursorY < -0.33 ? 'top-right' : this.cursorY > 0.33 ? 'bottom-right' : 'right';
+    } else {
+      this.quadrant = this.cursorY < -0.33 ? 'top' : this.cursorY > 0.33 ? 'bottom' : 'center';
+    }
+    
+    // Determine activity
+    if (this.speed < 0.05) {
+      this.idleTime += dt;
+      this.activity = this.idleTime > 2 ? 'idle' : 'paused';
+    } else if (this.speed > 2) {
+      this.activity = 'fast';
+      this.idleTime = 0;
+    } else {
+      this.activity = 'moving';
+      this.idleTime = 0;
+    }
+    
+    // Store history
+    this.history.push({ x: this.cursorX, y: this.cursorY, t: Date.now() });
+    if (this.history.length > this.maxHistory) this.history.shift();
+    
+    // Detect patterns
+    this.detectPatterns();
+    
+    // Auto emotion based on activity
+    if (this.autoEmotion) {
+      this.updateEmotion();
+    }
+    
+    // Update agent target based on mode
+    this.updateTarget(dt);
+  }
+  
+  detectPatterns() {
+    if (this.history.length < 20) return;
+    
+    // Detect circular motion
+    let angleSum = 0;
+    for (let i = 1; i < this.history.length; i++) {
+      const dx = this.history[i].x - this.history[i-1].x;
+      const dy = this.history[i].y - this.history[i-1].y;
+      angleSum += Math.atan2(dy, dx);
+    }
+    this.circlePattern = Math.abs(angleSum) / this.history.length;
+    
+    // Detect zigzag
+    let dirChanges = 0;
+    for (let i = 2; i < this.history.length; i++) {
+      const dx1 = this.history[i-1].x - this.history[i-2].x;
+      const dx2 = this.history[i].x - this.history[i-1].x;
+      if (dx1 * dx2 < 0) dirChanges++;
+    }
+    this.zigzagPattern = dirChanges / this.history.length;
+  }
+  
+  updateEmotion() {
+    let newEmotion = this.currentEmotion;
+    
+    if (this.activity === 'idle') {
+      newEmotion = 'calm';
+    } else if (this.activity === 'fast') {
+      newEmotion = 'energy';
+    } else if (this.circlePattern > 0.5) {
+      newEmotion = 'mystery';
+    } else if (this.zigzagPattern > 0.3) {
+      newEmotion = 'fire';
+    } else if (this.quadrant.includes('top')) {
+      newEmotion = 'cosmic';
+    } else {
+      newEmotion = 'joy';
+    }
+    
+    if (newEmotion !== this.currentEmotion) {
+      this.addLog('emotion', `Emotion: ${this.currentEmotion} → ${newEmotion}`);
+      this.currentEmotion = newEmotion;
+    }
+  }
+  
+  updateTarget(dt) {
+    switch (this.mode) {
+      case 'follow':
+        // Smooth follow cursor
+        this.targetX += (this.cursorX - this.targetX) * 0.1;
+        this.targetY += (this.cursorY - this.targetY) * 0.1;
+        break;
+        
+      case 'avoid':
+        // Move away from cursor
+        const dx = this.targetX - this.cursorX;
+        const dy = this.targetY - this.cursorY;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist < 0.5) {
+          this.targetX += dx / dist * 0.05;
+          this.targetY += dy / dist * 0.05;
+        }
+        // Keep in bounds
+        this.targetX = Math.max(-0.8, Math.min(0.8, this.targetX));
+        this.targetY = Math.max(-0.8, Math.min(0.8, this.targetY));
+        break;
+        
+      case 'orbit':
+        // Orbit around cursor
+        const time = Date.now() * 0.001;
+        const radius = 0.3;
+        this.targetX = this.cursorX + Math.cos(time * 2) * radius;
+        this.targetY = this.cursorY + Math.sin(time * 2) * radius;
+        break;
+    }
+  }
+  
+  addLog(type, message) {
+    this.log.unshift({ type, message, time: Date.now() });
+    if (this.log.length > 20) this.log.pop();
+  }
+  
+  getEmotion() {
+    return EMOTIONS[this.currentEmotion] || EMOTIONS.calm;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// PIXEL PROCESS
+// ─────────────────────────────────────────────────────────────────
+
+class Pixel {
+  constructor(x, y, w, h) {
+    this.x = x; this.y = y;
+    this.nx = (x / w) * 2 - 1;
+    this.ny = (y / h) * 2 - 1;
+    this.noise = [Math.random(), Math.random(), Math.random()];
+    this.target = [0.5, 0.5, 0.5];
+    this.color = [...this.noise];
+    this.flowT = 0;
+    this.phase = Math.random() * TAU;
+    this.freq = 0.05 + Math.random() * 0.1;
+  }
+  
+  tick(dt, time, emotion, targetX, targetY, strength) {
+    // SDF with morphing
+    const sdf = SDF.morph(this.nx - targetX, this.ny - targetY, time, 0.35);
+    
+    // Distance to target
+    const dx = this.nx - targetX;
+    const dy = this.ny - targetY;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    const guidance = Math.exp(-dist*dist * 4) * strength;
+    
+    // Inside/outside
+    const inside = sdf < 0;
+    const edge = Math.abs(sdf) < 0.05;
+    
+    if (inside) {
+      this.target = [...emotion.c];
+    } else {
+      const falloff = Math.exp(-sdf * 3);
+      this.target = emotion.c.map(c => c * falloff * 0.3);
+    }
+    
+    if (edge) {
+      const glow = 1 - Math.abs(sdf) / 0.05;
+      this.target = this.target.map(c => c + glow * 0.5);
+    }
+    
+    // Wave
+    const wave = Math.sin(this.freq * Math.sqrt(this.x*this.x + this.y*this.y) * 0.1 + time * emotion.f + this.phase);
+    
+    // Flow
+    const flowSpeed = 0.03 * (1 + guidance * 2);
+    this.flowT = Math.min(1, this.flowT + flowSpeed);
+    
+    for (let i = 0; i < 3; i++) {
+      this.color[i] = (1 - this.flowT) * this.noise[i] + this.flowT * this.target[i];
+    }
+    
+    // Wave influence
+    const waveInf = 0.15 * (1 - this.flowT);
+    this.color[0] += wave * waveInf;
+    this.color[1] += wave * waveInf * 0.8;
+    this.color[2] += wave * waveInf * 0.6;
+    
+    this.phase += dt * this.freq * (1 + guidance);
+  }
+  
+  reset() {
+    this.noise = [Math.random(), Math.random(), Math.random()];
+    this.flowT = 0;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN
+// ═══════════════════════════════════════════════════════════════
+
+const canvas = document.getElementById('c');
+canvas.width = S; canvas.height = S;
+canvas.style.width = S * SC + 'px';
+canvas.style.height = S * SC + 'px';
+
+const ctx = canvas.getContext('2d');
+const imageData = ctx.createImageData(S, S);
+
+const pixels = [];
+for (let y = 0; y < S; y++) {
+  for (let x = 0; x < S; x++) {
+    pixels.push(new Pixel(x, y, S, S));
+  }
+}
+
+const agent = new Agent();
+const cursor = document.getElementById('cursor');
+const trailContainer = document.getElementById('cursor-trail');
+const trails = [];
+for (let i = 0; i < 10; i++) {
+  const t = document.createElement('div');
+  t.className = 'trail';
+  trailContainer.appendChild(t);
+  trails.push({ el: t, x: 0, y: 0 });
+}
+
+document.getElementById('procs').textContent = pixels.length;
+
+let mouseX = 0, mouseY = 0, time = 0;
+
+canvas.parentElement.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const px = e.clientX - rect.left;
+  const py = e.clientY - rect.top;
+  mouseX = (px / rect.width) * 2 - 1;
+  mouseY = (py / rect.height) * 2 - 1;
+  
+  cursor.style.left = e.clientX + 'px';
+  cursor.style.top = e.clientY + 'px';
+  
+  // Update trails
+  for (let i = trails.length - 1; i > 0; i--) {
+    trails[i].x = trails[i-1].x;
+    trails[i].y = trails[i-1].y;
+  }
+  trails[0].x = e.clientX;
+  trails[0].y = e.clientY;
+  
+  trails.forEach((t, i) => {
+    t.el.style.left = t.x + 'px';
+    t.el.style.top = t.y + 'px';
+    t.el.style.opacity = (1 - i / trails.length) * 0.5;
+    t.el.style.transform = `translate(-50%, -50%) scale(${1 - i / trails.length})`;
+  });
+});
+
+canvas.addEventListener('click', () => {
+  pixels.forEach(p => p.reset());
+  agent.addLog('action', 'Flow reset by click');
+});
+
+// UI
+document.querySelectorAll('[data-mode]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    agent.mode = btn.dataset.mode;
+    document.querySelectorAll('[data-mode]').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
+    agent.addLog('action', `Mode: ${agent.mode}`);
+  });
+});
+
+document.getElementById('auto-emotion').addEventListener('click', function() {
+  agent.autoEmotion = !agent.autoEmotion;
+  this.classList.toggle('on');
+  agent.addLog('system', `Auto emotion: ${agent.autoEmotion ? 'ON' : 'OFF'}`);
+});
+
+// Render log
+function renderLog() {
+  const logEl = document.getElementById('agent-log');
+  logEl.innerHTML = agent.log.map(l => 
+    `<div class="log-entry ${l.type}">${l.message}</div>`
+  ).join('');
+}
+
+// ACES tone mapping
+function aces(c) {
+  const a = 2.51, b = 0.03, d = 2.43, e = 0.59, f = 0.14;
+  return c.map(x => Math.max(0, Math.min(1, (x*(a*x+b))/(x*(d*x+e)+f))));
+}
+
+// Animation loop
+let lastTime = performance.now();
+let frameCount = 0, fpsTime = 0;
+
+function loop() {
+  const now = performance.now();
+  const dt = (now - lastTime) / 1000;
+  lastTime = now;
+  time += dt;
+  
+  // FPS
+  frameCount++;
+  fpsTime += dt;
+  if (fpsTime >= 1) {
+    document.getElementById('fps').textContent = frameCount;
+    frameCount = 0;
+    fpsTime = 0;
+  }
+  
+  // Update agent
+  agent.update(dt, mouseX, mouseY);
+  
+  // Update awareness display
+  document.getElementById('aw-x').textContent = agent.cursorX.toFixed(2);
+  document.getElementById('aw-y').textContent = agent.cursorY.toFixed(2);
+  document.getElementById('aw-vel').textContent = agent.speed.toFixed(2);
+  document.getElementById('aw-dir').textContent = agent.direction;
+  document.getElementById('aw-quad').textContent = agent.quadrant;
+  document.getElementById('aw-act').textContent = agent.activity;
+  document.getElementById('aw-emo').textContent = agent.currentEmotion;
+  
+  // Get emotion and target from agent
+  const emotion = agent.getEmotion();
+  const targetX = agent.targetX;
+  const targetY = agent.targetY;
+  
+  // Update pixels
+  let avgFlow = 0;
+  for (let i = 0; i < pixels.length; i++) {
+    const p = pixels[i];
+    p.tick(dt, time, emotion, targetX, targetY, 0.8);
+    avgFlow += p.flowT;
+    
+    const c = aces([
+      Math.max(0, Math.min(1, p.color[0])),
+      Math.max(0, Math.min(1, p.color[1])),
+      Math.max(0, Math.min(1, p.color[2]))
+    ]);
+    
+    // Chromatic aberration
+    const nx = p.nx, ny = p.ny;
+    const d = Math.sqrt(nx*nx + ny*ny) * 0.02;
+    c[0] = Math.min(1, c[0] + d);
+    c[2] = Math.max(0, c[2] - d);
+    
+    const idx = i * 4;
+    imageData.data[idx] = Math.floor(c[0] * 255);
+    imageData.data[idx + 1] = Math.floor(c[1] * 255);
+    imageData.data[idx + 2] = Math.floor(c[2] * 255);
+    imageData.data[idx + 3] = 255;
+  }
+  
+  ctx.putImageData(imageData, 0, 0);
+  
+  // Bloom
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.filter = 'blur(2px)';
+  ctx.globalAlpha = 0.25;
+  ctx.drawImage(canvas, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.filter = 'none';
+  ctx.globalCompositeOperation = 'source-over';
+  
+  document.getElementById('flow').textContent = Math.round(avgFlow / pixels.length * 100);
+  
+  // Render log periodically
+  if (frameCount % 30 === 0) renderLog();
+  
+  requestAnimationFrame(loop);
+}
+
+agent.addLog('system', 'BEAM Agent initialized');
+agent.addLog('system', `${pixels.length} pixel processes spawned`);
+loop();
+</script>
+</body>
+</html>

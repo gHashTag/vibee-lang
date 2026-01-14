@@ -1,0 +1,84 @@
+name: VIBEE2NINE - Auto-generate .999 from .vibee
+
+on:
+  push:
+    paths:
+      - 'specs/**/*.vibee'
+  pull_request:
+    paths:
+      - 'specs/**/*.vibee'
+  workflow_dispatch:
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    name: Generate .999 from .vibee specs
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Generate .999 files
+        run: |
+          chmod +x scripts/vibee2nine.sh
+          bash scripts/vibee2nine.sh --all
+          
+      - name: Validate ULTRA-STRICT
+        run: |
+          chmod +x scripts/validate_ultra_strict.sh
+          bash scripts/validate_ultra_strict.sh
+          
+      - name: Run Tests
+        run: |
+          chmod +x scripts/test_runner.sh
+          bash scripts/test_runner.sh
+          
+      - name: Commit generated files
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          git config --local user.email "vibee2nine@999os.dev"
+          git config --local user.name "VIBEE2NINE Bot"
+          git add 999/
+          git diff --staged --quiet || git commit -m "chore: regenerate .999 from .vibee specs
+
+          Co-authored-by: Ona <no-reply@ona.com>"
+          git push
+
+  validate:
+    runs-on: ubuntu-latest
+    name: Validate .vibee specs
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Check .vibee only in specs/
+        run: |
+          vibee_outside=$(find . -name "*.vibee" -type f | grep -v "^./specs/" | grep -v node_modules | wc -l)
+          if [ "$vibee_outside" -gt 0 ]; then
+            echo "❌ ERROR: Found .vibee files outside specs/"
+            find . -name "*.vibee" -type f | grep -v "^./specs/" | grep -v node_modules
+            exit 1
+          fi
+          echo "✅ All .vibee files are in specs/"
+          
+      - name: Check every .999 has .vibee
+        run: |
+          missing=0
+          for file999 in $(find 999 -name "*.999" -type f); do
+            basename=$(basename "$file999" .999)
+            dirname=$(dirname "$file999" | sed 's|^999/||')
+            if [ "$dirname" = "999" ] || [ "$dirname" = "." ]; then
+              specpath="specs/999/${basename}.vibee"
+            else
+              specpath="specs/999/${dirname}/${basename}.vibee"
+            fi
+            if [ ! -f "$specpath" ]; then
+              echo "❌ Missing: $specpath for $file999"
+              missing=$((missing + 1))
+            fi
+          done
+          if [ "$missing" -gt 0 ]; then
+            exit 1
+          fi
+          echo "✅ All .999 files have corresponding .vibee specs"

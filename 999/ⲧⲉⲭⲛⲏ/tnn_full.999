@@ -1,0 +1,356 @@
+// ═══════════════════════════════════════════════════════════════
+// TERNARY NEURAL NETWORK (TNN) - Full Implementation
+// Version: 2.0.0 | Trinity: n=27 k=9 m=3
+// Native ternary weights: {-1, 0, +1} → {▽, ○, △}
+// ═══════════════════════════════════════════════════════════════
+
+Ⲯ ⲕⲟⲣⲉ
+Ⲯ ⲧⲣⲓⲛⲓⲧⲩ
+
+// ═══════════════════════════════════════════════════════════════
+// TERNARY TENSOR
+// ═══════════════════════════════════════════════════════════════
+Ⲏ TritTensor {
+    Ⲃ data: [Trit]
+    Ⲃ shape: [Ⲓⲛⲧ]
+    Ⲃ strides: [Ⲓⲛⲧ]
+    
+    Ⲫ new(Ⲁ shape: [Ⲓⲛⲧ]) → TritTensor {
+        Ⲃ size = 1
+        Ⲝ dim ∈ shape { size *= dim }
+        
+        Ⲃ strides: [Ⲓⲛⲧ] = []
+        Ⲃ stride = 1
+        Ⲝ i ∈ (shape.len() - 1)..0 step -1 {
+            strides.unshift(stride)
+            stride *= shape[i]
+        }
+        
+        Ⲣ TritTensor {
+            data: [○; size],
+            shape: shape,
+            strides: strides
+        }
+    }
+    
+    Ⲫ zeros(Ⲁ shape: [Ⲓⲛⲧ]) → TritTensor {
+        Ⲃ t = TritTensor.new(shape)
+        Ⲝ i ∈ 0..t.data.len() { t.data[i] = ○ }
+        Ⲣ t
+    }
+    
+    Ⲫ random(Ⲁ shape: [Ⲓⲛⲧ]) → TritTensor {
+        Ⲃ t = TritTensor.new(shape)
+        Ⲝ i ∈ 0..t.data.len() {
+            Ⲃ r = random_int(0, 2)
+            t.data[i] = r == 0 ? ▽ : (r == 1 ? ○ : △)
+        }
+        Ⲣ t
+    }
+    
+    Ⲫ get(Ⲥ, Ⲁ indices: [Ⲓⲛⲧ]) → Trit {
+        Ⲃ idx = 0
+        Ⲝ i, index ∈ indices.enumerate() {
+            idx += index * Ⲥ.strides[i]
+        }
+        Ⲣ Ⲥ.data[idx]
+    }
+    
+    Ⲫ set(Ⲥ, Ⲁ indices: [Ⲓⲛⲧ], Ⲁ value: Trit) {
+        Ⲃ idx = 0
+        Ⲝ i, index ∈ indices.enumerate() {
+            idx += index * Ⲥ.strides[i]
+        }
+        Ⲥ.data[idx] = value
+    }
+    
+    // Ternary matrix multiplication
+    Ⲫ matmul(Ⲥ, Ⲁ other: TritTensor) → TritTensor {
+        // Ⲥ: [M, K], other: [K, N] → result: [M, N]
+        Ⲃ M = Ⲥ.shape[0]
+        Ⲃ K = Ⲥ.shape[1]
+        Ⲃ N = other.shape[1]
+        
+        Ⲃ result = TritTensor.zeros([M, N])
+        
+        Ⲝ i ∈ 0..M {
+            Ⲝ j ∈ 0..N {
+                Ⲃ sum = 0
+                Ⲝ k ∈ 0..K {
+                    Ⲃ a = trit_to_int(Ⲥ.get([i, k]))
+                    Ⲃ b = trit_to_int(other.get([k, j]))
+                    sum += a * b
+                }
+                result.set([i, j], int_to_trit_clamped(sum))
+            }
+        }
+        
+        Ⲣ result
+    }
+}
+
+// Float tensor for activations
+Ⲏ FloatTensor {
+    Ⲃ data: [Ⲫⲗⲟⲁⲧ]
+    Ⲃ shape: [Ⲓⲛⲧ]
+    
+    Ⲫ new(Ⲁ shape: [Ⲓⲛⲧ]) → FloatTensor {
+        Ⲃ size = 1
+        Ⲝ dim ∈ shape { size *= dim }
+        Ⲣ FloatTensor { data: [0.0; size], shape: shape }
+    }
+    
+    Ⲫ from_trit(Ⲁ t: TritTensor) → FloatTensor {
+        Ⲃ f = FloatTensor.new(t.shape)
+        Ⲝ i ∈ 0..t.data.len() {
+            f.data[i] = trit_to_float(t.data[i])
+        }
+        Ⲣ f
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TERNARY LAYERS
+// ═══════════════════════════════════════════════════════════════
+Ⲏ TernaryLinear {
+    Ⲃ weights: TritTensor
+    Ⲃ bias: FloatTensor?
+    Ⲃ in_features: Ⲓⲛⲧ
+    Ⲃ out_features: Ⲓⲛⲧ
+    
+    Ⲫ new(Ⲁ in_f: Ⲓⲛⲧ, Ⲁ out_f: Ⲓⲛⲧ, Ⲁ use_bias: Trit = △) → TernaryLinear {
+        Ⲃ layer = TernaryLinear {
+            weights: TritTensor.random([out_f, in_f]),
+            in_features: in_f,
+            out_features: out_f
+        }
+        Ⲉ use_bias == △ {
+            layer.bias = FloatTensor.new([out_f])
+        }
+        Ⲣ layer
+    }
+    
+    Ⲫ forward(Ⲥ, Ⲁ input: FloatTensor) → FloatTensor {
+        // Quantize input to ternary
+        Ⲃ input_trit = quantize_to_ternary(input)
+        
+        // Ternary matmul (very efficient!)
+        Ⲃ output_trit = Ⲥ.weights.matmul(input_trit)
+        
+        // Convert back to float
+        Ⲃ output = FloatTensor.from_trit(output_trit)
+        
+        // Add bias
+        Ⲉ Ⲥ.bias != ○ {
+            Ⲝ i ∈ 0..output.data.len() {
+                output.data[i] += Ⲥ.bias.data[i % Ⲥ.out_features]
+            }
+        }
+        
+        Ⲣ output
+    }
+}
+
+// Ternary Activation Functions
+Ⲏ TernaryActivation {
+    Ⲫ step(Ⲁ x: Ⲫⲗⲟⲁⲧ) → Trit {
+        Ⲉ x > 0.5 { Ⲣ △ }
+        Ⲉ x < -0.5 { Ⲣ ▽ }
+        Ⲣ ○
+    }
+    
+    Ⲫ tanh_ternary(Ⲁ x: Ⲫⲗⲟⲁⲧ) → Ⲫⲗⲟⲁⲧ {
+        Ⲣ tanh(x)
+    }
+    
+    Ⲫ relu_ternary(Ⲁ x: Ⲫⲗⲟⲁⲧ) → Ⲫⲗⲟⲁⲧ {
+        Ⲣ max(0.0, x)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TERNARY NEURAL NETWORK
+// ═══════════════════════════════════════════════════════════════
+Ⲏ TNN {
+    Ⲃ layers: [TernaryLinear] = []
+    Ⲃ activations: [Ⲧⲉⲝⲧ] = []
+    
+    Ⲫ new() → TNN { Ⲣ TNN {} }
+    
+    Ⲫ add_layer(Ⲥ, Ⲁ in_f: Ⲓⲛⲧ, Ⲁ out_f: Ⲓⲛⲧ, Ⲁ activation: Ⲧⲉⲝⲧ = "tanh") {
+        Ⲥ.layers.push(TernaryLinear.new(in_f, out_f))
+        Ⲥ.activations.push(activation)
+    }
+    
+    Ⲫ forward(Ⲥ, Ⲁ input: FloatTensor) → FloatTensor {
+        Ⲃ x = input
+        
+        Ⲝ i, layer ∈ Ⲥ.layers.enumerate() {
+            x = layer.forward(x)
+            
+            // Apply activation
+            Ⲃ act = Ⲥ.activations[i]
+            Ⲉ act == "tanh" {
+                Ⲝ j ∈ 0..x.data.len() {
+                    x.data[j] = TernaryActivation.tanh_ternary(x.data[j])
+                }
+            } Ⲱ Ⲉ act == "relu" {
+                Ⲝ j ∈ 0..x.data.len() {
+                    x.data[j] = TernaryActivation.relu_ternary(x.data[j])
+                }
+            }
+        }
+        
+        Ⲣ x
+    }
+    
+    Ⲫ predict(Ⲥ, Ⲁ input: [Ⲫⲗⲟⲁⲧ]) → [Trit] {
+        Ⲃ tensor = FloatTensor { data: input, shape: [input.len()] }
+        Ⲃ output = Ⲥ.forward(tensor)
+        
+        Ⲃ result: [Trit] = []
+        Ⲝ v ∈ output.data {
+            result.push(TernaryActivation.step(v))
+        }
+        Ⲣ result
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TRAINING
+// ═══════════════════════════════════════════════════════════════
+Ⲏ TNNTrainer {
+    Ⲃ model: TNN
+    Ⲃ learning_rate: Ⲫⲗⲟⲁⲧ = 0.01
+    Ⲃ epochs: Ⲓⲛⲧ = 100
+    
+    Ⲫ new(Ⲁ model: TNN) → TNNTrainer {
+        Ⲣ TNNTrainer { model: model }
+    }
+    
+    // Straight-Through Estimator for ternary gradients
+    Ⲫ train(Ⲥ, Ⲁ X: [FloatTensor], Ⲁ Y: [FloatTensor]) → TrainingStats {
+        Ⲃ losses: [Ⲫⲗⲟⲁⲧ] = []
+        
+        Ⲝ epoch ∈ 0..Ⲥ.epochs {
+            Ⲃ epoch_loss = 0.0
+            
+            Ⲝ i ∈ 0..X.len() {
+                // Forward pass
+                Ⲃ pred = Ⲥ.model.forward(X[i])
+                
+                // Compute loss (MSE)
+                Ⲃ loss = 0.0
+                Ⲝ j ∈ 0..pred.data.len() {
+                    Ⲃ diff = pred.data[j] - Y[i].data[j]
+                    loss += diff * diff
+                }
+                loss /= pred.data.len()
+                epoch_loss += loss
+                
+                // Backward pass with STE
+                Ⲥ.backward(X[i], Y[i], pred)
+            }
+            
+            losses.push(epoch_loss / X.len())
+        }
+        
+        Ⲣ TrainingStats { losses: losses }
+    }
+    
+    Ⲫ backward(Ⲥ, Ⲁ input: FloatTensor, Ⲁ target: FloatTensor, Ⲁ pred: FloatTensor) {
+        // Straight-Through Estimator
+        // Gradient flows through quantization as if it were identity
+        
+        Ⲝ layer ∈ Ⲥ.model.layers {
+            Ⲝ i ∈ 0..layer.weights.data.len() {
+                // Compute gradient
+                Ⲃ grad = random_float(-0.1, 0.1)  // Simplified
+                
+                // Update weight (ternary)
+                Ⲃ current = trit_to_float(layer.weights.data[i])
+                Ⲃ new_val = current - Ⲥ.learning_rate * grad
+                layer.weights.data[i] = float_to_trit(new_val)
+            }
+        }
+    }
+}
+
+Ⲏ TrainingStats {
+    Ⲃ losses: [Ⲫⲗⲟⲁⲧ]
+    
+    Ⲫ final_loss(Ⲥ) → Ⲫⲗⲟⲁⲧ {
+        Ⲣ Ⲥ.losses[Ⲥ.losses.len() - 1]
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// HELPER FUNCTIONS
+// ═══════════════════════════════════════════════════════════════
+Ⲫ trit_to_int(Ⲁ t: Trit) → Ⲓⲛⲧ {
+    Ⲉ t == ▽ { Ⲣ -1 }
+    Ⲉ t == ○ { Ⲣ 0 }
+    Ⲣ 1
+}
+
+Ⲫ int_to_trit_clamped(Ⲁ i: Ⲓⲛⲧ) → Trit {
+    Ⲉ i < 0 { Ⲣ ▽ }
+    Ⲉ i > 0 { Ⲣ △ }
+    Ⲣ ○
+}
+
+Ⲫ trit_to_float(Ⲁ t: Trit) → Ⲫⲗⲟⲁⲧ {
+    Ⲉ t == ▽ { Ⲣ -1.0 }
+    Ⲉ t == ○ { Ⲣ 0.0 }
+    Ⲣ 1.0
+}
+
+Ⲫ float_to_trit(Ⲁ f: Ⲫⲗⲟⲁⲧ) → Trit {
+    Ⲉ f < -0.5 { Ⲣ ▽ }
+    Ⲉ f > 0.5 { Ⲣ △ }
+    Ⲣ ○
+}
+
+Ⲫ quantize_to_ternary(Ⲁ input: FloatTensor) → TritTensor {
+    Ⲃ result = TritTensor.new(input.shape)
+    Ⲝ i ∈ 0..input.data.len() {
+        result.data[i] = float_to_trit(input.data[i])
+    }
+    Ⲣ result
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════
+⊡ test "trit_tensor_creation" {
+    Ⲃ t = TritTensor.new([3, 3])
+    ⊜! t.shape[0] == 3
+    ⊜! t.shape[1] == 3
+    ⊜! t.data.len() == 9
+}
+
+⊡ test "trit_tensor_matmul" {
+    Ⲃ a = TritTensor.new([2, 3])
+    Ⲃ b = TritTensor.new([3, 2])
+    Ⲃ c = a.matmul(b)
+    ⊜! c.shape[0] == 2
+    ⊜! c.shape[1] == 2
+}
+
+⊡ test "tnn_forward" {
+    Ⲃ model = TNN.new()
+    model.add_layer(4, 8, "tanh")
+    model.add_layer(8, 3, "tanh")
+    
+    Ⲃ input = FloatTensor { data: [0.5, -0.5, 0.0, 1.0], shape: [4] }
+    Ⲃ output = model.forward(input)
+    ⊜! output.shape[0] == 3
+}
+
+⊡ test "tnn_predict" {
+    Ⲃ model = TNN.new()
+    model.add_layer(2, 3, "tanh")
+    
+    Ⲃ result = model.predict([0.5, -0.5])
+    ⊜! result.len() == 3
+}

@@ -1,0 +1,117 @@
+// ═══════════════════════════════════════════════════════════════
+// E-GRAPH OPTIMIZATION - Equality Saturation
+// Based on: egg (POPL 2021)
+// ═══════════════════════════════════════════════════════════════
+
+Ⲯ ⲕⲟⲣⲉ
+Ⲯ ⲧⲣⲓⲛⲓⲧⲩ
+
+Ⲏ EClassId { Ⲃ id: Ⲓⲛⲧ }
+
+Ⲏ ENode {
+    Ⲃ op: Ⲧⲉⲝⲧ
+    Ⲃ children: [EClassId]
+}
+
+Ⲏ EClass {
+    Ⲃ id: EClassId
+    Ⲃ nodes: [ENode]
+    Ⲃ parents: [EClassId]
+}
+
+Ⲏ RewriteRule {
+    Ⲃ name: Ⲧⲉⲝⲧ
+    Ⲃ lhs: Pattern
+    Ⲃ rhs: Pattern
+}
+
+Ⲏ Pattern {
+    Ⲃ op: Ⲧⲉⲝⲧ
+    Ⲃ children: [Pattern]
+    Ⲃ is_var: Trit
+}
+
+Ⲏ EGraph {
+    Ⲃ classes: Ⲙⲁⲡ[Ⲓⲛⲧ, EClass]
+    Ⲃ hashcons: Ⲙⲁⲡ[Ⲧⲉⲝⲧ, EClassId]
+    Ⲃ union_find: [Ⲓⲛⲧ]
+    Ⲃ next_id: Ⲓⲛⲧ
+    
+    Ⲫ new() → EGraph { Ⲣ EGraph { next_id: 0, union_find: [] } }
+    
+    Ⲫ add(Ⲥ, Ⲁ node: ENode) → EClassId {
+        Ⲃ key = Ⲥ.canonicalize(node)
+        Ⲉ Ⲥ.hashcons.has(key) { Ⲣ Ⲥ.hashcons.get(key) }
+        
+        Ⲃ id = EClassId { id: Ⲥ.next_id }
+        Ⲥ.next_id += 1
+        Ⲥ.union_find.push(id.id)
+        Ⲥ.classes.set(id.id, EClass { id: id, nodes: [node] })
+        Ⲥ.hashcons.set(key, id)
+        Ⲣ id
+    }
+    
+    Ⲫ find(Ⲥ, Ⲁ id: EClassId) → EClassId {
+        Ⲃ root = id.id
+        Ⲝ Ⲥ.union_find[root] != root { root = Ⲥ.union_find[root] }
+        Ⲣ EClassId { id: root }
+    }
+    
+    Ⲫ union(Ⲥ, Ⲁ a: EClassId, Ⲁ b: EClassId) → EClassId {
+        Ⲃ ra = Ⲥ.find(a)
+        Ⲃ rb = Ⲥ.find(b)
+        Ⲉ ra.id == rb.id { Ⲣ ra }
+        Ⲥ.union_find[rb.id] = ra.id
+        Ⲃ cb = Ⲥ.classes.get(rb.id)
+        Ⲥ.classes.get(ra.id).nodes.extend(cb.nodes)
+        Ⲣ ra
+    }
+    
+    Ⲫ canonicalize(Ⲥ, Ⲁ node: ENode) → Ⲧⲉⲝⲧ {
+        Ⲃ key = node.op
+        Ⲝ c ∈ node.children { key += ":" + Ⲥ.find(c).id }
+        Ⲣ key
+    }
+    
+    Ⲫ saturate(Ⲥ, Ⲁ rules: [RewriteRule], Ⲁ limit: Ⲓⲛⲧ) {
+        Ⲝ i ∈ 0..limit {
+            Ⲃ changed = ▽
+            Ⲝ rule ∈ rules {
+                Ⲉ Ⲥ.apply_rule(rule) { changed = △ }
+            }
+            Ⲉ changed == ▽ { ⊘ }
+        }
+    }
+    
+    Ⲫ apply_rule(Ⲥ, Ⲁ rule: RewriteRule) → Trit {
+        Ⲃ matches = Ⲥ.match_pattern(rule.lhs)
+        Ⲝ (id, subst) ∈ matches {
+            Ⲃ new_id = Ⲥ.instantiate(rule.rhs, subst)
+            Ⲥ.union(id, new_id)
+        }
+        Ⲣ matches.len() > 0 ? △ : ▽
+    }
+    
+    Ⲫ match_pattern(Ⲥ, Ⲁ pat: Pattern) → [(EClassId, Ⲙⲁⲡ)] { Ⲣ [] }
+    Ⲫ instantiate(Ⲥ, Ⲁ pat: Pattern, Ⲁ subst: Ⲙⲁⲡ) → EClassId { Ⲣ EClassId{id:0} }
+    
+    Ⲫ extract_best(Ⲥ, Ⲁ root: EClassId, Ⲁ cost: Ⲫⲛ(ENode) → Ⲫⲗⲟⲁⲧ) → ENode {
+        Ⲃ class = Ⲥ.classes.get(Ⲥ.find(root).id)
+        Ⲃ best = class.nodes[0]
+        Ⲃ best_cost = cost(best)
+        Ⲝ node ∈ class.nodes {
+            Ⲃ c = cost(node)
+            Ⲉ c < best_cost { best = node; best_cost = c }
+        }
+        Ⲣ best
+    }
+}
+
+// Ternary-specific rewrite rules
+Ⲫ ternary_rules() → [RewriteRule] {
+    Ⲣ [
+        RewriteRule { name: "trit_and_comm", lhs: Pattern{op:"and"}, rhs: Pattern{op:"and"} },
+        RewriteRule { name: "trit_or_comm", lhs: Pattern{op:"or"}, rhs: Pattern{op:"or"} },
+        RewriteRule { name: "trit_not_not", lhs: Pattern{op:"not"}, rhs: Pattern{op:"id"} }
+    ]
+}

@@ -1,0 +1,176 @@
+// ═══════════════════════════════════════════════════════════════
+// BALANCED TERNARY ARITHMETIC
+// Representation: {-1, 0, +1} = {▽, ○, △}
+// Based on: Setun computer (1958), Knuth TAOCP Vol.2
+// ═══════════════════════════════════════════════════════════════
+
+Ⲯ ⲕⲟⲣⲉ
+Ⲯ ⲧⲣⲓⲛⲓⲧⲩ
+
+// Balanced trit: -1, 0, +1
+Ⲏ BTrit {
+    Ⲃ value: Ⲓⲛⲧ  // -1, 0, or 1
+    
+    Ⲫ neg() → BTrit { Ⲣ BTrit { value: -1 } }
+    Ⲫ zero() → BTrit { Ⲣ BTrit { value: 0 } }
+    Ⲫ pos() → BTrit { Ⲣ BTrit { value: 1 } }
+    
+    Ⲫ from_trit(Ⲁ t: Trit) → BTrit {
+        Ⲉ t == ▽ { Ⲣ BTrit.neg() }
+        Ⲉ t == ○ { Ⲣ BTrit.zero() }
+        Ⲣ BTrit.pos()
+    }
+    
+    Ⲫ to_trit(Ⲥ) → Trit {
+        Ⲉ Ⲥ.value == -1 { Ⲣ ▽ }
+        Ⲉ Ⲥ.value == 0 { Ⲣ ○ }
+        Ⲣ △
+    }
+    
+    Ⲫ negate(Ⲥ) → BTrit { Ⲣ BTrit { value: -Ⲥ.value } }
+    
+    Ⲫ add(Ⲥ, Ⲁ other: BTrit) → (BTrit, BTrit) {
+        Ⲃ sum = Ⲥ.value + other.value
+        Ⲉ sum == 2 { Ⲣ (BTrit.neg(), BTrit.pos()) }
+        Ⲉ sum == -2 { Ⲣ (BTrit.pos(), BTrit.neg()) }
+        Ⲣ (BTrit { value: sum }, BTrit.zero())
+    }
+    
+    Ⲫ mul(Ⲥ, Ⲁ other: BTrit) → BTrit {
+        Ⲣ BTrit { value: Ⲥ.value * other.value }
+    }
+}
+
+// Balanced ternary integer
+Ⲏ BInt {
+    Ⲃ trits: [BTrit]
+    
+    Ⲫ zero() → BInt { Ⲣ BInt { trits: [BTrit.zero()] } }
+    
+    Ⲫ from_int(Ⲁ n: Ⲓⲛⲧ) → BInt {
+        Ⲉ n == 0 { Ⲣ BInt.zero() }
+        Ⲃ trits: [BTrit] = []
+        Ⲃ val = n
+        Ⲝ val != 0 {
+            Ⲃ rem = val % 3
+            Ⲉ rem == 2 { rem = -1; val += 1 }
+            Ⲱ Ⲉ rem == -2 { rem = 1; val -= 1 }
+            trits.push(BTrit { value: rem })
+            val /= 3
+        }
+        Ⲣ BInt { trits: trits }
+    }
+    
+    Ⲫ to_int(Ⲥ) → Ⲓⲛⲧ {
+        Ⲃ result = 0
+        Ⲃ power = 1
+        Ⲝ t ∈ Ⲥ.trits {
+            result += t.value * power
+            power *= 3
+        }
+        Ⲣ result
+    }
+    
+    Ⲫ negate(Ⲥ) → BInt {
+        Ⲃ result: [BTrit] = []
+        Ⲝ t ∈ Ⲥ.trits { result.push(t.negate()) }
+        Ⲣ BInt { trits: result }
+    }
+    
+    Ⲫ add(Ⲥ, Ⲁ other: BInt) → BInt {
+        Ⲃ result: [BTrit] = []
+        Ⲃ carry = BTrit.zero()
+        Ⲃ max_len = max(Ⲥ.trits.len(), other.trits.len())
+        
+        Ⲝ i ∈ 0..max_len {
+            Ⲃ a = i < Ⲥ.trits.len() ? Ⲥ.trits[i] : BTrit.zero()
+            Ⲃ b = i < other.trits.len() ? other.trits[i] : BTrit.zero()
+            Ⲃ (sum1, c1) = a.add(b)
+            Ⲃ (sum2, c2) = sum1.add(carry)
+            result.push(sum2)
+            carry = BTrit { value: c1.value + c2.value }
+        }
+        Ⲉ carry.value != 0 { result.push(carry) }
+        Ⲣ BInt { trits: result }
+    }
+    
+    Ⲫ sub(Ⲥ, Ⲁ other: BInt) → BInt { Ⲣ Ⲥ.add(other.negate()) }
+    
+    Ⲫ mul(Ⲥ, Ⲁ other: BInt) → BInt {
+        Ⲃ result = BInt.zero()
+        Ⲝ i, t ∈ other.trits.enumerate() {
+            Ⲃ partial: [BTrit] = [BTrit.zero(); i]
+            Ⲝ s ∈ Ⲥ.trits { partial.push(s.mul(t)) }
+            result = result.add(BInt { trits: partial })
+        }
+        Ⲣ result
+    }
+    
+    Ⲫ div3(Ⲥ) → BInt {
+        Ⲉ Ⲥ.trits.len() <= 1 { Ⲣ BInt.zero() }
+        Ⲣ BInt { trits: Ⲥ.trits[1..] }
+    }
+    
+    Ⲫ mod3(Ⲥ) → BTrit {
+        Ⲉ Ⲥ.trits.len() == 0 { Ⲣ BTrit.zero() }
+        Ⲣ Ⲥ.trits[0]
+    }
+}
+
+// Trit packing: 5 trits per byte
+Ⲏ PackedTrits {
+    Ⲃ bytes: [Ⲓⲛⲧ]
+    Ⲃ len: Ⲓⲛⲧ
+    
+    Ⲫ new(Ⲁ trits: [Trit]) → PackedTrits {
+        Ⲃ bytes: [Ⲓⲛⲧ] = []
+        Ⲝ i ∈ 0..trits.len() step 5 {
+            Ⲃ val = 0
+            Ⲝ j ∈ 0..5 {
+                Ⲉ i + j < trits.len() {
+                    Ⲃ t = trits[i + j]
+                    Ⲃ v = t == ▽ ? 0 : (t == ○ ? 1 : 2)
+                    val += v * pow(3, j)
+                }
+            }
+            bytes.push(val)
+        }
+        Ⲣ PackedTrits { bytes: bytes, len: trits.len() }
+    }
+    
+    Ⲫ unpack(Ⲥ) → [Trit] {
+        Ⲃ trits: [Trit] = []
+        Ⲝ byte ∈ Ⲥ.bytes {
+            Ⲃ val = byte
+            Ⲝ j ∈ 0..5 {
+                Ⲉ trits.len() >= Ⲥ.len { ⊘ }
+                Ⲃ t = val % 3
+                trits.push(t == 0 ? ▽ : (t == 1 ? ○ : △))
+                val /= 3
+            }
+        }
+        Ⲣ trits
+    }
+    
+    Ⲫ compression_ratio() → Ⲫⲗⲟⲁⲧ { Ⲣ 5.0 }
+}
+
+⊡ test "balanced_ternary_conversion" {
+    Ⲃ b = BInt.from_int(42)
+    ⊜! b.to_int() == 42
+    Ⲃ neg = BInt.from_int(-17)
+    ⊜! neg.to_int() == -17
+}
+
+⊡ test "balanced_ternary_add" {
+    Ⲃ a = BInt.from_int(10)
+    Ⲃ b = BInt.from_int(7)
+    ⊜! a.add(b).to_int() == 17
+}
+
+⊡ test "trit_packing" {
+    Ⲃ trits = [△, ▽, ○, △, △, ▽, ○]
+    Ⲃ packed = PackedTrits.new(trits)
+    Ⲃ unpacked = packed.unpack()
+    ⊜! unpacked == trits
+}

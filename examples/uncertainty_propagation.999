@@ -1,0 +1,238 @@
+// ═══════════════════════════════════════════════════════════════
+// UNCERTAINTY PROPAGATION - Handling unknown values
+// Uses: Kleene Strong semantics for uncertainty
+// ═══════════════════════════════════════════════════════════════
+
+Ⲯ ⲕⲟⲣⲉ
+Ⲯ ⲧⲣⲓⲛⲓⲧⲩ
+
+// ═══════════════════════════════════════════════════════════════
+// UNCERTAIN VALUE
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ Uncertain[T] {
+    Ⲃ value: T?
+    Ⲃ certainty: Trit
+    Ⲃ confidence: Ⲫⲗⲟⲁⲧ
+    
+    Ⲫ known(Ⲁ v: T) → Uncertain[T] {
+        Ⲣ Uncertain { value: v, certainty: △, confidence: 1.0 }
+    }
+    
+    Ⲫ unknown() → Uncertain[T] {
+        Ⲣ Uncertain { value: ○, certainty: ○, confidence: 0.5 }
+    }
+    
+    Ⲫ impossible() → Uncertain[T] {
+        Ⲣ Uncertain { value: ○, certainty: ▽, confidence: 0.0 }
+    }
+    
+    Ⲫ is_known(Ⲥ) → Trit {
+        Ⲣ Ⲥ.certainty
+    }
+    
+    Ⲫ get_or_default(Ⲥ, Ⲁ default: T) → T {
+        Ⲉ Ⲥ.certainty == △ { Ⲣ Ⲥ.value }
+        Ⲣ default
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SENSOR READING (Real-world example)
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ SensorReading {
+    Ⲃ temperature: Uncertain[Ⲫⲗⲟⲁⲧ]
+    Ⲃ humidity: Uncertain[Ⲫⲗⲟⲁⲧ]
+    Ⲃ pressure: Uncertain[Ⲫⲗⲟⲁⲧ]
+    Ⲃ timestamp: Ⲓⲛⲧ
+    
+    Ⲫ is_valid(Ⲥ) → Trit {
+        // All readings must be known for valid reading
+        Ⲣ trit_and(
+            Ⲥ.temperature.is_known(),
+            trit_and(Ⲥ.humidity.is_known(), Ⲥ.pressure.is_known())
+        )
+    }
+    
+    Ⲫ overall_confidence(Ⲥ) → Ⲫⲗⲟⲁⲧ {
+        Ⲣ (Ⲥ.temperature.confidence + Ⲥ.humidity.confidence + Ⲥ.pressure.confidence) / 3.0
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DATABASE QUERY (SQL NULL semantics)
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ User {
+    Ⲃ id: Ⲓⲛⲧ
+    Ⲃ name: Ⲧⲉⲝⲧ
+    Ⲃ email: Uncertain[Ⲧⲉⲝⲧ]  // May be NULL
+    Ⲃ age: Uncertain[Ⲓⲛⲧ]      // May be NULL
+}
+
+Ⲏ Database {
+    Ⲃ users: [User]
+    
+    Ⲫ find_by_id(Ⲥ, Ⲁ id: Ⲓⲛⲧ) → Uncertain[User] {
+        Ⲝ user ∈ Ⲥ.users {
+            Ⲉ user.id == id {
+                Ⲣ Uncertain.known(user)
+            }
+        }
+        Ⲣ Uncertain.unknown()  // Not found
+    }
+    
+    // SQL-like: WHERE age > 18 (with NULL handling)
+    Ⲫ find_adults(Ⲥ) → [User] {
+        Ⲃ result: [User] = []
+        Ⲝ user ∈ Ⲥ.users {
+            // In SQL, NULL > 18 is UNKNOWN, not included
+            Ⲉ user.age.is_known() == △ {
+                Ⲉ user.age.value > 18 {
+                    result.push(user)
+                }
+            }
+        }
+        Ⲣ result
+    }
+    
+    // Count with uncertainty
+    Ⲫ count_with_email(Ⲥ) → Ⲓⲛⲧ {
+        Ⲃ count = 0
+        Ⲝ user ∈ Ⲥ.users {
+            Ⲉ user.email.is_known() == △ {
+                count += 1
+            }
+        }
+        Ⲣ count
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PROPAGATION RULES
+// ═══════════════════════════════════════════════════════════════
+
+Ⲫ propagate_and(Ⲁ a: Uncertain[Ⲃⲟⲟⲗ], Ⲁ b: Uncertain[Ⲃⲟⲟⲗ]) → Uncertain[Ⲃⲟⲟⲗ] {
+    // Kleene Strong: if either is definitely false, result is false
+    Ⲉ a.certainty == ▽ || b.certainty == ▽ {
+        Ⲣ Uncertain.impossible()
+    }
+    // If both are definitely true, result is true
+    Ⲉ a.certainty == △ && b.certainty == △ {
+        Ⲣ Uncertain.known(a.value && b.value)
+    }
+    // Otherwise unknown
+    Ⲣ Uncertain.unknown()
+}
+
+Ⲫ propagate_or(Ⲁ a: Uncertain[Ⲃⲟⲟⲗ], Ⲁ b: Uncertain[Ⲃⲟⲟⲗ]) → Uncertain[Ⲃⲟⲟⲗ] {
+    // Kleene Strong: if either is definitely true, result is true
+    Ⲉ a.certainty == △ && a.value == △ {
+        Ⲣ Uncertain.known(△)
+    }
+    Ⲉ b.certainty == △ && b.value == △ {
+        Ⲣ Uncertain.known(△)
+    }
+    // If both are definitely false, result is false
+    Ⲉ a.certainty == △ && b.certainty == △ {
+        Ⲣ Uncertain.known(a.value || b.value)
+    }
+    // Otherwise unknown
+    Ⲣ Uncertain.unknown()
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DEMO
+// ═══════════════════════════════════════════════════════════════
+
+Ⲫ main() {
+    print("═══════════════════════════════════════════════════════════════")
+    print("UNCERTAINTY PROPAGATION DEMO")
+    print("═══════════════════════════════════════════════════════════════")
+    print("")
+    
+    // Sensor example
+    print("1. SENSOR READINGS")
+    print("─────────────────────────────────────────────────────────────────")
+    
+    Ⲃ reading1 = SensorReading {
+        temperature: Uncertain.known(25.5),
+        humidity: Uncertain.known(60.0),
+        pressure: Uncertain.known(1013.25),
+        timestamp: 1234567890
+    }
+    print("Reading 1 valid: " + reading1.is_valid())
+    print("Reading 1 confidence: " + reading1.overall_confidence())
+    
+    Ⲃ reading2 = SensorReading {
+        temperature: Uncertain.known(26.0),
+        humidity: Uncertain.unknown(),  // Sensor failure
+        pressure: Uncertain.known(1012.0),
+        timestamp: 1234567891
+    }
+    print("Reading 2 valid: " + reading2.is_valid())  // ○ (unknown)
+    print("Reading 2 confidence: " + reading2.overall_confidence())
+    print("")
+    
+    // Database example
+    print("2. DATABASE QUERIES (SQL NULL semantics)")
+    print("─────────────────────────────────────────────────────────────────")
+    
+    Ⲃ db = Database {
+        users: [
+            User { id: 1, name: "Alice", email: Uncertain.known("alice@example.com"), age: Uncertain.known(25) },
+            User { id: 2, name: "Bob", email: Uncertain.unknown(), age: Uncertain.known(17) },
+            User { id: 3, name: "Charlie", email: Uncertain.known("charlie@example.com"), age: Uncertain.unknown() }
+        ]
+    }
+    
+    Ⲃ found = db.find_by_id(1)
+    print("Find user 1: " + found.is_known())
+    
+    Ⲃ not_found = db.find_by_id(999)
+    print("Find user 999: " + not_found.is_known())  // ○
+    
+    Ⲃ adults = db.find_adults()
+    print("Adults (age > 18): " + adults.len())  // Only Alice (Charlie's age is NULL)
+    
+    print("Users with email: " + db.count_with_email())  // 2 (Alice, Charlie)
+    print("")
+    
+    // Propagation example
+    print("3. UNCERTAINTY PROPAGATION")
+    print("─────────────────────────────────────────────────────────────────")
+    
+    Ⲃ known_true = Uncertain.known(△)
+    Ⲃ known_false = Uncertain.known(▽)
+    Ⲃ unknown_val = Uncertain.unknown()
+    
+    print("△ AND ○ = " + propagate_and(known_true, unknown_val).certainty)  // ○
+    print("▽ AND ○ = " + propagate_and(known_false, unknown_val).certainty)  // ▽
+    print("△ OR ○ = " + propagate_or(known_true, unknown_val).certainty)   // △
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════
+
+⊡ test "known_value" {
+    Ⲃ v = Uncertain.known(42)
+    ⊜! v.is_known() == △
+    ⊜! v.confidence == 1.0
+}
+
+⊡ test "unknown_value" {
+    Ⲃ v = Uncertain.unknown()
+    ⊜! v.is_known() == ○
+    ⊜! v.confidence == 0.5
+}
+
+⊡ test "propagation_and" {
+    Ⲃ t = Uncertain.known(△)
+    Ⲃ u = Uncertain.unknown()
+    Ⲃ result = propagate_and(t, u)
+    ⊜! result.certainty == ○
+}
+
+main()

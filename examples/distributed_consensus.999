@@ -1,0 +1,199 @@
+// ═══════════════════════════════════════════════════════════════
+// DISTRIBUTED CONSENSUS - Fault-tolerant voting system
+// Uses: Ternary logic for Byzantine fault tolerance
+// ═══════════════════════════════════════════════════════════════
+
+Ⲯ ⲕⲟⲣⲉ
+Ⲯ ⲧⲣⲓⲛⲓⲧⲩ
+
+// ═══════════════════════════════════════════════════════════════
+// NODE STATE
+// ═══════════════════════════════════════════════════════════════
+
+⬢ NodeStatus { Active, Suspected, Failed }
+
+Ⲏ Node {
+    Ⲃ id: Ⲓⲛⲧ
+    Ⲃ status: NodeStatus = Active
+    Ⲃ vote: Trit = ○
+    Ⲃ confidence: Ⲫⲗⲟⲁⲧ = 0.5
+    
+    Ⲫ cast_vote(Ⲥ, Ⲁ v: Trit) {
+        Ⲥ.vote = v
+        Ⲥ.confidence = trit_to_confidence(v)
+    }
+    
+    Ⲫ is_reliable(Ⲥ) → Trit {
+        Ⲉ Ⲥ.status == Active { Ⲣ △ }
+        Ⲉ Ⲥ.status == Suspected { Ⲣ ○ }
+        Ⲣ ▽
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CONSENSUS PROTOCOL
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ ConsensusProtocol {
+    Ⲃ nodes: [Node]
+    Ⲃ quorum_size: Ⲓⲛⲧ
+    Ⲃ result: Trit = ○
+    Ⲃ rounds: Ⲓⲛⲧ = 0
+    
+    Ⲫ new(Ⲁ n: Ⲓⲛⲧ) → ConsensusProtocol {
+        Ⲃ nodes: [Node] = []
+        Ⲝ i ∈ 0..n {
+            nodes.push(Node { id: i })
+        }
+        // Byzantine fault tolerance: need 2f+1 nodes for f faults
+        Ⲃ quorum = (n * 2) / 3 + 1
+        Ⲣ ConsensusProtocol { nodes: nodes, quorum_size: quorum }
+    }
+    
+    // Phase 1: Collect votes
+    Ⲫ collect_votes(Ⲥ) → [Trit] {
+        Ⲃ votes: [Trit] = []
+        Ⲝ node ∈ Ⲥ.nodes {
+            Ⲉ node.is_reliable() != ▽ {
+                votes.push(node.vote)
+            }
+        }
+        Ⲣ votes
+    }
+    
+    // Phase 2: Calculate consensus using majority
+    Ⲫ calculate_consensus(Ⲥ, Ⲁ votes: [Trit]) → Trit {
+        Ⲃ true_count = 0
+        Ⲃ false_count = 0
+        Ⲃ unknown_count = 0
+        
+        Ⲝ v ∈ votes {
+            Ⲉ v == △ { true_count += 1 }
+            Ⲉ v == ▽ { false_count += 1 }
+            Ⲉ v == ○ { unknown_count += 1 }
+        }
+        
+        // Need quorum for decision
+        Ⲉ true_count >= Ⲥ.quorum_size { Ⲣ △ }
+        Ⲉ false_count >= Ⲥ.quorum_size { Ⲣ ▽ }
+        Ⲣ ○  // No consensus yet
+    }
+    
+    // Run consensus round
+    Ⲫ run_round(Ⲥ) → Trit {
+        Ⲥ.rounds += 1
+        Ⲃ votes = Ⲥ.collect_votes()
+        Ⲥ.result = Ⲥ.calculate_consensus(votes)
+        Ⲣ Ⲥ.result
+    }
+    
+    // Run until consensus or max rounds
+    Ⲫ run(Ⲥ, Ⲁ max_rounds: Ⲓⲛⲧ) → Trit {
+        Ⲝ _ ∈ 0..max_rounds {
+            Ⲃ result = Ⲥ.run_round()
+            Ⲉ result != ○ { Ⲣ result }
+        }
+        Ⲣ ○  // No consensus reached
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BYZANTINE FAULT DETECTOR
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ FaultDetector {
+    Ⲃ suspicion_threshold: Ⲫⲗⲟⲁⲧ = 0.3
+    
+    Ⲫ detect_byzantine(Ⲁ node: Node, Ⲁ expected: Trit) → Trit {
+        // Check if node's vote is consistent
+        Ⲃ consensus_result = trit_consensus(node.vote, expected)
+        Ⲉ consensus_result == ○ {
+            // Disagreement - possible Byzantine behavior
+            Ⲣ ○  // Suspected
+        }
+        Ⲣ △  // Consistent
+    }
+    
+    Ⲫ update_status(Ⲁ node: Node, Ⲁ suspicion: Trit) {
+        Ⲉ suspicion == ▽ {
+            node.status = Failed
+        }
+        Ⲉ suspicion == ○ {
+            node.status = Suspected
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DEMO
+// ═══════════════════════════════════════════════════════════════
+
+Ⲫ main() {
+    print("═══════════════════════════════════════════════════════════════")
+    print("DISTRIBUTED CONSENSUS DEMO")
+    print("═══════════════════════════════════════════════════════════════")
+    
+    // Create 7-node cluster (can tolerate 2 Byzantine faults)
+    Ⲃ protocol = ConsensusProtocol.new(7)
+    
+    print("Cluster: 7 nodes, quorum: " + protocol.quorum_size)
+    print("")
+    
+    // Simulate votes
+    protocol.nodes[0].cast_vote(△)
+    protocol.nodes[1].cast_vote(△)
+    protocol.nodes[2].cast_vote(△)
+    protocol.nodes[3].cast_vote(△)
+    protocol.nodes[4].cast_vote(▽)  // Dissenter
+    protocol.nodes[5].cast_vote(○)  // Uncertain
+    protocol.nodes[6].cast_vote(△)
+    
+    print("Votes cast:")
+    Ⲝ node ∈ protocol.nodes {
+        print("  Node " + node.id + ": " + node.vote)
+    }
+    print("")
+    
+    // Run consensus
+    Ⲃ result = protocol.run(3)
+    
+    print("Consensus result: " + result)
+    print("Rounds needed: " + protocol.rounds)
+    
+    Ⲉ result == △ {
+        print("✅ Consensus reached: APPROVE")
+    }
+    Ⲉ result == ▽ {
+        print("❌ Consensus reached: REJECT")
+    }
+    Ⲉ result == ○ {
+        print("⚠️ No consensus reached")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════
+
+⊡ test "quorum_calculation" {
+    Ⲃ p = ConsensusProtocol.new(7)
+    ⊜! p.quorum_size == 5  // 2/3 + 1
+}
+
+⊡ test "unanimous_consensus" {
+    Ⲃ p = ConsensusProtocol.new(3)
+    p.nodes[0].cast_vote(△)
+    p.nodes[1].cast_vote(△)
+    p.nodes[2].cast_vote(△)
+    ⊜! p.run(1) == △
+}
+
+⊡ test "no_consensus" {
+    Ⲃ p = ConsensusProtocol.new(3)
+    p.nodes[0].cast_vote(△)
+    p.nodes[1].cast_vote(▽)
+    p.nodes[2].cast_vote(○)
+    ⊜! p.run(1) == ○
+}
+
+main()

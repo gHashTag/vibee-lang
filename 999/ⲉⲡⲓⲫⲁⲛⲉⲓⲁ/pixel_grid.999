@@ -1,0 +1,441 @@
+// ═══════════════════════════════════════════════════════════════
+// ⲠⲒⲜⲈⲖ ⲄⲢⲒⲆ - Atomic Pixel Grid as OTP Processes
+// Each pixel = one lightweight process (BEAM-style)
+// NO HTML/CSS - Pure Canvas rendering
+// ═══════════════════════════════════════════════════════════════
+
+Ⲯ ⲉⲡⲓⲫⲁⲛⲉⲓⲁ
+
+// ═══════════════════════════════════════════════════════════════
+// PIXEL - Atomic Unit (Single OTP Process)
+// ═══════════════════════════════════════════════════════════════
+
+⬢ PixelState { Active, Inactive, Fog, Glow, Wave }
+
+Ⲏ Pixel {
+    Ⲃ id: Ⲩ64                    // Unique atom ID
+    Ⲃ x: Ⲓⲛⲧ                     // X coordinate
+    Ⲃ y: Ⲓⲛⲧ                     // Y coordinate
+    Ⲃ r: Ⲩ8                      // Red (0-255)
+    Ⲃ g: Ⲩ8                      // Green (0-255)
+    Ⲃ b: Ⲩ8                      // Blue (0-255)
+    Ⲃ a: Ⲩ8                      // Alpha (0-255)
+    Ⲃ state: PixelState          // Current state
+    Ⲃ wave_phase: Ⲫ64            // For wave diffusion
+    Ⲃ neighbors: [Ⲩ64]           // Neighbor pixel IDs
+    Ⲃ data: Ⲁⲛⲩ?                 // Custom data
+    
+    Ⲫ new(Ⲁ x: Ⲓⲛⲧ, Ⲁ y: Ⲓⲛⲧ) → Pixel {
+        Ⲃ id = (x as Ⲩ64) << 32 | (y as Ⲩ64)
+        Ⲣ Pixel {
+            id: id,
+            x: x, y: y,
+            r: 0, g: 0, b: 0, a: 255,
+            state: PixelState.Inactive,
+            wave_phase: 0.0,
+            neighbors: [],
+            data: ○
+        }
+    }
+    
+    // Set color
+    Ⲫ set_color(Ⲥ, Ⲁ r: Ⲩ8, Ⲁ g: Ⲩ8, Ⲁ b: Ⲩ8) {
+        Ⲥ.r = r; Ⲥ.g = g; Ⲥ.b = b
+    }
+    
+    // Set RGBA
+    Ⲫ set_rgba(Ⲥ, Ⲁ r: Ⲩ8, Ⲁ g: Ⲩ8, Ⲁ b: Ⲩ8, Ⲁ a: Ⲩ8) {
+        Ⲥ.r = r; Ⲥ.g = g; Ⲥ.b = b; Ⲥ.a = a
+    }
+    
+    // Apply fog of war effect
+    Ⲫ apply_fog(Ⲥ, Ⲁ intensity: Ⲫ64) {
+        Ⲥ.state = PixelState.Fog
+        Ⲥ.a = ((1.0 - intensity) * 255.0) as Ⲩ8
+    }
+    
+    // Apply glow effect
+    Ⲫ apply_glow(Ⲥ, Ⲁ intensity: Ⲫ64) {
+        Ⲥ.state = PixelState.Glow
+        Ⲃ boost = (intensity * 50.0) as Ⲩ8
+        Ⲥ.r = min(255, Ⲥ.r + boost)
+        Ⲥ.g = min(255, Ⲥ.g + boost)
+        Ⲥ.b = min(255, Ⲥ.b + boost)
+    }
+    
+    // Wave diffusion step
+    Ⲫ wave_step(Ⲥ, Ⲁ time: Ⲫ64, Ⲁ frequency: Ⲫ64) {
+        Ⲥ.state = PixelState.Wave
+        Ⲥ.wave_phase = sin(time * frequency + (Ⲥ.x + Ⲥ.y) as Ⲫ64 * 0.1)
+    }
+    
+    // Pack to u32 for efficient transfer
+    Ⲫ pack(Ⲥ) → Ⲩ32 {
+        Ⲣ (Ⲥ.r as Ⲩ32) << 24 | (Ⲥ.g as Ⲩ32) << 16 | (Ⲥ.b as Ⲩ32) << 8 | (Ⲥ.a as Ⲩ32)
+    }
+    
+    // Unpack from u32
+    Ⲫ unpack(Ⲁ packed: Ⲩ32) → (Ⲩ8, Ⲩ8, Ⲩ8, Ⲩ8) {
+        Ⲣ (
+            ((packed >> 24) & 0xFF) as Ⲩ8,
+            ((packed >> 16) & 0xFF) as Ⲩ8,
+            ((packed >> 8) & 0xFF) as Ⲩ8,
+            (packed & 0xFF) as Ⲩ8
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PIXEL GRID - 2D Array of Pixel Processes
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ PixelGrid {
+    Ⲃ width: Ⲓⲛⲧ
+    Ⲃ height: Ⲓⲛⲧ
+    Ⲃ pixels: Ⲙⲁⲡ[Ⲩ64, Pixel]   // Pixel ID → Pixel
+    Ⲃ buffer: [Ⲩ32]              // Packed pixel buffer for rendering
+    Ⲃ dirty: [Ⲩ64]               // Changed pixel IDs
+    
+    Ⲫ new(Ⲁ width: Ⲓⲛⲧ, Ⲁ height: Ⲓⲛⲧ) → PixelGrid {
+        Ⲃ grid = PixelGrid {
+            width: width,
+            height: height,
+            pixels: {},
+            buffer: [0; width * height],
+            dirty: []
+        }
+        
+        // Initialize all pixels
+        Ⲝ y ∈ 0..height {
+            Ⲝ x ∈ 0..width {
+                Ⲃ pixel = Pixel.new(x, y)
+                grid.pixels.set(pixel.id, pixel)
+            }
+        }
+        
+        // Set up neighbors
+        grid.setup_neighbors()
+        
+        Ⲣ grid
+    }
+    
+    // Setup 8-connected neighbors
+    Ⲫ setup_neighbors(Ⲥ) {
+        Ⲝ (id, pixel) ∈ Ⲥ.pixels {
+            Ⲃ neighbors: [Ⲩ64] = []
+            Ⲝ dy ∈ [-1, 0, 1] {
+                Ⲝ dx ∈ [-1, 0, 1] {
+                    Ⲉ dx == 0 && dy == 0 { ⊘ }
+                    Ⲃ nx = pixel.x + dx
+                    Ⲃ ny = pixel.y + dy
+                    Ⲉ nx >= 0 && nx < Ⲥ.width && ny >= 0 && ny < Ⲥ.height {
+                        Ⲃ nid = (nx as Ⲩ64) << 32 | (ny as Ⲩ64)
+                        neighbors.push(nid)
+                    }
+                }
+            }
+            pixel.neighbors = neighbors
+        }
+    }
+    
+    // Get pixel at coordinates
+    Ⲫ get(Ⲥ, Ⲁ x: Ⲓⲛⲧ, Ⲁ y: Ⲓⲛⲧ) → Pixel? {
+        Ⲃ id = (x as Ⲩ64) << 32 | (y as Ⲩ64)
+        Ⲣ Ⲥ.pixels.get(id)
+    }
+    
+    // Set pixel color
+    Ⲫ set_pixel(Ⲥ, Ⲁ x: Ⲓⲛⲧ, Ⲁ y: Ⲓⲛⲧ, Ⲁ r: Ⲩ8, Ⲁ g: Ⲩ8, Ⲁ b: Ⲩ8) {
+        Ⲃ pixel = Ⲥ.get(x, y)
+        Ⲉ pixel != ○ {
+            pixel.set_color(r, g, b)
+            pixel.state = PixelState.Active
+            Ⲥ.dirty.push(pixel.id)
+            Ⲥ.buffer[y * Ⲥ.width + x] = pixel.pack()
+        }
+    }
+    
+    // Fill rectangle
+    Ⲫ fill_rect(Ⲥ, Ⲁ x: Ⲓⲛⲧ, Ⲁ y: Ⲓⲛⲧ, Ⲁ w: Ⲓⲛⲧ, Ⲁ h: Ⲓⲛⲧ, Ⲁ r: Ⲩ8, Ⲁ g: Ⲩ8, Ⲁ b: Ⲩ8) {
+        Ⲝ py ∈ y..(y + h) {
+            Ⲝ px ∈ x..(x + w) {
+                Ⲥ.set_pixel(px, py, r, g, b)
+            }
+        }
+    }
+    
+    // Draw line (Bresenham)
+    Ⲫ draw_line(Ⲥ, Ⲁ x0: Ⲓⲛⲧ, Ⲁ y0: Ⲓⲛⲧ, Ⲁ x1: Ⲓⲛⲧ, Ⲁ y1: Ⲓⲛⲧ, Ⲁ r: Ⲩ8, Ⲁ g: Ⲩ8, Ⲁ b: Ⲩ8) {
+        Ⲃ dx = abs(x1 - x0)
+        Ⲃ dy = -abs(y1 - y0)
+        Ⲃ sx = Ⲉ x0 < x1 { 1 } Ⲁ { -1 }
+        Ⲃ sy = Ⲉ y0 < y1 { 1 } Ⲁ { -1 }
+        Ⲃ err = dx + dy
+        Ⲃ x = x0
+        Ⲃ y = y0
+        
+        Ⲝ △ {
+            Ⲥ.set_pixel(x, y, r, g, b)
+            Ⲉ x == x1 && y == y1 { ⊘ }
+            Ⲃ e2 = 2 * err
+            Ⲉ e2 >= dy { err += dy; x += sx }
+            Ⲉ e2 <= dx { err += dx; y += sy }
+        }
+    }
+    
+    // Draw circle (Midpoint)
+    Ⲫ draw_circle(Ⲥ, Ⲁ cx: Ⲓⲛⲧ, Ⲁ cy: Ⲓⲛⲧ, Ⲁ radius: Ⲓⲛⲧ, Ⲁ r: Ⲩ8, Ⲁ g: Ⲩ8, Ⲁ b: Ⲩ8) {
+        Ⲃ x = radius
+        Ⲃ y = 0
+        Ⲃ err = 0
+        
+        Ⲝ x >= y {
+            Ⲥ.set_pixel(cx + x, cy + y, r, g, b)
+            Ⲥ.set_pixel(cx + y, cy + x, r, g, b)
+            Ⲥ.set_pixel(cx - y, cy + x, r, g, b)
+            Ⲥ.set_pixel(cx - x, cy + y, r, g, b)
+            Ⲥ.set_pixel(cx - x, cy - y, r, g, b)
+            Ⲥ.set_pixel(cx - y, cy - x, r, g, b)
+            Ⲥ.set_pixel(cx + y, cy - x, r, g, b)
+            Ⲥ.set_pixel(cx + x, cy - y, r, g, b)
+            
+            y += 1
+            err += 1 + 2 * y
+            Ⲉ 2 * (err - x) + 1 > 0 {
+                x -= 1
+                err += 1 - 2 * x
+            }
+        }
+    }
+    
+    // Apply fog of war to region
+    Ⲫ apply_fog_region(Ⲥ, Ⲁ cx: Ⲓⲛⲧ, Ⲁ cy: Ⲓⲛⲧ, Ⲁ radius: Ⲓⲛⲧ, Ⲁ visible: Trit) {
+        Ⲝ y ∈ 0..Ⲥ.height {
+            Ⲝ x ∈ 0..Ⲥ.width {
+                Ⲃ dist = sqrt(((x - cx) * (x - cx) + (y - cy) * (y - cy)) as Ⲫ64)
+                Ⲃ pixel = Ⲥ.get(x, y)
+                Ⲉ pixel != ○ {
+                    Ⲉ visible == △ && dist <= radius as Ⲫ64 {
+                        pixel.state = PixelState.Active
+                        pixel.a = 255
+                    } Ⲁ {
+                        Ⲃ fog_intensity = min(1.0, dist / (radius as Ⲫ64 * 2.0))
+                        pixel.apply_fog(fog_intensity)
+                    }
+                    Ⲥ.dirty.push(pixel.id)
+                    Ⲥ.buffer[y * Ⲥ.width + x] = pixel.pack()
+                }
+            }
+        }
+    }
+    
+    // Wave diffusion animation
+    Ⲫ wave_diffusion(Ⲥ, Ⲁ time: Ⲫ64, Ⲁ frequency: Ⲫ64, Ⲁ amplitude: Ⲫ64) {
+        Ⲝ (id, pixel) ∈ Ⲥ.pixels {
+            pixel.wave_step(time, frequency)
+            
+            // Modulate color based on wave
+            Ⲃ wave_val = (pixel.wave_phase * amplitude + 1.0) / 2.0
+            Ⲃ mod_r = (pixel.r as Ⲫ64 * wave_val) as Ⲩ8
+            Ⲃ mod_g = (pixel.g as Ⲫ64 * wave_val) as Ⲩ8
+            Ⲃ mod_b = (pixel.b as Ⲫ64 * wave_val) as Ⲩ8
+            
+            Ⲥ.buffer[pixel.y * Ⲥ.width + pixel.x] = 
+                (mod_r as Ⲩ32) << 24 | (mod_g as Ⲩ32) << 16 | (mod_b as Ⲩ32) << 8 | (pixel.a as Ⲩ32)
+        }
+    }
+    
+    // Get buffer for rendering
+    Ⲫ get_buffer(Ⲥ) → [Ⲩ32] {
+        Ⲣ Ⲥ.buffer
+    }
+    
+    // Clear dirty list
+    Ⲫ clear_dirty(Ⲥ) {
+        Ⲥ.dirty = []
+    }
+    
+    // Total pixel count
+    Ⲫ pixel_count(Ⲥ) → Ⲓⲛⲧ {
+        Ⲣ Ⲥ.width * Ⲥ.height
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PIXEL PROCESS - OTP-style Actor for each pixel
+// ═══════════════════════════════════════════════════════════════
+
+⬢ PixelMessage {
+    SetColor { r: Ⲩ8, g: Ⲩ8, b: Ⲩ8 },
+    ApplyFog { intensity: Ⲫ64 },
+    ApplyGlow { intensity: Ⲫ64 },
+    WaveStep { time: Ⲫ64, frequency: Ⲫ64 },
+    GetState,
+    Terminate
+}
+
+Ⲏ PixelProcess {
+    Ⲃ pixel: Pixel
+    Ⲃ mailbox: [PixelMessage]
+    Ⲃ running: Trit
+    
+    Ⲫ spawn(Ⲁ x: Ⲓⲛⲧ, Ⲁ y: Ⲓⲛⲧ) → PixelProcess {
+        Ⲣ PixelProcess {
+            pixel: Pixel.new(x, y),
+            mailbox: [],
+            running: △
+        }
+    }
+    
+    // Send message to pixel
+    Ⲫ send(Ⲥ, Ⲁ msg: PixelMessage) {
+        Ⲥ.mailbox.push(msg)
+    }
+    
+    // Process one message
+    Ⲫ receive(Ⲥ) → Ⲁⲛⲩ? {
+        Ⲉ Ⲥ.mailbox.len() == 0 { Ⲣ ○ }
+        
+        Ⲃ msg = Ⲥ.mailbox.shift()
+        
+        Ⲉ msg == PixelMessage.SetColor { r, g, b } {
+            Ⲥ.pixel.set_color(r, g, b)
+            Ⲣ △
+        }
+        Ⲉ msg == PixelMessage.ApplyFog { intensity } {
+            Ⲥ.pixel.apply_fog(intensity)
+            Ⲣ △
+        }
+        Ⲉ msg == PixelMessage.ApplyGlow { intensity } {
+            Ⲥ.pixel.apply_glow(intensity)
+            Ⲣ △
+        }
+        Ⲉ msg == PixelMessage.WaveStep { time, frequency } {
+            Ⲥ.pixel.wave_step(time, frequency)
+            Ⲣ △
+        }
+        Ⲉ msg == PixelMessage.GetState {
+            Ⲣ Ⲥ.pixel
+        }
+        Ⲉ msg == PixelMessage.Terminate {
+            Ⲥ.running = ▽
+            Ⲣ ▽
+        }
+        
+        Ⲣ ○
+    }
+    
+    // Main loop
+    Ⲫ run(Ⲥ) {
+        Ⲝ Ⲥ.running == △ {
+            Ⲥ.receive()
+            yield()  // Cooperative scheduling
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PIXEL GRID SUPERVISOR - Manages all pixel processes
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ PixelGridSupervisor {
+    Ⲃ processes: Ⲙⲁⲡ[Ⲩ64, PixelProcess]
+    Ⲃ width: Ⲓⲛⲧ
+    Ⲃ height: Ⲓⲛⲧ
+    
+    Ⲫ new(Ⲁ width: Ⲓⲛⲧ, Ⲁ height: Ⲓⲛⲧ) → PixelGridSupervisor {
+        Ⲃ sup = PixelGridSupervisor {
+            processes: {},
+            width: width,
+            height: height
+        }
+        
+        // Spawn all pixel processes
+        Ⲝ y ∈ 0..height {
+            Ⲝ x ∈ 0..width {
+                Ⲃ proc = PixelProcess.spawn(x, y)
+                Ⲃ id = (x as Ⲩ64) << 32 | (y as Ⲩ64)
+                sup.processes.set(id, proc)
+            }
+        }
+        
+        Ⲣ sup
+    }
+    
+    // Broadcast message to all pixels
+    Ⲫ broadcast(Ⲥ, Ⲁ msg: PixelMessage) {
+        Ⲝ (id, proc) ∈ Ⲥ.processes {
+            proc.send(msg)
+        }
+    }
+    
+    // Send to specific pixel
+    Ⲫ send_to(Ⲥ, Ⲁ x: Ⲓⲛⲧ, Ⲁ y: Ⲓⲛⲧ, Ⲁ msg: PixelMessage) {
+        Ⲃ id = (x as Ⲩ64) << 32 | (y as Ⲩ64)
+        Ⲃ proc = Ⲥ.processes.get(id)
+        Ⲉ proc != ○ {
+            proc.send(msg)
+        }
+    }
+    
+    // Process all messages (one step)
+    Ⲫ tick(Ⲥ) {
+        Ⲝ (id, proc) ∈ Ⲥ.processes {
+            proc.receive()
+        }
+    }
+    
+    // Get pixel buffer for rendering
+    Ⲫ get_buffer(Ⲥ) → [Ⲩ32] {
+        Ⲃ buffer: [Ⲩ32] = [0; Ⲥ.width * Ⲥ.height]
+        
+        Ⲝ (id, proc) ∈ Ⲥ.processes {
+            Ⲃ pixel = proc.pixel
+            buffer[pixel.y * Ⲥ.width + pixel.x] = pixel.pack()
+        }
+        
+        Ⲣ buffer
+    }
+    
+    // Shutdown all processes
+    Ⲫ shutdown(Ⲥ) {
+        Ⲥ.broadcast(PixelMessage.Terminate)
+        Ⲥ.tick()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════
+
+⊡ test "pixel_creation" {
+    Ⲃ pixel = Pixel.new(100, 200)
+    ⊜! pixel.x == 100
+    ⊜! pixel.y == 200
+    ⊜! pixel.id == (100 << 32 | 200)
+}
+
+⊡ test "pixel_grid" {
+    Ⲃ grid = PixelGrid.new(100, 100)
+    ⊜! grid.pixel_count() == 10000
+    
+    grid.set_pixel(50, 50, 255, 0, 0)
+    Ⲃ pixel = grid.get(50, 50)
+    ⊜! pixel.r == 255
+}
+
+⊡ test "pixel_process" {
+    Ⲃ proc = PixelProcess.spawn(10, 20)
+    proc.send(PixelMessage.SetColor { r: 128, g: 64, b: 32 })
+    proc.receive()
+    ⊜! proc.pixel.r == 128
+}
+
+⊡ test "supervisor" {
+    Ⲃ sup = PixelGridSupervisor.new(10, 10)
+    sup.broadcast(PixelMessage.SetColor { r: 255, g: 255, b: 255 })
+    sup.tick()
+    
+    Ⲃ buffer = sup.get_buffer()
+    ⊜! buffer.len() == 100
+}

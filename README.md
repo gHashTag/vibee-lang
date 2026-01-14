@@ -153,6 +153,12 @@ Evolution factor: 1.85
 
 ## Документация
 
+### .999 Language
+- [Quick Start](docs/QUICKSTART.md) - Get started in 5 minutes
+- [Tutorial](docs/TUTORIAL.md) - Full language tutorial
+- [API Reference](docs/API.md) - Complete API documentation
+
+### Research
 - [Desktop SWE Agent](docs/academic/DESKTOP_SWE_AGENT.md)
 - [Decentralized AGI Research](docs/academic/DECENTRALIZED_AGI_RESEARCH.md)
 - [Advanced Decentralized AGI](docs/academic/ADVANCED_DECENTRALIZED_AGI.md)

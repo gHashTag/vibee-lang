@@ -1,0 +1,420 @@
+// ═══════════════════════════════════════════════════════════════
+// ⲂⲈⲀⲘ ⲠⲒⲜⲈⲖ ⲆⲒⲪⲪⲨⲤⲒⲞⲚ - Wave-based Image Generation
+// Real-time diffusion through distributed wave functions
+// OTP processes instead of GPU, emotions as latent codes
+// ═══════════════════════════════════════════════════════════════
+
+Ⲯ ⲉⲡⲓⲫⲁⲛⲉⲓⲁ
+
+// ═══════════════════════════════════════════════════════════════
+// WAVE FUNCTIONS
+// ═══════════════════════════════════════════════════════════════
+
+⬢ WaveType {
+    Sine,
+    Cosine,
+    Sawtooth,
+    Square,
+    Triangle,
+    Noise,
+    Perlin
+}
+
+Ⲏ WaveFunction {
+    Ⲃ wave_type: WaveType
+    Ⲃ frequency: Ⲫ64
+    Ⲃ amplitude: Ⲫ64
+    Ⲃ phase: Ⲫ64
+    Ⲃ offset: Ⲫ64
+    
+    Ⲫ new(Ⲁ wave_type: WaveType) → WaveFunction {
+        Ⲣ WaveFunction {
+            wave_type: wave_type,
+            frequency: 1.0,
+            amplitude: 1.0,
+            phase: 0.0,
+            offset: 0.0
+        }
+    }
+    
+    // Evaluate wave at position and time
+    Ⲫ eval(Ⲥ, Ⲁ x: Ⲫ64, Ⲁ y: Ⲫ64, Ⲁ t: Ⲫ64) → Ⲫ64 {
+        Ⲃ input = (x + y) * Ⲥ.frequency + t + Ⲥ.phase
+        
+        Ⲃ value = Ⲉ Ⲥ.wave_type == WaveType.Sine {
+            sin(input)
+        } Ⲁ Ⲉ Ⲥ.wave_type == WaveType.Cosine {
+            cos(input)
+        } Ⲁ Ⲉ Ⲥ.wave_type == WaveType.Sawtooth {
+            2.0 * (input / (2.0 * PI) - floor(input / (2.0 * PI) + 0.5))
+        } Ⲁ Ⲉ Ⲥ.wave_type == WaveType.Square {
+            Ⲉ sin(input) >= 0.0 { 1.0 } Ⲁ { -1.0 }
+        } Ⲁ Ⲉ Ⲥ.wave_type == WaveType.Triangle {
+            2.0 * abs(2.0 * (input / (2.0 * PI) - floor(input / (2.0 * PI) + 0.5))) - 1.0
+        } Ⲁ Ⲉ Ⲥ.wave_type == WaveType.Noise {
+            WaveFunction.noise(x, y, t)
+        } Ⲁ {
+            WaveFunction.perlin(x, y, t)
+        }
+        
+        Ⲣ value * Ⲥ.amplitude + Ⲥ.offset
+    }
+    
+    // Simple noise function
+    Ⲫ noise(Ⲁ x: Ⲫ64, Ⲁ y: Ⲫ64, Ⲁ t: Ⲫ64) → Ⲫ64 {
+        Ⲃ n = sin(x * 12.9898 + y * 78.233 + t) * 43758.5453
+        Ⲣ n - floor(n)
+    }
+    
+    // Perlin-like noise
+    Ⲫ perlin(Ⲁ x: Ⲫ64, Ⲁ y: Ⲫ64, Ⲁ t: Ⲫ64) → Ⲫ64 {
+        Ⲃ xi = floor(x) as Ⲓⲛⲧ
+        Ⲃ yi = floor(y) as Ⲓⲛⲧ
+        Ⲃ xf = x - floor(x)
+        Ⲃ yf = y - floor(y)
+        
+        // Smoothstep
+        Ⲃ u = xf * xf * (3.0 - 2.0 * xf)
+        Ⲃ v = yf * yf * (3.0 - 2.0 * yf)
+        
+        // Corner values
+        Ⲃ aa = WaveFunction.noise(xi as Ⲫ64, yi as Ⲫ64, t)
+        Ⲃ ab = WaveFunction.noise(xi as Ⲫ64, (yi + 1) as Ⲫ64, t)
+        Ⲃ ba = WaveFunction.noise((xi + 1) as Ⲫ64, yi as Ⲫ64, t)
+        Ⲃ bb = WaveFunction.noise((xi + 1) as Ⲫ64, (yi + 1) as Ⲫ64, t)
+        
+        // Bilinear interpolation
+        Ⲃ x1 = aa * (1.0 - u) + ba * u
+        Ⲃ x2 = ab * (1.0 - u) + bb * u
+        
+        Ⲣ x1 * (1.0 - v) + x2 * v
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// EMOTION AS LATENT CODE
+// ═══════════════════════════════════════════════════════════════
+
+⬢ Emotion {
+    Joy,
+    Sadness,
+    Anger,
+    Fear,
+    Surprise,
+    Disgust,
+    Trust,
+    Anticipation,
+    Neutral
+}
+
+Ⲏ EmotionLatent {
+    Ⲃ emotion: Emotion
+    Ⲃ intensity: Ⲫ64  // 0.0 - 1.0
+    
+    // Convert emotion to wave parameters
+    Ⲫ to_wave_params(Ⲥ) → (Ⲫ64, Ⲫ64, Ⲫ64) {  // (frequency, amplitude, phase)
+        Ⲉ Ⲥ.emotion == Emotion.Joy {
+            Ⲣ (2.0 * Ⲥ.intensity, 0.8, 0.0)
+        }
+        Ⲉ Ⲥ.emotion == Emotion.Sadness {
+            Ⲣ (0.5 * Ⲥ.intensity, 0.3, PI)
+        }
+        Ⲉ Ⲥ.emotion == Emotion.Anger {
+            Ⲣ (4.0 * Ⲥ.intensity, 1.0, PI / 2.0)
+        }
+        Ⲉ Ⲥ.emotion == Emotion.Fear {
+            Ⲣ (3.0 * Ⲥ.intensity, 0.6, PI / 4.0)
+        }
+        Ⲉ Ⲥ.emotion == Emotion.Surprise {
+            Ⲣ (5.0 * Ⲥ.intensity, 0.9, 0.0)
+        }
+        Ⲉ Ⲥ.emotion == Emotion.Trust {
+            Ⲣ (1.0 * Ⲥ.intensity, 0.5, PI / 3.0)
+        }
+        Ⲉ Ⲥ.emotion == Emotion.Anticipation {
+            Ⲣ (1.5 * Ⲥ.intensity, 0.7, PI / 6.0)
+        }
+        Ⲣ (1.0, 0.5, 0.0)  // Neutral
+    }
+    
+    // Convert emotion to color palette
+    Ⲫ to_color_palette(Ⲥ) → [(Ⲩ8, Ⲩ8, Ⲩ8)] {
+        Ⲉ Ⲥ.emotion == Emotion.Joy {
+            Ⲣ [(255, 223, 0), (255, 165, 0), (255, 215, 0)]  // Yellows/Golds
+        }
+        Ⲉ Ⲥ.emotion == Emotion.Sadness {
+            Ⲣ [(70, 130, 180), (100, 149, 237), (65, 105, 225)]  // Blues
+        }
+        Ⲉ Ⲥ.emotion == Emotion.Anger {
+            Ⲣ [(220, 20, 60), (178, 34, 34), (139, 0, 0)]  // Reds
+        }
+        Ⲉ Ⲥ.emotion == Emotion.Fear {
+            Ⲣ [(75, 0, 130), (72, 61, 139), (106, 90, 205)]  // Purples
+        }
+        Ⲉ Ⲥ.emotion == Emotion.Surprise {
+            Ⲣ [(255, 20, 147), (255, 105, 180), (255, 182, 193)]  // Pinks
+        }
+        Ⲉ Ⲥ.emotion == Emotion.Trust {
+            Ⲣ [(34, 139, 34), (60, 179, 113), (144, 238, 144)]  // Greens
+        }
+        Ⲣ [(128, 128, 128), (169, 169, 169), (192, 192, 192)]  // Grays
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DIFFUSION STEP
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ DiffusionStep {
+    Ⲃ step: Ⲓⲛⲧ
+    Ⲃ total_steps: Ⲓⲛⲧ
+    Ⲃ noise_level: Ⲫ64
+    
+    Ⲫ new(Ⲁ total_steps: Ⲓⲛⲧ) → DiffusionStep {
+        Ⲣ DiffusionStep {
+            step: 0,
+            total_steps: total_steps,
+            noise_level: 1.0
+        }
+    }
+    
+    // Advance one step (denoise)
+    Ⲫ advance(Ⲥ) {
+        Ⲥ.step += 1
+        Ⲥ.noise_level = 1.0 - (Ⲥ.step as Ⲫ64 / Ⲥ.total_steps as Ⲫ64)
+    }
+    
+    // Get current noise schedule
+    Ⲫ get_noise_schedule(Ⲥ) → Ⲫ64 {
+        // Cosine schedule (like in improved DDPM)
+        Ⲃ t = Ⲥ.step as Ⲫ64 / Ⲥ.total_steps as Ⲫ64
+        Ⲣ cos(t * PI / 2.0)
+    }
+    
+    Ⲫ is_complete(Ⲥ) → Trit {
+        Ⲣ Ⲥ.step >= Ⲥ.total_steps ? △ : ▽
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BEAM PIXEL DIFFUSION ENGINE
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ BeamPixelDiffusion {
+    Ⲃ grid: PixelGrid
+    Ⲃ waves: [WaveFunction]
+    Ⲃ emotion: EmotionLatent
+    Ⲃ diffusion: DiffusionStep
+    Ⲃ cursor_x: Ⲫ64 = 0.0
+    Ⲃ cursor_y: Ⲫ64 = 0.0
+    Ⲃ guidance_scale: Ⲫ64 = 7.5  // Like CFG in Stable Diffusion
+    Ⲃ time: Ⲫ64 = 0.0
+    
+    Ⲫ new(Ⲁ width: Ⲓⲛⲧ, Ⲁ height: Ⲓⲛⲧ) → BeamPixelDiffusion {
+        Ⲃ engine = BeamPixelDiffusion {
+            grid: PixelGrid.new(width, height),
+            waves: [],
+            emotion: EmotionLatent { emotion: Emotion.Neutral, intensity: 0.5 },
+            diffusion: DiffusionStep.new(50)
+        }
+        
+        // Initialize with multiple wave functions
+        engine.waves.push(WaveFunction.new(WaveType.Sine))
+        engine.waves.push(WaveFunction.new(WaveType.Perlin))
+        engine.waves.push(WaveFunction.new(WaveType.Cosine))
+        
+        Ⲣ engine
+    }
+    
+    // Set emotion (like setting a prompt)
+    Ⲫ set_emotion(Ⲥ, Ⲁ emotion: Emotion, Ⲁ intensity: Ⲫ64) {
+        Ⲥ.emotion = EmotionLatent { emotion: emotion, intensity: intensity }
+        
+        // Update wave parameters based on emotion
+        Ⲃ (freq, amp, phase) = Ⲥ.emotion.to_wave_params()
+        Ⲝ wave ∈ Ⲥ.waves {
+            wave.frequency = freq
+            wave.amplitude = amp
+            wave.phase = phase
+        }
+    }
+    
+    // Update cursor position (guidance)
+    Ⲫ set_cursor(Ⲥ, Ⲁ x: Ⲫ64, Ⲁ y: Ⲫ64) {
+        Ⲥ.cursor_x = x
+        Ⲥ.cursor_y = y
+    }
+    
+    // Perform one diffusion step
+    Ⲫ step(Ⲥ) {
+        Ⲉ Ⲥ.diffusion.is_complete() == △ { Ⲣ }
+        
+        Ⲃ noise_level = Ⲥ.diffusion.get_noise_schedule()
+        Ⲃ palette = Ⲥ.emotion.to_color_palette()
+        
+        // Process each pixel
+        Ⲝ y ∈ 0..Ⲥ.grid.height {
+            Ⲝ x ∈ 0..Ⲥ.grid.width {
+                Ⲃ pixel = Ⲥ.grid.get(x, y)
+                Ⲉ pixel == ○ { ⊘ }
+                
+                // Calculate distance from cursor (guidance)
+                Ⲃ dx = x as Ⲫ64 - Ⲥ.cursor_x
+                Ⲃ dy = y as Ⲫ64 - Ⲥ.cursor_y
+                Ⲃ dist = sqrt(dx * dx + dy * dy)
+                Ⲃ guidance = exp(-dist / (Ⲥ.grid.width as Ⲫ64 * 0.3)) * Ⲥ.guidance_scale
+                
+                // Combine wave functions
+                Ⲃ wave_value = 0.0
+                Ⲝ wave ∈ Ⲥ.waves {
+                    wave_value += wave.eval(x as Ⲫ64 * 0.01, y as Ⲫ64 * 0.01, Ⲥ.time)
+                }
+                wave_value = wave_value / Ⲥ.waves.len() as Ⲫ64
+                
+                // Apply guidance
+                wave_value = wave_value * (1.0 - guidance * 0.1) + guidance * 0.1
+                
+                // Mix with noise based on diffusion step
+                Ⲃ noise = WaveFunction.noise(x as Ⲫ64, y as Ⲫ64, Ⲥ.time)
+                Ⲃ mixed = wave_value * (1.0 - noise_level) + noise * noise_level
+                
+                // Map to color from palette
+                Ⲃ color_idx = ((mixed + 1.0) / 2.0 * (palette.len() - 1) as Ⲫ64) as Ⲓⲛⲧ
+                color_idx = clamp(color_idx, 0, palette.len() - 1)
+                Ⲃ (r, g, b) = palette[color_idx]
+                
+                // Apply brightness based on wave
+                Ⲃ brightness = (mixed + 1.0) / 2.0
+                Ⲃ fr = (r as Ⲫ64 * brightness) as Ⲩ8
+                Ⲃ fg = (g as Ⲫ64 * brightness) as Ⲩ8
+                Ⲃ fb = (b as Ⲫ64 * brightness) as Ⲩ8
+                
+                pixel.set_color(fr, fg, fb)
+            }
+        }
+        
+        Ⲥ.diffusion.advance()
+        Ⲥ.time += 0.1
+    }
+    
+    // Run full diffusion process
+    Ⲫ generate(Ⲥ) {
+        Ⲝ Ⲥ.diffusion.is_complete() == ▽ {
+            Ⲥ.step()
+        }
+    }
+    
+    // Get current buffer
+    Ⲫ get_buffer(Ⲥ) → [Ⲩ32] {
+        Ⲣ Ⲥ.grid.get_buffer()
+    }
+    
+    // Reset for new generation
+    Ⲫ reset(Ⲥ) {
+        Ⲥ.diffusion = DiffusionStep.new(50)
+        Ⲥ.time = 0.0
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FOG OF WAR DIFFUSION
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ FogOfWarDiffusion {
+    Ⲃ grid: PixelGrid
+    Ⲃ visibility_map: [Ⲫ64]  // 0.0 = hidden, 1.0 = visible
+    Ⲃ reveal_speed: Ⲫ64 = 0.1
+    Ⲃ fade_speed: Ⲫ64 = 0.02
+    
+    Ⲫ new(Ⲁ width: Ⲓⲛⲧ, Ⲁ height: Ⲓⲛⲧ) → FogOfWarDiffusion {
+        Ⲣ FogOfWarDiffusion {
+            grid: PixelGrid.new(width, height),
+            visibility_map: [0.0; width * height]
+        }
+    }
+    
+    // Reveal area around point
+    Ⲫ reveal(Ⲥ, Ⲁ cx: Ⲓⲛⲧ, Ⲁ cy: Ⲓⲛⲧ, Ⲁ radius: Ⲓⲛⲧ) {
+        Ⲝ y ∈ 0..Ⲥ.grid.height {
+            Ⲝ x ∈ 0..Ⲥ.grid.width {
+                Ⲃ dx = x - cx
+                Ⲃ dy = y - cy
+                Ⲃ dist = sqrt((dx * dx + dy * dy) as Ⲫ64)
+                
+                Ⲉ dist <= radius as Ⲫ64 {
+                    Ⲃ idx = y * Ⲥ.grid.width + x
+                    Ⲃ reveal_amount = 1.0 - (dist / radius as Ⲫ64)
+                    Ⲥ.visibility_map[idx] = min(1.0, Ⲥ.visibility_map[idx] + reveal_amount * Ⲥ.reveal_speed)
+                }
+            }
+        }
+    }
+    
+    // Fade unexplored areas
+    Ⲫ fade(Ⲥ) {
+        Ⲝ i ∈ 0..Ⲥ.visibility_map.len() {
+            Ⲥ.visibility_map[i] = max(0.0, Ⲥ.visibility_map[i] - Ⲥ.fade_speed)
+        }
+    }
+    
+    // Apply fog to pixel grid
+    Ⲫ apply_to_grid(Ⲥ, Ⲁ source_grid: PixelGrid) {
+        Ⲝ y ∈ 0..Ⲥ.grid.height {
+            Ⲝ x ∈ 0..Ⲥ.grid.width {
+                Ⲃ idx = y * Ⲥ.grid.width + x
+                Ⲃ visibility = Ⲥ.visibility_map[idx]
+                
+                Ⲃ src_pixel = source_grid.get(x, y)
+                Ⲃ dst_pixel = Ⲥ.grid.get(x, y)
+                
+                Ⲉ src_pixel != ○ && dst_pixel != ○ {
+                    // Blend with fog color based on visibility
+                    Ⲃ fog_r = 15 as Ⲩ8
+                    Ⲃ fog_g = 23 as Ⲩ8
+                    Ⲃ fog_b = 42 as Ⲩ8
+                    
+                    Ⲃ r = (src_pixel.r as Ⲫ64 * visibility + fog_r as Ⲫ64 * (1.0 - visibility)) as Ⲩ8
+                    Ⲃ g = (src_pixel.g as Ⲫ64 * visibility + fog_g as Ⲫ64 * (1.0 - visibility)) as Ⲩ8
+                    Ⲃ b = (src_pixel.b as Ⲫ64 * visibility + fog_b as Ⲫ64 * (1.0 - visibility)) as Ⲩ8
+                    
+                    dst_pixel.set_color(r, g, b)
+                    dst_pixel.a = (visibility * 255.0) as Ⲩ8
+                }
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════
+
+⊡ test "wave_function" {
+    Ⲃ wave = WaveFunction.new(WaveType.Sine)
+    Ⲃ val = wave.eval(0.0, 0.0, 0.0)
+    ⊜! val >= -1.0 && val <= 1.0
+}
+
+⊡ test "emotion_latent" {
+    Ⲃ emotion = EmotionLatent { emotion: Emotion.Joy, intensity: 1.0 }
+    Ⲃ (freq, amp, phase) = emotion.to_wave_params()
+    ⊜! freq == 2.0
+    ⊜! amp == 0.8
+}
+
+⊡ test "beam_pixel_diffusion" {
+    Ⲃ engine = BeamPixelDiffusion.new(100, 100)
+    engine.set_emotion(Emotion.Joy, 0.8)
+    engine.set_cursor(50.0, 50.0)
+    engine.step()
+    
+    ⊜! engine.diffusion.step == 1
+}
+
+⊡ test "fog_of_war" {
+    Ⲃ fog = FogOfWarDiffusion.new(100, 100)
+    fog.reveal(50, 50, 20)
+    
+    Ⲃ center_idx = 50 * 100 + 50
+    ⊜! fog.visibility_map[center_idx] > 0.0
+}

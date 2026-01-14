@@ -1,0 +1,265 @@
+// ═══════════════════════════════════════════════════════════════
+// ⲖⲒⲂⲈ ⲠⲒⲜⲈⲖ - Direct Pixel Access, NO LAYOUT, NO SVG
+// Like Sonic Pi for visuals - live coding the screen
+// ═══════════════════════════════════════════════════════════════
+
+Ⲯ ⲉⲡⲓⲫⲁⲛⲉⲓⲁ
+
+// ═══════════════════════════════════════════════════════════════
+// DIRECT PIXEL BUFFER - Raw memory access
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ LiveScreen {
+    Ⲃ width: Ⲓⲛⲧ
+    Ⲃ height: Ⲓⲛⲧ
+    Ⲃ pixels: [Ⲩ32]  // RGBA packed, direct memory
+    Ⲃ time: Ⲫ64 = 0.0
+    Ⲃ frame: Ⲩ64 = 0
+    
+    Ⲫ new(Ⲁ w: Ⲓⲛⲧ, Ⲁ h: Ⲓⲛⲧ) → LiveScreen {
+        Ⲣ LiveScreen { width: w, height: h, pixels: [0xFF000000; w * h] }
+    }
+    
+    // Direct pixel set - O(1)
+    Ⲫ px(Ⲥ, Ⲁ x: Ⲓⲛⲧ, Ⲁ y: Ⲓⲛⲧ, Ⲁ c: Ⲩ32) {
+        Ⲉ x >= 0 && x < Ⲥ.width && y >= 0 && y < Ⲥ.height {
+            Ⲥ.pixels[y * Ⲥ.width + x] = c
+        }
+    }
+    
+    // Get pixel
+    Ⲫ get(Ⲥ, Ⲁ x: Ⲓⲛⲧ, Ⲁ y: Ⲓⲛⲧ) → Ⲩ32 {
+        Ⲉ x >= 0 && x < Ⲥ.width && y >= 0 && y < Ⲥ.height {
+            Ⲣ Ⲥ.pixels[y * Ⲥ.width + x]
+        }
+        Ⲣ 0
+    }
+    
+    // Color helpers
+    Ⲫ rgb(Ⲁ r: Ⲩ8, Ⲁ g: Ⲩ8, Ⲁ b: Ⲩ8) → Ⲩ32 {
+        Ⲣ 0xFF000000 | (r as Ⲩ32) << 16 | (g as Ⲩ32) << 8 | (b as Ⲩ32)
+    }
+    
+    Ⲫ rgba(Ⲁ r: Ⲩ8, Ⲁ g: Ⲩ8, Ⲁ b: Ⲩ8, Ⲁ a: Ⲩ8) → Ⲩ32 {
+        Ⲣ (a as Ⲩ32) << 24 | (r as Ⲩ32) << 16 | (g as Ⲩ32) << 8 | (b as Ⲩ32)
+    }
+    
+    Ⲫ hsv(Ⲁ h: Ⲫ64, Ⲁ s: Ⲫ64, Ⲁ v: Ⲫ64) → Ⲩ32 {
+        Ⲃ c = v * s
+        Ⲃ x = c * (1.0 - abs((h / 60.0) % 2.0 - 1.0))
+        Ⲃ m = v - c
+        Ⲃ (r, g, b) = Ⲉ h < 60.0 { (c, x, 0.0) }
+            Ⲁ Ⲉ h < 120.0 { (x, c, 0.0) }
+            Ⲁ Ⲉ h < 180.0 { (0.0, c, x) }
+            Ⲁ Ⲉ h < 240.0 { (0.0, x, c) }
+            Ⲁ Ⲉ h < 300.0 { (x, 0.0, c) }
+            Ⲁ { (c, 0.0, x) }
+        Ⲣ LiveScreen.rgb(
+            ((r + m) * 255.0) as Ⲩ8,
+            ((g + m) * 255.0) as Ⲩ8,
+            ((b + m) * 255.0) as Ⲩ8
+        )
+    }
+    
+    // Clear screen
+    Ⲫ clear(Ⲥ, Ⲁ c: Ⲩ32) {
+        Ⲝ i ∈ 0..Ⲥ.pixels.len() { Ⲥ.pixels[i] = c }
+    }
+    
+    // Tick - advance time
+    Ⲫ tick(Ⲥ, Ⲁ dt: Ⲫ64) {
+        Ⲥ.time += dt
+        Ⲥ.frame += 1
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// WAVE SYNTH - Like Sonic Pi but for pixels
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ VisualSynth {
+    Ⲃ screen: LiveScreen
+    
+    Ⲫ new(Ⲁ w: Ⲓⲛⲧ, Ⲁ h: Ⲓⲛⲧ) → VisualSynth {
+        Ⲣ VisualSynth { screen: LiveScreen.new(w, h) }
+    }
+    
+    // ═══════════════════════════════════════════════════════════
+    // WAVE FUNCTIONS - Like Sonic Pi synths
+    // ═══════════════════════════════════════════════════════════
+    
+    // Sine wave across screen
+    Ⲫ wave_sin(Ⲥ, Ⲁ freq: Ⲫ64, Ⲁ amp: Ⲫ64, Ⲁ color: Ⲩ32) {
+        Ⲃ t = Ⲥ.screen.time
+        Ⲝ x ∈ 0..Ⲥ.screen.width {
+            Ⲃ y = (Ⲥ.screen.height / 2) as Ⲫ64 + 
+                  sin(x as Ⲫ64 * freq * 0.01 + t) * amp * Ⲥ.screen.height as Ⲫ64 * 0.4
+            Ⲥ.screen.px(x, y as Ⲓⲛⲧ, color)
+        }
+    }
+    
+    // Plasma effect
+    Ⲫ plasma(Ⲥ, Ⲁ scale: Ⲫ64) {
+        Ⲃ t = Ⲥ.screen.time
+        Ⲝ y ∈ 0..Ⲥ.screen.height {
+            Ⲝ x ∈ 0..Ⲥ.screen.width {
+                Ⲃ v = sin(x as Ⲫ64 * scale + t)
+                v += sin(y as Ⲫ64 * scale + t)
+                v += sin((x as Ⲫ64 + y as Ⲫ64) * scale + t)
+                v += sin(sqrt((x * x + y * y) as Ⲫ64) * scale)
+                Ⲃ hue = (v + 4.0) / 8.0 * 360.0
+                Ⲥ.screen.px(x, y, LiveScreen.hsv(hue, 1.0, 1.0))
+            }
+        }
+    }
+    
+    // Ripple from point
+    Ⲫ ripple(Ⲥ, Ⲁ cx: Ⲓⲛⲧ, Ⲁ cy: Ⲓⲛⲧ, Ⲁ freq: Ⲫ64, Ⲁ color: Ⲩ32) {
+        Ⲃ t = Ⲥ.screen.time
+        Ⲝ y ∈ 0..Ⲥ.screen.height {
+            Ⲝ x ∈ 0..Ⲥ.screen.width {
+                Ⲃ dx = (x - cx) as Ⲫ64
+                Ⲃ dy = (y - cy) as Ⲫ64
+                Ⲃ dist = sqrt(dx * dx + dy * dy)
+                Ⲃ v = sin(dist * freq * 0.1 - t * 5.0)
+                Ⲉ v > 0.8 {
+                    Ⲥ.screen.px(x, y, color)
+                }
+            }
+        }
+    }
+    
+    // Noise field
+    Ⲫ noise(Ⲥ, Ⲁ scale: Ⲫ64) {
+        Ⲃ t = Ⲥ.screen.time
+        Ⲝ y ∈ 0..Ⲥ.screen.height {
+            Ⲝ x ∈ 0..Ⲥ.screen.width {
+                Ⲃ n = sin(x as Ⲫ64 * 12.9898 + y as Ⲫ64 * 78.233 + t) * 43758.5453
+                n = n - floor(n)
+                Ⲃ c = (n * 255.0) as Ⲩ8
+                Ⲥ.screen.px(x, y, LiveScreen.rgb(c, c, c))
+            }
+        }
+    }
+    
+    // Fog of war - reveal around point
+    Ⲫ fog(Ⲥ, Ⲁ cx: Ⲓⲛⲧ, Ⲁ cy: Ⲓⲛⲧ, Ⲁ radius: Ⲫ64) {
+        Ⲝ y ∈ 0..Ⲥ.screen.height {
+            Ⲝ x ∈ 0..Ⲥ.screen.width {
+                Ⲃ dx = (x - cx) as Ⲫ64
+                Ⲃ dy = (y - cy) as Ⲫ64
+                Ⲃ dist = sqrt(dx * dx + dy * dy)
+                Ⲉ dist > radius {
+                    Ⲃ fade = min(1.0, (dist - radius) / 50.0)
+                    Ⲃ old = Ⲥ.screen.get(x, y)
+                    Ⲃ r = ((old >> 16) & 0xFF) as Ⲫ64 * (1.0 - fade * 0.8)
+                    Ⲃ g = ((old >> 8) & 0xFF) as Ⲫ64 * (1.0 - fade * 0.8)
+                    Ⲃ b = (old & 0xFF) as Ⲫ64 * (1.0 - fade * 0.8)
+                    Ⲥ.screen.px(x, y, LiveScreen.rgb(r as Ⲩ8, g as Ⲩ8, b as Ⲩ8))
+                }
+            }
+        }
+    }
+    
+    // Diffusion step - blur/spread
+    Ⲫ diffuse(Ⲥ, Ⲁ amount: Ⲫ64) {
+        Ⲃ old = Ⲥ.screen.pixels.clone()
+        Ⲝ y ∈ 1..(Ⲥ.screen.height - 1) {
+            Ⲝ x ∈ 1..(Ⲥ.screen.width - 1) {
+                Ⲃ idx = y * Ⲥ.screen.width + x
+                Ⲃ c = old[idx]
+                Ⲃ n = old[idx - Ⲥ.screen.width]
+                Ⲃ s = old[idx + Ⲥ.screen.width]
+                Ⲃ e = old[idx + 1]
+                Ⲃ w = old[idx - 1]
+                
+                // Average neighbors
+                Ⲃ r = (((c >> 16) & 0xFF) + ((n >> 16) & 0xFF) + ((s >> 16) & 0xFF) + ((e >> 16) & 0xFF) + ((w >> 16) & 0xFF)) / 5
+                Ⲃ g = (((c >> 8) & 0xFF) + ((n >> 8) & 0xFF) + ((s >> 8) & 0xFF) + ((e >> 8) & 0xFF) + ((w >> 8) & 0xFF)) / 5
+                Ⲃ b = ((c & 0xFF) + (n & 0xFF) + (s & 0xFF) + (e & 0xFF) + (w & 0xFF)) / 5
+                
+                Ⲥ.screen.pixels[idx] = LiveScreen.rgb(r as Ⲩ8, g as Ⲩ8, b as Ⲩ8)
+            }
+        }
+    }
+    
+    // Live loop - like Sonic Pi's live_loop
+    Ⲫ live_loop(Ⲥ, Ⲁ name: Ⲧⲉⲝⲧ, Ⲁ f: Ⲫⲛ(VisualSynth)) {
+        f(Ⲥ)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// LIVE CODING DSL - Sonic Pi style
+// ═══════════════════════════════════════════════════════════════
+
+// Global synth instance
+Ⲃ ⲥⲩⲛⲑ: VisualSynth? = ○
+
+Ⲫ setup(Ⲁ w: Ⲓⲛⲧ, Ⲁ h: Ⲓⲛⲧ) {
+    ⲥⲩⲛⲑ = VisualSynth.new(w, h)
+}
+
+Ⲫ px(Ⲁ x: Ⲓⲛⲧ, Ⲁ y: Ⲓⲛⲧ, Ⲁ c: Ⲩ32) {
+    ⲥⲩⲛⲑ?.screen.px(x, y, c)
+}
+
+Ⲫ clear(Ⲁ c: Ⲩ32) {
+    ⲥⲩⲛⲑ?.screen.clear(c)
+}
+
+Ⲫ wave(Ⲁ freq: Ⲫ64, Ⲁ amp: Ⲫ64, Ⲁ c: Ⲩ32) {
+    ⲥⲩⲛⲑ?.wave_sin(freq, amp, c)
+}
+
+Ⲫ plasma(Ⲁ scale: Ⲫ64) {
+    ⲥⲩⲛⲑ?.plasma(scale)
+}
+
+Ⲫ ripple(Ⲁ x: Ⲓⲛⲧ, Ⲁ y: Ⲓⲛⲧ, Ⲁ freq: Ⲫ64, Ⲁ c: Ⲩ32) {
+    ⲥⲩⲛⲑ?.ripple(x, y, freq, c)
+}
+
+Ⲫ fog(Ⲁ x: Ⲓⲛⲧ, Ⲁ y: Ⲓⲛⲧ, Ⲁ r: Ⲫ64) {
+    ⲥⲩⲛⲑ?.fog(x, y, r)
+}
+
+Ⲫ diffuse(Ⲁ amt: Ⲫ64) {
+    ⲥⲩⲛⲑ?.diffuse(amt)
+}
+
+Ⲫ tick(Ⲁ dt: Ⲫ64) {
+    ⲥⲩⲛⲑ?.screen.tick(dt)
+}
+
+Ⲫ time() → Ⲫ64 {
+    Ⲣ ⲥⲩⲛⲑ?.screen.time ?? 0.0
+}
+
+Ⲫ frame() → Ⲩ64 {
+    Ⲣ ⲥⲩⲛⲑ?.screen.frame ?? 0
+}
+
+Ⲫ buffer() → [Ⲩ32] {
+    Ⲣ ⲥⲩⲛⲑ?.screen.pixels ?? []
+}
+
+// ═══════════════════════════════════════════════════════════════
+// EXAMPLE - Like Sonic Pi code
+// ═══════════════════════════════════════════════════════════════
+//
+// setup(800, 600)
+//
+// live_loop "plasma" {
+//     plasma(0.05)
+//     tick(0.016)
+// }
+//
+// live_loop "ripples" {
+//     clear(0xFF000000)
+//     ripple(400, 300, 2.0, 0xFF00FF00)
+//     fog(mouse_x, mouse_y, 100.0)
+//     tick(0.016)
+// }
+//
+// ═══════════════════════════════════════════════════════════════

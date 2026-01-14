@@ -1,0 +1,374 @@
+// ═══════════════════════════════════════════════════════════════
+// TTQ - Trained Ternary Quantization (4x)
+// Quantize neural network weights to {-1, 0, +1}
+// Based on: arXiv:1612.01064, arXiv:2310.11453 (BitNet)
+// ═══════════════════════════════════════════════════════════════
+
+Ⲯ ⲕⲃⲁⲛⲧ
+
+// ═══════════════════════════════════════════════════════════════
+// QUANTIZATION FUNCTIONS
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ TTQ {
+    Ⲃ threshold_pos: Ⲫ64 = 0.05   // Threshold for +1
+    Ⲃ threshold_neg: Ⲫ64 = -0.05  // Threshold for -1
+    Ⲃ scale_pos: Ⲫ64 = 1.0        // Learned scale for positive
+    Ⲃ scale_neg: Ⲫ64 = 1.0        // Learned scale for negative
+    
+    // Quantize single weight to {-1, 0, +1}
+    Ⲫ quantize(Ⲥ, Ⲁ w: Ⲫ64) → Ⲓⲛⲧ {
+        Ⲉ w > Ⲥ.threshold_pos { Ⲣ 1 }
+        Ⲉ w < Ⲥ.threshold_neg { Ⲣ -1 }
+        Ⲣ 0
+    }
+    
+    // Dequantize: apply learned scales
+    Ⲫ dequantize(Ⲥ, Ⲁ q: Ⲓⲛⲧ) → Ⲫ64 {
+        Ⲉ q == 1 { Ⲣ Ⲥ.scale_pos }
+        Ⲉ q == -1 { Ⲣ -Ⲥ.scale_neg }
+        Ⲣ 0.0
+    }
+    
+    // Quantize weight tensor
+    Ⲫ quantize_tensor(Ⲥ, Ⲁ weights: [Ⲫ64]) → [Ⲓⲛⲧ] {
+        Ⲃ result: [Ⲓⲛⲧ] = []
+        Ⲝ w ∈ weights {
+            result.push(Ⲥ.quantize(w))
+        }
+        Ⲣ result
+    }
+    
+    // Learn optimal thresholds from data
+    Ⲫ learn_thresholds(Ⲥ, Ⲁ weights: [Ⲫ64]) {
+        // Sort absolute values
+        Ⲃ abs_weights: [Ⲫ64] = []
+        Ⲝ w ∈ weights { abs_weights.push(abs(w)) }
+        abs_weights.sort()
+        
+        // Find threshold that minimizes quantization error
+        Ⲃ best_threshold = 0.0
+        Ⲃ best_error = Ⲫ64.MAX
+        
+        Ⲝ i ∈ 0..100 {
+            Ⲃ t = abs_weights[abs_weights.len() * i / 100]
+            Ⲃ error = Ⲥ.compute_error(weights, t)
+            Ⲉ error < best_error {
+                best_error = error
+                best_threshold = t
+            }
+        }
+        
+        Ⲥ.threshold_pos = best_threshold
+        Ⲥ.threshold_neg = -best_threshold
+    }
+    
+    // Compute quantization error
+    Ⲫ compute_error(Ⲥ, Ⲁ weights: [Ⲫ64], Ⲁ threshold: Ⲫ64) → Ⲫ64 {
+        Ⲃ old_pos = Ⲥ.threshold_pos
+        Ⲃ old_neg = Ⲥ.threshold_neg
+        Ⲥ.threshold_pos = threshold
+        Ⲥ.threshold_neg = -threshold
+        
+        // Compute scales
+        Ⲃ pos_sum = 0.0
+        Ⲃ pos_count = 0
+        Ⲃ neg_sum = 0.0
+        Ⲃ neg_count = 0
+        
+        Ⲝ w ∈ weights {
+            Ⲉ w > threshold { pos_sum += w; pos_count += 1 }
+            Ⲉ w < -threshold { neg_sum += abs(w); neg_count += 1 }
+        }
+        
+        Ⲥ.scale_pos = Ⲉ pos_count > 0 { pos_sum / pos_count } Ⲁ { 1.0 }
+        Ⲥ.scale_neg = Ⲉ neg_count > 0 { neg_sum / neg_count } Ⲁ { 1.0 }
+        
+        // Compute MSE
+        Ⲃ error = 0.0
+        Ⲝ w ∈ weights {
+            Ⲃ q = Ⲥ.quantize(w)
+            Ⲃ dq = Ⲥ.dequantize(q)
+            error += (w - dq) * (w - dq)
+        }
+        
+        Ⲥ.threshold_pos = old_pos
+        Ⲥ.threshold_neg = old_neg
+        
+        Ⲣ error / weights.len()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BITNET-STYLE QUANTIZATION
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ BitNet {
+    // BitLinear: 1-bit weights with scaling
+    Ⲃ gamma: Ⲫ64 = 1.0  // Learned scale
+    
+    // Sign function with STE (Straight-Through Estimator)
+    Ⲫ sign_ste(Ⲁ x: Ⲫ64) → Ⲫ64 {
+        Ⲉ x >= 0.0 { Ⲣ 1.0 }
+        Ⲣ -1.0
+    }
+    
+    // Quantize weights to {-1, +1}
+    Ⲫ quantize_binary(Ⲁ weights: [Ⲫ64]) → ([Ⲓⲛⲧ], Ⲫ64) {
+        // Compute mean absolute value for scaling
+        Ⲃ mean_abs = 0.0
+        Ⲝ w ∈ weights { mean_abs += abs(w) }
+        mean_abs = mean_abs / weights.len()
+        
+        // Quantize
+        Ⲃ quantized: [Ⲓⲛⲧ] = []
+        Ⲝ w ∈ weights {
+            quantized.push(Ⲉ w >= 0.0 { 1 } Ⲁ { -1 })
+        }
+        
+        Ⲣ (quantized, mean_abs)
+    }
+    
+    // Quantize activations to 8-bit
+    Ⲫ quantize_activations(Ⲁ x: [Ⲫ64], Ⲁ bits: Ⲓⲛⲧ) → ([Ⲓⲛⲧ], Ⲫ64) {
+        Ⲃ max_val = 0.0
+        Ⲝ v ∈ x { max_val = max(max_val, abs(v)) }
+        
+        Ⲃ scale = (pow(2.0, bits - 1) - 1.0) / max_val
+        
+        Ⲃ quantized: [Ⲓⲛⲧ] = []
+        Ⲝ v ∈ x {
+            Ⲃ q = round(v * scale) as Ⲓⲛⲧ
+            q = clamp(q, -(1 << (bits-1)), (1 << (bits-1)) - 1)
+            quantized.push(q)
+        }
+        
+        Ⲣ (quantized, scale)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// AWQ-STYLE ACTIVATION-AWARE QUANTIZATION
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ AWQ {
+    Ⲃ salient_ratio: Ⲫ64 = 0.01  // 1% salient channels
+    
+    // Find salient channels based on activation magnitude
+    Ⲫ find_salient(Ⲁ activations: [[Ⲫ64]]) → [Ⲓⲛⲧ] {
+        Ⲃ n_channels = activations[0].len()
+        Ⲃ channel_importance: [Ⲫ64] = [0.0; n_channels]
+        
+        // Sum activation magnitudes per channel
+        Ⲝ act ∈ activations {
+            Ⲝ c ∈ 0..n_channels {
+                channel_importance[c] += abs(act[c])
+            }
+        }
+        
+        // Find top 1% channels
+        Ⲃ sorted_indices = argsort(channel_importance).reverse()
+        Ⲃ n_salient = max(1, (n_channels as Ⲫ64 * AWQ.salient_ratio) as Ⲓⲛⲧ)
+        
+        Ⲣ sorted_indices[0..n_salient]
+    }
+    
+    // Scale salient channels to protect them
+    Ⲫ compute_scales(Ⲁ weights: [[Ⲫ64]], Ⲁ salient: [Ⲓⲛⲧ]) → [Ⲫ64] {
+        Ⲃ n_channels = weights[0].len()
+        Ⲃ scales: [Ⲫ64] = [1.0; n_channels]
+        
+        Ⲝ c ∈ salient {
+            // Scale up salient channels
+            Ⲃ max_w = 0.0
+            Ⲝ row ∈ weights {
+                max_w = max(max_w, abs(row[c]))
+            }
+            scales[c] = max_w * 2.0  // Protect by scaling up
+        }
+        
+        Ⲣ scales
+    }
+    
+    // Quantize with channel-wise scaling
+    Ⲫ quantize_awq(Ⲁ weights: [[Ⲫ64]], Ⲁ scales: [Ⲫ64], Ⲁ bits: Ⲓⲛⲧ) → [[Ⲓⲛⲧ]] {
+        Ⲃ result: [[Ⲓⲛⲧ]] = []
+        Ⲃ max_val = (1 << (bits - 1)) - 1
+        
+        Ⲝ row ∈ weights {
+            Ⲃ qrow: [Ⲓⲛⲧ] = []
+            Ⲝ c ∈ 0..row.len() {
+                Ⲃ scaled = row[c] * scales[c]
+                Ⲃ q = round(scaled * max_val) as Ⲓⲛⲧ
+                q = clamp(q, -max_val, max_val)
+                qrow.push(q)
+            }
+            result.push(qrow)
+        }
+        
+        Ⲣ result
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// GPTQ-STYLE QUANTIZATION
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ GPTQ {
+    // One-shot quantization using Hessian information
+    Ⲫ quantize_layer(Ⲁ weights: [[Ⲫ64]], Ⲁ hessian: [[Ⲫ64]], Ⲁ bits: Ⲓⲛⲧ) → [[Ⲓⲛⲧ]] {
+        Ⲃ n_rows = weights.len()
+        Ⲃ n_cols = weights[0].len()
+        Ⲃ result: [[Ⲓⲛⲧ]] = []
+        
+        // Cholesky decomposition of Hessian (simplified)
+        Ⲃ h_inv = GPTQ.invert_hessian(hessian)
+        
+        Ⲝ row ∈ 0..n_rows {
+            Ⲃ w = weights[row].clone()
+            Ⲃ qrow: [Ⲓⲛⲧ] = []
+            
+            Ⲝ col ∈ 0..n_cols {
+                // Quantize
+                Ⲃ q = GPTQ.quantize_weight(w[col], bits)
+                qrow.push(q)
+                
+                // Update remaining weights using Hessian
+                Ⲃ error = w[col] - GPTQ.dequantize_weight(q, bits)
+                Ⲝ j ∈ (col+1)..n_cols {
+                    w[j] -= error * h_inv[col][j] / h_inv[col][col]
+                }
+            }
+            
+            result.push(qrow)
+        }
+        
+        Ⲣ result
+    }
+    
+    Ⲫ quantize_weight(Ⲁ w: Ⲫ64, Ⲁ bits: Ⲓⲛⲧ) → Ⲓⲛⲧ {
+        Ⲃ max_val = (1 << (bits - 1)) - 1
+        Ⲃ q = round(w * max_val) as Ⲓⲛⲧ
+        Ⲣ clamp(q, -max_val, max_val)
+    }
+    
+    Ⲫ dequantize_weight(Ⲁ q: Ⲓⲛⲧ, Ⲁ bits: Ⲓⲛⲧ) → Ⲫ64 {
+        Ⲃ max_val = (1 << (bits - 1)) - 1
+        Ⲣ q as Ⲫ64 / max_val as Ⲫ64
+    }
+    
+    Ⲫ invert_hessian(Ⲁ h: [[Ⲫ64]]) → [[Ⲫ64]] {
+        // Simplified: add damping and invert
+        Ⲃ n = h.len()
+        Ⲃ result: [[Ⲫ64]] = []
+        
+        Ⲝ i ∈ 0..n {
+            Ⲃ row: [Ⲫ64] = []
+            Ⲝ j ∈ 0..n {
+                Ⲉ i == j { row.push(1.0 / (h[i][j] + 0.01)) }
+                Ⲁ { row.push(0.0) }
+            }
+            result.push(row)
+        }
+        
+        Ⲣ result
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TERNARY NEURAL NETWORK LAYER
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ TernaryLinear {
+    Ⲃ weights: PackedTrits      // From packing.999
+    Ⲃ scale_pos: Ⲫ64
+    Ⲃ scale_neg: Ⲫ64
+    Ⲃ in_features: Ⲓⲛⲧ
+    Ⲃ out_features: Ⲓⲛⲧ
+    
+    Ⲫ new(Ⲁ in_f: Ⲓⲛⲧ, Ⲁ out_f: Ⲓⲛⲧ) → TernaryLinear {
+        Ⲣ TernaryLinear {
+            weights: PackedTrits.new(in_f * out_f),
+            scale_pos: 1.0,
+            scale_neg: 1.0,
+            in_features: in_f,
+            out_features: out_f
+        }
+    }
+    
+    // Forward pass with ternary weights
+    Ⲫ forward(Ⲥ, Ⲁ input: [Ⲫ64]) → [Ⲫ64] {
+        Ⲃ output: [Ⲫ64] = [0.0; Ⲥ.out_features]
+        
+        Ⲝ o ∈ 0..Ⲥ.out_features {
+            Ⲃ sum = 0.0
+            Ⲝ i ∈ 0..Ⲥ.in_features {
+                Ⲃ w = Ⲥ.weights.get(o * Ⲥ.in_features + i)
+                Ⲉ w == 1 { sum += input[i] * Ⲥ.scale_pos }
+                Ⲉ w == -1 { sum -= input[i] * Ⲥ.scale_neg }
+            }
+            output[o] = sum
+        }
+        
+        Ⲣ output
+    }
+    
+    // Memory savings vs FP32
+    Ⲫ compression_ratio(Ⲥ) → Ⲫ64 {
+        Ⲃ fp32_bytes = Ⲥ.in_features * Ⲥ.out_features * 4
+        Ⲃ ternary_bytes = (Ⲥ.in_features * Ⲥ.out_features + 4) / 5 + 16  // packed + scales
+        Ⲣ fp32_bytes as Ⲫ64 / ternary_bytes as Ⲫ64
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════
+
+⊡ test "ttq_quantize" {
+    Ⲃ ttq = TTQ { threshold_pos: 0.5, threshold_neg: -0.5 }
+    ⊜! ttq.quantize(0.8) == 1
+    ⊜! ttq.quantize(-0.8) == -1
+    ⊜! ttq.quantize(0.3) == 0
+}
+
+⊡ test "bitnet_binary" {
+    Ⲃ weights = [0.5, -0.3, 0.1, -0.8]
+    Ⲃ (q, scale) = BitNet.quantize_binary(weights)
+    ⊜! q[0] == 1
+    ⊜! q[1] == -1
+    ⊜! q[2] == 1
+    ⊜! q[3] == -1
+}
+
+⊡ test "ternary_linear_compression" {
+    Ⲃ layer = TernaryLinear.new(1024, 1024)
+    Ⲃ ratio = layer.compression_ratio()
+    ⊜! ratio > 15.0  // ~16x compression (32 bits → ~2 bits)
+}
+
+⊡ test "awq_salient" {
+    Ⲃ activations = [[1.0, 0.1, 0.2], [0.9, 0.15, 0.25], [1.1, 0.05, 0.3]]
+    Ⲃ salient = AWQ.find_salient(activations)
+    ⊜! salient[0] == 0  // Channel 0 has highest activation
+}
+
+// ═══════════════════════════════════════════════════════════════
+// QUANTIZATION COMPARISON
+// ═══════════════════════════════════════════════════════════════
+//
+// Method     | Bits | Compression | Accuracy Loss | Speed
+// -----------|------|-------------|---------------|-------
+// FP32       |  32  |     1x      |     0%        |  1x
+// FP16       |  16  |     2x      |    ~0%        |  2x
+// INT8       |   8  |     4x      |   <1%         |  4x
+// GPTQ-4bit  |   4  |     8x      |   1-2%        |  4x
+// AWQ-4bit   |   4  |     8x      |   <1%         |  4x
+// TTQ        | 1.58 |    ~20x     |   2-3%        |  4x
+// BitNet     |   1  |    32x      |   3-5%        |  4x
+//
+// TTQ achieves 4x speedup through:
+// - Elimination of multiplications (only add/subtract)
+// - SIMD-friendly packed representation
+// - Reduced memory bandwidth
+// ═══════════════════════════════════════════════════════════════

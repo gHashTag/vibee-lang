@@ -1,0 +1,161 @@
+# ═══════════════════════════════════════════════════════════════
+# SELF-EVOLUTION v4.0 - Enhanced with Formal Verification
+# Based on: arXiv:2601.05280 (Limits of Self-Improving)
+# Solution: Neurosymbolic approach with external oracle
+# ═══════════════════════════════════════════════════════════════
+
+name: self_evolution_v4
+version: "4.0.0"
+target: 999
+module: Ⲙ_evolution
+description: "Self-evolution with formal verification and external oracle"
+
+creation_pattern:
+  source: CurrentState
+  transformer: VerifiedEvolution
+  result: ImprovedState
+
+pas_analysis:
+  patterns:
+    - pattern: PRE
+      application: "Cache fitness evaluations"
+    - pattern: MLS
+      application: "ML-guided mutation selection"
+  current_metrics:
+    n: 25
+    k: 8
+    m: 30
+
+# Problem from research:
+# 1. Entropy Decay - mode collapse
+# 2. Variance Amplification - truth drift
+# Solution: External grounding + formal verification
+
+types:
+  - name: EvolutionState
+    fields:
+      - version: Ⲧⲉⲝⲧ
+      - generation: Ⲓⲛⲧ
+      - fitness: Ⲫⲗⲟⲁⲧ
+      - improved: Trit
+      - drift_score: Ⲫⲗⲟⲁⲧ  # Track drift
+
+  - name: Mutation
+    fields:
+      - type: Ⲧⲉⲝⲧ
+      - delta: Ⲫⲗⲟⲁⲧ
+      - verified: Trit
+
+  - name: ExternalOracle
+    description: "External validation to prevent drift"
+    fields:
+      - validators: [Ⲫⲛ]
+      - confidence: Ⲫⲗⲟⲁⲧ
+      - last_validation: Trit
+
+  - name: FormalVerifier
+    description: "Invariant checker"
+    fields:
+      - invariants: [Invariant]
+      - all_passed: Trit
+
+functions:
+  - name: evolve
+    description: "Evolve with verification"
+    params: [{state: EvolutionState}]
+    returns: EvolutionState
+    body: |
+      // 1. Generate candidate mutation
+      Ⲃ candidate = state.mutate()
+      
+      // 2. Formal verification (REQUIRED)
+      Ⲃ verified = state.verifier.verify_all()
+      Ⲉ verified == ▽ {
+          state.improved = ▽
+          Ⲣ state  // Reject - invariant violated
+      }
+      
+      // 3. External oracle validation (prevents drift)
+      Ⲃ oracle_result = state.oracle.validate(candidate)
+      Ⲉ oracle_result == ▽ {
+          state.improved = ▽
+          state.drift_score += 0.1  // Track drift attempt
+          Ⲣ state  // Reject - oracle rejected
+      }
+      
+      // 4. Accept evolution
+      state.generation += 1
+      state.improved = △
+      state.drift_score = max(0, state.drift_score - 0.05)
+      Ⲣ candidate
+
+  - name: add_invariant
+    description: "Add verification invariant"
+    params: [{state: EvolutionState}, {name: Ⲧⲉⲝⲧ}, {cond: Ⲫⲛ}]
+    returns: Ⲃⲟⲟⲗ
+    body: |
+      state.verifier.add_invariant(name, cond)
+      Ⲣ △
+
+  - name: add_oracle_validator
+    description: "Add external validator"
+    params: [{state: EvolutionState}, {validator: Ⲫⲛ}]
+    returns: Ⲃⲟⲟⲗ
+    body: |
+      state.oracle.validators.push(validator)
+      Ⲣ △
+
+  - name: check_drift
+    description: "Check if system is drifting"
+    params: [{state: EvolutionState}]
+    returns: Trit
+    body: |
+      Ⲉ state.drift_score > 0.5 { Ⲣ △ }  // High drift
+      Ⲉ state.drift_score > 0.2 { Ⲣ ○ }  // Some drift
+      Ⲣ ▽  // No drift
+
+behaviors:
+  - name: evolution_requires_verification
+    given: "An evolution state"
+    when: "evolve() is called"
+    then: "Formal verification must pass"
+    test_cases:
+      - name: verified_evolution
+        input: {invariants_pass: true}
+        expected: {improved: △}
+      - name: failed_verification
+        input: {invariants_pass: false}
+        expected: {improved: ▽}
+
+  - name: oracle_prevents_drift
+    given: "Evolution with external oracle"
+    when: "Oracle rejects mutation"
+    then: "Evolution is rejected and drift tracked"
+    test_cases:
+      - name: oracle_rejection
+        input: {oracle_pass: false}
+        expected: {improved: ▽, drift_increased: true}
+
+  - name: drift_detection
+    given: "Multiple rejected evolutions"
+    when: "check_drift() is called"
+    then: "Returns appropriate drift level"
+    test_cases:
+      - name: high_drift
+        input: {drift_score: 0.6}
+        expected: △
+      - name: medium_drift
+        input: {drift_score: 0.3}
+        expected: ○
+      - name: no_drift
+        input: {drift_score: 0.1}
+        expected: ▽
+
+self_evolution:
+  enabled: true
+  version: "4.0"
+  # Meta: this spec itself uses self-evolution
+  invariants:
+    - "fitness > 0"
+    - "generation >= 0"
+    - "drift_score >= 0 && drift_score <= 1"

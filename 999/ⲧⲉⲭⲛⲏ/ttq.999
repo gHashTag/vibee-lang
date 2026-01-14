@@ -1,0 +1,133 @@
+// ═══════════════════════════════════════════════════════════════
+// TRAINED TERNARY QUANTIZATION (TTQ)
+// Based on: Zhu et al. "Trained Ternary Quantization" (ICLR 2017)
+// 16-32x model compression with <1% accuracy loss
+// ═══════════════════════════════════════════════════════════════
+
+Ⲯ ⲕⲟⲣⲉ
+Ⲯ ⲧⲣⲓⲛⲓⲧⲩ
+
+Ⲏ TTQConfig {
+    Ⲃ threshold_ratio: Ⲫⲗⲟⲁⲧ = 0.05
+    Ⲃ learning_rate_scale: Ⲫⲗⲟⲁⲧ = 1.0
+    Ⲃ learning_rate_threshold: Ⲫⲗⲟⲁⲧ = 1.0
+}
+
+Ⲏ TTQLayer {
+    Ⲃ full_weights: [Ⲫⲗⲟⲁⲧ]
+    Ⲃ ternary_weights: [Trit]
+    Ⲃ scale_pos: Ⲫⲗⲟⲁⲧ
+    Ⲃ scale_neg: Ⲫⲗⲟⲁⲧ
+    Ⲃ threshold: Ⲫⲗⲟⲁⲧ
+    Ⲃ in_features: Ⲓⲛⲧ
+    Ⲃ out_features: Ⲓⲛⲧ
+    
+    Ⲫ new(Ⲁ in_f: Ⲓⲛⲧ, Ⲁ out_f: Ⲓⲛⲧ) → TTQLayer {
+        Ⲃ size = in_f * out_f
+        Ⲃ weights: [Ⲫⲗⲟⲁⲧ] = []
+        Ⲝ i ∈ 0..size { weights.push(random_float(-0.1, 0.1)) }
+        
+        Ⲣ TTQLayer {
+            full_weights: weights,
+            ternary_weights: [○; size],
+            scale_pos: 1.0,
+            scale_neg: 1.0,
+            threshold: 0.05,
+            in_features: in_f,
+            out_features: out_f
+        }
+    }
+    
+    Ⲫ quantize(Ⲥ) {
+        Ⲃ pos_sum = 0.0
+        Ⲃ neg_sum = 0.0
+        Ⲃ pos_count = 0
+        Ⲃ neg_count = 0
+        
+        Ⲝ i, w ∈ Ⲥ.full_weights.enumerate() {
+            Ⲉ w > Ⲥ.threshold {
+                Ⲥ.ternary_weights[i] = △
+                pos_sum += w
+                pos_count += 1
+            } Ⲱ Ⲉ w < -Ⲥ.threshold {
+                Ⲥ.ternary_weights[i] = ▽
+                neg_sum += abs(w)
+                neg_count += 1
+            } Ⲱ {
+                Ⲥ.ternary_weights[i] = ○
+            }
+        }
+        
+        Ⲉ pos_count > 0 { Ⲥ.scale_pos = pos_sum / pos_count }
+        Ⲉ neg_count > 0 { Ⲥ.scale_neg = neg_sum / neg_count }
+    }
+    
+    Ⲫ forward(Ⲥ, Ⲁ input: [Ⲫⲗⲟⲁⲧ]) → [Ⲫⲗⲟⲁⲧ] {
+        Ⲃ output: [Ⲫⲗⲟⲁⲧ] = [0.0; Ⲥ.out_features]
+        
+        Ⲝ o ∈ 0..Ⲥ.out_features {
+            Ⲝ i ∈ 0..Ⲥ.in_features {
+                Ⲃ idx = o * Ⲥ.in_features + i
+                Ⲃ t = Ⲥ.ternary_weights[idx]
+                Ⲉ t == △ { output[o] += Ⲥ.scale_pos * input[i] }
+                Ⲱ Ⲉ t == ▽ { output[o] -= Ⲥ.scale_neg * input[i] }
+            }
+        }
+        
+        Ⲣ output
+    }
+    
+    Ⲫ backward(Ⲥ, Ⲁ grad_output: [Ⲫⲗⲟⲁⲧ], Ⲁ input: [Ⲫⲗⲟⲁⲧ], Ⲁ lr: Ⲫⲗⲟⲁⲧ) {
+        Ⲝ o ∈ 0..Ⲥ.out_features {
+            Ⲝ i ∈ 0..Ⲥ.in_features {
+                Ⲃ idx = o * Ⲥ.in_features + i
+                Ⲃ grad = grad_output[o] * input[i]
+                Ⲥ.full_weights[idx] -= lr * grad
+            }
+        }
+        Ⲥ.quantize()
+    }
+    
+    Ⲫ compression_ratio(Ⲥ) → Ⲫⲗⲟⲁⲧ { Ⲣ 16.0 }
+}
+
+Ⲏ TTQNetwork {
+    Ⲃ layers: [TTQLayer]
+    
+    Ⲫ new(Ⲁ sizes: [Ⲓⲛⲧ]) → TTQNetwork {
+        Ⲃ layers: [TTQLayer] = []
+        Ⲝ i ∈ 0..sizes.len()-1 {
+            layers.push(TTQLayer.new(sizes[i], sizes[i+1]))
+        }
+        Ⲣ TTQNetwork { layers: layers }
+    }
+    
+    Ⲫ forward(Ⲥ, Ⲁ input: [Ⲫⲗⲟⲁⲧ]) → [Ⲫⲗⲟⲁⲧ] {
+        Ⲃ x = input
+        Ⲝ layer ∈ Ⲥ.layers {
+            x = layer.forward(x)
+            x = x.map(Ⲫⲛ(v) { Ⲣ tanh(v) })
+        }
+        Ⲣ x
+    }
+    
+    Ⲫ quantize_all(Ⲥ) {
+        Ⲝ layer ∈ Ⲥ.layers { layer.quantize() }
+    }
+    
+    Ⲫ total_compression(Ⲥ) → Ⲫⲗⲟⲁⲧ { Ⲣ 16.0 }
+}
+
+⊡ test "ttq_layer" {
+    Ⲃ layer = TTQLayer.new(4, 3)
+    layer.quantize()
+    Ⲃ out = layer.forward([1.0, 0.5, -0.5, 0.0])
+    ⊜! out.len() == 3
+}
+
+⊡ test "ttq_network" {
+    Ⲃ net = TTQNetwork.new([4, 8, 3])
+    net.quantize_all()
+    Ⲃ out = net.forward([1.0, 0.5, -0.5, 0.0])
+    ⊜! out.len() == 3
+}

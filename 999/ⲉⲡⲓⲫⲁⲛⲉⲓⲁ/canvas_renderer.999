@@ -1,0 +1,291 @@
+// ═══════════════════════════════════════════════════════════════
+// ⲔⲀⲚⲂⲀⲤ ⲢⲈⲚⲆⲈⲢⲈⲢ - Pure Canvas Rendering (NO HTML/CSS)
+// Binary protocol for BEAM ⇄ Browser communication
+// ═══════════════════════════════════════════════════════════════
+
+Ⲯ ⲉⲡⲓⲫⲁⲛⲉⲓⲁ
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER COMMANDS (Binary Protocol)
+// ═══════════════════════════════════════════════════════════════
+
+⬢ RenderCommand {
+    // Frame control
+    BeginFrame { frame_id: Ⲩ64 },
+    EndFrame,
+    Clear { r: Ⲩ8, g: Ⲩ8, b: Ⲩ8, a: Ⲩ8 },
+    
+    // Primitives
+    SetPixel { x: Ⲓⲛⲧ, y: Ⲓⲛⲧ, color: Ⲩ32 },
+    FillRect { x: Ⲓⲛⲧ, y: Ⲓⲛⲧ, w: Ⲓⲛⲧ, h: Ⲓⲛⲧ, color: Ⲩ32 },
+    StrokeRect { x: Ⲓⲛⲧ, y: Ⲓⲛⲧ, w: Ⲓⲛⲧ, h: Ⲓⲛⲧ, color: Ⲩ32, width: Ⲓⲛⲧ },
+    FillCircle { cx: Ⲓⲛⲧ, cy: Ⲓⲛⲧ, r: Ⲓⲛⲧ, color: Ⲩ32 },
+    DrawLine { x0: Ⲓⲛⲧ, y0: Ⲓⲛⲧ, x1: Ⲓⲛⲧ, y1: Ⲓⲛⲧ, color: Ⲩ32, width: Ⲓⲛⲧ },
+    
+    // Bulk operations
+    PutImageData { x: Ⲓⲛⲧ, y: Ⲓⲛⲧ, w: Ⲓⲛⲧ, h: Ⲓⲛⲧ, data: [Ⲩ32] },
+    
+    // Text (bitmap font)
+    DrawText { x: Ⲓⲛⲧ, y: Ⲓⲛⲧ, text: Ⲧⲉⲝⲧ, color: Ⲩ32, size: Ⲓⲛⲧ },
+    
+    // Effects
+    ApplyFog { cx: Ⲓⲛⲧ, cy: Ⲓⲛⲧ, radius: Ⲓⲛⲧ },
+    ApplyGlow { cx: Ⲓⲛⲧ, cy: Ⲓⲛⲧ, radius: Ⲓⲛⲧ, intensity: Ⲫ64 },
+    ApplyWave { time: Ⲫ64, frequency: Ⲫ64, amplitude: Ⲫ64 }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// INPUT EVENTS (From Browser)
+// ═══════════════════════════════════════════════════════════════
+
+⬢ InputEvent {
+    MouseMove { x: Ⲓⲛⲧ, y: Ⲓⲛⲧ },
+    MouseDown { x: Ⲓⲛⲧ, y: Ⲓⲛⲧ, button: Ⲓⲛⲧ },
+    MouseUp { x: Ⲓⲛⲧ, y: Ⲓⲛⲧ, button: Ⲓⲛⲧ },
+    MouseWheel { x: Ⲓⲛⲧ, y: Ⲓⲛⲧ, delta: Ⲓⲛⲧ },
+    KeyDown { key: Ⲧⲉⲝⲧ, code: Ⲓⲛⲧ, modifiers: Ⲓⲛⲧ },
+    KeyUp { key: Ⲧⲉⲝⲧ, code: Ⲓⲛⲧ, modifiers: Ⲓⲛⲧ },
+    Resize { width: Ⲓⲛⲧ, height: Ⲓⲛⲧ },
+    Focus,
+    Blur
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CANVAS RENDERER
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ CanvasRenderer {
+    Ⲃ width: Ⲓⲛⲧ
+    Ⲃ height: Ⲓⲛⲧ
+    Ⲃ grid: PixelGrid
+    Ⲃ layout: LayoutEngine
+    Ⲃ commands: [RenderCommand]
+    Ⲃ frame_id: Ⲩ64
+    Ⲃ dirty_regions: [(Ⲓⲛⲧ, Ⲓⲛⲧ, Ⲓⲛⲧ, Ⲓⲛⲧ)]
+    
+    Ⲫ new(Ⲁ width: Ⲓⲛⲧ, Ⲁ height: Ⲓⲛⲧ) → CanvasRenderer {
+        Ⲣ CanvasRenderer {
+            width: width,
+            height: height,
+            grid: PixelGrid.new(width, height),
+            layout: LayoutEngine.new(width as Ⲫ64, height as Ⲫ64),
+            commands: [],
+            frame_id: 0,
+            dirty_regions: []
+        }
+    }
+    
+    // Begin new frame
+    Ⲫ begin_frame(Ⲥ) {
+        Ⲥ.frame_id += 1
+        Ⲥ.commands = []
+        Ⲥ.commands.push(RenderCommand.BeginFrame { frame_id: Ⲥ.frame_id })
+    }
+    
+    // End frame and get commands
+    Ⲫ end_frame(Ⲥ) → [RenderCommand] {
+        Ⲥ.commands.push(RenderCommand.EndFrame)
+        Ⲣ Ⲥ.commands
+    }
+    
+    // Clear canvas
+    Ⲫ clear(Ⲥ, Ⲁ r: Ⲩ8, Ⲁ g: Ⲩ8, Ⲁ b: Ⲩ8) {
+        Ⲥ.commands.push(RenderCommand.Clear { r: r, g: g, b: b, a: 255 })
+        Ⲥ.grid.fill_rect(0, 0, Ⲥ.width, Ⲥ.height, r, g, b)
+    }
+    
+    // Draw filled rectangle
+    Ⲫ fill_rect(Ⲥ, Ⲁ x: Ⲓⲛⲧ, Ⲁ y: Ⲓⲛⲧ, Ⲁ w: Ⲓⲛⲧ, Ⲁ h: Ⲓⲛⲧ, Ⲁ r: Ⲩ8, Ⲁ g: Ⲩ8, Ⲁ b: Ⲩ8) {
+        Ⲃ color = (r as Ⲩ32) << 24 | (g as Ⲩ32) << 16 | (b as Ⲩ32) << 8 | 255
+        Ⲥ.commands.push(RenderCommand.FillRect { x: x, y: y, w: w, h: h, color: color })
+        Ⲥ.grid.fill_rect(x, y, w, h, r, g, b)
+        Ⲥ.dirty_regions.push((x, y, w, h))
+    }
+    
+    // Draw stroked rectangle
+    Ⲫ stroke_rect(Ⲥ, Ⲁ x: Ⲓⲛⲧ, Ⲁ y: Ⲓⲛⲧ, Ⲁ w: Ⲓⲛⲧ, Ⲁ h: Ⲓⲛⲧ, Ⲁ r: Ⲩ8, Ⲁ g: Ⲩ8, Ⲁ b: Ⲩ8, Ⲁ line_width: Ⲓⲛⲧ) {
+        Ⲃ color = (r as Ⲩ32) << 24 | (g as Ⲩ32) << 16 | (b as Ⲩ32) << 8 | 255
+        Ⲥ.commands.push(RenderCommand.StrokeRect { x: x, y: y, w: w, h: h, color: color, width: line_width })
+        
+        // Draw border lines
+        Ⲥ.grid.fill_rect(x, y, w, line_width, r, g, b)  // Top
+        Ⲥ.grid.fill_rect(x, y + h - line_width, w, line_width, r, g, b)  // Bottom
+        Ⲥ.grid.fill_rect(x, y, line_width, h, r, g, b)  // Left
+        Ⲥ.grid.fill_rect(x + w - line_width, y, line_width, h, r, g, b)  // Right
+    }
+    
+    // Draw filled circle
+    Ⲫ fill_circle(Ⲥ, Ⲁ cx: Ⲓⲛⲧ, Ⲁ cy: Ⲓⲛⲧ, Ⲁ radius: Ⲓⲛⲧ, Ⲁ r: Ⲩ8, Ⲁ g: Ⲩ8, Ⲁ b: Ⲩ8) {
+        Ⲃ color = (r as Ⲩ32) << 24 | (g as Ⲩ32) << 16 | (b as Ⲩ32) << 8 | 255
+        Ⲥ.commands.push(RenderCommand.FillCircle { cx: cx, cy: cy, r: radius, color: color })
+        
+        // Midpoint circle fill
+        Ⲝ y ∈ (cy - radius)..(cy + radius + 1) {
+            Ⲝ x ∈ (cx - radius)..(cx + radius + 1) {
+                Ⲃ dx = x - cx
+                Ⲃ dy = y - cy
+                Ⲉ dx * dx + dy * dy <= radius * radius {
+                    Ⲥ.grid.set_pixel(x, y, r, g, b)
+                }
+            }
+        }
+    }
+    
+    // Draw line
+    Ⲫ draw_line(Ⲥ, Ⲁ x0: Ⲓⲛⲧ, Ⲁ y0: Ⲓⲛⲧ, Ⲁ x1: Ⲓⲛⲧ, Ⲁ y1: Ⲓⲛⲧ, Ⲁ r: Ⲩ8, Ⲁ g: Ⲩ8, Ⲁ b: Ⲩ8) {
+        Ⲃ color = (r as Ⲩ32) << 24 | (g as Ⲩ32) << 16 | (b as Ⲩ32) << 8 | 255
+        Ⲥ.commands.push(RenderCommand.DrawLine { x0: x0, y0: y0, x1: x1, y1: y1, color: color, width: 1 })
+        Ⲥ.grid.draw_line(x0, y0, x1, y1, r, g, b)
+    }
+    
+    // Apply fog of war effect
+    Ⲫ apply_fog(Ⲥ, Ⲁ cx: Ⲓⲛⲧ, Ⲁ cy: Ⲓⲛⲧ, Ⲁ radius: Ⲓⲛⲧ) {
+        Ⲥ.commands.push(RenderCommand.ApplyFog { cx: cx, cy: cy, radius: radius })
+        Ⲥ.grid.apply_fog_region(cx, cy, radius, △)
+    }
+    
+    // Apply wave diffusion
+    Ⲫ apply_wave(Ⲥ, Ⲁ time: Ⲫ64, Ⲁ frequency: Ⲫ64, Ⲁ amplitude: Ⲫ64) {
+        Ⲥ.commands.push(RenderCommand.ApplyWave { time: time, frequency: frequency, amplitude: amplitude })
+        Ⲥ.grid.wave_diffusion(time, frequency, amplitude)
+    }
+    
+    // Render layout tree
+    Ⲫ render_layout(Ⲥ) {
+        Ⲥ.layout.calculate()
+        Ⲥ.layout.render_to_grid(Ⲥ.grid)
+    }
+    
+    // Get pixel buffer for direct transfer
+    Ⲫ get_buffer(Ⲥ) → [Ⲩ32] {
+        Ⲣ Ⲥ.grid.get_buffer()
+    }
+    
+    // Serialize commands to binary
+    Ⲫ serialize_commands(Ⲥ) → [Ⲩ8] {
+        Ⲃ buffer: [Ⲩ8] = []
+        
+        Ⲝ cmd ∈ Ⲥ.commands {
+            Ⲉ cmd == RenderCommand.BeginFrame { frame_id } {
+                buffer.push(0x01)
+                buffer.extend(frame_id.to_le_bytes())
+            }
+            Ⲉ cmd == RenderCommand.EndFrame {
+                buffer.push(0x02)
+            }
+            Ⲉ cmd == RenderCommand.Clear { r, g, b, a } {
+                buffer.push(0x03)
+                buffer.push(r); buffer.push(g); buffer.push(b); buffer.push(a)
+            }
+            Ⲉ cmd == RenderCommand.FillRect { x, y, w, h, color } {
+                buffer.push(0x10)
+                buffer.extend((x as Ⲩ16).to_le_bytes())
+                buffer.extend((y as Ⲩ16).to_le_bytes())
+                buffer.extend((w as Ⲩ16).to_le_bytes())
+                buffer.extend((h as Ⲩ16).to_le_bytes())
+                buffer.extend(color.to_le_bytes())
+            }
+            Ⲉ cmd == RenderCommand.FillCircle { cx, cy, r, color } {
+                buffer.push(0x11)
+                buffer.extend((cx as Ⲩ16).to_le_bytes())
+                buffer.extend((cy as Ⲩ16).to_le_bytes())
+                buffer.extend((r as Ⲩ16).to_le_bytes())
+                buffer.extend(color.to_le_bytes())
+            }
+            Ⲉ cmd == RenderCommand.DrawLine { x0, y0, x1, y1, color, width } {
+                buffer.push(0x12)
+                buffer.extend((x0 as Ⲩ16).to_le_bytes())
+                buffer.extend((y0 as Ⲩ16).to_le_bytes())
+                buffer.extend((x1 as Ⲩ16).to_le_bytes())
+                buffer.extend((y1 as Ⲩ16).to_le_bytes())
+                buffer.extend(color.to_le_bytes())
+            }
+            Ⲉ cmd == RenderCommand.ApplyFog { cx, cy, radius } {
+                buffer.push(0x20)
+                buffer.extend((cx as Ⲩ16).to_le_bytes())
+                buffer.extend((cy as Ⲩ16).to_le_bytes())
+                buffer.extend((radius as Ⲩ16).to_le_bytes())
+            }
+            Ⲉ cmd == RenderCommand.ApplyWave { time, frequency, amplitude } {
+                buffer.push(0x21)
+                buffer.extend(time.to_le_bytes())
+                buffer.extend(frequency.to_le_bytes())
+                buffer.extend(amplitude.to_le_bytes())
+            }
+        }
+        
+        Ⲣ buffer
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BITMAP FONT (8x8 pixel font)
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ BitmapFont {
+    Ⲃ glyphs: Ⲙⲁⲡ[Ⲧⲉⲝⲧ, [Ⲩ8; 8]]  // Character → 8 rows of 8 bits
+    Ⲃ char_width: Ⲓⲛⲧ = 8
+    Ⲃ char_height: Ⲓⲛⲧ = 8
+    
+    Ⲫ default() → BitmapFont {
+        Ⲃ font = BitmapFont { glyphs: {} }
+        
+        // Basic ASCII glyphs (simplified)
+        font.glyphs.set("A", [0x18, 0x24, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x00])
+        font.glyphs.set("B", [0x7C, 0x42, 0x7C, 0x42, 0x42, 0x42, 0x7C, 0x00])
+        font.glyphs.set("C", [0x3C, 0x42, 0x40, 0x40, 0x40, 0x42, 0x3C, 0x00])
+        font.glyphs.set("0", [0x3C, 0x42, 0x46, 0x4A, 0x52, 0x62, 0x3C, 0x00])
+        font.glyphs.set("1", [0x08, 0x18, 0x08, 0x08, 0x08, 0x08, 0x1C, 0x00])
+        // ... more glyphs
+        
+        Ⲣ font
+    }
+    
+    Ⲫ draw_char(Ⲥ, Ⲁ grid: PixelGrid, Ⲁ ch: Ⲧⲉⲝⲧ, Ⲁ x: Ⲓⲛⲧ, Ⲁ y: Ⲓⲛⲧ, Ⲁ r: Ⲩ8, Ⲁ g: Ⲩ8, Ⲁ b: Ⲩ8) {
+        Ⲃ glyph = Ⲥ.glyphs.get(ch)
+        Ⲉ glyph == ○ { Ⲣ }
+        
+        Ⲝ row ∈ 0..8 {
+            Ⲃ bits = glyph[row]
+            Ⲝ col ∈ 0..8 {
+                Ⲉ (bits >> (7 - col)) & 1 == 1 {
+                    grid.set_pixel(x + col, y + row, r, g, b)
+                }
+            }
+        }
+    }
+    
+    Ⲫ draw_text(Ⲥ, Ⲁ grid: PixelGrid, Ⲁ text: Ⲧⲉⲝⲧ, Ⲁ x: Ⲓⲛⲧ, Ⲁ y: Ⲓⲛⲧ, Ⲁ r: Ⲩ8, Ⲁ g: Ⲩ8, Ⲁ b: Ⲩ8) {
+        Ⲃ cx = x
+        Ⲝ ch ∈ text.chars() {
+            Ⲥ.draw_char(grid, ch, cx, y, r, g, b)
+            cx += Ⲥ.char_width + 1
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════
+
+⊡ test "canvas_renderer" {
+    Ⲃ renderer = CanvasRenderer.new(800, 600)
+    renderer.begin_frame()
+    renderer.clear(15, 23, 42)
+    renderer.fill_rect(100, 100, 200, 150, 34, 197, 94)
+    renderer.fill_circle(400, 300, 50, 59, 130, 246)
+    Ⲃ commands = renderer.end_frame()
+    
+    ⊜! commands.len() > 0
+}
+
+⊡ test "serialize_commands" {
+    Ⲃ renderer = CanvasRenderer.new(100, 100)
+    renderer.begin_frame()
+    renderer.fill_rect(10, 10, 20, 20, 255, 0, 0)
+    renderer.end_frame()
+    
+    Ⲃ binary = renderer.serialize_commands()
+    ⊜! binary.len() > 0
+    ⊜! binary[0] == 0x01  // BeginFrame
+}

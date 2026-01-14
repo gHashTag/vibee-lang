@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>BEAM Diffusion PRO</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:#080810;color:#fff;font-family:monospace;display:flex;height:100vh}
+    #main{flex:1;display:flex;align-items:center;justify-content:center}
+    canvas{image-rendering:pixelated;cursor:crosshair;box-shadow:0 0 80px rgba(100,150,255,0.3)}
+    #ui{width:220px;background:#111;padding:15px;overflow-y:auto}
+    h1{font-size:14px;color:#0af;margin-bottom:10px}
+    h2{font-size:10px;color:#666;margin:15px 0 8px;text-transform:uppercase}
+    .btn{display:block;width:100%;padding:8px;margin:3px 0;background:#1a1a2a;border:1px solid #333;color:#aaa;font-size:10px;cursor:pointer;border-radius:4px}
+    .btn:hover{background:#252535}
+    .btn.on{border-color:#0af;color:#fff;background:#0a2a4a}
+    .row{display:flex;gap:4px}
+    .row .btn{flex:1}
+    #stats{font-size:9px;color:#555;margin-top:15px;line-height:1.8}
+    #stats b{color:#0af}
+    .slider{width:100%;margin:5px 0}
+  </style>
+</head>
+<body>
+<div id="main"><canvas id="c"></canvas></div>
+<div id="ui">
+  <h1>BEAM Diffusion PRO</h1>
+  <div style="font-size:9px;color:#444">Flow Matching + Post-FX</div>
+  
+  <h2>Emotion</h2>
+  <div class="row">
+    <button class="btn on" data-e="joy">Joy</button>
+    <button class="btn" data-e="calm">Calm</button>
+    <button class="btn" data-e="energy">Energy</button>
+  </div>
+  <div class="row">
+    <button class="btn" data-e="mystery">Mystery</button>
+    <button class="btn" data-e="fire">Fire</button>
+    <button class="btn" data-e="cosmic">Cosmic</button>
+  </div>
+  
+  <h2>Shape (SDF)</h2>
+  <div class="row">
+    <button class="btn on" data-s="circle">●</button>
+    <button class="btn" data-s="box">■</button>
+    <button class="btn" data-s="hex">⬡</button>
+    <button class="btn" data-s="star">★</button>
+    <button class="btn" data-s="heart">♥</button>
+  </div>
+  
+  <h2>Post Effects</h2>
+  <button class="btn on" data-fx="bloom">Bloom</button>
+  <button class="btn on" data-fx="chromatic">Chromatic Aberration</button>
+  <button class="btn" data-fx="grain">Film Grain</button>
+  <button class="btn" data-fx="vignette">Vignette</button>
+  <button class="btn" data-fx="scanlines">Scanlines</button>
+  
+  <h2>Flow Speed</h2>
+  <input type="range" class="slider" id="speed" min="1" max="100" value="30">
+  
+  <div id="stats">
+    <b id="fps">0</b> FPS | <b id="procs">0</b> procs<br>
+    Flow: <b id="flow">0</b>% | Time: <b id="time">0</b>s
+  </div>
+</div>
+
+<script>
+const S=128,SC=4,TAU=Math.PI*2;
+const E={
+  joy:{c:[1,.8,.2],f:1.2,a:1,t:.3},
+  calm:{c:[.2,.5,.9],f:.6,a:.7,t:.1},
+  energy:{c:[1,.3,.1],f:2,a:1.5,t:.8},
+  mystery:{c:[.5,.2,.8],f:.8,a:.9,t:.5},
+  fire:{c:[1,.4,0],f:3,a:2,t:1},
+  cosmic:{c:[.1,.1,.4],f:.4,a:1.2,t:.6}
+};
+
+const SDF={
+  circle:(x,y,r)=>Math.sqrt(x*x+y*y)-r,
+  box:(x,y,b)=>{const d=[Math.abs(x)-b,Math.abs(y)-b];return Math.sqrt(Math.max(d[0],0)**2+Math.max(d[1],0)**2)+Math.min(Math.max(d[0],d[1]),0)},
+  hex:(x,y,r)=>{const k=[-.866,.5,.577];x=Math.abs(x);y=Math.abs(y);const d=2*Math.min(k[0]*x+k[1]*y,0);x-=d*k[0];y-=d*k[1];x-=Math.max(-k[2]*r,Math.min(k[2]*r,x));y-=r;return Math.sqrt(x*x+y*y)*Math.sign(y)},
+  star:(x,y,r)=>{const an=Math.PI/5,en=Math.PI/2.5,acs=[Math.cos(an),Math.sin(an)],ecs=[Math.cos(en),Math.sin(en)];let bn=Math.atan2(x,y)%(2*an);if(bn<0)bn+=2*an;bn-=an;const l=Math.sqrt(x*x+y*y);x=l*Math.cos(bn);y=Math.abs(l*Math.sin(bn));x-=r*acs[0];y-=r*acs[1];const k=Math.max(0,Math.min(r*acs[1]/ecs[1],-(x*ecs[0]+y*ecs[1])));x+=ecs[0]*k;y+=ecs[1]*k;return Math.sqrt(x*x+y*y)*Math.sign(x)},
+  heart:(x,y)=>{x=Math.abs(x);if(x+y>1)return Math.sqrt((x-.25)**2+(y-.75)**2)-Math.SQRT2/4;const d1=x*x+(y-1)**2,k=Math.max(x+y,0)*.5,d2=(x-k)**2+(y-k)**2;return Math.sqrt(Math.min(d1,d2))*Math.sign(x-y)}
+};
+
+function hash(x,y){let p=(x*.3183099+y*.1)%1;if(p<0)p+=1;p*=17;return(p*(p+33.33))%1}
+function noise(x,y){const i=Math.floor(x),j=Math.floor(y),f=x-i,g=y-j,u=f*f*(3-2*f),v=g*g*(3-2*g);return(hash(i,j)+(hash(i+1,j)-hash(i,j))*u)+((hash(i,j+1)+(hash(i+1,j+1)-hash(i,j+1))*u)-(hash(i,j)+(hash(i+1,j)-hash(i,j))*u))*v}
+function fbm(x,y,o=4){let v=0,a=.5,f=1;for(let i=0;i<o;i++){v+=a*noise(x*f,y*f);a*=.5;f*=2}return v}
+
+class Pixel{
+  constructor(x,y,w,h){
+    this.x=x;this.y=y;
+    this.nx=(x/w)*2-1;this.ny=(y/h)*2-1;
+    this.n=[Math.random(),Math.random(),Math.random()];
+    this.t=[.5,.5,.5];this.c=[...this.n];this.ft=0;
+    this.ph=Math.random()*TAU;this.fr=.05+Math.random()*.1;
+  }
+  tick(dt,tm,em,cx,cy,cs,sh,sp){
+    const sdf=SDF[sh]||(()=>-1);
+    let d=sh==='heart'?sdf(this.nx,this.ny*1.2+.3):sdf(this.nx-cx,this.ny-cy,.35);
+    const dx=this.nx-cx,dy=this.ny-cy,dist=Math.sqrt(dx*dx+dy*dy);
+    const g=Math.exp(-dist*dist*4)*cs;
+    const ins=d<0,edge=Math.abs(d)<.05;
+    if(ins){this.t=[em.c[0],em.c[1],em.c[2]]}
+    else{const f=Math.exp(-d*3);this.t=[em.c[0]*f*.3,em.c[1]*f*.3,em.c[2]*f*.3]}
+    if(edge){const gl=1-Math.abs(d)/.05;this.t[0]+=gl*.5;this.t[1]+=gl*.5;this.t[2]+=gl*.5}
+    const w=Math.sin(this.fr*Math.sqrt(this.x*this.x+this.y*this.y)*.1+tm*em.f+this.ph);
+    const w2=.5*Math.sin(this.fr*2*dist*10+tm*1.7);
+    const tw=(w+w2)*em.a;
+    const curl=[fbm(this.nx*3+.01,this.ny*3,4)-fbm(this.nx*3-.01,this.ny*3,4),fbm(this.nx*3,this.ny*3+.01,4)-fbm(this.nx*3,this.ny*3-.01,4)];
+    this.t[0]+=curl[0]*em.t*.5;this.t[1]+=curl[1]*em.t*.5;
+    const fs=sp*.001*(1+g*2);
+    this.ft=Math.min(1,this.ft+fs);
+    this.c[0]=(1-this.ft)*this.n[0]+this.ft*this.t[0];
+    this.c[1]=(1-this.ft)*this.n[1]+this.ft*this.t[1];
+    this.c[2]=(1-this.ft)*this.n[2]+this.ft*this.t[2];
+    const wi=.15*(1-this.ft);
+    this.c[0]+=tw*wi;this.c[1]+=tw*wi*.8;this.c[2]+=tw*wi*.6;
+    this.ph+=dt*this.fr*(1+g);
+  }
+  reset(){this.n=[Math.random(),Math.random(),Math.random()];this.ft=0}
+}
+
+const cv=document.getElementById('c');
+cv.width=S;cv.height=S;cv.style.width=S*SC+'px';cv.style.height=S*SC+'px';
+const ctx=cv.getContext('2d');
+const img=ctx.createImageData(S,S);
+const px=[];for(let y=0;y<S;y++)for(let x=0;x<S;x++)px.push(new Pixel(x,y,S,S));
+
+let em=E.joy,sh='circle',tm=0,cx=0,cy=0,cs=.5,sp=30;
+let fx={bloom:true,chromatic:true,grain:false,vignette:false,scanlines:false};
+
+document.getElementById('procs').textContent=px.length;
+
+cv.onmousemove=e=>{const r=cv.getBoundingClientRect();cx=(e.clientX-r.left)/r.width*2-1;cy=(e.clientY-r.top)/r.height*2-1};
+cv.onclick=()=>px.forEach(p=>p.reset());
+
+document.querySelectorAll('[data-e]').forEach(b=>b.onclick=()=>{
+  em=E[b.dataset.e];px.forEach(p=>p.reset());
+  document.querySelectorAll('[data-e]').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+});
+document.querySelectorAll('[data-s]').forEach(b=>b.onclick=()=>{
+  sh=b.dataset.s;px.forEach(p=>p.reset());
+  document.querySelectorAll('[data-s]').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+});
+document.querySelectorAll('[data-fx]').forEach(b=>b.onclick=()=>{
+  fx[b.dataset.fx]=!fx[b.dataset.fx];b.classList.toggle('on');
+});
+document.getElementById('speed').oninput=e=>sp=+e.target.value;
+
+function aces(c){const a=2.51,b=.03,d=2.43,e=.59,f=.14;return[Math.max(0,Math.min(1,(c[0]*(a*c[0]+b))/(c[0]*(d*c[0]+e)+f))),Math.max(0,Math.min(1,(c[1]*(a*c[1]+b))/(c[1]*(d*c[1]+e)+f))),Math.max(0,Math.min(1,(c[2]*(a*c[2]+b))/(c[2]*(d*c[2]+e)+f)))]}
+
+let lt=performance.now(),fc=0,ft=0;
+function loop(){
+  const now=performance.now(),dt=(now-lt)/1000;lt=now;tm+=dt;
+  fc++;ft+=dt;if(ft>=1){document.getElementById('fps').textContent=fc;fc=0;ft=0}
+  
+  let avgF=0;
+  for(let i=0;i<px.length;i++){
+    const p=px[i];p.tick(dt,tm,em,cx,cy,cs,sh,sp);avgF+=p.ft;
+    let c=aces([Math.max(0,Math.min(1,p.c[0])),Math.max(0,Math.min(1,p.c[1])),Math.max(0,Math.min(1,p.c[2]))]);
+    
+    // Post effects per pixel
+    const nx=p.nx,ny=p.ny;
+    
+    // Chromatic aberration
+    if(fx.chromatic){
+      const d=Math.sqrt(nx*nx+ny*ny)*.02;
+      c[0]=Math.min(1,c[0]+d);c[2]=Math.max(0,c[2]-d);
+    }
+    
+    // Vignette
+    if(fx.vignette){
+      const v=1-Math.sqrt(nx*nx+ny*ny)*.5;
+      c[0]*=v;c[1]*=v;c[2]*=v;
+    }
+    
+    // Film grain
+    if(fx.grain){
+      const g=(Math.random()-.5)*.1;
+      c[0]+=g;c[1]+=g;c[2]+=g;
+    }
+    
+    // Scanlines
+    if(fx.scanlines&&p.y%2===0){
+      c[0]*=.8;c[1]*=.8;c[2]*=.8;
+    }
+    
+    const idx=i*4;
+    img.data[idx]=Math.floor(c[0]*255);
+    img.data[idx+1]=Math.floor(c[1]*255);
+    img.data[idx+2]=Math.floor(c[2]*255);
+    img.data[idx+3]=255;
+  }
+  
+  ctx.putImageData(img,0,0);
+  
+  // Bloom (canvas level)
+  if(fx.bloom){
+    ctx.globalCompositeOperation='lighter';
+    ctx.filter='blur(2px)';
+    ctx.globalAlpha=.3;
+    ctx.drawImage(cv,0,0);
+    ctx.globalAlpha=1;
+    ctx.filter='none';
+    ctx.globalCompositeOperation='source-over';
+  }
+  
+  document.getElementById('flow').textContent=Math.round(avgF/px.length*100);
+  document.getElementById('time').textContent=tm.toFixed(1);
+  
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>

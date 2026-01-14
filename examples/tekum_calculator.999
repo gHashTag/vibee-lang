@@ -1,0 +1,252 @@
+// ═══════════════════════════════════════════════════════════════
+// TEKUM CALCULATOR - Balanced Ternary Arithmetic
+// Based on: arXiv:2512.10964 (Tekum format)
+// Uses 27 trits (3³) for precision
+// ═══════════════════════════════════════════════════════════════
+
+Ⲯ ⲕⲟⲣⲉ
+Ⲯ ⲧⲣⲓⲛⲓⲧⲩ
+
+// ═══════════════════════════════════════════════════════════════
+// TEKUM NUMBER (27 trits)
+// ═══════════════════════════════════════════════════════════════
+
+Ⲏ Tekum {
+    Ⲃ trits: [Trit; 27]  // 27 trits = 3^27 range
+    Ⲃ exponent: Ⲓⲛⲧ = 0
+    
+    // Create from integer
+    Ⲫ from_int(Ⲁ n: Ⲓⲛⲧ) → Tekum {
+        Ⲃ t = Tekum { trits: [○; 27] }
+        Ⲃ val = n
+        Ⲃ i = 0
+        
+        Ⲝ val != 0 && i < 27 {
+            // Balanced ternary: remainder in {-1, 0, 1}
+            Ⲃ rem = (val + 1) % 3 - 1
+            t.trits[i] = int_to_trit(rem)
+            val = (val - rem) / 3
+            i += 1
+        }
+        
+        Ⲣ t
+    }
+    
+    // Convert to integer
+    Ⲫ to_int(Ⲥ) → Ⲓⲛⲧ {
+        Ⲃ result = 0
+        Ⲃ power = 1
+        
+        Ⲝ trit ∈ Ⲥ.trits {
+            result += trit_to_int(trit) * power
+            power *= 3
+        }
+        
+        // Apply exponent
+        Ⲝ _ ∈ 0..Ⲥ.exponent { result *= 3 }
+        
+        Ⲣ result
+    }
+    
+    // Addition
+    Ⲫ add(Ⲥ, Ⲁ other: Tekum) → Tekum {
+        Ⲃ result = Tekum { trits: [○; 27] }
+        Ⲃ carry: Trit = ○
+        
+        Ⲝ i ∈ 0..27 {
+            Ⲃ sum = trit_to_int(Ⲥ.trits[i]) + trit_to_int(other.trits[i]) + trit_to_int(carry)
+            
+            // Normalize to balanced ternary
+            Ⲉ sum > 1 {
+                result.trits[i] = int_to_trit(sum - 3)
+                carry = △
+            }
+            Ⲉ sum < -1 {
+                result.trits[i] = int_to_trit(sum + 3)
+                carry = ▽
+            }
+            Ⲉ {
+                result.trits[i] = int_to_trit(sum)
+                carry = ○
+            }
+        }
+        
+        Ⲣ result
+    }
+    
+    // Negation (just flip all trits)
+    Ⲫ negate(Ⲥ) → Tekum {
+        Ⲃ result = Tekum { trits: [○; 27] }
+        Ⲝ i ∈ 0..27 {
+            result.trits[i] = trit_not(Ⲥ.trits[i])
+        }
+        Ⲣ result
+    }
+    
+    // Subtraction
+    Ⲫ sub(Ⲥ, Ⲁ other: Tekum) → Tekum {
+        Ⲣ Ⲥ.add(other.negate())
+    }
+    
+    // Multiplication by 3 (shift left)
+    Ⲫ mul3(Ⲥ) → Tekum {
+        Ⲃ result = Tekum { trits: [○; 27] }
+        Ⲝ i ∈ 1..27 {
+            result.trits[i] = Ⲥ.trits[i - 1]
+        }
+        Ⲣ result
+    }
+    
+    // Division by 3 (shift right)
+    Ⲫ div3(Ⲥ) → Tekum {
+        Ⲃ result = Tekum { trits: [○; 27] }
+        Ⲝ i ∈ 0..26 {
+            result.trits[i] = Ⲥ.trits[i + 1]
+        }
+        Ⲣ result
+    }
+    
+    // Display as balanced ternary string
+    Ⲫ to_string(Ⲥ) → Ⲧⲉⲝⲧ {
+        Ⲃ s = ""
+        Ⲃ started = ▽
+        
+        // Find most significant non-zero trit
+        Ⲝ i ∈ (0..27).reverse() {
+            Ⲉ Ⲥ.trits[i] != ○ || started {
+                started = △
+                s += trit_symbol(Ⲥ.trits[i])
+            }
+        }
+        
+        Ⲉ s == "" { Ⲣ "○" }
+        Ⲣ s
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// HELPER FUNCTIONS
+// ═══════════════════════════════════════════════════════════════
+
+◬ int_to_trit(Ⲁ n: Ⲓⲛⲧ) → Trit {
+    Ⲉ n > 0 { Ⲣ △ }
+    Ⲉ n < 0 { Ⲣ ▽ }
+    Ⲣ ○
+}
+
+◬ trit_to_int(Ⲁ t: Trit) → Ⲓⲛⲧ {
+    Ⲉ t == △ { Ⲣ 1 }
+    Ⲉ t == ▽ { Ⲣ -1 }
+    Ⲣ 0
+}
+
+◬ trit_symbol(Ⲁ t: Trit) → Ⲧⲉⲝⲧ {
+    Ⲉ t == △ { Ⲣ "+" }
+    Ⲉ t == ▽ { Ⲣ "-" }
+    Ⲣ "0"
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ADVANTAGES OF BALANCED TERNARY
+// ═══════════════════════════════════════════════════════════════
+
+Ⲫ print_advantages() {
+    print("═══════════════════════════════════════════════════════════════")
+    print("ADVANTAGES OF BALANCED TERNARY")
+    print("═══════════════════════════════════════════════════════════════")
+    print("")
+    print("1. NO SEPARATE SIGN BIT")
+    print("   - Sign is implicit in the representation")
+    print("   - Negation is just flipping all trits")
+    print("")
+    print("2. SIMPLER ROUNDING")
+    print("   - Round to nearest: just truncate")
+    print("   - No bias towards positive or negative")
+    print("")
+    print("3. EFFICIENT ARITHMETIC")
+    print("   - Addition: simple trit-by-trit with carry")
+    print("   - Multiplication by 3: just shift")
+    print("")
+    print("4. ENERGY EFFICIENCY")
+    print("   - Fewer digits needed for same range")
+    print("   - log₃(n) < log₂(n) for large n")
+    print("")
+    print("5. NATURAL FOR TERNARY LOGIC")
+    print("   - △ = +1, ○ = 0, ▽ = -1")
+    print("   - Logic and arithmetic unified")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DEMO
+// ═══════════════════════════════════════════════════════════════
+
+Ⲫ main() {
+    print("═══════════════════════════════════════════════════════════════")
+    print("TEKUM CALCULATOR - Balanced Ternary Arithmetic")
+    print("═══════════════════════════════════════════════════════════════")
+    print("")
+    
+    // Example: 42 in balanced ternary
+    Ⲃ a = Tekum.from_int(42)
+    print("42 in balanced ternary: " + a.to_string())
+    print("  Verification: " + a.to_int())
+    print("")
+    
+    // Example: -13 in balanced ternary
+    Ⲃ b = Tekum.from_int(-13)
+    print("-13 in balanced ternary: " + b.to_string())
+    print("  Verification: " + b.to_int())
+    print("")
+    
+    // Addition
+    Ⲃ sum = a.add(b)
+    print("42 + (-13) = " + sum.to_int())
+    print("  In balanced ternary: " + sum.to_string())
+    print("")
+    
+    // Negation
+    Ⲃ neg_a = a.negate()
+    print("-42 in balanced ternary: " + neg_a.to_string())
+    print("  Verification: " + neg_a.to_int())
+    print("")
+    
+    // Multiply by 3
+    Ⲃ a_times_3 = a.mul3()
+    print("42 × 3 = " + a_times_3.to_int())
+    print("")
+    
+    print_advantages()
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════
+
+⊡ test "conversion" {
+    Ⲃ t = Tekum.from_int(42)
+    ⊜! t.to_int() == 42
+}
+
+⊡ test "negative" {
+    Ⲃ t = Tekum.from_int(-13)
+    ⊜! t.to_int() == -13
+}
+
+⊡ test "addition" {
+    Ⲃ a = Tekum.from_int(10)
+    Ⲃ b = Tekum.from_int(5)
+    ⊜! a.add(b).to_int() == 15
+}
+
+⊡ test "negation" {
+    Ⲃ a = Tekum.from_int(42)
+    ⊜! a.negate().to_int() == -42
+}
+
+⊡ test "subtraction" {
+    Ⲃ a = Tekum.from_int(10)
+    Ⲃ b = Tekum.from_int(3)
+    ⊜! a.sub(b).to_int() == 7
+}
+
+main()

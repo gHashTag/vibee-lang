@@ -1,0 +1,435 @@
+// ═══════════════════════════════════════════════════════════════
+// BEAM Pixel Diffusion - Generated from beam_pixel_diffusion.vibee
+// Real-time Image/Video Generation through Distributed Wave Functions
+// ═══════════════════════════════════════════════════════════════
+// Each pixel = OTP process (atomic actor)
+// Emotions as latent codes
+// Cursor as Classifier-Free Guidance
+// Fault-tolerant generation
+// ═══════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────
+// MODULE: Emotional Latent Codes
+// ─────────────────────────────────────────────────────────────────
+
+emotion joy := [1.0, 0.8, 0.2]
+emotion calm := [0.2, 0.5, 0.9]
+emotion energy := [1.0, 0.3, 0.1]
+emotion mystery := [0.5, 0.2, 0.8]
+emotion nature := [0.2, 0.8, 0.3]
+
+// ─────────────────────────────────────────────────────────────────
+// MODULE: Wave Mathematics
+// ─────────────────────────────────────────────────────────────────
+
+// Base wave function: ψ(x,y,t) = A·sin(k·r + ω·t + φ)
+fn wave(x, y, t, amplitude, frequency, phase) :=
+  amplitude * sin(frequency * sqrt(x*x + y*y) + t + phase)
+
+// Superposition of multiple waves
+fn superposition(waves) :=
+  waves |> fold(0, (acc, w) -> acc + w)
+
+// Gaussian diffusion kernel
+fn diffusion_kernel(x, y, sigma) :=
+  exp(-(x*x + y*y) / (2 * sigma * sigma))
+
+// Noise schedule (cosine)
+fn noise_level(t, t_max) :=
+  cos((t / t_max) * PI / 2) ^ 2
+
+// ─────────────────────────────────────────────────────────────────
+// MODULE: Pixel Process (OTP Actor)
+// ─────────────────────────────────────────────────────────────────
+
+atom PixelProcess {
+  // State
+  state := {
+    x: 0,
+    y: 0,
+    r: 0.5,
+    g: 0.5,
+    b: 0.5,
+    a: 1.0,
+    phase: random() * TAU,
+    frequency: 0.1 + random() * 0.05,
+    alive: true
+  }
+  
+  // Initialize pixel at position
+  on :init(pos_x, pos_y) ->
+    state.x = pos_x
+    state.y = pos_y
+    state.phase = random() * TAU
+    
+  // Handle time tick - core diffusion step
+  on :tick(dt, time, emotion_code, cursor_x, cursor_y, cursor_strength) ->
+    // Distance to cursor (guidance)
+    dx := state.x - cursor_x
+    dy := state.y - cursor_y
+    dist := sqrt(dx*dx + dy*dy)
+    
+    // Cursor influence (Classifier-Free Guidance)
+    guidance := exp(-dist*dist / 2500) * cursor_strength
+    
+    // Wave calculation with emotion modulation
+    wave_val := wave(
+      state.x, 
+      state.y, 
+      time * state.frequency,
+      1.0 + guidance,
+      state.frequency * (1 + guidance * 0.5),
+      state.phase
+    )
+    
+    // Interference from multiple harmonics
+    harmonic2 := wave(state.x, state.y, time * 1.7, 0.5, state.frequency * 2, state.phase + 1)
+    harmonic3 := wave(state.x, state.y, time * 2.3, 0.3, state.frequency * 3, state.phase + 2)
+    
+    total_wave := wave_val + harmonic2 + harmonic3
+    
+    // Map wave to color using emotion as hue shift
+    state.r = 0.5 + 0.5 * sin(total_wave + emotion_code[0] * TAU)
+    state.g = 0.5 + 0.5 * sin(total_wave + emotion_code[1] * TAU + TAU/3)
+    state.b = 0.5 + 0.5 * sin(total_wave + emotion_code[2] * TAU + 2*TAU/3)
+    
+    // Phase evolution (diffusion process)
+    state.phase = state.phase + dt * state.frequency * (1 + guidance)
+    
+  // Get current color
+  on :get_color() -> 
+    [state.r, state.g, state.b, state.a]
+    
+  // Handle crash recovery
+  on :recover(neighbor_colors) ->
+    // Interpolate from neighbors (fault tolerance)
+    avg_r := neighbor_colors |> map(c -> c[0]) |> average()
+    avg_g := neighbor_colors |> map(c -> c[1]) |> average()
+    avg_b := neighbor_colors |> map(c -> c[2]) |> average()
+    state.r = avg_r
+    state.g = avg_g
+    state.b = avg_b
+    state.alive = true
+}
+
+// ─────────────────────────────────────────────────────────────────
+// MODULE: Pixel Grid Supervisor
+// ─────────────────────────────────────────────────────────────────
+
+atom PixelGridSupervisor {
+  state := {
+    width: 0,
+    height: 0,
+    pixels: [],
+    strategy: :one_for_one,
+    max_restarts: 1000
+  }
+  
+  // Spawn pixel grid
+  on :spawn_grid(width, height) ->
+    state.width = width
+    state.height = height
+    state.pixels = []
+    
+    // Spawn width × height pixel processes
+    for y in 0..height {
+      row := []
+      for x in 0..width {
+        pixel := spawn(PixelProcess)
+        pixel ! :init(x, y)
+        row = row ++ [pixel]
+      }
+      state.pixels = state.pixels ++ [row]
+    }
+    
+    log("Spawned #{width * height} pixel processes")
+    
+  // Get pixel at position
+  on :get_pixel(x, y) ->
+    state.pixels[y][x]
+    
+  // Handle pixel crash
+  on :pixel_crashed(x, y) ->
+    // Get neighbor colors for recovery
+    neighbors := get_neighbors(x, y)
+    neighbor_colors := neighbors |> map(p -> p ! :get_color())
+    
+    // Restart pixel
+    new_pixel := spawn(PixelProcess)
+    new_pixel ! :init(x, y)
+    new_pixel ! :recover(neighbor_colors)
+    
+    state.pixels[y][x] = new_pixel
+    
+  // Get neighbors (for fault tolerance)
+  fn get_neighbors(x, y) :=
+    offsets := [[-1,0], [1,0], [0,-1], [0,1]]
+    offsets 
+      |> filter((dx, dy) -> 
+           x+dx >= 0 && x+dx < state.width &&
+           y+dy >= 0 && y+dy < state.height)
+      |> map((dx, dy) -> state.pixels[y+dy][x+dx])
+}
+
+// ─────────────────────────────────────────────────────────────────
+// MODULE: Wave Engine
+// ─────────────────────────────────────────────────────────────────
+
+atom WaveEngine {
+  state := {
+    time: 0,
+    dt: 1/60,
+    running: false
+  }
+  
+  on :start() ->
+    state.running = true
+    
+  on :stop() ->
+    state.running = false
+    
+  on :tick() ->
+    if state.running {
+      state.time = state.time + state.dt
+    }
+    state.time
+    
+  on :get_time() ->
+    state.time
+    
+  on :reset() ->
+    state.time = 0
+}
+
+// ─────────────────────────────────────────────────────────────────
+// MODULE: Emotion State Machine
+// ─────────────────────────────────────────────────────────────────
+
+atom EmotionState {
+  state := {
+    current: joy,
+    target: joy,
+    blend: 1.0,
+    transition_speed: 1/60  // 60 frames to transition
+  }
+  
+  on :set_emotion(name) ->
+    state.target = match name {
+      "joy" -> joy
+      "calm" -> calm
+      "energy" -> energy
+      "mystery" -> mystery
+      "nature" -> nature
+      _ -> joy
+    }
+    state.blend = 0
+    
+  on :tick() ->
+    if state.blend < 1.0 {
+      state.blend = min(1.0, state.blend + state.transition_speed)
+      // Interpolate latent codes
+      state.current = [
+        lerp(state.current[0], state.target[0], state.blend),
+        lerp(state.current[1], state.target[1], state.blend),
+        lerp(state.current[2], state.target[2], state.blend)
+      ]
+    }
+    state.current
+    
+  on :get_code() ->
+    state.current
+}
+
+// ─────────────────────────────────────────────────────────────────
+// MODULE: Cursor Tracker (Guidance)
+// ─────────────────────────────────────────────────────────────────
+
+atom CursorTracker {
+  state := {
+    x: 0,
+    y: 0,
+    strength: 0.5,
+    active: false
+  }
+  
+  on :move(new_x, new_y) ->
+    state.x = new_x
+    state.y = new_y
+    state.active = true
+    
+  on :set_strength(s) ->
+    state.strength = clamp(s, 0, 1)
+    
+  on :leave() ->
+    state.active = false
+    
+  on :get_position() ->
+    [state.x, state.y, state.strength, state.active]
+    
+  on :burst() ->
+    // Create wave burst at current position
+    state.strength = 1.0
+    // Decay over time handled externally
+}
+
+// ─────────────────────────────────────────────────────────────────
+// MODULE: Renderer (Frame Compositor)
+// ─────────────────────────────────────────────────────────────────
+
+atom Renderer {
+  state := {
+    width: 0,
+    height: 0,
+    image_data: null,
+    bloom_enabled: true,
+    tone_mapping: true
+  }
+  
+  on :init(width, height) ->
+    state.width = width
+    state.height = height
+    
+  // Collect colors from all pixels and composite
+  on :render(pixel_grid, time, emotion, cursor) ->
+    // Build image from pixel states
+    for y in 0..state.height {
+      for x in 0..state.width {
+        pixel := pixel_grid ! :get_pixel(x, y)
+        
+        // Send tick to pixel
+        pixel ! :tick(
+          1/60,
+          time,
+          emotion,
+          cursor[0] * state.width,
+          cursor[1] * state.height,
+          cursor[2]
+        )
+        
+        // Get resulting color
+        color := pixel ! :get_color()
+        
+        // Apply tone mapping (ACES)
+        if state.tone_mapping {
+          color = aces_tonemap(color)
+        }
+        
+        // Store in image data
+        idx := (y * state.width + x) * 4
+        state.image_data[idx + 0] = floor(color[0] * 255)
+        state.image_data[idx + 1] = floor(color[1] * 255)
+        state.image_data[idx + 2] = floor(color[2] * 255)
+        state.image_data[idx + 3] = 255
+      }
+    }
+    
+    state.image_data
+}
+
+// ─────────────────────────────────────────────────────────────────
+// MODULE: Diffusion Supervisor (Main)
+// ─────────────────────────────────────────────────────────────────
+
+atom DiffusionSupervisor {
+  state := {
+    grid: null,
+    wave_engine: null,
+    emotion: null,
+    cursor: null,
+    renderer: null,
+    running: false
+  }
+  
+  on :start(width, height) ->
+    // Spawn all child processes
+    state.grid = spawn(PixelGridSupervisor)
+    state.wave_engine = spawn(WaveEngine)
+    state.emotion = spawn(EmotionState)
+    state.cursor = spawn(CursorTracker)
+    state.renderer = spawn(Renderer)
+    
+    // Initialize
+    state.grid ! :spawn_grid(width, height)
+    state.renderer ! :init(width, height)
+    state.wave_engine ! :start()
+    state.running = true
+    
+    log("BEAM Pixel Diffusion started: #{width}x#{height} = #{width*height} processes")
+    
+  on :tick() ->
+    if state.running {
+      time := state.wave_engine ! :tick()
+      emotion_code := state.emotion ! :tick()
+      cursor_pos := state.cursor ! :get_position()
+      
+      image := state.renderer ! :render(
+        state.grid,
+        time,
+        emotion_code,
+        cursor_pos
+      )
+      
+      image
+    }
+    
+  on :set_emotion(name) ->
+    state.emotion ! :set_emotion(name)
+    
+  on :cursor_move(x, y) ->
+    state.cursor ! :move(x, y)
+    
+  on :cursor_burst() ->
+    state.cursor ! :burst()
+    
+  on :stop() ->
+    state.running = false
+    state.wave_engine ! :stop()
+}
+
+// ─────────────────────────────────────────────────────────────────
+// HELPER FUNCTIONS
+// ─────────────────────────────────────────────────────────────────
+
+fn lerp(a, b, t) := a + (b - a) * t
+
+fn clamp(x, min_val, max_val) := max(min_val, min(max_val, x))
+
+fn average(list) := list |> fold(0, (a, b) -> a + b) / length(list)
+
+// ACES Filmic Tone Mapping
+fn aces_tonemap(color) := {
+  a := 2.51
+  b := 0.03
+  c := 2.43
+  d := 0.59
+  e := 0.14
+  
+  [
+    clamp((color[0]*(a*color[0]+b))/(color[0]*(c*color[0]+d)+e), 0, 1),
+    clamp((color[1]*(a*color[1]+b))/(color[1]*(c*color[1]+d)+e), 0, 1),
+    clamp((color[2]*(a*color[2]+b))/(color[2]*(c*color[2]+d)+e), 0, 1)
+  ]
+}
+
+// ─────────────────────────────────────────────────────────────────
+// CONSTANTS
+// ─────────────────────────────────────────────────────────────────
+
+const PI := 3.14159265359
+const TAU := 6.28318530718
+
+// ─────────────────────────────────────────────────────────────────
+// ENTRY POINT
+// ─────────────────────────────────────────────────────────────────
+
+main := {
+  supervisor := spawn(DiffusionSupervisor)
+  supervisor ! :start(128, 128)  // 16,384 pixel processes
+  
+  // Animation loop
+  loop {
+    image := supervisor ! :tick()
+    render_to_canvas(image)
+    await next_frame()
+  }
+}

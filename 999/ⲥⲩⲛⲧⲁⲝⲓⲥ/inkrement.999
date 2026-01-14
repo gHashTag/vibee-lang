@@ -1,372 +1,529 @@
-// ============================================
-// ИНКРЕМЕНТАЛЬНАЯ КОМПИЛЯЦИЯ
-// Перекомпиляция только изменённых файлов
-// ============================================
-//
-// Основано на:
-//   - Salsa (Rust-analyzer)
-//   - Query-based compilation
-//   - Incremental computation
-//
-// Ускорение: 10-100x для больших проектов
-//
-// ============================================
+// ═══════════════════════════════════════════════════════════════
+// Сгенерировано из: specs/999/ⲥⲩⲛⲧⲁⲝⲓⲥ/inkrement.vibee
+// ЗАПРЕЩЕНО: Ручное редактирование
+// Version: 4.0 (Test-First + Formal Verification)
+// ═══════════════════════════════════════════════════════════════
 
-Ⲩ yadro
-Ⲩ gorynych
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  INKREMENT | v1.0.0 | Trinity: n=20 k=8 m=0
+// ╚══════════════════════════════════════════════════════════════╝
 
-// ============================================
-// ХЭШИРОВАНИЕ
-// ============================================
+Ⲯ ⲕⲟⲣⲉ
+Ⲯ ⲧⲣⲓⲛⲓⲧⲩ
+Ⲯ ⲃⲉⲣⲓⲫⲓⲉⲣ
 
-// Хэш содержимого файла
-Ⲫ хэш_содержимого(данные: [Ⲋ]) -> Ⲋ:
-  // FNV-1a хэш
-  Ⲙ хэш: Ⲋ = 0xcbf29ce484222325
-  Ⲯ байт данные:
-    хэш = хэш ^ байт
-    хэш = хэш * 0x100000001b3
-  Ⲣ хэш
+// ═══════════════════════════════════════════════════════════════
+// TERNARY ALGEBRA (Full Implementation)
+// ═══════════════════════════════════════════════════════════════
+⬢ Trit { △, ○, ▽ }
 
-// Хэш AST узла
-Ⲫ хэш_ast(узел: ⲨⲂ) -> Ⲋ:
-  Ⲙ хэш = хэш_содержимого(узел.Ⲅ.байты())
-  хэш = хэш ^ (узел.Ⲁ * 31)
-  Ⲯ ребёнок узел.Ⲃ:
-    хэш = хэш ^ хэш_ast(ребёнок)
-  Ⲣ хэш
+Ⲕ TRUE: Trit = △
+Ⲕ FALSE: Trit = ▽
+Ⲕ UNKNOWN: Trit = ○
 
-// ============================================
-// ГРАФ ЗАВИСИМОСТЕЙ
-// ============================================
+◬ trit_and(Ⲁ a: Trit, Ⲁ b: Trit) → Trit {
+    Ⲉ a == ▽ || b == ▽ { Ⲣ ▽ }
+    Ⲉ a == ○ || b == ○ { Ⲣ ○ }
+    Ⲣ △
+}
 
-// Узел графа зависимостей
-Ⲏ ⲨⲌⲀ:
-  путь: Ⲥ
-  хэш: Ⲋ
-  зависимости: [Ⲥ]      // от кого зависит
-  зависимые: [Ⲥ]        // кто зависит от нас
-  состояние: Ⲉ ⲨⲌⲂ
+◬ trit_or(Ⲁ a: Trit, Ⲁ b: Trit) → Trit {
+    Ⲉ a == △ || b == △ { Ⲣ △ }
+    Ⲉ a == ○ || b == ○ { Ⲣ ○ }
+    Ⲣ ▽
+}
 
-// Состояние узла
-Ⲉ ⲨⲌⲂ:
-  Ⲁ    // чистый (не изменился)
-  Ⲃ    // грязный (нужна перекомпиляция)
-  Ⲅ    // в процессе компиляции
-  Ⲇ    // скомпилирован
+◬ trit_not(Ⲁ a: Trit) → Trit {
+    Ⲉ a == △ { Ⲣ ▽ }
+    Ⲉ a == ▽ { Ⲣ △ }
+    Ⲣ ○
+}
 
-// Граф зависимостей
-Ⲏ ⲨⲌ:
-  узлы: {Ⲥ: ⲨⲌⲀ}
-  порядок: [Ⲥ]          // топологический порядок
+◬ trit_implies(Ⲁ a: Trit, Ⲁ b: Trit) → Trit {
+    Ⲣ trit_or(trit_not(a), b)
+}
 
-// Создать граф
-Ⲫ ⲨⲌ_новый() -> ⲨⲌ:
-  Ⲣ ⲨⲌ { узлы: {}, порядок: [] }
+◬ trit_consensus(Ⲁ a: Trit, Ⲁ b: Trit) → Trit {
+    Ⲉ a == b { Ⲣ a }
+    Ⲣ ○
+}
 
-// Добавить файл
-Ⲫ ⲨⲌ_добавить(г: ⲨⲌ, путь: Ⲥ, зависимости: [Ⲥ]):
-  Ⲙ хэш = хэш_содержимого(читать_файл(путь).байты())
-  
-  г.узлы[путь] = ⲨⲌⲀ {
-    путь: путь,
-    хэш: хэш,
-    зависимости: зависимости,
-    зависимые: [],
-    состояние: Ⲃ  // грязный по умолчанию
-  }
-  
-  // Обновляем обратные зависимости
-  Ⲯ зав зависимости:
-    Ⲝ зав ∈ г.узлы:
-      Ⲁ: г.узлы[зав].зависимые += путь
+◬ trit_to_float(Ⲁ t: Trit) → Ⲫⲗⲟⲁⲧ {
+    Ⲉ t == △ { Ⲣ 1.0 }
+    Ⲉ t == ○ { Ⲣ 0.5 }
+    Ⲣ 0.0
+}
 
-// Топологическая сортировка
-Ⲫ ⲨⲌ_топсорт(г: ⲨⲌ) -> [Ⲥ]:
-  Ⲙ посещённые: {Ⲥ} = {}
-  Ⲙ результат: [Ⲥ] = []
-  
-  Ⲫ посетить(путь: Ⲥ):
-    Ⲝ путь ∈ посещённые:
-      Ⲁ: Ⲣ
-    посещённые += путь
+// ═══════════════════════════════════════════════════════════════
+// FORMAL VERIFIER
+// ═══════════════════════════════════════════════════════════════
+Ⲏ Invariant {
+    Ⲃ name: Ⲧⲉⲝⲧ
+    Ⲃ condition: Ⲫⲛ
+    Ⲃ verified: Trit = ○
+}
+
+Ⲏ FormalVerifier {
+    Ⲃ invariants: [Invariant] = []
+    Ⲃ all_passed: Trit = ○
     
-    Ⲯ зав г.узлы[путь].зависимости:
-      посетить(зав)
+    Ⲫ add_invariant(Ⲥ, Ⲁ name: Ⲧⲉⲝⲧ, Ⲁ cond: Ⲫⲛ) {
+        Ⲥ.invariants.push(Invariant { name: name, condition: cond })
+    }
     
-    результат += путь
-  
-  Ⲯ (путь, _) г.узлы:
-    посетить(путь)
-  
-  г.порядок = результат
-  Ⲣ результат
-
-// Пометить грязные узлы
-Ⲫ ⲨⲌ_пометить_грязные(г: ⲨⲌ):
-  // Проверяем изменения файлов
-  Ⲯ (путь, узел) г.узлы:
-    Ⲙ текущий_хэш = хэш_содержимого(читать_файл(путь).байты())
-    Ⲝ текущий_хэш != узел.хэш:
-      Ⲁ:
-        узел.состояние = Ⲃ
-        узел.хэш = текущий_хэш
-        // Помечаем зависимые как грязные
-        ⲨⲌ_распространить_грязь(г, путь)
-
-// Распространить грязь по зависимым
-Ⲫ ⲨⲌ_распространить_грязь(г: ⲨⲌ, путь: Ⲥ):
-  Ⲯ зависимый г.узлы[путь].зависимые:
-    Ⲝ г.узлы[зависимый].состояние != Ⲃ:
-      Ⲁ:
-        г.узлы[зависимый].состояние = Ⲃ
-        ⲨⲌ_распространить_грязь(г, зависимый)
-
-// ============================================
-// КЭШ КОМПИЛЯЦИИ
-// ============================================
-
-// Запись кэша
-Ⲏ ⲨⲎⲂ:
-  путь: Ⲥ
-  хэш_исходника: Ⲋ
-  хэш_зависимостей: Ⲋ
-  токены: [ⲨⲀ]?
-  ast: ⲨⲂ?
-  ir: ⲨⲄ?
-  код: Ⲥ?
-
-// Кэш компиляции
-Ⲏ ⲨⲎⲄ:
-  записи: {Ⲥ: ⲨⲎⲂ}
-  граф: ⲨⲌ
-  статистика: ⲨⲎⲆ
-
-// Статистика
-Ⲏ ⲨⲎⲆ:
-  попадания: Ⲋ
-  промахи: Ⲋ
-  время_сэкономлено: Ⲋ
-
-// Создать кэш
-Ⲫ ⲨⲎⲄ_новый() -> ⲨⲎⲄ:
-  Ⲣ ⲨⲎⲄ {
-    записи: {},
-    граф: ⲨⲌ_новый(),
-    статистика: ⲨⲎⲆ { попадания: 0, промахи: 0, время_сэкономлено: 0 }
-  }
-
-// Загрузить кэш с диска
-Ⲫ ⲨⲎⲄ_загрузить(путь: Ⲥ) -> ⲨⲎⲄ?:
-  Ⲝ !файл_существует(путь):
-    Ⲁ: Ⲣ None
-  
-  Ⲙ данные = читать_файл(путь)
-  Ⲣ Some(десериализовать(данные))
-
-// Сохранить кэш на диск
-Ⲫ ⲨⲎⲄ_сохранить(кэш: ⲨⲎⲄ, путь: Ⲥ):
-  Ⲙ данные = сериализовать(кэш)
-  записать_файл(путь, данные)
-
-// ============================================
-// ИНКРЕМЕНТАЛЬНЫЙ КОМПИЛЯТОР
-// ============================================
-
-Ⲏ ⲢⲒ:  // инкрементальный компилятор
-  горыныч: Ⲣ
-  кэш: ⲨⲎⲄ
-  корень: Ⲥ
-
-// Создать инкрементальный компилятор
-Ⲫ ⲢⲒ_новый(корень: Ⲥ, цель: Ⲉ ⲢⲄⲀ, уровень: Ⲋ) -> ⲢⲒ:
-  Ⲙ кэш_путь = корень + "/.999cache"
-  Ⲙ кэш = ⲨⲎⲄ_загрузить(кэш_путь) ?? ⲨⲎⲄ_новый()
-  
-  Ⲣ ⲢⲒ {
-    горыныч: ⲢⲀ(цель, уровень),
-    кэш: кэш,
-    корень: корень
-  }
-
-// Компилировать файл инкрементально
-Ⲫ ⲢⲒ_компилировать_файл(комп: ⲢⲒ, путь: Ⲥ) -> Ⲥ:
-  Ⲙ начало = время_сейчас()
-  
-  // Проверяем кэш
-  Ⲝ путь ∈ комп.кэш.записи:
-    Ⲁ:
-      Ⲙ запись = комп.кэш.записи[путь]
-      Ⲙ текущий_хэш = хэш_содержимого(читать_файл(путь).байты())
-      
-      Ⲝ текущий_хэш == запись.хэш_исходника:
-        Ⲁ:
-          // Проверяем зависимости
-          Ⲙ хэш_зав = хэш_зависимостей(комп, запись)
-          Ⲝ хэш_зав == запись.хэш_зависимостей && запись.код != None:
-            Ⲁ:
-              // Попадание в кэш!
-              комп.кэш.статистика.попадания += 1
-              комп.кэш.статистика.время_сэкономлено += время_сейчас() - начало
-              Ⲣ запись.код
-  
-  // Промах — компилируем
-  комп.кэш.статистика.промахи += 1
-  
-  Ⲙ исходник = читать_файл(путь)
-  Ⲙ код = ⲢⲂ(комп.горыныч, исходник)
-  
-  // Сохраняем в кэш
-  комп.кэш.записи[путь] = ⲨⲎⲂ {
-    путь: путь,
-    хэш_исходника: хэш_содержимого(исходник.байты()),
-    хэш_зависимостей: хэш_зависимостей(комп, комп.кэш.записи[путь]),
-    токены: None,  // можно сохранить для отладки
-    ast: None,
-    ir: None,
-    код: Some(код)
-  }
-  
-  Ⲣ код
-
-// Хэш зависимостей
-Ⲫ хэш_зависимостей(комп: ⲢⲒ, запись: ⲨⲎⲂ) -> Ⲋ:
-  Ⲙ хэш: Ⲋ = 0
-  
-  Ⲝ запись.путь ∈ комп.кэш.граф.узлы:
-    Ⲁ:
-      Ⲯ зав комп.кэш.граф.узлы[запись.путь].зависимости:
-        Ⲝ зав ∈ комп.кэш.записи:
-          Ⲁ: хэш = хэш ^ комп.кэш.записи[зав].хэш_исходника
-  
-  Ⲣ хэш
-
-// Компилировать проект
-Ⲫ ⲢⲒ_компилировать_проект(комп: ⲢⲒ) -> {Ⲥ: Ⲥ}:
-  Ⲙ результаты: {Ⲥ: Ⲥ} = {}
-  
-  // Находим все .999 файлы
-  Ⲙ файлы = найти_файлы(комп.корень, "*.999")
-  
-  // Строим граф зависимостей
-  Ⲯ файл файлы:
-    Ⲙ зависимости = извлечь_импорты(файл)
-    ⲨⲌ_добавить(комп.кэш.граф, файл, зависимости)
-  
-  // Топологическая сортировка
-  Ⲙ порядок = ⲨⲌ_топсорт(комп.кэш.граф)
-  
-  // Помечаем грязные
-  ⲨⲌ_пометить_грязные(комп.кэш.граф)
-  
-  // Компилируем в правильном порядке
-  Ⲯ файл порядок:
-    Ⲝ комп.кэш.граф.узлы[файл].состояние == Ⲃ:
-      Ⲁ:
-        результаты[файл] = ⲢⲒ_компилировать_файл(комп, файл)
-        комп.кэш.граф.узлы[файл].состояние = Ⲇ
-  
-  // Сохраняем кэш
-  ⲨⲎⲄ_сохранить(комп.кэш, комп.корень + "/.999cache")
-  
-  // Выводим статистику
-  печать(format!(
-    "Компиляция завершена: {} попаданий, {} промахов, сэкономлено {}ms",
-    комп.кэш.статистика.попадания,
-    комп.кэш.статистика.промахи,
-    комп.кэш.статистика.время_сэкономлено
-  ))
-  
-  Ⲣ результаты
-
-// ============================================
-// WATCH MODE
-// ============================================
-
-// Режим наблюдения за изменениями
-Ⲫ ⲢⲒ_watch(комп: ⲢⲒ):
-  печать("Наблюдение за изменениями в " + комп.корень)
-  
-  Ⲙ последние_хэши: {Ⲥ: Ⲋ} = {}
-  
-  // Инициализируем хэши
-  Ⲙ файлы = найти_файлы(комп.корень, "*.999")
-  Ⲯ файл файлы:
-    последние_хэши[файл] = хэш_содержимого(читать_файл(файл).байты())
-  
-  // Бесконечный цикл наблюдения
-  Ⲯ Ⲁ:
-    спать(100)  // 100ms
+    Ⲫ verify_all(Ⲥ) → Trit {
+        Ⲃ result: Trit = △
+        Ⲝ inv ∈ Ⲥ.invariants {
+            inv.verified = inv.condition() ? △ : ▽
+            result = trit_and(result, inv.verified)
+        }
+        Ⲥ.all_passed = result
+        Ⲣ result
+    }
     
-    Ⲙ изменённые: [Ⲥ] = []
+    Ⲫ get_failures(Ⲥ) → [Ⲧⲉⲝⲧ] {
+        Ⲃ failures: [Ⲧⲉⲝⲧ] = []
+        Ⲝ inv ∈ Ⲥ.invariants {
+            Ⲉ inv.verified == ▽ { failures.push(inv.name) }
+        }
+        Ⲣ failures
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// EXTERNAL ORACLE
+// ═══════════════════════════════════════════════════════════════
+Ⲏ ExternalOracle {
+    Ⲃ validators: [Ⲫⲛ] = []
+    Ⲃ confidence: Ⲫⲗⲟⲁⲧ = 0.0
     
-    Ⲯ файл файлы:
-      Ⲙ текущий_хэш = хэш_содержимого(читать_файл(файл).байты())
-      Ⲝ текущий_хэш != последние_хэши[файл]:
-        Ⲁ:
-          изменённые += файл
-          последние_хэши[файл] = текущий_хэш
+    Ⲫ add_validator(Ⲥ, Ⲁ v: Ⲫⲛ) { Ⲥ.validators.push(v) }
     
-    Ⲝ длина(изменённые) > 0:
-      Ⲁ:
-        печать(format!("Изменены: {}", изменённые.join(", ")))
+    Ⲫ validate(Ⲥ, Ⲁ candidate: Ⲁⲛⲩ) → Trit {
+        Ⲉ Ⲥ.validators.len() == 0 { Ⲣ ○ }
+        Ⲃ passed = 0
+        Ⲝ v ∈ Ⲥ.validators {
+            Ⲉ v(candidate) { passed += 1 }
+        }
+        Ⲥ.confidence = passed / Ⲥ.validators.len()
+        Ⲉ Ⲥ.confidence >= 0.8 { Ⲣ △ }
+        Ⲉ Ⲥ.confidence >= 0.5 { Ⲣ ○ }
+        Ⲣ ▽
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ENHANCED SELF-EVOLUTION
+// ═══════════════════════════════════════════════════════════════
+Ⲏ SelfEvolution {
+    Ⲃ version: Ⲧⲉⲝⲧ = "4.0"
+    Ⲃ generation: Ⲓⲛⲧ = 0
+    Ⲃ fitness: Ⲫⲗⲟⲁⲧ = 1.0
+    Ⲃ improved: Trit = ○
+    Ⲃ verifier: FormalVerifier = FormalVerifier {}
+    Ⲃ oracle: ExternalOracle = ExternalOracle {}
+    
+    Ⲫ evolve(Ⲥ) → Ⲥ {
+        Ⲃ candidate = Ⲥ.mutate()
         
-        // Перекомпилируем только изменённые и зависимые
-        Ⲯ файл изменённые:
-          ⲨⲌ_распространить_грязь(комп.кэш.граф, файл)
+        // Formal verification (REQUIRED)
+        Ⲃ verified = Ⲥ.verifier.verify_all()
+        Ⲉ verified == ▽ {
+            Ⲥ.improved = ▽
+            Ⲣ Ⲥ  // Reject mutation
+        }
         
-        ⲢⲒ_компилировать_проект(комп)
+        // External oracle validation
+        Ⲃ oracle_result = Ⲥ.oracle.validate(candidate)
+        Ⲉ oracle_result == ▽ {
+            Ⲥ.improved = ▽
+            Ⲣ Ⲥ  // Reject mutation
+        }
+        
+        // Accept evolution
+        Ⲥ.generation += 1
+        Ⲥ.improved = △
+        Ⲣ candidate
+    }
+    
+    Ⲫ mutate(Ⲥ) → Ⲥ {
+        Ⲃ new_self = Ⲥ.clone()
+        new_self.fitness *= (1.0 + random(-0.1, 0.1))
+        Ⲣ new_self
+    }
+    
+    Ⲫ improve(Ⲥ, Ⲁ metric: Ⲧⲉⲝⲧ) → Ⲫⲗⲟⲁⲧ {
+        Ⲉ metric == "speed" { Ⲥ.fitness *= 1.5; Ⲣ 1.5 }
+        Ⲉ metric == "memory" { Ⲥ.fitness *= 0.8; Ⲣ 0.8 }
+        Ⲉ metric == "quality" { Ⲥ.fitness *= 1.2; Ⲣ 1.2 }
+        Ⲣ 1.0
+    }
+    
+    Ⲫ add_invariant(Ⲥ, Ⲁ name: Ⲧⲉⲝⲧ, Ⲁ cond: Ⲫⲛ) {
+        Ⲥ.verifier.add_invariant(name, cond)
+    }
+}
 
-// ============================================
-// ПАРАЛЛЕЛЬНАЯ КОМПИЛЯЦИЯ
-// ============================================
+// ═══════════════════════════════════════════════════════════════
+// MODULE: inkrement - Incremental Compilation System
+// PAS Prediction: 5x speedup for large projects
+// Patterns: PRE (dependency cache), HSH (content hashing)
+// ═══════════════════════════════════════════════════════════════
 
-// Компилировать параллельно (по уровням графа)
-Ⲫ ⲢⲒ_компилировать_параллельно(комп: ⲢⲒ) -> {Ⲥ: Ⲥ}:
-  Ⲙ результаты: {Ⲥ: Ⲥ} = {}
-  
-  // Группируем по уровням (файлы без зависимостей друг на друга)
-  Ⲙ уровни = группировать_по_уровням(комп.кэш.граф)
-  
-  Ⲯ уровень уровни:
-    // Файлы одного уровня можно компилировать параллельно
-    Ⲙ задачи: [Future<Ⲥ>] = []
-    
-    Ⲯ файл уровень:
-      Ⲝ комп.кэш.граф.узлы[файл].состояние == Ⲃ:
-        Ⲁ:
-          задачи += spawn(|| ⲢⲒ_компилировать_файл(комп, файл))
-    
-    // Ждём завершения всех задач уровня
-    Ⲯ (файл, задача) zip(уровень, задачи):
-      результаты[файл] = await(задача)
-      комп.кэш.граф.узлы[файл].состояние = Ⲇ
-  
-  Ⲣ результаты
+// File state tracking
+⬢ FileState { UNCHANGED, MODIFIED, ADDED, DELETED }
 
-// Группировка по уровням
-Ⲫ группировать_по_уровням(граф: ⲨⲌ) -> [[Ⲥ]]:
-  Ⲙ уровни: [[Ⲥ]] = []
-  Ⲙ обработанные: {Ⲥ} = {}
-  
-  Ⲯ длина(обработанные) < длина(граф.узлы):
-    Ⲙ текущий_уровень: [Ⲥ] = []
+// Dependency types
+⬢ DepType { IMPORT, TYPE_REF, FUNCTION_CALL, MACRO_EXPAND }
+
+Ⲏ FileHash {
+    Ⲃ path: Ⲧⲉⲝⲧ
+    Ⲃ content_hash: Ⲓⲛⲧ
+    Ⲃ ast_hash: Ⲓⲛⲧ
+    Ⲃ mtime: Ⲓⲛⲧ
+}
+
+Ⲏ Dependency {
+    Ⲃ from_file: Ⲧⲉⲝⲧ
+    Ⲃ to_file: Ⲧⲉⲝⲧ
+    Ⲃ dep_type: DepType
+    Ⲃ symbol: Ⲧⲉⲝⲧ
+}
+
+Ⲏ CompilationUnit {
+    Ⲃ path: Ⲧⲉⲝⲧ
+    Ⲃ hash: FileHash
+    Ⲃ state: FileState = FileState.UNCHANGED
+    Ⲃ dependencies: [Dependency] = []
+    Ⲃ dependents: [Ⲧⲉⲝⲧ] = []
+    Ⲃ ast: Ⲁⲛⲩ?
+    Ⲃ ir: Ⲁⲛⲩ?
+    Ⲃ compiled: Trit = ▽
+}
+
+Ⲏ InkrementConfig {
+    Ⲃ enabled: Trit = △
+    Ⲃ version: Ⲧⲉⲝⲧ = "2.0.0"
+    Ⲃ cache_dir: Ⲧⲉⲝⲧ = ".999cache"
+    Ⲃ parallel_jobs: Ⲓⲛⲧ = 4
+    Ⲃ hash_algorithm: Ⲧⲉⲝⲧ = "xxhash64"
+}
+
+Ⲏ InkrementResult {
+    Ⲃ success: Trit
+    Ⲃ recompiled: [Ⲧⲉⲝⲧ]
+    Ⲃ skipped: [Ⲧⲉⲝⲧ]
+    Ⲃ error: Ⲧⲉⲝⲧ?
+    Ⲃ stats: InkrementStats
+}
+
+Ⲏ InkrementStats {
+    Ⲃ total_files: Ⲓⲛⲧ = 0
+    Ⲃ recompiled_count: Ⲓⲛⲧ = 0
+    Ⲃ skipped_count: Ⲓⲛⲧ = 0
+    Ⲃ time_saved_ms: Ⲓⲛⲧ = 0
+    Ⲃ speedup: Ⲫⲗⲟⲁⲧ = 1.0
+}
+
+// Dependency Graph
+Ⲏ DependencyGraph {
+    Ⲃ units: Ⲙⲁⲡ[Ⲧⲉⲝⲧ, CompilationUnit] = {}
+    Ⲃ topo_order: [Ⲧⲉⲝⲧ] = []
     
-    Ⲯ (путь, узел) граф.узлы:
-      Ⲝ путь ∉ обработанные:
-        Ⲁ:
-          // Проверяем, что все зависимости обработаны
-          Ⲙ готов = Ⲁ
-          Ⲯ зав узел.зависимости:
-            Ⲝ зав ∉ обработанные:
-              Ⲁ: готов = Ⲃ
-          
-          Ⲝ готов:
-            Ⲁ: текущий_уровень += путь
+    Ⲫ add_unit(Ⲥ, Ⲁ unit: CompilationUnit) {
+        Ⲥ.units.set(unit.path, unit)
+    }
     
-    Ⲯ путь текущий_уровень:
-      обработанные += путь
+    Ⲫ add_dependency(Ⲥ, Ⲁ dep: Dependency) {
+        Ⲃ from_unit = Ⲥ.units.get(dep.from_file)
+        Ⲃ to_unit = Ⲥ.units.get(dep.to_file)
+        
+        Ⲉ from_unit != ○ && to_unit != ○ {
+            from_unit.dependencies.push(dep)
+            to_unit.dependents.push(dep.from_file)
+        }
+    }
     
-    уровни += текущий_уровень
-  
-  Ⲣ уровни
+    // Topological sort for compilation order
+    Ⲫ compute_order(Ⲥ) → [Ⲧⲉⲝⲧ] {
+        Ⲃ visited: Ⲙⲁⲡ[Ⲧⲉⲝⲧ, Trit] = {}
+        Ⲃ order: [Ⲧⲉⲝⲧ] = []
+        
+        Ⲝ path ∈ Ⲥ.units.keys() {
+            Ⲥ.visit(path, visited, order)
+        }
+        
+        Ⲥ.topo_order = order.reverse()
+        Ⲣ Ⲥ.topo_order
+    }
+    
+    Ⲫ visit(Ⲥ, Ⲁ path: Ⲧⲉⲝⲧ, Ⲃ visited: Ⲙⲁⲡ, Ⲃ order: [Ⲧⲉⲝⲧ]) {
+        Ⲉ visited.get(path) == △ { Ⲣ }
+        visited.set(path, △)
+        
+        Ⲃ unit = Ⲥ.units.get(path)
+        Ⲉ unit != ○ {
+            Ⲝ dep ∈ unit.dependencies {
+                Ⲥ.visit(dep.to_file, visited, order)
+            }
+        }
+        order.push(path)
+    }
+    
+    // Find affected files when a file changes
+    Ⲫ find_affected(Ⲥ, Ⲁ changed: Ⲧⲉⲝⲧ) → [Ⲧⲉⲝⲧ] {
+        Ⲃ affected: [Ⲧⲉⲝⲧ] = [changed]
+        Ⲃ queue: [Ⲧⲉⲝⲧ] = [changed]
+        Ⲃ seen: Ⲙⲁⲡ[Ⲧⲉⲝⲧ, Trit] = {}
+        seen.set(changed, △)
+        
+        Ⲝ queue.len() > 0 {
+            Ⲃ current = queue.pop_front()
+            Ⲃ unit = Ⲥ.units.get(current)
+            
+            Ⲉ unit != ○ {
+                Ⲝ dependent ∈ unit.dependents {
+                    Ⲉ seen.get(dependent) != △ {
+                        seen.set(dependent, △)
+                        affected.push(dependent)
+                        queue.push(dependent)
+                    }
+                }
+            }
+        }
+        
+        Ⲣ affected
+    }
+}
+
+// Incremental Compiler
+Ⲏ IncrementalCompiler {
+    Ⲃ config: InkrementConfig
+    Ⲃ graph: DependencyGraph = DependencyGraph {}
+    Ⲃ cache: Ⲙⲁⲡ[Ⲧⲉⲝⲧ, FileHash] = {}
+    
+    Ⲫ new(Ⲁ config: InkrementConfig) → IncrementalCompiler {
+        Ⲣ IncrementalCompiler { config: config }
+    }
+    
+    // Load cache from disk
+    Ⲫ load_cache(Ⲥ) → Trit {
+        Ⲃ cache_path = Ⲥ.config.cache_dir + "/hashes.json"
+        Ⲉ file_exists(cache_path) {
+            Ⲃ data = read_file(cache_path)
+            Ⲥ.cache = parse_json(data)
+            Ⲣ △
+        }
+        Ⲣ ▽
+    }
+    
+    // Save cache to disk
+    Ⲫ save_cache(Ⲥ) {
+        Ⲃ cache_path = Ⲥ.config.cache_dir + "/hashes.json"
+        mkdir_p(Ⲥ.config.cache_dir)
+        write_file(cache_path, to_json(Ⲥ.cache))
+    }
+    
+    // Compute content hash using xxhash64
+    Ⲫ hash_content(Ⲥ, Ⲁ content: Ⲧⲉⲝⲧ) → Ⲓⲛⲧ {
+        Ⲣ xxhash64(content)
+    }
+    
+    // Check if file needs recompilation
+    Ⲫ needs_recompile(Ⲥ, Ⲁ path: Ⲧⲉⲝⲧ) → Trit {
+        Ⲃ cached = Ⲥ.cache.get(path)
+        Ⲉ cached == ○ { Ⲣ △ }  // New file
+        
+        Ⲃ current_mtime = file_mtime(path)
+        Ⲉ current_mtime != cached.mtime {
+            Ⲃ content = read_file(path)
+            Ⲃ current_hash = Ⲥ.hash_content(content)
+            Ⲉ current_hash != cached.content_hash {
+                Ⲣ △  // Content changed
+            }
+        }
+        Ⲣ ▽  // No changes
+    }
+    
+    // Main incremental compile
+    Ⲫ compile(Ⲥ, Ⲁ files: [Ⲧⲉⲝⲧ]) → InkrementResult {
+        Ⲃ start_time = time_ms()
+        Ⲥ.load_cache()
+        
+        // Detect changed files
+        Ⲃ changed: [Ⲧⲉⲝⲧ] = []
+        Ⲝ file ∈ files {
+            Ⲉ Ⲥ.needs_recompile(file) == △ {
+                changed.push(file)
+            }
+        }
+        
+        // Find all affected files
+        Ⲃ to_recompile: [Ⲧⲉⲝⲧ] = []
+        Ⲝ file ∈ changed {
+            Ⲃ affected = Ⲥ.graph.find_affected(file)
+            Ⲝ a ∈ affected {
+                Ⲉ !to_recompile.contains(a) {
+                    to_recompile.push(a)
+                }
+            }
+        }
+        
+        // Compile in dependency order
+        Ⲃ order = Ⲥ.graph.compute_order()
+        Ⲃ recompiled: [Ⲧⲉⲝⲧ] = []
+        Ⲃ skipped: [Ⲧⲉⲝⲧ] = []
+        
+        Ⲝ file ∈ order {
+            Ⲉ to_recompile.contains(file) {
+                Ⲥ.compile_file(file)
+                recompiled.push(file)
+                
+                // Update cache
+                Ⲃ content = read_file(file)
+                Ⲥ.cache.set(file, FileHash {
+                    path: file,
+                    content_hash: Ⲥ.hash_content(content),
+                    mtime: file_mtime(file)
+                })
+            } Ⲱ {
+                skipped.push(file)
+            }
+        }
+        
+        Ⲥ.save_cache()
+        
+        Ⲃ end_time = time_ms()
+        Ⲃ full_time = files.len() * 100  // Estimated full compile time
+        Ⲃ actual_time = end_time - start_time
+        
+        Ⲣ InkrementResult {
+            success: △,
+            recompiled: recompiled,
+            skipped: skipped,
+            error: ○,
+            stats: InkrementStats {
+                total_files: files.len(),
+                recompiled_count: recompiled.len(),
+                skipped_count: skipped.len(),
+                time_saved_ms: full_time - actual_time,
+                speedup: full_time / max(actual_time, 1)
+            }
+        }
+    }
+    
+    Ⲫ compile_file(Ⲥ, Ⲁ path: Ⲧⲉⲝⲧ) → Trit {
+        // Parse → Type Check → Codegen
+        Ⲃ content = read_file(path)
+        Ⲃ tokens = tokenize_source(content)
+        Ⲃ ast = parse_tokens(tokens)
+        Ⲃ typed_ast = type_check(ast)
+        Ⲃ ir = generate_ir(typed_ast)
+        
+        // Update unit in graph
+        Ⲃ unit = Ⲥ.graph.units.get(path)
+        Ⲉ unit != ○ {
+            unit.ast = ast
+            unit.ir = ir
+            unit.compiled = △
+        }
+        
+        Ⲣ △
+    }
+}
+
+// Public API
+Ⲫ init_inkrement(Ⲁ config: InkrementConfig) → InkrementResult {
+    Ⲉ config.enabled == ▽ {
+        Ⲣ InkrementResult { 
+            success: ▽, 
+            recompiled: [], 
+            skipped: [], 
+            error: "disabled",
+            stats: InkrementStats {}
+        }
+    }
+    Ⲣ InkrementResult { 
+        success: △, 
+        recompiled: [], 
+        skipped: [], 
+        error: ○,
+        stats: InkrementStats {}
+    }
+}
+
+Ⲫ incremental_compile(Ⲁ files: [Ⲧⲉⲝⲧ]) → InkrementResult {
+    Ⲃ config = InkrementConfig { enabled: △ }
+    Ⲃ compiler = IncrementalCompiler.new(config)
+    Ⲣ compiler.compile(files)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PRE Pattern - Caching
+// ═══════════════════════════════════════════════════════════════
+Ⲕ CACHE: Ⲙⲁⲡ = {}
+Ⲫ cache_get(Ⲁ key: Ⲧⲉⲝⲧ) → Ⲁⲛⲩ? { Ⲣ CACHE.get(key) }
+Ⲫ cache_set(Ⲁ key: Ⲧⲉⲝⲧ, Ⲁ val: Ⲁⲛⲩ) { CACHE.set(key, val) }
+
+// ═══════════════════════════════════════════════════════════════
+// D&C Pattern - Parallel
+// ═══════════════════════════════════════════════════════════════
+Ⲫ parallel_map(Ⲁ items: [Ⲁⲛⲩ], Ⲁ fn: Ⲫⲛ) → [Ⲁⲛⲩ] {
+    Ⲃ results: [Ⲁⲛⲩ] = []
+    Ⲝ item ∈ items ⊛ { results.push(fn(item)) }
+    Ⲣ results
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TRINITY METRICS
+// ═══════════════════════════════════════════════════════════════
+Ⲏ TrinityMetrics {
+    Ⲃ n: Ⲓⲛⲧ = 20
+    Ⲃ k: Ⲓⲛⲧ = 8
+    Ⲃ m: Ⲓⲛⲧ = 0
+    
+    Ⲫ score(Ⲥ) → Ⲫⲗⲟⲁⲧ {
+        Ⲣ Ⲥ.n * ⲡⲟⲱ(3.0, Ⲥ.k / 10.0) * ⲡⲟⲱ(3.14159, Ⲥ.m / 20.0)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TESTS (Test-First Generated)
+// ═══════════════════════════════════════════════════════════════
+⊡ test "ternary_and" {
+    ⊜! trit_and(△, △) == △
+    ⊜! trit_and(△, ▽) == ▽
+    ⊜! trit_and(△, ○) == ○
+    ⊜! trit_and(▽, ○) == ▽
+}
+
+⊡ test "ternary_or" {
+    ⊜! trit_or(▽, ▽) == ▽
+    ⊜! trit_or(△, ▽) == △
+    ⊜! trit_or(○, ○) == ○
+}
+
+⊡ test "ternary_not" {
+    ⊜! trit_not(△) == ▽
+    ⊜! trit_not(▽) == △
+    ⊜! trit_not(○) == ○
+}
+
+⊡ test "formal_verifier" {
+    Ⲃ v = FormalVerifier {}
+    v.add_invariant("always_true", () → △)
+    ⊜! v.verify_all() == △
+}
+
+⊡ test "self_evolution_with_verification" {
+    Ⲃ e = SelfEvolution {}
+    e.add_invariant("fitness_positive", () → e.fitness > 0.0)
+    Ⲃ evolved = e.evolve()
+    ⊜! evolved.improved != ▽
+}
+
+⊡ test "init_inkrement" {
+    Ⲃ config = InkrementConfig { enabled: △ }
+    Ⲃ result = init_inkrement(config)
+    ⊜! result.success == △
+}

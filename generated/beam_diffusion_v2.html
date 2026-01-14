@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>BEAM Pixel Diffusion v2 - Flow Matching</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+      background: linear-gradient(135deg, #0a0a12 0%, #1a1a2e 100%);
+      color: #fff; 
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      overflow: hidden;
+      display: flex;
+      height: 100vh;
+    }
+    #main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+    canvas { 
+      border: 1px solid #333;
+      image-rendering: pixelated;
+      cursor: crosshair;
+      box-shadow: 0 0 60px rgba(100, 150, 255, 0.2);
+    }
+    #sidebar {
+      width: 240px;
+      background: rgba(17, 17, 24, 0.95);
+      padding: 20px;
+      border-left: 1px solid #222;
+      overflow-y: auto;
+    }
+    h1 { 
+      font-size: 16px; 
+      color: #0af;
+      margin-bottom: 5px;
+      text-shadow: 0 0 10px rgba(0, 170, 255, 0.5);
+    }
+    .subtitle {
+      font-size: 10px;
+      color: #666;
+      margin-bottom: 15px;
+    }
+    h2 {
+      font-size: 11px;
+      color: #888;
+      margin: 20px 0 10px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 10px 12px;
+      margin: 4px 0;
+      background: linear-gradient(135deg, #1a1a2a 0%, #252535 100%);
+      border: 1px solid #333;
+      color: #ccc;
+      font-family: inherit;
+      font-size: 11px;
+      cursor: pointer;
+      border-radius: 6px;
+      transition: all 0.2s;
+      text-align: left;
+    }
+    .btn:hover { 
+      background: linear-gradient(135deg, #252535 0%, #353545 100%);
+      border-color: #444;
+    }
+    .btn.active { 
+      border-color: #0af;
+      background: linear-gradient(135deg, #0a2a4a 0%, #1a3a5a 100%);
+      color: #fff;
+      box-shadow: 0 0 15px rgba(0, 170, 255, 0.3);
+    }
+    .btn .dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 10px;
+      box-shadow: 0 0 8px currentColor;
+    }
+    .btn .key {
+      float: right;
+      padding: 2px 6px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 3px;
+      font-size: 9px;
+    }
+    #stats {
+      font-size: 10px;
+      color: #555;
+      margin-top: 20px;
+      line-height: 2;
+      padding: 10px;
+      background: rgba(0,0,0,0.3);
+      border-radius: 6px;
+    }
+    #stats span { color: #0af; }
+    #stats .label { color: #666; }
+    #flow-bar {
+      height: 4px;
+      background: #222;
+      border-radius: 2px;
+      margin-top: 10px;
+      overflow: hidden;
+    }
+    #flow-progress {
+      height: 100%;
+      background: linear-gradient(90deg, #0af, #f0a);
+      width: 0%;
+      transition: width 0.1s;
+    }
+    #info {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      font-size: 10px;
+      color: #444;
+      max-width: 400px;
+      line-height: 1.6;
+    }
+    #info a { color: #0af; text-decoration: none; }
+    .shape-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+    }
+    .shape-btn {
+      padding: 8px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div id="main">
+    <canvas id="canvas"></canvas>
+  </div>
+  <div id="sidebar">
+    <h1>BEAM Diffusion v2</h1>
+    <div class="subtitle">Flow Matching + Rectified Flow</div>
+    
+    <h2>Emotion (Latent)</h2>
+    <button class="btn active" data-emotion="joy">
+      <span class="dot" style="background:#fc3"></span>Joy <span class="key">1</span>
+    </button>
+    <button class="btn" data-emotion="calm">
+      <span class="dot" style="background:#38f"></span>Calm <span class="key">2</span>
+    </button>
+    <button class="btn" data-emotion="energy">
+      <span class="dot" style="background:#f42"></span>Energy <span class="key">3</span>
+    </button>
+    <button class="btn" data-emotion="mystery">
+      <span class="dot" style="background:#a4f"></span>Mystery <span class="key">4</span>
+    </button>
+    <button class="btn" data-emotion="nature">
+      <span class="dot" style="background:#4c8"></span>Nature <span class="key">5</span>
+    </button>
+    <button class="btn" data-emotion="cosmic">
+      <span class="dot" style="background:#226"></span>Cosmic <span class="key">6</span>
+    </button>
+    <button class="btn" data-emotion="fire">
+      <span class="dot" style="background:#f60"></span>Fire <span class="key">7</span>
+    </button>
+    
+    <h2>Shape (SDF)</h2>
+    <div class="shape-grid">
+      <button class="btn shape-btn active" data-shape="circle">Circle</button>
+      <button class="btn shape-btn" data-shape="box">Box</button>
+      <button class="btn shape-btn" data-shape="hexagon">Hexagon</button>
+      <button class="btn shape-btn" data-shape="star">Star</button>
+      <button class="btn shape-btn" data-shape="heart">Heart</button>
+      <button class="btn shape-btn" data-shape="none">Waves</button>
+    </div>
+    
+    <h2>Controls</h2>
+    <div style="font-size:10px;color:#666;line-height:1.8;padding:5px">
+      <b style="color:#888">Mouse:</b> Guide flow<br>
+      <b style="color:#888">Click:</b> Reset flow<br>
+      <b style="color:#888">Space:</b> Full reset<br>
+      <b style="color:#888">Q/W:</b> Shape cycle
+    </div>
+    
+    <div id="stats">
+      <span class="label">Processes:</span> <span id="proc-count">0</span><br>
+      <span class="label">Time:</span> <span id="time">0.00</span>s<br>
+      <span class="label">FPS:</span> <span id="fps">0</span><br>
+      <span class="label">Flow:</span> <span id="flow-pct">0</span>%<br>
+      <span class="label">Emotion:</span> <span id="current-emotion">joy</span><br>
+      <span class="label">Shape:</span> <span id="current-shape">circle</span>
+      <div id="flow-bar"><div id="flow-progress"></div></div>
+    </div>
+  </div>
+  
+  <div id="info">
+    Based on: <a href="https://arxiv.org/abs/2210.02747" target="_blank">Flow Matching</a> (Meta AI),
+    <a href="https://arxiv.org/abs/2403.03206" target="_blank">Rectified Flow</a> (SD3),
+    <a href="https://blackforestlabs.ai/" target="_blank">FLUX</a> (Black Forest Labs),
+    <a href="https://iquilezles.org/articles/distfunctions2d/" target="_blank">SDF</a> (Inigo Quilez)
+  </div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// BEAM Pixel Diffusion v2 Runtime
+// Flow Matching + Rectified Flow + SDF
+// ═══════════════════════════════════════════════════════════════
+
+const TAU = Math.PI * 2;
+const PHI = 1.618033988749895;
+
+// Extended Emotional Latent Codes
+const EMOTIONS = {
+  joy:     { color: [1.0, 0.8, 0.2], frequency: 1.2, amplitude: 1.0, turbulence: 0.3 },
+  calm:    { color: [0.2, 0.5, 0.9], frequency: 0.6, amplitude: 0.7, turbulence: 0.1 },
+  energy:  { color: [1.0, 0.3, 0.1], frequency: 2.0, amplitude: 1.5, turbulence: 0.8 },
+  mystery: { color: [0.5, 0.2, 0.8], frequency: 0.8, amplitude: 0.9, turbulence: 0.5 },
+  nature:  { color: [0.2, 0.8, 0.3], frequency: 1.0, amplitude: 0.8, turbulence: 0.4 },
+  cosmic:  { color: [0.1, 0.1, 0.3], frequency: 0.4, amplitude: 1.2, turbulence: 0.6 },
+  fire:    { color: [1.0, 0.4, 0.0], frequency: 3.0, amplitude: 2.0, turbulence: 1.0 }
+};
+
+// ─────────────────────────────────────────────────────────────────
+// SDF Functions (Inigo Quilez)
+// ─────────────────────────────────────────────────────────────────
+
+const SDF = {
+  circle: (px, py, r) => Math.sqrt(px*px + py*py) - r,
+  
+  box: (px, py, bx, by) => {
+    const dx = Math.abs(px) - bx;
+    const dy = Math.abs(py) - by;
+    return Math.sqrt(Math.max(dx,0)**2 + Math.max(dy,0)**2) + Math.min(Math.max(dx,dy), 0);
+  },
+  
+  hexagon: (px, py, r) => {
+    const kx = -0.866025404, ky = 0.5, kz = 0.577350269;
+    px = Math.abs(px); py = Math.abs(py);
+    const dot1 = 2 * Math.min(kx*px + ky*py, 0);
+    px -= dot1 * kx; py -= dot1 * ky;
+    px -= Math.max(-kz*r, Math.min(kz*r, px));
+    py -= r;
+    return Math.sqrt(px*px + py*py) * Math.sign(py);
+  },
+  
+  star: (px, py, r, n=5, m=2.5) => {
+    const an = Math.PI / n;
+    const en = Math.PI / m;
+    const acs = [Math.cos(an), Math.sin(an)];
+    const ecs = [Math.cos(en), Math.sin(en)];
+    
+    let bn = Math.atan2(px, py) % (2*an);
+    if (bn < 0) bn += 2*an;
+    bn -= an;
+    const len = Math.sqrt(px*px + py*py);
+    px = len * Math.cos(bn);
+    py = Math.abs(len * Math.sin(bn));
+    
+    px -= r * acs[0];
+    py -= r * acs[1];
+    
+    const k = Math.max(0, Math.min(r * acs[1] / ecs[1], -(px*ecs[0] + py*ecs[1])));
+    px += ecs[0] * k;
+    py += ecs[1] * k;
+    
+    return Math.sqrt(px*px + py*py) * Math.sign(px);
+  },
+  
+  heart: (px, py) => {
+    px = Math.abs(px);
+    if (px + py > 1.0) {
+      return Math.sqrt((px-0.25)**2 + (py-0.75)**2) - Math.SQRT2/4;
+    }
+    const d1 = px*px + (py-1)**2;
+    const k = Math.max(px + py, 0) * 0.5;
+    const d2 = (px-k)**2 + (py-k)**2;
+    return Math.sqrt(Math.min(d1, d2)) * Math.sign(px - py);
+  },
+  
+  none: () => -1 // Always inside
+};
+
+// ─────────────────────────────────────────────────────────────────
+// Noise Functions
+// ─────────────────────────────────────────────────────────────────
+
+function hash(x, y) {
+  let p = (x * 0.3183099 + y * 0.1) % 1;
+  if (p < 0) p += 1;
+  p *= 17;
+  return (p * (p + 33.33)) % 1;
+}
+
+function valueNoise(x, y) {
+  const i = Math.floor(x), j = Math.floor(y);
+  const f = x - i, g = y - j;
+  const u = f * f * (3 - 2*f);
+  const v = g * g * (3 - 2*g);
+  const a = hash(i, j), b = hash(i+1, j);
+  const c = hash(i, j+1), d = hash(i+1, j+1);
+  return (a + (b-a)*u) + ((c + (d-c)*u) - (a + (b-a)*u)) * v;
+}
+
+function fbm(x, y, octaves=4) {
+  let value = 0, amplitude = 0.5, frequency = 1;
+  for (let i = 0; i < octaves; i++) {
+    value += amplitude * valueNoise(x*frequency, y*frequency);
+    amplitude *= 0.5;
+    frequency *= 2;
+  }
+  return value;
+}
+
+function curlNoise(x, y, t) {
+  const eps = 0.01;
+  const dx = (fbm(x+eps, y, 4) - fbm(x-eps, y, 4)) / (2*eps);
+  const dy = (fbm(x, y+eps, 4) - fbm(x, y-eps, 4)) / (2*eps);
+  return [-dy, dx];
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Flow Matching
+// ─────────────────────────────────────────────────────────────────
+
+function rectifiedFlow(noise, target, t) {
+  return (1 - t) * noise + t * target;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Pixel Process v2
+// ─────────────────────────────────────────────────────────────────
+
+class PixelProcessV2 {
+  constructor(x, y, width, height) {
+    this.x = x;
+    this.y = y;
+    this.nx = (x / width) * 2 - 1;
+    this.ny = (y / height) * 2 - 1;
+    
+    this.noise = [Math.random(), Math.random(), Math.random()];
+    this.target = [0.5, 0.5, 0.5];
+    this.color = [...this.noise];
+    this.flowT = 0;
+    
+    this.phase = Math.random() * TAU;
+    this.frequency = 0.05 + Math.random() * 0.1;
+  }
+  
+  tick(dt, time, emotion, cursor, sdfMode) {
+    // 1. Calculate SDF
+    const sdfFn = SDF[sdfMode] || SDF.circle;
+    let sdf;
+    if (sdfMode === 'none') {
+      sdf = -1;
+    } else if (sdfMode === 'heart') {
+      sdf = sdfFn(this.nx, this.ny * 1.2 + 0.3);
+    } else {
+      sdf = sdfFn(this.nx - cursor.nx, this.ny - cursor.ny, 0.35);
+    }
+    
+    // 2. Cursor guidance
+    const dx = this.nx - cursor.nx;
+    const dy = this.ny - cursor.ny;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    const guidance = Math.exp(-dist*dist * 4) * cursor.strength;
+    
+    // 3. Calculate target color
+    const inside = sdf < 0;
+    const edge = Math.abs(sdf) < 0.05;
+    
+    if (inside) {
+      this.target[0] = emotion.color[0];
+      this.target[1] = emotion.color[1];
+      this.target[2] = emotion.color[2];
+    } else {
+      const falloff = Math.exp(-sdf * 3);
+      this.target[0] = emotion.color[0] * falloff * 0.3;
+      this.target[1] = emotion.color[1] * falloff * 0.3;
+      this.target[2] = emotion.color[2] * falloff * 0.3;
+    }
+    
+    // Edge glow
+    if (edge) {
+      const glow = 1 - Math.abs(sdf) / 0.05;
+      this.target[0] += glow * 0.5;
+      this.target[1] += glow * 0.5;
+      this.target[2] += glow * 0.5;
+    }
+    
+    // 4. Wave modulation
+    const r = Math.sqrt(this.x*this.x + this.y*this.y);
+    const wave = Math.sin(this.frequency * r * 0.1 + time * emotion.frequency + this.phase);
+    const wave2 = 0.5 * Math.sin(this.frequency * 2 * dist * 10 + time * 1.7);
+    const wave3 = 0.3 * Math.sin(this.frequency * 3 * dist * 10 + time * 2.3);
+    const totalWave = (wave + wave2 + wave3) * emotion.amplitude;
+    
+    // 5. Turbulence
+    const curl = curlNoise(this.nx * 3, this.ny * 3, time * 0.1);
+    const turb = emotion.turbulence * 0.1;
+    this.target[0] += curl[0] * turb;
+    this.target[1] += curl[1] * turb;
+    this.target[2] += (curl[0] + curl[1]) * turb * 0.5;
+    
+    // 6. Flow Matching
+    const flowSpeed = 0.02 * (1 + guidance * 2);
+    this.flowT = Math.min(1, this.flowT + flowSpeed);
+    
+    this.color[0] = rectifiedFlow(this.noise[0], this.target[0], this.flowT);
+    this.color[1] = rectifiedFlow(this.noise[1], this.target[1], this.flowT);
+    this.color[2] = rectifiedFlow(this.noise[2], this.target[2], this.flowT);
+    
+    // 7. Wave interference
+    const waveInfluence = 0.15 * (1 - this.flowT);
+    this.color[0] += totalWave * waveInfluence;
+    this.color[1] += totalWave * waveInfluence * 0.8;
+    this.color[2] += totalWave * waveInfluence * 0.6;
+    
+    // 8. Phase evolution
+    this.phase += dt * this.frequency * (1 + guidance);
+  }
+  
+  resetFlow() {
+    this.noise = [Math.random(), Math.random(), Math.random()];
+    this.flowT = 0;
+  }
+  
+  getColor() {
+    return [
+      Math.max(0, Math.min(1, this.color[0])),
+      Math.max(0, Math.min(1, this.color[1])),
+      Math.max(0, Math.min(1, this.color[2])),
+      1
+    ];
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Supervisor
+// ─────────────────────────────────────────────────────────────────
+
+class DiffusionSupervisorV2 {
+  constructor(width, height) {
+    this.width = width;
+    this.height = height;
+    this.pixels = [];
+    this.time = 0;
+    this.emotion = EMOTIONS.joy;
+    this.emotionName = 'joy';
+    this.cursor = { nx: 0, ny: 0, strength: 0.5 };
+    this.sdfMode = 'circle';
+    this.avgFlowT = 0;
+    
+    for (let y = 0; y < height; y++) {
+      const row = [];
+      for (let x = 0; x < width; x++) {
+        row.push(new PixelProcessV2(x, y, width, height));
+      }
+      this.pixels.push(row);
+    }
+  }
+  
+  tick(dt, imageData) {
+    this.time += dt;
+    let totalFlow = 0;
+    
+    for (let y = 0; y < this.height; y++) {
+      for (let x = 0; x < this.width; x++) {
+        const pixel = this.pixels[y][x];
+        pixel.tick(dt, this.time, this.emotion, this.cursor, this.sdfMode);
+        totalFlow += pixel.flowT;
+        
+        const color = pixel.getColor();
+        const mapped = this.acesTonemap(color);
+        const idx = (y * this.width + x) * 4;
+        
+        imageData.data[idx + 0] = Math.floor(mapped[0] * 255);
+        imageData.data[idx + 1] = Math.floor(mapped[1] * 255);
+        imageData.data[idx + 2] = Math.floor(mapped[2] * 255);
+        imageData.data[idx + 3] = 255;
+      }
+    }
+    
+    this.avgFlowT = totalFlow / (this.width * this.height);
+    return imageData;
+  }
+  
+  acesTonemap(c) {
+    const a = 2.51, b = 0.03, c_ = 2.43, d = 0.59, e = 0.14;
+    return [
+      Math.max(0, Math.min(1, (c[0]*(a*c[0]+b))/(c[0]*(c_*c[0]+d)+e))),
+      Math.max(0, Math.min(1, (c[1]*(a*c[1]+b))/(c[1]*(c_*c[1]+d)+e))),
+      Math.max(0, Math.min(1, (c[2]*(a*c[2]+b))/(c[2]*(c_*c[2]+d)+e)))
+    ];
+  }
+  
+  setEmotion(name) {
+    if (EMOTIONS[name]) {
+      this.emotion = EMOTIONS[name];
+      this.emotionName = name;
+      this.resetFlow();
+    }
+  }
+  
+  setShape(shape) {
+    this.sdfMode = shape;
+    this.resetFlow();
+  }
+  
+  resetFlow() {
+    for (const row of this.pixels) {
+      for (const pixel of row) {
+        pixel.resetFlow();
+      }
+    }
+  }
+  
+  cursorMove(x, y) {
+    this.cursor.nx = x * 2 - 1;
+    this.cursor.ny = y * 2 - 1;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN
+// ═══════════════════════════════════════════════════════════════
+
+const SIZE = 128;
+const SCALE = 4;
+
+const canvas = document.getElementById('canvas');
+canvas.width = SIZE;
+canvas.height = SIZE;
+canvas.style.width = SIZE * SCALE + 'px';
+canvas.style.height = SIZE * SCALE + 'px';
+
+const ctx = canvas.getContext('2d');
+const imageData = ctx.createImageData(SIZE, SIZE);
+
+const supervisor = new DiffusionSupervisorV2(SIZE, SIZE);
+
+document.getElementById('proc-count').textContent = (SIZE * SIZE).toLocaleString();
+
+// Mouse
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  supervisor.cursorMove(
+    (e.clientX - rect.left) / rect.width,
+    (e.clientY - rect.top) / rect.height
+  );
+});
+
+canvas.addEventListener('click', () => supervisor.resetFlow());
+
+// Keyboard
+const shapes = ['circle', 'box', 'hexagon', 'star', 'heart', 'none'];
+let shapeIdx = 0;
+
+document.addEventListener('keydown', e => {
+  if (e.key >= '1' && e.key <= '7') {
+    const emotions = ['joy', 'calm', 'energy', 'mystery', 'nature', 'cosmic', 'fire'];
+    const idx = parseInt(e.key) - 1;
+    supervisor.setEmotion(emotions[idx]);
+    document.getElementById('current-emotion').textContent = emotions[idx];
+    document.querySelectorAll('[data-emotion]').forEach((btn, i) => {
+      btn.classList.toggle('active', i === idx);
+    });
+  }
+  if (e.key === ' ') {
+    e.preventDefault();
+    supervisor.resetFlow();
+  }
+  if (e.key === 'q' || e.key === 'Q') {
+    shapeIdx = (shapeIdx - 1 + shapes.length) % shapes.length;
+    supervisor.setShape(shapes[shapeIdx]);
+    document.getElementById('current-shape').textContent = shapes[shapeIdx];
+    document.querySelectorAll('[data-shape]').forEach((btn, i) => {
+      btn.classList.toggle('active', i === shapeIdx);
+    });
+  }
+  if (e.key === 'w' || e.key === 'W') {
+    shapeIdx = (shapeIdx + 1) % shapes.length;
+    supervisor.setShape(shapes[shapeIdx]);
+    document.getElementById('current-shape').textContent = shapes[shapeIdx];
+    document.querySelectorAll('[data-shape]').forEach((btn, i) => {
+      btn.classList.toggle('active', i === shapeIdx);
+    });
+  }
+});
+
+// Buttons
+document.querySelectorAll('[data-emotion]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const emotion = btn.dataset.emotion;
+    supervisor.setEmotion(emotion);
+    document.getElementById('current-emotion').textContent = emotion;
+    document.querySelectorAll('[data-emotion]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+document.querySelectorAll('[data-shape]').forEach((btn, i) => {
+  btn.addEventListener('click', () => {
+    shapeIdx = i;
+    supervisor.setShape(shapes[i]);
+    document.getElementById('current-shape').textContent = shapes[i];
+    document.querySelectorAll('[data-shape]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+// Animation
+let lastTime = performance.now();
+let frameCount = 0, fpsTime = 0;
+
+function loop() {
+  const now = performance.now();
+  const dt = (now - lastTime) / 1000;
+  lastTime = now;
+  
+  frameCount++;
+  fpsTime += dt;
+  if (fpsTime >= 1) {
+    document.getElementById('fps').textContent = frameCount;
+    frameCount = 0;
+    fpsTime = 0;
+  }
+  
+  document.getElementById('time').textContent = supervisor.time.toFixed(2);
+  document.getElementById('flow-pct').textContent = Math.round(supervisor.avgFlowT * 100);
+  document.getElementById('flow-progress').style.width = (supervisor.avgFlowT * 100) + '%';
+  
+  supervisor.tick(dt, imageData);
+  ctx.putImageData(imageData, 0, 0);
+  
+  requestAnimationFrame(loop);
+}
+
+loop();
+
+console.log('BEAM Pixel Diffusion v2');
+console.log('Flow Matching + Rectified Flow + SDF');
+console.log(`${SIZE}x${SIZE} = ${SIZE*SIZE} OTP processes`);
+</script>
+</body>
+</html>

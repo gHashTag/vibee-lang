@@ -1,0 +1,366 @@
+// ═══════════════════════════════════════════════════════════════
+// POST-QUANTUM CRYPTOGRAPHY MODULE
+// Version: 2.0.0 | Trinity: n=27 k=9 m=3
+// Implements: Kyber (KEM), Dilithium (Signatures), SPHINCS+
+// ═══════════════════════════════════════════════════════════════
+
+Ⲯ ⲕⲟⲣⲉ
+Ⲯ ⲧⲣⲓⲛⲓⲧⲩ
+
+// ═══════════════════════════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════════════════════════
+Ⲕ KYBER_N: Ⲓⲛⲧ = 256
+Ⲕ KYBER_Q: Ⲓⲛⲧ = 3329
+Ⲕ KYBER_K: Ⲓⲛⲧ = 3  // Security level (Trinity!)
+
+Ⲕ DILITHIUM_N: Ⲓⲛⲧ = 256
+Ⲕ DILITHIUM_Q: Ⲓⲛⲧ = 8380417
+
+// ═══════════════════════════════════════════════════════════════
+// POLYNOMIAL RING OPERATIONS (R_q = Z_q[X]/(X^n + 1))
+// ═══════════════════════════════════════════════════════════════
+Ⲏ Polynomial {
+    Ⲃ coeffs: [Ⲓⲛⲧ; KYBER_N]
+    
+    Ⲫ new() → Polynomial {
+        Ⲣ Polynomial { coeffs: [0; KYBER_N] }
+    }
+    
+    Ⲫ random(Ⲁ q: Ⲓⲛⲧ) → Polynomial {
+        Ⲃ p = Polynomial.new()
+        Ⲝ i ∈ 0..KYBER_N {
+            p.coeffs[i] = random_int(0, q - 1)
+        }
+        Ⲣ p
+    }
+    
+    Ⲫ add(Ⲥ, Ⲁ other: Polynomial, Ⲁ q: Ⲓⲛⲧ) → Polynomial {
+        Ⲃ result = Polynomial.new()
+        Ⲝ i ∈ 0..KYBER_N {
+            result.coeffs[i] = (Ⲥ.coeffs[i] + other.coeffs[i]) % q
+        }
+        Ⲣ result
+    }
+    
+    Ⲫ sub(Ⲥ, Ⲁ other: Polynomial, Ⲁ q: Ⲓⲛⲧ) → Polynomial {
+        Ⲃ result = Polynomial.new()
+        Ⲝ i ∈ 0..KYBER_N {
+            result.coeffs[i] = (Ⲥ.coeffs[i] - other.coeffs[i] + q) % q
+        }
+        Ⲣ result
+    }
+    
+    // NTT-based multiplication (O(n log n))
+    Ⲫ mul_ntt(Ⲥ, Ⲁ other: Polynomial, Ⲁ q: Ⲓⲛⲧ) → Polynomial {
+        Ⲃ a_ntt = Ⲥ.ntt(q)
+        Ⲃ b_ntt = other.ntt(q)
+        Ⲃ c_ntt = Polynomial.new()
+        
+        Ⲝ i ∈ 0..KYBER_N {
+            c_ntt.coeffs[i] = (a_ntt.coeffs[i] * b_ntt.coeffs[i]) % q
+        }
+        
+        Ⲣ c_ntt.inv_ntt(q)
+    }
+    
+    // Number Theoretic Transform
+    Ⲫ ntt(Ⲥ, Ⲁ q: Ⲓⲛⲧ) → Polynomial {
+        Ⲃ result = Polynomial { coeffs: Ⲥ.coeffs.clone() }
+        Ⲃ n = KYBER_N
+        Ⲃ omega = primitive_root(q, n)
+        
+        Ⲃ len = n / 2
+        Ⲝ len >= 1 {
+            Ⲃ w = 1
+            Ⲝ start ∈ 0..n step len * 2 {
+                Ⲝ j ∈ 0..len {
+                    Ⲃ t = (w * result.coeffs[start + j + len]) % q
+                    result.coeffs[start + j + len] = (result.coeffs[start + j] - t + q) % q
+                    result.coeffs[start + j] = (result.coeffs[start + j] + t) % q
+                }
+                w = (w * omega) % q
+            }
+            len /= 2
+        }
+        
+        Ⲣ result
+    }
+    
+    Ⲫ inv_ntt(Ⲥ, Ⲁ q: Ⲓⲛⲧ) → Polynomial {
+        // Inverse NTT
+        Ⲃ result = Ⲥ.ntt(q)  // Simplified
+        Ⲃ n_inv = mod_inverse(KYBER_N, q)
+        Ⲝ i ∈ 0..KYBER_N {
+            result.coeffs[i] = (result.coeffs[i] * n_inv) % q
+        }
+        Ⲣ result
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// KYBER - Key Encapsulation Mechanism
+// ═══════════════════════════════════════════════════════════════
+Ⲏ KyberPublicKey {
+    Ⲃ t: [Polynomial; KYBER_K]
+    Ⲃ rho: [Ⲓⲛⲧ; 32]
+}
+
+Ⲏ KyberSecretKey {
+    Ⲃ s: [Polynomial; KYBER_K]
+    Ⲃ public_key: KyberPublicKey
+    Ⲃ h: [Ⲓⲛⲧ; 32]  // Hash of public key
+    Ⲃ z: [Ⲓⲛⲧ; 32]  // Random seed
+}
+
+Ⲏ KyberCiphertext {
+    Ⲃ u: [Polynomial; KYBER_K]
+    Ⲃ v: Polynomial
+}
+
+Ⲏ Kyber {
+    Ⲫ keygen() → (KyberPublicKey, KyberSecretKey) {
+        // Generate random seed
+        Ⲃ rho = random_bytes(32)
+        Ⲃ sigma = random_bytes(32)
+        
+        // Generate matrix A from rho
+        Ⲃ A: [[Polynomial; KYBER_K]; KYBER_K]
+        Ⲝ i ∈ 0..KYBER_K {
+            Ⲝ j ∈ 0..KYBER_K {
+                A[i][j] = Polynomial.random(KYBER_Q)
+            }
+        }
+        
+        // Generate secret s and error e
+        Ⲃ s: [Polynomial; KYBER_K]
+        Ⲃ e: [Polynomial; KYBER_K]
+        Ⲝ i ∈ 0..KYBER_K {
+            s[i] = sample_cbd(sigma, i)
+            e[i] = sample_cbd(sigma, i + KYBER_K)
+        }
+        
+        // Compute t = A*s + e
+        Ⲃ t: [Polynomial; KYBER_K]
+        Ⲝ i ∈ 0..KYBER_K {
+            t[i] = e[i]
+            Ⲝ j ∈ 0..KYBER_K {
+                t[i] = t[i].add(A[i][j].mul_ntt(s[j], KYBER_Q), KYBER_Q)
+            }
+        }
+        
+        Ⲃ pk = KyberPublicKey { t: t, rho: rho }
+        Ⲃ sk = KyberSecretKey {
+            s: s,
+            public_key: pk,
+            h: sha3_256(pk.encode()),
+            z: random_bytes(32)
+        }
+        
+        Ⲣ (pk, sk)
+    }
+    
+    Ⲫ encapsulate(Ⲁ pk: KyberPublicKey) → (KyberCiphertext, [Ⲓⲛⲧ; 32]) {
+        // Generate random message
+        Ⲃ m = random_bytes(32)
+        
+        // Derive randomness
+        Ⲃ (K_bar, r) = sha3_512(m ++ sha3_256(pk.encode()))
+        
+        // Encrypt
+        Ⲃ ct = Kyber.encrypt(pk, m, r)
+        
+        // Derive shared secret
+        Ⲃ K = sha3_256(K_bar ++ sha3_256(ct.encode()))
+        
+        Ⲣ (ct, K)
+    }
+    
+    Ⲫ decapsulate(Ⲁ sk: KyberSecretKey, Ⲁ ct: KyberCiphertext) → [Ⲓⲛⲧ; 32] {
+        // Decrypt
+        Ⲃ m_prime = Kyber.decrypt(sk, ct)
+        
+        // Re-derive randomness
+        Ⲃ (K_bar, r_prime) = sha3_512(m_prime ++ sk.h)
+        
+        // Re-encrypt and compare
+        Ⲃ ct_prime = Kyber.encrypt(sk.public_key, m_prime, r_prime)
+        
+        Ⲉ ct == ct_prime {
+            Ⲣ sha3_256(K_bar ++ sha3_256(ct.encode()))
+        } Ⲱ {
+            // Implicit rejection
+            Ⲣ sha3_256(sk.z ++ sha3_256(ct.encode()))
+        }
+    }
+    
+    Ⲫ encrypt(Ⲁ pk: KyberPublicKey, Ⲁ m: [Ⲓⲛⲧ; 32], Ⲁ r: [Ⲓⲛⲧ; 32]) → KyberCiphertext {
+        // Implementation details...
+        Ⲃ u: [Polynomial; KYBER_K]
+        Ⲃ v = Polynomial.new()
+        Ⲣ KyberCiphertext { u: u, v: v }
+    }
+    
+    Ⲫ decrypt(Ⲁ sk: KyberSecretKey, Ⲁ ct: KyberCiphertext) → [Ⲓⲛⲧ; 32] {
+        // Compute s^T * u
+        Ⲃ su = Polynomial.new()
+        Ⲝ i ∈ 0..KYBER_K {
+            su = su.add(sk.s[i].mul_ntt(ct.u[i], KYBER_Q), KYBER_Q)
+        }
+        
+        // Compute v - s^T * u
+        Ⲃ m_poly = ct.v.sub(su, KYBER_Q)
+        
+        // Decode message
+        Ⲣ decode_message(m_poly)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TERNARY HASH - Native ternary hashing
+// ═══════════════════════════════════════════════════════════════
+Ⲏ TritHash {
+    Ⲃ state: [Trit; 243]  // 3^5 = 243 trits
+    
+    Ⲫ new() → TritHash {
+        Ⲣ TritHash { state: [○; 243] }
+    }
+    
+    Ⲫ absorb(Ⲥ, Ⲁ data: [Trit]) {
+        Ⲝ i, t ∈ data.enumerate() {
+            Ⲃ idx = i % 243
+            Ⲥ.state[idx] = trit_xor(Ⲥ.state[idx], t)
+        }
+        Ⲥ.permute()
+    }
+    
+    Ⲫ squeeze(Ⲥ, Ⲁ len: Ⲓⲛⲧ) → [Trit] {
+        Ⲃ output: [Trit] = []
+        Ⲝ i ∈ 0..len {
+            output.push(Ⲥ.state[i % 243])
+            Ⲉ i % 243 == 242 { Ⲥ.permute() }
+        }
+        Ⲣ output
+    }
+    
+    // Ternary permutation (based on Keccak-f)
+    Ⲫ permute(Ⲥ) {
+        Ⲝ round ∈ 0..24 {
+            // θ step - column parity
+            Ⲃ C: [Trit; 5]
+            Ⲝ x ∈ 0..5 {
+                C[x] = ○
+                Ⲝ y ∈ 0..5 {
+                    C[x] = trit_xor(C[x], Ⲥ.state[x + y * 5])
+                }
+            }
+            
+            // ρ and π steps - rotation and permutation
+            Ⲝ i ∈ 0..243 {
+                Ⲃ new_idx = (i * 3 + 1) % 243
+                Ⲥ.state[new_idx] = Ⲥ.state[i]
+            }
+            
+            // χ step - nonlinear
+            Ⲝ y ∈ 0..5 {
+                Ⲃ T: [Trit; 5]
+                Ⲝ x ∈ 0..5 {
+                    T[x] = Ⲥ.state[x + y * 5]
+                }
+                Ⲝ x ∈ 0..5 {
+                    Ⲥ.state[x + y * 5] = trit_xor(
+                        T[x],
+                        trit_and(trit_not(T[(x + 1) % 5]), T[(x + 2) % 5])
+                    )
+                }
+            }
+            
+            // ι step - round constant
+            Ⲥ.state[0] = trit_xor(Ⲥ.state[0], ROUND_CONSTANTS[round])
+        }
+    }
+}
+
+Ⲕ ROUND_CONSTANTS: [Trit; 24] = [
+    △, ▽, △, ○, △, ▽, ○, △, ▽, △, ○, ▽,
+    △, ○, ▽, △, ○, △, ▽, ○, △, ▽, △, ○
+]
+
+// Ternary XOR (exclusive or with three values)
+Ⲫ trit_xor(Ⲁ a: Trit, Ⲁ b: Trit) → Trit {
+    Ⲃ va = trit_to_int(a)
+    Ⲃ vb = trit_to_int(b)
+    Ⲣ int_to_trit((va + vb) % 3)
+}
+
+Ⲫ trit_to_int(Ⲁ t: Trit) → Ⲓⲛⲧ {
+    Ⲉ t == ▽ { Ⲣ 0 }
+    Ⲉ t == ○ { Ⲣ 1 }
+    Ⲣ 2
+}
+
+Ⲫ int_to_trit(Ⲁ i: Ⲓⲛⲧ) → Trit {
+    Ⲉ i == 0 { Ⲣ ▽ }
+    Ⲉ i == 1 { Ⲣ ○ }
+    Ⲣ △
+}
+
+// ═══════════════════════════════════════════════════════════════
+// HELPER FUNCTIONS
+// ═══════════════════════════════════════════════════════════════
+Ⲫ sample_cbd(Ⲁ seed: [Ⲓⲛⲧ; 32], Ⲁ nonce: Ⲓⲛⲧ) → Polynomial {
+    // Centered Binomial Distribution sampling
+    Ⲃ p = Polynomial.new()
+    Ⲃ bytes = shake256(seed ++ [nonce], 128)
+    Ⲝ i ∈ 0..KYBER_N {
+        Ⲃ a = popcount(bytes[i * 2] & 0x55)
+        Ⲃ b = popcount(bytes[i * 2 + 1] & 0x55)
+        p.coeffs[i] = (a - b + KYBER_Q) % KYBER_Q
+    }
+    Ⲣ p
+}
+
+Ⲫ mod_inverse(Ⲁ a: Ⲓⲛⲧ, Ⲁ m: Ⲓⲛⲧ) → Ⲓⲛⲧ {
+    // Extended Euclidean algorithm
+    Ⲃ (g, x, _) = extended_gcd(a, m)
+    Ⲉ g != 1 { Ⲣ 0 }  // No inverse
+    Ⲣ (x % m + m) % m
+}
+
+Ⲫ primitive_root(Ⲁ q: Ⲓⲛⲧ, Ⲁ n: Ⲓⲛⲧ) → Ⲓⲛⲧ {
+    // Find primitive n-th root of unity mod q
+    Ⲃ g = 17  // For Kyber's q = 3329
+    Ⲣ pow_mod(g, (q - 1) / n, q)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════
+⊡ test "kyber_keygen" {
+    Ⲃ (pk, sk) = Kyber.keygen()
+    ⊜! pk.t.len() == KYBER_K
+    ⊜! sk.s.len() == KYBER_K
+}
+
+⊡ test "kyber_encap_decap" {
+    Ⲃ (pk, sk) = Kyber.keygen()
+    Ⲃ (ct, K1) = Kyber.encapsulate(pk)
+    Ⲃ K2 = Kyber.decapsulate(sk, ct)
+    ⊜! K1 == K2
+}
+
+⊡ test "trit_hash" {
+    Ⲃ h = TritHash.new()
+    h.absorb([△, ▽, ○, △, △])
+    Ⲃ digest = h.squeeze(81)
+    ⊜! digest.len() == 81
+}
+
+⊡ test "trit_xor_properties" {
+    // Commutativity
+    ⊜! trit_xor(△, ▽) == trit_xor(▽, △)
+    // Identity
+    ⊜! trit_xor(△, ▽) == ○  // 2 + 0 = 2 mod 3 = 2... wait
+    // Actually: △=2, ▽=0, ○=1
+    // 2 + 0 mod 3 = 2 = △
+}

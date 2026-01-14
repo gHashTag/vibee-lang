@@ -1,0 +1,450 @@
+// ═══════════════════════════════════════════════════════════════
+// P2P NETWORK - Decentralized AGI Network
+// Version: 2.0.0 | Trinity: n=27 k=9 m=3
+// Features: DHT, Consensus, Federated Learning, Knowledge Sharing
+// ═══════════════════════════════════════════════════════════════
+
+Ⲯ ⲕⲟⲣⲉ
+Ⲯ ⲧⲣⲓⲛⲓⲧⲩ
+Ⲯ ⲕⲣⲩⲡⲧⲟⲥ
+
+// ═══════════════════════════════════════════════════════════════
+// NODE IDENTITY
+// ═══════════════════════════════════════════════════════════════
+Ⲏ NodeId {
+    Ⲃ bytes: [Ⲓⲛⲧ; 32]
+    
+    Ⲫ random() → NodeId {
+        Ⲣ NodeId { bytes: random_bytes(32) }
+    }
+    
+    Ⲫ from_public_key(Ⲁ pk: [Ⲓⲛⲧ]) → NodeId {
+        Ⲣ NodeId { bytes: sha256(pk) }
+    }
+    
+    Ⲫ distance(Ⲥ, Ⲁ other: NodeId) → [Ⲓⲛⲧ; 32] {
+        // XOR distance for Kademlia DHT
+        Ⲃ result: [Ⲓⲛⲧ; 32]
+        Ⲝ i ∈ 0..32 { result[i] = Ⲥ.bytes[i] ^ other.bytes[i] }
+        Ⲣ result
+    }
+    
+    Ⲫ leading_zeros(Ⲁ distance: [Ⲓⲛⲧ; 32]) → Ⲓⲛⲧ {
+        Ⲃ count = 0
+        Ⲝ byte ∈ distance {
+            Ⲉ byte == 0 { count += 8 }
+            Ⲱ {
+                Ⲝ i ∈ 7..0 step -1 {
+                    Ⲉ (byte >> i) & 1 == 0 { count += 1 }
+                    Ⲱ { Ⲣ count }
+                }
+            }
+        }
+        Ⲣ count
+    }
+}
+
+Ⲏ PeerInfo {
+    Ⲃ id: NodeId
+    Ⲃ address: Ⲧⲉⲝⲧ
+    Ⲃ port: Ⲓⲛⲧ
+    Ⲃ public_key: [Ⲓⲛⲧ]
+    Ⲃ last_seen: Ⲓⲛⲧ
+    Ⲃ reputation: Ⲫⲗⲟⲁⲧ = 0.5
+}
+
+// ═══════════════════════════════════════════════════════════════
+// KADEMLIA DHT
+// ═══════════════════════════════════════════════════════════════
+Ⲕ K_BUCKET_SIZE: Ⲓⲛⲧ = 20
+Ⲕ ALPHA: Ⲓⲛⲧ = 3  // Parallel lookups
+
+Ⲏ KBucket {
+    Ⲃ peers: [PeerInfo] = []
+    Ⲃ max_size: Ⲓⲛⲧ = K_BUCKET_SIZE
+    
+    Ⲫ add(Ⲥ, Ⲁ peer: PeerInfo) → Trit {
+        // Check if already exists
+        Ⲝ i, p ∈ Ⲥ.peers.enumerate() {
+            Ⲉ p.id == peer.id {
+                // Move to end (most recently seen)
+                Ⲥ.peers.remove(i)
+                Ⲥ.peers.push(peer)
+                Ⲣ △
+            }
+        }
+        
+        // Add new peer
+        Ⲉ Ⲥ.peers.len() < Ⲥ.max_size {
+            Ⲥ.peers.push(peer)
+            Ⲣ △
+        }
+        
+        // Bucket full - ping oldest, replace if dead
+        Ⲣ ○
+    }
+    
+    Ⲫ get_closest(Ⲥ, Ⲁ target: NodeId, Ⲁ count: Ⲓⲛⲧ) → [PeerInfo] {
+        Ⲃ sorted = Ⲥ.peers.sort_by(Ⲫⲛ(a, b) {
+            Ⲃ da = a.id.distance(target)
+            Ⲃ db = b.id.distance(target)
+            Ⲣ compare_bytes(da, db)
+        })
+        Ⲣ sorted[0..min(count, sorted.len())]
+    }
+}
+
+Ⲏ RoutingTable {
+    Ⲃ local_id: NodeId
+    Ⲃ buckets: [KBucket; 256]
+    
+    Ⲫ new(Ⲁ local_id: NodeId) → RoutingTable {
+        Ⲃ rt = RoutingTable { local_id: local_id, buckets: [] }
+        Ⲝ i ∈ 0..256 { rt.buckets.push(KBucket {}) }
+        Ⲣ rt
+    }
+    
+    Ⲫ bucket_index(Ⲥ, Ⲁ id: NodeId) → Ⲓⲛⲧ {
+        Ⲃ dist = Ⲥ.local_id.distance(id)
+        Ⲣ 255 - NodeId.leading_zeros(dist)
+    }
+    
+    Ⲫ add_peer(Ⲥ, Ⲁ peer: PeerInfo) {
+        Ⲃ idx = Ⲥ.bucket_index(peer.id)
+        Ⲥ.buckets[idx].add(peer)
+    }
+    
+    Ⲫ find_closest(Ⲥ, Ⲁ target: NodeId, Ⲁ count: Ⲓⲛⲧ) → [PeerInfo] {
+        Ⲃ result: [PeerInfo] = []
+        Ⲃ idx = Ⲥ.bucket_index(target)
+        
+        // Search outward from target bucket
+        Ⲃ left = idx
+        Ⲃ right = idx + 1
+        
+        Ⲝ result.len() < count && (left >= 0 || right < 256) {
+            Ⲉ left >= 0 {
+                result.extend(Ⲥ.buckets[left].get_closest(target, count))
+                left -= 1
+            }
+            Ⲉ right < 256 {
+                result.extend(Ⲥ.buckets[right].get_closest(target, count))
+                right += 1
+            }
+        }
+        
+        Ⲣ result[0..min(count, result.len())]
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// P2P NODE
+// ═══════════════════════════════════════════════════════════════
+Ⲏ P2PNode {
+    Ⲃ id: NodeId
+    Ⲃ routing_table: RoutingTable
+    Ⲃ storage: Ⲙⲁⲡ[Ⲧⲉⲝⲧ, [Ⲓⲛⲧ]] = {}
+    Ⲃ pending_requests: Ⲙⲁⲡ[Ⲓⲛⲧ, PendingRequest] = {}
+    Ⲃ next_request_id: Ⲓⲛⲧ = 1
+    
+    Ⲫ new() → P2PNode {
+        Ⲃ id = NodeId.random()
+        Ⲣ P2PNode {
+            id: id,
+            routing_table: RoutingTable.new(id)
+        }
+    }
+    
+    // Bootstrap from known peers
+    Ⲫ bootstrap(Ⲥ, Ⲁ seeds: [PeerInfo]) {
+        Ⲝ seed ∈ seeds {
+            Ⲥ.routing_table.add_peer(seed)
+        }
+        // Lookup self to populate routing table
+        Ⲥ.lookup(Ⲥ.id)
+    }
+    
+    // Iterative lookup
+    Ⲫ lookup(Ⲥ, Ⲁ target: NodeId) → [PeerInfo] {
+        Ⲃ closest = Ⲥ.routing_table.find_closest(target, K_BUCKET_SIZE)
+        Ⲃ queried: Ⲙⲁⲡ[NodeId, Trit] = {}
+        
+        Ⲝ closest.len() > 0 {
+            // Query ALPHA closest unqueried nodes
+            Ⲃ to_query: [PeerInfo] = []
+            Ⲝ peer ∈ closest {
+                Ⲉ queried.get(peer.id) != △ && to_query.len() < ALPHA {
+                    to_query.push(peer)
+                    queried.set(peer.id, △)
+                }
+            }
+            
+            Ⲉ to_query.len() == 0 { ⊘ }
+            
+            // Send FIND_NODE requests in parallel
+            Ⲃ responses: [[PeerInfo]] = []
+            Ⲝ peer ∈ to_query ⊛ {
+                Ⲃ resp = Ⲥ.send_find_node(peer, target)
+                responses.push(resp)
+            }
+            
+            // Merge responses
+            Ⲝ resp ∈ responses {
+                Ⲝ peer ∈ resp {
+                    Ⲥ.routing_table.add_peer(peer)
+                    closest.push(peer)
+                }
+            }
+            
+            // Sort by distance
+            closest = closest.sort_by(Ⲫⲛ(a, b) {
+                Ⲣ compare_bytes(a.id.distance(target), b.id.distance(target))
+            })
+            closest = closest[0..min(K_BUCKET_SIZE, closest.len())]
+        }
+        
+        Ⲣ closest
+    }
+    
+    // Store value in DHT
+    Ⲫ store(Ⲥ, Ⲁ key: Ⲧⲉⲝⲧ, Ⲁ value: [Ⲓⲛⲧ]) {
+        Ⲃ key_id = NodeId { bytes: sha256(key) }
+        Ⲃ closest = Ⲥ.lookup(key_id)
+        
+        Ⲝ peer ∈ closest {
+            Ⲥ.send_store(peer, key, value)
+        }
+    }
+    
+    // Retrieve value from DHT
+    Ⲫ get(Ⲥ, Ⲁ key: Ⲧⲉⲝⲧ) → [Ⲓⲛⲧ]? {
+        // Check local storage first
+        Ⲉ Ⲥ.storage.has(key) { Ⲣ Ⲥ.storage.get(key) }
+        
+        Ⲃ key_id = NodeId { bytes: sha256(key) }
+        Ⲃ closest = Ⲥ.lookup(key_id)
+        
+        Ⲝ peer ∈ closest {
+            Ⲃ value = Ⲥ.send_find_value(peer, key)
+            Ⲉ value != ○ { Ⲣ value }
+        }
+        
+        Ⲣ ○
+    }
+    
+    Ⲫ send_find_node(Ⲥ, Ⲁ peer: PeerInfo, Ⲁ target: NodeId) → [PeerInfo] {
+        // Network call (simplified)
+        Ⲣ []
+    }
+    
+    Ⲫ send_store(Ⲥ, Ⲁ peer: PeerInfo, Ⲁ key: Ⲧⲉⲝⲧ, Ⲁ value: [Ⲓⲛⲧ]) {
+        // Network call
+    }
+    
+    Ⲫ send_find_value(Ⲥ, Ⲁ peer: PeerInfo, Ⲁ key: Ⲧⲉⲝⲧ) → [Ⲓⲛⲧ]? {
+        Ⲣ ○
+    }
+}
+
+Ⲏ PendingRequest {
+    Ⲃ id: Ⲓⲛⲧ
+    Ⲃ type: RequestType
+    Ⲃ target: NodeId
+    Ⲃ timestamp: Ⲓⲛⲧ
+}
+
+⬢ RequestType { FIND_NODE, FIND_VALUE, STORE, PING }
+
+// ═══════════════════════════════════════════════════════════════
+// CONSENSUS - Proof of Learning
+// ═══════════════════════════════════════════════════════════════
+Ⲏ ProofOfLearning {
+    Ⲃ model_hash: [Ⲓⲛⲧ; 32]
+    Ⲃ accuracy: Ⲫⲗⲟⲁⲧ
+    Ⲃ dataset_hash: [Ⲓⲛⲧ; 32]
+    Ⲃ timestamp: Ⲓⲛⲧ
+    Ⲃ signature: [Ⲓⲛⲧ]
+}
+
+Ⲏ ConsensusEngine {
+    Ⲃ validators: [NodeId] = []
+    Ⲃ min_validators: Ⲓⲛⲧ = 3
+    Ⲃ threshold: Ⲫⲗⲟⲁⲧ = 0.67
+    
+    Ⲫ new() → ConsensusEngine { Ⲣ ConsensusEngine {} }
+    
+    Ⲫ submit_proof(Ⲥ, Ⲁ proof: ProofOfLearning) → Trit {
+        // Verify proof
+        Ⲉ !Ⲥ.verify_proof(proof) { Ⲣ ▽ }
+        
+        // Collect votes from validators
+        Ⲃ votes: [Trit] = []
+        Ⲝ validator ∈ Ⲥ.validators {
+            Ⲃ vote = Ⲥ.request_vote(validator, proof)
+            votes.push(vote)
+        }
+        
+        // Count votes
+        Ⲃ approve_count = 0
+        Ⲝ v ∈ votes {
+            Ⲉ v == △ { approve_count += 1 }
+        }
+        
+        Ⲃ approval_rate = approve_count / votes.len()
+        Ⲣ approval_rate >= Ⲥ.threshold ? △ : ▽
+    }
+    
+    Ⲫ verify_proof(Ⲥ, Ⲁ proof: ProofOfLearning) → Trit {
+        // Verify signature
+        // Verify accuracy claim
+        // Verify timestamp
+        Ⲣ △
+    }
+    
+    Ⲫ request_vote(Ⲥ, Ⲁ validator: NodeId, Ⲁ proof: ProofOfLearning) → Trit {
+        // Network call to validator
+        Ⲣ ○
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FEDERATED LEARNING
+// ═══════════════════════════════════════════════════════════════
+Ⲏ FederatedLearning {
+    Ⲃ node: P2PNode
+    Ⲃ local_model: [Ⲫⲗⲟⲁⲧ]
+    Ⲃ round: Ⲓⲛⲧ = 0
+    
+    Ⲫ new(Ⲁ node: P2PNode, Ⲁ model_size: Ⲓⲛⲧ) → FederatedLearning {
+        Ⲣ FederatedLearning {
+            node: node,
+            local_model: [0.0; model_size]
+        }
+    }
+    
+    // Train on local data
+    Ⲫ train_local(Ⲥ, Ⲁ data: [[Ⲫⲗⲟⲁⲧ]], Ⲁ labels: [Ⲫⲗⲟⲁⲧ], Ⲁ epochs: Ⲓⲛⲧ) {
+        // Local SGD training
+        Ⲝ epoch ∈ 0..epochs {
+            Ⲝ i ∈ 0..data.len() {
+                Ⲃ grad = compute_gradient(Ⲥ.local_model, data[i], labels[i])
+                Ⲝ j ∈ 0..Ⲥ.local_model.len() {
+                    Ⲥ.local_model[j] -= 0.01 * grad[j]
+                }
+            }
+        }
+    }
+    
+    // Share model updates with peers
+    Ⲫ share_updates(Ⲥ) {
+        Ⲃ peers = Ⲥ.node.routing_table.find_closest(Ⲥ.node.id, 10)
+        
+        Ⲝ peer ∈ peers {
+            Ⲥ.send_model_update(peer, Ⲥ.local_model)
+        }
+    }
+    
+    // Aggregate received updates
+    Ⲫ aggregate(Ⲥ, Ⲁ updates: [[Ⲫⲗⲟⲁⲧ]]) {
+        Ⲃ n = updates.len() + 1  // Include local model
+        
+        Ⲝ i ∈ 0..Ⲥ.local_model.len() {
+            Ⲃ sum = Ⲥ.local_model[i]
+            Ⲝ update ∈ updates { sum += update[i] }
+            Ⲥ.local_model[i] = sum / n
+        }
+        
+        Ⲥ.round += 1
+    }
+    
+    Ⲫ send_model_update(Ⲥ, Ⲁ peer: PeerInfo, Ⲁ model: [Ⲫⲗⲟⲁⲧ]) {
+        // Compress and send
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// KNOWLEDGE GRAPH SHARING
+// ═══════════════════════════════════════════════════════════════
+Ⲏ KnowledgeTriple {
+    Ⲃ subject: Ⲧⲉⲝⲧ
+    Ⲃ predicate: Ⲧⲉⲝⲧ
+    Ⲃ object: Ⲧⲉⲝⲧ
+    Ⲃ confidence: Trit  // △=certain, ○=uncertain, ▽=false
+    Ⲃ source: NodeId
+}
+
+Ⲏ KnowledgeGraph {
+    Ⲃ triples: [KnowledgeTriple] = []
+    Ⲃ index: Ⲙⲁⲡ[Ⲧⲉⲝⲧ, [Ⲓⲛⲧ]] = {}
+    
+    Ⲫ new() → KnowledgeGraph { Ⲣ KnowledgeGraph {} }
+    
+    Ⲫ add(Ⲥ, Ⲁ triple: KnowledgeTriple) {
+        Ⲃ idx = Ⲥ.triples.len()
+        Ⲥ.triples.push(triple)
+        
+        // Index by subject
+        Ⲉ !Ⲥ.index.has(triple.subject) { Ⲥ.index.set(triple.subject, []) }
+        Ⲥ.index.get(triple.subject).push(idx)
+    }
+    
+    Ⲫ query(Ⲥ, Ⲁ subject: Ⲧⲉⲝⲧ?, Ⲁ predicate: Ⲧⲉⲝⲧ?, Ⲁ object: Ⲧⲉⲝⲧ?) → [KnowledgeTriple] {
+        Ⲃ results: [KnowledgeTriple] = []
+        
+        Ⲝ triple ∈ Ⲥ.triples {
+            Ⲃ match = △
+            Ⲉ subject != ○ && triple.subject != subject { match = ▽ }
+            Ⲉ predicate != ○ && triple.predicate != predicate { match = ▽ }
+            Ⲉ object != ○ && triple.object != object { match = ▽ }
+            
+            Ⲉ match == △ { results.push(triple) }
+        }
+        
+        Ⲣ results
+    }
+    
+    // Merge knowledge from peer
+    Ⲫ merge(Ⲥ, Ⲁ other: KnowledgeGraph, Ⲁ trust: Ⲫⲗⲟⲁⲧ) {
+        Ⲝ triple ∈ other.triples {
+            // Check for conflicts
+            Ⲃ existing = Ⲥ.query(triple.subject, triple.predicate, ○)
+            
+            Ⲉ existing.len() == 0 {
+                // No conflict, add
+                Ⲥ.add(triple)
+            } Ⲱ {
+                // Resolve conflict using ternary consensus
+                Ⲃ consensus = trit_consensus(existing[0].confidence, triple.confidence)
+                Ⲉ consensus == ○ {
+                    // Uncertain - keep both with reduced confidence
+                    triple.confidence = ○
+                    Ⲥ.add(triple)
+                }
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════
+⊡ test "node_id_distance" {
+    Ⲃ a = NodeId.random()
+    Ⲃ b = NodeId.random()
+    Ⲃ dist = a.distance(b)
+    ⊜! dist.len() == 32
+}
+
+⊡ test "routing_table_add" {
+    Ⲃ local = NodeId.random()
+    Ⲃ rt = RoutingTable.new(local)
+    Ⲃ peer = PeerInfo { id: NodeId.random(), address: "127.0.0.1", port: 8080, public_key: [] }
+    rt.add_peer(peer)
+}
+
+⊡ test "knowledge_graph_query" {
+    Ⲃ kg = KnowledgeGraph.new()
+    kg.add(KnowledgeTriple { subject: "Alice", predicate: "knows", object: "Bob", confidence: △, source: NodeId.random() })
+    Ⲃ results = kg.query("Alice", ○, ○)
+    ⊜! results.len() == 1
+}

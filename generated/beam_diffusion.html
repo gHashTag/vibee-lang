@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>BEAM Pixel Diffusion</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+      background: #0a0a12; 
+      color: #fff; 
+      font-family: 'SF Mono', monospace;
+      overflow: hidden;
+      display: flex;
+      height: 100vh;
+    }
+    #main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    canvas { 
+      border: 1px solid #333;
+      image-rendering: pixelated;
+      cursor: crosshair;
+    }
+    #sidebar {
+      width: 220px;
+      background: #111;
+      padding: 20px;
+      border-left: 1px solid #222;
+    }
+    h1 { 
+      font-size: 14px; 
+      color: #0af;
+      margin-bottom: 5px;
+    }
+    h2 {
+      font-size: 11px;
+      color: #666;
+      margin: 20px 0 10px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .emotion-btn {
+      display: block;
+      width: 100%;
+      padding: 12px;
+      margin: 5px 0;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      color: #fff;
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: all 0.2s;
+    }
+    .emotion-btn:hover { background: #252525; }
+    .emotion-btn.active { 
+      border-color: #0af;
+      background: #0af15;
+    }
+    .emotion-btn .dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 8px;
+    }
+    #stats {
+      font-size: 10px;
+      color: #555;
+      margin-top: 20px;
+      line-height: 1.8;
+    }
+    #stats span { color: #0af; }
+    .key {
+      display: inline-block;
+      padding: 2px 6px;
+      background: #222;
+      border-radius: 3px;
+      font-size: 10px;
+      margin-left: 5px;
+    }
+    #info {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      font-size: 11px;
+      color: #444;
+    }
+  </style>
+</head>
+<body>
+  <div id="main">
+    <canvas id="canvas"></canvas>
+  </div>
+  <div id="sidebar">
+    <h1>BEAM Pixel Diffusion</h1>
+    <div style="font-size:10px;color:#555">Wave Function Generation</div>
+    
+    <h2>Emotion (Latent Code)</h2>
+    <button class="emotion-btn active" data-emotion="joy">
+      <span class="dot" style="background:#fc3"></span>Joy <span class="key">1</span>
+    </button>
+    <button class="emotion-btn" data-emotion="calm">
+      <span class="dot" style="background:#38f"></span>Calm <span class="key">2</span>
+    </button>
+    <button class="emotion-btn" data-emotion="energy">
+      <span class="dot" style="background:#f42"></span>Energy <span class="key">3</span>
+    </button>
+    <button class="emotion-btn" data-emotion="mystery">
+      <span class="dot" style="background:#a4f"></span>Mystery <span class="key">4</span>
+    </button>
+    <button class="emotion-btn" data-emotion="nature">
+      <span class="dot" style="background:#4c8"></span>Nature <span class="key">5</span>
+    </button>
+    
+    <h2>Controls</h2>
+    <div style="font-size:11px;color:#888;line-height:1.8">
+      <b>Mouse:</b> Guide waves<br>
+      <b>Click:</b> Wave burst<br>
+      <b>Space:</b> Reset noise<br>
+      <b>+/-:</b> Frequency
+    </div>
+    
+    <div id="stats">
+      Processes: <span id="proc-count">0</span><br>
+      Time: <span id="time">0.00</span>s<br>
+      FPS: <span id="fps">0</span><br>
+      Emotion: <span id="current-emotion">joy</span>
+    </div>
+  </div>
+  
+  <div id="info">
+    Each pixel = OTP process | Waves replace neural networks | Fault-tolerant
+  </div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// 999 Runtime - BEAM Pixel Diffusion Interpreter
+// ═══════════════════════════════════════════════════════════════
+
+const TAU = Math.PI * 2;
+
+// Emotional Latent Codes
+const EMOTIONS = {
+  joy:     [1.0, 0.8, 0.2],
+  calm:    [0.2, 0.5, 0.9],
+  energy:  [1.0, 0.3, 0.1],
+  mystery: [0.5, 0.2, 0.8],
+  nature:  [0.2, 0.8, 0.3]
+};
+
+// ─────────────────────────────────────────────────────────────────
+// Pixel Process (OTP Actor Simulation)
+// ─────────────────────────────────────────────────────────────────
+class PixelProcess {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.phase = Math.random() * TAU;
+    this.frequency = 0.1 + Math.random() * 0.05;
+    this.r = 0.5;
+    this.g = 0.5;
+    this.b = 0.5;
+    this.alive = true;
+  }
+  
+  tick(dt, time, emotion, cursorX, cursorY, cursorStrength) {
+    // Distance to cursor (guidance)
+    const dx = this.x - cursorX;
+    const dy = this.y - cursorY;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    
+    // Classifier-Free Guidance from cursor
+    const guidance = Math.exp(-dist*dist / 2500) * cursorStrength;
+    
+    // Wave function: ψ(x,y,t) = A·sin(k·r + ω·t + φ)
+    const r = Math.sqrt(this.x*this.x + this.y*this.y);
+    const amplitude = 1.0 + guidance;
+    const freq = this.frequency * (1 + guidance * 0.5);
+    
+    // Main wave
+    const wave1 = amplitude * Math.sin(freq * r * 0.1 + time + this.phase);
+    // Harmonics for richness
+    const wave2 = 0.5 * Math.sin(freq * r * 0.17 + time * 1.7 + this.phase + 1);
+    const wave3 = 0.3 * Math.sin(freq * r * 0.23 + time * 2.3 + this.phase + 2);
+    
+    const totalWave = wave1 + wave2 + wave3;
+    
+    // Map wave to color using emotion as hue shift
+    this.r = 0.5 + 0.5 * Math.sin(totalWave + emotion[0] * TAU);
+    this.g = 0.5 + 0.5 * Math.sin(totalWave + emotion[1] * TAU + TAU/3);
+    this.b = 0.5 + 0.5 * Math.sin(totalWave + emotion[2] * TAU + 2*TAU/3);
+    
+    // Phase evolution (diffusion process)
+    this.phase += dt * this.frequency * (1 + guidance);
+  }
+  
+  getColor() {
+    return [this.r, this.g, this.b, 1];
+  }
+  
+  recover(neighborColors) {
+    // Fault tolerance: interpolate from neighbors
+    const avgR = neighborColors.reduce((a, c) => a + c[0], 0) / neighborColors.length;
+    const avgG = neighborColors.reduce((a, c) => a + c[1], 0) / neighborColors.length;
+    const avgB = neighborColors.reduce((a, c) => a + c[2], 0) / neighborColors.length;
+    this.r = avgR;
+    this.g = avgG;
+    this.b = avgB;
+    this.alive = true;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Pixel Grid Supervisor
+// ─────────────────────────────────────────────────────────────────
+class PixelGridSupervisor {
+  constructor(width, height) {
+    this.width = width;
+    this.height = height;
+    this.pixels = [];
+    this.spawnGrid();
+  }
+  
+  spawnGrid() {
+    for (let y = 0; y < this.height; y++) {
+      const row = [];
+      for (let x = 0; x < this.width; x++) {
+        row.push(new PixelProcess(x, y));
+      }
+      this.pixels.push(row);
+    }
+    console.log(`Spawned ${this.width * this.height} pixel processes`);
+  }
+  
+  getPixel(x, y) {
+    return this.pixels[y]?.[x];
+  }
+  
+  getNeighbors(x, y) {
+    const neighbors = [];
+    const offsets = [[-1,0], [1,0], [0,-1], [0,1]];
+    for (const [dx, dy] of offsets) {
+      const nx = x + dx, ny = y + dy;
+      if (nx >= 0 && nx < this.width && ny >= 0 && ny < this.height) {
+        neighbors.push(this.pixels[ny][nx]);
+      }
+    }
+    return neighbors;
+  }
+  
+  handleCrash(x, y) {
+    const neighbors = this.getNeighbors(x, y);
+    const neighborColors = neighbors.map(p => p.getColor());
+    const newPixel = new PixelProcess(x, y);
+    newPixel.recover(neighborColors);
+    this.pixels[y][x] = newPixel;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Emotion State Machine
+// ─────────────────────────────────────────────────────────────────
+class EmotionState {
+  constructor() {
+    this.current = [...EMOTIONS.joy];
+    this.target = [...EMOTIONS.joy];
+    this.blend = 1.0;
+    this.transitionSpeed = 1/60;
+    this.name = 'joy';
+  }
+  
+  setEmotion(name) {
+    if (EMOTIONS[name]) {
+      this.target = [...EMOTIONS[name]];
+      this.blend = 0;
+      this.name = name;
+    }
+  }
+  
+  tick() {
+    if (this.blend < 1.0) {
+      this.blend = Math.min(1.0, this.blend + this.transitionSpeed);
+      for (let i = 0; i < 3; i++) {
+        this.current[i] = this.current[i] + (this.target[i] - this.current[i]) * this.blend;
+      }
+    }
+    return this.current;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Cursor Tracker (Guidance)
+// ─────────────────────────────────────────────────────────────────
+class CursorTracker {
+  constructor() {
+    this.x = 0;
+    this.y = 0;
+    this.strength = 0.5;
+    this.active = false;
+    this.burstDecay = 0;
+  }
+  
+  move(x, y) {
+    this.x = x;
+    this.y = y;
+    this.active = true;
+  }
+  
+  burst() {
+    this.burstDecay = 1.0;
+  }
+  
+  tick() {
+    if (this.burstDecay > 0) {
+      this.burstDecay *= 0.95;
+    }
+    return {
+      x: this.x,
+      y: this.y,
+      strength: this.strength + this.burstDecay,
+      active: this.active
+    };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Diffusion Supervisor (Main)
+// ─────────────────────────────────────────────────────────────────
+class DiffusionSupervisor {
+  constructor(width, height) {
+    this.width = width;
+    this.height = height;
+    this.grid = new PixelGridSupervisor(width, height);
+    this.emotion = new EmotionState();
+    this.cursor = new CursorTracker();
+    this.time = 0;
+    this.frequency = 1.0;
+    this.running = true;
+  }
+  
+  tick(dt, imageData) {
+    if (!this.running) return;
+    
+    this.time += dt * this.frequency;
+    const emotionCode = this.emotion.tick();
+    const cursorState = this.cursor.tick();
+    
+    // Update all pixel processes
+    for (let y = 0; y < this.height; y++) {
+      for (let x = 0; x < this.width; x++) {
+        const pixel = this.grid.getPixel(x, y);
+        
+        pixel.tick(
+          dt,
+          this.time,
+          emotionCode,
+          cursorState.x * this.width,
+          cursorState.y * this.height,
+          cursorState.strength
+        );
+        
+        const color = pixel.getColor();
+        const idx = (y * this.width + x) * 4;
+        
+        // ACES tone mapping
+        const mapped = this.acesTonemap(color);
+        
+        imageData.data[idx + 0] = Math.floor(mapped[0] * 255);
+        imageData.data[idx + 1] = Math.floor(mapped[1] * 255);
+        imageData.data[idx + 2] = Math.floor(mapped[2] * 255);
+        imageData.data[idx + 3] = 255;
+      }
+    }
+    
+    return imageData;
+  }
+  
+  acesTonemap(c) {
+    const a = 2.51, b = 0.03, c_ = 2.43, d = 0.59, e = 0.14;
+    return [
+      Math.max(0, Math.min(1, (c[0]*(a*c[0]+b))/(c[0]*(c_*c[0]+d)+e))),
+      Math.max(0, Math.min(1, (c[1]*(a*c[1]+b))/(c[1]*(c_*c[1]+d)+e))),
+      Math.max(0, Math.min(1, (c[2]*(a*c[2]+b))/(c[2]*(c_*c[2]+d)+e)))
+    ];
+  }
+  
+  setEmotion(name) {
+    this.emotion.setEmotion(name);
+  }
+  
+  cursorMove(x, y) {
+    this.cursor.move(x, y);
+  }
+  
+  cursorBurst() {
+    this.cursor.burst();
+  }
+  
+  reset() {
+    this.time = 0;
+    this.grid = new PixelGridSupervisor(this.width, this.height);
+  }
+  
+  adjustFrequency(delta) {
+    this.frequency = Math.max(0.1, Math.min(3.0, this.frequency + delta));
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN - Canvas Setup & Animation Loop
+// ═══════════════════════════════════════════════════════════════
+
+const SIZE = 128;  // 128x128 = 16,384 pixel processes
+const SCALE = 4;
+
+const canvas = document.getElementById('canvas');
+canvas.width = SIZE;
+canvas.height = SIZE;
+canvas.style.width = SIZE * SCALE + 'px';
+canvas.style.height = SIZE * SCALE + 'px';
+
+const ctx = canvas.getContext('2d');
+const imageData = ctx.createImageData(SIZE, SIZE);
+
+const supervisor = new DiffusionSupervisor(SIZE, SIZE);
+
+// Stats
+document.getElementById('proc-count').textContent = (SIZE * SIZE).toLocaleString();
+
+// Mouse handling
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const x = (e.clientX - rect.left) / rect.width;
+  const y = (e.clientY - rect.top) / rect.height;
+  supervisor.cursorMove(x, y);
+});
+
+canvas.addEventListener('click', () => {
+  supervisor.cursorBurst();
+});
+
+canvas.addEventListener('mouseleave', () => {
+  supervisor.cursor.active = false;
+});
+
+// Keyboard
+document.addEventListener('keydown', e => {
+  if (e.key >= '1' && e.key <= '5') {
+    const emotions = ['joy', 'calm', 'energy', 'mystery', 'nature'];
+    const idx = parseInt(e.key) - 1;
+    supervisor.setEmotion(emotions[idx]);
+    document.getElementById('current-emotion').textContent = emotions[idx];
+    
+    document.querySelectorAll('.emotion-btn').forEach((btn, i) => {
+      btn.classList.toggle('active', i === idx);
+    });
+  }
+  if (e.key === ' ') {
+    e.preventDefault();
+    supervisor.reset();
+  }
+  if (e.key === '+' || e.key === '=') {
+    supervisor.adjustFrequency(0.1);
+  }
+  if (e.key === '-') {
+    supervisor.adjustFrequency(-0.1);
+  }
+});
+
+// Emotion buttons
+document.querySelectorAll('.emotion-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const emotion = btn.dataset.emotion;
+    supervisor.setEmotion(emotion);
+    document.getElementById('current-emotion').textContent = emotion;
+    
+    document.querySelectorAll('.emotion-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+// Animation loop
+let lastTime = performance.now();
+let frameCount = 0;
+let fpsTime = 0;
+
+function loop() {
+  const now = performance.now();
+  const dt = (now - lastTime) / 1000;
+  lastTime = now;
+  
+  // FPS counter
+  frameCount++;
+  fpsTime += dt;
+  if (fpsTime >= 1) {
+    document.getElementById('fps').textContent = frameCount;
+    frameCount = 0;
+    fpsTime = 0;
+  }
+  
+  // Update time display
+  document.getElementById('time').textContent = supervisor.time.toFixed(2);
+  
+  // Tick all processes
+  supervisor.tick(dt, imageData);
+  
+  // Render
+  ctx.putImageData(imageData, 0, 0);
+  
+  requestAnimationFrame(loop);
+}
+
+loop();
+
+console.log('BEAM Pixel Diffusion started');
+console.log(`${SIZE}x${SIZE} = ${SIZE*SIZE} OTP pixel processes`);
+</script>
+</body>
+</html>
