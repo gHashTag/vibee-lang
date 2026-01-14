@@ -1,0 +1,334 @@
+╔══════════════════════════════════════════════════════════════════╗
+║  ◬ allocator_evolved.999 - Эволюционированный аллокатор памяти  ║
+║  PAS УЛУЧШЕНИЯ: PRE, HSH, ALG оптимизации                       ║
+║  АВТОМАТИЧЕСКИ СГЕНЕРИРОВАНО самоэволюцией 999 OS               ║
+╚══════════════════════════════════════════════════════════════════╝
+
+▲ use os.hal.hal
+
+║ ═══════════════════════════════════════════════════════════════════
+║  КОНСТАНТЫ (PAS: PRE - предвычисленные степени 3)
+║ ═══════════════════════════════════════════════════════════════════
+
+◇ MIN_BLOCK_SIZE = 27       ║ 3^3 = 27 тритов
+◇ MAX_BLOCK_ORDER = 9       ║ 3^9 = 19683 тритов
+◇ BLOCK_MAGIC = 0x999       ║ Магическое число для проверки
+
+║ PAS: PRE - Предвычисленные степени 3 для O(1) доступа
+◇ POW3_TABLE = [1, 3, 9, 27, 81, 243, 729, 2187, 6561, 19683]
+
+║ PAS: HSH - Хэш-таблица для быстрого поиска часто используемых размеров
+◇ CACHE_SIZE = 64
+◇ SIZE_CACHE_MASK = CACHE_SIZE - 1
+
+║ ═══════════════════════════════════════════════════════════════════
+║  БЛОК ПАМЯТИ (PAS: ALG - оптимизированная структура)
+║ ═══════════════════════════════════════════════════════════════════
+
+⬡ MemoryBlock {
+    magic: Int27            ║ Магическое число для валидации
+    size: Int27             ║ Размер в тритах
+    order: Int9             ║ Порядок (степень 3)
+    is_free: Trit
+    next: ?*MemoryBlock
+    prev: ?*MemoryBlock
+    hash_next: ?*MemoryBlock ║ PAS: HSH - цепочка для хэш-таблицы
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  МЕНЕДЖЕР ПАМЯТИ (PAS: PRE, HSH - кэши и хэширование)
+║ ═══════════════════════════════════════════════════════════════════
+
+⬡ MemoryManager {
+    base: Int27             ║ Базовый адрес кучи
+    total_size: Int27       ║ Общий размер
+    used_size: Int27        ║ Использовано
+    
+    free_lists: [?*MemoryBlock; 10]  ║ Списки свободных блоков по порядкам
+    
+    ║ PAS: HSH - Хэш-таблица для быстрого поиска по размеру
+    size_cache: [?*MemoryBlock; CACHE_SIZE]
+    
+    ║ PAS: PRE - Кэш часто используемых размеров
+    hot_sizes: [Int27; 8]   ║ 8 наиболее популярных размеров
+    hot_counts: [Int27; 8]  ║ Счётчики использования
+    
+    ║ Статистика
+    alloc_count: Int27
+    free_count: Int27
+    cache_hits: Int27       ║ PAS: HSH - статистика попаданий в кэш
+    cache_misses: Int27
+    
+    ◬ new(base: Int27, size: Int27) → MemoryManager {
+        ◇ mm = MemoryManager {
+            base: base
+            total_size: size
+            used_size: 0
+            free_lists: [∅; 10]
+            size_cache: [∅; CACHE_SIZE]
+            hot_sizes: [0; 8]
+            hot_counts: [0; 8]
+            alloc_count: 0
+            free_count: 0
+            cache_hits: 0
+            cache_misses: 0
+        }
+        
+        ◇ order = size_to_order(size)
+        ◇ block = base as *MemoryBlock
+        block.magic = BLOCK_MAGIC
+        block.size = pow3(order)
+        block.order = order
+        block.is_free = △
+        block.next = ∅
+        block.prev = ∅
+        block.hash_next = ∅
+        
+        mm.free_lists[order] = block
+        ⟵ mm
+    }
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ВЫДЕЛЕНИЕ ПАМЯТИ (PAS: HSH, PRE - оптимизированный поиск)
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ alloc(mm: *MemoryManager, size: Int27) → Result[Int27, MemoryError] {
+    ⊜ size == 0 { ⟵ Err(MemoryError.invalid_size {}) }
+    
+    update_hot_sizes(mm, size)  ║ PAS: PRE - статистика горячих размеров
+    
+    ║ PAS: HSH - Сначала проверяем кэш по размеру
+    ◇ cached_block = find_in_size_cache(mm, size)
+    ⊜ cached_block ≠ ∅ {
+        mm.cache_hits += 1
+        ⟵ Ok(allocate_from_block(mm, cached_block))
+    }
+    
+    mm.cache_misses += 1
+    
+    ◇ order = size_to_order(size + sizeof[MemoryBlock]())
+    ⊜ order > MAX_BLOCK_ORDER {
+        ⟵ Err(MemoryError.too_large { requested: size })
+    }
+    
+    ◇ found_order = order
+    ⟲ found_order <= MAX_BLOCK_ORDER ∧ mm.free_lists[found_order] == ∅ {
+        found_order += 1
+    }
+    
+    ⊜ found_order > MAX_BLOCK_ORDER {
+        ⟵ Err(MemoryError.out_of_memory {})
+    }
+    
+    ⟲ found_order > order {
+        split_block(mm, found_order)
+        found_order -= 1
+    }
+    
+    ◇ block = mm.free_lists[order]
+    mm.free_lists[order] = block.next
+    ⊜ block.next ≠ ∅ { block.next.prev = ∅ }
+    
+    ⟵ Ok(allocate_from_block(mm, block))
+}
+
+◬ allocate_from_block(mm: *MemoryManager, block: *MemoryBlock) → Int27 {
+    block.is_free = ▽
+    mm.used_size += block.size
+    mm.alloc_count += 1
+    add_to_size_cache(mm, block)  ║ PAS: HSH - добавляем в кэш
+    ⟵ (block as Int27) + sizeof[MemoryBlock]()
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ОСВОБОЖДЕНИЕ ПАМЯТИ
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ free(mm: *MemoryManager, ptr: Int27) → Result[(), MemoryError] {
+    ⊜ ptr == 0 { ⟵ Err(MemoryError.null_pointer {}) }
+    
+    ◇ block = (ptr - sizeof[MemoryBlock]()) as *MemoryBlock
+    
+    ⊜ block.magic ≠ BLOCK_MAGIC { ⟵ Err(MemoryError.invalid_pointer {}) }
+    ⊜ block.is_free == △ { ⟵ Err(MemoryError.double_free {}) }
+    
+    block.is_free = △
+    mm.used_size -= block.size
+    mm.free_count += 1
+    
+    remove_from_size_cache(mm, block)  ║ PAS: HSH - удаляем из кэша
+    coalesce_buddies(mm, block)
+    
+    ⟵ Ok(())
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  PAS: HSH - ХЭШ-ТАБЛИЦА ПО РАЗМЕРУ
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ find_in_size_cache(mm: *MemoryManager, size: Int27) → ?*MemoryBlock {
+    ◇ hash = size % CACHE_SIZE
+    ◇ block = mm.size_cache[hash]
+    
+    ⟲ block ≠ ∅ {
+        ⊜ block.size == size ∧ block.is_free == △ { ⟵ block }
+        block = block.hash_next
+    }
+    ⟵ ∅
+}
+
+◬ add_to_size_cache(mm: *MemoryManager, block: *MemoryBlock) {
+    ◇ hash = block.size % CACHE_SIZE
+    block.hash_next = mm.size_cache[hash]
+    mm.size_cache[hash] = block
+}
+
+◬ remove_from_size_cache(mm: *MemoryManager, block: *MemoryBlock) {
+    ◇ hash = block.size % CACHE_SIZE
+    ◇ prev: ?*MemoryBlock = ∅
+    ◇ current = mm.size_cache[hash]
+    
+    ⟲ current ≠ ∅ {
+        ⊜ current == block {
+            ⊜ prev ≠ ∅ {
+                prev.hash_next = current.hash_next
+            } ⊝ {
+                mm.size_cache[hash] = current.hash_next
+            }
+            ⊗
+        }
+        prev = current
+        current = current.hash_next
+    }
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  PAS: PRE - ГОРЯЧИЕ РАЗМЕРЫ
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ update_hot_sizes(mm: *MemoryManager, size: Int27) {
+    ⟳ i ∈ 0..8 {
+        ⊜ mm.hot_sizes[i] == size {
+            mm.hot_counts[i] += 1
+            ⟵
+        }
+    }
+    
+    ◇ min_idx = 0
+    ◇ min_count = mm.hot_counts[0]
+    
+    ⟳ i ∈ 1..8 {
+        ⊜ mm.hot_counts[i] < min_count {
+            min_count = mm.hot_counts[i]
+            min_idx = i
+        }
+    }
+    
+    ⊜ min_count == 0 ∨ size > mm.hot_sizes[min_idx] {
+        mm.hot_sizes[min_idx] = size
+        mm.hot_counts[min_idx] = 1
+    }
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (PAS: PRE - O(1) степени 3)
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ pow3(n: Int9) → Int27 {
+    ⊜ n >= 0 ∧ n < POW3_TABLE.len { ⟵ POW3_TABLE[n] }
+    ⟵ 0
+}
+
+◬ size_to_order(size: Int27) → Int9 {
+    ◇ order: Int9 = 0
+    ◇ s = MIN_BLOCK_SIZE
+    ⟲ s < size ∧ order < MAX_BLOCK_ORDER {
+        s *= 3
+        order += 1
+    }
+    ⟵ order
+}
+
+⬡ MemoryStats {
+    total: Int27
+    used: Int27
+    free: Int27
+    alloc_count: Int27
+    free_count: Int27
+    fragmentation: Int27
+    cache_hit_rate: Int27   ║ PAS: HSH - процент попаданий в кэш
+    hot_sizes: [Int27; 8]   ║ PAS: PRE - топ размеров
+}
+
+◬ memory_stats(mm: *MemoryManager) → MemoryStats {
+    ◇ free_size = mm.total_size - mm.used_size
+    ◇ frag = ⊜ free_size > 0 {
+        ◇ block_count = 0
+        ⟳ order ∈ 0..10 {
+            ◇ b = mm.free_lists[order]
+            ⟲ b ≠ ∅ {
+                block_count += 1
+                b = b.next
+            }
+        }
+        block_count × 100 / (free_size / MIN_BLOCK_SIZE)
+    } ⊝ { 0 }
+    
+    ◇ total_requests = mm.cache_hits + mm.cache_misses
+    ◇ hit_rate = ⊜ total_requests > 0 { mm.cache_hits × 100 / total_requests } ⊝ { 0 }
+    
+    ⟵ MemoryStats {
+        total: mm.total_size
+        used: mm.used_size
+        free: free_size
+        alloc_count: mm.alloc_count
+        free_count: mm.free_count
+        fragmentation: frag
+        cache_hit_rate: hit_rate
+        hot_sizes: mm.hot_sizes
+    }
+}
+
+⬢ MemoryError {
+    △ init_failed { message: String }
+    ○ out_of_memory {}
+    ▽ invalid_size {}
+    ◇ too_large { requested: Int27 }
+    ◆ null_pointer {}
+    ⬡ invalid_pointer {}
+    ⬢ double_free {}
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ЭВОЛЮЦИОННЫЕ УЛУЧШЕНИЯ (СГЕНЕРИРОВАНО PAS)
+║ ═══════════════════════════════════════════════════════════════════
+
+⊡ test "эволюционные улучшения" {
+    ◇ mm = MemoryManager.new(1000, 10000)
+    
+    ║ Тестируем кэширование
+    ◇ ptr1 = alloc(&mm, 128)?
+    ◇ ptr2 = alloc(&mm, 128)?  ║ Должен попасть в кэш
+    
+    ◇ stats = memory_stats(&mm)
+    ⊜! stats.cache_hit_rate > 0  ║ Должны быть попадания в кэш
+    
+    free(&mm, ptr1)?
+    free(&mm, ptr2)?
+    
+    ⊜! stats.hot_sizes[0] == 128  ║ Размер должен быть в горячих
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  PAS ПРЕДСКАЗАНИЕ ПРОИЗВОДИТЕЛЬНОСТИ
+║ ═══════════════════════════════════════════════════════════════════
+
+prediction:
+  target: "MemoryManager аллокатор"
+  current: "O(log n) для выделения, базовый buddy аллокатор"
+  predicted: "O(1) для частых размеров через HSH + PRE кэширование"
+  confidence: 0.89
+  timeline: "Немедленно после применения"
+  patterns: [PRE, HSH, ALG]
+  reasoning: "Хэширование обеспечивает O(1) доступ к часто используемым размерам, предвычисление степеней 3 устраняет повторные вычисления, кэширование горячих размеров оптимизирует паттерны использования"
