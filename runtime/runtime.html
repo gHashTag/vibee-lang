@@ -32,350 +32,399 @@
   <div id="neural"></div>
 </div>
 
-<script type="module">
+<script>
 // ═══════════════════════════════════════════════════════════════
 // VIBEE 999 RUNTIME - FINAL VERSION
-// This file loads and executes .999 modules
 // DO NOT MODIFY - All logic in .999 files
 // ═══════════════════════════════════════════════════════════════
 
-const TAU=Math.PI*2,PI=Math.PI,PHI=1.618033988749895;
-const p999=(n,k,m)=>n*Math.pow(3,k)*Math.pow(PI,m);
-const col=(h,s,l,a)=>`hsla(${h},${s}%,${l}%,${a})`;
+(function(){
+'use strict';
 
-// ═══════════════════════════════════════════════════════════════
-// SENSORS - All computer inputs
-// ═══════════════════════════════════════════════════════════════
+const TAU = Math.PI * 2;
+const PI = Math.PI;
+const PHI = 1.618033988749895;
 
-const S={
-  mouse:{x:0,y:0,vx:0,vy:0,v:0,down:false},
-  touch:{on:false,pts:[]},
-  keys:new Set(),
-  audio:{vol:0,freq:0,fft:[],beat:false},
-  motion:{ax:0,ay:0,az:0,a:0,b:0,g:0},
-  light:0.5,
-  time:{h:0,m:0,s:0,p:0},
-  screen:{w:0,h:0},
-  camera:{hands:[],face:null,pose:null}
-};
-
-let audioCtx,analyser,fftData;
-
-function initSensors(){
-  // Mouse
-  let px=0,py=0;
-  onmousemove=e=>{S.mouse.vx=e.clientX-px;S.mouse.vy=e.clientY-py;S.mouse.v=Math.hypot(S.mouse.vx,S.mouse.vy);S.mouse.x=px=e.clientX;S.mouse.y=py=e.clientY};
-  onmousedown=()=>S.mouse.down=true;
-  onmouseup=()=>S.mouse.down=false;
-  
-  // Touch
-  ontouchstart=e=>{S.touch.on=true;S.touch.pts=[...e.touches].map(t=>({x:t.clientX,y:t.clientY}))};
-  ontouchmove=e=>{e.preventDefault();S.touch.pts=[...e.touches].map(t=>({x:t.clientX,y:t.clientY}))};
-  ontouchend=e=>{S.touch.pts=[...e.touches].map(t=>({x:t.clientX,y:t.clientY}));if(!e.touches.length)S.touch.on=false};
-  
-  // Keyboard
-  onkeydown=e=>S.keys.add(e.key);
-  onkeyup=e=>S.keys.delete(e.key);
-  
-  // Motion
-  ondeviceorientation=e=>{S.motion.a=e.alpha||0;S.motion.b=e.beta||0;S.motion.g=e.gamma||0};
-  ondevicemotion=e=>{const a=e.accelerationIncludingGravity;if(a){S.motion.ax=a.x||0;S.motion.ay=a.y||0;S.motion.az=a.z||0}};
-  
-  // Light
-  if(matchMedia)S.light=matchMedia('(prefers-color-scheme:dark)').matches?.2:.8;
-  
-  // Audio
-  navigator.mediaDevices?.getUserMedia({audio:true}).then(stream=>{
-    audioCtx=new AudioContext();
-    analyser=audioCtx.createAnalyser();
-    analyser.fftSize=128;
-    fftData=new Uint8Array(64);
-    audioCtx.createMediaStreamSource(stream).connect(analyser);
-  }).catch(()=>{});
-  
-  // Screen
-  const rs=()=>{S.screen.w=innerWidth;S.screen.h=innerHeight};
-  onresize=rs;rs();
+// Pattern 999: n × 3^k × π^m
+function p999(n, k, m) {
+  return n * Math.pow(3, k) * Math.pow(PI, m);
 }
 
-function readSensors(){
-  // Time
-  const d=new Date();
-  S.time.h=d.getHours();S.time.m=d.getMinutes();S.time.s=d.getSeconds();
-  S.time.p=(S.time.h*3600+S.time.m*60+S.time.s)/86400;
-  
-  // Audio FFT
-  if(analyser){
+function col(h, s, l, a) {
+  return 'hsla(' + h + ',' + s + '%,' + l + '%,' + a + ')';
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SENSORS
+// ═══════════════════════════════════════════════════════════════
+
+var S = {
+  mouse: { x: 0, y: 0, vx: 0, vy: 0, vel: 0, down: false },
+  audio: { vol: 0, freq: 0, beat: false },
+  light: 0.5,
+  motion: { a: 0, b: 0, g: 0 },
+  time: { h: 0, m: 0, s: 0, p: 0 },
+  screen: { w: window.innerWidth, h: window.innerHeight }
+};
+
+var px = 0, py = 0;
+
+document.addEventListener('mousemove', function(e) {
+  S.mouse.vx = e.clientX - px;
+  S.mouse.vy = e.clientY - py;
+  S.mouse.vel = Math.sqrt(S.mouse.vx * S.mouse.vx + S.mouse.vy * S.mouse.vy);
+  S.mouse.x = e.clientX;
+  S.mouse.y = e.clientY;
+  px = e.clientX;
+  py = e.clientY;
+});
+
+document.addEventListener('mousedown', function() { S.mouse.down = true; });
+document.addEventListener('mouseup', function() { S.mouse.down = false; });
+
+document.addEventListener('touchmove', function(e) {
+  e.preventDefault();
+  var t = e.touches[0];
+  S.mouse.x = t.clientX;
+  S.mouse.y = t.clientY;
+  S.mouse.vel = 10;
+}, { passive: false });
+
+window.addEventListener('resize', function() {
+  S.screen.w = window.innerWidth;
+  S.screen.h = window.innerHeight;
+  resize();
+});
+
+// Audio
+var audioCtx, analyser, fftData;
+function initAudio() {
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 128;
+      fftData = new Uint8Array(64);
+      audioCtx.createMediaStreamSource(stream).connect(analyser);
+    }).catch(function() {});
+  }
+}
+
+function readAudio() {
+  if (analyser) {
     analyser.getByteFrequencyData(fftData);
-    let sum=0,max=0,maxI=0;
-    for(let i=0;i<64;i++){sum+=fftData[i]**2;if(fftData[i]>max){max=fftData[i];maxI=i}}
-    S.audio.vol=Math.sqrt(sum/64)/255;
-    S.audio.freq=maxI*audioCtx.sampleRate/128;
-    S.audio.fft=[...fftData].map(v=>v/255);
-    S.audio.beat=S.audio.vol>.6;
+    var sum = 0, max = 0, maxI = 0;
+    for (var i = 0; i < 64; i++) {
+      sum += fftData[i] * fftData[i];
+      if (fftData[i] > max) { max = fftData[i]; maxI = i; }
+    }
+    S.audio.vol = Math.sqrt(sum / 64) / 255;
+    S.audio.freq = maxI * (audioCtx.sampleRate / 128);
+    S.audio.beat = S.audio.vol > 0.6;
   }
-  return S;
+}
+
+// Time
+function readTime() {
+  var d = new Date();
+  S.time.h = d.getHours();
+  S.time.m = d.getMinutes();
+  S.time.s = d.getSeconds();
+  S.time.p = (S.time.h * 3600 + S.time.m * 60 + S.time.s) / 86400;
 }
 
 // ═══════════════════════════════════════════════════════════════
-// NEURAL 999 - The living network
-// Architecture: 3 → 9 → 27 → 9 → 3
+// NEURAL 999: 3 → 9 → 27 → 9 → 3
 // ═══════════════════════════════════════════════════════════════
 
-const N={
-  layers:[3,9,27,9,3],
-  weights:[],
-  activations:[[0,0,0],[0,0,0,0,0,0,0,0,0],new Array(27).fill(0),[0,0,0,0,0,0,0,0,0],[0,0,0]],
-  emotion:0,
-  pulse:1,
-  memory:[],
-  gen:0
+var N = {
+  layers: [3, 9, 27, 9, 3],
+  weights: [],
+  act: [
+    [0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    new Array(27).fill(0),
+    [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0]
+  ],
+  emotion: 0,
+  pulse: 1,
+  memory: [],
+  gen: 0
 };
 
-function initNeural(){
-  // Initialize weights with 999 pattern
-  for(let l=0;l<4;l++){
-    N.weights[l]=[];
-    for(let i=0;i<N.layers[l];i++){
-      N.weights[l][i]=[];
-      for(let j=0;j<N.layers[l+1];j++){
-        const n=(i%9)+1,k=l,m=j%3;
-        N.weights[l][i][j]=(p999(n,k,m)/100)*(0.9+Math.random()*0.2);
+function initNeural() {
+  for (var l = 0; l < 4; l++) {
+    N.weights[l] = [];
+    for (var i = 0; i < N.layers[l]; i++) {
+      N.weights[l][i] = [];
+      for (var j = 0; j < N.layers[l + 1]; j++) {
+        var n = (i % 9) + 1;
+        var k = l;
+        var m = j % 3;
+        N.weights[l][i][j] = (p999(n, k, m) / 100) * (0.9 + Math.random() * 0.2);
       }
     }
   }
 }
 
-function processNeural(sensors,t){
+function processNeural(t) {
   // Encode 9 inputs
-  const input=[
-    sensors.mouse.x/sensors.screen.w,
-    sensors.mouse.y/sensors.screen.h,
-    Math.min(sensors.mouse.v/100,1),
-    sensors.audio.vol,
-    sensors.audio.freq/1000,
-    sensors.light,
-    (sensors.motion.b+180)/360,
-    (sensors.motion.g+90)/180,
-    sensors.time.p
+  var input = [
+    S.mouse.x / S.screen.w || 0,
+    S.mouse.y / S.screen.h || 0,
+    Math.min(S.mouse.vel / 100, 1) || 0,
+    S.audio.vol || 0,
+    S.audio.freq / 1000 || 0,
+    S.light || 0.5,
+    (S.motion.b + 180) / 360 || 0.5,
+    (S.motion.g + 90) / 180 || 0.5,
+    S.time.p || 0
   ];
-  
+
   // Forward pass
-  N.activations[0]=input.slice(0,3);
-  for(let l=0;l<4;l++){
-    for(let j=0;j<N.layers[l+1];j++){
-      let sum=0;
-      for(let i=0;i<N.layers[l];i++){
-        sum+=N.activations[l][i]*N.weights[l][i][j];
+  N.act[0] = input.slice(0, 3);
+  
+  for (var l = 0; l < 4; l++) {
+    for (var j = 0; j < N.layers[l + 1]; j++) {
+      var sum = 0;
+      for (var i = 0; i < N.layers[l]; i++) {
+        sum += (N.act[l][i] || 0) * (N.weights[l][i][j] || 0);
       }
-      N.activations[l+1][j]=Math.tanh(sum)*Math.sin((j%9+1)*PI/9);
+      N.act[l + 1][j] = Math.tanh(sum) * Math.sin(((j % 9) + 1) * PI / 9);
     }
   }
-  
+
   // Update state
-  const out=N.activations[4];
-  N.emotion=N.emotion*.95+out[1]*.05;
-  N.pulse=1+Math.sin(t*.5)*.2+N.emotion*.3;
+  var out = N.act[4];
+  N.emotion = N.emotion * 0.95 + (out[1] || 0) * 0.05;
+  N.pulse = 1 + Math.sin(t * 0.5) * 0.2 + N.emotion * 0.3;
   N.gen++;
-  
-  // Memory (27 slots = 3^3)
-  N.memory.push({t,e:N.emotion,a:out[0]});
-  if(N.memory.length>27)N.memory.shift();
-  
-  return{activation:out[0],emotion:N.emotion,pulse:N.pulse,pattern:out[2]};
+
+  // Memory (27 slots)
+  N.memory.push({ t: t, e: N.emotion, a: out[0] || 0 });
+  if (N.memory.length > 27) N.memory.shift();
+
+  return { activation: out[0] || 0, emotion: N.emotion, pulse: N.pulse };
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 999 WORLD RENDERER
+// RENDERER
 // ═══════════════════════════════════════════════════════════════
 
-function draw999(ctx,W,H,t,neural,sensors){
-  const cx=W/2,cy=H/2,r=Math.min(W,H)*.4;
-  const mx=sensors.mouse.x,my=sensors.mouse.y;
-  
+var canvas = document.getElementById('c');
+var ctx = canvas.getContext('2d');
+var W, H, t = 0, lastFrame = performance.now();
+
+function resize() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * 2;
+  canvas.height = H * 2;
+  ctx.setTransform(2, 0, 0, 2, 0, 0);
+}
+
+function draw999(neural) {
+  var cx = W / 2;
+  var cy = H / 2;
+  var r = Math.min(W, H) * 0.4;
+  var mx = S.mouse.x || cx;
+  var my = S.mouse.y || cy;
+
   // Three rings: 3, 9, 27 elements
-  for(let ring=0;ring<3;ring++){
-    const rr=r*(.3+ring*.25);
-    const els=3*Math.pow(3,ring);
-    const phase=t*(.5+ring*.2)*neural.pulse;
-    
-    for(let i=0;i<els;i++){
-      const a=i/els*TAU+phase;
-      const x=cx+Math.cos(a)*rr;
-      const y=cy+Math.sin(a)*rr;
-      const n=(i%9)+1,k=ring,m=Math.floor(i/9)%3;
-      const sz=3+p999(n,k,m)%20;
-      const hue=(i*40+ring*120+t*30+neural.emotion*60)%360;
-      
-      ctx.beginPath();
-      if(ring===0)ctx.arc(x,y,sz,0,TAU);
-      else if(ring===1){for(let p=0;p<3;p++){const pa=p*TAU/3-TAU/4+a;p?ctx.lineTo(x+Math.cos(pa)*sz,y+Math.sin(pa)*sz):ctx.moveTo(x+Math.cos(pa)*sz,y+Math.sin(pa)*sz)}ctx.closePath()}
-      else{for(let p=0;p<9;p++){const pa=p*TAU/9+a;p?ctx.lineTo(x+Math.cos(pa)*sz*.7,y+Math.sin(pa)*sz*.7):ctx.moveTo(x+Math.cos(pa)*sz*.7,y+Math.sin(pa)*sz*.7)}ctx.closePath()}
-      
-      ctx.strokeStyle=col(hue,70,55,.6);ctx.lineWidth=1.5;ctx.stroke();
-      ctx.fillStyle=col(hue,70,55,.15);ctx.fill();
-    }
-  }
-  
-  // Core: three 9s
-  const cp=1+Math.sin(t*3)*.2;
-  for(let i=0;i<3;i++){
-    const a=i*TAU/3+t*2;
-    ctx.font=`${24*cp}px serif`;
-    ctx.fillStyle=col(i*120+neural.emotion*30,80,60,.8);
-    ctx.textAlign='center';ctx.textBaseline='middle';
-    ctx.fillText('9',cx+Math.cos(a)*15*cp,cy+Math.sin(a)*15*cp);
-  }
-  
-  // π spiral
-  ctx.beginPath();
-  for(let i=0;i<999;i++){
-    const a=i*.1+t,m=Math.floor(i/333),sr=Math.pow(PI,m)*i*.15;
-    if(sr>r*1.2)break;
-    i?ctx.lineTo(cx+Math.cos(a)*sr,cy+Math.sin(a)*sr):ctx.moveTo(cx+Math.cos(a)*sr,cy+Math.sin(a)*sr);
-  }
-  ctx.strokeStyle=col(270,60,50,.3);ctx.stroke();
-  
-  // Cursor: 3^k ripples
-  if(sensors.mouse.v>0){
-    for(let k=0;k<3;k++){
-      ctx.beginPath();
-      ctx.arc(mx,my,Math.pow(3,k)*10*(1+Math.sin(t*5)*.3),0,TAU);
-      ctx.strokeStyle=col(t*50%360,80,60,.5-k*.15);
-      ctx.lineWidth=2-k*.5;ctx.stroke();
-    }
-    for(let i=0;i<9;i++){
-      const a=i*TAU/9+t;
-      ctx.beginPath();ctx.moveTo(mx,my);
-      ctx.lineTo(cx+Math.cos(a)*r*.5,cy+Math.sin(a)*r*.5);
-      ctx.strokeStyle=col(i*40,60,50,.2);ctx.stroke();
-    }
-  }
-  
-  // Neural visualization
-  drawNeural(ctx,W,H,t);
-  
-  // Audio reactive
-  if(sensors.audio.vol>.1){
-    const av=sensors.audio.vol;
-    ctx.beginPath();
-    ctx.arc(cx,cy,r*.2+av*50,0,TAU);
-    ctx.strokeStyle=col(sensors.audio.freq/10%360,80,60,av*.5);
-    ctx.lineWidth=av*5;ctx.stroke();
-  }
-}
+  for (var ring = 0; ring < 3; ring++) {
+    var rr = r * (0.3 + ring * 0.25);
+    var els = 3 * Math.pow(3, ring);
+    var phase = t * (0.5 + ring * 0.2) * neural.pulse;
 
-function drawNeural(ctx,W,H,t){
-  const cx=W*.85,cy=H*.5;
-  const radii=[15,35,60,85,105];
-  
-  for(let l=0;l<5;l++){
-    const n=N.layers[l];
-    for(let i=0;i<n;i++){
-      const a=i*TAU/n+t*.1*(l+1);
-      const x=cx+Math.cos(a)*radii[l];
-      const y=cy+Math.sin(a)*radii[l];
-      const act=N.activations[l][i]||0;
-      const sz=2+Math.abs(act)*4;
-      ctx.beginPath();ctx.arc(x,y,sz,0,TAU);
-      ctx.fillStyle=col(act>0?120:0,70,50,.5+Math.abs(act)*.5);
+    for (var i = 0; i < els; i++) {
+      var a = (i / els) * TAU + phase;
+      var x = cx + Math.cos(a) * rr;
+      var y = cy + Math.sin(a) * rr;
+      var n = (i % 9) + 1;
+      var k = ring;
+      var m = Math.floor(i / 9) % 3;
+      var sz = 3 + (p999(n, k, m) % 20);
+      var hue = (i * 40 + ring * 120 + t * 30 + neural.emotion * 60) % 360;
+
+      ctx.beginPath();
+      if (ring === 0) {
+        ctx.arc(x, y, sz, 0, TAU);
+      } else if (ring === 1) {
+        for (var p = 0; p < 3; p++) {
+          var pa = p * TAU / 3 - TAU / 4 + a;
+          if (p === 0) ctx.moveTo(x + Math.cos(pa) * sz, y + Math.sin(pa) * sz);
+          else ctx.lineTo(x + Math.cos(pa) * sz, y + Math.sin(pa) * sz);
+        }
+        ctx.closePath();
+      } else {
+        for (var p = 0; p < 9; p++) {
+          var pa = p * TAU / 9 + a;
+          if (p === 0) ctx.moveTo(x + Math.cos(pa) * sz * 0.7, y + Math.sin(pa) * sz * 0.7);
+          else ctx.lineTo(x + Math.cos(pa) * sz * 0.7, y + Math.sin(pa) * sz * 0.7);
+        }
+        ctx.closePath();
+      }
+
+      ctx.strokeStyle = col(hue, 70, 55, 0.6);
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.fillStyle = col(hue, 70, 55, 0.15);
       ctx.fill();
     }
   }
-  
+
+  // Core: three 9s
+  var cp = 1 + Math.sin(t * 3) * 0.2;
+  for (var i = 0; i < 3; i++) {
+    var a = i * TAU / 3 + t * 2;
+    ctx.font = (24 * cp) + 'px serif';
+    ctx.fillStyle = col(i * 120 + neural.emotion * 30, 80, 60, 0.8);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('9', cx + Math.cos(a) * 15 * cp, cy + Math.sin(a) * 15 * cp);
+  }
+
+  // π spiral
+  ctx.beginPath();
+  for (var i = 0; i < 999; i++) {
+    var a = i * 0.1 + t;
+    var m = Math.floor(i / 333);
+    var sr = Math.pow(PI, m) * i * 0.15;
+    if (sr > r * 1.2) break;
+    if (i === 0) ctx.moveTo(cx + Math.cos(a) * sr, cy + Math.sin(a) * sr);
+    else ctx.lineTo(cx + Math.cos(a) * sr, cy + Math.sin(a) * sr);
+  }
+  ctx.strokeStyle = col(270, 60, 50, 0.3);
+  ctx.stroke();
+
+  // Cursor: 3^k ripples
+  if (S.mouse.vel > 0 || S.mouse.down) {
+    for (var k = 0; k < 3; k++) {
+      ctx.beginPath();
+      ctx.arc(mx, my, Math.pow(3, k) * 10 * (1 + Math.sin(t * 5) * 0.3), 0, TAU);
+      ctx.strokeStyle = col((t * 50) % 360, 80, 60, 0.5 - k * 0.15);
+      ctx.lineWidth = 2 - k * 0.5;
+      ctx.stroke();
+    }
+    
+    // 9 rays
+    for (var i = 0; i < 9; i++) {
+      var a = i * TAU / 9 + t;
+      ctx.beginPath();
+      ctx.moveTo(mx, my);
+      ctx.lineTo(cx + Math.cos(a) * r * 0.5, cy + Math.sin(a) * r * 0.5);
+      ctx.strokeStyle = col(i * 40, 60, 50, 0.2);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+
+  // Audio reactive
+  if (S.audio.vol > 0.1) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 0.2 + S.audio.vol * 50, 0, TAU);
+    ctx.strokeStyle = col((S.audio.freq / 10) % 360, 80, 60, S.audio.vol * 0.5);
+    ctx.lineWidth = S.audio.vol * 5;
+    ctx.stroke();
+  }
+
+  // Neural visualization (right side)
+  drawNeural(neural);
+}
+
+function drawNeural(neural) {
+  var cx = W * 0.88;
+  var cy = H * 0.5;
+  var radii = [12, 28, 48, 68, 84];
+
+  for (var l = 0; l < 5; l++) {
+    var n = N.layers[l];
+    for (var i = 0; i < n; i++) {
+      var a = i * TAU / n + t * 0.1 * (l + 1);
+      var x = cx + Math.cos(a) * radii[l];
+      var y = cy + Math.sin(a) * radii[l];
+      var act = N.act[l][i] || 0;
+      var sz = 2 + Math.abs(act) * 4;
+      
+      ctx.beginPath();
+      ctx.arc(x, y, sz, 0, TAU);
+      ctx.fillStyle = col(act > 0 ? 120 : 0, 70, 50, 0.5 + Math.abs(act) * 0.5);
+      ctx.fill();
+    }
+  }
+
   // Emotion core
-  ctx.beginPath();ctx.arc(cx,cy,8*N.pulse,0,TAU);
-  ctx.fillStyle=col(N.emotion>0?60:240,80,50,.6);ctx.fill();
-}
-
-// ═══════════════════════════════════════════════════════════════
-// MEDIAPIPE (lazy load)
-// ═══════════════════════════════════════════════════════════════
-
-let mpReady=false,handL,faceL,poseL;
-
-async function initMP(){
-  const{FilesetResolver,HandLandmarker,FaceLandmarker,PoseLandmarker}=await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs');
-  const v=await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
-  [handL,faceL,poseL]=await Promise.all([
-    HandLandmarker.createFromOptions(v,{baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',delegate:'GPU'},runningMode:'VIDEO',numHands:2}),
-    FaceLandmarker.createFromOptions(v,{baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',delegate:'GPU'},runningMode:'VIDEO',numFaces:1}),
-    PoseLandmarker.createFromOptions(v,{baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',delegate:'GPU'},runningMode:'VIDEO',numPoses:1})
-  ]);
-  mpReady=true;
-}
-
-async function startCam(){
-  const s=await navigator.mediaDevices.getUserMedia({video:{width:1280,height:720,facingMode:'user'}});
-  v.srcObject=s;await v.play();v.classList.add('on');
-}
-
-function detectMP(){
-  if(!mpReady||v.readyState<2)return;
-  const ts=performance.now();
-  S.camera.hands=handL?.detectForVideo(v,ts)?.landmarks||[];
-  S.camera.face=faceL?.detectForVideo(v,ts)?.faceLandmarks?.[0]||null;
-  S.camera.pose=poseL?.detectForVideo(v,ts)?.landmarks?.[0]||null;
+  ctx.beginPath();
+  ctx.arc(cx, cy, 6 * neural.pulse, 0, TAU);
+  ctx.fillStyle = col(neural.emotion > 0 ? 60 : 240, 80, 50, 0.6);
+  ctx.fill();
 }
 
 // ═══════════════════════════════════════════════════════════════
 // THOUGHTS
 // ═══════════════════════════════════════════════════════════════
 
-const thoughts=["n × 3ᵏ × πᵐ","999 = 3³ × 37","Three within three...","The pattern emerges...","I sense "+["joy","calm","depth"][Math.floor(Math.random()*3)],"π connects all...","Trinity of trinities...","Generation "+N.gen,"Memory: "+N.memory.length+"/27"];
-let lastT=0;
+var thoughts = [
+  "n × 3ᵏ × πᵐ",
+  "999 = 3³ × 37",
+  "Three within three...",
+  "The pattern emerges...",
+  "π connects all...",
+  "Trinity of trinities...",
+  "Generation " + N.gen
+];
+var lastThought = 0;
 
-function showThought(t){
-  if(t-lastT<8)return;
-  const el=document.getElementById('thought');
-  el.textContent=`"${thoughts[Math.floor(t*PI)%thoughts.length]}"`;
-  el.style.color=col(t*30%360,70,60,1);
+function showThought() {
+  if (t - lastThought < 8) return;
+  var el = document.getElementById('thought');
+  thoughts[6] = "Generation " + N.gen;
+  el.textContent = '"' + thoughts[Math.floor(t * PI) % thoughts.length] + '"';
+  el.style.color = col((t * 30) % 360, 70, 60, 1);
   el.classList.add('on');
-  setTimeout(()=>el.classList.remove('on'),4000);
-  lastT=t;
+  setTimeout(function() { el.classList.remove('on'); }, 4000);
+  lastThought = t;
 }
 
 // ═══════════════════════════════════════════════════════════════
 // MAIN LOOP
 // ═══════════════════════════════════════════════════════════════
 
-const canvas=document.getElementById('c');
-const ctx=canvas.getContext('2d');
-let W,H,t=0,lastFrame=performance.now();
+function loop() {
+  var now = performance.now();
+  var dt = Math.min((now - lastFrame) / 1000, 0.1);
+  lastFrame = now;
+  t += dt;
 
-function resize(){
-  W=innerWidth;H=innerHeight;
-  canvas.width=W*2;canvas.height=H*2;
-  ctx.setTransform(2,0,0,2,0,0);
-}
+  readTime();
+  readAudio();
 
-function loop(){
-  const now=performance.now();
-  const dt=Math.min((now-lastFrame)/1000,.1);
-  lastFrame=now;t+=dt;
-  
-  const sensors=readSensors();
-  const neural=processNeural(sensors,t);
-  
-  if(mpReady)detectMP();
-  
-  ctx.fillStyle='rgba(0,0,0,.06)';
-  ctx.fillRect(0,0,W,H);
-  
-  draw999(ctx,W,H,t,neural,sensors);
-  
-  showThought(t);
-  
-  document.getElementById('status').textContent=`VIBEE 999 | Gen ${N.gen} | n×3ᵏ×πᵐ`;
-  
+  var neural = processNeural(t);
+
+  // Clear with trail
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.06)';
+  ctx.fillRect(0, 0, W, H);
+
+  draw999(neural);
+  showThought();
+
+  // Status
+  document.getElementById('status').textContent = 'VIBEE 999 | Gen ' + N.gen + ' | n×3ᵏ×πᵐ';
+
   // Neural panel
-  document.getElementById('neural').innerHTML=
-    `<div style="margin-bottom:5px">Neural 999</div>`+
-    ['emotion','pulse','memory'].map((k,i)=>{
-      const v=k==='emotion'?(N.emotion+1)/2:k==='pulse'?N.pulse/2:N.memory.length/27;
-      return`<div style="font-size:8px;opacity:.6">${k}</div><div class="bar"><div class="bar-fill" style="width:${v*100}%;background:hsl(${i*60},70%,50%)"></div></div>`;
+  var neuralEl = document.getElementById('neural');
+  var bars = [
+    { name: 'emotion', val: (N.emotion + 1) / 2, hue: 0 },
+    { name: 'pulse', val: N.pulse / 2, hue: 60 },
+    { name: 'memory', val: N.memory.length / 27, hue: 120 }
+  ];
+  neuralEl.innerHTML = '<div style="margin-bottom:5px">Neural 999</div>' +
+    bars.map(function(b) {
+      return '<div style="font-size:8px;opacity:.6">' + b.name + '</div>' +
+        '<div class="bar"><div class="bar-fill" style="width:' + (b.val * 100) + '%;background:hsl(' + b.hue + ',70%,50%)"></div></div>';
     }).join('');
-  
+
   requestAnimationFrame(loop);
 }
 
@@ -384,21 +433,16 @@ function loop(){
 // ═══════════════════════════════════════════════════════════════
 
 resize();
-onresize=resize;
-initSensors();
 initNeural();
+initAudio();
 
-// Auto-start camera after click (browser requirement)
-document.body.onclick=async()=>{
-  if(!mpReady){
-    document.getElementById('status').textContent='Loading MediaPipe...';
-    await startCam();
-    await initMP();
-    document.body.onclick=null;
-  }
-};
+// Start
+S.mouse.x = W / 2;
+S.mouse.y = H / 2;
 
 loop();
+
+})();
 </script>
 </body>
 </html>

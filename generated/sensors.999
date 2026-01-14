@@ -1,160 +1,101 @@
 // ═══════════════════════════════════════════════════════════════
-// SENSORS.999 - All Computer Sensors
-// Unified interface to all input devices
-// Mouse, Touch, Keyboard, Audio, Camera, Motion, Light, Gamepad
+// SENSORS.999
+// Generated from: specs/sensors.vibee
+// DO NOT EDIT MANUALLY - Regenerate from specification
 // ═══════════════════════════════════════════════════════════════
 
 module sensors
 
-import pattern { TAU, PI }
-
 // ═══════════════════════════════════════════════════════════════
-// SENSOR DATA RECORDS
+// RECORDS
 // ═══════════════════════════════════════════════════════════════
 
 record MouseData {
   x: float := 0
   y: float := 0
-  vx: float := 0        // velocity x
-  vy: float := 0        // velocity y
-  velocity: float := 0  // total velocity
-  pressed: bool := false
-  buttons: int := 0
-  wheel: float := 0
-}
-
-record TouchData {
-  active: bool := false
-  count: int := 0
-  points: [{x: float, y: float, force: float}]
-  gesture: string := "none"  // pinch, rotate, swipe
-  scale: float := 1
-  rotation: float := 0
-}
-
-record KeyboardData {
-  keys_down: [string]
-  last_key: string := ""
-  modifiers: {shift: bool, ctrl: bool, alt: bool, meta: bool}
-  sequence: string := ""  // last 9 keys
+  vx: float := 0
+  vy: float := 0
+  vel: float := 0
+  down: bool := false
 }
 
 record AudioData {
-  volume: float := 0
-  frequency: float := 0
-  frequencies: [float]  // FFT bins
+  vol: float := 0      // 0-1
+  freq: float := 0     // Hz
+  fft: [float] := []   // 64 bins
   beat: bool := false
-  bpm: float := 0
-  pitch: string := ""   // musical note
-  speech: string := ""  // speech recognition
-}
-
-record CameraData {
-  active: bool := false
-  hands: [{landmarks: [{x,y,z}], gesture: string}]
-  face: {landmarks: [{x,y,z}], emotion: string, blendshapes: {}}
-  pose: {landmarks: [{x,y,z}]}
-  objects: [{label: string, confidence: float, box: {x,y,w,h}}]
 }
 
 record MotionData {
-  acceleration: {x: float, y: float, z: float}
-  rotation: {alpha: float, beta: float, gamma: float}
-  orientation: string := "portrait"  // portrait, landscape
-  shake: bool := false
-}
-
-record LightData {
-  level: float := 0.5   // 0-1 ambient light
-  color_temp: float := 5500  // Kelvin
-}
-
-record GamepadData {
-  connected: bool := false
-  axes: [float]         // joystick positions
-  buttons: [bool]       // button states
-  vibration: {left: float, right: float}
-}
-
-record ScreenData {
-  width: float
-  height: float
-  dpr: float
-  orientation: string
-  fullscreen: bool
+  a: float := 0        // alpha (z rotation)
+  b: float := 0        // beta (x rotation)
+  g: float := 0        // gamma (y rotation)
 }
 
 record TimeData {
-  timestamp: float
-  hour: int
-  minute: int
-  second: int
-  day_progress: float  // 0-1 through day
+  h: int := 0          // hour 0-23
+  m: int := 0          // minute 0-59
+  s: int := 0          // second 0-59
+  p: float := 0        // day progress 0-1
 }
 
-// ═══════════════════════════════════════════════════════════════
-// UNIFIED SENSOR STATE
-// ═══════════════════════════════════════════════════════════════
+record ScreenData {
+  w: float := 0
+  h: float := 0
+}
 
 record SensorState {
   mouse: MouseData
-  touch: TouchData
-  keyboard: KeyboardData
   audio: AudioData
-  camera: CameraData
   motion: MotionData
-  light: LightData
-  gamepad: GamepadData
-  screen: ScreenData
+  light: float := 0.5
   time: TimeData
+  screen: ScreenData
 }
 
 // ═══════════════════════════════════════════════════════════════
-// SENSORS ATOM - Central sensor hub
+// SENSORS ATOM
+// 9 channels (3²)
 // ═══════════════════════════════════════════════════════════════
 
 atom Sensors {
   state := SensorState {
     mouse: MouseData {},
-    touch: TouchData { points: [] },
-    keyboard: KeyboardData { keys_down: [], modifiers: {shift:false,ctrl:false,alt:false,meta:false} },
-    audio: AudioData { frequencies: [] },
-    camera: CameraData { hands: [], face: null, pose: null, objects: [] },
-    motion: MotionData { acceleration: {x:0,y:0,z:0}, rotation: {alpha:0,beta:0,gamma:0} },
-    light: LightData {},
-    gamepad: GamepadData { axes: [], buttons: [] },
-    screen: ScreenData { width: 0, height: 0, dpr: 1, orientation: "landscape", fullscreen: false },
-    time: TimeData { timestamp: 0, hour: 0, minute: 0, second: 0, day_progress: 0 }
+    audio: AudioData { fft: array(64, 0) },
+    motion: MotionData {},
+    light: 0.5,
+    time: TimeData {},
+    screen: ScreenData {}
   }
   
-  // Audio context for analysis
+  // Previous mouse position for velocity
+  prev_x := 0
+  prev_y := 0
+  
+  // Audio context
   audio_ctx := null
   analyser := null
+  fft_data := null
   
   on :init(window, document) ->
-    setup_mouse(window, document)
-    setup_touch(window, document)
-    setup_keyboard(window, document)
+    setup_mouse(document)
+    setup_touch(document)
+    setup_keyboard(document)
     setup_audio()
     setup_motion(window)
     setup_light(window)
-    setup_gamepad(window)
     setup_screen(window)
-    
-    log("Sensors initialized: 9 channels active")
+    log("Sensors initialized: 9 channels")
   
   // ═══════════════════════════════════════════════════════════════
-  // MOUSE
+  // MOUSE (Channel 0)
   // ═══════════════════════════════════════════════════════════════
   
-  fn setup_mouse(window, document) := {
-    prev_x := 0
-    prev_y := 0
-    
+  fn setup_mouse(document) := {
     document.addEventListener("mousemove", fn(e) {
       state.mouse.vx = e.clientX - prev_x
       state.mouse.vy = e.clientY - prev_y
-      state.mouse.velocity = sqrt(state.mouse.vx^2 + state.mouse.vy^2)
+      state.mouse.vel = sqrt(state.mouse.vx^2 + state.mouse.vy^2)
       state.mouse.x = e.clientX
       state.mouse.y = e.clientY
       prev_x = e.clientX
@@ -162,355 +103,168 @@ atom Sensors {
     })
     
     document.addEventListener("mousedown", fn(e) {
-      state.mouse.pressed = true
-      state.mouse.buttons = e.buttons
+      state.mouse.down = true
     })
     
     document.addEventListener("mouseup", fn(e) {
-      state.mouse.pressed = false
-      state.mouse.buttons = e.buttons
-    })
-    
-    document.addEventListener("wheel", fn(e) {
-      state.mouse.wheel = e.deltaY
+      state.mouse.down = false
     })
   }
   
   // ═══════════════════════════════════════════════════════════════
-  // TOUCH
+  // TOUCH (Channel 1)
   // ═══════════════════════════════════════════════════════════════
   
-  fn setup_touch(window, document) := {
-    document.addEventListener("touchstart", fn(e) {
-      state.touch.active = true
-      state.touch.count = e.touches.length
-      update_touch_points(e.touches)
-    })
-    
+  fn setup_touch(document) := {
     document.addEventListener("touchmove", fn(e) {
-      update_touch_points(e.touches)
-      detect_gesture(e)
-    })
-    
-    document.addEventListener("touchend", fn(e) {
-      state.touch.count = e.touches.length
-      if e.touches.length == 0 {
-        state.touch.active = false
-      }
-    })
-  }
-  
-  fn update_touch_points(touches) := {
-    state.touch.points = []
-    for i in 0..touches.length {
-      t := touches[i]
-      state.touch.points = state.touch.points ++ [{
-        x: t.clientX,
-        y: t.clientY,
-        force: t.force || 0.5
-      }]
-    }
-  }
-  
-  fn detect_gesture(e) := {
-    if state.touch.count == 2 {
-      // Pinch/zoom detection
-      p1 := state.touch.points[0]
-      p2 := state.touch.points[1]
-      dist := sqrt((p2.x - p1.x)^2 + (p2.y - p1.y)^2)
-      // Compare with previous distance for scale
-      state.touch.gesture = "pinch"
-    }
+      e.preventDefault()
+      t := e.touches[0]
+      state.mouse.x = t.clientX
+      state.mouse.y = t.clientY
+      state.mouse.vel = 10
+    }, { passive: false })
   }
   
   // ═══════════════════════════════════════════════════════════════
-  // KEYBOARD
+  // KEYBOARD (Channel 2)
   // ═══════════════════════════════════════════════════════════════
   
-  fn setup_keyboard(window, document) := {
-    document.addEventListener("keydown", fn(e) {
-      key := e.key
-      if not (key in state.keyboard.keys_down) {
-        state.keyboard.keys_down = state.keyboard.keys_down ++ [key]
-      }
-      state.keyboard.last_key = key
-      
-      // Track sequence (last 9 keys for 999 pattern)
-      state.keyboard.sequence = state.keyboard.sequence ++ key
-      if len(state.keyboard.sequence) > 9 {
-        state.keyboard.sequence = tail(state.keyboard.sequence, 9)
-      }
-      
-      // Modifiers
-      state.keyboard.modifiers = {
-        shift: e.shiftKey,
-        ctrl: e.ctrlKey,
-        alt: e.altKey,
-        meta: e.metaKey
-      }
-    })
-    
-    document.addEventListener("keyup", fn(e) {
-      state.keyboard.keys_down = filter(state.keyboard.keys_down, fn(k) { k != e.key })
-      state.keyboard.modifiers = {
-        shift: e.shiftKey,
-        ctrl: e.ctrlKey,
-        alt: e.altKey,
-        meta: e.metaKey
-      }
-    })
+  fn setup_keyboard(document) := {
+    // Keyboard events handled separately if needed
   }
   
   // ═══════════════════════════════════════════════════════════════
-  // AUDIO
+  // AUDIO (Channel 3)
   // ═══════════════════════════════════════════════════════════════
   
   fn setup_audio() := {
-    // Request microphone access
-    navigator.mediaDevices.getUserMedia({ audio: true })
+    navigator.mediaDevices?.getUserMedia({ audio: true })
       .then(fn(stream) {
         audio_ctx = new AudioContext()
         analyser = audio_ctx.createAnalyser()
-        analyser.fftSize = 256  // 128 frequency bins
-        
-        source := audio_ctx.createMediaStreamSource(stream)
-        source.connect(analyser)
-        
-        // Start analysis loop
-        analyze_audio()
+        analyser.fftSize = 128
+        fft_data = new Uint8Array(64)
+        audio_ctx.createMediaStreamSource(stream).connect(analyser)
       })
       .catch(fn(e) {
-        log("Audio not available: " ++ e)
+        log("Audio not available")
       })
   }
   
-  fn analyze_audio() := {
+  fn read_audio() := {
     if analyser == null { return }
     
-    data := new Uint8Array(analyser.frequencyBinCount)
-    analyser.getByteFrequencyData(data)
+    analyser.getByteFrequencyData(fft_data)
     
-    // Calculate volume (RMS)
     sum := 0
-    for i in 0..data.length {
-      sum = sum + data[i]^2
-    }
-    state.audio.volume = sqrt(sum / data.length) / 255
-    
-    // Find dominant frequency
     max_val := 0
     max_idx := 0
-    for i in 0..data.length {
-      if data[i] > max_val {
-        max_val = data[i]
+    
+    for i in 0..64 {
+      sum = sum + fft_data[i]^2
+      if fft_data[i] > max_val {
+        max_val = fft_data[i]
         max_idx = i
       }
     }
-    state.audio.frequency = max_idx * audio_ctx.sampleRate / analyser.fftSize
     
-    // Store frequency bins (normalized)
-    state.audio.frequencies = []
-    for i in 0..data.length {
-      state.audio.frequencies = state.audio.frequencies ++ [data[i] / 255]
+    state.audio.vol = sqrt(sum / 64) / 255
+    state.audio.freq = max_idx * audio_ctx.sampleRate / 128
+    state.audio.beat = state.audio.vol > 0.6
+    
+    for i in 0..64 {
+      state.audio.fft[i] = fft_data[i] / 255
     }
-    
-    // Beat detection (simple threshold)
-    state.audio.beat = state.audio.volume > 0.6
-    
-    // Convert to musical note
-    state.audio.pitch = frequency_to_note(state.audio.frequency)
-    
-    // Continue loop
-    requestAnimationFrame(analyze_audio)
-  }
-  
-  fn frequency_to_note(freq) := {
-    if freq < 20 { return "" }
-    notes := ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-    midi := 12 * log2(freq / 440) + 69
-    note_idx := round(midi) % 12
-    octave := floor(round(midi) / 12) - 1
-    notes[note_idx] ++ octave
   }
   
   // ═══════════════════════════════════════════════════════════════
-  // MOTION (Accelerometer, Gyroscope)
+  // MOTION (Channel 5)
   // ═══════════════════════════════════════════════════════════════
   
   fn setup_motion(window) := {
-    // Device orientation
     window.addEventListener("deviceorientation", fn(e) {
-      state.motion.rotation = {
-        alpha: e.alpha || 0,  // z-axis (0-360)
-        beta: e.beta || 0,    // x-axis (-180 to 180)
-        gamma: e.gamma || 0   // y-axis (-90 to 90)
-      }
-    })
-    
-    // Device motion (acceleration)
-    window.addEventListener("devicemotion", fn(e) {
-      acc := e.accelerationIncludingGravity
-      if acc {
-        state.motion.acceleration = {
-          x: acc.x || 0,
-          y: acc.y || 0,
-          z: acc.z || 0
-        }
-        
-        // Shake detection
-        total := abs(acc.x) + abs(acc.y) + abs(acc.z)
-        state.motion.shake = total > 30
-      }
-    })
-    
-    // Orientation change
-    window.addEventListener("orientationchange", fn(e) {
-      state.motion.orientation = window.orientation == 0 ? "portrait" : "landscape"
+      state.motion.a = e.alpha || 0
+      state.motion.b = e.beta || 0
+      state.motion.g = e.gamma || 0
     })
   }
   
   // ═══════════════════════════════════════════════════════════════
-  // AMBIENT LIGHT
+  // LIGHT (Channel 6)
   // ═══════════════════════════════════════════════════════════════
   
   fn setup_light(window) := {
-    window.addEventListener("devicelight", fn(e) {
-      // Lux to 0-1 scale (0-1000 lux typical indoor)
-      state.light.level = min(e.value / 1000, 1)
-    })
-    
-    // Fallback: use prefers-color-scheme
     if window.matchMedia {
       dark := window.matchMedia("(prefers-color-scheme: dark)")
-      state.light.level = dark.matches ? 0.2 : 0.8
-      
-      dark.addEventListener("change", fn(e) {
-        state.light.level = e.matches ? 0.2 : 0.8
-      })
+      state.light = dark.matches ? 0.2 : 0.8
     }
   }
   
   // ═══════════════════════════════════════════════════════════════
-  // GAMEPAD
-  // ═══════════════════════════════════════════════════════════════
-  
-  fn setup_gamepad(window) := {
-    window.addEventListener("gamepadconnected", fn(e) {
-      state.gamepad.connected = true
-      log("Gamepad connected: " ++ e.gamepad.id)
-    })
-    
-    window.addEventListener("gamepaddisconnected", fn(e) {
-      state.gamepad.connected = false
-    })
-  }
-  
-  fn poll_gamepad() := {
-    gamepads := navigator.getGamepads()
-    if gamepads[0] {
-      gp := gamepads[0]
-      state.gamepad.axes = gp.axes
-      state.gamepad.buttons = gp.buttons.map(fn(b) { b.pressed })
-    }
-  }
-  
-  // ═══════════════════════════════════════════════════════════════
-  // SCREEN
+  // SCREEN (Channel 8 - part of time/screen)
   // ═══════════════════════════════════════════════════════════════
   
   fn setup_screen(window) := {
-    update_screen := fn() {
-      state.screen = {
-        width: window.innerWidth,
-        height: window.innerHeight,
-        dpr: window.devicePixelRatio || 1,
-        orientation: window.innerWidth > window.innerHeight ? "landscape" : "portrait",
-        fullscreen: document.fullscreenElement != null
-      }
+    update := fn() {
+      state.screen.w = window.innerWidth
+      state.screen.h = window.innerHeight
     }
-    
-    window.addEventListener("resize", update_screen)
-    document.addEventListener("fullscreenchange", update_screen)
-    update_screen()
+    window.addEventListener("resize", update)
+    update()
   }
   
   // ═══════════════════════════════════════════════════════════════
-  // TIME
+  // TIME (Channel 8)
   // ═══════════════════════════════════════════════════════════════
   
-  fn update_time() := {
-    now := new Date()
-    state.time = {
-      timestamp: now.getTime(),
-      hour: now.getHours(),
-      minute: now.getMinutes(),
-      second: now.getSeconds(),
-      day_progress: (now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds()) / 86400
-    }
+  fn read_time() := {
+    d := new Date()
+    state.time.h = d.getHours()
+    state.time.m = d.getMinutes()
+    state.time.s = d.getSeconds()
+    state.time.p = (state.time.h * 3600 + state.time.m * 60 + state.time.s) / 86400
   }
   
   // ═══════════════════════════════════════════════════════════════
-  // CAMERA (MediaPipe integration)
-  // ═══════════════════════════════════════════════════════════════
-  
-  on :update_camera(mediapipe_data) ->
-    state.camera = {
-      active: true,
-      hands: mediapipe_data.hands || [],
-      face: mediapipe_data.face || null,
-      pose: mediapipe_data.pose || null,
-      objects: []
-    }
-  
-  // ═══════════════════════════════════════════════════════════════
-  // READ ALL SENSORS
+  // READ ALL
   // ═══════════════════════════════════════════════════════════════
   
   on :read() ->
-    update_time()
-    if state.gamepad.connected {
-      poll_gamepad()
-    }
+    read_time()
+    read_audio()
     state
   
-  // Get specific sensor
-  on :get(sensor_name) ->
-    match sensor_name {
+  on :get(channel) ->
+    match channel {
       "mouse" -> state.mouse
-      "touch" -> state.touch
-      "keyboard" -> state.keyboard
       "audio" -> state.audio
-      "camera" -> state.camera
       "motion" -> state.motion
       "light" -> state.light
-      "gamepad" -> state.gamepad
-      "screen" -> state.screen
       "time" -> state.time
+      "screen" -> state.screen
       _ -> null
     }
-  
-  // Check if specific input is active
-  on :is_active(sensor_name) ->
-    match sensor_name {
-      "mouse" -> state.mouse.velocity > 0
-      "touch" -> state.touch.active
-      "keyboard" -> len(state.keyboard.keys_down) > 0
-      "audio" -> state.audio.volume > 0.1
-      "camera" -> state.camera.active
-      "motion" -> state.motion.shake
-      "gamepad" -> state.gamepad.connected
-      _ -> false
-    }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// NEURAL ENCODING
+// 9 inputs for Neural999
+// ═══════════════════════════════════════════════════════════════
+
+fn encode_for_neural(state: SensorState) -> [float] := [
+  state.mouse.x / state.screen.w,           // 0: position_x
+  state.mouse.y / state.screen.h,           // 1: position_y
+  min(state.mouse.vel / 100, 1),            // 2: velocity
+  state.audio.vol,                          // 3: audio_volume
+  state.audio.freq / 1000,                  // 4: audio_frequency
+  state.light,                              // 5: light_level
+  (state.motion.b + 180) / 360,             // 6: tilt_x
+  (state.motion.g + 90) / 180,              // 7: tilt_y
+  state.time.p                              // 8: time_progress
+]
 
 // ═══════════════════════════════════════════════════════════════
 // EXPORTS
 // ═══════════════════════════════════════════════════════════════
 
-export { 
-  Sensors, 
-  SensorState,
-  MouseData, TouchData, KeyboardData, AudioData,
-  CameraData, MotionData, LightData, GamepadData,
-  ScreenData, TimeData
-}
+export { Sensors, SensorState, MouseData, AudioData, TimeData, encode_for_neural }

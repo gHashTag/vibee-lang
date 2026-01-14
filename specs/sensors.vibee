@@ -1,0 +1,298 @@
+# Sensors Specification
+# All computer input channels
+
+name: sensors
+version: "1.0.0"
+language: 999
+module: sensors
+
+# ═══════════════════════════════════════════════════════════════
+# CREATION PATTERN
+# ═══════════════════════════════════════════════════════════════
+
+creation_pattern:
+  source: ComputerHardware
+  transformer: SensorHub
+  result: UnifiedSensorData
+
+# ═══════════════════════════════════════════════════════════════
+# SENSOR CHANNELS (9 = 3²)
+# ═══════════════════════════════════════════════════════════════
+
+channels:
+  count: 9
+  description: "9 channels following 3² pattern"
+  
+  list:
+    - index: 0
+      name: mouse
+      type: pointer
+      fields:
+        - x: float          # position x
+        - y: float          # position y
+        - vx: float         # velocity x
+        - vy: float         # velocity y
+        - vel: float        # total velocity
+        - down: bool        # button pressed
+      events:
+        - mousemove
+        - mousedown
+        - mouseup
+        
+    - index: 1
+      name: touch
+      type: multitouch
+      fields:
+        - active: bool
+        - count: int
+        - points: [{x, y, force}]
+        - gesture: string   # pinch, rotate, swipe
+      events:
+        - touchstart
+        - touchmove
+        - touchend
+        
+    - index: 2
+      name: keyboard
+      type: keys
+      fields:
+        - keys_down: [string]
+        - last_key: string
+        - modifiers: {shift, ctrl, alt, meta}
+        - sequence: string  # last 9 keys
+      events:
+        - keydown
+        - keyup
+        
+    - index: 3
+      name: audio
+      type: microphone
+      fields:
+        - vol: float        # volume 0-1
+        - freq: float       # dominant frequency Hz
+        - fft: [float]      # frequency bins
+        - beat: bool        # beat detected
+      api: Web Audio API
+      fft_size: 128
+      
+    - index: 4
+      name: camera
+      type: vision
+      fields:
+        - active: bool
+        - hands: [HandLandmarks]
+        - face: FaceLandmarks
+        - pose: PoseLandmarks
+      api: MediaPipe
+      
+    - index: 5
+      name: motion
+      type: accelerometer
+      fields:
+        - ax: float         # acceleration x
+        - ay: float         # acceleration y
+        - az: float         # acceleration z
+        - a: float          # alpha (z rotation)
+        - b: float          # beta (x rotation)
+        - g: float          # gamma (y rotation)
+      events:
+        - devicemotion
+        - deviceorientation
+        
+    - index: 6
+      name: light
+      type: ambient
+      fields:
+        - level: float      # 0-1 brightness
+      fallback: "prefers-color-scheme media query"
+      
+    - index: 7
+      name: gamepad
+      type: controller
+      fields:
+        - connected: bool
+        - axes: [float]
+        - buttons: [bool]
+      api: Gamepad API
+      
+    - index: 8
+      name: time
+      type: clock
+      fields:
+        - h: int            # hour 0-23
+        - m: int            # minute 0-59
+        - s: int            # second 0-59
+        - p: float          # day progress 0-1
+
+# ═══════════════════════════════════════════════════════════════
+# DATA RECORDS
+# ═══════════════════════════════════════════════════════════════
+
+records:
+  - name: MouseData
+    fields:
+      - x: { type: float, default: 0 }
+      - y: { type: float, default: 0 }
+      - vx: { type: float, default: 0 }
+      - vy: { type: float, default: 0 }
+      - vel: { type: float, default: 0 }
+      - down: { type: bool, default: false }
+      
+  - name: AudioData
+    fields:
+      - vol: { type: float, range: [0, 1], default: 0 }
+      - freq: { type: float, range: [0, 20000], default: 0 }
+      - fft: { type: "[float]", size: 64 }
+      - beat: { type: bool, default: false }
+      
+  - name: TimeData
+    fields:
+      - h: { type: int, range: [0, 23] }
+      - m: { type: int, range: [0, 59] }
+      - s: { type: int, range: [0, 59] }
+      - p: { type: float, range: [0, 1] }
+
+  - name: SensorState
+    fields:
+      - mouse: MouseData
+      - audio: AudioData
+      - light: float
+      - motion: { a: float, b: float, g: float }
+      - time: TimeData
+      - screen: { w: float, h: float }
+
+# ═══════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: init_sensors
+    given: Window and document available
+    when: Runtime starts
+    then: |
+      1. Attach mouse event listeners
+      2. Attach touch event listeners
+      3. Attach keyboard event listeners
+      4. Request microphone access
+      5. Check for motion sensors
+      6. Check for ambient light
+      7. Check for gamepad
+      8. Initialize screen dimensions
+    test_cases:
+      - name: mouse_tracking
+        input: { event: "mousemove", x: 100, y: 200 }
+        expected: { mouse.x: 100, mouse.y: 200 }
+        
+      - name: velocity_calculation
+        input: { prev_x: 0, prev_y: 0, new_x: 10, new_y: 0 }
+        expected: { mouse.vel: 10 }
+
+  - name: read_audio
+    given: Audio context initialized
+    when: Frame update
+    then: |
+      1. Get frequency data from analyser
+      2. Calculate RMS volume
+      3. Find dominant frequency
+      4. Detect beat (volume > 0.6)
+    test_cases:
+      - name: volume_calculation
+        input: { fft: [128, 128, 128, 128] }
+        expected: { vol: 0.5 }
+        
+      - name: beat_detection
+        input: { vol: 0.7 }
+        expected: { beat: true }
+
+  - name: read_time
+    given: System clock available
+    when: Frame update
+    then: |
+      1. Get current Date
+      2. Extract hours, minutes, seconds
+      3. Calculate day progress (0-1)
+    test_cases:
+      - name: noon
+        input: { hours: 12, minutes: 0, seconds: 0 }
+        expected: { p: 0.5 }
+        
+      - name: midnight
+        input: { hours: 0, minutes: 0, seconds: 0 }
+        expected: { p: 0 }
+
+  - name: normalize_input
+    given: Raw sensor values
+    when: Neural network needs input
+    then: |
+      1. Normalize mouse position to [0, 1]
+      2. Clamp velocity to [0, 1]
+      3. Audio volume already [0, 1]
+      4. Normalize motion angles
+      5. Time progress already [0, 1]
+    test_cases:
+      - name: mouse_normalization
+        input: { x: 500, screen_w: 1000 }
+        expected: { normalized_x: 0.5 }
+
+# ═══════════════════════════════════════════════════════════════
+# ENCODING FOR NEURAL 999
+# ═══════════════════════════════════════════════════════════════
+
+neural_encoding:
+  output_size: 9  # 3² inputs for neural network
+  
+  mapping:
+    - index: 0
+      source: "mouse.x / screen.w"
+      name: "position_x"
+      
+    - index: 1
+      source: "mouse.y / screen.h"
+      name: "position_y"
+      
+    - index: 2
+      source: "min(mouse.vel / 100, 1)"
+      name: "velocity"
+      
+    - index: 3
+      source: "audio.vol"
+      name: "audio_volume"
+      
+    - index: 4
+      source: "audio.freq / 1000"
+      name: "audio_frequency"
+      
+    - index: 5
+      source: "light"
+      name: "light_level"
+      
+    - index: 6
+      source: "(motion.b + 180) / 360"
+      name: "tilt_x"
+      
+    - index: 7
+      source: "(motion.g + 90) / 180"
+      name: "tilt_y"
+      
+    - index: 8
+      source: "time.p"
+      name: "time_progress"
+
+# ═══════════════════════════════════════════════════════════════
+# CODE GENERATION
+# ═══════════════════════════════════════════════════════════════
+
+codegen:
+  target: 999
+  output: "generated/sensors.999"
+  
+  mappings:
+    SensorState: "record SensorState"
+    Sensors: "atom Sensors"
+    
+  functions:
+    - init_sensors
+    - read_audio
+    - read_time
+    - normalize_input
+    - encode_for_neural

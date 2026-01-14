@@ -1,0 +1,310 @@
+# Bridge Specification
+# Universal bridge between .999 modules and runtime
+
+name: bridge
+version: "1.0.0"
+language: 999
+module: bridge
+
+# ═══════════════════════════════════════════════════════════════
+# CREATION PATTERN
+# ═══════════════════════════════════════════════════════════════
+
+creation_pattern:
+  source: ".999 Modules"
+  transformer: Bridge
+  result: "runtime.html execution"
+
+# ═══════════════════════════════════════════════════════════════
+# ARCHITECTURE
+# ═══════════════════════════════════════════════════════════════
+
+architecture:
+  principle: "Single point of contact with runtime"
+  
+  flow: |
+    .vibee (spec)
+        ↓ codegen
+    .999 (logic)
+        ↓ bridge
+    runtime.html (execution)
+  
+  rules:
+    - "All .999 modules communicate through Bridge"
+    - "Bridge is the ONLY interface to runtime.html"
+    - "runtime.html is FINAL - never modify directly"
+
+# ═══════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════
+
+constants:
+  TAU:
+    value: 6.283185307179586
+    description: "2π - full circle"
+    
+  PI:
+    value: 3.141592653589793
+    description: "π - half circle"
+    
+  PHI:
+    value: 1.618033988749895
+    description: "Golden ratio"
+
+# ═══════════════════════════════════════════════════════════════
+# PATTERN 999
+# ═══════════════════════════════════════════════════════════════
+
+pattern:
+  name: "n × 3^k × π^m"
+  
+  function:
+    name: pattern999
+    signature: "(n: int, k: int, m: int) -> float"
+    body: "n * pow(3, k) * pow(PI, m)"
+    
+  parameters:
+    n:
+      range: [1, 9]
+      description: "Base number"
+      
+    k:
+      range: [0, 4]
+      description: "Power of 3"
+      
+    m:
+      range: [0, 3]
+      description: "Power of π"
+      
+  examples:
+    - input: { n: 1, k: 0, m: 0 }
+      output: 1
+      
+    - input: { n: 3, k: 2, m: 1 }
+      output: "3 × 9 × π = 84.82..."
+      
+    - input: { n: 9, k: 3, m: 2 }
+      output: "9 × 27 × π² = 2397.17..."
+
+# ═══════════════════════════════════════════════════════════════
+# BRIDGE ATOM
+# ═══════════════════════════════════════════════════════════════
+
+atoms:
+  - name: Bridge
+    description: "Central controller connecting all modules"
+    
+    state:
+      - modules: { type: "[Module]", default: [] }
+      - sensors: { type: "Sensors", default: null }
+      - neural: { type: "Neural999", default: null }
+      - canvas: { type: "Canvas", default: null }
+      - ctx: { type: "Context2D", default: null }
+      - time: { type: float, default: 0 }
+      - ready: { type: bool, default: false }
+      
+    messages:
+      - name: init
+        params: [canvas, ctx]
+        action: |
+          state.canvas = canvas
+          state.ctx = ctx
+          state.sensors = spawn(Sensors)
+          state.neural = spawn(Neural999)
+          state.ready = true
+          log("Bridge initialized")
+          
+      - name: register
+        params: [module]
+        action: |
+          state.modules = state.modules ++ [module]
+          log("Module registered: " ++ module.name)
+          
+      - name: tick
+        params: [dt]
+        action: |
+          state.time = state.time + dt
+          sensor_data = state.sensors ! :read()
+          neural_output = state.neural ! :process(sensor_data, state.time)
+          for module in state.modules {
+            module ! :update(dt, sensor_data, neural_output)
+          }
+          
+      - name: render
+        params: []
+        action: |
+          for module in state.modules {
+            module ! :draw(state.ctx, state.canvas.width, state.canvas.height, state.time)
+          }
+          
+      - name: get_state
+        params: []
+        returns: state
+
+# ═══════════════════════════════════════════════════════════════
+# RENDERER MODULE
+# ═══════════════════════════════════════════════════════════════
+
+atoms:
+  - name: Pattern999Renderer
+    description: "Renders the n × 3^k × π^m visualization"
+    
+    state:
+      - rings: { type: "[int]", default: [3, 9, 27] }
+      - phase: { type: float, default: 0 }
+      
+    messages:
+      - name: update
+        params: [dt, sensors, neural]
+        action: |
+          state.phase = state.phase + dt * neural.pulse
+          
+      - name: draw
+        params: [ctx, W, H, t]
+        action: |
+          cx = W / 2
+          cy = H / 2
+          r = min(W, H) * 0.4
+          
+          // Three rings
+          for k in 0..3 {
+            ring_r = r * (0.3 + k * 0.25)
+            elements = state.rings[k]
+            
+            for i in 0..elements {
+              angle = (i / elements) * TAU + state.phase * (1 + k * 0.3)
+              x = cx + cos(angle) * ring_r
+              y = cy + sin(angle) * ring_r
+              
+              n = (i % 9) + 1
+              m = floor(i / 9) % 3
+              size = 3 + (pattern999(n, k, m) % 20)
+              hue = (i * 40 + k * 120 + t * 30) % 360
+              
+              draw_element(ctx, x, y, size, k, angle, hue)
+            }
+          }
+          
+          draw_core(ctx, cx, cy, t)
+          draw_pi_spiral(ctx, cx, cy, r, t)
+
+# ═══════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: bridge_initialization
+    given: Canvas and context available
+    when: Runtime starts
+    then: |
+      1. Create Bridge atom
+      2. Initialize with canvas and context
+      3. Spawn Sensors atom
+      4. Spawn Neural999 atom
+      5. Set ready = true
+    test_cases:
+      - name: successful_init
+        input: { canvas: "valid", ctx: "valid" }
+        expected: { ready: true, sensors: "not null", neural: "not null" }
+
+  - name: module_registration
+    given: Bridge initialized
+    when: Module wants to connect
+    then: |
+      1. Add module to modules list
+      2. Log registration
+    test_cases:
+      - name: register_renderer
+        input: { module: "Pattern999Renderer" }
+        expected: { modules_count: 1 }
+
+  - name: tick_cycle
+    given: Bridge ready
+    when: Frame update
+    then: |
+      1. Increment time by dt
+      2. Read all sensors
+      3. Process through neural network
+      4. Broadcast to all modules
+    test_cases:
+      - name: tick_updates_time
+        input: { dt: 0.016 }
+        expected: { time_increased: true }
+
+  - name: render_cycle
+    given: Bridge ready
+    when: After tick
+    then: |
+      1. Iterate all registered modules
+      2. Call draw on each with ctx, W, H, t
+    test_cases:
+      - name: render_calls_modules
+        input: { modules: 2 }
+        expected: { draw_calls: 2 }
+
+# ═══════════════════════════════════════════════════════════════
+# HELPER FUNCTIONS
+# ═══════════════════════════════════════════════════════════════
+
+functions:
+  - name: col
+    signature: "(h: int, s: int, l: int, a: float) -> string"
+    body: "'hsla(' ++ h ++ ',' ++ s ++ '%,' ++ l ++ '%,' ++ a ++ ')'"
+    description: "Create HSLA color string"
+    
+  - name: draw_element
+    signature: "(ctx, x, y, size, ring, angle, hue) -> void"
+    body: |
+      ctx.beginPath()
+      match ring {
+        0 -> ctx.arc(x, y, size, 0, TAU)
+        1 -> draw_triangle(ctx, x, y, size, angle)
+        2 -> draw_nonagon(ctx, x, y, size, angle)
+      }
+      ctx.strokeStyle = col(hue, 70, 55, 0.6)
+      ctx.fillStyle = col(hue, 70, 55, 0.15)
+      ctx.stroke()
+      ctx.fill()
+      
+  - name: draw_triangle
+    signature: "(ctx, x, y, size, angle) -> void"
+    body: |
+      for p in 0..3 {
+        pa = p * TAU/3 - TAU/4 + angle
+        px = x + cos(pa) * size
+        py = y + sin(pa) * size
+        if p == 0 { ctx.moveTo(px, py) } else { ctx.lineTo(px, py) }
+      }
+      ctx.closePath()
+      
+  - name: draw_nonagon
+    signature: "(ctx, x, y, size, angle) -> void"
+    body: |
+      for p in 0..9 {
+        pa = p * TAU/9 + angle
+        px = x + cos(pa) * size * 0.7
+        py = y + sin(pa) * size * 0.7
+        if p == 0 { ctx.moveTo(px, py) } else { ctx.lineTo(px, py) }
+      }
+      ctx.closePath()
+
+# ═══════════════════════════════════════════════════════════════
+# CODE GENERATION
+# ═══════════════════════════════════════════════════════════════
+
+codegen:
+  target: 999
+  output: "generated/bridge.999"
+  
+  imports:
+    - sensors
+    - neural_999
+    
+  exports:
+    - Bridge
+    - Pattern999Renderer
+    - pattern999
+    - TAU
+    - PI
+    - PHI
+    - col

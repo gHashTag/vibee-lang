@@ -1,29 +1,52 @@
 // ═══════════════════════════════════════════════════════════════
-// BRIDGE.999 - The Universal Bridge
-// Connects .999 modules to runtime.html
-// THIS IS THE ONLY INTERFACE TO RUNTIME
+// BRIDGE.999
+// Generated from: specs/bridge.vibee
+// DO NOT EDIT MANUALLY - Regenerate from specification
 // ═══════════════════════════════════════════════════════════════
 
 module bridge
 
-import pattern { TAU, PI, PHI, Pattern999 }
-import sensors { Sensors }
-import neural { Neural999 }
+import sensors { Sensors, encode_for_neural }
+import neural_999 { Neural999, pattern999 }
 
 // ═══════════════════════════════════════════════════════════════
-// CONSTANTS: n × 3^k × π^m
+// CONSTANTS
 // ═══════════════════════════════════════════════════════════════
 
 const TAU := 6.283185307179586
 const PI := 3.141592653589793
 const PHI := 1.618033988749895
 
-// Sacred 999 pattern
-fn pattern999(n: int, k: int, m: int) -> float :=
-  n * pow(3, k) * pow(PI, m)
+// ═══════════════════════════════════════════════════════════════
+// HELPER FUNCTIONS
+// ═══════════════════════════════════════════════════════════════
+
+fn col(h: int, s: int, l: int, a: float) -> string :=
+  "hsla(" ++ h ++ "," ++ s ++ "%," ++ l ++ "%," ++ a ++ ")"
+
+fn draw_triangle(ctx, x, y, size, angle) := {
+  for p in 0..3 {
+    pa := p * TAU/3 - TAU/4 + angle
+    px := x + cos(pa) * size
+    py := y + sin(pa) * size
+    if p == 0 { ctx.moveTo(px, py) } else { ctx.lineTo(px, py) }
+  }
+  ctx.closePath()
+}
+
+fn draw_nonagon(ctx, x, y, size, angle) := {
+  for p in 0..9 {
+    pa := p * TAU/9 + angle
+    px := x + cos(pa) * size * 0.7
+    py := y + sin(pa) * size * 0.7
+    if p == 0 { ctx.moveTo(px, py) } else { ctx.lineTo(px, py) }
+  }
+  ctx.closePath()
+}
 
 // ═══════════════════════════════════════════════════════════════
-// BRIDGE ATOM - Central Controller
+// BRIDGE ATOM
+// Central controller - ONLY interface to runtime.html
 // ═══════════════════════════════════════════════════════════════
 
 atom Bridge {
@@ -37,76 +60,65 @@ atom Bridge {
     ready: false
   }
   
-  // Initialize bridge with canvas context
   on :init(canvas, ctx) ->
     state.canvas = canvas
     state.ctx = ctx
     state.sensors = spawn(Sensors)
     state.neural = spawn(Neural999)
+    state.sensors ! :init(window, document)
+    state.neural ! :init()
     state.ready = true
     log("Bridge initialized")
   
-  // Register a .999 module
   on :register(module) ->
     state.modules = state.modules ++ [module]
     log("Module registered: " ++ module.name)
   
-  // Main update tick
   on :tick(dt) ->
     state.time = state.time + dt
-    
-    // Update sensors
     sensor_data := state.sensors ! :read()
-    
-    // Feed to neural network
     neural_output := state.neural ! :process(sensor_data, state.time)
     
-    // Broadcast to all modules
     for module in state.modules {
       module ! :update(dt, sensor_data, neural_output)
     }
   
-  // Render all modules
   on :render() ->
-    ctx := state.ctx
-    W := state.canvas.width
-    H := state.canvas.height
-    
     for module in state.modules {
-      module ! :draw(ctx, W, H, state.time)
+      module ! :draw(state.ctx, state.canvas.width, state.canvas.height, state.time)
     }
   
-  // Get current state
   on :get_state() -> state
 }
 
 // ═══════════════════════════════════════════════════════════════
 // PATTERN 999 RENDERER
-// The fundamental visualization
+// Visualizes n × 3^k × π^m
 // ═══════════════════════════════════════════════════════════════
 
 atom Pattern999Renderer {
   state := {
-    rings: [3, 9, 27],  // 3^1, 3^2, 3^3
-    colors: [],
+    name: "Pattern999Renderer",
+    rings: [3, 9, 27],
     phase: 0
   }
   
   on :update(dt, sensors, neural) ->
-    state.phase = state.phase + dt * neural.pulse_rate
+    state.phase = state.phase + dt * neural.pulse
   
   on :draw(ctx, W, H, t) ->
     cx := W / 2
     cy := H / 2
     r := min(W, H) * 0.4
     
-    // Three rings of n × 3^k × π^m
+    // Three rings: 3^1, 3^2, 3^3
     for k in 0..3 {
       ring_r := r * (0.3 + k * 0.25)
       elements := state.rings[k]
+      phase := state.phase * (1 + k * 0.3)
       
       for i in 0..elements {
-        angle := (i / elements) * TAU + state.phase * (1 + k * 0.3)
+        angle := (i / elements) * TAU + phase
         x := cx + cos(angle) * ring_r
         y := cy + sin(angle) * ring_r
         
@@ -115,61 +127,189 @@ atom Pattern999Renderer {
         size := 3 + (pattern999(n, k, m) % 20)
         hue := (i * 40 + k * 120 + t * 30) % 360
         
-        draw_element(ctx, x, y, size, k, angle, hue)
+        ctx.beginPath()
+        
+        match k {
+          0 -> ctx.arc(x, y, size, 0, TAU)
+          1 -> draw_triangle(ctx, x, y, size, angle)
+          2 -> draw_nonagon(ctx, x, y, size, angle)
+        }
+        
+        ctx.strokeStyle = col(hue, 70, 55, 0.6)
+        ctx.lineWidth = 1.5
+        ctx.stroke()
+        
+        ctx.fillStyle = col(hue, 70, 55, 0.15)
+        ctx.fill()
       }
     }
     
-    // Center: rotating 999
+    // Core: three 9s
     draw_core(ctx, cx, cy, t)
     
     // π spiral
     draw_pi_spiral(ctx, cx, cy, r, t)
   
-  fn draw_element(ctx, x, y, size, ring, angle, hue) := {
-    ctx.beginPath()
-    
-    match ring {
-      0 -> ctx.arc(x, y, size, 0, TAU)
-      1 -> draw_triangle(ctx, x, y, size, angle)
-      2 -> draw_nonagon(ctx, x, y, size, angle)
-    }
-    
-    ctx.strokeStyle = hsla(hue, 70, 55, 0.6)
-    ctx.fillStyle = hsla(hue, 70, 55, 0.15)
-    ctx.stroke()
-    ctx.fill()
-  }
-  
   fn draw_core(ctx, cx, cy, t) := {
     pulse := 1 + sin(t * 3) * 0.2
+    
     for i in 0..3 {
       angle := i * TAU/3 + t * 2
       ox := cx + cos(angle) * 15 * pulse
       oy := cy + sin(angle) * 15 * pulse
+      
       ctx.font = (24 * pulse) ++ "px serif"
-      ctx.fillStyle = hsla(i * 120, 80, 60, 0.8)
+      ctx.fillStyle = col(i * 120, 80, 60, 0.8)
+      ctx.textAlign = "center"
+      ctx.textBaseline = "middle"
       ctx.fillText("9", ox, oy)
     }
   }
   
   fn draw_pi_spiral(ctx, cx, cy, r, t) := {
     ctx.beginPath()
+    
     for i in 0..999 {
       a := i * 0.1 + t
       m := floor(i / 333)
       spiral_r := pow(PI, m) * i * 0.15
+      
       if spiral_r > r * 1.2 { break }
+      
       sx := cx + cos(a) * spiral_r
       sy := cy + sin(a) * spiral_r
+      
       if i == 0 { ctx.moveTo(sx, sy) } else { ctx.lineTo(sx, sy) }
     }
-    ctx.strokeStyle = hsla(270, 60, 50, 0.3)
+    
+    ctx.strokeStyle = col(270, 60, 50, 0.3)
     ctx.stroke()
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CURSOR RENDERER
+// 3^k ripples and 9 rays
+// ═══════════════════════════════════════════════════════════════
+
+atom CursorRenderer {
+  state := {
+    name: "CursorRenderer"
+  }
+  
+  on :update(dt, sensors, neural) ->
+    // No state update needed
+  
+  on :draw(ctx, W, H, t, sensors) ->
+    mx := sensors.mouse.x
+    my := sensors.mouse.y
+    cx := W / 2
+    cy := H / 2
+    r := min(W, H) * 0.4
+    
+    if sensors.mouse.vel > 0 or sensors.mouse.down {
+      // 3^k ripples
+      for k in 0..3 {
+        ctx.beginPath()
+        ctx.arc(mx, my, pow(3, k) * 10 * (1 + sin(t * 5) * 0.3), 0, TAU)
+        ctx.strokeStyle = col((t * 50) % 360, 80, 60, 0.5 - k * 0.15)
+        ctx.lineWidth = 2 - k * 0.5
+        ctx.stroke()
+      }
+      
+      // 9 rays
+      for i in 0..9 {
+        angle := i * TAU/9 + t
+        ctx.beginPath()
+        ctx.moveTo(mx, my)
+        ctx.lineTo(cx + cos(angle) * r * 0.5, cy + sin(angle) * r * 0.5)
+        ctx.strokeStyle = col(i * 40, 60, 50, 0.2)
+        ctx.lineWidth = 1
+        ctx.stroke()
+      }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// AUDIO RENDERER
+// Reactive visualization
+// ═══════════════════════════════════════════════════════════════
+
+atom AudioRenderer {
+  state := {
+    name: "AudioRenderer"
+  }
+  
+  on :update(dt, sensors, neural) ->
+    // No state update needed
+  
+  on :draw(ctx, W, H, t, sensors) ->
+    if sensors.audio.vol > 0.1 {
+      cx := W / 2
+      cy := H / 2
+      r := min(W, H) * 0.4
+      
+      ctx.beginPath()
+      ctx.arc(cx, cy, r * 0.2 + sensors.audio.vol * 50, 0, TAU)
+      ctx.strokeStyle = col((sensors.audio.freq / 10) % 360, 80, 60, sensors.audio.vol * 0.5)
+      ctx.lineWidth = sensors.audio.vol * 5
+      ctx.stroke()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// NEURAL RENDERER
+// Visualizes network state
+// ═══════════════════════════════════════════════════════════════
+
+atom NeuralRenderer {
+  state := {
+    name: "NeuralRenderer",
+    layers: [3, 9, 27, 9, 3],
+    radii: [12, 28, 48, 68, 84]
+  }
+  
+  on :update(dt, sensors, neural) ->
+    // No state update needed
+  
+  on :draw(ctx, W, H, t, neural_state) ->
+    cx := W * 0.88
+    cy := H * 0.5
+    
+    for l in 0..5 {
+      n := state.layers[l]
+      for i in 0..n {
+        angle := i * TAU / n + t * 0.1 * (l + 1)
+        x := cx + cos(angle) * state.radii[l]
+        y := cy + sin(angle) * state.radii[l]
+        act := neural_state.activations[l][i] || 0
+        size := 2 + abs(act) * 4
+        
+        ctx.beginPath()
+        ctx.arc(x, y, size, 0, TAU)
+        ctx.fillStyle = col(act > 0 ? 120 : 0, 70, 50, 0.5 + abs(act) * 0.5)
+        ctx.fill()
+      }
+    }
+    
+    // Emotion core
+    ctx.beginPath()
+    ctx.arc(cx, cy, 6 * neural_state.pulse, 0, TAU)
+    ctx.fillStyle = col(neural_state.emotion > 0 ? 60 : 240, 80, 50, 0.6)
+    ctx.fill()
 }
 
 // ═══════════════════════════════════════════════════════════════
 // EXPORTS
 // ═══════════════════════════════════════════════════════════════
 
-export { Bridge, Pattern999Renderer, pattern999, TAU, PI, PHI }
+export { 
+  Bridge, 
+  Pattern999Renderer, 
+  CursorRenderer, 
+  AudioRenderer, 
+  NeuralRenderer,
+  pattern999, 
+  TAU, PI, PHI, 
+  col 
+}
