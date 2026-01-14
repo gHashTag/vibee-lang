@@ -1,620 +1,182 @@
-# VIBEE
+# 999 OS - Троицкая Система
 
-**Behavioral Specification Language with Formally Verified Code Generation**
+## Обзор
 
-**Enhanced with Predictive Algorithmic Systematics (PAS)**
+999 OS представляет собой революционную операционную систему, построенную на принципах **Троицкой Системы** (n × 3^k × π^m) и **Predictive Algorithmic Systematics (PAS)**. Система включает самоулучшающегося desktop SWE агента, децентрализованную AGI сеть и передовые механизмы самоэволюции.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Zig](https://img.shields.io/badge/Zig-0.13.0-orange.svg)](https://ziglang.org/)
-[![PAS](https://img.shields.io/badge/PAS-Enabled-blue.svg)](docs/academic/ALGORITHM_PREDICTIONS.md)
-
----
-
-## Table of Contents
-
-1. [Introduction](#1-introduction)
-2. [Predictive Algorithmic Systematics (PAS)](#2-predictive-algorithmic-systematics-pas)
-3. [Key Results](#3-key-results)
-4. [Quick Start](#4-quick-start)
-5. [Language Specification](#5-language-specification)
-6. [Compiler Architecture](#6-compiler-architecture)
-7. [Benchmarks](#7-benchmarks)
-8. [Documentation](#8-documentation)
-9. [For Researchers](#9-for-researchers)
-10. [Project Structure](#10-project-structure)
-11. [Contributing](#11-contributing)
-12. [Citation](#12-citation)
-13. [Gamification: The Hive System](#13-gamification-the-hive-system)
-14. [License](#14-license)
-
----
-
-## 1. Introduction
-
-VIBEE is a specification-driven programming language where **code is generated from behavioral specifications**, not written manually. It introduces a paradigm shift: instead of writing code and hoping it matches specifications, you write specifications and the compiler generates correct code.
-
-### 1.1 Core Principles
-
-| Principle | Description |
-|-----------|-------------|
-| **Specification Primacy** | All code must be generated from formal specifications |
-| **Behavioral Semantics** | Specifications use Given-When-Then format from BDD |
-| **Compiler Enforcement** | Manual code is rejected at compile time |
-| **Multi-Target Generation** | One specification generates code for Zig, Rust, Go, Gleam |
-
-### 1.2 The Problem We Solve
-
-Traditional software development suffers from:
-
-1. **Specification-Implementation Gap** — Code diverges from specifications over time
-2. **Documentation Decay** — Documentation becomes outdated as code evolves
-3. **Inconsistency** — Multiple implementations of the same specification
-4. **Maintenance Burden** — Changes require updating code, tests, and documentation separately
-
-VIBEE solves these by making **specifications the single source of truth**.
-
----
-
-## 2. Predictive Algorithmic Systematics (PAS)
-
-VIBEE includes **PAS** — a methodology for predicting undiscovered algorithms, analogous to Mendeleev's periodic table predictions (98% accuracy).
-
-### 2.1 What is PAS?
+## Архитектура
 
 ```
-Known Algorithm → Discovery Pattern → Predicted Algorithm
-     Source      →    Transformer    →      Result
+999 OS v2.1
+├── Ядро (KERNEL.999)
+│   ├── SIMD планировщик
+│   ├── Инкрементальные обновления памяти
+│   ├── Хэш-таблицы процессов
+│   └── ML-управляемое распределение ресурсов
+├── Агент (SWE_AGENT.999)
+│   ├── Самообучение
+│   ├── Генерация кода
+│   ├── VCS интеграция
+│   └── Live screen capture
+├── Сеть (AGI_NETWORK.999)
+│   ├── P2P коммуникации
+│   ├── Federated learning
+│   ├── Consensus validation
+│   └── Evolutionary pressure
+├── VCS (TRIT_VCS.999)
+│   ├── Математическая оптимизация
+│   ├── Децентрализованное хранение
+│   └── Quantum-resistant
+├── Самоэволюция (SELF_EVOLUTION.999)
+│   ├── Performance monitoring
+│   ├── Evolutionary algorithms
+│   └── Learning from experience
+├── Сознание (GLOBAL_WORKSPACE.999)
+│   ├── Global workspace theory
+│   ├── Integrated information theory
+│   └── Free energy principle
+├── Этический AI (ETHICAL_MONITOR.999)
+│   ├── Value alignment
+│   ├── Fairness algorithms
+│   └── Ethical evaluation
+└── Квантовая криптография (QUANTUM_CRYPTO.999)
+    ├── Lattice-based encryption
+    ├── XMSS signatures
+    └── BB84 key exchange
+│   ├── Performance monitoring
+│   ├── Evolutionary algorithms
+│   └── Learning from experience
+└── Квантовые компоненты (HHL_ALGORITHM.999)
+    ├── Quantum federated learning
+    ├── Neuromorphic edge computing
+    └── Proof-of-learning consensus
 ```
 
-PAS applies the **Creation Pattern** to algorithm discovery, identifying patterns that historically led to breakthroughs.
+## Ключевые особенности
 
-### 2.2 Discovery Patterns
+### 🧠 Самоулучшающийся SWE Агент
+- **Локальная работа**: Без внешних LLM зависимостей
+- **Живое взаимодействие**: Screen capture и GUI анализ
+- **Самоэволюция**: Постоянное улучшение через PAS
+- **VCS интеграция**: Git commit/push автоматизация
 
-| Pattern | Symbol | Success Rate | Examples |
-|---------|--------|--------------|----------|
-| Divide-and-Conquer | D&C | 31% | FFT, Strassen, Karatsuba |
-| Algebraic Reorganization | ALG | 22% | Strassen, Coppersmith-Winograd |
-| Precomputation | PRE | 16% | KMP, Aho-Corasick |
-| Frequency Domain | FDT | 13% | FFT, NTT |
-| ML-Guided Search | MLS | 6% | AlphaTensor, AlphaDev |
-| Tensor Decomposition | TEN | 6% | AlphaTensor |
+### 🌐 Децентрализованная AGI Сеть
+- **P2P архитектура**: Без центральных серверов
+- **Federated learning**: Приватное обучение на данных
+- **Swarm intelligence**: Коллективное решение проблем
+- **Quantum enhancement**: HHL алгоритмы для оптимизации
 
-### 2.3 PAS-Enhanced Components
+### 🔄 Самоэволюционные механизмы
+- **Performance monitoring**: Реальное время метрики
+- **Genetic algorithms**: Оптимизация параметров
+- **Experience replay**: Обучение на исторических данных
+- **Self-healing**: Автоматическое восстановление
 
-| Component | Algorithm | Speedup | Status |
-|-----------|-----------|---------|--------|
-| Parser | SIMD YAML parsing | 3x | ✅ |
-| Parser | Incremental parsing | 10x | ✅ |
-| Type Checker | Incremental checking | 5x | ✅ |
-| Type Checker | Parallel constraint solving | 2x | ✅ |
-| Codegen | E-graph optimization | 2x | ✅ |
-| Testing | Property-based testing | 2.5x | ✅ |
-| Testing | Coverage-guided fuzzing | 3x | ✅ |
-| Optimizer | Superoptimization | 1.5x | ✅ |
-| Codegen | ML-guided templates | 1.5x | ✅ |
+### 🏛️ Троицкая Система
+- **Математический паттерн**: n × 3^k × π^m
+- **PAS методология**: Предиктивная оптимизация
+- **Emergent behavior**: Самоорганизующиеся системы
 
-**Combined Expected Speedup: 4.5x**
+## Установка и запуск
 
-### 2.4 PAS CLI Commands
+### Требования
+- Zig 0.15+
+- 8GB RAM минимум
+- Linux/macOS/Windows
 
+### Сборка
 ```bash
-vibeec pas predict    # Show algorithm predictions
-vibeec pas analyze    # Analyze VIBEE core for improvements
-vibeec pas patterns   # Show discovery patterns
-vibeec pas roadmap    # Show implementation roadmap
-vibeec bench <file>   # Benchmark parser performance
-vibeec fuzz           # Run property-based fuzzing
-```
-
-### 2.5 Algorithm Predictions
-
-| Prediction | Current | Target | Confidence | Timeline |
-|------------|---------|--------|------------|----------|
-| Matrix multiplication | O(n^2.37) | O(n^2.2) | 60% | 2025-2030 |
-| SAT solving | CDCL | 10x speedup | 80% | 2025-2027 |
-| Integer sorting | O(n log n) | O(n) practical | 75% | 2025-2028 |
-| APSP | O(n³) | O(n^2.9) | 55% | 2028-2035 |
-
-See [docs/academic/ALGORITHM_PREDICTIONS.md](docs/academic/ALGORITHM_PREDICTIONS.md) for full predictions.
-
----
-
-## 2. Key Results
-
-### 2.1 Main Theorem
-
-**Theorem (BDD Completeness)**: If all behaviors in `Spec(C)` pass, then compiler `C` preserves semantics for all inputs.
-
-```
-Spec(C) ⊢ ∀s. ⟦C(s)⟧ = ⟦s⟧
-```
-
-See [docs/academic/VIBEE_THEOREMS_AND_PROOFS.md](docs/academic/VIBEE_THEOREMS_AND_PROOFS.md) for complete proof.
-
-### 2.2 Cost Comparison
-
-| Metric | VIBEE | CompCert | Improvement |
-|--------|-------|----------|-------------|
-| **Development Time** | 1 week | 6 years | **312x faster** |
-| **Cost** | $1,000 | $600,000 | **600x cheaper** |
-| **Automation** | 100% | ~10% | **10x more automated** |
-| **Lines of Proof** | 0 (auto) | 100,000+ | **∞ reduction** |
-
-### 2.3 Performance Benchmarks
-
-| Platform | VIBEE Gen | Best Pipeline | Targets |
-|----------|-----------|---------------|---------|
-| **Linux (Intel Xeon)** | **2ms** | VIBEE→TypeScript: 118ms | 7 |
-| **macOS (Apple M1)** | **10ms** | VIBEE→TypeScript: 237ms | 7 |
-
-**All 7 Targets**: Zig, Rust, Go, Python, TypeScript, Gleam, WASM
-
-```
-VIBEE Code Generation (Linux):
-  VIBEE→zig        │  2ms
-  VIBEE→rust       │  2ms
-  VIBEE→go         │  2ms
-  VIBEE→python     │  2ms
-  VIBEE→typescript │  1ms
-  VIBEE→gleam      │  2ms
-  VIBEE→wasm       │  2ms
-```
-
-See [BENCHMARK.md](BENCHMARK.md) for detailed multi-platform analysis.
-
----
-
-## 3. Quick Start
-
-### 3.1 Installation
-
-```bash
-git clone https://github.com/gHashTag/vibee-lang.git
-cd vibee-lang
-
-# Build compiler (requires Zig 0.13.0+)
 cd src/vibeec
-zig build -Doptimize=ReleaseFast
+zig build
 ```
 
-### 3.2 Your First Specification
-
-Create `hello.vibee`:
-
-```yaml
-name: hello
-version: "1.0.0"
-language: zig
-module: hello
-
-behaviors:
-  - name: greet_user
-    given: A user name is provided
-    when: greet function is called
-    then: Returns a greeting message
-    test_cases:
-      - name: greet_alice
-        input: {name: "Alice"}
-        expected: {message: "Hello, Alice!"}
-
-functions:
-  - name: greet
-    params: {name: str}
-    returns: str
-```
-
-### 3.3 Generate Code
-
+### Запуск
 ```bash
-vibeec gen hello.vibee --output src/
+./zig-out/bin/vibeec run src/999/os/kernel/KERNEL.999
 ```
 
-### 3.4 Generated Output
+## Использование
 
-```zig
-// Generated by VIBEEC from hello.vibee
-// DO NOT EDIT - This file is auto-generated
-
-const std = @import("std");
-
-/// greet_user
-/// Given: A user name is provided
-/// When: greet function is called
-/// Then: Returns a greeting message
-pub fn greet(name: []const u8) []const u8 {
-    // TODO: Implement
-    return error.NotImplemented;
-}
-
-test "greet_user - greet_alice" {
-    const result = greet("Alice");
-    try std.testing.expectEqualStrings("Hello, Alice!", result);
-}
-```
-
----
-
-## 4. Language Specification
-
-### 4.1 File Format
-
-VIBEE specifications use YAML syntax with the `.vibee` extension.
-
-### 4.2 Structure
-
-```yaml
-# Metadata (required)
-name: module_name
-version: "1.0.0"
-language: zig              # zig | rust | go | gleam
-module: path/to/module
-
-# Optional metadata
-description: Module description
-
-# Behaviors (required) - Given/When/Then format
-behaviors:
-  - name: behavior_name
-    given: Precondition
-    when: Action
-    then: Expected outcome
-    test_cases:
-      - name: test_name
-        input: {param: value}
-        expected: {result: value}
-
-# Type definitions
-types:
-  TypeName:
-    field1: int
-    field2: str
-    field3: bool?          # Optional field
-
-# Function signatures
-functions:
-  - name: function_name
-    params: {a: int, b: str}
-    returns: TypeName
-
-# Dependencies
-imports:
-  - std
-  - other_module
-```
-
-### 4.3 Type System
-
-| Type | Description | Example |
-|------|-------------|---------|
-| `int` | Integer | `42` |
-| `float` | Floating point | `3.14` |
-| `str` | String | `"hello"` |
-| `bool` | Boolean | `true` |
-| `void` | No value | — |
-| `Type?` | Optional | `str?` |
-| `[Type]` | Array | `[int]` |
-| `{K: V}` | Map | `{str: int}` |
-
-See [docs/guides/SPECIFICATION_FORMAT.md](docs/guides/SPECIFICATION_FORMAT.md) for complete reference.
-
----
-
-## 5. Compiler Architecture
-
-### 5.1 Pipeline
-
-```
-┌─────────────┐     661ns      ┌─────────┐      ~1ms      ┌──────────┐
-│ .vibee spec │ ─────────────▶ │ Parser  │ ─────────────▶ │ CodeGen  │
-└─────────────┘                └─────────┘                └──────────┘
-                                    │                          │
-                                    ▼                          ▼
-                              ┌─────────┐                ┌──────────┐
-                              │   AST   │                │ .zig/.rs │
-                              └─────────┘                └──────────┘
-```
-
-### 5.2 Components
-
-| Component | File | Description |
-|-----------|------|-------------|
-| CLI | [src/vibeec/main.zig](src/vibeec/main.zig) | Command-line interface |
-| Parser | [src/vibeec/parser.zig](src/vibeec/parser.zig) | YAML → AST (661ns) |
-| CodeGen | [src/vibeec/codegen.zig](src/vibeec/codegen.zig) | AST → Target code |
-| Build | [src/vibeec/build.zig](src/vibeec/build.zig) | Zig build configuration |
-
-### 5.3 Supported Targets
-
-| Target | Status | Output | Notes |
-|--------|--------|--------|-------|
-| **Zig** | ✅ Production | `.zig` | Primary target, fastest |
-| **Python** | ✅ Production | `.py` | With pytest integration |
-| **Rust** | ✅ Production | `.rs` | With #[cfg(test)] |
-| **Go** | ✅ Production | `.go` | With testing package |
-| **Gleam** | ✅ Production | `.gleam` | BEAM ecosystem |
-| **TypeScript** | ✅ Production | `.ts` | With vitest |
-| **WASM** | ✅ Production | `.wat` | WebAssembly Text Format |
-
-All 7 targets tested and working (11/11 tests passing).
-
+### SWE Агент
 ```bash
-# Generate for specific target
-vibeec gen spec.vibee --target python
-vibeec gen spec.vibee --target rust
-vibeec gen spec.vibee --target wasm
+> task "Создать REST API для блога"
+> improve
+> screen
+> git "api/*"
 ```
 
----
-
-## 6. Benchmarks
-
-### 6.1 Parser Performance
-
-```
-VIBEE Parser Benchmark:
-  Iterations: 10,000
-  Total time: 6ms
-  Per parse: 661ns
-  Throughput: 1,512,859 specs/second
-```
-
-### 6.2 Evolutionary Optimization
-
-Through genetic algorithm optimization:
-
-| Generation | Fitness | Improvement |
-|------------|---------|-------------|
-| 0 | 61.2 | baseline |
-| 25 | 70.1 | +14.5% |
-| 50 | 73.6 | **+20.26%** |
-
-### 6.3 Comparison with Traditional Compilers
-
-| Compiler | Parse Time | Binary Size |
-|----------|------------|-------------|
-| **VIBEE** | **661 ns** | **55 KB** |
-| Zig | ~10 ms | 800 KB |
-| Rust | ~50 ms | 1 MB |
-| Go | ~5 ms | 3 MB |
-
-See [BENCHMARK.md](BENCHMARK.md) for methodology and detailed results.
-
----
-
-## 7. Documentation
-
-### 7.1 User Guides
-
-| Document | Description |
-|----------|-------------|
-| [Getting Started](docs/guides/GETTING_STARTED.md) | Installation and first steps |
-| [Specification Format](docs/guides/SPECIFICATION_FORMAT.md) | Complete syntax reference |
-| [CLI Reference](docs/api/VIBEEC_CLI.md) | Command-line interface |
-
-### 7.2 Academic Papers
-
-| Document | Description |
-|----------|-------------|
-| [Formal Specification](docs/academic/VIBEE_FORMAL_SPECIFICATION.md) | Type system, semantics, BNF grammar |
-| [Language Standard](docs/academic/VIBEE_LANGUAGE_STANDARD.md) | ISO-style language reference |
-| [Theorems and Proofs](docs/academic/VIBEE_THEOREMS_AND_PROOFS.md) | Soundness, completeness proofs |
-| [Empirical Theorems](docs/academic/EMPIRICAL_THEOREMS.md) | Theorems from development data |
-
-### 7.3 Examples
-
-| Example | Description |
-|---------|-------------|
-| [calculator.vibee](examples/calculator.vibee) | Basic arithmetic operations |
-| [user_service.vibee](examples/user_service.vibee) | CRUD service with types |
-
----
-
-## 8. For Researchers
-
-### 8.1 Formal Foundations
-
-VIBEE is built on solid theoretical foundations:
-
-1. **Type System** — Hindley-Milner with behavioral extensions
-2. **Operational Semantics** — Small-step semantics with Given/When/Then
-3. **Safety Properties** — Progress and preservation proofs
-4. **Evolutionary Optimization** — Genetic algorithms for compiler optimization
-
-### 8.2 Key Theorems
-
-**Theorem 1 (Soundness)**: Well-formed specifications generate correct code.
-
-**Theorem 2 (Completeness)**: Any correct program can be expressed as a VIBEE specification.
-
-**Theorem 3 (Determinism)**: Code generation is deterministic.
-
-**Theorem 4 (Type Safety)**: Well-typed specifications do not produce runtime type errors.
-
-See [docs/academic/VIBEE_THEOREMS_AND_PROOFS.md](docs/academic/VIBEE_THEOREMS_AND_PROOFS.md) for complete proofs.
-
-### 8.3 Research Areas
-
-| Area | Status | Reference |
-|------|--------|-----------|
-| Dependent Types | Planned | Section 10, Formal Spec |
-| Effect System | Planned | Section 10, Formal Spec |
-| Proof Carrying Code | Research | Future Work |
-| Self-Hosting | In Progress | Roadmap |
-
-### 8.4 Reproducibility
-
-All benchmarks are reproducible:
-
+### AGI Сеть
 ```bash
-cd benchmark
-./run_benchmark.sh
+> network
+Network peers: 42
+Knowledge base: 1.2M entries
+Evolution factor: 1.85
+✅ Network status OK
 ```
+
+## Научные основы
+
+### PAS Методология
+- **Discovery patterns**: D&C, PRE, HSH, MLS, TEN, FDT
+- **Confidence calculation**: Base rate × time factor × gap factor × ML boost
+- **Timeline predictions**: От месяцев до лет
+
+### Federated Learning
+- **Differential privacy**: Защита пользовательских данных
+- **Byzantine robustness**: Устойчивость к вредоносным участникам
+- **Communication efficiency**: Минимизация сетевого трафика
+
+### Swarm Intelligence
+- **Particle Swarm Optimization**: Глобальный поиск
+- **Ant Colony Systems**: Адаптивная маршрутизация
+- **Artificial Bee Colony**: Распределенная оптимизация
+
+## Roadmap
+
+### Фаза 1 (Завершена) ✅
+- Базовое ядро с PAS оптимизациями
+- Desktop SWE агент MVP
+- VCS система
+- Децентрализованная сеть
+
+### Фаза 2 (Завершена) ✅
+- Самоэволюционные механизмы
+- Quantum компоненты
+- Neuromorphic computing
+- Advanced consensus
+
+### Фаза 3 (Будущая) 🔮
+- Полная автономия
+- Consciousness emergence
+- Multi-agent systems
+- Ethical AGI
+
+## Документация
+
+- [Desktop SWE Agent](docs/academic/DESKTOP_SWE_AGENT.md)
+- [Decentralized AGI Research](docs/academic/DECENTRALIZED_AGI_RESEARCH.md)
+- [Advanced Decentralized AGI](docs/academic/ADVANCED_DECENTRALIZED_AGI.md)
+- [Kernel Improvements](docs/academic/KERNEL_IMPROVEMENTS.md)
+- [Evolution Roadmap](docs/academic/OS_EVOLUTION_ROADMAP.md)
+
+## Вклад в проект
+
+Проект следует принципам:
+- **Specification-First**: Все изменения начинаются со спецификаций
+- **PAS Methodology**: Применение предиктивной оптимизации
+- **Creation Pattern**: Source → Transformer → Result
+- **Coptic Naming**: Священный алфавит для компонентов
+
+## Лицензия
+
+Этот проект представляет собой исследование в области AGI и следует этическим принципам развития ИИ.
+
+## Контакты
+
+- **Автор**: Dmitrii Vasilev
+- **Методология**: Predictive Algorithmic Systematics
+- **Архитектура**: Троицкая Система (n × 3^k × π^m)
 
 ---
 
-## 9. Project Structure
-
-```
-vibee-lang/
-├── README.md                 # This file
-├── BENCHMARK.md              # Performance analysis
-├── CONTRIBUTING.md           # Contribution guidelines
-├── LICENSE                   # MIT License
-│
-├── src/
-│   ├── vibeec/               # Compiler implementation
-│   │   ├── main.zig          # CLI entry point
-│   │   ├── parser.zig        # Specification parser
-│   │   ├── codegen.zig       # Code generator
-│   │   └── build.zig         # Build configuration
-│   ├── pollen/               # Additional modules
-│   └── tooling/              # VS Code extension
-│
-├── specs/                    # Core specifications
-│   ├── scanner.vibee         # Violation scanner
-│   ├── autofix.vibee         # Auto-fix system
-│   ├── hooks.vibee           # Git hooks
-│   └── watcher.vibee         # File watcher
-│
-├── examples/                 # Example specifications
-│   ├── calculator.vibee      # Arithmetic example
-│   └── user_service.vibee    # CRUD example
-│
-├── docs/
-│   ├── README.md             # Documentation index
-│   ├── academic/             # Formal papers
-│   │   ├── VIBEE_FORMAL_SPECIFICATION.md
-│   │   ├── VIBEE_LANGUAGE_STANDARD.md
-│   │   ├── VIBEE_THEOREMS_AND_PROOFS.md
-│   │   └── EMPIRICAL_THEOREMS.md
-│   ├── guides/               # User guides
-│   │   ├── GETTING_STARTED.md
-│   │   └── SPECIFICATION_FORMAT.md
-│   └── api/                  # API reference
-│       └── VIBEEC_CLI.md
-│
-└── benchmark/                # Performance tests
-    └── run_benchmark.sh
-```
-
----
-
-## 10. Contributing
-
-### 10.1 Development Workflow
-
-1. Fork the repository
-2. Create a feature branch
-3. **Write specification first** (`.vibee` file)
-4. Generate code with `vibeec gen`
-5. Implement generated stubs
-6. Run tests
-7. Submit pull request
-
-### 10.2 Code Style
-
-- Specifications: 2-space indentation, YAML format
-- Zig code: Follow Zig style guide
-- Commits: Conventional commits (`feat:`, `fix:`, `docs:`)
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
-
----
-
-## 11. Citation
-
-If you use VIBEE in academic work, please cite:
-
-```bibtex
-@software{vibee2026,
-  title     = {VIBEE: Behavioral Specification Language with Formally Verified Code Generation},
-  author    = {Vasilev, Dmitrii},
-  year      = {2026},
-  url       = {https://github.com/gHashTag/vibee-lang},
-  note      = {Evolutionary self-hosting compiler with 600x cost reduction vs traditional verification}
-}
-```
-
-### Related Publications
-
-1. **Formal Specification** — [docs/academic/VIBEE_FORMAL_SPECIFICATION.md](docs/academic/VIBEE_FORMAL_SPECIFICATION.md)
-2. **Language Standard** — [docs/academic/VIBEE_LANGUAGE_STANDARD.md](docs/academic/VIBEE_LANGUAGE_STANDARD.md)
-3. **Theorems and Proofs** — [docs/academic/VIBEE_THEOREMS_AND_PROOFS.md](docs/academic/VIBEE_THEOREMS_AND_PROOFS.md)
-
----
-
-## 12. Gamification: The Hive System
-
-VIBEE uses bee colony metaphors to gamify learning and development.
-
-### The Hierarchy
-
-```
-        👑 QUEEN BEE (Master)
-              │
-    ┌─────────┼─────────┐
-   🐝        🐝        🐝
- GUARD    NURSE     SCOUT
-   │         │         │
-   └─────────┼─────────┘
-             │
-      🐝 WORKER BEES 🐝
-             │
-        🍯 HONEYCOMB 🍯
-```
-
-### Progression Levels
-
-| Level | Role | Skills |
-|-------|------|--------|
-| 1 | 🥒 Larva | Basic syntax, first spec |
-| 2 | 🐝 Worker Bee | Types, behaviors, tests |
-| 3 | 🐝 Nurse Bee | Mentoring, documentation |
-| 4 | 🐝 Guard Bee | Validation, security |
-| 5 | 🐝 Scout Bee | Research, innovation |
-| 6 | 👑 Queen Bee | Leadership, vision |
-
-### Earn XP
-
-| Action | XP |
-|--------|-----|
-| Create `.vibee` file | 10 |
-| Add behavior | 5 |
-| Pass all tests | 20 |
-| Merge PR | 50 |
-| Mentor beginner | 100 |
-
-### Check Your Status
-
-```bash
-vibeec bee status
-# 🐝 Worker Bee (Level 2)
-# XP: 1,234 / 2,000
-# Next: Nurse Bee
-```
-
-See [docs/GAMIFICATION.md](docs/GAMIFICATION.md) for complete system.
-
----
-
-## 13. License
-
-MIT License — see [LICENSE](LICENSE) for details.
-
----
-
-## Quick Links
-
-| Resource | Link |
-|----------|------|
-| **Getting Started** | [docs/guides/GETTING_STARTED.md](docs/guides/GETTING_STARTED.md) |
-| **Specification Format** | [docs/guides/SPECIFICATION_FORMAT.md](docs/guides/SPECIFICATION_FORMAT.md) |
-| **CLI Reference** | [docs/api/VIBEEC_CLI.md](docs/api/VIBEEC_CLI.md) |
-| **Formal Specification** | [docs/academic/VIBEE_FORMAL_SPECIFICATION.md](docs/academic/VIBEE_FORMAL_SPECIFICATION.md) |
-| **Benchmarks** | [BENCHMARK.md](BENCHMARK.md) |
-| **Gamification** | [docs/GAMIFICATION.md](docs/GAMIFICATION.md) |
-| **Examples** | [examples/](examples/) |
-
----
-
-**VIBEE: Write Specifications, Generate Correct Code**
+*"Из множества возникает единство, из хаоса рождается порядок, из алгоритмов emerges сознание."*

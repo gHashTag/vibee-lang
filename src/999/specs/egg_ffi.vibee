@@ -1,0 +1,244 @@
+name: egg_ffi_integration
+version: "1.0.0"
+language: zig
+module: egg_ffi
+description: |
+  EGG FFI INTEGRATION — Production E-Graph Optimization
+  
+  Интеграция с Rust egg library для equality saturation.
+  Научное обоснование: egg (SIGPLAN 2021), используется в Cranelift, RisingWave.
+  
+  Creation Pattern:
+    999 AST → E-Graph Saturation → Optimized AST
+    Source  →    Transformer     →    Result
+
+creation_pattern:
+  source: TernaryAST
+  transformer: EGraphSaturation
+  result: OptimizedAST
+  iteration: until_saturation
+
+types:
+  EggId:
+    ptr: u64
+    
+  EggEGraph:
+    ptr: u64
+    nodes_count: u64
+    classes_count: u64
+    
+  EggRunner:
+    egraph: EggEGraph
+    iter_limit: u32
+    time_limit_ms: u64
+    
+  EggExtractor:
+    egraph: EggEGraph
+    cost_model: str
+
+  TernaryExpr:
+    enum:
+      - Num(i64)
+      - Trit(i8)           # -1, 0, +1
+      - Var(str)
+      - Add(TernaryExpr, TernaryExpr)
+      - Sub(TernaryExpr, TernaryExpr)
+      - Mul(TernaryExpr, TernaryExpr)
+      - Neg(TernaryExpr)   # Ternary negation
+      - Shift3(TernaryExpr, u8)  # Multiply by 3^n
+      - If(TernaryExpr, TernaryExpr, TernaryExpr)
+
+  RewriteRule:
+    pattern: str
+    replacement: str
+    conditions: [str]
+
+  OptimizationStats:
+    nodes_before: u64
+    nodes_after: u64
+    classes_created: u64
+    rules_applied: u64
+    time_ms: u64
+    
+  CostModel:
+    enum:
+      - ASTSize
+      - CycleCount
+      - RegisterPressure
+      - Custom(str)
+
+transformers:
+  - name: build_egraph
+    type: pure
+    input: TernaryExpr
+    output: EggEGraph
+    rule: |
+      egraph = egg_egraph_new()
+      root_id = add_expr_recursive(egraph, expr)
+      return egraph
+    patterns: [precomputation]
+
+  - name: apply_ternary_rules
+    type: iterative
+    input: EggEGraph
+    output: EggEGraph
+    rule: |
+      rules = get_ternary_rules()
+      runner = egg_runner_new(egraph)
+      runner = egg_runner_with_iter_limit(runner, 100)
+      runner = egg_runner_run(runner, rules)
+      return runner.egraph
+    patterns: [algebraic_reorg]
+    expected_speedup: 2.0
+
+  - name: extract_optimal
+    type: pure
+    input: {egraph: EggEGraph, cost: CostModel}
+    output: TernaryExpr
+    rule: |
+      extractor = egg_extractor_new(egraph, cost)
+      (cost, expr_str) = egg_extractor_find_best(extractor, root)
+      return parse_expr(expr_str)
+    patterns: [precomputation]
+
+behaviors:
+  - name: ternary_negation_identity
+    given: Expression with double negation
+    when: Applying ternary rewrite rules
+    then: neg(neg(x)) simplifies to x
+    test_cases:
+      - name: double_neg
+        input: {expr: "neg(neg(x))"}
+        expected: {optimized: "x", cost_saved: 2}
+      - name: neg_zero
+        input: {expr: "neg(0)"}
+        expected: {optimized: "0", cost_saved: 1}
+
+  - name: ternary_add_identity
+    given: Add with zero
+    when: Applying ternary rewrite rules
+    then: x + 0 simplifies to x
+    test_cases:
+      - name: add_zero
+        input: {expr: "add(x, 0)"}
+        expected: {optimized: "x", cost_saved: 2}
+      - name: add_neg_self
+        input: {expr: "add(x, neg(x))"}
+        expected: {optimized: "0", cost_saved: 3}
+
+  - name: ternary_mul_strength_reduction
+    given: Multiply by power of 3
+    when: Detecting strength reduction opportunity
+    then: mul(x, 3^n) becomes shift3(x, n)
+    test_cases:
+      - name: mul_by_3
+        input: {expr: "mul(x, 3)"}
+        expected: {optimized: "shift3(x, 1)", cycles_saved: 4}
+      - name: mul_by_27
+        input: {expr: "mul(x, 27)"}
+        expected: {optimized: "shift3(x, 3)", cycles_saved: 8}
+
+  - name: equality_saturation_convergence
+    given: Complex ternary expression
+    when: Running equality saturation
+    then: Converges in reasonable iterations
+    test_cases:
+      - name: algebraic_simplification
+        input: {expr: "add(mul(x, 1), sub(y, y))"}
+        expected: {optimized: "x", iterations_max: 10}
+
+functions:
+  - name: egg_egraph_new
+    params: {}
+    returns: EggEGraph
+    ffi: {lib: "egg_rs", symbol: "egg_egraph_new"}
+    
+  - name: egg_egraph_add
+    params: {egraph: EggEGraph, op: str, children: [EggId]}
+    returns: EggId
+    ffi: {lib: "egg_rs", symbol: "egg_egraph_add"}
+    
+  - name: egg_egraph_union
+    params: {egraph: EggEGraph, a: EggId, b: EggId}
+    returns: EggId
+    ffi: {lib: "egg_rs", symbol: "egg_egraph_union"}
+    
+  - name: egg_runner_run
+    params: {runner: EggRunner, rules: [str]}
+    returns: EggRunner
+    ffi: {lib: "egg_rs", symbol: "egg_runner_run"}
+    
+  - name: egg_extractor_find_best
+    params: {extractor: EggExtractor, id: EggId}
+    returns: {cost: u64, expr: str}
+    ffi: {lib: "egg_rs", symbol: "egg_extractor_find_best"}
+
+  - name: optimize_module
+    params: {module: Module}
+    returns: Module
+    description: Apply e-graph optimization to all expressions
+    
+  - name: get_optimization_stats
+    params: {egraph: EggEGraph}
+    returns: OptimizationStats
+
+data:
+  ternary_rewrite_rules:
+    # Neutral elements
+    - pattern: "(add ?x 0)"
+      replacement: "?x"
+    - pattern: "(sub ?x 0)"
+      replacement: "?x"
+    - pattern: "(mul ?x 1)"
+      replacement: "?x"
+    - pattern: "(mul ?x 0)"
+      replacement: "0"
+      
+    # Ternary negation (key balanced ternary operation)
+    - pattern: "(neg (neg ?x))"
+      replacement: "?x"
+    - pattern: "(add ?x (neg ?x))"
+      replacement: "0"
+    - pattern: "(neg 0)"
+      replacement: "0"
+      
+    # Multiplication with negation
+    - pattern: "(mul (neg ?x) ?y)"
+      replacement: "(neg (mul ?x ?y))"
+    - pattern: "(mul ?x (neg ?y))"
+      replacement: "(neg (mul ?x ?y))"
+      
+    # Strength reduction (ternary shifts)
+    - pattern: "(mul ?x 3)"
+      replacement: "(shift3 ?x 1)"
+    - pattern: "(mul ?x 9)"
+      replacement: "(shift3 ?x 2)"
+    - pattern: "(mul ?x 27)"
+      replacement: "(shift3 ?x 3)"
+      
+    # Associativity
+    - pattern: "(add (add ?x ?y) ?z)"
+      replacement: "(add ?x (add ?y ?z))"
+      
+    # Commutativity
+    - pattern: "(add ?x ?y)"
+      replacement: "(add ?y ?x)"
+    - pattern: "(mul ?x ?y)"
+      replacement: "(mul ?y ?x)"
+
+  operation_costs:
+    num: 0
+    trit: 0
+    var: 1
+    add: 1
+    sub: 2
+    mul: 5
+    neg: 1
+    shift3: 1
+    if: 3
+
+test_generation:
+  boundary: true
+  property: true
+  stress: [100, 1000, 10000]
+  coverage: 90
