@@ -1,0 +1,342 @@
+╔══════════════════════════════════════════════════════════════════╗
+║  ◬ console.999 - Драйвер консоли 999 OS                          ║
+║  Вывод текста на экран (VGA/UART/WASM)                           ║
+╚══════════════════════════════════════════════════════════════════╝
+
+▲ use os.hal.hal
+▲ use os.kernel.kernel
+
+║ ═══════════════════════════════════════════════════════════════════
+║  КОНСТАНТЫ
+║ ═══════════════════════════════════════════════════════════════════
+
+◇ VGA_BUFFER = 0xB8000       ║ VGA text mode buffer
+◇ VGA_WIDTH = 80
+◇ VGA_HEIGHT = 25
+
+◇ UART_PORT = 0x3F8          ║ COM1
+
+║ Цвета (троичные!)
+⬢ Color {
+    △ white    ║ +1
+    ○ gray     ║  0
+    ▽ black    ║ -1
+    ◇ green
+    ◆ red
+    ⬡ blue
+    ⬢ yellow
+    ◎ cyan
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  КОНСОЛЬ
+║ ═══════════════════════════════════════════════════════════════════
+
+⬡ Console {
+    x: Int27
+    y: Int27
+    fg: Color
+    bg: Color
+    mode: ConsoleMode
+}
+
+⬢ ConsoleMode {
+    △ vga      ║ VGA text mode
+    ○ uart     ║ Serial port
+    ▽ wasm     ║ WASM console.log
+    ◇ tsimd    ║ Троичный дисплей
+}
+
+◇ CONSOLE: Console = Console {
+    x: 0
+    y: 0
+    fg: .white
+    bg: .black
+    mode: .vga
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ИНИЦИАЛИЗАЦИЯ
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ console_init(platform: Platform) → Result[(), ConsoleError] {
+    CONSOLE.mode = ⟳ platform {
+        .x86_64 → {
+            ║ Проверяем наличие VGA
+            ⊜ vga_available() { .vga } ⊝ { uart_init(); .uart }
+        }
+        .arm64 → { uart_init(); .uart }
+        .wasm32 → .wasm
+        .tsimd → .tsimd
+        .riscv64 → { uart_init(); .uart }
+        _ → .uart
+    }
+    
+    console_clear()
+    ⟵ Ok(())
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ВЫВОД
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ console_print(s: String) {
+    ⟳ c ∈ s {
+        console_putchar(c)
+    }
+}
+
+◬ console_println(s: String) {
+    console_print(s)
+    console_putchar('\n')
+}
+
+◬ console_putchar(c: Char) {
+    ⟳ CONSOLE.mode {
+        .vga → vga_putchar(c)
+        .uart → uart_putchar(c)
+        .wasm → wasm_putchar(c)
+        .tsimd → tsimd_putchar(c)
+    }
+}
+
+◬ console_print_hex(value: Int27) {
+    ◇ hex = "0123456789ABCDEF"
+    console_print("0x")
+    ⟳ i ∈ (0..8).reverse() {
+        ◇ nibble = (value >> (i × 4)) & 0xF
+        console_putchar(hex[nibble])
+    }
+}
+
+◬ console_print_int(value: Int27) {
+    ⊜ value < 0 {
+        console_putchar('-')
+        value = -value
+    }
+    
+    ⊜ value == 0 {
+        console_putchar('0')
+        ⟵
+    }
+    
+    ◇ buf: [Char; 20]
+    ◇ i = 0
+    ⟲ value > 0 {
+        buf[i] = '0' + (value % 10)
+        value /= 10
+        i += 1
+    }
+    
+    ⟲ i > 0 {
+        i -= 1
+        console_putchar(buf[i])
+    }
+}
+
+◬ console_clear() {
+    ⟳ CONSOLE.mode {
+        .vga → vga_clear()
+        .uart → uart_print("\x1B[2J\x1B[H")
+        .wasm → wasm_clear()
+        .tsimd → tsimd_clear()
+    }
+    CONSOLE.x = 0
+    CONSOLE.y = 0
+}
+
+◬ console_set_color(fg: Color, bg: Color) {
+    CONSOLE.fg = fg
+    CONSOLE.bg = bg
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  VGA TEXT MODE
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ vga_available() → Trit {
+    ║ Проверяем сигнатуру VGA
+    ◇ ptr = VGA_BUFFER as *Int27
+    ⟵ ptr.* ≠ 0xDEAD
+}
+
+◬ vga_putchar(c: Char) {
+    ⊜ c == '\n' {
+        CONSOLE.x = 0
+        CONSOLE.y += 1
+        ⊜ CONSOLE.y >= VGA_HEIGHT {
+            vga_scroll()
+        }
+        ⟵
+    }
+    
+    ⊜ c == '\r' {
+        CONSOLE.x = 0
+        ⟵
+    }
+    
+    ⊜ c == '\t' {
+        CONSOLE.x = (CONSOLE.x + 8) / 8 × 8
+        ⟵
+    }
+    
+    ◇ offset = CONSOLE.y × VGA_WIDTH + CONSOLE.x
+    ◇ ptr = (VGA_BUFFER + offset × 2) as *Int9
+    
+    ptr[0] = c as Int9
+    ptr[1] = vga_color_byte(CONSOLE.fg, CONSOLE.bg)
+    
+    CONSOLE.x += 1
+    ⊜ CONSOLE.x >= VGA_WIDTH {
+        CONSOLE.x = 0
+        CONSOLE.y += 1
+        ⊜ CONSOLE.y >= VGA_HEIGHT {
+            vga_scroll()
+        }
+    }
+}
+
+◬ vga_color_byte(fg: Color, bg: Color) → Int9 {
+    ◇ fg_code = color_to_vga(fg)
+    ◇ bg_code = color_to_vga(bg)
+    ⟵ (bg_code << 4) | fg_code
+}
+
+◬ color_to_vga(c: Color) → Int9 {
+    ⟵ ⟳ c {
+        .black → 0
+        .blue → 1
+        .green → 2
+        .cyan → 3
+        .red → 4
+        .yellow → 14
+        .white → 15
+        .gray → 7
+    }
+}
+
+◬ vga_clear() {
+    ◇ ptr = VGA_BUFFER as *Int9
+    ◇ attr = vga_color_byte(CONSOLE.fg, CONSOLE.bg)
+    ⟳ i ∈ 0..(VGA_WIDTH × VGA_HEIGHT) {
+        ptr[i × 2] = ' ' as Int9
+        ptr[i × 2 + 1] = attr
+    }
+}
+
+◬ vga_scroll() {
+    ◇ ptr = VGA_BUFFER as *Int9
+    
+    ║ Копируем строки вверх
+    ⟳ y ∈ 1..VGA_HEIGHT {
+        ⟳ x ∈ 0..VGA_WIDTH {
+            ◇ src = (y × VGA_WIDTH + x) × 2
+            ◇ dst = ((y - 1) × VGA_WIDTH + x) × 2
+            ptr[dst] = ptr[src]
+            ptr[dst + 1] = ptr[src + 1]
+        }
+    }
+    
+    ║ Очищаем последнюю строку
+    ◇ last_row = (VGA_HEIGHT - 1) × VGA_WIDTH × 2
+    ◇ attr = vga_color_byte(CONSOLE.fg, CONSOLE.bg)
+    ⟳ x ∈ 0..VGA_WIDTH {
+        ptr[last_row + x × 2] = ' ' as Int9
+        ptr[last_row + x × 2 + 1] = attr
+    }
+    
+    CONSOLE.y = VGA_HEIGHT - 1
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  UART (Serial Port)
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ uart_init() {
+    ║ Инициализация COM1
+    hal_write_port(UART_PORT + 1, 0x00)  ║ Disable interrupts
+    hal_write_port(UART_PORT + 3, 0x80)  ║ Enable DLAB
+    hal_write_port(UART_PORT + 0, 0x03)  ║ Divisor low (38400 baud)
+    hal_write_port(UART_PORT + 1, 0x00)  ║ Divisor high
+    hal_write_port(UART_PORT + 3, 0x03)  ║ 8 bits, no parity, 1 stop
+    hal_write_port(UART_PORT + 2, 0xC7)  ║ Enable FIFO
+    hal_write_port(UART_PORT + 4, 0x0B)  ║ IRQs enabled, RTS/DSR set
+}
+
+◬ uart_putchar(c: Char) {
+    ║ Ждём готовности
+    ⟲ (hal_read_port(UART_PORT + 5) & 0x20) == 0 {}
+    hal_write_port(UART_PORT, c as Int27)
+}
+
+◬ uart_print(s: String) {
+    ⟳ c ∈ s {
+        uart_putchar(c)
+    }
+}
+
+◬ uart_getchar() → ?Char {
+    ⊜ (hal_read_port(UART_PORT + 5) & 0x01) ≠ 0 {
+        ⟵ hal_read_port(UART_PORT) as Char
+    }
+    ⟵ ∅
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  WASM CONSOLE
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ wasm_putchar(c: Char) {
+    @wasm_import("env", "console_putchar")(c as Int27)
+}
+
+◬ wasm_clear() {
+    @wasm_import("env", "console_clear")()
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  TSIMD CONSOLE (Троичный дисплей)
+║ ═══════════════════════════════════════════════════════════════════
+
+◇ TSIMD_DISPLAY = 0x9000     ║ Адрес троичного дисплея
+
+◬ tsimd_putchar(c: Char) {
+    ◇ offset = CONSOLE.y × 27 + CONSOLE.x  ║ 27 символов в строке
+    ◇ addr = TSIMD_DISPLAY + offset
+    
+    ║ Кодируем символ в триты
+    ◇ trit_char = char_to_trits(c)
+    @tsimd("tstore", addr, trit_char)
+    
+    CONSOLE.x += 1
+    ⊜ CONSOLE.x >= 27 {
+        CONSOLE.x = 0
+        CONSOLE.y += 1
+    }
+}
+
+◬ tsimd_clear() {
+    ⟳ i ∈ 0..(27 × 9) {  ║ 27x9 = 243 символа
+        @tsimd("tstore", TSIMD_DISPLAY + i, 0)
+    }
+}
+
+◬ char_to_trits(c: Char) → Int27 {
+    ║ Кодируем ASCII в троичную систему
+    ⟵ c as Int27
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ОШИБКИ
+║ ═══════════════════════════════════════════════════════════════════
+
+⬢ ConsoleError {
+    △ init_failed {}
+    ○ no_display {}
+}
+
+║ Тесты
+⊡ test "color_to_vga" {
+    ⊜! color_to_vga(.black) == 0
+    ⊜! color_to_vga(.white) == 15
+}

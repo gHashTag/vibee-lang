@@ -1,0 +1,301 @@
+╔══════════════════════════════════════════════════════════════════╗
+║  ◬ stdlib/core.999 - Стандартная библиотека языка 999            ║
+║  100% dogfooding - написано на 999                               ║
+╚══════════════════════════════════════════════════════════════════╝
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ТРОИЧНЫЕ ПРИМИТИВЫ
+║ ═══════════════════════════════════════════════════════════════════
+
+║ Троичное И (min)
+◬ trit_and(a: Trit, b: Trit) → Trit {
+    ⟵ ⟳ (a, b) {
+        (▽, _) → ▽
+        (_, ▽) → ▽
+        (○, _) → ○
+        (_, ○) → ○
+        (△, △) → △
+    }
+}
+
+║ Троичное ИЛИ (max)
+◬ trit_or(a: Trit, b: Trit) → Trit {
+    ⟵ ⟳ (a, b) {
+        (△, _) → △
+        (_, △) → △
+        (○, _) → ○
+        (_, ○) → ○
+        (▽, ▽) → ▽
+    }
+}
+
+║ Троичное НЕ (инверсия)
+◬ trit_not(a: Trit) → Trit {
+    ⟵ ⟳ a { △ → ▽  ○ → ○  ▽ → △ }
+}
+
+║ Консенсус
+◬ trit_consensus(a: Trit, b: Trit) → Trit {
+    ⟵ ⊜ a == b { a } ⊝ { ○ }
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ЧИСЛА
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ abs(x: Int27) → Int27 { ⟵ ⊜ x < 0 { -x } ⊝ { x } }
+◬ min(a: Int27, b: Int27) → Int27 { ⟵ ⊜ a < b { a } ⊝ { b } }
+◬ max(a: Int27, b: Int27) → Int27 { ⟵ ⊜ a > b { a } ⊝ { b } }
+◬ clamp(x: Int27, lo: Int27, hi: Int27) → Int27 { ⟵ min(max(x, lo), hi) }
+
+◬ pow(base: Int27, exp: Int27) → Int27 {
+    ◇ result: Int27 = 1
+    ⟳ _ ∈ 0..exp { result *= base }
+    ⟵ result
+}
+
+║ Троичная степень (3^n)
+◬ pow3(n: Int27) → Int27 { ⟵ pow(3, n) }
+
+║ ═══════════════════════════════════════════════════════════════════
+║  СТРОКИ
+║ ═══════════════════════════════════════════════════════════════════
+
+⬡ String {
+    data: *Int9
+    len: Int27
+    cap: Int27
+    
+    ◬ new() → String { ⟵ String { data: ∅, len: 0, cap: 0 } }
+    ◬ from(s: *Int9, len: Int27) → String {
+        ◇ str = String { data: alloc(len), len: len, cap: len }
+        memcpy(str.data, s, len)
+        ⟵ str
+    }
+    ◬ len(self: *String) → Int27 { ⟵ self.len }
+    ◬ is_empty(self: *String) → Trit { ⟵ self.len == 0 }
+    ◬ at(self: *String, i: Int27) → Int9 { ⟵ self.data[i] }
+    
+    ◬ concat(self: *String, other: *String) → String {
+        ◇ new_len = self.len + other.len
+        ◇ result = String { data: alloc(new_len), len: new_len, cap: new_len }
+        memcpy(result.data, self.data, self.len)
+        memcpy(result.data + self.len, other.data, other.len)
+        ⟵ result
+    }
+    
+    ◬ slice(self: *String, start: Int27, end: Int27) → String {
+        ◇ len = end - start
+        ⟵ String.from(self.data + start, len)
+    }
+    
+    ◬ contains(self: *String, sub: *String) → Trit {
+        ⟳ i ∈ 0..(self.len - sub.len + 1) {
+            ◇ found = △
+            ⟳ j ∈ 0..sub.len {
+                ⊜ self.data[i + j] ≠ sub.data[j] { found = ▽; ⊗ }
+            }
+            ⊜ found { ⟵ △ }
+        }
+        ⟵ ▽
+    }
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  СПИСКИ
+║ ═══════════════════════════════════════════════════════════════════
+
+⬡ List[T] {
+    data: *T
+    len: Int27
+    cap: Int27
+    
+    ◬ new() → List[T] { ⟵ List[T] { data: ∅, len: 0, cap: 0 } }
+    
+    ◬ push(self: *List[T], item: T) {
+        ⊜ self.len >= self.cap { self.grow() }
+        self.data[self.len] = item
+        self.len += 1
+    }
+    
+    ◬ pop(self: *List[T]) → ?T {
+        ⊜ self.len == 0 { ⟵ ∅ }
+        self.len -= 1
+        ⟵ self.data[self.len]
+    }
+    
+    ◬ get(self: *List[T], i: Int27) → ?T {
+        ⊜ i < 0 ∨ i >= self.len { ⟵ ∅ }
+        ⟵ self.data[i]
+    }
+    
+    ◬ grow(self: *List[T]) {
+        ◇ new_cap = ⊜ self.cap == 0 { 9 } ⊝ { self.cap × 3 }
+        ◇ new_data = alloc[T](new_cap)
+        ⊜ self.data ≠ ∅ {
+            memcpy(new_data, self.data, self.len × sizeof[T]())
+            free(self.data)
+        }
+        self.data = new_data
+        self.cap = new_cap
+    }
+    
+    ◬ map[U](self: *List[T], f: ◬(T) → U) → List[U] {
+        ◇ result = List[U].new()
+        ⟳ item ∈ self.* { result.push(f(item)) }
+        ⟵ result
+    }
+    
+    ◬ filter(self: *List[T], pred: ◬(T) → Trit) → List[T] {
+        ◇ result = List[T].new()
+        ⟳ item ∈ self.* { ⊜ pred(item) { result.push(item) } }
+        ⟵ result
+    }
+    
+    ◬ fold[U](self: *List[T], init: U, f: ◬(U, T) → U) → U {
+        ◇ acc = init
+        ⟳ item ∈ self.* { acc = f(acc, item) }
+        ⟵ acc
+    }
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  СЛОВАРИ
+║ ═══════════════════════════════════════════════════════════════════
+
+⬡ Map[K, V] {
+    buckets: List[List[Entry[K, V]]]
+    size: Int27
+    
+    ◬ new() → Map[K, V] {
+        ◇ m = Map[K, V] { buckets: [], size: 0 }
+        ⟳ _ ∈ 0..27 { m.buckets.push(List[Entry[K, V]].new()) }
+        ⟵ m
+    }
+    
+    ◬ set(self: *Map[K, V], key: K, value: V) {
+        ◇ h = hash(key) % 27
+        ◇ bucket = &self.buckets[h]
+        ⟳ i, e ∈ bucket.* {
+            ⊜ e.key == key { bucket.*[i].value = value; ⟵ }
+        }
+        bucket.push(Entry[K, V] { key: key, value: value })
+        self.size += 1
+    }
+    
+    ◬ get(self: *Map[K, V], key: K) → ?V {
+        ◇ h = hash(key) % 27
+        ⟳ e ∈ self.buckets[h] {
+            ⊜ e.key == key { ⟵ e.value }
+        }
+        ⟵ ∅
+    }
+    
+    ◬ contains(self: *Map[K, V], key: K) → Trit {
+        ⟵ self.get(key) ≠ ∅
+    }
+}
+
+⬡ Entry[K, V] { key: K, value: V }
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ОПЦИОНАЛЬНЫЕ ЗНАЧЕНИЯ
+║ ═══════════════════════════════════════════════════════════════════
+
+⬢ Option[T] {
+    △ Some { value: T }
+    ▽ None {}
+    
+    ◬ is_some(self: *Option[T]) → Trit { ⟵ self.* is .Some }
+    ◬ is_none(self: *Option[T]) → Trit { ⟵ self.* is .None }
+    
+    ◬ unwrap(self: *Option[T]) → T {
+        ⟵ ⟳ self.* { .Some(s) → s.value .None(_) → panic("unwrap on None") }
+    }
+    
+    ◬ unwrap_or(self: *Option[T], default: T) → T {
+        ⟵ ⟳ self.* { .Some(s) → s.value .None(_) → default }
+    }
+    
+    ◬ map[U](self: *Option[T], f: ◬(T) → U) → Option[U] {
+        ⟵ ⟳ self.* { .Some(s) → Option[U].Some { value: f(s.value) } .None(_) → Option[U].None {} }
+    }
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  РЕЗУЛЬТАТЫ
+║ ═══════════════════════════════════════════════════════════════════
+
+⬢ Result[T, E] {
+    △ Ok { value: T }
+    ▽ Err { error: E }
+    
+    ◬ is_ok(self: *Result[T, E]) → Trit { ⟵ self.* is .Ok }
+    ◬ is_err(self: *Result[T, E]) → Trit { ⟵ self.* is .Err }
+    
+    ◬ unwrap(self: *Result[T, E]) → T {
+        ⟵ ⟳ self.* { .Ok(o) → o.value .Err(_) → panic("unwrap on Err") }
+    }
+    
+    ◬ map[U](self: *Result[T, E], f: ◬(T) → U) → Result[U, E] {
+        ⟵ ⟳ self.* { .Ok(o) → Result[U, E].Ok { value: f(o.value) } .Err(e) → Result[U, E].Err { error: e.error } }
+    }
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ПАМЯТЬ
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ alloc[T](count: Int27) → *T { ⟵ @extern("malloc")(count × sizeof[T]()) }
+◬ free[T](ptr: *T) { @extern("free")(ptr) }
+◬ memcpy(dst: *Int9, src: *Int9, len: Int27) { @extern("memcpy")(dst, src, len) }
+◬ memset(dst: *Int9, val: Int9, len: Int27) { @extern("memset")(dst, val, len) }
+◬ sizeof[T]() → Int27 { ⟵ @sizeof(T) }
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ВВОД/ВЫВОД
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ print(s: String) { @extern("write")(1, s.data, s.len) }
+◬ println(s: String) { print(s); print("\n") }
+◬ eprint(s: String) { @extern("write")(2, s.data, s.len) }
+
+⬡ File {
+    fd: Int27
+    ◬ open(path: String, mode: FileMode) → Result[File, IoError] {
+        ◇ flags = ⟳ mode { .read → 0 .write → 1 .append → 2 }
+        ◇ fd = @extern("open")(path.data, flags)
+        ⊜ fd < 0 { ⟵ Err(IoError { code: fd }) }
+        ⟵ Ok(File { fd: fd })
+    }
+    ◬ read(self: *File, buf: *Int9, len: Int27) → Int27 { ⟵ @extern("read")(self.fd, buf, len) }
+    ◬ write(self: *File, data: String) → Int27 { ⟵ @extern("write")(self.fd, data.data, data.len) }
+    ◬ close(self: *File) { @extern("close")(self.fd) }
+}
+
+⬢ FileMode { △ read  ○ write  ▽ append }
+⬡ IoError { code: Int27 }
+
+║ ═══════════════════════════════════════════════════════════════════
+║  УТИЛИТЫ
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ panic(msg: String) → ! { eprint("PANIC: "); eprint(msg); eprint("\n"); @extern("exit")(1) }
+◬ assert(cond: Trit, msg: String) { ⊜ ¬cond { panic(msg) } }
+◬ hash[T](value: T) → Int27 { ⟵ @hash(value) }
+
+║ Тесты
+⊡ test "trit_ops" {
+    ⊜! trit_and(△, △) == △
+    ⊜! trit_and(△, ▽) == ▽
+    ⊜! trit_or(▽, △) == △
+    ⊜! trit_not(△) == ▽
+}
+
+⊡ test "list" {
+    ◇ l = List[Int27].new()
+    l.push(1)
+    l.push(2)
+    ⊜! l.len == 2
+    ⊜! l.get(0) == 1
+}

@@ -1,0 +1,505 @@
+╔══════════════════════════════════════════════════════════════════╗
+║  ◬ hal.999 - Hardware Abstraction Layer для 999 OS               ║
+║  Абстракция над различными платформами                           ║
+╚══════════════════════════════════════════════════════════════════╝
+
+▲ use os.kernel.kernel
+
+║ ═══════════════════════════════════════════════════════════════════
+║  HAL ИНТЕРФЕЙС
+║ ═══════════════════════════════════════════════════════════════════
+
+⬡ HAL {
+    platform: Platform
+    interrupts_enabled: Trit
+    heap_base: Int27
+    heap_size: Int27
+    
+    ║ Функции платформы (vtable)
+    init_fn: ◬(*HAL) → Result[(), HalError]
+    shutdown_fn: ◬(*HAL, Int27)
+    halt_fn: ◬(*HAL)
+    idle_fn: ◬(*HAL)
+    enable_interrupts_fn: ◬(*HAL)
+    disable_interrupts_fn: ◬(*HAL)
+    handle_interrupts_fn: ◬(*HAL)
+    read_port_fn: ◬(*HAL, Int27) → Int27
+    write_port_fn: ◬(*HAL, Int27, Int27)
+}
+
+◇ CURRENT_HAL: ?*HAL = ∅
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ИНИЦИАЛИЗАЦИЯ
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ hal_init(platform: Platform) → Result[(), HalError] {
+    ◇ hal = ⟳ platform {
+        .x86_64 → create_x86_64_hal()
+        .arm64 → create_arm64_hal()
+        .wasm32 → create_wasm_hal()
+        .tsimd → create_tsimd_hal()
+        .riscv64 → create_riscv_hal()
+        _ → ⟵ Err(HalError.unsupported_platform {})
+    }
+    
+    CURRENT_HAL = hal
+    hal.init_fn(hal)?
+    
+    ⟵ Ok(())
+}
+
+◬ hal_detect_platform() → Platform {
+    ║ Определяем платформу по магическим адресам/регистрам
+    #[cfg(target = "x86_64")]
+    ⟵ .x86_64
+    
+    #[cfg(target = "aarch64")]
+    ⟵ .arm64
+    
+    #[cfg(target = "wasm32")]
+    ⟵ .wasm32
+    
+    #[cfg(target = "riscv64")]
+    ⟵ .riscv64
+    
+    ⟵ .unknown
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ОБЩИЕ ФУНКЦИИ HAL
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ hal_shutdown(code: Int27) {
+    ⊜ CURRENT_HAL ≠ ∅ {
+        CURRENT_HAL.shutdown_fn(CURRENT_HAL, code)
+    }
+}
+
+◬ hal_halt() → ! {
+    ⊜ CURRENT_HAL ≠ ∅ {
+        CURRENT_HAL.halt_fn(CURRENT_HAL)
+    }
+    ⟲ △ {}  ║ Бесконечный цикл если halt не работает
+}
+
+◬ hal_idle() {
+    ⊜ CURRENT_HAL ≠ ∅ {
+        CURRENT_HAL.idle_fn(CURRENT_HAL)
+    }
+}
+
+◬ hal_enable_interrupts() {
+    ⊜ CURRENT_HAL ≠ ∅ {
+        CURRENT_HAL.enable_interrupts_fn(CURRENT_HAL)
+        CURRENT_HAL.interrupts_enabled = △
+    }
+}
+
+◬ hal_disable_interrupts() {
+    ⊜ CURRENT_HAL ≠ ∅ {
+        CURRENT_HAL.disable_interrupts_fn(CURRENT_HAL)
+        CURRENT_HAL.interrupts_enabled = ▽
+    }
+}
+
+◬ hal_handle_interrupts() {
+    ⊜ CURRENT_HAL ≠ ∅ ∧ CURRENT_HAL.interrupts_enabled == △ {
+        CURRENT_HAL.handle_interrupts_fn(CURRENT_HAL)
+    }
+}
+
+◬ hal_get_heap_base() → Int27 {
+    ⊜ CURRENT_HAL ≠ ∅ {
+        ⟵ CURRENT_HAL.heap_base
+    }
+    ⟵ 0
+}
+
+◬ hal_get_heap_size() → Int27 {
+    ⊜ CURRENT_HAL ≠ ∅ {
+        ⟵ CURRENT_HAL.heap_size
+    }
+    ⟵ 0
+}
+
+◬ hal_read_port(port: Int27) → Int27 {
+    ⊜ CURRENT_HAL ≠ ∅ {
+        ⟵ CURRENT_HAL.read_port_fn(CURRENT_HAL, port)
+    }
+    ⟵ 0
+}
+
+◬ hal_write_port(port: Int27, value: Int27) {
+    ⊜ CURRENT_HAL ≠ ∅ {
+        CURRENT_HAL.write_port_fn(CURRENT_HAL, port, value)
+    }
+}
+
+◬ hal_dump_registers() {
+    ⊜ CURRENT_HAL ≠ ∅ {
+        ⟳ CURRENT_HAL.platform {
+            .x86_64 → x86_dump_registers()
+            .arm64 → arm_dump_registers()
+            .wasm32 → wasm_dump_stack()
+            _ → {}
+        }
+    }
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  x86_64 HAL
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ create_x86_64_hal() → *HAL {
+    ◇ hal = alloc[HAL](1)
+    hal.* = HAL {
+        platform: .x86_64
+        interrupts_enabled: ▽
+        heap_base: 0x100000      ║ 1MB
+        heap_size: 0x100000      ║ 1MB heap
+        init_fn: x86_init
+        shutdown_fn: x86_shutdown
+        halt_fn: x86_halt
+        idle_fn: x86_idle
+        enable_interrupts_fn: x86_sti
+        disable_interrupts_fn: x86_cli
+        handle_interrupts_fn: x86_handle_irq
+        read_port_fn: x86_inb
+        write_port_fn: x86_outb
+    }
+    ⟵ hal
+}
+
+◬ x86_init(hal: *HAL) → Result[(), HalError] {
+    ║ Инициализация GDT
+    x86_setup_gdt()
+    
+    ║ Инициализация IDT
+    x86_setup_idt()
+    
+    ║ Инициализация PIC
+    x86_setup_pic()
+    
+    ⟵ Ok(())
+}
+
+◬ x86_shutdown(hal: *HAL, code: Int27) {
+    ║ ACPI shutdown или тройной fault
+    x86_outb(0x604, 0x2000)  ║ QEMU shutdown
+}
+
+◬ x86_halt(hal: *HAL) {
+    @asm("cli; hlt")
+}
+
+◬ x86_idle(hal: *HAL) {
+    @asm("hlt")
+}
+
+◬ x86_sti(hal: *HAL) {
+    @asm("sti")
+}
+
+◬ x86_cli(hal: *HAL) {
+    @asm("cli")
+}
+
+◬ x86_handle_irq(hal: *HAL) {
+    ║ Читаем номер прерывания из PIC
+    ◇ irq = x86_inb(0x20)
+    
+    ⟳ irq {
+        0 → timer_interrupt()      ║ Timer
+        1 → keyboard_interrupt()   ║ Keyboard
+        _ → {}
+    }
+    
+    ║ EOI
+    x86_outb(0x20, 0x20)
+}
+
+◬ x86_inb(hal: *HAL, port: Int27) → Int27 {
+    ◇ value: Int27
+    @asm("inb %1, %0" : "=a"(value) : "Nd"(port))
+    ⟵ value
+}
+
+◬ x86_outb(hal: *HAL, port: Int27, value: Int27) {
+    @asm("outb %0, %1" :: "a"(value), "Nd"(port))
+}
+
+◬ x86_dump_registers() {
+    console_print("  RAX: "); console_print_hex(@asm("mov %rax, %0"))
+    console_print("  RBX: "); console_print_hex(@asm("mov %rbx, %0"))
+    console_print("  RCX: "); console_print_hex(@asm("mov %rcx, %0"))
+    console_print("  RDX: "); console_print_hex(@asm("mov %rdx, %0"))
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ARM64 HAL
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ create_arm64_hal() → *HAL {
+    ◇ hal = alloc[HAL](1)
+    hal.* = HAL {
+        platform: .arm64
+        interrupts_enabled: ▽
+        heap_base: 0x40000000
+        heap_size: 0x100000
+        init_fn: arm_init
+        shutdown_fn: arm_shutdown
+        halt_fn: arm_halt
+        idle_fn: arm_idle
+        enable_interrupts_fn: arm_enable_irq
+        disable_interrupts_fn: arm_disable_irq
+        handle_interrupts_fn: arm_handle_irq
+        read_port_fn: arm_mmio_read
+        write_port_fn: arm_mmio_write
+    }
+    ⟵ hal
+}
+
+◬ arm_init(hal: *HAL) → Result[(), HalError] {
+    ║ Инициализация GIC
+    arm_setup_gic()
+    ⟵ Ok(())
+}
+
+◬ arm_shutdown(hal: *HAL, code: Int27) {
+    @asm("mov x0, #0; mov x1, #0; mov x2, #0; mov x3, #0; hvc #0")
+}
+
+◬ arm_halt(hal: *HAL) {
+    @asm("msr daifset, #0xf; wfi")
+}
+
+◬ arm_idle(hal: *HAL) {
+    @asm("wfi")
+}
+
+◬ arm_enable_irq(hal: *HAL) {
+    @asm("msr daifclr, #2")
+}
+
+◬ arm_disable_irq(hal: *HAL) {
+    @asm("msr daifset, #2")
+}
+
+◬ arm_handle_irq(hal: *HAL) {
+    ║ Читаем из GIC
+    ◇ irq = arm_mmio_read(hal, 0x08000000 + 0x0C)
+    ⟳ irq {
+        30 → timer_interrupt()
+        _ → {}
+    }
+    ║ EOI
+    arm_mmio_write(hal, 0x08000000 + 0x10, irq)
+}
+
+◬ arm_mmio_read(hal: *HAL, addr: Int27) → Int27 {
+    ⟵ *(addr as *Int27)
+}
+
+◬ arm_mmio_write(hal: *HAL, addr: Int27, value: Int27) {
+    *(addr as *Int27) = value
+}
+
+◬ arm_dump_registers() {
+    console_print("  X0-X30, SP, PC\n")
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  WASM HAL
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ create_wasm_hal() → *HAL {
+    ◇ hal = alloc[HAL](1)
+    hal.* = HAL {
+        platform: .wasm32
+        interrupts_enabled: △
+        heap_base: 0x10000       ║ После линейной памяти
+        heap_size: 0x100000
+        init_fn: wasm_init
+        shutdown_fn: wasm_shutdown
+        halt_fn: wasm_halt
+        idle_fn: wasm_idle
+        enable_interrupts_fn: wasm_nop
+        disable_interrupts_fn: wasm_nop
+        handle_interrupts_fn: wasm_poll_events
+        read_port_fn: wasm_import_read
+        write_port_fn: wasm_import_write
+    }
+    ⟵ hal
+}
+
+◬ wasm_init(hal: *HAL) → Result[(), HalError] {
+    ║ Инициализация WASM imports
+    @wasm_import("env", "init")()
+    ⟵ Ok(())
+}
+
+◬ wasm_shutdown(hal: *HAL, code: Int27) {
+    @wasm_import("env", "exit")(code)
+}
+
+◬ wasm_halt(hal: *HAL) {
+    @wasm_import("env", "abort")()
+}
+
+◬ wasm_idle(hal: *HAL) {
+    ║ В WASM нет idle, просто возвращаемся
+}
+
+◬ wasm_nop(hal: *HAL) {}
+
+◬ wasm_poll_events(hal: *HAL) {
+    @wasm_import("env", "poll_events")()
+}
+
+◬ wasm_import_read(hal: *HAL, port: Int27) → Int27 {
+    ⟵ @wasm_import("env", "read_port")(port)
+}
+
+◬ wasm_import_write(hal: *HAL, port: Int27, value: Int27) {
+    @wasm_import("env", "write_port")(port, value)
+}
+
+◬ wasm_dump_stack() {
+    console_print("  WASM stack trace not available\n")
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  TSIMD HAL (Троичный SIMD)
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ create_tsimd_hal() → *HAL {
+    ◇ hal = alloc[HAL](1)
+    hal.* = HAL {
+        platform: .tsimd
+        interrupts_enabled: △
+        heap_base: 0x1000
+        heap_size: 19683         ║ 3^9 тритов
+        init_fn: tsimd_init
+        shutdown_fn: tsimd_shutdown
+        halt_fn: tsimd_halt
+        idle_fn: tsimd_idle
+        enable_interrupts_fn: tsimd_nop
+        disable_interrupts_fn: tsimd_nop
+        handle_interrupts_fn: tsimd_nop
+        read_port_fn: tsimd_read
+        write_port_fn: tsimd_write
+    }
+    ⟵ hal
+}
+
+◬ tsimd_init(hal: *HAL) → Result[(), HalError] {
+    ║ Инициализация троичных регистров
+    @tsimd("tinit")
+    ⟵ Ok(())
+}
+
+◬ tsimd_shutdown(hal: *HAL, code: Int27) {
+    @tsimd("thalt", code)
+}
+
+◬ tsimd_halt(hal: *HAL) {
+    @tsimd("thalt", 0)
+}
+
+◬ tsimd_idle(hal: *HAL) {
+    @tsimd("tnop")
+}
+
+◬ tsimd_nop(hal: *HAL) {}
+
+◬ tsimd_read(hal: *HAL, addr: Int27) → Int27 {
+    ⟵ @tsimd("tload", addr)
+}
+
+◬ tsimd_write(hal: *HAL, addr: Int27, value: Int27) {
+    @tsimd("tstore", addr, value)
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  RISC-V HAL
+║ ═══════════════════════════════════════════════════════════════════
+
+◬ create_riscv_hal() → *HAL {
+    ◇ hal = alloc[HAL](1)
+    hal.* = HAL {
+        platform: .riscv64
+        interrupts_enabled: ▽
+        heap_base: 0x80200000
+        heap_size: 0x100000
+        init_fn: riscv_init
+        shutdown_fn: riscv_shutdown
+        halt_fn: riscv_halt
+        idle_fn: riscv_idle
+        enable_interrupts_fn: riscv_enable_irq
+        disable_interrupts_fn: riscv_disable_irq
+        handle_interrupts_fn: riscv_handle_irq
+        read_port_fn: riscv_mmio_read
+        write_port_fn: riscv_mmio_write
+    }
+    ⟵ hal
+}
+
+◬ riscv_init(hal: *HAL) → Result[(), HalError] {
+    ║ Инициализация PLIC
+    riscv_setup_plic()
+    ⟵ Ok(())
+}
+
+◬ riscv_shutdown(hal: *HAL, code: Int27) {
+    @asm("li a7, 93; ecall")  ║ SBI shutdown
+}
+
+◬ riscv_halt(hal: *HAL) {
+    @asm("wfi")
+}
+
+◬ riscv_idle(hal: *HAL) {
+    @asm("wfi")
+}
+
+◬ riscv_enable_irq(hal: *HAL) {
+    @asm("csrsi mstatus, 8")
+}
+
+◬ riscv_disable_irq(hal: *HAL) {
+    @asm("csrci mstatus, 8")
+}
+
+◬ riscv_handle_irq(hal: *HAL) {
+    ◇ cause: Int27
+    @asm("csrr %0, mcause" : "=r"(cause))
+    ⟳ cause & 0xFF {
+        7 → timer_interrupt()
+        _ → {}
+    }
+}
+
+◬ riscv_mmio_read(hal: *HAL, addr: Int27) → Int27 {
+    ⟵ *(addr as *Int27)
+}
+
+◬ riscv_mmio_write(hal: *HAL, addr: Int27, value: Int27) {
+    *(addr as *Int27) = value
+}
+
+║ ═══════════════════════════════════════════════════════════════════
+║  ОШИБКИ
+║ ═══════════════════════════════════════════════════════════════════
+
+⬢ HalError {
+    △ unsupported_platform {}
+    ○ init_failed { message: String }
+    ▽ hardware_error { code: Int27 }
+}
+
+║ Тесты
+⊡ test "hal_detect" {
+    ◇ p = hal_detect_platform()
+    ⊜! p ≠ .unknown
+}

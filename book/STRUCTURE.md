@@ -173,6 +173,7 @@ book/chapters/
 ├── PART_IV_VIBEE.md            # === ЧАСТЬ IV: ЦАРСТВО VIBEE ===
 ├── 11_vibee_language.md        # Глава 11: Язык Vibee
 ├── 12_compiler_999.md          # Глава 12: Компилятор 999
+├── 12a_zmey_gorynych.md        # ★ Глава 12а: Змей Горыныч — Самовоспроизведение
 ├── 13_architecture.md          # Глава 13: Архитектура
 │
 ├── PART_V_FUTURE.md            # === ЧАСТЬ V: БУДУЩЕЕ ===
