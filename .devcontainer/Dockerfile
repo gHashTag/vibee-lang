@@ -6,7 +6,15 @@ RUN apt-get update && apt-get install -y \
     wget \
     git \
     build-essential \
+    xz-utils \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Zig 0.13.0
+RUN wget https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz && \
+    tar -xf zig-linux-x86_64-0.13.0.tar.xz && \
+    mv zig-linux-x86_64-0.13.0 /usr/local/zig && \
+    ln -s /usr/local/zig/zig /usr/local/bin/zig && \
+    rm zig-linux-x86_64-0.13.0.tar.xz
 
 # Install Erlang/OTP 25 and rebar3
 RUN apt-get update && \
@@ -29,4 +37,4 @@ ENV FLYCTL_INSTALL="/root/.fly"
 ENV PATH="$FLYCTL_INSTALL/bin:$PATH"
 
 # Verify installations
-RUN gleam --version && erl -version && rebar3 version
+RUN gleam --version && erl -version && rebar3 version && zig version
