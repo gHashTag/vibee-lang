@@ -11,6 +11,8 @@
 | **Trinity Hash** | 82% больше ёмкости | 3 хеш-функции vs 2 в Cuckoo hashing |
 | **Trinity Graph** | Чище код | 3 состояния: unvisited/in-progress/visited |
 | **Ternary Search Tree** | Лучший prefix match | 3-way branching для строк |
+| **Trinity Compression** | Теоретически оптимально | Base 3 минимизирует b/ln(b) |
+| **Trinity Neural** | 16x меньше памяти | Ternary weights {-1, 0, +1} |
 
 ### ❌ Не работает
 
@@ -151,6 +153,9 @@ research/
 ├── trinity_hash.py                # Cuckoo hashing с 3 таблицами
 ├── trinity_graph.py               # 3-state алгоритмы на графах
 ├── trinity_string.py              # TST и 3-way string sort
+├── trinity_compression.py         # Ternary encoding, Huffman-3, RLE-3
+├── trinity_neural.py              # TWN, 3-way decisions, ternary activations
+├── trinity_wisdom.py              # "Тридевятое царство" = 3×9 = 27 = 3³
 ├── advanced_trinity_sorts.py      # Parallel, SIMD, Hybrid
 ├── fair_comparison.py             # Честное сравнение (pure Python)
 ├── ACADEMIC_RESULTS.md            # Результаты для публикации
