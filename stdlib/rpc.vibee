@@ -1,0 +1,712 @@
+// =============================================================================
+// Vibee OS — RPC Module
+// Remote Procedure Call framework with multiple protocols
+// =============================================================================
+
+use json::{JsonValue, Serialize, Deserialize}
+use msgpack::{MsgPack}
+use http::{Request, Response, Status, Client as HttpClient}
+use tcp::{TcpStream, TcpListener}
+use channel::{Channel, Sender, Receiver}
+
+// =============================================================================
+// RPC Core
+// =============================================================================
+
+/// RPC Method definition
+struct RpcMethod {
+    name: String
+    handler: fn(RpcRequest) -> Result<JsonValue, RpcError>
+    params_schema: Option<Schema>
+    result_schema: Option<Schema>
+    description: Option<String>
+}
+
+/// RPC Request
+struct RpcRequest {
+    id: Option<RpcId>
+    method: String
+    params: JsonValue
+    context: RpcContext
+}
+
+impl RpcRequest {
+    fn new(method: String, params: JsonValue) -> Self {
+        RpcRequest {
+            id: Some(RpcId.String(uuid.v4())),
+            method: method,
+            params: params,
+            context: RpcContext.new()
+        }
+    }
+    
+    fn notification(method: String, params: JsonValue) -> Self {
+        RpcRequest { id: None, method: method, params: params, context: RpcContext.new() }
+    }
+    
+    fn is_notification() -> Bool { self.id.is_none() }
+    
+    fn param<T: Deserialize>(name: String) -> Result<T, RpcError> {
+        self.params.get(name)
+            .ok_or(RpcError.InvalidParams(format!("Missing parameter: {}", name)))
+            .and_then(|v| json.decode::<T>(v).map_err(|e| RpcError.InvalidParams(e.to_string())))
+    }
+    
+    fn params<T: Deserialize>() -> Result<T, RpcError> {
+        json.decode::<T>(self.params).map_err(|e| RpcError.InvalidParams(e.to_string()))
+    }
+}
+
+/// RPC Response
+struct RpcResponse {
+    id: Option<RpcId>
+    result: Option<JsonValue>
+    error: Option<RpcErrorData>
+}
+
+impl RpcResponse {
+    fn success(id: RpcId, result: JsonValue) -> Self {
+        RpcResponse { id: Some(id), result: Some(result), error: None }
+    }
+    
+    fn error(id: Option<RpcId>, error: RpcError) -> Self {
+        RpcResponse { id: id, result: None, error: Some(error.to_error_data()) }
+    }
+    
+    fn is_success() -> Bool { self.error.is_none() }
+    fn is_error() -> Bool { self.error.is_some() }
+}
+
+/// RPC ID (can be string, number, or null)
+enum RpcId { String(String), Number(Int64), Null }
+
+/// RPC Context for request metadata
+struct RpcContext {
+    headers: Map<String, String>
+    timeout_ms: Int64
+    trace_id: Option<String>
+    user_id: Option<String>
+}
+
+impl RpcContext {
+    fn new() -> Self { RpcContext { headers: Map.empty(), timeout_ms: 30000, trace_id: None, user_id: None } }
+    fn header(name: String, value: String) -> Self { self.headers.set(name, value); self }
+    fn timeout(ms: Int64) -> Self { self.timeout_ms = ms; self }
+    fn trace(id: String) -> Self { self.trace_id = Some(id); self }
+    fn user(id: String) -> Self { self.user_id = Some(id); self }
+}
+
+// =============================================================================
+// JSON-RPC 2.0
+// =============================================================================
+
+/// JSON-RPC 2.0 Server
+actor JsonRpcServer {
+    state methods: Map<String, RpcMethod>
+    state middleware: [fn(RpcRequest, fn(RpcRequest) -> RpcResponse) -> RpcResponse]
+    state batch_limit: Int
+    
+    fn new() -> Self {
+        JsonRpcServer { methods: Map.empty(), middleware: [], batch_limit: 100 }
+    }
+    
+    /// Register a method
+    fn method<P: Deserialize, R: Serialize>(name: String, handler: fn(P) -> Result<R, RpcError>) -> Self {
+        self.methods.set(name, RpcMethod {
+            name: name,
+            handler: |req| {
+                let params = req.params::<P>()?
+                let result = handler(params)?
+                Ok(json.encode(result))
+            },
+            params_schema: None,
+            result_schema: None,
+            description: None
+        })
+        self
+    }
+    
+    /// Register method with context
+    fn method_with_context<P: Deserialize, R: Serialize>(name: String, handler: fn(P, RpcContext) -> Result<R, RpcError>) -> Self {
+        self.methods.set(name, RpcMethod {
+            name: name,
+            handler: |req| {
+                let params = req.params::<P>()?
+                let result = handler(params, req.context)?
+                Ok(json.encode(result))
+            },
+            params_schema: None,
+            result_schema: None,
+            description: None
+        })
+        self
+    }
+    
+    /// Add middleware
+    fn use(mw: fn(RpcRequest, fn(RpcRequest) -> RpcResponse) -> RpcResponse) -> Self {
+        self.middleware.push(mw)
+        self
+    }
+    
+    /// Set batch request limit
+    fn batch_limit(limit: Int) -> Self { self.batch_limit = limit; self }
+    
+    /// Handle JSON-RPC request
+    fn handle(input: String) -> String {
+        let parsed = json.parse(input)
+        
+        match parsed {
+            Ok(JsonValue.Array(requests)) => {
+                // Batch request
+                if requests.len() > self.batch_limit {
+                    return json.encode(RpcResponse.error(None, RpcError.InvalidRequest("Batch limit exceeded")))
+                }
+                let responses: [RpcResponse] = requests.iter()
+                    .filter_map(|req| self.handle_single(req))
+                    .collect()
+                json.encode(responses)
+            }
+            Ok(request) => {
+                // Single request
+                match self.handle_single(request) {
+                    Some(response) => json.encode(response),
+                    None => ""  // Notification, no response
+                }
+            }
+            Err(_) => json.encode(RpcResponse.error(None, RpcError.ParseError))
+        }
+    }
+    
+    fn handle_single(request: JsonValue) -> Option<RpcResponse> {
+        // Validate JSON-RPC structure
+        let jsonrpc = request.get("jsonrpc").and_then(|v| v.as_str())
+        if jsonrpc != Some("2.0") {
+            return Some(RpcResponse.error(None, RpcError.InvalidRequest("Invalid JSON-RPC version")))
+        }
+        
+        let method = match request.get("method").and_then(|v| v.as_str()) {
+            Some(m) => m,
+            None => return Some(RpcResponse.error(None, RpcError.InvalidRequest("Missing method")))
+        }
+        
+        let id = request.get("id").map(|v| match v {
+            JsonValue.String(s) => RpcId.String(s),
+            JsonValue.Number(n) => RpcId.Number(n as Int64),
+            _ => RpcId.Null
+        })
+        
+        let params = request.get("params").cloned().unwrap_or(JsonValue.Null)
+        
+        let rpc_request = RpcRequest {
+            id: id.clone(),
+            method: method.to_string(),
+            params: params,
+            context: RpcContext.new()
+        }
+        
+        // Check if notification
+        if id.is_none() {
+            self.execute(rpc_request)
+            return None
+        }
+        
+        // Execute with middleware chain
+        let response = self.execute_with_middleware(rpc_request)
+        Some(response)
+    }
+    
+    fn execute_with_middleware(req: RpcRequest) -> RpcResponse {
+        let chain = self.middleware.iter().rev().fold(
+            |r| self.execute(r),
+            |next, mw| |r| mw(r, next)
+        )
+        chain(req)
+    }
+    
+    fn execute(req: RpcRequest) -> RpcResponse {
+        match self.methods.get(req.method) {
+            Some(method) => {
+                match (method.handler)(req.clone()) {
+                    Ok(result) => RpcResponse.success(req.id.unwrap(), result),
+                    Err(e) => RpcResponse.error(req.id, e)
+                }
+            }
+            None => RpcResponse.error(req.id, RpcError.MethodNotFound(req.method))
+        }
+    }
+    
+    /// Create HTTP handler
+    fn http_handler() -> fn(Request) -> Response {
+        |req| {
+            if req.method != http.Method.POST {
+                return Response.new(Status.new(405))
+            }
+            
+            let body = req.text()
+            let result = self.handle(body)
+            
+            if result.is_empty() {
+                Response.new(Status.no_content())
+            } else {
+                Response.ok().json_raw(result)
+            }
+        }
+    }
+    
+    /// Start TCP server
+    fn listen_tcp(addr: String) -> Result<(), RpcError> {
+        let listener = TcpListener.bind(addr)?
+        
+        loop {
+            let (stream, _) = listener.accept()?
+            spawn {
+                self.handle_tcp_connection(stream)
+            }
+        }
+    }
+    
+    fn handle_tcp_connection(stream: TcpStream) {
+        let reader = BufReader.new(stream.clone())
+        let writer = BufWriter.new(stream)
+        
+        for line in reader.lines() {
+            let response = self.handle(line)
+            if !response.is_empty() {
+                writer.write_line(response)
+                writer.flush()
+            }
+        }
+    }
+}
+
+/// JSON-RPC 2.0 Client
+actor JsonRpcClient {
+    state transport: RpcTransport
+    state id_counter: Int64
+    state pending: Map<String, Sender<RpcResponse>>
+    
+    fn http(url: String) -> Self {
+        JsonRpcClient {
+            transport: RpcTransport.Http(HttpClient.new(), url),
+            id_counter: 0,
+            pending: Map.empty()
+        }
+    }
+    
+    fn tcp(addr: String) -> Result<Self, RpcError> {
+        let stream = TcpStream.connect(addr)?
+        Ok(JsonRpcClient {
+            transport: RpcTransport.Tcp(stream),
+            id_counter: 0,
+            pending: Map.empty()
+        })
+    }
+    
+    /// Call remote method
+    fn call<P: Serialize, R: Deserialize>(method: String, params: P) -> Result<R, RpcError> {
+        let id = self.next_id()
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0",
+            id: Some(id.clone()),
+            method: method,
+            params: json.encode(params)
+        }
+        
+        let response = self.send(request)?
+        
+        if let Some(error) = response.error {
+            return Err(RpcError.from_error_data(error))
+        }
+        
+        response.result
+            .ok_or(RpcError.InternalError("No result"))
+            .and_then(|r| json.decode::<R>(r).map_err(|e| RpcError.ParseError))
+    }
+    
+    /// Send notification (no response expected)
+    fn notify<P: Serialize>(method: String, params: P) -> Result<(), RpcError> {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0",
+            id: None,
+            method: method,
+            params: json.encode(params)
+        }
+        
+        self.send_no_response(request)
+    }
+    
+    /// Batch call
+    fn batch() -> BatchCall { BatchCall.new(self) }
+    
+    fn next_id() -> RpcId {
+        self.id_counter += 1
+        RpcId.Number(self.id_counter)
+    }
+    
+    fn send(request: JsonRpcRequest) -> Result<RpcResponse, RpcError> {
+        let body = json.encode(request)
+        
+        match self.transport {
+            RpcTransport.Http(client, url) => {
+                let response = client.post(url, body.as_bytes())?
+                let response_body = response.text()
+                json.decode::<RpcResponse>(response_body).map_err(|_| RpcError.ParseError)
+            }
+            RpcTransport.Tcp(stream) => {
+                stream.write_line(body)?
+                let response_line = stream.read_line()?
+                json.decode::<RpcResponse>(response_line).map_err(|_| RpcError.ParseError)
+            }
+        }
+    }
+    
+    fn send_no_response(request: JsonRpcRequest) -> Result<(), RpcError> {
+        let body = json.encode(request)
+        
+        match self.transport {
+            RpcTransport.Http(client, url) => {
+                client.post(url, body.as_bytes())?
+                Ok(())
+            }
+            RpcTransport.Tcp(stream) => {
+                stream.write_line(body)?
+                Ok(())
+            }
+        }
+    }
+}
+
+struct JsonRpcRequest {
+    jsonrpc: String
+    id: Option<RpcId>
+    method: String
+    params: JsonValue
+}
+
+/// Batch call builder
+struct BatchCall {
+    client: JsonRpcClient
+    requests: [JsonRpcRequest]
+}
+
+impl BatchCall {
+    fn new(client: JsonRpcClient) -> Self { BatchCall { client: client, requests: [] } }
+    
+    fn call<P: Serialize>(method: String, params: P) -> Self {
+        self.requests.push(JsonRpcRequest {
+            jsonrpc: "2.0",
+            id: Some(self.client.next_id()),
+            method: method,
+            params: json.encode(params)
+        })
+        self
+    }
+    
+    fn execute() -> Result<[RpcResponse], RpcError> {
+        let body = json.encode(self.requests)
+        
+        match self.client.transport {
+            RpcTransport.Http(client, url) => {
+                let response = client.post(url, body.as_bytes())?
+                json.decode::<[RpcResponse]>(response.text()).map_err(|_| RpcError.ParseError)
+            }
+            _ => Err(RpcError.InternalError("Batch not supported for this transport"))
+        }
+    }
+}
+
+enum RpcTransport {
+    Http(HttpClient, String)
+    Tcp(TcpStream)
+}
+
+// =============================================================================
+// MessagePack RPC
+// =============================================================================
+
+/// MessagePack RPC Server
+actor MsgPackRpcServer {
+    state methods: Map<String, fn([MsgPack]) -> Result<MsgPack, RpcError>>
+    
+    fn new() -> Self { MsgPackRpcServer { methods: Map.empty() } }
+    
+    fn method(name: String, handler: fn([MsgPack]) -> Result<MsgPack, RpcError>) -> Self {
+        self.methods.set(name, handler)
+        self
+    }
+    
+    fn handle(data: [UInt8]) -> [UInt8] {
+        let msg = msgpack.decode::<[MsgPack]>(data).unwrap_or([])
+        
+        if msg.len() < 3 {
+            return self.encode_error(0, RpcError.InvalidRequest("Invalid message format"))
+        }
+        
+        let msg_type = msg[0].as_int().unwrap_or(-1)
+        let msg_id = msg[1].as_int().unwrap_or(0) as Int
+        
+        match msg_type {
+            0 => {
+                // Request
+                let method = msg[2].as_str().unwrap_or("")
+                let params = msg.get(3).cloned().unwrap_or(MsgPack.Array([]))
+                
+                match self.methods.get(method) {
+                    Some(handler) => {
+                        let args = params.as_array().unwrap_or([])
+                        match handler(args) {
+                            Ok(result) => self.encode_response(msg_id, result),
+                            Err(e) => self.encode_error(msg_id, e)
+                        }
+                    }
+                    None => self.encode_error(msg_id, RpcError.MethodNotFound(method.to_string()))
+                }
+            }
+            2 => {
+                // Notification
+                let method = msg[2].as_str().unwrap_or("")
+                let params = msg.get(3).cloned().unwrap_or(MsgPack.Array([]))
+                
+                if let Some(handler) = self.methods.get(method) {
+                    let args = params.as_array().unwrap_or([])
+                    let _ = handler(args)
+                }
+                []
+            }
+            _ => self.encode_error(msg_id, RpcError.InvalidRequest("Unknown message type"))
+        }
+    }
+    
+    fn encode_response(id: Int, result: MsgPack) -> [UInt8] {
+        msgpack.encode([MsgPack.Int(1), MsgPack.Int(id as Int64), MsgPack.Nil, result])
+    }
+    
+    fn encode_error(id: Int, error: RpcError) -> [UInt8] {
+        msgpack.encode([MsgPack.Int(1), MsgPack.Int(id as Int64), MsgPack.String(error.to_string()), MsgPack.Nil])
+    }
+    
+    fn listen(addr: String) -> Result<(), RpcError> {
+        let listener = TcpListener.bind(addr)?
+        
+        loop {
+            let (stream, _) = listener.accept()?
+            spawn { self.handle_connection(stream) }
+        }
+    }
+    
+    fn handle_connection(stream: TcpStream) {
+        loop {
+            let len_bytes = stream.read_exact(4)?
+            let len = u32.from_be_bytes(len_bytes) as Int
+            let data = stream.read_exact(len)?
+            
+            let response = self.handle(data)
+            if !response.is_empty() {
+                stream.write_all((response.len() as u32).to_be_bytes())?
+                stream.write_all(response)?
+            }
+        }
+    }
+}
+
+/// MessagePack RPC Client
+actor MsgPackRpcClient {
+    state stream: TcpStream
+    state id_counter: Int
+    
+    fn connect(addr: String) -> Result<Self, RpcError> {
+        let stream = TcpStream.connect(addr)?
+        Ok(MsgPackRpcClient { stream: stream, id_counter: 0 })
+    }
+    
+    fn call<R: Deserialize>(method: String, args: [MsgPack]) -> Result<R, RpcError> {
+        self.id_counter += 1
+        let msg = [MsgPack.Int(0), MsgPack.Int(self.id_counter as Int64), MsgPack.String(method), MsgPack.Array(args)]
+        let data = msgpack.encode(msg)
+        
+        self.stream.write_all((data.len() as u32).to_be_bytes())?
+        self.stream.write_all(data)?
+        
+        let len_bytes = self.stream.read_exact(4)?
+        let len = u32.from_be_bytes(len_bytes) as Int
+        let response_data = self.stream.read_exact(len)?
+        
+        let response = msgpack.decode::<[MsgPack]>(response_data)?
+        
+        if response.len() >= 4 {
+            if !response[2].is_nil() {
+                return Err(RpcError.ServerError(response[2].as_str().unwrap_or("Unknown error").to_string()))
+            }
+            msgpack.decode::<R>(msgpack.encode(response[3].clone())).map_err(|e| RpcError.ParseError)
+        } else {
+            Err(RpcError.InvalidRequest("Invalid response format"))
+        }
+    }
+    
+    fn notify(method: String, args: [MsgPack]) -> Result<(), RpcError> {
+        let msg = [MsgPack.Int(2), MsgPack.String(method), MsgPack.Array(args)]
+        let data = msgpack.encode(msg)
+        
+        self.stream.write_all((data.len() as u32).to_be_bytes())?
+        self.stream.write_all(data)?
+        Ok(())
+    }
+}
+
+// =============================================================================
+// RPC Service Definition
+// =============================================================================
+
+/// Define RPC service with macro
+macro rpc_service($name:ident { $($method:ident($($param:ident: $ptype:ty),*) -> $rtype:ty;)* }) {
+    struct $name;
+    
+    impl $name {
+        $(
+            fn $method($($param: $ptype),*) -> Result<$rtype, RpcError>;
+        )*
+    }
+    
+    // Generate client
+    struct ${name}Client {
+        rpc: JsonRpcClient
+    }
+    
+    impl ${name}Client {
+        fn new(url: String) -> Self {
+            ${name}Client { rpc: JsonRpcClient.http(url) }
+        }
+        
+        $(
+            fn $method($($param: $ptype),*) -> Result<$rtype, RpcError> {
+                self.rpc.call(stringify!($method), ($($param),*))
+            }
+        )*
+    }
+}
+
+// =============================================================================
+// Error Types
+// =============================================================================
+
+/// RPC Error
+enum RpcError {
+    ParseError
+    InvalidRequest(String)
+    MethodNotFound(String)
+    InvalidParams(String)
+    InternalError(String)
+    ServerError(String)
+    TransportError(String)
+    Timeout
+    Custom { code: Int, message: String, data: Option<JsonValue> }
+}
+
+impl RpcError {
+    fn code() -> Int {
+        match self {
+            ParseError => -32700,
+            InvalidRequest(_) => -32600,
+            MethodNotFound(_) => -32601,
+            InvalidParams(_) => -32602,
+            InternalError(_) => -32603,
+            ServerError(_) => -32000,
+            Custom { code, .. } => code,
+            _ => -32000
+        }
+    }
+    
+    fn to_error_data() -> RpcErrorData {
+        RpcErrorData {
+            code: self.code(),
+            message: self.to_string(),
+            data: match self { Custom { data, .. } => data, _ => None }
+        }
+    }
+    
+    fn from_error_data(data: RpcErrorData) -> Self {
+        match data.code {
+            -32700 => RpcError.ParseError,
+            -32600 => RpcError.InvalidRequest(data.message),
+            -32601 => RpcError.MethodNotFound(data.message),
+            -32602 => RpcError.InvalidParams(data.message),
+            -32603 => RpcError.InternalError(data.message),
+            _ => RpcError.Custom { code: data.code, message: data.message, data: data.data }
+        }
+    }
+}
+
+impl Display for RpcError {
+    fn fmt(f: Formatter) {
+        match self {
+            ParseError => f.write("Parse error"),
+            InvalidRequest(msg) => f.write(format!("Invalid request: {}", msg)),
+            MethodNotFound(method) => f.write(format!("Method not found: {}", method)),
+            InvalidParams(msg) => f.write(format!("Invalid params: {}", msg)),
+            InternalError(msg) => f.write(format!("Internal error: {}", msg)),
+            ServerError(msg) => f.write(format!("Server error: {}", msg)),
+            TransportError(msg) => f.write(format!("Transport error: {}", msg)),
+            Timeout => f.write("Request timeout"),
+            Custom { message, .. } => f.write(message)
+        }
+    }
+}
+
+struct RpcErrorData {
+    code: Int
+    message: String
+    data: Option<JsonValue>
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "json-rpc server" {
+    let server = JsonRpcServer.new()
+        .method::<(Int, Int), Int>("add", |(a, b)| Ok(a + b))
+        .method::<String, Int>("strlen", |s| Ok(s.len()))
+    
+    let request = r#"{"jsonrpc":"2.0","id":1,"method":"add","params":[2,3]}"#
+    let response = server.handle(request)
+    
+    assert(response.contains("\"result\":5"))?
+}
+
+test "json-rpc batch" {
+    let server = JsonRpcServer.new()
+        .method::<Int, Int>("double", |n| Ok(n * 2))
+    
+    let batch = r#"[
+        {"jsonrpc":"2.0","id":1,"method":"double","params":[5]},
+        {"jsonrpc":"2.0","id":2,"method":"double","params":[10]}
+    ]"#
+    
+    let response = server.handle(batch)
+    assert(response.contains("\"result\":10"))?
+    assert(response.contains("\"result\":20"))?
+}
+
+test "json-rpc notification" {
+    let server = JsonRpcServer.new()
+        .method::<String, ()>("log", |msg| { println(msg); Ok(()) })
+    
+    let notification = r#"{"jsonrpc":"2.0","method":"log","params":["hello"]}"#
+    let response = server.handle(notification)
+    
+    assert(response.is_empty())?  // No response for notifications
+}
+
+test "rpc error codes" {
+    assert_eq(RpcError.ParseError.code(), -32700)?
+    assert_eq(RpcError.MethodNotFound("test").code(), -32601)?
+    assert_eq(RpcError.InvalidParams("bad").code(), -32602)?
+}
+
+test "method not found" {
+    let server = JsonRpcServer.new()
+    let request = r#"{"jsonrpc":"2.0","id":1,"method":"unknown","params":[]}"#
+    let response = server.handle(request)
+    
+    assert(response.contains("-32601"))?
+}

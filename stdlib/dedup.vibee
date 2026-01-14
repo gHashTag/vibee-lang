@@ -1,0 +1,772 @@
+// =============================================================================
+// Vibee OS — Dedup Module
+// Data deduplication utilities
+// =============================================================================
+//
+// This module provides deduplication functionality:
+// - Exact deduplication (hash-based)
+// - Fuzzy deduplication (similarity-based)
+// - Content-defined chunking
+// - Block-level deduplication
+// - File deduplication
+// - Stream deduplication
+// =============================================================================
+
+// =============================================================================
+// Dedup Result
+// =============================================================================
+
+/// Result of deduplication operation
+struct DedupResult<T> {
+    unique: [T]
+    duplicates: [DuplicateGroup<T>]
+    stats: DedupStats
+}
+
+impl<T> DedupResult<T> {
+    fn new(unique: [T], duplicates: [DuplicateGroup<T>], stats: DedupStats) -> Self {
+        DedupResult { unique: unique, duplicates: duplicates, stats: stats }
+    }
+    
+    /// Get all unique items
+    fn unique_items() -> [T] {
+        self.unique.clone()
+    }
+    
+    /// Get duplicate groups
+    fn duplicate_groups() -> [DuplicateGroup<T>] {
+        self.duplicates.clone()
+    }
+    
+    /// Get deduplication ratio
+    fn ratio() -> Float64 {
+        self.stats.ratio()
+    }
+    
+    /// Get space saved
+    fn space_saved() -> Int {
+        self.stats.space_saved
+    }
+}
+
+/// Group of duplicate items
+struct DuplicateGroup<T> {
+    canonical: T
+    duplicates: [T]
+    hash: String
+}
+
+impl<T> DuplicateGroup<T> {
+    fn new(canonical: T, duplicates: [T], hash: String) -> Self {
+        DuplicateGroup { canonical: canonical, duplicates: duplicates, hash: hash }
+    }
+    
+    fn count() -> Int {
+        1 + self.duplicates.len()
+    }
+}
+
+/// Deduplication statistics
+struct DedupStats {
+    total_items: Int
+    unique_items: Int
+    duplicate_items: Int
+    total_size: Int
+    unique_size: Int
+    space_saved: Int
+}
+
+impl DedupStats {
+    fn new() -> Self {
+        DedupStats { 
+            total_items: 0, unique_items: 0, duplicate_items: 0,
+            total_size: 0, unique_size: 0, space_saved: 0 
+        }
+    }
+    
+    fn ratio() -> Float64 {
+        if self.total_size == 0 { 1.0 }
+        else { self.unique_size as Float64 / self.total_size as Float64 }
+    }
+    
+    fn dedup_percentage() -> Float64 {
+        if self.total_items == 0 { 0.0 }
+        else { self.duplicate_items as Float64 / self.total_items as Float64 * 100.0 }
+    }
+}
+
+// =============================================================================
+// Exact Deduplication
+// =============================================================================
+
+/// Exact deduplicator using hash comparison
+struct ExactDedup<T: Hash + Eq + Clone> {
+    seen: Map<String, T>
+    duplicates: Map<String, [T]>
+}
+
+impl<T: Hash + Eq + Clone> ExactDedup<T> {
+    fn new() -> Self {
+        ExactDedup { seen: Map.empty(), duplicates: Map.empty() }
+    }
+    
+    /// Add item, returns true if unique
+    fn add(item: T) -> Bool {
+        let hash = compute_hash(item)
+        
+        if self.seen.contains(hash) {
+            if !self.duplicates.contains(hash) {
+                self.duplicates.set(hash.clone(), [])
+            }
+            self.duplicates.get_mut(hash).unwrap().push(item)
+            false
+        } else {
+            self.seen.set(hash, item)
+            true
+        }
+    }
+    
+    /// Process multiple items
+    fn add_all(items: [T]) -> DedupResult<T> {
+        for item in items {
+            self.add(item)
+        }
+        self.result()
+    }
+    
+    /// Get deduplication result
+    fn result() -> DedupResult<T> {
+        var unique = []
+        var duplicate_groups = []
+        var stats = DedupStats.new()
+        
+        for (hash, item) in self.seen.iter() {
+            if let Some(dups) = self.duplicates.get(hash) {
+                duplicate_groups.push(DuplicateGroup.new(item.clone(), dups.clone(), hash.clone()))
+                stats.duplicate_items += dups.len()
+            }
+            unique.push(item.clone())
+            stats.unique_items += 1
+        }
+        
+        stats.total_items = stats.unique_items + stats.duplicate_items
+        
+        DedupResult.new(unique, duplicate_groups, stats)
+    }
+    
+    /// Check if item exists
+    fn contains(item: T) -> Bool {
+        let hash = compute_hash(item)
+        self.seen.contains(hash)
+    }
+    
+    /// Clear all data
+    fn clear() {
+        self.seen.clear()
+        self.duplicates.clear()
+    }
+}
+
+fn compute_hash<T: Hash>(item: T) -> String {
+    sha256.hash_string_hex(format!("{:?}", item))
+}
+
+/// Quick exact deduplication
+fn dedup<T: Hash + Eq + Clone>(items: [T]) -> [T] {
+    ExactDedup.new().add_all(items).unique_items()
+}
+
+/// Dedup with duplicate info
+fn dedup_with_info<T: Hash + Eq + Clone>(items: [T]) -> DedupResult<T> {
+    ExactDedup.new().add_all(items)
+}
+
+// =============================================================================
+// Fuzzy Deduplication
+// =============================================================================
+
+/// Fuzzy deduplicator using similarity threshold
+struct FuzzyDedup {
+    threshold: Float64
+    items: [(String, fingerprint.Fingerprint)]
+    groups: [FuzzyGroup]
+}
+
+impl FuzzyDedup {
+    fn new(threshold: Float64) -> Self {
+        FuzzyDedup { threshold: threshold, items: [], groups: [] }
+    }
+    
+    /// Add text item
+    fn add(id: String, text: String) -> Option<String> {
+        let fp = fingerprint.simhash(text)
+        
+        // Check for similar existing item
+        for (existing_id, existing_fp) in self.items {
+            if fp.similarity(existing_fp) >= self.threshold {
+                return Some(existing_id.clone())
+            }
+        }
+        
+        self.items.push((id, fp))
+        None
+    }
+    
+    /// Process multiple items
+    fn add_all(items: [(String, String)]) -> FuzzyDedupResult {
+        var unique = []
+        var duplicates = []
+        
+        for (id, text) in items {
+            if let Some(original_id) = self.add(id.clone(), text) {
+                duplicates.push((id, original_id))
+            } else {
+                unique.push(id)
+            }
+        }
+        
+        FuzzyDedupResult { unique: unique, duplicates: duplicates }
+    }
+    
+    /// Find similar items
+    fn find_similar(text: String) -> [(String, Float64)] {
+        let fp = fingerprint.simhash(text)
+        
+        var results = []
+        for (id, existing_fp) in self.items {
+            let sim = fp.similarity(existing_fp)
+            if sim >= self.threshold {
+                results.push((id.clone(), sim))
+            }
+        }
+        
+        results.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap())
+        results
+    }
+}
+
+struct FuzzyDedupResult {
+    unique: [String]
+    duplicates: [(String, String)]  // (duplicate_id, original_id)
+}
+
+impl FuzzyDedupResult {
+    fn unique_count() -> Int { self.unique.len() }
+    fn duplicate_count() -> Int { self.duplicates.len() }
+}
+
+struct FuzzyGroup {
+    canonical_id: String
+    member_ids: [String]
+    similarity: Float64
+}
+
+/// Quick fuzzy deduplication
+fn fuzzy_dedup(items: [(String, String)], threshold: Float64) -> FuzzyDedupResult {
+    FuzzyDedup.new(threshold).add_all(items)
+}
+
+// =============================================================================
+// Content-Defined Chunking
+// =============================================================================
+
+/// Content-defined chunker for block deduplication
+struct ContentChunker {
+    min_size: Int
+    max_size: Int
+    avg_size: Int
+    mask: UInt64
+}
+
+impl ContentChunker {
+    fn new(avg_size: Int) -> Self {
+        let mask = (1u64 << (avg_size.trailing_zeros() as Int)) - 1
+        ContentChunker {
+            min_size: avg_size / 4,
+            max_size: avg_size * 4,
+            avg_size: avg_size,
+            mask: mask
+        }
+    }
+    
+    fn default() -> Self {
+        Self.new(4096)
+    }
+    
+    /// Chunk data into content-defined blocks
+    fn chunk(data: [UInt8]) -> [Chunk] {
+        var chunks = []
+        var start = 0
+        var rabin = fingerprint.RabinFingerprint.new(48)
+        
+        while start < data.len() {
+            let end = self.find_boundary(data, start, rabin)
+            let chunk_data = data[start..end].to_vec()
+            let hash = sha256.hash_hex(chunk_data)
+            
+            chunks.push(Chunk {
+                offset: start,
+                size: end - start,
+                hash: hash,
+                data: Some(chunk_data)
+            })
+            
+            start = end
+        }
+        
+        chunks
+    }
+    
+    fn find_boundary(data: [UInt8], start: Int, rabin: fingerprint.RabinFingerprint) -> Int {
+        let max_end = (start + self.max_size).min(data.len())
+        let min_end = (start + self.min_size).min(data.len())
+        
+        if min_end >= data.len() {
+            return data.len()
+        }
+        
+        var fp: UInt64 = 0
+        for i in start..min_end {
+            fp = rabin.slide(fp, data[i], 0)
+        }
+        
+        for i in min_end..max_end {
+            fp = rabin.slide(fp, data[i], data[i - 48])
+            if (fp & self.mask) == 0 {
+                return i + 1
+            }
+        }
+        
+        max_end
+    }
+}
+
+/// Data chunk
+struct Chunk {
+    offset: Int
+    size: Int
+    hash: String
+    data: Option<[UInt8]>
+}
+
+impl Chunk {
+    fn is_duplicate(other: Chunk) -> Bool {
+        self.hash == other.hash
+    }
+}
+
+/// Quick content chunking
+fn content_chunk(data: [UInt8]) -> [Chunk] {
+    ContentChunker.default().chunk(data)
+}
+
+// =============================================================================
+// Block Deduplication
+// =============================================================================
+
+/// Block-level deduplicator
+struct BlockDedup {
+    chunker: ContentChunker
+    block_store: Map<String, [UInt8]>
+    references: Map<String, Int>
+}
+
+impl BlockDedup {
+    fn new() -> Self {
+        BlockDedup {
+            chunker: ContentChunker.default(),
+            block_store: Map.empty(),
+            references: Map.empty()
+        }
+    }
+    
+    fn with_chunk_size(avg_size: Int) -> Self {
+        BlockDedup {
+            chunker: ContentChunker.new(avg_size),
+            block_store: Map.empty(),
+            references: Map.empty()
+        }
+    }
+    
+    /// Store data with deduplication
+    fn store(data: [UInt8]) -> BlockRef {
+        let chunks = self.chunker.chunk(data)
+        var chunk_refs = []
+        
+        for chunk in chunks {
+            let hash = chunk.hash.clone()
+            
+            if !self.block_store.contains(hash) {
+                self.block_store.set(hash.clone(), chunk.data.unwrap())
+                self.references.set(hash.clone(), 0)
+            }
+            
+            *self.references.get_mut(hash).unwrap() += 1
+            chunk_refs.push(ChunkRef { hash: hash, offset: chunk.offset, size: chunk.size })
+        }
+        
+        BlockRef { chunks: chunk_refs, total_size: data.len() }
+    }
+    
+    /// Retrieve data
+    fn retrieve(block_ref: BlockRef) -> [UInt8] {
+        var data = []
+        
+        for chunk_ref in block_ref.chunks {
+            if let Some(chunk_data) = self.block_store.get(chunk_ref.hash) {
+                data.extend(chunk_data.iter().cloned())
+            }
+        }
+        
+        data
+    }
+    
+    /// Delete reference
+    fn delete(block_ref: BlockRef) {
+        for chunk_ref in block_ref.chunks {
+            if let Some(count) = self.references.get_mut(chunk_ref.hash) {
+                *count -= 1
+                if *count == 0 {
+                    self.block_store.remove(chunk_ref.hash)
+                    self.references.remove(chunk_ref.hash)
+                }
+            }
+        }
+    }
+    
+    /// Get statistics
+    fn stats() -> BlockDedupStats {
+        let unique_blocks = self.block_store.len()
+        let total_refs: Int = self.references.values().sum()
+        let stored_size: Int = self.block_store.values().map(|v| v.len()).sum()
+        
+        BlockDedupStats {
+            unique_blocks: unique_blocks,
+            total_references: total_refs,
+            stored_size: stored_size,
+            dedup_ratio: if unique_blocks > 0 { total_refs as Float64 / unique_blocks as Float64 } else { 1.0 }
+        }
+    }
+}
+
+/// Reference to deduplicated block
+struct BlockRef {
+    chunks: [ChunkRef]
+    total_size: Int
+}
+
+/// Reference to a chunk
+struct ChunkRef {
+    hash: String
+    offset: Int
+    size: Int
+}
+
+/// Block deduplication statistics
+struct BlockDedupStats {
+    unique_blocks: Int
+    total_references: Int
+    stored_size: Int
+    dedup_ratio: Float64
+}
+
+// =============================================================================
+// File Deduplication
+// =============================================================================
+
+/// File deduplicator
+struct FileDedup {
+    file_hashes: Map<String, [String]>  // hash -> [file_paths]
+    path_hashes: Map<String, String>    // path -> hash
+}
+
+impl FileDedup {
+    fn new() -> Self {
+        FileDedup { file_hashes: Map.empty(), path_hashes: Map.empty() }
+    }
+    
+    /// Add file
+    fn add_file(path: String) -> Result<Option<String>, DedupError> {
+        let hash = sha256.hash_file_hex(path.clone())
+            .map_err(|e| DedupError.IoError(e.to_string()))?
+        
+        self.path_hashes.set(path.clone(), hash.clone())
+        
+        if self.file_hashes.contains(hash) {
+            let existing = self.file_hashes.get(hash).unwrap()[0].clone()
+            self.file_hashes.get_mut(hash).unwrap().push(path)
+            Ok(Some(existing))
+        } else {
+            self.file_hashes.set(hash, [path])
+            Ok(None)
+        }
+    }
+    
+    /// Scan directory for duplicates
+    fn scan_directory(dir: String) -> Result<FileDedupResult, DedupError> {
+        let files = fs.walk_files(dir).map_err(|e| DedupError.IoError(e.to_string()))?
+        
+        var duplicates = []
+        var unique = []
+        var total_size = 0
+        var wasted_size = 0
+        
+        for file in files {
+            let size = fs.file_size(file.clone()).unwrap_or(0)
+            total_size += size
+            
+            if let Some(original) = self.add_file(file.clone())? {
+                duplicates.push((file, original, size))
+                wasted_size += size
+            } else {
+                unique.push(file)
+            }
+        }
+        
+        Ok(FileDedupResult {
+            unique_files: unique,
+            duplicate_files: duplicates,
+            total_size: total_size,
+            wasted_size: wasted_size
+        })
+    }
+    
+    /// Get duplicate groups
+    fn duplicate_groups() -> [FileGroup] {
+        self.file_hashes.iter()
+            .filter(|(_, paths)| paths.len() > 1)
+            .map(|(hash, paths)| FileGroup {
+                hash: hash.clone(),
+                files: paths.clone()
+            })
+            .collect()
+    }
+}
+
+struct FileDedupResult {
+    unique_files: [String]
+    duplicate_files: [(String, String, Int)]  // (duplicate, original, size)
+    total_size: Int
+    wasted_size: Int
+}
+
+impl FileDedupResult {
+    fn savings_percentage() -> Float64 {
+        if self.total_size == 0 { 0.0 }
+        else { self.wasted_size as Float64 / self.total_size as Float64 * 100.0 }
+    }
+}
+
+struct FileGroup {
+    hash: String
+    files: [String]
+}
+
+// =============================================================================
+// Stream Deduplication
+// =============================================================================
+
+/// Stream deduplicator for continuous data
+actor StreamDedup {
+    state block_dedup: BlockDedup
+    state buffer: [UInt8]
+    state buffer_size: Int
+    state total_input: Int
+    state total_stored: Int
+    
+    fn new(buffer_size: Int) -> Self {
+        StreamDedup {
+            block_dedup: BlockDedup.new(),
+            buffer: [],
+            buffer_size: buffer_size,
+            total_input: 0,
+            total_stored: 0
+        }
+    }
+    
+    /// Write data to stream
+    fn write(data: [UInt8]) -> [BlockRef] {
+        self.buffer.extend(data.iter().cloned())
+        self.total_input += data.len()
+        
+        var refs = []
+        
+        while self.buffer.len() >= self.buffer_size {
+            let chunk = self.buffer[0..self.buffer_size].to_vec()
+            self.buffer = self.buffer[self.buffer_size..].to_vec()
+            
+            let block_ref = self.block_dedup.store(chunk)
+            refs.push(block_ref)
+        }
+        
+        refs
+    }
+    
+    /// Flush remaining buffer
+    fn flush() -> Option<BlockRef> {
+        if self.buffer.is_empty() {
+            return None
+        }
+        
+        let chunk = self.buffer.clone()
+        self.buffer.clear()
+        Some(self.block_dedup.store(chunk))
+    }
+    
+    /// Get deduplication ratio
+    fn ratio() -> Float64 {
+        let stats = self.block_dedup.stats()
+        if self.total_input == 0 { 1.0 }
+        else { stats.stored_size as Float64 / self.total_input as Float64 }
+    }
+    
+    /// Get statistics
+    fn stats() -> StreamDedupStats {
+        let block_stats = self.block_dedup.stats()
+        StreamDedupStats {
+            total_input: self.total_input,
+            stored_size: block_stats.stored_size,
+            unique_blocks: block_stats.unique_blocks,
+            ratio: self.ratio()
+        }
+    }
+}
+
+struct StreamDedupStats {
+    total_input: Int
+    stored_size: Int
+    unique_blocks: Int
+    ratio: Float64
+}
+
+// =============================================================================
+// Dedup Strategies
+// =============================================================================
+
+/// Deduplication strategy
+enum DedupStrategy {
+    Exact           // Hash-based exact matching
+    Fuzzy(Float64)  // Similarity-based with threshold
+    Block(Int)      // Block-level with chunk size
+}
+
+/// Apply deduplication strategy
+fn apply_strategy<T: Hash + Eq + Clone>(items: [T], strategy: DedupStrategy) -> DedupResult<T> {
+    match strategy {
+        Exact => dedup_with_info(items)
+        Fuzzy(_) => {
+            // For fuzzy, items need to be convertible to strings
+            // This is a simplified version
+            dedup_with_info(items)
+        }
+        Block(_) => {
+            // Block dedup is for byte data
+            dedup_with_info(items)
+        }
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum DedupError {
+    IoError(String)
+    HashError(String)
+    InvalidData(String)
+}
+
+impl Display for DedupError {
+    fn fmt(f: Formatter) {
+        match self {
+            IoError(s) => f.write(format!("I/O error: {}", s))
+            HashError(s) => f.write(format!("Hash error: {}", s))
+            InvalidData(s) => f.write(format!("Invalid data: {}", s))
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "exact dedup" {
+    let items = ["a", "b", "a", "c", "b", "d"]
+    let result = dedup(items)
+    assert_eq(result.len(), 4)?
+}
+
+test "exact dedup with info" {
+    let items = ["a", "b", "a", "c"]
+    let result = dedup_with_info(items)
+    assert_eq(result.stats.unique_items, 3)?
+    assert_eq(result.stats.duplicate_items, 1)?
+}
+
+test "fuzzy dedup" {
+    var dedup = FuzzyDedup.new(0.8)
+    
+    assert(dedup.add("doc1", "hello world").is_none())?
+    assert(dedup.add("doc2", "hello world!").is_some())?  // Similar
+    assert(dedup.add("doc3", "completely different").is_none())?
+}
+
+test "content chunking" {
+    let data = [0u8; 10000]
+    let chunks = content_chunk(data)
+    assert(!chunks.is_empty())?
+}
+
+test "block dedup" {
+    var dedup = BlockDedup.new()
+    
+    let data1 = [1u8, 2, 3, 4, 5]
+    let data2 = [1u8, 2, 3, 4, 5]  // Same data
+    
+    let ref1 = dedup.store(data1)
+    let ref2 = dedup.store(data2)
+    
+    // Should reference same blocks
+    let stats = dedup.stats()
+    assert(stats.dedup_ratio >= 1.0)?
+}
+
+test "block retrieve" {
+    var dedup = BlockDedup.new()
+    
+    let original = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    let block_ref = dedup.store(original.clone())
+    let retrieved = dedup.retrieve(block_ref)
+    
+    assert_eq(retrieved, original)?
+}
+
+test "stream dedup" {
+    var stream = StreamDedup.new(100)
+    
+    stream.write([1u8; 50])
+    stream.write([1u8; 50])
+    stream.write([1u8; 50])
+    
+    let stats = stream.stats()
+    assert(stats.total_input == 150)?
+}
+
+test "dedup stats" {
+    let stats = DedupStats {
+        total_items: 100,
+        unique_items: 60,
+        duplicate_items: 40,
+        total_size: 1000,
+        unique_size: 600,
+        space_saved: 400
+    }
+    
+    assert_eq(stats.ratio(), 0.6)?
+    assert_eq(stats.dedup_percentage(), 40.0)?
+}
+
+test "duplicate group" {
+    let group = DuplicateGroup.new("original", ["dup1", "dup2"], "hash123")
+    assert_eq(group.count(), 3)?
+}

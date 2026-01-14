@@ -1,0 +1,466 @@
+// =============================================================================
+// Vibee OS — Sitemap Module
+// XML Sitemap generation for SEO
+// =============================================================================
+
+use result::{Result, Ok, Err}
+use datetime::{DateTime}
+
+// =============================================================================
+// Sitemap Types
+// =============================================================================
+
+/// Change frequency
+enum ChangeFreq {
+    Always,
+    Hourly,
+    Daily,
+    Weekly,
+    Monthly,
+    Yearly,
+    Never
+}
+
+impl ChangeFreq {
+    fn to_string() -> String {
+        match self {
+            ChangeFreq.Always => "always",
+            ChangeFreq.Hourly => "hourly",
+            ChangeFreq.Daily => "daily",
+            ChangeFreq.Weekly => "weekly",
+            ChangeFreq.Monthly => "monthly",
+            ChangeFreq.Yearly => "yearly",
+            ChangeFreq.Never => "never"
+        }
+    }
+}
+
+// =============================================================================
+// Sitemap URL Entry
+// =============================================================================
+
+/// Sitemap URL entry
+struct SitemapUrl {
+    loc: String,
+    lastmod: Option<DateTime>,
+    changefreq: Option<ChangeFreq>,
+    priority: Option<Float>,
+    images: [SitemapImage],
+    videos: [SitemapVideo],
+    alternates: Map<String, String>
+}
+
+impl SitemapUrl {
+    fn new(loc: String) -> Self {
+        SitemapUrl {
+            loc: loc,
+            lastmod: None,
+            changefreq: None,
+            priority: None,
+            images: [],
+            videos: [],
+            alternates: Map.empty()
+        }
+    }
+    
+    fn with_lastmod(date: DateTime) -> Self {
+        self.lastmod = Some(date)
+        self
+    }
+    
+    fn with_changefreq(freq: ChangeFreq) -> Self {
+        self.changefreq = Some(freq)
+        self
+    }
+    
+    fn with_priority(priority: Float) -> Self {
+        self.priority = Some(priority.clamp(0.0, 1.0))
+        self
+    }
+    
+    fn add_image(image: SitemapImage) {
+        self.images.push(image)
+    }
+    
+    fn add_video(video: SitemapVideo) {
+        self.videos.push(video)
+    }
+    
+    fn add_alternate(lang: String, url: String) {
+        self.alternates.set(lang, url)
+    }
+    
+    fn render_xml() -> String {
+        var xml = format!("  <url>\n    <loc>{}</loc>\n", escape_xml(self.loc.clone()))
+        
+        if let Some(lastmod) = self.lastmod {
+            xml.push_str(format!("    <lastmod>{}</lastmod>\n", lastmod.format("%Y-%m-%d")))
+        }
+        
+        if let Some(freq) = self.changefreq.clone() {
+            xml.push_str(format!("    <changefreq>{}</changefreq>\n", freq.to_string()))
+        }
+        
+        if let Some(priority) = self.priority {
+            xml.push_str(format!("    <priority>{:.1}</priority>\n", priority))
+        }
+        
+        for image in self.images.iter() {
+            xml.push_str(image.render_xml())
+        }
+        
+        for video in self.videos.iter() {
+            xml.push_str(video.render_xml())
+        }
+        
+        for (lang, url) in self.alternates.iter() {
+            xml.push_str(format!("    <xhtml:link rel=\"alternate\" hreflang=\"{}\" href=\"{}\"/>\n", 
+                lang, escape_xml(url.clone())))
+        }
+        
+        xml.push_str("  </url>\n")
+        xml
+    }
+}
+
+/// Sitemap image
+struct SitemapImage {
+    loc: String,
+    caption: Option<String>,
+    title: Option<String>,
+    license: Option<String>
+}
+
+impl SitemapImage {
+    fn new(loc: String) -> Self {
+        SitemapImage {
+            loc: loc,
+            caption: None,
+            title: None,
+            license: None
+        }
+    }
+    
+    fn with_caption(caption: String) -> Self {
+        self.caption = Some(caption)
+        self
+    }
+    
+    fn with_title(title: String) -> Self {
+        self.title = Some(title)
+        self
+    }
+    
+    fn render_xml() -> String {
+        var xml = "    <image:image>\n"
+        xml.push_str(format!("      <image:loc>{}</image:loc>\n", escape_xml(self.loc.clone())))
+        
+        if let Some(caption) = self.caption.clone() {
+            xml.push_str(format!("      <image:caption>{}</image:caption>\n", escape_xml(caption)))
+        }
+        
+        if let Some(title) = self.title.clone() {
+            xml.push_str(format!("      <image:title>{}</image:title>\n", escape_xml(title)))
+        }
+        
+        xml.push_str("    </image:image>\n")
+        xml
+    }
+}
+
+/// Sitemap video
+struct SitemapVideo {
+    thumbnail_loc: String,
+    title: String,
+    description: String,
+    content_loc: Option<String>,
+    player_loc: Option<String>,
+    duration: Option<Int>
+}
+
+impl SitemapVideo {
+    fn new(thumbnail: String, title: String, description: String) -> Self {
+        SitemapVideo {
+            thumbnail_loc: thumbnail,
+            title: title,
+            description: description,
+            content_loc: None,
+            player_loc: None,
+            duration: None
+        }
+    }
+    
+    fn render_xml() -> String {
+        var xml = "    <video:video>\n"
+        xml.push_str(format!("      <video:thumbnail_loc>{}</video:thumbnail_loc>\n", escape_xml(self.thumbnail_loc.clone())))
+        xml.push_str(format!("      <video:title>{}</video:title>\n", escape_xml(self.title.clone())))
+        xml.push_str(format!("      <video:description>{}</video:description>\n", escape_xml(self.description.clone())))
+        
+        if let Some(content) = self.content_loc.clone() {
+            xml.push_str(format!("      <video:content_loc>{}</video:content_loc>\n", escape_xml(content)))
+        }
+        
+        if let Some(duration) = self.duration {
+            xml.push_str(format!("      <video:duration>{}</video:duration>\n", duration))
+        }
+        
+        xml.push_str("    </video:video>\n")
+        xml
+    }
+}
+
+// =============================================================================
+// Sitemap
+// =============================================================================
+
+/// XML Sitemap
+struct Sitemap {
+    urls: [SitemapUrl],
+    include_images: Bool,
+    include_videos: Bool,
+    include_alternates: Bool
+}
+
+impl Sitemap {
+    fn new() -> Self {
+        Sitemap {
+            urls: [],
+            include_images: false,
+            include_videos: false,
+            include_alternates: false
+        }
+    }
+    
+    fn add(url: SitemapUrl) {
+        self.urls.push(url)
+    }
+    
+    fn add_url(loc: String, lastmod: Option<DateTime>, priority: Option<Float>) {
+        var url = SitemapUrl.new(loc)
+        url.lastmod = lastmod
+        url.priority = priority
+        self.urls.push(url)
+    }
+    
+    fn with_images() -> Self {
+        self.include_images = true
+        self
+    }
+    
+    fn with_videos() -> Self {
+        self.include_videos = true
+        self
+    }
+    
+    fn with_alternates() -> Self {
+        self.include_alternates = true
+        self
+    }
+    
+    fn render_xml() -> String {
+        var namespaces = "xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\""
+        
+        if self.include_images {
+            namespaces.push_str(" xmlns:image=\"http://www.google.com/schemas/sitemap-image/1.1\"")
+        }
+        if self.include_videos {
+            namespaces.push_str(" xmlns:video=\"http://www.google.com/schemas/sitemap-video/1.1\"")
+        }
+        if self.include_alternates {
+            namespaces.push_str(" xmlns:xhtml=\"http://www.w3.org/1999/xhtml\"")
+        }
+        
+        var xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset {}>\n", namespaces)
+        
+        for url in self.urls.iter() {
+            xml.push_str(url.render_xml())
+        }
+        
+        xml.push_str("</urlset>")
+        xml
+    }
+    
+    fn len() -> Int {
+        self.urls.len()
+    }
+}
+
+// =============================================================================
+// Sitemap Index
+// =============================================================================
+
+/// Sitemap index for large sites
+struct SitemapIndex {
+    sitemaps: [SitemapEntry]
+}
+
+struct SitemapEntry {
+    loc: String,
+    lastmod: Option<DateTime>
+}
+
+impl SitemapIndex {
+    fn new() -> Self {
+        SitemapIndex { sitemaps: [] }
+    }
+    
+    fn add(loc: String, lastmod: Option<DateTime>) {
+        self.sitemaps.push(SitemapEntry { loc: loc, lastmod: lastmod })
+    }
+    
+    fn render_xml() -> String {
+        var xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        xml.push_str("<sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n")
+        
+        for entry in self.sitemaps.iter() {
+            xml.push_str("  <sitemap>\n")
+            xml.push_str(format!("    <loc>{}</loc>\n", escape_xml(entry.loc.clone())))
+            if let Some(lastmod) = entry.lastmod {
+                xml.push_str(format!("    <lastmod>{}</lastmod>\n", lastmod.format("%Y-%m-%d")))
+            }
+            xml.push_str("  </sitemap>\n")
+        }
+        
+        xml.push_str("</sitemapindex>")
+        xml
+    }
+}
+
+// =============================================================================
+// Sitemap Generator
+// =============================================================================
+
+/// Sitemap generator service
+actor SitemapGenerator {
+    state base_url: String
+    state max_urls_per_sitemap: Int
+    state sitemaps: [Sitemap]
+    state current_sitemap: Sitemap
+    
+    fn new(base_url: String) -> Self {
+        SitemapGenerator {
+            base_url: base_url,
+            max_urls_per_sitemap: 50000,
+            sitemaps: [],
+            current_sitemap: Sitemap.new()
+        }
+    }
+    
+    on add_url(path: String, lastmod: Option<DateTime>, changefreq: Option<ChangeFreq>, priority: Option<Float>) {
+        if self.current_sitemap.len() >= self.max_urls_per_sitemap {
+            self.sitemaps.push(self.current_sitemap.clone())
+            self.current_sitemap = Sitemap.new()
+        }
+        
+        let full_url = format!("{}{}", self.base_url, path)
+        var url = SitemapUrl.new(full_url)
+        url.lastmod = lastmod
+        url.changefreq = changefreq
+        url.priority = priority
+        
+        self.current_sitemap.add(url)
+    }
+    
+    on generate() -> String {
+        if self.sitemaps.is_empty() {
+            return self.current_sitemap.render_xml()
+        }
+        
+        // Multiple sitemaps - return index
+        var index = SitemapIndex.new()
+        for (i, _) in self.sitemaps.iter().enumerate() {
+            index.add(format!("{}/sitemap-{}.xml", self.base_url, i + 1), Some(DateTime.now()))
+        }
+        if self.current_sitemap.len() > 0 {
+            index.add(format!("{}/sitemap-{}.xml", self.base_url, self.sitemaps.len() + 1), Some(DateTime.now()))
+        }
+        index.render_xml()
+    }
+    
+    on get_sitemap(index: Int) -> Option<String> {
+        if index == 0 && self.sitemaps.is_empty() {
+            return Some(self.current_sitemap.render_xml())
+        }
+        
+        if index < self.sitemaps.len() {
+            return Some(self.sitemaps[index].render_xml())
+        }
+        
+        if index == self.sitemaps.len() && self.current_sitemap.len() > 0 {
+            return Some(self.current_sitemap.render_xml())
+        }
+        
+        None
+    }
+    
+    on clear() {
+        self.sitemaps.clear()
+        self.current_sitemap = Sitemap.new()
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+fn escape_xml(s: String) -> String {
+    s.replace("&", "&amp;")
+     .replace("<", "&lt;")
+     .replace(">", "&gt;")
+     .replace("\"", "&quot;")
+     .replace("'", "&apos;")
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "sitemap url" {
+    let url = SitemapUrl.new("https://example.com/page")
+        .with_lastmod(DateTime.now())
+        .with_changefreq(ChangeFreq.Weekly)
+        .with_priority(0.8)
+    
+    let xml = url.render_xml()
+    assert(xml.contains("<loc>https://example.com/page</loc>"))?
+    assert(xml.contains("<changefreq>weekly</changefreq>"))?
+}
+
+test "sitemap generation" {
+    var sitemap = Sitemap.new()
+    sitemap.add_url("https://example.com/", Some(DateTime.now()), Some(1.0))
+    sitemap.add_url("https://example.com/about", None, Some(0.8))
+    
+    let xml = sitemap.render_xml()
+    assert(xml.contains("<?xml version"))?
+    assert(xml.contains("<urlset"))?
+}
+
+test "sitemap index" {
+    var index = SitemapIndex.new()
+    index.add("https://example.com/sitemap-1.xml", Some(DateTime.now()))
+    index.add("https://example.com/sitemap-2.xml", Some(DateTime.now()))
+    
+    let xml = index.render_xml()
+    assert(xml.contains("<sitemapindex"))?
+}
+
+test "sitemap with images" {
+    var url = SitemapUrl.new("https://example.com/page")
+    url.add_image(SitemapImage.new("https://example.com/image.jpg").with_caption("Image"))
+    
+    var sitemap = Sitemap.new().with_images()
+    sitemap.add(url)
+    
+    let xml = sitemap.render_xml()
+    assert(xml.contains("image:image"))?
+}
+
+test "sitemap generator" {
+    var gen = SitemapGenerator.new("https://example.com")
+    gen.add_url("/", Some(DateTime.now()), Some(ChangeFreq.Daily), Some(1.0))
+    gen.add_url("/about", None, Some(ChangeFreq.Monthly), Some(0.8))
+    
+    let xml = gen.generate()
+    assert(xml.contains("<urlset"))?
+}

@@ -1,0 +1,456 @@
+// =============================================================================
+// Vibee OS — Media Upload Module
+// Media file uploads, processing, and storage
+// =============================================================================
+
+use result::{Result, Ok, Err}
+use datetime::{DateTime, Duration}
+
+// =============================================================================
+// Media Types
+// =============================================================================
+
+/// Media type
+enum MediaType {
+    Image,
+    Video,
+    Audio,
+    Document,
+    Archive,
+    Unknown
+}
+
+impl MediaType {
+    fn from_mime(mime: String) -> Self {
+        if mime.starts_with("image/") { MediaType.Image }
+        else if mime.starts_with("video/") { MediaType.Video }
+        else if mime.starts_with("audio/") { MediaType.Audio }
+        else if mime.starts_with("application/pdf") || mime.starts_with("text/") { MediaType.Document }
+        else if mime.contains("zip") || mime.contains("tar") || mime.contains("rar") { MediaType.Archive }
+        else { MediaType.Unknown }
+    }
+    
+    fn allowed_extensions() -> [String] {
+        match self {
+            MediaType.Image => ["jpg", "jpeg", "png", "gif", "webp", "svg"],
+            MediaType.Video => ["mp4", "webm", "mov", "avi", "mkv"],
+            MediaType.Audio => ["mp3", "wav", "ogg", "flac", "aac"],
+            MediaType.Document => ["pdf", "doc", "docx", "txt", "md"],
+            MediaType.Archive => ["zip", "tar", "gz", "rar", "7z"],
+            MediaType.Unknown => []
+        }
+    }
+}
+
+/// Upload status
+enum UploadStatus {
+    Pending,
+    Uploading(Float),
+    Processing,
+    Completed,
+    Failed(String),
+    Cancelled
+}
+
+impl UploadStatus {
+    fn is_complete() -> Bool {
+        matches!(self, UploadStatus.Completed)
+    }
+    
+    fn is_failed() -> Bool {
+        matches!(self, UploadStatus.Failed(_))
+    }
+    
+    fn progress() -> Float {
+        match self {
+            UploadStatus.Uploading(p) => p,
+            UploadStatus.Completed => 100.0,
+            _ => 0.0
+        }
+    }
+}
+
+// =============================================================================
+// Media File
+// =============================================================================
+
+/// Uploaded media file
+struct MediaFile {
+    id: String,
+    filename: String,
+    original_filename: String,
+    media_type: MediaType,
+    mime_type: String,
+    size: Int64,
+    url: String,
+    thumbnail_url: Option<String>,
+    width: Option<Int>,
+    height: Option<Int>,
+    duration: Option<Int>,
+    checksum: String,
+    storage_path: String,
+    uploader_id: String,
+    status: UploadStatus,
+    created_at: DateTime,
+    metadata: Map<String, String>
+}
+
+impl MediaFile {
+    fn new(original_filename: String, mime_type: String, size: Int64, uploader_id: String) -> Self {
+        let media_type = MediaType.from_mime(mime_type.clone())
+        let ext = original_filename.split('.').last().unwrap_or("")
+        let filename = format!("{}.{}", generate_id(), ext)
+        
+        MediaFile {
+            id: generate_id(),
+            filename: filename.clone(),
+            original_filename: original_filename,
+            media_type: media_type,
+            mime_type: mime_type,
+            size: size,
+            url: "",
+            thumbnail_url: None,
+            width: None,
+            height: None,
+            duration: None,
+            checksum: "",
+            storage_path: "",
+            uploader_id: uploader_id,
+            status: UploadStatus.Pending,
+            created_at: DateTime.now(),
+            metadata: Map.empty()
+        }
+    }
+    
+    fn with_dimensions(width: Int, height: Int) -> Self {
+        self.width = Some(width)
+        self.height = Some(height)
+        self
+    }
+    
+    fn with_duration(duration: Int) -> Self {
+        self.duration = Some(duration)
+        self
+    }
+    
+    fn with_thumbnail(url: String) -> Self {
+        self.thumbnail_url = Some(url)
+        self
+    }
+    
+    fn set_url(url: String) {
+        self.url = url
+    }
+    
+    fn set_storage_path(path: String) {
+        self.storage_path = path
+    }
+    
+    fn set_checksum(checksum: String) {
+        self.checksum = checksum
+    }
+    
+    fn mark_uploading(progress: Float) {
+        self.status = UploadStatus.Uploading(progress)
+    }
+    
+    fn mark_processing() {
+        self.status = UploadStatus.Processing
+    }
+    
+    fn mark_completed() {
+        self.status = UploadStatus.Completed
+    }
+    
+    fn mark_failed(error: String) {
+        self.status = UploadStatus.Failed(error)
+    }
+    
+    fn is_image() -> Bool { matches!(self.media_type, MediaType.Image) }
+    fn is_video() -> Bool { matches!(self.media_type, MediaType.Video) }
+    fn is_audio() -> Bool { matches!(self.media_type, MediaType.Audio) }
+    
+    fn formatted_size() -> String {
+        if self.size < 1024 { format!("{} B", self.size) }
+        else if self.size < 1024 * 1024 { format!("{:.1} KB", self.size as Float / 1024.0) }
+        else if self.size < 1024 * 1024 * 1024 { format!("{:.1} MB", self.size as Float / (1024.0 * 1024.0)) }
+        else { format!("{:.1} GB", self.size as Float / (1024.0 * 1024.0 * 1024.0)) }
+    }
+    
+    fn extension() -> String {
+        self.filename.split('.').last().unwrap_or("").to_string()
+    }
+}
+
+// =============================================================================
+// Upload Config
+// =============================================================================
+
+/// Upload configuration
+struct UploadConfig {
+    max_file_size: Int64,
+    allowed_types: [MediaType],
+    allowed_extensions: [String],
+    storage_path: String,
+    generate_thumbnails: Bool,
+    thumbnail_sizes: [(Int, Int)],
+    auto_optimize: Bool,
+    max_image_dimension: Int
+}
+
+impl UploadConfig {
+    fn default() -> Self {
+        UploadConfig {
+            max_file_size: 50 * 1024 * 1024,  // 50MB
+            allowed_types: [MediaType.Image, MediaType.Video, MediaType.Audio, MediaType.Document],
+            allowed_extensions: ["jpg", "jpeg", "png", "gif", "webp", "mp4", "webm", "mp3", "pdf"],
+            storage_path: "/uploads",
+            generate_thumbnails: true,
+            thumbnail_sizes: [(150, 150), (300, 300), (600, 600)],
+            auto_optimize: true,
+            max_image_dimension: 4096
+        }
+    }
+    
+    fn images_only() -> Self {
+        UploadConfig {
+            max_file_size: 10 * 1024 * 1024,
+            allowed_types: [MediaType.Image],
+            allowed_extensions: ["jpg", "jpeg", "png", "gif", "webp"],
+            storage_path: "/uploads/images",
+            generate_thumbnails: true,
+            thumbnail_sizes: [(150, 150), (300, 300)],
+            auto_optimize: true,
+            max_image_dimension: 2048
+        }
+    }
+    
+    fn validate(file: MediaFile) -> Result<(), UploadError> {
+        if file.size > self.max_file_size {
+            return Err(UploadError.FileTooLarge(self.max_file_size))
+        }
+        
+        if !self.allowed_types.contains(file.media_type.clone()) {
+            return Err(UploadError.TypeNotAllowed)
+        }
+        
+        let ext = file.extension().to_lowercase()
+        if !self.allowed_extensions.contains(ext) {
+            return Err(UploadError.ExtensionNotAllowed)
+        }
+        
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Upload Service
+// =============================================================================
+
+/// Upload service actor
+actor UploadService {
+    state files: Map<String, MediaFile>
+    state user_files: Map<String, [String]>
+    state config: UploadConfig
+    state processing_queue: [String]
+    
+    fn new(config: UploadConfig) -> Self {
+        UploadService {
+            files: Map.empty(),
+            user_files: Map.empty(),
+            config: config,
+            processing_queue: []
+        }
+    }
+    
+    /// Start upload
+    on start_upload(original_filename: String, mime_type: String, size: Int64, uploader_id: String) -> Result<MediaFile, UploadError> {
+        var file = MediaFile.new(original_filename, mime_type, size, uploader_id.clone())
+        
+        self.config.validate(file.clone())?
+        
+        let file_id = file.id.clone()
+        file.set_storage_path(format!("{}/{}", self.config.storage_path, file.filename))
+        
+        self.files.set(file_id.clone(), file.clone())
+        self.user_files.entry(uploader_id).or_insert([]).push(file_id)
+        
+        Ok(file)
+    }
+    
+    /// Update upload progress
+    on update_progress(file_id: String, progress: Float) -> Result<(), UploadError> {
+        let file = self.files.get_mut(file_id)
+            .ok_or(UploadError.NotFound)?
+        file.mark_uploading(progress)
+        Ok(())
+    }
+    
+    /// Complete upload
+    on complete_upload(file_id: String, url: String, checksum: String) -> Result<MediaFile, UploadError> {
+        let file = self.files.get_mut(file_id.clone())
+            .ok_or(UploadError.NotFound)?
+        
+        file.set_url(url)
+        file.set_checksum(checksum)
+        file.mark_processing()
+        
+        self.processing_queue.push(file_id)
+        
+        Ok(file.clone())
+    }
+    
+    /// Mark processing complete
+    on finish_processing(file_id: String, thumbnail_url: Option<String>, width: Option<Int>, height: Option<Int>) -> Result<MediaFile, UploadError> {
+        let file = self.files.get_mut(file_id.clone())
+            .ok_or(UploadError.NotFound)?
+        
+        if let Some(thumb) = thumbnail_url {
+            file.thumbnail_url = Some(thumb)
+        }
+        if let Some(w) = width { file.width = Some(w) }
+        if let Some(h) = height { file.height = Some(h) }
+        
+        file.mark_completed()
+        self.processing_queue.retain(|id| *id != file_id)
+        
+        Ok(file.clone())
+    }
+    
+    /// Fail upload
+    on fail_upload(file_id: String, error: String) -> Result<(), UploadError> {
+        let file = self.files.get_mut(file_id.clone())
+            .ok_or(UploadError.NotFound)?
+        file.mark_failed(error)
+        self.processing_queue.retain(|id| *id != file_id)
+        Ok(())
+    }
+    
+    /// Get file
+    on get(file_id: String) -> Option<MediaFile> {
+        self.files.get(file_id)
+    }
+    
+    /// Get user files
+    on get_user_files(user_id: String, limit: Int, offset: Int) -> [MediaFile] {
+        self.user_files.get(user_id)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| self.files.get(id))
+                    .filter(|f| f.status.is_complete())
+                    .skip(offset)
+                    .take(limit)
+                    .collect()
+            })
+            .unwrap_or([])
+    }
+    
+    /// Delete file
+    on delete(file_id: String, user_id: String) -> Result<(), UploadError> {
+        let file = self.files.get(file_id.clone())
+            .ok_or(UploadError.NotFound)?
+        
+        if file.uploader_id != user_id {
+            return Err(UploadError.Unauthorized)
+        }
+        
+        self.files.remove(file_id.clone())
+        if let Some(user_files) = self.user_files.get_mut(user_id) {
+            user_files.retain(|id| *id != file_id)
+        }
+        
+        Ok(())
+    }
+    
+    /// Get storage usage for user
+    on get_storage_usage(user_id: String) -> Int64 {
+        self.user_files.get(user_id)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| self.files.get(id))
+                    .map(|f| f.size)
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+}
+
+// =============================================================================
+// Upload Errors
+// =============================================================================
+
+/// Upload errors
+enum UploadError {
+    NotFound,
+    FileTooLarge(Int64),
+    TypeNotAllowed,
+    ExtensionNotAllowed,
+    StorageFull,
+    ProcessingFailed(String),
+    Unauthorized,
+    InvalidChecksum
+}
+
+impl UploadError {
+    fn message() -> String {
+        match self {
+            UploadError.NotFound => "File not found",
+            UploadError.FileTooLarge(max) => format!("File exceeds maximum size of {} bytes", max),
+            UploadError.TypeNotAllowed => "File type not allowed",
+            UploadError.ExtensionNotAllowed => "File extension not allowed",
+            UploadError.StorageFull => "Storage quota exceeded",
+            UploadError.ProcessingFailed(e) => format!("Processing failed: {}", e),
+            UploadError.Unauthorized => "Not authorized",
+            UploadError.InvalidChecksum => "File checksum mismatch"
+        }
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+fn generate_id() -> String {
+    @native("uuid_v4")
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "media file creation" {
+    let file = MediaFile.new("photo.jpg", "image/jpeg", 1024 * 100, "user1")
+    assert_eq(file.original_filename, "photo.jpg")?
+    assert(file.is_image())?
+}
+
+test "upload config validation" {
+    let config = UploadConfig.default()
+    let file = MediaFile.new("test.jpg", "image/jpeg", 1024, "user1")
+    assert(config.validate(file).is_ok())?
+}
+
+test "file too large" {
+    let config = UploadConfig.default()
+    let file = MediaFile.new("big.jpg", "image/jpeg", 100 * 1024 * 1024, "user1")
+    assert(config.validate(file).is_err())?
+}
+
+test "upload service" {
+    let service = UploadService.new(UploadConfig.default())
+    
+    let file = service.start_upload("test.jpg", "image/jpeg", 1024, "user1").unwrap()
+    service.complete_upload(file.id.clone(), "https://example.com/test.jpg", "abc123").unwrap()
+    service.finish_processing(file.id.clone(), Some("https://example.com/thumb.jpg"), Some(800), Some(600)).unwrap()
+    
+    let retrieved = service.get(file.id).unwrap()
+    assert(retrieved.status.is_complete())?
+}
+
+test "formatted size" {
+    var file = MediaFile.new("test.jpg", "image/jpeg", 1536, "user1")
+    assert_eq(file.formatted_size(), "1.5 KB")?
+    
+    file.size = 1024 * 1024 * 2
+    assert_eq(file.formatted_size(), "2.0 MB")?
+}

@@ -1,0 +1,665 @@
+// =============================================================================
+// Vibee OS — Deal Module
+// CRM deal/opportunity management with pipeline stages and forecasting
+// =============================================================================
+
+use datetime::{DateTime}
+use uuid::{UUID}
+use money::{Money}
+use currency::{Currency}
+use contact::{Contact}
+
+// =============================================================================
+// Deal Types & Enums
+// =============================================================================
+
+enum DealStatus {
+    Open
+    Won
+    Lost
+    OnHold
+}
+
+impl DealStatus {
+    fn is_active() -> Bool { self == DealStatus.Open }
+    fn is_closed() -> Bool { self == DealStatus.Won || self == DealStatus.Lost }
+    fn display_name() -> String {
+        match self {
+            DealStatus.Open => "Open"
+            DealStatus.Won => "Won"
+            DealStatus.Lost => "Lost"
+            DealStatus.OnHold => "On Hold"
+        }
+    }
+}
+
+enum DealPriority { Low, Medium, High, Critical }
+
+enum DealType { NewBusiness, Renewal, Upsell, CrossSell }
+
+// =============================================================================
+// Deal Stage
+// =============================================================================
+
+struct DealStage {
+    id: String
+    name: String
+    order: Int
+    probability: Float
+    is_won: Bool
+    is_lost: Bool
+    rotting_days: Option<Int>
+}
+
+impl DealStage {
+    fn new(name: String, order: Int, probability: Float) -> Self {
+        DealStage {
+            id: UUID.v4().to_string(),
+            name: name,
+            order: order,
+            probability: probability,
+            is_won: false,
+            is_lost: false,
+            rotting_days: None
+        }
+    }
+    
+    fn won_stage(name: String, order: Int) -> Self {
+        DealStage { id: UUID.v4().to_string(), name: name, order: order, probability: 1.0, is_won: true, is_lost: false, rotting_days: None }
+    }
+    
+    fn lost_stage(name: String, order: Int) -> Self {
+        DealStage { id: UUID.v4().to_string(), name: name, order: order, probability: 0.0, is_won: false, is_lost: true, rotting_days: None }
+    }
+    
+    fn with_rotting(days: Int) -> Self { self.rotting_days = Some(days); self }
+}
+
+// =============================================================================
+// Deal Product
+// =============================================================================
+
+struct DealProduct {
+    id: String
+    product_id: String
+    name: String
+    quantity: Int
+    unit_price: Money
+    discount: Float
+    total: Money
+}
+
+impl DealProduct {
+    fn new(product_id: String, name: String, quantity: Int, unit_price: Money) -> Self {
+        let total = unit_price.mul_int(quantity)
+        DealProduct {
+            id: UUID.v4().to_string(),
+            product_id: product_id,
+            name: name,
+            quantity: quantity,
+            unit_price: unit_price,
+            discount: 0.0,
+            total: total
+        }
+    }
+    
+    fn with_discount(pct: Float) -> Self {
+        self.discount = pct
+        self.total = self.unit_price.mul_int(self.quantity).mul_float(1.0 - pct / 100.0)
+        self
+    }
+    
+    fn recalculate() -> Self {
+        self.total = self.unit_price.mul_int(self.quantity).mul_float(1.0 - self.discount / 100.0)
+        self
+    }
+}
+
+// =============================================================================
+// Deal
+// =============================================================================
+
+struct Deal {
+    id: String
+    name: String
+    status: DealStatus
+    deal_type: DealType
+    priority: DealPriority
+    
+    // Pipeline
+    pipeline_id: String
+    stage_id: String
+    stage_entered_at: DateTime
+    
+    // Value
+    amount: Money
+    currency: Currency
+    products: [DealProduct]
+    
+    // Probability & Forecast
+    probability: Float
+    weighted_amount: Money
+    
+    // Contacts
+    contact_id: Option<String>
+    company_id: Option<String>
+    contact_ids: [String]
+    
+    // Assignment
+    owner_id: Option<String>
+    team_id: Option<String>
+    
+    // Dates
+    expected_close_date: Option<DateTime>
+    actual_close_date: Option<DateTime>
+    
+    // Win/Loss
+    won_reason: Option<String>
+    lost_reason: Option<String>
+    competitor: Option<String>
+    
+    // Source
+    lead_id: Option<String>
+    campaign_id: Option<String>
+    source: Option<String>
+    
+    // Custom
+    tags: [String]
+    custom_fields: Map<String, String>
+    notes: Option<String>
+    
+    // Timestamps
+    created_at: DateTime
+    updated_at: DateTime
+    last_activity_at: Option<DateTime>
+}
+
+impl Deal {
+    fn new(name: String, pipeline_id: String, stage_id: String, amount: Money) -> Self {
+        let now = DateTime.now()
+        Deal {
+            id: UUID.v4().to_string(),
+            name: name,
+            status: DealStatus.Open,
+            deal_type: DealType.NewBusiness,
+            priority: DealPriority.Medium,
+            pipeline_id: pipeline_id,
+            stage_id: stage_id,
+            stage_entered_at: now,
+            amount: amount.clone(),
+            currency: amount.currency(),
+            products: [],
+            probability: 0.0,
+            weighted_amount: Money.zero(amount.currency()),
+            contact_id: None,
+            company_id: None,
+            contact_ids: [],
+            owner_id: None,
+            team_id: None,
+            expected_close_date: None,
+            actual_close_date: None,
+            won_reason: None,
+            lost_reason: None,
+            competitor: None,
+            lead_id: None,
+            campaign_id: None,
+            source: None,
+            tags: [],
+            custom_fields: Map.empty(),
+            notes: None,
+            created_at: now,
+            updated_at: now,
+            last_activity_at: None
+        }
+    }
+    
+    // Builder methods
+    fn with_type(t: DealType) -> Self { self.deal_type = t; self }
+    fn with_priority(p: DealPriority) -> Self { self.priority = p; self }
+    fn with_contact(id: String) -> Self { self.contact_id = Some(id); self }
+    fn with_company(id: String) -> Self { self.company_id = Some(id); self }
+    fn with_owner(id: String) -> Self { self.owner_id = Some(id); self }
+    fn with_team(id: String) -> Self { self.team_id = Some(id); self }
+    fn with_expected_close(dt: DateTime) -> Self { self.expected_close_date = Some(dt); self }
+    fn with_lead(id: String) -> Self { self.lead_id = Some(id); self }
+    fn with_campaign(id: String) -> Self { self.campaign_id = Some(id); self }
+    fn with_source(s: String) -> Self { self.source = Some(s); self }
+    fn with_notes(n: String) -> Self { self.notes = Some(n); self }
+    
+    // Products
+    fn add_product(product: DealProduct) -> Self {
+        self.products.push(product)
+        self.recalculate_amount()
+        self
+    }
+    
+    fn remove_product(product_id: String) -> Self {
+        self.products.retain(|p| p.id != product_id)
+        self.recalculate_amount()
+        self
+    }
+    
+    fn recalculate_amount() -> Self {
+        if !self.products.is_empty() {
+            self.amount = self.products.iter().map(|p| p.total.clone()).fold(Money.zero(self.currency), |a, b| a + b)
+        }
+        self.weighted_amount = self.amount.mul_float(self.probability)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    // Contacts
+    fn add_contact(id: String) -> Self {
+        if !self.contact_ids.contains(id) { self.contact_ids.push(id) }
+        self
+    }
+    
+    fn remove_contact(id: String) -> Self {
+        self.contact_ids.retain(|c| c != id)
+        self
+    }
+    
+    // Tags
+    fn add_tag(t: String) -> Self { if !self.tags.contains(t) { self.tags.push(t) }; self }
+    fn remove_tag(t: String) -> Self { self.tags.retain(|x| x != t); self }
+    fn has_tag(t: String) -> Bool { self.tags.contains(t) }
+    
+    // Stage management
+    fn move_to_stage(stage_id: String, probability: Float) -> Self {
+        self.stage_id = stage_id
+        self.probability = probability
+        self.stage_entered_at = DateTime.now()
+        self.weighted_amount = self.amount.mul_float(probability)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn set_probability(p: Float) -> Self {
+        self.probability = p.clamp(0.0, 1.0)
+        self.weighted_amount = self.amount.mul_float(self.probability)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    // Win/Loss
+    fn win(reason: Option<String>) -> Result<Self, DealError> {
+        if self.status != DealStatus.Open { return Err(DealError.InvalidTransition) }
+        self.status = DealStatus.Won
+        self.probability = 1.0
+        self.weighted_amount = self.amount.clone()
+        self.won_reason = reason
+        self.actual_close_date = Some(DateTime.now())
+        self.updated_at = DateTime.now()
+        Ok(self)
+    }
+    
+    fn lose(reason: String, competitor: Option<String>) -> Result<Self, DealError> {
+        if self.status != DealStatus.Open { return Err(DealError.InvalidTransition) }
+        self.status = DealStatus.Lost
+        self.probability = 0.0
+        self.weighted_amount = Money.zero(self.currency)
+        self.lost_reason = Some(reason)
+        self.competitor = competitor
+        self.actual_close_date = Some(DateTime.now())
+        self.updated_at = DateTime.now()
+        Ok(self)
+    }
+    
+    fn reopen() -> Result<Self, DealError> {
+        if self.status == DealStatus.Open { return Err(DealError.InvalidTransition) }
+        self.status = DealStatus.Open
+        self.actual_close_date = None
+        self.won_reason = None
+        self.lost_reason = None
+        self.updated_at = DateTime.now()
+        Ok(self)
+    }
+    
+    fn hold() -> Self {
+        self.status = DealStatus.OnHold
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    // Activity
+    fn record_activity() -> Self {
+        self.last_activity_at = Some(DateTime.now())
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    // Getters
+    fn is_open() -> Bool { self.status == DealStatus.Open }
+    fn is_won() -> Bool { self.status == DealStatus.Won }
+    fn is_lost() -> Bool { self.status == DealStatus.Lost }
+    fn is_closed() -> Bool { self.status.is_closed() }
+    
+    fn days_in_stage() -> Int { DateTime.now().days_since(self.stage_entered_at) }
+    fn days_open() -> Int { DateTime.now().days_since(self.created_at) }
+    fn days_to_close() -> Option<Int> { self.expected_close_date.map(|dt| dt.days_since(DateTime.now())) }
+    
+    fn is_overdue() -> Bool {
+        self.expected_close_date.map(|dt| DateTime.now() > dt && self.is_open()).unwrap_or(false)
+    }
+    
+    fn is_rotting(rotting_days: Int) -> Bool {
+        self.is_open() && self.days_in_stage() > rotting_days
+    }
+}
+
+// =============================================================================
+// Deal Query
+// =============================================================================
+
+struct DealQuery {
+    search: Option<String>
+    status: Option<DealStatus>
+    statuses: [DealStatus]
+    pipeline_id: Option<String>
+    stage_id: Option<String>
+    stage_ids: [String]
+    owner_id: Option<String>
+    contact_id: Option<String>
+    company_id: Option<String>
+    deal_type: Option<DealType>
+    priority: Option<DealPriority>
+    min_amount: Option<Money>
+    max_amount: Option<Money>
+    tags: [String]
+    expected_close_after: Option<DateTime>
+    expected_close_before: Option<DateTime>
+    created_after: Option<DateTime>
+    created_before: Option<DateTime>
+    overdue_only: Bool
+    sort_by: DealSortField
+    sort_order: SortOrder
+    limit: Int
+    offset: Int
+}
+
+enum DealSortField { Name, Amount, CreatedAt, ExpectedClose, LastActivity, Probability }
+enum SortOrder { Asc, Desc }
+
+impl DealQuery {
+    fn new() -> Self {
+        DealQuery {
+            search: None, status: None, statuses: [], pipeline_id: None, stage_id: None, stage_ids: [],
+            owner_id: None, contact_id: None, company_id: None, deal_type: None, priority: None,
+            min_amount: None, max_amount: None, tags: [], expected_close_after: None, expected_close_before: None,
+            created_after: None, created_before: None, overdue_only: false,
+            sort_by: DealSortField.CreatedAt, sort_order: SortOrder.Desc, limit: 50, offset: 0
+        }
+    }
+    
+    fn with_search(s: String) -> Self { self.search = Some(s); self }
+    fn with_status(s: DealStatus) -> Self { self.status = Some(s); self }
+    fn with_pipeline(id: String) -> Self { self.pipeline_id = Some(id); self }
+    fn with_stage(id: String) -> Self { self.stage_id = Some(id); self }
+    fn with_stages(ids: [String]) -> Self { self.stage_ids = ids; self }
+    fn with_owner(id: String) -> Self { self.owner_id = Some(id); self }
+    fn with_contact(id: String) -> Self { self.contact_id = Some(id); self }
+    fn with_company(id: String) -> Self { self.company_id = Some(id); self }
+    fn open_only() -> Self { self.status = Some(DealStatus.Open); self }
+    fn won_only() -> Self { self.status = Some(DealStatus.Won); self }
+    fn lost_only() -> Self { self.status = Some(DealStatus.Lost); self }
+    fn overdue() -> Self { self.overdue_only = true; self }
+    fn closing_this_month() -> Self {
+        let now = DateTime.now()
+        self.expected_close_after = Some(now.start_of_month())
+        self.expected_close_before = Some(now.end_of_month())
+        self
+    }
+    fn sort_by_amount() -> Self { self.sort_by = DealSortField.Amount; self.sort_order = SortOrder.Desc; self }
+    fn sort_by_close_date() -> Self { self.sort_by = DealSortField.ExpectedClose; self }
+    fn limit(n: Int) -> Self { self.limit = n; self }
+    fn page(p: Int, per: Int) -> Self { self.limit = per; self.offset = (p - 1) * per; self }
+}
+
+// =============================================================================
+// Deal Service
+// =============================================================================
+
+actor DealService {
+    state deals: Map<String, Deal>
+    state by_pipeline: Map<String, [String]>
+    state by_stage: Map<String, [String]>
+    state by_owner: Map<String, [String]>
+    state by_contact: Map<String, [String]>
+    state by_company: Map<String, [String]>
+    
+    fn new() -> Self {
+        DealService {
+            deals: Map.empty(),
+            by_pipeline: Map.empty(),
+            by_stage: Map.empty(),
+            by_owner: Map.empty(),
+            by_contact: Map.empty(),
+            by_company: Map.empty()
+        }
+    }
+    
+    fn create(deal: Deal) -> Result<Deal, DealError> {
+        // Index by pipeline
+        let pipeline_ids = self.by_pipeline.get(deal.pipeline_id.clone()).unwrap_or([])
+        pipeline_ids.push(deal.id.clone())
+        self.by_pipeline.insert(deal.pipeline_id.clone(), pipeline_ids)
+        
+        // Index by stage
+        let stage_ids = self.by_stage.get(deal.stage_id.clone()).unwrap_or([])
+        stage_ids.push(deal.id.clone())
+        self.by_stage.insert(deal.stage_id.clone(), stage_ids)
+        
+        // Index by owner
+        if let Some(owner) = deal.owner_id.clone() {
+            let owner_ids = self.by_owner.get(owner.clone()).unwrap_or([])
+            owner_ids.push(deal.id.clone())
+            self.by_owner.insert(owner, owner_ids)
+        }
+        
+        // Index by contact
+        if let Some(contact) = deal.contact_id.clone() {
+            let contact_ids = self.by_contact.get(contact.clone()).unwrap_or([])
+            contact_ids.push(deal.id.clone())
+            self.by_contact.insert(contact, contact_ids)
+        }
+        
+        self.deals.insert(deal.id.clone(), deal.clone())
+        Ok(deal)
+    }
+    
+    fn get(id: String) -> Option<Deal> { self.deals.get(id) }
+    fn get_by_pipeline(pipeline_id: String) -> [Deal] { self.by_pipeline.get(pipeline_id).unwrap_or([]).iter().filter_map(|id| self.deals.get(id)).collect() }
+    fn get_by_stage(stage_id: String) -> [Deal] { self.by_stage.get(stage_id).unwrap_or([]).iter().filter_map(|id| self.deals.get(id)).collect() }
+    fn get_by_owner(owner_id: String) -> [Deal] { self.by_owner.get(owner_id).unwrap_or([]).iter().filter_map(|id| self.deals.get(id)).collect() }
+    fn get_by_contact(contact_id: String) -> [Deal] { self.by_contact.get(contact_id).unwrap_or([]).iter().filter_map(|id| self.deals.get(id)).collect() }
+    
+    fn update(deal: Deal) -> Result<Deal, DealError> {
+        if !self.deals.contains_key(deal.id) { return Err(DealError.NotFound) }
+        self.deals.insert(deal.id.clone(), deal.clone())
+        Ok(deal)
+    }
+    
+    fn delete(id: String) -> Result<(), DealError> {
+        self.deals.remove(id).ok_or(DealError.NotFound)?
+        Ok(())
+    }
+    
+    fn move_stage(deal_id: String, stage_id: String, probability: Float) -> Result<Deal, DealError> {
+        let mut deal = self.deals.get(deal_id.clone()).ok_or(DealError.NotFound)?
+        
+        // Remove from old stage index
+        if let Some(ids) = self.by_stage.get_mut(deal.stage_id.clone()) {
+            ids.retain(|id| id != deal_id)
+        }
+        
+        // Update deal
+        deal = deal.move_to_stage(stage_id.clone(), probability)
+        
+        // Add to new stage index
+        let stage_ids = self.by_stage.get(stage_id.clone()).unwrap_or([])
+        stage_ids.push(deal_id.clone())
+        self.by_stage.insert(stage_id, stage_ids)
+        
+        self.deals.insert(deal_id, deal.clone())
+        Ok(deal)
+    }
+    
+    fn win_deal(deal_id: String, reason: Option<String>) -> Result<Deal, DealError> {
+        let mut deal = self.deals.get(deal_id.clone()).ok_or(DealError.NotFound)?
+        deal = deal.win(reason)?
+        self.deals.insert(deal_id, deal.clone())
+        Ok(deal)
+    }
+    
+    fn lose_deal(deal_id: String, reason: String, competitor: Option<String>) -> Result<Deal, DealError> {
+        let mut deal = self.deals.get(deal_id.clone()).ok_or(DealError.NotFound)?
+        deal = deal.lose(reason, competitor)?
+        self.deals.insert(deal_id, deal.clone())
+        Ok(deal)
+    }
+    
+    fn search(query: DealQuery) -> [Deal] {
+        self.deals.values().filter(|d| {
+            if let Some(s) = query.status { if d.status != s { return false } }
+            if let Some(p) = query.pipeline_id.clone() { if d.pipeline_id != p { return false } }
+            if let Some(s) = query.stage_id.clone() { if d.stage_id != s { return false } }
+            if let Some(o) = query.owner_id.clone() { if d.owner_id != Some(o) { return false } }
+            if query.overdue_only { if !d.is_overdue() { return false } }
+            true
+        }).take(query.limit).collect()
+    }
+    
+    fn count() -> Int { self.deals.len() }
+    fn count_open() -> Int { self.deals.values().filter(|d| d.is_open()).count() }
+    
+    fn get_stats(pipeline_id: Option<String>) -> DealStats {
+        let deals: [Deal] = match pipeline_id {
+            Some(id) => self.get_by_pipeline(id),
+            None => self.deals.values().collect()
+        }
+        
+        let open_deals: [Deal] = deals.iter().filter(|d| d.is_open()).collect()
+        let won_deals: [Deal] = deals.iter().filter(|d| d.is_won()).collect()
+        let lost_deals: [Deal] = deals.iter().filter(|d| d.is_lost()).collect()
+        
+        DealStats {
+            total: deals.len(),
+            open: open_deals.len(),
+            won: won_deals.len(),
+            lost: lost_deals.len(),
+            total_value: deals.iter().map(|d| d.amount.clone()).fold(Money.zero(Currency.USD), |a, b| a + b),
+            open_value: open_deals.iter().map(|d| d.amount.clone()).fold(Money.zero(Currency.USD), |a, b| a + b),
+            won_value: won_deals.iter().map(|d| d.amount.clone()).fold(Money.zero(Currency.USD), |a, b| a + b),
+            weighted_value: open_deals.iter().map(|d| d.weighted_amount.clone()).fold(Money.zero(Currency.USD), |a, b| a + b)
+        }
+    }
+    
+    fn get_forecast(period_start: DateTime, period_end: DateTime) -> DealForecast {
+        let deals: [Deal] = self.deals.values()
+            .filter(|d| d.is_open() && d.expected_close_date.map(|dt| dt >= period_start && dt <= period_end).unwrap_or(false))
+            .collect()
+        
+        DealForecast {
+            period_start: period_start,
+            period_end: period_end,
+            deal_count: deals.len(),
+            total_value: deals.iter().map(|d| d.amount.clone()).fold(Money.zero(Currency.USD), |a, b| a + b),
+            weighted_value: deals.iter().map(|d| d.weighted_amount.clone()).fold(Money.zero(Currency.USD), |a, b| a + b),
+            best_case: deals.iter().map(|d| d.amount.clone()).fold(Money.zero(Currency.USD), |a, b| a + b),
+            worst_case: deals.iter().filter(|d| d.probability >= 0.7).map(|d| d.amount.clone()).fold(Money.zero(Currency.USD), |a, b| a + b)
+        }
+    }
+}
+
+// =============================================================================
+// Deal Stats & Forecast
+// =============================================================================
+
+struct DealStats {
+    total: Int
+    open: Int
+    won: Int
+    lost: Int
+    total_value: Money
+    open_value: Money
+    won_value: Money
+    weighted_value: Money
+}
+
+impl DealStats {
+    fn win_rate() -> Float { if self.won + self.lost == 0 { 0.0 } else { self.won as Float / (self.won + self.lost) as Float * 100.0 } }
+    fn avg_deal_size() -> Money { if self.won == 0 { Money.zero(Currency.USD) } else { self.won_value.div_int(self.won) } }
+}
+
+struct DealForecast {
+    period_start: DateTime
+    period_end: DateTime
+    deal_count: Int
+    total_value: Money
+    weighted_value: Money
+    best_case: Money
+    worst_case: Money
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum DealError {
+    NotFound
+    InvalidTransition
+    InvalidStage
+    ValidationError(String)
+}
+
+impl Display for DealError {
+    fn fmt(f: Formatter) {
+        match self {
+            NotFound => f.write("Deal not found"),
+            InvalidTransition => f.write("Invalid status transition"),
+            InvalidStage => f.write("Invalid stage"),
+            ValidationError(e) => f.write("Validation error: \(e)")
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "deal creation" {
+    let deal = Deal.new("Enterprise License", "pipeline-1", "stage-1", Money.usd(50000.0))
+        .with_contact("contact-123")
+        .with_owner("user-456")
+        .with_expected_close(DateTime.now().add_days(30))
+    
+    assert_eq(deal.name, "Enterprise License")?
+    assert(deal.is_open())?
+}
+
+test "deal win" {
+    var deal = Deal.new("Test Deal", "p1", "s1", Money.usd(10000.0))
+    deal = deal.win(Some("Great product fit")).unwrap()
+    
+    assert(deal.is_won())?
+    assert_eq(deal.probability, 1.0)?
+}
+
+test "deal products" {
+    var deal = Deal.new("Product Deal", "p1", "s1", Money.usd(0.0))
+    deal = deal.add_product(DealProduct.new("prod-1", "Widget", 10, Money.usd(100.0)))
+    deal = deal.add_product(DealProduct.new("prod-2", "Gadget", 5, Money.usd(200.0)))
+    
+    assert_eq(deal.products.len(), 2)?
+    assert_eq(deal.amount, Money.usd(2000.0))?
+}
+
+test "deal service stats" {
+    let service = DealService.new()
+    service.create(Deal.new("Deal A", "p1", "s1", Money.usd(10000.0))).unwrap()
+    service.create(Deal.new("Deal B", "p1", "s1", Money.usd(20000.0))).unwrap()
+    
+    let stats = service.get_stats(None)
+    assert_eq(stats.total, 2)?
+    assert_eq(stats.open, 2)?
+}

@@ -1,0 +1,412 @@
+// =============================================================================
+// Vibee OS — QUIC Module
+// QUIC protocol implementation (RFC 9000)
+// =============================================================================
+
+use tls.{TlsConfig, Certificate, PrivateKey}
+use net.{SocketAddr, UdpSocket}
+
+// -----------------------------------------------------------------------------
+// QUIC Packet Types
+// -----------------------------------------------------------------------------
+
+enum PacketType { Initial, ZeroRTT, Handshake, Retry, Short }
+
+impl PacketType {
+    fn from_byte(b: UInt8) -> Self {
+        if b & 0x80 == 0 { return Short }
+        match (b & 0x30) >> 4 {
+            0 => Initial, 1 => ZeroRTT, 2 => Handshake, 3 => Retry, _ => Short
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// QUIC Frame Types
+// -----------------------------------------------------------------------------
+
+enum FrameType {
+    Padding, Ping, Ack, ResetStream, StopSending, Crypto, NewToken,
+    Stream, MaxData, MaxStreamData, MaxStreams, DataBlocked,
+    StreamDataBlocked, StreamsBlocked, NewConnectionId,
+    RetireConnectionId, PathChallenge, PathResponse, ConnectionClose, HandshakeDone
+}
+
+impl FrameType {
+    fn from_varint(v: Int64) -> Option<Self> {
+        match v {
+            0x00 => Some(Padding), 0x01 => Some(Ping), 0x02..=0x03 => Some(Ack),
+            0x04 => Some(ResetStream), 0x05 => Some(StopSending), 0x06 => Some(Crypto),
+            0x07 => Some(NewToken), 0x08..=0x0F => Some(Stream), 0x10 => Some(MaxData),
+            0x11 => Some(MaxStreamData), 0x12..=0x13 => Some(MaxStreams),
+            0x14 => Some(DataBlocked), 0x15 => Some(StreamDataBlocked),
+            0x16..=0x17 => Some(StreamsBlocked), 0x18 => Some(NewConnectionId),
+            0x19 => Some(RetireConnectionId), 0x1A => Some(PathChallenge),
+            0x1B => Some(PathResponse), 0x1C..=0x1D => Some(ConnectionClose),
+            0x1E => Some(HandshakeDone), _ => None
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Connection ID
+// -----------------------------------------------------------------------------
+
+struct ConnectionId { bytes: [UInt8] }
+
+impl ConnectionId {
+    fn new(bytes: [UInt8]) -> Self { ConnectionId { bytes: bytes } }
+    fn random(len: Int) -> Self { ConnectionId { bytes: @native("random_bytes", len) } }
+    fn empty() -> Self { ConnectionId { bytes: [] } }
+    fn len() -> Int { self.bytes.len() }
+    fn is_empty() -> Bool { self.bytes.is_empty() }
+}
+
+impl Eq for ConnectionId {
+    fn eq(other: Self) -> Bool { self.bytes == other.bytes }
+}
+
+impl Hash for ConnectionId {
+    fn hash(h: Hasher) { h.write(self.bytes) }
+}
+
+// -----------------------------------------------------------------------------
+// QUIC Configuration
+// -----------------------------------------------------------------------------
+
+struct QuicConfig {
+    alpn: [String]
+    max_idle_timeout: Duration
+    max_udp_payload_size: Int
+    initial_max_data: Int64
+    initial_max_stream_data_bidi_local: Int64
+    initial_max_stream_data_bidi_remote: Int64
+    initial_max_stream_data_uni: Int64
+    initial_max_streams_bidi: Int64
+    initial_max_streams_uni: Int64
+    cert: Option<Certificate>
+    key: Option<PrivateKey>
+    verify_peer: Bool
+}
+
+impl QuicConfig {
+    fn default() -> Self {
+        QuicConfig {
+            alpn: [], max_idle_timeout: Duration.seconds(30),
+            max_udp_payload_size: 1350, initial_max_data: 10485760,
+            initial_max_stream_data_bidi_local: 1048576,
+            initial_max_stream_data_bidi_remote: 1048576,
+            initial_max_stream_data_uni: 1048576,
+            initial_max_streams_bidi: 100, initial_max_streams_uni: 100,
+            cert: None, key: None, verify_peer: true
+        }
+    }
+    
+    fn server(cert: Certificate, key: PrivateKey) -> Self {
+        Self.default().cert(cert).key(key)
+    }
+    
+    fn alpn(protocols: [String]) -> Self { self.alpn = protocols; self }
+    fn idle_timeout(d: Duration) -> Self { self.max_idle_timeout = d; self }
+    fn max_data(v: Int64) -> Self { self.initial_max_data = v; self }
+    fn max_streams(bidi: Int64, uni: Int64) -> Self {
+        self.initial_max_streams_bidi = bidi
+        self.initial_max_streams_uni = uni
+        self
+    }
+    fn cert(c: Certificate) -> Self { self.cert = Some(c); self }
+    fn key(k: PrivateKey) -> Self { self.key = Some(k); self }
+    fn verify(v: Bool) -> Self { self.verify_peer = v; self }
+}
+
+// -----------------------------------------------------------------------------
+// QUIC Stream
+// -----------------------------------------------------------------------------
+
+struct QuicStream {
+    id: Int64
+    conn: @native("QuicStreamHandle")
+    readable: Bool
+    writable: Bool
+    finished: Bool
+}
+
+impl QuicStream {
+    fn id() -> Int64 { self.id }
+    fn is_bidi() -> Bool { self.id & 0x02 == 0 }
+    fn is_uni() -> Bool { self.id & 0x02 != 0 }
+    fn is_client_initiated() -> Bool { self.id & 0x01 == 0 }
+    fn is_server_initiated() -> Bool { self.id & 0x01 != 0 }
+    
+    fn read(buf: [UInt8]) -> Result<Int, QuicError> {
+        if !self.readable { return Err(QuicError.StreamClosed) }
+        @native("quic_stream_read", self.conn, buf)
+    }
+    
+    fn read_exact(buf: [UInt8]) -> Result<(), QuicError> {
+        var total = 0
+        while total < buf.len() {
+            let n = self.read(buf[total..])?
+            if n == 0 { return Err(QuicError.StreamClosed) }
+            total += n
+        }
+        Ok(())
+    }
+    
+    fn read_all() -> Result<[UInt8], QuicError> {
+        var data = []
+        var buf = [0u8; 8192]
+        loop {
+            let n = self.read(buf)?
+            if n == 0 { break }
+            data.extend(buf[..n])
+        }
+        Ok(data)
+    }
+    
+    fn write(data: [UInt8]) -> Result<Int, QuicError> {
+        if !self.writable { return Err(QuicError.StreamClosed) }
+        @native("quic_stream_write", self.conn, data)
+    }
+    
+    fn write_all(data: [UInt8]) -> Result<(), QuicError> {
+        var total = 0
+        while total < data.len() {
+            let n = self.write(data[total..])?
+            total += n
+        }
+        Ok(())
+    }
+    
+    fn finish() -> Result<(), QuicError> {
+        self.finished = true
+        self.writable = false
+        @native("quic_stream_finish", self.conn)
+    }
+    
+    fn reset(error_code: Int64) -> Result<(), QuicError> {
+        @native("quic_stream_reset", self.conn, error_code)
+    }
+    
+    fn stop_sending(error_code: Int64) -> Result<(), QuicError> {
+        @native("quic_stream_stop_sending", self.conn, error_code)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// QUIC Connection
+// -----------------------------------------------------------------------------
+
+actor QuicConnection {
+    state socket: UdpSocket
+    state local_cid: ConnectionId
+    state remote_cid: ConnectionId
+    state peer_addr: SocketAddr
+    state config: QuicConfig
+    state state: ConnectionState
+    state next_bidi_stream: Int64
+    state next_uni_stream: Int64
+    state max_data: Int64
+    state sent_data: Int64
+    state streams: Map<Int64, QuicStream>
+    state closed: Bool
+}
+
+enum ConnectionState { Initial, Handshaking, Connected, Draining, Closed }
+
+impl QuicConnection {
+    fn connect(host: String, port: Int, config: QuicConfig) -> Result<Self, QuicError> {
+        let addr = SocketAddr.resolve(host, port)?
+        let socket = UdpSocket.bind("0.0.0.0:0")?
+        socket.connect(addr)?
+        
+        let local_cid = ConnectionId.random(8)
+        let remote_cid = ConnectionId.random(8)
+        
+        var conn = QuicConnection {
+            socket: socket, local_cid: local_cid, remote_cid: remote_cid,
+            peer_addr: addr, config: config, state: ConnectionState.Initial,
+            next_bidi_stream: 0, next_uni_stream: 2,
+            max_data: config.initial_max_data, sent_data: 0,
+            streams: Map.new(), closed: false
+        }
+        
+        conn.handshake()?
+        Ok(conn)
+    }
+    
+    fn handshake() -> Result<(), QuicError> {
+        self.state = ConnectionState.Handshaking
+        @native("quic_handshake", self.socket, self.local_cid, self.remote_cid, self.config)?
+        self.state = ConnectionState.Connected
+        Ok(())
+    }
+    
+    fn open_bidi() -> Result<QuicStream, QuicError> {
+        if self.closed { return Err(QuicError.ConnectionClosed) }
+        let id = self.next_bidi_stream
+        self.next_bidi_stream += 4
+        let stream = QuicStream {
+            id: id, conn: @native("quic_open_stream", self.socket, id),
+            readable: true, writable: true, finished: false
+        }
+        self.streams.insert(id, stream.clone())
+        Ok(stream)
+    }
+    
+    fn open_uni() -> Result<QuicStream, QuicError> {
+        if self.closed { return Err(QuicError.ConnectionClosed) }
+        let id = self.next_uni_stream
+        self.next_uni_stream += 4
+        let stream = QuicStream {
+            id: id, conn: @native("quic_open_stream", self.socket, id),
+            readable: false, writable: true, finished: false
+        }
+        self.streams.insert(id, stream.clone())
+        Ok(stream)
+    }
+    
+    fn accept_bidi() -> Result<QuicStream, QuicError> {
+        @native("quic_accept_bidi", self.socket)
+    }
+    
+    fn accept_uni() -> Result<QuicStream, QuicError> {
+        @native("quic_accept_uni", self.socket)
+    }
+    
+    fn ping() -> Result<Duration, QuicError> {
+        let start = Instant.now()
+        @native("quic_ping", self.socket)?
+        Ok(start.elapsed())
+    }
+    
+    fn close(error_code: Int64, reason: String) -> Result<(), QuicError> {
+        self.state = ConnectionState.Draining
+        @native("quic_close", self.socket, error_code, reason)?
+        self.closed = true
+        self.state = ConnectionState.Closed
+        Ok(())
+    }
+    
+    fn is_closed() -> Bool { self.closed }
+    fn local_addr() -> SocketAddr { self.socket.local_addr().unwrap() }
+    fn peer_addr() -> SocketAddr { self.peer_addr }
+    fn rtt() -> Duration { @native("quic_rtt", self.socket) }
+}
+
+// -----------------------------------------------------------------------------
+// QUIC Listener
+// -----------------------------------------------------------------------------
+
+actor QuicListener {
+    state socket: UdpSocket
+    state config: QuicConfig
+    state connections: Map<ConnectionId, QuicConnection>
+    state running: Bool
+}
+
+impl QuicListener {
+    fn bind(addr: String, config: QuicConfig) -> Result<Self, QuicError> {
+        let socket = UdpSocket.bind(addr)?
+        Ok(QuicListener {
+            socket: socket, config: config,
+            connections: Map.new(), running: false
+        })
+    }
+    
+    fn accept() -> Result<QuicConnection, QuicError> {
+        @native("quic_accept", self.socket, self.config)
+    }
+    
+    fn local_addr() -> SocketAddr { self.socket.local_addr().unwrap() }
+}
+
+// -----------------------------------------------------------------------------
+// Transport Parameters
+// -----------------------------------------------------------------------------
+
+struct TransportParams {
+    original_dcid: Option<ConnectionId>
+    initial_scid: Option<ConnectionId>
+    retry_scid: Option<ConnectionId>
+    max_idle_timeout: Duration
+    max_udp_payload_size: Int
+    initial_max_data: Int64
+    initial_max_stream_data_bidi_local: Int64
+    initial_max_stream_data_bidi_remote: Int64
+    initial_max_stream_data_uni: Int64
+    initial_max_streams_bidi: Int64
+    initial_max_streams_uni: Int64
+    ack_delay_exponent: Int
+    max_ack_delay: Duration
+    active_conn_id_limit: Int
+}
+
+impl TransportParams {
+    fn default() -> Self {
+        TransportParams {
+            original_dcid: None, initial_scid: None, retry_scid: None,
+            max_idle_timeout: Duration.seconds(30), max_udp_payload_size: 1350,
+            initial_max_data: 10485760, initial_max_stream_data_bidi_local: 1048576,
+            initial_max_stream_data_bidi_remote: 1048576, initial_max_stream_data_uni: 1048576,
+            initial_max_streams_bidi: 100, initial_max_streams_uni: 100,
+            ack_delay_exponent: 3, max_ack_delay: Duration.millis(25), active_conn_id_limit: 2
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum QuicError {
+    ConnectionClosed, StreamClosed, FlowControl, InvalidState,
+    TlsError(String), Timeout, Io(String), Protocol(String)
+}
+
+impl Display for QuicError {
+    fn fmt(f: Formatter) {
+        match self {
+            ConnectionClosed => f.write("Connection closed")
+            StreamClosed => f.write("Stream closed")
+            FlowControl => f.write("Flow control error")
+            InvalidState => f.write("Invalid state")
+            TlsError(s) => f.write(format!("TLS error: {}", s))
+            Timeout => f.write("Timeout")
+            Io(s) => f.write(format!("IO error: {}", s))
+            Protocol(s) => f.write(format!("Protocol error: {}", s))
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+fn connect(host: String, port: Int) -> Result<QuicConnection, QuicError> {
+    QuicConnection.connect(host, port, QuicConfig.default())
+}
+
+fn listen(addr: String, cert: Certificate, key: PrivateKey) -> Result<QuicListener, QuicError> {
+    QuicListener.bind(addr, QuicConfig.server(cert, key))
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "connection id" {
+    let cid = ConnectionId.random(8)
+    assert_eq(cid.len(), 8)
+}
+
+test "config" {
+    let config = QuicConfig.default().alpn(["h3"]).idle_timeout(Duration.seconds(60))
+    assert_eq(config.alpn, ["h3"])
+}
+
+test "stream id types" {
+    let stream = QuicStream { id: 0, conn: @native("null"), readable: true, writable: true, finished: false }
+    assert(stream.is_bidi())
+    assert(stream.is_client_initiated())
+}

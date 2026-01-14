@@ -1,0 +1,632 @@
+// =============================================================================
+// Vibee OS — Geo Distance Module
+// Geographic distance calculations and spatial measurements
+// =============================================================================
+
+use math::{PI, sin, cos, tan, sqrt, atan2, asin, abs, min, max}
+use coordinate::{GeoCoord, ECEFCoord}
+
+// -----------------------------------------------------------------------------
+// Constants
+// -----------------------------------------------------------------------------
+
+/// Earth radius constants (meters)
+const EARTH_RADIUS_EQUATORIAL: Float64 = 6378137.0
+const EARTH_RADIUS_POLAR: Float64 = 6356752.3
+const EARTH_RADIUS_MEAN: Float64 = 6371008.8
+
+/// WGS84 ellipsoid
+const WGS84_A: Float64 = 6378137.0
+const WGS84_F: Float64 = 1.0 / 298.257223563
+const WGS84_B: Float64 = 6356752.314245
+
+// -----------------------------------------------------------------------------
+// Distance Units
+// -----------------------------------------------------------------------------
+
+/// Distance unit enumeration
+enum DistanceUnit {
+    Meters
+    Kilometers
+    Miles
+    NauticalMiles
+    Feet
+    Yards
+}
+
+impl DistanceUnit {
+    /// Convert meters to this unit
+    fn from_meters(meters: Float64) -> Float64 {
+        match self {
+            Meters => meters
+            Kilometers => meters / 1000.0
+            Miles => meters / 1609.344
+            NauticalMiles => meters / 1852.0
+            Feet => meters * 3.28084
+            Yards => meters * 1.09361
+        }
+    }
+    
+    /// Convert this unit to meters
+    fn to_meters(value: Float64) -> Float64 {
+        match self {
+            Meters => value
+            Kilometers => value * 1000.0
+            Miles => value * 1609.344
+            NauticalMiles => value * 1852.0
+            Feet => value / 3.28084
+            Yards => value / 1.09361
+        }
+    }
+    
+    fn abbreviation() -> String {
+        match self {
+            Meters => "m"
+            Kilometers => "km"
+            Miles => "mi"
+            NauticalMiles => "nm"
+            Feet => "ft"
+            Yards => "yd"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Distance Calculator
+// -----------------------------------------------------------------------------
+
+/// Geographic distance calculator with multiple algorithms
+struct DistanceCalculator {
+    algorithm: DistanceAlgorithm
+    unit: DistanceUnit
+    
+    fn new() -> Self {
+        DistanceCalculator {
+            algorithm: DistanceAlgorithm.Haversine,
+            unit: DistanceUnit.Meters
+        }
+    }
+    
+    fn with_algorithm(algorithm: DistanceAlgorithm) -> Self {
+        DistanceCalculator { algorithm: algorithm, unit: DistanceUnit.Meters }
+    }
+    
+    fn with_unit(unit: DistanceUnit) -> Self {
+        DistanceCalculator { algorithm: self.algorithm, unit: unit }
+    }
+    
+    /// Calculate distance between two points
+    fn distance(from: GeoCoord, to: GeoCoord) -> Float64 {
+        let meters = match self.algorithm {
+            DistanceAlgorithm.Haversine => haversine_distance(from, to)
+            DistanceAlgorithm.Vincenty => vincenty_distance(from, to)
+            DistanceAlgorithm.SphericalLaw => spherical_law_distance(from, to)
+            DistanceAlgorithm.Euclidean => euclidean_distance(from, to)
+            DistanceAlgorithm.Manhattan => manhattan_distance(from, to)
+        }
+        self.unit.from_meters(meters)
+    }
+    
+    /// Calculate total distance along path
+    fn path_distance(points: [GeoCoord]) -> Float64 {
+        var total = 0.0
+        for i in 0..(points.len() - 1) {
+            total += self.distance(points[i], points[i + 1])
+        }
+        total
+    }
+    
+    /// Calculate distance matrix
+    fn distance_matrix(points: [GeoCoord]) -> [[Float64]] {
+        let n = points.len()
+        var matrix = []
+        for i in 0..n {
+            var row = []
+            for j in 0..n {
+                if i == j {
+                    row.push(0.0)
+                } else {
+                    row.push(self.distance(points[i], points[j]))
+                }
+            }
+            matrix.push(row)
+        }
+        matrix
+    }
+}
+
+/// Distance calculation algorithm
+enum DistanceAlgorithm {
+    Haversine       // Fast, good for most cases
+    Vincenty        // Most accurate, slower
+    SphericalLaw    // Spherical law of cosines
+    Euclidean       // Simple Euclidean (for small areas)
+    Manhattan       // Manhattan distance
+}
+
+// -----------------------------------------------------------------------------
+// Distance Functions
+// -----------------------------------------------------------------------------
+
+/// Haversine distance (meters) - fast and accurate for most cases
+fn haversine_distance(from: GeoCoord, to: GeoCoord) -> Float64 {
+    let lat1 = from.lat.to_radians()
+    let lat2 = to.lat.to_radians()
+    let dlat = (to.lat - from.lat).to_radians()
+    let dlon = (to.lon - from.lon).to_radians()
+    
+    let a = sin(dlat / 2.0).pow(2) +
+            cos(lat1) * cos(lat2) * sin(dlon / 2.0).pow(2)
+    let c = 2.0 * asin(sqrt(a))
+    
+    EARTH_RADIUS_MEAN * c
+}
+
+/// Vincenty distance (meters) - most accurate, uses WGS84 ellipsoid
+fn vincenty_distance(from: GeoCoord, to: GeoCoord) -> Float64 {
+    let lat1 = from.lat.to_radians()
+    let lat2 = to.lat.to_radians()
+    let lon1 = from.lon.to_radians()
+    let lon2 = to.lon.to_radians()
+    
+    let f = WGS84_F
+    let a = WGS84_A
+    let b = WGS84_B
+    
+    let U1 = atan((1.0 - f) * tan(lat1))
+    let U2 = atan((1.0 - f) * tan(lat2))
+    let L = lon2 - lon1
+    
+    let sin_U1 = sin(U1)
+    let cos_U1 = cos(U1)
+    let sin_U2 = sin(U2)
+    let cos_U2 = cos(U2)
+    
+    var lambda = L
+    var lambda_prev: Float64
+    var iterations = 0
+    var sin_sigma: Float64
+    var cos_sigma: Float64
+    var sigma: Float64
+    var sin_alpha: Float64
+    var cos2_alpha: Float64
+    var cos_2sigma_m: Float64
+    
+    loop {
+        let sin_lambda = sin(lambda)
+        let cos_lambda = cos(lambda)
+        
+        sin_sigma = sqrt(
+            (cos_U2 * sin_lambda).pow(2) +
+            (cos_U1 * sin_U2 - sin_U1 * cos_U2 * cos_lambda).pow(2)
+        )
+        
+        if sin_sigma == 0.0 {
+            return 0.0  // Coincident points
+        }
+        
+        cos_sigma = sin_U1 * sin_U2 + cos_U1 * cos_U2 * cos_lambda
+        sigma = atan2(sin_sigma, cos_sigma)
+        
+        sin_alpha = cos_U1 * cos_U2 * sin_lambda / sin_sigma
+        cos2_alpha = 1.0 - sin_alpha.pow(2)
+        
+        cos_2sigma_m = if cos2_alpha != 0.0 {
+            cos_sigma - 2.0 * sin_U1 * sin_U2 / cos2_alpha
+        } else {
+            0.0
+        }
+        
+        let C = f / 16.0 * cos2_alpha * (4.0 + f * (4.0 - 3.0 * cos2_alpha))
+        
+        lambda_prev = lambda
+        lambda = L + (1.0 - C) * f * sin_alpha * (
+            sigma + C * sin_sigma * (
+                cos_2sigma_m + C * cos_sigma * (-1.0 + 2.0 * cos_2sigma_m.pow(2))
+            )
+        )
+        
+        iterations += 1
+        if abs(lambda - lambda_prev) < 1e-12 || iterations >= 100 {
+            break
+        }
+    }
+    
+    let u2 = cos2_alpha * (a.pow(2) - b.pow(2)) / b.pow(2)
+    let A = 1.0 + u2 / 16384.0 * (4096.0 + u2 * (-768.0 + u2 * (320.0 - 175.0 * u2)))
+    let B = u2 / 1024.0 * (256.0 + u2 * (-128.0 + u2 * (74.0 - 47.0 * u2)))
+    
+    let delta_sigma = B * sin_sigma * (
+        cos_2sigma_m + B / 4.0 * (
+            cos_sigma * (-1.0 + 2.0 * cos_2sigma_m.pow(2)) -
+            B / 6.0 * cos_2sigma_m * (-3.0 + 4.0 * sin_sigma.pow(2)) * (-3.0 + 4.0 * cos_2sigma_m.pow(2))
+        )
+    )
+    
+    b * A * (sigma - delta_sigma)
+}
+
+/// Spherical law of cosines distance (meters)
+fn spherical_law_distance(from: GeoCoord, to: GeoCoord) -> Float64 {
+    let lat1 = from.lat.to_radians()
+    let lat2 = to.lat.to_radians()
+    let dlon = (to.lon - from.lon).to_radians()
+    
+    let d = acos(sin(lat1) * sin(lat2) + cos(lat1) * cos(lat2) * cos(dlon))
+    EARTH_RADIUS_MEAN * d
+}
+
+/// Euclidean distance (meters) - approximation for small distances
+fn euclidean_distance(from: GeoCoord, to: GeoCoord) -> Float64 {
+    let lat_mid = (from.lat + to.lat) / 2.0
+    let dx = (to.lon - from.lon).to_radians() * EARTH_RADIUS_MEAN * cos(lat_mid.to_radians())
+    let dy = (to.lat - from.lat).to_radians() * EARTH_RADIUS_MEAN
+    sqrt(dx.pow(2) + dy.pow(2))
+}
+
+/// Manhattan distance (meters) - sum of lat/lon distances
+fn manhattan_distance(from: GeoCoord, to: GeoCoord) -> Float64 {
+    let lat_mid = (from.lat + to.lat) / 2.0
+    let dx = abs(to.lon - from.lon).to_radians() * EARTH_RADIUS_MEAN * cos(lat_mid.to_radians())
+    let dy = abs(to.lat - from.lat).to_radians() * EARTH_RADIUS_MEAN
+    dx + dy
+}
+
+// -----------------------------------------------------------------------------
+// Bearing and Direction
+// -----------------------------------------------------------------------------
+
+/// Calculate initial bearing from point A to point B (degrees, 0-360)
+fn bearing(from: GeoCoord, to: GeoCoord) -> Float64 {
+    let lat1 = from.lat.to_radians()
+    let lat2 = to.lat.to_radians()
+    let dlon = (to.lon - from.lon).to_radians()
+    
+    let x = sin(dlon) * cos(lat2)
+    let y = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dlon)
+    
+    let brng = atan2(x, y).to_degrees()
+    (brng + 360.0) % 360.0
+}
+
+/// Calculate final bearing (bearing at destination)
+fn final_bearing(from: GeoCoord, to: GeoCoord) -> Float64 {
+    (bearing(to, from) + 180.0) % 360.0
+}
+
+/// Calculate destination point given start, bearing, and distance
+fn destination(from: GeoCoord, bearing_deg: Float64, distance_m: Float64) -> GeoCoord {
+    let lat1 = from.lat.to_radians()
+    let lon1 = from.lon.to_radians()
+    let brng = bearing_deg.to_radians()
+    let d = distance_m / EARTH_RADIUS_MEAN
+    
+    let lat2 = asin(sin(lat1) * cos(d) + cos(lat1) * sin(d) * cos(brng))
+    let lon2 = lon1 + atan2(sin(brng) * sin(d) * cos(lat1), cos(d) - sin(lat1) * sin(lat2))
+    
+    GeoCoord.unchecked(lat2.to_degrees(), ((lon2.to_degrees() + 540.0) % 360.0) - 180.0)
+}
+
+/// Calculate midpoint between two coordinates
+fn midpoint(from: GeoCoord, to: GeoCoord) -> GeoCoord {
+    let lat1 = from.lat.to_radians()
+    let lon1 = from.lon.to_radians()
+    let lat2 = to.lat.to_radians()
+    let dlon = (to.lon - from.lon).to_radians()
+    
+    let Bx = cos(lat2) * cos(dlon)
+    let By = cos(lat2) * sin(dlon)
+    
+    let lat3 = atan2(sin(lat1) + sin(lat2), sqrt((cos(lat1) + Bx).pow(2) + By.pow(2)))
+    let lon3 = lon1 + atan2(By, cos(lat1) + Bx)
+    
+    GeoCoord.unchecked(lat3.to_degrees(), lon3.to_degrees())
+}
+
+/// Interpolate point along great circle path
+fn interpolate(from: GeoCoord, to: GeoCoord, fraction: Float64) -> GeoCoord {
+    let d = haversine_distance(from, to) / EARTH_RADIUS_MEAN
+    if d == 0.0 { return from }
+    
+    let lat1 = from.lat.to_radians()
+    let lon1 = from.lon.to_radians()
+    let lat2 = to.lat.to_radians()
+    let lon2 = to.lon.to_radians()
+    
+    let a = sin((1.0 - fraction) * d) / sin(d)
+    let b = sin(fraction * d) / sin(d)
+    
+    let x = a * cos(lat1) * cos(lon1) + b * cos(lat2) * cos(lon2)
+    let y = a * cos(lat1) * sin(lon1) + b * cos(lat2) * sin(lon2)
+    let z = a * sin(lat1) + b * sin(lat2)
+    
+    let lat3 = atan2(z, sqrt(x.pow(2) + y.pow(2)))
+    let lon3 = atan2(y, x)
+    
+    GeoCoord.unchecked(lat3.to_degrees(), lon3.to_degrees())
+}
+
+// -----------------------------------------------------------------------------
+// Compass Direction
+// -----------------------------------------------------------------------------
+
+/// Compass direction enumeration
+enum CompassDirection {
+    N, NNE, NE, ENE, E, ESE, SE, SSE,
+    S, SSW, SW, WSW, W, WNW, NW, NNW
+}
+
+impl CompassDirection {
+    /// Get compass direction from bearing
+    fn from_bearing(bearing: Float64) -> Self {
+        let normalized = ((bearing % 360.0) + 360.0) % 360.0
+        let index = ((normalized + 11.25) / 22.5).floor() as Int % 16
+        match index {
+            0 => N, 1 => NNE, 2 => NE, 3 => ENE,
+            4 => E, 5 => ESE, 6 => SE, 7 => SSE,
+            8 => S, 9 => SSW, 10 => SW, 11 => WSW,
+            12 => W, 13 => WNW, 14 => NW, 15 => NNW,
+            _ => N
+        }
+    }
+    
+    /// Get bearing range for this direction
+    fn bearing_range() -> (Float64, Float64) {
+        let center = match self {
+            N => 0.0, NNE => 22.5, NE => 45.0, ENE => 67.5,
+            E => 90.0, ESE => 112.5, SE => 135.0, SSE => 157.5,
+            S => 180.0, SSW => 202.5, SW => 225.0, WSW => 247.5,
+            W => 270.0, WNW => 292.5, NW => 315.0, NNW => 337.5
+        }
+        ((center - 11.25 + 360.0) % 360.0, (center + 11.25) % 360.0)
+    }
+    
+    fn to_string() -> String {
+        match self {
+            N => "North", NNE => "North-Northeast", NE => "Northeast", ENE => "East-Northeast",
+            E => "East", ESE => "East-Southeast", SE => "Southeast", SSE => "South-Southeast",
+            S => "South", SSW => "South-Southwest", SW => "Southwest", WSW => "West-Southwest",
+            W => "West", WNW => "West-Northwest", NW => "Northwest", NNW => "North-Northwest"
+        }
+    }
+    
+    fn abbreviation() -> String {
+        match self {
+            N => "N", NNE => "NNE", NE => "NE", ENE => "ENE",
+            E => "E", ESE => "ESE", SE => "SE", SSE => "SSE",
+            S => "S", SSW => "SSW", SW => "SW", WSW => "WSW",
+            W => "W", WNW => "WNW", NW => "NW", NNW => "NNW"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Distance Result
+// -----------------------------------------------------------------------------
+
+/// Comprehensive distance result
+struct DistanceResult {
+    distance: Float64
+    unit: DistanceUnit
+    bearing: Float64
+    direction: CompassDirection
+    from: GeoCoord
+    to: GeoCoord
+    
+    fn calculate(from: GeoCoord, to: GeoCoord, unit: DistanceUnit = DistanceUnit.Meters) -> Self {
+        let dist_m = haversine_distance(from, to)
+        let brng = bearing(from, to)
+        
+        DistanceResult {
+            distance: unit.from_meters(dist_m),
+            unit: unit,
+            bearing: brng,
+            direction: CompassDirection.from_bearing(brng),
+            from: from,
+            to: to
+        }
+    }
+    
+    /// Get distance in different unit
+    fn in_unit(unit: DistanceUnit) -> Float64 {
+        let meters = self.unit.to_meters(self.distance)
+        unit.from_meters(meters)
+    }
+    
+    fn to_string() -> String {
+        format!("{:.2} {} {} ({:.1}°)", 
+            self.distance, 
+            self.unit.abbreviation(),
+            self.direction.abbreviation(),
+            self.bearing)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Nearest Point Finder
+// -----------------------------------------------------------------------------
+
+/// Find nearest points from a set
+struct NearestFinder {
+    points: [GeoCoord]
+    
+    fn new(points: [GeoCoord]) -> Self {
+        NearestFinder { points: points }
+    }
+    
+    /// Find nearest point to target
+    fn nearest(target: GeoCoord) -> Option<(GeoCoord, Float64)> {
+        if self.points.is_empty() { return None }
+        
+        var nearest_point = self.points[0]
+        var nearest_dist = haversine_distance(target, nearest_point)
+        
+        for point in self.points[1..] {
+            let dist = haversine_distance(target, point)
+            if dist < nearest_dist {
+                nearest_dist = dist
+                nearest_point = point
+            }
+        }
+        
+        Some((nearest_point, nearest_dist))
+    }
+    
+    /// Find k nearest points
+    fn k_nearest(target: GeoCoord, k: Int) -> [(GeoCoord, Float64)] {
+        var distances = []
+        for point in self.points {
+            distances.push((point, haversine_distance(target, point)))
+        }
+        distances.sort_by(|a, b| a.1.cmp(b.1))
+        distances[0..min(k, distances.len())]
+    }
+    
+    /// Find all points within radius (meters)
+    fn within_radius(target: GeoCoord, radius: Float64) -> [(GeoCoord, Float64)] {
+        var result = []
+        for point in self.points {
+            let dist = haversine_distance(target, point)
+            if dist <= radius {
+                result.push((point, dist))
+            }
+        }
+        result.sort_by(|a, b| a.1.cmp(b.1))
+        result
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Path Analysis
+// -----------------------------------------------------------------------------
+
+/// Analyze geographic path
+struct PathAnalyzer {
+    points: [GeoCoord]
+    
+    fn new(points: [GeoCoord]) -> Self {
+        PathAnalyzer { points: points }
+    }
+    
+    /// Total path length in meters
+    fn total_length() -> Float64 {
+        var total = 0.0
+        for i in 0..(self.points.len() - 1) {
+            total += haversine_distance(self.points[i], self.points[i + 1])
+        }
+        total
+    }
+    
+    /// Get segment lengths
+    fn segment_lengths() -> [Float64] {
+        var lengths = []
+        for i in 0..(self.points.len() - 1) {
+            lengths.push(haversine_distance(self.points[i], self.points[i + 1]))
+        }
+        lengths
+    }
+    
+    /// Get cumulative distances
+    fn cumulative_distances() -> [Float64] {
+        var cumulative = [0.0]
+        var total = 0.0
+        for i in 0..(self.points.len() - 1) {
+            total += haversine_distance(self.points[i], self.points[i + 1])
+            cumulative.push(total)
+        }
+        cumulative
+    }
+    
+    /// Get point at distance along path
+    fn point_at_distance(distance: Float64) -> Option<GeoCoord> {
+        var remaining = distance
+        for i in 0..(self.points.len() - 1) {
+            let segment_len = haversine_distance(self.points[i], self.points[i + 1])
+            if remaining <= segment_len {
+                let fraction = remaining / segment_len
+                return Some(interpolate(self.points[i], self.points[i + 1], fraction))
+            }
+            remaining -= segment_len
+        }
+        self.points.last()
+    }
+    
+    /// Get bearings at each segment
+    fn segment_bearings() -> [Float64] {
+        var bearings = []
+        for i in 0..(self.points.len() - 1) {
+            bearings.push(bearing(self.points[i], self.points[i + 1]))
+        }
+        bearings
+    }
+    
+    /// Calculate total elevation change (if altitude available)
+    fn elevation_change() -> (Float64, Float64) {
+        var gain = 0.0
+        var loss = 0.0
+        for i in 0..(self.points.len() - 1) {
+            let diff = self.points[i + 1].alt - self.points[i].alt
+            if diff > 0.0 { gain += diff }
+            else { loss += abs(diff) }
+        }
+        (gain, loss)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "haversine distance" {
+    let nyc = GeoCoord.unchecked(40.7128, -74.0060)
+    let la = GeoCoord.unchecked(34.0522, -118.2437)
+    let dist = haversine_distance(nyc, la)
+    // ~3935 km
+    assert(dist > 3900000.0 && dist < 4000000.0)?
+}
+
+test "vincenty distance" {
+    let london = GeoCoord.unchecked(51.5074, -0.1278)
+    let paris = GeoCoord.unchecked(48.8566, 2.3522)
+    let dist = vincenty_distance(london, paris)
+    // ~343 km
+    assert(dist > 340000.0 && dist < 350000.0)?
+}
+
+test "bearing calculation" {
+    let london = GeoCoord.unchecked(51.5074, -0.1278)
+    let paris = GeoCoord.unchecked(48.8566, 2.3522)
+    let brng = bearing(london, paris)
+    // Should be roughly southeast (~148°)
+    assert(brng > 140.0 && brng < 160.0)?
+}
+
+test "destination point" {
+    let start = GeoCoord.unchecked(51.5074, -0.1278)
+    let dest = destination(start, 90.0, 100000.0)  // 100km east
+    assert(dest.lon > start.lon)?
+}
+
+test "compass direction" {
+    assert_eq(CompassDirection.from_bearing(0.0), CompassDirection.N)?
+    assert_eq(CompassDirection.from_bearing(90.0), CompassDirection.E)?
+    assert_eq(CompassDirection.from_bearing(180.0), CompassDirection.S)?
+}
+
+test "distance units" {
+    let meters = 1609.344
+    let miles = DistanceUnit.Miles.from_meters(meters)
+    assert((miles - 1.0).abs() < 0.001)?
+}
+
+test "nearest finder" {
+    let points = [
+        GeoCoord.unchecked(40.0, -74.0),
+        GeoCoord.unchecked(41.0, -74.0),
+        GeoCoord.unchecked(42.0, -74.0)
+    ]
+    let finder = NearestFinder.new(points)
+    let target = GeoCoord.unchecked(40.5, -74.0)
+    let (nearest, _) = finder.nearest(target)?
+    assert((nearest.lat - 40.0).abs() < 0.1 || (nearest.lat - 41.0).abs() < 0.1)?
+}

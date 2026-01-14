@@ -1,0 +1,760 @@
+// =============================================================================
+// Vibee OS — Reducer Module
+// Redux-like reducers for state management
+// =============================================================================
+
+use action::{Action, StandardAction, InitAction, ActionBatch}
+
+// =============================================================================
+// Core Reducer Types
+// =============================================================================
+
+/// Reducer trait - transforms state based on action
+trait Reducer<S> {
+    fn reduce(state: S, action: impl Action) -> S
+}
+
+/// Reducer function type
+type ReducerFn<S> = fn(S, impl Action) -> S
+
+/// Functional reducer wrapper
+struct FnReducer<S> {
+    reduce_fn: ReducerFn<S>
+    initial_state: S
+}
+
+impl<S: Clone> Reducer<S> for FnReducer<S> {
+    fn reduce(state: S, action: impl Action) -> S {
+        (self.reduce_fn)(state, action)
+    }
+}
+
+impl<S: Clone> FnReducer<S> {
+    fn new(initial_state: S, reduce_fn: ReducerFn<S>) -> Self {
+        FnReducer {
+            reduce_fn: reduce_fn,
+            initial_state: initial_state
+        }
+    }
+    
+    fn get_initial_state() -> S {
+        self.initial_state.clone()
+    }
+}
+
+/// Create reducer from function
+fn create_reducer<S: Clone>(initial_state: S, reduce_fn: ReducerFn<S>) -> FnReducer<S> {
+    FnReducer.new(initial_state, reduce_fn)
+}
+
+// =============================================================================
+// Reducer Builder
+// =============================================================================
+
+/// Case reducer - handles specific action type
+struct CaseReducer<S, P> {
+    action_type: String
+    handler: fn(S, P) -> S
+}
+
+/// Reducer builder for declarative reducer creation
+struct ReducerBuilder<S> {
+    initial_state: S
+    cases: Map<String, fn(S, impl Action) -> S>
+    default_handler: Option<fn(S, impl Action) -> S>
+}
+
+impl<S: Clone> ReducerBuilder<S> {
+    fn new(initial_state: S) -> Self {
+        ReducerBuilder {
+            initial_state: initial_state,
+            cases: Map.new(),
+            default_handler: None
+        }
+    }
+    
+    /// Add case for specific action type
+    fn add_case<P>(action_type: String, handler: fn(S, P) -> S) -> Self {
+        self.cases.insert(action_type, |state, action| {
+            if let Some(typed_action) = action.downcast::<StandardAction<P>>() {
+                handler(state, typed_action.payload())
+            } else {
+                state
+            }
+        })
+        self
+    }
+    
+    /// Add case using action creator
+    fn add_case_for<P>(creator: ActionCreator<P>, handler: fn(S, P) -> S) -> Self {
+        self.add_case(creator.get_type(), handler)
+    }
+    
+    /// Add matcher for multiple action types
+    fn add_matcher(matcher: ActionMatcher, handler: fn(S, impl Action) -> S) -> Self {
+        // Store matcher handler separately
+        self.default_handler = Some(|state, action| {
+            if matcher.matches(action) {
+                handler(state, action)
+            } else if let Some(prev) = self.default_handler {
+                prev(state, action)
+            } else {
+                state
+            }
+        })
+        self
+    }
+    
+    /// Set default case handler
+    fn add_default_case(handler: fn(S, impl Action) -> S) -> Self {
+        self.default_handler = Some(handler)
+        self
+    }
+    
+    /// Build the reducer
+    fn build() -> FnReducer<S> {
+        let cases = self.cases.clone()
+        let default_handler = self.default_handler.clone()
+        let initial = self.initial_state.clone()
+        
+        FnReducer.new(initial, |state, action| {
+            let action_type = action.action_type()
+            
+            if let Some(handler) = cases.get(action_type) {
+                handler(state, action)
+            } else if let Some(default_fn) = default_handler {
+                default_fn(state, action)
+            } else {
+                state
+            }
+        })
+    }
+}
+
+/// Create reducer builder
+fn builder<S: Clone>(initial_state: S) -> ReducerBuilder<S> {
+    ReducerBuilder.new(initial_state)
+}
+
+// =============================================================================
+// Combine Reducers
+// =============================================================================
+
+/// Combined state from multiple reducers
+struct CombinedReducer<S> {
+    reducers: Map<String, impl Reducer<Any>>
+    initial_state: S
+}
+
+impl<S: Clone> Reducer<S> for CombinedReducer<S> {
+    fn reduce(state: S, action: impl Action) -> S {
+        var new_state = state.clone()
+        var has_changed = false
+        
+        for (key, reducer) in self.reducers.iter() {
+            let prev_state_for_key = new_state.get_field(key)
+            let next_state_for_key = reducer.reduce(prev_state_for_key, action)
+            
+            if prev_state_for_key != next_state_for_key {
+                new_state.set_field(key, next_state_for_key)
+                has_changed = true
+            }
+        }
+        
+        if has_changed { new_state } else { state }
+    }
+}
+
+/// Combine multiple reducers into one
+fn combine_reducers<S: Clone>(reducers: Map<String, impl Reducer<Any>>) -> CombinedReducer<S> {
+    // Build initial state from reducer initial states
+    var initial_state = S.default()
+    for (key, reducer) in reducers.iter() {
+        if let Some(fn_reducer) = reducer.downcast::<FnReducer<Any>>() {
+            initial_state.set_field(key, fn_reducer.get_initial_state())
+        }
+    }
+    
+    CombinedReducer {
+        reducers: reducers,
+        initial_state: initial_state
+    }
+}
+
+// =============================================================================
+// Reducer Enhancers
+// =============================================================================
+
+/// Wrap reducer with logging
+fn with_logging<S: Clone + Debug>(reducer: impl Reducer<S>) -> FnReducer<S> {
+    let initial = if let Some(fn_r) = reducer.downcast::<FnReducer<S>>() {
+        fn_r.get_initial_state()
+    } else {
+        S.default()
+    }
+    
+    FnReducer.new(initial, |state, action| {
+        @native("console_group", "Action: " + action.action_type())
+        @native("console_log", "Prev State:", state)
+        
+        let next_state = reducer.reduce(state, action)
+        
+        @native("console_log", "Next State:", next_state)
+        @native("console_group_end")
+        
+        next_state
+    })
+}
+
+/// Wrap reducer with undo/redo capability
+struct UndoableState<S> {
+    past: [S]
+    present: S
+    future: [S]
+}
+
+impl<S: Clone> UndoableState<S> {
+    fn new(initial: S) -> Self {
+        UndoableState {
+            past: [],
+            present: initial,
+            future: []
+        }
+    }
+}
+
+fn undoable<S: Clone>(reducer: impl Reducer<S>, limit: Int) -> FnReducer<UndoableState<S>> {
+    let initial = if let Some(fn_r) = reducer.downcast::<FnReducer<S>>() {
+        UndoableState.new(fn_r.get_initial_state())
+    } else {
+        UndoableState.new(S.default())
+    }
+    
+    FnReducer.new(initial, |state, action| {
+        match action.action_type().as_str() {
+            "@@UNDO" => {
+                if state.past.is_empty() {
+                    return state
+                }
+                var new_past = state.past.clone()
+                let previous = new_past.pop().unwrap()
+                var new_future = state.future.clone()
+                new_future.insert(0, state.present.clone())
+                
+                UndoableState {
+                    past: new_past,
+                    present: previous,
+                    future: new_future
+                }
+            }
+            "@@REDO" => {
+                if state.future.is_empty() {
+                    return state
+                }
+                var new_future = state.future.clone()
+                let next = new_future.remove(0)
+                var new_past = state.past.clone()
+                new_past.push(state.present.clone())
+                
+                UndoableState {
+                    past: new_past,
+                    present: next,
+                    future: new_future
+                }
+            }
+            "@@CLEAR_HISTORY" => {
+                UndoableState {
+                    past: [],
+                    present: state.present.clone(),
+                    future: []
+                }
+            }
+            _ => {
+                let new_present = reducer.reduce(state.present.clone(), action)
+                
+                if new_present == state.present {
+                    return state
+                }
+                
+                var new_past = state.past.clone()
+                new_past.push(state.present.clone())
+                
+                // Limit history
+                while new_past.len() > limit {
+                    new_past.remove(0)
+                }
+                
+                UndoableState {
+                    past: new_past,
+                    present: new_present,
+                    future: []
+                }
+            }
+        }
+    })
+}
+
+/// Undo action
+struct UndoAction {}
+impl Action for UndoAction {
+    fn action_type() -> String { "@@UNDO" }
+}
+
+/// Redo action
+struct RedoAction {}
+impl Action for RedoAction {
+    fn action_type() -> String { "@@REDO" }
+}
+
+/// Clear history action
+struct ClearHistoryAction {}
+impl Action for ClearHistoryAction {
+    fn action_type() -> String { "@@CLEAR_HISTORY" }
+}
+
+// =============================================================================
+// Reducer Composition
+// =============================================================================
+
+/// Compose multiple reducers sequentially
+fn compose_reducers<S: Clone>(reducers: [impl Reducer<S>]) -> FnReducer<S> {
+    let initial = if !reducers.is_empty() {
+        if let Some(fn_r) = reducers[0].downcast::<FnReducer<S>>() {
+            fn_r.get_initial_state()
+        } else {
+            S.default()
+        }
+    } else {
+        S.default()
+    }
+    
+    FnReducer.new(initial, |state, action| {
+        var current_state = state
+        for reducer in reducers.iter() {
+            current_state = reducer.reduce(current_state, action)
+        }
+        current_state
+    })
+}
+
+/// Reduce only specific slice of state
+fn reduce_slice<S: Clone, T: Clone>(
+    key: String,
+    reducer: impl Reducer<T>
+) -> FnReducer<S> {
+    FnReducer.new(S.default(), |state, action| {
+        let slice = state.get_field::<T>(key)
+        let new_slice = reducer.reduce(slice, action)
+        
+        if slice != new_slice {
+            var new_state = state.clone()
+            new_state.set_field(key, new_slice)
+            new_state
+        } else {
+            state
+        }
+    })
+}
+
+// =============================================================================
+// Batch Reducer
+// =============================================================================
+
+/// Handle batched actions
+fn with_batch_support<S: Clone>(reducer: impl Reducer<S>) -> FnReducer<S> {
+    let initial = if let Some(fn_r) = reducer.downcast::<FnReducer<S>>() {
+        fn_r.get_initial_state()
+    } else {
+        S.default()
+    }
+    
+    FnReducer.new(initial, |state, action| {
+        if action.action_type() == "@@BATCH" {
+            if let Some(batch) = action.downcast::<ActionBatch>() {
+                var current_state = state
+                for a in batch.iter() {
+                    current_state = reducer.reduce(current_state, a)
+                }
+                current_state
+            } else {
+                state
+            }
+        } else {
+            reducer.reduce(state, action)
+        }
+    })
+}
+
+// =============================================================================
+// Immutable Update Helpers
+// =============================================================================
+
+/// Update nested field immutably
+fn update_in<S: Clone, T: Clone>(
+    state: S,
+    path: [String],
+    updater: fn(T) -> T
+) -> S {
+    if path.is_empty() {
+        return state
+    }
+    
+    var new_state = state.clone()
+    let key = path[0]
+    
+    if path.len() == 1 {
+        let value = new_state.get_field::<T>(key)
+        new_state.set_field(key, updater(value))
+    } else {
+        let nested = new_state.get_field::<Any>(key)
+        let updated_nested = update_in(nested, path[1..].to_vec(), updater)
+        new_state.set_field(key, updated_nested)
+    }
+    
+    new_state
+}
+
+/// Set nested field immutably
+fn set_in<S: Clone, T: Clone>(state: S, path: [String], value: T) -> S {
+    update_in(state, path, |_| value)
+}
+
+/// Remove field immutably
+fn remove_in<S: Clone>(state: S, path: [String]) -> S {
+    if path.is_empty() {
+        return state
+    }
+    
+    var new_state = state.clone()
+    let key = path[0]
+    
+    if path.len() == 1 {
+        new_state.remove_field(key)
+    } else {
+        let nested = new_state.get_field::<Any>(key)
+        let updated_nested = remove_in(nested, path[1..].to_vec())
+        new_state.set_field(key, updated_nested)
+    }
+    
+    new_state
+}
+
+// =============================================================================
+// Array Reducers
+// =============================================================================
+
+/// Reducer for array state
+fn array_reducer<T: Clone + Eq>(initial: [T]) -> FnReducer<[T]> {
+    FnReducer.new(initial, |state, action| {
+        match action.action_type().as_str() {
+            "@@ARRAY/PUSH" => {
+                if let Some(typed) = action.downcast::<StandardAction<T>>() {
+                    var new_state = state.clone()
+                    new_state.push(typed.payload())
+                    new_state
+                } else {
+                    state
+                }
+            }
+            "@@ARRAY/POP" => {
+                if state.is_empty() {
+                    state
+                } else {
+                    var new_state = state.clone()
+                    new_state.pop()
+                    new_state
+                }
+            }
+            "@@ARRAY/REMOVE" => {
+                if let Some(typed) = action.downcast::<StandardAction<Int>>() {
+                    let idx = typed.payload()
+                    if idx >= 0 && idx < state.len() {
+                        var new_state = state.clone()
+                        new_state.remove(idx)
+                        new_state
+                    } else {
+                        state
+                    }
+                } else {
+                    state
+                }
+            }
+            "@@ARRAY/CLEAR" => {
+                []
+            }
+            "@@ARRAY/SET" => {
+                if let Some(typed) = action.downcast::<StandardAction<[T]>>() {
+                    typed.payload()
+                } else {
+                    state
+                }
+            }
+            _ => state
+        }
+    })
+}
+
+// =============================================================================
+// Map Reducers
+// =============================================================================
+
+/// Reducer for map state
+fn map_reducer<K: Hash + Eq + Clone, V: Clone>(initial: Map<K, V>) -> FnReducer<Map<K, V>> {
+    FnReducer.new(initial, |state, action| {
+        match action.action_type().as_str() {
+            "@@MAP/SET" => {
+                if let Some(typed) = action.downcast::<StandardAction<(K, V)>>() {
+                    let (key, value) = typed.payload()
+                    var new_state = state.clone()
+                    new_state.insert(key, value)
+                    new_state
+                } else {
+                    state
+                }
+            }
+            "@@MAP/REMOVE" => {
+                if let Some(typed) = action.downcast::<StandardAction<K>>() {
+                    var new_state = state.clone()
+                    new_state.remove(typed.payload())
+                    new_state
+                } else {
+                    state
+                }
+            }
+            "@@MAP/CLEAR" => {
+                Map.new()
+            }
+            "@@MAP/MERGE" => {
+                if let Some(typed) = action.downcast::<StandardAction<Map<K, V>>>() {
+                    var new_state = state.clone()
+                    for (k, v) in typed.payload().iter() {
+                        new_state.insert(k, v)
+                    }
+                    new_state
+                } else {
+                    state
+                }
+            }
+            _ => state
+        }
+    })
+}
+
+// =============================================================================
+// Entity Reducer
+// =============================================================================
+
+/// Entity state for normalized data
+struct EntityState<T> {
+    ids: [String]
+    entities: Map<String, T>
+}
+
+impl<T: Clone> EntityState<T> {
+    fn new() -> Self {
+        EntityState {
+            ids: [],
+            entities: Map.new()
+        }
+    }
+    
+    fn get(id: String) -> Option<T> {
+        self.entities.get(id)
+    }
+    
+    fn get_all() -> [T] {
+        self.ids.iter().filter_map(|id| self.entities.get(id)).collect()
+    }
+    
+    fn len() -> Int {
+        self.ids.len()
+    }
+}
+
+/// Create entity reducer
+fn entity_reducer<T: Clone>(
+    get_id: fn(T) -> String
+) -> FnReducer<EntityState<T>> {
+    FnReducer.new(EntityState.new(), |state, action| {
+        match action.action_type().as_str() {
+            "@@ENTITY/ADD_ONE" => {
+                if let Some(typed) = action.downcast::<StandardAction<T>>() {
+                    let entity = typed.payload()
+                    let id = get_id(entity.clone())
+                    
+                    var new_state = state.clone()
+                    if !new_state.entities.contains_key(id.clone()) {
+                        new_state.ids.push(id.clone())
+                    }
+                    new_state.entities.insert(id, entity)
+                    new_state
+                } else {
+                    state
+                }
+            }
+            "@@ENTITY/ADD_MANY" => {
+                if let Some(typed) = action.downcast::<StandardAction<[T]>>() {
+                    var new_state = state.clone()
+                    for entity in typed.payload() {
+                        let id = get_id(entity.clone())
+                        if !new_state.entities.contains_key(id.clone()) {
+                            new_state.ids.push(id.clone())
+                        }
+                        new_state.entities.insert(id, entity)
+                    }
+                    new_state
+                } else {
+                    state
+                }
+            }
+            "@@ENTITY/REMOVE_ONE" => {
+                if let Some(typed) = action.downcast::<StandardAction<String>>() {
+                    let id = typed.payload()
+                    var new_state = state.clone()
+                    new_state.entities.remove(id.clone())
+                    new_state.ids.retain(|i| i != id)
+                    new_state
+                } else {
+                    state
+                }
+            }
+            "@@ENTITY/UPDATE_ONE" => {
+                if let Some(typed) = action.downcast::<StandardAction<(String, fn(T) -> T)>>() {
+                    let (id, updater) = typed.payload()
+                    if let Some(entity) = state.entities.get(id.clone()) {
+                        var new_state = state.clone()
+                        new_state.entities.insert(id, updater(entity))
+                        new_state
+                    } else {
+                        state
+                    }
+                } else {
+                    state
+                }
+            }
+            "@@ENTITY/SET_ALL" => {
+                if let Some(typed) = action.downcast::<StandardAction<[T]>>() {
+                    var new_state = EntityState.new()
+                    for entity in typed.payload() {
+                        let id = get_id(entity.clone())
+                        new_state.ids.push(id.clone())
+                        new_state.entities.insert(id, entity)
+                    }
+                    new_state
+                } else {
+                    state
+                }
+            }
+            "@@ENTITY/CLEAR" => {
+                EntityState.new()
+            }
+            _ => state
+        }
+    })
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "create reducer" {
+    let counter_reducer = create_reducer(0, |state, action| {
+        match action.action_type().as_str() {
+            "INCREMENT" => state + 1,
+            "DECREMENT" => state - 1,
+            _ => state
+        }
+    })
+    
+    let state1 = counter_reducer.reduce(0, simple_action("INCREMENT"))
+    assert_eq(state1, 1)?
+    
+    let state2 = counter_reducer.reduce(state1, simple_action("INCREMENT"))
+    assert_eq(state2, 2)?
+    
+    let state3 = counter_reducer.reduce(state2, simple_action("DECREMENT"))
+    assert_eq(state3, 1)?
+}
+
+test "reducer builder" {
+    let reducer = builder(0)
+        .add_case::<Int>("INCREMENT", |state, amount| state + amount)
+        .add_case::<Int>("DECREMENT", |state, amount| state - amount)
+        .add_case::<()>("RESET", |_, _| 0)
+        .build()
+    
+    let state1 = reducer.reduce(0, action_with_payload("INCREMENT", 5))
+    assert_eq(state1, 5)?
+    
+    let state2 = reducer.reduce(state1, action_with_payload("DECREMENT", 2))
+    assert_eq(state2, 3)?
+    
+    let state3 = reducer.reduce(state2, simple_action("RESET"))
+    assert_eq(state3, 0)?
+}
+
+test "undoable reducer" {
+    let base_reducer = create_reducer(0, |state, action| {
+        match action.action_type().as_str() {
+            "INCREMENT" => state + 1,
+            _ => state
+        }
+    })
+    
+    let reducer = undoable(base_reducer, 10)
+    
+    var state = reducer.get_initial_state()
+    state = reducer.reduce(state, simple_action("INCREMENT"))
+    state = reducer.reduce(state, simple_action("INCREMENT"))
+    
+    assert_eq(state.present, 2)?
+    assert_eq(state.past.len(), 2)?
+    
+    state = reducer.reduce(state, UndoAction {})
+    assert_eq(state.present, 1)?
+    assert_eq(state.future.len(), 1)?
+    
+    state = reducer.reduce(state, RedoAction {})
+    assert_eq(state.present, 2)?
+}
+
+test "compose reducers" {
+    let r1 = create_reducer(0, |state, action| {
+        if action.action_type() == "ADD" { state + 1 } else { state }
+    })
+    let r2 = create_reducer(0, |state, action| {
+        if action.action_type() == "MULTIPLY" { state * 2 } else { state }
+    })
+    
+    let composed = compose_reducers([r1, r2])
+    
+    var state = 1
+    state = composed.reduce(state, simple_action("ADD"))
+    assert_eq(state, 2)?
+}
+
+test "array reducer" {
+    let reducer = array_reducer::<Int>([])
+    
+    var state = reducer.get_initial_state()
+    state = reducer.reduce(state, action_with_payload("@@ARRAY/PUSH", 1))
+    state = reducer.reduce(state, action_with_payload("@@ARRAY/PUSH", 2))
+    
+    assert_eq(state, [1, 2])?
+    
+    state = reducer.reduce(state, simple_action("@@ARRAY/POP"))
+    assert_eq(state, [1])?
+}
+
+test "entity reducer" {
+    struct User { id: String, name: String }
+    
+    let reducer = entity_reducer::<User>(|u| u.id.clone())
+    
+    var state = reducer.get_initial_state()
+    state = reducer.reduce(state, action_with_payload("@@ENTITY/ADD_ONE", User { id: "1", name: "Alice" }))
+    state = reducer.reduce(state, action_with_payload("@@ENTITY/ADD_ONE", User { id: "2", name: "Bob" }))
+    
+    assert_eq(state.len(), 2)?
+    assert_eq(state.get("1").unwrap().name, "Alice")?
+}

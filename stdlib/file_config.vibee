@@ -1,0 +1,800 @@
+// =============================================================================
+// Vibee OS — File Config Module
+// Configuration from files (JSON, YAML, TOML, INI)
+// =============================================================================
+
+// =============================================================================
+// Config Value
+// =============================================================================
+
+/// Universal configuration value
+enum ConfigValue {
+    Null
+    Bool(Bool)
+    Int(Int)
+    Float(Float)
+    String(String)
+    Array([ConfigValue])
+    Object(Map<String, ConfigValue>)
+}
+
+impl ConfigValue {
+    fn is_null() -> Bool { match self { .Null => true, _ => false } }
+    fn is_bool() -> Bool { match self { .Bool(_) => true, _ => false } }
+    fn is_int() -> Bool { match self { .Int(_) => true, _ => false } }
+    fn is_float() -> Bool { match self { .Float(_) => true, _ => false } }
+    fn is_string() -> Bool { match self { .String(_) => true, _ => false } }
+    fn is_array() -> Bool { match self { .Array(_) => true, _ => false } }
+    fn is_object() -> Bool { match self { .Object(_) => true, _ => false } }
+    
+    fn as_bool() -> Option<Bool> { match self { .Bool(b) => Some(b), _ => None } }
+    fn as_int() -> Option<Int> { match self { .Int(i) => Some(i), _ => None } }
+    fn as_float() -> Option<Float> { match self { .Float(f) => Some(f), _ => None } }
+    fn as_str() -> Option<String> { match self { .String(s) => Some(s), _ => None } }
+    fn as_array() -> Option<[ConfigValue]> { match self { .Array(a) => Some(a), _ => None } }
+    fn as_object() -> Option<Map<String, ConfigValue>> { match self { .Object(o) => Some(o), _ => None } }
+    
+    /// Get nested value by key
+    fn get(key: String) -> Option<ConfigValue> {
+        match self {
+            .Object(o) => o.get(key).cloned()
+            _ => None
+        }
+    }
+    
+    /// Get nested value by index
+    fn at(idx: Int) -> Option<ConfigValue> {
+        match self {
+            .Array(a) if idx >= 0 && idx < a.len() => Some(a[idx].clone())
+            _ => None
+        }
+    }
+    
+    /// Get nested value by path (e.g., "database.host")
+    fn path(p: String) -> Option<ConfigValue> {
+        let parts = p.split(".")
+        var current = self.clone()
+        for part in parts {
+            // Try as object key first
+            if let Some(v) = current.get(part) {
+                current = v
+            } else if let Ok(idx) = Int.parse(part) {
+                // Try as array index
+                current = current.at(idx)?
+            } else {
+                return None
+            }
+        }
+        Some(current)
+    }
+    
+    /// Get path as specific type
+    fn path_bool(p: String) -> Option<Bool> { self.path(p)?.as_bool() }
+    fn path_int(p: String) -> Option<Int> { self.path(p)?.as_int() }
+    fn path_float(p: String) -> Option<Float> { self.path(p)?.as_float() }
+    fn path_str(p: String) -> Option<String> { self.path(p)?.as_str() }
+    fn path_array(p: String) -> Option<[ConfigValue]> { self.path(p)?.as_array() }
+    fn path_object(p: String) -> Option<Map<String, ConfigValue>> { self.path(p)?.as_object() }
+    
+    /// Merge two config values (other takes precedence)
+    fn merge(other: ConfigValue) -> ConfigValue {
+        match (self, other) {
+            (.Object(a), .Object(b)) => {
+                var result = a.clone()
+                for (k, v) in b {
+                    match result.get(k) {
+                        Some(existing) => result.set(k, existing.merge(v))
+                        None => result.set(k, v)
+                    }
+                }
+                ConfigValue.Object(result)
+            }
+            (_, other) => other
+        }
+    }
+    
+    /// Set value at path
+    fn set_path(p: String, value: ConfigValue) -> ConfigValue {
+        let parts = p.split(".").collect::<[String]>()
+        self.set_path_recursive(parts, 0, value)
+    }
+    
+    fn set_path_recursive(parts: [String], idx: Int, value: ConfigValue) -> ConfigValue {
+        if idx >= parts.len() { return value }
+        
+        let key = parts[idx]
+        match self {
+            .Object(o) => {
+                var new_obj = o.clone()
+                let child = o.get(key).cloned().unwrap_or(ConfigValue.Object(Map.empty()))
+                new_obj.set(key, child.set_path_recursive(parts, idx + 1, value))
+                ConfigValue.Object(new_obj)
+            }
+            _ => {
+                var new_obj = Map.empty()
+                let child = ConfigValue.Object(Map.empty())
+                new_obj.set(key, child.set_path_recursive(parts, idx + 1, value))
+                ConfigValue.Object(new_obj)
+            }
+        }
+    }
+}
+
+impl Index<String> for ConfigValue {
+    type Output = Option<ConfigValue>
+    fn index(key: String) -> Option<ConfigValue> { self.get(key) }
+}
+
+impl Index<Int> for ConfigValue {
+    type Output = Option<ConfigValue>
+    fn index(idx: Int) -> Option<ConfigValue> { self.at(idx) }
+}
+
+// =============================================================================
+// Config Format
+// =============================================================================
+
+/// Supported configuration formats
+enum ConfigFormat {
+    JSON
+    YAML
+    TOML
+    INI
+    Auto
+}
+
+impl ConfigFormat {
+    fn from_extension(path: String) -> Self {
+        let ext = path.rsplit(".").next().unwrap_or("").to_lower()
+        match ext {
+            "json" => ConfigFormat.JSON
+            "yaml" | "yml" => ConfigFormat.YAML
+            "toml" => ConfigFormat.TOML
+            "ini" | "cfg" | "conf" => ConfigFormat.INI
+            _ => ConfigFormat.Auto
+        }
+    }
+    
+    fn detect(content: String) -> Self {
+        let trimmed = content.trim()
+        if trimmed.starts_with("{") || trimmed.starts_with("[") {
+            ConfigFormat.JSON
+        } else if trimmed.contains(": ") || trimmed.starts_with("---") {
+            ConfigFormat.YAML
+        } else if trimmed.contains(" = ") && (trimmed.contains("[") || !trimmed.contains(":")) {
+            ConfigFormat.TOML
+        } else {
+            ConfigFormat.INI
+        }
+    }
+}
+
+// =============================================================================
+// File Config
+// =============================================================================
+
+/// File-based configuration manager
+struct FileConfig {
+    values: ConfigValue
+    sources: [ConfigSource]
+    watchers: [fn(ConfigValue)]
+}
+
+struct ConfigSource {
+    path: String
+    format: ConfigFormat
+    optional: Bool
+    priority: Int
+}
+
+impl FileConfig {
+    fn new() -> Self {
+        FileConfig {
+            values: ConfigValue.Object(Map.empty()),
+            sources: [],
+            watchers: []
+        }
+    }
+    
+    /// Load from single file
+    fn from_file(path: String) -> Result<Self, FileConfigError> {
+        let mut config = Self.new()
+        config.add_source(path)?
+        config.reload()?
+        Ok(config)
+    }
+    
+    /// Load from file with specific format
+    fn from_file_with_format(path: String, format: ConfigFormat) -> Result<Self, FileConfigError> {
+        let mut config = Self.new()
+        config.sources.push(ConfigSource {
+            path: path,
+            format: format,
+            optional: false,
+            priority: 0
+        })
+        config.reload()?
+        Ok(config)
+    }
+    
+    /// Add configuration source
+    fn add_source(path: String) -> Result<Self, FileConfigError> {
+        self.sources.push(ConfigSource {
+            path: path.clone(),
+            format: ConfigFormat.from_extension(path),
+            optional: false,
+            priority: self.sources.len() as Int
+        })
+        Ok(self)
+    }
+    
+    /// Add optional configuration source
+    fn add_optional_source(path: String) -> Self {
+        self.sources.push(ConfigSource {
+            path: path.clone(),
+            format: ConfigFormat.from_extension(path),
+            optional: true,
+            priority: self.sources.len() as Int
+        })
+        self
+    }
+    
+    /// Add source with priority
+    fn add_source_with_priority(path: String, priority: Int) -> Self {
+        self.sources.push(ConfigSource {
+            path: path.clone(),
+            format: ConfigFormat.from_extension(path),
+            optional: false,
+            priority: priority
+        })
+        self
+    }
+    
+    /// Reload all configuration sources
+    fn reload() -> Result<(), FileConfigError> {
+        // Sort by priority
+        self.sources.sort_by(|a, b| a.priority.cmp(b.priority))
+        
+        var merged = ConfigValue.Object(Map.empty())
+        
+        for source in self.sources {
+            match self.load_source(source) {
+                Ok(value) => merged = merged.merge(value)
+                Err(e) if source.optional => {} // Skip optional missing files
+                Err(e) => return Err(e)
+            }
+        }
+        
+        let old_values = self.values.clone()
+        self.values = merged
+        
+        // Notify watchers if changed
+        if old_values != self.values {
+            for watcher in self.watchers {
+                watcher(self.values.clone())
+            }
+        }
+        
+        Ok(())
+    }
+    
+    fn load_source(source: ConfigSource) -> Result<ConfigValue, FileConfigError> {
+        let content = fs.read_string(source.path.clone())
+            .map_err(|e| FileConfigError.IOError(source.path.clone(), e.to_string()))?
+        
+        let format = match source.format {
+            ConfigFormat.Auto => ConfigFormat.detect(content.clone())
+            f => f
+        }
+        
+        parse_content(content, format)
+    }
+    
+    /// Get value by path
+    fn get(path: String) -> Option<ConfigValue> { self.values.path(path) }
+    
+    /// Get value with default
+    fn get_or(path: String, default: ConfigValue) -> ConfigValue {
+        self.get(path).unwrap_or(default)
+    }
+    
+    /// Get typed values
+    fn get_bool(path: String) -> Option<Bool> { self.values.path_bool(path) }
+    fn get_int(path: String) -> Option<Int> { self.values.path_int(path) }
+    fn get_float(path: String) -> Option<Float> { self.values.path_float(path) }
+    fn get_str(path: String) -> Option<String> { self.values.path_str(path) }
+    fn get_array(path: String) -> Option<[ConfigValue]> { self.values.path_array(path) }
+    fn get_object(path: String) -> Option<Map<String, ConfigValue>> { self.values.path_object(path) }
+    
+    /// Get with defaults
+    fn get_bool_or(path: String, default: Bool) -> Bool { self.get_bool(path).unwrap_or(default) }
+    fn get_int_or(path: String, default: Int) -> Int { self.get_int(path).unwrap_or(default) }
+    fn get_float_or(path: String, default: Float) -> Float { self.get_float(path).unwrap_or(default) }
+    fn get_str_or(path: String, default: String) -> String { self.get_str(path).unwrap_or(default) }
+    
+    /// Require value (returns error if missing)
+    fn require(path: String) -> Result<ConfigValue, FileConfigError> {
+        self.get(path).ok_or(FileConfigError.MissingKey(path))
+    }
+    
+    fn require_bool(path: String) -> Result<Bool, FileConfigError> {
+        self.get_bool(path).ok_or(FileConfigError.MissingKey(path))
+    }
+    
+    fn require_int(path: String) -> Result<Int, FileConfigError> {
+        self.get_int(path).ok_or(FileConfigError.MissingKey(path))
+    }
+    
+    fn require_str(path: String) -> Result<String, FileConfigError> {
+        self.get_str(path).ok_or(FileConfigError.MissingKey(path))
+    }
+    
+    /// Set value at path
+    fn set(path: String, value: ConfigValue) {
+        self.values = self.values.set_path(path, value)
+    }
+    
+    /// Watch for changes
+    fn on_change(callback: fn(ConfigValue)) -> Self {
+        self.watchers.push(callback)
+        self
+    }
+    
+    /// Save to file
+    fn save(path: String) -> Result<(), FileConfigError> {
+        let format = ConfigFormat.from_extension(path.clone())
+        let content = emit_content(self.values.clone(), format)?
+        fs.write_string(path.clone(), content)
+            .map_err(|e| FileConfigError.IOError(path, e.to_string()))
+    }
+    
+    /// Get all values as map
+    fn all() -> ConfigValue { self.values.clone() }
+}
+
+// =============================================================================
+// Parsing Functions
+// =============================================================================
+
+fn parse_content(content: String, format: ConfigFormat) -> Result<ConfigValue, FileConfigError> {
+    match format {
+        ConfigFormat.JSON => parse_json(content)
+        ConfigFormat.YAML => parse_yaml(content)
+        ConfigFormat.TOML => parse_toml(content)
+        ConfigFormat.INI => parse_ini(content)
+        ConfigFormat.Auto => parse_content(content, ConfigFormat.detect(content))
+    }
+}
+
+fn parse_json(content: String) -> Result<ConfigValue, FileConfigError> {
+    @native("json_parse_to_config", content)
+        .map_err(|e| FileConfigError.ParseError("JSON", e))
+}
+
+fn parse_yaml(content: String) -> Result<ConfigValue, FileConfigError> {
+    @native("yaml_parse_to_config", content)
+        .map_err(|e| FileConfigError.ParseError("YAML", e))
+}
+
+fn parse_toml(content: String) -> Result<ConfigValue, FileConfigError> {
+    @native("toml_parse_to_config", content)
+        .map_err(|e| FileConfigError.ParseError("TOML", e))
+}
+
+fn parse_ini(content: String) -> Result<ConfigValue, FileConfigError> {
+    var result = Map.empty()
+    var current_section = ""
+    
+    for line in content.lines() {
+        let line = line.trim()
+        
+        // Skip empty lines and comments
+        if line.is_empty() || line.starts_with(";") || line.starts_with("#") {
+            continue
+        }
+        
+        // Section header
+        if line.starts_with("[") && line.ends_with("]") {
+            current_section = line[1..line.len() - 1].trim()
+            if !result.contains(current_section) {
+                result.set(current_section, ConfigValue.Object(Map.empty()))
+            }
+            continue
+        }
+        
+        // Key-value pair
+        if let Some(eq_pos) = line.find("=") {
+            let key = line[..eq_pos].trim()
+            let value = line[eq_pos + 1..].trim()
+            let config_value = parse_ini_value(value)
+            
+            if current_section.is_empty() {
+                result.set(key, config_value)
+            } else {
+                if let Some(ConfigValue.Object(section)) = result.get(current_section) {
+                    var section_mut = section.clone()
+                    section_mut.set(key, config_value)
+                    result.set(current_section, ConfigValue.Object(section_mut))
+                }
+            }
+        }
+    }
+    
+    Ok(ConfigValue.Object(result))
+}
+
+fn parse_ini_value(value: String) -> ConfigValue {
+    // Try boolean
+    match value.to_lower() {
+        "true" | "yes" | "on" => return ConfigValue.Bool(true)
+        "false" | "no" | "off" => return ConfigValue.Bool(false)
+        _ => {}
+    }
+    
+    // Try integer
+    if let Ok(i) = Int.parse(value) {
+        return ConfigValue.Int(i)
+    }
+    
+    // Try float
+    if let Ok(f) = Float.parse(value) {
+        return ConfigValue.Float(f)
+    }
+    
+    // Remove quotes if present
+    var s = value
+    if (s.starts_with("\"") && s.ends_with("\"")) ||
+       (s.starts_with("'") && s.ends_with("'")) {
+        s = s[1..s.len() - 1]
+    }
+    
+    ConfigValue.String(s)
+}
+
+// =============================================================================
+// Emitting Functions
+// =============================================================================
+
+fn emit_content(value: ConfigValue, format: ConfigFormat) -> Result<String, FileConfigError> {
+    match format {
+        ConfigFormat.JSON => emit_json(value)
+        ConfigFormat.YAML => emit_yaml(value)
+        ConfigFormat.TOML => emit_toml(value)
+        ConfigFormat.INI => emit_ini(value)
+        ConfigFormat.Auto => emit_json(value)
+    }
+}
+
+fn emit_json(value: ConfigValue) -> Result<String, FileConfigError> {
+    Ok(@native("json_emit_from_config", value))
+}
+
+fn emit_yaml(value: ConfigValue) -> Result<String, FileConfigError> {
+    Ok(@native("yaml_emit_from_config", value))
+}
+
+fn emit_toml(value: ConfigValue) -> Result<String, FileConfigError> {
+    Ok(@native("toml_emit_from_config", value))
+}
+
+fn emit_ini(value: ConfigValue) -> Result<String, FileConfigError> {
+    var result = StringBuilder.new()
+    
+    match value {
+        .Object(obj) => {
+            // First, emit top-level non-object values
+            for (k, v) in obj {
+                match v {
+                    .Object(_) => {} // Skip sections for now
+                    _ => result.append(format!("{} = {}\n", k, emit_ini_value(v)))
+                }
+            }
+            
+            // Then emit sections
+            for (k, v) in obj {
+                if let .Object(section) = v {
+                    result.append(format!("\n[{}]\n", k))
+                    for (sk, sv) in section {
+                        result.append(format!("{} = {}\n", sk, emit_ini_value(sv)))
+                    }
+                }
+            }
+        }
+        _ => return Err(FileConfigError.ParseError("INI", "Root must be object"))
+    }
+    
+    Ok(result.build())
+}
+
+fn emit_ini_value(value: ConfigValue) -> String {
+    match value {
+        .Null => ""
+        .Bool(b) => if b { "true" } else { "false" }
+        .Int(i) => format!("{}", i)
+        .Float(f) => format!("{}", f)
+        .String(s) => if s.contains(" ") { format!("\"{}\"", s) } else { s }
+        .Array(_) | .Object(_) => "[complex]"
+    }
+}
+
+// =============================================================================
+// Config File Watcher
+// =============================================================================
+
+/// Watch configuration files for changes
+actor ConfigFileWatcher {
+    state config: FileConfig
+    state poll_interval_ms: Int64
+    state running: Bool
+    state last_modified: Map<String, Int64>
+    
+    fn new(config: FileConfig) -> Self {
+        ConfigFileWatcher {
+            config: config,
+            poll_interval_ms: 1000,
+            running: false,
+            last_modified: Map.empty()
+        }
+    }
+    
+    fn poll_interval(ms: Int64) -> Self {
+        self.poll_interval_ms = ms
+        self
+    }
+    
+    fn start() {
+        self.running = true
+        
+        // Initialize last modified times
+        for source in self.config.sources {
+            if let Ok(meta) = fs.metadata(source.path.clone()) {
+                if let Some(modified) = meta.modified {
+                    self.last_modified.set(source.path, modified.timestamp_millis())
+                }
+            }
+        }
+        
+        spawn {
+            while self.running {
+                self.check_changes()
+                sleep(Duration.millis(self.poll_interval_ms))
+            }
+        }
+    }
+    
+    fn stop() {
+        self.running = false
+    }
+    
+    fn check_changes() {
+        var changed = false
+        
+        for source in self.config.sources {
+            if let Ok(meta) = fs.metadata(source.path.clone()) {
+                if let Some(modified) = meta.modified {
+                    let ts = modified.timestamp_millis()
+                    let last = self.last_modified.get(source.path.clone()).cloned().unwrap_or(0)
+                    
+                    if ts > last {
+                        self.last_modified.set(source.path, ts)
+                        changed = true
+                    }
+                }
+            }
+        }
+        
+        if changed {
+            if let Err(e) = self.config.reload() {
+                log.error("Failed to reload config: {}", e)
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Config Builder
+// =============================================================================
+
+/// Builder for creating configuration with defaults and overrides
+struct ConfigBuilder {
+    defaults: ConfigValue
+    sources: [ConfigSource]
+    overrides: ConfigValue
+    env_prefix: Option<String>
+}
+
+impl ConfigBuilder {
+    fn new() -> Self {
+        ConfigBuilder {
+            defaults: ConfigValue.Object(Map.empty()),
+            sources: [],
+            overrides: ConfigValue.Object(Map.empty()),
+            env_prefix: None
+        }
+    }
+    
+    /// Set default values
+    fn defaults(value: ConfigValue) -> Self {
+        self.defaults = value
+        self
+    }
+    
+    /// Add file source
+    fn file(path: String) -> Self {
+        self.sources.push(ConfigSource {
+            path: path.clone(),
+            format: ConfigFormat.from_extension(path),
+            optional: false,
+            priority: self.sources.len() as Int
+        })
+        self
+    }
+    
+    /// Add optional file source
+    fn optional_file(path: String) -> Self {
+        self.sources.push(ConfigSource {
+            path: path.clone(),
+            format: ConfigFormat.from_extension(path),
+            optional: true,
+            priority: self.sources.len() as Int
+        })
+        self
+    }
+    
+    /// Set override values
+    fn overrides(value: ConfigValue) -> Self {
+        self.overrides = value
+        self
+    }
+    
+    /// Enable environment variable overrides with prefix
+    fn env_override(prefix: String) -> Self {
+        self.env_prefix = Some(prefix)
+        self
+    }
+    
+    /// Build the configuration
+    fn build() -> Result<FileConfig, FileConfigError> {
+        var config = FileConfig.new()
+        config.sources = self.sources.clone()
+        
+        // Start with defaults
+        config.values = self.defaults.clone()
+        
+        // Load and merge file sources
+        config.reload()?
+        
+        // Apply environment overrides
+        if let Some(prefix) = self.env_prefix {
+            config.values = apply_env_overrides(config.values, prefix)
+        }
+        
+        // Apply explicit overrides
+        config.values = config.values.merge(self.overrides.clone())
+        
+        Ok(config)
+    }
+}
+
+fn apply_env_overrides(value: ConfigValue, prefix: String) -> ConfigValue {
+    let env_vars = env_config.with_prefix(prefix)
+    var result = value
+    
+    for (key, val) in env_vars {
+        // Convert ENV_VAR_NAME to path.name
+        let path = key[prefix.len() + 1..]
+            .to_lower()
+            .replace("__", ".")
+            .replace("_", ".")
+        
+        result = result.set_path(path, ConfigValue.String(val))
+    }
+    
+    result
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum FileConfigError {
+    IOError(String, String)
+    ParseError(String, String)
+    MissingKey(String)
+    InvalidFormat(String)
+}
+
+impl Display for FileConfigError {
+    fn fmt(f: Formatter) {
+        match self {
+            .IOError(path, msg) => f.write(format!("I/O error reading {}: {}", path, msg))
+            .ParseError(format, msg) => f.write(format!("{} parse error: {}", format, msg))
+            .MissingKey(key) => f.write(format!("Missing required key: {}", key))
+            .InvalidFormat(msg) => f.write(format!("Invalid format: {}", msg))
+        }
+    }
+}
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+/// Load configuration from file
+fn load(path: String) -> Result<FileConfig, FileConfigError> {
+    FileConfig.from_file(path)
+}
+
+/// Load JSON configuration
+fn load_json(path: String) -> Result<FileConfig, FileConfigError> {
+    FileConfig.from_file_with_format(path, ConfigFormat.JSON)
+}
+
+/// Load YAML configuration
+fn load_yaml(path: String) -> Result<FileConfig, FileConfigError> {
+    FileConfig.from_file_with_format(path, ConfigFormat.YAML)
+}
+
+/// Load TOML configuration
+fn load_toml(path: String) -> Result<FileConfig, FileConfigError> {
+    FileConfig.from_file_with_format(path, ConfigFormat.TOML)
+}
+
+/// Load INI configuration
+fn load_ini(path: String) -> Result<FileConfig, FileConfigError> {
+    FileConfig.from_file_with_format(path, ConfigFormat.INI)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "config value path" {
+    let config = ConfigValue.Object(Map.from([
+        ("database", ConfigValue.Object(Map.from([
+            ("host", ConfigValue.String("localhost")),
+            ("port", ConfigValue.Int(5432))
+        ])))
+    ]))
+    
+    assert_eq(config.path_str("database.host"), Some("localhost"))?
+    assert_eq(config.path_int("database.port"), Some(5432))?
+}
+
+test "config value merge" {
+    let a = ConfigValue.Object(Map.from([
+        ("a", ConfigValue.Int(1)),
+        ("b", ConfigValue.Int(2))
+    ]))
+    
+    let b = ConfigValue.Object(Map.from([
+        ("b", ConfigValue.Int(3)),
+        ("c", ConfigValue.Int(4))
+    ]))
+    
+    let merged = a.merge(b)
+    assert_eq(merged.path_int("a"), Some(1))?
+    assert_eq(merged.path_int("b"), Some(3))?
+    assert_eq(merged.path_int("c"), Some(4))?
+}
+
+test "parse ini" {
+    let ini = "[database]\nhost = localhost\nport = 5432\n"
+    let config = parse_ini(ini)?
+    
+    assert_eq(config.path_str("database.host"), Some("localhost"))?
+    assert_eq(config.path_int("database.port"), Some(5432))?
+}
+
+test "config format detection" {
+    assert_eq(ConfigFormat.from_extension("config.json"), ConfigFormat.JSON)?
+    assert_eq(ConfigFormat.from_extension("config.yaml"), ConfigFormat.YAML)?
+    assert_eq(ConfigFormat.from_extension("config.toml"), ConfigFormat.TOML)?
+    assert_eq(ConfigFormat.from_extension("config.ini"), ConfigFormat.INI)?
+}
+
+test "set path" {
+    let config = ConfigValue.Object(Map.empty())
+    let updated = config.set_path("database.host", ConfigValue.String("localhost"))
+    
+    assert_eq(updated.path_str("database.host"), Some("localhost"))?
+}

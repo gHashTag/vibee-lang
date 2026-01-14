@@ -1,0 +1,385 @@
+// =============================================================================
+// Vibee OS — Lease Module
+// Resource leasing primitives for distributed systems
+// =============================================================================
+
+// =============================================================================
+// Lease Types
+// =============================================================================
+
+/// Lease state
+enum LeaseState {
+    Active
+    Expired
+    Revoked
+    Renewed
+}
+
+/// Lease error types
+enum LeaseError {
+    Expired { lease_id: String }
+    NotFound { lease_id: String }
+    NotOwner { lease_id: String, owner: String }
+    RenewalFailed { reason: String }
+    AlreadyExists { resource: String }
+    BackendError { message: String }
+}
+
+impl LeaseError {
+    fn message() -> String {
+        match self {
+            LeaseError.Expired { lease_id } => f"Lease {lease_id} has expired"
+            LeaseError.NotFound { lease_id } => f"Lease {lease_id} not found"
+            LeaseError.NotOwner { lease_id, owner } => f"Lease {lease_id} not owned by {owner}"
+            LeaseError.RenewalFailed { reason } => f"Renewal failed: {reason}"
+            LeaseError.AlreadyExists { resource } => f"Lease already exists for {resource}"
+            LeaseError.BackendError { message } => f"Backend error: {message}"
+        }
+    }
+}
+
+// =============================================================================
+// Lease
+// =============================================================================
+
+/// A lease for a resource
+struct Lease {
+    id: String
+    resource: String
+    owner: String
+    ttl_ms: Int64
+    created_at: Int64
+    expires_at: Int64
+    renewed_count: Int
+    metadata: Map<String, String>
+    
+    fn new(resource: String, owner: String, ttl_ms: Int64) -> Self {
+        let now = @native("timestamp_ms")
+        Lease {
+            id: @native("uuid_v4"),
+            resource: resource,
+            owner: owner,
+            ttl_ms: ttl_ms,
+            created_at: now,
+            expires_at: now + ttl_ms,
+            renewed_count: 0,
+            metadata: Map.new()
+        }
+    }
+    
+    fn is_expired() -> Bool {
+        @native("timestamp_ms") > self.expires_at
+    }
+    
+    fn remaining_ms() -> Int64 {
+        (self.expires_at - @native("timestamp_ms")).max(0)
+    }
+    
+    fn state() -> LeaseState {
+        if self.is_expired() { LeaseState.Expired } else { LeaseState.Active }
+    }
+    
+    fn renew() -> Self {
+        let now = @native("timestamp_ms")
+        Lease {
+            id: self.id,
+            resource: self.resource,
+            owner: self.owner,
+            ttl_ms: self.ttl_ms,
+            created_at: self.created_at,
+            expires_at: now + self.ttl_ms,
+            renewed_count: self.renewed_count + 1,
+            metadata: self.metadata
+        }
+    }
+}
+
+// =============================================================================
+// Lease Manager
+// =============================================================================
+
+/// Configuration for lease manager
+struct LeaseConfig {
+    default_ttl_ms: Int64
+    max_ttl_ms: Int64
+    renewal_threshold_ms: Int64
+    auto_renew: Bool
+    
+    fn default() -> Self {
+        LeaseConfig {
+            default_ttl_ms: 30000,
+            max_ttl_ms: 300000,
+            renewal_threshold_ms: 10000,
+            auto_renew: true
+        }
+    }
+}
+
+/// Lease manager for resource leasing
+actor LeaseManager {
+    state leases: Map<String, Lease>
+    state resource_leases: Map<String, String>
+    state config: LeaseConfig
+    state renewal_tasks: Map<String, TaskHandle>
+    
+    fn new() -> Self {
+        LeaseManager {
+            leases: Map.new(),
+            resource_leases: Map.new(),
+            config: LeaseConfig.default(),
+            renewal_tasks: Map.new()
+        }
+    }
+    
+    fn with_config(config: LeaseConfig) -> Self {
+        LeaseManager {
+            leases: Map.new(),
+            resource_leases: Map.new(),
+            config: config,
+            renewal_tasks: Map.new()
+        }
+    }
+    
+    /// Acquire a lease on a resource
+    fn acquire(resource: String, owner: String) -> Result<LeaseGuard, LeaseError> {
+        self.acquire_with_ttl(resource, owner, self.config.default_ttl_ms)
+    }
+    
+    /// Acquire a lease with custom TTL
+    fn acquire_with_ttl(resource: String, owner: String, ttl_ms: Int64) -> Result<LeaseGuard, LeaseError> {
+        // Check if resource already has active lease
+        if let Some(lease_id) = self.resource_leases.get(resource.clone()) {
+            if let Some(lease) = self.leases.get(lease_id.clone()) {
+                if !lease.is_expired() {
+                    return Err(LeaseError.AlreadyExists { resource: resource })
+                }
+            }
+        }
+        
+        let ttl = ttl_ms.min(self.config.max_ttl_ms)
+        let lease = Lease.new(resource.clone(), owner.clone(), ttl)
+        let lease_id = lease.id.clone()
+        
+        self.leases.insert(lease_id.clone(), lease)
+        self.resource_leases.insert(resource.clone(), lease_id.clone())
+        
+        if self.config.auto_renew {
+            self.start_auto_renewal(lease_id.clone())
+        }
+        
+        Ok(LeaseGuard { manager: self, lease_id: lease_id })
+    }
+    
+    /// Renew a lease
+    fn renew(lease_id: String) -> Result<Lease, LeaseError> {
+        match self.leases.get(lease_id.clone()) {
+            Some(lease) => {
+                if lease.is_expired() {
+                    return Err(LeaseError.Expired { lease_id: lease_id })
+                }
+                let renewed = lease.renew()
+                self.leases.insert(lease_id, renewed.clone())
+                Ok(renewed)
+            }
+            None => Err(LeaseError.NotFound { lease_id: lease_id })
+        }
+    }
+    
+    /// Release a lease
+    fn release(lease_id: String, owner: String) -> Result<(), LeaseError> {
+        match self.leases.get(lease_id.clone()) {
+            Some(lease) => {
+                if lease.owner != owner {
+                    return Err(LeaseError.NotOwner { lease_id: lease_id, owner: owner })
+                }
+                self.stop_auto_renewal(lease_id.clone())
+                self.resource_leases.remove(lease.resource)
+                self.leases.remove(lease_id)
+                Ok(())
+            }
+            None => Err(LeaseError.NotFound { lease_id: lease_id })
+        }
+    }
+    
+    /// Get lease info
+    fn get(lease_id: String) -> Option<Lease> {
+        self.leases.get(lease_id)
+    }
+    
+    /// Check if resource has active lease
+    fn is_leased(resource: String) -> Bool {
+        if let Some(lease_id) = self.resource_leases.get(resource) {
+            if let Some(lease) = self.leases.get(lease_id) {
+                return !lease.is_expired()
+            }
+        }
+        false
+    }
+    
+    fn start_auto_renewal(lease_id: String) {
+        let manager = self
+        let task = spawn {
+            loop {
+                @native("sleep_ms", manager.config.renewal_threshold_ms)
+                if let Some(lease) = manager.leases.get(lease_id.clone()) {
+                    if lease.remaining_ms() < manager.config.renewal_threshold_ms {
+                        let _ = manager.renew(lease_id.clone())
+                    }
+                } else {
+                    break
+                }
+            }
+        }
+        self.renewal_tasks.insert(lease_id, task)
+    }
+    
+    fn stop_auto_renewal(lease_id: String) {
+        if let Some(task) = self.renewal_tasks.remove(lease_id) {
+            task.cancel()
+        }
+    }
+    
+    /// Cleanup expired leases
+    fn cleanup() -> Int {
+        var removed = 0
+        let expired_ids: [String] = self.leases.iter()
+            .filter(|(_, lease)| lease.is_expired())
+            .map(|(id, _)| id.clone())
+            .collect()
+        
+        for id in expired_ids.iter() {
+            if let Some(lease) = self.leases.remove(id.clone()) {
+                self.resource_leases.remove(lease.resource)
+                self.stop_auto_renewal(id.clone())
+                removed += 1
+            }
+        }
+        removed
+    }
+}
+
+/// RAII guard for automatic lease release
+struct LeaseGuard {
+    manager: LeaseManager
+    lease_id: String
+}
+
+impl LeaseGuard {
+    fn lease_id() -> String { self.lease_id.clone() }
+    
+    fn renew() -> Result<Lease, LeaseError> {
+        self.manager.renew(self.lease_id.clone())
+    }
+}
+
+impl Drop for LeaseGuard {
+    fn drop() {
+        if let Some(lease) = self.manager.get(self.lease_id.clone()) {
+            let _ = self.manager.release(self.lease_id.clone(), lease.owner)
+        }
+    }
+}
+
+// =============================================================================
+// Distributed Lease (etcd/consul style)
+// =============================================================================
+
+/// Backend trait for distributed leases
+trait LeaseBackend {
+    fn grant(ttl_sec: Int64) -> Result<Int64, LeaseError>
+    fn revoke(lease_id: Int64) -> Result<(), LeaseError>
+    fn keepalive(lease_id: Int64) -> Result<Int64, LeaseError>
+    fn ttl(lease_id: Int64) -> Result<Int64, LeaseError>
+}
+
+/// Distributed lease with backend
+actor DistributedLease<B: LeaseBackend> {
+    state backend: B
+    state lease_id: Option<Int64>
+    state ttl_sec: Int64
+    state keepalive_task: Option<TaskHandle>
+    
+    fn new(backend: B, ttl_sec: Int64) -> Self {
+        DistributedLease {
+            backend: backend,
+            lease_id: None,
+            ttl_sec: ttl_sec,
+            keepalive_task: None
+        }
+    }
+    
+    fn grant() -> Result<Int64, LeaseError> {
+        match self.backend.grant(self.ttl_sec) {
+            Ok(id) => {
+                self.lease_id = Some(id)
+                self.start_keepalive()
+                Ok(id)
+            }
+            Err(e) => Err(e)
+        }
+    }
+    
+    fn revoke() -> Result<(), LeaseError> {
+        self.stop_keepalive()
+        if let Some(id) = self.lease_id.take() {
+            self.backend.revoke(id)
+        } else {
+            Ok(())
+        }
+    }
+    
+    fn keepalive() -> Result<Int64, LeaseError> {
+        match self.lease_id {
+            Some(id) => self.backend.keepalive(id)
+            None => Err(LeaseError.NotFound { lease_id: "none".to_string() })
+        }
+    }
+    
+    fn start_keepalive() {
+        let lease = self
+        let interval = (self.ttl_sec * 1000 / 3).max(1000)
+        self.keepalive_task = Some(spawn {
+            loop {
+                @native("sleep_ms", interval)
+                if lease.lease_id.is_none() { break }
+                let _ = lease.keepalive()
+            }
+        })
+    }
+    
+    fn stop_keepalive() {
+        if let Some(task) = self.keepalive_task.take() {
+            task.cancel()
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "lease creation" {
+    let lease = Lease.new("resource1".to_string(), "owner1".to_string(), 5000)
+    assert(!lease.is_expired())?
+    assert(lease.remaining_ms() > 0)?
+}
+
+test "lease manager acquire" {
+    let manager = LeaseManager.new()
+    let guard = manager.acquire("resource1".to_string(), "owner1".to_string())?
+    assert(manager.is_leased("resource1".to_string()))?
+}
+
+test "lease manager prevents double acquire" {
+    let manager = LeaseManager.new()
+    let _g1 = manager.acquire("resource1".to_string(), "owner1".to_string())?
+    let result = manager.acquire("resource1".to_string(), "owner2".to_string())
+    assert(result.is_err())?
+}
+
+test "lease renewal" {
+    let manager = LeaseManager.new()
+    let guard = manager.acquire_with_ttl("resource1".to_string(), "owner1".to_string(), 1000)?
+    let renewed = guard.renew()?
+    assert_eq(renewed.renewed_count, 1)?
+}

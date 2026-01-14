@@ -1,0 +1,755 @@
+// =============================================================================
+// Vibee OS — Synthesizer Module
+// Professional audio synthesis with oscillators, envelopes, and modulation
+// =============================================================================
+
+use audio::{AudioBuffer, Sample, AudioGenerator}
+use math::{PI, sin, cos, pow, exp, log}
+
+/// Oscillator waveform types
+enum Waveform {
+    Sine,
+    Square,
+    Sawtooth,
+    Triangle,
+    Pulse(Float64),    // Pulse width 0.0-1.0
+    Noise,
+    WhiteNoise,
+    PinkNoise,
+    BrownNoise,
+    Custom([Float64])  // Wavetable
+    
+    fn name() -> String {
+        match self {
+            Sine => "Sine",
+            Square => "Square",
+            Sawtooth => "Sawtooth",
+            Triangle => "Triangle",
+            Pulse(_) => "Pulse",
+            Noise | WhiteNoise => "White Noise",
+            PinkNoise => "Pink Noise",
+            BrownNoise => "Brown Noise",
+            Custom(_) => "Custom"
+        }
+    }
+}
+
+/// ADSR Envelope
+struct Envelope {
+    attack: Float64      // Attack time in seconds
+    decay: Float64       // Decay time in seconds
+    sustain: Float64     // Sustain level 0.0-1.0
+    release: Float64     // Release time in seconds
+    
+    fn new(attack: Float64, decay: Float64, sustain: Float64, release: Float64) -> Self {
+        Envelope {
+            attack: attack.max(0.001),
+            decay: decay.max(0.001),
+            sustain: sustain.clamp(0.0, 1.0),
+            release: release.max(0.001)
+        }
+    }
+    
+    fn default() -> Self {
+        Envelope.new(0.01, 0.1, 0.7, 0.3)
+    }
+    
+    fn instant() -> Self {
+        Envelope.new(0.001, 0.001, 1.0, 0.001)
+    }
+    
+    fn pad() -> Self {
+        Envelope.new(0.5, 0.3, 0.8, 1.0)
+    }
+    
+    fn pluck() -> Self {
+        Envelope.new(0.001, 0.2, 0.0, 0.1)
+    }
+    
+    fn organ() -> Self {
+        Envelope.new(0.01, 0.01, 1.0, 0.05)
+    }
+    
+    /// Get envelope value at time t (note_on_duration is how long note was held)
+    fn value_at(t: Float64, note_on_duration: Float64) -> Float64 {
+        if t < 0.0 { return 0.0 }
+        
+        // Note is still held
+        if t < note_on_duration {
+            if t < self.attack {
+                // Attack phase
+                return t / self.attack
+            } else if t < self.attack + self.decay {
+                // Decay phase
+                let decay_t = t - self.attack
+                let decay_progress = decay_t / self.decay
+                return 1.0 - (1.0 - self.sustain) * decay_progress
+            } else {
+                // Sustain phase
+                return self.sustain
+            }
+        }
+        
+        // Note released - calculate release
+        let release_t = t - note_on_duration
+        if release_t >= self.release {
+            return 0.0
+        }
+        
+        // Get level at release point
+        let release_level = if note_on_duration < self.attack {
+            note_on_duration / self.attack
+        } else if note_on_duration < self.attack + self.decay {
+            let decay_t = note_on_duration - self.attack
+            1.0 - (1.0 - self.sustain) * (decay_t / self.decay)
+        } else {
+            self.sustain
+        }
+        
+        // Release decay
+        release_level * (1.0 - release_t / self.release)
+    }
+    
+    fn total_duration(note_duration: Float64) -> Float64 {
+        note_duration + self.release
+    }
+}
+
+/// LFO (Low Frequency Oscillator) for modulation
+struct LFO {
+    frequency: Float64   // Hz
+    waveform: Waveform
+    amplitude: Float64   // Modulation depth
+    phase: Float64       // Phase offset 0.0-1.0
+    
+    fn new(frequency: Float64, waveform: Waveform, amplitude: Float64) -> Self {
+        LFO {
+            frequency: frequency,
+            waveform: waveform,
+            amplitude: amplitude,
+            phase: 0.0
+        }
+    }
+    
+    fn with_phase(phase: Float64) -> Self {
+        self.phase = phase
+        self
+    }
+    
+    fn value_at(t: Float64) -> Float64 {
+        let phase = (t * self.frequency + self.phase) % 1.0
+        let raw = match self.waveform {
+            Waveform.Sine => sin(2.0 * PI * phase),
+            Waveform.Square => if phase < 0.5 { 1.0 } else { -1.0 },
+            Waveform.Sawtooth => 2.0 * phase - 1.0,
+            Waveform.Triangle => 4.0 * (phase - 0.5).abs() - 1.0,
+            _ => sin(2.0 * PI * phase)
+        }
+        raw * self.amplitude
+    }
+}
+
+/// Single oscillator
+struct Oscillator {
+    waveform: Waveform
+    frequency: Float64
+    amplitude: Float64
+    phase: Float64
+    detune: Float64      // Cents (-100 to +100)
+    
+    fn new(waveform: Waveform, frequency: Float64) -> Self {
+        Oscillator {
+            waveform: waveform,
+            frequency: frequency,
+            amplitude: 1.0,
+            phase: 0.0,
+            detune: 0.0
+        }
+    }
+    
+    fn with_amplitude(amplitude: Float64) -> Self {
+        self.amplitude = amplitude
+        self
+    }
+    
+    fn with_detune(cents: Float64) -> Self {
+        self.detune = cents.clamp(-100.0, 100.0)
+        self
+    }
+    
+    fn with_phase(phase: Float64) -> Self {
+        self.phase = phase % 1.0
+        self
+    }
+    
+    fn effective_frequency() -> Float64 {
+        self.frequency * pow(2.0, self.detune / 1200.0)
+    }
+    
+    fn sample_at(t: Float64) -> Float64 {
+        let freq = self.effective_frequency()
+        let phase = (t * freq + self.phase) % 1.0
+        
+        let value = match self.waveform {
+            Waveform.Sine => sin(2.0 * PI * phase),
+            Waveform.Square => if phase < 0.5 { 1.0 } else { -1.0 },
+            Waveform.Sawtooth => 2.0 * phase - 1.0,
+            Waveform.Triangle => 4.0 * (phase - 0.5).abs() - 1.0,
+            Waveform.Pulse(width) => if phase < width { 1.0 } else { -1.0 },
+            Waveform.Noise | Waveform.WhiteNoise => @native("random_float") * 2.0 - 1.0,
+            Waveform.PinkNoise => @native("pink_noise_sample"),
+            Waveform.BrownNoise => @native("brown_noise_sample"),
+            Waveform.Custom(table) => {
+                let index = (phase * table.len() as Float64) as Int
+                table[index % table.len()]
+            }
+        }
+        
+        value * self.amplitude
+    }
+}
+
+/// Filter types for synthesizer
+enum FilterType {
+    LowPass,
+    HighPass,
+    BandPass,
+    Notch,
+    LowShelf,
+    HighShelf,
+    Peak
+}
+
+/// Synthesizer filter with resonance
+struct SynthFilter {
+    filter_type: FilterType
+    cutoff: Float64      // Hz
+    resonance: Float64   // Q factor
+    gain: Float64        // dB for shelf/peak filters
+    
+    fn new(filter_type: FilterType, cutoff: Float64, resonance: Float64) -> Self {
+        SynthFilter {
+            filter_type: filter_type,
+            cutoff: cutoff,
+            resonance: resonance.clamp(0.1, 20.0),
+            gain: 0.0
+        }
+    }
+    
+    fn low_pass(cutoff: Float64, resonance: Float64) -> Self {
+        SynthFilter.new(FilterType.LowPass, cutoff, resonance)
+    }
+    
+    fn high_pass(cutoff: Float64, resonance: Float64) -> Self {
+        SynthFilter.new(FilterType.HighPass, cutoff, resonance)
+    }
+    
+    fn with_gain(gain: Float64) -> Self {
+        self.gain = gain
+        self
+    }
+    
+    fn process(buffer: AudioBuffer) -> AudioBuffer {
+        @native("synth_filter_process", self, buffer)
+    }
+}
+
+/// Voice for polyphonic synthesizer
+struct Voice {
+    oscillators: [Oscillator]
+    envelope: Envelope
+    filter: Option<SynthFilter>
+    filter_envelope: Option<Envelope>
+    note: Int            // MIDI note number
+    velocity: Float64    // 0.0-1.0
+    start_time: Float64
+    release_time: Option<Float64>
+    
+    fn new(note: Int, velocity: Float64, start_time: Float64) -> Self {
+        Voice {
+            oscillators: [],
+            envelope: Envelope.default(),
+            filter: None,
+            filter_envelope: None,
+            note: note,
+            velocity: velocity,
+            start_time: start_time,
+            release_time: None
+        }
+    }
+    
+    fn add_oscillator(osc: Oscillator) {
+        self.oscillators.push(osc)
+    }
+    
+    fn note_off(time: Float64) {
+        self.release_time = Some(time)
+    }
+    
+    fn is_finished(current_time: Float64) -> Bool {
+        if let Some(release) = self.release_time {
+            let note_duration = release - self.start_time
+            current_time > self.start_time + self.envelope.total_duration(note_duration)
+        } else {
+            false
+        }
+    }
+    
+    fn frequency() -> Float64 {
+        440.0 * pow(2.0, (self.note - 69) as Float64 / 12.0)
+    }
+    
+    fn sample_at(t: Float64) -> Float64 {
+        let local_t = t - self.start_time
+        if local_t < 0.0 { return 0.0 }
+        
+        let note_duration = if let Some(release) = self.release_time {
+            release - self.start_time
+        } else {
+            local_t + 1.0  // Still held
+        }
+        
+        let env_value = self.envelope.value_at(local_t, note_duration)
+        if env_value == 0.0 { return 0.0 }
+        
+        var sample = 0.0
+        let base_freq = self.frequency()
+        
+        for osc in self.oscillators {
+            var osc_copy = osc.clone()
+            osc_copy.frequency = base_freq
+            sample += osc_copy.sample_at(local_t)
+        }
+        
+        sample * env_value * self.velocity
+    }
+}
+
+/// Polyphonic synthesizer
+actor Synthesizer {
+    state sample_rate: Int
+    state voices: [Voice]
+    state max_voices: Int
+    state master_volume: Float64
+    state oscillator_templates: [Oscillator]
+    state envelope: Envelope
+    state filter: Option<SynthFilter>
+    state lfo: Option<LFO>
+    state pitch_bend: Float64
+    state mod_wheel: Float64
+    
+    fn new(sample_rate: Int) -> Self {
+        Synthesizer {
+            sample_rate: sample_rate,
+            voices: [],
+            max_voices: 16,
+            master_volume: 0.8,
+            oscillator_templates: [Oscillator.new(Waveform.Sawtooth, 440.0)],
+            envelope: Envelope.default(),
+            filter: None,
+            lfo: None,
+            pitch_bend: 0.0,
+            mod_wheel: 0.0
+        }
+    }
+    
+    fn set_waveform(waveform: Waveform) {
+        self.oscillator_templates = [Oscillator.new(waveform, 440.0)]
+    }
+    
+    fn add_oscillator(osc: Oscillator) {
+        self.oscillator_templates.push(osc)
+    }
+    
+    fn set_envelope(envelope: Envelope) {
+        self.envelope = envelope
+    }
+    
+    fn set_filter(filter: SynthFilter) {
+        self.filter = Some(filter)
+    }
+    
+    fn set_lfo(lfo: LFO) {
+        self.lfo = Some(lfo)
+    }
+    
+    fn set_max_voices(max: Int) {
+        self.max_voices = max.clamp(1, 128)
+    }
+    
+    fn note_on(note: Int, velocity: Float64, time: Float64) {
+        // Voice stealing if at max
+        if self.voices.len() >= self.max_voices {
+            self.voices.remove(0)
+        }
+        
+        var voice = Voice.new(note, velocity, time)
+        voice.envelope = self.envelope.clone()
+        voice.filter = self.filter.clone()
+        
+        for template in self.oscillator_templates {
+            voice.add_oscillator(template.clone())
+        }
+        
+        self.voices.push(voice)
+    }
+    
+    fn note_off(note: Int, time: Float64) {
+        for voice in self.voices {
+            if voice.note == note && voice.release_time.is_none() {
+                voice.note_off(time)
+                break
+            }
+        }
+    }
+    
+    fn all_notes_off(time: Float64) {
+        for voice in self.voices {
+            if voice.release_time.is_none() {
+                voice.note_off(time)
+            }
+        }
+    }
+    
+    fn set_pitch_bend(value: Float64) {
+        self.pitch_bend = value.clamp(-1.0, 1.0)
+    }
+    
+    fn set_mod_wheel(value: Float64) {
+        self.mod_wheel = value.clamp(0.0, 1.0)
+    }
+    
+    fn render(duration: Float64) -> AudioBuffer {
+        let num_samples = (duration * self.sample_rate as Float64) as Int
+        var samples = []
+        
+        for i in 0..num_samples {
+            let t = i as Float64 / self.sample_rate as Float64
+            var sample = 0.0
+            
+            // Apply LFO modulation
+            let lfo_mod = if let Some(lfo) = self.lfo {
+                lfo.value_at(t) * self.mod_wheel
+            } else { 0.0 }
+            
+            for voice in self.voices {
+                if !voice.is_finished(t) {
+                    sample += voice.sample_at(t + lfo_mod * 0.001)
+                }
+            }
+            
+            samples.push(Sample.new(sample * self.master_volume))
+        }
+        
+        // Clean up finished voices
+        self.voices = self.voices.filter(|v| !v.is_finished(duration))
+        
+        var buffer = AudioBuffer.from_mono(samples, self.sample_rate)
+        
+        // Apply filter if set
+        if let Some(filter) = self.filter {
+            buffer = filter.process(buffer)
+        }
+        
+        buffer
+    }
+    
+    fn render_note(note: Int, velocity: Float64, duration: Float64) -> AudioBuffer {
+        self.note_on(note, velocity, 0.0)
+        self.note_off(note, duration)
+        self.render(duration + self.envelope.release)
+    }
+}
+
+/// Preset synthesizer configurations
+struct SynthPreset {
+    name: String
+    oscillators: [Oscillator]
+    envelope: Envelope
+    filter: Option<SynthFilter>
+    lfo: Option<LFO>
+    
+    fn new(name: String) -> Self {
+        SynthPreset {
+            name: name,
+            oscillators: [],
+            envelope: Envelope.default(),
+            filter: None,
+            lfo: None
+        }
+    }
+    
+    fn bass() -> Self {
+        var preset = SynthPreset.new("Bass")
+        preset.oscillators = [
+            Oscillator.new(Waveform.Sawtooth, 440.0).with_amplitude(0.7),
+            Oscillator.new(Waveform.Square, 440.0).with_amplitude(0.3).with_detune(-5.0)
+        ]
+        preset.envelope = Envelope.new(0.01, 0.2, 0.6, 0.2)
+        preset.filter = Some(SynthFilter.low_pass(800.0, 2.0))
+        preset
+    }
+    
+    fn lead() -> Self {
+        var preset = SynthPreset.new("Lead")
+        preset.oscillators = [
+            Oscillator.new(Waveform.Sawtooth, 440.0).with_amplitude(0.5),
+            Oscillator.new(Waveform.Sawtooth, 440.0).with_amplitude(0.5).with_detune(7.0)
+        ]
+        preset.envelope = Envelope.new(0.01, 0.1, 0.8, 0.3)
+        preset.filter = Some(SynthFilter.low_pass(3000.0, 1.5))
+        preset.lfo = Some(LFO.new(5.0, Waveform.Sine, 0.1))
+        preset
+    }
+    
+    fn pad() -> Self {
+        var preset = SynthPreset.new("Pad")
+        preset.oscillators = [
+            Oscillator.new(Waveform.Sine, 440.0).with_amplitude(0.4),
+            Oscillator.new(Waveform.Triangle, 440.0).with_amplitude(0.3).with_detune(3.0),
+            Oscillator.new(Waveform.Triangle, 440.0).with_amplitude(0.3).with_detune(-3.0)
+        ]
+        preset.envelope = Envelope.pad()
+        preset.filter = Some(SynthFilter.low_pass(2000.0, 0.7))
+        preset
+    }
+    
+    fn pluck() -> Self {
+        var preset = SynthPreset.new("Pluck")
+        preset.oscillators = [
+            Oscillator.new(Waveform.Triangle, 440.0).with_amplitude(0.8),
+            Oscillator.new(Waveform.Sine, 440.0).with_amplitude(0.2)
+        ]
+        preset.envelope = Envelope.pluck()
+        preset.filter = Some(SynthFilter.low_pass(5000.0, 1.0))
+        preset
+    }
+    
+    fn strings() -> Self {
+        var preset = SynthPreset.new("Strings")
+        preset.oscillators = [
+            Oscillator.new(Waveform.Sawtooth, 440.0).with_amplitude(0.25).with_detune(-7.0),
+            Oscillator.new(Waveform.Sawtooth, 440.0).with_amplitude(0.25).with_detune(-3.0),
+            Oscillator.new(Waveform.Sawtooth, 440.0).with_amplitude(0.25).with_detune(3.0),
+            Oscillator.new(Waveform.Sawtooth, 440.0).with_amplitude(0.25).with_detune(7.0)
+        ]
+        preset.envelope = Envelope.new(0.3, 0.2, 0.9, 0.5)
+        preset.filter = Some(SynthFilter.low_pass(4000.0, 0.5))
+        preset.lfo = Some(LFO.new(4.0, Waveform.Sine, 0.05))
+        preset
+    }
+    
+    fn apply_to(synth: Synthesizer) {
+        synth.oscillator_templates = self.oscillators.clone()
+        synth.envelope = self.envelope.clone()
+        synth.filter = self.filter.clone()
+        synth.lfo = self.lfo.clone()
+    }
+}
+
+/// Drum synthesizer for percussion
+struct DrumSynth {
+    sample_rate: Int
+    
+    fn new(sample_rate: Int) -> Self {
+        DrumSynth { sample_rate: sample_rate }
+    }
+    
+    fn kick(pitch: Float64, decay: Float64) -> AudioBuffer {
+        let num_samples = (decay * self.sample_rate as Float64) as Int
+        var samples = []
+        
+        for i in 0..num_samples {
+            let t = i as Float64 / self.sample_rate as Float64
+            let env = exp(-t * 10.0 / decay)
+            let pitch_env = pitch * exp(-t * 30.0)
+            let value = sin(2.0 * PI * pitch_env * t) * env
+            samples.push(Sample.new(value))
+        }
+        
+        AudioBuffer.from_mono(samples, self.sample_rate)
+    }
+    
+    fn snare(tone: Float64, noise_amount: Float64, decay: Float64) -> AudioBuffer {
+        let num_samples = (decay * self.sample_rate as Float64) as Int
+        var samples = []
+        
+        for i in 0..num_samples {
+            let t = i as Float64 / self.sample_rate as Float64
+            let env = exp(-t * 15.0 / decay)
+            let tone_part = sin(2.0 * PI * tone * t) * (1.0 - noise_amount)
+            let noise_part = (@native("random_float") * 2.0 - 1.0) * noise_amount
+            let value = (tone_part + noise_part) * env
+            samples.push(Sample.new(value))
+        }
+        
+        AudioBuffer.from_mono(samples, self.sample_rate)
+    }
+    
+    fn hihat(decay: Float64, open: Bool) -> AudioBuffer {
+        let actual_decay = if open { decay * 3.0 } else { decay }
+        let num_samples = (actual_decay * self.sample_rate as Float64) as Int
+        var samples = []
+        
+        for i in 0..num_samples {
+            let t = i as Float64 / self.sample_rate as Float64
+            let env = exp(-t * (if open { 5.0 } else { 30.0 }) / decay)
+            // Metallic noise using multiple high frequencies
+            var value = 0.0
+            for freq in [3000.0, 6000.0, 9000.0, 12000.0] {
+                value += sin(2.0 * PI * freq * t + @native("random_float") * PI)
+            }
+            value = value / 4.0 + (@native("random_float") * 2.0 - 1.0) * 0.5
+            samples.push(Sample.new(value * env * 0.3))
+        }
+        
+        AudioBuffer.from_mono(samples, self.sample_rate)
+    }
+    
+    fn tom(pitch: Float64, decay: Float64) -> AudioBuffer {
+        let num_samples = (decay * self.sample_rate as Float64) as Int
+        var samples = []
+        
+        for i in 0..num_samples {
+            let t = i as Float64 / self.sample_rate as Float64
+            let env = exp(-t * 8.0 / decay)
+            let pitch_env = pitch * (1.0 + exp(-t * 20.0) * 0.5)
+            let value = sin(2.0 * PI * pitch_env * t) * env
+            samples.push(Sample.new(value))
+        }
+        
+        AudioBuffer.from_mono(samples, self.sample_rate)
+    }
+    
+    fn clap(decay: Float64) -> AudioBuffer {
+        let num_samples = (decay * self.sample_rate as Float64) as Int
+        var samples = []
+        
+        for i in 0..num_samples {
+            let t = i as Float64 / self.sample_rate as Float64
+            // Multiple short bursts
+            var env = 0.0
+            for offset in [0.0, 0.01, 0.02, 0.03] {
+                if t >= offset {
+                    env += exp(-(t - offset) * 50.0) * 0.25
+                }
+            }
+            env *= exp(-t * 10.0 / decay)
+            let noise = @native("random_float") * 2.0 - 1.0
+            samples.push(Sample.new(noise * env))
+        }
+        
+        AudioBuffer.from_mono(samples, self.sample_rate)
+    }
+}
+
+/// Arpeggiator
+struct Arpeggiator {
+    pattern: ArpPattern
+    rate: Float64        // Notes per second
+    octaves: Int
+    gate: Float64        // Note length ratio 0.0-1.0
+    
+    fn new(pattern: ArpPattern, rate: Float64) -> Self {
+        Arpeggiator {
+            pattern: pattern,
+            rate: rate,
+            octaves: 1,
+            gate: 0.8
+        }
+    }
+    
+    fn with_octaves(octaves: Int) -> Self {
+        self.octaves = octaves.clamp(1, 4)
+        self
+    }
+    
+    fn with_gate(gate: Float64) -> Self {
+        self.gate = gate.clamp(0.1, 1.0)
+        self
+    }
+    
+    fn generate_sequence(notes: [Int], duration: Float64) -> [(Int, Float64, Float64)] {
+        var sequence = []
+        let note_duration = 1.0 / self.rate
+        let note_length = note_duration * self.gate
+        
+        // Build full note list with octaves
+        var all_notes = []
+        for oct in 0..self.octaves {
+            for note in notes {
+                all_notes.push(note + oct * 12)
+            }
+        }
+        
+        // Apply pattern
+        let ordered = match self.pattern {
+            ArpPattern.Up => all_notes.clone(),
+            ArpPattern.Down => all_notes.clone().reverse(),
+            ArpPattern.UpDown => {
+                var ud = all_notes.clone()
+                ud.extend(all_notes.clone().reverse()[1..-1])
+                ud
+            },
+            ArpPattern.Random => all_notes.clone(),  // Randomized at playback
+            ArpPattern.Order => notes.clone()
+        }
+        
+        var t = 0.0
+        var index = 0
+        while t < duration {
+            let note = if self.pattern == ArpPattern.Random {
+                ordered[@native("random_int") % ordered.len()]
+            } else {
+                ordered[index % ordered.len()]
+            }
+            sequence.push((note, t, note_length))
+            t += note_duration
+            index += 1
+        }
+        
+        sequence
+    }
+}
+
+enum ArpPattern {
+    Up,
+    Down,
+    UpDown,
+    Random,
+    Order
+}
+
+// Tests
+test "envelope value" {
+    let env = Envelope.new(0.1, 0.1, 0.5, 0.2)
+    assert(env.value_at(0.05, 1.0) > 0.4)?  // Attack phase
+    assert(env.value_at(0.15, 1.0) < 0.8)?  // Decay phase
+    assert_eq(env.value_at(0.5, 1.0), 0.5)? // Sustain phase
+}
+
+test "oscillator sample" {
+    let osc = Oscillator.new(Waveform.Sine, 440.0)
+    let sample = osc.sample_at(0.0)
+    assert(sample.abs() < 0.01)?  // Sine starts at 0
+}
+
+test "synthesizer render" {
+    var synth = Synthesizer.new(44100)
+    let buffer = synth.render_note(60, 0.8, 0.5)
+    assert(buffer.num_samples() > 0)?
+}
+
+test "drum kick" {
+    let drums = DrumSynth.new(44100)
+    let kick = drums.kick(60.0, 0.3)
+    assert(kick.num_samples() > 0)?
+    assert(kick.peak() > 0.5)?
+}
+
+test "preset application" {
+    var synth = Synthesizer.new(44100)
+    let preset = SynthPreset.bass()
+    preset.apply_to(synth)
+    assert_eq(synth.oscillator_templates.len(), 2)?
+}

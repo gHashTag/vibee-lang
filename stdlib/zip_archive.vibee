@@ -1,0 +1,647 @@
+// =============================================================================
+// Vibee OS — ZIP Archive Module
+// ZIP archive creation and extraction (PKZIP format)
+// =============================================================================
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+const ZIP_LOCAL_HEADER_SIG: UInt32 = 0x04034b50
+const ZIP_CENTRAL_DIR_SIG: UInt32 = 0x02014b50
+const ZIP_END_CENTRAL_DIR_SIG: UInt32 = 0x06054b50
+const ZIP64_END_CENTRAL_DIR_SIG: UInt32 = 0x06064b50
+const ZIP64_END_CENTRAL_DIR_LOCATOR_SIG: UInt32 = 0x07064b50
+
+const ZIP_VERSION_MADE_BY: UInt16 = 63  // 6.3
+const ZIP_VERSION_NEEDED: UInt16 = 20   // 2.0
+
+// Compression methods
+const ZIP_METHOD_STORED: UInt16 = 0
+const ZIP_METHOD_DEFLATE: UInt16 = 8
+const ZIP_METHOD_BZIP2: UInt16 = 12
+const ZIP_METHOD_LZMA: UInt16 = 14
+const ZIP_METHOD_ZSTD: UInt16 = 93
+
+// General purpose bit flags
+const ZIP_FLAG_ENCRYPTED: UInt16 = 0x0001
+const ZIP_FLAG_DATA_DESCRIPTOR: UInt16 = 0x0008
+const ZIP_FLAG_UTF8: UInt16 = 0x0800
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+/// ZIP compression method
+enum ZipMethod {
+    Stored      // No compression
+    Deflate     // DEFLATE (most common)
+    Bzip2       // BZIP2
+    Lzma        // LZMA
+    Zstd        // Zstandard
+}
+
+impl ZipMethod {
+    fn to_code() -> UInt16 {
+        match self {
+            Stored => ZIP_METHOD_STORED
+            Deflate => ZIP_METHOD_DEFLATE
+            Bzip2 => ZIP_METHOD_BZIP2
+            Lzma => ZIP_METHOD_LZMA
+            Zstd => ZIP_METHOD_ZSTD
+        }
+    }
+    
+    fn from_code(code: UInt16) -> Result<Self, ZipError> {
+        match code {
+            0 => Ok(Stored)
+            8 => Ok(Deflate)
+            12 => Ok(Bzip2)
+            14 => Ok(Lzma)
+            93 => Ok(Zstd)
+            _ => Err(ZipError.UnsupportedMethod(code))
+        }
+    }
+}
+
+/// ZIP compression level
+enum ZipLevel {
+    None        // Store only
+    Fast        // Fast compression
+    Default     // Default compression
+    Best        // Best compression
+}
+
+impl ZipLevel {
+    fn value() -> Int {
+        match self {
+            None => 0
+            Fast => 1
+            Default => 6
+            Best => 9
+        }
+    }
+}
+
+/// File attributes
+enum ZipAttributes {
+    Regular
+    Directory
+    Symlink
+    ReadOnly
+    Hidden
+    System
+}
+
+// =============================================================================
+// Structs
+// =============================================================================
+
+/// ZIP local file header
+struct ZipLocalHeader {
+    signature: UInt32
+    version_needed: UInt16
+    flags: UInt16
+    compression: UInt16
+    mod_time: UInt16
+    mod_date: UInt16
+    crc32: UInt32
+    compressed_size: UInt32
+    uncompressed_size: UInt32
+    filename_len: UInt16
+    extra_len: UInt16
+}
+
+/// ZIP central directory entry
+struct ZipCentralEntry {
+    signature: UInt32
+    version_made_by: UInt16
+    version_needed: UInt16
+    flags: UInt16
+    compression: UInt16
+    mod_time: UInt16
+    mod_date: UInt16
+    crc32: UInt32
+    compressed_size: UInt64
+    uncompressed_size: UInt64
+    filename_len: UInt16
+    extra_len: UInt16
+    comment_len: UInt16
+    disk_start: UInt16
+    internal_attrs: UInt16
+    external_attrs: UInt32
+    local_header_offset: UInt64
+    filename: String
+    extra: [UInt8]
+    comment: String
+}
+
+/// ZIP archive entry (file or directory)
+struct ZipEntry {
+    name: String
+    compressed_size: UInt64
+    uncompressed_size: UInt64
+    crc32: UInt32
+    compression: ZipMethod
+    modified: DateTime
+    is_dir: Bool
+    is_encrypted: Bool
+    comment: String
+    unix_mode: Option<Int>
+    data: [UInt8]
+}
+
+impl ZipEntry {
+    fn new(name: String) -> Self {
+        ZipEntry {
+            name: name
+            compressed_size: 0
+            uncompressed_size: 0
+            crc32: 0
+            compression: ZipMethod.Deflate
+            modified: DateTime.now()
+            is_dir: name.ends_with("/")
+            is_encrypted: false
+            comment: ""
+            unix_mode: None
+            data: []
+        }
+    }
+    
+    fn from_file(name: String, data: [UInt8]) -> Self {
+        let mut entry = Self.new(name)
+        entry.data = data
+        entry.uncompressed_size = data.len() as UInt64
+        entry.is_dir = false
+        entry
+    }
+    
+    fn from_dir(name: String) -> Self {
+        let dir_name = if name.ends_with("/") { name } else { name + "/" }
+        let mut entry = Self.new(dir_name)
+        entry.is_dir = true
+        entry.compression = ZipMethod.Stored
+        entry
+    }
+    
+    fn is_file() -> Bool { !self.is_dir }
+    
+    fn compression_ratio() -> Float64 {
+        if self.uncompressed_size == 0 { return 0.0 }
+        1.0 - (self.compressed_size as Float64 / self.uncompressed_size as Float64)
+    }
+}
+
+/// ZIP archive reader
+struct ZipReader {
+    inner: @native("ZipReader")
+    entries: [ZipEntry]
+    comment: String
+}
+
+impl ZipReader {
+    fn new(data: [UInt8]) -> Result<Self, ZipError> {
+        let inner = @native("zip_reader_new", data)?
+        let entries = @native("zip_reader_entries", inner)?
+        let comment = @native("zip_reader_comment", inner)
+        Ok(ZipReader { inner: inner, entries: entries, comment: comment })
+    }
+    
+    fn open(path: String) -> Result<Self, ZipError> {
+        let data = @native("fs_read_bytes", path)?
+        Self.new(data)
+    }
+    
+    fn entries() -> [ZipEntry] { self.entries.clone() }
+    
+    fn len() -> Int { self.entries.len() }
+    
+    fn is_empty() -> Bool { self.entries.is_empty() }
+    
+    fn comment() -> String { self.comment.clone() }
+    
+    fn list() -> [String] { self.entries.map(|e| e.name.clone()) }
+    
+    fn find(name: String) -> Option<ZipEntry> {
+        for e in self.entries {
+            if e.name == name { return Some(e.clone()) }
+        }
+        None
+    }
+    
+    fn extract(dest: String) -> Result<Int, ZipError> {
+        @native("zip_reader_extract", self.inner, dest)
+    }
+    
+    fn extract_file(name: String) -> Result<[UInt8], ZipError> {
+        @native("zip_reader_extract_file", self.inner, name)
+    }
+    
+    fn extract_to_memory() -> Result<[(String, [UInt8])], ZipError> {
+        @native("zip_reader_extract_all", self.inner)
+    }
+    
+    fn verify() -> Result<Bool, ZipError> {
+        @native("zip_reader_verify", self.inner)
+    }
+}
+
+impl Iterator for ZipReader {
+    type Item = ZipEntry
+    fn next() -> Option<Self.Item> {
+        @native("zip_reader_next", self.inner)
+    }
+}
+
+impl Drop for ZipReader {
+    fn drop() { @native("zip_reader_close", self.inner) }
+}
+
+/// ZIP archive builder
+struct ZipBuilder {
+    entries: [ZipEntry]
+    compression: ZipMethod
+    level: ZipLevel
+    comment: String
+    password: Option<String>
+}
+
+impl ZipBuilder {
+    fn new() -> Self {
+        ZipBuilder {
+            entries: []
+            compression: ZipMethod.Deflate
+            level: ZipLevel.Default
+            comment: ""
+            password: None
+        }
+    }
+    
+    fn with_compression(method: ZipMethod) -> Self {
+        self.compression = method
+        self
+    }
+    
+    fn with_level(level: ZipLevel) -> Self {
+        self.level = level
+        self
+    }
+    
+    fn with_comment(comment: String) -> Self {
+        self.comment = comment
+        self
+    }
+    
+    fn with_password(password: String) -> Self {
+        self.password = Some(password)
+        self
+    }
+    
+    fn add_file(name: String, data: [UInt8]) -> Self {
+        let mut entry = ZipEntry.from_file(name, data)
+        entry.compression = self.compression
+        self.entries.push(entry)
+        self
+    }
+    
+    fn add_file_with_options(name: String, data: [UInt8], options: ZipFileOptions) -> Self {
+        let mut entry = ZipEntry.from_file(name, data)
+        entry.compression = options.compression.unwrap_or(self.compression)
+        entry.comment = options.comment.unwrap_or("")
+        entry.unix_mode = options.unix_mode
+        if let Some(dt) = options.modified {
+            entry.modified = dt
+        }
+        self.entries.push(entry)
+        self
+    }
+    
+    fn add_dir(name: String) -> Self {
+        self.entries.push(ZipEntry.from_dir(name))
+        self
+    }
+    
+    fn add_entry(entry: ZipEntry) -> Self {
+        self.entries.push(entry)
+        self
+    }
+    
+    fn add_path(path: String) -> Result<Self, ZipError> {
+        @native("zip_builder_add_path", self, path)
+    }
+    
+    fn add_dir_recursive(path: String) -> Result<Self, ZipError> {
+        @native("zip_builder_add_dir_recursive", self, path)
+    }
+    
+    fn add_dir_recursive_with_filter(path: String, filter: fn(String) -> Bool) -> Result<Self, ZipError> {
+        @native("zip_builder_add_dir_recursive_filter", self, path, filter)
+    }
+    
+    fn build() -> Result<[UInt8], ZipError> {
+        @native("zip_builder_build", self.entries, self.compression, self.level, self.comment, self.password)
+    }
+    
+    fn write(path: String) -> Result<(), ZipError> {
+        let data = self.build()?
+        @native("fs_write_bytes", path, data)
+    }
+}
+
+/// Options for adding files
+struct ZipFileOptions {
+    compression: Option<ZipMethod>
+    comment: Option<String>
+    unix_mode: Option<Int>
+    modified: Option<DateTime>
+}
+
+impl ZipFileOptions {
+    fn new() -> Self {
+        ZipFileOptions {
+            compression: None
+            comment: None
+            unix_mode: None
+            modified: None
+        }
+    }
+    
+    fn compression(method: ZipMethod) -> Self { self.compression = Some(method); self }
+    fn comment(c: String) -> Self { self.comment = Some(c); self }
+    fn unix_mode(mode: Int) -> Self { self.unix_mode = Some(mode); self }
+    fn modified(dt: DateTime) -> Self { self.modified = Some(dt); self }
+}
+
+/// Streaming ZIP writer
+struct ZipWriter {
+    inner: @native("ZipWriter")
+}
+
+impl ZipWriter {
+    fn new() -> Self {
+        ZipWriter { inner: @native("zip_writer_new") }
+    }
+    
+    fn create(path: String) -> Result<Self, ZipError> {
+        Ok(ZipWriter { inner: @native("zip_writer_create", path)? })
+    }
+    
+    fn start_file(name: String) -> Result<(), ZipError> {
+        self.start_file_with_options(name, ZipFileOptions.new())
+    }
+    
+    fn start_file_with_options(name: String, options: ZipFileOptions) -> Result<(), ZipError> {
+        @native("zip_writer_start_file", self.inner, name, options)
+    }
+    
+    fn write(data: [UInt8]) -> Result<(), ZipError> {
+        @native("zip_writer_write", self.inner, data)
+    }
+    
+    fn add_directory(name: String) -> Result<(), ZipError> {
+        @native("zip_writer_add_directory", self.inner, name)
+    }
+    
+    fn set_comment(comment: String) -> Result<(), ZipError> {
+        @native("zip_writer_set_comment", self.inner, comment)
+    }
+    
+    fn finish() -> Result<[UInt8], ZipError> {
+        @native("zip_writer_finish", self.inner)
+    }
+}
+
+impl Drop for ZipWriter {
+    fn drop() { @native("zip_writer_close", self.inner) }
+}
+
+// =============================================================================
+// Actor for async operations
+// =============================================================================
+
+actor ZipActor {
+    fn create_async(files: [(String, [UInt8])]) -> Result<[UInt8], ZipError> {
+        create(files)
+    }
+    
+    fn extract_async(data: [UInt8], dest: String) -> Result<Int, ZipError> {
+        extract(data, dest)
+    }
+    
+    fn compress_dir_async(path: String, dest: String) -> Result<(), ZipError> {
+        compress_dir(path, dest)
+    }
+    
+    fn list_async(data: [UInt8]) -> Result<[String], ZipError> {
+        list(data)
+    }
+}
+
+// =============================================================================
+// Trait implementations
+// =============================================================================
+
+trait Archive {
+    fn list() -> [String]
+    fn extract(dest: String) -> Result<Int, ZipError>
+    fn extract_file(name: String) -> Result<[UInt8], ZipError>
+}
+
+impl Archive for ZipReader {
+    fn list() -> [String] { self.list() }
+    fn extract(dest: String) -> Result<Int, ZipError> { self.extract(dest) }
+    fn extract_file(name: String) -> Result<[UInt8], ZipError> { self.extract_file(name) }
+}
+
+// =============================================================================
+// Public API Functions
+// =============================================================================
+
+/// Create a ZIP archive from files
+fn create(files: [(String, [UInt8])]) -> Result<[UInt8], ZipError> {
+    let mut builder = ZipBuilder.new()
+    for (name, data) in files {
+        builder = builder.add_file(name, data)
+    }
+    builder.build()
+}
+
+/// Create a ZIP archive with specific compression
+fn create_with_compression(files: [(String, [UInt8])], method: ZipMethod) -> Result<[UInt8], ZipError> {
+    let mut builder = ZipBuilder.new().with_compression(method)
+    for (name, data) in files {
+        builder = builder.add_file(name, data)
+    }
+    builder.build()
+}
+
+/// Create a password-protected ZIP archive
+fn create_encrypted(files: [(String, [UInt8])], password: String) -> Result<[UInt8], ZipError> {
+    let mut builder = ZipBuilder.new().with_password(password)
+    for (name, data) in files {
+        builder = builder.add_file(name, data)
+    }
+    builder.build()
+}
+
+/// Extract ZIP archive to directory
+fn extract(data: [UInt8], dest: String) -> Result<Int, ZipError> {
+    let reader = ZipReader.new(data)?
+    reader.extract(dest)
+}
+
+/// Extract ZIP archive from file
+fn extract_file(path: String, dest: String) -> Result<Int, ZipError> {
+    let reader = ZipReader.open(path)?
+    reader.extract(dest)
+}
+
+/// Extract password-protected ZIP archive
+fn extract_encrypted(data: [UInt8], dest: String, password: String) -> Result<Int, ZipError> {
+    @native("zip_extract_encrypted", data, dest, password)
+}
+
+/// List files in ZIP archive
+fn list(data: [UInt8]) -> Result<[String], ZipError> {
+    let reader = ZipReader.new(data)?
+    Ok(reader.list())
+}
+
+/// Get a single file from ZIP archive
+fn get_file(data: [UInt8], name: String) -> Result<[UInt8], ZipError> {
+    let reader = ZipReader.new(data)?
+    reader.extract_file(name)
+}
+
+/// Compress a directory to ZIP file
+fn compress_dir(path: String, dest: String) -> Result<(), ZipError> {
+    ZipBuilder.new().add_dir_recursive(path)?.write(dest)
+}
+
+/// Compress a directory to ZIP bytes
+fn compress_dir_to_bytes(path: String) -> Result<[UInt8], ZipError> {
+    ZipBuilder.new().add_dir_recursive(path)?.build()
+}
+
+/// Verify ZIP archive integrity
+fn verify(data: [UInt8]) -> Result<Bool, ZipError> {
+    let reader = ZipReader.new(data)?
+    reader.verify()
+}
+
+/// Calculate CRC32 checksum
+fn crc32(data: [UInt8]) -> UInt32 {
+    @native("crc32", data)
+}
+
+/// Check if data is a valid ZIP archive
+fn is_zip(data: [UInt8]) -> Bool {
+    if data.len() < 4 { return false }
+    // Check for local file header signature
+    data[0] == 0x50 && data[1] == 0x4b && data[2] == 0x03 && data[3] == 0x04
+}
+
+// =============================================================================
+// Error Type
+// =============================================================================
+
+enum ZipError {
+    InvalidArchive
+    InvalidSignature
+    InvalidChecksum
+    UnsupportedMethod(UInt16)
+    UnsupportedVersion(UInt16)
+    FileNotFound(String)
+    PasswordRequired
+    WrongPassword
+    IoError(String)
+    CompressionError(String)
+    Zip64Required
+    Other(String)
+}
+
+impl Display for ZipError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidArchive => f.write("Invalid ZIP archive")
+            InvalidSignature => f.write("Invalid ZIP signature")
+            InvalidChecksum => f.write("CRC32 checksum mismatch")
+            UnsupportedMethod(m) => f.write("Unsupported compression method: " + m.to_string())
+            UnsupportedVersion(v) => f.write("Unsupported ZIP version: " + v.to_string())
+            FileNotFound(name) => f.write("File not found in archive: " + name)
+            PasswordRequired => f.write("Password required for encrypted archive")
+            WrongPassword => f.write("Wrong password")
+            IoError(msg) => f.write("I/O error: " + msg)
+            CompressionError(msg) => f.write("Compression error: " + msg)
+            Zip64Required => f.write("ZIP64 format required for large files")
+            Other(msg) => f.write(msg)
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "create and extract zip" {
+    let files = [
+        ("hello.txt", "Hello, World!".as_bytes()),
+        ("data.bin", [0x00, 0x01, 0x02, 0x03])
+    ]
+    let zip_data = create(files)?
+    
+    let reader = ZipReader.new(zip_data)?
+    assert_eq(reader.len(), 2)?
+    
+    let content = reader.extract_file("hello.txt")?
+    assert_eq(String.from_bytes(content), "Hello, World!")?
+}
+
+test "zip builder" {
+    let zip_data = ZipBuilder.new()
+        .with_compression(ZipMethod.Deflate)
+        .add_file("test.txt", "Test content".as_bytes())
+        .add_dir("subdir/")
+        .build()?
+    
+    assert(is_zip(zip_data))?
+    
+    let names = list(zip_data)?
+    assert_eq(names.len(), 2)?
+}
+
+test "compression methods" {
+    let data = "Hello, World!".as_bytes()
+    
+    let stored = create_with_compression([("test.txt", data)], ZipMethod.Stored)?
+    let deflate = create_with_compression([("test.txt", data)], ZipMethod.Deflate)?
+    
+    // Both should be valid
+    assert(is_zip(stored))?
+    assert(is_zip(deflate))?
+}
+
+test "is_zip detection" {
+    let valid_zip = [0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]
+    assert(is_zip(valid_zip))?
+    
+    let invalid = [0x00, 0x00, 0x00, 0x00]
+    assert(!is_zip(invalid))?
+}
+
+test "zip entry" {
+    let entry = ZipEntry.from_file("test.txt", "Hello".as_bytes())
+    assert(entry.is_file())?
+    assert(!entry.is_dir)?
+    assert_eq(entry.uncompressed_size, 5)?
+    
+    let dir_entry = ZipEntry.from_dir("mydir")
+    assert(dir_entry.is_dir)?
+    assert(dir_entry.name.ends_with("/"))?
+}
+
+test "crc32" {
+    let data = "Hello, World!".as_bytes()
+    let checksum = crc32(data)
+    assert(checksum != 0)?
+}

@@ -1,0 +1,696 @@
+// =============================================================================
+// Vibee OS — Presence Module
+// Online status, availability, and user presence tracking
+// =============================================================================
+
+use result::{Result, Ok, Err}
+use datetime::{DateTime, Duration}
+
+// =============================================================================
+// Presence Status
+// =============================================================================
+
+/// User presence status
+enum PresenceStatus {
+    Online,
+    Away,
+    Busy,
+    DoNotDisturb,
+    Invisible,
+    Offline
+}
+
+impl PresenceStatus {
+    fn is_available() -> Bool {
+        match self {
+            PresenceStatus.Online | PresenceStatus.Away => true,
+            _ => false
+        }
+    }
+    
+    fn is_visible() -> Bool {
+        match self {
+            PresenceStatus.Invisible | PresenceStatus.Offline => false,
+            _ => true
+        }
+    }
+    
+    fn can_receive_notifications() -> Bool {
+        match self {
+            PresenceStatus.DoNotDisturb | PresenceStatus.Offline => false,
+            _ => true
+        }
+    }
+    
+    fn icon() -> String {
+        match self {
+            PresenceStatus.Online => "🟢",
+            PresenceStatus.Away => "🟡",
+            PresenceStatus.Busy => "🔴",
+            PresenceStatus.DoNotDisturb => "⛔",
+            PresenceStatus.Invisible => "👻",
+            PresenceStatus.Offline => "⚫"
+        }
+    }
+    
+    fn display_name() -> String {
+        match self {
+            PresenceStatus.Online => "Online",
+            PresenceStatus.Away => "Away",
+            PresenceStatus.Busy => "Busy",
+            PresenceStatus.DoNotDisturb => "Do Not Disturb",
+            PresenceStatus.Invisible => "Invisible",
+            PresenceStatus.Offline => "Offline"
+        }
+    }
+    
+    fn priority() -> Int {
+        match self {
+            PresenceStatus.Online => 100,
+            PresenceStatus.Busy => 80,
+            PresenceStatus.Away => 60,
+            PresenceStatus.DoNotDisturb => 40,
+            PresenceStatus.Invisible => 20,
+            PresenceStatus.Offline => 0
+        }
+    }
+}
+
+// =============================================================================
+// User Presence
+// =============================================================================
+
+/// User presence information
+struct UserPresence {
+    user_id: String,
+    status: PresenceStatus,
+    status_text: Option<String>,
+    status_emoji: Option<String>,
+    last_seen: DateTime,
+    last_active: DateTime,
+    device: Option<DeviceInfo>,
+    location: Option<String>,
+    expires_at: Option<DateTime>,
+    auto_away_enabled: Bool,
+    auto_away_timeout: Duration
+}
+
+impl UserPresence {
+    fn new(user_id: String) -> Self {
+        UserPresence {
+            user_id: user_id,
+            status: PresenceStatus.Offline,
+            status_text: None,
+            status_emoji: None,
+            last_seen: DateTime.now(),
+            last_active: DateTime.now(),
+            device: None,
+            location: None,
+            expires_at: None,
+            auto_away_enabled: true,
+            auto_away_timeout: Duration.minutes(5)
+        }
+    }
+    
+    fn online(user_id: String) -> Self {
+        var presence = Self.new(user_id)
+        presence.status = PresenceStatus.Online
+        presence
+    }
+    
+    fn set_status(status: PresenceStatus) {
+        self.status = status
+        self.last_active = DateTime.now()
+    }
+    
+    fn set_status_text(text: String) {
+        self.status_text = Some(text)
+    }
+    
+    fn set_status_emoji(emoji: String) {
+        self.status_emoji = Some(emoji)
+    }
+    
+    fn set_custom_status(text: String, emoji: String, expires_in: Option<Duration>) {
+        self.status_text = Some(text)
+        self.status_emoji = Some(emoji)
+        self.expires_at = expires_in.map(|d| DateTime.now() + d)
+    }
+    
+    fn clear_custom_status() {
+        self.status_text = None
+        self.status_emoji = None
+        self.expires_at = None
+    }
+    
+    fn go_online() {
+        self.status = PresenceStatus.Online
+        self.last_seen = DateTime.now()
+        self.last_active = DateTime.now()
+    }
+    
+    fn go_offline() {
+        self.status = PresenceStatus.Offline
+        self.last_seen = DateTime.now()
+    }
+    
+    fn go_away() {
+        if self.status == PresenceStatus.Online {
+            self.status = PresenceStatus.Away
+        }
+    }
+    
+    fn heartbeat() {
+        self.last_active = DateTime.now()
+        if self.status == PresenceStatus.Away {
+            self.status = PresenceStatus.Online
+        }
+    }
+    
+    fn check_auto_away() {
+        if !self.auto_away_enabled { return }
+        if self.status != PresenceStatus.Online { return }
+        
+        let idle_time = DateTime.now() - self.last_active
+        if idle_time > self.auto_away_timeout {
+            self.status = PresenceStatus.Away
+        }
+    }
+    
+    fn check_status_expiry() {
+        if let Some(expires) = self.expires_at {
+            if DateTime.now() > expires {
+                self.clear_custom_status()
+            }
+        }
+    }
+    
+    fn is_online() -> Bool {
+        self.status == PresenceStatus.Online
+    }
+    
+    fn is_available() -> Bool {
+        self.status.is_available()
+    }
+    
+    fn is_visible() -> Bool {
+        self.status.is_visible()
+    }
+    
+    fn last_seen_text() -> String {
+        if self.status == PresenceStatus.Online {
+            return "Online"
+        }
+        
+        let diff = DateTime.now() - self.last_seen
+        if diff < Duration.minutes(1) {
+            "Just now"
+        } else if diff < Duration.hours(1) {
+            let mins = diff.as_minutes()
+            "\(mins) min ago"
+        } else if diff < Duration.days(1) {
+            let hours = diff.as_hours()
+            "\(hours) hours ago"
+        } else {
+            self.last_seen.format("MMM d, HH:mm")
+        }
+    }
+    
+    fn display_status() -> String {
+        var result = self.status.icon() + " " + self.status.display_name()
+        
+        if let Some(emoji) = self.status_emoji {
+            result = emoji + " " + result
+        }
+        
+        if let Some(text) = self.status_text {
+            result += " - " + text
+        }
+        
+        result
+    }
+}
+
+/// Device information
+struct DeviceInfo {
+    device_id: String,
+    device_type: DeviceType,
+    device_name: Option<String>,
+    platform: String,
+    app_version: Option<String>,
+    push_token: Option<String>
+}
+
+enum DeviceType {
+    Desktop,
+    Mobile,
+    Tablet,
+    Web,
+    Unknown
+}
+
+impl DeviceType {
+    fn icon() -> String {
+        match self {
+            DeviceType.Desktop => "💻",
+            DeviceType.Mobile => "📱",
+            DeviceType.Tablet => "📲",
+            DeviceType.Web => "🌐",
+            DeviceType.Unknown => "❓"
+        }
+    }
+}
+
+impl DeviceInfo {
+    fn new(device_id: String, device_type: DeviceType, platform: String) -> Self {
+        DeviceInfo {
+            device_id: device_id,
+            device_type: device_type,
+            device_name: None,
+            platform: platform,
+            app_version: None,
+            push_token: None
+        }
+    }
+}
+
+// =============================================================================
+// Presence Event
+// =============================================================================
+
+/// Presence change event
+struct PresenceEvent {
+    user_id: String,
+    old_status: PresenceStatus,
+    new_status: PresenceStatus,
+    timestamp: DateTime
+}
+
+impl PresenceEvent {
+    fn new(user_id: String, old: PresenceStatus, new: PresenceStatus) -> Self {
+        PresenceEvent {
+            user_id: user_id,
+            old_status: old,
+            new_status: new,
+            timestamp: DateTime.now()
+        }
+    }
+    
+    fn is_going_online() -> Bool {
+        self.old_status == PresenceStatus.Offline && self.new_status == PresenceStatus.Online
+    }
+    
+    fn is_going_offline() -> Bool {
+        self.old_status != PresenceStatus.Offline && self.new_status == PresenceStatus.Offline
+    }
+}
+
+// =============================================================================
+// Presence Manager Actor
+// =============================================================================
+
+/// Presence management actor
+actor PresenceManager {
+    state presences: Map<String, UserPresence>
+    state subscriptions: Map<String, [String]>  // user_id -> [subscriber_ids]
+    state on_change: [fn(PresenceEvent)]
+    state heartbeat_interval: Duration
+    state cleanup_interval: Duration
+    state offline_timeout: Duration
+    
+    fn new() -> Self {
+        PresenceManager {
+            presences: Map.empty(),
+            subscriptions: Map.empty(),
+            on_change: [],
+            heartbeat_interval: Duration.seconds(30),
+            cleanup_interval: Duration.minutes(1),
+            offline_timeout: Duration.minutes(2)
+        }
+    }
+    
+    on set_presence(user_id: String, status: PresenceStatus) {
+        let old_status = self.presences.get(user_id)
+            .map(|p| p.status)
+            .unwrap_or(PresenceStatus.Offline)
+        
+        if let Some(presence) = self.presences.get(user_id) {
+            presence.set_status(status)
+        } else {
+            var presence = UserPresence.new(user_id.clone())
+            presence.set_status(status)
+            self.presences.insert(user_id.clone(), presence)
+        }
+        
+        if old_status != status {
+            let event = PresenceEvent.new(user_id, old_status, status)
+            self.notify_subscribers(event)
+        }
+    }
+    
+    on get_presence(user_id: String) -> Option<UserPresence> {
+        self.presences.get(user_id).cloned()
+    }
+    
+    on get_status(user_id: String) -> PresenceStatus {
+        self.presences.get(user_id)
+            .map(|p| p.status)
+            .unwrap_or(PresenceStatus.Offline)
+    }
+    
+    on get_many(user_ids: [String]) -> Map<String, UserPresence> {
+        var result = Map.empty()
+        for user_id in user_ids {
+            if let Some(presence) = self.presences.get(user_id) {
+                result.insert(user_id, presence.clone())
+            }
+        }
+        result
+    }
+    
+    on heartbeat(user_id: String) {
+        if let Some(presence) = self.presences.get(user_id) {
+            presence.heartbeat()
+        } else {
+            var presence = UserPresence.online(user_id.clone())
+            self.presences.insert(user_id, presence)
+        }
+    }
+    
+    on set_custom_status(user_id: String, text: String, emoji: String, expires_in: Option<Duration>) {
+        if let Some(presence) = self.presences.get(user_id) {
+            presence.set_custom_status(text, emoji, expires_in)
+        }
+    }
+    
+    on clear_custom_status(user_id: String) {
+        if let Some(presence) = self.presences.get(user_id) {
+            presence.clear_custom_status()
+        }
+    }
+    
+    on subscribe(subscriber_id: String, user_id: String) {
+        if let Some(subs) = self.subscriptions.get(user_id) {
+            if !subs.contains(subscriber_id) {
+                subs.push(subscriber_id)
+            }
+        } else {
+            self.subscriptions.insert(user_id, [subscriber_id])
+        }
+    }
+    
+    on unsubscribe(subscriber_id: String, user_id: String) {
+        if let Some(subs) = self.subscriptions.get(user_id) {
+            subs.retain(|s| s != subscriber_id)
+        }
+    }
+    
+    on unsubscribe_all(subscriber_id: String) {
+        for (_, subs) in self.subscriptions {
+            subs.retain(|s| s != subscriber_id)
+        }
+    }
+    
+    on online_users() -> [String] {
+        self.presences.iter()
+            .filter(|(_, p)| p.is_online())
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+    
+    on online_count() -> Int {
+        self.presences.values().filter(|p| p.is_online()).count()
+    }
+    
+    on available_users() -> [String] {
+        self.presences.iter()
+            .filter(|(_, p)| p.is_available())
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+    
+    fn notify_subscribers(event: PresenceEvent) {
+        // Notify global handlers
+        for handler in self.on_change {
+            handler(event.clone())
+        }
+        
+        // Notify specific subscribers
+        if let Some(subs) = self.subscriptions.get(event.user_id) {
+            for sub_id in subs {
+                // Would send notification to subscriber
+                @native("notify_presence", sub_id, event.clone())
+            }
+        }
+    }
+    
+    on cleanup() {
+        let now = DateTime.now()
+        var to_offline = []
+        
+        for (user_id, presence) in self.presences {
+            // Check auto-away
+            presence.check_auto_away()
+            
+            // Check status expiry
+            presence.check_status_expiry()
+            
+            // Check offline timeout
+            if presence.status != PresenceStatus.Offline {
+                let idle = now - presence.last_active
+                if idle > self.offline_timeout {
+                    to_offline.push(user_id.clone())
+                }
+            }
+        }
+        
+        // Set users offline
+        for user_id in to_offline {
+            self.set_presence(user_id, PresenceStatus.Offline)
+        }
+    }
+    
+    fn on_presence_change(handler: fn(PresenceEvent)) {
+        self.on_change.push(handler)
+    }
+    
+    fn start_cleanup_loop() {
+        @native("set_interval", self.cleanup_interval.as_millis(), || {
+            self.cleanup()
+        })
+    }
+}
+
+// =============================================================================
+// Presence Tracker
+// =============================================================================
+
+/// Track presence for a specific context (e.g., conversation)
+actor PresenceTracker {
+    state context_id: String
+    state members: Map<String, UserPresence>
+    state on_join: [fn(String)]
+    state on_leave: [fn(String)]
+    state on_change: [fn(String, PresenceStatus)]
+    
+    fn new(context_id: String) -> Self {
+        PresenceTracker {
+            context_id: context_id,
+            members: Map.empty(),
+            on_join: [],
+            on_leave: [],
+            on_change: []
+        }
+    }
+    
+    on join(user_id: String, presence: UserPresence) {
+        self.members.insert(user_id.clone(), presence)
+        for handler in self.on_join { handler(user_id.clone()) }
+    }
+    
+    on leave(user_id: String) {
+        if self.members.remove(user_id.clone()).is_some() {
+            for handler in self.on_leave { handler(user_id) }
+        }
+    }
+    
+    on update(user_id: String, status: PresenceStatus) {
+        if let Some(presence) = self.members.get(user_id) {
+            presence.set_status(status)
+            for handler in self.on_change { handler(user_id.clone(), status) }
+        }
+    }
+    
+    on get_all() -> [UserPresence] {
+        self.members.values().cloned().collect()
+    }
+    
+    on get_online() -> [String] {
+        self.members.iter()
+            .filter(|(_, p)| p.is_online())
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+    
+    on count() -> Int {
+        self.members.len()
+    }
+    
+    on online_count() -> Int {
+        self.members.values().filter(|p| p.is_online()).count()
+    }
+    
+    fn on_member_join(handler: fn(String)) { self.on_join.push(handler) }
+    fn on_member_leave(handler: fn(String)) { self.on_leave.push(handler) }
+    fn on_status_change(handler: fn(String, PresenceStatus)) { self.on_change.push(handler) }
+}
+
+// =============================================================================
+// Presence Aggregator
+// =============================================================================
+
+/// Aggregate presence across multiple devices
+struct PresenceAggregator {
+    user_id: String,
+    devices: Map<String, DevicePresence>
+}
+
+struct DevicePresence {
+    device_id: String,
+    device_info: DeviceInfo,
+    status: PresenceStatus,
+    last_active: DateTime
+}
+
+impl PresenceAggregator {
+    fn new(user_id: String) -> Self {
+        PresenceAggregator {
+            user_id: user_id,
+            devices: Map.empty()
+        }
+    }
+    
+    fn update_device(device_id: String, device_info: DeviceInfo, status: PresenceStatus) {
+        self.devices.insert(device_id.clone(), DevicePresence {
+            device_id: device_id,
+            device_info: device_info,
+            status: status,
+            last_active: DateTime.now()
+        })
+    }
+    
+    fn remove_device(device_id: String) {
+        self.devices.remove(device_id)
+    }
+    
+    fn aggregate_status() -> PresenceStatus {
+        // Return highest priority status across all devices
+        self.devices.values()
+            .map(|d| d.status)
+            .max_by(|a, b| a.priority().cmp(b.priority()))
+            .unwrap_or(PresenceStatus.Offline)
+    }
+    
+    fn active_devices() -> [DevicePresence] {
+        self.devices.values()
+            .filter(|d| d.status != PresenceStatus.Offline)
+            .cloned()
+            .collect()
+    }
+    
+    fn primary_device() -> Option<DevicePresence> {
+        self.devices.values()
+            .filter(|d| d.status != PresenceStatus.Offline)
+            .max_by(|a, b| a.last_active.cmp(b.last_active))
+            .cloned()
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "presence status" {
+    assert(PresenceStatus.Online.is_available())?
+    assert(PresenceStatus.Away.is_available())?
+    assert(!PresenceStatus.Busy.is_available())?
+    assert(!PresenceStatus.Offline.is_visible())?
+    assert(!PresenceStatus.Invisible.is_visible())?
+}
+
+test "user presence" {
+    var presence = UserPresence.online("user1")
+    assert(presence.is_online())?
+    assert(presence.is_available())?
+    
+    presence.go_away()
+    assert_eq(presence.status, PresenceStatus.Away)?
+    assert(presence.is_available())?
+    
+    presence.go_offline()
+    assert_eq(presence.status, PresenceStatus.Offline)?
+    assert(!presence.is_available())?
+}
+
+test "custom status" {
+    var presence = UserPresence.online("user1")
+    presence.set_custom_status("In a meeting", "📅", Some(Duration.hours(1)))
+    
+    assert_eq(presence.status_text, Some("In a meeting"))?
+    assert_eq(presence.status_emoji, Some("📅"))?
+    assert(presence.expires_at.is_some())?
+    
+    presence.clear_custom_status()
+    assert(presence.status_text.is_none())?
+}
+
+test "presence manager" {
+    let manager = PresenceManager.new()
+    
+    manager.set_presence("user1", PresenceStatus.Online)
+    assert_eq(manager.get_status("user1"), PresenceStatus.Online)?
+    
+    manager.set_presence("user2", PresenceStatus.Online)
+    assert_eq(manager.online_count(), 2)?
+    
+    manager.set_presence("user1", PresenceStatus.Offline)
+    assert_eq(manager.online_count(), 1)?
+}
+
+test "presence tracker" {
+    let tracker = PresenceTracker.new("room1")
+    
+    let p1 = UserPresence.online("user1")
+    let p2 = UserPresence.online("user2")
+    
+    tracker.join("user1", p1)
+    tracker.join("user2", p2)
+    
+    assert_eq(tracker.count(), 2)?
+    assert_eq(tracker.online_count(), 2)?
+    
+    tracker.update("user1", PresenceStatus.Away)
+    assert_eq(tracker.online_count(), 1)?
+}
+
+test "presence aggregator" {
+    var agg = PresenceAggregator.new("user1")
+    
+    let desktop = DeviceInfo.new("d1", DeviceType.Desktop, "macOS")
+    let mobile = DeviceInfo.new("d2", DeviceType.Mobile, "iOS")
+    
+    agg.update_device("d1", desktop, PresenceStatus.Away)
+    agg.update_device("d2", mobile, PresenceStatus.Online)
+    
+    // Should return Online (highest priority)
+    assert_eq(agg.aggregate_status(), PresenceStatus.Online)?
+    assert_eq(agg.active_devices().len(), 2)?
+}
+
+test "last seen text" {
+    var presence = UserPresence.online("user1")
+    assert_eq(presence.last_seen_text(), "Online")?
+    
+    presence.go_offline()
+    // Would test time-based text
+}

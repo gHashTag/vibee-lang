@@ -2,7 +2,7 @@
 
 **A Unified Framework for Understanding Collatz, Goldbach, and Twin Prime Conjectures**
 
-**Authors**: Dmitrii Vasilev, Ona  
+**Author**: Dmitrii Vasilev  
 **Date**: January 13, 2026  
 **Institution**: VIBEE Research  
 **Status**: Research Report with Computational Verification

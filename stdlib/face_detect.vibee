@@ -1,0 +1,811 @@
+// =============================================================================
+// Vibee OS — Face Detection Module
+// Face detection, recognition, and analysis
+// =============================================================================
+
+use image::{Image, Pixel}
+use tensor::{Tensor, Shape}
+
+// -----------------------------------------------------------------------------
+// Face Detection Types
+// -----------------------------------------------------------------------------
+
+/// Bounding box for detected face
+struct FaceBox {
+    x: Int
+    y: Int
+    width: Int
+    height: Int
+    confidence: Float
+    
+    fn new(x: Int, y: Int, width: Int, height: Int, confidence: Float) -> Self {
+        FaceBox { x: x, y: y, width: width, height: height, confidence: confidence }
+    }
+    
+    fn center() -> (Int, Int) {
+        (self.x + self.width / 2, self.y + self.height / 2)
+    }
+    
+    fn area() -> Int {
+        self.width * self.height
+    }
+    
+    fn contains(px: Int, py: Int) -> Bool {
+        px >= self.x && px < self.x + self.width &&
+        py >= self.y && py < self.y + self.height
+    }
+    
+    fn intersects(other: FaceBox) -> Bool {
+        !(self.x + self.width < other.x || other.x + other.width < self.x ||
+          self.y + self.height < other.y || other.y + other.height < self.y)
+    }
+    
+    fn iou(other: FaceBox) -> Float {
+        let x1 = self.x.max(other.x)
+        let y1 = self.y.max(other.y)
+        let x2 = (self.x + self.width).min(other.x + other.width)
+        let y2 = (self.y + self.height).min(other.y + other.height)
+        
+        if x2 <= x1 || y2 <= y1 { return 0.0 }
+        
+        let intersection = (x2 - x1) * (y2 - y1)
+        let union = self.area() + other.area() - intersection
+        intersection as Float / union as Float
+    }
+}
+
+/// Facial landmark points
+struct FaceLandmarks {
+    left_eye: (Int, Int)
+    right_eye: (Int, Int)
+    nose: (Int, Int)
+    left_mouth: (Int, Int)
+    right_mouth: (Int, Int)
+    points: [(Int, Int)]
+    
+    fn new() -> Self {
+        FaceLandmarks {
+            left_eye: (0, 0), right_eye: (0, 0), nose: (0, 0),
+            left_mouth: (0, 0), right_mouth: (0, 0), points: []
+        }
+    }
+    
+    fn with_5_points(left_eye: (Int, Int), right_eye: (Int, Int), nose: (Int, Int),
+                     left_mouth: (Int, Int), right_mouth: (Int, Int)) -> Self {
+        FaceLandmarks {
+            left_eye: left_eye, right_eye: right_eye, nose: nose,
+            left_mouth: left_mouth, right_mouth: right_mouth,
+            points: [left_eye, right_eye, nose, left_mouth, right_mouth]
+        }
+    }
+    
+    fn with_68_points(points: [(Int, Int)]) -> Self {
+        var lm = FaceLandmarks.new()
+        lm.points = points
+        if points.len() >= 68 {
+            lm.left_eye = points[36]
+            lm.right_eye = points[45]
+            lm.nose = points[30]
+            lm.left_mouth = points[48]
+            lm.right_mouth = points[54]
+        }
+        lm
+    }
+    
+    fn eye_distance() -> Float {
+        let dx = self.right_eye.0 - self.left_eye.0
+        let dy = self.right_eye.1 - self.left_eye.1
+        ((dx * dx + dy * dy) as Float).sqrt()
+    }
+    
+    fn face_angle() -> Float {
+        let dx = self.right_eye.0 - self.left_eye.0
+        let dy = self.right_eye.1 - self.left_eye.1
+        (dy as Float).atan2(dx as Float) * 180.0 / 3.14159265
+    }
+}
+
+/// Detected face with all information
+struct Face {
+    bbox: FaceBox
+    landmarks: Option<FaceLandmarks>
+    embedding: Option<Tensor>
+    age: Option<Int>
+    gender: Option<Gender>
+    emotion: Option<Emotion>
+    attributes: FaceAttributes
+    
+    fn new(bbox: FaceBox) -> Self {
+        Face {
+            bbox: bbox, landmarks: None, embedding: None,
+            age: None, gender: None, emotion: None,
+            attributes: FaceAttributes.new()
+        }
+    }
+    
+    fn with_landmarks(bbox: FaceBox, landmarks: FaceLandmarks) -> Self {
+        var face = Face.new(bbox)
+        face.landmarks = Some(landmarks)
+        face
+    }
+    
+    fn confidence() -> Float { self.bbox.confidence }
+    
+    fn crop(image: Image) -> Image {
+        image.crop(self.bbox.x, self.bbox.y, self.bbox.width, self.bbox.height)
+    }
+    
+    fn align(image: Image) -> Image {
+        if let Some(lm) = self.landmarks {
+            let angle = lm.face_angle()
+            let center = self.bbox.center()
+            image.rotate_around(center.0, center.1, -angle)
+                 .crop(self.bbox.x, self.bbox.y, self.bbox.width, self.bbox.height)
+        } else {
+            self.crop(image)
+        }
+    }
+}
+
+/// Gender classification
+enum Gender {
+    Male,
+    Female,
+    Unknown
+    
+    fn from_score(male_score: Float) -> Self {
+        if male_score > 0.6 { Gender.Male }
+        else if male_score < 0.4 { Gender.Female }
+        else { Gender.Unknown }
+    }
+}
+
+/// Emotion classification
+enum Emotion {
+    Neutral,
+    Happy,
+    Sad,
+    Angry,
+    Surprised,
+    Fearful,
+    Disgusted,
+    Contempt
+    
+    fn from_scores(scores: [Float]) -> Self {
+        let max_idx = scores.iter().enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(i, _)| i)
+            .unwrap_or(0)
+        
+        match max_idx {
+            0 => Emotion.Neutral,
+            1 => Emotion.Happy,
+            2 => Emotion.Sad,
+            3 => Emotion.Angry,
+            4 => Emotion.Surprised,
+            5 => Emotion.Fearful,
+            6 => Emotion.Disgusted,
+            7 => Emotion.Contempt,
+            _ => Emotion.Neutral
+        }
+    }
+    
+    fn name() -> String {
+        match self {
+            Neutral => "neutral", Happy => "happy", Sad => "sad",
+            Angry => "angry", Surprised => "surprised", Fearful => "fearful",
+            Disgusted => "disgusted", Contempt => "contempt"
+        }
+    }
+}
+
+/// Face attributes
+struct FaceAttributes {
+    glasses: Bool
+    sunglasses: Bool
+    beard: Bool
+    mustache: Bool
+    mask: Bool
+    hat: Bool
+    makeup: Bool
+    smile: Float
+    eyes_open: Float
+    mouth_open: Float
+    
+    fn new() -> Self {
+        FaceAttributes {
+            glasses: false, sunglasses: false, beard: false,
+            mustache: false, mask: false, hat: false, makeup: false,
+            smile: 0.0, eyes_open: 1.0, mouth_open: 0.0
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Face Detector
+// -----------------------------------------------------------------------------
+
+/// Face detection model type
+enum FaceDetectorModel {
+    MTCNN,
+    RetinaFace,
+    BlazeFace,
+    YuNet,
+    SSD,
+    HOG,
+    Haar
+    
+    fn name() -> String {
+        match self {
+            MTCNN => "mtcnn", RetinaFace => "retinaface",
+            BlazeFace => "blazeface", YuNet => "yunet",
+            SSD => "ssd", HOG => "hog", Haar => "haar"
+        }
+    }
+}
+
+/// Face detector configuration
+struct FaceDetectorConfig {
+    model: FaceDetectorModel
+    min_face_size: Int
+    confidence_threshold: Float
+    nms_threshold: Float
+    max_faces: Int
+    detect_landmarks: Bool
+    
+    fn new() -> Self {
+        FaceDetectorConfig {
+            model: FaceDetectorModel.RetinaFace,
+            min_face_size: 20,
+            confidence_threshold: 0.5,
+            nms_threshold: 0.4,
+            max_faces: 100,
+            detect_landmarks: true
+        }
+    }
+    
+    fn with_model(model: FaceDetectorModel) -> Self { self.model = model; self }
+    fn with_min_size(size: Int) -> Self { self.min_face_size = size; self }
+    fn with_confidence(conf: Float) -> Self { self.confidence_threshold = conf; self }
+    fn with_nms(nms: Float) -> Self { self.nms_threshold = nms; self }
+    fn with_max_faces(max: Int) -> Self { self.max_faces = max; self }
+    fn with_landmarks(detect: Bool) -> Self { self.detect_landmarks = detect; self }
+}
+
+/// Face detector
+struct FaceDetector {
+    config: FaceDetectorConfig
+    model_path: Option<String>
+    
+    fn new() -> Self {
+        FaceDetector { config: FaceDetectorConfig.new(), model_path: None }
+    }
+    
+    fn with_config(config: FaceDetectorConfig) -> Self {
+        FaceDetector { config: config, model_path: None }
+    }
+    
+    fn load_model(path: String) -> Result<Self, FaceError> {
+        var detector = FaceDetector.new()
+        detector.model_path = Some(path)
+        @native("face_detector_load", path)?
+        Ok(detector)
+    }
+    
+    fn detect(image: Image) -> Result<[Face], FaceError> {
+        @native("face_detect", image, self.config)
+    }
+    
+    fn detect_largest(image: Image) -> Result<Option<Face>, FaceError> {
+        let faces = self.detect(image)?
+        Ok(faces.iter().max_by(|a, b| a.bbox.area().cmp(&b.bbox.area())).cloned())
+    }
+    
+    fn detect_with_tracking(frames: [Image]) -> Result<[[Face]], FaceError> {
+        @native("face_detect_track", frames, self.config)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Face Recognition
+// -----------------------------------------------------------------------------
+
+/// Face embedding model
+enum EmbeddingModel {
+    ArcFace,
+    FaceNet,
+    VGGFace,
+    DeepFace,
+    InsightFace
+}
+
+/// Face recognizer for identity matching
+struct FaceRecognizer {
+    model: EmbeddingModel
+    embedding_size: Int
+    threshold: Float
+    
+    fn new() -> Self {
+        FaceRecognizer {
+            model: EmbeddingModel.ArcFace,
+            embedding_size: 512,
+            threshold: 0.6
+        }
+    }
+    
+    fn with_model(model: EmbeddingModel) -> Self {
+        var rec = FaceRecognizer.new()
+        rec.model = model
+        rec.embedding_size = match model {
+            ArcFace => 512,
+            FaceNet => 128,
+            VGGFace => 2048,
+            DeepFace => 4096,
+            InsightFace => 512
+        }
+        rec
+    }
+    
+    fn get_embedding(image: Image, face: Face) -> Result<Tensor, FaceError> {
+        let aligned = face.align(image)
+        @native("face_embedding", aligned, self.model)
+    }
+    
+    fn compare(embedding1: Tensor, embedding2: Tensor) -> Float {
+        // Cosine similarity
+        let dot = embedding1.dot(embedding2)
+        let norm1 = embedding1.norm(2.0)
+        let norm2 = embedding2.norm(2.0)
+        dot / (norm1 * norm2)
+    }
+    
+    fn is_same_person(embedding1: Tensor, embedding2: Tensor) -> Bool {
+        self.compare(embedding1, embedding2) > self.threshold
+    }
+    
+    fn euclidean_distance(embedding1: Tensor, embedding2: Tensor) -> Float {
+        embedding1.sub(embedding2).norm(2.0)
+    }
+}
+
+/// Face database for recognition
+struct FaceDatabase {
+    embeddings: Map<String, Tensor>
+    metadata: Map<String, FaceMetadata>
+    
+    fn new() -> Self {
+        FaceDatabase { embeddings: Map.new(), metadata: Map.new() }
+    }
+    
+    fn add(id: String, embedding: Tensor, meta: FaceMetadata) {
+        self.embeddings.insert(id, embedding)
+        self.metadata.insert(id, meta)
+    }
+    
+    fn remove(id: String) {
+        self.embeddings.remove(id)
+        self.metadata.remove(id)
+    }
+    
+    fn search(query: Tensor, recognizer: FaceRecognizer, top_k: Int = 5) -> [FaceMatch] {
+        var matches = []
+        for (id, embedding) in self.embeddings.iter() {
+            let similarity = recognizer.compare(query, embedding.clone())
+            matches.push(FaceMatch {
+                id: id.clone(),
+                similarity: similarity,
+                metadata: self.metadata.get(id).cloned()
+            })
+        }
+        matches.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap())
+        matches.into_iter().take(top_k).collect()
+    }
+    
+    fn identify(query: Tensor, recognizer: FaceRecognizer) -> Option<FaceMatch> {
+        let matches = self.search(query, recognizer, 1)
+        if matches.len() > 0 && matches[0].similarity > recognizer.threshold {
+            Some(matches[0].clone())
+        } else {
+            None
+        }
+    }
+    
+    fn save(path: String) -> Result<(), FaceError> {
+        @native("face_db_save", self, path)
+    }
+    
+    fn load(path: String) -> Result<Self, FaceError> {
+        @native("face_db_load", path)
+    }
+    
+    fn count() -> Int { self.embeddings.len() }
+}
+
+/// Face match result
+struct FaceMatch {
+    id: String
+    similarity: Float
+    metadata: Option<FaceMetadata>
+    
+    fn clone() -> Self {
+        FaceMatch {
+            id: self.id.clone(),
+            similarity: self.similarity,
+            metadata: self.metadata.clone()
+        }
+    }
+}
+
+/// Face metadata
+struct FaceMetadata {
+    name: Option<String>
+    group: Option<String>
+    created_at: DateTime
+    image_path: Option<String>
+    
+    fn new() -> Self {
+        FaceMetadata {
+            name: None, group: None,
+            created_at: DateTime.now(),
+            image_path: None
+        }
+    }
+    
+    fn with_name(name: String) -> Self {
+        var meta = FaceMetadata.new()
+        meta.name = Some(name)
+        meta
+    }
+    
+    fn clone() -> Self {
+        FaceMetadata {
+            name: self.name.clone(),
+            group: self.group.clone(),
+            created_at: self.created_at,
+            image_path: self.image_path.clone()
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Face Analysis
+// -----------------------------------------------------------------------------
+
+/// Face analyzer for age, gender, emotion
+struct FaceAnalyzer {
+    analyze_age: Bool
+    analyze_gender: Bool
+    analyze_emotion: Bool
+    analyze_attributes: Bool
+    
+    fn new() -> Self {
+        FaceAnalyzer {
+            analyze_age: true,
+            analyze_gender: true,
+            analyze_emotion: true,
+            analyze_attributes: true
+        }
+    }
+    
+    fn analyze(image: Image, face: Face) -> Result<Face, FaceError> {
+        var result = face.clone()
+        let cropped = face.crop(image)
+        
+        if self.analyze_age {
+            result.age = Some(@native("face_age", cropped)?)
+        }
+        if self.analyze_gender {
+            let score: Float = @native("face_gender", cropped)?
+            result.gender = Some(Gender.from_score(score))
+        }
+        if self.analyze_emotion {
+            let scores: [Float] = @native("face_emotion", cropped)?
+            result.emotion = Some(Emotion.from_scores(scores))
+        }
+        if self.analyze_attributes {
+            result.attributes = @native("face_attributes", cropped)?
+        }
+        
+        Ok(result)
+    }
+    
+    fn analyze_batch(image: Image, faces: [Face]) -> Result<[Face], FaceError> {
+        faces.iter().map(|f| self.analyze(image, f.clone())).collect()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Face Verification
+// -----------------------------------------------------------------------------
+
+/// Face verification result
+struct VerificationResult {
+    is_match: Bool
+    similarity: Float
+    confidence: Float
+    
+    fn new(is_match: Bool, similarity: Float) -> Self {
+        VerificationResult {
+            is_match: is_match,
+            similarity: similarity,
+            confidence: similarity.abs()
+        }
+    }
+}
+
+/// Face verifier for 1:1 matching
+struct FaceVerifier {
+    detector: FaceDetector
+    recognizer: FaceRecognizer
+    
+    fn new() -> Self {
+        FaceVerifier {
+            detector: FaceDetector.new(),
+            recognizer: FaceRecognizer.new()
+        }
+    }
+    
+    fn verify(image1: Image, image2: Image) -> Result<VerificationResult, FaceError> {
+        let face1 = self.detector.detect_largest(image1)?
+            .ok_or(FaceError.NoFaceDetected)?
+        let face2 = self.detector.detect_largest(image2)?
+            .ok_or(FaceError.NoFaceDetected)?
+        
+        let emb1 = self.recognizer.get_embedding(image1, face1)?
+        let emb2 = self.recognizer.get_embedding(image2, face2)?
+        
+        let similarity = self.recognizer.compare(emb1, emb2)
+        let is_match = similarity > self.recognizer.threshold
+        
+        Ok(VerificationResult.new(is_match, similarity))
+    }
+    
+    fn verify_against_embedding(image: Image, reference: Tensor) -> Result<VerificationResult, FaceError> {
+        let face = self.detector.detect_largest(image)?
+            .ok_or(FaceError.NoFaceDetected)?
+        let embedding = self.recognizer.get_embedding(image, face)?
+        
+        let similarity = self.recognizer.compare(embedding, reference)
+        let is_match = similarity > self.recognizer.threshold
+        
+        Ok(VerificationResult.new(is_match, similarity))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Liveness Detection
+// -----------------------------------------------------------------------------
+
+/// Liveness detection result
+enum LivenessResult {
+    Real(Float),
+    Spoof(Float),
+    Unknown
+    
+    fn is_real() -> Bool {
+        match self {
+            Real(_) => true,
+            _ => false
+        }
+    }
+    
+    fn confidence() -> Float {
+        match self {
+            Real(c) => c,
+            Spoof(c) => c,
+            Unknown => 0.0
+        }
+    }
+}
+
+/// Liveness detector for anti-spoofing
+struct LivenessDetector {
+    threshold: Float
+    
+    fn new() -> Self {
+        LivenessDetector { threshold: 0.5 }
+    }
+    
+    fn detect(image: Image, face: Face) -> Result<LivenessResult, FaceError> {
+        let cropped = face.crop(image)
+        let score: Float = @native("face_liveness", cropped)?
+        
+        if score > self.threshold {
+            Ok(LivenessResult.Real(score))
+        } else {
+            Ok(LivenessResult.Spoof(1.0 - score))
+        }
+    }
+    
+    fn detect_with_depth(rgb: Image, depth: Image, face: Face) -> Result<LivenessResult, FaceError> {
+        @native("face_liveness_depth", rgb, depth, face)
+    }
+    
+    fn detect_with_ir(rgb: Image, ir: Image, face: Face) -> Result<LivenessResult, FaceError> {
+        @native("face_liveness_ir", rgb, ir, face)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Face Clustering
+// -----------------------------------------------------------------------------
+
+/// Face cluster
+struct FaceCluster {
+    id: Int
+    faces: [Face]
+    centroid: Option<Tensor>
+    
+    fn new(id: Int) -> Self {
+        FaceCluster { id: id, faces: [], centroid: None }
+    }
+    
+    fn add(face: Face) {
+        self.faces.push(face)
+    }
+    
+    fn size() -> Int { self.faces.len() }
+    
+    fn compute_centroid(recognizer: FaceRecognizer, image: Image) -> Result<Tensor, FaceError> {
+        var embeddings = []
+        for face in self.faces {
+            embeddings.push(recognizer.get_embedding(image, face.clone())?)
+        }
+        
+        let sum = embeddings.iter().fold(Tensor.zeros(Shape.vector(512)), |acc, e| acc.add(e.clone()))
+        let centroid = sum.mul_scalar(1.0 / embeddings.len() as Float)
+        self.centroid = Some(centroid.clone())
+        Ok(centroid)
+    }
+}
+
+/// Face clustering algorithm
+struct FaceClusterer {
+    recognizer: FaceRecognizer
+    threshold: Float
+    
+    fn new() -> Self {
+        FaceClusterer {
+            recognizer: FaceRecognizer.new(),
+            threshold: 0.5
+        }
+    }
+    
+    fn cluster(image: Image, faces: [Face]) -> Result<[FaceCluster], FaceError> {
+        var embeddings = []
+        for face in faces {
+            embeddings.push(self.recognizer.get_embedding(image, face.clone())?)
+        }
+        
+        // Simple agglomerative clustering
+        var clusters: [FaceCluster] = []
+        var assigned = [false; faces.len()]
+        
+        for i in 0..faces.len() {
+            if assigned[i] { continue }
+            
+            var cluster = FaceCluster.new(clusters.len() as Int)
+            cluster.add(faces[i].clone())
+            assigned[i] = true
+            
+            for j in (i + 1)..faces.len() {
+                if assigned[j] { continue }
+                
+                let similarity = self.recognizer.compare(embeddings[i].clone(), embeddings[j].clone())
+                if similarity > self.threshold {
+                    cluster.add(faces[j].clone())
+                    assigned[j] = true
+                }
+            }
+            
+            clusters.push(cluster)
+        }
+        
+        Ok(clusters)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+/// Face detection errors
+enum FaceError {
+    NoFaceDetected,
+    MultipleFaces,
+    ModelNotLoaded,
+    InvalidImage,
+    ProcessingError(String),
+    IoError(String)
+}
+
+impl Display for FaceError {
+    fn fmt(f: Formatter) {
+        match self {
+            NoFaceDetected => f.write("No face detected in image"),
+            MultipleFaces => f.write("Multiple faces detected, expected one"),
+            ModelNotLoaded => f.write("Face detection model not loaded"),
+            InvalidImage => f.write("Invalid image format"),
+            ProcessingError(msg) => f.write(format!("Processing error: {}", msg)),
+            IoError(msg) => f.write(format!("IO error: {}", msg))
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+/// Detect faces in an image
+fn detect_faces(image: Image) -> Result<[Face], FaceError> {
+    FaceDetector.new().detect(image)
+}
+
+/// Detect the largest face in an image
+fn detect_face(image: Image) -> Result<Option<Face>, FaceError> {
+    FaceDetector.new().detect_largest(image)
+}
+
+/// Compare two face images
+fn compare_faces(image1: Image, image2: Image) -> Result<Float, FaceError> {
+    let verifier = FaceVerifier.new()
+    let result = verifier.verify(image1, image2)?
+    Ok(result.similarity)
+}
+
+/// Check if two images contain the same person
+fn is_same_person(image1: Image, image2: Image) -> Result<Bool, FaceError> {
+    let verifier = FaceVerifier.new()
+    let result = verifier.verify(image1, image2)?
+    Ok(result.is_match)
+}
+
+/// Count faces in an image
+fn count_faces(image: Image) -> Result<Int, FaceError> {
+    let faces = detect_faces(image)?
+    Ok(faces.len())
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "face_box_iou" {
+    let box1 = FaceBox.new(0, 0, 100, 100, 0.9)
+    let box2 = FaceBox.new(50, 50, 100, 100, 0.8)
+    let iou = box1.iou(box2)
+    assert(iou > 0.0 && iou < 1.0)?
+}
+
+test "face_box_center" {
+    let box = FaceBox.new(100, 100, 50, 50, 0.9)
+    let center = box.center()
+    assert_eq(center.0, 125)?
+    assert_eq(center.1, 125)?
+}
+
+test "landmarks_eye_distance" {
+    let lm = FaceLandmarks.with_5_points(
+        (100, 100), (200, 100), (150, 150), (120, 200), (180, 200)
+    )
+    assert_eq(lm.eye_distance(), 100.0)?
+}
+
+test "gender_from_score" {
+    assert_eq(Gender.from_score(0.8), Gender.Male)?
+    assert_eq(Gender.from_score(0.2), Gender.Female)?
+    assert_eq(Gender.from_score(0.5), Gender.Unknown)?
+}
+
+test "face_database" {
+    var db = FaceDatabase.new()
+    let embedding = Tensor.randn(Shape.vector(512))
+    db.add("person1", embedding, FaceMetadata.with_name("John"))
+    assert_eq(db.count(), 1)?
+}
+
+test "verification_result" {
+    let result = VerificationResult.new(true, 0.85)
+    assert(result.is_match)?
+    assert_eq(result.similarity, 0.85)?
+}

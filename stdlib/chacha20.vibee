@@ -1,0 +1,542 @@
+// =============================================================================
+// Vibee OS — ChaCha20 Module
+// ChaCha20 Stream Cipher and ChaCha20-Poly1305 AEAD
+// =============================================================================
+//
+// ChaCha20 is a high-speed stream cipher designed by Daniel J. Bernstein.
+// ChaCha20-Poly1305 is an AEAD construction combining ChaCha20 with Poly1305 MAC.
+//
+// Benefits:
+// - Faster than AES on platforms without hardware AES support
+// - Constant-time implementation (no timing attacks)
+// - Simple and secure design
+// - Used in TLS 1.3, WireGuard, and many other protocols
+// =============================================================================
+
+const KEY_SIZE: Int = 32
+const NONCE_SIZE: Int = 12
+const NONCE_SIZE_IETF: Int = 12
+const NONCE_SIZE_ORIGINAL: Int = 8
+const TAG_SIZE: Int = 16
+const BLOCK_SIZE: Int = 64
+
+// =============================================================================
+// ChaCha20 Key
+// =============================================================================
+
+/// ChaCha20 256-bit key
+struct ChaCha20Key {
+    bytes: [UInt8; 32]
+}
+
+impl ChaCha20Key {
+    /// Create from bytes
+    fn from_bytes(bytes: [UInt8]) -> Result<Self, ChaCha20Error> {
+        if bytes.len() != KEY_SIZE {
+            return Err(ChaCha20Error.InvalidKeySize)
+        }
+        Ok(ChaCha20Key { bytes: bytes.try_into().unwrap() })
+    }
+    
+    /// Generate random key
+    fn generate() -> Self {
+        ChaCha20Key { bytes: crypto.random_bytes(32).try_into().unwrap() }
+    }
+    
+    /// Derive from password using Argon2id
+    fn from_password(password: String, salt: [UInt8]) -> Result<Self, ChaCha20Error> {
+        let key_bytes = crypto.argon2id(password.as_bytes(), salt, 65536, 3, 4, 32)
+            .map_err(|_| ChaCha20Error.KeyDerivationFailed)?
+        Ok(ChaCha20Key { bytes: key_bytes.try_into().unwrap() })
+    }
+    
+    /// Derive from password using PBKDF2
+    fn from_password_pbkdf2(password: String, salt: [UInt8], iterations: Int) -> Self {
+        let key_bytes = crypto.pbkdf2_sha256(password.as_bytes(), salt, iterations, 32)
+        ChaCha20Key { bytes: key_bytes.try_into().unwrap() }
+    }
+    
+    /// Derive using HKDF
+    fn derive(ikm: [UInt8], salt: [UInt8], info: [UInt8]) -> Self {
+        let key_bytes = crypto.hkdf_sha256(ikm, salt, info, 32)
+        ChaCha20Key { bytes: key_bytes.try_into().unwrap() }
+    }
+    
+    /// Get raw bytes
+    fn as_bytes() -> [UInt8; 32] {
+        self.bytes
+    }
+    
+    /// Convert to hex
+    fn to_hex() -> String {
+        hex.encode(self.bytes)
+    }
+    
+    /// Securely zero key
+    fn zeroize() {
+        crypto.secure_zero(self.bytes)
+    }
+}
+
+impl Drop for ChaCha20Key {
+    fn drop() {
+        self.zeroize()
+    }
+}
+
+// =============================================================================
+// ChaCha20 Nonce
+// =============================================================================
+
+/// ChaCha20 nonce (12 bytes for IETF variant)
+struct ChaCha20Nonce {
+    bytes: [UInt8; 12]
+}
+
+impl ChaCha20Nonce {
+    /// Create from bytes
+    fn from_bytes(bytes: [UInt8]) -> Result<Self, ChaCha20Error> {
+        if bytes.len() != NONCE_SIZE {
+            return Err(ChaCha20Error.InvalidNonceSize)
+        }
+        Ok(ChaCha20Nonce { bytes: bytes.try_into().unwrap() })
+    }
+    
+    /// Generate random nonce
+    fn generate() -> Self {
+        ChaCha20Nonce { bytes: crypto.random_bytes(12).try_into().unwrap() }
+    }
+    
+    /// Create from counter (for deterministic nonce)
+    fn from_counter(counter: UInt64) -> Self {
+        var bytes = [0u8; 12]
+        // Put counter in last 8 bytes (big-endian)
+        let counter_bytes = counter.to_be_bytes()
+        for i in 0..8 {
+            bytes[4 + i] = counter_bytes[i]
+        }
+        ChaCha20Nonce { bytes: bytes }
+    }
+    
+    /// Create zero nonce
+    fn zero() -> Self {
+        ChaCha20Nonce { bytes: [0u8; 12] }
+    }
+    
+    /// Get raw bytes
+    fn as_bytes() -> [UInt8; 12] {
+        self.bytes
+    }
+    
+    /// Increment nonce (for sequential encryption)
+    fn increment() -> Self {
+        var new_bytes = self.bytes
+        for i in (0..12).rev() {
+            new_bytes[i] += 1
+            if new_bytes[i] != 0 {
+                break
+            }
+        }
+        ChaCha20Nonce { bytes: new_bytes }
+    }
+}
+
+// =============================================================================
+// ChaCha20-Poly1305 AEAD (Recommended)
+// =============================================================================
+
+/// ChaCha20-Poly1305 authenticated encryption
+struct ChaCha20Poly1305 {
+    key: ChaCha20Key
+}
+
+impl ChaCha20Poly1305 {
+    /// Create new cipher
+    fn new(key: ChaCha20Key) -> Self {
+        ChaCha20Poly1305 { key: key }
+    }
+    
+    /// Create from raw key bytes
+    fn from_bytes(key: [UInt8]) -> Result<Self, ChaCha20Error> {
+        Ok(ChaCha20Poly1305 { key: ChaCha20Key.from_bytes(key)? })
+    }
+    
+    /// Create with generated key
+    fn with_generated_key() -> Self {
+        ChaCha20Poly1305 { key: ChaCha20Key.generate() }
+    }
+    
+    /// Encrypt with provided nonce
+    fn encrypt(plaintext: [UInt8], nonce: ChaCha20Nonce, aad: [UInt8]) -> Result<[UInt8], ChaCha20Error> {
+        @native("chacha20_poly1305_encrypt", self.key.bytes, nonce.bytes, plaintext, aad)
+            .map_err(|_| ChaCha20Error.EncryptionFailed)
+    }
+    
+    /// Encrypt with auto-generated nonce (prepended to ciphertext)
+    fn encrypt_with_nonce(plaintext: [UInt8], aad: [UInt8]) -> Result<[UInt8], ChaCha20Error> {
+        let nonce = ChaCha20Nonce.generate()
+        let ciphertext = self.encrypt(plaintext, nonce, aad)?
+        Ok(nonce.bytes.to_vec() + ciphertext)
+    }
+    
+    /// Encrypt without AAD
+    fn encrypt_simple(plaintext: [UInt8]) -> Result<[UInt8], ChaCha20Error> {
+        self.encrypt_with_nonce(plaintext, [])
+    }
+    
+    /// Decrypt with provided nonce
+    fn decrypt(ciphertext: [UInt8], nonce: ChaCha20Nonce, aad: [UInt8]) -> Result<[UInt8], ChaCha20Error> {
+        @native("chacha20_poly1305_decrypt", self.key.bytes, nonce.bytes, ciphertext, aad)
+            .map_err(|_| ChaCha20Error.DecryptionFailed)
+    }
+    
+    /// Decrypt with nonce prepended to ciphertext
+    fn decrypt_with_nonce(data: [UInt8], aad: [UInt8]) -> Result<[UInt8], ChaCha20Error> {
+        if data.len() < NONCE_SIZE + TAG_SIZE {
+            return Err(ChaCha20Error.InvalidCiphertext)
+        }
+        let nonce = ChaCha20Nonce.from_bytes(data[0..NONCE_SIZE])?
+        let ciphertext = data[NONCE_SIZE..]
+        self.decrypt(ciphertext, nonce, aad)
+    }
+    
+    /// Decrypt without AAD
+    fn decrypt_simple(data: [UInt8]) -> Result<[UInt8], ChaCha20Error> {
+        self.decrypt_with_nonce(data, [])
+    }
+    
+    /// Get the key
+    fn key() -> ChaCha20Key {
+        self.key
+    }
+}
+
+// =============================================================================
+// ChaCha20 Stream Cipher (Raw, no authentication)
+// =============================================================================
+
+/// ChaCha20 stream cipher (use ChaCha20Poly1305 for authenticated encryption)
+struct ChaCha20 {
+    key: ChaCha20Key
+}
+
+impl ChaCha20 {
+    /// Create new cipher
+    fn new(key: ChaCha20Key) -> Self {
+        ChaCha20 { key: key }
+    }
+    
+    /// Create from raw key bytes
+    fn from_bytes(key: [UInt8]) -> Result<Self, ChaCha20Error> {
+        Ok(ChaCha20 { key: ChaCha20Key.from_bytes(key)? })
+    }
+    
+    /// Encrypt/decrypt (XOR with keystream)
+    fn apply(data: [UInt8], nonce: ChaCha20Nonce, counter: UInt32) -> [UInt8] {
+        @native("chacha20_encrypt", self.key.bytes, nonce.bytes, counter, data)
+    }
+    
+    /// Encrypt (same as apply)
+    fn encrypt(plaintext: [UInt8], nonce: ChaCha20Nonce) -> [UInt8] {
+        self.apply(plaintext, nonce, 0)
+    }
+    
+    /// Decrypt (same as apply)
+    fn decrypt(ciphertext: [UInt8], nonce: ChaCha20Nonce) -> [UInt8] {
+        self.apply(ciphertext, nonce, 0)
+    }
+    
+    /// Generate keystream
+    fn keystream(nonce: ChaCha20Nonce, counter: UInt32, length: Int) -> [UInt8] {
+        @native("chacha20_keystream", self.key.bytes, nonce.bytes, counter, length)
+    }
+}
+
+// =============================================================================
+// XChaCha20-Poly1305 (Extended nonce variant)
+// =============================================================================
+
+/// XChaCha20-Poly1305 with 24-byte nonce (safer for random nonces)
+struct XChaCha20Poly1305 {
+    key: ChaCha20Key
+}
+
+impl XChaCha20Poly1305 {
+    /// Create new cipher
+    fn new(key: ChaCha20Key) -> Self {
+        XChaCha20Poly1305 { key: key }
+    }
+    
+    /// Create from raw key bytes
+    fn from_bytes(key: [UInt8]) -> Result<Self, ChaCha20Error> {
+        Ok(XChaCha20Poly1305 { key: ChaCha20Key.from_bytes(key)? })
+    }
+    
+    /// Generate random 24-byte nonce
+    fn generate_nonce() -> [UInt8; 24] {
+        crypto.random_bytes(24).try_into().unwrap()
+    }
+    
+    /// Encrypt with provided nonce
+    fn encrypt(plaintext: [UInt8], nonce: [UInt8; 24], aad: [UInt8]) -> Result<[UInt8], ChaCha20Error> {
+        @native("xchacha20_poly1305_encrypt", self.key.bytes, nonce, plaintext, aad)
+            .map_err(|_| ChaCha20Error.EncryptionFailed)
+    }
+    
+    /// Encrypt with auto-generated nonce
+    fn encrypt_simple(plaintext: [UInt8]) -> Result<[UInt8], ChaCha20Error> {
+        let nonce = Self.generate_nonce()
+        let ciphertext = self.encrypt(plaintext, nonce, [])?
+        Ok(nonce.to_vec() + ciphertext)
+    }
+    
+    /// Decrypt with provided nonce
+    fn decrypt(ciphertext: [UInt8], nonce: [UInt8; 24], aad: [UInt8]) -> Result<[UInt8], ChaCha20Error> {
+        @native("xchacha20_poly1305_decrypt", self.key.bytes, nonce, ciphertext, aad)
+            .map_err(|_| ChaCha20Error.DecryptionFailed)
+    }
+    
+    /// Decrypt with nonce prepended
+    fn decrypt_simple(data: [UInt8]) -> Result<[UInt8], ChaCha20Error> {
+        if data.len() < 24 + TAG_SIZE {
+            return Err(ChaCha20Error.InvalidCiphertext)
+        }
+        let nonce: [UInt8; 24] = data[0..24].try_into().unwrap()
+        let ciphertext = data[24..]
+        self.decrypt(ciphertext, nonce, [])
+    }
+}
+
+// =============================================================================
+// Streaming Encryption Actor
+// =============================================================================
+
+/// Actor for streaming ChaCha20-Poly1305 encryption
+actor ChaCha20Stream {
+    state cipher: ChaCha20Poly1305
+    state nonce: ChaCha20Nonce
+    state buffer: [UInt8]
+    state finalized: Bool
+    
+    fn new(key: ChaCha20Key) -> Self {
+        ChaCha20Stream {
+            cipher: ChaCha20Poly1305.new(key),
+            nonce: ChaCha20Nonce.generate(),
+            buffer: [],
+            finalized: false
+        }
+    }
+    
+    /// Get the nonce (needed for decryption)
+    fn nonce() -> ChaCha20Nonce {
+        self.nonce
+    }
+    
+    /// Write data to encrypt
+    fn write(data: [UInt8]) -> Result<(), ChaCha20Error> {
+        if self.finalized {
+            return Err(ChaCha20Error.AlreadyFinalized)
+        }
+        self.buffer.extend(data)
+        Ok(())
+    }
+    
+    /// Write string
+    fn write_str(s: String) -> Result<(), ChaCha20Error> {
+        self.write(s.as_bytes())
+    }
+    
+    /// Finalize and get encrypted data
+    fn finalize(aad: [UInt8]) -> Result<[UInt8], ChaCha20Error> {
+        if self.finalized {
+            return Err(ChaCha20Error.AlreadyFinalized)
+        }
+        self.finalized = true
+        self.cipher.encrypt(self.buffer, self.nonce, aad)
+    }
+    
+    /// Finalize without AAD
+    fn finalize_simple() -> Result<[UInt8], ChaCha20Error> {
+        self.finalize([])
+    }
+}
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
+/// Quick encrypt with ChaCha20-Poly1305
+fn encrypt(key: [UInt8], plaintext: [UInt8]) -> Result<[UInt8], ChaCha20Error> {
+    let cipher = ChaCha20Poly1305.from_bytes(key)?
+    cipher.encrypt_simple(plaintext)
+}
+
+/// Quick decrypt with ChaCha20-Poly1305
+fn decrypt(key: [UInt8], ciphertext: [UInt8]) -> Result<[UInt8], ChaCha20Error> {
+    let cipher = ChaCha20Poly1305.from_bytes(key)?
+    cipher.decrypt_simple(ciphertext)
+}
+
+/// Encrypt string with password
+fn encrypt_with_password(plaintext: String, password: String) -> Result<[UInt8], ChaCha20Error> {
+    let salt = crypto.random_bytes(16)
+    let key = ChaCha20Key.from_password_pbkdf2(password, salt, 100000)
+    let cipher = ChaCha20Poly1305.new(key)
+    let ciphertext = cipher.encrypt_simple(plaintext.as_bytes())?
+    Ok(salt + ciphertext)
+}
+
+/// Decrypt string with password
+fn decrypt_with_password(data: [UInt8], password: String) -> Result<String, ChaCha20Error> {
+    if data.len() < 16 + NONCE_SIZE + TAG_SIZE {
+        return Err(ChaCha20Error.InvalidCiphertext)
+    }
+    let salt = data[0..16]
+    let ciphertext = data[16..]
+    let key = ChaCha20Key.from_password_pbkdf2(password, salt, 100000)
+    let cipher = ChaCha20Poly1305.new(key)
+    let plaintext = cipher.decrypt_simple(ciphertext)?
+    String.from_utf8(plaintext).map_err(|_| ChaCha20Error.InvalidPlaintext)
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum ChaCha20Error {
+    InvalidKeySize
+    InvalidNonceSize
+    InvalidCiphertext
+    InvalidPlaintext
+    EncryptionFailed
+    DecryptionFailed
+    KeyDerivationFailed
+    AlreadyFinalized
+    AuthenticationFailed
+}
+
+impl Display for ChaCha20Error {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidKeySize => f.write("Invalid key size (must be 32 bytes)")
+            InvalidNonceSize => f.write("Invalid nonce size (must be 12 bytes)")
+            InvalidCiphertext => f.write("Invalid ciphertext")
+            InvalidPlaintext => f.write("Invalid plaintext encoding")
+            EncryptionFailed => f.write("Encryption failed")
+            DecryptionFailed => f.write("Decryption/authentication failed")
+            KeyDerivationFailed => f.write("Key derivation failed")
+            AlreadyFinalized => f.write("Stream already finalized")
+            AuthenticationFailed => f.write("Authentication tag verification failed")
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "chacha20-poly1305 encrypt decrypt" {
+    let key = ChaCha20Key.generate()
+    let cipher = ChaCha20Poly1305.new(key)
+    let plaintext = "Hello, ChaCha20!".as_bytes()
+    
+    let ciphertext = cipher.encrypt_simple(plaintext)?
+    let decrypted = cipher.decrypt_simple(ciphertext)?
+    
+    assert_eq(decrypted, plaintext)?
+}
+
+test "chacha20-poly1305 with aad" {
+    let key = ChaCha20Key.generate()
+    let cipher = ChaCha20Poly1305.new(key)
+    let plaintext = "Secret data".as_bytes()
+    let aad = "header".as_bytes()
+    let nonce = ChaCha20Nonce.generate()
+    
+    let ciphertext = cipher.encrypt(plaintext, nonce, aad)?
+    let decrypted = cipher.decrypt(ciphertext, nonce, aad)?
+    
+    assert_eq(decrypted, plaintext)?
+}
+
+test "wrong aad fails" {
+    let key = ChaCha20Key.generate()
+    let cipher = ChaCha20Poly1305.new(key)
+    let plaintext = "Secret".as_bytes()
+    let nonce = ChaCha20Nonce.generate()
+    
+    let ciphertext = cipher.encrypt(plaintext, nonce, "correct".as_bytes())?
+    let result = cipher.decrypt(ciphertext, nonce, "wrong".as_bytes())
+    
+    assert(result.is_err())?
+}
+
+test "raw chacha20" {
+    let key = ChaCha20Key.generate()
+    let cipher = ChaCha20.new(key)
+    let nonce = ChaCha20Nonce.generate()
+    let plaintext = "Stream cipher test".as_bytes()
+    
+    let ciphertext = cipher.encrypt(plaintext, nonce)
+    let decrypted = cipher.decrypt(ciphertext, nonce)
+    
+    assert_eq(decrypted, plaintext)?
+}
+
+test "xchacha20-poly1305" {
+    let key = ChaCha20Key.generate()
+    let cipher = XChaCha20Poly1305.new(key)
+    let plaintext = "Extended nonce test".as_bytes()
+    
+    let ciphertext = cipher.encrypt_simple(plaintext)?
+    let decrypted = cipher.decrypt_simple(ciphertext)?
+    
+    assert_eq(decrypted, plaintext)?
+}
+
+test "password encryption" {
+    let message = "Secret message"
+    let password = "strong-password"
+    
+    let encrypted = encrypt_with_password(message, password)?
+    let decrypted = decrypt_with_password(encrypted, password)?
+    
+    assert_eq(decrypted, message)?
+}
+
+test "nonce increment" {
+    let nonce = ChaCha20Nonce.zero()
+    let next = nonce.increment()
+    
+    assert_eq(next.bytes[11], 1)?
+}
+
+test "nonce from counter" {
+    let nonce = ChaCha20Nonce.from_counter(42)
+    assert_eq(nonce.bytes[11], 42)?
+}
+
+test "key derivation" {
+    let key = ChaCha20Key.derive(
+        "input key material".as_bytes(),
+        "salt".as_bytes(),
+        "context".as_bytes()
+    )
+    assert_eq(key.as_bytes().len(), 32)?
+}
+
+test "streaming encryption" {
+    let key = ChaCha20Key.generate()
+    var stream = ChaCha20Stream.new(key)
+    
+    stream.write_str("Hello, ")?
+    stream.write_str("World!")?
+    
+    let nonce = stream.nonce()
+    let ciphertext = stream.finalize_simple()?
+    
+    let cipher = ChaCha20Poly1305.new(key)
+    let decrypted = cipher.decrypt(ciphertext, nonce, [])?
+    
+    assert_eq(String.from_utf8(decrypted)?, "Hello, World!")?
+}

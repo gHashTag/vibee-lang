@@ -1,0 +1,486 @@
+// =============================================================================
+// Vibee OS — Python FFI Module
+// Python Foreign Function Interface for Python interoperability
+// =============================================================================
+
+// =============================================================================
+// Python Runtime
+// =============================================================================
+
+/// Python interpreter state
+struct PythonRuntime {
+    initialized: Bool
+    version: String
+}
+
+impl PythonRuntime {
+    /// Initialize Python interpreter
+    fn init() -> Result<Self, PyError> {
+        if @native("py_is_initialized") {
+            return Err(PyError.AlreadyInitialized)
+        }
+        @native("py_initialize")
+        let version = @native("py_version")
+        Ok(PythonRuntime { initialized: true, version: version })
+    }
+    
+    /// Initialize with config
+    fn init_with_config(config: PyConfig) -> Result<Self, PyError> {
+        if @native("py_is_initialized") {
+            return Err(PyError.AlreadyInitialized)
+        }
+        @native("py_initialize_ex", config.home, config.path, config.no_site)
+        let version = @native("py_version")
+        Ok(PythonRuntime { initialized: true, version: version })
+    }
+    
+    /// Check if initialized
+    fn is_initialized() -> Bool { @native("py_is_initialized") }
+    
+    /// Get Python version
+    fn version() -> String { self.version.clone() }
+    
+    /// Execute Python code
+    fn exec(code: String) -> Result<(), PyError> {
+        let result = @native("py_run_string", code)
+        if result < 0 { Err(Self.get_error()) } else { Ok(()) }
+    }
+    
+    /// Evaluate Python expression
+    fn eval(expr: String) -> Result<PyObject, PyError> {
+        let obj = @native("py_eval_string", expr)
+        if obj.is_null() { Err(Self.get_error()) } else { Ok(PyObject { handle: obj }) }
+    }
+    
+    /// Import Python module
+    fn import(name: String) -> Result<PyModule, PyError> {
+        let handle = @native("py_import", name)
+        if handle.is_null() { Err(Self.get_error()) } else { Ok(PyModule { handle: handle, name: name }) }
+    }
+    
+    /// Get last Python error
+    fn get_error() -> PyError {
+        let (type_name, message, traceback) = @native("py_get_error")
+        PyError.Exception(type_name, message, traceback)
+    }
+    
+    /// Clear Python error
+    fn clear_error() { @native("py_clear_error") }
+    
+    /// Get globals dict
+    fn globals() -> PyDict {
+        PyDict { handle: @native("py_get_globals") }
+    }
+    
+    /// Get locals dict
+    fn locals() -> PyDict {
+        PyDict { handle: @native("py_get_locals") }
+    }
+}
+
+impl Drop for PythonRuntime {
+    fn drop() {
+        if self.initialized {
+            @native("py_finalize")
+        }
+    }
+}
+
+/// Python configuration
+struct PyConfig {
+    home: Option<String>
+    path: [String]
+    no_site: Bool
+    verbose: Int
+}
+
+impl PyConfig {
+    fn new() -> Self {
+        PyConfig { home: None, path: [], no_site: false, verbose: 0 }
+    }
+    
+    fn home(path: String) -> Self { self.home = Some(path); self }
+    fn add_path(path: String) -> Self { self.path.push(path); self }
+    fn no_site_packages() -> Self { self.no_site = true; self }
+    fn verbose(level: Int) -> Self { self.verbose = level; self }
+}
+
+// =============================================================================
+// Python Object
+// =============================================================================
+
+/// Python object wrapper
+struct PyObject {
+    handle: *()
+}
+
+impl PyObject {
+    /// Create None
+    fn none() -> Self { PyObject { handle: @native("py_none") } }
+    
+    /// Create from Vibee value
+    fn from_bool(v: Bool) -> Self { PyObject { handle: @native("py_bool_from", v) } }
+    fn from_int(v: Int64) -> Self { PyObject { handle: @native("py_int_from", v) } }
+    fn from_float(v: Float64) -> Self { PyObject { handle: @native("py_float_from", v) } }
+    fn from_string(v: String) -> Self { PyObject { handle: @native("py_string_from", v) } }
+    
+    /// Convert to Vibee value
+    fn to_bool() -> Result<Bool, PyError> {
+        if !self.is_bool() { return Err(PyError.TypeError("Expected bool")) }
+        Ok(@native("py_bool_to", self.handle))
+    }
+    
+    fn to_int() -> Result<Int64, PyError> {
+        if !self.is_int() { return Err(PyError.TypeError("Expected int")) }
+        Ok(@native("py_int_to", self.handle))
+    }
+    
+    fn to_float() -> Result<Float64, PyError> {
+        if !self.is_float() && !self.is_int() { return Err(PyError.TypeError("Expected float")) }
+        Ok(@native("py_float_to", self.handle))
+    }
+    
+    fn to_string() -> Result<String, PyError> {
+        if !self.is_string() { return Err(PyError.TypeError("Expected str")) }
+        Ok(@native("py_string_to", self.handle))
+    }
+    
+    /// Type checks
+    fn is_none() -> Bool { @native("py_is_none", self.handle) }
+    fn is_bool() -> Bool { @native("py_is_bool", self.handle) }
+    fn is_int() -> Bool { @native("py_is_int", self.handle) }
+    fn is_float() -> Bool { @native("py_is_float", self.handle) }
+    fn is_string() -> Bool { @native("py_is_string", self.handle) }
+    fn is_list() -> Bool { @native("py_is_list", self.handle) }
+    fn is_dict() -> Bool { @native("py_is_dict", self.handle) }
+    fn is_tuple() -> Bool { @native("py_is_tuple", self.handle) }
+    fn is_callable() -> Bool { @native("py_is_callable", self.handle) }
+    
+    /// Get type name
+    fn type_name() -> String { @native("py_type_name", self.handle) }
+    
+    /// Get attribute
+    fn getattr(name: String) -> Result<PyObject, PyError> {
+        let obj = @native("py_getattr", self.handle, name)
+        if obj.is_null() { Err(PyError.AttributeError(name)) } else { Ok(PyObject { handle: obj }) }
+    }
+    
+    /// Set attribute
+    fn setattr(name: String, value: PyObject) -> Result<(), PyError> {
+        if @native("py_setattr", self.handle, name, value.handle) < 0 {
+            Err(PyError.AttributeError(name))
+        } else { Ok(()) }
+    }
+    
+    /// Check if has attribute
+    fn hasattr(name: String) -> Bool { @native("py_hasattr", self.handle, name) }
+    
+    /// Call object
+    fn call(args: [PyObject]) -> Result<PyObject, PyError> {
+        if !self.is_callable() { return Err(PyError.TypeError("Object is not callable")) }
+        let result = @native("py_call", self.handle, args.iter().map(|o| o.handle).collect())
+        if result.is_null() { Err(PythonRuntime.get_error()) } else { Ok(PyObject { handle: result }) }
+    }
+    
+    /// Call with keyword arguments
+    fn call_kwargs(args: [PyObject], kwargs: PyDict) -> Result<PyObject, PyError> {
+        if !self.is_callable() { return Err(PyError.TypeError("Object is not callable")) }
+        let result = @native("py_call_kwargs", self.handle, args.iter().map(|o| o.handle).collect(), kwargs.handle)
+        if result.is_null() { Err(PythonRuntime.get_error()) } else { Ok(PyObject { handle: result }) }
+    }
+    
+    /// Get string representation
+    fn repr() -> String { @native("py_repr", self.handle) }
+    
+    /// Get string value
+    fn str() -> String { @native("py_str", self.handle) }
+    
+    /// Get length
+    fn len() -> Result<Int, PyError> {
+        let len = @native("py_len", self.handle)
+        if len < 0 { Err(PyError.TypeError("Object has no len()")) } else { Ok(len) }
+    }
+    
+    /// Get item by index or key
+    fn getitem(key: PyObject) -> Result<PyObject, PyError> {
+        let obj = @native("py_getitem", self.handle, key.handle)
+        if obj.is_null() { Err(PythonRuntime.get_error()) } else { Ok(PyObject { handle: obj }) }
+    }
+    
+    /// Set item by index or key
+    fn setitem(key: PyObject, value: PyObject) -> Result<(), PyError> {
+        if @native("py_setitem", self.handle, key.handle, value.handle) < 0 {
+            Err(PythonRuntime.get_error())
+        } else { Ok(()) }
+    }
+    
+    /// Check if contains
+    fn contains(item: PyObject) -> Bool {
+        @native("py_contains", self.handle, item.handle)
+    }
+    
+    /// Iterate over object
+    fn iter() -> PyIterator {
+        PyIterator { handle: @native("py_iter", self.handle) }
+    }
+}
+
+impl Clone for PyObject {
+    fn clone() -> Self {
+        @native("py_incref", self.handle)
+        PyObject { handle: self.handle }
+    }
+}
+
+impl Drop for PyObject {
+    fn drop() { @native("py_decref", self.handle) }
+}
+
+// =============================================================================
+// Python Collections
+// =============================================================================
+
+/// Python list
+struct PyList { handle: *() }
+
+impl PyList {
+    fn new() -> Self { PyList { handle: @native("py_list_new") } }
+    
+    fn from_array<T: ToPyObject>(arr: [T]) -> Self {
+        let list = Self.new()
+        for item in arr { list.append(item.to_py_object()) }
+        list
+    }
+    
+    fn len() -> Int { @native("py_list_len", self.handle) }
+    fn get(index: Int) -> Option<PyObject> {
+        let obj = @native("py_list_get", self.handle, index)
+        if obj.is_null() { None } else { Some(PyObject { handle: obj }) }
+    }
+    fn set(index: Int, value: PyObject) { @native("py_list_set", self.handle, index, value.handle) }
+    fn append(value: PyObject) { @native("py_list_append", self.handle, value.handle) }
+    fn insert(index: Int, value: PyObject) { @native("py_list_insert", self.handle, index, value.handle) }
+    fn remove(index: Int) -> Option<PyObject> {
+        let obj = @native("py_list_pop", self.handle, index)
+        if obj.is_null() { None } else { Some(PyObject { handle: obj }) }
+    }
+    fn clear() { @native("py_list_clear", self.handle) }
+    fn as_object() -> PyObject { PyObject { handle: self.handle } }
+    
+    fn to_array<T: FromPyObject>() -> Result<[T], PyError> {
+        var result = []
+        for i in 0..self.len() {
+            let obj = self.get(i).ok_or(PyError.IndexError)?
+            result.push(T.from_py_object(obj)?)
+        }
+        Ok(result)
+    }
+}
+
+/// Python dict
+struct PyDict { handle: *() }
+
+impl PyDict {
+    fn new() -> Self { PyDict { handle: @native("py_dict_new") } }
+    
+    fn len() -> Int { @native("py_dict_len", self.handle) }
+    fn get(key: String) -> Option<PyObject> {
+        let obj = @native("py_dict_get", self.handle, key)
+        if obj.is_null() { None } else { Some(PyObject { handle: obj }) }
+    }
+    fn set(key: String, value: PyObject) { @native("py_dict_set", self.handle, key, value.handle) }
+    fn remove(key: String) -> Bool { @native("py_dict_del", self.handle, key) }
+    fn contains(key: String) -> Bool { @native("py_dict_contains", self.handle, key) }
+    fn keys() -> PyList { PyList { handle: @native("py_dict_keys", self.handle) } }
+    fn values() -> PyList { PyList { handle: @native("py_dict_values", self.handle) } }
+    fn items() -> PyList { PyList { handle: @native("py_dict_items", self.handle) } }
+    fn clear() { @native("py_dict_clear", self.handle) }
+    fn as_object() -> PyObject { PyObject { handle: self.handle } }
+}
+
+/// Python tuple
+struct PyTuple { handle: *() }
+
+impl PyTuple {
+    fn new(size: Int) -> Self { PyTuple { handle: @native("py_tuple_new", size) } }
+    fn from_array(arr: [PyObject]) -> Self {
+        let tuple = Self.new(arr.len())
+        for (i, obj) in arr.iter().enumerate() { tuple.set(i, obj) }
+        tuple
+    }
+    fn len() -> Int { @native("py_tuple_len", self.handle) }
+    fn get(index: Int) -> Option<PyObject> {
+        let obj = @native("py_tuple_get", self.handle, index)
+        if obj.is_null() { None } else { Some(PyObject { handle: obj }) }
+    }
+    fn set(index: Int, value: PyObject) { @native("py_tuple_set", self.handle, index, value.handle) }
+    fn as_object() -> PyObject { PyObject { handle: self.handle } }
+}
+
+/// Python set
+struct PySet { handle: *() }
+
+impl PySet {
+    fn new() -> Self { PySet { handle: @native("py_set_new") } }
+    fn len() -> Int { @native("py_set_len", self.handle) }
+    fn add(value: PyObject) { @native("py_set_add", self.handle, value.handle) }
+    fn remove(value: PyObject) -> Bool { @native("py_set_discard", self.handle, value.handle) }
+    fn contains(value: PyObject) -> Bool { @native("py_set_contains", self.handle, value.handle) }
+    fn clear() { @native("py_set_clear", self.handle) }
+    fn as_object() -> PyObject { PyObject { handle: self.handle } }
+}
+
+// =============================================================================
+// Python Iterator
+// =============================================================================
+
+struct PyIterator { handle: *() }
+
+impl Iterator for PyIterator {
+    type Item = PyObject
+    fn next() -> Option<Self.Item> {
+        let obj = @native("py_iter_next", self.handle)
+        if obj.is_null() { None } else { Some(PyObject { handle: obj }) }
+    }
+}
+
+// =============================================================================
+// Python Module
+// =============================================================================
+
+struct PyModule { handle: *(), name: String }
+
+impl PyModule {
+    fn name() -> String { self.name.clone() }
+    fn getattr(name: String) -> Result<PyObject, PyError> {
+        let obj = @native("py_getattr", self.handle, name)
+        if obj.is_null() { Err(PyError.AttributeError(name)) } else { Ok(PyObject { handle: obj }) }
+    }
+    fn call(func_name: String, args: [PyObject]) -> Result<PyObject, PyError> {
+        let func = self.getattr(func_name)?
+        func.call(args)
+    }
+    fn as_object() -> PyObject { PyObject { handle: self.handle } }
+}
+
+// =============================================================================
+// Python Class
+// =============================================================================
+
+/// Create Python class from Vibee
+struct PyClassBuilder {
+    name: String
+    bases: [PyObject]
+    methods: [(String, PyObject)]
+    attrs: [(String, PyObject)]
+}
+
+impl PyClassBuilder {
+    fn new(name: String) -> Self {
+        PyClassBuilder { name: name, bases: [], methods: [], attrs: [] }
+    }
+    
+    fn base(cls: PyObject) -> Self { self.bases.push(cls); self }
+    
+    fn method<F>(name: String, f: F) -> Self 
+    where F: Fn(PyObject, [PyObject]) -> Result<PyObject, PyError> {
+        let py_func = @native("py_method_from_vibee", f)
+        self.methods.push((name, PyObject { handle: py_func }))
+        self
+    }
+    
+    fn attr(name: String, value: PyObject) -> Self {
+        self.attrs.push((name, value))
+        self
+    }
+    
+    fn build() -> Result<PyObject, PyError> {
+        let cls = @native("py_class_create", self.name, self.bases, self.methods, self.attrs)
+        if cls.is_null() { Err(PythonRuntime.get_error()) } else { Ok(PyObject { handle: cls }) }
+    }
+}
+
+// =============================================================================
+// Conversion Traits
+// =============================================================================
+
+trait ToPyObject { fn to_py_object() -> PyObject }
+trait FromPyObject { fn from_py_object(obj: PyObject) -> Result<Self, PyError> }
+
+impl ToPyObject for Bool { fn to_py_object() -> PyObject { PyObject.from_bool(self) } }
+impl ToPyObject for Int { fn to_py_object() -> PyObject { PyObject.from_int(self as Int64) } }
+impl ToPyObject for Int64 { fn to_py_object() -> PyObject { PyObject.from_int(self) } }
+impl ToPyObject for Float64 { fn to_py_object() -> PyObject { PyObject.from_float(self) } }
+impl ToPyObject for String { fn to_py_object() -> PyObject { PyObject.from_string(self) } }
+
+impl FromPyObject for Bool { fn from_py_object(obj: PyObject) -> Result<Self, PyError> { obj.to_bool() } }
+impl FromPyObject for Int64 { fn from_py_object(obj: PyObject) -> Result<Self, PyError> { obj.to_int() } }
+impl FromPyObject for Float64 { fn from_py_object(obj: PyObject) -> Result<Self, PyError> { obj.to_float() } }
+impl FromPyObject for String { fn from_py_object(obj: PyObject) -> Result<Self, PyError> { obj.to_string() } }
+
+// =============================================================================
+// Error Types
+// =============================================================================
+
+enum PyError {
+    NotInitialized
+    AlreadyInitialized
+    ImportError(String)
+    AttributeError(String)
+    TypeError(String)
+    ValueError(String)
+    IndexError
+    KeyError(String)
+    RuntimeError(String)
+    Exception(String, String, String)  // type, message, traceback
+    Other(String)
+}
+
+impl Display for PyError {
+    fn fmt(f: Formatter) {
+        match self {
+            NotInitialized => f.write("Python not initialized")
+            AlreadyInitialized => f.write("Python already initialized")
+            ImportError(m) => f.write(format!("ImportError: {}", m))
+            AttributeError(a) => f.write(format!("AttributeError: {}", a))
+            TypeError(t) => f.write(format!("TypeError: {}", t))
+            ValueError(v) => f.write(format!("ValueError: {}", v))
+            IndexError => f.write("IndexError")
+            KeyError(k) => f.write(format!("KeyError: {}", k))
+            RuntimeError(r) => f.write(format!("RuntimeError: {}", r))
+            Exception(t, m, tb) => f.write(format!("{}: {}\n{}", t, m, tb))
+            Other(s) => f.write(s)
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "py object from values" {
+    let i = PyObject.from_int(42)
+    assert(i.is_int())?
+    assert_eq(i.to_int()?, 42)?
+    
+    let s = PyObject.from_string("hello")
+    assert(s.is_string())?
+    assert_eq(s.to_string()?, "hello")?
+}
+
+test "py list operations" {
+    let list = PyList.new()
+    list.append(PyObject.from_int(1))
+    list.append(PyObject.from_int(2))
+    
+    assert_eq(list.len(), 2)?
+    assert_eq(list.get(0)?.to_int()?, 1)?
+}
+
+test "py dict operations" {
+    let dict = PyDict.new()
+    dict.set("key", PyObject.from_string("value"))
+    
+    assert(dict.contains("key"))?
+    assert_eq(dict.get("key")?.to_string()?, "value")?
+}

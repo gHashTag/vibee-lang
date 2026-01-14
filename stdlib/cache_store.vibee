@@ -1,0 +1,808 @@
+// =============================================================================
+// Vibee OS — Cache Store Module
+// Advanced caching with multiple eviction strategies and backends
+// =============================================================================
+
+// =============================================================================
+// Cache Configuration
+// =============================================================================
+
+/// Cache configuration
+struct CacheConfig {
+    max_size: Int
+    default_ttl_ms: Option<Int64>
+    eviction_policy: EvictionPolicy
+    stats_enabled: Bool
+    cleanup_interval_ms: Int64
+}
+
+impl CacheConfig {
+    fn default() -> Self {
+        CacheConfig {
+            max_size: 1000,
+            default_ttl_ms: None,
+            eviction_policy: EvictionPolicy.LRU,
+            stats_enabled: true,
+            cleanup_interval_ms: 60000
+        }
+    }
+    
+    fn with_max_size(size: Int) -> Self {
+        self.max_size = size
+        self
+    }
+    
+    fn with_ttl(ttl_ms: Int64) -> Self {
+        self.default_ttl_ms = Some(ttl_ms)
+        self
+    }
+    
+    fn with_eviction_policy(policy: EvictionPolicy) -> Self {
+        self.eviction_policy = policy
+        self
+    }
+    
+    fn with_stats(enabled: Bool) -> Self {
+        self.stats_enabled = enabled
+        self
+    }
+}
+
+/// Eviction policy
+enum EvictionPolicy {
+    LRU      // Least Recently Used
+    LFU      // Least Frequently Used
+    FIFO     // First In First Out
+    Random   // Random eviction
+    TTL      // Expire by TTL only
+}
+
+// =============================================================================
+// Cache Error
+// =============================================================================
+
+enum CacheError {
+    NotFound
+    Expired
+    Full
+    SerializationError(String)
+    DeserializationError(String)
+    BackendError(String)
+    Other(String)
+}
+
+impl Display for CacheError {
+    fn fmt(f: Formatter) {
+        match self {
+            .NotFound => f.write("Cache entry not found")
+            .Expired => f.write("Cache entry expired")
+            .Full => f.write("Cache is full")
+            .SerializationError(msg) => f.write("Serialization error: \(msg)")
+            .DeserializationError(msg) => f.write("Deserialization error: \(msg)")
+            .BackendError(msg) => f.write("Backend error: \(msg)")
+            .Other(msg) => f.write(msg)
+        }
+    }
+}
+
+// =============================================================================
+// Cache Entry
+// =============================================================================
+
+/// Cache entry with metadata
+struct CacheEntry<V> {
+    value: V
+    created_at: Int64
+    expires_at: Option<Int64>
+    last_accessed: Int64
+    access_count: Int64
+    size_bytes: Int
+}
+
+impl<V> CacheEntry<V> {
+    fn new(value: V, ttl_ms: Option<Int64>) -> Self {
+        let now = @native("timestamp_ms")
+        CacheEntry {
+            value: value,
+            created_at: now,
+            expires_at: ttl_ms.map(|t| now + t),
+            last_accessed: now,
+            access_count: 1,
+            size_bytes: 0
+        }
+    }
+    
+    fn is_expired() -> Bool {
+        if let Some(expires) = self.expires_at {
+            @native("timestamp_ms") >= expires
+        } else {
+            false
+        }
+    }
+    
+    fn touch() {
+        self.last_accessed = @native("timestamp_ms")
+        self.access_count += 1
+    }
+    
+    fn ttl_remaining() -> Option<Int64> {
+        self.expires_at.map(|e| e - @native("timestamp_ms"))
+    }
+    
+    fn age() -> Int64 {
+        @native("timestamp_ms") - self.created_at
+    }
+}
+
+// =============================================================================
+// Cache Statistics
+// =============================================================================
+
+/// Cache statistics
+struct CacheStats {
+    hits: Int64
+    misses: Int64
+    evictions: Int64
+    expirations: Int64
+    size: Int
+    max_size: Int
+    memory_bytes: Int64
+}
+
+impl CacheStats {
+    fn new(max_size: Int) -> Self {
+        CacheStats {
+            hits: 0,
+            misses: 0,
+            evictions: 0,
+            expirations: 0,
+            size: 0,
+            max_size: max_size,
+            memory_bytes: 0
+        }
+    }
+    
+    fn hit_rate() -> Float64 {
+        let total = self.hits + self.misses
+        if total == 0 { 0.0 } else { self.hits as Float64 / total as Float64 }
+    }
+    
+    fn miss_rate() -> Float64 {
+        1.0 - self.hit_rate()
+    }
+    
+    fn fill_rate() -> Float64 {
+        self.size as Float64 / self.max_size as Float64
+    }
+    
+    fn reset() {
+        self.hits = 0
+        self.misses = 0
+        self.evictions = 0
+        self.expirations = 0
+    }
+}
+
+// =============================================================================
+// Cache Store Actor
+// =============================================================================
+
+/// Thread-safe cache store with configurable eviction
+actor CacheStore<K: Hash + Eq + Clone, V: Clone> {
+    state config: CacheConfig
+    state data: Map<K, CacheEntry<V>>
+    state stats: CacheStats
+    state order: [K]  // For FIFO/LRU
+    state frequency: Map<K, Int64>  // For LFU
+    
+    init(config: CacheConfig) {
+        self.config = config
+        self.data = Map.empty()
+        self.stats = CacheStats.new(config.max_size)
+        self.order = []
+        self.frequency = Map.empty()
+    }
+    
+    /// Get value from cache
+    on get(key: K) -> Option<V> {
+        if let Some(entry) = self.data.get_mut(key) {
+            if entry.is_expired() {
+                self.remove_entry(key)
+                self.stats.expirations += 1
+                self.stats.misses += 1
+                return None
+            }
+            entry.touch()
+            self.update_access_order(key)
+            self.stats.hits += 1
+            Some(entry.value.clone())
+        } else {
+            self.stats.misses += 1
+            None
+        }
+    }
+    
+    /// Set value in cache
+    on set(key: K, value: V) {
+        self.set_with_ttl(key, value, self.config.default_ttl_ms)
+    }
+    
+    /// Set value with custom TTL
+    on set_with_ttl(key: K, value: V, ttl_ms: Option<Int64>) {
+        // Evict if necessary
+        if !self.data.contains(key) && self.data.len() >= self.config.max_size {
+            self.evict()
+        }
+        
+        let entry = CacheEntry.new(value, ttl_ms)
+        let is_new = !self.data.contains(key)
+        self.data.set(key.clone(), entry)
+        
+        if is_new {
+            self.order.push(key.clone())
+            self.frequency.set(key.clone(), 1)
+            self.stats.size += 1
+        }
+    }
+    
+    /// Remove entry from cache
+    on remove(key: K) -> Option<V> {
+        self.remove_entry(key)
+    }
+    
+    /// Check if key exists and is not expired
+    on contains(key: K) -> Bool {
+        if let Some(entry) = self.data.get(key) {
+            !entry.is_expired()
+        } else {
+            false
+        }
+    }
+    
+    /// Get or compute value
+    on get_or_set(key: K, compute: fn() -> V) -> V {
+        if let Some(v) = self.get(key.clone()) {
+            return v
+        }
+        let value = compute()
+        self.set(key, value.clone())
+        value
+    }
+    
+    /// Get or compute with TTL
+    on get_or_set_with_ttl(key: K, ttl_ms: Int64, compute: fn() -> V) -> V {
+        if let Some(v) = self.get(key.clone()) {
+            return v
+        }
+        let value = compute()
+        self.set_with_ttl(key, value.clone(), Some(ttl_ms))
+        value
+    }
+    
+    /// Get or compute async
+    on get_or_set_async(key: K, compute: async fn() -> V) -> V {
+        if let Some(v) = self.get(key.clone()) {
+            return v
+        }
+        let value = compute().await
+        self.set(key, value.clone())
+        value
+    }
+    
+    /// Clear all entries
+    on clear() {
+        self.data.clear()
+        self.order.clear()
+        self.frequency.clear()
+        self.stats.size = 0
+    }
+    
+    /// Get cache statistics
+    on stats() -> CacheStats {
+        self.stats.clone()
+    }
+    
+    /// Reset statistics
+    on reset_stats() {
+        self.stats.reset()
+    }
+    
+    /// Get all keys
+    on keys() -> [K] {
+        self.data.keys().filter(|k| !self.data.get(*k).unwrap().is_expired()).collect()
+    }
+    
+    /// Get cache size
+    on len() -> Int {
+        self.stats.size
+    }
+    
+    /// Check if cache is empty
+    on is_empty() -> Bool {
+        self.stats.size == 0
+    }
+    
+    /// Cleanup expired entries
+    on cleanup() -> Int {
+        let expired: [K] = self.data.iter()
+            .filter(|(_, entry)| entry.is_expired())
+            .map(|(k, _)| k.clone())
+            .collect()
+        
+        let count = expired.len()
+        for k in expired {
+            self.remove_entry(k)
+            self.stats.expirations += 1
+        }
+        count
+    }
+    
+    /// Refresh TTL for key
+    on touch(key: K) -> Bool {
+        if let Some(entry) = self.data.get_mut(key) {
+            if !entry.is_expired() {
+                entry.touch()
+                if let Some(ttl) = self.config.default_ttl_ms {
+                    entry.expires_at = Some(@native("timestamp_ms") + ttl)
+                }
+                return true
+            }
+        }
+        false
+    }
+    
+    /// Get entry metadata
+    on entry_info(key: K) -> Option<CacheEntryInfo> {
+        self.data.get(key).map(|e| CacheEntryInfo {
+            created_at: e.created_at,
+            expires_at: e.expires_at,
+            last_accessed: e.last_accessed,
+            access_count: e.access_count,
+            is_expired: e.is_expired()
+        })
+    }
+    
+    // Internal methods
+    fn remove_entry(key: K) -> Option<V> {
+        if let Some(entry) = self.data.remove(key) {
+            self.order.retain(|k| k != key)
+            self.frequency.remove(key)
+            self.stats.size -= 1
+            Some(entry.value)
+        } else {
+            None
+        }
+    }
+    
+    fn update_access_order(key: K) {
+        match self.config.eviction_policy {
+            .LRU => {
+                self.order.retain(|k| k != key)
+                self.order.push(key.clone())
+            }
+            .LFU => {
+                let count = self.frequency.get(key).unwrap_or(0) + 1
+                self.frequency.set(key, count)
+            }
+            _ => {}
+        }
+    }
+    
+    fn evict() {
+        let key_to_evict = match self.config.eviction_policy {
+            .LRU | .FIFO => self.order.first().cloned()
+            .LFU => {
+                self.frequency.iter()
+                    .min_by_key(|(_, count)| *count)
+                    .map(|(k, _)| k.clone())
+            }
+            .Random => {
+                let keys: [K] = self.data.keys().collect()
+                if keys.is_empty() { None } else { Some(keys[@native("random_int", 0, keys.len())]) }
+            }
+            .TTL => {
+                // Find entry closest to expiration
+                self.data.iter()
+                    .filter(|(_, e)| e.expires_at.is_some())
+                    .min_by_key(|(_, e)| e.expires_at.unwrap())
+                    .map(|(k, _)| k.clone())
+            }
+        }
+        
+        if let Some(key) = key_to_evict {
+            self.remove_entry(key)
+            self.stats.evictions += 1
+        }
+    }
+}
+
+/// Cache entry info (without value)
+struct CacheEntryInfo {
+    created_at: Int64
+    expires_at: Option<Int64>
+    last_accessed: Int64
+    access_count: Int64
+    is_expired: Bool
+}
+
+// =============================================================================
+// Multi-Level Cache
+// =============================================================================
+
+/// Two-level cache (L1: fast/small, L2: slow/large)
+actor MultiLevelCache<K: Hash + Eq + Clone, V: Clone> {
+    state l1: CacheStore<K, V>
+    state l2: CacheStore<K, V>
+    state l1_ttl_ms: Option<Int64>
+    state l2_ttl_ms: Option<Int64>
+    
+    init(l1_config: CacheConfig, l2_config: CacheConfig) {
+        self.l1 = CacheStore.new(l1_config)
+        self.l2 = CacheStore.new(l2_config)
+        self.l1_ttl_ms = l1_config.default_ttl_ms
+        self.l2_ttl_ms = l2_config.default_ttl_ms
+    }
+    
+    on get(key: K) -> Option<V> {
+        // Try L1 first
+        if let Some(v) = self.l1.get(key.clone()) {
+            return Some(v)
+        }
+        
+        // Try L2
+        if let Some(v) = self.l2.get(key.clone()) {
+            // Promote to L1
+            self.l1.set_with_ttl(key, v.clone(), self.l1_ttl_ms)
+            return Some(v)
+        }
+        
+        None
+    }
+    
+    on set(key: K, value: V) {
+        self.l1.set_with_ttl(key.clone(), value.clone(), self.l1_ttl_ms)
+        self.l2.set_with_ttl(key, value, self.l2_ttl_ms)
+    }
+    
+    on remove(key: K) {
+        self.l1.remove(key.clone())
+        self.l2.remove(key)
+    }
+    
+    on clear() {
+        self.l1.clear()
+        self.l2.clear()
+    }
+    
+    on stats() -> (CacheStats, CacheStats) {
+        (self.l1.stats(), self.l2.stats())
+    }
+}
+
+// =============================================================================
+// Write-Through Cache
+// =============================================================================
+
+/// Cache with write-through to backend
+actor WriteThroughCache<K: Hash + Eq + Clone, V: Clone> {
+    state cache: CacheStore<K, V>
+    state backend: fn(K) -> Result<V, CacheError>
+    state writer: fn(K, V) -> Result<(), CacheError>
+    
+    init(config: CacheConfig, backend: fn(K) -> Result<V, CacheError>, writer: fn(K, V) -> Result<(), CacheError>) {
+        self.cache = CacheStore.new(config)
+        self.backend = backend
+        self.writer = writer
+    }
+    
+    on get(key: K) -> Result<V, CacheError> {
+        if let Some(v) = self.cache.get(key.clone()) {
+            return Ok(v)
+        }
+        
+        // Load from backend
+        let value = (self.backend)(key.clone())?
+        self.cache.set(key, value.clone())
+        Ok(value)
+    }
+    
+    on set(key: K, value: V) -> Result<(), CacheError> {
+        // Write to backend first
+        (self.writer)(key.clone(), value.clone())?
+        // Then update cache
+        self.cache.set(key, value)
+        Ok(())
+    }
+    
+    on invalidate(key: K) {
+        self.cache.remove(key)
+    }
+    
+    on refresh(key: K) -> Result<V, CacheError> {
+        self.cache.remove(key.clone())
+        self.get(key)
+    }
+}
+
+// =============================================================================
+// Write-Behind Cache
+// =============================================================================
+
+/// Cache with async write-behind to backend
+actor WriteBehindCache<K: Hash + Eq + Clone, V: Clone> {
+    state cache: CacheStore<K, V>
+    state pending_writes: Map<K, V>
+    state writer: async fn([(K, V)]) -> Result<(), CacheError>
+    state flush_interval_ms: Int64
+    state batch_size: Int
+    
+    init(config: CacheConfig, writer: async fn([(K, V)]) -> Result<(), CacheError>) {
+        self.cache = CacheStore.new(config)
+        self.pending_writes = Map.empty()
+        self.writer = writer
+        self.flush_interval_ms = 5000
+        self.batch_size = 100
+    }
+    
+    on get(key: K) -> Option<V> {
+        // Check pending writes first
+        if let Some(v) = self.pending_writes.get(key) {
+            return Some(v.clone())
+        }
+        self.cache.get(key)
+    }
+    
+    on set(key: K, value: V) {
+        self.cache.set(key.clone(), value.clone())
+        self.pending_writes.set(key, value)
+        
+        if self.pending_writes.len() >= self.batch_size {
+            self.flush()
+        }
+    }
+    
+    on flush() -> Result<(), CacheError> {
+        if self.pending_writes.is_empty() {
+            return Ok(())
+        }
+        
+        let writes: [(K, V)] = self.pending_writes.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+        
+        self.pending_writes.clear()
+        (self.writer)(writes).await
+    }
+    
+    on pending_count() -> Int {
+        self.pending_writes.len()
+    }
+}
+
+// =============================================================================
+// Cache Loader
+// =============================================================================
+
+/// Automatic cache loading with refresh
+struct CacheLoader<K: Hash + Eq + Clone, V: Clone> {
+    cache: CacheStore<K, V>
+    loader: fn(K) -> Result<V, CacheError>
+    refresh_ahead_ms: Option<Int64>
+}
+
+impl<K: Hash + Eq + Clone, V: Clone> CacheLoader<K, V> {
+    fn new(config: CacheConfig, loader: fn(K) -> Result<V, CacheError>) -> Self {
+        CacheLoader {
+            cache: CacheStore.new(config),
+            loader: loader,
+            refresh_ahead_ms: None
+        }
+    }
+    
+    fn with_refresh_ahead(refresh_ms: Int64) -> Self {
+        self.refresh_ahead_ms = Some(refresh_ms)
+        self
+    }
+    
+    fn get(key: K) -> Result<V, CacheError> {
+        // Check if refresh needed
+        if let Some(info) = self.cache.entry_info(key.clone()) {
+            if let Some(refresh_ms) = self.refresh_ahead_ms {
+                if let Some(expires) = info.expires_at {
+                    let now = @native("timestamp_ms")
+                    if expires - now < refresh_ms {
+                        // Trigger async refresh
+                        spawn { self.refresh(key.clone()) }
+                    }
+                }
+            }
+        }
+        
+        if let Some(v) = self.cache.get(key.clone()) {
+            return Ok(v)
+        }
+        
+        let value = (self.loader)(key.clone())?
+        self.cache.set(key, value.clone())
+        Ok(value)
+    }
+    
+    fn refresh(key: K) -> Result<V, CacheError> {
+        let value = (self.loader)(key.clone())?
+        self.cache.set(key, value.clone())
+        Ok(value)
+    }
+    
+    fn invalidate(key: K) {
+        self.cache.remove(key)
+    }
+    
+    fn preload(keys: [K]) -> Result<(), CacheError> {
+        for key in keys {
+            let value = (self.loader)(key.clone())?
+            self.cache.set(key, value)
+        }
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Memoization
+// =============================================================================
+
+/// Memoize function results
+fn memoize<A: Hash + Eq + Clone, R: Clone>(f: fn(A) -> R) -> fn(A) -> R {
+    let cache = CacheStore::<A, R>.new(CacheConfig.default())
+    |arg| cache.get_or_set(arg, || f(arg))
+}
+
+/// Memoize with TTL
+fn memoize_ttl<A: Hash + Eq + Clone, R: Clone>(ttl_ms: Int64, f: fn(A) -> R) -> fn(A) -> R {
+    let cache = CacheStore::<A, R>.new(CacheConfig.default().with_ttl(ttl_ms))
+    |arg| cache.get_or_set(arg, || f(arg))
+}
+
+/// Memoize async function
+fn memoize_async<A: Hash + Eq + Clone, R: Clone>(f: async fn(A) -> R) -> async fn(A) -> R {
+    let cache = CacheStore::<A, R>.new(CacheConfig.default())
+    async |arg| cache.get_or_set_async(arg, async || f(arg).await)
+}
+
+// =============================================================================
+// Cache Decorators
+// =============================================================================
+
+/// Cached function decorator
+struct Cached<A: Hash + Eq + Clone, R: Clone> {
+    cache: CacheStore<A, R>
+    func: fn(A) -> R
+}
+
+impl<A: Hash + Eq + Clone, R: Clone> Cached<A, R> {
+    fn new(config: CacheConfig, func: fn(A) -> R) -> Self {
+        Cached { cache: CacheStore.new(config), func: func }
+    }
+    
+    fn call(arg: A) -> R {
+        self.cache.get_or_set(arg, || (self.func)(arg))
+    }
+    
+    fn invalidate(arg: A) {
+        self.cache.remove(arg)
+    }
+    
+    fn clear() {
+        self.cache.clear()
+    }
+    
+    fn stats() -> CacheStats {
+        self.cache.stats()
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/// Create LRU cache
+fn lru<K: Hash + Eq + Clone, V: Clone>(max_size: Int) -> CacheStore<K, V> {
+    CacheStore.new(CacheConfig.default().with_max_size(max_size).with_eviction_policy(EvictionPolicy.LRU))
+}
+
+/// Create LFU cache
+fn lfu<K: Hash + Eq + Clone, V: Clone>(max_size: Int) -> CacheStore<K, V> {
+    CacheStore.new(CacheConfig.default().with_max_size(max_size).with_eviction_policy(EvictionPolicy.LFU))
+}
+
+/// Create TTL cache
+fn ttl<K: Hash + Eq + Clone, V: Clone>(max_size: Int, ttl_ms: Int64) -> CacheStore<K, V> {
+    CacheStore.new(CacheConfig.default().with_max_size(max_size).with_ttl(ttl_ms))
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "cache basic operations" {
+    let cache = CacheStore::<String, Int>.new(CacheConfig.default())
+    
+    cache.set("a", 1)
+    cache.set("b", 2)
+    
+    assert_eq(cache.get("a"), Some(1))?
+    assert_eq(cache.get("b"), Some(2))?
+    assert_eq(cache.get("c"), None)?
+}
+
+test "cache eviction lru" {
+    let cache = lru::<String, Int>(2)
+    
+    cache.set("a", 1)
+    cache.set("b", 2)
+    cache.get("a")  // Touch "a"
+    cache.set("c", 3)  // Should evict "b"
+    
+    assert_eq(cache.get("a"), Some(1))?
+    assert_eq(cache.get("b"), None)?
+    assert_eq(cache.get("c"), Some(3))?
+}
+
+test "cache ttl expiration" {
+    let cache = ttl::<String, Int>(100, 50)
+    
+    cache.set("a", 1)
+    assert_eq(cache.get("a"), Some(1))?
+    
+    @native("sleep_ms", 100)
+    
+    assert_eq(cache.get("a"), None)?
+}
+
+test "cache stats" {
+    let cache = CacheStore::<String, Int>.new(CacheConfig.default())
+    
+    cache.set("a", 1)
+    cache.get("a")  // Hit
+    cache.get("b")  // Miss
+    
+    let stats = cache.stats()
+    assert_eq(stats.hits, 1)?
+    assert_eq(stats.misses, 1)?
+    assert_eq(stats.hit_rate(), 0.5)?
+}
+
+test "cache get_or_set" {
+    let cache = CacheStore::<String, Int>.new(CacheConfig.default())
+    
+    var computed = false
+    let v1 = cache.get_or_set("a", || { computed = true; 42 })
+    assert_eq(v1, 42)?
+    assert(computed)?
+    
+    computed = false
+    let v2 = cache.get_or_set("a", || { computed = true; 100 })
+    assert_eq(v2, 42)?
+    assert(!computed)?
+}
+
+test "multi level cache" {
+    let l1_config = CacheConfig.default().with_max_size(10)
+    let l2_config = CacheConfig.default().with_max_size(100)
+    let cache = MultiLevelCache::<String, Int>.new(l1_config, l2_config)
+    
+    cache.set("a", 1)
+    assert_eq(cache.get("a"), Some(1))?
+}
+
+test "memoization" {
+    var call_count = 0
+    let expensive = |x: Int| { call_count += 1; x * x }
+    let memoized = memoize(expensive)
+    
+    assert_eq(memoized(5), 25)?
+    assert_eq(memoized(5), 25)?
+    assert_eq(call_count, 1)?  // Only computed once
+    
+    assert_eq(memoized(3), 9)?
+    assert_eq(call_count, 2)?
+}

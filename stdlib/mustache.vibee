@@ -1,0 +1,820 @@
+// =============================================================================
+// Vibee OS — Mustache Module
+// Logic-less templates with Mustache syntax
+// =============================================================================
+
+// =============================================================================
+// Mustache Template
+// =============================================================================
+
+/// Compiled Mustache template
+struct Template {
+    source: String
+    tokens: [Token]
+    partials: Map<String, Template>
+    
+    /// Parse a Mustache template string
+    fn parse(source: String) -> Result<Self, MustacheError> {
+        let parser = Parser.new(source)
+        let tokens = parser.parse()?
+        Ok(Template { source: source, tokens: tokens, partials: Map.new() })
+    }
+    
+    /// Parse from file
+    fn from_file(path: String) -> Result<Self, MustacheError> {
+        let source = @native("fs_read_string", path).map_err(|e| MustacheError.IOError(e))?
+        Self.parse(source)
+    }
+    
+    /// Register a partial template
+    fn register_partial(name: String, template: Template) -> Self {
+        self.partials.insert(name, template)
+        self
+    }
+    
+    /// Register partial from string
+    fn register_partial_str(name: String, source: String) -> Result<Self, MustacheError> {
+        let partial = Template.parse(source)?
+        Ok(self.register_partial(name, partial))
+    }
+    
+    /// Render template with context
+    fn render(context: impl ToMustacheValue) -> Result<String, MustacheError> {
+        let ctx = Context.new(context.to_mustache_value())
+        Renderer.new(self, ctx).render()
+    }
+}
+
+impl Display for Template {
+    fn fmt(f: Formatter) {
+        f.write(format!("Mustache({} tokens)", self.tokens.len()))
+    }
+}
+
+// =============================================================================
+// Token Types
+// =============================================================================
+
+/// Mustache token types
+enum Token {
+    /// Raw text
+    Text(String)
+    /// Variable: {{name}}
+    Variable(String, Bool)
+    /// Unescaped variable: {{{name}}} or {{&name}}
+    UnescapedVariable(String)
+    /// Section start: {{#name}}
+    SectionStart(String)
+    /// Inverted section: {{^name}}
+    InvertedSectionStart(String)
+    /// Section end: {{/name}}
+    SectionEnd(String)
+    /// Partial: {{>name}}
+    Partial(String, Int)
+    /// Comment: {{! comment }}
+    Comment(String)
+    /// Set delimiter: {{=<% %>=}}
+    SetDelimiter(String, String)
+    /// Parent: {{<name}}
+    Parent(String)
+    /// Block: {{$name}}
+    Block(String)
+}
+
+impl Display for Token {
+    fn fmt(f: Formatter) {
+        match self {
+            Text(s) => f.write(format!("Text({})", s.len()))
+            Variable(n, _) => f.write(format!("Var({})", n))
+            UnescapedVariable(n) => f.write(format!("Raw({})", n))
+            SectionStart(n) => f.write(format!("Section({})", n))
+            InvertedSectionStart(n) => f.write(format!("Inverted({})", n))
+            SectionEnd(n) => f.write(format!("End({})", n))
+            Partial(n, _) => f.write(format!("Partial({})", n))
+            Comment(_) => f.write("Comment")
+            SetDelimiter(o, c) => f.write(format!("Delim({} {})", o, c))
+            Parent(n) => f.write(format!("Parent({})", n))
+            Block(n) => f.write(format!("Block({})", n))
+        }
+    }
+}
+
+// =============================================================================
+// Mustache Value
+// =============================================================================
+
+/// Value types for Mustache templates
+enum Value {
+    Null
+    Bool(Bool)
+    Int(Int)
+    Float(Float)
+    String(String)
+    Array([Value])
+    Object(Map<String, Value>)
+    Lambda(fn(String) -> String)
+}
+
+impl Value {
+    fn is_truthy() -> Bool {
+        match self {
+            Null => false
+            Bool(b) => b
+            Int(i) => i != 0
+            Float(f) => f != 0.0
+            String(s) => !s.is_empty()
+            Array(a) => !a.is_empty()
+            Object(_) => true
+            Lambda(_) => true
+        }
+    }
+    
+    fn is_falsy() -> Bool { !self.is_truthy() }
+    
+    fn as_string() -> String {
+        match self {
+            Null => ""
+            Bool(b) => if b { "true" } else { "false" }
+            Int(i) => i.to_string()
+            Float(f) => f.to_string()
+            String(s) => s
+            Array(_) => ""
+            Object(_) => ""
+            Lambda(_) => ""
+        }
+    }
+    
+    fn as_array() -> [Value] {
+        match self {
+            Array(a) => a
+            _ => []
+        }
+    }
+    
+    fn get(key: String) -> Option<Value> {
+        match self {
+            Object(m) => m.get(key)
+            _ => None
+        }
+    }
+}
+
+/// Trait for converting to Mustache value
+trait ToMustacheValue {
+    fn to_mustache_value() -> Value
+}
+
+impl ToMustacheValue for Bool {
+    fn to_mustache_value() -> Value { Value.Bool(self) }
+}
+
+impl ToMustacheValue for Int {
+    fn to_mustache_value() -> Value { Value.Int(self) }
+}
+
+impl ToMustacheValue for Float {
+    fn to_mustache_value() -> Value { Value.Float(self) }
+}
+
+impl ToMustacheValue for String {
+    fn to_mustache_value() -> Value { Value.String(self) }
+}
+
+impl<T: ToMustacheValue> ToMustacheValue for [T] {
+    fn to_mustache_value() -> Value {
+        Value.Array(self.iter().map(|v| v.to_mustache_value()).collect())
+    }
+}
+
+impl<T: ToMustacheValue> ToMustacheValue for Map<String, T> {
+    fn to_mustache_value() -> Value {
+        let obj = Map.new()
+        for (k, v) in self {
+            obj.insert(k, v.to_mustache_value())
+        }
+        Value.Object(obj)
+    }
+}
+
+// =============================================================================
+// Context
+// =============================================================================
+
+/// Template rendering context with stack
+struct Context {
+    stack: [Value]
+    
+    fn new(root: Value) -> Self {
+        Context { stack: [root] }
+    }
+    
+    fn push(value: Value) {
+        self.stack.push(value)
+    }
+    
+    fn pop() -> Option<Value> {
+        if self.stack.len() > 1 {
+            self.stack.pop()
+        } else {
+            None
+        }
+    }
+    
+    /// Lookup a dotted path in context
+    fn lookup(path: String) -> Option<Value> {
+        if path == "." {
+            return self.stack.last()
+        }
+        
+        let parts = path.split(".")
+        
+        // Search from top of stack down
+        for i in (0..self.stack.len()).rev() {
+            if let Some(value) = self.lookup_in(self.stack[i], parts) {
+                return Some(value)
+            }
+        }
+        None
+    }
+    
+    fn lookup_in(value: Value, parts: [String]) -> Option<Value> {
+        var current = value
+        for part in parts {
+            match current.get(part) {
+                Some(v) => current = v
+                None => return None
+            }
+        }
+        Some(current)
+    }
+}
+
+// =============================================================================
+// Parser
+// =============================================================================
+
+/// Mustache template parser
+struct Parser {
+    source: String
+    pos: Int
+    open_delim: String
+    close_delim: String
+    
+    fn new(source: String) -> Self {
+        Parser {
+            source: source,
+            pos: 0,
+            open_delim: "{{",
+            close_delim: "}}"
+        }
+    }
+    
+    fn parse() -> Result<[Token], MustacheError> {
+        var tokens: [Token] = []
+        
+        while self.pos < self.source.len() {
+            if self.starts_with(self.open_delim) {
+                let token = self.parse_tag()?
+                tokens.push(token)
+            } else {
+                let text = self.parse_text()
+                if !text.is_empty() {
+                    tokens.push(Token.Text(text))
+                }
+            }
+        }
+        
+        self.validate_sections(tokens)?
+        Ok(tokens)
+    }
+    
+    fn parse_text() -> String {
+        let start = self.pos
+        while self.pos < self.source.len() && !self.starts_with(self.open_delim) {
+            self.pos += 1
+        }
+        self.source[start..self.pos]
+    }
+    
+    fn parse_tag() -> Result<Token, MustacheError> {
+        self.pos += self.open_delim.len()
+        self.skip_whitespace()
+        
+        if self.pos >= self.source.len() {
+            return Err(MustacheError.UnterminatedTag)
+        }
+        
+        let c = self.source[self.pos]
+        let token = match c {
+            '{' => self.parse_triple_mustache()
+            '&' => self.parse_unescaped()
+            '#' => self.parse_section_start()
+            '^' => self.parse_inverted_section()
+            '/' => self.parse_section_end()
+            '>' => self.parse_partial()
+            '!' => self.parse_comment()
+            '=' => self.parse_set_delimiter()
+            '<' => self.parse_parent()
+            '$' => self.parse_block()
+            _ => self.parse_variable()
+        }?
+        
+        self.skip_whitespace()
+        
+        if !self.starts_with(self.close_delim) {
+            return Err(MustacheError.UnterminatedTag)
+        }
+        self.pos += self.close_delim.len()
+        
+        Ok(token)
+    }
+    
+    fn parse_variable() -> Result<Token, MustacheError> {
+        let name = self.parse_identifier()?
+        Ok(Token.Variable(name, true))
+    }
+    
+    fn parse_triple_mustache() -> Result<Token, MustacheError> {
+        self.pos += 1
+        self.skip_whitespace()
+        let name = self.parse_identifier()?
+        self.skip_whitespace()
+        if self.source[self.pos] != '}' {
+            return Err(MustacheError.InvalidSyntax("Expected closing }}}".to_string()))
+        }
+        self.pos += 1
+        Ok(Token.UnescapedVariable(name))
+    }
+    
+    fn parse_unescaped() -> Result<Token, MustacheError> {
+        self.pos += 1
+        self.skip_whitespace()
+        let name = self.parse_identifier()?
+        Ok(Token.UnescapedVariable(name))
+    }
+    
+    fn parse_section_start() -> Result<Token, MustacheError> {
+        self.pos += 1
+        self.skip_whitespace()
+        let name = self.parse_identifier()?
+        Ok(Token.SectionStart(name))
+    }
+    
+    fn parse_inverted_section() -> Result<Token, MustacheError> {
+        self.pos += 1
+        self.skip_whitespace()
+        let name = self.parse_identifier()?
+        Ok(Token.InvertedSectionStart(name))
+    }
+    
+    fn parse_section_end() -> Result<Token, MustacheError> {
+        self.pos += 1
+        self.skip_whitespace()
+        let name = self.parse_identifier()?
+        Ok(Token.SectionEnd(name))
+    }
+    
+    fn parse_partial() -> Result<Token, MustacheError> {
+        self.pos += 1
+        self.skip_whitespace()
+        let name = self.parse_identifier()?
+        Ok(Token.Partial(name, 0))
+    }
+    
+    fn parse_comment() -> Result<Token, MustacheError> {
+        self.pos += 1
+        let start = self.pos
+        while self.pos < self.source.len() && !self.starts_with(self.close_delim) {
+            self.pos += 1
+        }
+        Ok(Token.Comment(self.source[start..self.pos].trim()))
+    }
+    
+    fn parse_set_delimiter() -> Result<Token, MustacheError> {
+        self.pos += 1
+        self.skip_whitespace()
+        
+        let open_start = self.pos
+        while self.pos < self.source.len() && !self.source[self.pos].is_whitespace() && self.source[self.pos] != '=' {
+            self.pos += 1
+        }
+        let new_open = self.source[open_start..self.pos]
+        
+        self.skip_whitespace()
+        
+        let close_start = self.pos
+        while self.pos < self.source.len() && self.source[self.pos] != '=' {
+            self.pos += 1
+        }
+        let new_close = self.source[close_start..self.pos].trim()
+        
+        self.pos += 1
+        
+        self.open_delim = new_open
+        self.close_delim = new_close
+        
+        Ok(Token.SetDelimiter(new_open, new_close))
+    }
+    
+    fn parse_parent() -> Result<Token, MustacheError> {
+        self.pos += 1
+        self.skip_whitespace()
+        let name = self.parse_identifier()?
+        Ok(Token.Parent(name))
+    }
+    
+    fn parse_block() -> Result<Token, MustacheError> {
+        self.pos += 1
+        self.skip_whitespace()
+        let name = self.parse_identifier()?
+        Ok(Token.Block(name))
+    }
+    
+    fn parse_identifier() -> Result<String, MustacheError> {
+        let start = self.pos
+        while self.pos < self.source.len() {
+            let c = self.source[self.pos]
+            if c.is_alphanumeric() || c == '_' || c == '.' || c == '-' {
+                self.pos += 1
+            } else {
+                break
+            }
+        }
+        let name = self.source[start..self.pos]
+        if name.is_empty() {
+            return Err(MustacheError.InvalidSyntax("Expected identifier".to_string()))
+        }
+        Ok(name)
+    }
+    
+    fn skip_whitespace() {
+        while self.pos < self.source.len() && self.source[self.pos].is_whitespace() {
+            self.pos += 1
+        }
+    }
+    
+    fn starts_with(s: String) -> Bool {
+        self.source[self.pos..].starts_with(s)
+    }
+    
+    fn validate_sections(tokens: [Token]) -> Result<(), MustacheError> {
+        var stack: [String] = []
+        
+        for token in tokens {
+            match token {
+                SectionStart(name) | InvertedSectionStart(name) => stack.push(name)
+                SectionEnd(name) => {
+                    match stack.pop() {
+                        Some(open) if open == name => {}
+                        Some(open) => return Err(MustacheError.MismatchedSection(open, name))
+                        None => return Err(MustacheError.UnexpectedSectionEnd(name))
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        if !stack.is_empty() {
+            return Err(MustacheError.UnclosedSection(stack.pop().unwrap()))
+        }
+        
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Renderer
+// =============================================================================
+
+/// Template renderer
+struct Renderer {
+    template: Template
+    context: Context
+    output: String
+    
+    fn new(template: Template, context: Context) -> Self {
+        Renderer { template: template, context: context, output: "" }
+    }
+    
+    fn render() -> Result<String, MustacheError> {
+        self.render_tokens(self.template.tokens)?
+        Ok(self.output)
+    }
+    
+    fn render_tokens(tokens: [Token]) -> Result<(), MustacheError> {
+        var i = 0
+        while i < tokens.len() {
+            match tokens[i] {
+                Text(s) => self.output.push_str(s)
+                Variable(name, escaped) => self.render_variable(name, escaped)?
+                UnescapedVariable(name) => self.render_variable(name, false)?
+                SectionStart(name) => {
+                    let (section_tokens, end_idx) = self.collect_section(tokens, i, name)?
+                    self.render_section(name, section_tokens)?
+                    i = end_idx
+                }
+                InvertedSectionStart(name) => {
+                    let (section_tokens, end_idx) = self.collect_section(tokens, i, name)?
+                    self.render_inverted_section(name, section_tokens)?
+                    i = end_idx
+                }
+                Partial(name, indent) => self.render_partial(name, indent)?
+                Comment(_) => {}
+                SetDelimiter(_, _) => {}
+                _ => {}
+            }
+            i += 1
+        }
+        Ok(())
+    }
+    
+    fn render_variable(name: String, escaped: Bool) -> Result<(), MustacheError> {
+        let value = self.context.lookup(name).unwrap_or(Value.Null)
+        let text = value.as_string()
+        
+        if escaped {
+            self.output.push_str(html_escape(text))
+        } else {
+            self.output.push_str(text)
+        }
+        Ok(())
+    }
+    
+    fn render_section(name: String, tokens: [Token]) -> Result<(), MustacheError> {
+        let value = self.context.lookup(name).unwrap_or(Value.Null)
+        
+        match value {
+            Array(items) => {
+                for item in items {
+                    self.context.push(item)
+                    self.render_tokens(tokens)?
+                    self.context.pop()
+                }
+            }
+            Lambda(f) => {
+                let raw = self.tokens_to_source(tokens)
+                let result = f(raw)
+                self.output.push_str(result)
+            }
+            _ if value.is_truthy() => {
+                self.context.push(value)
+                self.render_tokens(tokens)?
+                self.context.pop()
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    
+    fn render_inverted_section(name: String, tokens: [Token]) -> Result<(), MustacheError> {
+        let value = self.context.lookup(name).unwrap_or(Value.Null)
+        
+        if value.is_falsy() {
+            self.render_tokens(tokens)?
+        }
+        Ok(())
+    }
+    
+    fn render_partial(name: String, indent: Int) -> Result<(), MustacheError> {
+        match self.template.partials.get(name) {
+            Some(partial) => {
+                let renderer = Renderer.new(partial, self.context)
+                let result = renderer.render()?
+                
+                if indent > 0 {
+                    let indent_str = " ".repeat(indent)
+                    let indented = result.lines().map(|l| format!("{}{}", indent_str, l)).join("\n")
+                    self.output.push_str(indented)
+                } else {
+                    self.output.push_str(result)
+                }
+            }
+            None => return Err(MustacheError.PartialNotFound(name))
+        }
+        Ok(())
+    }
+    
+    fn collect_section(tokens: [Token], start: Int, name: String) -> Result<([Token], Int), MustacheError> {
+        var depth = 1
+        var i = start + 1
+        var section_tokens: [Token] = []
+        
+        while i < tokens.len() && depth > 0 {
+            match tokens[i] {
+                SectionStart(n) | InvertedSectionStart(n) if n == name => depth += 1
+                SectionEnd(n) if n == name => {
+                    depth -= 1
+                    if depth == 0 {
+                        return Ok((section_tokens, i))
+                    }
+                }
+                _ => {}
+            }
+            if depth > 0 {
+                section_tokens.push(tokens[i])
+            }
+            i += 1
+        }
+        
+        Err(MustacheError.UnclosedSection(name))
+    }
+    
+    fn tokens_to_source(tokens: [Token]) -> String {
+        var result = ""
+        for token in tokens {
+            match token {
+                Text(s) => result.push_str(s)
+                Variable(n, _) => result.push_str(format!("{{{{{}}}}}", n))
+                UnescapedVariable(n) => result.push_str(format!("{{{{{{{}}}}}}", n))
+                _ => {}
+            }
+        }
+        result
+    }
+}
+
+// =============================================================================
+// HTML Escaping
+// =============================================================================
+
+/// Escape HTML special characters
+fn html_escape(s: String) -> String {
+    var result = ""
+    for c in s.chars() {
+        match c {
+            '&' => result.push_str("&amp;")
+            '<' => result.push_str("&lt;")
+            '>' => result.push_str("&gt;")
+            '"' => result.push_str("&quot;")
+            '\'' => result.push_str("&#x27;")
+            '/' => result.push_str("&#x2F;")
+            '`' => result.push_str("&#x60;")
+            '=' => result.push_str("&#x3D;")
+            _ => result.push(c)
+        }
+    }
+    result
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+/// Mustache template errors
+enum MustacheError {
+    ParseError(String)
+    InvalidSyntax(String)
+    UnterminatedTag
+    UnclosedSection(String)
+    UnexpectedSectionEnd(String)
+    MismatchedSection(String, String)
+    PartialNotFound(String)
+    RenderError(String)
+    IOError(String)
+}
+
+impl Display for MustacheError {
+    fn fmt(f: Formatter) {
+        match self {
+            ParseError(s) => f.write(format!("Parse error: {}", s))
+            InvalidSyntax(s) => f.write(format!("Invalid syntax: {}", s))
+            UnterminatedTag => f.write("Unterminated tag")
+            UnclosedSection(n) => f.write(format!("Unclosed section: {}", n))
+            UnexpectedSectionEnd(n) => f.write(format!("Unexpected section end: {}", n))
+            MismatchedSection(o, c) => f.write(format!("Mismatched section: opened {} but closed {}", o, c))
+            PartialNotFound(n) => f.write(format!("Partial not found: {}", n))
+            RenderError(s) => f.write(format!("Render error: {}", s))
+            IOError(s) => f.write(format!("IO error: {}", s))
+        }
+    }
+}
+
+impl Error for MustacheError {}
+
+// =============================================================================
+// Builder API
+// =============================================================================
+
+/// Fluent template builder
+struct TemplateBuilder {
+    source: String
+    partials: Map<String, String>
+    
+    fn new() -> Self {
+        TemplateBuilder { source: "", partials: Map.new() }
+    }
+    
+    fn source(s: String) -> Self {
+        self.source = s
+        self
+    }
+    
+    fn partial(name: String, source: String) -> Self {
+        self.partials.insert(name, source)
+        self
+    }
+    
+    fn build() -> Result<Template, MustacheError> {
+        var template = Template.parse(self.source)?
+        for (name, src) in self.partials {
+            template = template.register_partial_str(name, src)?
+        }
+        Ok(template)
+    }
+}
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+/// Quick render a template string
+fn render(template: String, context: impl ToMustacheValue) -> Result<String, MustacheError> {
+    Template.parse(template)?.render(context)
+}
+
+/// Render with a map context
+fn render_map(template: String, context: Map<String, Value>) -> Result<String, MustacheError> {
+    Template.parse(template)?.render(Value.Object(context))
+}
+
+/// Create a template builder
+fn builder() -> TemplateBuilder {
+    TemplateBuilder.new()
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "simple variable" {
+    let tmpl = Template.parse("Hello, {{name}}!")?
+    let ctx = Value.Object(Map.from([("name", Value.String("World"))]))
+    assert_eq(tmpl.render(ctx)?, "Hello, World!")?
+}
+
+test "html escaping" {
+    let tmpl = Template.parse("{{content}}")?
+    let ctx = Value.Object(Map.from([("content", Value.String("<script>"))]))
+    assert_eq(tmpl.render(ctx)?, "&lt;script&gt;")?
+}
+
+test "unescaped variable" {
+    let tmpl = Template.parse("{{{content}}}")?
+    let ctx = Value.Object(Map.from([("content", Value.String("<b>bold</b>"))]))
+    assert_eq(tmpl.render(ctx)?, "<b>bold</b>")?
+}
+
+test "section" {
+    let tmpl = Template.parse("{{#show}}visible{{/show}}")?
+    let ctx = Value.Object(Map.from([("show", Value.Bool(true))]))
+    assert_eq(tmpl.render(ctx)?, "visible")?
+}
+
+test "inverted section" {
+    let tmpl = Template.parse("{{^items}}No items{{/items}}")?
+    let ctx = Value.Object(Map.from([("items", Value.Array([]))]))
+    assert_eq(tmpl.render(ctx)?, "No items")?
+}
+
+test "array iteration" {
+    let tmpl = Template.parse("{{#items}}{{.}} {{/items}}")?
+    let ctx = Value.Object(Map.from([
+        ("items", Value.Array([Value.String("a"), Value.String("b"), Value.String("c")]))
+    ]))
+    assert_eq(tmpl.render(ctx)?, "a b c ")?
+}
+
+test "nested context" {
+    let tmpl = Template.parse("{{#person}}{{name}} is {{age}}{{/person}}")?
+    let person = Value.Object(Map.from([
+        ("name", Value.String("Alice")),
+        ("age", Value.Int(30))
+    ]))
+    let ctx = Value.Object(Map.from([("person", person)]))
+    assert_eq(tmpl.render(ctx)?, "Alice is 30")?
+}
+
+test "dotted names" {
+    let tmpl = Template.parse("{{person.name}}")?
+    let person = Value.Object(Map.from([("name", Value.String("Bob"))]))
+    let ctx = Value.Object(Map.from([("person", person)]))
+    assert_eq(tmpl.render(ctx)?, "Bob")?
+}
+
+test "comments" {
+    let tmpl = Template.parse("Hello{{! this is a comment }}, World!")?
+    let ctx = Value.Object(Map.new())
+    assert_eq(tmpl.render(ctx)?, "Hello, World!")?
+}
+
+test "partials" {
+    let tmpl = Template.parse("{{>header}}")?
+        .register_partial_str("header", "<h1>Title</h1>")?
+    let ctx = Value.Object(Map.new())
+    assert_eq(tmpl.render(ctx)?, "<h1>Title</h1>")?
+}
+
+test "quick render" {
+    let result = render("Hello, {{name}}!", Map.from([("name", Value.String("Vibee"))]))?
+    assert_eq(result, "Hello, Vibee!")?
+}

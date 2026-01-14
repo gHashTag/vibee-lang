@@ -2,7 +2,7 @@
 
 **Beyond Formalization: The Pattern in Pure Mathematics**
 
-**Authors**: Dmitrii Vasilev, Ona  
+**Author**: Dmitrii Vasilev  
 **Date**: January 13, 2026  
 **Status**: Advanced Research
 

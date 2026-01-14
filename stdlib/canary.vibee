@@ -1,0 +1,426 @@
+// =============================================================================
+// Vibee OS — Canary Deployment Module
+// Canary release strategy with traffic shifting
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Canary Configuration
+// -----------------------------------------------------------------------------
+
+struct CanaryConfig {
+    name: String
+    baseline_version: String
+    canary_version: String
+    initial_weight: Int
+    max_weight: Int
+    step_weight: Int
+    step_interval: Duration
+    analysis: CanaryAnalysis
+    promotion_criteria: [PromotionCriterion]
+    rollback_criteria: [RollbackCriterion]
+    timeout: Duration
+}
+
+impl CanaryConfig {
+    fn default(name: String, baseline: String, canary: String) -> Self {
+        CanaryConfig {
+            name: name,
+            baseline_version: baseline,
+            canary_version: canary,
+            initial_weight: 10,
+            max_weight: 100,
+            step_weight: 10,
+            step_interval: 5.minutes(),
+            analysis: CanaryAnalysis.default(),
+            promotion_criteria: [],
+            rollback_criteria: [],
+            timeout: 1.hours()
+        }
+    }
+}
+
+struct CanaryAnalysis {
+    metrics: [CanaryMetric]
+    interval: Duration
+    threshold: AnalysisThreshold
+}
+
+impl CanaryAnalysis {
+    fn default() -> Self {
+        CanaryAnalysis {
+            metrics: [CanaryMetric.ErrorRate, CanaryMetric.Latency],
+            interval: 1.minutes(),
+            threshold: AnalysisThreshold { marginal: 5.0, pass: 95.0 }
+        }
+    }
+}
+
+enum CanaryMetric { ErrorRate, Latency, Throughput, Custom(String) }
+
+struct AnalysisThreshold { marginal: Float, pass: Float }
+
+struct PromotionCriterion { metric: CanaryMetric, operator: CompareOp, value: Float }
+struct RollbackCriterion { metric: CanaryMetric, operator: CompareOp, value: Float }
+enum CompareOp { Lt, Lte, Gt, Gte, Eq }
+
+// -----------------------------------------------------------------------------
+// Canary Builder
+// -----------------------------------------------------------------------------
+
+actor CanaryBuilder {
+    state config: CanaryConfig
+    
+    init(name: String, baseline: String, canary: String) {
+        self.config = CanaryConfig.default(name, baseline, canary)
+    }
+    
+    on initial_weight(w: Int) -> Self { self.config.initial_weight = w; self }
+    on max_weight(w: Int) -> Self { self.config.max_weight = w; self }
+    on step_weight(w: Int) -> Self { self.config.step_weight = w; self }
+    on step_interval(i: Duration) -> Self { self.config.step_interval = i; self }
+    on analysis(a: CanaryAnalysis) -> Self { self.config.analysis = a; self }
+    on timeout(t: Duration) -> Self { self.config.timeout = t; self }
+    on promote_when(metric: CanaryMetric, op: CompareOp, value: Float) -> Self {
+        self.config.promotion_criteria.append(PromotionCriterion { metric: metric, operator: op, value: value })
+        self
+    }
+    on rollback_when(metric: CanaryMetric, op: CompareOp, value: Float) -> Self {
+        self.config.rollback_criteria.append(RollbackCriterion { metric: metric, operator: op, value: value })
+        self
+    }
+    
+    on build() -> CanaryConfig { self.config.clone() }
+}
+
+// -----------------------------------------------------------------------------
+// Canary Manager
+// -----------------------------------------------------------------------------
+
+actor CanaryManager {
+    state provider: CanaryProvider
+    state active_canaries: Map<String, CanaryState>
+    state history: [CanaryRecord]
+    
+    init(provider: CanaryProvider) {
+        self.provider = provider
+        self.active_canaries = Map.empty()
+        self.history = []
+    }
+    
+    on start(config: CanaryConfig) -> Result<CanaryState, CanaryError> {
+        // Create canary deployment
+        let canary = self.provider.create_canary(config)?
+        
+        // Set initial traffic weight
+        self.provider.set_weight(canary.id, config.initial_weight)?
+        
+        let state = CanaryState {
+            id: canary.id,
+            config: config.clone(),
+            current_weight: config.initial_weight,
+            status: CanaryStatus.Running,
+            started_at: DateTime.now(),
+            analysis_results: []
+        }
+        
+        self.active_canaries.set(canary.id, state.clone())
+        
+        // Start analysis loop
+        self.start_analysis(canary.id)
+        
+        Ok(state)
+    }
+    
+    fn start_analysis(canary_id: String) {
+        spawn {
+            loop {
+                let state = self.active_canaries.get(canary_id)?
+                if state.status != CanaryStatus.Running { break }
+                
+                // Run analysis
+                let result = self.analyze(canary_id)?
+                
+                match result.verdict {
+                    AnalysisVerdict.Pass => self.progress_canary(canary_id)?
+                    AnalysisVerdict.Fail => self.abort_canary(canary_id, "Analysis failed")?
+                    AnalysisVerdict.Inconclusive => {}
+                }
+                
+                sleep(state.config.analysis.interval)
+            }
+        }
+    }
+    
+    on analyze(canary_id: String) -> Result<AnalysisResult, CanaryError> {
+        let state = self.active_canaries.get(canary_id)
+            .ok_or(CanaryError.NotFound(canary_id))?
+        
+        let metrics = self.provider.get_metrics(canary_id)?
+        
+        // Check rollback criteria
+        for criterion in state.config.rollback_criteria {
+            if self.check_criterion(metrics, criterion) {
+                return Ok(AnalysisResult { verdict: AnalysisVerdict.Fail, metrics: metrics, reason: Some("Rollback criterion met") })
+            }
+        }
+        
+        // Check promotion criteria
+        var all_pass = true
+        for criterion in state.config.promotion_criteria {
+            if !self.check_criterion(metrics, criterion) {
+                all_pass = false
+                break
+            }
+        }
+        
+        let verdict = if all_pass { AnalysisVerdict.Pass } else { AnalysisVerdict.Inconclusive }
+        Ok(AnalysisResult { verdict: verdict, metrics: metrics, reason: None })
+    }
+    
+    fn check_criterion(metrics: CanaryMetrics, criterion: PromotionCriterion) -> Bool {
+        let value = match criterion.metric {
+            CanaryMetric.ErrorRate => metrics.error_rate
+            CanaryMetric.Latency => metrics.latency_ms
+            CanaryMetric.Throughput => metrics.throughput
+            CanaryMetric.Custom(name) => metrics.custom.get(name).unwrap_or(0.0)
+        }
+        
+        match criterion.operator {
+            CompareOp.Lt => value < criterion.value
+            CompareOp.Lte => value <= criterion.value
+            CompareOp.Gt => value > criterion.value
+            CompareOp.Gte => value >= criterion.value
+            CompareOp.Eq => value == criterion.value
+        }
+    }
+    
+    on progress_canary(canary_id: String) -> Result<(), CanaryError> {
+        let state = self.active_canaries.get_mut(canary_id)
+            .ok_or(CanaryError.NotFound(canary_id))?
+        
+        let new_weight = min(state.current_weight + state.config.step_weight, state.config.max_weight)
+        
+        if new_weight >= state.config.max_weight {
+            self.promote(canary_id)
+        } else {
+            self.provider.set_weight(canary_id, new_weight)?
+            state.current_weight = new_weight
+        }
+        
+        Ok(())
+    }
+    
+    on promote(canary_id: String) -> Result<CanaryRecord, CanaryError> {
+        let state = self.active_canaries.remove(canary_id)
+            .ok_or(CanaryError.NotFound(canary_id))?
+        
+        self.provider.promote(canary_id)?
+        
+        let record = CanaryRecord {
+            id: canary_id,
+            config: state.config,
+            outcome: CanaryOutcome.Promoted,
+            started_at: state.started_at,
+            completed_at: DateTime.now(),
+            final_weight: 100
+        }
+        self.history.append(record.clone())
+        
+        Ok(record)
+    }
+    
+    on abort_canary(canary_id: String, reason: String) -> Result<CanaryRecord, CanaryError> {
+        let state = self.active_canaries.remove(canary_id)
+            .ok_or(CanaryError.NotFound(canary_id))?
+        
+        self.provider.rollback(canary_id)?
+        
+        let record = CanaryRecord {
+            id: canary_id,
+            config: state.config,
+            outcome: CanaryOutcome.Aborted(reason),
+            started_at: state.started_at,
+            completed_at: DateTime.now(),
+            final_weight: state.current_weight
+        }
+        self.history.append(record.clone())
+        
+        Ok(record)
+    }
+    
+    on pause(canary_id: String) -> Result<(), CanaryError> {
+        let state = self.active_canaries.get_mut(canary_id)
+            .ok_or(CanaryError.NotFound(canary_id))?
+        state.status = CanaryStatus.Paused
+        Ok(())
+    }
+    
+    on resume(canary_id: String) -> Result<(), CanaryError> {
+        let state = self.active_canaries.get_mut(canary_id)
+            .ok_or(CanaryError.NotFound(canary_id))?
+        state.status = CanaryStatus.Running
+        self.start_analysis(canary_id)
+        Ok(())
+    }
+    
+    on set_weight(canary_id: String, weight: Int) -> Result<(), CanaryError> {
+        self.provider.set_weight(canary_id, weight)?
+        let state = self.active_canaries.get_mut(canary_id)
+            .ok_or(CanaryError.NotFound(canary_id))?
+        state.current_weight = weight
+        Ok(())
+    }
+    
+    on get_status(canary_id: String) -> Result<CanaryState, CanaryError> {
+        self.active_canaries.get(canary_id)
+            .ok_or(CanaryError.NotFound(canary_id))
+            .map(|s| s.clone())
+    }
+    
+    on list_active() -> [CanaryState] {
+        self.active_canaries.values().collect()
+    }
+    
+    on history() -> [CanaryRecord] { self.history.clone() }
+}
+
+// -----------------------------------------------------------------------------
+// Canary Provider Trait
+// -----------------------------------------------------------------------------
+
+trait CanaryProvider {
+    fn create_canary(config: CanaryConfig) -> Result<Canary, CanaryError>
+    fn set_weight(id: String, weight: Int) -> Result<(), CanaryError>
+    fn get_metrics(id: String) -> Result<CanaryMetrics, CanaryError>
+    fn promote(id: String) -> Result<(), CanaryError>
+    fn rollback(id: String) -> Result<(), CanaryError>
+    fn delete(id: String) -> Result<(), CanaryError>
+}
+
+// -----------------------------------------------------------------------------
+// Istio Canary Provider
+// -----------------------------------------------------------------------------
+
+actor IstioCanaryProvider {
+    state client: K8sClient
+    state namespace: String
+    
+    init(client: K8sClient, namespace: String = "default") {
+        self.client = client
+        self.namespace = namespace
+    }
+}
+
+impl CanaryProvider for IstioCanaryProvider {
+    fn create_canary(config: CanaryConfig) -> Result<Canary, CanaryError> {
+        @native("istio_create_canary", self.client, self.namespace, config)
+    }
+    
+    fn set_weight(id: String, weight: Int) -> Result<(), CanaryError> {
+        @native("istio_set_weight", self.client, self.namespace, id, weight)
+    }
+    
+    fn get_metrics(id: String) -> Result<CanaryMetrics, CanaryError> {
+        @native("istio_get_canary_metrics", self.client, self.namespace, id)
+    }
+    
+    fn promote(id: String) -> Result<(), CanaryError> {
+        @native("istio_promote_canary", self.client, self.namespace, id)
+    }
+    
+    fn rollback(id: String) -> Result<(), CanaryError> {
+        @native("istio_rollback_canary", self.client, self.namespace, id)
+    }
+    
+    fn delete(id: String) -> Result<(), CanaryError> {
+        @native("istio_delete_canary", self.client, self.namespace, id)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Types
+// -----------------------------------------------------------------------------
+
+struct Canary { id: String, name: String, created_at: DateTime }
+
+struct CanaryState {
+    id: String
+    config: CanaryConfig
+    current_weight: Int
+    status: CanaryStatus
+    started_at: DateTime
+    analysis_results: [AnalysisResult]
+}
+
+enum CanaryStatus { Pending, Running, Paused, Promoting, RollingBack, Completed }
+
+struct CanaryMetrics {
+    error_rate: Float
+    latency_ms: Float
+    throughput: Float
+    custom: Map<String, Float>
+}
+
+struct AnalysisResult { verdict: AnalysisVerdict, metrics: CanaryMetrics, reason: String? }
+enum AnalysisVerdict { Pass, Fail, Inconclusive }
+
+struct CanaryRecord {
+    id: String
+    config: CanaryConfig
+    outcome: CanaryOutcome
+    started_at: DateTime
+    completed_at: DateTime
+    final_weight: Int
+}
+
+enum CanaryOutcome { Promoted, Aborted(String), TimedOut }
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum CanaryError {
+    NotFound(String), CreationFailed(String), AnalysisFailed(String), PromotionFailed(String), RollbackFailed(String), Timeout, ProviderError(String)
+    
+    fn message() -> String {
+        match self {
+            .NotFound(id) => "Canary not found: \(id)"
+            .CreationFailed(m) => "Canary creation failed: \(m)"
+            .AnalysisFailed(m) => "Analysis failed: \(m)"
+            .PromotionFailed(m) => "Promotion failed: \(m)"
+            .RollbackFailed(m) => "Rollback failed: \(m)"
+            .Timeout => "Canary deployment timed out"
+            .ProviderError(m) => "Provider error: \(m)"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+fn canary(name: String, baseline: String, canary_version: String) -> CanaryBuilder {
+    CanaryBuilder.new(name, baseline, canary_version)
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "canary builder" {
+    let config = CanaryBuilder.new("web", "v1.0", "v1.1")
+        .initial_weight(5)
+        .step_weight(10)
+        .step_interval(2.minutes())
+        .promote_when(CanaryMetric.ErrorRate, CompareOp.Lt, 1.0)
+        .build()
+    
+    assert(config.name == "web")
+    assert(config.initial_weight == 5)
+    assert(config.promotion_criteria.len() == 1)
+}
+
+test "analysis verdict" {
+    let pass = AnalysisResult { verdict: AnalysisVerdict.Pass, metrics: CanaryMetrics { error_rate: 0.1, latency_ms: 50.0, throughput: 1000.0, custom: Map.empty() }, reason: None }
+    assert(pass.verdict == AnalysisVerdict.Pass)
+}

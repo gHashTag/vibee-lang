@@ -1,0 +1,490 @@
+// =============================================================================
+// Vibee OS — SSO Module
+// Single Sign-On (SAML, OIDC, OAuth2)
+// =============================================================================
+
+// =============================================================================
+// SSO Provider
+// =============================================================================
+
+/// SSO Provider configuration
+struct SsoProvider {
+    id: String
+    name: String
+    provider_type: SsoType
+    config: SsoConfig
+    enabled: Bool
+    created_at: DateTime
+}
+
+enum SsoType { SAML, OIDC, OAuth2 }
+
+enum SsoConfig {
+    Saml(SamlConfig)
+    Oidc(OidcConfig)
+    OAuth2(OAuth2Config)
+}
+
+impl SsoProvider {
+    fn saml(name: String, config: SamlConfig) -> Self {
+        SsoProvider { id: uuid.v4(), name: name, provider_type: SsoType.SAML, config: SsoConfig.Saml(config), enabled: true, created_at: DateTime.now() }
+    }
+    
+    fn oidc(name: String, config: OidcConfig) -> Self {
+        SsoProvider { id: uuid.v4(), name: name, provider_type: SsoType.OIDC, config: SsoConfig.Oidc(config), enabled: true, created_at: DateTime.now() }
+    }
+    
+    fn oauth2(name: String, config: OAuth2Config) -> Self {
+        SsoProvider { id: uuid.v4(), name: name, provider_type: SsoType.OAuth2, config: SsoConfig.OAuth2(config), enabled: true, created_at: DateTime.now() }
+    }
+}
+
+// =============================================================================
+// SAML Configuration
+// =============================================================================
+
+struct SamlConfig {
+    entity_id: String
+    sso_url: String
+    slo_url: Option<String>
+    certificate: String
+    name_id_format: NameIdFormat
+    attribute_mapping: Map<String, String>
+    sign_requests: Bool
+    want_assertions_signed: Bool
+}
+
+enum NameIdFormat { EmailAddress, Persistent, Transient, Unspecified }
+
+impl SamlConfig {
+    fn new(entity_id: String, sso_url: String, certificate: String) -> Self {
+        SamlConfig {
+            entity_id: entity_id, sso_url: sso_url, slo_url: None, certificate: certificate,
+            name_id_format: NameIdFormat.EmailAddress, attribute_mapping: Map.empty(),
+            sign_requests: true, want_assertions_signed: true
+        }
+    }
+    
+    fn with_slo(url: String) -> Self { self.slo_url = Some(url); self }
+    fn with_attribute(saml_attr: String, local_attr: String) -> Self { self.attribute_mapping.set(saml_attr, local_attr); self }
+}
+
+// =============================================================================
+// OIDC Configuration
+// =============================================================================
+
+struct OidcConfig {
+    issuer: String
+    client_id: String
+    client_secret: String
+    redirect_uri: String
+    scopes: [String]
+    discovery_url: Option<String>
+    jwks_uri: Option<String>
+    authorization_endpoint: Option<String>
+    token_endpoint: Option<String>
+    userinfo_endpoint: Option<String>
+}
+
+impl OidcConfig {
+    fn new(issuer: String, client_id: String, client_secret: String, redirect_uri: String) -> Self {
+        OidcConfig {
+            issuer: issuer, client_id: client_id, client_secret: client_secret, redirect_uri: redirect_uri,
+            scopes: ["openid", "profile", "email"], discovery_url: None, jwks_uri: None,
+            authorization_endpoint: None, token_endpoint: None, userinfo_endpoint: None
+        }
+    }
+    
+    fn with_discovery(url: String) -> Self { self.discovery_url = Some(url); self }
+    fn with_scope(scope: String) -> Self { self.scopes.push(scope); self }
+    
+    fn google(client_id: String, client_secret: String, redirect_uri: String) -> Self {
+        Self.new("https://accounts.google.com", client_id, client_secret, redirect_uri)
+            .with_discovery("https://accounts.google.com/.well-known/openid-configuration")
+    }
+    
+    fn microsoft(tenant: String, client_id: String, client_secret: String, redirect_uri: String) -> Self {
+        let issuer = format!("https://login.microsoftonline.com/{}/v2.0", tenant)
+        Self.new(issuer.clone(), client_id, client_secret, redirect_uri)
+            .with_discovery(format!("{}/.well-known/openid-configuration", issuer))
+    }
+}
+
+// =============================================================================
+// OAuth2 Configuration
+// =============================================================================
+
+struct OAuth2Config {
+    client_id: String
+    client_secret: String
+    authorize_url: String
+    token_url: String
+    userinfo_url: String
+    redirect_uri: String
+    scopes: [String]
+    user_id_field: String
+}
+
+impl OAuth2Config {
+    fn new(client_id: String, client_secret: String, authorize_url: String, token_url: String) -> Self {
+        OAuth2Config {
+            client_id: client_id, client_secret: client_secret, authorize_url: authorize_url,
+            token_url: token_url, userinfo_url: "", redirect_uri: "", scopes: [], user_id_field: "id"
+        }
+    }
+    
+    fn github(client_id: String, client_secret: String, redirect_uri: String) -> Self {
+        OAuth2Config {
+            client_id: client_id, client_secret: client_secret,
+            authorize_url: "https://github.com/login/oauth/authorize",
+            token_url: "https://github.com/login/oauth/access_token",
+            userinfo_url: "https://api.github.com/user",
+            redirect_uri: redirect_uri, scopes: ["user:email"], user_id_field: "id"
+        }
+    }
+}
+
+// =============================================================================
+// SSO Session
+// =============================================================================
+
+struct SsoSession {
+    id: String
+    provider_id: String
+    user_id: String
+    external_id: String
+    attributes: Map<String, String>
+    access_token: Option<String>
+    refresh_token: Option<String>
+    id_token: Option<String>
+    expires_at: Option<DateTime>
+    created_at: DateTime
+}
+
+impl SsoSession {
+    fn new(provider_id: String, user_id: String, external_id: String) -> Self {
+        SsoSession {
+            id: uuid.v4(), provider_id: provider_id, user_id: user_id, external_id: external_id,
+            attributes: Map.empty(), access_token: None, refresh_token: None, id_token: None,
+            expires_at: None, created_at: DateTime.now()
+        }
+    }
+    
+    fn is_expired() -> Bool { self.expires_at.map(|t| DateTime.now() > t).unwrap_or(false) }
+}
+
+// =============================================================================
+// SSO Manager
+// =============================================================================
+
+struct SsoManager<S: SsoStore> {
+    store: S
+    providers: Map<String, SsoProvider>
+}
+
+impl<S: SsoStore> SsoManager<S> {
+    fn new(store: S) -> Self { SsoManager { store: store, providers: Map.empty() } }
+    
+    fn register_provider(provider: SsoProvider) -> Result<(), SsoError> {
+        self.providers.set(provider.id.clone(), provider)
+        Ok(())
+    }
+    
+    fn get_provider(id: String) -> Option<SsoProvider> { self.providers.get(id) }
+    
+    fn initiate_login(provider_id: String) -> Result<SsoLoginRequest, SsoError> {
+        let provider = self.providers.get(provider_id.clone()).ok_or(SsoError.ProviderNotFound(provider_id))?
+        
+        match provider.config {
+            SsoConfig.Oidc(config) => self.initiate_oidc_login(config)
+            SsoConfig.OAuth2(config) => self.initiate_oauth2_login(config)
+            SsoConfig.Saml(config) => self.initiate_saml_login(config)
+        }
+    }
+    
+    fn initiate_oidc_login(config: OidcConfig) -> Result<SsoLoginRequest, SsoError> {
+        let state = base64.encode_url_safe(crypto.random_bytes(32))
+        let nonce = base64.encode_url_safe(crypto.random_bytes(32))
+        let pkce = PkceChallenge.generate()
+        
+        let auth_url = config.authorization_endpoint.clone()
+            .or_else(|| config.discovery_url.map(|_| format!("{}/authorize", config.issuer)))
+            .ok_or(SsoError.ConfigError("No authorization endpoint"))?
+        
+        let params = [
+            ("client_id", config.client_id.clone()),
+            ("response_type", "code"),
+            ("redirect_uri", config.redirect_uri.clone()),
+            ("scope", config.scopes.join(" ")),
+            ("state", state.clone()),
+            ("nonce", nonce.clone()),
+            ("code_challenge", pkce.challenge.clone()),
+            ("code_challenge_method", "S256")
+        ]
+        
+        let query = params.iter().map(|(k, v)| format!("{}={}", k, url.encode(v))).join("&")
+        
+        Ok(SsoLoginRequest {
+            redirect_url: format!("{}?{}", auth_url, query),
+            state: state, nonce: Some(nonce), pkce_verifier: Some(pkce.verifier)
+        })
+    }
+    
+    fn initiate_oauth2_login(config: OAuth2Config) -> Result<SsoLoginRequest, SsoError> {
+        let state = base64.encode_url_safe(crypto.random_bytes(32))
+        
+        let params = [
+            ("client_id", config.client_id.clone()),
+            ("redirect_uri", config.redirect_uri.clone()),
+            ("scope", config.scopes.join(" ")),
+            ("state", state.clone())
+        ]
+        
+        let query = params.iter().map(|(k, v)| format!("{}={}", k, url.encode(v))).join("&")
+        
+        Ok(SsoLoginRequest {
+            redirect_url: format!("{}?{}", config.authorize_url, query),
+            state: state, nonce: None, pkce_verifier: None
+        })
+    }
+    
+    fn initiate_saml_login(config: SamlConfig) -> Result<SsoLoginRequest, SsoError> {
+        let request_id = format!("_{}",uuid.v4())
+        let issue_instant = DateTime.now().to_iso8601()
+        
+        let saml_request = format!(
+            r#"<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="{}" Version="2.0" IssueInstant="{}"><saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">{}</saml:Issuer></samlp:AuthnRequest>"#,
+            request_id, issue_instant, config.entity_id
+        )
+        
+        let encoded = base64.encode(compress.deflate(saml_request.as_bytes()))
+        let redirect_url = format!("{}?SAMLRequest={}", config.sso_url, url.encode(encoded))
+        
+        Ok(SsoLoginRequest { redirect_url: redirect_url, state: request_id, nonce: None, pkce_verifier: None })
+    }
+    
+    fn handle_callback(provider_id: String, callback: SsoCallback) -> Result<SsoSession, SsoError> {
+        let provider = self.providers.get(provider_id.clone()).ok_or(SsoError.ProviderNotFound(provider_id.clone()))?
+        
+        match provider.config {
+            SsoConfig.Oidc(config) => self.handle_oidc_callback(provider_id, config, callback)
+            SsoConfig.OAuth2(config) => self.handle_oauth2_callback(provider_id, config, callback)
+            SsoConfig.Saml(config) => self.handle_saml_callback(provider_id, config, callback)
+        }
+    }
+    
+    fn handle_oidc_callback(provider_id: String, config: OidcConfig, callback: SsoCallback) -> Result<SsoSession, SsoError> {
+        let code = callback.code.ok_or(SsoError.InvalidCallback("Missing code"))?
+        
+        let token_url = config.token_endpoint.clone()
+            .or_else(|| Some(format!("{}/token", config.issuer)))
+            .unwrap()
+        
+        var params = Map.empty()
+        params.set("grant_type", "authorization_code")
+        params.set("code", code)
+        params.set("redirect_uri", config.redirect_uri.clone())
+        params.set("client_id", config.client_id.clone())
+        params.set("client_secret", config.client_secret.clone())
+        
+        if let Some(verifier) = callback.pkce_verifier { params.set("code_verifier", verifier) }
+        
+        let response = http.Client.new().post(token_url).form(params).send()
+            .map_err(|e| SsoError.NetworkError(e.to_string()))?
+        
+        let tokens: OidcTokenResponse = response.json().map_err(|_| SsoError.InvalidResponse)?
+        
+        let claims = Jwt.decode(tokens.id_token.clone()).map_err(|_| SsoError.InvalidToken)?.claims
+        let sub = claims.sub.ok_or(SsoError.InvalidToken)?
+        
+        let session = SsoSession {
+            id: uuid.v4(), provider_id: provider_id, user_id: "", external_id: sub,
+            attributes: Map.empty(), access_token: Some(tokens.access_token),
+            refresh_token: tokens.refresh_token, id_token: Some(tokens.id_token),
+            expires_at: tokens.expires_in.map(|e| DateTime.now().add_seconds(e)), created_at: DateTime.now()
+        }
+        
+        Ok(session)
+    }
+    
+    fn handle_oauth2_callback(provider_id: String, config: OAuth2Config, callback: SsoCallback) -> Result<SsoSession, SsoError> {
+        let code = callback.code.ok_or(SsoError.InvalidCallback("Missing code"))?
+        
+        var params = Map.empty()
+        params.set("grant_type", "authorization_code")
+        params.set("code", code)
+        params.set("redirect_uri", config.redirect_uri.clone())
+        params.set("client_id", config.client_id.clone())
+        params.set("client_secret", config.client_secret.clone())
+        
+        let response = http.Client.new().post(config.token_url.clone()).form(params).send()
+            .map_err(|e| SsoError.NetworkError(e.to_string()))?
+        
+        let tokens: OAuth2TokenResponse = response.json().map_err(|_| SsoError.InvalidResponse)?
+        
+        let userinfo = http.Client.new().get(config.userinfo_url.clone())
+            .header("Authorization", format!("Bearer {}", tokens.access_token))
+            .send().map_err(|e| SsoError.NetworkError(e.to_string()))?
+            .json::<Map<String, JsonValue>>().map_err(|_| SsoError.InvalidResponse)?
+        
+        let external_id = userinfo.get(config.user_id_field.clone())
+            .and_then(|v| v.as_string())
+            .ok_or(SsoError.InvalidResponse)?
+        
+        Ok(SsoSession {
+            id: uuid.v4(), provider_id: provider_id, user_id: "", external_id: external_id,
+            attributes: Map.empty(), access_token: Some(tokens.access_token),
+            refresh_token: tokens.refresh_token, id_token: None,
+            expires_at: tokens.expires_in.map(|e| DateTime.now().add_seconds(e)), created_at: DateTime.now()
+        })
+    }
+    
+    fn handle_saml_callback(provider_id: String, config: SamlConfig, callback: SsoCallback) -> Result<SsoSession, SsoError> {
+        let saml_response = callback.saml_response.ok_or(SsoError.InvalidCallback("Missing SAML response"))?
+        let decoded = base64.decode(saml_response).map_err(|_| SsoError.InvalidResponse)?
+        let xml = String.from_utf8(decoded).map_err(|_| SsoError.InvalidResponse)?
+        
+        // Parse and validate SAML response (simplified)
+        let name_id = self.extract_saml_name_id(xml.clone())?
+        let attributes = self.extract_saml_attributes(xml, config.attribute_mapping)?
+        
+        Ok(SsoSession {
+            id: uuid.v4(), provider_id: provider_id, user_id: "", external_id: name_id,
+            attributes: attributes, access_token: None, refresh_token: None, id_token: None,
+            expires_at: None, created_at: DateTime.now()
+        })
+    }
+    
+    fn extract_saml_name_id(xml: String) -> Result<String, SsoError> {
+        // Simplified XML parsing
+        xml.find("<saml:NameID").and_then(|start| {
+            let content_start = xml[start..].find(">").map(|i| start + i + 1)?
+            let content_end = xml[content_start..].find("</saml:NameID>").map(|i| content_start + i)?
+            Some(xml[content_start..content_end].to_string())
+        }).ok_or(SsoError.InvalidResponse)
+    }
+    
+    fn extract_saml_attributes(xml: String, mapping: Map<String, String>) -> Result<Map<String, String>, SsoError> {
+        Ok(Map.empty()) // Simplified
+    }
+}
+
+struct SsoLoginRequest { redirect_url: String, state: String, nonce: Option<String>, pkce_verifier: Option<String> }
+struct SsoCallback { code: Option<String>, state: Option<String>, saml_response: Option<String>, pkce_verifier: Option<String> }
+struct OidcTokenResponse { access_token: String, token_type: String, expires_in: Option<Int64>, refresh_token: Option<String>, id_token: String }
+struct OAuth2TokenResponse { access_token: String, token_type: String, expires_in: Option<Int64>, refresh_token: Option<String> }
+struct PkceChallenge { verifier: String, challenge: String }
+
+impl PkceChallenge {
+    fn generate() -> Self {
+        let verifier = base64.encode_url_safe(crypto.random_bytes(32))
+        let challenge = base64.encode_url_safe(crypto.sha256(verifier.as_bytes()))
+        PkceChallenge { verifier: verifier, challenge: challenge }
+    }
+}
+
+// =============================================================================
+// SSO Store Trait
+// =============================================================================
+
+trait SsoStore {
+    fn save_session(session: SsoSession) -> Result<(), SsoError>
+    fn find_session(id: String) -> Option<SsoSession>
+    fn find_by_external_id(provider_id: String, external_id: String) -> Option<SsoSession>
+    fn delete_session(id: String) -> Result<(), SsoError>
+}
+
+// =============================================================================
+// SSO Actor
+// =============================================================================
+
+actor SsoActor {
+    state providers: Map<String, SsoProvider>
+    state sessions: Map<String, SsoSession>
+    state pending_states: Map<String, PendingLogin>
+    
+    fn new() -> Self { SsoActor { providers: Map.empty(), sessions: Map.empty(), pending_states: Map.empty() } }
+    
+    fn register_provider(provider: SsoProvider) { self.providers.set(provider.id.clone(), provider) }
+    
+    fn initiate_login(provider_id: String) -> Result<SsoLoginRequest, SsoError> {
+        let provider = self.providers.get(provider_id.clone()).ok_or(SsoError.ProviderNotFound(provider_id))?
+        
+        let state = base64.encode_url_safe(crypto.random_bytes(32))
+        let nonce = base64.encode_url_safe(crypto.random_bytes(32))
+        let pkce = PkceChallenge.generate()
+        
+        self.pending_states.set(state.clone(), PendingLogin {
+            provider_id: provider.id.clone(), state: state.clone(), nonce: nonce.clone(),
+            pkce_verifier: pkce.verifier.clone(), created_at: DateTime.now()
+        })
+        
+        match provider.config {
+            SsoConfig.Oidc(config) => {
+                let url = format!("{}?client_id={}&response_type=code&redirect_uri={}&scope={}&state={}&nonce={}&code_challenge={}&code_challenge_method=S256",
+                    config.authorization_endpoint.unwrap_or(format!("{}/authorize", config.issuer)),
+                    config.client_id, url.encode(config.redirect_uri), url.encode(config.scopes.join(" ")),
+                    state, nonce, pkce.challenge)
+                Ok(SsoLoginRequest { redirect_url: url, state: state, nonce: Some(nonce), pkce_verifier: Some(pkce.verifier) })
+            }
+            _ => Err(SsoError.ConfigError("Unsupported provider type"))
+        }
+    }
+    
+    fn validate_state(state: String) -> Option<PendingLogin> { self.pending_states.remove(state) }
+    fn store_session(session: SsoSession) { self.sessions.set(session.id.clone(), session) }
+    fn get_session(id: String) -> Option<SsoSession> { self.sessions.get(id) }
+}
+
+struct PendingLogin { provider_id: String, state: String, nonce: String, pkce_verifier: String, created_at: DateTime }
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum SsoError {
+    ProviderNotFound(String)
+    ConfigError(String)
+    InvalidCallback(String)
+    InvalidToken
+    InvalidResponse
+    NetworkError(String)
+    Other(String)
+}
+
+impl Display for SsoError {
+    fn fmt(f: Formatter) {
+        match self {
+            ProviderNotFound(id) => f.write(format!("SSO provider not found: {}", id))
+            ConfigError(msg) => f.write(format!("Configuration error: {}", msg))
+            InvalidCallback(msg) => f.write(format!("Invalid callback: {}", msg))
+            InvalidToken => f.write("Invalid token")
+            InvalidResponse => f.write("Invalid response from provider")
+            NetworkError(msg) => f.write(format!("Network error: {}", msg))
+            Other(msg) => f.write(msg)
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "oidc config" {
+    let config = OidcConfig.google("client-id", "client-secret", "https://app.example.com/callback")
+    assert_eq(config.issuer, "https://accounts.google.com")?
+    assert(config.scopes.contains("openid"))?
+}
+
+test "pkce generation" {
+    let pkce = PkceChallenge.generate()
+    assert(!pkce.verifier.is_empty())?
+    assert(!pkce.challenge.is_empty())?
+    assert(pkce.verifier != pkce.challenge)?
+}
+
+test "saml config" {
+    let config = SamlConfig.new("https://sp.example.com", "https://idp.example.com/sso", "CERT")
+        .with_attribute("email", "user_email")
+    assert(config.attribute_mapping.contains_key("email"))?
+}

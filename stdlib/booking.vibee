@@ -1,0 +1,734 @@
+// =============================================================================
+// Vibee OS — Booking Module
+// Appointment and resource booking system
+// =============================================================================
+
+use datetime::{DateTime, Duration}
+use uuid::{UUID}
+
+// =============================================================================
+// Booking Types & Enums
+// =============================================================================
+
+enum BookingStatus { Pending, Confirmed, Cancelled, Completed, NoShow }
+enum BookingType { Appointment, Meeting, Resource, Service }
+enum PaymentStatus { NotRequired, Pending, Paid, Refunded, Failed }
+enum CancellationPolicy { Flexible, Moderate, Strict, NonRefundable }
+
+// =============================================================================
+// Booking Participant
+// =============================================================================
+
+struct BookingParticipant {
+    id: String
+    name: String
+    email: String
+    phone: Option<String>
+    is_host: Bool
+    confirmed: Bool
+    confirmed_at: Option<DateTime>
+}
+
+impl BookingParticipant {
+    fn new(name: String, email: String) -> Self {
+        BookingParticipant {
+            id: UUID.v4().to_string(),
+            name: name,
+            email: email,
+            phone: None,
+            is_host: false,
+            confirmed: false,
+            confirmed_at: None
+        }
+    }
+    
+    fn host(name: String, email: String) -> Self {
+        var p = BookingParticipant.new(name, email)
+        p.is_host = true
+        p.confirmed = true
+        p.confirmed_at = Some(DateTime.now())
+        p
+    }
+    
+    fn with_phone(p: String) -> Self { self.phone = Some(p); self }
+    
+    fn confirm() -> Self {
+        self.confirmed = true
+        self.confirmed_at = Some(DateTime.now())
+        self
+    }
+}
+
+// =============================================================================
+// Bookable Resource
+// =============================================================================
+
+struct BookableResource {
+    id: String
+    name: String
+    description: Option<String>
+    resource_type: String
+    capacity: Int
+    location: Option<String>
+    amenities: [String]
+    hourly_rate: Option<Float>
+    min_duration: Duration
+    max_duration: Duration
+    buffer_time: Duration
+    is_active: Bool
+    metadata: Map<String, String>
+}
+
+impl BookableResource {
+    fn new(name: String, resource_type: String) -> Self {
+        BookableResource {
+            id: UUID.v4().to_string(),
+            name: name,
+            description: None,
+            resource_type: resource_type,
+            capacity: 1,
+            location: None,
+            amenities: [],
+            hourly_rate: None,
+            min_duration: Duration.minutes(15),
+            max_duration: Duration.hours(8),
+            buffer_time: Duration.minutes(0),
+            is_active: true,
+            metadata: Map.empty()
+        }
+    }
+    
+    fn meeting_room(name: String, capacity: Int) -> Self {
+        var r = BookableResource.new(name, "meeting_room")
+        r.capacity = capacity
+        r
+    }
+    
+    fn equipment(name: String) -> Self {
+        BookableResource.new(name, "equipment")
+    }
+    
+    fn with_description(d: String) -> Self { self.description = Some(d); self }
+    fn with_location(l: String) -> Self { self.location = Some(l); self }
+    fn with_capacity(c: Int) -> Self { self.capacity = c; self }
+    fn with_hourly_rate(r: Float) -> Self { self.hourly_rate = Some(r); self }
+    fn with_min_duration(d: Duration) -> Self { self.min_duration = d; self }
+    fn with_max_duration(d: Duration) -> Self { self.max_duration = d; self }
+    fn with_buffer(d: Duration) -> Self { self.buffer_time = d; self }
+    fn add_amenity(a: String) -> Self { self.amenities.push(a); self }
+    
+    fn deactivate() -> Self { self.is_active = false; self }
+    fn activate() -> Self { self.is_active = true; self }
+}
+
+// =============================================================================
+// Service Type
+// =============================================================================
+
+struct ServiceType {
+    id: String
+    name: String
+    description: Option<String>
+    duration: Duration
+    price: Float
+    currency: String
+    buffer_before: Duration
+    buffer_after: Duration
+    max_participants: Int
+    requires_confirmation: Bool
+    cancellation_policy: CancellationPolicy
+    is_active: Bool
+}
+
+impl ServiceType {
+    fn new(name: String, duration: Duration, price: Float) -> Self {
+        ServiceType {
+            id: UUID.v4().to_string(),
+            name: name,
+            description: None,
+            duration: duration,
+            price: price,
+            currency: "USD",
+            buffer_before: Duration.minutes(0),
+            buffer_after: Duration.minutes(0),
+            max_participants: 1,
+            requires_confirmation: false,
+            cancellation_policy: CancellationPolicy.Flexible,
+            is_active: true
+        }
+    }
+    
+    fn with_description(d: String) -> Self { self.description = Some(d); self }
+    fn with_currency(c: String) -> Self { self.currency = c; self }
+    fn with_buffer(before: Duration, after: Duration) -> Self {
+        self.buffer_before = before
+        self.buffer_after = after
+        self
+    }
+    fn with_max_participants(n: Int) -> Self { self.max_participants = n; self }
+    fn requires_confirmation() -> Self { self.requires_confirmation = true; self }
+    fn with_cancellation_policy(p: CancellationPolicy) -> Self { self.cancellation_policy = p; self }
+}
+
+// =============================================================================
+// Booking
+// =============================================================================
+
+struct Booking {
+    id: String
+    booking_type: BookingType
+    status: BookingStatus
+    title: String
+    description: Option<String>
+    start_time: DateTime
+    end_time: DateTime
+    timezone: String
+    host_id: String
+    participants: [BookingParticipant]
+    resource_id: Option<String>
+    service_type_id: Option<String>
+    location: Option<String>
+    meeting_url: Option<String>
+    notes: Option<String>
+    payment_status: PaymentStatus
+    amount: Float
+    currency: String
+    confirmation_code: String
+    cancellation_reason: Option<String>
+    cancelled_at: Option<DateTime>
+    cancelled_by: Option<String>
+    reminder_sent: Bool
+    custom_fields: Map<String, String>
+    created_at: DateTime
+    updated_at: DateTime
+}
+
+impl Booking {
+    fn new(title: String, start: DateTime, end: DateTime, host_id: String) -> Self {
+        let now = DateTime.now()
+        Booking {
+            id: UUID.v4().to_string(),
+            booking_type: BookingType.Appointment,
+            status: BookingStatus.Pending,
+            title: title,
+            description: None,
+            start_time: start,
+            end_time: end,
+            timezone: "UTC",
+            host_id: host_id,
+            participants: [],
+            resource_id: None,
+            service_type_id: None,
+            location: None,
+            meeting_url: None,
+            notes: None,
+            payment_status: PaymentStatus.NotRequired,
+            amount: 0.0,
+            currency: "USD",
+            confirmation_code: generate_confirmation_code(),
+            cancellation_reason: None,
+            cancelled_at: None,
+            cancelled_by: None,
+            reminder_sent: false,
+            custom_fields: Map.empty(),
+            created_at: now,
+            updated_at: now
+        }
+    }
+    
+    fn appointment(title: String, start: DateTime, duration: Duration, host_id: String) -> Self {
+        var b = Booking.new(title, start, start.add(duration), host_id)
+        b.booking_type = BookingType.Appointment
+        b
+    }
+    
+    fn meeting(title: String, start: DateTime, duration: Duration, host_id: String) -> Self {
+        var b = Booking.new(title, start, start.add(duration), host_id)
+        b.booking_type = BookingType.Meeting
+        b
+    }
+    
+    fn resource_booking(resource_id: String, start: DateTime, end: DateTime, host_id: String) -> Self {
+        var b = Booking.new("Resource Booking", start, end, host_id)
+        b.booking_type = BookingType.Resource
+        b.resource_id = Some(resource_id)
+        b
+    }
+    
+    // Builder methods
+    fn with_description(d: String) -> Self { self.description = Some(d); self }
+    fn with_timezone(tz: String) -> Self { self.timezone = tz; self }
+    fn with_location(l: String) -> Self { self.location = Some(l); self }
+    fn with_meeting_url(url: String) -> Self { self.meeting_url = Some(url); self }
+    fn with_notes(n: String) -> Self { self.notes = Some(n); self }
+    fn with_service(id: String) -> Self { self.service_type_id = Some(id); self }
+    fn with_payment(amount: Float, currency: String) -> Self {
+        self.amount = amount
+        self.currency = currency
+        self.payment_status = PaymentStatus.Pending
+        self
+    }
+    
+    fn add_participant(p: BookingParticipant) -> Self {
+        self.participants.push(p)
+        self
+    }
+    
+    // Status methods
+    fn confirm() -> Self {
+        self.status = BookingStatus.Confirmed
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn cancel(reason: String, cancelled_by: String) -> Self {
+        self.status = BookingStatus.Cancelled
+        self.cancellation_reason = Some(reason)
+        self.cancelled_at = Some(DateTime.now())
+        self.cancelled_by = Some(cancelled_by)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn complete() -> Self {
+        self.status = BookingStatus.Completed
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn mark_no_show() -> Self {
+        self.status = BookingStatus.NoShow
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn mark_paid() -> Self {
+        self.payment_status = PaymentStatus.Paid
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn refund() -> Self {
+        self.payment_status = PaymentStatus.Refunded
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn mark_reminder_sent() -> Self {
+        self.reminder_sent = true
+        self
+    }
+    
+    // Reschedule
+    fn reschedule(new_start: DateTime, new_end: DateTime) -> Self {
+        self.start_time = new_start
+        self.end_time = new_end
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    // Query methods
+    fn duration() -> Duration {
+        self.end_time.diff(self.start_time)
+    }
+    
+    fn is_confirmed() -> Bool { self.status == BookingStatus.Confirmed }
+    fn is_cancelled() -> Bool { self.status == BookingStatus.Cancelled }
+    fn is_completed() -> Bool { self.status == BookingStatus.Completed }
+    fn is_pending() -> Bool { self.status == BookingStatus.Pending }
+    
+    fn is_upcoming() -> Bool {
+        !self.is_cancelled() && DateTime.now().is_before(self.start_time)
+    }
+    
+    fn is_past() -> Bool {
+        DateTime.now().is_after(self.end_time)
+    }
+    
+    fn is_happening_now() -> Bool {
+        let now = DateTime.now()
+        now.is_after(self.start_time) && now.is_before(self.end_time)
+    }
+    
+    fn can_cancel() -> Bool {
+        !self.is_cancelled() && !self.is_completed() && self.is_upcoming()
+    }
+    
+    fn can_reschedule() -> Bool {
+        self.can_cancel()
+    }
+    
+    fn participant_count() -> Int {
+        self.participants.len()
+    }
+    
+    fn confirmed_participants() -> [BookingParticipant] {
+        self.participants.iter().filter(|p| p.confirmed).collect()
+    }
+    
+    fn time_until_start() -> Option<Duration> {
+        if self.is_upcoming() {
+            Some(self.start_time.diff(DateTime.now()))
+        } else {
+            None
+        }
+    }
+}
+
+fn generate_confirmation_code() -> String {
+    let chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    var code = ""
+    for _ in 0..8 {
+        let idx = @native("random_int", 0, chars.len())
+        code += chars[idx..idx+1]
+    }
+    code
+}
+
+// =============================================================================
+// Booking Query
+// =============================================================================
+
+struct BookingQuery {
+    host_id: Option<String>
+    participant_email: Option<String>
+    resource_id: Option<String>
+    service_type_id: Option<String>
+    statuses: [BookingStatus]
+    start_after: Option<DateTime>
+    start_before: Option<DateTime>
+    booking_types: [BookingType]
+    confirmation_code: Option<String>
+    include_cancelled: Bool
+    limit: Int
+    offset: Int
+}
+
+impl BookingQuery {
+    fn new() -> Self {
+        BookingQuery {
+            host_id: None,
+            participant_email: None,
+            resource_id: None,
+            service_type_id: None,
+            statuses: [],
+            start_after: None,
+            start_before: None,
+            booking_types: [],
+            confirmation_code: None,
+            include_cancelled: false,
+            limit: 50,
+            offset: 0
+        }
+    }
+    
+    fn for_host(id: String) -> Self { self.host_id = Some(id); self }
+    fn for_participant(email: String) -> Self { self.participant_email = Some(email); self }
+    fn for_resource(id: String) -> Self { self.resource_id = Some(id); self }
+    fn for_service(id: String) -> Self { self.service_type_id = Some(id); self }
+    fn with_status(s: BookingStatus) -> Self { self.statuses.push(s); self }
+    fn with_type(t: BookingType) -> Self { self.booking_types.push(t); self }
+    fn by_confirmation_code(code: String) -> Self { self.confirmation_code = Some(code); self }
+    
+    fn upcoming() -> Self {
+        self.start_after = Some(DateTime.now())
+        self
+    }
+    
+    fn today() -> Self {
+        let now = DateTime.now()
+        self.start_after = Some(now.start_of_day())
+        self.start_before = Some(now.end_of_day())
+        self
+    }
+    
+    fn in_range(start: DateTime, end: DateTime) -> Self {
+        self.start_after = Some(start)
+        self.start_before = Some(end)
+        self
+    }
+    
+    fn confirmed_only() -> Self { self.statuses = [BookingStatus.Confirmed]; self }
+    fn include_cancelled() -> Self { self.include_cancelled = true; self }
+    fn limit(n: Int) -> Self { self.limit = n; self }
+    fn page(p: Int, per: Int) -> Self {
+        self.limit = per
+        self.offset = (p - 1) * per
+        self
+    }
+}
+
+// =============================================================================
+// Booking Service
+// =============================================================================
+
+actor BookingService {
+    state bookings: Map<String, Booking>
+    state by_host: Map<String, [String]>
+    state by_resource: Map<String, [String]>
+    state by_confirmation: Map<String, String>
+    state resources: Map<String, BookableResource>
+    state services: Map<String, ServiceType>
+    
+    fn new() -> Self {
+        BookingService {
+            bookings: Map.empty(),
+            by_host: Map.empty(),
+            by_resource: Map.empty(),
+            by_confirmation: Map.empty(),
+            resources: Map.empty(),
+            services: Map.empty()
+        }
+    }
+    
+    fn create(booking: Booking) -> Result<Booking, BookingError> {
+        // Validate
+        if booking.end_time.is_before(booking.start_time) {
+            return Err(BookingError.InvalidTimeRange)
+        }
+        
+        // Check resource availability
+        if let Some(resource_id) = booking.resource_id.clone() {
+            if !self.is_resource_available(resource_id, booking.start_time, booking.end_time) {
+                return Err(BookingError.ResourceNotAvailable)
+            }
+        }
+        
+        // Store booking
+        self.bookings.insert(booking.id.clone(), booking.clone())
+        self.by_confirmation.insert(booking.confirmation_code.clone(), booking.id.clone())
+        
+        // Index by host
+        let host_bookings = self.by_host.get(booking.host_id.clone()).unwrap_or([])
+        host_bookings.push(booking.id.clone())
+        self.by_host.insert(booking.host_id.clone(), host_bookings)
+        
+        // Index by resource
+        if let Some(resource_id) = booking.resource_id.clone() {
+            let resource_bookings = self.by_resource.get(resource_id.clone()).unwrap_or([])
+            resource_bookings.push(booking.id.clone())
+            self.by_resource.insert(resource_id, resource_bookings)
+        }
+        
+        Ok(booking)
+    }
+    
+    fn get(id: String) -> Option<Booking> {
+        self.bookings.get(id)
+    }
+    
+    fn get_by_confirmation(code: String) -> Option<Booking> {
+        self.by_confirmation.get(code).and_then(|id| self.bookings.get(id.clone()))
+    }
+    
+    fn update(booking: Booking) -> Result<Booking, BookingError> {
+        if !self.bookings.contains_key(booking.id.clone()) {
+            return Err(BookingError.NotFound)
+        }
+        
+        var updated = booking.clone()
+        updated.updated_at = DateTime.now()
+        self.bookings.insert(updated.id.clone(), updated.clone())
+        
+        Ok(updated)
+    }
+    
+    fn confirm(id: String) -> Result<Booking, BookingError> {
+        let booking = self.bookings.get_mut(id).ok_or(BookingError.NotFound)?
+        booking.confirm()
+        Ok(booking.clone())
+    }
+    
+    fn cancel(id: String, reason: String, cancelled_by: String) -> Result<Booking, BookingError> {
+        let booking = self.bookings.get_mut(id).ok_or(BookingError.NotFound)?
+        
+        if !booking.can_cancel() {
+            return Err(BookingError.CannotCancel)
+        }
+        
+        booking.cancel(reason, cancelled_by)
+        Ok(booking.clone())
+    }
+    
+    fn reschedule(id: String, new_start: DateTime, new_end: DateTime) -> Result<Booking, BookingError> {
+        let booking = self.bookings.get_mut(id.clone()).ok_or(BookingError.NotFound)?
+        
+        if !booking.can_reschedule() {
+            return Err(BookingError.CannotReschedule)
+        }
+        
+        // Check resource availability for new time
+        if let Some(resource_id) = booking.resource_id.clone() {
+            if !self.is_resource_available_excluding(resource_id, new_start, new_end, id) {
+                return Err(BookingError.ResourceNotAvailable)
+            }
+        }
+        
+        booking.reschedule(new_start, new_end)
+        Ok(booking.clone())
+    }
+    
+    fn query(q: BookingQuery) -> [Booking] {
+        self.bookings.values().filter(|b| {
+            if let Some(host_id) = q.host_id.clone() {
+                if b.host_id != host_id { return false }
+            }
+            
+            if let Some(resource_id) = q.resource_id.clone() {
+                if b.resource_id != Some(resource_id) { return false }
+            }
+            
+            if let Some(code) = q.confirmation_code.clone() {
+                if b.confirmation_code != code { return false }
+            }
+            
+            if !q.statuses.is_empty() && !q.statuses.contains(b.status) { return false }
+            if !q.include_cancelled && b.is_cancelled() { return false }
+            if !q.booking_types.is_empty() && !q.booking_types.contains(b.booking_type) { return false }
+            
+            if let Some(start) = q.start_after {
+                if b.start_time.is_before(start) { return false }
+            }
+            if let Some(end) = q.start_before {
+                if b.start_time.is_after(end) { return false }
+            }
+            
+            if let Some(email) = q.participant_email.clone() {
+                if !b.participants.iter().any(|p| p.email == email) { return false }
+            }
+            
+            true
+        })
+        .skip(q.offset)
+        .take(q.limit)
+        .collect()
+    }
+    
+    // Resource management
+    fn add_resource(resource: BookableResource) {
+        self.resources.insert(resource.id.clone(), resource)
+    }
+    
+    fn get_resource(id: String) -> Option<BookableResource> {
+        self.resources.get(id)
+    }
+    
+    fn is_resource_available(resource_id: String, start: DateTime, end: DateTime) -> Bool {
+        self.is_resource_available_excluding(resource_id, start, end, "")
+    }
+    
+    fn is_resource_available_excluding(resource_id: String, start: DateTime, end: DateTime, exclude_id: String) -> Bool {
+        let bookings = self.by_resource.get(resource_id).unwrap_or([])
+        
+        for booking_id in bookings.iter() {
+            if booking_id == exclude_id { continue }
+            
+            if let Some(booking) = self.bookings.get(booking_id.clone()) {
+                if booking.is_cancelled() { continue }
+                
+                if booking.start_time.is_before(end) && booking.end_time.is_after(start) {
+                    return false
+                }
+            }
+        }
+        
+        true
+    }
+    
+    // Service management
+    fn add_service(service: ServiceType) {
+        self.services.insert(service.id.clone(), service)
+    }
+    
+    fn get_service(id: String) -> Option<ServiceType> {
+        self.services.get(id)
+    }
+    
+    fn count() -> Int { self.bookings.len() }
+    fn count_upcoming() -> Int {
+        self.bookings.values().filter(|b| b.is_upcoming()).count()
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum BookingError {
+    NotFound
+    InvalidTimeRange
+    ResourceNotAvailable
+    ServiceNotFound
+    CannotCancel
+    CannotReschedule
+    PaymentRequired
+    ValidationError(String)
+}
+
+impl Display for BookingError {
+    fn fmt(f: Formatter) {
+        match self {
+            NotFound => f.write("Booking not found")
+            InvalidTimeRange => f.write("Invalid time range")
+            ResourceNotAvailable => f.write("Resource not available")
+            ServiceNotFound => f.write("Service not found")
+            CannotCancel => f.write("Cannot cancel booking")
+            CannotReschedule => f.write("Cannot reschedule booking")
+            PaymentRequired => f.write("Payment required")
+            ValidationError(msg) => f.write("Validation error: \(msg)")
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "booking creation" {
+    let start = DateTime.now().add(Duration.days(1))
+    let booking = Booking.appointment("Consultation", start, Duration.hours(1), "host1")
+        .with_description("Initial consultation")
+        .add_participant(BookingParticipant.new("John", "john@example.com"))
+    
+    assert_eq(booking.duration().as_hours(), 1)?
+    assert(booking.is_pending())?
+    assert(booking.is_upcoming())?
+}
+
+test "booking confirmation" {
+    let start = DateTime.now().add(Duration.days(1))
+    var booking = Booking.appointment("Test", start, Duration.hours(1), "host1")
+    
+    booking = booking.confirm()
+    assert(booking.is_confirmed())?
+}
+
+test "booking cancellation" {
+    let start = DateTime.now().add(Duration.days(1))
+    var booking = Booking.appointment("Test", start, Duration.hours(1), "host1")
+    
+    assert(booking.can_cancel())?
+    booking = booking.cancel("Changed plans", "user1")
+    assert(booking.is_cancelled())?
+    assert(!booking.can_cancel())?
+}
+
+test "booking service" {
+    let svc = BookingService.new()
+    
+    let start = DateTime.now().add(Duration.days(1))
+    let booking = svc.create(Booking.appointment("Test", start, Duration.hours(1), "host1")).unwrap()
+    
+    assert(svc.get(booking.id.clone()).is_some())?
+    assert(svc.get_by_confirmation(booking.confirmation_code.clone()).is_some())?
+}
+
+test "resource booking" {
+    let svc = BookingService.new()
+    
+    svc.add_resource(BookableResource.meeting_room("Room A", 10))
+    let resource = svc.get_resource("Room A")
+    
+    let start = DateTime.now().add(Duration.days(1))
+    assert(svc.is_resource_available("Room A", start, start.add(Duration.hours(1))))?
+}

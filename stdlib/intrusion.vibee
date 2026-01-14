@@ -1,0 +1,260 @@
+// =============================================================================
+// Vibee OS — Intrusion Detection Module
+// IDS/IPS system for detecting and preventing network intrusions
+// =============================================================================
+
+use net.{IpAddr, SocketAddr}
+use datetime.{DateTime}
+
+// =============================================================================
+// Core Types
+// =============================================================================
+
+enum AlertSeverity { Critical, High, Medium, Low, Info }
+enum AlertAction { Alert, Block, Drop, Log, Quarantine }
+enum DetectionMethod { Signature, Anomaly, Heuristic, Behavioral, Hybrid }
+
+/// Intrusion alert
+struct IntrusionAlert {
+    id: String
+    timestamp: DateTime
+    severity: AlertSeverity
+    source_ip: IpAddr
+    dest_ip: IpAddr
+    source_port: UInt16
+    dest_port: UInt16
+    signature_id: Option<String>
+    description: String
+    action_taken: AlertAction
+    raw_data: [UInt8]
+}
+
+// =============================================================================
+// Signature
+// =============================================================================
+
+struct Signature {
+    id: String
+    name: String
+    description: String
+    severity: AlertSeverity
+    pattern: [UInt8]
+    protocol: String
+    src_port: Option<UInt16>
+    dst_port: Option<UInt16>
+    enabled: Bool
+}
+
+impl Signature {
+    fn new(id: String, name: String, pattern: [UInt8]) -> Self {
+        Signature {
+            id: id, name: name, description: "", severity: AlertSeverity.Medium,
+            pattern: pattern, protocol: "any", src_port: None, dst_port: None, enabled: true
+        }
+    }
+    
+    fn with_severity(sev: AlertSeverity) -> Self { self.severity = sev; self }
+    fn with_protocol(proto: String) -> Self { self.protocol = proto; self }
+    fn with_dst_port(port: UInt16) -> Self { self.dst_port = Some(port); self }
+    
+    fn matches(data: [UInt8]) -> Bool {
+        if !self.enabled { return false }
+        @native("bytes_contains", data, self.pattern)
+    }
+}
+
+// =============================================================================
+// Anomaly Detector
+// =============================================================================
+
+struct AnomalyDetector {
+    baseline: TrafficBaseline
+    threshold_multiplier: Float
+}
+
+struct TrafficBaseline {
+    avg_packets_per_sec: Float
+    avg_bytes_per_sec: Float
+    avg_connections_per_sec: Float
+    common_ports: [UInt16]
+    learning_period: Bool
+}
+
+impl AnomalyDetector {
+    fn new() -> Self {
+        AnomalyDetector {
+            baseline: TrafficBaseline {
+                avg_packets_per_sec: 0.0, avg_bytes_per_sec: 0.0,
+                avg_connections_per_sec: 0.0, common_ports: [], learning_period: true
+            },
+            threshold_multiplier: 3.0
+        }
+    }
+    
+    fn update_baseline(packets: Float, bytes: Float, connections: Float) {
+        let b = self.baseline
+        b.avg_packets_per_sec = (b.avg_packets_per_sec * 0.9) + (packets * 0.1)
+        b.avg_bytes_per_sec = (b.avg_bytes_per_sec * 0.9) + (bytes * 0.1)
+        b.avg_connections_per_sec = (b.avg_connections_per_sec * 0.9) + (connections * 0.1)
+    }
+    
+    fn is_anomaly(packets: Float, bytes: Float, connections: Float) -> Bool {
+        if self.baseline.learning_period { return false }
+        let t = self.threshold_multiplier
+        packets > self.baseline.avg_packets_per_sec * t ||
+        bytes > self.baseline.avg_bytes_per_sec * t ||
+        connections > self.baseline.avg_connections_per_sec * t
+    }
+    
+    fn finish_learning() { self.baseline.learning_period = false }
+}
+
+// =============================================================================
+// IDS Engine
+// =============================================================================
+
+actor IntrusionDetector {
+    state signatures: [Signature]
+    state anomaly_detector: AnomalyDetector
+    state alerts: [IntrusionAlert]
+    state blocked_ips: Map<IpAddr, DateTime>
+    state stats: IdsStats
+    state alert_handler: Option<fn(IntrusionAlert)>
+    
+    fn new() -> Self {
+        IntrusionDetector {
+            signatures: [], anomaly_detector: AnomalyDetector.new(),
+            alerts: [], blocked_ips: Map.new(), stats: IdsStats.new(), alert_handler: None
+        }
+    }
+    
+    fn add_signature(sig: Signature) { self.signatures.push(sig) }
+    fn load_signatures(sigs: [Signature]) { self.signatures.extend(sigs) }
+    
+    fn analyze(packet: NetworkPacket) -> Option<IntrusionAlert> {
+        self.stats.packets_analyzed += 1
+        
+        // Check blocked IPs
+        if self.blocked_ips.contains_key(packet.source_ip) {
+            return None
+        }
+        
+        // Signature-based detection
+        for sig in self.signatures.iter() {
+            if sig.matches(packet.payload) {
+                self.stats.alerts_generated += 1
+                let alert = IntrusionAlert {
+                    id: @native("uuid_v4"),
+                    timestamp: DateTime.now(),
+                    severity: sig.severity,
+                    source_ip: packet.source_ip,
+                    dest_ip: packet.dest_ip,
+                    source_port: packet.source_port,
+                    dest_port: packet.dest_port,
+                    signature_id: Some(sig.id.clone()),
+                    description: sig.name.clone(),
+                    action_taken: AlertAction.Alert,
+                    raw_data: packet.payload.clone()
+                }
+                self.handle_alert(alert.clone())
+                return Some(alert)
+            }
+        }
+        
+        // Anomaly detection
+        if self.anomaly_detector.is_anomaly(1.0, packet.payload.len() as Float, 1.0) {
+            self.stats.anomalies_detected += 1
+            let alert = IntrusionAlert {
+                id: @native("uuid_v4"),
+                timestamp: DateTime.now(),
+                severity: AlertSeverity.Medium,
+                source_ip: packet.source_ip,
+                dest_ip: packet.dest_ip,
+                source_port: packet.source_port,
+                dest_port: packet.dest_port,
+                signature_id: None,
+                description: "Anomaly detected",
+                action_taken: AlertAction.Alert,
+                raw_data: []
+            }
+            self.handle_alert(alert.clone())
+            return Some(alert)
+        }
+        
+        None
+    }
+    
+    fn handle_alert(alert: IntrusionAlert) {
+        self.alerts.push(alert.clone())
+        if let Some(handler) = self.alert_handler { handler(alert) }
+    }
+    
+    fn block_ip(ip: IpAddr, duration_secs: Int64) {
+        self.blocked_ips.insert(ip, DateTime.now().add_seconds(duration_secs))
+    }
+    
+    fn unblock_ip(ip: IpAddr) { self.blocked_ips.remove(ip) }
+    fn set_alert_handler(handler: fn(IntrusionAlert)) { self.alert_handler = Some(handler) }
+    fn get_alerts(since: DateTime) -> [IntrusionAlert] { self.alerts.iter().filter(|a| a.timestamp >= since).cloned().collect() }
+    fn stats() -> IdsStats { self.stats.clone() }
+}
+
+struct NetworkPacket {
+    source_ip: IpAddr
+    dest_ip: IpAddr
+    source_port: UInt16
+    dest_port: UInt16
+    protocol: String
+    payload: [UInt8]
+    timestamp: DateTime
+}
+
+struct IdsStats {
+    packets_analyzed: Int64
+    alerts_generated: Int64
+    anomalies_detected: Int64
+    ips_blocked: Int64
+}
+
+impl IdsStats {
+    fn new() -> Self { IdsStats { packets_analyzed: 0, alerts_generated: 0, anomalies_detected: 0, ips_blocked: 0 } }
+}
+
+// =============================================================================
+// Preset Signatures
+// =============================================================================
+
+fn common_attack_signatures() -> [Signature] {
+    [
+        Signature.new("1001", "Port Scan SYN", [0x02]).with_severity(AlertSeverity.Medium),
+        Signature.new("1002", "SSH Brute Force", "SSH-".as_bytes()).with_dst_port(22).with_severity(AlertSeverity.High),
+        Signature.new("1003", "SQL Injection Attempt", "UNION SELECT".as_bytes()).with_severity(AlertSeverity.Critical),
+        Signature.new("1004", "Shell Command", "/bin/sh".as_bytes()).with_severity(AlertSeverity.Critical),
+        Signature.new("1005", "Reverse Shell", "bash -i".as_bytes()).with_severity(AlertSeverity.Critical)
+    ]
+}
+
+enum IdsError { SignatureNotFound(String), InvalidPattern(String), ConfigError(String) }
+
+test "signature matching" {
+    let sig = Signature.new("test", "Test", "malicious".as_bytes())
+    assert(sig.matches("this is malicious content".as_bytes()))?
+    assert(!sig.matches("this is safe content".as_bytes()))?
+}
+
+test "ids detection" {
+    let ids = IntrusionDetector.new()
+    ids.load_signatures(common_attack_signatures())
+    
+    let packet = NetworkPacket {
+        source_ip: IpAddr.parse("10.0.0.1")?,
+        dest_ip: IpAddr.parse("192.168.1.1")?,
+        source_port: 12345, dest_port: 80,
+        protocol: "tcp",
+        payload: "SELECT * FROM users UNION SELECT password FROM admin".as_bytes(),
+        timestamp: DateTime.now()
+    }
+    
+    let alert = ids.analyze(packet)
+    assert(alert.is_some())?
+}

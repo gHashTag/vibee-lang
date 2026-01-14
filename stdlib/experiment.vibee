@@ -1,0 +1,841 @@
+// =============================================================================
+// Vibee OS — ML Experiment Module
+// Machine learning experiment tracking and management
+// =============================================================================
+
+use datetime::{DateTime, Duration}
+use uuid::{UUID}
+use tensor::{Tensor}
+use result::{Result, Ok, Err}
+use json::{Json, ToJson}
+
+// -----------------------------------------------------------------------------
+// Experiment Status
+// -----------------------------------------------------------------------------
+
+/// Status of an experiment run
+enum ExperimentStatus {
+    Pending
+    Running
+    Completed
+    Failed
+    Cancelled
+    
+    fn to_string() -> String {
+        match self {
+            Pending => "pending",
+            Running => "running",
+            Completed => "completed",
+            Failed => "failed",
+            Cancelled => "cancelled"
+        }
+    }
+    
+    fn is_terminal() -> Bool {
+        match self {
+            Completed | Failed | Cancelled => true,
+            _ => false
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Metric Types
+// -----------------------------------------------------------------------------
+
+/// Metric value with timestamp
+struct MetricPoint {
+    value: Float
+    step: Int
+    timestamp: DateTime
+    
+    fn new(value: Float, step: Int) -> Self {
+        MetricPoint { value: value, step: step, timestamp: DateTime.now() }
+    }
+}
+
+/// Metric series for tracking over time
+struct MetricSeries {
+    name: String
+    points: [MetricPoint]
+    
+    fn new(name: String) -> Self {
+        MetricSeries { name: name, points: [] }
+    }
+    
+    fn log(value: Float, step: Int) {
+        self.points.push(MetricPoint.new(value, step))
+    }
+    
+    fn last() -> Option<Float> {
+        self.points.last().map(|p| p.value)
+    }
+    
+    fn min() -> Option<Float> {
+        if self.points.is_empty() { return None }
+        Some(self.points.iter().map(|p| p.value).fold(Float.INFINITY, |a, b| a.min(b)))
+    }
+    
+    fn max() -> Option<Float> {
+        if self.points.is_empty() { return None }
+        Some(self.points.iter().map(|p| p.value).fold(Float.NEG_INFINITY, |a, b| a.max(b)))
+    }
+    
+    fn mean() -> Option<Float> {
+        if self.points.is_empty() { return None }
+        Some(self.points.iter().map(|p| p.value).sum() / self.points.len() as Float)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Artifact Types
+// -----------------------------------------------------------------------------
+
+/// Type of artifact
+enum ArtifactType {
+    Model
+    Dataset
+    Plot
+    Config
+    Checkpoint
+    Log
+    Custom(String)
+    
+    fn to_string() -> String {
+        match self {
+            Model => "model",
+            Dataset => "dataset",
+            Plot => "plot",
+            Config => "config",
+            Checkpoint => "checkpoint",
+            Log => "log",
+            Custom(s) => s
+        }
+    }
+}
+
+/// Artifact metadata
+struct Artifact {
+    id: UUID
+    name: String
+    artifact_type: ArtifactType
+    path: String
+    size_bytes: Int
+    checksum: String
+    metadata: Map<String, String>
+    created_at: DateTime
+    
+    fn new(name: String, artifact_type: ArtifactType, path: String) -> Self {
+        Artifact {
+            id: UUID.v4(),
+            name: name,
+            artifact_type: artifact_type,
+            path: path,
+            size_bytes: 0,
+            checksum: "",
+            metadata: Map.empty(),
+            created_at: DateTime.now()
+        }
+    }
+    
+    fn with_metadata(key: String, value: String) -> Self {
+        self.metadata.insert(key, value)
+        self
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Experiment Run
+// -----------------------------------------------------------------------------
+
+/// A single experiment run
+struct Run {
+    id: UUID
+    experiment_id: UUID
+    name: String
+    status: ExperimentStatus
+    parameters: Map<String, Json>
+    metrics: Map<String, MetricSeries>
+    artifacts: [Artifact]
+    tags: [String]
+    notes: String
+    start_time: DateTime
+    end_time: Option<DateTime>
+    parent_run_id: Option<UUID>
+    
+    fn new(experiment_id: UUID, name: String) -> Self {
+        Run {
+            id: UUID.v4(),
+            experiment_id: experiment_id,
+            name: name,
+            status: ExperimentStatus.Pending,
+            parameters: Map.empty(),
+            metrics: Map.empty(),
+            artifacts: [],
+            tags: [],
+            notes: "",
+            start_time: DateTime.now(),
+            end_time: None,
+            parent_run_id: None
+        }
+    }
+    
+    fn start() {
+        self.status = ExperimentStatus.Running
+        self.start_time = DateTime.now()
+    }
+    
+    fn complete() {
+        self.status = ExperimentStatus.Completed
+        self.end_time = Some(DateTime.now())
+    }
+    
+    fn fail(reason: String) {
+        self.status = ExperimentStatus.Failed
+        self.end_time = Some(DateTime.now())
+        self.notes = reason
+    }
+    
+    fn cancel() {
+        self.status = ExperimentStatus.Cancelled
+        self.end_time = Some(DateTime.now())
+    }
+    
+    fn duration() -> Option<Duration> {
+        self.end_time.map(|end| end.duration_since(self.start_time))
+    }
+    
+    // Parameter logging
+    fn log_param(key: String, value: Json) {
+        self.parameters.insert(key, value)
+    }
+    
+    fn log_params(params: Map<String, Json>) {
+        for (k, v) in params { self.parameters.insert(k, v) }
+    }
+    
+    // Metric logging
+    fn log_metric(name: String, value: Float, step: Int = 0) {
+        if !self.metrics.contains_key(name) {
+            self.metrics.insert(name, MetricSeries.new(name))
+        }
+        self.metrics.get_mut(name).unwrap().log(value, step)
+    }
+    
+    fn log_metrics(metrics: Map<String, Float>, step: Int = 0) {
+        for (name, value) in metrics {
+            self.log_metric(name, value, step)
+        }
+    }
+    
+    fn get_metric(name: String) -> Option<MetricSeries> {
+        self.metrics.get(name).cloned()
+    }
+    
+    // Artifact logging
+    fn log_artifact(artifact: Artifact) {
+        self.artifacts.push(artifact)
+    }
+    
+    fn log_model(name: String, path: String) {
+        self.log_artifact(Artifact.new(name, ArtifactType.Model, path))
+    }
+    
+    fn log_dataset(name: String, path: String) {
+        self.log_artifact(Artifact.new(name, ArtifactType.Dataset, path))
+    }
+    
+    // Tags
+    fn add_tag(tag: String) {
+        if !self.tags.contains(tag) { self.tags.push(tag) }
+    }
+    
+    fn remove_tag(tag: String) {
+        self.tags.retain(|t| *t != tag)
+    }
+    
+    fn has_tag(tag: String) -> Bool {
+        self.tags.contains(tag)
+    }
+    
+    // Child runs for nested experiments
+    fn create_child_run(name: String) -> Run {
+        var child = Run.new(self.experiment_id, name)
+        child.parent_run_id = Some(self.id)
+        child
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Experiment
+// -----------------------------------------------------------------------------
+
+/// An experiment containing multiple runs
+struct Experiment {
+    id: UUID
+    name: String
+    description: String
+    runs: [Run]
+    tags: [String]
+    created_at: DateTime
+    updated_at: DateTime
+    
+    fn new(name: String) -> Self {
+        let now = DateTime.now()
+        Experiment {
+            id: UUID.v4(),
+            name: name,
+            description: "",
+            runs: [],
+            tags: [],
+            created_at: now,
+            updated_at: now
+        }
+    }
+    
+    fn with_description(description: String) -> Self {
+        self.description = description
+        self
+    }
+    
+    fn create_run(name: String) -> Run {
+        var run = Run.new(self.id, name)
+        self.runs.push(run.clone())
+        self.updated_at = DateTime.now()
+        run
+    }
+    
+    fn get_run(run_id: UUID) -> Option<Run> {
+        self.runs.iter().find(|r| r.id == run_id).cloned()
+    }
+    
+    fn get_runs_by_status(status: ExperimentStatus) -> [Run] {
+        self.runs.iter().filter(|r| r.status == status).cloned().collect()
+    }
+    
+    fn get_best_run(metric_name: String, minimize: Bool = true) -> Option<Run> {
+        var best_run: Option<Run> = None
+        var best_value: Option<Float> = None
+        
+        for run in self.runs {
+            if let Some(series) = run.metrics.get(metric_name) {
+                if let Some(last) = series.last() {
+                    let is_better = match best_value {
+                        None => true,
+                        Some(bv) => if minimize { last < bv } else { last > bv }
+                    }
+                    if is_better {
+                        best_value = Some(last)
+                        best_run = Some(run.clone())
+                    }
+                }
+            }
+        }
+        best_run
+    }
+    
+    fn compare_runs(run_ids: [UUID], metric_names: [String]) -> Map<UUID, Map<String, Float>> {
+        var result = Map.empty()
+        for run_id in run_ids {
+            if let Some(run) = self.get_run(run_id) {
+                var metrics = Map.empty()
+                for name in metric_names {
+                    if let Some(series) = run.metrics.get(name) {
+                        if let Some(last) = series.last() {
+                            metrics.insert(name.clone(), last)
+                        }
+                    }
+                }
+                result.insert(run_id, metrics)
+            }
+        }
+        result
+    }
+    
+    fn delete_run(run_id: UUID) -> Bool {
+        let len_before = self.runs.len()
+        self.runs.retain(|r| r.id != run_id)
+        self.updated_at = DateTime.now()
+        self.runs.len() < len_before
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Experiment Tracker
+// -----------------------------------------------------------------------------
+
+/// Trait for experiment tracking backends
+trait ExperimentBackend {
+    fn save_experiment(experiment: Experiment) -> Result<(), String>
+    fn load_experiment(id: UUID) -> Result<Experiment, String>
+    fn list_experiments() -> Result<[Experiment], String>
+    fn delete_experiment(id: UUID) -> Result<(), String>
+    fn save_run(run: Run) -> Result<(), String>
+    fn load_run(id: UUID) -> Result<Run, String>
+}
+
+/// In-memory experiment backend
+struct InMemoryBackend {
+    experiments: Map<UUID, Experiment>
+    runs: Map<UUID, Run>
+    
+    fn new() -> Self {
+        InMemoryBackend { experiments: Map.empty(), runs: Map.empty() }
+    }
+}
+
+impl ExperimentBackend for InMemoryBackend {
+    fn save_experiment(experiment: Experiment) -> Result<(), String> {
+        self.experiments.insert(experiment.id, experiment)
+        Ok(())
+    }
+    
+    fn load_experiment(id: UUID) -> Result<Experiment, String> {
+        self.experiments.get(id).cloned().ok_or("Experiment not found")
+    }
+    
+    fn list_experiments() -> Result<[Experiment], String> {
+        Ok(self.experiments.values().cloned().collect())
+    }
+    
+    fn delete_experiment(id: UUID) -> Result<(), String> {
+        self.experiments.remove(id)
+        Ok(())
+    }
+    
+    fn save_run(run: Run) -> Result<(), String> {
+        self.runs.insert(run.id, run)
+        Ok(())
+    }
+    
+    fn load_run(id: UUID) -> Result<Run, String> {
+        self.runs.get(id).cloned().ok_or("Run not found")
+    }
+}
+
+/// File-based experiment backend
+struct FileBackend {
+    base_path: String
+    
+    fn new(base_path: String) -> Self {
+        FileBackend { base_path: base_path }
+    }
+    
+    fn experiment_path(id: UUID) -> String {
+        "\(self.base_path)/experiments/\(id.to_string()).json"
+    }
+    
+    fn run_path(id: UUID) -> String {
+        "\(self.base_path)/runs/\(id.to_string()).json"
+    }
+}
+
+impl ExperimentBackend for FileBackend {
+    fn save_experiment(experiment: Experiment) -> Result<(), String> {
+        let path = self.experiment_path(experiment.id)
+        @native("fs_write", path, experiment.to_json().to_string())
+    }
+    
+    fn load_experiment(id: UUID) -> Result<Experiment, String> {
+        let path = self.experiment_path(id)
+        let content = @native("fs_read", path)?
+        Experiment.from_json(Json.parse(content)?)
+    }
+    
+    fn list_experiments() -> Result<[Experiment], String> {
+        let files = @native("fs_list", "\(self.base_path)/experiments")?
+        var experiments = []
+        for file in files {
+            if file.ends_with(".json") {
+                let id = UUID.parse(file.trim_end_matches(".json"))?
+                experiments.push(self.load_experiment(id)?)
+            }
+        }
+        Ok(experiments)
+    }
+    
+    fn delete_experiment(id: UUID) -> Result<(), String> {
+        @native("fs_delete", self.experiment_path(id))
+    }
+    
+    fn save_run(run: Run) -> Result<(), String> {
+        let path = self.run_path(run.id)
+        @native("fs_write", path, run.to_json().to_string())
+    }
+    
+    fn load_run(id: UUID) -> Result<Run, String> {
+        let path = self.run_path(id)
+        let content = @native("fs_read", path)?
+        Run.from_json(Json.parse(content)?)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Experiment Tracker Actor
+// -----------------------------------------------------------------------------
+
+/// Actor for managing experiments
+actor ExperimentTracker {
+    backend: Box<dyn ExperimentBackend>
+    active_experiment: Option<Experiment>
+    active_run: Option<Run>
+    
+    fn new(backend: Box<dyn ExperimentBackend>) -> Self {
+        ExperimentTracker {
+            backend: backend,
+            active_experiment: None,
+            active_run: None
+        }
+    }
+    
+    fn default() -> Self {
+        ExperimentTracker.new(Box.new(InMemoryBackend.new()))
+    }
+    
+    // Experiment management
+    fn create_experiment(name: String) -> Experiment {
+        let experiment = Experiment.new(name)
+        self.backend.save_experiment(experiment.clone())
+        self.active_experiment = Some(experiment.clone())
+        experiment
+    }
+    
+    fn set_experiment(name: String) -> Experiment {
+        // Try to find existing experiment
+        if let Ok(experiments) = self.backend.list_experiments() {
+            for exp in experiments {
+                if exp.name == name {
+                    self.active_experiment = Some(exp.clone())
+                    return exp
+                }
+            }
+        }
+        // Create new if not found
+        self.create_experiment(name)
+    }
+    
+    fn get_experiment(id: UUID) -> Result<Experiment, String> {
+        self.backend.load_experiment(id)
+    }
+    
+    fn list_experiments() -> Result<[Experiment], String> {
+        self.backend.list_experiments()
+    }
+    
+    // Run management
+    fn start_run(name: String = "run") -> Run {
+        let experiment = self.active_experiment.as_ref()
+            .expect("No active experiment. Call set_experiment first.")
+        
+        var run = Run.new(experiment.id, name)
+        run.start()
+        self.active_run = Some(run.clone())
+        self.backend.save_run(run.clone())
+        run
+    }
+    
+    fn end_run() {
+        if let Some(run) = self.active_run.as_mut() {
+            run.complete()
+            self.backend.save_run(run.clone())
+        }
+        self.active_run = None
+    }
+    
+    fn fail_run(reason: String) {
+        if let Some(run) = self.active_run.as_mut() {
+            run.fail(reason)
+            self.backend.save_run(run.clone())
+        }
+        self.active_run = None
+    }
+    
+    fn active_run() -> Option<Run> {
+        self.active_run.clone()
+    }
+    
+    // Logging shortcuts
+    fn log_param(key: String, value: Json) {
+        if let Some(run) = self.active_run.as_mut() {
+            run.log_param(key, value)
+            self.backend.save_run(run.clone())
+        }
+    }
+    
+    fn log_params(params: Map<String, Json>) {
+        if let Some(run) = self.active_run.as_mut() {
+            run.log_params(params)
+            self.backend.save_run(run.clone())
+        }
+    }
+    
+    fn log_metric(name: String, value: Float, step: Int = 0) {
+        if let Some(run) = self.active_run.as_mut() {
+            run.log_metric(name, value, step)
+            self.backend.save_run(run.clone())
+        }
+    }
+    
+    fn log_metrics(metrics: Map<String, Float>, step: Int = 0) {
+        if let Some(run) = self.active_run.as_mut() {
+            run.log_metrics(metrics, step)
+            self.backend.save_run(run.clone())
+        }
+    }
+    
+    fn log_artifact(artifact: Artifact) {
+        if let Some(run) = self.active_run.as_mut() {
+            run.log_artifact(artifact)
+            self.backend.save_run(run.clone())
+        }
+    }
+    
+    fn add_tag(tag: String) {
+        if let Some(run) = self.active_run.as_mut() {
+            run.add_tag(tag)
+            self.backend.save_run(run.clone())
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Global Tracker Instance
+// -----------------------------------------------------------------------------
+
+static TRACKER: ExperimentTracker = ExperimentTracker.default()
+
+fn set_experiment(name: String) -> Experiment {
+    TRACKER.set_experiment(name)
+}
+
+fn start_run(name: String = "run") -> Run {
+    TRACKER.start_run(name)
+}
+
+fn end_run() {
+    TRACKER.end_run()
+}
+
+fn log_param(key: String, value: Json) {
+    TRACKER.log_param(key, value)
+}
+
+fn log_params(params: Map<String, Json>) {
+    TRACKER.log_params(params)
+}
+
+fn log_metric(name: String, value: Float, step: Int = 0) {
+    TRACKER.log_metric(name, value, step)
+}
+
+fn log_metrics(metrics: Map<String, Float>, step: Int = 0) {
+    TRACKER.log_metrics(metrics, step)
+}
+
+fn log_artifact(artifact: Artifact) {
+    TRACKER.log_artifact(artifact)
+}
+
+// -----------------------------------------------------------------------------
+// Hyperparameter Search
+// -----------------------------------------------------------------------------
+
+/// Hyperparameter space definition
+enum ParamSpace {
+    Uniform { low: Float, high: Float }
+    LogUniform { low: Float, high: Float }
+    Choice { values: [Json] }
+    IntRange { low: Int, high: Int }
+    
+    fn sample() -> Json {
+        match self {
+            Uniform { low, high } => Json.Float(Random.float() * (high - low) + low),
+            LogUniform { low, high } => {
+                let log_low = low.ln()
+                let log_high = high.ln()
+                Json.Float((Random.float() * (log_high - log_low) + log_low).exp())
+            },
+            Choice { values } => values[Random.int(0, values.len())].clone(),
+            IntRange { low, high } => Json.Int(Random.int(low, high))
+        }
+    }
+}
+
+/// Hyperparameter search configuration
+struct SearchConfig {
+    param_space: Map<String, ParamSpace>
+    n_trials: Int
+    metric_name: String
+    minimize: Bool
+    
+    fn new(metric_name: String) -> Self {
+        SearchConfig {
+            param_space: Map.empty(),
+            n_trials: 10,
+            metric_name: metric_name,
+            minimize: true
+        }
+    }
+    
+    fn add_param(name: String, space: ParamSpace) -> Self {
+        self.param_space.insert(name, space)
+        self
+    }
+    
+    fn with_trials(n: Int) -> Self {
+        self.n_trials = n
+        self
+    }
+    
+    fn maximize() -> Self {
+        self.minimize = false
+        self
+    }
+    
+    fn sample_params() -> Map<String, Json> {
+        var params = Map.empty()
+        for (name, space) in self.param_space {
+            params.insert(name.clone(), space.sample())
+        }
+        params
+    }
+}
+
+/// Run hyperparameter search
+fn hyperparameter_search(
+    config: SearchConfig,
+    train_fn: fn(Map<String, Json>) -> Float
+) -> (Map<String, Json>, Float) {
+    var best_params: Option<Map<String, Json>> = None
+    var best_score: Option<Float> = None
+    
+    for trial in 0..config.n_trials {
+        let params = config.sample_params()
+        let score = train_fn(params.clone())
+        
+        let is_better = match best_score {
+            None => true,
+            Some(bs) => if config.minimize { score < bs } else { score > bs }
+        }
+        
+        if is_better {
+            best_params = Some(params)
+            best_score = Some(score)
+        }
+        
+        println("Trial \(trial + 1)/\(config.n_trials): score = \(score)")
+    }
+    
+    (best_params.unwrap(), best_score.unwrap())
+}
+
+// -----------------------------------------------------------------------------
+// Cross Validation
+// -----------------------------------------------------------------------------
+
+/// K-Fold cross validation
+struct KFold {
+    n_splits: Int
+    shuffle: Bool
+    
+    fn new(n_splits: Int = 5, shuffle: Bool = true) -> Self {
+        KFold { n_splits: n_splits, shuffle: shuffle }
+    }
+    
+    fn split(n_samples: Int) -> [(Range<Int>, Range<Int>)] {
+        var indices: [Int] = (0..n_samples).collect()
+        if self.shuffle { indices.shuffle() }
+        
+        let fold_size = n_samples / self.n_splits
+        var splits = []
+        
+        for i in 0..self.n_splits {
+            let test_start = i * fold_size
+            let test_end = if i == self.n_splits - 1 { n_samples } else { (i + 1) * fold_size }
+            
+            var train_indices = []
+            var test_indices = []
+            
+            for (j, idx) in indices.iter().enumerate() {
+                if j >= test_start && j < test_end {
+                    test_indices.push(*idx)
+                } else {
+                    train_indices.push(*idx)
+                }
+            }
+            
+            splits.push((train_indices, test_indices))
+        }
+        splits
+    }
+}
+
+/// Cross validation score
+fn cross_val_score(
+    n_samples: Int,
+    n_splits: Int,
+    train_fn: fn([Int], [Int]) -> Float
+) -> [Float] {
+    let kfold = KFold.new(n_splits)
+    var scores = []
+    
+    for (train_idx, test_idx) in kfold.split(n_samples) {
+        let score = train_fn(train_idx, test_idx)
+        scores.push(score)
+    }
+    
+    scores
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "experiment_creation" {
+    let exp = Experiment.new("test-experiment")
+    assert_eq(exp.name, "test-experiment")?
+    assert(exp.runs.is_empty())?
+}
+
+test "run_lifecycle" {
+    var exp = Experiment.new("test")
+    var run = exp.create_run("run-1")
+    
+    run.start()
+    assert_eq(run.status, ExperimentStatus.Running)?
+    
+    run.log_param("learning_rate", Json.Float(0.01))
+    run.log_metric("loss", 0.5, 0)
+    run.log_metric("loss", 0.3, 1)
+    
+    run.complete()
+    assert_eq(run.status, ExperimentStatus.Completed)?
+    assert(run.duration().is_some())?
+}
+
+test "metric_series" {
+    var series = MetricSeries.new("accuracy")
+    series.log(0.7, 0)
+    series.log(0.8, 1)
+    series.log(0.85, 2)
+    
+    assert_eq(series.last(), Some(0.85))?
+    assert_eq(series.min(), Some(0.7))?
+    assert_eq(series.max(), Some(0.85))?
+}
+
+test "param_space_sampling" {
+    let uniform = ParamSpace.Uniform { low: 0.0, high: 1.0 }
+    let sample = uniform.sample()
+    
+    if let Json.Float(v) = sample {
+        assert(v >= 0.0 && v <= 1.0)?
+    }
+}
+
+test "kfold_split" {
+    let kfold = KFold.new(5, false)
+    let splits = kfold.split(100)
+    
+    assert_eq(splits.len(), 5)?
+}

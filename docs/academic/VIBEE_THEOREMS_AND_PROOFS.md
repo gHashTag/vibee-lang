@@ -2,7 +2,7 @@
 
 **A Constructive Approach to Compiler Correctness via BDD**
 
-**Authors**: Dmitrii Vasilev  
+**Authors**: Vibee Research  
 **Date**: January 12, 2026  
 **Status**: Submitted for Nobel Prize Consideration
 
@@ -859,7 +859,7 @@ See extended technical report for complete proofs of all 33 theorems.
 
 **Nobel Prize Submission • 33 Theorems • 600x Better than CompCert**
 
-**Author**: Dmitrii Vasilev  
+**Author**: Vibee Research  
 **Date**: January 12, 2026  
 **Status**: 6 Conjectures PROVEN, 5 Open Problems Remaining
 

@@ -1,0 +1,750 @@
+// =============================================================================
+// Vibee OS — Shortest Path Module
+// Dijkstra, A*, Bellman-Ford and other shortest path algorithms
+// =============================================================================
+
+use graph_node.{NodeId}
+use graph_edge.{AdjacencyList}
+use heap.{MinHeap}
+
+/// Shortest path result
+struct PathResult {
+    distances: Map<NodeId, Float>
+    predecessors: Map<NodeId, NodeId>
+    source: NodeId
+    
+    fn distance_to(target: NodeId) -> Option<Float> {
+        self.distances.get(target).cloned()
+    }
+    
+    fn path_to(target: NodeId) -> Option<[NodeId]> {
+        if !self.distances.contains(target) { return None }
+        if target == self.source { return Some([self.source]) }
+        if !self.predecessors.contains(target) { return None }
+        
+        var path = [target]
+        var current = target
+        while current != self.source {
+            current = *self.predecessors.get(current)?
+            path.push(current)
+        }
+        path.reverse()
+        Some(path)
+    }
+    
+    fn reachable_nodes() -> [NodeId] {
+        self.distances.keys().collect()
+    }
+    
+    fn is_reachable(target: NodeId) -> Bool {
+        self.distances.contains(target) && self.distances.get(target).unwrap() < Float.INFINITY
+    }
+}
+
+/// All-pairs shortest path result
+struct AllPairsResult {
+    distances: Map<(NodeId, NodeId), Float>
+    next_hop: Map<(NodeId, NodeId), NodeId>
+    
+    fn distance(from: NodeId, to: NodeId) -> Option<Float> {
+        self.distances.get((from, to)).cloned()
+    }
+    
+    fn path(from: NodeId, to: NodeId) -> Option<[NodeId]> {
+        if !self.distances.contains((from, to)) { return None }
+        if from == to { return Some([from]) }
+        
+        var path = [from]
+        var current = from
+        while current != to {
+            current = *self.next_hop.get((current, to))?
+            path.push(current)
+        }
+        Some(path)
+    }
+}
+
+/// Shortest path algorithms
+struct ShortestPath;
+
+impl ShortestPath {
+    /// Dijkstra's algorithm - single source shortest paths
+    /// Works only with non-negative edge weights
+    fn dijkstra(graph: AdjacencyList<Float>, source: NodeId) -> PathResult {
+        var distances = Map.empty()
+        var predecessors = Map.empty()
+        var heap = MinHeap.new()
+        
+        distances.set(source, 0.0)
+        heap.push((0.0, source))
+        
+        while let Some((dist, node)) = heap.pop() {
+            // Skip if we've found a better path
+            if dist > distances.get(node).unwrap_or(Float.INFINITY) {
+                continue
+            }
+            
+            for (neighbor, weight) in graph.neighbors(node) {
+                let new_dist = dist + weight
+                if new_dist < distances.get(neighbor).unwrap_or(Float.INFINITY) {
+                    distances.set(neighbor, new_dist)
+                    predecessors.set(neighbor, node)
+                    heap.push((new_dist, neighbor))
+                }
+            }
+        }
+        
+        PathResult { distances: distances, predecessors: predecessors, source: source }
+    }
+    
+    /// Dijkstra with integer weights
+    fn dijkstra_int(graph: AdjacencyList<Int>, source: NodeId) -> PathResult {
+        var distances = Map.empty()
+        var predecessors = Map.empty()
+        var heap = MinHeap.new()
+        
+        distances.set(source, 0.0)
+        heap.push((0, source))
+        
+        while let Some((dist, node)) = heap.pop() {
+            let dist_f = dist as Float
+            if dist_f > distances.get(node).unwrap_or(Float.INFINITY) {
+                continue
+            }
+            
+            for (neighbor, weight) in graph.neighbors(node) {
+                let new_dist = dist + weight
+                let new_dist_f = new_dist as Float
+                if new_dist_f < distances.get(neighbor).unwrap_or(Float.INFINITY) {
+                    distances.set(neighbor, new_dist_f)
+                    predecessors.set(neighbor, node)
+                    heap.push((new_dist, neighbor))
+                }
+            }
+        }
+        
+        PathResult { distances: distances, predecessors: predecessors, source: source }
+    }
+    
+    /// Dijkstra with early termination (find path to specific target)
+    fn dijkstra_target(graph: AdjacencyList<Float>, source: NodeId, target: NodeId) -> Option<(Float, [NodeId])> {
+        var distances = Map.empty()
+        var predecessors = Map.empty()
+        var heap = MinHeap.new()
+        
+        distances.set(source, 0.0)
+        heap.push((0.0, source))
+        
+        while let Some((dist, node)) = heap.pop() {
+            if node == target {
+                // Reconstruct path
+                var path = [target]
+                var current = target
+                while current != source {
+                    current = *predecessors.get(current)?
+                    path.push(current)
+                }
+                path.reverse()
+                return Some((dist, path))
+            }
+            
+            if dist > distances.get(node).unwrap_or(Float.INFINITY) {
+                continue
+            }
+            
+            for (neighbor, weight) in graph.neighbors(node) {
+                let new_dist = dist + weight
+                if new_dist < distances.get(neighbor).unwrap_or(Float.INFINITY) {
+                    distances.set(neighbor, new_dist)
+                    predecessors.set(neighbor, node)
+                    heap.push((new_dist, neighbor))
+                }
+            }
+        }
+        
+        None
+    }
+    
+    /// A* algorithm - heuristic-guided shortest path
+    fn a_star(
+        graph: AdjacencyList<Float>,
+        source: NodeId,
+        target: NodeId,
+        heuristic: fn(NodeId) -> Float
+    ) -> Option<(Float, [NodeId])> {
+        var g_score = Map.empty()  // Cost from start
+        var f_score = Map.empty()  // g_score + heuristic
+        var predecessors = Map.empty()
+        var heap = MinHeap.new()
+        var closed = Set.empty()
+        
+        g_score.set(source, 0.0)
+        f_score.set(source, heuristic(source))
+        heap.push((heuristic(source), source))
+        
+        while let Some((_, node)) = heap.pop() {
+            if node == target {
+                // Reconstruct path
+                var path = [target]
+                var current = target
+                while current != source {
+                    current = *predecessors.get(current)?
+                    path.push(current)
+                }
+                path.reverse()
+                return Some((g_score.get(target).unwrap(), path))
+            }
+            
+            if closed.contains(node) { continue }
+            closed.insert(node)
+            
+            for (neighbor, weight) in graph.neighbors(node) {
+                if closed.contains(neighbor) { continue }
+                
+                let tentative_g = g_score.get(node).unwrap() + weight
+                
+                if tentative_g < g_score.get(neighbor).unwrap_or(Float.INFINITY) {
+                    predecessors.set(neighbor, node)
+                    g_score.set(neighbor, tentative_g)
+                    let f = tentative_g + heuristic(neighbor)
+                    f_score.set(neighbor, f)
+                    heap.push((f, neighbor))
+                }
+            }
+        }
+        
+        None
+    }
+    
+    /// A* with position-based heuristic (Euclidean distance)
+    fn a_star_euclidean(
+        graph: AdjacencyList<Float>,
+        source: NodeId,
+        target: NodeId,
+        positions: Map<NodeId, (Float, Float)>
+    ) -> Option<(Float, [NodeId])> {
+        let target_pos = positions.get(target)?;
+        
+        let heuristic = |node: NodeId| -> Float {
+            match positions.get(node) {
+                Some((x, y)) => {
+                    let dx = x - target_pos.0
+                    let dy = y - target_pos.1
+                    (dx * dx + dy * dy).sqrt()
+                }
+                None => 0.0
+            }
+        };
+        
+        Self.a_star(graph, source, target, heuristic)
+    }
+    
+    /// A* with Manhattan distance heuristic
+    fn a_star_manhattan(
+        graph: AdjacencyList<Float>,
+        source: NodeId,
+        target: NodeId,
+        positions: Map<NodeId, (Float, Float)>
+    ) -> Option<(Float, [NodeId])> {
+        let target_pos = positions.get(target)?;
+        
+        let heuristic = |node: NodeId| -> Float {
+            match positions.get(node) {
+                Some((x, y)) => (x - target_pos.0).abs() + (y - target_pos.1).abs(),
+                None => 0.0
+            }
+        };
+        
+        Self.a_star(graph, source, target, heuristic)
+    }
+    
+    /// Bellman-Ford algorithm - handles negative weights
+    fn bellman_ford(graph: AdjacencyList<Float>, source: NodeId) -> Result<PathResult, String> {
+        let nodes = graph.nodes()
+        let n = nodes.len()
+        var distances = Map.empty()
+        var predecessors = Map.empty()
+        
+        // Initialize distances
+        for node in nodes.iter() {
+            distances.set(*node, Float.INFINITY)
+        }
+        distances.set(source, 0.0)
+        
+        // Relax edges n-1 times
+        for _ in 0..(n - 1) {
+            var changed = false
+            for node in nodes.iter() {
+                let dist = distances.get(*node).unwrap();
+                if dist == Float.INFINITY { continue }
+                
+                for (neighbor, weight) in graph.neighbors(*node) {
+                    let new_dist = dist + weight
+                    if new_dist < distances.get(neighbor).unwrap_or(Float.INFINITY) {
+                        distances.set(neighbor, new_dist)
+                        predecessors.set(neighbor, *node)
+                        changed = true
+                    }
+                }
+            }
+            if !changed { break }
+        }
+        
+        // Check for negative cycles
+        for node in nodes.iter() {
+            let dist = distances.get(*node).unwrap();
+            if dist == Float.INFINITY { continue }
+            
+            for (neighbor, weight) in graph.neighbors(*node) {
+                if dist + weight < distances.get(neighbor).unwrap() {
+                    return Err("Graph contains negative cycle")
+                }
+            }
+        }
+        
+        Ok(PathResult { distances: distances, predecessors: predecessors, source: source })
+    }
+    
+    /// Floyd-Warshall algorithm - all pairs shortest paths
+    fn floyd_warshall(graph: AdjacencyList<Float>) -> AllPairsResult {
+        let nodes = graph.nodes()
+        var distances = Map.empty()
+        var next_hop = Map.empty()
+        
+        // Initialize
+        for i in nodes.iter() {
+            for j in nodes.iter() {
+                if i == j {
+                    distances.set((*i, *j), 0.0)
+                } else {
+                    distances.set((*i, *j), Float.INFINITY)
+                }
+            }
+        }
+        
+        // Set direct edges
+        for node in nodes.iter() {
+            for (neighbor, weight) in graph.neighbors(*node) {
+                distances.set((*node, neighbor), weight)
+                next_hop.set((*node, neighbor), neighbor)
+            }
+        }
+        
+        // Main algorithm
+        for k in nodes.iter() {
+            for i in nodes.iter() {
+                for j in nodes.iter() {
+                    let ik = distances.get((*i, *k)).unwrap()
+                    let kj = distances.get((*k, *j)).unwrap()
+                    let ij = distances.get((*i, *j)).unwrap()
+                    
+                    if ik + kj < ij {
+                        distances.set((*i, *j), ik + kj)
+                        next_hop.set((*i, *j), *next_hop.get((*i, *k)).unwrap_or(k))
+                    }
+                }
+            }
+        }
+        
+        AllPairsResult { distances: distances, next_hop: next_hop }
+    }
+    
+    /// Johnson's algorithm - all pairs shortest paths (efficient for sparse graphs)
+    fn johnson(graph: AdjacencyList<Float>) -> Result<AllPairsResult, String> {
+        let nodes = graph.nodes()
+        
+        // Add a new node connected to all other nodes with weight 0
+        var augmented = graph.clone()
+        let q = -1 as NodeId  // Virtual node
+        augmented.add_node(q)
+        for node in nodes.iter() {
+            augmented.add_edge(q, *node, 0.0)
+        }
+        
+        // Run Bellman-Ford from q
+        let bf_result = Self.bellman_ford(augmented, q)?
+        let h = bf_result.distances  // Potential function
+        
+        // Reweight edges
+        var reweighted = AdjacencyList.new()
+        for node in nodes.iter() {
+            reweighted.add_node(*node)
+        }
+        for node in nodes.iter() {
+            let h_u = h.get(*node).unwrap()
+            for (neighbor, weight) in graph.neighbors(*node) {
+                let h_v = h.get(neighbor).unwrap()
+                let new_weight = weight + h_u - h_v
+                reweighted.add_edge(*node, neighbor, new_weight)
+            }
+        }
+        
+        // Run Dijkstra from each node
+        var distances = Map.empty()
+        var next_hop = Map.empty()
+        
+        for source in nodes.iter() {
+            let result = Self.dijkstra(reweighted, *source)
+            let h_u = h.get(*source).unwrap()
+            
+            for target in nodes.iter() {
+                if let Some(dist) = result.distances.get(*target) {
+                    let h_v = h.get(*target).unwrap()
+                    let real_dist = dist - h_u + h_v
+                    distances.set((*source, *target), real_dist)
+                    
+                    if let Some(pred) = result.predecessors.get(*target) {
+                        next_hop.set((*source, *target), *pred)
+                    }
+                }
+            }
+        }
+        
+        Ok(AllPairsResult { distances: distances, next_hop: next_hop })
+    }
+    
+    /// BFS-based shortest path for unweighted graphs
+    fn bfs_shortest_path(graph: AdjacencyList<Int>, source: NodeId, target: NodeId) -> Option<[NodeId]> {
+        if source == target { return Some([source]) }
+        
+        var visited = Set.empty()
+        var queue = [(source, [source])]
+        visited.insert(source)
+        
+        while !queue.is_empty() {
+            let (node, path) = queue.remove(0)
+            
+            for (neighbor, _) in graph.neighbors(node) {
+                if neighbor == target {
+                    var result = path.clone()
+                    result.push(neighbor)
+                    return Some(result)
+                }
+                
+                if !visited.contains(neighbor) {
+                    visited.insert(neighbor)
+                    var new_path = path.clone()
+                    new_path.push(neighbor)
+                    queue.push((neighbor, new_path))
+                }
+            }
+        }
+        
+        None
+    }
+    
+    /// K shortest paths (Yen's algorithm)
+    fn k_shortest_paths(
+        graph: AdjacencyList<Float>,
+        source: NodeId,
+        target: NodeId,
+        k: Int
+    ) -> [[NodeId]] {
+        var result = []
+        var candidates = MinHeap.new()
+        
+        // Find first shortest path
+        if let Some((dist, path)) = Self.dijkstra_target(graph.clone(), source, target) {
+            result.push(path.clone())
+            candidates.push((dist, path))
+        } else {
+            return []
+        }
+        
+        while result.len() < k && !candidates.is_empty() {
+            let (_, prev_path) = candidates.pop().unwrap()
+            
+            for i in 0..(prev_path.len() - 1) {
+                let spur_node = prev_path[i]
+                let root_path = prev_path[0..=i].to_vec()
+                
+                // Create modified graph
+                var modified = graph.clone()
+                
+                // Remove edges that are part of previous paths with same root
+                for path in result.iter() {
+                    if path.len() > i && path[0..=i] == root_path {
+                        modified.remove_edge(path[i], path[i + 1])
+                    }
+                }
+                
+                // Remove root path nodes (except spur node)
+                for j in 0..i {
+                    // Remove all edges to/from root_path[j]
+                    for (neighbor, _) in graph.neighbors(root_path[j]) {
+                        modified.remove_edge(root_path[j], neighbor)
+                    }
+                }
+                
+                // Find spur path
+                if let Some((spur_dist, spur_path)) = Self.dijkstra_target(modified, spur_node, target) {
+                    var total_path = root_path.clone()
+                    total_path.extend(spur_path[1..].iter())
+                    
+                    // Calculate total distance
+                    var total_dist = 0.0
+                    for j in 0..(total_path.len() - 1) {
+                        for (neighbor, weight) in graph.neighbors(total_path[j]) {
+                            if neighbor == total_path[j + 1] {
+                                total_dist += weight
+                                break
+                            }
+                        }
+                    }
+                    
+                    // Add if not duplicate
+                    if !result.contains(&total_path) {
+                        candidates.push((total_dist, total_path))
+                    }
+                }
+            }
+            
+            // Get next best path
+            while let Some((dist, path)) = candidates.pop() {
+                if !result.contains(&path) {
+                    result.push(path)
+                    break
+                }
+            }
+        }
+        
+        result
+    }
+    
+    /// Bidirectional Dijkstra
+    fn bidirectional_dijkstra(
+        graph: AdjacencyList<Float>,
+        reverse_graph: AdjacencyList<Float>,
+        source: NodeId,
+        target: NodeId
+    ) -> Option<(Float, [NodeId])> {
+        if source == target { return Some((0.0, [source])) }
+        
+        var forward_dist = Map.empty()
+        var backward_dist = Map.empty()
+        var forward_pred = Map.empty()
+        var backward_pred = Map.empty()
+        var forward_heap = MinHeap.new()
+        var backward_heap = MinHeap.new()
+        var forward_settled = Set.empty()
+        var backward_settled = Set.empty()
+        
+        forward_dist.set(source, 0.0)
+        backward_dist.set(target, 0.0)
+        forward_heap.push((0.0, source))
+        backward_heap.push((0.0, target))
+        
+        var best_dist = Float.INFINITY
+        var meeting_node = None
+        
+        while !forward_heap.is_empty() || !backward_heap.is_empty() {
+            // Forward step
+            if let Some((dist, node)) = forward_heap.pop() {
+                if dist > best_dist { break }
+                if forward_settled.contains(node) { continue }
+                forward_settled.insert(node)
+                
+                if backward_settled.contains(node) {
+                    let total = dist + backward_dist.get(node).unwrap()
+                    if total < best_dist {
+                        best_dist = total
+                        meeting_node = Some(node)
+                    }
+                }
+                
+                for (neighbor, weight) in graph.neighbors(node) {
+                    let new_dist = dist + weight
+                    if new_dist < forward_dist.get(neighbor).unwrap_or(Float.INFINITY) {
+                        forward_dist.set(neighbor, new_dist)
+                        forward_pred.set(neighbor, node)
+                        forward_heap.push((new_dist, neighbor))
+                    }
+                }
+            }
+            
+            // Backward step
+            if let Some((dist, node)) = backward_heap.pop() {
+                if dist > best_dist { break }
+                if backward_settled.contains(node) { continue }
+                backward_settled.insert(node)
+                
+                if forward_settled.contains(node) {
+                    let total = dist + forward_dist.get(node).unwrap()
+                    if total < best_dist {
+                        best_dist = total
+                        meeting_node = Some(node)
+                    }
+                }
+                
+                for (neighbor, weight) in reverse_graph.neighbors(node) {
+                    let new_dist = dist + weight
+                    if new_dist < backward_dist.get(neighbor).unwrap_or(Float.INFINITY) {
+                        backward_dist.set(neighbor, new_dist)
+                        backward_pred.set(neighbor, node)
+                        backward_heap.push((new_dist, neighbor))
+                    }
+                }
+            }
+        }
+        
+        // Reconstruct path
+        meeting_node.map(|meeting| {
+            var path = []
+            
+            // Forward path
+            var current = meeting
+            while current != source {
+                path.push(current)
+                current = *forward_pred.get(current).unwrap()
+            }
+            path.push(source)
+            path.reverse()
+            
+            // Backward path
+            current = meeting
+            while current != target {
+                current = *backward_pred.get(current).unwrap()
+                path.push(current)
+            }
+            
+            (best_dist, path)
+        })
+    }
+}
+
+/// Heuristic functions for A*
+struct Heuristics;
+
+impl Heuristics {
+    /// Zero heuristic (equivalent to Dijkstra)
+    fn zero(_: NodeId) -> Float { 0.0 }
+    
+    /// Euclidean distance
+    fn euclidean(positions: Map<NodeId, (Float, Float)>, target: NodeId) -> fn(NodeId) -> Float {
+        let target_pos = positions.get(target).unwrap_or((0.0, 0.0))
+        |node: NodeId| -> Float {
+            match positions.get(node) {
+                Some((x, y)) => {
+                    let dx = x - target_pos.0
+                    let dy = y - target_pos.1
+                    (dx * dx + dy * dy).sqrt()
+                }
+                None => 0.0
+            }
+        }
+    }
+    
+    /// Manhattan distance
+    fn manhattan(positions: Map<NodeId, (Float, Float)>, target: NodeId) -> fn(NodeId) -> Float {
+        let target_pos = positions.get(target).unwrap_or((0.0, 0.0))
+        |node: NodeId| -> Float {
+            match positions.get(node) {
+                Some((x, y)) => (x - target_pos.0).abs() + (y - target_pos.1).abs(),
+                None => 0.0
+            }
+        }
+    }
+    
+    /// Chebyshev distance (diagonal movement)
+    fn chebyshev(positions: Map<NodeId, (Float, Float)>, target: NodeId) -> fn(NodeId) -> Float {
+        let target_pos = positions.get(target).unwrap_or((0.0, 0.0))
+        |node: NodeId| -> Float {
+            match positions.get(node) {
+                Some((x, y)) => {
+                    let dx = (x - target_pos.0).abs()
+                    let dy = (y - target_pos.1).abs()
+                    dx.max(dy)
+                }
+                None => 0.0
+            }
+        }
+    }
+}
+
+// Tests
+test "dijkstra basic" {
+    var graph = AdjacencyList::<Float>.new()
+    graph.add_edge(0, 1, 4.0)
+    graph.add_edge(0, 2, 1.0)
+    graph.add_edge(2, 1, 2.0)
+    graph.add_edge(1, 3, 1.0)
+    graph.add_edge(2, 3, 5.0)
+    
+    let result = ShortestPath.dijkstra(graph, 0)
+    assert_eq(result.distance_to(3), Some(4.0))?
+    assert_eq(result.path_to(3), Some([0, 2, 1, 3]))?
+}
+
+test "dijkstra target" {
+    var graph = AdjacencyList::<Float>.new()
+    graph.add_edge(0, 1, 1.0)
+    graph.add_edge(1, 2, 1.0)
+    graph.add_edge(2, 3, 1.0)
+    
+    let result = ShortestPath.dijkstra_target(graph, 0, 3)
+    assert!(result.is_some())?
+    let (dist, path) = result.unwrap()
+    assert_eq(dist, 3.0)?
+    assert_eq(path, [0, 1, 2, 3])?
+}
+
+test "a_star basic" {
+    var graph = AdjacencyList::<Float>.new()
+    graph.add_edge(0, 1, 1.0)
+    graph.add_edge(0, 2, 1.5)
+    graph.add_edge(1, 3, 1.0)
+    graph.add_edge(2, 3, 0.5)
+    
+    let result = ShortestPath.a_star(graph, 0, 3, |_| 0.0)
+    assert!(result.is_some())?
+    let (dist, _) = result.unwrap()
+    assert_eq(dist, 2.0)?
+}
+
+test "bellman_ford basic" {
+    var graph = AdjacencyList::<Float>.new()
+    graph.add_edge(0, 1, 4.0)
+    graph.add_edge(0, 2, 5.0)
+    graph.add_edge(1, 2, -3.0)
+    graph.add_edge(2, 3, 4.0)
+    
+    let result = ShortestPath.bellman_ford(graph, 0)
+    assert!(result.is_ok())?
+    let path_result = result.unwrap()
+    assert_eq(path_result.distance_to(3), Some(5.0))?
+}
+
+test "bellman_ford negative cycle" {
+    var graph = AdjacencyList::<Float>.new()
+    graph.add_edge(0, 1, 1.0)
+    graph.add_edge(1, 2, -1.0)
+    graph.add_edge(2, 0, -1.0)
+    
+    let result = ShortestPath.bellman_ford(graph, 0)
+    assert!(result.is_err())?
+}
+
+test "floyd_warshall basic" {
+    var graph = AdjacencyList::<Float>.new()
+    graph.add_node(0)
+    graph.add_node(1)
+    graph.add_node(2)
+    graph.add_edge(0, 1, 1.0)
+    graph.add_edge(1, 2, 2.0)
+    graph.add_edge(0, 2, 5.0)
+    
+    let result = ShortestPath.floyd_warshall(graph)
+    assert_eq(result.distance(0, 2), Some(3.0))?
+}
+
+test "bfs shortest path" {
+    var graph = AdjacencyList::<Int>.new()
+    graph.add_edge(0, 1, 1)
+    graph.add_edge(0, 2, 1)
+    graph.add_edge(1, 3, 1)
+    graph.add_edge(2, 3, 1)
+    
+    let path = ShortestPath.bfs_shortest_path(graph, 0, 3)
+    assert!(path.is_some())?
+    assert_eq(path.unwrap().len(), 3)?
+}

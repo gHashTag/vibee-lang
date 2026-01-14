@@ -1,0 +1,397 @@
+// =============================================================================
+// Vibee OS — Plugin Sandbox Module
+// Secure sandbox environment for plugin execution
+// =============================================================================
+
+use result::{Result, Ok, Err}
+use option::{Option, Some, None}
+use plugin_api::{Plugin, PluginError, PluginCapability, PluginContext}
+
+// =============================================================================
+// Sandbox Configuration
+// =============================================================================
+
+/// Sandbox configuration
+struct SandboxConfig {
+    memory_limit_mb: Int
+    cpu_time_limit_ms: Int
+    max_threads: Int
+    allowed_capabilities: Set<PluginCapability>
+    allowed_paths: [PathPermission]
+    allowed_hosts: [String]
+    allowed_ports: [Int]
+    enable_network: Bool
+    enable_filesystem: Bool
+    enable_process: Bool
+}
+
+struct PathPermission {
+    path: String
+    read: Bool
+    write: Bool
+    execute: Bool
+}
+
+impl SandboxConfig {
+    fn default() -> Self {
+        SandboxConfig {
+            memory_limit_mb: 256,
+            cpu_time_limit_ms: 30000,
+            max_threads: 4,
+            allowed_capabilities: Set.new(),
+            allowed_paths: [],
+            allowed_hosts: [],
+            allowed_ports: [],
+            enable_network: false,
+            enable_filesystem: false,
+            enable_process: false
+        }
+    }
+    
+    fn permissive() -> Self {
+        SandboxConfig {
+            memory_limit_mb: 1024,
+            cpu_time_limit_ms: 60000,
+            max_threads: 16,
+            allowed_capabilities: Set.from([
+                PluginCapability.FileSystem,
+                PluginCapability.Network,
+                PluginCapability.Database
+            ]),
+            allowed_paths: [PathPermission { path: "/tmp".to_string(), read: true, write: true, execute: false }],
+            allowed_hosts: ["*".to_string()],
+            allowed_ports: [],
+            enable_network: true,
+            enable_filesystem: true,
+            enable_process: false
+        }
+    }
+    
+    fn allow_path(self, path: String, read: Bool, write: Bool) -> Self {
+        self.allowed_paths.push(PathPermission { path: path, read: read, write: write, execute: false })
+        self
+    }
+    
+    fn allow_host(self, host: String) -> Self {
+        self.allowed_hosts.push(host)
+        self
+    }
+}
+
+// =============================================================================
+// Sandbox
+// =============================================================================
+
+/// Plugin sandbox for secure execution
+struct Sandbox {
+    id: String
+    config: SandboxConfig
+    state: SandboxState
+    resources: ResourceTracker
+    violations: [SecurityViolation]
+}
+
+enum SandboxState {
+    Created
+    Running
+    Suspended
+    Terminated
+}
+
+struct SecurityViolation {
+    timestamp: Int64
+    violation_type: ViolationType
+    details: String
+}
+
+enum ViolationType {
+    MemoryLimit
+    CpuLimit
+    UnauthorizedPath(String)
+    UnauthorizedNetwork(String)
+    UnauthorizedCapability(PluginCapability)
+    ThreadLimit
+}
+
+impl Sandbox {
+    fn new(id: String, config: SandboxConfig) -> Self {
+        Sandbox {
+            id: id,
+            config: config,
+            state: SandboxState.Created,
+            resources: ResourceTracker.new(),
+            violations: []
+        }
+    }
+    
+    /// Execute function in sandbox
+    fn execute<T>(f: fn() -> T) -> Result<T, PluginError> {
+        if self.state != SandboxState.Running {
+            self.state = SandboxState.Running
+        }
+        
+        // Check resource limits before execution
+        self.check_limits()?
+        
+        // Execute with monitoring
+        let result = self.monitored_execute(f)?
+        
+        Ok(result)
+    }
+    
+    fn monitored_execute<T>(f: fn() -> T) -> Result<T, PluginError> {
+        let start = Time.now().unix_millis()
+        let result = f()
+        let elapsed = Time.now().unix_millis() - start
+        
+        self.resources.cpu_time_used += elapsed
+        
+        if self.resources.cpu_time_used > self.config.cpu_time_limit_ms {
+            self.record_violation(ViolationType.CpuLimit, "CPU time limit exceeded")
+            return Err(PluginError.SandboxViolation("CPU time limit exceeded".to_string()))
+        }
+        
+        Ok(result)
+    }
+    
+    fn check_limits() -> Result<(), PluginError> {
+        if self.resources.memory_used > self.config.memory_limit_mb * 1024 * 1024 {
+            self.record_violation(ViolationType.MemoryLimit, "Memory limit exceeded")
+            return Err(PluginError.SandboxViolation("Memory limit exceeded".to_string()))
+        }
+        Ok(())
+    }
+    
+    /// Check if path access is allowed
+    fn check_path(path: String, write: Bool) -> Result<(), PluginError> {
+        if !self.config.enable_filesystem {
+            return Err(PluginError.SandboxViolation("Filesystem access disabled".to_string()))
+        }
+        
+        for perm in self.config.allowed_paths.iter() {
+            if path.starts_with(perm.path.clone()) {
+                if write && !perm.write {
+                    self.record_violation(ViolationType.UnauthorizedPath(path.clone()), "Write not allowed")
+                    return Err(PluginError.SandboxViolation(format!("Write access denied: {}", path)))
+                }
+                if !write && !perm.read {
+                    self.record_violation(ViolationType.UnauthorizedPath(path.clone()), "Read not allowed")
+                    return Err(PluginError.SandboxViolation(format!("Read access denied: {}", path)))
+                }
+                return Ok(())
+            }
+        }
+        
+        self.record_violation(ViolationType.UnauthorizedPath(path.clone()), "Path not in allowed list")
+        Err(PluginError.SandboxViolation(format!("Access denied: {}", path)))
+    }
+    
+    /// Check if network access is allowed
+    fn check_network(host: String, port: Int) -> Result<(), PluginError> {
+        if !self.config.enable_network {
+            return Err(PluginError.SandboxViolation("Network access disabled".to_string()))
+        }
+        
+        let host_allowed = self.config.allowed_hosts.iter()
+            .any(|h| h == "*" || h == host);
+        
+        if !host_allowed {
+            self.record_violation(ViolationType.UnauthorizedNetwork(host.clone()), "Host not allowed")
+            return Err(PluginError.SandboxViolation(format!("Network access denied: {}", host)))
+        }
+        
+        Ok(())
+    }
+    
+    /// Check if capability is allowed
+    fn check_capability(cap: PluginCapability) -> Result<(), PluginError> {
+        if !self.config.allowed_capabilities.contains(cap.clone()) {
+            self.record_violation(ViolationType.UnauthorizedCapability(cap.clone()), "Capability not allowed")
+            return Err(PluginError.CapabilityDenied(cap))
+        }
+        Ok(())
+    }
+    
+    fn record_violation(vtype: ViolationType, details: String) {
+        self.violations.push(SecurityViolation {
+            timestamp: Time.now().unix_millis(),
+            violation_type: vtype,
+            details: details
+        })
+    }
+    
+    /// Terminate sandbox
+    fn terminate() {
+        self.state = SandboxState.Terminated
+    }
+    
+    /// Get violation count
+    fn violation_count() -> Int {
+        self.violations.len()
+    }
+}
+
+// =============================================================================
+// Resource Tracker
+// =============================================================================
+
+struct ResourceTracker {
+    memory_used: Int
+    cpu_time_used: Int64
+    thread_count: Int
+    file_handles: Int
+    network_connections: Int
+}
+
+impl ResourceTracker {
+    fn new() -> Self {
+        ResourceTracker {
+            memory_used: 0,
+            cpu_time_used: 0,
+            thread_count: 0,
+            file_handles: 0,
+            network_connections: 0
+        }
+    }
+    
+    fn allocate_memory(size: Int) -> Result<(), PluginError> {
+        self.memory_used += size
+        Ok(())
+    }
+    
+    fn free_memory(size: Int) {
+        self.memory_used = (self.memory_used - size).max(0)
+    }
+}
+
+// =============================================================================
+// Sandbox Manager
+// =============================================================================
+
+/// Manager for multiple sandboxes
+struct SandboxManager {
+    sandboxes: Map<String, Sandbox>
+    default_config: SandboxConfig
+}
+
+impl SandboxManager {
+    fn new() -> Self {
+        SandboxManager {
+            sandboxes: Map.new(),
+            default_config: SandboxConfig.default()
+        }
+    }
+    
+    fn create(plugin_id: String) -> Result<Sandbox, PluginError> {
+        self.create_with_config(plugin_id, self.default_config.clone())
+    }
+    
+    fn create_with_config(plugin_id: String, config: SandboxConfig) -> Result<Sandbox, PluginError> {
+        let sandbox = Sandbox.new(plugin_id.clone(), config)
+        self.sandboxes.insert(plugin_id, sandbox.clone())
+        Ok(sandbox)
+    }
+    
+    fn get(plugin_id: String) -> Option<Sandbox> {
+        self.sandboxes.get(plugin_id).cloned()
+    }
+    
+    fn terminate(plugin_id: String) {
+        if let Some(sandbox) = self.sandboxes.get_mut(plugin_id) {
+            sandbox.terminate()
+        }
+        self.sandboxes.remove(plugin_id)
+    }
+    
+    fn terminate_all() {
+        for (_, sandbox) in self.sandboxes.iter_mut() {
+            sandbox.terminate()
+        }
+        self.sandboxes.clear()
+    }
+}
+
+// =============================================================================
+// Sandboxed Context
+// =============================================================================
+
+/// Sandboxed plugin context
+struct SandboxedContext {
+    inner: PluginContext
+    sandbox: Sandbox
+}
+
+impl SandboxedContext {
+    fn new(ctx: PluginContext, sandbox: Sandbox) -> Self {
+        SandboxedContext { inner: ctx, sandbox: sandbox }
+    }
+    
+    fn read_file(path: String) -> Result<[UInt8], PluginError> {
+        self.sandbox.check_path(path.clone(), false)?
+        // Actual file read
+        Ok([])
+    }
+    
+    fn write_file(path: String, data: [UInt8]) -> Result<(), PluginError> {
+        self.sandbox.check_path(path.clone(), true)?
+        // Actual file write
+        Ok(())
+    }
+    
+    fn http_get(url: String) -> Result<[UInt8], PluginError> {
+        let host = self.extract_host(url.clone())
+        self.sandbox.check_network(host, 443)?
+        // Actual HTTP request
+        Ok([])
+    }
+    
+    fn extract_host(url: String) -> String {
+        // Extract host from URL
+        url.split("/").nth(2).unwrap_or("").to_string()
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "sandbox config" {
+    let config = SandboxConfig.default()
+    assert_eq(config.memory_limit_mb, 256)?
+    assert(!config.enable_network)?
+}
+
+test "path check" {
+    let config = SandboxConfig.default()
+        .allow_path("/tmp", true, true)
+    var sandbox = Sandbox.new("test", config)
+    
+    assert(sandbox.check_path("/tmp/file.txt", false).is_ok())?
+    assert(sandbox.check_path("/etc/passwd", false).is_err())?
+}
+
+test "capability check" {
+    var config = SandboxConfig.default()
+    config.allowed_capabilities.insert(PluginCapability.FileSystem)
+    var sandbox = Sandbox.new("test", config)
+    
+    assert(sandbox.check_capability(PluginCapability.FileSystem).is_ok())?
+    assert(sandbox.check_capability(PluginCapability.Network).is_err())?
+}
+
+test "violation tracking" {
+    var sandbox = Sandbox.new("test", SandboxConfig.default())
+    
+    let _ = sandbox.check_path("/etc/passwd", false)
+    assert_eq(sandbox.violation_count(), 1)?
+}
+
+test "sandbox manager" {
+    var manager = SandboxManager.new()
+    
+    manager.create("plugin1")?
+    assert(manager.get("plugin1").is_some())?
+    
+    manager.terminate("plugin1")
+    assert(manager.get("plugin1").is_none())?
+}

@@ -1,0 +1,255 @@
+// =============================================================================
+// Vibee OS — Pose Estimation Module
+// Human pose detection and body tracking
+// =============================================================================
+
+use image::{Image, Pixel}
+use tensor::{Tensor, Shape}
+
+// -----------------------------------------------------------------------------
+// Keypoint Types
+// -----------------------------------------------------------------------------
+
+/// Body keypoint
+struct Keypoint {
+    x: Float
+    y: Float
+    confidence: Float
+    name: String
+    
+    fn new(x: Float, y: Float, confidence: Float) -> Self {
+        Keypoint { x: x, y: y, confidence: confidence, name: "" }
+    }
+    
+    fn named(x: Float, y: Float, confidence: Float, name: String) -> Self {
+        Keypoint { x: x, y: y, confidence: confidence, name: name }
+    }
+    
+    fn is_visible() -> Bool { self.confidence > 0.5 }
+    fn position() -> (Float, Float) { (self.x, self.y) }
+    
+    fn distance_to(other: Keypoint) -> Float {
+        let dx = self.x - other.x
+        let dy = self.y - other.y
+        (dx * dx + dy * dy).sqrt()
+    }
+}
+
+/// COCO keypoint indices
+enum CocoKeypoint {
+    Nose, LeftEye, RightEye, LeftEar, RightEar,
+    LeftShoulder, RightShoulder, LeftElbow, RightElbow,
+    LeftWrist, RightWrist, LeftHip, RightHip,
+    LeftKnee, RightKnee, LeftAnkle, RightAnkle
+    
+    fn index() -> Int {
+        match self {
+            Nose => 0, LeftEye => 1, RightEye => 2, LeftEar => 3, RightEar => 4,
+            LeftShoulder => 5, RightShoulder => 6, LeftElbow => 7, RightElbow => 8,
+            LeftWrist => 9, RightWrist => 10, LeftHip => 11, RightHip => 12,
+            LeftKnee => 13, RightKnee => 14, LeftAnkle => 15, RightAnkle => 16
+        }
+    }
+    
+    fn name() -> String {
+        match self {
+            Nose => "nose", LeftEye => "left_eye", RightEye => "right_eye",
+            LeftEar => "left_ear", RightEar => "right_ear",
+            LeftShoulder => "left_shoulder", RightShoulder => "right_shoulder",
+            LeftElbow => "left_elbow", RightElbow => "right_elbow",
+            LeftWrist => "left_wrist", RightWrist => "right_wrist",
+            LeftHip => "left_hip", RightHip => "right_hip",
+            LeftKnee => "left_knee", RightKnee => "right_knee",
+            LeftAnkle => "left_ankle", RightAnkle => "right_ankle"
+        }
+    }
+}
+
+/// Skeleton connection (bone)
+struct Bone {
+    start: Int
+    end: Int
+    name: String
+    
+    fn new(start: Int, end: Int, name: String) -> Self {
+        Bone { start: start, end: end, name: name }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Pose Result
+// -----------------------------------------------------------------------------
+
+/// Detected pose
+struct Pose {
+    keypoints: [Keypoint]
+    confidence: Float
+    bbox: Option<(Int, Int, Int, Int)>
+    person_id: Option<Int>
+    
+    fn new(keypoints: [Keypoint]) -> Self {
+        let conf = keypoints.iter().map(|k| k.confidence).sum::<Float>() / keypoints.len() as Float
+        Pose { keypoints: keypoints, confidence: conf, bbox: None, person_id: None }
+    }
+    
+    fn get(idx: Int) -> Option<Keypoint> {
+        if idx >= 0 && idx < self.keypoints.len() { Some(self.keypoints[idx].clone()) }
+        else { None }
+    }
+    
+    fn get_by_name(name: String) -> Option<Keypoint> {
+        self.keypoints.iter().find(|k| k.name == name).cloned()
+    }
+    
+    fn nose() -> Option<Keypoint> { self.get(0) }
+    fn left_shoulder() -> Option<Keypoint> { self.get(5) }
+    fn right_shoulder() -> Option<Keypoint> { self.get(6) }
+    fn left_hip() -> Option<Keypoint> { self.get(11) }
+    fn right_hip() -> Option<Keypoint> { self.get(12) }
+    
+    fn visible_keypoints() -> [Keypoint] {
+        self.keypoints.iter().filter(|k| k.is_visible()).cloned().collect()
+    }
+    
+    fn visible_count() -> Int { self.visible_keypoints().len() }
+    
+    fn center() -> (Float, Float) {
+        let visible = self.visible_keypoints()
+        if visible.is_empty() { return (0.0, 0.0) }
+        let sum_x: Float = visible.iter().map(|k| k.x).sum()
+        let sum_y: Float = visible.iter().map(|k| k.y).sum()
+        (sum_x / visible.len() as Float, sum_y / visible.len() as Float)
+    }
+    
+    fn height() -> Float {
+        if let (Some(head), Some(ankle)) = (self.nose(), self.get(15)) {
+            (head.y - ankle.y).abs()
+        } else { 0.0 }
+    }
+}
+
+/// Multiple pose results
+struct PoseResults {
+    poses: [Pose]
+    image_width: Int
+    image_height: Int
+    
+    fn new(poses: [Pose], width: Int, height: Int) -> Self {
+        PoseResults { poses: poses, image_width: width, image_height: height }
+    }
+    
+    fn len() -> Int { self.poses.len() }
+    fn is_empty() -> Bool { self.poses.is_empty() }
+    fn first() -> Option<Pose> { self.poses.first().cloned() }
+    
+    fn filter_by_confidence(threshold: Float) -> Self {
+        let filtered = self.poses.iter().filter(|p| p.confidence >= threshold).cloned().collect()
+        PoseResults.new(filtered, self.image_width, self.image_height)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Pose Estimator
+// -----------------------------------------------------------------------------
+
+/// Pose model type
+enum PoseModel { OpenPose, MediaPipe, MoveNet, ViTPose, HRNet, AlphaPose }
+
+/// Pose estimator configuration
+struct PoseConfig {
+    model: PoseModel
+    confidence_threshold: Float
+    max_poses: Int
+    
+    fn new() -> Self {
+        PoseConfig { model: PoseModel.MoveNet, confidence_threshold: 0.3, max_poses: 10 }
+    }
+}
+
+/// Pose estimator
+struct PoseEstimator {
+    config: PoseConfig
+    
+    fn new() -> Self { PoseEstimator { config: PoseConfig.new() } }
+    fn with_config(config: PoseConfig) -> Self { PoseEstimator { config: config } }
+    
+    fn estimate(image: Image) -> Result<PoseResults, PoseError> {
+        @native("pose_estimate", image, self.config)
+    }
+    
+    fn estimate_single(image: Image) -> Result<Option<Pose>, PoseError> {
+        Ok(self.estimate(image)?.first())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Gesture Recognition
+// -----------------------------------------------------------------------------
+
+/// Recognized gesture
+enum Gesture {
+    Standing, Sitting, Walking, Running, Jumping,
+    WavingHand, RaisedHand, CrossedArms, HandsOnHips,
+    Pointing, Thumbsup, Unknown
+}
+
+/// Gesture recognizer
+struct GestureRecognizer {
+    fn new() -> Self { GestureRecognizer {} }
+    
+    fn recognize(pose: Pose) -> Gesture {
+        // Simple rule-based recognition
+        if let (Some(lw), Some(rw), Some(ls), Some(rs)) = 
+            (pose.get(9), pose.get(10), pose.get(5), pose.get(6)) {
+            if lw.y < ls.y && rw.y < rs.y { return Gesture.RaisedHand }
+        }
+        Gesture.Unknown
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum PoseError { ModelNotLoaded, InvalidImage, ProcessingError(String) }
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+fn estimate_pose(image: Image) -> Result<Option<Pose>, PoseError> {
+    PoseEstimator.new().estimate_single(image)
+}
+
+fn estimate_poses(image: Image) -> Result<PoseResults, PoseError> {
+    PoseEstimator.new().estimate(image)
+}
+
+fn count_people(image: Image) -> Result<Int, PoseError> {
+    Ok(estimate_poses(image)?.len())
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "keypoint_distance" {
+    let k1 = Keypoint.new(0.0, 0.0, 1.0)
+    let k2 = Keypoint.new(3.0, 4.0, 1.0)
+    assert_eq(k1.distance_to(k2), 5.0)?
+}
+
+test "pose_visible_count" {
+    let keypoints = [
+        Keypoint.new(100.0, 100.0, 0.9),
+        Keypoint.new(150.0, 100.0, 0.8),
+        Keypoint.new(0.0, 0.0, 0.1)
+    ]
+    let pose = Pose.new(keypoints)
+    assert_eq(pose.visible_count(), 2)?
+}
+
+test "coco_keypoint_index" {
+    assert_eq(CocoKeypoint.Nose.index(), 0)?
+    assert_eq(CocoKeypoint.LeftShoulder.index(), 5)?
+}

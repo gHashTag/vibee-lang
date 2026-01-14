@@ -1,0 +1,809 @@
+// =============================================================================
+// Vibee OS — Backtrace Module
+// Stack trace capture, formatting, and analysis
+// =============================================================================
+
+use debug.{StackTrace, StackFrame}
+use datetime.{DateTime, Instant}
+
+// -----------------------------------------------------------------------------
+// Core Types
+// -----------------------------------------------------------------------------
+
+/// Enhanced backtrace with metadata
+struct Backtrace {
+    frames: [Frame]
+    captured_at: DateTime
+    thread_id: Option<Int>
+    thread_name: Option<String>
+    status: BacktraceStatus
+}
+
+/// Backtrace capture status
+enum BacktraceStatus {
+    /// Backtrace was captured successfully
+    Captured
+    /// Backtrace capture is disabled
+    Disabled
+    /// Backtrace capture not supported
+    Unsupported
+}
+
+/// Enhanced stack frame
+struct Frame {
+    /// Frame index (0 = most recent)
+    index: Int
+    /// Instruction pointer address
+    ip: UInt64
+    /// Symbol address (start of function)
+    symbol_address: Option<UInt64>
+    /// Function/symbol name
+    symbol_name: Option<String>
+    /// Demangled symbol name
+    demangled_name: Option<String>
+    /// Source file path
+    file: Option<String>
+    /// Line number
+    line: Option<Int>
+    /// Column number
+    column: Option<Int>
+    /// Module/library name
+    module: Option<String>
+    /// Is inline frame
+    is_inline: Bool
+}
+
+impl Frame {
+    fn new(index: Int, ip: UInt64) -> Self {
+        Frame {
+            index: index,
+            ip: ip,
+            symbol_address: None,
+            symbol_name: None,
+            demangled_name: None,
+            file: None,
+            line: None,
+            column: None,
+            module: None,
+            is_inline: false
+        }
+    }
+    
+    /// Get display name (demangled or raw symbol)
+    fn name() -> String {
+        self.demangled_name
+            .or(self.symbol_name)
+            .unwrap_or("<unknown>")
+    }
+    
+    /// Get source location string
+    fn location() -> Option<String> {
+        match (self.file.as_ref(), self.line) {
+            (Some(f), Some(l)) => {
+                match self.column {
+                    Some(c) => Some(format!("{}:{}:{}", f, l, c))
+                    None => Some(format!("{}:{}", f, l))
+                }
+            }
+            (Some(f), None) => Some(f.clone())
+            _ => None
+        }
+    }
+    
+    /// Check if frame is from standard library
+    fn is_stdlib() -> Bool {
+        if let Some(m) = self.module.as_ref() {
+            return m.starts_with("std::") || m.contains("/stdlib/")
+        }
+        if let Some(f) = self.file.as_ref() {
+            return f.contains("/stdlib/") || f.starts_with("std/")
+        }
+        false
+    }
+    
+    /// Check if frame is from runtime
+    fn is_runtime() -> Bool {
+        if let Some(m) = self.module.as_ref() {
+            return m.contains("runtime") || m.contains("vibee_rt")
+        }
+        if let Some(s) = self.symbol_name.as_ref() {
+            return s.starts_with("__vibee_") || s.starts_with("_rt_")
+        }
+        false
+    }
+    
+    /// Check if frame is user code
+    fn is_user_code() -> Bool {
+        !self.is_stdlib() && !self.is_runtime()
+    }
+    
+    /// Format frame for display
+    fn display() -> String {
+        var result = format!("{:>4}: ", self.index)
+        
+        result += self.name()
+        
+        if let Some(loc) = self.location() {
+            result += format!("\n        at {}", loc)
+        } else if let Some(addr) = self.symbol_address {
+            result += format!("\n        at 0x{:016x}", addr)
+        }
+        
+        if let Some(m) = self.module.as_ref() {
+            result += format!("\n        in {}", m)
+        }
+        
+        if self.is_inline {
+            result += " [inline]"
+        }
+        
+        result
+    }
+    
+    /// Format frame as single line
+    fn display_short() -> String {
+        var result = self.name()
+        if let Some(loc) = self.location() {
+            result += format!(" ({})", loc)
+        }
+        result
+    }
+}
+
+impl Backtrace {
+    /// Capture current backtrace
+    fn capture() -> Self {
+        if !Backtrace.is_enabled() {
+            return Backtrace.disabled()
+        }
+        
+        let raw_frames: [RawFrame] = @native("capture_backtrace")
+        var frames = []
+        
+        for (i, raw) in raw_frames.enumerate() {
+            var frame = Frame.new(i, raw.ip)
+            
+            // Resolve symbol information
+            if let Some(sym) = resolve_symbol(raw.ip) {
+                frame.symbol_address = Some(sym.address)
+                frame.symbol_name = Some(sym.name)
+                frame.demangled_name = demangle(sym.name)
+                frame.file = sym.file
+                frame.line = sym.line
+                frame.column = sym.column
+                frame.module = sym.module
+                frame.is_inline = sym.is_inline
+            }
+            
+            frames.push(frame)
+        }
+        
+        Backtrace {
+            frames: frames,
+            captured_at: DateTime.now(),
+            thread_id: Some(@native("current_thread_id")),
+            thread_name: @native("current_thread_name"),
+            status: BacktraceStatus.Captured
+        }
+    }
+    
+    /// Capture with skip count
+    fn capture_skip(skip: Int) -> Self {
+        var bt = Backtrace.capture()
+        if skip > 0 && bt.frames.len() > skip {
+            bt.frames = bt.frames[skip..]
+            // Reindex frames
+            for (i, frame) in bt.frames.enumerate() {
+                frame.index = i
+            }
+        }
+        bt
+    }
+    
+    /// Create disabled backtrace
+    fn disabled() -> Self {
+        Backtrace {
+            frames: [],
+            captured_at: DateTime.now(),
+            thread_id: None,
+            thread_name: None,
+            status: BacktraceStatus.Disabled
+        }
+    }
+    
+    /// Create unsupported backtrace
+    fn unsupported() -> Self {
+        Backtrace {
+            frames: [],
+            captured_at: DateTime.now(),
+            thread_id: None,
+            thread_name: None,
+            status: BacktraceStatus.Unsupported
+        }
+    }
+    
+    /// Check if backtrace capture is enabled
+    fn is_enabled() -> Bool {
+        // Check environment variable
+        match Env.get("VIBEE_BACKTRACE") {
+            Some("1") | Some("full") => true
+            Some("0") => false
+            _ => @debug_mode()
+        }
+    }
+    
+    /// Enable backtrace capture
+    fn enable() {
+        Env.set("VIBEE_BACKTRACE", "1")
+    }
+    
+    /// Disable backtrace capture
+    fn disable() {
+        Env.set("VIBEE_BACKTRACE", "0")
+    }
+    
+    // Accessors
+    fn len() -> Int { self.frames.len() }
+    fn is_empty() -> Bool { self.frames.is_empty() }
+    fn is_captured() -> Bool { self.status == BacktraceStatus.Captured }
+    
+    /// Get frame at index
+    fn get(index: Int) -> Option<Frame> {
+        if index >= 0 && index < self.frames.len() {
+            Some(self.frames[index].clone())
+        } else {
+            None
+        }
+    }
+    
+    /// Iterate over frames
+    fn iter() -> impl Iterator<Item = Frame> {
+        self.frames.iter()
+    }
+    
+    /// Filter to user code only
+    fn user_frames() -> Backtrace {
+        Backtrace {
+            frames: self.frames.filter(|f| f.is_user_code()),
+            captured_at: self.captured_at,
+            thread_id: self.thread_id,
+            thread_name: self.thread_name.clone(),
+            status: self.status
+        }
+    }
+    
+    /// Filter out runtime frames
+    fn without_runtime() -> Backtrace {
+        Backtrace {
+            frames: self.frames.filter(|f| !f.is_runtime()),
+            captured_at: self.captured_at,
+            thread_id: self.thread_id,
+            thread_name: self.thread_name.clone(),
+            status: self.status
+        }
+    }
+    
+    /// Get frames matching predicate
+    fn filter(pred: fn(Frame) -> Bool) -> Backtrace {
+        Backtrace {
+            frames: self.frames.filter(pred),
+            captured_at: self.captured_at,
+            thread_id: self.thread_id,
+            thread_name: self.thread_name.clone(),
+            status: self.status
+        }
+    }
+    
+    /// Find frame by function name
+    fn find_function(name: String) -> Option<Frame> {
+        for frame in self.frames.iter() {
+            if frame.name().contains(name) {
+                return Some(frame.clone())
+            }
+        }
+        None
+    }
+    
+    /// Find frame by file
+    fn find_file(path: String) -> Option<Frame> {
+        for frame in self.frames.iter() {
+            if let Some(f) = frame.file.as_ref() {
+                if f.contains(path) {
+                    return Some(frame.clone())
+                }
+            }
+        }
+        None
+    }
+    
+    /// Get top N frames
+    fn top(n: Int) -> Backtrace {
+        Backtrace {
+            frames: self.frames.take(n),
+            captured_at: self.captured_at,
+            thread_id: self.thread_id,
+            thread_name: self.thread_name.clone(),
+            status: self.status
+        }
+    }
+    
+    /// Skip first N frames
+    fn skip(n: Int) -> Backtrace {
+        Backtrace {
+            frames: self.frames.skip(n),
+            captured_at: self.captured_at,
+            thread_id: self.thread_id,
+            thread_name: self.thread_name.clone(),
+            status: self.status
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Display Formatting
+// -----------------------------------------------------------------------------
+
+impl Display for Backtrace {
+    fn fmt(f: Formatter) {
+        f.write(self.to_string())
+    }
+}
+
+impl Backtrace {
+    /// Format as string
+    fn to_string() -> String {
+        BacktraceFormatter.default().format(self)
+    }
+    
+    /// Print to stderr
+    fn print() {
+        eprintln(self.to_string())
+    }
+    
+    /// Format as JSON
+    fn to_json() -> String {
+        var obj = Map.new()
+        obj.insert("captured_at", self.captured_at.to_iso8601())
+        obj.insert("thread_id", self.thread_id)
+        obj.insert("thread_name", self.thread_name.clone())
+        obj.insert("status", match self.status {
+            Captured => "captured"
+            Disabled => "disabled"
+            Unsupported => "unsupported"
+        })
+        
+        var frames_json = []
+        for frame in self.frames.iter() {
+            var frame_obj = Map.new()
+            frame_obj.insert("index", frame.index)
+            frame_obj.insert("ip", format!("0x{:x}", frame.ip))
+            frame_obj.insert("name", frame.name())
+            if let Some(loc) = frame.location() {
+                frame_obj.insert("location", loc)
+            }
+            if let Some(m) = frame.module.as_ref() {
+                frame_obj.insert("module", m.clone())
+            }
+            frame_obj.insert("is_inline", frame.is_inline)
+            frames_json.push(frame_obj)
+        }
+        obj.insert("frames", frames_json)
+        
+        Json.stringify_pretty(obj)
+    }
+}
+
+/// Backtrace formatter with options
+struct BacktraceFormatter {
+    show_addresses: Bool
+    show_modules: Bool
+    show_inline: Bool
+    color: Bool
+    max_frames: Option<Int>
+    filter_stdlib: Bool
+    filter_runtime: Bool
+}
+
+impl BacktraceFormatter {
+    fn default() -> Self {
+        BacktraceFormatter {
+            show_addresses: false,
+            show_modules: true,
+            show_inline: true,
+            color: true,
+            max_frames: None,
+            filter_stdlib: false,
+            filter_runtime: true
+        }
+    }
+    
+    fn minimal() -> Self {
+        BacktraceFormatter {
+            show_addresses: false,
+            show_modules: false,
+            show_inline: false,
+            color: false,
+            max_frames: Some(10),
+            filter_stdlib: true,
+            filter_runtime: true
+        }
+    }
+    
+    fn full() -> Self {
+        BacktraceFormatter {
+            show_addresses: true,
+            show_modules: true,
+            show_inline: true,
+            color: true,
+            max_frames: None,
+            filter_stdlib: false,
+            filter_runtime: false
+        }
+    }
+    
+    fn with_max_frames(n: Int) -> Self {
+        self.max_frames = Some(n)
+        self
+    }
+    
+    fn with_color(enabled: Bool) -> Self {
+        self.color = enabled
+        self
+    }
+    
+    fn format(bt: Backtrace) -> String {
+        match bt.status {
+            Disabled => return "<backtrace disabled>"
+            Unsupported => return "<backtrace unsupported>"
+            Captured => {}
+        }
+        
+        var result = StringBuilder.new()
+        
+        // Header
+        if self.color {
+            result.append("\x1b[1mStack backtrace:\x1b[0m\n")
+        } else {
+            result.append("Stack backtrace:\n")
+        }
+        
+        if let Some(tid) = bt.thread_id {
+            result.append(format!("  Thread: {} ", tid))
+            if let Some(name) = bt.thread_name.as_ref() {
+                result.append(format!("({})", name))
+            }
+            result.append("\n")
+        }
+        
+        // Filter frames
+        var frames = bt.frames.clone()
+        if self.filter_runtime {
+            frames = frames.filter(|f| !f.is_runtime())
+        }
+        if self.filter_stdlib {
+            frames = frames.filter(|f| !f.is_stdlib())
+        }
+        
+        // Limit frames
+        let total = frames.len()
+        if let Some(max) = self.max_frames {
+            if frames.len() > max {
+                frames = frames.take(max)
+            }
+        }
+        
+        // Format frames
+        for frame in frames.iter() {
+            result.append(self.format_frame(frame))
+            result.append("\n")
+        }
+        
+        // Show truncation notice
+        if let Some(max) = self.max_frames {
+            if total > max {
+                result.append(format!("  ... and {} more frames\n", total - max))
+            }
+        }
+        
+        result.build()
+    }
+    
+    fn format_frame(frame: Frame) -> String {
+        var result = StringBuilder.new()
+        
+        // Index
+        if self.color {
+            result.append(format!("\x1b[90m{:>4}:\x1b[0m ", frame.index))
+        } else {
+            result.append(format!("{:>4}: ", frame.index))
+        }
+        
+        // Function name
+        let name = frame.name()
+        if self.color {
+            if frame.is_user_code() {
+                result.append(format!("\x1b[1;32m{}\x1b[0m", name))
+            } else {
+                result.append(format!("\x1b[33m{}\x1b[0m", name))
+            }
+        } else {
+            result.append(name)
+        }
+        
+        // Inline marker
+        if self.show_inline && frame.is_inline {
+            if self.color {
+                result.append(" \x1b[90m[inline]\x1b[0m")
+            } else {
+                result.append(" [inline]")
+            }
+        }
+        
+        // Location
+        if let Some(loc) = frame.location() {
+            if self.color {
+                result.append(format!("\n        \x1b[36mat {}\x1b[0m", loc))
+            } else {
+                result.append(format!("\n        at {}", loc))
+            }
+        } else if self.show_addresses {
+            result.append(format!("\n        at 0x{:016x}", frame.ip))
+        }
+        
+        // Module
+        if self.show_modules {
+            if let Some(m) = frame.module.as_ref() {
+                if self.color {
+                    result.append(format!("\n        \x1b[90min {}\x1b[0m", m))
+                } else {
+                    result.append(format!("\n        in {}", m))
+                }
+            }
+        }
+        
+        result.build()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Symbol Resolution
+// -----------------------------------------------------------------------------
+
+/// Raw frame from native capture
+struct RawFrame {
+    ip: UInt64
+    sp: UInt64
+}
+
+/// Resolved symbol information
+struct SymbolInfo {
+    address: UInt64
+    name: String
+    file: Option<String>
+    line: Option<Int>
+    column: Option<Int>
+    module: Option<String>
+    is_inline: Bool
+}
+
+/// Resolve symbol at address
+fn resolve_symbol(address: UInt64) -> Option<SymbolInfo> {
+    @native("resolve_symbol", address)
+}
+
+/// Demangle symbol name
+fn demangle(name: String) -> Option<String> {
+    @native("demangle_symbol", name)
+}
+
+// -----------------------------------------------------------------------------
+// Backtrace Context
+// -----------------------------------------------------------------------------
+
+/// Backtrace with additional context
+struct BacktraceContext {
+    backtrace: Backtrace
+    message: Option<String>
+    variables: Map<String, Any>
+    tags: [String]
+}
+
+impl BacktraceContext {
+    fn new(bt: Backtrace) -> Self {
+        BacktraceContext {
+            backtrace: bt,
+            message: None,
+            variables: Map.new(),
+            tags: []
+        }
+    }
+    
+    fn capture() -> Self {
+        BacktraceContext.new(Backtrace.capture_skip(1))
+    }
+    
+    fn with_message(msg: String) -> Self {
+        self.message = Some(msg)
+        self
+    }
+    
+    fn with_variable(name: String, value: Any) -> Self {
+        self.variables.insert(name, value)
+        self
+    }
+    
+    fn with_tag(tag: String) -> Self {
+        self.tags.push(tag)
+        self
+    }
+    
+    fn display() -> String {
+        var result = StringBuilder.new()
+        
+        if let Some(msg) = self.message.as_ref() {
+            result.append(format!("Message: {}\n\n", msg))
+        }
+        
+        if !self.tags.is_empty() {
+            result.append(format!("Tags: {}\n\n", self.tags.join(", ")))
+        }
+        
+        if !self.variables.is_empty() {
+            result.append("Variables:\n")
+            for (name, value) in self.variables.iter() {
+                result.append(format!("  {} = {:?}\n", name, value))
+            }
+            result.append("\n")
+        }
+        
+        result.append(self.backtrace.to_string())
+        result.build()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Backtrace Comparison
+// -----------------------------------------------------------------------------
+
+/// Compare two backtraces
+fn compare(a: Backtrace, b: Backtrace) -> BacktraceComparison {
+    var common_prefix = 0
+    var common_suffix = 0
+    
+    // Find common prefix (from top of stack)
+    let min_len = a.len().min(b.len())
+    for i in 0..min_len {
+        if frames_equal(a.frames[i], b.frames[i]) {
+            common_prefix += 1
+        } else {
+            break
+        }
+    }
+    
+    // Find common suffix (from bottom of stack)
+    for i in 0..min_len {
+        let ai = a.len() - 1 - i
+        let bi = b.len() - 1 - i
+        if frames_equal(a.frames[ai], b.frames[bi]) {
+            common_suffix += 1
+        } else {
+            break
+        }
+    }
+    
+    BacktraceComparison {
+        a: a,
+        b: b,
+        common_prefix: common_prefix,
+        common_suffix: common_suffix
+    }
+}
+
+fn frames_equal(a: Frame, b: Frame) -> Bool {
+    a.name() == b.name() && a.location() == b.location()
+}
+
+struct BacktraceComparison {
+    a: Backtrace
+    b: Backtrace
+    common_prefix: Int
+    common_suffix: Int
+}
+
+impl BacktraceComparison {
+    fn similarity() -> Float {
+        let total = self.a.len() + self.b.len()
+        if total == 0 { return 1.0 }
+        let common = (self.common_prefix + self.common_suffix) * 2
+        common as Float / total as Float
+    }
+    
+    fn divergence_point() -> Option<(Frame, Frame)> {
+        if self.common_prefix < self.a.len() && self.common_prefix < self.b.len() {
+            Some((
+                self.a.frames[self.common_prefix].clone(),
+                self.b.frames[self.common_prefix].clone()
+            ))
+        } else {
+            None
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Macros
+// -----------------------------------------------------------------------------
+
+/// Capture backtrace at current location
+macro backtrace!() {
+    Backtrace.capture_skip(1)
+}
+
+/// Capture backtrace with context
+macro backtrace_ctx!(message) {
+    BacktraceContext.capture()
+        .with_message(message)
+}
+
+/// Print backtrace
+macro print_backtrace!() {
+    Backtrace.capture_skip(1).print()
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "backtrace capture" {
+    Backtrace.enable()
+    let bt = Backtrace.capture()
+    
+    assert(bt.is_captured())?
+    assert(bt.len() > 0)?
+}
+
+test "frame filtering" {
+    let bt = Backtrace.capture()
+    let user_bt = bt.user_frames()
+    
+    for frame in user_bt.iter() {
+        assert(frame.is_user_code())?
+    }
+}
+
+test "backtrace formatter" {
+    let bt = Backtrace.capture()
+    let formatted = BacktraceFormatter.minimal().format(bt)
+    
+    assert(formatted.contains("Stack backtrace"))?
+}
+
+test "frame display" {
+    let frame = Frame.new(0, 0x12345678)
+    frame.symbol_name = Some("test_function")
+    frame.file = Some("test.vibee")
+    frame.line = Some(42)
+    
+    let display = frame.display()
+    assert(display.contains("test_function"))?
+    assert(display.contains("test.vibee:42"))?
+}
+
+test "backtrace context" {
+    let ctx = BacktraceContext.capture()
+        .with_message("Test context")
+        .with_variable("x", 42)
+        .with_tag("test")
+    
+    let display = ctx.display()
+    assert(display.contains("Test context"))?
+    assert(display.contains("x = 42"))?
+}
+
+test "backtrace comparison" {
+    let bt1 = Backtrace.capture()
+    let bt2 = Backtrace.capture()
+    
+    let cmp = compare(bt1, bt2)
+    assert(cmp.similarity() > 0.5)?  // Should be similar
+}

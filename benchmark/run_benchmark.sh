@@ -123,6 +123,7 @@ vibee_pipeline() {
     local spec_file=$2
     local impl_file=$3
     local target=$4
+    local opt_mode=${5:-"release"}  # debug or release
     
     if [[ -z "$VIBEEC" ]]; then
         echo "  VIBEE          │ VIBEEC not found, skipping"
@@ -135,7 +136,11 @@ vibee_pipeline() {
     
     case $target in
         zig)
-            zig build-exe "$impl_file" -O ReleaseFast -femit-bin=/tmp/vibee_bin 2>/dev/null || true
+            if [[ "$opt_mode" == "debug" ]]; then
+                zig build-exe "$impl_file" -O Debug -femit-bin=/tmp/vibee_bin 2>/dev/null || true
+            else
+                zig build-exe "$impl_file" -O ReleaseFast -femit-bin=/tmp/vibee_bin 2>/dev/null || true
+            fi
             ;;
         go)
             go build -o /tmp/vibee_bin "$impl_file" 2>/dev/null || true
@@ -156,8 +161,13 @@ vibee_pipeline() {
     local run_ms=$((run_end - compile_end))
     local total_ms=$((gen_ms + compile_ms + run_ms))
     
-    echo "VIBEE→$target,$algo,$total_ms" >> $RESULTS
-    printf "  %-14s │ %7d ms  (gen:%dms + compile:%dms + run:%dms)\n" "VIBEE→$target" "$total_ms" "$gen_ms" "$compile_ms" "$run_ms"
+    local display_name="VIBEE→$target"
+    if [[ "$target" == "zig" ]]; then
+        display_name="VIBEE→zig-$opt_mode"
+    fi
+    
+    echo "$display_name,$algo,$total_ms" >> $RESULTS
+    printf "  %-18s │ %7d ms  (gen:%dms + compile:%dms + run:%dms)\n" "$display_name" "$total_ms" "$gen_ms" "$compile_ms" "$run_ms"
     rm -f /tmp/vibee_bin
 }
 
@@ -271,7 +281,8 @@ fn fib(n: u64) u64 { return if (n <= 1) n else fib(n-1) + fib(n-2); }
 pub fn main() void { std.debug.print("{}\n", .{fib(35)}); }
 EOF
     if command -v zig &> /dev/null; then
-        vibee_pipeline "fib" "/tmp/fib_zig.vibee" "/tmp/fib_impl.zig" "zig"
+        vibee_pipeline "fib" "/tmp/fib_zig.vibee" "/tmp/fib_impl.zig" "zig" "debug"
+        vibee_pipeline "fib" "/tmp/fib_zig.vibee" "/tmp/fib_impl.zig" "zig" "release"
     fi
     
     # VIBEE→Rust (full pipeline)
@@ -296,7 +307,7 @@ EOF
         run_ms=$((run_end - gen_end))
         total_ms=$((gen_ms + run_ms))
         echo "VIBEE→python,fib,$total_ms" >> $RESULTS
-        printf "  %-14s │ %7d ms  (gen:%dms + run:%dms)\n" "VIBEE→python" "$total_ms" "$gen_ms" "$run_ms"
+        printf "  %-18s │ %7d ms  (gen:%dms + run:%dms)\n" "VIBEE→python" "$total_ms" "$gen_ms" "$run_ms"
     fi
     
     # VIBEE→TypeScript/Node.js (full pipeline)
@@ -314,7 +325,44 @@ EOF
         run_ms=$((run_end - gen_end))
         total_ms=$((gen_ms + run_ms))
         echo "VIBEE→typescript,fib,$total_ms" >> $RESULTS
-        printf "  %-14s │ %7d ms  (gen:%dms + run:%dms)\n" "VIBEE→typescript" "$total_ms" "$gen_ms" "$run_ms"
+        printf "  %-18s │ %7d ms  (gen:%dms + run:%dms)\n" "VIBEE→typescript" "$total_ms" "$gen_ms" "$run_ms"
+    fi
+    
+    # VIBEE→WASM (full pipeline)
+    cat > /tmp/fib_impl.wat << 'EOF'
+(module
+  (func $fib (param $n i64) (result i64)
+    (if (result i64) (i64.le_u (local.get $n) (i64.const 1))
+      (then (local.get $n))
+      (else
+        (i64.add
+          (call $fib (i64.sub (local.get $n) (i64.const 1)))
+          (call $fib (i64.sub (local.get $n) (i64.const 2)))
+        )
+      )
+    )
+  )
+  (func $main (result i64) (call $fib (i64.const 35)))
+  (export "fib" (func $fib))
+  (export "main" (func $main))
+)
+EOF
+    WASMTIME="$HOME/.wasmtime/bin/wasmtime"
+    if command -v wat2wasm &> /dev/null && [[ -f "$WASMTIME" ]]; then
+        start=$(get_ms)
+        $VIBEEC gen /tmp/fib.vibee --output /tmp 2>/dev/null || true
+        gen_end=$(get_ms)
+        wat2wasm /tmp/fib_impl.wat -o /tmp/fib_impl.wasm 2>/dev/null
+        compile_end=$(get_ms)
+        $WASMTIME run --invoke main /tmp/fib_impl.wasm > /dev/null 2>&1 || true
+        run_end=$(get_ms)
+        gen_ms=$((gen_end - start))
+        compile_ms=$((compile_end - gen_end))
+        run_ms=$((run_end - compile_end))
+        total_ms=$((gen_ms + compile_ms + run_ms))
+        wasm_size=$(ls -l /tmp/fib_impl.wasm 2>/dev/null | awk '{print $5}')
+        echo "VIBEE→wasm,fib,$total_ms" >> $RESULTS
+        printf "  %-18s │ %7d ms  (gen:%dms + compile:%dms + run:%dms) [%d bytes]\n" "VIBEE→wasm" "$total_ms" "$gen_ms" "$compile_ms" "$run_ms" "$wasm_size"
     fi
 fi
 

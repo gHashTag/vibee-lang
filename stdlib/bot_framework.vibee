@@ -1,0 +1,453 @@
+// =============================================================================
+// Vibee OS — Bot Framework Module
+// Universal bot framework with adapters for multiple platforms
+// =============================================================================
+
+use result::{Result, Ok, Err}
+use json::{JsonValue, Serialize, Deserialize}
+
+// =============================================================================
+// Core Traits
+// =============================================================================
+
+/// Platform adapter trait
+trait BotAdapter {
+    fn name() -> String;
+    fn connect() -> Result<(), AdapterError>;
+    fn disconnect() -> Result<(), AdapterError>;
+    fn send_message(channel: String, message: OutgoingMessage) -> Result<String, AdapterError>;
+    fn edit_message(channel: String, message_id: String, message: OutgoingMessage) -> Result<(), AdapterError>;
+    fn delete_message(channel: String, message_id: String) -> Result<(), AdapterError>;
+}
+
+/// Message handler trait
+trait MessageHandler {
+    fn handle(ctx: MessageContext) -> Option<OutgoingMessage>;
+}
+
+/// Middleware trait
+trait Middleware {
+    fn before(ctx: MessageContext) -> MiddlewareResult;
+    fn after(ctx: MessageContext, response: Option<OutgoingMessage>) -> Option<OutgoingMessage>;
+}
+
+// =============================================================================
+// Core Types
+// =============================================================================
+
+/// Incoming message from any platform
+struct IncomingMessage {
+    id: String,
+    platform: Platform,
+    channel_id: String,
+    user_id: String,
+    username: String,
+    text: String,
+    timestamp: Int64,
+    is_bot: Bool,
+    reply_to: Option<String>,
+    attachments: [Attachment],
+    metadata: Map<String, JsonValue>
+}
+
+impl IncomingMessage {
+    fn new(platform: Platform, channel_id: String, user_id: String, text: String) -> Self {
+        IncomingMessage {
+            id: @native("uuid_v4"), platform: platform, channel_id: channel_id,
+            user_id: user_id, username: "", text: text, timestamp: @native("timestamp_ms"),
+            is_bot: false, reply_to: None, attachments: [], metadata: Map.new()
+        }
+    }
+}
+
+/// Outgoing message to any platform
+struct OutgoingMessage {
+    text: String,
+    format: MessageFormat,
+    attachments: [Attachment],
+    buttons: [Button],
+    embed: Option<Embed>,
+    reply_to: Option<String>,
+    ephemeral: Bool
+}
+
+impl OutgoingMessage {
+    fn text(t: String) -> Self {
+        OutgoingMessage { text: t, format: MessageFormat.Plain, attachments: [], buttons: [], embed: None, reply_to: None, ephemeral: false }
+    }
+    fn markdown(t: String) -> Self {
+        OutgoingMessage { text: t, format: MessageFormat.Markdown, attachments: [], buttons: [], embed: None, reply_to: None, ephemeral: false }
+    }
+    fn html(t: String) -> Self {
+        OutgoingMessage { text: t, format: MessageFormat.HTML, attachments: [], buttons: [], embed: None, reply_to: None, ephemeral: false }
+    }
+    fn with_buttons(buttons: [Button]) -> Self { self.buttons = buttons; self }
+    fn with_embed(embed: Embed) -> Self { self.embed = Some(embed); self }
+    fn as_reply(message_id: String) -> Self { self.reply_to = Some(message_id); self }
+    fn as_ephemeral() -> Self { self.ephemeral = true; self }
+    fn add_button(btn: Button) -> Self { self.buttons.push(btn); self }
+    fn add_attachment(att: Attachment) -> Self { self.attachments.push(att); self }
+}
+
+/// Message format
+enum MessageFormat { Plain, Markdown, HTML }
+
+/// Platform enum
+enum Platform { Telegram, Discord, Slack, Custom(String) }
+
+impl Platform {
+    fn to_string() -> String {
+        match self {
+            Platform.Telegram => "telegram", Platform.Discord => "discord",
+            Platform.Slack => "slack", Platform.Custom(name) => name
+        }
+    }
+}
+
+/// Universal button
+struct Button { label: String, action: ButtonAction, style: ButtonStyle }
+
+impl Button {
+    fn callback(label: String, data: String) -> Self { Button { label: label, action: ButtonAction.Callback(data), style: ButtonStyle.Default } }
+    fn url(label: String, url: String) -> Self { Button { label: label, action: ButtonAction.Url(url), style: ButtonStyle.Default } }
+    fn primary(label: String, data: String) -> Self { Button { label: label, action: ButtonAction.Callback(data), style: ButtonStyle.Primary } }
+    fn danger(label: String, data: String) -> Self { Button { label: label, action: ButtonAction.Callback(data), style: ButtonStyle.Danger } }
+}
+
+enum ButtonAction { Callback(String), Url(String) }
+enum ButtonStyle { Default, Primary, Secondary, Success, Danger }
+
+/// Universal embed
+struct Embed { title: Option<String>, description: Option<String>, color: Option<Int>, url: Option<String>, image: Option<String>, thumbnail: Option<String>, fields: [EmbedField], footer: Option<String> }
+
+impl Embed {
+    fn new() -> Self { Embed { title: None, description: None, color: None, url: None, image: None, thumbnail: None, fields: [], footer: None } }
+    fn title(t: String) -> Self { self.title = Some(t); self }
+    fn description(d: String) -> Self { self.description = Some(d); self }
+    fn color(c: Int) -> Self { self.color = Some(c); self }
+    fn url(u: String) -> Self { self.url = Some(u); self }
+    fn image(i: String) -> Self { self.image = Some(i); self }
+    fn field(name: String, value: String, inline: Bool) -> Self { self.fields.push(EmbedField { name: name, value: value, inline: inline }); self }
+    fn footer(f: String) -> Self { self.footer = Some(f); self }
+}
+
+struct EmbedField { name: String, value: String, inline: Bool }
+
+/// Attachment
+struct Attachment { attachment_type: AttachmentType, url: String, filename: Option<String>, size: Option<Int64> }
+enum AttachmentType { Image, Video, Audio, File }
+
+/// Message context
+struct MessageContext {
+    message: IncomingMessage,
+    bot: BotInfo,
+    session: Session,
+    adapter: String
+}
+
+impl MessageContext {
+    fn reply(text: String) -> OutgoingMessage { OutgoingMessage.text(text).as_reply(self.message.id.clone()) }
+    fn reply_markdown(text: String) -> OutgoingMessage { OutgoingMessage.markdown(text).as_reply(self.message.id.clone()) }
+    fn user_id() -> String { self.message.user_id.clone() }
+    fn channel_id() -> String { self.message.channel_id.clone() }
+    fn text() -> String { self.message.text.clone() }
+    fn is_command(prefix: String) -> Bool { self.message.text.starts_with(prefix) }
+    fn get_command(prefix: String) -> Option<String> {
+        if !self.is_command(prefix) { return None }
+        self.message.text.strip_prefix(prefix).and_then(|s| s.split_whitespace().first().map(|c| c.to_string()))
+    }
+    fn get_args(prefix: String) -> [String] {
+        if !self.is_command(prefix) { return [] }
+        let parts: [String] = self.message.text.strip_prefix(prefix).unwrap_or("").split_whitespace().collect();
+        if parts.len() > 1 { parts[1..].to_vec() } else { [] }
+    }
+}
+
+/// Bot info
+struct BotInfo { id: String, name: String, username: String }
+
+/// Session data
+struct Session { user_id: String, data: Map<String, JsonValue>, created_at: Int64, updated_at: Int64 }
+
+impl Session {
+    fn new(user_id: String) -> Self { Session { user_id: user_id, data: Map.new(), created_at: @native("timestamp_ms"), updated_at: @native("timestamp_ms") } }
+    fn get<T: Deserialize>(key: String) -> Option<T> { self.data.get(&key).and_then(|v| json::from_value(v.clone()).ok()) }
+    fn set<T: Serialize>(key: String, value: T) { self.data.insert(key, json::to_value(value)); self.updated_at = @native("timestamp_ms"); }
+    fn remove(key: String) { self.data.remove(&key); }
+    fn clear() { self.data.clear(); }
+}
+
+/// Middleware result
+enum MiddlewareResult { Continue, Stop, Respond(OutgoingMessage) }
+
+// =============================================================================
+// Bot Framework
+// =============================================================================
+
+/// Adapter error
+enum AdapterError { ConnectionFailed(String), SendFailed(String), NotConnected, RateLimited(Int), Unauthorized }
+
+/// Bot Framework
+actor BotFramework {
+    state adapters: Map<String, Box<dyn BotAdapter>>
+    state handlers: [Box<dyn MessageHandler>]
+    state command_handlers: Map<String, fn(MessageContext) -> Option<OutgoingMessage>>
+    state callback_handlers: Map<String, fn(MessageContext, String) -> Option<OutgoingMessage>>
+    state middleware: [Box<dyn Middleware>]
+    state sessions: Map<String, Session>
+    state prefix: String
+    state bot_info: BotInfo
+    state running: Bool
+    
+    fn new(name: String) -> Self {
+        BotFramework {
+            adapters: Map.new(), handlers: [], command_handlers: Map.new(),
+            callback_handlers: Map.new(), middleware: [], sessions: Map.new(),
+            prefix: "!", bot_info: BotInfo { id: "", name: name, username: "" }, running: false
+        }
+    }
+    
+    fn set_prefix(prefix: String) -> Self { self.prefix = prefix; self }
+    
+    fn add_adapter<A: BotAdapter>(name: String, adapter: A) -> Self {
+        self.adapters.insert(name, Box.new(adapter));
+        self
+    }
+    
+    fn add_handler<H: MessageHandler>(handler: H) -> Self {
+        self.handlers.push(Box.new(handler));
+        self
+    }
+    
+    fn on_command(command: String, handler: fn(MessageContext) -> Option<OutgoingMessage>) -> Self {
+        self.command_handlers.insert(command, handler);
+        self
+    }
+    
+    fn on_callback(prefix: String, handler: fn(MessageContext, String) -> Option<OutgoingMessage>) -> Self {
+        self.callback_handlers.insert(prefix, handler);
+        self
+    }
+    
+    fn add_middleware<M: Middleware>(mw: M) -> Self {
+        self.middleware.push(Box.new(mw));
+        self
+    }
+    
+    fn get_session(user_id: String) -> Session {
+        self.sessions.entry(user_id.clone()).or_insert_with(|| Session.new(user_id)).clone()
+    }
+    
+    fn process_message(adapter_name: String, message: IncomingMessage) -> Option<OutgoingMessage> {
+        if message.is_bot { return None }
+        
+        let session = self.get_session(message.user_id.clone());
+        let ctx = MessageContext {
+            message: message.clone(), bot: self.bot_info.clone(),
+            session: session, adapter: adapter_name.clone()
+        };
+        
+        // Run middleware (before)
+        for mw in self.middleware.iter() {
+            match mw.before(ctx.clone()) {
+                MiddlewareResult.Stop => return None,
+                MiddlewareResult.Respond(resp) => return Some(resp),
+                MiddlewareResult.Continue => {}
+            }
+        }
+        
+        // Check for commands
+        if let Some(cmd) = ctx.get_command(self.prefix.clone()) {
+            if let Some(handler) = self.command_handlers.get(&cmd) {
+                let response = handler(ctx.clone());
+                return self.run_after_middleware(ctx, response);
+            }
+        }
+        
+        // Run handlers
+        for handler in self.handlers.iter() {
+            if let Some(response) = handler.handle(ctx.clone()) {
+                return self.run_after_middleware(ctx, Some(response));
+            }
+        }
+        
+        self.run_after_middleware(ctx, None)
+    }
+    
+    fn run_after_middleware(ctx: MessageContext, response: Option<OutgoingMessage>) -> Option<OutgoingMessage> {
+        let mut result = response;
+        for mw in self.middleware.iter().rev() {
+            result = mw.after(ctx.clone(), result);
+        }
+        result
+    }
+    
+    fn send(adapter_name: String, channel: String, message: OutgoingMessage) -> Result<String, AdapterError> {
+        let adapter = self.adapters.get(&adapter_name).ok_or(AdapterError.NotConnected)?;
+        adapter.send_message(channel, message)
+    }
+    
+    fn broadcast(channel: String, message: OutgoingMessage) -> Map<String, Result<String, AdapterError>> {
+        let mut results = Map.new();
+        for (name, adapter) in self.adapters.iter() {
+            results.insert(name.clone(), adapter.send_message(channel.clone(), message.clone()));
+        }
+        results
+    }
+    
+    fn start() -> Result<(), AdapterError> {
+        for (_, adapter) in self.adapters.iter_mut() {
+            adapter.connect()?;
+        }
+        self.running = true;
+        Ok(())
+    }
+    
+    fn stop() -> Result<(), AdapterError> {
+        self.running = false;
+        for (_, adapter) in self.adapters.iter_mut() {
+            adapter.disconnect()?;
+        }
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Built-in Middleware
+// =============================================================================
+
+/// Logging middleware
+struct LoggingMiddleware { log_level: LogLevel }
+enum LogLevel { Debug, Info, Warn, Error }
+
+impl LoggingMiddleware {
+    fn new(level: LogLevel) -> Self { LoggingMiddleware { log_level: level } }
+}
+
+impl Middleware for LoggingMiddleware {
+    fn before(ctx: MessageContext) -> MiddlewareResult {
+        @native("log", format!("[{}] {} -> {}: {}", ctx.adapter, ctx.message.user_id, ctx.message.channel_id, ctx.message.text));
+        MiddlewareResult.Continue
+    }
+    fn after(ctx: MessageContext, response: Option<OutgoingMessage>) -> Option<OutgoingMessage> {
+        if let Some(ref resp) = response {
+            @native("log", format!("[{}] Bot -> {}: {}", ctx.adapter, ctx.message.channel_id, resp.text));
+        }
+        response
+    }
+}
+
+/// Rate limiting middleware
+struct RateLimitMiddleware { requests_per_minute: Int, user_requests: Map<String, [Int64]> }
+
+impl RateLimitMiddleware {
+    fn new(rpm: Int) -> Self { RateLimitMiddleware { requests_per_minute: rpm, user_requests: Map.new() } }
+}
+
+impl Middleware for RateLimitMiddleware {
+    fn before(ctx: MessageContext) -> MiddlewareResult {
+        let now = @native("timestamp_ms");
+        let minute_ago = now - 60000;
+        let requests = self.user_requests.entry(ctx.message.user_id.clone()).or_insert([]);
+        requests.retain(|t| *t > minute_ago);
+        if requests.len() >= self.requests_per_minute {
+            return MiddlewareResult.Respond(OutgoingMessage.text("Rate limit exceeded. Please wait."));
+        }
+        requests.push(now);
+        MiddlewareResult.Continue
+    }
+    fn after(_ctx: MessageContext, response: Option<OutgoingMessage>) -> Option<OutgoingMessage> { response }
+}
+
+/// Admin-only middleware
+struct AdminMiddleware { admin_ids: [String] }
+
+impl AdminMiddleware {
+    fn new(admin_ids: [String]) -> Self { AdminMiddleware { admin_ids: admin_ids } }
+}
+
+impl Middleware for AdminMiddleware {
+    fn before(ctx: MessageContext) -> MiddlewareResult {
+        if ctx.is_command("!admin") && !self.admin_ids.contains(&ctx.message.user_id) {
+            return MiddlewareResult.Respond(OutgoingMessage.text("Admin access required."));
+        }
+        MiddlewareResult.Continue
+    }
+    fn after(_ctx: MessageContext, response: Option<OutgoingMessage>) -> Option<OutgoingMessage> { response }
+}
+
+// =============================================================================
+// Built-in Handlers
+// =============================================================================
+
+/// Echo handler
+struct EchoHandler { prefix: String }
+impl EchoHandler { fn new(prefix: String) -> Self { EchoHandler { prefix: prefix } } }
+impl MessageHandler for EchoHandler {
+    fn handle(ctx: MessageContext) -> Option<OutgoingMessage> {
+        if ctx.message.text.starts_with(self.prefix) {
+            Some(OutgoingMessage.text(ctx.message.text.strip_prefix(self.prefix).unwrap_or("").to_string()))
+        } else { None }
+    }
+}
+
+/// Regex handler
+struct RegexHandler { pattern: String, response_fn: fn(MessageContext, [String]) -> OutgoingMessage }
+impl RegexHandler {
+    fn new(pattern: String, response_fn: fn(MessageContext, [String]) -> OutgoingMessage) -> Self {
+        RegexHandler { pattern: pattern, response_fn: response_fn }
+    }
+}
+impl MessageHandler for RegexHandler {
+    fn handle(ctx: MessageContext) -> Option<OutgoingMessage> {
+        let regex = Regex.new(self.pattern.clone()).ok()?;
+        let captures: [String] = regex.captures(ctx.message.text.clone())?.iter().map(|c| c.to_string()).collect();
+        Some((self.response_fn)(ctx, captures))
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "outgoing message builder" {
+    let msg = OutgoingMessage.markdown("**Hello**").add_button(Button.primary("Click", "click_action"));
+    assert_eq(msg.format, MessageFormat.Markdown)?
+    assert_eq(msg.buttons.len(), 1)?
+}
+
+test "embed builder" {
+    let embed = Embed.new().title("Title").description("Desc").color(0xFF0000).field("F1", "V1", true);
+    assert_eq(embed.title, Some("Title"))?
+    assert_eq(embed.fields.len(), 1)?
+}
+
+test "button creation" {
+    let btn = Button.primary("Submit", "submit_data");
+    assert_eq(btn.label, "Submit")?
+    assert_eq(btn.style, ButtonStyle.Primary)?
+}
+
+test "session management" {
+    var session = Session.new("user123");
+    session.set("count", 5);
+    assert_eq(session.get::<Int>("count"), Some(5))?
+    session.remove("count");
+    assert_eq(session.get::<Int>("count"), None)?
+}
+
+test "message context commands" {
+    let msg = IncomingMessage.new(Platform.Discord, "ch1", "u1", "!help arg1 arg2");
+    let ctx = MessageContext { message: msg, bot: BotInfo { id: "b1", name: "Bot", username: "bot" }, session: Session.new("u1"), adapter: "discord" };
+    assert(ctx.is_command("!"))?
+    assert_eq(ctx.get_command("!"), Some("help"))?
+    assert_eq(ctx.get_args("!"), ["arg1", "arg2"])?
+}
+
+test "middleware result" {
+    let cont = MiddlewareResult.Continue;
+    let stop = MiddlewareResult.Stop;
+    let resp = MiddlewareResult.Respond(OutgoingMessage.text("Blocked"));
+    assert(matches!(cont, MiddlewareResult.Continue))?
+    assert(matches!(stop, MiddlewareResult.Stop))?
+}

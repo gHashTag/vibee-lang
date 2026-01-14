@@ -1,0 +1,685 @@
+// =============================================================================
+// Vibee OS — Stopwatch Module
+// High-precision stopwatch for timing and benchmarking
+// =============================================================================
+
+use duration.{Duration}
+use instant.{Instant}
+
+// -----------------------------------------------------------------------------
+// Stopwatch
+// -----------------------------------------------------------------------------
+
+/// A stopwatch for measuring elapsed time with pause/resume support
+struct Stopwatch {
+    start_time: Option<Instant>
+    accumulated: Duration
+    running: Bool
+    laps: [Lap]
+    
+    /// Create a new stopwatch (not started)
+    fn new() -> Self {
+        Stopwatch {
+            start_time: None,
+            accumulated: Duration.zero(),
+            running: false,
+            laps: []
+        }
+    }
+    
+    /// Create and start a new stopwatch
+    fn start_new() -> Self {
+        var sw = Self.new()
+        sw.start()
+        sw
+    }
+    
+    /// Start or resume the stopwatch
+    fn start() {
+        if !self.running {
+            self.start_time = Some(Instant.now())
+            self.running = true
+        }
+    }
+    
+    /// Stop/pause the stopwatch
+    fn stop() {
+        if self.running {
+            if let Some(start) = self.start_time {
+                self.accumulated = self.accumulated + start.elapsed()
+            }
+            self.start_time = None
+            self.running = false
+        }
+    }
+    
+    /// Reset the stopwatch to zero
+    fn reset() {
+        self.start_time = None
+        self.accumulated = Duration.zero()
+        self.running = false
+        self.laps = []
+    }
+    
+    /// Restart the stopwatch (reset and start)
+    fn restart() {
+        self.reset()
+        self.start()
+    }
+    
+    /// Get the elapsed time
+    fn elapsed() -> Duration {
+        if self.running {
+            if let Some(start) = self.start_time {
+                self.accumulated + start.elapsed()
+            } else {
+                self.accumulated
+            }
+        } else {
+            self.accumulated
+        }
+    }
+    
+    /// Get elapsed time in various units
+    fn elapsed_nanos() -> Int64 { self.elapsed().as_nanos() }
+    fn elapsed_micros() -> Int64 { self.elapsed().as_micros() }
+    fn elapsed_millis() -> Int64 { self.elapsed().as_millis() }
+    fn elapsed_seconds() -> Float { self.elapsed().as_seconds_f() }
+    
+    /// Check if the stopwatch is running
+    fn is_running() -> Bool { self.running }
+    
+    /// Record a lap
+    fn lap() -> Lap {
+        let total = self.elapsed()
+        let lap_time = if self.laps.is_empty() {
+            total
+        } else {
+            total - self.laps.last().unwrap().total_time
+        }
+        
+        let lap = Lap {
+            number: self.laps.len() + 1,
+            lap_time: lap_time,
+            total_time: total
+        }
+        
+        self.laps.push(lap)
+        lap
+    }
+    
+    /// Get all recorded laps
+    fn laps() -> [Lap] { self.laps.clone() }
+    
+    /// Get the last lap
+    fn last_lap() -> Option<Lap> { self.laps.last().cloned() }
+    
+    /// Get the best (fastest) lap
+    fn best_lap() -> Option<Lap> {
+        self.laps.iter().min_by(|a, b| a.lap_time.cmp(b.lap_time)).cloned()
+    }
+    
+    /// Get the worst (slowest) lap
+    fn worst_lap() -> Option<Lap> {
+        self.laps.iter().max_by(|a, b| a.lap_time.cmp(b.lap_time)).cloned()
+    }
+    
+    /// Get average lap time
+    fn average_lap() -> Option<Duration> {
+        if self.laps.is_empty() {
+            None
+        } else {
+            let total: Int64 = self.laps.iter().map(|l| l.lap_time.as_nanos()).sum()
+            Some(Duration.nanos(total / self.laps.len() as Int64))
+        }
+    }
+    
+    /// Get lap count
+    fn lap_count() -> Int { self.laps.len() }
+    
+    /// Clear all laps
+    fn clear_laps() { self.laps = [] }
+    
+    /// Format elapsed time
+    fn to_string() -> String {
+        format_stopwatch_time(self.elapsed())
+    }
+}
+
+/// A recorded lap
+struct Lap {
+    number: Int
+    lap_time: Duration
+    total_time: Duration
+    
+    fn to_string() -> String {
+        "Lap \(self.number): \(format_stopwatch_time(self.lap_time)) (Total: \(format_stopwatch_time(self.total_time)))"
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Split Timer
+// -----------------------------------------------------------------------------
+
+/// A timer that records split times (like in racing)
+struct SplitTimer {
+    stopwatch: Stopwatch
+    splits: [Split]
+    split_names: [String]
+    
+    /// Create a new split timer
+    fn new() -> Self {
+        SplitTimer {
+            stopwatch: Stopwatch.new(),
+            splits: [],
+            split_names: []
+        }
+    }
+    
+    /// Create with predefined split names
+    fn with_splits(names: [String]) -> Self {
+        SplitTimer {
+            stopwatch: Stopwatch.new(),
+            splits: [],
+            split_names: names
+        }
+    }
+    
+    /// Start the timer
+    fn start() { self.stopwatch.start() }
+    
+    /// Stop the timer
+    fn stop() { self.stopwatch.stop() }
+    
+    /// Reset the timer
+    fn reset() {
+        self.stopwatch.reset()
+        self.splits = []
+    }
+    
+    /// Record a split
+    fn split() -> Split {
+        self.split_named(self.get_next_split_name())
+    }
+    
+    /// Record a named split
+    fn split_named(name: String) -> Split {
+        let total = self.stopwatch.elapsed()
+        let split_time = if self.splits.is_empty() {
+            total
+        } else {
+            total - self.splits.last().unwrap().total_time
+        }
+        
+        let split = Split {
+            name: name,
+            number: self.splits.len() + 1,
+            split_time: split_time,
+            total_time: total,
+            delta: None
+        }
+        
+        self.splits.push(split)
+        split
+    }
+    
+    fn get_next_split_name() -> String {
+        let idx = self.splits.len()
+        if idx < self.split_names.len() {
+            self.split_names[idx].clone()
+        } else {
+            "Split \(idx + 1)"
+        }
+    }
+    
+    /// Get all splits
+    fn splits() -> [Split] { self.splits.clone() }
+    
+    /// Get elapsed time
+    fn elapsed() -> Duration { self.stopwatch.elapsed() }
+    
+    /// Compare with reference times
+    fn compare_with(reference: [Duration]) -> [Split] {
+        var result = []
+        for (i, split) in self.splits.iter().enumerate() {
+            if i < reference.len() {
+                let delta = split.total_time - reference[i]
+                result.push(Split {
+                    name: split.name.clone(),
+                    number: split.number,
+                    split_time: split.split_time,
+                    total_time: split.total_time,
+                    delta: Some(delta)
+                })
+            } else {
+                result.push(split.clone())
+            }
+        }
+        result
+    }
+}
+
+/// A recorded split
+struct Split {
+    name: String
+    number: Int
+    split_time: Duration
+    total_time: Duration
+    delta: Option<Duration>
+    
+    fn to_string() -> String {
+        var s = "\(self.name): \(format_stopwatch_time(self.split_time))"
+        if let Some(d) = self.delta {
+            let sign = if d.is_negative() { "-" } else { "+" }
+            s += " (\(sign)\(format_stopwatch_time(d.abs())))"
+        }
+        s
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Countdown Timer
+// -----------------------------------------------------------------------------
+
+/// A countdown timer
+actor CountdownTimer {
+    state duration: Duration
+    state remaining: Duration
+    state start_time: Option<Instant>
+    state running: Bool
+    state on_complete: Option<fn()>
+    state on_tick: Option<fn(Duration)>
+    
+    /// Create a new countdown timer
+    fn new(duration: Duration) -> Self {
+        CountdownTimer {
+            duration: duration,
+            remaining: duration,
+            start_time: None,
+            running: false,
+            on_complete: None,
+            on_tick: None
+        }
+    }
+    
+    /// Create from seconds
+    fn from_seconds(secs: Int64) -> Self {
+        Self.new(Duration.seconds(secs))
+    }
+    
+    /// Create from minutes
+    fn from_minutes(mins: Int64) -> Self {
+        Self.new(Duration.minutes(mins))
+    }
+    
+    /// Set completion callback
+    fn on_complete(callback: fn()) -> Self {
+        self.on_complete = Some(callback)
+        self
+    }
+    
+    /// Set tick callback
+    fn on_tick(callback: fn(Duration)) -> Self {
+        self.on_tick = Some(callback)
+        self
+    }
+    
+    /// Start the countdown
+    fn start() {
+        if !self.running && self.remaining.is_positive() {
+            self.start_time = Some(Instant.now())
+            self.running = true
+            self.run_loop()
+        }
+    }
+    
+    /// Pause the countdown
+    fn pause() {
+        if self.running {
+            self.remaining = self.get_remaining()
+            self.start_time = None
+            self.running = false
+        }
+    }
+    
+    /// Resume the countdown
+    fn resume() {
+        self.start()
+    }
+    
+    /// Stop and reset the countdown
+    fn reset() {
+        self.running = false
+        self.start_time = None
+        self.remaining = self.duration
+    }
+    
+    /// Get remaining time
+    fn get_remaining() -> Duration {
+        if self.running {
+            if let Some(start) = self.start_time {
+                let elapsed = start.elapsed()
+                let remaining = self.remaining - elapsed
+                if remaining.is_negative() {
+                    Duration.zero()
+                } else {
+                    remaining
+                }
+            } else {
+                self.remaining
+            }
+        } else {
+            self.remaining
+        }
+    }
+    
+    /// Check if countdown is finished
+    fn is_finished() -> Bool {
+        self.get_remaining().is_zero()
+    }
+    
+    /// Check if countdown is running
+    fn is_running() -> Bool { self.running }
+    
+    /// Add time to the countdown
+    fn add_time(duration: Duration) {
+        self.remaining = self.remaining + duration
+    }
+    
+    /// Subtract time from the countdown
+    fn subtract_time(duration: Duration) {
+        self.remaining = self.remaining.saturating_sub(duration)
+    }
+    
+    fn run_loop() {
+        spawn {
+            while self.running {
+                let remaining = self.get_remaining()
+                
+                if let Some(tick) = self.on_tick {
+                    tick(remaining)
+                }
+                
+                if remaining.is_zero() {
+                    self.running = false
+                    if let Some(complete) = self.on_complete {
+                        complete()
+                    }
+                    break
+                }
+                
+                @native("sleep_ms", 100)
+            }
+        }
+    }
+    
+    /// Format remaining time
+    fn to_string() -> String {
+        format_countdown_time(self.get_remaining())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Multi-Stopwatch
+// -----------------------------------------------------------------------------
+
+/// Manage multiple named stopwatches
+actor MultiStopwatch {
+    state watches: Map<String, Stopwatch>
+    
+    fn new() -> Self {
+        MultiStopwatch { watches: Map.new() }
+    }
+    
+    /// Create or get a stopwatch by name
+    fn get(name: String) -> Stopwatch {
+        if !self.watches.contains(name) {
+            self.watches.insert(name.clone(), Stopwatch.new())
+        }
+        self.watches.get(name).unwrap().clone()
+    }
+    
+    /// Start a named stopwatch
+    fn start(name: String) {
+        self.get(name).start()
+    }
+    
+    /// Stop a named stopwatch
+    fn stop(name: String) {
+        if let Some(sw) = self.watches.get_mut(name) {
+            sw.stop()
+        }
+    }
+    
+    /// Get elapsed time for a named stopwatch
+    fn elapsed(name: String) -> Duration {
+        self.watches.get(name).map(|sw| sw.elapsed()).unwrap_or(Duration.zero())
+    }
+    
+    /// Reset a named stopwatch
+    fn reset(name: String) {
+        if let Some(sw) = self.watches.get_mut(name) {
+            sw.reset()
+        }
+    }
+    
+    /// Reset all stopwatches
+    fn reset_all() {
+        for (_, sw) in self.watches.iter_mut() {
+            sw.reset()
+        }
+    }
+    
+    /// Remove a stopwatch
+    fn remove(name: String) {
+        self.watches.remove(name)
+    }
+    
+    /// Get all stopwatch names
+    fn names() -> [String] {
+        self.watches.keys().collect()
+    }
+    
+    /// Get summary of all stopwatches
+    fn summary() -> Map<String, Duration> {
+        var result = Map.new()
+        for (name, sw) in self.watches.iter() {
+            result.insert(name.clone(), sw.elapsed())
+        }
+        result
+    }
+    
+    /// Print summary
+    fn print_summary() {
+        println("Stopwatch Summary:")
+        println("-".repeat(40))
+        for (name, sw) in self.watches.iter() {
+            println("  \(name): \(format_stopwatch_time(sw.elapsed()))")
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Timing Scope
+// -----------------------------------------------------------------------------
+
+/// RAII-style timing scope
+struct TimingScope {
+    name: String
+    stopwatch: Stopwatch
+    print_on_drop: Bool
+    
+    /// Create a new timing scope (starts immediately)
+    fn new(name: String) -> Self {
+        var scope = TimingScope {
+            name: name,
+            stopwatch: Stopwatch.new(),
+            print_on_drop: true
+        }
+        scope.stopwatch.start()
+        scope
+    }
+    
+    /// Create without auto-print
+    fn silent(name: String) -> Self {
+        var scope = Self.new(name)
+        scope.print_on_drop = false
+        scope
+    }
+    
+    /// Get elapsed time
+    fn elapsed() -> Duration {
+        self.stopwatch.elapsed()
+    }
+}
+
+impl Drop for TimingScope {
+    fn drop() {
+        self.stopwatch.stop()
+        if self.print_on_drop {
+            println("\(self.name): \(format_stopwatch_time(self.stopwatch.elapsed()))")
+        }
+    }
+}
+
+/// Time a block of code
+fn time_block<T>(name: String, f: fn() -> T) -> T {
+    let _scope = TimingScope.new(name)
+    f()
+}
+
+/// Time a block and return duration
+fn time_block_duration<T>(f: fn() -> T) -> (T, Duration) {
+    let sw = Stopwatch.start_new()
+    let result = f()
+    sw.stop()
+    (result, sw.elapsed())
+}
+
+// -----------------------------------------------------------------------------
+// Formatting Helpers
+// -----------------------------------------------------------------------------
+
+fn format_stopwatch_time(d: Duration) -> String {
+    let total_ms = d.as_millis()
+    let hours = total_ms / 3_600_000
+    let minutes = (total_ms % 3_600_000) / 60_000
+    let seconds = (total_ms % 60_000) / 1_000
+    let millis = total_ms % 1_000
+    
+    if hours > 0 {
+        format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
+    } else if minutes > 0 {
+        format!("{:02}:{:02}.{:03}", minutes, seconds, millis)
+    } else {
+        format!("{}.{:03}s", seconds, millis)
+    }
+}
+
+fn format_countdown_time(d: Duration) -> String {
+    let total_secs = d.as_seconds()
+    let hours = total_secs / 3600
+    let minutes = (total_secs % 3600) / 60
+    let seconds = total_secs % 60
+    
+    if hours > 0 {
+        format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+    } else {
+        format!("{:02}:{:02}", minutes, seconds)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+/// Create and start a new stopwatch
+fn start() -> Stopwatch {
+    Stopwatch.start_new()
+}
+
+/// Time a function and return the duration
+fn time<T>(f: fn() -> T) -> (T, Duration) {
+    time_block_duration(f)
+}
+
+/// Time a function and print the result
+fn time_print<T>(name: String, f: fn() -> T) -> T {
+    time_block(name, f)
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "stopwatch basic" {
+    let sw = Stopwatch.start_new()
+    @native("sleep_ms", 10)
+    sw.stop()
+    assert(sw.elapsed_millis() >= 10)?
+}
+
+test "stopwatch pause resume" {
+    let sw = Stopwatch.start_new()
+    @native("sleep_ms", 10)
+    sw.stop()
+    let elapsed1 = sw.elapsed_millis()
+    
+    @native("sleep_ms", 10)
+    assert_eq(sw.elapsed_millis(), elapsed1)?  // Should not change while stopped
+    
+    sw.start()
+    @native("sleep_ms", 10)
+    sw.stop()
+    assert(sw.elapsed_millis() >= elapsed1 + 10)?
+}
+
+test "stopwatch laps" {
+    let sw = Stopwatch.start_new()
+    
+    @native("sleep_ms", 10)
+    let lap1 = sw.lap()
+    
+    @native("sleep_ms", 10)
+    let lap2 = sw.lap()
+    
+    assert_eq(sw.lap_count(), 2)?
+    assert(lap1.lap_time.as_millis() >= 10)?
+    assert(lap2.lap_time.as_millis() >= 10)?
+    assert(lap2.total_time > lap1.total_time)?
+}
+
+test "split timer" {
+    let timer = SplitTimer.with_splits(["Start", "Middle", "End"])
+    timer.start()
+    
+    @native("sleep_ms", 10)
+    let s1 = timer.split()
+    assert_eq(s1.name, "Start")?
+    
+    @native("sleep_ms", 10)
+    let s2 = timer.split()
+    assert_eq(s2.name, "Middle")?
+}
+
+test "countdown timer" {
+    let timer = CountdownTimer.from_seconds(1)
+    assert(!timer.is_finished())?
+    assert_eq(timer.get_remaining().as_seconds(), 1)?
+}
+
+test "format stopwatch time" {
+    assert_eq(format_stopwatch_time(Duration.millis(1500)), "1.500s")?
+    assert_eq(format_stopwatch_time(Duration.millis(65500)), "01:05.500")?
+    assert_eq(format_stopwatch_time(Duration.millis(3665500)), "01:01:05.500")?
+}
+
+test "timing scope" {
+    var elapsed = Duration.zero()
+    {
+        let scope = TimingScope.silent("test")
+        @native("sleep_ms", 10)
+        elapsed = scope.elapsed()
+    }
+    assert(elapsed.as_millis() >= 10)?
+}

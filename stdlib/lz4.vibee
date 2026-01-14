@@ -1,0 +1,410 @@
+// =============================================================================
+// Vibee OS — LZ4 Module
+// LZ4 compression and decompression
+// =============================================================================
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+const LZ4_MAGIC: UInt32 = 0x184D2204
+const LZ4_MAX_INPUT_SIZE: Int = 0x7E000000
+const LZ4_BLOCK_SIZE_64KB: Int = 65536
+const LZ4_BLOCK_SIZE_256KB: Int = 262144
+const LZ4_BLOCK_SIZE_1MB: Int = 1048576
+const LZ4_BLOCK_SIZE_4MB: Int = 4194304
+
+// =============================================================================
+// Compression Level
+// =============================================================================
+
+/// LZ4 compression mode
+enum Lz4Mode {
+    Fast        // Fast compression (default LZ4)
+    HC          // High compression mode
+    Custom(Int) // HC level (1-12)
+}
+
+impl Lz4Mode {
+    fn value() -> Int {
+        match self {
+            Fast => 0
+            HC => 9
+            Custom(n) => n.clamp(1, 12)
+        }
+    }
+}
+
+// =============================================================================
+// Block Size
+// =============================================================================
+
+/// LZ4 frame block size
+enum Lz4BlockSize {
+    B64KB
+    B256KB
+    B1MB
+    B4MB
+}
+
+impl Lz4BlockSize {
+    fn value() -> Int {
+        match self {
+            B64KB => LZ4_BLOCK_SIZE_64KB
+            B256KB => LZ4_BLOCK_SIZE_256KB
+            B1MB => LZ4_BLOCK_SIZE_1MB
+            B4MB => LZ4_BLOCK_SIZE_4MB
+        }
+    }
+    
+    fn id() -> Int {
+        match self {
+            B64KB => 4
+            B256KB => 5
+            B1MB => 6
+            B4MB => 7
+        }
+    }
+}
+
+// =============================================================================
+// Frame Options
+// =============================================================================
+
+/// LZ4 frame compression options
+struct Lz4Options {
+    mode: Lz4Mode
+    block_size: Lz4BlockSize
+    block_independent: Bool
+    content_checksum: Bool
+    block_checksum: Bool
+    content_size: Bool
+}
+
+impl Lz4Options {
+    fn new() -> Self {
+        Lz4Options {
+            mode: Lz4Mode.Fast,
+            block_size: Lz4BlockSize.B64KB,
+            block_independent: true,
+            content_checksum: false,
+            block_checksum: false,
+            content_size: false
+        }
+    }
+    
+    fn fast() -> Self { Self.new() }
+    
+    fn hc() -> Self {
+        var opts = Self.new()
+        opts.mode = Lz4Mode.HC
+        opts
+    }
+    
+    fn mode(m: Lz4Mode) -> Self { self.mode = m; self }
+    fn block_size(s: Lz4BlockSize) -> Self { self.block_size = s; self }
+    fn block_independent(b: Bool) -> Self { self.block_independent = b; self }
+    fn content_checksum(b: Bool) -> Self { self.content_checksum = b; self }
+    fn block_checksum(b: Bool) -> Self { self.block_checksum = b; self }
+    fn content_size(b: Bool) -> Self { self.content_size = b; self }
+}
+
+// =============================================================================
+// Core Functions
+// =============================================================================
+
+/// Compress data using LZ4 (fast mode)
+fn compress(data: [UInt8]) -> Result<[UInt8], Lz4Error> {
+    @native("lz4_compress", data)
+}
+
+/// Compress data using LZ4 HC (high compression)
+fn compress_hc(data: [UInt8]) -> Result<[UInt8], Lz4Error> {
+    compress_hc_level(data, 9)
+}
+
+/// Compress data using LZ4 HC with level
+fn compress_hc_level(data: [UInt8], level: Int) -> Result<[UInt8], Lz4Error> {
+    @native("lz4_compress_hc", data, level.clamp(1, 12))
+}
+
+/// Compress with options
+fn compress_with_options(data: [UInt8], options: Lz4Options) -> Result<[UInt8], Lz4Error> {
+    @native("lz4_compress_opts", data, options.mode.value(), options.block_size.id(), 
+            options.block_independent, options.content_checksum, options.block_checksum, options.content_size)
+}
+
+/// Decompress LZ4 data
+fn decompress(data: [UInt8]) -> Result<[UInt8], Lz4Error> {
+    @native("lz4_decompress", data)
+}
+
+/// Decompress with known uncompressed size
+fn decompress_safe(data: [UInt8], max_size: Int) -> Result<[UInt8], Lz4Error> {
+    @native("lz4_decompress_safe", data, max_size)
+}
+
+/// Check if data is LZ4 frame format
+fn is_lz4(data: [UInt8]) -> Bool {
+    if data.len() < 4 { return false }
+    let magic = (data[0] as UInt32) | ((data[1] as UInt32) << 8) | 
+                ((data[2] as UInt32) << 16) | ((data[3] as UInt32) << 24)
+    magic == LZ4_MAGIC
+}
+
+// =============================================================================
+// Block API (Raw LZ4)
+// =============================================================================
+
+/// Compress single block (no framing)
+fn compress_block(data: [UInt8]) -> Result<[UInt8], Lz4Error> {
+    @native("lz4_compress_block", data)
+}
+
+/// Compress single block HC
+fn compress_block_hc(data: [UInt8], level: Int) -> Result<[UInt8], Lz4Error> {
+    @native("lz4_compress_block_hc", data, level.clamp(1, 12))
+}
+
+/// Decompress single block
+fn decompress_block(data: [UInt8], original_size: Int) -> Result<[UInt8], Lz4Error> {
+    @native("lz4_decompress_block", data, original_size)
+}
+
+// =============================================================================
+// Streaming Encoder
+// =============================================================================
+
+/// Streaming LZ4 encoder
+struct Lz4Encoder {
+    inner: @native("Lz4Encoder")
+    options: Lz4Options
+    bytes_in: Int64
+    bytes_out: Int64
+}
+
+impl Lz4Encoder {
+    fn new() -> Self { Self.with_options(Lz4Options.new()) }
+    fn fast() -> Self { Self.with_options(Lz4Options.fast()) }
+    fn hc() -> Self { Self.with_options(Lz4Options.hc()) }
+    
+    fn with_options(options: Lz4Options) -> Self {
+        Lz4Encoder {
+            inner: @native("lz4_encoder_new", options.mode.value(), options.block_size.id()),
+            options: options,
+            bytes_in: 0,
+            bytes_out: 0
+        }
+    }
+    
+    fn write(data: [UInt8]) -> Result<[UInt8], Lz4Error> {
+        self.bytes_in += data.len() as Int64
+        let output = @native("lz4_encoder_write", self.inner, data)?
+        self.bytes_out += output.len() as Int64
+        Ok(output)
+    }
+    
+    fn flush() -> Result<[UInt8], Lz4Error> {
+        let output = @native("lz4_encoder_flush", self.inner)?
+        self.bytes_out += output.len() as Int64
+        Ok(output)
+    }
+    
+    fn finish() -> Result<[UInt8], Lz4Error> {
+        let output = @native("lz4_encoder_finish", self.inner)?
+        self.bytes_out += output.len() as Int64
+        Ok(output)
+    }
+    
+    fn reset() {
+        self.inner = @native("lz4_encoder_new", self.options.mode.value(), self.options.block_size.id())
+        self.bytes_in = 0
+        self.bytes_out = 0
+    }
+    
+    fn total_in() -> Int64 { self.bytes_in }
+    fn total_out() -> Int64 { self.bytes_out }
+}
+
+// =============================================================================
+// Streaming Decoder
+// =============================================================================
+
+/// Streaming LZ4 decoder
+struct Lz4Decoder {
+    inner: @native("Lz4Decoder")
+    bytes_in: Int64
+    bytes_out: Int64
+}
+
+impl Lz4Decoder {
+    fn new() -> Self {
+        Lz4Decoder {
+            inner: @native("lz4_decoder_new"),
+            bytes_in: 0,
+            bytes_out: 0
+        }
+    }
+    
+    fn write(data: [UInt8]) -> Result<[UInt8], Lz4Error> {
+        self.bytes_in += data.len() as Int64
+        let output = @native("lz4_decoder_write", self.inner, data)?
+        self.bytes_out += output.len() as Int64
+        Ok(output)
+    }
+    
+    fn finish() -> Result<[UInt8], Lz4Error> {
+        let output = @native("lz4_decoder_finish", self.inner)?
+        self.bytes_out += output.len() as Int64
+        Ok(output)
+    }
+    
+    fn reset() {
+        self.inner = @native("lz4_decoder_new")
+        self.bytes_in = 0
+        self.bytes_out = 0
+    }
+    
+    fn total_in() -> Int64 { self.bytes_in }
+    fn total_out() -> Int64 { self.bytes_out }
+}
+
+// =============================================================================
+// Async Streaming
+// =============================================================================
+
+actor AsyncLz4Encoder {
+    state encoder: Lz4Encoder
+    state buffer: [UInt8]
+    
+    fn new() -> Self { AsyncLz4Encoder { encoder: Lz4Encoder.new(), buffer: [] } }
+    fn hc() -> Self { AsyncLz4Encoder { encoder: Lz4Encoder.hc(), buffer: [] } }
+    
+    async fn write(data: [UInt8]) -> Result<(), Lz4Error> {
+        let output = self.encoder.write(data)?
+        self.buffer.extend(output)
+        Ok(())
+    }
+    
+    async fn finish() -> Result<[UInt8], Lz4Error> {
+        let final_data = self.encoder.finish()?
+        self.buffer.extend(final_data)
+        let result = self.buffer.clone()
+        self.buffer.clear()
+        Ok(result)
+    }
+}
+
+actor AsyncLz4Decoder {
+    state decoder: Lz4Decoder
+    state buffer: [UInt8]
+    
+    fn new() -> Self { AsyncLz4Decoder { decoder: Lz4Decoder.new(), buffer: [] } }
+    
+    async fn write(data: [UInt8]) -> Result<(), Lz4Error> {
+        let output = self.decoder.write(data)?
+        self.buffer.extend(output)
+        Ok(())
+    }
+    
+    async fn finish() -> Result<[UInt8], Lz4Error> {
+        let final_data = self.decoder.finish()?
+        self.buffer.extend(final_data)
+        let result = self.buffer.clone()
+        self.buffer.clear()
+        Ok(result)
+    }
+}
+
+// =============================================================================
+// Dictionary Compression
+// =============================================================================
+
+/// Compress with dictionary
+fn compress_with_dict(data: [UInt8], dict: [UInt8]) -> Result<[UInt8], Lz4Error> {
+    @native("lz4_compress_dict", data, dict)
+}
+
+/// Decompress with dictionary
+fn decompress_with_dict(data: [UInt8], dict: [UInt8], original_size: Int) -> Result<[UInt8], Lz4Error> {
+    @native("lz4_decompress_dict", data, dict, original_size)
+}
+
+// =============================================================================
+// Utilities
+// =============================================================================
+
+/// Calculate maximum compressed size
+fn compress_bound(input_size: Int) -> Int {
+    input_size + (input_size / 255) + 16
+}
+
+/// Get LZ4 version
+fn version() -> Int { @native("lz4_version") }
+
+fn version_string() -> String { @native("lz4_version_string") }
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum Lz4Error {
+    InvalidData
+    BufferTooSmall
+    InputTooLarge
+    ChecksumMismatch
+    Other(String)
+}
+
+impl Display for Lz4Error {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidData => f.write("Invalid LZ4 data")
+            BufferTooSmall => f.write("Output buffer too small")
+            InputTooLarge => f.write("Input too large")
+            ChecksumMismatch => f.write("Checksum mismatch")
+            Other(s) => f.write(s)
+        }
+    }
+}
+
+impl Error for Lz4Error {}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "compress decompress" {
+    let original = "Hello, World! LZ4 compression test.".as_bytes()
+    let compressed = compress(original)?
+    let decompressed = decompress(compressed)?
+    assert_eq(decompressed, original)?
+}
+
+test "hc compression" {
+    let data = "aaaaaaaaaa".repeat(1000).as_bytes()
+    let fast = compress(data)?
+    let hc = compress_hc(data)?
+    assert(hc.len() <= fast.len())?
+    assert_eq(decompress(hc)?, data)?
+}
+
+test "streaming" {
+    var encoder = Lz4Encoder.new()
+    encoder.write("Hello, ".as_bytes())?
+    encoder.write("World!".as_bytes())?
+    let compressed = encoder.finish()?
+    assert_eq(decompress(compressed)?, "Hello, World!".as_bytes())?
+}
+
+test "is_lz4" {
+    let compressed = compress("test".as_bytes())?
+    assert(is_lz4(compressed))?
+    assert(!is_lz4("not lz4".as_bytes()))?
+}
+
+test "empty data" {
+    let compressed = compress([])?
+    let decompressed = decompress(compressed)?
+    assert_eq(decompressed, [])?
+}

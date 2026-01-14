@@ -1,0 +1,864 @@
+// =============================================================================
+// Vibee OS — Workflow Step Module
+// Individual steps and actions within workflows
+// =============================================================================
+
+use result::{Result, Ok, Err}
+use datetime::{DateTime, Duration}
+
+// =============================================================================
+// Step Status
+// =============================================================================
+
+/// Status of a workflow step
+enum StepStatus {
+    Pending
+    Running
+    Completed
+    Failed(String)
+    Skipped
+    Cancelled
+    TimedOut
+    WaitingForApproval
+    
+    fn is_terminal() -> Bool {
+        match self {
+            Completed | Failed(_) | Skipped | Cancelled | TimedOut => true
+            _ => false
+        }
+    }
+    
+    fn is_success() -> Bool {
+        match self {
+            Completed | Skipped => true
+            _ => false
+        }
+    }
+    
+    fn is_failure() -> Bool {
+        match self {
+            Failed(_) | TimedOut | Cancelled => true
+            _ => false
+        }
+    }
+    
+    fn to_string() -> String {
+        match self {
+            Pending => "pending"
+            Running => "running"
+            Completed => "completed"
+            Failed(msg) => format!("failed: {}", msg)
+            Skipped => "skipped"
+            Cancelled => "cancelled"
+            TimedOut => "timed_out"
+            WaitingForApproval => "waiting_for_approval"
+        }
+    }
+}
+
+// =============================================================================
+// Step Result
+// =============================================================================
+
+/// Result of step execution
+struct StepResult {
+    status: StepStatus
+    output: Option<Any>
+    error: Option<String>
+    started_at: Option<DateTime>
+    completed_at: Option<DateTime>
+    metadata: Map<String, Any>
+    
+    fn success(output: Any) -> Self {
+        StepResult {
+            status: StepStatus.Completed,
+            output: Some(output),
+            error: None,
+            started_at: None,
+            completed_at: Some(DateTime.now()),
+            metadata: Map.empty()
+        }
+    }
+    
+    fn failure(error: String) -> Self {
+        StepResult {
+            status: StepStatus.Failed(error.clone()),
+            output: None,
+            error: Some(error),
+            started_at: None,
+            completed_at: Some(DateTime.now()),
+            metadata: Map.empty()
+        }
+    }
+    
+    fn skipped(reason: String) -> Self {
+        StepResult {
+            status: StepStatus.Skipped,
+            output: None,
+            error: None,
+            started_at: None,
+            completed_at: Some(DateTime.now()),
+            metadata: Map.from([("skip_reason", reason)])
+        }
+    }
+    
+    fn duration() -> Option<Duration> {
+        match (self.started_at, self.completed_at) {
+            (Some(start), Some(end)) => Some(end - start)
+            _ => None
+        }
+    }
+}
+
+// =============================================================================
+// Step Trait
+// =============================================================================
+
+/// Trait for workflow steps
+trait Step {
+    fn id() -> String
+    fn name() -> String
+    fn execute(context: StepContext) -> Result<StepResult, StepError>
+    
+    fn validate(context: StepContext) -> Result<(), StepError> {
+        Ok(())
+    }
+    
+    fn rollback(context: StepContext) -> Result<(), StepError> {
+        Ok(())
+    }
+    
+    fn timeout() -> Option<Duration> {
+        None
+    }
+    
+    fn retry_policy() -> RetryPolicy {
+        RetryPolicy.default()
+    }
+}
+
+// =============================================================================
+// Step Context
+// =============================================================================
+
+/// Context passed to step execution
+struct StepContext {
+    workflow_id: String
+    step_id: String
+    execution_id: String
+    inputs: Map<String, Any>
+    outputs: Map<String, Any>
+    variables: Map<String, Any>
+    metadata: Map<String, Any>
+    
+    fn new(workflow_id: String, step_id: String) -> Self {
+        StepContext {
+            workflow_id: workflow_id,
+            step_id: step_id,
+            execution_id: UUID.v4(),
+            inputs: Map.empty(),
+            outputs: Map.empty(),
+            variables: Map.empty(),
+            metadata: Map.empty()
+        }
+    }
+    
+    fn with_inputs(inputs: Map<String, Any>) -> Self {
+        self.inputs = inputs
+        self
+    }
+    
+    fn with_variables(vars: Map<String, Any>) -> Self {
+        self.variables = vars
+        self
+    }
+    
+    fn get_input<T>(key: String) -> Option<T> {
+        self.inputs.get(key).and_then(|v| v.cast::<T>())
+    }
+    
+    fn get_output<T>(key: String) -> Option<T> {
+        self.outputs.get(key).and_then(|v| v.cast::<T>())
+    }
+    
+    fn get_variable<T>(key: String) -> Option<T> {
+        self.variables.get(key).and_then(|v| v.cast::<T>())
+    }
+    
+    fn set_output(key: String, value: Any) {
+        self.outputs.set(key, value)
+    }
+    
+    fn set_variable(key: String, value: Any) {
+        self.variables.set(key, value)
+    }
+}
+
+// =============================================================================
+// Retry Policy
+// =============================================================================
+
+/// Retry policy for failed steps
+struct RetryPolicy {
+    max_retries: Int
+    initial_delay: Duration
+    max_delay: Duration
+    backoff_multiplier: Float
+    retryable_errors: [String]
+    
+    fn default() -> Self {
+        RetryPolicy {
+            max_retries: 3,
+            initial_delay: Duration.seconds(1),
+            max_delay: Duration.minutes(5),
+            backoff_multiplier: 2.0,
+            retryable_errors: []
+        }
+    }
+    
+    fn no_retry() -> Self {
+        RetryPolicy {
+            max_retries: 0,
+            initial_delay: Duration.zero(),
+            max_delay: Duration.zero(),
+            backoff_multiplier: 1.0,
+            retryable_errors: []
+        }
+    }
+    
+    fn with_max_retries(n: Int) -> Self {
+        self.max_retries = n
+        self
+    }
+    
+    fn with_delay(delay: Duration) -> Self {
+        self.initial_delay = delay
+        self
+    }
+    
+    fn with_backoff(multiplier: Float) -> Self {
+        self.backoff_multiplier = multiplier
+        self
+    }
+    
+    fn should_retry(attempt: Int, error: String) -> Bool {
+        if attempt >= self.max_retries {
+            return false
+        }
+        if self.retryable_errors.is_empty() {
+            return true
+        }
+        self.retryable_errors.iter().any(|e| error.contains(e))
+    }
+    
+    fn delay_for_attempt(attempt: Int) -> Duration {
+        let delay_ms = self.initial_delay.as_millis() as Float
+        let multiplied = delay_ms * self.backoff_multiplier.pow(attempt as Float)
+        let capped = multiplied.min(self.max_delay.as_millis() as Float)
+        Duration.milliseconds(capped as Int)
+    }
+}
+
+// =============================================================================
+// Built-in Step Types
+// =============================================================================
+
+/// Action step - executes a function
+struct ActionStep {
+    id: String
+    name: String
+    action: fn(StepContext) -> Result<Any, String>
+    timeout_duration: Option<Duration>
+    retry: RetryPolicy
+    
+    fn new(id: String, name: String, action: fn(StepContext) -> Result<Any, String>) -> Self {
+        ActionStep {
+            id: id,
+            name: name,
+            action: action,
+            timeout_duration: None,
+            retry: RetryPolicy.default()
+        }
+    }
+    
+    fn with_timeout(timeout: Duration) -> Self {
+        self.timeout_duration = Some(timeout)
+        self
+    }
+    
+    fn with_retry(policy: RetryPolicy) -> Self {
+        self.retry = policy
+        self
+    }
+}
+
+impl Step for ActionStep {
+    fn id() -> String { self.id.clone() }
+    fn name() -> String { self.name.clone() }
+    fn timeout() -> Option<Duration> { self.timeout_duration }
+    fn retry_policy() -> RetryPolicy { self.retry.clone() }
+    
+    fn execute(context: StepContext) -> Result<StepResult, StepError> {
+        match (self.action)(context) {
+            Ok(output) => Ok(StepResult.success(output))
+            Err(e) => Ok(StepResult.failure(e))
+        }
+    }
+}
+
+/// HTTP step - makes HTTP request
+struct HttpStep {
+    id: String
+    name: String
+    method: String
+    url: String
+    headers: Map<String, String>
+    body: Option<String>
+    timeout_duration: Duration
+    
+    fn new(id: String, name: String, method: String, url: String) -> Self {
+        HttpStep {
+            id: id,
+            name: name,
+            method: method,
+            url: url,
+            headers: Map.empty(),
+            body: None,
+            timeout_duration: Duration.seconds(30)
+        }
+    }
+    
+    fn get(id: String, name: String, url: String) -> Self {
+        Self.new(id, name, "GET", url)
+    }
+    
+    fn post(id: String, name: String, url: String) -> Self {
+        Self.new(id, name, "POST", url)
+    }
+    
+    fn with_header(key: String, value: String) -> Self {
+        self.headers.set(key, value)
+        self
+    }
+    
+    fn with_body(body: String) -> Self {
+        self.body = Some(body)
+        self
+    }
+    
+    fn with_json_body<T: Serialize>(data: T) -> Self {
+        self.headers.set("Content-Type", "application/json")
+        self.body = Some(json::encode(data))
+        self
+    }
+}
+
+impl Step for HttpStep {
+    fn id() -> String { self.id.clone() }
+    fn name() -> String { self.name.clone() }
+    fn timeout() -> Option<Duration> { Some(self.timeout_duration) }
+    
+    fn execute(context: StepContext) -> Result<StepResult, StepError> {
+        let url = interpolate_string(self.url, context.variables)
+        
+        let response = http::request(self.method.clone(), url)
+            .headers(self.headers.clone())
+            .body(self.body.clone())
+            .timeout(self.timeout_duration)
+            .send()
+            .map_err(|e| StepError.ExecutionFailed(e.to_string()))?
+        
+        if response.status >= 200 && response.status < 300 {
+            Ok(StepResult.success(response.body))
+        } else {
+            Ok(StepResult.failure(format!("HTTP {} - {}", response.status, response.body)))
+        }
+    }
+}
+
+/// Delay step - waits for specified duration
+struct DelayStep {
+    id: String
+    name: String
+    duration: Duration
+    
+    fn new(id: String, duration: Duration) -> Self {
+        DelayStep {
+            id: id,
+            name: format!("Wait {}", duration.to_string()),
+            duration: duration
+        }
+    }
+}
+
+impl Step for DelayStep {
+    fn id() -> String { self.id.clone() }
+    fn name() -> String { self.name.clone() }
+    
+    fn execute(context: StepContext) -> Result<StepResult, StepError> {
+        @native("sleep", self.duration)
+        Ok(StepResult.success(()))
+    }
+}
+
+/// Parallel step - executes multiple steps in parallel
+struct ParallelStep {
+    id: String
+    name: String
+    steps: [Box<dyn Step>]
+    fail_fast: Bool
+    
+    fn new(id: String, name: String) -> Self {
+        ParallelStep {
+            id: id,
+            name: name,
+            steps: [],
+            fail_fast: true
+        }
+    }
+    
+    fn add_step<S: Step>(step: S) -> Self {
+        self.steps.push(Box.new(step))
+        self
+    }
+    
+    fn with_fail_fast(fail_fast: Bool) -> Self {
+        self.fail_fast = fail_fast
+        self
+    }
+}
+
+impl Step for ParallelStep {
+    fn id() -> String { self.id.clone() }
+    fn name() -> String { self.name.clone() }
+    
+    fn execute(context: StepContext) -> Result<StepResult, StepError> {
+        let results = parallel::map(self.steps, |step| {
+            step.execute(context.clone())
+        })
+        
+        var outputs = []
+        var errors = []
+        
+        for result in results {
+            match result {
+                Ok(step_result) => {
+                    if step_result.status.is_failure() {
+                        if self.fail_fast {
+                            return Ok(StepResult.failure("Parallel step failed"))
+                        }
+                        errors.push(step_result.error.unwrap_or("Unknown error"))
+                    } else {
+                        outputs.push(step_result.output)
+                    }
+                }
+                Err(e) => {
+                    if self.fail_fast {
+                        return Err(e)
+                    }
+                    errors.push(e.to_string())
+                }
+            }
+        }
+        
+        if errors.is_empty() {
+            Ok(StepResult.success(outputs))
+        } else {
+            Ok(StepResult.failure(errors.join("; ")))
+        }
+    }
+}
+
+/// Conditional step - executes based on condition
+struct ConditionalStep {
+    id: String
+    name: String
+    condition: fn(StepContext) -> Bool
+    then_step: Box<dyn Step>
+    else_step: Option<Box<dyn Step>>
+    
+    fn new(id: String, name: String, condition: fn(StepContext) -> Bool, then_step: Box<dyn Step>) -> Self {
+        ConditionalStep {
+            id: id,
+            name: name,
+            condition: condition,
+            then_step: then_step,
+            else_step: None
+        }
+    }
+    
+    fn with_else<S: Step>(step: S) -> Self {
+        self.else_step = Some(Box.new(step))
+        self
+    }
+}
+
+impl Step for ConditionalStep {
+    fn id() -> String { self.id.clone() }
+    fn name() -> String { self.name.clone() }
+    
+    fn execute(context: StepContext) -> Result<StepResult, StepError> {
+        if (self.condition)(context.clone()) {
+            self.then_step.execute(context)
+        } else if let Some(else_step) = self.else_step {
+            else_step.execute(context)
+        } else {
+            Ok(StepResult.skipped("Condition not met"))
+        }
+    }
+}
+
+/// Loop step - executes step multiple times
+struct LoopStep {
+    id: String
+    name: String
+    items: fn(StepContext) -> [Any]
+    step: Box<dyn Step>
+    parallel: Bool
+    
+    fn new(id: String, name: String, items: fn(StepContext) -> [Any], step: Box<dyn Step>) -> Self {
+        LoopStep {
+            id: id,
+            name: name,
+            items: items,
+            step: step,
+            parallel: false
+        }
+    }
+    
+    fn run_parallel() -> Self {
+        self.parallel = true
+        self
+    }
+}
+
+impl Step for LoopStep {
+    fn id() -> String { self.id.clone() }
+    fn name() -> String { self.name.clone() }
+    
+    fn execute(context: StepContext) -> Result<StepResult, StepError> {
+        let items = (self.items)(context.clone())
+        var results = []
+        
+        if self.parallel {
+            results = parallel::map(items, |item| {
+                var ctx = context.clone()
+                ctx.set_variable("item", item)
+                self.step.execute(ctx)
+            })
+        } else {
+            for (index, item) in items.iter().enumerate() {
+                var ctx = context.clone()
+                ctx.set_variable("item", item)
+                ctx.set_variable("index", index)
+                results.push(self.step.execute(ctx))
+            }
+        }
+        
+        let outputs = results.iter()
+            .filter_map(|r| r.ok().and_then(|sr| sr.output))
+            .collect()
+        
+        Ok(StepResult.success(outputs))
+    }
+}
+
+/// Script step - executes inline script
+struct ScriptStep {
+    id: String
+    name: String
+    language: ScriptLanguage
+    code: String
+    
+    fn new(id: String, name: String, language: ScriptLanguage, code: String) -> Self {
+        ScriptStep {
+            id: id,
+            name: name,
+            language: language,
+            code: code
+        }
+    }
+    
+    fn vibee(id: String, name: String, code: String) -> Self {
+        Self.new(id, name, ScriptLanguage.Vibee, code)
+    }
+    
+    fn shell(id: String, name: String, code: String) -> Self {
+        Self.new(id, name, ScriptLanguage.Shell, code)
+    }
+}
+
+enum ScriptLanguage {
+    Vibee
+    Shell
+    Python
+    JavaScript
+}
+
+impl Step for ScriptStep {
+    fn id() -> String { self.id.clone() }
+    fn name() -> String { self.name.clone() }
+    
+    fn execute(context: StepContext) -> Result<StepResult, StepError> {
+        let code = interpolate_string(self.code, context.variables)
+        
+        let result = match self.language {
+            ScriptLanguage.Vibee => eval::execute(code)
+            ScriptLanguage.Shell => shell::execute(code)
+            ScriptLanguage.Python => python_ffi::execute(code)
+            ScriptLanguage.JavaScript => js_ffi::execute(code)
+        }
+        
+        match result {
+            Ok(output) => Ok(StepResult.success(output))
+            Err(e) => Ok(StepResult.failure(e.to_string()))
+        }
+    }
+}
+
+// =============================================================================
+// Step Builder
+// =============================================================================
+
+/// Builder for creating steps fluently
+struct StepBuilder {
+    id: String
+    name: String
+    action: Option<fn(StepContext) -> Result<Any, String>>
+    timeout: Option<Duration>
+    retry: RetryPolicy
+    on_success: Option<fn(StepResult)>
+    on_failure: Option<fn(StepResult)>
+    
+    fn new(id: String) -> Self {
+        StepBuilder {
+            id: id.clone(),
+            name: id,
+            action: None,
+            timeout: None,
+            retry: RetryPolicy.default(),
+            on_success: None,
+            on_failure: None
+        }
+    }
+    
+    fn name(name: String) -> Self {
+        self.name = name
+        self
+    }
+    
+    fn action(action: fn(StepContext) -> Result<Any, String>) -> Self {
+        self.action = Some(action)
+        self
+    }
+    
+    fn timeout(duration: Duration) -> Self {
+        self.timeout = Some(duration)
+        self
+    }
+    
+    fn retry(policy: RetryPolicy) -> Self {
+        self.retry = policy
+        self
+    }
+    
+    fn no_retry() -> Self {
+        self.retry = RetryPolicy.no_retry()
+        self
+    }
+    
+    fn on_success(callback: fn(StepResult)) -> Self {
+        self.on_success = Some(callback)
+        self
+    }
+    
+    fn on_failure(callback: fn(StepResult)) -> Self {
+        self.on_failure = Some(callback)
+        self
+    }
+    
+    fn build() -> Result<ActionStep, StepError> {
+        let action = self.action.ok_or(StepError.InvalidConfiguration("Action is required"))?
+        
+        var step = ActionStep.new(self.id, self.name, action)
+        
+        if let Some(t) = self.timeout {
+            step = step.with_timeout(t)
+        }
+        
+        step = step.with_retry(self.retry)
+        
+        Ok(step)
+    }
+}
+
+// =============================================================================
+// Step Executor
+// =============================================================================
+
+/// Executes steps with retry and timeout handling
+struct StepExecutor {
+    fn execute_with_retry<S: Step>(step: S, context: StepContext) -> Result<StepResult, StepError> {
+        let policy = step.retry_policy()
+        var attempt = 0
+        var last_error = None
+        
+        while attempt <= policy.max_retries {
+            if attempt > 0 {
+                let delay = policy.delay_for_attempt(attempt - 1)
+                @native("sleep", delay)
+            }
+            
+            let result = Self.execute_with_timeout(step, context.clone())
+            
+            match result {
+                Ok(step_result) => {
+                    if step_result.status.is_success() {
+                        return Ok(step_result)
+                    }
+                    
+                    if let StepStatus.Failed(error) = step_result.status {
+                        if !policy.should_retry(attempt, error.clone()) {
+                            return Ok(step_result)
+                        }
+                        last_error = Some(error)
+                    } else {
+                        return Ok(step_result)
+                    }
+                }
+                Err(e) => {
+                    last_error = Some(e.to_string())
+                }
+            }
+            
+            attempt += 1
+        }
+        
+        Ok(StepResult.failure(last_error.unwrap_or("Max retries exceeded")))
+    }
+    
+    fn execute_with_timeout<S: Step>(step: S, context: StepContext) -> Result<StepResult, StepError> {
+        match step.timeout() {
+            Some(timeout) => {
+                let result = timeout::run(timeout, || step.execute(context))
+                match result {
+                    Ok(r) => r
+                    Err(_) => Ok(StepResult {
+                        status: StepStatus.TimedOut,
+                        output: None,
+                        error: Some("Step timed out"),
+                        started_at: None,
+                        completed_at: Some(DateTime.now()),
+                        metadata: Map.empty()
+                    })
+                }
+            }
+            None => step.execute(context)
+        }
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum StepError {
+    InvalidConfiguration(String)
+    ExecutionFailed(String)
+    ValidationFailed(String)
+    Timeout
+    Cancelled
+    RollbackFailed(String)
+    
+    fn to_string() -> String {
+        match self {
+            InvalidConfiguration(msg) => format!("Invalid configuration: {}", msg)
+            ExecutionFailed(msg) => format!("Execution failed: {}", msg)
+            ValidationFailed(msg) => format!("Validation failed: {}", msg)
+            Timeout => "Step timed out"
+            Cancelled => "Step was cancelled"
+            RollbackFailed(msg) => format!("Rollback failed: {}", msg)
+        }
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+fn interpolate_string(template: String, vars: Map<String, Any>) -> String {
+    var result = template
+    for (key, value) in vars {
+        result = result.replace(format!("${{{}}}", key), value.to_string())
+        result = result.replace(format!("${}", key), value.to_string())
+    }
+    result
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "step status" {
+    assert(StepStatus.Completed.is_terminal())?
+    assert(StepStatus.Completed.is_success())?
+    assert(!StepStatus.Running.is_terminal())?
+    assert(StepStatus.Failed("error").is_failure())?
+}
+
+test "step result" {
+    let success = StepResult.success(42)
+    assert_eq(success.status, StepStatus.Completed)?
+    assert_eq(success.output, Some(42))?
+    
+    let failure = StepResult.failure("error")
+    assert(failure.status.is_failure())?
+}
+
+test "retry policy" {
+    let policy = RetryPolicy.default()
+    assert(policy.should_retry(0, "error"))?
+    assert(policy.should_retry(2, "error"))?
+    assert(!policy.should_retry(3, "error"))?
+    
+    let delay = policy.delay_for_attempt(1)
+    assert_eq(delay, Duration.seconds(2))?
+}
+
+test "action step" {
+    let step = ActionStep.new("test", "Test Step", |ctx| Ok(42))
+    let context = StepContext.new("wf-1", "test")
+    
+    let result = step.execute(context)?
+    assert_eq(result.status, StepStatus.Completed)?
+    assert_eq(result.output, Some(42))?
+}
+
+test "delay step" {
+    let step = DelayStep.new("delay", Duration.milliseconds(10))
+    let context = StepContext.new("wf-1", "delay")
+    
+    let result = step.execute(context)?
+    assert(result.status.is_success())?
+}
+
+test "step builder" {
+    let step = StepBuilder.new("my-step")
+        .name("My Step")
+        .action(|ctx| Ok("done"))
+        .timeout(Duration.seconds(30))
+        .no_retry()
+        .build()?
+    
+    assert_eq(step.id(), "my-step")?
+    assert_eq(step.name(), "My Step")?
+}
+
+test "step context" {
+    var ctx = StepContext.new("wf-1", "step-1")
+    ctx.set_variable("name", "test")
+    ctx.set_output("result", 42)
+    
+    assert_eq(ctx.get_variable::<String>("name"), Some("test"))?
+    assert_eq(ctx.get_output::<Int>("result"), Some(42))?
+}

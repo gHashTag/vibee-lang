@@ -1,0 +1,144 @@
+// =============================================================================
+// Vibee OS — Spreadsheet Module
+// Generic spreadsheet operations and data manipulation
+// =============================================================================
+
+// =============================================================================
+// Spreadsheet
+// =============================================================================
+
+/// Generic spreadsheet
+struct Spreadsheet {
+    sheets: [DataSheet]
+    active_sheet: Int
+}
+
+impl Spreadsheet {
+    fn new() -> Self { Spreadsheet { sheets: [DataSheet.new("Sheet1")], active_sheet: 0 } }
+    
+    fn add_sheet(name: String) -> DataSheet {
+        let sheet = DataSheet.new(name)
+        self.sheets.push(sheet.clone())
+        sheet
+    }
+    
+    fn sheet(index: Int) -> Option<DataSheet> { self.sheets.get(index).cloned() }
+    fn sheet_by_name(name: String) -> Option<DataSheet> { self.sheets.iter().find(|s| s.name == name).cloned() }
+    fn active() -> DataSheet { self.sheets[self.active_sheet].clone() }
+    fn set_active(index: Int) { if index < self.sheets.len() { self.active_sheet = index } }
+}
+
+// =============================================================================
+// DataSheet
+// =============================================================================
+
+struct DataSheet {
+    name: String
+    data: [[CellData]]
+    row_count: Int
+    col_count: Int
+}
+
+impl DataSheet {
+    fn new(name: String) -> Self { DataSheet { name: name, data: [], row_count: 0, col_count: 0 } }
+    
+    fn get(row: Int, col: Int) -> Option<CellData> {
+        self.data.get(row).and_then(|r| r.get(col).cloned())
+    }
+    
+    fn set(row: Int, col: Int, value: CellData) {
+        while self.data.len() <= row { self.data.push([]) }
+        while self.data[row].len() <= col { self.data[row].push(CellData.Empty) }
+        self.data[row][col] = value
+        self.row_count = self.row_count.max(row + 1)
+        self.col_count = self.col_count.max(col + 1)
+    }
+    
+    fn set_string(row: Int, col: Int, value: String) { self.set(row, col, CellData.Text(value)) }
+    fn set_number(row: Int, col: Int, value: Float64) { self.set(row, col, CellData.Number(value)) }
+    
+    fn row(index: Int) -> Option<[CellData]> { self.data.get(index).cloned() }
+    fn column(index: Int) -> [CellData] { self.data.iter().filter_map(|r| r.get(index).cloned()).collect() }
+    
+    fn insert_row(index: Int) { self.data.insert(index, []); self.row_count += 1 }
+    fn insert_column(index: Int) { for row in self.data.iter_mut() { row.insert(index, CellData.Empty) }; self.col_count += 1 }
+    fn delete_row(index: Int) { if index < self.data.len() { self.data.remove(index); self.row_count -= 1 } }
+    
+    fn from_csv(csv: String, delimiter: Char) -> Self {
+        let mut sheet = DataSheet.new("Data")
+        for (ri, line) in csv.lines().enumerate() {
+            for (ci, cell) in line.split(delimiter).enumerate() {
+                let value = if let Ok(n) = cell.trim().parse::<Float64>() { CellData.Number(n) } else { CellData.Text(cell.to_string()) }
+                sheet.set(ri, ci, value)
+            }
+        }
+        sheet
+    }
+    
+    fn to_csv(delimiter: Char) -> String {
+        self.data.iter().map(|row| row.iter().map(|c| c.to_string()).collect::<[String]>().join(delimiter.to_string())).collect::<[String]>().join("\n")
+    }
+}
+
+// =============================================================================
+// Cell Data
+// =============================================================================
+
+enum CellData { Empty, Text(String), Number(Float64), Boolean(Bool), Formula(String) }
+
+impl CellData {
+    fn to_string() -> String {
+        match self { Empty => "", Text(s) => s.clone(), Number(n) => n.to_string(), Boolean(b) => b.to_string(), Formula(f) => f.clone() }
+    }
+    fn as_number() -> Option<Float64> { match self { Number(n) => Some(n), Text(s) => s.parse().ok(), _ => None } }
+}
+
+// =============================================================================
+// Range Operations
+// =============================================================================
+
+struct DataRange { sheet: DataSheet, start_row: Int, start_col: Int, end_row: Int, end_col: Int }
+
+impl DataRange {
+    fn values() -> [[CellData]] {
+        var result: [[CellData]] = []
+        for r in self.start_row..=self.end_row {
+            var row: [CellData] = []
+            for c in self.start_col..=self.end_col { row.push(self.sheet.get(r, c).unwrap_or(CellData.Empty)) }
+            result.push(row)
+        }
+        result
+    }
+    
+    fn sum() -> Float64 { self.values().iter().flatten().filter_map(|c| c.as_number()).sum() }
+    fn average() -> Option<Float64> {
+        let nums: [Float64] = self.values().iter().flatten().filter_map(|c| c.as_number()).collect()
+        if nums.is_empty() { None } else { Some(nums.iter().sum::<Float64>() / nums.len() as Float64) }
+    }
+    fn max() -> Option<Float64> { self.values().iter().flatten().filter_map(|c| c.as_number()).max_by(|a, b| a.partial_cmp(b).unwrap()) }
+    fn min() -> Option<Float64> { self.values().iter().flatten().filter_map(|c| c.as_number()).min_by(|a, b| a.partial_cmp(b).unwrap()) }
+    fn count() -> Int { self.values().iter().flatten().filter(|c| !matches!(c, CellData.Empty)).count() }
+}
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+fn new() -> Spreadsheet { Spreadsheet.new() }
+fn from_csv(csv: String) -> DataSheet { DataSheet.from_csv(csv, ',') }
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "spreadsheet basics" {
+    let mut sheet = DataSheet.new("Test")
+    sheet.set_string(0, 0, "Hello")
+    sheet.set_number(0, 1, 42.0)
+    assert_eq(sheet.get(0, 0).unwrap().to_string(), "Hello")?
+}
+
+test "csv parsing" {
+    let sheet = DataSheet.from_csv("a,b,c\n1,2,3", ',')
+    assert_eq(sheet.row_count, 2)?
+}

@@ -1,0 +1,715 @@
+// =============================================================================
+// Vibee OS — Store Module
+// Redux-like state management store
+// =============================================================================
+
+use action::{Action, InitAction, ActionBatch, ActionMeta}
+use reducer::{Reducer, FnReducer}
+use selector::{Selector}
+use observable::{Observable, Observer, Subscription, next_observer}
+use subject::{BehaviorSubject}
+
+// =============================================================================
+// Core Store Types
+// =============================================================================
+
+/// Store trait - central state container
+trait Store<S> {
+    fn get_state() -> S
+    fn dispatch(action: impl Action)
+    fn subscribe(listener: fn(S)) -> Subscription
+}
+
+/// Store configuration
+struct StoreConfig<S> {
+    initial_state: Option<S>
+    enhancers: [fn(impl Store<S>) -> impl Store<S>]
+    dev_tools: Bool
+}
+
+impl<S> StoreConfig<S> {
+    fn new() -> Self {
+        StoreConfig {
+            initial_state: None,
+            enhancers: [],
+            dev_tools: false
+        }
+    }
+    
+    fn with_initial_state(state: S) -> Self {
+        self.initial_state = Some(state)
+        self
+    }
+    
+    fn with_enhancer(enhancer: fn(impl Store<S>) -> impl Store<S>) -> Self {
+        self.enhancers.push(enhancer)
+        self
+    }
+    
+    fn with_dev_tools() -> Self {
+        self.dev_tools = true
+        self
+    }
+}
+
+// =============================================================================
+// Core Store Implementation
+// =============================================================================
+
+/// Main store actor - thread-safe state container
+actor CoreStore<S: Clone> {
+    state current_state: S
+    state reducer: impl Reducer<S>
+    state subject: BehaviorSubject<S>
+    state middlewares: [Middleware<S>]
+    state is_dispatching: Bool
+    state action_log: [ActionLogEntry]
+    state log_enabled: Bool
+    
+    fn new(reducer: impl Reducer<S>, initial_state: S) -> Self {
+        let subject = BehaviorSubject.new(initial_state.clone())
+        
+        CoreStore {
+            current_state: initial_state,
+            reducer: reducer,
+            subject: subject,
+            middlewares: [],
+            is_dispatching: false,
+            action_log: [],
+            log_enabled: false
+        }
+    }
+    
+    fn with_middleware(middleware: Middleware<S>) -> Self {
+        self.middlewares.push(middleware)
+        self
+    }
+    
+    fn enable_logging() {
+        self.log_enabled = true
+    }
+    
+    fn disable_logging() {
+        self.log_enabled = false
+    }
+}
+
+impl<S: Clone> Store<S> for CoreStore<S> {
+    fn get_state() -> S {
+        self.current_state.clone()
+    }
+    
+    fn dispatch(action: impl Action) {
+        if self.is_dispatching {
+            panic("Cannot dispatch while reducing")
+        }
+        
+        // Log action if enabled
+        if self.log_enabled {
+            self.action_log.push(ActionLogEntry {
+                action_type: action.action_type(),
+                timestamp: @native("now_ms"),
+                prev_state: self.current_state.clone()
+            })
+        }
+        
+        // Apply middlewares
+        let dispatch_fn = self.create_dispatch_chain(action)
+        dispatch_fn()
+    }
+    
+    fn subscribe(listener: fn(S)) -> Subscription {
+        self.subject.subscribe(next_observer(listener))
+    }
+}
+
+impl<S: Clone> CoreStore<S> {
+    /// Create middleware dispatch chain
+    fn create_dispatch_chain(action: impl Action) -> fn() {
+        let store = self
+        let middlewares = self.middlewares.clone()
+        
+        // Base dispatch
+        let base_dispatch = || {
+            store.is_dispatching = true
+            let new_state = store.reducer.reduce(store.current_state.clone(), action)
+            store.current_state = new_state.clone()
+            store.is_dispatching = false
+            store.subject.next(new_state)
+        }
+        
+        // Chain middlewares
+        var dispatch = base_dispatch
+        for middleware in middlewares.iter().rev() {
+            let next = dispatch
+            let mw = middleware.clone()
+            dispatch = || {
+                mw.handle(store, action, next)
+            }
+        }
+        
+        dispatch
+    }
+    
+    /// Dispatch multiple actions
+    fn dispatch_all(actions: [impl Action]) {
+        for action in actions {
+            self.dispatch(action)
+        }
+    }
+    
+    /// Replace reducer (for hot reloading)
+    fn replace_reducer(new_reducer: impl Reducer<S>) {
+        self.reducer = new_reducer
+        self.dispatch(InitAction {})
+    }
+    
+    /// Get action log
+    fn get_action_log() -> [ActionLogEntry] {
+        self.action_log.clone()
+    }
+    
+    /// Clear action log
+    fn clear_action_log() {
+        self.action_log.clear()
+    }
+    
+    /// Select from state
+    fn select<R>(selector: impl Selector<S, R>) -> R {
+        selector.select(self.current_state.clone())
+    }
+    
+    /// Subscribe to selected state
+    fn select_subscribe<R: Eq + Clone>(
+        selector: impl Selector<S, R>,
+        listener: fn(R)
+    ) -> Subscription {
+        var last_value: Option<R> = None
+        
+        self.subscribe(|state| {
+            let new_value = selector.select(state)
+            
+            if let Some(ref last) = last_value {
+                if last != &new_value {
+                    listener(new_value.clone())
+                    last_value = Some(new_value)
+                }
+            } else {
+                listener(new_value.clone())
+                last_value = Some(new_value)
+            }
+        })
+    }
+    
+    /// Get observable of state
+    fn as_observable() -> impl Observable<Item = S> {
+        self.subject.as_observable()
+    }
+}
+
+/// Action log entry
+struct ActionLogEntry {
+    action_type: String
+    timestamp: Int64
+    prev_state: Any
+}
+
+// =============================================================================
+// Store Creation
+// =============================================================================
+
+/// Create store with reducer
+fn create_store<S: Clone>(
+    reducer: impl Reducer<S>,
+    initial_state: S
+) -> CoreStore<S> {
+    let store = CoreStore.new(reducer, initial_state)
+    store.dispatch(InitAction {})
+    store
+}
+
+/// Create store with config
+fn create_store_with_config<S: Clone>(
+    reducer: impl Reducer<S>,
+    config: StoreConfig<S>
+) -> impl Store<S> {
+    let initial = config.initial_state.unwrap_or_else(|| {
+        if let Some(fn_reducer) = reducer.downcast::<FnReducer<S>>() {
+            fn_reducer.get_initial_state()
+        } else {
+            S.default()
+        }
+    })
+    
+    var store: impl Store<S> = CoreStore.new(reducer, initial)
+    
+    // Apply enhancers
+    for enhancer in config.enhancers {
+        store = enhancer(store)
+    }
+    
+    // Enable dev tools if requested
+    if config.dev_tools {
+        if let Some(core) = store.downcast::<CoreStore<S>>() {
+            core.enable_logging()
+        }
+    }
+    
+    store.dispatch(InitAction {})
+    store
+}
+
+// =============================================================================
+// Middleware Type
+// =============================================================================
+
+/// Middleware for store
+struct Middleware<S> {
+    name: String
+    handler: fn(impl Store<S>, impl Action, fn()) -> ()
+}
+
+impl<S> Middleware<S> {
+    fn new(name: String, handler: fn(impl Store<S>, impl Action, fn()) -> ()) -> Self {
+        Middleware {
+            name: name,
+            handler: handler
+        }
+    }
+    
+    fn handle(store: impl Store<S>, action: impl Action, next: fn()) {
+        (self.handler)(store, action, next)
+    }
+}
+
+// =============================================================================
+// Store Enhancers
+// =============================================================================
+
+/// Apply middleware to store
+fn apply_middleware<S: Clone>(middlewares: [Middleware<S>]) -> fn(CoreStore<S>) -> CoreStore<S> {
+    |store| {
+        for mw in middlewares {
+            store = store.with_middleware(mw)
+        }
+        store
+    }
+}
+
+/// Dev tools enhancer
+fn dev_tools_enhancer<S: Clone + Debug>() -> fn(impl Store<S>) -> impl Store<S> {
+    |store| {
+        if let Some(core) = store.downcast::<CoreStore<S>>() {
+            core.enable_logging()
+        }
+        store
+    }
+}
+
+// =============================================================================
+// Scoped Store
+// =============================================================================
+
+/// Scoped store - view into a slice of parent store
+struct ScopedStore<S, T> {
+    parent: impl Store<S>
+    get_slice: fn(S) -> T
+    set_slice: fn(S, T) -> S
+}
+
+impl<S: Clone, T: Clone> Store<T> for ScopedStore<S, T> {
+    fn get_state() -> T {
+        (self.get_slice)(self.parent.get_state())
+    }
+    
+    fn dispatch(action: impl Action) {
+        // Wrap action to update slice
+        let wrapper = SliceAction {
+            inner: action,
+            get_slice: self.get_slice,
+            set_slice: self.set_slice
+        }
+        self.parent.dispatch(wrapper)
+    }
+    
+    fn subscribe(listener: fn(T)) -> Subscription {
+        var last_slice: Option<T> = None
+        
+        self.parent.subscribe(|state| {
+            let slice = (self.get_slice)(state)
+            
+            if let Some(ref last) = last_slice {
+                if last != &slice {
+                    listener(slice.clone())
+                    last_slice = Some(slice)
+                }
+            } else {
+                listener(slice.clone())
+                last_slice = Some(slice)
+            }
+        })
+    }
+}
+
+struct SliceAction<S, T> {
+    inner: impl Action
+    get_slice: fn(S) -> T
+    set_slice: fn(S, T) -> S
+}
+
+impl<S, T> Action for SliceAction<S, T> {
+    fn action_type() -> String {
+        self.inner.action_type()
+    }
+}
+
+/// Create scoped store
+fn scope<S: Clone, T: Clone>(
+    parent: impl Store<S>,
+    get_slice: fn(S) -> T,
+    set_slice: fn(S, T) -> S
+) -> ScopedStore<S, T> {
+    ScopedStore {
+        parent: parent,
+        get_slice: get_slice,
+        set_slice: set_slice
+    }
+}
+
+// =============================================================================
+// Multi-Store
+// =============================================================================
+
+/// Combine multiple stores
+struct MultiStore {
+    stores: Map<String, impl Store<Any>>
+}
+
+impl MultiStore {
+    fn new() -> Self {
+        MultiStore { stores: Map.new() }
+    }
+    
+    fn add_store<S>(name: String, store: impl Store<S>) -> Self {
+        self.stores.insert(name, store)
+        self
+    }
+    
+    fn get_store<S>(name: String) -> Option<impl Store<S>> {
+        self.stores.get(name)
+    }
+    
+    fn dispatch_to(name: String, action: impl Action) {
+        if let Some(store) = self.stores.get(name) {
+            store.dispatch(action)
+        }
+    }
+    
+    fn dispatch_to_all(action: impl Action) {
+        for (_, store) in self.stores.iter() {
+            store.dispatch(action.clone())
+        }
+    }
+}
+
+// =============================================================================
+// Store Utilities
+// =============================================================================
+
+/// Batch dispatch helper
+fn batch_dispatch<S>(store: impl Store<S>, actions: [impl Action]) {
+    let batch = ActionBatch.with_actions(actions)
+    store.dispatch(batch)
+}
+
+/// Create action dispatcher bound to store
+fn bind_action_creators<S>(
+    store: impl Store<S>,
+    creators: Map<String, fn(Any) -> impl Action>
+) -> Map<String, fn(Any)> {
+    var bound = Map.new()
+    
+    for (name, creator) in creators.iter() {
+        let s = store.clone()
+        bound.insert(name, |payload| {
+            s.dispatch(creator(payload))
+        })
+    }
+    
+    bound
+}
+
+/// Store snapshot for time-travel debugging
+struct StoreSnapshot<S> {
+    state: S
+    action: impl Action
+    timestamp: Int64
+}
+
+/// Time-travel store wrapper
+actor TimeTravelStore<S: Clone> {
+    state inner: CoreStore<S>
+    state snapshots: [StoreSnapshot<S>]
+    state current_index: Int
+    state max_snapshots: Int
+    
+    fn new(store: CoreStore<S>, max_snapshots: Int) -> Self {
+        TimeTravelStore {
+            inner: store,
+            snapshots: [],
+            current_index: -1,
+            max_snapshots: max_snapshots
+        }
+    }
+    
+    fn dispatch(action: impl Action) {
+        // Save snapshot before dispatch
+        self.snapshots.push(StoreSnapshot {
+            state: self.inner.get_state(),
+            action: action.clone(),
+            timestamp: @native("now_ms")
+        })
+        
+        // Trim old snapshots
+        while self.snapshots.len() > self.max_snapshots {
+            self.snapshots.remove(0)
+        }
+        
+        self.current_index = self.snapshots.len() - 1
+        self.inner.dispatch(action)
+    }
+    
+    fn jump_to(index: Int) -> Bool {
+        if index < 0 || index >= self.snapshots.len() {
+            return false
+        }
+        
+        self.current_index = index
+        // Replay actions from beginning to index
+        let initial = if let Some(fn_reducer) = self.inner.reducer.downcast::<FnReducer<S>>() {
+            fn_reducer.get_initial_state()
+        } else {
+            self.snapshots[0].state.clone()
+        }
+        
+        var state = initial
+        for i in 0..=index {
+            state = self.inner.reducer.reduce(state, self.snapshots[i].action.clone())
+        }
+        
+        self.inner.current_state = state.clone()
+        self.inner.subject.next(state)
+        true
+    }
+    
+    fn get_snapshots() -> [StoreSnapshot<S>] {
+        self.snapshots.clone()
+    }
+    
+    fn get_current_index() -> Int {
+        self.current_index
+    }
+}
+
+impl<S: Clone> Store<S> for TimeTravelStore<S> {
+    fn get_state() -> S { self.inner.get_state() }
+    fn dispatch(action: impl Action) { self.dispatch(action) }
+    fn subscribe(listener: fn(S)) -> Subscription { self.inner.subscribe(listener) }
+}
+
+// =============================================================================
+// Persistence
+// =============================================================================
+
+/// Persist store state
+trait StorePersistence<S> {
+    fn save(state: S) -> Result<(), Error>
+    fn load() -> Result<Option<S>, Error>
+}
+
+/// Local storage persistence
+struct LocalStoragePersistence<S: Serialize + Deserialize> {
+    key: String
+}
+
+impl<S: Serialize + Deserialize> StorePersistence<S> for LocalStoragePersistence<S> {
+    fn save(state: S) -> Result<(), Error> {
+        let json = state.to_json()
+        @native("local_storage_set", self.key.clone(), json)
+        Ok(())
+    }
+    
+    fn load() -> Result<Option<S>, Error> {
+        let json = @native("local_storage_get", self.key.clone())
+        if let Some(j) = json {
+            let state = S.from_json(j)?
+            Ok(Some(state))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+/// Create persisted store
+fn create_persisted_store<S: Clone + Serialize + Deserialize>(
+    reducer: impl Reducer<S>,
+    initial_state: S,
+    persistence: impl StorePersistence<S>
+) -> CoreStore<S> {
+    // Try to load persisted state
+    let state = match persistence.load() {
+        Ok(Some(s)) => s,
+        _ => initial_state
+    }
+    
+    let store = create_store(reducer, state)
+    
+    // Subscribe to persist on changes
+    store.subscribe(|state| {
+        let _ = persistence.save(state)
+    })
+    
+    store
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "create store" {
+    let reducer = FnReducer.new(0, |state, action| {
+        match action.action_type().as_str() {
+            "INCREMENT" => state + 1,
+            "DECREMENT" => state - 1,
+            _ => state
+        }
+    })
+    
+    let store = create_store(reducer, 0)
+    assert_eq(store.get_state(), 0)?
+}
+
+test "dispatch action" {
+    let reducer = FnReducer.new(0, |state, action| {
+        match action.action_type().as_str() {
+            "INCREMENT" => state + 1,
+            _ => state
+        }
+    })
+    
+    let store = create_store(reducer, 0)
+    
+    store.dispatch(simple_action("INCREMENT"))
+    assert_eq(store.get_state(), 1)?
+    
+    store.dispatch(simple_action("INCREMENT"))
+    assert_eq(store.get_state(), 2)?
+}
+
+test "subscribe to changes" {
+    let reducer = FnReducer.new(0, |state, action| {
+        match action.action_type().as_str() {
+            "INCREMENT" => state + 1,
+            _ => state
+        }
+    })
+    
+    let store = create_store(reducer, 0)
+    var updates = []
+    
+    store.subscribe(|state| updates.push(state))
+    
+    store.dispatch(simple_action("INCREMENT"))
+    store.dispatch(simple_action("INCREMENT"))
+    
+    assert_eq(updates, [0, 1, 2])?  // Initial + 2 updates
+}
+
+test "select from state" {
+    struct AppState { count: Int, name: String }
+    
+    let reducer = FnReducer.new(
+        AppState { count: 0, name: "test" },
+        |state, action| {
+            match action.action_type().as_str() {
+                "INCREMENT" => AppState { count: state.count + 1, name: state.name },
+                _ => state
+            }
+        }
+    )
+    
+    let store = create_store(reducer, AppState { count: 0, name: "test" })
+    let select_count = create_selector(|state: AppState| state.count)
+    
+    assert_eq(store.select(select_count), 0)?
+    
+    store.dispatch(simple_action("INCREMENT"))
+    assert_eq(store.select(select_count), 1)?
+}
+
+test "scoped store" {
+    struct RootState { counter: Int, user: String }
+    
+    let reducer = FnReducer.new(
+        RootState { counter: 0, user: "guest" },
+        |state, action| {
+            match action.action_type().as_str() {
+                "INCREMENT" => RootState { counter: state.counter + 1, user: state.user },
+                _ => state
+            }
+        }
+    )
+    
+    let root_store = create_store(reducer, RootState { counter: 0, user: "guest" })
+    
+    let counter_store = scope(
+        root_store,
+        |state: RootState| state.counter,
+        |state, counter| RootState { counter: counter, user: state.user }
+    )
+    
+    assert_eq(counter_store.get_state(), 0)?
+}
+
+test "time travel" {
+    let reducer = FnReducer.new(0, |state, action| {
+        match action.action_type().as_str() {
+            "INCREMENT" => state + 1,
+            _ => state
+        }
+    })
+    
+    let base_store = CoreStore.new(reducer, 0)
+    let store = TimeTravelStore.new(base_store, 100)
+    
+    store.dispatch(simple_action("INCREMENT"))
+    store.dispatch(simple_action("INCREMENT"))
+    store.dispatch(simple_action("INCREMENT"))
+    
+    assert_eq(store.get_state(), 3)?
+    
+    store.jump_to(1)
+    assert_eq(store.get_state(), 2)?
+    
+    store.jump_to(0)
+    assert_eq(store.get_state(), 1)?
+}
+
+test "action logging" {
+    let reducer = FnReducer.new(0, |state, action| {
+        match action.action_type().as_str() {
+            "INCREMENT" => state + 1,
+            _ => state
+        }
+    })
+    
+    let store = CoreStore.new(reducer, 0)
+    store.enable_logging()
+    
+    store.dispatch(simple_action("INCREMENT"))
+    store.dispatch(simple_action("INCREMENT"))
+    
+    let log = store.get_action_log()
+    assert_eq(log.len(), 2)?
+    assert_eq(log[0].action_type, "INCREMENT")?
+}

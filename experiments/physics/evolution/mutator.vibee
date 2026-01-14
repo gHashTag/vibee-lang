@@ -1,0 +1,211 @@
+name: mutator
+version: "1.0.0"
+language: zig
+module: mutator
+description: |
+  Эволюционные операторы для геномов физических законов
+  
+  Операторы:
+  - Мутация: изменение степеней, коэффициентов
+  - Кроссовер: комбинирование родителей
+  - Селекция: турнирный отбор
+
+creation_pattern:
+  source: Population
+  transformer: evolve_step
+  result: Population
+  iteration: bounded
+
+behaviors:
+  - name: mutation_power_change
+    given: Геном физического закона
+    when: Применяется мутация степени
+    then: Одна степень изменяется на ±1..2
+    test_cases:
+      - name: increase_power
+        input: {genome: {powers: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}, delta: 1}
+        expected: {power_changed: true}
+      - name: bounded_power
+        input: {genome: {powers: [4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}, delta: 1}
+        expected: {power: 4}  # не превышает MAX_POWER
+
+  - name: mutation_coefficient
+    given: Геном с коэффициентом
+    when: Применяется мутация коэффициента
+    then: Коэффициент меняется на один из простых
+    test_cases:
+      - name: change_coefficient
+        input: {genome: {coefficient: 1.0}}
+        expected: {coefficient_in: [0.5, 1.0, 2.0, 3.0, 4.0]}
+
+  - name: crossover_uniform
+    given: Два родительских генома
+    when: Применяется uniform crossover
+    then: Каждая степень наследуется от случайного родителя
+    test_cases:
+      - name: inherit_from_both
+        input: {parent1: {powers: [1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]}, parent2: {powers: [0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0]}}
+        expected: {child_has_genes_from_both: true}
+
+  - name: tournament_selection
+    given: Популяция с фитнесами
+    when: Проводится турнирная селекция
+    then: Выбирается лучший из случайной выборки
+    test_cases:
+      - name: select_best
+        input: {population: [{fitness: 10}, {fitness: 50}, {fitness: 30}], tournament_size: 3}
+        expected: {selected_fitness: 50}
+
+  - name: elite_preservation
+    given: Популяция отсортированная по фитнесу
+    when: Создаётся новое поколение
+    then: Лучшие особи сохраняются без изменений
+    test_cases:
+      - name: preserve_top_10
+        input: {population_size: 100, elite_size: 10}
+        expected: {elite_preserved: true}
+
+transformers:
+  - name: mutate
+    type: stochastic
+    input: LawGenome
+    output: LawGenome
+    rule: |
+      mutation_type = random_choice([power_change, power_swap, coefficient_change, sqrt_toggle, reset_power])
+      
+      switch mutation_type:
+        power_change:
+          idx = random_int(0, 11)
+          delta = random_int(-2, 2)
+          genome.powers[idx] = clamp(genome.powers[idx] + delta, -MAX_POWER, MAX_POWER)
+        power_swap:
+          i, j = random_pair(0, 11)
+          swap(genome.powers[i], genome.powers[j])
+        coefficient_change:
+          genome.coefficient = random_choice([0.5, 1.0, 2.0, 3.0, 4.0])
+        sqrt_toggle:
+          genome.sqrt_applied = !genome.sqrt_applied
+        reset_power:
+          idx = random_int(0, 11)
+          genome.powers[idx] = 0
+      
+      genome.mutations += 1
+      return genome
+
+  - name: crossover
+    type: stochastic
+    input: {parent1: LawGenome, parent2: LawGenome}
+    output: LawGenome
+    rule: |
+      child = LawGenome.init()
+      
+      for i in 0..12:
+        child.powers[i] = random_choice(parent1.powers[i], parent2.powers[i])
+      
+      child.coefficient = random_choice(parent1.coefficient, parent2.coefficient)
+      child.sqrt_applied = random_choice(parent1.sqrt_applied, parent2.sqrt_applied)
+      child.generation = max(parent1.generation, parent2.generation) + 1
+      
+      return child
+
+  - name: tournament_select
+    type: stochastic
+    input: {population: Population, size: uint32}
+    output: LawGenome
+    rule: |
+      best = null
+      best_fitness = -infinity
+      
+      for _ in 0..size:
+        idx = random_int(0, population.laws.len - 1)
+        candidate = population.laws[idx]
+        if candidate.fitness > best_fitness:
+          best_fitness = candidate.fitness
+          best = candidate
+      
+      return best
+
+  - name: evolve_population
+    type: stochastic
+    input: Population
+    output: Population
+    rule: |
+      # Оценка фитнеса
+      for law in population.laws:
+        law.fitness = evaluate(law)
+      
+      # Сортировка
+      sort_by_fitness(population.laws)
+      
+      # Новое поколение
+      new_laws = []
+      
+      # Элита
+      for i in 0..ELITE_SIZE:
+        new_laws.append(population.laws[i])
+      
+      # Остальные через кроссовер и мутацию
+      while new_laws.len < POPULATION_SIZE:
+        if random() < CROSSOVER_RATE:
+          p1 = tournament_select(population, TOURNAMENT_SIZE)
+          p2 = tournament_select(population, TOURNAMENT_SIZE)
+          child = crossover(p1, p2)
+          if random() < MUTATION_RATE:
+            child = mutate(child)
+          new_laws.append(child)
+        else:
+          new_laws.append(LawGenome.random())
+      
+      population.laws = new_laws
+      population.generation += 1
+      return population
+
+types:
+  MutationType:
+    enum: [power_change, power_swap, coefficient_change, sqrt_toggle, reset_power, random_power]
+    
+  EvolutionParams:
+    population_size: uint32
+    elite_size: uint32
+    mutation_rate: float
+    crossover_rate: float
+    tournament_size: uint32
+
+constants:
+  POPULATION_SIZE: 100
+  ELITE_SIZE: 10
+  MUTATION_RATE: 0.3
+  CROSSOVER_RATE: 0.7
+  TOURNAMENT_SIZE: 5
+  MAX_POWER: 4
+
+functions:
+  - name: mutate
+    params: {genome: LawGenome}
+    returns: LawGenome
+    
+  - name: crossover
+    params: {parent1: LawGenome, parent2: LawGenome}
+    returns: LawGenome
+    
+  - name: tournament_select
+    params: {population: Population, size: uint32}
+    returns: LawGenome
+    
+  - name: evolve_population
+    params: {population: Population}
+    returns: Population
+
+test_generation:
+  boundary: true
+  property: true
+  stress: true
+  coverage: 90
+  
+  property_tests:
+    - name: mutation_bounded
+      property: "-MAX_POWER <= mutated.powers[i] <= MAX_POWER"
+    - name: crossover_inherits
+      property: "child.powers[i] in {parent1.powers[i], parent2.powers[i]}"
+    - name: elite_preserved
+      property: "new_population.laws[0..ELITE_SIZE] == old_population.laws[0..ELITE_SIZE]"

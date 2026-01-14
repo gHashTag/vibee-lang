@@ -1,0 +1,716 @@
+// =============================================================================
+// Vibee OS — Word Module
+// Reading, writing, and manipulating Word documents (.docx, .doc)
+// =============================================================================
+
+use fs::{File, IoError}
+use image::Image
+
+// =============================================================================
+// Word Document
+// =============================================================================
+
+/// Word document
+struct Document {
+    handle: @native("WordDocumentHandle")
+    path: Option<String>
+    sections: [Section]
+}
+
+impl Document {
+    /// Create new empty document
+    fn new() -> Self {
+        let handle = @native("word_document_new")
+        Document { handle: handle, path: None, sections: [Section.default()] }
+    }
+    
+    /// Open document from file
+    fn open(path: String) -> Result<Self, WordError> {
+        let handle = @native("word_document_open", path)?
+        let sections = @native("word_document_sections", handle)?
+        Ok(Document { handle: handle, path: Some(path), sections: sections })
+    }
+    
+    /// Open password-protected document
+    fn open_encrypted(path: String, password: String) -> Result<Self, WordError> {
+        let handle = @native("word_document_open_encrypted", path, password)?
+        let sections = @native("word_document_sections", handle)?
+        Ok(Document { handle: handle, path: Some(path), sections: sections })
+    }
+    
+    /// Create document from bytes
+    fn from_bytes(data: [UInt8]) -> Result<Self, WordError> {
+        let handle = @native("word_document_from_bytes", data)?
+        let sections = @native("word_document_sections", handle)?
+        Ok(Document { handle: handle, path: None, sections: sections })
+    }
+    
+    /// Add paragraph
+    fn add_paragraph(text: String) -> Paragraph {
+        let para = Paragraph.new(text)
+        @native("word_document_add_paragraph", self.handle, para.handle)
+        para
+    }
+    
+    /// Add heading
+    fn add_heading(text: String, level: Int) -> Paragraph {
+        let para = Paragraph.heading(text, level)
+        @native("word_document_add_paragraph", self.handle, para.handle)
+        para
+    }
+    
+    /// Add table
+    fn add_table(rows: Int, cols: Int) -> Table {
+        let table = Table.new(rows, cols)
+        @native("word_document_add_table", self.handle, table.handle)
+        table
+    }
+    
+    /// Add image
+    fn add_image(path: String) -> Result<ImageElement, WordError> {
+        let img = ImageElement.from_file(path)?
+        @native("word_document_add_image", self.handle, img.handle)
+        Ok(img)
+    }
+    
+    /// Add image from bytes
+    fn add_image_bytes(data: [UInt8], format: String) -> Result<ImageElement, WordError> {
+        let img = ImageElement.from_bytes(data, format)?
+        @native("word_document_add_image", self.handle, img.handle)
+        Ok(img)
+    }
+    
+    /// Add page break
+    fn add_page_break() {
+        @native("word_document_add_page_break", self.handle)
+    }
+    
+    /// Add section break
+    fn add_section_break(break_type: SectionBreakType) {
+        @native("word_document_add_section_break", self.handle, break_type)
+    }
+    
+    /// Get all paragraphs
+    fn paragraphs() -> [Paragraph] {
+        @native("word_document_paragraphs", self.handle)
+    }
+    
+    /// Get all tables
+    fn tables() -> [Table] {
+        @native("word_document_tables", self.handle)
+    }
+    
+    /// Extract all text
+    fn extract_text() -> String {
+        self.paragraphs().iter().map(|p| p.text()).collect::<[String]>().join("\n")
+    }
+    
+    /// Find and replace text
+    fn find_replace(find: String, replace: String) -> Int {
+        @native("word_document_find_replace", self.handle, find, replace)
+    }
+    
+    /// Find and replace with regex
+    fn find_replace_regex(pattern: String, replace: String) -> Int {
+        @native("word_document_find_replace_regex", self.handle, pattern, replace)
+    }
+    
+    /// Get document properties
+    fn properties() -> DocumentProperties {
+        @native("word_document_properties", self.handle)
+    }
+    
+    /// Set document properties
+    fn set_properties(props: DocumentProperties) {
+        @native("word_document_set_properties", self.handle, props)
+    }
+    
+    /// Add header
+    fn add_header(header_type: HeaderFooterType) -> HeaderFooter {
+        @native("word_document_add_header", self.handle, header_type)
+    }
+    
+    /// Add footer
+    fn add_footer(footer_type: HeaderFooterType) -> HeaderFooter {
+        @native("word_document_add_footer", self.handle, footer_type)
+    }
+    
+    /// Save document
+    fn save(path: String) -> Result<(), WordError> {
+        @native("word_document_save", self.handle, path)
+    }
+    
+    /// Save with password
+    fn save_encrypted(path: String, password: String) -> Result<(), WordError> {
+        @native("word_document_save_encrypted", self.handle, path, password)
+    }
+    
+    /// Export to PDF
+    fn to_pdf(path: String) -> Result<(), WordError> {
+        @native("word_document_to_pdf", self.handle, path)
+    }
+    
+    /// Export to HTML
+    fn to_html() -> Result<String, WordError> {
+        @native("word_document_to_html", self.handle)
+    }
+    
+    /// Export to bytes
+    fn to_bytes() -> Result<[UInt8], WordError> {
+        @native("word_document_to_bytes", self.handle)
+    }
+    
+    /// Close document
+    fn close() { @native("word_document_close", self.handle) }
+}
+
+impl Drop for Document { fn drop() { self.close() } }
+
+// =============================================================================
+// Paragraph
+// =============================================================================
+
+/// Word paragraph
+struct Paragraph {
+    handle: @native("WordParagraphHandle")
+}
+
+impl Paragraph {
+    /// Create new paragraph
+    fn new(text: String) -> Self {
+        let handle = @native("word_paragraph_new", text)
+        Paragraph { handle: handle }
+    }
+    
+    /// Create heading paragraph
+    fn heading(text: String, level: Int) -> Self {
+        let handle = @native("word_paragraph_heading", text, level.clamp(1, 9))
+        Paragraph { handle: handle }
+    }
+    
+    /// Get text content
+    fn text() -> String { @native("word_paragraph_text", self.handle) }
+    
+    /// Set text content
+    fn set_text(text: String) { @native("word_paragraph_set_text", self.handle, text) }
+    
+    /// Add run (formatted text segment)
+    fn add_run(text: String) -> Run {
+        let run = Run.new(text)
+        @native("word_paragraph_add_run", self.handle, run.handle)
+        run
+    }
+    
+    /// Get all runs
+    fn runs() -> [Run] { @native("word_paragraph_runs", self.handle) }
+    
+    /// Set alignment
+    fn align(alignment: ParagraphAlignment) -> Self {
+        @native("word_paragraph_set_alignment", self.handle, alignment)
+        self
+    }
+    
+    /// Set left alignment
+    fn left() -> Self { self.align(ParagraphAlignment.Left) }
+    
+    /// Set center alignment
+    fn center() -> Self { self.align(ParagraphAlignment.Center) }
+    
+    /// Set right alignment
+    fn right() -> Self { self.align(ParagraphAlignment.Right) }
+    
+    /// Set justify alignment
+    fn justify() -> Self { self.align(ParagraphAlignment.Justify) }
+    
+    /// Set line spacing
+    fn line_spacing(spacing: Float64) -> Self {
+        @native("word_paragraph_set_line_spacing", self.handle, spacing)
+        self
+    }
+    
+    /// Set spacing before
+    fn space_before(points: Float64) -> Self {
+        @native("word_paragraph_set_space_before", self.handle, points)
+        self
+    }
+    
+    /// Set spacing after
+    fn space_after(points: Float64) -> Self {
+        @native("word_paragraph_set_space_after", self.handle, points)
+        self
+    }
+    
+    /// Set indentation
+    fn indent(left: Float64, right: Float64, first_line: Float64) -> Self {
+        @native("word_paragraph_set_indent", self.handle, left, right, first_line)
+        self
+    }
+    
+    /// Apply style
+    fn style(style_name: String) -> Self {
+        @native("word_paragraph_set_style", self.handle, style_name)
+        self
+    }
+    
+    /// Set as list item
+    fn list_item(list_type: ListType, level: Int) -> Self {
+        @native("word_paragraph_set_list", self.handle, list_type, level)
+        self
+    }
+}
+
+enum ParagraphAlignment { Left, Center, Right, Justify }
+enum ListType { Bullet, Numbered, None }
+
+// =============================================================================
+// Run (Text Segment)
+// =============================================================================
+
+/// Formatted text segment within a paragraph
+struct Run {
+    handle: @native("WordRunHandle")
+}
+
+impl Run {
+    fn new(text: String) -> Self {
+        let handle = @native("word_run_new", text)
+        Run { handle: handle }
+    }
+    
+    fn text() -> String { @native("word_run_text", self.handle) }
+    fn set_text(text: String) { @native("word_run_set_text", self.handle, text) }
+    
+    fn bold() -> Self { @native("word_run_set_bold", self.handle, true); self }
+    fn italic() -> Self { @native("word_run_set_italic", self.handle, true); self }
+    fn underline() -> Self { @native("word_run_set_underline", self.handle, true); self }
+    fn strike() -> Self { @native("word_run_set_strike", self.handle, true); self }
+    fn subscript() -> Self { @native("word_run_set_subscript", self.handle); self }
+    fn superscript() -> Self { @native("word_run_set_superscript", self.handle); self }
+    
+    fn font(name: String) -> Self { @native("word_run_set_font", self.handle, name); self }
+    fn size(points: Float64) -> Self { @native("word_run_set_size", self.handle, points); self }
+    fn color(hex: String) -> Self { @native("word_run_set_color", self.handle, hex); self }
+    fn highlight(color: HighlightColor) -> Self { @native("word_run_set_highlight", self.handle, color); self }
+}
+
+enum HighlightColor { Yellow, Green, Cyan, Magenta, Blue, Red, DarkBlue, DarkCyan, DarkGreen, DarkMagenta, DarkRed, DarkYellow, Gray, LightGray, Black }
+
+// =============================================================================
+// Table
+// =============================================================================
+
+/// Word table
+struct Table {
+    handle: @native("WordTableHandle")
+    rows: Int
+    cols: Int
+}
+
+impl Table {
+    fn new(rows: Int, cols: Int) -> Self {
+        let handle = @native("word_table_new", rows, cols)
+        Table { handle: handle, rows: rows, cols: cols }
+    }
+    
+    /// Get cell
+    fn cell(row: Int, col: Int) -> Result<TableCell, WordError> {
+        if row < 0 || row >= self.rows || col < 0 || col >= self.cols {
+            return Err(WordError.InvalidCell(row, col))
+        }
+        Ok(@native("word_table_cell", self.handle, row, col))
+    }
+    
+    /// Set cell text
+    fn set_cell(row: Int, col: Int, text: String) -> Result<(), WordError> {
+        self.cell(row, col)?.set_text(text)
+        Ok(())
+    }
+    
+    /// Get row
+    fn row(index: Int) -> Result<TableRow, WordError> {
+        if index < 0 || index >= self.rows {
+            return Err(WordError.InvalidRow(index))
+        }
+        Ok(@native("word_table_row", self.handle, index))
+    }
+    
+    /// Add row
+    fn add_row() -> TableRow {
+        self.rows += 1
+        @native("word_table_add_row", self.handle)
+    }
+    
+    /// Add column
+    fn add_column() {
+        self.cols += 1
+        @native("word_table_add_column", self.handle)
+    }
+    
+    /// Delete row
+    fn delete_row(index: Int) -> Result<(), WordError> {
+        if index < 0 || index >= self.rows {
+            return Err(WordError.InvalidRow(index))
+        }
+        @native("word_table_delete_row", self.handle, index)
+        self.rows -= 1
+        Ok(())
+    }
+    
+    /// Merge cells
+    fn merge_cells(start_row: Int, start_col: Int, end_row: Int, end_col: Int) -> Result<(), WordError> {
+        @native("word_table_merge_cells", self.handle, start_row, start_col, end_row, end_col)
+    }
+    
+    /// Set column width
+    fn set_column_width(col: Int, width: Float64) {
+        @native("word_table_set_column_width", self.handle, col, width)
+    }
+    
+    /// Set row height
+    fn set_row_height(row: Int, height: Float64) {
+        @native("word_table_set_row_height", self.handle, row, height)
+    }
+    
+    /// Apply style
+    fn style(style_name: String) -> Self {
+        @native("word_table_set_style", self.handle, style_name)
+        self
+    }
+    
+    /// Set borders
+    fn borders(border: TableBorder) -> Self {
+        @native("word_table_set_borders", self.handle, border)
+        self
+    }
+    
+    /// Auto-fit to contents
+    fn autofit() -> Self {
+        @native("word_table_autofit", self.handle)
+        self
+    }
+    
+    /// Set alignment
+    fn align(alignment: TableAlignment) -> Self {
+        @native("word_table_set_alignment", self.handle, alignment)
+        self
+    }
+    
+    /// Load from 2D array
+    fn from_array(data: [[String]]) -> Self {
+        let rows = data.len()
+        let cols = if rows > 0 { data[0].len() } else { 0 }
+        let table = Table.new(rows, cols)
+        for (ri, row) in data.iter().enumerate() {
+            for (ci, cell) in row.iter().enumerate() {
+                table.set_cell(ri, ci, cell.clone()).ok()
+            }
+        }
+        table
+    }
+}
+
+struct TableCell { handle: @native("WordTableCellHandle") }
+impl TableCell {
+    fn text() -> String { @native("word_table_cell_text", self.handle) }
+    fn set_text(text: String) { @native("word_table_cell_set_text", self.handle, text) }
+    fn add_paragraph(text: String) -> Paragraph { @native("word_table_cell_add_paragraph", self.handle, text) }
+    fn paragraphs() -> [Paragraph] { @native("word_table_cell_paragraphs", self.handle) }
+    fn shading(color: String) { @native("word_table_cell_set_shading", self.handle, color) }
+    fn vertical_align(align: VerticalAlignment) { @native("word_table_cell_set_valign", self.handle, align) }
+}
+
+struct TableRow { handle: @native("WordTableRowHandle"), index: Int }
+impl TableRow {
+    fn cells() -> [TableCell] { @native("word_table_row_cells", self.handle) }
+    fn height(h: Float64) { @native("word_table_row_set_height", self.handle, h) }
+}
+
+enum TableAlignment { Left, Center, Right }
+enum VerticalAlignment { Top, Center, Bottom }
+struct TableBorder { style: BorderStyle, color: String, width: Float64 }
+enum BorderStyle { None, Single, Double, Dotted, Dashed, Thick }
+
+// =============================================================================
+// Image Element
+// =============================================================================
+
+struct ImageElement {
+    handle: @native("WordImageHandle")
+    width: Float64
+    height: Float64
+}
+
+impl ImageElement {
+    fn from_file(path: String) -> Result<Self, WordError> {
+        let handle = @native("word_image_from_file", path)?
+        let (w, h) = @native("word_image_size", handle)
+        Ok(ImageElement { handle: handle, width: w, height: h })
+    }
+    
+    fn from_bytes(data: [UInt8], format: String) -> Result<Self, WordError> {
+        let handle = @native("word_image_from_bytes", data, format)?
+        let (w, h) = @native("word_image_size", handle)
+        Ok(ImageElement { handle: handle, width: w, height: h })
+    }
+    
+    fn resize(width: Float64, height: Float64) -> Self {
+        self.width = width
+        self.height = height
+        @native("word_image_resize", self.handle, width, height)
+        self
+    }
+    
+    fn scale(factor: Float64) -> Self {
+        self.resize(self.width * factor, self.height * factor)
+    }
+}
+
+// =============================================================================
+// Section and Page Setup
+// =============================================================================
+
+struct Section {
+    handle: @native("WordSectionHandle")
+    page_setup: PageSetup
+}
+
+impl Section {
+    fn default() -> Self {
+        Section { handle: @native("word_section_new"), page_setup: PageSetup.default() }
+    }
+    
+    fn set_page_setup(setup: PageSetup) {
+        self.page_setup = setup
+        @native("word_section_set_page_setup", self.handle, setup)
+    }
+}
+
+struct PageSetup {
+    width: Float64
+    height: Float64
+    margin_top: Float64
+    margin_bottom: Float64
+    margin_left: Float64
+    margin_right: Float64
+    orientation: PageOrientation
+}
+
+impl PageSetup {
+    fn default() -> Self {
+        PageSetup {
+            width: 612.0, height: 792.0,  // Letter size in points
+            margin_top: 72.0, margin_bottom: 72.0, margin_left: 72.0, margin_right: 72.0,
+            orientation: PageOrientation.Portrait
+        }
+    }
+    
+    fn a4() -> Self {
+        PageSetup { ..Self.default(), width: 595.0, height: 842.0 }
+    }
+    
+    fn letter() -> Self { Self.default() }
+    
+    fn landscape() -> Self {
+        let mut setup = Self.default()
+        setup.orientation = PageOrientation.Landscape
+        let temp = setup.width
+        setup.width = setup.height
+        setup.height = temp
+        setup
+    }
+    
+    fn margins(top: Float64, bottom: Float64, left: Float64, right: Float64) -> Self {
+        PageSetup { ..Self.default(), margin_top: top, margin_bottom: bottom, margin_left: left, margin_right: right }
+    }
+}
+
+enum PageOrientation { Portrait, Landscape }
+enum SectionBreakType { NextPage, Continuous, EvenPage, OddPage }
+
+// =============================================================================
+// Header and Footer
+// =============================================================================
+
+struct HeaderFooter { handle: @native("WordHeaderFooterHandle") }
+
+impl HeaderFooter {
+    fn add_paragraph(text: String) -> Paragraph {
+        @native("word_headerfooter_add_paragraph", self.handle, text)
+    }
+    
+    fn add_page_number() {
+        @native("word_headerfooter_add_page_number", self.handle)
+    }
+    
+    fn add_date() {
+        @native("word_headerfooter_add_date", self.handle)
+    }
+    
+    fn add_image(path: String) -> Result<ImageElement, WordError> {
+        @native("word_headerfooter_add_image", self.handle, path)
+    }
+}
+
+enum HeaderFooterType { Default, First, Even }
+
+// =============================================================================
+// Document Properties
+// =============================================================================
+
+struct DocumentProperties {
+    title: Option<String>
+    author: Option<String>
+    subject: Option<String>
+    keywords: Option<String>
+    comments: Option<String>
+    category: Option<String>
+    company: Option<String>
+}
+
+impl DocumentProperties {
+    fn new() -> Self {
+        DocumentProperties {
+            title: None, author: None, subject: None, keywords: None,
+            comments: None, category: None, company: None
+        }
+    }
+    
+    fn title(t: String) -> Self { self.title = Some(t); self }
+    fn author(a: String) -> Self { self.author = Some(a); self }
+    fn subject(s: String) -> Self { self.subject = Some(s); self }
+    fn keywords(k: String) -> Self { self.keywords = Some(k); self }
+}
+
+// =============================================================================
+// Document Builder
+// =============================================================================
+
+/// Fluent document builder
+actor DocumentBuilder {
+    state doc: Document
+    
+    init() { self.doc = Document.new() }
+    
+    on heading(text: String, level: Int) -> Self {
+        self.doc.add_heading(text, level)
+        self
+    }
+    
+    on h1(text: String) -> Self { self.heading(text, 1) }
+    on h2(text: String) -> Self { self.heading(text, 2) }
+    on h3(text: String) -> Self { self.heading(text, 3) }
+    
+    on paragraph(text: String) -> Self {
+        self.doc.add_paragraph(text)
+        self
+    }
+    
+    on p(text: String) -> Self { self.paragraph(text) }
+    
+    on table(data: [[String]]) -> Self {
+        self.doc.add_table(data.len(), if data.len() > 0 { data[0].len() } else { 0 })
+        self
+    }
+    
+    on image(path: String) -> Self {
+        self.doc.add_image(path).ok()
+        self
+    }
+    
+    on page_break() -> Self {
+        self.doc.add_page_break()
+        self
+    }
+    
+    on properties(props: DocumentProperties) -> Self {
+        self.doc.set_properties(props)
+        self
+    }
+    
+    on build() -> Document { self.doc }
+    
+    on save(path: String) -> Result<(), WordError> {
+        self.doc.save(path)
+    }
+}
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+fn open(path: String) -> Result<Document, WordError> { Document.open(path) }
+fn create() -> Document { Document.new() }
+fn builder() -> DocumentBuilder { DocumentBuilder.new() }
+
+fn extract_text(path: String) -> Result<String, WordError> {
+    Ok(Document.open(path)?.extract_text())
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum WordError {
+    FileNotFound(String)
+    InvalidFormat
+    InvalidCell(Int, Int)
+    InvalidRow(Int)
+    PasswordRequired
+    InvalidPassword
+    IoError(IoError)
+    Other(String)
+}
+
+impl Display for WordError {
+    fn fmt(f: Formatter) {
+        match self {
+            FileNotFound(p) => f.write(format!("File not found: {}", p))
+            InvalidFormat => f.write("Invalid Word document format")
+            InvalidCell(r, c) => f.write(format!("Invalid cell: ({}, {})", r, c))
+            InvalidRow(r) => f.write(format!("Invalid row: {}", r))
+            Other(m) => f.write(m)
+            _ => f.write("Word error")
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "create document" {
+    let doc = Document.new()
+    doc.add_paragraph("Hello, World!")
+    assert(doc.paragraphs().len() > 0)?
+}
+
+test "paragraph alignment" {
+    let para = Paragraph.new("Test")
+    para.center()
+    // Alignment should be set
+}
+
+test "document builder" {
+    let doc = DocumentBuilder.new()
+        .h1("Title")
+        .p("First paragraph")
+        .p("Second paragraph")
+        .build()
+    
+    assert(doc.paragraphs().len() >= 3)?
+}
+
+test "table creation" {
+    let table = Table.new(3, 3)
+    table.set_cell(0, 0, "A1").ok()
+    table.set_cell(1, 1, "B2").ok()
+    
+    assert_eq(table.rows, 3)?
+    assert_eq(table.cols, 3)?
+}
+
+test "page setup" {
+    let setup = PageSetup.a4()
+    assert_eq(setup.width, 595.0)?
+    assert_eq(setup.height, 842.0)?
+}

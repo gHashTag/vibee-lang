@@ -1,0 +1,657 @@
+// =============================================================================
+// Vibee OS — Geo Routing Module
+// Geographic routing, pathfinding, and navigation
+// =============================================================================
+
+use math::{PI, sin, cos, sqrt, abs, min, max, floor}
+use coordinate::{GeoCoord}
+use geo_distance::{haversine_distance, bearing, destination, interpolate}
+
+// -----------------------------------------------------------------------------
+// Route Types
+// -----------------------------------------------------------------------------
+
+/// Transportation mode
+enum TransportMode {
+    Driving
+    Walking
+    Cycling
+    Transit
+    Flying
+}
+
+impl TransportMode {
+    /// Average speed in m/s
+    fn average_speed() -> Float64 {
+        match self {
+            Driving => 13.9    // ~50 km/h
+            Walking => 1.4     // ~5 km/h
+            Cycling => 4.2     // ~15 km/h
+            Transit => 8.3     // ~30 km/h
+            Flying => 222.0    // ~800 km/h
+        }
+    }
+}
+
+/// Route optimization preference
+enum RoutePreference {
+    Fastest
+    Shortest
+    Scenic
+    Economical
+    Balanced
+}
+
+// -----------------------------------------------------------------------------
+// Waypoint
+// -----------------------------------------------------------------------------
+
+/// Route waypoint
+struct Waypoint {
+    location: GeoCoord
+    name: Option<String>
+    stop_duration: Duration
+    arrival_time: Option<Instant>
+    departure_time: Option<Instant>
+    
+    fn new(location: GeoCoord) -> Self {
+        Waypoint {
+            location: location,
+            name: None,
+            stop_duration: Duration.zero(),
+            arrival_time: None,
+            departure_time: None
+        }
+    }
+    
+    fn with_name(name: String) -> Self {
+        self.name = Some(name)
+        self
+    }
+    
+    fn with_stop(duration: Duration) -> Self {
+        self.stop_duration = duration
+        self
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Route Segment
+// -----------------------------------------------------------------------------
+
+/// Segment of a route between two points
+struct RouteSegment {
+    start: GeoCoord
+    end: GeoCoord
+    distance: Float64       // meters
+    duration: Duration
+    bearing: Float64        // degrees
+    instruction: String
+    road_name: Option<String>
+    speed_limit: Option<Float64>
+    
+    fn new(start: GeoCoord, end: GeoCoord) -> Self {
+        let dist = haversine_distance(start, end)
+        let brng = bearing(start, end)
+        
+        RouteSegment {
+            start: start,
+            end: end,
+            distance: dist,
+            duration: Duration.zero(),
+            bearing: brng,
+            instruction: "",
+            road_name: None,
+            speed_limit: None
+        }
+    }
+    
+    fn with_duration(duration: Duration) -> Self {
+        self.duration = duration
+        self
+    }
+    
+    fn with_instruction(instruction: String) -> Self {
+        self.instruction = instruction
+        self
+    }
+    
+    /// Get turn direction relative to previous bearing
+    fn turn_direction(previous_bearing: Float64) -> TurnDirection {
+        let diff = ((self.bearing - previous_bearing) + 360.0) % 360.0
+        TurnDirection.from_angle(diff)
+    }
+}
+
+/// Turn direction
+enum TurnDirection {
+    Straight
+    SlightRight
+    Right
+    SharpRight
+    UTurn
+    SharpLeft
+    Left
+    SlightLeft
+}
+
+impl TurnDirection {
+    fn from_angle(angle: Float64) -> Self {
+        let a = ((angle + 360.0) % 360.0)
+        match {
+            a < 20.0 || a > 340.0 => Straight
+            a >= 20.0 && a < 60.0 => SlightRight
+            a >= 60.0 && a < 120.0 => Right
+            a >= 120.0 && a < 160.0 => SharpRight
+            a >= 160.0 && a < 200.0 => UTurn
+            a >= 200.0 && a < 240.0 => SharpLeft
+            a >= 240.0 && a < 300.0 => Left
+            _ => SlightLeft
+        }
+    }
+    
+    fn instruction() -> String {
+        match self {
+            Straight => "Continue straight"
+            SlightRight => "Turn slight right"
+            Right => "Turn right"
+            SharpRight => "Turn sharp right"
+            UTurn => "Make a U-turn"
+            SharpLeft => "Turn sharp left"
+            Left => "Turn left"
+            SlightLeft => "Turn slight left"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Route
+// -----------------------------------------------------------------------------
+
+/// Complete route from origin to destination
+struct Route {
+    origin: Waypoint
+    destination: Waypoint
+    waypoints: [Waypoint]
+    segments: [RouteSegment]
+    total_distance: Float64
+    total_duration: Duration
+    mode: TransportMode
+    
+    fn new(origin: GeoCoord, destination: GeoCoord, mode: TransportMode) -> Self {
+        Route {
+            origin: Waypoint.new(origin),
+            destination: Waypoint.new(destination),
+            waypoints: [],
+            segments: [],
+            total_distance: 0.0,
+            total_duration: Duration.zero(),
+            mode: mode
+        }
+    }
+    
+    fn add_waypoint(waypoint: Waypoint) -> Self {
+        self.waypoints.push(waypoint)
+        self
+    }
+    
+    /// Get all points in order
+    fn all_points() -> [GeoCoord] {
+        var points = [self.origin.location]
+        for wp in self.waypoints {
+            points.push(wp.location)
+        }
+        points.push(self.destination.location)
+        points
+    }
+    
+    /// Get point at distance along route
+    fn point_at_distance(distance: Float64) -> Option<GeoCoord> {
+        var remaining = distance
+        for segment in self.segments {
+            if remaining <= segment.distance {
+                let fraction = remaining / segment.distance
+                return Some(interpolate(segment.start, segment.end, fraction))
+            }
+            remaining -= segment.distance
+        }
+        Some(self.destination.location)
+    }
+    
+    /// Get progress along route (0.0 to 1.0)
+    fn progress_at(position: GeoCoord) -> Float64 {
+        var min_dist = Float64.MAX
+        var closest_progress = 0.0
+        var cumulative = 0.0
+        
+        for segment in self.segments {
+            let dist_to_start = haversine_distance(position, segment.start)
+            let dist_to_end = haversine_distance(position, segment.end)
+            
+            if dist_to_start < min_dist {
+                min_dist = dist_to_start
+                closest_progress = cumulative / self.total_distance
+            }
+            if dist_to_end < min_dist {
+                min_dist = dist_to_end
+                closest_progress = (cumulative + segment.distance) / self.total_distance
+            }
+            
+            cumulative += segment.distance
+        }
+        
+        closest_progress.clamp(0.0, 1.0)
+    }
+    
+    /// Remaining distance from position
+    fn remaining_distance(position: GeoCoord) -> Float64 {
+        let progress = self.progress_at(position)
+        self.total_distance * (1.0 - progress)
+    }
+    
+    /// Estimated time of arrival
+    fn eta(position: GeoCoord, current_speed: Float64) -> Duration {
+        let remaining = self.remaining_distance(position)
+        let speed = if current_speed > 0.0 { current_speed } else { self.mode.average_speed() }
+        Duration.from_secs((remaining / speed) as Int64)
+    }
+    
+    /// Get turn-by-turn instructions
+    fn instructions() -> [String] {
+        var instructions = []
+        var prev_bearing = self.segments.first().map(|s| s.bearing).unwrap_or(0.0)
+        
+        for (i, segment) in self.segments.iter().enumerate() {
+            if i > 0 {
+                let turn = segment.turn_direction(prev_bearing)
+                if turn != TurnDirection.Straight {
+                    instructions.push(format!("{} onto {}", 
+                        turn.instruction(),
+                        segment.road_name.unwrap_or("the road")))
+                }
+            }
+            prev_bearing = segment.bearing
+        }
+        
+        instructions.push("Arrive at destination")
+        instructions
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Route Builder
+// -----------------------------------------------------------------------------
+
+/// Builds routes with various options
+struct RouteBuilder {
+    origin: Option<GeoCoord>
+    destination: Option<GeoCoord>
+    waypoints: [Waypoint]
+    mode: TransportMode
+    preference: RoutePreference
+    avoid: Set<RouteAvoidance>
+    departure_time: Option<Instant>
+    
+    fn new() -> Self {
+        RouteBuilder {
+            origin: None,
+            destination: None,
+            waypoints: [],
+            mode: TransportMode.Driving,
+            preference: RoutePreference.Fastest,
+            avoid: Set.empty(),
+            departure_time: None
+        }
+    }
+    
+    fn from(origin: GeoCoord) -> Self {
+        self.origin = Some(origin)
+        self
+    }
+    
+    fn to(destination: GeoCoord) -> Self {
+        self.destination = Some(destination)
+        self
+    }
+    
+    fn via(waypoint: GeoCoord) -> Self {
+        self.waypoints.push(Waypoint.new(waypoint))
+        self
+    }
+    
+    fn mode(mode: TransportMode) -> Self {
+        self.mode = mode
+        self
+    }
+    
+    fn prefer(preference: RoutePreference) -> Self {
+        self.preference = preference
+        self
+    }
+    
+    fn avoid(avoidance: RouteAvoidance) -> Self {
+        self.avoid.insert(avoidance)
+        self
+    }
+    
+    fn depart_at(time: Instant) -> Self {
+        self.departure_time = Some(time)
+        self
+    }
+    
+    /// Build simple direct route
+    fn build() -> Result<Route, RoutingError> {
+        let origin = self.origin.ok_or(RoutingError.MissingOrigin)?
+        let destination = self.destination.ok_or(RoutingError.MissingDestination)?
+        
+        var route = Route.new(origin, destination, self.mode)
+        route.waypoints = self.waypoints.clone()
+        
+        // Build segments
+        let points = route.all_points()
+        var total_dist = 0.0
+        var total_time = 0.0
+        
+        for i in 0..(points.len() - 1) {
+            let segment = RouteSegment.new(points[i], points[i + 1])
+            let duration = Duration.from_secs((segment.distance / self.mode.average_speed()) as Int64)
+            
+            route.segments.push(segment.with_duration(duration))
+            total_dist += segment.distance
+            total_time += duration.as_secs() as Float64
+        }
+        
+        route.total_distance = total_dist
+        route.total_duration = Duration.from_secs(total_time as Int64)
+        
+        Ok(route)
+    }
+}
+
+/// Things to avoid in routing
+enum RouteAvoidance {
+    Tolls
+    Highways
+    Ferries
+    UnpavedRoads
+    BorderCrossings
+}
+
+// -----------------------------------------------------------------------------
+// Route Optimizer
+// -----------------------------------------------------------------------------
+
+/// Optimizes routes and waypoint ordering
+struct RouteOptimizer {
+    /// Optimize waypoint order using nearest neighbor heuristic
+    fn optimize_order(origin: GeoCoord, waypoints: [GeoCoord], destination: GeoCoord) -> [GeoCoord] {
+        if waypoints.len() <= 1 {
+            return waypoints
+        }
+        
+        var remaining = waypoints.clone()
+        var optimized = []
+        var current = origin
+        
+        while !remaining.is_empty() {
+            var nearest_idx = 0
+            var nearest_dist = Float64.MAX
+            
+            for (i, wp) in remaining.iter().enumerate() {
+                let dist = haversine_distance(current, *wp)
+                if dist < nearest_dist {
+                    nearest_dist = dist
+                    nearest_idx = i
+                }
+            }
+            
+            current = remaining.remove(nearest_idx)
+            optimized.push(current)
+        }
+        
+        optimized
+    }
+    
+    /// Calculate optimal route using 2-opt improvement
+    fn two_opt_improve(points: [GeoCoord]) -> [GeoCoord] {
+        if points.len() < 4 {
+            return points
+        }
+        
+        var improved = points.clone()
+        var improvement = true
+        
+        while improvement {
+            improvement = false
+            for i in 1..(improved.len() - 2) {
+                for j in (i + 1)..(improved.len() - 1) {
+                    let current_dist = haversine_distance(improved[i-1], improved[i]) +
+                                      haversine_distance(improved[j], improved[j+1])
+                    let new_dist = haversine_distance(improved[i-1], improved[j]) +
+                                  haversine_distance(improved[i], improved[j+1])
+                    
+                    if new_dist < current_dist {
+                        // Reverse segment between i and j
+                        improved[i..=j].reverse()
+                        improvement = true
+                    }
+                }
+            }
+        }
+        
+        improved
+    }
+    
+    /// Calculate total route distance
+    fn total_distance(points: [GeoCoord]) -> Float64 {
+        var total = 0.0
+        for i in 0..(points.len() - 1) {
+            total += haversine_distance(points[i], points[i + 1])
+        }
+        total
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Navigation
+// -----------------------------------------------------------------------------
+
+/// Real-time navigation state
+struct NavigationState {
+    route: Route
+    current_position: GeoCoord
+    current_bearing: Float64
+    current_speed: Float64
+    current_segment_index: Int
+    off_route: Bool
+    
+    fn new(route: Route) -> Self {
+        NavigationState {
+            route: route,
+            current_position: route.origin.location,
+            current_bearing: 0.0,
+            current_speed: 0.0,
+            current_segment_index: 0,
+            off_route: false
+        }
+    }
+    
+    /// Update with new position
+    fn update(position: GeoCoord, bearing: Float64, speed: Float64) -> NavigationUpdate {
+        self.current_position = position
+        self.current_bearing = bearing
+        self.current_speed = speed
+        
+        // Check if off route
+        let min_dist = self.distance_to_route()
+        self.off_route = min_dist > 50.0  // 50m threshold
+        
+        // Update current segment
+        self.update_segment()
+        
+        NavigationUpdate {
+            remaining_distance: self.route.remaining_distance(position),
+            eta: self.route.eta(position, speed),
+            next_instruction: self.next_instruction(),
+            distance_to_next: self.distance_to_next_turn(),
+            off_route: self.off_route
+        }
+    }
+    
+    fn distance_to_route() -> Float64 {
+        var min_dist = Float64.MAX
+        for segment in self.route.segments {
+            let dist = point_to_segment_distance(self.current_position, segment.start, segment.end)
+            min_dist = min(min_dist, dist)
+        }
+        min_dist
+    }
+    
+    fn update_segment() {
+        for (i, segment) in self.route.segments.iter().enumerate() {
+            let dist_to_end = haversine_distance(self.current_position, segment.end)
+            if dist_to_end < 50.0 && i > self.current_segment_index {
+                self.current_segment_index = i
+            }
+        }
+    }
+    
+    fn next_instruction() -> String {
+        if self.current_segment_index + 1 < self.route.segments.len() {
+            let next = self.route.segments[self.current_segment_index + 1]
+            let current = self.route.segments[self.current_segment_index]
+            let turn = next.turn_direction(current.bearing)
+            turn.instruction()
+        } else {
+            "Arrive at destination"
+        }
+    }
+    
+    fn distance_to_next_turn() -> Float64 {
+        if self.current_segment_index < self.route.segments.len() {
+            let segment = self.route.segments[self.current_segment_index]
+            haversine_distance(self.current_position, segment.end)
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Navigation update result
+struct NavigationUpdate {
+    remaining_distance: Float64
+    eta: Duration
+    next_instruction: String
+    distance_to_next: Float64
+    off_route: Bool
+}
+
+// -----------------------------------------------------------------------------
+// Isochrone
+// -----------------------------------------------------------------------------
+
+/// Isochrone (reachable area within time/distance)
+struct Isochrone {
+    center: GeoCoord
+    mode: TransportMode
+    duration: Duration
+    points: [GeoCoord]
+    
+    /// Generate isochrone polygon
+    fn generate(center: GeoCoord, duration: Duration, mode: TransportMode, resolution: Int = 36) -> Self {
+        let max_distance = mode.average_speed() * duration.as_secs() as Float64
+        var points = []
+        
+        for i in 0..resolution {
+            let angle = (i as Float64 / resolution as Float64) * 360.0
+            let point = destination(center, angle, max_distance)
+            points.push(point)
+        }
+        
+        Isochrone {
+            center: center,
+            mode: mode,
+            duration: duration,
+            points: points
+        }
+    }
+    
+    fn contains(point: GeoCoord) -> Bool {
+        let dist = haversine_distance(self.center, point)
+        let max_dist = self.mode.average_speed() * self.duration.as_secs() as Float64
+        dist <= max_dist
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum RoutingError {
+    MissingOrigin
+    MissingDestination
+    NoRouteFound
+    InvalidWaypoint
+    ServiceUnavailable(String)
+}
+
+// -----------------------------------------------------------------------------
+// Helper Functions
+// -----------------------------------------------------------------------------
+
+fn point_to_segment_distance(point: GeoCoord, seg_start: GeoCoord, seg_end: GeoCoord) -> Float64 {
+    let d_total = haversine_distance(seg_start, seg_end)
+    if d_total == 0.0 {
+        return haversine_distance(point, seg_start)
+    }
+    
+    let d1 = haversine_distance(seg_start, point)
+    let d2 = haversine_distance(seg_end, point)
+    let s = (d_total + d1 + d2) / 2.0
+    let area = sqrt(s * (s - d_total) * (s - d1) * (s - d2))
+    
+    2.0 * area / d_total
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "route builder" {
+    let route = RouteBuilder.new()
+        .from(GeoCoord.unchecked(40.7128, -74.0060))
+        .to(GeoCoord.unchecked(34.0522, -118.2437))
+        .mode(TransportMode.Driving)
+        .build()?
+    
+    assert(route.total_distance > 0.0)?
+}
+
+test "turn direction" {
+    assert_eq(TurnDirection.from_angle(0.0), TurnDirection.Straight)?
+    assert_eq(TurnDirection.from_angle(90.0), TurnDirection.Right)?
+    assert_eq(TurnDirection.from_angle(270.0), TurnDirection.Left)?
+}
+
+test "route optimizer" {
+    let origin = GeoCoord.unchecked(0.0, 0.0)
+    let waypoints = [
+        GeoCoord.unchecked(1.0, 0.0),
+        GeoCoord.unchecked(2.0, 0.0),
+        GeoCoord.unchecked(3.0, 0.0)
+    ]
+    let dest = GeoCoord.unchecked(4.0, 0.0)
+    
+    let optimized = RouteOptimizer.optimize_order(origin, waypoints, dest)
+    assert_eq(optimized.len(), 3)?
+}
+
+test "isochrone" {
+    let iso = Isochrone.generate(
+        GeoCoord.unchecked(40.7128, -74.0060),
+        Duration.from_mins(30),
+        TransportMode.Driving
+    )
+    assert(iso.points.len() > 0)?
+    assert(iso.contains(GeoCoord.unchecked(40.7128, -74.0060)))?
+}

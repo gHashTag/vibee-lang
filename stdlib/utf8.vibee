@@ -1,0 +1,657 @@
+// =============================================================================
+// Vibee OS — UTF-8 Module
+// UTF-8 encoding and decoding utilities
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Constants
+// -----------------------------------------------------------------------------
+
+/// Maximum bytes per UTF-8 character
+const MAX_BYTES_PER_CHAR: Int = 4
+
+/// UTF-8 BOM (Byte Order Mark)
+const BOM: [UInt8] = [0xEF, 0xBB, 0xBF]
+
+/// Replacement character for invalid sequences
+const REPLACEMENT_CHAR: Char = '\u{FFFD}'
+
+// -----------------------------------------------------------------------------
+// Encoding
+// -----------------------------------------------------------------------------
+
+/// Encode a string to UTF-8 bytes
+fn encode(s: String) -> [UInt8] {
+    s.as_bytes()
+}
+
+/// Encode a single character to UTF-8 bytes
+fn encode_char(c: Char) -> [UInt8] {
+    let code = c as UInt32
+    
+    if code < 0x80 {
+        [code as UInt8]
+    } else if code < 0x800 {
+        [
+            (0xC0 | (code >> 6)) as UInt8,
+            (0x80 | (code & 0x3F)) as UInt8
+        ]
+    } else if code < 0x10000 {
+        [
+            (0xE0 | (code >> 12)) as UInt8,
+            (0x80 | ((code >> 6) & 0x3F)) as UInt8,
+            (0x80 | (code & 0x3F)) as UInt8
+        ]
+    } else {
+        [
+            (0xF0 | (code >> 18)) as UInt8,
+            (0x80 | ((code >> 12) & 0x3F)) as UInt8,
+            (0x80 | ((code >> 6) & 0x3F)) as UInt8,
+            (0x80 | (code & 0x3F)) as UInt8
+        ]
+    }
+}
+
+/// Encode with BOM prefix
+fn encode_with_bom(s: String) -> [UInt8] {
+    var result = BOM.clone()
+    result.extend(encode(s))
+    result
+}
+
+/// Encode code point to UTF-8 bytes
+fn encode_codepoint(codepoint: UInt32) -> Result<[UInt8], Utf8Error> {
+    if codepoint > 0x10FFFF {
+        return Err(Utf8Error.InvalidCodepoint(codepoint))
+    }
+    
+    // Surrogate pairs are invalid
+    if codepoint >= 0xD800 && codepoint <= 0xDFFF {
+        return Err(Utf8Error.SurrogateCodepoint(codepoint))
+    }
+    
+    Ok(encode_char(Char.from_u32(codepoint).unwrap()))
+}
+
+// -----------------------------------------------------------------------------
+// Decoding
+// -----------------------------------------------------------------------------
+
+/// Decode UTF-8 bytes to string
+fn decode(bytes: [UInt8]) -> Result<String, Utf8Error> {
+    String.from_utf8(bytes).map_err(|e| Utf8Error.InvalidSequence(e.position))
+}
+
+/// Decode UTF-8 bytes to string, replacing invalid sequences
+fn decode_lossy(bytes: [UInt8]) -> String {
+    var result = ""
+    var i = 0
+    
+    while i < bytes.len() {
+        match decode_char_at(bytes, i) {
+            Ok((c, len)) => {
+                result.push(c)
+                i += len
+            }
+            Err(_) => {
+                result.push(REPLACEMENT_CHAR)
+                i += 1
+            }
+        }
+    }
+    
+    result
+}
+
+/// Decode a single UTF-8 character from bytes at position
+fn decode_char_at(bytes: [UInt8], pos: Int) -> Result<(Char, Int), Utf8Error> {
+    if pos >= bytes.len() {
+        return Err(Utf8Error.UnexpectedEnd)
+    }
+    
+    let b0 = bytes[pos]
+    
+    // Single byte (ASCII)
+    if b0 < 0x80 {
+        return Ok((b0 as Char, 1))
+    }
+    
+    // Determine sequence length
+    let (len, min_code, max_code) = if b0 & 0xE0 == 0xC0 {
+        (2, 0x80, 0x7FF)
+    } else if b0 & 0xF0 == 0xE0 {
+        (3, 0x800, 0xFFFF)
+    } else if b0 & 0xF8 == 0xF0 {
+        (4, 0x10000, 0x10FFFF)
+    } else {
+        return Err(Utf8Error.InvalidLeadByte(b0))
+    }
+    
+    if pos + len > bytes.len() {
+        return Err(Utf8Error.UnexpectedEnd)
+    }
+    
+    // Decode continuation bytes
+    var code: UInt32 = match len {
+        2 => (b0 & 0x1F) as UInt32,
+        3 => (b0 & 0x0F) as UInt32,
+        4 => (b0 & 0x07) as UInt32,
+        _ => 0
+    }
+    
+    for i in 1..len {
+        let b = bytes[pos + i]
+        if b & 0xC0 != 0x80 {
+            return Err(Utf8Error.InvalidContinuationByte(b))
+        }
+        code = (code << 6) | ((b & 0x3F) as UInt32)
+    }
+    
+    // Check for overlong encoding
+    if code < min_code as UInt32 {
+        return Err(Utf8Error.OverlongEncoding)
+    }
+    
+    // Check for surrogate pairs
+    if code >= 0xD800 && code <= 0xDFFF {
+        return Err(Utf8Error.SurrogateCodepoint(code))
+    }
+    
+    // Check max codepoint
+    if code > 0x10FFFF {
+        return Err(Utf8Error.InvalidCodepoint(code))
+    }
+    
+    Ok((Char.from_u32(code).unwrap(), len))
+}
+
+/// Decode with BOM detection and removal
+fn decode_with_bom(bytes: [UInt8]) -> Result<String, Utf8Error> {
+    let data = if has_bom(bytes) { bytes[3..] } else { bytes }
+    decode(data)
+}
+
+// -----------------------------------------------------------------------------
+// Validation
+// -----------------------------------------------------------------------------
+
+/// Check if bytes are valid UTF-8
+fn is_valid(bytes: [UInt8]) -> Bool {
+    decode(bytes).is_ok()
+}
+
+/// Validate UTF-8 and return first error position
+fn validate(bytes: [UInt8]) -> Result<(), Utf8Error> {
+    var i = 0
+    while i < bytes.len() {
+        match decode_char_at(bytes, i) {
+            Ok((_, len)) => i += len,
+            Err(e) => return Err(e)
+        }
+    }
+    Ok(())
+}
+
+/// Check if byte is ASCII
+fn is_ascii(b: UInt8) -> Bool {
+    b < 0x80
+}
+
+/// Check if byte is UTF-8 lead byte
+fn is_lead_byte(b: UInt8) -> Bool {
+    (b & 0xC0) != 0x80
+}
+
+/// Check if byte is UTF-8 continuation byte
+fn is_continuation_byte(b: UInt8) -> Bool {
+    (b & 0xC0) == 0x80
+}
+
+/// Check if bytes start with BOM
+fn has_bom(bytes: [UInt8]) -> Bool {
+    bytes.len() >= 3 && 
+    bytes[0] == 0xEF && 
+    bytes[1] == 0xBB && 
+    bytes[2] == 0xBF
+}
+
+// -----------------------------------------------------------------------------
+// Character Properties
+// -----------------------------------------------------------------------------
+
+/// Get byte length of UTF-8 character from lead byte
+fn char_len(lead_byte: UInt8) -> Int {
+    if lead_byte < 0x80 { 1 }
+    else if lead_byte & 0xE0 == 0xC0 { 2 }
+    else if lead_byte & 0xF0 == 0xE0 { 3 }
+    else if lead_byte & 0xF8 == 0xF0 { 4 }
+    else { 1 }  // Invalid, treat as single byte
+}
+
+/// Get byte length needed for a codepoint
+fn codepoint_len(codepoint: UInt32) -> Int {
+    if codepoint < 0x80 { 1 }
+    else if codepoint < 0x800 { 2 }
+    else if codepoint < 0x10000 { 3 }
+    else { 4 }
+}
+
+/// Count characters in UTF-8 bytes
+fn char_count(bytes: [UInt8]) -> Int {
+    var count = 0
+    for b in bytes {
+        if is_lead_byte(b) {
+            count += 1
+        }
+    }
+    count
+}
+
+/// Get byte indices of character boundaries
+fn char_indices(bytes: [UInt8]) -> [Int] {
+    var indices = []
+    for (i, b) in bytes.iter().enumerate() {
+        if is_lead_byte(b) {
+            indices.push(i)
+        }
+    }
+    indices
+}
+
+// -----------------------------------------------------------------------------
+// Iteration
+// -----------------------------------------------------------------------------
+
+/// UTF-8 character iterator
+struct Utf8Chars {
+    bytes: [UInt8]
+    pos: Int
+    
+    fn new(bytes: [UInt8]) -> Self {
+        Utf8Chars { bytes: bytes, pos: 0 }
+    }
+    
+    fn from_string(s: String) -> Self {
+        Self.new(s.as_bytes())
+    }
+}
+
+impl Iterator for Utf8Chars {
+    type Item = Char
+    
+    fn next() -> Option<Char> {
+        if self.pos >= self.bytes.len() {
+            return None
+        }
+        
+        match decode_char_at(self.bytes, self.pos) {
+            Ok((c, len)) => {
+                self.pos += len
+                Some(c)
+            }
+            Err(_) => {
+                self.pos += 1
+                Some(REPLACEMENT_CHAR)
+            }
+        }
+    }
+}
+
+/// UTF-8 character iterator with indices
+struct Utf8CharIndices {
+    bytes: [UInt8]
+    pos: Int
+    
+    fn new(bytes: [UInt8]) -> Self {
+        Utf8CharIndices { bytes: bytes, pos: 0 }
+    }
+}
+
+impl Iterator for Utf8CharIndices {
+    type Item = (Int, Char)
+    
+    fn next() -> Option<(Int, Char)> {
+        if self.pos >= self.bytes.len() {
+            return None
+        }
+        
+        let start = self.pos
+        match decode_char_at(self.bytes, self.pos) {
+            Ok((c, len)) => {
+                self.pos += len
+                Some((start, c))
+            }
+            Err(_) => {
+                self.pos += 1
+                Some((start, REPLACEMENT_CHAR))
+            }
+        }
+    }
+}
+
+/// Iterate over UTF-8 characters
+fn chars(bytes: [UInt8]) -> Utf8Chars {
+    Utf8Chars.new(bytes)
+}
+
+/// Iterate over UTF-8 characters with byte indices
+fn char_indices_iter(bytes: [UInt8]) -> Utf8CharIndices {
+    Utf8CharIndices.new(bytes)
+}
+
+// -----------------------------------------------------------------------------
+// Streaming Decoder
+// -----------------------------------------------------------------------------
+
+/// Streaming UTF-8 decoder for incremental processing
+actor Utf8Decoder {
+    state buffer: [UInt8]
+    state output: String
+    
+    fn new() -> Self {
+        Utf8Decoder { buffer: [], output: "" }
+    }
+    
+    /// Write bytes to decoder
+    fn write(bytes: [UInt8]) -> Result<(), Utf8Error> {
+        self.buffer.extend(bytes)
+        self.process()
+    }
+    
+    /// Process buffered bytes
+    fn process() -> Result<(), Utf8Error> {
+        var i = 0
+        
+        while i < self.buffer.len() {
+            let b = self.buffer[i]
+            let expected_len = char_len(b)
+            
+            // Check if we have enough bytes
+            if i + expected_len > self.buffer.len() {
+                // Incomplete sequence, keep in buffer
+                self.buffer = self.buffer[i..]
+                return Ok(())
+            }
+            
+            match decode_char_at(self.buffer, i) {
+                Ok((c, len)) => {
+                    self.output.push(c)
+                    i += len
+                }
+                Err(e) => return Err(e)
+            }
+        }
+        
+        self.buffer.clear()
+        Ok(())
+    }
+    
+    /// Get decoded output and clear
+    fn take_output() -> String {
+        let result = self.output
+        self.output = ""
+        result
+    }
+    
+    /// Finish decoding, error if incomplete sequence
+    fn finish() -> Result<String, Utf8Error> {
+        if !self.buffer.is_empty() {
+            return Err(Utf8Error.UnexpectedEnd)
+        }
+        Ok(self.take_output())
+    }
+    
+    /// Finish decoding, replace incomplete with replacement char
+    fn finish_lossy() -> String {
+        if !self.buffer.is_empty() {
+            for _ in self.buffer {
+                self.output.push(REPLACEMENT_CHAR)
+            }
+            self.buffer.clear()
+        }
+        self.take_output()
+    }
+    
+    /// Reset decoder state
+    fn reset() {
+        self.buffer.clear()
+        self.output = ""
+    }
+}
+
+// -----------------------------------------------------------------------------
+// String Manipulation
+// -----------------------------------------------------------------------------
+
+/// Truncate string to max bytes while preserving UTF-8 validity
+fn truncate_to_bytes(s: String, max_bytes: Int) -> String {
+    let bytes = s.as_bytes()
+    if bytes.len() <= max_bytes {
+        return s
+    }
+    
+    // Find last valid character boundary
+    var end = max_bytes
+    while end > 0 && is_continuation_byte(bytes[end]) {
+        end -= 1
+    }
+    
+    decode(bytes[0..end]).unwrap_or("")
+}
+
+/// Truncate string to max characters
+fn truncate_to_chars(s: String, max_chars: Int) -> String {
+    let bytes = s.as_bytes()
+    var char_count = 0
+    var byte_pos = 0
+    
+    while byte_pos < bytes.len() && char_count < max_chars {
+        let len = char_len(bytes[byte_pos])
+        byte_pos += len
+        char_count += 1
+    }
+    
+    decode(bytes[0..byte_pos]).unwrap_or("")
+}
+
+/// Get substring by character indices
+fn substring(s: String, start: Int, end: Int) -> String {
+    let bytes = s.as_bytes()
+    var char_idx = 0
+    var start_byte = 0
+    var end_byte = bytes.len()
+    
+    var i = 0
+    while i < bytes.len() {
+        if char_idx == start {
+            start_byte = i
+        }
+        if char_idx == end {
+            end_byte = i
+            break
+        }
+        
+        let len = char_len(bytes[i])
+        i += len
+        char_idx += 1
+    }
+    
+    decode(bytes[start_byte..end_byte]).unwrap_or("")
+}
+
+/// Get character at index
+fn char_at(s: String, index: Int) -> Option<Char> {
+    let bytes = s.as_bytes()
+    var char_idx = 0
+    var i = 0
+    
+    while i < bytes.len() {
+        if char_idx == index {
+            return decode_char_at(bytes, i).ok().map(|(c, _)| c)
+        }
+        let len = char_len(bytes[i])
+        i += len
+        char_idx += 1
+    }
+    
+    None
+}
+
+// -----------------------------------------------------------------------------
+// Normalization Helpers
+// -----------------------------------------------------------------------------
+
+/// Remove BOM from bytes if present
+fn strip_bom(bytes: [UInt8]) -> [UInt8] {
+    if has_bom(bytes) { bytes[3..] } else { bytes }
+}
+
+/// Ensure string has no BOM
+fn strip_bom_string(s: String) -> String {
+    let bytes = s.as_bytes()
+    if has_bom(bytes) {
+        decode(bytes[3..]).unwrap_or(s)
+    } else {
+        s
+    }
+}
+
+/// Add BOM to string if not present
+fn ensure_bom(s: String) -> [UInt8] {
+    let bytes = s.as_bytes()
+    if has_bom(bytes) {
+        bytes
+    } else {
+        var result = BOM.clone()
+        result.extend(bytes)
+        result
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum Utf8Error {
+    InvalidSequence(Int)
+    InvalidLeadByte(UInt8)
+    InvalidContinuationByte(UInt8)
+    InvalidCodepoint(UInt32)
+    SurrogateCodepoint(UInt32)
+    OverlongEncoding
+    UnexpectedEnd
+}
+
+impl Display for Utf8Error {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidSequence(pos) => f.write(format!("Invalid UTF-8 sequence at position {}", pos))
+            InvalidLeadByte(b) => f.write(format!("Invalid UTF-8 lead byte: 0x{:02X}", b))
+            InvalidContinuationByte(b) => f.write(format!("Invalid UTF-8 continuation byte: 0x{:02X}", b))
+            InvalidCodepoint(cp) => f.write(format!("Invalid Unicode codepoint: U+{:04X}", cp))
+            SurrogateCodepoint(cp) => f.write(format!("Surrogate codepoint not allowed: U+{:04X}", cp))
+            OverlongEncoding => f.write("Overlong UTF-8 encoding detected")
+            UnexpectedEnd => f.write("Unexpected end of UTF-8 sequence")
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "encode ascii" {
+    assert_eq(encode("Hello"), [0x48, 0x65, 0x6C, 0x6C, 0x6F])?
+}
+
+test "encode unicode" {
+    assert_eq(encode("日本"), [0xE6, 0x97, 0xA5, 0xE6, 0x9C, 0xAC])?
+    assert_eq(encode("🎉"), [0xF0, 0x9F, 0x8E, 0x89])?
+}
+
+test "encode char" {
+    assert_eq(encode_char('A'), [0x41])?
+    assert_eq(encode_char('ñ'), [0xC3, 0xB1])?
+    assert_eq(encode_char('日'), [0xE6, 0x97, 0xA5])?
+    assert_eq(encode_char('🎉'), [0xF0, 0x9F, 0x8E, 0x89])?
+}
+
+test "decode valid" {
+    assert_eq(decode([0x48, 0x65, 0x6C, 0x6C, 0x6F])?, "Hello")?
+    assert_eq(decode([0xE6, 0x97, 0xA5, 0xE6, 0x9C, 0xAC])?, "日本")?
+}
+
+test "decode invalid" {
+    assert(decode([0xFF, 0xFE]).is_err())?
+    assert(decode([0xC0, 0x80]).is_err())?  // Overlong
+}
+
+test "decode lossy" {
+    let result = decode_lossy([0x48, 0xFF, 0x6C, 0x6C, 0x6F])
+    assert_eq(result, "H\u{FFFD}llo")?
+}
+
+test "is_valid" {
+    assert(is_valid([0x48, 0x65, 0x6C, 0x6C, 0x6F]))?
+    assert(!is_valid([0xFF, 0xFE]))?
+}
+
+test "char_len" {
+    assert_eq(char_len(0x41), 1)?      // ASCII
+    assert_eq(char_len(0xC3), 2)?      // 2-byte
+    assert_eq(char_len(0xE6), 3)?      // 3-byte
+    assert_eq(char_len(0xF0), 4)?      // 4-byte
+}
+
+test "char_count" {
+    assert_eq(char_count(encode("Hello")), 5)?
+    assert_eq(char_count(encode("日本語")), 3)?
+    assert_eq(char_count(encode("🎉🎊")), 2)?
+}
+
+test "bom handling" {
+    assert(has_bom([0xEF, 0xBB, 0xBF, 0x48]))?
+    assert(!has_bom([0x48, 0x65]))?
+    
+    let with_bom = encode_with_bom("Hi")
+    assert_eq(with_bom, [0xEF, 0xBB, 0xBF, 0x48, 0x69])?
+    
+    assert_eq(decode_with_bom(with_bom)?, "Hi")?
+}
+
+test "truncate" {
+    let s = "Hello, 世界!"
+    assert_eq(truncate_to_chars(s, 8), "Hello, 世")?
+    
+    // Truncate to bytes should not break UTF-8
+    let truncated = truncate_to_bytes(s, 10)
+    assert(is_valid(truncated.as_bytes()))?
+}
+
+test "substring" {
+    let s = "Hello, 世界!"
+    assert_eq(substring(s, 7, 9), "世界")?
+    assert_eq(char_at(s, 7), Some('世'))?
+}
+
+test "streaming decoder" {
+    var decoder = Utf8Decoder.new()
+    
+    // Send partial UTF-8 sequence
+    decoder.write([0xE6, 0x97])?  // Incomplete 日
+    assert_eq(decoder.take_output(), "")?
+    
+    // Complete the sequence
+    decoder.write([0xA5])?  // Complete 日
+    assert_eq(decoder.take_output(), "日")?
+}
+
+test "iterator" {
+    let bytes = encode("Hi日")
+    var chars = Utf8Chars.new(bytes)
+    
+    assert_eq(chars.next(), Some('H'))?
+    assert_eq(chars.next(), Some('i'))?
+    assert_eq(chars.next(), Some('日'))?
+    assert_eq(chars.next(), None)?
+}

@@ -1,0 +1,767 @@
+// =============================================================================
+// Vibee OS — Notification Badge Module
+// Badge management for app icons and UI elements
+// =============================================================================
+
+use json.{JsonValue, Serialize, Deserialize}
+use datetime.{DateTime, Duration}
+
+// =============================================================================
+// Badge Types & Enums
+// =============================================================================
+
+enum BadgeType {
+    Count(Int),
+    Dot,
+    Icon(String),
+    Text(String),
+    Custom(BadgeContent)
+    
+    fn is_visible() -> Bool {
+        match self {
+            .Count(n) => n > 0,
+            .Dot => true,
+            .Icon(_) => true,
+            .Text(t) => !t.is_empty(),
+            .Custom(c) => c.is_visible()
+        }
+    }
+}
+
+enum BadgePosition {
+    TopRight,
+    TopLeft,
+    BottomRight,
+    BottomLeft,
+    Center,
+    Custom(Float, Float)
+    
+    fn offset() -> (Float, Float) {
+        match self {
+            .TopRight => (-8.0, -8.0),
+            .TopLeft => (8.0, -8.0),
+            .BottomRight => (-8.0, 8.0),
+            .BottomLeft => (8.0, 8.0),
+            .Center => (0.0, 0.0),
+            .Custom(x, y) => (x, y)
+        }
+    }
+}
+
+enum BadgeSize {
+    Small,
+    Medium,
+    Large,
+    Custom(Float)
+    
+    fn diameter() -> Float {
+        match self {
+            .Small => 16.0,
+            .Medium => 20.0,
+            .Large => 24.0,
+            .Custom(d) => d
+        }
+    }
+}
+
+enum BadgeAnimation {
+    None,
+    Bounce,
+    Pulse,
+    Scale,
+    Shake,
+    Fade
+}
+
+// =============================================================================
+// Badge Content
+// =============================================================================
+
+struct BadgeContent {
+    value: String
+    icon: Option<String>
+    visible: Bool
+}
+
+impl BadgeContent {
+    fn new(value: String) -> Self {
+        BadgeContent { value: value, icon: None, visible: true }
+    }
+    
+    fn with_icon(value: String, icon: String) -> Self {
+        BadgeContent { value: value, icon: Some(icon), visible: true }
+    }
+    
+    fn is_visible() -> Bool { self.visible && !self.value.is_empty() }
+}
+
+// =============================================================================
+// Badge Style
+// =============================================================================
+
+struct BadgeStyle {
+    background_color: String
+    text_color: String
+    border_color: Option<String>
+    border_width: Float
+    font_size: Float
+    font_weight: FontWeight
+    padding: Float
+    corner_radius: Float
+    shadow: Option<BadgeShadow>
+    opacity: Float
+}
+
+impl BadgeStyle {
+    fn default() -> Self {
+        BadgeStyle {
+            background_color: "#FF3B30",
+            text_color: "#FFFFFF",
+            border_color: None,
+            border_width: 0.0,
+            font_size: 12.0,
+            font_weight: FontWeight.Bold,
+            padding: 4.0,
+            corner_radius: 10.0,
+            shadow: None,
+            opacity: 1.0
+        }
+    }
+    
+    fn primary() -> Self { BadgeStyle.default() }
+    
+    fn secondary() -> Self {
+        BadgeStyle.default()
+            .background("#007AFF")
+    }
+    
+    fn success() -> Self {
+        BadgeStyle.default()
+            .background("#34C759")
+    }
+    
+    fn warning() -> Self {
+        BadgeStyle.default()
+            .background("#FF9500")
+    }
+    
+    fn info() -> Self {
+        BadgeStyle.default()
+            .background("#5856D6")
+    }
+    
+    fn background(color: String) -> Self { self.background_color = color; self }
+    fn text_color(color: String) -> Self { self.text_color = color; self }
+    fn border(color: String, width: Float) -> Self {
+        self.border_color = Some(color);
+        self.border_width = width;
+        self
+    }
+    fn font_size(size: Float) -> Self { self.font_size = size; self }
+    fn font_weight(weight: FontWeight) -> Self { self.font_weight = weight; self }
+    fn padding(p: Float) -> Self { self.padding = p; self }
+    fn corner_radius(r: Float) -> Self { self.corner_radius = r; self }
+    fn shadow(s: BadgeShadow) -> Self { self.shadow = Some(s); self }
+    fn opacity(o: Float) -> Self { self.opacity = o; self }
+}
+
+enum FontWeight { Light, Regular, Medium, Semibold, Bold, Heavy }
+
+struct BadgeShadow {
+    color: String
+    offset_x: Float
+    offset_y: Float
+    blur: Float
+    spread: Float
+}
+
+impl BadgeShadow {
+    fn default() -> Self {
+        BadgeShadow {
+            color: "rgba(0,0,0,0.2)",
+            offset_x: 0.0,
+            offset_y: 2.0,
+            blur: 4.0,
+            spread: 0.0
+        }
+    }
+    
+    fn subtle() -> Self {
+        BadgeShadow { color: "rgba(0,0,0,0.1)", offset_x: 0.0, offset_y: 1.0, blur: 2.0, spread: 0.0 }
+    }
+    
+    fn elevated() -> Self {
+        BadgeShadow { color: "rgba(0,0,0,0.3)", offset_x: 0.0, offset_y: 4.0, blur: 8.0, spread: 0.0 }
+    }
+}
+
+// =============================================================================
+// Badge
+// =============================================================================
+
+struct Badge {
+    id: String
+    target_id: String
+    badge_type: BadgeType
+    position: BadgePosition
+    size: BadgeSize
+    style: BadgeStyle
+    animation: BadgeAnimation
+    max_count: Int
+    overflow_text: String
+    visible: Bool
+    created_at: DateTime
+    updated_at: DateTime
+}
+
+impl Badge {
+    fn new(target_id: String) -> Self {
+        Badge {
+            id: UUID.v4(),
+            target_id: target_id,
+            badge_type: BadgeType.Count(0),
+            position: BadgePosition.TopRight,
+            size: BadgeSize.Medium,
+            style: BadgeStyle.default(),
+            animation: BadgeAnimation.None,
+            max_count: 99,
+            overflow_text: "99+",
+            visible: true,
+            created_at: DateTime.now(),
+            updated_at: DateTime.now()
+        }
+    }
+    
+    fn count(target_id: String, count: Int) -> Self {
+        Badge.new(target_id).set_count(count)
+    }
+    
+    fn dot(target_id: String) -> Self {
+        let mut badge = Badge.new(target_id);
+        badge.badge_type = BadgeType.Dot;
+        badge
+    }
+    
+    fn icon(target_id: String, icon_url: String) -> Self {
+        let mut badge = Badge.new(target_id);
+        badge.badge_type = BadgeType.Icon(icon_url);
+        badge
+    }
+    
+    fn text(target_id: String, text: String) -> Self {
+        let mut badge = Badge.new(target_id);
+        badge.badge_type = BadgeType.Text(text);
+        badge
+    }
+    
+    fn set_count(count: Int) -> Self {
+        self.badge_type = BadgeType.Count(count);
+        self.updated_at = DateTime.now();
+        self
+    }
+    
+    fn increment() -> Self {
+        match self.badge_type {
+            BadgeType.Count(n) => self.set_count(n + 1),
+            _ => self.set_count(1)
+        }
+    }
+    
+    fn decrement() -> Self {
+        match self.badge_type {
+            BadgeType.Count(n) if n > 0 => self.set_count(n - 1),
+            _ => self
+        }
+    }
+    
+    fn clear() -> Self {
+        self.badge_type = BadgeType.Count(0);
+        self.updated_at = DateTime.now();
+        self
+    }
+    
+    fn position(pos: BadgePosition) -> Self { self.position = pos; self }
+    fn size(s: BadgeSize) -> Self { self.size = s; self }
+    fn style(s: BadgeStyle) -> Self { self.style = s; self }
+    fn animation(a: BadgeAnimation) -> Self { self.animation = a; self }
+    fn max_count(max: Int) -> Self { self.max_count = max; self }
+    fn overflow_text(text: String) -> Self { self.overflow_text = text; self }
+    fn show() -> Self { self.visible = true; self }
+    fn hide() -> Self { self.visible = false; self }
+    
+    fn display_value() -> String {
+        match self.badge_type {
+            BadgeType.Count(n) => {
+                if n > self.max_count { self.overflow_text.clone() }
+                else { n.to_string() }
+            },
+            BadgeType.Dot => "",
+            BadgeType.Icon(_) => "",
+            BadgeType.Text(t) => t,
+            BadgeType.Custom(c) => c.value.clone()
+        }
+    }
+    
+    fn is_visible() -> Bool {
+        self.visible && self.badge_type.is_visible()
+    }
+    
+    fn current_count() -> Int {
+        match self.badge_type {
+            BadgeType.Count(n) => n,
+            _ => 0
+        }
+    }
+}
+
+// =============================================================================
+// Badge Manager Actor
+// =============================================================================
+
+actor BadgeManager {
+    state badges: Map<String, Badge>
+    state target_badges: Map<String, [String]>
+    state app_badge_count: Int
+    state listeners: [Box<dyn BadgeListener>]
+    
+    fn new() -> Self {
+        BadgeManager {
+            badges: Map.empty(),
+            target_badges: Map.empty(),
+            app_badge_count: 0,
+            listeners: []
+        }
+    }
+    
+    on register_listener(listener: Box<dyn BadgeListener>) {
+        self.listeners.push(listener)
+    }
+    
+    on set_badge(badge: Badge) -> String {
+        let id = badge.id.clone();
+        let target = badge.target_id.clone();
+        
+        self.badges.set(id.clone(), badge.clone());
+        
+        let mut target_list = self.target_badges.get(target.clone()).unwrap_or([]);
+        if !target_list.contains(id.clone()) {
+            target_list.push(id.clone());
+            self.target_badges.set(target, target_list);
+        }
+        
+        self.notify_listeners(BadgeEvent.Updated(badge));
+        id
+    }
+    
+    on set_count(target_id: String, count: Int) -> Badge {
+        let badge = match self.get_for_target(target_id.clone()).first() {
+            Some(existing) => existing.clone().set_count(count),
+            None => Badge.count(target_id, count)
+        };
+        self.set_badge(badge.clone());
+        badge
+    }
+    
+    on increment(target_id: String) -> Badge {
+        let badge = match self.get_for_target(target_id.clone()).first() {
+            Some(existing) => existing.clone().increment(),
+            None => Badge.count(target_id, 1)
+        };
+        self.set_badge(badge.clone());
+        badge
+    }
+    
+    on decrement(target_id: String) -> Badge {
+        match self.get_for_target(target_id.clone()).first() {
+            Some(existing) => {
+                let badge = existing.clone().decrement();
+                self.set_badge(badge.clone());
+                badge
+            },
+            None => Badge.new(target_id)
+        }
+    }
+    
+    on clear(target_id: String) {
+        for badge in self.get_for_target(target_id.clone()) {
+            let cleared = badge.clone().clear();
+            self.badges.set(cleared.id.clone(), cleared.clone());
+            self.notify_listeners(BadgeEvent.Cleared(cleared));
+        }
+    }
+    
+    on clear_all() {
+        for (_, badge) in self.badges.iter_mut() {
+            badge.clear();
+        }
+        self.app_badge_count = 0;
+        self.notify_listeners(BadgeEvent.AllCleared);
+    }
+    
+    on remove(badge_id: String) -> Option<Badge> {
+        match self.badges.remove(badge_id.clone()) {
+            Some(badge) => {
+                if let Some(target_list) = self.target_badges.get_mut(badge.target_id.clone()) {
+                    target_list.retain(|id| *id != badge_id);
+                }
+                self.notify_listeners(BadgeEvent.Removed(badge.clone()));
+                Some(badge)
+            },
+            None => None
+        }
+    }
+    
+    fn get(badge_id: String) -> Option<Badge> {
+        self.badges.get(badge_id)
+    }
+    
+    fn get_for_target(target_id: String) -> [Badge] {
+        self.target_badges.get(target_id).unwrap_or([])
+            .iter()
+            .filter_map(|id| self.badges.get(id.clone()))
+            .collect()
+    }
+    
+    fn get_count(target_id: String) -> Int {
+        self.get_for_target(target_id)
+            .iter()
+            .map(|b| b.current_count())
+            .sum()
+    }
+    
+    fn total_count() -> Int {
+        self.badges.values()
+            .iter()
+            .map(|b| b.current_count())
+            .sum()
+    }
+    
+    fn all_badges() -> [Badge] {
+        self.badges.values().collect()
+    }
+    
+    fn visible_badges() -> [Badge] {
+        self.badges.values()
+            .iter()
+            .filter(|b| b.is_visible())
+            .collect()
+    }
+    
+    // App icon badge management
+    on set_app_badge(count: Int) {
+        self.app_badge_count = count;
+        self.notify_listeners(BadgeEvent.AppBadgeUpdated(count));
+    }
+    
+    on increment_app_badge() {
+        self.app_badge_count += 1;
+        self.notify_listeners(BadgeEvent.AppBadgeUpdated(self.app_badge_count));
+    }
+    
+    on decrement_app_badge() {
+        if self.app_badge_count > 0 {
+            self.app_badge_count -= 1;
+        }
+        self.notify_listeners(BadgeEvent.AppBadgeUpdated(self.app_badge_count));
+    }
+    
+    on clear_app_badge() {
+        self.app_badge_count = 0;
+        self.notify_listeners(BadgeEvent.AppBadgeUpdated(0));
+    }
+    
+    fn app_badge() -> Int { self.app_badge_count }
+    
+    fn notify_listeners(event: BadgeEvent) {
+        for listener in self.listeners.iter() {
+            listener.on_badge_event(event.clone());
+        }
+    }
+}
+
+// =============================================================================
+// Badge Events & Listener
+// =============================================================================
+
+enum BadgeEvent {
+    Updated(Badge),
+    Cleared(Badge),
+    Removed(Badge),
+    AllCleared,
+    AppBadgeUpdated(Int)
+}
+
+trait BadgeListener {
+    fn on_badge_event(event: BadgeEvent)
+}
+
+// =============================================================================
+// Badge Group
+// =============================================================================
+
+struct BadgeGroup {
+    id: String
+    name: String
+    badge_ids: [String]
+    aggregate_style: AggregateStyle
+}
+
+enum AggregateStyle {
+    Sum,
+    Max,
+    First,
+    Last
+}
+
+impl BadgeGroup {
+    fn new(name: String) -> Self {
+        BadgeGroup {
+            id: UUID.v4(),
+            name: name,
+            badge_ids: [],
+            aggregate_style: AggregateStyle.Sum
+        }
+    }
+    
+    fn add(badge_id: String) -> Self {
+        self.badge_ids.push(badge_id); self
+    }
+    
+    fn remove(badge_id: String) -> Self {
+        self.badge_ids.retain(|id| *id != badge_id); self
+    }
+    
+    fn aggregate_style(style: AggregateStyle) -> Self {
+        self.aggregate_style = style; self
+    }
+    
+    fn total_count(manager: BadgeManager) -> Int {
+        let counts: [Int] = self.badge_ids.iter()
+            .filter_map(|id| manager.get(id.clone()))
+            .map(|b| b.current_count())
+            .collect();
+        
+        match self.aggregate_style {
+            AggregateStyle.Sum => counts.iter().sum(),
+            AggregateStyle.Max => counts.iter().max().unwrap_or(0),
+            AggregateStyle.First => counts.first().unwrap_or(0),
+            AggregateStyle.Last => counts.last().unwrap_or(0)
+        }
+    }
+}
+
+// =============================================================================
+// Badge Presets
+// =============================================================================
+
+struct BadgePresets;
+
+impl BadgePresets {
+    fn notification_badge(target_id: String, count: Int) -> Badge {
+        Badge.count(target_id, count)
+            .style(BadgeStyle.primary())
+            .position(BadgePosition.TopRight)
+            .animation(BadgeAnimation.Bounce)
+    }
+    
+    fn message_badge(target_id: String, count: Int) -> Badge {
+        Badge.count(target_id, count)
+            .style(BadgeStyle.secondary())
+            .position(BadgePosition.TopRight)
+    }
+    
+    fn status_dot(target_id: String, color: String) -> Badge {
+        Badge.dot(target_id)
+            .style(BadgeStyle.default().background(color))
+            .size(BadgeSize.Small)
+            .position(BadgePosition.BottomRight)
+    }
+    
+    fn online_indicator(target_id: String) -> Badge {
+        BadgePresets.status_dot(target_id, "#34C759")
+    }
+    
+    fn offline_indicator(target_id: String) -> Badge {
+        BadgePresets.status_dot(target_id, "#8E8E93")
+    }
+    
+    fn busy_indicator(target_id: String) -> Badge {
+        BadgePresets.status_dot(target_id, "#FF3B30")
+    }
+    
+    fn away_indicator(target_id: String) -> Badge {
+        BadgePresets.status_dot(target_id, "#FF9500")
+    }
+    
+    fn new_badge(target_id: String) -> Badge {
+        Badge.text(target_id, "NEW")
+            .style(BadgeStyle.success().font_size(10.0))
+            .size(BadgeSize.Small)
+    }
+    
+    fn pro_badge(target_id: String) -> Badge {
+        Badge.text(target_id, "PRO")
+            .style(BadgeStyle.info().font_size(10.0))
+            .size(BadgeSize.Small)
+    }
+    
+    fn verified_badge(target_id: String) -> Badge {
+        Badge.icon(target_id, "verified_icon")
+            .style(BadgeStyle.secondary())
+            .size(BadgeSize.Small)
+    }
+}
+
+// =============================================================================
+// Platform Badge Integration
+// =============================================================================
+
+trait PlatformBadgeProvider {
+    fn set_app_badge(count: Int) -> Result<(), BadgeError>
+    fn clear_app_badge() -> Result<(), BadgeError>
+    fn supports_badges() -> Bool
+}
+
+struct IOSBadgeProvider;
+
+impl PlatformBadgeProvider for IOSBadgeProvider {
+    fn set_app_badge(count: Int) -> Result<(), BadgeError> {
+        // iOS native badge API
+        native_call("UIApplication.shared.applicationIconBadgeNumber = \(count)")
+        Ok(())
+    }
+    
+    fn clear_app_badge() -> Result<(), BadgeError> {
+        native_call("UIApplication.shared.applicationIconBadgeNumber = 0")
+        Ok(())
+    }
+    
+    fn supports_badges() -> Bool { true }
+}
+
+struct AndroidBadgeProvider;
+
+impl PlatformBadgeProvider for AndroidBadgeProvider {
+    fn set_app_badge(count: Int) -> Result<(), BadgeError> {
+        // Android ShortcutBadger or native API
+        native_call("ShortcutBadger.applyCount(context, \(count))")
+        Ok(())
+    }
+    
+    fn clear_app_badge() -> Result<(), BadgeError> {
+        native_call("ShortcutBadger.removeCount(context)")
+        Ok(())
+    }
+    
+    fn supports_badges() -> Bool { true }
+}
+
+struct WebBadgeProvider;
+
+impl PlatformBadgeProvider for WebBadgeProvider {
+    fn set_app_badge(count: Int) -> Result<(), BadgeError> {
+        // Web Badging API
+        js_call("navigator.setAppBadge(\(count))")
+        Ok(())
+    }
+    
+    fn clear_app_badge() -> Result<(), BadgeError> {
+        js_call("navigator.clearAppBadge()")
+        Ok(())
+    }
+    
+    fn supports_badges() -> Bool {
+        js_call("'setAppBadge' in navigator").as_bool()
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum BadgeError {
+    NotFound(String),
+    InvalidCount,
+    PlatformNotSupported,
+    PermissionDenied,
+    Unknown(String)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "badge creation" {
+    let badge = Badge.count("tab_messages", 5);
+    
+    assert_eq(badge.current_count(), 5)?
+    assert_eq(badge.display_value(), "5")?
+    assert(badge.is_visible())?
+}
+
+test "badge increment and decrement" {
+    let badge = Badge.count("tab_messages", 5);
+    
+    let incremented = badge.increment();
+    assert_eq(incremented.current_count(), 6)?
+    
+    let decremented = incremented.decrement();
+    assert_eq(decremented.current_count(), 5)?
+}
+
+test "badge overflow" {
+    let badge = Badge.count("notifications", 150)
+        .max_count(99)
+        .overflow_text("99+");
+    
+    assert_eq(badge.display_value(), "99+")?
+}
+
+test "badge manager" {
+    let manager = BadgeManager.new();
+    
+    manager.set_count("tab1", 5);
+    manager.set_count("tab2", 3);
+    
+    assert_eq(manager.get_count("tab1"), 5)?
+    assert_eq(manager.total_count(), 8)?
+    
+    manager.increment("tab1");
+    assert_eq(manager.get_count("tab1"), 6)?
+}
+
+test "badge styles" {
+    let primary = BadgeStyle.primary();
+    assert_eq(primary.background_color, "#FF3B30")?
+    
+    let success = BadgeStyle.success();
+    assert_eq(success.background_color, "#34C759")?
+}
+
+test "badge presets" {
+    let online = BadgePresets.online_indicator("user_avatar");
+    assert_eq(online.badge_type, BadgeType.Dot)?
+    
+    let notification = BadgePresets.notification_badge("bell_icon", 10);
+    assert_eq(notification.current_count(), 10)?
+}
+
+test "dot badge visibility" {
+    let dot = Badge.dot("status");
+    assert(dot.is_visible())?
+    
+    let hidden_dot = dot.hide();
+    assert(!hidden_dot.is_visible())?
+}
+
+test "badge group aggregation" {
+    let manager = BadgeManager.new();
+    manager.set_count("tab1", 5);
+    manager.set_count("tab2", 3);
+    
+    let group = BadgeGroup.new("tabs")
+        .add(manager.get_for_target("tab1").first().unwrap().id.clone())
+        .add(manager.get_for_target("tab2").first().unwrap().id.clone());
+    
+    assert_eq(group.total_count(manager), 8)?
+}

@@ -1,0 +1,936 @@
+// =============================================================================
+// Vibee OS — Chat Message Module
+// Chat message types, formatting, and delivery
+// =============================================================================
+
+use result::{Result, Ok, Err}
+use datetime::{DateTime, Duration}
+
+// =============================================================================
+// Message Types
+// =============================================================================
+
+/// Message content types
+enum MessageContent {
+    Text(String),
+    Image(ImageAttachment),
+    Video(VideoAttachment),
+    Audio(AudioAttachment),
+    File(FileAttachment),
+    Location(LocationData),
+    Contact(ContactCard),
+    Sticker(StickerData),
+    Poll(PollData),
+    Reply(ReplyData),
+    Forward(ForwardData),
+    System(SystemMessage)
+}
+
+impl MessageContent {
+    fn is_text() -> Bool {
+        match self {
+            MessageContent.Text(_) => true,
+            _ => false
+        }
+    }
+    
+    fn is_media() -> Bool {
+        match self {
+            MessageContent.Image(_) | MessageContent.Video(_) | 
+            MessageContent.Audio(_) | MessageContent.File(_) => true,
+            _ => false
+        }
+    }
+    
+    fn as_text() -> Option<String> {
+        match self {
+            MessageContent.Text(t) => Some(t),
+            _ => None
+        }
+    }
+    
+    fn preview(max_len: Int) -> String {
+        match self {
+            MessageContent.Text(t) => {
+                if t.len() > max_len { t.substring(0, max_len) + "..." } else { t }
+            },
+            MessageContent.Image(_) => "📷 Image",
+            MessageContent.Video(_) => "🎬 Video",
+            MessageContent.Audio(_) => "🎵 Audio",
+            MessageContent.File(f) => "📎 " + f.name,
+            MessageContent.Location(_) => "📍 Location",
+            MessageContent.Contact(_) => "👤 Contact",
+            MessageContent.Sticker(s) => "🎭 " + s.emoji,
+            MessageContent.Poll(p) => "📊 " + p.question,
+            MessageContent.Reply(r) => "↩️ Reply",
+            MessageContent.Forward(_) => "↪️ Forwarded",
+            MessageContent.System(s) => "ℹ️ " + s.text
+        }
+    }
+}
+
+/// Image attachment
+struct ImageAttachment {
+    url: String,
+    thumbnail_url: Option<String>,
+    width: Int,
+    height: Int,
+    size_bytes: Int64,
+    mime_type: String,
+    caption: Option<String>,
+    blur_hash: Option<String>
+}
+
+impl ImageAttachment {
+    fn new(url: String, width: Int, height: Int) -> Self {
+        ImageAttachment {
+            url: url,
+            thumbnail_url: None,
+            width: width,
+            height: height,
+            size_bytes: 0,
+            mime_type: "image/jpeg",
+            caption: None,
+            blur_hash: None
+        }
+    }
+    
+    fn with_caption(url: String, width: Int, height: Int, caption: String) -> Self {
+        ImageAttachment {
+            url: url,
+            thumbnail_url: None,
+            width: width,
+            height: height,
+            size_bytes: 0,
+            mime_type: "image/jpeg",
+            caption: Some(caption),
+            blur_hash: None
+        }
+    }
+    
+    fn aspect_ratio() -> Float {
+        self.width as Float / self.height as Float
+    }
+}
+
+/// Video attachment
+struct VideoAttachment {
+    url: String,
+    thumbnail_url: Option<String>,
+    width: Int,
+    height: Int,
+    duration_seconds: Int,
+    size_bytes: Int64,
+    mime_type: String,
+    caption: Option<String>
+}
+
+impl VideoAttachment {
+    fn new(url: String, duration: Int) -> Self {
+        VideoAttachment {
+            url: url,
+            thumbnail_url: None,
+            width: 0,
+            height: 0,
+            duration_seconds: duration,
+            size_bytes: 0,
+            mime_type: "video/mp4",
+            caption: None
+        }
+    }
+    
+    fn duration_formatted() -> String {
+        let mins = self.duration_seconds / 60
+        let secs = self.duration_seconds % 60
+        "\(mins):\(secs.to_string().pad_left(2, '0'))"
+    }
+}
+
+/// Audio attachment
+struct AudioAttachment {
+    url: String,
+    duration_seconds: Int,
+    size_bytes: Int64,
+    mime_type: String,
+    waveform: Option<[Int]>,
+    is_voice_message: Bool
+}
+
+impl AudioAttachment {
+    fn voice(url: String, duration: Int) -> Self {
+        AudioAttachment {
+            url: url,
+            duration_seconds: duration,
+            size_bytes: 0,
+            mime_type: "audio/ogg",
+            waveform: None,
+            is_voice_message: true
+        }
+    }
+    
+    fn audio(url: String, duration: Int) -> Self {
+        AudioAttachment {
+            url: url,
+            duration_seconds: duration,
+            size_bytes: 0,
+            mime_type: "audio/mp3",
+            waveform: None,
+            is_voice_message: false
+        }
+    }
+}
+
+/// File attachment
+struct FileAttachment {
+    url: String,
+    name: String,
+    size_bytes: Int64,
+    mime_type: String,
+    preview_url: Option<String>
+}
+
+impl FileAttachment {
+    fn new(url: String, name: String, size: Int64) -> Self {
+        FileAttachment {
+            url: url,
+            name: name,
+            size_bytes: size,
+            mime_type: "application/octet-stream",
+            preview_url: None
+        }
+    }
+    
+    fn size_formatted() -> String {
+        if self.size_bytes < 1024 {
+            "\(self.size_bytes) B"
+        } else if self.size_bytes < 1024 * 1024 {
+            "\(self.size_bytes / 1024) KB"
+        } else if self.size_bytes < 1024 * 1024 * 1024 {
+            "\(self.size_bytes / (1024 * 1024)) MB"
+        } else {
+            "\(self.size_bytes / (1024 * 1024 * 1024)) GB"
+        }
+    }
+    
+    fn extension() -> Option<String> {
+        let parts = self.name.split(".")
+        if parts.len() > 1 { Some(parts.last().unwrap()) } else { None }
+    }
+}
+
+/// Location data
+struct LocationData {
+    latitude: Float,
+    longitude: Float,
+    name: Option<String>,
+    address: Option<String>,
+    live_period: Option<Int>
+}
+
+impl LocationData {
+    fn new(lat: Float, lon: Float) -> Self {
+        LocationData {
+            latitude: lat,
+            longitude: lon,
+            name: None,
+            address: None,
+            live_period: None
+        }
+    }
+    
+    fn named(lat: Float, lon: Float, name: String) -> Self {
+        LocationData {
+            latitude: lat,
+            longitude: lon,
+            name: Some(name),
+            address: None,
+            live_period: None
+        }
+    }
+    
+    fn is_live() -> Bool {
+        self.live_period.is_some()
+    }
+}
+
+/// Contact card
+struct ContactCard {
+    name: String,
+    phone: Option<String>,
+    email: Option<String>,
+    user_id: Option<String>,
+    avatar_url: Option<String>
+}
+
+impl ContactCard {
+    fn new(name: String) -> Self {
+        ContactCard {
+            name: name,
+            phone: None,
+            email: None,
+            user_id: None,
+            avatar_url: None
+        }
+    }
+    
+    fn with_phone(name: String, phone: String) -> Self {
+        ContactCard {
+            name: name,
+            phone: Some(phone),
+            email: None,
+            user_id: None,
+            avatar_url: None
+        }
+    }
+}
+
+/// Sticker data
+struct StickerData {
+    sticker_id: String,
+    pack_id: String,
+    emoji: String,
+    url: String,
+    is_animated: Bool
+}
+
+/// Poll data
+struct PollData {
+    question: String,
+    options: [PollOption],
+    is_anonymous: Bool,
+    allows_multiple: Bool,
+    close_time: Option<DateTime>
+}
+
+struct PollOption {
+    id: String,
+    text: String,
+    voter_count: Int
+}
+
+impl PollData {
+    fn new(question: String, options: [String]) -> Self {
+        PollData {
+            question: question,
+            options: options.iter().enumerate().map(|(i, text)| {
+                PollOption { id: i.to_string(), text: text, voter_count: 0 }
+            }).collect(),
+            is_anonymous: true,
+            allows_multiple: false,
+            close_time: None
+        }
+    }
+    
+    fn total_votes() -> Int {
+        self.options.iter().map(|o| o.voter_count).sum()
+    }
+    
+    fn is_closed() -> Bool {
+        match self.close_time {
+            Some(t) => DateTime.now() > t,
+            None => false
+        }
+    }
+}
+
+/// Reply data
+struct ReplyData {
+    original_message_id: String,
+    original_sender_id: String,
+    original_sender_name: String,
+    original_preview: String,
+    content: Box<MessageContent>
+}
+
+/// Forward data
+struct ForwardData {
+    original_message_id: String,
+    original_chat_id: String,
+    original_sender_id: String,
+    original_sender_name: String,
+    original_timestamp: DateTime,
+    content: Box<MessageContent>
+}
+
+/// System message
+struct SystemMessage {
+    text: String,
+    action: SystemAction
+}
+
+enum SystemAction {
+    UserJoined(String),
+    UserLeft(String),
+    UserKicked(String, String),
+    UserBanned(String, String),
+    ChatCreated,
+    ChatRenamed(String),
+    AvatarChanged,
+    PinnedMessage(String),
+    UnpinnedMessage(String),
+    CallStarted,
+    CallEnded(Int),
+    Custom(String)
+}
+
+// =============================================================================
+// Message Status
+// =============================================================================
+
+/// Message delivery status
+enum MessageStatus {
+    Sending,
+    Sent,
+    Delivered,
+    Read,
+    Failed(String)
+}
+
+impl MessageStatus {
+    fn is_final() -> Bool {
+        match self {
+            MessageStatus.Read | MessageStatus.Failed(_) => true,
+            _ => false
+        }
+    }
+    
+    fn icon() -> String {
+        match self {
+            MessageStatus.Sending => "⏳",
+            MessageStatus.Sent => "✓",
+            MessageStatus.Delivered => "✓✓",
+            MessageStatus.Read => "✓✓",
+            MessageStatus.Failed(_) => "❌"
+        }
+    }
+}
+
+// =============================================================================
+// Chat Message
+// =============================================================================
+
+/// Main chat message structure
+struct ChatMessage {
+    id: String,
+    conversation_id: String,
+    sender_id: String,
+    sender_name: String,
+    sender_avatar: Option<String>,
+    content: MessageContent,
+    status: MessageStatus,
+    created_at: DateTime,
+    updated_at: Option<DateTime>,
+    deleted_at: Option<DateTime>,
+    reply_to: Option<String>,
+    thread_id: Option<String>,
+    reactions: Map<String, [String]>,
+    mentions: [Mention],
+    metadata: Map<String, String>,
+    is_pinned: Bool,
+    is_edited: Bool
+}
+
+impl ChatMessage {
+    fn new(conversation_id: String, sender_id: String, sender_name: String, content: MessageContent) -> Self {
+        ChatMessage {
+            id: @native("uuid_v4"),
+            conversation_id: conversation_id,
+            sender_id: sender_id,
+            sender_name: sender_name,
+            sender_avatar: None,
+            content: content,
+            status: MessageStatus.Sending,
+            created_at: DateTime.now(),
+            updated_at: None,
+            deleted_at: None,
+            reply_to: None,
+            thread_id: None,
+            reactions: Map.empty(),
+            mentions: [],
+            metadata: Map.empty(),
+            is_pinned: false,
+            is_edited: false
+        }
+    }
+    
+    fn text(conversation_id: String, sender_id: String, sender_name: String, text: String) -> Self {
+        Self.new(conversation_id, sender_id, sender_name, MessageContent.Text(text))
+    }
+    
+    fn image(conversation_id: String, sender_id: String, sender_name: String, attachment: ImageAttachment) -> Self {
+        Self.new(conversation_id, sender_id, sender_name, MessageContent.Image(attachment))
+    }
+    
+    fn system(conversation_id: String, message: SystemMessage) -> Self {
+        ChatMessage {
+            id: @native("uuid_v4"),
+            conversation_id: conversation_id,
+            sender_id: "system",
+            sender_name: "System",
+            sender_avatar: None,
+            content: MessageContent.System(message),
+            status: MessageStatus.Sent,
+            created_at: DateTime.now(),
+            updated_at: None,
+            deleted_at: None,
+            reply_to: None,
+            thread_id: None,
+            reactions: Map.empty(),
+            mentions: [],
+            metadata: Map.empty(),
+            is_pinned: false,
+            is_edited: false
+        }
+    }
+    
+    fn is_deleted() -> Bool {
+        self.deleted_at.is_some()
+    }
+    
+    fn is_from(user_id: String) -> Bool {
+        self.sender_id == user_id
+    }
+    
+    fn is_system() -> Bool {
+        match self.content {
+            MessageContent.System(_) => true,
+            _ => false
+        }
+    }
+    
+    fn add_reaction(emoji: String, user_id: String) {
+        if let Some(users) = self.reactions.get(emoji) {
+            if !users.contains(user_id) {
+                users.push(user_id)
+            }
+        } else {
+            self.reactions.insert(emoji, [user_id])
+        }
+    }
+    
+    fn remove_reaction(emoji: String, user_id: String) {
+        if let Some(users) = self.reactions.get(emoji) {
+            users.retain(|u| u != user_id)
+            if users.is_empty() {
+                self.reactions.remove(emoji)
+            }
+        }
+    }
+    
+    fn reaction_count() -> Int {
+        self.reactions.values().map(|v| v.len()).sum()
+    }
+    
+    fn edit(new_content: MessageContent) {
+        self.content = new_content
+        self.updated_at = Some(DateTime.now())
+        self.is_edited = true
+    }
+    
+    fn soft_delete() {
+        self.deleted_at = Some(DateTime.now())
+        self.content = MessageContent.Text("[Message deleted]")
+    }
+    
+    fn preview(max_len: Int) -> String {
+        self.content.preview(max_len)
+    }
+}
+
+/// Mention in message
+struct Mention {
+    user_id: String,
+    username: String,
+    offset: Int,
+    length: Int
+}
+
+impl Mention {
+    fn new(user_id: String, username: String, offset: Int, length: Int) -> Self {
+        Mention {
+            user_id: user_id,
+            username: username,
+            offset: offset,
+            length: length
+        }
+    }
+}
+
+// =============================================================================
+// Message Builder
+// =============================================================================
+
+/// Fluent message builder
+struct MessageBuilder {
+    conversation_id: String,
+    sender_id: String,
+    sender_name: String,
+    content: Option<MessageContent>,
+    reply_to: Option<String>,
+    thread_id: Option<String>,
+    mentions: [Mention],
+    metadata: Map<String, String>
+}
+
+impl MessageBuilder {
+    fn new(conversation_id: String, sender_id: String, sender_name: String) -> Self {
+        MessageBuilder {
+            conversation_id: conversation_id,
+            sender_id: sender_id,
+            sender_name: sender_name,
+            content: None,
+            reply_to: None,
+            thread_id: None,
+            mentions: [],
+            metadata: Map.empty()
+        }
+    }
+    
+    fn text(self, text: String) -> Self {
+        self.content = Some(MessageContent.Text(text))
+        self
+    }
+    
+    fn image(self, attachment: ImageAttachment) -> Self {
+        self.content = Some(MessageContent.Image(attachment))
+        self
+    }
+    
+    fn video(self, attachment: VideoAttachment) -> Self {
+        self.content = Some(MessageContent.Video(attachment))
+        self
+    }
+    
+    fn audio(self, attachment: AudioAttachment) -> Self {
+        self.content = Some(MessageContent.Audio(attachment))
+        self
+    }
+    
+    fn file(self, attachment: FileAttachment) -> Self {
+        self.content = Some(MessageContent.File(attachment))
+        self
+    }
+    
+    fn location(self, location: LocationData) -> Self {
+        self.content = Some(MessageContent.Location(location))
+        self
+    }
+    
+    fn reply_to(self, message_id: String) -> Self {
+        self.reply_to = Some(message_id)
+        self
+    }
+    
+    fn in_thread(self, thread_id: String) -> Self {
+        self.thread_id = Some(thread_id)
+        self
+    }
+    
+    fn mention(self, user_id: String, username: String, offset: Int, length: Int) -> Self {
+        self.mentions.push(Mention.new(user_id, username, offset, length))
+        self
+    }
+    
+    fn with_metadata(self, key: String, value: String) -> Self {
+        self.metadata.insert(key, value)
+        self
+    }
+    
+    fn build() -> Result<ChatMessage, MessageError> {
+        let content = self.content.ok_or(MessageError.NoContent)?
+        
+        var msg = ChatMessage.new(
+            self.conversation_id,
+            self.sender_id,
+            self.sender_name,
+            content
+        )
+        msg.reply_to = self.reply_to
+        msg.thread_id = self.thread_id
+        msg.mentions = self.mentions
+        msg.metadata = self.metadata
+        
+        Ok(msg)
+    }
+}
+
+/// Message errors
+enum MessageError {
+    NoContent,
+    InvalidContent(String),
+    AttachmentTooLarge(Int64),
+    UnsupportedFormat(String),
+    SendFailed(String)
+}
+
+// =============================================================================
+// Message Formatter
+// =============================================================================
+
+/// Message text formatter
+struct MessageFormatter {
+    fn parse_mentions(text: String) -> (String, [Mention]) {
+        let mentions = []
+        let regex = Regex.new("@\\[(\\w+)\\]\\((\\w+)\\)")
+        
+        for match in regex.find_all(text) {
+            mentions.push(Mention {
+                user_id: match.group(2),
+                username: match.group(1),
+                offset: match.start(),
+                length: match.len()
+            })
+        }
+        
+        let clean_text = regex.replace_all(text, "@$1")
+        (clean_text, mentions)
+    }
+    
+    fn parse_links(text: String) -> [Link] {
+        let links = []
+        let regex = Regex.new("https?://[^\\s]+")
+        
+        for match in regex.find_all(text) {
+            links.push(Link {
+                url: match.text(),
+                offset: match.start(),
+                length: match.len()
+            })
+        }
+        
+        links
+    }
+    
+    fn parse_hashtags(text: String) -> [String] {
+        let regex = Regex.new("#(\\w+)")
+        regex.find_all(text).map(|m| m.group(1)).collect()
+    }
+    
+    fn to_html(text: String) -> String {
+        text
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\n", "<br>")
+    }
+    
+    fn to_markdown(text: String) -> String {
+        // Basic markdown support
+        text
+            .replace_regex("\\*\\*(.+?)\\*\\*", "<strong>$1</strong>")
+            .replace_regex("\\*(.+?)\\*", "<em>$1</em>")
+            .replace_regex("`(.+?)`", "<code>$1</code>")
+    }
+}
+
+struct Link {
+    url: String,
+    offset: Int,
+    length: Int
+}
+
+// =============================================================================
+// Message Store Actor
+// =============================================================================
+
+/// Message storage and retrieval actor
+actor MessageStore {
+    state messages: Map<String, ChatMessage>
+    state by_conversation: Map<String, [String]>
+    state by_thread: Map<String, [String]>
+    
+    fn new() -> Self {
+        MessageStore {
+            messages: Map.empty(),
+            by_conversation: Map.empty(),
+            by_thread: Map.empty()
+        }
+    }
+    
+    on store(message: ChatMessage) -> String {
+        let id = message.id.clone()
+        
+        // Index by conversation
+        if let Some(ids) = self.by_conversation.get(message.conversation_id) {
+            ids.push(id.clone())
+        } else {
+            self.by_conversation.insert(message.conversation_id.clone(), [id.clone()])
+        }
+        
+        // Index by thread
+        if let Some(thread_id) = message.thread_id {
+            if let Some(ids) = self.by_thread.get(thread_id) {
+                ids.push(id.clone())
+            } else {
+                self.by_thread.insert(thread_id, [id.clone()])
+            }
+        }
+        
+        self.messages.insert(id.clone(), message)
+        id
+    }
+    
+    on get(id: String) -> Option<ChatMessage> {
+        self.messages.get(id).cloned()
+    }
+    
+    on get_by_conversation(conversation_id: String, limit: Int, before: Option<String>) -> [ChatMessage] {
+        let ids = self.by_conversation.get(conversation_id).unwrap_or([])
+        
+        let start_idx = match before {
+            Some(before_id) => ids.iter().position(|id| id == before_id).unwrap_or(ids.len()),
+            None => ids.len()
+        }
+        
+        let start = (start_idx - limit).max(0)
+        ids[start..start_idx]
+            .iter()
+            .filter_map(|id| self.messages.get(id).cloned())
+            .collect()
+    }
+    
+    on get_thread(thread_id: String) -> [ChatMessage] {
+        let ids = self.by_thread.get(thread_id).unwrap_or([])
+        ids.iter()
+            .filter_map(|id| self.messages.get(id).cloned())
+            .collect()
+    }
+    
+    on update(id: String, updater: fn(ChatMessage) -> ChatMessage) -> Option<ChatMessage> {
+        if let Some(msg) = self.messages.get(id) {
+            let updated = updater(msg.clone())
+            self.messages.insert(id, updated.clone())
+            Some(updated)
+        } else {
+            None
+        }
+    }
+    
+    on delete(id: String) -> Bool {
+        if let Some(msg) = self.messages.remove(id) {
+            // Remove from conversation index
+            if let Some(ids) = self.by_conversation.get(msg.conversation_id) {
+                ids.retain(|i| i != id)
+            }
+            // Remove from thread index
+            if let Some(thread_id) = msg.thread_id {
+                if let Some(ids) = self.by_thread.get(thread_id) {
+                    ids.retain(|i| i != id)
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+    
+    on search(conversation_id: String, query: String) -> [ChatMessage] {
+        let ids = self.by_conversation.get(conversation_id).unwrap_or([])
+        let query_lower = query.to_lowercase()
+        
+        ids.iter()
+            .filter_map(|id| self.messages.get(id).cloned())
+            .filter(|msg| {
+                match msg.content {
+                    MessageContent.Text(t) => t.to_lowercase().contains(query_lower),
+                    _ => false
+                }
+            })
+            .collect()
+    }
+    
+    on count(conversation_id: String) -> Int {
+        self.by_conversation.get(conversation_id).map(|ids| ids.len()).unwrap_or(0)
+    }
+    
+    on clear_conversation(conversation_id: String) -> Int {
+        let ids = self.by_conversation.remove(conversation_id).unwrap_or([])
+        let count = ids.len()
+        for id in ids {
+            self.messages.remove(id)
+        }
+        count
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "create text message" {
+    let msg = ChatMessage.text("conv1", "user1", "John", "Hello, World!")
+    assert_eq(msg.conversation_id, "conv1")?
+    assert_eq(msg.sender_id, "user1")?
+    assert(msg.content.is_text())?
+    assert_eq(msg.content.as_text(), Some("Hello, World!"))?
+}
+
+test "message preview" {
+    let text_msg = ChatMessage.text("conv1", "user1", "John", "This is a very long message that should be truncated")
+    assert_eq(text_msg.preview(20), "This is a very long ...")?
+    
+    let img = ImageAttachment.new("http://example.com/img.jpg", 800, 600)
+    let img_msg = ChatMessage.image("conv1", "user1", "John", img)
+    assert_eq(img_msg.preview(50), "📷 Image")?
+}
+
+test "message reactions" {
+    var msg = ChatMessage.text("conv1", "user1", "John", "Hello!")
+    
+    msg.add_reaction("👍", "user2")
+    msg.add_reaction("👍", "user3")
+    msg.add_reaction("❤️", "user2")
+    
+    assert_eq(msg.reaction_count(), 3)?
+    assert_eq(msg.reactions.get("👍").unwrap().len(), 2)?
+    
+    msg.remove_reaction("👍", "user2")
+    assert_eq(msg.reactions.get("👍").unwrap().len(), 1)?
+}
+
+test "message builder" {
+    let msg = MessageBuilder.new("conv1", "user1", "John")
+        .text("Hello @[Jane](user2)!")
+        .reply_to("msg123")
+        .mention("user2", "Jane", 6, 5)
+        .build()?
+    
+    assert_eq(msg.reply_to, Some("msg123"))?
+    assert_eq(msg.mentions.len(), 1)?
+}
+
+test "message store" {
+    let store = MessageStore.new()
+    
+    let msg1 = ChatMessage.text("conv1", "user1", "John", "First message")
+    let msg2 = ChatMessage.text("conv1", "user1", "John", "Second message")
+    
+    let id1 = store.store(msg1)
+    let id2 = store.store(msg2)
+    
+    assert_eq(store.count("conv1"), 2)?
+    
+    let messages = store.get_by_conversation("conv1", 10, None)
+    assert_eq(messages.len(), 2)?
+}
+
+test "message status" {
+    assert_eq(MessageStatus.Sent.icon(), "✓")?
+    assert_eq(MessageStatus.Delivered.icon(), "✓✓")?
+    assert_eq(MessageStatus.Read.icon(), "✓✓")?
+    assert(!MessageStatus.Sent.is_final())?
+    assert(MessageStatus.Read.is_final())?
+}
+
+test "file attachment" {
+    let file = FileAttachment.new("http://example.com/doc.pdf", "document.pdf", 1024 * 1024 * 5)
+    assert_eq(file.size_formatted(), "5 MB")?
+    assert_eq(file.extension(), Some("pdf"))?
+}
+
+test "poll data" {
+    let poll = PollData.new("What's your favorite color?", ["Red", "Blue", "Green"])
+    assert_eq(poll.options.len(), 3)?
+    assert_eq(poll.total_votes(), 0)?
+    assert(!poll.is_closed())?
+}

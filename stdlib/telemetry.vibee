@@ -1,0 +1,686 @@
+// =============================================================================
+// Vibee OS — Telemetry Module
+// IoT telemetry collection, processing, and transmission
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Telemetry Data Types
+// -----------------------------------------------------------------------------
+
+/// Generic telemetry point
+struct TelemetryPoint<T> {
+    name: String
+    value: T
+    timestamp: Int64
+    tags: Map<String, String>
+    
+    fn new(name: String, value: T) -> Self {
+        TelemetryPoint {
+            name: name,
+            value: value,
+            timestamp: @native("timestamp_ms"),
+            tags: Map.empty()
+        }
+    }
+    
+    fn with_tag(key: String, value: String) -> Self {
+        self.tags.set(key, value)
+        self
+    }
+    
+    fn with_timestamp(ts: Int64) -> Self {
+        self.timestamp = ts
+        self
+    }
+}
+
+/// Telemetry batch
+struct TelemetryBatch {
+    device_id: String
+    points: [TelemetryPoint<Value>]
+    sequence: Int64
+    created_at: Int64
+    
+    fn new(device_id: String) -> Self {
+        TelemetryBatch {
+            device_id: device_id,
+            points: [],
+            sequence: 0,
+            created_at: @native("timestamp_ms")
+        }
+    }
+    
+    fn add<T: Into<Value>>(name: String, value: T) -> Self {
+        self.points.push(TelemetryPoint.new(name, value.into()))
+        self
+    }
+    
+    fn add_point(point: TelemetryPoint<Value>) -> Self {
+        self.points.push(point)
+        self
+    }
+    
+    fn size() -> Int { self.points.len() }
+    fn is_empty() -> Bool { self.points.is_empty() }
+    
+    fn to_json() -> String {
+        JSON.stringify({
+            "deviceId": self.device_id,
+            "points": self.points,
+            "sequence": self.sequence,
+            "createdAt": self.created_at
+        })
+    }
+}
+
+/// Time series data
+struct TimeSeries {
+    name: String
+    points: [(Int64, Float64)]
+    
+    fn new(name: String) -> Self {
+        TimeSeries { name: name, points: [] }
+    }
+    
+    fn add(timestamp: Int64, value: Float64) -> Self {
+        self.points.push((timestamp, value))
+        self
+    }
+    
+    fn latest() -> Option<(Int64, Float64)> {
+        self.points.last()
+    }
+    
+    fn average() -> Option<Float64> {
+        if self.points.is_empty() { return None }
+        let sum: Float64 = self.points.iter().map(|(_, v)| v).sum()
+        Some(sum / self.points.len() as Float64)
+    }
+    
+    fn min() -> Option<Float64> {
+        self.points.iter().map(|(_, v)| v).min()
+    }
+    
+    fn max() -> Option<Float64> {
+        self.points.iter().map(|(_, v)| v).max()
+    }
+    
+    fn range(start: Int64, end: Int64) -> [(Int64, Float64)] {
+        self.points.iter()
+            .filter(|(ts, _)| ts >= start && ts <= end)
+            .collect()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Telemetry Collector
+// -----------------------------------------------------------------------------
+
+/// Collects telemetry from multiple sources
+actor TelemetryCollector {
+    state device_id: String
+    state buffer: [TelemetryPoint<Value>]
+    state max_buffer_size: Int
+    state flush_interval_ms: Int64
+    state sinks: [Box<dyn TelemetrySink>]
+    state running: Bool
+    
+    fn new(device_id: String) -> Self {
+        TelemetryCollector {
+            device_id: device_id,
+            buffer: [],
+            max_buffer_size: 1000,
+            flush_interval_ms: 10000,
+            sinks: [],
+            running: false
+        }
+    }
+    
+    on configure(max_buffer: Int, flush_interval_ms: Int64) {
+        self.max_buffer_size = max_buffer
+        self.flush_interval_ms = flush_interval_ms
+    }
+    
+    on add_sink<S: TelemetrySink>(sink: S) {
+        self.sinks.push(Box.new(sink))
+    }
+    
+    on collect<T: Into<Value>>(name: String, value: T) {
+        let point = TelemetryPoint.new(name, value.into())
+        self.buffer.push(point)
+        
+        if self.buffer.len() >= self.max_buffer_size {
+            self.flush()
+        }
+    }
+    
+    on collect_point(point: TelemetryPoint<Value>) {
+        self.buffer.push(point)
+        
+        if self.buffer.len() >= self.max_buffer_size {
+            self.flush()
+        }
+    }
+    
+    on flush() -> Result<(), TelemetryError> {
+        if self.buffer.is_empty() { return Ok(()) }
+        
+        let batch = TelemetryBatch {
+            device_id: self.device_id,
+            points: self.buffer.clone(),
+            sequence: @native("timestamp_ms"),
+            created_at: @native("timestamp_ms")
+        }
+        
+        for sink in self.sinks {
+            sink.send(batch.clone())?
+        }
+        
+        self.buffer.clear()
+        Ok(())
+    }
+    
+    on start() {
+        self.running = true
+        async {
+            while self.running {
+                @native("sleep_ms", self.flush_interval_ms)
+                let _ = self.flush()
+            }
+        }
+    }
+    
+    on stop() {
+        self.running = false
+        let _ = self.flush()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Telemetry Sinks
+// -----------------------------------------------------------------------------
+
+/// Trait for telemetry destinations
+trait TelemetrySink {
+    fn send(batch: TelemetryBatch) -> Result<(), TelemetryError>
+    fn flush() -> Result<(), TelemetryError>
+}
+
+/// HTTP telemetry sink
+actor HttpTelemetrySink {
+    state endpoint: String
+    state headers: Map<String, String>
+    state timeout_ms: Int64
+    
+    fn new(endpoint: String) -> Self {
+        HttpTelemetrySink {
+            endpoint: endpoint,
+            headers: Map.empty(),
+            timeout_ms: 30000
+        }
+    }
+    
+    fn with_header(key: String, value: String) -> Self {
+        self.headers.set(key, value)
+        self
+    }
+    
+    fn with_auth(token: String) -> Self {
+        self.headers.set("Authorization", "Bearer \(token)")
+        self
+    }
+}
+
+impl TelemetrySink for HttpTelemetrySink {
+    fn send(batch: TelemetryBatch) -> Result<(), TelemetryError> {
+        @native("http_post", self.endpoint, batch.to_json(), self.headers, self.timeout_ms)
+            .map_err(|e| TelemetryError.SendFailed(e.to_string()))
+    }
+    
+    fn flush() -> Result<(), TelemetryError> { Ok(()) }
+}
+
+/// MQTT telemetry sink
+actor MqttTelemetrySink {
+    state client: MqttClient
+    state topic_prefix: String
+    state qos: Int
+    
+    fn new(client: MqttClient, topic_prefix: String) -> Self {
+        MqttTelemetrySink { client: client, topic_prefix: topic_prefix, qos: 1 }
+    }
+    
+    fn with_qos(qos: Int) -> Self { self.qos = qos; self }
+}
+
+impl TelemetrySink for MqttTelemetrySink {
+    fn send(batch: TelemetryBatch) -> Result<(), TelemetryError> {
+        let topic = "\(self.topic_prefix)/\(batch.device_id)/telemetry"
+        self.client.publish(topic, batch.to_json().bytes(), self.qos, false)
+            .map_err(|e| TelemetryError.SendFailed(e.to_string()))
+    }
+    
+    fn flush() -> Result<(), TelemetryError> { Ok(()) }
+}
+
+/// File telemetry sink
+actor FileTelemetrySink {
+    state path: String
+    state buffer: [String]
+    state max_file_size: Int64
+    
+    fn new(path: String) -> Self {
+        FileTelemetrySink { path: path, buffer: [], max_file_size: 10_000_000 }
+    }
+}
+
+impl TelemetrySink for FileTelemetrySink {
+    fn send(batch: TelemetryBatch) -> Result<(), TelemetryError> {
+        self.buffer.push(batch.to_json())
+        if self.buffer.len() >= 100 {
+            self.flush()?
+        }
+        Ok(())
+    }
+    
+    fn flush() -> Result<(), TelemetryError> {
+        if self.buffer.is_empty() { return Ok(()) }
+        let content = self.buffer.join("\n")
+        @native("file_append", self.path, content)
+            .map_err(|e| TelemetryError.SendFailed(e.to_string()))?
+        self.buffer.clear()
+        Ok(())
+    }
+}
+
+/// InfluxDB telemetry sink
+actor InfluxDbSink {
+    state url: String
+    state org: String
+    state bucket: String
+    state token: String
+    
+    fn new(url: String, org: String, bucket: String, token: String) -> Self {
+        InfluxDbSink { url: url, org: org, bucket: bucket, token: token }
+    }
+}
+
+impl TelemetrySink for InfluxDbSink {
+    fn send(batch: TelemetryBatch) -> Result<(), TelemetryError> {
+        let lines = batch.points.iter()
+            .map(|p| Self.to_line_protocol(batch.device_id, p))
+            .join("\n")
+        
+        let endpoint = "\(self.url)/api/v2/write?org=\(self.org)&bucket=\(self.bucket)"
+        @native("http_post", endpoint, lines, {"Authorization": "Token \(self.token)"}, 30000)
+            .map_err(|e| TelemetryError.SendFailed(e.to_string()))
+    }
+    
+    fn flush() -> Result<(), TelemetryError> { Ok(()) }
+    
+    fn to_line_protocol(device_id: String, point: TelemetryPoint<Value>) -> String {
+        let tags = point.tags.iter()
+            .map(|(k, v)| "\(k)=\(v)")
+            .join(",")
+        let tag_str = if tags.is_empty() { "" } else { ",\(tags)" }
+        "\(point.name),device=\(device_id)\(tag_str) value=\(point.value) \(point.timestamp)000000"
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Telemetry Processing
+// -----------------------------------------------------------------------------
+
+/// Telemetry processor for transformations
+actor TelemetryProcessor {
+    state transformers: [Box<dyn TelemetryTransformer>]
+    state filters: [fn(TelemetryPoint<Value>) -> Bool]
+    
+    fn new() -> Self {
+        TelemetryProcessor { transformers: [], filters: [] }
+    }
+    
+    on add_transformer<T: TelemetryTransformer>(transformer: T) {
+        self.transformers.push(Box.new(transformer))
+    }
+    
+    on add_filter(filter: fn(TelemetryPoint<Value>) -> Bool) {
+        self.filters.push(filter)
+    }
+    
+    on process(point: TelemetryPoint<Value>) -> Option<TelemetryPoint<Value>> {
+        // Apply filters
+        for filter in self.filters {
+            if !filter(point) { return None }
+        }
+        
+        // Apply transformers
+        var result = point
+        for transformer in self.transformers {
+            result = transformer.transform(result)
+        }
+        
+        Some(result)
+    }
+    
+    on process_batch(batch: TelemetryBatch) -> TelemetryBatch {
+        let processed_points = batch.points.iter()
+            .filter_map(|p| self.process(p))
+            .collect()
+        
+        TelemetryBatch {
+            device_id: batch.device_id,
+            points: processed_points,
+            sequence: batch.sequence,
+            created_at: batch.created_at
+        }
+    }
+}
+
+/// Transformer trait
+trait TelemetryTransformer {
+    fn transform(point: TelemetryPoint<Value>) -> TelemetryPoint<Value>
+}
+
+/// Unit converter transformer
+struct UnitConverter {
+    conversions: Map<String, fn(Float64) -> Float64>
+    
+    fn new() -> Self { UnitConverter { conversions: Map.empty() } }
+    
+    fn add_conversion(metric: String, converter: fn(Float64) -> Float64) -> Self {
+        self.conversions.set(metric, converter)
+        self
+    }
+    
+    fn celsius_to_fahrenheit() -> Self {
+        self.add_conversion("temperature", |c| c * 9.0 / 5.0 + 32.0)
+    }
+}
+
+impl TelemetryTransformer for UnitConverter {
+    fn transform(point: TelemetryPoint<Value>) -> TelemetryPoint<Value> {
+        if let Some(converter) = self.conversions.get(point.name) {
+            if let Value.Float(v) = point.value {
+                point.value = Value.Float(converter(v))
+            }
+        }
+        point
+    }
+}
+
+/// Aggregator for downsampling
+actor TelemetryAggregator {
+    state window_ms: Int64
+    state aggregation: AggregationType
+    state buffers: Map<String, [Float64]>
+    state last_emit: Map<String, Int64>
+    
+    fn new(window_ms: Int64, aggregation: AggregationType) -> Self {
+        TelemetryAggregator {
+            window_ms: window_ms,
+            aggregation: aggregation,
+            buffers: Map.empty(),
+            last_emit: Map.empty()
+        }
+    }
+    
+    on add(name: String, value: Float64) -> Option<Float64> {
+        let buffer = self.buffers.entry(name).or_insert([])
+        buffer.push(value)
+        
+        let now = @native("timestamp_ms")
+        let last = self.last_emit.get(name).unwrap_or(0)
+        
+        if now - last >= self.window_ms {
+            self.last_emit.set(name, now)
+            let result = self.aggregate(buffer)
+            buffer.clear()
+            Some(result)
+        } else {
+            None
+        }
+    }
+    
+    fn aggregate(values: [Float64]) -> Float64 {
+        match self.aggregation {
+            .Average => values.iter().sum::<Float64>() / values.len() as Float64
+            .Sum => values.iter().sum()
+            .Min => values.iter().min().unwrap_or(0.0)
+            .Max => values.iter().max().unwrap_or(0.0)
+            .Count => values.len() as Float64
+            .First => values.first().unwrap_or(0.0)
+            .Last => values.last().unwrap_or(0.0)
+        }
+    }
+}
+
+enum AggregationType { Average, Sum, Min, Max, Count, First, Last }
+
+// -----------------------------------------------------------------------------
+// Telemetry Buffering
+// -----------------------------------------------------------------------------
+
+/// Offline buffer for telemetry
+actor TelemetryBuffer {
+    state path: String
+    state max_size: Int64
+    state current_size: Int64
+    
+    fn new(path: String, max_size: Int64) -> Self {
+        TelemetryBuffer { path: path, max_size: max_size, current_size: 0 }
+    }
+    
+    on store(batch: TelemetryBatch) -> Result<(), TelemetryError> {
+        let data = batch.to_json()
+        let size = data.len() as Int64
+        
+        if self.current_size + size > self.max_size {
+            return Err(TelemetryError.BufferFull)
+        }
+        
+        @native("file_append", self.path, data + "\n")?
+        self.current_size += size
+        Ok(())
+    }
+    
+    on retrieve(count: Int) -> Result<[TelemetryBatch], TelemetryError> {
+        let content = @native("file_read", self.path)?
+        let lines: [String] = content.lines().take(count).collect()
+        
+        lines.iter()
+            .map(|line| JSON.parse::<TelemetryBatch>(line))
+            .collect::<Result<[TelemetryBatch], _>>()
+            .map_err(|_| TelemetryError.ParseError)
+    }
+    
+    on clear() -> Result<(), TelemetryError> {
+        @native("file_write", self.path, "")?
+        self.current_size = 0
+        Ok(())
+    }
+    
+    on size() -> Int64 { self.current_size }
+}
+
+// -----------------------------------------------------------------------------
+// Telemetry Compression
+// -----------------------------------------------------------------------------
+
+/// Compresses telemetry data
+struct TelemetryCompressor {
+    fn compress_batch(batch: TelemetryBatch) -> Result<[Byte], TelemetryError> {
+        let json = batch.to_json()
+        @native("gzip_compress", json.bytes())
+            .map_err(|_| TelemetryError.CompressionError)
+    }
+    
+    fn decompress_batch(data: [Byte]) -> Result<TelemetryBatch, TelemetryError> {
+        let decompressed = @native("gzip_decompress", data)
+            .map_err(|_| TelemetryError.CompressionError)?
+        let json = String.from_utf8(decompressed)
+            .map_err(|_| TelemetryError.ParseError)?
+        JSON.parse::<TelemetryBatch>(json)
+            .map_err(|_| TelemetryError.ParseError)
+    }
+    
+    fn delta_encode(values: [Float64]) -> [Float64] {
+        if values.is_empty() { return [] }
+        var result = [values[0]]
+        for i in 1..values.len() {
+            result.push(values[i] - values[i - 1])
+        }
+        result
+    }
+    
+    fn delta_decode(deltas: [Float64]) -> [Float64] {
+        if deltas.is_empty() { return [] }
+        var result = [deltas[0]]
+        for i in 1..deltas.len() {
+            result.push(result[i - 1] + deltas[i])
+        }
+        result
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Telemetry Schema
+// -----------------------------------------------------------------------------
+
+/// Schema definition for telemetry validation
+struct TelemetrySchema {
+    fields: Map<String, FieldSchema>
+    
+    fn new() -> Self { TelemetrySchema { fields: Map.empty() } }
+    
+    fn add_field(name: String, schema: FieldSchema) -> Self {
+        self.fields.set(name, schema)
+        self
+    }
+    
+    fn validate(point: TelemetryPoint<Value>) -> Result<(), TelemetryError> {
+        if let Some(schema) = self.fields.get(point.name) {
+            schema.validate(point.value)
+        } else {
+            Ok(())  // Unknown fields are allowed
+        }
+    }
+}
+
+struct FieldSchema {
+    field_type: FieldType
+    required: Bool
+    min: Option<Float64>
+    max: Option<Float64>
+    
+    fn new(field_type: FieldType) -> Self {
+        FieldSchema { field_type: field_type, required: false, min: None, max: None }
+    }
+    
+    fn required() -> Self { self.required = true; self }
+    fn with_range(min: Float64, max: Float64) -> Self { self.min = Some(min); self.max = Some(max); self }
+    
+    fn validate(value: Value) -> Result<(), TelemetryError> {
+        // Type check
+        let valid_type = match (self.field_type, value) {
+            (FieldType.Float, Value.Float(_)) => true
+            (FieldType.Int, Value.Int(_)) => true
+            (FieldType.Bool, Value.Bool(_)) => true
+            (FieldType.String, Value.String(_)) => true
+            _ => false
+        }
+        
+        if !valid_type {
+            return Err(TelemetryError.ValidationError("Type mismatch"))
+        }
+        
+        // Range check
+        if let (Some(min), Some(max)) = (self.min, self.max) {
+            if let Value.Float(v) = value {
+                if v < min || v > max {
+                    return Err(TelemetryError.ValidationError("Value out of range"))
+                }
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+enum FieldType { Float, Int, Bool, String }
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum TelemetryError {
+    SendFailed(String)
+    BufferFull
+    ParseError
+    CompressionError
+    ValidationError(String)
+    ConnectionError(String)
+    
+    fn to_string() -> String {
+        match self {
+            .SendFailed(msg) => "Send failed: \(msg)"
+            .BufferFull => "Telemetry buffer full"
+            .ParseError => "Parse error"
+            .CompressionError => "Compression error"
+            .ValidationError(msg) => "Validation error: \(msg)"
+            .ConnectionError(msg) => "Connection error: \(msg)"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "telemetry point creation" {
+    let point = TelemetryPoint.new("temperature", 25.5)
+        .with_tag("location", "room1")
+    assert_eq(point.name, "temperature")?
+    assert_eq(point.tags.get("location"), Some("room1"))?
+}
+
+test "telemetry batch" {
+    let batch = TelemetryBatch.new("device-1")
+        .add("temperature", 25.5)
+        .add("humidity", 60.0)
+    assert_eq(batch.size(), 2)?
+}
+
+test "time series operations" {
+    let mut ts = TimeSeries.new("temp")
+    ts.add(1000, 20.0)
+    ts.add(2000, 22.0)
+    ts.add(3000, 24.0)
+    
+    assert_eq(ts.average(), Some(22.0))?
+    assert_eq(ts.min(), Some(20.0))?
+    assert_eq(ts.max(), Some(24.0))?
+}
+
+test "delta encoding" {
+    let values = [100.0, 102.0, 105.0, 103.0]
+    let encoded = TelemetryCompressor.delta_encode(values)
+    let decoded = TelemetryCompressor.delta_decode(encoded)
+    assert_eq(decoded, values)?
+}
+
+test "aggregation" {
+    let aggregator = TelemetryAggregator.new(1000, AggregationType.Average)
+    // Test aggregation logic
+}
+
+test "schema validation" {
+    let schema = TelemetrySchema.new()
+        .add_field("temperature", FieldSchema.new(FieldType.Float).with_range(-40.0, 85.0))
+    
+    let valid_point = TelemetryPoint.new("temperature", Value.Float(25.0))
+    assert(schema.validate(valid_point).is_ok())?
+    
+    let invalid_point = TelemetryPoint.new("temperature", Value.Float(100.0))
+    assert(schema.validate(invalid_point).is_err())?
+}

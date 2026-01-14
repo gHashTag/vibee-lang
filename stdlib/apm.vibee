@@ -1,0 +1,970 @@
+// =============================================================================
+// Vibee OS — APM Module (Application Performance Monitoring)
+// Comprehensive application performance monitoring and analysis
+// =============================================================================
+
+use tracing.{TraceId, SpanId, Span, Tracer}
+use metrics.{MetricValue, Counter, Gauge, Histogram}
+use datetime.{DateTime, Duration}
+
+// -----------------------------------------------------------------------------
+// Core APM Types
+// -----------------------------------------------------------------------------
+
+/// Transaction represents a single unit of work (e.g., HTTP request, job)
+struct Transaction {
+    id: String
+    trace_id: TraceId
+    name: String
+    type_: TransactionType
+    start_time: DateTime
+    end_time: Option<DateTime>
+    duration_ms: Option<Float>
+    result: Option<String>
+    outcome: TransactionOutcome
+    spans: [Span]
+    context: TransactionContext
+    labels: Map<String, String>
+    custom: Map<String, Any>
+    sampled: Bool
+}
+
+impl Transaction {
+    fn new(name: String, type_: TransactionType) -> Self {
+        Transaction {
+            id: Uuid.v4().to_string(),
+            trace_id: TraceId.generate(),
+            name: name,
+            type_: type_,
+            start_time: DateTime.now(),
+            end_time: None,
+            duration_ms: None,
+            result: None,
+            outcome: TransactionOutcome.Unknown,
+            spans: [],
+            context: TransactionContext.new(),
+            labels: Map.new(),
+            custom: Map.new(),
+            sampled: true
+        }
+    }
+    
+    fn with_trace_id(trace_id: TraceId) -> Self {
+        self.trace_id = trace_id
+        self
+    }
+    
+    fn with_label(key: String, value: String) -> Self {
+        self.labels.insert(key, value)
+        self
+    }
+    
+    fn with_custom(key: String, value: Any) -> Self {
+        self.custom.insert(key, value)
+        self
+    }
+    
+    fn start_span(name: String, type_: SpanType) -> Span {
+        let span = Span.new(name)
+            .with_trace_id(self.trace_id.clone())
+            .with_type(type_.to_string())
+        self.spans.push(span.clone())
+        span
+    }
+    
+    fn set_result(result: String) -> Self {
+        self.result = Some(result)
+        self
+    }
+    
+    fn set_outcome(outcome: TransactionOutcome) -> Self {
+        self.outcome = outcome
+        self
+    }
+    
+    fn end() {
+        self.end_time = Some(DateTime.now())
+        self.duration_ms = Some(self.end_time.unwrap().diff_ms(self.start_time))
+    }
+    
+    fn is_slow(threshold_ms: Float) -> Bool {
+        match self.duration_ms {
+            Some(d) => d > threshold_ms,
+            None => false
+        }
+    }
+}
+
+/// Transaction types
+enum TransactionType {
+    Request
+    BackgroundJob
+    Schedule
+    Custom(String)
+    
+    fn to_string() -> String {
+        match self {
+            Request => "request",
+            BackgroundJob => "background_job",
+            Schedule => "schedule",
+            Custom(s) => s
+        }
+    }
+}
+
+/// Transaction outcome
+enum TransactionOutcome {
+    Success
+    Failure
+    Unknown
+    
+    fn to_string() -> String {
+        match self {
+            Success => "success",
+            Failure => "failure",
+            Unknown => "unknown"
+        }
+    }
+}
+
+/// Span types for APM
+enum SpanType {
+    DB
+    External
+    Cache
+    Template
+    Custom(String)
+    
+    fn to_string() -> String {
+        match self {
+            DB => "db",
+            External => "external",
+            Cache => "cache",
+            Template => "template",
+            Custom(s) => s
+        }
+    }
+}
+
+/// Transaction context with request/response info
+struct TransactionContext {
+    request: Option<RequestContext>
+    response: Option<ResponseContext>
+    user: Option<UserContext>
+    service: Option<ServiceContext>
+    tags: Map<String, String>
+}
+
+impl TransactionContext {
+    fn new() -> Self {
+        TransactionContext {
+            request: None,
+            response: None,
+            user: None,
+            service: None,
+            tags: Map.new()
+        }
+    }
+    
+    fn with_request(ctx: RequestContext) -> Self {
+        self.request = Some(ctx)
+        self
+    }
+    
+    fn with_response(ctx: ResponseContext) -> Self {
+        self.response = Some(ctx)
+        self
+    }
+    
+    fn with_user(ctx: UserContext) -> Self {
+        self.user = Some(ctx)
+        self
+    }
+    
+    fn with_service(ctx: ServiceContext) -> Self {
+        self.service = Some(ctx)
+        self
+    }
+}
+
+struct RequestContext {
+    method: String
+    url: String
+    headers: Map<String, String>
+    body_size: Option<Int>
+    socket: Option<SocketContext>
+}
+
+struct ResponseContext {
+    status_code: Int
+    headers: Map<String, String>
+    body_size: Option<Int>
+}
+
+struct UserContext {
+    id: Option<String>
+    email: Option<String>
+    username: Option<String>
+}
+
+struct ServiceContext {
+    name: String
+    version: Option<String>
+    environment: Option<String>
+    node_name: Option<String>
+}
+
+struct SocketContext {
+    remote_address: String
+    encrypted: Bool
+}
+
+// -----------------------------------------------------------------------------
+// APM Agent
+// -----------------------------------------------------------------------------
+
+/// Main APM agent for collecting and reporting performance data
+actor ApmAgent {
+    state config: ApmConfig
+    state transactions: [Transaction]
+    state active_transactions: Map<String, Transaction>
+    state metrics_collector: MetricsCollector
+    state exporter: Box<dyn ApmExporter>
+    state running: Bool
+    
+    fn new(config: ApmConfig) -> Self {
+        ApmAgent {
+            config: config,
+            transactions: [],
+            active_transactions: Map.new(),
+            metrics_collector: MetricsCollector.new(),
+            exporter: Box.new(DefaultApmExporter.new(config.server_url.clone())),
+            running: false
+        }
+    }
+    
+    fn with_exporter<E: ApmExporter>(exporter: E) -> Self {
+        self.exporter = Box.new(exporter)
+        self
+    }
+    
+    async fn start() {
+        self.running = true
+        self.start_flush_loop().await
+    }
+    
+    async fn stop() {
+        self.running = false
+        self.flush().await
+    }
+    
+    fn start_transaction(name: String, type_: TransactionType) -> Transaction {
+        let tx = Transaction.new(name, type_)
+            .with_label("service.name", self.config.service_name.clone())
+            .with_label("service.environment", self.config.environment.clone())
+        
+        self.active_transactions.insert(tx.id.clone(), tx.clone())
+        tx
+    }
+    
+    fn end_transaction(tx_id: String) {
+        if let Some(mut tx) = self.active_transactions.remove(tx_id) {
+            tx.end()
+            self.transactions.push(tx.clone())
+            self.metrics_collector.record_transaction(tx)
+        }
+    }
+    
+    fn capture_span(tx_id: String, name: String, type_: SpanType) -> Option<Span> {
+        if let Some(tx) = self.active_transactions.get_mut(tx_id) {
+            Some(tx.start_span(name, type_))
+        } else {
+            None
+        }
+    }
+    
+    async fn flush() {
+        if self.transactions.is_empty() { return }
+        
+        let batch = self.transactions.drain(..).collect()
+        let metrics = self.metrics_collector.collect()
+        
+        let payload = ApmPayload {
+            transactions: batch,
+            metrics: metrics,
+            metadata: self.build_metadata()
+        }
+        
+        match self.exporter.export(payload).await {
+            Ok(_) => {},
+            Err(e) => Logger.error("APM export failed: \(e)")
+        }
+    }
+    
+    async fn start_flush_loop() {
+        while self.running {
+            Timer.sleep(self.config.flush_interval).await
+            self.flush().await
+        }
+    }
+    
+    fn build_metadata() -> ApmMetadata {
+        ApmMetadata {
+            service: ServiceInfo {
+                name: self.config.service_name.clone(),
+                version: self.config.service_version.clone(),
+                environment: self.config.environment.clone(),
+                agent: AgentInfo {
+                    name: "vibee-apm",
+                    version: "1.0.0"
+                }
+            },
+            system: SystemInfo.collect()
+        }
+    }
+    
+    fn get_metrics() -> ApmMetrics {
+        self.metrics_collector.get_summary()
+    }
+}
+
+/// APM configuration
+struct ApmConfig {
+    service_name: String
+    service_version: Option<String>
+    environment: String
+    server_url: String
+    secret_token: Option<String>
+    api_key: Option<String>
+    sample_rate: Float
+    flush_interval: Duration
+    max_queue_size: Int
+    capture_body: CaptureBody
+    capture_headers: Bool
+    transaction_ignore_urls: [String]
+    span_frames_min_duration: Duration
+}
+
+impl ApmConfig {
+    fn new(service_name: String) -> Self {
+        ApmConfig {
+            service_name: service_name,
+            service_version: None,
+            environment: "production",
+            server_url: "http://localhost:8200",
+            secret_token: None,
+            api_key: None,
+            sample_rate: 1.0,
+            flush_interval: Duration.seconds(10),
+            max_queue_size: 1000,
+            capture_body: CaptureBody.Off,
+            capture_headers: true,
+            transaction_ignore_urls: [],
+            span_frames_min_duration: Duration.milliseconds(5)
+        }
+    }
+    
+    fn with_server_url(url: String) -> Self {
+        self.server_url = url
+        self
+    }
+    
+    fn with_environment(env: String) -> Self {
+        self.environment = env
+        self
+    }
+    
+    fn with_sample_rate(rate: Float) -> Self {
+        self.sample_rate = rate.clamp(0.0, 1.0)
+        self
+    }
+    
+    fn with_secret_token(token: String) -> Self {
+        self.secret_token = Some(token)
+        self
+    }
+}
+
+enum CaptureBody {
+    Off
+    Errors
+    Transactions
+    All
+}
+
+// -----------------------------------------------------------------------------
+// Metrics Collection
+// -----------------------------------------------------------------------------
+
+/// Internal metrics collector for APM
+struct MetricsCollector {
+    transaction_count: Counter
+    transaction_duration: Histogram
+    span_count: Counter
+    error_count: Counter
+    throughput: Gauge
+    breakdown: Map<String, BreakdownMetrics>
+}
+
+impl MetricsCollector {
+    fn new() -> Self {
+        MetricsCollector {
+            transaction_count: Counter.new("apm.transaction.count", "Total transactions"),
+            transaction_duration: Histogram.new("apm.transaction.duration", "Transaction duration in ms"),
+            span_count: Counter.new("apm.span.count", "Total spans"),
+            error_count: Counter.new("apm.error.count", "Total errors"),
+            throughput: Gauge.new("apm.throughput", "Transactions per second"),
+            breakdown: Map.new()
+        }
+    }
+    
+    fn record_transaction(tx: Transaction) {
+        self.transaction_count.inc()
+        
+        if let Some(duration) = tx.duration_ms {
+            self.transaction_duration.observe(duration)
+        }
+        
+        self.span_count.add(tx.spans.len() as Float)
+        
+        if tx.outcome == TransactionOutcome.Failure {
+            self.error_count.inc()
+        }
+        
+        // Update breakdown metrics
+        let key = "\(tx.type_.to_string()):\(tx.name)"
+        let breakdown = self.breakdown.entry(key).or_insert(BreakdownMetrics.new())
+        breakdown.record(tx)
+    }
+    
+    fn collect() -> [MetricValue] {
+        [
+            MetricValue.Counter(self.transaction_count.value()),
+            MetricValue.Histogram(self.transaction_duration.snapshot()),
+            MetricValue.Counter(self.span_count.value()),
+            MetricValue.Counter(self.error_count.value())
+        ]
+    }
+    
+    fn get_summary() -> ApmMetrics {
+        ApmMetrics {
+            total_transactions: self.transaction_count.value() as Int,
+            avg_duration_ms: self.transaction_duration.mean(),
+            p50_duration_ms: self.transaction_duration.percentile(50.0),
+            p95_duration_ms: self.transaction_duration.percentile(95.0),
+            p99_duration_ms: self.transaction_duration.percentile(99.0),
+            error_rate: self.error_count.value() / self.transaction_count.value().max(1.0),
+            throughput: self.throughput.value()
+        }
+    }
+}
+
+struct BreakdownMetrics {
+    count: Int
+    total_duration: Float
+    min_duration: Float
+    max_duration: Float
+    self_time: Float
+}
+
+impl BreakdownMetrics {
+    fn new() -> Self {
+        BreakdownMetrics {
+            count: 0,
+            total_duration: 0.0,
+            min_duration: Float.MAX,
+            max_duration: 0.0,
+            self_time: 0.0
+        }
+    }
+    
+    fn record(tx: Transaction) {
+        self.count += 1
+        if let Some(d) = tx.duration_ms {
+            self.total_duration += d
+            self.min_duration = self.min_duration.min(d)
+            self.max_duration = self.max_duration.max(d)
+            
+            // Calculate self time (transaction time minus span time)
+            let span_time: Float = tx.spans.iter()
+                .filter_map(|s| s.duration_ms)
+                .sum()
+            self.self_time += d - span_time
+        }
+    }
+    
+    fn avg_duration() -> Float {
+        if self.count > 0 { self.total_duration / self.count as Float } else { 0.0 }
+    }
+}
+
+/// APM metrics summary
+struct ApmMetrics {
+    total_transactions: Int
+    avg_duration_ms: Float
+    p50_duration_ms: Float
+    p95_duration_ms: Float
+    p99_duration_ms: Float
+    error_rate: Float
+    throughput: Float
+}
+
+// -----------------------------------------------------------------------------
+// APM Exporter
+// -----------------------------------------------------------------------------
+
+/// Trait for APM data exporters
+trait ApmExporter {
+    async fn export(payload: ApmPayload) -> Result<(), ApmError>
+    fn name() -> String
+}
+
+struct ApmPayload {
+    transactions: [Transaction]
+    metrics: [MetricValue]
+    metadata: ApmMetadata
+}
+
+struct ApmMetadata {
+    service: ServiceInfo
+    system: SystemInfo
+}
+
+struct ServiceInfo {
+    name: String
+    version: Option<String>
+    environment: String
+    agent: AgentInfo
+}
+
+struct AgentInfo {
+    name: String
+    version: String
+}
+
+struct SystemInfo {
+    hostname: String
+    architecture: String
+    platform: String
+    container_id: Option<String>
+    kubernetes: Option<KubernetesInfo>
+}
+
+impl SystemInfo {
+    fn collect() -> Self {
+        SystemInfo {
+            hostname: System.hostname(),
+            architecture: System.arch(),
+            platform: System.platform(),
+            container_id: Env.get("CONTAINER_ID"),
+            kubernetes: KubernetesInfo.detect()
+        }
+    }
+}
+
+struct KubernetesInfo {
+    namespace: String
+    pod_name: String
+    pod_uid: String
+    node_name: Option<String>
+}
+
+impl KubernetesInfo {
+    fn detect() -> Option<Self> {
+        let namespace = Env.get("KUBERNETES_NAMESPACE")?
+        let pod_name = Env.get("KUBERNETES_POD_NAME")?
+        let pod_uid = Env.get("KUBERNETES_POD_UID")?
+        
+        Some(KubernetesInfo {
+            namespace: namespace,
+            pod_name: pod_name,
+            pod_uid: pod_uid,
+            node_name: Env.get("KUBERNETES_NODE_NAME")
+        })
+    }
+}
+
+/// Default HTTP exporter
+struct DefaultApmExporter {
+    server_url: String
+    client: HttpClient
+}
+
+impl DefaultApmExporter {
+    fn new(server_url: String) -> Self {
+        DefaultApmExporter {
+            server_url: server_url,
+            client: HttpClient.new()
+        }
+    }
+}
+
+impl ApmExporter for DefaultApmExporter {
+    async fn export(payload: ApmPayload) -> Result<(), ApmError> {
+        let url = "\(self.server_url)/intake/v2/events"
+        let body = Json.encode(payload)?
+        
+        let response = self.client
+            .post(url)
+            .header("Content-Type", "application/x-ndjson")
+            .body(body)
+            .send()
+            .await?
+        
+        if response.status() >= 400 {
+            return Err(ApmError.ExportFailed(response.status(), response.text().await?))
+        }
+        
+        Ok(())
+    }
+    
+    fn name() -> String { "default_http" }
+}
+
+/// Elastic APM exporter
+struct ElasticApmExporter {
+    server_url: String
+    secret_token: Option<String>
+    api_key: Option<String>
+    client: HttpClient
+}
+
+impl ElasticApmExporter {
+    fn new(server_url: String) -> Self {
+        ElasticApmExporter {
+            server_url: server_url,
+            secret_token: None,
+            api_key: None,
+            client: HttpClient.new()
+        }
+    }
+    
+    fn with_secret_token(token: String) -> Self {
+        self.secret_token = Some(token)
+        self
+    }
+    
+    fn with_api_key(key: String) -> Self {
+        self.api_key = Some(key)
+        self
+    }
+}
+
+impl ApmExporter for ElasticApmExporter {
+    async fn export(payload: ApmPayload) -> Result<(), ApmError> {
+        let url = "\(self.server_url)/intake/v2/events"
+        
+        var request = self.client
+            .post(url)
+            .header("Content-Type", "application/x-ndjson")
+        
+        if let Some(token) = self.secret_token.as_ref() {
+            request = request.header("Authorization", "Bearer \(token)")
+        } else if let Some(key) = self.api_key.as_ref() {
+            request = request.header("Authorization", "ApiKey \(key)")
+        }
+        
+        let body = self.format_ndjson(payload)
+        let response = request.body(body).send().await?
+        
+        if response.status() >= 400 {
+            return Err(ApmError.ExportFailed(response.status(), response.text().await?))
+        }
+        
+        Ok(())
+    }
+    
+    fn name() -> String { "elastic_apm" }
+}
+
+impl ElasticApmExporter {
+    fn format_ndjson(payload: ApmPayload) -> String {
+        var lines: [String] = []
+        
+        // Metadata line
+        lines.push(Json.encode({"metadata": payload.metadata}))
+        
+        // Transaction lines
+        for tx in payload.transactions {
+            lines.push(Json.encode({"transaction": tx}))
+            
+            // Span lines
+            for span in tx.spans {
+                lines.push(Json.encode({"span": span}))
+            }
+        }
+        
+        lines.join("\n")
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Database Span Helper
+// -----------------------------------------------------------------------------
+
+/// Helper for creating database spans
+struct DbSpan {
+    span: Span
+    db_type: String
+    statement: Option<String>
+}
+
+impl DbSpan {
+    fn new(tx: &mut Transaction, db_type: String) -> Self {
+        let span = tx.start_span("db", SpanType.DB)
+        DbSpan {
+            span: span,
+            db_type: db_type,
+            statement: None
+        }
+    }
+    
+    fn with_statement(statement: String) -> Self {
+        self.statement = Some(statement)
+        self.span.set_string("db.statement", statement)
+        self
+    }
+    
+    fn with_instance(instance: String) -> Self {
+        self.span.set_string("db.instance", instance)
+        self
+    }
+    
+    fn with_user(user: String) -> Self {
+        self.span.set_string("db.user", user)
+        self
+    }
+    
+    fn end() {
+        self.span.set_string("db.type", self.db_type.clone())
+        self.span.end()
+    }
+}
+
+/// Helper for creating HTTP spans
+struct HttpSpan {
+    span: Span
+}
+
+impl HttpSpan {
+    fn new(tx: &mut Transaction, method: String, url: String) -> Self {
+        let span = tx.start_span("HTTP \(method)", SpanType.External)
+        span.set_string("http.method", method)
+        span.set_string("http.url", url)
+        HttpSpan { span: span }
+    }
+    
+    fn set_status_code(code: Int) -> Self {
+        self.span.set_int("http.status_code", code)
+        self
+    }
+    
+    fn end() {
+        self.span.end()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// APM Middleware
+// -----------------------------------------------------------------------------
+
+/// HTTP middleware for automatic transaction tracking
+struct ApmMiddleware {
+    agent: ApmAgent
+    ignore_paths: [String]
+}
+
+impl ApmMiddleware {
+    fn new(agent: ApmAgent) -> Self {
+        ApmMiddleware {
+            agent: agent,
+            ignore_paths: ["/health", "/ready", "/metrics"]
+        }
+    }
+    
+    fn with_ignore_paths(paths: [String]) -> Self {
+        self.ignore_paths = paths
+        self
+    }
+    
+    async fn handle(request: Request, next: NextHandler) -> Response {
+        // Skip ignored paths
+        if self.ignore_paths.contains(request.path()) {
+            return next.handle(request).await
+        }
+        
+        let tx_name = "\(request.method()) \(request.path())"
+        let tx = self.agent.start_transaction(tx_name, TransactionType.Request)
+        
+        // Set request context
+        tx.context = tx.context.with_request(RequestContext {
+            method: request.method(),
+            url: request.url(),
+            headers: request.headers().clone(),
+            body_size: request.content_length(),
+            socket: Some(SocketContext {
+                remote_address: request.remote_addr(),
+                encrypted: request.is_secure()
+            })
+        })
+        
+        // Execute request
+        let response = next.handle(request).await
+        
+        // Set response context
+        tx.context = tx.context.with_response(ResponseContext {
+            status_code: response.status(),
+            headers: response.headers().clone(),
+            body_size: response.content_length()
+        })
+        
+        // Set outcome
+        tx.set_result(response.status().to_string())
+        if response.status() >= 500 {
+            tx.set_outcome(TransactionOutcome.Failure)
+        } else {
+            tx.set_outcome(TransactionOutcome.Success)
+        }
+        
+        self.agent.end_transaction(tx.id.clone())
+        
+        response
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Error Types
+// -----------------------------------------------------------------------------
+
+enum ApmError {
+    ConfigError(String)
+    ExportFailed(Int, String)
+    SerializationError(String)
+    NetworkError(String)
+    
+    fn message() -> String {
+        match self {
+            ConfigError(msg) => "Configuration error: \(msg)",
+            ExportFailed(code, msg) => "Export failed with status \(code): \(msg)",
+            SerializationError(msg) => "Serialization error: \(msg)",
+            NetworkError(msg) => "Network error: \(msg)"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Global APM Instance
+// -----------------------------------------------------------------------------
+
+static GLOBAL_APM: Mutex<Option<ApmAgent>> = Mutex.new(None)
+
+/// Initialize global APM agent
+fn init(config: ApmConfig) {
+    var guard = GLOBAL_APM.lock()
+    *guard = Some(ApmAgent.new(config))
+}
+
+/// Get global APM agent
+fn agent() -> Option<&ApmAgent> {
+    GLOBAL_APM.lock().as_ref()
+}
+
+/// Start a transaction using global agent
+fn start_transaction(name: String, type_: TransactionType) -> Option<Transaction> {
+    agent().map(|a| a.start_transaction(name, type_))
+}
+
+/// End a transaction using global agent
+fn end_transaction(tx_id: String) {
+    if let Some(a) = agent() {
+        a.end_transaction(tx_id)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Macros
+// -----------------------------------------------------------------------------
+
+/// Instrument a function with APM transaction
+macro instrument!(name, body) {
+    let __tx = start_transaction(name, TransactionType.Custom("function"))
+    let __result = body
+    if let Some(tx) = __tx {
+        end_transaction(tx.id)
+    }
+    __result
+}
+
+/// Create a database span
+macro db_span!(tx, db_type, statement, body) {
+    let __span = DbSpan.new(tx, db_type).with_statement(statement)
+    let __result = body
+    __span.end()
+    __result
+}
+
+/// Create an HTTP span
+macro http_span!(tx, method, url, body) {
+    let __span = HttpSpan.new(tx, method, url)
+    let __result = body
+    __span.end()
+    __result
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "transaction creation" {
+    let tx = Transaction.new("GET /api/users", TransactionType.Request)
+    assert_eq(tx.name, "GET /api/users")?
+    assert_eq(tx.outcome, TransactionOutcome.Unknown)?
+}
+
+test "transaction with spans" {
+    var tx = Transaction.new("test", TransactionType.Request)
+    let span = tx.start_span("db.query", SpanType.DB)
+    span.end()
+    tx.end()
+    
+    assert_eq(tx.spans.len(), 1)?
+    assert(tx.duration_ms.is_some())?
+}
+
+test "apm config defaults" {
+    let config = ApmConfig.new("test-service")
+    assert_eq(config.service_name, "test-service")?
+    assert_eq(config.environment, "production")?
+    assert_eq(config.sample_rate, 1.0)?
+}
+
+test "metrics collector" {
+    var collector = MetricsCollector.new()
+    var tx = Transaction.new("test", TransactionType.Request)
+    tx.duration_ms = Some(100.0)
+    tx.outcome = TransactionOutcome.Success
+    
+    collector.record_transaction(tx)
+    
+    let metrics = collector.get_summary()
+    assert_eq(metrics.total_transactions, 1)?
+}
+
+test "breakdown metrics" {
+    var breakdown = BreakdownMetrics.new()
+    var tx = Transaction.new("test", TransactionType.Request)
+    tx.duration_ms = Some(50.0)
+    
+    breakdown.record(tx)
+    
+    assert_eq(breakdown.count, 1)?
+    assert_eq(breakdown.avg_duration(), 50.0)?
+}
+
+test "slow transaction detection" {
+    var tx = Transaction.new("slow", TransactionType.Request)
+    tx.duration_ms = Some(5000.0)
+    
+    assert(tx.is_slow(1000.0))?
+    assert(!tx.is_slow(10000.0))?
+}

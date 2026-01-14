@@ -1,0 +1,709 @@
+// =============================================================================
+// Vibee OS — Distributed Lock Module
+// Distributed locking primitives for multi-node coordination
+// =============================================================================
+
+// =============================================================================
+// Lock Backend Trait
+// =============================================================================
+
+/// Backend trait for distributed lock storage
+trait LockBackend {
+    fn acquire(key: String, owner: String, ttl_ms: Int64) -> Result<Bool, LockError>
+    fn release(key: String, owner: String) -> Result<Bool, LockError>
+    fn extend(key: String, owner: String, ttl_ms: Int64) -> Result<Bool, LockError>
+    fn is_locked(key: String) -> Result<Bool, LockError>
+    fn get_owner(key: String) -> Result<Option<String>, LockError>
+}
+
+// =============================================================================
+// Error Types
+// =============================================================================
+
+/// Distributed lock errors
+enum LockError {
+    AlreadyLocked { owner: String, remaining_ms: Int64 }
+    NotOwner { expected: String, actual: String }
+    Expired
+    BackendError { message: String }
+    Timeout
+    NetworkError { message: String }
+    InvalidKey { key: String }
+    QuorumNotReached { acquired: Int, required: Int }
+}
+
+impl LockError {
+    fn is_retryable() -> Bool {
+        match self {
+            LockError.AlreadyLocked { .. } => true
+            LockError.Timeout => true
+            LockError.NetworkError { .. } => true
+            LockError.QuorumNotReached { .. } => true
+            _ => false
+        }
+    }
+    
+    fn message() -> String {
+        match self {
+            LockError.AlreadyLocked { owner, remaining_ms } => 
+                f"Lock held by {owner}, expires in {remaining_ms}ms"
+            LockError.NotOwner { expected, actual } => 
+                f"Expected owner {expected}, but was {actual}"
+            LockError.Expired => "Lock has expired"
+            LockError.BackendError { message } => f"Backend error: {message}"
+            LockError.Timeout => "Lock acquisition timed out"
+            LockError.NetworkError { message } => f"Network error: {message}"
+            LockError.InvalidKey { key } => f"Invalid lock key: {key}"
+            LockError.QuorumNotReached { acquired, required } => 
+                f"Quorum not reached: {acquired}/{required}"
+        }
+    }
+}
+
+// =============================================================================
+// Distributed Lock Configuration
+// =============================================================================
+
+/// Configuration for distributed locks
+struct DistributedLockConfig {
+    ttl_ms: Int64
+    retry_delay_ms: Int64
+    max_retries: Int
+    auto_extend: Bool
+    extend_interval_ms: Int64
+    drift_factor: Float64
+    
+    fn default() -> Self {
+        DistributedLockConfig {
+            ttl_ms: 30000,
+            retry_delay_ms: 100,
+            max_retries: 10,
+            auto_extend: true,
+            extend_interval_ms: 10000,
+            drift_factor: 0.01
+        }
+    }
+    
+    fn with_ttl(ttl_ms: Int64) -> Self {
+        var config = Self.default()
+        config.ttl_ms = ttl_ms
+        config
+    }
+    
+    fn short_lived() -> Self {
+        DistributedLockConfig {
+            ttl_ms: 5000,
+            retry_delay_ms: 50,
+            max_retries: 5,
+            auto_extend: false,
+            extend_interval_ms: 0,
+            drift_factor: 0.01
+        }
+    }
+    
+    fn long_lived() -> Self {
+        DistributedLockConfig {
+            ttl_ms: 300000,
+            retry_delay_ms: 500,
+            max_retries: 20,
+            auto_extend: true,
+            extend_interval_ms: 60000,
+            drift_factor: 0.01
+        }
+    }
+}
+
+// =============================================================================
+// Distributed Lock
+// =============================================================================
+
+/// Distributed lock for multi-node coordination
+actor DistributedLock<B: LockBackend> {
+    state backend: B
+    state key: String
+    state owner: String
+    state config: DistributedLockConfig
+    state acquired: Bool
+    state acquired_at: Int64
+    state extend_task: Option<TaskHandle>
+    
+    fn new(backend: B, key: String, owner: String) -> Self {
+        DistributedLock {
+            backend: backend,
+            key: key,
+            owner: owner,
+            config: DistributedLockConfig.default(),
+            acquired: false,
+            acquired_at: 0,
+            extend_task: None
+        }
+    }
+    
+    fn with_config(backend: B, key: String, owner: String, config: DistributedLockConfig) -> Self {
+        DistributedLock {
+            backend: backend,
+            key: key,
+            owner: owner,
+            config: config,
+            acquired: false,
+            acquired_at: 0,
+            extend_task: None
+        }
+    }
+    
+    /// Acquire the lock (blocking with retries)
+    fn acquire() -> Result<DistributedLockGuard<B>, LockError> {
+        var retries = 0
+        while retries < self.config.max_retries {
+            match self.try_acquire() {
+                Ok(guard) => return Ok(guard)
+                Err(e) if e.is_retryable() => {
+                    retries += 1
+                    @native("sleep_ms", self.config.retry_delay_ms)
+                }
+                Err(e) => return Err(e)
+            }
+        }
+        Err(LockError.Timeout)
+    }
+    
+    /// Try to acquire the lock (non-blocking)
+    fn try_acquire() -> Result<DistributedLockGuard<B>, LockError> {
+        if self.acquired {
+            return Ok(DistributedLockGuard { lock: self })
+        }
+        
+        match self.backend.acquire(self.key, self.owner, self.config.ttl_ms) {
+            Ok(true) => {
+                self.acquired = true
+                self.acquired_at = @native("timestamp_ms")
+                if self.config.auto_extend {
+                    self.start_auto_extend()
+                }
+                Ok(DistributedLockGuard { lock: self })
+            }
+            Ok(false) => {
+                match self.backend.get_owner(self.key) {
+                    Ok(Some(owner)) => Err(LockError.AlreadyLocked { 
+                        owner: owner, 
+                        remaining_ms: self.config.ttl_ms 
+                    })
+                    _ => Err(LockError.AlreadyLocked { 
+                        owner: "unknown".to_string(), 
+                        remaining_ms: 0 
+                    })
+                }
+            }
+            Err(e) => Err(e)
+        }
+    }
+    
+    /// Acquire with timeout
+    fn acquire_timeout(timeout_ms: Int64) -> Result<DistributedLockGuard<B>, LockError> {
+        let deadline = @native("timestamp_ms") + timeout_ms
+        while @native("timestamp_ms") < deadline {
+            match self.try_acquire() {
+                Ok(guard) => return Ok(guard)
+                Err(e) if e.is_retryable() => {
+                    @native("sleep_ms", self.config.retry_delay_ms.min(deadline - @native("timestamp_ms")))
+                }
+                Err(e) => return Err(e)
+            }
+        }
+        Err(LockError.Timeout)
+    }
+    
+    /// Release the lock
+    fn release() -> Result<(), LockError> {
+        if !self.acquired {
+            return Ok(())
+        }
+        
+        self.stop_auto_extend()
+        
+        match self.backend.release(self.key, self.owner) {
+            Ok(_) => {
+                self.acquired = false
+                self.acquired_at = 0
+                Ok(())
+            }
+            Err(e) => Err(e)
+        }
+    }
+    
+    /// Extend the lock TTL
+    fn extend() -> Result<(), LockError> {
+        if !self.acquired {
+            return Err(LockError.NotOwner { 
+                expected: self.owner, 
+                actual: "none".to_string() 
+            })
+        }
+        
+        match self.backend.extend(self.key, self.owner, self.config.ttl_ms) {
+            Ok(true) => Ok(())
+            Ok(false) => Err(LockError.Expired)
+            Err(e) => Err(e)
+        }
+    }
+    
+    /// Check if lock is held
+    fn is_held() -> Bool { self.acquired }
+    
+    /// Get remaining TTL
+    fn remaining_ttl() -> Int64 {
+        if !self.acquired { return 0 }
+        let elapsed = @native("timestamp_ms") - self.acquired_at
+        (self.config.ttl_ms - elapsed).max(0)
+    }
+    
+    fn start_auto_extend() {
+        let lock = self
+        self.extend_task = Some(spawn {
+            loop {
+                @native("sleep_ms", lock.config.extend_interval_ms)
+                if !lock.acquired { break }
+                let _ = lock.extend()
+            }
+        })
+    }
+    
+    fn stop_auto_extend() {
+        if let Some(task) = self.extend_task.take() {
+            task.cancel()
+        }
+    }
+}
+
+/// Guard for automatic lock release
+struct DistributedLockGuard<B: LockBackend> {
+    lock: DistributedLock<B>
+}
+
+impl<B: LockBackend> Drop for DistributedLockGuard<B> {
+    fn drop() {
+        let _ = self.lock.release()
+    }
+}
+
+// =============================================================================
+// Redis Lock Backend
+// =============================================================================
+
+/// Redis-based distributed lock backend
+struct RedisLockBackend {
+    client: RedisClient
+    key_prefix: String
+    
+    fn new(client: RedisClient) -> Self {
+        RedisLockBackend { client: client, key_prefix: "lock:".to_string() }
+    }
+    
+    fn with_prefix(client: RedisClient, prefix: String) -> Self {
+        RedisLockBackend { client: client, key_prefix: prefix }
+    }
+    
+    fn full_key(key: String) -> String {
+        f"{self.key_prefix}{key}"
+    }
+}
+
+impl LockBackend for RedisLockBackend {
+    fn acquire(key: String, owner: String, ttl_ms: Int64) -> Result<Bool, LockError> {
+        let full_key = self.full_key(key)
+        // SET key owner NX PX ttl_ms
+        match @native("redis_set_nx_px", self.client, full_key, owner, ttl_ms) {
+            Ok(true) => Ok(true)
+            Ok(false) => Ok(false)
+            Err(e) => Err(LockError.BackendError { message: e.to_string() })
+        }
+    }
+    
+    fn release(key: String, owner: String) -> Result<Bool, LockError> {
+        let full_key = self.full_key(key)
+        // Lua script for atomic check-and-delete
+        let script = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
+        match @native("redis_eval", self.client, script, [full_key], [owner]) {
+            Ok(1) => Ok(true)
+            Ok(0) => Ok(false)
+            Err(e) => Err(LockError.BackendError { message: e.to_string() })
+        }
+    }
+    
+    fn extend(key: String, owner: String, ttl_ms: Int64) -> Result<Bool, LockError> {
+        let full_key = self.full_key(key)
+        // Lua script for atomic check-and-extend
+        let script = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end"
+        match @native("redis_eval", self.client, script, [full_key], [owner, ttl_ms.to_string()]) {
+            Ok(1) => Ok(true)
+            Ok(0) => Ok(false)
+            Err(e) => Err(LockError.BackendError { message: e.to_string() })
+        }
+    }
+    
+    fn is_locked(key: String) -> Result<Bool, LockError> {
+        let full_key = self.full_key(key)
+        match @native("redis_exists", self.client, full_key) {
+            Ok(exists) => Ok(exists)
+            Err(e) => Err(LockError.BackendError { message: e.to_string() })
+        }
+    }
+    
+    fn get_owner(key: String) -> Result<Option<String>, LockError> {
+        let full_key = self.full_key(key)
+        match @native("redis_get", self.client, full_key) {
+            Ok(Some(owner)) => Ok(Some(owner))
+            Ok(None) => Ok(None)
+            Err(e) => Err(LockError.BackendError { message: e.to_string() })
+        }
+    }
+}
+
+// =============================================================================
+// Redlock Algorithm (Multi-node Redis)
+// =============================================================================
+
+/// Redlock distributed lock for high availability
+actor Redlock {
+    state backends: [RedisLockBackend]
+    state key: String
+    state owner: String
+    state config: DistributedLockConfig
+    state quorum: Int
+    state acquired_backends: [Int]
+    
+    fn new(backends: [RedisLockBackend], key: String, owner: String) -> Self {
+        let quorum = backends.len() / 2 + 1
+        Redlock {
+            backends: backends,
+            key: key,
+            owner: owner,
+            config: DistributedLockConfig.default(),
+            quorum: quorum,
+            acquired_backends: []
+        }
+    }
+    
+    /// Acquire lock on majority of nodes
+    fn acquire() -> Result<RedlockGuard, LockError> {
+        let start_time = @native("timestamp_ms")
+        var acquired_count = 0
+        var acquired_indices: [Int] = []
+        
+        // Try to acquire on all backends
+        for (i, backend) in self.backends.iter().enumerate() {
+            match backend.acquire(self.key, self.owner, self.config.ttl_ms) {
+                Ok(true) => {
+                    acquired_count += 1
+                    acquired_indices.push(i)
+                }
+                _ => {}
+            }
+        }
+        
+        // Calculate drift
+        let elapsed = @native("timestamp_ms") - start_time
+        let drift = (self.config.ttl_ms as Float64 * self.config.drift_factor) as Int64 + 2
+        let validity_time = self.config.ttl_ms - elapsed - drift
+        
+        // Check if quorum reached and lock is still valid
+        if acquired_count >= self.quorum && validity_time > 0 {
+            self.acquired_backends = acquired_indices
+            Ok(RedlockGuard { lock: self })
+        } else {
+            // Release all acquired locks
+            for i in acquired_indices {
+                let _ = self.backends[i].release(self.key, self.owner)
+            }
+            Err(LockError.QuorumNotReached { 
+                acquired: acquired_count, 
+                required: self.quorum 
+            })
+        }
+    }
+    
+    /// Release lock from all nodes
+    fn release() -> Result<(), LockError> {
+        var errors: [LockError] = []
+        
+        for i in self.acquired_backends.iter() {
+            if let Err(e) = self.backends[*i].release(self.key, self.owner) {
+                errors.push(e)
+            }
+        }
+        
+        self.acquired_backends.clear()
+        
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(LockError.BackendError { 
+                message: f"Failed to release on {errors.len()} nodes" 
+            })
+        }
+    }
+    
+    /// Extend lock on all acquired nodes
+    fn extend() -> Result<(), LockError> {
+        var success_count = 0
+        
+        for i in self.acquired_backends.iter() {
+            if let Ok(true) = self.backends[*i].extend(self.key, self.owner, self.config.ttl_ms) {
+                success_count += 1
+            }
+        }
+        
+        if success_count >= self.quorum {
+            Ok(())
+        } else {
+            Err(LockError.QuorumNotReached { 
+                acquired: success_count, 
+                required: self.quorum 
+            })
+        }
+    }
+}
+
+struct RedlockGuard {
+    lock: Redlock
+}
+
+impl Drop for RedlockGuard {
+    fn drop() {
+        let _ = self.lock.release()
+    }
+}
+
+// =============================================================================
+// Etcd Lock Backend
+// =============================================================================
+
+/// Etcd-based distributed lock backend
+struct EtcdLockBackend {
+    client: EtcdClient
+    key_prefix: String
+    lease_id: Option<Int64>
+    
+    fn new(client: EtcdClient) -> Self {
+        EtcdLockBackend { 
+            client: client, 
+            key_prefix: "/locks/".to_string(),
+            lease_id: None
+        }
+    }
+}
+
+impl LockBackend for EtcdLockBackend {
+    fn acquire(key: String, owner: String, ttl_ms: Int64) -> Result<Bool, LockError> {
+        let full_key = f"{self.key_prefix}{key}"
+        let ttl_sec = (ttl_ms / 1000).max(1)
+        
+        // Create lease
+        match @native("etcd_lease_grant", self.client, ttl_sec) {
+            Ok(lease_id) => {
+                self.lease_id = Some(lease_id)
+                // Try to create key with lease
+                match @native("etcd_txn_create", self.client, full_key, owner, lease_id) {
+                    Ok(true) => Ok(true)
+                    Ok(false) => {
+                        let _ = @native("etcd_lease_revoke", self.client, lease_id)
+                        self.lease_id = None
+                        Ok(false)
+                    }
+                    Err(e) => Err(LockError.BackendError { message: e.to_string() })
+                }
+            }
+            Err(e) => Err(LockError.BackendError { message: e.to_string() })
+        }
+    }
+    
+    fn release(key: String, owner: String) -> Result<Bool, LockError> {
+        if let Some(lease_id) = self.lease_id {
+            match @native("etcd_lease_revoke", self.client, lease_id) {
+                Ok(_) => {
+                    self.lease_id = None
+                    Ok(true)
+                }
+                Err(e) => Err(LockError.BackendError { message: e.to_string() })
+            }
+        } else {
+            Ok(false)
+        }
+    }
+    
+    fn extend(key: String, owner: String, ttl_ms: Int64) -> Result<Bool, LockError> {
+        if let Some(lease_id) = self.lease_id {
+            match @native("etcd_lease_keepalive", self.client, lease_id) {
+                Ok(_) => Ok(true)
+                Err(e) => Err(LockError.BackendError { message: e.to_string() })
+            }
+        } else {
+            Ok(false)
+        }
+    }
+    
+    fn is_locked(key: String) -> Result<Bool, LockError> {
+        let full_key = f"{self.key_prefix}{key}"
+        match @native("etcd_get", self.client, full_key) {
+            Ok(Some(_)) => Ok(true)
+            Ok(None) => Ok(false)
+            Err(e) => Err(LockError.BackendError { message: e.to_string() })
+        }
+    }
+    
+    fn get_owner(key: String) -> Result<Option<String>, LockError> {
+        let full_key = f"{self.key_prefix}{key}"
+        match @native("etcd_get", self.client, full_key) {
+            Ok(value) => Ok(value)
+            Err(e) => Err(LockError.BackendError { message: e.to_string() })
+        }
+    }
+}
+
+// =============================================================================
+// Lock Manager
+// =============================================================================
+
+/// Manager for multiple distributed locks
+actor LockManager<B: LockBackend> {
+    state backend: B
+    state owner: String
+    state active_locks: Map<String, DistributedLock<B>>
+    state config: DistributedLockConfig
+    
+    fn new(backend: B, owner: String) -> Self {
+        LockManager {
+            backend: backend,
+            owner: owner,
+            active_locks: Map.new(),
+            config: DistributedLockConfig.default()
+        }
+    }
+    
+    /// Acquire a named lock
+    fn acquire(key: String) -> Result<DistributedLockGuard<B>, LockError> {
+        if let Some(lock) = self.active_locks.get(key) {
+            return lock.try_acquire()
+        }
+        
+        let lock = DistributedLock.with_config(
+            self.backend.clone(),
+            key.clone(),
+            self.owner.clone(),
+            self.config.clone()
+        )
+        
+        match lock.acquire() {
+            Ok(guard) => {
+                self.active_locks.insert(key, lock)
+                Ok(guard)
+            }
+            Err(e) => Err(e)
+        }
+    }
+    
+    /// Release a named lock
+    fn release(key: String) -> Result<(), LockError> {
+        if let Some(lock) = self.active_locks.remove(key) {
+            lock.release()
+        } else {
+            Ok(())
+        }
+    }
+    
+    /// Release all locks
+    fn release_all() {
+        for (_, lock) in self.active_locks.drain() {
+            let _ = lock.release()
+        }
+    }
+    
+    /// Execute with lock
+    fn with_lock<R>(key: String, f: fn() -> R) -> Result<R, LockError> {
+        let guard = self.acquire(key)?
+        let result = f()
+        drop(guard)
+        Ok(result)
+    }
+    
+    /// Get active lock count
+    fn active_count() -> Int {
+        self.active_locks.len()
+    }
+}
+
+// =============================================================================
+// Fencing Token
+// =============================================================================
+
+/// Fencing token for preventing stale lock holders
+struct FencingToken {
+    token: Int64
+    owner: String
+    acquired_at: Int64
+    
+    fn new(owner: String) -> Self {
+        FencingToken {
+            token: @native("atomic_increment", "global_fence_token"),
+            owner: owner,
+            acquired_at: @native("timestamp_ms")
+        }
+    }
+    
+    fn validate(expected_min: Int64) -> Bool {
+        self.token >= expected_min
+    }
+}
+
+/// Distributed lock with fencing token
+actor FencedLock<B: LockBackend> {
+    state lock: DistributedLock<B>
+    state token: Option<FencingToken>
+    
+    fn new(backend: B, key: String, owner: String) -> Self {
+        FencedLock {
+            lock: DistributedLock.new(backend, key, owner),
+            token: None
+        }
+    }
+    
+    fn acquire() -> Result<(DistributedLockGuard<B>, FencingToken), LockError> {
+        let guard = self.lock.acquire()?
+        let token = FencingToken.new(self.lock.owner.clone())
+        self.token = Some(token.clone())
+        Ok((guard, token))
+    }
+    
+    fn get_token() -> Option<FencingToken> {
+        self.token.clone()
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "distributed lock config" {
+    let config = DistributedLockConfig.default()
+    assert_eq(config.ttl_ms, 30000)?
+    assert(config.auto_extend)?
+    
+    let short = DistributedLockConfig.short_lived()
+    assert_eq(short.ttl_ms, 5000)?
+    assert(!short.auto_extend)?
+}
+
+test "lock error retryable" {
+    let timeout = LockError.Timeout
+    assert(timeout.is_retryable())?
+    
+    let expired = LockError.Expired
+    assert(!expired.is_retryable())?
+}
+
+test "fencing token ordering" {
+    let t1 = FencingToken.new("owner1".to_string())
+    let t2 = FencingToken.new("owner2".to_string())
+    assert(t2.token > t1.token)?
+    assert(t2.validate(t1.token))?
+}

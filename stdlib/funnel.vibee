@@ -1,0 +1,677 @@
+// =============================================================================
+// Vibee OS — Funnel Module
+// Conversion funnel analysis and optimization
+// =============================================================================
+
+use datetime::{DateTime, Duration}
+use uuid::{UUID}
+use result::{Result, Ok, Err}
+use event_tracking::{Event, EventQuery}
+
+// =============================================================================
+// Funnel Definition
+// =============================================================================
+
+/// Conversion funnel
+struct Funnel {
+    id: String
+    name: String
+    description: String
+    steps: [FunnelStep]
+    conversion_window: Duration
+    created_at: DateTime
+    updated_at: DateTime
+}
+
+/// Funnel step
+struct FunnelStep {
+    id: String
+    name: String
+    order: Int
+    event_name: String
+    conditions: [StepCondition]
+    optional: Bool
+}
+
+/// Step condition
+struct StepCondition {
+    property: String
+    operator: ConditionOperator
+    value: ConditionValue
+}
+
+enum ConditionOperator {
+    Equals
+    NotEquals
+    Contains
+    NotContains
+    GreaterThan
+    LessThan
+    GreaterOrEqual
+    LessOrEqual
+    In
+    NotIn
+    Exists
+    NotExists
+}
+
+enum ConditionValue {
+    String(String)
+    Int(Int)
+    Float(Float)
+    Bool(Bool)
+    Array([String])
+}
+
+impl Funnel {
+    fn new(name: String) -> Self {
+        Funnel {
+            id: UUID.v4(),
+            name: name,
+            description: "",
+            steps: [],
+            conversion_window: Duration.days(7),
+            created_at: DateTime.now(),
+            updated_at: DateTime.now()
+        }
+    }
+    
+    fn description(desc: String) -> Self { self.description = desc; self }
+    fn conversion_window(window: Duration) -> Self { self.conversion_window = window; self }
+    
+    fn step(name: String, event_name: String) -> Self {
+        let order = self.steps.len() + 1
+        self.steps.push(FunnelStep {
+            id: UUID.v4(),
+            name: name,
+            order: order,
+            event_name: event_name,
+            conditions: [],
+            optional: false
+        })
+        self
+    }
+    
+    fn step_with_condition(name: String, event_name: String, conditions: [StepCondition]) -> Self {
+        let order = self.steps.len() + 1
+        self.steps.push(FunnelStep {
+            id: UUID.v4(),
+            name: name,
+            order: order,
+            event_name: event_name,
+            conditions: conditions,
+            optional: false
+        })
+        self
+    }
+    
+    fn optional_step(name: String, event_name: String) -> Self {
+        let order = self.steps.len() + 1
+        self.steps.push(FunnelStep {
+            id: UUID.v4(),
+            name: name,
+            order: order,
+            event_name: event_name,
+            conditions: [],
+            optional: true
+        })
+        self
+    }
+    
+    fn step_count() -> Int { self.steps.len() }
+    fn get_step(order: Int) -> Option<&FunnelStep> { self.steps.iter().find(|s| s.order == order) }
+}
+
+impl FunnelStep {
+    fn matches_event(event: &Event) -> Bool {
+        if event.name != self.event_name { return false }
+        
+        for condition in self.conditions.iter() {
+            if !condition.matches(event) { return false }
+        }
+        true
+    }
+}
+
+impl StepCondition {
+    fn new(property: String, operator: ConditionOperator, value: ConditionValue) -> Self {
+        StepCondition { property: property, operator: operator, value: value }
+    }
+    
+    fn equals(property: String, value: String) -> Self {
+        Self.new(property, ConditionOperator.Equals, ConditionValue.String(value))
+    }
+    
+    fn greater_than(property: String, value: Float) -> Self {
+        Self.new(property, ConditionOperator.GreaterThan, ConditionValue.Float(value))
+    }
+    
+    fn in_list(property: String, values: [String]) -> Self {
+        Self.new(property, ConditionOperator.In, ConditionValue.Array(values))
+    }
+    
+    fn matches(event: &Event) -> Bool {
+        let prop_value = event.properties.get(&self.property)
+        
+        match self.operator {
+            .Equals => self.check_equals(prop_value),
+            .NotEquals => !self.check_equals(prop_value),
+            .Contains => self.check_contains(prop_value),
+            .GreaterThan => self.check_greater_than(prop_value),
+            .LessThan => self.check_less_than(prop_value),
+            .In => self.check_in(prop_value),
+            .Exists => prop_value.is_some(),
+            .NotExists => prop_value.is_none(),
+            _ => true
+        }
+    }
+    
+    fn check_equals(prop_value: Option<&EventValue>) -> Bool {
+        match (prop_value, &self.value) {
+            (Some(EventValue.String(a)), ConditionValue.String(b)) => a == b,
+            (Some(EventValue.Int(a)), ConditionValue.Int(b)) => a == b,
+            (Some(EventValue.Float(a)), ConditionValue.Float(b)) => (a - b).abs() < 0.0001,
+            _ => false
+        }
+    }
+    
+    fn check_contains(prop_value: Option<&EventValue>) -> Bool {
+        match (prop_value, &self.value) {
+            (Some(EventValue.String(a)), ConditionValue.String(b)) => a.contains(b),
+            _ => false
+        }
+    }
+    
+    fn check_greater_than(prop_value: Option<&EventValue>) -> Bool {
+        match (prop_value, &self.value) {
+            (Some(EventValue.Float(a)), ConditionValue.Float(b)) => a > b,
+            (Some(EventValue.Int(a)), ConditionValue.Int(b)) => a > b,
+            _ => false
+        }
+    }
+    
+    fn check_less_than(prop_value: Option<&EventValue>) -> Bool {
+        match (prop_value, &self.value) {
+            (Some(EventValue.Float(a)), ConditionValue.Float(b)) => a < b,
+            (Some(EventValue.Int(a)), ConditionValue.Int(b)) => a < b,
+            _ => false
+        }
+    }
+    
+    fn check_in(prop_value: Option<&EventValue>) -> Bool {
+        match (prop_value, &self.value) {
+            (Some(EventValue.String(a)), ConditionValue.Array(arr)) => arr.contains(a),
+            _ => false
+        }
+    }
+}
+
+// =============================================================================
+// Funnel Analysis
+// =============================================================================
+
+/// Funnel analysis result
+struct FunnelAnalysis {
+    funnel_id: String
+    funnel_name: String
+    period_start: DateTime
+    period_end: DateTime
+    total_users: Int
+    step_results: [StepResult]
+    overall_conversion_rate: Float
+    average_time_to_convert: Option<Duration>
+    drop_off_analysis: [DropOffPoint]
+}
+
+/// Result for a single step
+struct StepResult {
+    step_id: String
+    step_name: String
+    step_order: Int
+    users_entered: Int
+    users_completed: Int
+    conversion_rate: Float
+    drop_off_rate: Float
+    average_time_from_previous: Option<Duration>
+    median_time_from_previous: Option<Duration>
+}
+
+/// Drop-off analysis point
+struct DropOffPoint {
+    from_step: String
+    to_step: String
+    drop_off_count: Int
+    drop_off_rate: Float
+    common_exit_events: [(String, Int)]
+}
+
+impl FunnelAnalysis {
+    fn new(funnel: &Funnel, start: DateTime, end: DateTime) -> Self {
+        FunnelAnalysis {
+            funnel_id: funnel.id.clone(),
+            funnel_name: funnel.name.clone(),
+            period_start: start,
+            period_end: end,
+            total_users: 0,
+            step_results: [],
+            overall_conversion_rate: 0.0,
+            average_time_to_convert: None,
+            drop_off_analysis: []
+        }
+    }
+    
+    fn step_conversion_rate(step_order: Int) -> Option<Float> {
+        self.step_results.iter()
+            .find(|s| s.step_order == step_order)
+            .map(|s| s.conversion_rate)
+    }
+    
+    fn biggest_drop_off() -> Option<&DropOffPoint> {
+        self.drop_off_analysis.iter()
+            .max_by(|a, b| a.drop_off_rate.partial_cmp(&b.drop_off_rate).unwrap())
+    }
+    
+    fn to_report() -> String {
+        var report = format!("Funnel Analysis: {}\n", self.funnel_name)
+        report.push_str(format!("Period: {} to {}\n", self.period_start.format("%Y-%m-%d"), self.period_end.format("%Y-%m-%d")))
+        report.push_str(format!("Total Users: {}\n", self.total_users))
+        report.push_str(format!("Overall Conversion: {:.2}%\n\n", self.overall_conversion_rate * 100.0))
+        
+        report.push_str("Steps:\n")
+        for step in self.step_results.iter() {
+            report.push_str(format!("  {}. {} - {} users ({:.2}% conversion, {:.2}% drop-off)\n",
+                step.step_order, step.step_name, step.users_completed,
+                step.conversion_rate * 100.0, step.drop_off_rate * 100.0))
+        }
+        
+        report
+    }
+}
+
+// =============================================================================
+// Funnel Analyzer Actor
+// =============================================================================
+
+/// Funnel analyzer
+actor FunnelAnalyzer {
+    state funnels: Map<String, Funnel>
+    state event_store: Box<dyn EventStore>
+    state cache: Map<String, FunnelAnalysis>
+    state cache_ttl: Duration
+    
+    fn new(event_store: Box<dyn EventStore>) -> Self {
+        FunnelAnalyzer {
+            funnels: Map.empty(),
+            event_store: event_store,
+            cache: Map.empty(),
+            cache_ttl: Duration.minutes(15)
+        }
+    }
+    
+    fn cache_ttl(ttl: Duration) -> Self { self.cache_ttl = ttl; self }
+    
+    fn register(funnel: Funnel) -> String {
+        let id = funnel.id.clone()
+        self.funnels.set(id.clone(), funnel)
+        id
+    }
+    
+    fn get(funnel_id: String) -> Option<&Funnel> { self.funnels.get(&funnel_id) }
+    fn list() -> [&Funnel] { self.funnels.values().collect() }
+    
+    /// Analyze funnel for a time period
+    fn analyze(funnel_id: String, start: DateTime, end: DateTime) -> Result<FunnelAnalysis, FunnelError> {
+        let funnel = self.funnels.get(&funnel_id).ok_or(FunnelError.NotFound)?
+        
+        // Check cache
+        let cache_key = format!("{}:{}:{}", funnel_id, start.timestamp(), end.timestamp())
+        if let Some(cached) = self.cache.get(&cache_key) {
+            return Ok(cached.clone())
+        }
+        
+        // Get all relevant events
+        let event_names: [String] = funnel.steps.iter().map(|s| s.event_name.clone()).collect()
+        let events = self.event_store.query(
+            EventQuery.new()
+                .events(event_names)
+                .from(start)
+                .to(end)
+        )?
+        
+        // Group events by user
+        let user_events = self.group_by_user(events)
+        
+        // Analyze each user's journey
+        var analysis = FunnelAnalysis.new(funnel, start, end)
+        analysis.total_users = user_events.len()
+        
+        var step_users: [Set<String>] = funnel.steps.iter().map(|_| Set.new()).collect()
+        var step_times: [Vec<Duration>] = funnel.steps.iter().map(|_| Vec.new()).collect()
+        var conversion_times: [Duration] = []
+        
+        for (user_id, events) in user_events.iter() {
+            let journey = self.analyze_user_journey(funnel, events)
+            
+            for (step_idx, completed) in journey.steps_completed.iter().enumerate() {
+                if *completed {
+                    step_users[step_idx].insert(user_id.clone())
+                    if let Some(time) = journey.step_times.get(step_idx) {
+                        step_times[step_idx].push(*time)
+                    }
+                }
+            }
+            
+            if journey.converted {
+                if let Some(time) = journey.total_time {
+                    conversion_times.push(time)
+                }
+            }
+        }
+        
+        // Calculate step results
+        for (idx, step) in funnel.steps.iter().enumerate() {
+            let users_entered = if idx == 0 { analysis.total_users } else { step_users[idx - 1].len() }
+            let users_completed = step_users[idx].len()
+            let conversion_rate = if users_entered > 0 { users_completed as Float / users_entered as Float } else { 0.0 }
+            let drop_off_rate = 1.0 - conversion_rate
+            
+            let avg_time = if step_times[idx].is_empty() { None } else {
+                Some(Duration.milliseconds(
+                    step_times[idx].iter().map(|d| d.as_millis()).sum::<i64>() / step_times[idx].len() as i64
+                ))
+            }
+            
+            analysis.step_results.push(StepResult {
+                step_id: step.id.clone(),
+                step_name: step.name.clone(),
+                step_order: step.order,
+                users_entered: users_entered,
+                users_completed: users_completed,
+                conversion_rate: conversion_rate,
+                drop_off_rate: drop_off_rate,
+                average_time_from_previous: avg_time,
+                median_time_from_previous: None
+            })
+        }
+        
+        // Calculate overall conversion
+        let final_step_users = step_users.last().map(|s| s.len()).unwrap_or(0)
+        analysis.overall_conversion_rate = if analysis.total_users > 0 {
+            final_step_users as Float / analysis.total_users as Float
+        } else { 0.0 }
+        
+        // Calculate average time to convert
+        if !conversion_times.is_empty() {
+            let total_ms: i64 = conversion_times.iter().map(|d| d.as_millis()).sum()
+            analysis.average_time_to_convert = Some(Duration.milliseconds(total_ms / conversion_times.len() as i64))
+        }
+        
+        // Analyze drop-offs
+        analysis.drop_off_analysis = self.analyze_drop_offs(funnel, &step_users)
+        
+        // Cache result
+        self.cache.set(cache_key, analysis.clone())
+        
+        Ok(analysis)
+    }
+    
+    fn group_by_user(events: [Event]) -> Map<String, [Event]> {
+        var grouped: Map<String, [Event]> = Map.empty()
+        for event in events.into_iter() {
+            if let Some(user_id) = event.user_id.clone() {
+                grouped.entry(user_id).or_insert(Vec.new()).push(event)
+            }
+        }
+        // Sort each user's events by timestamp
+        for (_, events) in grouped.iter_mut() {
+            events.sort_by(|a, b| a.timestamp.cmp(&b.timestamp))
+        }
+        grouped
+    }
+    
+    fn analyze_user_journey(funnel: &Funnel, events: &[Event]) -> UserJourney {
+        var journey = UserJourney {
+            steps_completed: funnel.steps.iter().map(|_| false).collect(),
+            step_times: Vec.new(),
+            converted: false,
+            total_time: None
+        }
+        
+        var current_step = 0
+        var last_step_time: Option<DateTime> = None
+        var first_step_time: Option<DateTime> = None
+        
+        for event in events.iter() {
+            if current_step >= funnel.steps.len() { break }
+            
+            let step = &funnel.steps[current_step]
+            
+            // Check if event matches current step
+            if step.matches_event(event) {
+                journey.steps_completed[current_step] = true
+                
+                if current_step == 0 {
+                    first_step_time = Some(event.timestamp)
+                }
+                
+                if let Some(last_time) = last_step_time {
+                    journey.step_times.push(event.timestamp.duration_since(last_time))
+                }
+                
+                last_step_time = Some(event.timestamp)
+                current_step += 1
+            } else if step.optional {
+                // Skip optional step
+                current_step += 1
+            }
+        }
+        
+        // Check if fully converted
+        journey.converted = journey.steps_completed.iter().all(|&c| c)
+        
+        if journey.converted {
+            if let (Some(first), Some(last)) = (first_step_time, last_step_time) {
+                journey.total_time = Some(last.duration_since(first))
+            }
+        }
+        
+        journey
+    }
+    
+    fn analyze_drop_offs(funnel: &Funnel, step_users: &[Set<String>]) -> [DropOffPoint] {
+        var drop_offs = []
+        
+        for i in 0..(funnel.steps.len() - 1) {
+            let from_users = &step_users[i]
+            let to_users = &step_users[i + 1]
+            
+            let dropped: Set<String> = from_users.difference(to_users).cloned().collect()
+            let drop_off_count = dropped.len()
+            let drop_off_rate = if from_users.len() > 0 {
+                drop_off_count as Float / from_users.len() as Float
+            } else { 0.0 }
+            
+            drop_offs.push(DropOffPoint {
+                from_step: funnel.steps[i].name.clone(),
+                to_step: funnel.steps[i + 1].name.clone(),
+                drop_off_count: drop_off_count,
+                drop_off_rate: drop_off_rate,
+                common_exit_events: []
+            })
+        }
+        
+        drop_offs
+    }
+    
+    /// Compare two time periods
+    fn compare(funnel_id: String, period1: (DateTime, DateTime), period2: (DateTime, DateTime)) -> Result<FunnelComparison, FunnelError> {
+        let analysis1 = self.analyze(funnel_id.clone(), period1.0, period1.1)?
+        let analysis2 = self.analyze(funnel_id, period2.0, period2.1)?
+        
+        Ok(FunnelComparison {
+            period1: analysis1,
+            period2: analysis2,
+            conversion_change: analysis2.overall_conversion_rate - analysis1.overall_conversion_rate,
+            user_change: analysis2.total_users - analysis1.total_users
+        })
+    }
+}
+
+/// User journey through funnel
+struct UserJourney {
+    steps_completed: [Bool]
+    step_times: [Duration]
+    converted: Bool
+    total_time: Option<Duration>
+}
+
+/// Comparison between two periods
+struct FunnelComparison {
+    period1: FunnelAnalysis
+    period2: FunnelAnalysis
+    conversion_change: Float
+    user_change: Int
+}
+
+impl FunnelComparison {
+    fn conversion_improved() -> Bool { self.conversion_change > 0.0 }
+    fn conversion_change_percent() -> Float { self.conversion_change * 100.0 }
+}
+
+// =============================================================================
+// Event Store Trait
+// =============================================================================
+
+trait EventStore {
+    fn query(query: EventQuery) -> Result<[Event], StoreError>
+    fn count(query: EventQuery) -> Result<Int, StoreError>
+}
+
+enum StoreError { QueryError(String), ConnectionError(String) }
+
+// =============================================================================
+// Predefined Funnels
+// =============================================================================
+
+/// E-commerce purchase funnel
+fn ecommerce_funnel() -> Funnel {
+    Funnel.new("E-commerce Purchase")
+        .description("Standard e-commerce conversion funnel")
+        .step("View Product", "product_view")
+        .step("Add to Cart", "add_to_cart")
+        .optional_step("View Cart", "cart_view")
+        .step("Begin Checkout", "checkout_start")
+        .step("Complete Purchase", "purchase")
+        .conversion_window(Duration.days(30))
+}
+
+/// SaaS signup funnel
+fn saas_signup_funnel() -> Funnel {
+    Funnel.new("SaaS Signup")
+        .description("User registration and activation funnel")
+        .step("Visit Landing", "page_view")
+        .step("Click Signup", "signup_click")
+        .step("Complete Registration", "signup_complete")
+        .step("Email Verified", "email_verified")
+        .step("First Action", "first_action")
+        .conversion_window(Duration.days(14))
+}
+
+/// Content engagement funnel
+fn content_funnel() -> Funnel {
+    Funnel.new("Content Engagement")
+        .description("Content consumption and engagement funnel")
+        .step("View Article", "article_view")
+        .step("Scroll 50%", "scroll_depth")
+        .step("Read Complete", "article_complete")
+        .optional_step("Share", "share")
+        .step("Subscribe", "newsletter_subscribe")
+        .conversion_window(Duration.days(7))
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum FunnelError {
+    NotFound
+    InvalidStep
+    AnalysisError(String)
+    StoreError(StoreError)
+}
+
+impl Display for FunnelError {
+    fn fmt(f: Formatter) {
+        match self {
+            .NotFound => f.write("Funnel not found")
+            .InvalidStep => f.write("Invalid step configuration")
+            .AnalysisError(e) => f.write(format!("Analysis error: {}", e))
+            .StoreError(e) => f.write(format!("Store error: {:?}", e))
+        }
+    }
+}
+
+// =============================================================================
+// Builder Functions
+// =============================================================================
+
+fn funnel(name: String) -> Funnel { Funnel.new(name) }
+fn condition(property: String, operator: ConditionOperator, value: ConditionValue) -> StepCondition {
+    StepCondition.new(property, operator, value)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "funnel creation" {
+    let f = Funnel.new("Test Funnel")
+        .step("Step 1", "event_1")
+        .step("Step 2", "event_2")
+        .conversion_window(Duration.days(7))
+    
+    assert_eq(f.name, "Test Funnel")?
+    assert_eq(f.step_count(), 2)?
+}
+
+test "step condition" {
+    let cond = StepCondition.equals("category", "electronics")
+    assert_eq(cond.property, "category")?
+}
+
+test "ecommerce funnel" {
+    let f = ecommerce_funnel()
+    assert_eq(f.step_count(), 5)?
+    assert_eq(f.steps[0].name, "View Product")?
+}
+
+test "funnel analysis result" {
+    let funnel = Funnel.new("Test").step("S1", "e1").step("S2", "e2")
+    let analysis = FunnelAnalysis.new(&funnel, DateTime.now().subtract(Duration.days(7)), DateTime.now())
+    assert_eq(analysis.funnel_name, "Test")?
+}
+
+test "step matching" {
+    let step = FunnelStep {
+        id: "1", name: "Test", order: 1, event_name: "click",
+        conditions: [StepCondition.equals("button", "submit")],
+        optional: false
+    }
+    
+    var event = Event.new("click")
+    event.properties.set("button", EventValue.String("submit"))
+    
+    assert(step.matches_event(&event))?
+}
+
+test "funnel comparison" {
+    let comp = FunnelComparison {
+        period1: FunnelAnalysis { funnel_id: "1", funnel_name: "Test", period_start: DateTime.now(), period_end: DateTime.now(), total_users: 100, step_results: [], overall_conversion_rate: 0.10, average_time_to_convert: None, drop_off_analysis: [] },
+        period2: FunnelAnalysis { funnel_id: "1", funnel_name: "Test", period_start: DateTime.now(), period_end: DateTime.now(), total_users: 120, step_results: [], overall_conversion_rate: 0.15, average_time_to_convert: None, drop_off_analysis: [] },
+        conversion_change: 0.05,
+        user_change: 20
+    }
+    
+    assert(comp.conversion_improved())?
+    assert_eq(comp.conversion_change_percent(), 5.0)?
+}

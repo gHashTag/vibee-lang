@@ -1,0 +1,688 @@
+// =============================================================================
+// Vibee OS — Zapier Integration Module
+// Zapier webhooks, triggers, and actions integration
+// =============================================================================
+
+use http::{Request, Response, Method, Status, Headers, Client as HttpClient}
+use json::{JsonValue, Serialize, Deserialize}
+use crypto::{hmac_sha256, constant_time_eq}
+use uuid::{uuid}
+
+// =============================================================================
+// Zapier Client
+// =============================================================================
+
+/// Zapier API client for managing webhooks and triggers
+actor ZapierClient {
+    state api_key: String
+    state webhook_url: Option<String>
+    state http_client: HttpClient
+    state retry_config: RetryConfig
+    
+    fn new(api_key: String) -> Self {
+        ZapierClient {
+            api_key: api_key,
+            webhook_url: None,
+            http_client: HttpClient.new().timeout(30000),
+            retry_config: RetryConfig.default()
+        }
+    }
+    
+    fn with_webhook(webhook_url: String) -> Self {
+        self.webhook_url = Some(webhook_url)
+        self
+    }
+    
+    fn with_retry(config: RetryConfig) -> Self {
+        self.retry_config = config
+        self
+    }
+    
+    /// Send data to Zapier webhook (trigger a Zap)
+    fn trigger(data: JsonValue) -> Result<ZapierResponse, ZapierError> {
+        let url = self.webhook_url.clone().ok_or(ZapierError.NoWebhookConfigured)?
+        self.send_webhook(url, data)
+    }
+    
+    /// Send data to a specific webhook URL
+    fn trigger_webhook(webhook_url: String, data: JsonValue) -> Result<ZapierResponse, ZapierError> {
+        self.send_webhook(webhook_url, data)
+    }
+    
+    /// Send multiple items in a single request
+    fn trigger_batch(items: [JsonValue]) -> Result<ZapierResponse, ZapierError> {
+        let url = self.webhook_url.clone().ok_or(ZapierError.NoWebhookConfigured)?
+        let payload = JsonValue.object([("items", JsonValue.array(items))])
+        self.send_webhook(url, payload)
+    }
+    
+    fn send_webhook(url: String, data: JsonValue) -> Result<ZapierResponse, ZapierError> {
+        var attempts = 0
+        var last_error: Option<ZapierError> = None
+        
+        while attempts < self.retry_config.max_retries {
+            let request = Request.post(url.clone())
+                .header("Content-Type", "application/json")
+                .header("X-Zapier-Key", self.api_key.clone())
+                .json(data.clone())
+            
+            match self.http_client.send(request) {
+                Ok(response) => {
+                    if response.is_success() {
+                        return Ok(ZapierResponse {
+                            status: response.status.code,
+                            request_id: response.headers.get("X-Request-Id").unwrap_or(uuid()),
+                            data: response.json().ok()
+                        })
+                    }
+                    if response.status.code >= 500 {
+                        last_error = Some(ZapierError.ServerError(response.status.code))
+                        attempts += 1
+                        @native("sleep_ms", self.retry_config.delay_ms * (2 ** attempts))
+                        continue
+                    }
+                    return Err(ZapierError.ApiError(response.status.code, response.text()))
+                }
+                Err(e) => {
+                    last_error = Some(ZapierError.NetworkError(e.to_string()))
+                    attempts += 1
+                    @native("sleep_ms", self.retry_config.delay_ms * (2 ** attempts))
+                }
+            }
+        }
+        
+        Err(last_error.unwrap_or(ZapierError.MaxRetriesExceeded))
+    }
+}
+
+// =============================================================================
+// Zapier Webhook Handler (for receiving webhooks from Zapier)
+// =============================================================================
+
+/// Handler for incoming Zapier webhooks
+struct ZapierWebhookHandler {
+    secret: Option<String>
+    handlers: Map<String, fn(ZapierWebhookEvent) -> Result<JsonValue, ZapierError>>
+}
+
+impl ZapierWebhookHandler {
+    fn new() -> Self {
+        ZapierWebhookHandler {
+            secret: None,
+            handlers: Map.empty()
+        }
+    }
+    
+    fn with_secret(secret: String) -> Self {
+        self.secret = Some(secret)
+        self
+    }
+    
+    /// Register a handler for a specific action type
+    fn on(action: String, handler: fn(ZapierWebhookEvent) -> Result<JsonValue, ZapierError>) -> Self {
+        self.handlers.set(action, handler)
+        self
+    }
+    
+    /// Process incoming webhook request
+    fn handle(request: Request) -> Result<Response, ZapierError> {
+        // Verify signature if secret is configured
+        if let Some(secret) = self.secret.clone() {
+            let signature = request.headers.get("X-Zapier-Signature")
+                .ok_or(ZapierError.InvalidSignature)?
+            
+            let body_str = String.from_utf8(request.body.clone())
+                .map_err(|_| ZapierError.InvalidPayload)?
+            
+            let expected = hex.encode(hmac_sha256(secret.as_bytes(), body_str.as_bytes()))
+            if !constant_time_eq(signature.as_bytes(), expected.as_bytes()) {
+                return Err(ZapierError.InvalidSignature)
+            }
+        }
+        
+        // Parse event
+        let event: ZapierWebhookEvent = json.decode(String.from_utf8(request.body.clone())
+            .map_err(|_| ZapierError.InvalidPayload)?)
+            .map_err(|_| ZapierError.InvalidPayload)?
+        
+        // Find and execute handler
+        let handler = self.handlers.get(event.action.clone())
+            .ok_or(ZapierError.UnknownAction(event.action.clone()))?
+        
+        let result = handler(event)?
+        
+        Ok(Response.ok().json(result))
+    }
+}
+
+/// Zapier webhook event
+struct ZapierWebhookEvent {
+    action: String
+    zap_id: String
+    data: JsonValue
+    timestamp: Int64
+    meta: Option<ZapierMeta>
+}
+
+struct ZapierMeta {
+    user_id: Option<String>
+    account_id: Option<String>
+    zap_name: Option<String>
+}
+
+// =============================================================================
+// Zapier Trigger Builder
+// =============================================================================
+
+/// Builder for creating Zapier trigger definitions
+struct ZapierTrigger {
+    key: String
+    label: String
+    description: String
+    input_fields: [ZapierField]
+    output_fields: [ZapierField]
+    sample_data: Option<JsonValue>
+    perform_url: Option<String>
+}
+
+impl ZapierTrigger {
+    fn new(key: String, label: String) -> Self {
+        ZapierTrigger {
+            key: key,
+            label: label,
+            description: "",
+            input_fields: [],
+            output_fields: [],
+            sample_data: None,
+            perform_url: None
+        }
+    }
+    
+    fn description(desc: String) -> Self {
+        self.description = desc
+        self
+    }
+    
+    fn input_field(field: ZapierField) -> Self {
+        self.input_fields.push(field)
+        self
+    }
+    
+    fn output_field(field: ZapierField) -> Self {
+        self.output_fields.push(field)
+        self
+    }
+    
+    fn sample(data: JsonValue) -> Self {
+        self.sample_data = Some(data)
+        self
+    }
+    
+    fn perform_at(url: String) -> Self {
+        self.perform_url = Some(url)
+        self
+    }
+    
+    fn to_json() -> JsonValue {
+        var obj = Map.empty()
+        obj.set("key", JsonValue.string(self.key.clone()))
+        obj.set("noun", JsonValue.string(self.label.clone()))
+        obj.set("display", JsonValue.object([
+            ("label", JsonValue.string(self.label.clone())),
+            ("description", JsonValue.string(self.description.clone()))
+        ]))
+        
+        if !self.input_fields.is_empty() {
+            obj.set("inputFields", JsonValue.array(self.input_fields.iter().map(|f| f.to_json()).collect()))
+        }
+        
+        if !self.output_fields.is_empty() {
+            obj.set("outputFields", JsonValue.array(self.output_fields.iter().map(|f| f.to_json()).collect()))
+        }
+        
+        if let Some(sample) = self.sample_data.clone() {
+            obj.set("sample", sample)
+        }
+        
+        JsonValue.from_map(obj)
+    }
+}
+
+// =============================================================================
+// Zapier Action Builder
+// =============================================================================
+
+/// Builder for creating Zapier action definitions
+struct ZapierAction {
+    key: String
+    label: String
+    description: String
+    input_fields: [ZapierField]
+    output_fields: [ZapierField]
+    perform_url: Option<String>
+}
+
+impl ZapierAction {
+    fn new(key: String, label: String) -> Self {
+        ZapierAction {
+            key: key,
+            label: label,
+            description: "",
+            input_fields: [],
+            output_fields: [],
+            perform_url: None
+        }
+    }
+    
+    fn description(desc: String) -> Self {
+        self.description = desc
+        self
+    }
+    
+    fn input_field(field: ZapierField) -> Self {
+        self.input_fields.push(field)
+        self
+    }
+    
+    fn output_field(field: ZapierField) -> Self {
+        self.output_fields.push(field)
+        self
+    }
+    
+    fn perform_at(url: String) -> Self {
+        self.perform_url = Some(url)
+        self
+    }
+    
+    fn to_json() -> JsonValue {
+        var obj = Map.empty()
+        obj.set("key", JsonValue.string(self.key.clone()))
+        obj.set("noun", JsonValue.string(self.label.clone()))
+        obj.set("display", JsonValue.object([
+            ("label", JsonValue.string(self.label.clone())),
+            ("description", JsonValue.string(self.description.clone()))
+        ]))
+        
+        if !self.input_fields.is_empty() {
+            obj.set("inputFields", JsonValue.array(self.input_fields.iter().map(|f| f.to_json()).collect()))
+        }
+        
+        if !self.output_fields.is_empty() {
+            obj.set("outputFields", JsonValue.array(self.output_fields.iter().map(|f| f.to_json()).collect()))
+        }
+        
+        JsonValue.from_map(obj)
+    }
+}
+
+// =============================================================================
+// Zapier Field Definition
+// =============================================================================
+
+/// Field definition for Zapier triggers and actions
+struct ZapierField {
+    key: String
+    label: String
+    field_type: ZapierFieldType
+    required: Bool
+    help_text: Option<String>
+    default_value: Option<String>
+    choices: Option<[ZapierChoice]>
+    dynamic: Option<String>
+}
+
+impl ZapierField {
+    fn new(key: String, label: String) -> Self {
+        ZapierField {
+            key: key,
+            label: label,
+            field_type: ZapierFieldType.String,
+            required: false,
+            help_text: None,
+            default_value: None,
+            choices: None,
+            dynamic: None
+        }
+    }
+    
+    fn string(key: String, label: String) -> Self { Self.new(key, label).of_type(ZapierFieldType.String) }
+    fn text(key: String, label: String) -> Self { Self.new(key, label).of_type(ZapierFieldType.Text) }
+    fn integer(key: String, label: String) -> Self { Self.new(key, label).of_type(ZapierFieldType.Integer) }
+    fn number(key: String, label: String) -> Self { Self.new(key, label).of_type(ZapierFieldType.Number) }
+    fn boolean(key: String, label: String) -> Self { Self.new(key, label).of_type(ZapierFieldType.Boolean) }
+    fn datetime(key: String, label: String) -> Self { Self.new(key, label).of_type(ZapierFieldType.DateTime) }
+    fn file(key: String, label: String) -> Self { Self.new(key, label).of_type(ZapierFieldType.File) }
+    fn password(key: String, label: String) -> Self { Self.new(key, label).of_type(ZapierFieldType.Password) }
+    
+    fn of_type(t: ZapierFieldType) -> Self {
+        self.field_type = t
+        self
+    }
+    
+    fn required() -> Self {
+        self.required = true
+        self
+    }
+    
+    fn help(text: String) -> Self {
+        self.help_text = Some(text)
+        self
+    }
+    
+    fn default(value: String) -> Self {
+        self.default_value = Some(value)
+        self
+    }
+    
+    fn with_choices(choices: [ZapierChoice]) -> Self {
+        self.choices = Some(choices)
+        self
+    }
+    
+    fn dynamic_dropdown(trigger_key: String) -> Self {
+        self.dynamic = Some(trigger_key)
+        self
+    }
+    
+    fn to_json() -> JsonValue {
+        var obj = Map.empty()
+        obj.set("key", JsonValue.string(self.key.clone()))
+        obj.set("label", JsonValue.string(self.label.clone()))
+        obj.set("type", JsonValue.string(self.field_type.to_string()))
+        obj.set("required", JsonValue.bool(self.required))
+        
+        if let Some(help) = self.help_text.clone() {
+            obj.set("helpText", JsonValue.string(help))
+        }
+        if let Some(default) = self.default_value.clone() {
+            obj.set("default", JsonValue.string(default))
+        }
+        if let Some(choices) = self.choices.clone() {
+            obj.set("choices", JsonValue.array(choices.iter().map(|c| c.to_json()).collect()))
+        }
+        if let Some(dynamic) = self.dynamic.clone() {
+            obj.set("dynamic", JsonValue.string(dynamic))
+        }
+        
+        JsonValue.from_map(obj)
+    }
+}
+
+enum ZapierFieldType { String, Text, Integer, Number, Boolean, DateTime, File, Password, Copy }
+
+impl ZapierFieldType {
+    fn to_string() -> String {
+        match self {
+            String => "string",
+            Text => "text",
+            Integer => "integer",
+            Number => "number",
+            Boolean => "boolean",
+            DateTime => "datetime",
+            File => "file",
+            Password => "password",
+            Copy => "copy"
+        }
+    }
+}
+
+struct ZapierChoice {
+    value: String
+    label: String
+}
+
+impl ZapierChoice {
+    fn new(value: String, label: String) -> Self {
+        ZapierChoice { value: value, label: label }
+    }
+    
+    fn to_json() -> JsonValue {
+        JsonValue.object([
+            ("value", JsonValue.string(self.value.clone())),
+            ("label", JsonValue.string(self.label.clone()))
+        ])
+    }
+}
+
+// =============================================================================
+// Zapier App Definition
+// =============================================================================
+
+/// Complete Zapier app definition
+struct ZapierApp {
+    name: String
+    version: String
+    platform_version: String
+    authentication: Option<ZapierAuth>
+    triggers: [ZapierTrigger]
+    actions: [ZapierAction]
+    searches: [ZapierAction]
+}
+
+impl ZapierApp {
+    fn new(name: String, version: String) -> Self {
+        ZapierApp {
+            name: name,
+            version: version,
+            platform_version: "14.0.0",
+            authentication: None,
+            triggers: [],
+            actions: [],
+            searches: []
+        }
+    }
+    
+    fn with_auth(auth: ZapierAuth) -> Self {
+        self.authentication = Some(auth)
+        self
+    }
+    
+    fn add_trigger(trigger: ZapierTrigger) -> Self {
+        self.triggers.push(trigger)
+        self
+    }
+    
+    fn add_action(action: ZapierAction) -> Self {
+        self.actions.push(action)
+        self
+    }
+    
+    fn add_search(search: ZapierAction) -> Self {
+        self.searches.push(search)
+        self
+    }
+    
+    fn to_json() -> JsonValue {
+        var obj = Map.empty()
+        obj.set("platformVersion", JsonValue.string(self.platform_version.clone()))
+        obj.set("version", JsonValue.string(self.version.clone()))
+        
+        if let Some(auth) = self.authentication.clone() {
+            obj.set("authentication", auth.to_json())
+        }
+        
+        if !self.triggers.is_empty() {
+            var triggers_obj = Map.empty()
+            for trigger in self.triggers.iter() {
+                triggers_obj.set(trigger.key.clone(), trigger.to_json())
+            }
+            obj.set("triggers", JsonValue.from_map(triggers_obj))
+        }
+        
+        if !self.actions.is_empty() {
+            var actions_obj = Map.empty()
+            for action in self.actions.iter() {
+                actions_obj.set(action.key.clone(), action.to_json())
+            }
+            obj.set("creates", JsonValue.from_map(actions_obj))
+        }
+        
+        if !self.searches.is_empty() {
+            var searches_obj = Map.empty()
+            for search in self.searches.iter() {
+                searches_obj.set(search.key.clone(), search.to_json())
+            }
+            obj.set("searches", JsonValue.from_map(searches_obj))
+        }
+        
+        JsonValue.from_map(obj)
+    }
+}
+
+// =============================================================================
+// Zapier Authentication
+// =============================================================================
+
+enum ZapierAuth {
+    ApiKey { fields: [ZapierField] },
+    OAuth2 { client_id: String, client_secret: String, auth_url: String, token_url: String, scopes: [String] },
+    Session { fields: [ZapierField], session_url: String },
+    Basic { fields: [ZapierField] }
+}
+
+impl ZapierAuth {
+    fn api_key() -> Self {
+        ZapierAuth.ApiKey { fields: [ZapierField.password("api_key", "API Key").required()] }
+    }
+    
+    fn oauth2(client_id: String, client_secret: String, auth_url: String, token_url: String) -> Self {
+        ZapierAuth.OAuth2 {
+            client_id: client_id,
+            client_secret: client_secret,
+            auth_url: auth_url,
+            token_url: token_url,
+            scopes: []
+        }
+    }
+    
+    fn to_json() -> JsonValue {
+        match self {
+            ApiKey { fields } => JsonValue.object([
+                ("type", JsonValue.string("custom")),
+                ("fields", JsonValue.array(fields.iter().map(|f| f.to_json()).collect()))
+            ]),
+            OAuth2 { client_id, client_secret, auth_url, token_url, scopes } => JsonValue.object([
+                ("type", JsonValue.string("oauth2")),
+                ("oauth2Config", JsonValue.object([
+                    ("authorizeUrl", JsonValue.string(auth_url)),
+                    ("getAccessToken", JsonValue.string(token_url)),
+                    ("scope", JsonValue.string(scopes.join(" ")))
+                ]))
+            ]),
+            Session { fields, session_url } => JsonValue.object([
+                ("type", JsonValue.string("session")),
+                ("fields", JsonValue.array(fields.iter().map(|f| f.to_json()).collect())),
+                ("sessionConfig", JsonValue.object([
+                    ("perform", JsonValue.string(session_url))
+                ]))
+            ]),
+            Basic { fields } => JsonValue.object([
+                ("type", JsonValue.string("basic")),
+                ("fields", JsonValue.array(fields.iter().map(|f| f.to_json()).collect()))
+            ])
+        }
+    }
+}
+
+// =============================================================================
+// Response and Error Types
+// =============================================================================
+
+struct ZapierResponse {
+    status: Int
+    request_id: String
+    data: Option<JsonValue>
+}
+
+struct RetryConfig {
+    max_retries: Int
+    delay_ms: Int64
+}
+
+impl RetryConfig {
+    fn default() -> Self {
+        RetryConfig { max_retries: 3, delay_ms: 1000 }
+    }
+    
+    fn new(max_retries: Int, delay_ms: Int64) -> Self {
+        RetryConfig { max_retries: max_retries, delay_ms: delay_ms }
+    }
+}
+
+enum ZapierError {
+    NoWebhookConfigured,
+    NetworkError(String),
+    ApiError(Int, String),
+    ServerError(Int),
+    MaxRetriesExceeded,
+    InvalidSignature,
+    InvalidPayload,
+    UnknownAction(String),
+    Other(String)
+}
+
+impl Display for ZapierError {
+    fn fmt(f: Formatter) {
+        match self {
+            NoWebhookConfigured => f.write("No webhook URL configured"),
+            NetworkError(s) => f.write(format!("Network error: {}", s)),
+            ApiError(code, msg) => f.write(format!("API error {}: {}", code, msg)),
+            ServerError(code) => f.write(format!("Server error: {}", code)),
+            MaxRetriesExceeded => f.write("Max retries exceeded"),
+            InvalidSignature => f.write("Invalid webhook signature"),
+            InvalidPayload => f.write("Invalid payload"),
+            UnknownAction(a) => f.write(format!("Unknown action: {}", a)),
+            Other(s) => f.write(s)
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "zapier field builder" {
+    let field = ZapierField.string("email", "Email Address")
+        .required()
+        .help("Enter your email address")
+    
+    let json = field.to_json()
+    assert_eq(json.get("key").as_string(), Some("email"))?
+    assert_eq(json.get("required").as_bool(), Some(true))?
+}
+
+test "zapier trigger builder" {
+    let trigger = ZapierTrigger.new("new_user", "New User")
+        .description("Triggers when a new user is created")
+        .input_field(ZapierField.string("status", "Status"))
+        .output_field(ZapierField.string("id", "User ID"))
+    
+    let json = trigger.to_json()
+    assert_eq(json.get("key").as_string(), Some("new_user"))?
+}
+
+test "zapier action builder" {
+    let action = ZapierAction.new("create_user", "Create User")
+        .description("Creates a new user")
+        .input_field(ZapierField.string("name", "Name").required())
+        .input_field(ZapierField.string("email", "Email").required())
+    
+    let json = action.to_json()
+    assert_eq(json.get("key").as_string(), Some("create_user"))?
+}
+
+test "zapier app definition" {
+    let app = ZapierApp.new("My App", "1.0.0")
+        .with_auth(ZapierAuth.api_key())
+        .add_trigger(ZapierTrigger.new("new_item", "New Item"))
+        .add_action(ZapierAction.new("create_item", "Create Item"))
+    
+    let json = app.to_json()
+    assert_eq(json.get("version").as_string(), Some("1.0.0"))?
+}
+
+test "retry config" {
+    let config = RetryConfig.default()
+    assert_eq(config.max_retries, 3)?
+    assert_eq(config.delay_ms, 1000)?
+}

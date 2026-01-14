@@ -1,0 +1,618 @@
+// =============================================================================
+// Vibee OS — Patch Module
+// Apply and create patches for text files
+// =============================================================================
+//
+// This module provides functionality for:
+// - Parsing unified diff patches
+// - Applying patches to text
+// - Creating patches from diffs
+// - Reverse patch application
+// - Fuzzy patch matching
+// =============================================================================
+
+// =============================================================================
+// Patch Types
+// =============================================================================
+
+/// A complete patch containing multiple file changes
+struct Patch {
+    files: [FilePatch]
+    
+    fn new() -> Self {
+        Patch { files: [] }
+    }
+    
+    fn from_files(files: [FilePatch]) -> Self {
+        Patch { files: files }
+    }
+    
+    /// Parse patch from unified diff string
+    fn parse(text: String) -> Result<Self, PatchError> {
+        parse_unified_patch(text)
+    }
+    
+    /// Apply patch to file contents map
+    fn apply(contents: Map<String, String>) -> Result<Map<String, String>, PatchError> {
+        var result = contents.clone()
+        for file_patch in self.files {
+            let path = file_patch.new_path.clone()
+            let old_content = result.get(file_patch.old_path).unwrap_or("")
+            let new_content = file_patch.apply(old_content)?
+            result.set(path, new_content)
+        }
+        Ok(result)
+    }
+    
+    /// Reverse the patch
+    fn reverse() -> Self {
+        Patch { files: self.files.iter().map(|f| f.reverse()).collect() }
+    }
+    
+    /// Get affected file paths
+    fn affected_files() -> [String] {
+        self.files.iter().flat_map(|f| [f.old_path.clone(), f.new_path.clone()]).collect()
+    }
+    
+    /// Convert to unified diff string
+    fn to_string() -> String {
+        self.files.iter().map(|f| f.to_string()).join("\n")
+    }
+}
+
+/// Patch for a single file
+struct FilePatch {
+    old_path: String
+    new_path: String
+    hunks: [Hunk]
+    
+    fn new(old_path: String, new_path: String) -> Self {
+        FilePatch { old_path: old_path, new_path: new_path, hunks: [] }
+    }
+    
+    /// Apply patch to text
+    fn apply(text: String) -> Result<String, PatchError> {
+        apply_hunks(text, self.hunks, false)
+    }
+    
+    /// Apply patch with fuzzy matching
+    fn apply_fuzzy(text: String, fuzz_factor: Int) -> Result<String, PatchError> {
+        apply_hunks_fuzzy(text, self.hunks, fuzz_factor)
+    }
+    
+    /// Reverse the file patch
+    fn reverse() -> Self {
+        FilePatch {
+            old_path: self.new_path.clone(),
+            new_path: self.old_path.clone(),
+            hunks: self.hunks.iter().map(|h| h.reverse()).collect()
+        }
+    }
+    
+    /// Check if patch can be applied
+    fn can_apply(text: String) -> Bool {
+        self.apply(text).is_ok()
+    }
+    
+    fn to_string() -> String {
+        var lines = [
+            format!("--- {}", self.old_path),
+            format!("+++ {}", self.new_path)
+        ]
+        for hunk in self.hunks {
+            lines.push(hunk.to_string())
+        }
+        lines.join("\n")
+    }
+}
+
+/// A hunk represents a contiguous change in a file
+struct Hunk {
+    old_start: Int
+    old_count: Int
+    new_start: Int
+    new_count: Int
+    lines: [PatchLine]
+    
+    fn new(old_start: Int, old_count: Int, new_start: Int, new_count: Int) -> Self {
+        Hunk { old_start: old_start, old_count: old_count, new_start: new_start, new_count: new_count, lines: [] }
+    }
+    
+    /// Reverse the hunk
+    fn reverse() -> Self {
+        Hunk {
+            old_start: self.new_start,
+            old_count: self.new_count,
+            new_start: self.old_start,
+            new_count: self.old_count,
+            lines: self.lines.iter().map(|l| l.reverse()).collect()
+        }
+    }
+    
+    /// Get context lines
+    fn context_lines() -> [String] {
+        self.lines.iter()
+            .filter(|l| l.op == PatchOp.Context)
+            .map(|l| l.content.clone())
+            .collect()
+    }
+    
+    fn to_string() -> String {
+        var result = format!("@@ -{},{} +{},{} @@\n", self.old_start, self.old_count, self.new_start, self.new_count)
+        for line in self.lines {
+            result += line.to_string() + "\n"
+        }
+        result
+    }
+}
+
+/// Single line in a patch
+struct PatchLine {
+    op: PatchOp
+    content: String
+}
+
+impl PatchLine {
+    fn context(content: String) -> Self {
+        PatchLine { op: PatchOp.Context, content: content }
+    }
+    
+    fn add(content: String) -> Self {
+        PatchLine { op: PatchOp.Add, content: content }
+    }
+    
+    fn remove(content: String) -> Self {
+        PatchLine { op: PatchOp.Remove, content: content }
+    }
+    
+    fn reverse() -> Self {
+        match self.op {
+            Context => self.clone()
+            Add => PatchLine { op: PatchOp.Remove, content: self.content.clone() }
+            Remove => PatchLine { op: PatchOp.Add, content: self.content.clone() }
+        }
+    }
+    
+    fn to_string() -> String {
+        match self.op {
+            Context => format!(" {}", self.content)
+            Add => format!("+{}", self.content)
+            Remove => format!("-{}", self.content)
+        }
+    }
+}
+
+/// Patch line operation
+enum PatchOp {
+    Context
+    Add
+    Remove
+}
+
+// =============================================================================
+// Parsing
+// =============================================================================
+
+/// Parse unified diff format
+fn parse_unified_patch(text: String) -> Result<Patch, PatchError> {
+    var files = []
+    var current_file: Option<FilePatch> = None
+    var current_hunk: Option<Hunk> = None
+    
+    let lines = text.lines()
+    var i = 0
+    
+    while i < lines.len() {
+        let line = lines[i]
+        
+        if line.starts_with("--- ") {
+            // Save previous file
+            if let Some(hunk) = current_hunk.take() {
+                current_file.as_mut().map(|f| f.hunks.push(hunk))
+            }
+            if let Some(file) = current_file.take() {
+                files.push(file)
+            }
+            
+            let old_path = line[4..].trim().to_string()
+            
+            // Expect +++ line
+            i += 1
+            if i >= lines.len() || !lines[i].starts_with("+++ ") {
+                return Err(PatchError.ParseError("Expected +++ line"))
+            }
+            let new_path = lines[i][4..].trim().to_string()
+            
+            current_file = Some(FilePatch.new(old_path, new_path))
+        } else if line.starts_with("@@ ") {
+            // Save previous hunk
+            if let Some(hunk) = current_hunk.take() {
+                current_file.as_mut().map(|f| f.hunks.push(hunk))
+            }
+            
+            // Parse hunk header
+            current_hunk = Some(parse_hunk_header(line)?)
+        } else if current_hunk.is_some() {
+            // Parse hunk line
+            let patch_line = if line.starts_with("+") {
+                PatchLine.add(line[1..].to_string())
+            } else if line.starts_with("-") {
+                PatchLine.remove(line[1..].to_string())
+            } else if line.starts_with(" ") || line.is_empty() {
+                PatchLine.context(if line.len() > 0 { line[1..].to_string() } else { "".to_string() })
+            } else {
+                PatchLine.context(line.to_string())
+            }
+            
+            current_hunk.as_mut().map(|h| h.lines.push(patch_line))
+        }
+        
+        i += 1
+    }
+    
+    // Save final hunk and file
+    if let Some(hunk) = current_hunk {
+        current_file.as_mut().map(|f| f.hunks.push(hunk))
+    }
+    if let Some(file) = current_file {
+        files.push(file)
+    }
+    
+    Ok(Patch { files: files })
+}
+
+/// Parse hunk header (@@ -1,3 +1,4 @@)
+fn parse_hunk_header(line: String) -> Result<Hunk, PatchError> {
+    // Extract numbers from @@ -old_start,old_count +new_start,new_count @@
+    let parts = line.trim_start_matches("@@ ").trim_end_matches(" @@").split(" ")
+    
+    if parts.len() < 2 {
+        return Err(PatchError.ParseError("Invalid hunk header"))
+    }
+    
+    let old_part = parts[0].trim_start_matches("-")
+    let new_part = parts[1].trim_start_matches("+")
+    
+    let (old_start, old_count) = parse_range(old_part)?
+    let (new_start, new_count) = parse_range(new_part)?
+    
+    Ok(Hunk.new(old_start, old_count, new_start, new_count))
+}
+
+fn parse_range(s: String) -> Result<(Int, Int), PatchError> {
+    let parts = s.split(",")
+    let start = parts[0].parse::<Int>().map_err(|_| PatchError.ParseError("Invalid line number"))?
+    let count = if parts.len() > 1 {
+        parts[1].parse::<Int>().map_err(|_| PatchError.ParseError("Invalid count"))?
+    } else {
+        1
+    }
+    Ok((start, count))
+}
+
+// =============================================================================
+// Application
+// =============================================================================
+
+/// Apply hunks to text
+fn apply_hunks(text: String, hunks: [Hunk], reverse: Bool) -> Result<String, PatchError> {
+    var lines = text.lines()
+    var offset = 0
+    
+    for hunk in hunks {
+        let start = (hunk.old_start - 1 + offset) as Int
+        
+        // Verify context
+        if !verify_context(lines, start, hunk.lines) {
+            return Err(PatchError.ContextMismatch(hunk.old_start))
+        }
+        
+        // Apply changes
+        let (new_lines, delta) = apply_hunk_lines(lines, start, hunk.lines)
+        lines = new_lines
+        offset += delta
+    }
+    
+    Ok(lines.join("\n"))
+}
+
+/// Apply hunks with fuzzy matching
+fn apply_hunks_fuzzy(text: String, hunks: [Hunk], fuzz_factor: Int) -> Result<String, PatchError> {
+    var lines = text.lines()
+    var offset = 0
+    
+    for hunk in hunks {
+        let target_start = (hunk.old_start - 1 + offset) as Int
+        
+        // Try exact match first
+        if verify_context(lines, target_start, hunk.lines) {
+            let (new_lines, delta) = apply_hunk_lines(lines, target_start, hunk.lines)
+            lines = new_lines
+            offset += delta
+            continue
+        }
+        
+        // Try fuzzy match
+        var found = false
+        for fuzz in 1..=fuzz_factor {
+            // Try before
+            let before = target_start - fuzz
+            if before >= 0 && verify_context(lines, before, hunk.lines) {
+                let (new_lines, delta) = apply_hunk_lines(lines, before, hunk.lines)
+                lines = new_lines
+                offset += delta - fuzz
+                found = true
+                break
+            }
+            
+            // Try after
+            let after = target_start + fuzz
+            if after < lines.len() && verify_context(lines, after, hunk.lines) {
+                let (new_lines, delta) = apply_hunk_lines(lines, after, hunk.lines)
+                lines = new_lines
+                offset += delta + fuzz
+                found = true
+                break
+            }
+        }
+        
+        if !found {
+            return Err(PatchError.ContextMismatch(hunk.old_start))
+        }
+    }
+    
+    Ok(lines.join("\n"))
+}
+
+/// Verify context lines match
+fn verify_context(lines: [String], start: Int, patch_lines: [PatchLine]) -> Bool {
+    var line_idx = start
+    
+    for patch_line in patch_lines {
+        match patch_line.op {
+            Context | Remove => {
+                if line_idx >= lines.len() || lines[line_idx] != patch_line.content {
+                    return false
+                }
+                line_idx += 1
+            }
+            Add => {}
+        }
+    }
+    
+    true
+}
+
+/// Apply hunk lines and return new lines with delta
+fn apply_hunk_lines(lines: [String], start: Int, patch_lines: [PatchLine]) -> ([String], Int) {
+    var result = lines[0..start].to_vec()
+    var line_idx = start
+    var added = 0
+    var removed = 0
+    
+    for patch_line in patch_lines {
+        match patch_line.op {
+            Context => {
+                result.push(lines[line_idx].clone())
+                line_idx += 1
+            }
+            Add => {
+                result.push(patch_line.content.clone())
+                added += 1
+            }
+            Remove => {
+                line_idx += 1
+                removed += 1
+            }
+        }
+    }
+    
+    // Add remaining lines
+    result.extend(lines[line_idx..].iter().cloned())
+    
+    (result, added - removed)
+}
+
+// =============================================================================
+// Patch Creation
+// =============================================================================
+
+/// Create patch from two texts
+fn create_patch(old_text: String, new_text: String, old_path: String, new_path: String) -> Patch {
+    let diff = diff.diff_lines(old_text, new_text)
+    create_patch_from_diff(diff, old_path, new_path)
+}
+
+/// Create patch from diff result
+fn create_patch_from_diff(diff_result: diff.DiffResult<String>, old_path: String, new_path: String) -> Patch {
+    var file_patch = FilePatch.new(old_path, new_path)
+    var current_hunk: Option<Hunk> = None
+    var old_line = 1
+    var new_line = 1
+    
+    for change in diff_result.changes {
+        let needs_hunk = !change.is_equal() && current_hunk.is_none()
+        
+        if needs_hunk {
+            current_hunk = Some(Hunk.new(old_line, 0, new_line, 0))
+        }
+        
+        if let Some(ref mut hunk) = current_hunk {
+            match change.op {
+                diff.DiffOp.Equal => {
+                    hunk.lines.push(PatchLine.context(change.old_value.unwrap_or("".to_string())))
+                    hunk.old_count += 1
+                    hunk.new_count += 1
+                    old_line += 1
+                    new_line += 1
+                }
+                diff.DiffOp.Insert => {
+                    hunk.lines.push(PatchLine.add(change.new_value.unwrap_or("".to_string())))
+                    hunk.new_count += 1
+                    new_line += 1
+                }
+                diff.DiffOp.Delete => {
+                    hunk.lines.push(PatchLine.remove(change.old_value.unwrap_or("".to_string())))
+                    hunk.old_count += 1
+                    old_line += 1
+                }
+                diff.DiffOp.Replace => {
+                    hunk.lines.push(PatchLine.remove(change.old_value.unwrap_or("".to_string())))
+                    hunk.lines.push(PatchLine.add(change.new_value.unwrap_or("".to_string())))
+                    hunk.old_count += 1
+                    hunk.new_count += 1
+                    old_line += 1
+                    new_line += 1
+                }
+            }
+        } else {
+            old_line += 1
+            new_line += 1
+        }
+    }
+    
+    if let Some(hunk) = current_hunk {
+        file_patch.hunks.push(hunk)
+    }
+    
+    Patch { files: [file_patch] }
+}
+
+// =============================================================================
+// Patch Actor
+// =============================================================================
+
+/// Actor for managing patch operations
+actor PatchActor {
+    state patches: [Patch]
+    state applied: [Int]
+    
+    fn new() -> Self {
+        PatchActor { patches: [], applied: [] }
+    }
+    
+    /// Add patch
+    fn add_patch(patch: Patch) -> Int {
+        let id = self.patches.len()
+        self.patches.push(patch)
+        id
+    }
+    
+    /// Apply patch by ID
+    fn apply(id: Int, contents: Map<String, String>) -> Result<Map<String, String>, PatchError> {
+        if id >= self.patches.len() {
+            return Err(PatchError.InvalidPatchId(id))
+        }
+        let result = self.patches[id].apply(contents)?
+        self.applied.push(id)
+        Ok(result)
+    }
+    
+    /// Revert last applied patch
+    fn revert(contents: Map<String, String>) -> Result<Map<String, String>, PatchError> {
+        if self.applied.is_empty() {
+            return Err(PatchError.NothingToRevert)
+        }
+        let id = self.applied.pop().unwrap()
+        let reversed = self.patches[id].reverse()
+        reversed.apply(contents)
+    }
+    
+    /// Get applied patch count
+    fn applied_count() -> Int {
+        self.applied.len()
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum PatchError {
+    ParseError(String)
+    ContextMismatch(Int)
+    InvalidPatchId(Int)
+    NothingToRevert
+    IoError(String)
+}
+
+impl Display for PatchError {
+    fn fmt(f: Formatter) {
+        match self {
+            ParseError(s) => f.write(format!("Parse error: {}", s))
+            ContextMismatch(line) => f.write(format!("Context mismatch at line {}", line))
+            InvalidPatchId(id) => f.write(format!("Invalid patch ID: {}", id))
+            NothingToRevert => f.write("Nothing to revert")
+            IoError(s) => f.write(format!("I/O error: {}", s))
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "parse simple patch" {
+    let patch_text = "--- a.txt\n+++ b.txt\n@@ -1,2 +1,3 @@\n line1\n+new line\n line2"
+    let patch = Patch.parse(patch_text)?
+    assert_eq(patch.files.len(), 1)?
+    assert_eq(patch.files[0].hunks.len(), 1)?
+}
+
+test "apply patch" {
+    let old_text = "line1\nline2"
+    let patch_text = "--- a.txt\n+++ b.txt\n@@ -1,2 +1,3 @@\n line1\n+new line\n line2"
+    let patch = Patch.parse(patch_text)?
+    
+    var contents = Map.empty()
+    contents.set("a.txt", old_text)
+    
+    let result = patch.apply(contents)?
+    assert(result.get("b.txt").unwrap().contains("new line"))?
+}
+
+test "reverse patch" {
+    let patch_text = "--- a.txt\n+++ b.txt\n@@ -1,2 +1,3 @@\n line1\n+new line\n line2"
+    let patch = Patch.parse(patch_text)?
+    let reversed = patch.reverse()
+    
+    assert_eq(reversed.files[0].old_path, "b.txt")?
+    assert_eq(reversed.files[0].new_path, "a.txt")?
+}
+
+test "create patch" {
+    let old_text = "hello\nworld"
+    let new_text = "hello\nbeautiful\nworld"
+    let patch = create_patch(old_text, new_text, "old.txt", "new.txt")
+    
+    assert_eq(patch.files.len(), 1)?
+}
+
+test "fuzzy apply" {
+    let old_text = "context1\nline1\nline2\ncontext2"
+    let patch_text = "--- a.txt\n+++ b.txt\n@@ -2,2 +2,3 @@\n line1\n+new line\n line2"
+    let patch = Patch.parse(patch_text)?
+    
+    // Should work with fuzzy matching even if lines shifted
+    let file_patch = patch.files[0]
+    let result = file_patch.apply_fuzzy(old_text, 3)
+    assert(result.is_ok())?
+}
+
+test "patch actor" {
+    var actor = PatchActor.new()
+    let patch_text = "--- a.txt\n+++ b.txt\n@@ -1,1 +1,2 @@\n line1\n+line2"
+    let patch = Patch.parse(patch_text)?
+    
+    let id = actor.add_patch(patch)
+    assert_eq(id, 0)?
+    assert_eq(actor.applied_count(), 0)?
+}
+
+test "hunk header parsing" {
+    let hunk = parse_hunk_header("@@ -1,3 +1,4 @@")?
+    assert_eq(hunk.old_start, 1)?
+    assert_eq(hunk.old_count, 3)?
+    assert_eq(hunk.new_start, 1)?
+    assert_eq(hunk.new_count, 4)?
+}

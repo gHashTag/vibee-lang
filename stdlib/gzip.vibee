@@ -1,0 +1,746 @@
+// =============================================================================
+// Vibee OS — Gzip Module
+// Gzip compression and decompression (RFC 1952)
+// =============================================================================
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+const GZIP_MAGIC: [UInt8; 2] = [0x1f, 0x8b]
+const GZIP_DEFLATE: UInt8 = 8
+const GZIP_OS_UNIX: UInt8 = 3
+const GZIP_OS_WINDOWS: UInt8 = 11
+const GZIP_OS_UNKNOWN: UInt8 = 255
+
+// Header flags
+const FTEXT: UInt8 = 0x01
+const FHCRC: UInt8 = 0x02
+const FEXTRA: UInt8 = 0x04
+const FNAME: UInt8 = 0x08
+const FCOMMENT: UInt8 = 0x10
+
+// =============================================================================
+// Compression Level
+// =============================================================================
+
+/// Gzip compression level
+enum GzipLevel {
+    None        // No compression (level 0)
+    Fast        // Fast compression (level 1)
+    Default     // Default compression (level 6)
+    Best        // Best compression (level 9)
+    Custom(Int) // Custom level (0-9)
+}
+
+impl GzipLevel {
+    fn value() -> Int {
+        match self {
+            None => 0
+            Fast => 1
+            Default => 6
+            Best => 9
+            Custom(n) => n.clamp(0, 9)
+        }
+    }
+    
+    fn from_int(level: Int) -> Self {
+        match level {
+            0 => GzipLevel.None
+            1 => GzipLevel.Fast
+            6 => GzipLevel.Default
+            9 => GzipLevel.Best
+            n => GzipLevel.Custom(n.clamp(0, 9))
+        }
+    }
+}
+
+// =============================================================================
+// Gzip Header
+// =============================================================================
+
+/// Gzip file header
+struct GzipHeader {
+    modification_time: UInt32
+    filename: Option<String>
+    comment: Option<String>
+    extra: Option<[UInt8]>
+    os: UInt8
+    is_text: Bool
+}
+
+impl GzipHeader {
+    fn new() -> Self {
+        GzipHeader {
+            modification_time: 0,
+            filename: None,
+            comment: None,
+            extra: None,
+            os: GZIP_OS_UNKNOWN,
+            is_text: false
+        }
+    }
+    
+    fn with_filename(name: String) -> Self {
+        var header = Self.new()
+        header.filename = Some(name)
+        header
+    }
+    
+    fn with_mtime(mtime: UInt32) -> Self {
+        var header = Self.new()
+        header.modification_time = mtime
+        header
+    }
+    
+    fn flags() -> UInt8 {
+        var flags: UInt8 = 0
+        if self.is_text { flags |= FTEXT }
+        if self.extra.is_some() { flags |= FEXTRA }
+        if self.filename.is_some() { flags |= FNAME }
+        if self.comment.is_some() { flags |= FCOMMENT }
+        flags
+    }
+    
+    /// Encode header to bytes
+    fn encode() -> [UInt8] {
+        var buf = []
+        
+        // Magic number
+        buf.push(GZIP_MAGIC[0])
+        buf.push(GZIP_MAGIC[1])
+        
+        // Compression method (deflate)
+        buf.push(GZIP_DEFLATE)
+        
+        // Flags
+        buf.push(self.flags())
+        
+        // Modification time (little-endian)
+        buf.push((self.modification_time & 0xff) as UInt8)
+        buf.push(((self.modification_time >> 8) & 0xff) as UInt8)
+        buf.push(((self.modification_time >> 16) & 0xff) as UInt8)
+        buf.push(((self.modification_time >> 24) & 0xff) as UInt8)
+        
+        // Extra flags (0 for default)
+        buf.push(0)
+        
+        // OS
+        buf.push(self.os)
+        
+        // Extra field
+        if let Some(extra) = self.extra {
+            let len = extra.len() as UInt16
+            buf.push((len & 0xff) as UInt8)
+            buf.push(((len >> 8) & 0xff) as UInt8)
+            buf.extend(extra)
+        }
+        
+        // Filename (null-terminated)
+        if let Some(name) = self.filename {
+            buf.extend(name.as_bytes())
+            buf.push(0)
+        }
+        
+        // Comment (null-terminated)
+        if let Some(comment) = self.comment {
+            buf.extend(comment.as_bytes())
+            buf.push(0)
+        }
+        
+        buf
+    }
+    
+    /// Decode header from bytes
+    fn decode(data: [UInt8]) -> Result<(Self, Int), GzipError> {
+        if data.len() < 10 {
+            return Err(GzipError.InvalidHeader)
+        }
+        
+        // Check magic
+        if data[0] != GZIP_MAGIC[0] || data[1] != GZIP_MAGIC[1] {
+            return Err(GzipError.InvalidMagic)
+        }
+        
+        // Check compression method
+        if data[2] != GZIP_DEFLATE {
+            return Err(GzipError.UnsupportedMethod)
+        }
+        
+        let flags = data[3]
+        let mtime = (data[4] as UInt32) |
+                    ((data[5] as UInt32) << 8) |
+                    ((data[6] as UInt32) << 16) |
+                    ((data[7] as UInt32) << 24)
+        let os = data[9]
+        
+        var header = GzipHeader {
+            modification_time: mtime,
+            filename: None,
+            comment: None,
+            extra: None,
+            os: os,
+            is_text: (flags & FTEXT) != 0
+        }
+        
+        var pos = 10
+        
+        // Extra field
+        if (flags & FEXTRA) != 0 {
+            if pos + 2 > data.len() { return Err(GzipError.InvalidHeader) }
+            let xlen = (data[pos] as Int) | ((data[pos + 1] as Int) << 8)
+            pos += 2
+            if pos + xlen > data.len() { return Err(GzipError.InvalidHeader) }
+            header.extra = Some(data[pos..(pos + xlen)].to_vec())
+            pos += xlen
+        }
+        
+        // Filename
+        if (flags & FNAME) != 0 {
+            let start = pos
+            while pos < data.len() && data[pos] != 0 { pos += 1 }
+            if pos >= data.len() { return Err(GzipError.InvalidHeader) }
+            header.filename = String.from_utf8(data[start..pos].to_vec()).ok()
+            pos += 1
+        }
+        
+        // Comment
+        if (flags & FCOMMENT) != 0 {
+            let start = pos
+            while pos < data.len() && data[pos] != 0 { pos += 1 }
+            if pos >= data.len() { return Err(GzipError.InvalidHeader) }
+            header.comment = String.from_utf8(data[start..pos].to_vec()).ok()
+            pos += 1
+        }
+        
+        // Header CRC (skip if present)
+        if (flags & FHCRC) != 0 {
+            pos += 2
+        }
+        
+        Ok((header, pos))
+    }
+}
+
+// =============================================================================
+// Core Functions
+// =============================================================================
+
+/// Compress data using gzip with default level
+fn compress(data: [UInt8]) -> Result<[UInt8], GzipError> {
+    compress_level(data, GzipLevel.Default)
+}
+
+/// Compress data using gzip with specified level
+fn compress_level(data: [UInt8], level: GzipLevel) -> Result<[UInt8], GzipError> {
+    @native("gzip_compress", data, level.value())
+}
+
+/// Compress data with custom header
+fn compress_with_header(data: [UInt8], header: GzipHeader, level: GzipLevel) -> Result<[UInt8], GzipError> {
+    @native("gzip_compress_header", data, header.encode(), level.value())
+}
+
+/// Decompress gzip data
+fn decompress(data: [UInt8]) -> Result<[UInt8], GzipError> {
+    @native("gzip_decompress", data)
+}
+
+/// Decompress and return header info
+fn decompress_with_header(data: [UInt8]) -> Result<([UInt8], GzipHeader), GzipError> {
+    let (header, _) = GzipHeader.decode(data)?
+    let decompressed = decompress(data)?
+    Ok((decompressed, header))
+}
+
+/// Check if data is gzip compressed
+fn is_gzip(data: [UInt8]) -> Bool {
+    data.len() >= 2 && data[0] == GZIP_MAGIC[0] && data[1] == GZIP_MAGIC[1]
+}
+
+/// Get uncompressed size from gzip footer (last 4 bytes)
+fn get_uncompressed_size(data: [UInt8]) -> Option<UInt32> {
+    if data.len() < 8 { return None }
+    let len = data.len()
+    Some(
+        (data[len - 4] as UInt32) |
+        ((data[len - 3] as UInt32) << 8) |
+        ((data[len - 2] as UInt32) << 16) |
+        ((data[len - 1] as UInt32) << 24)
+    )
+}
+
+// =============================================================================
+// Streaming Encoder
+// =============================================================================
+
+/// Streaming gzip encoder
+struct GzipEncoder {
+    inner: @native("GzipEncoder")
+    level: GzipLevel
+    header: GzipHeader
+    bytes_written: Int64
+    started: Bool
+}
+
+impl GzipEncoder {
+    fn new() -> Self {
+        Self.with_level(GzipLevel.Default)
+    }
+    
+    fn with_level(level: GzipLevel) -> Self {
+        GzipEncoder {
+            inner: @native("gzip_encoder_new", level.value()),
+            level: level,
+            header: GzipHeader.new(),
+            bytes_written: 0,
+            started: false
+        }
+    }
+    
+    fn with_header(header: GzipHeader, level: GzipLevel) -> Self {
+        GzipEncoder {
+            inner: @native("gzip_encoder_new_header", header.encode(), level.value()),
+            level: level,
+            header: header,
+            bytes_written: 0,
+            started: false
+        }
+    }
+    
+    /// Write data to encoder
+    fn write(data: [UInt8]) -> Result<(), GzipError> {
+        self.started = true
+        self.bytes_written += data.len() as Int64
+        @native("gzip_encoder_write", self.inner, data)
+    }
+    
+    /// Write string to encoder
+    fn write_str(s: String) -> Result<(), GzipError> {
+        self.write(s.as_bytes())
+    }
+    
+    /// Flush pending data
+    fn flush() -> Result<[UInt8], GzipError> {
+        @native("gzip_encoder_flush", self.inner)
+    }
+    
+    /// Finish encoding and get compressed data
+    fn finish() -> Result<[UInt8], GzipError> {
+        @native("gzip_encoder_finish", self.inner)
+    }
+    
+    /// Reset encoder for reuse
+    fn reset() {
+        self.inner = @native("gzip_encoder_new", self.level.value())
+        self.bytes_written = 0
+        self.started = false
+    }
+    
+    /// Get bytes written so far
+    fn bytes_in() -> Int64 { self.bytes_written }
+}
+
+impl Write for GzipEncoder {
+    fn write(data: [UInt8]) -> Result<Int, IoError> {
+        self.write(data).map_err(|e| IoError.Other(e.to_string()))?
+        Ok(data.len())
+    }
+    
+    fn flush() -> Result<(), IoError> {
+        self.flush().map_err(|e| IoError.Other(e.to_string()))?
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Streaming Decoder
+// =============================================================================
+
+/// Streaming gzip decoder
+struct GzipDecoder {
+    inner: @native("GzipDecoder")
+    header: Option<GzipHeader>
+    bytes_read: Int64
+    bytes_written: Int64
+}
+
+impl GzipDecoder {
+    fn new() -> Self {
+        GzipDecoder {
+            inner: @native("gzip_decoder_new"),
+            header: None,
+            bytes_read: 0,
+            bytes_written: 0
+        }
+    }
+    
+    /// Write compressed data to decoder
+    fn write(data: [UInt8]) -> Result<[UInt8], GzipError> {
+        self.bytes_read += data.len() as Int64
+        
+        // Parse header on first write
+        if self.header.is_none() && data.len() >= 10 {
+            if let Ok((header, _)) = GzipHeader.decode(data) {
+                self.header = Some(header)
+            }
+        }
+        
+        let output = @native("gzip_decoder_write", self.inner, data)?
+        self.bytes_written += output.len() as Int64
+        Ok(output)
+    }
+    
+    /// Finish decoding
+    fn finish() -> Result<[UInt8], GzipError> {
+        let output = @native("gzip_decoder_finish", self.inner)?
+        self.bytes_written += output.len() as Int64
+        Ok(output)
+    }
+    
+    /// Get parsed header
+    fn header() -> Option<GzipHeader> { self.header.clone() }
+    
+    /// Get bytes read
+    fn bytes_in() -> Int64 { self.bytes_read }
+    
+    /// Get bytes written
+    fn bytes_out() -> Int64 { self.bytes_written }
+    
+    /// Reset decoder for reuse
+    fn reset() {
+        self.inner = @native("gzip_decoder_new")
+        self.header = None
+        self.bytes_read = 0
+        self.bytes_written = 0
+    }
+}
+
+// =============================================================================
+// Async Streaming
+// =============================================================================
+
+/// Async gzip encoder actor
+actor AsyncGzipEncoder {
+    state encoder: GzipEncoder
+    state buffer: [UInt8]
+    state chunk_size: Int
+    
+    fn new() -> Self {
+        AsyncGzipEncoder {
+            encoder: GzipEncoder.new(),
+            buffer: [],
+            chunk_size: 65536
+        }
+    }
+    
+    fn with_level(level: GzipLevel) -> Self {
+        AsyncGzipEncoder {
+            encoder: GzipEncoder.with_level(level),
+            buffer: [],
+            chunk_size: 65536
+        }
+    }
+    
+    fn set_chunk_size(size: Int) {
+        self.chunk_size = size
+    }
+    
+    /// Write data asynchronously
+    async fn write(data: [UInt8]) -> Result<(), GzipError> {
+        self.buffer.extend(data)
+        
+        // Process in chunks
+        while self.buffer.len() >= self.chunk_size {
+            let chunk = self.buffer[0..self.chunk_size].to_vec()
+            self.buffer = self.buffer[self.chunk_size..].to_vec()
+            self.encoder.write(chunk)?
+        }
+        
+        Ok(())
+    }
+    
+    /// Finish and get result
+    async fn finish() -> Result<[UInt8], GzipError> {
+        // Write remaining buffer
+        if !self.buffer.is_empty() {
+            self.encoder.write(self.buffer.clone())?
+            self.buffer.clear()
+        }
+        
+        self.encoder.finish()
+    }
+}
+
+/// Async gzip decoder actor
+actor AsyncGzipDecoder {
+    state decoder: GzipDecoder
+    state output: [UInt8]
+    
+    fn new() -> Self {
+        AsyncGzipDecoder {
+            decoder: GzipDecoder.new(),
+            output: []
+        }
+    }
+    
+    /// Write compressed data asynchronously
+    async fn write(data: [UInt8]) -> Result<(), GzipError> {
+        let decompressed = self.decoder.write(data)?
+        self.output.extend(decompressed)
+        Ok(())
+    }
+    
+    /// Finish and get result
+    async fn finish() -> Result<[UInt8], GzipError> {
+        let final_data = self.decoder.finish()?
+        self.output.extend(final_data)
+        
+        let result = self.output.clone()
+        self.output.clear()
+        Ok(result)
+    }
+    
+    /// Get header
+    fn header() -> Option<GzipHeader> {
+        self.decoder.header()
+    }
+}
+
+// =============================================================================
+// File Operations
+// =============================================================================
+
+/// Compress file to .gz
+fn compress_file(input_path: String, output_path: Option<String>) -> Result<Int64, GzipError> {
+    let data = fs.read(input_path).map_err(|e| GzipError.IoError(e.to_string()))?
+    let compressed = compress(data)?
+    
+    let out_path = output_path.unwrap_or(format!("{}.gz", input_path))
+    fs.write(out_path, compressed).map_err(|e| GzipError.IoError(e.to_string()))?
+    
+    Ok(compressed.len() as Int64)
+}
+
+/// Decompress .gz file
+fn decompress_file(input_path: String, output_path: Option<String>) -> Result<Int64, GzipError> {
+    let data = fs.read(input_path).map_err(|e| GzipError.IoError(e.to_string()))?
+    let decompressed = decompress(data)?
+    
+    let out_path = output_path.unwrap_or_else(|| {
+        if input_path.ends_with(".gz") {
+            input_path[0..(input_path.len() - 3)].to_string()
+        } else {
+            format!("{}.out", input_path)
+        }
+    })
+    
+    fs.write(out_path, decompressed.clone()).map_err(|e| GzipError.IoError(e.to_string()))?
+    
+    Ok(decompressed.len() as Int64)
+}
+
+/// Stream compress large file
+fn compress_file_stream(input_path: String, output_path: String, level: GzipLevel) -> Result<Int64, GzipError> {
+    let input = fs.open(input_path, "r").map_err(|e| GzipError.IoError(e.to_string()))?
+    let output = fs.open(output_path, "w").map_err(|e| GzipError.IoError(e.to_string()))?
+    
+    var encoder = GzipEncoder.with_level(level)
+    var total_written: Int64 = 0
+    var buf = [0u8; 65536]
+    
+    loop {
+        let n = input.read(buf).map_err(|e| GzipError.IoError(e.to_string()))?
+        if n == 0 { break }
+        
+        encoder.write(buf[0..n].to_vec())?
+        let flushed = encoder.flush()?
+        if !flushed.is_empty() {
+            output.write(flushed).map_err(|e| GzipError.IoError(e.to_string()))?
+            total_written += flushed.len() as Int64
+        }
+    }
+    
+    let final_data = encoder.finish()?
+    output.write(final_data.clone()).map_err(|e| GzipError.IoError(e.to_string()))?
+    total_written += final_data.len() as Int64
+    
+    input.close()
+    output.close()
+    
+    Ok(total_written)
+}
+
+// =============================================================================
+// Utilities
+// =============================================================================
+
+/// Calculate compression ratio
+fn compression_ratio(original_size: Int, compressed_size: Int) -> Float64 {
+    if original_size == 0 { return 0.0 }
+    1.0 - (compressed_size as Float64 / original_size as Float64)
+}
+
+/// Estimate compressed size (rough estimate)
+fn estimate_compressed_size(data: [UInt8]) -> Int {
+    // Rough estimate: 50-70% of original for typical data
+    (data.len() as Float64 * 0.6) as Int
+}
+
+/// Concatenate multiple gzip streams
+fn concat(streams: [[UInt8]]) -> Result<[UInt8], GzipError> {
+    var result = []
+    for stream in streams {
+        if !is_gzip(stream) {
+            return Err(GzipError.InvalidMagic)
+        }
+        result.extend(stream)
+    }
+    Ok(result)
+}
+
+// =============================================================================
+// Compressor/Decompressor Traits
+// =============================================================================
+
+trait Compressor {
+    fn compress(data: [UInt8]) -> Result<[UInt8], GzipError>
+}
+
+trait Decompressor {
+    fn decompress(data: [UInt8]) -> Result<[UInt8], GzipError>
+}
+
+struct GzipCompressor { level: GzipLevel }
+
+impl GzipCompressor {
+    fn new() -> Self { GzipCompressor { level: GzipLevel.Default } }
+    fn with_level(level: GzipLevel) -> Self { GzipCompressor { level: level } }
+}
+
+impl Compressor for GzipCompressor {
+    fn compress(data: [UInt8]) -> Result<[UInt8], GzipError> {
+        compress_level(data, self.level)
+    }
+}
+
+struct GzipDecompressor {}
+
+impl GzipDecompressor {
+    fn new() -> Self { GzipDecompressor {} }
+}
+
+impl Decompressor for GzipDecompressor {
+    fn decompress(data: [UInt8]) -> Result<[UInt8], GzipError> {
+        decompress(data)
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum GzipError {
+    InvalidMagic
+    InvalidHeader
+    InvalidChecksum
+    InvalidData
+    UnsupportedMethod
+    BufferTooSmall
+    IoError(String)
+    Other(String)
+}
+
+impl Display for GzipError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidMagic => f.write("Invalid gzip magic number")
+            InvalidHeader => f.write("Invalid gzip header")
+            InvalidChecksum => f.write("Invalid gzip checksum")
+            InvalidData => f.write("Invalid compressed data")
+            UnsupportedMethod => f.write("Unsupported compression method")
+            BufferTooSmall => f.write("Output buffer too small")
+            IoError(s) => f.write(format!("I/O error: {}", s))
+            Other(s) => f.write(s)
+        }
+    }
+}
+
+impl Error for GzipError {}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "compress decompress roundtrip" {
+    let original = "Hello, World! This is a test of gzip compression.".as_bytes()
+    let compressed = compress(original)?
+    let decompressed = decompress(compressed)?
+    assert_eq(decompressed, original)?
+}
+
+test "compression levels" {
+    let data = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".repeat(100).as_bytes()
+    
+    let fast = compress_level(data, GzipLevel.Fast)?
+    let default = compress_level(data, GzipLevel.Default)?
+    let best = compress_level(data, GzipLevel.Best)?
+    
+    // All should decompress to original
+    assert_eq(decompress(fast)?, data)?
+    assert_eq(decompress(default)?, data)?
+    assert_eq(decompress(best)?, data)?
+    
+    // Best should be smallest or equal
+    assert(best.len() <= fast.len())?
+}
+
+test "is_gzip" {
+    let compressed = compress("test".as_bytes())?
+    assert(is_gzip(compressed))?
+    assert(!is_gzip("not gzip".as_bytes()))?
+}
+
+test "header parsing" {
+    let header = GzipHeader.with_filename("test.txt")
+    let encoded = header.encode()
+    let (decoded, _) = GzipHeader.decode(encoded)?
+    assert_eq(decoded.filename, Some("test.txt"))?
+}
+
+test "streaming encoder" {
+    var encoder = GzipEncoder.new()
+    encoder.write("Hello, ".as_bytes())?
+    encoder.write("World!".as_bytes())?
+    let compressed = encoder.finish()?
+    
+    let decompressed = decompress(compressed)?
+    assert_eq(String.from_utf8(decompressed)?, "Hello, World!")?
+}
+
+test "streaming decoder" {
+    let original = "Test data for streaming decoder".as_bytes()
+    let compressed = compress(original)?
+    
+    var decoder = GzipDecoder.new()
+    let part1 = decoder.write(compressed)?
+    let part2 = decoder.finish()?
+    
+    var result = []
+    result.extend(part1)
+    result.extend(part2)
+    assert_eq(result, original)?
+}
+
+test "empty data" {
+    let compressed = compress([])?
+    let decompressed = decompress(compressed)?
+    assert_eq(decompressed, [])?
+}
+
+test "compression ratio" {
+    let data = "aaaaaaaaaa".repeat(1000).as_bytes()
+    let compressed = compress(data)?
+    let ratio = compression_ratio(data.len(), compressed.len())
+    assert(ratio > 0.9)?  // Should compress very well
+}

@@ -1,0 +1,581 @@
+// =============================================================================
+// Vibee OS — Punycode Module
+// Punycode encoding for Internationalized Domain Names (IDN)
+// RFC 3492 implementation
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Constants (RFC 3492)
+// -----------------------------------------------------------------------------
+
+const BASE: Int = 36
+const TMIN: Int = 1
+const TMAX: Int = 26
+const SKEW: Int = 38
+const DAMP: Int = 700
+const INITIAL_BIAS: Int = 72
+const INITIAL_N: Int = 128
+const DELIMITER: Char = '-'
+const ACE_PREFIX: String = "xn--"
+
+// -----------------------------------------------------------------------------
+// Encoding
+// -----------------------------------------------------------------------------
+
+/// Encode Unicode string to Punycode
+fn encode(input: String) -> Result<String, PunycodeError> {
+    let input_chars: [Char] = input.chars().collect()
+    
+    // Separate ASCII and non-ASCII
+    var basic = ""
+    var non_basic_codepoints = []
+    
+    for c in input_chars {
+        let cp = c as Int
+        if cp < 128 {
+            basic.push(c)
+        } else {
+            non_basic_codepoints.push(cp)
+        }
+    }
+    
+    // If all ASCII, return as-is
+    if non_basic_codepoints.is_empty() {
+        return Ok(basic)
+    }
+    
+    var output = basic.clone()
+    
+    // Add delimiter if there are basic characters
+    if !basic.is_empty() {
+        output.push(DELIMITER)
+    }
+    
+    // Sort non-basic codepoints
+    var all_codepoints: [Int] = input_chars.iter().map(|c| c as Int).collect()
+    all_codepoints.sort()
+    all_codepoints.dedup()
+    
+    var n = INITIAL_N
+    var delta = 0
+    var bias = INITIAL_BIAS
+    var h = basic.len()
+    let b = basic.len()
+    
+    while h < input_chars.len() {
+        // Find minimum codepoint >= n
+        var m = Int.MAX
+        for cp in all_codepoints {
+            if cp >= n && cp < m {
+                m = cp
+            }
+        }
+        
+        // Increase delta
+        delta += (m - n) * (h + 1)
+        n = m
+        
+        for c in input_chars {
+            let cp = c as Int
+            
+            if cp < n {
+                delta += 1
+            } else if cp == n {
+                var q = delta
+                var k = BASE
+                
+                loop {
+                    let t = if k <= bias + TMIN {
+                        TMIN
+                    } else if k >= bias + TMAX {
+                        TMAX
+                    } else {
+                        k - bias
+                    }
+                    
+                    if q < t {
+                        break
+                    }
+                    
+                    let digit = t + ((q - t) % (BASE - t))
+                    output.push(encode_digit(digit))
+                    q = (q - t) / (BASE - t)
+                    k += BASE
+                }
+                
+                output.push(encode_digit(q))
+                bias = adapt(delta, h + 1, h == b)
+                delta = 0
+                h += 1
+            }
+        }
+        
+        delta += 1
+        n += 1
+    }
+    
+    Ok(output)
+}
+
+/// Encode domain label to Punycode with ACE prefix
+fn encode_label(label: String) -> Result<String, PunycodeError> {
+    // Check if already ASCII
+    if label.chars().all(|c| (c as Int) < 128) {
+        return Ok(label)
+    }
+    
+    let encoded = encode(label)?
+    Ok(format!("{}{}", ACE_PREFIX, encoded))
+}
+
+/// Encode full domain name
+fn encode_domain(domain: String) -> Result<String, PunycodeError> {
+    let labels = domain.split(".")
+    var encoded_labels = []
+    
+    for label in labels {
+        encoded_labels.push(encode_label(label)?)
+    }
+    
+    Ok(encoded_labels.join("."))
+}
+
+// -----------------------------------------------------------------------------
+// Decoding
+// -----------------------------------------------------------------------------
+
+/// Decode Punycode to Unicode string
+fn decode(input: String) -> Result<String, PunycodeError> {
+    // Find last delimiter
+    let delimiter_pos = input.rfind(DELIMITER)
+    
+    let (basic, encoded) = match delimiter_pos {
+        Some(pos) => (input[0..pos], input[(pos + 1)..])
+        None => ("", input)
+    }
+    
+    var output: [Char] = basic.chars().collect()
+    
+    if encoded.is_empty() {
+        return Ok(output.iter().collect())
+    }
+    
+    var n = INITIAL_N
+    var i = 0
+    var bias = INITIAL_BIAS
+    var idx = 0
+    let encoded_chars: [Char] = encoded.chars().collect()
+    
+    while idx < encoded_chars.len() {
+        let old_i = i
+        var w = 1
+        var k = BASE
+        
+        loop {
+            if idx >= encoded_chars.len() {
+                return Err(PunycodeError.InvalidInput)
+            }
+            
+            let digit = decode_digit(encoded_chars[idx])?
+            idx += 1
+            
+            i += digit * w
+            
+            let t = if k <= bias + TMIN {
+                TMIN
+            } else if k >= bias + TMAX {
+                TMAX
+            } else {
+                k - bias
+            }
+            
+            if digit < t {
+                break
+            }
+            
+            w *= BASE - t
+            k += BASE
+        }
+        
+        let out_len = output.len() + 1
+        bias = adapt(i - old_i, out_len, old_i == 0)
+        n += i / out_len
+        i = i % out_len
+        
+        // Check valid codepoint
+        if n > 0x10FFFF || (n >= 0xD800 && n <= 0xDFFF) {
+            return Err(PunycodeError.InvalidCodepoint(n as UInt32))
+        }
+        
+        let c = Char.from_u32(n as UInt32).ok_or(PunycodeError.InvalidCodepoint(n as UInt32))?
+        output.insert(i, c)
+        i += 1
+    }
+    
+    Ok(output.iter().collect())
+}
+
+/// Decode Punycode label (with or without ACE prefix)
+fn decode_label(label: String) -> Result<String, PunycodeError> {
+    if label.to_lower().starts_with(ACE_PREFIX) {
+        decode(label[4..])
+    } else {
+        Ok(label)
+    }
+}
+
+/// Decode full domain name
+fn decode_domain(domain: String) -> Result<String, PunycodeError> {
+    let labels = domain.split(".")
+    var decoded_labels = []
+    
+    for label in labels {
+        decoded_labels.push(decode_label(label)?)
+    }
+    
+    Ok(decoded_labels.join("."))
+}
+
+// -----------------------------------------------------------------------------
+// Helper Functions
+// -----------------------------------------------------------------------------
+
+fn encode_digit(d: Int) -> Char {
+    if d < 26 {
+        ('a' as Int + d) as Char
+    } else {
+        ('0' as Int + d - 26) as Char
+    }
+}
+
+fn decode_digit(c: Char) -> Result<Int, PunycodeError> {
+    let cp = c as Int
+    
+    if cp >= 'a' as Int && cp <= 'z' as Int {
+        Ok(cp - 'a' as Int)
+    } else if cp >= 'A' as Int && cp <= 'Z' as Int {
+        Ok(cp - 'A' as Int)
+    } else if cp >= '0' as Int && cp <= '9' as Int {
+        Ok(cp - '0' as Int + 26)
+    } else {
+        Err(PunycodeError.InvalidCharacter(c))
+    }
+}
+
+fn adapt(delta: Int, num_points: Int, first_time: Bool) -> Int {
+    var delta = if first_time {
+        delta / DAMP
+    } else {
+        delta / 2
+    }
+    
+    delta += delta / num_points
+    
+    var k = 0
+    while delta > ((BASE - TMIN) * TMAX) / 2 {
+        delta /= BASE - TMIN
+        k += BASE
+    }
+    
+    k + ((BASE - TMIN + 1) * delta) / (delta + SKEW)
+}
+
+// -----------------------------------------------------------------------------
+// IDN Utilities
+// -----------------------------------------------------------------------------
+
+/// Check if domain contains non-ASCII characters
+fn is_idn(domain: String) -> Bool {
+    domain.chars().any(|c| (c as Int) >= 128)
+}
+
+/// Check if domain is ACE-encoded
+fn is_ace(domain: String) -> Bool {
+    domain.to_lower().split(".").any(|label| label.starts_with(ACE_PREFIX))
+}
+
+/// Convert IDN to ASCII (ToASCII)
+fn to_ascii(domain: String) -> Result<String, PunycodeError> {
+    encode_domain(domain.to_lower())
+}
+
+/// Convert ACE to Unicode (ToUnicode)
+fn to_unicode(domain: String) -> Result<String, PunycodeError> {
+    decode_domain(domain)
+}
+
+/// Normalize domain for comparison
+fn normalize_domain(domain: String) -> Result<String, PunycodeError> {
+    // Convert to ASCII, then back to Unicode for normalization
+    let ascii = to_ascii(domain)?
+    to_unicode(ascii)
+}
+
+// -----------------------------------------------------------------------------
+// URL IDN Support
+// -----------------------------------------------------------------------------
+
+/// Encode IDN in URL
+fn encode_url_host(url: String) -> Result<String, PunycodeError> {
+    // Simple URL host extraction and encoding
+    if !url.contains("://") {
+        return encode_domain(url)
+    }
+    
+    let after_scheme = url.split("://").nth(1).unwrap_or("")
+    let host_end = after_scheme.find("/").unwrap_or(after_scheme.len())
+    let host = after_scheme[0..host_end]
+    
+    // Handle port
+    let (hostname, port) = match host.rfind(":") {
+        Some(idx) => (host[0..idx], Some(host[(idx + 1)..]))
+        None => (host, None)
+    }
+    
+    let encoded_host = encode_domain(hostname)?
+    
+    let new_host = match port {
+        Some(p) => format!("{}:{}", encoded_host, p)
+        None => encoded_host
+    }
+    
+    let scheme_end = url.find("://").unwrap() + 3
+    let scheme = url[0..scheme_end]
+    let path = after_scheme[host_end..]
+    
+    Ok(format!("{}{}{}", scheme, new_host, path))
+}
+
+/// Decode IDN in URL
+fn decode_url_host(url: String) -> Result<String, PunycodeError> {
+    if !url.contains("://") {
+        return decode_domain(url)
+    }
+    
+    let after_scheme = url.split("://").nth(1).unwrap_or("")
+    let host_end = after_scheme.find("/").unwrap_or(after_scheme.len())
+    let host = after_scheme[0..host_end]
+    
+    let (hostname, port) = match host.rfind(":") {
+        Some(idx) => (host[0..idx], Some(host[(idx + 1)..]))
+        None => (host, None)
+    }
+    
+    let decoded_host = decode_domain(hostname)?
+    
+    let new_host = match port {
+        Some(p) => format!("{}:{}", decoded_host, p)
+        None => decoded_host
+    }
+    
+    let scheme_end = url.find("://").unwrap() + 3
+    let scheme = url[0..scheme_end]
+    let path = after_scheme[host_end..]
+    
+    Ok(format!("{}{}{}", scheme, new_host, path))
+}
+
+// -----------------------------------------------------------------------------
+// Email IDN Support
+// -----------------------------------------------------------------------------
+
+/// Encode email address with IDN domain
+fn encode_email(email: String) -> Result<String, PunycodeError> {
+    match email.rfind("@") {
+        Some(idx) => {
+            let local = email[0..idx]
+            let domain = email[(idx + 1)..]
+            let encoded_domain = encode_domain(domain)?
+            Ok(format!("{}@{}", local, encoded_domain))
+        }
+        None => Err(PunycodeError.InvalidEmail)
+    }
+}
+
+/// Decode email address with IDN domain
+fn decode_email(email: String) -> Result<String, PunycodeError> {
+    match email.rfind("@") {
+        Some(idx) => {
+            let local = email[0..idx]
+            let domain = email[(idx + 1)..]
+            let decoded_domain = decode_domain(domain)?
+            Ok(format!("{}@{}", local, decoded_domain))
+        }
+        None => Err(PunycodeError.InvalidEmail)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Validation
+// -----------------------------------------------------------------------------
+
+/// Validate domain label
+fn validate_label(label: String) -> Result<(), PunycodeError> {
+    if label.is_empty() {
+        return Err(PunycodeError.EmptyLabel)
+    }
+    
+    if label.len() > 63 {
+        return Err(PunycodeError.LabelTooLong)
+    }
+    
+    // Check for valid characters
+    for c in label.chars() {
+        let cp = c as Int
+        if cp >= 128 {
+            continue  // Non-ASCII allowed
+        }
+        if !c.is_alphanumeric() && c != '-' {
+            return Err(PunycodeError.InvalidCharacter(c))
+        }
+    }
+    
+    // Cannot start or end with hyphen
+    if label.starts_with("-") || label.ends_with("-") {
+        return Err(PunycodeError.InvalidLabel)
+    }
+    
+    Ok(())
+}
+
+/// Validate full domain
+fn validate_domain(domain: String) -> Result<(), PunycodeError> {
+    if domain.is_empty() {
+        return Err(PunycodeError.EmptyDomain)
+    }
+    
+    if domain.len() > 253 {
+        return Err(PunycodeError.DomainTooLong)
+    }
+    
+    for label in domain.split(".") {
+        validate_label(label)?
+    }
+    
+    Ok(())
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum PunycodeError {
+    InvalidInput
+    InvalidCharacter(Char)
+    InvalidCodepoint(UInt32)
+    InvalidLabel
+    InvalidEmail
+    EmptyLabel
+    EmptyDomain
+    LabelTooLong
+    DomainTooLong
+    Overflow
+}
+
+impl Display for PunycodeError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidInput => f.write("Invalid Punycode input")
+            InvalidCharacter(c) => f.write(format!("Invalid character: '{}'", c))
+            InvalidCodepoint(cp) => f.write(format!("Invalid codepoint: U+{:04X}", cp))
+            InvalidLabel => f.write("Invalid domain label")
+            InvalidEmail => f.write("Invalid email address")
+            EmptyLabel => f.write("Empty domain label")
+            EmptyDomain => f.write("Empty domain")
+            LabelTooLong => f.write("Domain label exceeds 63 characters")
+            DomainTooLong => f.write("Domain exceeds 253 characters")
+            Overflow => f.write("Punycode overflow")
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "encode basic" {
+    // "münchen" -> "mnchen-3ya"
+    assert_eq(encode("münchen")?, "mnchen-3ya")?
+}
+
+test "encode all ascii" {
+    assert_eq(encode("example")?, "example")?
+}
+
+test "encode unicode" {
+    // "日本語" -> "wgv71a119e"
+    let encoded = encode("日本語")?
+    assert(!encoded.is_empty())?
+}
+
+test "decode basic" {
+    assert_eq(decode("mnchen-3ya")?, "münchen")?
+}
+
+test "decode all ascii" {
+    assert_eq(decode("example")?, "example")?
+}
+
+test "roundtrip" {
+    let original = "münchen"
+    let encoded = encode(original)?
+    let decoded = decode(encoded)?
+    assert_eq(decoded, original)?
+}
+
+test "encode_label" {
+    assert_eq(encode_label("münchen")?, "xn--mnchen-3ya")?
+    assert_eq(encode_label("example")?, "example")?  // ASCII unchanged
+}
+
+test "decode_label" {
+    assert_eq(decode_label("xn--mnchen-3ya")?, "münchen")?
+    assert_eq(decode_label("example")?, "example")?
+}
+
+test "encode_domain" {
+    assert_eq(encode_domain("münchen.de")?, "xn--mnchen-3ya.de")?
+}
+
+test "decode_domain" {
+    assert_eq(decode_domain("xn--mnchen-3ya.de")?, "münchen.de")?
+}
+
+test "is_idn" {
+    assert(is_idn("münchen.de"))?
+    assert(!is_idn("example.com"))?
+}
+
+test "is_ace" {
+    assert(is_ace("xn--mnchen-3ya.de"))?
+    assert(!is_ace("example.com"))?
+}
+
+test "to_ascii" {
+    assert_eq(to_ascii("münchen.de")?, "xn--mnchen-3ya.de")?
+}
+
+test "to_unicode" {
+    assert_eq(to_unicode("xn--mnchen-3ya.de")?, "münchen.de")?
+}
+
+test "encode_email" {
+    assert_eq(encode_email("user@münchen.de")?, "user@xn--mnchen-3ya.de")?
+}
+
+test "decode_email" {
+    assert_eq(decode_email("user@xn--mnchen-3ya.de")?, "user@münchen.de")?
+}
+
+test "validate_label" {
+    assert(validate_label("example").is_ok())?
+    assert(validate_label("münchen").is_ok())?
+    assert(validate_label("-invalid").is_err())?
+    assert(validate_label("").is_err())?
+}
+
+test "encode_url_host" {
+    let url = "https://münchen.de/path"
+    let encoded = encode_url_host(url)?
+    assert_eq(encoded, "https://xn--mnchen-3ya.de/path")?
+}

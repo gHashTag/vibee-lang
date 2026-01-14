@@ -1,0 +1,719 @@
+// =============================================================================
+// Vibee OS — Named Entity Recognition Module
+// Entity extraction and classification for NLP
+// =============================================================================
+
+use nlp_tokenizer::{Token, TokenType, WordTokenizer, Tokenizer}
+
+// =============================================================================
+// Entity Types
+// =============================================================================
+
+/// Named entity types
+enum EntityType {
+    Person          // People names
+    Organization    // Companies, institutions
+    Location        // Places, addresses
+    Date            // Dates and times
+    Time            // Time expressions
+    Money           // Monetary values
+    Percent         // Percentages
+    Email           // Email addresses
+    Phone           // Phone numbers
+    Url             // Web URLs
+    Product         // Product names
+    Event           // Events
+    Language        // Languages
+    Nationality     // Nationalities
+    JobTitle        // Job titles
+    Custom(String)  // Custom entity type
+}
+
+impl Display for EntityType {
+    fn fmt(f: Formatter) {
+        match self {
+            Person => f.write("PERSON"),
+            Organization => f.write("ORG"),
+            Location => f.write("LOC"),
+            Date => f.write("DATE"),
+            Time => f.write("TIME"),
+            Money => f.write("MONEY"),
+            Percent => f.write("PERCENT"),
+            Email => f.write("EMAIL"),
+            Phone => f.write("PHONE"),
+            Url => f.write("URL"),
+            Product => f.write("PRODUCT"),
+            Event => f.write("EVENT"),
+            Language => f.write("LANGUAGE"),
+            Nationality => f.write("NATIONALITY"),
+            JobTitle => f.write("JOB_TITLE"),
+            Custom(s) => f.write(s)
+        }
+    }
+}
+
+/// A recognized named entity
+struct Entity {
+    text: String
+    entity_type: EntityType
+    start: Int
+    end: Int
+    confidence: Float
+    
+    fn new(text: String, entity_type: EntityType, start: Int, end: Int) -> Self {
+        Entity {
+            text: text,
+            entity_type: entity_type,
+            start: start,
+            end: end,
+            confidence: 1.0
+        }
+    }
+    
+    fn with_confidence(text: String, entity_type: EntityType, start: Int, end: Int, confidence: Float) -> Self {
+        Entity {
+            text: text,
+            entity_type: entity_type,
+            start: start,
+            end: end,
+            confidence: confidence
+        }
+    }
+    
+    fn len() -> Int { self.end - self.start }
+}
+
+impl Display for Entity {
+    fn fmt(f: Formatter) {
+        f.write(format!("Entity('{}', {}, {}:{}, conf={:.2})", 
+            self.text, self.entity_type, self.start, self.end, self.confidence))
+    }
+}
+
+// =============================================================================
+// NER Trait
+// =============================================================================
+
+/// Base trait for NER systems
+trait NERExtractor {
+    fn extract(text: String) -> [Entity]
+    fn extract_type(text: String, entity_type: EntityType) -> [Entity] {
+        self.extract(text).iter().filter(|e| e.entity_type == entity_type).collect()
+    }
+}
+
+// =============================================================================
+// Rule-Based NER
+// =============================================================================
+
+/// Rule-based Named Entity Recognizer
+struct RuleBasedNER {
+    patterns: Map<EntityType, [String]>
+    gazetteers: Map<EntityType, Set<String>>
+    
+    fn new() -> Self {
+        RuleBasedNER {
+            patterns: default_patterns(),
+            gazetteers: default_gazetteers()
+        }
+    }
+    
+    fn with_gazetteers(gazetteers: Map<EntityType, Set<String>>) -> Self {
+        RuleBasedNER {
+            patterns: default_patterns(),
+            gazetteers: gazetteers
+        }
+    }
+    
+    fn add_gazetteer(entity_type: EntityType, entries: [String]) -> Self {
+        let set = self.gazetteers.entry(entity_type).or_insert(Set.empty())
+        for entry in entries {
+            set.insert(entry.to_lowercase())
+        }
+        self
+    }
+    
+    fn add_pattern(entity_type: EntityType, pattern: String) -> Self {
+        self.patterns.entry(entity_type).or_insert([]).push(pattern)
+        self
+    }
+}
+
+impl NERExtractor for RuleBasedNER {
+    fn extract(text: String) -> [Entity] {
+        var entities: [Entity] = []
+        
+        // Extract pattern-based entities
+        for (entity_type, patterns) in self.patterns {
+            for pattern in patterns {
+                if let Ok(re) = Regex.new(pattern) {
+                    for m in re.find_all(text) {
+                        entities.push(Entity.new(m.text, entity_type, m.start, m.end))
+                    }
+                }
+            }
+        }
+        
+        // Extract gazetteer-based entities
+        let tokenizer = WordTokenizer.new()
+        let tokens = tokenizer.tokenize(text)
+        
+        for (entity_type, gazetteer) in self.gazetteers {
+            // Single token lookup
+            for token in tokens {
+                if gazetteer.contains(token.text.to_lowercase()) {
+                    entities.push(Entity.new(token.text, entity_type, token.start, token.end))
+                }
+            }
+            
+            // Multi-token lookup (bigrams, trigrams)
+            for window_size in 2..=4 {
+                for i in 0..(tokens.len() - window_size + 1) {
+                    let phrase = tokens[i..(i + window_size)]
+                        .iter()
+                        .map(|t| t.text)
+                        .join(" ")
+                    if gazetteer.contains(phrase.to_lowercase()) {
+                        let start = tokens[i].start
+                        let end = tokens[i + window_size - 1].end
+                        entities.push(Entity.new(phrase, entity_type, start, end))
+                    }
+                }
+            }
+        }
+        
+        // Remove overlapping entities (keep longer ones)
+        remove_overlaps(entities)
+    }
+}
+
+// =============================================================================
+// Pattern-Based NER
+// =============================================================================
+
+/// Pattern-based NER using regex
+struct PatternNER {
+    rules: [(String, EntityType)]
+    
+    fn new() -> Self {
+        PatternNER { rules: default_ner_rules() }
+    }
+    
+    fn add_rule(pattern: String, entity_type: EntityType) -> Self {
+        self.rules.push((pattern, entity_type))
+        self
+    }
+}
+
+impl NERExtractor for PatternNER {
+    fn extract(text: String) -> [Entity] {
+        var entities: [Entity] = []
+        
+        for (pattern, entity_type) in self.rules {
+            if let Ok(re) = Regex.new(pattern) {
+                for m in re.find_all(text) {
+                    entities.push(Entity.new(m.text, entity_type, m.start, m.end))
+                }
+            }
+        }
+        
+        remove_overlaps(entities)
+    }
+}
+
+// =============================================================================
+// Capitalization-Based NER
+// =============================================================================
+
+/// NER based on capitalization patterns
+struct CapitalizationNER {
+    min_length: Int
+    
+    fn new() -> Self { CapitalizationNER { min_length: 2 } }
+}
+
+impl NERExtractor for CapitalizationNER {
+    fn extract(text: String) -> [Entity] {
+        var entities: [Entity] = []
+        let tokenizer = WordTokenizer.new()
+        let tokens = tokenizer.tokenize(text)
+        
+        var i = 0
+        while i < tokens.len() {
+            let token = tokens[i]
+            
+            // Check if token starts with uppercase (not at sentence start)
+            if is_capitalized(token.text) && (i > 0 || !is_sentence_start(text, token.start)) {
+                // Try to extend to multi-word entity
+                var end_idx = i
+                while end_idx + 1 < tokens.len() && is_capitalized(tokens[end_idx + 1].text) {
+                    end_idx += 1
+                }
+                
+                let entity_tokens = tokens[i..=end_idx].to_vec()
+                let entity_text = entity_tokens.iter().map(|t| t.text).join(" ")
+                
+                if entity_text.len() >= self.min_length {
+                    let entity_type = classify_capitalized_entity(entity_text)
+                    entities.push(Entity.new(
+                        entity_text,
+                        entity_type,
+                        entity_tokens[0].start,
+                        entity_tokens[entity_tokens.len() - 1].end
+                    ))
+                }
+                
+                i = end_idx + 1
+            } else {
+                i += 1
+            }
+        }
+        
+        entities
+    }
+}
+
+// =============================================================================
+// BIO Tagger
+// =============================================================================
+
+/// BIO (Begin, Inside, Outside) tag
+enum BIOTag {
+    B(EntityType)  // Beginning of entity
+    I(EntityType)  // Inside entity
+    O              // Outside any entity
+}
+
+impl Display for BIOTag {
+    fn fmt(f: Formatter) {
+        match self {
+            B(t) => f.write(format!("B-{}", t)),
+            I(t) => f.write(format!("I-{}", t)),
+            O => f.write("O")
+        }
+    }
+}
+
+/// Tagged token
+struct TaggedToken {
+    token: Token
+    tag: BIOTag
+}
+
+/// Convert entities to BIO tags
+fn entities_to_bio(text: String, entities: [Entity]) -> [TaggedToken] {
+    let tokenizer = WordTokenizer.new()
+    let tokens = tokenizer.tokenize(text)
+    var tagged: [TaggedToken] = []
+    
+    for token in tokens {
+        var tag = BIOTag.O
+        
+        for entity in entities {
+            if token.start >= entity.start && token.end <= entity.end {
+                if token.start == entity.start {
+                    tag = BIOTag.B(entity.entity_type)
+                } else {
+                    tag = BIOTag.I(entity.entity_type)
+                }
+                break
+            }
+        }
+        
+        tagged.push(TaggedToken { token: token, tag: tag })
+    }
+    
+    tagged
+}
+
+/// Convert BIO tags back to entities
+fn bio_to_entities(tagged_tokens: [TaggedToken]) -> [Entity] {
+    var entities: [Entity] = []
+    var current_entity: Option<(String, EntityType, Int, Int)> = None
+    
+    for tt in tagged_tokens {
+        match tt.tag {
+            BIOTag.B(entity_type) => {
+                // Save previous entity if exists
+                if let Some((text, etype, start, end)) = current_entity {
+                    entities.push(Entity.new(text, etype, start, end))
+                }
+                // Start new entity
+                current_entity = Some((tt.token.text, entity_type, tt.token.start, tt.token.end))
+            }
+            BIOTag.I(entity_type) => {
+                if let Some((text, etype, start, _)) = current_entity {
+                    if etype == entity_type {
+                        current_entity = Some((format!("{} {}", text, tt.token.text), etype, start, tt.token.end))
+                    }
+                }
+            }
+            BIOTag.O => {
+                if let Some((text, etype, start, end)) = current_entity {
+                    entities.push(Entity.new(text, etype, start, end))
+                    current_entity = None
+                }
+            }
+        }
+    }
+    
+    // Don't forget last entity
+    if let Some((text, etype, start, end)) = current_entity {
+        entities.push(Entity.new(text, etype, start, end))
+    }
+    
+    entities
+}
+
+// =============================================================================
+// Entity Linker
+// =============================================================================
+
+/// Links entities to knowledge base entries
+struct EntityLinker {
+    knowledge_base: Map<String, KBEntry>
+    
+    fn new() -> Self {
+        EntityLinker { knowledge_base: Map.empty() }
+    }
+    
+    fn add_entry(name: String, entry: KBEntry) -> Self {
+        self.knowledge_base.insert(name.to_lowercase(), entry)
+        self
+    }
+    
+    fn link(entity: Entity) -> Option<KBEntry> {
+        self.knowledge_base.get(entity.text.to_lowercase())
+    }
+    
+    fn link_all(entities: [Entity]) -> [(Entity, Option<KBEntry>)] {
+        entities.iter().map(|e| (e, self.link(e))).collect()
+    }
+}
+
+/// Knowledge base entry
+struct KBEntry {
+    id: String
+    canonical_name: String
+    entity_type: EntityType
+    description: String
+    aliases: [String]
+    properties: Map<String, String>
+    
+    fn new(id: String, name: String, entity_type: EntityType) -> Self {
+        KBEntry {
+            id: id,
+            canonical_name: name,
+            entity_type: entity_type,
+            description: "",
+            aliases: [],
+            properties: Map.empty()
+        }
+    }
+}
+
+// =============================================================================
+// Composite NER
+// =============================================================================
+
+/// Combines multiple NER extractors
+struct CompositeNER {
+    extractors: [Box<dyn NERExtractor>]
+    
+    fn new() -> Self {
+        CompositeNER { extractors: [] }
+    }
+    
+    fn add(extractor: impl NERExtractor) -> Self {
+        self.extractors.push(Box.new(extractor))
+        self
+    }
+}
+
+impl NERExtractor for CompositeNER {
+    fn extract(text: String) -> [Entity] {
+        var all_entities: [Entity] = []
+        
+        for extractor in self.extractors {
+            all_entities.extend(extractor.extract(text))
+        }
+        
+        remove_overlaps(all_entities)
+    }
+}
+
+// =============================================================================
+// NER Pipeline
+// =============================================================================
+
+/// NER processing pipeline
+actor NERPipeline {
+    state extractors: [Box<dyn NERExtractor>]
+    state post_processors: [fn([Entity]) -> [Entity]]
+    
+    fn new() -> Self {
+        NERPipeline {
+            extractors: [],
+            post_processors: []
+        }
+    }
+    
+    fn add_extractor(extractor: impl NERExtractor) -> Self {
+        self.extractors.push(Box.new(extractor))
+        self
+    }
+    
+    fn add_post_processor(processor: fn([Entity]) -> [Entity]) -> Self {
+        self.post_processors.push(processor)
+        self
+    }
+    
+    fn process(text: String) -> [Entity] {
+        var entities: [Entity] = []
+        
+        // Run all extractors
+        for extractor in self.extractors {
+            entities.extend(extractor.extract(text))
+        }
+        
+        // Remove overlaps
+        entities = remove_overlaps(entities)
+        
+        // Apply post-processors
+        for processor in self.post_processors {
+            entities = processor(entities)
+        }
+        
+        entities
+    }
+    
+    fn process_batch(texts: [String]) -> [[Entity]] {
+        texts.map(|t| self.process(t))
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+fn is_capitalized(word: String) -> Bool {
+    word.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+}
+
+fn is_sentence_start(text: String, pos: Int) -> Bool {
+    if pos == 0 { return true }
+    let before = text[0..pos].trim_end()
+    before.is_empty() || before.ends_with('.') || before.ends_with('!') || before.ends_with('?')
+}
+
+fn classify_capitalized_entity(text: String) -> EntityType {
+    let lower = text.to_lowercase()
+    
+    // Check against known patterns
+    if is_likely_person(lower) { return EntityType.Person }
+    if is_likely_organization(lower) { return EntityType.Organization }
+    if is_likely_location(lower) { return EntityType.Location }
+    
+    // Default to organization for multi-word capitalized phrases
+    if text.contains(' ') { EntityType.Organization }
+    else { EntityType.Person }
+}
+
+fn is_likely_person(text: String) -> Bool {
+    let person_indicators = ["mr", "mrs", "ms", "dr", "prof", "sir", "lady"]
+    person_indicators.iter().any(|p| text.starts_with(p))
+}
+
+fn is_likely_organization(text: String) -> Bool {
+    let org_indicators = ["inc", "corp", "ltd", "llc", "company", "group", "institute", "university", "bank", "foundation"]
+    org_indicators.iter().any(|o| text.contains(o))
+}
+
+fn is_likely_location(text: String) -> Bool {
+    let loc_indicators = ["city", "state", "country", "street", "avenue", "road", "river", "mountain", "lake", "island"]
+    loc_indicators.iter().any(|l| text.contains(l))
+}
+
+fn remove_overlaps(entities: [Entity]) -> [Entity] {
+    if entities.is_empty() { return entities }
+    
+    // Sort by start position, then by length (longer first)
+    var sorted = entities.sorted_by(|a, b| {
+        if a.start != b.start { a.start.cmp(b.start) }
+        else { b.len().cmp(a.len()) }
+    })
+    
+    var result: [Entity] = [sorted[0]]
+    
+    for i in 1..sorted.len() {
+        let current = sorted[i]
+        let last = result.last().unwrap()
+        
+        // Only add if not overlapping with last entity
+        if current.start >= last.end {
+            result.push(current)
+        }
+    }
+    
+    result
+}
+
+fn default_patterns() -> Map<EntityType, [String]> {
+    Map.from_iter([
+        (EntityType.Email, [r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"]),
+        (EntityType.Url, [r"https?://[^\s]+"]),
+        (EntityType.Phone, [r"\+?[\d\s\-\(\)]{10,}"]),
+        (EntityType.Date, [
+            r"\d{1,2}/\d{1,2}/\d{2,4}",
+            r"\d{4}-\d{2}-\d{2}",
+            r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}"
+        ]),
+        (EntityType.Time, [r"\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?"]),
+        (EntityType.Money, [r"\$[\d,]+(?:\.\d{2})?", r"[\d,]+(?:\.\d{2})?\s*(?:USD|EUR|GBP|JPY)"]),
+        (EntityType.Percent, [r"\d+(?:\.\d+)?%"])
+    ])
+}
+
+fn default_gazetteers() -> Map<EntityType, Set<String>> {
+    Map.from_iter([
+        (EntityType.Person, Set.from_iter([
+            "john", "mary", "james", "michael", "david", "robert", "william",
+            "richard", "joseph", "thomas", "charles", "christopher", "daniel"
+        ].iter().map(|s| s.to_string()))),
+        (EntityType.Location, Set.from_iter([
+            "new york", "los angeles", "chicago", "houston", "phoenix",
+            "london", "paris", "tokyo", "berlin", "moscow", "beijing",
+            "united states", "united kingdom", "germany", "france", "japan", "china",
+            "california", "texas", "florida", "new york state"
+        ].iter().map(|s| s.to_string()))),
+        (EntityType.Organization, Set.from_iter([
+            "google", "apple", "microsoft", "amazon", "facebook", "meta",
+            "ibm", "oracle", "intel", "nvidia", "tesla", "spacex",
+            "united nations", "world health organization", "european union"
+        ].iter().map(|s| s.to_string())))
+    ])
+}
+
+fn default_ner_rules() -> [(String, EntityType)] {
+    [
+        (r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", EntityType.Email),
+        (r"https?://[^\s]+", EntityType.Url),
+        (r"\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}", EntityType.Phone),
+        (r"\d{4}-\d{2}-\d{2}", EntityType.Date),
+        (r"\d{1,2}/\d{1,2}/\d{2,4}", EntityType.Date),
+        (r"\$[\d,]+(?:\.\d{2})?", EntityType.Money),
+        (r"\d+(?:\.\d+)?%", EntityType.Percent)
+    ]
+}
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+/// Extract all entities from text
+fn extract_entities(text: String) -> [Entity] {
+    let ner = CompositeNER.new()
+        .add(PatternNER.new())
+        .add(RuleBasedNER.new())
+        .add(CapitalizationNER.new())
+    ner.extract(text)
+}
+
+/// Extract entities of specific type
+fn extract_type(text: String, entity_type: EntityType) -> [Entity] {
+    extract_entities(text).iter().filter(|e| e.entity_type == entity_type).collect()
+}
+
+/// Extract person names
+fn extract_persons(text: String) -> [Entity] {
+    extract_type(text, EntityType.Person)
+}
+
+/// Extract organizations
+fn extract_organizations(text: String) -> [Entity] {
+    extract_type(text, EntityType.Organization)
+}
+
+/// Extract locations
+fn extract_locations(text: String) -> [Entity] {
+    extract_type(text, EntityType.Location)
+}
+
+/// Extract dates
+fn extract_dates(text: String) -> [Entity] {
+    extract_type(text, EntityType.Date)
+}
+
+/// Extract emails
+fn extract_emails(text: String) -> [Entity] {
+    extract_type(text, EntityType.Email)
+}
+
+/// Extract URLs
+fn extract_urls(text: String) -> [Entity] {
+    extract_type(text, EntityType.Url)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "pattern ner email" {
+    let entities = extract_emails("Contact us at info@example.com for more info")
+    assert_eq(entities.len(), 1)?
+    assert_eq(entities[0].text, "info@example.com")?
+}
+
+test "pattern ner date" {
+    let entities = extract_dates("The meeting is on 2024-01-15")
+    assert_eq(entities.len(), 1)?
+    assert_eq(entities[0].text, "2024-01-15")?
+}
+
+test "pattern ner money" {
+    let ner = PatternNER.new()
+    let entities = ner.extract("The price is $1,500.00")
+    let money = entities.iter().filter(|e| matches!(e.entity_type, EntityType.Money)).collect::<Vec<_>>()
+    assert_eq(money.len(), 1)?
+}
+
+test "gazetteer ner" {
+    let ner = RuleBasedNER.new()
+    let entities = ner.extract("I visited New York last summer")
+    let locations = entities.iter().filter(|e| matches!(e.entity_type, EntityType.Location)).collect::<Vec<_>>()
+    assert(locations.len() >= 1)?
+}
+
+test "capitalization ner" {
+    let ner = CapitalizationNER.new()
+    let entities = ner.extract("John Smith works at Microsoft Corporation")
+    assert(entities.len() >= 2)?
+}
+
+test "bio tagging" {
+    let text = "John works at Google"
+    let entities = [
+        Entity.new("John", EntityType.Person, 0, 4),
+        Entity.new("Google", EntityType.Organization, 15, 21)
+    ]
+    let tagged = entities_to_bio(text, entities)
+    assert(tagged.iter().any(|t| matches!(t.tag, BIOTag.B(_))))?
+}
+
+test "composite ner" {
+    let ner = CompositeNER.new()
+        .add(PatternNER.new())
+        .add(RuleBasedNER.new())
+    let entities = ner.extract("Email john@example.com in New York")
+    assert(entities.len() >= 2)?
+}
+
+test "remove overlaps" {
+    let entities = [
+        Entity.new("New", EntityType.Location, 0, 3),
+        Entity.new("New York", EntityType.Location, 0, 8)
+    ]
+    let result = remove_overlaps(entities)
+    assert_eq(result.len(), 1)?
+    assert_eq(result[0].text, "New York")?
+}

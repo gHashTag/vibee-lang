@@ -1,0 +1,776 @@
+// =============================================================================
+// Vibee OS — WAF Module (Web Application Firewall)
+// Protection against web attacks: XSS, SQL Injection, CSRF, etc.
+// =============================================================================
+
+use http.{Request, Response, Headers}
+use net.{IpAddr}
+use datetime.{DateTime}
+use regex.{Regex}
+
+// =============================================================================
+// WAF Configuration
+// =============================================================================
+
+/// WAF operation mode
+enum WafMode {
+    Detection      // Log only, don't block
+    Prevention     // Block malicious requests
+    Learning       // Learn patterns for tuning
+}
+
+/// WAF action on threat detection
+enum WafAction {
+    Allow
+    Block
+    Challenge      // CAPTCHA or JS challenge
+    Redirect(String)
+    RateLimit
+    Log
+}
+
+/// Threat severity level
+enum Severity {
+    Critical
+    High
+    Medium
+    Low
+    Info
+}
+
+// =============================================================================
+// Attack Types
+// =============================================================================
+
+/// Types of web attacks
+enum AttackType {
+    SqlInjection
+    XSS
+    CommandInjection
+    PathTraversal
+    LFI                 // Local File Inclusion
+    RFI                 // Remote File Inclusion
+    CSRF
+    SSRF
+    XXE
+    Deserialization
+    BruteForce
+    DDoS
+    BotAttack
+    ScannerDetection
+    ProtocolViolation
+    DataLeakage
+    Custom(String)
+}
+
+// =============================================================================
+// WAF Rule
+// =============================================================================
+
+/// WAF rule definition
+struct WafRule {
+    id: String
+    name: String
+    description: String
+    enabled: Bool
+    attack_type: AttackType
+    severity: Severity
+    action: WafAction
+    patterns: [Regex]
+    targets: [RuleTarget]
+    score: Int
+    tags: [String]
+}
+
+/// Where to apply the rule
+enum RuleTarget {
+    Uri
+    QueryString
+    Body
+    Headers
+    Cookies
+    UserAgent
+    Referer
+    All
+}
+
+impl WafRule {
+    fn new(name: String, attack_type: AttackType) -> Self {
+        WafRule {
+            id: @native("uuid_v4"),
+            name: name,
+            description: "",
+            enabled: true,
+            attack_type: attack_type,
+            severity: Severity.Medium,
+            action: WafAction.Block,
+            patterns: [],
+            targets: [RuleTarget.All],
+            score: 5,
+            tags: []
+        }
+    }
+    
+    fn with_pattern(pattern: String) -> Result<Self, WafError> {
+        let regex = Regex.new(pattern).map_err(|e| WafError.InvalidPattern(e.to_string()))?
+        self.patterns.push(regex)
+        Ok(self)
+    }
+    
+    fn with_patterns(patterns: [String]) -> Result<Self, WafError> {
+        for p in patterns {
+            self = self.with_pattern(p)?
+        }
+        Ok(self)
+    }
+    
+    fn with_severity(sev: Severity) -> Self { self.severity = sev; self }
+    fn with_action(action: WafAction) -> Self { self.action = action; self }
+    fn with_targets(targets: [RuleTarget]) -> Self { self.targets = targets; self }
+    fn with_score(score: Int) -> Self { self.score = score; self }
+    fn with_tag(tag: String) -> Self { self.tags.push(tag); self }
+    
+    fn matches(request: WafRequest) -> Option<RuleMatch> {
+        if !self.enabled { return None }
+        
+        for target in self.targets.iter() {
+            let content = request.get_target_content(*target)
+            for pattern in self.patterns.iter() {
+                if let Some(m) = pattern.find(content) {
+                    return Some(RuleMatch {
+                        rule_id: self.id.clone(),
+                        rule_name: self.name.clone(),
+                        attack_type: self.attack_type,
+                        severity: self.severity,
+                        matched_pattern: pattern.as_str().to_string(),
+                        matched_content: m.as_str().to_string(),
+                        target: *target,
+                        score: self.score
+                    })
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Rule match result
+struct RuleMatch {
+    rule_id: String
+    rule_name: String
+    attack_type: AttackType
+    severity: Severity
+    matched_pattern: String
+    matched_content: String
+    target: RuleTarget
+    score: Int
+}
+
+// =============================================================================
+// WAF Request Wrapper
+// =============================================================================
+
+/// Wrapper for HTTP request with WAF-specific methods
+struct WafRequest {
+    method: String
+    uri: String
+    query_string: String
+    headers: Headers
+    body: String
+    cookies: Map<String, String>
+    client_ip: IpAddr
+    timestamp: DateTime
+}
+
+impl WafRequest {
+    fn from_http(request: Request, client_ip: IpAddr) -> Self {
+        WafRequest {
+            method: request.method.to_string(),
+            uri: request.uri.clone(),
+            query_string: request.query_string().unwrap_or(""),
+            headers: request.headers.clone(),
+            body: request.body_string().unwrap_or(""),
+            cookies: request.cookies(),
+            client_ip: client_ip,
+            timestamp: DateTime.now()
+        }
+    }
+    
+    fn get_target_content(target: RuleTarget) -> String {
+        match target {
+            RuleTarget.Uri => self.uri.clone()
+            RuleTarget.QueryString => self.query_string.clone()
+            RuleTarget.Body => self.body.clone()
+            RuleTarget.Headers => self.headers.to_string()
+            RuleTarget.Cookies => self.cookies.values().join("; ")
+            RuleTarget.UserAgent => self.headers.get("User-Agent").unwrap_or("")
+            RuleTarget.Referer => self.headers.get("Referer").unwrap_or("")
+            RuleTarget.All => format!("{} {} {} {}", 
+                self.uri, self.query_string, self.body, self.headers.to_string())
+        }
+    }
+}
+
+// =============================================================================
+// WAF Engine
+// =============================================================================
+
+/// Main WAF actor
+actor Waf {
+    state mode: WafMode
+    state rules: [WafRule]
+    state whitelist: [IpAddr]
+    state blacklist: Map<IpAddr, DateTime>
+    state anomaly_threshold: Int
+    state stats: WafStats
+    state rate_limiter: Map<IpAddr, RateLimitState>
+    state log_handler: Option<fn(WafLogEntry)>
+    
+    fn new() -> Self {
+        Waf {
+            mode: WafMode.Prevention,
+            rules: [],
+            whitelist: [],
+            blacklist: Map.new(),
+            anomaly_threshold: 15,
+            stats: WafStats.new(),
+            rate_limiter: Map.new(),
+            log_handler: None
+        }
+    }
+    
+    fn with_mode(mode: WafMode) -> Self { self.mode = mode; self }
+    fn with_threshold(threshold: Int) -> Self { self.anomaly_threshold = threshold; self }
+    
+    // Rule management
+    fn add_rule(rule: WafRule) { self.rules.push(rule) }
+    fn remove_rule(id: String) { self.rules.retain(|r| r.id != id) }
+    fn enable_rule(id: String) { for r in self.rules.iter_mut() { if r.id == id { r.enabled = true } } }
+    fn disable_rule(id: String) { for r in self.rules.iter_mut() { if r.id == id { r.enabled = false } } }
+    
+    // Load preset rules
+    fn load_owasp_crs() {
+        self.rules.extend(WafPresets.sql_injection_rules())
+        self.rules.extend(WafPresets.xss_rules())
+        self.rules.extend(WafPresets.path_traversal_rules())
+        self.rules.extend(WafPresets.command_injection_rules())
+        self.rules.extend(WafPresets.scanner_detection_rules())
+    }
+    
+    // Whitelist/Blacklist
+    fn whitelist_ip(ip: IpAddr) { self.whitelist.push(ip) }
+    fn blacklist_ip(ip: IpAddr, until: DateTime) { self.blacklist.insert(ip, until) }
+    fn is_whitelisted(ip: IpAddr) -> Bool { self.whitelist.contains(ip) }
+    fn is_blacklisted(ip: IpAddr) -> Bool {
+        match self.blacklist.get(ip) {
+            Some(until) => DateTime.now() < *until
+            None => false
+        }
+    }
+    
+    // Main inspection method
+    fn inspect(request: WafRequest) -> WafResult {
+        self.stats.requests_total += 1
+        
+        // Check whitelist
+        if self.is_whitelisted(request.client_ip) {
+            return WafResult.allowed()
+        }
+        
+        // Check blacklist
+        if self.is_blacklisted(request.client_ip) {
+            self.stats.requests_blocked += 1
+            return WafResult.blocked("IP blacklisted", AttackType.BotAttack)
+        }
+        
+        // Rate limiting check
+        if self.check_rate_limit(request.client_ip) {
+            self.stats.requests_blocked += 1
+            return WafResult.blocked("Rate limit exceeded", AttackType.DDoS)
+        }
+        
+        // Run all rules and collect matches
+        let mut matches: [RuleMatch] = []
+        let mut total_score = 0
+        
+        for rule in self.rules.iter() {
+            if let Some(m) = rule.matches(request) {
+                total_score += m.score
+                matches.push(m)
+            }
+        }
+        
+        // Anomaly scoring
+        if total_score >= self.anomaly_threshold {
+            self.stats.requests_blocked += 1
+            self.stats.attacks_detected += 1
+            
+            let primary_match = matches.first().unwrap()
+            self.log_attack(request, matches.clone())
+            
+            match self.mode {
+                WafMode.Detection => WafResult.detected(matches)
+                WafMode.Prevention => WafResult.blocked_with_matches(
+                    format!("Anomaly score {} exceeds threshold", total_score),
+                    matches
+                )
+                WafMode.Learning => {
+                    self.learn_pattern(request, matches.clone())
+                    WafResult.detected(matches)
+                }
+            }
+        } else if !matches.is_empty() {
+            self.stats.suspicious_requests += 1
+            WafResult.suspicious(matches)
+        } else {
+            self.stats.requests_allowed += 1
+            WafResult.allowed()
+        }
+    }
+    
+    fn check_rate_limit(ip: IpAddr) -> Bool {
+        let now = DateTime.now()
+        let state = self.rate_limiter.entry(ip).or_insert(RateLimitState {
+            count: 0,
+            window_start: now
+        })
+        
+        // Reset window if expired (1 minute window)
+        if now.diff_seconds(state.window_start) > 60 {
+            state.count = 0
+            state.window_start = now
+        }
+        
+        state.count += 1
+        state.count > 100  // 100 requests per minute
+    }
+    
+    fn learn_pattern(request: WafRequest, matches: [RuleMatch]) {
+        // Store patterns for later analysis
+        @native("waf_learn_pattern", request, matches)
+    }
+    
+    fn log_attack(request: WafRequest, matches: [RuleMatch]) {
+        if let Some(handler) = self.log_handler {
+            let entry = WafLogEntry {
+                timestamp: DateTime.now(),
+                client_ip: request.client_ip,
+                uri: request.uri.clone(),
+                method: request.method.clone(),
+                matches: matches,
+                action_taken: WafAction.Block
+            }
+            handler(entry)
+        }
+    }
+    
+    fn set_log_handler(handler: fn(WafLogEntry)) {
+        self.log_handler = Some(handler)
+    }
+    
+    fn stats() -> WafStats { self.stats.clone() }
+    fn reset_stats() { self.stats = WafStats.new() }
+}
+
+// =============================================================================
+// WAF Result
+// =============================================================================
+
+/// Result of WAF inspection
+struct WafResult {
+    action: WafAction
+    blocked: Bool
+    reason: Option<String>
+    attack_type: Option<AttackType>
+    matches: [RuleMatch]
+    score: Int
+}
+
+impl WafResult {
+    fn allowed() -> Self {
+        WafResult { action: WafAction.Allow, blocked: false, reason: None, attack_type: None, matches: [], score: 0 }
+    }
+    
+    fn blocked(reason: String, attack_type: AttackType) -> Self {
+        WafResult { action: WafAction.Block, blocked: true, reason: Some(reason), attack_type: Some(attack_type), matches: [], score: 100 }
+    }
+    
+    fn blocked_with_matches(reason: String, matches: [RuleMatch]) -> Self {
+        let attack_type = matches.first().map(|m| m.attack_type)
+        let score = matches.iter().map(|m| m.score).sum()
+        WafResult { action: WafAction.Block, blocked: true, reason: Some(reason), attack_type: attack_type, matches: matches, score: score }
+    }
+    
+    fn detected(matches: [RuleMatch]) -> Self {
+        let score = matches.iter().map(|m| m.score).sum()
+        WafResult { action: WafAction.Log, blocked: false, reason: None, attack_type: None, matches: matches, score: score }
+    }
+    
+    fn suspicious(matches: [RuleMatch]) -> Self {
+        let score = matches.iter().map(|m| m.score).sum()
+        WafResult { action: WafAction.Log, blocked: false, reason: Some("Suspicious activity"), attack_type: None, matches: matches, score: score }
+    }
+}
+
+// =============================================================================
+// Supporting Types
+// =============================================================================
+
+struct RateLimitState {
+    count: Int
+    window_start: DateTime
+}
+
+struct WafStats {
+    requests_total: Int64
+    requests_allowed: Int64
+    requests_blocked: Int64
+    suspicious_requests: Int64
+    attacks_detected: Int64
+    started_at: DateTime
+}
+
+impl WafStats {
+    fn new() -> Self {
+        WafStats {
+            requests_total: 0,
+            requests_allowed: 0,
+            requests_blocked: 0,
+            suspicious_requests: 0,
+            attacks_detected: 0,
+            started_at: DateTime.now()
+        }
+    }
+    
+    fn block_rate() -> Float {
+        if self.requests_total == 0 { return 0.0 }
+        (self.requests_blocked as Float) / (self.requests_total as Float) * 100.0
+    }
+}
+
+struct WafLogEntry {
+    timestamp: DateTime
+    client_ip: IpAddr
+    uri: String
+    method: String
+    matches: [RuleMatch]
+    action_taken: WafAction
+}
+
+// =============================================================================
+// WAF Presets (OWASP CRS-like rules)
+// =============================================================================
+
+struct WafPresets {}
+
+impl WafPresets {
+    /// SQL Injection detection rules
+    fn sql_injection_rules() -> [WafRule] {
+        [
+            WafRule.new("SQL Injection - Union", AttackType.SqlInjection)
+                .with_patterns([
+                    r"(?i)union\s+(all\s+)?select",
+                    r"(?i)union\s+select\s+null",
+                ])?.with_severity(Severity.Critical).with_score(10),
+            
+            WafRule.new("SQL Injection - Boolean", AttackType.SqlInjection)
+                .with_patterns([
+                    r"(?i)'\s*(or|and)\s*'?\d*'?\s*=\s*'?\d*",
+                    r"(?i)'\s*(or|and)\s*'[^']*'\s*=\s*'",
+                    r"(?i)1\s*=\s*1",
+                    r"(?i)'\s*or\s*''='",
+                ])?.with_severity(Severity.High).with_score(8),
+            
+            WafRule.new("SQL Injection - Comments", AttackType.SqlInjection)
+                .with_patterns([
+                    r"(?i)/\*.*\*/",
+                    r"--\s*$",
+                    r"#\s*$",
+                ])?.with_severity(Severity.Medium).with_score(5),
+            
+            WafRule.new("SQL Injection - Stacked Queries", AttackType.SqlInjection)
+                .with_patterns([
+                    r";\s*(drop|delete|update|insert|alter)\s+",
+                ])?.with_severity(Severity.Critical).with_score(10),
+            
+            WafRule.new("SQL Injection - Functions", AttackType.SqlInjection)
+                .with_patterns([
+                    r"(?i)(benchmark|sleep|waitfor|delay)\s*\(",
+                    r"(?i)load_file\s*\(",
+                    r"(?i)into\s+(out|dump)file",
+                ])?.with_severity(Severity.High).with_score(8)
+        ]
+    }
+    
+    /// XSS detection rules
+    fn xss_rules() -> [WafRule] {
+        [
+            WafRule.new("XSS - Script Tag", AttackType.XSS)
+                .with_patterns([
+                    r"(?i)<script[^>]*>",
+                    r"(?i)</script>",
+                ])?.with_severity(Severity.High).with_score(8),
+            
+            WafRule.new("XSS - Event Handlers", AttackType.XSS)
+                .with_patterns([
+                    r"(?i)\bon\w+\s*=",
+                    r"(?i)onerror\s*=",
+                    r"(?i)onload\s*=",
+                    r"(?i)onclick\s*=",
+                    r"(?i)onmouseover\s*=",
+                ])?.with_severity(Severity.High).with_score(7),
+            
+            WafRule.new("XSS - JavaScript Protocol", AttackType.XSS)
+                .with_patterns([
+                    r"(?i)javascript\s*:",
+                    r"(?i)vbscript\s*:",
+                    r"(?i)data\s*:.*base64",
+                ])?.with_severity(Severity.High).with_score(8),
+            
+            WafRule.new("XSS - SVG/Object", AttackType.XSS)
+                .with_patterns([
+                    r"(?i)<svg[^>]*onload",
+                    r"(?i)<object[^>]*data\s*=",
+                    r"(?i)<embed[^>]*src\s*=",
+                ])?.with_severity(Severity.Medium).with_score(6),
+            
+            WafRule.new("XSS - Encoded", AttackType.XSS)
+                .with_patterns([
+                    r"(?i)&#x?[0-9a-f]+;",
+                    r"(?i)%3c%73%63%72%69%70%74",  // <script URL encoded
+                ])?.with_severity(Severity.Medium).with_score(5)
+        ]
+    }
+    
+    /// Path traversal detection rules
+    fn path_traversal_rules() -> [WafRule] {
+        [
+            WafRule.new("Path Traversal - Basic", AttackType.PathTraversal)
+                .with_patterns([
+                    r"\.\./",
+                    r"\.\.\\",
+                    r"%2e%2e%2f",
+                    r"%2e%2e/",
+                    r"\.%2e/",
+                ])?.with_severity(Severity.High).with_score(8),
+            
+            WafRule.new("Path Traversal - Sensitive Files", AttackType.PathTraversal)
+                .with_patterns([
+                    r"(?i)/etc/passwd",
+                    r"(?i)/etc/shadow",
+                    r"(?i)c:\\windows\\system32",
+                    r"(?i)boot\.ini",
+                    r"(?i)win\.ini",
+                ])?.with_severity(Severity.Critical).with_score(10)
+        ]
+    }
+    
+    /// Command injection detection rules
+    fn command_injection_rules() -> [WafRule] {
+        [
+            WafRule.new("Command Injection - Shell", AttackType.CommandInjection)
+                .with_patterns([
+                    r";\s*(ls|cat|id|whoami|pwd|uname)",
+                    r"\|\s*(ls|cat|id|whoami|pwd|uname)",
+                    r"`[^`]+`",
+                    r"\$\([^)]+\)",
+                ])?.with_severity(Severity.Critical).with_score(10),
+            
+            WafRule.new("Command Injection - Windows", AttackType.CommandInjection)
+                .with_patterns([
+                    r"(?i)&\s*(dir|type|net|ipconfig)",
+                    r"(?i)\|\s*(dir|type|net|ipconfig)",
+                ])?.with_severity(Severity.Critical).with_score(10)
+        ]
+    }
+    
+    /// Scanner/Bot detection rules
+    fn scanner_detection_rules() -> [WafRule] {
+        [
+            WafRule.new("Scanner Detection - User Agent", AttackType.ScannerDetection)
+                .with_patterns([
+                    r"(?i)(nikto|sqlmap|nmap|masscan|acunetix|nessus|burp)",
+                    r"(?i)(dirbuster|gobuster|wfuzz|ffuf)",
+                    r"(?i)(havij|pangolin|webscarab)",
+                ])?.with_targets([RuleTarget.UserAgent]).with_severity(Severity.High).with_score(8),
+            
+            WafRule.new("Scanner Detection - Probing", AttackType.ScannerDetection)
+                .with_patterns([
+                    r"(?i)\.(bak|backup|old|orig|save|swp|tmp)$",
+                    r"(?i)(phpinfo|test|debug|admin)\.(php|asp|aspx|jsp)",
+                    r"(?i)/\.git/",
+                    r"(?i)/\.svn/",
+                    r"(?i)/\.env",
+                ])?.with_targets([RuleTarget.Uri]).with_severity(Severity.Medium).with_score(5)
+        ]
+    }
+    
+    /// CSRF protection rules
+    fn csrf_rules() -> [WafRule] {
+        [
+            WafRule.new("CSRF - Missing Token", AttackType.CSRF)
+                .with_patterns([
+                    // This would be custom logic, not regex
+                ])?.with_severity(Severity.Medium).with_score(5)
+        ]
+    }
+}
+
+// =============================================================================
+// WAF Middleware
+// =============================================================================
+
+/// WAF middleware for HTTP servers
+struct WafMiddleware {
+    waf: Waf
+    block_response: Response
+}
+
+impl WafMiddleware {
+    fn new(waf: Waf) -> Self {
+        WafMiddleware {
+            waf: waf,
+            block_response: Response.new(403).body("Forbidden - Request blocked by WAF")
+        }
+    }
+    
+    fn with_block_response(response: Response) -> Self {
+        self.block_response = response
+        self
+    }
+    
+    fn handle(request: Request, client_ip: IpAddr, next: fn(Request) -> Response) -> Response {
+        let waf_request = WafRequest.from_http(request, client_ip)
+        let result = self.waf.inspect(waf_request)
+        
+        if result.blocked {
+            self.block_response.clone()
+        } else {
+            next(request)
+        }
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum WafError {
+    InvalidPattern(String)
+    RuleNotFound(String)
+    ConfigError(String)
+}
+
+impl Display for WafError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidPattern(s) => f.write(format!("Invalid pattern: {}", s))
+            RuleNotFound(s) => f.write(format!("Rule not found: {}", s))
+            ConfigError(s) => f.write(format!("Config error: {}", s))
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "sql injection detection" {
+    let waf = Waf.new()
+    waf.load_owasp_crs()
+    
+    let request = WafRequest {
+        method: "GET",
+        uri: "/search",
+        query_string: "q=' OR '1'='1",
+        headers: Headers.new(),
+        body: "",
+        cookies: Map.new(),
+        client_ip: IpAddr.parse("10.0.0.1")?,
+        timestamp: DateTime.now()
+    }
+    
+    let result = waf.inspect(request)
+    assert(result.blocked)?
+    assert_eq(result.attack_type, Some(AttackType.SqlInjection))?
+}
+
+test "xss detection" {
+    let waf = Waf.new()
+    waf.load_owasp_crs()
+    
+    let request = WafRequest {
+        method: "POST",
+        uri: "/comment",
+        query_string: "",
+        headers: Headers.new(),
+        body: "<script>alert('xss')</script>",
+        cookies: Map.new(),
+        client_ip: IpAddr.parse("10.0.0.1")?,
+        timestamp: DateTime.now()
+    }
+    
+    let result = waf.inspect(request)
+    assert(result.blocked)?
+}
+
+test "path traversal detection" {
+    let waf = Waf.new()
+    waf.load_owasp_crs()
+    
+    let request = WafRequest {
+        method: "GET",
+        uri: "/files/../../../etc/passwd",
+        query_string: "",
+        headers: Headers.new(),
+        body: "",
+        cookies: Map.new(),
+        client_ip: IpAddr.parse("10.0.0.1")?,
+        timestamp: DateTime.now()
+    }
+    
+    let result = waf.inspect(request)
+    assert(result.blocked)?
+}
+
+test "whitelist bypass" {
+    let waf = Waf.new()
+    waf.load_owasp_crs()
+    
+    let trusted_ip = IpAddr.parse("192.168.1.100")?
+    waf.whitelist_ip(trusted_ip)
+    
+    let request = WafRequest {
+        method: "GET",
+        uri: "/search",
+        query_string: "q=' OR '1'='1",
+        headers: Headers.new(),
+        body: "",
+        cookies: Map.new(),
+        client_ip: trusted_ip,
+        timestamp: DateTime.now()
+    }
+    
+    let result = waf.inspect(request)
+    assert(!result.blocked)?
+}
+
+test "detection mode" {
+    let waf = Waf.new().with_mode(WafMode.Detection)
+    waf.load_owasp_crs()
+    
+    let request = WafRequest {
+        method: "GET",
+        uri: "/search",
+        query_string: "q=' OR '1'='1",
+        headers: Headers.new(),
+        body: "",
+        cookies: Map.new(),
+        client_ip: IpAddr.parse("10.0.0.1")?,
+        timestamp: DateTime.now()
+    }
+    
+    let result = waf.inspect(request)
+    assert(!result.blocked)?  // Detection mode doesn't block
+    assert(!result.matches.is_empty())?  // But detects the attack
+}

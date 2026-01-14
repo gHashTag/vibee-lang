@@ -1,0 +1,818 @@
+// =============================================================================
+// Vibee OS — Tag Module
+// Tags, hashtags, and content labeling
+// =============================================================================
+
+use result::{Result, Ok, Err}
+use datetime::{DateTime, Duration}
+
+// =============================================================================
+// Tag Types
+// =============================================================================
+
+/// Tag type
+enum TagType {
+    Hashtag,
+    Mention,
+    Topic,
+    Category,
+    Label,
+    Keyword,
+    Custom(String)
+}
+
+impl TagType {
+    fn prefix() -> String {
+        match self {
+            TagType.Hashtag => "#",
+            TagType.Mention => "@",
+            TagType.Topic => "",
+            TagType.Category => "",
+            TagType.Label => "",
+            TagType.Keyword => "",
+            TagType.Custom(_) => ""
+        }
+    }
+    
+    fn display_name() -> String {
+        match self {
+            TagType.Hashtag => "Hashtag",
+            TagType.Mention => "Mention",
+            TagType.Topic => "Topic",
+            TagType.Category => "Category",
+            TagType.Label => "Label",
+            TagType.Keyword => "Keyword",
+            TagType.Custom(name) => name
+        }
+    }
+}
+
+/// Tag status
+enum TagStatus {
+    Active,
+    Trending,
+    Featured,
+    Banned,
+    Hidden
+}
+
+impl TagStatus {
+    fn is_visible() -> Bool {
+        match self {
+            TagStatus.Active => true,
+            TagStatus.Trending => true,
+            TagStatus.Featured => true,
+            _ => false
+        }
+    }
+}
+
+// =============================================================================
+// Tag Structure
+// =============================================================================
+
+/// Tag
+struct Tag {
+    id: String,
+    name: String,
+    slug: String,
+    tag_type: TagType,
+    status: TagStatus,
+    description: Option<String>,
+    color: Option<String>,
+    icon: Option<String>,
+    usage_count: Int64,
+    follower_count: Int64,
+    post_count: Int64,
+    created_at: DateTime,
+    updated_at: DateTime,
+    trending_score: Float,
+    metadata: Map<String, String>
+}
+
+impl Tag {
+    fn new(name: String, tag_type: TagType) -> Self {
+        let now = DateTime.now()
+        Tag {
+            id: generate_id(),
+            name: name.clone(),
+            slug: slugify(name),
+            tag_type: tag_type,
+            status: TagStatus.Active,
+            description: None,
+            color: None,
+            icon: None,
+            usage_count: 0,
+            follower_count: 0,
+            post_count: 0,
+            created_at: now,
+            updated_at: now,
+            trending_score: 0.0,
+            metadata: Map.empty()
+        }
+    }
+    
+    fn hashtag(name: String) -> Self {
+        let clean_name = name.trim_start_matches('#')
+        Self.new(clean_name.to_string(), TagType.Hashtag)
+    }
+    
+    fn topic(name: String) -> Self {
+        Self.new(name, TagType.Topic)
+    }
+    
+    fn label(name: String) -> Self {
+        Self.new(name, TagType.Label)
+    }
+    
+    fn with_description(description: String) -> Self {
+        self.description = Some(description)
+        self
+    }
+    
+    fn with_color(color: String) -> Self {
+        self.color = Some(color)
+        self
+    }
+    
+    fn with_icon(icon: String) -> Self {
+        self.icon = Some(icon)
+        self
+    }
+    
+    fn increment_usage() {
+        self.usage_count += 1
+        self.updated_at = DateTime.now()
+    }
+    
+    fn increment_posts() {
+        self.post_count += 1
+        self.updated_at = DateTime.now()
+    }
+    
+    fn decrement_posts() {
+        if self.post_count > 0 { self.post_count -= 1 }
+        self.updated_at = DateTime.now()
+    }
+    
+    fn add_follower() {
+        self.follower_count += 1
+        self.updated_at = DateTime.now()
+    }
+    
+    fn remove_follower() {
+        if self.follower_count > 0 { self.follower_count -= 1 }
+        self.updated_at = DateTime.now()
+    }
+    
+    fn mark_trending() {
+        self.status = TagStatus.Trending
+        self.updated_at = DateTime.now()
+    }
+    
+    fn mark_featured() {
+        self.status = TagStatus.Featured
+        self.updated_at = DateTime.now()
+    }
+    
+    fn ban() {
+        self.status = TagStatus.Banned
+        self.updated_at = DateTime.now()
+    }
+    
+    fn hide() {
+        self.status = TagStatus.Hidden
+        self.updated_at = DateTime.now()
+    }
+    
+    fn is_visible() -> Bool { self.status.is_visible() }
+    fn is_trending() -> Bool { matches!(self.status, TagStatus.Trending) }
+    fn is_featured() -> Bool { matches!(self.status, TagStatus.Featured) }
+    fn is_banned() -> Bool { matches!(self.status, TagStatus.Banned) }
+    
+    fn display_name() -> String {
+        format!("{}{}", self.tag_type.prefix(), self.name)
+    }
+    
+    fn url() -> String {
+        format!("/tags/{}", self.slug)
+    }
+    
+    fn calculate_trending_score(recent_usage: Int64, time_decay: Float) -> Float {
+        let base_score = recent_usage as Float * 10.0
+        let follower_boost = (self.follower_count as Float).log10() * 5.0
+        (base_score + follower_boost) * time_decay
+    }
+}
+
+// =============================================================================
+// Tag Group
+// =============================================================================
+
+/// Tag group for organizing related tags
+struct TagGroup {
+    id: String,
+    name: String,
+    slug: String,
+    description: Option<String>,
+    tags: [String],
+    is_exclusive: Bool,
+    max_tags: Option<Int>,
+    created_at: DateTime
+}
+
+impl TagGroup {
+    fn new(name: String) -> Self {
+        TagGroup {
+            id: generate_id(),
+            name: name.clone(),
+            slug: slugify(name),
+            description: None,
+            tags: [],
+            is_exclusive: false,
+            max_tags: None,
+            created_at: DateTime.now()
+        }
+    }
+    
+    fn with_description(description: String) -> Self {
+        self.description = Some(description)
+        self
+    }
+    
+    fn exclusive() -> Self {
+        self.is_exclusive = true
+        self
+    }
+    
+    fn with_max_tags(max: Int) -> Self {
+        self.max_tags = Some(max)
+        self
+    }
+    
+    fn add_tag(tag_id: String) -> Result<(), TagError> {
+        if let Some(max) = self.max_tags {
+            if self.tags.len() >= max {
+                return Err(TagError.MaxTagsReached)
+            }
+        }
+        
+        if !self.tags.contains(tag_id.clone()) {
+            self.tags.push(tag_id)
+        }
+        Ok(())
+    }
+    
+    fn remove_tag(tag_id: String) {
+        self.tags.retain(|id| *id != tag_id)
+    }
+    
+    fn contains(tag_id: String) -> Bool {
+        self.tags.contains(tag_id)
+    }
+}
+
+// =============================================================================
+// Tag Suggestion
+// =============================================================================
+
+/// Tag suggestion
+struct TagSuggestion {
+    tag: Tag,
+    score: Float,
+    reason: TagSuggestionReason
+}
+
+/// Tag suggestion reason
+enum TagSuggestionReason {
+    Popular,
+    Related,
+    Trending,
+    UserHistory,
+    ContentAnalysis,
+    Similar
+}
+
+impl TagSuggestion {
+    fn new(tag: Tag, score: Float, reason: TagSuggestionReason) -> Self {
+        TagSuggestion {
+            tag: tag,
+            score: score,
+            reason: reason
+        }
+    }
+}
+
+// =============================================================================
+// Tag Service
+// =============================================================================
+
+/// Tag service actor
+actor TagService {
+    state tags: Map<String, Tag>
+    state slug_index: Map<String, String>
+    state name_index: Map<String, String>
+    state tag_groups: Map<String, TagGroup>
+    state content_tags: Map<String, Set<String>>
+    state tag_followers: Map<String, Set<String>>
+    state trending_tags: [String]
+    
+    fn new() -> Self {
+        TagService {
+            tags: Map.empty(),
+            slug_index: Map.empty(),
+            name_index: Map.empty(),
+            tag_groups: Map.empty(),
+            content_tags: Map.empty(),
+            tag_followers: Map.empty(),
+            trending_tags: []
+        }
+    }
+    
+    /// Create or get tag
+    on get_or_create(name: String, tag_type: TagType) -> Tag {
+        let normalized = normalize_tag_name(name)
+        
+        if let Some(tag_id) = self.name_index.get(normalized.clone()) {
+            return self.tags.get(tag_id).unwrap().clone()
+        }
+        
+        let tag = Tag.new(normalized.clone(), tag_type)
+        let tag_id = tag.id.clone()
+        
+        self.tags.set(tag_id.clone(), tag.clone())
+        self.slug_index.set(tag.slug.clone(), tag_id.clone())
+        self.name_index.set(normalized, tag_id)
+        
+        tag
+    }
+    
+    /// Get tag by ID
+    on get(tag_id: String) -> Option<Tag> {
+        self.tags.get(tag_id)
+    }
+    
+    /// Get tag by slug
+    on get_by_slug(slug: String) -> Option<Tag> {
+        self.slug_index.get(slug)
+            .and_then(|id| self.tags.get(id))
+    }
+    
+    /// Get tag by name
+    on get_by_name(name: String) -> Option<Tag> {
+        let normalized = normalize_tag_name(name)
+        self.name_index.get(normalized)
+            .and_then(|id| self.tags.get(id))
+    }
+    
+    /// Update tag
+    on update(tag_id: String, description: Option<String>, color: Option<String>) -> Result<Tag, TagError> {
+        let tag = self.tags.get_mut(tag_id)
+            .ok_or(TagError.NotFound)?
+        
+        if let Some(desc) = description {
+            tag.description = Some(desc)
+        }
+        if let Some(c) = color {
+            tag.color = Some(c)
+        }
+        tag.updated_at = DateTime.now()
+        
+        Ok(tag.clone())
+    }
+    
+    /// Tag content
+    on tag_content(content_id: String, tag_ids: [String]) {
+        for tag_id in tag_ids.iter() {
+            self.content_tags.entry(content_id.clone()).or_insert(Set.empty()).insert(tag_id.clone())
+            
+            if let Some(tag) = self.tags.get_mut(tag_id.clone()) {
+                tag.increment_posts()
+                tag.increment_usage()
+            }
+        }
+    }
+    
+    /// Untag content
+    on untag_content(content_id: String, tag_ids: [String]) {
+        for tag_id in tag_ids.iter() {
+            if let Some(tags) = self.content_tags.get_mut(content_id.clone()) {
+                tags.remove(tag_id.clone())
+            }
+            
+            if let Some(tag) = self.tags.get_mut(tag_id.clone()) {
+                tag.decrement_posts()
+            }
+        }
+    }
+    
+    /// Get tags for content
+    on get_content_tags(content_id: String) -> [Tag] {
+        self.content_tags.get(content_id)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| self.tags.get(id))
+                    .collect()
+            })
+            .unwrap_or([])
+    }
+    
+    /// Follow tag
+    on follow(user_id: String, tag_id: String) -> Result<(), TagError> {
+        let tag = self.tags.get_mut(tag_id.clone())
+            .ok_or(TagError.NotFound)?
+        
+        let followers = self.tag_followers.entry(tag_id).or_insert(Set.empty())
+        if followers.insert(user_id) {
+            tag.add_follower()
+        }
+        
+        Ok(())
+    }
+    
+    /// Unfollow tag
+    on unfollow(user_id: String, tag_id: String) -> Result<(), TagError> {
+        let tag = self.tags.get_mut(tag_id.clone())
+            .ok_or(TagError.NotFound)?
+        
+        if let Some(followers) = self.tag_followers.get_mut(tag_id) {
+            if followers.remove(user_id) {
+                tag.remove_follower()
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Check if user follows tag
+    on is_following(user_id: String, tag_id: String) -> Bool {
+        self.tag_followers.get(tag_id)
+            .map(|f| f.contains(user_id))
+            .unwrap_or(false)
+    }
+    
+    /// Get tag followers
+    on get_followers(tag_id: String, limit: Int, offset: Int) -> [String] {
+        self.tag_followers.get(tag_id)
+            .map(|f| f.iter().skip(offset).take(limit).collect())
+            .unwrap_or([])
+    }
+    
+    /// Search tags
+    on search(query: String, limit: Int) -> [Tag] {
+        let query_lower = query.to_lowercase()
+        self.tags.values()
+            .filter(|t| t.is_visible() && t.name.to_lowercase().contains(query_lower.clone()))
+            .take(limit)
+            .collect()
+    }
+    
+    /// Get popular tags
+    on get_popular(limit: Int) -> [Tag] {
+        var tags: [Tag] = self.tags.values()
+            .filter(|t| t.is_visible())
+            .collect()
+        
+        tags.sort_by(|a, b| b.usage_count.cmp(a.usage_count))
+        tags.take(limit)
+    }
+    
+    /// Get trending tags
+    on get_trending(limit: Int) -> [Tag] {
+        self.trending_tags.iter()
+            .filter_map(|id| self.tags.get(id))
+            .take(limit)
+            .collect()
+    }
+    
+    /// Update trending tags
+    on update_trending(recent_usage: Map<String, Int64>) {
+        var scores: [(String, Float)] = []
+        let now = DateTime.now()
+        
+        for (tag_id, usage) in recent_usage.iter() {
+            if let Some(tag) = self.tags.get_mut(tag_id.clone()) {
+                let age_hours = (now - tag.created_at).hours() as Float
+                let time_decay = 1.0 / (1.0 + age_hours / 24.0)
+                let score = tag.calculate_trending_score(*usage, time_decay)
+                tag.trending_score = score
+                scores.push((tag_id.clone(), score))
+            }
+        }
+        
+        scores.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(Ordering.Equal))
+        
+        // Update trending status
+        self.trending_tags = scores.iter()
+            .take(50)
+            .map(|(id, _)| id.clone())
+            .collect()
+        
+        for (i, tag_id) in self.trending_tags.iter().enumerate() {
+            if let Some(tag) = self.tags.get_mut(tag_id.clone()) {
+                if i < 10 {
+                    tag.mark_trending()
+                }
+            }
+        }
+    }
+    
+    /// Get related tags
+    on get_related(tag_id: String, limit: Int) -> [Tag] {
+        // Find content with this tag
+        let content_with_tag: [String] = self.content_tags.iter()
+            .filter(|(_, tags)| tags.contains(tag_id.clone()))
+            .map(|(content_id, _)| content_id.clone())
+            .collect()
+        
+        // Count co-occurring tags
+        var co_occurrence: Map<String, Int> = Map.empty()
+        for content_id in content_with_tag.iter() {
+            if let Some(tags) = self.content_tags.get(content_id.clone()) {
+                for other_tag_id in tags.iter() {
+                    if *other_tag_id != tag_id {
+                        co_occurrence.entry(other_tag_id.clone()).or_insert(0) += 1
+                    }
+                }
+            }
+        }
+        
+        // Sort by co-occurrence
+        var sorted: [(String, Int)] = co_occurrence.iter().collect()
+        sorted.sort_by(|a, b| b.1.cmp(a.1))
+        
+        sorted.iter()
+            .take(limit)
+            .filter_map(|(id, _)| self.tags.get(id))
+            .collect()
+    }
+    
+    /// Suggest tags for content
+    on suggest(content: String, limit: Int) -> [TagSuggestion] {
+        var suggestions: [TagSuggestion] = []
+        
+        // Extract hashtags from content
+        let hashtags = extract_hashtags(content.clone())
+        for hashtag in hashtags.iter() {
+            if let Some(tag) = self.get_by_name(hashtag.clone()) {
+                suggestions.push(TagSuggestion.new(tag, 1.0, TagSuggestionReason.ContentAnalysis))
+            }
+        }
+        
+        // Add trending tags
+        for tag in self.get_trending(5).iter() {
+            if !suggestions.iter().any(|s| s.tag.id == tag.id) {
+                suggestions.push(TagSuggestion.new(tag.clone(), 0.5, TagSuggestionReason.Trending))
+            }
+        }
+        
+        suggestions.sort_by(|a, b| b.score.partial_cmp(a.score).unwrap_or(Ordering.Equal))
+        suggestions.take(limit)
+    }
+    
+    /// Create tag group
+    on create_group(group: TagGroup) -> TagGroup {
+        let group_id = group.id.clone()
+        self.tag_groups.set(group_id, group.clone())
+        group
+    }
+    
+    /// Get tag group
+    on get_group(group_id: String) -> Option<TagGroup> {
+        self.tag_groups.get(group_id)
+    }
+    
+    /// Ban tag
+    on ban(tag_id: String) -> Result<(), TagError> {
+        let tag = self.tags.get_mut(tag_id)
+            .ok_or(TagError.NotFound)?
+        tag.ban()
+        Ok(())
+    }
+    
+    /// Feature tag
+    on feature(tag_id: String) -> Result<(), TagError> {
+        let tag = self.tags.get_mut(tag_id)
+            .ok_or(TagError.NotFound)?
+        tag.mark_featured()
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Tag Errors
+// =============================================================================
+
+/// Tag errors
+enum TagError {
+    NotFound,
+    AlreadyExists,
+    InvalidName,
+    Banned,
+    MaxTagsReached,
+    Unauthorized
+}
+
+impl TagError {
+    fn message() -> String {
+        match self {
+            TagError.NotFound => "Tag not found",
+            TagError.AlreadyExists => "Tag already exists",
+            TagError.InvalidName => "Invalid tag name",
+            TagError.Banned => "This tag is banned",
+            TagError.MaxTagsReached => "Maximum number of tags reached",
+            TagError.Unauthorized => "Not authorized to perform this action"
+        }
+    }
+}
+
+// =============================================================================
+// Tag Events
+// =============================================================================
+
+/// Tag events for event sourcing
+enum TagEvent {
+    Created { tag_id: String, name: String, timestamp: DateTime },
+    Updated { tag_id: String, timestamp: DateTime },
+    Used { tag_id: String, content_id: String, timestamp: DateTime },
+    Followed { tag_id: String, user_id: String, timestamp: DateTime },
+    Unfollowed { tag_id: String, user_id: String, timestamp: DateTime },
+    Banned { tag_id: String, timestamp: DateTime },
+    Featured { tag_id: String, timestamp: DateTime },
+    TrendingUpdated { tag_ids: [String], timestamp: DateTime }
+}
+
+impl TagEvent {
+    fn timestamp() -> DateTime {
+        match self {
+            TagEvent.Created { timestamp, .. } => timestamp,
+            TagEvent.Updated { timestamp, .. } => timestamp,
+            TagEvent.Used { timestamp, .. } => timestamp,
+            TagEvent.Followed { timestamp, .. } => timestamp,
+            TagEvent.Unfollowed { timestamp, .. } => timestamp,
+            TagEvent.Banned { timestamp, .. } => timestamp,
+            TagEvent.Featured { timestamp, .. } => timestamp,
+            TagEvent.TrendingUpdated { timestamp, .. } => timestamp
+        }
+    }
+}
+
+// =============================================================================
+// Tag Analytics
+// =============================================================================
+
+/// Tag analytics
+struct TagAnalytics {
+    tag_id: String,
+    total_usage: Int64,
+    unique_users: Int64,
+    usage_by_day: Map<String, Int64>,
+    usage_by_hour: Map<Int, Int64>,
+    top_co_tags: [(String, Int64)],
+    growth_rate: Float,
+    engagement_rate: Float
+}
+
+impl TagAnalytics {
+    fn new(tag_id: String) -> Self {
+        TagAnalytics {
+            tag_id: tag_id,
+            total_usage: 0,
+            unique_users: 0,
+            usage_by_day: Map.empty(),
+            usage_by_hour: Map.empty(),
+            top_co_tags: [],
+            growth_rate: 0.0,
+            engagement_rate: 0.0
+        }
+    }
+    
+    fn record_usage(timestamp: DateTime) {
+        self.total_usage += 1
+        
+        let day = timestamp.format("%Y-%m-%d")
+        self.usage_by_day.entry(day).or_insert(0) += 1
+        
+        let hour = timestamp.hour()
+        self.usage_by_hour.entry(hour).or_insert(0) += 1
+    }
+    
+    fn peak_hour() -> Option<Int> {
+        self.usage_by_hour.iter()
+            .max_by(|a, b| a.1.cmp(b.1))
+            .map(|(h, _)| h)
+    }
+    
+    fn calculate_growth(previous_period: Int64, current_period: Int64) {
+        if previous_period > 0 {
+            self.growth_rate = ((current_period - previous_period) as Float / previous_period as Float) * 100.0
+        }
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+fn generate_id() -> String {
+    @native("uuid_v4")
+}
+
+fn slugify(text: String) -> String {
+    text.to_lowercase()
+        .replace(" ", "-")
+        .replace("_", "-")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-')
+        .collect()
+}
+
+fn normalize_tag_name(name: String) -> String {
+    name.trim()
+        .trim_start_matches('#')
+        .to_lowercase()
+}
+
+fn extract_hashtags(content: String) -> [String] {
+    let regex = Regex.new(r"#(\w+)")
+    regex.find_all(content).map(|m| m.group(1)).collect()
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "tag creation" {
+    let tag = Tag.hashtag("vibee")
+    assert_eq(tag.name, "vibee")?
+    assert_eq(tag.display_name(), "#vibee")?
+}
+
+test "tag with description" {
+    let tag = Tag.topic("Programming")
+        .with_description("All about coding")
+        .with_color("#3498db")
+    
+    assert_eq(tag.description, Some("All about coding"))?
+    assert_eq(tag.color, Some("#3498db"))?
+}
+
+test "tag usage" {
+    var tag = Tag.hashtag("test")
+    tag.increment_usage()
+    tag.increment_usage()
+    tag.increment_posts()
+    
+    assert_eq(tag.usage_count, 2)?
+    assert_eq(tag.post_count, 1)?
+}
+
+test "tag group" {
+    var group = TagGroup.new("Programming Languages")
+        .with_max_tags(10)
+    
+    group.add_tag("tag1").unwrap()
+    group.add_tag("tag2").unwrap()
+    
+    assert_eq(group.tags.len(), 2)?
+    assert(group.contains("tag1"))?
+}
+
+test "tag service" {
+    let service = TagService.new()
+    
+    let tag = service.get_or_create("vibee", TagType.Hashtag)
+    assert_eq(tag.name, "vibee")?
+    
+    // Getting same tag should return existing
+    let same_tag = service.get_or_create("vibee", TagType.Hashtag)
+    assert_eq(tag.id, same_tag.id)?
+}
+
+test "tag search" {
+    let service = TagService.new()
+    
+    service.get_or_create("programming", TagType.Topic)
+    service.get_or_create("program", TagType.Topic)
+    service.get_or_create("other", TagType.Topic)
+    
+    let results = service.search("prog", 10)
+    assert_eq(results.len(), 2)?
+}
+
+test "slugify" {
+    assert_eq(slugify("Hello World"), "hello-world")?
+    assert_eq(slugify("Test_Tag"), "test-tag")?
+    assert_eq(slugify("Special!@#Chars"), "specialchars")?
+}
+
+test "normalize tag name" {
+    assert_eq(normalize_tag_name("#Vibee"), "vibee")?
+    assert_eq(normalize_tag_name("  Test  "), "test")?
+}
+
+test "extract hashtags" {
+    let hashtags = extract_hashtags("Hello #world #vibee #programming")
+    assert_eq(hashtags.len(), 3)?
+    assert(hashtags.contains("world"))?
+}

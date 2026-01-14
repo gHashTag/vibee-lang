@@ -1,0 +1,614 @@
+// =============================================================================
+// Vibee OS — Logger Module
+// Structured logging with multiple levels and outputs
+// =============================================================================
+
+use log_formatter.{Formatter, DefaultFormatter, JsonFormatter}
+use log_handler.{Handler, ConsoleHandler, FileHandler}
+use log_filter.{Filter, LevelFilter}
+use datetime.{DateTime}
+
+// -----------------------------------------------------------------------------
+// Log Levels
+// -----------------------------------------------------------------------------
+
+/// Log severity levels
+enum Level {
+    Trace
+    Debug
+    Info
+    Warn
+    Error
+    Fatal
+    
+    fn value() -> Int {
+        match self {
+            Trace => 0
+            Debug => 1
+            Info => 2
+            Warn => 3
+            Error => 4
+            Fatal => 5
+        }
+    }
+    
+    fn from_value(v: Int) -> Self {
+        match v {
+            0 => .Trace
+            1 => .Debug
+            2 => .Info
+            3 => .Warn
+            4 => .Error
+            _ => .Fatal
+        }
+    }
+    
+    fn name() -> String {
+        match self {
+            Trace => "TRACE"
+            Debug => "DEBUG"
+            Info => "INFO"
+            Warn => "WARN"
+            Error => "ERROR"
+            Fatal => "FATAL"
+        }
+    }
+    
+    fn short_name() -> String {
+        match self {
+            Trace => "TRC"
+            Debug => "DBG"
+            Info => "INF"
+            Warn => "WRN"
+            Error => "ERR"
+            Fatal => "FTL"
+        }
+    }
+    
+    fn color() -> String {
+        match self {
+            Trace => "\x1b[90m"    // Gray
+            Debug => "\x1b[36m"    // Cyan
+            Info => "\x1b[32m"     // Green
+            Warn => "\x1b[33m"     // Yellow
+            Error => "\x1b[31m"    // Red
+            Fatal => "\x1b[35m"    // Magenta
+        }
+    }
+}
+
+impl Eq for Level {
+    fn eq(other: Level) -> Bool { self.value() == other.value() }
+}
+
+impl Ord for Level {
+    fn cmp(other: Level) -> Ordering { self.value().cmp(other.value()) }
+}
+
+// -----------------------------------------------------------------------------
+// Log Record
+// -----------------------------------------------------------------------------
+
+/// A single log entry
+struct LogRecord {
+    level: Level
+    message: String
+    timestamp: DateTime
+    logger_name: String
+    module: Option<String>
+    file: Option<String>
+    line: Option<Int>
+    fields: Map<String, Any>
+    error: Option<Error>
+}
+
+impl LogRecord {
+    fn new(level: Level, message: String) -> Self {
+        LogRecord {
+            level: level,
+            message: message,
+            timestamp: DateTime.now(),
+            logger_name: "root",
+            module: None,
+            file: None,
+            line: None,
+            fields: Map.new(),
+            error: None
+        }
+    }
+    
+    fn with_logger(name: String) -> Self {
+        self.logger_name = name
+        self
+    }
+    
+    fn with_module(module: String) -> Self {
+        self.module = Some(module)
+        self
+    }
+    
+    fn with_location(file: String, line: Int) -> Self {
+        self.file = Some(file)
+        self.line = Some(line)
+        self
+    }
+    
+    fn with_field(key: String, value: Any) -> Self {
+        self.fields.insert(key, value)
+        self
+    }
+    
+    fn with_fields(fields: Map<String, Any>) -> Self {
+        for (k, v) in fields {
+            self.fields.insert(k, v)
+        }
+        self
+    }
+    
+    fn with_error(err: Error) -> Self {
+        self.error = Some(err)
+        self
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Logger Trait
+// -----------------------------------------------------------------------------
+
+/// Core logging interface
+trait Log {
+    fn log(record: LogRecord)
+    fn enabled(level: Level) -> Bool
+    fn flush()
+}
+
+// -----------------------------------------------------------------------------
+// Logger
+// -----------------------------------------------------------------------------
+
+/// Main logger implementation
+struct Logger {
+    name: String
+    level: Level
+    handlers: [Box<dyn Handler>]
+    filters: [Box<dyn Filter>]
+    formatter: Box<dyn Formatter>
+    parent: Option<Box<Logger>>
+    propagate: Bool
+    fields: Map<String, Any>
+}
+
+impl Logger {
+    fn new(name: String) -> Self {
+        Logger {
+            name: name,
+            level: Level.Info,
+            handlers: [],
+            filters: [],
+            formatter: Box.new(DefaultFormatter.new()),
+            parent: None,
+            propagate: true,
+            fields: Map.new()
+        }
+    }
+    
+    fn root() -> Self {
+        Logger.new("root")
+            .with_handler(ConsoleHandler.new())
+    }
+    
+    fn with_level(level: Level) -> Self {
+        self.level = level
+        self
+    }
+    
+    fn with_handler<H: Handler>(handler: H) -> Self {
+        self.handlers.push(Box.new(handler))
+        self
+    }
+    
+    fn with_filter<F: Filter>(filter: F) -> Self {
+        self.filters.push(Box.new(filter))
+        self
+    }
+    
+    fn with_formatter<F: Formatter>(formatter: F) -> Self {
+        self.formatter = Box.new(formatter)
+        self
+    }
+    
+    fn with_parent(parent: Logger) -> Self {
+        self.parent = Some(Box.new(parent))
+        self
+    }
+    
+    fn with_propagate(propagate: Bool) -> Self {
+        self.propagate = propagate
+        self
+    }
+    
+    fn with_field(key: String, value: Any) -> Self {
+        self.fields.insert(key, value)
+        self
+    }
+    
+    fn child(name: String) -> Logger {
+        Logger.new("\(self.name).\(name)")
+            .with_parent(self.clone())
+            .with_level(self.level)
+    }
+    
+    /// Check if level is enabled
+    fn is_enabled(level: Level) -> Bool {
+        level >= self.level
+    }
+    
+    /// Log a record
+    fn log(record: LogRecord) {
+        if !self.is_enabled(record.level) { return }
+        
+        // Apply filters
+        for filter in self.filters.iter() {
+            if !filter.filter(record) { return }
+        }
+        
+        // Add logger fields to record
+        var enriched = record.clone()
+        enriched.logger_name = self.name.clone()
+        for (k, v) in self.fields.iter() {
+            if !enriched.fields.contains_key(k) {
+                enriched.fields.insert(k.clone(), v.clone())
+            }
+        }
+        
+        // Send to handlers
+        for handler in self.handlers.iter() {
+            handler.handle(enriched.clone(), self.formatter.as_ref())
+        }
+        
+        // Propagate to parent
+        if self.propagate {
+            if let Some(parent) = self.parent.as_ref() {
+                parent.log(enriched)
+            }
+        }
+    }
+    
+    // Convenience methods
+    fn trace(message: String) { self.log(LogRecord.new(Level.Trace, message)) }
+    fn debug(message: String) { self.log(LogRecord.new(Level.Debug, message)) }
+    fn info(message: String) { self.log(LogRecord.new(Level.Info, message)) }
+    fn warn(message: String) { self.log(LogRecord.new(Level.Warn, message)) }
+    fn error(message: String) { self.log(LogRecord.new(Level.Error, message)) }
+    fn fatal(message: String) { self.log(LogRecord.new(Level.Fatal, message)) }
+    
+    // Structured logging
+    fn trace_with(message: String, fields: Map<String, Any>) { self.log(LogRecord.new(Level.Trace, message).with_fields(fields)) }
+    fn debug_with(message: String, fields: Map<String, Any>) { self.log(LogRecord.new(Level.Debug, message).with_fields(fields)) }
+    fn info_with(message: String, fields: Map<String, Any>) { self.log(LogRecord.new(Level.Info, message).with_fields(fields)) }
+    fn warn_with(message: String, fields: Map<String, Any>) { self.log(LogRecord.new(Level.Warn, message).with_fields(fields)) }
+    fn error_with(message: String, fields: Map<String, Any>) { self.log(LogRecord.new(Level.Error, message).with_fields(fields)) }
+    fn fatal_with(message: String, fields: Map<String, Any>) { self.log(LogRecord.new(Level.Fatal, message).with_fields(fields)) }
+    
+    // Error logging
+    fn error_err(message: String, err: Error) {
+        self.log(LogRecord.new(Level.Error, message).with_error(err))
+    }
+    
+    fn fatal_err(message: String, err: Error) {
+        self.log(LogRecord.new(Level.Fatal, message).with_error(err))
+    }
+    
+    fn flush() {
+        for handler in self.handlers.iter() {
+            handler.flush()
+        }
+    }
+}
+
+impl Log for Logger {
+    fn log(record: LogRecord) { self.log(record) }
+    fn enabled(level: Level) -> Bool { self.is_enabled(level) }
+    fn flush() { self.flush() }
+}
+
+impl Drop for Logger {
+    fn drop() { self.flush() }
+}
+
+// -----------------------------------------------------------------------------
+// Logger Builder
+// -----------------------------------------------------------------------------
+
+/// Fluent builder for logger configuration
+struct LoggerBuilder {
+    name: String
+    level: Level
+    handlers: [Box<dyn Handler>]
+    filters: [Box<dyn Filter>]
+    formatter: Option<Box<dyn Formatter>>
+    fields: Map<String, Any>
+}
+
+impl LoggerBuilder {
+    fn new(name: String) -> Self {
+        LoggerBuilder {
+            name: name,
+            level: Level.Info,
+            handlers: [],
+            filters: [],
+            formatter: None,
+            fields: Map.new()
+        }
+    }
+    
+    fn level(level: Level) -> Self {
+        self.level = level
+        self
+    }
+    
+    fn handler<H: Handler>(handler: H) -> Self {
+        self.handlers.push(Box.new(handler))
+        self
+    }
+    
+    fn console() -> Self {
+        self.handler(ConsoleHandler.new())
+    }
+    
+    fn file(path: String) -> Self {
+        self.handler(FileHandler.new(path))
+    }
+    
+    fn filter<F: Filter>(filter: F) -> Self {
+        self.filters.push(Box.new(filter))
+        self
+    }
+    
+    fn min_level(level: Level) -> Self {
+        self.filter(LevelFilter.min(level))
+    }
+    
+    fn formatter<F: Formatter>(formatter: F) -> Self {
+        self.formatter = Some(Box.new(formatter))
+        self
+    }
+    
+    fn json() -> Self {
+        self.formatter(JsonFormatter.new())
+    }
+    
+    fn field(key: String, value: Any) -> Self {
+        self.fields.insert(key, value)
+        self
+    }
+    
+    fn build() -> Logger {
+        var logger = Logger.new(self.name.clone())
+            .with_level(self.level)
+        
+        for handler in self.handlers {
+            logger.handlers.push(handler)
+        }
+        
+        for filter in self.filters {
+            logger.filters.push(filter)
+        }
+        
+        if let Some(fmt) = self.formatter {
+            logger.formatter = fmt
+        }
+        
+        for (k, v) in self.fields {
+            logger.fields.insert(k, v)
+        }
+        
+        logger
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Global Logger
+// -----------------------------------------------------------------------------
+
+/// Global logger instance
+static GLOBAL_LOGGER: Mutex<Logger> = Mutex.new(Logger.root())
+
+/// Initialize global logger
+fn init(logger: Logger) {
+    var guard = GLOBAL_LOGGER.lock()
+    *guard = logger
+}
+
+/// Get global logger
+fn global() -> MutexGuard<Logger> {
+    GLOBAL_LOGGER.lock()
+}
+
+/// Set global log level
+fn set_level(level: Level) {
+    var guard = GLOBAL_LOGGER.lock()
+    guard.level = level
+}
+
+// Global convenience functions
+fn trace(message: String) { global().trace(message) }
+fn debug(message: String) { global().debug(message) }
+fn info(message: String) { global().info(message) }
+fn warn(message: String) { global().warn(message) }
+fn error(message: String) { global().error(message) }
+fn fatal(message: String) { global().fatal(message) }
+
+fn trace_with(message: String, fields: Map<String, Any>) { global().trace_with(message, fields) }
+fn debug_with(message: String, fields: Map<String, Any>) { global().debug_with(message, fields) }
+fn info_with(message: String, fields: Map<String, Any>) { global().info_with(message, fields) }
+fn warn_with(message: String, fields: Map<String, Any>) { global().warn_with(message, fields) }
+fn error_with(message: String, fields: Map<String, Any>) { global().error_with(message, fields) }
+fn fatal_with(message: String, fields: Map<String, Any>) { global().fatal_with(message, fields) }
+
+// -----------------------------------------------------------------------------
+// Context Logger
+// -----------------------------------------------------------------------------
+
+/// Logger with attached context
+struct ContextLogger {
+    logger: Logger
+    context: Map<String, Any>
+}
+
+impl ContextLogger {
+    fn new(logger: Logger) -> Self {
+        ContextLogger { logger: logger, context: Map.new() }
+    }
+    
+    fn with(key: String, value: Any) -> Self {
+        self.context.insert(key, value)
+        self
+    }
+    
+    fn with_request_id(id: String) -> Self { self.with("request_id", id) }
+    fn with_user_id(id: String) -> Self { self.with("user_id", id) }
+    fn with_trace_id(id: String) -> Self { self.with("trace_id", id) }
+    fn with_span_id(id: String) -> Self { self.with("span_id", id) }
+    
+    fn log(record: LogRecord) {
+        var enriched = record.clone()
+        for (k, v) in self.context.iter() {
+            enriched.fields.insert(k.clone(), v.clone())
+        }
+        self.logger.log(enriched)
+    }
+    
+    fn trace(message: String) { self.log(LogRecord.new(Level.Trace, message)) }
+    fn debug(message: String) { self.log(LogRecord.new(Level.Debug, message)) }
+    fn info(message: String) { self.log(LogRecord.new(Level.Info, message)) }
+    fn warn(message: String) { self.log(LogRecord.new(Level.Warn, message)) }
+    fn error(message: String) { self.log(LogRecord.new(Level.Error, message)) }
+    fn fatal(message: String) { self.log(LogRecord.new(Level.Fatal, message)) }
+}
+
+// -----------------------------------------------------------------------------
+// Async Logger Actor
+// -----------------------------------------------------------------------------
+
+/// Asynchronous logger using actor model
+actor AsyncLogger {
+    logger: Logger
+    buffer: [LogRecord]
+    buffer_size: Int
+    flush_interval: Duration
+    
+    fn new(logger: Logger) -> Self {
+        AsyncLogger {
+            logger: logger,
+            buffer: [],
+            buffer_size: 100,
+            flush_interval: Duration.seconds(5)
+        }
+    }
+    
+    fn with_buffer_size(size: Int) -> Self {
+        self.buffer_size = size
+        self
+    }
+    
+    fn with_flush_interval(interval: Duration) -> Self {
+        self.flush_interval = interval
+        self
+    }
+    
+    async fn log(record: LogRecord) {
+        self.buffer.push(record)
+        if self.buffer.len() >= self.buffer_size {
+            self.flush().await
+        }
+    }
+    
+    async fn flush() {
+        for record in self.buffer.drain(..) {
+            self.logger.log(record)
+        }
+        self.logger.flush()
+    }
+    
+    async fn trace(message: String) { self.log(LogRecord.new(Level.Trace, message)).await }
+    async fn debug(message: String) { self.log(LogRecord.new(Level.Debug, message)).await }
+    async fn info(message: String) { self.log(LogRecord.new(Level.Info, message)).await }
+    async fn warn(message: String) { self.log(LogRecord.new(Level.Warn, message)).await }
+    async fn error(message: String) { self.log(LogRecord.new(Level.Error, message)).await }
+    async fn fatal(message: String) { self.log(LogRecord.new(Level.Fatal, message)).await }
+}
+
+// -----------------------------------------------------------------------------
+// Macros
+// -----------------------------------------------------------------------------
+
+/// Log with source location
+macro log!(level, message) {
+    LogRecord.new(level, message)
+        .with_location(@file(), @line())
+}
+
+macro trace!(message) { global().log(log!(Level.Trace, message)) }
+macro debug!(message) { global().log(log!(Level.Debug, message)) }
+macro info!(message) { global().log(log!(Level.Info, message)) }
+macro warn!(message) { global().log(log!(Level.Warn, message)) }
+macro error!(message) { global().log(log!(Level.Error, message)) }
+macro fatal!(message) { global().log(log!(Level.Fatal, message)) }
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "log levels ordering" {
+    assert(Level.Trace < Level.Debug)?
+    assert(Level.Debug < Level.Info)?
+    assert(Level.Info < Level.Warn)?
+    assert(Level.Warn < Level.Error)?
+    assert(Level.Error < Level.Fatal)?
+}
+
+test "logger creation" {
+    let logger = Logger.new("test")
+        .with_level(Level.Debug)
+    
+    assert(logger.is_enabled(Level.Debug))?
+    assert(logger.is_enabled(Level.Info))?
+    assert(!logger.is_enabled(Level.Trace))?
+}
+
+test "logger builder" {
+    let logger = LoggerBuilder.new("app")
+        .level(Level.Info)
+        .console()
+        .json()
+        .field("service", "api")
+        .build()
+    
+    assert_eq(logger.name, "app")?
+    assert_eq(logger.level, Level.Info)?
+}
+
+test "context logger" {
+    let logger = Logger.new("test")
+    let ctx = ContextLogger.new(logger)
+        .with_request_id("req-123")
+        .with_user_id("user-456")
+    
+    assert_eq(ctx.context.get("request_id"), Some("req-123"))?
+}
+
+test "log record fields" {
+    let record = LogRecord.new(Level.Info, "test message")
+        .with_field("key1", "value1")
+        .with_field("key2", 42)
+    
+    assert_eq(record.fields.len(), 2)?
+}
+
+test "child logger" {
+    let parent = Logger.new("app")
+    let child = parent.child("http")
+    
+    assert_eq(child.name, "app.http")?
+}

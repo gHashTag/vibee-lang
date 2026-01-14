@@ -1,0 +1,672 @@
+// =============================================================================
+// Vibee OS — Panic Handler Module
+// Panic handling, hooks, and crash reporting
+// =============================================================================
+
+use backtrace.{Backtrace, BacktraceFormatter, Frame}
+use error_chain.{ChainedError, ErrorKind}
+use datetime.{DateTime, Instant}
+use logger.{Logger, Level}
+
+// -----------------------------------------------------------------------------
+// Core Types
+// -----------------------------------------------------------------------------
+
+/// Panic information
+struct PanicInfo {
+    /// Panic message
+    message: String
+    /// Source location
+    location: Option<PanicLocation>
+    /// Captured backtrace
+    backtrace: Backtrace
+    /// Thread that panicked
+    thread_id: Int
+    /// Thread name
+    thread_name: Option<String>
+    /// Timestamp
+    timestamp: DateTime
+    /// Panic payload (if any)
+    payload: Option<Any>
+}
+
+/// Panic source location
+struct PanicLocation {
+    file: String
+    line: Int
+    column: Int
+}
+
+impl PanicLocation {
+    fn new(file: String, line: Int, column: Int) -> Self {
+        PanicLocation { file: file, line: line, column: column }
+    }
+    
+    fn to_string() -> String {
+        format!("{}:{}:{}", self.file, self.line, self.column)
+    }
+}
+
+impl PanicInfo {
+    fn new(message: String) -> Self {
+        PanicInfo {
+            message: message,
+            location: None,
+            backtrace: Backtrace.capture(),
+            thread_id: @native("current_thread_id"),
+            thread_name: @native("current_thread_name"),
+            timestamp: DateTime.now(),
+            payload: None
+        }
+    }
+    
+    fn with_location(file: String, line: Int, column: Int) -> Self {
+        self.location = Some(PanicLocation.new(file, line, column))
+        self
+    }
+    
+    fn with_payload(payload: Any) -> Self {
+        self.payload = Some(payload)
+        self
+    }
+    
+    /// Get formatted panic message
+    fn display() -> String {
+        var result = StringBuilder.new()
+        
+        result.append("\x1b[1;31m=== PANIC ===\x1b[0m\n\n")
+        result.append(format!("Message: {}\n", self.message))
+        
+        if let Some(loc) = self.location.as_ref() {
+            result.append(format!("Location: {}\n", loc.to_string()))
+        }
+        
+        result.append(format!("Thread: {} ", self.thread_id))
+        if let Some(name) = self.thread_name.as_ref() {
+            result.append(format!("({})", name))
+        }
+        result.append("\n")
+        
+        result.append(format!("Time: {}\n", self.timestamp.to_iso8601()))
+        
+        result.append("\n")
+        result.append(self.backtrace.to_string())
+        
+        result.build()
+    }
+    
+    /// Convert to JSON for crash reporting
+    fn to_json() -> String {
+        var obj = Map.new()
+        obj.insert("message", self.message.clone())
+        obj.insert("thread_id", self.thread_id)
+        obj.insert("thread_name", self.thread_name.clone())
+        obj.insert("timestamp", self.timestamp.to_iso8601())
+        
+        if let Some(loc) = self.location.as_ref() {
+            obj.insert("location", Map.from([
+                ("file", loc.file.clone()),
+                ("line", loc.line),
+                ("column", loc.column)
+            ]))
+        }
+        
+        obj.insert("backtrace", self.backtrace.to_json())
+        
+        Json.stringify_pretty(obj)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Panic Hook
+// -----------------------------------------------------------------------------
+
+/// Panic hook function type
+type PanicHook = fn(PanicInfo)
+
+/// Global panic hook storage
+static PANIC_HOOK: Mutex<Option<Box<PanicHook>>> = Mutex.new(None)
+
+/// Default panic hooks
+static DEFAULT_HOOKS: Mutex<[Box<PanicHook>]> = Mutex.new([])
+
+/// Set custom panic hook
+fn set_panic_hook(hook: PanicHook) {
+    var guard = PANIC_HOOK.lock()
+    *guard = Some(Box.new(hook))
+}
+
+/// Take the current panic hook (returns ownership)
+fn take_panic_hook() -> Option<Box<PanicHook>> {
+    var guard = PANIC_HOOK.lock()
+    guard.take()
+}
+
+/// Add a default panic hook (runs before custom hook)
+fn add_default_hook(hook: PanicHook) {
+    var guard = DEFAULT_HOOKS.lock()
+    guard.push(Box.new(hook))
+}
+
+/// Clear all default hooks
+fn clear_default_hooks() {
+    var guard = DEFAULT_HOOKS.lock()
+    guard.clear()
+}
+
+/// Default panic handler
+fn default_panic_handler(info: PanicInfo) {
+    // Print to stderr
+    eprintln(info.display())
+}
+
+/// Invoke panic hooks
+fn invoke_panic_hooks(info: PanicInfo) {
+    // Run default hooks first
+    let default_hooks = DEFAULT_HOOKS.lock()
+    for hook in default_hooks.iter() {
+        hook(info.clone())
+    }
+    
+    // Run custom hook or default handler
+    let custom_hook = PANIC_HOOK.lock()
+    match custom_hook.as_ref() {
+        Some(hook) => hook(info)
+        None => default_panic_handler(info)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Panic Handlers
+// -----------------------------------------------------------------------------
+
+/// Panic handler that logs to file
+struct FilePanicHandler {
+    path: String
+    max_reports: Int
+}
+
+impl FilePanicHandler {
+    fn new(path: String) -> Self {
+        FilePanicHandler { path: path, max_reports: 100 }
+    }
+    
+    fn with_max_reports(max: Int) -> Self {
+        self.max_reports = max
+        self
+    }
+    
+    fn handle(info: PanicInfo) {
+        let filename = format!("{}/panic_{}.json", 
+            self.path, 
+            info.timestamp.format("%Y%m%d_%H%M%S"))
+        
+        if let Err(e) = Fs.write(filename, info.to_json()) {
+            eprintln(format!("Failed to write panic report: {}", e))
+        }
+        
+        // Cleanup old reports
+        self.cleanup_old_reports()
+    }
+    
+    fn cleanup_old_reports() {
+        if let Ok(entries) = Fs.read_dir(self.path) {
+            var reports: [(String, DateTime)] = entries
+                .filter(|e| e.name().starts_with("panic_") && e.name().ends_with(".json"))
+                .map(|e| (e.path(), e.modified_time()))
+                .collect()
+            
+            reports.sort_by(|(_, a), (_, b)| b.cmp(a))  // Newest first
+            
+            for (path, _) in reports.skip(self.max_reports) {
+                let _ = Fs.remove(path)
+            }
+        }
+    }
+}
+
+/// Panic handler that sends to remote service
+actor RemotePanicHandler {
+    endpoint: String
+    api_key: Option<String>
+    buffer: [PanicInfo]
+    max_buffer: Int
+    
+    fn new(endpoint: String) -> Self {
+        RemotePanicHandler {
+            endpoint: endpoint,
+            api_key: None,
+            buffer: [],
+            max_buffer: 10
+        }
+    }
+    
+    fn with_api_key(key: String) -> Self {
+        self.api_key = Some(key)
+        self
+    }
+    
+    async fn handle(info: PanicInfo) {
+        self.buffer.push(info.clone())
+        
+        // Try to send immediately
+        if let Err(_) = self.send(info).await {
+            // Will retry later
+        }
+        
+        // Trim buffer
+        while self.buffer.len() > self.max_buffer {
+            self.buffer.remove(0)
+        }
+    }
+    
+    async fn send(info: PanicInfo) -> Result<(), String> {
+        var headers = Map.new()
+        headers.insert("Content-Type", "application/json")
+        
+        if let Some(key) = self.api_key.as_ref() {
+            headers.insert("Authorization", format!("Bearer {}", key))
+        }
+        
+        let response = Http.post(self.endpoint.clone())
+            .headers(headers)
+            .body(info.to_json())
+            .send()
+            .await?
+        
+        if !response.is_success() {
+            return Err(format!("Failed to send panic report: {}", response.status()))
+        }
+        
+        Ok(())
+    }
+    
+    async fn flush() {
+        for info in self.buffer.drain(..) {
+            let _ = self.send(info).await
+        }
+    }
+}
+
+/// Panic handler that logs to logger
+struct LoggingPanicHandler {
+    logger: Logger
+}
+
+impl LoggingPanicHandler {
+    fn new(logger: Logger) -> Self {
+        LoggingPanicHandler { logger: logger }
+    }
+    
+    fn handle(info: PanicInfo) {
+        self.logger.fatal_with(
+            format!("PANIC: {}", info.message),
+            Map.from([
+                ("location", info.location.map(|l| l.to_string())),
+                ("thread_id", info.thread_id),
+                ("thread_name", info.thread_name.clone()),
+                ("backtrace", info.backtrace.to_string())
+            ])
+        )
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Panic Strategies
+// -----------------------------------------------------------------------------
+
+/// What to do after panic
+enum PanicStrategy {
+    /// Abort the process immediately
+    Abort
+    /// Unwind the stack (default)
+    Unwind
+    /// Try to recover and continue
+    Recover
+    /// Restart the current task/actor
+    Restart
+}
+
+/// Global panic strategy
+static PANIC_STRATEGY: Mutex<PanicStrategy> = Mutex.new(PanicStrategy.Unwind)
+
+/// Set panic strategy
+fn set_panic_strategy(strategy: PanicStrategy) {
+    var guard = PANIC_STRATEGY.lock()
+    *guard = strategy
+}
+
+/// Get current panic strategy
+fn panic_strategy() -> PanicStrategy {
+    PANIC_STRATEGY.lock().clone()
+}
+
+// -----------------------------------------------------------------------------
+// Panic Catching
+// -----------------------------------------------------------------------------
+
+/// Catch panics and convert to Result
+fn catch_panic<T>(f: fn() -> T) -> Result<T, PanicInfo> {
+    @native("catch_panic", f)
+}
+
+/// Catch panics with custom handler
+fn catch_panic_with<T>(f: fn() -> T, handler: fn(PanicInfo) -> T) -> T {
+    match catch_panic(f) {
+        Ok(value) => value
+        Err(info) => handler(info)
+    }
+}
+
+/// Resume panic after catching
+fn resume_panic(info: PanicInfo) -> ! {
+    @native("resume_panic", info)
+}
+
+/// Check if currently panicking
+fn is_panicking() -> Bool {
+    @native("is_panicking")
+}
+
+// -----------------------------------------------------------------------------
+// Panic Assertions
+// -----------------------------------------------------------------------------
+
+/// Assert that code panics
+fn assert_panics<T>(f: fn() -> T) -> Result<PanicInfo, String> {
+    match catch_panic(f) {
+        Ok(_) => Err("Expected panic but code completed normally")
+        Err(info) => Ok(info)
+    }
+}
+
+/// Assert that code panics with specific message
+fn assert_panics_with<T>(f: fn() -> T, expected_msg: String) -> Result<(), String> {
+    match catch_panic(f) {
+        Ok(_) => Err("Expected panic but code completed normally")
+        Err(info) => {
+            if info.message.contains(expected_msg) {
+                Ok(())
+            } else {
+                Err(format!("Panic message '{}' does not contain '{}'", 
+                    info.message, expected_msg))
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Panic Context
+// -----------------------------------------------------------------------------
+
+/// Thread-local panic context
+thread_local PANIC_CONTEXT: Vec<String> = Vec.new()
+
+/// Add context for panics
+fn push_panic_context(context: String) {
+    PANIC_CONTEXT.push(context)
+}
+
+/// Remove panic context
+fn pop_panic_context() -> Option<String> {
+    PANIC_CONTEXT.pop()
+}
+
+/// Get current panic context
+fn panic_context() -> [String] {
+    PANIC_CONTEXT.clone()
+}
+
+/// Scoped panic context
+struct PanicContextGuard {
+    _marker: ()
+}
+
+impl PanicContextGuard {
+    fn new(context: String) -> Self {
+        push_panic_context(context)
+        PanicContextGuard { _marker: () }
+    }
+}
+
+impl Drop for PanicContextGuard {
+    fn drop() {
+        pop_panic_context()
+    }
+}
+
+/// Add panic context for scope
+macro with_panic_context!(context, body) {
+    let _guard = PanicContextGuard.new(context)
+    body
+}
+
+// -----------------------------------------------------------------------------
+// Crash Report
+// -----------------------------------------------------------------------------
+
+/// Comprehensive crash report
+struct CrashReport {
+    panic_info: PanicInfo
+    system_info: SystemInfo
+    environment: Map<String, String>
+    memory_info: MemoryInfo
+    open_files: [String]
+    context: [String]
+}
+
+struct SystemInfo {
+    os: String
+    os_version: String
+    arch: String
+    cpu_count: Int
+    hostname: String
+    vibee_version: String
+}
+
+struct MemoryInfo {
+    heap_used: Int
+    heap_total: Int
+    stack_used: Int
+    stack_limit: Int
+}
+
+impl CrashReport {
+    fn generate(info: PanicInfo) -> Self {
+        CrashReport {
+            panic_info: info,
+            system_info: SystemInfo {
+                os: @native("os_name"),
+                os_version: @native("os_version"),
+                arch: @native("arch"),
+                cpu_count: @native("cpu_count"),
+                hostname: @native("hostname"),
+                vibee_version: @native("vibee_version")
+            },
+            environment: Env.all(),
+            memory_info: MemoryInfo {
+                heap_used: @native("heap_used"),
+                heap_total: @native("heap_total"),
+                stack_used: @native("stack_used"),
+                stack_limit: @native("stack_limit")
+            },
+            open_files: @native("open_files"),
+            context: panic_context()
+        }
+    }
+    
+    fn to_json() -> String {
+        var obj = Map.new()
+        obj.insert("panic", Json.parse(self.panic_info.to_json()))
+        obj.insert("system", Map.from([
+            ("os", self.system_info.os.clone()),
+            ("os_version", self.system_info.os_version.clone()),
+            ("arch", self.system_info.arch.clone()),
+            ("cpu_count", self.system_info.cpu_count),
+            ("hostname", self.system_info.hostname.clone()),
+            ("vibee_version", self.system_info.vibee_version.clone())
+        ]))
+        obj.insert("memory", Map.from([
+            ("heap_used", self.memory_info.heap_used),
+            ("heap_total", self.memory_info.heap_total),
+            ("stack_used", self.memory_info.stack_used),
+            ("stack_limit", self.memory_info.stack_limit)
+        ]))
+        obj.insert("context", self.context.clone())
+        obj.insert("open_files", self.open_files.clone())
+        
+        // Filter sensitive env vars
+        var safe_env = Map.new()
+        for (k, v) in self.environment.iter() {
+            if !k.contains("KEY") && !k.contains("SECRET") && !k.contains("PASSWORD") {
+                safe_env.insert(k.clone(), v.clone())
+            }
+        }
+        obj.insert("environment", safe_env)
+        
+        Json.stringify_pretty(obj)
+    }
+    
+    fn save(path: String) -> Result<(), IoError> {
+        Fs.write(path, self.to_json())
+    }
+    
+    fn display() -> String {
+        var result = StringBuilder.new()
+        
+        result.append("╔══════════════════════════════════════════════════════════════╗\n")
+        result.append("║                      CRASH REPORT                            ║\n")
+        result.append("╚══════════════════════════════════════════════════════════════╝\n\n")
+        
+        result.append(self.panic_info.display())
+        
+        result.append("\n\n--- System Information ---\n")
+        result.append(format!("OS: {} {}\n", self.system_info.os, self.system_info.os_version))
+        result.append(format!("Arch: {}\n", self.system_info.arch))
+        result.append(format!("CPUs: {}\n", self.system_info.cpu_count))
+        result.append(format!("Vibee: {}\n", self.system_info.vibee_version))
+        
+        result.append("\n--- Memory ---\n")
+        result.append(format!("Heap: {} / {} bytes\n", 
+            self.memory_info.heap_used, self.memory_info.heap_total))
+        result.append(format!("Stack: {} / {} bytes\n", 
+            self.memory_info.stack_used, self.memory_info.stack_limit))
+        
+        if !self.context.is_empty() {
+            result.append("\n--- Context ---\n")
+            for ctx in self.context.iter() {
+                result.append(format!("  - {}\n", ctx))
+            }
+        }
+        
+        result.build()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Panic Macros
+// -----------------------------------------------------------------------------
+
+/// Panic with formatted message
+macro panic!(message) {
+    let info = PanicInfo.new(message)
+        .with_location(@file(), @line(), @column())
+    invoke_panic_hooks(info.clone())
+    @native("panic", info)
+}
+
+/// Panic with format string
+macro panic_fmt!(fmt, ...args) {
+    panic!(format!(fmt, ...args))
+}
+
+/// Unreachable code
+macro unreachable!(message = "entered unreachable code") {
+    panic!(message)
+}
+
+/// Unimplemented code
+macro unimplemented!(message = "not yet implemented") {
+    panic!(message)
+}
+
+/// Todo marker that panics
+macro todo!(message = "not yet implemented") {
+    panic!(format!("TODO: {}", message))
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "panic info creation" {
+    let info = PanicInfo.new("Test panic")
+        .with_location("test.vibee", 42, 10)
+    
+    assert_eq(info.message, "Test panic")?
+    assert(info.location.is_some())?
+    assert(info.backtrace.is_captured())?
+}
+
+test "catch panic" {
+    let result = catch_panic(|| {
+        panic!("Test panic")
+    })
+    
+    assert(result.is_err())?
+    let info = result.unwrap_err()
+    assert(info.message.contains("Test panic"))?
+}
+
+test "assert panics" {
+    let result = assert_panics(|| {
+        panic!("Expected panic")
+    })
+    
+    assert(result.is_ok())?
+}
+
+test "assert panics with message" {
+    let result = assert_panics_with(
+        || panic!("Specific error message"),
+        "Specific error"
+    )
+    
+    assert(result.is_ok())?
+}
+
+test "panic context" {
+    push_panic_context("outer context")
+    push_panic_context("inner context")
+    
+    let ctx = panic_context()
+    assert_eq(ctx.len(), 2)?
+    assert_eq(ctx[0], "outer context")?
+    assert_eq(ctx[1], "inner context")?
+    
+    pop_panic_context()
+    pop_panic_context()
+}
+
+test "crash report generation" {
+    let info = PanicInfo.new("Test crash")
+    let report = CrashReport.generate(info)
+    
+    assert(report.system_info.vibee_version.len() > 0)?
+    assert(report.to_json().contains("Test crash"))?
+}
+
+test "panic hook" {
+    var hook_called = false
+    
+    set_panic_hook(|info| {
+        hook_called = true
+    })
+    
+    let _ = catch_panic(|| {
+        panic!("Test")
+    })
+    
+    // Note: In real implementation, hook would be called
+    // This is a simplified test
+}

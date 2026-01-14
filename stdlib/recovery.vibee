@@ -1,0 +1,926 @@
+// =============================================================================
+// Vibee OS — Recovery Module
+// Error recovery, retry strategies, and fault tolerance
+// =============================================================================
+
+use error_chain.{ChainedError, ErrorKind}
+use panic_handler.{PanicInfo, catch_panic}
+use datetime.{Duration, Instant}
+use logger.{Logger, Level}
+
+// -----------------------------------------------------------------------------
+// Recovery Result
+// -----------------------------------------------------------------------------
+
+/// Result of a recovery attempt
+enum RecoveryResult<T> {
+    /// Successfully recovered with value
+    Recovered(T)
+    /// Recovery failed, original error
+    Failed(ChainedError)
+    /// Partial recovery with degraded result
+    Degraded(T, ChainedError)
+    /// Recovery skipped (not applicable)
+    Skipped
+}
+
+impl<T> RecoveryResult<T> {
+    fn is_recovered() -> Bool {
+        match self {
+            Recovered(_) | Degraded(_, _) => true
+            _ => false
+        }
+    }
+    
+    fn is_failed() -> Bool {
+        match self {
+            Failed(_) => true
+            _ => false
+        }
+    }
+    
+    fn value() -> Option<T> {
+        match self {
+            Recovered(v) | Degraded(v, _) => Some(v)
+            _ => None
+        }
+    }
+    
+    fn error() -> Option<ChainedError> {
+        match self {
+            Failed(e) | Degraded(_, e) => Some(e)
+            _ => None
+        }
+    }
+    
+    fn into_result() -> Result<T, ChainedError> {
+        match self {
+            Recovered(v) => Ok(v)
+            Degraded(v, _) => Ok(v)
+            Failed(e) => Err(e)
+            Skipped => Err(ChainedError.new("Recovery skipped"))
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Recovery Strategy
+// -----------------------------------------------------------------------------
+
+/// Strategy for recovering from errors
+trait RecoveryStrategy<T, E> {
+    /// Attempt to recover from error
+    fn recover(error: E) -> RecoveryResult<T>
+    
+    /// Check if this strategy applies to the error
+    fn applies_to(error: E) -> Bool { true }
+    
+    /// Get strategy name
+    fn name() -> String { "unnamed" }
+}
+
+/// Default value recovery
+struct DefaultRecovery<T: Default> {}
+
+impl<T: Default, E> RecoveryStrategy<T, E> for DefaultRecovery<T> {
+    fn recover(error: E) -> RecoveryResult<T> {
+        RecoveryResult.Recovered(T.default())
+    }
+    
+    fn name() -> String { "default_value" }
+}
+
+/// Fallback value recovery
+struct FallbackRecovery<T> {
+    fallback: T
+}
+
+impl<T: Clone, E> RecoveryStrategy<T, E> for FallbackRecovery<T> {
+    fn recover(error: E) -> RecoveryResult<T> {
+        RecoveryResult.Recovered(self.fallback.clone())
+    }
+    
+    fn name() -> String { "fallback_value" }
+}
+
+/// Function-based recovery
+struct FnRecovery<T, E> {
+    recover_fn: fn(E) -> Option<T>
+}
+
+impl<T, E> RecoveryStrategy<T, E> for FnRecovery<T, E> {
+    fn recover(error: E) -> RecoveryResult<T> {
+        match (self.recover_fn)(error) {
+            Some(v) => RecoveryResult.Recovered(v)
+            None => RecoveryResult.Failed(ChainedError.new("Recovery function returned None"))
+        }
+    }
+    
+    fn name() -> String { "function" }
+}
+
+// -----------------------------------------------------------------------------
+// Retry Configuration
+// -----------------------------------------------------------------------------
+
+/// Retry configuration
+struct RetryConfig {
+    /// Maximum number of attempts
+    max_attempts: Int
+    /// Initial delay between retries
+    initial_delay: Duration
+    /// Maximum delay between retries
+    max_delay: Duration
+    /// Backoff multiplier
+    backoff_multiplier: Float
+    /// Add jitter to delays
+    jitter: Bool
+    /// Jitter factor (0.0 - 1.0)
+    jitter_factor: Float
+    /// Timeout for entire retry operation
+    timeout: Option<Duration>
+    /// Error filter - only retry matching errors
+    retry_on: Option<fn(ChainedError) -> Bool>
+}
+
+impl RetryConfig {
+    fn new() -> Self {
+        RetryConfig {
+            max_attempts: 3,
+            initial_delay: Duration.millis(100),
+            max_delay: Duration.seconds(30),
+            backoff_multiplier: 2.0,
+            jitter: true,
+            jitter_factor: 0.1,
+            timeout: None,
+            retry_on: None
+        }
+    }
+    
+    fn with_max_attempts(n: Int) -> Self {
+        self.max_attempts = n
+        self
+    }
+    
+    fn with_initial_delay(d: Duration) -> Self {
+        self.initial_delay = d
+        self
+    }
+    
+    fn with_max_delay(d: Duration) -> Self {
+        self.max_delay = d
+        self
+    }
+    
+    fn with_backoff(multiplier: Float) -> Self {
+        self.backoff_multiplier = multiplier
+        self
+    }
+    
+    fn with_jitter(enabled: Bool) -> Self {
+        self.jitter = enabled
+        self
+    }
+    
+    fn with_timeout(d: Duration) -> Self {
+        self.timeout = Some(d)
+        self
+    }
+    
+    fn retry_on(pred: fn(ChainedError) -> Bool) -> Self {
+        self.retry_on = Some(pred)
+        self
+    }
+    
+    /// Only retry on retryable errors
+    fn retry_on_retryable() -> Self {
+        self.retry_on(|e| e.is_retryable())
+    }
+    
+    /// Calculate delay for attempt
+    fn delay_for_attempt(attempt: Int) -> Duration {
+        var delay = self.initial_delay.as_millis() as Float
+        
+        for _ in 1..attempt {
+            delay *= self.backoff_multiplier
+        }
+        
+        delay = delay.min(self.max_delay.as_millis() as Float)
+        
+        if self.jitter {
+            let jitter_range = delay * self.jitter_factor
+            let jitter = Random.float_range(-jitter_range, jitter_range)
+            delay = (delay + jitter).max(0.0)
+        }
+        
+        Duration.millis(delay as Int)
+    }
+    
+    /// Check if error should be retried
+    fn should_retry(error: ChainedError) -> Bool {
+        match self.retry_on.as_ref() {
+            Some(pred) => pred(error)
+            None => true
+        }
+    }
+}
+
+/// Preset retry configurations
+impl RetryConfig {
+    /// Aggressive retry for critical operations
+    fn aggressive() -> Self {
+        RetryConfig.new()
+            .with_max_attempts(10)
+            .with_initial_delay(Duration.millis(50))
+            .with_backoff(1.5)
+    }
+    
+    /// Conservative retry for non-critical operations
+    fn conservative() -> Self {
+        RetryConfig.new()
+            .with_max_attempts(3)
+            .with_initial_delay(Duration.seconds(1))
+            .with_backoff(2.0)
+    }
+    
+    /// Exponential backoff for rate-limited APIs
+    fn exponential() -> Self {
+        RetryConfig.new()
+            .with_max_attempts(5)
+            .with_initial_delay(Duration.seconds(1))
+            .with_max_delay(Duration.minutes(5))
+            .with_backoff(2.0)
+    }
+    
+    /// Fixed delay retry
+    fn fixed(delay: Duration, attempts: Int) -> Self {
+        RetryConfig.new()
+            .with_max_attempts(attempts)
+            .with_initial_delay(delay)
+            .with_backoff(1.0)
+            .with_jitter(false)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Retry Executor
+// -----------------------------------------------------------------------------
+
+/// Execute operation with retry
+struct Retry<T> {
+    config: RetryConfig
+    operation: fn() -> Result<T, ChainedError>
+    on_retry: Option<fn(Int, ChainedError, Duration)>
+    on_success: Option<fn(T, Int)>
+    on_failure: Option<fn(ChainedError, Int)>
+}
+
+impl<T> Retry<T> {
+    fn new(operation: fn() -> Result<T, ChainedError>) -> Self {
+        Retry {
+            config: RetryConfig.new(),
+            operation: operation,
+            on_retry: None,
+            on_success: None,
+            on_failure: None
+        }
+    }
+    
+    fn with_config(config: RetryConfig) -> Self {
+        self.config = config
+        self
+    }
+    
+    fn on_retry(callback: fn(Int, ChainedError, Duration)) -> Self {
+        self.on_retry = Some(callback)
+        self
+    }
+    
+    fn on_success(callback: fn(T, Int)) -> Self {
+        self.on_success = Some(callback)
+        self
+    }
+    
+    fn on_failure(callback: fn(ChainedError, Int)) -> Self {
+        self.on_failure = Some(callback)
+        self
+    }
+    
+    /// Execute with retry
+    fn execute() -> Result<T, ChainedError> {
+        let start = Instant.now()
+        var last_error: Option<ChainedError> = None
+        
+        for attempt in 1..=self.config.max_attempts {
+            // Check timeout
+            if let Some(timeout) = self.config.timeout {
+                if start.elapsed() > timeout {
+                    return Err(ChainedError.new("Retry timeout exceeded")
+                        .kind(ErrorKind.Timeout)
+                        .caused_by(last_error.unwrap_or(ChainedError.new("No attempts made"))))
+                }
+            }
+            
+            // Execute operation
+            match (self.operation)() {
+                Ok(value) => {
+                    if let Some(cb) = self.on_success.as_ref() {
+                        cb(value.clone(), attempt)
+                    }
+                    return Ok(value)
+                }
+                Err(error) => {
+                    last_error = Some(error.clone())
+                    
+                    // Check if we should retry
+                    if attempt >= self.config.max_attempts {
+                        break
+                    }
+                    
+                    if !self.config.should_retry(error.clone()) {
+                        break
+                    }
+                    
+                    // Calculate delay
+                    let delay = self.config.delay_for_attempt(attempt)
+                    
+                    // Notify retry callback
+                    if let Some(cb) = self.on_retry.as_ref() {
+                        cb(attempt, error, delay)
+                    }
+                    
+                    // Wait before retry
+                    Thread.sleep(delay)
+                }
+            }
+        }
+        
+        let error = last_error.unwrap_or(ChainedError.new("No attempts made"))
+        
+        if let Some(cb) = self.on_failure.as_ref() {
+            cb(error.clone(), self.config.max_attempts)
+        }
+        
+        Err(error)
+    }
+    
+    /// Execute async with retry
+    async fn execute_async() -> Result<T, ChainedError> 
+    where T: Send
+    {
+        let start = Instant.now()
+        var last_error: Option<ChainedError> = None
+        
+        for attempt in 1..=self.config.max_attempts {
+            if let Some(timeout) = self.config.timeout {
+                if start.elapsed() > timeout {
+                    return Err(ChainedError.new("Retry timeout exceeded")
+                        .kind(ErrorKind.Timeout))
+                }
+            }
+            
+            match (self.operation)() {
+                Ok(value) => return Ok(value)
+                Err(error) => {
+                    last_error = Some(error.clone())
+                    
+                    if attempt >= self.config.max_attempts {
+                        break
+                    }
+                    
+                    if !self.config.should_retry(error) {
+                        break
+                    }
+                    
+                    let delay = self.config.delay_for_attempt(attempt)
+                    Timer.sleep(delay).await
+                }
+            }
+        }
+        
+        Err(last_error.unwrap_or(ChainedError.new("No attempts made")))
+    }
+}
+
+/// Convenience function for retry
+fn retry<T>(operation: fn() -> Result<T, ChainedError>) -> Retry<T> {
+    Retry.new(operation)
+}
+
+/// Retry with config
+fn retry_with<T>(config: RetryConfig, operation: fn() -> Result<T, ChainedError>) -> Result<T, ChainedError> {
+    Retry.new(operation)
+        .with_config(config)
+        .execute()
+}
+
+// -----------------------------------------------------------------------------
+// Circuit Breaker
+// -----------------------------------------------------------------------------
+
+/// Circuit breaker states
+enum CircuitState {
+    /// Normal operation
+    Closed
+    /// Failing, rejecting requests
+    Open
+    /// Testing if service recovered
+    HalfOpen
+}
+
+/// Circuit breaker for fault tolerance
+actor CircuitBreaker {
+    name: String
+    state: CircuitState
+    failure_count: Int
+    success_count: Int
+    failure_threshold: Int
+    success_threshold: Int
+    timeout: Duration
+    last_failure: Option<Instant>
+    on_state_change: Option<fn(CircuitState, CircuitState)>
+    
+    fn new(name: String) -> Self {
+        CircuitBreaker {
+            name: name,
+            state: CircuitState.Closed,
+            failure_count: 0,
+            success_count: 0,
+            failure_threshold: 5,
+            success_threshold: 3,
+            timeout: Duration.seconds(30),
+            last_failure: None,
+            on_state_change: None
+        }
+    }
+    
+    fn with_failure_threshold(n: Int) -> Self {
+        self.failure_threshold = n
+        self
+    }
+    
+    fn with_success_threshold(n: Int) -> Self {
+        self.success_threshold = n
+        self
+    }
+    
+    fn with_timeout(d: Duration) -> Self {
+        self.timeout = d
+        self
+    }
+    
+    fn on_state_change(callback: fn(CircuitState, CircuitState)) -> Self {
+        self.on_state_change = Some(callback)
+        self
+    }
+    
+    /// Check if circuit allows request
+    fn allow_request() -> Bool {
+        match self.state {
+            Closed => true
+            Open => {
+                // Check if timeout has passed
+                if let Some(last) = self.last_failure {
+                    if last.elapsed() > self.timeout {
+                        self.transition_to(CircuitState.HalfOpen)
+                        return true
+                    }
+                }
+                false
+            }
+            HalfOpen => true
+        }
+    }
+    
+    /// Record successful call
+    on record_success() {
+        match self.state {
+            Closed => {
+                self.failure_count = 0
+            }
+            HalfOpen => {
+                self.success_count += 1
+                if self.success_count >= self.success_threshold {
+                    self.transition_to(CircuitState.Closed)
+                }
+            }
+            Open => {}
+        }
+    }
+    
+    /// Record failed call
+    on record_failure() {
+        self.last_failure = Some(Instant.now())
+        
+        match self.state {
+            Closed => {
+                self.failure_count += 1
+                if self.failure_count >= self.failure_threshold {
+                    self.transition_to(CircuitState.Open)
+                }
+            }
+            HalfOpen => {
+                self.transition_to(CircuitState.Open)
+            }
+            Open => {}
+        }
+    }
+    
+    fn transition_to(new_state: CircuitState) {
+        let old_state = self.state
+        self.state = new_state
+        self.failure_count = 0
+        self.success_count = 0
+        
+        if let Some(cb) = self.on_state_change.as_ref() {
+            cb(old_state, new_state)
+        }
+    }
+    
+    /// Execute with circuit breaker
+    fn execute<T>(operation: fn() -> Result<T, ChainedError>) -> Result<T, ChainedError> {
+        if !self.allow_request() {
+            return Err(ChainedError.new(format!("Circuit breaker '{}' is open", self.name))
+                .kind(ErrorKind.Cancelled))
+        }
+        
+        match operation() {
+            Ok(value) => {
+                self.record_success()
+                Ok(value)
+            }
+            Err(error) => {
+                self.record_failure()
+                Err(error)
+            }
+        }
+    }
+    
+    /// Get current state
+    fn state() -> CircuitState { self.state }
+    
+    /// Force reset
+    on reset() {
+        self.transition_to(CircuitState.Closed)
+    }
+    
+    /// Force open
+    on trip() {
+        self.transition_to(CircuitState.Open)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Fallback Chain
+// -----------------------------------------------------------------------------
+
+/// Chain of fallback operations
+struct FallbackChain<T> {
+    operations: [fn() -> Result<T, ChainedError>]
+    on_fallback: Option<fn(Int, ChainedError)>
+}
+
+impl<T> FallbackChain<T> {
+    fn new() -> Self {
+        FallbackChain {
+            operations: [],
+            on_fallback: None
+        }
+    }
+    
+    fn add(operation: fn() -> Result<T, ChainedError>) -> Self {
+        self.operations.push(operation)
+        self
+    }
+    
+    fn on_fallback(callback: fn(Int, ChainedError)) -> Self {
+        self.on_fallback = Some(callback)
+        self
+    }
+    
+    /// Execute chain until one succeeds
+    fn execute() -> Result<T, ChainedError> {
+        var errors = []
+        
+        for (i, op) in self.operations.enumerate() {
+            match op() {
+                Ok(value) => return Ok(value)
+                Err(error) => {
+                    errors.push(error.clone())
+                    
+                    if let Some(cb) = self.on_fallback.as_ref() {
+                        cb(i, error)
+                    }
+                }
+            }
+        }
+        
+        // All failed
+        var combined = ChainedError.new("All fallback operations failed")
+            .kind(ErrorKind.Internal)
+        
+        for (i, err) in errors.enumerate() {
+            combined = combined.with_context(format!("fallback_{}", i), err.message())
+        }
+        
+        Err(combined)
+    }
+}
+
+/// Create fallback chain
+fn fallback<T>() -> FallbackChain<T> {
+    FallbackChain.new()
+}
+
+// -----------------------------------------------------------------------------
+// Bulkhead Pattern
+// -----------------------------------------------------------------------------
+
+/// Bulkhead for resource isolation
+actor Bulkhead {
+    name: String
+    max_concurrent: Int
+    current: Int
+    queue: [Sender<()>]
+    max_queue: Int
+    timeout: Duration
+    
+    fn new(name: String, max_concurrent: Int) -> Self {
+        Bulkhead {
+            name: name,
+            max_concurrent: max_concurrent,
+            current: 0,
+            queue: [],
+            max_queue: 100,
+            timeout: Duration.seconds(30)
+        }
+    }
+    
+    fn with_max_queue(n: Int) -> Self {
+        self.max_queue = n
+        self
+    }
+    
+    fn with_timeout(d: Duration) -> Self {
+        self.timeout = d
+        self
+    }
+    
+    /// Acquire permit
+    async fn acquire() -> Result<BulkheadPermit, ChainedError> {
+        if self.current < self.max_concurrent {
+            self.current += 1
+            return Ok(BulkheadPermit { bulkhead: self })
+        }
+        
+        if self.queue.len() >= self.max_queue {
+            return Err(ChainedError.new(format!("Bulkhead '{}' queue full", self.name))
+                .kind(ErrorKind.Cancelled))
+        }
+        
+        // Wait in queue
+        let (tx, rx) = Channel.oneshot()
+        self.queue.push(tx)
+        
+        match Timeout.run(self.timeout, rx.recv()).await {
+            Ok(_) => {
+                self.current += 1
+                Ok(BulkheadPermit { bulkhead: self })
+            }
+            Err(_) => {
+                Err(ChainedError.new(format!("Bulkhead '{}' timeout", self.name))
+                    .kind(ErrorKind.Timeout))
+            }
+        }
+    }
+    
+    /// Release permit
+    on release() {
+        self.current -= 1
+        
+        if let Some(waiter) = self.queue.pop_front() {
+            let _ = waiter.send(())
+        }
+    }
+    
+    /// Execute with bulkhead
+    async fn execute<T>(operation: fn() -> Result<T, ChainedError>) -> Result<T, ChainedError> {
+        let permit = self.acquire().await?
+        let result = operation()
+        drop(permit)
+        result
+    }
+}
+
+struct BulkheadPermit {
+    bulkhead: Bulkhead
+}
+
+impl Drop for BulkheadPermit {
+    fn drop() {
+        self.bulkhead.release()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Recovery Actor
+// -----------------------------------------------------------------------------
+
+/// Actor that manages recovery for a service
+actor RecoveryManager {
+    name: String
+    circuit_breaker: CircuitBreaker
+    retry_config: RetryConfig
+    bulkhead: Option<Bulkhead>
+    fallback: Option<fn() -> Result<Any, ChainedError>>
+    logger: Option<Logger>
+    
+    fn new(name: String) -> Self {
+        RecoveryManager {
+            name: name,
+            circuit_breaker: CircuitBreaker.new(name.clone()),
+            retry_config: RetryConfig.new(),
+            bulkhead: None,
+            fallback: None,
+            logger: None
+        }
+    }
+    
+    fn with_circuit_breaker(cb: CircuitBreaker) -> Self {
+        self.circuit_breaker = cb
+        self
+    }
+    
+    fn with_retry(config: RetryConfig) -> Self {
+        self.retry_config = config
+        self
+    }
+    
+    fn with_bulkhead(bh: Bulkhead) -> Self {
+        self.bulkhead = Some(bh)
+        self
+    }
+    
+    fn with_fallback(f: fn() -> Result<Any, ChainedError>) -> Self {
+        self.fallback = Some(f)
+        self
+    }
+    
+    fn with_logger(logger: Logger) -> Self {
+        self.logger = Some(logger)
+        self
+    }
+    
+    /// Execute with full recovery stack
+    async fn execute<T>(operation: fn() -> Result<T, ChainedError>) -> Result<T, ChainedError> {
+        // Bulkhead check
+        if let Some(bh) = self.bulkhead.as_ref() {
+            let permit = bh.acquire().await?
+            defer { drop(permit) }
+        }
+        
+        // Circuit breaker check
+        if !self.circuit_breaker.allow_request() {
+            self.log(Level.Warn, "Circuit breaker open, trying fallback")
+            return self.try_fallback()
+        }
+        
+        // Retry with circuit breaker
+        let result = Retry.new(|| {
+            self.circuit_breaker.execute(operation)
+        })
+        .with_config(self.retry_config.clone())
+        .on_retry(|attempt, err, delay| {
+            self.log(Level.Warn, format!("Retry attempt {} after {:?}: {}", 
+                attempt, delay, err.message()))
+        })
+        .execute()
+        
+        match result {
+            Ok(value) => Ok(value)
+            Err(error) => {
+                self.log(Level.Error, format!("All retries failed: {}", error.message()))
+                self.try_fallback()
+            }
+        }
+    }
+    
+    fn try_fallback<T>() -> Result<T, ChainedError> {
+        match self.fallback.as_ref() {
+            Some(f) => {
+                self.log(Level.Info, "Executing fallback")
+                f().map(|v| v as T)
+            }
+            None => Err(ChainedError.new("No fallback available")
+                .kind(ErrorKind.Internal))
+        }
+    }
+    
+    fn log(level: Level, message: String) {
+        if let Some(logger) = self.logger.as_ref() {
+            logger.log(LogRecord.new(level, format!("[{}] {}", self.name, message)))
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Macros
+// -----------------------------------------------------------------------------
+
+/// Retry operation with default config
+macro retry!(operation) {
+    Retry.new(|| operation).execute()
+}
+
+/// Retry with custom attempts
+macro retry_n!(n, operation) {
+    Retry.new(|| operation)
+        .with_config(RetryConfig.new().with_max_attempts(n))
+        .execute()
+}
+
+/// Execute with fallback
+macro with_fallback!(operation, fallback) {
+    match operation {
+        Ok(v) => Ok(v)
+        Err(_) => fallback
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "retry config delay calculation" {
+    let config = RetryConfig.new()
+        .with_initial_delay(Duration.millis(100))
+        .with_backoff(2.0)
+        .with_jitter(false)
+    
+    assert_eq(config.delay_for_attempt(1).as_millis(), 100)?
+    assert_eq(config.delay_for_attempt(2).as_millis(), 200)?
+    assert_eq(config.delay_for_attempt(3).as_millis(), 400)?
+}
+
+test "retry success" {
+    var attempts = 0
+    
+    let result = Retry.new(|| {
+        attempts += 1
+        if attempts < 3 {
+            Err(ChainedError.new("Temporary failure"))
+        } else {
+            Ok(42)
+        }
+    })
+    .with_config(RetryConfig.new().with_initial_delay(Duration.millis(1)))
+    .execute()
+    
+    assert_eq(result, Ok(42))?
+    assert_eq(attempts, 3)?
+}
+
+test "retry exhausted" {
+    let result = Retry.new(|| {
+        Err(ChainedError.new("Always fails"))
+    })
+    .with_config(RetryConfig.new().with_max_attempts(3).with_initial_delay(Duration.millis(1)))
+    .execute()
+    
+    assert(result.is_err())?
+}
+
+test "circuit breaker" {
+    let cb = CircuitBreaker.new("test")
+        .with_failure_threshold(2)
+    
+    // Record failures
+    cb.record_failure()
+    assert_eq(cb.state(), CircuitState.Closed)?
+    
+    cb.record_failure()
+    assert_eq(cb.state(), CircuitState.Open)?
+    
+    // Should reject requests
+    assert(!cb.allow_request())?
+}
+
+test "fallback chain" {
+    let result = FallbackChain.new()
+        .add(|| Err(ChainedError.new("First fails")))
+        .add(|| Err(ChainedError.new("Second fails")))
+        .add(|| Ok(42))
+        .execute()
+    
+    assert_eq(result, Ok(42))?
+}
+
+test "recovery result" {
+    let recovered: RecoveryResult<Int> = RecoveryResult.Recovered(42)
+    assert(recovered.is_recovered())?
+    assert_eq(recovered.value(), Some(42))?
+    
+    let failed: RecoveryResult<Int> = RecoveryResult.Failed(ChainedError.new("error"))
+    assert(failed.is_failed())?
+    assert(failed.value().is_none())?
+}

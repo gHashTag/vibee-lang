@@ -1,0 +1,692 @@
+// =============================================================================
+// Vibee OS — Loader Module
+// Module Loading and Dynamic Library Support
+// =============================================================================
+
+use linker::{ObjectFile, Symbol, Section, SymbolKind, SymbolBinding}
+
+// =============================================================================
+// Module System
+// =============================================================================
+
+/// Module identifier
+struct ModuleId {
+    name: String
+    version: Version
+    hash: UInt64
+}
+
+struct Version {
+    major: Int
+    minor: Int
+    patch: Int
+}
+
+impl Version {
+    fn new(major: Int, minor: Int, patch: Int) -> Self {
+        Version { major: major, minor: minor, patch: patch }
+    }
+    
+    fn parse(s: String) -> Option<Self> {
+        let parts: [String] = s.split(".").collect()
+        if parts.len() >= 3 {
+            Some(Version {
+                major: parts[0].parse().ok()?,
+                minor: parts[1].parse().ok()?,
+                patch: parts[2].parse().ok()?
+            })
+        } else { None }
+    }
+    
+    fn to_string() -> String {
+        format!("{}.{}.{}", self.major, self.minor, self.patch)
+    }
+    
+    fn is_compatible(other: Version) -> Bool {
+        self.major == other.major && self.minor >= other.minor
+    }
+}
+
+/// Loaded module
+struct Module {
+    id: ModuleId
+    path: String
+    exports: Map<String, ExportedSymbol>
+    imports: [ImportedSymbol]
+    dependencies: [ModuleId]
+    state: ModuleState
+    base_address: Int
+    size: Int
+}
+
+enum ModuleState {
+    Unloaded
+    Loading
+    Loaded
+    Initialized
+    Failed(String)
+}
+
+struct ExportedSymbol {
+    name: String
+    address: Int
+    kind: SymbolKind
+}
+
+struct ImportedSymbol {
+    name: String
+    from_module: String
+    resolved: Option<Int>
+}
+
+// =============================================================================
+// Module Loader
+// =============================================================================
+
+/// Loader configuration
+struct LoaderConfig {
+    search_paths: [String]
+    preload: [String]
+    lazy_binding: Bool
+    allow_undefined: Bool
+    max_depth: Int
+}
+
+impl LoaderConfig {
+    fn default() -> Self {
+        LoaderConfig {
+            search_paths: ["/lib", "/usr/lib", "./lib"],
+            preload: [],
+            lazy_binding: true,
+            allow_undefined: false,
+            max_depth: 100
+        }
+    }
+}
+
+/// Loader error
+enum LoaderError {
+    ModuleNotFound(String)
+    LoadFailed(String)
+    SymbolNotFound(String)
+    CircularDependency(String)
+    VersionMismatch(String, Version, Version)
+    InitializationFailed(String)
+}
+
+/// Module loader
+struct Loader {
+    config: LoaderConfig
+    modules: Map<String, Module>
+    loading_stack: [String]
+    symbol_table: Map<String, Int>
+}
+
+impl Loader {
+    fn new(config: LoaderConfig) -> Self {
+        Loader {
+            config: config,
+            modules: Map.new(),
+            loading_stack: [],
+            symbol_table: Map.new()
+        }
+    }
+    
+    fn with_defaults() -> Self {
+        Self.new(LoaderConfig.default())
+    }
+    
+    /// Load module by name
+    fn load(name: String) -> Result<Module, LoaderError> {
+        // Check if already loaded
+        if let Some(module) = self.modules.get(name) {
+            return Ok(module.clone())
+        }
+        
+        // Check for circular dependency
+        if self.loading_stack.contains(name) {
+            return Err(LoaderError.CircularDependency(name))
+        }
+        
+        // Find module file
+        let path = self.find_module(name.clone())?
+        
+        // Load module
+        self.loading_stack.push(name.clone())
+        let result = self.load_from_path(path)
+        self.loading_stack.pop()
+        
+        result
+    }
+    
+    /// Load module from file path
+    fn load_from_path(path: String) -> Result<Module, LoaderError> {
+        // Read and parse module file
+        let data = self.read_file(path.clone())?
+        let module_info = self.parse_module(data)?
+        
+        // Load dependencies first
+        for dep in module_info.dependencies.iter() {
+            self.load(dep.name.clone())?
+        }
+        
+        // Allocate memory for module
+        let base = self.allocate_memory(module_info.size)?
+        
+        // Load sections
+        self.load_sections(module_info.clone(), base)?
+        
+        // Resolve imports
+        self.resolve_imports(module_info.clone())?
+        
+        // Register exports
+        for (name, sym) in module_info.exports.iter() {
+            self.symbol_table.insert(name.clone(), sym.address + base)
+        }
+        
+        // Create module
+        var module = Module {
+            id: module_info.id,
+            path: path,
+            exports: module_info.exports,
+            imports: module_info.imports,
+            dependencies: module_info.dependencies,
+            state: ModuleState.Loaded,
+            base_address: base,
+            size: module_info.size
+        }
+        
+        // Initialize module
+        self.initialize_module(module.clone())?
+        module.state = ModuleState.Initialized
+        
+        self.modules.insert(module.id.name.clone(), module.clone())
+        Ok(module)
+    }
+    
+    /// Find module in search paths
+    fn find_module(name: String) -> Result<String, LoaderError> {
+        let extensions = [".vibee", ".vmod", ".so", ".dylib"]
+        
+        for path in self.config.search_paths.iter() {
+            for ext in extensions.iter() {
+                let full_path = format!("{}/{}{}", path, name, ext)
+                if self.file_exists(full_path.clone()) {
+                    return Ok(full_path)
+                }
+            }
+        }
+        
+        Err(LoaderError.ModuleNotFound(name))
+    }
+    
+    fn read_file(path: String) -> Result<[UInt8], LoaderError> {
+        // File reading implementation
+        Ok([])
+    }
+    
+    fn file_exists(path: String) -> Bool {
+        // File existence check
+        false
+    }
+    
+    fn parse_module(data: [UInt8]) -> Result<ModuleInfo, LoaderError> {
+        // Parse module format
+        Ok(ModuleInfo {
+            id: ModuleId { name: "".to_string(), version: Version.new(0, 0, 0), hash: 0 },
+            exports: Map.new(),
+            imports: [],
+            dependencies: [],
+            sections: [],
+            size: 0
+        })
+    }
+    
+    fn allocate_memory(size: Int) -> Result<Int, LoaderError> {
+        // Memory allocation for module
+        Ok(0x1000000)
+    }
+    
+    fn load_sections(info: ModuleInfo, base: Int) -> Result<(), LoaderError> {
+        // Load sections into memory
+        Ok(())
+    }
+    
+    fn resolve_imports(info: ModuleInfo) -> Result<(), LoaderError> {
+        for import in info.imports.iter() {
+            if let Some(addr) = self.symbol_table.get(import.name) {
+                // Symbol found
+            } else if !self.config.allow_undefined {
+                return Err(LoaderError.SymbolNotFound(import.name.clone()))
+            }
+        }
+        Ok(())
+    }
+    
+    fn initialize_module(module: Module) -> Result<(), LoaderError> {
+        // Call module init function if present
+        if let Some(init_addr) = module.exports.get("__vibee_init") {
+            // Call init function
+        }
+        Ok(())
+    }
+    
+    /// Unload module
+    fn unload(name: String) -> Result<(), LoaderError> {
+        let module = self.modules.remove(name.clone())
+            .ok_or(LoaderError.ModuleNotFound(name.clone()))?
+        
+        // Call cleanup function
+        if let Some(fini_addr) = module.exports.get("__vibee_fini") {
+            // Call fini function
+        }
+        
+        // Remove exports from symbol table
+        for (name, _) in module.exports.iter() {
+            self.symbol_table.remove(name)
+        }
+        
+        // Free memory
+        self.free_memory(module.base_address, module.size)
+        
+        Ok(())
+    }
+    
+    fn free_memory(base: Int, size: Int) {
+        // Free allocated memory
+    }
+    
+    /// Get symbol address
+    fn get_symbol(name: String) -> Option<Int> {
+        self.symbol_table.get(name).cloned()
+    }
+    
+    /// List loaded modules
+    fn list_modules() -> [ModuleId] {
+        self.modules.values().map(|m| m.id.clone()).collect()
+    }
+}
+
+struct ModuleInfo {
+    id: ModuleId
+    exports: Map<String, ExportedSymbol>
+    imports: [ImportedSymbol]
+    dependencies: [ModuleId]
+    sections: [SectionInfo]
+    size: Int
+}
+
+struct SectionInfo {
+    name: String
+    offset: Int
+    size: Int
+    flags: Int
+}
+
+// =============================================================================
+// Dynamic Library Loader
+// =============================================================================
+
+/// Dynamic library handle
+struct DynLib {
+    handle: Int
+    path: String
+    symbols: Map<String, Int>
+}
+
+impl DynLib {
+    /// Open dynamic library
+    fn open(path: String) -> Result<Self, LoaderError> {
+        // Platform-specific dlopen
+        Ok(DynLib {
+            handle: 0,
+            path: path,
+            symbols: Map.new()
+        })
+    }
+    
+    /// Get symbol from library
+    fn get_symbol(name: String) -> Option<Int> {
+        self.symbols.get(name).cloned()
+    }
+    
+    /// Close library
+    fn close() {
+        // Platform-specific dlclose
+    }
+}
+
+/// Dynamic library loader
+struct DynLoader {
+    libraries: Map<String, DynLib>
+    search_paths: [String]
+}
+
+impl DynLoader {
+    fn new() -> Self {
+        DynLoader {
+            libraries: Map.new(),
+            search_paths: ["/lib", "/usr/lib"]
+        }
+    }
+    
+    fn load(name: String) -> Result<DynLib, LoaderError> {
+        if let Some(lib) = self.libraries.get(name) {
+            return Ok(lib.clone())
+        }
+        
+        let path = self.find_library(name.clone())?
+        let lib = DynLib.open(path)?
+        self.libraries.insert(name, lib.clone())
+        Ok(lib)
+    }
+    
+    fn find_library(name: String) -> Result<String, LoaderError> {
+        let prefixes = ["lib", ""]
+        let suffixes = [".so", ".dylib", ".dll"]
+        
+        for path in self.search_paths.iter() {
+            for prefix in prefixes.iter() {
+                for suffix in suffixes.iter() {
+                    let full = format!("{}/{}{}{}", path, prefix, name, suffix)
+                    // Check if file exists
+                }
+            }
+        }
+        
+        Err(LoaderError.ModuleNotFound(name))
+    }
+    
+    fn unload(name: String) {
+        if let Some(lib) = self.libraries.remove(name) {
+            lib.close()
+        }
+    }
+}
+
+// =============================================================================
+// Module Cache
+// =============================================================================
+
+/// Compiled module cache
+struct ModuleCache {
+    cache_dir: String
+    entries: Map<String, CacheEntry>
+}
+
+struct CacheEntry {
+    module_name: String
+    source_hash: UInt64
+    compiled_path: String
+    timestamp: Int64
+}
+
+impl ModuleCache {
+    fn new(cache_dir: String) -> Self {
+        ModuleCache {
+            cache_dir: cache_dir,
+            entries: Map.new()
+        }
+    }
+    
+    fn get(name: String, source_hash: UInt64) -> Option<String> {
+        let entry = self.entries.get(name)?
+        if entry.source_hash == source_hash {
+            Some(entry.compiled_path.clone())
+        } else { None }
+    }
+    
+    fn put(name: String, source_hash: UInt64, compiled_path: String) {
+        self.entries.insert(name.clone(), CacheEntry {
+            module_name: name,
+            source_hash: source_hash,
+            compiled_path: compiled_path,
+            timestamp: 0
+        })
+    }
+    
+    fn invalidate(name: String) {
+        self.entries.remove(name)
+    }
+    
+    fn clear() {
+        self.entries.clear()
+    }
+}
+
+// =============================================================================
+// Module Resolution
+// =============================================================================
+
+/// Module resolver for import resolution
+struct ModuleResolver {
+    root_path: String
+    aliases: Map<String, String>
+    resolved: Map<String, String>
+}
+
+impl ModuleResolver {
+    fn new(root_path: String) -> Self {
+        ModuleResolver {
+            root_path: root_path,
+            aliases: Map.new(),
+            resolved: Map.new()
+        }
+    }
+    
+    fn add_alias(alias: String, path: String) {
+        self.aliases.insert(alias, path)
+    }
+    
+    fn resolve(import_path: String, from_module: String) -> Result<String, LoaderError> {
+        // Check cache
+        let cache_key = format!("{}:{}", from_module, import_path)
+        if let Some(resolved) = self.resolved.get(cache_key) {
+            return Ok(resolved.clone())
+        }
+        
+        // Check aliases
+        if let Some(aliased) = self.aliases.get(import_path) {
+            return Ok(aliased.clone())
+        }
+        
+        // Relative import
+        if import_path.starts_with("./") || import_path.starts_with("../") {
+            let base_dir = self.get_directory(from_module.clone())
+            let resolved = self.normalize_path(format!("{}/{}", base_dir, import_path))
+            self.resolved.insert(cache_key, resolved.clone())
+            return Ok(resolved)
+        }
+        
+        // Absolute import from root
+        let resolved = format!("{}/{}", self.root_path, import_path)
+        self.resolved.insert(cache_key, resolved.clone())
+        Ok(resolved)
+    }
+    
+    fn get_directory(path: String) -> String {
+        if let Some(idx) = path.rfind('/') {
+            path[..idx].to_string()
+        } else { ".".to_string() }
+    }
+    
+    fn normalize_path(path: String) -> String {
+        // Normalize path (resolve . and ..)
+        var parts: [String] = []
+        for part in path.split("/") {
+            match part.as_str() {
+                "." => {}
+                ".." => { parts.pop(); }
+                _ => parts.push(part.to_string())
+            }
+        }
+        parts.join("/")
+    }
+}
+
+// =============================================================================
+// Lazy Loading
+// =============================================================================
+
+/// Lazy module loader
+struct LazyLoader {
+    loader: Loader
+    pending: Map<String, LazyModule>
+}
+
+struct LazyModule {
+    name: String
+    path: String
+    loaded: Bool
+}
+
+impl LazyLoader {
+    fn new(loader: Loader) -> Self {
+        LazyLoader {
+            loader: loader,
+            pending: Map.new()
+        }
+    }
+    
+    fn register(name: String, path: String) {
+        self.pending.insert(name.clone(), LazyModule {
+            name: name,
+            path: path,
+            loaded: false
+        })
+    }
+    
+    fn get(name: String) -> Result<Module, LoaderError> {
+        // Check if already loaded
+        if let Some(module) = self.loader.modules.get(name) {
+            return Ok(module.clone())
+        }
+        
+        // Check pending
+        if let Some(lazy) = self.pending.get_mut(name) {
+            if !lazy.loaded {
+                let module = self.loader.load_from_path(lazy.path.clone())?
+                lazy.loaded = true
+                return Ok(module)
+            }
+        }
+        
+        Err(LoaderError.ModuleNotFound(name))
+    }
+}
+
+// =============================================================================
+// Hot Reload Support
+// =============================================================================
+
+/// Hot reload manager
+struct HotReloader {
+    loader: Loader
+    watchers: Map<String, FileWatcher>
+    callbacks: Map<String, fn(Module)>
+}
+
+struct FileWatcher {
+    path: String
+    last_modified: Int64
+}
+
+impl HotReloader {
+    fn new(loader: Loader) -> Self {
+        HotReloader {
+            loader: loader,
+            watchers: Map.new(),
+            callbacks: Map.new()
+        }
+    }
+    
+    fn watch(module_name: String, callback: fn(Module)) {
+        if let Some(module) = self.loader.modules.get(module_name) {
+            self.watchers.insert(module_name.clone(), FileWatcher {
+                path: module.path.clone(),
+                last_modified: 0
+            })
+            self.callbacks.insert(module_name, callback)
+        }
+    }
+    
+    fn check_updates() {
+        for (name, watcher) in self.watchers.iter_mut() {
+            let current_mtime = self.get_mtime(watcher.path.clone())
+            if current_mtime > watcher.last_modified {
+                watcher.last_modified = current_mtime
+                self.reload(name.clone())
+            }
+        }
+    }
+    
+    fn reload(name: String) {
+        // Unload old module
+        let _ = self.loader.unload(name.clone())
+        
+        // Load new version
+        if let Ok(module) = self.loader.load(name.clone()) {
+            if let Some(callback) = self.callbacks.get(name) {
+                callback(module)
+            }
+        }
+    }
+    
+    fn get_mtime(path: String) -> Int64 {
+        // Get file modification time
+        0
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "version parsing" {
+    let v = Version.parse("1.2.3")?
+    assert_eq(v.major, 1)?
+    assert_eq(v.minor, 2)?
+    assert_eq(v.patch, 3)?
+}
+
+test "version compatibility" {
+    let v1 = Version.new(1, 2, 0)
+    let v2 = Version.new(1, 3, 0)
+    let v3 = Version.new(2, 0, 0)
+    
+    assert(v2.is_compatible(v1))?
+    assert(!v3.is_compatible(v1))?
+}
+
+test "module resolver" {
+    var resolver = ModuleResolver.new("/project")
+    resolver.add_alias("std", "/stdlib")
+    
+    let resolved = resolver.resolve("std", "/project/main.vibee")?
+    assert_eq(resolved, "/stdlib")?
+}
+
+test "path normalization" {
+    let resolver = ModuleResolver.new("/project")
+    
+    let normalized = resolver.normalize_path("/a/b/../c/./d")
+    assert_eq(normalized, "/a/c/d")?
+}
+
+test "module cache" {
+    var cache = ModuleCache.new("/tmp/cache")
+    
+    cache.put("mymodule", 12345, "/tmp/cache/mymodule.vmod")
+    
+    let path = cache.get("mymodule", 12345)
+    assert_eq(path, Some("/tmp/cache/mymodule.vmod"))?
+    
+    let invalid = cache.get("mymodule", 99999)
+    assert_eq(invalid, None)?
+}
+
+test "loader config" {
+    let config = LoaderConfig.default()
+    assert(config.search_paths.len() > 0)?
+    assert(config.lazy_binding)?
+}

@@ -1,0 +1,934 @@
+// =============================================================================
+// Vibee OS — Cart Module
+// Shopping cart management with items, totals, and promotions
+// =============================================================================
+
+use money::{Money, usd}
+use currency::{Currency}
+use datetime::{DateTime, Duration}
+use uuid::{UUID}
+use product::{Product, ProductVariant, InventoryInfo}
+use discount::{Discount, DiscountType}
+
+// =============================================================================
+// Cart Types
+// =============================================================================
+
+/// Cart status
+enum CartStatus {
+    Active
+    Abandoned
+    Converted
+    Merged
+    Expired
+}
+
+impl CartStatus {
+    fn is_modifiable() -> Bool {
+        match self {
+            CartStatus.Active => true
+            _ => false
+        }
+    }
+    
+    fn display_name() -> String {
+        match self {
+            CartStatus.Active => "Active"
+            CartStatus.Abandoned => "Abandoned"
+            CartStatus.Converted => "Converted to Order"
+            CartStatus.Merged => "Merged"
+            CartStatus.Expired => "Expired"
+        }
+    }
+}
+
+// =============================================================================
+// Cart Item
+// =============================================================================
+
+/// Item in shopping cart
+struct CartItem {
+    id: String
+    product_id: String
+    variant_id: Option<String>
+    sku: String
+    name: String
+    quantity: Int
+    unit_price: Money
+    original_price: Money
+    discount_amount: Money
+    tax_amount: Money
+    attributes: Map<String, String>
+    image_url: Option<String>
+    weight: Option<Decimal>
+    requires_shipping: Bool
+    metadata: Map<String, String>
+    added_at: DateTime
+    updated_at: DateTime
+}
+
+impl CartItem {
+    /// Create cart item from product
+    fn from_product(product: Product, quantity: Int) -> Self {
+        let now = DateTime.now()
+        CartItem {
+            id: UUID.v4().to_string(),
+            product_id: product.id.clone(),
+            variant_id: None,
+            sku: product.sku.clone(),
+            name: product.name.clone(),
+            quantity: quantity,
+            unit_price: product.price,
+            original_price: product.compare_at_price.unwrap_or(product.price),
+            discount_amount: Money.zero(product.currency),
+            tax_amount: Money.zero(product.currency),
+            attributes: Map.empty(),
+            image_url: product.primary_image().map(|img| img.url),
+            weight: product.weight,
+            requires_shipping: product.product_type.requires_shipping(),
+            metadata: Map.empty(),
+            added_at: now,
+            updated_at: now
+        }
+    }
+    
+    /// Create cart item from variant
+    fn from_variant(product: Product, variant: ProductVariant, quantity: Int) -> Self {
+        var item = Self.from_product(product, quantity)
+        item.variant_id = Some(variant.id.clone())
+        item.sku = variant.sku.clone()
+        item.name = "\(product.name) - \(variant.name)"
+        item.unit_price = variant.price
+        item.original_price = variant.compare_at_price.unwrap_or(variant.price)
+        item.attributes = variant.options.clone()
+        item.weight = variant.weight.or(product.weight)
+        item
+    }
+    
+    /// Get line total (before tax)
+    fn subtotal() -> Money {
+        self.unit_price.mul_int(self.quantity) - self.discount_amount
+    }
+    
+    /// Get line total (with tax)
+    fn total() -> Money {
+        self.subtotal() + self.tax_amount
+    }
+    
+    /// Get savings amount
+    fn savings() -> Money {
+        let original_total = self.original_price.mul_int(self.quantity)
+        let current_total = self.unit_price.mul_int(self.quantity)
+        if original_total > current_total {
+            original_total - current_total + self.discount_amount
+        } else {
+            self.discount_amount
+        }
+    }
+    
+    /// Check if item has discount
+    fn has_discount() -> Bool {
+        !self.discount_amount.is_zero() || self.original_price > self.unit_price
+    }
+    
+    /// Update quantity
+    fn set_quantity(qty: Int) -> Self {
+        self.quantity = qty.max(1)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    /// Increment quantity
+    fn increment(amount: Int) -> Self {
+        self.quantity += amount
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    /// Apply discount
+    fn apply_discount(amount: Money) -> Self {
+        self.discount_amount = amount
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    /// Set tax
+    fn set_tax(amount: Money) -> Self {
+        self.tax_amount = amount
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    /// Get total weight
+    fn total_weight() -> Option<Decimal> {
+        self.weight.map(|w| w * Decimal.from_int(self.quantity))
+    }
+}
+
+impl Eq for CartItem {
+    fn eq(other: CartItem) -> Bool {
+        self.product_id == other.product_id && self.variant_id == other.variant_id
+    }
+}
+
+// =============================================================================
+// Shopping Cart
+// =============================================================================
+
+/// Shopping cart
+struct Cart {
+    id: String
+    user_id: Option<String>
+    session_id: String
+    status: CartStatus
+    items: [CartItem]
+    currency: Currency
+    coupon_codes: [String]
+    discounts: [AppliedDiscount]
+    shipping_address: Option<Address>
+    billing_address: Option<Address>
+    shipping_method: Option<ShippingMethod>
+    notes: Option<String>
+    metadata: Map<String, String>
+    created_at: DateTime
+    updated_at: DateTime
+    expires_at: Option<DateTime>
+}
+
+impl Cart {
+    /// Create new cart
+    fn new(session_id: String) -> Self {
+        let now = DateTime.now()
+        Cart {
+            id: UUID.v4().to_string(),
+            user_id: None,
+            session_id: session_id,
+            status: CartStatus.Active,
+            items: [],
+            currency: Currency.USD,
+            coupon_codes: [],
+            discounts: [],
+            shipping_address: None,
+            billing_address: None,
+            shipping_method: None,
+            notes: None,
+            metadata: Map.empty(),
+            created_at: now,
+            updated_at: now,
+            expires_at: Some(now + Duration.days(30))
+        }
+    }
+    
+    /// Create cart for user
+    fn for_user(user_id: String) -> Self {
+        var cart = Self.new(UUID.v4().to_string())
+        cart.user_id = Some(user_id)
+        cart
+    }
+    
+    /// Add item to cart
+    fn add_item(item: CartItem) -> Result<Self, CartError> {
+        if !self.status.is_modifiable() {
+            return Err(CartError.CartNotModifiable)
+        }
+        
+        // Check if item already exists
+        if let Some(idx) = self.items.iter().position(|i| i == item) {
+            self.items[idx] = self.items[idx].increment(item.quantity)
+        } else {
+            self.items.push(item)
+        }
+        
+        self.updated_at = DateTime.now()
+        Ok(self)
+    }
+    
+    /// Add product to cart
+    fn add_product(product: Product, quantity: Int) -> Result<Self, CartError> {
+        let item = CartItem.from_product(product, quantity)
+        self.add_item(item)
+    }
+    
+    /// Add variant to cart
+    fn add_variant(product: Product, variant: ProductVariant, quantity: Int) -> Result<Self, CartError> {
+        let item = CartItem.from_variant(product, variant, quantity)
+        self.add_item(item)
+    }
+    
+    /// Update item quantity
+    fn update_quantity(item_id: String, quantity: Int) -> Result<Self, CartError> {
+        if !self.status.is_modifiable() {
+            return Err(CartError.CartNotModifiable)
+        }
+        
+        if quantity <= 0 {
+            return self.remove_item(item_id)
+        }
+        
+        if let Some(idx) = self.items.iter().position(|i| i.id == item_id) {
+            self.items[idx] = self.items[idx].set_quantity(quantity)
+            self.updated_at = DateTime.now()
+            Ok(self)
+        } else {
+            Err(CartError.ItemNotFound)
+        }
+    }
+    
+    /// Remove item from cart
+    fn remove_item(item_id: String) -> Result<Self, CartError> {
+        if !self.status.is_modifiable() {
+            return Err(CartError.CartNotModifiable)
+        }
+        
+        let initial_len = self.items.len()
+        self.items.retain(|i| i.id != item_id)
+        
+        if self.items.len() == initial_len {
+            return Err(CartError.ItemNotFound)
+        }
+        
+        self.updated_at = DateTime.now()
+        Ok(self)
+    }
+    
+    /// Clear all items
+    fn clear() -> Self {
+        self.items.clear()
+        self.coupon_codes.clear()
+        self.discounts.clear()
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    /// Apply coupon code
+    fn apply_coupon(code: String, discount: Discount) -> Result<Self, CartError> {
+        if !self.status.is_modifiable() {
+            return Err(CartError.CartNotModifiable)
+        }
+        
+        if self.coupon_codes.contains(code) {
+            return Err(CartError.CouponAlreadyApplied)
+        }
+        
+        // Validate discount
+        if !discount.is_valid() {
+            return Err(CartError.InvalidCoupon)
+        }
+        
+        if let Some(min) = discount.minimum_order {
+            if self.subtotal() < min {
+                return Err(CartError.MinimumNotMet)
+            }
+        }
+        
+        self.coupon_codes.push(code.clone())
+        
+        let applied = AppliedDiscount {
+            code: code,
+            discount_type: discount.discount_type,
+            amount: self.calculate_discount_amount(discount),
+            description: discount.description.clone()
+        }
+        self.discounts.push(applied)
+        
+        self.updated_at = DateTime.now()
+        Ok(self)
+    }
+    
+    /// Remove coupon
+    fn remove_coupon(code: String) -> Self {
+        self.coupon_codes.retain(|c| c != code)
+        self.discounts.retain(|d| d.code != code)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    /// Calculate discount amount
+    fn calculate_discount_amount(discount: Discount) -> Money {
+        match discount.discount_type {
+            DiscountType.Percentage(pct) => {
+                self.subtotal().percent(pct)
+            }
+            DiscountType.FixedAmount(amount) => {
+                amount.min(self.subtotal())
+            }
+            DiscountType.FreeShipping => {
+                self.shipping_cost()
+            }
+            DiscountType.BuyXGetY(x, y, pct) => {
+                // Simplified: apply percentage to cheapest items
+                Money.zero(self.currency)
+            }
+        }
+    }
+    
+    /// Set shipping address
+    fn set_shipping_address(address: Address) -> Self {
+        self.shipping_address = Some(address)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    /// Set billing address
+    fn set_billing_address(address: Address) -> Self {
+        self.billing_address = Some(address)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    /// Set shipping method
+    fn set_shipping_method(method: ShippingMethod) -> Self {
+        self.shipping_method = Some(method)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    /// Check if cart is empty
+    fn is_empty() -> Bool {
+        self.items.is_empty()
+    }
+    
+    /// Get item count
+    fn item_count() -> Int {
+        self.items.len()
+    }
+    
+    /// Get total quantity
+    fn total_quantity() -> Int {
+        self.items.iter().map(|i| i.quantity).sum()
+    }
+    
+    /// Get subtotal (before discounts and tax)
+    fn subtotal() -> Money {
+        self.items.iter()
+            .map(|i| i.unit_price.mul_int(i.quantity))
+            .fold(Money.zero(self.currency), |acc, m| acc + m)
+    }
+    
+    /// Get total discount amount
+    fn discount_total() -> Money {
+        let item_discounts = self.items.iter()
+            .map(|i| i.discount_amount)
+            .fold(Money.zero(self.currency), |acc, m| acc + m)
+        
+        let cart_discounts = self.discounts.iter()
+            .map(|d| d.amount)
+            .fold(Money.zero(self.currency), |acc, m| acc + m)
+        
+        item_discounts + cart_discounts
+    }
+    
+    /// Get tax total
+    fn tax_total() -> Money {
+        self.items.iter()
+            .map(|i| i.tax_amount)
+            .fold(Money.zero(self.currency), |acc, m| acc + m)
+    }
+    
+    /// Get shipping cost
+    fn shipping_cost() -> Money {
+        self.shipping_method
+            .map(|m| m.price)
+            .unwrap_or(Money.zero(self.currency))
+    }
+    
+    /// Get grand total
+    fn total() -> Money {
+        self.subtotal() - self.discount_total() + self.tax_total() + self.shipping_cost()
+    }
+    
+    /// Get total savings
+    fn total_savings() -> Money {
+        let item_savings = self.items.iter()
+            .map(|i| i.savings())
+            .fold(Money.zero(self.currency), |acc, m| acc + m)
+        
+        item_savings + self.discount_total()
+    }
+    
+    /// Get total weight
+    fn total_weight() -> Decimal {
+        self.items.iter()
+            .filter_map(|i| i.total_weight())
+            .fold(Decimal.zero(), |acc, w| acc + w)
+    }
+    
+    /// Check if cart requires shipping
+    fn requires_shipping() -> Bool {
+        self.items.iter().any(|i| i.requires_shipping)
+    }
+    
+    /// Get cart summary
+    fn summary() -> CartSummary {
+        CartSummary {
+            item_count: self.item_count(),
+            total_quantity: self.total_quantity(),
+            subtotal: self.subtotal(),
+            discount: self.discount_total(),
+            tax: self.tax_total(),
+            shipping: self.shipping_cost(),
+            total: self.total(),
+            savings: self.total_savings(),
+            currency: self.currency
+        }
+    }
+    
+    /// Mark as abandoned
+    fn abandon() -> Self {
+        self.status = CartStatus.Abandoned
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    /// Mark as converted (to order)
+    fn convert() -> Self {
+        self.status = CartStatus.Converted
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    /// Check if expired
+    fn is_expired() -> Bool {
+        if let Some(expires) = self.expires_at {
+            DateTime.now() > expires
+        } else {
+            false
+        }
+    }
+    
+    /// Merge another cart into this one
+    fn merge(other: Cart) -> Self {
+        for item in other.items {
+            self.add_item(item).ok()
+        }
+        self.updated_at = DateTime.now()
+        self
+    }
+}
+
+// =============================================================================
+// Supporting Types
+// =============================================================================
+
+/// Applied discount
+struct AppliedDiscount {
+    code: String
+    discount_type: DiscountType
+    amount: Money
+    description: Option<String>
+}
+
+/// Cart summary
+struct CartSummary {
+    item_count: Int
+    total_quantity: Int
+    subtotal: Money
+    discount: Money
+    tax: Money
+    shipping: Money
+    total: Money
+    savings: Money
+    currency: Currency
+}
+
+impl CartSummary {
+    fn to_string() -> String {
+        var lines = []
+        lines.push("Subtotal: \(self.subtotal.format())")
+        if !self.discount.is_zero() {
+            lines.push("Discount: -\(self.discount.format())")
+        }
+        if !self.tax.is_zero() {
+            lines.push("Tax: \(self.tax.format())")
+        }
+        if !self.shipping.is_zero() {
+            lines.push("Shipping: \(self.shipping.format())")
+        }
+        lines.push("Total: \(self.total.format())")
+        lines.join("\n")
+    }
+}
+
+/// Shipping address
+struct Address {
+    first_name: String
+    last_name: String
+    company: Option<String>
+    address1: String
+    address2: Option<String>
+    city: String
+    state: String
+    postal_code: String
+    country: String
+    phone: Option<String>
+}
+
+impl Address {
+    fn new(first_name: String, last_name: String, address1: String, city: String, state: String, postal_code: String, country: String) -> Self {
+        Address {
+            first_name: first_name,
+            last_name: last_name,
+            company: None,
+            address1: address1,
+            address2: None,
+            city: city,
+            state: state,
+            postal_code: postal_code,
+            country: country,
+            phone: None
+        }
+    }
+    
+    fn full_name() -> String {
+        "\(self.first_name) \(self.last_name)"
+    }
+    
+    fn format() -> String {
+        var lines = [self.full_name()]
+        if let Some(company) = self.company {
+            lines.push(company)
+        }
+        lines.push(self.address1)
+        if let Some(addr2) = self.address2 {
+            lines.push(addr2)
+        }
+        lines.push("\(self.city), \(self.state) \(self.postal_code)")
+        lines.push(self.country)
+        lines.join("\n")
+    }
+}
+
+/// Shipping method
+struct ShippingMethod {
+    id: String
+    name: String
+    description: Option<String>
+    price: Money
+    estimated_days: Option<(Int, Int)>
+    carrier: Option<String>
+}
+
+impl ShippingMethod {
+    fn new(id: String, name: String, price: Money) -> Self {
+        ShippingMethod {
+            id: id,
+            name: name,
+            description: None,
+            price: price,
+            estimated_days: None,
+            carrier: None
+        }
+    }
+    
+    fn delivery_estimate() -> Option<String> {
+        self.estimated_days.map(|(min, max)| {
+            if min == max {
+                "\(min) business days"
+            } else {
+                "\(min)-\(max) business days"
+            }
+        })
+    }
+}
+
+// =============================================================================
+// Cart Service (Actor)
+// =============================================================================
+
+/// Cart management service
+actor CartService {
+    state carts: Map<String, Cart>
+    state user_carts: Map<String, String>
+    state session_carts: Map<String, String>
+    
+    fn new() -> Self {
+        CartService {
+            carts: Map.empty(),
+            user_carts: Map.empty(),
+            session_carts: Map.empty()
+        }
+    }
+    
+    /// Create new cart
+    fn create(session_id: String) -> Cart {
+        let cart = Cart.new(session_id.clone())
+        self.carts.insert(cart.id.clone(), cart.clone())
+        self.session_carts.insert(session_id, cart.id.clone())
+        cart
+    }
+    
+    /// Create cart for user
+    fn create_for_user(user_id: String) -> Cart {
+        let cart = Cart.for_user(user_id.clone())
+        self.carts.insert(cart.id.clone(), cart.clone())
+        self.user_carts.insert(user_id, cart.id.clone())
+        cart
+    }
+    
+    /// Get cart by ID
+    fn get(id: String) -> Option<Cart> {
+        self.carts.get(id)
+    }
+    
+    /// Get cart by session
+    fn get_by_session(session_id: String) -> Option<Cart> {
+        self.session_carts.get(session_id)
+            .and_then(|id| self.carts.get(id))
+    }
+    
+    /// Get cart by user
+    fn get_by_user(user_id: String) -> Option<Cart> {
+        self.user_carts.get(user_id)
+            .and_then(|id| self.carts.get(id))
+    }
+    
+    /// Get or create cart for session
+    fn get_or_create(session_id: String) -> Cart {
+        self.get_by_session(session_id.clone())
+            .unwrap_or_else(|| self.create(session_id))
+    }
+    
+    /// Get or create cart for user
+    fn get_or_create_for_user(user_id: String) -> Cart {
+        self.get_by_user(user_id.clone())
+            .unwrap_or_else(|| self.create_for_user(user_id))
+    }
+    
+    /// Update cart
+    fn update(cart: Cart) -> Result<Cart, CartError> {
+        if !self.carts.contains_key(cart.id) {
+            return Err(CartError.CartNotFound)
+        }
+        self.carts.insert(cart.id.clone(), cart.clone())
+        Ok(cart)
+    }
+    
+    /// Delete cart
+    fn delete(id: String) -> Result<(), CartError> {
+        if let Some(cart) = self.carts.remove(id) {
+            if let Some(user_id) = cart.user_id {
+                self.user_carts.remove(user_id)
+            }
+            self.session_carts.remove(cart.session_id)
+            Ok(())
+        } else {
+            Err(CartError.CartNotFound)
+        }
+    }
+    
+    /// Merge session cart into user cart
+    fn merge_session_to_user(session_id: String, user_id: String) -> Result<Cart, CartError> {
+        let session_cart = self.get_by_session(session_id.clone());
+        var user_cart = self.get_or_create_for_user(user_id.clone());
+        
+        if let Some(sc) = session_cart {
+            user_cart = user_cart.merge(sc)
+            self.delete(sc.id).ok()
+        }
+        
+        self.update(user_cart)
+    }
+    
+    /// Get abandoned carts
+    fn get_abandoned(since: DateTime) -> [Cart] {
+        self.carts.values()
+            .filter(|c| c.status == CartStatus.Abandoned && c.updated_at > since)
+            .collect()
+    }
+    
+    /// Mark old carts as abandoned
+    fn mark_abandoned(threshold: Duration) {
+        let cutoff = DateTime.now() - threshold
+        for (id, cart) in self.carts.iter_mut() {
+            if cart.status == CartStatus.Active && cart.updated_at < cutoff {
+                cart.status = CartStatus.Abandoned
+            }
+        }
+    }
+    
+    /// Clean up expired carts
+    fn cleanup_expired() -> Int {
+        let expired: [String] = self.carts.iter()
+            .filter(|(_, c)| c.is_expired())
+            .map(|(id, _)| id.clone())
+            .collect()
+        
+        for id in expired.clone() {
+            self.delete(id).ok()
+        }
+        
+        expired.len()
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum CartError {
+    CartNotFound
+    CartNotModifiable
+    ItemNotFound
+    InvalidQuantity
+    CouponAlreadyApplied
+    InvalidCoupon
+    MinimumNotMet
+    StockUnavailable
+}
+
+impl Display for CartError {
+    fn fmt(f: Formatter) {
+        f.write(match self {
+            CartNotFound => "Cart not found"
+            CartNotModifiable => "Cart cannot be modified"
+            ItemNotFound => "Item not found in cart"
+            InvalidQuantity => "Invalid quantity"
+            CouponAlreadyApplied => "Coupon already applied"
+            InvalidCoupon => "Invalid or expired coupon"
+            MinimumNotMet => "Minimum order amount not met"
+            StockUnavailable => "Requested quantity not available"
+        })
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "create cart" {
+    let cart = Cart.new("session-123")
+    assert(cart.is_empty())?
+    assert_eq(cart.status, CartStatus.Active)?
+}
+
+test "add items to cart" {
+    var cart = Cart.new("session-123")
+    
+    let item1 = CartItem {
+        id: "item-1",
+        product_id: "prod-1",
+        variant_id: None,
+        sku: "SKU-001",
+        name: "Test Product",
+        quantity: 2,
+        unit_price: usd(29.99),
+        original_price: usd(29.99),
+        discount_amount: Money.zero(Currency.USD),
+        tax_amount: Money.zero(Currency.USD),
+        attributes: Map.empty(),
+        image_url: None,
+        weight: None,
+        requires_shipping: true,
+        metadata: Map.empty(),
+        added_at: DateTime.now(),
+        updated_at: DateTime.now()
+    }
+    
+    cart = cart.add_item(item1).unwrap()
+    
+    assert_eq(cart.item_count(), 1)?
+    assert_eq(cart.total_quantity(), 2)?
+    assert_eq(cart.subtotal().format(), "$59.98")?
+}
+
+test "cart summary" {
+    var cart = Cart.new("session-123")
+    cart.currency = Currency.USD
+    
+    let item = CartItem {
+        id: "item-1",
+        product_id: "prod-1",
+        variant_id: None,
+        sku: "SKU-001",
+        name: "Product",
+        quantity: 3,
+        unit_price: usd(100.00),
+        original_price: usd(120.00),
+        discount_amount: usd(10.00),
+        tax_amount: usd(18.00),
+        attributes: Map.empty(),
+        image_url: None,
+        weight: None,
+        requires_shipping: true,
+        metadata: Map.empty(),
+        added_at: DateTime.now(),
+        updated_at: DateTime.now()
+    }
+    
+    cart = cart.add_item(item).unwrap()
+    
+    let summary = cart.summary()
+    assert_eq(summary.subtotal.format(), "$300.00")?
+    assert_eq(summary.item_count, 1)?
+}
+
+test "update quantity" {
+    var cart = Cart.new("session-123")
+    
+    let item = CartItem {
+        id: "item-1",
+        product_id: "prod-1",
+        variant_id: None,
+        sku: "SKU-001",
+        name: "Product",
+        quantity: 1,
+        unit_price: usd(50.00),
+        original_price: usd(50.00),
+        discount_amount: Money.zero(Currency.USD),
+        tax_amount: Money.zero(Currency.USD),
+        attributes: Map.empty(),
+        image_url: None,
+        weight: None,
+        requires_shipping: true,
+        metadata: Map.empty(),
+        added_at: DateTime.now(),
+        updated_at: DateTime.now()
+    }
+    
+    cart = cart.add_item(item).unwrap()
+    cart = cart.update_quantity("item-1", 5).unwrap()
+    
+    assert_eq(cart.total_quantity(), 5)?
+    assert_eq(cart.subtotal().format(), "$250.00")?
+}
+
+test "remove item" {
+    var cart = Cart.new("session-123")
+    
+    let item = CartItem {
+        id: "item-1",
+        product_id: "prod-1",
+        variant_id: None,
+        sku: "SKU-001",
+        name: "Product",
+        quantity: 1,
+        unit_price: usd(50.00),
+        original_price: usd(50.00),
+        discount_amount: Money.zero(Currency.USD),
+        tax_amount: Money.zero(Currency.USD),
+        attributes: Map.empty(),
+        image_url: None,
+        weight: None,
+        requires_shipping: true,
+        metadata: Map.empty(),
+        added_at: DateTime.now(),
+        updated_at: DateTime.now()
+    }
+    
+    cart = cart.add_item(item).unwrap()
+    assert_eq(cart.item_count(), 1)?
+    
+    cart = cart.remove_item("item-1").unwrap()
+    assert(cart.is_empty())?
+}
+
+test "cart service" {
+    let service = CartService.new()
+    
+    let cart1 = service.create("session-1")
+    let cart2 = service.create_for_user("user-1")
+    
+    assert(service.get(cart1.id).is_some())?
+    assert(service.get_by_user("user-1").is_some())?
+    assert(service.get_by_session("session-1").is_some())?
+}

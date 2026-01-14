@@ -1,0 +1,917 @@
+// =============================================================================
+// Vibee OS — Post Module
+// Posts, articles, and content publishing
+// =============================================================================
+
+use result::{Result, Ok, Err}
+use datetime::{DateTime, Duration}
+
+// =============================================================================
+// Post Types
+// =============================================================================
+
+/// Post visibility
+enum PostVisibility {
+    Public,
+    Private,
+    Followers,
+    Friends,
+    Custom([String])
+}
+
+impl PostVisibility {
+    fn is_public() -> Bool {
+        match self {
+            PostVisibility.Public => true,
+            _ => false
+        }
+    }
+    
+    fn can_view(viewer_id: String, author_id: String, followers: [String]) -> Bool {
+        match self {
+            PostVisibility.Public => true,
+            PostVisibility.Private => viewer_id == author_id,
+            PostVisibility.Followers => followers.contains(viewer_id),
+            PostVisibility.Friends => followers.contains(viewer_id),
+            PostVisibility.Custom(allowed) => allowed.contains(viewer_id)
+        }
+    }
+}
+
+/// Post status
+enum PostStatus {
+    Draft,
+    Published,
+    Scheduled(DateTime),
+    Archived,
+    Deleted
+}
+
+impl PostStatus {
+    fn is_visible() -> Bool {
+        match self {
+            PostStatus.Published => true,
+            _ => false
+        }
+    }
+    
+    fn display_name() -> String {
+        match self {
+            PostStatus.Draft => "Draft",
+            PostStatus.Published => "Published",
+            PostStatus.Scheduled(_) => "Scheduled",
+            PostStatus.Archived => "Archived",
+            PostStatus.Deleted => "Deleted"
+        }
+    }
+}
+
+/// Post content type
+enum PostContentType {
+    Text,
+    Image,
+    Video,
+    Audio,
+    Link,
+    Poll,
+    Article,
+    Story,
+    Reel
+}
+
+// =============================================================================
+// Post Content
+// =============================================================================
+
+/// Post media attachment
+struct PostMedia {
+    id: String,
+    url: String,
+    media_type: String,
+    width: Option<Int>,
+    height: Option<Int>,
+    duration: Option<Int>,
+    thumbnail_url: Option<String>,
+    alt_text: Option<String>
+}
+
+impl PostMedia {
+    fn new(url: String, media_type: String) -> Self {
+        PostMedia {
+            id: generate_id(),
+            url: url,
+            media_type: media_type,
+            width: None,
+            height: None,
+            duration: None,
+            thumbnail_url: None,
+            alt_text: None
+        }
+    }
+    
+    fn image(url: String, width: Int, height: Int) -> Self {
+        PostMedia {
+            id: generate_id(),
+            url: url,
+            media_type: "image",
+            width: Some(width),
+            height: Some(height),
+            duration: None,
+            thumbnail_url: None,
+            alt_text: None
+        }
+    }
+    
+    fn video(url: String, thumbnail: String, duration: Int) -> Self {
+        PostMedia {
+            id: generate_id(),
+            url: url,
+            media_type: "video",
+            width: None,
+            height: None,
+            duration: Some(duration),
+            thumbnail_url: Some(thumbnail),
+            alt_text: None
+        }
+    }
+    
+    fn with_alt_text(alt: String) -> Self {
+        self.alt_text = Some(alt)
+        self
+    }
+    
+    fn is_image() -> Bool { self.media_type == "image" }
+    fn is_video() -> Bool { self.media_type == "video" }
+    fn is_audio() -> Bool { self.media_type == "audio" }
+}
+
+/// Poll option
+struct PollOption {
+    id: String,
+    text: String,
+    votes: Int64
+}
+
+impl PollOption {
+    fn new(text: String) -> Self {
+        PollOption {
+            id: generate_id(),
+            text: text,
+            votes: 0
+        }
+    }
+    
+    fn vote() { self.votes += 1 }
+    fn unvote() { if self.votes > 0 { self.votes -= 1 } }
+}
+
+/// Post poll
+struct PostPoll {
+    question: String,
+    options: [PollOption],
+    multiple_choice: Bool,
+    expires_at: Option<DateTime>,
+    total_votes: Int64,
+    voters: Set<String>
+}
+
+impl PostPoll {
+    fn new(question: String, options: [String]) -> Self {
+        PostPoll {
+            question: question,
+            options: options.map(|o| PollOption.new(o)).collect(),
+            multiple_choice: false,
+            expires_at: None,
+            total_votes: 0,
+            voters: Set.empty()
+        }
+    }
+    
+    fn with_expiry(duration: Duration) -> Self {
+        self.expires_at = Some(DateTime.now() + duration)
+        self
+    }
+    
+    fn allow_multiple() -> Self {
+        self.multiple_choice = true
+        self
+    }
+    
+    fn vote(user_id: String, option_index: Int) -> Result<(), PostError> {
+        if self.voters.contains(user_id) && !self.multiple_choice {
+            return Err(PostError.AlreadyVoted)
+        }
+        if option_index >= self.options.len() {
+            return Err(PostError.InvalidOption)
+        }
+        if let Some(expires) = self.expires_at {
+            if DateTime.now() > expires {
+                return Err(PostError.PollExpired)
+            }
+        }
+        
+        self.options[option_index].vote()
+        self.voters.insert(user_id)
+        self.total_votes += 1
+        Ok(())
+    }
+    
+    fn is_expired() -> Bool {
+        self.expires_at.map(|e| DateTime.now() > e).unwrap_or(false)
+    }
+    
+    fn results() -> [(String, Float)] {
+        if self.total_votes == 0 {
+            return self.options.map(|o| (o.text.clone(), 0.0)).collect()
+        }
+        self.options.map(|o| {
+            let percentage = (o.votes as Float / self.total_votes as Float) * 100.0
+            (o.text.clone(), percentage)
+        }).collect()
+    }
+}
+
+// =============================================================================
+// Post Structure
+// =============================================================================
+
+/// Post
+struct Post {
+    id: String,
+    author_id: String,
+    content: String,
+    content_type: PostContentType,
+    media: [PostMedia],
+    poll: Option<PostPoll>,
+    tags: [String],
+    mentions: [String],
+    visibility: PostVisibility,
+    status: PostStatus,
+    parent_id: Option<String>,
+    repost_of: Option<String>,
+    location: Option<String>,
+    likes_count: Int64,
+    comments_count: Int64,
+    reposts_count: Int64,
+    views_count: Int64,
+    created_at: DateTime,
+    updated_at: DateTime,
+    published_at: Option<DateTime>,
+    metadata: Map<String, String>
+}
+
+impl Post {
+    fn new(author_id: String, content: String) -> Self {
+        let now = DateTime.now()
+        Post {
+            id: generate_id(),
+            author_id: author_id,
+            content: content,
+            content_type: PostContentType.Text,
+            media: [],
+            poll: None,
+            tags: [],
+            mentions: [],
+            visibility: PostVisibility.Public,
+            status: PostStatus.Draft,
+            parent_id: None,
+            repost_of: None,
+            location: None,
+            likes_count: 0,
+            comments_count: 0,
+            reposts_count: 0,
+            views_count: 0,
+            created_at: now,
+            updated_at: now,
+            published_at: None,
+            metadata: Map.empty()
+        }
+    }
+    
+    fn with_media(media: [PostMedia]) -> Self {
+        self.media = media
+        if media.len() > 0 {
+            if media[0].is_video() {
+                self.content_type = PostContentType.Video
+            } else if media[0].is_image() {
+                self.content_type = PostContentType.Image
+            }
+        }
+        self
+    }
+    
+    fn with_poll(poll: PostPoll) -> Self {
+        self.poll = Some(poll)
+        self.content_type = PostContentType.Poll
+        self
+    }
+    
+    fn with_tags(tags: [String]) -> Self {
+        self.tags = tags
+        self
+    }
+    
+    fn with_visibility(visibility: PostVisibility) -> Self {
+        self.visibility = visibility
+        self
+    }
+    
+    fn with_location(location: String) -> Self {
+        self.location = Some(location)
+        self
+    }
+    
+    fn as_reply_to(parent_id: String) -> Self {
+        self.parent_id = Some(parent_id)
+        self
+    }
+    
+    fn as_repost(original_id: String) -> Self {
+        self.repost_of = Some(original_id)
+        self
+    }
+    
+    fn publish() -> Result<(), PostError> {
+        if self.content.is_empty() && self.media.is_empty() && self.poll.is_none() {
+            return Err(PostError.EmptyContent)
+        }
+        self.status = PostStatus.Published
+        self.published_at = Some(DateTime.now())
+        self.updated_at = DateTime.now()
+        Ok(())
+    }
+    
+    fn schedule(publish_at: DateTime) -> Result<(), PostError> {
+        if publish_at <= DateTime.now() {
+            return Err(PostError.InvalidScheduleTime)
+        }
+        self.status = PostStatus.Scheduled(publish_at)
+        self.updated_at = DateTime.now()
+        Ok(())
+    }
+    
+    fn archive() {
+        self.status = PostStatus.Archived
+        self.updated_at = DateTime.now()
+    }
+    
+    fn delete() {
+        self.status = PostStatus.Deleted
+        self.updated_at = DateTime.now()
+    }
+    
+    fn update_content(content: String) {
+        self.content = content
+        self.updated_at = DateTime.now()
+    }
+    
+    fn increment_likes() { self.likes_count += 1 }
+    fn decrement_likes() { if self.likes_count > 0 { self.likes_count -= 1 } }
+    fn increment_comments() { self.comments_count += 1 }
+    fn decrement_comments() { if self.comments_count > 0 { self.comments_count -= 1 } }
+    fn increment_reposts() { self.reposts_count += 1 }
+    fn increment_views() { self.views_count += 1 }
+    
+    fn is_published() -> Bool { self.status.is_visible() }
+    fn is_repost() -> Bool { self.repost_of.is_some() }
+    fn is_reply() -> Bool { self.parent_id.is_some() }
+    fn has_media() -> Bool { !self.media.is_empty() }
+    fn has_poll() -> Bool { self.poll.is_some() }
+    
+    fn age() -> Duration { DateTime.now() - self.created_at }
+    
+    fn engagement_rate() -> Float {
+        if self.views_count == 0 { return 0.0 }
+        let engagements = self.likes_count + self.comments_count + self.reposts_count
+        (engagements as Float / self.views_count as Float) * 100.0
+    }
+    
+    fn extract_hashtags() -> [String] {
+        let regex = Regex.new(r"#(\w+)")
+        regex.find_all(self.content).map(|m| m.group(1)).collect()
+    }
+    
+    fn extract_mentions() -> [String] {
+        let regex = Regex.new(r"@(\w+)")
+        regex.find_all(self.content).map(|m| m.group(1)).collect()
+    }
+}
+
+// =============================================================================
+// Post Builder
+// =============================================================================
+
+/// Post builder for fluent construction
+struct PostBuilder {
+    author_id: String,
+    content: String,
+    content_type: PostContentType,
+    media: [PostMedia],
+    poll: Option<PostPoll>,
+    tags: [String],
+    visibility: PostVisibility,
+    location: Option<String>,
+    parent_id: Option<String>,
+    scheduled_at: Option<DateTime>,
+    auto_publish: Bool
+}
+
+impl PostBuilder {
+    fn new(author_id: String) -> Self {
+        PostBuilder {
+            author_id: author_id,
+            content: "",
+            content_type: PostContentType.Text,
+            media: [],
+            poll: None,
+            tags: [],
+            visibility: PostVisibility.Public,
+            location: None,
+            parent_id: None,
+            scheduled_at: None,
+            auto_publish: false
+        }
+    }
+    
+    fn content(text: String) -> Self {
+        self.content = text
+        self
+    }
+    
+    fn add_image(url: String) -> Self {
+        self.media.push(PostMedia.new(url, "image"))
+        self.content_type = PostContentType.Image
+        self
+    }
+    
+    fn add_video(url: String, thumbnail: String, duration: Int) -> Self {
+        self.media.push(PostMedia.video(url, thumbnail, duration))
+        self.content_type = PostContentType.Video
+        self
+    }
+    
+    fn add_poll(question: String, options: [String]) -> Self {
+        self.poll = Some(PostPoll.new(question, options))
+        self.content_type = PostContentType.Poll
+        self
+    }
+    
+    fn tags(tags: [String]) -> Self {
+        self.tags = tags
+        self
+    }
+    
+    fn visibility(visibility: PostVisibility) -> Self {
+        self.visibility = visibility
+        self
+    }
+    
+    fn location(location: String) -> Self {
+        self.location = Some(location)
+        self
+    }
+    
+    fn reply_to(post_id: String) -> Self {
+        self.parent_id = Some(post_id)
+        self
+    }
+    
+    fn schedule(at: DateTime) -> Self {
+        self.scheduled_at = Some(at)
+        self
+    }
+    
+    fn publish_immediately() -> Self {
+        self.auto_publish = true
+        self
+    }
+    
+    fn build() -> Result<Post, PostError> {
+        if self.content.is_empty() && self.media.is_empty() && self.poll.is_none() {
+            return Err(PostError.EmptyContent)
+        }
+        
+        var post = Post.new(self.author_id.clone(), self.content.clone())
+        post.content_type = self.content_type.clone()
+        post.media = self.media.clone()
+        post.poll = self.poll.clone()
+        post.tags = self.tags.clone()
+        post.visibility = self.visibility.clone()
+        post.location = self.location.clone()
+        post.parent_id = self.parent_id.clone()
+        
+        if let Some(schedule_time) = self.scheduled_at {
+            post.schedule(schedule_time)?
+        } else if self.auto_publish {
+            post.publish()?
+        }
+        
+        Ok(post)
+    }
+}
+
+// =============================================================================
+// Post Service
+// =============================================================================
+
+/// Post service actor
+actor PostService {
+    state posts: Map<String, Post>
+    state user_posts: Map<String, [String]>
+    state tag_posts: Map<String, [String]>
+    state scheduled_posts: [String]
+    
+    fn new() -> Self {
+        PostService {
+            posts: Map.empty(),
+            user_posts: Map.empty(),
+            tag_posts: Map.empty(),
+            scheduled_posts: []
+        }
+    }
+    
+    /// Create a new post
+    on create(post: Post) -> Result<Post, PostError> {
+        let post_id = post.id.clone()
+        let author_id = post.author_id.clone()
+        
+        self.posts.set(post_id.clone(), post.clone())
+        self.user_posts.entry(author_id).or_insert([]).push(post_id.clone())
+        
+        // Index by tags
+        for tag in post.tags.iter() {
+            self.tag_posts.entry(tag.clone()).or_insert([]).push(post_id.clone())
+        }
+        
+        // Track scheduled posts
+        if let PostStatus.Scheduled(_) = post.status {
+            self.scheduled_posts.push(post_id)
+        }
+        
+        Ok(post)
+    }
+    
+    /// Get post by ID
+    on get(post_id: String) -> Option<Post> {
+        self.posts.get(post_id)
+    }
+    
+    /// Update post
+    on update(post_id: String, content: String) -> Result<Post, PostError> {
+        let post = self.posts.get_mut(post_id.clone())
+            .ok_or(PostError.NotFound)?
+        
+        post.update_content(content)
+        Ok(post.clone())
+    }
+    
+    /// Publish post
+    on publish(post_id: String) -> Result<Post, PostError> {
+        let post = self.posts.get_mut(post_id.clone())
+            .ok_or(PostError.NotFound)?
+        
+        post.publish()?
+        self.scheduled_posts.retain(|id| *id != post_id)
+        Ok(post.clone())
+    }
+    
+    /// Delete post
+    on delete(post_id: String) -> Result<(), PostError> {
+        let post = self.posts.get_mut(post_id.clone())
+            .ok_or(PostError.NotFound)?
+        
+        post.delete()
+        Ok(())
+    }
+    
+    /// Get user posts
+    on get_user_posts(user_id: String, limit: Int, offset: Int) -> [Post] {
+        self.user_posts.get(user_id)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| self.posts.get(id))
+                    .filter(|p| p.is_published())
+                    .skip(offset)
+                    .take(limit)
+                    .collect()
+            })
+            .unwrap_or([])
+    }
+    
+    /// Get posts by tag
+    on get_by_tag(tag: String, limit: Int, offset: Int) -> [Post] {
+        self.tag_posts.get(tag)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| self.posts.get(id))
+                    .filter(|p| p.is_published())
+                    .skip(offset)
+                    .take(limit)
+                    .collect()
+            })
+            .unwrap_or([])
+    }
+    
+    /// Search posts
+    on search(query: String, limit: Int) -> [Post] {
+        let query_lower = query.to_lowercase()
+        self.posts.values()
+            .filter(|p| p.is_published() && p.content.to_lowercase().contains(query_lower.clone()))
+            .take(limit)
+            .collect()
+    }
+    
+    /// Get trending posts
+    on get_trending(limit: Int) -> [Post] {
+        var posts: [Post] = self.posts.values()
+            .filter(|p| p.is_published())
+            .collect()
+        
+        posts.sort_by(|a, b| {
+            let score_a = a.likes_count * 3 + a.comments_count * 2 + a.reposts_count * 4
+            let score_b = b.likes_count * 3 + b.comments_count * 2 + b.reposts_count * 4
+            score_b.cmp(score_a)
+        })
+        
+        posts.take(limit)
+    }
+    
+    /// Process scheduled posts
+    on process_scheduled() -> [Post] {
+        let now = DateTime.now()
+        var published: [Post] = []
+        
+        for post_id in self.scheduled_posts.clone() {
+            if let Some(post) = self.posts.get_mut(post_id.clone()) {
+                if let PostStatus.Scheduled(publish_at) = post.status {
+                    if now >= publish_at {
+                        post.publish().ok()
+                        published.push(post.clone())
+                    }
+                }
+            }
+        }
+        
+        // Remove published from scheduled
+        for p in published.iter() {
+            self.scheduled_posts.retain(|id| *id != p.id)
+        }
+        
+        published
+    }
+    
+    /// Increment view count
+    on view(post_id: String) {
+        if let Some(post) = self.posts.get_mut(post_id) {
+            post.increment_views()
+        }
+    }
+    
+    /// Like post
+    on like(post_id: String) -> Result<(), PostError> {
+        let post = self.posts.get_mut(post_id)
+            .ok_or(PostError.NotFound)?
+        post.increment_likes()
+        Ok(())
+    }
+    
+    /// Unlike post
+    on unlike(post_id: String) -> Result<(), PostError> {
+        let post = self.posts.get_mut(post_id)
+            .ok_or(PostError.NotFound)?
+        post.decrement_likes()
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Post Errors
+// =============================================================================
+
+/// Post errors
+enum PostError {
+    NotFound,
+    EmptyContent,
+    Unauthorized,
+    AlreadyPublished,
+    InvalidScheduleTime,
+    AlreadyVoted,
+    InvalidOption,
+    PollExpired,
+    ContentTooLong,
+    TooManyMedia,
+    InvalidMedia
+}
+
+impl PostError {
+    fn message() -> String {
+        match self {
+            PostError.NotFound => "Post not found",
+            PostError.EmptyContent => "Post content cannot be empty",
+            PostError.Unauthorized => "Not authorized to perform this action",
+            PostError.AlreadyPublished => "Post is already published",
+            PostError.InvalidScheduleTime => "Schedule time must be in the future",
+            PostError.AlreadyVoted => "Already voted in this poll",
+            PostError.InvalidOption => "Invalid poll option",
+            PostError.PollExpired => "Poll has expired",
+            PostError.ContentTooLong => "Post content exceeds maximum length",
+            PostError.TooManyMedia => "Too many media attachments",
+            PostError.InvalidMedia => "Invalid media format"
+        }
+    }
+}
+
+// =============================================================================
+// Post Events
+// =============================================================================
+
+/// Post events for event sourcing
+enum PostEvent {
+    Created { post_id: String, author_id: String, timestamp: DateTime },
+    Published { post_id: String, timestamp: DateTime },
+    Updated { post_id: String, timestamp: DateTime },
+    Deleted { post_id: String, timestamp: DateTime },
+    Liked { post_id: String, user_id: String, timestamp: DateTime },
+    Unliked { post_id: String, user_id: String, timestamp: DateTime },
+    Commented { post_id: String, comment_id: String, user_id: String, timestamp: DateTime },
+    Reposted { post_id: String, repost_id: String, user_id: String, timestamp: DateTime },
+    Viewed { post_id: String, user_id: Option<String>, timestamp: DateTime }
+}
+
+impl PostEvent {
+    fn timestamp() -> DateTime {
+        match self {
+            PostEvent.Created { timestamp, .. } => timestamp,
+            PostEvent.Published { timestamp, .. } => timestamp,
+            PostEvent.Updated { timestamp, .. } => timestamp,
+            PostEvent.Deleted { timestamp, .. } => timestamp,
+            PostEvent.Liked { timestamp, .. } => timestamp,
+            PostEvent.Unliked { timestamp, .. } => timestamp,
+            PostEvent.Commented { timestamp, .. } => timestamp,
+            PostEvent.Reposted { timestamp, .. } => timestamp,
+            PostEvent.Viewed { timestamp, .. } => timestamp
+        }
+    }
+    
+    fn post_id() -> String {
+        match self {
+            PostEvent.Created { post_id, .. } => post_id,
+            PostEvent.Published { post_id, .. } => post_id,
+            PostEvent.Updated { post_id, .. } => post_id,
+            PostEvent.Deleted { post_id, .. } => post_id,
+            PostEvent.Liked { post_id, .. } => post_id,
+            PostEvent.Unliked { post_id, .. } => post_id,
+            PostEvent.Commented { post_id, .. } => post_id,
+            PostEvent.Reposted { post_id, .. } => post_id,
+            PostEvent.Viewed { post_id, .. } => post_id
+        }
+    }
+}
+
+// =============================================================================
+// Post Analytics
+// =============================================================================
+
+/// Post analytics
+struct PostAnalytics {
+    post_id: String,
+    impressions: Int64,
+    reach: Int64,
+    engagement_rate: Float,
+    likes_by_hour: Map<Int, Int64>,
+    views_by_day: Map<String, Int64>,
+    top_referrers: [(String, Int64)],
+    demographics: Map<String, Int64>
+}
+
+impl PostAnalytics {
+    fn new(post_id: String) -> Self {
+        PostAnalytics {
+            post_id: post_id,
+            impressions: 0,
+            reach: 0,
+            engagement_rate: 0.0,
+            likes_by_hour: Map.empty(),
+            views_by_day: Map.empty(),
+            top_referrers: [],
+            demographics: Map.empty()
+        }
+    }
+    
+    fn record_impression() {
+        self.impressions += 1
+    }
+    
+    fn record_view(timestamp: DateTime) {
+        let day = timestamp.format("%Y-%m-%d")
+        self.views_by_day.entry(day).or_insert(0) += 1
+    }
+    
+    fn record_like(timestamp: DateTime) {
+        let hour = timestamp.hour()
+        self.likes_by_hour.entry(hour).or_insert(0) += 1
+    }
+    
+    fn calculate_engagement(post: Post) {
+        if post.views_count > 0 {
+            let engagements = post.likes_count + post.comments_count + post.reposts_count
+            self.engagement_rate = (engagements as Float / post.views_count as Float) * 100.0
+        }
+    }
+    
+    fn peak_hour() -> Option<Int> {
+        self.likes_by_hour.iter()
+            .max_by(|a, b| a.1.cmp(b.1))
+            .map(|(h, _)| h)
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+fn generate_id() -> String {
+    @native("uuid_v4")
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "post creation" {
+    let post = Post.new("user1", "Hello world!")
+    assert_eq(post.author_id, "user1")?
+    assert_eq(post.content, "Hello world!")?
+    assert(!post.is_published())?
+}
+
+test "post publish" {
+    var post = Post.new("user1", "Test post")
+    post.publish().unwrap()
+    assert(post.is_published())?
+    assert(post.published_at.is_some())?
+}
+
+test "post with media" {
+    let media = PostMedia.image("https://example.com/image.jpg", 800, 600)
+    var post = Post.new("user1", "Check this out!")
+        .with_media([media])
+    
+    assert(post.has_media())?
+    assert_eq(post.media.len(), 1)?
+}
+
+test "post poll" {
+    var poll = PostPoll.new("Favorite color?", ["Red", "Blue", "Green"])
+    poll.vote("user1", 0).unwrap()
+    poll.vote("user2", 1).unwrap()
+    
+    assert_eq(poll.total_votes, 2)?
+    
+    let results = poll.results()
+    assert_eq(results[0].1, 50.0)?
+}
+
+test "post builder" {
+    let post = PostBuilder.new("user1")
+        .content("Built with builder")
+        .tags(["test", "vibee"])
+        .visibility(PostVisibility.Public)
+        .publish_immediately()
+        .build()
+        .unwrap()
+    
+    assert(post.is_published())?
+    assert_eq(post.tags.len(), 2)?
+}
+
+test "post service" {
+    let service = PostService.new()
+    
+    var post = Post.new("user1", "Service test")
+    post.publish().unwrap()
+    
+    service.create(post.clone()).unwrap()
+    
+    let retrieved = service.get(post.id.clone())
+    assert(retrieved.is_some())?
+    assert_eq(retrieved.unwrap().content, "Service test")?
+}
+
+test "hashtag extraction" {
+    let post = Post.new("user1", "Hello #world #vibee #programming")
+    let tags = post.extract_hashtags()
+    assert_eq(tags.len(), 3)?
+    assert(tags.contains("world"))?
+}
+
+test "engagement rate" {
+    var post = Post.new("user1", "Engagement test")
+    post.views_count = 100
+    post.likes_count = 10
+    post.comments_count = 5
+    post.reposts_count = 2
+    
+    let rate = post.engagement_rate()
+    assert_eq(rate, 17.0)?
+}

@@ -1,0 +1,828 @@
+// =============================================================================
+// Vibee OS — IFTTT Integration Module
+// IFTTT (If This Then That) webhooks and applet integration
+// =============================================================================
+
+use http::{Request, Response, Method, Status, Headers, Client as HttpClient}
+use json::{JsonValue, Serialize, Deserialize}
+use crypto::{hmac_sha256}
+use uuid::{uuid}
+
+// =============================================================================
+// IFTTT Webhooks Client
+// =============================================================================
+
+/// IFTTT Webhooks client for triggering applets
+actor IftttClient {
+    state webhook_key: String
+    state http_client: HttpClient
+    state base_url: String
+    state retry_config: RetryConfig
+    
+    fn new(webhook_key: String) -> Self {
+        IftttClient {
+            webhook_key: webhook_key,
+            http_client: HttpClient.new().timeout(30000),
+            base_url: "https://maker.ifttt.com/trigger",
+            retry_config: RetryConfig.default()
+        }
+    }
+    
+    fn with_retry(config: RetryConfig) -> Self {
+        self.retry_config = config
+        self
+    }
+    
+    /// Trigger an IFTTT event with optional values
+    fn trigger(event_name: String) -> Result<IftttResponse, IftttError> {
+        self.trigger_with_values(event_name, None, None, None)
+    }
+    
+    /// Trigger an IFTTT event with one value
+    fn trigger_with_value1(event_name: String, value1: String) -> Result<IftttResponse, IftttError> {
+        self.trigger_with_values(event_name, Some(value1), None, None)
+    }
+    
+    /// Trigger an IFTTT event with two values
+    fn trigger_with_value2(event_name: String, value1: String, value2: String) -> Result<IftttResponse, IftttError> {
+        self.trigger_with_values(event_name, Some(value1), Some(value2), None)
+    }
+    
+    /// Trigger an IFTTT event with three values (IFTTT maximum)
+    fn trigger_with_values(event_name: String, value1: Option<String>, value2: Option<String>, value3: Option<String>) -> Result<IftttResponse, IftttError> {
+        let url = format!("{}/{}/with/key/{}", self.base_url, event_name, self.webhook_key)
+        
+        var payload = Map.empty()
+        if let Some(v1) = value1 { payload.set("value1", v1) }
+        if let Some(v2) = value2 { payload.set("value2", v2) }
+        if let Some(v3) = value3 { payload.set("value3", v3) }
+        
+        self.send_request(url, JsonValue.from_map(payload))
+    }
+    
+    /// Trigger with JSON payload (for advanced use)
+    fn trigger_json(event_name: String, data: JsonValue) -> Result<IftttResponse, IftttError> {
+        let url = format!("{}/{}/json/with/key/{}", self.base_url, event_name, self.webhook_key)
+        self.send_request(url, data)
+    }
+    
+    fn send_request(url: String, payload: JsonValue) -> Result<IftttResponse, IftttError> {
+        var attempts = 0
+        var last_error: Option<IftttError> = None
+        
+        while attempts < self.retry_config.max_retries {
+            let request = Request.post(url.clone())
+                .header("Content-Type", "application/json")
+                .json(payload.clone())
+            
+            match self.http_client.send(request) {
+                Ok(response) => {
+                    if response.is_success() {
+                        return Ok(IftttResponse {
+                            success: true,
+                            message: response.text()
+                        })
+                    }
+                    if response.status.code >= 500 {
+                        last_error = Some(IftttError.ServerError(response.status.code))
+                        attempts += 1
+                        @native("sleep_ms", self.retry_config.delay_ms * (2 ** attempts))
+                        continue
+                    }
+                    return Err(IftttError.ApiError(response.status.code, response.text()))
+                }
+                Err(e) => {
+                    last_error = Some(IftttError.NetworkError(e.to_string()))
+                    attempts += 1
+                    @native("sleep_ms", self.retry_config.delay_ms * (2 ** attempts))
+                }
+            }
+        }
+        
+        Err(last_error.unwrap_or(IftttError.MaxRetriesExceeded))
+    }
+}
+
+// =============================================================================
+// IFTTT Service (for building IFTTT services)
+// =============================================================================
+
+/// IFTTT Service definition for creating custom IFTTT services
+struct IftttService {
+    service_key: String
+    name: String
+    description: String
+    triggers: [IftttTrigger]
+    actions: [IftttAction]
+    queries: [IftttQuery]
+}
+
+impl IftttService {
+    fn new(service_key: String, name: String) -> Self {
+        IftttService {
+            service_key: service_key,
+            name: name,
+            description: "",
+            triggers: [],
+            actions: [],
+            queries: []
+        }
+    }
+    
+    fn description(desc: String) -> Self {
+        self.description = desc
+        self
+    }
+    
+    fn add_trigger(trigger: IftttTrigger) -> Self {
+        self.triggers.push(trigger)
+        self
+    }
+    
+    fn add_action(action: IftttAction) -> Self {
+        self.actions.push(action)
+        self
+    }
+    
+    fn add_query(query: IftttQuery) -> Self {
+        self.queries.push(query)
+        self
+    }
+}
+
+// =============================================================================
+// IFTTT Trigger Definition
+// =============================================================================
+
+/// IFTTT Trigger definition
+struct IftttTrigger {
+    slug: String
+    name: String
+    description: String
+    trigger_fields: [IftttField]
+    ingredients: [IftttIngredient]
+    verbiage: IftttVerbiage
+}
+
+impl IftttTrigger {
+    fn new(slug: String, name: String) -> Self {
+        IftttTrigger {
+            slug: slug,
+            name: name,
+            description: "",
+            trigger_fields: [],
+            ingredients: [],
+            verbiage: IftttVerbiage.default()
+        }
+    }
+    
+    fn description(desc: String) -> Self {
+        self.description = desc
+        self
+    }
+    
+    fn add_field(field: IftttField) -> Self {
+        self.trigger_fields.push(field)
+        self
+    }
+    
+    fn add_ingredient(ingredient: IftttIngredient) -> Self {
+        self.ingredients.push(ingredient)
+        self
+    }
+    
+    fn verbiage(v: IftttVerbiage) -> Self {
+        self.verbiage = v
+        self
+    }
+    
+    fn to_json() -> JsonValue {
+        JsonValue.object([
+            ("slug", JsonValue.string(self.slug.clone())),
+            ("name", JsonValue.string(self.name.clone())),
+            ("description", JsonValue.string(self.description.clone())),
+            ("trigger_fields", JsonValue.array(self.trigger_fields.iter().map(|f| f.to_json()).collect())),
+            ("ingredients", JsonValue.array(self.ingredients.iter().map(|i| i.to_json()).collect())),
+            ("verbiage", self.verbiage.to_json())
+        ])
+    }
+}
+
+// =============================================================================
+// IFTTT Action Definition
+// =============================================================================
+
+/// IFTTT Action definition
+struct IftttAction {
+    slug: String
+    name: String
+    description: String
+    action_fields: [IftttField]
+    verbiage: IftttVerbiage
+}
+
+impl IftttAction {
+    fn new(slug: String, name: String) -> Self {
+        IftttAction {
+            slug: slug,
+            name: name,
+            description: "",
+            action_fields: [],
+            verbiage: IftttVerbiage.default()
+        }
+    }
+    
+    fn description(desc: String) -> Self {
+        self.description = desc
+        self
+    }
+    
+    fn add_field(field: IftttField) -> Self {
+        self.action_fields.push(field)
+        self
+    }
+    
+    fn verbiage(v: IftttVerbiage) -> Self {
+        self.verbiage = v
+        self
+    }
+    
+    fn to_json() -> JsonValue {
+        JsonValue.object([
+            ("slug", JsonValue.string(self.slug.clone())),
+            ("name", JsonValue.string(self.name.clone())),
+            ("description", JsonValue.string(self.description.clone())),
+            ("action_fields", JsonValue.array(self.action_fields.iter().map(|f| f.to_json()).collect())),
+            ("verbiage", self.verbiage.to_json())
+        ])
+    }
+}
+
+// =============================================================================
+// IFTTT Query Definition
+// =============================================================================
+
+/// IFTTT Query definition for dynamic dropdowns
+struct IftttQuery {
+    slug: String
+    name: String
+    description: String
+    arguments: [IftttField]
+}
+
+impl IftttQuery {
+    fn new(slug: String, name: String) -> Self {
+        IftttQuery {
+            slug: slug,
+            name: name,
+            description: "",
+            arguments: []
+        }
+    }
+    
+    fn description(desc: String) -> Self {
+        self.description = desc
+        self
+    }
+    
+    fn add_argument(arg: IftttField) -> Self {
+        self.arguments.push(arg)
+        self
+    }
+    
+    fn to_json() -> JsonValue {
+        JsonValue.object([
+            ("slug", JsonValue.string(self.slug.clone())),
+            ("name", JsonValue.string(self.name.clone())),
+            ("description", JsonValue.string(self.description.clone())),
+            ("arguments", JsonValue.array(self.arguments.iter().map(|a| a.to_json()).collect()))
+        ])
+    }
+}
+
+// =============================================================================
+// IFTTT Field and Ingredient
+// =============================================================================
+
+/// IFTTT Field definition
+struct IftttField {
+    slug: String
+    label: String
+    field_type: IftttFieldType
+    required: Bool
+    helper_text: Option<String>
+    default_value: Option<String>
+    options: Option<[IftttOption]>
+}
+
+impl IftttField {
+    fn new(slug: String, label: String) -> Self {
+        IftttField {
+            slug: slug,
+            label: label,
+            field_type: IftttFieldType.TextInput,
+            required: false,
+            helper_text: None,
+            default_value: None,
+            options: None
+        }
+    }
+    
+    fn text_input(slug: String, label: String) -> Self {
+        Self.new(slug, label).of_type(IftttFieldType.TextInput)
+    }
+    
+    fn text_area(slug: String, label: String) -> Self {
+        Self.new(slug, label).of_type(IftttFieldType.TextArea)
+    }
+    
+    fn dropdown(slug: String, label: String, options: [IftttOption]) -> Self {
+        Self.new(slug, label).of_type(IftttFieldType.Dropdown).with_options(options)
+    }
+    
+    fn location(slug: String, label: String) -> Self {
+        Self.new(slug, label).of_type(IftttFieldType.Location)
+    }
+    
+    fn of_type(t: IftttFieldType) -> Self {
+        self.field_type = t
+        self
+    }
+    
+    fn required() -> Self {
+        self.required = true
+        self
+    }
+    
+    fn helper(text: String) -> Self {
+        self.helper_text = Some(text)
+        self
+    }
+    
+    fn default(value: String) -> Self {
+        self.default_value = Some(value)
+        self
+    }
+    
+    fn with_options(options: [IftttOption]) -> Self {
+        self.options = Some(options)
+        self
+    }
+    
+    fn to_json() -> JsonValue {
+        var obj = Map.empty()
+        obj.set("slug", JsonValue.string(self.slug.clone()))
+        obj.set("label", JsonValue.string(self.label.clone()))
+        obj.set("field_type", JsonValue.string(self.field_type.to_string()))
+        obj.set("required", JsonValue.bool(self.required))
+        
+        if let Some(helper) = self.helper_text.clone() {
+            obj.set("helper_text", JsonValue.string(helper))
+        }
+        if let Some(default) = self.default_value.clone() {
+            obj.set("default_value", JsonValue.string(default))
+        }
+        if let Some(options) = self.options.clone() {
+            obj.set("options", JsonValue.array(options.iter().map(|o| o.to_json()).collect()))
+        }
+        
+        JsonValue.from_map(obj)
+    }
+}
+
+enum IftttFieldType {
+    TextInput,
+    TextArea,
+    Dropdown,
+    Location,
+    DateTime,
+    Email,
+    Phone,
+    Url
+}
+
+impl IftttFieldType {
+    fn to_string() -> String {
+        match self {
+            TextInput => "text_input",
+            TextArea => "text_area",
+            Dropdown => "dropdown",
+            Location => "location",
+            DateTime => "datetime",
+            Email => "email",
+            Phone => "phone",
+            Url => "url"
+        }
+    }
+}
+
+struct IftttOption {
+    value: String
+    label: String
+}
+
+impl IftttOption {
+    fn new(value: String, label: String) -> Self {
+        IftttOption { value: value, label: label }
+    }
+    
+    fn to_json() -> JsonValue {
+        JsonValue.object([
+            ("value", JsonValue.string(self.value.clone())),
+            ("label", JsonValue.string(self.label.clone()))
+        ])
+    }
+}
+
+/// IFTTT Ingredient (output data from triggers)
+struct IftttIngredient {
+    slug: String
+    name: String
+    note: String
+    ingredient_type: IftttIngredientType
+    example: String
+}
+
+impl IftttIngredient {
+    fn new(slug: String, name: String) -> Self {
+        IftttIngredient {
+            slug: slug,
+            name: name,
+            note: "",
+            ingredient_type: IftttIngredientType.String,
+            example: ""
+        }
+    }
+    
+    fn note(n: String) -> Self {
+        self.note = n
+        self
+    }
+    
+    fn of_type(t: IftttIngredientType) -> Self {
+        self.ingredient_type = t
+        self
+    }
+    
+    fn example(e: String) -> Self {
+        self.example = e
+        self
+    }
+    
+    fn to_json() -> JsonValue {
+        JsonValue.object([
+            ("slug", JsonValue.string(self.slug.clone())),
+            ("name", JsonValue.string(self.name.clone())),
+            ("note", JsonValue.string(self.note.clone())),
+            ("type", JsonValue.string(self.ingredient_type.to_string())),
+            ("example", JsonValue.string(self.example.clone()))
+        ])
+    }
+}
+
+enum IftttIngredientType { String, Html, Url, ImageUrl, DateTime, Location }
+
+impl IftttIngredientType {
+    fn to_string() -> String {
+        match self {
+            String => "string",
+            Html => "html",
+            Url => "url",
+            ImageUrl => "image_url",
+            DateTime => "datetime",
+            Location => "location"
+        }
+    }
+}
+
+// =============================================================================
+// IFTTT Verbiage
+// =============================================================================
+
+/// IFTTT Verbiage for trigger/action descriptions
+struct IftttVerbiage {
+    simple: String
+    past: String
+    present: String
+    future: String
+}
+
+impl IftttVerbiage {
+    fn default() -> Self {
+        IftttVerbiage {
+            simple: "",
+            past: "",
+            present: "",
+            future: ""
+        }
+    }
+    
+    fn new(simple: String, past: String, present: String, future: String) -> Self {
+        IftttVerbiage {
+            simple: simple,
+            past: past,
+            present: present,
+            future: future
+        }
+    }
+    
+    fn to_json() -> JsonValue {
+        JsonValue.object([
+            ("simple", JsonValue.string(self.simple.clone())),
+            ("past", JsonValue.string(self.past.clone())),
+            ("present", JsonValue.string(self.present.clone())),
+            ("future", JsonValue.string(self.future.clone()))
+        ])
+    }
+}
+
+// =============================================================================
+// IFTTT Webhook Handler (for receiving IFTTT requests)
+// =============================================================================
+
+/// Handler for incoming IFTTT service requests
+actor IftttServiceHandler {
+    state service_key: String
+    state channel_key: String
+    state trigger_handlers: Map<String, fn(IftttTriggerRequest) -> Result<[JsonValue], IftttError>>
+    state action_handlers: Map<String, fn(IftttActionRequest) -> Result<JsonValue, IftttError>>
+    
+    fn new(service_key: String, channel_key: String) -> Self {
+        IftttServiceHandler {
+            service_key: service_key,
+            channel_key: channel_key,
+            trigger_handlers: Map.empty(),
+            action_handlers: Map.empty()
+        }
+    }
+    
+    fn on_trigger(slug: String, handler: fn(IftttTriggerRequest) -> Result<[JsonValue], IftttError>) -> Self {
+        self.trigger_handlers.set(slug, handler)
+        self
+    }
+    
+    fn on_action(slug: String, handler: fn(IftttActionRequest) -> Result<JsonValue, IftttError>) -> Self {
+        self.action_handlers.set(slug, handler)
+        self
+    }
+    
+    /// Verify IFTTT service key header
+    fn verify_request(request: Request) -> Result<(), IftttError> {
+        let service_key = request.headers.get("IFTTT-Service-Key")
+            .ok_or(IftttError.Unauthorized)?
+        
+        if service_key != self.channel_key {
+            return Err(IftttError.Unauthorized)
+        }
+        
+        Ok(())
+    }
+    
+    /// Handle trigger poll request
+    fn handle_trigger(slug: String, request: Request) -> Result<Response, IftttError> {
+        self.verify_request(request.clone())?
+        
+        let handler = self.trigger_handlers.get(slug.clone())
+            .ok_or(IftttError.UnknownTrigger(slug))?
+        
+        let trigger_request: IftttTriggerRequest = json.decode(String.from_utf8(request.body.clone())
+            .map_err(|_| IftttError.InvalidPayload)?)
+            .map_err(|_| IftttError.InvalidPayload)?
+        
+        let results = handler(trigger_request)?
+        
+        Ok(Response.ok().json(JsonValue.object([
+            ("data", JsonValue.array(results))
+        ])))
+    }
+    
+    /// Handle action request
+    fn handle_action(slug: String, request: Request) -> Result<Response, IftttError> {
+        self.verify_request(request.clone())?
+        
+        let handler = self.action_handlers.get(slug.clone())
+            .ok_or(IftttError.UnknownAction(slug))?
+        
+        let action_request: IftttActionRequest = json.decode(String.from_utf8(request.body.clone())
+            .map_err(|_| IftttError.InvalidPayload)?)
+            .map_err(|_| IftttError.InvalidPayload)?
+        
+        let result = handler(action_request)?
+        
+        Ok(Response.ok().json(JsonValue.object([
+            ("data", JsonValue.array([result]))
+        ])))
+    }
+    
+    /// Handle status check
+    fn handle_status(request: Request) -> Result<Response, IftttError> {
+        self.verify_request(request)?
+        Ok(Response.ok())
+    }
+}
+
+/// IFTTT Trigger request
+struct IftttTriggerRequest {
+    trigger_identity: String
+    trigger_fields: JsonValue
+    user: IftttUser
+    limit: Option<Int>
+}
+
+/// IFTTT Action request
+struct IftttActionRequest {
+    action_fields: JsonValue
+    user: IftttUser
+}
+
+/// IFTTT User info
+struct IftttUser {
+    id: String
+    timezone: Option<String>
+}
+
+// =============================================================================
+// Realtime API (for instant triggers)
+// =============================================================================
+
+/// IFTTT Realtime API client for instant triggers
+actor IftttRealtimeClient {
+    state service_key: String
+    state http_client: HttpClient
+    
+    fn new(service_key: String) -> Self {
+        IftttRealtimeClient {
+            service_key: service_key,
+            http_client: HttpClient.new().timeout(30000)
+        }
+    }
+    
+    /// Notify IFTTT that new data is available for a trigger
+    fn notify_trigger(user_id: String, trigger_slug: String) -> Result<(), IftttError> {
+        let url = "https://realtime.ifttt.com/v1/notifications"
+        
+        let payload = JsonValue.object([
+            ("data", JsonValue.array([
+                JsonValue.object([
+                    ("user_id", JsonValue.string(user_id)),
+                    ("trigger_identity", JsonValue.string(trigger_slug))
+                ])
+            ]))
+        ])
+        
+        let request = Request.post(url)
+            .header("Content-Type", "application/json")
+            .header("IFTTT-Service-Key", self.service_key.clone())
+            .json(payload)
+        
+        let response = self.http_client.send(request)
+            .map_err(|e| IftttError.NetworkError(e.to_string()))?
+        
+        if !response.is_success() {
+            return Err(IftttError.ApiError(response.status.code, response.text()))
+        }
+        
+        Ok(())
+    }
+    
+    /// Notify multiple users at once
+    fn notify_batch(notifications: [(String, String)]) -> Result<(), IftttError> {
+        let url = "https://realtime.ifttt.com/v1/notifications"
+        
+        let data: [JsonValue] = notifications.iter().map(|(user_id, trigger_slug)| {
+            JsonValue.object([
+                ("user_id", JsonValue.string(user_id.clone())),
+                ("trigger_identity", JsonValue.string(trigger_slug.clone()))
+            ])
+        }).collect()
+        
+        let payload = JsonValue.object([("data", JsonValue.array(data))])
+        
+        let request = Request.post(url)
+            .header("Content-Type", "application/json")
+            .header("IFTTT-Service-Key", self.service_key.clone())
+            .json(payload)
+        
+        let response = self.http_client.send(request)
+            .map_err(|e| IftttError.NetworkError(e.to_string()))?
+        
+        if !response.is_success() {
+            return Err(IftttError.ApiError(response.status.code, response.text()))
+        }
+        
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Response and Error Types
+// =============================================================================
+
+struct IftttResponse {
+    success: Bool
+    message: String
+}
+
+struct RetryConfig {
+    max_retries: Int
+    delay_ms: Int64
+}
+
+impl RetryConfig {
+    fn default() -> Self {
+        RetryConfig { max_retries: 3, delay_ms: 1000 }
+    }
+    
+    fn new(max_retries: Int, delay_ms: Int64) -> Self {
+        RetryConfig { max_retries: max_retries, delay_ms: delay_ms }
+    }
+}
+
+enum IftttError {
+    NetworkError(String),
+    ApiError(Int, String),
+    ServerError(Int),
+    MaxRetriesExceeded,
+    Unauthorized,
+    InvalidPayload,
+    UnknownTrigger(String),
+    UnknownAction(String),
+    Other(String)
+}
+
+impl Display for IftttError {
+    fn fmt(f: Formatter) {
+        match self {
+            NetworkError(s) => f.write(format!("Network error: {}", s)),
+            ApiError(code, msg) => f.write(format!("API error {}: {}", code, msg)),
+            ServerError(code) => f.write(format!("Server error: {}", code)),
+            MaxRetriesExceeded => f.write("Max retries exceeded"),
+            Unauthorized => f.write("Unauthorized"),
+            InvalidPayload => f.write("Invalid payload"),
+            UnknownTrigger(t) => f.write(format!("Unknown trigger: {}", t)),
+            UnknownAction(a) => f.write(format!("Unknown action: {}", a)),
+            Other(s) => f.write(s)
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "ifttt field builder" {
+    let field = IftttField.text_input("message", "Message")
+        .required()
+        .helper("Enter your message")
+    
+    let json = field.to_json()
+    assert_eq(json.get("slug").as_string(), Some("message"))?
+    assert_eq(json.get("required").as_bool(), Some(true))?
+}
+
+test "ifttt trigger builder" {
+    let trigger = IftttTrigger.new("new_post", "New Post")
+        .description("Triggers when a new post is created")
+        .add_field(IftttField.text_input("category", "Category"))
+        .add_ingredient(IftttIngredient.new("title", "Post Title").example("Hello World"))
+    
+    let json = trigger.to_json()
+    assert_eq(json.get("slug").as_string(), Some("new_post"))?
+}
+
+test "ifttt action builder" {
+    let action = IftttAction.new("create_post", "Create Post")
+        .description("Creates a new post")
+        .add_field(IftttField.text_input("title", "Title").required())
+        .add_field(IftttField.text_area("content", "Content"))
+    
+    let json = action.to_json()
+    assert_eq(json.get("slug").as_string(), Some("create_post"))?
+}
+
+test "ifttt ingredient" {
+    let ingredient = IftttIngredient.new("created_at", "Created At")
+        .of_type(IftttIngredientType.DateTime)
+        .example("2024-01-15T10:30:00Z")
+    
+    let json = ingredient.to_json()
+    assert_eq(json.get("type").as_string(), Some("datetime"))?
+}
+
+test "ifttt verbiage" {
+    let verbiage = IftttVerbiage.new(
+        "new post created",
+        "new post was created",
+        "new post is created",
+        "new post will be created"
+    )
+    
+    let json = verbiage.to_json()
+    assert_eq(json.get("simple").as_string(), Some("new post created"))?
+}
+
+test "retry config" {
+    let config = RetryConfig.default()
+    assert_eq(config.max_retries, 3)?
+    assert_eq(config.delay_ms, 1000)?
+}

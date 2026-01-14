@@ -1,0 +1,878 @@
+// =============================================================================
+// Vibee OS — End-to-End Testing Module
+// Full system testing with browser automation, API flows, and user journeys
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// E2E Test Runner
+// -----------------------------------------------------------------------------
+
+/// End-to-end test runner
+actor E2ERunner {
+    state tests: [E2ETest]
+    state config: E2EConfig
+    state results: [E2EResult]
+    state browser: Option<Browser>
+    state api_client: Option<APIClient>
+    state reporters: [E2EReporter]
+    
+    fn new() -> Self {
+        E2ERunner {
+            tests: [],
+            config: E2EConfig.default(),
+            results: [],
+            browser: None,
+            api_client: None,
+            reporters: []
+        }
+    }
+    
+    on config(c: E2EConfig) -> Self { self.config = c; self }
+    
+    /// Add E2E test
+    on test(name: String, f: (E2EContext) -> Result<(), E2EError>) -> Self {
+        self.tests.append(E2ETest { 
+            name: name, 
+            func: f, 
+            tags: [],
+            timeout: self.config.default_timeout,
+            retries: self.config.default_retries
+        })
+        self
+    }
+    
+    /// Add tagged test
+    on test_tagged(name: String, tags: [String], f: (E2EContext) -> Result<(), E2EError>) -> Self {
+        self.tests.append(E2ETest { 
+            name: name, 
+            func: f, 
+            tags: tags,
+            timeout: self.config.default_timeout,
+            retries: self.config.default_retries
+        })
+        self
+    }
+    
+    /// Add reporter
+    on reporter(r: E2EReporter) -> Self {
+        self.reporters.append(r)
+        self
+    }
+    
+    /// Run all tests
+    async on run() -> E2ESummary {
+        self.notify_start()
+        
+        // Setup browser if needed
+        if self.config.browser_enabled {
+            self.browser = Some(Browser.launch(self.config.browser_config).await?)
+        }
+        
+        // Setup API client
+        self.api_client = Some(APIClient.new(self.config.base_url))
+        
+        let filtered = self.filter_tests()
+        
+        for test in filtered {
+            let result = self.run_test(test).await
+            self.results.append(result)
+            self.notify_result(result)
+        }
+        
+        // Cleanup
+        if let browser = self.browser {
+            browser.close().await
+        }
+        
+        let summary = self.create_summary()
+        self.notify_end(summary)
+        summary
+    }
+    
+    fn filter_tests() -> [E2ETest] {
+        if self.config.filter_tags.is_empty() {
+            return self.tests
+        }
+        self.tests.filter(|t| t.tags.any(|tag| self.config.filter_tags.contains(tag)))
+    }
+    
+    async fn run_test(test: E2ETest) -> E2EResult {
+        var attempts = 0
+        var last_error: Option<E2EError> = None
+        
+        while attempts <= test.retries {
+            attempts += 1
+            
+            let ctx = E2EContext {
+                browser: self.browser,
+                api: self.api_client.unwrap(),
+                config: self.config,
+                screenshots: [],
+                logs: []
+            }
+            
+            let start = Instant.now()
+            
+            match timeout(test.timeout, test.func(ctx)).await {
+                Ok(Ok(())) => {
+                    return E2EResult {
+                        name: test.name,
+                        status: .Passed,
+                        duration: start.elapsed(),
+                        attempts: attempts,
+                        error: None,
+                        screenshots: ctx.screenshots,
+                        logs: ctx.logs
+                    }
+                }
+                Ok(Err(e)) => {
+                    last_error = Some(e)
+                    if attempts <= test.retries {
+                        // Take failure screenshot
+                        if let browser = ctx.browser {
+                            let screenshot = browser.screenshot().await.ok()
+                            if let s = screenshot {
+                                ctx.screenshots.append(Screenshot {
+                                    name: "failure_attempt_\(attempts)",
+                                    data: s,
+                                    timestamp: Instant.now()
+                                })
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    last_error = Some(E2EError.Timeout(test.timeout))
+                }
+            }
+        }
+        
+        E2EResult {
+            name: test.name,
+            status: .Failed,
+            duration: Instant.now().elapsed(),
+            attempts: attempts,
+            error: last_error,
+            screenshots: [],
+            logs: []
+        }
+    }
+    
+    fn create_summary() -> E2ESummary {
+        let passed = self.results.filter(|r| r.status == .Passed).len()
+        let failed = self.results.filter(|r| r.status == .Failed).len()
+        let skipped = self.results.filter(|r| r.status == .Skipped).len()
+        
+        E2ESummary {
+            total: self.results.len(),
+            passed: passed,
+            failed: failed,
+            skipped: skipped,
+            duration: self.results.map(|r| r.duration).sum(),
+            results: self.results
+        }
+    }
+    
+    fn notify_start() {
+        for r in self.reporters { r.on_start(self.tests.len()) }
+    }
+    
+    fn notify_result(result: E2EResult) {
+        for r in self.reporters { r.on_result(result) }
+    }
+    
+    fn notify_end(summary: E2ESummary) {
+        for r in self.reporters { r.on_end(summary) }
+    }
+}
+
+/// E2E test configuration
+struct E2EConfig {
+    base_url: String
+    browser_enabled: Bool
+    browser_config: BrowserConfig
+    default_timeout: Duration
+    default_retries: Int
+    filter_tags: [String]
+    parallel: Bool
+    screenshot_on_failure: Bool
+    video_recording: Bool
+    
+    fn default() -> Self {
+        E2EConfig {
+            base_url: "http://localhost:3000",
+            browser_enabled: true,
+            browser_config: BrowserConfig.default(),
+            default_timeout: Duration.seconds(30),
+            default_retries: 2,
+            filter_tags: [],
+            parallel: false,
+            screenshot_on_failure: true,
+            video_recording: false
+        }
+    }
+    
+    fn headless() -> Self {
+        var config = Self.default()
+        config.browser_config.headless = true
+        config
+    }
+    
+    fn api_only() -> Self {
+        var config = Self.default()
+        config.browser_enabled = false
+        config
+    }
+}
+
+struct E2ETest {
+    name: String
+    func: (E2EContext) -> Result<(), E2EError>
+    tags: [String]
+    timeout: Duration
+    retries: Int
+}
+
+// -----------------------------------------------------------------------------
+// E2E Context
+// -----------------------------------------------------------------------------
+
+/// Context passed to each E2E test
+struct E2EContext {
+    browser: Option<Browser>
+    api: APIClient
+    config: E2EConfig
+    screenshots: [Screenshot]
+    logs: [LogEntry]
+}
+
+impl E2EContext {
+    /// Navigate to URL
+    async fn goto(path: String) -> Result<Page, E2EError> {
+        let url = "\(self.config.base_url)\(path)"
+        self.browser.ok_or(E2EError.NoBrowser)?.goto(url).await
+    }
+    
+    /// Get current page
+    fn page() -> Result<Page, E2EError> {
+        self.browser.ok_or(E2EError.NoBrowser)?.current_page()
+    }
+    
+    /// Make API request
+    async fn api_get(path: String) -> Result<Response, E2EError> {
+        self.api.get(path).await.map_err(E2EError.API)
+    }
+    
+    async fn api_post<T: Serialize>(path: String, body: T) -> Result<Response, E2EError> {
+        self.api.post(path, body).await.map_err(E2EError.API)
+    }
+    
+    /// Take screenshot
+    async fn screenshot(name: String) -> Result<(), E2EError> {
+        if let browser = self.browser {
+            let data = browser.screenshot().await?
+            self.screenshots.append(Screenshot {
+                name: name,
+                data: data,
+                timestamp: Instant.now()
+            })
+        }
+        Ok(())
+    }
+    
+    /// Log message
+    fn log(message: String) {
+        self.logs.append(LogEntry {
+            message: message,
+            level: .Info,
+            timestamp: Instant.now()
+        })
+    }
+    
+    /// Wait for condition
+    async fn wait_for<T>(condition: () -> Option<T>, timeout: Duration) -> Result<T, E2EError> {
+        let start = Instant.now()
+        while start.elapsed() < timeout {
+            if let result = condition() {
+                return Ok(result)
+            }
+            sleep(Duration.millis(100)).await
+        }
+        Err(E2EError.WaitTimeout)
+    }
+    
+    /// Assert element visible
+    async fn assert_visible(selector: String) -> Result<(), E2EError> {
+        let page = self.page()?
+        let element = page.query(selector).await?
+        if !element.is_visible().await? {
+            return Err(E2EError.AssertionFailed("Element '\(selector)' not visible"))
+        }
+        Ok(())
+    }
+    
+    /// Assert text content
+    async fn assert_text(selector: String, expected: String) -> Result<(), E2EError> {
+        let page = self.page()?
+        let element = page.query(selector).await?
+        let text = element.text().await?
+        if text != expected {
+            return Err(E2EError.AssertionFailed("Expected '\(expected)', got '\(text)'"))
+        }
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Browser Automation
+// -----------------------------------------------------------------------------
+
+/// Browser instance
+actor Browser {
+    state driver: @native("WebDriver")
+    state pages: [Page]
+    state config: BrowserConfig
+    
+    async fn launch(config: BrowserConfig) -> Result<Self, E2EError> {
+        let driver = @native("browser_launch", config.browser_type, config.headless, config.args)
+            .map_err(|e| E2EError.BrowserLaunch(e.to_string()))?
+        Ok(Browser { driver: driver, pages: [], config: config })
+    }
+    
+    async fn goto(url: String) -> Result<Page, E2EError> {
+        let page_handle = @native("browser_goto", self.driver, url)
+            .map_err(|e| E2EError.Navigation(e.to_string()))?
+        let page = Page { handle: page_handle, browser: self }
+        self.pages.append(page)
+        Ok(page)
+    }
+    
+    fn current_page() -> Result<Page, E2EError> {
+        self.pages.last().ok_or(E2EError.NoPage)
+    }
+    
+    async fn new_page() -> Result<Page, E2EError> {
+        let page_handle = @native("browser_new_page", self.driver)
+            .map_err(|e| E2EError.BrowserError(e.to_string()))?
+        let page = Page { handle: page_handle, browser: self }
+        self.pages.append(page)
+        Ok(page)
+    }
+    
+    async fn screenshot() -> Result<[UInt8], E2EError> {
+        @native("browser_screenshot", self.driver)
+            .map_err(|e| E2EError.Screenshot(e.to_string()))
+    }
+    
+    async fn close() -> Result<(), E2EError> {
+        @native("browser_close", self.driver)
+            .map_err(|e| E2EError.BrowserError(e.to_string()))
+    }
+}
+
+struct BrowserConfig {
+    browser_type: BrowserType
+    headless: Bool
+    args: [String]
+    viewport: Viewport
+    timeout: Duration
+    
+    fn default() -> Self {
+        BrowserConfig {
+            browser_type: .Chromium,
+            headless: false,
+            args: [],
+            viewport: Viewport { width: 1280, height: 720 },
+            timeout: Duration.seconds(30)
+        }
+    }
+}
+
+enum BrowserType { Chromium, Firefox, WebKit }
+
+struct Viewport { width: Int, height: Int }
+
+/// Page instance
+struct Page {
+    handle: @native("PageHandle")
+    browser: Browser
+}
+
+impl Page {
+    /// Query element
+    async fn query(selector: String) -> Result<Element, E2EError> {
+        let handle = @native("page_query", self.handle, selector)
+            .map_err(|e| E2EError.ElementNotFound(selector))?
+        Ok(Element { handle: handle, page: self })
+    }
+    
+    /// Query all elements
+    async fn query_all(selector: String) -> Result<[Element], E2EError> {
+        let handles = @native("page_query_all", self.handle, selector)
+            .map_err(|e| E2EError.QueryFailed(e.to_string()))?
+        Ok(handles.map(|h| Element { handle: h, page: self }))
+    }
+    
+    /// Wait for selector
+    async fn wait_for(selector: String, timeout: Duration) -> Result<Element, E2EError> {
+        @native("page_wait_for", self.handle, selector, timeout.as_millis())
+            .map(|h| Element { handle: h, page: self })
+            .map_err(|_| E2EError.WaitTimeout)
+    }
+    
+    /// Get page URL
+    async fn url() -> Result<String, E2EError> {
+        @native("page_url", self.handle).map_err(|e| E2EError.BrowserError(e.to_string()))
+    }
+    
+    /// Get page title
+    async fn title() -> Result<String, E2EError> {
+        @native("page_title", self.handle).map_err(|e| E2EError.BrowserError(e.to_string()))
+    }
+    
+    /// Fill form field
+    async fn fill(selector: String, value: String) -> Result<(), E2EError> {
+        let element = self.query(selector).await?
+        element.fill(value).await
+    }
+    
+    /// Click element
+    async fn click(selector: String) -> Result<(), E2EError> {
+        let element = self.query(selector).await?
+        element.click().await
+    }
+    
+    /// Type text
+    async fn type_text(selector: String, text: String) -> Result<(), E2EError> {
+        let element = self.query(selector).await?
+        element.type_text(text).await
+    }
+    
+    /// Press key
+    async fn press(key: String) -> Result<(), E2EError> {
+        @native("page_press", self.handle, key)
+            .map_err(|e| E2EError.BrowserError(e.to_string()))
+    }
+    
+    /// Evaluate JavaScript
+    async fn evaluate<T>(script: String) -> Result<T, E2EError> {
+        @native("page_evaluate", self.handle, script)
+            .map_err(|e| E2EError.ScriptError(e.to_string()))
+    }
+}
+
+/// DOM Element
+struct Element {
+    handle: @native("ElementHandle")
+    page: Page
+}
+
+impl Element {
+    async fn click() -> Result<(), E2EError> {
+        @native("element_click", self.handle)
+            .map_err(|e| E2EError.InteractionFailed(e.to_string()))
+    }
+    
+    async fn fill(value: String) -> Result<(), E2EError> {
+        @native("element_fill", self.handle, value)
+            .map_err(|e| E2EError.InteractionFailed(e.to_string()))
+    }
+    
+    async fn type_text(text: String) -> Result<(), E2EError> {
+        @native("element_type", self.handle, text)
+            .map_err(|e| E2EError.InteractionFailed(e.to_string()))
+    }
+    
+    async fn text() -> Result<String, E2EError> {
+        @native("element_text", self.handle)
+            .map_err(|e| E2EError.BrowserError(e.to_string()))
+    }
+    
+    async fn attribute(name: String) -> Result<Option<String>, E2EError> {
+        @native("element_attribute", self.handle, name)
+            .map_err(|e| E2EError.BrowserError(e.to_string()))
+    }
+    
+    async fn is_visible() -> Result<Bool, E2EError> {
+        @native("element_is_visible", self.handle)
+            .map_err(|e| E2EError.BrowserError(e.to_string()))
+    }
+    
+    async fn is_enabled() -> Result<Bool, E2EError> {
+        @native("element_is_enabled", self.handle)
+            .map_err(|e| E2EError.BrowserError(e.to_string()))
+    }
+    
+    async fn select_option(value: String) -> Result<(), E2EError> {
+        @native("element_select", self.handle, value)
+            .map_err(|e| E2EError.InteractionFailed(e.to_string()))
+    }
+    
+    async fn check() -> Result<(), E2EError> {
+        @native("element_check", self.handle)
+            .map_err(|e| E2EError.InteractionFailed(e.to_string()))
+    }
+    
+    async fn uncheck() -> Result<(), E2EError> {
+        @native("element_uncheck", self.handle)
+            .map_err(|e| E2EError.InteractionFailed(e.to_string()))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// API Client
+// -----------------------------------------------------------------------------
+
+/// API client for E2E tests
+actor APIClient {
+    state base_url: String
+    state headers: Map<String, String>
+    state cookies: Map<String, String>
+    
+    fn new(base_url: String) -> Self {
+        APIClient { base_url: base_url, headers: Map.empty(), cookies: Map.empty() }
+    }
+    
+    on header(name: String, value: String) -> Self {
+        self.headers.set(name, value)
+        self
+    }
+    
+    on auth_token(token: String) -> Self {
+        self.headers.set("Authorization", "Bearer \(token)")
+        self
+    }
+    
+    async fn get(path: String) -> Result<Response, APIError> {
+        self.request(.GET, path, None).await
+    }
+    
+    async fn post<T: Serialize>(path: String, body: T) -> Result<Response, APIError> {
+        self.request(.POST, path, Some(json.encode(body))).await
+    }
+    
+    async fn put<T: Serialize>(path: String, body: T) -> Result<Response, APIError> {
+        self.request(.PUT, path, Some(json.encode(body))).await
+    }
+    
+    async fn delete(path: String) -> Result<Response, APIError> {
+        self.request(.DELETE, path, None).await
+    }
+    
+    async fn request(method: Method, path: String, body: Option<String>) -> Result<Response, APIError> {
+        let url = "\(self.base_url)\(path)"
+        var req = http.Request.new(method, url)
+        
+        for (k, v) in self.headers {
+            req = req.header(k, v)
+        }
+        
+        if let b = body {
+            req = req.header("Content-Type", "application/json").body(b.as_bytes())
+        }
+        
+        http.Client.new().send(req).map_err(APIError.HTTP)
+    }
+}
+
+enum APIError {
+    HTTP(HttpError)
+    Parse(String)
+}
+
+// -----------------------------------------------------------------------------
+// User Journey
+// -----------------------------------------------------------------------------
+
+/// User journey builder
+actor UserJourney {
+    state name: String
+    state steps: [JourneyStep]
+    state context: Map<String, Any>
+    
+    fn new(name: String) -> Self {
+        UserJourney { name: name, steps: [], context: Map.empty() }
+    }
+    
+    /// Add step to journey
+    on step(name: String, action: (E2EContext, Map<String, Any>) -> Result<(), E2EError>) -> Self {
+        self.steps.append(JourneyStep { name: name, action: action })
+        self
+    }
+    
+    /// Store value in context
+    on store(key: String, value: Any) -> Self {
+        self.context.set(key, value)
+        self
+    }
+    
+    /// Execute journey
+    async fn execute(ctx: E2EContext) -> Result<JourneyResult, E2EError> {
+        var step_results = []
+        let start = Instant.now()
+        
+        for step in self.steps {
+            let step_start = Instant.now()
+            match step.action(ctx, self.context).await {
+                Ok(()) => {
+                    step_results.append(StepResult {
+                        name: step.name,
+                        status: .Passed,
+                        duration: step_start.elapsed(),
+                        error: None
+                    })
+                }
+                Err(e) => {
+                    step_results.append(StepResult {
+                        name: step.name,
+                        status: .Failed,
+                        duration: step_start.elapsed(),
+                        error: Some(e)
+                    })
+                    return Err(e)
+                }
+            }
+        }
+        
+        Ok(JourneyResult {
+            name: self.name,
+            steps: step_results,
+            duration: start.elapsed()
+        })
+    }
+}
+
+struct JourneyStep {
+    name: String
+    action: (E2EContext, Map<String, Any>) -> Result<(), E2EError>
+}
+
+struct JourneyResult {
+    name: String
+    steps: [StepResult]
+    duration: Duration
+}
+
+struct StepResult {
+    name: String
+    status: TestStatus
+    duration: Duration
+    error: Option<E2EError>
+}
+
+// -----------------------------------------------------------------------------
+// Results & Reporting
+// -----------------------------------------------------------------------------
+
+enum TestStatus { Passed, Failed, Skipped }
+
+struct E2EResult {
+    name: String
+    status: TestStatus
+    duration: Duration
+    attempts: Int
+    error: Option<E2EError>
+    screenshots: [Screenshot]
+    logs: [LogEntry]
+}
+
+struct Screenshot {
+    name: String
+    data: [UInt8]
+    timestamp: Instant
+}
+
+struct LogEntry {
+    message: String
+    level: LogLevel
+    timestamp: Instant
+}
+
+enum LogLevel { Debug, Info, Warn, Error }
+
+struct E2ESummary {
+    total: Int
+    passed: Int
+    failed: Int
+    skipped: Int
+    duration: Duration
+    results: [E2EResult]
+    
+    fn success_rate() -> Float {
+        if self.total == 0 { return 0.0 }
+        (self.passed as Float / self.total as Float) * 100.0
+    }
+    
+    fn is_success() -> Bool {
+        self.failed == 0
+    }
+}
+
+/// E2E Reporter trait
+trait E2EReporter {
+    fn on_start(total: Int)
+    fn on_result(result: E2EResult)
+    fn on_end(summary: E2ESummary)
+}
+
+/// Console reporter
+struct ConsoleReporter {}
+
+impl E2EReporter for ConsoleReporter {
+    fn on_start(total: Int) {
+        println("\n🚀 Running \(total) E2E tests...\n")
+    }
+    
+    fn on_result(result: E2EResult) {
+        let icon = match result.status {
+            .Passed => "✅"
+            .Failed => "❌"
+            .Skipped => "⏭️"
+        }
+        let duration = format_duration(result.duration)
+        println("\(icon) \(result.name) (\(duration))")
+        
+        if let error = result.error {
+            println("   Error: \(error.message())")
+        }
+    }
+    
+    fn on_end(summary: E2ESummary) {
+        println("\n" + "=".repeat(50))
+        println("📊 E2E Test Summary")
+        println("=".repeat(50))
+        println("Total:   \(summary.total)")
+        println("Passed:  \(summary.passed) ✅")
+        println("Failed:  \(summary.failed) ❌")
+        println("Skipped: \(summary.skipped) ⏭️")
+        println("Success: \(summary.success_rate().round(1))%")
+        println("Duration: \(format_duration(summary.duration))")
+        println("=".repeat(50) + "\n")
+    }
+}
+
+/// HTML reporter
+struct HTMLReporter {
+    output_path: String
+}
+
+impl E2EReporter for HTMLReporter {
+    fn on_start(total: Int) {}
+    fn on_result(result: E2EResult) {}
+    
+    fn on_end(summary: E2ESummary) {
+        let html = self.generate_html(summary)
+        fs.write(self.output_path, html)
+    }
+    
+    fn generate_html(summary: E2ESummary) -> String {
+        var html = "<!DOCTYPE html><html><head><title>E2E Report</title></head><body>"
+        html += "<h1>E2E Test Report</h1>"
+        html += "<p>Total: \(summary.total), Passed: \(summary.passed), Failed: \(summary.failed)</p>"
+        html += "<ul>"
+        for result in summary.results {
+            let status = if result.status == .Passed { "✅" } else { "❌" }
+            html += "<li>\(status) \(result.name)</li>"
+        }
+        html += "</ul></body></html>"
+        html
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Helpers
+// -----------------------------------------------------------------------------
+
+fn format_duration(d: Duration) -> String {
+    let ms = d.as_millis()
+    if ms < 1000 { "\(ms)ms" }
+    else { "\((ms / 1000.0).round(2))s" }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum E2EError {
+    BrowserLaunch(String)
+    BrowserError(String)
+    Navigation(String)
+    ElementNotFound(String)
+    QueryFailed(String)
+    InteractionFailed(String)
+    Screenshot(String)
+    ScriptError(String)
+    Timeout(Duration)
+    WaitTimeout
+    AssertionFailed(String)
+    API(APIError)
+    NoBrowser
+    NoPage
+    JourneyFailed(String)
+    
+    fn message() -> String {
+        match self {
+            .BrowserLaunch(m) => "Browser launch failed: \(m)"
+            .BrowserError(m) => "Browser error: \(m)"
+            .Navigation(m) => "Navigation failed: \(m)"
+            .ElementNotFound(s) => "Element not found: \(s)"
+            .QueryFailed(m) => "Query failed: \(m)"
+            .InteractionFailed(m) => "Interaction failed: \(m)"
+            .Screenshot(m) => "Screenshot failed: \(m)"
+            .ScriptError(m) => "Script error: \(m)"
+            .Timeout(d) => "Timeout after \(d.as_millis())ms"
+            .WaitTimeout => "Wait condition timeout"
+            .AssertionFailed(m) => "Assertion failed: \(m)"
+            .API(e) => "API error"
+            .NoBrowser => "No browser instance"
+            .NoPage => "No page available"
+            .JourneyFailed(m) => "Journey failed: \(m)"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "e2e runner creation" {
+    let runner = E2ERunner.new()
+        .config(E2EConfig.headless())
+        .test("sample test", |ctx| Ok(()))
+    
+    assert_eq(runner.tests.len(), 1)?
+}
+
+test "user journey builder" {
+    let journey = UserJourney.new("Login Flow")
+        .step("Open login page", |ctx, _| ctx.goto("/login"))
+        .step("Enter credentials", |ctx, _| {
+            ctx.page()?.fill("#email", "test@example.com").await?
+            ctx.page()?.fill("#password", "password").await
+        })
+        .step("Submit form", |ctx, _| ctx.page()?.click("#submit").await)
+    
+    assert_eq(journey.steps.len(), 3)?
+}
+
+test "api client" {
+    let client = APIClient.new("https://api.example.com")
+        .header("Accept", "application/json")
+        .auth_token("test-token")
+    
+    assert_eq(client.headers.get("Authorization"), Some("Bearer test-token"))?
+}
+
+test "e2e summary" {
+    let summary = E2ESummary {
+        total: 10,
+        passed: 8,
+        failed: 2,
+        skipped: 0,
+        duration: Duration.seconds(30),
+        results: []
+    }
+    
+    assert_eq(summary.success_rate(), 80.0)?
+    assert(!summary.is_success())
+}

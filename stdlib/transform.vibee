@@ -1,0 +1,621 @@
+// =============================================================================
+// Vibee OS — Transform Module
+// Data transformation utilities and combinators
+// =============================================================================
+
+use result::{Result, Ok, Err}
+
+// =============================================================================
+// Transform Trait
+// =============================================================================
+
+/// Core transformation trait
+trait Transform<I, O> {
+    fn apply(input: I) -> Result<O, TransformError>
+    
+    fn and_then<N, T: Transform<O, N>>(next: T) -> Chain<Self, T, O> {
+        Chain { first: self, second: next }
+    }
+    
+    fn or_else<T: Transform<I, O>>(fallback: T) -> Fallback<Self, T> {
+        Fallback { primary: self, fallback: fallback }
+    }
+    
+    fn map_output<N>(f: fn(O) -> N) -> MapOutput<Self, N> {
+        MapOutput { transform: self, f: f }
+    }
+    
+    fn map_error(f: fn(TransformError) -> TransformError) -> MapError<Self> {
+        MapError { transform: self, f: f }
+    }
+}
+
+/// Transform error
+enum TransformError {
+    InvalidValue { field: String, message: String }
+    TypeConversion { from: String, to: String }
+    MissingField(String)
+    NullValue(String)
+    OutOfRange { field: String, min: String, max: String, actual: String }
+    PatternMismatch { field: String, pattern: String }
+    Custom(String)
+    
+    fn message() -> String {
+        match self {
+            .InvalidValue { field, message } => format!("Invalid value for '{}': {}", field, message)
+            .TypeConversion { from, to } => format!("Cannot convert from {} to {}", from, to)
+            .MissingField(f) => format!("Missing field: {}", f)
+            .NullValue(f) => format!("Null value for field: {}", f)
+            .OutOfRange { field, min, max, actual } => format!("'{}' out of range [{}, {}]: {}", field, min, max, actual)
+            .PatternMismatch { field, pattern } => format!("'{}' does not match pattern: {}", field, pattern)
+            .Custom(msg) => msg
+        }
+    }
+}
+
+// =============================================================================
+// Transform Combinators
+// =============================================================================
+
+/// Chain two transforms
+struct Chain<A, B, M> { first: A, second: B }
+impl<I, M, O, A: Transform<I, M>, B: Transform<M, O>> Transform<I, O> for Chain<A, B, M> {
+    fn apply(input: I) -> Result<O, TransformError> {
+        let mid = self.first.apply(input)?
+        self.second.apply(mid)
+    }
+}
+
+/// Fallback transform
+struct Fallback<A, B> { primary: A, fallback: B }
+impl<I: Clone, O, A: Transform<I, O>, B: Transform<I, O>> Transform<I, O> for Fallback<A, B> {
+    fn apply(input: I) -> Result<O, TransformError> {
+        match self.primary.apply(input.clone()) {
+            Ok(v) => Ok(v)
+            Err(_) => self.fallback.apply(input)
+        }
+    }
+}
+
+/// Map output transform
+struct MapOutput<T, O> { transform: T, f: fn(T.Output) -> O }
+impl<I, M, O, T: Transform<I, M>> Transform<I, O> for MapOutput<T, O> {
+    fn apply(input: I) -> Result<O, TransformError> {
+        Ok((self.f)(self.transform.apply(input)?))
+    }
+}
+
+/// Map error transform
+struct MapError<T> { transform: T, f: fn(TransformError) -> TransformError }
+impl<I, O, T: Transform<I, O>> Transform<I, O> for MapError<T> {
+    fn apply(input: I) -> Result<O, TransformError> {
+        self.transform.apply(input).map_err(self.f)
+    }
+}
+
+// =============================================================================
+// Value Transforms
+// =============================================================================
+
+/// Identity transform
+struct Identity<T> {}
+impl<T> Transform<T, T> for Identity<T> {
+    fn apply(input: T) -> Result<T, TransformError> { Ok(input) }
+}
+
+/// Constant transform
+struct Constant<T: Clone> { value: T }
+impl<I, T: Clone> Transform<I, T> for Constant<T> {
+    fn apply(_: I) -> Result<T, TransformError> { Ok(self.value.clone()) }
+}
+
+/// Map transform
+struct Map<I, O> { f: fn(I) -> O }
+impl<I, O> Transform<I, O> for Map<I, O> {
+    fn apply(input: I) -> Result<O, TransformError> { Ok((self.f)(input)) }
+}
+
+/// TryMap transform
+struct TryMap<I, O> { f: fn(I) -> Result<O, TransformError> }
+impl<I, O> Transform<I, O> for TryMap<I, O> {
+    fn apply(input: I) -> Result<O, TransformError> { (self.f)(input) }
+}
+
+/// Optional transform
+struct Optional<T> { transform: T, default: T.Output }
+impl<I, O: Clone, T: Transform<I, O>> Transform<Option<I>, O> for Optional<T> {
+    fn apply(input: Option<I>) -> Result<O, TransformError> {
+        match input {
+            Some(v) => self.transform.apply(v)
+            None => Ok(self.default.clone())
+        }
+    }
+}
+
+// =============================================================================
+// String Transforms
+// =============================================================================
+
+/// Trim whitespace
+struct Trim {}
+impl Transform<String, String> for Trim {
+    fn apply(input: String) -> Result<String, TransformError> { Ok(input.trim().to_string()) }
+}
+
+/// To uppercase
+struct ToUpperCase {}
+impl Transform<String, String> for ToUpperCase {
+    fn apply(input: String) -> Result<String, TransformError> { Ok(input.to_uppercase()) }
+}
+
+/// To lowercase
+struct ToLowerCase {}
+impl Transform<String, String> for ToLowerCase {
+    fn apply(input: String) -> Result<String, TransformError> { Ok(input.to_lowercase()) }
+}
+
+/// Capitalize
+struct Capitalize {}
+impl Transform<String, String> for Capitalize {
+    fn apply(input: String) -> Result<String, TransformError> {
+        if input.is_empty() { return Ok(input) }
+        let first = input.chars().next().unwrap().to_uppercase()
+        let rest = input[1..].to_lowercase()
+        Ok(format!("{}{}", first, rest))
+    }
+}
+
+/// Replace substring
+struct Replace { from: String, to: String }
+impl Transform<String, String> for Replace {
+    fn apply(input: String) -> Result<String, TransformError> {
+        Ok(input.replace(self.from, self.to))
+    }
+}
+
+/// Regex replace
+struct RegexReplace { pattern: String, replacement: String }
+impl Transform<String, String> for RegexReplace {
+    fn apply(input: String) -> Result<String, TransformError> {
+        Ok(@native("regex_replace", input, self.pattern, self.replacement))
+    }
+}
+
+/// Truncate string
+struct Truncate { max_len: Int, suffix: String }
+impl Transform<String, String> for Truncate {
+    fn apply(input: String) -> Result<String, TransformError> {
+        if input.len() <= self.max_len { Ok(input) }
+        else { Ok(format!("{}{}", input[0..self.max_len - self.suffix.len()], self.suffix)) }
+    }
+}
+
+/// Pad string
+struct Pad { width: Int, char: Char, side: PadSide }
+enum PadSide { Left, Right, Both }
+impl Transform<String, String> for Pad {
+    fn apply(input: String) -> Result<String, TransformError> {
+        if input.len() >= self.width { return Ok(input) }
+        let padding = self.char.to_string().repeat(self.width - input.len())
+        match self.side {
+            PadSide.Left => Ok(format!("{}{}", padding, input))
+            PadSide.Right => Ok(format!("{}{}", input, padding))
+            PadSide.Both => {
+                let left = padding.len() / 2
+                let right = padding.len() - left
+                Ok(format!("{}{}{}", self.char.to_string().repeat(left), input, self.char.to_string().repeat(right)))
+            }
+        }
+    }
+}
+
+/// Split string
+struct Split { delimiter: String }
+impl Transform<String, [String]> for Split {
+    fn apply(input: String) -> Result<[String], TransformError> {
+        Ok(input.split(self.delimiter).collect())
+    }
+}
+
+/// Join strings
+struct Join { delimiter: String }
+impl Transform<[String], String> for Join {
+    fn apply(input: [String]) -> Result<String, TransformError> {
+        Ok(input.join(self.delimiter))
+    }
+}
+
+// =============================================================================
+// Numeric Transforms
+// =============================================================================
+
+/// Parse integer
+struct ParseInt {}
+impl Transform<String, Int> for ParseInt {
+    fn apply(input: String) -> Result<Int, TransformError> {
+        input.parse::<Int>().map_err(|_| TransformError.TypeConversion { from: "String", to: "Int" })
+    }
+}
+
+/// Parse float
+struct ParseFloat {}
+impl Transform<String, Float> for ParseFloat {
+    fn apply(input: String) -> Result<Float, TransformError> {
+        input.parse::<Float>().map_err(|_| TransformError.TypeConversion { from: "String", to: "Float" })
+    }
+}
+
+/// Round float
+struct Round { decimals: Int }
+impl Transform<Float, Float> for Round {
+    fn apply(input: Float) -> Result<Float, TransformError> {
+        let factor = 10.0.pow(self.decimals as Float)
+        Ok((input * factor).round() / factor)
+    }
+}
+
+/// Clamp value
+struct Clamp<T: Ord + Clone> { min: T, max: T }
+impl<T: Ord + Clone> Transform<T, T> for Clamp<T> {
+    fn apply(input: T) -> Result<T, TransformError> {
+        Ok(input.clamp(self.min.clone(), self.max.clone()))
+    }
+}
+
+/// Scale value
+struct Scale { factor: Float }
+impl Transform<Float, Float> for Scale {
+    fn apply(input: Float) -> Result<Float, TransformError> { Ok(input * self.factor) }
+}
+
+/// Normalize to range [0, 1]
+struct Normalize { min: Float, max: Float }
+impl Transform<Float, Float> for Normalize {
+    fn apply(input: Float) -> Result<Float, TransformError> {
+        if self.max == self.min { return Ok(0.0) }
+        Ok((input - self.min) / (self.max - self.min))
+    }
+}
+
+/// Denormalize from range [0, 1]
+struct Denormalize { min: Float, max: Float }
+impl Transform<Float, Float> for Denormalize {
+    fn apply(input: Float) -> Result<Float, TransformError> {
+        Ok(input * (self.max - self.min) + self.min)
+    }
+}
+
+// =============================================================================
+// Date/Time Transforms
+// =============================================================================
+
+/// Parse date
+struct ParseDate { format: String }
+impl Transform<String, DateTime> for ParseDate {
+    fn apply(input: String) -> Result<DateTime, TransformError> {
+        @native("parse_datetime", input, self.format)
+            .map_err(|_| TransformError.TypeConversion { from: "String", to: "DateTime" })
+    }
+}
+
+/// Format date
+struct FormatDate { format: String }
+impl Transform<DateTime, String> for FormatDate {
+    fn apply(input: DateTime) -> Result<String, TransformError> {
+        Ok(@native("format_datetime", input, self.format))
+    }
+}
+
+/// Extract date component
+struct ExtractDate { component: DateComponent }
+enum DateComponent { Year, Month, Day, Hour, Minute, Second, DayOfWeek, DayOfYear, WeekOfYear }
+impl Transform<DateTime, Int> for ExtractDate {
+    fn apply(input: DateTime) -> Result<Int, TransformError> {
+        Ok(match self.component {
+            DateComponent.Year => input.year()
+            DateComponent.Month => input.month()
+            DateComponent.Day => input.day()
+            DateComponent.Hour => input.hour()
+            DateComponent.Minute => input.minute()
+            DateComponent.Second => input.second()
+            DateComponent.DayOfWeek => input.day_of_week()
+            DateComponent.DayOfYear => input.day_of_year()
+            DateComponent.WeekOfYear => input.week_of_year()
+        })
+    }
+}
+
+// =============================================================================
+// Collection Transforms
+// =============================================================================
+
+/// Map over collection
+struct MapCollection<T> { transform: T }
+impl<I, O, T: Transform<I, O>> Transform<[I], [O]> for MapCollection<T> {
+    fn apply(input: [I]) -> Result<[O], TransformError> {
+        var results = []
+        for item in input { results.push(self.transform.apply(item)?) }
+        Ok(results)
+    }
+}
+
+/// Filter collection
+struct FilterCollection<T> { predicate: fn(T) -> Bool }
+impl<T: Clone> Transform<[T], [T]> for FilterCollection<T> {
+    fn apply(input: [T]) -> Result<[T], TransformError> {
+        Ok(input.iter().filter(|x| (self.predicate)(x.clone())).collect())
+    }
+}
+
+/// Sort collection
+struct SortCollection<T, K: Ord> { key: fn(T) -> K }
+impl<T: Clone, K: Ord> Transform<[T], [T]> for SortCollection<T, K> {
+    fn apply(input: [T]) -> Result<[T], TransformError> {
+        var sorted = input.clone()
+        sorted.sort_by_key(|x| (self.key)(x.clone()))
+        Ok(sorted)
+    }
+}
+
+/// Unique elements
+struct Unique<T: Hash + Eq> {}
+impl<T: Hash + Eq + Clone> Transform<[T], [T]> for Unique<T> {
+    fn apply(input: [T]) -> Result<[T], TransformError> {
+        var seen = Set.empty()
+        var result = []
+        for item in input {
+            if seen.insert(item.clone()) { result.push(item) }
+        }
+        Ok(result)
+    }
+}
+
+/// Flatten nested collection
+struct Flatten {}
+impl<T> Transform<[[T]], [T]> for Flatten {
+    fn apply(input: [[T]]) -> Result<[T], TransformError> {
+        Ok(input.into_iter().flatten().collect())
+    }
+}
+
+/// Group by key
+struct GroupBy<T, K: Hash + Eq> { key: fn(T) -> K }
+impl<T: Clone, K: Hash + Eq> Transform<[T], Map<K, [T]>> for GroupBy<T, K> {
+    fn apply(input: [T]) -> Result<Map<K, [T]>, TransformError> {
+        var groups: Map<K, [T]> = Map.empty()
+        for item in input {
+            let k = (self.key)(item.clone())
+            groups.entry(k).or_insert([]).push(item)
+        }
+        Ok(groups)
+    }
+}
+
+/// Take first N elements
+struct Take { n: Int }
+impl<T> Transform<[T], [T]> for Take {
+    fn apply(input: [T]) -> Result<[T], TransformError> {
+        Ok(input.into_iter().take(self.n).collect())
+    }
+}
+
+/// Skip first N elements
+struct Skip { n: Int }
+impl<T> Transform<[T], [T]> for Skip {
+    fn apply(input: [T]) -> Result<[T], TransformError> {
+        Ok(input.into_iter().skip(self.n).collect())
+    }
+}
+
+// =============================================================================
+// Record/Object Transforms
+// =============================================================================
+
+/// Select fields
+struct Select { fields: [String] }
+impl Transform<Map<String, Value>, Map<String, Value>> for Select {
+    fn apply(input: Map<String, Value>) -> Result<Map<String, Value>, TransformError> {
+        var result = Map.empty()
+        for field in self.fields.iter() {
+            if let Some(v) = input.get(field) { result.insert(field.clone(), v.clone()) }
+        }
+        Ok(result)
+    }
+}
+
+/// Exclude fields
+struct Exclude { fields: [String] }
+impl Transform<Map<String, Value>, Map<String, Value>> for Exclude {
+    fn apply(input: Map<String, Value>) -> Result<Map<String, Value>, TransformError> {
+        var result = input.clone()
+        for field in self.fields.iter() { result.remove(field) }
+        Ok(result)
+    }
+}
+
+/// Rename fields
+struct Rename { mappings: Map<String, String> }
+impl Transform<Map<String, Value>, Map<String, Value>> for Rename {
+    fn apply(input: Map<String, Value>) -> Result<Map<String, Value>, TransformError> {
+        var result = Map.empty()
+        for (key, value) in input.iter() {
+            let new_key = self.mappings.get(key).cloned().unwrap_or(key.clone())
+            result.insert(new_key, value.clone())
+        }
+        Ok(result)
+    }
+}
+
+/// Add computed field
+struct AddField { name: String, compute: fn(Map<String, Value>) -> Value }
+impl Transform<Map<String, Value>, Map<String, Value>> for AddField {
+    fn apply(input: Map<String, Value>) -> Result<Map<String, Value>, TransformError> {
+        var result = input.clone()
+        result.insert(self.name.clone(), (self.compute)(input))
+        Ok(result)
+    }
+}
+
+/// Transform field
+struct TransformField<T> { field: String, transform: T }
+impl<T: Transform<Value, Value>> Transform<Map<String, Value>, Map<String, Value>> for TransformField<T> {
+    fn apply(input: Map<String, Value>) -> Result<Map<String, Value>, TransformError> {
+        var result = input.clone()
+        if let Some(v) = result.get(self.field) {
+            let transformed = self.transform.apply(v.clone())?
+            result.insert(self.field.clone(), transformed)
+        }
+        Ok(result)
+    }
+}
+
+/// Merge records
+struct Merge { other: Map<String, Value>, strategy: MergeStrategy }
+enum MergeStrategy { KeepFirst, KeepLast, Combine }
+impl Transform<Map<String, Value>, Map<String, Value>> for Merge {
+    fn apply(input: Map<String, Value>) -> Result<Map<String, Value>, TransformError> {
+        var result = input.clone()
+        for (key, value) in self.other.iter() {
+            match self.strategy {
+                MergeStrategy.KeepFirst => { if !result.contains_key(key) { result.insert(key.clone(), value.clone()) } }
+                MergeStrategy.KeepLast => { result.insert(key.clone(), value.clone()) }
+                MergeStrategy.Combine => {
+                    if let Some(existing) = result.get(key) {
+                        result.insert(key.clone(), combine_values(existing.clone(), value.clone()))
+                    } else {
+                        result.insert(key.clone(), value.clone())
+                    }
+                }
+            }
+        }
+        Ok(result)
+    }
+}
+
+fn combine_values(a: Value, b: Value) -> Value {
+    match (a, b) {
+        (Value.Array(mut arr), Value.Array(other)) => { arr.extend(other); Value.Array(arr) }
+        (Value.Object(mut obj), Value.Object(other)) => { for (k, v) in other { obj.insert(k, v) } Value.Object(obj) }
+        (_, b) => b
+    }
+}
+
+// =============================================================================
+// Validation Transforms
+// =============================================================================
+
+/// Validate with predicate
+struct Validate<T> { predicate: fn(T) -> Bool, error_msg: String }
+impl<T: Clone> Transform<T, T> for Validate<T> {
+    fn apply(input: T) -> Result<T, TransformError> {
+        if (self.predicate)(input.clone()) { Ok(input) }
+        else { Err(TransformError.Custom(self.error_msg.clone())) }
+    }
+}
+
+/// Require non-null
+struct RequireNonNull { field: String }
+impl<T> Transform<Option<T>, T> for RequireNonNull {
+    fn apply(input: Option<T>) -> Result<T, TransformError> {
+        input.ok_or(TransformError.NullValue(self.field.clone()))
+    }
+}
+
+/// Coalesce (first non-null)
+struct Coalesce<T: Clone> { defaults: [T] }
+impl<T: Clone> Transform<Option<T>, T> for Coalesce<T> {
+    fn apply(input: Option<T>) -> Result<T, TransformError> {
+        if let Some(v) = input { return Ok(v) }
+        for d in self.defaults.iter() { return Ok(d.clone()) }
+        Err(TransformError.NullValue("coalesce"))
+    }
+}
+
+// =============================================================================
+// Builder Functions
+// =============================================================================
+
+fn identity<T>() -> Identity<T> { Identity {} }
+fn constant<T: Clone>(value: T) -> Constant<T> { Constant { value: value } }
+fn map<I, O>(f: fn(I) -> O) -> Map<I, O> { Map { f: f } }
+fn try_map<I, O>(f: fn(I) -> Result<O, TransformError>) -> TryMap<I, O> { TryMap { f: f } }
+
+fn trim() -> Trim { Trim {} }
+fn to_upper() -> ToUpperCase { ToUpperCase {} }
+fn to_lower() -> ToLowerCase { ToLowerCase {} }
+fn capitalize() -> Capitalize { Capitalize {} }
+fn replace(from: String, to: String) -> Replace { Replace { from: from, to: to } }
+fn truncate(max_len: Int) -> Truncate { Truncate { max_len: max_len, suffix: "..." } }
+fn split(delimiter: String) -> Split { Split { delimiter: delimiter } }
+fn join(delimiter: String) -> Join { Join { delimiter: delimiter } }
+
+fn parse_int() -> ParseInt { ParseInt {} }
+fn parse_float() -> ParseFloat { ParseFloat {} }
+fn round(decimals: Int) -> Round { Round { decimals: decimals } }
+fn clamp<T: Ord + Clone>(min: T, max: T) -> Clamp<T> { Clamp { min: min, max: max } }
+fn scale(factor: Float) -> Scale { Scale { factor: factor } }
+fn normalize(min: Float, max: Float) -> Normalize { Normalize { min: min, max: max } }
+
+fn parse_date(format: String) -> ParseDate { ParseDate { format: format } }
+fn format_date(format: String) -> FormatDate { FormatDate { format: format } }
+
+fn select(fields: [String]) -> Select { Select { fields: fields } }
+fn exclude(fields: [String]) -> Exclude { Exclude { fields: fields } }
+fn rename(mappings: Map<String, String>) -> Rename { Rename { mappings: mappings } }
+fn add_field(name: String, compute: fn(Map<String, Value>) -> Value) -> AddField { AddField { name: name, compute: compute } }
+
+fn validate<T>(predicate: fn(T) -> Bool, error_msg: String) -> Validate<T> { Validate { predicate: predicate, error_msg: error_msg } }
+fn require_non_null(field: String) -> RequireNonNull { RequireNonNull { field: field } }
+
+fn map_collection<I, O, T: Transform<I, O>>(transform: T) -> MapCollection<T> { MapCollection { transform: transform } }
+fn filter_collection<T>(predicate: fn(T) -> Bool) -> FilterCollection<T> { FilterCollection { predicate: predicate } }
+fn sort_by<T, K: Ord>(key: fn(T) -> K) -> SortCollection<T, K> { SortCollection { key: key } }
+fn unique<T: Hash + Eq>() -> Unique<T> { Unique {} }
+fn flatten() -> Flatten { Flatten {} }
+fn group_by<T, K: Hash + Eq>(key: fn(T) -> K) -> GroupBy<T, K> { GroupBy { key: key } }
+fn take(n: Int) -> Take { Take { n: n } }
+fn skip(n: Int) -> Skip { Skip { n: n } }
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "string_transforms" {
+    assert_eq(Trim {}.apply("  hello  ")?, "hello")?
+    assert_eq(ToUpperCase {}.apply("hello")?, "HELLO")?
+    assert_eq(ToLowerCase {}.apply("HELLO")?, "hello")?
+    assert_eq(Capitalize {}.apply("hello")?, "Hello")?
+}
+
+test "numeric_transforms" {
+    assert_eq(ParseInt {}.apply("42")?, 42)?
+    assert_eq(Round { decimals: 2 }.apply(3.14159)?, 3.14)?
+    assert_eq(Clamp { min: 0, max: 10 }.apply(15)?, 10)?
+}
+
+test "chain_transforms" {
+    let t = Trim {}.and_then(ToUpperCase {})
+    assert_eq(t.apply("  hello  ")?, "HELLO")?
+}
+
+test "collection_transforms" {
+    let t = FilterCollection { predicate: |x: Int| x > 2 }
+    assert_eq(t.apply([1, 2, 3, 4, 5])?, [3, 4, 5])?
+}
+
+test "record_transforms" {
+    var input = Map.empty()
+    input.insert("name", Value.String("Alice"))
+    input.insert("age", Value.Int(30))
+    input.insert("city", Value.String("NYC"))
+    
+    let t = Select { fields: ["name", "age"] }
+    let result = t.apply(input)?
+    assert_eq(result.len(), 2)?
+    assert(result.contains_key("name"))?
+}
+
+test "transform_error" {
+    let err = TransformError.MissingField("name")
+    assert(err.message().contains("name"))?
+}

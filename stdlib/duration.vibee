@@ -1,0 +1,518 @@
+// =============================================================================
+// Vibee OS — Duration Module
+// Time duration representation and manipulation
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Duration
+// -----------------------------------------------------------------------------
+
+/// Time duration with nanosecond precision
+struct Duration {
+    nanos: Int64    // Duration in nanoseconds
+    
+    // Constructors
+    fn zero() -> Self { Duration { nanos: 0 } }
+    fn max() -> Self { Duration { nanos: Int64.MAX } }
+    
+    fn nanos(n: Int64) -> Self { Duration { nanos: n } }
+    fn micros(n: Int64) -> Self { Duration { nanos: n * 1_000 } }
+    fn millis(n: Int64) -> Self { Duration { nanos: n * 1_000_000 } }
+    fn seconds(n: Int64) -> Self { Duration { nanos: n * 1_000_000_000 } }
+    fn minutes(n: Int64) -> Self { Duration { nanos: n * 60_000_000_000 } }
+    fn hours(n: Int64) -> Self { Duration { nanos: n * 3_600_000_000_000 } }
+    fn days(n: Int64) -> Self { Duration { nanos: n * 86_400_000_000_000 } }
+    fn weeks(n: Int64) -> Self { Duration { nanos: n * 604_800_000_000_000 } }
+    
+    // Float constructors for fractional values
+    fn seconds_f(n: Float) -> Self { Duration { nanos: (n * 1_000_000_000.0) as Int64 } }
+    fn minutes_f(n: Float) -> Self { Duration { nanos: (n * 60_000_000_000.0) as Int64 } }
+    fn hours_f(n: Float) -> Self { Duration { nanos: (n * 3_600_000_000_000.0) as Int64 } }
+    
+    // Conversions
+    fn as_nanos() -> Int64 { self.nanos }
+    fn as_micros() -> Int64 { self.nanos / 1_000 }
+    fn as_millis() -> Int64 { self.nanos / 1_000_000 }
+    fn as_seconds() -> Int64 { self.nanos / 1_000_000_000 }
+    fn as_minutes() -> Int64 { self.nanos / 60_000_000_000 }
+    fn as_hours() -> Int64 { self.nanos / 3_600_000_000_000 }
+    fn as_days() -> Int64 { self.nanos / 86_400_000_000_000 }
+    
+    // Float conversions for precision
+    fn as_seconds_f() -> Float { self.nanos as Float / 1_000_000_000.0 }
+    fn as_minutes_f() -> Float { self.nanos as Float / 60_000_000_000.0 }
+    fn as_hours_f() -> Float { self.nanos as Float / 3_600_000_000_000.0 }
+    fn as_days_f() -> Float { self.nanos as Float / 86_400_000_000_000.0 }
+    
+    // Predicates
+    fn is_zero() -> Bool { self.nanos == 0 }
+    fn is_positive() -> Bool { self.nanos > 0 }
+    fn is_negative() -> Bool { self.nanos < 0 }
+    
+    // Operations
+    fn abs() -> Self { Duration { nanos: self.nanos.abs() } }
+    fn neg() -> Self { Duration { nanos: -self.nanos } }
+    
+    fn saturating_add(other: Duration) -> Self {
+        let result = self.nanos.saturating_add(other.nanos)
+        Duration { nanos: result }
+    }
+    
+    fn saturating_sub(other: Duration) -> Self {
+        let result = self.nanos.saturating_sub(other.nanos)
+        Duration { nanos: result }
+    }
+    
+    fn saturating_mul(n: Int64) -> Self {
+        let result = self.nanos.saturating_mul(n)
+        Duration { nanos: result }
+    }
+    
+    fn checked_add(other: Duration) -> Option<Self> {
+        self.nanos.checked_add(other.nanos).map(|n| Duration { nanos: n })
+    }
+    
+    fn checked_sub(other: Duration) -> Option<Self> {
+        self.nanos.checked_sub(other.nanos).map(|n| Duration { nanos: n })
+    }
+    
+    fn checked_mul(n: Int64) -> Option<Self> {
+        self.nanos.checked_mul(n).map(|n| Duration { nanos: n })
+    }
+    
+    // Components extraction
+    fn components() -> DurationComponents {
+        let total_nanos = self.nanos.abs()
+        let days = total_nanos / 86_400_000_000_000
+        let hours = (total_nanos % 86_400_000_000_000) / 3_600_000_000_000
+        let minutes = (total_nanos % 3_600_000_000_000) / 60_000_000_000
+        let seconds = (total_nanos % 60_000_000_000) / 1_000_000_000
+        let millis = (total_nanos % 1_000_000_000) / 1_000_000
+        let micros = (total_nanos % 1_000_000) / 1_000
+        let nanos = total_nanos % 1_000
+        
+        DurationComponents {
+            negative: self.nanos < 0,
+            days: days,
+            hours: hours as Int,
+            minutes: minutes as Int,
+            seconds: seconds as Int,
+            millis: millis as Int,
+            micros: micros as Int,
+            nanos: nanos as Int
+        }
+    }
+    
+    // Formatting
+    fn to_string() -> String {
+        let c = self.components()
+        var parts = []
+        let sign = if c.negative { "-" } else { "" }
+        
+        if c.days > 0 { parts.push("\(c.days)d") }
+        if c.hours > 0 { parts.push("\(c.hours)h") }
+        if c.minutes > 0 { parts.push("\(c.minutes)m") }
+        if c.seconds > 0 || c.millis > 0 || parts.is_empty() {
+            if c.millis > 0 {
+                parts.push("\(c.seconds).\(c.millis.to_string().pad_left(3, '0'))s")
+            } else {
+                parts.push("\(c.seconds)s")
+            }
+        }
+        
+        sign + parts.join(" ")
+    }
+    
+    fn to_iso8601() -> String {
+        let c = self.components()
+        var result = if c.negative { "-P" } else { "P" }
+        
+        if c.days > 0 { result += "\(c.days)D" }
+        
+        if c.hours > 0 || c.minutes > 0 || c.seconds > 0 {
+            result += "T"
+            if c.hours > 0 { result += "\(c.hours)H" }
+            if c.minutes > 0 { result += "\(c.minutes)M" }
+            if c.seconds > 0 || c.millis > 0 {
+                if c.millis > 0 {
+                    result += "\(c.seconds).\(c.millis)S"
+                } else {
+                    result += "\(c.seconds)S"
+                }
+            }
+        }
+        
+        if result == "P" || result == "-P" { result += "T0S" }
+        result
+    }
+    
+    fn humanize() -> String {
+        let secs = self.as_seconds().abs()
+        
+        if secs < 1 { return "less than a second" }
+        if secs < 60 { return "\(secs) second\(if secs == 1 { "" } else { "s" })" }
+        if secs < 3600 {
+            let mins = secs / 60
+            return "\(mins) minute\(if mins == 1 { "" } else { "s" })"
+        }
+        if secs < 86400 {
+            let hours = secs / 3600
+            return "\(hours) hour\(if hours == 1 { "" } else { "s" })"
+        }
+        if secs < 2592000 {
+            let days = secs / 86400
+            return "\(days) day\(if days == 1 { "" } else { "s" })"
+        }
+        if secs < 31536000 {
+            let months = secs / 2592000
+            return "\(months) month\(if months == 1 { "" } else { "s" })"
+        }
+        let years = secs / 31536000
+        "\(years) year\(if years == 1 { "" } else { "s" })"
+    }
+    
+    fn format(pattern: String) -> String {
+        let c = self.components()
+        pattern
+            .replace("%D", c.days.to_string())
+            .replace("%H", c.hours.to_string().pad_left(2, '0'))
+            .replace("%M", c.minutes.to_string().pad_left(2, '0'))
+            .replace("%S", c.seconds.to_string().pad_left(2, '0'))
+            .replace("%f", c.millis.to_string().pad_left(3, '0'))
+            .replace("%h", c.hours.to_string())
+            .replace("%m", c.minutes.to_string())
+            .replace("%s", c.seconds.to_string())
+    }
+    
+    // Parsing
+    fn parse(s: String) -> Result<Self, DurationParseError> {
+        let s = s.trim().to_lower()
+        
+        // Try ISO 8601 format
+        if s.starts_with("p") || s.starts_with("-p") {
+            return Self.parse_iso8601(s)
+        }
+        
+        // Try simple format: "1h 30m 45s"
+        Self.parse_simple(s)
+    }
+    
+    fn parse_iso8601(s: String) -> Result<Self, DurationParseError> {
+        var negative = false
+        var s = s
+        
+        if s.starts_with("-") {
+            negative = true
+            s = s[1..]
+        }
+        
+        if !s.starts_with("p") {
+            return Err(DurationParseError.InvalidFormat)
+        }
+        s = s[1..]
+        
+        var total_nanos: Int64 = 0
+        var in_time = false
+        var num_str = ""
+        
+        for ch in s.chars() {
+            match ch {
+                't' => { in_time = true }
+                'd' => {
+                    let n = Int64.parse(num_str).map_err(|_| DurationParseError.InvalidNumber)?
+                    total_nanos += n * 86_400_000_000_000
+                    num_str = ""
+                }
+                'h' => {
+                    let n = Int64.parse(num_str).map_err(|_| DurationParseError.InvalidNumber)?
+                    total_nanos += n * 3_600_000_000_000
+                    num_str = ""
+                }
+                'm' if in_time => {
+                    let n = Int64.parse(num_str).map_err(|_| DurationParseError.InvalidNumber)?
+                    total_nanos += n * 60_000_000_000
+                    num_str = ""
+                }
+                's' => {
+                    let n = Float.parse(num_str).map_err(|_| DurationParseError.InvalidNumber)?
+                    total_nanos += (n * 1_000_000_000.0) as Int64
+                    num_str = ""
+                }
+                _ if ch.is_digit() || ch == '.' => { num_str += ch.to_string() }
+                _ => { return Err(DurationParseError.InvalidFormat) }
+            }
+        }
+        
+        if negative { total_nanos = -total_nanos }
+        Ok(Duration { nanos: total_nanos })
+    }
+    
+    fn parse_simple(s: String) -> Result<Self, DurationParseError> {
+        var total_nanos: Int64 = 0
+        var num_str = ""
+        
+        for ch in s.chars() {
+            match ch {
+                'd' => {
+                    let n = Int64.parse(num_str.trim()).map_err(|_| DurationParseError.InvalidNumber)?
+                    total_nanos += n * 86_400_000_000_000
+                    num_str = ""
+                }
+                'h' => {
+                    let n = Int64.parse(num_str.trim()).map_err(|_| DurationParseError.InvalidNumber)?
+                    total_nanos += n * 3_600_000_000_000
+                    num_str = ""
+                }
+                'm' if !num_str.is_empty() && num_str.trim().chars().last() != Some('s') => {
+                    let n = Int64.parse(num_str.trim()).map_err(|_| DurationParseError.InvalidNumber)?
+                    total_nanos += n * 60_000_000_000
+                    num_str = ""
+                }
+                's' => {
+                    let trimmed = num_str.trim()
+                    if trimmed.ends_with("m") {
+                        // milliseconds
+                        let n = Int64.parse(trimmed[..trimmed.len()-1]).map_err(|_| DurationParseError.InvalidNumber)?
+                        total_nanos += n * 1_000_000
+                    } else if trimmed.ends_with("u") || trimmed.ends_with("µ") {
+                        // microseconds
+                        let n = Int64.parse(trimmed[..trimmed.len()-1]).map_err(|_| DurationParseError.InvalidNumber)?
+                        total_nanos += n * 1_000
+                    } else if trimmed.ends_with("n") {
+                        // nanoseconds
+                        let n = Int64.parse(trimmed[..trimmed.len()-1]).map_err(|_| DurationParseError.InvalidNumber)?
+                        total_nanos += n
+                    } else {
+                        // seconds
+                        let n = Float.parse(trimmed).map_err(|_| DurationParseError.InvalidNumber)?
+                        total_nanos += (n * 1_000_000_000.0) as Int64
+                    }
+                    num_str = ""
+                }
+                ' ' => { num_str += " " }
+                _ if ch.is_digit() || ch == '.' || ch == '-' => { num_str += ch.to_string() }
+                _ => { num_str += ch.to_string() }
+            }
+        }
+        
+        Ok(Duration { nanos: total_nanos })
+    }
+}
+
+// Operator implementations
+impl Add for Duration {
+    fn add(other: Duration) -> Duration { Duration { nanos: self.nanos + other.nanos } }
+}
+
+impl Sub for Duration {
+    fn sub(other: Duration) -> Duration { Duration { nanos: self.nanos - other.nanos } }
+}
+
+impl Mul<Int64> for Duration {
+    fn mul(n: Int64) -> Duration { Duration { nanos: self.nanos * n } }
+}
+
+impl Div<Int64> for Duration {
+    fn div(n: Int64) -> Duration { Duration { nanos: self.nanos / n } }
+}
+
+impl Div for Duration {
+    fn div(other: Duration) -> Float { self.nanos as Float / other.nanos as Float }
+}
+
+impl Neg for Duration {
+    fn neg() -> Duration { Duration { nanos: -self.nanos } }
+}
+
+impl Eq for Duration {
+    fn eq(other: Duration) -> Bool { self.nanos == other.nanos }
+}
+
+impl Ord for Duration {
+    fn cmp(other: Duration) -> Ordering { self.nanos.cmp(other.nanos) }
+}
+
+impl Hash for Duration {
+    fn hash() -> Int { self.nanos.hash() }
+}
+
+impl Default for Duration {
+    fn default() -> Self { Duration.zero() }
+}
+
+// -----------------------------------------------------------------------------
+// Duration Components
+// -----------------------------------------------------------------------------
+
+struct DurationComponents {
+    negative: Bool
+    days: Int64
+    hours: Int
+    minutes: Int
+    seconds: Int
+    millis: Int
+    micros: Int
+    nanos: Int
+}
+
+// -----------------------------------------------------------------------------
+// Duration Parse Error
+// -----------------------------------------------------------------------------
+
+enum DurationParseError {
+    InvalidFormat
+    InvalidNumber
+    Overflow
+}
+
+impl Display for DurationParseError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidFormat => f.write("Invalid duration format")
+            InvalidNumber => f.write("Invalid number in duration")
+            Overflow => f.write("Duration overflow")
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Duration Builder
+// -----------------------------------------------------------------------------
+
+struct DurationBuilder {
+    nanos: Int64
+    
+    fn new() -> Self { DurationBuilder { nanos: 0 } }
+    
+    fn days(n: Int64) -> Self { self.nanos += n * 86_400_000_000_000; self }
+    fn hours(n: Int64) -> Self { self.nanos += n * 3_600_000_000_000; self }
+    fn minutes(n: Int64) -> Self { self.nanos += n * 60_000_000_000; self }
+    fn seconds(n: Int64) -> Self { self.nanos += n * 1_000_000_000; self }
+    fn millis(n: Int64) -> Self { self.nanos += n * 1_000_000; self }
+    fn micros(n: Int64) -> Self { self.nanos += n * 1_000; self }
+    fn nanos(n: Int64) -> Self { self.nanos += n; self }
+    
+    fn build() -> Duration { Duration { nanos: self.nanos } }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+/// Create duration from nanoseconds
+fn nanos(n: Int64) -> Duration { Duration.nanos(n) }
+
+/// Create duration from microseconds
+fn micros(n: Int64) -> Duration { Duration.micros(n) }
+
+/// Create duration from milliseconds
+fn millis(n: Int64) -> Duration { Duration.millis(n) }
+
+/// Create duration from seconds
+fn seconds(n: Int64) -> Duration { Duration.seconds(n) }
+
+/// Create duration from minutes
+fn minutes(n: Int64) -> Duration { Duration.minutes(n) }
+
+/// Create duration from hours
+fn hours(n: Int64) -> Duration { Duration.hours(n) }
+
+/// Create duration from days
+fn days(n: Int64) -> Duration { Duration.days(n) }
+
+/// Create duration from weeks
+fn weeks(n: Int64) -> Duration { Duration.weeks(n) }
+
+/// Parse duration string
+fn parse(s: String) -> Result<Duration, DurationParseError> { Duration.parse(s) }
+
+/// Sleep for duration
+fn sleep(d: Duration) {
+    @native("sleep_nanos", d.nanos)
+}
+
+/// Sleep for milliseconds
+fn sleep_ms(ms: Int64) {
+    @native("sleep_ms", ms)
+}
+
+// -----------------------------------------------------------------------------
+// Constants
+// -----------------------------------------------------------------------------
+
+const NANOSECOND: Duration = Duration { nanos: 1 }
+const MICROSECOND: Duration = Duration { nanos: 1_000 }
+const MILLISECOND: Duration = Duration { nanos: 1_000_000 }
+const SECOND: Duration = Duration { nanos: 1_000_000_000 }
+const MINUTE: Duration = Duration { nanos: 60_000_000_000 }
+const HOUR: Duration = Duration { nanos: 3_600_000_000_000 }
+const DAY: Duration = Duration { nanos: 86_400_000_000_000 }
+const WEEK: Duration = Duration { nanos: 604_800_000_000_000 }
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "duration creation" {
+    let d = Duration.hours(2) + Duration.minutes(30)
+    assert_eq(d.as_minutes(), 150)?
+    assert_eq(d.as_seconds(), 9000)?
+}
+
+test "duration components" {
+    let d = Duration.hours(25) + Duration.minutes(30) + Duration.seconds(45)
+    let c = d.components()
+    assert_eq(c.days, 1)?
+    assert_eq(c.hours, 1)?
+    assert_eq(c.minutes, 30)?
+    assert_eq(c.seconds, 45)?
+}
+
+test "duration formatting" {
+    let d = Duration.hours(1) + Duration.minutes(30)
+    assert_eq(d.to_string(), "1h 30m 0s")?
+}
+
+test "duration parsing" {
+    let d = Duration.parse("1h 30m 45s")?
+    assert_eq(d.as_seconds(), 5445)?
+}
+
+test "duration iso8601" {
+    let d = Duration.parse_iso8601("PT1H30M45S")?
+    assert_eq(d.as_seconds(), 5445)?
+    assert_eq(d.to_iso8601(), "PT1H30M45S")?
+}
+
+test "duration arithmetic" {
+    let a = Duration.seconds(10)
+    let b = Duration.seconds(3)
+    assert_eq((a + b).as_seconds(), 13)?
+    assert_eq((a - b).as_seconds(), 7)?
+    assert_eq((a * 2).as_seconds(), 20)?
+    assert_eq((a / 2).as_seconds(), 5)?
+}
+
+test "duration comparison" {
+    let a = Duration.seconds(10)
+    let b = Duration.seconds(5)
+    assert(a > b)?
+    assert(b < a)?
+    assert(a == Duration.seconds(10))?
+}
+
+test "duration humanize" {
+    assert_eq(Duration.seconds(30).humanize(), "30 seconds")?
+    assert_eq(Duration.minutes(5).humanize(), "5 minutes")?
+    assert_eq(Duration.hours(2).humanize(), "2 hours")?
+    assert_eq(Duration.days(3).humanize(), "3 days")?
+}
+
+test "duration builder" {
+    let d = DurationBuilder.new()
+        .hours(1)
+        .minutes(30)
+        .seconds(45)
+        .build()
+    assert_eq(d.as_seconds(), 5445)?
+}

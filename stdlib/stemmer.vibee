@@ -1,0 +1,569 @@
+// =============================================================================
+// Vibee OS — Stemmer Module
+// Word stemming algorithms for NLP
+// =============================================================================
+
+/// Stemmer trait
+trait Stemmer {
+    fn stem(word: String) -> String
+    fn stem_batch(words: [String]) -> [String] {
+        words.map(|w| self.stem(w))
+    }
+}
+
+// =============================================================================
+// Porter Stemmer (English)
+// =============================================================================
+
+/// Porter Stemmer for English
+struct PorterStemmer {}
+
+impl PorterStemmer {
+    fn new() -> Self { PorterStemmer {} }
+}
+
+impl Stemmer for PorterStemmer {
+    fn stem(word: String) -> String {
+        if word.len() < 3 { return word }
+        
+        var w = word.to_lowercase()
+        w = step1a(w)
+        w = step1b(w)
+        w = step1c(w)
+        w = step2(w)
+        w = step3(w)
+        w = step4(w)
+        w = step5(w)
+        w
+    }
+}
+
+// Porter Stemmer Steps
+fn step1a(word: String) -> String {
+    if word.ends_with("sses") { return word[0..word.len()-2].to_string() }
+    if word.ends_with("ies") { return word[0..word.len()-2].to_string() }
+    if word.ends_with("ss") { return word }
+    if word.ends_with("s") { return word[0..word.len()-1].to_string() }
+    word
+}
+
+fn step1b(word: String) -> String {
+    if word.ends_with("eed") {
+        let stem = word[0..word.len()-3].to_string()
+        if measure(stem) > 0 { return format!("{}ee", stem) }
+        return word
+    }
+    
+    if word.ends_with("ed") {
+        let stem = word[0..word.len()-2].to_string()
+        if has_vowel(stem) { return step1b_fix(stem) }
+        return word
+    }
+    
+    if word.ends_with("ing") {
+        let stem = word[0..word.len()-3].to_string()
+        if has_vowel(stem) { return step1b_fix(stem) }
+        return word
+    }
+    
+    word
+}
+
+fn step1b_fix(word: String) -> String {
+    if word.ends_with("at") || word.ends_with("bl") || word.ends_with("iz") {
+        return format!("{}e", word)
+    }
+    if ends_double_consonant(word) && !word.ends_with("l") && !word.ends_with("s") && !word.ends_with("z") {
+        return word[0..word.len()-1].to_string()
+    }
+    if measure(word) == 1 && ends_cvc(word) {
+        return format!("{}e", word)
+    }
+    word
+}
+
+fn step1c(word: String) -> String {
+    if word.ends_with("y") {
+        let stem = word[0..word.len()-1].to_string()
+        if has_vowel(stem) { return format!("{}i", stem) }
+    }
+    word
+}
+
+fn step2(word: String) -> String {
+    let suffixes = [
+        ("ational", "ate"), ("tional", "tion"), ("enci", "ence"), ("anci", "ance"),
+        ("izer", "ize"), ("abli", "able"), ("alli", "al"), ("entli", "ent"),
+        ("eli", "e"), ("ousli", "ous"), ("ization", "ize"), ("ation", "ate"),
+        ("ator", "ate"), ("alism", "al"), ("iveness", "ive"), ("fulness", "ful"),
+        ("ousness", "ous"), ("aliti", "al"), ("iviti", "ive"), ("biliti", "ble")
+    ]
+    
+    for (suffix, replacement) in suffixes {
+        if word.ends_with(suffix) {
+            let stem = word[0..word.len()-suffix.len()].to_string()
+            if measure(stem) > 0 { return format!("{}{}", stem, replacement) }
+        }
+    }
+    word
+}
+
+fn step3(word: String) -> String {
+    let suffixes = [
+        ("icate", "ic"), ("ative", ""), ("alize", "al"), ("iciti", "ic"),
+        ("ical", "ic"), ("ful", ""), ("ness", "")
+    ]
+    
+    for (suffix, replacement) in suffixes {
+        if word.ends_with(suffix) {
+            let stem = word[0..word.len()-suffix.len()].to_string()
+            if measure(stem) > 0 { return format!("{}{}", stem, replacement) }
+        }
+    }
+    word
+}
+
+fn step4(word: String) -> String {
+    let suffixes = [
+        "al", "ance", "ence", "er", "ic", "able", "ible", "ant", "ement",
+        "ment", "ent", "ion", "ou", "ism", "ate", "iti", "ous", "ive", "ize"
+    ]
+    
+    for suffix in suffixes {
+        if word.ends_with(suffix) {
+            let stem = word[0..word.len()-suffix.len()].to_string()
+            if suffix == "ion" {
+                if measure(stem) > 1 && (stem.ends_with("s") || stem.ends_with("t")) {
+                    return stem
+                }
+            } else if measure(stem) > 1 {
+                return stem
+            }
+        }
+    }
+    word
+}
+
+fn step5(word: String) -> String {
+    var w = word
+    if w.ends_with("e") {
+        let stem = w[0..w.len()-1].to_string()
+        if measure(stem) > 1 { w = stem }
+        else if measure(stem) == 1 && !ends_cvc(stem) { w = stem }
+    }
+    if w.ends_with("ll") && measure(w) > 1 {
+        w = w[0..w.len()-1].to_string()
+    }
+    w
+}
+
+// Helper functions
+fn is_vowel(c: Char) -> Bool {
+    match c { 'a' | 'e' | 'i' | 'o' | 'u' => true, _ => false }
+}
+
+fn is_consonant(word: String, i: Int) -> Bool {
+    let c = word.chars().nth(i).unwrap_or('a')
+    if is_vowel(c) { return false }
+    if c == 'y' {
+        if i == 0 { return true }
+        return !is_consonant(word, i - 1)
+    }
+    true
+}
+
+fn measure(word: String) -> Int {
+    var m = 0
+    var i = 0
+    let n = word.len()
+    
+    while i < n && is_consonant(word, i) { i += 1 }
+    while i < n {
+        while i < n && !is_consonant(word, i) { i += 1 }
+        while i < n && is_consonant(word, i) { i += 1; m += 1 }
+    }
+    m
+}
+
+fn has_vowel(word: String) -> Bool {
+    for i in 0..word.len() {
+        if !is_consonant(word, i) { return true }
+    }
+    false
+}
+
+fn ends_double_consonant(word: String) -> Bool {
+    let n = word.len()
+    if n < 2 { return false }
+    let last = word.chars().nth(n - 1)
+    let prev = word.chars().nth(n - 2)
+    last == prev && is_consonant(word, n - 1)
+}
+
+fn ends_cvc(word: String) -> Bool {
+    let n = word.len()
+    if n < 3 { return false }
+    let last = word.chars().nth(n - 1).unwrap_or('a')
+    is_consonant(word, n - 3) && !is_consonant(word, n - 2) && is_consonant(word, n - 1) &&
+        last != 'w' && last != 'x' && last != 'y'
+}
+
+// =============================================================================
+// Snowball Stemmer
+// =============================================================================
+
+/// Snowball Stemmer with multi-language support
+struct SnowballStemmer {
+    language: Language
+}
+
+enum Language {
+    English
+    Russian
+    German
+    French
+    Spanish
+    Italian
+    Portuguese
+}
+
+impl SnowballStemmer {
+    fn new(language: Language) -> Self { SnowballStemmer { language: language } }
+    fn english() -> Self { Self.new(Language.English) }
+    fn russian() -> Self { Self.new(Language.Russian) }
+}
+
+impl Stemmer for SnowballStemmer {
+    fn stem(word: String) -> String {
+        match self.language {
+            Language.English => PorterStemmer.new().stem(word),
+            Language.Russian => stem_russian(word),
+            Language.German => stem_german(word),
+            Language.French => stem_french(word),
+            Language.Spanish => stem_spanish(word),
+            _ => word
+        }
+    }
+}
+
+// Russian stemmer
+fn stem_russian(word: String) -> String {
+    var w = word.to_lowercase()
+    
+    // Remove reflexive suffixes
+    let reflexive = ["ся", "сь"]
+    for suffix in reflexive {
+        if w.ends_with(suffix) {
+            w = w[0..w.len()-suffix.len()].to_string()
+            break
+        }
+    }
+    
+    // Remove adjective endings
+    let adj_endings = ["ее", "ие", "ые", "ое", "ими", "ыми", "ей", "ий", "ый", "ой", "ем", "им", "ым", "ом", "его", "ого", "ему", "ому", "их", "ых", "ую", "юю", "ая", "яя", "ою", "ею"]
+    for ending in adj_endings {
+        if w.ends_with(ending) {
+            w = w[0..w.len()-ending.len()].to_string()
+            break
+        }
+    }
+    
+    // Remove verb endings
+    let verb_endings = ["ла", "на", "ете", "йте", "ли", "й", "л", "ем", "н", "ло", "но", "ет", "ют", "ны", "ть", "ешь", "нно"]
+    for ending in verb_endings {
+        if w.ends_with(ending) {
+            w = w[0..w.len()-ending.len()].to_string()
+            break
+        }
+    }
+    
+    // Remove noun endings
+    let noun_endings = ["а", "ев", "ов", "ие", "ье", "е", "иями", "ями", "ами", "еи", "ии", "и", "ией", "ей", "ой", "ий", "й", "иям", "ям", "ием", "ем", "ам", "ом", "о", "у", "ах", "иях", "ях", "ы", "ь", "ию", "ью", "ю", "ия", "ья", "я"]
+    for ending in noun_endings {
+        if w.ends_with(ending) {
+            w = w[0..w.len()-ending.len()].to_string()
+            break
+        }
+    }
+    
+    // Remove derivational suffix
+    if w.ends_with("ость") || w.ends_with("ост") {
+        w = w[0..w.len()-4].to_string()
+    }
+    
+    w
+}
+
+fn stem_german(word: String) -> String {
+    var w = word.to_lowercase()
+    let suffixes = ["ern", "em", "er", "en", "es", "e", "s"]
+    for suffix in suffixes {
+        if w.ends_with(suffix) && w.len() > suffix.len() + 2 {
+            return w[0..w.len()-suffix.len()].to_string()
+        }
+    }
+    w
+}
+
+fn stem_french(word: String) -> String {
+    var w = word.to_lowercase()
+    let suffixes = ["issements", "issement", "atrices", "atrice", "ateurs", "ations", "ateur", "ation", "ances", "ences", "ments", "ement", "ance", "ence", "ment", "euse", "eux", "eur", "ant", "ent"]
+    for suffix in suffixes {
+        if w.ends_with(suffix) && w.len() > suffix.len() + 2 {
+            return w[0..w.len()-suffix.len()].to_string()
+        }
+    }
+    w
+}
+
+fn stem_spanish(word: String) -> String {
+    var w = word.to_lowercase()
+    let suffixes = ["amientos", "imientos", "amiento", "imiento", "aciones", "uciones", "adores", "idades", "ación", "ución", "adora", "mente", "idad", "ador", "ante", "anza", "ible", "able", "ista"]
+    for suffix in suffixes {
+        if w.ends_with(suffix) && w.len() > suffix.len() + 2 {
+            return w[0..w.len()-suffix.len()].to_string()
+        }
+    }
+    w
+}
+
+// =============================================================================
+// Lancaster Stemmer
+// =============================================================================
+
+/// Lancaster (Paice/Husk) Stemmer - more aggressive
+struct LancasterStemmer {}
+
+impl LancasterStemmer {
+    fn new() -> Self { LancasterStemmer {} }
+}
+
+impl Stemmer for LancasterStemmer {
+    fn stem(word: String) -> String {
+        var w = word.to_lowercase()
+        var changed = true
+        
+        while changed && w.len() > 2 {
+            changed = false
+            let rules = lancaster_rules()
+            
+            for (ending, remove, append, cont) in rules {
+                if w.ends_with(ending) && w.len() - ending.len() >= 2 {
+                    w = format!("{}{}", w[0..w.len()-remove].to_string(), append)
+                    changed = cont
+                    break
+                }
+            }
+        }
+        w
+    }
+}
+
+fn lancaster_rules() -> [(String, Int, String, Bool)] {
+    [
+        ("ies", 3, "y", true), ("ied", 3, "y", true),
+        ("ing", 3, "", true), ("ings", 4, "", true),
+        ("ed", 2, "", true), ("edly", 4, "", true),
+        ("ly", 2, "", true), ("ness", 4, "", false),
+        ("ment", 4, "", false), ("ful", 3, "", false),
+        ("less", 4, "", false), ("tion", 4, "", false),
+        ("able", 4, "", false), ("ible", 4, "", false),
+        ("al", 2, "", true), ("ial", 3, "", true),
+        ("ive", 3, "", false), ("ize", 3, "", false),
+        ("ise", 3, "", false), ("ous", 3, "", false),
+        ("ant", 3, "", false), ("ent", 3, "", false),
+        ("er", 2, "", true), ("or", 2, "", true),
+        ("s", 1, "", true)
+    ]
+}
+
+// =============================================================================
+// Lemmatizer
+// =============================================================================
+
+/// Simple rule-based lemmatizer
+struct Lemmatizer {
+    exceptions: Map<String, String>
+    
+    fn new() -> Self {
+        Lemmatizer { exceptions: default_lemma_exceptions() }
+    }
+    
+    fn with_exceptions(exceptions: Map<String, String>) -> Self {
+        Lemmatizer { exceptions: exceptions }
+    }
+    
+    fn lemmatize(word: String) -> String {
+        let lower = word.to_lowercase()
+        
+        // Check exceptions first
+        if let Some(lemma) = self.exceptions.get(lower) {
+            return lemma
+        }
+        
+        // Apply rules
+        lemmatize_verb(lower)
+            .or_else(|| lemmatize_noun(lower))
+            .or_else(|| lemmatize_adjective(lower))
+            .unwrap_or(lower)
+    }
+}
+
+fn lemmatize_verb(word: String) -> Option<String> {
+    let rules = [
+        ("ies", "y"), ("ied", "y"), ("es", ""), ("ed", ""),
+        ("ing", ""), ("s", "")
+    ]
+    for (suffix, replacement) in rules {
+        if word.ends_with(suffix) && word.len() > suffix.len() + 1 {
+            return Some(format!("{}{}", word[0..word.len()-suffix.len()].to_string(), replacement))
+        }
+    }
+    None
+}
+
+fn lemmatize_noun(word: String) -> Option<String> {
+    if word.ends_with("ies") { return Some(format!("{}y", word[0..word.len()-3].to_string())) }
+    if word.ends_with("es") && word.len() > 3 { return Some(word[0..word.len()-2].to_string()) }
+    if word.ends_with("s") && word.len() > 2 { return Some(word[0..word.len()-1].to_string()) }
+    None
+}
+
+fn lemmatize_adjective(word: String) -> Option<String> {
+    if word.ends_with("er") { return Some(word[0..word.len()-2].to_string()) }
+    if word.ends_with("est") { return Some(word[0..word.len()-3].to_string()) }
+    None
+}
+
+fn default_lemma_exceptions() -> Map<String, String> {
+    Map.from_iter([
+        ("was", "be"), ("were", "be"), ("been", "be"), ("being", "be"), ("am", "be"), ("is", "be"), ("are", "be"),
+        ("had", "have"), ("has", "have"), ("having", "have"),
+        ("did", "do"), ("does", "do"), ("doing", "do"), ("done", "do"),
+        ("went", "go"), ("gone", "go"), ("going", "go"), ("goes", "go"),
+        ("said", "say"), ("says", "say"), ("saying", "say"),
+        ("made", "make"), ("makes", "make"), ("making", "make"),
+        ("took", "take"), ("taken", "take"), ("takes", "take"), ("taking", "take"),
+        ("came", "come"), ("comes", "come"), ("coming", "come"),
+        ("saw", "see"), ("seen", "see"), ("sees", "see"), ("seeing", "see"),
+        ("knew", "know"), ("known", "know"), ("knows", "know"), ("knowing", "know"),
+        ("got", "get"), ("gotten", "get"), ("gets", "get"), ("getting", "get"),
+        ("gave", "give"), ("given", "give"), ("gives", "give"), ("giving", "give"),
+        ("found", "find"), ("finds", "find"), ("finding", "find"),
+        ("thought", "think"), ("thinks", "think"), ("thinking", "think"),
+        ("told", "tell"), ("tells", "tell"), ("telling", "tell"),
+        ("became", "become"), ("becomes", "become"), ("becoming", "become"),
+        ("left", "leave"), ("leaves", "leave"), ("leaving", "leave"),
+        ("felt", "feel"), ("feels", "feel"), ("feeling", "feel"),
+        ("brought", "bring"), ("brings", "bring"), ("bringing", "bring"),
+        ("began", "begin"), ("begun", "begin"), ("begins", "begin"), ("beginning", "begin"),
+        ("kept", "keep"), ("keeps", "keep"), ("keeping", "keep"),
+        ("held", "hold"), ("holds", "hold"), ("holding", "hold"),
+        ("wrote", "write"), ("written", "write"), ("writes", "write"), ("writing", "write"),
+        ("stood", "stand"), ("stands", "stand"), ("standing", "stand"),
+        ("heard", "hear"), ("hears", "hear"), ("hearing", "hear"),
+        ("let", "let"), ("lets", "let"), ("letting", "let"),
+        ("meant", "mean"), ("means", "mean"), ("meaning", "mean"),
+        ("set", "set"), ("sets", "set"), ("setting", "set"),
+        ("met", "meet"), ("meets", "meet"), ("meeting", "meet"),
+        ("ran", "run"), ("runs", "run"), ("running", "run"),
+        ("paid", "pay"), ("pays", "pay"), ("paying", "pay"),
+        ("sat", "sit"), ("sits", "sit"), ("sitting", "sit"),
+        ("spoke", "speak"), ("spoken", "speak"), ("speaks", "speak"), ("speaking", "speak"),
+        ("lay", "lie"), ("lain", "lie"), ("lies", "lie"), ("lying", "lie"),
+        ("led", "lead"), ("leads", "lead"), ("leading", "lead"),
+        ("read", "read"), ("reads", "read"), ("reading", "read"),
+        ("grew", "grow"), ("grown", "grow"), ("grows", "grow"), ("growing", "grow"),
+        ("lost", "lose"), ("loses", "lose"), ("losing", "lose"),
+        ("children", "child"), ("men", "man"), ("women", "woman"),
+        ("feet", "foot"), ("teeth", "tooth"), ("geese", "goose"),
+        ("mice", "mouse"), ("people", "person"), ("oxen", "ox")
+    ].iter().map(|(k, v)| (k.to_string(), v.to_string())))
+}
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+/// Stem a word using Porter Stemmer
+fn stem(word: String) -> String {
+    PorterStemmer.new().stem(word)
+}
+
+/// Stem words in a text
+fn stem_text(text: String) -> String {
+    let stemmer = PorterStemmer.new()
+    text.split_whitespace()
+        .map(|w| stemmer.stem(w.to_string()))
+        .join(" ")
+}
+
+/// Lemmatize a word
+fn lemmatize(word: String) -> String {
+    Lemmatizer.new().lemmatize(word)
+}
+
+/// Get stemmer for language
+fn get_stemmer(language: String) -> impl Stemmer {
+    match language.to_lowercase().as_str() {
+        "english" | "en" => SnowballStemmer.english(),
+        "russian" | "ru" => SnowballStemmer.russian(),
+        "german" | "de" => SnowballStemmer.new(Language.German),
+        "french" | "fr" => SnowballStemmer.new(Language.French),
+        "spanish" | "es" => SnowballStemmer.new(Language.Spanish),
+        _ => SnowballStemmer.english()
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "porter stemmer basic" {
+    let stemmer = PorterStemmer.new()
+    assert_eq(stemmer.stem("running"), "run")?
+    assert_eq(stemmer.stem("cats"), "cat")?
+    assert_eq(stemmer.stem("caresses"), "caress")?
+}
+
+test "porter stemmer step1a" {
+    assert_eq(step1a("caresses"), "caress")?
+    assert_eq(step1a("ponies"), "poni")?
+    assert_eq(step1a("cats"), "cat")?
+}
+
+test "porter stemmer complex" {
+    let stemmer = PorterStemmer.new()
+    assert_eq(stemmer.stem("generalization"), "gener")?
+    assert_eq(stemmer.stem("oscillators"), "oscil")?
+}
+
+test "russian stemmer" {
+    let stemmer = SnowballStemmer.russian()
+    assert_eq(stemmer.stem("книги"), "книг")?
+    assert_eq(stemmer.stem("делается"), "дела")?
+}
+
+test "lemmatizer irregular verbs" {
+    let lemmatizer = Lemmatizer.new()
+    assert_eq(lemmatizer.lemmatize("went"), "go")?
+    assert_eq(lemmatizer.lemmatize("was"), "be")?
+    assert_eq(lemmatizer.lemmatize("children"), "child")?
+}
+
+test "lemmatizer regular" {
+    let lemmatizer = Lemmatizer.new()
+    assert_eq(lemmatizer.lemmatize("running"), "run")?
+    assert_eq(lemmatizer.lemmatize("cats"), "cat")?
+}
+
+test "lancaster stemmer" {
+    let stemmer = LancasterStemmer.new()
+    assert_eq(stemmer.stem("happiness"), "happy")?
+}
+
+test "stem text" {
+    let result = stem_text("the cats are running quickly")
+    assert(result.contains("cat"))?
+    assert(result.contains("run"))?
+}

@@ -1,0 +1,757 @@
+// =============================================================================
+// Vibee OS — OCR Module
+// Optical Character Recognition for text extraction
+// =============================================================================
+
+use image::{Image, Pixel}
+use tensor::{Tensor, Shape}
+
+// -----------------------------------------------------------------------------
+// Text Region
+// -----------------------------------------------------------------------------
+
+/// Bounding polygon for text region
+struct TextPolygon {
+    points: [(Int, Int)]
+    
+    fn new(points: [(Int, Int)]) -> Self {
+        TextPolygon { points: points }
+    }
+    
+    fn from_box(x: Int, y: Int, width: Int, height: Int) -> Self {
+        TextPolygon {
+            points: [(x, y), (x + width, y), (x + width, y + height), (x, y + height)]
+        }
+    }
+    
+    fn bounding_box() -> (Int, Int, Int, Int) {
+        let xs: [Int] = self.points.iter().map(|p| p.0).collect()
+        let ys: [Int] = self.points.iter().map(|p| p.1).collect()
+        let min_x = xs.iter().min().unwrap_or(&0)
+        let min_y = ys.iter().min().unwrap_or(&0)
+        let max_x = xs.iter().max().unwrap_or(&0)
+        let max_y = ys.iter().max().unwrap_or(&0)
+        (*min_x, *min_y, max_x - min_x, max_y - min_y)
+    }
+    
+    fn center() -> (Int, Int) {
+        let (x, y, w, h) = self.bounding_box()
+        (x + w / 2, y + h / 2)
+    }
+    
+    fn area() -> Int {
+        // Shoelace formula
+        var area = 0
+        let n = self.points.len()
+        for i in 0..n {
+            let j = (i + 1) % n
+            area += self.points[i].0 * self.points[j].1
+            area -= self.points[j].0 * self.points[i].1
+        }
+        (area.abs() / 2)
+    }
+    
+    fn is_horizontal() -> Bool {
+        let (_, _, w, h) = self.bounding_box()
+        w > h
+    }
+    
+    fn is_vertical() -> Bool {
+        !self.is_horizontal()
+    }
+    
+    fn angle() -> Float {
+        if self.points.len() < 2 { return 0.0 }
+        let dx = self.points[1].0 - self.points[0].0
+        let dy = self.points[1].1 - self.points[0].1
+        (dy as Float).atan2(dx as Float) * 180.0 / 3.14159265
+    }
+}
+
+/// Text line with position
+struct TextLine {
+    text: String
+    polygon: TextPolygon
+    confidence: Float
+    words: [TextWord]
+    
+    fn new(text: String, polygon: TextPolygon, confidence: Float) -> Self {
+        TextLine { text: text, polygon: polygon, confidence: confidence, words: [] }
+    }
+    
+    fn with_words(text: String, polygon: TextPolygon, confidence: Float, words: [TextWord]) -> Self {
+        TextLine { text: text, polygon: polygon, confidence: confidence, words: words }
+    }
+    
+    fn word_count() -> Int { self.words.len() }
+    fn char_count() -> Int { self.text.len() }
+    fn is_empty() -> Bool { self.text.trim().is_empty() }
+    
+    fn bounding_box() -> (Int, Int, Int, Int) { self.polygon.bounding_box() }
+}
+
+/// Single word with position
+struct TextWord {
+    text: String
+    polygon: TextPolygon
+    confidence: Float
+    characters: [TextChar]
+    
+    fn new(text: String, polygon: TextPolygon, confidence: Float) -> Self {
+        TextWord { text: text, polygon: polygon, confidence: confidence, characters: [] }
+    }
+    
+    fn char_count() -> Int { self.text.len() }
+    fn bounding_box() -> (Int, Int, Int, Int) { self.polygon.bounding_box() }
+}
+
+/// Single character with position
+struct TextChar {
+    char: Char
+    polygon: TextPolygon
+    confidence: Float
+    
+    fn new(char: Char, polygon: TextPolygon, confidence: Float) -> Self {
+        TextChar { char: char, polygon: polygon, confidence: confidence }
+    }
+}
+
+/// Text block (paragraph)
+struct TextBlock {
+    lines: [TextLine]
+    polygon: TextPolygon
+    block_type: BlockType
+    
+    fn new(lines: [TextLine], polygon: TextPolygon) -> Self {
+        TextBlock { lines: lines, polygon: polygon, block_type: BlockType.Text }
+    }
+    
+    fn text() -> String {
+        self.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>().join("\n")
+    }
+    
+    fn line_count() -> Int { self.lines.len() }
+    fn word_count() -> Int { self.lines.iter().map(|l| l.word_count()).sum() }
+    fn confidence() -> Float {
+        if self.lines.is_empty() { return 0.0 }
+        self.lines.iter().map(|l| l.confidence).sum::<Float>() / self.lines.len() as Float
+    }
+}
+
+/// Block type classification
+enum BlockType {
+    Text,
+    Title,
+    List,
+    Table,
+    Figure,
+    Caption,
+    Header,
+    Footer,
+    PageNumber
+}
+
+// -----------------------------------------------------------------------------
+// OCR Result
+// -----------------------------------------------------------------------------
+
+/// Complete OCR result
+struct OcrResult {
+    text: String
+    blocks: [TextBlock]
+    lines: [TextLine]
+    words: [TextWord]
+    confidence: Float
+    language: Option<String>
+    
+    fn new() -> Self {
+        OcrResult {
+            text: "", blocks: [], lines: [], words: [],
+            confidence: 0.0, language: None
+        }
+    }
+    
+    fn from_text(text: String, confidence: Float) -> Self {
+        var result = OcrResult.new()
+        result.text = text
+        result.confidence = confidence
+        result
+    }
+    
+    fn line_count() -> Int { self.lines.len() }
+    fn word_count() -> Int { self.words.len() }
+    fn char_count() -> Int { self.text.len() }
+    fn is_empty() -> Bool { self.text.trim().is_empty() }
+    
+    fn get_text() -> String { self.text.clone() }
+    
+    fn get_lines() -> [String] {
+        self.lines.iter().map(|l| l.text.clone()).collect()
+    }
+    
+    fn get_words() -> [String] {
+        self.words.iter().map(|w| w.text.clone()).collect()
+    }
+    
+    fn search(query: String) -> [TextWord] {
+        self.words.iter()
+            .filter(|w| w.text.to_lowercase().contains(&query.to_lowercase()))
+            .cloned()
+            .collect()
+    }
+    
+    fn filter_by_confidence(threshold: Float) -> Self {
+        var result = OcrResult.new()
+        result.lines = self.lines.iter().filter(|l| l.confidence >= threshold).cloned().collect()
+        result.words = self.words.iter().filter(|w| w.confidence >= threshold).cloned().collect()
+        result.text = result.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>().join("\n")
+        result.confidence = self.confidence
+        result
+    }
+}
+
+// -----------------------------------------------------------------------------
+// OCR Engine
+// -----------------------------------------------------------------------------
+
+/// OCR engine type
+enum OcrEngine {
+    Tesseract,
+    EasyOCR,
+    PaddleOCR,
+    TrOCR,
+    MMOCR,
+    DocTR,
+    Surya
+    
+    fn name() -> String {
+        match self {
+            Tesseract => "tesseract", EasyOCR => "easyocr",
+            PaddleOCR => "paddleocr", TrOCR => "trocr",
+            MMOCR => "mmocr", DocTR => "doctr", Surya => "surya"
+        }
+    }
+}
+
+/// OCR configuration
+struct OcrConfig {
+    engine: OcrEngine
+    languages: [String]
+    detect_orientation: Bool
+    deskew: Bool
+    preprocess: Bool
+    output_format: OutputFormat
+    psm: PageSegmentationMode
+    
+    fn new() -> Self {
+        OcrConfig {
+            engine: OcrEngine.Tesseract,
+            languages: ["eng"],
+            detect_orientation: true,
+            deskew: true,
+            preprocess: true,
+            output_format: OutputFormat.Text,
+            psm: PageSegmentationMode.Auto
+        }
+    }
+    
+    fn with_engine(engine: OcrEngine) -> Self { self.engine = engine; self }
+    fn with_languages(langs: [String]) -> Self { self.languages = langs; self }
+    fn with_orientation(detect: Bool) -> Self { self.detect_orientation = detect; self }
+    fn with_deskew(deskew: Bool) -> Self { self.deskew = deskew; self }
+    fn with_preprocess(preprocess: Bool) -> Self { self.preprocess = preprocess; self }
+    fn with_psm(psm: PageSegmentationMode) -> Self { self.psm = psm; self }
+}
+
+/// Output format
+enum OutputFormat { Text, HOCR, TSV, JSON, ALTO }
+
+/// Page segmentation mode
+enum PageSegmentationMode {
+    OsdOnly,
+    AutoOsd,
+    AutoOnly,
+    Auto,
+    SingleColumn,
+    SingleBlockVertText,
+    SingleBlock,
+    SingleLine,
+    SingleWord,
+    CircleWord,
+    SingleChar,
+    SparseText,
+    SparseTextOsd,
+    RawLine
+}
+
+// -----------------------------------------------------------------------------
+// OCR Reader
+// -----------------------------------------------------------------------------
+
+/// Main OCR reader
+struct OcrReader {
+    config: OcrConfig
+    
+    fn new() -> Self {
+        OcrReader { config: OcrConfig.new() }
+    }
+    
+    fn with_config(config: OcrConfig) -> Self {
+        OcrReader { config: config }
+    }
+    
+    fn with_engine(engine: OcrEngine) -> Self {
+        var reader = OcrReader.new()
+        reader.config.engine = engine
+        reader
+    }
+    
+    fn with_languages(languages: [String]) -> Self {
+        var reader = OcrReader.new()
+        reader.config.languages = languages
+        reader
+    }
+    
+    fn read(image: Image) -> Result<OcrResult, OcrError> {
+        let preprocessed = if self.config.preprocess {
+            self.preprocess(image)
+        } else { image }
+        
+        @native("ocr_read", preprocessed, self.config)
+    }
+    
+    fn read_text(image: Image) -> Result<String, OcrError> {
+        Ok(self.read(image)?.text)
+    }
+    
+    fn read_lines(image: Image) -> Result<[TextLine], OcrError> {
+        Ok(self.read(image)?.lines)
+    }
+    
+    fn read_words(image: Image) -> Result<[TextWord], OcrError> {
+        Ok(self.read(image)?.words)
+    }
+    
+    fn read_batch(images: [Image]) -> Result<[OcrResult], OcrError> {
+        images.iter().map(|img| self.read(img.clone())).collect()
+    }
+    
+    fn preprocess(image: Image) -> Image {
+        var img = image.clone()
+        
+        // Convert to grayscale
+        img = img.grayscale()
+        
+        // Binarization
+        img = img.threshold(128)
+        
+        // Noise removal
+        img = img.median_filter(3)
+        
+        // Deskew if enabled
+        if self.config.deskew {
+            let angle = self.detect_skew(img.clone())
+            if angle.abs() > 0.5 {
+                img = img.rotate(angle)
+            }
+        }
+        
+        img
+    }
+    
+    fn detect_skew(image: Image) -> Float {
+        @native("ocr_detect_skew", image).unwrap_or(0.0)
+    }
+    
+    fn detect_orientation(image: Image) -> Result<Int, OcrError> {
+        @native("ocr_detect_orientation", image)
+    }
+    
+    fn detect_language(image: Image) -> Result<String, OcrError> {
+        @native("ocr_detect_language", image)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Text Detection
+// -----------------------------------------------------------------------------
+
+/// Text detector (finds text regions without recognition)
+struct TextDetector {
+    model: TextDetectorModel
+    min_confidence: Float
+    
+    fn new() -> Self {
+        TextDetector { model: TextDetectorModel.CRAFT, min_confidence: 0.5 }
+    }
+    
+    fn with_model(model: TextDetectorModel) -> Self {
+        TextDetector { model: model, min_confidence: 0.5 }
+    }
+    
+    fn detect(image: Image) -> Result<[TextPolygon], OcrError> {
+        @native("text_detect", image, self.model, self.min_confidence)
+    }
+    
+    fn detect_lines(image: Image) -> Result<[TextPolygon], OcrError> {
+        @native("text_detect_lines", image, self.model)
+    }
+    
+    fn detect_words(image: Image) -> Result<[TextPolygon], OcrError> {
+        @native("text_detect_words", image, self.model)
+    }
+}
+
+/// Text detection model
+enum TextDetectorModel {
+    CRAFT,
+    EAST,
+    DBNet,
+    PSENet,
+    PANet,
+    TextFuseNet
+}
+
+// -----------------------------------------------------------------------------
+// Document OCR
+// -----------------------------------------------------------------------------
+
+/// Document page
+struct DocumentPage {
+    image: Image
+    ocr_result: OcrResult
+    page_number: Int
+    orientation: Int
+    
+    fn new(image: Image, page_number: Int) -> Self {
+        DocumentPage {
+            image: image, ocr_result: OcrResult.new(),
+            page_number: page_number, orientation: 0
+        }
+    }
+    
+    fn text() -> String { self.ocr_result.text.clone() }
+}
+
+/// Document OCR for multi-page documents
+struct DocumentOcr {
+    reader: OcrReader
+    
+    fn new() -> Self {
+        DocumentOcr { reader: OcrReader.new() }
+    }
+    
+    fn with_config(config: OcrConfig) -> Self {
+        DocumentOcr { reader: OcrReader.with_config(config) }
+    }
+    
+    fn read_pdf(path: String) -> Result<[DocumentPage], OcrError> {
+        let images: [Image] = @native("pdf_to_images", path)?
+        var pages = []
+        for (i, img) in images.iter().enumerate() {
+            var page = DocumentPage.new(img.clone(), i + 1)
+            page.ocr_result = self.reader.read(img.clone())?
+            pages.push(page)
+        }
+        Ok(pages)
+    }
+    
+    fn read_images(images: [Image]) -> Result<[DocumentPage], OcrError> {
+        var pages = []
+        for (i, img) in images.iter().enumerate() {
+            var page = DocumentPage.new(img.clone(), i + 1)
+            page.ocr_result = self.reader.read(img.clone())?
+            pages.push(page)
+        }
+        Ok(pages)
+    }
+    
+    fn extract_text(pages: [DocumentPage]) -> String {
+        pages.iter().map(|p| p.text()).collect::<Vec<_>>().join("\n\n")
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Specialized OCR
+// -----------------------------------------------------------------------------
+
+/// Receipt OCR
+struct ReceiptOcr {
+    reader: OcrReader
+    
+    fn new() -> Self {
+        ReceiptOcr { reader: OcrReader.new() }
+    }
+    
+    fn read(image: Image) -> Result<ReceiptData, OcrError> {
+        let ocr_result = self.reader.read(image)?
+        @native("receipt_parse", ocr_result)
+    }
+}
+
+/// Receipt data
+struct ReceiptData {
+    merchant: Option<String>
+    date: Option<String>
+    total: Option<Float>
+    items: [ReceiptItem]
+    tax: Option<Float>
+    raw_text: String
+}
+
+/// Receipt item
+struct ReceiptItem {
+    name: String
+    quantity: Int
+    price: Float
+}
+
+/// License plate OCR
+struct LicensePlateOcr {
+    reader: OcrReader
+    
+    fn new() -> Self {
+        var config = OcrConfig.new()
+        config.psm = PageSegmentationMode.SingleLine
+        LicensePlateOcr { reader: OcrReader.with_config(config) }
+    }
+    
+    fn read(image: Image) -> Result<String, OcrError> {
+        let result = self.reader.read(image)?
+        // Clean up plate text
+        let text = result.text.trim()
+            .replace(" ", "")
+            .to_uppercase()
+        Ok(text)
+    }
+    
+    fn detect_and_read(image: Image) -> Result<[String], OcrError> {
+        let plates: [Image] = @native("detect_license_plates", image)?
+        plates.iter().map(|p| self.read(p.clone())).collect()
+    }
+}
+
+/// ID Card OCR
+struct IdCardOcr {
+    reader: OcrReader
+    
+    fn new() -> Self {
+        IdCardOcr { reader: OcrReader.new() }
+    }
+    
+    fn read(image: Image) -> Result<IdCardData, OcrError> {
+        let ocr_result = self.reader.read(image)?
+        @native("id_card_parse", ocr_result)
+    }
+}
+
+/// ID card data
+struct IdCardData {
+    name: Option<String>
+    id_number: Option<String>
+    date_of_birth: Option<String>
+    expiry_date: Option<String>
+    nationality: Option<String>
+    gender: Option<String>
+    mrz: Option<String>
+}
+
+/// Business card OCR
+struct BusinessCardOcr {
+    reader: OcrReader
+    
+    fn new() -> Self {
+        BusinessCardOcr { reader: OcrReader.new() }
+    }
+    
+    fn read(image: Image) -> Result<BusinessCardData, OcrError> {
+        let ocr_result = self.reader.read(image)?
+        @native("business_card_parse", ocr_result)
+    }
+}
+
+/// Business card data
+struct BusinessCardData {
+    name: Option<String>
+    title: Option<String>
+    company: Option<String>
+    email: Option<String>
+    phone: Option<String>
+    address: Option<String>
+    website: Option<String>
+}
+
+// -----------------------------------------------------------------------------
+// Handwriting Recognition
+// -----------------------------------------------------------------------------
+
+/// Handwriting recognizer
+struct HandwritingRecognizer {
+    model: HandwritingModel
+    
+    fn new() -> Self {
+        HandwritingRecognizer { model: HandwritingModel.IAM }
+    }
+    
+    fn with_model(model: HandwritingModel) -> Self {
+        HandwritingRecognizer { model: model }
+    }
+    
+    fn recognize(image: Image) -> Result<String, OcrError> {
+        @native("handwriting_recognize", image, self.model)
+    }
+    
+    fn recognize_lines(image: Image) -> Result<[TextLine], OcrError> {
+        @native("handwriting_recognize_lines", image, self.model)
+    }
+}
+
+/// Handwriting model
+enum HandwritingModel { IAM, RIMES, CVL, Washington }
+
+// -----------------------------------------------------------------------------
+// Scene Text Recognition
+// -----------------------------------------------------------------------------
+
+/// Scene text recognizer (text in natural images)
+struct SceneTextRecognizer {
+    detector: TextDetector
+    reader: OcrReader
+    
+    fn new() -> Self {
+        SceneTextRecognizer {
+            detector: TextDetector.new(),
+            reader: OcrReader.new()
+        }
+    }
+    
+    fn recognize(image: Image) -> Result<OcrResult, OcrError> {
+        // Detect text regions
+        let regions = self.detector.detect(image.clone())?
+        
+        var words = []
+        var full_text = ""
+        
+        for region in regions {
+            let (x, y, w, h) = region.bounding_box()
+            let cropped = image.crop(x, y, w, h)
+            let result = self.reader.read(cropped)?
+            
+            for word in result.words {
+                words.push(word)
+            }
+            full_text += &result.text
+            full_text += " "
+        }
+        
+        var result = OcrResult.new()
+        result.text = full_text.trim().to_string()
+        result.words = words
+        Ok(result)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+/// OCR errors
+enum OcrError {
+    EngineNotAvailable,
+    InvalidImage,
+    LanguageNotSupported(String),
+    ProcessingError(String),
+    IoError(String)
+}
+
+impl Display for OcrError {
+    fn fmt(f: Formatter) {
+        match self {
+            EngineNotAvailable => f.write("OCR engine not available"),
+            InvalidImage => f.write("Invalid image format"),
+            LanguageNotSupported(lang) => f.write(format!("Language not supported: {}", lang)),
+            ProcessingError(msg) => f.write(format!("Processing error: {}", msg)),
+            IoError(msg) => f.write(format!("IO error: {}", msg))
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+/// Read text from image
+fn read_text(image: Image) -> Result<String, OcrError> {
+    OcrReader.new().read_text(image)
+}
+
+/// Read text with specific language
+fn read_text_lang(image: Image, language: String) -> Result<String, OcrError> {
+    OcrReader.with_languages([language]).read_text(image)
+}
+
+/// Read lines from image
+fn read_lines(image: Image) -> Result<[String], OcrError> {
+    let result = OcrReader.new().read(image)?
+    Ok(result.get_lines())
+}
+
+/// Read words from image
+fn read_words(image: Image) -> Result<[String], OcrError> {
+    let result = OcrReader.new().read(image)?
+    Ok(result.get_words())
+}
+
+/// Detect text regions
+fn detect_text(image: Image) -> Result<[TextPolygon], OcrError> {
+    TextDetector.new().detect(image)
+}
+
+/// Read license plate
+fn read_license_plate(image: Image) -> Result<String, OcrError> {
+    LicensePlateOcr.new().read(image)
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "text_polygon_bounding_box" {
+    let poly = TextPolygon.from_box(10, 20, 100, 50)
+    let (x, y, w, h) = poly.bounding_box()
+    assert_eq(x, 10)?
+    assert_eq(y, 20)?
+    assert_eq(w, 100)?
+    assert_eq(h, 50)?
+}
+
+test "text_polygon_center" {
+    let poly = TextPolygon.from_box(0, 0, 100, 100)
+    assert_eq(poly.center(), (50, 50))?
+}
+
+test "text_line_word_count" {
+    let word1 = TextWord.new("Hello", TextPolygon.from_box(0, 0, 50, 20), 0.9)
+    let word2 = TextWord.new("World", TextPolygon.from_box(60, 0, 50, 20), 0.85)
+    let line = TextLine.with_words("Hello World", TextPolygon.from_box(0, 0, 110, 20), 0.87, [word1, word2])
+    assert_eq(line.word_count(), 2)?
+}
+
+test "ocr_result_search" {
+    var result = OcrResult.new()
+    result.words = [
+        TextWord.new("hello", TextPolygon.from_box(0, 0, 50, 20), 0.9),
+        TextWord.new("world", TextPolygon.from_box(60, 0, 50, 20), 0.85),
+        TextWord.new("hello", TextPolygon.from_box(0, 30, 50, 20), 0.88)
+    ]
+    let matches = result.search("hello")
+    assert_eq(matches.len(), 2)?
+}
+
+test "ocr_config_builder" {
+    let config = OcrConfig.new()
+        .with_engine(OcrEngine.EasyOCR)
+        .with_languages(["eng", "rus"])
+        .with_deskew(true)
+    assert_eq(config.languages.len(), 2)?
+}

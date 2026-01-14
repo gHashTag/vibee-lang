@@ -1,0 +1,469 @@
+// =============================================================================
+// Vibee OS — Discord Bot Module
+// Discord Bot API client with Gateway WebSocket support
+// =============================================================================
+
+use http::{Client as HttpClient, Request, Response}
+use websocket::{WebSocket, Message as WsMessage}
+use json::{JsonValue, Serialize, Deserialize}
+use result::{Result, Ok, Err}
+
+// =============================================================================
+// Core Types
+// =============================================================================
+
+/// Discord intents for gateway connection
+enum Intent {
+    Guilds, GuildMembers, GuildBans, GuildEmojis, GuildIntegrations, GuildWebhooks,
+    GuildInvites, GuildVoiceStates, GuildPresences, GuildMessages, GuildMessageReactions,
+    GuildMessageTyping, DirectMessages, DirectMessageReactions, DirectMessageTyping, MessageContent
+}
+
+impl Intent {
+    fn value() -> Int {
+        match self {
+            Intent.Guilds => 1 << 0, Intent.GuildMembers => 1 << 1, Intent.GuildBans => 1 << 2,
+            Intent.GuildEmojis => 1 << 3, Intent.GuildIntegrations => 1 << 4, Intent.GuildWebhooks => 1 << 5,
+            Intent.GuildInvites => 1 << 6, Intent.GuildVoiceStates => 1 << 7, Intent.GuildPresences => 1 << 8,
+            Intent.GuildMessages => 1 << 9, Intent.GuildMessageReactions => 1 << 10, Intent.GuildMessageTyping => 1 << 11,
+            Intent.DirectMessages => 1 << 12, Intent.DirectMessageReactions => 1 << 13, Intent.DirectMessageTyping => 1 << 14,
+            Intent.MessageContent => 1 << 15
+        }
+    }
+    
+    fn default_intents() -> Int {
+        Intent.Guilds.value() | Intent.GuildMessages.value() | Intent.DirectMessages.value() | Intent.MessageContent.value()
+    }
+}
+
+/// Channel types
+enum ChannelType { GuildText, DM, GuildVoice, GroupDM, GuildCategory, GuildNews, GuildStore, GuildNewsThread, GuildPublicThread, GuildPrivateThread, GuildStageVoice }
+
+impl ChannelType {
+    fn from_int(v: Int) -> Self {
+        match v {
+            0 => ChannelType.GuildText, 1 => ChannelType.DM, 2 => ChannelType.GuildVoice,
+            3 => ChannelType.GroupDM, 4 => ChannelType.GuildCategory, 5 => ChannelType.GuildNews,
+            6 => ChannelType.GuildStore, 10 => ChannelType.GuildNewsThread, 11 => ChannelType.GuildPublicThread,
+            12 => ChannelType.GuildPrivateThread, 13 => ChannelType.GuildStageVoice, _ => ChannelType.GuildText
+        }
+    }
+}
+
+/// User status
+enum UserStatus { Online, Idle, DoNotDisturb, Invisible, Offline }
+
+impl UserStatus {
+    fn to_string() -> String {
+        match self { UserStatus.Online => "online", UserStatus.Idle => "idle", UserStatus.DoNotDisturb => "dnd", UserStatus.Invisible => "invisible", UserStatus.Offline => "offline" }
+    }
+}
+
+// =============================================================================
+// Discord Entities
+// =============================================================================
+
+/// Discord User
+struct User { id: String, username: String, discriminator: String, avatar: Option<String>, bot: Bool, system: Bool }
+
+impl User {
+    fn tag() -> String { format!("{}#{}", self.username, self.discriminator) }
+    fn mention() -> String { format!("<@{}>", self.id) }
+    fn avatar_url(size: Int) -> Option<String> {
+        self.avatar.map(|hash| format!("https://cdn.discordapp.com/avatars/{}/{}.png?size={}", self.id, hash, size))
+    }
+}
+
+/// Discord Guild (Server)
+struct Guild { id: String, name: String, icon: Option<String>, owner_id: String, member_count: Option<Int>, description: Option<String> }
+
+impl Guild {
+    fn icon_url(size: Int) -> Option<String> {
+        self.icon.map(|hash| format!("https://cdn.discordapp.com/icons/{}/{}.png?size={}", self.id, hash, size))
+    }
+}
+
+/// Discord Channel
+struct Channel { id: String, channel_type: ChannelType, guild_id: Option<String>, name: Option<String>, topic: Option<String>, nsfw: Bool }
+
+impl Channel {
+    fn mention() -> String { format!("<#{}>", self.id) }
+    fn is_text() -> Bool { matches!(self.channel_type, ChannelType.GuildText | ChannelType.DM | ChannelType.GroupDM) }
+    fn is_voice() -> Bool { matches!(self.channel_type, ChannelType.GuildVoice | ChannelType.GuildStageVoice) }
+}
+
+/// Discord Role
+struct Role { id: String, name: String, color: Int, hoist: Bool, position: Int, permissions: String, mentionable: Bool }
+
+impl Role {
+    fn mention() -> String { format!("<@&{}>", self.id) }
+}
+
+/// Guild Member
+struct Member { user: User, nick: Option<String>, roles: [String], joined_at: String, deaf: Bool, mute: Bool }
+
+impl Member {
+    fn display_name() -> String { self.nick.clone().unwrap_or(self.user.username.clone()) }
+}
+
+/// Discord Embed
+struct Embed {
+    title: Option<String>, description: Option<String>, url: Option<String>, color: Option<Int>,
+    timestamp: Option<String>, footer: Option<EmbedFooter>, image: Option<EmbedImage>,
+    thumbnail: Option<EmbedThumbnail>, author: Option<EmbedAuthor>, fields: [EmbedField]
+}
+
+impl Embed {
+    fn new() -> Self { Embed { title: None, description: None, url: None, color: None, timestamp: None, footer: None, image: None, thumbnail: None, author: None, fields: [] } }
+    fn title(t: String) -> Self { self.title = Some(t); self }
+    fn description(d: String) -> Self { self.description = Some(d); self }
+    fn url(u: String) -> Self { self.url = Some(u); self }
+    fn color(c: Int) -> Self { self.color = Some(c); self }
+    fn footer(text: String, icon_url: Option<String>) -> Self { self.footer = Some(EmbedFooter { text: text, icon_url: icon_url }); self }
+    fn image(url: String) -> Self { self.image = Some(EmbedImage { url: url }); self }
+    fn thumbnail(url: String) -> Self { self.thumbnail = Some(EmbedThumbnail { url: url }); self }
+    fn author(name: String, url: Option<String>, icon_url: Option<String>) -> Self { self.author = Some(EmbedAuthor { name: name, url: url, icon_url: icon_url }); self }
+    fn field(name: String, value: String, inline: Bool) -> Self { self.fields.push(EmbedField { name: name, value: value, inline: inline }); self }
+}
+
+struct EmbedFooter { text: String, icon_url: Option<String> }
+struct EmbedImage { url: String }
+struct EmbedThumbnail { url: String }
+struct EmbedAuthor { name: String, url: Option<String>, icon_url: Option<String> }
+struct EmbedField { name: String, value: String, inline: Bool }
+
+/// Discord Message
+struct Message {
+    id: String, channel_id: String, guild_id: Option<String>, author: User, content: String,
+    timestamp: String, edited_timestamp: Option<String>, tts: Bool, mention_everyone: Bool,
+    mentions: [User], mention_roles: [String], embeds: [Embed], pinned: Bool
+}
+
+impl Message {
+    fn is_command(prefix: String) -> Bool { self.content.starts_with(prefix) }
+    fn get_command(prefix: String) -> Option<String> {
+        if !self.is_command(prefix) { return None }
+        self.content.strip_prefix(prefix).and_then(|s| s.split_whitespace().first().map(|c| c.to_string()))
+    }
+    fn get_args(prefix: String) -> [String] {
+        if !self.is_command(prefix) { return [] }
+        let content = self.content.strip_prefix(prefix).unwrap_or("");
+        let parts: [String] = content.split_whitespace().collect();
+        if parts.len() > 1 { parts[1..].to_vec() } else { [] }
+    }
+    fn reply_mention() -> String { format!("<@{}>", self.author.id) }
+}
+
+/// Interaction (slash commands, buttons, etc.)
+struct Interaction {
+    id: String, application_id: String, interaction_type: InteractionType, data: Option<InteractionData>,
+    guild_id: Option<String>, channel_id: Option<String>, member: Option<Member>, user: Option<User>, token: String
+}
+
+enum InteractionType { Ping, ApplicationCommand, MessageComponent, Autocomplete, ModalSubmit }
+
+struct InteractionData { id: String, name: String, options: [CommandOption] }
+struct CommandOption { name: String, value: JsonValue, options: [CommandOption] }
+
+/// Reaction
+struct Reaction { user_id: String, channel_id: String, message_id: String, guild_id: Option<String>, emoji: Emoji }
+struct Emoji { id: Option<String>, name: String, animated: Bool }
+
+impl Emoji {
+    fn to_string() -> String {
+        match self.id { Some(id) => format!("<{}:{}:{}>", if self.animated { "a" } else { "" }, self.name, id), None => self.name.clone() }
+    }
+}
+
+// =============================================================================
+// Bot Client
+// =============================================================================
+
+/// Discord API error
+enum DiscordError { NetworkError(String), ApiError { code: Int, message: String }, GatewayError(String), RateLimited(Int), Unauthorized }
+
+/// Discord Bot client
+actor DiscordBot {
+    state token: String
+    state api_url: String
+    state gateway_url: String
+    state http: HttpClient
+    state ws: Option<WebSocket>
+    state intents: Int
+    state prefix: String
+    state handlers: Map<String, fn(Message) -> ()>
+    state interaction_handlers: Map<String, fn(Interaction) -> ()>
+    state reaction_handlers: [fn(Reaction) -> ()]
+    state ready_handler: Option<fn(User) -> ()>
+    state session_id: Option<String>
+    state sequence: Option<Int>
+    state heartbeat_interval: Int
+    
+    fn new(token: String) -> Self {
+        DiscordBot {
+            token: token, api_url: "https://discord.com/api/v10", gateway_url: "wss://gateway.discord.gg/?v=10&encoding=json",
+            http: HttpClient.new().timeout(30000).default_header("Authorization", format!("Bot {}", token)),
+            ws: None, intents: Intent.default_intents(), prefix: "!", handlers: Map.new(),
+            interaction_handlers: Map.new(), reaction_handlers: [], ready_handler: None,
+            session_id: None, sequence: None, heartbeat_interval: 45000
+        }
+    }
+    
+    fn with_intents(token: String, intents: Int) -> Self {
+        let mut bot = Self.new(token);
+        bot.intents = intents;
+        bot
+    }
+    
+    fn set_prefix(prefix: String) -> Self { self.prefix = prefix; self }
+    
+    // -------------------------------------------------------------------------
+    // REST API Methods
+    // -------------------------------------------------------------------------
+    
+    fn api_call<T: Deserialize>(method: String, endpoint: String, body: Option<JsonValue>) -> Result<T, DiscordError> {
+        let url = format!("{}{}", self.api_url, endpoint);
+        let req = match method.as_str() {
+            "GET" => Request.get(url),
+            "POST" => Request.post(url).json(body.unwrap_or({})),
+            "PUT" => Request.put(url).json(body.unwrap_or({})),
+            "PATCH" => Request.new(Method.PATCH, url).json(body.unwrap_or({})),
+            "DELETE" => Request.delete(url),
+            _ => Request.get(url)
+        };
+        let response = self.http.send(req).map_err(|e| DiscordError.NetworkError(e.to_string()))?;
+        if response.status.code == 429 {
+            let retry_after = response.headers.get("Retry-After").and_then(|s| Int.parse(s).ok()).unwrap_or(5000);
+            return Err(DiscordError.RateLimited(retry_after));
+        }
+        if response.status.code == 401 { return Err(DiscordError.Unauthorized); }
+        if !response.status.is_success() {
+            let body: JsonValue = response.json().unwrap_or({});
+            return Err(DiscordError.ApiError { code: body["code"].as_int().unwrap_or(0), message: body["message"].as_str().unwrap_or("").to_string() });
+        }
+        response.json().map_err(|e| DiscordError.NetworkError(e.to_string()))
+    }
+    
+    fn get_current_user() -> Result<User, DiscordError> { self.api_call("GET", "/users/@me", None) }
+    fn get_user(user_id: String) -> Result<User, DiscordError> { self.api_call("GET", format!("/users/{}", user_id), None) }
+    fn get_guild(guild_id: String) -> Result<Guild, DiscordError> { self.api_call("GET", format!("/guilds/{}", guild_id), None) }
+    fn get_channel(channel_id: String) -> Result<Channel, DiscordError> { self.api_call("GET", format!("/channels/{}", channel_id), None) }
+    
+    fn send_message(channel_id: String, content: String) -> Result<Message, DiscordError> {
+        self.api_call("POST", format!("/channels/{}/messages", channel_id), Some({ "content": content }))
+    }
+    
+    fn send_embed(channel_id: String, embed: Embed) -> Result<Message, DiscordError> {
+        self.api_call("POST", format!("/channels/{}/messages", channel_id), Some({ "embeds": [embed] }))
+    }
+    
+    fn send_message_with_embed(channel_id: String, content: String, embed: Embed) -> Result<Message, DiscordError> {
+        self.api_call("POST", format!("/channels/{}/messages", channel_id), Some({ "content": content, "embeds": [embed] }))
+    }
+    
+    fn reply(message: Message, content: String) -> Result<Message, DiscordError> {
+        self.api_call("POST", format!("/channels/{}/messages", message.channel_id), Some({
+            "content": content, "message_reference": { "message_id": message.id }
+        }))
+    }
+    
+    fn edit_message(channel_id: String, message_id: String, content: String) -> Result<Message, DiscordError> {
+        self.api_call("PATCH", format!("/channels/{}/messages/{}", channel_id, message_id), Some({ "content": content }))
+    }
+    
+    fn delete_message(channel_id: String, message_id: String) -> Result<(), DiscordError> {
+        self.api_call("DELETE", format!("/channels/{}/messages/{}", channel_id, message_id), None)
+    }
+    
+    fn add_reaction(channel_id: String, message_id: String, emoji: String) -> Result<(), DiscordError> {
+        self.api_call("PUT", format!("/channels/{}/messages/{}/reactions/{}/@me", channel_id, message_id, emoji), None)
+    }
+    
+    fn create_dm(user_id: String) -> Result<Channel, DiscordError> {
+        self.api_call("POST", "/users/@me/channels", Some({ "recipient_id": user_id }))
+    }
+    
+    fn set_presence(status: UserStatus, activity_name: Option<String>, activity_type: Int) {
+        if let Some(ws) = self.ws.as_mut() {
+            let mut presence = { "status": status.to_string(), "afk": false, "since": null, "activities": [] };
+            if let Some(name) = activity_name {
+                presence["activities"] = [{ "name": name, "type": activity_type }];
+            }
+            ws.send(WsMessage.Text(json::encode({ "op": 3, "d": presence })));
+        }
+    }
+    
+    // -------------------------------------------------------------------------
+    // Slash Commands
+    // -------------------------------------------------------------------------
+    
+    fn register_global_command(name: String, description: String, options: [SlashCommandOption]) -> Result<(), DiscordError> {
+        let app_id = self.get_current_user()?.id;
+        self.api_call("POST", format!("/applications/{}/commands", app_id), Some({
+            "name": name, "description": description, "options": options
+        }))
+    }
+    
+    fn respond_to_interaction(interaction: Interaction, content: String) -> Result<(), DiscordError> {
+        self.api_call("POST", format!("/interactions/{}/{}/callback", interaction.id, interaction.token), Some({
+            "type": 4, "data": { "content": content }
+        }))
+    }
+    
+    fn respond_with_embed(interaction: Interaction, embed: Embed) -> Result<(), DiscordError> {
+        self.api_call("POST", format!("/interactions/{}/{}/callback", interaction.id, interaction.token), Some({
+            "type": 4, "data": { "embeds": [embed] }
+        }))
+    }
+    
+    // -------------------------------------------------------------------------
+    // Event Handlers
+    // -------------------------------------------------------------------------
+    
+    fn on_ready(handler: fn(User) -> ()) -> Self { self.ready_handler = Some(handler); self }
+    fn on_command(command: String, handler: fn(Message) -> ()) -> Self { self.handlers.insert(command, handler); self }
+    fn on_slash_command(name: String, handler: fn(Interaction) -> ()) -> Self { self.interaction_handlers.insert(name, handler); self }
+    fn on_reaction(handler: fn(Reaction) -> ()) -> Self { self.reaction_handlers.push(handler); self }
+    
+    fn process_message(message: Message) {
+        if message.author.bot { return; }
+        if let Some(cmd) = message.get_command(self.prefix) {
+            if let Some(handler) = self.handlers.get(&cmd) { handler(message); }
+        }
+    }
+    
+    fn process_interaction(interaction: Interaction) {
+        if let Some(data) = interaction.data.as_ref() {
+            if let Some(handler) = self.interaction_handlers.get(&data.name) { handler(interaction); }
+        }
+    }
+    
+    // -------------------------------------------------------------------------
+    // Gateway Connection
+    // -------------------------------------------------------------------------
+    
+    fn connect() -> Result<(), DiscordError> {
+        self.ws = Some(WebSocket.connect(self.gateway_url).map_err(|e| DiscordError.GatewayError(e.to_string()))?);
+        self.identify()?;
+        Ok(())
+    }
+    
+    fn identify() -> Result<(), DiscordError> {
+        if let Some(ws) = self.ws.as_mut() {
+            let payload = { "op": 2, "d": { "token": self.token, "intents": self.intents, "properties": { "os": "vibee", "browser": "vibee", "device": "vibee" } } };
+            ws.send(WsMessage.Text(json::encode(payload))).map_err(|e| DiscordError.GatewayError(e.to_string()))?;
+        }
+        Ok(())
+    }
+    
+    fn heartbeat() {
+        if let Some(ws) = self.ws.as_mut() {
+            ws.send(WsMessage.Text(json::encode({ "op": 1, "d": self.sequence })));
+        }
+    }
+    
+    fn handle_gateway_event(event: JsonValue) {
+        let op = event["op"].as_int().unwrap_or(-1);
+        match op {
+            0 => { // Dispatch
+                self.sequence = event["s"].as_int();
+                let event_name = event["t"].as_str().unwrap_or("");
+                let data = event["d"].clone();
+                match event_name {
+                    "READY" => {
+                        self.session_id = data["session_id"].as_str().map(|s| s.to_string());
+                        if let Some(handler) = self.ready_handler {
+                            if let Ok(user) = json::from_value(data["user"].clone()) { handler(user); }
+                        }
+                    },
+                    "MESSAGE_CREATE" => {
+                        if let Ok(msg) = json::from_value::<Message>(data) { self.process_message(msg); }
+                    },
+                    "INTERACTION_CREATE" => {
+                        if let Ok(interaction) = json::from_value::<Interaction>(data) { self.process_interaction(interaction); }
+                    },
+                    "MESSAGE_REACTION_ADD" => {
+                        if let Ok(reaction) = json::from_value::<Reaction>(data) {
+                            for handler in self.reaction_handlers.iter() { handler(reaction.clone()); }
+                        }
+                    },
+                    _ => {}
+                }
+            },
+            10 => { // Hello
+                self.heartbeat_interval = data["heartbeat_interval"].as_int().unwrap_or(45000);
+            },
+            11 => {}, // Heartbeat ACK
+            _ => {}
+        }
+    }
+    
+    fn run() -> Result<(), DiscordError> {
+        self.connect()?;
+        let mut last_heartbeat = @native("timestamp_ms");
+        loop {
+            if let Some(ws) = self.ws.as_mut() {
+                while let Some(msg) = ws.try_recv() {
+                    if let WsMessage.Text(text) = msg {
+                        if let Ok(event) = json::decode::<JsonValue>(text) { self.handle_gateway_event(event); }
+                    }
+                }
+            }
+            let now = @native("timestamp_ms");
+            if now - last_heartbeat >= self.heartbeat_interval { self.heartbeat(); last_heartbeat = now; }
+            @native("sleep_ms", 100);
+        }
+    }
+}
+
+/// Slash command option
+struct SlashCommandOption { name: String, description: String, option_type: Int, required: Bool, choices: [SlashCommandChoice] }
+struct SlashCommandChoice { name: String, value: JsonValue }
+
+impl SlashCommandOption {
+    fn string(name: String, description: String, required: Bool) -> Self {
+        SlashCommandOption { name: name, description: description, option_type: 3, required: required, choices: [] }
+    }
+    fn integer(name: String, description: String, required: Bool) -> Self {
+        SlashCommandOption { name: name, description: description, option_type: 4, required: required, choices: [] }
+    }
+    fn user(name: String, description: String, required: Bool) -> Self {
+        SlashCommandOption { name: name, description: description, option_type: 6, required: required, choices: [] }
+    }
+    fn channel(name: String, description: String, required: Bool) -> Self {
+        SlashCommandOption { name: name, description: description, option_type: 7, required: required, choices: [] }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "intents" {
+    let intents = Intent.Guilds.value() | Intent.GuildMessages.value();
+    assert_eq(intents, (1 << 0) | (1 << 9))?
+}
+
+test "embed builder" {
+    let embed = Embed.new().title("Test").description("Description").color(0xFF0000).field("Field", "Value", true);
+    assert_eq(embed.title, Some("Test"))?
+    assert_eq(embed.fields.len(), 1)?
+}
+
+test "user tag" {
+    let user = User { id: "123", username: "TestUser", discriminator: "1234", avatar: None, bot: false, system: false };
+    assert_eq(user.tag(), "TestUser#1234")?
+    assert_eq(user.mention(), "<@123>")?
+}
+
+test "message command parsing" {
+    let msg = Message { id: "1", channel_id: "2", guild_id: None, author: User { id: "3", username: "Test", discriminator: "0001", avatar: None, bot: false, system: false }, content: "!help arg1", timestamp: "", edited_timestamp: None, tts: false, mention_everyone: false, mentions: [], mention_roles: [], embeds: [], pinned: false };
+    assert(msg.is_command("!"))?
+    assert_eq(msg.get_command("!"), Some("help"))?
+    assert_eq(msg.get_args("!"), ["arg1"])?
+}
+
+test "channel mention" {
+    let channel = Channel { id: "123456", channel_type: ChannelType.GuildText, guild_id: Some("789"), name: Some("general"), topic: None, nsfw: false };
+    assert_eq(channel.mention(), "<#123456>")?
+}

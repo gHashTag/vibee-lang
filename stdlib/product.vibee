@@ -1,0 +1,1039 @@
+// =============================================================================
+// Vibee OS — Product Module
+// E-commerce product management with variants, inventory, and pricing
+// =============================================================================
+
+use money::{Money, usd}
+use currency::{Currency}
+use datetime::{DateTime}
+use uuid::{UUID}
+
+// =============================================================================
+// Product Types
+// =============================================================================
+
+/// Product status
+enum ProductStatus {
+    Draft
+    Active
+    Archived
+    OutOfStock
+    Discontinued
+}
+
+impl ProductStatus {
+    fn is_visible() -> Bool {
+        match self {
+            ProductStatus.Active => true
+            ProductStatus.OutOfStock => true
+            _ => false
+        }
+    }
+    
+    fn is_purchasable() -> Bool {
+        match self {
+            ProductStatus.Active => true
+            _ => false
+        }
+    }
+    
+    fn display_name() -> String {
+        match self {
+            ProductStatus.Draft => "Draft"
+            ProductStatus.Active => "Active"
+            ProductStatus.Archived => "Archived"
+            ProductStatus.OutOfStock => "Out of Stock"
+            ProductStatus.Discontinued => "Discontinued"
+        }
+    }
+}
+
+/// Product type
+enum ProductType {
+    Physical
+    Digital
+    Service
+    Subscription
+    Bundle
+    GiftCard
+}
+
+impl ProductType {
+    fn requires_shipping() -> Bool {
+        match self {
+            ProductType.Physical => true
+            ProductType.Bundle => true
+            _ => false
+        }
+    }
+    
+    fn is_tangible() -> Bool {
+        match self {
+            ProductType.Physical => true
+            _ => false
+        }
+    }
+}
+
+// =============================================================================
+// Product Structure
+// =============================================================================
+
+/// Main product structure
+struct Product {
+    id: String
+    sku: String
+    name: String
+    slug: String
+    description: Option<String>
+    short_description: Option<String>
+    product_type: ProductType
+    status: ProductStatus
+    price: Money
+    compare_at_price: Option<Money>
+    cost_price: Option<Money>
+    currency: Currency
+    tax_class: Option<String>
+    taxable: Bool
+    weight: Option<Decimal>
+    weight_unit: WeightUnit
+    dimensions: Option<Dimensions>
+    images: [ProductImage]
+    categories: [String]
+    tags: [String]
+    variants: [ProductVariant]
+    attributes: [ProductAttribute]
+    inventory: InventoryInfo
+    seo: SeoInfo
+    metadata: Map<String, String>
+    created_at: DateTime
+    updated_at: DateTime
+    published_at: Option<DateTime>
+}
+
+impl Product {
+    /// Create new product
+    fn new(name: String, price: Money) -> Self {
+        let now = DateTime.now()
+        Product {
+            id: UUID.v4().to_string(),
+            sku: generate_sku(),
+            name: name.clone(),
+            slug: slugify(name),
+            description: None,
+            short_description: None,
+            product_type: ProductType.Physical,
+            status: ProductStatus.Draft,
+            price: price,
+            compare_at_price: None,
+            cost_price: None,
+            currency: price.currency,
+            tax_class: None,
+            taxable: true,
+            weight: None,
+            weight_unit: WeightUnit.Kg,
+            dimensions: None,
+            images: [],
+            categories: [],
+            tags: [],
+            variants: [],
+            attributes: [],
+            inventory: InventoryInfo.default(),
+            seo: SeoInfo.default(),
+            metadata: Map.empty(),
+            created_at: now,
+            updated_at: now,
+            published_at: None
+        }
+    }
+    
+    /// Create digital product
+    fn digital(name: String, price: Money) -> Self {
+        var product = Self.new(name, price)
+        product.product_type = ProductType.Digital
+        product
+    }
+    
+    /// Create service product
+    fn service(name: String, price: Money) -> Self {
+        var product = Self.new(name, price)
+        product.product_type = ProductType.Service
+        product
+    }
+    
+    /// Builder methods
+    fn with_description(description: String) -> Self {
+        self.description = Some(description)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn with_sku(sku: String) -> Self {
+        self.sku = sku
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn with_compare_price(price: Money) -> Self {
+        self.compare_at_price = Some(price)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn with_cost(cost: Money) -> Self {
+        self.cost_price = Some(cost)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn with_weight(weight: Decimal, unit: WeightUnit) -> Self {
+        self.weight = Some(weight)
+        self.weight_unit = unit
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn with_dimensions(dims: Dimensions) -> Self {
+        self.dimensions = Some(dims)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn with_category(category: String) -> Self {
+        self.categories.push(category)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn with_tag(tag: String) -> Self {
+        self.tags.push(tag)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    fn with_image(image: ProductImage) -> Self {
+        self.images.push(image)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    /// Publish product
+    fn publish() -> Self {
+        self.status = ProductStatus.Active
+        self.published_at = Some(DateTime.now())
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    /// Archive product
+    fn archive() -> Self {
+        self.status = ProductStatus.Archived
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    /// Check if on sale
+    fn is_on_sale() -> Bool {
+        if let Some(compare) = self.compare_at_price {
+            compare > self.price
+        } else {
+            false
+        }
+    }
+    
+    /// Get sale percentage
+    fn sale_percentage() -> Option<Decimal> {
+        if let Some(compare) = self.compare_at_price {
+            if compare > self.price {
+                let diff = compare.as_decimal() - self.price.as_decimal()
+                let pct = (diff / compare.as_decimal()) * Decimal.from_int(100)
+                Some(pct.round(0))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+    
+    /// Get profit margin
+    fn profit_margin() -> Option<Decimal> {
+        if let Some(cost) = self.cost_price {
+            let profit = self.price.as_decimal() - cost.as_decimal()
+            let margin = (profit / self.price.as_decimal()) * Decimal.from_int(100)
+            Some(margin.round(2))
+        } else {
+            None
+        }
+    }
+    
+    /// Get primary image
+    fn primary_image() -> Option<ProductImage> {
+        self.images.iter().find(|img| img.is_primary).or_else(|| self.images.first())
+    }
+    
+    /// Check if in stock
+    fn is_in_stock() -> Bool {
+        self.inventory.is_available()
+    }
+    
+    /// Get effective price (considering variants)
+    fn effective_price() -> Money {
+        if self.variants.is_empty() {
+            self.price
+        } else {
+            self.variants.iter()
+                .filter(|v| v.is_available())
+                .map(|v| v.price)
+                .min()
+                .unwrap_or(self.price)
+        }
+    }
+    
+    /// Get price range for variants
+    fn price_range() -> (Money, Money) {
+        if self.variants.is_empty() {
+            (self.price, self.price)
+        } else {
+            let prices: [Money] = self.variants.iter().map(|v| v.price).collect()
+            let min = prices.iter().min().unwrap_or(self.price)
+            let max = prices.iter().max().unwrap_or(self.price)
+            (min, max)
+        }
+    }
+    
+    /// Add variant
+    fn add_variant(variant: ProductVariant) -> Self {
+        self.variants.push(variant)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    /// Get variant by options
+    fn get_variant(options: Map<String, String>) -> Option<ProductVariant> {
+        self.variants.iter().find(|v| v.matches_options(options))
+    }
+    
+    /// Add attribute
+    fn add_attribute(attr: ProductAttribute) -> Self {
+        self.attributes.push(attr)
+        self.updated_at = DateTime.now()
+        self
+    }
+    
+    /// Update inventory
+    fn update_inventory(quantity: Int) {
+        self.inventory.quantity = quantity
+        if quantity <= 0 && !self.inventory.allow_backorder {
+            self.status = ProductStatus.OutOfStock
+        } else if self.status == ProductStatus.OutOfStock && quantity > 0 {
+            self.status = ProductStatus.Active
+        }
+        self.updated_at = DateTime.now()
+    }
+}
+
+// =============================================================================
+// Product Variant
+// =============================================================================
+
+/// Product variant (e.g., size/color combinations)
+struct ProductVariant {
+    id: String
+    sku: String
+    name: String
+    price: Money
+    compare_at_price: Option<Money>
+    options: Map<String, String>
+    weight: Option<Decimal>
+    inventory: InventoryInfo
+    image_id: Option<String>
+    barcode: Option<String>
+    position: Int
+    created_at: DateTime
+    updated_at: DateTime
+}
+
+impl ProductVariant {
+    fn new(options: Map<String, String>, price: Money) -> Self {
+        let now = DateTime.now()
+        let name = options.values().join(" / ")
+        ProductVariant {
+            id: UUID.v4().to_string(),
+            sku: generate_sku(),
+            name: name,
+            price: price,
+            compare_at_price: None,
+            options: options,
+            weight: None,
+            inventory: InventoryInfo.default(),
+            image_id: None,
+            barcode: None,
+            position: 0,
+            created_at: now,
+            updated_at: now
+        }
+    }
+    
+    fn with_sku(sku: String) -> Self {
+        self.sku = sku
+        self
+    }
+    
+    fn with_inventory(quantity: Int) -> Self {
+        self.inventory.quantity = quantity
+        self
+    }
+    
+    fn is_available() -> Bool {
+        self.inventory.is_available()
+    }
+    
+    fn matches_options(query: Map<String, String>) -> Bool {
+        for (key, value) in query {
+            if self.options.get(key) != Some(value) {
+                return false
+            }
+        }
+        true
+    }
+    
+    fn option_string() -> String {
+        self.options.iter()
+            .map(|(k, v)| "\(k): \(v)")
+            .join(", ")
+    }
+}
+
+// =============================================================================
+// Product Attribute
+// =============================================================================
+
+/// Product attribute for filtering/display
+struct ProductAttribute {
+    name: String
+    value: String
+    visible: Bool
+    variation: Bool
+}
+
+impl ProductAttribute {
+    fn new(name: String, value: String) -> Self {
+        ProductAttribute {
+            name: name,
+            value: value,
+            visible: true,
+            variation: false
+        }
+    }
+    
+    fn for_variation(name: String, value: String) -> Self {
+        ProductAttribute {
+            name: name,
+            value: value,
+            visible: true,
+            variation: true
+        }
+    }
+}
+
+// =============================================================================
+// Product Image
+// =============================================================================
+
+/// Product image
+struct ProductImage {
+    id: String
+    url: String
+    alt_text: Option<String>
+    position: Int
+    is_primary: Bool
+    width: Option<Int>
+    height: Option<Int>
+}
+
+impl ProductImage {
+    fn new(url: String) -> Self {
+        ProductImage {
+            id: UUID.v4().to_string(),
+            url: url,
+            alt_text: None,
+            position: 0,
+            is_primary: false,
+            width: None,
+            height: None
+        }
+    }
+    
+    fn primary(url: String) -> Self {
+        var img = Self.new(url)
+        img.is_primary = true
+        img
+    }
+    
+    fn with_alt(alt: String) -> Self {
+        self.alt_text = Some(alt)
+        self
+    }
+    
+    fn with_dimensions(width: Int, height: Int) -> Self {
+        self.width = Some(width)
+        self.height = Some(height)
+        self
+    }
+}
+
+// =============================================================================
+// Inventory
+// =============================================================================
+
+/// Inventory tracking info
+struct InventoryInfo {
+    quantity: Int
+    reserved: Int
+    track_inventory: Bool
+    allow_backorder: Bool
+    low_stock_threshold: Int
+    warehouse_id: Option<String>
+}
+
+impl InventoryInfo {
+    fn default() -> Self {
+        InventoryInfo {
+            quantity: 0,
+            reserved: 0,
+            track_inventory: true,
+            allow_backorder: false,
+            low_stock_threshold: 5,
+            warehouse_id: None
+        }
+    }
+    
+    fn available_quantity() -> Int {
+        self.quantity - self.reserved
+    }
+    
+    fn is_available() -> Bool {
+        if !self.track_inventory {
+            true
+        } else if self.allow_backorder {
+            true
+        } else {
+            self.available_quantity() > 0
+        }
+    }
+    
+    fn is_low_stock() -> Bool {
+        self.track_inventory && self.available_quantity() <= self.low_stock_threshold
+    }
+    
+    fn reserve(qty: Int) -> Result<(), ProductError> {
+        if qty > self.available_quantity() && !self.allow_backorder {
+            return Err(ProductError.InsufficientStock)
+        }
+        self.reserved += qty
+        Ok(())
+    }
+    
+    fn release(qty: Int) {
+        self.reserved = (self.reserved - qty).max(0)
+    }
+    
+    fn commit(qty: Int) -> Result<(), ProductError> {
+        if qty > self.quantity && !self.allow_backorder {
+            return Err(ProductError.InsufficientStock)
+        }
+        self.quantity -= qty
+        self.reserved = (self.reserved - qty).max(0)
+        Ok(())
+    }
+    
+    fn restock(qty: Int) {
+        self.quantity += qty
+    }
+}
+
+// =============================================================================
+// Supporting Types
+// =============================================================================
+
+/// Weight unit
+enum WeightUnit {
+    Kg
+    G
+    Lb
+    Oz
+}
+
+impl WeightUnit {
+    fn to_kg(value: Decimal) -> Decimal {
+        match self {
+            WeightUnit.Kg => value
+            WeightUnit.G => value / Decimal.from_int(1000)
+            WeightUnit.Lb => value * Decimal.from_string("0.453592").unwrap()
+            WeightUnit.Oz => value * Decimal.from_string("0.0283495").unwrap()
+        }
+    }
+    
+    fn symbol() -> String {
+        match self {
+            WeightUnit.Kg => "kg"
+            WeightUnit.G => "g"
+            WeightUnit.Lb => "lb"
+            WeightUnit.Oz => "oz"
+        }
+    }
+}
+
+/// Product dimensions
+struct Dimensions {
+    length: Decimal
+    width: Decimal
+    height: Decimal
+    unit: DimensionUnit
+}
+
+impl Dimensions {
+    fn new(length: Decimal, width: Decimal, height: Decimal) -> Self {
+        Dimensions {
+            length: length,
+            width: width,
+            height: height,
+            unit: DimensionUnit.Cm
+        }
+    }
+    
+    fn volume() -> Decimal {
+        self.length * self.width * self.height
+    }
+    
+    fn to_string() -> String {
+        let u = self.unit.symbol()
+        "\(self.length) x \(self.width) x \(self.height) \(u)"
+    }
+}
+
+/// Dimension unit
+enum DimensionUnit {
+    Cm
+    M
+    In
+    Ft
+}
+
+impl DimensionUnit {
+    fn symbol() -> String {
+        match self {
+            DimensionUnit.Cm => "cm"
+            DimensionUnit.M => "m"
+            DimensionUnit.In => "in"
+            DimensionUnit.Ft => "ft"
+        }
+    }
+}
+
+/// SEO information
+struct SeoInfo {
+    title: Option<String>
+    description: Option<String>
+    keywords: [String]
+    canonical_url: Option<String>
+}
+
+impl SeoInfo {
+    fn default() -> Self {
+        SeoInfo {
+            title: None,
+            description: None,
+            keywords: [],
+            canonical_url: None
+        }
+    }
+}
+
+// =============================================================================
+// Product Service (Actor)
+// =============================================================================
+
+/// Product catalog service
+actor ProductService {
+    state products: Map<String, Product>
+    state by_sku: Map<String, String>
+    state by_slug: Map<String, String>
+    state by_category: Map<String, [String]>
+    
+    fn new() -> Self {
+        ProductService {
+            products: Map.empty(),
+            by_sku: Map.empty(),
+            by_slug: Map.empty(),
+            by_category: Map.empty()
+        }
+    }
+    
+    /// Add product to catalog
+    fn add(product: Product) -> Result<Product, ProductError> {
+        if self.by_sku.contains_key(product.sku) {
+            return Err(ProductError.DuplicateSku)
+        }
+        if self.by_slug.contains_key(product.slug) {
+            return Err(ProductError.DuplicateSlug)
+        }
+        
+        self.by_sku.insert(product.sku.clone(), product.id.clone())
+        self.by_slug.insert(product.slug.clone(), product.id.clone())
+        
+        for category in product.categories {
+            let ids = self.by_category.get(category).unwrap_or([])
+            ids.push(product.id.clone())
+            self.by_category.insert(category, ids)
+        }
+        
+        self.products.insert(product.id.clone(), product.clone())
+        Ok(product)
+    }
+    
+    /// Get product by ID
+    fn get(id: String) -> Option<Product> {
+        self.products.get(id)
+    }
+    
+    /// Get product by SKU
+    fn get_by_sku(sku: String) -> Option<Product> {
+        self.by_sku.get(sku).and_then(|id| self.products.get(id))
+    }
+    
+    /// Get product by slug
+    fn get_by_slug(slug: String) -> Option<Product> {
+        self.by_slug.get(slug).and_then(|id| self.products.get(id))
+    }
+    
+    /// Get products by category
+    fn get_by_category(category: String) -> [Product] {
+        self.by_category.get(category)
+            .unwrap_or([])
+            .iter()
+            .filter_map(|id| self.products.get(id))
+            .collect()
+    }
+    
+    /// Update product
+    fn update(product: Product) -> Result<Product, ProductError> {
+        if !self.products.contains_key(product.id) {
+            return Err(ProductError.NotFound)
+        }
+        self.products.insert(product.id.clone(), product.clone())
+        Ok(product)
+    }
+    
+    /// Delete product
+    fn delete(id: String) -> Result<(), ProductError> {
+        if let Some(product) = self.products.remove(id) {
+            self.by_sku.remove(product.sku)
+            self.by_slug.remove(product.slug)
+            for category in product.categories {
+                if let Some(ids) = self.by_category.get_mut(category) {
+                    ids.retain(|i| i != product.id)
+                }
+            }
+            Ok(())
+        } else {
+            Err(ProductError.NotFound)
+        }
+    }
+    
+    /// Search products
+    fn search(query: ProductQuery) -> ProductSearchResult {
+        var results: [Product] = self.products.values().collect()
+        
+        // Filter by status
+        if let Some(status) = query.status {
+            results = results.iter().filter(|p| p.status == status).collect()
+        }
+        
+        // Filter by category
+        if let Some(category) = query.category {
+            results = results.iter().filter(|p| p.categories.contains(category)).collect()
+        }
+        
+        // Filter by price range
+        if let Some(min) = query.min_price {
+            results = results.iter().filter(|p| p.price >= min).collect()
+        }
+        if let Some(max) = query.max_price {
+            results = results.iter().filter(|p| p.price <= max).collect()
+        }
+        
+        // Filter by text search
+        if let Some(text) = query.search_text {
+            let lower = text.to_lower()
+            results = results.iter().filter(|p| {
+                p.name.to_lower().contains(lower) ||
+                p.description.map(|d| d.to_lower().contains(lower)).unwrap_or(false)
+            }).collect()
+        }
+        
+        // Filter by in stock
+        if query.in_stock_only {
+            results = results.iter().filter(|p| p.is_in_stock()).collect()
+        }
+        
+        let total = results.len()
+        
+        // Sort
+        results = match query.sort_by {
+            ProductSortBy.Name => results.sort_by(|a, b| a.name.cmp(b.name))
+            ProductSortBy.PriceAsc => results.sort_by(|a, b| a.price.cmp(b.price))
+            ProductSortBy.PriceDesc => results.sort_by(|a, b| b.price.cmp(a.price))
+            ProductSortBy.Newest => results.sort_by(|a, b| b.created_at.cmp(a.created_at))
+            ProductSortBy.Popularity => results  // Would need sales data
+        }
+        
+        // Paginate
+        let start = query.offset
+        let end = (start + query.limit).min(results.len())
+        results = results[start..end].to_vec()
+        
+        ProductSearchResult {
+            products: results,
+            total: total,
+            page: query.offset / query.limit + 1,
+            per_page: query.limit
+        }
+    }
+    
+    /// Get all active products
+    fn list_active() -> [Product] {
+        self.products.values()
+            .filter(|p| p.status == ProductStatus.Active)
+            .collect()
+    }
+    
+    /// Get low stock products
+    fn list_low_stock() -> [Product] {
+        self.products.values()
+            .filter(|p| p.inventory.is_low_stock())
+            .collect()
+    }
+}
+
+// =============================================================================
+// Query Types
+// =============================================================================
+
+/// Product search query
+struct ProductQuery {
+    search_text: Option<String>
+    category: Option<String>
+    status: Option<ProductStatus>
+    min_price: Option<Money>
+    max_price: Option<Money>
+    tags: [String]
+    in_stock_only: Bool
+    sort_by: ProductSortBy
+    offset: Int
+    limit: Int
+}
+
+impl ProductQuery {
+    fn new() -> Self {
+        ProductQuery {
+            search_text: None,
+            category: None,
+            status: None,
+            min_price: None,
+            max_price: None,
+            tags: [],
+            in_stock_only: false,
+            sort_by: ProductSortBy.Newest,
+            offset: 0,
+            limit: 20
+        }
+    }
+    
+    fn with_search(text: String) -> Self {
+        self.search_text = Some(text)
+        self
+    }
+    
+    fn with_category(category: String) -> Self {
+        self.category = Some(category)
+        self
+    }
+    
+    fn with_price_range(min: Money, max: Money) -> Self {
+        self.min_price = Some(min)
+        self.max_price = Some(max)
+        self
+    }
+    
+    fn active_only() -> Self {
+        self.status = Some(ProductStatus.Active)
+        self
+    }
+    
+    fn in_stock() -> Self {
+        self.in_stock_only = true
+        self
+    }
+    
+    fn sort(by: ProductSortBy) -> Self {
+        self.sort_by = by
+        self
+    }
+    
+    fn paginate(page: Int, per_page: Int) -> Self {
+        self.offset = (page - 1) * per_page
+        self.limit = per_page
+        self
+    }
+}
+
+/// Sort options
+enum ProductSortBy {
+    Name
+    PriceAsc
+    PriceDesc
+    Newest
+    Popularity
+}
+
+/// Search result
+struct ProductSearchResult {
+    products: [Product]
+    total: Int
+    page: Int
+    per_page: Int
+}
+
+impl ProductSearchResult {
+    fn total_pages() -> Int {
+        (self.total + self.per_page - 1) / self.per_page
+    }
+    
+    fn has_next() -> Bool {
+        self.page < self.total_pages()
+    }
+    
+    fn has_prev() -> Bool {
+        self.page > 1
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum ProductError {
+    NotFound
+    DuplicateSku
+    DuplicateSlug
+    InsufficientStock
+    InvalidPrice
+    InvalidVariant
+}
+
+impl Display for ProductError {
+    fn fmt(f: Formatter) {
+        f.write(match self {
+            NotFound => "Product not found"
+            DuplicateSku => "SKU already exists"
+            DuplicateSlug => "Slug already exists"
+            InsufficientStock => "Insufficient stock"
+            InvalidPrice => "Invalid price"
+            InvalidVariant => "Invalid variant"
+        })
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+fn generate_sku() -> String {
+    let chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    var sku = "SKU-"
+    for _ in 0..8 {
+        sku.push(chars.chars().nth(@native("random_int", 0, chars.len())).unwrap())
+    }
+    sku
+}
+
+fn slugify(text: String) -> String {
+    text.to_lower()
+        .replace(" ", "-")
+        .replace("_", "-")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c == '-')
+        .collect()
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "create product" {
+    let product = Product.new("Test Product", usd(29.99))
+    assert_eq(product.name, "Test Product")?
+    assert_eq(product.price.format(), "$29.99")?
+    assert_eq(product.status, ProductStatus.Draft)?
+}
+
+test "product on sale" {
+    var product = Product.new("Sale Item", usd(79.99))
+        .with_compare_price(usd(99.99))
+    
+    assert(product.is_on_sale())?
+    assert_eq(product.sale_percentage(), Some(Decimal.from_int(20)))?
+}
+
+test "product variants" {
+    var product = Product.new("T-Shirt", usd(25.00))
+    
+    let small = ProductVariant.new(
+        Map.from([("Size", "S"), ("Color", "Red")]),
+        usd(25.00)
+    ).with_inventory(10)
+    
+    let large = ProductVariant.new(
+        Map.from([("Size", "L"), ("Color", "Red")]),
+        usd(27.00)
+    ).with_inventory(5)
+    
+    product = product.add_variant(small).add_variant(large)
+    
+    assert_eq(product.variants.len(), 2)?
+    
+    let (min, max) = product.price_range()
+    assert_eq(min.format(), "$25.00")?
+    assert_eq(max.format(), "$27.00")?
+}
+
+test "inventory management" {
+    var inv = InventoryInfo.default()
+    inv.quantity = 10
+    
+    assert(inv.is_available())?
+    assert_eq(inv.available_quantity(), 10)?
+    
+    inv.reserve(3).unwrap()
+    assert_eq(inv.available_quantity(), 7)?
+    
+    inv.commit(3).unwrap()
+    assert_eq(inv.quantity, 7)?
+}
+
+test "product search" {
+    let service = ProductService.new()
+    
+    service.add(Product.new("iPhone 15", usd(999.00)).publish()).unwrap()
+    service.add(Product.new("Samsung Galaxy", usd(899.00)).publish()).unwrap()
+    service.add(Product.new("iPhone Case", usd(29.00)).publish()).unwrap()
+    
+    let query = ProductQuery.new()
+        .with_search("iPhone")
+        .active_only()
+    
+    let results = service.search(query)
+    assert_eq(results.total, 2)?
+}

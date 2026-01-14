@@ -1,0 +1,576 @@
+// =============================================================================
+// Vibee OS — HCL Module
+// HashiCorp Configuration Language parsing and generation
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// HCL Value Types
+// -----------------------------------------------------------------------------
+
+enum Value {
+    Null
+    Bool(Bool)
+    Number(Float)
+    String(String)
+    Array([Value])
+    Object(Map<String, Value>)
+    Block(Block)
+    
+    fn as_bool() -> Option<Bool> { match self { .Bool(b) => Some(b), _ => None } }
+    fn as_number() -> Option<Float> { match self { .Number(n) => Some(n), _ => None } }
+    fn as_int() -> Option<Int> { match self { .Number(n) => Some(n as Int), _ => None } }
+    fn as_str() -> Option<String> { match self { .String(s) => Some(s), _ => None } }
+    fn as_array() -> Option<[Value]> { match self { .Array(a) => Some(a), _ => None } }
+    fn as_object() -> Option<Map<String, Value>> { match self { .Object(o) => Some(o), _ => None } }
+    fn as_block() -> Option<Block> { match self { .Block(b) => Some(b), _ => None } }
+    
+    fn get(key: String) -> Option<Value> { match self { .Object(o) => o.get(key), _ => None } }
+    fn at(idx: Int) -> Option<Value> { match self { .Array(a) if idx >= 0 && idx < a.len() => Some(a[idx]), _ => None } }
+    
+    fn path(p: String) -> Option<Value> {
+        let parts = p.split(".")
+        var current = self
+        for part in parts { current = current.get(part)? }
+        Some(current)
+    }
+}
+
+impl Index<String> for Value {
+    type Output = Option<Value>
+    fn index(key: String) -> Option<Value> { self.get(key) }
+}
+
+// -----------------------------------------------------------------------------
+// HCL Block
+// -----------------------------------------------------------------------------
+
+struct Block {
+    type_name: String
+    labels: [String]
+    attributes: Map<String, Value>
+    blocks: [Block]
+    
+    fn new(type_name: String) -> Self {
+        Block { type_name: type_name, labels: [], attributes: Map.empty(), blocks: [] }
+    }
+    
+    fn with_labels(type_name: String, labels: [String]) -> Self {
+        Block { type_name: type_name, labels: labels, attributes: Map.empty(), blocks: [] }
+    }
+    
+    fn get(key: String) -> Option<Value> { self.attributes.get(key) }
+    fn get_str(key: String) -> Option<String> { self.attributes.get(key)?.as_str() }
+    fn get_int(key: String) -> Option<Int> { self.attributes.get(key)?.as_int() }
+    fn get_bool(key: String) -> Option<Bool> { self.attributes.get(key)?.as_bool() }
+    
+    fn set(key: String, value: Value) -> Self { self.attributes.set(key, value); self }
+    fn add_block(block: Block) -> Self { self.blocks.append(block); self }
+    
+    fn find_blocks(type_name: String) -> [Block] {
+        self.blocks.filter(|b| b.type_name == type_name)
+    }
+    
+    fn find_block(type_name: String, label: String) -> Option<Block> {
+        self.blocks.find(|b| b.type_name == type_name && b.labels.first() == Some(label))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// HCL Document
+// -----------------------------------------------------------------------------
+
+struct Document {
+    attributes: Map<String, Value>
+    blocks: [Block]
+    
+    fn new() -> Self { Document { attributes: Map.empty(), blocks: [] } }
+    
+    fn parse(hcl: String) -> Result<Document, HCLError> { Parser.new(hcl).parse() }
+    
+    fn parse_file(path: String) -> Result<Document, HCLError> {
+        let content = File.read_string(path)?
+        Self.parse(content)
+    }
+    
+    fn get(key: String) -> Option<Value> { self.attributes.get(key) }
+    fn set(key: String, value: Value) -> Self { self.attributes.set(key, value); self }
+    
+    fn find_blocks(type_name: String) -> [Block] {
+        self.blocks.filter(|b| b.type_name == type_name)
+    }
+    
+    fn find_block(type_name: String, label: String) -> Option<Block> {
+        self.blocks.find(|b| b.type_name == type_name && b.labels.first() == Some(label))
+    }
+    
+    fn add_block(block: Block) -> Self { self.blocks.append(block); self }
+    
+    fn to_hcl() -> String { Emitter.new().emit(self) }
+    
+    fn save(path: String) -> Result<(), HCLError> {
+        File.write_string(path, self.to_hcl())?
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Parser
+// -----------------------------------------------------------------------------
+
+actor Parser {
+    state input: String
+    state pos: Int
+    state line: Int
+    
+    fn new(input: String) -> Self { Parser { input: input, pos: 0, line: 1 } }
+    
+    fn parse() -> Result<Document, HCLError> {
+        var doc = Document.new()
+        
+        while self.pos < self.input.len() {
+            self.skip_whitespace_and_comments()
+            if self.pos >= self.input.len() { break }
+            
+            let ident = self.parse_identifier()?
+            self.skip_whitespace_inline()
+            
+            if self.peek_char() == Some('=') {
+                let value = self.parse_attribute()?
+                doc.attributes.set(ident, value)
+            } else {
+                let block = self.parse_block(ident)?
+                doc.blocks.append(block)
+            }
+        }
+        
+        Ok(doc)
+    }
+    
+    fn parse_attribute() -> Result<Value, HCLError> {
+        self.expect('=')?
+        self.skip_whitespace_inline()
+        self.parse_value()
+    }
+    
+    fn parse_block(type_name: String) -> Result<Block, HCLError> {
+        var labels = []
+        
+        while self.peek_char() != Some('{') {
+            self.skip_whitespace_inline()
+            if self.peek_char() == Some('"') {
+                labels.append(self.parse_string()?)
+            } else if self.peek_char()?.is_alphanumeric() {
+                labels.append(self.parse_identifier()?)
+            } else {
+                break
+            }
+        }
+        
+        self.skip_whitespace_inline()
+        self.expect('{')?
+        
+        var block = Block.with_labels(type_name, labels)
+        
+        while self.pos < self.input.len() {
+            self.skip_whitespace_and_comments()
+            if self.peek_char() == Some('}') { break }
+            
+            let ident = self.parse_identifier()?
+            self.skip_whitespace_inline()
+            
+            if self.peek_char() == Some('=') {
+                let value = self.parse_attribute()?
+                block.attributes.set(ident, value)
+            } else {
+                let nested = self.parse_block(ident)?
+                block.blocks.append(nested)
+            }
+        }
+        
+        self.expect('}')?
+        Ok(block)
+    }
+    
+    fn parse_value() -> Result<Value, HCLError> {
+        self.skip_whitespace_inline()
+        
+        match self.peek_char() {
+            Some('"') => Ok(Value.String(self.parse_string()?))
+            Some('[') => self.parse_array()
+            Some('{') => self.parse_object()
+            Some('t') if self.peek_str("true") => { self.advance(4); Ok(Value.Bool(true)) }
+            Some('f') if self.peek_str("false") => { self.advance(5); Ok(Value.Bool(false)) }
+            Some('n') if self.peek_str("null") => { self.advance(4); Ok(Value.Null) }
+            Some(c) if c.is_digit() || c == '-' || c == '+' => self.parse_number()
+            Some(c) if c.is_alphabetic() => Ok(Value.String(self.parse_identifier()?))
+            _ => Err(HCLError.UnexpectedChar(self.line))
+        }
+    }
+    
+    fn parse_string() -> Result<String, HCLError> {
+        if self.peek_str("<<") { return self.parse_heredoc() }
+        
+        self.expect('"')?
+        var result = StringBuilder.new()
+        
+        while self.pos < self.input.len() {
+            let c = self.input[self.pos]
+            self.pos += 1
+            
+            if c == '"' { return Ok(result.build()) }
+            if c == '\\' && self.pos < self.input.len() {
+                let escaped = self.input[self.pos]
+                self.pos += 1
+                match escaped {
+                    'n' => result.append('\n')
+                    't' => result.append('\t')
+                    'r' => result.append('\r')
+                    '\\' => result.append('\\')
+                    '"' => result.append('"')
+                    '$' => result.append('$')
+                    _ => { result.append('\\'); result.append(escaped) }
+                }
+            } else {
+                result.append(c)
+            }
+        }
+        
+        Err(HCLError.UnterminatedString(self.line))
+    }
+    
+    fn parse_heredoc() -> Result<String, HCLError> {
+        self.expect('<')?
+        self.expect('<')?
+        let indent = self.peek_char() == Some('-')
+        if indent { self.pos += 1 }
+        
+        let delimiter = self.parse_identifier()?
+        self.skip_to_eol()
+        
+        var result = StringBuilder.new()
+        while self.pos < self.input.len() {
+            let line_start = self.pos
+            while self.pos < self.input.len() && self.input[self.pos] != '\n' { self.pos += 1 }
+            let line = self.input[line_start..self.pos]
+            
+            let trimmed = if indent { line.trim_start() } else { line }
+            if trimmed == delimiter { break }
+            
+            result.append(line)
+            result.append('\n')
+            if self.pos < self.input.len() { self.pos += 1; self.line += 1 }
+        }
+        
+        Ok(result.build().trim_end())
+    }
+    
+    fn parse_number() -> Result<Value, HCLError> {
+        let start = self.pos
+        if self.peek_char() == Some('-') || self.peek_char() == Some('+') { self.pos += 1 }
+        
+        while self.pos < self.input.len() {
+            let c = self.input[self.pos]
+            if c.is_digit() || c == '.' || c == 'e' || c == 'E' || c == '-' || c == '+' {
+                self.pos += 1
+            } else { break }
+        }
+        
+        let s = self.input[start..self.pos]
+        Ok(Value.Number(Float.parse(s)?))
+    }
+    
+    fn parse_array() -> Result<Value, HCLError> {
+        self.expect('[')?
+        var items = []
+        
+        while self.pos < self.input.len() {
+            self.skip_whitespace_and_comments()
+            if self.peek_char() == Some(']') { break }
+            
+            items.append(self.parse_value()?)
+            self.skip_whitespace_and_comments()
+            
+            if self.peek_char() == Some(',') { self.pos += 1 }
+        }
+        
+        self.expect(']')?
+        Ok(Value.Array(items))
+    }
+    
+    fn parse_object() -> Result<Value, HCLError> {
+        self.expect('{')?
+        var map = Map.empty()
+        
+        while self.pos < self.input.len() {
+            self.skip_whitespace_and_comments()
+            if self.peek_char() == Some('}') { break }
+            
+            let key = if self.peek_char() == Some('"') {
+                self.parse_string()?
+            } else {
+                self.parse_identifier()?
+            }
+            
+            self.skip_whitespace_inline()
+            if self.peek_char() == Some('=') { self.pos += 1 }
+            else if self.peek_char() == Some(':') { self.pos += 1 }
+            self.skip_whitespace_inline()
+            
+            let value = self.parse_value()?
+            map.set(key, value)
+            
+            self.skip_whitespace_and_comments()
+            if self.peek_char() == Some(',') { self.pos += 1 }
+        }
+        
+        self.expect('}')?
+        Ok(Value.Object(map))
+    }
+    
+    fn parse_identifier() -> Result<String, HCLError> {
+        let start = self.pos
+        while self.pos < self.input.len() {
+            let c = self.input[self.pos]
+            if c.is_alphanumeric() || c == '_' || c == '-' { self.pos += 1 }
+            else { break }
+        }
+        if self.pos == start { return Err(HCLError.ExpectedIdentifier(self.line)) }
+        Ok(self.input[start..self.pos])
+    }
+    
+    fn peek_char() -> Option<Char> { if self.pos < self.input.len() { Some(self.input[self.pos]) } else { None } }
+    fn peek_str(s: String) -> Bool { self.input[self.pos..].starts_with(s) }
+    fn advance(n: Int) { self.pos += n }
+    fn expect(c: Char) -> Result<(), HCLError> {
+        if self.peek_char() == Some(c) { self.pos += 1; Ok(()) }
+        else { Err(HCLError.Expected(c, self.line)) }
+    }
+    
+    fn skip_whitespace_inline() { while self.pos < self.input.len() && (self.input[self.pos] == ' ' || self.input[self.pos] == '\t') { self.pos += 1 } }
+    
+    fn skip_whitespace_and_comments() {
+        while self.pos < self.input.len() {
+            let c = self.input[self.pos]
+            if c == ' ' || c == '\t' || c == '\r' { self.pos += 1 }
+            else if c == '\n' { self.pos += 1; self.line += 1 }
+            else if c == '#' || self.peek_str("//") { self.skip_line_comment() }
+            else if self.peek_str("/*") { self.skip_block_comment() }
+            else { break }
+        }
+    }
+    
+    fn skip_line_comment() { while self.pos < self.input.len() && self.input[self.pos] != '\n' { self.pos += 1 } }
+    
+    fn skip_block_comment() {
+        self.pos += 2
+        while self.pos < self.input.len() - 1 {
+            if self.input[self.pos] == '\n' { self.line += 1 }
+            if self.peek_str("*/") { self.pos += 2; return }
+            self.pos += 1
+        }
+    }
+    
+    fn skip_to_eol() {
+        while self.pos < self.input.len() && self.input[self.pos] != '\n' { self.pos += 1 }
+        if self.pos < self.input.len() { self.pos += 1; self.line += 1 }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Emitter
+// -----------------------------------------------------------------------------
+
+actor Emitter {
+    state indent: Int
+    
+    fn new() -> Self { Emitter { indent: 0 } }
+    
+    fn emit(doc: Document) -> String {
+        var result = ""
+        
+        for (key, value) in doc.attributes {
+            result += "\(key) = \(self.emit_value(value))\n"
+        }
+        
+        for block in doc.blocks {
+            if !result.is_empty() { result += "\n" }
+            result += self.emit_block(block)
+        }
+        
+        result
+    }
+    
+    fn emit_block(block: Block) -> String {
+        var result = self.indent_str() + block.type_name
+        
+        for label in block.labels {
+            result += " \"\(label)\""
+        }
+        
+        result += " {\n"
+        self.indent += 1
+        
+        for (key, value) in block.attributes {
+            result += self.indent_str() + "\(key) = \(self.emit_value(value))\n"
+        }
+        
+        for nested in block.blocks {
+            result += "\n" + self.emit_block(nested)
+        }
+        
+        self.indent -= 1
+        result += self.indent_str() + "}\n"
+        result
+    }
+    
+    fn emit_value(value: Value) -> String {
+        match value {
+            .Null => "null"
+            .Bool(b) => if b { "true" } else { "false" }
+            .Number(n) => if n == n.floor() { "\(n as Int)" } else { "\(n)" }
+            .String(s) => self.emit_string(s)
+            .Array(a) => "[" + a.map(|v| self.emit_value(v)).join(", ") + "]"
+            .Object(o) => self.emit_object(o)
+            .Block(b) => self.emit_block(b)
+        }
+    }
+    
+    fn emit_string(s: String) -> String {
+        if s.contains("\n") {
+            "<<-EOF\n\(s)\nEOF"
+        } else {
+            "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+        }
+    }
+    
+    fn emit_object(obj: Map<String, Value>) -> String {
+        if obj.is_empty() { return "{}" }
+        var result = "{\n"
+        self.indent += 1
+        for (key, value) in obj {
+            result += self.indent_str() + "\(key) = \(self.emit_value(value))\n"
+        }
+        self.indent -= 1
+        result += self.indent_str() + "}"
+        result
+    }
+    
+    fn indent_str() -> String { "  ".repeat(self.indent) }
+}
+
+// -----------------------------------------------------------------------------
+// Builder
+// -----------------------------------------------------------------------------
+
+struct BlockBuilder {
+    block: Block
+    
+    fn new(type_name: String) -> Self { BlockBuilder { block: Block.new(type_name) } }
+    fn with_label(type_name: String, label: String) -> Self { BlockBuilder { block: Block.with_labels(type_name, [label]) } }
+    
+    fn label(l: String) -> Self { self.block.labels.append(l); self }
+    fn attr(key: String, value: Value) -> Self { self.block.set(key, value); self }
+    fn string(key: String, value: String) -> Self { self.attr(key, Value.String(value)) }
+    fn number(key: String, value: Float) -> Self { self.attr(key, Value.Number(value)) }
+    fn int(key: String, value: Int) -> Self { self.attr(key, Value.Number(value as Float)) }
+    fn bool(key: String, value: Bool) -> Self { self.attr(key, Value.Bool(value)) }
+    fn array(key: String, values: [Value]) -> Self { self.attr(key, Value.Array(values)) }
+    fn nested(block: Block) -> Self { self.block.add_block(block); self }
+    fn build() -> Block { self.block }
+}
+
+struct DocumentBuilder {
+    doc: Document
+    
+    fn new() -> Self { DocumentBuilder { doc: Document.new() } }
+    fn attr(key: String, value: Value) -> Self { self.doc.set(key, value); self }
+    fn block(block: Block) -> Self { self.doc.add_block(block); self }
+    fn build() -> Document { self.doc }
+}
+
+fn block(type_name: String) -> BlockBuilder { BlockBuilder.new(type_name) }
+fn block_with_label(type_name: String, label: String) -> BlockBuilder { BlockBuilder.with_label(type_name, label) }
+fn document() -> DocumentBuilder { DocumentBuilder.new() }
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+enum HCLError {
+    UnexpectedChar(Int)
+    UnterminatedString(Int)
+    ExpectedIdentifier(Int)
+    Expected(Char, Int)
+    IOError(String)
+    
+    fn message() -> String {
+        match self {
+            .UnexpectedChar(l) => "Unexpected character at line \(l)"
+            .UnterminatedString(l) => "Unterminated string at line \(l)"
+            .ExpectedIdentifier(l) => "Expected identifier at line \(l)"
+            .Expected(c, l) => "Expected '\(c)' at line \(l)"
+            .IOError(m) => "I/O error: \(m)"
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Convenience Functions
+// -----------------------------------------------------------------------------
+
+fn parse(hcl: String) -> Result<Document, HCLError> { Document.parse(hcl) }
+fn parse_file(path: String) -> Result<Document, HCLError> { Document.parse_file(path) }
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+test "parse terraform resource" {
+    let hcl = "resource \"aws_instance\" \"web\" {\n  ami = \"ami-12345\"\n  instance_type = \"t2.micro\"\n}"
+    let doc = parse(hcl)?
+    
+    let blocks = doc.find_blocks("resource")
+    assert(blocks.len() == 1)
+    assert(blocks[0].labels == ["aws_instance", "web"])
+    assert(blocks[0].get_str("ami") == Some("ami-12345"))
+}
+
+test "parse attributes" {
+    let hcl = "name = \"test\"\ncount = 42\nenabled = true"
+    let doc = parse(hcl)?
+    
+    assert(doc.get("name")?.as_str() == Some("test"))
+    assert(doc.get("count")?.as_int() == Some(42))
+    assert(doc.get("enabled")?.as_bool() == Some(true))
+}
+
+test "parse nested blocks" {
+    let hcl = "provider \"aws\" {\n  region = \"us-west-2\"\n  assume_role {\n    role_arn = \"arn:aws:iam::123456789012:role/role\"\n  }\n}"
+    let doc = parse(hcl)?
+    
+    let provider = doc.find_blocks("provider")[0]
+    assert(provider.get_str("region") == Some("us-west-2"))
+    assert(provider.find_blocks("assume_role").len() == 1)
+}
+
+test "emit hcl" {
+    let doc = document()
+        .block(block_with_label("resource", "aws_s3_bucket")
+            .label("my_bucket")
+            .string("bucket", "my-bucket-name")
+            .bool("force_destroy", true)
+            .build())
+        .build()
+    
+    let hcl = doc.to_hcl()
+    assert(hcl.contains("resource \"aws_s3_bucket\" \"my_bucket\""))
+    assert(hcl.contains("bucket = \"my-bucket-name\""))
+}
+
+test "parse with comments" {
+    let hcl = "# This is a comment\nname = \"test\" // inline comment\n/* block\ncomment */\nvalue = 123"
+    let doc = parse(hcl)?
+    
+    assert(doc.get("name")?.as_str() == Some("test"))
+    assert(doc.get("value")?.as_int() == Some(123))
+}

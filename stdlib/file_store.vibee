@@ -1,0 +1,588 @@
+// =============================================================================
+// Vibee OS — File Store Module
+// File-based storage with indexing and metadata support
+// =============================================================================
+
+// =============================================================================
+// File Store Configuration
+// =============================================================================
+
+struct FileStoreConfig {
+    base_path: String
+    max_file_size: Int64
+    allowed_extensions: Option<[String]>
+    create_directories: Bool
+    use_hashing: Bool
+    hash_algorithm: HashAlgorithm
+    metadata_enabled: Bool
+}
+
+impl FileStoreConfig {
+    fn default(base_path: String) -> Self {
+        FileStoreConfig {
+            base_path: base_path,
+            max_file_size: 100 * 1024 * 1024,  // 100MB
+            allowed_extensions: None,
+            create_directories: true,
+            use_hashing: true,
+            hash_algorithm: HashAlgorithm.SHA256,
+            metadata_enabled: true
+        }
+    }
+    
+    fn with_max_size(size: Int64) -> Self { self.max_file_size = size; self }
+    fn with_extensions(exts: [String]) -> Self { self.allowed_extensions = Some(exts); self }
+    fn with_hashing(enabled: Bool) -> Self { self.use_hashing = enabled; self }
+}
+
+enum HashAlgorithm { MD5, SHA1, SHA256, SHA512, Blake3 }
+
+// =============================================================================
+// File Store Error
+// =============================================================================
+
+enum FileStoreError {
+    NotFound(String)
+    AlreadyExists(String)
+    PermissionDenied(String)
+    FileTooLarge(Int64, Int64)
+    InvalidExtension(String)
+    InvalidPath(String)
+    IoError(String)
+    HashMismatch(String, String)
+    MetadataError(String)
+    QuotaExceeded
+}
+
+impl Display for FileStoreError {
+    fn fmt(f: Formatter) {
+        match self {
+            .NotFound(path) => f.write("File not found: \(path)")
+            .AlreadyExists(path) => f.write("File already exists: \(path)")
+            .PermissionDenied(path) => f.write("Permission denied: \(path)")
+            .FileTooLarge(size, max) => f.write("File too large: \(size) > \(max)")
+            .InvalidExtension(ext) => f.write("Invalid extension: \(ext)")
+            .InvalidPath(path) => f.write("Invalid path: \(path)")
+            .IoError(msg) => f.write("IO error: \(msg)")
+            .HashMismatch(expected, actual) => f.write("Hash mismatch: expected \(expected), got \(actual)")
+            .MetadataError(msg) => f.write("Metadata error: \(msg)")
+            .QuotaExceeded => f.write("Storage quota exceeded")
+        }
+    }
+}
+
+// =============================================================================
+// File Metadata
+// =============================================================================
+
+struct FileMetadata {
+    path: String
+    name: String
+    extension: String
+    size: Int64
+    hash: Option<String>
+    content_type: String
+    created_at: Int64
+    modified_at: Int64
+    custom: Map<String, String>
+}
+
+impl FileMetadata {
+    fn new(path: String, size: Int64) -> Self {
+        let name = path::filename(path)
+        let ext = path::extension(path)
+        let now = @native("timestamp_ms")
+        FileMetadata {
+            path: path,
+            name: name,
+            extension: ext,
+            size: size,
+            hash: None,
+            content_type: mimetype::from_extension(ext),
+            created_at: now,
+            modified_at: now,
+            custom: Map.empty()
+        }
+    }
+    
+    fn with_hash(hash: String) -> Self { self.hash = Some(hash); self }
+    fn with_content_type(ct: String) -> Self { self.content_type = ct; self }
+    fn set_custom(key: String, value: String) { self.custom.set(key, value) }
+    fn get_custom(key: String) -> Option<String> { self.custom.get(key).cloned() }
+}
+
+// =============================================================================
+// File Store Actor
+// =============================================================================
+
+actor FileStore {
+    state config: FileStoreConfig
+    state metadata_index: Map<String, FileMetadata>
+    
+    init(config: FileStoreConfig) {
+        self.config = config
+        self.metadata_index = Map.empty()
+        self.ensure_base_path()
+        self.load_metadata_index()
+    }
+    
+    fn ensure_base_path() {
+        if self.config.create_directories && !fs.exists(self.config.base_path) {
+            fs.create_dir_all(self.config.base_path)
+        }
+    }
+    
+    fn load_metadata_index() {
+        let index_path = "\(self.config.base_path)/.metadata.json"
+        if fs.exists(index_path) {
+            if let Ok(content) = fs.read_string(index_path) {
+                if let Ok(index) = json.decode::<Map<String, FileMetadata>>(content) {
+                    self.metadata_index = index
+                }
+            }
+        }
+    }
+    
+    fn save_metadata_index() {
+        let index_path = "\(self.config.base_path)/.metadata.json"
+        let content = json.encode(self.metadata_index)
+        fs.write_string(index_path, content)
+    }
+    
+    fn full_path(relative: String) -> String {
+        path::join(self.config.base_path, relative)
+    }
+    
+    fn validate_path(relative: String) -> Result<(), FileStoreError> {
+        if relative.contains("..") || relative.starts_with("/") {
+            return Err(FileStoreError.InvalidPath(relative))
+        }
+        Ok(())
+    }
+    
+    fn validate_extension(path: String) -> Result<(), FileStoreError> {
+        if let Some(allowed) = self.config.allowed_extensions {
+            let ext = path::extension(path)
+            if !allowed.contains(ext) {
+                return Err(FileStoreError.InvalidExtension(ext))
+            }
+        }
+        Ok(())
+    }
+    
+    fn compute_hash(data: [Byte]) -> String {
+        match self.config.hash_algorithm {
+            .MD5 => crypto.md5(data).hex()
+            .SHA1 => crypto.sha1(data).hex()
+            .SHA256 => crypto.sha256(data).hex()
+            .SHA512 => crypto.sha512(data).hex()
+            .Blake3 => crypto.blake3(data).hex()
+        }
+    }
+    
+    // Write operations
+    on write(relative_path: String, data: [Byte]) -> Result<FileMetadata, FileStoreError> {
+        self.validate_path(relative_path.clone())?
+        self.validate_extension(relative_path.clone())?
+        
+        if data.len() as Int64 > self.config.max_file_size {
+            return Err(FileStoreError.FileTooLarge(data.len() as Int64, self.config.max_file_size))
+        }
+        
+        let full = self.full_path(relative_path.clone())
+        let dir = path::parent(full.clone())
+        
+        if self.config.create_directories && !fs.exists(dir.clone()) {
+            fs.create_dir_all(dir).map_err(|e| FileStoreError.IoError(e.to_string()))?
+        }
+        
+        fs.write_bytes(full, data.clone()).map_err(|e| FileStoreError.IoError(e.to_string()))?
+        
+        var metadata = FileMetadata.new(relative_path.clone(), data.len() as Int64)
+        if self.config.use_hashing {
+            metadata = metadata.with_hash(self.compute_hash(data))
+        }
+        
+        if self.config.metadata_enabled {
+            self.metadata_index.set(relative_path, metadata.clone())
+            self.save_metadata_index()
+        }
+        
+        Ok(metadata)
+    }
+    
+    on write_string(relative_path: String, content: String) -> Result<FileMetadata, FileStoreError> {
+        self.write(relative_path, content.bytes())
+    }
+    
+    on write_stream(relative_path: String, stream: Stream<[Byte]>) -> Result<FileMetadata, FileStoreError> {
+        self.validate_path(relative_path.clone())?
+        self.validate_extension(relative_path.clone())?
+        
+        let full = self.full_path(relative_path.clone())
+        let dir = path::parent(full.clone())
+        
+        if self.config.create_directories && !fs.exists(dir.clone()) {
+            fs.create_dir_all(dir).map_err(|e| FileStoreError.IoError(e.to_string()))?
+        }
+        
+        let file = fs.File.create(full).map_err(|e| FileStoreError.IoError(e.to_string()))?
+        var total_size: Int64 = 0
+        var hasher = if self.config.use_hashing { Some(crypto.hasher(self.config.hash_algorithm)) } else { None }
+        
+        for chunk in stream {
+            total_size += chunk.len() as Int64
+            if total_size > self.config.max_file_size {
+                file.close()
+                fs.remove(full)
+                return Err(FileStoreError.FileTooLarge(total_size, self.config.max_file_size))
+            }
+            file.write_all(chunk.clone()).map_err(|e| FileStoreError.IoError(e.to_string()))?
+            if let Some(h) = hasher { h.update(chunk) }
+        }
+        file.close()
+        
+        var metadata = FileMetadata.new(relative_path.clone(), total_size)
+        if let Some(h) = hasher {
+            metadata = metadata.with_hash(h.finalize().hex())
+        }
+        
+        if self.config.metadata_enabled {
+            self.metadata_index.set(relative_path, metadata.clone())
+            self.save_metadata_index()
+        }
+        
+        Ok(metadata)
+    }
+    
+    // Read operations
+    on read(relative_path: String) -> Result<[Byte], FileStoreError> {
+        self.validate_path(relative_path.clone())?
+        let full = self.full_path(relative_path)
+        fs.read_bytes(full.clone()).map_err(|e| {
+            if e == fs.IoError.NotFound { FileStoreError.NotFound(full) }
+            else { FileStoreError.IoError(e.to_string()) }
+        })
+    }
+    
+    on read_string(relative_path: String) -> Result<String, FileStoreError> {
+        let bytes = self.read(relative_path)?
+        String.from_utf8(bytes).map_err(|e| FileStoreError.IoError(e.to_string()))
+    }
+    
+    on read_stream(relative_path: String, chunk_size: Int = 8192) -> Result<Stream<[Byte]>, FileStoreError> {
+        self.validate_path(relative_path.clone())?
+        let full = self.full_path(relative_path)
+        let file = fs.File.open(full.clone()).map_err(|e| {
+            if e == fs.IoError.NotFound { FileStoreError.NotFound(full) }
+            else { FileStoreError.IoError(e.to_string()) }
+        })?
+        
+        Ok(Stream.generate(|| {
+            let chunk = file.read_bytes(chunk_size)
+            if chunk.is_empty() { file.close(); None }
+            else { Some(chunk) }
+        }))
+    }
+    
+    on read_verified(relative_path: String, expected_hash: String) -> Result<[Byte], FileStoreError> {
+        let data = self.read(relative_path)?
+        let actual_hash = self.compute_hash(data.clone())
+        if actual_hash != expected_hash {
+            return Err(FileStoreError.HashMismatch(expected_hash, actual_hash))
+        }
+        Ok(data)
+    }
+    
+    // Delete operations
+    on delete(relative_path: String) -> Result<(), FileStoreError> {
+        self.validate_path(relative_path.clone())?
+        let full = self.full_path(relative_path.clone())
+        fs.remove(full.clone()).map_err(|e| {
+            if e == fs.IoError.NotFound { FileStoreError.NotFound(full) }
+            else { FileStoreError.IoError(e.to_string()) }
+        })?
+        
+        if self.config.metadata_enabled {
+            self.metadata_index.remove(relative_path)
+            self.save_metadata_index()
+        }
+        Ok(())
+    }
+    
+    on delete_dir(relative_path: String) -> Result<Int, FileStoreError> {
+        self.validate_path(relative_path.clone())?
+        let full = self.full_path(relative_path.clone())
+        
+        var count = 0
+        for entry in fs.walk(full) {
+            if entry.is_file() {
+                let rel = entry.path.strip_prefix(self.config.base_path)
+                self.delete(rel)?
+                count += 1
+            }
+        }
+        
+        fs.remove_dir_all(full).map_err(|e| FileStoreError.IoError(e.to_string()))?
+        Ok(count)
+    }
+    
+    // Query operations
+    on exists(relative_path: String) -> Bool {
+        if self.validate_path(relative_path.clone()).is_err() { return false }
+        fs.exists(self.full_path(relative_path))
+    }
+    
+    on metadata(relative_path: String) -> Result<FileMetadata, FileStoreError> {
+        self.validate_path(relative_path.clone())?
+        
+        if let Some(meta) = self.metadata_index.get(relative_path.clone()) {
+            return Ok(meta.clone())
+        }
+        
+        let full = self.full_path(relative_path.clone())
+        let fs_meta = fs.metadata(full.clone()).map_err(|e| {
+            if e == fs.IoError.NotFound { FileStoreError.NotFound(full) }
+            else { FileStoreError.IoError(e.to_string()) }
+        })?
+        
+        Ok(FileMetadata.new(relative_path, fs_meta.size))
+    }
+    
+    on list(relative_path: String = "") -> Result<[FileMetadata], FileStoreError> {
+        self.validate_path(relative_path.clone())?
+        let full = self.full_path(relative_path)
+        
+        let entries = fs.read_dir(full.clone()).map_err(|e| {
+            if e == fs.IoError.NotFound { FileStoreError.NotFound(full) }
+            else { FileStoreError.IoError(e.to_string()) }
+        })?
+        
+        var result: [FileMetadata] = []
+        for entry in entries {
+            if entry.name.starts_with(".") { continue }
+            let rel = entry.path.strip_prefix(self.config.base_path)
+            if let Some(meta) = self.metadata_index.get(rel.clone()) {
+                result.push(meta.clone())
+            } else {
+                result.push(FileMetadata.new(rel, entry.metadata()?.size))
+            }
+        }
+        Ok(result)
+    }
+    
+    on list_recursive(relative_path: String = "") -> Result<[FileMetadata], FileStoreError> {
+        self.validate_path(relative_path.clone())?
+        let full = self.full_path(relative_path)
+        
+        var result: [FileMetadata] = []
+        for entry in fs.walk(full) {
+            if entry.is_file() && !entry.name.starts_with(".") {
+                let rel = entry.path.strip_prefix(self.config.base_path)
+                if let Some(meta) = self.metadata_index.get(rel.clone()) {
+                    result.push(meta.clone())
+                } else {
+                    result.push(FileMetadata.new(rel, entry.metadata()?.size))
+                }
+            }
+        }
+        Ok(result)
+    }
+    
+    on search(pattern: String) -> Result<[FileMetadata], FileStoreError> {
+        let all = self.list_recursive()?
+        let regex = regex.compile(pattern).map_err(|e| FileStoreError.IoError(e.to_string()))?
+        Ok(all.iter().filter(|m| regex.is_match(m.path)).collect())
+    }
+    
+    on find_by_extension(ext: String) -> Result<[FileMetadata], FileStoreError> {
+        let all = self.list_recursive()?
+        Ok(all.iter().filter(|m| m.extension == ext).collect())
+    }
+    
+    on find_by_content_type(content_type: String) -> Result<[FileMetadata], FileStoreError> {
+        let all = self.list_recursive()?
+        Ok(all.iter().filter(|m| m.content_type == content_type).collect())
+    }
+    
+    // Copy/Move operations
+    on copy(from: String, to: String) -> Result<FileMetadata, FileStoreError> {
+        let data = self.read(from)?
+        self.write(to, data)
+    }
+    
+    on move(from: String, to: String) -> Result<FileMetadata, FileStoreError> {
+        let meta = self.copy(from.clone(), to)?
+        self.delete(from)?
+        Ok(meta)
+    }
+    
+    // Statistics
+    on stats() -> FileStoreStats {
+        var total_size: Int64 = 0
+        var file_count = 0
+        
+        for (_, meta) in self.metadata_index.iter() {
+            total_size += meta.size
+            file_count += 1
+        }
+        
+        FileStoreStats {
+            file_count: file_count,
+            total_size: total_size,
+            base_path: self.config.base_path.clone()
+        }
+    }
+}
+
+struct FileStoreStats {
+    file_count: Int
+    total_size: Int64
+    base_path: String
+}
+
+// =============================================================================
+// Temporary File Store
+// =============================================================================
+
+actor TempFileStore {
+    state store: FileStore
+    state ttl_ms: Int64
+    state files: Map<String, Int64>  // path -> expires_at
+    
+    init(ttl_ms: Int64 = 3600000) {
+        let temp_dir = "\(fs.temp_dir())/vibee_temp_\(@native("random_hex", 8))"
+        self.store = FileStore.new(FileStoreConfig.default(temp_dir))
+        self.ttl_ms = ttl_ms
+        self.files = Map.empty()
+    }
+    
+    on write(name: String, data: [Byte]) -> Result<String, FileStoreError> {
+        let id = uuid.v4()
+        let path = "\(id)/\(name)"
+        self.store.write(path.clone(), data)?
+        self.files.set(path.clone(), @native("timestamp_ms") + self.ttl_ms)
+        Ok(path)
+    }
+    
+    on read(path: String) -> Result<[Byte], FileStoreError> {
+        if let Some(expires) = self.files.get(path.clone()) {
+            if @native("timestamp_ms") >= *expires {
+                self.delete(path.clone())?
+                return Err(FileStoreError.NotFound(path))
+            }
+        }
+        self.store.read(path)
+    }
+    
+    on delete(path: String) -> Result<(), FileStoreError> {
+        self.files.remove(path.clone())
+        self.store.delete(path)
+    }
+    
+    on cleanup() -> Int {
+        let now = @native("timestamp_ms")
+        let expired: [String] = self.files.iter()
+            .filter(|(_, expires)| now >= **expires)
+            .map(|(path, _)| path.clone())
+            .collect()
+        
+        let count = expired.len()
+        for path in expired {
+            self.delete(path)
+        }
+        count
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+fn create(base_path: String) -> FileStore {
+    FileStore.new(FileStoreConfig.default(base_path))
+}
+
+fn temp() -> TempFileStore {
+    TempFileStore.new(3600000)
+}
+
+fn temp_with_ttl(ttl_ms: Int64) -> TempFileStore {
+    TempFileStore.new(ttl_ms)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "file store write and read" {
+    let store = create("/tmp/test_file_store")
+    
+    let data = "Hello, World!".bytes()
+    let meta = store.write("test.txt", data.clone())?
+    
+    assert_eq(meta.name, "test.txt")?
+    assert_eq(meta.size, data.len() as Int64)?
+    
+    let read_data = store.read("test.txt")?
+    assert_eq(read_data, data)?
+    
+    store.delete("test.txt")?
+}
+
+test "file store metadata" {
+    let store = create("/tmp/test_file_store")
+    
+    store.write("doc.pdf", [1, 2, 3])?
+    let meta = store.metadata("doc.pdf")?
+    
+    assert_eq(meta.extension, "pdf")?
+    assert_eq(meta.content_type, "application/pdf")?
+    
+    store.delete("doc.pdf")?
+}
+
+test "file store list" {
+    let store = create("/tmp/test_file_store")
+    
+    store.write("a.txt", [1])?
+    store.write("b.txt", [2])?
+    store.write("sub/c.txt", [3])?
+    
+    let files = store.list()?
+    assert_eq(files.len(), 2)?  // a.txt, b.txt (not sub/)
+    
+    let all_files = store.list_recursive()?
+    assert_eq(all_files.len(), 3)?
+    
+    store.delete_dir("")?
+}
+
+test "file store hash verification" {
+    let store = create("/tmp/test_file_store")
+    
+    let data = "test data".bytes()
+    let meta = store.write("verified.txt", data.clone())?
+    
+    let hash = meta.hash.unwrap()
+    let verified = store.read_verified("verified.txt", hash)?
+    assert_eq(verified, data)?
+    
+    let result = store.read_verified("verified.txt", "invalid_hash")
+    assert(result.is_err())?
+    
+    store.delete("verified.txt")?
+}
+
+test "temp file store" {
+    let temp = temp_with_ttl(100)
+    
+    let path = temp.write("temp.txt", "temporary".bytes())?
+    let data = temp.read(path.clone())?
+    assert_eq(String.from_utf8(data)?, "temporary")?
+    
+    @native("sleep_ms", 150)
+    
+    let result = temp.read(path)
+    assert(result.is_err())?
+}

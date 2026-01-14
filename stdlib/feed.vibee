@@ -1,0 +1,202 @@
+// =============================================================================
+// Vibee OS — Feed Module
+// News feed, timeline, and content aggregation
+// =============================================================================
+
+use result::{Result, Ok, Err}
+use datetime::{DateTime, Duration}
+
+// =============================================================================
+// Feed Item Types
+// =============================================================================
+
+/// Feed item content type
+enum FeedItemType {
+    Post,
+    Repost,
+    Like,
+    Comment,
+    Follow,
+    Mention,
+    Story,
+    Ad,
+    Suggestion
+}
+
+/// Feed item
+struct FeedItem {
+    id: String,
+    item_type: FeedItemType,
+    author_id: String,
+    content_id: String,
+    content: FeedContent,
+    created_at: DateTime,
+    score: Float,
+    seen: Bool,
+    metadata: Map<String, String>
+}
+
+impl FeedItem {
+    fn new(item_type: FeedItemType, author_id: String, content: FeedContent) -> Self {
+        FeedItem {
+            id: generate_id(),
+            item_type: item_type,
+            author_id: author_id,
+            content_id: generate_id(),
+            content: content,
+            created_at: DateTime.now(),
+            score: 0.0,
+            seen: false,
+            metadata: Map.empty()
+        }
+    }
+    
+    fn mark_seen() { self.seen = true }
+    fn age() -> Duration { DateTime.now() - self.created_at }
+}
+
+/// Feed content
+enum FeedContent {
+    Text(String),
+    Image { url: String, caption: Option<String> },
+    Video { url: String, thumbnail: String, duration: Int },
+    Link { url: String, title: String, preview: Option<String> },
+    Poll { question: String, options: [String] },
+    Activity { action: String, target_id: String }
+}
+
+// =============================================================================
+// Feed Service
+// =============================================================================
+
+/// Feed service actor
+actor FeedService {
+    state items: Map<String, FeedItem>
+    state user_feeds: Map<String, [String]>
+    state timeline_cache: Map<String, [FeedItem]>
+    
+    fn new() -> Self {
+        FeedService {
+            items: Map.empty(),
+            user_feeds: Map.empty(),
+            timeline_cache: Map.empty()
+        }
+    }
+    
+    /// Add item to feed
+    on add_item(user_id: String, item: FeedItem) {
+        self.items.set(item.id.clone(), item.clone())
+        self.user_feeds.entry(user_id).or_insert([]).push(item.id)
+        self.timeline_cache.remove(user_id)
+    }
+    
+    /// Get user timeline
+    on get_timeline(user_id: String, limit: Int, offset: Int) -> [FeedItem] {
+        if let Some(cached) = self.timeline_cache.get(user_id) {
+            return cached.skip(offset).take(limit).collect()
+        }
+        
+        let item_ids = self.user_feeds.get(user_id).unwrap_or([])
+        var items: [FeedItem] = item_ids
+            .filter_map(|id| self.items.get(id))
+            .collect()
+        
+        items.sort_by(|a, b| b.created_at.cmp(a.created_at))
+        self.timeline_cache.set(user_id, items.clone())
+        items.skip(offset).take(limit).collect()
+    }
+    
+    /// Remove item
+    on remove_item(item_id: String) {
+        self.items.remove(item_id)
+    }
+    
+    /// Mark item as seen
+    on mark_seen(item_id: String) {
+        if let Some(item) = self.items.get_mut(item_id) {
+            item.mark_seen()
+        }
+    }
+}
+
+// =============================================================================
+// Feed Builder
+// =============================================================================
+
+/// Feed builder for constructing feeds
+struct FeedBuilder {
+    user_id: String,
+    following: [String],
+    items: [FeedItem],
+    limit: Int,
+    include_ads: Bool
+}
+
+impl FeedBuilder {
+    fn new(user_id: String) -> Self {
+        FeedBuilder {
+            user_id: user_id,
+            following: [],
+            items: [],
+            limit: 20,
+            include_ads: false
+        }
+    }
+    
+    fn with_following(following: [String]) -> Self {
+        self.following = following
+        self
+    }
+    
+    fn with_limit(limit: Int) -> Self {
+        self.limit = limit
+        self
+    }
+    
+    fn with_ads() -> Self {
+        self.include_ads = true
+        self
+    }
+    
+    fn add_item(item: FeedItem) -> Self {
+        self.items.push(item)
+        self
+    }
+    
+    fn build() -> [FeedItem] {
+        var result = self.items.clone()
+        result.sort_by(|a, b| b.score.cmp(a.score))
+        result.take(self.limit)
+    }
+}
+
+// =============================================================================
+// Helper
+// =============================================================================
+
+fn generate_id() -> String {
+    @native("uuid_v4")
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "feed item creation" {
+    let item = FeedItem.new(
+        FeedItemType.Post,
+        "user1",
+        FeedContent.Text("Hello world")
+    )
+    assert_eq(item.author_id, "user1")?
+    assert(!item.seen)?
+}
+
+test "feed service" {
+    let service = FeedService.new()
+    let item = FeedItem.new(FeedItemType.Post, "user1", FeedContent.Text("Test"))
+    
+    service.add_item("user1", item)
+    let timeline = service.get_timeline("user1", 10, 0)
+    assert_eq(timeline.len(), 1)?
+}

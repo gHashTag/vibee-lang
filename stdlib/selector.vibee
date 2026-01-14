@@ -1,0 +1,742 @@
+// =============================================================================
+// Vibee OS — Selector Module
+// Memoized selectors for efficient state derivation
+// =============================================================================
+
+// =============================================================================
+// Core Selector Types
+// =============================================================================
+
+/// Selector trait - derives data from state
+trait Selector<S, R> {
+    fn select(state: S) -> R
+}
+
+/// Selector function type
+type SelectorFn<S, R> = fn(S) -> R
+
+/// Basic selector wrapper
+struct BasicSelector<S, R> {
+    select_fn: SelectorFn<S, R>
+}
+
+impl<S, R> Selector<S, R> for BasicSelector<S, R> {
+    fn select(state: S) -> R {
+        (self.select_fn)(state)
+    }
+}
+
+impl<S, R> BasicSelector<S, R> {
+    fn new(select_fn: SelectorFn<S, R>) -> Self {
+        BasicSelector { select_fn: select_fn }
+    }
+}
+
+/// Create basic selector
+fn create_selector<S, R>(select_fn: SelectorFn<S, R>) -> BasicSelector<S, R> {
+    BasicSelector.new(select_fn)
+}
+
+// =============================================================================
+// Memoized Selector
+// =============================================================================
+
+/// Memoized selector with caching
+struct MemoizedSelector<S: Eq, R: Clone> {
+    select_fn: SelectorFn<S, R>
+    last_state: Option<S>
+    last_result: Option<R>
+}
+
+impl<S: Eq + Clone, R: Clone> Selector<S, R> for MemoizedSelector<S, R> {
+    fn select(state: S) -> R {
+        // Check if state changed
+        if let Some(ref last) = self.last_state {
+            if last == &state {
+                return self.last_result.clone().unwrap()
+            }
+        }
+        
+        // Compute new result
+        let result = (self.select_fn)(state.clone())
+        self.last_state = Some(state)
+        self.last_result = Some(result.clone())
+        result
+    }
+}
+
+impl<S: Eq + Clone, R: Clone> MemoizedSelector<S, R> {
+    fn new(select_fn: SelectorFn<S, R>) -> Self {
+        MemoizedSelector {
+            select_fn: select_fn,
+            last_state: None,
+            last_result: None
+        }
+    }
+    
+    fn clear_cache() {
+        self.last_state = None
+        self.last_result = None
+    }
+    
+    fn is_cached() -> Bool {
+        self.last_state.is_some()
+    }
+}
+
+/// Create memoized selector
+fn memoize<S: Eq + Clone, R: Clone>(select_fn: SelectorFn<S, R>) -> MemoizedSelector<S, R> {
+    MemoizedSelector.new(select_fn)
+}
+
+// =============================================================================
+// Composed Selectors
+// =============================================================================
+
+/// Compose two selectors
+struct ComposedSelector<S, I, R> {
+    input_selector: impl Selector<S, I>
+    result_fn: fn(I) -> R
+    last_input: Option<I>
+    last_result: Option<R>
+}
+
+impl<S, I: Eq + Clone, R: Clone> Selector<S, R> for ComposedSelector<S, I, R> {
+    fn select(state: S) -> R {
+        let input = self.input_selector.select(state)
+        
+        // Check if input changed
+        if let Some(ref last) = self.last_input {
+            if last == &input {
+                return self.last_result.clone().unwrap()
+            }
+        }
+        
+        let result = (self.result_fn)(input.clone())
+        self.last_input = Some(input)
+        self.last_result = Some(result.clone())
+        result
+    }
+}
+
+/// Create selector from one input selector
+fn create_selector_1<S, I: Eq + Clone, R: Clone>(
+    input: impl Selector<S, I>,
+    result_fn: fn(I) -> R
+) -> ComposedSelector<S, I, R> {
+    ComposedSelector {
+        input_selector: input,
+        result_fn: result_fn,
+        last_input: None,
+        last_result: None
+    }
+}
+
+/// Composed selector with two inputs
+struct ComposedSelector2<S, I1, I2, R> {
+    selector1: impl Selector<S, I1>
+    selector2: impl Selector<S, I2>
+    result_fn: fn(I1, I2) -> R
+    last_inputs: Option<(I1, I2)>
+    last_result: Option<R>
+}
+
+impl<S, I1: Eq + Clone, I2: Eq + Clone, R: Clone> Selector<S, R> for ComposedSelector2<S, I1, I2, R> {
+    fn select(state: S) -> R {
+        let input1 = self.selector1.select(state.clone())
+        let input2 = self.selector2.select(state)
+        
+        if let Some(ref last) = self.last_inputs {
+            if last.0 == input1 && last.1 == input2 {
+                return self.last_result.clone().unwrap()
+            }
+        }
+        
+        let result = (self.result_fn)(input1.clone(), input2.clone())
+        self.last_inputs = Some((input1, input2))
+        self.last_result = Some(result.clone())
+        result
+    }
+}
+
+/// Create selector from two input selectors
+fn create_selector_2<S, I1: Eq + Clone, I2: Eq + Clone, R: Clone>(
+    selector1: impl Selector<S, I1>,
+    selector2: impl Selector<S, I2>,
+    result_fn: fn(I1, I2) -> R
+) -> ComposedSelector2<S, I1, I2, R> {
+    ComposedSelector2 {
+        selector1: selector1,
+        selector2: selector2,
+        result_fn: result_fn,
+        last_inputs: None,
+        last_result: None
+    }
+}
+
+/// Composed selector with three inputs
+struct ComposedSelector3<S, I1, I2, I3, R> {
+    selector1: impl Selector<S, I1>
+    selector2: impl Selector<S, I2>
+    selector3: impl Selector<S, I3>
+    result_fn: fn(I1, I2, I3) -> R
+    last_inputs: Option<(I1, I2, I3)>
+    last_result: Option<R>
+}
+
+impl<S, I1: Eq + Clone, I2: Eq + Clone, I3: Eq + Clone, R: Clone> Selector<S, R> 
+    for ComposedSelector3<S, I1, I2, I3, R> 
+{
+    fn select(state: S) -> R {
+        let input1 = self.selector1.select(state.clone())
+        let input2 = self.selector2.select(state.clone())
+        let input3 = self.selector3.select(state)
+        
+        if let Some(ref last) = self.last_inputs {
+            if last.0 == input1 && last.1 == input2 && last.2 == input3 {
+                return self.last_result.clone().unwrap()
+            }
+        }
+        
+        let result = (self.result_fn)(input1.clone(), input2.clone(), input3.clone())
+        self.last_inputs = Some((input1, input2, input3))
+        self.last_result = Some(result.clone())
+        result
+    }
+}
+
+/// Create selector from three input selectors
+fn create_selector_3<S, I1: Eq + Clone, I2: Eq + Clone, I3: Eq + Clone, R: Clone>(
+    selector1: impl Selector<S, I1>,
+    selector2: impl Selector<S, I2>,
+    selector3: impl Selector<S, I3>,
+    result_fn: fn(I1, I2, I3) -> R
+) -> ComposedSelector3<S, I1, I2, I3, R> {
+    ComposedSelector3 {
+        selector1: selector1,
+        selector2: selector2,
+        selector3: selector3,
+        result_fn: result_fn,
+        last_inputs: None,
+        last_result: None
+    }
+}
+
+// =============================================================================
+// Parameterized Selectors
+// =============================================================================
+
+/// Selector factory - creates selectors with parameters
+struct SelectorFactory<S, P, R> {
+    factory_fn: fn(P) -> impl Selector<S, R>
+    cache: Map<P, impl Selector<S, R>>
+}
+
+impl<S, P: Hash + Eq + Clone, R> SelectorFactory<S, P, R> {
+    fn new(factory_fn: fn(P) -> impl Selector<S, R>) -> Self {
+        SelectorFactory {
+            factory_fn: factory_fn,
+            cache: Map.new()
+        }
+    }
+    
+    fn get(param: P) -> impl Selector<S, R> {
+        if let Some(selector) = self.cache.get(param.clone()) {
+            return selector
+        }
+        
+        let selector = (self.factory_fn)(param.clone())
+        self.cache.insert(param, selector.clone())
+        selector
+    }
+    
+    fn select(state: S, param: P) -> R {
+        self.get(param).select(state)
+    }
+    
+    fn clear_cache() {
+        self.cache.clear()
+    }
+}
+
+/// Create parameterized selector factory
+fn create_parameterized<S, P: Hash + Eq + Clone, R>(
+    factory_fn: fn(P) -> impl Selector<S, R>
+) -> SelectorFactory<S, P, R> {
+    SelectorFactory.new(factory_fn)
+}
+
+// =============================================================================
+// Selector Utilities
+// =============================================================================
+
+/// Identity selector - returns state as-is
+fn identity<S>() -> BasicSelector<S, S> {
+    BasicSelector.new(|state| state)
+}
+
+/// Constant selector - always returns same value
+fn constant<S, R: Clone>(value: R) -> BasicSelector<S, R> {
+    BasicSelector.new(|_| value.clone())
+}
+
+/// Field selector - selects specific field from state
+fn field<S, R>(field_name: String) -> BasicSelector<S, R> {
+    BasicSelector.new(|state| state.get_field(field_name.clone()))
+}
+
+/// Path selector - selects nested field
+fn path<S, R>(path: [String]) -> BasicSelector<S, R> {
+    BasicSelector.new(|state| {
+        var current: Any = state
+        for key in path.iter() {
+            current = current.get_field(key)
+        }
+        current.downcast::<R>().unwrap()
+    })
+}
+
+/// Map selector - transforms result
+fn map<S, I, R>(
+    selector: impl Selector<S, I>,
+    mapper: fn(I) -> R
+) -> BasicSelector<S, R> {
+    BasicSelector.new(|state| mapper(selector.select(state)))
+}
+
+/// Filter selector - filters array results
+fn filter<S, T>(
+    selector: impl Selector<S, [T]>,
+    predicate: fn(T) -> Bool
+) -> BasicSelector<S, [T]> {
+    BasicSelector.new(|state| {
+        selector.select(state).into_iter().filter(predicate).collect()
+    })
+}
+
+/// Sort selector - sorts array results
+fn sort<S, T: Ord>(
+    selector: impl Selector<S, [T]>
+) -> BasicSelector<S, [T]> {
+    BasicSelector.new(|state| {
+        var result = selector.select(state)
+        result.sort()
+        result
+    })
+}
+
+/// Sort by selector - sorts by key
+fn sort_by<S, T, K: Ord>(
+    selector: impl Selector<S, [T]>,
+    key_fn: fn(T) -> K
+) -> BasicSelector<S, [T]> {
+    BasicSelector.new(|state| {
+        var result = selector.select(state)
+        result.sort_by_key(key_fn)
+        result
+    })
+}
+
+// =============================================================================
+// Entity Selectors
+// =============================================================================
+
+/// Selectors for entity state
+struct EntitySelectors<T> {
+    select_ids: BasicSelector<EntityState<T>, [String]>
+    select_entities: BasicSelector<EntityState<T>, Map<String, T>>
+    select_all: BasicSelector<EntityState<T>, [T]>
+    select_total: BasicSelector<EntityState<T>, Int>
+}
+
+impl<T: Clone> EntitySelectors<T> {
+    fn new() -> Self {
+        EntitySelectors {
+            select_ids: BasicSelector.new(|state: EntityState<T>| state.ids.clone()),
+            select_entities: BasicSelector.new(|state: EntityState<T>| state.entities.clone()),
+            select_all: BasicSelector.new(|state: EntityState<T>| state.get_all()),
+            select_total: BasicSelector.new(|state: EntityState<T>| state.len())
+        }
+    }
+    
+    fn select_by_id(id: String) -> BasicSelector<EntityState<T>, Option<T>> {
+        BasicSelector.new(|state: EntityState<T>| state.get(id.clone()))
+    }
+    
+    fn select_by_ids(ids: [String]) -> BasicSelector<EntityState<T>, [T]> {
+        BasicSelector.new(|state: EntityState<T>| {
+            ids.iter().filter_map(|id| state.get(id)).collect()
+        })
+    }
+}
+
+/// Create entity selectors
+fn entity_selectors<T: Clone>() -> EntitySelectors<T> {
+    EntitySelectors.new()
+}
+
+// =============================================================================
+// Async Selector
+// =============================================================================
+
+/// Async loading state
+enum LoadingState<T, E> {
+    Idle
+    Loading
+    Loaded(T)
+    Error(E)
+}
+
+impl<T, E> LoadingState<T, E> {
+    fn is_idle() -> Bool {
+        match self {
+            LoadingState.Idle => true,
+            _ => false
+        }
+    }
+    
+    fn is_loading() -> Bool {
+        match self {
+            LoadingState.Loading => true,
+            _ => false
+        }
+    }
+    
+    fn is_loaded() -> Bool {
+        match self {
+            LoadingState.Loaded(_) => true,
+            _ => false
+        }
+    }
+    
+    fn is_error() -> Bool {
+        match self {
+            LoadingState.Error(_) => true,
+            _ => false
+        }
+    }
+    
+    fn get_data() -> Option<T> {
+        match self {
+            LoadingState.Loaded(data) => Some(data),
+            _ => None
+        }
+    }
+    
+    fn get_error() -> Option<E> {
+        match self {
+            LoadingState.Error(err) => Some(err),
+            _ => None
+        }
+    }
+}
+
+/// Selectors for async state
+struct AsyncSelectors<T, E> {
+    select_data: BasicSelector<LoadingState<T, E>, Option<T>>
+    select_error: BasicSelector<LoadingState<T, E>, Option<E>>
+    select_is_loading: BasicSelector<LoadingState<T, E>, Bool>
+    select_is_loaded: BasicSelector<LoadingState<T, E>, Bool>
+}
+
+impl<T: Clone, E: Clone> AsyncSelectors<T, E> {
+    fn new() -> Self {
+        AsyncSelectors {
+            select_data: BasicSelector.new(|state: LoadingState<T, E>| state.get_data()),
+            select_error: BasicSelector.new(|state: LoadingState<T, E>| state.get_error()),
+            select_is_loading: BasicSelector.new(|state: LoadingState<T, E>| state.is_loading()),
+            select_is_loaded: BasicSelector.new(|state: LoadingState<T, E>| state.is_loaded())
+        }
+    }
+}
+
+/// Create async selectors
+fn async_selectors<T: Clone, E: Clone>() -> AsyncSelectors<T, E> {
+    AsyncSelectors.new()
+}
+
+// =============================================================================
+// Selector Debugging
+// =============================================================================
+
+/// Selector with recomputation tracking
+struct TrackedSelector<S: Eq + Clone, R: Clone> {
+    inner: MemoizedSelector<S, R>
+    name: String
+    recompute_count: Int
+    hit_count: Int
+}
+
+impl<S: Eq + Clone, R: Clone> Selector<S, R> for TrackedSelector<S, R> {
+    fn select(state: S) -> R {
+        let was_cached = self.inner.is_cached()
+        let result = self.inner.select(state)
+        
+        if was_cached && self.inner.is_cached() {
+            self.hit_count += 1
+        } else {
+            self.recompute_count += 1
+        }
+        
+        result
+    }
+}
+
+impl<S: Eq + Clone, R: Clone> TrackedSelector<S, R> {
+    fn new(name: String, select_fn: SelectorFn<S, R>) -> Self {
+        TrackedSelector {
+            inner: MemoizedSelector.new(select_fn),
+            name: name,
+            recompute_count: 0,
+            hit_count: 0
+        }
+    }
+    
+    fn get_stats() -> SelectorStats {
+        SelectorStats {
+            name: self.name.clone(),
+            recompute_count: self.recompute_count,
+            hit_count: self.hit_count,
+            hit_rate: if self.hit_count + self.recompute_count > 0 {
+                self.hit_count as Float / (self.hit_count + self.recompute_count) as Float
+            } else {
+                0.0
+            }
+        }
+    }
+    
+    fn reset_stats() {
+        self.recompute_count = 0
+        self.hit_count = 0
+    }
+}
+
+struct SelectorStats {
+    name: String
+    recompute_count: Int
+    hit_count: Int
+    hit_rate: Float
+}
+
+/// Create tracked selector
+fn tracked<S: Eq + Clone, R: Clone>(
+    name: String,
+    select_fn: SelectorFn<S, R>
+) -> TrackedSelector<S, R> {
+    TrackedSelector.new(name, select_fn)
+}
+
+// =============================================================================
+// Selector Composition Helpers
+// =============================================================================
+
+/// Pipe multiple transformations
+fn pipe<S, R>(
+    selector: impl Selector<S, R>,
+    transforms: [fn(R) -> R]
+) -> BasicSelector<S, R> {
+    BasicSelector.new(|state| {
+        var result = selector.select(state)
+        for transform in transforms.iter() {
+            result = transform(result)
+        }
+        result
+    })
+}
+
+/// Combine multiple selectors into tuple
+fn combine<S, R1, R2>(
+    selector1: impl Selector<S, R1>,
+    selector2: impl Selector<S, R2>
+) -> BasicSelector<S, (R1, R2)> {
+    BasicSelector.new(|state| {
+        (selector1.select(state.clone()), selector2.select(state))
+    })
+}
+
+/// Combine three selectors
+fn combine3<S, R1, R2, R3>(
+    selector1: impl Selector<S, R1>,
+    selector2: impl Selector<S, R2>,
+    selector3: impl Selector<S, R3>
+) -> BasicSelector<S, (R1, R2, R3)> {
+    BasicSelector.new(|state| {
+        (
+            selector1.select(state.clone()),
+            selector2.select(state.clone()),
+            selector3.select(state)
+        )
+    })
+}
+
+/// Select from array by index
+fn at_index<S, T>(
+    selector: impl Selector<S, [T]>,
+    index: Int
+) -> BasicSelector<S, Option<T>> {
+    BasicSelector.new(|state| {
+        let arr = selector.select(state)
+        if index >= 0 && index < arr.len() {
+            Some(arr[index].clone())
+        } else {
+            None
+        }
+    })
+}
+
+/// Select first element
+fn first<S, T>(selector: impl Selector<S, [T]>) -> BasicSelector<S, Option<T>> {
+    at_index(selector, 0)
+}
+
+/// Select last element
+fn last<S, T>(selector: impl Selector<S, [T]>) -> BasicSelector<S, Option<T>> {
+    BasicSelector.new(|state| {
+        let arr = selector.select(state)
+        if arr.is_empty() {
+            None
+        } else {
+            Some(arr[arr.len() - 1].clone())
+        }
+    })
+}
+
+/// Count elements matching predicate
+fn count<S, T>(
+    selector: impl Selector<S, [T]>,
+    predicate: fn(T) -> Bool
+) -> BasicSelector<S, Int> {
+    BasicSelector.new(|state| {
+        selector.select(state).into_iter().filter(predicate).count()
+    })
+}
+
+/// Check if any element matches
+fn any<S, T>(
+    selector: impl Selector<S, [T]>,
+    predicate: fn(T) -> Bool
+) -> BasicSelector<S, Bool> {
+    BasicSelector.new(|state| {
+        selector.select(state).into_iter().any(predicate)
+    })
+}
+
+/// Check if all elements match
+fn all<S, T>(
+    selector: impl Selector<S, [T]>,
+    predicate: fn(T) -> Bool
+) -> BasicSelector<S, Bool> {
+    BasicSelector.new(|state| {
+        selector.select(state).into_iter().all(predicate)
+    })
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "basic selector" {
+    struct State { count: Int }
+    
+    let select_count = create_selector(|state: State| state.count)
+    let state = State { count: 42 }
+    
+    assert_eq(select_count.select(state), 42)?
+}
+
+test "memoized selector" {
+    struct State { items: [Int] }
+    
+    var compute_count = 0
+    let select_sum = memoize(|state: State| {
+        compute_count += 1
+        state.items.iter().sum()
+    })
+    
+    let state = State { items: [1, 2, 3, 4, 5] }
+    
+    assert_eq(select_sum.select(state.clone()), 15)?
+    assert_eq(compute_count, 1)?
+    
+    // Same state - should use cache
+    assert_eq(select_sum.select(state.clone()), 15)?
+    assert_eq(compute_count, 1)?
+    
+    // Different state - should recompute
+    let state2 = State { items: [1, 2, 3] }
+    assert_eq(select_sum.select(state2), 6)?
+    assert_eq(compute_count, 2)?
+}
+
+test "composed selector" {
+    struct State { items: [Int] }
+    
+    let select_items = create_selector(|state: State| state.items.clone())
+    let select_count = create_selector_1(select_items, |items| items.len())
+    
+    let state = State { items: [1, 2, 3] }
+    assert_eq(select_count.select(state), 3)?
+}
+
+test "composed selector 2" {
+    struct State { a: Int, b: Int }
+    
+    let select_a = create_selector(|state: State| state.a)
+    let select_b = create_selector(|state: State| state.b)
+    let select_sum = create_selector_2(select_a, select_b, |a, b| a + b)
+    
+    let state = State { a: 10, b: 20 }
+    assert_eq(select_sum.select(state), 30)?
+}
+
+test "parameterized selector" {
+    struct State { users: Map<String, String> }
+    
+    let select_user = create_parameterized(|id: String| {
+        create_selector(|state: State| state.users.get(id.clone()))
+    })
+    
+    var users = Map.new()
+    users.insert("1", "Alice")
+    users.insert("2", "Bob")
+    let state = State { users: users }
+    
+    assert_eq(select_user.select(state.clone(), "1"), Some("Alice"))?
+    assert_eq(select_user.select(state.clone(), "2"), Some("Bob"))?
+    assert_eq(select_user.select(state, "3"), None)?
+}
+
+test "filter selector" {
+    struct State { numbers: [Int] }
+    
+    let select_numbers = create_selector(|state: State| state.numbers.clone())
+    let select_even = filter(select_numbers, |n| n % 2 == 0)
+    
+    let state = State { numbers: [1, 2, 3, 4, 5, 6] }
+    assert_eq(select_even.select(state), [2, 4, 6])?
+}
+
+test "tracked selector" {
+    struct State { value: Int }
+    
+    let selector = tracked("test_selector", |state: State| state.value * 2)
+    
+    let state1 = State { value: 5 }
+    assert_eq(selector.select(state1.clone()), 10)?
+    assert_eq(selector.select(state1.clone()), 10)?
+    
+    let stats = selector.get_stats()
+    assert_eq(stats.recompute_count, 1)?
+    assert_eq(stats.hit_count, 1)?
+}
+
+test "loading state selectors" {
+    let selectors = async_selectors::<String, String>()
+    
+    let loading = LoadingState::<String, String>.Loading
+    assert(selectors.select_is_loading.select(loading))?
+    
+    let loaded = LoadingState.Loaded("data")
+    assert(selectors.select_is_loaded.select(loaded.clone()))?
+    assert_eq(selectors.select_data.select(loaded), Some("data"))?
+}

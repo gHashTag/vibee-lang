@@ -2,7 +2,7 @@
 
 **A Complete Mathematical Framework**
 
-**Authors**: Dmitrii Vasilev, Ona  
+**Author**: Dmitrii Vasilev  
 **Date**: January 13, 2026  
 **Status**: Synthesis Document
 

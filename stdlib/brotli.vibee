@@ -1,0 +1,765 @@
+// =============================================================================
+// Vibee OS — Brotli Module
+// Brotli compression and decompression (RFC 7932)
+// =============================================================================
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+const BROTLI_MIN_QUALITY: Int = 0
+const BROTLI_MAX_QUALITY: Int = 11
+const BROTLI_DEFAULT_QUALITY: Int = 11
+const BROTLI_MIN_WINDOW: Int = 10
+const BROTLI_MAX_WINDOW: Int = 24
+const BROTLI_DEFAULT_WINDOW: Int = 22
+const BROTLI_MIN_INPUT_BLOCK: Int = 16
+const BROTLI_MAX_INPUT_BLOCK: Int = 24
+
+// =============================================================================
+// Compression Quality
+// =============================================================================
+
+/// Brotli compression quality (0-11)
+enum BrotliQuality {
+    Fastest     // Quality 0 - fastest, largest
+    Fast        // Quality 1
+    Default     // Quality 11 - slowest, smallest
+    Custom(Int) // Custom quality (0-11)
+}
+
+impl BrotliQuality {
+    fn value() -> Int {
+        match self {
+            Fastest => 0
+            Fast => 1
+            Default => 11
+            Custom(n) => n.clamp(0, 11)
+        }
+    }
+    
+    fn from_int(quality: Int) -> Self {
+        match quality {
+            0 => BrotliQuality.Fastest
+            1 => BrotliQuality.Fast
+            11 => BrotliQuality.Default
+            n => BrotliQuality.Custom(n.clamp(0, 11))
+        }
+    }
+}
+
+// =============================================================================
+// Encoder Mode
+// =============================================================================
+
+/// Brotli encoder mode
+enum BrotliMode {
+    Generic     // Default mode for any data
+    Text        // Optimized for UTF-8 text
+    Font        // Optimized for WOFF 2.0 fonts
+}
+
+impl BrotliMode {
+    fn value() -> Int {
+        match self {
+            Generic => 0
+            Text => 1
+            Font => 2
+        }
+    }
+}
+
+// =============================================================================
+// Compression Options
+// =============================================================================
+
+/// Brotli compression options
+struct BrotliOptions {
+    quality: Int
+    window_size: Int
+    mode: BrotliMode
+    large_window: Bool
+}
+
+impl BrotliOptions {
+    fn new() -> Self {
+        BrotliOptions {
+            quality: BROTLI_DEFAULT_QUALITY,
+            window_size: BROTLI_DEFAULT_WINDOW,
+            mode: BrotliMode.Generic,
+            large_window: false
+        }
+    }
+    
+    fn with_quality(quality: BrotliQuality) -> Self {
+        var opts = Self.new()
+        opts.quality = quality.value()
+        opts
+    }
+    
+    fn quality(q: Int) -> Self {
+        self.quality = q.clamp(0, 11)
+        self
+    }
+    
+    fn window_size(size: Int) -> Self {
+        self.window_size = size.clamp(BROTLI_MIN_WINDOW, BROTLI_MAX_WINDOW)
+        self
+    }
+    
+    fn mode(m: BrotliMode) -> Self {
+        self.mode = m
+        self
+    }
+    
+    fn large_window(enabled: Bool) -> Self {
+        self.large_window = enabled
+        self
+    }
+    
+    /// Preset for fast compression
+    fn fast() -> Self {
+        BrotliOptions {
+            quality: 1,
+            window_size: 16,
+            mode: BrotliMode.Generic,
+            large_window: false
+        }
+    }
+    
+    /// Preset for best compression
+    fn best() -> Self {
+        BrotliOptions {
+            quality: 11,
+            window_size: 24,
+            mode: BrotliMode.Generic,
+            large_window: true
+        }
+    }
+    
+    /// Preset for text compression
+    fn text() -> Self {
+        BrotliOptions {
+            quality: 11,
+            window_size: 22,
+            mode: BrotliMode.Text,
+            large_window: false
+        }
+    }
+    
+    /// Preset for font compression
+    fn font() -> Self {
+        BrotliOptions {
+            quality: 11,
+            window_size: 22,
+            mode: BrotliMode.Font,
+            large_window: false
+        }
+    }
+}
+
+// =============================================================================
+// Core Functions
+// =============================================================================
+
+/// Compress data using brotli with default quality
+fn compress(data: [UInt8]) -> Result<[UInt8], BrotliError> {
+    compress_quality(data, BrotliQuality.Default)
+}
+
+/// Compress data using brotli with specified quality
+fn compress_quality(data: [UInt8], quality: BrotliQuality) -> Result<[UInt8], BrotliError> {
+    @native("brotli_compress", data, quality.value())
+}
+
+/// Compress data with options
+fn compress_with_options(data: [UInt8], options: BrotliOptions) -> Result<[UInt8], BrotliError> {
+    @native("brotli_compress_opts", data, options.quality, options.window_size, options.mode.value(), options.large_window)
+}
+
+/// Decompress brotli data
+fn decompress(data: [UInt8]) -> Result<[UInt8], BrotliError> {
+    @native("brotli_decompress", data)
+}
+
+/// Decompress with size hint
+fn decompress_with_hint(data: [UInt8], size_hint: Int) -> Result<[UInt8], BrotliError> {
+    @native("brotli_decompress_hint", data, size_hint)
+}
+
+/// Check if data might be brotli compressed
+/// Note: Brotli doesn't have a magic number, so this is heuristic
+fn is_brotli(data: [UInt8]) -> Bool {
+    if data.is_empty() { return false }
+    
+    // Try to decode first byte as window size
+    let wbits = data[0] & 0x01
+    if wbits == 0 {
+        // 16-bit window size
+        if data.len() < 2 { return false }
+    }
+    
+    // Best effort: try to decompress small portion
+    @native("brotli_is_valid", data)
+}
+
+// =============================================================================
+// Streaming Encoder
+// =============================================================================
+
+/// Streaming brotli encoder
+struct BrotliEncoder {
+    inner: @native("BrotliEncoder")
+    options: BrotliOptions
+    bytes_in: Int64
+    bytes_out: Int64
+    finished: Bool
+}
+
+impl BrotliEncoder {
+    fn new() -> Self {
+        Self.with_options(BrotliOptions.new())
+    }
+    
+    fn with_quality(quality: BrotliQuality) -> Self {
+        Self.with_options(BrotliOptions.with_quality(quality))
+    }
+    
+    fn with_options(options: BrotliOptions) -> Self {
+        BrotliEncoder {
+            inner: @native("brotli_encoder_new", options.quality, options.window_size, options.mode.value()),
+            options: options,
+            bytes_in: 0,
+            bytes_out: 0,
+            finished: false
+        }
+    }
+    
+    /// Compress data chunk
+    fn write(data: [UInt8]) -> Result<[UInt8], BrotliError> {
+        if self.finished {
+            return Err(BrotliError.EncoderFinished)
+        }
+        
+        self.bytes_in += data.len() as Int64
+        let output = @native("brotli_encoder_write", self.inner, data)?
+        self.bytes_out += output.len() as Int64
+        Ok(output)
+    }
+    
+    /// Flush compressed data
+    fn flush() -> Result<[UInt8], BrotliError> {
+        if self.finished {
+            return Err(BrotliError.EncoderFinished)
+        }
+        
+        let output = @native("brotli_encoder_flush", self.inner)?
+        self.bytes_out += output.len() as Int64
+        Ok(output)
+    }
+    
+    /// Finish compression
+    fn finish() -> Result<[UInt8], BrotliError> {
+        if self.finished {
+            return Ok([])
+        }
+        
+        self.finished = true
+        let output = @native("brotli_encoder_finish", self.inner)?
+        self.bytes_out += output.len() as Int64
+        Ok(output)
+    }
+    
+    /// Check if encoder is finished
+    fn is_finished() -> Bool { self.finished }
+    
+    /// Reset encoder for reuse
+    fn reset() {
+        self.inner = @native("brotli_encoder_new", self.options.quality, self.options.window_size, self.options.mode.value())
+        self.bytes_in = 0
+        self.bytes_out = 0
+        self.finished = false
+    }
+    
+    /// Get total bytes input
+    fn total_in() -> Int64 { self.bytes_in }
+    
+    /// Get total bytes output
+    fn total_out() -> Int64 { self.bytes_out }
+    
+    /// Get compression ratio
+    fn ratio() -> Float64 {
+        if self.bytes_in == 0 { return 0.0 }
+        1.0 - (self.bytes_out as Float64 / self.bytes_in as Float64)
+    }
+}
+
+impl Write for BrotliEncoder {
+    fn write(data: [UInt8]) -> Result<Int, IoError> {
+        self.write(data).map_err(|e| IoError.Other(e.to_string()))?
+        Ok(data.len())
+    }
+    
+    fn flush() -> Result<(), IoError> {
+        self.flush().map_err(|e| IoError.Other(e.to_string()))?
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Streaming Decoder
+// =============================================================================
+
+/// Streaming brotli decoder
+struct BrotliDecoder {
+    inner: @native("BrotliDecoder")
+    bytes_in: Int64
+    bytes_out: Int64
+    finished: Bool
+}
+
+impl BrotliDecoder {
+    fn new() -> Self {
+        BrotliDecoder {
+            inner: @native("brotli_decoder_new"),
+            bytes_in: 0,
+            bytes_out: 0,
+            finished: false
+        }
+    }
+    
+    /// Decompress data chunk
+    fn write(data: [UInt8]) -> Result<[UInt8], BrotliError> {
+        if self.finished {
+            return Err(BrotliError.DecoderFinished)
+        }
+        
+        self.bytes_in += data.len() as Int64
+        let (output, done) = @native("brotli_decoder_write", self.inner, data)?
+        self.bytes_out += output.len() as Int64
+        
+        if done {
+            self.finished = true
+        }
+        
+        Ok(output)
+    }
+    
+    /// Finish decompression
+    fn finish() -> Result<[UInt8], BrotliError> {
+        if self.finished {
+            return Ok([])
+        }
+        
+        self.finished = true
+        let output = @native("brotli_decoder_finish", self.inner)?
+        self.bytes_out += output.len() as Int64
+        Ok(output)
+    }
+    
+    /// Check if decoder is finished
+    fn is_finished() -> Bool { self.finished }
+    
+    /// Check if decoder needs more input
+    fn needs_more_input() -> Bool {
+        @native("brotli_decoder_needs_input", self.inner)
+    }
+    
+    /// Check if decoder has more output
+    fn has_more_output() -> Bool {
+        @native("brotli_decoder_has_output", self.inner)
+    }
+    
+    /// Reset decoder for reuse
+    fn reset() {
+        self.inner = @native("brotli_decoder_new")
+        self.bytes_in = 0
+        self.bytes_out = 0
+        self.finished = false
+    }
+    
+    /// Get total bytes input
+    fn total_in() -> Int64 { self.bytes_in }
+    
+    /// Get total bytes output
+    fn total_out() -> Int64 { self.bytes_out }
+}
+
+// =============================================================================
+// Async Streaming
+// =============================================================================
+
+/// Async brotli encoder actor
+actor AsyncBrotliEncoder {
+    state encoder: BrotliEncoder
+    state output_buffer: [UInt8]
+    state chunk_size: Int
+    
+    fn new() -> Self {
+        AsyncBrotliEncoder {
+            encoder: BrotliEncoder.new(),
+            output_buffer: [],
+            chunk_size: 65536
+        }
+    }
+    
+    fn with_quality(quality: BrotliQuality) -> Self {
+        AsyncBrotliEncoder {
+            encoder: BrotliEncoder.with_quality(quality),
+            output_buffer: [],
+            chunk_size: 65536
+        }
+    }
+    
+    fn with_options(options: BrotliOptions) -> Self {
+        AsyncBrotliEncoder {
+            encoder: BrotliEncoder.with_options(options),
+            output_buffer: [],
+            chunk_size: 65536
+        }
+    }
+    
+    /// Compress data asynchronously
+    async fn write(data: [UInt8]) -> Result<(), BrotliError> {
+        let output = self.encoder.write(data)?
+        self.output_buffer.extend(output)
+        Ok(())
+    }
+    
+    /// Get compressed output
+    async fn take_output() -> [UInt8] {
+        let result = self.output_buffer.clone()
+        self.output_buffer.clear()
+        result
+    }
+    
+    /// Flush encoder
+    async fn flush() -> Result<[UInt8], BrotliError> {
+        let output = self.encoder.flush()?
+        self.output_buffer.extend(output)
+        Ok(self.take_output().await)
+    }
+    
+    /// Finish compression
+    async fn finish() -> Result<[UInt8], BrotliError> {
+        let final_output = self.encoder.finish()?
+        self.output_buffer.extend(final_output)
+        Ok(self.take_output().await)
+    }
+    
+    /// Get compression stats
+    fn stats() -> (Int64, Int64, Float64) {
+        (self.encoder.total_in(), self.encoder.total_out(), self.encoder.ratio())
+    }
+}
+
+/// Async brotli decoder actor
+actor AsyncBrotliDecoder {
+    state decoder: BrotliDecoder
+    state output_buffer: [UInt8]
+    
+    fn new() -> Self {
+        AsyncBrotliDecoder {
+            decoder: BrotliDecoder.new(),
+            output_buffer: []
+        }
+    }
+    
+    /// Decompress data asynchronously
+    async fn write(data: [UInt8]) -> Result<(), BrotliError> {
+        let output = self.decoder.write(data)?
+        self.output_buffer.extend(output)
+        Ok(())
+    }
+    
+    /// Get decompressed output
+    async fn take_output() -> [UInt8] {
+        let result = self.output_buffer.clone()
+        self.output_buffer.clear()
+        result
+    }
+    
+    /// Finish decompression
+    async fn finish() -> Result<[UInt8], BrotliError> {
+        let final_output = self.decoder.finish()?
+        self.output_buffer.extend(final_output)
+        Ok(self.take_output().await)
+    }
+    
+    /// Check if finished
+    fn is_finished() -> Bool {
+        self.decoder.is_finished()
+    }
+}
+
+// =============================================================================
+// Dictionary Compression
+// =============================================================================
+
+/// Shared dictionary for compression
+struct BrotliDictionary {
+    data: [UInt8]
+    id: UInt32
+}
+
+impl BrotliDictionary {
+    /// Create dictionary from data
+    fn new(data: [UInt8]) -> Self {
+        let id = @native("brotli_dict_hash", data)
+        BrotliDictionary { data: data, id: id }
+    }
+    
+    /// Load dictionary from file
+    fn from_file(path: String) -> Result<Self, BrotliError> {
+        let data = fs.read(path).map_err(|e| BrotliError.IoError(e.to_string()))?
+        Ok(Self.new(data))
+    }
+    
+    /// Get dictionary ID
+    fn id() -> UInt32 { self.id }
+    
+    /// Get dictionary data
+    fn data() -> [UInt8] { self.data.clone() }
+}
+
+/// Compress with shared dictionary
+fn compress_with_dict(data: [UInt8], dict: BrotliDictionary) -> Result<[UInt8], BrotliError> {
+    compress_with_dict_quality(data, dict, BrotliQuality.Default)
+}
+
+/// Compress with shared dictionary and quality
+fn compress_with_dict_quality(data: [UInt8], dict: BrotliDictionary, quality: BrotliQuality) -> Result<[UInt8], BrotliError> {
+    @native("brotli_compress_dict", data, dict.data, quality.value())
+}
+
+/// Decompress with shared dictionary
+fn decompress_with_dict(data: [UInt8], dict: BrotliDictionary) -> Result<[UInt8], BrotliError> {
+    @native("brotli_decompress_dict", data, dict.data)
+}
+
+// =============================================================================
+// Prepared Dictionary
+// =============================================================================
+
+/// Prepared dictionary for faster compression
+struct PreparedDictionary {
+    inner: @native("BrotliPreparedDict")
+    quality: Int
+}
+
+impl PreparedDictionary {
+    /// Prepare dictionary for specific quality
+    fn new(data: [UInt8], quality: BrotliQuality) -> Self {
+        PreparedDictionary {
+            inner: @native("brotli_prepare_dict", data, quality.value()),
+            quality: quality.value()
+        }
+    }
+    
+    /// Compress using prepared dictionary
+    fn compress(data: [UInt8]) -> Result<[UInt8], BrotliError> {
+        @native("brotli_compress_prepared", data, self.inner, self.quality)
+    }
+}
+
+// =============================================================================
+// File Operations
+// =============================================================================
+
+/// Compress file to .br
+fn compress_file(input_path: String, output_path: Option<String>) -> Result<Int64, BrotliError> {
+    let data = fs.read(input_path).map_err(|e| BrotliError.IoError(e.to_string()))?
+    let compressed = compress(data)?
+    
+    let out_path = output_path.unwrap_or(format!("{}.br", input_path))
+    fs.write(out_path, compressed).map_err(|e| BrotliError.IoError(e.to_string()))?
+    
+    Ok(compressed.len() as Int64)
+}
+
+/// Decompress .br file
+fn decompress_file(input_path: String, output_path: Option<String>) -> Result<Int64, BrotliError> {
+    let data = fs.read(input_path).map_err(|e| BrotliError.IoError(e.to_string()))?
+    let decompressed = decompress(data)?
+    
+    let out_path = output_path.unwrap_or_else(|| {
+        if input_path.ends_with(".br") {
+            input_path[0..(input_path.len() - 3)].to_string()
+        } else {
+            format!("{}.out", input_path)
+        }
+    })
+    
+    fs.write(out_path, decompressed.clone()).map_err(|e| BrotliError.IoError(e.to_string()))?
+    
+    Ok(decompressed.len() as Int64)
+}
+
+// =============================================================================
+// Utilities
+// =============================================================================
+
+/// Calculate maximum compressed size
+fn max_compressed_size(input_size: Int) -> Int {
+    // Brotli worst case: input + header overhead
+    input_size + 16 + (input_size >> 10)
+}
+
+/// Get encoder version
+fn encoder_version() -> UInt32 {
+    @native("brotli_encoder_version")
+}
+
+/// Get decoder version
+fn decoder_version() -> UInt32 {
+    @native("brotli_decoder_version")
+}
+
+/// Format version as string
+fn version_string(version: UInt32) -> String {
+    let major = (version >> 24) & 0xff
+    let minor = (version >> 12) & 0xfff
+    let patch = version & 0xfff
+    format!("{}.{}.{}", major, minor, patch)
+}
+
+// =============================================================================
+// HTTP Content-Encoding Support
+// =============================================================================
+
+/// Compress for HTTP response with Content-Encoding: br
+fn compress_http(data: [UInt8], content_type: String) -> Result<[UInt8], BrotliError> {
+    let options = if content_type.starts_with("text/") || 
+                     content_type.contains("json") || 
+                     content_type.contains("xml") {
+        BrotliOptions.text()
+    } else if content_type.contains("font") {
+        BrotliOptions.font()
+    } else {
+        BrotliOptions.new()
+    }
+    
+    compress_with_options(data, options)
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum BrotliError {
+    InvalidData
+    BufferTooSmall
+    EncoderFinished
+    DecoderFinished
+    InvalidQuality
+    InvalidWindowSize
+    IoError(String)
+    Other(String)
+}
+
+impl Display for BrotliError {
+    fn fmt(f: Formatter) {
+        match self {
+            InvalidData => f.write("Invalid brotli data")
+            BufferTooSmall => f.write("Output buffer too small")
+            EncoderFinished => f.write("Encoder already finished")
+            DecoderFinished => f.write("Decoder already finished")
+            InvalidQuality => f.write("Invalid quality level")
+            InvalidWindowSize => f.write("Invalid window size")
+            IoError(s) => f.write(format!("I/O error: {}", s))
+            Other(s) => f.write(s)
+        }
+    }
+}
+
+impl Error for BrotliError {}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "compress decompress roundtrip" {
+    let original = "Hello, World! This is a test of brotli compression.".as_bytes()
+    let compressed = compress(original)?
+    let decompressed = decompress(compressed)?
+    assert_eq(decompressed, original)?
+}
+
+test "compression quality levels" {
+    let data = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".repeat(100).as_bytes()
+    
+    let fastest = compress_quality(data, BrotliQuality.Fastest)?
+    let fast = compress_quality(data, BrotliQuality.Fast)?
+    let default = compress_quality(data, BrotliQuality.Default)?
+    
+    assert_eq(decompress(fastest)?, data)?
+    assert_eq(decompress(fast)?, data)?
+    assert_eq(decompress(default)?, data)?
+    
+    // Higher quality should produce smaller output
+    assert(default.len() <= fastest.len())?
+}
+
+test "compression options" {
+    let data = "Test data for options".as_bytes()
+    
+    let fast_opts = BrotliOptions.fast()
+    let best_opts = BrotliOptions.best()
+    
+    let fast = compress_with_options(data, fast_opts)?
+    let best = compress_with_options(data, best_opts)?
+    
+    assert_eq(decompress(fast)?, data)?
+    assert_eq(decompress(best)?, data)?
+}
+
+test "text mode" {
+    let text = "The quick brown fox jumps over the lazy dog. ".repeat(100).as_bytes()
+    let compressed = compress_with_options(text, BrotliOptions.text())?
+    let decompressed = decompress(compressed)?
+    assert_eq(decompressed, text)?
+}
+
+test "streaming encoder" {
+    var encoder = BrotliEncoder.new()
+    encoder.write("Hello, ".as_bytes())?
+    encoder.write("World!".as_bytes())?
+    let compressed = encoder.finish()?
+    
+    let decompressed = decompress(compressed)?
+    assert_eq(String.from_utf8(decompressed)?, "Hello, World!")?
+}
+
+test "streaming decoder" {
+    let original = "Test data for streaming decoder".as_bytes()
+    let compressed = compress(original)?
+    
+    var decoder = BrotliDecoder.new()
+    let part1 = decoder.write(compressed)?
+    let part2 = decoder.finish()?
+    
+    var result = []
+    result.extend(part1)
+    result.extend(part2)
+    assert_eq(result, original)?
+}
+
+test "empty data" {
+    let compressed = compress([])?
+    let decompressed = decompress(compressed)?
+    assert_eq(decompressed, [])?
+}
+
+test "large data" {
+    let data = "x".repeat(1000000).as_bytes()
+    let compressed = compress_quality(data, BrotliQuality.Fast)?
+    let decompressed = decompress(compressed)?
+    assert_eq(decompressed.len(), data.len())?
+}
+
+test "version" {
+    let enc_ver = encoder_version()
+    let dec_ver = decoder_version()
+    assert(enc_ver > 0)?
+    assert(dec_ver > 0)?
+}

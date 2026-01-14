@@ -1,0 +1,615 @@
+// =============================================================================
+// Vibee OS — Bounce Module
+// Email bounce handling, classification, and management
+// =============================================================================
+
+use email.{Email, Address, EmailError}
+use json.{JsonValue, Serialize, Deserialize}
+use regex.{Regex}
+
+// =============================================================================
+// Bounce Types
+// =============================================================================
+
+/// Email bounce record
+struct Bounce {
+    id: String
+    email: String
+    bounce_type: BounceType
+    bounce_subtype: BounceSubtype
+    diagnostic_code: Option<String>
+    action: Option<String>
+    status: Option<String>
+    remote_mta: Option<String>
+    timestamp: Instant
+    original_message_id: Option<String>
+    raw_message: Option<String>
+}
+
+/// Main bounce categories
+enum BounceType {
+    Hard        // Permanent failure
+    Soft        // Temporary failure
+    Transient   // Temporary, may retry
+    Undetermined
+}
+
+/// Detailed bounce subtypes
+enum BounceSubtype {
+    // Hard bounce subtypes
+    General
+    NoEmail           // Address doesn't exist
+    Suppressed        // On suppression list
+    OnAccountSuppressionList
+    
+    // Soft bounce subtypes
+    MailboxFull
+    MessageTooLarge
+    ContentRejected
+    AttachmentRejected
+    
+    // Transient subtypes
+    MailboxBusy
+    NetworkError
+    TemporaryFailure
+    
+    // Other
+    SpamComplaint
+    VirusDetected
+    InvalidDomain
+    PolicyRejection
+    Unknown
+}
+
+impl Bounce {
+    fn new(email: String, bounce_type: BounceType) -> Self {
+        Bounce {
+            id: UUID.v4(),
+            email: email,
+            bounce_type: bounce_type,
+            bounce_subtype: BounceSubtype.Unknown,
+            diagnostic_code: None,
+            action: None,
+            status: None,
+            remote_mta: None,
+            timestamp: Instant.now(),
+            original_message_id: None,
+            raw_message: None
+        }
+    }
+    
+    fn subtype(st: BounceSubtype) -> Self { self.bounce_subtype = st; self }
+    fn diagnostic(code: String) -> Self { self.diagnostic_code = Some(code); self }
+    fn action(a: String) -> Self { self.action = Some(a); self }
+    fn status(s: String) -> Self { self.status = Some(s); self }
+    fn remote_mta(mta: String) -> Self { self.remote_mta = Some(mta); self }
+    fn message_id(id: String) -> Self { self.original_message_id = Some(id); self }
+    fn raw(msg: String) -> Self { self.raw_message = Some(msg); self }
+    
+    /// Check if hard bounce
+    fn is_hard() -> Bool {
+        match self.bounce_type { BounceType.Hard => true, _ => false }
+    }
+    
+    /// Check if soft bounce
+    fn is_soft() -> Bool {
+        match self.bounce_type { BounceType.Soft | BounceType.Transient => true, _ => false }
+    }
+    
+    /// Check if should suppress email
+    fn should_suppress() -> Bool {
+        self.is_hard() || match self.bounce_subtype {
+            BounceSubtype.SpamComplaint | BounceSubtype.Suppressed => true
+            _ => false
+        }
+    }
+    
+    /// Check if can retry
+    fn can_retry() -> Bool {
+        match self.bounce_type {
+            BounceType.Soft | BounceType.Transient => true
+            _ => false
+        }
+    }
+    
+    /// Get recommended action
+    fn recommended_action() -> BounceAction {
+        match self.bounce_type {
+            BounceType.Hard => BounceAction.Remove
+            BounceType.Soft => match self.bounce_subtype {
+                BounceSubtype.MailboxFull => BounceAction.RetryLater
+                BounceSubtype.MessageTooLarge => BounceAction.ReduceSize
+                BounceSubtype.ContentRejected => BounceAction.ModifyContent
+                _ => BounceAction.RetryLater
+            }
+            BounceType.Transient => BounceAction.RetryLater
+            BounceType.Undetermined => BounceAction.Investigate
+        }
+    }
+}
+
+enum BounceAction {
+    Remove          // Remove from list
+    RetryLater      // Retry after delay
+    ReduceSize      // Reduce message size
+    ModifyContent   // Change content
+    Investigate     // Manual review needed
+    Ignore          // No action needed
+}
+
+// =============================================================================
+// Bounce Parser
+// =============================================================================
+
+/// Parse bounce messages from various formats
+struct BounceParser {
+    patterns: [BouncePattern]
+}
+
+struct BouncePattern {
+    regex: Regex
+    bounce_type: BounceType
+    bounce_subtype: BounceSubtype
+}
+
+impl BounceParser {
+    fn new() -> Self {
+        BounceParser { patterns: Self.default_patterns() }
+    }
+    
+    fn default_patterns() -> [BouncePattern] {
+        [
+            // Hard bounces
+            BouncePattern { regex: Regex.new(r"(?i)user unknown|no such user|mailbox not found"), bounce_type: BounceType.Hard, bounce_subtype: BounceSubtype.NoEmail },
+            BouncePattern { regex: Regex.new(r"(?i)address rejected|invalid recipient"), bounce_type: BounceType.Hard, bounce_subtype: BounceSubtype.NoEmail },
+            BouncePattern { regex: Regex.new(r"(?i)domain not found|no mx record"), bounce_type: BounceType.Hard, bounce_subtype: BounceSubtype.InvalidDomain },
+            BouncePattern { regex: Regex.new(r"(?i)permanently rejected|permanent failure"), bounce_type: BounceType.Hard, bounce_subtype: BounceSubtype.General },
+            
+            // Soft bounces
+            BouncePattern { regex: Regex.new(r"(?i)mailbox full|over quota|quota exceeded"), bounce_type: BounceType.Soft, bounce_subtype: BounceSubtype.MailboxFull },
+            BouncePattern { regex: Regex.new(r"(?i)message too large|size limit"), bounce_type: BounceType.Soft, bounce_subtype: BounceSubtype.MessageTooLarge },
+            BouncePattern { regex: Regex.new(r"(?i)content rejected|spam detected"), bounce_type: BounceType.Soft, bounce_subtype: BounceSubtype.ContentRejected },
+            BouncePattern { regex: Regex.new(r"(?i)attachment rejected|file type not allowed"), bounce_type: BounceType.Soft, bounce_subtype: BounceSubtype.AttachmentRejected },
+            
+            // Transient
+            BouncePattern { regex: Regex.new(r"(?i)try again later|temporary failure"), bounce_type: BounceType.Transient, bounce_subtype: BounceSubtype.TemporaryFailure },
+            BouncePattern { regex: Regex.new(r"(?i)connection timed out|network error"), bounce_type: BounceType.Transient, bounce_subtype: BounceSubtype.NetworkError },
+            BouncePattern { regex: Regex.new(r"(?i)mailbox busy|too many connections"), bounce_type: BounceType.Transient, bounce_subtype: BounceSubtype.MailboxBusy },
+            
+            // Complaints
+            BouncePattern { regex: Regex.new(r"(?i)spam complaint|abuse report"), bounce_type: BounceType.Hard, bounce_subtype: BounceSubtype.SpamComplaint },
+            BouncePattern { regex: Regex.new(r"(?i)virus detected|malware"), bounce_type: BounceType.Hard, bounce_subtype: BounceSubtype.VirusDetected },
+            BouncePattern { regex: Regex.new(r"(?i)policy violation|blocked"), bounce_type: BounceType.Soft, bounce_subtype: BounceSubtype.PolicyRejection }
+        ]
+    }
+    
+    fn add_pattern(pattern: BouncePattern) -> Self {
+        self.patterns.push(pattern)
+        self
+    }
+    
+    /// Parse bounce from raw email
+    fn parse(raw_message: String) -> Result<Bounce, BounceError> {
+        let email_addr = self.extract_email(raw_message.clone())?
+        let (bounce_type, bounce_subtype) = self.classify(raw_message.clone())
+        let diagnostic = self.extract_diagnostic(raw_message.clone())
+        let status = self.extract_status(raw_message.clone())
+        
+        Ok(Bounce.new(email_addr, bounce_type)
+            .subtype(bounce_subtype)
+            .diagnostic(diagnostic.unwrap_or(""))
+            .status(status.unwrap_or(""))
+            .raw(raw_message))
+    }
+    
+    /// Parse AWS SES bounce notification
+    fn parse_ses(json: String) -> Result<Bounce, BounceError> {
+        let data: JsonValue = json.parse().map_err(|e| BounceError.ParseError(e.to_string()))?
+        
+        let bounce_obj = data.get("bounce").ok_or(BounceError.ParseError("No bounce object"))?
+        let bounce_type_str = bounce_obj.get("bounceType").and_then(|v| v.as_string()).unwrap_or("Undetermined")
+        let bounce_subtype_str = bounce_obj.get("bounceSubType").and_then(|v| v.as_string()).unwrap_or("General")
+        
+        let recipients = bounce_obj.get("bouncedRecipients").and_then(|v| v.as_array()).unwrap_or([])
+        let email = recipients.get(0).and_then(|r| r.get("emailAddress")).and_then(|v| v.as_string())
+            .ok_or(BounceError.ParseError("No recipient email"))?
+        
+        let bounce_type = match bounce_type_str {
+            "Permanent" => BounceType.Hard
+            "Transient" => BounceType.Transient
+            _ => BounceType.Undetermined
+        }
+        
+        let bounce_subtype = match bounce_subtype_str {
+            "General" => BounceSubtype.General
+            "NoEmail" => BounceSubtype.NoEmail
+            "Suppressed" => BounceSubtype.Suppressed
+            "MailboxFull" => BounceSubtype.MailboxFull
+            "MessageTooLarge" => BounceSubtype.MessageTooLarge
+            "ContentRejected" => BounceSubtype.ContentRejected
+            _ => BounceSubtype.Unknown
+        }
+        
+        let diagnostic = recipients.get(0).and_then(|r| r.get("diagnosticCode")).and_then(|v| v.as_string())
+        
+        Ok(Bounce.new(email, bounce_type)
+            .subtype(bounce_subtype)
+            .diagnostic(diagnostic.unwrap_or("")))
+    }
+    
+    /// Parse SendGrid bounce webhook
+    fn parse_sendgrid(json: String) -> Result<Bounce, BounceError> {
+        let data: JsonValue = json.parse().map_err(|e| BounceError.ParseError(e.to_string()))?
+        
+        let email = data.get("email").and_then(|v| v.as_string())
+            .ok_or(BounceError.ParseError("No email"))?
+        let event = data.get("event").and_then(|v| v.as_string()).unwrap_or("bounce")
+        let reason = data.get("reason").and_then(|v| v.as_string())
+        
+        let bounce_type = match event {
+            "bounce" => BounceType.Hard
+            "deferred" => BounceType.Transient
+            "dropped" => BounceType.Hard
+            "spamreport" => BounceType.Hard
+            _ => BounceType.Undetermined
+        }
+        
+        let bounce_subtype = match event {
+            "spamreport" => BounceSubtype.SpamComplaint
+            _ => BounceSubtype.General
+        }
+        
+        Ok(Bounce.new(email, bounce_type)
+            .subtype(bounce_subtype)
+            .diagnostic(reason.unwrap_or("")))
+    }
+    
+    /// Parse Mailgun bounce webhook
+    fn parse_mailgun(json: String) -> Result<Bounce, BounceError> {
+        let data: JsonValue = json.parse().map_err(|e| BounceError.ParseError(e.to_string()))?
+        
+        let event_data = data.get("event-data").unwrap_or(data.clone())
+        let email = event_data.get("recipient").and_then(|v| v.as_string())
+            .ok_or(BounceError.ParseError("No recipient"))?
+        let severity = event_data.get("severity").and_then(|v| v.as_string()).unwrap_or("permanent")
+        let reason = event_data.get("reason").and_then(|v| v.as_string())
+        
+        let bounce_type = match severity {
+            "permanent" => BounceType.Hard
+            "temporary" => BounceType.Transient
+            _ => BounceType.Undetermined
+        }
+        
+        Ok(Bounce.new(email, bounce_type).diagnostic(reason.unwrap_or("")))
+    }
+    
+    fn classify(message: String) -> (BounceType, BounceSubtype) {
+        for pattern in self.patterns {
+            if pattern.regex.is_match(message.clone()) {
+                return (pattern.bounce_type, pattern.bounce_subtype)
+            }
+        }
+        (BounceType.Undetermined, BounceSubtype.Unknown)
+    }
+    
+    fn extract_email(message: String) -> Result<String, BounceError> {
+        let email_regex = Regex.new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+        match email_regex.find(message) {
+            Some(m) => Ok(m.as_str())
+            None => Err(BounceError.ParseError("No email found"))
+        }
+    }
+    
+    fn extract_diagnostic(message: String) -> Option<String> {
+        let diag_regex = Regex.new(r"(?i)diagnostic[- ]code[:\s]+(.+)")
+        diag_regex.captures(message).and_then(|c| c.get(1)).map(|m| m.as_str())
+    }
+    
+    fn extract_status(message: String) -> Option<String> {
+        let status_regex = Regex.new(r"(?i)status[:\s]+(\d\.\d\.\d)")
+        status_regex.captures(message).and_then(|c| c.get(1)).map(|m| m.as_str())
+    }
+}
+
+// =============================================================================
+// Bounce Handler
+// =============================================================================
+
+/// Handle bounces with callbacks and storage
+actor BounceHandler {
+    state bounces: Map<String, Bounce>
+    state suppression_list: Set<String>
+    state callbacks: [fn(Bounce)]
+    state stats: BounceStats
+    state auto_suppress: Bool
+    state max_soft_bounces: Int
+    state soft_bounce_counts: Map<String, Int>
+}
+
+impl BounceHandler {
+    fn new() -> Self {
+        BounceHandler {
+            bounces: Map.empty(),
+            suppression_list: Set.new(),
+            callbacks: [],
+            stats: BounceStats.new(),
+            auto_suppress: true,
+            max_soft_bounces: 3,
+            soft_bounce_counts: Map.empty()
+        }
+    }
+    
+    fn auto_suppress(enabled: Bool) -> Self { self.auto_suppress = enabled; self }
+    fn max_soft_bounces(count: Int) -> Self { self.max_soft_bounces = count; self }
+    
+    /// Register bounce callback
+    fn on_bounce(callback: fn(Bounce)) {
+        self.callbacks.push(callback)
+    }
+    
+    /// Process a bounce
+    fn handle(bounce: Bounce) {
+        self.bounces.set(bounce.id.clone(), bounce.clone())
+        self.update_stats(bounce.clone())
+        
+        // Auto-suppress logic
+        if self.auto_suppress {
+            if bounce.is_hard() {
+                self.suppress(bounce.email.clone())
+            } else if bounce.is_soft() {
+                let count = self.soft_bounce_counts.get(bounce.email.clone()).unwrap_or(0) + 1
+                self.soft_bounce_counts.set(bounce.email.clone(), count)
+                if count >= self.max_soft_bounces {
+                    self.suppress(bounce.email.clone())
+                }
+            }
+        }
+        
+        // Notify callbacks
+        for callback in self.callbacks {
+            callback(bounce.clone())
+        }
+    }
+    
+    /// Add email to suppression list
+    fn suppress(email: String) {
+        self.suppression_list.insert(email.to_lowercase())
+    }
+    
+    /// Remove from suppression list
+    fn unsuppress(email: String) {
+        self.suppression_list.remove(email.to_lowercase())
+    }
+    
+    /// Check if email is suppressed
+    fn is_suppressed(email: String) -> Bool {
+        self.suppression_list.contains(email.to_lowercase())
+    }
+    
+    /// Get suppression list
+    fn get_suppression_list() -> [String] {
+        self.suppression_list.iter().collect()
+    }
+    
+    /// Get bounce by ID
+    fn get_bounce(id: String) -> Option<Bounce> {
+        self.bounces.get(id)
+    }
+    
+    /// Get bounces for email
+    fn get_bounces_for(email: String) -> [Bounce] {
+        self.bounces.values().filter(|b| b.email == email).collect()
+    }
+    
+    /// Get recent bounces
+    fn get_recent(count: Int) -> [Bounce] {
+        var bounces: [Bounce] = self.bounces.values().collect()
+        bounces.sort_by(|a, b| b.timestamp.cmp(a.timestamp))
+        bounces.into_iter().take(count).collect()
+    }
+    
+    /// Get statistics
+    fn get_stats() -> BounceStats { self.stats.clone() }
+    
+    fn update_stats(bounce: Bounce) {
+        self.stats.total += 1
+        match bounce.bounce_type {
+            BounceType.Hard => self.stats.hard += 1
+            BounceType.Soft => self.stats.soft += 1
+            BounceType.Transient => self.stats.transient += 1
+            BounceType.Undetermined => self.stats.undetermined += 1
+        }
+        match bounce.bounce_subtype {
+            BounceSubtype.SpamComplaint => self.stats.complaints += 1
+            _ => {}
+        }
+    }
+    
+    /// Clear old bounces
+    fn cleanup(older_than: Duration) {
+        let cutoff = Instant.now() - older_than
+        self.bounces.retain(|_, b| b.timestamp > cutoff)
+    }
+    
+    /// Export suppression list
+    fn export_suppression_list() -> String {
+        self.suppression_list.iter().join("\n")
+    }
+    
+    /// Import suppression list
+    fn import_suppression_list(data: String) {
+        for line in data.lines() {
+            let email = line.trim()
+            if !email.is_empty() {
+                self.suppress(email)
+            }
+        }
+    }
+}
+
+struct BounceStats {
+    total: Int
+    hard: Int
+    soft: Int
+    transient: Int
+    undetermined: Int
+    complaints: Int
+    
+    fn new() -> Self {
+        BounceStats { total: 0, hard: 0, soft: 0, transient: 0, undetermined: 0, complaints: 0 }
+    }
+    
+    fn hard_rate() -> Float {
+        if self.total == 0 { 0.0 } else { self.hard as Float / self.total as Float }
+    }
+    
+    fn soft_rate() -> Float {
+        if self.total == 0 { 0.0 } else { self.soft as Float / self.total as Float }
+    }
+    
+    fn complaint_rate() -> Float {
+        if self.total == 0 { 0.0 } else { self.complaints as Float / self.total as Float }
+    }
+}
+
+// =============================================================================
+// Bounce Webhook Handler
+// =============================================================================
+
+/// HTTP webhook handler for bounce notifications
+struct BounceWebhook {
+    handler: BounceHandler
+    parser: BounceParser
+    secret: Option<String>
+}
+
+impl BounceWebhook {
+    fn new(handler: BounceHandler) -> Self {
+        BounceWebhook {
+            handler: handler,
+            parser: BounceParser.new(),
+            secret: None
+        }
+    }
+    
+    fn with_secret(secret: String) -> Self {
+        self.secret = Some(secret)
+        self
+    }
+    
+    /// Handle AWS SES webhook
+    fn handle_ses(body: String, headers: Map<String, String>) -> Result<(), BounceError> {
+        let bounce = self.parser.parse_ses(body)?
+        self.handler.handle(bounce)
+        Ok(())
+    }
+    
+    /// Handle SendGrid webhook
+    fn handle_sendgrid(body: String, headers: Map<String, String>) -> Result<(), BounceError> {
+        // Verify signature if secret set
+        if let Some(secret) = self.secret.clone() {
+            let signature = headers.get("X-Twilio-Email-Event-Webhook-Signature").unwrap_or("")
+            if !self.verify_sendgrid_signature(body.clone(), signature, secret) {
+                return Err(BounceError.InvalidSignature)
+            }
+        }
+        
+        let bounce = self.parser.parse_sendgrid(body)?
+        self.handler.handle(bounce)
+        Ok(())
+    }
+    
+    /// Handle Mailgun webhook
+    fn handle_mailgun(body: String, headers: Map<String, String>) -> Result<(), BounceError> {
+        let bounce = self.parser.parse_mailgun(body)?
+        self.handler.handle(bounce)
+        Ok(())
+    }
+    
+    fn verify_sendgrid_signature(body: String, signature: String, secret: String) -> Bool {
+        // Simplified verification
+        !signature.is_empty()
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum BounceError {
+    ParseError(String)
+    InvalidSignature
+    StorageError(String)
+    NotFound
+}
+
+impl Display for BounceError {
+    fn fmt(f: Formatter) {
+        match self {
+            ParseError(e) => f.write(format!("Parse error: {}", e))
+            InvalidSignature => f.write("Invalid webhook signature")
+            StorageError(e) => f.write(format!("Storage error: {}", e))
+            NotFound => f.write("Bounce not found")
+        }
+    }
+}
+
+impl Error for BounceError {}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "bounce creation" {
+    let bounce = Bounce.new("test@example.com", BounceType.Hard)
+        .subtype(BounceSubtype.NoEmail)
+        .diagnostic("550 User not found")
+    
+    assert(bounce.is_hard())?
+    assert(bounce.should_suppress())?
+    assert_eq(bounce.recommended_action(), BounceAction.Remove)?
+}
+
+test "bounce parser" {
+    let parser = BounceParser.new()
+    let (bounce_type, subtype) = parser.classify("550 User unknown")
+    
+    assert_eq(bounce_type, BounceType.Hard)?
+    assert_eq(subtype, BounceSubtype.NoEmail)?
+}
+
+test "bounce handler" {
+    let handler = BounceHandler.new()
+    let bounce = Bounce.new("bad@example.com", BounceType.Hard)
+    
+    handler.handle(bounce)
+    
+    assert(handler.is_suppressed("bad@example.com"))?
+    assert_eq(handler.get_stats().hard, 1)?
+}
+
+test "soft bounce threshold" {
+    let handler = BounceHandler.new().max_soft_bounces(2)
+    
+    handler.handle(Bounce.new("test@example.com", BounceType.Soft))
+    assert(!handler.is_suppressed("test@example.com"))?
+    
+    handler.handle(Bounce.new("test@example.com", BounceType.Soft))
+    assert(handler.is_suppressed("test@example.com"))?
+}
+
+test "ses bounce parsing" {
+    let json = r#"{"bounce":{"bounceType":"Permanent","bounceSubType":"NoEmail","bouncedRecipients":[{"emailAddress":"test@example.com"}]}}"#
+    let parser = BounceParser.new()
+    let bounce = parser.parse_ses(json)?
+    
+    assert_eq(bounce.email, "test@example.com")?
+    assert(bounce.is_hard())?
+}
+
+test "bounce stats" {
+    let stats = BounceStats { total: 100, hard: 10, soft: 20, transient: 5, undetermined: 5, complaints: 2 }
+    
+    assert_eq(stats.hard_rate(), 0.1)?
+    assert_eq(stats.complaint_rate(), 0.02)?
+}

@@ -1,0 +1,769 @@
+// =============================================================================
+// Vibee OS — Notification Action Module
+// Interactive actions and responses for notifications
+// =============================================================================
+
+use json.{JsonValue, Serialize, Deserialize}
+use datetime.{DateTime, Duration}
+
+// =============================================================================
+// Action Types & Enums
+// =============================================================================
+
+enum ActionType {
+    Button,
+    TextInput,
+    QuickReply,
+    DeepLink,
+    Dismiss,
+    Snooze,
+    MarkAsRead,
+    Delete,
+    Custom(String)
+    
+    fn requires_foreground() -> Bool {
+        match self {
+            .DeepLink | .Custom(_) => true,
+            _ => false
+        }
+    }
+}
+
+enum ActionStyle {
+    Default,
+    Cancel,
+    Destructive,
+    Primary,
+    Secondary
+    
+    fn is_destructive() -> Bool {
+        match self {
+            .Destructive => true,
+            _ => false
+        }
+    }
+}
+
+enum ActionBehavior {
+    Foreground,
+    Background,
+    AuthenticationRequired,
+    Destructive
+}
+
+enum InputMode {
+    Text,
+    Number,
+    Email,
+    Phone,
+    Url,
+    Password
+}
+
+// =============================================================================
+// Notification Action
+// =============================================================================
+
+struct NotificationAction {
+    id: String
+    title: String
+    action_type: ActionType
+    style: ActionStyle
+    behavior: ActionBehavior
+    icon: Option<String>
+    icon_color: Option<String>
+    text_input: Option<TextInputConfig>
+    deep_link: Option<String>
+    payload: Map<String, JsonValue>
+    enabled: Bool
+    visible: Bool
+    order: Int
+}
+
+impl NotificationAction {
+    fn new(id: String, title: String) -> Self {
+        NotificationAction {
+            id: id,
+            title: title,
+            action_type: ActionType.Button,
+            style: ActionStyle.Default,
+            behavior: ActionBehavior.Background,
+            icon: None,
+            icon_color: None,
+            text_input: None,
+            deep_link: None,
+            payload: Map.empty(),
+            enabled: true,
+            visible: true,
+            order: 0
+        }
+    }
+    
+    fn button(id: String, title: String) -> Self {
+        NotificationAction.new(id, title)
+    }
+    
+    fn text_input(id: String, title: String, placeholder: String) -> Self {
+        let mut action = NotificationAction.new(id, title);
+        action.action_type = ActionType.TextInput;
+        action.text_input = Some(TextInputConfig.new(placeholder));
+        action
+    }
+    
+    fn quick_reply(id: String, title: String) -> Self {
+        let mut action = NotificationAction.new(id, title);
+        action.action_type = ActionType.QuickReply;
+        action
+    }
+    
+    fn deep_link(id: String, title: String, url: String) -> Self {
+        let mut action = NotificationAction.new(id, title);
+        action.action_type = ActionType.DeepLink;
+        action.deep_link = Some(url);
+        action.behavior = ActionBehavior.Foreground;
+        action
+    }
+    
+    fn dismiss(title: String) -> Self {
+        let mut action = NotificationAction.new("dismiss", title);
+        action.action_type = ActionType.Dismiss;
+        action.style = ActionStyle.Cancel;
+        action
+    }
+    
+    fn snooze(title: String, duration: Duration) -> Self {
+        let mut action = NotificationAction.new("snooze", title);
+        action.action_type = ActionType.Snooze;
+        action.payload.set("duration_ms", JsonValue.number(duration.as_millis() as Float));
+        action
+    }
+    
+    fn mark_as_read() -> Self {
+        let mut action = NotificationAction.new("mark_read", "Mark as Read");
+        action.action_type = ActionType.MarkAsRead;
+        action
+    }
+    
+    fn delete() -> Self {
+        let mut action = NotificationAction.new("delete", "Delete");
+        action.action_type = ActionType.Delete;
+        action.style = ActionStyle.Destructive;
+        action.behavior = ActionBehavior.Destructive;
+        action
+    }
+    
+    fn style(s: ActionStyle) -> Self { self.style = s; self }
+    fn behavior(b: ActionBehavior) -> Self { self.behavior = b; self }
+    fn icon(url: String) -> Self { self.icon = Some(url); self }
+    fn icon_color(color: String) -> Self { self.icon_color = Some(color); self }
+    fn foreground() -> Self { self.behavior = ActionBehavior.Foreground; self }
+    fn background() -> Self { self.behavior = ActionBehavior.Background; self }
+    fn auth_required() -> Self { self.behavior = ActionBehavior.AuthenticationRequired; self }
+    fn destructive() -> Self { self.style = ActionStyle.Destructive; self.behavior = ActionBehavior.Destructive; self }
+    fn primary() -> Self { self.style = ActionStyle.Primary; self }
+    fn secondary() -> Self { self.style = ActionStyle.Secondary; self }
+    fn order(o: Int) -> Self { self.order = o; self }
+    fn enabled(e: Bool) -> Self { self.enabled = e; self }
+    fn visible(v: Bool) -> Self { self.visible = v; self }
+    
+    fn payload(key: String, value: JsonValue) -> Self {
+        self.payload.set(key, value); self
+    }
+    
+    fn configure_text_input(config: TextInputConfig) -> Self {
+        self.text_input = Some(config); self
+    }
+    
+    fn is_destructive() -> Bool { self.style.is_destructive() }
+    fn requires_foreground() -> Bool { self.action_type.requires_foreground() }
+}
+
+// =============================================================================
+// Text Input Configuration
+// =============================================================================
+
+struct TextInputConfig {
+    placeholder: String
+    button_title: String
+    input_mode: InputMode
+    max_length: Option<Int>
+    min_length: Option<Int>
+    default_value: Option<String>
+    capitalize: Bool
+    autocorrect: Bool
+    secure: Bool
+}
+
+impl TextInputConfig {
+    fn new(placeholder: String) -> Self {
+        TextInputConfig {
+            placeholder: placeholder,
+            button_title: "Send",
+            input_mode: InputMode.Text,
+            max_length: None,
+            min_length: None,
+            default_value: None,
+            capitalize: true,
+            autocorrect: true,
+            secure: false
+        }
+    }
+    
+    fn button_title(title: String) -> Self { self.button_title = title; self }
+    fn input_mode(mode: InputMode) -> Self { self.input_mode = mode; self }
+    fn max_length(len: Int) -> Self { self.max_length = Some(len); self }
+    fn min_length(len: Int) -> Self { self.min_length = Some(len); self }
+    fn default_value(val: String) -> Self { self.default_value = Some(val); self }
+    fn capitalize(c: Bool) -> Self { self.capitalize = c; self }
+    fn autocorrect(a: Bool) -> Self { self.autocorrect = a; self }
+    fn secure() -> Self { self.secure = true; self.autocorrect = false; self }
+    
+    fn validate(input: String) -> Result<(), ValidationError> {
+        if let Some(min) = self.min_length {
+            if input.len() < min {
+                return Err(ValidationError.TooShort(min))
+            }
+        }
+        if let Some(max) = self.max_length {
+            if input.len() > max {
+                return Err(ValidationError.TooLong(max))
+            }
+        }
+        Ok(())
+    }
+}
+
+enum ValidationError {
+    TooShort(Int),
+    TooLong(Int),
+    InvalidFormat(String)
+}
+
+// =============================================================================
+// Action Category
+// =============================================================================
+
+struct ActionCategory {
+    id: String
+    name: String
+    actions: [NotificationAction]
+    intent_identifiers: [String]
+    hidden_preview_body: Option<String>
+    summary_format: Option<String>
+    options: CategoryOptions
+}
+
+impl ActionCategory {
+    fn new(id: String, name: String) -> Self {
+        ActionCategory {
+            id: id,
+            name: name,
+            actions: [],
+            intent_identifiers: [],
+            hidden_preview_body: None,
+            summary_format: None,
+            options: CategoryOptions.default()
+        }
+    }
+    
+    fn add_action(action: NotificationAction) -> Self {
+        self.actions.push(action); self
+    }
+    
+    fn add_actions(actions: [NotificationAction]) -> Self {
+        for action in actions {
+            self.actions.push(action);
+        }
+        self
+    }
+    
+    fn intent_identifier(id: String) -> Self {
+        self.intent_identifiers.push(id); self
+    }
+    
+    fn hidden_preview_body(body: String) -> Self {
+        self.hidden_preview_body = Some(body); self
+    }
+    
+    fn summary_format(format: String) -> Self {
+        self.summary_format = Some(format); self
+    }
+    
+    fn options(opts: CategoryOptions) -> Self {
+        self.options = opts; self
+    }
+    
+    fn get_action(id: String) -> Option<NotificationAction> {
+        self.actions.iter().find(|a| a.id == id)
+    }
+    
+    fn visible_actions() -> [NotificationAction] {
+        self.actions.iter().filter(|a| a.visible && a.enabled).collect()
+    }
+}
+
+struct CategoryOptions {
+    custom_dismiss_action: Bool
+    allow_in_car_play: Bool
+    hidden_previews_show_title: Bool
+    hidden_previews_show_subtitle: Bool
+}
+
+impl CategoryOptions {
+    fn default() -> Self {
+        CategoryOptions {
+            custom_dismiss_action: false,
+            allow_in_car_play: false,
+            hidden_previews_show_title: true,
+            hidden_previews_show_subtitle: false
+        }
+    }
+    
+    fn custom_dismiss_action() -> Self { self.custom_dismiss_action = true; self }
+    fn allow_in_car_play() -> Self { self.allow_in_car_play = true; self }
+    fn hidden_previews_show_title(show: Bool) -> Self { self.hidden_previews_show_title = show; self }
+    fn hidden_previews_show_subtitle(show: Bool) -> Self { self.hidden_previews_show_subtitle = show; self }
+}
+
+// =============================================================================
+// Action Response
+// =============================================================================
+
+struct ActionResponse {
+    action_id: String
+    notification_id: String
+    user_id: Option<String>
+    text_input: Option<String>
+    selected_option: Option<String>
+    timestamp: DateTime
+    context: ActionContext
+}
+
+impl ActionResponse {
+    fn new(action_id: String, notification_id: String) -> Self {
+        ActionResponse {
+            action_id: action_id,
+            notification_id: notification_id,
+            user_id: None,
+            text_input: None,
+            selected_option: None,
+            timestamp: DateTime.now(),
+            context: ActionContext.default()
+        }
+    }
+    
+    fn with_text(action_id: String, notification_id: String, text: String) -> Self {
+        let mut response = ActionResponse.new(action_id, notification_id);
+        response.text_input = Some(text);
+        response
+    }
+    
+    fn with_option(action_id: String, notification_id: String, option: String) -> Self {
+        let mut response = ActionResponse.new(action_id, notification_id);
+        response.selected_option = Some(option);
+        response
+    }
+    
+    fn user_id(id: String) -> Self { self.user_id = Some(id); self }
+    fn context(ctx: ActionContext) -> Self { self.context = ctx; self }
+    
+    fn has_text_input() -> Bool { self.text_input.is_some() }
+    fn has_selection() -> Bool { self.selected_option.is_some() }
+}
+
+struct ActionContext {
+    source: ActionSource
+    device_id: Option<String>
+    app_state: AppState
+    locale: Option<String>
+    timezone: Option<String>
+}
+
+impl ActionContext {
+    fn default() -> Self {
+        ActionContext {
+            source: ActionSource.Unknown,
+            device_id: None,
+            app_state: AppState.Background,
+            locale: None,
+            timezone: None
+        }
+    }
+    
+    fn source(s: ActionSource) -> Self { self.source = s; self }
+    fn device_id(id: String) -> Self { self.device_id = Some(id); self }
+    fn app_state(state: AppState) -> Self { self.app_state = state; self }
+    fn locale(l: String) -> Self { self.locale = Some(l); self }
+    fn timezone(tz: String) -> Self { self.timezone = Some(tz); self }
+}
+
+enum ActionSource {
+    NotificationCenter,
+    LockScreen,
+    Banner,
+    Widget,
+    Watch,
+    CarPlay,
+    Siri,
+    Unknown
+}
+
+enum AppState {
+    Foreground,
+    Background,
+    Inactive,
+    Terminated
+}
+
+// =============================================================================
+// Action Handler
+// =============================================================================
+
+trait ActionHandler {
+    fn handle(response: ActionResponse) -> Result<ActionResult, ActionError>
+    fn supports_action(action_id: String) -> Bool
+    fn priority() -> Int { 0 }
+}
+
+struct ActionResult {
+    success: Bool
+    message: Option<String>
+    data: Map<String, JsonValue>
+    follow_up: Option<FollowUpAction>
+}
+
+impl ActionResult {
+    fn success() -> Self {
+        ActionResult { success: true, message: None, data: Map.empty(), follow_up: None }
+    }
+    
+    fn success_with_message(msg: String) -> Self {
+        ActionResult { success: true, message: Some(msg), data: Map.empty(), follow_up: None }
+    }
+    
+    fn failure(msg: String) -> Self {
+        ActionResult { success: false, message: Some(msg), data: Map.empty(), follow_up: None }
+    }
+    
+    fn data(key: String, value: JsonValue) -> Self {
+        self.data.set(key, value); self
+    }
+    
+    fn follow_up(action: FollowUpAction) -> Self {
+        self.follow_up = Some(action); self
+    }
+}
+
+enum FollowUpAction {
+    OpenApp,
+    OpenUrl(String),
+    ShowNotification(String),
+    Dismiss,
+    Snooze(Duration),
+    Custom(String, Map<String, JsonValue>)
+}
+
+// =============================================================================
+// Action Registry Actor
+// =============================================================================
+
+actor ActionRegistry {
+    state categories: Map<String, ActionCategory>
+    state handlers: [Box<dyn ActionHandler>]
+    state response_history: [ActionResponse]
+    state max_history: Int
+    
+    fn new() -> Self {
+        ActionRegistry {
+            categories: Map.empty(),
+            handlers: [],
+            response_history: [],
+            max_history: 1000
+        }
+    }
+    
+    on register_category(category: ActionCategory) {
+        self.categories.set(category.id.clone(), category)
+    }
+    
+    on register_handler(handler: Box<dyn ActionHandler>) {
+        self.handlers.push(handler);
+        // Sort by priority
+        self.handlers.sort_by(|a, b| b.priority().cmp(a.priority()));
+    }
+    
+    fn get_category(id: String) -> Option<ActionCategory> {
+        self.categories.get(id)
+    }
+    
+    fn get_actions_for_category(category_id: String) -> [NotificationAction] {
+        self.categories.get(category_id)
+            .map(|c| c.visible_actions())
+            .unwrap_or([])
+    }
+    
+    on handle_response(response: ActionResponse) -> Result<ActionResult, ActionError> {
+        // Store in history
+        self.response_history.push(response.clone());
+        if self.response_history.len() > self.max_history {
+            self.response_history.remove(0);
+        }
+        
+        // Find handler
+        for handler in self.handlers.iter() {
+            if handler.supports_action(response.action_id.clone()) {
+                return handler.handle(response)
+            }
+        }
+        
+        Err(ActionError.NoHandler(response.action_id))
+    }
+    
+    fn get_response_history(limit: Int) -> [ActionResponse] {
+        self.response_history.iter().rev().take(limit).collect()
+    }
+    
+    fn get_responses_for_notification(notification_id: String) -> [ActionResponse] {
+        self.response_history.iter()
+            .filter(|r| r.notification_id == notification_id)
+            .collect()
+    }
+    
+    fn clear_history() {
+        self.response_history.clear()
+    }
+}
+
+// =============================================================================
+// Quick Reply Builder
+// =============================================================================
+
+struct QuickReplyBuilder {
+    action_id: String
+    options: [QuickReplyOption]
+    allow_custom: Bool
+    custom_placeholder: String
+}
+
+struct QuickReplyOption {
+    id: String
+    title: String
+    icon: Option<String>
+}
+
+impl QuickReplyBuilder {
+    fn new(action_id: String) -> Self {
+        QuickReplyBuilder {
+            action_id: action_id,
+            options: [],
+            allow_custom: false,
+            custom_placeholder: "Type a message..."
+        }
+    }
+    
+    fn add_option(id: String, title: String) -> Self {
+        self.options.push(QuickReplyOption { id: id, title: title, icon: None });
+        self
+    }
+    
+    fn add_option_with_icon(id: String, title: String, icon: String) -> Self {
+        self.options.push(QuickReplyOption { id: id, title: title, icon: Some(icon) });
+        self
+    }
+    
+    fn allow_custom(placeholder: String) -> Self {
+        self.allow_custom = true;
+        self.custom_placeholder = placeholder;
+        self
+    }
+    
+    fn build() -> [NotificationAction] {
+        let mut actions: [NotificationAction] = [];
+        
+        for option in self.options.iter() {
+            let mut action = NotificationAction.quick_reply(option.id.clone(), option.title.clone());
+            if let Some(icon) = option.icon.clone() {
+                action = action.icon(icon);
+            }
+            actions.push(action);
+        }
+        
+        if self.allow_custom {
+            actions.push(
+                NotificationAction.text_input(
+                    format!("{}_custom", self.action_id),
+                    "Custom",
+                    self.custom_placeholder.clone()
+                )
+            );
+        }
+        
+        actions
+    }
+}
+
+// =============================================================================
+// Preset Action Categories
+// =============================================================================
+
+struct ActionPresets;
+
+impl ActionPresets {
+    fn message_category() -> ActionCategory {
+        ActionCategory.new("message", "Message")
+            .add_action(NotificationAction.text_input("reply", "Reply", "Type a message..."))
+            .add_action(NotificationAction.button("like", "👍").background())
+            .add_action(NotificationAction.mark_as_read())
+    }
+    
+    fn email_category() -> ActionCategory {
+        ActionCategory.new("email", "Email")
+            .add_action(NotificationAction.text_input("reply", "Reply", "Type a reply..."))
+            .add_action(NotificationAction.button("archive", "Archive").background())
+            .add_action(NotificationAction.delete())
+            .add_action(NotificationAction.mark_as_read())
+    }
+    
+    fn reminder_category() -> ActionCategory {
+        ActionCategory.new("reminder", "Reminder")
+            .add_action(NotificationAction.button("complete", "Complete").primary())
+            .add_action(NotificationAction.snooze("Snooze 1h", Duration.from_hours(1)))
+            .add_action(NotificationAction.snooze("Snooze 1d", Duration.from_days(1)))
+            .add_action(NotificationAction.dismiss("Dismiss"))
+    }
+    
+    fn social_category() -> ActionCategory {
+        ActionCategory.new("social", "Social")
+            .add_action(NotificationAction.button("like", "Like").icon("heart"))
+            .add_action(NotificationAction.text_input("comment", "Comment", "Write a comment..."))
+            .add_action(NotificationAction.deep_link("view", "View", "/post/{id}"))
+    }
+    
+    fn alert_category() -> ActionCategory {
+        ActionCategory.new("alert", "Alert")
+            .add_action(NotificationAction.deep_link("view", "View Details", "/alert/{id}").primary())
+            .add_action(NotificationAction.button("acknowledge", "Acknowledge").background())
+            .add_action(NotificationAction.dismiss("Dismiss"))
+    }
+    
+    fn call_category() -> ActionCategory {
+        ActionCategory.new("call", "Incoming Call")
+            .add_action(NotificationAction.button("answer", "Answer").primary().foreground())
+            .add_action(NotificationAction.button("decline", "Decline").destructive())
+            .add_action(NotificationAction.text_input("message", "Message", "Send a message..."))
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+enum ActionError {
+    NotFound(String),
+    NoHandler(String),
+    ValidationFailed(ValidationError),
+    ExecutionFailed(String),
+    Unauthorized,
+    Timeout,
+    Unknown(String)
+}
+
+impl ActionError {
+    fn message() -> String {
+        match self {
+            .NotFound(id) => format!("Action not found: {}", id),
+            .NoHandler(id) => format!("No handler for action: {}", id),
+            .ValidationFailed(e) => format!("Validation failed: {:?}", e),
+            .ExecutionFailed(msg) => format!("Execution failed: {}", msg),
+            .Unauthorized => "Unauthorized action",
+            .Timeout => "Action timed out",
+            .Unknown(msg) => format!("Unknown error: {}", msg)
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "notification action creation" {
+    let action = NotificationAction.button("reply", "Reply")
+        .icon("reply_icon")
+        .primary();
+    
+    assert_eq(action.id, "reply")?
+    assert_eq(action.title, "Reply")?
+    assert_eq(action.style, ActionStyle.Primary)?
+}
+
+test "text input action" {
+    let action = NotificationAction.text_input("reply", "Reply", "Type here...");
+    
+    assert_eq(action.action_type, ActionType.TextInput)?
+    assert(action.text_input.is_some())?
+    assert_eq(action.text_input.unwrap().placeholder, "Type here...")?
+}
+
+test "deep link action" {
+    let action = NotificationAction.deep_link("view", "View", "/post/123");
+    
+    assert_eq(action.action_type, ActionType.DeepLink)?
+    assert_eq(action.deep_link, Some("/post/123"))?
+    assert(action.requires_foreground())?
+}
+
+test "action category" {
+    let category = ActionCategory.new("test", "Test Category")
+        .add_action(NotificationAction.button("a1", "Action 1"))
+        .add_action(NotificationAction.button("a2", "Action 2"));
+    
+    assert_eq(category.actions.len(), 2)?
+    assert(category.get_action("a1").is_some())?
+}
+
+test "action response" {
+    let response = ActionResponse.with_text("reply", "notif123", "Hello!");
+    
+    assert_eq(response.action_id, "reply")?
+    assert(response.has_text_input())?
+    assert_eq(response.text_input, Some("Hello!"))?
+}
+
+test "quick reply builder" {
+    let actions = QuickReplyBuilder.new("quick_reply")
+        .add_option("yes", "Yes")
+        .add_option("no", "No")
+        .add_option("maybe", "Maybe")
+        .allow_custom("Type custom response...")
+        .build();
+    
+    assert_eq(actions.len(), 4)?  // 3 options + 1 custom
+}
+
+test "text input validation" {
+    let config = TextInputConfig.new("Enter text")
+        .min_length(5)
+        .max_length(100);
+    
+    assert(config.validate("Hi").is_err())?
+    assert(config.validate("Hello World").is_ok())?
+}
+
+test "preset categories" {
+    let message_cat = ActionPresets.message_category();
+    assert_eq(message_cat.id, "message")?
+    assert(message_cat.actions.len() >= 2)?
+    
+    let reminder_cat = ActionPresets.reminder_category();
+    assert_eq(reminder_cat.id, "reminder")?
+}
+
+test "action result" {
+    let result = ActionResult.success_with_message("Done!")
+        .data("count", JsonValue.number(5.0))
+        .follow_up(FollowUpAction.Dismiss);
+    
+    assert(result.success)?
+    assert_eq(result.message, Some("Done!"))?
+    assert(result.follow_up.is_some())?
+}
