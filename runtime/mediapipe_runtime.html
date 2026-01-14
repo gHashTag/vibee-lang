@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>VIBEE MediaPipe Vision</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:system-ui,sans-serif}
+    #container{position:relative;width:100%;height:100%}
+    video{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+    canvas{position:absolute;top:0;left:0;width:100%;height:100%;transform:scaleX(-1)}
+    #ui{position:fixed;z-index:100;color:#fff;pointer-events:none}
+    #status{position:fixed;top:20px;left:20px;font-size:12px;background:rgba(0,0,0,0.7);padding:10px 15px;border-radius:8px}
+    #mode{position:fixed;top:20px;right:20px;font-size:14px;background:rgba(0,0,0,0.7);padding:10px 15px;border-radius:8px}
+    #gesture{position:fixed;bottom:100px;left:50%;transform:translateX(-50%);font-size:48px;text-shadow:0 0 20px currentColor}
+    #emotion{position:fixed;bottom:50px;left:50%;transform:translateX(-50%);font-size:24px;background:rgba(0,0,0,0.7);padding:8px 20px;border-radius:20px}
+    #controls{position:fixed;bottom:20px;right:20px;display:flex;gap:10px;pointer-events:auto}
+    .btn{background:rgba(255,255,255,0.2);border:none;color:#fff;padding:10px 20px;border-radius:8px;cursor:pointer;font-size:14px}
+    .btn:hover{background:rgba(255,255,255,0.3)}
+    .btn.active{background:rgba(100,200,255,0.4)}
+    #loading{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center}
+    #loading h2{font-size:24px;margin-bottom:20px}
+    .spinner{width:50px;height:50px;border:3px solid rgba(255,255,255,0.2);border-top-color:#0af;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    #landmarks{position:fixed;left:20px;top:50%;transform:translateY(-50%);font-size:10px;background:rgba(0,0,0,0.7);padding:10px;border-radius:8px;max-height:300px;overflow:auto}
+  </style>
+</head>
+<body>
+<div id="container">
+  <video id="video" playsinline autoplay></video>
+  <canvas id="canvas"></canvas>
+</div>
+<div id="ui">
+  <div id="status">Initializing MediaPipe...</div>
+  <div id="mode">Mode: Skeleton</div>
+  <div id="gesture"></div>
+  <div id="emotion"></div>
+  <div id="landmarks"></div>
+</div>
+<div id="controls">
+  <button class="btn active" data-mode="skeleton">Skeleton</button>
+  <button class="btn" data-mode="sacred">Sacred</button>
+  <button class="btn" data-mode="aura">Aura</button>
+  <button class="btn" data-mode="chakras">Chakras</button>
+</div>
+<div id="loading">
+  <div class="spinner"></div>
+  <h2>Loading MediaPipe Models...</h2>
+</div>
+
+<script type="module">
+import { FilesetResolver, HandLandmarker, FaceLandmarker, PoseLandmarker, GestureRecognizer } 
+  from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
+
+const TAU = Math.PI * 2;
+const PHI = 1.618033988749895;
+
+// State
+const state = {
+  mode: 'skeleton',
+  hands: null,
+  face: null,
+  pose: null,
+  gesture: null,
+  emotion: 'neutral',
+  particles: [],
+  time: 0,
+  effectIntensity: 1,
+  mirror: true
+};
+
+// Canvas setup
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+// Resize handler
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// MediaPipe instances
+let handLandmarker, faceLandmarker, poseLandmarker, gestureRecognizer;
+
+// Initialize MediaPipe
+async function initMediaPipe() {
+  const vision = await FilesetResolver.forVisionTasks(
+    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+  );
+  
+  // Hand Landmarker
+  handLandmarker = await HandLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+      delegate: 'GPU'
+    },
+    runningMode: 'VIDEO',
+    numHands: 2,
+    minHandDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+  
+  // Face Landmarker
+  faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+      delegate: 'GPU'
+    },
+    runningMode: 'VIDEO',
+    numFaces: 1,
+    minFaceDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5,
+    outputFaceBlendshapes: true
+  });
+  
+  // Pose Landmarker
+  poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+      delegate: 'GPU'
+    },
+    runningMode: 'VIDEO',
+    numPoses: 1,
+    minPoseDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+  
+  // Gesture Recognizer
+  gestureRecognizer = await GestureRecognizer.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task',
+      delegate: 'GPU'
+    },
+    runningMode: 'VIDEO',
+    numHands: 2
+  });
+  
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('status').textContent = 'MediaPipe Ready';
+}
+
+// Start camera
+async function startCamera() {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { width: 1280, height: 720, facingMode: 'user' }
+  });
+  video.srcObject = stream;
+  await video.play();
+}
+
+// Hand connections
+const HAND_CONNECTIONS = [
+  [0,1],[1,2],[2,3],[3,4],
+  [0,5],[5,6],[6,7],[7,8],
+  [0,9],[9,10],[10,11],[11,12],
+  [0,13],[13,14],[14,15],[15,16],
+  [0,17],[17,18],[18,19],[19,20],
+  [5,9],[9,13],[13,17]
+];
+
+// Pose connections
+const POSE_CONNECTIONS = [
+  [0,1],[1,2],[2,3],[3,7],[0,4],[4,5],[5,6],[6,8],
+  [9,10],[11,12],[11,13],[13,15],[15,17],[15,19],[15,21],
+  [12,14],[14,16],[16,18],[16,20],[16,22],
+  [11,23],[12,24],[23,24],[23,25],[24,26],[25,27],[26,28],
+  [27,29],[28,30],[29,31],[30,32],[27,31],[28,32]
+];
+
+// Draw functions
+function drawLandmarks(landmarks, color, size = 4) {
+  ctx.fillStyle = color;
+  for (const lm of landmarks) {
+    const x = lm.x * canvas.width;
+    const y = lm.y * canvas.height;
+    ctx.beginPath();
+    ctx.arc(x, y, size, 0, TAU);
+    ctx.fill();
+  }
+}
+
+function drawConnections(landmarks, connections, color, width = 2) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  for (const [i, j] of connections) {
+    if (landmarks[i] && landmarks[j]) {
+      ctx.beginPath();
+      ctx.moveTo(landmarks[i].x * canvas.width, landmarks[i].y * canvas.height);
+      ctx.lineTo(landmarks[j].x * canvas.width, landmarks[j].y * canvas.height);
+      ctx.stroke();
+    }
+  }
+}
+
+// Sacred geometry from landmarks
+function drawFlowerOfLife(cx, cy, r, color) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+  const circles = [[0, 0]];
+  for (let i = 0; i < 6; i++) {
+    const angle = i * TAU / 6;
+    circles.push([Math.cos(angle) * r, Math.sin(angle) * r]);
+  }
+  for (let ring = 0; ring < 2; ring++) {
+    for (let i = 0; i < 6; i++) {
+      const angle = i * TAU / 6 + ring * TAU / 12;
+      const dist = r * (ring + 1);
+      circles.push([Math.cos(angle) * dist, Math.sin(angle) * dist]);
+    }
+  }
+  for (const [ox, oy] of circles) {
+    ctx.beginPath();
+    ctx.arc(cx + ox, cy + oy, r, 0, TAU);
+    ctx.stroke();
+  }
+}
+
+function drawMetatronsCube(cx, cy, r, color) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+  const points = [[cx, cy]];
+  for (let i = 0; i < 6; i++) {
+    const angle = i * TAU / 6 - TAU / 4;
+    points.push([cx + Math.cos(angle) * r, cy + Math.sin(angle) * r]);
+    points.push([cx + Math.cos(angle) * r * 2, cy + Math.sin(angle) * r * 2]);
+  }
+  for (let i = 0; i < points.length; i++) {
+    for (let j = i + 1; j < points.length; j++) {
+      ctx.beginPath();
+      ctx.moveTo(points[i][0], points[i][1]);
+      ctx.lineTo(points[j][0], points[j][1]);
+      ctx.stroke();
+    }
+  }
+}
+
+// Chakra positions from pose
+function getChakraPositions(pose) {
+  if (!pose || pose.length < 33) return [];
+  const W = canvas.width, H = canvas.height;
+  const lh = pose[23], rh = pose[24]; // hips
+  const ls = pose[11], rs = pose[12]; // shoulders
+  const nose = pose[0];
+  
+  return [
+    { name: 'Root', x: (lh.x + rh.x) / 2 * W, y: (lh.y + rh.y) / 2 * H, color: 'hsl(0,100%,50%)' },
+    { name: 'Sacral', x: (lh.x + rh.x) / 2 * W, y: ((lh.y + rh.y) / 2 * 0.7 + (ls.y + rs.y) / 2 * 0.3) * H, color: 'hsl(30,100%,50%)' },
+    { name: 'Solar', x: (ls.x + rs.x) / 2 * W, y: ((lh.y + rh.y) / 2 * 0.4 + (ls.y + rs.y) / 2 * 0.6) * H, color: 'hsl(60,100%,50%)' },
+    { name: 'Heart', x: (ls.x + rs.x) / 2 * W, y: (ls.y + rs.y) / 2 * H, color: 'hsl(120,100%,50%)' },
+    { name: 'Throat', x: nose.x * W, y: (nose.y * 0.3 + (ls.y + rs.y) / 2 * 0.7) * H, color: 'hsl(180,100%,50%)' },
+    { name: 'Third Eye', x: nose.x * W, y: nose.y * H - 30, color: 'hsl(240,100%,50%)' },
+    { name: 'Crown', x: nose.x * W, y: nose.y * H - 80, color: 'hsl(280,100%,50%)' }
+  ];
+}
+
+// Particle system
+function spawnParticle(x, y, color) {
+  if (state.particles.length > 200) return;
+  state.particles.push({
+    x, y,
+    vx: (Math.random() - 0.5) * 4,
+    vy: (Math.random() - 0.5) * 4 - 2,
+    life: 1,
+    color,
+    size: 3 + Math.random() * 5
+  });
+}
+
+function updateParticles(dt) {
+  for (let i = state.particles.length - 1; i >= 0; i--) {
+    const p = state.particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.1;
+    p.life -= dt * 1.5;
+    if (p.life <= 0) state.particles.splice(i, 1);
+  }
+}
+
+function drawParticles() {
+  for (const p of state.particles) {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * p.life, 0, TAU);
+    ctx.fillStyle = p.color.replace('1)', `${p.life})`);
+    ctx.fill();
+  }
+}
+
+// Emotion detection from blendshapes
+function detectEmotion(blendshapes) {
+  if (!blendshapes || !blendshapes[0]) return 'neutral';
+  const bs = {};
+  for (const b of blendshapes[0].categories) {
+    bs[b.categoryName] = b.score;
+  }
+  
+  const smile = (bs.mouthSmileLeft || 0) + (bs.mouthSmileRight || 0);
+  const frown = (bs.mouthFrownLeft || 0) + (bs.mouthFrownRight || 0);
+  const surprise = (bs.eyeWideLeft || 0) + (bs.eyeWideRight || 0) + (bs.jawOpen || 0);
+  const angry = (bs.browDownLeft || 0) + (bs.browDownRight || 0);
+  
+  if (smile > 0.6) return '😊 Happy';
+  if (frown > 0.4) return '😢 Sad';
+  if (surprise > 1.0) return '😮 Surprised';
+  if (angry > 0.5) return '😠 Angry';
+  return '😐 Neutral';
+}
+
+// Main render loop
+let lastTime = performance.now();
+
+async function render() {
+  const now = performance.now();
+  const dt = (now - lastTime) / 1000;
+  lastTime = now;
+  state.time += dt;
+  
+  // Clear
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  
+  // Detect
+  const timestamp = performance.now();
+  
+  if (handLandmarker && video.readyState >= 2) {
+    state.hands = handLandmarker.detectForVideo(video, timestamp);
+  }
+  if (faceLandmarker && video.readyState >= 2) {
+    state.face = faceLandmarker.detectForVideo(video, timestamp);
+  }
+  if (poseLandmarker && video.readyState >= 2) {
+    state.pose = poseLandmarker.detectForVideo(video, timestamp);
+  }
+  if (gestureRecognizer && video.readyState >= 2) {
+    const gestureResult = gestureRecognizer.recognizeForVideo(video, timestamp);
+    if (gestureResult.gestures && gestureResult.gestures[0] && gestureResult.gestures[0][0]) {
+      const g = gestureResult.gestures[0][0];
+      if (g.score > 0.7) {
+        state.gesture = g.categoryName;
+        document.getElementById('gesture').textContent = getGestureEmoji(g.categoryName);
+      }
+    }
+  }
+  
+  // Update emotion
+  if (state.face && state.face.faceBlendshapes) {
+    state.emotion = detectEmotion(state.face.faceBlendshapes);
+    document.getElementById('emotion').textContent = state.emotion;
+  }
+  
+  // Draw based on mode
+  switch (state.mode) {
+    case 'skeleton':
+      drawSkeletonMode();
+      break;
+    case 'sacred':
+      drawSacredMode();
+      break;
+    case 'aura':
+      drawAuraMode(dt);
+      break;
+    case 'chakras':
+      drawChakrasMode();
+      break;
+  }
+  
+  // Update particles
+  updateParticles(dt);
+  drawParticles();
+  
+  // Update status
+  const handsCount = state.hands?.landmarks?.length || 0;
+  const facesCount = state.face?.faceLandmarks?.length || 0;
+  const posesCount = state.pose?.landmarks?.length || 0;
+  document.getElementById('status').innerHTML = 
+    `Hands: ${handsCount} | Faces: ${facesCount} | Poses: ${posesCount}<br>FPS: ${Math.round(1/dt)}`;
+  
+  requestAnimationFrame(render);
+}
+
+function drawSkeletonMode() {
+  // Hands
+  if (state.hands?.landmarks) {
+    for (const hand of state.hands.landmarks) {
+      drawConnections(hand, HAND_CONNECTIONS, 'rgba(0,255,200,0.8)', 3);
+      drawLandmarks(hand, 'rgba(255,100,100,1)', 5);
+    }
+  }
+  
+  // Face mesh
+  if (state.face?.faceLandmarks) {
+    for (const face of state.face.faceLandmarks) {
+      ctx.fillStyle = 'rgba(100,200,255,0.5)';
+      for (const lm of face) {
+        ctx.beginPath();
+        ctx.arc(lm.x * canvas.width, lm.y * canvas.height, 1, 0, TAU);
+        ctx.fill();
+      }
+    }
+  }
+  
+  // Pose
+  if (state.pose?.landmarks) {
+    for (const pose of state.pose.landmarks) {
+      drawConnections(pose, POSE_CONNECTIONS, 'rgba(255,200,0,0.8)', 4);
+      drawLandmarks(pose, 'rgba(255,50,50,1)', 6);
+    }
+  }
+}
+
+function drawSacredMode() {
+  // Face -> Flower of Life
+  if (state.face?.faceLandmarks?.[0]) {
+    const face = state.face.faceLandmarks[0];
+    const nose = face[1];
+    const cx = nose.x * canvas.width;
+    const cy = nose.y * canvas.height;
+    const leftEye = face[33], rightEye = face[263];
+    const eyeDist = Math.hypot((rightEye.x - leftEye.x) * canvas.width, (rightEye.y - leftEye.y) * canvas.height);
+    
+    ctx.globalAlpha = 0.6;
+    drawFlowerOfLife(cx, cy, eyeDist * 0.8, `hsla(${state.time * 30 % 360}, 80%, 60%, 0.5)`);
+    ctx.globalAlpha = 1;
+  }
+  
+  // Pose -> Metatron's Cube
+  if (state.pose?.landmarks?.[0]) {
+    const pose = state.pose.landmarks[0];
+    const ls = pose[11], rs = pose[12];
+    const cx = (ls.x + rs.x) / 2 * canvas.width;
+    const cy = (ls.y + rs.y) / 2 * canvas.height;
+    const shoulderDist = Math.hypot((rs.x - ls.x) * canvas.width, (rs.y - ls.y) * canvas.height);
+    
+    ctx.globalAlpha = 0.4;
+    drawMetatronsCube(cx, cy, shoulderDist * 0.4, `hsla(${(state.time * 20 + 180) % 360}, 70%, 50%, 0.4)`);
+    ctx.globalAlpha = 1;
+  }
+  
+  // Hands -> Fibonacci spirals
+  if (state.hands?.landmarks) {
+    for (const hand of state.hands.landmarks) {
+      const wrist = hand[0];
+      const cx = wrist.x * canvas.width;
+      const cy = wrist.y * canvas.height;
+      
+      ctx.strokeStyle = `hsla(${state.time * 50 % 360}, 90%, 60%, 0.6)`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i < 100; i++) {
+        const angle = i * 0.2;
+        const r = Math.pow(PHI, angle / TAU) * 5;
+        const x = cx + Math.cos(angle + state.time) * r;
+        const y = cy + Math.sin(angle + state.time) * r;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+  }
+}
+
+function drawAuraMode(dt) {
+  // Pose aura
+  if (state.pose?.landmarks?.[0]) {
+    const pose = state.pose.landmarks[0];
+    
+    // Spawn particles along body
+    for (let i = 0; i < pose.length; i += 3) {
+      if (Math.random() < 0.3) {
+        const lm = pose[i];
+        const hue = (state.time * 30 + i * 10) % 360;
+        spawnParticle(
+          lm.x * canvas.width + (Math.random() - 0.5) * 50,
+          lm.y * canvas.height + (Math.random() - 0.5) * 50,
+          `hsla(${hue}, 80%, 60%, 1)`
+        );
+      }
+    }
+    
+    // Glow effect
+    for (const lm of pose) {
+      const x = lm.x * canvas.width;
+      const y = lm.y * canvas.height;
+      const grad = ctx.createRadialGradient(x, y, 0, x, y, 50);
+      grad.addColorStop(0, `hsla(${state.time * 20 % 360}, 80%, 60%, 0.3)`);
+      grad.addColorStop(1, 'transparent');
+      ctx.fillStyle = grad;
+      ctx.fillRect(x - 50, y - 50, 100, 100);
+    }
+  }
+  
+  // Hand trails
+  if (state.hands?.landmarks) {
+    for (const hand of state.hands.landmarks) {
+      for (const tip of [4, 8, 12, 16, 20]) {
+        const lm = hand[tip];
+        spawnParticle(
+          lm.x * canvas.width,
+          lm.y * canvas.height,
+          `hsla(${state.time * 60 % 360}, 90%, 70%, 1)`
+        );
+      }
+    }
+  }
+}
+
+function drawChakrasMode() {
+  // Draw skeleton first
+  drawSkeletonMode();
+  
+  // Draw chakras
+  if (state.pose?.landmarks?.[0]) {
+    const chakras = getChakraPositions(state.pose.landmarks[0]);
+    
+    for (const chakra of chakras) {
+      const pulse = 1 + Math.sin(state.time * 3) * 0.2;
+      const size = 25 * pulse * state.effectIntensity;
+      
+      // Glow
+      const grad = ctx.createRadialGradient(chakra.x, chakra.y, 0, chakra.x, chakra.y, size * 2);
+      grad.addColorStop(0, chakra.color.replace('50%)', '70%)'));
+      grad.addColorStop(0.5, chakra.color.replace(')', ', 0.5)').replace('hsl', 'hsla'));
+      grad.addColorStop(1, 'transparent');
+      ctx.fillStyle = grad;
+      ctx.fillRect(chakra.x - size * 2, chakra.y - size * 2, size * 4, size * 4);
+      
+      // Core
+      ctx.beginPath();
+      ctx.arc(chakra.x, chakra.y, size * 0.5, 0, TAU);
+      ctx.fillStyle = chakra.color;
+      ctx.fill();
+      
+      // Label
+      ctx.fillStyle = '#fff';
+      ctx.font = '12px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText(chakra.name, chakra.x, chakra.y + size + 15);
+    }
+  }
+}
+
+function getGestureEmoji(gesture) {
+  const map = {
+    'Closed_Fist': '✊',
+    'Open_Palm': '🖐️',
+    'Pointing_Up': '☝️',
+    'Thumb_Down': '👎',
+    'Thumb_Up': '👍',
+    'Victory': '✌️',
+    'ILoveYou': '🤟',
+    'None': ''
+  };
+  return map[gesture] || '';
+}
+
+// Mode buttons
+document.querySelectorAll('.btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.mode = btn.dataset.mode;
+    document.getElementById('mode').textContent = `Mode: ${state.mode.charAt(0).toUpperCase() + state.mode.slice(1)}`;
+  });
+});
+
+// Initialize
+async function init() {
+  try {
+    await startCamera();
+    await initMediaPipe();
+    render();
+  } catch (err) {
+    document.getElementById('loading').innerHTML = `<h2>Error: ${err.message}</h2><p>Please allow camera access</p>`;
+    console.error(err);
+  }
+}
+
+init();
+</script>
+</body>
+</html>
