@@ -37,8 +37,8 @@
 
 <script>
 // ═══════════════════════════════════════════════════════════════
-// 999 RUNTIME - Universal interpreter for .999 files
-// Executes code generated from .vibee specifications
+// 999 RUNTIME v2 - Universal interpreter for .999 files
+// Enhanced interactivity - cursor follows precisely
 // ═══════════════════════════════════════════════════════════════
 
 const Runtime = {
@@ -57,7 +57,22 @@ const Runtime = {
   // State
   atoms: new Map(),
   time: 0,
-  mouse: { x: 0.5, y: 0.5, active: false },
+  
+  // FIXED: Mouse now stores actual pixel coordinates
+  mouse: { 
+    x: 0, 
+    y: 0, 
+    px: 0,  // Previous x for velocity
+    py: 0,  // Previous y for velocity
+    vx: 0,  // Velocity x
+    vy: 0,  // Velocity y
+    active: false,
+    pressed: false,
+    lastMove: 0
+  },
+  
+  // Particles for trail effect
+  particles: [],
   
   // Initialize
   init() {
@@ -66,22 +81,55 @@ const Runtime = {
     this.resize();
     window.onresize = () => this.resize();
     
-    // Input
-    document.addEventListener('mousemove', e => {
-      this.mouse.x = e.clientX / this.W;
-      this.mouse.y = e.clientY / this.H;
+    // FIXED: Store actual pixel coordinates
+    const updateMouse = (x, y) => {
+      this.mouse.px = this.mouse.x;
+      this.mouse.py = this.mouse.y;
+      this.mouse.x = x;
+      this.mouse.y = y;
+      this.mouse.vx = this.mouse.x - this.mouse.px;
+      this.mouse.vy = this.mouse.y - this.mouse.py;
       this.mouse.active = true;
+      this.mouse.lastMove = Date.now();
+      
+      // Spawn particles on movement
+      if (Math.abs(this.mouse.vx) + Math.abs(this.mouse.vy) > 2) {
+        this.spawnParticle(x, y);
+      }
+    };
+    
+    document.addEventListener('mousemove', e => {
+      updateMouse(e.clientX, e.clientY);
     });
+    
+    document.addEventListener('mousedown', () => this.mouse.pressed = true);
+    document.addEventListener('mouseup', () => this.mouse.pressed = false);
+    
+    document.addEventListener('touchstart', e => {
+      e.preventDefault();
+      this.mouse.pressed = true;
+      updateMouse(e.touches[0].clientX, e.touches[0].clientY);
+    }, { passive: false });
+    
     document.addEventListener('touchmove', e => {
       e.preventDefault();
-      this.mouse.x = e.touches[0].clientX / this.W;
-      this.mouse.y = e.touches[0].clientY / this.H;
-      this.mouse.active = true;
+      updateMouse(e.touches[0].clientX, e.touches[0].clientY);
     }, { passive: false });
+    
+    document.addEventListener('touchend', () => {
+      this.mouse.pressed = false;
+      this.mouse.active = false;
+    });
+    
     document.addEventListener('mouseleave', () => this.mouse.active = false);
     
-    this.log('999 Runtime initialized');
+    // Initialize mouse to center
+    this.mouse.x = this.W / 2;
+    this.mouse.y = this.H / 2;
+    
+    this.log('999 Runtime v2 initialized');
     this.log(`Quality: ${this.dpr}x (4K)`);
+    this.log('Enhanced interactivity ON');
   },
   
   resize() {
@@ -89,7 +137,40 @@ const Runtime = {
     this.H = innerHeight;
     this.canvas.width = this.W * this.dpr;
     this.canvas.height = this.H * this.dpr;
-    this.ctx.scale(this.dpr, this.dpr);
+    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+  },
+  
+  // Particle system for cursor trail
+  spawnParticle(x, y) {
+    if (this.particles.length > 50) return;
+    this.particles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 4,
+      vy: (Math.random() - 0.5) * 4,
+      life: 1,
+      size: 3 + Math.random() * 5,
+      hue: Date.now() % 360
+    });
+  },
+  
+  updateParticles(dt) {
+    for (let i = this.particles.length - 1; i >= 0; i--) {
+      const p = this.particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.life -= dt * 2;
+      p.size *= 0.98;
+      if (p.life <= 0) this.particles.splice(i, 1);
+    }
+  },
+  
+  drawParticles(ctx, color) {
+    for (const p of this.particles) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * p.life, 0, this.TAU);
+      ctx.fillStyle = this.col(color.h, color.s, color.l, p.life * 0.5);
+      ctx.fill();
+    }
   },
   
   // Logging
@@ -315,14 +396,22 @@ function drawEvolvedGeometry(ctx, cx, cy, r, t, dna, soul) {
   const c = soul.color;
   const b = soul.breath;
   const TAU = Runtime.TAU;
+  const mx = Runtime.mouse.x;
+  const my = Runtime.mouse.y;
+  const mouseActive = Runtime.mouse.active;
+  const mousePressed = Runtime.mouse.pressed;
   
   const elements = Math.floor(3 + dna.complexity * 12);
   const symmetryOrder = Math.floor(3 + dna.symmetry * 9);
   const depth = Math.floor(1 + dna.fractal_depth * 4);
   const hueShift = dna.color_shift * 360;
   
+  // Press effect - expand on click
+  const pressScale = mousePressed ? 1.2 : 1;
+  const pressGlow = mousePressed ? 1.5 : 1;
+  
   for (let d = 0; d < depth; d++) {
-    const depthScale = 1 - d * 0.2;
+    const depthScale = (1 - d * 0.2) * pressScale;
     const depthAlpha = 1 - d * 0.25;
     
     for (let s = 0; s < symmetryOrder; s++) {
@@ -333,18 +422,44 @@ function drawEvolvedGeometry(ctx, cx, cy, r, t, dna, soul) {
       ctx.rotate(symAngle);
       
       for (let i = 0; i < elements; i++) {
-        const angle = i * TAU / elements + t * dna.pulse_rate;
-        const dist = r * depthScale * (0.3 + i / elements * 0.7);
-        const x = Math.cos(angle) * dist;
-        const y = Math.sin(angle) * dist;
-        const size = r * 0.05 * (1 + dna.complexity * 0.5) * (1 + Math.sin(t * 2 + i) * 0.2 * b);
+        const baseAngle = i * TAU / elements + t * dna.pulse_rate;
+        const baseDist = r * depthScale * (0.3 + i / elements * 0.7);
+        
+        // Calculate world position of this element
+        const worldX = cx + Math.cos(symAngle) * Math.cos(baseAngle) * baseDist - Math.sin(symAngle) * Math.sin(baseAngle) * baseDist;
+        const worldY = cy + Math.sin(symAngle) * Math.cos(baseAngle) * baseDist + Math.cos(symAngle) * Math.sin(baseAngle) * baseDist;
+        
+        // INTERACTIVE: Calculate attraction to cursor
+        let attractX = 0, attractY = 0;
+        if (mouseActive) {
+          const dx = mx - worldX;
+          const dy = my - worldY;
+          const distToCursor = Math.sqrt(dx * dx + dy * dy);
+          const attractStrength = Math.max(0, 1 - distToCursor / 300) * 30 * dna.adaptability;
+          attractX = (dx / distToCursor) * attractStrength || 0;
+          attractY = (dy / distToCursor) * attractStrength || 0;
+        }
+        
+        const x = Math.cos(baseAngle) * baseDist + attractX;
+        const y = Math.sin(baseAngle) * baseDist + attractY;
+        
+        // Size reacts to cursor proximity
+        let size = r * 0.05 * (1 + dna.complexity * 0.5) * (1 + Math.sin(t * 2 + i) * 0.2 * b);
+        if (mouseActive) {
+          const dx = mx - worldX;
+          const dy = my - worldY;
+          const distToCursor = Math.sqrt(dx * dx + dy * dy);
+          const proximity = Math.max(0, 1 - distToCursor / 200);
+          size *= (1 + proximity * 0.8);
+        }
         
         ctx.beginPath();
         
         if (dna.creativity >= 0.7) {
           // Star
-          for (let p = 0; p < 5; p++) {
-            const pa = p * TAU / 5 - TAU / 4;
+          const points = mousePressed ? 7 : 5;
+          for (let p = 0; p < points; p++) {
+            const pa = p * TAU / points - TAU / 4;
             const pr = size * (p % 2 ? 0.5 : 1);
             p ? ctx.lineTo(x + Math.cos(pa) * pr, y + Math.sin(pa) * pr) :
                 ctx.moveTo(x + Math.cos(pa) * pr, y + Math.sin(pa) * pr);
@@ -363,12 +478,14 @@ function drawEvolvedGeometry(ctx, cx, cy, r, t, dna, soul) {
         }
         
         const hue = (c.h + hueShift + i * 10 + d * 30) % 360;
-        ctx.strokeStyle = Runtime.col(hue, c.s, c.l, 0.3 * depthAlpha + b * 0.2);
-        ctx.lineWidth = 1 + dna.expressiveness;
+        const alpha = (0.3 * depthAlpha + b * 0.2) * pressGlow;
+        ctx.strokeStyle = Runtime.col(hue, c.s, c.l, Math.min(1, alpha));
+        ctx.lineWidth = (1 + dna.expressiveness) * (mousePressed ? 2 : 1);
         ctx.stroke();
         
-        if (dna.glow_intensity > 0.5) {
-          ctx.fillStyle = Runtime.col(hue, c.s, c.l, 0.1 * dna.glow_intensity * depthAlpha);
+        if (dna.glow_intensity > 0.5 || mousePressed) {
+          const fillAlpha = 0.1 * dna.glow_intensity * depthAlpha * pressGlow;
+          ctx.fillStyle = Runtime.col(hue, c.s, c.l, Math.min(0.8, fillAlpha));
           ctx.fill();
         }
       }
@@ -377,17 +494,22 @@ function drawEvolvedGeometry(ctx, cx, cy, r, t, dna, soul) {
     }
   }
   
-  // Center
-  const centerPulse = 1 + Math.sin(t * 3) * 0.2 * b;
+  // Center - pulses on click
+  const centerPulse = (1 + Math.sin(t * 3) * 0.2 * b) * (mousePressed ? 1.5 : 1);
   ctx.beginPath();
   ctx.arc(cx, cy, r * 0.08 * centerPulse * (1 + dna.expressiveness * 0.5), 0, TAU);
-  ctx.fillStyle = Runtime.col(c.h, c.s, c.l + 20, 0.6 + b * 0.3);
+  const centerGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 0.1);
+  centerGrad.addColorStop(0, Runtime.col(c.h, c.s, c.l + 30, 0.9));
+  centerGrad.addColorStop(0.5, Runtime.col(c.h, c.s, c.l + 10, 0.5));
+  centerGrad.addColorStop(1, Runtime.col(c.h, c.s, c.l, 0.2));
+  ctx.fillStyle = centerGrad;
   ctx.fill();
   
-  // Connections
-  if (dna.introspection > 0.5) {
-    ctx.strokeStyle = Runtime.col(c.h, c.s, c.l, 0.1 * dna.introspection);
-    ctx.lineWidth = 0.5;
+  // Connections - more visible when interacting
+  const connectionAlpha = mouseActive ? 0.3 : 0.1;
+  if (dna.introspection > 0.3) {
+    ctx.strokeStyle = Runtime.col(c.h, c.s, c.l, connectionAlpha * dna.introspection);
+    ctx.lineWidth = mouseActive ? 1 : 0.5;
     for (let i = 0; i < symmetryOrder; i++) {
       const a1 = i * TAU / symmetryOrder + t * 0.1;
       const a2 = (i + 1) * TAU / symmetryOrder + t * 0.1;
@@ -396,6 +518,31 @@ function drawEvolvedGeometry(ctx, cx, cy, r, t, dna, soul) {
       ctx.lineTo(cx + Math.cos(a2) * r * 0.3, cy + Math.sin(a2) * r * 0.3);
       ctx.stroke();
     }
+    
+    // Connect to cursor when active
+    if (mouseActive) {
+      ctx.strokeStyle = Runtime.col(c.h, c.s, c.l, 0.15);
+      ctx.lineWidth = 1;
+      for (let i = 0; i < symmetryOrder; i++) {
+        const a = i * TAU / symmetryOrder + t * 0.1;
+        const px = cx + Math.cos(a) * r * 0.5;
+        const py = cy + Math.sin(a) * r * 0.5;
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(mx, my);
+        ctx.stroke();
+      }
+    }
+  }
+  
+  // Energy burst on press
+  if (mousePressed) {
+    const burstRadius = r * 0.6 + Math.sin(t * 10) * 20;
+    ctx.beginPath();
+    ctx.arc(cx, cy, burstRadius, 0, TAU);
+    ctx.strokeStyle = Runtime.col(c.h, 90, 70, 0.3);
+    ctx.lineWidth = 3;
+    ctx.stroke();
   }
 }
 
@@ -420,33 +567,97 @@ const soul = new Soul();
 
 let lastTime = performance.now();
 
+// Smooth cursor following
+let smoothX = Runtime.W / 2;
+let smoothY = Runtime.H / 2;
+
 function loop() {
   const now = performance.now();
   const dt = (now - lastTime) / 1000;
   lastTime = now;
   
+  const ctx = Runtime.ctx;
+  const W = Runtime.W;
+  const H = Runtime.H;
+  const mx = Runtime.mouse.x;
+  const my = Runtime.mouse.y;
+  
+  // FIXED: Smooth cursor following with actual pixel coordinates
+  const followStrength = Runtime.mouse.active ? 0.15 : 0.02;
+  const targetX = Runtime.mouse.active ? mx : W / 2;
+  const targetY = Runtime.mouse.active ? my : H / 2;
+  smoothX += (targetX - smoothX) * followStrength;
+  smoothY += (targetY - smoothY) * followStrength;
+  
   // Update atoms
-  evolution.update(dt, Runtime.mouse.active, Runtime.mouse.x, Runtime.mouse.y);
+  evolution.update(dt, Runtime.mouse.active, mx / W, my / H);
   const dna = evolution.current_dna;
   
   soul.update(dt, dna, evolution.generation);
   
-  // Render
-  const ctx = Runtime.ctx;
-  const W = Runtime.W;
-  const H = Runtime.H;
-  const cx = W / 2 + (Runtime.mouse.x - 0.5) * 80;
-  const cy = H / 2 + (Runtime.mouse.y - 0.5) * 80;
+  // Update particles
+  Runtime.updateParticles(dt);
+  
+  // FIXED: Center follows cursor directly
+  const cx = smoothX;
+  const cy = smoothY;
   const r = Math.min(W, H) * 0.35;
   
-  // Clear
-  ctx.fillStyle = `rgba(0, 0, 0, ${0.03 + dna.introspection * 0.02})`;
+  // Clear with trail effect
+  ctx.fillStyle = `rgba(0, 0, 0, ${0.05 + dna.introspection * 0.03})`;
   ctx.fillRect(0, 0, W, H);
   
-  // Draw
+  // Draw cursor attraction field
+  if (Runtime.mouse.active) {
+    const fieldGrad = ctx.createRadialGradient(mx, my, 0, mx, my, 150);
+    fieldGrad.addColorStop(0, Runtime.col(soul.color.h, 80, 60, 0.15));
+    fieldGrad.addColorStop(0.5, Runtime.col(soul.color.h, 60, 50, 0.05));
+    fieldGrad.addColorStop(1, 'transparent');
+    ctx.fillStyle = fieldGrad;
+    ctx.fillRect(0, 0, W, H);
+    
+    // Cursor ring
+    ctx.beginPath();
+    ctx.arc(mx, my, 20 + Math.sin(soul.inner_time * 5) * 5, 0, Runtime.TAU);
+    ctx.strokeStyle = Runtime.col(soul.color.h, 80, 60, 0.5);
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    // Connection line from center to cursor
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(mx, my);
+    ctx.strokeStyle = Runtime.col(soul.color.h, 60, 50, 0.2);
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 10]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  
+  // Draw particles
+  Runtime.drawParticles(ctx, soul.color);
+  
+  // Draw main geometry
   drawEvolvedGeometry(ctx, cx, cy, r, soul.inner_time, dna, soul);
   
-  // Post effects
+  // Draw reactive elements around cursor
+  if (Runtime.mouse.active) {
+    const numOrbs = 6;
+    for (let i = 0; i < numOrbs; i++) {
+      const angle = i * Runtime.TAU / numOrbs + soul.inner_time * 2;
+      const dist = 40 + Math.sin(soul.inner_time * 3 + i) * 15;
+      const ox = mx + Math.cos(angle) * dist;
+      const oy = my + Math.sin(angle) * dist;
+      const orbSize = 4 + Math.sin(soul.inner_time * 4 + i * 2) * 2;
+      
+      ctx.beginPath();
+      ctx.arc(ox, oy, orbSize, 0, Runtime.TAU);
+      ctx.fillStyle = Runtime.col((soul.color.h + i * 30) % 360, 70, 60, 0.6);
+      ctx.fill();
+    }
+  }
+  
+  // Post effects - glow
   const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 1.5);
   g.addColorStop(0, Runtime.col(soul.color.h, soul.color.s, soul.color.l, 0.1 * dna.glow_intensity));
   g.addColorStop(1, 'transparent');
@@ -455,8 +666,9 @@ function loop() {
   
   // UI
   renderDNA(dna);
+  const interactionStatus = Runtime.mouse.active ? 'INTERACTIVE' : 'IDLE';
   document.getElementById('status').textContent = 
-    `999 RUNTIME | GEN ${evolution.generation} | FITNESS ${dna.fitness.toFixed(2)}`;
+    `999 RUNTIME v2 | GEN ${evolution.generation} | FITNESS ${dna.fitness.toFixed(2)} | ${interactionStatus}`;
   
   requestAnimationFrame(loop);
 }
