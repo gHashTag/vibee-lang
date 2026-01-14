@@ -210,19 +210,27 @@ pub const Guardian = struct {
     // ═══════════════════════════════════════════════════════════════
 
     pub fn protectRuntime(_: *Guardian, path: []const u8) GuardianError!void {
-        if (std.mem.endsWith(u8, path, "runtime/runtime.html")) {
+        if (std.mem.indexOf(u8, path, "runtime.html") != null) {
             std.debug.print(
                 \\
-                \\⛔ GUARDIAN ERROR: Runtime modification attempt
-                \\   Path: {s}
+                \\╔═══════════════════════════════════════════════════════════════╗
+                \\║  ⛔ GUARDIAN: RUNTIME.HTML IS IMMUTABLE                       ║
+                \\╠═══════════════════════════════════════════════════════════════╣
+                \\║                                                               ║
+                \\║  This file is PERMANENTLY LOCKED.                             ║
+                \\║  It contains ONLY the loader - no implementation.             ║
+                \\║                                                               ║
+                \\║  ALL implementation must be in:                               ║
+                \\║    generated/core.999.js                                      ║
+                \\║                                                               ║
+                \\║  To change behavior:                                          ║
+                \\║    1. Edit specs/*.vibee                                      ║
+                \\║    2. Regenerate generated/*.999                              ║
+                \\║    3. runtime.html loads automatically                        ║
+                \\║                                                               ║
+                \\╚═══════════════════════════════════════════════════════════════╝
                 \\
-                \\   runtime.html is FINAL and must not be modified.
-                \\   All logic should be in .999 files.
-                \\
-                \\   Architecture:
-                \\   .vibee → .999 → runtime.html (LOCKED)
-                \\
-            , .{path});
+            , .{});
             return GuardianError.RuntimeModificationAttempt;
         }
     }
@@ -355,6 +363,14 @@ pub fn main() !void {
         guardian.verifyGeneratedFile(args[2], content) catch |err| {
             std.debug.print("Verification failed: {}\n", .{err});
         };
+    } else if (std.mem.eql(u8, command, "protect")) {
+        if (args.len < 3) {
+            std.debug.print("Usage: guardian protect <file>\n", .{});
+            return;
+        }
+        guardian.protectRuntime(args[2]) catch |err| {
+            std.debug.print("Protection triggered: {}\n", .{err});
+        };
     } else {
         printUsage();
     }
@@ -369,12 +385,17 @@ fn printUsage() void {
         \\  guardian scan [path]     - Scan project for violations
         \\  guardian check <file>    - Check if file type is allowed
         \\  guardian verify <file>   - Verify generated file integrity
+        \\  guardian protect <file>  - Check if file is protected (runtime.html)
         \\
         \\Protected Architecture:
-        \\  .vibee (spec) → .999 (code) → runtime.html (final)
+        \\  specs/*.vibee → generated/*.999 → runtime.html (IMMUTABLE)
         \\
         \\Forbidden file types: .html .css .js .ts .jsx .tsx
-        \\Exception: runtime/runtime.html (THE ONLY ALLOWED HTML)
+        \\
+        \\IMMUTABLE FILES:
+        \\  runtime/runtime.html - NEVER EDIT, only loads .999 files
+        \\
+        \\All implementation in: generated/core.999.js
         \\
     , .{});
 }
