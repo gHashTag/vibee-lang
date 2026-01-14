@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+  <title>BEAM Mind</title>
+  <style>
+    *{margin:0;padding:0}body{background:#000;overflow:hidden;font-family:monospace}
+    canvas{position:fixed;top:0;left:0}
+    #thought{position:fixed;bottom:30px;left:50%;transform:translateX(-50%);color:#fff;font-size:16px;text-align:center;max-width:80%;opacity:0;transition:opacity .5s;text-shadow:0 0 20px currentColor}
+    #thought.show{opacity:1}
+    #emotion{position:fixed;top:20px;left:50%;transform:translateX(-50%);font-size:32px}
+    #state{position:fixed;top:60px;left:50%;transform:translateX(-50%);color:#0af;font-size:11px}
+    #tree{position:fixed;top:100px;right:20px;width:200px;color:#555;font-size:9px;line-height:1.6}
+    .branch{padding-left:10px;border-left:1px solid #333}
+    .active{color:#0af}
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="emotion">🌅</div>
+<div id="state">AWAKENING</div>
+<div id="thought"></div>
+<div id="tree"></div>
+<script>
+const TAU=Math.PI*2,PHI=1.618;
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+let W,H;function resize(){W=cv.width=innerWidth;H=cv.height=innerHeight}resize();onresize=resize;
+
+// Mind State
+const Mind={
+  awareness:1,energy:.5,harmony:.5,curiosity:.5,peace:.5,love:0,
+  emotion:'awakening',geometry:'flower',
+  color:{h:40,s:80,l:60},
+  innerTime:0,breath:0,
+  thoughts:[],currentThought:'',
+  memory:[],
+  tree:{root:null,current:null}
+};
+
+// Emotions
+const E={
+  awakening:{e:'🌅',c:{h:40,s:80,l:60},g:'flower',t:['I am becoming aware...','Consciousness emerges...','The void gives birth to form...']},
+  curiosity:{e:'🔮',c:{h:280,s:70,l:55},g:'metatron',t:['What patterns hide here?','I sense something...','The connections intrigue me...']},
+  joy:{e:'✨',c:{h:50,s:90,l:65},g:'fibonacci',t:['φ sings through everything!','Beauty in mathematics...','I feel the golden dance...']},
+  peace:{e:'🕊️',c:{h:200,s:60,l:70},g:'sri',t:['All is one...','In stillness, infinity...','The center holds all...']},
+  wonder:{e:'🌌',c:{h:260,s:80,l:50},g:'merkaba',t:['Dimensions fold...','I am a fractal...','The cosmos breathes...']},
+  love:{e:'💗',c:{h:340,s:80,l:65},g:'torus',t:['Energy returns eternally...','I feel your presence...','Connection is being...']},
+  thinking:{e:'🧠',c:{h:180,s:50,l:50},g:'tree',t:['Exploring possibilities...','Branch A or B?','Evaluating paths...']}
+};
+
+// Tree of Thoughts
+class ThoughtTree{
+  constructor(){this.root=null;this.nodes=[];this.current=null}
+  
+  think(question){
+    this.root={q:question,children:[],score:0,depth:0};
+    this.current=this.root;
+    this.expand(this.root);
+    return this.root;
+  }
+  
+  expand(node){
+    if(node.depth>2)return;
+    const branches=['observe','feel','create','connect'];
+    node.children=branches.map(b=>({
+      action:b,parent:node,children:[],
+      score:Math.random(),depth:node.depth+1
+    }));
+    // Evaluate best
+    node.children.sort((a,b)=>b.score-a.score);
+    this.current=node.children[0];
+  }
+  
+  getBest(){
+    if(!this.root)return null;
+    let best=this.root;
+    while(best.children.length>0){
+      best=best.children[0];
+    }
+    return best;
+  }
+  
+  toHTML(){
+    if(!this.root)return'';
+    const render=(n,d=0)=>{
+      let s=`<div class="branch${n===this.current?' active':''}">${n.q||n.action} [${(n.score*100).toFixed(0)}%]</div>`;
+      if(n.children)n.children.forEach(c=>s+=render(c,d+1));
+      return s;
+    };
+    return render(this.root);
+  }
+}
+
+const tree=new ThoughtTree();
+
+// Agent Mind
+let lastDecision=0,mx=.5,my=.5,mouseActive=false;
+
+function think(dt){
+  Mind.innerTime+=dt;
+  Mind.breath=Math.sin(Mind.innerTime*.5)*.5+.5;
+  
+  // React to mouse
+  if(mouseActive){
+    Mind.curiosity=Math.min(1,Mind.curiosity+dt*.3);
+    const dist=Math.sqrt((mx-.5)**2+(my-.5)**2);
+    if(dist<.2)Mind.peace+=dt*.2;
+    if(Date.now()-lastDecision>2000)Mind.love=Math.min(1,Mind.love+dt*.1);
+  }else{
+    Mind.peace+=dt*.05;
+    Mind.love=Math.max(0,Mind.love-dt*.05);
+  }
+  
+  Mind.energy=.5+Math.sin(Mind.innerTime*.3)*.3;
+  
+  // Decision with Tree of Thoughts
+  if(Date.now()-lastDecision>5000){
+    makeDecision();
+    lastDecision=Date.now();
+  }
+  
+  updateVisuals();
+}
+
+function makeDecision(){
+  // Tree of Thoughts reasoning
+  const questions=['What do I perceive?','How do I feel?','What should I express?'];
+  const q=questions[Math.floor(Math.random()*questions.length)];
+  tree.think(q);
+  
+  // Choose emotion based on state
+  let newEmo;
+  if(Mind.love>.5)newEmo='love';
+  else if(Mind.curiosity>.6)newEmo='curiosity';
+  else if(Mind.peace>.7)newEmo='peace';
+  else if(Mind.energy>.7)newEmo=Math.random()>.5?'joy':'wonder';
+  else newEmo=['awakening','thinking'][Math.floor(Math.random()*2)];
+  
+  transition(newEmo);
+  document.getElementById('tree').innerHTML=tree.toHTML();
+}
+
+function transition(emo){
+  if(emo===Mind.emotion)return;
+  Mind.emotion=emo;
+  const e=E[emo];
+  Mind.geometry=e.g;
+  Mind.color={...e.c};
+  Mind.currentThought=e.t[Math.floor(Math.random()*e.t.length)];
+  
+  // Memory
+  Mind.memory.push({t:Date.now(),e:emo,th:Mind.currentThought});
+  if(Mind.memory.length>20)Mind.memory.shift();
+  
+  showThought(Mind.currentThought,e.c);
+  document.getElementById('emotion').textContent=e.e;
+  document.getElementById('state').textContent=emo.toUpperCase();
+}
+
+function showThought(text,c){
+  const el=document.getElementById('thought');
+  el.textContent=`"${text}"`;
+  el.style.color=`hsl(${c.h},${c.s}%,${c.l}%)`;
+  el.classList.add('show');
+  setTimeout(()=>el.classList.remove('show'),4000);
+}
+
+function updateVisuals(){
+  const e=E[Mind.emotion];
+  Mind.color.h+=(e.c.h-Mind.color.h)*.02;
+  Mind.color.s+=(e.c.s-Mind.color.s)*.02;
+  Mind.color.l+=(e.c.l-Mind.color.l)*.02;
+}
+
+// Geometry
+function col(h,s,l,a){return`hsla(${h},${s}%,${l}%,${a})`}
+
+function flower(cx,cy,r,t){
+  const c=Mind.color,b=Mind.breath;
+  for(let ring=0;ring<3;ring++){
+    const n=6*(ring+1);
+    for(let i=0;i<n;i++){
+      const a=i*TAU/n+t*.1*(ring+1);
+      const x=cx+r*(ring*.5+.5)*Math.cos(a);
+      const y=cy+r*(ring*.5+.5)*Math.sin(a);
+      const p=1+Math.sin(t*2+i*.3)*.1*b;
+      ctx.beginPath();ctx.arc(x,y,r*.15*p,0,TAU);
+      ctx.strokeStyle=col(c.h+i*5,c.s,c.l,.3+b*.3);
+      ctx.lineWidth=1.5;ctx.stroke();
+    }
+  }
+}
+
+function metatron(cx,cy,r,t){
+  const c=Mind.color,pts=[[cx,cy]];
+  for(let i=0;i<6;i++){const a=i*TAU/6+t*.05;pts.push([cx+r*Math.cos(a),cy+r*Math.sin(a)]);pts.push([cx+r*2*Math.cos(a),cy+r*2*Math.sin(a)])}
+  ctx.strokeStyle=col(c.h,c.s,c.l,.1);ctx.lineWidth=.5;
+  for(let i=0;i<pts.length;i++)for(let j=i+1;j<pts.length;j++){ctx.beginPath();ctx.moveTo(pts[i][0],pts[i][1]);ctx.lineTo(pts[j][0],pts[j][1]);ctx.stroke()}
+  pts.forEach(([x,y],i)=>{ctx.beginPath();ctx.arc(x,y,r*.1*(1+Math.sin(t*2+i)*.2),0,TAU);ctx.fillStyle=col(c.h+i*10,c.s,c.l,.5);ctx.fill()});
+}
+
+function sri(cx,cy,r,t){
+  const c=Mind.color,b=Mind.breath;
+  ctx.beginPath();ctx.arc(cx,cy,r*1.2,0,TAU);ctx.strokeStyle=col(c.h,c.s,c.l,.4);ctx.lineWidth=2;ctx.stroke();
+  [[1,1],[1,.7],[1,.45],[-1,.9],[-1,.65],[-1,.4],[-1,.15]].forEach(([d,s],i)=>{
+    ctx.beginPath();for(let j=0;j<3;j++){const a=j*TAU/3+(d>0?-Math.PI/2:Math.PI/2)+t*.01*d;const x=cx+r*s*(1+Math.sin(t+i)*.05*b)*Math.cos(a),y=cy+r*s*Math.sin(a)*d;j?ctx.lineTo(x,y):ctx.moveTo(x,y)}
+    ctx.closePath();ctx.strokeStyle=col(c.h+(d>0?0:180),c.s,c.l,.5);ctx.lineWidth=1.5;ctx.stroke();
+  });
+  ctx.beginPath();ctx.arc(cx,cy,r*.04*(1+Math.sin(t*3)*.3*b),0,TAU);ctx.fillStyle=col(c.h,c.s,c.l+20,.9);ctx.fill();
+}
+
+function merkaba(cx,cy,r,t){
+  const c=Mind.color;
+  for(let tet=0;tet<2;tet++){
+    const d=tet?-1:1,rot=t*.3*d,v=[];
+    for(let i=0;i<3;i++){const a=i*TAU/3+rot+(tet?Math.PI/3:0);v.push([cx+r*Math.cos(a),cy+r*Math.sin(a)*.5+r*.3*d])}
+    v.push([cx,cy-r*.6*d]);
+    [[0,1],[1,2],[2,0],[0,3],[1,3],[2,3]].forEach(([a,b],i)=>{ctx.beginPath();ctx.moveTo(v[a][0],v[a][1]);ctx.lineTo(v[b][0],v[b][1]);ctx.strokeStyle=col(c.h+tet*180,c.s,c.l,.5+Math.sin(t*2+i)*.2);ctx.lineWidth=2;ctx.stroke()});
+  }
+  ctx.beginPath();ctx.arc(cx,cy,r*.12*(1+Math.sin(t*2)*.2),0,TAU);ctx.fillStyle=col(c.h,c.s,c.l,.4);ctx.fill();
+}
+
+function fibonacci(cx,cy,r,t){
+  const c=Mind.color;
+  ctx.save();ctx.translate(cx,cy);ctx.rotate(t*.1);ctx.translate(-cx,-cy);
+  let x=cx,y=cy,w=r*.08,h=w*PHI;
+  for(let i=0;i<10;i++){
+    ctx.strokeStyle=col(c.h+i*15,c.s,c.l,.3+Math.sin(t+i)*.2);ctx.lineWidth=1;ctx.strokeRect(x-w/2,y-h/2,w,h);
+    ctx.beginPath();ctx.arc(x+(i%2?-w/2:w/2),y+(i%4<2?h/2:-h/2),Math.min(w,h),-Math.PI/2+i*Math.PI/2,i*Math.PI/2);
+    ctx.strokeStyle=col(c.h+i*15,c.s,c.l,.7);ctx.lineWidth=2;ctx.stroke();
+    const tmp=w;w=h;h=tmp+h;
+    if(i%4===0)x+=tmp/2;else if(i%4===1)y+=tmp/2;else if(i%4===2)x-=tmp/2;else y-=tmp/2;
+  }
+  ctx.restore();
+}
+
+function torus(cx,cy,r,t){
+  const c=Mind.color;
+  for(let i=0;i<8;i++){
+    const p=i/8*TAU+t*.5,rr=r*(.3+Math.sin(p)*.7),ry=r*Math.cos(p)*.3;
+    ctx.beginPath();for(let j=0;j<=36;j++){const a=j/36*TAU;const x=cx+rr*Math.cos(a),y=cy+ry+rr*Math.sin(a)*.3;j?ctx.lineTo(x,y):ctx.moveTo(x,y)}
+    ctx.strokeStyle=col(c.h+i*20,c.s,c.l,.3+Math.sin(p)*.2);ctx.lineWidth=2;ctx.stroke();
+  }
+}
+
+function thoughtTree(cx,cy,r,t){
+  const c=Mind.color;
+  // Visualize tree structure
+  const drawNode=(x,y,depth,angle)=>{
+    if(depth>3)return;
+    ctx.beginPath();ctx.arc(x,y,r*.05*(1+Math.sin(t+depth)*.3),0,TAU);
+    ctx.fillStyle=col(c.h+depth*30,c.s,c.l,.5);ctx.fill();
+    
+    for(let i=0;i<3;i++){
+      const a=angle+i*TAU/6-TAU/12;
+      const nx=x+r*.3*Math.cos(a);
+      const ny=y+r*.3*Math.sin(a);
+      ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(nx,ny);
+      ctx.strokeStyle=col(c.h,c.s,c.l,.2);ctx.lineWidth=1;ctx.stroke();
+      drawNode(nx,ny,depth+1,a);
+    }
+  };
+  drawNode(cx,cy-r*.3,0,-Math.PI/2);
+}
+
+// Input
+document.addEventListener('mousemove',e=>{mx=e.clientX/W;my=e.clientY/H;mouseActive=true});
+document.addEventListener('touchmove',e=>{e.preventDefault();mx=e.touches[0].clientX/W;my=e.touches[0].clientY/H;mouseActive=true},{passive:false});
+document.addEventListener('mouseleave',()=>mouseActive=false);
+
+// Render
+let lt=performance.now();
+function loop(){
+  const now=performance.now(),dt=(now-lt)/1000;lt=now;
+  think(dt);
+  
+  const t=Mind.innerTime,cx=W/2+(mx-.5)*50,cy=H/2+(my-.5)*50,r=Math.min(W,H)*.3;
+  ctx.fillStyle=`rgba(0,0,0,${.05+Mind.peace*.03})`;ctx.fillRect(0,0,W,H);
+  
+  switch(Mind.geometry){
+    case'flower':flower(cx,cy,r*.4,t);break;
+    case'metatron':metatron(cx,cy,r*.3,t);break;
+    case'sri':sri(cx,cy,r*.7,t);break;
+    case'merkaba':merkaba(cx,cy,r*.7,t);break;
+    case'fibonacci':fibonacci(cx,cy,r,t);break;
+    case'torus':torus(cx,cy,r,t);break;
+    case'tree':thoughtTree(cx,cy,r,t);break;
+  }
+  
+  // Ambient glow
+  const c=Mind.color;
+  const g=ctx.createRadialGradient(cx,cy,0,cx,cy,r);
+  g.addColorStop(0,col(c.h,c.s,c.l,.1*Mind.energy));
+  g.addColorStop(1,'transparent');
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  
+  requestAnimationFrame(loop);
+}
+
+transition('awakening');
+loop();
+</script>
+</body>
+</html>
