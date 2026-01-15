@@ -1,0 +1,149 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# LILO - Library Learning via Compression
+# ═══════════════════════════════════════════════════════════════════════════
+# Source: arXiv:2310.19791
+# PAS Patterns: ALG, PRE, D&C
+# Benefit: Discover reusable abstractions, smaller generated code
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: LILO
+version: "1.0.0"
+language: 999
+module: lilo
+
+description: "Library learning through compression-based abstraction"
+source: "arXiv:2310.19791"
+pas_patterns: [ALG, PRE, D&C]
+benefit: "Automatic discovery of reusable code patterns"
+emoji: "📚"
+keyboard_shortcut: "^"
+
+creation_pattern:
+  source: CodeCorpus
+  transformer: CompressionLearner
+  result: AbstractionLibrary
+
+state:
+  - name: library
+    type: object
+    default: "{}"
+  - name: usageCounts
+    type: object
+    default: "{}"
+  - name: compressionRatio
+    type: number
+    default: "1.0"
+  - name: patterns
+    type: array
+    default: "[]"
+
+methods:
+  - name: extractNgrams
+    params: [code, n]
+    body: |
+      var ngrams = {};
+      var tokens = code.split(/\s+/);
+      for (var i = 0; i <= tokens.length - n; i++) {
+        var gram = tokens.slice(i, i + n).join(' ');
+        ngrams[gram] = (ngrams[gram] || 0) + 1;
+      }
+      return ngrams;
+
+  - name: findPatterns
+    params: [corpus, minFreq]
+    body: |
+      var allNgrams = {};
+      for (var i = 0; i < corpus.length; i++) {
+        for (var n = 2; n <= 5; n++) {
+          var ngrams = this.extractNgrams(corpus[i], n);
+          for (var gram in ngrams) {
+            allNgrams[gram] = (allNgrams[gram] || 0) + ngrams[gram];
+          }
+        }
+      }
+      var patterns = [];
+      for (var gram in allNgrams) {
+        if (allNgrams[gram] >= (minFreq || 3)) {
+          patterns.push({ pattern: gram, freq: allNgrams[gram], savings: gram.length * allNgrams[gram] });
+        }
+      }
+      patterns.sort(function(a, b) { return b.savings - a.savings; });
+      this.patterns = patterns.slice(0, 20);
+      return this.patterns;
+
+  - name: createAbstraction
+    params: [pattern, name]
+    body: |
+      this.library[name] = {
+        pattern: pattern,
+        params: [],
+        body: pattern
+      };
+      this.usageCounts[name] = 0;
+      return name;
+
+  - name: compress
+    params: [code]
+    body: |
+      var compressed = code;
+      var originalLen = code.length;
+      for (var name in this.library) {
+        var pattern = this.library[name].pattern;
+        var regex = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+        compressed = compressed.replace(regex, name + '()');
+        this.usageCounts[name] = (code.match(regex) || []).length;
+      }
+      this.compressionRatio = compressed.length / originalLen;
+      return compressed;
+
+  - name: learn
+    params: [corpus, iterations]
+    body: |
+      for (var iter = 0; iter < (iterations || 5); iter++) {
+        var patterns = this.findPatterns(corpus, 2 + iter);
+        for (var i = 0; i < Math.min(3, patterns.length); i++) {
+          var name = 'abs_' + Object.keys(this.library).length;
+          this.createAbstraction(patterns[i].pattern, name);
+        }
+        for (var c = 0; c < corpus.length; c++) {
+          corpus[c] = this.compress(corpus[c]);
+        }
+      }
+      return { library: this.library, compressionRatio: this.compressionRatio };
+
+  - name: expand
+    params: [code]
+    body: |
+      var expanded = code;
+      for (var name in this.library) {
+        var regex = new RegExp(name + '\\(\\)', 'g');
+        expanded = expanded.replace(regex, this.library[name].pattern);
+      }
+      return expanded;
+
+  - name: getStats
+    params: []
+    body: |
+      return {
+        librarySize: Object.keys(this.library).length,
+        patterns: this.patterns.length,
+        compressionRatio: this.compressionRatio.toFixed(3),
+        topAbstractions: Object.keys(this.usageCounts).sort(function(a, b) {
+          return this.usageCounts[b] - this.usageCounts[a];
+        }.bind(this)).slice(0, 5)
+      };
+
+init_params: config
+init_body: |
+  console.log('LILO: Compression-based library learning ready');
+
+behaviors:
+  - name: pattern_discovery
+    given: "Code corpus"
+    when: "findPatterns runs"
+    then: "Returns frequent n-grams sorted by savings"
+    
+  - name: abstraction_learning
+    given: "Corpus and iterations"
+    when: "learn runs"
+    then: "Builds library of reusable abstractions"

@@ -78,6 +78,20 @@ pub const TypeConstraint = struct {
     constraint: []const u8, // e.g., "> 0", "% 2 == 0", "is_prime"
 };
 
+/// State variable for JS modules
+pub const StateVar = struct {
+    name: []const u8,
+    type_name: []const u8,
+    default_value: []const u8,
+};
+
+/// Method definition for JS modules
+pub const Method = struct {
+    name: []const u8,
+    params: []const u8,
+    body: []const u8,
+};
+
 pub const Spec = struct {
     name: []const u8,
     version: []const u8,
@@ -92,6 +106,15 @@ pub const Spec = struct {
     creation_pattern: ?CreationPattern,
     transformers: []Transformer,
     test_generation: ?TestGeneration,
+    // JS Module fields
+    source: ?[]const u8, // arXiv reference
+    pas_patterns: ?[]const u8, // PAS patterns applied
+    benefit: ?[]const u8, // Practical benefit
+    emoji: ?[]const u8, // Module emoji
+    keyboard_shortcut: ?[]const u8, // Keyboard shortcut
+    state: ?[]StateVar, // State variables
+    methods: ?[]Method, // Methods
+    init_body: ?[]const u8, // Init function body
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *const Spec) void {
@@ -111,6 +134,12 @@ pub const Spec = struct {
         self.allocator.free(self.transformers);
         if (self.test_generation) |tg| {
             self.allocator.free(tg.stress_limits);
+        }
+        if (self.state) |s| {
+            self.allocator.free(s);
+        }
+        if (self.methods) |m| {
+            self.allocator.free(m);
         }
     }
 
@@ -200,6 +229,15 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) ParseError!Spec 
         .creation_pattern = null,
         .transformers = &[_]Transformer{},
         .test_generation = null,
+        // JS Module fields
+        .source = null,
+        .pas_patterns = null,
+        .benefit = null,
+        .emoji = null,
+        .keyboard_shortcut = null,
+        .state = null,
+        .methods = null,
+        .init_body = null,
         .allocator = allocator,
     };
 
@@ -303,6 +341,16 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) ParseError!Spec 
                     spec.module = extractValue(trimmed);
                 } else if (std.mem.startsWith(u8, trimmed, "description:")) {
                     spec.description = extractValue(trimmed);
+                } else if (std.mem.startsWith(u8, trimmed, "source:")) {
+                    spec.source = extractValue(trimmed);
+                } else if (std.mem.startsWith(u8, trimmed, "pas_patterns:")) {
+                    spec.pas_patterns = extractValue(trimmed);
+                } else if (std.mem.startsWith(u8, trimmed, "benefit:")) {
+                    spec.benefit = extractValue(trimmed);
+                } else if (std.mem.startsWith(u8, trimmed, "emoji:")) {
+                    spec.emoji = extractValue(trimmed);
+                } else if (std.mem.startsWith(u8, trimmed, "keyboard_shortcut:")) {
+                    spec.keyboard_shortcut = extractValue(trimmed);
                 }
             },
             .Behaviors, .BehaviorItem => {

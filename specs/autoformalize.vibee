@@ -1,0 +1,135 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# AUTOFORMALIZE - Natural Language to Formal Specification
+# ═══════════════════════════════════════════════════════════════════════════
+# Source: arXiv:2205.12615, arXiv:2406.14408
+# PAS Patterns: MLS, ALG, D&C
+# Benefit: 25.3% → 35.2% proof rate, automatic formalization
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: Autoformalize
+version: "1.0.0"
+language: 999
+module: autoformalize
+
+description: "Convert natural language to formal specifications"
+source: "arXiv:2205.12615"
+pas_patterns: [MLS, ALG, D&C]
+benefit: "Automatic formalization of requirements"
+emoji: "📝"
+keyboard_shortcut: ")"
+
+creation_pattern:
+  source: NaturalLanguage
+  transformer: Formalizer
+  result: FormalSpec
+
+state:
+  - name: vocabulary
+    type: object
+    default: "{}"
+  - name: templates
+    type: array
+    default: "[]"
+  - name: formalizations
+    type: array
+    default: "[]"
+
+methods:
+  - name: addTemplate
+    params: [pattern, formal]
+    body: |
+      this.templates.push({ pattern: pattern, formal: formal });
+
+  - name: tokenize
+    params: [text]
+    body: |
+      return text.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/);
+
+  - name: matchTemplate
+    params: [tokens]
+    body: |
+      for (var i = 0; i < this.templates.length; i++) {
+        var pattern = this.templates[i].pattern;
+        var patternTokens = this.tokenize(pattern);
+        var bindings = {};
+        var match = true;
+        var ti = 0;
+        for (var pi = 0; pi < patternTokens.length && match; pi++) {
+          if (patternTokens[pi].startsWith('$')) {
+            var varName = patternTokens[pi].slice(1);
+            if (ti < tokens.length) {
+              bindings[varName] = tokens[ti];
+              ti++;
+            } else {
+              match = false;
+            }
+          } else if (ti < tokens.length && patternTokens[pi] === tokens[ti]) {
+            ti++;
+          } else {
+            match = false;
+          }
+        }
+        if (match) {
+          return { template: this.templates[i], bindings: bindings };
+        }
+      }
+      return null;
+
+  - name: formalize
+    params: [text]
+    body: |
+      var tokens = this.tokenize(text);
+      var match = this.matchTemplate(tokens);
+      if (match) {
+        var formal = match.template.formal;
+        for (var v in match.bindings) {
+          formal = formal.replace(new RegExp('\\$' + v, 'g'), match.bindings[v]);
+        }
+        this.formalizations.push({ input: text, output: formal });
+        return formal;
+      }
+      var fallback = { type: 'predicate', name: tokens[0] || 'unknown', args: tokens.slice(1) };
+      this.formalizations.push({ input: text, output: fallback });
+      return fallback;
+
+  - name: batchFormalize
+    params: [texts]
+    body: |
+      var results = [];
+      for (var i = 0; i < texts.length; i++) {
+        results.push(this.formalize(texts[i]));
+      }
+      return results;
+
+  - name: getStats
+    params: []
+    body: |
+      var templateMatches = 0;
+      for (var i = 0; i < this.formalizations.length; i++) {
+        if (typeof this.formalizations[i].output === 'string') {
+          templateMatches++;
+        }
+      }
+      return {
+        templates: this.templates.length,
+        formalizations: this.formalizations.length,
+        matchRate: (templateMatches / Math.max(1, this.formalizations.length) * 100).toFixed(1) + '%'
+      };
+
+init_params: config
+init_body: |
+  this.addTemplate('$x is greater than $y', 'forall $x $y: $x > $y');
+  this.addTemplate('$x equals $y', '$x = $y');
+  this.addTemplate('for all $x $p', 'forall $x: $p');
+  this.addTemplate('there exists $x such that $p', 'exists $x: $p');
+  this.addTemplate('if $p then $q', '$p => $q');
+  this.addTemplate('$x and $y', '$x ∧ $y');
+  this.addTemplate('$x or $y', '$x ∨ $y');
+  this.addTemplate('not $p', '¬$p');
+  console.log('Autoformalize: ' + this.templates.length + ' templates loaded');
+
+behaviors:
+  - name: template_matching
+    given: "Natural language statement"
+    when: "formalize runs"
+    then: "Returns formal specification"

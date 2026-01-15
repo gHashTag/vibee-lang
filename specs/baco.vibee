@@ -1,0 +1,131 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# BACO - Bayesian Compiler Optimization
+# ═══════════════════════════════════════════════════════════════════════════
+# Source: arXiv:2212.11142
+# PAS Patterns: PRB, PRE
+# Benefit: 1.36-1.56x faster code, 2.9-3.9x faster to expert performance
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: BaCO
+version: "1.0.0"
+language: 999
+module: baco
+
+description: "Bayesian Compiler Optimization with Gaussian Process"
+source: "arXiv:2212.11142"
+pas_patterns: [PRB, PRE]
+benefit: "1.36-1.56x faster code with tiny search budget"
+emoji: "📈"
+keyboard_shortcut: "@"
+
+creation_pattern:
+  source: ParameterSpace
+  transformer: BayesianOptimizer
+  result: OptimalParameters
+
+state:
+  - name: observations
+    type: array
+    default: "[]"
+  - name: bestConfig
+    type: object
+    default: "null"
+  - name: bestScore
+    type: number
+    default: "-Infinity"
+  - name: lengthScale
+    type: number
+    default: "1.0"
+  - name: noiseVar
+    type: number
+    default: "0.01"
+
+methods:
+  - name: kernel
+    params: [x1, x2]
+    body: |
+      var dist = 0;
+      for (var i = 0; i < x1.length; i++) {
+        var d = (x1[i] - x2[i]) / this.lengthScale;
+        dist += d * d;
+      }
+      return Math.exp(-0.5 * dist);
+
+  - name: predict
+    params: [x]
+    body: |
+      if (this.observations.length === 0) {
+        return { mean: 0, var: 1 };
+      }
+      var k = [];
+      for (var i = 0; i < this.observations.length; i++) {
+        k.push(this.kernel(x, this.observations[i].x));
+      }
+      var mean = 0;
+      var kSum = 0;
+      for (var i = 0; i < k.length; i++) {
+        mean += k[i] * this.observations[i].y;
+        kSum += k[i];
+      }
+      mean = kSum > 0 ? mean / kSum : 0;
+      var variance = 1 - kSum / (this.observations.length + 1);
+      return { mean: mean, var: Math.max(0.01, variance) };
+
+  - name: acquisition
+    params: [x, beta]
+    body: |
+      var pred = this.predict(x);
+      return pred.mean + (beta || 2.0) * Math.sqrt(pred.var);
+
+  - name: observe
+    params: [x, y]
+    body: |
+      this.observations.push({ x: x, y: y });
+      if (y > this.bestScore) {
+        this.bestScore = y;
+        this.bestConfig = x;
+      }
+
+  - name: suggest
+    params: [bounds, nCandidates]
+    body: |
+      var best = null;
+      var bestAcq = -Infinity;
+      for (var i = 0; i < (nCandidates || 100); i++) {
+        var x = [];
+        for (var j = 0; j < bounds.length; j++) {
+          x.push(bounds[j][0] + Math.random() * (bounds[j][1] - bounds[j][0]));
+        }
+        var acq = this.acquisition(x);
+        if (acq > bestAcq) {
+          bestAcq = acq;
+          best = x;
+        }
+      }
+      return best;
+
+  - name: optimize
+    params: [objective, bounds, budget]
+    body: |
+      for (var i = 0; i < (budget || 20); i++) {
+        var x = this.suggest(bounds);
+        var y = objective(x);
+        this.observe(x, y);
+      }
+      return { config: this.bestConfig, score: this.bestScore };
+
+init_params: config
+init_body: |
+  if (config && config.lengthScale) this.lengthScale = config.lengthScale;
+  console.log('BaCO: Gaussian Process ready, lengthScale=' + this.lengthScale);
+
+behaviors:
+  - name: bayesian_optimization
+    given: "Parameter bounds and objective function"
+    when: "optimize runs with budget=20"
+    then: "Returns near-optimal config"
+    
+  - name: exploration_exploitation
+    given: "UCB acquisition function"
+    when: "suggest runs"
+    then: "Balances exploration and exploitation"

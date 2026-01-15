@@ -1,0 +1,172 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# E-GRAPH EQUALITY SATURATION
+# ═══════════════════════════════════════════════════════════════════════════
+# Source: arXiv:2505.09363, arXiv:2501.02413
+# PAS Patterns: ALG, D&C
+# Benefit: Globally optimal transformations, 2-5x better optimization
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: EGraphSat
+version: "1.0.0"
+language: 999
+module: egraph_sat
+
+description: "E-graph equality saturation for optimal code transformations"
+source: "arXiv:2505.09363"
+pas_patterns: [ALG, D&C]
+benefit: "Globally optimal transformations"
+emoji: "🔄"
+keyboard_shortcut: "#"
+
+creation_pattern:
+  source: IRExpression
+  transformer: EqualitySaturation
+  result: OptimalExpression
+
+state:
+  - name: classes
+    type: object
+    default: "{}"
+  - name: nodes
+    type: array
+    default: "[]"
+  - name: unionFind
+    type: object
+    default: "{}"
+  - name: rules
+    type: array
+    default: "[]"
+  - name: iterations
+    type: number
+    default: "0"
+
+methods:
+  - name: find
+    params: [id]
+    body: |
+      if (!this.unionFind[id]) this.unionFind[id] = id;
+      if (this.unionFind[id] !== id) {
+        this.unionFind[id] = this.find(this.unionFind[id]);
+      }
+      return this.unionFind[id];
+
+  - name: union
+    params: [id1, id2]
+    body: |
+      var root1 = this.find(id1);
+      var root2 = this.find(id2);
+      if (root1 !== root2) {
+        this.unionFind[root1] = root2;
+        return true;
+      }
+      return false;
+
+  - name: addNode
+    params: [op, children]
+    body: |
+      var id = this.nodes.length;
+      this.nodes.push({ op: op, children: children || [], id: id });
+      this.unionFind[id] = id;
+      return id;
+
+  - name: addRule
+    params: [name, pattern, replacement]
+    body: |
+      this.rules.push({ name: name, pattern: pattern, replacement: replacement });
+
+  - name: matchPattern
+    params: [nodeId, pattern]
+    body: |
+      var node = this.nodes[nodeId];
+      if (!node) return null;
+      if (pattern.type === 'var') return { [pattern.name]: nodeId };
+      if (pattern.op !== node.op) return null;
+      if (pattern.children.length !== node.children.length) return null;
+      var bindings = {};
+      for (var i = 0; i < pattern.children.length; i++) {
+        var childBindings = this.matchPattern(node.children[i], pattern.children[i]);
+        if (!childBindings) return null;
+        for (var k in childBindings) bindings[k] = childBindings[k];
+      }
+      return bindings;
+
+  - name: applyRules
+    params: []
+    body: |
+      var changed = false;
+      for (var r = 0; r < this.rules.length; r++) {
+        var rule = this.rules[r];
+        for (var n = 0; n < this.nodes.length; n++) {
+          var bindings = this.matchPattern(n, rule.pattern);
+          if (bindings) {
+            var newId = this.instantiate(rule.replacement, bindings);
+            if (this.union(n, newId)) changed = true;
+          }
+        }
+      }
+      return changed;
+
+  - name: instantiate
+    params: [template, bindings]
+    body: |
+      if (template.type === 'var') return bindings[template.name];
+      var children = [];
+      for (var i = 0; i < (template.children || []).length; i++) {
+        children.push(this.instantiate(template.children[i], bindings));
+      }
+      return this.addNode(template.op, children);
+
+  - name: saturate
+    params: [maxIter]
+    body: |
+      for (var i = 0; i < (maxIter || 10); i++) {
+        this.iterations++;
+        if (!this.applyRules()) break;
+      }
+      return this.iterations;
+
+  - name: extract
+    params: [rootId]
+    body: |
+      var root = this.find(rootId);
+      var best = null;
+      var bestCost = Infinity;
+      for (var i = 0; i < this.nodes.length; i++) {
+        if (this.find(i) === root) {
+          var cost = this.cost(i);
+          if (cost < bestCost) {
+            bestCost = cost;
+            best = i;
+          }
+        }
+      }
+      return { nodeId: best, cost: bestCost };
+
+  - name: cost
+    params: [nodeId]
+    body: |
+      var node = this.nodes[nodeId];
+      if (!node) return Infinity;
+      var c = 1;
+      for (var i = 0; i < node.children.length; i++) {
+        c += this.cost(node.children[i]);
+      }
+      return c;
+
+init_params: config
+init_body: |
+  this.addRule('add_zero', { op: '+', children: [{ type: 'var', name: 'x' }, { op: 'const', children: [], value: 0 }] }, { type: 'var', name: 'x' });
+  this.addRule('mul_one', { op: '*', children: [{ type: 'var', name: 'x' }, { op: 'const', children: [], value: 1 }] }, { type: 'var', name: 'x' });
+  this.addRule('mul_zero', { op: '*', children: [{ type: 'var', name: 'x' }, { op: 'const', children: [], value: 0 }] }, { op: 'const', children: [], value: 0 });
+  console.log('EGraphSat: ' + this.rules.length + ' rewrite rules loaded');
+
+behaviors:
+  - name: equality_saturation
+    given: "Expression with redundant operations"
+    when: "saturate runs"
+    then: "All equivalent forms discovered"
+    
+  - name: optimal_extraction
+    given: "Saturated e-graph"
+    when: "extract runs"
+    then: "Returns minimum cost expression"

@@ -1,0 +1,135 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# STOP - Self-Taught Optimizer
+# ═══════════════════════════════════════════════════════════════════════════
+# Source: arXiv:2310.02304
+# PAS Patterns: MLS, PRE
+# Benefit: Recursive self-improvement of optimization code
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: STOPOptimizer
+version: "1.0.0"
+language: 999
+module: stop_optimizer
+
+description: "Self-taught optimizer with recursive self-improvement"
+source: "arXiv:2310.02304"
+pas_patterns: [MLS, PRE]
+benefit: "Code improves itself through scaffolded self-improvement"
+emoji: "🔄"
+keyboard_shortcut: "&"
+
+creation_pattern:
+  source: OptimizerCode
+  transformer: SelfImprovement
+  result: ImprovedOptimizer
+
+state:
+  - name: optimizerCode
+    type: string
+    default: "''"
+  - name: history
+    type: array
+    default: "[]"
+  - name: generation
+    type: number
+    default: "0"
+  - name: bestScore
+    type: number
+    default: "0"
+  - name: scaffolds
+    type: array
+    default: "[]"
+
+methods:
+  - name: evaluate
+    params: [code, problems]
+    body: |
+      var score = 0;
+      for (var i = 0; i < problems.length; i++) {
+        try {
+          var fn = new Function('x', code + '; return optimize(x);');
+          var result = fn(problems[i].input);
+          var error = Math.abs(result - problems[i].target);
+          score += 1 / (1 + error);
+        } catch (e) {
+          score += 0;
+        }
+      }
+      return score / problems.length;
+
+  - name: mutate
+    params: [code]
+    body: |
+      var mutations = [
+        function(c) { return c.replace(/\+/g, '-'); },
+        function(c) { return c.replace(/\*/g, '+'); },
+        function(c) { return c.replace(/0\.1/g, '0.01'); },
+        function(c) { return c.replace(/10/g, '100'); },
+        function(c) { return c + '\n// improved'; }
+      ];
+      var m = mutations[Math.floor(Math.random() * mutations.length)];
+      return m(code);
+
+  - name: crossover
+    params: [code1, code2]
+    body: |
+      var lines1 = code1.split('\n');
+      var lines2 = code2.split('\n');
+      var result = [];
+      var maxLen = Math.max(lines1.length, lines2.length);
+      for (var i = 0; i < maxLen; i++) {
+        if (Math.random() < 0.5 && i < lines1.length) {
+          result.push(lines1[i]);
+        } else if (i < lines2.length) {
+          result.push(lines2[i]);
+        }
+      }
+      return result.join('\n');
+
+  - name: improve
+    params: [problems, iterations]
+    body: |
+      var population = [this.optimizerCode];
+      for (var i = 0; i < 10; i++) {
+        population.push(this.mutate(this.optimizerCode));
+      }
+      for (var iter = 0; iter < (iterations || 10); iter++) {
+        var scored = [];
+        for (var p = 0; p < population.length; p++) {
+          scored.push({ code: population[p], score: this.evaluate(population[p], problems) });
+        }
+        scored.sort(function(a, b) { return b.score - a.score; });
+        if (scored[0].score > this.bestScore) {
+          this.bestScore = scored[0].score;
+          this.optimizerCode = scored[0].code;
+          this.generation++;
+          this.history.push({ gen: this.generation, score: this.bestScore });
+        }
+        var newPop = [scored[0].code, scored[1].code];
+        while (newPop.length < 10) {
+          if (Math.random() < 0.7) {
+            newPop.push(this.mutate(scored[Math.floor(Math.random() * 3)].code));
+          } else {
+            newPop.push(this.crossover(scored[0].code, scored[1].code));
+          }
+        }
+        population = newPop;
+      }
+      return { code: this.optimizerCode, score: this.bestScore, generation: this.generation };
+
+  - name: scaffold
+    params: [hint]
+    body: |
+      this.scaffolds.push(hint);
+      this.optimizerCode = hint + '\n' + this.optimizerCode;
+
+init_params: config
+init_body: |
+  this.optimizerCode = 'function optimize(x) { return x * 0.9; }';
+  console.log('STOP: Self-taught optimizer ready for recursive improvement');
+
+behaviors:
+  - name: self_improvement
+    given: "Initial optimizer code"
+    when: "improve runs with problems"
+    then: "Returns improved optimizer through evolution"

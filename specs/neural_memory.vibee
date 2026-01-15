@@ -1,0 +1,108 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# NEURAL MEMORY MODULE
+# ═══════════════════════════════════════════════════════════════════════════
+# Auto-generated module specification for vibeec-js compiler
+
+name: NeuralMemory
+description: Differentiable memory with attention-based read/write
+source: arXiv:1410.5401
+pas_patterns: [PRE, MLS, ALG]
+benefit: External memory for neural networks
+emoji: 🧠
+keyboard_shortcut: $
+
+state:
+  - name: memory
+    type: array
+    default: []
+  - name: memorySize
+    type: number
+    default: 128
+  - name: vectorDim
+    type: number
+    default: 64
+  - name: readHead
+    type: array
+    default: []
+  - name: writeHead
+    type: array
+    default: []
+
+methods:
+  - name: allocate
+    params: [size, dim]
+    body: |
+      this.memorySize = size || 128;
+      this.vectorDim = dim || 64;
+      this.memory = [];
+      for (var i = 0; i < this.memorySize; i++) {
+        this.memory[i] = new Array(this.vectorDim).fill(0);
+      }
+      this.readHead = new Array(this.memorySize).fill(1 / this.memorySize);
+      this.writeHead = new Array(this.memorySize).fill(1 / this.memorySize);
+      return this;
+
+  - name: read
+    params: [weights]
+    body: |
+      weights = weights || this.readHead;
+      var result = new Array(this.vectorDim).fill(0);
+      for (var i = 0; i < this.memorySize; i++) {
+        for (var j = 0; j < this.vectorDim; j++) {
+          result[j] += weights[i] * this.memory[i][j];
+        }
+      }
+      return result;
+
+  - name: write
+    params: [weights, eraseVec, addVec]
+    body: |
+      weights = weights || this.writeHead;
+      for (var i = 0; i < this.memorySize; i++) {
+        for (var j = 0; j < this.vectorDim; j++) {
+          this.memory[i][j] *= (1 - weights[i] * eraseVec[j]);
+          this.memory[i][j] += weights[i] * addVec[j];
+        }
+      }
+      return this;
+
+  - name: contentAddress
+    params: [key, beta]
+    body: |
+      beta = beta || 1.0;
+      var weights = new Array(this.memorySize);
+      var sum = 0;
+      for (var i = 0; i < this.memorySize; i++) {
+        var dot = 0, normK = 0, normM = 0;
+        for (var j = 0; j < this.vectorDim; j++) {
+          dot += key[j] * this.memory[i][j];
+          normK += key[j] * key[j];
+          normM += this.memory[i][j] * this.memory[i][j];
+        }
+        var sim = dot / (Math.sqrt(normK * normM) + 1e-8);
+        weights[i] = Math.exp(beta * sim);
+        sum += weights[i];
+      }
+      for (var i = 0; i < this.memorySize; i++) {
+        weights[i] /= sum;
+      }
+      return weights;
+
+  - name: getStats
+    params: []
+    body: |
+      var used = 0;
+      for (var i = 0; i < this.memorySize; i++) {
+        var norm = 0;
+        for (var j = 0; j < this.vectorDim; j++) {
+          norm += this.memory[i][j] * this.memory[i][j];
+        }
+        if (norm > 0.01) used++;
+      }
+      return { size: this.memorySize, dim: this.vectorDim, used: used };
+
+init_params: config
+init_body: |
+  var size = config && config.size || 128;
+  var dim = config && config.dim || 64;
+  this.allocate(size, dim);

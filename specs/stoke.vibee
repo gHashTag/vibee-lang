@@ -1,0 +1,156 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# STOKE - Stochastic Superoptimization
+# ═══════════════════════════════════════════════════════════════════════════
+# Source: arXiv:1211.0557, arXiv:1612.01094
+# PAS Patterns: PRB, MLS
+# Benefit: Find globally optimal code, 10-30% faster generated code
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: STOKE
+version: "1.0.0"
+language: 999
+module: stoke
+
+description: "MCMC-based stochastic superoptimization"
+source: "arXiv:1211.0557"
+pas_patterns: [PRB, MLS]
+benefit: "10-30% faster code via global search"
+emoji: "🎲"
+keyboard_shortcut: "%"
+
+creation_pattern:
+  source: TargetProgram
+  transformer: MCMCSampler
+  result: OptimalProgram
+
+state:
+  - name: currentProgram
+    type: array
+    default: "[]"
+  - name: bestProgram
+    type: array
+    default: "[]"
+  - name: bestCost
+    type: number
+    default: "Infinity"
+  - name: temperature
+    type: number
+    default: "1.0"
+  - name: instructions
+    type: array
+    default: "['add', 'sub', 'mul', 'mov', 'xor', 'and', 'or', 'shl', 'shr', 'nop']"
+  - name: iterations
+    type: number
+    default: "0"
+
+methods:
+  - name: randomInstruction
+    params: []
+    body: |
+      return this.instructions[Math.floor(Math.random() * this.instructions.length)];
+
+  - name: mutate
+    params: [program]
+    body: |
+      var newProg = program.slice();
+      var mutation = Math.floor(Math.random() * 4);
+      var pos = Math.floor(Math.random() * Math.max(1, newProg.length));
+      if (mutation === 0 && newProg.length > 1) {
+        newProg.splice(pos, 1);
+      } else if (mutation === 1) {
+        newProg.splice(pos, 0, this.randomInstruction());
+      } else if (mutation === 2 && newProg.length > 0) {
+        newProg[pos % newProg.length] = this.randomInstruction();
+      } else if (mutation === 3 && newProg.length > 1) {
+        var pos2 = Math.floor(Math.random() * newProg.length);
+        var tmp = newProg[pos % newProg.length];
+        newProg[pos % newProg.length] = newProg[pos2];
+        newProg[pos2] = tmp;
+      }
+      return newProg;
+
+  - name: cost
+    params: [program, target]
+    body: |
+      var correctness = 0;
+      var performance = program.length;
+      for (var i = 0; i < Math.min(program.length, (target || []).length); i++) {
+        if (program[i] === target[i]) correctness++;
+      }
+      var correctnessWeight = 1000;
+      return correctnessWeight * (1 - correctness / Math.max(1, (target || []).length)) + performance;
+
+  - name: accept
+    params: [oldCost, newCost]
+    body: |
+      if (newCost < oldCost) return true;
+      var delta = newCost - oldCost;
+      var prob = Math.exp(-delta / this.temperature);
+      return Math.random() < prob;
+
+  - name: step
+    params: [target]
+    body: |
+      var candidate = this.mutate(this.currentProgram);
+      var candidateCost = this.cost(candidate, target);
+      var currentCost = this.cost(this.currentProgram, target);
+      if (this.accept(currentCost, candidateCost)) {
+        this.currentProgram = candidate;
+        if (candidateCost < this.bestCost) {
+          this.bestCost = candidateCost;
+          this.bestProgram = candidate.slice();
+        }
+      }
+      this.iterations++;
+      this.temperature *= 0.999;
+
+  - name: optimize
+    params: [target, maxIter]
+    body: |
+      this.currentProgram = target.slice();
+      this.bestProgram = target.slice();
+      this.bestCost = this.cost(target, target);
+      this.temperature = 1.0;
+      for (var i = 0; i < (maxIter || 1000); i++) {
+        this.step(target);
+        if (this.bestCost < 1) break;
+      }
+      return { program: this.bestProgram, cost: this.bestCost, iterations: this.iterations };
+
+  - name: synthesize
+    params: [spec, maxIter]
+    body: |
+      this.currentProgram = [];
+      this.bestProgram = [];
+      this.bestCost = Infinity;
+      this.temperature = 2.0;
+      for (var i = 0; i < (maxIter || 5000); i++) {
+        var candidate = this.mutate(this.currentProgram);
+        var candidateCost = spec.evaluate ? spec.evaluate(candidate) : candidate.length;
+        if (this.accept(this.cost(this.currentProgram, []), candidateCost)) {
+          this.currentProgram = candidate;
+          if (candidateCost < this.bestCost) {
+            this.bestCost = candidateCost;
+            this.bestProgram = candidate.slice();
+          }
+        }
+        this.iterations++;
+        this.temperature *= 0.9995;
+      }
+      return { program: this.bestProgram, cost: this.bestCost };
+
+init_params: config
+init_body: |
+  if (config && config.instructions) this.instructions = config.instructions;
+  console.log('STOKE: MCMC sampler ready, ' + this.instructions.length + ' instructions');
+
+behaviors:
+  - name: mcmc_search
+    given: "Target program"
+    when: "optimize runs"
+    then: "Returns optimized program via MCMC"
+    
+  - name: program_synthesis
+    given: "Specification"
+    when: "synthesize runs"
+    then: "Generates program from scratch"
