@@ -350,11 +350,48 @@ VIBEE-2026-001
 
 ---
 
+## ГОТОВЫЕ ФАЙЛЫ
+
+### PDF документы
+
+| Файл | Язык | Страниц | Размер |
+|------|------|---------|--------|
+| `SACRED_FORMULA_SIMPLE_ARXIV.pdf` | English | 3 | 164 KB |
+| `SACRED_FORMULA_EN_EXTENDED.pdf` | English | 2 | 164 KB |
+| `SACRED_FORMULA_RU.pdf` | **Русский** | 6 | 244 KB |
+
+### LaTeX исходники
+
+| Файл | Описание |
+|------|----------|
+| `SACRED_FORMULA_SIMPLE_ARXIV.tex` | Краткая версия для arXiv |
+| `SACRED_FORMULA_EN_EXTENDED.tex` | Расширенная английская |
+| `SACRED_FORMULA_RU.tex` | Полная русская версия |
+
+---
+
+## НАУЧНЫЕ ИСТОЧНИКИ
+
+### Ключевые работы на arXiv
+
+| Автор | Год | arXiv | Тема |
+|-------|-----|-------|------|
+| Y. Koide | 1983 | — | Формула масс лептонов Q=2/3 |
+| R. Heyrovska | 2005 | physics/0509207 | α и золотое сечение |
+| J. Ciborowski | 2025 | 2508.00030 | Bi-constructible pattern |
+| R.D. Smith | 2013 | 1307.5251 | Feigenbaum и φ |
+| Y. Sumino | 2009 | 0903.3640 | Family gauge symmetry |
+| A.M. Selvam | 1998 | chao-dyn/9806002 | Fractal spacetime |
+
+---
+
 ## ЗАКЛЮЧЕНИЕ
 
 Упрощённая формула **V = n × 3^k × π^m × φ^p** представляет минимальный математический фреймворк. Серия из 9 статей систематически исследует её применение к физическим константам.
 
 **Первый шаг**: Подать `SACRED_FORMULA_SIMPLE_ARXIV.tex` в категорию `math-ph`.
+
+**Для ФИАН**: Использовать `SACRED_FORMULA_RU.pdf` (русская версия).
 
 ---
 
