@@ -1,0 +1,129 @@
+# HumanMeshRecovery - 4D Human-Scene Reconstruction
+# Source: arXiv:2510.06219 - Human3R, arXiv:2503.06089 - Fish2Mesh
+# PAS Analysis: D&C (multi-person), MLS (SMPL-X regression), PRE (pose priors)
+
+name: human_mesh_recovery
+version: "1.0.0"
+language: 999
+module: ⲎⲨⲘⲀⲚ_ⲘⲈⲤⲎ_ⲢⲈⲔⲞⲂⲈⲢⲨ
+
+pas_analysis:
+  source_paper: "arXiv:2510.06219, arXiv:2503.06089"
+  current_complexity: "O(n * p) where p = persons"
+  theoretical_lower_bound: "O(n) single-pass"
+  gap: "Factor of p via unified model"
+  patterns_applicable:
+    - symbol: D&C
+      name: "Divide-and-Conquer"
+      success_rate: 0.31
+      rationale: "Multi-person decomposition"
+    - symbol: MLS
+      name: "ML-Guided Search"
+      success_rate: 0.06
+      rationale: "SMPL-X parameter regression"
+    - symbol: PRE
+      name: "Precomputation"
+      success_rate: 0.16
+      rationale: "Pre-trained pose priors"
+    - symbol: ALG
+      name: "Algebraic Reorganization"
+      success_rate: 0.22
+      rationale: "Visual prompt tuning"
+  confidence: 0.77
+  predicted_improvement: "15 FPS, 8GB, unified model"
+
+creation_pattern:
+  source: MonocularVideo
+  transformer: Human3RModel
+  result: SMPLX_Mesh
+
+behaviors:
+  - name: global_human_motion
+    given: "Monocular video"
+    when: "Apply Human3R"
+    then: "Recover global SMPL-X bodies"
+    test_cases:
+      - name: emdb_global
+        input:
+          video_length: 100
+          persons: 3
+        expected:
+          mpjpe: 85  # mm
+          pa_mpjpe: 55  # mm
+
+  - name: egocentric_mesh
+    given: "Fisheye egocentric video"
+    when: "Apply Fish2Mesh"
+    then: "Recover self body mesh"
+    test_cases:
+      - name: ego_body
+        input:
+          camera: "fisheye"
+          fov: 180
+        expected:
+          mpjpe: 95  # mm
+          self_occlusion_handled: true
+
+  - name: scene_reconstruction
+    given: "Video with humans"
+    when: "Joint human-scene recovery"
+    then: "Reconstruct 4D scene"
+    test_cases:
+      - name: human_scene_4d
+        input:
+          frames: 100
+          scene_type: "indoor"
+        expected:
+          depth_accuracy: 0.1  # meters
+          human_scene_consistent: true
+
+  - name: real_time_tracking
+    given: "Live video stream"
+    when: "Apply unified model"
+    then: "Track multiple humans"
+    test_cases:
+      - name: online_tracking
+        input:
+          fps: 30
+          persons: 5
+        expected:
+          output_fps: 15
+          memory_gb: 8
+
+algorithms:
+  human3r:
+    base: "CUT3R (4D reconstruction)"
+    tuning: "Visual prompt tuning"
+    output: "SMPL-X + scene + camera"
+    unified: true
+    
+  smplx:
+    body_joints: 22
+    hand_joints: 30
+    face_joints: 51
+    shape_params: 10
+    expression_params: 10
+    
+  fish2mesh:
+    input: "Fisheye egocentric"
+    embedding: "Ego-specific position"
+    backbone: "Swin Transformer"
+
+body_models:
+  smpl:
+    joints: 24
+    vertices: 6890
+    faces: 13776
+  smplx:
+    joints: 55
+    vertices: 10475
+    faces: 20908
+    hands: true
+    face: true
+
+metrics:
+  mpjpe: 85
+  pa_mpjpe: 55
+  fps: 15
+  memory_gb: 8
+  persons_max: 10
