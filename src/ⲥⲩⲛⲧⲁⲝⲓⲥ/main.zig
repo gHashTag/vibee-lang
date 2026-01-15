@@ -162,6 +162,57 @@ fn printUsage() !void {
 }
 
 fn generateCode(allocator: std.mem.Allocator, spec_file: []const u8, output_dir: []const u8) !void {
+    // ═══════════════════════════════════════════════════════════════════════════
+    // АРХИТЕКТУРНЫЙ ЗАПРЕТ: Прямое создание файлов в 999/ ЗАПРЕЩЕНО!
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Правильный путь: specs/*.vibee → vibeec → 999/*.999
+    // Структура 999/: 3 папки → 9 подпапок → файлы .999
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    // Проверка: источник ДОЛЖЕН быть из specs/
+    if (!std.mem.containsAtLeast(u8, spec_file, 1, "specs/") and 
+        !std.mem.containsAtLeast(u8, spec_file, 1, "specs\\")) {
+        std.debug.print("\n", .{});
+        std.debug.print("╔═══════════════════════════════════════════════════════════════╗\n", .{});
+        std.debug.print("║  ⛔ ОШИБКА АРХИТЕКТУРЫ VIBEE                                  ║\n", .{});
+        std.debug.print("╠═══════════════════════════════════════════════════════════════╣\n", .{});
+        std.debug.print("║  Источник должен быть из папки specs/                         ║\n", .{});
+        std.debug.print("║                                                               ║\n", .{});
+        std.debug.print("║  Правильно:  vibeec gen specs/module.vibee                    ║\n", .{});
+        std.debug.print("║  Неправильно: vibeec gen other/module.vibee                   ║\n", .{});
+        std.debug.print("║                                                               ║\n", .{});
+        std.debug.print("║  Архитектура: specs/*.vibee → vibeec → 999/*.999              ║\n", .{});
+        std.debug.print("╚═══════════════════════════════════════════════════════════════╝\n", .{});
+        return error.ArchitectureViolation;
+    }
+    
+    // Проверка: выход ДОЛЖЕН быть в 999/ с правильной структурой 3→9→файлы
+    if (std.mem.containsAtLeast(u8, output_dir, 1, "999/") or 
+        std.mem.containsAtLeast(u8, output_dir, 1, "999\\")) {
+        // Проверяем глубину: должно быть минимум 999/папка1/папка2/
+        var depth: u32 = 0;
+        var it = std.mem.splitScalar(u8, output_dir, '/');
+        while (it.next()) |part| {
+            if (part.len > 0) depth += 1;
+        }
+        
+        if (depth < 3) {
+            std.debug.print("\n", .{});
+            std.debug.print("╔═══════════════════════════════════════════════════════════════╗\n", .{});
+            std.debug.print("║  ⛔ ОШИБКА СТРУКТУРЫ 999/                                     ║\n", .{});
+            std.debug.print("╠═══════════════════════════════════════════════════════════════╣\n", .{});
+            std.debug.print("║  Структура 999/ должна быть: 3 папки → 9 подпапок → файлы     ║\n", .{});
+            std.debug.print("║                                                               ║\n", .{});
+            std.debug.print("║  Правильно:  999/ⲣⲁⲍⲩⲙ/ⲣ01_ⲡⲁⲥ/                              ║\n", .{});
+            std.debug.print("║  Неправильно: 999/ или 999/ⲣⲁⲍⲩⲙ/                             ║\n", .{});
+            std.debug.print("║                                                               ║\n", .{});
+            std.debug.print("║  3 корневые папки: ⲣⲁⲍⲩⲙ, ⲩⲁⲃⲗⲉⲛⲓⲉ, ⲩⲇⲣⲟ                     ║\n", .{});
+            std.debug.print("║  9 подпапок в каждой (всего 27 = 3³)                          ║\n", .{});
+            std.debug.print("╚═══════════════════════════════════════════════════════════════╝\n", .{});
+            return error.StructureViolation;
+        }
+    }
+    
     std.debug.print("Generating code from: {s}\n", .{spec_file});
     std.debug.print("Output directory: {s}\n", .{output_dir});
 
