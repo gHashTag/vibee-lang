@@ -158,6 +158,12 @@ pub const EGraph = struct {
         }
         self.classes.deinit();
         self.union_find.deinit();
+        
+        // Free hashcons keys (they were duplicated)
+        var key_it = self.hashcons.keyIterator();
+        while (key_it.next()) |key| {
+            self.allocator.free(key.*);
+        }
         self.hashcons.deinit();
     }
 

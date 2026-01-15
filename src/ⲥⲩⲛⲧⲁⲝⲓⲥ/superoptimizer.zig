@@ -39,7 +39,7 @@ pub const Opcode = enum {
     
     // Comparison
     cmp,
-    test,
+    tst,
     
     // Control flow
     jmp,
@@ -62,7 +62,7 @@ pub const Opcode = enum {
             .add, .sub, .neg, .inc, .dec => 1,
             .@"and", .@"or", .xor, .not => 1,
             .shl, .shr, .sar, .rol, .ror => 1,
-            .cmp, .test => 1,
+            .cmp, .tst => 1,
             .mul, .imul => 3,
             .div, .idiv => 20,
             .jmp, .je, .jne, .jl, .jle, .jg, .jge => 1,

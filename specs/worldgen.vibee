@@ -1,0 +1,592 @@
+# WorldGen - 3D World Generation from Text
+# Эволюция GEN UI: Генерация 3D миров из текстового описания
+# Author: Dmitrii Vasilev
+# Version: 1.0.0
+
+name: worldgen
+version: "1.0.0"
+language: 999
+module: ⲅⲉⲛ_ui.ⲙⲓⲣ_3d
+
+# =============================================================================
+# CREATION PATTERN
+# =============================================================================
+
+creation_pattern:
+  source: TextDescription | SketchMap | PartialWorld
+  transformer: World3DGenerator
+  result: World3DScene
+
+# =============================================================================
+# ТЕОРЕТИЧЕСКАЯ ОСНОВА
+# =============================================================================
+
+theory:
+  name: "Text-to-3D World Generation"
+  description: |
+    WorldGen генерирует полноценные 3D миры из текстового описания:
+    
+    1. Terrain Generation: ландшафт (горы, долины, реки)
+    2. Object Placement: размещение объектов (деревья, здания)
+    3. Atmosphere: освещение, погода, время суток
+    4. Navigation: пути, дороги, точки интереса
+    
+    Архитектура объединяет:
+    - Процедурную генерацию (шум Перлина, L-системы)
+    - Нейросетевую генерацию (диффузия, NeRF)
+    - Физическую симуляцию (эрозия, гравитация)
+    
+  mathematical_foundation:
+    terrain_generation: |
+      Heightmap H(x, y) = Σ_i a_i * noise(f_i * x, f_i * y)
+      
+      где:
+      - noise() - функция шума (Perlin, Simplex, Worley)
+      - a_i - амплитуда на октаве i
+      - f_i - частота на октаве i (обычно f_i = 2^i)
+      
+      Erosion simulation:
+      H'(x,y) = H(x,y) - k_e * ∇²H(x,y) * water_flow(x,y)
+      
+    object_placement: |
+      Poisson Disk Sampling для равномерного распределения:
+      P(place_object | position) = f(terrain, biome, density)
+      
+      L-системы для растительности:
+      F → F[+F]F[-F]F
+      
+    neural_generation: |
+      3D Diffusion для объектов:
+      p_θ(x_{t-1} | x_t, text) = N(μ_θ(x_t, t, text), Σ_θ)
+      
+      NeRF для детализации:
+      (σ, c) = MLP(γ(x), γ(d))
+      C(r) = ∫ T(t) * σ(r(t)) * c(r(t), d) dt
+      
+    scene_composition: |
+      Scene S = {terrain, objects, atmosphere, camera}
+      
+      Rendering equation:
+      L_o(x, ω_o) = L_e(x, ω_o) + ∫ f_r(x, ω_i, ω_o) L_i(x, ω_i) (ω_i · n) dω_i
+
+# =============================================================================
+# АРХИТЕКТУРА
+# =============================================================================
+
+architecture:
+  name: "WorldGen Pipeline"
+  
+  components:
+    # Парсер текста
+    text_parser:
+      model: "LLM-based Scene Parser"
+      output:
+        - terrain_description
+        - object_list
+        - atmosphere_params
+        - style_tags
+        
+      example_parsing:
+        input: "A mystical forest with ancient ruins, foggy morning"
+        output:
+          terrain: {type: "forest", elevation: "hilly"}
+          objects: ["ancient_ruins", "trees", "fog"]
+          atmosphere: {time: "morning", weather: "foggy"}
+          style: ["mystical", "ancient"]
+          
+    # Генератор ландшафта
+    terrain_generator:
+      methods:
+        procedural:
+          noise_types: ["perlin", "simplex", "worley", "ridged"]
+          octaves: 8
+          persistence: 0.5
+          lacunarity: 2.0
+          
+        neural:
+          model: "TerrainDiffusion"
+          conditioning: "text + sketch"
+          resolution: [1024, 1024]
+          
+        hybrid:
+          description: "Процедурная база + нейросетевая детализация"
+          
+      features:
+        - heightmap_generation
+        - biome_classification
+        - water_simulation
+        - erosion_simulation
+        
+    # Генератор объектов
+    object_generator:
+      asset_library:
+        categories:
+          - name: "vegetation"
+            items: ["tree", "bush", "grass", "flower", "mushroom"]
+          - name: "structures"
+            items: ["building", "ruins", "bridge", "tower", "wall"]
+          - name: "natural"
+            items: ["rock", "boulder", "cliff", "cave"]
+          - name: "props"
+            items: ["chest", "sign", "lamp", "bench"]
+            
+      generation_methods:
+        - name: "asset_placement"
+          description: "Размещение готовых ассетов"
+        - name: "procedural_generation"
+          description: "L-системы для растений"
+        - name: "neural_generation"
+          description: "3D диффузия для уникальных объектов"
+          
+      placement_algorithm:
+        type: "Poisson Disk + Constraint Satisfaction"
+        constraints:
+          - "no_overlap"
+          - "terrain_compatibility"
+          - "biome_rules"
+          - "density_maps"
+          
+    # Атмосфера
+    atmosphere_generator:
+      components:
+        sky:
+          model: "Procedural Sky"
+          params: ["sun_position", "cloud_coverage", "sky_color"]
+          
+        lighting:
+          types: ["directional", "ambient", "point", "spot"]
+          global_illumination: true
+          
+        weather:
+          effects: ["rain", "snow", "fog", "wind"]
+          particle_systems: true
+          
+        time_of_day:
+          presets: ["dawn", "morning", "noon", "afternoon", "dusk", "night"]
+          dynamic_transition: true
+          
+    # Рендерер
+    renderer:
+      backends:
+        - name: "WebGL"
+          target: "browser"
+          features: ["PBR", "shadows", "post_processing"]
+          
+        - name: "WebGPU"
+          target: "modern_browser"
+          features: ["ray_tracing", "compute_shaders"]
+          
+        - name: "Three.js"
+          target: "runtime.html"
+          integration: "native"
+          
+      optimization:
+        - LOD_system
+        - frustum_culling
+        - occlusion_culling
+        - instancing
+        - texture_streaming
+
+# =============================================================================
+# WORLD ELEMENTS
+# =============================================================================
+
+world_elements:
+  terrain_types:
+    - name: "ⲢⲀⲂⲚⲒⲚⲀ"
+      id: 0
+      description: "Плоская равнина"
+      heightmap_params: {amplitude: 0.1, frequency: 0.5}
+      
+    - name: "ⲬⲞⲖⲘⲨ"
+      id: 1
+      description: "Холмистая местность"
+      heightmap_params: {amplitude: 0.3, frequency: 1.0}
+      
+    - name: "ⲄⲞⲢⲨ"
+      id: 2
+      description: "Горный ландшафт"
+      heightmap_params: {amplitude: 0.8, frequency: 2.0, ridged: true}
+      
+    - name: "ⲔⲀⲚⲒⲞⲚ"
+      id: 3
+      description: "Каньон/ущелье"
+      heightmap_params: {erosion: "high", water_carving: true}
+      
+    - name: "ⲞⲤⲦⲢⲞⲂ"
+      id: 4
+      description: "Остров"
+      heightmap_params: {falloff: "radial", water_level: 0.3}
+      
+  biomes:
+    - name: "ⲖⲈⲤ"
+      id: 10
+      vegetation: ["tree_deciduous", "bush", "grass"]
+      density: "high"
+      
+    - name: "ⲠⲨⲤⲦⲨⲚⲀ"
+      id: 11
+      vegetation: ["cactus", "dead_tree", "tumbleweed"]
+      density: "low"
+      
+    - name: "ⲦⲨⲚⲆⲢⲀ"
+      id: 12
+      vegetation: ["pine", "moss", "lichen"]
+      density: "medium"
+      
+    - name: "ⲆⲌⲨⲚⲄⲖⲒ"
+      id: 13
+      vegetation: ["palm", "fern", "vine", "exotic_flower"]
+      density: "very_high"
+      
+    - name: "ⲂⲞⲆⲀ"
+      id: 14
+      features: ["ocean", "lake", "river", "waterfall"]
+      
+  structures:
+    - name: "ⲌⲀⲘⲞⲔ"
+      id: 20
+      components: ["walls", "towers", "gate", "courtyard"]
+      
+    - name: "ⲆⲈⲢⲈⲂⲚⲀ"
+      id: 21
+      components: ["houses", "roads", "well", "farm"]
+      
+    - name: "ⲢⲨⲒⲚⲨ"
+      id: 22
+      components: ["broken_walls", "columns", "debris"]
+      
+    - name: "ⲬⲢⲀⲘ"
+      id: 23
+      components: ["altar", "statues", "pillars"]
+
+# =============================================================================
+# BEHAVIORS
+# =============================================================================
+
+behaviors:
+  - name: text_to_world
+    given: "Текстовое описание мира"
+    when: "Запуск генерации"
+    then: "Создаётся 3D сцена соответствующая описанию"
+    
+    test_cases:
+      - name: "simple_forest"
+        input:
+          prompt: "A peaceful forest clearing with a small pond"
+          resolution: [512, 512]
+          detail_level: "medium"
+        expected:
+          has_terrain: true
+          has_trees: true
+          has_water: true
+          render_time: "<5s"
+          
+      - name: "fantasy_castle"
+        input:
+          prompt: "A dark castle on a cliff overlooking stormy sea"
+        expected:
+          has_structure: "castle"
+          terrain_type: "cliff"
+          atmosphere: "stormy"
+          
+      - name: "alien_landscape"
+        input:
+          prompt: "Alien planet with purple vegetation and two moons"
+        expected:
+          custom_colors: true
+          sky_objects: 2
+          
+  - name: terrain_generation
+    given: "Параметры ландшафта"
+    when: "Генерация heightmap"
+    then: "Создаётся реалистичный ландшафт"
+    
+    test_cases:
+      - name: "mountain_range"
+        input:
+          type: "ⲄⲞⲢⲨ"
+          size: [1024, 1024]
+          seed: 42
+        expected:
+          height_range: [0, 1]
+          has_peaks: true
+          erosion_applied: true
+          
+  - name: object_placement
+    given: "Ландшафт и список объектов"
+    when: "Размещение объектов"
+    then: "Объекты размещены согласно правилам биома"
+    
+    test_cases:
+      - name: "forest_vegetation"
+        input:
+          terrain: "forest_heightmap"
+          objects: ["tree", "bush", "grass"]
+          density: 0.7
+        expected:
+          no_overlaps: true
+          terrain_compatible: true
+          density_respected: true
+
+# =============================================================================
+# GENERATION PIPELINE
+# =============================================================================
+
+generation_pipeline:
+  stages:
+    1_text_analysis:
+      input: "text_prompt"
+      output: "scene_specification"
+      model: "LLM Parser"
+      
+    2_terrain_generation:
+      input: "terrain_params"
+      output: "heightmap + biome_map"
+      methods: ["procedural", "neural", "hybrid"]
+      
+    3_water_simulation:
+      input: "heightmap"
+      output: "water_bodies + rivers"
+      algorithm: "hydraulic_erosion + flow_simulation"
+      
+    4_vegetation_placement:
+      input: "terrain + biome_map"
+      output: "vegetation_instances"
+      algorithm: "poisson_disk + l_systems"
+      
+    5_structure_placement:
+      input: "terrain + structure_specs"
+      output: "structure_instances"
+      algorithm: "constraint_satisfaction"
+      
+    6_atmosphere_setup:
+      input: "atmosphere_params"
+      output: "sky + lighting + weather"
+      
+    7_optimization:
+      input: "full_scene"
+      output: "optimized_scene"
+      techniques: ["LOD", "instancing", "culling"]
+      
+    8_rendering:
+      input: "optimized_scene"
+      output: "rendered_view / interactive_scene"
+
+# =============================================================================
+# PROCEDURAL ALGORITHMS
+# =============================================================================
+
+procedural_algorithms:
+  noise_functions:
+    - name: "Perlin"
+      use_case: "Smooth terrain"
+      
+    - name: "Simplex"
+      use_case: "Faster, less artifacts"
+      
+    - name: "Worley"
+      use_case: "Cellular patterns (rocks, cracks)"
+      
+    - name: "Ridged Multifractal"
+      use_case: "Mountain ridges"
+      
+    - name: "Domain Warping"
+      use_case: "Organic, twisted shapes"
+      
+  l_systems:
+    tree_grammar:
+      axiom: "F"
+      rules:
+        - "F → FF+[+F-F-F]-[-F+F+F]"
+      angle: 25
+      iterations: 4
+      
+    bush_grammar:
+      axiom: "F"
+      rules:
+        - "F → F[+F]F[-F][F]"
+      angle: 30
+      iterations: 3
+      
+  erosion:
+    hydraulic:
+      iterations: 50
+      rain_rate: 0.01
+      evaporation: 0.01
+      sediment_capacity: 0.1
+      
+    thermal:
+      iterations: 30
+      talus_angle: 45
+      erosion_rate: 0.1
+
+# =============================================================================
+# NEURAL COMPONENTS
+# =============================================================================
+
+neural_components:
+  terrain_diffusion:
+    architecture: "U-Net with attention"
+    conditioning: "text + sketch"
+    output: "heightmap + texture"
+    
+  object_diffusion:
+    architecture: "3D U-Net"
+    output: "voxel grid → mesh"
+    
+  texture_synthesis:
+    architecture: "StyleGAN-based"
+    output: "tileable textures"
+    
+  nerf_detailing:
+    architecture: "Instant-NGP"
+    use_case: "High-detail object views"
+
+# =============================================================================
+# PAS ANALYSIS
+# =============================================================================
+
+pas_analysis:
+  current_state:
+    algorithm: "Manual 3D Modeling + Procedural"
+    complexity: "O(n) manual work per asset"
+    limitations:
+      - "Time-consuming manual work"
+      - "Limited procedural variety"
+      - "No semantic understanding"
+      
+  improvement:
+    algorithm: "Text-to-3D World Generation"
+    complexity: "O(1) per world (amortized)"
+    patterns_applied:
+      - symbol: "MLS"
+        name: "ML-Guided Search"
+        application: "Neural terrain and object generation"
+      - symbol: "PRE"
+        name: "Precomputation"
+        application: "Asset library + procedural templates"
+      - symbol: "D&C"
+        name: "Divide and Conquer"
+        application: "Hierarchical scene generation"
+      - symbol: "PRB"
+        name: "Probabilistic"
+        application: "Stochastic placement and variation"
+        
+  prediction:
+    speedup: "100x vs manual"
+    quality: "Near-professional"
+    confidence: 0.70
+    timeline: "2025-2026"
+
+# =============================================================================
+# API
+# =============================================================================
+
+api:
+  functions:
+    - name: "ⲄⲈⲚⲈⲢⲒⲢⲞⲂⲀⲦⲒ_ⲘⲒⲢ"
+      description: "Генерация 3D мира из текста"
+      input:
+        - name: "prompt"
+          type: "string"
+        - name: "size"
+          type: "[int, int]"
+          default: [1024, 1024]
+        - name: "detail_level"
+          type: "string"
+          default: "medium"
+          options: ["low", "medium", "high", "ultra"]
+        - name: "seed"
+          type: "int"
+          default: "random"
+      output: "World3DScene"
+      
+    - name: "ⲄⲈⲚⲈⲢⲒⲢⲞⲂⲀⲦⲒ_ⲖⲀⲚⲆⲰⲀⲪⲦ"
+      description: "Генерация только ландшафта"
+      input:
+        - name: "terrain_type"
+          type: "string"
+        - name: "size"
+          type: "[int, int]"
+        - name: "params"
+          type: "TerrainParams"
+      output: "Heightmap"
+      
+    - name: "ⲢⲀⲌⲘⲈⲤⲦⲒⲦⲒ_ⲞⲂⲈⲔⲦⲨ"
+      description: "Размещение объектов на ландшафте"
+      input:
+        - name: "terrain"
+          type: "Heightmap"
+        - name: "objects"
+          type: "List[ObjectSpec]"
+        - name: "density"
+          type: "float"
+          default: 0.5
+      output: "List[ObjectInstance]"
+      
+    - name: "ⲚⲀⲤⲦⲢⲞⲒⲦⲒ_ⲀⲦⲘⲞⲤⲪⲈⲢⲨ"
+      description: "Настройка атмосферы сцены"
+      input:
+        - name: "time_of_day"
+          type: "string"
+        - name: "weather"
+          type: "string"
+        - name: "mood"
+          type: "string"
+      output: "AtmosphereConfig"
+      
+    - name: "ⲢⲈⲚⲆⲈⲢⲒⲦⲒ_ⲤⲤⲈⲚⲨ"
+      description: "Рендеринг сцены"
+      input:
+        - name: "scene"
+          type: "World3DScene"
+        - name: "camera"
+          type: "CameraConfig"
+        - name: "quality"
+          type: "string"
+          default: "high"
+      output: "RenderedImage | InteractiveView"
+      
+    - name: "ⲈⲔⲤⲠⲞⲢⲦⲒⲢⲞⲂⲀⲦⲒ_ⲤⲤⲈⲚⲨ"
+      description: "Экспорт сцены в различные форматы"
+      input:
+        - name: "scene"
+          type: "World3DScene"
+        - name: "format"
+          type: "string"
+          options: ["gltf", "obj", "fbx", "999"]
+      output: "ExportedFile"
+
+# =============================================================================
+# INTEGRATION
+# =============================================================================
+
+vibee_integration:
+  input_sources:
+    - "Text prompt"
+    - "Sketch/heightmap"
+    - "Partial world specification"
+    
+  output_targets:
+    - ".999 3D scene code"
+    - "runtime.html (Three.js integration)"
+    - "Export formats (glTF, OBJ)"
+    
+  workflow:
+    1: "Parse text description"
+    2: "Generate terrain"
+    3: "Place objects"
+    4: "Setup atmosphere"
+    5: "Optimize scene"
+    6: "Generate .999 code"
+    7: "Integrate into runtime.html"
+    
+  runtime_integration:
+    renderer: "Three.js"
+    controls: "OrbitControls / FirstPersonControls"
+    features:
+      - "Real-time rendering"
+      - "Interactive exploration"
+      - "Dynamic LOD"
+      - "Day/night cycle"

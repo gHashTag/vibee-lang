@@ -279,7 +279,7 @@ pub const TypeError = struct {
     severity: Severity,
 
     pub const Severity = enum {
-        error,
+        err,
         warning,
         hint,
     };
@@ -435,7 +435,7 @@ pub const IncrementalTypeChecker = struct {
             try errors.append(.{
                 .message = "Unknown symbol",
                 .location = .{ .file = "", .line = 0, .column = 0 },
-                .severity = .error,
+                .severity = .err,
             });
         }
 
@@ -529,6 +529,13 @@ pub const Substitution = struct {
             try self.mappings.put(entry.key_ptr.*, entry.value_ptr.*);
         }
     }
+
+    pub fn composeMut(self: *Substitution, other: *Substitution) !void {
+        var it = other.mappings.iterator();
+        while (it.next()) |entry| {
+            try self.mappings.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+    }
 };
 
 pub const UnificationError = error{
@@ -563,9 +570,9 @@ pub const ParallelConstraintSolver = struct {
         var result = Substitution.init(self.allocator);
 
         for (partitions) |partition| {
-            const partial = try self.solveSequential(partition);
+            var partial = try self.solveSequential(partition);
             defer partial.deinit();
-            try result.compose(&partial);
+            try result.composeMut(&partial);
         }
 
         return result;

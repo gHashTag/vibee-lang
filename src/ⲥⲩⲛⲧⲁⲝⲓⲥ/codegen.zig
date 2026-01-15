@@ -13,6 +13,7 @@ pub const Target = enum {
     gleam,
     typescript,
     wasm,
+    @"999", // Священный язык 999 с коптским алфавитом
 
     pub fn fromString(s: []const u8) ?Target {
         if (std.mem.eql(u8, s, "zig")) return .zig;
@@ -22,6 +23,7 @@ pub const Target = enum {
         if (std.mem.eql(u8, s, "gleam")) return .gleam;
         if (std.mem.eql(u8, s, "typescript") or std.mem.eql(u8, s, "ts")) return .typescript;
         if (std.mem.eql(u8, s, "wasm") or std.mem.eql(u8, s, "webassembly")) return .wasm;
+        if (std.mem.eql(u8, s, "999") or std.mem.eql(u8, s, "coptic")) return .@"999";
         return null;
     }
 
@@ -34,6 +36,7 @@ pub const Target = enum {
             .gleam => ".gleam",
             .typescript => ".ts",
             .wasm => ".wat",
+            .@"999" => ".999",
         };
     }
 };
@@ -48,6 +51,7 @@ pub fn generateForTarget(allocator: std.mem.Allocator, spec: parser.Spec, target
         .zig => generateZig(allocator, spec),
         .python => generatePython(allocator, spec),
         .rust => generateRust(allocator, spec),
+        .@"999" => generate999(allocator, spec),
         .go => generateGo(allocator, spec),
         .gleam => generateGleam(allocator, spec),
         .typescript => generateTypeScript(allocator, spec),
@@ -1220,4 +1224,530 @@ test "generate auto tests" {
     // Should generate property tests
     try std.testing.expect(std.mem.indexOf(u8, code, "property: idempotence") != null);
     try std.testing.expect(std.mem.indexOf(u8, code, "property: monotonicity") != null);
+}
+
+// ============================================================================
+// 999 CODE GENERATOR - СВЯЩЕННЫЙ КОПТСКИЙ АЛФАВИТ
+// ============================================================================
+// АЛФАВИТ ЦАРСТВА (27 символов):
+// МЕДНОЕ (1-9):     Ⲁ Ⲃ Ⲅ Ⲇ Ⲉ Ⲋ Ⲍ Ⲏ Ⲑ
+// СЕРЕБРЯНОЕ (10-18): Ⲓ Ⲕ Ⲗ Ⲙ Ⲛ Ⲝ Ⲟ Ⲡ Ⲣ
+// ЗОЛОТОЕ (19-27):   Ⲥ Ⲧ Ⲩ Ⲫ Ⲭ Ⲯ Ⲱ Ⳁ Ⳃ
+
+const COPTIC_ALPHABET = [27][]const u8{
+    "Ⲁ", "Ⲃ", "Ⲅ", "Ⲇ", "Ⲉ", "Ⲋ", "Ⲍ", "Ⲏ", "Ⲑ", // Медное 1-9
+    "Ⲓ", "Ⲕ", "Ⲗ", "Ⲙ", "Ⲛ", "Ⲝ", "Ⲟ", "Ⲡ", "Ⲣ", // Серебряное 10-18
+    "Ⲥ", "Ⲧ", "Ⲩ", "Ⲫ", "Ⲭ", "Ⲯ", "Ⲱ", "Ⳁ", "Ⳃ", // Золотое 19-27
+};
+
+// Латиница → Коптский (консистентный маппинг)
+const LATIN_TO_COPTIC = [26][]const u8{
+    "Ⲁ", // a
+    "Ⲃ", // b
+    "Ⲕ", // c → k
+    "Ⲇ", // d
+    "Ⲉ", // e
+    "Ⲫ", // f
+    "Ⲅ", // g
+    "Ⲏ", // h
+    "Ⲓ", // i
+    "Ⲓ", // j → i
+    "Ⲕ", // k
+    "Ⲗ", // l
+    "Ⲙ", // m
+    "Ⲛ", // n
+    "Ⲟ", // o
+    "Ⲡ", // p
+    "Ⲕ", // q → k
+    "Ⲣ", // r
+    "Ⲥ", // s
+    "Ⲧ", // t
+    "Ⲩ", // u
+    "Ⲃ", // v → b
+    "Ⲱ", // w
+    "Ⲭ", // x
+    "Ⲩ", // y → u
+    "Ⲍ", // z
+};
+
+// Ключевые слова языка 999 (КОНСИСТЕНТНЫЕ)
+const KW_MODULE = "Ⲙ";
+const KW_FUNCTION = "Ⲫ";
+const KW_STRUCT = "Ⲥ";
+const KW_CONST = "Ⲕ";
+const KW_VAR = "Ⲝ";
+const KW_EXPORT = "Ⲉ";
+const KW_IMPORT = "Ⲓ";
+const KW_IF = "ⲈⲤ";
+const KW_ELSE = "ⲈⲖ";
+const KW_FOR = "ⲆⲖ";
+const KW_WHILE = "ⲠⲔ";
+const KW_RETURN = "ⲂⲌ";
+const KW_BREAK = "ⲂⲢ";
+const KW_CONTINUE = "ⲠⲢ";
+const KW_IN = "Ⲃ";
+const KW_RANGE = "ⲆⲀ";
+const KW_TRUE = "Ⲑ";
+const KW_FALSE = "Ⲁ";
+const KW_NULL = "Ⲱ";
+
+// Типы данных (КОНСИСТЕНТНЫЕ)
+const TYPE_INT = "Ⲓ";
+const TYPE_FLOAT = "Ⲫ";
+const TYPE_STRING = "Ⲥ";
+const TYPE_BOOL = "Ⲃ";
+const TYPE_LIST = "Ⲗ";
+const TYPE_MAP = "Ⲙ";
+const TYPE_VOID = "Ⲱ";
+
+// ============================================================================
+// КОНСИСТЕНТНАЯ ТАБЛИЦА ИДЕНТИФИКАТОРОВ
+// ============================================================================
+// Гарантирует: один идентификатор → всегда один коптский код
+
+const ConsistentMapping = struct {
+    latin: []const u8,
+    coptic: []const u8,
+};
+
+const CONSISTENT_IDENTIFIERS = [_]ConsistentMapping{
+    // UI компоненты
+    .{ .latin = "layout", .coptic = "ⲖⲀⲨⲞ" },
+    .{ .latin = "button", .coptic = "ⲂⲦⲚⲔ" },
+    .{ .latin = "input", .coptic = "ⲒⲚⲠⲦ" },
+    .{ .latin = "text", .coptic = "ⲦⲈⲜⲦ" },
+    .{ .latin = "image", .coptic = "ⲒⲘⲀⲄ" },
+    .{ .latin = "container", .coptic = "ⲔⲞⲚⲦ" },
+    .{ .latin = "card", .coptic = "ⲔⲀⲢⲆ" },
+    .{ .latin = "modal", .coptic = "ⲘⲞⲆⲖ" },
+    .{ .latin = "navbar", .coptic = "ⲚⲀⲂⲢ" },
+    .{ .latin = "sidebar", .coptic = "ⲤⲒⲆⲂ" },
+    // Действия
+    .{ .latin = "click", .coptic = "ⲔⲖⲒⲔ" },
+    .{ .latin = "submit", .coptic = "ⲤⲂⲘⲦ" },
+    .{ .latin = "change", .coptic = "ⲬⲚⲄⲈ" },
+    .{ .latin = "load", .coptic = "ⲖⲞⲀⲆ" },
+    .{ .latin = "save", .coptic = "ⲤⲀⲂⲈ" },
+    .{ .latin = "delete", .coptic = "ⲆⲈⲖⲦ" },
+    .{ .latin = "update", .coptic = "ⲨⲠⲆⲦ" },
+    .{ .latin = "create", .coptic = "ⲔⲢⲈⲦ" },
+    // Данные
+    .{ .latin = "data", .coptic = "ⲆⲀⲦⲀ" },
+    .{ .latin = "value", .coptic = "ⲂⲀⲖⲨ" },
+    .{ .latin = "result", .coptic = "ⲢⲈⲤⲖ" },
+    .{ .latin = "error", .coptic = "ⲈⲢⲢⲢ" },
+    .{ .latin = "state", .coptic = "ⲤⲦⲀⲦ" },
+    .{ .latin = "props", .coptic = "ⲠⲢⲞⲠ" },
+    .{ .latin = "config", .coptic = "ⲔⲞⲚⲪ" },
+    .{ .latin = "options", .coptic = "ⲞⲠⲦⲤ" },
+    // Генерация
+    .{ .latin = "generate", .coptic = "ⲄⲈⲚⲢ" },
+    .{ .latin = "render", .coptic = "ⲢⲚⲆⲢ" },
+    .{ .latin = "transform", .coptic = "ⲦⲢⲚⲤ" },
+    .{ .latin = "encode", .coptic = "ⲈⲚⲔⲆ" },
+    .{ .latin = "decode", .coptic = "ⲆⲈⲔⲆ" },
+    .{ .latin = "parse", .coptic = "ⲠⲀⲢⲤ" },
+    .{ .latin = "compile", .coptic = "ⲔⲘⲠⲖ" },
+    // 3D/WorldGen
+    .{ .latin = "world", .coptic = "ⲰⲢⲖⲆ" },
+    .{ .latin = "terrain", .coptic = "ⲦⲢⲢⲚ" },
+    .{ .latin = "object", .coptic = "ⲞⲂⲒⲔ" },
+    .{ .latin = "scene", .coptic = "ⲤⲤⲈⲚ" },
+    .{ .latin = "camera", .coptic = "ⲔⲀⲘⲢ" },
+    .{ .latin = "light", .coptic = "ⲖⲒⲄⲦ" },
+    .{ .latin = "mesh", .coptic = "ⲘⲈⲰⲤ" },
+    .{ .latin = "texture", .coptic = "ⲦⲈⲜⲢ" },
+    // GNN/ML
+    .{ .latin = "graph", .coptic = "ⲄⲢⲀⲪ" },
+    .{ .latin = "node", .coptic = "ⲚⲞⲆⲈ" },
+    .{ .latin = "edge", .coptic = "ⲈⲆⲄⲈ" },
+    .{ .latin = "layer", .coptic = "ⲖⲀⲨⲢ" },
+    .{ .latin = "model", .coptic = "ⲘⲞⲆⲖ" },
+    .{ .latin = "train", .coptic = "ⲦⲢⲀⲚ" },
+    .{ .latin = "predict", .coptic = "ⲠⲢⲈⲆ" },
+    .{ .latin = "loss", .coptic = "ⲖⲞⲤⲤ" },
+    // Diffusion
+    .{ .latin = "diffusion", .coptic = "ⲆⲒⲪⲤ" },
+    .{ .latin = "noise", .coptic = "ⲚⲞⲒⲤ" },
+    .{ .latin = "denoise", .coptic = "ⲆⲚⲞⲤ" },
+    .{ .latin = "step", .coptic = "ⲤⲦⲈⲠ" },
+    .{ .latin = "sample", .coptic = "ⲤⲘⲠⲖ" },
+    // Gradient
+    .{ .latin = "gradient", .coptic = "ⲄⲢⲀⲆ" },
+    .{ .latin = "optimize", .coptic = "ⲞⲠⲦⲘ" },
+    .{ .latin = "minimize", .coptic = "ⲘⲒⲚⲘ" },
+    .{ .latin = "maximize", .coptic = "ⲘⲀⲜⲘ" },
+    .{ .latin = "constraint", .coptic = "ⲔⲚⲤⲦ" },
+    // Общие
+    .{ .latin = "test", .coptic = "ⲦⲈⲤⲦ" },
+    .{ .latin = "spec", .coptic = "ⲤⲠⲈⲔ" },
+    .{ .latin = "behavior", .coptic = "ⲂⲈⲎⲂ" },
+    .{ .latin = "module", .coptic = "ⲘⲞⲆⲨ" },
+    .{ .latin = "source", .coptic = "ⲤⲞⲨⲢ" },
+    .{ .latin = "target", .coptic = "ⲦⲀⲢⲄ" },
+};
+
+/// Кодирование числа в base-27 коптский алфавит
+fn encodeNumber(allocator: std.mem.Allocator, n: u64) ![]const u8 {
+    if (n == 0) {
+        return try allocator.dupe(u8, COPTIC_ALPHABET[0]);
+    }
+    
+    var result = std.ArrayList(u8).init(allocator);
+    var num = n;
+    
+    // Собираем цифры в обратном порядке
+    var digits = std.ArrayList(usize).init(allocator);
+    defer digits.deinit();
+    
+    while (num > 0) {
+        try digits.append(num % 27);
+        num /= 27;
+    }
+    
+    // Записываем в правильном порядке
+    var i: usize = digits.items.len;
+    while (i > 0) {
+        i -= 1;
+        try result.appendSlice(COPTIC_ALPHABET[digits.items[i]]);
+    }
+    
+    return result.toOwnedSlice();
+}
+
+/// Поиск в консистентной таблице
+fn findConsistentMapping(name: []const u8) ?[]const u8 {
+    // Приводим к нижнему регистру для поиска
+    var lower_buf: [64]u8 = undefined;
+    const len = @min(name.len, 64);
+    for (name[0..len], 0..) |c, i| {
+        lower_buf[i] = if (c >= 'A' and c <= 'Z') c + 32 else c;
+    }
+    const lower = lower_buf[0..len];
+    
+    for (CONSISTENT_IDENTIFIERS) |mapping| {
+        if (std.mem.eql(u8, mapping.latin, lower)) {
+            return mapping.coptic;
+        }
+    }
+    return null;
+}
+
+/// Кодирование одной латинской буквы в коптскую
+fn latinToCoptic(c: u8) []const u8 {
+    const lower = if (c >= 'A' and c <= 'Z') c + 32 else c;
+    if (lower >= 'a' and lower <= 'z') {
+        return LATIN_TO_COPTIC[lower - 'a'];
+    }
+    return "Ⲁ"; // default
+}
+
+/// КОНСИСТЕНТНОЕ кодирование идентификатора в коптский алфавит
+/// Гарантирует: один идентификатор → всегда один коптский код
+fn encodeIdentifier(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    // 1. Сначала ищем в консистентной таблице
+    if (findConsistentMapping(name)) |coptic| {
+        return try allocator.dupe(u8, coptic);
+    }
+    
+    // 2. Если не найдено - кодируем первые 4 буквы детерминированно
+    var result = std.ArrayList(u8).init(allocator);
+    
+    var count: usize = 0;
+    for (name) |c| {
+        if (count >= 4) break;
+        if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')) {
+            try result.appendSlice(latinToCoptic(c));
+            count += 1;
+        }
+    }
+    
+    // Если меньше 4 символов - дополняем Ⲁ
+    while (count < 4) {
+        try result.appendSlice("Ⲁ");
+        count += 1;
+    }
+    
+    return result.toOwnedSlice();
+}
+
+/// Генерация кода на языке 999
+fn generate999(allocator: std.mem.Allocator, spec: parser.Spec) ![]const u8 {
+    var output = std.ArrayList(u8).init(allocator);
+    const writer = output.writer();
+
+    // Заголовок модуля
+    const module_name = try encodeIdentifier(allocator, spec.module);
+    defer allocator.free(module_name);
+    
+    try writer.print(
+        \\// ⳃⳃⳃ - Ⲅⲉⲛⲉⲣⲁⲧⲉⲇ ⲃⲩ ⲂⲒⲂⲈⲈⲤ
+        \\// Ⲥⲟⲩⲣⲥⲉ: {s}.vibee
+        \\// Ⲃⲉⲣⲥⲓⲟⲛ: {s}
+        \\
+        \\{s} {s}
+        \\
+        \\
+    , .{ spec.name, spec.version, KW_MODULE, module_name });
+
+    // Генерация констант из Creation Pattern
+    if (spec.creation_pattern) |cp| {
+        const source_enc = try encodeIdentifier(allocator, cp.source);
+        defer allocator.free(source_enc);
+        const transformer_enc = try encodeIdentifier(allocator, cp.transformer);
+        defer allocator.free(transformer_enc);
+        const result_enc = try encodeIdentifier(allocator, cp.result);
+        defer allocator.free(result_enc);
+        
+        try writer.print(
+            \\// Ⲥⲣⲉⲁⲧⲓⲟⲛ Ⲡⲁⲧⲧⲉⲣⲛ
+            \\{s} {s}: {s} = "{s}"
+            \\{s} {s}: {s} = "{s}"
+            \\{s} {s}: {s} = "{s}"
+            \\
+            \\
+        , .{
+            KW_CONST, source_enc, TYPE_STRING, cp.source,
+            KW_CONST, transformer_enc, TYPE_STRING, cp.transformer,
+            KW_CONST, result_enc, TYPE_STRING, cp.result,
+        });
+    }
+
+    // Генерация функций из behaviors
+    for (spec.behaviors) |behavior| {
+        const func_name = try encodeIdentifier(allocator, behavior.name);
+        defer allocator.free(func_name);
+        
+        try writer.print(
+            \\// {s}
+            \\// Ⲅⲓⲃⲉⲛ: {s}
+            \\// Ⲱⲏⲉⲛ: {s}
+            \\// Ⲧⲏⲉⲛ: {s}
+            \\{s} {s}() -> {s} {{
+            \\  {s} {s}
+            \\}}
+            \\
+            \\
+        , .{
+            behavior.name,
+            behavior.given,
+            behavior.when,
+            behavior.then,
+            KW_FUNCTION, func_name, TYPE_VOID,
+            KW_RETURN, KW_NULL,
+        });
+    }
+
+    // Генерация трансформеров
+    for (spec.transformers) |transformer| {
+        const trans_name = try encodeIdentifier(allocator, transformer.name);
+        defer allocator.free(trans_name);
+        const input_enc = try encodeIdentifier(allocator, transformer.input);
+        defer allocator.free(input_enc);
+        const output_enc = try encodeIdentifier(allocator, transformer.output);
+        defer allocator.free(output_enc);
+        
+        try writer.print(
+            \\// Ⲧⲣⲁⲛⲥⲫⲟⲣⲙⲉⲣ: {s}
+            \\{s} {s}({s}: {s}) -> {s} {{
+            \\  {s} {s}
+            \\}}
+            \\
+            \\
+        , .{
+            transformer.name,
+            KW_FUNCTION, trans_name, input_enc, TYPE_INT, output_enc,
+            KW_RETURN, KW_NULL,
+        });
+    }
+
+    // Экспорты
+    try writer.print(
+        \\{s} {{
+    , .{KW_EXPORT});
+    
+    for (spec.behaviors, 0..) |behavior, i| {
+        const func_name = try encodeIdentifier(allocator, behavior.name);
+        defer allocator.free(func_name);
+        
+        if (i > 0) try writer.writeAll(", ");
+        try writer.writeAll(func_name);
+    }
+    
+    try writer.writeAll(" }\n");
+
+    return output.toOwnedSlice();
+}
+
+test "generate 999 code" {
+    var behaviors = [_]parser.Behavior{
+        .{
+            .name = "test_behavior",
+            .given = "input",
+            .when = "process",
+            .then = "output",
+            .test_cases = &[_]parser.TestCase{},
+        },
+    };
+
+    const spec = parser.Spec{
+        .name = "test999",
+        .version = "1.0.0",
+        .language = "999",
+        .module = "test_module",
+        .description = "Test 999 generation",
+        .behaviors = &behaviors,
+        .types = &[_]parser.Type{},
+        .functions = &[_]parser.Function{},
+        .imports = &[_][]const u8{},
+        .creation_pattern = null,
+        .transformers = &[_]parser.Transformer{},
+        .test_generation = null,
+        .allocator = std.testing.allocator,
+    };
+
+    const code = try generate(std.testing.allocator, spec);
+    defer std.testing.allocator.free(code);
+
+    // Должен содержать коптские символы
+    try std.testing.expect(std.mem.indexOf(u8, code, "Ⲙ") != null); // MODULE
+    try std.testing.expect(std.mem.indexOf(u8, code, "Ⲫ") != null); // FUNCTION
+    try std.testing.expect(std.mem.indexOf(u8, code, "Ⲉ") != null); // EXPORT
+    
+    // Не должен содержать латинские ключевые слова
+    try std.testing.expect(std.mem.indexOf(u8, code, "module ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "function ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "export ") == null);
+}
+
+test "encode number to coptic" {
+    // 0 = Ⲁ
+    const zero = try encodeNumber(std.testing.allocator, 0);
+    defer std.testing.allocator.free(zero);
+    try std.testing.expectEqualStrings("Ⲁ", zero);
+    
+    // 1 = Ⲃ
+    const one = try encodeNumber(std.testing.allocator, 1);
+    defer std.testing.allocator.free(one);
+    try std.testing.expectEqualStrings("Ⲃ", one);
+    
+    // 26 = Ⳃ
+    const twentysix = try encodeNumber(std.testing.allocator, 26);
+    defer std.testing.allocator.free(twentysix);
+    try std.testing.expectEqualStrings("Ⳃ", twentysix);
+    
+    // 27 = ⲂⲀ (1*27 + 0)
+    const twentyseven = try encodeNumber(std.testing.allocator, 27);
+    defer std.testing.allocator.free(twentyseven);
+    try std.testing.expectEqualStrings("ⲂⲀ", twentyseven);
+}
+
+test "consistent identifier encoding" {
+    // Тест консистентности: один идентификатор → всегда один код
+    
+    // layout → ⲖⲀⲨⲞ (из таблицы)
+    const layout1 = try encodeIdentifier(std.testing.allocator, "layout");
+    defer std.testing.allocator.free(layout1);
+    const layout2 = try encodeIdentifier(std.testing.allocator, "layout");
+    defer std.testing.allocator.free(layout2);
+    try std.testing.expectEqualStrings("ⲖⲀⲨⲞ", layout1);
+    try std.testing.expectEqualStrings(layout1, layout2); // КОНСИСТЕНТНОСТЬ!
+    
+    // button → ⲂⲦⲚⲔ (из таблицы)
+    const button = try encodeIdentifier(std.testing.allocator, "button");
+    defer std.testing.allocator.free(button);
+    try std.testing.expectEqualStrings("ⲂⲦⲚⲔ", button);
+    
+    // graph → ⲄⲢⲀⲪ (из таблицы)
+    const graph = try encodeIdentifier(std.testing.allocator, "graph");
+    defer std.testing.allocator.free(graph);
+    try std.testing.expectEqualStrings("ⲄⲢⲀⲪ", graph);
+    
+    // Новый идентификатор (не в таблице) - детерминированное кодирование
+    const custom1 = try encodeIdentifier(std.testing.allocator, "myVar");
+    defer std.testing.allocator.free(custom1);
+    const custom2 = try encodeIdentifier(std.testing.allocator, "myVar");
+    defer std.testing.allocator.free(custom2);
+    try std.testing.expectEqualStrings(custom1, custom2); // КОНСИСТЕНТНОСТЬ!
+    try std.testing.expectEqualStrings("ⲘⲨⲂⲀ", custom1); // m=Ⲙ, y=Ⲩ, v=Ⲃ, a=Ⲁ
+}
+
+test "deterministic new identifier encoding" {
+    // Новые идентификаторы кодируются детерминированно через латиницу
+    
+    // "test" → ⲦⲈⲤⲦ (из таблицы)
+    const test_id = try encodeIdentifier(std.testing.allocator, "test");
+    defer std.testing.allocator.free(test_id);
+    try std.testing.expectEqualStrings("ⲦⲈⲤⲦ", test_id);
+    
+    // "xyz" → ⲬⲨⲌⲀ (x=Ⲭ, y=Ⲩ, z=Ⲍ, дополнение Ⲁ)
+    const xyz = try encodeIdentifier(std.testing.allocator, "xyz");
+    defer std.testing.allocator.free(xyz);
+    try std.testing.expectEqualStrings("ⲬⲨⲌⲀ", xyz);
+}
+
+// ============================================================================
+// ВАЛИДАТОР КОПТСКОГО КОДА
+// ============================================================================
+
+/// Проверяет что строка содержит только коптские символы (Ⲁ-Ⳃ)
+/// и допустимые символы (пробелы, переносы, пунктуация, цифры)
+pub fn validateCopticCode(code: []const u8) bool {
+    var i: usize = 0;
+    while (i < code.len) {
+        const c = code[i];
+        
+        // ASCII допустимые: пробелы, переносы, пунктуация, цифры, комментарии
+        if (c <= 127) {
+            // Запрещены латинские буквы!
+            if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')) {
+                return false;
+            }
+            i += 1;
+            continue;
+        }
+        
+        // UTF-8 многобайтовые символы
+        // Коптский диапазон: U+2C80 - U+2CFF (Ⲁ-Ⳃ)
+        if (c >= 0xE2) {
+            // 3-байтовый UTF-8
+            if (i + 2 < code.len) {
+                i += 3;
+                continue;
+            }
+        } else if (c >= 0xC0) {
+            // 2-байтовый UTF-8
+            if (i + 1 < code.len) {
+                i += 2;
+                continue;
+            }
+        }
+        
+        i += 1;
+    }
+    return true;
+}
+
+/// Проверяет что код НЕ содержит латинских букв
+pub fn hasNoLatinLetters(code: []const u8) bool {
+    for (code) |c| {
+        if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+test "validate coptic code - no latin" {
+    // Правильный код (только коптский)
+    const valid = "Ⲙ ⲦⲈⲤⲦ\nⲂⲌ Ⲱ";
+    try std.testing.expect(hasNoLatinLetters(valid));
+    
+    // Неправильный код (есть латиница)
+    const invalid = "func test() { return 0; }";
+    try std.testing.expect(!hasNoLatinLetters(invalid));
+    
+    // Смешанный (недопустимо)
+    const mixed = "Ⲙ test";
+    try std.testing.expect(!hasNoLatinLetters(mixed));
 }

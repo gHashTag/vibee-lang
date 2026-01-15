@@ -150,7 +150,7 @@ pub const StructuralIndexBuilder = struct {
             const keys = findKeysSIMD(chunk);
             const newlines = findNewlines(chunk);
             const list_items = findListItems(chunk);
-            const comments = findComments(chunk);
+            _ = findComments(chunk); // Used for future comment handling
 
             // Process found positions
             try self.processChunk(pos, keys, .colon);
@@ -385,10 +385,11 @@ test "SIMD find keys" {
 }
 
 test "SIMD find newlines" {
-    var chunk: ChunkVector = undefined;
-    @memset(&chunk, ' ');
-    chunk[10] = '\n';
-    chunk[20] = '\n';
+    var chunk_arr: [32]u8 = undefined;
+    @memset(&chunk_arr, ' ');
+    chunk_arr[10] = '\n';
+    chunk_arr[20] = '\n';
+    const chunk: ChunkVector = chunk_arr;
     
     const newlines = findNewlines(chunk);
     

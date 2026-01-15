@@ -1,0 +1,410 @@
+# UniLayDiff - Unified Diffusion Transformer for UI Layout Generation
+# Эволюция GEN UI: Диффузионная модель для генерации layout
+# Author: Dmitrii Vasilev
+# Version: 1.0.0
+
+name: unilaydiff
+version: "1.0.0"
+language: 999
+module: ⲅⲉⲛ_ui.ⲇⲓⲫⲫⲩⲍⲓⲁ
+
+# =============================================================================
+# CREATION PATTERN
+# =============================================================================
+
+creation_pattern:
+  source: TextPrompt | SketchImage | PartialLayout
+  transformer: UnifiedDiffusionTransformer
+  result: UILayoutTree
+
+# =============================================================================
+# ТЕОРЕТИЧЕСКАЯ ОСНОВА
+# =============================================================================
+
+theory:
+  name: "Unified Layout Diffusion"
+  description: |
+    UniLayDiff объединяет три подхода к генерации UI:
+    1. Text-to-Layout: генерация из текстового описания
+    2. Image-to-Layout: извлечение layout из скетча/скриншота
+    3. Layout-to-Layout: итеративное улучшение существующего layout
+    
+    Использует диффузионный процесс в пространстве bounding boxes:
+    - Forward process: добавление шума к координатам элементов
+    - Reverse process: денойзинг через трансформер
+    
+  mathematical_foundation:
+    diffusion_process: |
+      q(x_t | x_{t-1}) = N(x_t; √(1-β_t) * x_{t-1}, β_t * I)
+      
+      где x_t = [x, y, w, h, class]^N - состояние N элементов на шаге t
+      β_t - schedule шума
+      
+    reverse_process: |
+      p_θ(x_{t-1} | x_t, c) = N(x_{t-1}; μ_θ(x_t, t, c), Σ_θ(x_t, t, c))
+      
+      где c - условие (текст, изображение, частичный layout)
+      μ_θ, Σ_θ - параметризованы трансформером
+      
+    loss_function: |
+      L = E_{t,x_0,ε}[||ε - ε_θ(x_t, t, c)||²]
+      
+      + λ_overlap * L_overlap    # штраф за перекрытия
+      + λ_align * L_alignment    # штраф за несовпадение выравнивания
+      + λ_aspect * L_aspect      # штраф за неправильные пропорции
+
+# =============================================================================
+# АРХИТЕКТУРА
+# =============================================================================
+
+architecture:
+  name: "UniLayDiff Transformer"
+  
+  components:
+    # Энкодер условий
+    condition_encoder:
+      text_encoder:
+        type: "CLIP-like"
+        hidden_dim: 768
+        layers: 12
+        output: "text_embedding[768]"
+        
+      image_encoder:
+        type: "ViT"
+        patch_size: 16
+        hidden_dim: 768
+        layers: 12
+        output: "image_embedding[768]"
+        
+      layout_encoder:
+        type: "SetTransformer"
+        hidden_dim: 256
+        layers: 4
+        output: "layout_embedding[768]"
+        
+    # Основной диффузионный трансформер
+    diffusion_transformer:
+      type: "DiT (Diffusion Transformer)"
+      hidden_dim: 1024
+      num_heads: 16
+      num_layers: 24
+      
+      input_projection:
+        bbox_dim: 4  # x, y, w, h (normalized 0-1)
+        class_dim: 128  # embedding размер класса
+        time_dim: 256  # sinusoidal time embedding
+        
+      attention_blocks:
+        - type: "self_attention"
+          description: "Внимание между элементами layout"
+        - type: "cross_attention"
+          description: "Внимание к условию (текст/изображение)"
+        - type: "adaptive_layer_norm"
+          description: "AdaLN для time conditioning"
+          
+      output_projection:
+        bbox_output: 4  # предсказание шума для координат
+        class_output: "num_classes"  # предсказание класса
+        
+    # Декодер в UI дерево
+    layout_decoder:
+      type: "Hierarchical"
+      stages:
+        - name: "bbox_refinement"
+          description: "Уточнение bounding boxes"
+        - name: "hierarchy_inference"
+          description: "Вывод иерархии parent-child"
+        - name: "attribute_prediction"
+          description: "Предсказание атрибутов (цвет, шрифт, etc)"
+
+# =============================================================================
+# NOISE SCHEDULE
+# =============================================================================
+
+noise_schedule:
+  type: "cosine"
+  num_steps: 1000
+  
+  # Специальный schedule для layout
+  coordinate_schedule:
+    description: "Меньше шума для координат - они должны быть точными"
+    beta_start: 0.0001
+    beta_end: 0.02
+    
+  class_schedule:
+    description: "Больше шума для классов - они более робастны"
+    beta_start: 0.0001
+    beta_end: 0.05
+
+# =============================================================================
+# UI ELEMENT CLASSES
+# =============================================================================
+
+ui_classes:
+  containers:
+    - name: "ⲔⲞⲚⲦⲈⲒⲚⲈⲢ"
+      id: 0
+      description: "Базовый контейнер"
+    - name: "ⲔⲀⲢⲦⲀ"
+      id: 1
+      description: "Карточка с тенью"
+    - name: "ⲘⲞⲆⲀⲖ"
+      id: 2
+      description: "Модальное окно"
+    - name: "ⲤⲈⲔⲤⲒⲀ"
+      id: 3
+      description: "Секция страницы"
+      
+  inputs:
+    - name: "ⲔⲚⲞⲠⲔⲀ"
+      id: 10
+      description: "Кнопка"
+    - name: "ⲠⲞⲖⲈ_ⲂⲂⲞⲆⲀ"
+      id: 11
+      description: "Текстовое поле"
+    - name: "ⲤⲈⲖⲈⲔⲦ"
+      id: 12
+      description: "Выпадающий список"
+    - name: "ⲤⲖⲀⲒⲆⲈⲢ"
+      id: 13
+      description: "Ползунок"
+      
+  display:
+    - name: "ⲦⲈⲔⲤⲦ"
+      id: 20
+      description: "Текстовый блок"
+    - name: "ⲒⲌⲞⲂⲢⲀⲌⲈⲚⲒⲈ"
+      id: 21
+      description: "Изображение"
+    - name: "ⲒⲔⲞⲚⲔⲀ"
+      id: 22
+      description: "Иконка"
+    - name: "ⲄⲢⲀⲪⲒⲔ"
+      id: 23
+      description: "График/диаграмма"
+      
+  navigation:
+    - name: "ⲚⲀⲂⲂⲀⲢ"
+      id: 30
+      description: "Навигационная панель"
+    - name: "ⲤⲀⲒⲆⲂⲀⲢ"
+      id: 31
+      description: "Боковая панель"
+    - name: "ⲦⲀⲂⲨ"
+      id: 32
+      description: "Вкладки"
+    - name: "ⲘⲈⲚⲨ"
+      id: 33
+      description: "Меню"
+
+# =============================================================================
+# BEHAVIORS
+# =============================================================================
+
+behaviors:
+  - name: text_to_layout
+    given: "Текстовое описание UI"
+    when: "Запуск генерации"
+    then: "Создаётся валидный UI layout tree"
+    
+    test_cases:
+      - name: "simple_form"
+        input:
+          prompt: "Login form with email, password fields and submit button"
+          num_steps: 50
+        expected:
+          num_elements: [4, 6]  # диапазон
+          element_types: ["ⲔⲞⲚⲦⲈⲒⲚⲈⲢ", "ⲠⲞⲖⲈ_ⲂⲂⲞⲆⲀ", "ⲔⲚⲞⲠⲔⲀ"]
+          no_overlaps: true
+          
+      - name: "dashboard"
+        input:
+          prompt: "Dashboard with sidebar, header, and 4 metric cards"
+        expected:
+          num_elements: [7, 12]
+          has_hierarchy: true
+          
+  - name: image_to_layout
+    given: "Скетч или скриншот UI"
+    when: "Запуск извлечения layout"
+    then: "Создаётся layout соответствующий изображению"
+    
+    test_cases:
+      - name: "sketch_extraction"
+        input:
+          image: "test_data/sketch_form.png"
+          threshold: 0.8
+        expected:
+          iou_score: ">0.7"
+          class_accuracy: ">0.85"
+          
+  - name: layout_refinement
+    given: "Частичный или неоптимальный layout"
+    when: "Запуск улучшения"
+    then: "Layout улучшается с сохранением структуры"
+    
+    test_cases:
+      - name: "fix_alignment"
+        input:
+          layout:
+            - {class: "ⲔⲚⲞⲠⲔⲀ", bbox: [0.1, 0.1, 0.2, 0.05]}
+            - {class: "ⲔⲚⲞⲠⲔⲀ", bbox: [0.12, 0.2, 0.2, 0.05]}  # misaligned
+          preserve_structure: true
+        expected:
+          alignment_improved: true
+          structure_preserved: true
+
+# =============================================================================
+# TRAINING CONFIGURATION
+# =============================================================================
+
+training:
+  dataset:
+    sources:
+      - name: "RICO"
+        description: "Android UI dataset"
+        size: "66k screens"
+      - name: "WebUI"
+        description: "Web interface dataset"
+        size: "400k pages"
+      - name: "Figma-Export"
+        description: "Exported Figma designs"
+        size: "100k designs"
+        
+  augmentation:
+    - type: "bbox_jitter"
+      magnitude: 0.02
+    - type: "class_dropout"
+      probability: 0.1
+    - type: "hierarchy_shuffle"
+      probability: 0.05
+      
+  hyperparameters:
+    batch_size: 256
+    learning_rate: 1e-4
+    warmup_steps: 10000
+    total_steps: 500000
+    ema_decay: 0.9999
+    gradient_clip: 1.0
+
+# =============================================================================
+# INFERENCE
+# =============================================================================
+
+inference:
+  sampling_methods:
+    - name: "DDPM"
+      steps: 1000
+      quality: "highest"
+      speed: "slow"
+      
+    - name: "DDIM"
+      steps: 50
+      quality: "high"
+      speed: "fast"
+      
+    - name: "DPM-Solver++"
+      steps: 20
+      quality: "high"
+      speed: "fastest"
+      
+  guidance:
+    classifier_free_guidance:
+      enabled: true
+      scale: 7.5
+      
+    layout_guidance:
+      overlap_penalty: 10.0
+      alignment_bonus: 5.0
+      aspect_ratio_penalty: 3.0
+
+# =============================================================================
+# PAS ANALYSIS
+# =============================================================================
+
+pas_analysis:
+  current_state:
+    algorithm: "Autoregressive Layout Generation"
+    complexity: "O(n²) per element"
+    limitations:
+      - "Sequential generation - slow"
+      - "Error accumulation"
+      - "No global optimization"
+      
+  improvement:
+    algorithm: "Diffusion-based Parallel Generation"
+    complexity: "O(n) parallel"
+    patterns_applied:
+      - symbol: "FDT"
+        name: "Frequency Domain Transform"
+        application: "Diffusion in latent space"
+      - symbol: "PRB"
+        name: "Probabilistic"
+        application: "Stochastic denoising"
+      - symbol: "MLS"
+        name: "ML-Guided Search"
+        application: "Learned denoising network"
+        
+  prediction:
+    speedup: "10x"
+    quality_improvement: "25%"
+    confidence: 0.78
+    timeline: "2025-2026"
+
+# =============================================================================
+# API
+# =============================================================================
+
+api:
+  functions:
+    - name: "ⲄⲈⲚⲈⲢⲒⲢⲞⲂⲀⲦⲒ_ⲒⲌ_ⲦⲈⲔⲤⲦⲀ"
+      description: "Генерация layout из текста"
+      input:
+        - name: "prompt"
+          type: "string"
+        - name: "num_steps"
+          type: "int"
+          default: 50
+        - name: "guidance_scale"
+          type: "float"
+          default: 7.5
+      output: "UILayoutTree"
+      
+    - name: "ⲄⲈⲚⲈⲢⲒⲢⲞⲂⲀⲦⲒ_ⲒⲌ_ⲒⲌⲞⲂⲢⲀⲌⲈⲚⲒⲀ"
+      description: "Извлечение layout из изображения"
+      input:
+        - name: "image"
+          type: "Image"
+        - name: "num_steps"
+          type: "int"
+          default: 50
+      output: "UILayoutTree"
+      
+    - name: "ⲨⲖⲨⲤⲰⲒⲦⲒ_LAYOUT"
+      description: "Улучшение существующего layout"
+      input:
+        - name: "layout"
+          type: "UILayoutTree"
+        - name: "num_steps"
+          type: "int"
+          default: 20
+        - name: "preserve_structure"
+          type: "bool"
+          default: true
+      output: "UILayoutTree"
+
+# =============================================================================
+# INTEGRATION WITH VIBEE
+# =============================================================================
+
+vibee_integration:
+  input_format: ".vibee UI specification"
+  output_format: ".999 UI code"
+  
+  workflow:
+    1: "Parse .vibee UI description"
+    2: "Encode as condition vector"
+    3: "Run diffusion sampling"
+    4: "Decode to UILayoutTree"
+    5: "Generate .999 code"
+    6: "Integrate into runtime.html"

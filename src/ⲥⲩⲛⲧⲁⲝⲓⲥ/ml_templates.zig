@@ -378,29 +378,29 @@ pub const MLModel = struct {
     pub fn train(self: *MLModel, features: [16]f32, target_idx: usize, learning_rate: f32) void {
         const output = self.predict(features);
 
-        // Compute error (cross-entropy gradient)
-        var error: [16]f32 = output;
-        error[target_idx] -= 1.0;
+        // Compute err (cross-entropy gradient)
+        var err: [16]f32 = output;
+        err[target_idx] -= 1.0;
 
         // Backprop through output layer
-        var hidden_error: [32]f32 = undefined;
-        @memset(&hidden_error, 0.0);
+        var hidden_err: [32]f32 = undefined;
+        @memset(&hidden_err, 0.0);
 
         for (0..16) |j| {
             for (0..32) |i| {
-                hidden_error[i] += error[j] * self.weights_ho[i][j];
-                self.weights_ho[i][j] -= learning_rate * error[j] * @max(0.0, self.bias_h[i]);
+                hidden_err[i] += err[j] * self.weights_ho[i][j];
+                self.weights_ho[i][j] -= learning_rate * err[j] * @max(0.0, self.bias_h[i]);
             }
-            self.bias_o[j] -= learning_rate * error[j];
+            self.bias_o[j] -= learning_rate * err[j];
         }
 
         // Backprop through hidden layer (ReLU derivative)
         for (0..32) |j| {
             if (self.bias_h[j] > 0) {
                 for (0..16) |i| {
-                    self.weights_ih[i][j] -= learning_rate * hidden_error[j] * features[i];
+                    self.weights_ih[i][j] -= learning_rate * hidden_err[j] * features[i];
                 }
-                self.bias_h[j] -= learning_rate * hidden_error[j];
+                self.bias_h[j] -= learning_rate * hidden_err[j];
             }
         }
     }

@@ -43,12 +43,27 @@ We identify **10 fundamental patterns** of algorithmic discovery:
 | Algebraic Reorganization | ALG | Reduce operations via algebra | 22% |
 | Precomputation | PRE | Trade space for time | 16% |
 | Frequency Domain Transform | FDT | Transform to easier domain | 13% |
-| Machine Learning Search | MLS | AI-guided exploration | 6% (growing) |
+| Machine Learning Search | MLS | AI-guided exploration | 9% (growing) |
 | Tensor Decomposition | TEN | Low-rank tensor factorization | 6% |
 | Hashing | HSH | Randomized data structures | 6% |
 | Greedy/Local | GRD | Local optimization | 6% |
 | Probabilistic | PRB | Randomized algorithms | 3% |
-| Amortization | AMR | Average-case analysis | 3% |
+| Amortization | AMR | Average-case analysis | 5% |
+
+### 1.2.1 New Patterns (2024-2026 Discoveries)
+
+Based on analysis of recent scientific papers, we identify **8 additional patterns**:
+
+| Pattern | Symbol | Description | Success Rate | Source Papers |
+|---------|--------|-------------|--------------|---------------|
+| State Space Model | SSM | O(n) sequence modeling via state transitions | 12% | Mamba, S4, Hyena |
+| IO-Aware Tiling | IOT | Optimize for memory hierarchy (SRAM/HBM) | 15% | FlashAttention |
+| Equality Saturation | EQS | Explore all equivalent rewrites simultaneously | 8% | egg, Herbie |
+| Incremental Computation | INC | Reuse previous computation on changes | 14% | Tree-sitter, Salsa |
+| Consistency Distillation | CSD | Distill multi-step into single-step | 7% | Consistency Models |
+| Gaussian Splatting | GSP | Differentiable 3D Gaussian representation | 10% | 3DGS |
+| Neuromorphic | NRO | Event-driven sparse computation | 5% | Loihi, NorthPole |
+| Zero-Copy | ZCP | Eliminate data copying via shared memory | 12% | io_uring, DPDK |
 
 ### 1.3 Pattern Combinations
 

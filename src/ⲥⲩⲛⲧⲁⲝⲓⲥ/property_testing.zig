@@ -39,7 +39,7 @@ pub const Generator = struct {
     /// Generate random string of given length
     pub fn string(self: *Generator, min_len: usize, max_len: usize) ![]u8 {
         const len = self.random.intRangeAtMost(usize, min_len, max_len);
-        var buf = try self.allocator.alloc(u8, len);
+        const buf = try self.allocator.alloc(u8, len);
         
         for (buf) |*c| {
             // Generate printable ASCII
@@ -52,7 +52,7 @@ pub const Generator = struct {
     /// Generate random alphanumeric string
     pub fn alphanumeric(self: *Generator, min_len: usize, max_len: usize) ![]u8 {
         const len = self.random.intRangeAtMost(usize, min_len, max_len);
-        var buf = try self.allocator.alloc(u8, len);
+        const buf = try self.allocator.alloc(u8, len);
         
         const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         
@@ -66,7 +66,7 @@ pub const Generator = struct {
     /// Generate random YAML-safe identifier
     pub fn identifier(self: *Generator) ![]u8 {
         const len = self.random.intRangeAtMost(usize, 1, 20);
-        var buf = try self.allocator.alloc(u8, len);
+        const buf = try self.allocator.alloc(u8, len);
         
         const first_chars = "abcdefghijklmnopqrstuvwxyz_";
         const rest_chars = "abcdefghijklmnopqrstuvwxyz0123456789_";
@@ -83,7 +83,7 @@ pub const Generator = struct {
     /// Generate random array of given type
     pub fn array(self: *Generator, comptime T: type, min_len: usize, max_len: usize, gen_elem: *const fn (*Generator) T) ![]T {
         const len = self.random.intRangeAtMost(usize, min_len, max_len);
-        var buf = try self.allocator.alloc(T, len);
+        const buf = try self.allocator.alloc(T, len);
         
         for (buf) |*elem| {
             elem.* = gen_elem(self);
@@ -206,9 +206,9 @@ pub const Shrinker = struct {
 
 pub const Property = struct {
     name: []const u8,
-    predicate: *const fn (anytype) bool,
-    generator: *const fn (*Generator) anytype,
-    shrinker: ?*const fn (*Shrinker, anytype) anytype,
+    predicate: *const fn (*const anyopaque) bool,
+    generator: *const fn (*Generator) *anyopaque,
+    shrinker: ?*const fn (*Shrinker, *const anyopaque) *anyopaque,
 };
 
 // ============================================================================

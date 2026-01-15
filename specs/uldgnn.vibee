@@ -1,0 +1,513 @@
+# ULDGNN - UI Layer Detection Graph Neural Network
+# Эволюция GEN UI: GNN для детекции и анализа UI слоёв
+# Author: Dmitrii Vasilev
+# Version: 1.0.0
+
+name: uldgnn
+version: "1.0.0"
+language: 999
+module: ⲅⲉⲛ_ui.ⲅⲛⲛ_ⲇⲉⲧⲉⲕⲧⲟⲣ
+
+# =============================================================================
+# CREATION PATTERN
+# =============================================================================
+
+creation_pattern:
+  source: UIScreenImage | DesignFile | DOMTree
+  transformer: GraphNeuralNetwork
+  result: UILayerGraph
+
+# =============================================================================
+# ТЕОРЕТИЧЕСКАЯ ОСНОВА
+# =============================================================================
+
+theory:
+  name: "UI Layer Detection via GNN"
+  description: |
+    ULDGNN решает задачу детекции UI слоёв как задачу на графах:
+    
+    1. Построение графа из визуальных примитивов
+    2. Message passing для агрегации контекста
+    3. Node classification для определения типа элемента
+    4. Edge prediction для определения иерархии
+    
+    Преимущества GNN подхода:
+    - Естественное моделирование иерархии UI
+    - Инвариантность к перестановкам элементов
+    - Эффективная агрегация локального и глобального контекста
+    
+  mathematical_foundation:
+    graph_construction: |
+      G = (V, E) где:
+      V = {v_i} - визуальные примитивы (bboxes, текст, изображения)
+      E = {e_ij} - рёбра на основе:
+        - Пространственной близости: ||center_i - center_j|| < τ
+        - Визуального сходства: sim(feat_i, feat_j) > θ
+        - Иерархических отношений: contains(bbox_i, bbox_j)
+        
+    message_passing: |
+      h_v^{(l+1)} = UPDATE(h_v^{(l)}, AGGREGATE({h_u^{(l)} : u ∈ N(v)}))
+      
+      где:
+      - h_v^{(l)} - представление узла v на слое l
+      - N(v) - соседи узла v
+      - AGGREGATE - функция агрегации (mean, max, attention)
+      - UPDATE - функция обновления (MLP, GRU)
+      
+    node_classification: |
+      P(class_v | G) = softmax(MLP(h_v^{(L)}))
+      
+    edge_prediction: |
+      P(parent(u,v) | G) = σ(MLP([h_u^{(L)} || h_v^{(L)} || edge_feat(u,v)]))
+      
+    loss_function: |
+      L = L_node + λ_edge * L_edge + λ_hierarchy * L_hierarchy
+      
+      L_node = CrossEntropy(predicted_class, true_class)
+      L_edge = BCE(predicted_edge, true_edge)
+      L_hierarchy = TreeConsistencyLoss(predicted_tree)
+
+# =============================================================================
+# АРХИТЕКТУРА
+# =============================================================================
+
+architecture:
+  name: "ULDGNN Architecture"
+  
+  components:
+    # Визуальный энкодер
+    visual_encoder:
+      backbone:
+        type: "ResNet-50 + FPN"
+        pretrained: true
+        output_scales: [4, 8, 16, 32]
+        
+      roi_extractor:
+        type: "RoIAlign"
+        output_size: 7
+        sampling_ratio: 2
+        
+      feature_dim: 256
+      
+    # Построитель графа
+    graph_builder:
+      node_features:
+        - name: "visual_features"
+          dim: 256
+          source: "roi_extractor"
+        - name: "bbox_features"
+          dim: 16
+          encoding: "sinusoidal"
+          components: [x, y, w, h, aspect_ratio, area]
+        - name: "text_features"
+          dim: 128
+          encoder: "CharCNN"
+          
+      edge_construction:
+        spatial_edges:
+          type: "kNN"
+          k: 8
+          distance: "center_distance"
+          
+        containment_edges:
+          type: "bbox_containment"
+          iou_threshold: 0.5
+          
+        visual_edges:
+          type: "feature_similarity"
+          threshold: 0.7
+          
+      edge_features:
+        - name: "relative_position"
+          dim: 8
+          components: [dx, dy, dw, dh]
+        - name: "iou"
+          dim: 1
+        - name: "containment_score"
+          dim: 2
+          
+    # GNN слои
+    gnn_layers:
+      type: "Heterogeneous Graph Transformer"
+      num_layers: 6
+      hidden_dim: 256
+      num_heads: 8
+      
+      layer_config:
+        - layer: 1-2
+          scope: "local"
+          description: "Локальные паттерны"
+        - layer: 3-4
+          scope: "regional"
+          description: "Региональный контекст"
+        - layer: 5-6
+          scope: "global"
+          description: "Глобальная структура"
+          
+      attention_types:
+        - name: "spatial_attention"
+          description: "Внимание на основе позиции"
+        - name: "semantic_attention"
+          description: "Внимание на основе типа"
+        - name: "hierarchical_attention"
+          description: "Внимание parent-child"
+          
+    # Головы предсказания
+    prediction_heads:
+      node_classifier:
+        type: "MLP"
+        layers: [256, 128, num_classes]
+        activation: "GELU"
+        dropout: 0.1
+        
+      edge_predictor:
+        type: "BilinearEdgePredictor"
+        hidden_dim: 128
+        edge_types: ["sibling", "parent", "child", "none"]
+        
+      hierarchy_decoder:
+        type: "TreeDecoder"
+        method: "MST + constraints"
+        constraints:
+          - "single_root"
+          - "no_cycles"
+          - "containment_consistency"
+
+# =============================================================================
+# UI LAYER TYPES
+# =============================================================================
+
+layer_types:
+  structural:
+    - name: "ⲔⲞⲢⲈⲚⲒ"
+      id: 0
+      description: "Корневой контейнер"
+      typical_children: ["ⲤⲈⲔⲤⲒⲀ", "ⲚⲀⲂⲂⲀⲢ", "ⲪⲨⲦⲈⲢ"]
+      
+    - name: "ⲤⲈⲔⲤⲒⲀ"
+      id: 1
+      description: "Секция/раздел"
+      typical_children: ["ⲄⲢⲨⲠⲠⲀ", "ⲔⲀⲢⲦⲀ", "ⲤⲠⲒⲤⲞⲔ"]
+      
+    - name: "ⲄⲢⲨⲠⲠⲀ"
+      id: 2
+      description: "Группа элементов"
+      typical_children: ["ⲈⲖⲈⲘⲈⲚⲦ", "ⲦⲈⲔⲤⲦ", "ⲒⲔⲞⲚⲔⲀ"]
+      
+  interactive:
+    - name: "ⲔⲚⲞⲠⲔⲀ"
+      id: 10
+      description: "Кнопка"
+      typical_children: ["ⲦⲈⲔⲤⲦ", "ⲒⲔⲞⲚⲔⲀ"]
+      
+    - name: "ⲠⲞⲖⲈ_ⲂⲂⲞⲆⲀ"
+      id: 11
+      description: "Поле ввода"
+      typical_children: ["ⲠⲖⲈⲒⲤⲬⲞⲖⲆⲈⲢ", "ⲒⲔⲞⲚⲔⲀ"]
+      
+    - name: "ⲤⲤⲨⲖⲔⲀ"
+      id: 12
+      description: "Ссылка"
+      typical_children: ["ⲦⲈⲔⲤⲦ"]
+      
+  content:
+    - name: "ⲦⲈⲔⲤⲦ"
+      id: 20
+      description: "Текстовый элемент"
+      subtypes: ["heading", "paragraph", "label", "caption"]
+      
+    - name: "ⲒⲌⲞⲂⲢⲀⲌⲈⲚⲒⲈ"
+      id: 21
+      description: "Изображение"
+      subtypes: ["photo", "icon", "logo", "illustration"]
+      
+    - name: "ⲒⲔⲞⲚⲔⲀ"
+      id: 22
+      description: "Иконка"
+      
+  composite:
+    - name: "ⲔⲀⲢⲦⲀ"
+      id: 30
+      description: "Карточка"
+      typical_structure: ["image", "title", "description", "actions"]
+      
+    - name: "ⲤⲠⲒⲤⲞⲔ"
+      id: 31
+      description: "Список"
+      typical_children: ["ⲈⲖⲈⲘⲈⲚⲦ_ⲤⲠⲒⲤⲔⲀ"]
+      
+    - name: "ⲦⲀⲂⲖⲒⲤⲀ"
+      id: 32
+      description: "Таблица"
+      typical_children: ["ⲤⲦⲢⲞⲔⲀ", "ⲀⲤⲈⲒⲔⲀ"]
+
+# =============================================================================
+# BEHAVIORS
+# =============================================================================
+
+behaviors:
+  - name: layer_detection
+    given: "Изображение UI экрана"
+    when: "Запуск детекции слоёв"
+    then: "Возвращается граф UI слоёв с типами и иерархией"
+    
+    test_cases:
+      - name: "simple_form"
+        input:
+          image: "test_data/login_form.png"
+        expected:
+          num_nodes: [5, 10]
+          detected_types: ["ⲔⲞⲢⲈⲚⲒ", "ⲠⲞⲖⲈ_ⲂⲂⲞⲆⲀ", "ⲔⲚⲞⲠⲔⲀ", "ⲦⲈⲔⲤⲦ"]
+          hierarchy_depth: [2, 4]
+          
+      - name: "complex_dashboard"
+        input:
+          image: "test_data/dashboard.png"
+        expected:
+          num_nodes: [20, 50]
+          has_cards: true
+          has_navigation: true
+          
+  - name: hierarchy_inference
+    given: "Набор детектированных UI элементов"
+    when: "Запуск построения иерархии"
+    then: "Возвращается дерево parent-child отношений"
+    
+    test_cases:
+      - name: "nested_containers"
+        input:
+          elements:
+            - {id: 0, bbox: [0, 0, 1, 1], type: "ⲔⲞⲢⲈⲚⲒ"}
+            - {id: 1, bbox: [0.1, 0.1, 0.8, 0.3], type: "ⲤⲈⲔⲤⲒⲀ"}
+            - {id: 2, bbox: [0.2, 0.15, 0.3, 0.1], type: "ⲔⲚⲞⲠⲔⲀ"}
+        expected:
+          tree:
+            root: 0
+            children:
+              0: [1]
+              1: [2]
+              2: []
+              
+  - name: layer_grouping
+    given: "Плоский список UI элементов"
+    when: "Запуск группировки"
+    then: "Элементы группируются по визуальному и семантическому сходству"
+    
+    test_cases:
+      - name: "button_group"
+        input:
+          elements:
+            - {bbox: [0.1, 0.5, 0.2, 0.05], type: "ⲔⲚⲞⲠⲔⲀ"}
+            - {bbox: [0.35, 0.5, 0.2, 0.05], type: "ⲔⲚⲞⲠⲔⲀ"}
+            - {bbox: [0.6, 0.5, 0.2, 0.05], type: "ⲔⲚⲞⲠⲔⲀ"}
+        expected:
+          groups: 1
+          group_type: "ⲄⲢⲨⲠⲠⲀ"
+
+# =============================================================================
+# GNN VARIANTS
+# =============================================================================
+
+gnn_variants:
+  - name: "ULDGNN-Base"
+    layers: 4
+    hidden_dim: 128
+    params: "5M"
+    speed: "fast"
+    accuracy: "good"
+    
+  - name: "ULDGNN-Large"
+    layers: 6
+    hidden_dim: 256
+    params: "20M"
+    speed: "medium"
+    accuracy: "high"
+    
+  - name: "ULDGNN-XL"
+    layers: 8
+    hidden_dim: 512
+    params: "80M"
+    speed: "slow"
+    accuracy: "highest"
+
+# =============================================================================
+# TRAINING
+# =============================================================================
+
+training:
+  dataset:
+    sources:
+      - name: "RICO-Semantic"
+        description: "RICO with semantic annotations"
+        size: "66k screens"
+        annotations: ["element_type", "hierarchy", "grouping"]
+        
+      - name: "PubLayNet"
+        description: "Document layout dataset"
+        size: "360k documents"
+        
+      - name: "Figma-Layers"
+        description: "Figma designs with layer info"
+        size: "50k designs"
+        
+  augmentation:
+    geometric:
+      - type: "random_crop"
+        scale: [0.8, 1.0]
+      - type: "random_resize"
+        scale: [0.5, 1.5]
+        
+    graph:
+      - type: "node_dropout"
+        probability: 0.1
+      - type: "edge_dropout"
+        probability: 0.2
+      - type: "feature_noise"
+        std: 0.05
+        
+  hyperparameters:
+    batch_size: 32
+    learning_rate: 1e-4
+    weight_decay: 1e-5
+    epochs: 100
+    scheduler: "cosine_annealing"
+    warmup_epochs: 5
+
+# =============================================================================
+# INFERENCE PIPELINE
+# =============================================================================
+
+inference:
+  pipeline:
+    1_detection:
+      description: "Детекция визуальных примитивов"
+      method: "Faster R-CNN / DETR"
+      output: "bboxes + features"
+      
+    2_graph_construction:
+      description: "Построение графа"
+      method: "kNN + containment + similarity"
+      output: "heterogeneous graph"
+      
+    3_gnn_forward:
+      description: "Прямой проход GNN"
+      method: "Message passing"
+      output: "node embeddings"
+      
+    4_prediction:
+      description: "Предсказание типов и связей"
+      method: "Classification + Edge prediction"
+      output: "typed nodes + edges"
+      
+    5_tree_construction:
+      description: "Построение дерева иерархии"
+      method: "MST + constraints"
+      output: "UI layer tree"
+      
+  optimization:
+    batching: "Dynamic batching by graph size"
+    caching: "Cache visual features"
+    pruning: "Remove low-confidence edges early"
+
+# =============================================================================
+# PAS ANALYSIS
+# =============================================================================
+
+pas_analysis:
+  current_state:
+    algorithm: "CNN-based UI Detection"
+    complexity: "O(n²) for hierarchy"
+    limitations:
+      - "No explicit structure modeling"
+      - "Quadratic complexity for relations"
+      - "Poor generalization to new layouts"
+      
+  improvement:
+    algorithm: "GNN-based Layer Detection"
+    complexity: "O(n·k) where k = avg neighbors"
+    patterns_applied:
+      - symbol: "D&C"
+        name: "Divide and Conquer"
+        application: "Local-to-global message passing"
+      - symbol: "PRE"
+        name: "Precomputation"
+        application: "Cached visual features"
+      - symbol: "HSH"
+        name: "Hashing"
+        application: "Efficient neighbor lookup"
+        
+  prediction:
+    speedup: "5x"
+    accuracy_improvement: "15%"
+    confidence: 0.72
+    timeline: "2025"
+
+# =============================================================================
+# API
+# =============================================================================
+
+api:
+  functions:
+    - name: "ⲆⲈⲦⲈⲔⲦⲒⲢⲞⲂⲀⲦⲒ_ⲤⲖⲞⲒ"
+      description: "Детекция UI слоёв из изображения"
+      input:
+        - name: "image"
+          type: "Image"
+        - name: "model_size"
+          type: "string"
+          default: "large"
+          options: ["base", "large", "xl"]
+      output: "UILayerGraph"
+      
+    - name: "ⲠⲞⲤⲦⲢⲞⲒⲦⲒ_ⲒⲈⲢⲀⲢⲬⲒⲨ"
+      description: "Построение иерархии из элементов"
+      input:
+        - name: "elements"
+          type: "List[UIElement]"
+        - name: "method"
+          type: "string"
+          default: "gnn"
+          options: ["gnn", "heuristic", "hybrid"]
+      output: "UITree"
+      
+    - name: "ⲄⲢⲨⲠⲠⲒⲢⲞⲂⲀⲦⲒ_ⲈⲖⲈⲘⲈⲚⲦⲨ"
+      description: "Группировка UI элементов"
+      input:
+        - name: "elements"
+          type: "List[UIElement]"
+        - name: "threshold"
+          type: "float"
+          default: 0.7
+      output: "List[UIGroup]"
+      
+    - name: "ⲈⲔⲤⲠⲞⲢⲦⲒⲢⲞⲂⲀⲦⲒ_Ⲃ_999"
+      description: "Экспорт графа в код 999"
+      input:
+        - name: "graph"
+          type: "UILayerGraph"
+        - name: "style"
+          type: "string"
+          default: "hierarchical"
+      output: "string"
+
+# =============================================================================
+# INTEGRATION
+# =============================================================================
+
+vibee_integration:
+  input_sources:
+    - "Screenshot/image"
+    - "Figma export"
+    - "DOM tree"
+    
+  output_targets:
+    - ".999 UI code"
+    - "UILayoutTree (for UniLayDiff)"
+    - "Component specifications"
+    
+  workflow:
+    1: "Load image/design"
+    2: "Run ULDGNN detection"
+    3: "Build hierarchy tree"
+    4: "Generate .999 code"
+    5: "Integrate into runtime.html"
