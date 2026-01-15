@@ -1,0 +1,124 @@
+# DepthEstimation - Monocular and Stereo Depth Perception
+# Source: arXiv:2312.07504 - COLMAP-Free 3DGS, arXiv:2308.16894 - EMDB
+# PAS Analysis: MLS (depth prediction), D&C (multi-scale), PRE (depth priors)
+
+name: depth_estimation
+version: "1.0.0"
+language: 999
+module: ⲆⲈⲠⲦⲎ_ⲈⲤⲦⲒⲘⲀⲦⲒⲞⲚ
+
+pas_analysis:
+  source_paper: "arXiv:2312.07504, arXiv:2308.16894"
+  current_complexity: "O(n²) stereo matching"
+  theoretical_lower_bound: "O(n) monocular prediction"
+  gap: "Quadratic to linear via learned priors"
+  patterns_applicable:
+    - symbol: MLS
+      name: "ML-Guided Search"
+      success_rate: 0.06
+      rationale: "Deep learning depth prediction"
+    - symbol: D&C
+      name: "Divide-and-Conquer"
+      success_rate: 0.31
+      rationale: "Multi-scale feature pyramid"
+    - symbol: PRE
+      name: "Precomputation"
+      success_rate: 0.16
+      rationale: "Pre-trained depth priors"
+    - symbol: ALG
+      name: "Algebraic Reorganization"
+      success_rate: 0.22
+      rationale: "Gaussian splatting for 3D"
+  confidence: 0.76
+  predicted_improvement: "Real-time monocular depth"
+
+creation_pattern:
+  source: MonocularImage
+  transformer: DepthPredictor
+  result: DepthMap
+
+behaviors:
+  - name: monocular_depth
+    given: "Single RGB image"
+    when: "Apply depth network"
+    then: "Predict dense depth map"
+    test_cases:
+      - name: indoor_depth
+        input:
+          resolution: [640, 480]
+          model: "MiDaS"
+        expected:
+          abs_rel: 0.08
+          delta1: 0.95
+
+  - name: stereo_depth
+    given: "Stereo image pair"
+    when: "Apply stereo matching"
+    then: "Compute disparity map"
+    test_cases:
+      - name: kitti_stereo
+        input:
+          baseline: 0.54  # meters
+          focal_length: 721
+        expected:
+          epe: 0.5  # pixels
+          d1_all: 0.02
+
+  - name: colmap_free_reconstruction
+    given: "Video sequence"
+    when: "Apply 3D Gaussian Splatting"
+    then: "Reconstruct 3D without SfM"
+    test_cases:
+      - name: sequential_3dgs
+        input:
+          frames: 100
+          motion: "large"
+        expected:
+          psnr: 28.5
+          pose_error_deg: 2.0
+
+  - name: metric_depth
+    given: "Image with scale reference"
+    when: "Predict metric depth"
+    then: "Return absolute depth values"
+    test_cases:
+      - name: zoe_depth
+        input:
+          reference: "known_object_size"
+        expected:
+          abs_error_m: 0.1
+          scale_invariant: false
+
+algorithms:
+  midas:
+    architecture: "DPT (Dense Prediction Transformer)"
+    output: "Relative depth"
+    zero_shot: true
+    
+  gaussian_splatting:
+    representation: "3D Gaussians"
+    rendering: "Differentiable rasterization"
+    speed: "200+ FPS"
+    
+  stereo_matching:
+    cost_volume: "4D correlation"
+    aggregation: "3D convolution"
+    refinement: "Hierarchical"
+
+depth_cues:
+  monocular:
+    - "Texture gradient"
+    - "Relative size"
+    - "Occlusion"
+    - "Atmospheric perspective"
+    - "Linear perspective"
+  binocular:
+    - "Disparity"
+    - "Vergence"
+
+metrics:
+  abs_rel: 0.08
+  sq_rel: 0.05
+  rmse: 0.35
+  delta1: 0.95
+  fps: 30
