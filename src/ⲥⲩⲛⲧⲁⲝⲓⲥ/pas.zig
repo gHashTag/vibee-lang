@@ -1420,3 +1420,129 @@ test "new algorithm categories" {
         try std.testing.expect(patterns.len > 0);
     }
 }
+
+// ============================================================================
+// PAS PREDICTIONS 2026 - New algorithm predictions
+// ============================================================================
+
+pub const PASPrediction2026 = struct {
+    name: []const u8,
+    domain: []const u8,
+    current_complexity: []const u8,
+    predicted_complexity: []const u8,
+    patterns: []const DiscoveryPattern,
+    confidence: f64,
+    timeline: []const u8,
+    reasoning: []const u8,
+};
+
+/// Get all PAS predictions for 2026
+pub fn getPASPredictions2026() [8]PASPrediction2026 {
+    return [_]PASPrediction2026{
+        // #1: O(n) Attention - HIGHEST CONFIDENCE
+        .{
+            .name = "Linear Attention",
+            .domain = "ML/AI",
+            .current_complexity = "O(n²)",
+            .predicted_complexity = "O(n)",
+            .patterns = &[_]DiscoveryPattern{ .state_space_model, .io_aware_tiling },
+            .confidence = 0.85,
+            .timeline = "2025-2026",
+            .reasoning = "Mamba/S4 already show O(n) is possible. SSM+IOT combination will achieve full O(n) attention with Transformer quality.",
+        },
+        // #2: 10x SAT Solver
+        .{
+            .name = "ML-Guided SAT",
+            .domain = "Optimization",
+            .current_complexity = "1x baseline",
+            .predicted_complexity = "10x faster",
+            .patterns = &[_]DiscoveryPattern{ .ml_guided_search, .probabilistic },
+            .confidence = 0.80,
+            .timeline = "2025-2027",
+            .reasoning = "AlphaDev trajectory + NeuroSAT foundations. ML will replace hand-crafted heuristics.",
+        },
+        // #3: O(n) Integer Sort
+        .{
+            .name = "Practical O(n) Sort",
+            .domain = "Sorting",
+            .current_complexity = "O(n log n)",
+            .predicted_complexity = "O(n)",
+            .patterns = &[_]DiscoveryPattern{ .ml_guided_search, .precomputation },
+            .confidence = 0.75,
+            .timeline = "2025-2028",
+            .reasoning = "AlphaDev optimized small sorts. Extension to full O(n) for bounded integers is natural next step.",
+        },
+        // #4: 5x LLM Inference
+        .{
+            .name = "Fast LLM Inference",
+            .domain = "ML/AI",
+            .current_complexity = "1x baseline",
+            .predicted_complexity = "5x faster",
+            .patterns = &[_]DiscoveryPattern{ .io_aware_tiling, .tensor_decomposition },
+            .confidence = 0.70,
+            .timeline = "2025-2027",
+            .reasoning = "FlashAttention + speculative decoding + quantization. IOT+TEN patterns converging.",
+        },
+        // #5: O(n^2.2) Matrix Multiplication
+        .{
+            .name = "Improved MatMult",
+            .domain = "Linear Algebra",
+            .current_complexity = "O(n^2.37)",
+            .predicted_complexity = "O(n^2.2)",
+            .patterns = &[_]DiscoveryPattern{ .ml_guided_search, .tensor_decomposition, .algebraic_reorg },
+            .confidence = 0.60,
+            .timeline = "2025-2030",
+            .reasoning = "AlphaTensor improved 4x4 case. Scaling to larger matrices via MLS+TEN+ALG.",
+        },
+        // #6: O(n^2.9) APSP
+        .{
+            .name = "Faster APSP",
+            .domain = "Graph Algorithms",
+            .current_complexity = "O(n³)",
+            .predicted_complexity = "O(n^2.9)",
+            .patterns = &[_]DiscoveryPattern{ .algebraic_reorg, .ml_guided_search },
+            .confidence = 0.55,
+            .timeline = "2028-2035",
+            .reasoning = "APSP reduces to matrix multiplication. Improvements in matmult → improvements in APSP.",
+        },
+        // #7: O(n log n) Graph Neural Networks
+        .{
+            .name = "Efficient GNN",
+            .domain = "ML/AI",
+            .current_complexity = "O(n²)",
+            .predicted_complexity = "O(n log n)",
+            .patterns = &[_]DiscoveryPattern{ .divide_and_conquer, .ml_guided_search },
+            .confidence = 0.50,
+            .timeline = "2027-2030",
+            .reasoning = "Graph transformers are O(n²). D&C on graph structure + learned aggregation.",
+        },
+        // #8: Quantum O(n²) MatMult
+        .{
+            .name = "Quantum MatMult",
+            .domain = "Quantum Computing",
+            .current_complexity = "O(n^2.37)",
+            .predicted_complexity = "O(n²)",
+            .patterns = &[_]DiscoveryPattern{ .tensor_decomposition },
+            .confidence = 0.40,
+            .timeline = "2035-2045",
+            .reasoning = "Quantum parallelism could achieve O(n²) with polylog overhead. Requires fault-tolerant QC.",
+        },
+    };
+}
+
+test "PAS predictions 2026" {
+    const predictions = getPASPredictions2026();
+    
+    // Verify all predictions have valid data
+    for (predictions) |pred| {
+        try std.testing.expect(pred.name.len > 0);
+        try std.testing.expect(pred.confidence > 0.0);
+        try std.testing.expect(pred.confidence <= 1.0);
+        try std.testing.expect(pred.patterns.len > 0);
+    }
+    
+    // Verify highest confidence predictions
+    try std.testing.expect(predictions[0].confidence == 0.85); // Linear Attention
+    try std.testing.expect(predictions[1].confidence == 0.80); // SAT Solver
+    try std.testing.expect(predictions[2].confidence == 0.75); // O(n) Sort
+}
