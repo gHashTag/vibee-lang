@@ -343,11 +343,77 @@ pub const EGraph = struct {
         return try self.allocator.dupe(u8, &buf);
     }
 
+    /// Find all matches for a pattern in the e-graph
     fn findMatches(self: *EGraph, pattern: Pattern, matches: *std.ArrayList(Match)) !void {
-        _ = self;
-        _ = pattern;
-        _ = matches;
-        // TODO: Implement pattern matching
+        // Iterate over all e-classes to find pattern matches
+        var class_iter = self.classes.iterator();
+        while (class_iter.next()) |entry| {
+            const class_id = entry.key_ptr.*;
+            const class = entry.value_ptr.*;
+            
+            // Try to match pattern against each node in the class
+            for (class.nodes.items) |node| {
+                var bindings = std.ArrayList(EClassId).init(self.allocator);
+                defer bindings.deinit();
+                
+                if (try self.matchPattern(pattern, node, &bindings)) {
+                    try matches.append(.{
+                        .root = class_id,
+                        .bindings = try bindings.toOwnedSlice(),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Match a pattern against an expression, collecting variable bindings
+    fn matchPattern(self: *EGraph, pattern: Pattern, expr: Expr, bindings: *std.ArrayList(EClassId)) !bool {
+        switch (pattern.tag) {
+            .wildcard => {
+                // Wildcard matches anything - bind the variable
+                if (expr.children.len > 0) {
+                    try bindings.append(self.find(expr.children[0]));
+                }
+                return true;
+            },
+            .constant => {
+                // Match constant value
+                if (expr.tag != .constant) return false;
+                if (pattern.const_value) |pv| {
+                    if (expr.value) |ev| {
+                        return pv == ev;
+                    }
+                }
+                return false;
+            },
+            .var_binding => {
+                // Variable binding - just record the match
+                return true;
+            },
+            .expr => {
+                // Match expression structure
+                if (pattern.children.len != expr.children.len) return false;
+                
+                // Recursively match children
+                for (pattern.children, 0..) |child_pattern, i| {
+                    if (i >= expr.children.len) return false;
+                    
+                    const child_class_id = expr.children[i];
+                    const child_class = self.classes.get(self.find(child_class_id)) orelse return false;
+                    
+                    // Try to match against any node in the child class
+                    var matched = false;
+                    for (child_class.nodes.items) |child_node| {
+                        if (try self.matchPattern(child_pattern, child_node, bindings)) {
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if (!matched) return false;
+                }
+                return true;
+            },
+        }
     }
 
     fn buildFromPattern(self: *EGraph, pattern: Pattern, bindings: []const EClassId) !EClassId {

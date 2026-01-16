@@ -10,6 +10,10 @@ const pas = @import("pas.zig");
 const simd_parser = @import("simd_parser.zig");
 const egraph = @import("egraph.zig");
 const property_testing = @import("property_testing.zig");
+const incremental_types = @import("incremental_types.zig");
+
+// Global incremental type checker for caching across compilations
+var global_type_checker: ?incremental_types.IncrementalTypeChecker = null;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -1069,10 +1073,35 @@ fn checkSpec(allocator: std.mem.Allocator, spec_file: []const u8) !void {
     };
     defer spec.deinit();
 
+    // Initialize incremental type checker if not already done
+    if (global_type_checker == null) {
+        global_type_checker = incremental_types.IncrementalTypeChecker.init(allocator);
+    }
+    
+    // Run incremental type checking
+    var type_checker = &global_type_checker.?;
+    var type_errors: u32 = 0;
+    
+    // Check each function's types
+    for (spec.functions) |func| {
+        const result = type_checker.checkSymbol(func.name, &spec) catch continue;
+        if (result.errors.len > 0) {
+            type_errors += @intCast(result.errors.len);
+            for (result.errors) |err| {
+                std.debug.print("  Type error in {s}: {s}\n", .{func.name, err.message});
+            }
+        }
+    }
+
     std.debug.print("Valid spec: {s} v{s}\n", .{ spec.name, spec.version });
     std.debug.print("  Module: {s}\n", .{spec.module});
     std.debug.print("  Language: {s}\n", .{spec.language});
     std.debug.print("  Behaviors: {d}\n", .{spec.behaviors.len});
     std.debug.print("  Types: {d}\n", .{spec.types.len});
     std.debug.print("  Functions: {d}\n", .{spec.functions.len});
+    std.debug.print("  Type errors: {d}\n", .{type_errors});
+    
+    // Show type checker stats
+    std.debug.print("  Type cache hits: {d}\n", .{type_checker.cache_hits});
+    std.debug.print("  Type cache misses: {d}\n", .{type_checker.cache_misses});
 }

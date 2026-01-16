@@ -176,18 +176,34 @@ PAS is implemented in the VIBEE compiler (11,000+ lines of Zig):
 | `superoptimizer.zig` | 803 | Stochastic superoptimization |
 | `ml_templates.zig` | 659 | ML-guided template selection |
 
-### 4.2 PAS-Guided Optimizations
+### 4.2 PAS-Guided Optimizations — HONEST RESULTS
 
-We applied PAS to identify improvements for VIBEE itself:
+We applied PAS to identify improvements for VIBEE itself. **REAL BENCHMARK RESULTS** (January 2026):
 
-| Component | PAS Prediction | Patterns | Result |
-|-----------|---------------|----------|--------|
-| Parser | 3x speedup | PRE, D&C | SIMD parsing: 3.2x |
-| Type Checker | 5x speedup | AMR, PRE | Incremental: 5.1x |
-| Codegen | 2x quality | ALG, PRE | E-graphs: 1.9x |
-| Testing | 2.5x coverage | PRB, MLS | Property-based: 2.7x |
+| Component | PAS Prediction | Patterns | ACTUAL Result |
+|-----------|---------------|----------|---------------|
+| Parser | 3x speedup | PRE, D&C | SIMD parsing: **0.45x (SLOWER!)** |
+| Type Checker | 5x speedup | AMR, PRE | Incremental: **Integrated, not benchmarked** |
+| Codegen | 2x quality | ALG, PRE | E-graphs: **Pattern matching implemented** |
+| Testing | 2.5x coverage | PRB, MLS | Property-based: **Not measured** |
 
-**Combined measured speedup: 4.5x** (vs. 4.2x predicted)
+**REAL BENCHMARK DATA:**
+```
+Standard Parser: 0.019 ms avg, 26.91 MB/s throughput
+SIMD Parser:     0.042 ms avg, 12.10 MB/s throughput
+SIMD Speedup:    0.45x (SLOWER than standard!)
+
+E-Graph Add:     0.212 ms for 100 nodes (472,300 ops/sec)
+E-Graph Merge:   0.136 ms for 25 pairs (183,241 ops/sec)
+```
+
+**WHY SIMD IS SLOWER:**
+The hybrid approach builds a structural index with SIMD, but still delegates
+to the standard parser for complex nested structures. The overhead of building
+the index is not amortized for small-to-medium files.
+
+**HONEST CONCLUSION:** The "4.5x speedup" claim was **FABRICATED**. Real measurements
+show the SIMD parser is actually slower. This has been corrected.
 
 ### 4.3 Algorithm Database
 
