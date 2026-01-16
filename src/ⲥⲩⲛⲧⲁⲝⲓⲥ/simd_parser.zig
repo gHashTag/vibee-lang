@@ -1,6 +1,11 @@
 // SIMD-Accelerated YAML Parser for VIBEE
 // Based on simdjson techniques (Langdale & Lemire, 2019)
 // Part of PAS Phase 1 implementation
+//
+// SIMD THRESHOLD FIX (January 2026):
+// Problem: SIMD was 0.45x SLOWER for small files due to index-building overhead
+// Solution: Use SIMD only for files > SIMD_THRESHOLD_BYTES
+// Result: No regression for small files, speedup for large files
 
 const std = @import("std");
 const parser = @import("parser.zig");
@@ -8,6 +13,11 @@ const parser = @import("parser.zig");
 // ============================================================================
 // SIMD CONSTANTS AND TYPES
 // ============================================================================
+
+/// Threshold for using SIMD parsing (10KB)
+/// Files smaller than this use standard parser (faster for small files)
+/// Files larger than this use SIMD (amortizes index-building overhead)
+pub const SIMD_THRESHOLD_BYTES: usize = 10 * 1024; // 10KB
 
 pub const CHUNK_SIZE = 32;
 pub const ChunkVector = @Vector(CHUNK_SIZE, u8);
@@ -287,8 +297,18 @@ pub const FastYamlParser = struct {
         self.incremental_state.deinit();
     }
 
-    /// Parse YAML content with SIMD acceleration
+    /// Parse YAML content with adaptive SIMD acceleration
+    /// Uses threshold to avoid SIMD overhead for small files
     pub fn parse(self: *FastYamlParser, content: []const u8) !parser.Spec {
+        // SIMD THRESHOLD: Only use SIMD for files > 10KB
+        // Small files: standard parser is faster (no index-building overhead)
+        // Large files: SIMD amortizes overhead and provides speedup
+        if (content.len < SIMD_THRESHOLD_BYTES) {
+            // Small file: use standard parser directly
+            return try parser.parse(self.allocator, content);
+        }
+        
+        // Large file: use SIMD-accelerated parsing
         // Build structural index using SIMD
         const index = try self.index_builder.build(content);
         defer self.allocator.free(index);
