@@ -45,6 +45,34 @@ All features, technologies, and visualizations MUST be integrated into this ONE 
 
 **VIOLATION OF THIS RULE IS A COMPILER ERROR.**
 
+### GIT HOOKS ENFORCEMENT
+
+The repository has pre-commit hooks that **BLOCK** commits containing forbidden files:
+
+```bash
+# Hook location
+.githooks/pre-commit
+
+# Activate hooks
+git config core.hooksPath .githooks
+```
+
+**BLOCKED EXTENSIONS:** `.html` (except runtime.html), `.css`, `.js`, `.ts`, `.jsx`, `.tsx`
+
+**ALLOWED EXTENSIONS:** `.vibee`, `.999`, `.zig`, `.md`, `.json`, `.yaml`
+
+---
+
+## СВЯЩЕННАЯ ФОРМУЛА
+
+```
+V = n × 3^k × π^m × φ^p × e^q
+```
+
+**ЗОЛОТАЯ ИДЕНТИЧНОСТЬ:** `φ² + 1/φ² = 3`
+
+**САМОЭВОЛЮЦИЯ:** Включена по умолчанию во всех модулях
+
 ---
 
 ## Core Principles
