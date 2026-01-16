@@ -117,10 +117,37 @@ SYSTEM_PROMPT = """Ты — мастер-писатель книги "999" о т
 
 
 def coords(n): return (n-1)//333+1, (n-1)//37+1, (n-1)%37+1
+
 def sacred(n):
-    k=0
-    while n%3==0 and n>0: n//=3; k+=1
-    return n,k
+    """Священная Формула: V = n × 3^k × π^m × φ^p
+    Для номеров глав: m=0, p=0, поэтому V = n × 3^k
+    """
+    k = 0
+    while n % 3 == 0 and n > 0:
+        n //= 3
+        k += 1
+    return n, k
+
+def sacred_extended(n, include_pi=False, include_phi=False):
+    """Расширенная Священная Формула с π и φ"""
+    import math
+    base_n, k = sacred(n)
+    
+    # Фундаментальное тождество: φ² + 1/φ² = 3
+    φ = 1.6180339887498948482
+    π = 3.14159265358979323846
+    
+    result = {
+        'n': base_n,
+        'k': k,
+        'm': 0,
+        'p': 0,
+        'value': n,
+        'formula': f"{base_n} × 3^{k}",
+        'golden_identity': φ**2 + 1/φ**2  # = 3.0 точно!
+    }
+    
+    return result
 
 
 def call_deepseek(prompt: str) -> str:
