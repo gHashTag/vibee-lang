@@ -1,0 +1,143 @@
+name: diffusion_book_generator
+version: "1.0.0"
+language: python
+module: book.generator.diffusion
+
+description: |
+  Диффузионный генератор книги 999
+  Параллельная генерация всех глав через discrete diffusion
+  Ускорение 10-15x по сравнению с autoregressive LLM
+
+creation_pattern:
+  source: ChapterPrompt
+  transformer: DiffusionModel
+  result: ChapterText
+
+sacred_formula:
+  description: "V = n × 3^k × π^m × φ^p для диффузии"
+  n: batch_size
+  k: log3_diffusion_steps
+  m: noise_schedule_power
+  p: golden_sampling_ratio
+
+architecture:
+  encoder:
+    type: BERT
+    hidden_size: 768
+    layers: 12
+  
+  diffusion:
+    type: discrete
+    steps: 729  # 3^6
+    schedule: cosine
+    noise_type: absorbing
+  
+  decoder:
+    type: GPT2
+    hidden_size: 768
+    layers: 12
+
+behaviors:
+  - name: generate_chapter
+    given: "Промпт с номером главы и темой"
+    when: "Запуск диффузионной генерации"
+    then: "Текст главы 20-30KB за 1-2 секунды"
+    test_cases:
+      - name: chapter_1
+        input:
+          chapter_num: 1
+          book: "Начало Пути"
+          theme: "История троичных систем"
+        expected:
+          min_size: 20000
+          max_time_ms: 2000
+          has_sections: ["Эпиграф", "История", "Научное", "Код", "Испытания"]
+
+  - name: batch_generate
+    given: "Список из N промптов"
+    when: "Параллельная генерация"
+    then: "N глав одновременно"
+    test_cases:
+      - name: batch_100
+        input:
+          prompts: 100
+        expected:
+          total_time_sec: 60
+          success_rate: 0.95
+
+  - name: vr_integration
+    given: "Жест или голосовой ввод в VR"
+    when: "Преобразование в промпт и генерация"
+    then: "Текст появляется в виртуальном пространстве"
+    test_cases:
+      - name: gesture_to_text
+        input:
+          gesture: "wave_chapter_42"
+        expected:
+          latency_ms: 500
+          output_format: "3d_text"
+
+pas_analysis:
+  current_algorithm: "Autoregressive LLM"
+  current_complexity: "O(n) per token"
+  predicted_algorithm: "Discrete Diffusion"
+  predicted_complexity: "O(k) for all tokens"
+  speedup: "10-15x"
+  confidence: 0.75
+  patterns:
+    - D&C: "Параллельная генерация блоков"
+    - PRE: "Precomputed embeddings"
+    - FDT: "Latent space diffusion"
+
+dependencies:
+  - torch >= 2.0
+  - transformers >= 4.30
+  - diffusers >= 0.20
+  - accelerate >= 0.20
+
+config:
+  model_path: "models/diffusion_book_999"
+  batch_size: 100
+  diffusion_steps: 729
+  noise_schedule: "cosine"
+  sampling_method: "ddim"
+  device: "cuda"
+
+api:
+  - endpoint: "/generate"
+    method: POST
+    input:
+      chapter_num: int
+      book_name: str
+      theme: str
+    output:
+      text: str
+      size_bytes: int
+      generation_time_ms: int
+
+  - endpoint: "/batch_generate"
+    method: POST
+    input:
+      chapters: list[int]
+    output:
+      results: list[ChapterResult]
+      total_time_sec: float
+
+  - endpoint: "/vr_generate"
+    method: POST
+    input:
+      gesture_data: bytes
+      voice_text: str
+    output:
+      text: str
+      position_3d: tuple[float, float, float]
+
+metrics:
+  - name: tokens_per_second
+    target: 1000
+  - name: chapters_per_minute
+    target: 50
+  - name: quality_score
+    target: 0.9
+  - name: vr_latency_ms
+    target: 500
