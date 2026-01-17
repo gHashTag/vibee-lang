@@ -1,0 +1,225 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPE FEEDBACK SYSTEM - Спецификация для JIT оптимизаций
+# ═══════════════════════════════════════════════════════════════════════════════
+# СВЯЩЕННАЯ ФОРМУЛА: V = n × 3^k × π^m × φ^p × e^q
+# ЗОЛОТАЯ ИДЕНТИЧНОСТЬ: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+# НАУЧНЫЕ ОСНОВЫ:
+# 1. "Optimizing Dynamically-Typed Object-Oriented Languages" (Hölzle, 1994)
+# 2. "An Efficient Implementation of SELF" (Chambers, Ungar, 1989)
+# 3. "Adaptive Optimization for SELF" (Hölzle, Ungar, 1994)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: type_feedback
+version: "1.0.0"
+language: zig
+module: type_feedback
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREATION PATTERN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+creation_pattern:
+  source: RuntimeTypeObservation
+  transformer: TypeProfiler
+  result: TypeFeedbackData
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_analysis:
+  current_complexity: "O(1) per observation"
+  theoretical_lower_bound: "Ω(1)"
+  applicable_patterns: [PRE, HSH]
+  predicted_improvement: "Already optimal for single observation"
+  confidence: 0.95
+  reasoning: "Type feedback is O(1) per observation, optimization comes from JIT using the data"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  TypeId:
+    enum:
+      - nil: 0
+      - bool_type: 1
+      - int: 2
+      - float: 3
+      - string: 4
+      - array: 5
+      - object: 6
+      - function: 7
+
+  TypeProfile:
+    struct:
+      observed_types: u8  # Bitmap
+      type_counts: "[8]u32"
+      total_observations: u64
+
+  CallSiteProfile:
+    struct:
+      arg_profiles: "[8]TypeProfile"
+      num_args: u8
+      return_profile: TypeProfile
+      call_count: u64
+      targets: "[4]?u32"
+      num_targets: u8
+
+  BranchProfile:
+    struct:
+      taken_count: u64
+      not_taken_count: u64
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: record_type_observation
+    given: "TypeProfile и TypeId"
+    when: "Вызывается record(type_id)"
+    then: "Обновляется bitmap и счётчик"
+    test_cases:
+      - name: first_observation
+        input:
+          profile: {observed_types: 0, type_counts: [0,0,0,0,0,0,0,0]}
+          type_id: int
+        expected:
+          observed_types: 4  # bit 2 set
+          type_counts: [0,0,1,0,0,0,0,0]
+      - name: repeated_observation
+        input:
+          profile: {observed_types: 4, type_counts: [0,0,5,0,0,0,0,0]}
+          type_id: int
+        expected:
+          observed_types: 4
+          type_counts: [0,0,6,0,0,0,0,0]
+
+  - name: detect_monomorphic
+    given: "TypeProfile с наблюдениями"
+    when: "Вызывается isMonomorphic()"
+    then: "true если только один тип наблюдался"
+    test_cases:
+      - name: single_type
+        input:
+          observed_types: 4  # только int
+        expected:
+          is_monomorphic: true
+      - name: multiple_types
+        input:
+          observed_types: 12  # int и float
+        expected:
+          is_monomorphic: false
+
+  - name: detect_polymorphic
+    given: "TypeProfile с наблюдениями"
+    when: "Вызывается isPolymorphic()"
+    then: "true если 2-4 типа наблюдались"
+    test_cases:
+      - name: two_types
+        input:
+          observed_types: 12  # int и float
+        expected:
+          is_polymorphic: true
+      - name: five_types
+        input:
+          observed_types: 0b11111  # 5 типов
+        expected:
+          is_polymorphic: false
+          is_megamorphic: true
+
+  - name: get_dominant_type
+    given: "TypeProfile с наблюдениями"
+    when: "Вызывается getDominantType()"
+    then: "Возвращает тип если >90% наблюдений"
+    test_cases:
+      - name: clear_dominant
+        input:
+          type_counts: [0,0,95,5,0,0,0,0]
+          total_observations: 100
+        expected:
+          dominant_type: int
+      - name: no_dominant
+        input:
+          type_counts: [0,0,50,50,0,0,0,0]
+          total_observations: 100
+        expected:
+          dominant_type: null
+
+  - name: branch_prediction
+    given: "BranchProfile с историей"
+    when: "Вызывается getPredictedDirection()"
+    then: "Возвращает наиболее вероятное направление"
+    test_cases:
+      - name: biased_taken
+        input:
+          taken_count: 95
+          not_taken_count: 5
+        expected:
+          predicted: true
+          probability: 0.95
+          is_biased: true
+      - name: balanced
+        input:
+          taken_count: 50
+          not_taken_count: 50
+        expected:
+          predicted: true  # default to taken
+          probability: 0.5
+          is_biased: false
+
+  - name: should_inline
+    given: "CallSiteProfile"
+    when: "Вызывается shouldInline()"
+    then: "true если монорфный, частый, стабильные типы"
+    test_cases:
+      - name: good_candidate
+        input:
+          num_targets: 1
+          call_count: 150
+          arg_profiles_monomorphic: true
+        expected:
+          should_inline: true
+      - name: polymorphic_target
+        input:
+          num_targets: 3
+          call_count: 150
+        expected:
+          should_inline: false
+      - name: cold_call
+        input:
+          num_targets: 1
+          call_count: 10
+        expected:
+          should_inline: false
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INTEGRATION WITH VM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+vm_integration:
+  hooks:
+    - name: on_operation
+      description: "Записать тип операнда"
+      bytecode_offset: true
+      
+    - name: on_call
+      description: "Записать типы аргументов и цель"
+      bytecode_offset: true
+      
+    - name: on_branch
+      description: "Записать направление перехода"
+      bytecode_offset: true
+
+  jit_usage:
+    - name: type_specialization
+      description: "Генерировать специализированный код для доминантного типа"
+      guard: "type_check"
+      
+    - name: inline_decision
+      description: "Решение об инлайнинге на основе CallSiteProfile"
+      
+    - name: branch_prediction
+      description: "Оптимизация layout кода на основе BranchProfile"

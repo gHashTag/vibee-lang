@@ -1,0 +1,251 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# STATE OF THE ART VM TECHNIQUES
+# ═══════════════════════════════════════════════════════════════════════════════
+# СВЯЩЕННАЯ ФОРМУЛА: V = n × 3^k × π^m × φ^p × e^q
+# ЗОЛОТАЯ ИДЕНТИЧНОСТЬ: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+# НАУЧНЫЕ ОСНОВЫ:
+# 1. Tracing JIT (Gal et al., PLDI 2009)
+# 2. Method JIT (HotSpot, V8 TurboFan)
+# 3. Tiered Compilation (V8, GraalVM)
+# 4. Partial Evaluation (Truffle)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: state_of_the_art
+version: "1.0.0"
+language: zig
+module: state_of_the_art
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREATION PATTERN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+creation_pattern:
+  source: BytecodeProgram
+  transformer: JITCompiler
+  result: NativeCode
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_analysis:
+  current_complexity: "O(n) interpretation"
+  theoretical_lower_bound: "Ω(1) native execution"
+  applicable_patterns: [PRE, MLS, D&C]
+  predicted_improvement: "O(1) for hot paths via JIT"
+  confidence: 0.95
+  reasoning: "JIT compilation amortizes compilation cost over many executions"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRACING JIT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tracing_jit:
+  description: "Основа LuaJIT, TraceMonkey"
+  
+  states:
+    - idle: "Ожидание hot loop"
+    - recording: "Запись trace"
+    - compiling: "Компиляция в native"
+    - executing: "Выполнение native"
+    - side_exit: "Выход из trace"
+  
+  guard_types:
+    - type_check: "Проверка типа"
+    - value_check: "Проверка значения"
+    - overflow: "Проверка переполнения"
+    - bounds: "Проверка границ"
+  
+  trace_ops:
+    # Специализированные операции
+    - add_int
+    - sub_int
+    - mul_int
+    - add_float
+    - sub_float
+    - mul_float
+    # Guards
+    - guard_int
+    - guard_float
+    - guard_true
+    # Memory
+    - load
+    - store
+    # Control
+    - loop_start
+    - loop_end
+    - side_exit
+
+  hotspot_threshold: 100
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# METHOD JIT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+method_jit:
+  description: "Основа V8 TurboFan, HotSpot C2"
+  
+  tiers:
+    - interpreter: "Tier 0: Интерпретатор"
+    - baseline: "Tier 1: Быстрая компиляция"
+    - optimized: "Tier 2: Полная оптимизация"
+  
+  thresholds:
+    baseline: 100
+    optimized: 10000
+  
+  type_feedback:
+    description: "Сбор информации о типах"
+    observed_types: "Bitmap наблюдаемых типов"
+    monomorphic: "Только один тип"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIERED COMPILATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tiered_compilation:
+  description: "V8, GraalVM"
+  
+  tiers:
+    - interpreter: 0
+    - baseline: 1
+    - optimized: 2
+    - deoptimized: 3
+  
+  profiling:
+    type_profile:
+      slots: 16
+      per_slot:
+        type_id: u8
+        count: u32
+    
+    branch_profile:
+      taken: u32
+      not_taken: u32
+  
+  deopt_reasons:
+    - type_mismatch
+    - overflow
+    - bounds_check
+    - null_check
+    - unstable_map
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: detect_hot_loop
+    given: "IP и backward_jump флаг"
+    when: "backward_jump=true и iteration_count >= threshold"
+    then: "Начинается запись trace"
+    test_cases:
+      - name: cold_loop
+        input:
+          ip: 100
+          backward_jump: true
+          iteration_count: 50
+          threshold: 100
+        expected:
+          start_recording: false
+      - name: hot_loop
+        input:
+          ip: 100
+          backward_jump: true
+          iteration_count: 100
+          threshold: 100
+        expected:
+          start_recording: true
+
+  - name: record_type_feedback
+    given: "TypeFeedback и type_id"
+    when: "Вызывается recordType(type_id)"
+    then: "Обновляется bitmap и monomorphic флаг"
+    test_cases:
+      - name: first_type
+        input:
+          observed_types: 0
+          type_id: 1
+        expected:
+          observed_types: 2  # bit 1 set
+          monomorphic: true
+      - name: second_different_type
+        input:
+          observed_types: 2
+          type_id: 2
+        expected:
+          observed_types: 6  # bits 1 and 2 set
+          monomorphic: false
+
+  - name: should_upgrade_tier
+    given: "CompilationUnit"
+    when: "Проверка на upgrade"
+    then: "true если execution_count >= threshold для текущего tier"
+    test_cases:
+      - name: interpreter_to_baseline
+        input:
+          tier: interpreter
+          execution_count: 100
+        expected:
+          should_upgrade: true
+      - name: baseline_to_optimized
+        input:
+          tier: baseline
+          execution_count: 10000
+        expected:
+          should_upgrade: true
+
+  - name: branch_probability
+    given: "BranchProfile с taken и not_taken"
+    when: "Вызывается probability()"
+    then: "Возвращает taken / (taken + not_taken)"
+    test_cases:
+      - name: biased_taken
+        input:
+          taken: 90
+          not_taken: 10
+        expected:
+          probability: 0.9
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE COMPARISON
+# ═══════════════════════════════════════════════════════════════════════════════
+
+performance_comparison:
+  benchmarks:
+    vibee_v010:
+      fib30_ms: 92.8
+      description: "Current stack-based interpreter"
+    
+    vibee_v020:
+      fib30_ms: 45.0
+      description: "Target: register-based + IC"
+    
+    vibee_v030:
+      fib30_ms: 5.0
+      description: "Target: tracing JIT"
+    
+    vibee_v100:
+      fib30_ms: 1.5
+      description: "Target: full JIT"
+    
+    cpython:
+      fib30_ms: 103.2
+      description: "Reference: CPython 3.12"
+    
+    pypy:
+      fib30_ms: 8.0
+      description: "Reference: PyPy"
+    
+    luajit:
+      fib30_ms: 0.9
+      description: "Reference: LuaJIT"
+    
+    v8:
+      fib30_ms: 0.5
+      description: "Reference: V8"
+    
+    native_c:
+      fib30_ms: 0.1
+      description: "Reference: Native C"
