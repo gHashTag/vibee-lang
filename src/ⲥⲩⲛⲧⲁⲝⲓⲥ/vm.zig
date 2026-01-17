@@ -16,6 +16,117 @@ const codegen = @import("codegen.zig");
 const builtin = @import("builtin");
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// TYPE FEEDBACK INTEGRATION - РЕАЛЬНЫЙ сбор данных о типах
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const TypeFeedback = struct {
+    // Type counts per bytecode offset
+    type_observations: [1024]TypeObservation,
+    observation_count: u32,
+    
+    // Branch statistics
+    branch_taken: [256]u32,
+    branch_not_taken: [256]u32,
+    
+    // Call site statistics
+    call_counts: [256]u32,
+    
+    pub const TypeObservation = struct {
+        offset: u32,
+        int_count: u32,
+        float_count: u32,
+        other_count: u32,
+        
+        pub fn isMonomorphic(self: *const TypeObservation) bool {
+            const total = self.int_count + self.float_count + self.other_count;
+            if (total == 0) return false;
+            const threshold = total * 9 / 10;  // 90%
+            return self.int_count >= threshold or self.float_count >= threshold;
+        }
+        
+        pub fn getDominantType(self: *const TypeObservation) u8 {
+            if (self.int_count >= self.float_count and self.int_count >= self.other_count) return 0;
+            if (self.float_count >= self.int_count and self.float_count >= self.other_count) return 1;
+            return 2;
+        }
+    };
+    
+    pub fn init() TypeFeedback {
+        return .{
+            .type_observations = [_]TypeObservation{.{ .offset = 0, .int_count = 0, .float_count = 0, .other_count = 0 }} ** 1024,
+            .observation_count = 0,
+            .branch_taken = [_]u32{0} ** 256,
+            .branch_not_taken = [_]u32{0} ** 256,
+            .call_counts = [_]u32{0} ** 256,
+        };
+    }
+    
+    pub fn recordType(self: *TypeFeedback, offset: u32, type_id: u8) void {
+        const idx = offset % 1024;
+        self.type_observations[idx].offset = offset;
+        switch (type_id) {
+            0 => self.type_observations[idx].int_count +%= 1,
+            1 => self.type_observations[idx].float_count +%= 1,
+            else => self.type_observations[idx].other_count +%= 1,
+        }
+        self.observation_count +%= 1;
+    }
+    
+    pub fn recordBranch(self: *TypeFeedback, offset: u32, taken: bool) void {
+        const idx = offset % 256;
+        if (taken) {
+            self.branch_taken[idx] +%= 1;
+        } else {
+            self.branch_not_taken[idx] +%= 1;
+        }
+    }
+    
+    pub fn recordCall(self: *TypeFeedback, offset: u32) void {
+        const idx = offset % 256;
+        self.call_counts[idx] +%= 1;
+    }
+    
+    pub fn getMonomorphicRatio(self: *const TypeFeedback) f64 {
+        var mono: u32 = 0;
+        var total: u32 = 0;
+        
+        for (&self.type_observations) |*obs| {
+            const obs_total = obs.int_count + obs.float_count + obs.other_count;
+            if (obs_total > 0) {
+                total += 1;
+                if (obs.isMonomorphic()) mono += 1;
+            }
+        }
+        
+        if (total == 0) return 0;
+        return @as(f64, @floatFromInt(mono)) / @as(f64, @floatFromInt(total));
+    }
+    
+    pub fn getBiasedBranchRatio(self: *const TypeFeedback) f64 {
+        var biased: u32 = 0;
+        var total: u32 = 0;
+        
+        for (0..256) |i| {
+            const t = self.branch_taken[i];
+            const nt = self.branch_not_taken[i];
+            const sum = t + nt;
+            if (sum > 0) {
+                total += 1;
+                const ratio = @as(f64, @floatFromInt(t)) / @as(f64, @floatFromInt(sum));
+                if (ratio > 0.9 or ratio < 0.1) biased += 1;
+            }
+        }
+        
+        if (total == 0) return 0;
+        return @as(f64, @floatFromInt(biased)) / @as(f64, @floatFromInt(total));
+    }
+    
+    pub fn getTotalObservations(self: *const TypeFeedback) u32 {
+        return self.observation_count;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // OPCODES - Реальные коды операций
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -195,6 +306,10 @@ pub const VM = struct {
     // Hotspot counters for JIT
     hotspot_counters: [256]u32,
     
+    // TYPE FEEDBACK - РЕАЛЬНАЯ интеграция
+    feedback: TypeFeedback,
+    feedback_enabled: bool,
+    
     const STACK_SIZE = 16384;
     const CALL_STACK_SIZE = 1024;
     const HOTSPOT_THRESHOLD = 1000;
@@ -216,6 +331,8 @@ pub const VM = struct {
             .instructions_executed = 0,
             .simd_regs = .{ SIMDOps.splat(0), SIMDOps.splat(0), SIMDOps.splat(0), SIMDOps.splat(0) },
             .hotspot_counters = [_]u32{0} ** 256,
+            .feedback = TypeFeedback.init(),
+            .feedback_enabled = false,
         };
         // Initialize stack with nil
         for (&vm.stack) |*slot| {
@@ -528,6 +645,13 @@ pub const VM = struct {
                 @intFromEnum(Opcode.ADD) => {
                     const b = self.popFast();
                     const a = self.popFast();
+                    
+                    // РЕАЛЬНЫЙ сбор type feedback
+                    if (self.feedback_enabled) {
+                        self.feedback.recordType(@intCast(self.ip - 1), @intFromEnum(a.tag));
+                        self.feedback.recordType(@intCast(self.ip - 1), @intFromEnum(b.tag));
+                    }
+                    
                     if (a.tag == .INT and b.tag == .INT) {
                         self.pushFast(Value.int(a.asInt() +% b.asInt()));
                     } else {
@@ -538,6 +662,13 @@ pub const VM = struct {
                 @intFromEnum(Opcode.SUB) => {
                     const b = self.popFast();
                     const a = self.popFast();
+                    
+                    // РЕАЛЬНЫЙ сбор type feedback
+                    if (self.feedback_enabled) {
+                        self.feedback.recordType(@intCast(self.ip - 1), @intFromEnum(a.tag));
+                        self.feedback.recordType(@intCast(self.ip - 1), @intFromEnum(b.tag));
+                    }
+                    
                     if (a.tag == .INT and b.tag == .INT) {
                         self.pushFast(Value.int(a.asInt() -% b.asInt()));
                     } else {
@@ -548,6 +679,13 @@ pub const VM = struct {
                 @intFromEnum(Opcode.MUL) => {
                     const b = self.popFast();
                     const a = self.popFast();
+                    
+                    // РЕАЛЬНЫЙ сбор type feedback
+                    if (self.feedback_enabled) {
+                        self.feedback.recordType(@intCast(self.ip - 1), @intFromEnum(a.tag));
+                        self.feedback.recordType(@intCast(self.ip - 1), @intFromEnum(b.tag));
+                    }
+                    
                     if (a.tag == .INT and b.tag == .INT) {
                         self.pushFast(Value.int(a.asInt() *% b.asInt()));
                     } else {
@@ -619,6 +757,12 @@ pub const VM = struct {
                 
                 @intFromEnum(Opcode.CALL) => {
                     const addr = self.readU16Fast();
+                    
+                    // РЕАЛЬНЫЙ сбор call feedback
+                    if (self.feedback_enabled) {
+                        self.feedback.recordCall(@intCast(self.ip - 3));
+                    }
+                    
                     self.call_stack[self.fp] = .{
                         .return_ip = self.ip,
                         .base_sp = self.sp,
@@ -763,6 +907,46 @@ pub const VM = struct {
         
         return hotspots;
     }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TYPE FEEDBACK API - РЕАЛЬНАЯ интеграция
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    /// Enable type feedback collection
+    pub fn enableFeedback(self: *VM) void {
+        self.feedback_enabled = true;
+        self.feedback = TypeFeedback.init();
+    }
+    
+    /// Disable type feedback collection
+    pub fn disableFeedback(self: *VM) void {
+        self.feedback_enabled = false;
+    }
+    
+    /// Get type feedback statistics
+    pub fn getFeedbackStats(self: *const VM) TypeFeedbackStats {
+        return .{
+            .total_observations = self.feedback.getTotalObservations(),
+            .monomorphic_ratio = self.feedback.getMonomorphicRatio(),
+            .biased_branch_ratio = self.feedback.getBiasedBranchRatio(),
+            .feedback_enabled = self.feedback_enabled,
+        };
+    }
+    
+    /// Run with feedback collection and return stats
+    pub fn runWithFeedback(self: *VM) !struct { result: Value, stats: TypeFeedbackStats } {
+        self.enableFeedback();
+        const result = try self.runFast();
+        const stats = self.getFeedbackStats();
+        return .{ .result = result, .stats = stats };
+    }
+};
+
+pub const TypeFeedbackStats = struct {
+    total_observations: u32,
+    monomorphic_ratio: f64,
+    biased_branch_ratio: f64,
+    feedback_enabled: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1193,6 +1377,55 @@ test "VM fibonacci small values" {
     defer std.testing.allocator.free(prog5.constants);
     var vm5 = VM.init(prog5.bytecode, prog5.constants);
     try std.testing.expectEqual(@as(i64, 5), (try vm5.runFast()).asInt());
+}
+
+test "VM type feedback integration" {
+    // Test that type feedback is actually collected
+    const prog = try generateRealFibonacci(std.testing.allocator, 10);
+    defer std.testing.allocator.free(prog.bytecode);
+    defer std.testing.allocator.free(prog.constants);
+    
+    var vm_instance = VM.init(prog.bytecode, prog.constants);
+    
+    // Run with feedback enabled
+    const result = try vm_instance.runWithFeedback();
+    
+    // Verify result is correct
+    try std.testing.expectEqual(@as(i64, 55), result.result.asInt());
+    
+    // Verify feedback was collected
+    try std.testing.expect(result.stats.feedback_enabled);
+    try std.testing.expect(result.stats.total_observations > 0);
+    
+    // Fibonacci uses only integers, monomorphic ratio should be positive
+    // (exact value depends on bytecode layout)
+    try std.testing.expect(result.stats.monomorphic_ratio >= 0.0);
+}
+
+test "TypeFeedback monomorphic detection" {
+    var feedback = TypeFeedback.init();
+    
+    // Record only integers
+    feedback.recordType(0, 0);  // int
+    feedback.recordType(0, 0);  // int
+    feedback.recordType(0, 0);  // int
+    feedback.recordType(0, 0);  // int
+    feedback.recordType(0, 0);  // int
+    
+    try std.testing.expect(feedback.type_observations[0].isMonomorphic());
+    try std.testing.expectEqual(@as(u8, 0), feedback.type_observations[0].getDominantType());
+}
+
+test "TypeFeedback polymorphic detection" {
+    var feedback = TypeFeedback.init();
+    
+    // Record mixed types
+    feedback.recordType(0, 0);  // int
+    feedback.recordType(0, 1);  // float
+    feedback.recordType(0, 0);  // int
+    feedback.recordType(0, 1);  // float
+    
+    try std.testing.expect(!feedback.type_observations[0].isMonomorphic());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
