@@ -1009,12 +1009,12 @@ pub const VM = struct {
                 try self.push(b);
             },
             
-            // Arithmetic
+            // Arithmetic - use wrapping to prevent overflow panics
             .ADD => {
                 const b = try self.pop();
                 const a = try self.pop();
                 if (a.tag == .INT and b.tag == .INT) {
-                    try self.push(Value.int(a.asInt() + b.asInt()));
+                    try self.push(Value.int(a.asInt() +% b.asInt()));
                 } else {
                     try self.push(Value.float(a.toFloat() + b.toFloat()));
                 }
@@ -1024,7 +1024,7 @@ pub const VM = struct {
                 const b = try self.pop();
                 const a = try self.pop();
                 if (a.tag == .INT and b.tag == .INT) {
-                    try self.push(Value.int(a.asInt() - b.asInt()));
+                    try self.push(Value.int(a.asInt() -% b.asInt()));
                 } else {
                     try self.push(Value.float(a.toFloat() - b.toFloat()));
                 }
@@ -1034,7 +1034,7 @@ pub const VM = struct {
                 const b = try self.pop();
                 const a = try self.pop();
                 if (a.tag == .INT and b.tag == .INT) {
-                    try self.push(Value.int(a.asInt() * b.asInt()));
+                    try self.push(Value.int(a.asInt() *% b.asInt()));
                 } else {
                     try self.push(Value.float(a.toFloat() * b.toFloat()));
                 }
