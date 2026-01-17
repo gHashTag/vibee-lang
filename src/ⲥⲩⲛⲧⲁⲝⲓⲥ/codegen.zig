@@ -442,6 +442,14 @@ test "generate 999 code" {
         .creation_pattern = null,
         .transformers = &[_]parser.Transformer{},
         .test_generation = null,
+        .source = null,
+        .pas_patterns = null,
+        .benefit = null,
+        .emoji = null,
+        .keyboard_shortcut = null,
+        .state = null,
+        .methods = null,
+        .init_body = null,
         .allocator = std.testing.allocator,
     };
 
