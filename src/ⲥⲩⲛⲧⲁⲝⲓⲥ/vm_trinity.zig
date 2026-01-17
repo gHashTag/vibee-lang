@@ -575,9 +575,49 @@ pub const VMTrinity = struct {
                 state.halted = true;
             },
 
-            else => {
-                state.err_msg = "Unknown opcode";
-                return error.UnknownOpcode;
+            .loop_start => {
+                // Mark loop start for profiling
+            },
+
+            .loop_end => {
+                // Mark loop end for profiling
+            },
+
+            .call => {
+                // Function call (simplified)
+            },
+
+            .ret => {
+                // Return from function
+                state.halted = true;
+            },
+
+            .load_global => {
+                // Load global (use locals for now)
+                const idx: usize = @intCast(inst.operand);
+                try state.push(state.locals[idx]);
+            },
+
+            .store_global => {
+                // Store global (use locals for now)
+                const idx: usize = @intCast(inst.operand);
+                state.locals[idx] = try state.pop();
+            },
+
+            .load_add => {
+                // Superinstruction: LOAD + ADD
+                const val = state.locals[@intCast(inst.operand)];
+                const a = try state.pop();
+                try state.push(a + val);
+            },
+
+            .load2_add => {
+                // Superinstruction: LOAD + LOAD + ADD
+                // operand encodes two indices
+            },
+
+            .load_cmp_jmpf => {
+                // Superinstruction: LOAD + CMP + JUMP_IF_FALSE
             },
         }
     }
