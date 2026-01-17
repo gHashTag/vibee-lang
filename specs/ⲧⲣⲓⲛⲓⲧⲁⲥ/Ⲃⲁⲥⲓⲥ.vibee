@@ -1,0 +1,81 @@
+# Ⲃⲁⲥⲓⲥ - Модуль памяти TRINITY
+# SSOT: trinity_core_ssot.vibee
+
+name: Ⲃⲁⲥⲓⲥ
+version: "φ.1.0"
+language: zig
+module: kernel.memory
+parent: Ⲁⲛⲁⲕⲉⲫⲁⲗⲁⲓⲱⲥⲓⲥ
+level: Ⲁ
+
+sacred_constants:
+  page_size: 4096
+  φ_alignment: 1.618
+  quota_base: 0.382  # 1/φ²
+
+creation_pattern:
+  source: "Memory request"
+  transformer: "φ-allocator"
+  result: "Aligned memory region"
+
+syscalls:
+  alloc:
+    signature: "fn alloc(size: usize) ?*void"
+    pre_conditions:
+      - "size > 0"
+      - "size ≤ quota(level)"
+    post_conditions:
+      - "ptr ≠ null ⟹ valid_region(ptr, size)"
+      - "aligned(ptr, φ_alignment)"
+    implementation: |
+      pub fn alloc(size: usize) ?*void {
+          const aligned_size = alignToGolden(size);
+          if (aligned_size > getQuota(current_level)) return null;
+          return φ_allocator.alloc(aligned_size);
+      }
+  
+  free:
+    signature: "fn free(ptr: *void, size: usize) void"
+    pre_conditions:
+      - "valid_region(ptr, size)"
+    post_conditions:
+      - "¬valid_region(ptr, size)"
+    implementation: |
+      pub fn free(ptr: *void, size: usize) void {
+          if (!isValidRegion(ptr, size)) return;
+          φ_allocator.free(ptr, size);
+          updateQuota(current_level, -@intCast(i64, size));
+      }
+  
+  map:
+    signature: "fn map(virt: usize, phys: usize, flags: u32) !void"
+    pre_conditions:
+      - "valid_physical(phys)"
+      - "aligned(virt, PAGE_SIZE)"
+    post_conditions:
+      - "translate(virt) = phys"
+
+invariants:
+  - name: "unique_ownership"
+    formula: "∀p: allocated(p) ⟹ ∃!owner(p)"
+  - name: "quota_limit"
+    formula: "quota_used(level) ≤ quota(level) × φ^layer"
+  - name: "golden_alignment"
+    formula: "∀ptr: aligned(ptr, φ × base_align)"
+
+behaviors:
+  - name: alloc_respects_quota
+    given: "уровень Ⲁ с quota = 0.382"
+    when: "запрашиваем память > quota"
+    then: "возвращает null"
+    test_cases:
+      - input: {size: 1000000000, level: 0}
+        expected: {result: null}
+  
+  - name: free_releases_quota
+    given: "выделенная память size = 1024"
+    when: "освобождаем память"
+    then: "quota_used уменьшается на size"
+    test_cases:
+      - input: {size: 1024}
+        expected: {quota_delta: -1024}
