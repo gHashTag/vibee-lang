@@ -1,0 +1,170 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# VM CACHE SPECIFICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# СВЯЩЕННАЯ ФОРМУЛА: V = n × 3^k × π^m × φ^p × e^q
+# ЗОЛОТАЯ ИДЕНТИЧНОСТЬ: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+# Based on: CacheX (arXiv:2511.09956) - LLC contention-aware optimization
+# Target: 3-5x speedup through cache optimization
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: vm_cache
+version: "1.0.0"
+language: zig
+module: vm_cache
+
+creation_pattern:
+  source: "Opcode dispatch"
+  transformer: "Cache-aligned handler table"
+  result: "Optimized execution with better cache utilization"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CACHE CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  - name: L1_CACHE_LINE_SIZE
+    value: 64
+    description: "Typical L1 cache line size in bytes"
+  - name: L1_CACHE_SIZE
+    value: 32768
+    description: "32 KiB typical L1 cache"
+  - name: L2_CACHE_SIZE
+    value: 262144
+    description: "256 KiB typical L2 cache"
+  - name: PREFETCH_DISTANCE
+    value: 64
+    description: "Bytes ahead to prefetch"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  - name: HandlerFn
+    kind: function_pointer
+    signature: "*const fn (*CacheAwareVM) anyerror!bool"
+    description: "Opcode handler function type"
+
+  - name: HandlerTable
+    kind: struct
+    alignment: 64  # Cache line aligned
+    fields:
+      - name: handlers
+        type: "[256]HandlerFn"
+        alignment: 64
+    methods:
+      - name: init
+        returns: HandlerTable
+        description: "Initialize handler table with all opcode handlers"
+
+  - name: CacheAwareVM
+    kind: struct
+    description: "VM with cache-optimized layout"
+    fields:
+      # Hot data - first cache line (64 bytes)
+      - name: stack_ptr
+        type: "[*]Value"
+        alignment: 64
+        description: "Hot: stack pointer"
+      - name: sp
+        type: usize
+      - name: bytecode_ptr
+        type: "[*]const u8"
+      - name: ip
+        type: usize
+      - name: constants_ptr
+        type: "[*]const Value"
+      - name: constants_len
+        type: usize
+      # Cold data - second cache line
+      - name: stack
+        type: "[]Value"
+        alignment: 64
+      - name: bytecode
+        type: "[]const u8"
+      - name: constants
+        type: "[]const Value"
+      - name: instructions
+        type: u64
+      - name: cache_prefetches
+        type: u64
+    methods:
+      - name: init
+        params: [bytecode: "[]const u8", constants: "[]const Value"]
+        returns: CacheAwareVM
+      - name: run
+        returns: "!Value"
+        description: "Execute with cache-aware dispatch"
+      - name: prefetchNext
+        inline: true
+        description: "Software prefetch for next instruction"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: cache_aware_execution
+    given: "Bytecode for 10 + 32"
+    when: "Running CacheAwareVM"
+    then: "Returns 42 with cache-optimized dispatch"
+    test_cases:
+      - name: basic_arithmetic
+        input:
+          bytecode: [PUSH_CONST 0, PUSH_CONST 1, ADD, HALT]
+          constants: [10, 32]
+        expected: { result: 42 }
+
+  - name: superinstruction_cache
+    given: "Bytecode using LOAD_ADD"
+    when: "Running CacheAwareVM"
+    then: "Executes with cache-aligned handler"
+    test_cases:
+      - name: load_add
+        input:
+          bytecode: [PUSH_CONST 0, LOAD_ADD 1, HALT]
+          constants: [100, 50]
+        expected: { result: 150 }
+
+  - name: handler_table_alignment
+    given: "Handler table"
+    when: "Checking alignment"
+    then: "Table is 64-byte aligned"
+    test_cases:
+      - name: alignment_check
+        input: {}
+        expected:
+          alignment: 64
+          is_cache_aligned: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_analysis:
+  component: "Cache-Aware VM"
+  current_complexity: "O(1) dispatch per opcode"
+  theoretical_lower_bound: "O(1)"
+  gap: 0
+  
+  scientific_basis:
+    - paper: "CacheX (arXiv:2511.09956)"
+      finding: "Cache-aware scheduling improves throughput 15-30%"
+      relevance: "Cache line alignment reduces misses"
+      
+  patterns_applicable:
+    - pattern: CACHE_AWARE
+      reason: "Align handlers to cache lines"
+      potential_speedup: "1.5-3x"
+      
+    - pattern: PRE
+      reason: "Software prefetch next instruction"
+      potential_speedup: "1.1-1.2x"
+      
+  prediction:
+    target: "3-5x speedup"
+    current: "1.22x (baseline)"
+    predicted: "3x with full cache optimization"
+    confidence: 0.45
+    timeline: "Already implemented (partial)"

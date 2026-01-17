@@ -1,0 +1,292 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# VM ISOLATION SPECIFICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# СВЯЩЕННАЯ ФОРМУЛА: V = n × 3^k × π^m × φ^p × e^q
+# ЗОЛОТАЯ ИДЕНТИЧНОСТЬ: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+# Based on:
+# - Cross-Domain Attacks (arXiv:2512.04260)
+# - Arm CCA (arXiv:2512.01594)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: vm_isolation
+version: "1.0.0"
+language: zig
+module: vm_isolation
+
+creation_pattern:
+  source: "Memory regions"
+  transformer: "MPK domain assignment"
+  result: "Isolated memory domains"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MEMORY DOMAINS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  - name: MemoryDomain
+    kind: enum
+    base_type: u4
+    values:
+      - name: VM_CORE
+        value: 0
+        description: "VM core code - read-execute only"
+        permissions: { read: true, write: false, execute: true }
+      - name: VM_HEAP
+        value: 1
+        description: "Managed heap for VM objects"
+        permissions: { read: true, write: true, execute: false }
+      - name: VM_STACK
+        value: 2
+        description: "Execution stack"
+        permissions: { read: true, write: true, execute: false }
+      - name: VM_UNTRUSTED
+        value: 3
+        description: "User-provided untrusted data"
+        permissions: { read: true, write: true, execute: false }
+    methods:
+      - name: permissions
+        returns: Permissions
+      - name: name
+        returns: "[]const u8"
+
+  - name: Permissions
+    kind: struct
+    fields:
+      - name: read
+        type: bool
+      - name: write
+        type: bool
+      - name: execute
+        type: bool
+    methods:
+      - name: toMPKRights
+        returns: u2
+        description: "Convert to MPK rights: 0=full, 1=write-disable, 2=no-access"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MPK (Memory Protection Keys)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  - name: MPK
+    kind: struct
+    description: "Intel Memory Protection Keys interface"
+    methods:
+      - name: isSupported
+        returns: bool
+        description: "Check CPUID for PKU support"
+      - name: allocKey
+        returns: "!u4"
+        description: "Allocate protection key (0-15)"
+      - name: freeKey
+        params: [key: u4]
+      - name: protectMemory
+        params: [addr: "[*]u8", len: usize, key: u4]
+        returns: "!void"
+      - name: readPKRU
+        inline: true
+        returns: u32
+        description: "Read PKRU register"
+        implementation: |
+          asm volatile ("rdpkru"
+              : [pkru] "={eax}" (pkru)
+              : [ecx] "{ecx}" (@as(u32, 0))
+              : "edx"
+          );
+      - name: writePKRU
+        inline: true
+        params: [pkru: u32]
+        description: "Write PKRU register"
+        implementation: |
+          asm volatile ("wrpkru"
+              :
+              : [eax] "{eax}" (pkru),
+                [ecx] "{ecx}" (@as(u32, 0)),
+                [edx] "{edx}" (@as(u32, 0))
+          );
+      - name: setKeyPermissions
+        params: [pkru: u32, key: u4, rights: u2]
+        returns: u32
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DOMAIN MANAGER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  - name: DomainManager
+    kind: struct
+    fields:
+      - name: keys
+        type: "[4]u4"
+        description: "Protection keys for each domain"
+      - name: current_domain
+        type: MemoryDomain
+      - name: transitions
+        type: u64
+        description: "Domain transition count"
+      - name: mpk_supported
+        type: bool
+    methods:
+      - name: init
+        returns: DomainManager
+      - name: deinit
+      - name: switchDomain
+        params: [target: MemoryDomain]
+        description: "Switch to different memory domain via WRPKRU"
+      - name: inDomain
+        params: [domain: MemoryDomain, "comptime func: anytype"]
+        returns: "@TypeOf(func())"
+        description: "Execute code in specific domain"
+      - name: canAccess
+        params: [target: MemoryDomain]
+        returns: bool
+        description: "Check if access allowed from current domain"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ISOLATED VM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  - name: IsolatedVM
+    kind: struct
+    fields:
+      - name: domains
+        type: DomainManager
+      - name: stack
+        type: "[4096]Value"
+        domain: VM_STACK
+      - name: sp
+        type: usize
+      - name: heap
+        type: "[16384]Value"
+        domain: VM_HEAP
+      - name: hp
+        type: usize
+      - name: bytecode
+        type: "[]const u8"
+        domain: VM_CORE
+      - name: ip
+        type: usize
+      - name: constants
+        type: "[]const Value"
+        domain: VM_CORE
+      - name: instructions
+        type: u64
+      - name: isolation_violations
+        type: u64
+    methods:
+      - name: push
+        params: [v: Value]
+        returns: "!void"
+        errors: [IsolationViolation]
+        description: "Push to stack (requires VM_STACK domain)"
+      - name: pop
+        returns: "!Value"
+        errors: [IsolationViolation]
+      - name: heapAlloc
+        params: [value: Value]
+        returns: "!usize"
+        errors: [IsolationViolation]
+      - name: heapRead
+        params: [addr: usize]
+        returns: "!Value"
+        errors: [IsolationViolation]
+      - name: getStats
+        returns: IsolationStats
+
+  - name: IsolationStats
+    kind: struct
+    fields:
+      - name: domain_transitions
+        type: u64
+      - name: isolation_violations
+        type: u64
+      - name: mpk_supported
+        type: bool
+      - name: current_domain
+        type: MemoryDomain
+    methods:
+      - name: print
+        params: [writer: anytype]
+        returns: "!void"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: domain_permissions
+    given: "Memory domain definitions"
+    when: "Checking VM_CORE permissions"
+    then: "Returns read=true, write=false, execute=true"
+    test_cases:
+      - name: core_permissions
+        input: { domain: VM_CORE }
+        expected: { read: true, write: false, execute: true }
+      - name: heap_permissions
+        input: { domain: VM_HEAP }
+        expected: { read: true, write: true, execute: false }
+
+  - name: domain_transitions
+    given: "DomainManager in VM_CORE"
+    when: "Switching to VM_HEAP"
+    then: "Current domain changes, transition count increments"
+    test_cases:
+      - name: switch_domain
+        input: { from: VM_CORE, to: VM_HEAP }
+        expected: { current: VM_HEAP, transitions: 1 }
+      - name: same_domain_no_transition
+        input: { from: VM_CORE, to: VM_CORE }
+        expected: { transitions: 0 }
+
+  - name: access_control
+    given: "DomainManager in VM_UNTRUSTED"
+    when: "Attempting to access VM_CORE"
+    then: "Access denied"
+    test_cases:
+      - name: untrusted_cannot_access_core
+        input: { current: VM_UNTRUSTED, target: VM_CORE }
+        expected: { can_access: false }
+      - name: core_can_access_all
+        input: { current: VM_CORE, target: VM_HEAP }
+        expected: { can_access: true }
+
+  - name: mpk_pkru_manipulation
+    given: "PKRU register value"
+    when: "Setting key permissions"
+    then: "Correct bits are set"
+    test_cases:
+      - name: set_key_0_readonly
+        input: { pkru: 0, key: 0, rights: 1 }
+        expected: { result_bits_0_1: 0b01 }
+      - name: set_key_1_noaccess
+        input: { pkru: 0, key: 1, rights: 2 }
+        expected: { result_bits_2_3: 0b10 }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_analysis:
+  component: "Memory Isolation"
+  current_complexity: "O(1) domain switch"
+  theoretical_lower_bound: "O(1)"
+  gap: 0
+  
+  scientific_basis:
+    - paper: "Cross-Domain Attacks (arXiv:2512.04260)"
+      finding: "Weak memory isolation enables exploitation"
+      relevance: "Justifies need for MPK domains"
+    - paper: "Arm CCA (arXiv:2512.01594)"
+      finding: "Hardware isolation 209x faster than encryption"
+      relevance: "MPK provides similar hardware-enforced isolation"
+      
+  patterns_applicable:
+    - pattern: HW
+      reason: "Hardware-enforced isolation via MPK"
+      potential_speedup: "209x vs software isolation"
+      
+  prediction:
+    target: "Full MPK integration"
+    current: "Software fallback"
+    predicted: "Hardware-enforced on supported CPUs"
+    confidence: 0.55
+    timeline: "6-12 months"

@@ -1,0 +1,168 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# VM CORE SPECIFICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# СВЯЩЕННАЯ ФОРМУЛА: V = n × 3^k × π^m × φ^p × e^q
+# ЗОЛОТАЯ ИДЕНТИЧНОСТЬ: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: vm_core
+version: "1.0.0"
+language: zig
+module: vm_core
+
+creation_pattern:
+  source: "Bytecode + Constants"
+  transformer: "Stack Machine Execution"
+  result: "Computed Value"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VALUE TYPE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  - name: ValueTag
+    kind: enum
+    values: [NIL, BOOL, INT, FLOAT]
+    
+  - name: Value
+    kind: packed_struct
+    fields:
+      - name: tag
+        type: ValueTag
+      - name: data
+        type: u64
+    methods:
+      - name: nil
+        returns: Value
+        description: "Create nil value"
+      - name: boolean
+        params: [b: bool]
+        returns: Value
+      - name: int
+        params: [i: i64]
+        returns: Value
+      - name: float
+        params: [f: f64]
+        returns: Value
+      - name: toFloat
+        returns: f64
+        description: "Convert any value to float"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STACK
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  - name: Stack
+    kind: generic_struct
+    params: [size: comptime_int]
+    fields:
+      - name: data
+        type: "[size]Value"
+      - name: sp
+        type: usize
+    methods:
+      - name: push
+        params: [value: Value]
+        returns: "!void"
+        errors: [StackOverflow]
+      - name: pop
+        returns: "!Value"
+        errors: [StackUnderflow]
+      - name: peek
+        returns: Value
+      - name: pushFast
+        inline: true
+        params: [value: Value]
+      - name: popFast
+        inline: true
+        returns: Value
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BYTECODE READER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  - name: BytecodeReader
+    kind: struct
+    fields:
+      - name: bytecode
+        type: "[]const u8"
+      - name: ip
+        type: usize
+    methods:
+      - name: readByte
+        returns: u8
+      - name: readU16
+        returns: u16
+      - name: readU16Fast
+        inline: true
+        returns: u16
+      - name: atEnd
+        returns: bool
+      - name: jump
+        params: [addr: usize]
+      - name: jumpBack
+        params: [offset: usize]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: value_creation
+    given: "Need to create a VM value"
+    when: "Calling Value.int(42)"
+    then: "Returns Value with tag=INT and data=42"
+    test_cases:
+      - name: create_int
+        input: { value: 42 }
+        expected: { tag: INT, asInt: 42 }
+      - name: create_float
+        input: { value: 3.14 }
+        expected: { tag: FLOAT }
+      - name: create_bool
+        input: { value: true }
+        expected: { tag: BOOL, asBool: true }
+      - name: create_nil
+        input: {}
+        expected: { tag: NIL }
+
+  - name: stack_operations
+    given: "An empty stack"
+    when: "Push 1, 2, 3 then pop"
+    then: "Returns 3, 2, 1 in order"
+    test_cases:
+      - name: push_pop_order
+        input: { values: [1, 2, 3] }
+        expected: { pop_order: [3, 2, 1] }
+      - name: stack_overflow
+        input: { push_count: 17 }  # Stack size 16
+        expected: { error: StackOverflow }
+      - name: stack_underflow
+        input: { pop_empty: true }
+        expected: { error: StackUnderflow }
+
+  - name: bytecode_reading
+    given: "Bytecode [0x01, 0x00, 0x02, 0xFF]"
+    when: "Reading bytes and u16"
+    then: "Returns correct values"
+    test_cases:
+      - name: read_byte
+        input: { bytecode: [0x01, 0x00, 0x02, 0xFF] }
+        expected: { first_byte: 0x01 }
+      - name: read_u16
+        input: { bytecode: [0x01, 0x00, 0x02, 0xFF], skip: 1 }
+        expected: { u16_value: 0x0002 }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_analysis:
+  component: "VM Core Data Structures"
+  current_complexity: "O(1) for all operations"
+  theoretical_lower_bound: "Ω(1)"
+  gap: 0
+  patterns_applicable: []
+  prediction:
+    improvement_possible: false
+    reason: "Already at theoretical optimum for basic operations"

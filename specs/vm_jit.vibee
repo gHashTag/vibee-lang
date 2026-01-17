@@ -1,0 +1,301 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# VM JIT SPECIFICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# СВЯЩЕННАЯ ФОРМУЛА: V = n × 3^k × π^m × φ^p × e^q
+# ЗОЛОТАЯ ИДЕНТИЧНОСТЬ: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: vm_jit
+version: "1.0.0"
+language: zig
+module: vm_jit
+
+creation_pattern:
+  source: "Hot bytecode trace"
+  transformer: "Trace compiler"
+  result: "Optimized IR / Native code"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRACE RECORDING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  - name: TraceEntry
+    kind: struct
+    fields:
+      - name: opcode
+        type: Opcode
+      - name: operand
+        type: u16
+      - name: left_type
+        type: ValueTag
+        description: "Type of left operand for specialization"
+      - name: right_type
+        type: ValueTag
+      - name: bc_offset
+        type: u16
+
+  - name: Trace
+    kind: struct
+    constants:
+      - name: MAX_TRACE_LENGTH
+        value: 256
+    fields:
+      - name: entries
+        type: "[MAX_TRACE_LENGTH]TraceEntry"
+      - name: length
+        type: u16
+      - name: loop_start
+        type: u16
+      - name: loop_end
+        type: u16
+      - name: iteration_count
+        type: u32
+      - name: is_compiled
+        type: bool
+      - name: native_code
+        type: "?[]const u8"
+    methods:
+      - name: record
+        params: [entry: TraceEntry]
+      - name: clear
+
+  - name: TraceRecorder
+    kind: struct
+    constants:
+      - name: MAX_TRACES
+        value: 32
+      - name: DEFAULT_HOT_THRESHOLD
+        value: 1000
+    fields:
+      - name: traces
+        type: "[MAX_TRACES]Trace"
+      - name: trace_count
+        type: u8
+      - name: recording_trace
+        type: "?*Trace"
+      - name: hot_threshold
+        type: u32
+    methods:
+      - name: startRecording
+        params: [loop_start: u16, loop_end: u16]
+      - name: stopRecording
+      - name: recordInstruction
+        params: [opcode: Opcode, operand: u16, left_type: ValueTag, right_type: ValueTag, bc_offset: u16]
+      - name: isHotLoop
+        params: [loop_start: u16, loop_end: u16]
+        returns: bool
+      - name: recordLoopIteration
+        params: [loop_start: u16, loop_end: u16]
+      - name: getTrace
+        params: [loop_start: u16, loop_end: u16]
+        returns: "?*Trace"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INTERMEDIATE REPRESENTATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  - name: IROpcode
+    kind: enum
+    base_type: u8
+    values:
+      # Constants
+      - CONST_INT
+      - CONST_FLOAT
+      # Type-specialized arithmetic
+      - ADD_INT
+      - ADD_FLOAT
+      - SUB_INT
+      - SUB_FLOAT
+      - MUL_INT
+      - MUL_FLOAT
+      - DIV_FLOAT
+      # Comparison
+      - LT_INT
+      - LT_FLOAT
+      - LE_INT
+      - LE_FLOAT
+      # Control flow
+      - JUMP
+      - BRANCH_TRUE
+      - BRANCH_FALSE
+      # Stack
+      - LOAD_LOCAL
+      - STORE_LOCAL
+      # Guards
+      - GUARD_INT
+      - GUARD_FLOAT
+      - DEOPT
+      # Return
+      - RETURN
+
+  - name: IRInstruction
+    kind: struct
+    fields:
+      - name: opcode
+        type: IROpcode
+      - name: dest
+        type: u8
+        description: "Destination register"
+      - name: src1
+        type: u8
+      - name: src2
+        type: u8
+      - name: imm
+        type: i64
+        description: "Immediate value"
+    constructors:
+      - name: constInt
+        params: [dest: u8, value: i64]
+      - name: addInt
+        params: [dest: u8, src1: u8, src2: u8]
+      - name: mulInt
+        params: [dest: u8, src1: u8, src2: u8]
+      - name: ltInt
+        params: [dest: u8, src1: u8, src2: u8]
+      - name: guardInt
+        params: [src: u8, deopt_target: i64]
+      - name: ret
+        params: [src: u8]
+
+  - name: IRFunction
+    kind: struct
+    constants:
+      - name: MAX_IR_LENGTH
+        value: 512
+    fields:
+      - name: instructions
+        type: "[MAX_IR_LENGTH]IRInstruction"
+      - name: length
+        type: u16
+      - name: num_registers
+        type: u8
+    methods:
+      - name: emit
+        params: [inst: IRInstruction]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRACE COMPILER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  - name: TraceCompiler
+    kind: struct
+    methods:
+      - name: compileToIR
+        params: [trace: "*const Trace"]
+        returns: IRFunction
+        description: "Compile bytecode trace to type-specialized IR"
+      - name: optimizeIR
+        params: [ir: "*IRFunction"]
+        description: "Apply optimizations: constant folding, dead code elimination"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# IR INTERPRETER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  - name: IRInterpreter
+    kind: struct
+    fields:
+      - name: registers
+        type: "[256]i64"
+    methods:
+      - name: execute
+        params: [ir: "*const IRFunction"]
+        returns: i64
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: trace_recording
+    given: "A loop executing multiple times"
+    when: "Loop iterations exceed hot_threshold"
+    then: "Loop is marked as hot"
+    test_cases:
+      - name: hot_detection
+        input: { loop_start: 5, loop_end: 15, iterations: 1500, threshold: 1000 }
+        expected: { is_hot: true }
+      - name: cold_loop
+        input: { loop_start: 5, loop_end: 15, iterations: 100, threshold: 1000 }
+        expected: { is_hot: false }
+
+  - name: ir_generation
+    given: "A trace with PUSH_CONST, ADD"
+    when: "Compiling to IR"
+    then: "Generates type-specialized IR"
+    test_cases:
+      - name: int_add_specialization
+        input:
+          trace: [
+            { opcode: PUSH_CONST, operand: 5, left_type: INT },
+            { opcode: PUSH_CONST, operand: 3, left_type: INT },
+            { opcode: ADD, left_type: INT, right_type: INT }
+          ]
+        expected:
+          ir: [CONST_INT, CONST_INT, ADD_INT]
+
+  - name: ir_execution
+    given: "IR for 5 + 3"
+    when: "Executing in IR interpreter"
+    then: "Returns 8"
+    test_cases:
+      - name: simple_add
+        input:
+          ir: [
+            { opcode: CONST_INT, dest: 0, imm: 5 },
+            { opcode: CONST_INT, dest: 1, imm: 3 },
+            { opcode: ADD_INT, dest: 0, src1: 0, src2: 1 },
+            { opcode: RETURN, src1: 0 }
+          ]
+        expected: { result: 8 }
+
+  - name: constant_folding
+    given: "IR with CONST 5, CONST 3, ADD"
+    when: "Applying optimizations"
+    then: "Folds to CONST 8"
+    test_cases:
+      - name: fold_add
+        input:
+          ir: [
+            { opcode: CONST_INT, dest: 0, imm: 5 },
+            { opcode: CONST_INT, dest: 1, imm: 3 },
+            { opcode: ADD_INT, dest: 0, src1: 0, src2: 1 }
+          ]
+        expected:
+          optimized_first: { opcode: CONST_INT, imm: 8 }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_analysis:
+  component: "Tracing JIT"
+  current_complexity: "O(n) interpretation"
+  theoretical_lower_bound: "O(1) native execution"
+  gap: "n (linear vs constant)"
+  
+  patterns_applicable:
+    - pattern: D&C
+      reason: "Trace compilation divides hot/cold paths"
+      potential_speedup: "10-50x for hot loops"
+      
+    - pattern: PRE
+      reason: "Type guards enable specialization"
+      potential_speedup: "2-5x via monomorphic dispatch"
+      
+    - pattern: MLS
+      reason: "ML could guide trace selection"
+      potential_speedup: "1.5x better trace quality"
+      
+  prediction:
+    target: "Full native code generation"
+    current: "IR interpretation"
+    predicted: "x86-64/ARM64 emission"
+    confidence: 0.25
+    timeline: "12-24 months"
+    requirements:
+      - "Register allocation"
+      - "Code emission"
+      - "OSR (On-Stack Replacement)"
+      - "Deoptimization"

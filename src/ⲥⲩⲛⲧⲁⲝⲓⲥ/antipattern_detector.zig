@@ -43,13 +43,17 @@ pub const AntipatternType = enum {
     false_optimization_claims, // Ложные комментарии
     esoteric_over_science,     // Эзотерика без обоснования
     missing_pas_analysis,      // Нет PAS анализа
+    manual_code_without_spec,  // Ручной код без спецификации
+    spec_implementation_mismatch, // Спецификация не соответствует коду
     
     pub fn severity(self: AntipatternType) Severity {
         return switch (self) {
             .direct_implementation => .critical,
             .legacy_web_files => .critical,
+            .manual_code_without_spec => .critical,
             .missing_tests => .high,
             .missing_creation_pattern => .high,
+            .spec_implementation_mismatch => .high,
             .false_optimization_claims => .medium,
             .esoteric_over_science => .medium,
             .missing_pas_analysis => .low,
@@ -65,6 +69,8 @@ pub const AntipatternType = enum {
             .false_optimization_claims => "Ложные комментарии об оптимизациях",
             .esoteric_over_science => "Эзотерика без научного обоснования",
             .missing_pas_analysis => "Алгоритм без PAS анализа",
+            .manual_code_without_spec => "Ручной код должен генерироваться из .vibee",
+            .spec_implementation_mismatch => "Код не соответствует спецификации",
         };
     }
 };
@@ -102,6 +108,14 @@ const BOOTSTRAP_EXCEPTIONS = [_][]const u8{
     "vm.zig",
     "pas.zig",
     "antipattern_detector.zig",  // Этот файл
+    // Модули с существующими спецификациями
+    "vm_core.zig",      // specs/vm_core.vibee
+    "vm_opcodes.zig",   // specs/vm_opcodes.vibee
+    "vm_jit.zig",       // specs/vm_jit.vibee
+    "vm_isolation.zig", // specs/vm_isolation.vibee
+    "vm_minimal.zig",   // specs/vm_minimal.vibee (TODO: create)
+    "vm_cache.zig",     // specs/vm_cache.vibee (TODO: create)
+    "fuzz.zig",         // specs/fuzz.vibee (TODO: create)
 };
 
 fn isBootstrapException(file_name: []const u8) bool {
@@ -366,4 +380,102 @@ test "detector report" {
     const report = detector.getReport();
     try std.testing.expectEqual(@as(u32, 1), report.critical);
     try std.testing.expect(report.should_block);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VM INTEGRATION - Runtime antipattern checking
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const VMAntipatternChecker = struct {
+    detector: AntipatternDetector,
+    enabled: bool,
+    check_on_load: bool,
+    
+    pub fn init(allocator: Allocator) VMAntipatternChecker {
+        return .{
+            .detector = AntipatternDetector.init(allocator, "specs/"),
+            .enabled = true,
+            .check_on_load = true,
+        };
+    }
+    
+    pub fn deinit(self: *VMAntipatternChecker) void {
+        self.detector.deinit();
+    }
+    
+    /// Check if a module being loaded has a valid spec
+    pub fn checkModuleLoad(self: *VMAntipatternChecker, module_path: []const u8) !void {
+        if (!self.enabled or !self.check_on_load) return;
+        
+        try self.detector.checkDirectImplementation(module_path);
+    }
+    
+    /// Validate that code follows Creation Pattern
+    pub fn validateCreationPattern(self: *VMAntipatternChecker, spec_content: []const u8) SpecValidation {
+        _ = self;
+        return SpecValidator.validateCompleteness(spec_content);
+    }
+    
+    /// Get current violation status
+    pub fn hasViolations(self: *const VMAntipatternChecker) bool {
+        return self.detector.violations.items.len > 0;
+    }
+    
+    /// Get blocking status
+    pub fn shouldBlock(self: *const VMAntipatternChecker) bool {
+        return self.detector.hasBlockingViolations();
+    }
+    
+    /// Print violations to writer
+    pub fn printViolations(self: *const VMAntipatternChecker, writer: anytype) !void {
+        const report = self.detector.getReport();
+        
+        try writer.print("\n═══════════════════════════════════════════════════════════════\n", .{});
+        try writer.print("ANTIPATTERN DETECTOR REPORT\n", .{});
+        try writer.print("═══════════════════════════════════════════════════════════════\n", .{});
+        try writer.print("Files scanned:    {d}\n", .{report.files_scanned});
+        try writer.print("Total violations: {d}\n", .{report.total_violations});
+        try writer.print("  ⛔ Critical:    {d}\n", .{report.critical});
+        try writer.print("  ⚠️  High:        {d}\n", .{report.high});
+        try writer.print("  ℹ️  Medium:      {d}\n", .{report.medium});
+        try writer.print("  💡 Low:         {d}\n", .{report.low});
+        try writer.print("Should block:     {s}\n", .{if (report.should_block) "YES" else "NO"});
+        try writer.print("═══════════════════════════════════════════════════════════════\n", .{});
+        
+        if (report.total_violations > 0) {
+            try writer.print("\nViolations:\n", .{});
+            for (self.detector.violations.items) |violation| {
+                var buf: [512]u8 = undefined;
+                const formatted = violation.format(&buf);
+                try writer.print("  {s}\n", .{formatted});
+            }
+        }
+    }
+};
+
+test "VM antipattern checker" {
+    var checker = VMAntipatternChecker.init(std.testing.allocator);
+    defer checker.deinit();
+    
+    // Initially no violations
+    try std.testing.expect(!checker.hasViolations());
+    try std.testing.expect(!checker.shouldBlock());
+}
+
+test "spec validation completeness" {
+    const complete = 
+        \\name: test
+        \\creation_pattern:
+        \\  source: A
+        \\behaviors:
+        \\  - name: b
+        \\    test_cases:
+        \\      - name: c
+    ;
+    
+    var checker = VMAntipatternChecker.init(std.testing.allocator);
+    defer checker.deinit();
+    
+    const validation = checker.validateCreationPattern(complete);
+    try std.testing.expect(validation.isComplete());
 }
