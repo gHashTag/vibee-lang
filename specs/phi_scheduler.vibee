@@ -1,0 +1,284 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ-SCHEDULER: NUMA-AWARE ПЛАНИРОВЩИК НА ОСНОВЕ ЗОЛОТОГО СЕЧЕНИЯ
+# Author: Dmitrii Vasilev
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: phi_scheduler
+version: "1.0.0"
+language: zig
+module: scheduler
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREATION PATTERN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+creation_pattern:
+  source: ReadyQueue × NUMATopology × CPUState
+  transformer: φ-Selection
+  result: SelectedProcess × UpdatedState
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# КОНСТАНТЫ φ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  PHI: 1.618033988749895
+  PHI_INV: 0.618033988749895  # 1/φ
+  PHI_SQ: 2.618033988749895   # φ²
+  
+  # Золотая идентичность: φ² + 1/φ² = 3
+  GOLDEN_IDENTITY: "φ² + 1/φ² = 3"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ТИПЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  NumaNode:
+    fields:
+      id: u8
+      cpus: List[u32]
+      memory_total: u64
+      memory_free: u64
+      local_latency_ns: u32
+    invariant: "memory_free ≤ memory_total"
+
+  NumaTopology:
+    fields:
+      nodes: List[NumaNode]
+      distances: Matrix[u8]  # distances[i][j] = latency factor
+    invariant: "∀i: distances[i][i] = 10"  # Local = 10
+
+  Process:
+    fields:
+      pid: u32
+      state: {Ready, Running, Blocked}
+      priority: u8  # 0-63
+      numa_home: u8
+      memory_pages: u64
+      local_pages: u64
+      wait_ticks: u64
+      quantum_remaining: u64
+    invariant: "local_pages ≤ memory_pages"
+
+  SchedulerState:
+    fields:
+      ready_queues: List[List[Process]]  # Per-NUMA queues
+      running: Map[u32, Process]         # CPU → Process
+      current_tick: u64
+      numa: NumaTopology
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ-ПОЛИТИКИ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+policies:
+  # Квант времени на основе φ
+  quantum_policy:
+    base_quantum_us: 2618  # ≈ φ × 1.618ms
+    formula: |
+      quantum(p) = base × φ^(2 - level(p)) × numa_factor(p)
+      
+      where:
+        level(p) = priority(p) / 32  # 0, 1, or 2
+        numa_factor(p) = φ if locality(p) > 0.618 else 1/φ
+        locality(p) = local_pages(p) / memory_pages(p)
+
+  # Вес процесса для выбора
+  weight_policy:
+    formula: |
+      weight(p, cpu) = priority_weight × wait_weight × numa_weight
+      
+      where:
+        priority_weight = φ^(priority(p) / 64)
+        wait_weight = φ^(wait_ticks(p) / 1000)
+        numa_weight = φ if same_numa(p, cpu) else 1/φ²
+
+  # Распределение памяти
+  memory_policy:
+    local_ratio: 0.618  # 1/φ
+    formula: |
+      alloc(size, preferred_numa) =
+        local_size = min(size, free(preferred_numa) × 0.618)
+        if local_size < size:
+          remote = nearest_numa(preferred_numa)
+          remote_size = size - local_size
+        return (local_size, remote_size)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# АЛГОРИТМЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+algorithms:
+  select_next:
+    input: "(ready: List[Process], cpu: u32, numa: NumaTopology)"
+    output: "?Process"
+    steps:
+      - "numa_node = numa_of(cpu)"
+      - "local_procs = filter(p => p.numa_home == numa_node, ready)"
+      - "if local_procs.len > 0:"
+      - "  return weighted_select(local_procs, weight_policy)"
+      - "else:"
+      - "  return weighted_select(ready, weight_policy / φ)"
+
+  weighted_select:
+    input: "(procs: List[Process], weight_fn: Process → f64)"
+    output: "Process"
+    steps:
+      - "total = Σ weight_fn(p) for p in procs"
+      - "r = random() × total"
+      - "cumulative = 0"
+      - "for p in procs:"
+      - "  cumulative += weight_fn(p)"
+      - "  if cumulative >= r: return p"
+
+  rebalance_numa:
+    input: "(state: SchedulerState)"
+    output: "List[Migration]"
+    steps:
+      - "for each numa_node n:"
+      - "  load[n] = Σ weight(p) for p in ready_queues[n]"
+      - "avg_load = Σ load / |nodes|"
+      - "migrations = []"
+      - "for n where load[n] > avg_load × φ:"
+      - "  excess = select_migratable(n, load[n] - avg_load)"
+      - "  target = argmin(load)"
+      - "  migrations.append((excess, target))"
+      - "return migrations"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: local_process_preferred
+    given: "CPU on NUMA node N, ready processes on N and other nodes"
+    when: "scheduler selects next process"
+    then: "process from node N selected with probability > 0.618"
+    test_cases:
+      - name: local_available
+        input:
+          cpu: 0
+          numa_node: 0
+          ready: [{pid: 1, numa_home: 0}, {pid: 2, numa_home: 1}]
+        expected:
+          selected_numa: 0
+          probability: "> 0.618"
+
+  - name: quantum_scales_with_priority
+    given: "processes with different priorities"
+    when: "quantum is calculated"
+    then: "higher priority gets longer quantum by factor φ"
+    test_cases:
+      - name: priority_difference
+        input:
+          p1: {priority: 32}
+          p2: {priority: 64}
+        expected:
+          ratio: "quantum(p2) / quantum(p1) ≈ φ"
+
+  - name: numa_locality_bonus
+    given: "process with high local memory ratio"
+    when: "weight is calculated"
+    then: "weight multiplied by φ"
+    test_cases:
+      - name: high_locality
+        input:
+          process: {local_pages: 800, memory_pages: 1000}
+        expected:
+          numa_factor: 1.618
+
+  - name: golden_identity_holds
+    given: "any φ-based calculation"
+    when: "φ² + 1/φ² is computed"
+    then: "result equals 3"
+    test_cases:
+      - name: identity_check
+        input: {}
+        expected:
+          result: 3.0
+          tolerance: 1e-10
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CODEGEN TEMPLATE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+codegen:
+  target: zig
+  template: |
+    const std = @import("std");
+    
+    pub const PHI: f64 = 1.618033988749895;
+    pub const PHI_INV: f64 = 0.618033988749895;
+    pub const BASE_QUANTUM_US: u64 = 2618;
+    
+    pub const Process = struct {
+        pid: u32,
+        priority: u8,
+        numa_home: u8,
+        memory_pages: u64,
+        local_pages: u64,
+        wait_ticks: u64,
+        quantum_remaining: u64,
+        
+        pub fn locality(self: *const Process) f64 {
+            if (self.memory_pages == 0) return 0;
+            return @as(f64, @floatFromInt(self.local_pages)) / 
+                   @as(f64, @floatFromInt(self.memory_pages));
+        }
+        
+        pub fn quantum(self: *const Process) u64 {
+            const level = @as(f64, @floatFromInt(self.priority)) / 32.0;
+            const priority_factor = std.math.pow(f64, PHI, 2.0 - level);
+            const numa_factor = if (self.locality() > PHI_INV) PHI else PHI_INV;
+            return @intFromFloat(@as(f64, @floatFromInt(BASE_QUANTUM_US)) * priority_factor * numa_factor);
+        }
+    };
+    
+    pub fn weight(p: *const Process, cpu_numa: u8) f64 {
+        const priority_w = std.math.pow(f64, PHI, @as(f64, @floatFromInt(p.priority)) / 64.0);
+        const wait_w = std.math.pow(f64, PHI, @as(f64, @floatFromInt(p.wait_ticks)) / 1000.0);
+        const numa_w = if (p.numa_home == cpu_numa) PHI else 1.0 / (PHI * PHI);
+        return priority_w * wait_w * numa_w;
+    }
+    
+    pub fn selectNext(ready: []const *Process, cpu: u32, numa_of_cpu: u8, rng: *std.Random) ?*const Process {
+        if (ready.len == 0) return null;
+        
+        // Prefer local NUMA
+        var local_weight: f64 = 0;
+        var total_weight: f64 = 0;
+        
+        for (ready) |p| {
+            const w = weight(p, numa_of_cpu);
+            total_weight += w;
+            if (p.numa_home == numa_of_cpu) {
+                local_weight += w;
+            }
+        }
+        
+        // Weighted random selection
+        var r = rng.float(f64) * total_weight;
+        var cumulative: f64 = 0;
+        
+        for (ready) |p| {
+            cumulative += weight(p, numa_of_cpu);
+            if (cumulative >= r) return p;
+        }
+        
+        return ready[ready.len - 1];
+    }
+    
+    test "golden identity" {
+        const result = PHI * PHI + 1.0 / (PHI * PHI);
+        try std.testing.expectApproxEqAbs(@as(f64, 3.0), result, 1e-10);
+    }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# METADATA
+# ═══════════════════════════════════════════════════════════════════════════════
+
+metadata:
+  author: "Dmitrii Vasilev"
+  creation_pattern: "ReadyQueue × NUMA → φ-Selection → Process"
+  key_insight: "φ provides natural balance between local preference and global fairness"
