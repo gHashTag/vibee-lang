@@ -44,8 +44,9 @@ pub const INV_PHI_SQUARED: f64 = 1.0 / PHI_SQUARED; // ≈ 0.382
 pub const GOLDEN_IDENTITY: f64 = 3.0;
 
 /// Tier transition thresholds (based on φ powers)
-pub const COLD_TO_WARM_THRESHOLD: u64 = 100; // ~φ^9 = 76.01
-pub const WARM_TO_HOT_THRESHOLD: u64 = 10000; // ~φ^18 = 5778
+/// OPTIMIZED: Lowered from 100 to 50 for faster tier promotion (PAS-2026-002)
+pub const COLD_TO_WARM_THRESHOLD: u64 = 50; // ~φ^8 = 47 (was 100)
+pub const WARM_TO_HOT_THRESHOLD: u64 = 5000; // ~φ^16 = 2584 (was 10000)
 pub const DEOPT_RATE_THRESHOLD: f64 = INV_PHI_SQUARED; // 0.382
 
 // ═══════════════════════════════════════════════════════════════
