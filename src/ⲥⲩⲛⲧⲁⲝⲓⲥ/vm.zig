@@ -1017,6 +1017,84 @@ pub fn generateFibonacciBytecode(allocator: std.mem.Allocator, n: i64) !struct {
     };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// REAL RECURSIVE FIBONACCI - Честный тест производительности
+// ═══════════════════════════════════════════════════════════════════════════════
+// fib(n) = n if n <= 1 else fib(n-1) + fib(n-2)
+// Это НАСТОЯЩИЙ рекурсивный Fibonacci с CALL/RET
+
+pub fn generateRealFibonacci(allocator: std.mem.Allocator, n: i64) !struct { bytecode: []u8, constants: []Value } {
+    var bytecode = std.ArrayList(u8).init(allocator);
+    var constants = std.ArrayList(Value).init(allocator);
+    
+    // Constants
+    try constants.append(Value.int(n));    // idx 0: n (input)
+    try constants.append(Value.int(0));    // idx 1: 0
+    try constants.append(Value.int(1));    // idx 2: 1
+    try constants.append(Value.int(2));    // idx 3: 2
+    
+    // Main: push n, call fib, halt
+    // Address 0: entry point
+    try bytecode.appendSlice(&[_]u8{
+        @intFromEnum(Opcode.PUSH_CONST), 0, 0,  // push n
+        @intFromEnum(Opcode.CALL), 0, 12,       // call fib (at address 12)
+        @intFromEnum(Opcode.HALT),              // halt with result
+    });
+    
+    // Padding to align fib function at address 12
+    while (bytecode.items.len < 12) {
+        try bytecode.append(@intFromEnum(Opcode.HALT));
+    }
+    
+    // fib function at address 12
+    // Stack on entry: [n]
+    // if n <= 1: return n
+    const fib_start: u16 = 12;
+    _ = fib_start;
+    
+    try bytecode.appendSlice(&[_]u8{
+        // Check if n <= 1
+        @intFromEnum(Opcode.DUP),               // [n, n]
+        @intFromEnum(Opcode.PUSH_CONST), 0, 2,  // [n, n, 1]
+        @intFromEnum(Opcode.LE),                // [n, n<=1]
+        @intFromEnum(Opcode.JZ), 0, 28,         // if n > 1, jump to recursive case
+        
+        // Base case: return n (already on stack)
+        @intFromEnum(Opcode.RET),               // return n
+    });
+    
+    // Padding to address 28
+    while (bytecode.items.len < 28) {
+        try bytecode.append(@intFromEnum(Opcode.HALT));
+    }
+    
+    // Recursive case at address 28
+    // Stack: [n]
+    // return fib(n-1) + fib(n-2)
+    try bytecode.appendSlice(&[_]u8{
+        // Calculate fib(n-1)
+        @intFromEnum(Opcode.DUP),               // [n, n]
+        @intFromEnum(Opcode.PUSH_CONST), 0, 2,  // [n, n, 1]
+        @intFromEnum(Opcode.SUB),               // [n, n-1]
+        @intFromEnum(Opcode.CALL), 0, 12,       // [n, fib(n-1)]
+        
+        // Calculate fib(n-2)
+        @intFromEnum(Opcode.SWAP),              // [fib(n-1), n]
+        @intFromEnum(Opcode.PUSH_CONST), 0, 3,  // [fib(n-1), n, 2]
+        @intFromEnum(Opcode.SUB),               // [fib(n-1), n-2]
+        @intFromEnum(Opcode.CALL), 0, 12,       // [fib(n-1), fib(n-2)]
+        
+        // Add results
+        @intFromEnum(Opcode.ADD),               // [fib(n-1) + fib(n-2)]
+        @intFromEnum(Opcode.RET),               // return result
+    });
+    
+    return .{
+        .bytecode = try bytecode.toOwnedSlice(),
+        .constants = try constants.toOwnedSlice(),
+    };
+}
+
 // Simple loop benchmark
 pub fn generateLoopBytecode(allocator: std.mem.Allocator, iterations: i64) !struct { bytecode: []u8, constants: []Value } {
     var bytecode = std.ArrayList(u8).init(allocator);
@@ -1075,9 +1153,102 @@ test "VM loop benchmark" {
     defer std.testing.allocator.free(prog.bytecode);
     defer std.testing.allocator.free(prog.constants);
     
-    var vm = VM.init(prog.bytecode, prog.constants);
-    const result = try vm.runFast();
+    var vm_instance = VM.init(prog.bytecode, prog.constants);
+    const result = try vm_instance.runFast();
     
     // Should end with i = 1000
     try std.testing.expectEqual(@as(i64, 1000), result.asInt());
+}
+
+test "VM real recursive fibonacci" {
+    // Test fib(10) = 55
+    const prog = try generateRealFibonacci(std.testing.allocator, 10);
+    defer std.testing.allocator.free(prog.bytecode);
+    defer std.testing.allocator.free(prog.constants);
+    
+    var vm_instance = VM.init(prog.bytecode, prog.constants);
+    const result = try vm_instance.runFast();
+    
+    try std.testing.expectEqual(@as(i64, 55), result.asInt());
+}
+
+test "VM fibonacci small values" {
+    // fib(0) = 0
+    const prog0 = try generateRealFibonacci(std.testing.allocator, 0);
+    defer std.testing.allocator.free(prog0.bytecode);
+    defer std.testing.allocator.free(prog0.constants);
+    var vm0 = VM.init(prog0.bytecode, prog0.constants);
+    try std.testing.expectEqual(@as(i64, 0), (try vm0.runFast()).asInt());
+    
+    // fib(1) = 1
+    const prog1 = try generateRealFibonacci(std.testing.allocator, 1);
+    defer std.testing.allocator.free(prog1.bytecode);
+    defer std.testing.allocator.free(prog1.constants);
+    var vm1 = VM.init(prog1.bytecode, prog1.constants);
+    try std.testing.expectEqual(@as(i64, 1), (try vm1.runFast()).asInt());
+    
+    // fib(5) = 5
+    const prog5 = try generateRealFibonacci(std.testing.allocator, 5);
+    defer std.testing.allocator.free(prog5.bytecode);
+    defer std.testing.allocator.free(prog5.constants);
+    var vm5 = VM.init(prog5.bytecode, prog5.constants);
+    try std.testing.expectEqual(@as(i64, 5), (try vm5.runFast()).asInt());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BENCHMARK MAIN - Запуск бенчмарка
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub fn main() !void {
+    const stdout = std.io.getStdOut().writer();
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    try stdout.print("VIBEE VM Fibonacci Benchmark\n", .{});
+    try stdout.print("========================================\n\n", .{});
+
+    const test_values = [_]i64{ 10, 20, 25, 30 };
+
+    for (test_values) |n| {
+        try benchmarkFib(allocator, stdout, n, 5);
+        try stdout.print("\n", .{});
+    }
+}
+
+fn benchmarkFib(allocator: std.mem.Allocator, writer: anytype, n: i64, iterations: usize) !void {
+    var times: [10]f64 = undefined;
+    var result: i64 = 0;
+
+    for (0..iterations) |i| {
+        const prog = try generateRealFibonacci(allocator, n);
+        defer allocator.free(prog.bytecode);
+        defer allocator.free(prog.constants);
+
+        var vm_instance = VM.init(prog.bytecode, prog.constants);
+
+        const start = std.time.nanoTimestamp();
+        const res = try vm_instance.runFast();
+        const end = std.time.nanoTimestamp();
+
+        result = res.asInt();
+        times[i] = @as(f64, @floatFromInt(end - start)) / 1_000_000.0;
+    }
+
+    var sum: f64 = 0;
+    var min_t: f64 = times[0];
+    var max_t: f64 = times[0];
+
+    for (0..iterations) |i| {
+        sum += times[i];
+        if (times[i] < min_t) min_t = times[i];
+        if (times[i] > max_t) max_t = times[i];
+    }
+
+    const avg = sum / @as(f64, @floatFromInt(iterations));
+
+    try writer.print("fib({d}) = {d}\n", .{ n, result });
+    try writer.print("  Average: {d:.3} ms\n", .{avg});
+    try writer.print("  Min:     {d:.3} ms\n", .{min_t});
+    try writer.print("  Max:     {d:.3} ms\n", .{max_t});
 }
