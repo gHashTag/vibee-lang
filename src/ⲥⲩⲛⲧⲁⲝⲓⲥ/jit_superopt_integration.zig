@@ -1,3 +1,6 @@
+// ⚠️  WARNING: This file should be GENERATED from .vibee specification!
+// ⚠️  This is a REFERENCE IMPLEMENTATION for development purposes.
+
 // ═══════════════════════════════════════════════════════════════
 // JIT + SUPEROPTIMIZER INTEGRATION
 // Combines Tracing JIT with STOKE-style Superoptimization

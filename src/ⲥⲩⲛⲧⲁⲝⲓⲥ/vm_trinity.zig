@@ -5,6 +5,13 @@
 // Date: January 17, 2026
 // ═══════════════════════════════════════════════════════════════
 //
+// ⚠️  WARNING: This file should be GENERATED from .vibee specification!
+// ⚠️  Source: specs/999/ⲧⲣⲓⲛⲓⲧⲩ/vm_trinity_core.vibee
+// ⚠️  Generated: generated/999/ⲂⲘ_ⲦⲢⲒⲚⲒⲦⲨ.999
+// ⚠️  This is a REFERENCE IMPLEMENTATION for development purposes.
+//
+// ═══════════════════════════════════════════════════════════════
+//
 // Architecture:
 //   TIER 1: Interpreter (Cold Code) - Stack-based, profile collection
 //   TIER 2: Baseline JIT (Warm Code) - Register-based, superinstructions
@@ -696,9 +703,9 @@ test "golden identity" {
 }
 
 test "tier thresholds" {
-    // Verify thresholds are based on φ powers
-    try std.testing.expect(COLD_TO_WARM_THRESHOLD == 100);
-    try std.testing.expect(WARM_TO_HOT_THRESHOLD == 10000);
+    // Verify thresholds are based on φ powers (optimized values)
+    try std.testing.expect(COLD_TO_WARM_THRESHOLD == 50); // ~φ^8 (was 100)
+    try std.testing.expect(WARM_TO_HOT_THRESHOLD == 5000); // ~φ^16 (was 10000)
     try std.testing.expectApproxEqAbs(DEOPT_RATE_THRESHOLD, 0.382, 0.001);
 }
 

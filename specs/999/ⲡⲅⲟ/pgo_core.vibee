@@ -1,0 +1,257 @@
+# PGO CORE SPECIFICATION
+# Profile-Guided Optimization Engine
+# СВЯЩЕННАЯ ФОРМУЛА: V = n × 3^k × π^m × φ^p × e^q
+# Author: Dmitrii Vasilev
+# Date: January 17, 2026
+
+name: pgo_core
+version: "1.0.0"
+language: zig
+module: pgo
+
+description: |
+  Profile-Guided Optimization (PGO) Engine
+  
+  Features:
+    - Type profiling (monomorphic/polymorphic/megamorphic)
+    - Branch profiling (biased detection)
+    - Inline caching (4-slot polymorphic IC)
+    - Optimization hint generation
+  
+  Scientific basis:
+    - Hölzle et al., 1991 - Inline Caching
+    - arXiv:2504.17460 - Multi-tier JIT
+
+# ═══════════════════════════════════════════════════════════════
+# CREATION PATTERN
+# ═══════════════════════════════════════════════════════════════
+
+creation_pattern:
+  source: ExecutionProfile
+  transformer: PGO_Analysis
+  result: OptimizationHints
+
+# ═══════════════════════════════════════════════════════════════
+# SACRED FORMULA
+# ═══════════════════════════════════════════════════════════════
+
+sacred_formula:
+  equation: "V = n × 3^k × π^m × φ^p × e^q"
+  
+  constants:
+    phi: 1.618033988749895
+    golden_identity: 3.0
+
+# ═══════════════════════════════════════════════════════════════
+# DATA STRUCTURES
+# ═══════════════════════════════════════════════════════════════
+
+types:
+  - name: TypeTag
+    kind: enum
+    values:
+      - unknown: 0
+      - int: 1
+      - float: 2
+      - string: 3
+      - array: 4
+      - object: 5
+      - function: 6
+      - nil: 7
+
+  - name: TypeProfile
+    kind: struct
+    fields:
+      - types_seen: "[8]u32"
+      - total_samples: u32
+      - dominant_type: TypeTag
+      - is_monomorphic: bool
+      - is_polymorphic: bool
+      - is_megamorphic: bool
+    methods:
+      - name: record
+        params: [tag: TypeTag]
+        description: "Record type observation"
+      - name: dominantRatio
+        returns: f64
+        description: "Ratio of dominant type"
+
+  - name: BranchProfile
+    kind: struct
+    fields:
+      - taken_count: u64
+      - not_taken_count: u64
+    methods:
+      - name: takenRatio
+        returns: f64
+        description: "Ratio of taken branches"
+      - name: isBiased
+        returns: bool
+        description: "True if ratio > 0.9 or < 0.1"
+      - name: predictedDirection
+        returns: bool
+        description: "Predicted branch direction"
+
+  - name: InlineCacheEntry
+    kind: struct
+    fields:
+      - type_tag: TypeTag
+      - method_ptr: "?*const anyopaque"
+      - hit_count: u32
+
+  - name: InlineCache
+    kind: struct
+    fields:
+      - entries: "[4]?InlineCacheEntry"  # 4-slot polymorphic IC
+      - miss_count: u32
+      - total_lookups: u32
+    methods:
+      - name: lookup
+        params: [type_tag: TypeTag]
+        returns: "?*const anyopaque"
+      - name: insert
+        params: [type_tag: TypeTag, method_ptr: "*const anyopaque"]
+      - name: hitRate
+        returns: f64
+
+  - name: HintType
+    kind: enum
+    values:
+      - type_specialize: 0
+      - branch_predict: 1
+      - inline_call: 2
+      - unroll_loop: 3
+
+  - name: OptimizationHint
+    kind: struct
+    fields:
+      - pc: usize
+      - hint_type: HintType
+      - confidence: f64
+      - data: u64
+
+  - name: PGOEngine
+    kind: struct
+    fields:
+      - allocator: Allocator
+      - type_profiles: "HashMap(usize, TypeProfile)"
+      - branch_profiles: "HashMap(usize, BranchProfile)"
+      - inline_caches: "HashMap(usize, InlineCache)"
+      - execution_counts: "HashMap(usize, u64)"
+      - total_samples: u64
+      - optimization_hints_generated: u64
+
+# ═══════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: type_profile_monomorphic
+    given: "100 samples of same type"
+    when: "Check is_monomorphic"
+    then: "Returns true"
+    test_cases:
+      - name: all_int_samples
+        input:
+          samples: 100
+          type: int
+        expected:
+          is_monomorphic: true
+          dominant_type: int
+          dominant_ratio: 1.0
+
+  - name: type_profile_polymorphic
+    given: "Samples of 2-4 different types"
+    when: "Check is_polymorphic"
+    then: "Returns true"
+    test_cases:
+      - name: int_and_float
+        input:
+          int_samples: 50
+          float_samples: 50
+        expected:
+          is_polymorphic: true
+          is_monomorphic: false
+
+  - name: branch_profile_biased
+    given: "95% taken, 5% not taken"
+    when: "Check isBiased()"
+    then: "Returns true"
+    test_cases:
+      - name: mostly_taken
+        input:
+          taken: 95
+          not_taken: 5
+        expected:
+          is_biased: true
+          predicted_direction: true
+
+  - name: inline_cache_hit_rate
+    given: "IC with entry, 10 lookups of same type"
+    when: "Calculate hitRate()"
+    then: "Returns > 0.9"
+    test_cases:
+      - name: monomorphic_ic
+        input:
+          type: int
+          lookups: 10
+        expected:
+          hit_rate_min: 0.9
+
+  - name: hint_generation
+    given: "Monomorphic type profile with > 95% dominant"
+    when: "Generate hints"
+    then: "Returns type_specialize hint"
+    test_cases:
+      - name: specialize_int
+        input:
+          dominant_type: int
+          dominant_ratio: 0.98
+        expected:
+          hint_type: type_specialize
+          has_confidence: true
+
+# ═══════════════════════════════════════════════════════════════
+# ALGORITHMS
+# ═══════════════════════════════════════════════════════════════
+
+algorithms:
+  - name: type_classification
+    description: "Classify type profile as mono/poly/megamorphic"
+    rules:
+      - "monomorphic: 1 type seen"
+      - "polymorphic: 2-4 types seen"
+      - "megamorphic: > 4 types seen"
+      
+  - name: branch_prediction
+    description: "Predict branch direction based on profile"
+    threshold: 0.9
+    
+  - name: inline_cache_replacement
+    description: "LRU-style replacement for IC entries"
+    slots: 4
+
+# ═══════════════════════════════════════════════════════════════
+# CODE GENERATION
+# ═══════════════════════════════════════════════════════════════
+
+codegen:
+  target: zig
+  output: "src/ⲥⲩⲛⲧⲁⲝⲓⲥ/pgo.zig"
+  
+  imports:
+    - std
+
+# ═══════════════════════════════════════════════════════════════
+# METRICS
+# ═══════════════════════════════════════════════════════════════
+
+metrics:
+  - name: ic_hit_rate
+    target: "> 90%"
+    
+  - name: type_stability
+    target: "> 80% monomorphic"
+    
+  - name: branch_prediction_accuracy
+    target: "> 90%"

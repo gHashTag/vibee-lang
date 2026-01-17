@@ -1,3 +1,6 @@
+// ⚠️  WARNING: This file should be GENERATED from .vibee specification!
+// ⚠️  This is a REFERENCE IMPLEMENTATION for development purposes.
+
 // ═══════════════════════════════════════════════════════════════
 // PAS DAEMON - Predictive Algorithmic Systematics Engine
 // Extended with ML-style predictions

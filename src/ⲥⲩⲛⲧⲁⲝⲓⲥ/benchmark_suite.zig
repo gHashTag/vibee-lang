@@ -1,3 +1,6 @@
+// ⚠️  WARNING: This file should be GENERATED from .vibee specification!
+// ⚠️  This is a REFERENCE IMPLEMENTATION for development purposes.
+
 // ═══════════════════════════════════════════════════════════════
 // BENCHMARK SUITE for VM TRINITY and Competitors
 // СВЯЩЕННАЯ ФОРМУЛА: V = n × 3^k × π^m × φ^p × e^q
