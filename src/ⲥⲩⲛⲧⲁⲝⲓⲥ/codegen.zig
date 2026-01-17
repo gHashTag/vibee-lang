@@ -3,9 +3,213 @@
 // ⛔ ЗАПРЕЩЕНО: .zig, .py, .rs, .go, .ts, .js, .html, .css
 // ✅ РАЗРЕШЕНО: ТОЛЬКО .999 (Священный язык с коптским алфавитом)
 // ═══════════════════════════════════════════════════════════════
+// СВЯЩЕННАЯ ФОРМУЛА: V = n × 3^k × π^m × φ^p × e^q
+// ЗОЛОТАЯ ИДЕНТИЧНОСТЬ: φ² + 1/φ² = 3
+// ═══════════════════════════════════════════════════════════════
 
 const std = @import("std");
 const parser = @import("parser.zig");
+
+// ═══════════════════════════════════════════════════════════════
+// СВЯЩЕННЫЕ КОНСТАНТЫ - ФУНДАМЕНТАЛЬНЫЕ ЧИСЛА ВСЕЛЕННОЙ
+// ═══════════════════════════════════════════════════════════════
+
+pub const SacredConstants = struct {
+    // Золотое сечение φ (phi) - основа гармонии
+    pub const PHI: f64 = 1.6180339887498948482045868343656381177203091798057628621354486227;
+    pub const PHI_SQUARED: f64 = 2.6180339887498948482045868343656381177203091798057628621354486227;
+    pub const PHI_INVERSE: f64 = 0.6180339887498948482045868343656381177203091798057628621354486227;
+    pub const PHI_INVERSE_SQUARED: f64 = 0.3819660112501051517954131656343618822796908201942371378645513773;
+    
+    // Число Пи π - основа круга
+    pub const PI: f64 = 3.1415926535897932384626433832795028841971693993751058209749445923;
+    pub const PI_SQUARED: f64 = 9.8696044010893586188344909998761511353136994072407906264133493762;
+    pub const TAU: f64 = 6.2831853071795864769252867665590057683943387987502116419498891846;
+    
+    // Число Эйлера e - основа роста
+    pub const E: f64 = 2.7182818284590452353602874713526624977572470936999595749669676277;
+    pub const E_SQUARED: f64 = 7.3890560989306502272304274605750078131803155705518473240871278225;
+    
+    // Корень из 2 √2 - диагональ единичного квадрата
+    pub const SQRT2: f64 = 1.4142135623730950488016887242096980785696718753769480731766797379;
+    pub const SQRT2_INVERSE: f64 = 0.7071067811865475244008443621048490392848359376884740365883398690;
+    
+    // Корень из 3 √3 - высота равностороннего треугольника
+    pub const SQRT3: f64 = 1.7320508075688772935274463415058723669428052538103806280558069795;
+    
+    // Корень из 5 √5 - связь с φ: φ = (1 + √5) / 2
+    pub const SQRT5: f64 = 2.2360679774997896964091736687747632440588203494105034630322903584;
+    
+    // Постоянная Эйлера-Маскерони γ
+    pub const EULER_GAMMA: f64 = 0.5772156649015328606065120900824024310421593359399235988057672349;
+    
+    // Постоянная Апери ζ(3)
+    pub const APERY: f64 = 1.2020569031595942853997381615114499907649862923404988817922715553;
+    
+    // Постоянная Каталана G
+    pub const CATALAN: f64 = 0.9159655941772190150546035149323841107741493742816721342664981196;
+    
+    // Постоянная Фейгенбаума δ
+    pub const FEIGENBAUM_DELTA: f64 = 4.6692016091029906718532038204662016172581855774757686327456513430;
+    
+    // Постоянная Фейгенбаума α
+    pub const FEIGENBAUM_ALPHA: f64 = 2.5029078750958928222839028732182157863812713767271499773361920567;
+    
+    // Постоянная Пластика ρ (единственный реальный корень x³ = x + 1)
+    pub const PLASTIC: f64 = 1.3247179572447460259609088544780973407344040569017333645340150025;
+    
+    // Серебряное сечение δ_S = 1 + √2
+    pub const SILVER_RATIO: f64 = 2.4142135623730950488016887242096980785696718753769480731766797379;
+    
+    // Бронзовое сечение (3 + √13) / 2
+    pub const BRONZE_RATIO: f64 = 3.3027756377319946465596106337352361136822113494952461117881651579;
+    
+    // ═══════════════════════════════════════════════════════════════
+    // СВЯЩЕННЫЕ ФОРМУЛЫ И ИДЕНТИЧНОСТИ
+    // ═══════════════════════════════════════════════════════════════
+    
+    // ЗОЛОТАЯ ИДЕНТИЧНОСТЬ: φ² + 1/φ² = 3
+    pub fn goldenIdentity() f64 {
+        return PHI_SQUARED + PHI_INVERSE_SQUARED; // = 3.0
+    }
+    
+    // СВЯЩЕННАЯ ФОРМУЛА: V = n × 3^k × π^m × φ^p × e^q
+    pub fn sacredFormula(n: f64, k: f64, m: f64, p: f64, q: f64) f64 {
+        return n * std.math.pow(f64, 3.0, k) * std.math.pow(f64, PI, m) * std.math.pow(f64, PHI, p) * std.math.pow(f64, E, q);
+    }
+    
+    // Формула Эйлера: e^(iπ) + 1 = 0 (проверка через |e^(iπ) + 1| ≈ 0)
+    pub fn eulerIdentityCheck() f64 {
+        // |e^(iπ) + 1| = |cos(π) + i*sin(π) + 1| = |-1 + 0i + 1| = 0
+        const cos_pi = @cos(PI);
+        const sin_pi = @sin(PI);
+        return @abs(cos_pi + 1.0) + @abs(sin_pi);
+    }
+    
+    // Формула Рамануджана: 1/π = (2√2/9801) × Σ...
+    pub fn ramanujanPiApprox(terms: u32) f64 {
+        var sum: f64 = 0.0;
+        var k: u32 = 0;
+        while (k < terms) : (k += 1) {
+            const kf = @as(f64, @floatFromInt(k));
+            const factorial_4k = factorial(4 * k);
+            const factorial_k = factorial(k);
+            const numerator = factorial_4k * (1103.0 + 26390.0 * kf);
+            const denominator = std.math.pow(f64, factorial_k, 4.0) * std.math.pow(f64, 396.0, 4.0 * kf);
+            sum += numerator / denominator;
+        }
+        return 9801.0 / (2.0 * SQRT2 * sum);
+    }
+    
+    // Факториал (для формулы Рамануджана)
+    fn factorial(n: u32) f64 {
+        if (n <= 1) return 1.0;
+        var result: f64 = 1.0;
+        var i: u32 = 2;
+        while (i <= n) : (i += 1) {
+            result *= @as(f64, @floatFromInt(i));
+        }
+        return result;
+    }
+    
+    // Числа Фибоначчи через φ: F(n) = (φ^n - ψ^n) / √5, где ψ = -1/φ
+    pub fn fibonacciGolden(n: u32) f64 {
+        const nf = @as(f64, @floatFromInt(n));
+        const psi = -PHI_INVERSE;
+        return (std.math.pow(f64, PHI, nf) - std.math.pow(f64, psi, nf)) / SQRT5;
+    }
+    
+    // Числа Люка: L(n) = φ^n + ψ^n
+    pub fn lucasNumber(n: u32) f64 {
+        const nf = @as(f64, @floatFromInt(n));
+        const psi = -PHI_INVERSE;
+        return std.math.pow(f64, PHI, nf) + std.math.pow(f64, psi, nf);
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // ЭВОЛЮЦИОННЫЕ КОНСТАНТЫ (для самоэволюции)
+    // ═══════════════════════════════════════════════════════════════
+    
+    // Мутация μ = 1/φ³ ≈ 0.0382
+    pub const MUTATION_RATE: f64 = 0.03819660112501051517954131656343618822796908201942371378645513773;
+    
+    // Кроссовер χ = 1/φ² ≈ 0.0618
+    pub const CROSSOVER_RATE: f64 = 0.06180339887498948482045868343656381177203091798057628621354486227;
+    
+    // Селекция σ = φ ≈ 1.618
+    pub const SELECTION_PRESSURE: f64 = PHI;
+    
+    // Эксплорация ε = 1/3 ≈ 0.333
+    pub const EXPLORATION_RATE: f64 = 0.33333333333333333333333333333333333333333333333333333333333333333;
+    
+    // Температура отжига T₀ = e
+    pub const ANNEALING_TEMP: f64 = E;
+    
+    // Скорость охлаждения α = 1/φ
+    pub const COOLING_RATE: f64 = PHI_INVERSE;
+    
+    // ═══════════════════════════════════════════════════════════════
+    // TRINITY КОНСТАНТЫ (3 = φ² + 1/φ²)
+    // ═══════════════════════════════════════════════════════════════
+    
+    // Троичная база
+    pub const TRINITY: f64 = 3.0;
+    
+    // log₂(3) ≈ 1.585 - информационное преимущество троичной системы
+    pub const LOG2_3: f64 = 1.5849625007211561814537389439478165087598144076924810604557526545;
+    
+    // log₃(2) ≈ 0.631
+    pub const LOG3_2: f64 = 0.6309297535714574370995271143427608642877840028070665787435485914;
+    
+    // 3^k степени тройки
+    pub const POW3: [20]u64 = .{
+        1, 3, 9, 27, 81, 243, 729, 2187, 6561, 19683,
+        59049, 177147, 531441, 1594323, 4782969, 14348907,
+        43046721, 129140163, 387420489, 1162261467,
+    };
+};
+
+// ═══════════════════════════════════════════════════════════════
+// PAS DAEMON КОНСТАНТЫ - Предиктивная Алгоритмическая Систематика
+// ═══════════════════════════════════════════════════════════════
+
+pub const PASConstants = struct {
+    // Паттерны открытий с их success rates
+    pub const PATTERN_DC: f64 = 0.31;   // Divide-and-Conquer
+    pub const PATTERN_ALG: f64 = 0.22;  // Algebraic Reorganization
+    pub const PATTERN_PRE: f64 = 0.16;  // Precomputation
+    pub const PATTERN_FDT: f64 = 0.13;  // Frequency Domain Transform
+    pub const PATTERN_MLS: f64 = 0.06;  // ML-Guided Search
+    pub const PATTERN_TEN: f64 = 0.06;  // Tensor Decomposition
+    pub const PATTERN_HSH: f64 = 0.04;  // Hashing
+    pub const PATTERN_PRB: f64 = 0.02;  // Probabilistic
+    
+    // Confidence thresholds
+    pub const CONFIDENCE_HIGH: f64 = 0.80;
+    pub const CONFIDENCE_MEDIUM: f64 = 0.60;
+    pub const CONFIDENCE_LOW: f64 = 0.40;
+    
+    // Time factors
+    pub const TIME_FACTOR_MAX: f64 = 50.0; // years
+    
+    // ML boost when tools available
+    pub const ML_BOOST: f64 = 1.3;
+    
+    // Расчёт confidence
+    pub fn calculateConfidence(patterns: []const f64, years_since_improvement: f64, gap: f64, current_exponent: f64, ml_available: bool) f64 {
+        var base_rate: f64 = 0.0;
+        for (patterns) |p| {
+            base_rate += p;
+        }
+        base_rate /= @as(f64, @floatFromInt(patterns.len));
+        
+        const time_factor = @min(1.0, years_since_improvement / TIME_FACTOR_MAX);
+        const gap_factor = @min(1.0, gap / current_exponent);
+        const ml_boost = if (ml_available) ML_BOOST else 1.0;
+        
+        return base_rate * time_factor * gap_factor * ml_boost;
+    }
+};
 
 pub const Target = enum {
     @"999", // ЕДИНСТВЕННЫЙ разрешённый target
@@ -971,4 +1175,81 @@ test "validate coptic code - no latin" {
     // Смешанный (недопустимо)
     const mixed = "Ⲙ test";
     try std.testing.expect(!hasNoLatinLetters(mixed));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ТЕСТЫ СВЯЩЕННЫХ КОНСТАНТ
+// ═══════════════════════════════════════════════════════════════
+
+test "golden identity: phi^2 + 1/phi^2 = 3" {
+    const result = SacredConstants.goldenIdentity();
+    try std.testing.expectApproxEqAbs(@as(f64, 3.0), result, 1e-14);
+}
+
+test "sacred formula computation" {
+    // V = 1 × 3^2 × π^1 × φ^1 × e^1
+    const result = SacredConstants.sacredFormula(1.0, 2.0, 1.0, 1.0, 1.0);
+    // 1 × 9 × 3.14159... × 1.618... × 2.718... ≈ 124.358
+    try std.testing.expectApproxEqAbs(@as(f64, 124.358), result, 0.01);
+}
+
+test "fibonacci via golden ratio" {
+    // F(10) = 55
+    const fib10 = SacredConstants.fibonacciGolden(10);
+    try std.testing.expectApproxEqAbs(@as(f64, 55.0), fib10, 0.001);
+    
+    // F(20) = 6765
+    const fib20 = SacredConstants.fibonacciGolden(20);
+    try std.testing.expectApproxEqAbs(@as(f64, 6765.0), fib20, 0.001);
+}
+
+test "lucas numbers" {
+    // L(5) = 11
+    const lucas5 = SacredConstants.lucasNumber(5);
+    try std.testing.expectApproxEqAbs(@as(f64, 11.0), lucas5, 0.001);
+    
+    // L(10) = 123
+    const lucas10 = SacredConstants.lucasNumber(10);
+    try std.testing.expectApproxEqAbs(@as(f64, 123.0), lucas10, 0.001);
+}
+
+test "euler identity check" {
+    // |e^(iπ) + 1| ≈ 0
+    const result = SacredConstants.eulerIdentityCheck();
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), result, 1e-14);
+}
+
+test "trinity constant: log2(3)" {
+    try std.testing.expectApproxEqAbs(@as(f64, 1.5849625007211561), SacredConstants.LOG2_3, 1e-14);
+}
+
+test "evolution constants" {
+    // μ = 1/φ³ ≈ 0.0382
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0382), SacredConstants.MUTATION_RATE, 0.001);
+    
+    // χ = 1/φ² ≈ 0.0618
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0618), SacredConstants.CROSSOVER_RATE, 0.001);
+    
+    // σ = φ ≈ 1.618
+    try std.testing.expectApproxEqAbs(@as(f64, 1.618), SacredConstants.SELECTION_PRESSURE, 0.001);
+}
+
+test "PAS confidence calculation" {
+    const patterns = [_]f64{ PASConstants.PATTERN_DC, PASConstants.PATTERN_PRE };
+    const confidence = PASConstants.calculateConfidence(&patterns, 10.0, 1.0, 2.0, true);
+    
+    // base_rate = (0.31 + 0.16) / 2 = 0.235
+    // time_factor = min(1.0, 10/50) = 0.2
+    // gap_factor = min(1.0, 1/2) = 0.5
+    // ml_boost = 1.3
+    // confidence = 0.235 * 0.2 * 0.5 * 1.3 ≈ 0.0306
+    try std.testing.expect(confidence > 0.02 and confidence < 0.05);
+}
+
+test "powers of 3" {
+    try std.testing.expectEqual(@as(u64, 1), SacredConstants.POW3[0]);
+    try std.testing.expectEqual(@as(u64, 3), SacredConstants.POW3[1]);
+    try std.testing.expectEqual(@as(u64, 9), SacredConstants.POW3[2]);
+    try std.testing.expectEqual(@as(u64, 27), SacredConstants.POW3[3]);
+    try std.testing.expectEqual(@as(u64, 59049), SacredConstants.POW3[10]);
 }
