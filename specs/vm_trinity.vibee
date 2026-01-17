@@ -617,3 +617,244 @@ generation:
     - "△ = TRUE, ▽ = FALSE, ○ = UNKNOWN"
     - "Source → Transformer → Result"
     - "Improve / Maintain / Degrade"
+
+# ═══════════════════════════════════════════════════════════════
+# VM EXECUTION BEHAVIORS - Поведения виртуальной машины
+# ═══════════════════════════════════════════════════════════════
+
+vm_behaviors:
+  - name: vm_execute_dispatch
+    given: Valid bytecode loaded into VM memory
+    when: Dispatch loop processes opcodes via computed goto
+    then: O(1) dispatch per instruction, correct execution
+    pas_prediction:
+      current: "switch-based O(log n)"
+      predicted: "computed goto O(1)"
+      confidence: 0.95
+      patterns: [PRE, HSH]
+    test_cases:
+      - name: arithmetic_sequence
+        input:
+          bytecode: [PUSH_CONST, 10, PUSH_CONST, 20, ADD, PUSH_CONST, 3, MUL]
+        expected:
+          stack_top: 90
+          instructions_executed: 5
+      - name: function_call_return
+        input:
+          bytecode: [PUSH_CONST, 5, CALL, 100, RET]
+        expected:
+          call_depth: 1
+          return_value: computed
+
+  - name: vm_stack_management
+    given: Stack with 64KB capacity (16384 values)
+    when: Push/pop operations performed
+    then: LIFO order maintained, O(1) operations
+    test_cases:
+      - name: push_pop_sequence
+        input:
+          operations: [PUSH 1, PUSH 2, PUSH 3, POP, POP, POP]
+        expected:
+          popped: [3, 2, 1]
+          final_sp: 0
+      - name: stack_overflow_protection
+        input:
+          operations: [PUSH x 16385]
+        expected:
+          error: STACK_OVERFLOW
+          sp_unchanged: true
+
+# ═══════════════════════════════════════════════════════════════
+# JIT COMPILER BEHAVIORS - Поведения JIT компилятора
+# ═══════════════════════════════════════════════════════════════
+
+jit_behaviors:
+  - name: jit_hotspot_detection
+    given: Execution counters for basic blocks
+    when: Counter exceeds threshold (1000 iterations)
+    then: Block marked hot, JIT compilation triggered
+    pas_prediction:
+      current: "fixed threshold"
+      predicted: "adaptive ML-based threshold"
+      confidence: 0.75
+      patterns: [MLS, PRE]
+    test_cases:
+      - name: loop_becomes_hot
+        input:
+          block_id: 42
+          iterations: 1001
+        expected:
+          is_hot: true
+          jit_triggered: true
+      - name: cold_code_stays_cold
+        input:
+          block_id: 99
+          iterations: 50
+        expected:
+          is_hot: false
+          jit_triggered: false
+
+  - name: jit_trace_compilation
+    given: Hot basic block detected
+    when: Trace recording captures instruction sequence
+    then: Native code generated with type specialization
+    pas_prediction:
+      current: "method-based JIT"
+      predicted: "trace-based with speculation"
+      confidence: 0.80
+      patterns: [PRE, MLS]
+    test_cases:
+      - name: integer_loop_trace
+        input:
+          trace: [LOAD_INT, ADD_INT, STORE_INT, JMP_BACK]
+          observed_types: [int64, int64, int64]
+        expected:
+          native_code: generated
+          guards: type_guards
+          speedup: ">10x"
+
+  - name: jit_deoptimization
+    given: JIT-compiled code with type guards
+    when: Guard fails (unexpected type)
+    then: Deoptimize to interpreter, invalidate code
+    test_cases:
+      - name: type_guard_failure
+        input:
+          expected_type: int64
+          actual_type: float64
+        expected:
+          deoptimized: true
+          fallback: interpreter
+          counter_reset: true
+
+# ═══════════════════════════════════════════════════════════════
+# GARBAGE COLLECTOR BEHAVIORS - Поведения сборщика мусора
+# ═══════════════════════════════════════════════════════════════
+
+gc_behaviors:
+  - name: gc_mark_phase
+    given: Root set (stack, globals, registers)
+    when: Tri-color marking traverses object graph
+    then: All reachable objects marked, unreachable unmarked
+    pas_prediction:
+      current: "stop-the-world marking"
+      predicted: "incremental concurrent marking"
+      confidence: 0.85
+      patterns: [D&C, PRE]
+    test_cases:
+      - name: simple_reachability
+        input:
+          roots: [obj_a]
+          graph: {obj_a: [obj_b, obj_c], obj_b: [], obj_c: [obj_d]}
+        expected:
+          marked: [obj_a, obj_b, obj_c, obj_d]
+          unmarked: [obj_e, obj_f]
+      - name: cyclic_graph
+        input:
+          roots: [obj_a]
+          graph: {obj_a: [obj_b], obj_b: [obj_c], obj_c: [obj_a]}
+        expected:
+          marked: [obj_a, obj_b, obj_c]
+          no_infinite_loop: true
+
+  - name: gc_sweep_phase
+    given: Mark bits set for live objects
+    when: Sweep phase scans heap
+    then: Unmarked objects freed, memory returned
+    test_cases:
+      - name: sweep_dead_objects
+        input:
+          total_objects: 1000
+          marked: 600
+        expected:
+          freed: 400
+          free_list_increased: true
+
+  - name: gc_compact_phase
+    given: Fragmented heap after sweep
+    when: Compaction relocates live objects
+    then: Fragmentation eliminated, references updated
+    pas_prediction:
+      current: "full compaction"
+      predicted: "incremental compaction"
+      confidence: 0.70
+      patterns: [D&C]
+    test_cases:
+      - name: defragment_heap
+        input:
+          fragmentation: 40%
+          live_objects: 600
+        expected:
+          fragmentation: 0%
+          all_refs_updated: true
+
+# ═══════════════════════════════════════════════════════════════
+# SIMD BEHAVIORS - Поведения векторных операций
+# ═══════════════════════════════════════════════════════════════
+
+simd_behaviors:
+  - name: simd_vector_arithmetic
+    given: Two aligned 256-bit vectors (8 x float32)
+    when: SIMD operation executed
+    then: All 8 elements processed in single instruction
+    pas_prediction:
+      current: "AVX2 256-bit"
+      predicted: "AVX-512 512-bit"
+      confidence: 0.90
+      patterns: [ALG, TEN]
+    test_cases:
+      - name: vector_add
+        input:
+          a: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+          b: [8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0]
+        expected:
+          result: [9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0]
+          instructions: 1
+      - name: dot_product
+        input:
+          a: [1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0]
+          b: [4.0, 3.0, 2.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+        expected:
+          result: 20.0
+
+  - name: simd_matrix_multiply
+    given: Two 4x4 matrices
+    when: SIMD matrix multiplication
+    then: 4x speedup over scalar
+    test_cases:
+      - name: identity_multiply
+        input:
+          a: identity_4x4
+          b: arbitrary_4x4
+        expected:
+          result: arbitrary_4x4
+          speedup: ">3x"
+
+# ═══════════════════════════════════════════════════════════════
+# BENCHMARKS - Целевые показатели производительности
+# ═══════════════════════════════════════════════════════════════
+
+benchmarks:
+  - name: fibonacci_35
+    description: "Recursive Fibonacci(35)"
+    baseline: "Python 3.12: 2.5s"
+    target: "<50ms"
+    speedup: "50x"
+    
+  - name: matrix_1000x1000
+    description: "Matrix multiplication 1000x1000"
+    baseline: "NumPy: 100ms"
+    target: "<120ms"
+    speedup: "0.8x (competitive)"
+    
+  - name: gc_throughput
+    description: "Allocate/free 1M objects"
+    baseline: "Go GC: 500ms"
+    target: "<400ms"
+    speedup: "1.25x"
+    
+  - name: dispatch_overhead
+    description: "Empty loop 100M iterations"
+    baseline: "LuaJIT: 50ms"
+    target: "<100ms"
+    speedup: "0.5x"

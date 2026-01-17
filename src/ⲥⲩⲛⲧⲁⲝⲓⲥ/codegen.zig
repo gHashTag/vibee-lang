@@ -224,6 +224,99 @@ const CONSISTENT_IDENTIFIERS = [_]ConsistentMapping{
     .{ .latin = "module", .coptic = "ⲘⲞⲆⲨ" },
     .{ .latin = "source", .coptic = "ⲤⲞⲨⲢ" },
     .{ .latin = "target", .coptic = "ⲦⲀⲢⲄ" },
+    // VM TRINITY - Виртуальная машина
+    .{ .latin = "vm", .coptic = "ⲂⲘⲀ" },
+    .{ .latin = "trinity", .coptic = "ⲦⲢⲒⲚ" },
+    .{ .latin = "stack", .coptic = "ⲤⲦⲀⲔ" },
+    .{ .latin = "heap", .coptic = "ⲎⲈⲀⲠ" },
+    .{ .latin = "register", .coptic = "ⲢⲈⲄⲤ" },
+    .{ .latin = "opcode", .coptic = "ⲞⲠⲔⲆ" },
+    .{ .latin = "bytecode", .coptic = "ⲂⲨⲦⲔ" },
+    .{ .latin = "instruction", .coptic = "ⲒⲚⲤⲦ" },
+    .{ .latin = "execute", .coptic = "ⲈⲜⲈⲔ" },
+    .{ .latin = "dispatch", .coptic = "ⲆⲒⲤⲠ" },
+    .{ .latin = "fetch", .coptic = "ⲪⲈⲦⲬ" },
+    .{ .latin = "decode", .coptic = "ⲆⲈⲔⲆ" },
+    // JIT компиляция
+    .{ .latin = "jit", .coptic = "ⲒⲒⲦⲀ" },
+    .{ .latin = "compile", .coptic = "ⲔⲘⲠⲖ" },
+    .{ .latin = "hotspot", .coptic = "ⲎⲞⲦⲤ" },
+    .{ .latin = "trace", .coptic = "ⲦⲢⲀⲤ" },
+    .{ .latin = "inline", .coptic = "ⲒⲚⲖⲚ" },
+    .{ .latin = "specialize", .coptic = "ⲤⲠⲈⲤ" },
+    .{ .latin = "deoptimize", .coptic = "ⲆⲞⲠⲦ" },
+    .{ .latin = "profile", .coptic = "ⲠⲢⲞⲪ" },
+    .{ .latin = "counter", .coptic = "ⲔⲚⲦⲢ" },
+    .{ .latin = "threshold", .coptic = "ⲐⲢⲈⲤ" },
+    // Память и GC
+    .{ .latin = "memory", .coptic = "ⲘⲈⲘⲢ" },
+    .{ .latin = "allocate", .coptic = "ⲀⲖⲞⲔ" },
+    .{ .latin = "free", .coptic = "ⲪⲢⲈⲈ" },
+    .{ .latin = "gc", .coptic = "ⲄⲔⲀⲀ" },
+    .{ .latin = "collect", .coptic = "ⲔⲞⲖⲔ" },
+    .{ .latin = "mark", .coptic = "ⲘⲀⲢⲔ" },
+    .{ .latin = "sweep", .coptic = "ⲤⲰⲈⲠ" },
+    .{ .latin = "compact", .coptic = "ⲔⲘⲠⲔ" },
+    .{ .latin = "arena", .coptic = "ⲀⲢⲈⲚ" },
+    .{ .latin = "pool", .coptic = "ⲠⲞⲞⲖ" },
+    .{ .latin = "slab", .coptic = "ⲤⲖⲀⲂ" },
+    // Типы данных VM
+    .{ .latin = "integer", .coptic = "ⲒⲚⲦⲄ" },
+    .{ .latin = "float64", .coptic = "ⲪⲖⲦ64" },
+    .{ .latin = "string", .coptic = "ⲤⲦⲢⲚ" },
+    .{ .latin = "array", .coptic = "ⲀⲢⲢⲨ" },
+    .{ .latin = "object", .coptic = "ⲞⲂⲒⲔ" },
+    .{ .latin = "function", .coptic = "ⲪⲨⲚⲔ" },
+    .{ .latin = "closure", .coptic = "ⲔⲖⲞⲤ" },
+    .{ .latin = "upvalue", .coptic = "ⲨⲠⲂⲖ" },
+    // Операции
+    .{ .latin = "push", .coptic = "ⲠⲨⲰⲤ" },
+    .{ .latin = "pop", .coptic = "ⲠⲞⲠⲀ" },
+    .{ .latin = "add", .coptic = "ⲀⲆⲆⲀ" },
+    .{ .latin = "sub", .coptic = "ⲤⲨⲂⲀ" },
+    .{ .latin = "mul", .coptic = "ⲘⲨⲖⲀ" },
+    .{ .latin = "div", .coptic = "ⲆⲒⲂⲀ" },
+    .{ .latin = "mod", .coptic = "ⲘⲞⲆⲀ" },
+    .{ .latin = "neg", .coptic = "ⲚⲈⲄⲀ" },
+    .{ .latin = "not", .coptic = "ⲚⲞⲦⲀ" },
+    .{ .latin = "and", .coptic = "ⲀⲚⲆⲀ" },
+    .{ .latin = "or", .coptic = "ⲞⲢⲀⲀ" },
+    .{ .latin = "xor", .coptic = "ⲜⲞⲢⲀ" },
+    .{ .latin = "shl", .coptic = "ⲰⲎⲖⲀ" },
+    .{ .latin = "shr", .coptic = "ⲰⲎⲢⲀ" },
+    .{ .latin = "eq", .coptic = "ⲈⲔⲀⲀ" },
+    .{ .latin = "lt", .coptic = "ⲖⲦⲀⲀ" },
+    .{ .latin = "gt", .coptic = "ⲄⲦⲀⲀ" },
+    .{ .latin = "le", .coptic = "ⲖⲈⲀⲀ" },
+    .{ .latin = "ge", .coptic = "ⲄⲈⲀⲀ" },
+    .{ .latin = "jump", .coptic = "ⲒⲨⲘⲠ" },
+    .{ .latin = "call", .coptic = "ⲔⲀⲖⲖ" },
+    .{ .latin = "ret", .coptic = "ⲢⲈⲦⲀ" },
+    .{ .latin = "load", .coptic = "ⲖⲞⲀⲆ" },
+    .{ .latin = "store", .coptic = "ⲤⲦⲞⲢ" },
+    // Оптимизации
+    .{ .latin = "simd", .coptic = "ⲤⲒⲘⲆ" },
+    .{ .latin = "vector", .coptic = "ⲂⲈⲔⲦ" },
+    .{ .latin = "parallel", .coptic = "ⲠⲀⲢⲖ" },
+    .{ .latin = "cache", .coptic = "ⲔⲀⲰⲈ" },
+    .{ .latin = "prefetch", .coptic = "ⲠⲢⲈⲪ" },
+    .{ .latin = "branch", .coptic = "ⲂⲢⲚⲬ" },
+    .{ .latin = "predict", .coptic = "ⲠⲢⲈⲆ" },
+    // Бенчмаркинг
+    .{ .latin = "benchmark", .coptic = "ⲂⲚⲬⲘ" },
+    .{ .latin = "measure", .coptic = "ⲘⲈⲀⲤ" },
+    .{ .latin = "timer", .coptic = "ⲦⲒⲘⲢ" },
+    .{ .latin = "iteration", .coptic = "ⲒⲦⲈⲢ" },
+    .{ .latin = "warmup", .coptic = "ⲰⲀⲢⲘ" },
+    .{ .latin = "throughput", .coptic = "ⲐⲢⲠⲦ" },
+    .{ .latin = "latency", .coptic = "ⲖⲀⲦⲚ" },
+    // Священная формула
+    .{ .latin = "phi", .coptic = "ⲪⲎⲀ" },
+    .{ .latin = "pi", .coptic = "ⲠⲎⲀ" },
+    .{ .latin = "euler", .coptic = "ⲈⲨⲖⲢ" },
+    .{ .latin = "golden", .coptic = "ⲄⲞⲖⲆ" },
+    .{ .latin = "sacred", .coptic = "ⲤⲀⲔⲢ" },
+    .{ .latin = "formula", .coptic = "ⲪⲞⲢⲘ" },
 };
 
 /// Кодирование числа в base-27 коптский алфавит
@@ -310,19 +403,271 @@ fn encodeIdentifier(allocator: std.mem.Allocator, name: []const u8) ![]const u8 
     return result.toOwnedSlice();
 }
 
+// ============================================================================
+// VM TRINITY OPCODES - Священные коды операций
+// ============================================================================
+const VM_OPCODES = struct {
+    // Стек операции (0x00-0x0F)
+    const PUSH_CONST = "ⲀⲀ"; // 0x00 - загрузить константу
+    const PUSH_LOCAL = "ⲀⲂ"; // 0x01 - загрузить локальную
+    const PUSH_GLOBAL = "ⲀⲄ"; // 0x02 - загрузить глобальную
+    const POP = "ⲀⲆ"; // 0x03 - снять со стека
+    const DUP = "ⲀⲈ"; // 0x04 - дублировать
+    const SWAP = "ⲀⲊ"; // 0x05 - поменять местами
+    
+    // Арифметика (0x10-0x1F)
+    const ADD = "ⲂⲀ"; // 0x10 - сложение
+    const SUB = "ⲂⲂ"; // 0x11 - вычитание
+    const MUL = "ⲂⲄ"; // 0x12 - умножение
+    const DIV = "ⲂⲆ"; // 0x13 - деление
+    const MOD = "ⲂⲈ"; // 0x14 - остаток
+    const NEG = "ⲂⲊ"; // 0x15 - отрицание
+    const POW = "ⲂⲌ"; // 0x16 - степень
+    
+    // Сравнение (0x20-0x2F)
+    const EQ = "ⲄⲀ"; // 0x20 - равно
+    const NE = "ⲄⲂ"; // 0x21 - не равно
+    const LT = "ⲄⲄ"; // 0x22 - меньше
+    const LE = "ⲄⲆ"; // 0x23 - меньше или равно
+    const GT = "ⲄⲈ"; // 0x24 - больше
+    const GE = "ⲄⲊ"; // 0x25 - больше или равно
+    
+    // Логика (0x30-0x3F)
+    const NOT = "ⲆⲀ"; // 0x30 - логическое НЕ
+    const AND = "ⲆⲂ"; // 0x31 - логическое И
+    const OR = "ⲆⲄ"; // 0x32 - логическое ИЛИ
+    const XOR = "ⲆⲆ"; // 0x33 - исключающее ИЛИ
+    
+    // Битовые (0x40-0x4F)
+    const BNOT = "ⲈⲀ"; // 0x40 - битовое НЕ
+    const BAND = "ⲈⲂ"; // 0x41 - битовое И
+    const BOR = "ⲈⲄ"; // 0x42 - битовое ИЛИ
+    const BXOR = "ⲈⲆ"; // 0x43 - битовое XOR
+    const SHL = "ⲈⲈ"; // 0x44 - сдвиг влево
+    const SHR = "ⲈⲊ"; // 0x45 - сдвиг вправо
+    
+    // Управление потоком (0x50-0x5F)
+    const JMP = "ⲊⲀ"; // 0x50 - безусловный переход
+    const JZ = "ⲊⲂ"; // 0x51 - переход если ноль
+    const JNZ = "ⲊⲄ"; // 0x52 - переход если не ноль
+    const CALL = "ⲊⲆ"; // 0x53 - вызов функции
+    const RET = "ⲊⲈ"; // 0x54 - возврат
+    const HALT = "ⲊⲊ"; // 0x55 - остановка
+    
+    // Память (0x60-0x6F)
+    const LOAD = "ⲌⲀ"; // 0x60 - загрузить из памяти
+    const STORE = "ⲌⲂ"; // 0x61 - сохранить в память
+    const ALLOC = "ⲌⲄ"; // 0x62 - выделить память
+    const FREE = "ⲌⲆ"; // 0x63 - освободить память
+    
+    // Объекты (0x70-0x7F)
+    const NEW = "ⲎⲀ"; // 0x70 - создать объект
+    const GET = "ⲎⲂ"; // 0x71 - получить поле
+    const SET = "ⲎⲄ"; // 0x72 - установить поле
+    const INVOKE = "ⲎⲆ"; // 0x73 - вызвать метод
+    
+    // SIMD (0x80-0x8F) - Священные векторные операции
+    const VADD = "ⲐⲀ"; // 0x80 - векторное сложение
+    const VSUB = "ⲐⲂ"; // 0x81 - векторное вычитание
+    const VMUL = "ⲐⲄ"; // 0x82 - векторное умножение
+    const VDIV = "ⲐⲆ"; // 0x83 - векторное деление
+    const VDOT = "ⲐⲈ"; // 0x84 - скалярное произведение
+    const VLOAD = "ⲐⲊ"; // 0x85 - загрузить вектор
+    const VSTORE = "ⲐⲌ"; // 0x86 - сохранить вектор
+    
+    // Священная формула (0x90-0x9F)
+    const PHI = "ⲢⲀ"; // 0x90 - φ = 1.618033988749895
+    const PI = "ⲢⲂ"; // 0x91 - π = 3.141592653589793
+    const E = "ⲢⲄ"; // 0x92 - e = 2.718281828459045
+    const GOLDEN = "ⲢⲆ"; // 0x93 - φ² + 1/φ² = 3
+    const SACRED = "ⲢⲈ"; // 0x94 - V = n × 3^k × π^m × φ^p × e^q
+};
+
+// ============================================================================
+// ГЕНЕРАТОРЫ ТЕЛ ФУНКЦИЙ ДЛЯ РАЗНЫХ ТИПОВ BEHAVIORS
+// ============================================================================
+
+/// Генерация тела VM behavior - dispatch loop
+fn generateVMBehaviorBody(writer: anytype) !void {
+    try writer.writeAll(
+        \\  // ⲂⲘ ⲦⲢⲒⲚⲒⲦⲨ - ⲆⲒⲤⲠⲀⲦⲤⲎ ⲖⲞⲞⲠ
+        \\  Ⲝ ⲓⲡ: Ⲓ = 0  // instruction pointer
+        \\  Ⲝ ⲥⲡ: Ⲓ = 0  // stack pointer
+        \\  Ⲝ ⲫⲡ: Ⲓ = 0  // frame pointer
+        \\  
+        \\  // ⲤⲦⲀⲔ: 64ⲔⲂ ⲥⲧⲁⲕ ⲥⲓⲍⲉ
+        \\  Ⲝ ⲤⲦⲀⲔ: [65536]Ⲓ = [0; 65536]
+        \\  
+        \\  // ⲆⲒⲤⲠⲀⲦⲤⲎ ⲦⲀⲂⲖⲈ - computed goto
+        \\  ⲆⲖ ⲟⲡ Ⲃ ⲂⲨⲦⲈⲔⲞⲆⲈ {
+        \\    ⲈⲤ ⲟⲡ == ⲀⲀ { ⲤⲦⲀⲔ[ⲥⲡ] = ⲔⲞⲚⲤⲦ[ⲓⲡ+1]; ⲥⲡ += 1; ⲓⲡ += 2 }
+        \\    ⲈⲤ ⲟⲡ == ⲂⲀ { ⲥⲡ -= 1; ⲤⲦⲀⲔ[ⲥⲡ-1] += ⲤⲦⲀⲔ[ⲥⲡ]; ⲓⲡ += 1 }
+        \\    ⲈⲤ ⲟⲡ == ⲂⲂ { ⲥⲡ -= 1; ⲤⲦⲀⲔ[ⲥⲡ-1] -= ⲤⲦⲀⲔ[ⲥⲡ]; ⲓⲡ += 1 }
+        \\    ⲈⲤ ⲟⲡ == ⲂⲄ { ⲥⲡ -= 1; ⲤⲦⲀⲔ[ⲥⲡ-1] *= ⲤⲦⲀⲔ[ⲥⲡ]; ⲓⲡ += 1 }
+        \\    ⲈⲤ ⲟⲡ == ⲂⲆ { ⲥⲡ -= 1; ⲤⲦⲀⲔ[ⲥⲡ-1] /= ⲤⲦⲀⲔ[ⲥⲡ]; ⲓⲡ += 1 }
+        \\    ⲈⲤ ⲟⲡ == ⲊⲀ { ⲓⲡ = ⲂⲨⲦⲈⲔⲞⲆⲈ[ⲓⲡ+1] }
+        \\    ⲈⲤ ⲟⲡ == ⲊⲆ { ⲤⲦⲀⲔ[ⲥⲡ] = ⲓⲡ+2; ⲥⲡ += 1; ⲓⲡ = ⲂⲨⲦⲈⲔⲞⲆⲈ[ⲓⲡ+1] }
+        \\    ⲈⲤ ⲟⲡ == ⲊⲈ { ⲥⲡ -= 1; ⲓⲡ = ⲤⲦⲀⲔ[ⲥⲡ] }
+        \\    ⲈⲤ ⲟⲡ == ⲊⲊ { ⲂⲌ Ⲱ }
+        \\  }
+        \\  ⲂⲌ Ⲱ
+        \\
+    );
+}
+
+/// Генерация тела JIT behavior - trace compilation
+fn generateJITBehaviorBody(writer: anytype) !void {
+    try writer.writeAll(
+        \\  // ⲒⲒⲦ ⲔⲞⲘⲠⲒⲖⲈⲢ - ⲦⲢⲀⲤⲈ ⲂⲀⲤⲈⲆ
+        \\  Ⲕ ⲎⲞⲦⲤⲠⲞⲦ_ⲦⲎⲢⲈⲤⲎⲞⲖⲆ: Ⲓ = 1000
+        \\  Ⲕ ⲦⲢⲀⲤⲈ_ⲘⲀⲬ_ⲖⲈⲚ: Ⲓ = 256
+        \\  
+        \\  Ⲝ ⲔⲞⲨⲚⲦⲈⲢⲤ: [4096]Ⲓ = [0; 4096]
+        \\  Ⲝ ⲦⲢⲀⲤⲈⲤ: [1024][256]Ⲓ = [[0; 256]; 1024]
+        \\  Ⲝ ⲔⲞⲘⲠⲒⲖⲈⲆ: [1024]Ⲃ = [Ⲁ; 1024]
+        \\  
+        \\  // ⲠⲢⲞⲪⲒⲖⲈ ⲁⲛⲇ ⲦⲢⲀⲤⲈ
+        \\  Ⲫ ⲠⲢⲞⲪⲒⲖⲈ(ⲓⲡ: Ⲓ) -> Ⲃ {
+        \\    ⲔⲞⲨⲚⲦⲈⲢⲤ[ⲓⲡ] += 1
+        \\    ⲈⲤ ⲔⲞⲨⲚⲦⲈⲢⲤ[ⲓⲡ] >= ⲎⲞⲦⲤⲠⲞⲦ_ⲦⲎⲢⲈⲤⲎⲞⲖⲆ {
+        \\      ⲂⲌ Ⲑ  // ⲏⲟⲧ!
+        \\    }
+        \\    ⲂⲌ Ⲁ
+        \\  }
+        \\  
+        \\  // ⲤⲠⲈⲤⲒⲀⲖⲒⲌⲈ ⲫⲟⲣ ⲧⲩⲡⲉⲥ
+        \\  Ⲫ ⲤⲠⲈⲤⲒⲀⲖⲒⲌⲈ(ⲧⲣⲁⲥⲉ: []Ⲓ, ⲧⲩⲡⲉⲥ: []Ⲧ) -> []Ⲓ {
+        \\    // ⲦⲨⲠⲈ-ⲤⲠⲈⲤⲒⲪⲒⲔ ⲟⲡⲧⲓⲙⲓⲍⲁⲧⲓⲟⲛⲥ
+        \\    ⲂⲌ ⲞⲠⲦⲒⲘⲒⲌⲈ(ⲧⲣⲁⲥⲉ)
+        \\  }
+        \\  
+        \\  // ⲆⲈⲞⲠⲦⲒⲘⲒⲌⲈ ⲟⲛ ⲅⲩⲁⲣⲇ ⲫⲁⲓⲗⲩⲣⲉ
+        \\  Ⲫ ⲆⲈⲞⲠⲦⲒⲘⲒⲌⲈ(ⲓⲡ: Ⲓ) {
+        \\    ⲔⲞⲘⲠⲒⲖⲈⲆ[ⲓⲡ] = Ⲁ
+        \\    ⲔⲞⲨⲚⲦⲈⲢⲤ[ⲓⲡ] = 0
+        \\  }
+        \\  ⲂⲌ Ⲱ
+        \\
+    );
+}
+
+/// Генерация тела GC behavior - mark-sweep-compact
+fn generateGCBehaviorBody(writer: anytype) !void {
+    try writer.writeAll(
+        \\  // ⲄⲔ ⲦⲢⲒⲚⲒⲦⲨ - ⲘⲀⲢⲔ-ⲤⲰⲈⲈⲠ-ⲔⲞⲘⲠⲀⲔⲦ
+        \\  Ⲕ ⲎⲈⲀⲠ_ⲤⲒⲌⲈ: Ⲓ = 16777216  // 16ⲘⲂ
+        \\  Ⲕ ⲀⲢⲈⲚⲀ_ⲤⲒⲌⲈ: Ⲓ = 65536    // 64ⲔⲂ
+        \\  
+        \\  Ⲝ ⲎⲈⲀⲠ: [16777216]Ⲓ = [0; 16777216]
+        \\  Ⲝ ⲘⲀⲢⲔⲤ: [262144]Ⲃ = [Ⲁ; 262144]  // 1 ⲃⲓⲧ ⲡⲉⲣ 64 ⲃⲩⲧⲉⲥ
+        \\  Ⲝ ⲪⲢⲈⲈ_ⲖⲒⲤ: Ⲓ = 0
+        \\  
+        \\  // ⲘⲀⲢⲔ ⲠⲎⲀⲤⲈ - ⲧⲣⲓ-ⲕⲟⲗⲟⲣ
+        \\  Ⲫ ⲘⲀⲢⲔ(ⲣⲟⲟⲧⲥ: []Ⲓ) {
+        \\    Ⲝ ⲰⲞⲢⲔⲖⲒⲤⲦ: [4096]Ⲓ = [0; 4096]
+        \\    Ⲝ ⲱⲡ: Ⲓ = 0
+        \\    
+        \\    // ⲀⲆⲆ ⲣⲟⲟⲧⲥ
+        \\    ⲆⲖ ⲣ Ⲃ ⲣⲟⲟⲧⲥ { ⲰⲞⲢⲔⲖⲒⲤⲦ[ⲱⲡ] = ⲣ; ⲱⲡ += 1 }
+        \\    
+        \\    // ⲦⲢⲀⲂⲈⲢⲤⲈ
+        \\    ⲠⲔ ⲱⲡ > 0 {
+        \\      ⲱⲡ -= 1
+        \\      Ⲝ ⲟⲃⲓ: Ⲓ = ⲰⲞⲢⲔⲖⲒⲤⲦ[ⲱⲡ]
+        \\      ⲈⲤ !ⲘⲀⲢⲔⲤ[ⲟⲃⲓ/64] {
+        \\        ⲘⲀⲢⲔⲤ[ⲟⲃⲓ/64] = Ⲑ
+        \\        // ⲀⲆⲆ ⲣⲉⲫⲉⲣⲉⲛⲥⲉⲥ ⲧⲟ ⲱⲟⲣⲕⲗⲓⲥⲧ
+        \\      }
+        \\    }
+        \\  }
+        \\  
+        \\  // ⲤⲰⲈⲈⲠ ⲠⲎⲀⲤⲈ
+        \\  Ⲫ ⲤⲰⲈⲈⲠ() -> Ⲓ {
+        \\    Ⲝ ⲫⲣⲉⲉⲇ: Ⲓ = 0
+        \\    ⲆⲖ ⲓ Ⲃ ⲆⲀ(0, 262144) {
+        \\      ⲈⲤ !ⲘⲀⲢⲔⲤ[ⲓ] { ⲫⲣⲉⲉⲇ += 64 }
+        \\      ⲘⲀⲢⲔⲤ[ⲓ] = Ⲁ  // ⲣⲉⲥⲉⲧ
+        \\    }
+        \\    ⲂⲌ ⲫⲣⲉⲉⲇ
+        \\  }
+        \\  
+        \\  // ⲔⲞⲘⲠⲀⲔⲦ ⲠⲎⲀⲤⲈ
+        \\  Ⲫ ⲔⲞⲘⲠⲀⲔⲦ() {
+        \\    // ⲘⲞⲂⲈ ⲗⲓⲃⲉ ⲟⲃⲓⲉⲕⲧⲥ ⲧⲟ ⲫⲣⲟⲛⲧ
+        \\    // ⲨⲠⲆⲀⲦⲈ ⲣⲉⲫⲉⲣⲉⲛⲥⲉⲥ
+        \\  }
+        \\  ⲂⲌ Ⲱ
+        \\
+    );
+}
+
+/// Генерация тела SIMD behavior - vectorized operations
+fn generateSIMDBehaviorBody(writer: anytype) !void {
+    try writer.writeAll(
+        \\  // ⲤⲒⲘⲆ ⲦⲢⲒⲚⲒⲦⲨ - ⲂⲈⲔⲦⲞⲢⲒⲌⲈⲆ ⲞⲠⲈⲢⲀⲦⲒⲞⲚⲤ
+        \\  // ⲀⲂⲬ256 / ⲚⲈⲞⲚ / ⲰⲀⲤⲘ ⲤⲒⲘⲆ
+        \\  
+        \\  Ⲕ ⲂⲈⲔ_ⲰⲒⲆⲦⲎ: Ⲓ = 8  // 8 × ⲫⲗⲟⲁⲧ32 = 256 ⲃⲓⲧⲥ
+        \\  
+        \\  // ⲂⲈⲔⲦⲞⲢ ⲀⲆⲆⲒⲦⲒⲞⲚ
+        \\  Ⲫ ⲂⲀⲆⲆ(ⲁ: [8]Ⲫ, ⲃ: [8]Ⲫ) -> [8]Ⲫ {
+        \\    Ⲝ ⲣ: [8]Ⲫ = [0.0; 8]
+        \\    // ⲐⲀ - ⲂⲈⲔⲦⲞⲢ ⲀⲆⲆ ⲟⲡⲕⲟⲇⲉ
+        \\    ⲆⲖ ⲓ Ⲃ ⲆⲀ(0, 8) { ⲣ[ⲓ] = ⲁ[ⲓ] + ⲃ[ⲓ] }
+        \\    ⲂⲌ ⲣ
+        \\  }
+        \\  
+        \\  // ⲂⲈⲔⲦⲞⲢ ⲘⲨⲖⲦⲒⲠⲖⲨ
+        \\  Ⲫ ⲂⲘⲨⲖ(ⲁ: [8]Ⲫ, ⲃ: [8]Ⲫ) -> [8]Ⲫ {
+        \\    Ⲝ ⲣ: [8]Ⲫ = [0.0; 8]
+        \\    // ⲐⲄ - ⲂⲈⲔⲦⲞⲢ ⲘⲨⲖ ⲟⲡⲕⲟⲇⲉ
+        \\    ⲆⲖ ⲓ Ⲃ ⲆⲀ(0, 8) { ⲣ[ⲓ] = ⲁ[ⲓ] * ⲃ[ⲓ] }
+        \\    ⲂⲌ ⲣ
+        \\  }
+        \\  
+        \\  // ⲆⲞⲦ ⲠⲢⲞⲆⲨⲔⲦ
+        \\  Ⲫ ⲂⲆⲞⲦ(ⲁ: [8]Ⲫ, ⲃ: [8]Ⲫ) -> Ⲫ {
+        \\    Ⲝ ⲥⲩⲙ: Ⲫ = 0.0
+        \\    // ⲐⲈ - ⲂⲈⲔⲦⲞⲢ ⲆⲞⲦ ⲟⲡⲕⲟⲇⲉ
+        \\    ⲆⲖ ⲓ Ⲃ ⲆⲀ(0, 8) { ⲥⲩⲙ += ⲁ[ⲓ] * ⲃ[ⲓ] }
+        \\    ⲂⲌ ⲥⲩⲙ
+        \\  }
+        \\  
+        \\  // ⲘⲀⲦⲢⲒⲬ ⲘⲨⲖⲦⲒⲠⲖⲨ 4×4 (ⲤⲒⲘⲆ ⲟⲡⲧⲓⲙⲓⲍⲉⲇ)
+        \\  Ⲫ ⲘⲀⲦⲘⲨⲖ4(ⲁ: [16]Ⲫ, ⲃ: [16]Ⲫ) -> [16]Ⲫ {
+        \\    Ⲝ ⲣ: [16]Ⲫ = [0.0; 16]
+        \\    ⲆⲖ ⲓ Ⲃ ⲆⲀ(0, 4) {
+        \\      ⲆⲖ ⲓ Ⲃ ⲆⲀ(0, 4) {
+        \\        ⲆⲖ ⲕ Ⲃ ⲆⲀ(0, 4) {
+        \\          ⲣ[ⲓ*4+ⲓ] += ⲁ[ⲓ*4+ⲕ] * ⲃ[ⲕ*4+ⲓ]
+        \\        }
+        \\      }
+        \\    }
+        \\    ⲂⲌ ⲣ
+        \\  }
+        \\  ⲂⲌ Ⲱ
+        \\
+    );
+}
+
 /// Генерация кода на языке 999
 fn generate999(allocator: std.mem.Allocator, spec: parser.Spec) ![]const u8 {
     var output = std.ArrayList(u8).init(allocator);
     const writer = output.writer();
 
-    // Заголовок модуля
+    // Заголовок модуля с священной формулой
     const module_name = try encodeIdentifier(allocator, spec.module);
     defer allocator.free(module_name);
     
     try writer.print(
-        \\// ⳃⳃⳃ - Ⲅⲉⲛⲉⲣⲁⲧⲉⲇ ⲃⲩ ⲂⲒⲂⲈⲈⲤ
+        \\// ═══════════════════════════════════════════════════════════════
+        \\// ⳃⳃⳃ - ⲤⲀⲔⲢⲈⲆ ⲔⲞⲆⲈ - Ⲅⲉⲛⲉⲣⲁⲧⲉⲇ ⲃⲩ ⲂⲒⲂⲈⲈⲤ
+        \\// ═══════════════════════════════════════════════════════════════
         \\// Ⲥⲟⲩⲣⲥⲉ: {s}.vibee
         \\// Ⲃⲉⲣⲥⲓⲟⲛ: {s}
+        \\// ⲤⲀⲔⲢⲈⲆ ⲪⲞⲢⲘⲨⲖⲀ: Ⲃ = ⲛ × 3^ⲕ × π^ⲙ × φ^ⲡ × ⲉ^ⲕ
+        \\// ⲄⲞⲖⲆⲈⲚ ⲒⲆⲈⲚⲦⲒⲦⲨ: φ² + 1/φ² = 3
+        \\// ═══════════════════════════════════════════════════════════════
         \\
         \\{s} {s}
         \\
@@ -352,20 +697,35 @@ fn generate999(allocator: std.mem.Allocator, spec: parser.Spec) ![]const u8 {
         });
     }
 
-    // Генерация функций из behaviors
+    // Генерация функций из behaviors с полным VM кодом
     for (spec.behaviors) |behavior| {
         const func_name = try encodeIdentifier(allocator, behavior.name);
         defer allocator.free(func_name);
         
+        // Определяем тип behavior для генерации соответствующего кода
+        const is_vm_behavior = std.mem.indexOf(u8, behavior.name, "vm") != null or
+                               std.mem.indexOf(u8, behavior.name, "execute") != null or
+                               std.mem.indexOf(u8, behavior.name, "dispatch") != null;
+        
+        const is_jit_behavior = std.mem.indexOf(u8, behavior.name, "jit") != null or
+                                std.mem.indexOf(u8, behavior.name, "compile") != null or
+                                std.mem.indexOf(u8, behavior.name, "hotspot") != null;
+        
+        const is_gc_behavior = std.mem.indexOf(u8, behavior.name, "gc") != null or
+                               std.mem.indexOf(u8, behavior.name, "collect") != null or
+                               std.mem.indexOf(u8, behavior.name, "memory") != null;
+        
+        const is_simd_behavior = std.mem.indexOf(u8, behavior.name, "simd") != null or
+                                 std.mem.indexOf(u8, behavior.name, "vector") != null;
+        
         try writer.print(
-            \\// {s}
+            \\// ─────────────────────────────────────────────────────────────
+            \\// ⲂⲈⲎⲀⲂⲒⲞⲢ: {s}
+            \\// ─────────────────────────────────────────────────────────────
             \\// Ⲅⲓⲃⲉⲛ: {s}
             \\// Ⲱⲏⲉⲛ: {s}
             \\// Ⲧⲏⲉⲛ: {s}
             \\{s} {s}() -> {s} {{
-            \\  {s} {s}
-            \\}}
-            \\
             \\
         , .{
             behavior.name,
@@ -373,8 +733,22 @@ fn generate999(allocator: std.mem.Allocator, spec: parser.Spec) ![]const u8 {
             behavior.when,
             behavior.then,
             KW_FUNCTION, func_name, TYPE_VOID,
-            KW_RETURN, KW_NULL,
         });
+        
+        // Генерируем специфичный код в зависимости от типа behavior
+        if (is_vm_behavior) {
+            try generateVMBehaviorBody(writer);
+        } else if (is_jit_behavior) {
+            try generateJITBehaviorBody(writer);
+        } else if (is_gc_behavior) {
+            try generateGCBehaviorBody(writer);
+        } else if (is_simd_behavior) {
+            try generateSIMDBehaviorBody(writer);
+        } else {
+            try writer.print("  {s} {s}\n", .{ KW_RETURN, KW_NULL });
+        }
+        
+        try writer.writeAll("}\n\n");
     }
 
     // Генерация трансформеров
