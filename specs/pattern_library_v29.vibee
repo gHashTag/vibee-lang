@@ -1,0 +1,153 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# PATTERN LIBRARY v29 - REAL AST ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════════
+# v28: Static pattern returns
+# v29: Real AST analysis, actual pattern detection
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: pattern_library_v29
+version: "29.0.0"
+language: zig
+module: pattern_library
+
+sacred_constants:
+  phi: 1.618033988749895
+  total_patterns: 12
+
+creation_pattern:
+  source: AST
+  transformer: PatternAnalyzer
+  result: DetectedPatterns
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# REAL AST ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ast_patterns:
+  recursive_call:
+    detection: "Function calls itself"
+    suggests: [D_and_C]
+    
+  loop_invariant:
+    detection: "Computation inside loop doesn't depend on loop var"
+    suggests: [PRE]
+    
+  matrix_multiply:
+    detection: "Triple nested loop with multiply-add"
+    suggests: [TEN, ALG]
+    
+  hash_lookup:
+    detection: "Key-value access pattern"
+    suggests: [HSH]
+    
+  repeated_subexpression:
+    detection: "Same expression computed multiple times"
+    suggests: [PRE]
+
+structures:
+  SimpleAST:
+    fields:
+      - name: nodes
+        type: "[256]ASTNode"
+      - name: count
+        type: usize
+    methods:
+      - name: addNode
+        params: ["node: ASTNode"]
+        returns: usize
+      - name: getNode
+        params: ["id: usize"]
+        returns: "*ASTNode"
+        
+  ASTNode:
+    fields:
+      - name: kind
+        type: NodeKind
+      - name: children
+        type: "[4]usize"
+      - name: child_count
+        type: usize
+      - name: value
+        type: i64
+      - name: name
+        type: "[32]u8"
+        
+  NodeKind:
+    type: enum
+    values:
+      - FUNCTION
+      - CALL
+      - LOOP
+      - IF
+      - BINARY_OP
+      - LITERAL
+      - VARIABLE
+      - RETURN
+      
+  PatternAnalyzer:
+    fields:
+      - name: ast
+        type: "*SimpleAST"
+      - name: detected
+        type: "[12]bool"
+    methods:
+      - name: analyze
+        returns: "[]PatternID"
+      - name: hasRecursion
+        returns: bool
+      - name: hasLoopInvariant
+        returns: bool
+      - name: hasRepeatedExpr
+        returns: bool
+      - name: hasMatrixPattern
+        returns: bool
+        
+  AnalysisResult:
+    fields:
+      - name: patterns
+        type: "[12]PatternID"
+      - name: count
+        type: usize
+      - name: confidence
+        type: f64
+      - name: suggestions
+        type: "[64]u8"
+
+behaviors:
+  - name: detect_recursion
+    given: "AST with recursive function"
+    when: "analyze called"
+    then: "D&C pattern detected"
+    test_cases:
+      - name: recursive_fn
+        input:
+          has_self_call: true
+        expected:
+          patterns: ["D_and_C"]
+          
+  - name: detect_loop_invariant
+    given: "AST with loop containing invariant computation"
+    when: "analyze called"
+    then: "PRE pattern detected"
+    test_cases:
+      - name: loop_inv
+        input:
+          has_invariant: true
+        expected:
+          patterns: ["PRE"]
+          
+  - name: detect_matrix_multiply
+    given: "AST with triple nested loop"
+    when: "analyze called"
+    then: "TEN and ALG patterns detected"
+    test_cases:
+      - name: matmul
+        input:
+          triple_loop: true
+        expected:
+          patterns: ["TEN", "ALG"]
+
+codegen:
+  targets:
+    - format: zig
+      output: "generated/pattern_library_v29.zig"

@@ -1,0 +1,143 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# LLM INFERENCE v29 - REAL SIMD IMPLEMENTATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+# v28: Mock functions
+# v29: Real SIMD softmax, working attention, actual KV cache
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: llm_inference_v29
+version: "29.0.0"
+language: zig
+module: llm_inference
+
+sacred_constants:
+  phi: 1.618033988749895
+  block_size: 64
+  simd_width: 8
+
+creation_pattern:
+  source: Tokens
+  transformer: LLMInferenceV29
+  result: GeneratedTokens
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# REAL IMPROVEMENTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+real_implementations:
+  simd_softmax:
+    description: "SIMD-accelerated softmax using @Vector"
+    complexity: "O(n) with 8x parallelism"
+    code_lines: 30
+    
+  online_softmax:
+    description: "Numerically stable online softmax"
+    complexity: "O(n) single pass"
+    code_lines: 25
+    
+  tiled_attention:
+    description: "Block-wise attention computation"
+    complexity: "O(n²/B) memory"
+    code_lines: 50
+    
+  kv_cache_real:
+    description: "Working KV cache with append/get"
+    complexity: "O(1) operations"
+    code_lines: 40
+
+structures:
+  SIMDSoftmax:
+    fields:
+      - name: max_val
+        type: f32
+      - name: sum_exp
+        type: f32
+    methods:
+      - name: compute
+        params: ["input: []f32", "output: []f32"]
+        returns: void
+        description: "Real SIMD softmax implementation"
+        
+  OnlineSoftmax:
+    fields:
+      - name: running_max
+        type: f32
+      - name: running_sum
+        type: f32
+    methods:
+      - name: update
+        params: ["value: f32"]
+        returns: void
+      - name: normalize
+        params: ["values: []f32"]
+        returns: void
+        
+  TiledAttention:
+    fields:
+      - name: block_size
+        type: usize
+      - name: num_heads
+        type: usize
+    methods:
+      - name: forward
+        params: ["q: []f32", "k: []f32", "v: []f32", "out: []f32"]
+        returns: void
+        description: "Real tiled attention with O(n) memory"
+        
+  RealKVCache:
+    fields:
+      - name: keys
+        type: "[][]f32"
+      - name: values
+        type: "[][]f32"
+      - name: seq_len
+        type: usize
+      - name: capacity
+        type: usize
+    methods:
+      - name: append
+        params: ["k: []f32", "v: []f32"]
+        returns: bool
+      - name: getKeys
+        returns: "[][]f32"
+      - name: getValues
+        returns: "[][]f32"
+
+behaviors:
+  - name: simd_softmax_correct
+    given: "Input array [1.0, 2.0, 3.0, 4.0]"
+    when: "SIMD softmax computed"
+    then: "Output sums to 1.0"
+    test_cases:
+      - name: softmax_sum
+        input:
+          values: [1.0, 2.0, 3.0, 4.0]
+        expected:
+          sum: 1.0
+          
+  - name: online_softmax_stable
+    given: "Large values [1000.0, 1001.0, 1002.0]"
+    when: "Online softmax computed"
+    then: "No overflow, correct result"
+    test_cases:
+      - name: large_values
+        input:
+          values: [1000.0, 1001.0, 1002.0]
+        expected:
+          no_overflow: true
+          
+  - name: kv_cache_append
+    given: "Empty KV cache"
+    when: "Append called 10 times"
+    then: "seq_len = 10"
+    test_cases:
+      - name: append_test
+        input:
+          append_count: 10
+        expected:
+          seq_len: 10
+
+codegen:
+  targets:
+    - format: zig
+      output: "generated/llm_inference_v29.zig"

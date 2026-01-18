@@ -1,0 +1,145 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# JIT COMPILER v29 - REAL x86-64 STENCILS
+# ═══════════════════════════════════════════════════════════════════════════════
+# v28: Stencil structures only
+# v29: Real x86-64 machine code, executable emission
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: jit_compiler_v29
+version: "29.0.0"
+language: zig
+module: jit_compiler
+
+sacred_constants:
+  phi: 1.618033988749895
+  hot_threshold: 50
+  page_size: 4096
+
+creation_pattern:
+  source: Bytecode
+  transformer: JITCompilerV29
+  result: ExecutableCode
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# REAL x86-64 STENCILS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+real_stencils:
+  add_i64:
+    description: "ADD two i64 values"
+    bytes: [0x48, 0x01, 0xF8]  # add rax, rdi
+    size: 3
+    
+  sub_i64:
+    description: "SUB two i64 values"
+    bytes: [0x48, 0x29, 0xF8]  # sub rax, rdi
+    size: 3
+    
+  mul_i64:
+    description: "MUL two i64 values"
+    bytes: [0x48, 0x0F, 0xAF, 0xC7]  # imul rax, rdi
+    size: 4
+    
+  ret:
+    description: "Return from function"
+    bytes: [0xC3]
+    size: 1
+    
+  mov_imm64:
+    description: "Move immediate to rax"
+    bytes: [0x48, 0xB8]  # movabs rax, imm64
+    size: 10
+    holes: [{offset: 2, kind: IMM64}]
+
+structures:
+  RealStencil:
+    fields:
+      - name: code
+        type: "[64]u8"
+      - name: size
+        type: usize
+      - name: holes
+        type: "[4]Hole"
+      - name: hole_count
+        type: usize
+    methods:
+      - name: emit
+        params: ["buffer: []u8", "values: []u64"]
+        returns: usize
+        description: "Emit patched code to buffer"
+        
+  ExecutableBuffer:
+    fields:
+      - name: memory
+        type: "[*]u8"
+      - name: size
+        type: usize
+      - name: offset
+        type: usize
+    methods:
+      - name: alloc
+        params: ["size: usize"]
+        returns: "?*ExecutableBuffer"
+      - name: write
+        params: ["code: []u8"]
+        returns: bool
+      - name: makeExecutable
+        returns: bool
+      - name: getFunction
+        returns: "*const fn() i64"
+        
+  CodeEmitter:
+    fields:
+      - name: buffer
+        type: "*ExecutableBuffer"
+      - name: stencils
+        type: "std.AutoHashMap(Opcode, RealStencil)"
+    methods:
+      - name: emitAdd
+        returns: void
+      - name: emitSub
+        returns: void
+      - name: emitMul
+        returns: void
+      - name: emitReturn
+        returns: void
+      - name: emitImmediate
+        params: ["value: i64"]
+        returns: void
+
+behaviors:
+  - name: emit_add_stencil
+    given: "CodeEmitter initialized"
+    when: "emitAdd called"
+    then: "3 bytes written: 48 01 F8"
+    test_cases:
+      - name: add_emission
+        input: {}
+        expected:
+          bytes: [0x48, 0x01, 0xF8]
+          
+  - name: emit_immediate
+    given: "CodeEmitter initialized"
+    when: "emitImmediate(42) called"
+    then: "10 bytes written with value 42"
+    test_cases:
+      - name: imm_emission
+        input:
+          value: 42
+        expected:
+          size: 10
+          
+  - name: execute_simple_function
+    given: "Function that returns 42"
+    when: "Function called"
+    then: "Returns 42"
+    test_cases:
+      - name: exec_test
+        input: {}
+        expected:
+          result: 42
+
+codegen:
+  targets:
+    - format: zig
+      output: "generated/jit_compiler_v29.zig"
