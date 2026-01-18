@@ -1,0 +1,143 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# LLM INFERENCE PIPELINE v28 - FLASH ATTENTION + SPECULATIVE DECODING
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS PATTERNS: PRE, D&C, QNT, TEN
+# CONFIDENCE: 82%
+# SPEEDUP: 2-4x
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: llm_inference_v28
+version: "28.0.0"
+language: zig
+module: llm_inference
+
+sacred_constants:
+  phi: 1.618033988749895
+  golden_identity: 3.0
+  block_size: 64
+  speculative_k: 4
+
+creation_pattern:
+  source: Tokens
+  transformer: LLMInference
+  result: GeneratedTokens
+
+pas_analysis:
+  current_complexity: "O(n² × d)"
+  theoretical_lower: "Ω(n × d)"
+  gap: "n×"
+  patterns:
+    - name: PRE
+      application: "KV Cache precomputation"
+      confidence: 0.90
+      speedup: "2-4x"
+    - name: D_and_C
+      application: "Flash Attention tiling"
+      confidence: 0.85
+      speedup: "2-3x"
+    - name: QNT
+      application: "INT8/INT4 quantization"
+      confidence: 0.88
+      speedup: "2-4x"
+    - name: TEN
+      application: "Tensor decomposition"
+      confidence: 0.70
+      speedup: "1.5x"
+
+structures:
+  FlashAttention:
+    fields:
+      - name: block_size
+        type: usize
+        default: 64
+      - name: scale
+        type: f32
+    methods:
+      - name: forward
+        params: ["q: *Tensor", "k: *Tensor", "v: *Tensor"]
+        returns: "*Tensor"
+        complexity: "O(n × d)"
+        
+  KVCache:
+    fields:
+      - name: keys
+        type: "*Tensor"
+      - name: values
+        type: "*Tensor"
+      - name: seq_len
+        type: usize
+      - name: max_len
+        type: usize
+    methods:
+      - name: append
+        returns: void
+        complexity: "O(1)"
+      - name: get
+        returns: "struct{k: *Tensor, v: *Tensor}"
+        complexity: "O(1)"
+        
+  SpeculativeDecoder:
+    fields:
+      - name: draft_model
+        type: "*Model"
+      - name: target_model
+        type: "*Model"
+      - name: k
+        type: usize
+        default: 4
+    methods:
+      - name: generate
+        returns: "[]u32"
+        complexity: "O(n/k)"
+        
+  QuantizedWeight:
+    fields:
+      - name: scale
+        type: f16
+      - name: zero_point
+        type: i8
+      - name: data
+        type: "[64]i8"
+
+behaviors:
+  - name: flash_attention_forward
+    given: "Q, K, V tensors"
+    when: "forward called with block_size=64"
+    then: "Output computed with O(n) memory"
+    test_cases:
+      - name: small_attention
+        input:
+          seq_len: 128
+          d_model: 64
+        expected:
+          memory: "O(128)"
+          
+  - name: kv_cache_append
+    given: "KVCache with seq_len=100"
+    when: "append called"
+    then: "seq_len incremented, O(1) time"
+    test_cases:
+      - name: cache_append
+        input:
+          initial_len: 100
+        expected:
+          final_len: 101
+          
+  - name: speculative_decoding
+    given: "Draft and target models"
+    when: "generate called with k=4"
+    then: "2-3x speedup achieved"
+    test_cases:
+      - name: speculative_gen
+        input:
+          k: 4
+          tokens: 100
+        expected:
+          speedup: 2.5
+
+codegen:
+  targets:
+    - format: zig
+      output: "generated/llm_inference_v28.zig"
+    - format: 999
+      output: "generated/llm_inference_v28.999"

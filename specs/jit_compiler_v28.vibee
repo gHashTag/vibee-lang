@@ -1,0 +1,161 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# JIT COMPILER v28 - COPY-AND-PATCH + TIERED COMPILATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS PATTERNS: PRE, HSH, D&C
+# CONFIDENCE: 88%
+# SPEEDUP: 10x compile time
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: jit_compiler_v28
+version: "28.0.0"
+language: zig
+module: jit_compiler
+
+sacred_constants:
+  phi: 1.618033988749895
+  hot_threshold: 50
+  tier1_threshold: 10
+  tier2_threshold: 1000
+
+creation_pattern:
+  source: Bytecode
+  transformer: JITCompiler
+  result: NativeCode
+
+pas_analysis:
+  current_complexity: "O(n) per block"
+  theoretical_lower: "Ω(n)"
+  gap: "optimal"
+  patterns:
+    - name: PRE
+      application: "Stencil precompilation"
+      confidence: 0.95
+      speedup: "10x compile"
+    - name: HSH
+      application: "O(1) stencil lookup"
+      confidence: 0.95
+      speedup: "5x"
+    - name: D_and_C
+      application: "Tiered compilation"
+      confidence: 0.80
+      speedup: "2x runtime"
+
+structures:
+  Stencil:
+    fields:
+      - name: code
+        type: "[256]u8"
+      - name: holes
+        type: "[]Hole"
+      - name: size
+        type: usize
+    methods:
+      - name: patch
+        params: ["values: []u64"]
+        returns: void
+        complexity: "O(h)"
+      - name: patchSIMD
+        params: ["values: @Vector(4, u64)"]
+        returns: void
+        complexity: "O(1)"
+        
+  Hole:
+    fields:
+      - name: offset
+        type: usize
+      - name: kind
+        type: HoleKind
+        
+  HoleKind:
+    type: enum
+    values: [IMM64, REL32, ABS64]
+    
+  StencilLibrary:
+    fields:
+      - name: stencils
+        type: "std.AutoHashMap(Opcode, *Stencil)"
+    methods:
+      - name: get
+        returns: "?*Stencil"
+        complexity: "O(1)"
+        
+  BBVersion:
+    fields:
+      - name: type_context
+        type: "*TypeContext"
+      - name: compiled_code
+        type: "[]u8"
+      - name: execution_count
+        type: u64
+        
+  BasicBlockVersioning:
+    fields:
+      - name: versions
+        type: "std.AutoHashMap(u64, *BBVersion)"
+    methods:
+      - name: findVersion
+        params: ["ctx: *TypeContext"]
+        returns: "?*BBVersion"
+        complexity: "O(1)"
+        
+  CompilationTier:
+    type: enum
+    values:
+      - INTERPRETER
+      - BASELINE
+      - OPTIMIZED
+      
+  TieredCompiler:
+    fields:
+      - name: tier1_threshold
+        type: u32
+        default: 10
+      - name: tier2_threshold
+        type: u32
+        default: 1000
+    methods:
+      - name: shouldPromote
+        returns: "?CompilationTier"
+      - name: compile
+        returns: "*CompiledCode"
+
+behaviors:
+  - name: stencil_lookup
+    given: "StencilLibrary initialized"
+    when: "get called with opcode"
+    then: "Stencil returned in O(1)"
+    test_cases:
+      - name: lookup_add
+        input:
+          opcode: "ADD"
+        expected:
+          found: true
+          
+  - name: bbv_version_find
+    given: "BBV with cached versions"
+    when: "findVersion called"
+    then: "Version found in O(1)"
+    test_cases:
+      - name: find_cached
+        input:
+          type_context_hash: 12345
+        expected:
+          found: true
+          
+  - name: tiered_promotion
+    given: "Function with 1000 executions"
+    when: "shouldPromote called"
+    then: "OPTIMIZED tier returned"
+    test_cases:
+      - name: promote_to_optimized
+        input:
+          execution_count: 1000
+        expected:
+          tier: "OPTIMIZED"
+
+codegen:
+  targets:
+    - format: zig
+      output: "generated/jit_compiler_v28.zig"
+    - format: 999
+      output: "generated/jit_compiler_v28.999"
