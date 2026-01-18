@@ -1,0 +1,298 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRINITY LLM INFERENCE ENGINE SPECIFICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# РЕАЛЬНЫЙ LLM inference с Transformer архитектурой
+# - Multi-Head Self-Attention
+# - Feed-Forward Network
+# - Layer Normalization
+# - KV Cache
+#
+# СВЯЩЕННАЯ ФОРМУЛА: V = n × 3^k × π^m × φ^p × e^q
+# ЗОЛОТАЯ ИДЕНТИЧНОСТЬ: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: llm_inference_trinity
+version: "1.0.0"
+language: zig
+module: llm_trinity
+
+sacred_formula:
+  expression: "V = n × 3^k × π^m × φ^p × e^q"
+  golden_identity: "φ² + 1/φ² = 3"
+  self_evolution: enabled
+
+creation_pattern:
+  source: TokenSequence
+  transformer: TransformerModel
+  result: GeneratedTokens
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MODEL CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+model_config:
+  num_layers: 12
+  hidden_dim: 768
+  num_heads: 12
+  head_dim: 64
+  ffn_dim: 3072
+  vocab_size: 50257
+  max_seq_len: 2048
+  dropout: 0.1
+  
+  # Священные соотношения
+  sacred_ratios:
+    ffn_to_hidden: 4  # 3072/768 = 4 ≈ φ² + 1
+    heads_to_layers: 1  # 12/12 = 1
+    head_dim_ratio: "hidden_dim / num_heads = 64"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STRUCTURES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+structures:
+  ModelConfig:
+    fields:
+      - name: num_layers
+        type: usize
+        default: 12
+      - name: hidden_dim
+        type: usize
+        default: 768
+      - name: num_heads
+        type: usize
+        default: 12
+      - name: head_dim
+        type: usize
+        default: 64
+      - name: ffn_dim
+        type: usize
+        default: 3072
+      - name: vocab_size
+        type: usize
+        default: 50257
+      - name: max_seq_len
+        type: usize
+        default: 2048
+      - name: dropout
+        type: f32
+        default: 0.1
+    methods:
+      - name: headDim
+        returns: usize
+        formula: "hidden_dim / num_heads"
+        
+  Tensor:
+    generic: T
+    fields:
+      - name: data
+        type: "[]T"
+      - name: shape
+        type: "[]const usize"
+      - name: allocator
+        type: Allocator
+    methods:
+      - name: init
+        params: [allocator: Allocator, shape: "[]const usize"]
+        returns: "!Tensor(T)"
+      - name: deinit
+      - name: size
+        returns: usize
+      - name: get
+        params: [indices: "[]const usize"]
+        returns: T
+      - name: set
+        params: [indices: "[]const usize", value: T]
+      - name: xavierInit
+        params: [fan_in: usize, fan_out: usize]
+        description: "Xavier/Glorot initialization"
+        
+  LayerNorm:
+    fields:
+      - name: gamma
+        type: "Tensor(f32)"
+      - name: beta
+        type: "Tensor(f32)"
+      - name: eps
+        type: f32
+        default: 1e-5
+      - name: dim
+        type: usize
+    methods:
+      - name: forward
+        params: [input: "*Tensor(f32)", output: "*Tensor(f32)"]
+        description: "y = (x - μ) / σ * γ + β"
+        
+  MultiHeadAttention:
+    fields:
+      - name: config
+        type: ModelConfig
+      - name: w_q
+        type: "Tensor(f32)"
+        description: "Query weights [hidden, hidden]"
+      - name: w_k
+        type: "Tensor(f32)"
+        description: "Key weights [hidden, hidden]"
+      - name: w_v
+        type: "Tensor(f32)"
+        description: "Value weights [hidden, hidden]"
+      - name: w_o
+        type: "Tensor(f32)"
+        description: "Output weights [hidden, hidden]"
+      - name: k_cache
+        type: "?Tensor(f32)"
+        description: "KV Cache for keys"
+      - name: v_cache
+        type: "?Tensor(f32)"
+        description: "KV Cache for values"
+      - name: cache_len
+        type: usize
+    methods:
+      - name: attention
+        params: [q: "*Tensor(f32)", k: "*Tensor(f32)", v: "*Tensor(f32)", output: "*Tensor(f32)"]
+        description: "Scaled dot-product attention: softmax(QK^T/√d)V"
+        
+  FeedForward:
+    fields:
+      - name: w1
+        type: "Tensor(f32)"
+        description: "[hidden, ffn]"
+      - name: w2
+        type: "Tensor(f32)"
+        description: "[ffn, hidden]"
+      - name: b1
+        type: "Tensor(f32)"
+      - name: b2
+        type: "Tensor(f32)"
+    methods:
+      - name: forward
+        params: [input: "*Tensor(f32)", output: "*Tensor(f32)"]
+        description: "FFN(x) = GELU(xW₁ + b₁)W₂ + b₂"
+      - name: gelu
+        params: [x: f32]
+        returns: f32
+        description: "GELU activation"
+        
+  TransformerLayer:
+    fields:
+      - name: attention
+        type: MultiHeadAttention
+      - name: ffn
+        type: FeedForward
+      - name: ln1
+        type: LayerNorm
+      - name: ln2
+        type: LayerNorm
+      - name: config
+        type: ModelConfig
+        
+  LLMModel:
+    fields:
+      - name: config
+        type: ModelConfig
+      - name: layers
+        type: "[]TransformerLayer"
+      - name: embedding
+        type: "Tensor(f32)"
+      - name: ln_final
+        type: LayerNorm
+      - name: lm_head
+        type: "Tensor(f32)"
+      - name: tokens_generated
+        type: u64
+      - name: total_time_ns
+        type: u64
+    methods:
+      - name: generateToken
+        params: [input_ids: "[]const u32"]
+        returns: "!u32"
+      - name: getTokensPerSecond
+        returns: f64
+      - name: getStats
+        returns: LLMStats
+      - name: countParameters
+        returns: u64
+        
+  LLMStats:
+    fields:
+      - name: num_layers
+        type: usize
+      - name: hidden_dim
+        type: usize
+      - name: num_heads
+        type: usize
+      - name: vocab_size
+        type: usize
+      - name: tokens_generated
+        type: u64
+      - name: tokens_per_second
+        type: f64
+      - name: total_parameters
+        type: u64
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: attention_computation
+    description: "Scaled dot-product attention"
+    given: "Query, Key, Value tensors"
+    when: "attention method called"
+    then: "Output = softmax(QK^T/√d_k)V with causal mask"
+    test_cases:
+      - name: causal_mask
+        input:
+          seq_len: 10
+        expected:
+          mask_type: "lower_triangular"
+          
+  - name: layer_norm
+    description: "Layer normalization"
+    given: "Input tensor"
+    when: "forward called"
+    then: "Output normalized with mean=0, var=1"
+    test_cases:
+      - name: normalize
+        input:
+          values: [1.0, 2.0, 3.0, 4.0]
+        expected:
+          mean: 0.0
+          variance: 1.0
+          
+  - name: token_generation
+    description: "Generate next token"
+    given: "Input token sequence"
+    when: "generateToken called"
+    then: "Returns most likely next token"
+    test_cases:
+      - name: simple_generation
+        input:
+          tokens: [1, 2, 3]
+        expected:
+          output_type: u32
+          
+  - name: kv_cache
+    description: "KV Cache for efficient inference"
+    given: "Previous keys and values cached"
+    when: "New token processed"
+    then: "Only new K,V computed, cache extended"
+    test_cases:
+      - name: cache_growth
+        input:
+          initial_len: 10
+          new_tokens: 5
+        expected:
+          final_len: 15
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CODEGEN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+codegen:
+  target: zig
+  output: "generated/llm_trinity.zig"
+  
+test_generation:
+  enabled: true
+  coverage_target: 85
