@@ -1,31 +1,45 @@
+//! ═══════════════════════════════════════════════════════════════════════════════
+//! VIBEE BUILD SYSTEM V2 - GENERATED FROM specs/vibee_production.vibee
+//! ═══════════════════════════════════════════════════════════════════════════════
+//! φ² + 1/φ² = 3
+//! ═══════════════════════════════════════════════════════════════════════════════
+
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable(.{
+    // ═══════════════════════════════════════════════════════════════════════════
+    // VIBEEC V2 - New CLI with file output and watch mode
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    const vibeec_v2 = b.addExecutable(.{
         .name = "vibeec",
-        .root_source_file = b.path("main.zig"),
+        .root_source_file = b.path("vibeec_cli.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    b.installArtifact(exe);
+    b.installArtifact(vibeec_v2);
 
-    const run_cmd = b.addRunArtifact(exe);
+    const run_cmd = b.addRunArtifact(vibeec_v2);
     run_cmd.step.dependOn(b.getInstallStep());
 
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
 
-    const run_step = b.step("run", "Run vibeec");
+    const run_step = b.step("run", "Run vibeec V2");
     run_step.dependOn(&run_cmd.step);
 
-    // Tests
-    const parser_tests = b.addTest(.{
-        .root_source_file = b.path("parser.zig"),
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TESTS V2
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Parser V2 tests
+    const parser_v2_tests = b.addTest(.{
+        .root_source_file = b.path("parser_v2.zig"),
         .target = target,
         .optimize = optimize,
     });
