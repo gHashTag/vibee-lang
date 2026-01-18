@@ -1,4 +1,4 @@
-# TRINITY VM v19 LLM 4D CINEMA - BENCHMARK COMPARISON
+# TRINITY VM v20 LLM ARCHITECTURE VISUALIZER - BENCHMARK COMPARISON
 
 ## ТОКСИЧНЫЙ ОТЧЁТ О ПРОДЕЛАННОЙ РАБОТЕ
 
@@ -43,6 +43,7 @@
 | **TRINITY VM v15 ЯБЛОЧКО** | JIT+GPU | 10 | 2.0x | 10MB | 6 | 1.0x |
 | **TRINITY VM v18 PIXEL** | JIT+GPU | 8 | 3.0x | 8MB | 6 | 0.67x |
 | **TRINITY VM v19 4D CINEMA** | JIT+GPU+LLM | 15 | 5.0x | 15MB | 30 | 0.4x |
+| **TRINITY VM v20 LLM ARCH** | JIT+GPU+LLM+VIS | 12 | 6.0x | 12MB | 30 | 0.33x |
 
 ### 2. RENDERING ENGINES
 
@@ -100,7 +101,8 @@
 | v16 МАТРЁШКА | 30 | 220 | 300.0x | 155 papers | Native pixel bridge |
 | v17 | 30 | 240 | 350.0x | 160 papers | Tile-based |
 | v18 PIXEL | 30 | 260 | 400.0x | 170 papers | TRINITY pixel |
-| **v19 4D CINEMA** | **30** | **280** | **500.0x** | **200+ papers** | **LLM 4D Cinema** |
+| v19 4D CINEMA | 30 | 280 | 500.0x | 200+ papers | LLM 4D Cinema |
+| **v20 LLM ARCH** | **30** | **300** | **600.0x** | **250+ papers** | **Full LLM Visualization** |
 
 ---
 

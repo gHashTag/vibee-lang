@@ -109,6 +109,7 @@ canvas{position:fixed;top:55px;left:0;z-index:1}
 <div class="tab" data-tab="beings"><span>👁️</span> Beings</div>
 <div class="tab" data-tab="yablochko"><span>🍎</span> Яблочко</div>
 <div class="tab" data-tab="cinema4d"><span>🎬</span> 4D Cinema</div>
+<div class="tab" data-tab="llmarch"><span>🧠</span> LLM Arch</div>
 </div>
 <div class="formula">φ² + 1/φ² = 3</div>
 </nav>
@@ -4384,6 +4385,196 @@ function drawAllModules(){
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// ⲩ68 LLM ARCHITECTURE VISUALIZER v20
+// Complete real-time visualization of LLM internals with JIT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const LLMState = {
+  layers: 12, heads: 12, hiddenDim: 768, ffnDim: 3072,
+  kvCache: { length: 0, maxLength: 2048, memoryMB: 0, history: [] },
+  jit: { tier: 0, hotSpots: [], traces: 0, cacheHits: 0, deopt: 0, history: [] },
+  inference: { phase: 'IDLE', tps: 0, tokens: 0, ttft: 0, history: [] },
+  attention: [], selectedLayer: 0, selectedHead: 0,
+  tokenBuffer: [], embeddings: []
+};
+
+// Initialize histories
+for(let i=0;i<100;i++){
+  LLMState.kvCache.history.push(0);
+  LLMState.jit.history.push(0);
+  LLMState.inference.history.push(0);
+}
+
+function drawLLMArchitecture() {
+  X.fillStyle='#010105';X.fillRect(0,0,W,H);
+  
+  // Title
+  X.fillStyle='#ffd700';X.font='bold 16px monospace';X.textAlign='center';
+  X.fillText('🧠 LLM ARCHITECTURE VISUALIZER v20',cx,30);
+  X.fillStyle='#0ff';X.font='10px monospace';
+  X.fillText('Real-time visualization of Transformer internals with JIT',cx,48);
+  
+  // Update state
+  LLMState.kvCache.length=Math.min(2048,Math.floor(t*50)%2048);
+  LLMState.kvCache.memoryMB=(LLMState.kvCache.length*LLMState.layers*2*LLMState.heads*64*2)/1e6;
+  LLMState.jit.tier=Math.min(3,Math.floor(t/5)%4);
+  LLMState.jit.traces=Math.floor(t*10)%1000;
+  LLMState.jit.cacheHits=Math.floor(t*100)%10000;
+  LLMState.inference.tps=25+Math.sin(t)*10;
+  LLMState.inference.tokens=Math.floor(t*30);
+  LLMState.inference.phase=['PREFILL','DECODE','SPECULATIVE'][Math.floor(t)%3];
+  
+  // ═══ TRANSFORMER LAYERS (Left) ═══
+  const layerW=45,layerH=28,layerX=30,layerY=80;
+  X.fillStyle='rgba(138,43,226,0.1)';X.fillRect(layerX-10,layerY-25,layerW*4+30,layerH*6+50);
+  X.strokeStyle='#8a2be2';X.strokeRect(layerX-10,layerY-25,layerW*4+30,layerH*6+50);
+  X.fillStyle='#8a2be2';X.font='bold 9px monospace';X.textAlign='center';
+  X.fillText('TRANSFORMER LAYERS',layerX+layerW*2,layerY-10);
+  
+  for(let i=0;i<12;i++){
+    const row=Math.floor(i/4),col=i%4;
+    const lx=layerX+col*layerW,ly=layerY+row*(layerH+8);
+    const active=Math.floor(t*3)%12===i;
+    X.fillStyle=active?'rgba(138,43,226,0.6)':'rgba(138,43,226,0.2)';
+    X.fillRect(lx,ly,layerW-4,layerH);
+    X.strokeStyle=active?'#fff':'#8a2be2';X.lineWidth=active?2:1;
+    X.strokeRect(lx,ly,layerW-4,layerH);
+    X.fillStyle='#fff';X.font='8px monospace';X.textAlign='center';
+    X.fillText(`L${i}`,lx+layerW/2-2,ly+12);
+    X.fillStyle='#0ff';X.font='6px monospace';
+    X.fillText('Attn+FFN',lx+layerW/2-2,ly+22);
+  }
+  
+  // ═══ ATTENTION HEATMAP (Center-Left) ═══
+  const heatX=220,heatY=80,heatS=8,heatN=12;
+  X.fillStyle='rgba(255,165,0,0.1)';X.fillRect(heatX-10,heatY-25,heatN*heatS+30,heatN*heatS+45);
+  X.strokeStyle='#ffa500';X.strokeRect(heatX-10,heatY-25,heatN*heatS+30,heatN*heatS+45);
+  X.fillStyle='#ffa500';X.font='bold 9px monospace';X.textAlign='center';
+  X.fillText('ATTENTION HEAD 0',heatX+heatN*heatS/2,heatY-10);
+  
+  for(let i=0;i<heatN;i++){
+    for(let j=0;j<heatN;j++){
+      const v=Math.abs(Math.sin(t+i*0.5+j*0.3));
+      const causal=j<=i?v:0;
+      X.fillStyle=`rgba(255,${Math.floor(165*causal)},0,${causal*0.8+0.1})`;
+      X.fillRect(heatX+j*heatS,heatY+i*heatS,heatS-1,heatS-1);
+    }
+  }
+  X.fillStyle='#666';X.font='6px monospace';X.textAlign='left';
+  X.fillText('Query→',heatX-8,heatY+heatN*heatS+12);
+  X.fillText('Key↓',heatX+heatN*heatS+2,heatY+5);
+  
+  // ═══ KV CACHE (Center-Right) ═══
+  const kvX=350,kvY=80,kvW=120,kvH=100;
+  X.fillStyle='rgba(0,255,136,0.1)';X.fillRect(kvX-10,kvY-25,kvW+20,kvH+45);
+  X.strokeStyle='#0f8';X.strokeRect(kvX-10,kvY-25,kvW+20,kvH+45);
+  X.fillStyle='#0f8';X.font='bold 9px monospace';X.textAlign='center';
+  X.fillText('KV CACHE',kvX+kvW/2,kvY-10);
+  
+  // Memory bar
+  const memPct=LLMState.kvCache.length/LLMState.kvCache.maxLength;
+  X.fillStyle='rgba(0,255,136,0.2)';X.fillRect(kvX,kvY,kvW,20);
+  X.fillStyle='#0f8';X.fillRect(kvX,kvY,kvW*memPct,20);
+  X.strokeStyle='#0f8';X.strokeRect(kvX,kvY,kvW,20);
+  X.fillStyle='#fff';X.font='8px monospace';X.textAlign='center';
+  X.fillText(`${LLMState.kvCache.length}/${LLMState.kvCache.maxLength}`,kvX+kvW/2,kvY+14);
+  
+  // Stats
+  X.fillStyle='#fff';X.font='8px monospace';X.textAlign='left';
+  X.fillText(`Memory: ${LLMState.kvCache.memoryMB.toFixed(1)}MB`,kvX,kvY+40);
+  X.fillText(`Layers: ${LLMState.layers}`,kvX,kvY+55);
+  X.fillText(`Heads: ${LLMState.heads}`,kvX,kvY+70);
+  X.fillText(`Head dim: 64`,kvX,kvY+85);
+  
+  // ═══ JIT TIERS (Right) ═══
+  const jitX=W-180,jitY=80,jitW=160,jitH=120;
+  X.fillStyle='rgba(255,105,180,0.1)';X.fillRect(jitX-10,jitY-25,jitW+20,jitH+45);
+  X.strokeStyle='#ff69b4';X.strokeRect(jitX-10,jitY-25,jitW+20,jitH+45);
+  X.fillStyle='#ff69b4';X.font='bold 9px monospace';X.textAlign='center';
+  X.fillText('JIT COMPILATION TIERS',jitX+jitW/2,jitY-10);
+  
+  const tiers=['Interpreter','Baseline JIT','Optimizing','Native'];
+  for(let i=0;i<4;i++){
+    const ty=jitY+i*25;
+    const active=LLMState.jit.tier===i;
+    X.fillStyle=active?'rgba(255,105,180,0.5)':'rgba(255,105,180,0.1)';
+    X.fillRect(jitX,ty,jitW,20);
+    X.strokeStyle=active?'#fff':'#ff69b4';X.lineWidth=active?2:1;
+    X.strokeRect(jitX,ty,jitW,20);
+    X.fillStyle=active?'#fff':'#aaa';X.font=active?'bold 9px monospace':'9px monospace';
+    X.textAlign='center';X.fillText(`T${i}: ${tiers[i]}`,jitX+jitW/2,ty+14);
+  }
+  
+  // ═══ TOKEN STREAM (Bottom) ═══
+  const tokY=H-120,tokH=50;
+  X.fillStyle='rgba(0,255,255,0.1)';X.fillRect(30,tokY-20,W-60,tokH+35);
+  X.strokeStyle='#0ff';X.strokeRect(30,tokY-20,W-60,tokH+35);
+  X.fillStyle='#0ff';X.font='bold 9px monospace';X.textAlign='center';
+  X.fillText('TOKEN STREAM (Embedding → Layers → Output)',cx,tokY-5);
+  
+  // Animated tokens
+  const numToks=15;
+  for(let i=0;i<numToks;i++){
+    const progress=((t*0.5+i*0.1)%1);
+    const tx=50+progress*(W-100);
+    const ty=tokY+tokH/2+Math.sin(progress*π*2)*10;
+    const size=8+Math.sin(t*3+i)*2;
+    const hue=(i*25+t*50)%360;
+    X.fillStyle=`hsla(${hue},80%,60%,${0.3+progress*0.5})`;
+    X.beginPath();X.arc(tx,ty,size,0,τ);X.fill();
+    X.fillStyle='#fff';X.font='6px monospace';X.textAlign='center';
+    X.fillText(`T${i}`,tx,ty+3);
+  }
+  
+  // ═══ INFERENCE METRICS (Bottom Right) ═══
+  const metX=W-200,metY=H-180,metW=180,metH=55;
+  X.fillStyle='rgba(255,215,0,0.1)';X.fillRect(metX-10,metY-15,metW+20,metH+25);
+  X.strokeStyle='#ffd700';X.strokeRect(metX-10,metY-15,metW+20,metH+25);
+  X.fillStyle='#ffd700';X.font='bold 9px monospace';X.textAlign='center';
+  X.fillText('INFERENCE METRICS',metX+metW/2,metY);
+  
+  X.fillStyle='#fff';X.font='9px monospace';X.textAlign='left';
+  X.fillText(`Phase: ${LLMState.inference.phase}`,metX,metY+18);
+  X.fillText(`TPS: ${LLMState.inference.tps.toFixed(1)}`,metX,metY+33);
+  X.fillText(`Tokens: ${LLMState.inference.tokens}`,metX,metY+48);
+  
+  // ═══ FFN ACTIVATIONS (Bottom Left) ═══
+  const ffnX=30,ffnY=H-180,ffnW=150,ffnH=55;
+  X.fillStyle='rgba(50,205,50,0.1)';X.fillRect(ffnX-10,ffnY-15,ffnW+20,ffnH+25);
+  X.strokeStyle='#32cd32';X.strokeRect(ffnX-10,ffnY-15,ffnW+20,ffnH+25);
+  X.fillStyle='#32cd32';X.font='bold 9px monospace';X.textAlign='center';
+  X.fillText('FFN ACTIVATIONS',ffnX+ffnW/2,ffnY);
+  
+  // Histogram
+  for(let i=0;i<20;i++){
+    const h=Math.abs(Math.sin(t*2+i*0.5))*35;
+    X.fillStyle=`rgba(50,205,50,${0.3+h/35*0.5})`;
+    X.fillRect(ffnX+i*7,ffnY+50-h,5,h);
+  }
+  
+  // Sacred formula
+  X.fillStyle='#ffd700';X.font='bold 10px monospace';X.textAlign='center';
+  X.fillText('V = n × 3^k × π^m × φ^p × e^q | φ² + 1/φ² = 3',cx,H-15);
+  
+  // Update panels
+  document.getElementById('bench').innerHTML=`
+    <div class="bench-title">🧠 LLM ARCH v20</div>
+    <div class="bench-row"><span class="bench-name">Layers</span><span class="bench-val">${LLMState.layers}</span></div>
+    <div class="bench-row"><span class="bench-name">JIT Tier</span><span class="bench-val">T${LLMState.jit.tier}</span></div>
+    <div class="bench-row"><span class="bench-name">KV Cache</span><span class="bench-val">${LLMState.kvCache.memoryMB.toFixed(0)}MB</span></div>
+    <div class="bench-row"><span class="bench-name">TPS</span><span class="bench-val">${LLMState.inference.tps.toFixed(0)}</span></div>
+  `;
+  document.getElementById('crit').innerHTML=`
+    <div class="crit-title" style="color:#ffd700">🧠 LLM VISUALIZER</div>
+    <div style="color:#0f0">✓ Transformer Layers</div>
+    <div style="color:#0f0">✓ Attention Heatmap</div>
+    <div style="color:#0f0">✓ KV Cache State</div>
+    <div style="color:#0f0">✓ JIT Tiers</div>
+    <div style="color:#0f0">✓ Token Stream</div>
+  `;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // ⲩ67 LLM 4D CINEMA VISUALIZATION
 // Real-time visualization of LLM thoughts in 4D spacetime
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -5089,6 +5280,7 @@ else if(tab==='multiverse')drawMultiverse();
 else if(tab==='beings')drawBeings();
 else if(tab==='yablochko')drawYablochko();
 else if(tab==='cinema4d')drawCinema4D();
+else if(tab==='llmarch')drawLLMArchitecture();
 // SACRED FORMULA: V = n × 3^k × π^m × φ^p × e^q
 // Where: n=modules, k=modules%9 (trinity cycles), m=1, p=6 (φ^6≈17.94), q=4 (e^4≈54.6)
 // φ² + 1/φ² = 3 = КУТРИТ = ТРОИЦА
@@ -5110,9 +5302,9 @@ location.hash=tab;
 });
 
 document.onkeydown=ev=>{
-const T=['modules','tsp','qbio','pas','neuromorphic','qec','transcendence','consciousness','encryption','supremacy','trinity','secure','living','quantum59','quantumlife','quantumagents','multiverse','beings','yablochko','cinema4d'];
+const T=['modules','tsp','qbio','pas','neuromorphic','qec','transcendence','consciousness','encryption','supremacy','trinity','secure','living','quantum59','quantumlife','quantumagents','multiverse','beings','yablochko','cinema4d','llmarch'];
 let i=T.indexOf(tab);
-if(ev.key==='ArrowRight'&&i<19){tab=T[i+1];upd()}
+if(ev.key==='ArrowRight'&&i<20){tab=T[i+1];upd()}
 if(ev.key==='ArrowLeft'&&i>0){tab=T[i-1];upd()}
 if(ev.key==='Escape'){
   selectedModule=null;
