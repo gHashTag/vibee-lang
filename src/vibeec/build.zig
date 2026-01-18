@@ -92,6 +92,6 @@ pub fn build(b: *std.Build) void {
     // ═══════════════════════════════════════════════════════════════════════════
 
     const clean_step = b.step("clean", "Clean build artifacts");
-    clean_step.dependOn(&b.addRemoveDirTree(b.path("zig-out")).step);
-    clean_step.dependOn(&b.addRemoveDirTree(b.path(".zig-cache")).step);
+    _ = clean_step;
+    // Note: Manual cleanup via `rm -rf zig-out .zig-cache`
 }
