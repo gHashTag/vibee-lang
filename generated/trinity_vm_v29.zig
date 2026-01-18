@@ -52,7 +52,9 @@ pub const ComponentV29 = struct {
     version: u32 = VERSION,
     tests_passed: usize = 0,
     tests_total: usize = 0,
-    real_speedup: f64 = 1.0,
+    // ЧЕСТНО: speedup должен быть измерен, не захардкожен
+    // null = не измерено, значение = реально измерено
+    measured_speedup: ?f64 = null,
     is_working: bool = false,
     improvements: [128]u8 = [_]u8{0} ** 128,
     improvements_len: usize = 0,
@@ -72,6 +74,10 @@ pub const ComponentV29 = struct {
 
     pub fn getImprovements(self: *const Self) []const u8 {
         return self.improvements[0..self.improvements_len];
+    }
+
+    pub fn hasRealSpeedup(self: Self) bool {
+        return self.measured_speedup != null;
     }
 };
 
@@ -111,11 +117,17 @@ pub const TestResults = struct {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub const BenchmarkResults = struct {
-    speedup_vs_v28: f64 = 1.0,
-    speedup_vs_v27: f64 = 1.0,
-    speedup_vs_v26: f64 = 1.0,
+    // ЧЕСТНО: Эти значения должны быть измерены, не захардкожены
+    speedup_vs_v28: ?f64 = null, // null = не измерено
+    speedup_vs_v27: ?f64 = null,
+    speedup_vs_v26: ?f64 = null,
     total_time_ms: i64 = 0,
     components_benchmarked: usize = 0,
+    is_real_benchmark: bool = false, // false = фейк
+
+    pub fn isValid(self: BenchmarkResults) bool {
+        return self.is_real_benchmark and self.components_benchmarked > 0;
+    }
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -134,11 +146,12 @@ pub const TrinityVMv29 = struct {
         var vm = Self{};
 
         // Initialize all 6 components with v29 improvements
+        // ЧЕСТНО: measured_speedup = null, потому что мы НЕ ИЗМЕРЯЛИ
         vm.components[0] = ComponentV29{
             .id = .LLM_INFERENCE,
             .tests_passed = 10,
             .tests_total = 10,
-            .real_speedup = 2.0,
+            .measured_speedup = null, // НЕ ИЗМЕРЕНО
             .is_working = true,
         };
         vm.components[0].setImprovements("Real SIMD softmax, working KV cache");
@@ -147,7 +160,7 @@ pub const TrinityVMv29 = struct {
             .id = .JIT_COMPILER,
             .tests_passed = 11,
             .tests_total = 11,
-            .real_speedup = 10.0,
+            .measured_speedup = null, // НЕ ИЗМЕРЕНО
             .is_working = true,
         };
         vm.components[1].setImprovements("Real x86-64 stencils, code emission");
@@ -156,7 +169,7 @@ pub const TrinityVMv29 = struct {
             .id = .ZHAR_PTITSA,
             .tests_passed = 11,
             .tests_total = 11,
-            .real_speedup = 3.0,
+            .measured_speedup = null, // НЕ ИЗМЕРЕНО
             .is_working = true,
         };
         vm.components[2].setImprovements("Real fitness functions, symbolic regression");
@@ -165,7 +178,7 @@ pub const TrinityVMv29 = struct {
             .id = .PATTERN_LIBRARY,
             .tests_passed = 9,
             .tests_total = 9,
-            .real_speedup = 1.0,
+            .measured_speedup = null, // НЕ ИЗМЕРЕНО
             .is_working = true,
         };
         vm.components[3].setImprovements("Real AST analysis, pattern detection");
@@ -174,7 +187,7 @@ pub const TrinityVMv29 = struct {
             .id = .ANTIPATTERN_DETECTOR,
             .tests_passed = 10,
             .tests_total = 10,
-            .real_speedup = 10.0,
+            .measured_speedup = null, // НЕ ИЗМЕРЕНО
             .is_working = true,
         };
         vm.components[4].setImprovements("Real code analysis, complexity detection");
@@ -183,7 +196,7 @@ pub const TrinityVMv29 = struct {
             .id = .SWE_PIPELINE,
             .tests_passed = 10,
             .tests_total = 10,
-            .real_speedup = 5.0,
+            .measured_speedup = null, // НЕ ИЗМЕРЕНО
             .is_working = true,
         };
         vm.components[5].setImprovements("Real stage execution, metrics collection");
@@ -211,7 +224,6 @@ pub const TrinityVMv29 = struct {
         self.metrics.total_tests = 0;
         self.metrics.total_passed = 0;
         self.metrics.working_components = 0;
-        var total_speedup: f64 = 0.0;
 
         for (self.components) |c| {
             self.metrics.total_tests += c.tests_total;
@@ -219,10 +231,10 @@ pub const TrinityVMv29 = struct {
             if (c.is_working) {
                 self.metrics.working_components += 1;
             }
-            total_speedup += c.real_speedup;
         }
 
-        self.metrics.avg_speedup = total_speedup / @as(f64, @floatFromInt(COMPONENT_COUNT));
+        // ЧЕСТНО: avg_speedup = 1.0, потому что мы ничего не измеряли
+        self.metrics.avg_speedup = 1.0; // НЕ ИЗМЕРЕНО
     }
 
     pub fn runAllTests(self: *Self) TestResults {
@@ -238,13 +250,16 @@ pub const TrinityVMv29 = struct {
         return results;
     }
 
+    /// ЧЕСТНО: Реальный бенчмарк НЕ РЕАЛИЗОВАН
+    /// Возвращает null для всех speedup, потому что мы их не измеряли
     pub fn benchmark(self: *Self) BenchmarkResults {
         _ = self;
         return BenchmarkResults{
-            .speedup_vs_v28 = 1.5,
-            .speedup_vs_v27 = 2.0,
-            .speedup_vs_v26 = 2.5,
-            .components_benchmarked = COMPONENT_COUNT,
+            .speedup_vs_v28 = null, // НЕ ИЗМЕРЕНО
+            .speedup_vs_v27 = null, // НЕ ИЗМЕРЕНО
+            .speedup_vs_v26 = null, // НЕ ИЗМЕРЕНО
+            .components_benchmarked = 0, // НИЧЕГО НЕ БЕНЧМАРКАЛОСЬ
+            .is_real_benchmark = false, // ЭТО НЕ РЕАЛЬНЫЙ БЕНЧМАРК
         };
     }
 
@@ -301,10 +316,15 @@ test "total_tests_count" {
     try std.testing.expectEqual(@as(usize, 61), results.total);
 }
 
-test "benchmark_speedup" {
+test "benchmark_is_honest" {
     var vm = TrinityVMv29.init();
     const bench = vm.benchmark();
-    try std.testing.expect(bench.speedup_vs_v28 >= 1.0);
+    // ЧЕСТНО: бенчмарк не реализован, поэтому is_real_benchmark = false
+    try std.testing.expect(!bench.is_real_benchmark);
+    try std.testing.expect(bench.speedup_vs_v28 == null);
+    try std.testing.expect(bench.speedup_vs_v27 == null);
+    try std.testing.expect(bench.speedup_vs_v26 == null);
+    try std.testing.expectEqual(@as(usize, 0), bench.components_benchmarked);
 }
 
 test "version_check" {
@@ -312,10 +332,19 @@ test "version_check" {
     try std.testing.expectEqual(@as(u32, 29), vm.version);
 }
 
-test "metrics_calculation" {
+test "metrics_honest" {
     const vm = TrinityVMv29.init();
     try std.testing.expectEqual(@as(usize, 6), vm.metrics.working_components);
-    try std.testing.expect(vm.metrics.avg_speedup > 1.0);
+    // ЧЕСТНО: avg_speedup = 1.0, потому что не измерено
+    try std.testing.expectEqual(@as(f64, 1.0), vm.metrics.avg_speedup);
+}
+
+test "components_no_fake_speedup" {
+    const vm = TrinityVMv29.init();
+    for (vm.components) |c| {
+        // ЧЕСТНО: measured_speedup = null для всех компонентов
+        try std.testing.expect(c.measured_speedup == null);
+    }
 }
 
 test "component_improvements" {
