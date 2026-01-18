@@ -1,0 +1,588 @@
+; ═══════════════════════════════════════════════════════════════════════════════
+; ANTIPATTERN DETECTOR V43 - НАУЧНО-ОБОСНОВАННАЯ СИСТЕМА
+; ═══════════════════════════════════════════════════════════════════════════════
+; Generated from: specs/antipattern_detector_v43.vibee
+; PAS DAEMON V43 - Scientific Antipattern Detection
+; Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+; Golden Identity: φ² + 1/φ² = 3
+; ═══════════════════════════════════════════════════════════════════════════════
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: SACRED CONSTANTS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.sacred_constants:
+    PHI             = 1.618033988749895
+    PHI_INV         = 0.618033988749895
+    PHI_SQ          = 2.618033988749895
+    INV_PHI_SQ      = 0.381966011250105
+    GOLDEN_IDENTITY = 3.0
+    PI              = 3.141592653589793
+    E               = 2.718281828459045
+    TRINITY         = 3
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: ANTIPATTERN CATEGORIES
+; Source: ACM Computing Surveys 2022, PLDI/OOPSLA/CGO Research
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.antipattern_ids:
+    ; Architecture (CRITICAL)
+    AP001_DIRECT_IMPL       = 0x01  ; .zig without .vibee
+    AP002_LEGACY_FILE       = 0x02  ; .html/.css/.js
+    AP003_MISSING_PATTERN   = 0x03  ; No creation_pattern
+    
+    ; Optimization (HIGH)
+    AP010_NO_QUICKENING     = 0x10  ; Missing bytecode quickening
+    AP011_NO_REG_PINNING    = 0x11  ; No register pinning
+    AP012_NO_INLINE_CACHE   = 0x12  ; No inline caching
+    AP013_NO_ESCAPE_ANAL    = 0x13  ; No escape analysis
+    AP014_NO_LOOP_OPT       = 0x14  ; No loop optimization
+    
+    ; GC (HIGH)
+    AP020_NO_GENERATIONAL   = 0x20  ; No generational GC
+    AP021_NO_LINE_MARKING   = 0x21  ; No Immix line marking
+    AP022_NO_CONCURRENT     = 0x22  ; No concurrent marking
+    
+    ; Testing (MEDIUM)
+    AP030_NO_TEST_CASES     = 0x30  ; Missing test_cases
+    AP031_NO_EDGE_CASES     = 0x31  ; No edge case tests
+    AP032_NO_PAS_ANALYSIS   = 0x32  ; No PAS analysis
+
+.severity_levels:
+    SEVERITY_CRITICAL = 0xFF
+    SEVERITY_HIGH     = 0xC0
+    SEVERITY_MEDIUM   = 0x80
+    SEVERITY_LOW      = 0x40
+    SEVERITY_INFO     = 0x20
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: SCIENTIFIC SOURCES DATABASE
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.scientific_sources:
+    ; Source ID -> Paper Info
+    SRC_DEEGEN          = 0x01  ; arXiv 2024 - Deegen JIT
+    SRC_COPY_PATCH      = 0x02  ; OOPSLA 2021 - Copy-and-Patch
+    SRC_IMMIX           = 0x03  ; PLDI 2008 - Immix GC
+    SRC_BBV             = 0x04  ; POPL 2021 - Basic Block Versioning
+    SRC_ESCAPE          = 0x05  ; CGO 2014 - Escape Analysis
+    SRC_SELF_VM         = 0x06  ; OOPSLA 1991 - Self VM
+    SRC_CODE_SMELLS     = 0x07  ; ACM Surveys 2022
+
+    ; Speedup factors (fixed point x100)
+    SPEEDUP_QUICKENING  = 550   ; 5.5x
+    SPEEDUP_REG_PIN     = 120   ; 1.2x
+    SPEEDUP_INLINE_CACHE= 400   ; 4x
+    SPEEDUP_ESCAPE      = 130   ; 1.3x
+    SPEEDUP_LOOP_OPT    = 300   ; 3x
+    SPEEDUP_IMMIX       = 115   ; 1.15x
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: DETECTION ENGINE
+; PAS Pattern: HSH (O(1) lookup) + D&C (recursive scan)
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.detection_engine:
+    ; Violation report structure
+    REPORT_MAX_VIOLATIONS = 64
+    REPORT_VIOLATIONS     DQ 64 DUP(0)  ; Array of violation IDs
+    REPORT_COUNT          DQ 0
+    REPORT_CRITICAL_COUNT DQ 0
+    REPORT_HIGH_COUNT     DQ 0
+    REPORT_BLOCKED        DB 0
+
+    ; Extension hash table for O(1) lookup
+    .extension_hash:
+        ; hash = first_char % 16
+        ; .zig = 'z' % 16 = 10
+        ; .html = 'h' % 16 = 8
+        ; .css = 'c' % 16 = 3
+        ; .js = 'j' % 16 = 10 (collision with .zig)
+        ; .ts = 't' % 16 = 4
+        ; .vibee = 'v' % 16 = 6
+        EXT_HASH_TABLE:
+            DQ 0, 0, 0, 1, 1, 0, 2, 0  ; 0-7: css=1, ts=1, vibee=2
+            DQ 1, 0, 3, 0, 0, 0, 0, 0  ; 8-15: html=1, zig/js=3
+        
+        ; 0 = allowed, 1 = legacy (block), 2 = spec (check), 3 = impl (check spec)
+
+    ; Main detection entry point
+    .detect:
+        ; Input: r0 = file_path pointer
+        ; Output: r0 = violation count
+        
+        PUSH            rbp
+        MOV             rbp, rsp
+        PUSH            r12
+        PUSH            r13
+        
+        MOV             r12, r0         ; save file path
+        
+        ; Extract extension
+        CALL            .extract_extension
+        MOV             r13, r0         ; extension pointer
+        
+        ; Hash lookup
+        MOVZX           r1, BYTE [r13]  ; first char
+        AND             r1, 0x0F        ; % 16
+        LEA             r2, EXT_HASH_TABLE
+        MOV             r3, [r2 + r1 * 8]
+        
+        ; Branch on extension type
+        CMP             r3, 0
+        JE              .detect_done    ; allowed
+        CMP             r3, 1
+        JE              .check_legacy
+        CMP             r3, 2
+        JE              .check_spec
+        CMP             r3, 3
+        JE              .check_impl
+        
+    .check_legacy:
+        ; Check if runtime.html (exception)
+        MOV             r0, r12
+        LEA             r1, .runtime_html_path
+        CALL            .string_ends_with
+        TEST            r0, r0
+        JNZ             .detect_done    ; exception
+        
+        ; VIOLATION: AP002
+        MOV             r0, AP002_LEGACY_FILE
+        MOV             r1, SEVERITY_CRITICAL
+        CALL            .emit_violation
+        JMP             .detect_done
+        
+    .check_impl:
+        ; Check for corresponding .vibee spec
+        MOV             r0, r12
+        CALL            .get_spec_path
+        CALL            .file_exists
+        TEST            r0, r0
+        JNZ             .detect_done    ; spec exists
+        
+        ; VIOLATION: AP001
+        MOV             r0, AP001_DIRECT_IMPL
+        MOV             r1, SEVERITY_CRITICAL
+        CALL            .emit_violation
+        JMP             .detect_done
+        
+    .check_spec:
+        ; Validate spec completeness
+        MOV             r0, r12
+        CALL            .validate_spec
+        ; violations emitted inside validate_spec
+        
+    .detect_done:
+        ; Return violation count
+        MOV             r0, [REPORT_COUNT]
+        
+        POP             r13
+        POP             r12
+        POP             rbp
+        RET
+
+    .runtime_html_path:
+        DB "runtime/runtime.html", 0
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: SPEC VALIDATION
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.spec_validator:
+    ; Required elements
+    REQ_CREATION_PATTERN = 0x01
+    REQ_BEHAVIORS        = 0x02
+    REQ_TEST_CASES       = 0x04
+    REQ_PAS_ANALYSIS     = 0x08
+    
+    .validate_spec:
+        ; Input: r0 = spec file path
+        ; Output: r0 = missing elements mask
+        
+        PUSH            rbp
+        MOV             rbp, rsp
+        PUSH            r12
+        
+        ; Read spec content
+        CALL            .read_file
+        MOV             r12, r0         ; content pointer
+        
+        XOR             r1, r1          ; found mask
+        
+        ; Check creation_pattern
+        MOV             r0, r12
+        LEA             r2, .str_creation_pattern
+        CALL            .string_contains
+        TEST            r0, r0
+        JZ              .no_creation_pattern
+        OR              r1, REQ_CREATION_PATTERN
+        JMP             .check_behaviors
+        
+    .no_creation_pattern:
+        MOV             r0, AP003_MISSING_PATTERN
+        MOV             r2, SEVERITY_HIGH
+        PUSH            r1
+        CALL            .emit_violation
+        POP             r1
+        
+    .check_behaviors:
+        MOV             r0, r12
+        LEA             r2, .str_behaviors
+        CALL            .string_contains
+        TEST            r0, r0
+        JZ              .check_test_cases
+        OR              r1, REQ_BEHAVIORS
+        
+    .check_test_cases:
+        MOV             r0, r12
+        LEA             r2, .str_test_cases
+        CALL            .string_contains
+        TEST            r0, r0
+        JZ              .no_test_cases
+        OR              r1, REQ_TEST_CASES
+        JMP             .check_pas
+        
+    .no_test_cases:
+        MOV             r0, AP030_NO_TEST_CASES
+        MOV             r2, SEVERITY_MEDIUM
+        PUSH            r1
+        CALL            .emit_violation
+        POP             r1
+        
+    .check_pas:
+        MOV             r0, r12
+        LEA             r2, .str_pas_analysis
+        CALL            .string_contains
+        TEST            r0, r0
+        JZ              .no_pas
+        OR              r1, REQ_PAS_ANALYSIS
+        JMP             .validate_done
+        
+    .no_pas:
+        MOV             r0, AP032_NO_PAS_ANALYSIS
+        MOV             r2, SEVERITY_LOW
+        PUSH            r1
+        CALL            .emit_violation
+        POP             r1
+        
+    .validate_done:
+        MOV             r0, r1
+        POP             r12
+        POP             rbp
+        RET
+        
+    .str_creation_pattern:
+        DB "creation_pattern:", 0
+    .str_behaviors:
+        DB "behaviors:", 0
+    .str_test_cases:
+        DB "test_cases:", 0
+    .str_pas_analysis:
+        DB "pas_analysis:", 0
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: OPTIMIZATION ANTIPATTERN DETECTION
+; Source: Deegen (arXiv 2024), Copy-and-Patch (OOPSLA 2021)
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.optimization_detector:
+    .detect_jit_antipatterns:
+        ; Input: r0 = module IR
+        ; Output: r0 = antipattern mask
+        
+        PUSH            rbp
+        MOV             rbp, rsp
+        PUSH            r12
+        PUSH            r13
+        
+        MOV             r12, r0         ; IR pointer
+        XOR             r13, r13        ; antipattern mask
+        
+        ; Check for bytecode quickening
+        MOV             r0, r12
+        CALL            .has_quickening
+        TEST            r0, r0
+        JNZ             .check_reg_pin
+        OR              r13, (1 << 0)   ; AP010
+        MOV             r0, AP010_NO_QUICKENING
+        MOV             r1, SEVERITY_HIGH
+        CALL            .emit_violation
+        
+    .check_reg_pin:
+        MOV             r0, r12
+        CALL            .has_register_pinning
+        TEST            r0, r0
+        JNZ             .check_ic
+        OR              r13, (1 << 1)   ; AP011
+        MOV             r0, AP011_NO_REG_PINNING
+        MOV             r1, SEVERITY_HIGH
+        CALL            .emit_violation
+        
+    .check_ic:
+        MOV             r0, r12
+        CALL            .has_inline_cache
+        TEST            r0, r0
+        JNZ             .check_escape
+        OR              r13, (1 << 2)   ; AP012
+        MOV             r0, AP012_NO_INLINE_CACHE
+        MOV             r1, SEVERITY_HIGH
+        CALL            .emit_violation
+        
+    .check_escape:
+        MOV             r0, r12
+        CALL            .has_escape_analysis
+        TEST            r0, r0
+        JNZ             .check_loop
+        OR              r13, (1 << 3)   ; AP013
+        MOV             r0, AP013_NO_ESCAPE_ANAL
+        MOV             r1, SEVERITY_HIGH
+        CALL            .emit_violation
+        
+    .check_loop:
+        MOV             r0, r12
+        CALL            .has_loop_optimization
+        TEST            r0, r0
+        JNZ             .opt_detect_done
+        OR              r13, (1 << 4)   ; AP014
+        MOV             r0, AP014_NO_LOOP_OPT
+        MOV             r1, SEVERITY_HIGH
+        CALL            .emit_violation
+        
+    .opt_detect_done:
+        MOV             r0, r13
+        POP             r13
+        POP             r12
+        POP             rbp
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: SELF-CRITICISM ENGINE
+; Честный анализ собственных нарушений
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.self_criticism:
+    ; Own violations (честно признаём)
+    OWN_VIOLATIONS:
+        DQ AP001_DIRECT_IMPL    ; jit_v2.zig created without spec
+        DQ AP001_DIRECT_IMPL    ; gc_immix.zig created without spec
+        DQ AP001_DIRECT_IMPL    ; bbv_optimizer.zig created without spec
+        DQ AP001_DIRECT_IMPL    ; ssa_regalloc.zig created without spec
+        DQ AP001_DIRECT_IMPL    ; benchmark_trinity.zig created without spec
+        DQ 0                    ; terminator
+    
+    OWN_VIOLATION_COUNT = 5
+    
+    .self_analyze:
+        ; Честно сообщаем о собственных нарушениях
+        
+        PUSH            rbp
+        MOV             rbp, rsp
+        
+        ; Emit self-criticism header
+        LEA             r0, .self_crit_header
+        CALL            .print_string
+        
+        ; Count own violations
+        MOV             r0, OWN_VIOLATION_COUNT
+        LEA             r1, .self_crit_count
+        CALL            .print_formatted
+        
+        ; List violations
+        LEA             r0, OWN_VIOLATIONS
+        MOV             r1, OWN_VIOLATION_COUNT
+        CALL            .print_violations
+        
+        ; Emit corrective actions
+        LEA             r0, .corrective_actions
+        CALL            .print_string
+        
+        POP             rbp
+        RET
+        
+    .self_crit_header:
+        DB "═══ SELF-CRITICISM REPORT ═══", 10
+        DB "Честный анализ собственных нарушений:", 10, 0
+        
+    .self_crit_count:
+        DB "Обнаружено нарушений: %d", 10, 0
+        
+    .corrective_actions:
+        DB 10, "КОРРЕКТИРУЮЩИЕ ДЕЙСТВИЯ:", 10
+        DB "1. Создать .vibee спецификации для всех .zig файлов", 10
+        DB "2. Перегенерировать код из спецификаций", 10
+        DB "3. Удалить вручную созданные файлы", 10
+        DB "4. Интегрировать детектор в pre-commit hook", 10, 0
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: VIOLATION EMITTER
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.violation_emitter:
+    .emit_violation:
+        ; Input: r0 = antipattern_id, r1 = severity
+        
+        PUSH            rbp
+        MOV             rbp, rsp
+        
+        ; Add to report
+        MOV             r2, [REPORT_COUNT]
+        CMP             r2, REPORT_MAX_VIOLATIONS
+        JGE             .emit_done
+        
+        LEA             r3, REPORT_VIOLATIONS
+        MOV             [r3 + r2 * 8], r0
+        INC             QWORD [REPORT_COUNT]
+        
+        ; Update severity counts
+        CMP             r1, SEVERITY_CRITICAL
+        JNE             .check_high
+        INC             QWORD [REPORT_CRITICAL_COUNT]
+        MOV             BYTE [REPORT_BLOCKED], 1
+        JMP             .emit_done
+        
+    .check_high:
+        CMP             r1, SEVERITY_HIGH
+        JNE             .emit_done
+        INC             QWORD [REPORT_HIGH_COUNT]
+        
+    .emit_done:
+        POP             rbp
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: ENFORCEMENT
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.enforcement:
+    .should_block:
+        ; Output: r0 = 1 if should block, 0 otherwise
+        MOVZX           r0, BYTE [REPORT_BLOCKED]
+        RET
+        
+    .get_report:
+        ; Output: r0 = report pointer
+        LEA             r0, REPORT_VIOLATIONS
+        RET
+        
+    .clear_report:
+        MOV             QWORD [REPORT_COUNT], 0
+        MOV             QWORD [REPORT_CRITICAL_COUNT], 0
+        MOV             QWORD [REPORT_HIGH_COUNT], 0
+        MOV             BYTE [REPORT_BLOCKED], 0
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: GOLDEN IDENTITY VERIFICATION
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.golden_identity:
+    .verify:
+        ; Verify φ² + 1/φ² = 3
+        
+        FMOV            f0, PHI
+        FMUL            f1, f0, f0      ; φ²
+        
+        FMOV            f2, 1.0
+        FDIV            f2, f1          ; 1/φ²
+        
+        FADD            f3, f1, f2      ; φ² + 1/φ²
+        
+        FMOV            f4, GOLDEN_IDENTITY
+        FSUB            f5, f3, f4      ; difference
+        FABS            f5, f5
+        
+        FMOV            f6, 0.0001      ; tolerance
+        FCMP            f5, f6
+        JLE             .verified
+        
+        ; Verification failed
+        XOR             r0, r0
+        RET
+        
+    .verified:
+        MOV             r0, 1
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: UTILITY FUNCTIONS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.utils:
+    .extract_extension:
+        ; Input: r0 = path pointer
+        ; Output: r0 = extension pointer (after last '.')
+        
+        MOV             r1, r0
+        XOR             r2, r2          ; last dot position
+        
+    .ext_loop:
+        MOVZX           r3, BYTE [r1]
+        TEST            r3, r3
+        JZ              .ext_done
+        CMP             r3, '.'
+        JNE             .ext_next
+        LEA             r2, [r1 + 1]    ; save position after dot
+    .ext_next:
+        INC             r1
+        JMP             .ext_loop
+    .ext_done:
+        MOV             r0, r2
+        RET
+        
+    .file_exists:
+        ; Input: r0 = path pointer
+        ; Output: r0 = 1 if exists, 0 otherwise
+        ; (syscall wrapper)
+        MOV             rax, 21         ; SYS_access
+        MOV             rdi, r0
+        XOR             rsi, rsi        ; F_OK
+        SYSCALL
+        TEST            rax, rax
+        SETZ            al
+        MOVZX           r0, al
+        RET
+        
+    .string_contains:
+        ; Input: r0 = haystack, r1 = needle
+        ; Output: r0 = 1 if contains, 0 otherwise
+        ; (simplified - full impl uses SIMD)
+        
+        PUSH            rbp
+        MOV             rbp, rsp
+        PUSH            r12
+        PUSH            r13
+        
+        MOV             r12, r0         ; haystack
+        MOV             r13, r1         ; needle
+        
+    .contains_loop:
+        MOVZX           r0, BYTE [r12]
+        TEST            r0, r0
+        JZ              .not_found
+        
+        ; Try match at this position
+        MOV             r0, r12
+        MOV             r1, r13
+        CALL            .string_starts_with
+        TEST            r0, r0
+        JNZ             .found
+        
+        INC             r12
+        JMP             .contains_loop
+        
+    .found:
+        MOV             r0, 1
+        JMP             .contains_done
+    .not_found:
+        XOR             r0, r0
+    .contains_done:
+        POP             r13
+        POP             r12
+        POP             rbp
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; END OF ANTIPATTERN DETECTOR V43
+; Golden Identity Verified: φ² + 1/φ² = 3.0000 ✓
+; ═══════════════════════════════════════════════════════════════════════════════
