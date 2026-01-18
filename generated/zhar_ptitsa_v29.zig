@@ -524,3 +524,157 @@ test "version_check" {
     const zp = ZharPtitsaV29.init();
     try std.testing.expectEqual(@as(u32, 29), zp.version);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SELF-EVOLUTION TRAJECTORY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const EvolutionSnapshot = struct {
+    version: u32,
+    generation: u64,
+    best_fitness: f64,
+    tests_count: usize,
+    speedup: f64,
+    timestamp_ns: i128,
+};
+
+pub const EvolutionTrajectory = struct {
+    snapshots: [100]EvolutionSnapshot = undefined,
+    snapshot_count: usize = 0,
+    start_time: i128 = 0,
+
+    const Self = @This();
+
+    pub fn init() Self {
+        return Self{
+            .start_time = std.time.nanoTimestamp(),
+        };
+    }
+
+    pub fn addSnapshot(self: *Self, version: u32, generation: u64, fitness: f64, tests: usize, speedup: f64) void {
+        if (self.snapshot_count < 100) {
+            self.snapshots[self.snapshot_count] = EvolutionSnapshot{
+                .version = version,
+                .generation = generation,
+                .best_fitness = fitness,
+                .tests_count = tests,
+                .speedup = speedup,
+                .timestamp_ns = std.time.nanoTimestamp() - self.start_time,
+            };
+            self.snapshot_count += 1;
+        }
+    }
+
+    pub fn getImprovementRate(self: *const Self) f64 {
+        if (self.snapshot_count < 2) return 0.0;
+
+        const first = self.snapshots[0];
+        const last = self.snapshots[self.snapshot_count - 1];
+
+        if (first.best_fitness == 0.0) return 0.0;
+        return (last.best_fitness - first.best_fitness) / first.best_fitness * 100.0;
+    }
+
+    pub fn getSpeedupTrajectory(self: *const Self) f64 {
+        if (self.snapshot_count < 2) return 1.0;
+
+        const first = self.snapshots[0];
+        const last = self.snapshots[self.snapshot_count - 1];
+
+        return last.speedup / first.speedup;
+    }
+};
+
+pub const PhoenixEvolution = struct {
+    trajectory: EvolutionTrajectory,
+    current_version: u32 = VERSION,
+    total_rebirths: u64 = 0,
+    is_evolving: bool = false,
+
+    const Self = @This();
+
+    pub fn init() Self {
+        return Self{
+            .trajectory = EvolutionTrajectory.init(),
+        };
+    }
+
+    /// Record a version snapshot
+    pub fn recordVersion(self: *Self, version: u32, tests: usize, speedup: f64) void {
+        self.trajectory.addSnapshot(version, self.total_rebirths, speedup, tests, speedup);
+        if (version > self.current_version) {
+            self.current_version = version;
+            self.total_rebirths += 1;
+        }
+    }
+
+    /// Get evolution summary
+    pub fn getSummary(self: *const Self) struct {
+        versions_evolved: u32,
+        total_rebirths: u64,
+        improvement_rate: f64,
+        speedup_trajectory: f64,
+    } {
+        return .{
+            .versions_evolved = self.current_version - 22, // Started at v22
+            .total_rebirths = self.total_rebirths,
+            .improvement_rate = self.trajectory.getImprovementRate(),
+            .speedup_trajectory = self.trajectory.getSpeedupTrajectory(),
+        };
+    }
+
+    /// Check if Phoenix is ready for rebirth
+    pub fn isReadyForRebirth(self: *const Self) bool {
+        // Phoenix rebirths every 999 generations
+        return self.total_rebirths % PHOENIX_GENERATIONS == 0;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SELF-EVOLUTION TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "evolution_trajectory_init" {
+    const trajectory = EvolutionTrajectory.init();
+    try std.testing.expectEqual(@as(usize, 0), trajectory.snapshot_count);
+}
+
+test "evolution_trajectory_add_snapshot" {
+    var trajectory = EvolutionTrajectory.init();
+    trajectory.addSnapshot(29, 100, 0.95, 200, 7.0);
+    try std.testing.expectEqual(@as(usize, 1), trajectory.snapshot_count);
+}
+
+test "evolution_trajectory_improvement_rate" {
+    var trajectory = EvolutionTrajectory.init();
+    trajectory.addSnapshot(28, 0, 0.5, 59, 1.0);
+    trajectory.addSnapshot(29, 100, 1.0, 200, 7.0);
+    
+    const rate = trajectory.getImprovementRate();
+    try std.testing.expect(rate > 0.0); // Should show improvement
+}
+
+test "phoenix_evolution_init" {
+    const phoenix = PhoenixEvolution.init();
+    try std.testing.expectEqual(@as(u32, 29), phoenix.current_version);
+}
+
+test "phoenix_evolution_record" {
+    var phoenix = PhoenixEvolution.init();
+    phoenix.recordVersion(29, 200, 7.0);
+    try std.testing.expectEqual(@as(usize, 1), phoenix.trajectory.snapshot_count);
+}
+
+test "phoenix_evolution_summary" {
+    var phoenix = PhoenixEvolution.init();
+    phoenix.recordVersion(28, 59, 1.0);
+    phoenix.recordVersion(29, 200, 7.0);
+    
+    const summary = phoenix.getSummary();
+    try std.testing.expect(summary.versions_evolved > 0);
+}
+
+test "phoenix_rebirth_check" {
+    const phoenix = PhoenixEvolution.init();
+    try std.testing.expect(phoenix.isReadyForRebirth()); // 0 % 999 == 0
+}

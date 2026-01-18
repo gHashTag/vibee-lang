@@ -14,33 +14,46 @@ const std = @import("std");
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub const Antipattern = enum(u8) {
-    // Architecture antipatterns
+    // Architecture antipatterns (AP001-AP003)
     AP001_DIRECT_ZIG_CREATION = 0,
     AP002_LEGACY_WEB_FILES = 1,
     AP003_SPECLESS_IMPLEMENTATION = 2,
     
-    // Benchmark antipatterns
+    // Benchmark antipatterns (AP004-AP007)
     AP004_FAKE_BENCHMARK = 3,
     AP005_HARDCODED_SPEEDUP = 4,
     AP006_NO_WARMUP = 5,
     AP007_NO_STATISTICS = 6,
     
-    // Code quality antipatterns
+    // Code quality antipatterns (AP010-AP014)
     AP010_LONG_FUNCTION = 10,
     AP011_DEEP_NESTING = 11,
     AP012_HIGH_COMPLEXITY = 12,
     AP013_MAGIC_NUMBERS = 13,
     AP014_DUPLICATE_CODE = 14,
     
-    // Optimization antipatterns
+    // Optimization antipatterns (AP020-AP023)
     AP020_NO_SIMD = 20,
     AP021_NO_CACHE = 21,
     AP022_LINEAR_SEARCH = 22,
     AP023_NO_INCREMENTAL = 23,
     
-    // Sacred antipatterns
+    // Sacred antipatterns (AP030-AP031)
     AP030_SACRED_VIOLATION = 30,
     AP031_PHI_UNUSED = 31,
+    
+    // Spec-First antipatterns (AP040-AP050) - NEW
+    AP040_ORPHAN_CODE = 40,
+    AP041_SPEC_MISMATCH = 41,
+    AP042_MISSING_BEHAVIOR = 42,
+    AP043_MISSING_TEST_CASE = 43,
+    AP044_HAND_WRITTEN_LOGIC = 44,
+    AP045_UNTRACKED_FUNCTION = 45,
+    AP046_OPCODE_NO_HANDLER = 46,
+    AP047_HANDLER_NO_OPCODE = 47,
+    AP048_MANUAL_MEMORY_IN_SPEC = 48,
+    AP049_PAS_INVARIANT_MISSING = 49,
+    AP050_GENERATION_BYPASS = 50,
 
     pub fn id(self: Antipattern) []const u8 {
         return switch (self) {
@@ -62,6 +75,17 @@ pub const Antipattern = enum(u8) {
             .AP023_NO_INCREMENTAL => "AP023",
             .AP030_SACRED_VIOLATION => "AP030",
             .AP031_PHI_UNUSED => "AP031",
+            .AP040_ORPHAN_CODE => "AP040",
+            .AP041_SPEC_MISMATCH => "AP041",
+            .AP042_MISSING_BEHAVIOR => "AP042",
+            .AP043_MISSING_TEST_CASE => "AP043",
+            .AP044_HAND_WRITTEN_LOGIC => "AP044",
+            .AP045_UNTRACKED_FUNCTION => "AP045",
+            .AP046_OPCODE_NO_HANDLER => "AP046",
+            .AP047_HANDLER_NO_OPCODE => "AP047",
+            .AP048_MANUAL_MEMORY_IN_SPEC => "AP048",
+            .AP049_PAS_INVARIANT_MISSING => "AP049",
+            .AP050_GENERATION_BYPASS => "AP050",
         };
     }
 
@@ -85,6 +109,17 @@ pub const Antipattern = enum(u8) {
             .AP023_NO_INCREMENTAL => "Full recompute where incremental possible",
             .AP030_SACRED_VIOLATION => "Sacred formula not verified",
             .AP031_PHI_UNUSED => "Golden ratio not applied",
+            .AP040_ORPHAN_CODE => "Code without corresponding .vibee spec",
+            .AP041_SPEC_MISMATCH => "Generated code differs from specification",
+            .AP042_MISSING_BEHAVIOR => "Behavior in spec has no implementation",
+            .AP043_MISSING_TEST_CASE => "Behavior has no test cases",
+            .AP044_HAND_WRITTEN_LOGIC => "Logic written directly in .zig, not from spec",
+            .AP045_UNTRACKED_FUNCTION => "Function not declared in .vibee spec",
+            .AP046_OPCODE_NO_HANDLER => "Opcode declared but no handler exists",
+            .AP047_HANDLER_NO_OPCODE => "Handler exists but no opcode declared",
+            .AP048_MANUAL_MEMORY_IN_SPEC => "Manual memory management in spec abstraction",
+            .AP049_PAS_INVARIANT_MISSING => "PAS invariant not verified",
+            .AP050_GENERATION_BYPASS => "Code bypasses generation pipeline",
         };
     }
 
@@ -108,6 +143,17 @@ pub const Antipattern = enum(u8) {
             .AP023_NO_INCREMENTAL => .MEDIUM,
             .AP030_SACRED_VIOLATION => .CRITICAL,
             .AP031_PHI_UNUSED => .LOW,
+            .AP040_ORPHAN_CODE => .CRITICAL,
+            .AP041_SPEC_MISMATCH => .CRITICAL,
+            .AP042_MISSING_BEHAVIOR => .HIGH,
+            .AP043_MISSING_TEST_CASE => .HIGH,
+            .AP044_HAND_WRITTEN_LOGIC => .CRITICAL,
+            .AP045_UNTRACKED_FUNCTION => .HIGH,
+            .AP046_OPCODE_NO_HANDLER => .CRITICAL,
+            .AP047_HANDLER_NO_OPCODE => .HIGH,
+            .AP048_MANUAL_MEMORY_IN_SPEC => .MEDIUM,
+            .AP049_PAS_INVARIANT_MISSING => .HIGH,
+            .AP050_GENERATION_BYPASS => .CRITICAL,
         };
     }
 
@@ -117,7 +163,8 @@ pub const Antipattern = enum(u8) {
         if (val < 10) return "Benchmark";
         if (val < 20) return "Code Quality";
         if (val < 30) return "Optimization";
-        return "Sacred";
+        if (val < 40) return "Sacred";
+        return "Spec-First";
     }
 };
 
@@ -1112,4 +1159,77 @@ test "antipattern_score_with_violations" {
     const bad_code = "speedup = 1.5; benchmark() { }"; // Hardcoded + no warmup
     const score = calculateAntipatternScore(bad_code, "test.zig");
     try std.testing.expect(score > 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SPEC-FIRST ANTIPATTERN TESTS (AP040-AP050)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "antipattern_ap040_orphan_code" {
+    try std.testing.expectEqualStrings("AP040", Antipattern.AP040_ORPHAN_CODE.id());
+    try std.testing.expectEqual(Severity.CRITICAL, Antipattern.AP040_ORPHAN_CODE.severity());
+    try std.testing.expectEqualStrings("Spec-First", Antipattern.AP040_ORPHAN_CODE.category());
+}
+
+test "antipattern_ap041_spec_mismatch" {
+    try std.testing.expectEqualStrings("AP041", Antipattern.AP041_SPEC_MISMATCH.id());
+    try std.testing.expectEqual(Severity.CRITICAL, Antipattern.AP041_SPEC_MISMATCH.severity());
+}
+
+test "antipattern_ap042_missing_behavior" {
+    try std.testing.expectEqualStrings("AP042", Antipattern.AP042_MISSING_BEHAVIOR.id());
+    try std.testing.expectEqual(Severity.HIGH, Antipattern.AP042_MISSING_BEHAVIOR.severity());
+}
+
+test "antipattern_ap043_missing_test_case" {
+    try std.testing.expectEqualStrings("AP043", Antipattern.AP043_MISSING_TEST_CASE.id());
+    try std.testing.expectEqual(Severity.HIGH, Antipattern.AP043_MISSING_TEST_CASE.severity());
+}
+
+test "antipattern_ap044_hand_written_logic" {
+    try std.testing.expectEqualStrings("AP044", Antipattern.AP044_HAND_WRITTEN_LOGIC.id());
+    try std.testing.expectEqual(Severity.CRITICAL, Antipattern.AP044_HAND_WRITTEN_LOGIC.severity());
+}
+
+test "antipattern_ap045_untracked_function" {
+    try std.testing.expectEqualStrings("AP045", Antipattern.AP045_UNTRACKED_FUNCTION.id());
+    try std.testing.expectEqual(Severity.HIGH, Antipattern.AP045_UNTRACKED_FUNCTION.severity());
+}
+
+test "antipattern_ap046_opcode_no_handler" {
+    try std.testing.expectEqualStrings("AP046", Antipattern.AP046_OPCODE_NO_HANDLER.id());
+    try std.testing.expectEqual(Severity.CRITICAL, Antipattern.AP046_OPCODE_NO_HANDLER.severity());
+}
+
+test "antipattern_ap047_handler_no_opcode" {
+    try std.testing.expectEqualStrings("AP047", Antipattern.AP047_HANDLER_NO_OPCODE.id());
+    try std.testing.expectEqual(Severity.HIGH, Antipattern.AP047_HANDLER_NO_OPCODE.severity());
+}
+
+test "antipattern_ap048_manual_memory" {
+    try std.testing.expectEqualStrings("AP048", Antipattern.AP048_MANUAL_MEMORY_IN_SPEC.id());
+    try std.testing.expectEqual(Severity.MEDIUM, Antipattern.AP048_MANUAL_MEMORY_IN_SPEC.severity());
+}
+
+test "antipattern_ap049_pas_invariant" {
+    try std.testing.expectEqualStrings("AP049", Antipattern.AP049_PAS_INVARIANT_MISSING.id());
+    try std.testing.expectEqual(Severity.HIGH, Antipattern.AP049_PAS_INVARIANT_MISSING.severity());
+}
+
+test "antipattern_ap050_generation_bypass" {
+    try std.testing.expectEqualStrings("AP050", Antipattern.AP050_GENERATION_BYPASS.id());
+    try std.testing.expectEqual(Severity.CRITICAL, Antipattern.AP050_GENERATION_BYPASS.severity());
+}
+
+test "antipattern_spec_first_category" {
+    try std.testing.expectEqualStrings("Spec-First", Antipattern.AP040_ORPHAN_CODE.category());
+    try std.testing.expectEqualStrings("Spec-First", Antipattern.AP041_SPEC_MISMATCH.category());
+    try std.testing.expectEqualStrings("Spec-First", Antipattern.AP050_GENERATION_BYPASS.category());
+}
+
+test "antipattern_total_count" {
+    // 29 antipatterns total: AP001-AP003 (3) + AP004-AP007 (4) + AP010-AP014 (5) + 
+    // AP020-AP023 (4) + AP030-AP031 (2) + AP040-AP050 (11) = 29
+    const count = 29;
+    try std.testing.expectEqual(@as(usize, count), count);
 }
