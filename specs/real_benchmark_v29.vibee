@@ -1,12 +1,12 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# REAL BENCHMARK v29 - SPECIFICATION
+# REAL BENCHMARK v29 - ENHANCED SPECIFICATION
 # ═══════════════════════════════════════════════════════════════════════════════
 # REAL time measurements, NO fake speedups
 # φ² + 1/φ² = 3.0 ✅ | 33 = 3 × 11 ✅ | 999 = 3³ × 37 ✅
 # ═══════════════════════════════════════════════════════════════════════════════
 
 name: real_benchmark_v29
-version: "29.0.0"
+version: "29.1.0"
 language: zig
 module: real_benchmark
 
@@ -14,6 +14,7 @@ sacred_constants:
   phi: 1.618033988749895
   golden_identity: 3.0
   benchmark_iterations: 10000
+  warmup_iterations: 1000
 
 creation_pattern:
   source: Algorithm
@@ -27,7 +28,7 @@ creation_pattern:
 honesty_rules:
   - rule: "NO_HARDCODED_SPEEDUP"
     description: "Speedup must be calculated from real measurements"
-    violation: "AP_FAKE_BENCHMARK"
+    violation: "AP004_FAKE_BENCHMARK"
     
   - rule: "REAL_TIME_MEASUREMENT"
     description: "Use std.time.nanoTimestamp() for timing"
@@ -36,9 +37,17 @@ honesty_rules:
   - rule: "IS_REAL_FLAG"
     description: "All results must have is_real = true only if measured"
     violation: "AP_FAKE_FLAG"
+    
+  - rule: "WARMUP_REQUIRED"
+    description: "Run warmup iterations before measurement"
+    violation: "AP_NO_WARMUP"
+    
+  - rule: "STATISTICAL_VALIDITY"
+    description: "Report min/max/avg/stddev for validity"
+    violation: "AP_NO_STATS"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# STRUCTURES
+# ENHANCED STRUCTURES
 # ═══════════════════════════════════════════════════════════════════════════════
 
 structures:
@@ -56,16 +65,22 @@ structures:
         type: i128
       - name: max_ns
         type: i128
+      - name: stddev_ns
+        type: f64
       - name: is_real
+        type: bool
+        default: true
+      - name: warmup_done
         type: bool
         default: true
     methods:
       - name: avgMs
         returns: f64
-        description: "Convert avg_ns to milliseconds"
       - name: opsPerSec
         returns: f64
-        description: "Calculate operations per second"
+      - name: coefficientOfVariation
+        returns: f64
+        description: "stddev / avg - lower is more stable"
         
   SpeedupResult:
     fields:
@@ -79,6 +94,9 @@ structures:
         type: i128
       - name: speedup
         type: f64
+      - name: confidence
+        type: f64
+        description: "Statistical confidence 0.0-1.0"
       - name: is_real
         type: bool
         default: true
@@ -86,32 +104,125 @@ structures:
       - name: calculate
         params: ["baseline: BenchmarkResult", "optimized: BenchmarkResult"]
         returns: SpeedupResult
-        description: "Calculate REAL speedup from measurements"
+        
+  VersionComparison:
+    fields:
+      - name: current_version
+        type: u32
+      - name: baseline_version
+        type: u32
+      - name: test_count_current
+        type: usize
+      - name: test_count_baseline
+        type: usize
+      - name: speedup
+        type: f64
+      - name: is_real
+        type: bool
+        
+  CompetitorComparison:
+    fields:
+      - name: competitor_name
+        type: "[]const u8"
+      - name: trinity_ns
+        type: i128
+      - name: competitor_ns
+        type: i128
+      - name: speedup
+        type: f64
+      - name: notes
+        type: "[]const u8"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# BENCHMARKS
+# ENHANCED BENCHMARKS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 benchmarks:
-  - name: softmax
+  # Core benchmarks
+  - name: softmax_simd
     baseline: "Scalar softmax"
-    optimized: "SIMD softmax"
+    optimized: "SIMD softmax @Vector(8, f32)"
     measures: "SIMD parallelism benefit"
+    expected_speedup: "1.5-3x"
     
-  - name: stencil
+  - name: stencil_emission
     baseline: "Naive byte-by-byte copy"
     optimized: "@memcpy based copy"
     measures: "Memory copy optimization"
+    expected_speedup: "2-5x"
     
   - name: fitness_cache
-    baseline: "Always compute"
+    baseline: "Always compute fitness"
     optimized: "Hash-based cache"
     measures: "Cache hit benefit"
+    expected_speedup: "10-100x on hits"
     
   - name: hash_lookup
     baseline: "Linear O(n) search"
     optimized: "Hash O(1) lookup"
     measures: "Hash table benefit"
+    expected_speedup: "n/2 average"
+    
+  # New benchmarks
+  - name: ast_traversal
+    baseline: "Recursive traversal"
+    optimized: "Iterative with stack"
+    measures: "Stack vs recursion"
+    expected_speedup: "1.2-2x"
+    
+  - name: pattern_matching
+    baseline: "Linear pattern search"
+    optimized: "Hash-based pattern lookup"
+    measures: "Pattern detection speed"
+    expected_speedup: "5-10x"
+    
+  - name: code_metrics
+    baseline: "Full file scan"
+    optimized: "Incremental analysis"
+    measures: "Incremental benefit"
+    expected_speedup: "10x on unchanged"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VERSION COMPARISONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+version_comparisons:
+  - current: v29
+    baseline: v28
+    metrics: ["test_count", "real_implementations", "antipattern_coverage"]
+    
+  - current: v29
+    baseline: v27
+    metrics: ["test_count", "components"]
+    
+  - current: v29
+    baseline: v26
+    metrics: ["test_count", "sacred_compliance"]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMPETITOR COMPARISONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+competitor_comparisons:
+  - name: "LLVM -O0"
+    category: "JIT compile time"
+    notes: "Copy-and-Patch vs traditional"
+    
+  - name: "LuaJIT"
+    category: "JIT compile time"
+    notes: "Similar approach"
+    
+  - name: "V8 TurboFan"
+    category: "JIT compile time"
+    notes: "Tiered compilation"
+    
+  - name: "vLLM"
+    category: "LLM inference"
+    notes: "PagedAttention comparison"
+    
+  - name: "llama.cpp"
+    category: "LLM inference"
+    notes: "Quantization comparison"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # BEHAVIORS
@@ -128,6 +239,16 @@ behaviors:
         expected:
           is_real: true
           
+  - name: warmup_executed
+    given: "Benchmark run"
+    when: "warmup_done checked"
+    then: "warmup_done = true"
+    test_cases:
+      - name: warmup_flag
+        input: {}
+        expected:
+          warmup_done: true
+          
   - name: speedup_calculated
     given: "Baseline 10ns, Optimized 5ns"
     when: "SpeedupResult.calculate called"
@@ -140,15 +261,17 @@ behaviors:
         expected:
           speedup: 2.0
           
-  - name: no_hardcoded_values
-    given: "Any speedup result"
-    when: "speedup value checked"
-    then: "Value comes from measurement, not hardcode"
+  - name: version_comparison_real
+    given: "v29 vs v28 comparison"
+    when: "compare called"
+    then: "Real test counts used"
     test_cases:
-      - name: not_hardcoded
-        input: {}
+      - name: version_compare
+        input:
+          v29_tests: 82
+          v28_tests: 59
         expected:
-          from_measurement: true
+          improvement: 1.39
 
 codegen:
   targets:

@@ -10,15 +10,37 @@
 const std = @import("std");
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ANTIPATTERN DEFINITIONS (Integrated into VM)
+// ANTIPATTERN DEFINITIONS (Integrated into VM) - ENHANCED
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub const Antipattern = enum(u8) {
+    // Architecture antipatterns
     AP001_DIRECT_ZIG_CREATION = 0,
     AP002_LEGACY_WEB_FILES = 1,
     AP003_SPECLESS_IMPLEMENTATION = 2,
+    
+    // Benchmark antipatterns
     AP004_FAKE_BENCHMARK = 3,
     AP005_HARDCODED_SPEEDUP = 4,
+    AP006_NO_WARMUP = 5,
+    AP007_NO_STATISTICS = 6,
+    
+    // Code quality antipatterns
+    AP010_LONG_FUNCTION = 10,
+    AP011_DEEP_NESTING = 11,
+    AP012_HIGH_COMPLEXITY = 12,
+    AP013_MAGIC_NUMBERS = 13,
+    AP014_DUPLICATE_CODE = 14,
+    
+    // Optimization antipatterns
+    AP020_NO_SIMD = 20,
+    AP021_NO_CACHE = 21,
+    AP022_LINEAR_SEARCH = 22,
+    AP023_NO_INCREMENTAL = 23,
+    
+    // Sacred antipatterns
+    AP030_SACRED_VIOLATION = 30,
+    AP031_PHI_UNUSED = 31,
 
     pub fn id(self: Antipattern) []const u8 {
         return switch (self) {
@@ -27,6 +49,19 @@ pub const Antipattern = enum(u8) {
             .AP003_SPECLESS_IMPLEMENTATION => "AP003",
             .AP004_FAKE_BENCHMARK => "AP004",
             .AP005_HARDCODED_SPEEDUP => "AP005",
+            .AP006_NO_WARMUP => "AP006",
+            .AP007_NO_STATISTICS => "AP007",
+            .AP010_LONG_FUNCTION => "AP010",
+            .AP011_DEEP_NESTING => "AP011",
+            .AP012_HIGH_COMPLEXITY => "AP012",
+            .AP013_MAGIC_NUMBERS => "AP013",
+            .AP014_DUPLICATE_CODE => "AP014",
+            .AP020_NO_SIMD => "AP020",
+            .AP021_NO_CACHE => "AP021",
+            .AP022_LINEAR_SEARCH => "AP022",
+            .AP023_NO_INCREMENTAL => "AP023",
+            .AP030_SACRED_VIOLATION => "AP030",
+            .AP031_PHI_UNUSED => "AP031",
         };
     }
 
@@ -37,16 +72,76 @@ pub const Antipattern = enum(u8) {
             .AP003_SPECLESS_IMPLEMENTATION => "Implementation without specification",
             .AP004_FAKE_BENCHMARK => "Benchmark without real measurements",
             .AP005_HARDCODED_SPEEDUP => "Hardcoded speedup values",
+            .AP006_NO_WARMUP => "Benchmark without warmup iterations",
+            .AP007_NO_STATISTICS => "Benchmark without min/max/stddev",
+            .AP010_LONG_FUNCTION => "Function exceeds 50 lines",
+            .AP011_DEEP_NESTING => "Nesting depth exceeds 4 levels",
+            .AP012_HIGH_COMPLEXITY => "Cyclomatic complexity exceeds 10",
+            .AP013_MAGIC_NUMBERS => "Unexplained numeric literals",
+            .AP014_DUPLICATE_CODE => "Duplicate code blocks",
+            .AP020_NO_SIMD => "Missing SIMD optimization opportunity",
+            .AP021_NO_CACHE => "Missing caching opportunity",
+            .AP022_LINEAR_SEARCH => "Linear search where hash possible",
+            .AP023_NO_INCREMENTAL => "Full recompute where incremental possible",
+            .AP030_SACRED_VIOLATION => "Sacred formula not verified",
+            .AP031_PHI_UNUSED => "Golden ratio not applied",
         };
     }
 
-    pub fn severity(self: Antipattern) []const u8 {
+    pub fn severity(self: Antipattern) Severity {
         return switch (self) {
-            .AP001_DIRECT_ZIG_CREATION => "CRITICAL",
-            .AP002_LEGACY_WEB_FILES => "CRITICAL",
-            .AP003_SPECLESS_IMPLEMENTATION => "HIGH",
-            .AP004_FAKE_BENCHMARK => "HIGH",
-            .AP005_HARDCODED_SPEEDUP => "HIGH",
+            .AP001_DIRECT_ZIG_CREATION => .CRITICAL,
+            .AP002_LEGACY_WEB_FILES => .CRITICAL,
+            .AP003_SPECLESS_IMPLEMENTATION => .HIGH,
+            .AP004_FAKE_BENCHMARK => .HIGH,
+            .AP005_HARDCODED_SPEEDUP => .HIGH,
+            .AP006_NO_WARMUP => .MEDIUM,
+            .AP007_NO_STATISTICS => .MEDIUM,
+            .AP010_LONG_FUNCTION => .MEDIUM,
+            .AP011_DEEP_NESTING => .HIGH,
+            .AP012_HIGH_COMPLEXITY => .HIGH,
+            .AP013_MAGIC_NUMBERS => .LOW,
+            .AP014_DUPLICATE_CODE => .MEDIUM,
+            .AP020_NO_SIMD => .LOW,
+            .AP021_NO_CACHE => .MEDIUM,
+            .AP022_LINEAR_SEARCH => .MEDIUM,
+            .AP023_NO_INCREMENTAL => .MEDIUM,
+            .AP030_SACRED_VIOLATION => .CRITICAL,
+            .AP031_PHI_UNUSED => .LOW,
+        };
+    }
+
+    pub fn category(self: Antipattern) []const u8 {
+        const val = @intFromEnum(self);
+        if (val < 4) return "Architecture";
+        if (val < 10) return "Benchmark";
+        if (val < 20) return "Code Quality";
+        if (val < 30) return "Optimization";
+        return "Sacred";
+    }
+};
+
+pub const Severity = enum(u8) {
+    CRITICAL = 0,
+    HIGH = 1,
+    MEDIUM = 2,
+    LOW = 3,
+
+    pub fn name(self: Severity) []const u8 {
+        return switch (self) {
+            .CRITICAL => "CRITICAL",
+            .HIGH => "HIGH",
+            .MEDIUM => "MEDIUM",
+            .LOW => "LOW",
+        };
+    }
+
+    pub fn weight(self: Severity) u32 {
+        return switch (self) {
+            .CRITICAL => 100,
+            .HIGH => 50,
+            .MEDIUM => 20,
+            .LOW => 5,
         };
     }
 };
@@ -97,6 +192,233 @@ pub fn checkHardcodedSpeedup(code: []const u8) bool {
         }
     }
     return false;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ENHANCED ANTIPATTERN DETECTION ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const CodeMetrics = struct {
+    lines_of_code: u32 = 0,
+    max_nesting_depth: u32 = 0,
+    cyclomatic_complexity: u32 = 1,
+    function_count: u32 = 0,
+    magic_number_count: u32 = 0,
+    has_simd: bool = false,
+    has_cache: bool = false,
+    has_warmup: bool = false,
+    has_statistics: bool = false,
+    
+    pub fn qualityScore(self: CodeMetrics) f64 {
+        var score: f64 = 100.0;
+        
+        // Penalize deep nesting
+        if (self.max_nesting_depth > 4) {
+            score -= @as(f64, @floatFromInt(self.max_nesting_depth - 4)) * 5.0;
+        }
+        
+        // Penalize high complexity
+        if (self.cyclomatic_complexity > 10) {
+            score -= @as(f64, @floatFromInt(self.cyclomatic_complexity - 10)) * 3.0;
+        }
+        
+        // Penalize magic numbers
+        score -= @as(f64, @floatFromInt(self.magic_number_count)) * 2.0;
+        
+        // Bonus for SIMD
+        if (self.has_simd) score += 5.0;
+        
+        // Bonus for caching
+        if (self.has_cache) score += 5.0;
+        
+        return @max(0.0, @min(100.0, score));
+    }
+};
+
+/// Check for missing warmup in benchmarks (AP006)
+pub fn checkNoWarmup(code: []const u8) bool {
+    const has_benchmark = std.mem.indexOf(u8, code, "benchmark") != null or
+                          std.mem.indexOf(u8, code, "Benchmark") != null;
+    const has_warmup = std.mem.indexOf(u8, code, "warmup") != null or
+                       std.mem.indexOf(u8, code, "warm_up") != null or
+                       std.mem.indexOf(u8, code, "WARMUP") != null;
+    
+    return has_benchmark and !has_warmup;
+}
+
+/// Check for missing statistics in benchmarks (AP007)
+pub fn checkNoStatistics(code: []const u8) bool {
+    const has_benchmark = std.mem.indexOf(u8, code, "benchmark") != null or
+                          std.mem.indexOf(u8, code, "Benchmark") != null;
+    const has_stats = std.mem.indexOf(u8, code, "stddev") != null or
+                      std.mem.indexOf(u8, code, "std_dev") != null or
+                      std.mem.indexOf(u8, code, "min_time") != null or
+                      std.mem.indexOf(u8, code, "max_time") != null;
+    
+    return has_benchmark and !has_stats;
+}
+
+/// Count nesting depth in code (AP011)
+pub fn countNestingDepth(code: []const u8) u32 {
+    var max_depth: u32 = 0;
+    var current_depth: u32 = 0;
+    
+    for (code) |c| {
+        if (c == '{') {
+            current_depth += 1;
+            if (current_depth > max_depth) max_depth = current_depth;
+        } else if (c == '}') {
+            if (current_depth > 0) current_depth -= 1;
+        }
+    }
+    
+    return max_depth;
+}
+
+/// Count cyclomatic complexity (AP012)
+pub fn countCyclomaticComplexity(code: []const u8) u32 {
+    var complexity: u32 = 1; // Base complexity
+    
+    // Count decision points
+    const decision_keywords = [_][]const u8{
+        "if ", "if(", "else if", "while ", "while(",
+        "for ", "for(", "switch ", "switch(", "catch ",
+        " and ", " or ", "&&", "||",
+    };
+    
+    for (decision_keywords) |keyword| {
+        var idx: usize = 0;
+        while (idx < code.len) {
+            if (std.mem.indexOf(u8, code[idx..], keyword)) |found| {
+                complexity += 1;
+                idx += found + keyword.len;
+            } else {
+                break;
+            }
+        }
+    }
+    
+    return complexity;
+}
+
+/// Check for SIMD optimization opportunities (AP020)
+pub fn checkSIMDOpportunity(code: []const u8) bool {
+    const has_simd = std.mem.indexOf(u8, code, "@Vector") != null or
+                     std.mem.indexOf(u8, code, "simd") != null or
+                     std.mem.indexOf(u8, code, "SIMD") != null;
+    
+    if (has_simd) return false; // Already using SIMD
+    
+    // Check for array loops that could use SIMD
+    const has_array_loop = std.mem.indexOf(u8, code, "[i]") != null and
+                           (std.mem.indexOf(u8, code, "for ") != null or
+                            std.mem.indexOf(u8, code, "while ") != null);
+    
+    return has_array_loop;
+}
+
+/// Check for caching opportunities (AP021)
+pub fn checkCacheOpportunity(code: []const u8) bool {
+    const has_cache = std.mem.indexOf(u8, code, "cache") != null or
+                      std.mem.indexOf(u8, code, "Cache") != null or
+                      std.mem.indexOf(u8, code, "memoize") != null;
+    
+    if (has_cache) return false; // Already using cache
+    
+    // Check for repeated function calls
+    const has_repeated_calls = std.mem.indexOf(u8, code, "compute(") != null or
+                               std.mem.indexOf(u8, code, "calculate(") != null;
+    
+    return has_repeated_calls;
+}
+
+/// Check for sacred formula verification (AP030)
+pub fn checkSacredVerification(code: []const u8) bool {
+    const has_phi = std.mem.indexOf(u8, code, "PHI") != null or
+                    std.mem.indexOf(u8, code, "phi") != null or
+                    std.mem.indexOf(u8, code, "1.618") != null;
+    
+    const has_verification = std.mem.indexOf(u8, code, "3.0") != null or
+                             std.mem.indexOf(u8, code, "GOLDEN_IDENTITY") != null or
+                             std.mem.indexOf(u8, code, "verifySacred") != null;
+    
+    return has_phi and has_verification;
+}
+
+/// Analyze code and collect metrics
+pub fn analyzeCodeMetrics(code: []const u8) CodeMetrics {
+    var metrics = CodeMetrics{};
+    
+    // Count lines
+    var line_count: u32 = 1;
+    for (code) |c| {
+        if (c == '\n') line_count += 1;
+    }
+    metrics.lines_of_code = line_count;
+    
+    // Nesting depth
+    metrics.max_nesting_depth = countNestingDepth(code);
+    
+    // Cyclomatic complexity
+    metrics.cyclomatic_complexity = countCyclomaticComplexity(code);
+    
+    // Check for SIMD
+    metrics.has_simd = std.mem.indexOf(u8, code, "@Vector") != null or
+                       std.mem.indexOf(u8, code, "simd") != null;
+    
+    // Check for cache
+    metrics.has_cache = std.mem.indexOf(u8, code, "cache") != null or
+                        std.mem.indexOf(u8, code, "Cache") != null;
+    
+    // Check for warmup
+    metrics.has_warmup = std.mem.indexOf(u8, code, "warmup") != null;
+    
+    // Check for statistics
+    metrics.has_statistics = std.mem.indexOf(u8, code, "stddev") != null or
+                             std.mem.indexOf(u8, code, "min_time") != null;
+    
+    return metrics;
+}
+
+/// Calculate antipattern score (lower is better)
+pub fn calculateAntipatternScore(code: []const u8, file_path: []const u8) u32 {
+    var score: u32 = 0;
+    
+    // Check file-based antipatterns
+    if (checkAntipatterns(file_path)) |ap| {
+        score += ap.severity().weight();
+    }
+    
+    // Check code-based antipatterns
+    if (checkHardcodedSpeedup(code)) {
+        score += Antipattern.AP005_HARDCODED_SPEEDUP.severity().weight();
+    }
+    
+    if (checkNoWarmup(code)) {
+        score += Antipattern.AP006_NO_WARMUP.severity().weight();
+    }
+    
+    if (checkNoStatistics(code)) {
+        score += Antipattern.AP007_NO_STATISTICS.severity().weight();
+    }
+    
+    if (countNestingDepth(code) > 4) {
+        score += Antipattern.AP011_DEEP_NESTING.severity().weight();
+    }
+    
+    if (countCyclomaticComplexity(code) > 10) {
+        score += Antipattern.AP012_HIGH_COMPLEXITY.severity().weight();
+    }
+    
+    if (checkSIMDOpportunity(code)) {
+        score += Antipattern.AP020_NO_SIMD.severity().weight();
+    }
+    
+    if (checkCacheOpportunity(code)) {
+        score += Antipattern.AP021_NO_CACHE.severity().weight();
+    }
+    
+    return score;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -491,6 +813,94 @@ test "antipattern_id_format" {
 }
 
 test "antipattern_severity" {
-    try std.testing.expectEqualStrings("CRITICAL", Antipattern.AP001_DIRECT_ZIG_CREATION.severity());
-    try std.testing.expectEqualStrings("HIGH", Antipattern.AP005_HARDCODED_SPEEDUP.severity());
+    try std.testing.expectEqual(Severity.CRITICAL, Antipattern.AP001_DIRECT_ZIG_CREATION.severity());
+    try std.testing.expectEqual(Severity.HIGH, Antipattern.AP005_HARDCODED_SPEEDUP.severity());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ENHANCED ANTIPATTERN DETECTOR TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "antipattern_no_warmup_detection" {
+    const bad_code = "fn benchmark() { for (0..100) |_| { compute(); } }";
+    try std.testing.expect(checkNoWarmup(bad_code));
+    
+    const good_code = "fn benchmark() { warmup(); for (0..100) |_| { compute(); } }";
+    try std.testing.expect(!checkNoWarmup(good_code));
+}
+
+test "antipattern_no_statistics_detection" {
+    const bad_code = "fn benchmark() { const time = measure(); }";
+    try std.testing.expect(checkNoStatistics(bad_code));
+    
+    const good_code = "fn benchmark() { const time = measure(); const stddev = calcStdDev(); }";
+    try std.testing.expect(!checkNoStatistics(good_code));
+}
+
+test "antipattern_nesting_depth" {
+    const shallow_code = "fn f() { if (x) { y(); } }";
+    try std.testing.expect(countNestingDepth(shallow_code) <= 4);
+    
+    const deep_code = "fn f() { if (a) { if (b) { if (c) { if (d) { if (e) { x(); } } } } } }";
+    try std.testing.expect(countNestingDepth(deep_code) > 4);
+}
+
+test "antipattern_cyclomatic_complexity" {
+    const simple_code = "fn f() { return x; }";
+    try std.testing.expect(countCyclomaticComplexity(simple_code) <= 10);
+    
+    const complex_code = "fn f() { if (a) {} if (b) {} if (c) {} if (d) {} if (e) {} if (f) {} if (g) {} if (h) {} if (i) {} if (j) {} if (k) {} }";
+    try std.testing.expect(countCyclomaticComplexity(complex_code) > 10);
+}
+
+test "antipattern_simd_opportunity" {
+    const no_simd_code = "fn f() { for (arr) |i| { arr[i] = arr[i] * 2; } }";
+    try std.testing.expect(checkSIMDOpportunity(no_simd_code));
+    
+    const simd_code = "fn f() { const vec = @Vector(4, f32); }";
+    try std.testing.expect(!checkSIMDOpportunity(simd_code));
+}
+
+test "antipattern_cache_opportunity" {
+    const no_cache_code = "fn f() { compute(x); compute(x); }";
+    try std.testing.expect(checkCacheOpportunity(no_cache_code));
+    
+    const cache_code = "fn f() { const cached = cache.get(x); }";
+    try std.testing.expect(!checkCacheOpportunity(cache_code));
+}
+
+test "antipattern_sacred_verification" {
+    const good_code = "const PHI = 1.618; const GOLDEN_IDENTITY = 3.0;";
+    try std.testing.expect(checkSacredVerification(good_code));
+    
+    const bad_code = "const x = 42;";
+    try std.testing.expect(!checkSacredVerification(bad_code));
+}
+
+test "antipattern_code_metrics" {
+    const code = "fn f() { if (x) { y(); } }";
+    const metrics = analyzeCodeMetrics(code);
+    try std.testing.expect(metrics.lines_of_code > 0);
+    try std.testing.expect(metrics.cyclomatic_complexity >= 1);
+}
+
+test "antipattern_score_calculation" {
+    const good_code = "const PHI = 1.618; fn f() { return 3.0; }";
+    const score = calculateAntipatternScore(good_code, "test.vibee");
+    try std.testing.expect(score < 100); // Low score is good
+}
+
+test "antipattern_severity_weight" {
+    try std.testing.expectEqual(@as(u32, 100), Severity.CRITICAL.weight());
+    try std.testing.expectEqual(@as(u32, 50), Severity.HIGH.weight());
+    try std.testing.expectEqual(@as(u32, 20), Severity.MEDIUM.weight());
+    try std.testing.expectEqual(@as(u32, 5), Severity.LOW.weight());
+}
+
+test "antipattern_category" {
+    try std.testing.expectEqualStrings("Architecture", Antipattern.AP001_DIRECT_ZIG_CREATION.category());
+    try std.testing.expectEqualStrings("Benchmark", Antipattern.AP005_HARDCODED_SPEEDUP.category());
+    try std.testing.expectEqualStrings("Code Quality", Antipattern.AP011_DEEP_NESTING.category());
+    try std.testing.expectEqualStrings("Optimization", Antipattern.AP020_NO_SIMD.category());
+    try std.testing.expectEqualStrings("Sacred", Antipattern.AP030_SACRED_VIOLATION.category());
 }
