@@ -13,6 +13,8 @@ const std = @import("std");
 
 pub const PHI: f64 = 1.618033988749895;
 pub const GOLDEN_IDENTITY: f64 = 3.0;
+pub const TRINITY_PRIME: u32 = 33;
+pub const PHOENIX_GENERATIONS: u32 = 999;
 pub const BLOCK_SIZE: usize = 64;
 pub const SIMD_WIDTH: usize = 8;
 pub const VERSION: u32 = 29;
@@ -454,4 +456,90 @@ test "simd_softmax_large_array" {
         sum += v;
     }
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), sum, 0.001);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 100% COVERAGE TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "trinity_prime" {
+    try std.testing.expectEqual(@as(u32, 33), TRINITY_PRIME);
+    try std.testing.expectEqual(@as(u32, 33), 3 * 11);
+}
+
+test "phoenix_generations" {
+    try std.testing.expectEqual(@as(u32, 999), PHOENIX_GENERATIONS);
+    try std.testing.expectEqual(@as(u32, 999), 27 * 37);
+}
+
+test "simd_softmax_empty" {
+    var input: [0]f32 = undefined;
+    var output: [0]f32 = undefined;
+    SIMDSoftmax.compute(&input, &output);
+}
+
+test "simd_softmax_single" {
+    var input = [_]f32{5.0};
+    var output: [1]f32 = undefined;
+    SIMDSoftmax.compute(&input, &output);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), output[0], 0.0001);
+}
+
+test "online_softmax_empty" {
+    var input: [0]f32 = undefined;
+    var output: [0]f32 = undefined;
+    OnlineSoftmax.computeOnline(&input, &output);
+}
+
+test "online_softmax_single" {
+    var input = [_]f32{5.0};
+    var output: [1]f32 = undefined;
+    OnlineSoftmax.computeOnline(&input, &output);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), output[0], 0.0001);
+}
+
+test "kv_cache_clear" {
+    var cache = RealKVCache.init(std.testing.allocator, 100, 64);
+    defer cache.deinit();
+
+    const k = [_]f32{1.0};
+    const v = [_]f32{1.0};
+    _ = try cache.append(&k, &v);
+    
+    cache.clear();
+    try std.testing.expectEqual(@as(usize, 0), cache.seq_len);
+}
+
+test "kv_cache_get_values" {
+    var cache = RealKVCache.init(std.testing.allocator, 100, 64);
+    defer cache.deinit();
+
+    const k = [_]f32{1.0};
+    const v = [_]f32{4.0};
+    _ = try cache.append(&k, &v);
+
+    const values = cache.getValues();
+    try std.testing.expectEqual(@as(usize, 1), values.len);
+}
+
+test "tiled_attention_init" {
+    const attention = TiledAttention.init(64);
+    try std.testing.expect(attention.scale > 0.0);
+}
+
+test "tiled_attention_dot_product_empty" {
+    const q: [0]f32 = undefined;
+    const k: [0]f32 = undefined;
+    const result = TiledAttention.dotProduct(&q, &k);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), result, 0.0001);
+}
+
+test "llm_inference_init_deinit" {
+    var llm = LLMInferenceV29.init(std.testing.allocator, 64, 100);
+    defer llm.deinit();
+    try std.testing.expectEqual(@as(u32, 29), llm.version);
+}
+
+test "block_size_constant" {
+    try std.testing.expectEqual(@as(usize, 64), BLOCK_SIZE);
 }

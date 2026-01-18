@@ -1233,3 +1233,230 @@ test "antipattern_total_count" {
     const count = 29;
     try std.testing.expectEqual(@as(usize, count), count);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 100% COVERAGE - ADDITIONAL TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "check_no_warmup_with_warmup" {
+    const good_code = "fn benchmark() { warmup(); measure(); }";
+    try std.testing.expect(!checkNoWarmup(good_code));
+}
+
+test "check_no_warmup_without_benchmark" {
+    const code = "fn regular() { compute(); }";
+    try std.testing.expect(!checkNoWarmup(code));
+}
+
+test "check_no_statistics_with_stats" {
+    const good_code = "fn benchmark() { const stddev = calc(); }";
+    try std.testing.expect(!checkNoStatistics(good_code));
+}
+
+test "check_no_statistics_without_benchmark" {
+    const code = "fn regular() { compute(); }";
+    try std.testing.expect(!checkNoStatistics(code));
+}
+
+test "count_nesting_depth_empty" {
+    try std.testing.expectEqual(@as(u32, 0), countNestingDepth(""));
+}
+
+test "count_nesting_depth_flat" {
+    try std.testing.expectEqual(@as(u32, 1), countNestingDepth("{ }"));
+}
+
+test "count_nesting_depth_nested" {
+    try std.testing.expectEqual(@as(u32, 3), countNestingDepth("{ { { } } }"));
+}
+
+test "count_cyclomatic_complexity_simple" {
+    try std.testing.expectEqual(@as(u32, 1), countCyclomaticComplexity("fn f() { return; }"));
+}
+
+test "count_cyclomatic_complexity_with_if" {
+    const code = "fn f() { if (x) { } }";
+    try std.testing.expect(countCyclomaticComplexity(code) >= 2);
+}
+
+test "count_cyclomatic_complexity_with_while" {
+    const code = "fn f() { while (x) { } }";
+    try std.testing.expect(countCyclomaticComplexity(code) >= 2);
+}
+
+test "count_cyclomatic_complexity_with_for" {
+    const code = "fn f() { for (0..10) |_| { } }";
+    try std.testing.expect(countCyclomaticComplexity(code) >= 2);
+}
+
+test "check_simd_opportunity_with_simd" {
+    const code = "const vec = @Vector(4, f32);";
+    try std.testing.expect(!checkSIMDOpportunity(code));
+}
+
+test "check_simd_opportunity_without_loop" {
+    const code = "const x = 42;";
+    try std.testing.expect(!checkSIMDOpportunity(code));
+}
+
+test "check_cache_opportunity_with_cache" {
+    const code = "const cached = cache.get(x);";
+    try std.testing.expect(!checkCacheOpportunity(code));
+}
+
+test "check_cache_opportunity_without_compute" {
+    const code = "const x = 42;";
+    try std.testing.expect(!checkCacheOpportunity(code));
+}
+
+test "check_sacred_verification_without_phi" {
+    const code = "const x = 42;";
+    try std.testing.expect(!checkSacredVerification(code));
+}
+
+test "check_sacred_verification_with_phi_only" {
+    const code = "const PHI = 1.618;";
+    try std.testing.expect(!checkSacredVerification(code));
+}
+
+test "analyze_code_metrics_empty" {
+    const metrics = analyzeCodeMetrics("");
+    try std.testing.expectEqual(@as(u32, 1), metrics.lines_of_code);
+}
+
+test "analyze_code_metrics_multiline" {
+    const code = "line1\nline2\nline3";
+    const metrics = analyzeCodeMetrics(code);
+    try std.testing.expectEqual(@as(u32, 3), metrics.lines_of_code);
+}
+
+test "analyze_code_metrics_with_simd" {
+    const code = "const vec = @Vector(4, f32);";
+    const metrics = analyzeCodeMetrics(code);
+    try std.testing.expect(metrics.has_simd);
+}
+
+test "analyze_code_metrics_with_cache" {
+    const code = "const cached = cache.get(x);";
+    const metrics = analyzeCodeMetrics(code);
+    try std.testing.expect(metrics.has_cache);
+}
+
+test "analyze_code_metrics_with_warmup" {
+    const code = "warmup();";
+    const metrics = analyzeCodeMetrics(code);
+    try std.testing.expect(metrics.has_warmup);
+}
+
+test "analyze_code_metrics_with_statistics" {
+    const code = "const stddev = calc();";
+    const metrics = analyzeCodeMetrics(code);
+    try std.testing.expect(metrics.has_statistics);
+}
+
+test "calculate_antipattern_score_clean_code" {
+    const code = "const PHI = 1.618; const GOLDEN_IDENTITY = 3.0;";
+    const score = calculateAntipatternScore(code, "test.vibee");
+    try std.testing.expect(score < 200); // Low score for clean code
+}
+
+test "calculate_antipattern_score_legacy_file" {
+    const code = "console.log('hello');";
+    const score = calculateAntipatternScore(code, "test.js");
+    try std.testing.expect(score >= 100); // CRITICAL severity
+}
+
+test "vm_init_all_components" {
+    const vm = TrinityVMv29.init();
+    try std.testing.expectEqual(@as(usize, 6), vm.metrics.working_components);
+}
+
+test "vm_run_all_tests" {
+    var vm = TrinityVMv29.init();
+    const results = vm.runAllTests();
+    try std.testing.expect(results.total > 0);
+}
+
+test "vm_run_benchmarks" {
+    var vm = TrinityVMv29.init();
+    _ = vm.benchmark();
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), vm.metrics.avg_speedup, 0.001);
+}
+
+test "check_allowed_vibee" {
+    const result = checkAntipatterns("spec.vibee");
+    try std.testing.expect(result == null);
+}
+
+test "check_allowed_zig_in_generated" {
+    const result = checkAntipatterns("generated/test.zig");
+    try std.testing.expect(result == null);
+}
+
+test "check_allowed_runtime_html" {
+    const result = checkAntipatterns("runtime/runtime.html");
+    try std.testing.expect(result == null);
+}
+
+test "check_hardcoded_speedup_with_measurement" {
+    const code = "nanoTimestamp(); speedup = 1.5;";
+    try std.testing.expect(!checkHardcodedSpeedup(code));
+}
+
+test "check_hardcoded_speedup_clean" {
+    const code = "const x = 42;";
+    try std.testing.expect(!checkHardcodedSpeedup(code));
+}
+
+test "code_metrics_quality_score_perfect" {
+    const metrics = CodeMetrics{
+        .max_nesting_depth = 2,
+        .cyclomatic_complexity = 5,
+        .magic_number_count = 0,
+        .has_simd = true,
+        .has_cache = true,
+    };
+    try std.testing.expect(metrics.qualityScore() >= 100.0);
+}
+
+test "code_metrics_quality_score_with_penalties" {
+    const metrics = CodeMetrics{
+        .max_nesting_depth = 10, // 6 over limit
+        .cyclomatic_complexity = 20, // 10 over limit
+        .magic_number_count = 10,
+    };
+    try std.testing.expect(metrics.qualityScore() < 50.0);
+}
+
+test "antipattern_all_descriptions_not_empty" {
+    const antipatterns = [_]Antipattern{
+        .AP001_DIRECT_ZIG_CREATION,
+        .AP002_LEGACY_WEB_FILES,
+        .AP003_SPECLESS_IMPLEMENTATION,
+        .AP004_FAKE_BENCHMARK,
+        .AP005_HARDCODED_SPEEDUP,
+        .AP040_ORPHAN_CODE,
+        .AP041_SPEC_MISMATCH,
+        .AP050_GENERATION_BYPASS,
+    };
+    for (antipatterns) |ap| {
+        try std.testing.expect(ap.description().len > 0);
+    }
+}
+
+test "antipattern_all_ids_format" {
+    const antipatterns = [_]Antipattern{
+        .AP001_DIRECT_ZIG_CREATION,
+        .AP010_LONG_FUNCTION,
+        .AP020_NO_SIMD,
+        .AP030_SACRED_VIOLATION,
+        .AP040_ORPHAN_CODE,
+        .AP050_GENERATION_BYPASS,
+    };
+    for (antipatterns) |ap| {
+        const id = ap.id();
+        try std.testing.expect(id.len == 5); // "APxxx"
+        try std.testing.expect(id[0] == 'A');
+        try std.testing.expect(id[1] == 'P');
+    }
+}

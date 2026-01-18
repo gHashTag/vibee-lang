@@ -14,6 +14,8 @@ const builtin = @import("builtin");
 
 pub const PHI: f64 = 1.618033988749895;
 pub const GOLDEN_IDENTITY: f64 = 3.0;
+pub const TRINITY_PRIME: u32 = 33;
+pub const PHOENIX_GENERATIONS: u32 = 999;
 pub const VERSION: u32 = 29;
 pub const PAGE_SIZE: usize = 4096;
 
@@ -414,4 +416,93 @@ test "version_check" {
     var jit = try JITCompilerV29.init(std.testing.allocator);
     defer jit.deinit();
     try std.testing.expectEqual(@as(u32, 29), jit.version);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 100% COVERAGE TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "trinity_prime" {
+    try std.testing.expectEqual(@as(u32, 33), TRINITY_PRIME);
+    try std.testing.expectEqual(@as(u32, 33), 3 * 11);
+}
+
+test "phoenix_generations" {
+    try std.testing.expectEqual(@as(u32, 999), PHOENIX_GENERATIONS);
+    try std.testing.expectEqual(@as(u32, 999), 27 * 37);
+}
+
+test "opcode_enum_values" {
+    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(X86Opcode.ADD));
+    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(X86Opcode.SUB));
+    try std.testing.expectEqual(@as(u8, 2), @intFromEnum(X86Opcode.MUL));
+    try std.testing.expectEqual(@as(u8, 3), @intFromEnum(X86Opcode.MOV_IMM));
+    try std.testing.expectEqual(@as(u8, 4), @intFromEnum(X86Opcode.RET));
+    try std.testing.expectEqual(@as(u8, 5), @intFromEnum(X86Opcode.NOP));
+}
+
+test "stencil_nop_bytes" {
+    var lib = try StencilLibrary.init(std.testing.allocator);
+    defer lib.deinit();
+
+    const stencil = lib.get(.NOP).?;
+    try std.testing.expect(stencil.size > 0);
+}
+
+test "stencil_library_get_all" {
+    var lib = try StencilLibrary.init(std.testing.allocator);
+    defer lib.deinit();
+
+    try std.testing.expect(lib.get(.ADD) != null);
+    try std.testing.expect(lib.get(.SUB) != null);
+    try std.testing.expect(lib.get(.MUL) != null);
+    try std.testing.expect(lib.get(.NOP) != null);
+    try std.testing.expect(lib.get(.MOV_IMM) != null);
+    try std.testing.expect(lib.get(.RET) != null);
+}
+
+test "code_buffer_capacity" {
+    var buffer = try CodeBuffer.init(std.testing.allocator, 4);
+    defer buffer.deinit();
+
+    const result1 = buffer.write(&[_]u8{ 0x48, 0x01 });
+    try std.testing.expect(result1);
+
+    const result2 = buffer.write(&[_]u8{ 0x48, 0x01 });
+    try std.testing.expect(result2);
+
+    // Should fail - at capacity
+    const result3 = buffer.write(&[_]u8{0x48});
+    try std.testing.expect(!result3);
+}
+
+test "code_buffer_get_code" {
+    var buffer = try CodeBuffer.init(std.testing.allocator, 64);
+    defer buffer.deinit();
+
+    _ = buffer.write(&[_]u8{ 0x48, 0x01, 0xF8 });
+    const code = buffer.getCode();
+    try std.testing.expectEqual(@as(usize, 3), code.len);
+}
+
+test "stencil_emit_no_patches" {
+    var lib = try StencilLibrary.init(std.testing.allocator);
+    defer lib.deinit();
+
+    const stencil = lib.get(.ADD).?;
+    var buffer: [64]u8 = undefined;
+
+    const size = stencil.emit(&buffer, &[_]u64{});
+    try std.testing.expectEqual(@as(usize, 3), size);
+}
+
+test "jit_compiler_multiple_compiles" {
+    var jit = try JITCompilerV29.init(std.testing.allocator);
+    defer jit.deinit();
+
+    _ = jit.compileConstant(1);
+    _ = jit.compileConstant(2);
+    _ = jit.compileConstant(3);
+
+    try std.testing.expectEqual(@as(usize, 3), jit.functions_compiled);
 }

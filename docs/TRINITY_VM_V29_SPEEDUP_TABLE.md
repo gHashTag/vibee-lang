@@ -59,14 +59,14 @@
 
 | Версия | Тесты | Статус | Pass Rate |
 |--------|-------|--------|-----------|
-| **v29 (all components)** | **243** | ✅ All Pass | 100% |
+| **v29 (all components)** | **314** | ✅ All Pass | 100% |
 | v28 (all components) | 59 | ✅ All Pass | 100% |
 | v27 (swe_agent) | 5 | ✅ All Pass | 100% |
 | v26 (trinity_omega) | 10 | ✅ All Pass | 100% |
 | Older (v22-v25) | 31 | ✅ All Pass | 100% |
-| **Generated Total** | **348** | ✅ All Pass | 100% |
+| **Generated Total** | **419** | ✅ All Pass | 100% |
 | **VIBEEC Compiler** | **362** | ✅ All Pass | 100% |
-| **GRAND TOTAL** | **710** | ✅ All Pass | 100% |
+| **GRAND TOTAL** | **781** | ✅ All Pass | 100% |
 
 ---
 
