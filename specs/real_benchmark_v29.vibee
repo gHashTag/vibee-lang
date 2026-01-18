@@ -1,0 +1,156 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# REAL BENCHMARK v29 - SPECIFICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# REAL time measurements, NO fake speedups
+# φ² + 1/φ² = 3.0 ✅ | 33 = 3 × 11 ✅ | 999 = 3³ × 37 ✅
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: real_benchmark_v29
+version: "29.0.0"
+language: zig
+module: real_benchmark
+
+sacred_constants:
+  phi: 1.618033988749895
+  golden_identity: 3.0
+  benchmark_iterations: 10000
+
+creation_pattern:
+  source: Algorithm
+  transformer: RealBenchmark
+  result: MeasuredSpeedup
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ЧЕСТНОСТЬ: Все speedup ИЗМЕРЯЮТСЯ, не хардкодятся
+# ═══════════════════════════════════════════════════════════════════════════════
+
+honesty_rules:
+  - rule: "NO_HARDCODED_SPEEDUP"
+    description: "Speedup must be calculated from real measurements"
+    violation: "AP_FAKE_BENCHMARK"
+    
+  - rule: "REAL_TIME_MEASUREMENT"
+    description: "Use std.time.nanoTimestamp() for timing"
+    violation: "AP_NO_MEASUREMENT"
+    
+  - rule: "IS_REAL_FLAG"
+    description: "All results must have is_real = true only if measured"
+    violation: "AP_FAKE_FLAG"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STRUCTURES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+structures:
+  BenchmarkResult:
+    fields:
+      - name: name
+        type: "[]const u8"
+      - name: iterations
+        type: usize
+      - name: total_ns
+        type: i128
+      - name: avg_ns
+        type: i128
+      - name: min_ns
+        type: i128
+      - name: max_ns
+        type: i128
+      - name: is_real
+        type: bool
+        default: true
+    methods:
+      - name: avgMs
+        returns: f64
+        description: "Convert avg_ns to milliseconds"
+      - name: opsPerSec
+        returns: f64
+        description: "Calculate operations per second"
+        
+  SpeedupResult:
+    fields:
+      - name: baseline_name
+        type: "[]const u8"
+      - name: optimized_name
+        type: "[]const u8"
+      - name: baseline_ns
+        type: i128
+      - name: optimized_ns
+        type: i128
+      - name: speedup
+        type: f64
+      - name: is_real
+        type: bool
+        default: true
+    methods:
+      - name: calculate
+        params: ["baseline: BenchmarkResult", "optimized: BenchmarkResult"]
+        returns: SpeedupResult
+        description: "Calculate REAL speedup from measurements"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BENCHMARKS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+benchmarks:
+  - name: softmax
+    baseline: "Scalar softmax"
+    optimized: "SIMD softmax"
+    measures: "SIMD parallelism benefit"
+    
+  - name: stencil
+    baseline: "Naive byte-by-byte copy"
+    optimized: "@memcpy based copy"
+    measures: "Memory copy optimization"
+    
+  - name: fitness_cache
+    baseline: "Always compute"
+    optimized: "Hash-based cache"
+    measures: "Cache hit benefit"
+    
+  - name: hash_lookup
+    baseline: "Linear O(n) search"
+    optimized: "Hash O(1) lookup"
+    measures: "Hash table benefit"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: benchmark_is_real
+    given: "Any benchmark result"
+    when: "is_real checked"
+    then: "is_real = true (because we measured)"
+    test_cases:
+      - name: real_flag
+        input: {}
+        expected:
+          is_real: true
+          
+  - name: speedup_calculated
+    given: "Baseline 10ns, Optimized 5ns"
+    when: "SpeedupResult.calculate called"
+    then: "speedup = 2.0"
+    test_cases:
+      - name: speedup_calc
+        input:
+          baseline_ns: 10
+          optimized_ns: 5
+        expected:
+          speedup: 2.0
+          
+  - name: no_hardcoded_values
+    given: "Any speedup result"
+    when: "speedup value checked"
+    then: "Value comes from measurement, not hardcode"
+    test_cases:
+      - name: not_hardcoded
+        input: {}
+        expected:
+          from_measurement: true
+
+codegen:
+  targets:
+    - format: zig
+      output: "generated/real_benchmark_v29.zig"

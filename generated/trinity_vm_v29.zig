@@ -1,12 +1,103 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // TRINITY VM v29 - REAL IMPLEMENTATIONS
 // ═══════════════════════════════════════════════════════════════════════════════
+// Generated from: specs/trinity_vm_v29.vibee
 // v28: Specifications and skeletons
 // v29: Working code with real functionality
 // φ² + 1/φ² = 3.0 ✅ | 33 = 3 × 11 ✅ | 999 = 3³ × 37 ✅
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const std = @import("std");
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ANTIPATTERN DEFINITIONS (Integrated into VM)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const Antipattern = enum(u8) {
+    AP001_DIRECT_ZIG_CREATION = 0,
+    AP002_LEGACY_WEB_FILES = 1,
+    AP003_SPECLESS_IMPLEMENTATION = 2,
+    AP004_FAKE_BENCHMARK = 3,
+    AP005_HARDCODED_SPEEDUP = 4,
+
+    pub fn id(self: Antipattern) []const u8 {
+        return switch (self) {
+            .AP001_DIRECT_ZIG_CREATION => "AP001",
+            .AP002_LEGACY_WEB_FILES => "AP002",
+            .AP003_SPECLESS_IMPLEMENTATION => "AP003",
+            .AP004_FAKE_BENCHMARK => "AP004",
+            .AP005_HARDCODED_SPEEDUP => "AP005",
+        };
+    }
+
+    pub fn description(self: Antipattern) []const u8 {
+        return switch (self) {
+            .AP001_DIRECT_ZIG_CREATION => "Creating .zig without .vibee spec",
+            .AP002_LEGACY_WEB_FILES => "Creating .html/.css/.js files",
+            .AP003_SPECLESS_IMPLEMENTATION => "Implementation without specification",
+            .AP004_FAKE_BENCHMARK => "Benchmark without real measurements",
+            .AP005_HARDCODED_SPEEDUP => "Hardcoded speedup values",
+        };
+    }
+
+    pub fn severity(self: Antipattern) []const u8 {
+        return switch (self) {
+            .AP001_DIRECT_ZIG_CREATION => "CRITICAL",
+            .AP002_LEGACY_WEB_FILES => "CRITICAL",
+            .AP003_SPECLESS_IMPLEMENTATION => "HIGH",
+            .AP004_FAKE_BENCHMARK => "HIGH",
+            .AP005_HARDCODED_SPEEDUP => "HIGH",
+        };
+    }
+};
+
+pub const AntipatternViolation = struct {
+    antipattern: Antipattern,
+    file: []const u8,
+    line: usize,
+    message: []const u8,
+};
+
+/// Check if a file violates antipattern rules
+pub fn checkAntipatterns(file_path: []const u8) ?Antipattern {
+    // Check for legacy web files
+    if (std.mem.endsWith(u8, file_path, ".html") and
+        !std.mem.eql(u8, file_path, "runtime/runtime.html"))
+    {
+        return .AP002_LEGACY_WEB_FILES;
+    }
+    if (std.mem.endsWith(u8, file_path, ".css")) return .AP002_LEGACY_WEB_FILES;
+    if (std.mem.endsWith(u8, file_path, ".js")) return .AP002_LEGACY_WEB_FILES;
+    if (std.mem.endsWith(u8, file_path, ".ts")) return .AP002_LEGACY_WEB_FILES;
+    if (std.mem.endsWith(u8, file_path, ".jsx")) return .AP002_LEGACY_WEB_FILES;
+    if (std.mem.endsWith(u8, file_path, ".tsx")) return .AP002_LEGACY_WEB_FILES;
+
+    return null;
+}
+
+/// Check if code contains hardcoded speedup (AP005)
+pub fn checkHardcodedSpeedup(code: []const u8) bool {
+    // Look for patterns like "speedup = 1.5" or "speedup: 2.0"
+    const patterns = [_][]const u8{
+        "speedup = 1.",
+        "speedup = 2.",
+        "speedup = 3.",
+        "speedup: 1.",
+        "speedup: 2.",
+        "speedup: 3.",
+        "speedup_vs_v",
+    };
+
+    for (patterns) |pattern| {
+        if (std.mem.indexOf(u8, code, pattern)) |_| {
+            // Check if it's followed by measurement code
+            if (std.mem.indexOf(u8, code, "nanoTimestamp") == null) {
+                return true; // Hardcoded without measurement
+            }
+        }
+    }
+    return false;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SACRED CONSTANTS
@@ -351,4 +442,55 @@ test "component_improvements" {
     const vm = TrinityVMv29.init();
     const llm = vm.components[0];
     try std.testing.expect(llm.improvements_len > 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ANTIPATTERN DETECTOR TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "antipattern_detect_legacy_js" {
+    const result = checkAntipatterns("test.js");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(Antipattern.AP002_LEGACY_WEB_FILES, result.?);
+}
+
+test "antipattern_detect_legacy_html" {
+    const result = checkAntipatterns("page.html");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(Antipattern.AP002_LEGACY_WEB_FILES, result.?);
+}
+
+test "antipattern_allow_runtime_html" {
+    const result = checkAntipatterns("runtime/runtime.html");
+    try std.testing.expect(result == null); // Allowed exception
+}
+
+test "antipattern_allow_zig" {
+    const result = checkAntipatterns("test.zig");
+    try std.testing.expect(result == null);
+}
+
+test "antipattern_allow_vibee" {
+    const result = checkAntipatterns("test.vibee");
+    try std.testing.expect(result == null);
+}
+
+test "antipattern_detect_hardcoded_speedup" {
+    const bad_code = "speedup = 1.5; // fake";
+    try std.testing.expect(checkHardcodedSpeedup(bad_code));
+}
+
+test "antipattern_allow_measured_speedup" {
+    const good_code = "const start = nanoTimestamp(); speedup = baseline / optimized;";
+    try std.testing.expect(!checkHardcodedSpeedup(good_code));
+}
+
+test "antipattern_id_format" {
+    try std.testing.expectEqualStrings("AP001", Antipattern.AP001_DIRECT_ZIG_CREATION.id());
+    try std.testing.expectEqualStrings("AP002", Antipattern.AP002_LEGACY_WEB_FILES.id());
+}
+
+test "antipattern_severity" {
+    try std.testing.expectEqualStrings("CRITICAL", Antipattern.AP001_DIRECT_ZIG_CREATION.severity());
+    try std.testing.expectEqualStrings("HIGH", Antipattern.AP005_HARDCODED_SPEEDUP.severity());
 }
