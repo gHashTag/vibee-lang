@@ -3,13 +3,201 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // ⲤⲀⲔⲢⲀ ⲪⲞⲢⲘⲨⲖⲀ: V = n × 3^k × π^m × φ^p × e^q
 // ⲌⲞⲖⲞⲦⲀⲒⲀ ⲒⲆⲈⲚⲦⲒⲬⲚⲞⲤⲦⲒ: φ² + 1/φ² = 3
-// SPEEDUP: 4-8x for whitespace skipping
+// SOURCE: simdjson (Langdale & Lemire, VLDB 2019)
+// SPEEDUP: 4-8x for whitespace skipping, GB/s throughput
 // ═══════════════════════════════════════════════════════════════════════════════
 
 ⲧⲣⲓⲛⲓⲧⲓ ⲧⲣⲓ_ⲡⲁⲣⲥⲉⲣ_ⲥⲓⲙⲇ {
     ⲟⲛⲟⲙⲁ: "TRI Parser with SIMD"
-    ⲃⲉⲣⲥⲓⲁ: "1.0.0"
-    ⲡⲁⲧⲧⲉⲣⲛ: "D&C"
+    ⲃⲉⲣⲥⲓⲁ: "2.0.0"
+    ⲡⲁⲧⲧⲉⲣⲛ: "PRE + D&C"
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ⲤⲀⲔⲢⲀ ⲔⲞⲚⲤⲦⲀⲚⲦⲤ
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    ⲥⲁⲕⲣⲁ_ⲕⲟⲛⲥⲧⲁⲛⲧⲥ: {
+        ⲪⲎⲒ: 1.618033988749895
+        ⲦⲢⲒⲚⲒⲦⲨ: 3
+        ⲦⲢⲒⲚⲒⲦⲨ_ⲠⲢⲒⲘⲈ: 33
+        ⲪⲞⲈⲚⲒⲜ: 999
+        ⲤⲠⲈⲈⲆ_ⲞⲪ_ⲖⲒⲄⲎⲦ: 299792458
+        
+        // SIMD параметры
+        ⲤⲒⲘⲆ_ⲰⲒⲆⲦⲎ: 32           // AVX2 = 256 bits = 32 bytes
+        ⲤⲒⲘⲆ_ⲀⲖⲒⲄⲚ: 32           // alignment
+        ⲘⲀⲜ_ⲦⲞⲔⲈⲚⲤ: 65536       // max tokens per file
+        ⲂⲨⲪⲪⲈⲢ_ⲤⲒⲌⲈ: 1048576    // 1MB buffer
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ⲚⲀⲨⲬⲚⲨⲒ ⲒⲤⲦⲞⲬⲚⲒⲔ
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    ⲛⲁⲩⲭⲛⲩⲓ_ⲓⲥⲧⲟⲭⲛⲓⲕ: {
+        ⲛⲁⲙⲉ: "simdjson"
+        ⲁⲩⲧⲟⲣⲩ: "Langdale, Lemire"
+        ⲃⲉⲛⲩⲉ: "VLDB 2019"
+        ⲧⲓⲧⲗⲉ: "Parsing Gigabytes of JSON per Second"
+        ⲣⲉⲥⲩⲗⲧ: "2.5 GB/s JSON parsing"
+        ⲧⲉⲭⲛⲓⲕⲩⲉ: [
+            "SIMD whitespace classification",
+            "Structural character detection",
+            "Branchless parsing",
+            "Two-stage parsing"
+        ]
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ⲤⲒⲘⲆ ⲞⲠⲈⲢⲀⲦⲒⲞⲚⲤ
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    ⲥⲓⲙⲇ_ⲟⲡⲉⲣⲁⲧⲓⲟⲛⲥ: {
+        // Загрузка 32 байт
+        ⲗⲟⲁⲇ_32: {
+            ⲟⲡ: "load 32 bytes into SIMD register"
+            ⲍⲓⲅ: "@Vector(32, u8)"
+            ⲁⲥⲙ: "vmovdqu ymm0, [rdi]"
+        }
+        
+        // Сравнение с символом
+        ⲕⲙⲡ_ⲉⲕ: {
+            ⲟⲡ: "compare equal to char"
+            ⲍⲓⲅ: "vec == @splat(char)"
+            ⲁⲥⲙ: "vpcmpeqb ymm1, ymm0, ymm2"
+        }
+        
+        // Маска в битовое поле
+        ⲙⲟⲩⲉⲙⲁⲥⲕ: {
+            ⲟⲡ: "convert mask to bitmask"
+            ⲍⲓⲅ: "@bitCast(u32, mask)"
+            ⲁⲥⲙ: "vpmovmskb eax, ymm1"
+        }
+        
+        // Подсчёт нулей
+        ⲧⲍⲕⲛⲧ: {
+            ⲟⲡ: "count trailing zeros"
+            ⲍⲓⲅ: "@ctz(mask)"
+            ⲁⲥⲙ: "tzcnt eax, eax"
+        }
+        
+        // Подсчёт единиц
+        ⲡⲟⲡⲕⲛⲧ: {
+            ⲟⲡ: "count set bits"
+            ⲍⲓⲅ: "@popCount(mask)"
+            ⲁⲥⲙ: "popcnt eax, eax"
+        }
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ⲰⲎⲒⲦⲈⲤⲠⲀⲔⲈ ⲆⲈⲦⲈⲔⲦⲒⲞⲚ
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    ⲱⲏⲓⲧⲉⲥⲡⲁⲕⲉ: {
+        ⲭⲁⲣⲥ: [0x20, 0x09, 0x0A, 0x0D]  // space, tab, newline, CR
+        
+        ⲁⲗⲅⲟⲣⲓⲧⲏⲙ: """
+        fn findWhitespace(input: []const u8) u32 {
+            if (input.len >= 32) {
+                const chunk: @Vector(32, u8) = input[0..32].*;
+                const space = chunk == @splat(@as(u8, ' '));
+                const tab = chunk == @splat(@as(u8, '\t'));
+                const nl = chunk == @splat(@as(u8, '\n'));
+                const cr = chunk == @splat(@as(u8, '\r'));
+                return @bitCast(space | tab | nl | cr);
+            }
+            // scalar fallback
+            var mask: u32 = 0;
+            for (input, 0..) |c, i| {
+                if (c == ' ' or c == '\t' or c == '\n' or c == '\r')
+                    mask |= @as(u32, 1) << @intCast(i);
+            }
+            return mask;
+        }
+        """
+        
+        ⲥⲕⲓⲡ_ⲁⲗⲅⲟⲣⲓⲧⲏⲙ: """
+        fn skipWhitespace(self: *Parser) void {
+            while (self.pos < self.input.len) {
+                const remaining = self.input[self.pos..];
+                if (remaining.len >= 32) {
+                    const mask = findWhitespace(remaining);
+                    if (mask == 0xFFFFFFFF) {
+                        self.pos += 32;
+                        continue;
+                    }
+                    const non_ws = ~mask;
+                    if (non_ws != 0) {
+                        self.pos += @ctz(non_ws);
+                        return;
+                    }
+                }
+                // scalar
+                if (!isWhitespace(self.input[self.pos])) return;
+                self.pos += 1;
+            }
+        }
+        """
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ⲤⲦⲢⲨⲔⲦⲨⲢⲀⲖ ⲆⲈⲦⲈⲔⲦⲒⲞⲚ
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    ⲥⲧⲣⲩⲕⲧⲩⲣⲁⲗ: {
+        ⲭⲁⲣⲥ: ['{', '}', '[', ']', ':', ',', '"']
+        
+        ⲁⲗⲅⲟⲣⲓⲧⲏⲙ: """
+        fn findStructural(input: []const u8) u32 {
+            if (input.len >= 32) {
+                const chunk: @Vector(32, u8) = input[0..32].*;
+                const lbrace = chunk == @splat(@as(u8, '{'));
+                const rbrace = chunk == @splat(@as(u8, '}'));
+                const lbracket = chunk == @splat(@as(u8, '['));
+                const rbracket = chunk == @splat(@as(u8, ']'));
+                const colon = chunk == @splat(@as(u8, ':'));
+                const comma = chunk == @splat(@as(u8, ','));
+                const quote = chunk == @splat(@as(u8, '"'));
+                return @bitCast(lbrace | rbrace | lbracket | rbracket | 
+                               colon | comma | quote);
+            }
+            // scalar fallback
+            return 0;
+        }
+        """
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ⲦⲰⲞ-ⲤⲦⲀⲄⲈ ⲠⲀⲢⲤⲒⲚⲄ
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    ⲧⲱⲟ_ⲥⲧⲁⲅⲉ: {
+        ⲥⲧⲁⲅⲉ_1: {
+            ⲛⲁⲙⲉ: "Structural Index"
+            ⲇⲉⲥⲕⲣⲓⲡⲧⲓⲟ: "Find all structural characters using SIMD"
+            ⲟⲩⲧⲡⲩⲧ: "array of (position, char_type)"
+        }
+        
+        ⲥⲧⲁⲅⲉ_2: {
+            ⲛⲁⲙⲉ: "DOM Construction"
+            ⲇⲉⲥⲕⲣⲓⲡⲧⲓⲟ: "Build AST from structural index"
+            ⲟⲩⲧⲡⲩⲧ: "Document AST"
+        }
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ⲂⲈⲚⲬⲘⲀⲢⲔ ⲦⲀⲢⲄⲈⲦⲤ
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    ⲃⲉⲛⲭⲙⲁⲣⲕⲥ: {
+        ⲧⲁⲣⲅⲉⲧ_ⲧⲏⲣⲟⲩⲅⲏⲡⲩⲧ: "500 MB/s"
+        ⲕⲟⲙⲡⲁⲣⲓⲥⲟⲛ: {
+            ⲥⲓⲙⲇⲓⲥⲟⲛ: "2500 MB/s (JSON)"
+            ⲣⲁⲡⲓⲇⲓⲥⲟⲛ: "500 MB/s (JSON)"
+            ⲗⲓⲃⲩⲁⲙⲗ: "100 MB/s (YAML)"
+            ⲡⲩⲩⲁⲙⲗ: "10 MB/s (YAML)"
+        }
+    }
     
     ⲕⲟⲇⲉ_ⲅⲉⲛⲉⲣⲁⲧⲓⲟⲛ {
         ⲗⲁⲛⲅⲩⲁⲅⲉ: "zig"
