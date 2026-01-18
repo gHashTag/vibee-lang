@@ -1,0 +1,601 @@
+// ═══════════════════════════════════════════════════════════════════════════════
+// VIBEEC BYTECODE EMITTER - .999 BINARY FORMAT
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAS DAEMON V36 - Bytecode Generation with Constant Pool
+// Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+// Golden Identity: φ² + 1/φ² = 3
+// Patterns Applied: PRE (Constant Pool), ALG (Instruction Encoding)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const ArrayList = std.ArrayList;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SACRED CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const PHI: f64 = 1.618033988749895;
+pub const PHI_SQ: f64 = 2.618033988749895;
+pub const GOLDEN_IDENTITY: f64 = 3.0;
+pub const PI: f64 = 3.14159265358979323846;
+pub const E: f64 = 2.71828182845904523536;
+pub const VERSION = "1.0.0";
+
+// Magic number for .999 bytecode files
+pub const MAGIC: [4]u8 = .{ '9', '9', '9', 0 };
+pub const BYTECODE_VERSION: u16 = 1;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OPCODES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const Opcode = enum(u8) {
+    // Stack Operations (0x00-0x0F)
+    NOP = 0x00,
+    PUSH_CONST = 0x01,
+    POP = 0x02,
+    DUP = 0x03,
+    SWAP = 0x04,
+    LOAD_LOCAL = 0x05,
+    STORE_LOCAL = 0x06,
+    LOAD_GLOBAL = 0x07,
+    STORE_GLOBAL = 0x08,
+
+    // Arithmetic (0x10-0x1F)
+    ADD = 0x10,
+    SUB = 0x11,
+    MUL = 0x12,
+    DIV = 0x13,
+    MOD = 0x14,
+    NEG = 0x15,
+    INC = 0x16,
+    DEC = 0x17,
+
+    // Comparison (0x20-0x2F)
+    EQ = 0x20,
+    NE = 0x21,
+    LT = 0x22,
+    LE = 0x23,
+    GT = 0x24,
+    GE = 0x25,
+
+    // Logic (0x30-0x3F)
+    NOT = 0x30,
+    AND = 0x31,
+    OR = 0x32,
+    XOR = 0x33,
+
+    // Bitwise (0x38-0x3F)
+    SHL = 0x38,
+    SHR = 0x39,
+    BAND = 0x3A,
+    BOR = 0x3B,
+    BXOR = 0x3C,
+    BNOT = 0x3D,
+
+    // Control Flow (0x40-0x4F)
+    JMP = 0x40,
+    JZ = 0x41,
+    JNZ = 0x42,
+    CALL = 0x43,
+    RET = 0x44,
+    HALT = 0x45,
+    LOOP = 0x46,
+
+    // SIMD (0x80-0x8F)
+    SIMD_ADD = 0x80,
+    SIMD_MUL = 0x81,
+    SIMD_DOT = 0x82,
+
+    // Sacred Constants (0x90-0x9F)
+    PUSH_PHI = 0x90,
+    PUSH_PI = 0x91,
+    PUSH_E = 0x92,
+    GOLDEN_IDENTITY_OP = 0x93,
+    SACRED_FORMULA = 0x94,
+
+    // Superinstructions (0xA0-0xAF)
+    LOAD_ADD = 0xA0,
+    LOAD_SUB = 0xA1,
+    LOAD_MUL = 0xA2,
+    LT_JZ = 0xA3,
+    LE_JZ = 0xA4,
+    INC_LT = 0xA5,
+    DEC_GT = 0xA6,
+
+    pub fn operandSize(self: Opcode) u8 {
+        return switch (self) {
+            .PUSH_CONST, .JMP, .JZ, .JNZ, .CALL, .LOOP => 2,
+            .LOAD_LOCAL, .STORE_LOCAL, .LOAD_GLOBAL, .STORE_GLOBAL => 2,
+            .LOAD_ADD, .LOAD_SUB, .LOAD_MUL => 2,
+            .LT_JZ, .LE_JZ => 2,
+            else => 0,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VALUE TYPE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const ValueTag = enum(u8) {
+    nil = 0,
+    bool_val = 1,
+    int_val = 2,
+    float_val = 3,
+    string_val = 4,
+};
+
+pub const Value = union(ValueTag) {
+    nil: void,
+    bool_val: bool,
+    int_val: i64,
+    float_val: f64,
+    string_val: []const u8,
+
+    pub fn isNil(self: Value) bool {
+        return self == .nil;
+    }
+
+    pub fn toInt(self: Value) ?i64 {
+        return switch (self) {
+            .int_val => |v| v,
+            .float_val => |v| @intFromFloat(v),
+            .bool_val => |v| if (v) @as(i64, 1) else @as(i64, 0),
+            else => null,
+        };
+    }
+
+    pub fn toFloat(self: Value) ?f64 {
+        return switch (self) {
+            .float_val => |v| v,
+            .int_val => |v| @floatFromInt(v),
+            else => null,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONSTANT POOL - PRE PATTERN
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const ConstantPool = struct {
+    allocator: Allocator,
+    entries: ArrayList(Value),
+    // PRE Pattern: Deduplication map
+    int_map: std.AutoHashMap(i64, u16),
+    float_map: std.AutoHashMap(u64, u16), // Store float bits as u64
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return Self{
+            .allocator = allocator,
+            .entries = ArrayList(Value).init(allocator),
+            .int_map = std.AutoHashMap(i64, u16).init(allocator),
+            .float_map = std.AutoHashMap(u64, u16).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.entries.deinit();
+        self.int_map.deinit();
+        self.float_map.deinit();
+    }
+
+    /// PRE Pattern: Add constant with deduplication
+    pub fn addInt(self: *Self, value: i64) !u16 {
+        if (self.int_map.get(value)) |idx| {
+            return idx;
+        }
+
+        const idx: u16 = @intCast(self.entries.items.len);
+        try self.entries.append(.{ .int_val = value });
+        try self.int_map.put(value, idx);
+        return idx;
+    }
+
+    pub fn addFloat(self: *Self, value: f64) !u16 {
+        const bits: u64 = @bitCast(value);
+        if (self.float_map.get(bits)) |idx| {
+            return idx;
+        }
+
+        const idx: u16 = @intCast(self.entries.items.len);
+        try self.entries.append(.{ .float_val = value });
+        try self.float_map.put(bits, idx);
+        return idx;
+    }
+
+    pub fn addBool(self: *Self, value: bool) !u16 {
+        const idx: u16 = @intCast(self.entries.items.len);
+        try self.entries.append(.{ .bool_val = value });
+        return idx;
+    }
+
+    pub fn addString(self: *Self, value: []const u8) !u16 {
+        const idx: u16 = @intCast(self.entries.items.len);
+        try self.entries.append(.{ .string_val = value });
+        return idx;
+    }
+
+    pub fn get(self: *const Self, idx: u16) ?Value {
+        if (idx >= self.entries.items.len) return null;
+        return self.entries.items[idx];
+    }
+
+    pub fn count(self: *const Self) usize {
+        return self.entries.items.len;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LABEL TABLE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const ForwardRef = struct {
+    label_name: []const u8,
+    patch_offset: u32,
+};
+
+pub const LabelTable = struct {
+    allocator: Allocator,
+    labels: std.StringHashMap(u32),
+    forward_refs: ArrayList(ForwardRef),
+    next_label_id: u32,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return Self{
+            .allocator = allocator,
+            .labels = std.StringHashMap(u32).init(allocator),
+            .forward_refs = ArrayList(ForwardRef).init(allocator),
+            .next_label_id = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.labels.deinit();
+        self.forward_refs.deinit();
+    }
+
+    pub fn newLabel(self: *Self) []const u8 {
+        const id = self.next_label_id;
+        self.next_label_id += 1;
+        // Return a generated label name
+        return std.fmt.allocPrint(self.allocator, "_L{d}", .{id}) catch "_L0";
+    }
+
+    pub fn define(self: *Self, name: []const u8, offset: u32) !void {
+        try self.labels.put(name, offset);
+    }
+
+    pub fn addForwardRef(self: *Self, name: []const u8, patch_offset: u32) !void {
+        try self.forward_refs.append(.{
+            .label_name = name,
+            .patch_offset = patch_offset,
+        });
+    }
+
+    pub fn resolve(self: *Self, name: []const u8) ?u32 {
+        return self.labels.get(name);
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BYTECODE EMITTER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const BytecodeEmitter = struct {
+    allocator: Allocator,
+    code: ArrayList(u8),
+    constants: ConstantPool,
+    labels: LabelTable,
+
+    // Metrics
+    instructions_emitted: u64,
+    bytes_emitted: u64,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return Self{
+            .allocator = allocator,
+            .code = ArrayList(u8).init(allocator),
+            .constants = ConstantPool.init(allocator),
+            .labels = LabelTable.init(allocator),
+            .instructions_emitted = 0,
+            .bytes_emitted = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.code.deinit();
+        self.constants.deinit();
+        self.labels.deinit();
+    }
+
+    /// Emit single-byte opcode
+    pub fn emit(self: *Self, op: Opcode) !void {
+        try self.code.append(@intFromEnum(op));
+        self.instructions_emitted += 1;
+        self.bytes_emitted += 1;
+    }
+
+    /// Emit opcode with u16 operand (big-endian)
+    pub fn emitWithU16(self: *Self, op: Opcode, operand: u16) !void {
+        try self.code.append(@intFromEnum(op));
+        try self.code.append(@intCast(operand >> 8));
+        try self.code.append(@intCast(operand & 0xFF));
+        self.instructions_emitted += 1;
+        self.bytes_emitted += 3;
+    }
+
+    /// Emit PUSH_CONST with integer value
+    pub fn emitPushInt(self: *Self, value: i64) !void {
+        const idx = try self.constants.addInt(value);
+        try self.emitWithU16(.PUSH_CONST, idx);
+    }
+
+    /// Emit PUSH_CONST with float value
+    pub fn emitPushFloat(self: *Self, value: f64) !void {
+        const idx = try self.constants.addFloat(value);
+        try self.emitWithU16(.PUSH_CONST, idx);
+    }
+
+    /// Emit sacred constant
+    pub fn emitPushPhi(self: *Self) !void {
+        try self.emit(.PUSH_PHI);
+    }
+
+    pub fn emitPushPi(self: *Self) !void {
+        try self.emit(.PUSH_PI);
+    }
+
+    pub fn emitPushE(self: *Self) !void {
+        try self.emit(.PUSH_E);
+    }
+
+    pub fn emitGoldenIdentity(self: *Self) !void {
+        try self.emit(.GOLDEN_IDENTITY_OP);
+    }
+
+    /// Define a label at current position
+    pub fn defineLabel(self: *Self, name: []const u8) !void {
+        try self.labels.define(name, @intCast(self.code.items.len));
+    }
+
+    /// Emit jump to label
+    pub fn emitJump(self: *Self, op: Opcode, label: []const u8) !void {
+        try self.code.append(@intFromEnum(op));
+
+        if (self.labels.resolve(label)) |addr| {
+            try self.code.append(@intCast(addr >> 8));
+            try self.code.append(@intCast(addr & 0xFF));
+        } else {
+            // Forward reference
+            try self.labels.addForwardRef(label, @intCast(self.code.items.len));
+            try self.code.append(0);
+            try self.code.append(0);
+        }
+
+        self.instructions_emitted += 1;
+        self.bytes_emitted += 3;
+    }
+
+    /// Resolve all forward references
+    pub fn resolveLabels(self: *Self) !void {
+        for (self.labels.forward_refs.items) |ref| {
+            const target = self.labels.resolve(ref.label_name) orelse
+                return error.UndefinedLabel;
+
+            self.code.items[ref.patch_offset] = @intCast(target >> 8);
+            self.code.items[ref.patch_offset + 1] = @intCast(target & 0xFF);
+        }
+    }
+
+    /// Get current code offset
+    pub fn currentOffset(self: *const Self) u32 {
+        return @intCast(self.code.items.len);
+    }
+
+    /// Generate final bytecode with header
+    pub fn finalize(self: *Self) ![]const u8 {
+        try self.resolveLabels();
+
+        var output = ArrayList(u8).init(self.allocator);
+
+        // Header
+        try output.appendSlice(&MAGIC);
+        try output.append(@intCast(BYTECODE_VERSION >> 8));
+        try output.append(@intCast(BYTECODE_VERSION & 0xFF));
+
+        // Flags (reserved)
+        try output.append(0);
+        try output.append(0);
+
+        // Constant pool offset (after header = 24 bytes)
+        const cp_offset: u32 = 24;
+        try self.appendU32(&output, cp_offset);
+
+        // Code section offset (after constant pool)
+        const cp_size = self.serializeConstantPoolSize();
+        const code_offset: u32 = cp_offset + cp_size;
+        try self.appendU32(&output, code_offset);
+
+        // Code section size
+        try self.appendU32(&output, @intCast(self.code.items.len));
+
+        // Entry point (0 for now)
+        try self.appendU32(&output, 0);
+
+        // Constant pool
+        try self.serializeConstantPool(&output);
+
+        // Code section
+        try output.appendSlice(self.code.items);
+
+        return output.toOwnedSlice();
+    }
+
+    fn appendU32(self: *Self, output: *ArrayList(u8), value: u32) !void {
+        _ = self;
+        try output.append(@intCast((value >> 24) & 0xFF));
+        try output.append(@intCast((value >> 16) & 0xFF));
+        try output.append(@intCast((value >> 8) & 0xFF));
+        try output.append(@intCast(value & 0xFF));
+    }
+
+    fn serializeConstantPoolSize(self: *const Self) u32 {
+        // 2 bytes for count + 9 bytes per entry (tag + 8 bytes data)
+        return 2 + @as(u32, @intCast(self.constants.count())) * 9;
+    }
+
+    fn serializeConstantPool(self: *Self, output: *ArrayList(u8)) !void {
+        const count: u16 = @intCast(self.constants.count());
+        try output.append(@intCast(count >> 8));
+        try output.append(@intCast(count & 0xFF));
+
+        for (self.constants.entries.items) |entry| {
+            switch (entry) {
+                .nil => {
+                    try output.append(@intFromEnum(ValueTag.nil));
+                    try output.appendNTimes(0, 8);
+                },
+                .bool_val => |v| {
+                    try output.append(@intFromEnum(ValueTag.bool_val));
+                    try output.append(if (v) 1 else 0);
+                    try output.appendNTimes(0, 7);
+                },
+                .int_val => |v| {
+                    try output.append(@intFromEnum(ValueTag.int_val));
+                    const bytes: [8]u8 = @bitCast(v);
+                    try output.appendSlice(&bytes);
+                },
+                .float_val => |v| {
+                    try output.append(@intFromEnum(ValueTag.float_val));
+                    const bytes: [8]u8 = @bitCast(v);
+                    try output.appendSlice(&bytes);
+                },
+                .string_val => |v| {
+                    try output.append(@intFromEnum(ValueTag.string_val));
+                    // Store length as u32 + padding
+                    const len: u32 = @intCast(v.len);
+                    try self.appendU32(output, len);
+                    try output.appendNTimes(0, 4);
+                },
+            }
+        }
+    }
+
+    pub fn getMetrics(self: *const Self) BytecodeMetrics {
+        return .{
+            .instructions_emitted = self.instructions_emitted,
+            .bytes_emitted = self.bytes_emitted,
+            .constants_count = self.constants.count(),
+            .labels_count = self.labels.labels.count(),
+        };
+    }
+};
+
+pub const BytecodeMetrics = struct {
+    instructions_emitted: u64,
+    bytes_emitted: u64,
+    constants_count: usize,
+    labels_count: usize,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "ConstantPool deduplication" {
+    const allocator = std.testing.allocator;
+    var pool = ConstantPool.init(allocator);
+    defer pool.deinit();
+
+    const idx1 = try pool.addInt(42);
+    const idx2 = try pool.addInt(42);
+    const idx3 = try pool.addInt(100);
+
+    try std.testing.expectEqual(idx1, idx2); // Same value = same index
+    try std.testing.expect(idx1 != idx3); // Different value = different index
+    try std.testing.expectEqual(@as(usize, 2), pool.count()); // Only 2 unique values
+}
+
+test "BytecodeEmitter basic" {
+    const allocator = std.testing.allocator;
+    var emitter = BytecodeEmitter.init(allocator);
+    defer emitter.deinit();
+
+    try emitter.emitPushInt(42);
+    try emitter.emitPushInt(10);
+    try emitter.emit(.ADD);
+    try emitter.emit(.HALT);
+
+    const metrics = emitter.getMetrics();
+    try std.testing.expectEqual(@as(u64, 4), metrics.instructions_emitted);
+}
+
+test "BytecodeEmitter sacred constants" {
+    const allocator = std.testing.allocator;
+    var emitter = BytecodeEmitter.init(allocator);
+    defer emitter.deinit();
+
+    try emitter.emitPushPhi();
+    try emitter.emitPushPi();
+    try emitter.emit(.MUL);
+    try emitter.emitPushE();
+    try emitter.emit(.MUL);
+    try emitter.emitGoldenIdentity();
+
+    const metrics = emitter.getMetrics();
+    try std.testing.expectEqual(@as(u64, 6), metrics.instructions_emitted);
+}
+
+test "BytecodeEmitter labels" {
+    const allocator = std.testing.allocator;
+    var emitter = BytecodeEmitter.init(allocator);
+    defer emitter.deinit();
+
+    try emitter.defineLabel("start");
+    try emitter.emitPushInt(1);
+    try emitter.emitJump(.JMP, "start");
+
+    try emitter.resolveLabels();
+
+    // JMP should point to offset 0
+    try std.testing.expectEqual(@as(u8, 0), emitter.code.items[4]);
+    try std.testing.expectEqual(@as(u8, 0), emitter.code.items[5]);
+}
+
+test "BytecodeEmitter finalize" {
+    const allocator = std.testing.allocator;
+    var emitter = BytecodeEmitter.init(allocator);
+    defer emitter.deinit();
+
+    try emitter.emitPushInt(42);
+    try emitter.emit(.HALT);
+
+    const bytecode = try emitter.finalize();
+    defer allocator.free(bytecode);
+
+    // Check magic number
+    try std.testing.expectEqualSlices(u8, &MAGIC, bytecode[0..4]);
+}
+
+test "Opcode operand sizes" {
+    try std.testing.expectEqual(@as(u8, 0), Opcode.NOP.operandSize());
+    try std.testing.expectEqual(@as(u8, 2), Opcode.PUSH_CONST.operandSize());
+    try std.testing.expectEqual(@as(u8, 2), Opcode.JMP.operandSize());
+    try std.testing.expectEqual(@as(u8, 0), Opcode.ADD.operandSize());
+}
+
+test "golden identity" {
+    const phi_sq = PHI * PHI;
+    const inv_phi_sq = 1.0 / phi_sq;
+    const result = phi_sq + inv_phi_sq;
+    try std.testing.expectApproxEqAbs(GOLDEN_IDENTITY, result, 0.0001);
+}

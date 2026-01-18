@@ -1,0 +1,310 @@
+; ═══════════════════════════════════════════════════════════════════════════════
+; VM ANTIPATTERN INTEGRATION - Runtime Hooks
+; ═══════════════════════════════════════════════════════════════════════════════
+; Generated from: specs/vm_antipattern_detector.vibee
+; СВЯЩЕННАЯ ФОРМУЛА: V = n × 3^k × π^m × φ^p × e^q
+; ЗОЛОТАЯ ИДЕНТИЧНОСТЬ: φ² + 1/φ² = 3
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.module vm_antipattern_integration
+.version "1.0.0"
+.import antipattern_detector
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; OPCODE DEFINITIONS (0xA0-0xAF range)
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.const OP_AP_CHECK 0xA0
+.const OP_AP_VALIDATE_SPEC 0xA1
+.const OP_AP_EMIT_VIOLATION 0xA2
+.const OP_AP_BLOCK_COMMIT 0xA3
+.const OP_AP_VERIFY_GOLDEN 0xA4
+.const OP_AP_SCAN_DIR 0xA5
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; OPCODE HANDLER TABLE
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.data opcode_handlers
+    .word handle_ap_check       ; 0xA0
+    .word handle_ap_validate    ; 0xA1
+    .word handle_ap_emit        ; 0xA2
+    .word handle_ap_block       ; 0xA3
+    .word handle_ap_golden      ; 0xA4
+    .word handle_ap_scan        ; 0xA5
+.end
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; OPCODE HANDLERS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.func handle_ap_check
+    ; Input: R0 = file_path
+    ; Output: R0 = violation_code
+    
+    CALL antipattern_detector.detect_antipatterns
+    RET
+.end
+
+.func handle_ap_validate
+    ; Input: R0 = spec_path
+    ; Output: R0 = completeness_status
+    
+    CALL antipattern_detector.find_spec_for_file
+    CMP R0, 0
+    JEQ .no_spec
+    
+    CALL antipattern_detector.validate_spec_completeness
+    RET
+
+.no_spec:
+    MOV R0, 0x04  ; AP004
+    RET
+.end
+
+.func handle_ap_emit
+    ; Input: R0 = code, R1 = severity
+    
+    CALL antipattern_detector.emit_violation
+    RET
+.end
+
+.func handle_ap_block
+    ; Block commit if violations exist
+    
+    LEA R0, antipattern_detector.block_commit_flag
+    LOAD R1, [R0]
+    CMP R1, 1
+    JNE .no_block
+    
+    ; Exit with error
+    MOV R0, 1
+    SYSCALL SYS_EXIT
+
+.no_block:
+    MOV R0, 0
+    RET
+.end
+
+.func handle_ap_golden
+    ; Verify golden identity
+    
+    CALL antipattern_detector.verify_golden_identity
+    RET
+.end
+
+.func handle_ap_scan
+    ; Input: R0 = directory_path
+    ; Output: R0 = total_violations
+    
+    MOV R4, 0           ; violation counter
+    PUSH R0
+    
+    ; Get file list
+    SYSCALL SYS_SCAN_DIR
+    MOV R1, R0          ; R1 = file list
+    
+.scan_loop:
+    LOAD R2, [R1]
+    CMP R2, 0
+    JEQ .scan_done
+    
+    ; Check each file
+    MOV R0, R2
+    CALL antipattern_detector.detect_antipatterns
+    CMP R0, 0
+    JEQ .next_file
+    
+    ADD R4, 1           ; Increment violation count
+
+.next_file:
+    ADD R1, 8
+    JMP .scan_loop
+
+.scan_done:
+    POP R0
+    MOV R0, R4
+    RET
+.end
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; VM DISPATCH INTEGRATION
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.func dispatch_antipattern_opcode
+    ; Input: R0 = opcode (0xA0-0xAF)
+    ; Dispatches to appropriate handler
+    
+    ; Validate opcode range
+    CMP R0, OP_AP_CHECK
+    JLT .invalid_opcode
+    CMP R0, 0xAF
+    JGT .invalid_opcode
+    
+    ; Calculate handler index
+    SUB R0, OP_AP_CHECK
+    
+    ; Load handler address
+    LEA R1, opcode_handlers
+    SHL R0, 3           ; * 8 (pointer size)
+    ADD R1, R0
+    LOAD R2, [R1]
+    
+    ; Call handler
+    CALL R2
+    RET
+
+.invalid_opcode:
+    MOV R0, -1
+    RET
+.end
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; RUNTIME HOOKS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.func hook_on_file_create
+    ; Called when a file is created
+    ; Input: R0 = file_path
+    
+    PUSH R0
+    CALL antipattern_detector.detect_antipatterns
+    
+    CMP R0, 0
+    JEQ .create_allowed
+    
+    ; Violation detected - block creation
+    POP R0
+    MOV R1, R0          ; violation code
+    LEA R0, create_blocked_msg
+    SYSCALL SYS_PRINT
+    
+    MOV R0, 1
+    RET
+
+.create_allowed:
+    POP R0
+    MOV R0, 0
+    RET
+
+.data create_blocked_msg
+    .string "ERROR: File creation blocked due to antipattern violation\n"
+.end
+.end
+
+.func hook_pre_commit
+    ; Called before git commit
+    ; Scans all staged files
+    
+    ; Get staged files
+    LEA R0, git_staged_cmd
+    SYSCALL SYS_EXEC
+    MOV R1, R0          ; R1 = staged files list
+    
+    MOV R4, 0           ; violation counter
+    
+.commit_scan_loop:
+    LOAD R2, [R1]
+    CMP R2, 0
+    JEQ .commit_scan_done
+    
+    MOV R0, R2
+    CALL antipattern_detector.detect_antipatterns
+    CMP R0, 0
+    JEQ .commit_next_file
+    
+    ADD R4, 1
+
+.commit_next_file:
+    ADD R1, 8
+    JMP .commit_scan_loop
+
+.commit_scan_done:
+    CMP R4, 0
+    JEQ .commit_allowed
+    
+    ; Block commit
+    LEA R0, commit_blocked_msg
+    SYSCALL SYS_PRINT
+    MOV R0, 1
+    RET
+
+.commit_allowed:
+    MOV R0, 0
+    RET
+
+.data git_staged_cmd
+    .string "git diff --cached --name-only"
+.end
+
+.data commit_blocked_msg
+    .string "ERROR: Commit blocked due to antipattern violations\n"
+    .string "Run 'vibeec antipattern-check' for details\n"
+.end
+.end
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; INITIALIZATION
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.func init_antipattern_system
+    ; Initialize antipattern detection system
+    
+    ; Initialize detector
+    CALL antipattern_detector.init
+    CMP R0, 0
+    JEQ .init_failed
+    
+    ; Verify golden identity
+    CALL antipattern_detector.verify_golden_identity
+    CMP R0, 0
+    JEQ .golden_failed
+    
+    ; Register hooks
+    LEA R0, hook_on_file_create
+    MOV R1, HOOK_FILE_CREATE
+    SYSCALL SYS_REGISTER_HOOK
+    
+    LEA R0, hook_pre_commit
+    MOV R1, HOOK_PRE_COMMIT
+    SYSCALL SYS_REGISTER_HOOK
+    
+    MOV R0, 1
+    RET
+
+.init_failed:
+    LEA R0, init_failed_msg
+    SYSCALL SYS_PRINT
+    MOV R0, 0
+    RET
+
+.golden_failed:
+    LEA R0, golden_failed_msg
+    SYSCALL SYS_PRINT
+    MOV R0, 0
+    RET
+
+.data init_failed_msg
+    .string "FATAL: Antipattern detector initialization failed\n"
+.end
+
+.data golden_failed_msg
+    .string "FATAL: Golden identity verification failed (φ² + 1/φ² ≠ 3)\n"
+.end
+
+.const HOOK_FILE_CREATE 1
+.const HOOK_PRE_COMMIT 2
+.end
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; EXPORTS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.export init_antipattern_system
+.export dispatch_antipattern_opcode
+.export hook_on_file_create
+.export hook_pre_commit
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; END OF MODULE
+; ═══════════════════════════════════════════════════════════════════════════════
