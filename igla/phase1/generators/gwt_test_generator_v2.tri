@@ -1,0 +1,363 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# GWT_TEST_GENERATOR_V2.TLS - УЛУЧШЕННЫЙ ГЕНЕРАТОР ТЕСТОВ (VIBEEC PATTERNS)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Creation Pattern: opcodes_gwt.tls → gwt_test_generator_v2 → tests_gwt.tls
+# Patterns Applied: PRE (Precomputation), HSH (Hashing), AMR (Amortized)
+# Based on: vibeec/codegen_v4.zig architecture
+# ═══════════════════════════════════════════════════════════════════════════════
+
+gwt_test_generator_v2:
+  meta:
+    name: "zmei_gwt_gen_v2"
+    version: "2.0.0"
+    format: "Given-When-Then"
+    patterns: ["PRE", "HSH", "AMR"]
+    based_on: "vibeec/codegen_v4.zig"
+    
+  creation_pattern:
+    source: "GWT specification (.tls)"
+    transformer: "gwt_test_generator_v2"
+    result: "executable tests (.tls → .zig)"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SACRED CONSTANTS (из vibeec)
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  sacred_constants:
+    PHI: 1.618033988749895
+    PHI_SQ: 2.618033988749895
+    PHI_INV: 0.618033988749895
+    GOLDEN_IDENTITY: 3.0
+    TRINITY: 3
+    PHOENIX: 999
+    TRINITY_PRIME: 33
+    INITIAL_BUFFER_SIZE: 4096
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PATTERN CACHE (HSH pattern из vibeec IdentifierCache)
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  pattern_cache:
+    description: "Cache GWT patterns → Zig code (HSH pattern)"
+    structure:
+      cache: "HashMap<PatternKey, ZigCode>"
+      hits: "u64"
+      misses: "u64"
+      
+    precomputed_patterns:
+      # Given patterns
+      given:
+        "a VM with empty stack":
+          code: "var vm = VM.init(allocator);"
+          hash: 0x1A2B3C4D
+          
+        "stack contains [{values}]":
+          code: |
+            for (values) |value| {
+                try vm.stack.append(value);
+            }
+          hash: 0x2B3C4D5E
+          
+        "stack has less than {n} elements":
+          code: "// Precondition: stack.len < {n}"
+          hash: 0x3C4D5E6F
+          
+        "registers are initialized to zero":
+          code: |
+            for (&vm.registers) |*reg| {
+                reg.* = 0;
+            }
+          hash: 0x4D5E6F70
+          
+      # When patterns
+      when:
+        "I execute {OPCODE} opcode":
+          code: "vm.dispatch({opcode_code});"
+          hash: 0x5E6F7081
+          
+        "I execute {OPCODE} opcode ({code})":
+          code: "vm.dispatch({code});"
+          hash: 0x6F708192
+          
+        "I execute {n} instructions":
+          code: |
+            var i: usize = 0;
+            while (i < {n}) : (i += 1) {
+                vm.step();
+            }
+          hash: 0x708192A3
+          
+      # Then patterns
+      then:
+        "stack should contain [{values}]":
+          code: |
+            try std.testing.expectEqual(@as(usize, {len}), vm.stack.items.len);
+            for (values, 0..) |value, i| {
+                try std.testing.expectEqual(@as(u64, value), vm.stack.items[i]);
+            }
+          hash: 0x8192A3B4
+          
+        "pc should be {value}":
+          code: "try std.testing.expectEqual(@as(u64, {value}), vm.pc);"
+          hash: 0x92A3B4C5
+          
+        "status should be {status}":
+          code: "try std.testing.expectEqual(VM.Status.{status}, vm.status);"
+          hash: 0xA3B4C5D6
+          
+    hit_ratio_calculation: |
+      fn hitRatio(self: *PatternCache) f64 {
+          const total = self.hits + self.misses;
+          if (total == 0) return 0;
+          return @as(f64, @floatFromInt(self.hits)) / @as(f64, @floatFromInt(total));
+      }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CODE BUILDER (AMR pattern из vibeec CodeBuilder)
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  code_builder:
+    description: "φ-based buffer growth (AMR pattern)"
+    structure:
+      buffer: "[]u8"
+      len: "usize"
+      reallocations: "u32"
+      indent_level: "u32"
+      
+    growth_algorithm: |
+      fn grow(self: *CodeBuilder, min_additional: usize) !void {
+          const current = self.buffer.len;
+          // φ-based growth for optimal amortization
+          const phi_growth = @as(usize, @intFromFloat(@as(f64, @floatFromInt(current)) * PHI));
+          const new_size = @max(phi_growth, current + min_additional);
+          self.buffer = try self.allocator.realloc(self.buffer, new_size);
+          self.reallocations += 1;
+      }
+      
+    methods:
+      append: "Add bytes to buffer"
+      appendLine: "Add line with current indent"
+      appendIndent: "Add indentation"
+      indent: "Increase indent level"
+      dedent: "Decrease indent level"
+      toOwnedSlice: "Return final buffer"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PRECOMPUTED TEMPLATES (PRE pattern)
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  precomputed_templates:
+    description: "Precomputed Zig test templates (PRE pattern)"
+    
+    test_header: |
+      // ═══════════════════════════════════════════════════════════════════════
+      // GENERATED TESTS - TRINITY VM
+      // ═══════════════════════════════════════════════════════════════════════
+      // Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+      // Golden Identity: φ² + 1/φ² = 3
+      // Generated by: gwt_test_generator_v2
+      // ═══════════════════════════════════════════════════════════════════════
+      
+      const std = @import("std");
+      const VM = @import("vm.zig").VM;
+      
+      // Sacred Constants
+      pub const PHI: f64 = 1.618033988749895;
+      pub const GOLDEN_IDENTITY: f64 = 3.0;
+      
+    test_template: |
+      // ═══════════════════════════════════════════════════════════════════════
+      // Scenario: {scenario_name}
+      // ═══════════════════════════════════════════════════════════════════════
+      // Given:
+      {given_comments}
+      // When:
+      {when_comments}
+      // Then:
+      {then_comments}
+      // ═══════════════════════════════════════════════════════════════════════
+      
+      test "{scenario_name}" {{
+          var gpa = std.heap.GeneralPurposeAllocator(.{{}}){{}}; 
+          defer _ = gpa.deinit();
+          var vm = VM.init(gpa.allocator());
+          defer vm.deinit();
+          
+          // Given: {given_summary}
+          {setup_code}
+          
+          // When: {when_summary}
+          {action_code}
+          
+          // Then: {then_summary}
+          {assertion_code}
+      }}
+      
+    test_footer: |
+      // ═══════════════════════════════════════════════════════════════════════
+      // END OF GENERATED TESTS
+      // ═══════════════════════════════════════════════════════════════════════
+      // Total tests: {total_tests}
+      // Cache hit ratio: {hit_ratio}%
+      // Buffer reallocations: {reallocations}
+      // ═══════════════════════════════════════════════════════════════════════
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # METRICS (из vibeec CodegenV4)
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  metrics:
+    description: "Track generation metrics"
+    tracked:
+      tests_generated: "u64"
+      cache_hits: "u64"
+      cache_misses: "u64"
+      buffer_reallocations: "u32"
+      total_bytes_generated: "usize"
+      generation_time_ns: "u64"
+      
+    report_format: |
+      generation_report:
+        tests_generated: {tests_generated}
+        cache_hit_ratio: {hit_ratio}%
+        buffer_reallocations: {reallocations}
+        total_bytes: {total_bytes}
+        generation_time_ms: {time_ms}
+        efficiency_score: {efficiency}
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # GENERATION ALGORITHM (улучшенный)
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  algorithm:
+    pseudocode: |
+      function generate_tests_v2(gwt_spec):
+        # Initialize with vibeec patterns
+        cache = PatternCache.init()
+        builder = CodeBuilder.init(INITIAL_BUFFER_SIZE)
+        metrics = Metrics.init()
+        
+        # Header (PRE pattern - precomputed)
+        builder.append(precomputed_templates.test_header)
+        
+        for opcode in gwt_spec.opcodes:
+          for behavior in opcode.behaviors:
+            # Try cache first (HSH pattern)
+            cache_key = hash(behavior.given, behavior.when, behavior.then)
+            
+            if cache.has(cache_key):
+              code = cache.get(cache_key)
+              metrics.cache_hits += 1
+            else:
+              code = generate_test_code(behavior)
+              cache.put(cache_key, code)
+              metrics.cache_misses += 1
+            
+            # Append with φ-growth (AMR pattern)
+            builder.append(code)
+            metrics.tests_generated += 1
+        
+        # Footer with metrics
+        builder.append(format_footer(metrics))
+        
+        return GenerationResult{
+          code: builder.toOwnedSlice(),
+          metrics: metrics,
+        }
+        
+      function generate_test_code(behavior):
+        # Use cached patterns
+        setup_code = lookup_pattern(cache.given, behavior.given)
+        action_code = lookup_pattern(cache.when, behavior.when)
+        assertion_code = lookup_pattern(cache.then, behavior.then)
+        
+        return format_template(
+          precomputed_templates.test_template,
+          scenario_name: behavior.name,
+          given_comments: format_comments(behavior.given),
+          when_comments: format_comments(behavior.when),
+          then_comments: format_comments(behavior.then),
+          setup_code: setup_code,
+          action_code: action_code,
+          assertion_code: assertion_code,
+        )
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # BEHAVIORS (GWT для самого генератора)
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  behaviors:
+    - name: "generate_test_with_cache_hit"
+      given:
+        - "a pattern cache with 'stack contains [3, 5]' cached"
+        - "a GWT behavior with 'stack contains [3, 5]' in given"
+      when:
+        - "I generate test code"
+      then:
+        - "cache hit counter should increment"
+        - "generated code should match cached pattern"
+        - "generation time should be < 1ms"
+      test_data:
+        setup:
+          cache: { "stack contains [3, 5]": "try vm.stack.append(3); try vm.stack.append(5);" }
+          behavior: { given: ["stack contains [3, 5]"] }
+        expected:
+          cache_hits: 1
+          code_contains: "try vm.stack.append(3)"
+          
+    - name: "generate_test_with_cache_miss"
+      given:
+        - "an empty pattern cache"
+        - "a GWT behavior with new pattern"
+      when:
+        - "I generate test code"
+      then:
+        - "cache miss counter should increment"
+        - "pattern should be added to cache"
+        - "subsequent calls should hit cache"
+      test_data:
+        setup:
+          cache: {}
+          behavior: { given: ["new pattern"] }
+        expected:
+          cache_misses: 1
+          cache_size: 1
+          
+    - name: "buffer_grows_by_phi"
+      given:
+        - "a code builder with 4096 byte buffer"
+        - "content requiring 5000 bytes"
+      when:
+        - "I append content"
+      then:
+        - "buffer should grow to ~6627 bytes (4096 * φ)"
+        - "reallocations counter should be 1"
+      test_data:
+        setup:
+          buffer_size: 4096
+          content_size: 5000
+        expected:
+          new_buffer_size: 6627  # 4096 * 1.618...
+          reallocations: 1
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # COMPARISON V1 → V2
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  comparison:
+    v1:
+      patterns: []
+      caching: "none"
+      buffer_growth: "fixed or 2x"
+      metrics: "none"
+      
+    v2:
+      patterns: ["PRE", "HSH", "AMR"]
+      caching: "pattern cache with hit/miss tracking"
+      buffer_growth: "φ-based (1.618x)"
+      metrics: "full tracking"
+      
+    expected_improvements:
+      cache_hit_ratio: "> 80% for repeated patterns"
+      buffer_efficiency: "30% fewer reallocations"
+      generation_speed: "2x faster for large specs"

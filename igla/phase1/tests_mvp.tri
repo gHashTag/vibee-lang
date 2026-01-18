@@ -1,0 +1,422 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TESTS_MVP.TLS - ИСПОЛНЯЕМЫЕ ТЕСТЫ ДЛЯ PHASE 1
+# ═══════════════════════════════════════════════════════════════════════════════
+# Phase 1 MVP - Тесты для ADD, SUB, MUL, DIV
+# Автор: Dmitrii Vasilev
+# Дата: 2026-01-18
+# 
+# ВАЖНО: Эти тесты генерируются в реальный Zig код и ИСПОЛНЯЮТСЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tests_mvp:
+  meta:
+    version: "0.1.0"
+    total_tests: 20
+    phase: "1"
+    
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ТЕСТОВЫЙ ФРЕЙМВОРК
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  framework:
+    description: |
+      Каждый тест:
+      1. Создаёт VM с начальным состоянием
+      2. Выполняет один опкод
+      3. Проверяет конечное состояние
+      
+    zig_test_template: |
+      test "{test_name}" {{
+          var vm = VM.init();
+          defer vm.deinit();
+          
+          // Setup
+          {setup_code}
+          
+          // Execute
+          vm.dispatch({opcode});
+          
+          // Assert
+          {assertions}
+      }}
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ТЕСТЫ ADD
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  ADD_tests:
+    - name: "add_basic"
+      opcode: 0x01
+      setup:
+        stack: [3, 5]
+      expected:
+        stack: [8]
+        pc: 1
+        status: "Running"
+      zig_code: |
+        test "add_basic" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(3);
+            try vm.stack.append(5);
+            vm.dispatch(0x01);
+            try std.testing.expectEqual(@as(usize, 1), vm.stack.items.len);
+            try std.testing.expectEqual(@as(u64, 8), vm.stack.items[0]);
+            try std.testing.expectEqual(@as(u64, 1), vm.pc);
+            try std.testing.expectEqual(VM.Status.Running, vm.status);
+        }
+        
+    - name: "add_zero"
+      opcode: 0x01
+      setup:
+        stack: [0, 42]
+      expected:
+        stack: [42]
+        pc: 1
+      zig_code: |
+        test "add_zero" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(0);
+            try vm.stack.append(42);
+            vm.dispatch(0x01);
+            try std.testing.expectEqual(@as(u64, 42), vm.stack.items[0]);
+        }
+        
+    - name: "add_large_numbers"
+      opcode: 0x01
+      setup:
+        stack: [1000000000, 2000000000]
+      expected:
+        stack: [3000000000]
+        pc: 1
+      zig_code: |
+        test "add_large_numbers" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(1000000000);
+            try vm.stack.append(2000000000);
+            vm.dispatch(0x01);
+            try std.testing.expectEqual(@as(u64, 3000000000), vm.stack.items[0]);
+        }
+        
+    - name: "add_overflow_wrapping"
+      opcode: 0x01
+      setup:
+        stack: [0xFFFFFFFFFFFFFFFF, 1]
+      expected:
+        stack: [0]
+        pc: 1
+      description: "Проверка wrapping overflow"
+      zig_code: |
+        test "add_overflow_wrapping" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(0xFFFFFFFFFFFFFFFF);
+            try vm.stack.append(1);
+            vm.dispatch(0x01);
+            try std.testing.expectEqual(@as(u64, 0), vm.stack.items[0]);
+        }
+        
+    - name: "add_stack_underflow"
+      opcode: 0x01
+      setup:
+        stack: [5]
+      expected:
+        status: "Error_StackUnderflow"
+      zig_code: |
+        test "add_stack_underflow" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(5);
+            vm.dispatch(0x01);
+            try std.testing.expectEqual(VM.Status.Error_StackUnderflow, vm.status);
+        }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ТЕСТЫ SUB
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  SUB_tests:
+    - name: "sub_basic"
+      opcode: 0x02
+      setup:
+        stack: [10, 3]  # 10 внизу, 3 на вершине
+      expected:
+        stack: [7]  # 10 - 3 = 7
+        pc: 1
+      zig_code: |
+        test "sub_basic" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(10);
+            try vm.stack.append(3);
+            vm.dispatch(0x02);
+            try std.testing.expectEqual(@as(u64, 7), vm.stack.items[0]);
+        }
+        
+    - name: "sub_to_zero"
+      opcode: 0x02
+      setup:
+        stack: [5, 5]
+      expected:
+        stack: [0]
+        pc: 1
+      zig_code: |
+        test "sub_to_zero" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(5);
+            try vm.stack.append(5);
+            vm.dispatch(0x02);
+            try std.testing.expectEqual(@as(u64, 0), vm.stack.items[0]);
+        }
+        
+    - name: "sub_underflow_wrapping"
+      opcode: 0x02
+      setup:
+        stack: [0, 1]  # 0 - 1 = MAX_U64
+      expected:
+        stack: [0xFFFFFFFFFFFFFFFF]
+        pc: 1
+      zig_code: |
+        test "sub_underflow_wrapping" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(0);
+            try vm.stack.append(1);
+            vm.dispatch(0x02);
+            try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), vm.stack.items[0]);
+        }
+        
+    - name: "sub_stack_underflow"
+      opcode: 0x02
+      setup:
+        stack: [5]
+      expected:
+        status: "Error_StackUnderflow"
+      zig_code: |
+        test "sub_stack_underflow" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(5);
+            vm.dispatch(0x02);
+            try std.testing.expectEqual(VM.Status.Error_StackUnderflow, vm.status);
+        }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ТЕСТЫ MUL
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  MUL_tests:
+    - name: "mul_basic"
+      opcode: 0x03
+      setup:
+        stack: [4, 7]
+      expected:
+        stack: [28]
+        pc: 1
+      zig_code: |
+        test "mul_basic" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(4);
+            try vm.stack.append(7);
+            vm.dispatch(0x03);
+            try std.testing.expectEqual(@as(u64, 28), vm.stack.items[0]);
+        }
+        
+    - name: "mul_by_zero"
+      opcode: 0x03
+      setup:
+        stack: [999, 0]
+      expected:
+        stack: [0]
+        pc: 1
+      zig_code: |
+        test "mul_by_zero" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(999);
+            try vm.stack.append(0);
+            vm.dispatch(0x03);
+            try std.testing.expectEqual(@as(u64, 0), vm.stack.items[0]);
+        }
+        
+    - name: "mul_by_one"
+      opcode: 0x03
+      setup:
+        stack: [42, 1]
+      expected:
+        stack: [42]
+        pc: 1
+      zig_code: |
+        test "mul_by_one" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(42);
+            try vm.stack.append(1);
+            vm.dispatch(0x03);
+            try std.testing.expectEqual(@as(u64, 42), vm.stack.items[0]);
+        }
+        
+    - name: "mul_squares"
+      opcode: 0x03
+      setup:
+        stack: [12, 12]
+      expected:
+        stack: [144]
+        pc: 1
+      zig_code: |
+        test "mul_squares" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(12);
+            try vm.stack.append(12);
+            vm.dispatch(0x03);
+            try std.testing.expectEqual(@as(u64, 144), vm.stack.items[0]);
+        }
+        
+    - name: "mul_stack_underflow"
+      opcode: 0x03
+      setup:
+        stack: [5]
+      expected:
+        status: "Error_StackUnderflow"
+      zig_code: |
+        test "mul_stack_underflow" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(5);
+            vm.dispatch(0x03);
+            try std.testing.expectEqual(VM.Status.Error_StackUnderflow, vm.status);
+        }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ТЕСТЫ DIV
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  DIV_tests:
+    - name: "div_basic"
+      opcode: 0x04
+      setup:
+        stack: [20, 4]  # 20 / 4 = 5
+      expected:
+        stack: [5]
+        pc: 1
+      zig_code: |
+        test "div_basic" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(20);
+            try vm.stack.append(4);
+            vm.dispatch(0x04);
+            try std.testing.expectEqual(@as(u64, 5), vm.stack.items[0]);
+        }
+        
+    - name: "div_truncate"
+      opcode: 0x04
+      setup:
+        stack: [7, 2]  # 7 / 2 = 3 (truncated)
+      expected:
+        stack: [3]
+        pc: 1
+      zig_code: |
+        test "div_truncate" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(7);
+            try vm.stack.append(2);
+            vm.dispatch(0x04);
+            try std.testing.expectEqual(@as(u64, 3), vm.stack.items[0]);
+        }
+        
+    - name: "div_by_one"
+      opcode: 0x04
+      setup:
+        stack: [42, 1]
+      expected:
+        stack: [42]
+        pc: 1
+      zig_code: |
+        test "div_by_one" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(42);
+            try vm.stack.append(1);
+            vm.dispatch(0x04);
+            try std.testing.expectEqual(@as(u64, 42), vm.stack.items[0]);
+        }
+        
+    - name: "div_zero_dividend"
+      opcode: 0x04
+      setup:
+        stack: [0, 5]  # 0 / 5 = 0
+      expected:
+        stack: [0]
+        pc: 1
+      zig_code: |
+        test "div_zero_dividend" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(0);
+            try vm.stack.append(5);
+            vm.dispatch(0x04);
+            try std.testing.expectEqual(@as(u64, 0), vm.stack.items[0]);
+        }
+        
+    - name: "div_by_zero"
+      opcode: 0x04
+      setup:
+        stack: [10, 0]
+      expected:
+        status: "Error_DivByZero"
+      zig_code: |
+        test "div_by_zero" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(10);
+            try vm.stack.append(0);
+            vm.dispatch(0x04);
+            try std.testing.expectEqual(VM.Status.Error_DivByZero, vm.status);
+        }
+        
+    - name: "div_stack_underflow"
+      opcode: 0x04
+      setup:
+        stack: [5]
+      expected:
+        status: "Error_StackUnderflow"
+      zig_code: |
+        test "div_stack_underflow" {
+            var vm = VM.init();
+            defer vm.deinit();
+            try vm.stack.append(5);
+            vm.dispatch(0x04);
+            try std.testing.expectEqual(VM.Status.Error_StackUnderflow, vm.status);
+        }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # СВОДКА ТЕСТОВ
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  summary:
+    ADD: 5
+    SUB: 4
+    MUL: 5
+    DIV: 6
+    total: 20
+    
+    categories:
+      basic_operations: 8
+      edge_cases: 6
+      error_handling: 6
+      
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CREATION PATTERN
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  creation_pattern:
+    source: "tests_mvp.tls"
+    transformer: "test_codegen"
+    result: "vm_tests.zig"

@@ -1,0 +1,394 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# OPCODES_MVP.TLS - 4 БАЗОВЫХ ОПКОДА ДЛЯ PHASE 1
+# ═══════════════════════════════════════════════════════════════════════════════
+# Phase 1 MVP - ADD, SUB, MUL, DIV с ПОЛНОЙ спецификацией
+# Автор: Dmitrii Vasilev
+# Дата: 2026-01-18
+# ═══════════════════════════════════════════════════════════════════════════════
+
+opcodes_mvp:
+  meta:
+    version: "0.1.0"
+    count: 4
+    phase: "1"
+    
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ТИПЫ ДАННЫХ
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  types:
+    Word:
+      size: 64
+      signed: false
+      zig_type: "u64"
+      
+    SignedWord:
+      size: 64
+      signed: true
+      zig_type: "i64"
+      
+    Stack:
+      element_type: "Word"
+      max_size: 999  # PHOENIX
+      zig_type: "std.ArrayList(u64)"
+      
+  # ═══════════════════════════════════════════════════════════════════════════
+  # СОСТОЯНИЕ VM (минимальное для Phase 1)
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  vm_state:
+    fields:
+      - name: "stack"
+        type: "Stack"
+        initial: "empty"
+        
+      - name: "pc"
+        type: "Word"
+        initial: 0
+        
+      - name: "status"
+        type: "Status"
+        initial: "Running"
+        
+    Status:
+      variants:
+        - "Running"
+        - "Halted"
+        - "Error_StackUnderflow"
+        - "Error_StackOverflow"
+        - "Error_DivByZero"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ОПКОД: ADD
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  ADD:
+    code: 0x01
+    mnemonic: "ADD"
+    args: 0
+    
+    description: |
+      Снимает два значения с вершины стека, складывает их,
+      и кладёт результат обратно на стек.
+      
+    preconditions:
+      - "stack.len() >= 2"
+      - "status == Running"
+      
+    postconditions:
+      - "stack.len() == old(stack.len()) - 1"
+      - "stack.top() == old(stack[0]) + old(stack[1])"
+      - "pc == old(pc) + 1"
+      
+    semantics:
+      formal: "v₁::v₂::s ↪ (v₁+v₂)::s"
+      
+      pseudocode: |
+        if stack.len() < 2:
+          status = Error_StackUnderflow
+          return
+        v1 = stack.pop()
+        v2 = stack.pop()
+        result = v1 +% v2  # wrapping add
+        stack.push(result)
+        pc += 1
+        
+    overflow_behavior: "wrapping"
+    
+    zig_implementation: |
+      fn exec_ADD(vm: *VM) void {
+          if (vm.stack.items.len < 2) {
+              vm.status = .Error_StackUnderflow;
+              return;
+          }
+          const v1 = vm.stack.pop();
+          const v2 = vm.stack.pop();
+          const result = v1 +% v2;
+          vm.stack.append(result) catch {
+              vm.status = .Error_StackOverflow;
+              return;
+          };
+          vm.pc += 1;
+      }
+      
+    test_cases:
+      - name: "add_basic"
+        setup: { stack: [3, 5] }
+        expected: { stack: [8], pc: 1 }
+        
+      - name: "add_zero"
+        setup: { stack: [0, 42] }
+        expected: { stack: [42], pc: 1 }
+        
+      - name: "add_overflow"
+        setup: { stack: [0xFFFFFFFFFFFFFFFF, 1] }
+        expected: { stack: [0], pc: 1 }  # wrapping
+        
+      - name: "add_underflow"
+        setup: { stack: [5] }
+        expected: { status: "Error_StackUnderflow" }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ОПКОД: SUB
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  SUB:
+    code: 0x02
+    mnemonic: "SUB"
+    args: 0
+    
+    description: |
+      Снимает два значения с вершины стека (v1 на вершине, v2 под ним),
+      вычисляет v2 - v1, и кладёт результат обратно на стек.
+      
+    preconditions:
+      - "stack.len() >= 2"
+      - "status == Running"
+      
+    postconditions:
+      - "stack.len() == old(stack.len()) - 1"
+      - "stack.top() == old(stack[1]) - old(stack[0])"
+      - "pc == old(pc) + 1"
+      
+    semantics:
+      formal: "v₁::v₂::s ↪ (v₂-v₁)::s"
+      note: "v1 на вершине, v2 под ним, результат = v2 - v1"
+      
+      pseudocode: |
+        if stack.len() < 2:
+          status = Error_StackUnderflow
+          return
+        v1 = stack.pop()  # вершина
+        v2 = stack.pop()  # под вершиной
+        result = v2 -% v1  # wrapping sub
+        stack.push(result)
+        pc += 1
+        
+    overflow_behavior: "wrapping"
+    
+    zig_implementation: |
+      fn exec_SUB(vm: *VM) void {
+          if (vm.stack.items.len < 2) {
+              vm.status = .Error_StackUnderflow;
+              return;
+          }
+          const v1 = vm.stack.pop();
+          const v2 = vm.stack.pop();
+          const result = v2 -% v1;
+          vm.stack.append(result) catch {
+              vm.status = .Error_StackOverflow;
+              return;
+          };
+          vm.pc += 1;
+      }
+      
+    test_cases:
+      - name: "sub_basic"
+        setup: { stack: [10, 3] }  # 10 под 3
+        expected: { stack: [7], pc: 1 }  # 10 - 3 = 7
+        
+      - name: "sub_zero"
+        setup: { stack: [5, 0] }
+        expected: { stack: [5], pc: 1 }
+        
+      - name: "sub_underflow_wrap"
+        setup: { stack: [0, 1] }
+        expected: { stack: [0xFFFFFFFFFFFFFFFF], pc: 1 }  # wrapping
+        
+      - name: "sub_stack_underflow"
+        setup: { stack: [5] }
+        expected: { status: "Error_StackUnderflow" }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ОПКОД: MUL
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  MUL:
+    code: 0x03
+    mnemonic: "MUL"
+    args: 0
+    
+    description: |
+      Снимает два значения с вершины стека, умножает их,
+      и кладёт результат обратно на стек.
+      
+    preconditions:
+      - "stack.len() >= 2"
+      - "status == Running"
+      
+    postconditions:
+      - "stack.len() == old(stack.len()) - 1"
+      - "stack.top() == old(stack[0]) * old(stack[1])"
+      - "pc == old(pc) + 1"
+      
+    semantics:
+      formal: "v₁::v₂::s ↪ (v₁×v₂)::s"
+      
+      pseudocode: |
+        if stack.len() < 2:
+          status = Error_StackUnderflow
+          return
+        v1 = stack.pop()
+        v2 = stack.pop()
+        result = v1 *% v2  # wrapping mul
+        stack.push(result)
+        pc += 1
+        
+    overflow_behavior: "wrapping"
+    
+    zig_implementation: |
+      fn exec_MUL(vm: *VM) void {
+          if (vm.stack.items.len < 2) {
+              vm.status = .Error_StackUnderflow;
+              return;
+          }
+          const v1 = vm.stack.pop();
+          const v2 = vm.stack.pop();
+          const result = v1 *% v2;
+          vm.stack.append(result) catch {
+              vm.status = .Error_StackOverflow;
+              return;
+          };
+          vm.pc += 1;
+      }
+      
+    test_cases:
+      - name: "mul_basic"
+        setup: { stack: [4, 7] }
+        expected: { stack: [28], pc: 1 }
+        
+      - name: "mul_zero"
+        setup: { stack: [0, 999] }
+        expected: { stack: [0], pc: 1 }
+        
+      - name: "mul_one"
+        setup: { stack: [1, 42] }
+        expected: { stack: [42], pc: 1 }
+        
+      - name: "mul_overflow"
+        setup: { stack: [0xFFFFFFFFFFFFFFFF, 2] }
+        expected: { stack: [0xFFFFFFFFFFFFFFFE], pc: 1 }  # wrapping
+        
+      - name: "mul_stack_underflow"
+        setup: { stack: [5] }
+        expected: { status: "Error_StackUnderflow" }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ОПКОД: DIV
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  DIV:
+    code: 0x04
+    mnemonic: "DIV"
+    args: 0
+    
+    description: |
+      Снимает два значения с вершины стека (v1 на вершине, v2 под ним),
+      вычисляет v2 / v1 (целочисленное деление), и кладёт результат на стек.
+      Если v1 == 0, устанавливает статус Error_DivByZero.
+      
+    preconditions:
+      - "stack.len() >= 2"
+      - "status == Running"
+      
+    postconditions:
+      - "if old(stack[0]) != 0: stack.top() == old(stack[1]) / old(stack[0])"
+      - "if old(stack[0]) == 0: status == Error_DivByZero"
+      
+    semantics:
+      formal: |
+        v₁::v₂::s, v₁≠0 ↪ (v₂÷v₁)::s
+        v₁::v₂::s, v₁=0 ↪ Error(DivByZero)
+      note: "v1 на вершине (делитель), v2 под ним (делимое)"
+      
+      pseudocode: |
+        if stack.len() < 2:
+          status = Error_StackUnderflow
+          return
+        v1 = stack.pop()  # делитель
+        if v1 == 0:
+          status = Error_DivByZero
+          return
+        v2 = stack.pop()  # делимое
+        result = v2 / v1  # integer division
+        stack.push(result)
+        pc += 1
+        
+    overflow_behavior: "none (integer division)"
+    
+    zig_implementation: |
+      fn exec_DIV(vm: *VM) void {
+          if (vm.stack.items.len < 2) {
+              vm.status = .Error_StackUnderflow;
+              return;
+          }
+          const v1 = vm.stack.pop();
+          if (v1 == 0) {
+              vm.status = .Error_DivByZero;
+              return;
+          }
+          const v2 = vm.stack.pop();
+          const result = v2 / v1;
+          vm.stack.append(result) catch {
+              vm.status = .Error_StackOverflow;
+              return;
+          };
+          vm.pc += 1;
+      }
+      
+    test_cases:
+      - name: "div_basic"
+        setup: { stack: [20, 4] }  # 20 под 4
+        expected: { stack: [5], pc: 1 }  # 20 / 4 = 5
+        
+      - name: "div_truncate"
+        setup: { stack: [7, 2] }
+        expected: { stack: [3], pc: 1 }  # 7 / 2 = 3 (truncated)
+        
+      - name: "div_by_one"
+        setup: { stack: [42, 1] }
+        expected: { stack: [42], pc: 1 }
+        
+      - name: "div_zero_dividend"
+        setup: { stack: [0, 5] }
+        expected: { stack: [0], pc: 1 }  # 0 / 5 = 0
+        
+      - name: "div_by_zero"
+        setup: { stack: [10, 0] }
+        expected: { status: "Error_DivByZero" }
+        
+      - name: "div_stack_underflow"
+        setup: { stack: [5] }
+        expected: { status: "Error_StackUnderflow" }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DISPATCH TABLE (для Phase 1)
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  dispatch:
+    method: "switch"  # простой switch для MVP
+    table:
+      0x01: "exec_ADD"
+      0x02: "exec_SUB"
+      0x03: "exec_MUL"
+      0x04: "exec_DIV"
+      
+    zig_implementation: |
+      fn dispatch(vm: *VM, opcode: u8) void {
+          switch (opcode) {
+              0x01 => exec_ADD(vm),
+              0x02 => exec_SUB(vm),
+              0x03 => exec_MUL(vm),
+              0x04 => exec_DIV(vm),
+              else => vm.status = .Error_InvalidOpcode,
+          }
+      }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CREATION PATTERN
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  creation_pattern:
+    source: "opcodes_mvp.tls"
+    transformer: "codegen"
+    result: "vm_mvp.zig"

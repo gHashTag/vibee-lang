@@ -1,0 +1,364 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# OPCODES_GWT.TLS - СПЕЦИФИКАЦИЯ ОПКОДОВ В ФОРМАТЕ GIVEN-WHEN-THEN
+# ═══════════════════════════════════════════════════════════════════════════════
+# BDD (Behavior-Driven Development) спецификация для TRINITY VM
+# Формат: Given-When-Then (GWT) / Gherkin-совместимый
+# 
+# Creation Pattern: 
+#   opcodes_gwt.tls → test_generator → tests_gwt.tls → code_generator → vm.zig
+# ═══════════════════════════════════════════════════════════════════════════════
+
+feature:
+  name: "TRINITY VM Arithmetic Operations"
+  description: |
+    As a TRINITY VM user
+    I want to perform arithmetic operations on the stack
+    So that I can compute mathematical expressions
+    
+  meta:
+    version: "0.1.0"
+    phase: "1"
+    format: "GWT (Given-When-Then)"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ADD SCENARIOS
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  ADD:
+    code: 0x01
+    mnemonic: "ADD"
+    
+    description: |
+      ADD pops two values from the stack, adds them,
+      and pushes the result back onto the stack.
+      
+    semantics: "v₁::v₂::s ↪ (v₁+v₂)::s"
+    
+    behaviors:
+      - name: "add_two_positive_numbers"
+        given:
+          - "a VM with empty stack"
+          - "stack contains [3, 5] (5 on top)"
+        when:
+          - "I execute ADD opcode (0x01)"
+        then:
+          - "stack should contain [8]"
+          - "pc should be 1"
+          - "status should be Running"
+        test_data:
+          setup: { stack: [3, 5] }
+          expected: { stack: [8], pc: 1, status: "Running" }
+          
+      - name: "add_with_zero"
+        given:
+          - "a VM with stack containing [0, 42]"
+        when:
+          - "I execute ADD opcode"
+        then:
+          - "stack should contain [42]"
+          - "adding zero should not change the value"
+        test_data:
+          setup: { stack: [0, 42] }
+          expected: { stack: [42], pc: 1 }
+          
+      - name: "add_is_commutative"
+        given:
+          - "a VM with stack containing [7, 3]"
+        when:
+          - "I execute ADD opcode"
+        then:
+          - "stack should contain [10]"
+          - "result should be same regardless of order"
+        test_data:
+          setup: { stack: [7, 3] }
+          expected: { stack: [10], pc: 1 }
+          
+      - name: "add_large_numbers"
+        given:
+          - "a VM with stack containing [1000000000, 2000000000]"
+        when:
+          - "I execute ADD opcode"
+        then:
+          - "stack should contain [3000000000]"
+        test_data:
+          setup: { stack: [1000000000, 2000000000] }
+          expected: { stack: [3000000000], pc: 1 }
+          
+      - name: "add_overflow_wraps"
+        given:
+          - "a VM with stack containing [MAX_U64, 1]"
+          - "MAX_U64 = 0xFFFFFFFFFFFFFFFF"
+        when:
+          - "I execute ADD opcode"
+        then:
+          - "stack should contain [0]"
+          - "overflow should wrap around (wrapping semantics)"
+        test_data:
+          setup: { stack: [0xFFFFFFFFFFFFFFFF, 1] }
+          expected: { stack: [0], pc: 1 }
+          
+      - name: "add_fails_on_stack_underflow"
+        given:
+          - "a VM with stack containing only [5]"
+          - "stack has less than 2 elements"
+        when:
+          - "I execute ADD opcode"
+        then:
+          - "status should be Error_StackUnderflow"
+          - "stack should remain unchanged"
+        test_data:
+          setup: { stack: [5] }
+          expected: { status: "Error_StackUnderflow" }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SUB SCENARIOS
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  SUB:
+    code: 0x02
+    mnemonic: "SUB"
+    
+    description: |
+      SUB pops two values from the stack (v1 on top, v2 below),
+      computes v2 - v1, and pushes the result.
+      
+    semantics: "v₁::v₂::s ↪ (v₂-v₁)::s"
+    note: "v1 is subtrahend (on top), v2 is minuend (below)"
+    
+    behaviors:
+      - name: "subtract_two_numbers"
+        given:
+          - "a VM with stack containing [10, 3] (3 on top)"
+        when:
+          - "I execute SUB opcode (0x02)"
+        then:
+          - "stack should contain [7]"
+          - "result is 10 - 3 = 7"
+        test_data:
+          setup: { stack: [10, 3] }
+          expected: { stack: [7], pc: 1, status: "Running" }
+          
+      - name: "subtract_zero"
+        given:
+          - "a VM with stack containing [5, 0]"
+        when:
+          - "I execute SUB opcode"
+        then:
+          - "stack should contain [5]"
+          - "subtracting zero should not change the value"
+        test_data:
+          setup: { stack: [5, 0] }
+          expected: { stack: [5], pc: 1 }
+          
+      - name: "subtract_equal_numbers"
+        given:
+          - "a VM with stack containing [7, 7]"
+        when:
+          - "I execute SUB opcode"
+        then:
+          - "stack should contain [0]"
+        test_data:
+          setup: { stack: [7, 7] }
+          expected: { stack: [0], pc: 1 }
+          
+      - name: "subtract_underflow_wraps"
+        given:
+          - "a VM with stack containing [0, 1]"
+          - "0 - 1 would be negative"
+        when:
+          - "I execute SUB opcode"
+        then:
+          - "stack should contain [MAX_U64]"
+          - "underflow should wrap around (wrapping semantics)"
+        test_data:
+          setup: { stack: [0, 1] }
+          expected: { stack: [0xFFFFFFFFFFFFFFFF], pc: 1 }
+          
+      - name: "subtract_fails_on_stack_underflow"
+        given:
+          - "a VM with stack containing only [5]"
+        when:
+          - "I execute SUB opcode"
+        then:
+          - "status should be Error_StackUnderflow"
+        test_data:
+          setup: { stack: [5] }
+          expected: { status: "Error_StackUnderflow" }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MUL SCENARIOS
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  MUL:
+    code: 0x03
+    mnemonic: "MUL"
+    
+    description: |
+      MUL pops two values from the stack, multiplies them,
+      and pushes the result back onto the stack.
+      
+    semantics: "v₁::v₂::s ↪ (v₁×v₂)::s"
+    
+    behaviors:
+      - name: "multiply_two_numbers"
+        given:
+          - "a VM with stack containing [4, 7]"
+        when:
+          - "I execute MUL opcode (0x03)"
+        then:
+          - "stack should contain [28]"
+        test_data:
+          setup: { stack: [4, 7] }
+          expected: { stack: [28], pc: 1, status: "Running" }
+          
+      - name: "multiply_by_zero"
+        given:
+          - "a VM with stack containing [999, 0]"
+        when:
+          - "I execute MUL opcode"
+        then:
+          - "stack should contain [0]"
+          - "anything multiplied by zero is zero"
+        test_data:
+          setup: { stack: [999, 0] }
+          expected: { stack: [0], pc: 1 }
+          
+      - name: "multiply_by_one"
+        given:
+          - "a VM with stack containing [42, 1]"
+        when:
+          - "I execute MUL opcode"
+        then:
+          - "stack should contain [42]"
+          - "multiplying by one should not change the value"
+        test_data:
+          setup: { stack: [42, 1] }
+          expected: { stack: [42], pc: 1 }
+          
+      - name: "multiply_square"
+        given:
+          - "a VM with stack containing [12, 12]"
+        when:
+          - "I execute MUL opcode"
+        then:
+          - "stack should contain [144]"
+          - "12 squared is 144"
+        test_data:
+          setup: { stack: [12, 12] }
+          expected: { stack: [144], pc: 1 }
+          
+      - name: "multiply_fails_on_stack_underflow"
+        given:
+          - "a VM with stack containing only [5]"
+        when:
+          - "I execute MUL opcode"
+        then:
+          - "status should be Error_StackUnderflow"
+        test_data:
+          setup: { stack: [5] }
+          expected: { status: "Error_StackUnderflow" }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DIV SCENARIOS
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  DIV:
+    code: 0x04
+    mnemonic: "DIV"
+    
+    description: |
+      DIV pops two values from the stack (v1 on top as divisor, v2 below as dividend),
+      computes v2 / v1 (integer division), and pushes the result.
+      If v1 is zero, sets status to Error_DivByZero.
+      
+    semantics: "v₁::v₂::s, v₁≠0 ↪ (v₂÷v₁)::s"
+    note: "v1 is divisor (on top), v2 is dividend (below)"
+    
+    behaviors:
+      - name: "divide_two_numbers"
+        given:
+          - "a VM with stack containing [20, 4] (4 on top)"
+        when:
+          - "I execute DIV opcode (0x04)"
+        then:
+          - "stack should contain [5]"
+          - "result is 20 / 4 = 5"
+        test_data:
+          setup: { stack: [20, 4] }
+          expected: { stack: [5], pc: 1, status: "Running" }
+          
+      - name: "divide_with_truncation"
+        given:
+          - "a VM with stack containing [7, 2]"
+        when:
+          - "I execute DIV opcode"
+        then:
+          - "stack should contain [3]"
+          - "7 / 2 = 3 (truncated toward zero)"
+        test_data:
+          setup: { stack: [7, 2] }
+          expected: { stack: [3], pc: 1 }
+          
+      - name: "divide_by_one"
+        given:
+          - "a VM with stack containing [42, 1]"
+        when:
+          - "I execute DIV opcode"
+        then:
+          - "stack should contain [42]"
+          - "dividing by one should not change the value"
+        test_data:
+          setup: { stack: [42, 1] }
+          expected: { stack: [42], pc: 1 }
+          
+      - name: "divide_zero_dividend"
+        given:
+          - "a VM with stack containing [0, 5]"
+        when:
+          - "I execute DIV opcode"
+        then:
+          - "stack should contain [0]"
+          - "0 / 5 = 0"
+        test_data:
+          setup: { stack: [0, 5] }
+          expected: { stack: [0], pc: 1 }
+          
+      - name: "divide_by_zero_fails"
+        given:
+          - "a VM with stack containing [10, 0]"
+          - "divisor is zero"
+        when:
+          - "I execute DIV opcode"
+        then:
+          - "status should be Error_DivByZero"
+          - "division by zero is not allowed"
+        test_data:
+          setup: { stack: [10, 0] }
+          expected: { status: "Error_DivByZero" }
+          
+      - name: "divide_fails_on_stack_underflow"
+        given:
+          - "a VM with stack containing only [5]"
+        when:
+          - "I execute DIV opcode"
+        then:
+          - "status should be Error_StackUnderflow"
+        test_data:
+          setup: { stack: [5] }
+          expected: { status: "Error_StackUnderflow" }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SUMMARY
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  summary:
+    total_scenarios: 22
+    by_opcode:
+      ADD: 6
+      SUB: 5
+      MUL: 5
+      DIV: 6
+    categories:
+      happy_path: 12
+      edge_cases: 6
+      error_handling: 4

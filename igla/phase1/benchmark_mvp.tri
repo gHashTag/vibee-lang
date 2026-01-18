@@ -1,0 +1,273 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# BENCHMARK_MVP.TLS - РЕАЛЬНЫЕ БЕНЧМАРКИ ДЛЯ PHASE 1
+# ═══════════════════════════════════════════════════════════════════════════════
+# Phase 1 MVP - Бенчмарки для ADD, SUB, MUL, DIV
+# Автор: Dmitrii Vasilev
+# Дата: 2026-01-18
+# 
+# ВАЖНО: Все значения помечены как "TO_BE_MEASURED" - это НЕ фейковые данные,
+#        а плейсхолдеры для реальных измерений после реализации.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+benchmark_mvp:
+  meta:
+    version: "0.1.0"
+    phase: "1"
+    status: "SPECIFICATION_ONLY"
+    
+    # ЧЕСТНОЕ ПРИЗНАНИЕ
+    disclaimer: |
+      ВСЕ ЗНАЧЕНИЯ ПРОИЗВОДИТЕЛЬНОСТИ В ЭТОМ ФАЙЛЕ - ПЛЕЙСХОЛДЕРЫ.
+      Реальные измерения будут получены ТОЛЬКО после:
+      1. Реализации VM на Zig
+      2. Запуска бенчмарков на реальном железе
+      3. Статистической обработки результатов
+      
+      Любые числа без пометки "MEASURED" - это ОЖИДАНИЯ, не факты.
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # МЕТОДОЛОГИЯ БЕНЧМАРКИНГА
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  methodology:
+    warmup_iterations: 10000
+    measurement_iterations: 1000000
+    statistical_method: "median with IQR"
+    
+    environment:
+      cpu: "TO_BE_RECORDED"
+      ram: "TO_BE_RECORDED"
+      os: "TO_BE_RECORDED"
+      zig_version: "TO_BE_RECORDED"
+      
+    zig_benchmark_code: |
+      const std = @import("std");
+      const VM = @import("vm.zig").VM;
+      
+      pub fn benchmark(comptime name: []const u8, comptime func: fn(*VM) void) void {
+          var vm = VM.init();
+          defer vm.deinit();
+          
+          // Warmup
+          var i: usize = 0;
+          while (i < 10000) : (i += 1) {
+              func(&vm);
+              vm.reset();
+          }
+          
+          // Measure
+          var timer = std.time.Timer{};
+          timer.reset();
+          
+          i = 0;
+          while (i < 1000000) : (i += 1) {
+              func(&vm);
+              vm.reset();
+          }
+          
+          const elapsed_ns = timer.read();
+          const ns_per_op = elapsed_ns / 1000000;
+          
+          std.debug.print("{s}: {d} ns/op\n", .{name, ns_per_op});
+      }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # БЕНЧМАРКИ ОПКОДОВ
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  opcode_benchmarks:
+    
+    ADD:
+      name: "bench_ADD"
+      description: "Измерение времени выполнения одного ADD"
+      
+      setup: |
+        vm.stack.append(42);
+        vm.stack.append(17);
+        
+      operation: "vm.dispatch(0x01)"
+      
+      expected_range:
+        min_ns: "TO_BE_MEASURED"
+        max_ns: "TO_BE_MEASURED"
+        median_ns: "TO_BE_MEASURED"
+        
+      theoretical_estimate:
+        description: "Теоретическая оценка на основе операций"
+        operations:
+          - "2x stack.pop() - ~2-5 ns each"
+          - "1x addition - ~1 ns"
+          - "1x stack.push() - ~2-5 ns"
+          - "1x pc increment - ~1 ns"
+        total_estimate: "8-17 ns"
+        confidence: "LOW - это ОЦЕНКА, не измерение"
+        
+      zig_code: |
+        fn bench_ADD(vm: *VM) void {
+            vm.stack.append(42) catch unreachable;
+            vm.stack.append(17) catch unreachable;
+            vm.dispatch(0x01);
+        }
+        
+    SUB:
+      name: "bench_SUB"
+      description: "Измерение времени выполнения одного SUB"
+      
+      setup: |
+        vm.stack.append(100);
+        vm.stack.append(42);
+        
+      operation: "vm.dispatch(0x02)"
+      
+      expected_range:
+        min_ns: "TO_BE_MEASURED"
+        max_ns: "TO_BE_MEASURED"
+        median_ns: "TO_BE_MEASURED"
+        
+      theoretical_estimate:
+        total_estimate: "8-17 ns"
+        confidence: "LOW"
+        
+    MUL:
+      name: "bench_MUL"
+      description: "Измерение времени выполнения одного MUL"
+      
+      setup: |
+        vm.stack.append(7);
+        vm.stack.append(6);
+        
+      operation: "vm.dispatch(0x03)"
+      
+      expected_range:
+        min_ns: "TO_BE_MEASURED"
+        max_ns: "TO_BE_MEASURED"
+        median_ns: "TO_BE_MEASURED"
+        
+      theoretical_estimate:
+        total_estimate: "8-20 ns"
+        note: "MUL может быть медленнее ADD на некоторых CPU"
+        confidence: "LOW"
+        
+    DIV:
+      name: "bench_DIV"
+      description: "Измерение времени выполнения одного DIV"
+      
+      setup: |
+        vm.stack.append(100);
+        vm.stack.append(7);
+        
+      operation: "vm.dispatch(0x04)"
+      
+      expected_range:
+        min_ns: "TO_BE_MEASURED"
+        max_ns: "TO_BE_MEASURED"
+        median_ns: "TO_BE_MEASURED"
+        
+      theoretical_estimate:
+        total_estimate: "15-40 ns"
+        note: "DIV обычно медленнее других арифметических операций"
+        confidence: "LOW"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # КОМПЛЕКСНЫЕ БЕНЧМАРКИ
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  complex_benchmarks:
+    
+    arithmetic_sequence:
+      name: "bench_arithmetic_sequence"
+      description: "Последовательность: ADD, SUB, MUL, DIV"
+      
+      setup: |
+        vm.stack.append(100);
+        vm.stack.append(50);
+        vm.stack.append(25);
+        vm.stack.append(5);
+        vm.stack.append(2);
+        
+      operations:
+        - "ADD: 50 + 100 = 150"
+        - "SUB: 150 - 25 = 125"
+        - "MUL: 125 * 5 = 625"
+        - "DIV: 625 / 2 = 312"
+        
+      expected_range:
+        min_ns: "TO_BE_MEASURED"
+        max_ns: "TO_BE_MEASURED"
+        median_ns: "TO_BE_MEASURED"
+        
+      theoretical_estimate:
+        total_estimate: "40-100 ns"
+        confidence: "LOW"
+        
+    fibonacci_10:
+      name: "bench_fibonacci_10"
+      description: "Вычисление Fibonacci(10) = 55"
+      
+      note: |
+        Этот бенчмарк требует дополнительных опкодов (LD, ST, JMP, JE).
+        Будет реализован в Phase 2.
+        
+      status: "DEFERRED_TO_PHASE_2"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # СРАВНЕНИЕ С BASELINE
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  baseline_comparison:
+    description: |
+      Сравнение с другими VM и интерпретаторами.
+      ВСЕ ЗНАЧЕНИЯ БУДУТ ИЗМЕРЕНЫ, НЕ ПРИДУМАНЫ.
+      
+    baselines:
+      - name: "Native Zig"
+        description: "Прямой Zig код без VM"
+        status: "TO_BE_MEASURED"
+        
+      - name: "Lua 5.4"
+        description: "Lua VM для сравнения"
+        status: "TO_BE_MEASURED"
+        
+      - name: "Python 3.11"
+        description: "CPython для сравнения"
+        status: "TO_BE_MEASURED"
+        
+    comparison_table:
+      header: ["Operation", "TRINITY VM", "Native Zig", "Lua 5.4", "Python 3.11"]
+      rows:
+        - ["ADD", "TO_BE_MEASURED", "TO_BE_MEASURED", "TO_BE_MEASURED", "TO_BE_MEASURED"]
+        - ["SUB", "TO_BE_MEASURED", "TO_BE_MEASURED", "TO_BE_MEASURED", "TO_BE_MEASURED"]
+        - ["MUL", "TO_BE_MEASURED", "TO_BE_MEASURED", "TO_BE_MEASURED", "TO_BE_MEASURED"]
+        - ["DIV", "TO_BE_MEASURED", "TO_BE_MEASURED", "TO_BE_MEASURED", "TO_BE_MEASURED"]
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # РЕЗУЛЬТАТЫ (заполняются после измерений)
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  results:
+    status: "NOT_YET_MEASURED"
+    
+    last_run:
+      date: null
+      environment: null
+      
+    measurements:
+      ADD: null
+      SUB: null
+      MUL: null
+      DIV: null
+      
+    notes: |
+      Этот раздел будет заполнен РЕАЛЬНЫМИ данными после:
+      1. Реализации VM (Phase 1 implementation)
+      2. Запуска бенчмарков
+      3. Статистической обработки
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CREATION PATTERN
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  creation_pattern:
+    source: "benchmark_mvp.tls"
+    transformer: "benchmark_codegen"
+    result: "vm_benchmark.zig"

@@ -1,0 +1,191 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ⲆⲀⲈⲘⲞⲚⲤ v2 - ФОРМАЛИЗОВАННЫЕ PAS ДЕМОНЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+# Источники:
+#   - Learning Classifier Systems (Bull, 2014) - arXiv:1401.3607
+#   - Pittsburgh LCS (Bishop et al., 2022) - arXiv:2305.09945
+#   - Tangled Program Graphs (Desnos et al., 2021) - arXiv:2012.08296
+#   - XCS with Memory (Zang et al., 2012) - arXiv:1211.0424
+# Паттерн: MLS (ML-Guided Search) - 6% success rate
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ⲇⲁⲉⲙⲟⲛⲥ_v2:
+  ⲙⲉⲧⲁ:
+    ⲡⲁⲧⲧⲉⲣⲛ: "MLS"
+    ⲕⲟⲛⲫⲓⲇⲉⲛⲕⲉ: 0.65
+    ⲁⲣⲭⲓⲧⲉⲕⲧⲩⲣⲉ: "Pittsburgh-style LCS + TPG"
+    ⲥⲟⲩⲣⲕⲉⲥ:
+      - "arXiv:1401.3607"
+      - "arXiv:2305.09945"
+      - "arXiv:2012.08296"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Θ - PREDICTION DAEMON (формализованный)
+  # ═══════════════════════════════════════════════════════════════════════════
+  Θ_Prediction:
+    ⲓⲇ: 0
+    ⲧⲩⲡⲉ: "predictor"
+    
+    # Формальная спецификация
+    ⲥⲓⲅⲛⲁⲧⲩⲣⲉ: |
+      Θ: State × DemonID → Prediction
+      Θ(σ, d) = softmax(W_d · encode(σ))
+      
+    ⲕⲟⲙⲡⲗⲉⲝⲓⲧⲩ: "O(log n)"
+    ⲕⲟⲛⲩⲉⲣⲅⲉⲛⲕⲉ: |
+      Guaranteed in O(φ × generations)
+      где φ = 1.618033988749895
+      
+    ⲉⲣⲣⲟⲣ_ⲃⲟⲩⲛⲇ: |
+      ε < 1/φ² = 0.382
+      P(|Θ(σ) - true_value| > ε) < 1/φ³
+      
+    # XCS-style accuracy
+    ⲁⲕⲕⲩⲣⲁⲕⲩ: |
+      accuracy(Θ) = 1 - |prediction - outcome|
+      fitness(Θ) = accuracy(Θ)^ν
+      где ν = 5 (accuracy exponent)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Ι - ACTION DAEMON (формализованный)
+  # ═══════════════════════════════════════════════════════════════════════════
+  Ι_Action:
+    ⲓⲇ: 1
+    ⲧⲩⲡⲉ: "actor"
+    
+    ⲥⲓⲅⲛⲁⲧⲩⲣⲉ: |
+      Ι: Prediction × ActionID → Action
+      Ι(p, a) = action_table[a] if p > threshold else NOP
+      
+    ⲁⲕⲧⲓⲟⲛ_ⲥⲡⲁⲕⲉ: |
+      A = {NOP, EXEC, SKIP, BRANCH, EVOLVE}
+      |A| = 5
+      
+    ⲧⲉⲣⲙⲓⲛⲁⲧⲓⲟⲛ: |
+      Action terminates when:
+        1. max_steps reached (default: 1000)
+        2. fitness converged (Δfitness < ε)
+        3. explicit HALT action
+        
+    ⲕⲟⲙⲡⲗⲉⲝⲓⲧⲩ: "O(1)"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Κ - SELECTION DAEMON (формализованный)
+  # ═══════════════════════════════════════════════════════════════════════════
+  Κ_Selection:
+    ⲓⲇ: 2
+    ⲧⲩⲡⲉ: "selector"
+    
+    ⲥⲓⲅⲛⲁⲧⲩⲣⲉ: |
+      Κ: [Prediction] → Prediction
+      Κ(predictions) = tournament_select(predictions, k=3)
+      
+    ⲁⲗⲅⲟⲣⲓⲧⲏⲙ: "Tournament Selection"
+    ⲧⲟⲩⲣⲛⲁⲙⲉⲛⲧ_ⲥⲓⲍⲉ: 3
+    
+    ⲇⲓⲩⲉⲣⲥⲓⲧⲩ: |
+      Crowding distance preservation:
+      d(i) = Σ(f_k(i+1) - f_k(i-1)) / (f_k_max - f_k_min)
+      
+    ⲉⲗⲓⲧⲓⲥⲙ: |
+      ε = 1/3 = 0.333
+      Top ε fraction preserved unchanged
+      
+    ⲕⲟⲙⲡⲗⲉⲝⲓⲧⲩ: "O(k × n) где k=3, n=population"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Λ - LEARNING DAEMON (формализованный)
+  # ═══════════════════════════════════════════════════════════════════════════
+  Λ_Learning:
+    ⲓⲇ: 3
+    ⲧⲩⲡⲉ: "learner"
+    
+    ⲥⲓⲅⲛⲁⲧⲩⲣⲉ: |
+      Λ: Outcome × Prediction × Weights → Weights
+      Λ(o, p, W) = W + α × (o - p) × ∇W
+      
+    ⲗⲉⲁⲣⲛⲓⲛⲅ_ⲣⲁⲧⲉ: |
+      α(t) = α₀ / (1 + t/τ)
+      где α₀ = 1/φ = 0.618, τ = 1000
+      
+    ⲅⲣⲁⲇⲓⲉⲛⲧ: |
+      ∇W = ∂loss/∂W
+      loss = (outcome - prediction)²
+      
+    ⲙⲟⲙⲉⲛⲧⲩⲙ: |
+      v(t) = β × v(t-1) + (1-β) × ∇W
+      W(t) = W(t-1) - α × v(t)
+      где β = 1/φ² = 0.382
+      
+    ⲕⲟⲙⲡⲗⲉⲝⲓⲧⲩ: "O(|W|)"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Μ - MEMORY DAEMON (формализованный)
+  # ═══════════════════════════════════════════════════════════════════════════
+  Μ_Memory:
+    ⲓⲇ: 4
+    ⲧⲩⲡⲉ: "memory"
+    
+    ⲥⲓⲅⲛⲁⲧⲩⲣⲉ: |
+      Μ: State → CachedState
+      Μ(σ) = cache.get(hash(σ)) ?? compute_and_cache(σ)
+      
+    ⲉⲩⲓⲕⲧⲓⲟⲛ_ⲡⲟⲗⲓⲕⲩ: |
+      LRU with golden ratio sizing:
+      cache_size = ⌊PHOENIX / φ⌋ = ⌊999 / 1.618⌋ = 617
+      
+    ⲕⲟⲏⲉⲣⲉⲛⲕⲉ: |
+      Write-through policy:
+      On write: update cache AND backing store
+      On read: check cache first, then backing store
+      
+    ⲏⲁⲥⲏ: |
+      h(σ) = (σ.pc × PRIME + σ.stack_hash) mod cache_size
+      где PRIME = 0x9E3779B9
+      
+    ⲕⲟⲙⲡⲗⲉⲝⲓⲧⲩ: "O(1) average, O(n) worst case"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # TPG - TANGLED PROGRAM GRAPH STRUCTURE
+  # ═══════════════════════════════════════════════════════════════════════════
+  ⲧⲡⲅ:
+    ⲇⲉⲥⲕⲣⲓⲡⲧⲓⲟⲛ: |
+      Demons organized as Tangled Program Graph (TPG).
+      Each demon is a node, edges represent information flow.
+      
+    ⲥⲧⲣⲩⲕⲧⲩⲣⲉ: |
+      TPG = (Nodes, Edges)
+      Nodes = {Θ, Ι, Κ, Λ, Μ}
+      Edges = {
+        (Θ → Κ),   # Predictions to selection
+        (Κ → Ι),   # Selected to action
+        (Ι → Λ),   # Action outcome to learning
+        (Λ → Θ),   # Updated weights to prediction
+        (Μ ↔ all)  # Memory accessible by all
+      }
+      
+    ⲉⲩⲟⲗⲩⲧⲓⲟⲛ: |
+      TPG evolves via:
+        1. Node mutation (weight changes)
+        2. Edge mutation (connection changes)
+        3. Subgraph crossover
+
+ⲉⲩⲟⲗⲩⲧⲓⲟⲛ_v2:
+  ⲫⲓⲧⲛⲉⲥⲥ: |
+    fitness(demon) = accuracy^ν × (1 + bonus)
+    где:
+      accuracy = correct_predictions / total_predictions
+      ν = 5
+      bonus = diversity_bonus + novelty_bonus
+      
+  ⲥⲉⲗⲉⲕⲧⲓⲟⲛ: |
+    P(survive) = fitness(demon)^σ / Σ(fitness(all)^σ)
+    где σ = φ = 1.618 (selection pressure)
+    
+  ⲙⲩⲧⲁⲧⲓⲟⲛ: |
+    mutate(W) = W + N(0, σ²)
+    где σ² = 1/φ² = 0.382 (golden variance)
+    
+  ⲕⲣⲟⲥⲥⲟⲩⲉⲣ: |
+    crossover(W₁, W₂) = α×W₁ + (1-α)×W₂
+    где α ~ Beta(φ, 1/φ)

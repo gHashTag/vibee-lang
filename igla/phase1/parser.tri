@@ -1,0 +1,187 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# PARSER.TLS - СПЕЦИФИКАЦИЯ ПАРСЕРА ДЛЯ .TLS ФАЙЛОВ
+# ═══════════════════════════════════════════════════════════════════════════════
+# Phase 1 MVP - Минимальный парсер для TRINITY VM
+# Автор: Dmitrii Vasilev
+# Дата: 2026-01-18
+# ═══════════════════════════════════════════════════════════════════════════════
+
+parser:
+  meta:
+    name: "tls_parser"
+    version: "0.1.0"
+    target: "zig"
+    phase: "1"
+    
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ГРАММАТИКА .TLS (YAML-подмножество)
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  grammar:
+    # BNF-подобная грамматика
+    rules: |
+      document     ::= (line NEWLINE)*
+      line         ::= comment | key_value | empty
+      comment      ::= '#' TEXT
+      key_value    ::= INDENT* key ':' value?
+      key          ::= IDENTIFIER | COPTIC_IDENTIFIER
+      value        ::= scalar | block_scalar
+      scalar       ::= STRING | NUMBER | BOOLEAN | 'null'
+      block_scalar ::= '|' NEWLINE (INDENT TEXT NEWLINE)*
+      
+      IDENTIFIER        ::= [a-zA-Z_][a-zA-Z0-9_]*
+      COPTIC_IDENTIFIER ::= [ⲁ-ⲱ][ⲁ-ⲱ_]*
+      STRING            ::= '"' [^"]* '"'
+      NUMBER            ::= '-'? [0-9]+ ('.' [0-9]+)?
+      BOOLEAN           ::= 'true' | 'false'
+      INDENT            ::= '  '  # 2 пробела
+      
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ТОКЕНЫ
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  tokens:
+    - name: "COLON"
+      pattern: ":"
+      
+    - name: "PIPE"
+      pattern: "|"
+      
+    - name: "HASH"
+      pattern: "#"
+      
+    - name: "NEWLINE"
+      pattern: "\\n"
+      
+    - name: "INDENT"
+      pattern: "  "
+      description: "Ровно 2 пробела"
+      
+    - name: "NUMBER"
+      pattern: "-?[0-9]+(\\.[0-9]+)?"
+      examples: ["42", "-1", "3.14", "1.618033988749895"]
+      
+    - name: "STRING"
+      pattern: "\"[^\"]*\""
+      examples: ["\"hello\"", "\"TRINITY VM\""]
+      
+    - name: "BOOLEAN"
+      pattern: "true|false"
+      
+    - name: "IDENTIFIER"
+      pattern: "[a-zA-Z_][a-zA-Z0-9_]*"
+      examples: ["name", "version", "ADD", "exec_ADD"]
+      
+    - name: "COPTIC"
+      pattern: "[ⲁ-ⲱⲀ-Ⲱ][ⲁ-ⲱⲀ-Ⲱ_]*"
+      examples: ["ⲥⲁⲕⲣⲁ", "ⲟⲡⲕⲟⲇⲉⲥ", "ⲥⲉⲙⲁⲛⲧⲓⲕⲥ"]
+      
+  # ═══════════════════════════════════════════════════════════════════════════
+  # AST СТРУКТУРЫ
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  ast:
+    Document:
+      fields:
+        - name: "entries"
+          type: "[]Entry"
+          
+    Entry:
+      variants:
+        - Comment: { text: "[]u8" }
+        - KeyValue: { key: "[]u8", value: "Value", indent: "u8" }
+        
+    Value:
+      variants:
+        - Null: {}
+        - Bool: { value: "bool" }
+        - Int: { value: "i64" }
+        - Float: { value: "f64" }
+        - String: { value: "[]u8" }
+        - Block: { lines: "[][]u8" }
+        - Map: { entries: "[]Entry" }
+        
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ПАРСЕР API
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  api:
+    parse:
+      signature: "fn parse(source: []const u8) -> ParseResult"
+      description: "Парсит .tls файл в AST"
+      errors:
+        - "UnexpectedToken"
+        - "InvalidIndent"
+        - "UnterminatedString"
+        - "InvalidNumber"
+        
+    parse_file:
+      signature: "fn parse_file(path: []const u8) -> ParseResult"
+      description: "Читает и парсит файл"
+      errors:
+        - "FileNotFound"
+        - "IoError"
+        - "ParseError"
+        
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ПРИМЕРЫ ПАРСИНГА
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  examples:
+    simple_key_value:
+      input: |
+        name: "test"
+        value: 42
+      output:
+        type: "Document"
+        entries:
+          - type: "KeyValue"
+            key: "name"
+            value: { type: "String", value: "test" }
+          - type: "KeyValue"
+            key: "value"
+            value: { type: "Int", value: 42 }
+            
+    nested:
+      input: |
+        opcodes:
+          ADD:
+            code: 0x01
+            args: 0
+      output:
+        type: "Document"
+        entries:
+          - type: "KeyValue"
+            key: "opcodes"
+            value:
+              type: "Map"
+              entries:
+                - type: "KeyValue"
+                  key: "ADD"
+                  value:
+                    type: "Map"
+                    entries:
+                      - { key: "code", value: { type: "Int", value: 1 } }
+                      - { key: "args", value: { type: "Int", value: 0 } }
+                      
+    block_scalar:
+      input: |
+        semantics: |
+          v₁::v₂::s ↪ (v₁+v₂)::s
+      output:
+        type: "Document"
+        entries:
+          - type: "KeyValue"
+            key: "semantics"
+            value:
+              type: "Block"
+              lines: ["v₁::v₂::s ↪ (v₁+v₂)::s"]
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CREATION PATTERN
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  creation_pattern:
+    source: "[]const u8 (TLS source code)"
+    transformer: "tls_parser"
+    result: "Document (AST)"

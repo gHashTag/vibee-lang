@@ -1,0 +1,213 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# OPCODES.TLS - СПЕЦИФИКАЦИЯ ОПКОДОВ ДЛЯ ГЕНЕРАЦИИ
+# ═══════════════════════════════════════════════════════════════════════════════
+# Формат оптимизирован для автоматической генерации тестов и кода
+# Creation Pattern: opcodes.tls → test_generator → tests.tls → code_generator → vm.zig
+# ═══════════════════════════════════════════════════════════════════════════════
+
+opcodes:
+  meta:
+    version: "0.1.0"
+    phase: "1"
+    generator_compatible: true
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ОБЩИЕ ТИПЫ
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  types:
+    Word: "u64"
+    Stack: "ArrayList(u64)"
+    MaxStack: 999
+    
+  errors:
+    - "Error_StackUnderflow"
+    - "Error_StackOverflow"
+    - "Error_DivByZero"
+    - "Error_InvalidOpcode"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ADD
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  ADD:
+    code: 0x01
+    mnemonic: "ADD"
+    category: "arithmetic"
+    
+    # Формальная семантика (для генерации)
+    semantics:
+      notation: "v₁::v₂::s ↪ (v₁+v₂)::s"
+      inputs: 2
+      outputs: 1
+      operation: "add"
+      operator: "+%"
+      
+    # Preconditions (для генерации проверок)
+    preconditions:
+      stack_min: 2
+      
+    # Поведение (для генерации тестов)
+    behavior:
+      overflow: "wrapping"
+      
+    # Тестовые данные (для генерации тестов)
+    test_vectors:
+      basic:
+        inputs: [3, 5]
+        output: 8
+      zero:
+        inputs: [0, 42]
+        output: 42
+      commutative:
+        inputs: [7, 3]
+        output: 10
+      large:
+        inputs: [1000000000, 2000000000]
+        output: 3000000000
+      overflow:
+        inputs: [0xFFFFFFFFFFFFFFFF, 1]
+        output: 0
+        note: "wrapping"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SUB
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  SUB:
+    code: 0x02
+    mnemonic: "SUB"
+    category: "arithmetic"
+    
+    semantics:
+      notation: "v₁::v₂::s ↪ (v₂-v₁)::s"
+      inputs: 2
+      outputs: 1
+      operation: "sub"
+      operator: "-%"
+      note: "v1 на вершине (вычитаемое), v2 под ним (уменьшаемое)"
+      
+    preconditions:
+      stack_min: 2
+      
+    behavior:
+      overflow: "wrapping"
+      
+    test_vectors:
+      basic:
+        inputs: [10, 3]  # stack: [10, 3], 3 на вершине
+        output: 7        # 10 - 3 = 7
+      zero:
+        inputs: [5, 0]
+        output: 5
+      equal:
+        inputs: [7, 7]
+        output: 0
+      underflow:
+        inputs: [0, 1]
+        output: 0xFFFFFFFFFFFFFFFF
+        note: "wrapping underflow"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MUL
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  MUL:
+    code: 0x03
+    mnemonic: "MUL"
+    category: "arithmetic"
+    
+    semantics:
+      notation: "v₁::v₂::s ↪ (v₁×v₂)::s"
+      inputs: 2
+      outputs: 1
+      operation: "mul"
+      operator: "*%"
+      
+    preconditions:
+      stack_min: 2
+      
+    behavior:
+      overflow: "wrapping"
+      
+    test_vectors:
+      basic:
+        inputs: [4, 7]
+        output: 28
+      zero:
+        inputs: [999, 0]
+        output: 0
+      one:
+        inputs: [42, 1]
+        output: 42
+      square:
+        inputs: [12, 12]
+        output: 144
+      commutative:
+        inputs: [3, 5]
+        output: 15
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DIV
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  DIV:
+    code: 0x04
+    mnemonic: "DIV"
+    category: "arithmetic"
+    
+    semantics:
+      notation: "v₁::v₂::s, v₁≠0 ↪ (v₂÷v₁)::s"
+      inputs: 2
+      outputs: 1
+      operation: "div"
+      operator: "/"
+      note: "v1 на вершине (делитель), v2 под ним (делимое)"
+      
+    preconditions:
+      stack_min: 2
+      divisor_not_zero: true
+      
+    behavior:
+      overflow: "none"
+      truncation: "toward_zero"
+      
+    errors:
+      - condition: "v1 == 0"
+        error: "Error_DivByZero"
+        
+    test_vectors:
+      basic:
+        inputs: [20, 4]  # 20 / 4 = 5
+        output: 5
+      truncate:
+        inputs: [7, 2]   # 7 / 2 = 3 (truncated)
+        output: 3
+      one:
+        inputs: [42, 1]
+        output: 42
+      zero_dividend:
+        inputs: [0, 5]   # 0 / 5 = 0
+        output: 0
+      large:
+        inputs: [1000000000, 7]
+        output: 142857142
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # МЕТАДАННЫЕ ДЛЯ ГЕНЕРАТОРА
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  generator_hints:
+    # Какие тесты генерировать для каждой категории
+    arithmetic:
+      generate_tests:
+        - "basic"           # из test_vectors.basic
+        - "zero"            # из test_vectors.zero или сгенерировать
+        - "overflow"        # если behavior.overflow == "wrapping"
+        - "stack_underflow" # всегда для stack_min > 0
+        
+    # Специальные тесты для DIV
+    div_special:
+      generate_tests:
+        - "div_by_zero"     # из errors
+        - "truncation"      # из test_vectors.truncate

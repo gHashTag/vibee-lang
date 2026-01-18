@@ -1,0 +1,236 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST_GENERATOR.TLS - ГЕНЕРАТОР ТЕСТОВ ИЗ СПЕЦИФИКАЦИИ
+# ═══════════════════════════════════════════════════════════════════════════════
+# Creation Pattern: spec.tls → test_generator → tests.tls
+# Автор: Dmitrii Vasilev
+# Дата: 2026-01-18
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_generator:
+  meta:
+    name: "zmei_test_gen"
+    version: "0.1.0"
+    
+  creation_pattern:
+    source: "opcode specification (.tls)"
+    transformer: "test_generator"
+    result: "generated tests (.tls)"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ВХОДНОЙ ФОРМАТ (что читаем из спецификации опкода)
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  input_format:
+    opcode:
+      required_fields:
+        - name: "code"
+          type: "u8"
+          example: "0x01"
+          
+        - name: "mnemonic"
+          type: "string"
+          example: "ADD"
+          
+        - name: "semantics"
+          type: "string"
+          example: "v₁::v₂::s ↪ (v₁+v₂)::s"
+          
+        - name: "preconditions"
+          type: "list[string]"
+          example: ["stack.len() >= 2"]
+          
+        - name: "postconditions"
+          type: "list[string]"
+          example: ["stack.top() == old(stack[0]) + old(stack[1])"]
+          
+      optional_fields:
+        - name: "overflow_behavior"
+          type: "string"
+          values: ["wrapping", "saturating", "error"]
+          default: "wrapping"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ПРАВИЛА ГЕНЕРАЦИИ ТЕСТОВ
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  generation_rules:
+    
+    # Правило 1: Базовый тест из семантики
+    rule_basic:
+      trigger: "всегда"
+      description: "Генерирует базовый тест из семантики"
+      template: |
+        - name: "{mnemonic}_basic"
+          opcode: {code}
+          setup:
+            stack: [RANDOM_A, RANDOM_B]
+          expected:
+            stack: [RESULT]
+            pc: 1
+            status: "Running"
+      example:
+        input:
+          mnemonic: "ADD"
+          code: "0x01"
+          semantics: "v₁::v₂::s ↪ (v₁+v₂)::s"
+        output:
+          name: "ADD_basic"
+          setup: { stack: [3, 5] }
+          expected: { stack: [8], pc: 1 }
+          
+    # Правило 2: Тест с нулём
+    rule_zero:
+      trigger: "арифметический опкод"
+      description: "Генерирует тест с нулевым операндом"
+      template: |
+        - name: "{mnemonic}_zero"
+          opcode: {code}
+          setup:
+            stack: [0, RANDOM]
+          expected:
+            stack: [RESULT_WITH_ZERO]
+            
+    # Правило 3: Тест на переполнение
+    rule_overflow:
+      trigger: "overflow_behavior == 'wrapping'"
+      description: "Генерирует тест на wrapping overflow"
+      template: |
+        - name: "{mnemonic}_overflow"
+          opcode: {code}
+          setup:
+            stack: [MAX_U64, 1]  # или другие граничные значения
+          expected:
+            stack: [WRAPPED_RESULT]
+            
+    # Правило 4: Тест на ошибку стека
+    rule_stack_underflow:
+      trigger: "precondition содержит 'stack.len() >= N'"
+      description: "Генерирует тест на stack underflow"
+      template: |
+        - name: "{mnemonic}_stack_underflow"
+          opcode: {code}
+          setup:
+            stack: [SINGLE_VALUE]  # меньше чем N
+          expected:
+            status: "Error_StackUnderflow"
+            
+    # Правило 5: Тест на деление на ноль
+    rule_div_by_zero:
+      trigger: "mnemonic == 'DIV'"
+      description: "Генерирует тест на деление на ноль"
+      template: |
+        - name: "DIV_by_zero"
+          opcode: 0x04
+          setup:
+            stack: [DIVIDEND, 0]
+          expected:
+            status: "Error_DivByZero"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ВЫХОДНОЙ ФОРМАТ (что генерируем)
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  output_format:
+    generated_tests:
+      header: |
+        # ═══════════════════════════════════════════════════════════════════
+        # GENERATED TESTS - DO NOT EDIT MANUALLY
+        # ═══════════════════════════════════════════════════════════════════
+        # Source: {source_file}
+        # Generator: zmei_test_gen v0.1.0
+        # Generated: {timestamp}
+        # ═══════════════════════════════════════════════════════════════════
+        
+      test_entry:
+        fields:
+          - name: "string"
+          - opcode: "u8"
+          - setup: "TestSetup"
+          - expected: "TestExpected"
+          - generated_by: "string (rule name)"
+          
+      TestSetup:
+        fields:
+          - stack: "list[u64]"
+          - registers: "optional list[u64]"
+          - memory: "optional map[u64, u64]"
+          - pc: "optional u64 (default 0)"
+          
+      TestExpected:
+        fields:
+          - stack: "optional list[u64]"
+          - pc: "optional u64"
+          - status: "optional Status"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # АЛГОРИТМ ГЕНЕРАЦИИ
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  algorithm:
+    pseudocode: |
+      function generate_tests(spec_file):
+        spec = parse_tls(spec_file)
+        tests = []
+        
+        for opcode in spec.opcodes:
+          # Правило 1: Базовый тест
+          tests.append(generate_basic_test(opcode))
+          
+          # Правило 2: Тест с нулём
+          if is_arithmetic(opcode):
+            tests.append(generate_zero_test(opcode))
+          
+          # Правило 3: Тест на переполнение
+          if opcode.overflow_behavior == "wrapping":
+            tests.append(generate_overflow_test(opcode))
+          
+          # Правило 4: Тест на stack underflow
+          if has_stack_precondition(opcode):
+            tests.append(generate_underflow_test(opcode))
+          
+          # Правило 5: Специфичные тесты
+          if opcode.mnemonic == "DIV":
+            tests.append(generate_div_by_zero_test(opcode))
+        
+        return format_as_tls(tests)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ПРИМЕР ГЕНЕРАЦИИ
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  example:
+    input_spec: |
+      ADD:
+        code: 0x01
+        mnemonic: "ADD"
+        semantics: "v₁::v₂::s ↪ (v₁+v₂)::s"
+        preconditions:
+          - "stack.len() >= 2"
+        overflow_behavior: "wrapping"
+        
+    generated_output: |
+      # GENERATED TESTS for ADD
+      ADD_tests:
+        - name: "ADD_basic"
+          opcode: 0x01
+          setup: { stack: [3, 5] }
+          expected: { stack: [8], pc: 1, status: "Running" }
+          generated_by: "rule_basic"
+          
+        - name: "ADD_zero"
+          opcode: 0x01
+          setup: { stack: [0, 42] }
+          expected: { stack: [42], pc: 1 }
+          generated_by: "rule_zero"
+          
+        - name: "ADD_overflow"
+          opcode: 0x01
+          setup: { stack: [0xFFFFFFFFFFFFFFFF, 1] }
+          expected: { stack: [0], pc: 1 }
+          generated_by: "rule_overflow"
+          
+        - name: "ADD_stack_underflow"
+          opcode: 0x01
+          setup: { stack: [5] }
+          expected: { status: "Error_StackUnderflow" }
+          generated_by: "rule_stack_underflow"

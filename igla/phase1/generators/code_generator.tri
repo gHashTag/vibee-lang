@@ -1,0 +1,271 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CODE_GENERATOR.TLS - ГЕНЕРАТОР КОДА ИЗ ТЕСТОВ И СПЕЦИФИКАЦИИ
+# ═══════════════════════════════════════════════════════════════════════════════
+# Creation Pattern: tests.tls + spec.tls → code_generator → vm.zig
+# Автор: Dmitrii Vasilev
+# Дата: 2026-01-18
+# ═══════════════════════════════════════════════════════════════════════════════
+
+code_generator:
+  meta:
+    name: "zmei_code_gen"
+    version: "0.1.0"
+    
+  creation_pattern:
+    source: "generated tests (.tls) + opcode spec (.tls)"
+    transformer: "code_generator"
+    result: "vm implementation (.zig)"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ПОЛНЫЙ PIPELINE
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  pipeline:
+    description: |
+      spec.tls ──┬──→ test_generator ──→ tests.tls ──┐
+                 │                                    │
+                 └────────────────────────────────────┴──→ code_generator ──→ vm.zig
+                 
+    steps:
+      1: "Парсим spec.tls (опкоды, семантика, preconditions)"
+      2: "Генерируем tests.tls из spec.tls"
+      3: "Парсим tests.tls (тестовые случаи)"
+      4: "Генерируем vm.zig который проходит все тесты"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ШАБЛОНЫ ГЕНЕРАЦИИ КОДА
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  templates:
+    
+    # Шаблон VM структуры
+    vm_struct: |
+      const std = @import("std");
+      
+      pub const VM = struct {
+          stack: std.ArrayList(u64),
+          pc: u64,
+          status: Status,
+          allocator: std.mem.Allocator,
+          
+          pub const Status = enum {
+              Running,
+              Halted,
+              Error_StackUnderflow,
+              Error_StackOverflow,
+              Error_DivByZero,
+              Error_InvalidOpcode,
+          };
+          
+          pub fn init(allocator: std.mem.Allocator) VM {
+              return .{
+                  .stack = std.ArrayList(u64).init(allocator),
+                  .pc = 0,
+                  .status = .Running,
+                  .allocator = allocator,
+              };
+          }
+          
+          pub fn deinit(self: *VM) void {
+              self.stack.deinit();
+          }
+          
+          pub fn reset(self: *VM) void {
+              self.stack.clearRetainingCapacity();
+              self.pc = 0;
+              self.status = .Running;
+          }
+          
+          pub fn dispatch(self: *VM, opcode: u8) void {
+              switch (opcode) {
+                  {DISPATCH_CASES}
+                  else => self.status = .Error_InvalidOpcode,
+              }
+          }
+          
+          {OPCODE_FUNCTIONS}
+      };
+      
+    # Шаблон функции опкода
+    opcode_function: |
+      fn exec_{MNEMONIC}(self: *VM) void {
+          // Precondition: {PRECONDITION}
+          if (self.stack.items.len < {REQUIRED_STACK}) {
+              self.status = .Error_StackUnderflow;
+              return;
+          }
+          {SPECIAL_CHECKS}
+          {POP_OPERATIONS}
+          {COMPUTE_RESULT}
+          self.stack.append(result) catch {
+              self.status = .Error_StackOverflow;
+              return;
+          };
+          self.pc += 1;
+      }
+      
+    # Шаблон теста
+    test_function: |
+      test "{TEST_NAME}" {
+          var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+          defer _ = gpa.deinit();
+          var vm = VM.init(gpa.allocator());
+          defer vm.deinit();
+          
+          // Setup
+          {SETUP_CODE}
+          
+          // Execute
+          vm.dispatch({OPCODE});
+          
+          // Assert
+          {ASSERTIONS}
+      }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ПРАВИЛА ГЕНЕРАЦИИ КОДА ИЗ СЕМАНТИКИ
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  semantic_to_code:
+    
+    # Парсинг семантики
+    parse_semantics:
+      pattern: "v₁::v₂::s ↪ (EXPR)::s"
+      extracts:
+        - input_count: 2  # v₁ и v₂
+        - output_count: 1  # результат
+        - expression: "EXPR"
+        
+    # Маппинг операторов
+    operator_mapping:
+      "+": "+%"   # wrapping add
+      "-": "-%"   # wrapping sub
+      "×": "*%"   # wrapping mul
+      "÷": "/"    # integer div
+      
+    # Генерация кода из выражения
+    expression_to_code:
+      "v₁+v₂": "v1 +% v2"
+      "v₂-v₁": "v2 -% v1"
+      "v₁×v₂": "v1 *% v2"
+      "v₂÷v₁": "v2 / v1"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ПРАВИЛА ГЕНЕРАЦИИ ТЕСТОВ В КОД
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  test_to_code:
+    
+    setup_generation:
+      stack_push: |
+        # Для каждого элемента в setup.stack:
+        try vm.stack.append({VALUE});
+        
+    assertion_generation:
+      stack_check: |
+        try std.testing.expectEqual(@as(usize, {EXPECTED_LEN}), vm.stack.items.len);
+        try std.testing.expectEqual(@as(u64, {EXPECTED_VALUE}), vm.stack.items[{INDEX}]);
+        
+      pc_check: |
+        try std.testing.expectEqual(@as(u64, {EXPECTED_PC}), vm.pc);
+        
+      status_check: |
+        try std.testing.expectEqual(VM.Status.{EXPECTED_STATUS}, vm.status);
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # АЛГОРИТМ ГЕНЕРАЦИИ
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  algorithm:
+    pseudocode: |
+      function generate_code(spec_file, tests_file):
+        spec = parse_tls(spec_file)
+        tests = parse_tls(tests_file)
+        
+        # 1. Генерируем функции опкодов
+        opcode_functions = []
+        dispatch_cases = []
+        
+        for opcode in spec.opcodes:
+          func = generate_opcode_function(opcode)
+          opcode_functions.append(func)
+          dispatch_cases.append(f"0x{opcode.code:02X} => self.exec_{opcode.mnemonic}(),")
+        
+        # 2. Генерируем тесты
+        test_functions = []
+        for test in tests:
+          test_func = generate_test_function(test)
+          test_functions.append(test_func)
+        
+        # 3. Собираем финальный файл
+        output = templates.vm_struct
+          .replace("{DISPATCH_CASES}", dispatch_cases.join("\n"))
+          .replace("{OPCODE_FUNCTIONS}", opcode_functions.join("\n"))
+        
+        output += test_functions.join("\n")
+        
+        return output
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ПРИМЕР ГЕНЕРАЦИИ
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  example:
+    input_spec: |
+      ADD:
+        code: 0x01
+        mnemonic: "ADD"
+        semantics: "v₁::v₂::s ↪ (v₁+v₂)::s"
+        preconditions: ["stack.len() >= 2"]
+        
+    input_tests: |
+      - name: "ADD_basic"
+        opcode: 0x01
+        setup: { stack: [3, 5] }
+        expected: { stack: [8], pc: 1 }
+        
+    generated_code: |
+      fn exec_ADD(self: *VM) void {
+          if (self.stack.items.len < 2) {
+              self.status = .Error_StackUnderflow;
+              return;
+          }
+          const v1 = self.stack.pop();
+          const v2 = self.stack.pop();
+          const result = v1 +% v2;
+          self.stack.append(result) catch {
+              self.status = .Error_StackOverflow;
+              return;
+          };
+          self.pc += 1;
+      }
+      
+      test "ADD_basic" {
+          var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+          defer _ = gpa.deinit();
+          var vm = VM.init(gpa.allocator());
+          defer vm.deinit();
+          
+          try vm.stack.append(3);
+          try vm.stack.append(5);
+          
+          vm.dispatch(0x01);
+          
+          try std.testing.expectEqual(@as(usize, 1), vm.stack.items.len);
+          try std.testing.expectEqual(@as(u64, 8), vm.stack.items[0]);
+          try std.testing.expectEqual(@as(u64, 1), vm.pc);
+      }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ВЫХОДНЫЕ ФАЙЛЫ
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  output_files:
+    - path: "/igla/output/vm_generated.zig"
+      description: "Сгенерированная VM с опкодами"
+      
+    - path: "/igla/output/vm_tests_generated.zig"
+      description: "Сгенерированные тесты"
+      
+    - path: "/igla/output/generation_report.tls"
+      description: "Отчёт о генерации"

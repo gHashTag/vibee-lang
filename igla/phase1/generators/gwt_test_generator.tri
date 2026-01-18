@@ -1,0 +1,220 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# GWT_TEST_GENERATOR.TLS - ГЕНЕРАТОР ТЕСТОВ ИЗ GIVEN-WHEN-THEN СПЕЦИФИКАЦИИ
+# ═══════════════════════════════════════════════════════════════════════════════
+# Creation Pattern: opcodes_gwt.tls → gwt_test_generator → tests_gwt.tls
+# BDD (Behavior-Driven Development) подход
+# ═══════════════════════════════════════════════════════════════════════════════
+
+gwt_test_generator:
+  meta:
+    name: "zmei_gwt_gen"
+    version: "0.1.0"
+    format: "Given-When-Then"
+    
+  creation_pattern:
+    source: "GWT specification (.tls)"
+    transformer: "gwt_test_generator"
+    result: "executable tests (.tls → .zig)"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # GWT ФОРМАТ (входной)
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  input_format:
+    behavior:
+      required:
+        - name: "string (scenario name)"
+        - given: "list[string] (preconditions)"
+        - when: "list[string] (actions)"
+        - then: "list[string] (expected outcomes)"
+        - test_data: "TestData (concrete values)"
+        
+      TestData:
+        setup:
+          stack: "list[u64]"
+          registers: "optional list[u64]"
+          pc: "optional u64"
+        expected:
+          stack: "optional list[u64]"
+          pc: "optional u64"
+          status: "optional Status"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ПРАВИЛА ТРАНСФОРМАЦИИ GWT → ZIG TEST
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  transformation_rules:
+    
+    # Given → Setup code
+    given_to_setup:
+      description: "Преобразует Given в код инициализации"
+      rules:
+        - pattern: "a VM with empty stack"
+          code: "var vm = VM.init(allocator);"
+          
+        - pattern: "stack contains [{values}]"
+          code: |
+            for value in values:
+              try vm.stack.append({value});
+              
+        - pattern: "stack has less than {n} elements"
+          code: "// Precondition: stack.len < {n}"
+          
+    # When → Action code
+    when_to_action:
+      description: "Преобразует When в код выполнения"
+      rules:
+        - pattern: "I execute {OPCODE} opcode"
+          code: "vm.dispatch({opcode_code});"
+          
+        - pattern: "I execute {OPCODE} opcode ({code})"
+          code: "vm.dispatch({code});"
+          
+    # Then → Assertion code
+    then_to_assert:
+      description: "Преобразует Then в код проверки"
+      rules:
+        - pattern: "stack should contain [{values}]"
+          code: |
+            try std.testing.expectEqual(@as(usize, {len}), vm.stack.items.len);
+            for i, value in values:
+              try std.testing.expectEqual(@as(u64, {value}), vm.stack.items[{i}]);
+              
+        - pattern: "pc should be {value}"
+          code: "try std.testing.expectEqual(@as(u64, {value}), vm.pc);"
+          
+        - pattern: "status should be {status}"
+          code: "try std.testing.expectEqual(VM.Status.{status}, vm.status);"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ШАБЛОН ГЕНЕРАЦИИ ТЕСТА
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  test_template:
+    zig: |
+      // ═══════════════════════════════════════════════════════════════════════
+      // Scenario: {scenario_name}
+      // ═══════════════════════════════════════════════════════════════════════
+      // Given:
+      {given_comments}
+      // When:
+      {when_comments}
+      // Then:
+      {then_comments}
+      // ═══════════════════════════════════════════════════════════════════════
+      
+      test "{scenario_name}" {{
+          var gpa = std.heap.GeneralPurposeAllocator(.{{}}){{}};
+          defer _ = gpa.deinit();
+          var vm = VM.init(gpa.allocator());
+          defer vm.deinit();
+          
+          // Given: {given_summary}
+          {setup_code}
+          
+          // When: {when_summary}
+          {action_code}
+          
+          // Then: {then_summary}
+          {assertion_code}
+      }}
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # АЛГОРИТМ ГЕНЕРАЦИИ
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  algorithm:
+    pseudocode: |
+      function generate_tests(gwt_spec):
+        tests = []
+        
+        for opcode in gwt_spec.opcodes:
+          for behavior in opcode.behaviors:
+            test = {
+              name: behavior.name,
+              given_comments: format_comments(behavior.given),
+              when_comments: format_comments(behavior.when),
+              then_comments: format_comments(behavior.then),
+              setup_code: generate_setup(behavior.test_data.setup),
+              action_code: generate_action(opcode.code),
+              assertion_code: generate_assertions(behavior.test_data.expected),
+            }
+            tests.append(test)
+        
+        return format_as_zig(tests)
+        
+      function generate_setup(setup):
+        code = []
+        for value in setup.stack:
+          code.append(f"try vm.stack.append({value});")
+        return code.join("\n")
+        
+      function generate_action(opcode_code):
+        return f"vm.dispatch({opcode_code});"
+        
+      function generate_assertions(expected):
+        code = []
+        if expected.stack:
+          code.append(f"try std.testing.expectEqual(@as(usize, {len(expected.stack)}), vm.stack.items.len);")
+          for i, value in expected.stack:
+            code.append(f"try std.testing.expectEqual(@as(u64, {value}), vm.stack.items[{i}]);")
+        if expected.pc:
+          code.append(f"try std.testing.expectEqual(@as(u64, {expected.pc}), vm.pc);")
+        if expected.status:
+          code.append(f"try std.testing.expectEqual(VM.Status.{expected.status}, vm.status);")
+        return code.join("\n")
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ПРИМЕР ТРАНСФОРМАЦИИ
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  example:
+    input_gwt: |
+      - name: "add_two_positive_numbers"
+        given:
+          - "a VM with empty stack"
+          - "stack contains [3, 5] (5 on top)"
+        when:
+          - "I execute ADD opcode (0x01)"
+        then:
+          - "stack should contain [8]"
+          - "pc should be 1"
+          - "status should be Running"
+        test_data:
+          setup: { stack: [3, 5] }
+          expected: { stack: [8], pc: 1, status: "Running" }
+          
+    output_zig: |
+      // ═══════════════════════════════════════════════════════════════════════
+      // Scenario: add_two_positive_numbers
+      // ═══════════════════════════════════════════════════════════════════════
+      // Given:
+      //   - a VM with empty stack
+      //   - stack contains [3, 5] (5 on top)
+      // When:
+      //   - I execute ADD opcode (0x01)
+      // Then:
+      //   - stack should contain [8]
+      //   - pc should be 1
+      //   - status should be Running
+      // ═══════════════════════════════════════════════════════════════════════
+      
+      test "add_two_positive_numbers" {
+          var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+          defer _ = gpa.deinit();
+          var vm = VM.init(gpa.allocator());
+          defer vm.deinit();
+          
+          // Given: stack contains [3, 5]
+          try vm.stack.append(3);
+          try vm.stack.append(5);
+          
+          // When: I execute ADD opcode
+          vm.dispatch(0x01);
+          
+          // Then: stack should contain [8], pc should be 1
+          try std.testing.expectEqual(@as(usize, 1), vm.stack.items.len);
+          try std.testing.expectEqual(@as(u64, 8), vm.stack.items[0]);
+          try std.testing.expectEqual(@as(u64, 1), vm.pc);
+          try std.testing.expectEqual(VM.Status.Running, vm.status);
+      }
