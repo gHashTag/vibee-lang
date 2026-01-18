@@ -71,6 +71,11 @@ pub const FLIGHT_SPEED: f64 = 1.618033988749895;
 pub const HEALING_POWER: f64 = 0.6180339887498948;
 pub const EVOLUTION_RATE: f64 = 0.03819660112501051;
 
+// ⚡ Speed of Light - TRINITY × 10⁸
+pub const SPEED_OF_LIGHT: u64 = 299792458; // c = 299,792,458 м/с
+pub const TRINITY_LIGHT: f64 = 300000000.0; // c ≈ 3 × 10⁸
+pub const PHOENIX_LIGHT_SPEED: f64 = 299792458 * 1.618033988749895; // c × φ
+
 // ⲥⲁⲕⲣⲉⲇ_ⲩⲙ
 // ⲙⲉⲅⲁ_ⲃⲉⲛⲭⲙⲁⲣⲕ
 // ⲃⲉⲛⲭⲙⲁⲣⲕ_ⲥⲩⲓⲧⲉ

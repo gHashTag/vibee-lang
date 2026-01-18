@@ -16,6 +16,8 @@ PHI = 1.618033988749895
 TRINITY = 3
 TRINITY_PRIME = 33
 PHOENIX = 999
+SPEED_OF_LIGHT = 299792458  # c = 299,792,458 м/с
+TRINITY_LIGHT = 3e8         # c ≈ TRINITY × 10⁸
 
 class ZigCodegen:
     def __init__(self):
@@ -104,6 +106,11 @@ class ZigCodegen:
             self._emit(f"pub const FLIGHT_SPEED: f64 = {PHI};")
             self._emit(f"pub const HEALING_POWER: f64 = {1.0/PHI};")
             self._emit(f"pub const EVOLUTION_RATE: f64 = {1.0/(PHI*PHI)/10};")
+            self._emit("")
+            self._emit("// ⚡ Speed of Light - TRINITY × 10⁸")
+            self._emit(f"pub const SPEED_OF_LIGHT: u64 = {SPEED_OF_LIGHT}; // c = 299,792,458 м/с")
+            self._emit(f"pub const TRINITY_LIGHT: f64 = {TRINITY_LIGHT}; // c ≈ 3 × 10⁸")
+            self._emit(f"pub const PHOENIX_LIGHT_SPEED: f64 = {SPEED_OF_LIGHT} * {PHI}; // c × φ")
             self._emit("")
             self.emitted_constants.add('PHI')
             self.emitted_constants.add('TRINITY')
