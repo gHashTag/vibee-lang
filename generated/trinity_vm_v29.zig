@@ -904,3 +904,212 @@ test "antipattern_category" {
     try std.testing.expectEqualStrings("Optimization", Antipattern.AP020_NO_SIMD.category());
     try std.testing.expectEqualStrings("Sacred", Antipattern.AP030_SACRED_VIOLATION.category());
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 100% COVERAGE TESTS FOR VM TRINITY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "component_id_names" {
+    try std.testing.expectEqualStrings("LLM Inference v29", ComponentID.LLM_INFERENCE.name());
+    try std.testing.expectEqualStrings("JIT Compiler v29", ComponentID.JIT_COMPILER.name());
+    try std.testing.expectEqualStrings("Zhar-Ptitsa v29", ComponentID.ZHAR_PTITSA.name());
+    try std.testing.expectEqualStrings("Pattern Library v29", ComponentID.PATTERN_LIBRARY.name());
+    try std.testing.expectEqualStrings("Antipattern Detector v29", ComponentID.ANTIPATTERN_DETECTOR.name());
+    try std.testing.expectEqualStrings("SWE Pipeline v29", ComponentID.SWE_PIPELINE.name());
+}
+
+test "component_pass_rate" {
+    const component = ComponentV29{
+        .id = .LLM_INFERENCE,
+        .tests_passed = 8,
+        .tests_total = 10,
+        .is_working = true,
+    };
+    try std.testing.expectApproxEqAbs(@as(f64, 0.8), component.passRate(), 0.001);
+}
+
+test "component_pass_rate_zero" {
+    const component = ComponentV29{
+        .id = .LLM_INFERENCE,
+        .tests_passed = 0,
+        .tests_total = 0,
+        .is_working = false,
+    };
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), component.passRate(), 0.001);
+}
+
+test "component_has_real_speedup" {
+    var component = ComponentV29{
+        .id = .LLM_INFERENCE,
+        .is_working = true,
+    };
+    try std.testing.expect(!component.hasRealSpeedup());
+    
+    component.measured_speedup = 1.5;
+    try std.testing.expect(component.hasRealSpeedup());
+}
+
+test "component_set_get_improvements" {
+    var component = ComponentV29{
+        .id = .LLM_INFERENCE,
+        .is_working = true,
+    };
+    component.setImprovements("SIMD softmax");
+    try std.testing.expectEqualStrings("SIMD softmax", component.getImprovements());
+}
+
+test "vm_metrics_pass_rate" {
+    const metrics = VMMetrics{
+        .total_tests = 100,
+        .total_passed = 95,
+        .working_components = 6,
+    };
+    try std.testing.expectApproxEqAbs(@as(f64, 0.95), metrics.passRate(), 0.001);
+}
+
+test "vm_metrics_pass_rate_zero" {
+    const metrics = VMMetrics{
+        .total_tests = 0,
+        .total_passed = 0,
+    };
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), metrics.passRate(), 0.001);
+}
+
+test "test_results_all_passed" {
+    const results = TestResults{
+        .total = 100,
+        .passed = 100,
+        .failed = 0,
+    };
+    try std.testing.expect(results.allPassed());
+}
+
+test "test_results_not_all_passed" {
+    const results = TestResults{
+        .total = 100,
+        .passed = 95,
+        .failed = 5,
+    };
+    try std.testing.expect(!results.allPassed());
+}
+
+test "benchmark_results_valid" {
+    const results = BenchmarkResults{
+        .speedup_vs_v28 = 1.5,
+        .components_benchmarked = 6,
+        .is_real_benchmark = true,
+    };
+    try std.testing.expect(results.isValid());
+}
+
+test "benchmark_results_invalid" {
+    const results = BenchmarkResults{
+        .is_real_benchmark = false,
+    };
+    try std.testing.expect(!results.isValid());
+}
+
+test "vm_get_component" {
+    var vm = TrinityVMv29.init();
+    const llm = vm.getComponent(.LLM_INFERENCE);
+    try std.testing.expectEqual(ComponentID.LLM_INFERENCE, llm.id);
+}
+
+test "antipattern_all_ids" {
+    try std.testing.expectEqualStrings("AP003", Antipattern.AP003_SPECLESS_IMPLEMENTATION.id());
+    try std.testing.expectEqualStrings("AP004", Antipattern.AP004_FAKE_BENCHMARK.id());
+    try std.testing.expectEqualStrings("AP006", Antipattern.AP006_NO_WARMUP.id());
+    try std.testing.expectEqualStrings("AP007", Antipattern.AP007_NO_STATISTICS.id());
+    try std.testing.expectEqualStrings("AP010", Antipattern.AP010_LONG_FUNCTION.id());
+    try std.testing.expectEqualStrings("AP012", Antipattern.AP012_HIGH_COMPLEXITY.id());
+    try std.testing.expectEqualStrings("AP013", Antipattern.AP013_MAGIC_NUMBERS.id());
+    try std.testing.expectEqualStrings("AP014", Antipattern.AP014_DUPLICATE_CODE.id());
+    try std.testing.expectEqualStrings("AP021", Antipattern.AP021_NO_CACHE.id());
+    try std.testing.expectEqualStrings("AP022", Antipattern.AP022_LINEAR_SEARCH.id());
+    try std.testing.expectEqualStrings("AP023", Antipattern.AP023_NO_INCREMENTAL.id());
+    try std.testing.expectEqualStrings("AP031", Antipattern.AP031_PHI_UNUSED.id());
+}
+
+test "antipattern_all_descriptions" {
+    try std.testing.expect(Antipattern.AP001_DIRECT_ZIG_CREATION.description().len > 0);
+    try std.testing.expect(Antipattern.AP002_LEGACY_WEB_FILES.description().len > 0);
+    try std.testing.expect(Antipattern.AP030_SACRED_VIOLATION.description().len > 0);
+}
+
+test "antipattern_all_severities" {
+    try std.testing.expectEqual(Severity.HIGH, Antipattern.AP003_SPECLESS_IMPLEMENTATION.severity());
+    try std.testing.expectEqual(Severity.HIGH, Antipattern.AP004_FAKE_BENCHMARK.severity());
+    try std.testing.expectEqual(Severity.MEDIUM, Antipattern.AP006_NO_WARMUP.severity());
+    try std.testing.expectEqual(Severity.MEDIUM, Antipattern.AP007_NO_STATISTICS.severity());
+    try std.testing.expectEqual(Severity.MEDIUM, Antipattern.AP010_LONG_FUNCTION.severity());
+    try std.testing.expectEqual(Severity.LOW, Antipattern.AP013_MAGIC_NUMBERS.severity());
+    try std.testing.expectEqual(Severity.MEDIUM, Antipattern.AP014_DUPLICATE_CODE.severity());
+    try std.testing.expectEqual(Severity.MEDIUM, Antipattern.AP021_NO_CACHE.severity());
+    try std.testing.expectEqual(Severity.MEDIUM, Antipattern.AP022_LINEAR_SEARCH.severity());
+    try std.testing.expectEqual(Severity.MEDIUM, Antipattern.AP023_NO_INCREMENTAL.severity());
+    try std.testing.expectEqual(Severity.LOW, Antipattern.AP031_PHI_UNUSED.severity());
+}
+
+test "severity_name" {
+    try std.testing.expectEqualStrings("CRITICAL", Severity.CRITICAL.name());
+    try std.testing.expectEqualStrings("HIGH", Severity.HIGH.name());
+    try std.testing.expectEqualStrings("MEDIUM", Severity.MEDIUM.name());
+    try std.testing.expectEqualStrings("LOW", Severity.LOW.name());
+}
+
+test "code_metrics_quality_score" {
+    const metrics = CodeMetrics{
+        .max_nesting_depth = 2,
+        .cyclomatic_complexity = 5,
+        .magic_number_count = 0,
+        .has_simd = true,
+        .has_cache = true,
+    };
+    const score = metrics.qualityScore();
+    try std.testing.expect(score >= 100.0); // Perfect score with bonuses
+}
+
+test "code_metrics_quality_score_penalties" {
+    const metrics = CodeMetrics{
+        .max_nesting_depth = 8, // 4 levels over limit
+        .cyclomatic_complexity = 15, // 5 over limit
+        .magic_number_count = 5,
+    };
+    const score = metrics.qualityScore();
+    try std.testing.expect(score < 100.0); // Penalized
+}
+
+test "check_legacy_css" {
+    const result = checkAntipatterns("style.css");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(Antipattern.AP002_LEGACY_WEB_FILES, result.?);
+}
+
+test "check_legacy_ts" {
+    const result = checkAntipatterns("app.ts");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(Antipattern.AP002_LEGACY_WEB_FILES, result.?);
+}
+
+test "check_legacy_jsx" {
+    const result = checkAntipatterns("component.jsx");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(Antipattern.AP002_LEGACY_WEB_FILES, result.?);
+}
+
+test "check_legacy_tsx" {
+    const result = checkAntipatterns("component.tsx");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(Antipattern.AP002_LEGACY_WEB_FILES, result.?);
+}
+
+test "check_allowed_999" {
+    const result = checkAntipatterns("code.999");
+    try std.testing.expect(result == null);
+}
+
+test "antipattern_score_with_violations" {
+    const bad_code = "speedup = 1.5; benchmark() { }"; // Hardcoded + no warmup
+    const score = calculateAntipatternScore(bad_code, "test.zig");
+    try std.testing.expect(score > 0);
+}

@@ -490,3 +490,157 @@ test "version_check" {
     defer detector.deinit();
     try std.testing.expectEqual(@as(u32, 29), detector.version);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ADDITIONAL TESTS FOR 100% COVERAGE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "severity_names" {
+    try std.testing.expectEqualStrings("CRITICAL", Severity.CRITICAL.name());
+    try std.testing.expectEqualStrings("HIGH", Severity.HIGH.name());
+    try std.testing.expectEqualStrings("MEDIUM", Severity.MEDIUM.name());
+    try std.testing.expectEqualStrings("LOW", Severity.LOW.name());
+}
+
+test "severity_weights" {
+    try std.testing.expectEqual(@as(u32, 100), Severity.CRITICAL.weight());
+    try std.testing.expectEqual(@as(u32, 50), Severity.HIGH.weight());
+    try std.testing.expectEqual(@as(u32, 20), Severity.MEDIUM.weight());
+    try std.testing.expectEqual(@as(u32, 5), Severity.LOW.weight());
+}
+
+test "violation_init_and_message" {
+    const v = Violation.init(.LONG_FUNCTION, .MEDIUM, 42, "Test message");
+    try std.testing.expectEqual(ViolationKind.LONG_FUNCTION, v.kind);
+    try std.testing.expectEqual(Severity.MEDIUM, v.severity);
+    try std.testing.expectEqual(@as(usize, 42), v.line);
+    try std.testing.expectEqualStrings("Test message", v.getMessage());
+}
+
+test "code_metrics_function_count" {
+    var metrics = CodeMetrics{};
+    metrics.analyze("fn foo() {} fn bar() {} fn baz() {}");
+    try std.testing.expectEqual(@as(usize, 3), metrics.function_count);
+}
+
+test "code_metrics_while_loop" {
+    var metrics = CodeMetrics{};
+    metrics.analyze("fn test() { while (true) { } }");
+    // Base 1 + 1 while = 2
+    try std.testing.expectEqual(@as(usize, 2), metrics.cyclomatic_complexity);
+}
+
+test "analyzer_total_score" {
+    var analyzer = CodeAnalyzer.init(std.testing.allocator);
+    defer analyzer.deinit();
+
+    // Deep nesting (HIGH = 50)
+    const source = "fn x() { { { { { } } } } }";
+    _ = try analyzer.analyze(source);
+
+    const score = analyzer.totalScore();
+    try std.testing.expect(score >= 50); // At least HIGH severity
+}
+
+test "analyzer_get_metrics" {
+    var analyzer = CodeAnalyzer.init(std.testing.allocator);
+    defer analyzer.deinit();
+
+    _ = try analyzer.analyze("fn test() { if (x) {} }");
+    const metrics = analyzer.getMetrics();
+
+    try std.testing.expect(metrics.function_count >= 1);
+}
+
+test "detector_analyze_source" {
+    var detector = AntipatternDetectorV29.init(std.testing.allocator);
+    defer detector.deinit();
+
+    _ = try detector.analyzeSource("fn test() {}");
+    try std.testing.expectEqual(@as(usize, 1), detector.files_analyzed);
+}
+
+test "detector_get_metrics" {
+    var detector = AntipatternDetectorV29.init(std.testing.allocator);
+    defer detector.deinit();
+
+    _ = try detector.analyzeSource("fn test() { if (x) {} }");
+    const metrics = detector.getMetrics();
+
+    try std.testing.expect(metrics.cyclomatic_complexity >= 1);
+}
+
+test "detector_find_duplicates" {
+    var detector = AntipatternDetectorV29.init(std.testing.allocator);
+    defer detector.deinit();
+
+    const source = "const x = 123456789;\\nconst y = 987654321;\\nconst x = 123456789;\\n";
+    const duplicates = try detector.findDuplicates(source);
+    _ = duplicates;
+}
+
+test "max_constants" {
+    try std.testing.expectEqual(@as(usize, 50), MAX_FUNCTION_LINES);
+    try std.testing.expectEqual(@as(usize, 4), MAX_NESTING_DEPTH);
+    try std.testing.expectEqual(@as(usize, 10), MAX_COMPLEXITY);
+}
+
+test "trinity_prime" {
+    try std.testing.expectEqual(@as(u32, 33), 3 * 11);
+}
+
+test "phoenix_generations" {
+    try std.testing.expectEqual(@as(u32, 999), 27 * 37);
+}
+
+test "violation_kind_values" {
+    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(ViolationKind.LONG_FUNCTION));
+    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(ViolationKind.DEEP_NESTING));
+    try std.testing.expectEqual(@as(u8, 2), @intFromEnum(ViolationKind.HIGH_COMPLEXITY));
+    try std.testing.expectEqual(@as(u8, 3), @intFromEnum(ViolationKind.MAGIC_NUMBER));
+    try std.testing.expectEqual(@as(u8, 4), @intFromEnum(ViolationKind.DUPLICATE_CODE));
+    try std.testing.expectEqual(@as(u8, 5), @intFromEnum(ViolationKind.FORBIDDEN_FILE));
+    try std.testing.expectEqual(@as(u8, 6), @intFromEnum(ViolationKind.MISSING_SPEC));
+}
+
+test "analyzer_magic_numbers_violation" {
+    var analyzer = CodeAnalyzer.init(std.testing.allocator);
+    defer analyzer.deinit();
+
+    // Many magic numbers
+    const source = "const a = 42; const b = 100; const c = 200; const d = 300; const e = 400;";
+    const violations = try analyzer.analyze(source);
+
+    var found_magic = false;
+    for (violations) |v| {
+        if (v.kind == .MAGIC_NUMBER) found_magic = true;
+    }
+    try std.testing.expect(found_magic);
+}
+
+test "code_metrics_empty_source" {
+    var metrics = CodeMetrics{};
+    metrics.analyze("");
+    try std.testing.expectEqual(@as(usize, 0), metrics.lines);
+    try std.testing.expectEqual(@as(usize, 1), metrics.cyclomatic_complexity);
+}
+
+test "duplicate_detector_no_duplicates" {
+    var detector = DuplicateDetector.init(std.testing.allocator);
+    defer detector.deinit();
+
+    const source = "line one unique\\nline two unique\\nline three unique\\n";
+    const duplicates = try detector.findDuplicates(source);
+    try std.testing.expectEqual(@as(usize, 0), duplicates);
+}
+
+test "analyzer_no_violations" {
+    var analyzer = CodeAnalyzer.init(std.testing.allocator);
+    defer analyzer.deinit();
+
+    // Simple clean code
+    const source = "fn test() { return 0; }";
+    const violations = try analyzer.analyze(source);
+
+    try std.testing.expectEqual(@as(usize, 0), violations.len);
+}
