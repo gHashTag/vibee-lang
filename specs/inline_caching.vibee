@@ -1,0 +1,181 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# INLINE CACHING SPECIFICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# Based on: Deutsch & Schiffman (1984), Hölzle et al. (1991)
+# Target: 15-25% performance improvement
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: inline_caching
+version: "1.0.0"
+language: zig
+module: inline_cache
+
+creation_pattern:
+  source: PropertyAccess
+  transformer: InlineCacheOptimization
+  result: FastPropertyAccess
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SHAPE SYSTEM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  Shape:
+    description: "Hidden class describing object layout"
+    fields:
+      - name: id
+        type: u64
+        description: "Unique shape identifier"
+      - name: property_count
+        type: u32
+        description: "Number of properties"
+      - name: transitions
+        type: "Map<String, Shape>"
+        description: "Transitions to other shapes"
+      - name: offsets
+        type: "Map<String, u32>"
+        description: "Property name to offset mapping"
+      - name: parent
+        type: "?*Shape"
+        description: "Parent shape for transition chain"
+        
+  InlineCacheEntry:
+    description: "Single cache entry"
+    fields:
+      - name: shape
+        type: "*Shape"
+        description: "Expected shape"
+      - name: offset
+        type: u32
+        description: "Property offset in object"
+      - name: hit_count
+        type: u32
+        description: "Number of cache hits"
+        
+  InlineCacheState:
+    description: "Cache state machine"
+    values:
+      - uninitialized
+      - monomorphic
+      - polymorphic
+      - megamorphic
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ALGORITHMS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+algorithms:
+  
+  shape_lookup:
+    name: "Shape-based Property Lookup"
+    complexity: "O(1) for cached, O(n) for miss"
+    steps:
+      - "Check if object shape matches cached shape"
+      - "If match: return value at cached offset"
+      - "If miss: update cache, fall back to hash lookup"
+    
+  cache_update:
+    name: "Inline Cache Update"
+    complexity: "O(1)"
+    steps:
+      - "Record new shape and offset"
+      - "Transition state: uninitialized → monomorphic → polymorphic → megamorphic"
+      - "If megamorphic: stop caching, use hash table"
+      
+  shape_transition:
+    name: "Shape Transition on Property Add"
+    complexity: "O(1) amortized"
+    steps:
+      - "Check if transition exists for property name"
+      - "If exists: use existing shape"
+      - "If not: create new shape, add transition"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: monomorphic_hit
+    given: "IC in monomorphic state with shape S1"
+    when: "Access property on object with shape S1"
+    then: "Return value at cached offset in O(1)"
+    test_cases:
+      - name: "mono_hit"
+        input: { cache_shape: "S1", object_shape: "S1", offset: 8 }
+        expected: { hit: true, lookup_time: "O(1)" }
+        
+  - name: monomorphic_miss
+    given: "IC in monomorphic state with shape S1"
+    when: "Access property on object with shape S2"
+    then: "Transition to polymorphic, add S2 entry"
+    test_cases:
+      - name: "mono_miss"
+        input: { cache_shape: "S1", object_shape: "S2" }
+        expected: { new_state: "polymorphic", entries: 2 }
+        
+  - name: polymorphic_hit
+    given: "IC in polymorphic state with shapes [S1, S2, S3]"
+    when: "Access property on object with shape S2"
+    then: "Linear search finds S2, return cached offset"
+    test_cases:
+      - name: "poly_hit"
+        input: { cache_shapes: ["S1", "S2", "S3"], object_shape: "S2" }
+        expected: { hit: true, search_steps: 2 }
+        
+  - name: megamorphic_fallback
+    given: "IC in polymorphic state with 4 shapes"
+    when: "Access property on object with new shape S5"
+    then: "Transition to megamorphic, use hash table"
+    test_cases:
+      - name: "mega_transition"
+        input: { cache_shapes: ["S1", "S2", "S3", "S4"], object_shape: "S5" }
+        expected: { new_state: "megamorphic", use_hash: true }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE EXPECTATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+performance:
+  monomorphic:
+    speedup: "10x vs hash lookup"
+    latency: "~3 cycles"
+    
+  polymorphic:
+    speedup: "5x vs hash lookup"
+    latency: "~10-15 cycles"
+    
+  megamorphic:
+    speedup: "1x (no improvement)"
+    latency: "~50+ cycles"
+    
+  expected_distribution:
+    monomorphic: 85%
+    polymorphic: 10%
+    megamorphic: 5%
+    
+  overall_improvement: "15-25%"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SCIENTIFIC REFERENCES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+references:
+  - authors: "Deutsch & Schiffman"
+    title: "Efficient Implementation of the Smalltalk-80 System"
+    venue: "POPL"
+    year: 1984
+    contribution: "Invented inline caching"
+    
+  - authors: "Hölzle, Chambers, Ungar"
+    title: "Optimizing Dynamically-Typed Object-Oriented Languages"
+    venue: "ECOOP"
+    year: 1991
+    contribution: "Polymorphic inline caches"
+    
+  - authors: "Brunthaler"
+    title: "Inline Caching Meets Quickening"
+    venue: "ECOOP"
+    year: 2010
+    contribution: "Quickening for interpreters"
