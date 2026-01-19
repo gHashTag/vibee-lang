@@ -8,6 +8,40 @@ This document provides guidelines for AI agents working on the VIBEE project. Al
 
 ---
 
+## 🚨 AUTONOMOUS DEVELOPMENT LOOP (RALPH PATTERN)
+
+Based on [ralph-claude-code](https://github.com/frankbria/ralph-claude-code) - autonomous AI development with intelligent exit detection.
+
+### Core Principles:
+
+1. **Specification-First**: NEVER write implementation code directly
+2. **Auto-Generation**: Code is GENERATED from specs, not written manually
+3. **Continuous Improvement**: Loop until EXIT_SIGNAL or completion
+4. **Self-Validation**: Run tests after each generation
+
+### Development Loop:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    RALPH DEVELOPMENT LOOP                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. ANALYZE task requirements                                   │
+│           ↓                                                     │
+│  2. CREATE .vibee specification in specs/                       │
+│           ↓                                                     │
+│  3. RUN: vibee-compile specs/tri/feature.vibee --test           │
+│           ↓                                                     │
+│  4. CHECK: All tests passing?                                   │
+│           ↓                                                     │
+│     YES → EXIT_SIGNAL: true                                     │
+│     NO  → ITERATE (go to step 2)                                │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## ⛔ CRITICAL PROHIBITIONS
 
 ### NEVER CREATE THESE FILE TYPES MANUALLY:
@@ -21,6 +55,7 @@ This document provides guidelines for AI agents working on the VIBEE project. Al
 ❌ .tsx files
 ❌ .zig files in trinity/output/ (ONLY GENERATED)
 ❌ .py files (ONLY GENERATED)
+❌ Manual code in ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ blocks (DEPRECATED)
 ```
 
 ### WHY?
@@ -28,14 +63,24 @@ This document provides guidelines for AI agents working on the VIBEE project. Al
 VIBEE uses specification-first development:
 
 ```
-specs/*.vibee → vibee gen → trinity/output/*.zig
+specs/*.vibee → vibee-compile → trinity/output/*.zig
+```
+
+**OLD (WRONG):**
+```
+.vibee with manual ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ → tri-extract → .zig
+```
+
+**NEW (CORRECT):**
+```
+.vibee (spec only) → vibee-compile → auto-generated .zig
 ```
 
 ### ALLOWED TO EDIT:
 
 ```
 src/vibeec/*.zig - Compiler source code
-specs/*.vibee - Specifications
+specs/*.vibee - Specifications (NO manual code blocks!)
 ```
 
 ### NEVER EDIT:
@@ -511,10 +556,78 @@ trinity/output/agent_reasoning.zig
 
 ---
 
+## 🔒 MANDATORY WORKFLOW (ENFORCED)
+
+### The ONLY Correct Way to Add Features:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  ПРАВИЛЬНЫЙ ПРОЦЕСС (автоматический)                            │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. Человек пишет ТОЛЬКО спецификацию:                          │
+│     ┌──────────────────────────────────────┐                    │
+│     │ name: my_feature                     │                    │
+│     │ types:                               │                    │
+│     │   - name: User                       │                    │
+│     │     fields:                          │                    │
+│     │       - name: id                     │                    │
+│     │         type: Int                    │                    │
+│     │ behaviors:                           │                    │
+│     │   - name: create_user                │                    │
+│     │     given: "Valid data"              │                    │
+│     │     when: "Create called"            │                    │
+│     │     then: "User created"             │                    │
+│     └──────────────────────────────────────┘                    │
+│                                                                 │
+│  2. КОМПИЛЯТОР vibee-compile АВТОМАТИЧЕСКИ генерирует:          │
+│     - Структуры из types                                        │
+│     - Функции из behaviors                                      │
+│     - Тесты из test_cases                                       │
+│                                                                 │
+│  3. Результат → trinity/output/*.zig                            │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Commands:
+
+```bash
+# Compile single spec
+vibee-compile specs/tri/feature.vibee
+
+# Compile with tests
+vibee-compile specs/tri/feature.vibee --test
+
+# Compile all specs
+vibee-compile --all --test
+```
+
+### EXIT_SIGNAL Pattern (from ralph-claude-code):
+
+Agent должен продолжать итерации пока:
+1. Все тесты не пройдут
+2. Спецификация не будет полной
+3. Не будет явного EXIT_SIGNAL
+
+```yaml
+# Agent loop
+while not EXIT_SIGNAL:
+    1. Analyze requirements
+    2. Update .vibee specification
+    3. Run: vibee-compile --test
+    4. If tests pass: EXIT_SIGNAL = true
+    5. Else: iterate
+```
+
+---
+
 **Remember**: Every improvement follows the Creation Pattern. Every algorithm improvement uses PAS. Every feature starts with a specification.
 
 ```
 Source → Transformer → Result
 Known → PAS → Predicted
-Specification → vibee gen → Code
+Specification → vibee-compile → Auto-Generated Code
 ```
+
+**φ² + 1/φ² = 3 | PHOENIX = 999**
