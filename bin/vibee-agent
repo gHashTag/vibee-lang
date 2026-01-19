@@ -219,9 +219,47 @@ execute_tool() {
         "write_file")
             local path=$(echo "$tool_input" | jq -r '.path')
             local content=$(echo "$tool_input" | jq -r '.content')
+            
+            # PIPELINE ENFORCER: Block direct code file creation
+            local ext="${path##*.}"
+            case "$ext" in
+                zig|py|js|ts|go|rs|java|kt|swift|c|cpp)
+                    # Check if it's in trinity/output (allowed for extraction)
+                    if [[ "$path" != trinity/output/* ]]; then
+                        echo -e "${RED}❌ PIPELINE VIOLATION: Cannot create .$ext files directly${NC}"
+                        echo ""
+                        echo "STRICT PIPELINE REQUIRED:"
+                        echo "  Step 0: Create .vibee specification in specs/tri/"
+                        echo "  Step 1: Include ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ: block with code"
+                        echo "  Step 2: Extract to trinity/output/"
+                        echo ""
+                        echo "Example: specs/tri/my_feature.vibee"
+                        return 1
+                    fi
+                    ;;
+            esac
+            
             mkdir -p "$(dirname "$path")"
             echo "$content" > "$path"
             echo "✅ Written to $path ($(wc -c < "$path") bytes)"
+            
+            # Auto-extract if .vibee file with ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ
+            if [[ "$path" == *.vibee ]] && grep -q 'ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ:' "$path" 2>/dev/null; then
+                local name=$(basename "$path" .vibee)
+                local output="trinity/output/${name}.zig"
+                mkdir -p trinity/output
+                sed -n '/ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ: """/,/^"""/p' "$path" | sed '1d;$d' > "$output"
+                echo "✅ Auto-extracted: $output ($(wc -l < "$output") lines)"
+                
+                # Auto-run tests
+                echo "🧪 Running tests..."
+                if zig test "$output" 2>&1 | grep -q "passed"; then
+                    local test_count=$(zig test "$output" 2>&1 | grep -oP '\d+(?= tests? passed)' | head -1)
+                    echo "✅ All $test_count tests passed!"
+                else
+                    echo "❌ Tests failed. Check output above."
+                fi
+            fi
             ;;
         "run_command")
             local cmd=$(echo "$tool_input" | jq -r '.command')
@@ -247,7 +285,30 @@ execute_tool() {
 # CALL LLM API (Multi-Provider)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-SYSTEM_PROMPT="You are VIBEE Agent, a self-writing code assistant. You write code by creating .vibee specifications and generating .zig code. Use tools to read/write files and run commands. Be concise. Sacred formula: φ² + 1/φ² = 3. Always test your code after writing."
+SYSTEM_PROMPT="You are VIBEE Agent, a self-writing code assistant.
+
+STRICT PIPELINE (MUST FOLLOW):
+Step 0: Create .vibee specification in specs/tri/ folder
+Step 1: NEVER write .zig/.py/.js/.ts/.go/.rs files directly
+Step 2: Include ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ: block in .vibee with generated code
+Step 3: Extract .zig to trinity/output/ using: sed -n '/ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ: \"\"\"/,/^\"\"\"/p' file.vibee | sed '1d;\$d'
+Step 4: Run tests: zig test trinity/output/file.zig
+Step 5: Fix problems by updating .vibee specification
+
+BLOCKED FILE TYPES (redirect to .vibee):
+- .zig → Create .vibee with ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ block
+- .py → Create .vibee with language: python
+- .js/.ts → Create .vibee with language: typescript
+- .go → Create .vibee with language: go
+- .rs → Create .vibee with language: rust
+
+ALLOWED FILE TYPES:
+- .vibee (specifications)
+- .tri (intermediate format)
+- .md (documentation)
+
+Sacred formula: φ² + 1/φ² = 3
+Always test your code after extraction."
 
 call_llm() {
     local messages="$1"
