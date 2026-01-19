@@ -3,6 +3,7 @@
 # VIBEE AGENT - Self-Writing Code Terminal Agent
 # ═══════════════════════════════════════════════════════════════════════════════
 # φ² + 1/φ² = 3 | PHOENIX = 999
+# Multi-Model: Anthropic, OpenAI, Ollama
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set -e
@@ -21,9 +22,71 @@ PHI="1.618033988749895"
 PHOENIX="999"
 
 # Config
-MODEL="${VIBEE_MODEL:-claude-sonnet-4-20250514}"
 MAX_TOKENS="${VIBEE_MAX_TOKENS:-4096}"
 WORKDIR="${VIBEE_WORKDIR:-$(pwd)}"
+SESSION_DIR="${VIBEE_SESSION_DIR:-$HOME/.vibee/sessions}"
+CURRENT_SESSION=""
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROVIDER DETECTION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+detect_provider() {
+    if [ -n "$ANTHROPIC_API_KEY" ]; then
+        PROVIDER="anthropic"
+        MODEL="${VIBEE_MODEL:-claude-sonnet-4-20250514}"
+        API_URL="https://api.anthropic.com/v1/messages"
+    elif [ -n "$OPENAI_API_KEY" ]; then
+        PROVIDER="openai"
+        MODEL="${VIBEE_MODEL:-gpt-4o}"
+        API_URL="https://api.openai.com/v1/chat/completions"
+    elif [ -n "$OLLAMA_HOST" ] || curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
+        PROVIDER="ollama"
+        OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
+        MODEL="${VIBEE_MODEL:-llama3.2}"
+        API_URL="$OLLAMA_HOST/api/chat"
+    else
+        PROVIDER="none"
+        MODEL=""
+        API_URL=""
+    fi
+}
+
+switch_provider() {
+    local new_provider="$1"
+    case "$new_provider" in
+        anthropic|claude)
+            if [ -z "$ANTHROPIC_API_KEY" ]; then
+                echo -e "${RED}ANTHROPIC_API_KEY not set${NC}"
+                return 1
+            fi
+            PROVIDER="anthropic"
+            MODEL="${2:-claude-sonnet-4-20250514}"
+            API_URL="https://api.anthropic.com/v1/messages"
+            ;;
+        openai|gpt)
+            if [ -z "$OPENAI_API_KEY" ]; then
+                echo -e "${RED}OPENAI_API_KEY not set${NC}"
+                return 1
+            fi
+            PROVIDER="openai"
+            MODEL="${2:-gpt-4o}"
+            API_URL="https://api.openai.com/v1/chat/completions"
+            ;;
+        ollama|local)
+            PROVIDER="ollama"
+            OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
+            MODEL="${2:-llama3.2}"
+            API_URL="$OLLAMA_HOST/api/chat"
+            ;;
+        *)
+            echo -e "${RED}Unknown provider: $new_provider${NC}"
+            echo "Available: anthropic, openai, ollama"
+            return 1
+            ;;
+    esac
+    echo -e "${GREEN}Switched to $PROVIDER ($MODEL)${NC}"
+}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # BANNER
@@ -43,15 +106,20 @@ print_banner() {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 check_api_key() {
-    if [ -z "$ANTHROPIC_API_KEY" ]; then
-        echo -e "${RED}❌ ANTHROPIC_API_KEY not set${NC}"
+    detect_provider
+    
+    if [ "$PROVIDER" = "none" ]; then
+        echo -e "${RED}❌ No AI provider configured${NC}"
         echo ""
-        echo "Set your API key:"
-        echo "  export ANTHROPIC_API_KEY=sk-ant-your-key-here"
+        echo "Set one of these:"
+        echo "  export ANTHROPIC_API_KEY=sk-ant-your-key    # Claude"
+        echo "  export OPENAI_API_KEY=sk-your-key          # GPT-4"
+        echo "  ollama serve                                # Local Ollama"
         echo ""
         exit 1
     fi
-    echo -e "${GREEN}✅ API key configured${NC}"
+    
+    echo -e "${GREEN}✅ Provider: $PROVIDER ($MODEL)${NC}"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -163,30 +231,194 @@ execute_tool() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CALL CLAUDE API
+# CALL LLM API (Multi-Provider)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-call_claude() {
+SYSTEM_PROMPT="You are VIBEE Agent, a self-writing code assistant. You write code by creating .vibee specifications and generating .zig code. Use tools to read/write files and run commands. Be concise. Sacred formula: φ² + 1/φ² = 3. Always test your code after writing."
+
+call_llm() {
     local messages="$1"
     
-    local response=$(curl -s https://api.anthropic.com/v1/messages \
+    case "$PROVIDER" in
+        anthropic)
+            call_anthropic "$messages"
+            ;;
+        openai)
+            call_openai "$messages"
+            ;;
+        ollama)
+            call_ollama "$messages"
+            ;;
+        *)
+            echo '{"error": {"message": "No provider configured"}}'
+            ;;
+    esac
+}
+
+call_anthropic() {
+    local messages="$1"
+    
+    curl -s https://api.anthropic.com/v1/messages \
         -H "Content-Type: application/json" \
         -H "x-api-key: $ANTHROPIC_API_KEY" \
         -H "anthropic-version: 2023-06-01" \
         -d "{
             \"model\": \"$MODEL\",
             \"max_tokens\": $MAX_TOKENS,
-            \"system\": \"You are VIBEE Agent, a self-writing code assistant. You write code by creating .vibee specifications and generating .zig code. Use tools to read/write files and run commands. Be concise. Sacred formula: φ² + 1/φ² = 3. Always test your code after writing.\",
+            \"system\": \"$SYSTEM_PROMPT\",
             \"tools\": $TOOLS,
             \"messages\": $messages
+        }"
+}
+
+call_openai() {
+    local messages="$1"
+    
+    # Convert Anthropic format to OpenAI format
+    local openai_messages=$(echo "$messages" | jq '[{role: "system", content: "'"$SYSTEM_PROMPT"'"} ] + .')
+    
+    # Convert tools to OpenAI format
+    local openai_tools=$(echo "$TOOLS" | jq '[.[] | {type: "function", function: {name: .name, description: .description, parameters: .input_schema}}]')
+    
+    local response=$(curl -s https://api.openai.com/v1/chat/completions \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $OPENAI_API_KEY" \
+        -d "{
+            \"model\": \"$MODEL\",
+            \"max_tokens\": $MAX_TOKENS,
+            \"tools\": $openai_tools,
+            \"messages\": $openai_messages
         }")
     
-    echo "$response"
+    # Convert OpenAI response to Anthropic format for unified processing
+    convert_openai_response "$response"
+}
+
+convert_openai_response() {
+    local response="$1"
+    
+    # Check for error
+    if echo "$response" | jq -e '.error' > /dev/null 2>&1; then
+        echo "$response"
+        return
+    fi
+    
+    local finish_reason=$(echo "$response" | jq -r '.choices[0].finish_reason')
+    local message=$(echo "$response" | jq -c '.choices[0].message')
+    
+    # Build Anthropic-style response
+    local content="[]"
+    
+    # Add text content if present
+    local text=$(echo "$message" | jq -r '.content // empty')
+    if [ -n "$text" ]; then
+        content=$(echo "$content" | jq ". + [{\"type\": \"text\", \"text\": $(echo "$text" | jq -Rs .)}]")
+    fi
+    
+    # Add tool calls if present
+    local tool_calls=$(echo "$message" | jq -c '.tool_calls // []')
+    if [ "$(echo "$tool_calls" | jq 'length')" -gt 0 ]; then
+        while IFS= read -r tc; do
+            local tc_id=$(echo "$tc" | jq -r '.id')
+            local tc_name=$(echo "$tc" | jq -r '.function.name')
+            local tc_args=$(echo "$tc" | jq -c '.function.arguments | fromjson')
+            content=$(echo "$content" | jq ". + [{\"type\": \"tool_use\", \"id\": \"$tc_id\", \"name\": \"$tc_name\", \"input\": $tc_args}]")
+        done <<< "$(echo "$tool_calls" | jq -c '.[]')"
+    fi
+    
+    local stop_reason="end_turn"
+    [ "$finish_reason" = "tool_calls" ] && stop_reason="tool_use"
+    
+    echo "{\"content\": $content, \"stop_reason\": \"$stop_reason\"}"
+}
+
+call_ollama() {
+    local messages="$1"
+    
+    # Ollama doesn't support tools natively, so we use a prompt-based approach
+    local ollama_messages=$(echo "$messages" | jq '[{role: "system", content: "'"$SYSTEM_PROMPT"'\n\nYou have these tools available:\n- read_file(path): Read a file\n- write_file(path, content): Write to a file\n- run_command(command): Run a shell command\n- list_files(path): List directory\n- search_files(pattern, path): Search in files\n\nTo use a tool, respond with:\nTOOL: tool_name\nINPUT: {\"param\": \"value\"}\n\nAfter tool results, continue your response."} ] + .')
+    
+    local response=$(curl -s "$OLLAMA_HOST/api/chat" \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"model\": \"$MODEL\",
+            \"messages\": $ollama_messages,
+            \"stream\": false
+        }")
+    
+    # Convert Ollama response to Anthropic format
+    convert_ollama_response "$response"
+}
+
+convert_ollama_response() {
+    local response="$1"
+    
+    # Check for error
+    if echo "$response" | jq -e '.error' > /dev/null 2>&1; then
+        echo "$response"
+        return
+    fi
+    
+    local text=$(echo "$response" | jq -r '.message.content // ""')
+    local content="[]"
+    
+    # Check if response contains tool call pattern
+    if echo "$text" | grep -q "^TOOL:"; then
+        local tool_name=$(echo "$text" | grep "^TOOL:" | head -1 | sed 's/TOOL: *//')
+        local tool_input=$(echo "$text" | grep -A1 "^INPUT:" | tail -1)
+        
+        # Generate a unique ID
+        local tool_id="ollama_$(date +%s%N)"
+        
+        content=$(echo "$content" | jq ". + [{\"type\": \"tool_use\", \"id\": \"$tool_id\", \"name\": \"$tool_name\", \"input\": $tool_input}]")
+        echo "{\"content\": $content, \"stop_reason\": \"tool_use\"}"
+    else
+        content=$(echo "$content" | jq ". + [{\"type\": \"text\", \"text\": $(echo "$text" | jq -Rs .)}]")
+        echo "{\"content\": $content, \"stop_reason\": \"end_turn\"}"
+    fi
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # AGENT LOOP
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SESSION MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+init_session() {
+    mkdir -p "$SESSION_DIR"
+    CURRENT_SESSION="$SESSION_DIR/session_$(date +%Y%m%d_%H%M%S).json"
+    echo '{"messages": [], "provider": "'"$PROVIDER"'", "model": "'"$MODEL"'"}' > "$CURRENT_SESSION"
+    echo -e "${CYAN}Session: $CURRENT_SESSION${NC}"
+}
+
+save_session() {
+    if [ -n "$CURRENT_SESSION" ] && [ -f "$CURRENT_SESSION" ]; then
+        local messages="$1"
+        echo "{\"messages\": $messages, \"provider\": \"$PROVIDER\", \"model\": \"$MODEL\"}" > "$CURRENT_SESSION"
+    fi
+}
+
+load_session() {
+    local session_file="$1"
+    if [ -f "$session_file" ]; then
+        CURRENT_SESSION="$session_file"
+        local saved=$(cat "$session_file")
+        PROVIDER=$(echo "$saved" | jq -r '.provider')
+        MODEL=$(echo "$saved" | jq -r '.model')
+        echo "$saved" | jq -c '.messages'
+    else
+        echo "[]"
+    fi
+}
+
+list_sessions() {
+    echo -e "\n${CYAN}Sessions:${NC}"
+    ls -la "$SESSION_DIR"/*.json 2>/dev/null | while read line; do
+        echo "  $line"
+    done
+}
 
 run_agent() {
     local user_message="$1"
@@ -196,10 +428,10 @@ run_agent() {
     
     while [ $iteration -lt $max_iterations ]; do
         iteration=$((iteration + 1))
-        echo -e "\n${BLUE}[Iteration $iteration]${NC}"
+        echo -e "\n${BLUE}[Iteration $iteration] ($PROVIDER/$MODEL)${NC}"
         
-        # Call Claude
-        local response=$(call_claude "$messages")
+        # Call LLM (multi-provider)
+        local response=$(call_llm "$messages")
         
         # Check for errors
         if echo "$response" | jq -e '.error' > /dev/null 2>&1; then
@@ -263,10 +495,10 @@ run_agent() {
 interactive_mode() {
     print_banner
     check_api_key
-    echo -e "${CYAN}Model: $MODEL${NC}"
+    init_session
     echo -e "${CYAN}Workdir: $WORKDIR${NC}"
     echo ""
-    echo "Type your request. Commands: /quit, /help"
+    echo "Type your request. Commands: /help"
     echo ""
     
     while true; do
@@ -283,19 +515,40 @@ interactive_mode() {
             /help|/h)
                 echo ""
                 echo "Commands:"
-                echo "  /quit    Exit"
-                echo "  /help    Show help"
-                echo "  /clear   Clear screen"
+                echo "  /quit              Exit"
+                echo "  /help              Show help"
+                echo "  /clear             Clear screen"
+                echo "  /model <name>      Switch model"
+                echo "  /provider <name>   Switch provider (anthropic, openai, ollama)"
+                echo "  /sessions          List sessions"
+                echo "  /status            Show current status"
                 echo ""
-                echo "Examples:"
-                echo "  Create a hello world in Zig"
-                echo "  Read the README.md file"
-                echo "  List all .vibee files"
+                echo "Providers:"
+                echo "  anthropic  Claude (ANTHROPIC_API_KEY)"
+                echo "  openai     GPT-4 (OPENAI_API_KEY)"
+                echo "  ollama     Local (ollama serve)"
                 echo ""
                 ;;
             /clear)
                 clear
                 print_banner
+                ;;
+            /model\ *)
+                MODEL="${input#/model }"
+                echo -e "${GREEN}Model: $MODEL${NC}"
+                ;;
+            /provider\ *)
+                local new_provider="${input#/provider }"
+                switch_provider "$new_provider"
+                ;;
+            /sessions)
+                list_sessions
+                ;;
+            /status)
+                echo -e "\n${CYAN}Provider: $PROVIDER${NC}"
+                echo -e "${CYAN}Model: $MODEL${NC}"
+                echo -e "${CYAN}Session: $CURRENT_SESSION${NC}"
+                echo ""
                 ;;
             *)
                 run_agent "$input"
@@ -317,14 +570,25 @@ case "${1:-}" in
         echo "  -h, --help     Show help"
         echo "  -v, --version  Show version"
         echo ""
+        echo "Providers (auto-detected):"
+        echo "  ANTHROPIC_API_KEY  Claude (claude-sonnet-4-20250514)"
+        echo "  OPENAI_API_KEY     GPT-4 (gpt-4o)"
+        echo "  OLLAMA_HOST        Ollama (llama3.2)"
+        echo ""
         echo "Environment:"
-        echo "  ANTHROPIC_API_KEY  Required. Your Claude API key"
-        echo "  VIBEE_MODEL        Model to use (default: claude-sonnet-4-20250514)"
+        echo "  VIBEE_MODEL        Override model name"
         echo "  VIBEE_MAX_TOKENS   Max tokens (default: 4096)"
+        echo "  VIBEE_SESSION_DIR  Session storage (~/.vibee/sessions)"
         echo ""
         echo "Examples:"
         echo "  vibee-agent                    # Interactive mode"
         echo "  vibee-agent 'Create hello.zig' # Single task"
+        echo ""
+        echo "In-session commands:"
+        echo "  /provider anthropic   Switch to Claude"
+        echo "  /provider openai      Switch to GPT-4"
+        echo "  /provider ollama      Switch to local Ollama"
+        echo "  /model gpt-4-turbo    Change model"
         echo ""
         ;;
     -v|--version)
