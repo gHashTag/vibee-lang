@@ -1,0 +1,302 @@
+# csync.vibee - Concurrent Synchronization Primitives
+# Author: Dmitrii Vasilev
+# Source: github.com/charmbracelet/crush/internal/csync
+
+name: csync
+version: "1.0.0"
+language: zig
+module: csync
+
+sacred_formula:
+  V: "n × 3^k × π^m × φ^p × e^q"
+  golden_identity: "φ² + 1/φ² = 3"
+  self_evolution: enabled
+
+creation_pattern:
+  source: UnsafeCollection
+  transformer: MutexWrapper
+  result: ThreadSafeCollection
+
+# Thread-safe generic collections
+
+types:
+  - name: Map
+    description: "Concurrent map with RWMutex protection"
+    generic_params: [K, V]
+    fields:
+      - name: inner
+        type: "HashMap(K, V)"
+      - name: mu
+        type: "RwLock"
+
+  - name: Slice
+    description: "Thread-safe slice with mutex protection"
+    generic_params: [T]
+    fields:
+      - name: inner
+        type: "ArrayList(T)"
+      - name: mu
+        type: "RwLock"
+
+  - name: LazySlice
+    description: "Thread-safe lazy-loaded slice"
+    generic_params: [K]
+    fields:
+      - name: inner
+        type: "[]K"
+      - name: wg
+        type: "WaitGroup"
+
+  - name: Value
+    description: "Generic thread-safe value wrapper"
+    generic_params: [T]
+    fields:
+      - name: v
+        type: "T"
+      - name: mu
+        type: "RwLock"
+
+behaviors:
+  # Map behaviors
+  - name: map_new
+    given: "No initial data"
+    when: "NewMap() is called"
+    then: "Returns empty thread-safe map"
+    test_cases:
+      - name: create_empty_map
+        input: {}
+        expected:
+          len: 0
+          not_nil: true
+
+  - name: map_set_get
+    given: "Thread-safe map"
+    when: "Set and Get are called"
+    then: "Value is stored and retrieved correctly"
+    test_cases:
+      - name: set_and_get
+        input:
+          key: "test"
+          value: 42
+        expected:
+          get_result: 42
+          found: true
+
+  - name: map_del
+    given: "Map with existing key"
+    when: "Del(key) is called"
+    then: "Key is removed from map"
+    test_cases:
+      - name: delete_key
+        input:
+          key: "test"
+        expected:
+          found_after: false
+
+  - name: map_get_or_set
+    given: "Map without key"
+    when: "GetOrSet(key, fn) is called"
+    then: "Function is executed and result stored"
+    test_cases:
+      - name: get_or_set_new
+        input:
+          key: "new"
+          fn: "() => 100"
+        expected:
+          result: 100
+      - name: get_or_set_existing
+        input:
+          key: "existing"
+          existing_value: 50
+        expected:
+          result: 50
+          fn_not_called: true
+
+  - name: map_take
+    given: "Map with key"
+    when: "Take(key) is called"
+    then: "Value returned and key deleted"
+    test_cases:
+      - name: take_existing
+        input:
+          key: "test"
+          value: 42
+        expected:
+          result: 42
+          found: true
+          key_deleted: true
+
+  - name: map_copy
+    given: "Map with data"
+    when: "Copy() is called"
+    then: "Returns independent copy of inner map"
+    test_cases:
+      - name: copy_map
+        input:
+          data: {"a": 1, "b": 2}
+        expected:
+          copy_equals_original: true
+          modifications_independent: true
+
+  # Slice behaviors
+  - name: slice_new
+    given: "No initial data"
+    when: "NewSlice() is called"
+    then: "Returns empty thread-safe slice"
+    test_cases:
+      - name: create_empty_slice
+        input: {}
+        expected:
+          len: 0
+
+  - name: slice_append
+    given: "Thread-safe slice"
+    when: "Append(items) is called"
+    then: "Items added to end of slice"
+    test_cases:
+      - name: append_single
+        input:
+          item: 42
+        expected:
+          len: 1
+          last_item: 42
+      - name: append_multiple
+        input:
+          items: [1, 2, 3]
+        expected:
+          len: 3
+
+  - name: slice_get
+    given: "Slice with elements"
+    when: "Get(index) is called"
+    then: "Returns element at index or error"
+    test_cases:
+      - name: get_valid_index
+        input:
+          index: 0
+          data: [10, 20, 30]
+        expected:
+          result: 10
+          found: true
+      - name: get_invalid_index
+        input:
+          index: 100
+          data: [10, 20, 30]
+        expected:
+          found: false
+
+  - name: slice_set_slice
+    given: "Existing slice"
+    when: "SetSlice(items) is called"
+    then: "Entire slice replaced with new items"
+    test_cases:
+      - name: replace_slice
+        input:
+          new_items: [100, 200]
+        expected:
+          len: 2
+          first: 100
+
+  # Value behaviors
+  - name: value_new
+    given: "Initial value"
+    when: "NewValue(t) is called"
+    then: "Returns thread-safe value wrapper"
+    test_cases:
+      - name: create_value
+        input:
+          initial: 42
+        expected:
+          get_result: 42
+
+  - name: value_set_get
+    given: "Value wrapper"
+    when: "Set and Get are called"
+    then: "Value is updated and retrieved"
+    test_cases:
+      - name: update_value
+        input:
+          initial: 10
+          new_value: 20
+        expected:
+          get_result: 20
+
+  - name: value_type_restrictions
+    given: "Pointer, slice, or map type"
+    when: "NewValue is called"
+    then: "Panics with appropriate message"
+    test_cases:
+      - name: reject_pointer
+        input:
+          type: "*int"
+        expected:
+          panic: "does not support pointer types"
+      - name: reject_slice
+        input:
+          type: "[]int"
+        expected:
+          panic: "does not support slice types"
+      - name: reject_map
+        input:
+          type: "map[string]int"
+        expected:
+          panic: "does not support map types"
+
+  # LazySlice behaviors
+  - name: lazy_slice_new
+    given: "Load function"
+    when: "NewLazySlice(load) is called"
+    then: "Returns slice that loads data in background"
+    test_cases:
+      - name: create_lazy_slice
+        input:
+          load_fn: "() => [1, 2, 3]"
+        expected:
+          eventual_len: 3
+
+  - name: lazy_slice_seq
+    given: "LazySlice with pending load"
+    when: "Seq() is called"
+    then: "Waits for load and returns iterator"
+    test_cases:
+      - name: iterate_lazy
+        input:
+          data: [10, 20, 30]
+        expected:
+          iteration_order: [10, 20, 30]
+
+pas_analysis:
+  current_algorithm: "RWMutex-based synchronization"
+  current_complexity: "O(1) for operations, O(n) for iteration"
+  theoretical_lower_bound: "Ω(1)"
+  gap: 0
+  patterns_applicable:
+    - pattern: PRE
+      reason: "Lock-free structures could reduce contention"
+    - pattern: HSH
+      reason: "Sharded maps for better concurrency"
+  prediction:
+    target: "Concurrent collections"
+    current: "RWMutex O(1)"
+    predicted: "Lock-free O(1) with better throughput"
+    confidence: 0.55
+    timeline: "2027"
+    reasoning: "Lock-free algorithms reduce contention under high load"
+
+dependencies:
+  - "sync"
+  - "iter"
+  - "maps"
+  - "encoding/json"
+  - "reflect"
+
+test_generation:
+  strategy: property_based
+  coverage_target: 90
+  edge_cases:
+    - "concurrent reads and writes"
+    - "empty collections"
+    - "nil values"
+    - "large number of elements"
+    - "rapid set/delete cycles"
+    - "iterator invalidation"

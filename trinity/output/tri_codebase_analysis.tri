@@ -1,0 +1,483 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRI CODEBASE ANALYSIS - Generated from codebase_analysis.vibee
+# Date: 2026-01-19
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+module: codebase_analysis
+version: "1.0.0"
+generated_from: "specs/tri/codebase_analysis.vibee"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SACRED CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  PHI: 1.618033988749895
+  TRINITY: 3.0
+  PHOENIX: 999
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+enum Language:
+  zig
+  go
+  python
+  javascript
+  typescript
+  rust
+  vibee
+  tri
+  unknown
+
+enum ProjectType:
+  library
+  application
+  cli
+  web
+  api
+  monorepo
+
+struct FileIndex:
+  path: String
+  language: Language
+  lines: Int
+  functions: List<FunctionInfo>
+  imports: List<String>
+  exports: List<String>
+  last_modified: Timestamp
+
+struct FunctionInfo:
+  name: String
+  line: Int
+  params: List<String>
+  return_type: String?
+  is_public: Bool
+  doc_comment: String?
+
+struct ProjectIndex:
+  root: String
+  name: String
+  type: ProjectType
+  languages: List<Language>
+  files: List<FileIndex>
+  dependencies: List<Dependency>
+  entry_points: List<String>
+  test_files: List<String>
+  total_lines: Int
+  total_functions: Int
+
+struct Dependency:
+  name: String
+  version: String
+  source: String
+
+struct CodeMetrics:
+  total_files: Int
+  total_lines: Int
+  code_lines: Int
+  comment_lines: Int
+  blank_lines: Int
+  functions: Int
+  complexity: Float
+  test_coverage: Float?
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LANGUAGE DETECTION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+const EXTENSION_MAP = {
+  ".zig": Language.zig,
+  ".go": Language.go,
+  ".py": Language.python,
+  ".js": Language.javascript,
+  ".ts": Language.typescript,
+  ".rs": Language.rust,
+  ".vibee": Language.vibee,
+  ".tri": Language.tri,
+  ".999": Language.tri
+}
+
+const FILE_MAP = {
+  "build.zig": Language.zig,
+  "go.mod": Language.go,
+  "requirements.txt": Language.python,
+  "package.json": Language.javascript,
+  "Cargo.toml": Language.rust
+}
+
+const IGNORE_DIRS = [
+  "node_modules",
+  "__pycache__",
+  ".git",
+  ".vscode",
+  "zig-cache",
+  "zig-out",
+  "target",
+  "dist",
+  "build",
+  "vendor"
+]
+
+fn detect_language(path: String) -> Language:
+  ext = path.extension()
+  if ext in EXTENSION_MAP:
+    return EXTENSION_MAP[ext]
+  
+  name = path.basename()
+  if name in FILE_MAP:
+    return FILE_MAP[name]
+  
+  return Language.unknown
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CODEBASE ANALYZER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class CodebaseAnalyzer:
+  root: String
+  index: ProjectIndex?
+  
+  fn init(root: String = ".") -> CodebaseAnalyzer:
+    return CodebaseAnalyzer(
+      root: resolve_path(root),
+      index: null
+    )
+  
+  fn analyze() -> ProjectIndex:
+    files = self.scan_files()
+    languages = self.detect_languages(files)
+    project_type = self.detect_project_type(files)
+    dependencies = self.parse_dependencies()
+    entry_points = self.find_entry_points(files)
+    test_files = self.find_test_files(files)
+    
+    total_lines = 0
+    total_functions = 0
+    
+    for f in files:
+      total_lines += f.lines
+      total_functions += f.functions.len()
+    
+    self.index = ProjectIndex(
+      root: self.root,
+      name: self.root.basename(),
+      type: project_type,
+      languages: languages,
+      files: files,
+      dependencies: dependencies,
+      entry_points: entry_points,
+      test_files: test_files,
+      total_lines: total_lines,
+      total_functions: total_functions
+    )
+    
+    return self.index
+  
+  fn scan_files() -> List<FileIndex>:
+    files = []
+    
+    for path in walk_files(self.root):
+      # Skip ignored directories
+      if any(d in path for d in IGNORE_DIRS):
+        continue
+      
+      language = detect_language(path)
+      if language == Language.unknown:
+        continue
+      
+      content = fs_read(path)
+      functions = self.extract_functions(content, language)
+      imports = self.extract_imports(content, language)
+      
+      files.append(FileIndex(
+        path: path,
+        language: language,
+        lines: content.count("\n") + 1,
+        functions: functions,
+        imports: imports,
+        exports: [],
+        last_modified: file_mtime(path)
+      ))
+    
+    return files
+  
+  fn extract_functions(content: String, language: Language) -> List<FunctionInfo>:
+    functions = []
+    lines = content.split("\n")
+    
+    match language:
+      Language.zig:
+        for i, line in lines.enumerate():
+          if "fn " in line and "(" in line:
+            name = line.extract_between("fn ", "(")
+            is_public = line.starts_with("pub ")
+            functions.append(FunctionInfo(
+              name: name,
+              line: i + 1,
+              params: [],
+              return_type: null,
+              is_public: is_public,
+              doc_comment: null
+            ))
+      
+      Language.go:
+        for i, line in lines.enumerate():
+          if line.starts_with("func "):
+            name = line.extract_between("func ", "(")
+            functions.append(FunctionInfo(
+              name: name,
+              line: i + 1,
+              params: [],
+              return_type: null,
+              is_public: name[0].is_upper(),
+              doc_comment: null
+            ))
+      
+      Language.python:
+        for i, line in lines.enumerate():
+          if line.strip().starts_with("def "):
+            name = line.extract_between("def ", "(")
+            functions.append(FunctionInfo(
+              name: name,
+              line: i + 1,
+              params: [],
+              return_type: null,
+              is_public: not name.starts_with("_"),
+              doc_comment: null
+            ))
+      
+      _:
+        pass
+    
+    return functions
+  
+  fn extract_imports(content: String, language: Language) -> List<String>:
+    imports = []
+    
+    match language:
+      Language.zig:
+        for line in content.split("\n"):
+          if "@import(" in line:
+            name = line.extract_between("@import(\"", "\")")
+            imports.append(name)
+      
+      Language.go:
+        for line in content.split("\n"):
+          if line.strip().starts_with("import "):
+            name = line.extract_between("\"", "\"")
+            imports.append(name)
+      
+      Language.python:
+        for line in content.split("\n"):
+          if line.starts_with("import ") or line.starts_with("from "):
+            imports.append(line)
+      
+      _:
+        pass
+    
+    return imports
+  
+  fn detect_languages(files: List<FileIndex>) -> List<Language>:
+    languages = {}
+    for f in files:
+      languages[f.language] = true
+    return languages.keys()
+  
+  fn detect_project_type(files: List<FileIndex>) -> ProjectType:
+    has_main = any(f.path.ends_with("main.zig") or f.path.ends_with("main.go") for f in files)
+    has_lib = any(f.path.ends_with("lib.zig") or f.path.ends_with("lib.go") for f in files)
+    has_web = any(f.language in [Language.javascript, Language.typescript] for f in files)
+    
+    if has_main and not has_lib:
+      return ProjectType.cli
+    elif has_lib:
+      return ProjectType.library
+    elif has_web:
+      return ProjectType.web
+    else:
+      return ProjectType.application
+  
+  fn parse_dependencies() -> List<Dependency>:
+    deps = []
+    
+    # Check for various dependency files
+    if file_exists("{self.root}/build.zig"):
+      # Parse Zig dependencies
+      pass
+    
+    if file_exists("{self.root}/go.mod"):
+      content = fs_read("{self.root}/go.mod")
+      for line in content.split("\n"):
+        if line.strip().starts_with("require "):
+          parts = line.split(" ")
+          if parts.len() >= 2:
+            deps.append(Dependency(
+              name: parts[1],
+              version: parts[2] if parts.len() > 2 else "latest",
+              source: "go.mod"
+            ))
+    
+    if file_exists("{self.root}/package.json"):
+      pkg = json_decode(fs_read("{self.root}/package.json"))
+      for name, version in pkg.get("dependencies", {}).items():
+        deps.append(Dependency(name: name, version: version, source: "npm"))
+    
+    return deps
+  
+  fn find_entry_points(files: List<FileIndex>) -> List<String>:
+    entry_points = []
+    for f in files:
+      if f.path.ends_with("main.zig") or f.path.ends_with("main.go") or f.path.ends_with("main.py"):
+        entry_points.append(f.path)
+      if f.path.ends_with("build.zig"):
+        entry_points.append(f.path)
+    return entry_points
+  
+  fn find_test_files(files: List<FileIndex>) -> List<String>:
+    test_files = []
+    for f in files:
+      if "_test" in f.path or "test_" in f.path or f.path.ends_with(".test.js"):
+        test_files.append(f.path)
+    return test_files
+  
+  fn calculate_metrics() -> CodeMetrics:
+    if not self.index:
+      self.analyze()
+    
+    code_lines = 0
+    comment_lines = 0
+    blank_lines = 0
+    
+    for f in self.index.files:
+      content = fs_read(f.path)
+      for line in content.split("\n"):
+        stripped = line.strip()
+        if stripped.is_empty():
+          blank_lines += 1
+        elif stripped.starts_with("//") or stripped.starts_with("#") or stripped.starts_with("--"):
+          comment_lines += 1
+        else:
+          code_lines += 1
+    
+    return CodeMetrics(
+      total_files: self.index.files.len(),
+      total_lines: self.index.total_lines,
+      code_lines: code_lines,
+      comment_lines: comment_lines,
+      blank_lines: blank_lines,
+      functions: self.index.total_functions,
+      complexity: 0.0,  # TODO: Calculate cyclomatic complexity
+      test_coverage: null
+    )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMMANDS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+command "tri analyze":
+  usage: "tri analyze [path] [--full] [--json]"
+  fn execute(args):
+    path = args.positional[0] ?? "."
+    analyzer = CodebaseAnalyzer.init(path)
+    index = analyzer.analyze()
+    
+    if args.has("json"):
+      print(json_encode(index))
+    else:
+      print("Project: {index.name}")
+      print("Type: {index.type}")
+      print("Languages: {index.languages.join(', ')}")
+      print("Files: {index.files.len()}")
+      print("Lines: {index.total_lines}")
+      print("Functions: {index.total_functions}")
+      
+      if args.has("full"):
+        print("\nEntry Points:")
+        for ep in index.entry_points:
+          print("  {ep}")
+        
+        print("\nDependencies:")
+        for dep in index.dependencies:
+          print("  {dep.name} @ {dep.version}")
+
+command "tri metrics":
+  usage: "tri metrics [path] [--format table|json]"
+  fn execute(args):
+    path = args.positional[0] ?? "."
+    analyzer = CodebaseAnalyzer.init(path)
+    metrics = analyzer.calculate_metrics()
+    
+    if args.get("format") == "json":
+      print(json_encode(metrics))
+    else:
+      print("═══════════════════════════════════════════════════════════════")
+      print("CODE METRICS")
+      print("═══════════════════════════════════════════════════════════════")
+      print("  Total Files:    {metrics.total_files}")
+      print("  Total Lines:    {metrics.total_lines}")
+      print("  Code Lines:     {metrics.code_lines}")
+      print("  Comment Lines:  {metrics.comment_lines}")
+      print("  Blank Lines:    {metrics.blank_lines}")
+      print("  Functions:      {metrics.functions}")
+      print("═══════════════════════════════════════════════════════════════")
+
+command "tri find":
+  usage: "tri find <symbol> [--type func|type|var]"
+  fn execute(args):
+    symbol = args.positional[0]
+    analyzer = CodebaseAnalyzer.init(".")
+    analyzer.analyze()
+    
+    for f in analyzer.index.files:
+      for func in f.functions:
+        if symbol.lower() in func.name.lower():
+          print("{f.path}:{func.line}: {func.name}")
+
+command "tri structure":
+  usage: "tri structure [path] [--depth N]"
+  fn execute(args):
+    path = args.positional[0] ?? "."
+    depth = args.get("depth") ?? 3
+    
+    print_tree(path, depth)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TESTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tests:
+  - name: "Detect Zig Language"
+    input:
+      path: "main.zig"
+    assert: detect_language(input.path) == Language.zig
+
+  - name: "Detect Go Language"
+    input:
+      path: "main.go"
+    assert: detect_language(input.path) == Language.go
+
+  - name: "Detect VIBEE Language"
+    input:
+      path: "spec.vibee"
+    assert: detect_language(input.path) == Language.vibee
+
+  - name: "Detect TRI Language"
+    input:
+      path: "output.tri"
+    assert: detect_language(input.path) == Language.tri
+
+  - name: "Ignore node_modules"
+    input:
+      path: "node_modules/package/index.js"
+    assert: any("node_modules" in input.path for d in IGNORE_DIRS)
+
+  - name: "Golden Identity"
+    assert: PHI * PHI + 1/(PHI * PHI) == TRINITY
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════

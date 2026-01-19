@@ -1,0 +1,489 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRI STREAMING - Generated from streaming.vibee
+# Real-time Token Streaming
+# Date: 2026-01-19
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+module: streaming
+version: "1.0.0"
+generated_from: "specs/tri/streaming.vibee"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SACRED CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  PHI: 1.618033988749895
+  TRINITY: 3.0
+  PHOENIX: 999
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+enum StreamEvent:
+  start
+  token
+  content_block
+  tool_use
+  tool_result
+  error
+  done
+
+struct StreamChunk:
+  event: StreamEvent
+  data: String?
+  index: Int
+  timestamp: Timestamp
+  metadata: Object?
+
+struct StreamConfig:
+  buffer_size: Int = 16
+  render_delay_ms: Int = 10
+  show_spinner: Bool = true
+  show_tokens: Bool = false
+  color_output: Bool = true
+
+struct StreamState:
+  started: Bool = false
+  chunks_received: Int = 0
+  tokens_received: Int = 0
+  content: String = ""
+  errors: List<String> = []
+  start_time: Timestamp
+  end_time: Timestamp?
+
+struct StreamStats:
+  total_tokens: Int
+  tokens_per_second: Float
+  latency_first_token_ms: Int
+  latency_total_ms: Int
+  chunks: Int
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COLORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+const COLORS = {
+  "assistant": "\x1b[32m",
+  "code": "\x1b[36m",
+  "error": "\x1b[31m",
+  "stats": "\x1b[90m",
+  "reset": "\x1b[0m"
+}
+
+const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
+const SPINNER_INTERVAL_MS = 100
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STREAM PROCESSOR
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class StreamProcessor:
+  config: StreamConfig
+  state: StreamState
+  buffer: List<String>
+  spinner_running: Bool
+  
+  fn init(config: StreamConfig?) -> StreamProcessor:
+    return StreamProcessor(
+      config: config ?? StreamConfig(),
+      state: StreamState(start_time: now()),
+      buffer: [],
+      spinner_running: false
+    )
+  
+  fn process_chunk(self, chunk: StreamChunk):
+    self.state.chunks_received += 1
+    
+    match chunk.event:
+      StreamEvent.start:
+        self.state.started = true
+        if self.config.show_spinner:
+          self.start_spinner()
+      
+      StreamEvent.token:
+        self.state.tokens_received += 1
+        self.state.content += chunk.data ?? ""
+        self.buffer.append(chunk.data ?? "")
+        
+        if self.buffer.len() >= self.config.buffer_size:
+          self.flush_buffer()
+      
+      StreamEvent.content_block:
+        self.state.content += chunk.data ?? ""
+        self.buffer.append(chunk.data ?? "")
+        self.flush_buffer()
+      
+      StreamEvent.error:
+        self.state.errors.append(chunk.data ?? "Unknown error")
+        self.print_error(chunk.data ?? "Error")
+      
+      StreamEvent.done:
+        self.state.end_time = now()
+        self.flush_buffer()
+        if self.config.show_spinner:
+          self.stop_spinner()
+        self.print_stats()
+  
+  fn flush_buffer(self):
+    if self.buffer.is_empty():
+      return
+    
+    text = self.buffer.join("")
+    self.buffer = []
+    
+    if self.config.color_output:
+      print("{COLORS.assistant}{text}{COLORS.reset}", end: "", flush: true)
+    else:
+      print(text, end: "", flush: true)
+    
+    if self.config.render_delay_ms > 0:
+      sleep_ms(self.config.render_delay_ms)
+  
+  fn start_spinner(self):
+    self.spinner_running = true
+    spawn(self.animate_spinner)
+  
+  fn stop_spinner(self):
+    self.spinner_running = false
+    print("\r                    \r", end: "", flush: true)
+  
+  fn animate_spinner(self):
+    i = 0
+    while self.spinner_running and not self.state.started:
+      frame = SPINNER_FRAMES[i % 4]
+      print("\r{frame} Thinking...", end: "", flush: true)
+      i += 1
+      sleep_ms(SPINNER_INTERVAL_MS)
+  
+  fn print_error(self, error: String):
+    print("{COLORS.error}Error: {error}{COLORS.reset}")
+  
+  fn print_stats(self):
+    if not self.config.show_tokens:
+      return
+    
+    stats = self.calculate_stats()
+    print("")
+    print("{COLORS.stats}---")
+    print("Tokens: {stats.total_tokens} ({stats.tokens_per_second:.1f}/s)")
+    print("Time: {stats.latency_total_ms}ms")
+    print("---{COLORS.reset}")
+  
+  fn calculate_stats(self) -> StreamStats:
+    duration_ms = (self.state.end_time ?? now()) - self.state.start_time
+    duration_s = duration_ms / 1000.0
+    
+    return StreamStats(
+      total_tokens: self.state.tokens_received,
+      tokens_per_second: self.state.tokens_received / duration_s if duration_s > 0 else 0,
+      latency_first_token_ms: 0,
+      latency_total_ms: duration_ms,
+      chunks: self.state.chunks_received
+    )
+  
+  fn get_content(self) -> String:
+    return self.state.content
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROVIDER PARSERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+fn parse_anthropic_event(line: String) -> StreamChunk?:
+  if not line.starts_with("data: "):
+    return null
+  
+  data = json_decode(line[6:])
+  
+  match data.type:
+    "message_start":
+      return StreamChunk(
+        event: StreamEvent.start,
+        index: 0,
+        timestamp: now()
+      )
+    
+    "content_block_delta":
+      if data.delta.type == "text_delta":
+        return StreamChunk(
+          event: StreamEvent.token,
+          data: data.delta.text,
+          index: data.index,
+          timestamp: now()
+        )
+    
+    "message_stop":
+      return StreamChunk(
+        event: StreamEvent.done,
+        index: 0,
+        timestamp: now()
+      )
+    
+    _:
+      return null
+
+fn parse_ollama_event(line: String) -> StreamChunk?:
+  data = json_decode(line)
+  
+  if data.done:
+    return StreamChunk(
+      event: StreamEvent.done,
+      index: 0,
+      timestamp: now()
+    )
+  else:
+    return StreamChunk(
+      event: StreamEvent.token,
+      data: data.message.content,
+      index: 0,
+      timestamp: now()
+    )
+
+fn parse_openai_event(line: String) -> StreamChunk?:
+  if line == "data: [DONE]":
+    return StreamChunk(
+      event: StreamEvent.done,
+      index: 0,
+      timestamp: now()
+    )
+  
+  if not line.starts_with("data: "):
+    return null
+  
+  data = json_decode(line[6:])
+  
+  if data.choices[0].delta.content:
+    return StreamChunk(
+      event: StreamEvent.token,
+      data: data.choices[0].delta.content,
+      index: data.choices[0].index,
+      timestamp: now()
+    )
+  
+  return null
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STREAM RENDERER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class StreamRenderer:
+  config: StreamConfig
+  terminal_width: Int
+  current_line: String
+  in_code_block: Bool
+  
+  fn init(config: StreamConfig?) -> StreamRenderer:
+    return StreamRenderer(
+      config: config ?? StreamConfig(),
+      terminal_width: get_terminal_width() ?? 80,
+      current_line: "",
+      in_code_block: false
+    )
+  
+  fn render_token(self, token: String):
+    # Check for code block markers
+    if "```" in token:
+      self.in_code_block = not self.in_code_block
+    
+    # Handle newlines
+    if "\n" in token:
+      parts = token.split("\n")
+      for i, part in parts.enumerate():
+        if i > 0:
+          print("")
+          self.current_line = ""
+        self.print_part(part)
+    else:
+      self.print_part(token)
+  
+  fn print_part(self, text: String):
+    if self.in_code_block:
+      print("{COLORS.code}{text}{COLORS.reset}", end: "", flush: true)
+    else:
+      print(text, end: "", flush: true)
+    
+    self.current_line += text
+    
+    # Word wrap
+    if self.current_line.len() > self.terminal_width:
+      last_space = self.current_line.rfind(" ")
+      if last_space > 0:
+        print("")
+        self.current_line = self.current_line[last_space+1:]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STREAMING CLIENT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class StreamingClient:
+  provider: Provider
+  config: StreamConfig
+  
+  fn init(provider: Provider, config: StreamConfig?) -> StreamingClient:
+    return StreamingClient(
+      provider: provider,
+      config: config ?? StreamConfig()
+    )
+  
+  fn stream_chat(self, messages: List<Message>) -> StreamProcessor:
+    processor = StreamProcessor.init(self.config)
+    
+    # Start streaming request
+    match self.provider:
+      Provider.anthropic:
+        self.stream_anthropic(messages, processor)
+      Provider.ollama:
+        self.stream_ollama(messages, processor)
+      Provider.openai:
+        self.stream_openai(messages, processor)
+      _:
+        processor.process_chunk(StreamChunk(
+          event: StreamEvent.error,
+          data: "Streaming not supported for this provider",
+          index: 0,
+          timestamp: now()
+        ))
+    
+    return processor
+  
+  fn stream_anthropic(self, messages: List<Message>, processor: StreamProcessor):
+    # Build request
+    body = {
+      "model": "claude-sonnet-4-20250514",
+      "max_tokens": 4096,
+      "stream": true,
+      "messages": messages.map(m -> {"role": m.role, "content": m.content})
+    }
+    
+    # Make streaming request
+    response = http_stream(
+      url: "https://api.anthropic.com/v1/messages",
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": get_env("ANTHROPIC_API_KEY"),
+        "anthropic-version": "2023-06-01"
+      },
+      body: body
+    )
+    
+    for line in response.lines():
+      chunk = parse_anthropic_event(line)
+      if chunk:
+        processor.process_chunk(chunk)
+  
+  fn stream_ollama(self, messages: List<Message>, processor: StreamProcessor):
+    body = {
+      "model": "llama3.2",
+      "stream": true,
+      "messages": messages.map(m -> {"role": m.role, "content": m.content})
+    }
+    
+    host = get_env("OLLAMA_HOST") ?? "localhost:11434"
+    
+    response = http_stream(
+      url: "http://{host}/api/chat",
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: body
+    )
+    
+    for line in response.lines():
+      chunk = parse_ollama_event(line)
+      if chunk:
+        processor.process_chunk(chunk)
+  
+  fn stream_openai(self, messages: List<Message>, processor: StreamProcessor):
+    body = {
+      "model": "gpt-4o",
+      "stream": true,
+      "messages": messages.map(m -> {"role": m.role, "content": m.content})
+    }
+    
+    response = http_stream(
+      url: "https://api.openai.com/v1/chat/completions",
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer {get_env('OPENAI_API_KEY')}"
+      },
+      body: body
+    )
+    
+    for line in response.lines():
+      chunk = parse_openai_event(line)
+      if chunk:
+        processor.process_chunk(chunk)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMMANDS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+command "tri chat --stream":
+  usage: "tri chat --stream [--no-color] [--show-tokens]"
+  fn execute(args):
+    config = StreamConfig(
+      color_output: not args.has("no-color"),
+      show_tokens: args.has("show-tokens")
+    )
+    
+    provider = detect_provider()
+    client = StreamingClient.init(provider, config)
+    
+    print("TRI Streaming Chat (Ctrl+C to exit)")
+    print("Provider: {provider}")
+    print("")
+    
+    while true:
+      input = readline("you> ")
+      
+      if input.is_empty():
+        continue
+      
+      if input == "/exit":
+        break
+      
+      messages = [Message(role: Role.user, content: input)]
+      
+      print("tri> ", end: "", flush: true)
+      processor = client.stream_chat(messages)
+      print("")
+      print("")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TESTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tests:
+  - name: "Process Token Chunk"
+    input:
+      chunk:
+        event: StreamEvent.token
+        data: "Hello"
+    setup:
+      processor: StreamProcessor.init()
+    assert: processor.state.tokens_received == 1
+
+  - name: "Buffer Flush"
+    input:
+      buffer_size: 4
+      tokens: ["a", "b", "c", "d", "e"]
+    assert: flush_count == 2
+
+  - name: "Parse Anthropic Event"
+    input: 'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}'
+    assert: parse_anthropic_event(input).data == "Hi"
+
+  - name: "Parse Ollama Event"
+    input: '{"message":{"content":"Hello"},"done":false}'
+    assert: parse_ollama_event(input).data == "Hello"
+
+  - name: "Golden Identity"
+    assert: PHI * PHI + 1/(PHI * PHI) == TRINITY
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════

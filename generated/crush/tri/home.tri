@@ -1,0 +1,150 @@
+// home.tri - Trinity Intermediate Representation
+// Generated from: specs/crush/home.vibee
+// Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+
+@module home
+@version "1.0.0"
+@golden_identity "φ² + 1/φ² = 3"
+
+// Type definitions
+@type HomeDir {
+    path: []const u8,
+    error: ?anyerror
+}
+
+// Creation Pattern: FilePath → HomePathResolver → NormalizedPath
+
+// Global state (cached at init)
+@global homedir: []const u8 = os.UserHomeDir()
+@global homedirErr: ?anyerror
+
+// Behavior: dir_returns_home
+@behavior dir_returns_home {
+    @given "System has valid home directory"
+    @when "Dir() is called"
+    @then "Returns user home directory path"
+    
+    @trinity_transform {
+        source: void,
+        transformer: HomeDirLookup,
+        result: []const u8
+    }
+    
+    @implementation {
+        return homedir;
+    }
+}
+
+// Behavior: short_replaces_home_with_tilde
+@behavior short_replaces_home_with_tilde {
+    @given "Path starts with home directory"
+    @when "Short(path) is called"
+    @then "Home prefix replaced with ~"
+    
+    @trinity_transform {
+        source: FilePath,
+        transformer: TildeCompressor,
+        result: ShortPath
+    }
+    
+    @implementation {
+        if (homedir.len == 0 or !strings.hasPrefix(p, homedir)) {
+            return p;
+        }
+        return filepath.join("~", strings.trimPrefix(p, homedir));
+    }
+    
+    @test_cases [
+        { input: "/home/user/documents/file.txt", expected: "~/documents/file.txt" },
+        { input: "/absolute/path/file.txt", expected: "/absolute/path/file.txt" },
+        { input: "/any/path", homedir: "", expected: "/any/path" }
+    ]
+}
+
+// Behavior: long_replaces_tilde_with_home
+@behavior long_replaces_tilde_with_home {
+    @given "Path starts with ~"
+    @when "Long(path) is called"
+    @then "Tilde replaced with actual home directory"
+    
+    @trinity_transform {
+        source: ShortPath,
+        transformer: TildeExpander,
+        result: FilePath
+    }
+    
+    @implementation {
+        if (homedir.len == 0 or !strings.hasPrefix(p, "~")) {
+            return p;
+        }
+        return strings.replace(p, "~", homedir, 1);
+    }
+    
+    @test_cases [
+        { input: "~/documents/file.txt", expected: "/home/user/documents/file.txt" },
+        { input: "/absolute/path/file.txt", expected: "/absolute/path/file.txt" },
+        { input: "~/any/path", homedir: "", expected: "~/any/path" }
+    ]
+}
+
+// Behavior: init_logs_error
+@behavior init_logs_error {
+    @given "Home directory lookup fails"
+    @when "Package initializes"
+    @then "Error is logged via slog"
+    
+    @trinity_transform {
+        source: InitError,
+        transformer: SlogLogger,
+        result: LoggedError
+    }
+    
+    @implementation {
+        if (homedirErr != null) {
+            slog.Error("failed to get user home directory", "error", homedirErr);
+        }
+    }
+}
+
+// Behavior: path_separator_handling
+@behavior path_separator_handling {
+    @given "Path with platform-specific separators"
+    @when "Short or Long is called"
+    @then "Separators are handled correctly via filepath.Join"
+    
+    @trinity_transform {
+        source: PlatformPath,
+        transformer: SeparatorNormalizer,
+        result: NormalizedPath
+    }
+    
+    @platform_aware true
+}
+
+// PAS Analysis
+@pas_prediction {
+    target: "Path resolution",
+    current: "O(n)",
+    predicted: "O(1) for common case with caching",
+    confidence: 0.70,
+    timeline: "2026",
+    patterns: [PRE, HSH]
+}
+
+// Dependencies
+@dependencies [
+    "log/slog",
+    "os",
+    "path/filepath",
+    "strings"
+]
+
+// Edge cases for test generation
+@edge_cases [
+    "empty path",
+    "path equals home exactly",
+    "path with trailing separator",
+    "relative path starting with ~",
+    "multiple tildes in path",
+    "home directory not set"
+]

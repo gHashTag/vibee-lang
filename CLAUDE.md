@@ -6,7 +6,7 @@
 
 ## ⛔ ABSOLUTE PROHIBITION - READ FIRST
 
-### NEVER CREATE THESE FILES:
+### NEVER CREATE THESE FILES MANUALLY:
 
 | Forbidden | Reason |
 |-----------|--------|
@@ -16,22 +16,63 @@
 | `*.ts` | Legacy TypeScript |
 | `*.jsx` | Legacy React |
 | `*.tsx` | Legacy React+TS |
+| `*.zig` | **ONLY generated from .vibee** |
+| `*.py` | **ONLY generated from .vibee** |
 
 ### THE ONLY EXCEPTION:
 
 ```
 runtime/runtime.html - THE SINGLE UNIFIED RUNTIME
+src/vibeec/*.zig - COMPILER SOURCE (can be modified)
 ```
 
-This is the ONLY HTML file in the entire project. ALL functionality integrates here.
+---
 
-### VIBEE ARCHITECTURE:
+## ⚡ VIBEE PIPELINE (CRITICAL)
+
+### The ONLY way to create code:
 
 ```
-.vibee (spec) → .999 (code) → runtime.html (interpreter)
+specs/*.vibee → trinity/output/*.zig
 ```
 
-**Creating separate HTML/CSS/JS files is a COMPILATION ERROR.**
+### Commands:
+
+```bash
+# Generate .zig from .vibee specification
+vibee gen specs/tri/ai_provider.vibee
+
+# Generate all specs
+for f in specs/tri/*.vibee; do vibee gen "$f"; done
+
+# Test generated code
+zig test trinity/output/ai_provider.zig
+```
+
+### Directory Structure:
+
+| Directory | Purpose |
+|-----------|---------|
+| `specs/tri/*.vibee` | Source specifications |
+| `trinity/output/*.zig` | Generated Zig code (DO NOT EDIT) |
+| `src/vibeec/*.zig` | Compiler source (CAN edit) |
+| `bin/vibee` | CLI binary |
+
+### Type Mapping (.vibee → Zig):
+
+| VIBEE Type | Zig Type |
+|------------|----------|
+| `String` | `[]const u8` |
+| `Int` | `i64` |
+| `Float` | `f64` |
+| `Bool` | `bool` |
+| `Option<T>` | `?[]const u8` |
+| `List<T>` | `[]const u8` |
+| `Timestamp` | `i64` |
+
+### Reserved Words:
+
+Fields named `error`, `type`, `return`, etc. are escaped as `@"error"`.
 
 ---
 
@@ -179,19 +220,29 @@ All features must have:
 ## Quick Commands
 
 ```bash
-# Build compiler
-cd src/vibeec && zig build
+# Generate .zig from .vibee (PRIMARY WORKFLOW)
+vibee gen specs/tri/ai_provider.vibee
+vibee gen specs/tri/ai_provider.vibee trinity/output/ai_provider.zig
 
-# Run tests
-zig test src/vibeec/parser.zig
-zig test src/vibeec/codegen.zig
-zig test src/vibeec/pas.zig
+# Generate all specs
+for f in specs/tri/*.vibee; do vibee gen "$f"; done
 
-# Generate code from spec
-./zig-out/bin/vibeec gen specs/my_feature.vibee
+# Test generated code
+zig test trinity/output/ai_provider.zig
+cd trinity/output && for f in *.zig; do zig test "$f"; done
 
-# Run benchmarks
-zig run benchmark/parser_bench.zig
+# Build compiler (only if modifying compiler itself)
+cd src/vibeec && zig build-exe gen_cmd.zig
+
+# Rebuild vibee CLI
+cd generated/crush/zig && zig build-exe main.zig -O ReleaseFast
+cp main ../../bin/vibee
+
+# Other vibee commands
+vibee help          # Show all commands
+vibee eval "△ ∧ ○"  # Ternary logic
+vibee phi           # Sacred constants
+vibee commit        # AI git commit
 ```
 
 ## Contributing
@@ -202,3 +253,54 @@ zig run benchmark/parser_bench.zig
 4. Submit PR with spec file
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+
+---
+
+## 🤖 Agent Reasoning (Claude Code Pattern)
+
+### 7-Phase Feature Development Workflow
+
+Based on [Claude Code](https://github.com/anthropics/claude-code) best practices:
+
+| Phase | Goal | Actions |
+|-------|------|---------|
+| 1. Discovery | Understand what to build | Create todos, ask clarifying questions |
+| 2. Exploration | Understand existing code | Launch 2-3 explorer agents in parallel |
+| 3. Clarification | Fill gaps | Ask ALL questions before designing |
+| 4. Architecture | Design solution | Present multiple approaches with tradeoffs |
+| 5. Implementation | Build feature | Wait for approval, follow chosen approach |
+| 6. Review | Quality check | Launch 3 reviewer agents in parallel |
+| 7. Summary | Document | Mark todos complete, summarize changes |
+
+### Core Principles
+
+1. **Ask clarifying questions** - Identify ambiguities, wait for answers
+2. **Understand before acting** - Read existing code patterns first
+3. **Read files from agents** - When agents return file lists, read them
+4. **Simple and elegant** - Prioritize readable, maintainable code
+5. **Use TodoWrite** - Track all progress throughout
+
+### Agent Types
+
+| Agent | Purpose | Tools |
+|-------|---------|-------|
+| `code_explorer` | Trace execution paths, map architecture | glob, grep, ls, read |
+| `code_architect` | Design approaches with tradeoffs | glob, grep, ls, read |
+| `code_reviewer` | Check quality, bugs, conventions | glob, grep, ls, read |
+
+### VIBEE-Specific Workflow
+
+```bash
+# Phase 1: Create specification
+# specs/tri/feature.vibee
+
+# Phase 2: Generate code
+vibee gen specs/tri/feature.vibee
+
+# Phase 3: Test
+zig test trinity/output/feature.zig
+
+# Phase 4: Iterate if tests fail
+```
+
+**NEVER write .zig manually - ALWAYS use vibee gen**

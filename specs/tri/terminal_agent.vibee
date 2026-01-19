@@ -1,0 +1,285 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TERMINAL AGENT - Self-Writing Code Agent
+# ═══════════════════════════════════════════════════════════════════════════════
+# Based on Claude Code architecture + PAS DAEMONS
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+# PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: terminal_agent
+version: "1.0.0"
+language: zig
+module: terminal_agent
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+
+creation_pattern:
+  source: UserRequest
+  transformer: AgentEngine
+  result: GeneratedCode
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # Agent state
+  AgentState:
+    enum:
+      - idle
+      - thinking
+      - executing
+      - generating
+      - testing
+      - complete
+      - error
+
+  # Tool types available to agent
+  ToolType:
+    enum:
+      - file_read
+      - file_write
+      - bash_exec
+      - git_op
+      - vibee_gen
+      - zig_test
+      - search
+
+  # Tool call
+  ToolCall:
+    fields:
+      tool: ToolType
+      args: List<String>
+      result: String
+      success: Bool
+
+  # Agent context
+  AgentContext:
+    fields:
+      state: AgentState
+      history: List<ToolCall>
+      files_read: List<String>
+      files_written: List<String>
+      tests_passed: Int
+      tests_failed: Int
+
+  # Code generation request
+  CodeGenRequest:
+    fields:
+      description: String
+      language: String
+      output_path: String
+
+  # Code generation result
+  CodeGenResult:
+    fields:
+      success: Bool
+      path: String
+      bytes: Int
+      tests_passed: Int
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS - Agent Workflow
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # Initialize agent
+  - name: agent_init
+    given: User starts agent
+    when: Agent receives init command
+    then: Set state to idle and clear context
+    test_cases:
+      - name: init_sets_idle
+        input:
+          command: "init"
+        expected:
+          state: idle
+          history_len: 0
+
+  # Process user request
+  - name: process_request
+    given: Agent is idle
+    when: User sends code generation request
+    then: Parse request and start thinking phase
+    test_cases:
+      - name: request_starts_thinking
+        input:
+          request: "Create a fibonacci function"
+        expected:
+          state: thinking
+
+  # Generate .vibee specification
+  - name: generate_spec
+    given: Agent understands request
+    when: Thinking phase complete
+    then: Create .vibee specification file
+    test_cases:
+      - name: spec_created
+        input:
+          description: "fibonacci function"
+        expected:
+          file_created: true
+          extension: ".vibee"
+
+  # Generate code via vibee gen
+  - name: generate_code
+    given: .vibee specification exists
+    when: Agent calls vibee gen
+    then: Generate .zig code in trinity/output
+    test_cases:
+      - name: code_generated
+        input:
+          spec_path: "specs/tri/test.vibee"
+        expected:
+          output_exists: true
+          extension: ".zig"
+
+  # Run tests
+  - name: run_tests
+    given: .zig code generated
+    when: Agent calls zig test
+    then: Execute tests and report results
+    test_cases:
+      - name: tests_executed
+        input:
+          zig_path: "trinity/output/test.zig"
+        expected:
+          tests_run: true
+
+  # Self-correction loop
+  - name: self_correct
+    given: Tests failed
+    when: Agent detects failures
+    then: Modify .vibee spec and regenerate
+    max_iterations: 3
+    test_cases:
+      - name: correction_attempted
+        input:
+          failures: 2
+        expected:
+          regenerated: true
+
+  # Complete workflow
+  - name: complete_workflow
+    given: All tests pass
+    when: Agent finishes generation
+    then: Report success and cleanup
+    test_cases:
+      - name: workflow_complete
+        input:
+          tests_passed: 5
+          tests_failed: 0
+        expected:
+          state: complete
+          success: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AGENT TOOLS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tools:
+  file_read:
+    description: "Read file contents"
+    args: ["path"]
+    returns: "String"
+    
+  file_write:
+    description: "Write content to file"
+    args: ["path", "content"]
+    returns: "Bool"
+    
+  bash_exec:
+    description: "Execute bash command"
+    args: ["command"]
+    returns: "String"
+    
+  vibee_gen:
+    description: "Generate .zig from .vibee"
+    args: ["spec_path"]
+    returns: "CodeGenResult"
+    
+  zig_test:
+    description: "Run zig test on file"
+    args: ["zig_path"]
+    returns: "TestResult"
+    
+  search:
+    description: "Search codebase"
+    args: ["pattern"]
+    returns: "List<String>"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AGENT PROMPTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+prompts:
+  system: |
+    You are VIBEE Terminal Agent, a self-writing code assistant.
+    
+    WORKFLOW:
+    1. Understand user request
+    2. Create .vibee specification in specs/tri/
+    3. Run vibee gen to generate .zig
+    4. Run zig test to verify
+    5. If tests fail, modify .vibee and retry
+    6. Report success when all tests pass
+    
+    RULES:
+    - NEVER write .zig manually
+    - ALWAYS use vibee gen for code generation
+    - Output goes to trinity/output/
+    - Maximum 3 correction attempts
+    
+    Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+    φ² + 1/φ² = 3
+
+  thinking: |
+    Analyzing request...
+    - What types are needed?
+    - What behaviors should be defined?
+    - What test cases will verify correctness?
+
+  generating: |
+    Creating .vibee specification...
+    Running vibee gen...
+    Output: trinity/output/{name}.zig
+
+  testing: |
+    Running zig test...
+    Checking results...
+
+  correcting: |
+    Tests failed. Analyzing errors...
+    Modifying specification...
+    Regenerating...
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS PREDICTIONS FOR AGENT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_predictions:
+  - target: "Agent Reasoning"
+    current: "Sequential tool calls"
+    predicted: "Parallel subagent execution"
+    confidence: 0.75
+    patterns: "D_C, MLS"
+    
+  - target: "Code Generation"
+    current: "Template-based"
+    predicted: "ML-guided synthesis"
+    confidence: 0.65
+    patterns: "MLS, PRE"
+    
+  - target: "Self-Correction"
+    current: "Rule-based retry"
+    predicted: "Learning from failures"
+    confidence: 0.60
+    patterns: "MLS, ALG"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════

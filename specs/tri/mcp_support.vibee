@@ -1,0 +1,468 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# MCP SUPPORT SPECIFICATION
+# Model Context Protocol for TRI
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: mcp_support
+version: "1.0.0"
+language: tri
+module: mcp
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+
+creation_pattern:
+  source: MCPRequest
+  transformer: MCPServer
+  result: MCPResponse
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MCP PROTOCOL TYPES
+# Based on: https://modelcontextprotocol.io/
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # JSON-RPC 2.0 base
+  JsonRpcRequest:
+    fields:
+      jsonrpc: String = "2.0"
+      id: String | Int
+      method: String
+      params: Object?
+
+  JsonRpcResponse:
+    fields:
+      jsonrpc: String = "2.0"
+      id: String | Int
+      result: Object?
+      error: JsonRpcError?
+
+  JsonRpcError:
+    fields:
+      code: Int
+      message: String
+      data: Object?
+
+  # MCP Capabilities
+  ServerCapabilities:
+    fields:
+      tools: ToolsCapability?
+      resources: ResourcesCapability?
+      prompts: PromptsCapability?
+      logging: LoggingCapability?
+
+  ClientCapabilities:
+    fields:
+      roots: RootsCapability?
+      sampling: SamplingCapability?
+
+  # Tools
+  Tool:
+    fields:
+      name: String
+      description: String
+      inputSchema: JsonSchema
+
+  ToolCall:
+    fields:
+      name: String
+      arguments: Object
+
+  ToolResult:
+    fields:
+      content: List<Content>
+      isError: Bool?
+
+  # Resources
+  Resource:
+    fields:
+      uri: String
+      name: String
+      description: String?
+      mimeType: String?
+
+  ResourceContent:
+    fields:
+      uri: String
+      mimeType: String?
+      text: String?
+      blob: String?  # base64
+
+  # Prompts
+  Prompt:
+    fields:
+      name: String
+      description: String?
+      arguments: List<PromptArgument>?
+
+  PromptArgument:
+    fields:
+      name: String
+      description: String?
+      required: Bool?
+
+  PromptMessage:
+    fields:
+      role: Role
+      content: Content
+
+  # Content types
+  Content:
+    enum:
+      - TextContent
+      - ImageContent
+      - ResourceContent
+
+  TextContent:
+    fields:
+      type: String = "text"
+      text: String
+
+  ImageContent:
+    fields:
+      type: String = "image"
+      data: String  # base64
+      mimeType: String
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MCP SERVER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class MCPServer:
+  name: String
+  version: String
+  capabilities: ServerCapabilities
+  tools: List<Tool>
+  resources: List<Resource>
+  prompts: List<Prompt>
+  
+  fn init(name: String, version: String) -> MCPServer:
+    return MCPServer(
+      name: name,
+      version: version,
+      capabilities: ServerCapabilities(
+        tools: ToolsCapability(listChanged: true),
+        resources: ResourcesCapability(subscribe: true, listChanged: true),
+        prompts: PromptsCapability(listChanged: true),
+        logging: LoggingCapability()
+      ),
+      tools: [],
+      resources: [],
+      prompts: []
+    )
+  
+  fn register_tool(self, tool: Tool):
+    self.tools.append(tool)
+  
+  fn register_resource(self, resource: Resource):
+    self.resources.append(resource)
+  
+  fn register_prompt(self, prompt: Prompt):
+    self.prompts.append(prompt)
+  
+  fn handle_request(self, request: JsonRpcRequest) -> JsonRpcResponse:
+    match request.method:
+      "initialize" -> self.handle_initialize(request)
+      "tools/list" -> self.handle_tools_list(request)
+      "tools/call" -> self.handle_tools_call(request)
+      "resources/list" -> self.handle_resources_list(request)
+      "resources/read" -> self.handle_resources_read(request)
+      "prompts/list" -> self.handle_prompts_list(request)
+      "prompts/get" -> self.handle_prompts_get(request)
+      _ -> self.error_response(request.id, -32601, "Method not found")
+  
+  fn handle_initialize(self, request: JsonRpcRequest) -> JsonRpcResponse:
+    return JsonRpcResponse(
+      id: request.id,
+      result: {
+        "protocolVersion": "2024-11-05",
+        "capabilities": self.capabilities,
+        "serverInfo": {
+          "name": self.name,
+          "version": self.version
+        }
+      }
+    )
+  
+  fn handle_tools_list(self, request: JsonRpcRequest) -> JsonRpcResponse:
+    return JsonRpcResponse(
+      id: request.id,
+      result: {
+        "tools": self.tools.map(t -> {
+          "name": t.name,
+          "description": t.description,
+          "inputSchema": t.inputSchema
+        })
+      }
+    )
+  
+  fn handle_tools_call(self, request: JsonRpcRequest) -> JsonRpcResponse:
+    call = request.params as ToolCall
+    tool = self.tools.find(t -> t.name == call.name)
+    
+    if not tool:
+      return self.error_response(request.id, -32602, "Tool not found: {call.name}")
+    
+    result = self.execute_tool(tool, call.arguments)
+    
+    return JsonRpcResponse(
+      id: request.id,
+      result: {
+        "content": result.content,
+        "isError": result.isError
+      }
+    )
+  
+  fn error_response(self, id: String | Int, code: Int, message: String) -> JsonRpcResponse:
+    return JsonRpcResponse(
+      id: id,
+      error: JsonRpcError(code: code, message: message)
+    )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRI MCP TOOLS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tri_tools:
+  - name: "tri_eval"
+    description: "Evaluate ternary logic expression"
+    inputSchema:
+      type: object
+      properties:
+        expression:
+          type: string
+          description: "Ternary expression (e.g., 'true AND unknown')"
+      required: ["expression"]
+    handler: |
+      fn execute(args):
+        expr = args.expression
+        result = eval_ternary(expr)
+        return ToolResult(
+          content: [TextContent(text: "Result: {result}")]
+        )
+
+  - name: "tri_truth"
+    description: "Show truth table for ternary operator"
+    inputSchema:
+      type: object
+      properties:
+        operator:
+          type: string
+          enum: ["and", "or", "not", "implies", "all"]
+      required: ["operator"]
+    handler: |
+      fn execute(args):
+        table = get_truth_table(args.operator)
+        return ToolResult(
+          content: [TextContent(text: table)]
+        )
+
+  - name: "tri_phi"
+    description: "Show sacred constants (φ, TRINITY, PHOENIX)"
+    inputSchema:
+      type: object
+      properties: {}
+    handler: |
+      fn execute(args):
+        return ToolResult(
+          content: [TextContent(text: """
+            φ = {PHI}
+            φ² + 1/φ² = {TRINITY}
+            PHOENIX = {PHOENIX}
+          """)]
+        )
+
+  - name: "tri_pas"
+    description: "Run PAS analysis on algorithm"
+    inputSchema:
+      type: object
+      properties:
+        target:
+          type: string
+          description: "Algorithm or component to analyze"
+        mode:
+          type: string
+          enum: ["analyze", "predict", "patterns"]
+      required: ["target"]
+    handler: |
+      fn execute(args):
+        result = pas_analyze(args.target, args.mode ?? "analyze")
+        return ToolResult(
+          content: [TextContent(text: result)]
+        )
+
+  - name: "tri_compile"
+    description: "Compile .tri file to Zig"
+    inputSchema:
+      type: object
+      properties:
+        file:
+          type: string
+          description: "Path to .tri file"
+        check_only:
+          type: boolean
+          description: "Only type check, don't generate code"
+      required: ["file"]
+    handler: |
+      fn execute(args):
+        result = compile_tri(args.file, check_only: args.check_only ?? false)
+        return ToolResult(
+          content: [TextContent(text: result.summary)],
+          isError: not result.success
+        )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRI MCP RESOURCES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tri_resources:
+  - uri: "tri://specs"
+    name: "TRI Specifications"
+    description: "List of .vibee specifications"
+    mimeType: "application/json"
+
+  - uri: "tri://output"
+    name: "Generated Code"
+    description: "Generated .tri files"
+    mimeType: "application/json"
+
+  - uri: "tri://docs"
+    name: "Documentation"
+    description: "TRI documentation"
+    mimeType: "text/markdown"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRI MCP PROMPTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tri_prompts:
+  - name: "ternary_logic"
+    description: "Explain ternary logic concepts"
+    arguments:
+      - name: "topic"
+        description: "Topic to explain (kleene, lukasiewicz, truth_tables)"
+        required: true
+
+  - name: "pas_analysis"
+    description: "Analyze algorithm using PAS methodology"
+    arguments:
+      - name: "algorithm"
+        description: "Algorithm name or description"
+        required: true
+
+  - name: "vibee_spec"
+    description: "Generate .vibee specification"
+    arguments:
+      - name: "feature"
+        description: "Feature to specify"
+        required: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: initialize_server
+    given: MCP client connects
+    when: Initialize request received
+    then: Return server capabilities
+    test_cases:
+      - name: init_success
+        input:
+          method: "initialize"
+          params: { protocolVersion: "2024-11-05" }
+        expected:
+          result.serverInfo.name: "TRI"
+
+  - name: list_tools
+    given: Server initialized
+    when: tools/list request received
+    then: Return list of TRI tools
+    test_cases:
+      - name: list_all_tools
+        input:
+          method: "tools/list"
+        expected:
+          result.tools.length: 5
+
+  - name: call_tool
+    given: Valid tool name
+    when: tools/call request received
+    then: Execute tool and return result
+    test_cases:
+      - name: call_tri_eval
+        input:
+          method: "tools/call"
+          params:
+            name: "tri_eval"
+            arguments: { expression: "true AND unknown" }
+        expected:
+          result.content[0].text: contains("unknown")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMMANDS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+commands:
+  - name: "tri mcp"
+    usage: "tri mcp [--stdio] [--port <port>]"
+    description: "Start MCP server"
+    examples:
+      - "tri mcp --stdio"
+      - "tri mcp --port 3000"
+
+  - name: "tri mcp tools"
+    usage: "tri mcp tools"
+    description: "List available MCP tools"
+
+  - name: "tri mcp test"
+    usage: "tri mcp test <tool> [args...]"
+    description: "Test MCP tool locally"
+    examples:
+      - "tri mcp test tri_eval --expression 'true AND false'"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRANSPORT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+transport:
+  stdio:
+    description: "Standard input/output transport"
+    format: "JSON-RPC 2.0 over newline-delimited JSON"
+    
+  http:
+    description: "HTTP transport with SSE"
+    endpoints:
+      - path: "/mcp"
+        method: POST
+        description: "JSON-RPC endpoint"
+      - path: "/mcp/sse"
+        method: GET
+        description: "Server-sent events for notifications"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS PREDICTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_predictions:
+  - target: "MCP Latency"
+    current: "50ms per request"
+    predicted: "5ms with connection pooling"
+    confidence: 0.80
+    patterns: [PRE]
+    timeline: "2026"
+
+  - target: "Tool Discovery"
+    current: "Static list"
+    predicted: "Dynamic registration"
+    confidence: 0.75
+    patterns: [D&C]
+    timeline: "2026"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════

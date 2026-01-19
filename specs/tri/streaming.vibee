@@ -1,0 +1,461 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# STREAMING SPECIFICATION
+# Real-time Token Streaming for TRI
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: streaming
+version: "1.0.0"
+language: tri
+module: streaming
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+
+creation_pattern:
+  source: StreamRequest
+  transformer: StreamProcessor
+  result: StreamOutput
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  StreamEvent:
+    enum:
+      - start           # Stream started
+      - token           # New token received
+      - content_block   # Content block (Anthropic)
+      - tool_use        # Tool use event
+      - tool_result     # Tool result
+      - error           # Error occurred
+      - done            # Stream completed
+
+  StreamChunk:
+    fields:
+      event: StreamEvent
+      data: String?
+      index: Int
+      timestamp: Timestamp
+      metadata: Object?
+
+  StreamConfig:
+    fields:
+      buffer_size: Int = 16
+      render_delay_ms: Int = 10
+      show_spinner: Bool = true
+      show_tokens: Bool = false
+      color_output: Bool = true
+
+  StreamState:
+    fields:
+      started: Bool
+      chunks_received: Int
+      tokens_received: Int
+      content: String
+      errors: List<String>
+      start_time: Timestamp
+      end_time: Timestamp?
+
+  StreamStats:
+    fields:
+      total_tokens: Int
+      tokens_per_second: Float
+      latency_first_token_ms: Int
+      latency_total_ms: Int
+      chunks: Int
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STREAM PROCESSOR
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class StreamProcessor:
+  config: StreamConfig
+  state: StreamState
+  buffer: List<String>
+  callbacks: StreamCallbacks
+  
+  fn init(config: StreamConfig?) -> StreamProcessor:
+    return StreamProcessor(
+      config: config ?? StreamConfig(),
+      state: StreamState(
+        started: false,
+        chunks_received: 0,
+        tokens_received: 0,
+        content: "",
+        errors: [],
+        start_time: now()
+      ),
+      buffer: [],
+      callbacks: StreamCallbacks()
+    )
+  
+  fn on_start(self, callback: fn()):
+    self.callbacks.on_start = callback
+  
+  fn on_token(self, callback: fn(token: String)):
+    self.callbacks.on_token = callback
+  
+  fn on_done(self, callback: fn(content: String, stats: StreamStats)):
+    self.callbacks.on_done = callback
+  
+  fn on_error(self, callback: fn(error: String)):
+    self.callbacks.on_error = callback
+  
+  fn process_chunk(self, chunk: StreamChunk):
+    self.state.chunks_received += 1
+    
+    match chunk.event:
+      StreamEvent.start:
+        self.state.started = true
+        if self.callbacks.on_start:
+          self.callbacks.on_start()
+        if self.config.show_spinner:
+          self.start_spinner()
+      
+      StreamEvent.token:
+        self.state.tokens_received += 1
+        self.state.content += chunk.data ?? ""
+        self.buffer.append(chunk.data ?? "")
+        
+        if self.buffer.len() >= self.config.buffer_size:
+          self.flush_buffer()
+        
+        if self.callbacks.on_token:
+          self.callbacks.on_token(chunk.data ?? "")
+      
+      StreamEvent.content_block:
+        # Anthropic-style content block
+        self.state.content += chunk.data ?? ""
+        self.buffer.append(chunk.data ?? "")
+        self.flush_buffer()
+      
+      StreamEvent.error:
+        self.state.errors.append(chunk.data ?? "Unknown error")
+        if self.callbacks.on_error:
+          self.callbacks.on_error(chunk.data ?? "")
+      
+      StreamEvent.done:
+        self.state.end_time = now()
+        self.flush_buffer()
+        if self.config.show_spinner:
+          self.stop_spinner()
+        
+        stats = self.calculate_stats()
+        if self.callbacks.on_done:
+          self.callbacks.on_done(self.state.content, stats)
+  
+  fn flush_buffer(self):
+    if self.buffer.is_empty():
+      return
+    
+    text = self.buffer.join("")
+    self.buffer = []
+    
+    if self.config.color_output:
+      print("{colors.assistant}{text}{colors.reset}", end: "", flush: true)
+    else:
+      print(text, end: "", flush: true)
+    
+    if self.config.render_delay_ms > 0:
+      sleep_ms(self.config.render_delay_ms)
+  
+  fn calculate_stats(self) -> StreamStats:
+    duration_ms = (self.state.end_time ?? now()) - self.state.start_time
+    duration_s = duration_ms / 1000.0
+    
+    return StreamStats(
+      total_tokens: self.state.tokens_received,
+      tokens_per_second: self.state.tokens_received / duration_s if duration_s > 0 else 0,
+      latency_first_token_ms: 0,  # TODO: track first token time
+      latency_total_ms: duration_ms,
+      chunks: self.state.chunks_received
+    )
+  
+  fn start_spinner(self):
+    # Start background spinner
+    spawn(self.animate_spinner)
+  
+  fn stop_spinner(self):
+    self.spinner_running = false
+    print("\r                    \r", end: "")
+  
+  fn animate_spinner(self):
+    frames = ["◐", "◓", "◑", "◒"]
+    i = 0
+    self.spinner_running = true
+    
+    while self.spinner_running and not self.state.started:
+      print("\r{frames[i % 4]} Thinking...", end: "", flush: true)
+      i += 1
+      sleep_ms(100)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROVIDER-SPECIFIC STREAMING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+streaming_formats:
+  anthropic:
+    description: "Anthropic Claude streaming format"
+    event_types:
+      - message_start
+      - content_block_start
+      - content_block_delta
+      - content_block_stop
+      - message_delta
+      - message_stop
+    
+    parser: |
+      fn parse_anthropic_event(line: String) -> StreamChunk?:
+        if not line.starts_with("data: "):
+          return null
+        
+        data = json_decode(line[6:])
+        
+        match data.type:
+          "message_start":
+            return StreamChunk(event: StreamEvent.start)
+          
+          "content_block_delta":
+            if data.delta.type == "text_delta":
+              return StreamChunk(
+                event: StreamEvent.token,
+                data: data.delta.text
+              )
+          
+          "message_stop":
+            return StreamChunk(event: StreamEvent.done)
+          
+          _:
+            return null
+
+  ollama:
+    description: "Ollama streaming format"
+    event_types:
+      - response (with done: false)
+      - response (with done: true)
+    
+    parser: |
+      fn parse_ollama_event(line: String) -> StreamChunk?:
+        data = json_decode(line)
+        
+        if data.done:
+          return StreamChunk(event: StreamEvent.done)
+        else:
+          return StreamChunk(
+            event: StreamEvent.token,
+            data: data.message.content
+          )
+
+  openai:
+    description: "OpenAI streaming format"
+    event_types:
+      - "[DONE]"
+      - data: {...}
+    
+    parser: |
+      fn parse_openai_event(line: String) -> StreamChunk?:
+        if line == "data: [DONE]":
+          return StreamChunk(event: StreamEvent.done)
+        
+        if not line.starts_with("data: "):
+          return null
+        
+        data = json_decode(line[6:])
+        
+        if data.choices[0].delta.content:
+          return StreamChunk(
+            event: StreamEvent.token,
+            data: data.choices[0].delta.content
+          )
+        
+        return null
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STREAM RENDERER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class StreamRenderer:
+  config: StreamConfig
+  terminal_width: Int
+  current_line: String
+  
+  fn init(config: StreamConfig?) -> StreamRenderer:
+    return StreamRenderer(
+      config: config ?? StreamConfig(),
+      terminal_width: get_terminal_width() ?? 80,
+      current_line: ""
+    )
+  
+  fn render_token(self, token: String):
+    self.current_line += token
+    
+    # Handle newlines
+    if "\n" in token:
+      parts = token.split("\n")
+      for i, part in parts.enumerate():
+        if i > 0:
+          print("")
+          self.current_line = ""
+        print(part, end: "", flush: true)
+        self.current_line += part
+    else:
+      print(token, end: "", flush: true)
+    
+    # Word wrap if needed
+    if self.current_line.len() > self.terminal_width:
+      # Find last space
+      last_space = self.current_line.rfind(" ")
+      if last_space > 0:
+        print("")
+        self.current_line = self.current_line[last_space+1:]
+  
+  fn render_code_block(self, language: String, code: String):
+    print("\n```{language}")
+    for line in code.split("\n"):
+      print(line)
+    print("```\n")
+  
+  fn render_markdown(self, text: String):
+    # Simple markdown rendering
+    lines = text.split("\n")
+    for line in lines:
+      if line.starts_with("# "):
+        print("{colors.bold}{line}{colors.reset}")
+      elif line.starts_with("## "):
+        print("{colors.bold}{line}{colors.reset}")
+      elif line.starts_with("- "):
+        print("  • {line[2:]}")
+      elif line.starts_with("```"):
+        print(line)
+      else:
+        print(line)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: process_stream
+    given: Streaming response from AI
+    when: Chunks arrive
+    then: Render tokens in real-time
+    test_cases:
+      - name: render_tokens
+        input:
+          chunks:
+            - { event: start }
+            - { event: token, data: "Hello" }
+            - { event: token, data: " world" }
+            - { event: done }
+        expected:
+          output: "Hello world"
+
+  - name: handle_buffer
+    given: Buffer size configured
+    when: Buffer fills up
+    then: Flush buffer to output
+    test_cases:
+      - name: buffer_flush
+        input:
+          buffer_size: 4
+          tokens: ["a", "b", "c", "d", "e"]
+        expected:
+          flushes: 2
+
+  - name: calculate_stats
+    given: Stream completed
+    when: Stats requested
+    then: Return accurate statistics
+    test_cases:
+      - name: stats_calculation
+        input:
+          tokens: 100
+          duration_ms: 1000
+        expected:
+          tokens_per_second: 100.0
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMMANDS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+commands:
+  - name: "tri chat --stream"
+    usage: "tri chat --stream [--no-color] [--show-tokens]"
+    description: "Chat with streaming output"
+    examples:
+      - "tri chat --stream"
+      - "tri chat --stream --show-tokens"
+
+  - name: "tri config streaming"
+    usage: "tri config streaming [key] [value]"
+    description: "Configure streaming settings"
+    examples:
+      - "tri config streaming buffer_size 32"
+      - "tri config streaming render_delay_ms 5"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+config:
+  defaults:
+    buffer_size: 16
+    render_delay_ms: 10
+    show_spinner: true
+    show_tokens: false
+    color_output: true
+  
+  env_vars:
+    TRI_STREAM_BUFFER: buffer_size
+    TRI_STREAM_DELAY: render_delay_ms
+    TRI_NO_COLOR: "!color_output"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TERMINAL EFFECTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+terminal_effects:
+  spinner:
+    frames: ["◐", "◓", "◑", "◒"]
+    interval_ms: 100
+    message: "Thinking..."
+  
+  typing:
+    enabled: false
+    delay_ms: 20
+    variance_ms: 10
+  
+  colors:
+    assistant: "\x1b[32m"  # green
+    code: "\x1b[36m"       # cyan
+    error: "\x1b[31m"      # red
+    stats: "\x1b[90m"      # gray
+    reset: "\x1b[0m"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS PREDICTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_predictions:
+  - target: "First Token Latency"
+    current: "500ms"
+    predicted: "100ms with speculative decoding"
+    confidence: 0.75
+    patterns: [PRE, MLS]
+    timeline: "2026"
+
+  - target: "Render Performance"
+    current: "60 FPS"
+    predicted: "120 FPS with GPU acceleration"
+    confidence: 0.60
+    patterns: [ALG]
+    timeline: "2027"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════

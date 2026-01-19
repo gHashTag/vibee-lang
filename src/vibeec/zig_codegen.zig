@@ -191,7 +191,9 @@ pub const ZigCodeGen = struct {
                 
                 for (t.fields.items) |field| {
                     try self.builder.writeIndent();
-                    try self.builder.writeFmt("{s}: {s},\n", .{ field.name, mapType(field.type_name) });
+                    const clean_type = cleanTypeName(field.type_name);
+                    const safe_name = escapeReservedWord(field.name);
+                    try self.builder.writeFmt("{s}: {s},\n", .{ safe_name, mapType(clean_type) });
                 }
                 
                 self.builder.decIndent();
@@ -515,7 +517,49 @@ pub const ZigCodeGen = struct {
         return null;
     }
     
+    fn escapeReservedWord(name: []const u8) []const u8 {
+        // Zig reserved words that might appear as field names
+        if (std.mem.eql(u8, name, "error")) return "@\"error\"";
+        if (std.mem.eql(u8, name, "type")) return "@\"type\"";
+        if (std.mem.eql(u8, name, "return")) return "@\"return\"";
+        if (std.mem.eql(u8, name, "break")) return "@\"break\"";
+        if (std.mem.eql(u8, name, "continue")) return "@\"continue\"";
+        if (std.mem.eql(u8, name, "if")) return "@\"if\"";
+        if (std.mem.eql(u8, name, "else")) return "@\"else\"";
+        if (std.mem.eql(u8, name, "while")) return "@\"while\"";
+        if (std.mem.eql(u8, name, "for")) return "@\"for\"";
+        if (std.mem.eql(u8, name, "fn")) return "@\"fn\"";
+        if (std.mem.eql(u8, name, "const")) return "@\"const\"";
+        if (std.mem.eql(u8, name, "var")) return "@\"var\"";
+        if (std.mem.eql(u8, name, "pub")) return "@\"pub\"";
+        if (std.mem.eql(u8, name, "try")) return "@\"try\"";
+        if (std.mem.eql(u8, name, "catch")) return "@\"catch\"";
+        return name;
+    }
+
+    fn cleanTypeName(type_name: []const u8) []const u8 {
+        var result = type_name;
+        
+        // Remove comments (# ...)
+        if (std.mem.indexOf(u8, result, "#")) |pos| {
+            result = result[0..pos];
+        }
+        
+        // Remove default values (= "...")
+        if (std.mem.indexOf(u8, result, "=")) |pos| {
+            result = result[0..pos];
+        }
+        
+        // Handle union types (A | B) -> use first type
+        if (std.mem.indexOf(u8, result, "|")) |pos| {
+            result = result[0..pos];
+        }
+        
+        return std.mem.trim(u8, result, " \t");
+    }
+
     fn mapType(type_name: []const u8) []const u8 {
+        // Primitive types
         if (std.mem.eql(u8, type_name, "f64")) return "f64";
         if (std.mem.eql(u8, type_name, "f32")) return "f32";
         if (std.mem.eql(u8, type_name, "i32")) return "i32";
@@ -523,6 +567,52 @@ pub const ZigCodeGen = struct {
         if (std.mem.eql(u8, type_name, "u32")) return "u32";
         if (std.mem.eql(u8, type_name, "u64")) return "u64";
         if (std.mem.eql(u8, type_name, "bool")) return "bool";
+        
+        // VIBEE types -> Zig types
+        if (std.mem.eql(u8, type_name, "String")) return "[]const u8";
+        if (std.mem.eql(u8, type_name, "Int")) return "i64";
+        if (std.mem.eql(u8, type_name, "Float")) return "f64";
+        if (std.mem.eql(u8, type_name, "Bool")) return "bool";
+        if (std.mem.eql(u8, type_name, "Bytes")) return "[]const u8";
+        if (std.mem.eql(u8, type_name, "Timestamp")) return "i64";
+        if (std.mem.eql(u8, type_name, "Duration")) return "i64";
+        if (std.mem.eql(u8, type_name, "Any")) return "[]const u8";
+        if (std.mem.eql(u8, type_name, "Void")) return "void";
+        if (std.mem.eql(u8, type_name, "Error")) return "anyerror";
+        
+        // Generic types Option<T> -> ?T
+        if (std.mem.startsWith(u8, type_name, "Option<")) {
+            return "?[]const u8"; // Simplified: Option<T> -> ?[]const u8
+        }
+        
+        // Generic types List<T> -> []T
+        if (std.mem.startsWith(u8, type_name, "List<")) {
+            return "[]const u8"; // Simplified: List<T> -> slice
+        }
+        
+        // Generic types Map<K,V> -> std.StringHashMap
+        if (std.mem.startsWith(u8, type_name, "Map<")) {
+            return "std.StringHashMap([]const u8)";
+        }
+        
+        // Handle trailing ? (nullable) - convert Type? to ?Type
+        if (type_name.len > 0 and type_name[type_name.len - 1] == '?') {
+            return "?[]const u8"; // Simplified
+        }
+        
+        // Object type
+        if (std.mem.eql(u8, type_name, "Object")) {
+            return "[]const u8";
+        }
+        
+        // Unknown complex types -> []const u8
+        if (std.mem.eql(u8, type_name, "JsonSchema")) return "[]const u8";
+        if (std.mem.eql(u8, type_name, "Role")) return "[]const u8";
+        if (std.mem.eql(u8, type_name, "PluginManifest")) return "[]const u8";
+        if (std.mem.eql(u8, type_name, "PluginConfig")) return "[]const u8";
+        if (std.mem.eql(u8, type_name, "StreamEvent")) return "[]const u8";
+        if (std.mem.eql(u8, type_name, "TokenStats")) return "[]const u8";
+        
         return type_name;
     }
 };

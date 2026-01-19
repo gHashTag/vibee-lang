@@ -1,0 +1,662 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRI COMPILER - Generated from tri_compiler.vibee
+# .tri → Zig Transpilation Engine
+# Date: 2026-01-19
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+module: tri_compiler
+version: "1.0.0"
+generated_from: "specs/tri/tri_compiler.vibee"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SACRED CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  PHI: 1.618033988749895
+  TRINITY: 3.0
+  PHOENIX: 999
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TOKEN TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+enum Token:
+  keyword
+  identifier
+  literal
+  operator
+  punctuation
+  comment
+  newline
+  eof
+
+struct TokenInfo:
+  type: Token
+  value: String
+  line: Int
+  column: Int
+
+const KEYWORDS = [
+  "module", "version", "import", "const", "enum", "struct", "class",
+  "fn", "command", "test", "if", "else", "elif", "match", "for",
+  "while", "return", "break", "continue", "true", "false", "null",
+  "self", "in", "not", "and", "or"
+]
+
+const OPERATORS = [
+  "+", "-", "*", "/", "%", "==", "!=", "<", ">", "<=", ">=",
+  "=", "+=", "-=", "->", "=>", ":", "::", ".", "..", "...", "?", "??"
+]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LEXER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class Lexer:
+  source: String
+  pos: Int
+  line: Int
+  column: Int
+  tokens: List<TokenInfo>
+  
+  fn init(source: String) -> Lexer:
+    return Lexer(
+      source: source,
+      pos: 0,
+      line: 1,
+      column: 1,
+      tokens: []
+    )
+  
+  fn tokenize(self) -> List<TokenInfo>:
+    while self.pos < self.source.len():
+      self.skip_whitespace()
+      
+      if self.pos >= self.source.len():
+        break
+      
+      ch = self.current()
+      
+      if ch == "#":
+        self.read_comment()
+      elif ch == "\n":
+        self.add_token(Token.newline, "\n")
+        self.advance()
+        self.line += 1
+        self.column = 1
+      elif ch == '"' or ch == "'":
+        self.read_string(ch)
+      elif ch.is_digit():
+        self.read_number()
+      elif ch.is_alpha() or ch == "_":
+        self.read_identifier()
+      elif self.is_operator_start(ch):
+        self.read_operator()
+      elif ch in "(){}[]:,":
+        self.add_token(Token.punctuation, ch)
+        self.advance()
+      else:
+        self.advance()
+    
+    self.add_token(Token.eof, "")
+    return self.tokens
+  
+  fn current(self) -> String:
+    return self.source[self.pos]
+  
+  fn advance(self) -> String:
+    ch = self.current()
+    self.pos += 1
+    self.column += 1
+    return ch
+  
+  fn skip_whitespace(self):
+    while self.pos < self.source.len() and self.current() in " \t\r":
+      self.advance()
+  
+  fn read_comment(self):
+    start = self.pos
+    while self.pos < self.source.len() and self.current() != "\n":
+      self.advance()
+    self.add_token(Token.comment, self.source[start:self.pos])
+  
+  fn read_string(self, quote: String):
+    start = self.pos
+    self.advance()  # skip opening quote
+    
+    # Check for triple quote
+    if self.pos + 1 < self.source.len() and self.source[self.pos:self.pos+2] == quote + quote:
+      self.advance()
+      self.advance()
+      # Read until triple quote
+      while self.pos + 2 < self.source.len():
+        if self.source[self.pos:self.pos+3] == quote + quote + quote:
+          self.advance()
+          self.advance()
+          self.advance()
+          break
+        if self.current() == "\n":
+          self.line += 1
+          self.column = 0
+        self.advance()
+    else:
+      # Single line string
+      while self.pos < self.source.len() and self.current() != quote:
+        if self.current() == "\\":
+          self.advance()
+        self.advance()
+      self.advance()  # skip closing quote
+    
+    self.add_token(Token.literal, self.source[start:self.pos])
+  
+  fn read_number(self):
+    start = self.pos
+    while self.pos < self.source.len() and (self.current().is_digit() or self.current() == "."):
+      self.advance()
+    self.add_token(Token.literal, self.source[start:self.pos])
+  
+  fn read_identifier(self):
+    start = self.pos
+    while self.pos < self.source.len() and (self.current().is_alnum() or self.current() == "_"):
+      self.advance()
+    
+    value = self.source[start:self.pos]
+    token_type = Token.keyword if value in KEYWORDS else Token.identifier
+    self.add_token(token_type, value)
+  
+  fn read_operator(self):
+    # Try longest match first
+    for op in OPERATORS.sorted(key: o -> -o.len()):
+      if self.source[self.pos:].starts_with(op):
+        self.add_token(Token.operator, op)
+        self.pos += op.len()
+        self.column += op.len()
+        return
+    
+    # Single char operator
+    self.add_token(Token.operator, self.current())
+    self.advance()
+  
+  fn is_operator_start(self, ch: String) -> Bool:
+    return any(op.starts_with(ch) for op in OPERATORS)
+  
+  fn add_token(self, type: Token, value: String):
+    self.tokens.append(TokenInfo(
+      type: type,
+      value: value,
+      line: self.line,
+      column: self.column - value.len()
+    ))
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AST NODES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+enum ASTNode:
+  module
+  import_decl
+  const_decl
+  enum_decl
+  struct_decl
+  class_decl
+  fn_decl
+  command_decl
+  test_decl
+  expression
+  statement
+  block
+
+struct ModuleAST:
+  name: String
+  version: String
+  imports: List<ImportNode>
+  constants: List<ConstNode>
+  enums: List<EnumNode>
+  structs: List<StructNode>
+  classes: List<ClassNode>
+  functions: List<FunctionNode>
+  commands: List<CommandNode>
+  tests: List<TestNode>
+
+struct ImportNode:
+  name: String
+  from_path: String?
+
+struct ConstNode:
+  name: String
+  value: String
+
+struct EnumNode:
+  name: String
+  variants: List<String>
+
+struct StructNode:
+  name: String
+  fields: List<FieldNode>
+
+struct FieldNode:
+  name: String
+  type: String
+  default: String?
+
+struct ClassNode:
+  name: String
+  fields: List<FieldNode>
+  methods: List<FunctionNode>
+
+struct FunctionNode:
+  name: String
+  params: List<ParamNode>
+  return_type: String?
+  body: List<String>
+
+struct ParamNode:
+  name: String
+  type: String
+  default: String?
+
+struct CommandNode:
+  name: String
+  usage: String?
+  handler: FunctionNode?
+
+struct TestNode:
+  name: String
+  assertions: List<String>
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PARSER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class Parser:
+  tokens: List<TokenInfo>
+  pos: Int
+  
+  fn init(tokens: List<TokenInfo>) -> Parser:
+    return Parser(tokens: tokens, pos: 0)
+  
+  fn parse(self) -> ModuleAST:
+    ast = ModuleAST(
+      name: "",
+      version: "1.0.0",
+      imports: [],
+      constants: [],
+      enums: [],
+      structs: [],
+      classes: [],
+      functions: [],
+      commands: [],
+      tests: []
+    )
+    
+    while not self.is_eof():
+      self.skip_newlines()
+      
+      if self.is_eof():
+        break
+      
+      if self.check_keyword("module"):
+        ast.name = self.parse_module_decl()
+      elif self.check_keyword("version"):
+        ast.version = self.parse_version_decl()
+      elif self.check_keyword("import"):
+        ast.imports.append(self.parse_import())
+      elif self.check_keyword("const"):
+        ast.constants.append(self.parse_const())
+      elif self.check_keyword("enum"):
+        ast.enums.append(self.parse_enum())
+      elif self.check_keyword("struct"):
+        ast.structs.append(self.parse_struct())
+      elif self.check_keyword("class"):
+        ast.classes.append(self.parse_class())
+      elif self.check_keyword("fn"):
+        ast.functions.append(self.parse_function())
+      elif self.check_keyword("command"):
+        ast.commands.append(self.parse_command())
+      elif self.check_keyword("test"):
+        ast.tests.append(self.parse_test())
+      else:
+        self.advance()
+    
+    return ast
+  
+  fn current(self) -> TokenInfo:
+    return self.tokens[self.pos]
+  
+  fn advance(self) -> TokenInfo:
+    token = self.current()
+    self.pos += 1
+    return token
+  
+  fn is_eof(self) -> Bool:
+    return self.pos >= self.tokens.len() or self.current().type == Token.eof
+  
+  fn check_keyword(self, keyword: String) -> Bool:
+    return self.current().type == Token.keyword and self.current().value == keyword
+  
+  fn skip_newlines(self):
+    while not self.is_eof() and self.current().type == Token.newline:
+      self.advance()
+  
+  fn parse_module_decl(self) -> String:
+    self.advance()  # skip "module"
+    self.expect(":")
+    name = self.advance().value
+    return name
+  
+  fn parse_version_decl(self) -> String:
+    self.advance()  # skip "version"
+    self.expect(":")
+    version = self.advance().value.trim('"')
+    return version
+  
+  fn expect(self, value: String):
+    if self.current().value != value:
+      error("Expected '{value}' at line {self.current().line}")
+    self.advance()
+
+  # ... additional parse methods ...
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CODE GENERATOR
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class CodeGenerator:
+  ast: ModuleAST
+  output: List<String>
+  indent: Int
+  
+  fn init(ast: ModuleAST) -> CodeGenerator:
+    return CodeGenerator(ast: ast, output: [], indent: 0)
+  
+  fn generate(self) -> String:
+    self.emit_header()
+    self.emit_imports()
+    self.emit_constants()
+    self.emit_enums()
+    self.emit_structs()
+    self.emit_classes()
+    self.emit_functions()
+    self.emit_tests()
+    
+    return self.output.join("\n")
+  
+  fn emit_header(self):
+    self.emit("// {self.ast.name}.zig - Generated from {self.ast.name}.tri")
+    self.emit("// Sacred Formula: V = n × 3^k × π^m × φ^p × e^q")
+    self.emit("// Golden Identity: φ² + 1/φ² = 3")
+    self.emit("")
+    self.emit("const std = @import(\"std\");")
+    self.emit("")
+    self.emit("pub const PHI: f64 = 1.618033988749895;")
+    self.emit("pub const TRINITY: f64 = 3.0;")
+    self.emit("pub const PHOENIX: u32 = 999;")
+    self.emit("")
+  
+  fn emit_imports(self):
+    for imp in self.ast.imports:
+      if imp.from_path:
+        self.emit("const {imp.name} = @import(\"{imp.from_path}\");")
+      else:
+        self.emit("const {imp.name} = @import(\"{imp.name}.zig\");")
+    if self.ast.imports.len() > 0:
+      self.emit("")
+  
+  fn emit_constants(self):
+    for c in self.ast.constants:
+      self.emit("pub const {c.name} = {self.convert_value(c.value)};")
+    if self.ast.constants.len() > 0:
+      self.emit("")
+  
+  fn emit_enums(self):
+    for e in self.ast.enums:
+      self.emit("pub const {e.name} = enum {")
+      self.indent += 1
+      for v in e.variants:
+        self.emit("{v},")
+      self.indent -= 1
+      self.emit("};")
+      self.emit("")
+  
+  fn emit_structs(self):
+    for s in self.ast.structs:
+      self.emit("pub const {s.name} = struct {")
+      self.indent += 1
+      for f in s.fields:
+        zig_type = self.convert_type(f.type)
+        if f.default:
+          self.emit("{f.name}: {zig_type} = {self.convert_value(f.default)},")
+        else:
+          self.emit("{f.name}: {zig_type},")
+      self.indent -= 1
+      self.emit("};")
+      self.emit("")
+  
+  fn emit_classes(self):
+    for c in self.ast.classes:
+      self.emit("pub const {c.name} = struct {")
+      self.indent += 1
+      
+      # Fields
+      for f in c.fields:
+        zig_type = self.convert_type(f.type)
+        self.emit("{f.name}: {zig_type},")
+      
+      self.emit("")
+      
+      # Methods
+      for m in c.methods:
+        self.emit_function(m, is_method: true)
+      
+      self.indent -= 1
+      self.emit("};")
+      self.emit("")
+  
+  fn emit_functions(self):
+    for f in self.ast.functions:
+      self.emit_function(f, is_method: false)
+  
+  fn emit_function(self, f: FunctionNode, is_method: Bool):
+    params = []
+    if is_method:
+      params.append("self: *@This()")
+    for p in f.params:
+      zig_type = self.convert_type(p.type)
+      params.append("{p.name}: {zig_type}")
+    
+    params_str = params.join(", ")
+    return_type = self.convert_type(f.return_type) if f.return_type else "void"
+    
+    self.emit("pub fn {f.name}({params_str}) {return_type} {")
+    self.indent += 1
+    for line in f.body:
+      self.emit(self.convert_statement(line))
+    self.indent -= 1
+    self.emit("}")
+    self.emit("")
+  
+  fn emit_tests(self):
+    for t in self.ast.tests:
+      self.emit("test \"{t.name}\" {")
+      self.indent += 1
+      for a in t.assertions:
+        self.emit("try std.testing.expect({self.convert_assertion(a)});")
+      self.indent -= 1
+      self.emit("}")
+      self.emit("")
+  
+  fn emit(self, line: String):
+    indent_str = "    " * self.indent
+    self.output.append("{indent_str}{line}")
+  
+  fn convert_type(self, tri_type: String) -> String:
+    type_map = {
+      "String": "[]const u8",
+      "Int": "i64",
+      "Float": "f64",
+      "Bool": "bool",
+      "Void": "void"
+    }
+    
+    if tri_type in type_map:
+      return type_map[tri_type]
+    
+    if tri_type.starts_with("List<"):
+      inner = tri_type[5:-1]
+      return "std.ArrayList({self.convert_type(inner)})"
+    
+    if tri_type.starts_with("Option<"):
+      inner = tri_type[7:-1]
+      return "?{self.convert_type(inner)}"
+    
+    return tri_type
+  
+  fn convert_value(self, value: String) -> String:
+    if value.starts_with('"'):
+      return value
+    if value == "true":
+      return "true"
+    if value == "false":
+      return "false"
+    if value == "null":
+      return "null"
+    return value
+  
+  fn convert_statement(self, stmt: String) -> String:
+    # Basic statement conversion
+    stmt = stmt.replace("self.", "self.")
+    stmt = stmt.replace(" and ", " and ")
+    stmt = stmt.replace(" or ", " or ")
+    stmt = stmt.replace(" not ", " !")
+    return stmt
+  
+  fn convert_assertion(self, assertion: String) -> String:
+    return assertion
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMPILER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TriCompiler:
+  fn compile(source: String) -> CompileResult:
+    start_time = now()
+    
+    # Lexing
+    lexer = Lexer.init(source)
+    tokens = lexer.tokenize()
+    
+    # Parsing
+    parser = Parser.init(tokens)
+    ast = parser.parse()
+    
+    # Code generation
+    generator = CodeGenerator.init(ast)
+    zig_code = generator.generate()
+    
+    end_time = now()
+    
+    return CompileResult(
+      success: true,
+      zig_code: zig_code,
+      errors: [],
+      warnings: [],
+      stats: CompileStats(
+        input_lines: source.count("\n") + 1,
+        output_lines: zig_code.count("\n") + 1,
+        functions: ast.functions.len(),
+        structs: ast.structs.len(),
+        enums: ast.enums.len(),
+        compile_time_ms: end_time - start_time
+      )
+    )
+  
+  fn compile_file(input_path: String, output_path: String?) -> CompileResult:
+    source = fs_read(input_path)
+    result = TriCompiler.compile(source)
+    
+    if result.success:
+      out_path = output_path ?? input_path.replace(".tri", ".zig")
+      fs_write(out_path, result.zig_code)
+    
+    return result
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMMANDS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+command "tri compile":
+  usage: "tri compile <file.tri> [--output <file.zig>] [--check]"
+  fn execute(args):
+    input_file = args.positional[0]
+    output_file = args.get("output")
+    check_only = args.has("check")
+    
+    print("Compiling {input_file}...")
+    
+    result = TriCompiler.compile_file(input_file, output_file)
+    
+    if result.success:
+      print("✓ Compiled successfully")
+      print("  Input:  {result.stats.input_lines} lines")
+      print("  Output: {result.stats.output_lines} lines")
+      print("  Time:   {result.stats.compile_time_ms}ms")
+    else:
+      print("✗ Compilation failed")
+      for err in result.errors:
+        print("  {err.file}:{err.line}: {err.message}")
+
+command "tri build":
+  usage: "tri build [--release] [--target <target>]"
+  fn execute(args):
+    release = args.has("release")
+    target = args.get("target")
+    
+    # Find all .tri files
+    tri_files = find_files(".", "*.tri")
+    
+    for file in tri_files:
+      result = TriCompiler.compile_file(file)
+      if not result.success:
+        print("✗ Failed to compile {file}")
+        return
+    
+    # Build with Zig
+    zig_args = ["zig", "build"]
+    if release:
+      zig_args.append("-Doptimize=ReleaseFast")
+    if target:
+      zig_args.extend(["-Dtarget", target])
+    
+    exec(zig_args.join(" "))
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TESTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tests:
+  - name: "Tokenize module declaration"
+    input: "module: test"
+    assert: Lexer.init(input).tokenize().len() == 4
+
+  - name: "Parse simple function"
+    input: |
+      fn add(a: Int, b: Int) -> Int:
+        return a + b
+    assert: Parser.init(Lexer.init(input).tokenize()).parse().functions.len() == 1
+
+  - name: "Generate Zig enum"
+    input:
+      type: enum
+      name: "Color"
+      variants: ["red", "green", "blue"]
+    assert: "pub const Color = enum" in CodeGenerator.generate(input)
+
+  - name: "Golden Identity"
+    assert: PHI * PHI + 1/(PHI * PHI) == TRINITY
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════

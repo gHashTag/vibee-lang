@@ -1,0 +1,235 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRI AI PROVIDER - Generated from ai_provider.vibee
+# Date: 2026-01-19
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+module: ai_provider
+version: "1.0.0"
+generated_from: "specs/tri/ai_provider.vibee"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SACRED CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  PHI: 1.618033988749895
+  PHI_SQ: 2.618033988749895
+  INV_PHI_SQ: 0.381966011250105
+  TRINITY: 3.0
+  PHOENIX: 999
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROVIDER ENUM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+enum Provider:
+  anthropic:
+    model: "claude-sonnet-4-20250514"
+    base_url: "https://api.anthropic.com"
+    env_key: "ANTHROPIC_API_KEY"
+    
+  ollama:
+    model: "llama3.2"
+    base_url: "http://localhost:11434"
+    env_key: "OLLAMA_HOST"
+    
+  openai:
+    model: "gpt-4o"
+    base_url: "https://api.openai.com"
+    env_key: "OPENAI_API_KEY"
+    
+  local:
+    model: "none"
+    base_url: ""
+    env_key: null
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MESSAGE TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+enum Role:
+  user: "user"
+  assistant: "assistant"
+  system: "system"
+
+struct Message:
+  role: Role
+  content: String
+
+struct AIConfig:
+  provider: Provider
+  api_key: String?
+  model: String
+  system_prompt: String
+  max_tokens: Int = 4096
+  temperature: Float = 0.7
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AI CLIENT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AIClient:
+  config: AIConfig
+  
+  fn init() -> AIClient:
+    # Detect provider from environment
+    provider = detect_provider()
+    return AIClient(
+      config: AIConfig(
+        provider: provider,
+        api_key: get_env(provider.env_key),
+        model: provider.model,
+        system_prompt: DEFAULT_SYSTEM_PROMPT
+      )
+    )
+  
+  fn detect_provider() -> Provider:
+    if get_env("ANTHROPIC_API_KEY"):
+      return Provider.anthropic
+    elif get_env("OPENAI_API_KEY"):
+      return Provider.openai
+    elif get_env("OLLAMA_HOST") or check_ollama():
+      return Provider.ollama
+    else:
+      return Provider.local
+  
+  fn chat(messages: List<Message>) -> String:
+    match self.config.provider:
+      Provider.anthropic -> chat_anthropic(messages)
+      Provider.ollama -> chat_ollama(messages)
+      Provider.openai -> chat_openai(messages)
+      Provider.local -> chat_local(messages)
+
+  fn chat_anthropic(messages: List<Message>) -> String:
+    body = {
+      "model": self.config.model,
+      "max_tokens": self.config.max_tokens,
+      "system": self.config.system_prompt,
+      "messages": messages.map(m -> {"role": m.role, "content": m.content})
+    }
+    response = http_post(
+      url: "https://api.anthropic.com/v1/messages",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": self.config.api_key,
+        "anthropic-version": "2023-06-01"
+      },
+      body: body
+    )
+    return response.content[0].text
+
+  fn chat_ollama(messages: List<Message>) -> String:
+    body = {
+      "model": self.config.model,
+      "stream": false,
+      "messages": [
+        {"role": "system", "content": self.config.system_prompt},
+        ...messages.map(m -> {"role": m.role, "content": m.content})
+      ]
+    }
+    host = get_env("OLLAMA_HOST") ?? "localhost:11434"
+    response = http_post(
+      url: "http://{host}/api/chat",
+      headers: {"Content-Type": "application/json"},
+      body: body
+    )
+    return response.message.content
+
+  fn chat_openai(messages: List<Message>) -> String:
+    body = {
+      "model": self.config.model,
+      "messages": [
+        {"role": "system", "content": self.config.system_prompt},
+        ...messages.map(m -> {"role": m.role, "content": m.content})
+      ]
+    }
+    response = http_post(
+      url: "https://api.openai.com/v1/chat/completions",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer {self.config.api_key}"
+      },
+      body: body
+    )
+    return response.choices[0].message.content
+
+  fn chat_local(messages: List<Message>) -> String:
+    last = messages.last()
+    
+    if "help" in last.content.lower():
+      return LOCAL_HELP_MESSAGE
+    
+    if "phi" in last.content.lower():
+      return "φ = {PHI}\nφ² + 1/φ² = {TRINITY}\nPHOENIX = {PHOENIX}"
+    
+    return "[Local mode] Set ANTHROPIC_API_KEY or run Ollama for AI."
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEFAULT PROMPTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+const DEFAULT_SYSTEM_PROMPT = """
+You are TRI, a TRINITY Terminal Interface assistant.
+You help developers with coding tasks using ternary logic principles.
+
+Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+Golden Identity: φ² + 1/φ² = 3
+
+Ternary Values:
+  △ (true/+1)
+  ○ (unknown/0)  
+  ▽ (false/-1)
+
+Be concise and technical. Focus on code and solutions.
+"""
+
+const LOCAL_HELP_MESSAGE = """
+TRI Local Mode - No AI provider configured.
+
+To enable AI:
+  1. Set ANTHROPIC_API_KEY for Claude
+  2. Set OPENAI_API_KEY for GPT
+  3. Run Ollama locally (ollama serve)
+
+Available commands:
+  tri eval <expr>  - Evaluate ternary logic
+  tri truth <op>   - Show truth tables
+  tri commit       - Git commit
+  tri review       - Code review
+  tri pas          - PAS analysis
+"""
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TESTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tests:
+  - name: "Golden Identity Verification"
+    assert: PHI_SQ + INV_PHI_SQ == TRINITY
+    expected: true
+    
+  - name: "Provider Detection - Anthropic"
+    setup:
+      env: { ANTHROPIC_API_KEY: "test" }
+    assert: detect_provider() == Provider.anthropic
+    
+  - name: "Provider Detection - Fallback"
+    setup:
+      env: {}
+    assert: detect_provider() == Provider.local
+    
+  - name: "Local Chat - Help"
+    input:
+      messages: [{ role: "user", content: "help" }]
+    assert: "TRI Local Mode" in chat_local(input.messages)
+    
+  - name: "Local Chat - Phi"
+    input:
+      messages: [{ role: "user", content: "phi" }]
+    assert: "1.618" in chat_local(input.messages)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════

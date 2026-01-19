@@ -1,0 +1,180 @@
+# version.vibee - Version Information Module
+# Author: Dmitrii Vasilev
+# Source: github.com/charmbracelet/crush/internal/version
+
+name: version
+version: "1.0.0"
+language: zig
+module: version
+
+sacred_formula:
+  V: "n × 3^k × π^m × φ^p × e^q"
+  golden_identity: "φ² + 1/φ² = 3"
+  self_evolution: enabled
+
+creation_pattern:
+  source: BuildInfo
+  transformer: VersionResolver
+  result: VersionString
+
+# Version information with build-time and runtime detection
+
+constants:
+  - name: DEFAULT_VERSION
+    value: "devel"
+    description: "Default version when not set via ldflags"
+
+types:
+  - name: VersionInfo
+    description: "Complete version information"
+    fields:
+      - name: version
+        type: "[]const u8"
+        description: "Semantic version string"
+      - name: commit
+        type: "?[]const u8"
+        description: "Git commit hash"
+      - name: build_time
+        type: "?[]const u8"
+        description: "Build timestamp"
+
+behaviors:
+  - name: get_version
+    given: "Application is running"
+    when: "Version is accessed"
+    then: "Returns version string"
+    test_cases:
+      - name: default_version
+        input: {}
+        expected:
+          result: "devel"
+      - name: ldflags_version
+        input:
+          ldflags_version: "1.2.3"
+        expected:
+          result: "1.2.3"
+
+  - name: init_from_build_info
+    given: "Build info is available"
+    when: "Module initializes"
+    then: "Version is set from build info if valid"
+    test_cases:
+      - name: valid_build_info
+        input:
+          main_version: "v1.0.0"
+        expected:
+          version: "v1.0.0"
+      - name: devel_build_info
+        input:
+          main_version: "(devel)"
+        expected:
+          version: "devel"
+      - name: empty_build_info
+        input:
+          main_version: ""
+        expected:
+          version: "devel"
+
+  - name: version_comparison
+    given: "Two version strings"
+    when: "Compared"
+    then: "Returns correct ordering"
+    test_cases:
+      - name: compare_major
+        input:
+          v1: "2.0.0"
+          v2: "1.0.0"
+        expected:
+          result: "greater"
+      - name: compare_minor
+        input:
+          v1: "1.2.0"
+          v2: "1.1.0"
+        expected:
+          result: "greater"
+      - name: compare_patch
+        input:
+          v1: "1.0.2"
+          v2: "1.0.1"
+        expected:
+          result: "greater"
+      - name: compare_equal
+        input:
+          v1: "1.0.0"
+          v2: "1.0.0"
+        expected:
+          result: "equal"
+
+  - name: parse_semver
+    given: "Version string"
+    when: "Parsed"
+    then: "Returns major, minor, patch components"
+    test_cases:
+      - name: parse_simple
+        input: "1.2.3"
+        expected:
+          major: 1
+          minor: 2
+          patch: 3
+      - name: parse_with_v_prefix
+        input: "v1.2.3"
+        expected:
+          major: 1
+          minor: 2
+          patch: 3
+      - name: parse_with_prerelease
+        input: "1.2.3-beta.1"
+        expected:
+          major: 1
+          minor: 2
+          patch: 3
+          prerelease: "beta.1"
+
+algorithms:
+  - name: version_detection
+    complexity: "O(1)"
+    description: "Detect version from build info"
+    steps:
+      - "Check if ldflags version is set"
+      - "If not, read from debug.ReadBuildInfo"
+      - "Validate version is not empty or (devel)"
+      - "Return version or default"
+
+  - name: semver_parse
+    complexity: "O(n) where n = version string length"
+    description: "Parse semantic version string"
+    steps:
+      - "Strip optional 'v' prefix"
+      - "Split by '.'"
+      - "Parse major, minor, patch as integers"
+      - "Extract prerelease if present"
+
+pas_analysis:
+  current_algorithm: "String parsing"
+  current_complexity: "O(n)"
+  theoretical_lower_bound: "Ω(n)"
+  gap: 0
+  patterns_applicable:
+    - pattern: PRE
+      reason: "Version can be cached at init"
+  prediction:
+    target: "Version access"
+    current: "O(n) parse"
+    predicted: "O(1) cached"
+    confidence: 0.90
+    timeline: "2026"
+    reasoning: "Parse once at init, cache result"
+
+dependencies:
+  - "runtime/debug"
+
+test_generation:
+  strategy: property_based
+  coverage_target: 95
+  edge_cases:
+    - "empty version"
+    - "invalid format"
+    - "very long version"
+    - "special characters"
+    - "prerelease versions"
+    - "build metadata"

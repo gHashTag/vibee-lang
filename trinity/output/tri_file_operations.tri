@@ -1,0 +1,329 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRI FILE OPERATIONS - Generated from file_operations.vibee
+# Date: 2026-01-19
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+module: file_operations
+version: "1.0.0"
+generated_from: "specs/tri/file_operations.vibee"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SACRED CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  PHI: 1.618033988749895
+  TRINITY: 3.0
+  PHOENIX: 999
+  MAX_FILE_SIZE: 10485760  # 10 MB
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+enum FileOperation:
+  read
+  write
+  edit
+  delete
+  list
+  search
+  diff
+
+enum EditOperation:
+  replace
+  insert
+  delete_lines
+  append
+
+struct FileInfo:
+  path: String
+  name: String
+  size: Int
+  is_dir: Bool
+  modified: Timestamp
+  permissions: String
+
+struct ReadResult:
+  content: String
+  lines: Int
+  size: Int
+  encoding: String = "utf-8"
+
+struct WriteResult:
+  path: String
+  bytes_written: Int
+  success: Bool
+
+struct SearchResult:
+  path: String
+  line: Int
+  content: String
+  match: String
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECURITY
+# ═══════════════════════════════════════════════════════════════════════════════
+
+const BLOCKED_PATHS = [
+  "/etc/passwd",
+  "/etc/shadow",
+  "~/.ssh/*",
+  "*.pem",
+  "*.key",
+  ".env",
+  ".env.*"
+]
+
+const BLOCKED_PATTERNS = [
+  "password",
+  "secret",
+  "api_key",
+  "private_key"
+]
+
+fn is_path_allowed(path: String) -> Bool:
+  for blocked in BLOCKED_PATHS:
+    if path.matches(blocked):
+      return false
+  return true
+
+fn check_content_security(content: String) -> List<String>:
+  warnings = []
+  for pattern in BLOCKED_PATTERNS:
+    if pattern in content.lower():
+      warnings.append("⚠️ Found '{pattern}' - check for sensitive data")
+  return warnings
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FILE OPERATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+fn read_file(path: String, lines: Int? = null, from_line: Int? = null, to_line: Int? = null) -> ReadResult:
+  if not is_path_allowed(path):
+    error("Access denied: {path}")
+  
+  if not file_exists(path):
+    error("File not found: {path}")
+  
+  content = fs_read(path)
+  
+  if from_line or to_line:
+    all_lines = content.split("\n")
+    start = from_line ?? 1
+    end = to_line ?? all_lines.len()
+    content = all_lines[start-1:end].join("\n")
+  elif lines:
+    all_lines = content.split("\n")
+    content = all_lines[0:lines].join("\n")
+  
+  return ReadResult(
+    content: content,
+    lines: content.count("\n") + 1,
+    size: content.len()
+  )
+
+fn write_file(path: String, content: String) -> WriteResult:
+  if not is_path_allowed(path):
+    error("Access denied: {path}")
+  
+  warnings = check_content_security(content)
+  if warnings.len() > 0:
+    print("Security warnings:")
+    for w in warnings:
+      print("  {w}")
+  
+  # Create parent directories if needed
+  parent = path.dirname()
+  if parent and not dir_exists(parent):
+    fs_mkdir(parent, recursive: true)
+  
+  bytes = fs_write(path, content)
+  
+  return WriteResult(
+    path: path,
+    bytes_written: bytes,
+    success: true
+  )
+
+fn edit_file(path: String, operation: EditOperation, old_str: String? = null, new_str: String? = null, line: Int? = null) -> WriteResult:
+  if not is_path_allowed(path):
+    error("Access denied: {path}")
+  
+  content = fs_read(path)
+  
+  match operation:
+    EditOperation.replace:
+      if old_str not in content:
+        error("String not found: {old_str}")
+      if content.count(old_str) > 1:
+        error("Multiple matches found - be more specific")
+      content = content.replace(old_str, new_str ?? "")
+      
+    EditOperation.insert:
+      lines = content.split("\n")
+      lines.insert(line ?? 0, new_str ?? "")
+      content = lines.join("\n")
+      
+    EditOperation.delete_lines:
+      lines = content.split("\n")
+      del lines[line-1]
+      content = lines.join("\n")
+      
+    EditOperation.append:
+      content = content + "\n" + (new_str ?? "")
+  
+  return write_file(path, content)
+
+fn list_directory(path: String = ".", all: Bool = false, long: Bool = false) -> List<FileInfo>:
+  entries = fs_readdir(path)
+  
+  if not all:
+    entries = entries.filter(e -> not e.name.starts_with("."))
+  
+  return entries.map(e -> FileInfo(
+    path: "{path}/{e.name}",
+    name: e.name,
+    size: e.size,
+    is_dir: e.is_dir,
+    modified: e.modified,
+    permissions: e.permissions
+  ))
+
+fn search_files(pattern: String, path: String = ".", regex: Bool = false) -> List<SearchResult>:
+  results = []
+  
+  for file in walk_files(path):
+    if file.is_binary():
+      continue
+    
+    content = fs_read(file.path)
+    lines = content.split("\n")
+    
+    for i, line in lines.enumerate():
+      match_found = if regex:
+        line.matches_regex(pattern)
+      else:
+        pattern in line
+      
+      if match_found:
+        results.append(SearchResult(
+          path: file.path,
+          line: i + 1,
+          content: line.trim(),
+          match: pattern
+        ))
+  
+  return results
+
+fn diff_files(file1: String, file2: String) -> String:
+  content1 = fs_read(file1)
+  content2 = fs_read(file2)
+  
+  return generate_diff(content1, content2)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMMANDS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+command "tri read":
+  usage: "tri read <path> [--lines N] [--from L] [--to L]"
+  fn execute(args):
+    path = args.positional[0]
+    result = read_file(
+      path: path,
+      lines: args.get("lines"),
+      from_line: args.get("from"),
+      to_line: args.get("to")
+    )
+    print(result.content)
+    print("\n--- {result.lines} lines, {result.size} bytes ---")
+
+command "tri write":
+  usage: "tri write <path> <content>"
+  fn execute(args):
+    path = args.positional[0]
+    content = args.positional[1] ?? stdin_read()
+    result = write_file(path, content)
+    print("✓ Wrote {result.bytes_written} bytes to {result.path}")
+
+command "tri edit":
+  usage: "tri edit <path> --replace <old> <new>"
+  fn execute(args):
+    path = args.positional[0]
+    result = edit_file(
+      path: path,
+      operation: EditOperation.replace,
+      old_str: args.get("replace"),
+      new_str: args.positional[1]
+    )
+    print("✓ Edited {result.path}")
+
+command "tri ls":
+  usage: "tri ls [path] [--all] [--long]"
+  fn execute(args):
+    path = args.positional[0] ?? "."
+    entries = list_directory(
+      path: path,
+      all: args.has("all"),
+      long: args.has("long")
+    )
+    for e in entries:
+      if args.has("long"):
+        print("{e.permissions} {e.size:>8} {e.name}")
+      else:
+        print(e.name)
+
+command "tri search":
+  usage: "tri search <pattern> [path] [--regex]"
+  fn execute(args):
+    pattern = args.positional[0]
+    path = args.positional[1] ?? "."
+    results = search_files(
+      pattern: pattern,
+      path: path,
+      regex: args.has("regex")
+    )
+    for r in results:
+      print("{r.path}:{r.line}: {r.content}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TESTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tests:
+  - name: "Read Existing File"
+    setup:
+      create_file: "test.txt" with "Hello TRI"
+    input:
+      path: "test.txt"
+    assert: read_file(input.path).content == "Hello TRI"
+    cleanup:
+      delete_file: "test.txt"
+
+  - name: "Write New File"
+    input:
+      path: "new_test.txt"
+      content: "Test content"
+    assert: write_file(input.path, input.content).success == true
+    cleanup:
+      delete_file: "new_test.txt"
+
+  - name: "Security Block"
+    input:
+      path: "/etc/passwd"
+    assert: is_path_allowed(input.path) == false
+
+  - name: "Content Security Warning"
+    input:
+      content: "password=secret123"
+    assert: check_content_security(input.content).len() > 0
+
+  - name: "Golden Identity"
+    assert: PHI * PHI + 1/(PHI * PHI) == TRINITY
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════

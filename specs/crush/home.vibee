@@ -1,0 +1,156 @@
+# home.vibee - Home Directory Utilities Specification
+# Author: Dmitrii Vasilev
+# Source: github.com/charmbracelet/crush/internal/home
+
+name: home
+version: "1.0.0"
+language: zig
+module: home
+
+sacred_formula:
+  V: "n × 3^k × π^m × φ^p × e^q"
+  golden_identity: "φ² + 1/φ² = 3"
+  self_evolution: enabled
+
+creation_pattern:
+  source: FilePath
+  transformer: HomePathResolver
+  result: NormalizedPath
+
+# Package provides utilities for dealing with the user's home directory
+
+types:
+  - name: HomeDir
+    description: "Cached user home directory"
+    fields:
+      - name: path
+        type: "[]const u8"
+        description: "Absolute path to home directory"
+      - name: error
+        type: "?anyerror"
+        description: "Error if home dir lookup failed"
+
+behaviors:
+  - name: dir_returns_home
+    given: "System has valid home directory"
+    when: "Dir() is called"
+    then: "Returns user home directory path"
+    test_cases:
+      - name: get_home_dir
+        input: {}
+        expected:
+          result_not_empty: true
+          is_absolute_path: true
+
+  - name: short_replaces_home_with_tilde
+    given: "Path starts with home directory"
+    when: "Short(path) is called"
+    then: "Home prefix replaced with ~"
+    test_cases:
+      - name: shorten_home_path
+        input:
+          path: "/home/user/documents/file.txt"
+          homedir: "/home/user"
+        expected:
+          result: "~/documents/file.txt"
+      - name: preserve_non_home_path
+        input:
+          path: "/absolute/path/file.txt"
+          homedir: "/home/user"
+        expected:
+          result: "/absolute/path/file.txt"
+      - name: handle_empty_homedir
+        input:
+          path: "/any/path"
+          homedir: ""
+        expected:
+          result: "/any/path"
+
+  - name: long_replaces_tilde_with_home
+    given: "Path starts with ~"
+    when: "Long(path) is called"
+    then: "Tilde replaced with actual home directory"
+    test_cases:
+      - name: expand_tilde_path
+        input:
+          path: "~/documents/file.txt"
+          homedir: "/home/user"
+        expected:
+          result: "/home/user/documents/file.txt"
+      - name: preserve_absolute_path
+        input:
+          path: "/absolute/path/file.txt"
+          homedir: "/home/user"
+        expected:
+          result: "/absolute/path/file.txt"
+      - name: handle_empty_homedir
+        input:
+          path: "~/any/path"
+          homedir: ""
+        expected:
+          result: "~/any/path"
+
+  - name: init_logs_error
+    given: "Home directory lookup fails"
+    when: "Package initializes"
+    then: "Error is logged via slog"
+    test_cases:
+      - name: log_homedir_error
+        input:
+          error: "permission denied"
+        expected:
+          slog_error_called: true
+          error_message_contains: "failed to get user home directory"
+
+  - name: path_separator_handling
+    given: "Path with platform-specific separators"
+    when: "Short or Long is called"
+    then: "Separators are handled correctly via filepath.Join"
+    test_cases:
+      - name: unix_separators
+        input:
+          path: "/home/user/docs/file.txt"
+          separator: "/"
+        expected:
+          result_uses_correct_separator: true
+      - name: windows_separators
+        input:
+          path: "C:\\Users\\user\\docs\\file.txt"
+          separator: "\\"
+        expected:
+          result_uses_correct_separator: true
+
+pas_analysis:
+  current_algorithm: "String prefix matching"
+  current_complexity: "O(n) where n = path length"
+  theoretical_lower_bound: "Ω(n)"
+  gap: 0
+  patterns_applicable:
+    - pattern: PRE
+      reason: "Home directory is cached at init"
+    - pattern: HSH
+      reason: "Could use hash for prefix check"
+  prediction:
+    target: "Path resolution"
+    current: "O(n)"
+    predicted: "O(1) for common case with caching"
+    confidence: 0.70
+    timeline: "2026"
+    reasoning: "LRU cache for frequently accessed paths"
+
+dependencies:
+  - "log/slog"
+  - "os"
+  - "path/filepath"
+  - "strings"
+
+test_generation:
+  strategy: property_based
+  coverage_target: 90
+  edge_cases:
+    - "empty path"
+    - "path equals home exactly"
+    - "path with trailing separator"
+    - "relative path starting with ~"
+    - "multiple tildes in path"
+    - "home directory not set"

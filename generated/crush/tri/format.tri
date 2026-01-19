@@ -1,0 +1,154 @@
+// format.tri - Trinity Intermediate Representation
+// Generated from: specs/crush/format.vibee
+// Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+
+@module format
+@version "1.0.0"
+@golden_identity "φ² + 1/φ² = 3"
+
+// Type definitions
+@type Spinner {
+    done: Channel<void>,
+    prog: *Program
+}
+
+@type Model {
+    cancel: fn() void,
+    anim: *Anim
+}
+
+// Creation Pattern: AnimationSettings → SpinnerEngine → TerminalAnimation
+
+// Behavior: spinner_lifecycle
+@behavior spinner_lifecycle {
+    @given "Animation settings and context"
+    @when "NewSpinner is called"
+    @then "Returns configured Spinner ready to start"
+    
+    @trinity_transform {
+        source: AnimationSettings,
+        transformer: SpinnerEngine,
+        result: Spinner
+    }
+}
+
+// Behavior: spinner_start
+@behavior spinner_start {
+    @given "Configured Spinner instance"
+    @when "Start() is called"
+    @then "Animation begins in goroutine"
+    
+    @trinity_transform {
+        source: Spinner,
+        transformer: GoroutineLauncher,
+        result: RunningAnimation
+    }
+}
+
+// Behavior: spinner_stop
+@behavior spinner_stop {
+    @given "Running Spinner"
+    @when "Stop() is called"
+    @then "Animation stops and done channel closes"
+    
+    @trinity_transform {
+        source: RunningAnimation,
+        transformer: GracefulShutdown,
+        result: CompletedAnimation
+    }
+}
+
+// Behavior: model_init
+@behavior model_init {
+    @given "Model with animation"
+    @when "Init() is called"
+    @then "Returns animation init command"
+    
+    @trinity_transform {
+        source: Model,
+        transformer: AnimInit,
+        result: Command
+    }
+}
+
+// Behavior: model_view
+@behavior model_view {
+    @given "Model with animation"
+    @when "View() is called"
+    @then "Returns animation view wrapped in tea.View"
+    
+    @trinity_transform {
+        source: Model,
+        transformer: ViewRenderer,
+        result: View
+    }
+}
+
+// Behavior: model_update_keypress
+@behavior model_update_keypress {
+    @given "Model receiving key press"
+    @when "ctrl+c or esc is pressed"
+    @then "Cancel is called and Quit command returned"
+    
+    @trinity_transform {
+        source: KeyPressMsg,
+        transformer: KeyHandler,
+        result: QuitCommand
+    }
+    
+    @key_bindings {
+        "ctrl+c": cancel_and_quit,
+        "esc": cancel_and_quit
+    }
+}
+
+// Behavior: spinner_error_handling
+@behavior spinner_error_handling {
+    @given "Spinner encounters error during run"
+    @when "Error is not context.Canceled or tea.ErrInterrupted"
+    @then "Error is printed to stderr"
+    
+    @trinity_transform {
+        source: Error,
+        transformer: ErrorFilter,
+        result: StderrOutput
+    }
+    
+    @ignore_errors [context.Canceled, tea.ErrInterrupted]
+}
+
+// Behavior: line_clearing
+@behavior line_clearing {
+    @given "Spinner stops"
+    @when "Run completes"
+    @then "Entire line is erased from terminal"
+    
+    @trinity_transform {
+        source: CompletedRun,
+        transformer: AnsiEraser,
+        result: CleanTerminal
+    }
+    
+    @ansi_sequence EraseEntireLine
+}
+
+// PAS Analysis
+@pas_prediction {
+    target: "Spinner animation",
+    current: "O(1) per frame",
+    predicted: "O(1) with reduced allocations",
+    confidence: 0.60,
+    timeline: "2026",
+    patterns: [PRE, FDT]
+}
+
+// Dependencies
+@dependencies [
+    "context",
+    "errors", 
+    "fmt",
+    "os",
+    "charm.land/bubbletea/v2",
+    "github.com/charmbracelet/crush/internal/tui/components/anim",
+    "github.com/charmbracelet/x/ansi"
+]

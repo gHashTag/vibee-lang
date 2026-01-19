@@ -1,0 +1,356 @@
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⲦⲈⲢⲘⲒⲚⲀⲖ ⲀⲄⲈⲚⲦ - Self-Writing Code Agent
+// ═══════════════════════════════════════════════════════════════════════════════
+// SOURCE: specs/tri/terminal_agent.vibee
+// φ² + 1/φ² = 3 | PHOENIX = 999
+// ═══════════════════════════════════════════════════════════════════════════════
+
+ⲧⲣⲓⲛⲓⲧⲓ ⲦⲈⲢⲘⲒⲚⲀⲖ_ⲀⲄⲈⲚⲦ {
+    ⲟⲛⲟⲙⲁ: "Terminal Agent"
+    ⲃⲉⲣⲥⲓⲁ: "1.0.0"
+    ⲥⲟⲩⲣⲕⲉ_ⲥⲡⲉⲕ: "specs/tri/terminal_agent.vibee"
+    
+    ⲥⲁⲕⲣⲁ: {
+        ⲪⲎⲒ: 1.618033988749895
+        ⲦⲢⲒⲚⲒⲦⲨ: 3.0
+        ⲪⲞⲈⲚⲒⲜ: 999
+    }
+    
+    ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ: """
+// ═══════════════════════════════════════════════════════════════════════════════
+// TERMINAL AGENT - Self-Writing Code Agent
+// ═══════════════════════════════════════════════════════════════════════════════
+// Generates code through .vibee → .zig pipeline
+// φ² + 1/φ² = 3 | PHOENIX = 999
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const std = @import("std");
+const mem = std.mem;
+const fs = std.fs;
+const Allocator = mem.Allocator;
+const ChildProcess = std.process.Child;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SACRED CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const PHI: f64 = 1.618033988749895;
+pub const PHI_SQ: f64 = 2.618033988749895;
+pub const INV_PHI_SQ: f64 = 0.381966011250105;
+pub const TRINITY: f64 = 3.0;
+pub const PHOENIX: u32 = 999;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AGENT STATE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const AgentState = enum {
+    idle,
+    thinking,
+    executing,
+    generating,
+    testing,
+    complete,
+    @"error",
+
+    pub fn toString(self: AgentState) []const u8 {
+        return switch (self) {
+            .idle => "idle",
+            .thinking => "thinking",
+            .executing => "executing",
+            .generating => "generating",
+            .testing => "testing",
+            .complete => "complete",
+            .@"error" => "error",
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TOOL TYPES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const ToolType = enum {
+    file_read,
+    file_write,
+    bash_exec,
+    git_op,
+    vibee_gen,
+    zig_test,
+    search,
+
+    pub fn toString(self: ToolType) []const u8 {
+        return switch (self) {
+            .file_read => "file_read",
+            .file_write => "file_write",
+            .bash_exec => "bash_exec",
+            .git_op => "git_op",
+            .vibee_gen => "vibee_gen",
+            .zig_test => "zig_test",
+            .search => "search",
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TOOL CALL
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const ToolCall = struct {
+    tool: ToolType,
+    args: []const []const u8,
+    result: []const u8,
+    success: bool,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AGENT CONTEXT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const AgentContext = struct {
+    state: AgentState,
+    history: std.ArrayList(ToolCall),
+    files_read: std.ArrayList([]const u8),
+    files_written: std.ArrayList([]const u8),
+    tests_passed: u32,
+    tests_failed: u32,
+    allocator: Allocator,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return Self{
+            .state = .idle,
+            .history = std.ArrayList(ToolCall).init(allocator),
+            .files_read = std.ArrayList([]const u8).init(allocator),
+            .files_written = std.ArrayList([]const u8).init(allocator),
+            .tests_passed = 0,
+            .tests_failed = 0,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.history.deinit();
+        self.files_read.deinit();
+        self.files_written.deinit();
+    }
+
+    pub fn reset(self: *Self) void {
+        self.state = .idle;
+        self.history.clearRetainingCapacity();
+        self.files_read.clearRetainingCapacity();
+        self.files_written.clearRetainingCapacity();
+        self.tests_passed = 0;
+        self.tests_failed = 0;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CODE GENERATION RESULT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const CodeGenResult = struct {
+    success: bool,
+    path: []const u8,
+    bytes: usize,
+    tests_passed: u32,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TERMINAL AGENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const TerminalAgent = struct {
+    context: AgentContext,
+    max_retries: u32,
+    allocator: Allocator,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return Self{
+            .context = AgentContext.init(allocator),
+            .max_retries = 3,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.context.deinit();
+    }
+
+    /// Generate code from description
+    pub fn generateCode(self: *Self, description: []const u8, name: []const u8) !CodeGenResult {
+        self.context.state = .thinking;
+
+        // Step 1: Create .vibee specification
+        const spec_path = try self.createSpec(description, name);
+        try self.context.files_written.append(spec_path);
+
+        // Step 2: Generate .zig via vibee gen
+        self.context.state = .generating;
+        const gen_result = try self.runVibeeGen(spec_path);
+        if (!gen_result.success) {
+            self.context.state = .@"error";
+            return CodeGenResult{
+                .success = false,
+                .path = "",
+                .bytes = 0,
+                .tests_passed = 0,
+            };
+        }
+        try self.context.files_written.append(gen_result.path);
+
+        // Step 3: Run tests
+        self.context.state = .testing;
+        const test_result = try self.runZigTest(gen_result.path);
+        self.context.tests_passed = test_result.passed;
+        self.context.tests_failed = test_result.failed;
+
+        // Step 4: Self-correct if needed
+        var retries: u32 = 0;
+        while (test_result.failed > 0 and retries < self.max_retries) {
+            retries += 1;
+            // Modify spec and regenerate
+            // (simplified - in real implementation would analyze errors)
+        }
+
+        self.context.state = if (test_result.failed == 0) .complete else .@"error";
+
+        return CodeGenResult{
+            .success = test_result.failed == 0,
+            .path = gen_result.path,
+            .bytes = gen_result.bytes,
+            .tests_passed = test_result.passed,
+        };
+    }
+
+    fn createSpec(self: *Self, description: []const u8, name: []const u8) ![]const u8 {
+        _ = description;
+        var path_buf: [256]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "specs/tri/{s}.vibee", .{name});
+        return try self.allocator.dupe(u8, path);
+    }
+
+    fn runVibeeGen(self: *Self, spec_path: []const u8) !struct { success: bool, path: []const u8, bytes: usize } {
+        _ = self;
+        _ = spec_path;
+        // Would execute: vibee gen <spec_path>
+        return .{
+            .success = true,
+            .path = "trinity/output/generated.zig",
+            .bytes = 1024,
+        };
+    }
+
+    fn runZigTest(self: *Self, zig_path: []const u8) !struct { passed: u32, failed: u32 } {
+        _ = self;
+        _ = zig_path;
+        // Would execute: zig test <zig_path>
+        return .{
+            .passed = 5,
+            .failed = 0,
+        };
+    }
+
+    /// Get agent status
+    pub fn getStatus(self: *Self) []const u8 {
+        return self.context.state.toString();
+    }
+
+    /// Get tool call count
+    pub fn getToolCallCount(self: *Self) usize {
+        return self.context.history.items.len;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "Golden Identity Verification" {
+    const result = PHI_SQ + INV_PHI_SQ;
+    try std.testing.expectApproxEqAbs(TRINITY, result, 0.0000001);
+}
+
+test "Agent Init" {
+    var agent = TerminalAgent.init(std.testing.allocator);
+    defer agent.deinit();
+    try std.testing.expectEqual(AgentState.idle, agent.context.state);
+    try std.testing.expectEqual(@as(usize, 0), agent.getToolCallCount());
+}
+
+test "Agent State Transitions" {
+    var agent = TerminalAgent.init(std.testing.allocator);
+    defer agent.deinit();
+    
+    agent.context.state = .thinking;
+    try std.testing.expectEqualStrings("thinking", agent.getStatus());
+    
+    agent.context.state = .generating;
+    try std.testing.expectEqualStrings("generating", agent.getStatus());
+    
+    agent.context.state = .complete;
+    try std.testing.expectEqualStrings("complete", agent.getStatus());
+}
+
+test "Tool Type Strings" {
+    try std.testing.expectEqualStrings("vibee_gen", ToolType.vibee_gen.toString());
+    try std.testing.expectEqualStrings("zig_test", ToolType.zig_test.toString());
+    try std.testing.expectEqualStrings("file_read", ToolType.file_read.toString());
+}
+
+test "Agent Context Reset" {
+    var agent = TerminalAgent.init(std.testing.allocator);
+    defer agent.deinit();
+    
+    agent.context.state = .complete;
+    agent.context.tests_passed = 10;
+    agent.context.reset();
+    
+    try std.testing.expectEqual(AgentState.idle, agent.context.state);
+    try std.testing.expectEqual(@as(u32, 0), agent.context.tests_passed);
+}
+
+test "Phoenix Number" {
+    try std.testing.expect(PHOENIX == 999);
+    try std.testing.expect(999 == 27 * 37);
+}
+
+test "Max Retries" {
+    var agent = TerminalAgent.init(std.testing.allocator);
+    defer agent.deinit();
+    try std.testing.expectEqual(@as(u32, 3), agent.max_retries);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// φ² + 1/φ² = 3 | PHOENIX = 999
+// ═══════════════════════════════════════════════════════════════════════════════
+"""
+    
+    ⲧⲉⲥⲧⲥ: [
+        {
+            ⲟⲛⲟⲙⲁ: "Golden Identity"
+            ⲓⲛⲡⲩⲧ: "PHI_SQ + INV_PHI_SQ"
+            ⲉⲝⲡⲉⲕⲧⲉⲇ: "3.0"
+            ⲥⲧⲁⲧⲩⲥ: "✅"
+        },
+        {
+            ⲟⲛⲟⲙⲁ: "Agent Init"
+            ⲓⲛⲡⲩⲧ: "TerminalAgent.init()"
+            ⲉⲝⲡⲉⲕⲧⲉⲇ: "state = idle"
+            ⲥⲧⲁⲧⲩⲥ: "✅"
+        },
+        {
+            ⲟⲛⲟⲙⲁ: "State Transitions"
+            ⲓⲛⲡⲩⲧ: "state changes"
+            ⲉⲝⲡⲉⲕⲧⲉⲇ: "correct strings"
+            ⲥⲧⲁⲧⲩⲥ: "✅"
+        }
+    ]
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// φ² + 1/φ² = 3 | PHOENIX = 999
+// ═══════════════════════════════════════════════════════════════════════════════

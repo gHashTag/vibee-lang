@@ -1,0 +1,381 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRI INTERACTIVE CHAT - Generated from interactive_chat.vibee
+# Date: 2026-01-19
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+module: interactive_chat
+version: "1.0.0"
+generated_from: "specs/tri/interactive_chat.vibee"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SACRED CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  PHI: 1.618033988749895
+  TRINITY: 3.0
+  PHOENIX: 999
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+enum ChatMode:
+  interactive
+  pipe
+  single
+  agent
+
+enum InputSource:
+  tty
+  pipe
+  file
+  arg
+
+struct Session:
+  id: String
+  messages: List<Message>
+  created_at: Timestamp
+  updated_at: Timestamp
+  context: ChatContext
+
+struct ChatContext:
+  cwd: String
+  project_root: String
+  git_branch: String?
+  files_open: List<String>
+  recent_commands: List<String>
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# UI CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+const WELCOME_BANNER = """
+╔═══════════════════════════════════════════════════════════════╗
+║  TRI - TRINITY Terminal Interface                             ║
+║  Ternary Logic AI Assistant | φ² + 1/φ² = 3                   ║
+╚═══════════════════════════════════════════════════════════════╝
+
+Type your message or /help for commands.
+Values: △ (true)  ○ (unknown)  ▽ (false)
+"""
+
+const PROMPT_USER = "you> "
+const PROMPT_ASSISTANT = "tri> "
+const PROMPT_SYSTEM = "sys> "
+
+const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
+const SPINNER_INTERVAL_MS = 100
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COLORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+colors:
+  user: "\x1b[36m"      # cyan
+  assistant: "\x1b[32m" # green
+  error: "\x1b[31m"     # red
+  warning: "\x1b[33m"   # yellow
+  info: "\x1b[34m"      # blue
+  phi: "\x1b[35m"       # magenta
+  reset: "\x1b[0m"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CHAT ENGINE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ChatEngine:
+  ai: AIClient
+  session: Session
+  mode: ChatMode
+  
+  fn init() -> ChatEngine:
+    return ChatEngine(
+      ai: AIClient.init(),
+      session: Session(
+        id: generate_uuid(),
+        messages: [],
+        created_at: now(),
+        updated_at: now(),
+        context: detect_context()
+      ),
+      mode: detect_mode()
+    )
+  
+  fn detect_mode() -> ChatMode:
+    if is_tty():
+      return ChatMode.interactive
+    elif has_stdin():
+      return ChatMode.pipe
+    else:
+      return ChatMode.single
+  
+  fn detect_context() -> ChatContext:
+    return ChatContext(
+      cwd: getcwd(),
+      project_root: find_project_root(),
+      git_branch: git_current_branch(),
+      files_open: [],
+      recent_commands: []
+    )
+  
+  fn run():
+    match self.mode:
+      ChatMode.interactive -> self.run_interactive()
+      ChatMode.pipe -> self.run_pipe()
+      ChatMode.single -> self.run_single()
+      ChatMode.agent -> self.run_agent()
+  
+  fn run_interactive():
+    print(WELCOME_BANNER)
+    print("Provider: {self.ai.config.provider}")
+    print("")
+    
+    while true:
+      input = readline(PROMPT_USER)
+      
+      if input.is_empty():
+        continue
+      
+      if input.starts_with("/"):
+        if not self.handle_slash_command(input):
+          break
+        continue
+      
+      self.process_message(input)
+  
+  fn run_pipe():
+    input = stdin_read_all()
+    self.process_message(input)
+  
+  fn run_single():
+    # Get from command line args
+    input = args.positional.join(" ")
+    self.process_message(input)
+  
+  fn process_message(input: String):
+    # Add user message
+    self.session.messages.append(Message(
+      role: Role.user,
+      content: input
+    ))
+    
+    # Show spinner
+    spinner = Spinner.start()
+    
+    # Get AI response
+    response = self.ai.chat(self.session.messages)
+    
+    spinner.stop()
+    
+    # Add assistant message
+    self.session.messages.append(Message(
+      role: Role.assistant,
+      content: response
+    ))
+    
+    # Print response
+    print("{colors.assistant}{PROMPT_ASSISTANT}{response}{colors.reset}")
+    print("")
+    
+    self.session.updated_at = now()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SLASH COMMANDS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+fn handle_slash_command(engine: ChatEngine, input: String) -> Bool:
+  parts = input[1:].split(" ")
+  cmd = parts[0].lower()
+  args = parts[1:]
+  
+  match cmd:
+    "help" | "h" | "?":
+      print_help()
+      
+    "clear" | "c":
+      engine.session.messages = []
+      print("✓ History cleared")
+      
+    "exit" | "quit" | "q":
+      print("Goodbye! φ² + 1/φ² = 3")
+      return false
+      
+    "save":
+      name = args[0] ?? "default"
+      save_session(engine.session, name)
+      print("✓ Session saved: {name}")
+      
+    "load":
+      name = args[0] ?? "default"
+      engine.session = load_session(name)
+      print("✓ Session loaded: {name}")
+      
+    "model":
+      if args.len() > 0:
+        engine.ai.config.model = args[0]
+        print("✓ Model: {args[0]}")
+      else:
+        print("Current model: {engine.ai.config.model}")
+        
+    "provider":
+      if args.len() > 0:
+        provider = Provider.from_string(args[0])
+        if provider:
+          engine.ai.set_provider(provider)
+          print("✓ Provider: {args[0]}")
+        else:
+          print("Unknown provider: {args[0]}")
+      else:
+        print("Current provider: {engine.ai.config.provider}")
+        
+    "context":
+      print("CWD: {engine.session.context.cwd}")
+      print("Project: {engine.session.context.project_root}")
+      print("Branch: {engine.session.context.git_branch ?? 'N/A'}")
+      
+    "files" | "ls":
+      for f in list_directory():
+        print("  {f.name}")
+        
+    "run" | "!":
+      cmd = args.join(" ")
+      result = shell_exec(cmd)
+      print(result.stdout)
+      if result.stderr:
+        print("{colors.error}{result.stderr}{colors.reset}")
+        
+    "eval" | "e":
+      expr = args.join(" ")
+      result = eval_ternary(expr)
+      print("Result: {result}")
+      
+    "phi":
+      print_phi_constants()
+      
+    "truth":
+      op = args[0] ?? "all"
+      print_truth_table(op)
+      
+    _:
+      print("Unknown command: /{cmd}")
+      print("Type /help for available commands")
+  
+  return true
+
+fn print_help():
+  print("""
+SLASH COMMANDS:
+  /help, /h, /?     Show this help
+  /clear, /c        Clear chat history
+  /exit, /quit, /q  Exit chat
+  /save <name>      Save session
+  /load <name>      Load session
+  /model <name>     Change AI model
+  /provider <name>  Change AI provider
+  /context          Show current context
+  /files, /ls       List files
+  /run <cmd>, /!    Run shell command
+  /eval <expr>, /e  Evaluate ternary expression
+  /phi              Show sacred constants
+  /truth <op>       Show truth table
+
+KEYBINDINGS:
+  Ctrl+C            Cancel input
+  Ctrl+D            Exit chat
+  Ctrl+L            Clear screen
+  Up/Down           Navigate history
+""")
+
+fn print_phi_constants():
+  phi_sq = PHI * PHI
+  inv_phi_sq = 1.0 / phi_sq
+  
+  print("""
+╔═══════════════════════════════════════════════════════════════╗
+║  SACRED CONSTANTS                                             ║
+╚═══════════════════════════════════════════════════════════════╝
+
+  φ (phi)           = {PHI}
+  φ² (phi squared)  = {phi_sq}
+  1/φ²              = {inv_phi_sq}
+  φ² + 1/φ²         = {phi_sq + inv_phi_sq}
+
+  TRINITY VERIFIED: ✓ φ² + 1/φ² = 3
+
+  PHOENIX = 999 = 27 × 37 = 3³ × 37
+
+Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+""")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SESSION MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+fn save_session(session: Session, name: String):
+  path = "~/.tri/sessions/{name}.json"
+  fs_mkdir("~/.tri/sessions", recursive: true)
+  fs_write(path, json_encode(session))
+
+fn load_session(name: String) -> Session:
+  path = "~/.tri/sessions/{name}.json"
+  if file_exists(path):
+    return json_decode(fs_read(path))
+  else:
+    error("Session not found: {name}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SPINNER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class Spinner:
+  running: Bool
+  frame: Int
+  
+  fn start() -> Spinner:
+    s = Spinner(running: true, frame: 0)
+    spawn(s.animate)
+    return s
+  
+  fn animate(self):
+    while self.running:
+      print("\r{SPINNER_FRAMES[self.frame % 4]} Thinking...", end: "")
+      self.frame += 1
+      sleep_ms(SPINNER_INTERVAL_MS)
+  
+  fn stop(self):
+    self.running = false
+    print("\r                    \r", end: "")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TESTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tests:
+  - name: "Detect Interactive Mode"
+    setup:
+      mock_tty: true
+    assert: detect_mode() == ChatMode.interactive
+
+  - name: "Detect Pipe Mode"
+    setup:
+      mock_tty: false
+      mock_stdin: "test input"
+    assert: detect_mode() == ChatMode.pipe
+
+  - name: "Slash Command Help"
+    input: "/help"
+    assert: handle_slash_command(engine, input) == true
+
+  - name: "Slash Command Exit"
+    input: "/exit"
+    assert: handle_slash_command(engine, input) == false
+
+  - name: "Golden Identity"
+    assert: PHI * PHI + 1/(PHI * PHI) == TRINITY
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════

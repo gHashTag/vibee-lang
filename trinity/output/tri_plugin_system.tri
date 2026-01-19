@@ -1,0 +1,465 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRI PLUGIN SYSTEM - Generated from plugin_system.vibee
+# Extensible Plugin Architecture
+# Date: 2026-01-19
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+module: plugin_system
+version: "1.0.0"
+generated_from: "specs/tri/plugin_system.vibee"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SACRED CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  PHI: 1.618033988749895
+  TRINITY: 3.0
+  PHOENIX: 999
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+enum HookEvent:
+  pre_chat
+  post_chat
+  pre_tool_use
+  post_tool_use
+  pre_commit
+  post_commit
+  on_error
+  on_startup
+  on_shutdown
+
+struct PluginManifest:
+  name: String
+  version: String
+  description: String
+  author: Author?
+  license: String?
+  tri_version: String
+  commands: List<CommandDef>?
+  hooks: List<HookDef>?
+  agents: List<AgentDef>?
+
+struct Author:
+  name: String
+  email: String?
+
+struct CommandDef:
+  name: String
+  description: String
+  usage: String?
+  file: String
+
+struct HookDef:
+  event: HookEvent
+  handler: String
+  priority: Int = 50
+
+struct AgentDef:
+  name: String
+  description: String
+  system_prompt: String
+  tools: List<String>?
+
+struct LoadedPlugin:
+  manifest: PluginManifest
+  path: String
+  enabled: Bool
+  loaded_at: Timestamp
+
+struct PluginInfo:
+  name: String
+  version: String
+  description: String
+  enabled: Bool
+  commands: Int
+  hooks: Int
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PLUGIN MANAGER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class PluginManager:
+  plugins: Map<String, LoadedPlugin>
+  hooks: Map<HookEvent, List<Hook>>
+  plugin_dir: String
+  
+  fn init() -> PluginManager:
+    plugin_dir = get_plugin_dir()
+    
+    manager = PluginManager(
+      plugins: {},
+      hooks: {},
+      plugin_dir: plugin_dir
+    )
+    
+    # Initialize hook lists
+    for event in HookEvent.values():
+      manager.hooks[event] = []
+    
+    return manager
+  
+  fn get_plugin_dir() -> String:
+    locations = [
+      "./.tri/plugins",
+      expand_path("~/.tri/plugins"),
+      "/usr/local/share/tri/plugins"
+    ]
+    
+    for loc in locations:
+      if dir_exists(loc):
+        return loc
+    
+    # Create default
+    default = expand_path("~/.tri/plugins")
+    fs_mkdir(default, recursive: true)
+    return default
+  
+  fn discover_plugins(self) -> List<String>:
+    plugins = []
+    
+    if not dir_exists(self.plugin_dir):
+      return plugins
+    
+    for entry in list_directory(self.plugin_dir):
+      if entry.is_dir:
+        manifest_path = "{self.plugin_dir}/{entry.name}/plugin.json"
+        if file_exists(manifest_path):
+          plugins.append(entry.name)
+    
+    return plugins
+  
+  fn load_plugin(self, name: String) -> Result<LoadedPlugin, String>:
+    manifest_path = "{self.plugin_dir}/{name}/plugin.json"
+    
+    if not file_exists(manifest_path):
+      return Err("Plugin not found: {name}")
+    
+    manifest_json = fs_read(manifest_path)
+    manifest = json_decode(manifest_json) as PluginManifest
+    
+    # Check version compatibility
+    if not self.is_compatible(manifest.tri_version):
+      return Err("Plugin requires TRI {manifest.tri_version}")
+    
+    # Register hooks
+    for hook_def in manifest.hooks ?? []:
+      hook = Hook(
+        plugin: name,
+        event: hook_def.event,
+        handler: hook_def.handler,
+        priority: hook_def.priority
+      )
+      self.register_hook(hook_def.event, hook)
+    
+    plugin = LoadedPlugin(
+      manifest: manifest,
+      path: "{self.plugin_dir}/{name}",
+      enabled: true,
+      loaded_at: now()
+    )
+    
+    self.plugins[name] = plugin
+    
+    return Ok(plugin)
+  
+  fn unload_plugin(self, name: String):
+    if name not in self.plugins:
+      return
+    
+    # Remove hooks
+    for event, hooks in self.hooks.items():
+      self.hooks[event] = hooks.filter(h -> h.plugin != name)
+    
+    del self.plugins[name]
+  
+  fn is_compatible(self, required: String) -> Bool:
+    # Simple version check
+    # required format: ">=1.0.0" or "1.0.0"
+    current = "1.0.0"
+    
+    if required.starts_with(">="):
+      min_version = required[2:]
+      return compare_versions(current, min_version) >= 0
+    else:
+      return current == required
+  
+  fn register_hook(self, event: HookEvent, hook: Hook):
+    self.hooks[event].append(hook)
+    self.hooks[event].sort(key: h -> h.priority)
+  
+  fn trigger_hook(self, event: HookEvent, context: Object) -> Object:
+    for hook in self.hooks[event]:
+      if not self.plugins[hook.plugin].enabled:
+        continue
+      
+      handler_path = "{self.plugins[hook.plugin].path}/{hook.handler}"
+      
+      # Execute handler
+      context = execute_hook_handler(handler_path, context)
+      
+      if context.abort:
+        break
+    
+    return context
+  
+  fn list_plugins(self) -> List<PluginInfo>:
+    return self.plugins.values().map(p -> PluginInfo(
+      name: p.manifest.name,
+      version: p.manifest.version,
+      description: p.manifest.description,
+      enabled: p.enabled,
+      commands: (p.manifest.commands ?? []).len(),
+      hooks: (p.manifest.hooks ?? []).len()
+    ))
+  
+  fn enable_plugin(self, name: String) -> Bool:
+    if name not in self.plugins:
+      return false
+    self.plugins[name].enabled = true
+    return true
+  
+  fn disable_plugin(self, name: String) -> Bool:
+    if name not in self.plugins:
+      return false
+    self.plugins[name].enabled = false
+    return true
+
+struct Hook:
+  plugin: String
+  event: HookEvent
+  handler: String
+  priority: Int
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PLUGIN API
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Functions available to plugins
+namespace tri:
+  fn chat(message: String) -> String:
+    # Send message to AI
+    return ai_client.chat([Message(role: Role.user, content: message)])
+  
+  fn eval(expr: String) -> Ternary:
+    # Evaluate ternary expression
+    return eval_ternary(expr)
+  
+  fn read_file(path: String) -> String:
+    return fs_read(path)
+  
+  fn write_file(path: String, content: String) -> Bool:
+    fs_write(path, content)
+    return true
+  
+  fn exec(cmd: String) -> ExecResult:
+    return shell_exec(cmd)
+  
+  fn config(key: String) -> Any:
+    return get_config(key)
+  
+  fn log(level: LogLevel, message: String):
+    log_message(level, message)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMMANDS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+command "tri plugin list":
+  usage: "tri plugin list [--all]"
+  fn execute(args):
+    manager = PluginManager.init()
+    
+    # Load all discovered plugins
+    for name in manager.discover_plugins():
+      manager.load_plugin(name)
+    
+    plugins = manager.list_plugins()
+    
+    if plugins.is_empty():
+      print("No plugins installed.")
+      print("")
+      print("Install plugins with: tri plugin install <name>")
+      return
+    
+    print("Installed Plugins:")
+    print("")
+    for p in plugins:
+      status = "✓" if p.enabled else "○"
+      print("  {status} {p.name} v{p.version}")
+      print("    {p.description}")
+      print("    Commands: {p.commands}, Hooks: {p.hooks}")
+      print("")
+
+command "tri plugin install":
+  usage: "tri plugin install <name|url>"
+  fn execute(args):
+    source = args.positional[0]
+    manager = PluginManager.init()
+    
+    if source.starts_with("http"):
+      # Clone from URL
+      name = source.split("/").last().replace(".git", "")
+      dest = "{manager.plugin_dir}/{name}"
+      
+      print("Installing {name} from {source}...")
+      exec("git clone {source} {dest}")
+    else:
+      # Install from registry (future)
+      print("Registry install not yet implemented")
+      print("Use: tri plugin install <git-url>")
+      return
+    
+    # Load the plugin
+    result = manager.load_plugin(name)
+    
+    match result:
+      Ok(plugin):
+        print("✓ Installed {plugin.manifest.name} v{plugin.manifest.version}")
+      Err(error):
+        print("✗ Failed to install: {error}")
+
+command "tri plugin uninstall":
+  usage: "tri plugin uninstall <name>"
+  fn execute(args):
+    name = args.positional[0]
+    manager = PluginManager.init()
+    
+    plugin_path = "{manager.plugin_dir}/{name}"
+    
+    if not dir_exists(plugin_path):
+      print("Plugin not found: {name}")
+      return
+    
+    print("Uninstalling {name}...")
+    fs_rmdir(plugin_path, recursive: true)
+    print("✓ Uninstalled {name}")
+
+command "tri plugin enable":
+  usage: "tri plugin enable <name>"
+  fn execute(args):
+    name = args.positional[0]
+    manager = PluginManager.init()
+    
+    for n in manager.discover_plugins():
+      manager.load_plugin(n)
+    
+    if manager.enable_plugin(name):
+      print("✓ Enabled {name}")
+    else:
+      print("Plugin not found: {name}")
+
+command "tri plugin disable":
+  usage: "tri plugin disable <name>"
+  fn execute(args):
+    name = args.positional[0]
+    manager = PluginManager.init()
+    
+    for n in manager.discover_plugins():
+      manager.load_plugin(n)
+    
+    if manager.disable_plugin(name):
+      print("✓ Disabled {name}")
+    else:
+      print("Plugin not found: {name}")
+
+command "tri plugin create":
+  usage: "tri plugin create <name>"
+  fn execute(args):
+    name = args.positional[0]
+    manager = PluginManager.init()
+    
+    plugin_path = "{manager.plugin_dir}/{name}"
+    
+    if dir_exists(plugin_path):
+      print("Plugin already exists: {name}")
+      return
+    
+    # Create scaffold
+    fs_mkdir(plugin_path)
+    fs_mkdir("{plugin_path}/commands")
+    fs_mkdir("{plugin_path}/hooks")
+    
+    # Create manifest
+    manifest = {
+      "name": name,
+      "version": "1.0.0",
+      "description": "A TRI plugin",
+      "author": {
+        "name": "Your Name"
+      },
+      "license": "MIT",
+      "tri_version": ">=1.0.0",
+      "commands": [],
+      "hooks": []
+    }
+    
+    fs_write("{plugin_path}/plugin.json", json_encode(manifest, indent: 2))
+    
+    # Create README
+    readme = """
+# {name}
+
+A TRI plugin.
+
+## Installation
+
+```bash
+tri plugin install {plugin_path}
+```
+
+## Usage
+
+TODO: Add usage instructions
+
+## License
+
+MIT
+"""
+    fs_write("{plugin_path}/README.md", readme)
+    
+    print("✓ Created plugin scaffold at {plugin_path}")
+    print("")
+    print("Next steps:")
+    print("  1. Edit {plugin_path}/plugin.json")
+    print("  2. Add commands in {plugin_path}/commands/")
+    print("  3. Add hooks in {plugin_path}/hooks/")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TESTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tests:
+  - name: "Discover Plugins"
+    setup:
+      create_dir: "~/.tri/plugins/test-plugin"
+      create_file: "~/.tri/plugins/test-plugin/plugin.json" with "{}"
+    assert: "test-plugin" in PluginManager.init().discover_plugins()
+    cleanup:
+      delete_dir: "~/.tri/plugins/test-plugin"
+
+  - name: "Load Plugin"
+    setup:
+      create_plugin: "test-plugin" with valid manifest
+    input:
+      name: "test-plugin"
+    assert: PluginManager.init().load_plugin(input.name).is_ok()
+
+  - name: "Hook Priority"
+    setup:
+      hooks:
+        - { event: pre_chat, priority: 10 }
+        - { event: pre_chat, priority: 5 }
+    assert: hooks[0].priority < hooks[1].priority
+
+  - name: "Golden Identity"
+    assert: PHI * PHI + 1/(PHI * PHI) == TRINITY
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════

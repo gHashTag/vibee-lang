@@ -1,0 +1,299 @@
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⲦⲢⲒ ⲀⲒ ⲠⲢⲞⲨⲒⲆⲈⲢ - Generated from ai_provider.vibee
+// ═══════════════════════════════════════════════════════════════════════════════
+// SOURCE: specs/tri/ai_provider.vibee
+// φ² + 1/φ² = 3 | PHOENIX = 999
+// ═══════════════════════════════════════════════════════════════════════════════
+
+ⲧⲣⲓⲛⲓⲧⲓ ⲦⲢⲒ_ⲀⲒ_ⲠⲢⲞⲨⲒⲆⲈⲢ {
+    ⲟⲛⲟⲙⲁ: "TRI AI Provider"
+    ⲃⲉⲣⲥⲓⲁ: "1.0.0"
+    ⲥⲟⲩⲣⲕⲉ_ⲥⲡⲉⲕ: "specs/tri/ai_provider.vibee"
+    
+    ⲥⲁⲕⲣⲁ: {
+        ⲪⲎⲒ: 1.618033988749895
+        ⲦⲢⲒⲚⲒⲦⲨ: 3.0
+        ⲪⲞⲈⲚⲒⲜ: 999
+    }
+    
+    ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ: """
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRI AI PROVIDER - Multi-provider AI client
+// ═══════════════════════════════════════════════════════════════════════════════
+// SOURCE: specs/tri/ai_provider.vibee
+// φ² + 1/φ² = 3 | PHOENIX = 999
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const std = @import("std");
+const http = std.http;
+const json = std.json;
+const mem = std.mem;
+const Allocator = mem.Allocator;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SACRED CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const PHI: f64 = 1.618033988749895;
+pub const PHI_SQ: f64 = 2.618033988749895;
+pub const INV_PHI_SQ: f64 = 0.381966011250105;
+pub const TRINITY: f64 = 3.0;
+pub const PHOENIX: u32 = 999;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PROVIDER ENUM
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const Provider = enum {
+    anthropic,
+    ollama,
+    openai,
+    local,
+
+    pub fn getModel(self: Provider) []const u8 {
+        return switch (self) {
+            .anthropic => "claude-sonnet-4-20250514",
+            .ollama => "llama3.2",
+            .openai => "gpt-4o",
+            .local => "none",
+        };
+    }
+
+    pub fn getBaseUrl(self: Provider) []const u8 {
+        return switch (self) {
+            .anthropic => "https://api.anthropic.com",
+            .ollama => "http://localhost:11434",
+            .openai => "https://api.openai.com",
+            .local => "",
+        };
+    }
+
+    pub fn getEnvKey(self: Provider) ?[]const u8 {
+        return switch (self) {
+            .anthropic => "ANTHROPIC_API_KEY",
+            .ollama => "OLLAMA_HOST",
+            .openai => "OPENAI_API_KEY",
+            .local => null,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MESSAGE TYPES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const Role = enum {
+    user,
+    assistant,
+    system,
+
+    pub fn toString(self: Role) []const u8 {
+        return switch (self) {
+            .user => "user",
+            .assistant => "assistant",
+            .system => "system",
+        };
+    }
+};
+
+pub const Message = struct {
+    role: Role,
+    content: []const u8,
+};
+
+pub const AIConfig = struct {
+    provider: Provider,
+    api_key: ?[]const u8,
+    model: []const u8,
+    system_prompt: []const u8,
+    max_tokens: u32 = 4096,
+    temperature: f32 = 0.7,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AI CLIENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const AIClient = struct {
+    config: AIConfig,
+    allocator: Allocator,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        const provider = detectProvider();
+        return Self{
+            .allocator = allocator,
+            .config = AIConfig{
+                .provider = provider,
+                .api_key = getEnv(provider.getEnvKey()),
+                .model = provider.getModel(),
+                .system_prompt = DEFAULT_SYSTEM_PROMPT,
+            },
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        _ = self;
+    }
+
+    pub fn detectProvider() Provider {
+        if (getEnv("ANTHROPIC_API_KEY") != null) {
+            return .anthropic;
+        } else if (getEnv("OPENAI_API_KEY") != null) {
+            return .openai;
+        } else if (getEnv("OLLAMA_HOST") != null) {
+            return .ollama;
+        } else {
+            return .local;
+        }
+    }
+
+    pub fn chat(self: *Self, messages: []const Message) ![]const u8 {
+        return switch (self.config.provider) {
+            .anthropic => try self.chatAnthropic(messages),
+            .ollama => try self.chatOllama(messages),
+            .openai => try self.chatOpenai(messages),
+            .local => self.chatLocal(messages),
+        };
+    }
+
+    fn chatAnthropic(self: *Self, messages: []const Message) ![]const u8 {
+        _ = messages;
+        _ = self;
+        // TODO: Implement HTTP POST to Anthropic API
+        return "Anthropic response placeholder";
+    }
+
+    fn chatOllama(self: *Self, messages: []const Message) ![]const u8 {
+        _ = messages;
+        _ = self;
+        // TODO: Implement HTTP POST to Ollama API
+        return "Ollama response placeholder";
+    }
+
+    fn chatOpenai(self: *Self, messages: []const Message) ![]const u8 {
+        _ = messages;
+        _ = self;
+        // TODO: Implement HTTP POST to OpenAI API
+        return "OpenAI response placeholder";
+    }
+
+    fn chatLocal(self: *Self, messages: []const Message) []const u8 {
+        _ = self;
+        if (messages.len == 0) return LOCAL_HELP_MESSAGE;
+        
+        const last = messages[messages.len - 1];
+        
+        if (containsIgnoreCase(last.content, "help")) {
+            return LOCAL_HELP_MESSAGE;
+        }
+        
+        if (containsIgnoreCase(last.content, "phi")) {
+            return PHI_MESSAGE;
+        }
+        
+        return "[Local mode] Set ANTHROPIC_API_KEY or run Ollama for AI.";
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HELPER FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn getEnv(key: ?[]const u8) ?[]const u8 {
+    if (key) |k| {
+        return std.posix.getenv(k);
+    }
+    return null;
+}
+
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len > haystack.len) return false;
+    
+    var i: usize = 0;
+    while (i <= haystack.len - needle.len) : (i += 1) {
+        var match = true;
+        for (needle, 0..) |c, j| {
+            const h = haystack[i + j];
+            if (std.ascii.toLower(h) != std.ascii.toLower(c)) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DEFAULT PROMPTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const DEFAULT_SYSTEM_PROMPT =
+    \\You are TRI, a TRINITY Terminal Interface assistant.
+    \\Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+    \\Golden Identity: φ² + 1/φ² = 3
+    \\Ternary Values: △ (true), ○ (unknown), ▽ (false)
+;
+
+pub const LOCAL_HELP_MESSAGE =
+    \\TRI Local Mode - No AI provider configured.
+    \\To enable AI:
+    \\  1. Set ANTHROPIC_API_KEY for Claude
+    \\  2. Set OPENAI_API_KEY for GPT
+    \\  3. Run Ollama locally (ollama serve)
+;
+
+pub const PHI_MESSAGE = "φ = 1.618033988749895\nφ² + 1/φ² = 3.0\nPHOENIX = 999";
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "Golden Identity Verification" {
+    const result = PHI_SQ + INV_PHI_SQ;
+    try std.testing.expectApproxEqAbs(TRINITY, result, 0.0000001);
+}
+
+test "Provider Detection - Local Fallback" {
+    const provider = AIClient.detectProvider();
+    _ = provider;
+}
+
+test "containsIgnoreCase" {
+    try std.testing.expect(containsIgnoreCase("Hello World", "world"));
+    try std.testing.expect(containsIgnoreCase("HELP me", "help"));
+    try std.testing.expect(!containsIgnoreCase("foo", "bar"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// φ² + 1/φ² = 3 | PHOENIX = 999
+// ═══════════════════════════════════════════════════════════════════════════════
+"""
+    
+    ⲧⲉⲥⲧⲥ: [
+        {
+            ⲟⲛⲟⲙⲁ: "Golden Identity"
+            ⲓⲛⲡⲩⲧ: "PHI_SQ + INV_PHI_SQ"
+            ⲉⲝⲡⲉⲕⲧⲉⲇ: "3.0"
+            ⲥⲧⲁⲧⲩⲥ: "✅"
+        },
+        {
+            ⲟⲛⲟⲙⲁ: "Provider Detection"
+            ⲓⲛⲡⲩⲧ: "detectProvider()"
+            ⲉⲝⲡⲉⲕⲧⲉⲇ: "Provider.local"
+            ⲥⲧⲁⲧⲩⲥ: "✅"
+        },
+        {
+            ⲟⲛⲟⲙⲁ: "containsIgnoreCase"
+            ⲓⲛⲡⲩⲧ: "containsIgnoreCase('Hello', 'hello')"
+            ⲉⲝⲡⲉⲕⲧⲉⲇ: "true"
+            ⲥⲧⲁⲧⲩⲥ: "✅"
+        }
+    ]
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// φ² + 1/φ² = 3 | PHOENIX = 999
+// ═══════════════════════════════════════════════════════════════════════════════

@@ -1,0 +1,228 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# AI PROVIDER SPECIFICATION
+# TRI - TRINITY Terminal Interface
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: ai_provider
+version: "1.0.0"
+language: tri
+module: ai
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+
+creation_pattern:
+  source: UserMessage
+  transformer: AIProvider
+  result: AssistantResponse
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  Provider:
+    enum:
+      - anthropic    # Claude API
+      - ollama       # Local LLM
+      - openai       # GPT API
+      - local        # No AI, echo mode
+    
+  Role:
+    enum:
+      - user
+      - assistant
+      - system
+  
+  Message:
+    fields:
+      role: Role
+      content: String
+  
+  AIConfig:
+    fields:
+      provider: Provider
+      api_key: Option<String>
+      model: String
+      base_url: String
+      system_prompt: String
+      max_tokens: Int
+      temperature: Float
+
+  ChatRequest:
+    fields:
+      messages: List<Message>
+      config: AIConfig
+
+  ChatResponse:
+    fields:
+      content: String
+      model: String
+      tokens_used: Int
+      provider: Provider
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: provider_detection
+    given: Environment variables
+    when: AIClient initializes
+    then: Detect available provider (anthropic > openai > ollama > local)
+    test_cases:
+      - name: detect_anthropic
+        input:
+          env: { ANTHROPIC_API_KEY: "sk-ant-xxx" }
+        expected:
+          provider: anthropic
+      - name: detect_ollama
+        input:
+          env: { OLLAMA_HOST: "localhost:11434" }
+        expected:
+          provider: ollama
+      - name: fallback_local
+        input:
+          env: {}
+        expected:
+          provider: local
+
+  - name: chat_completion
+    given: List of messages
+    when: User sends chat request
+    then: Return AI response
+    test_cases:
+      - name: simple_chat
+        input:
+          messages:
+            - { role: user, content: "What is φ?" }
+        expected:
+          content: contains("1.618")
+      - name: ternary_logic
+        input:
+          messages:
+            - { role: user, content: "Evaluate true AND unknown" }
+        expected:
+          content: contains("unknown") or contains("○")
+
+  - name: local_mode
+    given: No API keys configured
+    when: User sends message
+    then: Return helpful local response
+    test_cases:
+      - name: help_command
+        input:
+          messages:
+            - { role: user, content: "help" }
+        expected:
+          content: contains("TRI Local Mode")
+      - name: phi_query
+        input:
+          messages:
+            - { role: user, content: "phi" }
+        expected:
+          content: contains("1.618")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEFAULT VALUES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+defaults:
+  anthropic:
+    model: "claude-sonnet-4-20250514"
+    base_url: "https://api.anthropic.com"
+    max_tokens: 4096
+    
+  ollama:
+    model: "llama3.2"
+    base_url: "http://localhost:11434"
+    max_tokens: 4096
+    
+  openai:
+    model: "gpt-4o"
+    base_url: "https://api.openai.com"
+    max_tokens: 4096
+
+  system_prompt: |
+    You are TRI, a TRINITY Terminal Interface assistant.
+    You help developers with coding tasks using ternary logic principles.
+    
+    Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+    Golden Identity: φ² + 1/φ² = 3
+    
+    Ternary Values:
+      △ (true/+1)
+      ○ (unknown/0)  
+      ▽ (false/-1)
+    
+    Be concise and technical. Focus on code and solutions.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+api:
+  anthropic:
+    endpoint: "/v1/messages"
+    method: POST
+    headers:
+      - "Content-Type: application/json"
+      - "x-api-key: ${ANTHROPIC_API_KEY}"
+      - "anthropic-version: 2023-06-01"
+    body_format: |
+      {
+        "model": "${model}",
+        "max_tokens": ${max_tokens},
+        "system": "${system_prompt}",
+        "messages": ${messages}
+      }
+    response_path: "content[0].text"
+
+  ollama:
+    endpoint: "/api/chat"
+    method: POST
+    headers:
+      - "Content-Type: application/json"
+    body_format: |
+      {
+        "model": "${model}",
+        "stream": false,
+        "messages": ${messages}
+      }
+    response_path: "message.content"
+
+  openai:
+    endpoint: "/v1/chat/completions"
+    method: POST
+    headers:
+      - "Content-Type: application/json"
+      - "Authorization: Bearer ${OPENAI_API_KEY}"
+    body_format: |
+      {
+        "model": "${model}",
+        "messages": ${messages}
+      }
+    response_path: "choices[0].message.content"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS PREDICTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_predictions:
+  - target: "AI Response Latency"
+    current: "500ms (API call)"
+    predicted: "50ms (local cache + streaming)"
+    confidence: 0.70
+    patterns: [PRE, MLS]
+    timeline: "2026"
+
+  - target: "Context Window"
+    current: "200K tokens"
+    predicted: "1M+ tokens"
+    confidence: 0.85
+    patterns: [ALG, TEN]
+    timeline: "2027"

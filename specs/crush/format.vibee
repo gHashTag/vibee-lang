@@ -1,0 +1,183 @@
+# format.vibee - Spinner Animation Module Specification
+# Author: Dmitrii Vasilev
+# Source: github.com/charmbracelet/crush/internal/format
+
+name: format
+version: "1.0.0"
+language: zig
+module: format
+
+sacred_formula:
+  V: "n × 3^k × π^m × φ^p × e^q"
+  golden_identity: "φ² + 1/φ² = 3"
+  self_evolution: enabled
+
+creation_pattern:
+  source: AnimationSettings
+  transformer: SpinnerEngine
+  result: TerminalAnimation
+
+# Spinner - Terminal animation wrapper for non-interactive mode
+types:
+  - name: Spinner
+    description: "Wraps bubbletea spinner for non-interactive mode"
+    fields:
+      - name: done
+        type: Channel(void)
+        description: "Signal channel for completion"
+      - name: prog
+        type: "*tea.Program"
+        description: "Bubbletea program instance"
+
+  - name: Model
+    description: "Internal bubbletea model for spinner"
+    fields:
+      - name: cancel
+        type: "fn() void"
+        description: "Context cancellation function"
+      - name: anim
+        type: "*anim.Anim"
+        description: "Animation component"
+
+behaviors:
+  - name: spinner_lifecycle
+    given: "Animation settings and context"
+    when: "NewSpinner is called"
+    then: "Returns configured Spinner ready to start"
+    test_cases:
+      - name: create_spinner
+        input:
+          ctx: "context.Background()"
+          cancel: "cancel_func"
+          settings: "anim.Settings{}"
+        expected:
+          spinner_not_nil: true
+          done_channel_open: true
+
+  - name: spinner_start
+    given: "Configured Spinner instance"
+    when: "Start() is called"
+    then: "Animation begins in goroutine"
+    test_cases:
+      - name: start_animation
+        input:
+          spinner: "valid_spinner"
+        expected:
+          goroutine_started: true
+          program_running: true
+
+  - name: spinner_stop
+    given: "Running Spinner"
+    when: "Stop() is called"
+    then: "Animation stops and done channel closes"
+    test_cases:
+      - name: stop_animation
+        input:
+          spinner: "running_spinner"
+        expected:
+          program_quit: true
+          done_channel_closed: true
+
+  - name: model_init
+    given: "Model with animation"
+    when: "Init() is called"
+    then: "Returns animation init command"
+    test_cases:
+      - name: init_model
+        input:
+          model: "model_with_anim"
+        expected:
+          cmd_not_nil: true
+
+  - name: model_view
+    given: "Model with animation"
+    when: "View() is called"
+    then: "Returns animation view wrapped in tea.View"
+    test_cases:
+      - name: render_view
+        input:
+          model: "model_with_anim"
+        expected:
+          view_not_empty: true
+
+  - name: model_update_keypress
+    given: "Model receiving key press"
+    when: "ctrl+c or esc is pressed"
+    then: "Cancel is called and Quit command returned"
+    test_cases:
+      - name: handle_ctrl_c
+        input:
+          msg: "tea.KeyPressMsg{Key: 'ctrl+c'}"
+        expected:
+          cancel_called: true
+          quit_returned: true
+      - name: handle_esc
+        input:
+          msg: "tea.KeyPressMsg{Key: 'esc'}"
+        expected:
+          cancel_called: true
+          quit_returned: true
+
+  - name: spinner_error_handling
+    given: "Spinner encounters error during run"
+    when: "Error is not context.Canceled or tea.ErrInterrupted"
+    then: "Error is printed to stderr"
+    test_cases:
+      - name: handle_error
+        input:
+          error: "some_error"
+        expected:
+          stderr_contains: "Error running spinner"
+      - name: ignore_canceled
+        input:
+          error: "context.Canceled"
+        expected:
+          stderr_empty: true
+
+  - name: line_clearing
+    given: "Spinner stops"
+    when: "Run completes"
+    then: "Entire line is erased from terminal"
+    test_cases:
+      - name: clear_line
+        input:
+          spinner: "stopping_spinner"
+        expected:
+          ansi_erase_sent: true
+
+pas_analysis:
+  current_algorithm: "Bubbletea event loop"
+  current_complexity: "O(1) per frame"
+  theoretical_lower_bound: "Ω(1)"
+  gap: 0
+  patterns_applicable:
+    - pattern: PRE
+      reason: "Animation frames could be precomputed"
+    - pattern: FDT
+      reason: "Frame timing could use frequency domain"
+  prediction:
+    target: "Spinner animation"
+    current: "O(1) per frame"
+    predicted: "O(1) with reduced allocations"
+    confidence: 0.60
+    timeline: "2026"
+    reasoning: "Frame buffer pooling reduces GC pressure"
+
+dependencies:
+  - "context"
+  - "errors"
+  - "fmt"
+  - "os"
+  - "charm.land/bubbletea/v2"
+  - "github.com/charmbracelet/crush/internal/tui/components/anim"
+  - "github.com/charmbracelet/x/ansi"
+
+test_generation:
+  strategy: property_based
+  coverage_target: 85
+  edge_cases:
+    - "nil context"
+    - "nil cancel function"
+    - "rapid start/stop cycles"
+    - "concurrent stop calls"
+    - "context already canceled"

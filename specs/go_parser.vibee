@@ -1,0 +1,286 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# GO PARSER - Парсер Go кода в AST
+# ═══════════════════════════════════════════════════════════════════════════════
+# ⲤⲀⲔⲢⲀ ⲪⲞⲢⲘⲨⲖⲀ: V = n × 3^k × π^m × φ^p × e^q
+# ⲌⲞⲖⲞⲦⲀⲒⲀ ⲒⲆⲈⲚⲦⲒⲬⲚⲞⲤⲦⲒ: φ² + 1/φ² = 3
+# PHOENIX = 999 = 3³ × 37
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: go_parser
+version: "1.0.0"
+author: "Dmitrii Vasilev"
+license: "MIT"
+language: zig
+module: go_parser
+
+sacred_formula:
+  V: "n × 3^k × π^m × φ^p × e^q"
+  golden_identity: "φ² + 1/φ² = 3"
+  phoenix: 999
+
+constants:
+  - name: PHI
+    value: 1.618033988749895
+    description: "Golden ratio"
+  - name: TRINITY
+    value: 3.0
+    description: "Sacred trinity"
+  - name: MAX_DEPTH
+    value: 99
+    description: "Maximum AST depth"
+
+creation_pattern:
+  source: "[]GoToken"
+  transformer: "GoParser"
+  result: "GoFile (AST)"
+
+types:
+  - name: GoFile
+    kind: struct
+    description: "Parsed Go file"
+    fields:
+      - name: package
+        type: "[]const u8"
+      - name: imports
+        type: "ArrayList(GoImport)"
+      - name: decls
+        type: "ArrayList(GoDecl)"
+
+  - name: GoImport
+    kind: struct
+    fields:
+      - name: alias
+        type: "?[]const u8"
+      - name: path
+        type: "[]const u8"
+
+  - name: GoDecl
+    kind: union
+    variants:
+      - func_decl
+      - type_decl
+      - const_decl
+      - var_decl
+
+  - name: GoFuncDecl
+    kind: struct
+    fields:
+      - name: name
+        type: "[]const u8"
+      - name: receiver
+        type: "?GoReceiver"
+      - name: params
+        type: "ArrayList(GoParam)"
+      - name: returns
+        type: "ArrayList(GoType)"
+      - name: body_tokens
+        type: "ArrayList(GoToken)"
+
+  - name: GoReceiver
+    kind: struct
+    fields:
+      - name: name
+        type: "[]const u8"
+      - name: type_name
+        type: "[]const u8"
+      - name: is_pointer
+        type: bool
+
+  - name: GoParam
+    kind: struct
+    fields:
+      - name: name
+        type: "[]const u8"
+      - name: type_info
+        type: GoType
+      - name: is_variadic
+        type: bool
+
+  - name: GoType
+    kind: struct
+    fields:
+      - name: name
+        type: "[]const u8"
+      - name: is_pointer
+        type: bool
+      - name: is_slice
+        type: bool
+      - name: is_map
+        type: bool
+      - name: key_type_name
+        type: "?[]const u8"
+      - name: elem_type_name
+        type: "?[]const u8"
+
+  - name: GoTypeDecl
+    kind: struct
+    fields:
+      - name: name
+        type: "[]const u8"
+      - name: kind
+        type: TypeKind
+      - name: fields
+        type: "ArrayList(GoStructField)"
+      - name: methods
+        type: "ArrayList(GoMethodSig)"
+
+  - name: TypeKind
+    kind: enum
+    variants:
+      - struct_type
+      - interface_type
+      - alias
+
+  - name: GoStructField
+    kind: struct
+    fields:
+      - name: name
+        type: "[]const u8"
+      - name: type_info
+        type: GoType
+      - name: tag
+        type: "?[]const u8"
+
+  - name: GoMethodSig
+    kind: struct
+    fields:
+      - name: name
+        type: "[]const u8"
+      - name: params
+        type: "ArrayList(GoParam)"
+      - name: returns
+        type: "ArrayList(GoType)"
+
+  - name: GoConstDecl
+    kind: struct
+    fields:
+      - name: name
+        type: "[]const u8"
+      - name: value
+        type: "?[]const u8"
+
+  - name: GoVarDecl
+    kind: struct
+    fields:
+      - name: name
+        type: "[]const u8"
+      - name: type_name
+        type: "?[]const u8"
+
+behaviors:
+  - name: parse_file
+    given: "Tokens from Go lexer"
+    when: "parse() is called"
+    then: "Returns GoFile AST"
+    test_cases:
+      - name: parse_empty
+        input: ""
+        expected: "GoFile{package: '', decls: []}"
+
+  - name: parse_package
+    given: "package main"
+    when: "parsePackage() is called"
+    then: "Returns package name 'main'"
+    test_cases:
+      - name: parse_package_main
+        input: "package main"
+        expected: "main"
+
+  - name: parse_import
+    given: "import \"fmt\""
+    when: "parseImport() is called"
+    then: "Returns GoImport{path: 'fmt'}"
+    test_cases:
+      - name: parse_single_import
+        input: "import \"fmt\""
+        expected: "GoImport{path: 'fmt'}"
+
+  - name: parse_func_decl
+    given: "func hello() {}"
+    when: "parseFuncDecl() is called"
+    then: "Returns GoFuncDecl{name: 'hello'}"
+    test_cases:
+      - name: parse_simple_func
+        input: "func hello() {}"
+        expected: "GoFuncDecl{name: 'hello', params: [], returns: []}"
+      - name: parse_func_with_params
+        input: "func add(a int, b int) int {}"
+        expected: "GoFuncDecl{name: 'add', params: [a:int, b:int], returns: [int]}"
+
+  - name: parse_receiver
+    given: "(p *Point)"
+    when: "parseReceiver() is called"
+    then: "Returns GoReceiver{name: 'p', type: 'Point', ptr: true}"
+    test_cases:
+      - name: parse_pointer_receiver
+        input: "(p *Point)"
+        expected: "GoReceiver{name: 'p', type_name: 'Point', is_pointer: true}"
+
+  - name: parse_struct
+    given: "type Point struct { X int }"
+    when: "parseTypeDecl() is called"
+    then: "Returns GoTypeDecl with struct"
+    test_cases:
+      - name: parse_simple_struct
+        input: "type Point struct { X int; Y int }"
+        expected: "GoTypeDecl{name: 'Point', kind: struct, fields: 2}"
+
+  - name: parse_interface
+    given: "type Reader interface { Read() }"
+    when: "parseTypeDecl() is called"
+    then: "Returns GoTypeDecl with interface"
+    test_cases:
+      - name: parse_simple_interface
+        input: "type Reader interface { Read(p []byte) int }"
+        expected: "GoTypeDecl{name: 'Reader', kind: interface, methods: 1}"
+
+  - name: parse_type
+    given: "Type tokens"
+    when: "parseType() is called"
+    then: "Returns GoType"
+    test_cases:
+      - name: parse_simple_type
+        input: "int"
+        expected: "GoType{name: 'int'}"
+      - name: parse_pointer_type
+        input: "*int"
+        expected: "GoType{name: 'int', is_pointer: true}"
+      - name: parse_slice_type
+        input: "[]int"
+        expected: "GoType{name: 'int', is_slice: true}"
+      - name: parse_map_type
+        input: "map[string]int"
+        expected: "GoType{is_map: true, key: 'string', elem: 'int'}"
+
+algorithms:
+  - name: recursive_descent_parser
+    complexity: "O(n)"
+    description: "Recursive descent parser for Go"
+    steps:
+      - "Parse package declaration"
+      - "Parse import declarations"
+      - "Parse top-level declarations (func, type, const, var)"
+      - "Build AST nodes"
+
+pas_predictions:
+  - target: "Go Parser"
+    current: "O(n) recursive descent"
+    predicted: "O(n) with lookahead cache"
+    speedup: "1.5x"
+    confidence: 0.70
+    patterns: [PRE]
+    timeline: "2026"
+
+wasm_exports:
+  functions:
+    - name: go_parse
+      params: [tokens_ptr: i32, tokens_len: i32]
+      returns: i32
+      description: "Parse Go tokens to AST"
+
+metrics:
+  trinity_score: 1.0
+  self_evolution: enabled
+  test_count: 10
+
+signature: "IGLA GO PARSER V1.0"

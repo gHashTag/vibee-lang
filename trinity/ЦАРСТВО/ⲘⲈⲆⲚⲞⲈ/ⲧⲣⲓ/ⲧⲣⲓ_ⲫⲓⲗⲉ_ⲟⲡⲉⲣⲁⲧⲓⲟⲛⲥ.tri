@@ -1,0 +1,334 @@
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⲦⲢⲒ ⲪⲒⲖⲈ ⲞⲠⲈⲢⲀⲦⲒⲞⲚⲤ - Generated from file_operations.vibee
+// ═══════════════════════════════════════════════════════════════════════════════
+// SOURCE: specs/tri/file_operations.vibee
+// φ² + 1/φ² = 3 | PHOENIX = 999
+// ═══════════════════════════════════════════════════════════════════════════════
+
+ⲧⲣⲓⲛⲓⲧⲓ ⲦⲢⲒ_ⲪⲒⲖⲈ_ⲞⲠⲈⲢⲀⲦⲒⲞⲚⲤ {
+    ⲟⲛⲟⲙⲁ: "TRI File Operations"
+    ⲃⲉⲣⲥⲓⲁ: "1.0.0"
+    ⲥⲟⲩⲣⲕⲉ_ⲥⲡⲉⲕ: "specs/tri/file_operations.vibee"
+    
+    ⲥⲁⲕⲣⲁ: {
+        ⲪⲎⲒ: 1.618033988749895
+        ⲦⲢⲒⲚⲒⲦⲨ: 3.0
+        ⲪⲞⲈⲚⲒⲜ: 999
+    }
+    
+    ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ: """
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRI FILE OPERATIONS - File read/write/edit/search
+// ═══════════════════════════════════════════════════════════════════════════════
+// SOURCE: specs/tri/file_operations.vibee
+// φ² + 1/φ² = 3 | PHOENIX = 999
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const std = @import("std");
+const fs = std.fs;
+const mem = std.mem;
+const Allocator = mem.Allocator;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SACRED CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const PHI: f64 = 1.618033988749895;
+pub const TRINITY: f64 = 3.0;
+pub const PHOENIX: u32 = 999;
+pub const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TYPES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const FileOperation = enum {
+    read,
+    write,
+    edit,
+    delete,
+    list,
+    search,
+    diff,
+};
+
+pub const EditOperation = enum {
+    replace,
+    insert,
+    delete_lines,
+    append,
+};
+
+pub const FileInfo = struct {
+    path: []const u8,
+    name: []const u8,
+    size: u64,
+    is_dir: bool,
+    modified: i128,
+};
+
+pub const ReadResult = struct {
+    content: []const u8,
+    lines: usize,
+    size: usize,
+};
+
+pub const WriteResult = struct {
+    path: []const u8,
+    bytes_written: usize,
+    success: bool,
+};
+
+pub const SearchResult = struct {
+    path: []const u8,
+    line: usize,
+    content: []const u8,
+    match_str: []const u8,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SECURITY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const BLOCKED_PATHS = [_][]const u8{
+    "/etc/passwd",
+    "/etc/shadow",
+    ".ssh",
+    ".pem",
+    ".key",
+    ".env",
+};
+
+const BLOCKED_PATTERNS = [_][]const u8{
+    "password",
+    "secret",
+    "api_key",
+    "private_key",
+};
+
+pub fn isPathAllowed(path: []const u8) bool {
+    for (BLOCKED_PATHS) |blocked| {
+        if (mem.indexOf(u8, path, blocked) != null) {
+            return false;
+        }
+    }
+    return true;
+}
+
+pub fn checkContentSecurity(allocator: Allocator, content: []const u8) !std.ArrayList([]const u8) {
+    var warnings = std.ArrayList([]const u8).init(allocator);
+    
+    var lower_content = try allocator.alloc(u8, content.len);
+    defer allocator.free(lower_content);
+    for (content, 0..) |c, i| {
+        lower_content[i] = std.ascii.toLower(c);
+    }
+    
+    for (BLOCKED_PATTERNS) |pattern| {
+        if (mem.indexOf(u8, lower_content, pattern) != null) {
+            try warnings.append(pattern);
+        }
+    }
+    
+    return warnings;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FILE OPERATIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub fn readFile(allocator: Allocator, path: []const u8) !ReadResult {
+    if (!isPathAllowed(path)) {
+        return error.AccessDenied;
+    }
+    
+    const file = try fs.cwd().openFile(path, .{});
+    defer file.close();
+    
+    const stat = try file.stat();
+    if (stat.size > MAX_FILE_SIZE) {
+        return error.FileTooLarge;
+    }
+    
+    const content = try file.readToEndAlloc(allocator, MAX_FILE_SIZE);
+    
+    var lines: usize = 1;
+    for (content) |c| {
+        if (c == '\n') lines += 1;
+    }
+    
+    return ReadResult{
+        .content = content,
+        .lines = lines,
+        .size = content.len,
+    };
+}
+
+pub fn writeFile(allocator: Allocator, path: []const u8, content: []const u8) !WriteResult {
+    _ = allocator;
+    
+    if (!isPathAllowed(path)) {
+        return error.AccessDenied;
+    }
+    
+    const file = try fs.cwd().createFile(path, .{});
+    defer file.close();
+    
+    try file.writeAll(content);
+    
+    return WriteResult{
+        .path = path,
+        .bytes_written = content.len,
+        .success = true,
+    };
+}
+
+pub fn editFile(allocator: Allocator, path: []const u8, operation: EditOperation, old_str: ?[]const u8, new_str: ?[]const u8) !WriteResult {
+    if (!isPathAllowed(path)) {
+        return error.AccessDenied;
+    }
+    
+    const result = try readFile(allocator, path);
+    var content = try allocator.dupe(u8, result.content);
+    defer allocator.free(result.content);
+    
+    switch (operation) {
+        .replace => {
+            if (old_str) |old| {
+                if (mem.indexOf(u8, content, old)) |pos| {
+                    const new = new_str orelse "";
+                    const new_len = content.len - old.len + new.len;
+                    var new_content = try allocator.alloc(u8, new_len);
+                    @memcpy(new_content[0..pos], content[0..pos]);
+                    @memcpy(new_content[pos..pos + new.len], new);
+                    @memcpy(new_content[pos + new.len..], content[pos + old.len..]);
+                    allocator.free(content);
+                    content = new_content;
+                } else {
+                    return error.StringNotFound;
+                }
+            }
+        },
+        .append => {
+            if (new_str) |new| {
+                const new_content = try allocator.alloc(u8, content.len + 1 + new.len);
+                @memcpy(new_content[0..content.len], content);
+                new_content[content.len] = '\n';
+                @memcpy(new_content[content.len + 1..], new);
+                allocator.free(content);
+                content = new_content;
+            }
+        },
+        else => {},
+    }
+    
+    return writeFile(allocator, path, content);
+}
+
+pub fn listDirectory(allocator: Allocator, path: []const u8) !std.ArrayList(FileInfo) {
+    var entries = std.ArrayList(FileInfo).init(allocator);
+    
+    var dir = try fs.cwd().openDir(path, .{ .iterate = true });
+    defer dir.close();
+    
+    var iter = dir.iterate();
+    while (try iter.next()) |entry| {
+        try entries.append(FileInfo{
+            .path = try allocator.dupe(u8, entry.name),
+            .name = try allocator.dupe(u8, entry.name),
+            .size = 0,
+            .is_dir = entry.kind == .directory,
+            .modified = 0,
+        });
+    }
+    
+    return entries;
+}
+
+pub fn searchInFile(allocator: Allocator, path: []const u8, pattern: []const u8) !std.ArrayList(SearchResult) {
+    var results = std.ArrayList(SearchResult).init(allocator);
+    
+    const file_result = try readFile(allocator, path);
+    defer allocator.free(file_result.content);
+    
+    var line_num: usize = 1;
+    var line_start: usize = 0;
+    
+    for (file_result.content, 0..) |c, i| {
+        if (c == '\n') {
+            const line = file_result.content[line_start..i];
+            if (mem.indexOf(u8, line, pattern) != null) {
+                try results.append(SearchResult{
+                    .path = path,
+                    .line = line_num,
+                    .content = try allocator.dupe(u8, line),
+                    .match_str = pattern,
+                });
+            }
+            line_num += 1;
+            line_start = i + 1;
+        }
+    }
+    
+    return results;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "Security - Block /etc/passwd" {
+    try std.testing.expect(!isPathAllowed("/etc/passwd"));
+}
+
+test "Security - Block .env" {
+    try std.testing.expect(!isPathAllowed(".env"));
+}
+
+test "Security - Allow normal path" {
+    try std.testing.expect(isPathAllowed("src/main.zig"));
+}
+
+test "Content Security - Detect password" {
+    const allocator = std.testing.allocator;
+    var warnings = try checkContentSecurity(allocator, "password=secret123");
+    defer warnings.deinit();
+    try std.testing.expect(warnings.items.len > 0);
+}
+
+test "Golden Identity" {
+    const phi_sq = PHI * PHI;
+    const inv_phi_sq = 1.0 / (PHI * PHI);
+    try std.testing.expectApproxEqAbs(TRINITY, phi_sq + inv_phi_sq, 0.0000001);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// φ² + 1/φ² = 3 | PHOENIX = 999
+// ═══════════════════════════════════════════════════════════════════════════════
+"""
+    
+    ⲧⲉⲥⲧⲥ: [
+        {
+            ⲟⲛⲟⲙⲁ: "Security Block"
+            ⲓⲛⲡⲩⲧ: "/etc/passwd"
+            ⲉⲝⲡⲉⲕⲧⲉⲇ: "false"
+            ⲥⲧⲁⲧⲩⲥ: "✅"
+        },
+        {
+            ⲟⲛⲟⲙⲁ: "Allow Normal Path"
+            ⲓⲛⲡⲩⲧ: "src/main.zig"
+            ⲉⲝⲡⲉⲕⲧⲉⲇ: "true"
+            ⲥⲧⲁⲧⲩⲥ: "✅"
+        },
+        {
+            ⲟⲛⲟⲙⲁ: "Golden Identity"
+            ⲓⲛⲡⲩⲧ: "PHI² + 1/PHI²"
+            ⲉⲝⲡⲉⲕⲧⲉⲇ: "3.0"
+            ⲥⲧⲁⲧⲩⲥ: "✅"
+        }
+    ]
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// φ² + 1/φ² = 3 | PHOENIX = 999
+// ═══════════════════════════════════════════════════════════════════════════════

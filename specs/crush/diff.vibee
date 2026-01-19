@@ -1,0 +1,172 @@
+# diff.vibee - Unified Diff Generation Module
+# Author: Dmitrii Vasilev
+# Source: github.com/charmbracelet/crush/internal/diff
+
+name: diff
+version: "1.0.0"
+language: zig
+module: diff
+
+sacred_formula:
+  V: "n × 3^k × π^m × φ^p × e^q"
+  golden_identity: "φ² + 1/φ² = 3"
+  self_evolution: enabled
+
+creation_pattern:
+  source: FileContents
+  transformer: UnifiedDiffGenerator
+  result: DiffOutput
+
+# Unified diff generation with statistics
+
+types:
+  - name: DiffResult
+    description: "Result of diff generation"
+    fields:
+      - name: unified
+        type: "[]const u8"
+        description: "Unified diff string"
+      - name: additions
+        type: "usize"
+        description: "Number of added lines"
+      - name: removals
+        type: "usize"
+        description: "Number of removed lines"
+
+behaviors:
+  - name: generate_diff
+    given: "Two file contents and filename"
+    when: "GenerateDiff is called"
+    then: "Returns unified diff with addition/removal counts"
+    test_cases:
+      - name: simple_addition
+        input:
+          before: "line1\nline2"
+          after: "line1\nline2\nline3"
+          filename: "test.txt"
+        expected:
+          additions: 1
+          removals: 0
+          contains_plus_line3: true
+      - name: simple_removal
+        input:
+          before: "line1\nline2\nline3"
+          after: "line1\nline2"
+          filename: "test.txt"
+        expected:
+          additions: 0
+          removals: 1
+          contains_minus_line3: true
+      - name: modification
+        input:
+          before: "hello"
+          after: "world"
+          filename: "test.txt"
+        expected:
+          additions: 1
+          removals: 1
+      - name: no_change
+        input:
+          before: "same content"
+          after: "same content"
+          filename: "test.txt"
+        expected:
+          additions: 0
+          removals: 0
+          unified_empty: true
+      - name: empty_before
+        input:
+          before: ""
+          after: "new content"
+          filename: "test.txt"
+        expected:
+          additions: 1
+          removals: 0
+      - name: empty_after
+        input:
+          before: "old content"
+          after: ""
+          filename: "test.txt"
+        expected:
+          additions: 0
+          removals: 1
+
+  - name: filename_normalization
+    given: "Filename with leading slash"
+    when: "GenerateDiff is called"
+    then: "Leading slash is trimmed"
+    test_cases:
+      - name: trim_leading_slash
+        input:
+          filename: "/path/to/file.txt"
+        expected:
+          header_contains: "a/path/to/file.txt"
+          no_double_slash: true
+
+  - name: diff_header_format
+    given: "Valid diff"
+    when: "GenerateDiff produces output"
+    then: "Header follows unified diff format"
+    test_cases:
+      - name: header_format
+        input:
+          before: "old"
+          after: "new"
+          filename: "file.txt"
+        expected:
+          starts_with: "--- a/file.txt"
+          contains: "+++ b/file.txt"
+
+algorithms:
+  - name: unified_diff
+    complexity: "O(n*m) where n,m = line counts"
+    description: "Myers diff algorithm for unified output"
+    steps:
+      - "Split content into lines"
+      - "Compute longest common subsequence"
+      - "Generate unified diff hunks"
+      - "Count additions and removals"
+
+  - name: line_counting
+    complexity: "O(n) where n = diff lines"
+    description: "Count additions and removals"
+    steps:
+      - "Iterate through diff lines"
+      - "Count lines starting with + (not +++)"
+      - "Count lines starting with - (not ---)"
+
+pas_analysis:
+  current_algorithm: "Myers diff O(n*m)"
+  current_complexity: "O(n*m)"
+  theoretical_lower_bound: "Ω(n+m) for similar files"
+  gap: 1
+  patterns_applicable:
+    - pattern: D&C
+      reason: "Divide and conquer for large files"
+    - pattern: PRE
+      reason: "Hash-based line matching"
+    - pattern: HSH
+      reason: "Rolling hash for similar regions"
+  prediction:
+    target: "Diff generation"
+    current: "O(n*m)"
+    predicted: "O(n+m) for similar files"
+    confidence: 0.70
+    timeline: "2026"
+    reasoning: "Patience diff or histogram diff algorithms"
+
+dependencies:
+  - "strings"
+  - "github.com/aymanbagabas/go-udiff"
+
+test_generation:
+  strategy: property_based
+  coverage_target: 95
+  edge_cases:
+    - "empty files"
+    - "identical files"
+    - "completely different files"
+    - "binary content"
+    - "very long lines"
+    - "unicode content"
+    - "trailing newlines"

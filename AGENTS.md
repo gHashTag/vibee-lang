@@ -10,7 +10,7 @@ This document provides guidelines for AI agents working on the VIBEE project. Al
 
 ## ⛔ CRITICAL PROHIBITIONS
 
-### NEVER CREATE THESE FILE TYPES DIRECTLY:
+### NEVER CREATE THESE FILE TYPES MANUALLY:
 
 ```
 ❌ .html files (except runtime/runtime.html)
@@ -19,33 +19,151 @@ This document provides guidelines for AI agents working on the VIBEE project. Al
 ❌ .ts files
 ❌ .jsx files
 ❌ .tsx files
+❌ .zig files in trinity/output/ (ONLY GENERATED)
+❌ .py files (ONLY GENERATED)
 ```
 
 ### WHY?
 
-These are **legacy technologies**. VIBEE uses:
+VIBEE uses specification-first development:
 
 ```
-.vibee (specification) → .999 (generated code) → runtime.html (interpreter)
+specs/*.vibee → vibee gen → trinity/output/*.zig
 ```
 
-### THE ONLY ALLOWED HTML FILE:
+### ALLOWED TO EDIT:
 
 ```
-runtime/runtime.html - THE SINGLE UNIFIED RUNTIME
+src/vibeec/*.zig - Compiler source code
+specs/*.vibee - Specifications
 ```
 
-All features, technologies, and visualizations MUST be integrated into this ONE file.
+### NEVER EDIT:
 
-### IF YOU NEED NEW FUNCTIONALITY:
+```
+trinity/output/*.zig - Generated code (will be overwritten)
+```
 
-1. Create `.vibee` specification in `specs/`
-2. Generate `.999` code
-3. Integrate into `runtime/runtime.html`
+---
 
-**VIOLATION OF THIS RULE IS A COMPILER ERROR.**
+## ⚡ VIBEE PIPELINE (MANDATORY)
 
-### GIT HOOKS ENFORCEMENT
+### Step 1: Create .vibee specification
+
+```yaml
+# specs/tri/my_feature.vibee
+name: my_feature
+version: "1.0.0"
+language: zig
+module: my_feature
+
+types:
+  MyType:
+    fields:
+      name: String
+      count: Int
+
+behaviors:
+  - name: my_behavior
+    given: Input
+    when: Action
+    then: Result
+```
+
+### Step 2: Generate .zig code
+
+```bash
+vibee gen specs/tri/my_feature.vibee
+# Output: trinity/output/my_feature.zig
+```
+
+### Step 3: Test generated code
+
+```bash
+zig test trinity/output/my_feature.zig
+```
+
+### Type Mapping Reference:
+
+| VIBEE Type | Zig Type |
+|------------|----------|
+| `String` | `[]const u8` |
+| `Int` | `i64` |
+| `Float` | `f64` |
+| `Bool` | `bool` |
+| `Option<T>` | `?[]const u8` |
+| `List<T>` | `[]const u8` |
+| `Map<K,V>` | `std.StringHashMap([]const u8)` |
+| `Timestamp` | `i64` |
+| `Object` | `[]const u8` |
+
+### Reserved Words Handling:
+
+Fields named `error`, `type`, `return`, etc. are automatically escaped as `@"error"`.
+
+### Comments and Defaults:
+
+```yaml
+# These are handled automatically:
+field: String  # comment is stripped
+field: String = "default"  # default is stripped
+field: String | Int  # union uses first type
+```
+
+---
+
+## 📁 File Organization
+
+```
+vibee-lang/
+├── specs/tri/              # .vibee specifications (SOURCE)
+│   ├── ai_provider.vibee
+│   ├── file_operations.vibee
+│   └── ...
+├── trinity/output/         # Generated .zig (DO NOT EDIT)
+│   ├── ai_provider.zig
+│   ├── file_operations.zig
+│   └── ...
+├── src/vibeec/             # Compiler (CAN EDIT)
+│   ├── gen_cmd.zig
+│   ├── zig_codegen.zig
+│   ├── vibee_parser.zig
+│   └── ...
+├── bin/vibee               # CLI binary
+└── generated/crush/zig/    # CLI source
+```
+
+---
+
+## 🔧 Commands Reference
+
+```bash
+# PRIMARY WORKFLOW
+vibee gen specs/tri/feature.vibee              # Generate single
+for f in specs/tri/*.vibee; do vibee gen "$f"; done  # Generate all
+
+# TEST
+zig test trinity/output/feature.zig            # Test single
+cd trinity/output && for f in *.zig; do zig test "$f"; done  # Test all
+
+# REBUILD COMPILER (only if modifying src/vibeec/)
+cd src/vibeec && zig build-exe gen_cmd.zig
+
+# REBUILD CLI (only if modifying generated/crush/zig/)
+cd generated/crush/zig && zig build-exe main.zig -O ReleaseFast
+cp main ../../../bin/vibee
+
+# OTHER COMMANDS
+vibee help                    # Show all commands
+vibee eval "△ ∧ ○"           # Ternary logic
+vibee phi                     # Sacred constants
+vibee commit                  # AI git commit
+vibee truth and               # Truth tables
+```
+
+---
+
+## GIT HOOKS ENFORCEMENT
 
 The repository has pre-commit hooks that **BLOCK** commits containing forbidden files:
 
@@ -322,10 +440,81 @@ When encountering errors:
 
 ---
 
+## 🤖 Agent Reasoning (Claude Code Pattern)
+
+### 7-Phase Feature Development Workflow
+
+Based on [Claude Code](https://github.com/anthropics/claude-code) architecture:
+
+```
+Phase 1: Discovery      → Understand what to build
+Phase 2: Exploration    → Launch parallel explorer agents
+Phase 3: Clarification  → Ask ALL questions (CRITICAL)
+Phase 4: Architecture   → Present multiple approaches
+Phase 5: Implementation → Wait for approval, then build
+Phase 6: Review         → Launch parallel reviewer agents
+Phase 7: Summary        → Document what was accomplished
+```
+
+### Agent Types
+
+```yaml
+code_explorer:
+  mission: Trace execution paths, map architecture layers
+  tools: [glob, grep, ls, read, todo_write]
+  output: List of 5-10 key files to read
+
+code_architect:
+  mission: Design approaches with different tradeoffs
+  focuses: [minimal_changes, clean_architecture, pragmatic_balance]
+  output: Comparison with recommendation
+
+code_reviewer:
+  mission: Check quality, bugs, conventions
+  focuses: [simplicity, correctness, conventions]
+  output: Findings ranked by severity
+```
+
+### Core Principles
+
+1. **Ask clarifying questions early** - Before designing, not during
+2. **Understand before acting** - Read files before writing code
+3. **Read files from agents** - Build context from agent findings
+4. **Simple and elegant** - Follow codebase conventions
+5. **Use TodoWrite** - Track progress through all phases
+
+### VIBEE Agent Workflow
+
+```bash
+# 1. Create .vibee specification
+vim specs/tri/feature.vibee
+
+# 2. Generate .zig code
+vibee gen specs/tri/feature.vibee
+
+# 3. Test generated code
+zig test trinity/output/feature.zig
+
+# 4. Iterate if tests fail
+# Fix .vibee, regenerate, test again
+```
+
+### Generated Agent Reasoning Module
+
+```bash
+# Specification
+specs/tri/agent_reasoning.vibee
+
+# Generated code (8 tests pass)
+trinity/output/agent_reasoning.zig
+```
+
+---
+
 **Remember**: Every improvement follows the Creation Pattern. Every algorithm improvement uses PAS. Every feature starts with a specification.
 
 ```
 Source → Transformer → Result
 Known → PAS → Predicted
-Specification → Compiler → Code
+Specification → vibee gen → Code
 ```

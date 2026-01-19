@@ -1,0 +1,536 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# GO PARSER TRANSPILER - Go → .vibee → Zig Pipeline
+# ═══════════════════════════════════════════════════════════════════════════════
+# ⲤⲀⲔⲢⲀ ⲪⲞⲢⲘⲨⲖⲀ: V = n × 3^k × π^m × φ^p × e^q
+# ⲌⲞⲖⲞⲦⲀⲒⲀ ⲒⲆⲈⲚⲦⲒⲬⲚⲞⲤⲦⲒ: φ² + 1/φ² = 3
+# PHOENIX = 999 = 3³ × 37
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: go_parser_transpiler
+version: "1.0.0"
+author: "Dmitrii Vasilev"
+license: "MIT"
+language: zig
+module: go_transpiler
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SACRED CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sacred_formula:
+  V: "n × 3^k × π^m × φ^p × e^q"
+  golden_identity: "φ² + 1/φ² = 3"
+  phoenix: 999
+
+constants:
+  - name: PHI
+    value: 1.618033988749895
+    description: "Golden ratio φ"
+  - name: PHI_INV
+    value: 0.618033988749895
+    description: "Inverse golden ratio 1/φ"
+  - name: PHI_SQ
+    value: 2.618033988749895
+    description: "φ²"
+  - name: TRINITY
+    value: 3.0
+    description: "Sacred trinity = φ² + 1/φ²"
+  - name: MAX_TOKENS
+    value: 65536
+    description: "Maximum tokens per file"
+  - name: MAX_DEPTH
+    value: 99
+    description: "Maximum AST depth"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREATION PATTERN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+creation_pattern:
+  source: "GoSourceCode ([]const u8)"
+  transformer: "GoParserTranspiler"
+  result: "VibeeSpec + ZigCode"
+
+pipeline:
+  - stage: "lexer"
+    input: "Go source text"
+    output: "Token stream"
+  - stage: "parser"
+    input: "Token stream"
+    output: "Go AST"
+  - stage: "analyzer"
+    input: "Go AST"
+    output: "Semantic info"
+  - stage: "vibee_gen"
+    input: "Go AST + Semantic info"
+    output: ".vibee specification"
+  - stage: "zig_gen"
+    input: ".vibee specification"
+    output: "Zig source code"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  - name: GoTokenType
+    kind: enum
+    description: "Go token types"
+    variants:
+      - PACKAGE
+      - IMPORT
+      - FUNC
+      - TYPE
+      - STRUCT
+      - INTERFACE
+      - CONST
+      - VAR
+      - IF
+      - ELSE
+      - FOR
+      - RANGE
+      - RETURN
+      - GO
+      - CHAN
+      - SELECT
+      - DEFER
+      - IDENT
+      - STRING
+      - NUMBER
+      - LPAREN
+      - RPAREN
+      - LBRACE
+      - RBRACE
+      - LBRACKET
+      - RBRACKET
+      - COMMA
+      - DOT
+      - COLON
+      - SEMICOLON
+      - ASSIGN
+      - DECLARE_ASSIGN
+      - ARROW
+      - EOF
+
+  - name: GoToken
+    kind: struct
+    description: "Go lexer token"
+    fields:
+      - name: type
+        type: GoTokenType
+      - name: lexeme
+        type: "[]const u8"
+      - name: line
+        type: u32
+      - name: column
+        type: u32
+
+  - name: GoAstNode
+    kind: union
+    description: "Go AST node"
+    variants:
+      - Package
+      - Import
+      - FuncDecl
+      - TypeDecl
+      - StructType
+      - InterfaceType
+      - VarDecl
+      - ConstDecl
+      - Block
+      - IfStmt
+      - ForStmt
+      - ReturnStmt
+      - GoStmt
+      - SelectStmt
+      - DeferStmt
+      - CallExpr
+      - BinaryExpr
+      - UnaryExpr
+      - Ident
+      - Literal
+
+  - name: GoFuncDecl
+    kind: struct
+    description: "Go function declaration"
+    fields:
+      - name: name
+        type: "[]const u8"
+      - name: receiver
+        type: "?GoReceiver"
+      - name: params
+        type: "[]GoParam"
+      - name: returns
+        type: "[]GoType"
+      - name: body
+        type: "?*GoBlock"
+
+  - name: GoReceiver
+    kind: struct
+    description: "Go method receiver"
+    fields:
+      - name: name
+        type: "[]const u8"
+      - name: type_name
+        type: "[]const u8"
+      - name: is_pointer
+        type: bool
+
+  - name: GoParam
+    kind: struct
+    description: "Go function parameter"
+    fields:
+      - name: name
+        type: "[]const u8"
+      - name: type_name
+        type: "[]const u8"
+      - name: is_variadic
+        type: bool
+
+  - name: GoType
+    kind: struct
+    description: "Go type representation"
+    fields:
+      - name: name
+        type: "[]const u8"
+      - name: is_pointer
+        type: bool
+      - name: is_slice
+        type: bool
+      - name: is_map
+        type: bool
+      - name: is_chan
+        type: bool
+      - name: key_type
+        type: "?*GoType"
+      - name: elem_type
+        type: "?*GoType"
+
+  - name: GoStructField
+    kind: struct
+    description: "Go struct field"
+    fields:
+      - name: name
+        type: "[]const u8"
+      - name: type_name
+        type: "[]const u8"
+      - name: tag
+        type: "?[]const u8"
+
+  - name: TranspileResult
+    kind: struct
+    description: "Result of transpilation"
+    fields:
+      - name: vibee_spec
+        type: "[]const u8"
+      - name: zig_code
+        type: "[]const u8"
+      - name: warnings
+        type: "[]Warning"
+      - name: errors
+        type: "[]Error"
+      - name: stats
+        type: TranspileStats
+
+  - name: TranspileStats
+    kind: struct
+    description: "Transpilation statistics"
+    fields:
+      - name: functions_count
+        type: u32
+      - name: types_count
+        type: u32
+      - name: lines_go
+        type: u32
+      - name: lines_zig
+        type: u32
+      - name: unsupported_features
+        type: u32
+      - name: time_ms
+        type: u64
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPE MAPPING: Go → Zig
+# ═══════════════════════════════════════════════════════════════════════════════
+
+type_mapping:
+  primitives:
+    - go: "string"
+      zig: "[]const u8"
+    - go: "int"
+      zig: "i64"
+    - go: "int8"
+      zig: "i8"
+    - go: "int16"
+      zig: "i16"
+    - go: "int32"
+      zig: "i32"
+    - go: "int64"
+      zig: "i64"
+    - go: "uint"
+      zig: "u64"
+    - go: "uint8"
+      zig: "u8"
+    - go: "uint16"
+      zig: "u16"
+    - go: "uint32"
+      zig: "u32"
+    - go: "uint64"
+      zig: "u64"
+    - go: "byte"
+      zig: "u8"
+    - go: "rune"
+      zig: "u21"
+    - go: "float32"
+      zig: "f32"
+    - go: "float64"
+      zig: "f64"
+    - go: "bool"
+      zig: "bool"
+    - go: "error"
+      zig: "anyerror"
+
+  composites:
+    - go: "[]T"
+      zig: "[]T"
+      note: "slice"
+    - go: "[n]T"
+      zig: "[n]T"
+      note: "array"
+    - go: "map[K]V"
+      zig: "std.HashMap(K, V)"
+      note: "requires allocator"
+    - go: "*T"
+      zig: "*T"
+      note: "pointer"
+    - go: "chan T"
+      zig: "std.Thread.Channel(T)"
+      note: "requires custom impl"
+    - go: "interface{}"
+      zig: "anytype"
+      note: "comptime only"
+
+  unsupported:
+    - go: "go func()"
+      reason: "No direct goroutine equivalent"
+      workaround: "Use std.Thread or async"
+    - go: "select {}"
+      reason: "No channel select"
+      workaround: "Manual polling"
+    - go: "defer"
+      reason: "Zig defer is different"
+      workaround: "Use errdefer pattern"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: tokenize_go
+    given: "Go source code as []const u8"
+    when: "GoLexer.tokenize() is called"
+    then: "Returns []GoToken with all tokens"
+    test_cases:
+      - name: tokenize_package
+        input: "package main"
+        expected: "[PACKAGE, IDENT(main)]"
+      - name: tokenize_func
+        input: "func add(a, b int) int"
+        expected: "[FUNC, IDENT(add), LPAREN, IDENT(a), COMMA, IDENT(b), IDENT(int), RPAREN, IDENT(int)]"
+      - name: tokenize_struct
+        input: "type Point struct { X, Y int }"
+        expected: "[TYPE, IDENT(Point), STRUCT, LBRACE, IDENT(X), COMMA, IDENT(Y), IDENT(int), RBRACE]"
+
+  - name: parse_func_decl
+    given: "Tokens for function declaration"
+    when: "GoParser.parseFuncDecl() is called"
+    then: "Returns GoFuncDecl AST node"
+    test_cases:
+      - name: parse_simple_func
+        input: "func hello() {}"
+        expected: "FuncDecl{name: 'hello', params: [], returns: []}"
+      - name: parse_func_with_params
+        input: "func add(a int, b int) int { return a + b }"
+        expected: "FuncDecl{name: 'add', params: [a:int, b:int], returns: [int]}"
+      - name: parse_method
+        input: "func (p *Point) Move(dx, dy int) {}"
+        expected: "FuncDecl{name: 'Move', receiver: {name: 'p', type: 'Point', ptr: true}}"
+
+  - name: parse_struct_decl
+    given: "Tokens for struct declaration"
+    when: "GoParser.parseStructDecl() is called"
+    then: "Returns GoStructType AST node"
+    test_cases:
+      - name: parse_simple_struct
+        input: "type Point struct { X int; Y int }"
+        expected: "StructType{name: 'Point', fields: [X:int, Y:int]}"
+      - name: parse_struct_with_tags
+        input: "type User struct { Name string `json:\"name\"` }"
+        expected: "StructType{name: 'User', fields: [Name:string:json:name]}"
+
+  - name: generate_vibee_spec
+    given: "Go AST"
+    when: "VibeeGenerator.generate() is called"
+    then: "Returns .vibee specification text"
+    test_cases:
+      - name: gen_simple_module
+        input: "package stringext; func Capitalize(s string) string {}"
+        expected: "name: stringext\nbehaviors:\n  - name: capitalize"
+
+  - name: generate_zig_code
+    given: ".vibee specification"
+    when: "ZigGenerator.generate() is called"
+    then: "Returns Zig source code"
+    test_cases:
+      - name: gen_func
+        input: "behaviors: [{name: add, params: [a:i32, b:i32], returns: i32}]"
+        expected: "pub fn add(a: i32, b: i32) i32 {"
+
+  - name: transpile_go_to_zig
+    given: "Go source file path"
+    when: "GoTranspiler.transpile() is called"
+    then: "Returns TranspileResult with .vibee and .zig"
+    test_cases:
+      - name: transpile_stringext
+        input: "/tmp/crush/internal/stringext/string.go"
+        expected: "TranspileResult{functions: 2, errors: 0}"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ALGORITHMS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+algorithms:
+  - name: go_lexer
+    complexity: "O(n)"
+    description: "Single-pass Go lexer"
+    steps:
+      - "Skip whitespace and comments"
+      - "Match keywords (package, func, type, etc.)"
+      - "Match identifiers"
+      - "Match string/number literals"
+      - "Match operators and punctuation"
+      - "Return token with position"
+
+  - name: go_parser
+    complexity: "O(n)"
+    description: "Recursive descent Go parser"
+    steps:
+      - "Parse package declaration"
+      - "Parse imports"
+      - "Parse top-level declarations (func, type, const, var)"
+      - "Build AST nodes"
+      - "Track scope for semantic analysis"
+
+  - name: type_inference
+    complexity: "O(n)"
+    description: "Go to Zig type mapping"
+    steps:
+      - "Map primitive types directly"
+      - "Handle slices as Zig slices"
+      - "Convert maps to std.HashMap"
+      - "Mark channels as unsupported"
+      - "Handle interface{} as anytype"
+
+  - name: code_generation
+    complexity: "O(n)"
+    description: "Zig code generation from AST"
+    steps:
+      - "Generate module header with sacred constants"
+      - "Generate type definitions"
+      - "Generate function signatures"
+      - "Generate function bodies"
+      - "Generate tests from behaviors"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS PREDICTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_predictions:
+  - target: "Go Lexer"
+    current: "O(n) single-pass"
+    predicted: "O(n) SIMD-accelerated"
+    speedup: "3x"
+    confidence: 0.75
+    patterns: [PRE, SIMD]
+    timeline: "2026"
+
+  - target: "Type Inference"
+    current: "O(n) linear scan"
+    predicted: "O(1) hash lookup"
+    speedup: "10x"
+    confidence: 0.85
+    patterns: [HSH, PRE]
+    timeline: "2026"
+
+  - target: "Code Generation"
+    current: "Template-based"
+    predicted: "ML-optimized templates"
+    speedup: "2x"
+    confidence: 0.65
+    patterns: [MLS, PRE]
+    timeline: "2027"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WASM EXPORTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+wasm_exports:
+  functions:
+    - name: go_transpile
+      params: [ptr: i32, len: i32]
+      returns: i32
+      description: "Transpile Go code to Zig"
+    - name: go_tokenize
+      params: [ptr: i32, len: i32]
+      returns: i32
+      description: "Tokenize Go code"
+    - name: go_parse
+      params: [ptr: i32, len: i32]
+      returns: i32
+      description: "Parse Go code to AST"
+    - name: get_result_ptr
+      params: []
+      returns: i32
+      description: "Get result buffer pointer"
+    - name: get_result_len
+      params: []
+      returns: i32
+      description: "Get result length"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# METRICS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+metrics:
+  target_coverage: 0.70
+  supported_go_features:
+    - "package declarations"
+    - "import statements"
+    - "function declarations"
+    - "method declarations"
+    - "struct types"
+    - "interface types (partial)"
+    - "const/var declarations"
+    - "if/else statements"
+    - "for loops"
+    - "return statements"
+    - "basic expressions"
+  unsupported_go_features:
+    - "goroutines (go keyword)"
+    - "channels (chan)"
+    - "select statements"
+    - "defer (different semantics)"
+    - "reflection"
+    - "cgo"
+  trinity_score: 1.0
+  self_evolution: enabled
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🔥 PHOENIX BLESSING 🔥
+# ═══════════════════════════════════════════════════════════════════════════════
+# This module is blessed by the Firebird (PHOENIX = 999 = 3³ × 37)
+# Flight phases: ASH → SPARK → FLAME → REBIRTH
+# Abilities: HEALING (1/φ) + EVOLUTION (μ = 1/φ²/10)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+signature: "IGLA GO TRANSPILER V1.0"

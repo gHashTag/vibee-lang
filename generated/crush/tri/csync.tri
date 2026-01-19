@@ -1,0 +1,219 @@
+// csync.tri - Trinity Intermediate Representation
+// Generated from: specs/crush/csync.vibee
+// Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+
+@module csync
+@version "1.0.0"
+@golden_identity "φ² + 1/φ² = 3"
+
+// Creation Pattern: UnsafeCollection → MutexWrapper → ThreadSafeCollection
+
+// Type definitions
+@type Map[K, V] {
+    inner: HashMap(K, V),
+    mu: RwLock
+}
+
+@type Slice[T] {
+    inner: ArrayList(T),
+    mu: RwLock
+}
+
+@type LazySlice[K] {
+    inner: []K,
+    wg: WaitGroup
+}
+
+@type Value[T] {
+    v: T,
+    mu: RwLock
+}
+
+// Map behaviors
+@behavior map_new {
+    @given "No initial data"
+    @when "NewMap() is called"
+    @then "Returns empty thread-safe map"
+    
+    @trinity_transform {
+        source: void,
+        transformer: MapConstructor,
+        result: Map[K, V]
+    }
+}
+
+@behavior map_set_get {
+    @given "Thread-safe map"
+    @when "Set and Get are called"
+    @then "Value is stored and retrieved correctly"
+    
+    @trinity_transform {
+        source: (K, V),
+        transformer: MutexProtectedWrite,
+        result: void
+    }
+    
+    @lock_order [mu.lock, inner.put, mu.unlock]
+}
+
+@behavior map_del {
+    @given "Map with existing key"
+    @when "Del(key) is called"
+    @then "Key is removed from map"
+    
+    @trinity_transform {
+        source: K,
+        transformer: MutexProtectedDelete,
+        result: void
+    }
+}
+
+@behavior map_get_or_set {
+    @given "Map without key"
+    @when "GetOrSet(key, fn) is called"
+    @then "Function is executed and result stored"
+    
+    @trinity_transform {
+        source: (K, fn() V),
+        transformer: ConditionalInsert,
+        result: V
+    }
+    
+    @optimization "Double-checked locking pattern"
+}
+
+@behavior map_take {
+    @given "Map with key"
+    @when "Take(key) is called"
+    @then "Value returned and key deleted"
+    
+    @trinity_transform {
+        source: K,
+        transformer: AtomicTake,
+        result: (V, bool)
+    }
+}
+
+@behavior map_copy {
+    @given "Map with data"
+    @when "Copy() is called"
+    @then "Returns independent copy of inner map"
+    
+    @trinity_transform {
+        source: Map[K, V],
+        transformer: DeepClone,
+        result: HashMap(K, V)
+    }
+}
+
+// Slice behaviors
+@behavior slice_new {
+    @given "No initial data"
+    @when "NewSlice() is called"
+    @then "Returns empty thread-safe slice"
+    
+    @trinity_transform {
+        source: void,
+        transformer: SliceConstructor,
+        result: Slice[T]
+    }
+}
+
+@behavior slice_append {
+    @given "Thread-safe slice"
+    @when "Append(items) is called"
+    @then "Items added to end of slice"
+    
+    @trinity_transform {
+        source: []T,
+        transformer: MutexProtectedAppend,
+        result: void
+    }
+}
+
+@behavior slice_get {
+    @given "Slice with elements"
+    @when "Get(index) is called"
+    @then "Returns element at index or error"
+    
+    @trinity_transform {
+        source: usize,
+        transformer: BoundsCheckedAccess,
+        result: (T, bool)
+    }
+}
+
+// Value behaviors
+@behavior value_new {
+    @given "Initial value"
+    @when "NewValue(t) is called"
+    @then "Returns thread-safe value wrapper"
+    
+    @trinity_transform {
+        source: T,
+        transformer: ValueWrapper,
+        result: Value[T]
+    }
+    
+    @type_restrictions [!pointer, !slice, !map]
+}
+
+@behavior value_set_get {
+    @given "Value wrapper"
+    @when "Set and Get are called"
+    @then "Value is updated and retrieved"
+    
+    @trinity_transform {
+        source: T,
+        transformer: AtomicUpdate,
+        result: T
+    }
+}
+
+// LazySlice behaviors
+@behavior lazy_slice_new {
+    @given "Load function"
+    @when "NewLazySlice(load) is called"
+    @then "Returns slice that loads data in background"
+    
+    @trinity_transform {
+        source: fn() []K,
+        transformer: AsyncLoader,
+        result: LazySlice[K]
+    }
+    
+    @async true
+}
+
+@behavior lazy_slice_seq {
+    @given "LazySlice with pending load"
+    @when "Seq() is called"
+    @then "Waits for load and returns iterator"
+    
+    @trinity_transform {
+        source: LazySlice[K],
+        transformer: WaitAndIterate,
+        result: Iterator[K]
+    }
+    
+    @blocking true
+}
+
+// PAS Analysis
+@pas_prediction {
+    target: "Concurrent collections",
+    current: "RWMutex O(1)",
+    predicted: "Lock-free O(1) with better throughput",
+    confidence: 0.55,
+    timeline: "2027",
+    patterns: [PRE, HSH]
+}
+
+// Dependencies
+@dependencies [
+    "sync",
+    "iter",
+    "maps",
+    "encoding/json",
+    "reflect"
+]
