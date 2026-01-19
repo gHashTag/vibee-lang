@@ -1,12 +1,147 @@
-name: CI
+name: VIBEE CI/CD
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
     branches: [main]
 
+env:
+  ZIG_VERSION: "0.13.0"
+
 jobs:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # WASM BUILD & TEST (PRIMARY)
+  # ═══════════════════════════════════════════════════════════════════════════
+  wasm-test:
+    name: WASM Build & Test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          
+      - name: Test phi_core
+        run: cd trinity/wasm && zig test src/phi_core.zig
+        
+      - name: Test phi_structures
+        run: cd trinity/wasm && zig test src/phi_structures.zig
+        
+      - name: Test phi_layout
+        run: cd trinity/wasm && zig test src/phi_layout.zig
+        
+      - name: Test phi_crypto
+        run: cd trinity/wasm && zig test src/phi_crypto.zig
+        
+      - name: Build WASM (Release + SIMD)
+        run: cd trinity/wasm && zig build -Doptimize=ReleaseSmall -Dsimd=true
+        
+      - name: Check WASM Sizes
+        run: |
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║                    WASM MODULE SIZES                         ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          ls -la trinity/wasm/zig-out/bin/*.wasm
+          total=$(stat -c%s trinity/wasm/zig-out/bin/*.wasm | awk '{sum += $1} END {print sum}')
+          echo "Total: $total bytes"
+          if [ "$total" -gt 102400 ]; then
+            echo "❌ WASM size exceeds 100KB!"
+            exit 1
+          fi
+          echo "✅ WASM size OK"
+          
+      - name: Upload WASM
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-modules
+          path: trinity/wasm/zig-out/bin/*.wasm
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # VIBEEC COMPILER TEST
+  # ═══════════════════════════════════════════════════════════════════════════
+  vibeec-test:
+    name: VIBEEC Compiler Test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          
+      - name: Test vibee_parser
+        run: cd src/vibeec && zig test vibee_parser.zig
+        
+      - name: Test zig_codegen
+        run: cd src/vibeec && zig test zig_codegen.zig
+        
+      - name: Build vibeec
+        run: cd src/vibeec && zig build-exe gen_cmd.zig --name vibeec
+        
+      - name: Generate from spec
+        run: cd src/vibeec && ./vibeec gen ../../specs/phi_core.vibee ../../generated/phi_core_gen.zig
+        
+      - name: Test generated code
+        run: cd generated && zig test phi_core_gen.zig
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # BENCHMARKS
+  # ═══════════════════════════════════════════════════════════════════════════
+  benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    needs: [wasm-test, vibeec-test]
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          
+      - name: Run Benchmarks
+        run: |
+          cd trinity/wasm
+          cat > bench_ci.zig << 'EOFZIG'
+          const std = @import("std");
+          const phi_core = @import("src/phi_core.zig");
+          var g: f64 = 0;
+          pub fn main() !void {
+              const out = std.io.getStdOut().writer();
+              var t1 = try std.time.Timer.start();
+              var i: u32 = 0;
+              while (i < 5_000_000) : (i += 1) { g += phi_core.phi_power(@intCast(i % 100)); }
+              const phi_ops = 5_000_000.0 / (@as(f64, @floatFromInt(t1.read())) / 1e9);
+              
+              var t2 = try std.time.Timer.start();
+              i = 0;
+              while (i < 50_000_000) : (i += 1) { g += phi_core.verify_trinity(); }
+              const trinity_ops = 50_000_000.0 / (@as(f64, @floatFromInt(t2.read())) / 1e9);
+              
+              var t3 = try std.time.Timer.start();
+              i = 0;
+              while (i < 50_000) : (i += 1) { g += phi_core.simd_verify_trinity_batch(1000); }
+              const simd_ops = 50_000_000.0 / (@as(f64, @floatFromInt(t3.read())) / 1e9);
+              
+              try out.print("phi_power: {d:.0} ops/sec\n", .{phi_ops});
+              try out.print("verify_trinity: {d:.0} ops/sec\n", .{trinity_ops});
+              try out.print("simd_trinity: {d:.0} ops/sec\n", .{simd_ops});
+              try out.print("simd_speedup: {d:.2}x\n", .{simd_ops / trinity_ops});
+          }
+          EOFZIG
+          zig run bench_ci.zig
+          rm bench_ci.zig
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SPEC VALIDATION
+  # ═══════════════════════════════════════════════════════════════════════════
   validate-specs:
     name: Validate .vibee Specs
     runs-on: ubuntu-latest

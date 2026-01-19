@@ -52,7 +52,7 @@ export fn tekum_from_int(n: i32) [*]i8 {
         if (val == 0) {
             t.* = 0;
         } else {
-            var rem = @mod(val + 1, 3) - 1;
+            const rem = @mod(val + 1, 3) - 1;
             t.* = @intCast(rem);
             val = @divTrunc(val - rem, 3);
         }

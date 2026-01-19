@@ -144,7 +144,10 @@ pub const InlineCostModel = struct {
         
         // Respect attributes
         if (callee.never_inline) return false;
-        if (callee.always_inline) return true;
+        if (callee.always_inline) {
+            site.should_inline = true;
+            return true;
+        }
         
         // Always inline tiny functions
         if (callee.instruction_count <= self.config.always_inline_threshold) {
@@ -438,7 +441,7 @@ test "InlineCostModel benefit calculation" {
     const config = InlineConfig{};
     const model = InlineCostModel.init(config);
     
-    const func = FunctionInfo.init("test", 30, 2);
+    var func = FunctionInfo.init("test", 30, 2);
     func.inline_cost = 35;
     
     var site = CallSite.init("main", "test", 0, 2);

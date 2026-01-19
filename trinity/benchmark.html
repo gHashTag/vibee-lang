@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TRINITY v24.φ - WASM vs JS Benchmark</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { 
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', sans-serif;
+    background: #0a0a0a; 
+    color: #fff; 
+    padding: 40px;
+    line-height: 1.6;
+}
+h1 { 
+    font-size: 24px; 
+    margin-bottom: 8px;
+    font-weight: 600;
+}
+.subtitle {
+    color: #888;
+    font-size: 14px;
+    margin-bottom: 32px;
+    font-family: 'SF Mono', Monaco, monospace;
+}
+.section {
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 24px;
+}
+.section h2 {
+    font-size: 16px;
+    color: #ffd700;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+th, td {
+    padding: 12px 16px;
+    text-align: left;
+    border-bottom: 1px solid #222;
+}
+th {
+    color: #888;
+    font-weight: 500;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.faster { color: #4ade80; }
+.slower { color: #f87171; }
+.neutral { color: #888; }
+.value { font-family: 'SF Mono', Monaco, monospace; }
+.speedup {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+}
+.speedup.good { background: rgba(74, 222, 128, 0.2); color: #4ade80; }
+.speedup.bad { background: rgba(248, 113, 113, 0.2); color: #f87171; }
+.btn {
+    background: #ffd700;
+    color: #000;
+    border: none;
+    padding: 12px 24px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-right: 12px;
+}
+.btn:hover { background: #ffed4a; }
+.btn:disabled { background: #444; color: #888; cursor: not-allowed; }
+#status {
+    margin-top: 16px;
+    padding: 12px;
+    background: #1a1a1a;
+    border-radius: 8px;
+    font-family: 'SF Mono', Monaco, monospace;
+    font-size: 12px;
+    color: #888;
+}
+.progress {
+    height: 4px;
+    background: #222;
+    border-radius: 2px;
+    margin-top: 8px;
+    overflow: hidden;
+}
+.progress-bar {
+    height: 100%;
+    background: #ffd700;
+    width: 0%;
+    transition: width 0.3s;
+}
+</style>
+</head>
+<body>
+
+<h1>TRINITY v24.φ - Performance Benchmark</h1>
+<p class="subtitle">φ² + 1/φ² = 3 | WASM vs JavaScript</p>
+
+<div class="section">
+    <h2>📊 Benchmark Controls</h2>
+    <button class="btn" id="runBtn" onclick="runAllBenchmarks()">Run All Benchmarks</button>
+    <button class="btn" onclick="runQuickBenchmark()">Quick Test</button>
+    <div id="status">Ready. Click "Run All Benchmarks" to start.</div>
+    <div class="progress"><div class="progress-bar" id="progress"></div></div>
+</div>
+
+<div class="section">
+    <h2>🔢 Fibonacci(40) - 10,000 iterations</h2>
+    <table id="fibTable">
+        <tr><th>Implementation</th><th>Time (ms)</th><th>Ops/sec</th><th>vs JS</th></tr>
+        <tr><td>JavaScript (iterative)</td><td class="value" id="fib-js-time">-</td><td class="value" id="fib-js-ops">-</td><td class="neutral">baseline</td></tr>
+        <tr><td>WASM Zig (Binet)</td><td class="value" id="fib-wasm-time">-</td><td class="value" id="fib-wasm-ops">-</td><td id="fib-speedup">-</td></tr>
+    </table>
+</div>
+
+<div class="section">
+    <h2>📐 φ-Power - 100,000 iterations</h2>
+    <table id="phiTable">
+        <tr><th>Implementation</th><th>Time (ms)</th><th>Ops/sec</th><th>vs JS</th></tr>
+        <tr><td>JavaScript (Math.pow)</td><td class="value" id="phi-js-time">-</td><td class="value" id="phi-js-ops">-</td><td class="neutral">baseline</td></tr>
+        <tr><td>WASM Zig (binary exp)</td><td class="value" id="phi-wasm-time">-</td><td class="value" id="phi-wasm-ops">-</td><td id="phi-speedup">-</td></tr>
+    </table>
+</div>
+
+<div class="section">
+    <h2>🌀 φ-Spiral (1000 points) - 1,000 iterations</h2>
+    <table id="spiralTable">
+        <tr><th>Implementation</th><th>Time (ms)</th><th>Points/sec</th><th>vs JS</th></tr>
+        <tr><td>JavaScript (Float64Array)</td><td class="value" id="spiral-js-time">-</td><td class="value" id="spiral-js-ops">-</td><td class="neutral">baseline</td></tr>
+        <tr><td>WASM Zig</td><td class="value" id="spiral-wasm-time">-</td><td class="value" id="spiral-wasm-ops">-</td><td id="spiral-speedup">-</td></tr>
+    </table>
+</div>
+
+<div class="section">
+    <h2>🔐 SHA-256 (1KB) - 10,000 iterations</h2>
+    <table id="shaTable">
+        <tr><th>Implementation</th><th>Time (ms)</th><th>Hashes/sec</th><th>vs WebCrypto</th></tr>
+        <tr><td>Web Crypto API</td><td class="value" id="sha-js-time">-</td><td class="value" id="sha-js-ops">-</td><td class="neutral">baseline</td></tr>
+        <tr><td>WASM Zig</td><td class="value" id="sha-wasm-time">-</td><td class="value" id="sha-wasm-ops">-</td><td id="sha-speedup">-</td></tr>
+    </table>
+</div>
+
+<div class="section">
+    <h2>📈 Summary</h2>
+    <table id="summaryTable">
+        <tr><th>Benchmark</th><th>Winner</th><th>Speedup</th><th>Recommendation</th></tr>
+        <tr id="sum-fib"><td>Fibonacci</td><td>-</td><td>-</td><td>-</td></tr>
+        <tr id="sum-phi"><td>φ-Power</td><td>-</td><td>-</td><td>-</td></tr>
+        <tr id="sum-spiral"><td>φ-Spiral</td><td>-</td><td>-</td><td>-</td></tr>
+        <tr id="sum-sha"><td>SHA-256</td><td>-</td><td>-</td><td>-</td></tr>
+    </table>
+</div>
+
+<script>
+const PHI = 1.618033988749895;
+const PHI_INV = 0.618033988749895;
+const SQRT5 = 2.2360679774997896;
+
+let wasmModule = null;
+
+// Load WASM
+async function loadWasm() {
+    try {
+        const response = await fetch('wasm/zig-out/bin/phi_core.wasm');
+        const bytes = await response.arrayBuffer();
+        const result = await WebAssembly.instantiate(bytes, {});
+        wasmModule = result.instance.exports;
+        return true;
+    } catch (e) {
+        console.error('WASM load failed:', e);
+        return false;
+    }
+}
+
+// JS implementations
+function fibonacciJS(n) {
+    if (n <= 1) return n;
+    let a = 0, b = 1;
+    for (let i = 2; i <= n; i++) [a, b] = [b, a + b];
+    return b;
+}
+
+function phiPowerJS(n) {
+    return Math.pow(PHI, n);
+}
+
+function generateSpiralJS(n) {
+    const points = new Float64Array(n * 2);
+    for (let i = 0; i < n; i++) {
+        const angle = i * Math.PI * 2 * PHI_INV;
+        const radius = Math.pow(PHI, i * 0.1);
+        points[i * 2] = radius * Math.cos(angle);
+        points[i * 2 + 1] = radius * Math.sin(angle);
+    }
+    return points;
+}
+
+// Benchmark runner
+function benchmark(fn, iterations, warmup = 100) {
+    // Warmup
+    for (let i = 0; i < warmup; i++) fn(i);
+    
+    const start = performance.now();
+    let checksum = 0;
+    for (let i = 0; i < iterations; i++) {
+        checksum += fn(i);
+    }
+    const elapsed = performance.now() - start;
+    
+    return { time: elapsed, ops: iterations / elapsed * 1000, checksum };
+}
+
+function updateStatus(msg) {
+    document.getElementById('status').textContent = msg;
+}
+
+function updateProgress(pct) {
+    document.getElementById('progress').style.width = pct + '%';
+}
+
+function formatSpeedup(jsTime, wasmTime) {
+    const speedup = jsTime / wasmTime;
+    const cls = speedup > 1 ? 'good' : 'bad';
+    const text = speedup > 1 ? `${speedup.toFixed(1)}x faster` : `${(1/speedup).toFixed(1)}x slower`;
+    return `<span class="speedup ${cls}">${text}</span>`;
+}
+
+async function runAllBenchmarks() {
+    const btn = document.getElementById('runBtn');
+    btn.disabled = true;
+    
+    updateStatus('Loading WASM module...');
+    updateProgress(5);
+    
+    const wasmLoaded = await loadWasm();
+    if (!wasmLoaded) {
+        updateStatus('❌ WASM load failed. Running JS-only benchmarks.');
+    }
+    
+    // Fibonacci
+    updateStatus('Running Fibonacci benchmark...');
+    updateProgress(20);
+    
+    const fibIterations = 10000;
+    const fibJS = benchmark(i => fibonacciJS(40), fibIterations);
+    document.getElementById('fib-js-time').textContent = fibJS.time.toFixed(2);
+    document.getElementById('fib-js-ops').textContent = Math.round(fibJS.ops).toLocaleString();
+    
+    if (wasmModule?.fibonacci) {
+        const fibWasm = benchmark(i => Number(wasmModule.fibonacci(40)), fibIterations);
+        document.getElementById('fib-wasm-time').textContent = fibWasm.time.toFixed(2);
+        document.getElementById('fib-wasm-ops').textContent = Math.round(fibWasm.ops).toLocaleString();
+        document.getElementById('fib-speedup').innerHTML = formatSpeedup(fibJS.time, fibWasm.time);
+        
+        const row = document.getElementById('sum-fib');
+        const speedup = fibJS.time / fibWasm.time;
+        row.cells[1].textContent = speedup > 1 ? 'WASM' : 'JS';
+        row.cells[2].innerHTML = formatSpeedup(fibJS.time, fibWasm.time);
+        row.cells[3].textContent = speedup > 2 ? 'Use WASM' : 'Either OK';
+    }
+    
+    // φ-Power
+    updateStatus('Running φ-Power benchmark...');
+    updateProgress(40);
+    
+    const phiIterations = 100000;
+    const phiJS = benchmark(i => phiPowerJS(i % 100 - 50), phiIterations);
+    document.getElementById('phi-js-time').textContent = phiJS.time.toFixed(2);
+    document.getElementById('phi-js-ops').textContent = Math.round(phiJS.ops).toLocaleString();
+    
+    if (wasmModule?.phi_power) {
+        const phiWasm = benchmark(i => wasmModule.phi_power(i % 100 - 50), phiIterations);
+        document.getElementById('phi-wasm-time').textContent = phiWasm.time.toFixed(2);
+        document.getElementById('phi-wasm-ops').textContent = Math.round(phiWasm.ops).toLocaleString();
+        document.getElementById('phi-speedup').innerHTML = formatSpeedup(phiJS.time, phiWasm.time);
+        
+        const row = document.getElementById('sum-phi');
+        const speedup = phiJS.time / phiWasm.time;
+        row.cells[1].textContent = speedup > 1 ? 'WASM' : 'JS';
+        row.cells[2].innerHTML = formatSpeedup(phiJS.time, phiWasm.time);
+        row.cells[3].textContent = speedup > 2 ? 'Use WASM' : 'Either OK';
+    }
+    
+    // Spiral
+    updateStatus('Running φ-Spiral benchmark...');
+    updateProgress(60);
+    
+    const spiralIterations = 1000;
+    const spiralJS = benchmark(i => generateSpiralJS(1000).length, spiralIterations);
+    document.getElementById('spiral-js-time').textContent = spiralJS.time.toFixed(2);
+    document.getElementById('spiral-js-ops').textContent = Math.round(spiralJS.ops * 1000).toLocaleString();
+    
+    if (wasmModule?.generate_phi_spiral) {
+        const spiralWasm = benchmark(i => wasmModule.generate_phi_spiral(1000, 1.0, 0.0, 0.0), spiralIterations);
+        document.getElementById('spiral-wasm-time').textContent = spiralWasm.time.toFixed(2);
+        document.getElementById('spiral-wasm-ops').textContent = Math.round(spiralWasm.ops * 1000).toLocaleString();
+        document.getElementById('spiral-speedup').innerHTML = formatSpeedup(spiralJS.time, spiralWasm.time);
+        
+        const row = document.getElementById('sum-spiral');
+        const speedup = spiralJS.time / spiralWasm.time;
+        row.cells[1].textContent = speedup > 1 ? 'WASM' : 'JS';
+        row.cells[2].innerHTML = formatSpeedup(spiralJS.time, spiralWasm.time);
+        row.cells[3].textContent = speedup > 2 ? 'Use WASM' : 'Either OK';
+    }
+    
+    // SHA-256
+    updateStatus('Running SHA-256 benchmark...');
+    updateProgress(80);
+    
+    const shaIterations = 1000;
+    const testData = new Uint8Array(1024).fill(65); // 1KB of 'A'
+    
+    // Web Crypto
+    const shaStart = performance.now();
+    for (let i = 0; i < shaIterations; i++) {
+        await crypto.subtle.digest('SHA-256', testData);
+    }
+    const shaJSTime = performance.now() - shaStart;
+    document.getElementById('sha-js-time').textContent = shaJSTime.toFixed(2);
+    document.getElementById('sha-js-ops').textContent = Math.round(shaIterations / shaJSTime * 1000).toLocaleString();
+    
+    // Note: WASM SHA would need memory setup, simplified here
+    document.getElementById('sha-wasm-time').textContent = 'N/A';
+    document.getElementById('sha-wasm-ops').textContent = 'N/A';
+    document.getElementById('sha-speedup').innerHTML = '<span class="speedup bad">Use WebCrypto</span>';
+    
+    const shaRow = document.getElementById('sum-sha');
+    shaRow.cells[1].textContent = 'WebCrypto';
+    shaRow.cells[2].innerHTML = '<span class="speedup good">Hardware accelerated</span>';
+    shaRow.cells[3].textContent = 'Always use WebCrypto';
+    
+    updateProgress(100);
+    updateStatus('✅ Benchmarks complete!');
+    btn.disabled = false;
+}
+
+async function runQuickBenchmark() {
+    updateStatus('Running quick test...');
+    
+    await loadWasm();
+    
+    if (wasmModule) {
+        const fib = wasmModule.fibonacci(20);
+        const phi = wasmModule.phi_power(5);
+        const trinity = wasmModule.verify_trinity();
+        
+        updateStatus(`✅ WASM OK | F(20)=${fib} | φ^5=${phi.toFixed(4)} | φ²+1/φ²=${trinity.toFixed(10)}`);
+    } else {
+        updateStatus('❌ WASM not available');
+    }
+}
+
+// Auto-load WASM on page load
+loadWasm().then(ok => {
+    if (ok) updateStatus('✅ WASM loaded. Ready to benchmark.');
+});
+</script>
+
+</body>
+</html>

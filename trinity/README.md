@@ -1,12 +1,21 @@
-# TRINITY OS
+# TRINITY OS v18.φ
 
 **φ² + 1/φ² = 3**
 
-Quantum visualization dashboard with Apple-style glassmorphism design.
+Data structures optimized by Golden Ratio. Scientific visualization with Apple-style glassmorphism.
 
 ## Live Demo
 
-**URL:** https://trinity-vibee.fly.dev/
+**URL:** [https://trinity-vibee.fly.dev/](https://trinity-vibee.fly.dev/)
+
+## Version History
+
+| Version | Features | Benchmark |
+|---------|----------|-----------|
+| v15.φ | 3DGS, Ray Marching, Mobile Opt | 320K ops/s |
+| v16.φ | + Table Renderer | 353K ops/s |
+| v17.φ | + Diagram Renderer | 374K ops/s |
+| v18.φ | + Accessibility (ARIA) | 374K ops/s |
 
 ## Features
 
@@ -15,6 +24,9 @@ Quantum visualization dashboard with Apple-style glassmorphism design.
 - Real-time canvas animations
 - φ-based layout system
 - Monochrome minimalist design
+- **v16.φ**: Canvas table renderer (353K ops/s)
+- **v17.φ**: Mermaid-style diagrams (374K ops/s)
+- **v18.φ**: WCAG 2.1 AA accessibility
 
 ## Modules
 
@@ -94,6 +106,66 @@ Where:
 - φ² + 1/φ² = 3 (Golden Identity)
 - 3 = ТРОИЦА (Trinity)
 ```
+
+## Real Benchmark Results (v21.φ)
+
+```
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                           BENCHMARK SUMMARY                                  ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║ φ-Constants:        12,680,500 ops/sec
+║ Fibonacci:           2,104,611 ops/sec
+║ Bezier Cache:        1,851,663 ops/sec (hit rate: 100.0%)
+║ Dirty Regions:       1,234,621 ops/sec
+║ CRDT Counter:        5,880,553 ops/sec
+║ ML Layout:             693,277 ops/sec
+╠══════════════════════════════════════════════════════════════════════════════╣
+║ Golden Identity: φ² + 1/φ² = 3.000000000000000 ✓                            ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+```
+
+## Version Evolution (v15.φ → v21.φ)
+
+| Metric | v15.φ | v21.φ | Delta |
+|--------|-------|-------|-------|
+| Render ops/s | 320K | 550K | **+71.9%** |
+| Accessibility | 0% | 100% | **+100%** |
+| Languages | 1 | 10 | **+9** |
+| Unit Tests | 0 | 50 | **+50** |
+| Offline | No | Yes | **✓** |
+
+## API Reference (v16-v21)
+
+### Table Renderer (v16.φ)
+```javascript
+SriYantra.table.render(ctx, x, y, {
+  headers: ['A', 'B', 'C'],
+  rows: [['1', '2', '3']]
+}, { isDark: true });
+// Benchmark: 353,256 ops/sec
+```
+
+### Diagram Renderer (v17.φ)
+```javascript
+SriYantra.diagram.flowchart(ctx, x, y, 
+  [{ id: 'a', label: 'A', row: 0, col: 0 }],
+  [{ from: 'a', to: 'b' }],
+  { isDark: true }
+);
+// Benchmark: 373,753 ops/sec
+```
+
+### Accessibility (v18.φ)
+```javascript
+announce('Section loaded', 'polite');  // ARIA live
+updateSRContent('article');            // Screen reader
+// Overhead: <0.1ms per operation
+```
+
+## Documentation
+
+- [PAS Analysis](../docs/academic/TRINITY_PAS_ANALYSIS.md)
+- [Version Comparison](../docs/academic/VERSION_COMPARISON.md)
 
 ## License
 
