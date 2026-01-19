@@ -1,0 +1,260 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# LEVEL 3: AUTONOMOUS LOOP - Ralph, Circuit Breaker, Response Analyzer
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Autonomous development with intelligent exit detection
+# Time: 2-3 weeks
+#
+# Based on: https://github.com/frankbria/ralph-claude-code
+# Pattern: Michael Nygard's Circuit Breaker from "Release It!"
+#
+# φ² + 1/φ² = 3 | PHOENIX = 999
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: level3_autonomous_loop
+version: "1.0.0"
+language: zig
+module: autonomous_loop
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+
+creation_pattern:
+  source: TaskRequest
+  transformer: RalphLoop
+  result: VerifiedCode
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  - name: LoopState
+    description: "Current state of the development loop"
+    enum:
+      - idle
+      - analyzing
+      - specifying
+      - generating
+      - testing
+      - iterating
+      - completed
+      - failed
+
+  - name: CircuitState
+    description: "Circuit breaker state (Michael Nygard pattern)"
+    enum:
+      - closed      # Normal operation
+      - half_open   # Monitoring mode
+      - open        # Execution halted
+
+  - name: ExitCondition
+    description: "Conditions for loop termination"
+    enum:
+      - none
+      - tests_passing
+      - max_iterations
+      - circuit_open
+      - user_interrupt
+      - explicit_signal
+
+  - name: CircuitConfig
+    description: "Circuit breaker configuration"
+    fields:
+      - name: no_progress_threshold
+        type: Int
+      - name: same_error_threshold
+        type: Int
+      - name: output_decline_threshold
+        type: Int
+      - name: recovery_threshold
+        type: Int
+
+  - name: LoopConfig
+    description: "Ralph loop configuration"
+    fields:
+      - name: max_iterations
+        type: Int
+      - name: confidence_threshold
+        type: Int
+      - name: enable_circuit_breaker
+        type: Bool
+      - name: enable_rate_limiting
+        type: Bool
+      - name: rate_limit_per_hour
+        type: Int
+
+  - name: IterationResult
+    description: "Result of a single iteration"
+    fields:
+      - name: iteration
+        type: Int
+      - name: state
+        type: LoopState
+      - name: files_changed
+        type: Int
+      - name: tests_run
+        type: Int
+      - name: tests_passed
+        type: Int
+      - name: errors
+        type: Int
+      - name: confidence
+        type: Int
+      - name: exit_signal
+        type: Bool
+      - name: duration_ms
+        type: Int
+
+  - name: AnalysisResult
+    description: "Response analysis result"
+    fields:
+      - name: exit_signal
+        type: Bool
+      - name: has_completion_signal
+        type: Bool
+      - name: tests_detected
+        type: Bool
+      - name: tests_passed
+        type: Bool
+      - name: no_work_remaining
+        type: Bool
+      - name: confidence
+        type: Int
+
+  - name: LoopResult
+    description: "Final loop result"
+    fields:
+      - name: state
+        type: LoopState
+      - name: exit_condition
+        type: ExitCondition
+      - name: iterations
+        type: Int
+      - name: total_files_changed
+        type: Int
+      - name: total_tests_run
+        type: Int
+      - name: total_tests_passed
+        type: Int
+      - name: total_errors
+        type: Int
+      - name: total_duration_ms
+        type: Int
+      - name: circuit_breaker_opens
+        type: Int
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: initialize_loop
+    given: "Task request with description"
+    when: "Loop is initialized"
+    then: "Return loop in idle state"
+    pas_pattern: PRE
+    test_cases:
+      - name: test_init
+        input: '{"task": "Add user authentication"}'
+        expected: '{"state": "idle", "iteration": 0}'
+
+  - name: analyze_response
+    given: "Claude/LLM output text"
+    when: "Response analyzer is invoked"
+    then: "Return analysis with exit signal and confidence"
+    pas_pattern: MLS
+    test_cases:
+      - name: test_explicit_exit
+        input: '{"output": "EXIT_SIGNAL: true"}'
+        expected: '{"exit_signal": true, "confidence": 100}'
+      - name: test_tests_passed
+        input: '{"output": "All 5 tests passed."}'
+        expected: '{"tests_passed": true, "confidence": 45}'
+      - name: test_no_signal
+        input: '{"output": "Working on implementation..."}'
+        expected: '{"exit_signal": false, "confidence": 0}'
+
+  - name: check_circuit_breaker
+    given: "Loop metrics"
+    when: "Circuit breaker is checked"
+    then: "Return circuit state and whether to continue"
+    pas_pattern: PRE
+    test_cases:
+      - name: test_closed_with_progress
+        input: '{"files_changed": 2, "consecutive_no_progress": 0}'
+        expected: '{"state": "closed", "can_continue": true}'
+      - name: test_open_no_progress
+        input: '{"files_changed": 0, "consecutive_no_progress": 3}'
+        expected: '{"state": "open", "can_continue": false}'
+      - name: test_half_open
+        input: '{"files_changed": 0, "consecutive_no_progress": 2}'
+        expected: '{"state": "half_open", "can_continue": true}'
+
+  - name: process_iteration
+    given: "Iteration result"
+    when: "Iteration is processed"
+    then: "Update loop state and metrics"
+    pas_pattern: PRE
+    test_cases:
+      - name: test_successful_iteration
+        input: '{"tests_passed": 5, "tests_run": 5, "exit_signal": true}'
+        expected: '{"state": "completed", "exit_condition": "tests_passing"}'
+      - name: test_failed_iteration
+        input: '{"tests_passed": 0, "tests_run": 5, "exit_signal": false}'
+        expected: '{"state": "iterating"}'
+
+  - name: execute_loop
+    given: "Initialized loop"
+    when: "Loop execution starts"
+    then: "Iterate until EXIT_SIGNAL or failure"
+    pas_pattern: D_C
+    test_cases:
+      - name: test_successful_loop
+        input: '{"max_iterations": 10}'
+        expected: '{"state": "completed"}'
+      - name: test_max_iterations
+        input: '{"max_iterations": 3, "always_fail": true}'
+        expected: '{"state": "failed", "exit_condition": "max_iterations"}'
+
+  - name: reset_loop
+    given: "Loop in any state"
+    when: "Reset is called"
+    then: "Return loop to idle state"
+    pas_pattern: PRE
+    test_cases:
+      - name: test_reset
+        input: '{"current_state": "completed"}'
+        expected: '{"state": "idle", "iteration": 0}'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXERCISES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+exercises:
+  - name: implement_circuit_breaker
+    description: "Implement circuit breaker with 3 states"
+    difficulty: 3
+    expected_time: "45 minutes"
+
+  - name: implement_response_analyzer
+    description: "Implement exit signal detection"
+    difficulty: 3
+    expected_time: "30 minutes"
+
+  - name: full_ralph_loop
+    description: "Implement complete Ralph loop"
+    difficulty: 4
+    expected_time: "60 minutes"
+
+  - name: test_autonomous_development
+    description: "Run autonomous loop on real task"
+    difficulty: 4
+    expected_time: "90 minutes"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
