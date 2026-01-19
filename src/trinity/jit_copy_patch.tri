@@ -1,0 +1,432 @@
+; ═══════════════════════════════════════════════════════════════════════════════
+; COPY-AND-PATCH JIT COMPILER - TRINITY IMPLEMENTATION
+; ═══════════════════════════════════════════════════════════════════════════════
+; Source: specs/jit_copy_patch.vibee
+; Based on: Xu & Kjolstad (2021) "Copy-and-Patch Compilation"
+; Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+; Golden Identity: φ² + 1/φ² = 3
+; ═══════════════════════════════════════════════════════════════════════════════
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: SACRED CONSTANTS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.sacred_constants:
+    PHI                 = 1.618033988749895
+    PHI_INV             = 0.618033988749895
+    TRINITY             = 3
+    GOLDEN_IDENTITY     = 3.0
+    
+    ; JIT Configuration
+    STENCIL_MAX_SIZE    = 256
+    CODE_CACHE_SIZE     = 65536     ; 64KB
+    HOT_THRESHOLD       = 100
+    MAX_HOLES           = 8
+    MAX_STENCILS        = 256
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: HOLE KINDS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.hole_kinds:
+    HOLE_IMM8           = 0x01      ; 8-bit immediate
+    HOLE_IMM32          = 0x02      ; 32-bit immediate
+    HOLE_IMM64          = 0x03      ; 64-bit immediate
+    HOLE_REL32          = 0x04      ; 32-bit relative offset
+    HOLE_ABS64          = 0x05      ; 64-bit absolute address
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: OPCODES (TRINITY VM)
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.opcodes:
+    OP_NOP              = 0x00
+    OP_LOAD_CONST       = 0x01
+    OP_LOAD_LOCAL       = 0x02
+    OP_STORE_LOCAL      = 0x03
+    OP_ADD              = 0x10
+    OP_SUB              = 0x11
+    OP_MUL              = 0x12
+    OP_DIV              = 0x13
+    OP_PHI_MUL          = 0x14      ; Multiply by φ
+    OP_PHI_DIV          = 0x15      ; Divide by φ
+    OP_TRINITY_CHECK    = 0x16      ; Verify φ² + 1/φ² = 3
+    OP_JMP              = 0x20
+    OP_JZ               = 0x21
+    OP_JNZ              = 0x22
+    OP_CALL             = 0x30
+    OP_RET              = 0x31
+    OP_PUSH             = 0x40
+    OP_POP              = 0x41
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: STENCIL LIBRARY
+; Pre-compiled native code templates for each opcode
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.stencil_library:
+
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; STENCIL: OP_LOAD_CONST (x86-64)
+    ; mov rax, IMM64
+    ; ─────────────────────────────────────────────────────────────────────────
+    .stencil_load_const:
+        .code:
+            0x48, 0xB8,             ; REX.W mov rax, imm64
+            0x00, 0x00, 0x00, 0x00, ; imm64 low (HOLE)
+            0x00, 0x00, 0x00, 0x00  ; imm64 high (HOLE)
+        .code_len: 10
+        .holes:
+            { offset: 2, kind: HOLE_IMM64, value: 0 }
+        .hole_count: 1
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; STENCIL: OP_ADD (x86-64)
+    ; add rax, rbx
+    ; ─────────────────────────────────────────────────────────────────────────
+    .stencil_add:
+        .code:
+            0x48, 0x01, 0xD8        ; REX.W add rax, rbx
+        .code_len: 3
+        .holes: []
+        .hole_count: 0
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; STENCIL: OP_SUB (x86-64)
+    ; sub rax, rbx
+    ; ─────────────────────────────────────────────────────────────────────────
+    .stencil_sub:
+        .code:
+            0x48, 0x29, 0xD8        ; REX.W sub rax, rbx
+        .code_len: 3
+        .holes: []
+        .hole_count: 0
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; STENCIL: OP_MUL (x86-64)
+    ; imul rax, rbx
+    ; ─────────────────────────────────────────────────────────────────────────
+    .stencil_mul:
+        .code:
+            0x48, 0x0F, 0xAF, 0xC3  ; REX.W imul rax, rbx
+        .code_len: 4
+        .holes: []
+        .hole_count: 0
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; STENCIL: OP_PHI_MUL (x86-64)
+    ; Multiply by φ using integer approximation: x * 1618 / 1000
+    ; ─────────────────────────────────────────────────────────────────────────
+    .stencil_phi_mul:
+        .code:
+            0x48, 0x69, 0xC0,       ; imul rax, rax, imm32
+            0x52, 0x06, 0x00, 0x00, ; 1618 = 0x652
+            0x48, 0xC1, 0xE8, 0x0A  ; shr rax, 10 (divide by 1024 ≈ 1000)
+        .code_len: 11
+        .holes: []
+        .hole_count: 0
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; STENCIL: OP_JMP (x86-64)
+    ; jmp rel32
+    ; ─────────────────────────────────────────────────────────────────────────
+    .stencil_jmp:
+        .code:
+            0xE9,                   ; jmp rel32
+            0x00, 0x00, 0x00, 0x00  ; rel32 (HOLE)
+        .code_len: 5
+        .holes:
+            { offset: 1, kind: HOLE_REL32, value: 0 }
+        .hole_count: 1
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; STENCIL: OP_JZ (x86-64)
+    ; test rax, rax; jz rel32
+    ; ─────────────────────────────────────────────────────────────────────────
+    .stencil_jz:
+        .code:
+            0x48, 0x85, 0xC0,       ; test rax, rax
+            0x0F, 0x84,             ; jz rel32
+            0x00, 0x00, 0x00, 0x00  ; rel32 (HOLE)
+        .code_len: 9
+        .holes:
+            { offset: 5, kind: HOLE_REL32, value: 0 }
+        .hole_count: 1
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; STENCIL: OP_RET (x86-64)
+    ; ret
+    ; ─────────────────────────────────────────────────────────────────────────
+    .stencil_ret:
+        .code:
+            0xC3                    ; ret
+        .code_len: 1
+        .holes: []
+        .hole_count: 0
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; STENCIL: OP_PUSH (x86-64)
+    ; push rax
+    ; ─────────────────────────────────────────────────────────────────────────
+    .stencil_push:
+        .code:
+            0x50                    ; push rax
+        .code_len: 1
+        .holes: []
+        .hole_count: 0
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; STENCIL: OP_POP (x86-64)
+    ; pop rax
+    ; ─────────────────────────────────────────────────────────────────────────
+    .stencil_pop:
+        .code:
+            0x58                    ; pop rax
+        .code_len: 1
+        .holes: []
+        .hole_count: 0
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: JIT ENGINE
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.jit_engine:
+
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; jit_init: Initialize JIT compiler
+    ; ─────────────────────────────────────────────────────────────────────────
+    .jit_init:
+        ; Allocate code cache
+        ALLOC_EXEC      r0, CODE_CACHE_SIZE
+        STORE_GLOBAL    code_cache_ptr, r0
+        
+        ; Initialize cache index
+        MOV             r1, 0
+        STORE_GLOBAL    code_cache_offset, r1
+        
+        ; Initialize stats
+        MOV             r2, 0
+        STORE_GLOBAL    jit_compilations, r2
+        STORE_GLOBAL    jit_cache_hits, r2
+        
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; jit_compile: Compile bytecode to native code
+    ; Input: r0 = bytecode_ptr, r1 = bytecode_len
+    ; Output: r0 = native_code_ptr
+    ; ─────────────────────────────────────────────────────────────────────────
+    .jit_compile:
+        PUSH            r4
+        PUSH            r5
+        PUSH            r6
+        
+        ; Get code cache pointer
+        LOAD_GLOBAL     r2, code_cache_ptr
+        LOAD_GLOBAL     r3, code_cache_offset
+        ADD             r2, r2, r3          ; r2 = write position
+        
+        MOV             r4, r0              ; r4 = bytecode_ptr
+        MOV             r5, r1              ; r5 = bytecode_len
+        MOV             r6, 0               ; r6 = bytecode index
+        
+    .compile_loop:
+        CMP             r6, r5
+        JGE             .compile_done
+        
+        ; Load opcode
+        LOAD_BYTE       r7, r4, r6
+        
+        ; Lookup stencil
+        CALL            .stencil_lookup     ; r0 = stencil_ptr
+        
+        ; Copy stencil to code cache
+        CALL            .stencil_copy       ; r2 advanced
+        
+        ; Patch holes
+        CALL            .patch_holes
+        
+        ; Advance bytecode index
+        ADD             r6, r6, 1
+        
+        ; Check for operands
+        CALL            .skip_operands
+        
+        JMP             .compile_loop
+        
+    .compile_done:
+        ; Update cache offset
+        LOAD_GLOBAL     r3, code_cache_ptr
+        SUB             r8, r2, r3
+        STORE_GLOBAL    code_cache_offset, r8
+        
+        ; Increment compilation count
+        LOAD_GLOBAL     r9, jit_compilations
+        ADD             r9, r9, 1
+        STORE_GLOBAL    jit_compilations, r9
+        
+        ; Return start of compiled code
+        LOAD_GLOBAL     r0, code_cache_ptr
+        ADD             r0, r0, r3
+        
+        POP             r6
+        POP             r5
+        POP             r4
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; stencil_lookup: Find stencil for opcode
+    ; Input: r7 = opcode
+    ; Output: r0 = stencil_ptr
+    ; ─────────────────────────────────────────────────────────────────────────
+    .stencil_lookup:
+        ; Jump table based on opcode
+        CMP             r7, OP_LOAD_CONST
+        JE              .lookup_load_const
+        CMP             r7, OP_ADD
+        JE              .lookup_add
+        CMP             r7, OP_SUB
+        JE              .lookup_sub
+        CMP             r7, OP_MUL
+        JE              .lookup_mul
+        CMP             r7, OP_PHI_MUL
+        JE              .lookup_phi_mul
+        CMP             r7, OP_JMP
+        JE              .lookup_jmp
+        CMP             r7, OP_JZ
+        JE              .lookup_jz
+        CMP             r7, OP_RET
+        JE              .lookup_ret
+        CMP             r7, OP_PUSH
+        JE              .lookup_push
+        CMP             r7, OP_POP
+        JE              .lookup_pop
+        
+        ; Default: NOP stencil
+        LEA             r0, .stencil_ret
+        RET
+        
+    .lookup_load_const:
+        LEA             r0, .stencil_load_const
+        RET
+    .lookup_add:
+        LEA             r0, .stencil_add
+        RET
+    .lookup_sub:
+        LEA             r0, .stencil_sub
+        RET
+    .lookup_mul:
+        LEA             r0, .stencil_mul
+        RET
+    .lookup_phi_mul:
+        LEA             r0, .stencil_phi_mul
+        RET
+    .lookup_jmp:
+        LEA             r0, .stencil_jmp
+        RET
+    .lookup_jz:
+        LEA             r0, .stencil_jz
+        RET
+    .lookup_ret:
+        LEA             r0, .stencil_ret
+        RET
+    .lookup_push:
+        LEA             r0, .stencil_push
+        RET
+    .lookup_pop:
+        LEA             r0, .stencil_pop
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; stencil_copy: Copy stencil bytes to code cache
+    ; Input: r0 = stencil_ptr, r2 = dest_ptr
+    ; Output: r2 = updated dest_ptr
+    ; ─────────────────────────────────────────────────────────────────────────
+    .stencil_copy:
+        PUSH            r3
+        PUSH            r4
+        
+        ; Load code_len from stencil
+        LOAD_HALF       r3, r0, 256         ; offset to code_len field
+        
+        ; Copy bytes
+        MOV             r4, 0
+    .copy_loop:
+        CMP             r4, r3
+        JGE             .copy_done
+        
+        LOAD_BYTE       r5, r0, r4
+        STORE_BYTE      r2, r4, r5
+        ADD             r4, r4, 1
+        JMP             .copy_loop
+        
+    .copy_done:
+        ADD             r2, r2, r3          ; Advance dest pointer
+        
+        POP             r4
+        POP             r3
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; is_hot: Check if address is hot (should be JIT compiled)
+    ; Input: r0 = address, r1 = execution_count
+    ; Output: r0 = 1 if hot, 0 otherwise
+    ; ─────────────────────────────────────────────────────────────────────────
+    .is_hot:
+        CMP             r1, HOT_THRESHOLD
+        JGE             .is_hot_yes
+        MOV             r0, 0
+        RET
+    .is_hot_yes:
+        MOV             r0, 1
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: GLOBAL DATA
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.data:
+    code_cache_ptr:     .quad 0
+    code_cache_offset:  .quad 0
+    jit_compilations:   .quad 0
+    jit_cache_hits:     .quad 0
+    jit_total_bytes:    .quad 0
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: TESTS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.tests:
+
+    .test_golden_identity:
+        ; Verify φ² + 1/φ² = 3
+        LOAD_CONST      r0, PHI
+        MUL             r1, r0, r0          ; r1 = φ²
+        DIV             r2, 1.0, r1         ; r2 = 1/φ²
+        ADD             r3, r1, r2          ; r3 = φ² + 1/φ²
+        CMP_APPROX      r3, TRINITY, 0.0001
+        ASSERT_TRUE
+        
+    .test_stencil_copy:
+        ; Test that stencil copy works
+        LEA             r0, .stencil_add
+        ALLOC           r2, 16
+        CALL            .stencil_copy
+        ; Verify bytes copied
+        LOAD_BYTE       r3, r2, 0
+        CMP             r3, 0x48            ; REX prefix
+        ASSERT_EQ
+        
+    .test_hot_threshold:
+        ; Test hot detection
+        MOV             r0, 0x1000
+        MOV             r1, 99
+        CALL            .is_hot
+        CMP             r0, 0
+        ASSERT_EQ
+        
+        MOV             r0, 0x1000
+        MOV             r1, 100
+        CALL            .is_hot
+        CMP             r0, 1
+        ASSERT_EQ

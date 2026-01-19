@@ -1,0 +1,321 @@
+; ═══════════════════════════════════════════════════════════════════════════════
+; SIMD PARSER - TRINITY IMPLEMENTATION
+; ═══════════════════════════════════════════════════════════════════════════════
+; Source: specs/parser_simd.vibee
+; Based on: Langdale & Lemire (2019) "Parsing Gigabytes of JSON per Second"
+; Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+; Golden Identity: φ² + 1/φ² = 3
+; ═══════════════════════════════════════════════════════════════════════════════
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: SACRED CONSTANTS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.sacred_constants:
+    PHI                 = 1.618033988749895
+    TRINITY             = 3
+    
+    ; SIMD Configuration
+    SIMD_WIDTH_256      = 32            ; AVX2
+    SIMD_WIDTH_128      = 16            ; SSE/NEON/WASM SIMD
+    CHUNK_SIZE          = 64            ; Process 64 bytes at a time
+    
+    ; Character codes
+    CHAR_NEWLINE        = 0x0A
+    CHAR_COLON          = 0x3A
+    CHAR_QUOTE          = 0x22
+    CHAR_SPACE          = 0x20
+    CHAR_TAB            = 0x09
+    CHAR_HASH           = 0x23
+    CHAR_DASH           = 0x2D
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: SIMD CLASSIFICATION
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.simd_classify:
+
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; simd_classify_chunk: Classify 64 bytes using SIMD
+    ; Input: r0 = input_ptr (64-byte aligned)
+    ; Output: r0 = structural_mask, r1 = whitespace_mask, r2 = newline_mask
+    ; ─────────────────────────────────────────────────────────────────────────
+    .simd_classify_chunk:
+        ; Load 64 bytes into 4x 128-bit SIMD registers (WASM SIMD)
+        V128_LOAD       v0, r0, 0           ; bytes 0-15
+        V128_LOAD       v1, r0, 16          ; bytes 16-31
+        V128_LOAD       v2, r0, 32          ; bytes 32-47
+        V128_LOAD       v3, r0, 48          ; bytes 48-63
+        
+        ; Create comparison vectors
+        V128_SPLAT_I8   v_newline, CHAR_NEWLINE
+        V128_SPLAT_I8   v_colon, CHAR_COLON
+        V128_SPLAT_I8   v_quote, CHAR_QUOTE
+        V128_SPLAT_I8   v_space, CHAR_SPACE
+        V128_SPLAT_I8   v_tab, CHAR_TAB
+        V128_SPLAT_I8   v_hash, CHAR_HASH
+        V128_SPLAT_I8   v_dash, CHAR_DASH
+        
+        ; ─────────────────────────────────────────────────────────────────────
+        ; Detect newlines
+        ; ─────────────────────────────────────────────────────────────────────
+        V128_EQ_I8      v_nl0, v0, v_newline
+        V128_EQ_I8      v_nl1, v1, v_newline
+        V128_EQ_I8      v_nl2, v2, v_newline
+        V128_EQ_I8      v_nl3, v3, v_newline
+        
+        ; Convert to bitmask
+        V128_BITMASK    r2, v_nl0           ; bits 0-15
+        V128_BITMASK    r3, v_nl1
+        SHL             r3, r3, 16
+        OR              r2, r2, r3          ; bits 0-31
+        
+        V128_BITMASK    r3, v_nl2
+        V128_BITMASK    r4, v_nl3
+        SHL             r4, r4, 16
+        OR              r3, r3, r4          ; bits 32-63
+        SHL             r3, r3, 32
+        OR              r2, r2, r3          ; r2 = newline_mask (64 bits)
+        
+        ; ─────────────────────────────────────────────────────────────────────
+        ; Detect colons (structural)
+        ; ─────────────────────────────────────────────────────────────────────
+        V128_EQ_I8      v_c0, v0, v_colon
+        V128_EQ_I8      v_c1, v1, v_colon
+        V128_EQ_I8      v_c2, v2, v_colon
+        V128_EQ_I8      v_c3, v3, v_colon
+        
+        V128_BITMASK    r0, v_c0
+        V128_BITMASK    r3, v_c1
+        SHL             r3, r3, 16
+        OR              r0, r0, r3
+        
+        V128_BITMASK    r3, v_c2
+        V128_BITMASK    r4, v_c3
+        SHL             r4, r4, 16
+        OR              r3, r3, r4
+        SHL             r3, r3, 32
+        OR              r0, r0, r3          ; r0 = colon_mask
+        
+        ; ─────────────────────────────────────────────────────────────────────
+        ; Detect dashes (list items)
+        ; ─────────────────────────────────────────────────────────────────────
+        V128_EQ_I8      v_d0, v0, v_dash
+        V128_EQ_I8      v_d1, v1, v_dash
+        V128_EQ_I8      v_d2, v2, v_dash
+        V128_EQ_I8      v_d3, v3, v_dash
+        
+        V128_BITMASK    r5, v_d0
+        V128_BITMASK    r3, v_d1
+        SHL             r3, r3, 16
+        OR              r5, r5, r3
+        
+        V128_BITMASK    r3, v_d2
+        V128_BITMASK    r4, v_d3
+        SHL             r4, r4, 16
+        OR              r3, r3, r4
+        SHL             r3, r3, 32
+        OR              r5, r5, r3          ; r5 = dash_mask
+        
+        ; Combine structural: colons | dashes | newlines
+        OR              r0, r0, r5
+        OR              r0, r0, r2          ; r0 = structural_mask
+        
+        ; ─────────────────────────────────────────────────────────────────────
+        ; Detect whitespace (space | tab)
+        ; ─────────────────────────────────────────────────────────────────────
+        V128_EQ_I8      v_s0, v0, v_space
+        V128_EQ_I8      v_t0, v0, v_tab
+        V128_OR         v_ws0, v_s0, v_t0
+        
+        V128_EQ_I8      v_s1, v1, v_space
+        V128_EQ_I8      v_t1, v1, v_tab
+        V128_OR         v_ws1, v_s1, v_t1
+        
+        V128_EQ_I8      v_s2, v2, v_space
+        V128_EQ_I8      v_t2, v2, v_tab
+        V128_OR         v_ws2, v_s2, v_t2
+        
+        V128_EQ_I8      v_s3, v3, v_space
+        V128_EQ_I8      v_t3, v3, v_tab
+        V128_OR         v_ws3, v_s3, v_t3
+        
+        V128_BITMASK    r1, v_ws0
+        V128_BITMASK    r3, v_ws1
+        SHL             r3, r3, 16
+        OR              r1, r1, r3
+        
+        V128_BITMASK    r3, v_ws2
+        V128_BITMASK    r4, v_ws3
+        SHL             r4, r4, 16
+        OR              r3, r3, r4
+        SHL             r3, r3, 32
+        OR              r1, r1, r3          ; r1 = whitespace_mask
+        
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: STRUCTURAL INDEX EXTRACTION
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.extract:
+
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; extract_positions: Convert bitmask to position array
+    ; Input: r0 = mask, r1 = base_offset, r2 = output_ptr, r3 = output_count_ptr
+    ; Output: Updated output array and count
+    ; ─────────────────────────────────────────────────────────────────────────
+    .extract_positions:
+        PUSH            r4
+        PUSH            r5
+        
+        LOAD_WORD       r4, r3, 0           ; current count
+        
+    .extract_loop:
+        CMP             r0, 0
+        JE              .extract_done
+        
+        ; Get position of lowest set bit
+        CTZ             r5, r0              ; r5 = trailing zeros
+        
+        ; Store position
+        ADD             r5, r5, r1          ; absolute position
+        MOV             r6, r4
+        SHL             r6, r6, 2           ; * 4 (u32 size)
+        ADD             r6, r6, r2
+        STORE_WORD      r6, 0, r5
+        
+        ADD             r4, r4, 1           ; count++
+        
+        ; Clear lowest bit: mask &= mask - 1
+        SUB             r5, r0, 1
+        AND             r0, r0, r5
+        
+        JMP             .extract_loop
+        
+    .extract_done:
+        STORE_WORD      r3, 0, r4           ; update count
+        
+        POP             r5
+        POP             r4
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: MAIN PARSER
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.parser:
+
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; simd_parse: Parse entire input using SIMD
+    ; Input: r0 = input_ptr, r1 = input_len
+    ; Output: r0 = structural_index_ptr, r1 = structural_count
+    ; ─────────────────────────────────────────────────────────────────────────
+    .simd_parse:
+        PUSH            r2
+        PUSH            r3
+        PUSH            r4
+        PUSH            r5
+        
+        MOV             r4, r0              ; input_ptr
+        MOV             r5, r1              ; input_len
+        
+        ; Allocate structural index
+        SHR             r0, r5, 2           ; estimate: len/4 structural chars max
+        ADD             r0, r0, 1024
+        SHL             r0, r0, 2           ; * 4 bytes per u32
+        ALLOC           r2, r0              ; r2 = structural_index
+        
+        ; Initialize count
+        MOV             r3, 0
+        LEA             r6, structural_count
+        STORE_WORD      r6, 0, r3
+        
+        ; Process in 64-byte chunks
+        MOV             r3, 0               ; offset
+        
+    .parse_loop:
+        ADD             r0, r3, CHUNK_SIZE
+        CMP             r0, r5
+        JG              .parse_remainder
+        
+        ; Classify chunk
+        ADD             r0, r4, r3
+        CALL            .simd_classify_chunk
+        ; r0 = structural_mask, r1 = whitespace_mask, r2 = newline_mask
+        
+        ; Extract positions
+        MOV             r1, r3              ; base_offset
+        LEA             r2, structural_index
+        LEA             r3, structural_count
+        CALL            .extract_positions
+        
+        ADD             r3, r3, CHUNK_SIZE
+        JMP             .parse_loop
+        
+    .parse_remainder:
+        ; Handle remaining bytes (< 64) with scalar fallback
+        ; TODO: Implement scalar fallback
+        
+    .parse_done:
+        LEA             r0, structural_index
+        LOAD_WORD       r1, structural_count, 0
+        
+        POP             r5
+        POP             r4
+        POP             r3
+        POP             r2
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: GLOBAL DATA
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.data:
+    structural_index:   .space 262144       ; 64K positions * 4 bytes
+    structural_count:   .word 0
+    
+    ; Statistics
+    bytes_processed:    .quad 0
+    chunks_processed:   .quad 0
+    parse_time_ns:      .quad 0
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: TESTS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.tests:
+
+    .test_golden_identity:
+        LOAD_CONST      r0, PHI
+        MUL             r1, r0, r0
+        DIV             r2, 1.0, r1
+        ADD             r3, r1, r2
+        CMP_APPROX      r3, TRINITY, 0.0001
+        ASSERT_TRUE
+        
+    .test_newline_detection:
+        ; Test input: "0123456789\n" (11 bytes, padded to 64)
+        ; Newline at position 10
+        LEA             r0, test_input_newline
+        CALL            .simd_classify_chunk
+        ; r2 should have bit 10 set
+        AND             r3, r2, 0x400       ; bit 10
+        CMP             r3, 0x400
+        ASSERT_EQ
+        
+    .test_colon_detection:
+        ; Test input: "key: value"
+        ; Colon at position 3
+        LEA             r0, test_input_colon
+        CALL            .simd_classify_chunk
+        ; r0 should have bit 3 set
+        AND             r3, r0, 0x08        ; bit 3
+        CMP             r3, 0x08
+        ASSERT_EQ
+
+.test_data:
+    test_input_newline: .ascii "0123456789\n"
+                        .space 53           ; pad to 64 bytes
+    test_input_colon:   .ascii "key: value"
+                        .space 54           ; pad to 64 bytes

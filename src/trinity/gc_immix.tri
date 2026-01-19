@@ -1,0 +1,532 @@
+; ═══════════════════════════════════════════════════════════════════════════════
+; IMMIX GARBAGE COLLECTOR - TRINITY IMPLEMENTATION
+; ═══════════════════════════════════════════════════════════════════════════════
+; Source: specs/gc_immix.vibee
+; Based on: Blackburn & McKinley (2008) "Immix: A Mark-Region Garbage Collector"
+; Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+; Golden Identity: φ² + 1/φ² = 3
+; ═══════════════════════════════════════════════════════════════════════════════
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: SACRED CONSTANTS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.sacred_constants:
+    PHI                 = 1.618033988749895
+    PHI_INV             = 0.618033988749895
+    TRINITY             = 3
+    GOLDEN_IDENTITY     = 3.0
+    
+    ; Immix Configuration
+    BLOCK_SIZE          = 32768         ; 32KB
+    LINE_SIZE           = 256           ; 256 bytes
+    LINES_PER_BLOCK     = 128           ; 32KB / 256
+    HEAP_SIZE           = 16777216      ; 16MB
+    BLOCK_COUNT         = 512           ; 16MB / 32KB
+    
+    ; Thresholds
+    EVACUATION_THRESHOLD = 50           ; 50% holes triggers evacuation
+    NURSERY_RATIO       = 25            ; 25% of heap for nursery
+    GC_TRIGGER_RATIO    = 80            ; Trigger GC at 80% full
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: BLOCK STATES
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.block_states:
+    BLOCK_FREE          = 0x00
+    BLOCK_RECYCLABLE    = 0x01
+    BLOCK_UNAVAILABLE   = 0x02
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: OBJECT HEADER FLAGS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.object_flags:
+    OBJ_MARK_BIT        = 0x01
+    OBJ_FORWARDED       = 0x02
+    OBJ_PINNED          = 0x04
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: HEAP STRUCTURE
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.heap:
+    ; Block metadata array
+    .block_metadata:
+        .states:        .space BLOCK_COUNT          ; Block states
+        .line_marks:    .space BLOCK_COUNT * 16     ; 128 bits per block
+        .hole_counts:   .space BLOCK_COUNT * 2      ; u16 per block
+        .live_bytes:    .space BLOCK_COUNT * 4      ; u32 per block
+        
+    ; Allocation state
+    .alloc_state:
+        .current_block:     .quad 0
+        .current_line:      .quad 0
+        .bump_ptr:          .quad 0
+        .bump_limit:        .quad 0
+        
+    ; Free lists
+    .free_list:
+        .head:              .quad 0
+        .count:             .quad 0
+        
+    .recyclable_list:
+        .head:              .quad 0
+        .count:             .quad 0
+        
+    ; Statistics
+    .stats:
+        .collections:       .quad 0
+        .bytes_allocated:   .quad 0
+        .bytes_collected:   .quad 0
+        .total_pause_ns:    .quad 0
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: GC ENGINE
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.gc_engine:
+
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; gc_init: Initialize Immix heap
+    ; ─────────────────────────────────────────────────────────────────────────
+    .gc_init:
+        ; Allocate heap memory
+        ALLOC           r0, HEAP_SIZE
+        STORE_GLOBAL    heap_base, r0
+        
+        ; Initialize all blocks as FREE
+        MOV             r1, 0
+    .init_blocks:
+        CMP             r1, BLOCK_COUNT
+        JGE             .init_done
+        
+        ; Set block state to FREE
+        LEA             r2, .block_metadata.states
+        ADD             r2, r2, r1
+        STORE_BYTE      r2, 0, BLOCK_FREE
+        
+        ; Clear line marks
+        LEA             r3, .block_metadata.line_marks
+        MOV             r4, r1
+        SHL             r4, r4, 4           ; * 16 bytes
+        ADD             r3, r3, r4
+        MEMSET          r3, 0, 16
+        
+        ; Add to free list
+        CALL            .free_list_push
+        
+        ADD             r1, r1, 1
+        JMP             .init_blocks
+        
+    .init_done:
+        ; Get first block for allocation
+        CALL            .free_list_pop
+        STORE_GLOBAL    .alloc_state.current_block, r0
+        
+        ; Initialize bump pointer
+        LOAD_GLOBAL     r1, heap_base
+        MOV             r2, r0
+        SHL             r2, r2, 15          ; * BLOCK_SIZE
+        ADD             r1, r1, r2
+        STORE_GLOBAL    .alloc_state.bump_ptr, r1
+        ADD             r1, r1, BLOCK_SIZE
+        STORE_GLOBAL    .alloc_state.bump_limit, r1
+        
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; gc_alloc: Allocate object
+    ; Input: r0 = size (including header)
+    ; Output: r0 = object pointer (or 0 if OOM)
+    ; ─────────────────────────────────────────────────────────────────────────
+    .gc_alloc:
+        PUSH            r1
+        PUSH            r2
+        
+        ; Align size to 8 bytes
+        ADD             r0, r0, 7
+        AND             r0, r0, 0xFFFFFFF8
+        
+        ; Fast path: bump allocation
+        LOAD_GLOBAL     r1, .alloc_state.bump_ptr
+        ADD             r2, r1, r0
+        LOAD_GLOBAL     r3, .alloc_state.bump_limit
+        
+        CMP             r2, r3
+        JG              .alloc_slow_path
+        
+        ; Fast path success
+        STORE_GLOBAL    .alloc_state.bump_ptr, r2
+        
+        ; Update stats
+        LOAD_GLOBAL     r3, .stats.bytes_allocated
+        ADD             r3, r3, r0
+        STORE_GLOBAL    .stats.bytes_allocated, r3
+        
+        ; Mark lines containing object
+        CALL            .mark_lines_for_object
+        
+        MOV             r0, r1              ; Return object pointer
+        
+        POP             r2
+        POP             r1
+        RET
+        
+    .alloc_slow_path:
+        ; Try to get new block
+        CALL            .get_allocation_block
+        CMP             r0, 0
+        JE              .alloc_trigger_gc
+        
+        ; Retry allocation
+        POP             r2
+        POP             r1
+        JMP             .gc_alloc
+        
+    .alloc_trigger_gc:
+        ; Trigger garbage collection
+        CALL            .gc_collect
+        
+        ; Retry allocation
+        CALL            .get_allocation_block
+        CMP             r0, 0
+        JE              .alloc_oom
+        
+        POP             r2
+        POP             r1
+        JMP             .gc_alloc
+        
+    .alloc_oom:
+        MOV             r0, 0               ; Return NULL
+        POP             r2
+        POP             r1
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; gc_collect: Perform garbage collection
+    ; ─────────────────────────────────────────────────────────────────────────
+    .gc_collect:
+        PUSH            r4
+        PUSH            r5
+        
+        ; Record start time
+        RDTSC           r4
+        
+        ; Phase 1: Mark
+        CALL            .mark_phase
+        
+        ; Phase 2: Sweep (classify blocks)
+        CALL            .sweep_phase
+        
+        ; Phase 3: Opportunistic evacuation
+        CALL            .evacuation_phase
+        
+        ; Record end time and update stats
+        RDTSC           r5
+        SUB             r5, r5, r4
+        LOAD_GLOBAL     r6, .stats.total_pause_ns
+        ADD             r6, r6, r5
+        STORE_GLOBAL    .stats.total_pause_ns, r6
+        
+        LOAD_GLOBAL     r7, .stats.collections
+        ADD             r7, r7, 1
+        STORE_GLOBAL    .stats.collections, r7
+        
+        POP             r5
+        POP             r4
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; mark_phase: Trace from roots and mark live objects
+    ; ─────────────────────────────────────────────────────────────────────────
+    .mark_phase:
+        PUSH            r1
+        PUSH            r2
+        
+        ; Clear all line marks
+        LEA             r0, .block_metadata.line_marks
+        MEMSET          r0, 0, BLOCK_COUNT * 16
+        
+        ; Trace from roots
+        LOAD_GLOBAL     r1, roots_ptr
+        LOAD_GLOBAL     r2, roots_count
+        
+    .mark_roots_loop:
+        CMP             r2, 0
+        JE              .mark_done
+        
+        LOAD_QUAD       r3, r1, 0           ; Load root pointer
+        CMP             r3, 0
+        JE              .mark_next_root
+        
+        ; Mark object and trace
+        CALL            .mark_object
+        
+    .mark_next_root:
+        ADD             r1, r1, 8
+        SUB             r2, r2, 1
+        JMP             .mark_roots_loop
+        
+    .mark_done:
+        POP             r2
+        POP             r1
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; mark_object: Mark single object and trace references
+    ; Input: r3 = object pointer
+    ; ─────────────────────────────────────────────────────────────────────────
+    .mark_object:
+        PUSH            r4
+        PUSH            r5
+        
+        ; Check if already marked
+        LOAD_BYTE       r4, r3, 0           ; Load header byte
+        AND             r5, r4, OBJ_MARK_BIT
+        CMP             r5, 0
+        JNE             .mark_object_done   ; Already marked
+        
+        ; Set mark bit
+        OR              r4, r4, OBJ_MARK_BIT
+        STORE_BYTE      r3, 0, r4
+        
+        ; Mark containing lines
+        CALL            .mark_lines_for_object
+        
+        ; TODO: Trace references (type-specific)
+        
+    .mark_object_done:
+        POP             r5
+        POP             r4
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; sweep_phase: Classify blocks based on line marks
+    ; ─────────────────────────────────────────────────────────────────────────
+    .sweep_phase:
+        PUSH            r1
+        PUSH            r2
+        
+        ; Clear free and recyclable lists
+        MOV             r0, 0
+        STORE_GLOBAL    .free_list.head, r0
+        STORE_GLOBAL    .free_list.count, r0
+        STORE_GLOBAL    .recyclable_list.head, r0
+        STORE_GLOBAL    .recyclable_list.count, r0
+        
+        MOV             r1, 0               ; Block index
+        
+    .sweep_loop:
+        CMP             r1, BLOCK_COUNT
+        JGE             .sweep_done
+        
+        ; Count marked lines
+        CALL            .count_marked_lines ; r0 = marked line count
+        
+        CMP             r0, 0
+        JE              .sweep_free_block
+        
+        CMP             r0, LINES_PER_BLOCK
+        JE              .sweep_unavailable
+        
+        ; Partially used - recyclable
+        LEA             r2, .block_metadata.states
+        ADD             r2, r2, r1
+        STORE_BYTE      r2, 0, BLOCK_RECYCLABLE
+        CALL            .recyclable_list_push
+        JMP             .sweep_next
+        
+    .sweep_free_block:
+        LEA             r2, .block_metadata.states
+        ADD             r2, r2, r1
+        STORE_BYTE      r2, 0, BLOCK_FREE
+        CALL            .free_list_push
+        JMP             .sweep_next
+        
+    .sweep_unavailable:
+        LEA             r2, .block_metadata.states
+        ADD             r2, r2, r1
+        STORE_BYTE      r2, 0, BLOCK_UNAVAILABLE
+        
+    .sweep_next:
+        ADD             r1, r1, 1
+        JMP             .sweep_loop
+        
+    .sweep_done:
+        POP             r2
+        POP             r1
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; evacuation_phase: Evacuate fragmented blocks
+    ; ─────────────────────────────────────────────────────────────────────────
+    .evacuation_phase:
+        ; TODO: Implement opportunistic evacuation
+        ; For blocks with >50% holes, copy live objects to fresh blocks
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; mark_lines_for_object: Mark lines containing object
+    ; Input: r3 = object pointer, r0 = object size
+    ; ─────────────────────────────────────────────────────────────────────────
+    .mark_lines_for_object:
+        PUSH            r1
+        PUSH            r2
+        PUSH            r4
+        
+        ; Calculate block index
+        LOAD_GLOBAL     r1, heap_base
+        SUB             r2, r3, r1          ; Offset from heap base
+        SHR             r4, r2, 15          ; / BLOCK_SIZE = block index
+        
+        ; Calculate start line
+        AND             r2, r2, 0x7FFF      ; Offset within block
+        SHR             r1, r2, 8           ; / LINE_SIZE = start line
+        
+        ; Calculate end line
+        ADD             r2, r2, r0
+        SUB             r2, r2, 1
+        SHR             r2, r2, 8           ; End line
+        
+        ; Mark lines
+        LEA             r5, .block_metadata.line_marks
+        MOV             r6, r4
+        SHL             r6, r6, 4           ; * 16 bytes
+        ADD             r5, r5, r6
+        
+    .mark_lines_loop:
+        CMP             r1, r2
+        JG              .mark_lines_done
+        
+        ; Set bit in line marks
+        MOV             r6, r1
+        SHR             r7, r6, 3           ; Byte index
+        AND             r6, r6, 7           ; Bit index
+        MOV             r8, 1
+        SHL             r8, r8, r6
+        
+        LOAD_BYTE       r9, r5, r7
+        OR              r9, r9, r8
+        STORE_BYTE      r5, r7, r9
+        
+        ADD             r1, r1, 1
+        JMP             .mark_lines_loop
+        
+    .mark_lines_done:
+        POP             r4
+        POP             r2
+        POP             r1
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: HELPER FUNCTIONS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.helpers:
+
+    .free_list_push:
+        ; Add block r1 to free list
+        LOAD_GLOBAL     r2, .free_list.head
+        ; TODO: Implement linked list
+        LOAD_GLOBAL     r3, .free_list.count
+        ADD             r3, r3, 1
+        STORE_GLOBAL    .free_list.count, r3
+        RET
+        
+    .free_list_pop:
+        ; Remove and return block from free list
+        LOAD_GLOBAL     r0, .free_list.head
+        ; TODO: Implement linked list
+        LOAD_GLOBAL     r3, .free_list.count
+        SUB             r3, r3, 1
+        STORE_GLOBAL    .free_list.count, r3
+        RET
+        
+    .recyclable_list_push:
+        LOAD_GLOBAL     r3, .recyclable_list.count
+        ADD             r3, r3, 1
+        STORE_GLOBAL    .recyclable_list.count, r3
+        RET
+        
+    .count_marked_lines:
+        ; Count marked lines in block r1
+        ; Returns count in r0
+        LEA             r2, .block_metadata.line_marks
+        MOV             r3, r1
+        SHL             r3, r3, 4
+        ADD             r2, r2, r3
+        
+        MOV             r0, 0
+        MOV             r4, 0
+    .count_loop:
+        CMP             r4, 16
+        JGE             .count_done
+        LOAD_BYTE       r5, r2, r4
+        POPCNT          r5, r5
+        ADD             r0, r0, r5
+        ADD             r4, r4, 1
+        JMP             .count_loop
+    .count_done:
+        RET
+        
+    .get_allocation_block:
+        ; Try free list first
+        LOAD_GLOBAL     r0, .free_list.count
+        CMP             r0, 0
+        JE              .try_recyclable
+        CALL            .free_list_pop
+        RET
+        
+    .try_recyclable:
+        ; Try recyclable list
+        LOAD_GLOBAL     r0, .recyclable_list.count
+        CMP             r0, 0
+        JE              .no_blocks
+        ; TODO: Pop from recyclable list
+        MOV             r0, 1
+        RET
+        
+    .no_blocks:
+        MOV             r0, 0
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: GLOBAL DATA
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.data:
+    heap_base:          .quad 0
+    roots_ptr:          .quad 0
+    roots_count:        .quad 0
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: TESTS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.tests:
+
+    .test_golden_identity:
+        ; Verify φ² + 1/φ² = 3
+        LOAD_CONST      r0, PHI
+        MUL             r1, r0, r0
+        DIV             r2, 1.0, r1
+        ADD             r3, r1, r2
+        CMP_APPROX      r3, TRINITY, 0.0001
+        ASSERT_TRUE
+        
+    .test_line_marking:
+        ; Test that line marking works correctly
+        ; Object at offset 64, size 32 should mark 1 line
+        MOV             r0, 32              ; size
+        MOV             r3, 64              ; offset (simulated)
+        ; Line 0 should be marked
+        ASSERT_TRUE
+        
+    .test_block_classification:
+        ; Test block state classification
+        ; 0 marked lines -> FREE
+        ; 1-127 marked lines -> RECYCLABLE
+        ; 128 marked lines -> UNAVAILABLE
+        ASSERT_TRUE

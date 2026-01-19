@@ -1,0 +1,254 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# COPY-AND-PATCH JIT COMPILER SPECIFICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# Based on: Xu & Kjolstad (2021) "Copy-and-Patch Compilation"
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: jit_copy_patch
+version: "1.0.0"
+author: "PAS DAEMON V41"
+license: "MIT"
+
+targets:
+  - zig
+  - wasm
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  PHI:
+    value: 1.618033988749895
+    description: "Golden ratio φ"
+    
+  TRINITY:
+    value: 3.0
+    description: "φ² + 1/φ² = 3"
+    
+  STENCIL_MAX_SIZE:
+    value: 256
+    description: "Maximum stencil size in bytes"
+    
+  CODE_CACHE_SIZE:
+    value: 65536
+    description: "64KB code cache"
+    
+  HOT_THRESHOLD:
+    value: 100
+    description: "Iterations before JIT compilation"
+    
+  MAX_HOLES:
+    value: 8
+    description: "Maximum holes per stencil"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  HoleKind:
+    base: enum
+    variants:
+      - IMM8      # 8-bit immediate
+      - IMM32     # 32-bit immediate
+      - IMM64     # 64-bit immediate
+      - REL32     # 32-bit relative offset
+      - ABS64     # 64-bit absolute address
+    description: "Type of hole to patch in stencil"
+    
+  Hole:
+    fields:
+      offset: u16
+      kind: HoleKind
+      value: u64
+    description: "A patchable location in a stencil"
+    
+  Stencil:
+    fields:
+      code: "[256]u8"
+      code_len: u16
+      holes: "[8]Hole"
+      hole_count: u8
+      opcode: u8
+    description: "Pre-compiled code template with holes"
+    
+  CompiledCode:
+    fields:
+      code_ptr: "*u8"
+      code_len: usize
+      entry_point: usize
+    description: "JIT-compiled native code"
+    
+  JITStats:
+    fields:
+      compilations: u64
+      cache_hits: u64
+      total_bytes: u64
+      avg_compile_ns: f64
+    description: "JIT compilation statistics"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREATION PATTERNS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+creation_patterns:
+  
+  stencil_library:
+    source: "Opcode enum"
+    transformer: "Pre-compile to native code templates"
+    result: "StencilLibrary with all opcodes"
+    
+  jit_compile:
+    source: "Bytecode sequence"
+    transformer: "Copy stencils and patch holes"
+    result: "Executable native code"
+    
+  hot_path_detect:
+    source: "Execution trace"
+    transformer: "Count iterations, detect loops"
+    result: "Hot path candidates for JIT"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+
+  - name: stencil_copy
+    given: "A stencil for opcode ADD"
+    when: "Copying stencil to code buffer"
+    then: "Exact byte-for-byte copy"
+    test_cases:
+      - input: { opcode: ADD, dst: 0, src1: 1, src2: 2 }
+        expected: "Valid x86-64 ADD instruction"
+        
+  - name: hole_patching
+    given: "A stencil with IMM32 hole at offset 4"
+    when: "Patching with value 0x12345678"
+    then: "Bytes at offset 4-7 contain little-endian value"
+    test_cases:
+      - input: { hole_offset: 4, hole_kind: IMM32, value: 0x12345678 }
+        expected: { bytes: [0x78, 0x56, 0x34, 0x12] }
+        
+  - name: compile_sequence
+    given: "Bytecode: LOAD_CONST 42, LOAD_CONST 58, ADD, RET"
+    when: "JIT compiling the sequence"
+    then: "Native code that returns 100"
+    test_cases:
+      - input: { bytecode: [LOAD_CONST, 42, LOAD_CONST, 58, ADD, RET] }
+        expected: { result: 100 }
+        
+  - name: hot_threshold
+    given: "A loop executed 99 times"
+    when: "Checking if hot"
+    then: "Not yet hot (threshold is 100)"
+    test_cases:
+      - input: { execution_count: 99 }
+        expected: { is_hot: false }
+      - input: { execution_count: 100 }
+        expected: { is_hot: true }
+        
+  - name: cache_lookup
+    given: "Previously compiled code for address 0x1000"
+    when: "Looking up compiled code"
+    then: "Returns cached CompiledCode"
+    test_cases:
+      - input: { address: 0x1000, cached: true }
+        expected: { cache_hit: true }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ALGORITHMS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+algorithms:
+
+  copy_and_patch:
+    description: "Main JIT compilation algorithm"
+    complexity: "O(n) where n = bytecode length"
+    pattern: PRE
+    steps:
+      - "For each bytecode instruction:"
+      - "  1. Lookup stencil in library"
+      - "  2. Copy stencil bytes to code buffer"
+      - "  3. For each hole in stencil:"
+      - "     - Compute patch value from operands"
+      - "     - Write value at hole offset"
+      - "  4. Advance code buffer pointer"
+      - "Return executable code pointer"
+      
+  stencil_generation:
+    description: "Generate stencils from C/Zig templates"
+    complexity: "O(1) per opcode (compile-time)"
+    pattern: PRE
+    steps:
+      - "Write template function in Zig"
+      - "Compile with -O3 -fPIC"
+      - "Extract machine code bytes"
+      - "Identify holes (placeholder values)"
+      - "Store in stencil library"
+      
+  hot_path_detection:
+    description: "Detect hot loops for JIT"
+    complexity: "O(1) per execution"
+    pattern: PRE
+    steps:
+      - "Increment counter at loop header"
+      - "If counter >= HOT_THRESHOLD:"
+      - "  Mark for JIT compilation"
+      - "  Reset counter"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WASM EXPORTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+wasm_exports:
+  functions:
+    - jit_init
+    - jit_compile
+    - jit_execute
+    - jit_get_stats
+    - stencil_lookup
+    - stencil_copy
+    - hole_patch
+    - cache_lookup
+    - cache_insert
+    - is_hot
+    
+  memory:
+    code_cache:
+      size: 65536
+      alignment: 16
+    stencil_library:
+      size: 16384
+      alignment: 8
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS PREDICTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_predictions:
+
+  - target: jit_compile
+    current: "Interpreter: ~100 ns/op"
+    predicted: "JIT: ~2 ns/op"
+    confidence: 0.85
+    pattern: PRE
+    status: implementing
+    timeline: "2026"
+    
+  - target: stencil_copy
+    current: "N/A (new)"
+    predicted: "~50 cycles per stencil"
+    confidence: 0.90
+    pattern: PRE
+    status: implementing
+    
+  - target: compilation_speed
+    current: "Template JIT: ~1ms"
+    predicted: "Copy-and-Patch: ~10μs"
+    confidence: 0.80
+    pattern: PRE
+    status: implementing
