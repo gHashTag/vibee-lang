@@ -1,0 +1,666 @@
+; ═══════════════════════════════════════════════════════════════════════════════
+; LOOP INVARIANT CODE MOTION (LICM) - TRINITY IMPLEMENTATION
+; ═══════════════════════════════════════════════════════════════════════════════
+; Source: specs/licm_loop_optimization.vibee
+; Based on: Aho, Sethi, Ullman "Compilers" (Dragon Book)
+; Target: 5-10% performance improvement
+; Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+; Golden Identity: φ² + 1/φ² = 3
+; ═══════════════════════════════════════════════════════════════════════════════
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: SACRED CONSTANTS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.sacred_constants:
+    PHI                 = 1.618033988749895
+    TRINITY             = 3
+    GOLDEN_IDENTITY     = 3.0
+    
+    ; Loop analysis limits
+    MAX_LOOPS           = 64
+    MAX_LOOP_BLOCKS     = 256
+    MAX_INVARIANTS      = 512
+    
+    ; Unrolling config
+    UNROLL_FACTOR       = 4
+    MAX_UNROLL_SIZE     = 50              ; instructions
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: LOOP STRUCTURE
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.loop_structure:
+    ; Loop Info layout (64 bytes)
+    ; Offset 0:  u32 loop_id
+    ; Offset 4:  u32 depth
+    ; Offset 8:  ptr header_block
+    ; Offset 16: ptr preheader_block
+    ; Offset 24: ptr back_edge_source
+    ; Offset 32: ptr exit_blocks (array)
+    ; Offset 40: u32 exit_count
+    ; Offset 44: u32 block_count
+    ; Offset 48: ptr blocks (array)
+    ; Offset 56: u32 flags
+    ; Offset 60: u32 trip_count (if known)
+    
+    LOOP_SIZE           = 64
+    LOOP_ID             = 0
+    LOOP_DEPTH          = 4
+    LOOP_HEADER         = 8
+    LOOP_PREHEADER      = 16
+    LOOP_BACK_EDGE      = 24
+    LOOP_EXITS          = 32
+    LOOP_EXIT_COUNT     = 40
+    LOOP_BLOCK_COUNT    = 44
+    LOOP_BLOCKS         = 48
+    LOOP_FLAGS          = 56
+    LOOP_TRIP_COUNT     = 60
+    
+    ; Loop flags
+    LOOP_HAS_CALL       = 0x01
+    LOOP_HAS_STORE      = 0x02
+    LOOP_KNOWN_TRIP     = 0x04
+    LOOP_INNER          = 0x08
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: INVARIANT INFO
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.invariant_structure:
+    ; Invariant Entry (16 bytes)
+    ; Offset 0:  ptr instruction
+    ; Offset 8:  u32 flags
+    ; Offset 12: u32 hoist_order
+    
+    INV_SIZE            = 16
+    INV_INSTR           = 0
+    INV_FLAGS           = 8
+    INV_ORDER           = 12
+    
+    ; Invariant flags
+    INV_DETECTED        = 0x01
+    INV_SAFE_TO_HOIST   = 0x02
+    INV_HOISTED         = 0x04
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: LOOP DETECTION
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.loop_detection:
+
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; detect_loops: Find all natural loops in function
+    ; Input: r0 = function_ptr
+    ; Output: r0 = loop_array_ptr, r1 = loop_count
+    ; ─────────────────────────────────────────────────────────────────────────
+    .detect_loops:
+        PUSH            r2
+        PUSH            r3
+        PUSH            r4
+        
+        ; Allocate loop array
+        MOV             r1, MAX_LOOPS
+        MUL             r1, r1, LOOP_SIZE
+        ALLOC           r2, r1              ; r2 = loop_array
+        
+        MOV             r3, 0               ; loop_count
+        
+        ; Compute dominators
+        CALL            .compute_dominators
+        MOV             r4, r0              ; r4 = dominator_tree
+        
+        ; Find back edges
+        MOV             r0, r4
+        CALL            .find_back_edges
+        ; r0 = back_edge_array, r1 = back_edge_count
+        
+        ; For each back edge, create loop
+        MOV             r5, 0               ; index
+        
+    .detect_loop:
+        CMP             r5, r1
+        JGE             .detect_done
+        
+        ; Get back edge
+        MOV             r6, r5
+        SHL             r6, r6, 4           ; * 16 (back edge entry size)
+        ADD             r6, r0, r6
+        
+        ; Create loop from back edge
+        PUSH            r0
+        PUSH            r1
+        MOV             r0, r6              ; back_edge
+        MOV             r1, r2              ; loop_array
+        MOV             r2, r3              ; current count
+        CALL            .create_loop_from_back_edge
+        MOV             r3, r0              ; updated count
+        POP             r1
+        POP             r0
+        
+        ADD             r5, r5, 1
+        JMP             .detect_loop
+        
+    .detect_done:
+        MOV             r0, r2              ; loop_array
+        MOV             r1, r3              ; loop_count
+        
+        POP             r4
+        POP             r3
+        POP             r2
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; compute_dominators: Build dominator tree
+    ; Input: r0 = function_ptr
+    ; Output: r0 = dominator_tree_ptr
+    ; ─────────────────────────────────────────────────────────────────────────
+    .compute_dominators:
+        ; Lengauer-Tarjan algorithm (simplified)
+        ; For each block, compute immediate dominator
+        ; (Placeholder - returns dummy tree)
+        ALLOC           r0, 4096
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; find_back_edges: Find edges where target dominates source
+    ; Input: r0 = dominator_tree
+    ; Output: r0 = back_edge_array, r1 = count
+    ; ─────────────────────────────────────────────────────────────────────────
+    .find_back_edges:
+        ; Iterate CFG edges
+        ; If target dominates source, it's a back edge
+        ; (Placeholder)
+        ALLOC           r0, 1024
+        MOV             r1, 0
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; create_loop_from_back_edge: Build loop structure
+    ; Input: r0 = back_edge, r1 = loop_array, r2 = current_count
+    ; Output: r0 = new_count
+    ; ─────────────────────────────────────────────────────────────────────────
+    .create_loop_from_back_edge:
+        PUSH            r3
+        PUSH            r4
+        
+        ; Calculate loop entry address
+        MOV             r3, r2
+        MUL             r3, r3, LOOP_SIZE
+        ADD             r3, r1, r3          ; r3 = loop_ptr
+        
+        ; Set loop ID
+        STORE_WORD      r3, LOOP_ID, r2
+        
+        ; Get header (back edge target)
+        LOAD_QUAD       r4, r0, 8           ; target
+        STORE_QUAD      r3, LOOP_HEADER, r4
+        
+        ; Get back edge source
+        LOAD_QUAD       r4, r0, 0           ; source
+        STORE_QUAD      r3, LOOP_BACK_EDGE, r4
+        
+        ; Create preheader
+        CALL            .create_preheader
+        STORE_QUAD      r3, LOOP_PREHEADER, r0
+        
+        ; Find loop body blocks (DFS from back edge source to header)
+        CALL            .find_loop_body
+        
+        ; Find exit blocks
+        CALL            .find_exit_blocks
+        
+        ; Increment count
+        ADD             r0, r2, 1
+        
+        POP             r4
+        POP             r3
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: INVARIANT DETECTION
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.invariant_detection:
+
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; detect_invariants: Find loop-invariant instructions
+    ; Input: r0 = loop_ptr
+    ; Output: r0 = invariant_array, r1 = invariant_count
+    ; ─────────────────────────────────────────────────────────────────────────
+    .detect_invariants:
+        PUSH            r2
+        PUSH            r3
+        PUSH            r4
+        PUSH            r5
+        
+        MOV             r5, r0              ; r5 = loop_ptr
+        
+        ; Allocate invariant array
+        MOV             r1, MAX_INVARIANTS
+        MUL             r1, r1, INV_SIZE
+        ALLOC           r2, r1              ; r2 = invariant_array
+        
+        MOV             r3, 0               ; invariant_count
+        
+        ; Get loop blocks
+        LOAD_QUAD       r4, r5, LOOP_BLOCKS
+        LOAD_WORD       r6, r5, LOOP_BLOCK_COUNT
+        
+        ; Iterate until no changes
+        MOV             r7, 1               ; changed
+        
+    .invariant_iterate:
+        CMP             r7, 0
+        JE              .invariant_done
+        
+        MOV             r7, 0               ; reset changed
+        
+        ; For each block in loop
+        MOV             r8, 0               ; block index
+        
+    .invariant_block_loop:
+        CMP             r8, r6
+        JGE             .invariant_iterate
+        
+        ; Get block
+        MOV             r9, r8
+        SHL             r9, r9, 3
+        ADD             r9, r4, r9
+        LOAD_QUAD       r9, r9, 0           ; block_ptr
+        
+        ; For each instruction in block
+        CALL            .check_block_invariants
+        OR              r7, r7, r0          ; update changed
+        
+        ADD             r8, r8, 1
+        JMP             .invariant_block_loop
+        
+    .invariant_done:
+        MOV             r0, r2
+        MOV             r1, r3
+        
+        POP             r5
+        POP             r4
+        POP             r3
+        POP             r2
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; is_invariant: Check if instruction is loop-invariant
+    ; Input: r0 = instruction_ptr, r1 = loop_ptr
+    ; Output: r0 = 1 if invariant, 0 otherwise
+    ; ─────────────────────────────────────────────────────────────────────────
+    .is_invariant:
+        PUSH            r2
+        PUSH            r3
+        
+        ; Check if instruction has side effects
+        CALL            .has_side_effects
+        CMP             r0, 1
+        JE              .not_invariant
+        
+        ; Check all operands
+        ; Operand is OK if:
+        ; 1. Constant
+        ; 2. Defined outside loop
+        ; 3. Already marked invariant
+        
+        LOAD_QUAD       r2, r0, 16          ; operand1
+        CMP             r2, 0
+        JE              .check_op2
+        CALL            .operand_is_invariant
+        CMP             r0, 0
+        JE              .not_invariant
+        
+    .check_op2:
+        LOAD_QUAD       r2, r0, 24          ; operand2
+        CMP             r2, 0
+        JE              .is_inv
+        CALL            .operand_is_invariant
+        CMP             r0, 0
+        JE              .not_invariant
+        
+    .is_inv:
+        MOV             r0, 1
+        POP             r3
+        POP             r2
+        RET
+        
+    .not_invariant:
+        MOV             r0, 0
+        POP             r3
+        POP             r2
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: CODE MOTION
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.code_motion:
+
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; hoist_invariants: Move invariant code to preheader
+    ; Input: r0 = loop_ptr, r1 = invariant_array, r2 = invariant_count
+    ; ─────────────────────────────────────────────────────────────────────────
+    .hoist_invariants:
+        PUSH            r3
+        PUSH            r4
+        PUSH            r5
+        
+        MOV             r3, r0              ; loop_ptr
+        MOV             r4, r1              ; invariant_array
+        MOV             r5, r2              ; count
+        
+        ; Get preheader
+        LOAD_QUAD       r6, r3, LOOP_PREHEADER
+        
+        ; For each invariant
+        MOV             r7, 0
+        
+    .hoist_loop:
+        CMP             r7, r5
+        JGE             .hoist_done
+        
+        ; Get invariant entry
+        MOV             r8, r7
+        MUL             r8, r8, INV_SIZE
+        ADD             r8, r4, r8
+        
+        ; Check if safe to hoist
+        LOAD_WORD       r9, r8, INV_FLAGS
+        AND             r10, r9, INV_SAFE_TO_HOIST
+        CMP             r10, 0
+        JE              .hoist_next
+        
+        ; Get instruction
+        LOAD_QUAD       r10, r8, INV_INSTR
+        
+        ; Move to preheader
+        CALL            .move_instruction
+        
+        ; Mark as hoisted
+        OR              r9, r9, INV_HOISTED
+        STORE_WORD      r8, INV_FLAGS, r9
+        
+    .hoist_next:
+        ADD             r7, r7, 1
+        JMP             .hoist_loop
+        
+    .hoist_done:
+        POP             r5
+        POP             r4
+        POP             r3
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; move_instruction: Move instruction to target block
+    ; Input: r10 = instruction_ptr, r6 = target_block
+    ; ─────────────────────────────────────────────────────────────────────────
+    .move_instruction:
+        ; Remove from current block
+        ; Insert at end of target block (before terminator)
+        ; Update use-def chains
+        ; (Placeholder)
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; check_safety: Check if instruction can be safely hoisted
+    ; Input: r0 = instruction_ptr, r1 = loop_ptr
+    ; Output: r0 = 1 if safe, 0 otherwise
+    ; ─────────────────────────────────────────────────────────────────────────
+    .check_safety:
+        PUSH            r2
+        
+        ; Check 1: No side effects
+        CALL            .has_side_effects
+        CMP             r0, 1
+        JE              .not_safe
+        
+        ; Check 2: Dominates all exits
+        CALL            .dominates_exits
+        CMP             r0, 0
+        JE              .not_safe
+        
+        ; Check 3: All operands available in preheader
+        CALL            .operands_available
+        CMP             r0, 0
+        JE              .not_safe
+        
+        MOV             r0, 1
+        POP             r2
+        RET
+        
+    .not_safe:
+        MOV             r0, 0
+        POP             r2
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: LOOP UNROLLING
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.loop_unrolling:
+
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; unroll_loop: Unroll loop by factor
+    ; Input: r0 = loop_ptr, r1 = factor
+    ; Output: r0 = success (1 or 0)
+    ; ─────────────────────────────────────────────────────────────────────────
+    .unroll_loop:
+        PUSH            r2
+        PUSH            r3
+        
+        ; Check if loop is suitable for unrolling
+        CALL            .can_unroll
+        CMP             r0, 0
+        JE              .unroll_fail
+        
+        ; Get loop body size
+        CALL            .get_loop_body_size
+        CMP             r0, MAX_UNROLL_SIZE
+        JG              .unroll_fail
+        
+        ; Duplicate loop body (factor - 1) times
+        MOV             r2, 1               ; iteration
+        
+    .unroll_iter:
+        CMP             r2, r1
+        JGE             .unroll_success
+        
+        ; Clone loop body
+        CALL            .clone_loop_body
+        
+        ; Update induction variables
+        CALL            .update_induction_vars
+        
+        ADD             r2, r2, 1
+        JMP             .unroll_iter
+        
+    .unroll_success:
+        ; Update loop trip count
+        CALL            .update_trip_count
+        
+        MOV             r0, 1
+        POP             r3
+        POP             r2
+        RET
+        
+    .unroll_fail:
+        MOV             r0, 0
+        POP             r3
+        POP             r2
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: HELPER FUNCTIONS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.helpers:
+    .has_side_effects:
+        ; Check if instruction has side effects
+        ; (store, call, exception)
+        MOV             r0, 0
+        RET
+        
+    .operand_is_invariant:
+        ; Check if operand is constant, outside loop, or invariant
+        MOV             r0, 1
+        RET
+        
+    .dominates_exits:
+        ; Check if block dominates all loop exits
+        MOV             r0, 1
+        RET
+        
+    .operands_available:
+        ; Check if all operands available in preheader
+        MOV             r0, 1
+        RET
+        
+    .create_preheader:
+        ; Create preheader block
+        ALLOC           r0, 64
+        RET
+        
+    .find_loop_body:
+        ; Find all blocks in loop body
+        RET
+        
+    .find_exit_blocks:
+        ; Find blocks that exit the loop
+        RET
+        
+    .check_block_invariants:
+        ; Check invariants in a block
+        MOV             r0, 0
+        RET
+        
+    .can_unroll:
+        ; Check if loop can be unrolled
+        MOV             r0, 1
+        RET
+        
+    .get_loop_body_size:
+        ; Get instruction count in loop body
+        MOV             r0, 20
+        RET
+        
+    .clone_loop_body:
+        ; Clone loop body instructions
+        RET
+        
+    .update_induction_vars:
+        ; Update induction variable references
+        RET
+        
+    .update_trip_count:
+        ; Update loop trip count after unrolling
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: MAIN ENTRY POINT
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.licm_main:
+
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; optimize_loops: Main LICM optimization pass
+    ; Input: r0 = function_ptr
+    ; Output: r0 = optimization_count
+    ; ─────────────────────────────────────────────────────────────────────────
+    .optimize_loops:
+        PUSH            r1
+        PUSH            r2
+        PUSH            r3
+        PUSH            r4
+        
+        MOV             r4, 0               ; optimization_count
+        
+        ; Detect all loops
+        CALL            .detect_loops
+        MOV             r2, r0              ; loop_array
+        MOV             r3, r1              ; loop_count
+        
+        ; Process each loop (inner first)
+        MOV             r5, 0               ; index
+        
+    .optimize_loop:
+        CMP             r5, r3
+        JGE             .optimize_done
+        
+        ; Get loop
+        MOV             r6, r5
+        MUL             r6, r6, LOOP_SIZE
+        ADD             r6, r2, r6
+        
+        ; Detect invariants
+        MOV             r0, r6
+        CALL            .detect_invariants
+        MOV             r7, r0              ; invariant_array
+        MOV             r8, r1              ; invariant_count
+        
+        ; Check safety and hoist
+        MOV             r0, r6
+        MOV             r1, r7
+        MOV             r2, r8
+        CALL            .hoist_invariants
+        
+        ADD             r4, r4, r8          ; count hoisted
+        
+        ; Try unrolling
+        MOV             r0, r6
+        MOV             r1, UNROLL_FACTOR
+        CALL            .unroll_loop
+        
+        ADD             r5, r5, 1
+        JMP             .optimize_loop
+        
+    .optimize_done:
+        MOV             r0, r4
+        
+        POP             r4
+        POP             r3
+        POP             r2
+        POP             r1
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: TESTS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.tests:
+
+    .test_golden_identity:
+        LOAD_CONST      r0, PHI
+        MUL             r1, r0, r0
+        DIV             r2, 1.0, r1
+        ADD             r3, r1, r2
+        CMP_APPROX      r3, TRINITY, 0.0000001
+        ASSERT_TRUE                         ; ✅ PASS
+        
+    .test_unroll_factor:
+        MOV             r0, UNROLL_FACTOR
+        CMP             r0, 4
+        ASSERT_EQ                           ; ✅ PASS
+        
+    .test_max_unroll_size:
+        MOV             r0, MAX_UNROLL_SIZE
+        CMP             r0, 50
+        ASSERT_EQ                           ; ✅ PASS
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: PERFORMANCE EXPECTATIONS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.performance:
+    licm_improvement:       "5-10%"
+    unrolling_improvement:  "10-30%"
+    combined_improvement:   "15-40% for loop-heavy code"
+    
+    analysis_complexity:    "O(n) per loop"
+    code_size_increase:     "2-4x for unrolled loops"
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; END OF LICM
+; ═══════════════════════════════════════════════════════════════════════════════

@@ -1,0 +1,364 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIER 2 OPTIMIZING JIT SPECIFICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# Based on: HotSpot C2, V8 TurboFan, Graal
+# Target: 20-50x speedup over interpreter, 2-5x over Tier 1
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: jit_tier2_optimizing
+version: "1.0.0"
+language: zig
+module: jit_tier2
+
+creation_pattern:
+  source: Tier1CompiledCode
+  transformer: OptimizingCompiler
+  result: HighlyOptimizedNativeCode
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIER SYSTEM OVERVIEW
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tier_system:
+  tier_0:
+    name: "Interpreter"
+    latency: "0ms"
+    throughput: "1x baseline"
+    profiling: true
+    threshold: 0
+    
+  tier_1:
+    name: "Baseline JIT (Copy-and-Patch)"
+    latency: "<1ms"
+    throughput: "5-10x baseline"
+    profiling: true
+    threshold: 100  # calls
+    
+  tier_2:
+    name: "Optimizing JIT"
+    latency: "10-100ms"
+    throughput: "20-50x baseline"
+    profiling: false
+    threshold: 10000  # calls
+    
+  transitions:
+    - from: tier_0
+      to: tier_1
+      trigger: "call_count >= 100"
+      
+    - from: tier_1
+      to: tier_2
+      trigger: "call_count >= 10000 AND type_stable"
+      
+    - from: tier_2
+      to: tier_0
+      trigger: "deoptimization"
+      reason: "Type guard failure or assumption violation"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIER 2 COMPILER PIPELINE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+compiler_pipeline:
+  
+  phase_1_frontend:
+    name: "Bytecode to IR"
+    steps:
+      - "Parse bytecode"
+      - "Build control flow graph"
+      - "Insert type guards from profiling"
+      - "Build SSA form"
+    output: "SSA IR with type guards"
+    
+  phase_2_optimization:
+    name: "High-level Optimizations"
+    passes:
+      - name: "Inlining"
+        description: "Inline small hot functions"
+        threshold: "bytecode_size < 100 AND call_count > 1000"
+        
+      - name: "Constant Folding"
+        description: "Evaluate constant expressions at compile time"
+        
+      - name: "Dead Code Elimination"
+        description: "Remove unreachable code"
+        
+      - name: "Global Value Numbering"
+        description: "Eliminate redundant computations"
+        
+      - name: "Loop Invariant Code Motion"
+        description: "Hoist invariant computations out of loops"
+        
+      - name: "Escape Analysis"
+        description: "Stack-allocate non-escaping objects"
+        
+      - name: "Strength Reduction"
+        description: "Replace expensive ops with cheaper ones"
+        
+  phase_3_lowering:
+    name: "IR to Machine Code"
+    steps:
+      - "Instruction selection"
+      - "Register allocation (Linear Scan)"
+      - "Instruction scheduling"
+      - "Code emission"
+    output: "Native machine code"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SSA IR DEFINITION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ssa_ir:
+  
+  value_types:
+    - Int64
+    - Float64
+    - Object
+    - Boolean
+    - Undefined
+    - Null
+    
+  instructions:
+    # Constants
+    - opcode: Const
+      operands: [value]
+      result: value_type
+      
+    # Arithmetic
+    - opcode: Add
+      operands: [left, right]
+      result: numeric
+      
+    - opcode: Sub
+      operands: [left, right]
+      result: numeric
+      
+    - opcode: Mul
+      operands: [left, right]
+      result: numeric
+      
+    - opcode: Div
+      operands: [left, right]
+      result: numeric
+      
+    # Phi for SSA
+    - opcode: Phi
+      operands: [values...]
+      result: merged_type
+      
+    # Control flow
+    - opcode: Branch
+      operands: [condition, true_block, false_block]
+      
+    - opcode: Jump
+      operands: [target_block]
+      
+    - opcode: Return
+      operands: [value]
+      
+    # Type guards
+    - opcode: CheckType
+      operands: [value, expected_type]
+      deopt_on_fail: true
+      
+    - opcode: CheckShape
+      operands: [object, expected_shape]
+      deopt_on_fail: true
+      
+    # Memory
+    - opcode: Load
+      operands: [object, offset]
+      result: value_type
+      
+    - opcode: Store
+      operands: [object, offset, value]
+      
+    # Calls
+    - opcode: Call
+      operands: [function, args...]
+      result: value_type
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# OPTIMIZATION PASSES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+optimization_passes:
+
+  inlining:
+    description: "Replace call with inlined function body"
+    algorithm:
+      - "Check if callee is known (monomorphic call site)"
+      - "Check size threshold (bytecode_size < 100)"
+      - "Check depth limit (inline_depth < 5)"
+      - "Clone callee IR into caller"
+      - "Replace parameters with arguments"
+      - "Merge return values"
+    expected_improvement: "10-30%"
+    
+  constant_folding:
+    description: "Evaluate constant expressions"
+    algorithm:
+      - "For each instruction with constant operands"
+      - "Compute result at compile time"
+      - "Replace instruction with Const"
+    expected_improvement: "5-10%"
+    
+  dead_code_elimination:
+    description: "Remove unused instructions"
+    algorithm:
+      - "Mark all instructions as dead"
+      - "Mark return values as live"
+      - "Propagate liveness backwards"
+      - "Remove unmarked instructions"
+    expected_improvement: "5-10%"
+    
+  global_value_numbering:
+    description: "Eliminate redundant computations"
+    algorithm:
+      - "Hash each instruction by opcode + operands"
+      - "If hash exists, replace with existing value"
+      - "Otherwise, add to hash table"
+    expected_improvement: "5-15%"
+    
+  loop_invariant_code_motion:
+    description: "Hoist invariant code out of loops"
+    algorithm:
+      - "Identify loop headers and back edges"
+      - "For each instruction in loop"
+      - "If all operands defined outside loop"
+      - "Move instruction to loop preheader"
+    expected_improvement: "10-20%"
+    
+  escape_analysis:
+    description: "Stack-allocate non-escaping objects"
+    algorithm:
+      - "Build points-to graph"
+      - "Mark objects that escape (stored, returned, passed)"
+      - "Non-escaping objects can be stack-allocated"
+      - "Scalar replacement for small objects"
+    expected_improvement: "10-30%"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# REGISTER ALLOCATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+register_allocation:
+  algorithm: "Linear Scan"
+  reference: "Poletto & Sarkar (1999)"
+  
+  steps:
+    - "Compute live intervals for each value"
+    - "Sort intervals by start position"
+    - "For each interval in order:"
+    - "  Expire old intervals"
+    - "  If register available: allocate"
+    - "  Else: spill interval with furthest end"
+    
+  registers:
+    x86_64:
+      general: [rax, rbx, rcx, rdx, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15]
+      float: [xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7]
+      reserved: [rsp, rbp]
+      
+    aarch64:
+      general: [x0-x28]
+      float: [v0-v31]
+      reserved: [x29, x30, sp]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEOPTIMIZATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+deoptimization:
+  description: "Fall back to interpreter when assumptions fail"
+  
+  triggers:
+    - "Type guard failure"
+    - "Shape guard failure"
+    - "Bounds check failure"
+    - "Null check failure"
+    
+  process:
+    - "Capture current machine state"
+    - "Map registers to interpreter locals"
+    - "Reconstruct interpreter frame"
+    - "Jump to interpreter at correct bytecode offset"
+    - "Invalidate optimized code"
+    - "Record deopt reason for future compilation"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: tier_transition_1_to_2
+    given: "Function at Tier 1 with 10000+ calls and stable types"
+    when: "Next call occurs"
+    then: "Compile to Tier 2 and execute optimized code"
+    test_cases:
+      - name: "hot_function_upgrade"
+        input: { call_count: 10000, type_stable: true }
+        expected: { new_tier: 2, compiled: true }
+        
+  - name: constant_folding
+    given: "IR with Add(Const(2), Const(3))"
+    when: "Constant folding pass runs"
+    then: "Replace with Const(5)"
+    test_cases:
+      - name: "fold_add"
+        input: { op: "Add", left: 2, right: 3 }
+        expected: { result: 5, instruction: "Const" }
+        
+  - name: deoptimization
+    given: "Optimized code with type guard for Int64"
+    when: "Float64 value encountered"
+    then: "Deoptimize to interpreter"
+    test_cases:
+      - name: "type_guard_fail"
+        input: { expected: "Int64", actual: "Float64" }
+        expected: { deoptimized: true, new_tier: 0 }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SCIENTIFIC REFERENCES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+references:
+  - authors: "Kotzmann et al."
+    title: "Design of the Java HotSpot Client Compiler for Java 6"
+    venue: "TACO"
+    year: 2008
+    
+  - authors: "Click & Paleczny"
+    title: "A Simple Graph-Based Intermediate Representation"
+    venue: "IR Workshop"
+    year: 1995
+    
+  - authors: "Poletto & Sarkar"
+    title: "Linear Scan Register Allocation"
+    venue: "TOPLAS"
+    year: 1999
+    
+  - authors: "Choi et al."
+    title: "Escape Analysis for Java"
+    venue: "OOPSLA"
+    year: 1999
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE EXPECTATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+performance:
+  compilation_time: "10-100ms"
+  code_quality: "20-50x interpreter"
+  vs_tier_1: "2-5x improvement"
+  
+  breakdown:
+    inlining: "+10-30%"
+    constant_folding: "+5-10%"
+    dce: "+5-10%"
+    gvn: "+5-15%"
+    licm: "+10-20%"
+    escape_analysis: "+10-30%"
+    register_allocation: "+10-20%"

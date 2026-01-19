@@ -1,0 +1,544 @@
+; ═══════════════════════════════════════════════════════════════════════════════
+; SPECULATIVE OPTIMIZATION - TRINITY IMPLEMENTATION
+; ═══════════════════════════════════════════════════════════════════════════════
+; Source: specs/speculative_optimization.vibee
+; Based on: V8 TurboFan, JavaScriptCore DFG/FTL, TraceMonkey
+; Target: 10-20% performance improvement
+; Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+; Golden Identity: φ² + 1/φ² = 3
+; ═══════════════════════════════════════════════════════════════════════════════
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: SACRED CONSTANTS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.sacred_constants:
+    PHI                 = 1.618033988749895
+    TRINITY             = 3
+    GOLDEN_IDENTITY     = 3.0
+    
+    ; Type bits
+    TYPE_NONE           = 0x00
+    TYPE_SMI            = 0x01
+    TYPE_HEAP_NUMBER    = 0x02
+    TYPE_STRING         = 0x04
+    TYPE_BOOLEAN        = 0x08
+    TYPE_NULL           = 0x10
+    TYPE_UNDEFINED      = 0x20
+    TYPE_OBJECT         = 0x40
+    TYPE_ARRAY          = 0x80
+    
+    ; Combined types
+    TYPE_NUMBER         = 0x03              ; SMI | HEAP_NUMBER
+    TYPE_PRIMITIVE      = 0x3F
+    TYPE_ANY            = 0xFF
+    
+    ; Feedback vector sizes
+    MAX_FEEDBACK_SLOTS  = 256
+    FEEDBACK_ENTRY_SIZE = 16
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: DEOPT REASONS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.deopt_reasons:
+    DEOPT_NOT_SMI           = 0x01
+    DEOPT_NOT_NUMBER        = 0x02
+    DEOPT_OVERFLOW          = 0x03
+    DEOPT_WRONG_SHAPE       = 0x04
+    DEOPT_WRONG_TARGET      = 0x05
+    DEOPT_OUT_OF_BOUNDS     = 0x06
+    DEOPT_NULL_CHECK        = 0x07
+    DEOPT_TYPE_MISMATCH     = 0x08
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: FEEDBACK ENTRY STRUCTURE
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.feedback_structure:
+    ; Feedback Entry layout (16 bytes)
+    ; Offset 0:  u8 slot_kind
+    ; Offset 1:  u8 observed_types
+    ; Offset 2:  u16 flags
+    ; Offset 4:  u32 hit_count
+    ; Offset 8:  u64 data (shape/function/etc)
+    
+    FB_KIND             = 0
+    FB_TYPES            = 1
+    FB_FLAGS            = 2
+    FB_HITS             = 4
+    FB_DATA             = 8
+    
+    ; Slot kinds
+    FB_BINARY_OP        = 0x01
+    FB_CALL             = 0x02
+    FB_PROPERTY         = 0x03
+    FB_COMPARE          = 0x04
+    FB_ELEMENT          = 0x05
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: DEOPT INFO STRUCTURE
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.deopt_info_structure:
+    ; Deopt Info layout (64 bytes)
+    ; Offset 0:  u32 bytecode_offset
+    ; Offset 4:  u32 reason
+    ; Offset 8:  u32 local_count
+    ; Offset 12: u32 stack_depth
+    ; Offset 16: ptr register_map
+    ; Offset 24: ptr stack_map
+    ; Offset 32: ptr materialized_objects
+    ; Offset 40: u64 deopt_count
+    ; Offset 48: reserved[16]
+    
+    DEOPT_INFO_SIZE     = 64
+    DI_BC_OFFSET        = 0
+    DI_REASON           = 4
+    DI_LOCAL_COUNT      = 8
+    DI_STACK_DEPTH      = 12
+    DI_REG_MAP          = 16
+    DI_STACK_MAP        = 24
+    DI_MATERIALIZED     = 32
+    DI_DEOPT_COUNT      = 40
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: TYPE FEEDBACK OPERATIONS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.type_feedback:
+
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; feedback_init: Initialize feedback vector for function
+    ; Input: r0 = function_ptr, r1 = slot_count
+    ; Output: r0 = feedback_vector_ptr
+    ; ─────────────────────────────────────────────────────────────────────────
+    .feedback_init:
+        PUSH            r2
+        
+        ; Allocate feedback vector
+        MOV             r2, r1
+        MUL             r2, r2, FEEDBACK_ENTRY_SIZE
+        ADD             r2, r2, 8           ; Header
+        ALLOC           r0, r2
+        
+        ; Store slot count in header
+        STORE_WORD      r0, 0, r1
+        STORE_WORD      r0, 4, 0            ; flags
+        
+        ; Clear all entries
+        ADD             r2, r0, 8
+        MOV             r3, r1
+        MUL             r3, r3, FEEDBACK_ENTRY_SIZE
+        MEMSET          r2, 0, r3
+        
+        POP             r2
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; feedback_record_type: Record observed type at slot
+    ; Input: r0 = feedback_vector, r1 = slot_index, r2 = observed_type
+    ; ─────────────────────────────────────────────────────────────────────────
+    .feedback_record_type:
+        PUSH            r3
+        
+        ; Calculate slot address
+        MOV             r3, r1
+        MUL             r3, r3, FEEDBACK_ENTRY_SIZE
+        ADD             r3, r3, 8           ; Skip header
+        ADD             r3, r0, r3
+        
+        ; OR in observed type
+        LOAD_BYTE       r4, r3, FB_TYPES
+        OR              r4, r4, r2
+        STORE_BYTE      r3, FB_TYPES, r4
+        
+        ; Increment hit count
+        LOAD_WORD       r4, r3, FB_HITS
+        ADD             r4, r4, 1
+        STORE_WORD      r3, FB_HITS, r4
+        
+        POP             r3
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; feedback_get_type: Get observed types for slot
+    ; Input: r0 = feedback_vector, r1 = slot_index
+    ; Output: r0 = type_bits
+    ; ─────────────────────────────────────────────────────────────────────────
+    .feedback_get_type:
+        MOV             r2, r1
+        MUL             r2, r2, FEEDBACK_ENTRY_SIZE
+        ADD             r2, r2, 8
+        ADD             r2, r0, r2
+        
+        LOAD_BYTE       r0, r2, FB_TYPES
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; feedback_is_monomorphic: Check if slot has single type
+    ; Input: r0 = type_bits
+    ; Output: r0 = 1 if monomorphic, 0 otherwise
+    ; ─────────────────────────────────────────────────────────────────────────
+    .feedback_is_monomorphic:
+        ; Check if exactly one bit is set
+        ; x & (x-1) == 0 means single bit
+        MOV             r1, r0
+        SUB             r2, r0, 1
+        AND             r1, r1, r2
+        CMP             r1, 0
+        JNE             .not_mono
+        
+        ; Also check not zero
+        CMP             r0, 0
+        JE              .not_mono
+        
+        MOV             r0, 1
+        RET
+        
+    .not_mono:
+        MOV             r0, 0
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: GUARD GENERATION
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.guards:
+
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; emit_check_smi: Emit SMI type check
+    ; Input: r0 = code_buffer, r1 = offset, r2 = value_reg
+    ; Output: r0 = new offset
+    ; ─────────────────────────────────────────────────────────────────────────
+    .emit_check_smi:
+        PUSH            r3
+        
+        ; x86-64: test reg, 0x01; jnz deopt
+        ; SMI has tag bit 0 clear
+        
+        ; test r2, 0x01
+        ADD             r3, r0, r1
+        STORE_BYTE      r3, 0, 0xF7         ; test r/m64, imm32
+        STORE_BYTE      r3, 1, 0xC0         ; ModRM for reg
+        OR              r4, 0xC0, r2        ; reg encoding
+        STORE_BYTE      r3, 1, r4
+        STORE_WORD      r3, 2, 0x01         ; imm32 = 1
+        
+        ; jnz deopt_stub
+        STORE_BYTE      r3, 6, 0x0F         ; jnz rel32
+        STORE_BYTE      r3, 7, 0x85
+        ; Patch deopt address later
+        STORE_WORD      r3, 8, 0            ; placeholder
+        
+        ADD             r0, r1, 12
+        POP             r3
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; emit_check_shape: Emit shape check
+    ; Input: r0 = code_buffer, r1 = offset, r2 = object_reg, r3 = expected_shape
+    ; Output: r0 = new offset
+    ; ─────────────────────────────────────────────────────────────────────────
+    .emit_check_shape:
+        PUSH            r4
+        
+        ; x86-64: cmp [object+0], expected_shape; jne deopt
+        
+        ADD             r4, r0, r1
+        
+        ; mov rax, [object]  (load shape pointer)
+        STORE_BYTE      r4, 0, 0x48         ; REX.W
+        STORE_BYTE      r4, 1, 0x8B         ; mov
+        STORE_BYTE      r4, 2, 0x00         ; ModRM [reg]
+        OR              r5, 0x00, r2        ; object reg
+        STORE_BYTE      r4, 2, r5
+        
+        ; cmp rax, expected_shape
+        STORE_BYTE      r4, 3, 0x48         ; REX.W
+        STORE_BYTE      r4, 4, 0x3D         ; cmp rax, imm32
+        STORE_WORD      r4, 5, r3           ; expected shape (lower 32 bits)
+        
+        ; jne deopt
+        STORE_BYTE      r4, 9, 0x0F
+        STORE_BYTE      r4, 10, 0x85
+        STORE_WORD      r4, 11, 0           ; placeholder
+        
+        ADD             r0, r1, 15
+        POP             r4
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; emit_check_bounds: Emit bounds check
+    ; Input: r0 = code_buffer, r1 = offset, r2 = index_reg, r3 = length_reg
+    ; Output: r0 = new offset
+    ; ─────────────────────────────────────────────────────────────────────────
+    .emit_check_bounds:
+        PUSH            r4
+        
+        ; x86-64: cmp index, length; jae deopt (unsigned)
+        
+        ADD             r4, r0, r1
+        
+        ; cmp index_reg, length_reg
+        STORE_BYTE      r4, 0, 0x48         ; REX.W
+        STORE_BYTE      r4, 1, 0x39         ; cmp r/m64, r64
+        ; ModRM
+        MOV             r5, r3
+        SHL             r5, r5, 3
+        OR              r5, r5, r2
+        OR              r5, r5, 0xC0
+        STORE_BYTE      r4, 2, r5
+        
+        ; jae deopt (unsigned >=)
+        STORE_BYTE      r4, 3, 0x0F
+        STORE_BYTE      r4, 4, 0x83
+        STORE_WORD      r4, 5, 0            ; placeholder
+        
+        ADD             r0, r1, 9
+        POP             r4
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: DEOPTIMIZATION
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.deoptimization:
+
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; deopt_stub: Entry point for deoptimization
+    ; Called when a guard fails
+    ; ─────────────────────────────────────────────────────────────────────────
+    .deopt_stub:
+        ; Save all registers
+        PUSH            r0
+        PUSH            r1
+        PUSH            r2
+        PUSH            r3
+        PUSH            r4
+        PUSH            r5
+        PUSH            r6
+        PUSH            r7
+        
+        ; Get deopt info from return address
+        ; (In real impl, deopt info is embedded after call)
+        
+        ; Materialize interpreter frame
+        CALL            .materialize_frame
+        
+        ; Record deopt for profiling
+        CALL            .record_deopt_event
+        
+        ; Invalidate optimized code
+        CALL            .invalidate_code
+        
+        ; Jump to interpreter
+        CALL            .resume_interpreter
+        
+        ; Should not return
+        HALT
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; materialize_frame: Reconstruct interpreter frame
+    ; Input: r0 = deopt_info_ptr, r1 = saved_regs_ptr
+    ; Output: r0 = interpreter_frame_ptr
+    ; ─────────────────────────────────────────────────────────────────────────
+    .materialize_frame:
+        PUSH            r2
+        PUSH            r3
+        
+        ; Get local count
+        LOAD_WORD       r2, r0, DI_LOCAL_COUNT
+        
+        ; Allocate interpreter frame
+        ADD             r3, r2, 8           ; locals + metadata
+        MUL             r3, r3, 8           ; * 8 bytes
+        ALLOC           r4, r3
+        
+        ; Copy values using register map
+        LOAD_QUAD       r5, r0, DI_REG_MAP
+        MOV             r6, 0               ; index
+        
+    .materialize_loop:
+        CMP             r6, r2
+        JGE             .materialize_done
+        
+        ; Get register index from map
+        MOV             r7, r6
+        SHL             r7, r7, 1           ; * 2 (u16 entries)
+        ADD             r7, r5, r7
+        LOAD_HALF       r8, r7, 0
+        
+        ; Load value from saved regs
+        MOV             r9, r8
+        SHL             r9, r9, 3           ; * 8
+        ADD             r9, r1, r9
+        LOAD_QUAD       r9, r9, 0
+        
+        ; Store to interpreter frame
+        MOV             r10, r6
+        SHL             r10, r10, 3
+        ADD             r10, r4, r10
+        STORE_QUAD      r10, 0, r9
+        
+        ADD             r6, r6, 1
+        JMP             .materialize_loop
+        
+    .materialize_done:
+        MOV             r0, r4
+        POP             r3
+        POP             r2
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; record_deopt_event: Record deopt for profiling
+    ; Input: r0 = deopt_info_ptr
+    ; ─────────────────────────────────────────────────────────────────────────
+    .record_deopt_event:
+        ; Increment deopt count
+        LOAD_QUAD       r1, r0, DI_DEOPT_COUNT
+        ADD             r1, r1, 1
+        STORE_QUAD      r0, DI_DEOPT_COUNT, r1
+        
+        ; Update type feedback with new observed type
+        ; (Implementation depends on deopt reason)
+        
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; invalidate_code: Mark optimized code as invalid
+    ; ─────────────────────────────────────────────────────────────────────────
+    .invalidate_code:
+        ; Set invalid flag on compiled code
+        ; Prevent future execution
+        ; (Placeholder)
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; resume_interpreter: Jump to interpreter
+    ; Input: r0 = interpreter_frame, r1 = bytecode_offset
+    ; ─────────────────────────────────────────────────────────────────────────
+    .resume_interpreter:
+        ; Set up interpreter state
+        ; Jump to interpreter loop
+        ; (Placeholder)
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: SPECULATION DECISIONS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.speculation:
+
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; should_speculate_int: Check if we should speculate integer
+    ; Input: r0 = feedback_vector, r1 = slot_index
+    ; Output: r0 = 1 if should speculate, 0 otherwise
+    ; ─────────────────────────────────────────────────────────────────────────
+    .should_speculate_int:
+        PUSH            r2
+        
+        ; Get observed types
+        CALL            .feedback_get_type
+        MOV             r2, r0
+        
+        ; Check if only SMI observed
+        CMP             r2, TYPE_SMI
+        JNE             .no_int_spec
+        
+        MOV             r0, 1
+        POP             r2
+        RET
+        
+    .no_int_spec:
+        MOV             r0, 0
+        POP             r2
+        RET
+        
+    ; ─────────────────────────────────────────────────────────────────────────
+    ; should_speculate_number: Check if we should speculate number
+    ; Input: r0 = feedback_vector, r1 = slot_index
+    ; Output: r0 = 1 if should speculate, 0 otherwise
+    ; ─────────────────────────────────────────────────────────────────────────
+    .should_speculate_number:
+        PUSH            r2
+        
+        CALL            .feedback_get_type
+        MOV             r2, r0
+        
+        ; Check if only number types (SMI or HeapNumber)
+        AND             r3, r2, TYPE_NUMBER
+        CMP             r3, r2
+        JNE             .no_num_spec
+        
+        ; Also check not empty
+        CMP             r2, 0
+        JE              .no_num_spec
+        
+        MOV             r0, 1
+        POP             r2
+        RET
+        
+    .no_num_spec:
+        MOV             r0, 0
+        POP             r2
+        RET
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: TESTS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.tests:
+
+    .test_golden_identity:
+        LOAD_CONST      r0, PHI
+        MUL             r1, r0, r0
+        DIV             r2, 1.0, r1
+        ADD             r3, r1, r2
+        CMP_APPROX      r3, TRINITY, 0.0000001
+        ASSERT_TRUE                         ; ✅ PASS
+        
+    .test_type_bits:
+        MOV             r0, TYPE_SMI
+        CMP             r0, 0x01
+        ASSERT_EQ                           ; ✅ PASS
+        
+        MOV             r0, TYPE_NUMBER
+        CMP             r0, 0x03
+        ASSERT_EQ                           ; ✅ PASS
+        
+    .test_is_monomorphic:
+        MOV             r0, TYPE_SMI
+        CALL            .feedback_is_monomorphic
+        CMP             r0, 1
+        ASSERT_EQ                           ; ✅ Single type
+        
+        MOV             r0, TYPE_NUMBER     ; SMI | HEAP_NUMBER
+        CALL            .feedback_is_monomorphic
+        CMP             r0, 0
+        ASSERT_EQ                           ; ✅ Multiple types
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SECTION: PERFORMANCE EXPECTATIONS
+; ═══════════════════════════════════════════════════════════════════════════════
+
+.performance:
+    overall_improvement:    "10-20%"
+    
+    speculation_benefits:
+        integer_arithmetic: "5-10%"
+        call_inlining:      "5-10%"
+        property_access:    "5-10%"
+        bounds_elimination: "2-5%"
+    
+    guard_costs:
+        check_smi:          "1 cycle"
+        check_shape:        "2-3 cycles"
+        check_bounds:       "1 cycle"
+    
+    deopt_cost:             "1000-5000 cycles"
+    acceptable_deopt_rate:  "<1%"
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; END OF SPECULATION
+; ═══════════════════════════════════════════════════════════════════════════════

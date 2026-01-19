@@ -1,0 +1,208 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOOP INVARIANT CODE MOTION (LICM) SPECIFICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# Based on: Aho, Sethi, Ullman "Compilers" (Dragon Book)
+# Target: 5-10% performance improvement for loop-heavy code
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: licm_loop_optimization
+version: "1.0.0"
+language: zig
+module: licm
+
+creation_pattern:
+  source: LoopWithInvariantCode
+  transformer: LICMOptimizer
+  result: OptimizedLoop
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOOP ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+loop_analysis:
+  
+  natural_loop:
+    description: "Loop with single entry (header) and back edges"
+    properties:
+      - header: "Single entry block"
+      - back_edges: "Edges from loop body to header"
+      - preheader: "Block before header (insertion point for hoisted code)"
+      - exit_blocks: "Blocks that exit the loop"
+      
+  loop_detection:
+    algorithm: "Dominator-based natural loop detection"
+    steps:
+      - "Compute dominators for all blocks"
+      - "Find back edges: edges where target dominates source"
+      - "For each back edge, compute natural loop body"
+      - "Identify loop header, preheader, exits"
+      
+  loop_nesting:
+    description: "Loops can be nested"
+    property: "Inner loops are processed before outer loops"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INVARIANT DETECTION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+invariant_detection:
+  
+  definition: "An instruction is loop-invariant if all its operands are either:
+    1. Constants
+    2. Defined outside the loop
+    3. Loop-invariant themselves"
+    
+  algorithm:
+    name: "Iterative Invariant Detection"
+    steps:
+      - "Initialize: mark all instructions as potentially invariant"
+      - "Iterate until no changes:"
+      - "  For each instruction in loop:"
+      - "    If any operand is defined in loop and not invariant:"
+      - "      Mark instruction as not invariant"
+      - "Return set of invariant instructions"
+      
+  exceptions:
+    - "Instructions with side effects (stores, calls)"
+    - "Instructions that may throw exceptions"
+    - "Phi nodes (by definition vary per iteration)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CODE MOTION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+code_motion:
+  
+  safety_conditions:
+    - name: "Dominates all exits"
+      description: "Instruction must execute on every path through loop"
+      check: "Block containing instruction dominates all exit blocks"
+      
+    - name: "No side effects"
+      description: "Instruction must be pure"
+      check: "Instruction is not store, call, or exception-throwing"
+      
+    - name: "Operands available"
+      description: "All operands must be available in preheader"
+      check: "All operands defined outside loop or already hoisted"
+      
+  hoisting:
+    description: "Move invariant instruction to preheader"
+    steps:
+      - "Verify all safety conditions"
+      - "Remove instruction from loop body"
+      - "Insert at end of preheader (before branch)"
+      - "Update use-def chains"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ADDITIONAL LOOP OPTIMIZATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+additional_optimizations:
+
+  loop_unrolling:
+    description: "Duplicate loop body to reduce overhead"
+    factor: 4
+    conditions:
+      - "Loop has known iteration count"
+      - "Loop body is small (< 50 instructions)"
+    benefits:
+      - "Reduce branch overhead"
+      - "Enable more instruction-level parallelism"
+      - "Better cache utilization"
+    expected_improvement: "10-30% for small loops"
+    
+  strength_reduction:
+    description: "Replace expensive operations with cheaper ones"
+    examples:
+      - from: "i * 4"
+        to: "i << 2"
+      - from: "i * stride (in loop)"
+        to: "accumulator += stride"
+    expected_improvement: "5-15%"
+    
+  induction_variable_elimination:
+    description: "Remove redundant induction variables"
+    example:
+      before: |
+        for (i = 0; i < n; i++) {
+          j = i * 4;
+          a[j] = ...;
+        }
+      after: |
+        for (j = 0; j < n*4; j += 4) {
+          a[j] = ...;
+        }
+    expected_improvement: "5-10%"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: detect_invariant
+    given: "Loop with instruction 'x = a + b' where a, b defined outside loop"
+    when: "Invariant detection runs"
+    then: "Instruction marked as invariant"
+    test_cases:
+      - name: "simple_invariant"
+        input: { instruction: "add", operands: ["const_1", "param_0"] }
+        expected: { is_invariant: true }
+        
+  - name: hoist_invariant
+    given: "Invariant instruction that dominates all exits"
+    when: "Code motion runs"
+    then: "Instruction moved to preheader"
+    test_cases:
+      - name: "hoist_add"
+        input: { instruction: "add", in_loop: true, dominates_exits: true }
+        expected: { hoisted: true, location: "preheader" }
+        
+  - name: no_hoist_side_effect
+    given: "Store instruction in loop"
+    when: "Code motion runs"
+    then: "Instruction not hoisted"
+    test_cases:
+      - name: "no_hoist_store"
+        input: { instruction: "store", in_loop: true }
+        expected: { hoisted: false, reason: "side_effect" }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SCIENTIFIC REFERENCES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+references:
+  - authors: "Aho, Sethi, Ullman"
+    title: "Compilers: Principles, Techniques, and Tools"
+    venue: "Addison-Wesley"
+    year: 1986
+    contribution: "Classic LICM algorithm"
+    
+  - authors: "Muchnick"
+    title: "Advanced Compiler Design and Implementation"
+    venue: "Morgan Kaufmann"
+    year: 1997
+    contribution: "Comprehensive loop optimization"
+    
+  - authors: "Allen & Kennedy"
+    title: "Optimizing Compilers for Modern Architectures"
+    venue: "Morgan Kaufmann"
+    year: 2001
+    contribution: "Loop transformations"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE EXPECTATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+performance:
+  licm_improvement: "5-10%"
+  unrolling_improvement: "10-30%"
+  strength_reduction_improvement: "5-15%"
+  
+  combined_improvement: "15-40% for loop-heavy code"
+  
+  overhead:
+    analysis_time: "O(n) where n = instructions in loop"
+    code_size_increase: "2-4x for unrolled loops"
