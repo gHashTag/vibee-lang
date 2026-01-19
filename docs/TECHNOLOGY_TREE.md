@@ -1,6 +1,6 @@
 # VIBEE Technology Tree - Next Technologies to Learn
 
-## Current State (v38)
+## Current State (v39.1)
 
 ```
 ✅ Level 0: Zig, YAML, Git
@@ -9,7 +9,18 @@
 ✅ Level 3: Ralph Loop, Circuit Breaker
 ✅ Level 4: A2A, DeepSeek
 ✅ Level 5: SIMD, Quantum (basics)
+✅ Level 6: LSP Server, SSE Streaming, Property Testing (v39)
+✅ Level 7: BPE Caching (25x speedup) (v39.1)
 ```
+
+## v39.1 Achievements
+
+| Technology | Status | Performance |
+|------------|--------|-------------|
+| LSP Server | ✅ | 31 completions, 1.8μs |
+| SSE Streaming | ✅ | 35 bytes/token, 29ns |
+| Property Testing | ✅ | Golden RNG, 310ns |
+| BPE Cache | ✅ | **25.5x speedup** |
 
 ---
 
@@ -279,17 +290,25 @@ Agent B (local) ↗
 ## Recommended Learning Order
 
 ```
-NOW (v38.1):
-├── LSP for .vibee files
-├── SSE streaming for agents
-└── Property-based testing
+COMPLETED (v39.1): ✅
+├── LSP for .vibee files (31 completions)
+├── SSE streaming for agents (full format)
+├── Property-based testing (Golden RNG)
+└── BPE Caching (25.5x speedup)
 
-NEXT (v39-v40):
+NOW (v40):
+├── SIMD bigram matching (2x additional speedup)
+├── Full BPE vocabulary (95% accuracy)
+├── WebSocket streaming
+└── Adaptive cache sizing
+
+NEXT (v41-v45):
 ├── WASM compilation target
 ├── GPU acceleration
-└── Distributed consensus
+├── Distributed consensus
+└── Incremental type checking
 
-FUTURE (v41+):
+FUTURE (v46+):
 ├── E-graph optimization
 ├── Formal verification
 └── Superoptimization
@@ -299,6 +318,69 @@ RESEARCH:
 ├── Quantum error correction
 └── Federated learning
 ```
+
+---
+
+## v40 Technology Roadmap
+
+### 1. SIMD Bigram Matching
+
+**Goal**: 2x additional speedup for BPE tokenization
+
+```zig
+// SIMD parallel bigram check
+const vec = @Vector(16, u8);
+const text_vec: vec = text[i..i+16].*;
+const pattern_vec: vec = @splat(pattern);
+const matches = text_vec == pattern_vec;
+```
+
+**Expected**: 300ns → 150ns per tokenization
+
+### 2. Full BPE Vocabulary
+
+**Goal**: 95% accuracy (vs current 90%)
+
+```zig
+// Extended vocabulary (10,000 tokens)
+const BPE_VOCAB = struct {
+    tokens: [10000][]const u8,
+    merges: [10000][2]u16,
+};
+```
+
+**Expected**: Match GPT-2 tokenizer accuracy
+
+### 3. WebSocket Streaming
+
+**Goal**: Bidirectional real-time communication
+
+```zig
+// WebSocket frame
+pub const Frame = struct {
+    fin: bool,
+    opcode: Opcode,
+    payload: []const u8,
+};
+```
+
+**Expected**: Full duplex agent communication
+
+### 4. Adaptive Cache Sizing
+
+**Goal**: Dynamic cache based on workload
+
+```zig
+// Adaptive LRU
+pub const AdaptiveCache = struct {
+    min_size: usize = 64,
+    max_size: usize = 4096,
+    current_size: usize,
+    hit_rate_threshold: f64 = 0.8,
+};
+```
+
+**Expected**: Optimal memory usage
 
 ---
 
