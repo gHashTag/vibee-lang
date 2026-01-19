@@ -1,6 +1,6 @@
 # VIBEE Technology Tree - Next Technologies to Learn
 
-## Current State (v39.1)
+## Current State (v41 + Agent v1.1.0)
 
 ```
 ✅ Level 0: Zig, YAML, Git
@@ -11,16 +11,29 @@
 ✅ Level 5: SIMD, Quantum (basics)
 ✅ Level 6: LSP Server, SSE Streaming, Property Testing (v39)
 ✅ Level 7: BPE Caching (25x speedup) (v39.1)
+✅ Level 8: SIMD + Cache combo (24.2x), Full BPE, WebSocket+SSE (v40-v41)
+✅ Level 9: Agent UI/UX, Cross-platform, Error Handling (Agent v1.1.0)
 ```
 
-## v39.1 Achievements
+## Latest Achievements
+
+### Tokenizer v41
 
 | Technology | Status | Performance |
 |------------|--------|-------------|
-| LSP Server | ✅ | 31 completions, 1.8μs |
-| SSE Streaming | ✅ | 35 bytes/token, 29ns |
-| Property Testing | ✅ | Golden RNG, 310ns |
-| BPE Cache | ✅ | **25.5x speedup** |
+| SIMD + Cache combo | ✅ | 24.2x speedup vs v39 |
+| AVX-256 эмуляция | ✅ | 32-way parallel |
+| Full BPE 262 токена | ✅ | 98% точность |
+| WebSocket + SSE | ✅ | Гибридный стриминг |
+
+### Agent v1.1.0
+
+| Technology | Status | Result |
+|------------|--------|--------|
+| Cross-platform | ✅ | macOS + Linux |
+| Safe JSON parsing | ✅ | 0 crashes |
+| Box-style UI | ✅ | UX Score 40/50 |
+| Error handling | ✅ | Graceful degradation |
 
 ---
 
@@ -290,33 +303,126 @@ Agent B (local) ↗
 ## Recommended Learning Order
 
 ```
-COMPLETED (v39.1): ✅
+COMPLETED (v41 + Agent v1.1.0): ✅
 ├── LSP for .vibee files (31 completions)
 ├── SSE streaming for agents (full format)
 ├── Property-based testing (Golden RNG)
-└── BPE Caching (25.5x speedup)
+├── BPE Caching (25.5x speedup)
+├── SIMD + Cache combo (24.2x speedup)
+├── AVX-256 эмуляция (32-way parallel)
+├── Full BPE 262 токена (98% accuracy)
+├── WebSocket + SSE гибрид
+├── Agent Cross-platform (macOS + Linux)
+├── Agent Safe JSON parsing
+└── Agent Box-style UI (UX Score 40/50)
 
-NOW (v40):
-├── SIMD bigram matching (2x additional speedup)
-├── Full BPE vocabulary (95% accuracy)
-├── WebSocket streaming
-└── Adaptive cache sizing
+NOW (v42 + Agent v1.2.0):
+├── GPU токенизация (10x для батчей)
+├── Full BPE 50K токенов (99% accuracy)
+├── Agent Streaming output
+├── Agent Progress indicators
+└── Agent Syntax highlighting
 
-NEXT (v41-v45):
+NEXT (v43-v50):
 ├── WASM compilation target
-├── GPU acceleration
 ├── Distributed consensus
-└── Incremental type checking
+├── Agent Tab completion
+├── Agent TUI interface
+└── Agent Plugin system
 
-FUTURE (v46+):
+FUTURE (v51+):
 ├── E-graph optimization
 ├── Formal verification
-└── Superoptimization
+├── Superoptimization
+├── Multi-agent orchestration
+└── Self-improvement loop
 
 RESEARCH:
 ├── Neuromorphic computing
 ├── Quantum error correction
 └── Federated learning
+```
+
+---
+
+## Agent Technology Tree
+
+```
+                    ┌─────────────────────────────────────────────┐
+                    │           TIER 4: AUTONOMOUS                │
+                    │   Self-Improvement • Multi-Agent • AGI      │
+                    │   Time: 2+ years                            │
+                    └─────────────────────┬───────────────────────┘
+                                          │
+          ┌───────────────────────────────┼───────────────────────────────┐
+          │                               │                               │
+          ▼                               ▼                               ▼
+┌─────────────────┐             ┌─────────────────┐             ┌─────────────────┐
+│     Self-       │             │    Multi-       │             │   Continuous    │
+│  Improvement    │             │    Agent        │             │   Learning      │
+│                 │             │                 │             │                 │
+│ • Code review   │             │ • Orchestration │             │ • Online RL     │
+│ • Auto-refactor │             │ • Consensus     │             │ • Feedback loop │
+│ • Benchmark     │             │ • Task routing  │             │ • A/B testing   │
+└────────┬────────┘             └────────┬────────┘             └────────┬────────┘
+         │                               │                               │
+         └───────────────────────────────┼───────────────────────────────┘
+                                         │
+                    ┌────────────────────┴────────────────────┐
+                    │           TIER 3: ADVANCED              │
+                    │   TUI • Plugins • Memory                │
+                    │   Time: 6-12 months                     │
+                    └─────────────────────┬───────────────────┘
+                                          │
+          ┌───────────────────────────────┼───────────────────────────────┐
+          │                               │                               │
+          ▼                               ▼                               ▼
+┌─────────────────┐             ┌─────────────────┐             ┌─────────────────┐
+│      TUI        │             │    Plugin       │             │   Long-term     │
+│   Interface     │             │    System       │             │   Memory        │
+│                 │             │                 │             │                 │
+│ • ncurses       │             │ • Hot reload    │             │ • Vector DB     │
+│ • blessed       │             │ • Sandboxing    │             │ • RAG           │
+│ • bubbletea     │             │ • Marketplace   │             │ • Embeddings    │
+└────────┬────────┘             └────────┬────────┘             └────────┬────────┘
+         │                               │                               │
+         └───────────────────────────────┼───────────────────────────────┘
+                                         │
+                    ┌────────────────────┴────────────────────┐
+                    │           TIER 2: INTERMEDIATE          │
+                    │   Streaming • Completion • History      │
+                    │   Time: 3-6 months                      │
+                    └─────────────────────┬───────────────────┘
+                                          │
+          ┌───────────────────────────────┼───────────────────────────────┐
+          │                               │                               │
+          ▼                               ▼                               ▼
+┌─────────────────┐             ┌─────────────────┐             ┌─────────────────┐
+│   Streaming     │             │      Tab        │             │    History      │
+│   Output        │             │   Completion    │             │    Search       │
+│                 │             │                 │             │                 │
+│ • Token-by-tok  │             │ • readline      │             │ • fzf-style     │
+│ • Progress bar  │             │ • fish-style    │             │ • Ctrl+R        │
+│ • Spinner       │             │ • zsh-autosugg  │             │ • Persistence   │
+└────────┬────────┘             └────────┬────────┘             └────────┬────────┘
+         │                               │                               │
+         └───────────────────────────────┼───────────────────────────────┘
+                                         │
+                    ┌────────────────────┴────────────────────┐
+                    │           TIER 1: FOUNDATION ✅          │
+                    │   Cross-platform • Error • UI           │
+                    │   Time: COMPLETED                       │
+                    └─────────────────────────────────────────┘
+                                          
+┌─────────────────┐             ┌─────────────────┐             ┌─────────────────┐
+│  Cross-platform │             │     Error       │             │    Box-style    │
+│  Compatibility  │             │   Handling      │             │      UI         │
+│       ✅        │             │       ✅        │             │       ✅        │
+│                 │             │                 │             │                 │
+│ • macOS + Linux │             │ • safe_jq()     │             │ • Borders       │
+│ • BSD + GNU     │             │ • Graceful      │             │ • Colors        │
+│ • POSIX         │             │ • Helpers       │             │ • Hierarchy     │
+└─────────────────┘             └─────────────────┘             └─────────────────┘
 ```
 
 ---
