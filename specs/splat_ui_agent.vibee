@@ -1,0 +1,424 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# SPLAT UI AGENT - 3D Gaussian Splatting Interactive UI + Computer Control
+# Version: 1.0.0
+# Author: PAS DAEMON
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: splat_ui_agent
+version: "1.0.0"
+language: zig
+module: splat_ui
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SACRED FORMULA CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+sacred_formula:
+  phi: 1.618033988749895
+  phi_sq: 2.618033988749895
+  phi_inv: 0.618033988749895
+  trinity: 3  # φ² + 1/φ² = 3
+  golden_angle: 2.399963229728653  # π(3-√5) ≈ 137.5°
+  transcendental: 13.819660112501051  # π × φ × e
+  lucas_10: 123  # φ¹⁰ + 1/φ¹⁰
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREATION PATTERN
+# ═══════════════════════════════════════════════════════════════════════════════
+creation_pattern:
+  source: MultimodalInput  # Voice, Gesture, Text
+  transformer: SplatUIAgent
+  result: ComputerAction  # Mouse, Keyboard, App, File, Media
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MODULE 1: SPLAT UI LAYER
+# Interactive UI elements rendered as 3D Gaussian Splat clusters
+# ═══════════════════════════════════════════════════════════════════════════════
+splat_ui_layer:
+  description: "3D Gaussian Splat-based UI elements"
+  
+  element_types:
+    - name: SplatButton
+      cluster_size: 50-200  # Number of splats per button
+      states: [normal, hover, active, disabled]
+      animations: [pulse, glow, ripple]
+      
+    - name: SplatToggle
+      cluster_size: 30-100
+      states: [off, on, transitioning]
+      animations: [flip, morph]
+      
+    - name: SplatSlider
+      cluster_size: 100-300
+      states: [idle, dragging]
+      value_range: [0.0, 1.0]
+      animations: [slide, fill]
+      
+    - name: SplatMenuItem
+      cluster_size: 40-150
+      states: [normal, hover, selected, disabled]
+      animations: [highlight, expand]
+      
+    - name: SplatWindow
+      cluster_size: 500-2000
+      states: [minimized, normal, maximized, closing]
+      animations: [open, close, minimize, maximize]
+      
+    - name: SplatMenu
+      cluster_size: 200-1000
+      layout: phi_spiral  # φ-spiral arrangement
+      states: [hidden, visible, animating]
+      animations: [spiral_in, spiral_out, cascade]
+
+  element_schema:
+    id: string
+    type: SplatElementType
+    cluster_id: uint32
+    world_position: vec3
+    bounds: AABB
+    rotation: quaternion
+    scale: vec3
+    color: rgba
+    opacity: float
+    state: ElementState
+    actions: Action[]
+    children: Element[]  # For hierarchical menus
+    
+  api:
+    - get_state() -> UIState
+    - dispatch_event(event: UIEvent) -> void
+    - apply_layout(layout: LayoutSpec) -> void
+    - add_element(element: Element) -> uint32
+    - remove_element(id: string) -> bool
+    - update_element(id: string, props: Props) -> void
+    - animate_element(id: string, animation: Animation) -> void
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MODULE 2: RAY CASTING & HIT DETECTION
+# Determine which splat cluster is under cursor/ray
+# ═══════════════════════════════════════════════════════════════════════════════
+ray_casting:
+  description: "Ray-splat intersection for UI interaction"
+  
+  methods:
+    - name: cast_ray
+      input: 
+        origin: vec3
+        direction: vec3
+      output:
+        hit: bool
+        element_id: string
+        hit_point: vec3
+        distance: float
+        
+    - name: screen_to_ray
+      input:
+        screen_x: float
+        screen_y: float
+        camera: Camera
+      output:
+        ray: Ray
+        
+    - name: find_nearest_element
+      input:
+        ray: Ray
+        max_distance: float
+      output:
+        element: Element?
+        
+  events:
+    - pointer_down: { element_id, position, button }
+    - pointer_up: { element_id, position, button }
+    - pointer_move: { element_id, position }
+    - hover_enter: { element_id }
+    - hover_exit: { element_id }
+    - gesture_hit: { element_id, gesture_type, params }
+    - gaze_hit: { element_id, duration }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MODULE 3: MULTIMODAL INPUT HANDLER
+# Voice, Gesture, Text → Unified Intent
+# ═══════════════════════════════════════════════════════════════════════════════
+multimodal_input:
+  description: "Process voice, gesture, and text inputs"
+  
+  modalities:
+    voice:
+      source: microphone
+      pipeline: audio → STT → text → intent
+      commands:
+        - "открой музыку" → { type: PLAY, target: music }
+        - "покажи меню файлов" → { type: SHOW, target: file_menu }
+        - "создай сплат-портал слева" → { type: CREATE_UI, target: portal, params: { position: left } }
+        - "громче" → { type: CONTROL, target: volume, params: { delta: +10 } }
+        - "следующий трек" → { type: MEDIA, target: track, params: { action: next } }
+        
+    gesture:
+      source: webcam
+      pipeline: video → pose_estimation → gesture → intent
+      gestures:
+        - point: { action: select, params: { direction } }
+        - pinch: { action: grab, params: { scale } }
+        - swipe_left: { action: navigate, params: { direction: prev } }
+        - swipe_right: { action: navigate, params: { direction: next } }
+        - circle_cw: { action: adjust, params: { target: volume, delta: +5 } }
+        - circle_ccw: { action: adjust, params: { target: volume, delta: -5 } }
+        - thumbs_up: { action: confirm }
+        - thumbs_down: { action: cancel }
+        - open_palm: { action: stop }
+        
+    text:
+      source: chat/console
+      pipeline: text → LLM → intent
+      
+  intent_schema:
+    type: IntentType  # OPEN, PLAY, SEARCH, CREATE_UI, CONTROL, MEDIA, NAVIGATE
+    target: string    # file, app, playlist, ui_element, volume, etc.
+    params: object    # Additional parameters
+    confidence: float
+    source: Modality  # voice, gesture, text
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MODULE 4: LLM AGENT CONTROLLER
+# Plan-Act-Reflect cycle for computer control
+# ═══════════════════════════════════════════════════════════════════════════════
+llm_agent:
+  description: "Vision Language Model agent for computer control"
+  reference: "ScreenAgent (arXiv:2402.07945)"
+  
+  input:
+    - text: string  # User command or ASR output
+    - ui_state: UIState  # Current splat UI state
+    - screen_state: ScreenState  # OS window information
+    - history: Action[]  # Previous actions
+    
+  output:
+    - plan: Step[]  # Sequence of steps
+    - action: Action  # Current action to execute
+    - reflection: string  # Self-evaluation
+    
+  cycle:
+    plan:
+      description: "Decompose task into steps"
+      output: Step[]
+      
+    act:
+      description: "Execute current step"
+      actions:
+        - click: { x, y, button }
+        - double_click: { x, y }
+        - drag: { from, to }
+        - type: { text }
+        - key: { key, modifiers }
+        - scroll: { direction, amount }
+        - open_app: { app_name }
+        - open_file: { path }
+        - play_media: { path_or_url }
+        - system_control: { target, action }
+        
+    reflect:
+      description: "Evaluate action result"
+      output:
+        success: bool
+        error: string?
+        next_action: Action?
+        replan: bool
+        
+  error_handling:
+    - element_not_found: replan with alternative
+    - file_not_exists: notify user
+    - app_not_installed: suggest installation
+    - permission_denied: request permission
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MODULE 5: COMPUTER CONTROL API
+# OS-independent layer for mouse, keyboard, apps, files
+# ═══════════════════════════════════════════════════════════════════════════════
+computer_control:
+  description: "Low-level computer control interface"
+  
+  mouse:
+    - move(x, y)
+    - click(button: left|right|middle)
+    - double_click()
+    - drag(from, to)
+    - scroll(direction, amount)
+    
+  keyboard:
+    - type(text)
+    - press(key)
+    - release(key)
+    - hotkey(keys[])  # e.g., [ctrl, c]
+    
+  applications:
+    - open(app_name)
+    - close(app_name)
+    - focus(app_name)
+    - list_running() -> App[]
+    - get_active_window() -> Window
+    
+  filesystem:
+    - open_file(path)
+    - create_file(path, content)
+    - delete_file(path)
+    - move_file(from, to)
+    - list_directory(path) -> Entry[]
+    - search(query, path) -> Entry[]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MODULE 6: MEDIA CONTROL
+# Audio, Video, Playlists
+# ═══════════════════════════════════════════════════════════════════════════════
+media_control:
+  description: "Multimedia playback control"
+  
+  audio:
+    - play(path_or_url)
+    - pause()
+    - resume()
+    - stop()
+    - set_volume(level: 0-100)
+    - get_volume() -> int
+    - next_track()
+    - prev_track()
+    - seek(position)
+    - get_position() -> float
+    - get_duration() -> float
+    
+  video:
+    - play(path_or_url)
+    - pause()
+    - fullscreen(enable: bool)
+    - set_playback_speed(speed: float)
+    
+  playlists:
+    - create(name, tracks[])
+    - add_track(playlist, track)
+    - remove_track(playlist, index)
+    - shuffle(playlist)
+    - repeat(mode: none|one|all)
+    - get_current_track() -> Track
+    
+  visualization:
+    description: "Display media state in splat UI"
+    elements:
+      - progress_ring: SplatSlider  # Circular progress around splat cluster
+      - volume_spiral: SplatSlider  # φ-spiral volume control
+      - track_list: SplatMenu  # Playlist as splat menu
+      - album_art: SplatWindow  # Album art as splat panel
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MODULE 7: SACRED FORMULA UI LAYOUT
+# φ-spiral menu arrangement, Lucas timing, Trinity states
+# ═══════════════════════════════════════════════════════════════════════════════
+sacred_layout:
+  description: "UI layout based on Sacred Formula"
+  
+  phi_spiral_menu:
+    description: "Menu items arranged in φ-spiral"
+    formula: |
+      angle = n × GOLDEN_ANGLE
+      radius = base_radius + √n × scale
+      position = (cos(angle) × radius, sin(angle) × radius, lucas(n % 10) × depth_scale)
+    parameters:
+      base_radius: 100
+      scale: 20
+      depth_scale: 5
+      
+  trinity_states:
+    description: "3 states based on φ² + 1/φ² = 3"
+    states:
+      - |0⟩: inactive (opacity: 0.3)
+      - |1⟩: hover (opacity: 0.6)
+      - |2⟩: active (opacity: 1.0)
+    transitions:
+      - |0⟩ → |1⟩: hover_enter
+      - |1⟩ → |2⟩: click
+      - |2⟩ → |0⟩: deactivate
+      
+  lucas_timing:
+    description: "Animation timing based on Lucas numbers"
+    formula: "duration = L(n) × base_duration / L(10)"
+    sequence: [2, 1, 3, 4, 7, 11, 18, 29, 47, 76, 123]
+    
+  transcendental_scaling:
+    description: "Element scaling using π × φ × e"
+    formula: "scale = base_scale × (TRANSCENDENTAL / 10)"
+    value: 1.382
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS (BDD-style test cases)
+# ═══════════════════════════════════════════════════════════════════════════════
+behaviors:
+  - name: voice_command_opens_music
+    given: "Agent is listening"
+    when: "User says 'открой музыку'"
+    then: "Music player opens and starts playing"
+    test_cases:
+      - input: { voice: "открой музыку" }
+        expected: { action: PLAY, target: music, success: true }
+        
+  - name: gesture_selects_menu_item
+    given: "φ-spiral menu is visible"
+    when: "User points at menu item"
+    then: "Menu item is highlighted and selected"
+    test_cases:
+      - input: { gesture: point, direction: [0.5, 0.3, 0.8] }
+        expected: { event: hover_enter, element_id: "menu_item_3" }
+        
+  - name: splat_button_click
+    given: "SplatButton is in normal state"
+    when: "User clicks on button"
+    then: "Button animates and action is triggered"
+    test_cases:
+      - input: { click: { x: 100, y: 200 } }
+        expected: { state: active, animation: ripple, action_triggered: true }
+        
+  - name: phi_spiral_layout
+    given: "Menu with 10 items"
+    when: "Layout is applied"
+    then: "Items are arranged in φ-spiral"
+    test_cases:
+      - input: { items: 10, base_radius: 100 }
+        expected: { 
+          item_0: { angle: 0, radius: 100 },
+          item_1: { angle: 2.4, radius: 120 },
+          item_9: { angle: 21.6, radius: 160 }
+        }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INTEGRATION POINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+integrations:
+  - name: 3dgs_renderer
+    type: WebGLSplatRenderer
+    version: v85
+    features: [compact_32b, phi_tree, sacred_glsl]
+    
+  - name: speech_recognition
+    type: Web Speech API / Whisper
+    languages: [en, ru]
+    
+  - name: gesture_recognition
+    type: MediaPipe / TensorFlow.js
+    gestures: [point, pinch, swipe, circle]
+    
+  - name: llm_backend
+    type: OpenAI / Local LLM
+    model: gpt-4-vision / llama-3
+    
+  - name: os_control
+    type: Platform-specific daemon
+    platforms: [windows, macos, linux]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE TARGETS
+# ═══════════════════════════════════════════════════════════════════════════════
+performance:
+  ui_response: <16ms  # 60 FPS
+  ray_cast: <1ms
+  intent_parse: <100ms
+  llm_response: <2000ms
+  action_execute: <500ms
+  voice_to_action: <3000ms
+  gesture_to_action: <500ms

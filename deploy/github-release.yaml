@@ -1,0 +1,187 @@
+# IGLA GitHub Actions Release Workflow
+# ⲤⲀⲔⲢⲀ ⲪⲞⲢⲘⲨⲖⲀ: V = n × 3^k × π^m × φ^p × e^q
+# PHOENIX = 999 = 3³ × 37
+
+name: Release IGLA
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  IGLA_VERSION: 3.0.0
+  PHOENIX: 999
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.13.0
+      
+      - name: Build Compiler
+        run: |
+          cd src/vibeec
+          zig build -Doptimize=ReleaseFast
+      
+      - name: Build Python Bindings
+        run: |
+          cd bindings/python
+          zig build-lib igla_lib.zig -dynamic -O ReleaseFast -femit-bin=libigla.so
+      
+      - name: Build WASM
+        run: |
+          cd bindings/wasm
+          zig build-exe igla.zig -target wasm32-freestanding -O ReleaseFast -fno-entry
+      
+      - name: Run Tests
+        run: |
+          cd src/vibeec
+          zig test parser.zig
+          zig test codegen.zig
+          zig test pas.zig
+      
+      - name: Package Release
+        run: |
+          mkdir -p dist
+          cp src/vibeec/zig-out/bin/vibeec dist/
+          cp bindings/python/libigla.so dist/
+          cp bindings/python/igla.py dist/
+          cp bindings/wasm/igla.wasm dist/
+          tar -czvf igla-${{ env.IGLA_VERSION }}-linux-x86_64.tar.gz -C dist .
+      
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: igla-linux-x86_64
+          path: igla-${{ env.IGLA_VERSION }}-linux-x86_64.tar.gz
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.13.0
+      
+      - name: Build Compiler
+        run: |
+          cd src/vibeec
+          zig build -Doptimize=ReleaseFast
+      
+      - name: Build Python Bindings
+        run: |
+          cd bindings/python
+          zig build-lib igla_lib.zig -dynamic -O ReleaseFast -femit-bin=libigla.dylib
+      
+      - name: Package Release
+        run: |
+          mkdir -p dist
+          cp src/vibeec/zig-out/bin/vibeec dist/
+          cp bindings/python/libigla.dylib dist/
+          cp bindings/python/igla.py dist/
+          tar -czvf igla-${{ env.IGLA_VERSION }}-macos-arm64.tar.gz -C dist .
+      
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: igla-macos-arm64
+          path: igla-${{ env.IGLA_VERSION }}-macos-arm64.tar.gz
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.13.0
+      
+      - name: Build Compiler
+        run: |
+          cd src/vibeec
+          zig build -Doptimize=ReleaseFast
+      
+      - name: Build Python Bindings
+        run: |
+          cd bindings/python
+          zig build-lib igla_lib.zig -dynamic -O ReleaseFast -femit-bin=igla.dll
+      
+      - name: Package Release
+        run: |
+          mkdir dist
+          copy src\vibeec\zig-out\bin\vibeec.exe dist\
+          copy bindings\python\igla.dll dist\
+          copy bindings\python\igla.py dist\
+          Compress-Archive -Path dist\* -DestinationPath igla-${{ env.IGLA_VERSION }}-windows-x86_64.zip
+      
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: igla-windows-x86_64
+          path: igla-${{ env.IGLA_VERSION }}-windows-x86_64.zip
+
+  release:
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: IGLA v${{ env.IGLA_VERSION }} - PHOENIX ${{ env.PHOENIX }}
+          body: |
+            ## IGLA v${{ env.IGLA_VERSION }}
+            
+            **ⲤⲀⲔⲢⲀ ⲪⲞⲢⲘⲨⲖⲀ:** V = n × 3^k × π^m × φ^p × e^q
+            **PHOENIX:** 999 = 3³ × 37
+            
+            ### Downloads
+            - Linux x86_64: `igla-${{ env.IGLA_VERSION }}-linux-x86_64.tar.gz`
+            - macOS ARM64: `igla-${{ env.IGLA_VERSION }}-macos-arm64.tar.gz`
+            - Windows x86_64: `igla-${{ env.IGLA_VERSION }}-windows-x86_64.zip`
+            
+            ### Included
+            - `vibeec` - IGLA compiler
+            - `libigla.so/dylib/dll` - Python bindings
+            - `igla.py` - Python wrapper
+            - `igla.wasm` - WebAssembly module
+          files: |
+            igla-linux-x86_64/*
+            igla-macos-arm64/*
+            igla-windows-x86_64/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  docker:
+    needs: [build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Build and Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ env.IGLA_VERSION }}
+            ghcr.io/${{ github.repository }}:latest

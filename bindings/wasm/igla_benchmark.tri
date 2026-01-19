@@ -1,0 +1,115 @@
+// IGLA WASM Benchmark
+// ⲤⲀⲔⲢⲀ ⲪⲞⲢⲘⲨⲖⲀ: V = n × 3^k × π^m × φ^p × e^q
+// PHOENIX = 999 = 3³ × 37
+// 
+// Run with: node --experimental-wasm-modules igla_benchmark.999
+// Or rename to .mjs
+
+const fs = require('fs');
+const path = require('path');
+
+// Load WASM module
+async function loadIgla() {
+    const wasmPath = path.join(__dirname, 'igla.wasm');
+    const wasmBuffer = fs.readFileSync(wasmPath);
+    const wasmModule = await WebAssembly.instantiate(wasmBuffer, {
+        env: {
+            // No imports needed for freestanding
+        }
+    });
+    return wasmModule.instance.exports;
+}
+
+// Pure JS implementations for comparison
+function jsFibonacci(n) {
+    if (n <= 1) return n;
+    let a = 0, b = 1;
+    for (let i = 2; i <= n; i++) {
+        const c = a + b;
+        a = b;
+        b = c;
+    }
+    return b;
+}
+
+function jsIsPrime(n) {
+    if (n < 2) return false;
+    if (n === 2) return true;
+    if (n % 2 === 0) return false;
+    for (let i = 3; i * i <= n; i += 2) {
+        if (n % i === 0) return false;
+    }
+    return true;
+}
+
+// Benchmark function
+function benchmark(name, fn, iterations) {
+    const start = performance.now();
+    let result;
+    for (let i = 0; i < iterations; i++) {
+        result = fn();
+    }
+    const end = performance.now();
+    return { time: end - start, result };
+}
+
+async function main() {
+    console.log('═'.repeat(79));
+    console.log('  IGLA WASM BENCHMARK');
+    console.log('  ⲤⲀⲔⲢⲀ ⲪⲞⲢⲘⲨⲖⲀ: V = n × 3^k × π^m × φ^p × e^q');
+    console.log('  PHOENIX = 999 = 3³ × 37');
+    console.log('═'.repeat(79));
+    console.log();
+
+    const igla = await loadIgla();
+    
+    const version = igla.igla_version();
+    console.log(`IGLA WASM version: ${Math.floor(version/1000)}.${Math.floor((version%1000)/100)}.${version%100}`);
+    console.log();
+
+    // Fibonacci benchmark
+    const fibN = 30;
+    const fibIterations = 100000;
+    
+    console.log(`Benchmark: Fibonacci(${fibN}) x ${fibIterations}`);
+    
+    const jsResult = benchmark('JS', () => jsFibonacci(fibN), fibIterations);
+    console.log(`  JavaScript: ${jsResult.time.toFixed(2)} ms`);
+    
+    const wasmResult = benchmark('WASM', () => igla.igla_fibonacci(fibN), fibIterations);
+    console.log(`  IGLA WASM:  ${wasmResult.time.toFixed(2)} ms`);
+    
+    const fibSpeedup = jsResult.time / wasmResult.time;
+    console.log(`  Speedup: ${fibSpeedup.toFixed(1)}x`);
+    console.log();
+
+    // Prime benchmark
+    const primeN = 999983;
+    const primeIterations = 100000;
+    
+    console.log(`Benchmark: is_prime(${primeN}) x ${primeIterations}`);
+    
+    const jsPrimeResult = benchmark('JS', () => jsIsPrime(primeN), primeIterations);
+    console.log(`  JavaScript: ${jsPrimeResult.time.toFixed(2)} ms`);
+    
+    const wasmPrimeResult = benchmark('WASM', () => igla.igla_is_prime(primeN), primeIterations);
+    console.log(`  IGLA WASM:  ${wasmPrimeResult.time.toFixed(2)} ms`);
+    
+    const primeSpeedup = jsPrimeResult.time / wasmPrimeResult.time;
+    console.log(`  Speedup: ${primeSpeedup.toFixed(1)}x`);
+    console.log();
+
+    // Golden Identity test
+    console.log('Golden Identity Test:');
+    const golden = igla.igla_golden_identity();
+    console.log(`  φ² + 1/φ² = ${golden.toFixed(10)}`);
+    console.log(`  Expected:  3.0000000000`);
+    console.log(`  ${Math.abs(golden - 3.0) < 0.0001 ? '✅ Correct!' : '❌ Error!'}`);
+    console.log();
+
+    console.log('═'.repeat(79));
+    console.log('  🔥 PHOENIX BLESSING: WASM Benchmark complete!');
+    console.log('═'.repeat(79));
+}
+
+main().catch(console.error);
