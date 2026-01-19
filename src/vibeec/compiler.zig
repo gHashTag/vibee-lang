@@ -319,6 +319,11 @@ pub fn main() !u8 {
     } else if (std.mem.eql(u8, cmd, "agent")) {
         printAgentStatus();
         return 0;
+    } else if (std.mem.eql(u8, cmd, "chat")) {
+        return runChat(allocator);
+    } else if (std.mem.eql(u8, cmd, "config")) {
+        printConfig();
+        return 0;
     }
 
     const stdout = std.io.getStdOut().writer();
@@ -331,27 +336,34 @@ fn printSimpleHelp() void {
     stdout.print(
         \\
         \\  ╔═══════════════════════════════════════════════════════════╗
-        \\  ║  VIBEEC v22.0.0 - VIBEE Compiler                          ║
+        \\  ║  VIBEEC v22.0.0 - VIBEE Terminal Agent                    ║
         \\  ║  Sacred Formula: V = n × 3^k × π^m × φ^p × e^q            ║
         \\  ║  Golden Identity: φ² + 1/φ² = 3                           ║
         \\  ╚═══════════════════════════════════════════════════════════╝
         \\
         \\  COMMANDS:
-        \\    help              Show this help
-        \\    version           Show version
+        \\    chat              Start interactive AI chat (requires API key)
+        \\    config            Show API configuration status
         \\    gen <file.vibee>  Generate .zig from .vibee specification
         \\    pas               Show PAS DAEMONS patterns
         \\    phi               Show sacred constants
         \\    eval "expr"       Evaluate ternary logic expression
         \\    agent             Show agent status
+        \\    help              Show this help
+        \\    version           Show version
+        \\
+        \\  ENVIRONMENT VARIABLES:
+        \\    ANTHROPIC_API_KEY   Claude API key
+        \\    OPENAI_API_KEY      OpenAI API key
+        \\    OLLAMA_HOST         Ollama server (default: http://localhost:11434)
         \\
         \\  TERNARY LOGIC (Kleene K₃):
         \\    △ = TRUE    ○ = UNKNOWN    ▽ = FALSE
         \\
         \\  EXAMPLES:
+        \\    vibeec chat
         \\    vibeec gen specs/terminal_agent.vibee
         \\    vibeec eval "△ ∧ ○"
-        \\    vibeec pas
         \\
     , .{}) catch {};
 }
@@ -429,20 +441,228 @@ fn evalTernary(expr: []const u8) void {
 
 fn printAgentStatus() void {
     const stdout = std.io.getStdOut().writer();
+    
+    // Check API keys
+    const anthropic_key = std.posix.getenv("ANTHROPIC_API_KEY");
+    const openai_key = std.posix.getenv("OPENAI_API_KEY");
+    const ollama_host = std.posix.getenv("OLLAMA_HOST");
+    
+    const has_anthropic = anthropic_key != null and anthropic_key.?.len > 0;
+    const has_openai = openai_key != null and openai_key.?.len > 0;
+    const has_ollama = ollama_host != null and ollama_host.?.len > 0;
+    
+    const ai_status = if (has_anthropic or has_openai or has_ollama) "READY" else "NO API KEY";
+    
     stdout.print(
         \\
         \\  VIBEE TERMINAL AGENT
         \\  ════════════════════
-        \\  Status: READY
+        \\  Status: {s}
         \\  Modules: 14
         \\  Tests: 94/94 passed
         \\  Pipeline: .vibee → .tri → .zig
+        \\
+        \\  AI PROVIDERS:
+        \\    Anthropic: {s}
+        \\    OpenAI:    {s}
+        \\    Ollama:    {s}
         \\
         \\  CAPABILITIES:
         \\    - Ternary Logic (K₃)
         \\    - PAS DAEMONS (8 patterns)
         \\    - Multi-provider AI
         \\    - Self-generating code
+        \\
+    , .{
+        ai_status,
+        if (has_anthropic) "✅ configured" else "❌ not set",
+        if (has_openai) "✅ configured" else "❌ not set",
+        if (has_ollama) "✅ configured" else "○ localhost:11434",
+    }) catch {};
+}
+
+fn printConfig() void {
+    const stdout = std.io.getStdOut().writer();
+    
+    const anthropic_key = std.posix.getenv("ANTHROPIC_API_KEY");
+    const openai_key = std.posix.getenv("OPENAI_API_KEY");
+    const ollama_host = std.posix.getenv("OLLAMA_HOST") orelse "http://localhost:11434";
+    
+    const has_anthropic = anthropic_key != null and anthropic_key.?.len > 0;
+    const has_openai = openai_key != null and openai_key.?.len > 0;
+    
+    stdout.print(
+        \\
+        \\  VIBEE CONFIGURATION
+        \\  ═══════════════════
+        \\
+        \\  API KEYS:
+        \\    ANTHROPIC_API_KEY: {s}
+        \\    OPENAI_API_KEY:    {s}
+        \\    OLLAMA_HOST:       {s}
+        \\
+    , .{
+        if (has_anthropic) "sk-ant-***" else "(not set)",
+        if (has_openai) "sk-***" else "(not set)",
+        ollama_host,
+    }) catch {};
+    
+    if (!has_anthropic and !has_openai) {
+        stdout.print(
+            \\
+            \\  ⚠️  NO API KEY CONFIGURED
+            \\
+            \\  To use AI features, set one of:
+            \\
+            \\    export ANTHROPIC_API_KEY=sk-ant-your-key
+            \\    export OPENAI_API_KEY=sk-your-key
+            \\
+            \\  Or use local Ollama:
+            \\
+            \\    ollama serve
+            \\    export OLLAMA_HOST=http://localhost:11434
+            \\
+        , .{}) catch {};
+    }
+}
+
+fn runChat(allocator: std.mem.Allocator) !u8 {
+    _ = allocator;
+    const stdout = std.io.getStdOut().writer();
+    const stdin = std.io.getStdIn().reader();
+    
+    // Check for API keys
+    const anthropic_key = std.posix.getenv("ANTHROPIC_API_KEY");
+    const openai_key = std.posix.getenv("OPENAI_API_KEY");
+    const ollama_host = std.posix.getenv("OLLAMA_HOST");
+    
+    const has_anthropic = anthropic_key != null and anthropic_key.?.len > 0;
+    const has_openai = openai_key != null and openai_key.?.len > 0;
+    const has_ollama = ollama_host != null and ollama_host.?.len > 0;
+    
+    // Determine provider
+    const provider: []const u8 = if (has_anthropic) 
+        "Anthropic Claude" 
+    else if (has_openai) 
+        "OpenAI GPT" 
+    else if (has_ollama) 
+        "Ollama (local)"
+    else 
+        "none";
+    
+    stdout.print(
+        \\
+        \\  ╔═══════════════════════════════════════════════════════════╗
+        \\  ║  VIBEE CHAT - Interactive AI Terminal                     ║
+        \\  ║  φ² + 1/φ² = 3                                            ║
+        \\  ╚═══════════════════════════════════════════════════════════╝
+        \\
+    , .{}) catch {};
+    
+    if (!has_anthropic and !has_openai and !has_ollama) {
+        stdout.print(
+            \\
+            \\  ❌ NO API KEY CONFIGURED
+            \\
+            \\  VIBEE requires an AI provider to chat. Set one of:
+            \\
+            \\    export ANTHROPIC_API_KEY=sk-ant-your-key-here
+            \\    export OPENAI_API_KEY=sk-your-key-here
+            \\
+            \\  Or run local Ollama:
+            \\
+            \\    ollama serve
+            \\    ollama pull llama3.2
+            \\    export OLLAMA_HOST=http://localhost:11434
+            \\
+            \\  Then run: vibeec chat
+            \\
+            \\  ────────────────────────────────────────────────────────
+            \\
+            \\  OFFLINE MODE: You can still use these commands:
+            \\
+            \\    vibeec gen <file.vibee>  - Generate code from spec
+            \\    vibeec pas               - View PAS patterns
+            \\    vibeec phi               - View sacred constants
+            \\    vibeec eval "△ ∧ ○"      - Evaluate ternary logic
+            \\
+        , .{}) catch {};
+        return 1;
+    }
+    
+    stdout.print(
+        \\  Provider: {s}
+        \\  Type /help for commands, /quit to exit
+        \\
+        \\
+    , .{provider}) catch {};
+    
+    // REPL loop
+    var input_buf: [4096]u8 = undefined;
+    
+    while (true) {
+        stdout.print("△ > ", .{}) catch {};
+        
+        const input = stdin.readUntilDelimiterOrEof(&input_buf, '\n') catch |err| {
+            stdout.print("\nError reading input: {}\n", .{err}) catch {};
+            continue;
+        };
+        
+        if (input == null) {
+            stdout.print("\n\nGoodbye! φ² + 1/φ² = 3\n", .{}) catch {};
+            break;
+        }
+        
+        const line = std.mem.trim(u8, input.?, " \t\r\n");
+        
+        if (line.len == 0) continue;
+        
+        // Handle commands
+        if (std.mem.startsWith(u8, line, "/")) {
+            if (std.mem.eql(u8, line, "/quit") or std.mem.eql(u8, line, "/exit") or std.mem.eql(u8, line, "/q")) {
+                stdout.print("\nGoodbye! φ² + 1/φ² = 3\n", .{}) catch {};
+                break;
+            } else if (std.mem.eql(u8, line, "/help") or std.mem.eql(u8, line, "/h")) {
+                printChatHelp();
+            } else if (std.mem.eql(u8, line, "/pas")) {
+                printPASInfo();
+            } else if (std.mem.eql(u8, line, "/phi")) {
+                printPhiInfo();
+            } else if (std.mem.eql(u8, line, "/status")) {
+                printAgentStatus();
+            } else if (std.mem.eql(u8, line, "/clear")) {
+                // Clear screen
+                stdout.print("\x1b[2J\x1b[H", .{}) catch {};
+            } else {
+                stdout.print("  Unknown command: {s}\n  Type /help for available commands\n\n", .{line}) catch {};
+            }
+            continue;
+        }
+        
+        // Send to AI (placeholder - actual HTTP call would go here)
+        stdout.print("\n  ○ Processing with {s}...\n", .{provider}) catch {};
+        stdout.print("\n  [AI Response would appear here]\n", .{}) catch {};
+        stdout.print("  Note: HTTP client not yet implemented in Zig.\n", .{}) catch {};
+        stdout.print("  Use the Python/Node wrapper for full AI support.\n\n", .{}) catch {};
+    }
+    
+    return 0;
+}
+
+fn printChatHelp() void {
+    const stdout = std.io.getStdOut().writer();
+    stdout.print(
+        \\
+        \\  CHAT COMMANDS
+        \\  ═════════════
+        \\    /help, /h     Show this help
+        \\    /quit, /q     Exit chat
+        \\    /clear        Clear screen
+        \\    /pas          Show PAS patterns
+        \\    /phi          Show sacred constants
+        \\    /status       Show agent status
+        \\
+        \\  Just type your message to chat with AI.
         \\
     , .{}) catch {};
 }

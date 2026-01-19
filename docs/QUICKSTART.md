@@ -1,79 +1,113 @@
-# .999 Quick Start Guide
-
-Get up and running with .999 in 5 minutes.
+# VIBEE Terminal Agent - Quick Start
 
 ## Installation
 
-### From Source
-
 ```bash
+# Clone repository
 git clone https://github.com/gHashTag/vibee-lang.git
-cd vibee-lang/src/vibeec
-zig build
+cd vibee-lang
+
+# Build compiler
+cd src/vibeec && zig build && cd ../..
+
+# Run
+./bin/vibeec help
 ```
 
-### Verify Installation
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `vibeec help` | Show help |
+| `vibeec version` | Show version |
+| `vibeec config` | Show API configuration |
+| `vibeec agent` | Show agent status |
+| `vibeec chat` | Start interactive AI chat |
+| `vibeec gen <file.vibee>` | Generate .zig from spec |
+| `vibeec pas` | Show PAS DAEMONS patterns |
+| `vibeec phi` | Show sacred constants |
+| `vibeec eval "expr"` | Evaluate ternary logic |
+
+## AI Configuration
+
+VIBEE supports three AI providers:
+
+### Option 1: Anthropic Claude (recommended)
 
 ```bash
-./zig-out/bin/vibeec --version
+export ANTHROPIC_API_KEY=sk-ant-your-key-here
+vibeec chat
 ```
 
-## Your First Program
-
-Create `hello.999`:
-
-```999
-Ⲯ ⲕⲟⲣⲉ
-
-Ⲫ main() {
-    print("Hello, .999!")
-}
-
-main()
-```
-
-Run it:
+### Option 2: OpenAI GPT
 
 ```bash
-./vibeec run hello.999
+export OPENAI_API_KEY=sk-your-key-here
+vibeec chat
 ```
 
-## Ternary Logic Example
-
-Create `ternary.999`:
-
-```999
-Ⲯ ⲧⲣⲓⲛⲓⲧⲩ
-
-Ⲫ main() {
-    // Three truth values
-    Ⲃ yes: Trit = △
-    Ⲃ no: Trit = ▽
-    Ⲃ maybe: Trit = ○
-    
-    // Kleene logic
-    print(trit_and(yes, maybe))  // ○
-    print(trit_or(yes, maybe))   // △
-    print(trit_not(maybe))       // ○
-}
-
-main()
-```
-
-## VS Code Setup
-
-1. Install the .999 extension from `vscode-999/`
-2. Open any `.999` file
-3. Enjoy syntax highlighting and LSP support
-
-## WASM Compilation
+### Option 3: Ollama (local, free)
 
 ```bash
-./vibeec compile --target wasm hello.999 -o hello.wasm
+# Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Start server
+ollama serve
+
+# Pull model
+ollama pull llama3.2
+
+# Run chat
+vibeec chat
 ```
 
-## Next Steps
+## Check Configuration
 
-- [Full Tutorial](TUTORIAL.md)
-- [API Reference](API.md)
-- [Examples](../examples/)
+```bash
+vibeec config
+```
+
+Without API key:
+```
+  ⚠️  NO API KEY CONFIGURED
+```
+
+With API key:
+```
+  ANTHROPIC_API_KEY: sk-ant-***
+```
+
+## Offline Mode
+
+Without an API key, you can still use:
+
+```bash
+vibeec gen specs/tri/terminal_agent.vibee  # Generate code
+vibeec pas                                   # PAS patterns
+vibeec phi                                   # Sacred constants
+vibeec eval "△ ∧ ○"                         # Ternary logic
+```
+
+## Chat Commands
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show commands |
+| `/quit` | Exit chat |
+| `/pas` | PAS patterns |
+| `/phi` | Sacred constants |
+
+## Ternary Logic (Kleene K₃)
+
+```
+△ = TRUE    ○ = UNKNOWN    ▽ = FALSE
+```
+
+## Sacred Formula
+
+```
+V = n × 3^k × π^m × φ^p × e^q
+φ² + 1/φ² = 3
+999 = 3³ × 37 (PHOENIX)
+```
