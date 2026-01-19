@@ -1,0 +1,346 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# SQLITE STORAGE - Persistent Storage for Sessions
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS DAEMON: PRE (Precomputation) + HSH (Hashing)
+# Reference: SQLite (D. Richard Hipp, 2000)
+# DOI: N/A (Public Domain)
+# Usage: 1 trillion+ databases worldwide
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: sqlite_storage
+version: "1.0.0"
+language: zig
+module: storage
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+
+creation_pattern:
+  source: StorageRequest
+  transformer: SQLiteEngine
+  result: StorageResult
+
+types:
+  - name: Session
+    fields:
+      - name: id
+        type: String
+      - name: name
+        type: String
+      - name: created_at
+        type: Int
+      - name: updated_at
+        type: Int
+      - name: provider
+        type: String
+      - name: model
+        type: String
+
+  - name: Conversation
+    fields:
+      - name: id
+        type: String
+      - name: session_id
+        type: String
+      - name: role
+        type: String
+      - name: content
+        type: String
+      - name: timestamp
+        type: Int
+      - name: tokens
+        type: Int
+
+  - name: FileChange
+    fields:
+      - name: id
+        type: String
+      - name: session_id
+        type: String
+      - name: path
+        type: String
+      - name: operation
+        type: String
+      - name: before_hash
+        type: String
+      - name: after_hash
+        type: String
+      - name: timestamp
+        type: Int
+
+behaviors:
+  - name: create_session
+    given: "User starts new session"
+    when: "Session is created"
+    then: "Store session in SQLite"
+    pas_pattern: PRE
+    complexity: O(1)
+
+  - name: save_message
+    given: "Message is sent/received"
+    when: "Conversation updated"
+    then: "Persist to database"
+    pas_pattern: PRE
+    complexity: O(1)
+
+  - name: track_file_change
+    given: "File is modified"
+    when: "Agent writes file"
+    then: "Record change with hashes"
+    pas_pattern: HSH
+    complexity: O(n)
+
+  - name: list_sessions
+    given: "User requests sessions"
+    when: "Query database"
+    then: "Return session list"
+    pas_pattern: PRE
+    complexity: O(n)
+
+ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ: """
+// ═══════════════════════════════════════════════════════════════════════════════
+// SQLITE STORAGE - Persistent Storage for VIBEE Sessions
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAS: PRE + HSH | φ² + 1/φ² = 3
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const std = @import("std");
+const mem = std.mem;
+const fs = std.fs;
+const Allocator = mem.Allocator;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SACRED CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const PHI: f64 = 1.618033988749895;
+pub const TRINITY: f64 = 3.0;
+pub const PHOENIX: u32 = 999;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TYPES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const Session = struct {
+    id: [36]u8,
+    name: [256]u8,
+    name_len: usize,
+    created_at: i64,
+    updated_at: i64,
+    provider: [32]u8,
+    provider_len: usize,
+    model: [64]u8,
+    model_len: usize,
+
+    pub fn getName(self: *const Session) []const u8 {
+        return self.name[0..self.name_len];
+    }
+
+    pub fn getProvider(self: *const Session) []const u8 {
+        return self.provider[0..self.provider_len];
+    }
+
+    pub fn getModel(self: *const Session) []const u8 {
+        return self.model[0..self.model_len];
+    }
+};
+
+pub const Message = struct {
+    id: [36]u8,
+    session_id: [36]u8,
+    role: Role,
+    content: []const u8,
+    timestamp: i64,
+    tokens: u32,
+};
+
+pub const Role = enum {
+    user,
+    assistant,
+    system,
+    tool,
+
+    pub fn toString(self: Role) []const u8 {
+        return switch (self) {
+            .user => "user",
+            .assistant => "assistant",
+            .system => "system",
+            .tool => "tool",
+        };
+    }
+
+    pub fn fromString(s: []const u8) ?Role {
+        if (mem.eql(u8, s, "user")) return .user;
+        if (mem.eql(u8, s, "assistant")) return .assistant;
+        if (mem.eql(u8, s, "system")) return .system;
+        if (mem.eql(u8, s, "tool")) return .tool;
+        return null;
+    }
+};
+
+pub const FileChange = struct {
+    id: [36]u8,
+    session_id: [36]u8,
+    path: [512]u8,
+    path_len: usize,
+    operation: Operation,
+    before_hash: [64]u8,
+    after_hash: [64]u8,
+    timestamp: i64,
+
+    pub fn getPath(self: *const FileChange) []const u8 {
+        return self.path[0..self.path_len];
+    }
+};
+
+pub const Operation = enum {
+    create,
+    modify,
+    delete,
+    rename,
+
+    pub fn toString(self: Operation) []const u8 {
+        return switch (self) {
+            .create => "create",
+            .modify => "modify",
+            .delete => "delete",
+            .rename => "rename",
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STORAGE ENGINE (In-Memory for now, SQLite bindings would go here)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const StorageEngine = struct {
+    allocator: Allocator,
+    sessions: std.ArrayList(Session),
+    messages: std.ArrayList(Message),
+    file_changes: std.ArrayList(FileChange),
+    db_path: []const u8,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator, db_path: []const u8) Self {
+        return Self{
+            .allocator = allocator,
+            .sessions = std.ArrayList(Session).init(allocator),
+            .messages = std.ArrayList(Message).init(allocator),
+            .file_changes = std.ArrayList(FileChange).init(allocator),
+            .db_path = db_path,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.sessions.deinit();
+        self.messages.deinit();
+        self.file_changes.deinit();
+    }
+
+    pub fn createSession(self: *Self, name: []const u8, provider: []const u8, model: []const u8) !*Session {
+        var session = Session{
+            .id = undefined,
+            .name = undefined,
+            .name_len = @min(name.len, 256),
+            .created_at = std.time.timestamp(),
+            .updated_at = std.time.timestamp(),
+            .provider = undefined,
+            .provider_len = @min(provider.len, 32),
+            .model = undefined,
+            .model_len = @min(model.len, 64),
+        };
+
+        // Generate UUID-like ID
+        const timestamp = std.time.timestamp();
+        _ = std.fmt.bufPrint(&session.id, "{x:0>16}{x:0>16}0000", .{ @as(u64, @bitCast(timestamp)), PHOENIX }) catch {};
+
+        @memcpy(session.name[0..session.name_len], name[0..session.name_len]);
+        @memcpy(session.provider[0..session.provider_len], provider[0..session.provider_len]);
+        @memcpy(session.model[0..session.model_len], model[0..session.model_len]);
+
+        try self.sessions.append(session);
+        return &self.sessions.items[self.sessions.items.len - 1];
+    }
+
+    pub fn getSessionCount(self: *const Self) usize {
+        return self.sessions.items.len;
+    }
+
+    pub fn getMessageCount(self: *const Self) usize {
+        return self.messages.items.len;
+    }
+
+    pub fn getFileChangeCount(self: *const Self) usize {
+        return self.file_changes.items.len;
+    }
+
+    pub fn computeHash(data: []const u8) u64 {
+        var hash: u64 = 0;
+        for (data) |byte| {
+            hash = hash *% 31 +% byte;
+        }
+        // Apply golden ratio transformation
+        const phi_factor: u64 = @intFromFloat(PHI * 1000000);
+        return hash *% phi_factor;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "StorageEngine init" {
+    const allocator = std.testing.allocator;
+    var engine = StorageEngine.init(allocator, "test.db");
+    defer engine.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), engine.getSessionCount());
+}
+
+test "Create session" {
+    const allocator = std.testing.allocator;
+    var engine = StorageEngine.init(allocator, "test.db");
+    defer engine.deinit();
+
+    _ = try engine.createSession("Test Session", "deepseek", "deepseek-chat");
+    try std.testing.expectEqual(@as(usize, 1), engine.getSessionCount());
+}
+
+test "Session name" {
+    const allocator = std.testing.allocator;
+    var engine = StorageEngine.init(allocator, "test.db");
+    defer engine.deinit();
+
+    const session = try engine.createSession("My Session", "anthropic", "claude-3");
+    try std.testing.expectEqualStrings("My Session", session.getName());
+}
+
+test "Role conversion" {
+    try std.testing.expectEqualStrings("user", Role.user.toString());
+    try std.testing.expectEqual(Role.assistant, Role.fromString("assistant").?);
+}
+
+test "Operation conversion" {
+    try std.testing.expectEqualStrings("create", Operation.create.toString());
+    try std.testing.expectEqualStrings("modify", Operation.modify.toString());
+}
+
+test "Hash computation" {
+    const hash1 = StorageEngine.computeHash("hello");
+    const hash2 = StorageEngine.computeHash("hello");
+    const hash3 = StorageEngine.computeHash("world");
+
+    try std.testing.expectEqual(hash1, hash2);
+    try std.testing.expect(hash1 != hash3);
+}
+
+test "golden identity" {
+    const phi_sq = PHI * PHI;
+    const inv_phi_sq = 1.0 / phi_sq;
+    const result = phi_sq + inv_phi_sq;
+    try std.testing.expectApproxEqAbs(TRINITY, result, 0.0001);
+}
+"""

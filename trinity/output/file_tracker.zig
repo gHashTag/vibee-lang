@@ -1,0 +1,244 @@
+// ═══════════════════════════════════════════════════════════════════════════════
+// FILE TRACKER - Track File Changes for VIBEE
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAS: HSH + PRE | φ² + 1/φ² = 3
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const std = @import("std");
+const mem = std.mem;
+const fs = std.fs;
+const Allocator = mem.Allocator;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SACRED CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const PHI: f64 = 1.618033988749895;
+pub const TRINITY: f64 = 3.0;
+pub const PHOENIX: u32 = 999;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TYPES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const ChangeType = enum {
+    created,
+    modified,
+    deleted,
+    renamed,
+
+    pub fn symbol(self: ChangeType) []const u8 {
+        return switch (self) {
+            .created => "+",
+            .modified => "~",
+            .deleted => "-",
+            .renamed => ">",
+        };
+    }
+
+    pub fn color(self: ChangeType) []const u8 {
+        return switch (self) {
+            .created => "\x1b[32m", // green
+            .modified => "\x1b[33m", // yellow
+            .deleted => "\x1b[31m", // red
+            .renamed => "\x1b[36m", // cyan
+        };
+    }
+};
+
+pub const FileSnapshot = struct {
+    path: [512]u8,
+    path_len: usize,
+    hash: u64,
+    size: u64,
+    timestamp: i64,
+
+    pub fn getPath(self: *const FileSnapshot) []const u8 {
+        return self.path[0..self.path_len];
+    }
+};
+
+pub const Change = struct {
+    change_type: ChangeType,
+    before: ?FileSnapshot,
+    after: ?FileSnapshot,
+    diff_lines_added: u32,
+    diff_lines_removed: u32,
+    session_id: [36]u8,
+
+    pub fn totalDiffLines(self: *const Change) u32 {
+        return self.diff_lines_added + self.diff_lines_removed;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HASH FUNCTION (FNV-1a with golden ratio)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub fn computeHash(data: []const u8) u64 {
+    const FNV_OFFSET: u64 = 14695981039346656037;
+    const FNV_PRIME: u64 = 1099511628211;
+    const PHI_FACTOR: u64 = @intFromFloat(PHI * 1000000000);
+
+    var hash: u64 = FNV_OFFSET;
+    for (data) |byte| {
+        hash ^= byte;
+        hash *%= FNV_PRIME;
+    }
+
+    // Apply golden ratio transformation
+    return hash ^ (hash >> 33) *% PHI_FACTOR;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FILE TRACKER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const FileTracker = struct {
+    allocator: Allocator,
+    changes: std.ArrayList(Change),
+    snapshots: std.StringHashMap(FileSnapshot),
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return Self{
+            .allocator = allocator,
+            .changes = std.ArrayList(Change).init(allocator),
+            .snapshots = std.StringHashMap(FileSnapshot).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.changes.deinit();
+        self.snapshots.deinit();
+    }
+
+    pub fn trackFile(self: *Self, path: []const u8, content: []const u8) !void {
+        const hash = computeHash(content);
+        const timestamp = std.time.timestamp();
+
+        var snapshot = FileSnapshot{
+            .path = undefined,
+            .path_len = @min(path.len, 512),
+            .hash = hash,
+            .size = content.len,
+            .timestamp = timestamp,
+        };
+        @memcpy(snapshot.path[0..snapshot.path_len], path[0..snapshot.path_len]);
+
+        // Check if file was previously tracked
+        if (self.snapshots.get(path)) |old_snapshot| {
+            if (old_snapshot.hash != hash) {
+                // File modified
+                try self.changes.append(Change{
+                    .change_type = .modified,
+                    .before = old_snapshot,
+                    .after = snapshot,
+                    .diff_lines_added = 0,
+                    .diff_lines_removed = 0,
+                    .session_id = undefined,
+                });
+            }
+        } else {
+            // New file
+            try self.changes.append(Change{
+                .change_type = .created,
+                .before = null,
+                .after = snapshot,
+                .diff_lines_added = 0,
+                .diff_lines_removed = 0,
+                .session_id = undefined,
+            });
+        }
+
+        try self.snapshots.put(path, snapshot);
+    }
+
+    pub fn getChangeCount(self: *const Self) usize {
+        return self.changes.items.len;
+    }
+
+    pub fn getTrackedFileCount(self: *const Self) usize {
+        return self.snapshots.count();
+    }
+
+    pub fn visualize(self: *const Self, writer: anytype) !void {
+        try writer.writeAll("\n  FILE CHANGES\n");
+        try writer.writeAll("  ════════════\n");
+
+        for (self.changes.items) |change| {
+            const symbol = change.change_type.symbol();
+            const color = change.change_type.color();
+            const reset = "\x1b[0m";
+
+            if (change.after) |after| {
+                try writer.print("  {s}{s}{s} {s}\n", .{ color, symbol, reset, after.getPath() });
+            } else if (change.before) |before| {
+                try writer.print("  {s}{s}{s} {s}\n", .{ color, symbol, reset, before.getPath() });
+            }
+        }
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "ChangeType symbols" {
+    try std.testing.expectEqualStrings("+", ChangeType.created.symbol());
+    try std.testing.expectEqualStrings("~", ChangeType.modified.symbol());
+    try std.testing.expectEqualStrings("-", ChangeType.deleted.symbol());
+}
+
+test "Hash computation" {
+    const hash1 = computeHash("hello world");
+    const hash2 = computeHash("hello world");
+    const hash3 = computeHash("hello world!");
+
+    try std.testing.expectEqual(hash1, hash2);
+    try std.testing.expect(hash1 != hash3);
+}
+
+test "Hash deterministic" {
+    const data = "test data for hashing";
+    const hash1 = computeHash(data);
+    const hash2 = computeHash(data);
+    try std.testing.expectEqual(hash1, hash2);
+}
+
+test "FileTracker init" {
+    const allocator = std.testing.allocator;
+    var tracker = FileTracker.init(allocator);
+    defer tracker.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), tracker.getChangeCount());
+}
+
+test "FileTracker track new file" {
+    const allocator = std.testing.allocator;
+    var tracker = FileTracker.init(allocator);
+    defer tracker.deinit();
+
+    try tracker.trackFile("test.zig", "const x = 1;");
+    try std.testing.expectEqual(@as(usize, 1), tracker.getChangeCount());
+    try std.testing.expectEqual(@as(usize, 1), tracker.getTrackedFileCount());
+}
+
+test "FileTracker track modified file" {
+    const allocator = std.testing.allocator;
+    var tracker = FileTracker.init(allocator);
+    defer tracker.deinit();
+
+    try tracker.trackFile("test.zig", "const x = 1;");
+    try tracker.trackFile("test.zig", "const x = 2;");
+
+    try std.testing.expectEqual(@as(usize, 2), tracker.getChangeCount());
+}
+
+test "golden identity" {
+    const phi_sq = PHI * PHI;
+    const inv_phi_sq = 1.0 / phi_sq;
+    const result = phi_sq + inv_phi_sq;
+    try std.testing.expectApproxEqAbs(TRINITY, result, 0.0001);
+}

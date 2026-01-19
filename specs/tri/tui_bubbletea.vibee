@@ -1,0 +1,390 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TUI BUBBLE TEA - Terminal User Interface
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS DAEMON: PRE (Precomputation) + D&C (Divide-and-Conquer)
+# Reference: Bubble Tea (Charm.sh) - Go TUI framework
+# Zig equivalent: Using raw terminal escape codes
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: tui_bubbletea
+version: "1.0.0"
+language: zig
+module: tui
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+
+creation_pattern:
+  source: UserInput
+  transformer: TUIRenderer
+  result: TerminalOutput
+
+types:
+  - name: Color
+    fields:
+      - name: r
+        type: Int
+      - name: g
+        type: Int
+      - name: b
+        type: Int
+
+  - name: Style
+    fields:
+      - name: fg
+        type: Color
+      - name: bg
+        type: Color
+      - name: bold
+        type: Bool
+      - name: italic
+        type: Bool
+
+  - name: Box
+    fields:
+      - name: x
+        type: Int
+      - name: y
+        type: Int
+      - name: width
+        type: Int
+      - name: height
+        type: Int
+      - name: title
+        type: String
+
+  - name: Message
+    fields:
+      - name: role
+        type: String
+      - name: content
+        type: String
+      - name: timestamp
+        type: Int
+
+  - name: Model
+    fields:
+      - name: messages
+        type: List<Message>
+      - name: input
+        type: String
+      - name: cursor
+        type: Int
+      - name: width
+        type: Int
+      - name: height
+        type: Int
+
+behaviors:
+  - name: render_box
+    given: "Box dimensions and title"
+    when: "Render is called"
+    then: "Draw box with Unicode borders"
+    pas_pattern: PRE
+    complexity: O(w+h)
+
+  - name: handle_keypress
+    given: "User presses key"
+    when: "Key event received"
+    then: "Update model state"
+    pas_pattern: D&C
+    complexity: O(1)
+
+  - name: render_messages
+    given: "List of messages"
+    when: "View is rendered"
+    then: "Display formatted messages"
+    pas_pattern: PRE
+    complexity: O(n)
+
+ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ: """
+// ═══════════════════════════════════════════════════════════════════════════════
+// TUI BUBBLE TEA - Terminal User Interface for VIBEE
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAS: PRE + D&C | φ² + 1/φ² = 3
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const std = @import("std");
+const io = std.io;
+const mem = std.mem;
+const Allocator = mem.Allocator;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SACRED CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const PHI: f64 = 1.618033988749895;
+pub const TRINITY: f64 = 3.0;
+pub const PHOENIX: u32 = 999;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ANSI ESCAPE CODES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const ANSI = struct {
+    pub const RESET: []const u8 = "\x1b[0m";
+    pub const BOLD: []const u8 = "\x1b[1m";
+    pub const DIM: []const u8 = "\x1b[2m";
+    pub const ITALIC: []const u8 = "\x1b[3m";
+    pub const UNDERLINE: []const u8 = "\x1b[4m";
+    
+    pub const FG_BLACK: []const u8 = "\x1b[30m";
+    pub const FG_RED: []const u8 = "\x1b[31m";
+    pub const FG_GREEN: []const u8 = "\x1b[32m";
+    pub const FG_YELLOW: []const u8 = "\x1b[33m";
+    pub const FG_BLUE: []const u8 = "\x1b[34m";
+    pub const FG_MAGENTA: []const u8 = "\x1b[35m";
+    pub const FG_CYAN: []const u8 = "\x1b[36m";
+    pub const FG_WHITE: []const u8 = "\x1b[37m";
+    
+    pub const CLEAR_SCREEN: []const u8 = "\x1b[2J";
+    pub const CURSOR_HOME: []const u8 = "\x1b[H";
+    pub const CURSOR_HIDE: []const u8 = "\x1b[?25l";
+    pub const CURSOR_SHOW: []const u8 = "\x1b[?25h";
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BOX DRAWING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const BoxChars = struct {
+    pub const TOP_LEFT: []const u8 = "╔";
+    pub const TOP_RIGHT: []const u8 = "╗";
+    pub const BOTTOM_LEFT: []const u8 = "╚";
+    pub const BOTTOM_RIGHT: []const u8 = "╝";
+    pub const HORIZONTAL: []const u8 = "═";
+    pub const VERTICAL: []const u8 = "║";
+};
+
+pub const Box = struct {
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+    title: []const u8,
+
+    pub fn render(self: Box, writer: anytype) !void {
+        // Top border
+        try writer.print("\x1b[{d};{d}H", .{ self.y, self.x });
+        try writer.writeAll(BoxChars.TOP_LEFT);
+        
+        const title_start = (self.width - self.title.len) / 2;
+        var i: u16 = 1;
+        while (i < self.width - 1) : (i += 1) {
+            if (i == title_start) {
+                try writer.writeAll(self.title);
+                i += @intCast(self.title.len);
+            } else {
+                try writer.writeAll(BoxChars.HORIZONTAL);
+            }
+        }
+        try writer.writeAll(BoxChars.TOP_RIGHT);
+        
+        // Sides
+        var row: u16 = 1;
+        while (row < self.height - 1) : (row += 1) {
+            try writer.print("\x1b[{d};{d}H", .{ self.y + row, self.x });
+            try writer.writeAll(BoxChars.VERTICAL);
+            try writer.print("\x1b[{d};{d}H", .{ self.y + row, self.x + self.width - 1 });
+            try writer.writeAll(BoxChars.VERTICAL);
+        }
+        
+        // Bottom border
+        try writer.print("\x1b[{d};{d}H", .{ self.y + self.height - 1, self.x });
+        try writer.writeAll(BoxChars.BOTTOM_LEFT);
+        i = 1;
+        while (i < self.width - 1) : (i += 1) {
+            try writer.writeAll(BoxChars.HORIZONTAL);
+        }
+        try writer.writeAll(BoxChars.BOTTOM_RIGHT);
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MESSAGE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const Role = enum {
+    user,
+    assistant,
+    system,
+
+    pub fn color(self: Role) []const u8 {
+        return switch (self) {
+            .user => ANSI.FG_CYAN,
+            .assistant => ANSI.FG_GREEN,
+            .system => ANSI.FG_YELLOW,
+        };
+    }
+
+    pub fn symbol(self: Role) []const u8 {
+        return switch (self) {
+            .user => "△",
+            .assistant => "○",
+            .system => "▽",
+        };
+    }
+};
+
+pub const Message = struct {
+    role: Role,
+    content: []const u8,
+    timestamp: i64,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MODEL (Elm Architecture)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const Model = struct {
+    messages: std.ArrayList(Message),
+    input_buffer: [1024]u8,
+    input_len: usize,
+    cursor_pos: usize,
+    width: u16,
+    height: u16,
+    scroll_offset: usize,
+    allocator: Allocator,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return Self{
+            .messages = std.ArrayList(Message).init(allocator),
+            .input_buffer = undefined,
+            .input_len = 0,
+            .cursor_pos = 0,
+            .width = 80,
+            .height = 24,
+            .scroll_offset = 0,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.messages.deinit();
+    }
+
+    pub fn addMessage(self: *Self, role: Role, content: []const u8) !void {
+        try self.messages.append(Message{
+            .role = role,
+            .content = content,
+            .timestamp = std.time.timestamp(),
+        });
+    }
+
+    pub fn getInput(self: *const Self) []const u8 {
+        return self.input_buffer[0..self.input_len];
+    }
+
+    pub fn clearInput(self: *Self) void {
+        self.input_len = 0;
+        self.cursor_pos = 0;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TUI APP
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const TUIApp = struct {
+    model: Model,
+    running: bool,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return Self{
+            .model = Model.init(allocator),
+            .running = true,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.model.deinit();
+    }
+
+    pub fn render(self: *Self, writer: anytype) !void {
+        // Clear and home
+        try writer.writeAll(ANSI.CLEAR_SCREEN);
+        try writer.writeAll(ANSI.CURSOR_HOME);
+        
+        // Header box
+        const header = Box{
+            .x = 1,
+            .y = 1,
+            .width = self.model.width,
+            .height = 3,
+            .title = " VIBEE AGENT ",
+        };
+        try header.render(writer);
+        
+        // Sacred formula in header
+        try writer.print("\x1b[2;3H{s}φ² + 1/φ² = 3{s}", .{ ANSI.FG_MAGENTA, ANSI.RESET });
+    }
+
+    pub fn stop(self: *Self) void {
+        self.running = false;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "Box render" {
+    var buffer: [1024]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buffer);
+    
+    const box = Box{
+        .x = 1,
+        .y = 1,
+        .width = 20,
+        .height = 5,
+        .title = "Test",
+    };
+    
+    try box.render(stream.writer());
+    try std.testing.expect(stream.pos > 0);
+}
+
+test "Role symbols" {
+    try std.testing.expectEqualStrings("△", Role.user.symbol());
+    try std.testing.expectEqualStrings("○", Role.assistant.symbol());
+    try std.testing.expectEqualStrings("▽", Role.system.symbol());
+}
+
+test "Model init" {
+    const allocator = std.testing.allocator;
+    var model = Model.init(allocator);
+    defer model.deinit();
+    
+    try std.testing.expectEqual(@as(usize, 0), model.messages.items.len);
+}
+
+test "Model add message" {
+    const allocator = std.testing.allocator;
+    var model = Model.init(allocator);
+    defer model.deinit();
+    
+    try model.addMessage(.user, "Hello");
+    try std.testing.expectEqual(@as(usize, 1), model.messages.items.len);
+}
+
+test "TUI App init" {
+    const allocator = std.testing.allocator;
+    var app = TUIApp.init(allocator);
+    defer app.deinit();
+    
+    try std.testing.expect(app.running);
+}
+
+test "golden identity" {
+    const phi_sq = PHI * PHI;
+    const inv_phi_sq = 1.0 / phi_sq;
+    const result = phi_sq + inv_phi_sq;
+    try std.testing.expectApproxEqAbs(TRINITY, result, 0.0001);
+}
+"""

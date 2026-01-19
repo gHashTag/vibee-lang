@@ -1,0 +1,285 @@
+// ═══════════════════════════════════════════════════════════════════════════════
+// VIM EDITOR - Vim-like Editor for VIBEE
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAS: PRE + D&C | φ² + 1/φ² = 3
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const std = @import("std");
+const mem = std.mem;
+const Allocator = mem.Allocator;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SACRED CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const PHI: f64 = 1.618033988749895;
+pub const TRINITY: f64 = 3.0;
+pub const PHOENIX: u32 = 999;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TYPES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const Mode = enum {
+    normal,
+    insert,
+    visual,
+    command,
+
+    pub fn toString(self: Mode) []const u8 {
+        return switch (self) {
+            .normal => "NORMAL",
+            .insert => "INSERT",
+            .visual => "VISUAL",
+            .command => "COMMAND",
+        };
+    }
+
+    pub fn statusChar(self: Mode) u8 {
+        return switch (self) {
+            .normal => 'N',
+            .insert => 'I',
+            .visual => 'V',
+            .command => ':',
+        };
+    }
+};
+
+pub const Cursor = struct {
+    line: usize,
+    col: usize,
+
+    pub fn move(self: *Cursor, dl: i32, dc: i32, max_line: usize, max_col: usize) void {
+        if (dl < 0 and self.line > 0) {
+            self.line -|= @intCast(@abs(dl));
+        } else if (dl > 0) {
+            self.line = @min(self.line + @as(usize, @intCast(dl)), max_line);
+        }
+
+        if (dc < 0 and self.col > 0) {
+            self.col -|= @intCast(@abs(dc));
+        } else if (dc > 0) {
+            self.col = @min(self.col + @as(usize, @intCast(dc)), max_col);
+        }
+    }
+};
+
+pub const Selection = struct {
+    start_line: usize,
+    start_col: usize,
+    end_line: usize,
+    end_col: usize,
+
+    pub fn contains(self: Selection, line: usize, col: usize) bool {
+        if (line < self.start_line or line > self.end_line) return false;
+        if (line == self.start_line and col < self.start_col) return false;
+        if (line == self.end_line and col > self.end_col) return false;
+        return true;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BUFFER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const Buffer = struct {
+    lines: std.ArrayList([]u8),
+    cursor: Cursor,
+    mode: Mode,
+    filename: [256]u8,
+    filename_len: usize,
+    modified: bool,
+    allocator: Allocator,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        var buf = Self{
+            .lines = std.ArrayList([]u8).init(allocator),
+            .cursor = Cursor{ .line = 0, .col = 0 },
+            .mode = .normal,
+            .filename = undefined,
+            .filename_len = 0,
+            .modified = false,
+            .allocator = allocator,
+        };
+        // Start with one empty line
+        buf.lines.append(allocator.alloc(u8, 0) catch &[_]u8{}) catch {};
+        return buf;
+    }
+
+    pub fn deinit(self: *Self) void {
+        for (self.lines.items) |line| {
+            self.allocator.free(line);
+        }
+        self.lines.deinit();
+    }
+
+    pub fn lineCount(self: *const Self) usize {
+        return self.lines.items.len;
+    }
+
+    pub fn currentLine(self: *const Self) []const u8 {
+        if (self.cursor.line < self.lines.items.len) {
+            return self.lines.items[self.cursor.line];
+        }
+        return "";
+    }
+
+    pub fn getFilename(self: *const Self) []const u8 {
+        return self.filename[0..self.filename_len];
+    }
+
+    pub fn setFilename(self: *Self, name: []const u8) void {
+        self.filename_len = @min(name.len, 256);
+        @memcpy(self.filename[0..self.filename_len], name[0..self.filename_len]);
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VIM ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const VimEngine = struct {
+    buffer: Buffer,
+    command_buffer: [256]u8,
+    command_len: usize,
+    last_command: u8,
+    count: usize,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return Self{
+            .buffer = Buffer.init(allocator),
+            .command_buffer = undefined,
+            .command_len = 0,
+            .last_command = 0,
+            .count = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.buffer.deinit();
+    }
+
+    pub fn handleKey(self: *Self, key: u8) void {
+        switch (self.buffer.mode) {
+            .normal => self.handleNormalMode(key),
+            .insert => self.handleInsertMode(key),
+            .visual => self.handleVisualMode(key),
+            .command => self.handleCommandMode(key),
+        }
+    }
+
+    fn handleNormalMode(self: *Self, key: u8) void {
+        switch (key) {
+            'h' => self.buffer.cursor.move(0, -1, 0, 1000),
+            'j' => self.buffer.cursor.move(1, 0, self.buffer.lineCount(), 0),
+            'k' => self.buffer.cursor.move(-1, 0, 0, 0),
+            'l' => self.buffer.cursor.move(0, 1, 0, 1000),
+            'i' => self.buffer.mode = .insert,
+            'v' => self.buffer.mode = .visual,
+            ':' => {
+                self.buffer.mode = .command;
+                self.command_len = 0;
+            },
+            else => {},
+        }
+        self.last_command = key;
+    }
+
+    fn handleInsertMode(self: *Self, key: u8) void {
+        if (key == 27) { // ESC
+            self.buffer.mode = .normal;
+        }
+        // In real implementation, would insert character
+    }
+
+    fn handleVisualMode(self: *Self, key: u8) void {
+        if (key == 27) { // ESC
+            self.buffer.mode = .normal;
+        }
+    }
+
+    fn handleCommandMode(self: *Self, key: u8) void {
+        if (key == 27) { // ESC
+            self.buffer.mode = .normal;
+        } else if (key == '\n' or key == '\r') {
+            // Execute command
+            self.buffer.mode = .normal;
+        } else if (self.command_len < 255) {
+            self.command_buffer[self.command_len] = key;
+            self.command_len += 1;
+        }
+    }
+
+    pub fn getMode(self: *const Self) Mode {
+        return self.buffer.mode;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "Mode toString" {
+    try std.testing.expectEqualStrings("NORMAL", Mode.normal.toString());
+    try std.testing.expectEqualStrings("INSERT", Mode.insert.toString());
+    try std.testing.expectEqualStrings("VISUAL", Mode.visual.toString());
+}
+
+test "Cursor move" {
+    var cursor = Cursor{ .line = 5, .col = 10 };
+    cursor.move(-1, 0, 100, 100);
+    try std.testing.expectEqual(@as(usize, 4), cursor.line);
+
+    cursor.move(0, 1, 100, 100);
+    try std.testing.expectEqual(@as(usize, 11), cursor.col);
+}
+
+test "Buffer init" {
+    const allocator = std.testing.allocator;
+    var buffer = Buffer.init(allocator);
+    defer buffer.deinit();
+
+    try std.testing.expectEqual(Mode.normal, buffer.mode);
+    try std.testing.expect(buffer.lineCount() >= 1);
+}
+
+test "VimEngine normal to insert" {
+    const allocator = std.testing.allocator;
+    var engine = VimEngine.init(allocator);
+    defer engine.deinit();
+
+    try std.testing.expectEqual(Mode.normal, engine.getMode());
+    engine.handleKey('i');
+    try std.testing.expectEqual(Mode.insert, engine.getMode());
+}
+
+test "VimEngine insert to normal" {
+    const allocator = std.testing.allocator;
+    var engine = VimEngine.init(allocator);
+    defer engine.deinit();
+
+    engine.handleKey('i');
+    try std.testing.expectEqual(Mode.insert, engine.getMode());
+    engine.handleKey(27); // ESC
+    try std.testing.expectEqual(Mode.normal, engine.getMode());
+}
+
+test "VimEngine command mode" {
+    const allocator = std.testing.allocator;
+    var engine = VimEngine.init(allocator);
+    defer engine.deinit();
+
+    engine.handleKey(':');
+    try std.testing.expectEqual(Mode.command, engine.getMode());
+}
+
+test "golden identity" {
+    const phi_sq = PHI * PHI;
+    const inv_phi_sq = 1.0 / phi_sq;
+    const result = phi_sq + inv_phi_sq;
+    try std.testing.expectApproxEqAbs(TRINITY, result, 0.0001);
+}
