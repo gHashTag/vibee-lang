@@ -151,12 +151,74 @@ Evolution factor: 1.85
 - Multi-agent systems
 - Ethical AGI
 
+## Auto Codegen (v36+)
+
+### Specification-First Development
+
+VIBEE использует подход "спецификация первична":
+
+```
+.vibee (spec) → vibeec compile → .zig (auto-generated)
+```
+
+### Пример
+
+```yaml
+# specs/tri/user.vibee
+name: user_service
+version: "1.0.0"
+
+types:
+  - name: User
+    fields:
+      - name: id
+        type: Int
+      - name: name
+        type: String
+
+behaviors:
+  - name: create_user
+    given: "Valid user data"
+    when: "create_user is called"
+    then: "Return new User"
+```
+
+### Генерация
+
+```bash
+vibeec compile specs/tri/user.vibee --target zig
+```
+
+### Результат
+
+```zig
+// AUTO-GENERATED from user.vibee
+pub const PHI: f64 = 1.618033988749895;
+pub const TRINITY: f64 = 3.0;
+
+pub const User = struct {
+    id: i64,
+    name: []const u8,
+};
+
+pub fn create_user() void {
+    // TODO: Implement based on specification
+}
+
+test "golden identity: φ² + 1/φ² = 3" {
+    // ...
+}
+```
+
+См. [Pipeline Architecture](docs/PIPELINE_ARCHITECTURE.md) для деталей.
+
 ## Документация
 
 ### .999 Language
 - [Quick Start](docs/QUICKSTART.md) - Get started in 5 minutes
 - [Tutorial](docs/TUTORIAL.md) - Full language tutorial
 - [API Reference](docs/API.md) - Complete API documentation
+- [Pipeline Architecture](docs/PIPELINE_ARCHITECTURE.md) - Auto codegen pipeline
 
 ### Research
 - [Desktop SWE Agent](docs/academic/DESKTOP_SWE_AGENT.md)
