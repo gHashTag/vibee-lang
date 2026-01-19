@@ -3,10 +3,11 @@
 # VIBEE AGENT - Self-Writing Code Terminal Agent
 # ═══════════════════════════════════════════════════════════════════════════════
 # φ² + 1/φ² = 3 | PHOENIX = 999
-# Multi-Model: Anthropic, OpenAI, Ollama
+# Multi-Model: Anthropic, OpenAI, DeepSeek, Ollama
 # ═══════════════════════════════════════════════════════════════════════════════
 
-set -e
+# Don't exit on error - handle gracefully
+set -o pipefail
 
 # Colors
 RED='\033[0;31m'
@@ -15,6 +16,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
+GRAY='\033[0;90m'
 NC='\033[0m' # No Color
 
 # Sacred constants
@@ -26,6 +28,48 @@ MAX_TOKENS="${VIBEE_MAX_TOKENS:-4096}"
 WORKDIR="${VIBEE_WORKDIR:-$(pwd)}"
 SESSION_DIR="${VIBEE_SESSION_DIR:-$HOME/.vibee/sessions}"
 CURRENT_SESSION=""
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ERROR HANDLING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+error() {
+    echo -e "${RED}❌ Error: $1${NC}" >&2
+}
+
+warn() {
+    echo -e "${YELLOW}⚠️  Warning: $1${NC}" >&2
+}
+
+info() {
+    echo -e "${CYAN}ℹ️  $1${NC}"
+}
+
+success() {
+    echo -e "${GREEN}✅ $1${NC}"
+}
+
+debug() {
+    if [ -n "$VIBEE_DEBUG" ]; then
+        echo -e "${GRAY}[DEBUG] $1${NC}" >&2
+    fi
+}
+
+# Safe JSON parsing
+safe_jq() {
+    local input="$1"
+    local query="$2"
+    local default="${3:-}"
+    
+    local result
+    result=$(echo "$input" | jq -r "$query" 2>/dev/null) || result="$default"
+    
+    if [ "$result" = "null" ] || [ -z "$result" ]; then
+        echo "$default"
+    else
+        echo "$result"
+    fi
+}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PROVIDER DETECTION
@@ -105,13 +149,16 @@ switch_provider() {
 # BANNER
 # ═══════════════════════════════════════════════════════════════════════════════
 
+VERSION="1.1.0"
+
 print_banner() {
-    echo -e "${MAGENTA}"
-    echo "  ╔═══════════════════════════════════════════════════════════╗"
-    echo "  ║  VIBEE AGENT v1.0.0 - Self-Writing Code                   ║"
-    echo "  ║  φ² + 1/φ² = 3 | PHOENIX = 999                            ║"
-    echo "  ╚═══════════════════════════════════════════════════════════╝"
-    echo -e "${NC}"
+    echo ""
+    echo -e "${CYAN}  ╔═══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}  ║${NC}  ${MAGENTA}VIBEE AGENT${NC} v${VERSION}                                    ${CYAN}║${NC}"
+    echo -e "${CYAN}  ║${NC}  Self-Writing Code Terminal Agent                        ${CYAN}║${NC}"
+    echo -e "${CYAN}  ║${NC}  ${YELLOW}φ² + 1/φ² = 3${NC} │ ${GREEN}PHOENIX = 999${NC}                        ${CYAN}║${NC}"
+    echo -e "${CYAN}  ╚═══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -122,17 +169,23 @@ check_api_key() {
     detect_provider
     
     if [ "$PROVIDER" = "none" ]; then
-        echo -e "${RED}❌ No AI provider configured${NC}"
+        echo -e "${RED}┌─────────────────────────────────────────────────────────────┐${NC}"
+        echo -e "${RED}│  ❌ No AI provider configured                               │${NC}"
+        echo -e "${RED}└─────────────────────────────────────────────────────────────┘${NC}"
         echo ""
-        echo "Set one of these:"
-        echo "  export ANTHROPIC_API_KEY=sk-ant-your-key    # Claude"
-        echo "  export OPENAI_API_KEY=sk-your-key          # GPT-4"
-        echo "  ollama serve                                # Local Ollama"
+        echo -e "${YELLOW}Set one of these environment variables:${NC}"
+        echo ""
+        echo -e "  ${CYAN}export ANTHROPIC_API_KEY=sk-ant-...${NC}    # Claude"
+        echo -e "  ${CYAN}export DEEPSEEK_API_KEY=sk-...${NC}         # DeepSeek"
+        echo -e "  ${CYAN}export OPENAI_API_KEY=sk-...${NC}           # GPT-4"
+        echo -e "  ${CYAN}ollama serve${NC}                            # Local Ollama"
         echo ""
         exit 1
     fi
     
-    echo -e "${GREEN}✅ Provider: $PROVIDER ($MODEL)${NC}"
+    echo -e "${GREEN}┌─ Provider ─────────────────────────────────────────────────┐${NC}"
+    echo -e "${GREEN}│${NC}  ${CYAN}$PROVIDER${NC} (${YELLOW}$MODEL${NC})"
+    echo -e "${GREEN}└─────────────────────────────────────────────────────────────┘${NC}"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -207,11 +260,29 @@ execute_tool() {
     local tool_name="$1"
     local tool_input="$2"
     
+    # Validate JSON input
+    if ! echo "$tool_input" | jq . >/dev/null 2>&1; then
+        echo "Error: Invalid JSON input for tool $tool_name"
+        return 1
+    fi
+    
     case "$tool_name" in
         "read_file")
-            local path=$(echo "$tool_input" | jq -r '.path')
+            local path
+            path=$(safe_jq "$tool_input" '.path' '')
+            if [ -z "$path" ]; then
+                echo "Error: Missing 'path' parameter"
+                return 1
+            fi
             if [ -f "$path" ]; then
-                cat "$path" 2>&1 | head -500
+                # Limit output and handle binary files
+                if file "$path" | grep -q "text"; then
+                    head -500 "$path" 2>&1
+                else
+                    echo "[Binary file: $(file -b "$path")]"
+                fi
+            elif [ -d "$path" ]; then
+                echo "Error: '$path' is a directory, use list_files instead"
             else
                 echo "Error: File not found: $path"
             fi
@@ -392,8 +463,8 @@ convert_deepseek_response() {
             local tool_id="deepseek_$(date +%s)"
             content="[{\"type\": \"tool_use\", \"id\": \"$tool_id\", \"name\": \"$tool_name\", \"input\": $tool_input}]"
             
-            # Add any text before the tool call
-            local pre_text=$(echo "$text" | sed -n '1,/TOOL_CALL:/p' | head -n -1)
+            # Add any text before the tool call (macOS compatible)
+            local pre_text=$(echo "$text" | sed -n '1,/TOOL_CALL:/p' | sed '$d')
             if [ -n "$pre_text" ]; then
                 content=$(echo "$content" | jq --arg t "$pre_text" '. + [{type: "text", text: $t}]')
             fi
@@ -614,16 +685,30 @@ run_agent() {
                 local tool_name=$(echo "$block" | jq -r '.name')
                 local tool_input=$(echo "$block" | jq -c '.input')
                 
-                echo -e "\n${YELLOW}🔧 Tool: $tool_name${NC}"
-                echo -e "${CYAN}   Input: $tool_input${NC}"
+                echo ""
+                echo -e "${YELLOW}┌─ Tool: $tool_name ─────────────────────────────────────────┐${NC}"
+                echo -e "${GRAY}│ Input: $tool_input${NC}"
+                echo -e "${YELLOW}├─────────────────────────────────────────────────────────────┤${NC}"
                 
                 # Execute tool
-                local result=$(execute_tool "$tool_name" "$tool_input")
-                echo -e "${CYAN}   Result: ${NC}"
-                echo "$result" | head -20
+                local result
+                result=$(execute_tool "$tool_name" "$tool_input" 2>&1)
+                local exit_code=$?
                 
-                assistant_content=$(echo "$assistant_content" | jq ". + [$block]")
-                tool_results=$(echo "$tool_results" | jq ". + [{\"type\": \"tool_result\", \"tool_use_id\": \"$tool_id\", \"content\": $(echo "$result" | jq -Rs .)}]")
+                if [ $exit_code -eq 0 ]; then
+                    echo -e "${GREEN}│ Result:${NC}"
+                else
+                    echo -e "${RED}│ Error:${NC}"
+                fi
+                echo "$result" | head -20 | sed 's/^/│ /'
+                echo -e "${YELLOW}└─────────────────────────────────────────────────────────────┘${NC}"
+                
+                # Safely encode result as JSON string
+                local result_json
+                result_json=$(printf '%s' "$result" | jq -Rs . 2>/dev/null || echo '"[Error encoding result]"')
+                
+                assistant_content=$(echo "$assistant_content" | jq ". + [$block]" 2>/dev/null || echo "[]")
+                tool_results=$(echo "$tool_results" | jq ". + [{\"type\": \"tool_result\", \"tool_use_id\": \"$tool_id\", \"content\": $result_json}]" 2>/dev/null || echo "[]")
             fi
         done <<< "$content"
         
@@ -663,36 +748,45 @@ interactive_mode() {
     print_banner
     check_api_key
     init_session
-    echo -e "${CYAN}Workdir: $WORKDIR${NC}"
+    
+    echo -e "${GRAY}┌─ Session ──────────────────────────────────────────────────┐${NC}"
+    echo -e "${GRAY}│${NC} ${CYAN}$CURRENT_SESSION${NC}"
+    echo -e "${GRAY}│${NC} Workdir: ${YELLOW}$WORKDIR${NC}"
+    echo -e "${GRAY}└─────────────────────────────────────────────────────────────┘${NC}"
     echo ""
-    echo "Type your request. Commands: /help"
+    echo -e "Type your request or ${CYAN}/help${NC} for commands"
     echo ""
     
     while true; do
-        echo -ne "${MAGENTA}△ > ${NC}"
+        echo -ne "${MAGENTA}vibee>${NC} "
         read -r input
         
         [ -z "$input" ] && continue
         
         case "$input" in
             /quit|/exit|/q)
-                echo -e "\n${GREEN}Goodbye! φ² + 1/φ² = 3${NC}"
+                echo ""
+                echo -e "${GREEN}┌─────────────────────────────────────────────────────────────┐${NC}"
+                echo -e "${GREEN}│${NC}  Goodbye! ${YELLOW}φ² + 1/φ² = 3${NC}                                    ${GREEN}│${NC}"
+                echo -e "${GREEN}└─────────────────────────────────────────────────────────────┘${NC}"
                 exit 0
                 ;;
             /help|/h)
                 echo ""
-                echo "Commands:"
-                echo "  /quit              Exit"
-                echo "  /help              Show help"
-                echo "  /clear             Clear screen"
-                echo "  /model <name>      Switch model"
-                echo "  /provider <name>   Switch provider (anthropic, openai, ollama)"
-                echo "  /sessions          List sessions"
-                echo "  /status            Show current status"
-                echo ""
-                echo "Providers:"
-                echo "  anthropic  Claude (ANTHROPIC_API_KEY)"
-                echo "  openai     GPT-4 (OPENAI_API_KEY)"
+                echo -e "${CYAN}┌─ Commands ─────────────────────────────────────────────────┐${NC}"
+                echo -e "${CYAN}│${NC}  ${YELLOW}/quit${NC}              Exit"
+                echo -e "${CYAN}│${NC}  ${YELLOW}/help${NC}              Show this help"
+                echo -e "${CYAN}│${NC}  ${YELLOW}/clear${NC}             Clear screen"
+                echo -e "${CYAN}│${NC}  ${YELLOW}/model${NC} <name>      Switch model"
+                echo -e "${CYAN}│${NC}  ${YELLOW}/provider${NC} <name>   Switch provider"
+                echo -e "${CYAN}│${NC}  ${YELLOW}/sessions${NC}          List sessions"
+                echo -e "${CYAN}│${NC}  ${YELLOW}/status${NC}            Show current status"
+                echo -e "${CYAN}├─ Providers ────────────────────────────────────────────────┤${NC}"
+                echo -e "${CYAN}│${NC}  ${GREEN}anthropic${NC}  Claude (ANTHROPIC_API_KEY)"
+                echo -e "${CYAN}│${NC}  ${GREEN}deepseek${NC}   DeepSeek (DEEPSEEK_API_KEY)"
+                echo -e "${CYAN}│${NC}  ${GREEN}openai${NC}     GPT-4 (OPENAI_API_KEY)"
+                echo -e "${CYAN}│${NC}  ${GREEN}ollama${NC}     Local (ollama serve)"
+                echo -e "${CYAN}└─────────────────────────────────────────────────────────────┘${NC}"
                 echo "  ollama     Local (ollama serve)"
                 echo ""
                 ;;
