@@ -1,0 +1,419 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# VIBEE SPECIFICATION: Agent Code Editor with Diff View
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# 
+# Inspired by:
+#   - WeDLM (Tencent WeChat AI) - Diffusion Language Model, 3-10x speedup
+#   - Monaco Editor - VS Code's editor
+#   - diff-match-patch - Google's diff algorithm
+#
+# Scientific References:
+#   [1] Liu et al. (2025) "WeDLM: Reconciling Diffusion Language Models" arXiv:2512.22737
+#   [2] Austin et al. (2021) "Structured Denoising Diffusion Models" NeurIPS
+#   [3] Li et al. (2022) "Diffusion-LM Improves Controllable Text Generation" NeurIPS
+#   [4] Myers (1986) "An O(ND) Difference Algorithm" Algorithmica
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: agent_code_editor
+version: "1.0.0"
+language: zig
+module: code_editor
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREATION PATTERN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+creation_pattern:
+  source: FileContent
+  transformer: DiffusionEditor
+  result: EditedFile
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS DAEMONS PATTERNS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_patterns:
+  - pattern: D&C
+    application: "Myers diff algorithm - O(ND) complexity"
+    expected_speedup: "2x vs naive O(n²)"
+    
+  - pattern: PRE
+    application: "Pre-computed syntax highlighting rules"
+    expected_speedup: "10x vs runtime parsing"
+    
+  - pattern: MLS
+    application: "WeDLM diffusion for parallel token generation"
+    expected_speedup: "3-10x vs autoregressive"
+    
+  - pattern: FDT
+    application: "Streaming diff updates"
+    expected_speedup: "Real-time feedback"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATA STRUCTURES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # Diff operation types
+  DiffOp:
+    enum:
+      - equal    # No change
+      - insert   # Added line
+      - delete   # Removed line
+      - modify   # Changed line
+  
+  # Single diff hunk
+  DiffHunk:
+    fields:
+      - name: op
+        type: DiffOp
+      - name: old_start
+        type: u32
+      - name: old_count
+        type: u32
+      - name: new_start
+        type: u32
+      - name: new_count
+        type: u32
+      - name: old_lines
+        type: "[][]u8"
+      - name: new_lines
+        type: "[][]u8"
+  
+  # Complete diff result
+  DiffResult:
+    fields:
+      - name: hunks
+        type: "[]DiffHunk"
+      - name: additions
+        type: u32
+      - name: deletions
+        type: u32
+      - name: file_path
+        type: "[]u8"
+  
+  # Syntax token for highlighting
+  SyntaxToken:
+    fields:
+      - name: start
+        type: u32
+      - name: end
+        type: u32
+      - name: token_type
+        type: TokenType
+  
+  TokenType:
+    enum:
+      - keyword
+      - string
+      - number
+      - comment
+      - function
+      - variable
+      - operator
+      - punctuation
+      - type_name
+      - constant
+  
+  # Editor state
+  EditorState:
+    fields:
+      - name: content
+        type: "[]u8"
+      - name: cursor_line
+        type: u32
+      - name: cursor_col
+        type: u32
+      - name: selection_start
+        type: "?Position"
+      - name: selection_end
+        type: "?Position"
+      - name: syntax_tokens
+        type: "[]SyntaxToken"
+      - name: diff_hunks
+        type: "[]DiffHunk"
+  
+  Position:
+    fields:
+      - name: line
+        type: u32
+      - name: col
+        type: u32
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DIFF COMPUTATION (Myers Algorithm)
+  # ─────────────────────────────────────────────────────────────────────────────
+  
+  - name: compute_diff
+    description: "Compute diff between old and new content using Myers algorithm"
+    given: "Two text contents (old and new)"
+    when: "User requests diff or agent modifies file"
+    then: "Return list of diff hunks with additions/deletions"
+    
+    algorithm: |
+      // Myers O(ND) diff algorithm
+      // D = number of differences, N = total length
+      
+      1. Build edit graph
+      2. Find shortest edit script (SES)
+      3. Group consecutive operations into hunks
+      4. Calculate line-level changes
+      
+    test_cases:
+      - name: simple_addition
+        input:
+          old: "line1\nline2"
+          new: "line1\nline2\nline3"
+        expected:
+          additions: 1
+          deletions: 0
+          hunks_count: 1
+          
+      - name: simple_deletion
+        input:
+          old: "line1\nline2\nline3"
+          new: "line1\nline3"
+        expected:
+          additions: 0
+          deletions: 1
+          hunks_count: 1
+          
+      - name: modification
+        input:
+          old: "const x = 1;"
+          new: "const x = 2;"
+        expected:
+          additions: 1
+          deletions: 1
+          hunks_count: 1
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SYNTAX HIGHLIGHTING
+  # ─────────────────────────────────────────────────────────────────────────────
+  
+  - name: highlight_syntax
+    description: "Tokenize code for syntax highlighting"
+    given: "Source code content and language"
+    when: "Editor displays code"
+    then: "Return list of syntax tokens with types"
+    
+    supported_languages:
+      - zig
+      - vibee
+      - python
+      - rust
+      - javascript
+    
+    test_cases:
+      - name: zig_keywords
+        input:
+          content: "const x: u32 = 42;"
+          language: "zig"
+        expected:
+          tokens:
+            - type: keyword
+              text: "const"
+            - type: variable
+              text: "x"
+            - type: type_name
+              text: "u32"
+            - type: number
+              text: "42"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DIFF VIEW RENDERING
+  # ─────────────────────────────────────────────────────────────────────────────
+  
+  - name: render_diff_view
+    description: "Render side-by-side or unified diff view"
+    given: "DiffResult and view mode"
+    when: "Agent shows file changes"
+    then: "Return formatted diff output with colors"
+    
+    view_modes:
+      - unified    # git diff style
+      - split      # side-by-side
+      - inline     # inline changes
+    
+    colors:
+      addition: green
+      deletion: red
+      modification: yellow
+      context: gray
+    
+    test_cases:
+      - name: unified_view
+        input:
+          diff:
+            hunks:
+              - op: delete
+                old_lines: ["old line"]
+              - op: insert
+                new_lines: ["new line"]
+          mode: unified
+        expected:
+          output_contains:
+            - "- old line"
+            - "+ new line"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STREAMING DIFF (Real-time)
+  # ─────────────────────────────────────────────────────────────────────────────
+  
+  - name: stream_diff_updates
+    description: "Stream diff updates as agent generates code"
+    given: "Initial content and token stream"
+    when: "Agent generates code with WeDLM/diffusion"
+    then: "Emit incremental diff updates"
+    
+    streaming_protocol: SSE
+    
+    events:
+      - type: diff_start
+        payload: file_path
+      - type: diff_hunk
+        payload: DiffHunk
+      - type: diff_complete
+        payload: DiffResult
+    
+    test_cases:
+      - name: streaming_addition
+        input:
+          initial: "line1"
+          tokens: ["line2", "line3"]
+        expected:
+          events_count: 3  # start + 2 hunks + complete
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DIFFUSION INTEGRATION (WeDLM-style)
+  # ─────────────────────────────────────────────────────────────────────────────
+  
+  - name: diffusion_code_generation
+    description: "Generate code using diffusion model with parallel decoding"
+    given: "Prompt and context"
+    when: "Agent needs to generate/modify code"
+    then: "Generate tokens in parallel with 3-10x speedup"
+    
+    algorithm: |
+      // WeDLM-style diffusion decoding
+      // Key insight: Topological Reordering for causal attention
+      
+      1. Initialize masked sequence
+      2. For each diffusion step:
+         a. Predict all masked positions in parallel
+         b. Commit high-confidence tokens to prefix
+         c. Reorder: move committed tokens to left
+         d. Continue until all tokens committed
+      
+    parameters:
+      - name: num_steps
+        type: u32
+        default: 10
+        description: "Number of diffusion steps"
+      - name: confidence_threshold
+        type: f32
+        default: 0.9
+        description: "Threshold for committing tokens"
+      - name: parallel_tokens
+        type: u32
+        default: 8
+        description: "Max tokens to generate in parallel"
+    
+    test_cases:
+      - name: parallel_generation
+        input:
+          prompt: "fn add(a: i32, b: i32) -> i32"
+          num_steps: 5
+        expected:
+          speedup_vs_ar: ">= 3.0"
+          quality_preserved: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  PHI: 1.618033988749895
+  PHOENIX: 999
+  TRINITY: 3
+  
+  # Diff colors (ANSI)
+  COLOR_RED: "\x1b[31m"
+  COLOR_GREEN: "\x1b[32m"
+  COLOR_YELLOW: "\x1b[33m"
+  COLOR_GRAY: "\x1b[90m"
+  COLOR_RESET: "\x1b[0m"
+  
+  # Box drawing
+  BOX_TOP_LEFT: "┌"
+  BOX_TOP_RIGHT: "┐"
+  BOX_BOTTOM_LEFT: "└"
+  BOX_BOTTOM_RIGHT: "┘"
+  BOX_HORIZONTAL: "─"
+  BOX_VERTICAL: "│"
+  BOX_T_RIGHT: "├"
+  BOX_T_LEFT: "┤"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SCIENTIFIC REFERENCES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+references:
+  - id: wedlm
+    authors: "Liu et al."
+    year: 2025
+    title: "WeDLM: Reconciling Diffusion Language Models with Standard Causal Attention"
+    venue: "arXiv:2512.22737"
+    contribution: "3-10x speedup via parallel diffusion decoding"
+    
+  - id: diffusion_lm
+    authors: "Li et al."
+    year: 2022
+    title: "Diffusion-LM Improves Controllable Text Generation"
+    venue: "NeurIPS 2022"
+    contribution: "Foundation for diffusion language models"
+    
+  - id: d3pm
+    authors: "Austin et al."
+    year: 2021
+    title: "Structured Denoising Diffusion Models in Discrete State-Spaces"
+    venue: "NeurIPS 2021"
+    contribution: "Discrete diffusion for text"
+    
+  - id: myers_diff
+    authors: "Myers"
+    year: 1986
+    title: "An O(ND) Difference Algorithm and Its Variations"
+    venue: "Algorithmica"
+    contribution: "Optimal diff algorithm"
+    
+  - id: mdlm
+    authors: "Sahoo et al."
+    year: 2024
+    title: "Simple and Effective Masked Diffusion Language Models"
+    venue: "NeurIPS 2024"
+    contribution: "Simplified diffusion LM training"
+    
+  - id: plaid
+    authors: "Gulrajani & Hashimoto"
+    year: 2024
+    title: "Likelihood-Based Diffusion Language Models"
+    venue: "NeurIPS 2024"
+    contribution: "Improved likelihood estimation"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# METADATA
+# ═══════════════════════════════════════════════════════════════════════════════
+
+metadata:
+  author: "Dmitrii Vasilev"
+  created: "2026-01-20"
+  pas_confidence: 0.75
+  target_speedup: "3-10x"
+  sacred_formula: "V = n × 3^k × π^m × φ^p × e^q"

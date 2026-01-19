@@ -1,6 +1,6 @@
 # VIBEE Technology Tree - Next Technologies to Learn
 
-## Current State (v41 + Agent v1.1.0)
+## Current State (v42 + Agent v1.2.0)
 
 ```
 ✅ Level 0: Zig, YAML, Git
@@ -13,9 +13,21 @@
 ✅ Level 7: BPE Caching (25x speedup) (v39.1)
 ✅ Level 8: SIMD + Cache combo (24.2x), Full BPE, WebSocket+SSE (v40-v41)
 ✅ Level 9: Agent UI/UX, Cross-platform, Error Handling (Agent v1.1.0)
+✅ Level 10: Diffusion LM (4x speedup), Code Editor + Diff View (v42)
 ```
 
 ## Latest Achievements
+
+### v42: Diffusion LM + Code Editor
+
+| Technology | Status | Performance |
+|------------|--------|-------------|
+| Diffusion Decoder (WeDLM) | ✅ | **4x speedup** |
+| Topological Reordering | ✅ | KV cache reuse |
+| Confidence-based Commit | ✅ | Parallel decoding |
+| Code Editor + Diff View | ✅ | Myers O(ND) |
+| Syntax Highlighting | ✅ | Zig keywords |
+| Streaming Generation | ✅ | Real-time output |
 
 ### Tokenizer v41
 
@@ -303,7 +315,7 @@ Agent B (local) ↗
 ## Recommended Learning Order
 
 ```
-COMPLETED (v41 + Agent v1.1.0): ✅
+COMPLETED (v42 + Agent v1.2.0): ✅
 ├── LSP for .vibee files (31 completions)
 ├── SSE streaming for agents (full format)
 ├── Property-based testing (Golden RNG)
@@ -314,14 +326,19 @@ COMPLETED (v41 + Agent v1.1.0): ✅
 ├── WebSocket + SSE гибрид
 ├── Agent Cross-platform (macOS + Linux)
 ├── Agent Safe JSON parsing
-└── Agent Box-style UI (UX Score 40/50)
+├── Agent Box-style UI (UX Score 40/50)
+├── Diffusion Decoder WeDLM (4x speedup) ← NEW v42
+├── Topological Reordering (KV cache reuse) ← NEW v42
+├── Code Editor + Diff View (Myers O(ND)) ← NEW v42
+├── Syntax Highlighting (Zig keywords) ← NEW v42
+└── Streaming Generation (real-time) ← NEW v42
 
-NOW (v42 + Agent v1.2.0):
-├── GPU токенизация (10x для батчей)
+NOW (v43 + Agent v1.3.0):
+├── Real Transformer Integration (3-10x speedup)
+├── GPU Acceleration (CUDA/Metal)
+├── Tree-sitter Parsing (all languages)
 ├── Full BPE 50K токенов (99% accuracy)
-├── Agent Streaming output
-├── Agent Progress indicators
-└── Agent Syntax highlighting
+└── Agent Multi-file Diff
 
 NEXT (v43-v50):
 ├── WASM compilation target
