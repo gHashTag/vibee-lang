@@ -1,0 +1,227 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# WeDLM INTEGRATED - Full WeDLM + TransformerBackend Integration
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3 | PHOENIX = 999 = 3³ × 37
+# Combines WeDLM streaming parallel decoding with real transformer backend
+# Target: 3-10x speedup with production-ready inference
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: wedlm_integrated
+version: "1.0.0"
+language: zig
+module: trinity.wedlm_integrated
+
+imports:
+  - transformer_backend
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREATION PATTERN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+creation_pattern:
+  source: PromptTokens
+  transformer: IntegratedWeDLMDecoder
+  result: GeneratedSequence
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  PHI: 1.618033988749895
+  PHOENIX: 999
+  TRINITY: 3
+  
+  # WeDLM defaults
+  DEFAULT_WINDOW_SIZE: 16
+  DEFAULT_CONFIDENCE_THRESHOLD: 0.85
+  DEFAULT_DISTANCE_PENALTY: 0.1
+  DEFAULT_TEMPERATURE: 1.0
+  MASK_TOKEN: 50256
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  WeDLMConfig:
+    window_size: u32
+    confidence_threshold: f32
+    distance_penalty: f32
+    temperature: f32
+    max_steps: u32
+    
+  Token:
+    id: u32
+    confidence: f32
+    position: u32
+    committed: bool
+    
+  GenerationResult:
+    tokens: []u32
+    stats: GenerationStats
+    allocator: Allocator
+    
+  GenerationStats:
+    total_tokens: u32
+    steps_taken: u32
+    tokens_per_step: f32
+    speedup_vs_ar: f32
+    cache_hit_rate: f32
+    avg_confidence: f32
+    backend_tps: f64
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMPONENTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+components:
+  IntegratedWeDLMDecoder:
+    description: |
+      Full WeDLM decoder integrated with TransformerBackend.
+      Implements streaming parallel decoding with real model inference.
+      
+    fields:
+      config: WeDLMConfig
+      model_config: ModelConfig
+      backend: TransformerBackend
+      allocator: Allocator
+      total_confidence: f32
+      confidence_count: u32
+      
+    methods:
+      init:
+        input: allocator Allocator, wedlm_config WeDLMConfig, model_config ModelConfig
+        output: IntegratedWeDLMDecoder
+        algorithm: |
+          1. Create TransformerBackend via BackendFactory
+          2. Initialize stats tracking
+          3. Return decoder
+          
+      deinit:
+        description: Release backend and resources
+        
+      generate:
+        input: prompt []u32, max_new_tokens u32
+        output: GenerationResult
+        algorithm: |
+          1. Initialize generated list with prompt
+          2. Create sliding window with MASK tokens
+          3. While not done:
+             a. Prepare input for transformer
+             b. Forward pass through backend
+             c. Compute confidence from logits (softmax)
+             d. Apply distance penalty
+             e. Select and commit tokens
+             f. Add committed to generated
+             g. Refill window
+          4. Compute final stats
+          5. Return result
+          
+      computeConfidence:
+        input: logits []f32
+        output: confidence f32
+        algorithm: |
+          1. Find max logit
+          2. Compute softmax denominator
+          3. Return scaled max probability
+          
+      sampleToken:
+        input: logits []f32
+        output: token_id u32
+        algorithm: |
+          Greedy sampling: return argmax
+          
+      selectAndCommit:
+        input: window []Token, prefix_end u32
+        output: committed_count u32
+        algorithm: |
+          1. For each token in window:
+             - Compute score with distance penalty
+             - If above threshold and contiguous: commit
+          2. Return count
+          
+      refillWindow:
+        input: window []Token, new_start u32
+        algorithm: |
+          1. Shift uncommitted tokens left
+          2. Fill rest with new MASK tokens
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS (BDD)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: basic_generation
+    given: Initialized decoder with simulated backend
+    when: generate is called with prompt
+    then: Returns generated tokens
+    test_cases:
+      - name: generate_20_tokens
+        input:
+          prompt: [1, 2, 3, 4, 5]
+          max_new_tokens: 20
+          window_size: 8
+          confidence_threshold: 0.5
+        expected:
+          tokens_generated: ">0"
+          steps_taken: ">0"
+          
+  - name: onnx_backend_generation
+    given: Decoder with ONNX backend
+    when: generate is called
+    then: Returns generated tokens using ONNX
+    test_cases:
+      - name: generate_with_onnx
+        input:
+          prompt: [10, 20, 30]
+          max_new_tokens: 50
+          backend_type: ONNX
+          model_path: "gpt2.onnx"
+        expected:
+          tokens_generated: ">0"
+          
+  - name: end_to_end_benchmark
+    given: Decoder with aggressive settings
+    when: generate is called for 100 tokens
+    then: Shows theoretical speedup vs AR
+    test_cases:
+      - name: benchmark_100_tokens
+        input:
+          prompt: [1, 2, 3]
+          max_new_tokens: 100
+          window_size: 32
+          confidence_threshold: 0.3
+          distance_penalty: 0.02
+        expected:
+          tokens_generated: ">0"
+          print_benchmark: true
+          
+  - name: golden_identity
+    given: Sacred constant PHI
+    when: Golden identity is computed
+    then: φ² + 1/φ² = 3
+    test_cases:
+      - name: verify_identity
+        input:
+          phi: 1.618033988749895
+        expected:
+          result: 3.0
+          tolerance: 0.0001
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GENERATION CONFIG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+generation:
+  output_path: "trinity/output/wedlm_integrated.zig"
+  
+  features:
+    - integrated_decoder
+    - confidence_computation
+    - distance_penalty
+    - sliding_window
+    - benchmark_output
+    
+  imports:
+    - transformer_backend
