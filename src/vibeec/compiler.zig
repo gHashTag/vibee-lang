@@ -317,6 +317,9 @@ pub fn main() !u8 {
         evalTernary(args[2]);
         return 0;
     } else if (std.mem.eql(u8, cmd, "agent")) {
+        // Launch the bash agent with tool calling
+        return launchAgent(allocator, args);
+    } else if (std.mem.eql(u8, cmd, "status")) {
         printAgentStatus();
         return 0;
     } else if (std.mem.eql(u8, cmd, "chat")) {
@@ -342,28 +345,27 @@ fn printSimpleHelp() void {
         \\  ╚═══════════════════════════════════════════════════════════╝
         \\
         \\  COMMANDS:
-        \\    chat              Start interactive AI chat (requires API key)
+        \\    agent [task]      Start AI agent (writes code!) - requires API key
+        \\    chat              Simple AI chat (no tools)
         \\    config            Show API configuration status
+        \\    status            Show agent status
         \\    gen <file.vibee>  Generate .zig from .vibee specification
         \\    pas               Show PAS DAEMONS patterns
         \\    phi               Show sacred constants
         \\    eval "expr"       Evaluate ternary logic expression
-        \\    agent             Show agent status
         \\    help              Show this help
         \\    version           Show version
         \\
         \\  ENVIRONMENT VARIABLES:
-        \\    ANTHROPIC_API_KEY   Claude API key
-        \\    OPENAI_API_KEY      OpenAI API key
-        \\    OLLAMA_HOST         Ollama server (default: http://localhost:11434)
+        \\    ANTHROPIC_API_KEY   Claude API key (required for agent)
         \\
         \\  TERNARY LOGIC (Kleene K₃):
         \\    △ = TRUE    ○ = UNKNOWN    ▽ = FALSE
         \\
         \\  EXAMPLES:
-        \\    vibeec chat
+        \\    vibeec agent                        # Interactive agent mode
+        \\    vibeec agent "Create hello.zig"    # Single task
         \\    vibeec gen specs/terminal_agent.vibee
-        \\    vibeec eval "△ ∧ ○"
         \\
     , .{}) catch {};
 }
@@ -665,6 +667,37 @@ fn printChatHelp() void {
         \\  Just type your message to chat with AI.
         \\
     , .{}) catch {};
+}
+
+fn launchAgent(allocator: std.mem.Allocator, args: []const []const u8) !u8 {
+    // Build command for vibee-agent
+    var argv = std.ArrayList([]const u8).init(allocator);
+    defer argv.deinit();
+    
+    // Find the agent script relative to the binary
+    try argv.append("bin/vibee-agent");
+    
+    // Pass remaining arguments
+    if (args.len > 2) {
+        for (args[2..]) |arg| {
+            try argv.append(arg);
+        }
+    }
+    
+    // Execute
+    var child = std.process.Child.init(argv.items, allocator);
+    child.stdin_behavior = .Inherit;
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
+    
+    _ = child.spawnAndWait() catch |err| {
+        const stdout = std.io.getStdOut().writer();
+        stdout.print("Failed to launch agent: {}\n", .{err}) catch {};
+        stdout.print("\nRun directly: ./bin/vibee-agent\n", .{}) catch {};
+        return 1;
+    };
+    
+    return 0;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
