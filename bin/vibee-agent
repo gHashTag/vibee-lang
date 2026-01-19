@@ -36,6 +36,10 @@ detect_provider() {
         PROVIDER="anthropic"
         MODEL="${VIBEE_MODEL:-claude-sonnet-4-20250514}"
         API_URL="https://api.anthropic.com/v1/messages"
+    elif [ -n "$DEEPSEEK_API_KEY" ]; then
+        PROVIDER="deepseek"
+        MODEL="${VIBEE_MODEL:-deepseek-chat}"
+        API_URL="https://api.deepseek.com/v1/chat/completions"
     elif [ -n "$OPENAI_API_KEY" ]; then
         PROVIDER="openai"
         MODEL="${VIBEE_MODEL:-gpt-4o}"
@@ -64,6 +68,15 @@ switch_provider() {
             MODEL="${2:-claude-sonnet-4-20250514}"
             API_URL="https://api.anthropic.com/v1/messages"
             ;;
+        deepseek)
+            if [ -z "$DEEPSEEK_API_KEY" ]; then
+                echo -e "${RED}DEEPSEEK_API_KEY not set${NC}"
+                return 1
+            fi
+            PROVIDER="deepseek"
+            MODEL="${2:-deepseek-chat}"
+            API_URL="https://api.deepseek.com/v1/chat/completions"
+            ;;
         openai|gpt)
             if [ -z "$OPENAI_API_KEY" ]; then
                 echo -e "${RED}OPENAI_API_KEY not set${NC}"
@@ -81,7 +94,7 @@ switch_provider() {
             ;;
         *)
             echo -e "${RED}Unknown provider: $new_provider${NC}"
-            echo "Available: anthropic, openai, ollama"
+            echo "Available: anthropic, deepseek, openai, ollama"
             return 1
             ;;
     esac
@@ -243,6 +256,9 @@ call_llm() {
         anthropic)
             call_anthropic "$messages"
             ;;
+        deepseek)
+            call_deepseek "$messages"
+            ;;
         openai)
             call_openai "$messages"
             ;;
@@ -253,6 +269,29 @@ call_llm() {
             echo '{"error": {"message": "No provider configured"}}'
             ;;
     esac
+}
+
+call_deepseek() {
+    local messages="$1"
+    
+    # DeepSeek uses OpenAI-compatible API
+    local deepseek_messages=$(echo "$messages" | jq '[{role: "system", content: "'"$SYSTEM_PROMPT"'"} ] + .')
+    
+    # Convert tools to OpenAI format
+    local openai_tools=$(echo "$TOOLS" | jq '[.[] | {type: "function", function: {name: .name, description: .description, parameters: .input_schema}}]')
+    
+    local response=$(curl -s https://api.deepseek.com/v1/chat/completions \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
+        -d "{
+            \"model\": \"$MODEL\",
+            \"max_tokens\": $MAX_TOKENS,
+            \"tools\": $openai_tools,
+            \"messages\": $deepseek_messages
+        }")
+    
+    # Convert to Anthropic format for unified processing
+    convert_openai_response "$response"
 }
 
 call_anthropic() {
@@ -572,8 +611,9 @@ case "${1:-}" in
         echo ""
         echo "Providers (auto-detected):"
         echo "  ANTHROPIC_API_KEY  Claude (claude-sonnet-4-20250514)"
+        echo "  DEEPSEEK_API_KEY   DeepSeek (deepseek-chat) - CHEAPEST"
         echo "  OPENAI_API_KEY     GPT-4 (gpt-4o)"
-        echo "  OLLAMA_HOST        Ollama (llama3.2)"
+        echo "  OLLAMA_HOST        Ollama (llama3.2) - FREE LOCAL"
         echo ""
         echo "Environment:"
         echo "  VIBEE_MODEL        Override model name"

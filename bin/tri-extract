@@ -1,0 +1,203 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRI-EXTRACT - Extract ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ blocks from .vibee/.tri files
+# ═══════════════════════════════════════════════════════════════════════════════
+# Pipeline: .vibee → .tri → .zig
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+set -e
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# Directories
+SPECS_DIR="${SPECS_DIR:-specs/tri}"
+TRI_DIR="${TRI_DIR:-trinity/ЦАРСТВО/ⲘⲈⲆⲚⲞⲈ/ⲧⲣⲓ}"
+OUTPUT_DIR="${OUTPUT_DIR:-trinity/output}"
+
+# Counters
+EXTRACTED=0
+FAILED=0
+TESTED=0
+PASSED=0
+
+print_banner() {
+    echo -e "${MAGENTA}"
+    echo "  ╔═══════════════════════════════════════════════════════════╗"
+    echo "  ║  TRI-EXTRACT v1.0.0 - .vibee → .tri → .zig Pipeline       ║"
+    echo "  ║  φ² + 1/φ² = 3 | PHOENIX = 999                            ║"
+    echo "  ╚═══════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXTRACT FUNCTION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+extract_zig_from_file() {
+    local input_file="$1"
+    local output_file="$2"
+    
+    # Check if file contains ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ block
+    if grep -q 'ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ:' "$input_file" 2>/dev/null; then
+        # Extract content between """ markers after ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ:
+        sed -n '/ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ: """/,/^"""/p' "$input_file" | \
+            sed '1d;$d' > "$output_file"
+        
+        if [ -s "$output_file" ]; then
+            echo -e "${GREEN}✅ Extracted: $(basename "$output_file")${NC}"
+            EXTRACTED=$((EXTRACTED + 1))
+            return 0
+        fi
+    fi
+    
+    echo -e "${YELLOW}⚠️  No ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ block: $(basename "$input_file")${NC}"
+    FAILED=$((FAILED + 1))
+    return 1
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST FUNCTION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_zig_file() {
+    local zig_file="$1"
+    local name=$(basename "$zig_file" .zig)
+    
+    TESTED=$((TESTED + 1))
+    
+    if zig test "$zig_file" 2>&1 | grep -q "passed"; then
+        local test_count=$(zig test "$zig_file" 2>&1 | grep -oP '\d+(?= passed)' | head -1)
+        echo -e "${GREEN}✅ $name: $test_count tests passed${NC}"
+        PASSED=$((PASSED + 1))
+        return 0
+    else
+        echo -e "${RED}❌ $name: tests failed${NC}"
+        zig test "$zig_file" 2>&1 | tail -5
+        return 1
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROCESS ALL SPECS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+process_all() {
+    print_banner
+    
+    mkdir -p "$OUTPUT_DIR"
+    
+    echo -e "${CYAN}Processing .vibee files from $SPECS_DIR...${NC}\n"
+    
+    # Process .vibee files
+    for vibee_file in "$SPECS_DIR"/*.vibee; do
+        [ -f "$vibee_file" ] || continue
+        
+        local name=$(basename "$vibee_file" .vibee)
+        local output_file="$OUTPUT_DIR/${name}.zig"
+        
+        extract_zig_from_file "$vibee_file" "$output_file"
+    done
+    
+    # Process .tri files if they exist
+    if [ -d "$TRI_DIR" ]; then
+        echo -e "\n${CYAN}Processing .tri files from $TRI_DIR...${NC}\n"
+        
+        find "$TRI_DIR" -name "*.tri" 2>/dev/null | while read tri_file; do
+            local name=$(basename "$tri_file" .tri)
+            local output_file="$OUTPUT_DIR/${name}.zig"
+            
+            extract_zig_from_file "$tri_file" "$output_file"
+        done
+    fi
+    
+    echo -e "\n${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}Extraction complete: $EXTRACTED extracted, $FAILED skipped${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}\n"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST ALL
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_all() {
+    echo -e "${CYAN}Running tests on extracted .zig files...${NC}\n"
+    
+    for zig_file in "$OUTPUT_DIR"/*.zig; do
+        [ -f "$zig_file" ] || continue
+        test_zig_file "$zig_file" || true
+    done
+    
+    echo -e "\n${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}Tests complete: $PASSED/$TESTED passed${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}\n"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SINGLE FILE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+process_single() {
+    local input_file="$1"
+    local name=$(basename "$input_file" | sed 's/\.\(vibee\|tri\)$//')
+    local output_file="$OUTPUT_DIR/${name}.zig"
+    
+    mkdir -p "$OUTPUT_DIR"
+    
+    if extract_zig_from_file "$input_file" "$output_file"; then
+        echo -e "\n${CYAN}Testing...${NC}"
+        test_zig_file "$output_file"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+case "${1:-}" in
+    -h|--help)
+        print_banner
+        echo "Usage: tri-extract [command] [options]"
+        echo ""
+        echo "Commands:"
+        echo "  all           Extract all .vibee and .tri files"
+        echo "  test          Run tests on extracted .zig files"
+        echo "  <file>        Extract single file"
+        echo ""
+        echo "Environment:"
+        echo "  SPECS_DIR     Source directory (default: specs/tri)"
+        echo "  TRI_DIR       .tri files directory"
+        echo "  OUTPUT_DIR    Output directory (default: trinity/output)"
+        echo ""
+        echo "Examples:"
+        echo "  tri-extract all                    # Extract all"
+        echo "  tri-extract test                   # Test all"
+        echo "  tri-extract specs/tri/lsp.vibee   # Single file"
+        echo ""
+        ;;
+    all)
+        process_all
+        ;;
+    test)
+        test_all
+        ;;
+    "")
+        process_all
+        test_all
+        ;;
+    *)
+        if [ -f "$1" ]; then
+            process_single "$1"
+        else
+            echo -e "${RED}File not found: $1${NC}"
+            exit 1
+        fi
+        ;;
+esac
