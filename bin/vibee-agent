@@ -274,11 +274,24 @@ call_llm() {
 call_deepseek() {
     local messages="$1"
     
-    # DeepSeek uses OpenAI-compatible API
-    local deepseek_messages=$(echo "$messages" | jq '[{role: "system", content: "'"$SYSTEM_PROMPT"'"} ] + .')
-    
-    # Convert tools to OpenAI format
-    local openai_tools=$(echo "$TOOLS" | jq '[.[] | {type: "function", function: {name: .name, description: .description, parameters: .input_schema}}]')
+    # Build system prompt with tool instructions
+    local tool_prompt="$SYSTEM_PROMPT
+
+You have these tools available. To use a tool, respond EXACTLY in this format:
+TOOL_CALL: tool_name
+TOOL_INPUT: {\"param\": \"value\"}
+
+Available tools:
+- read_file: Read file contents. Input: {\"path\": \"filepath\"}
+- write_file: Write to file. Input: {\"path\": \"filepath\", \"content\": \"text\"}
+- run_command: Execute shell command. Input: {\"command\": \"cmd\"}
+- list_files: List directory. Input: {\"path\": \"dirpath\"}
+
+After I show you tool results, continue your response.
+If no tool is needed, just respond normally."
+
+    # Build messages array
+    local deepseek_messages=$(echo "$messages" | jq --arg sys "$tool_prompt" '[{role: "system", content: $sys}] + .')
     
     local response=$(curl -s https://api.deepseek.com/v1/chat/completions \
         -H "Content-Type: application/json" \
@@ -286,12 +299,54 @@ call_deepseek() {
         -d "{
             \"model\": \"$MODEL\",
             \"max_tokens\": $MAX_TOKENS,
-            \"tools\": $openai_tools,
             \"messages\": $deepseek_messages
         }")
     
-    # Convert to Anthropic format for unified processing
-    convert_openai_response "$response"
+    # Convert to Anthropic format
+    convert_deepseek_response "$response"
+}
+
+convert_deepseek_response() {
+    local response="$1"
+    
+    # Check for error
+    if echo "$response" | jq -e '.error' > /dev/null 2>&1; then
+        echo "$response"
+        return
+    fi
+    
+    local text=$(echo "$response" | jq -r '.choices[0].message.content // ""')
+    local content="[]"
+    
+    # Check if response contains tool call pattern
+    if echo "$text" | grep -q "TOOL_CALL:"; then
+        local tool_name=$(echo "$text" | grep "TOOL_CALL:" | head -1 | sed 's/TOOL_CALL: *//' | tr -d '\r\n')
+        local tool_input=$(echo "$text" | grep -A1 "TOOL_INPUT:" | tail -1 | tr -d '\r\n')
+        
+        # Clean up tool input
+        tool_input=$(echo "$tool_input" | sed 's/^TOOL_INPUT: *//')
+        
+        # Validate JSON
+        if echo "$tool_input" | jq . > /dev/null 2>&1; then
+            local tool_id="deepseek_$(date +%s)"
+            content="[{\"type\": \"tool_use\", \"id\": \"$tool_id\", \"name\": \"$tool_name\", \"input\": $tool_input}]"
+            
+            # Add any text before the tool call
+            local pre_text=$(echo "$text" | sed -n '1,/TOOL_CALL:/p' | head -n -1)
+            if [ -n "$pre_text" ]; then
+                content=$(echo "$content" | jq --arg t "$pre_text" '. + [{type: "text", text: $t}]')
+            fi
+            
+            echo "{\"content\": $content, \"stop_reason\": \"tool_use\"}"
+        else
+            # Invalid JSON, treat as text
+            content="[{\"type\": \"text\", \"text\": $(echo "$text" | jq -Rs .)}]"
+            echo "{\"content\": $content, \"stop_reason\": \"end_turn\"}"
+        fi
+    else
+        content="[{\"type\": \"text\", \"text\": $(echo "$text" | jq -Rs .)}]"
+        echo "{\"content\": $content, \"stop_reason\": \"end_turn\"}"
+    fi
 }
 
 call_anthropic() {
@@ -512,11 +567,23 @@ run_agent() {
         done <<< "$content"
         
         # Add assistant message
-        messages=$(echo "$messages" | jq ". + [{\"role\": \"assistant\", \"content\": $assistant_content}]")
+        # For DeepSeek/OpenAI, convert content to text format
+        if [ "$PROVIDER" = "deepseek" ] || [ "$PROVIDER" = "openai" ]; then
+            local text_content=$(echo "$assistant_content" | jq -r '[.[] | if .type == "text" then .text else "Using tool: " + .name end] | join("\n")')
+            messages=$(echo "$messages" | jq --arg c "$text_content" '. + [{role: "assistant", content: $c}]')
+        else
+            messages=$(echo "$messages" | jq ". + [{\"role\": \"assistant\", \"content\": $assistant_content}]")
+        fi
         
         # If there were tool calls, add results and continue
         if [ "$(echo "$tool_results" | jq 'length')" -gt 0 ]; then
-            messages=$(echo "$messages" | jq ". + [{\"role\": \"user\", \"content\": $tool_results}]")
+            # For DeepSeek/OpenAI, convert tool results to text format
+            if [ "$PROVIDER" = "deepseek" ] || [ "$PROVIDER" = "openai" ]; then
+                local result_text=$(echo "$tool_results" | jq -r '.[].content')
+                messages=$(echo "$messages" | jq ". + [{\"role\": \"user\", \"content\": \"Tool result: $result_text\"}]")
+            else
+                messages=$(echo "$messages" | jq ". + [{\"role\": \"user\", \"content\": $tool_results}]")
+            fi
         fi
         
         # Check if done
