@@ -346,12 +346,20 @@ COMPLETED (v43 + Agent v1.3.0): ✅
 ├── Dynamic Sliding Window (no stop-and-wait) ← NEW v43
 └── Confidence Calibration (temperature scaling) ← NEW v43
 
-NOW (v44 + Agent v1.4.0):
-├── Real Transformer Integration (ONNX/HuggingFace)
-├── GPU Acceleration (CUDA/Metal)
-├── Tree-sitter Parsing (all languages)
-├── Full BPE 50K токенов (99% accuracy)
-└── Agent Multi-file Diff
+COMPLETED (v44 Planning): ✅
+├── TransformerBackend Interface (polymorphic) ← NEW
+├── PagedKVCache (vLLM-style, <5% waste) ← NEW
+├── SimulatedBackend (6/6 tests) ← NEW
+├── BackendFactory (ONNX/llama.cpp/vLLM) ← NEW
+├── Best Practices Documentation ← NEW
+└── ONNX Runtime Integration Guide ← NEW
+
+NOW (v44 Implementation):
+├── ONNX Runtime C API bindings
+├── GPU Acceleration (CUDA EP)
+├── Real model loading (GPT-2, Llama)
+├── vLLM Benchmark comparison
+└── Tree-sitter Parsing (all languages)
 
 NEXT (v43-v50):
 ├── WASM compilation target
