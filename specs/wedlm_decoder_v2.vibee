@@ -1,0 +1,471 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# WeDLM DECODER V2 - Full Implementation Specification
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3 | PHOENIX = 999 = 3³ × 37
+# Based on: WeDLM (Tencent WeChat AI) - arxiv.org/abs/2512.22737
+# Target: 3-10x speedup vs autoregressive
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: wedlm_decoder_v2
+version: "2.0.0"
+language: zig
+module: trinity.wedlm
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREATION PATTERN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+creation_pattern:
+  source: MaskedSequence
+  transformer: StreamingParallelDecoder
+  result: GeneratedSequence
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SACRED CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  PHI: 1.618033988749895
+  PHOENIX: 999
+  TRINITY: 3
+  
+  # WeDLM defaults (from paper)
+  DEFAULT_WINDOW_SIZE: 16
+  DEFAULT_CONFIDENCE_THRESHOLD: 0.85
+  DEFAULT_DISTANCE_PENALTY: 0.1
+  DEFAULT_TEMPERATURE: 1.0
+  DEFAULT_MAX_STEPS: 100
+  
+  # Special tokens
+  MASK_TOKEN: 50256
+  PAD_TOKEN: 50257
+  EOS_TOKEN: 50258
+  BOS_TOKEN: 50259
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  Token:
+    id: u32
+    confidence: f32
+    position: u32           # Logical position (RoPE)
+    physical_idx: u32       # Physical index after reorder
+    committed: bool
+    
+  KVCacheEntry:
+    key: []f32              # Key vector
+    value: []f32            # Value vector
+    position: u32           # Logical position
+    valid: bool
+    
+  KVCache:
+    entries: []KVCacheEntry
+    committed_len: u32      # Number of committed entries
+    
+  SlidingWindow:
+    tokens: []Token
+    size: u32
+    start_position: u32     # Logical start position
+    
+  WeDLMConfig:
+    window_size: u32
+    confidence_threshold: f32
+    distance_penalty: f32   # λ in paper
+    temperature: f32
+    max_steps: u32
+    use_entropy_threshold: bool
+    
+  GenerationStats:
+    total_tokens: u32
+    steps_taken: u32
+    tokens_per_step: f32
+    speedup_vs_ar: f32
+    cache_hit_rate: f32
+    avg_confidence: f32
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CORE COMPONENTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+components:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TOPOLOGICAL REORDERER
+  # ─────────────────────────────────────────────────────────────────────────────
+  TopologicalReorderer:
+    description: |
+      Moves committed tokens to physical prefix while preserving logical positions.
+      Key insight from WeDLM: enables KV cache reuse with causal attention.
+      
+    methods:
+      reorder:
+        input: sequence []Token
+        output: reordered []Token, position_map []u32
+        algorithm: |
+          1. Separate committed and masked tokens
+          2. Place committed tokens at physical front
+          3. Place masked tokens after committed
+          4. Preserve logical positions via position_map
+          5. Return reordered sequence and mapping
+          
+      inverse_reorder:
+        input: reordered []Token, position_map []u32
+        output: original_order []Token
+        algorithm: |
+          Restore original logical order using position_map
+          
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DISTANCE PENALTY SCORER
+  # ─────────────────────────────────────────────────────────────────────────────
+  DistancePenaltyScorer:
+    description: |
+      Implements distance penalty for left-to-right commitment.
+      score(i) = confidence(i) - λ × (position(i) - prefix_end)
+      
+    methods:
+      compute_scores:
+        input: tokens []Token, prefix_end u32, lambda f32
+        output: scores []f32
+        algorithm: |
+          for each token:
+            distance = token.position - prefix_end
+            penalty = lambda * max(0, distance)
+            score = token.confidence - penalty
+          return scores
+          
+      select_commits:
+        input: tokens []Token, scores []f32, threshold f32
+        output: to_commit []u32
+        algorithm: |
+          1. Sort tokens by score (descending)
+          2. Select contiguous tokens from prefix_end
+          3. Stop at first token below threshold
+          4. Return indices to commit
+          
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DYNAMIC SLIDING WINDOW
+  # ─────────────────────────────────────────────────────────────────────────────
+  DynamicSlidingWindow:
+    description: |
+      Maintains fixed-size window of MASK tokens.
+      Continuously refills as tokens are committed.
+      Eliminates stop-and-wait behavior.
+      
+    methods:
+      init:
+        input: size u32, start_position u32
+        output: window SlidingWindow
+        
+      commit_and_refill:
+        input: window SlidingWindow, committed_indices []u32
+        output: updated_window SlidingWindow
+        algorithm: |
+          1. Remove committed tokens from window
+          2. Shift remaining tokens left
+          3. Append new MASK tokens to fill window
+          4. Update start_position
+          
+      get_active_masks:
+        input: window SlidingWindow
+        output: mask_positions []u32
+        
+  # ─────────────────────────────────────────────────────────────────────────────
+  # KV CACHE MANAGER
+  # ─────────────────────────────────────────────────────────────────────────────
+  KVCacheManager:
+    description: |
+      Manages KV cache for committed tokens.
+      Enables O(k) computation where k = window_size.
+      
+    methods:
+      init:
+        input: max_length u32, hidden_dim u32
+        output: cache KVCache
+        
+      commit_tokens:
+        input: cache KVCache, tokens []Token, kv_states []KVCacheEntry
+        output: updated_cache KVCache
+        algorithm: |
+          1. Append new KV states to cache
+          2. Update committed_len
+          3. Mark entries as valid
+          
+      get_prefix_kv:
+        input: cache KVCache
+        output: keys [][]f32, values [][]f32
+        
+      invalidate_after:
+        input: cache KVCache, position u32
+        output: updated_cache KVCache
+        
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONFIDENCE CALIBRATOR
+  # ─────────────────────────────────────────────────────────────────────────────
+  ConfidenceCalibrator:
+    description: |
+      Calibrates model confidence using temperature and entropy.
+      Improves commitment decisions.
+      
+    methods:
+      calibrate:
+        input: logits []f32, temperature f32
+        output: calibrated_confidence f32
+        algorithm: |
+          1. Apply temperature scaling: logits / temperature
+          2. Compute softmax
+          3. Return max probability as confidence
+          
+      entropy_threshold:
+        input: logits []f32
+        output: should_commit bool
+        algorithm: |
+          1. Compute entropy of distribution
+          2. Low entropy = high confidence = commit
+          3. Return entropy < threshold
+          
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STREAMING PARALLEL DECODER (Main Component)
+  # ─────────────────────────────────────────────────────────────────────────────
+  StreamingParallelDecoder:
+    description: |
+      Main WeDLM decoder implementing streaming parallel decoding.
+      Combines all components for 3-10x speedup.
+      
+    components:
+      - TopologicalReorderer
+      - DistancePenaltyScorer
+      - DynamicSlidingWindow
+      - KVCacheManager
+      - ConfidenceCalibrator
+      
+    methods:
+      init:
+        input: config WeDLMConfig, model_backend ModelBackend
+        output: decoder StreamingParallelDecoder
+        
+      decode:
+        input: prompt []u32, target_length u32
+        output: generated []u32, stats GenerationStats
+        algorithm: |
+          1. Initialize:
+             committed = tokenize(prompt)
+             window = SlidingWindow.init(config.window_size, len(committed))
+             cache = KVCache.init(target_length)
+             cache.commit_tokens(committed)
+             
+          2. While len(committed) < target_length:
+             
+             a. Reorder for causal attention:
+                reordered, pos_map = reorderer.reorder(committed + window)
+                
+             b. Forward pass (parallel prediction):
+                logits = model(reordered, cache.get_prefix_kv())
+                
+             c. Compute confidence with calibration:
+                for each mask in window:
+                  confidence = calibrator.calibrate(logits[mask], temperature)
+                  mask.confidence = confidence
+                  
+             d. Score with distance penalty:
+                scores = scorer.compute_scores(window, len(committed), lambda)
+                
+             e. Select tokens to commit:
+                to_commit = scorer.select_commits(window, scores, threshold)
+                
+             f. Commit and update cache:
+                for idx in to_commit:
+                  token = window[idx]
+                  token.committed = true
+                  committed.append(token)
+                  cache.commit_tokens([token])
+                  
+             g. Refill window:
+                window = window.commit_and_refill(to_commit)
+                
+             h. Emit streaming output:
+                for token in newly_committed:
+                  emit(token)
+                  
+          3. Return committed, compute_stats()
+          
+      decode_streaming:
+        input: prompt []u32, target_length u32, callback fn(Token)
+        output: stats GenerationStats
+        algorithm: |
+          Same as decode() but calls callback for each committed token
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS (BDD)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Topological Reordering
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: topological_reorder_preserves_positions
+    given: Sequence with committed and masked tokens
+    when: Topological reorder is applied
+    then: Physical order changes but logical positions preserved
+    test_cases:
+      - name: basic_reorder
+        input:
+          tokens: [
+            {id: 1, position: 0, committed: true},
+            {id: MASK, position: 1, committed: false},
+            {id: 2, position: 2, committed: true},
+            {id: MASK, position: 3, committed: false}
+          ]
+        expected:
+          physical_order: [1, 2, MASK, MASK]
+          logical_positions: [0, 2, 1, 3]
+          
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Distance Penalty
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: distance_penalty_favors_left
+    given: Multiple tokens with similar confidence
+    when: Distance penalty is applied
+    then: Tokens closer to prefix have higher scores
+    test_cases:
+      - name: penalty_calculation
+        input:
+          tokens: [
+            {confidence: 0.9, position: 5},
+            {confidence: 0.9, position: 6},
+            {confidence: 0.9, position: 7}
+          ]
+          prefix_end: 5
+          lambda: 0.1
+        expected:
+          scores: [0.9, 0.8, 0.7]
+          first_commit: position_5
+          
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Sliding Window
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: sliding_window_continuous_refill
+    given: Window with some committed tokens
+    when: Tokens are committed
+    then: Window refills immediately without stop-and-wait
+    test_cases:
+      - name: refill_after_commit
+        input:
+          window_size: 8
+          committed_count: 3
+        expected:
+          new_window_size: 8
+          new_masks_added: 3
+          
+  # ─────────────────────────────────────────────────────────────────────────────
+  # KV Cache
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: kv_cache_reuse
+    given: Committed prefix with cached KV states
+    when: New step is computed
+    then: Only window tokens are recomputed
+    test_cases:
+      - name: cache_efficiency
+        input:
+          prefix_len: 100
+          window_size: 16
+        expected:
+          cached_computations: 100
+          new_computations: 16
+          cache_hit_rate: 0.862
+          
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Full Decoding
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: streaming_decode_speedup
+    given: Target sequence of N tokens
+    when: Streaming parallel decoding is used
+    then: Achieves 3-10x speedup vs autoregressive
+    test_cases:
+      - name: speedup_100_tokens
+        input:
+          target_length: 100
+          window_size: 16
+          confidence_threshold: 0.85
+        expected:
+          min_speedup: 3.0
+          max_steps: 34
+          
+      - name: speedup_low_entropy
+        input:
+          target_length: 100
+          entropy: low
+        expected:
+          speedup: 10.0
+          tokens_per_step: 10
+          
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Golden Identity
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: golden_identity
+    given: Sacred constant PHI
+    when: Golden identity is computed
+    then: φ² + 1/φ² = 3
+    test_cases:
+      - name: verify_identity
+        input:
+          phi: 1.618033988749895
+        expected:
+          result: 3.0
+          tolerance: 0.0001
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS DAEMONS ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_analysis:
+  current:
+    algorithm: "Block Diffusion"
+    complexity: "O(N/B × B²) = O(N×B)"
+    speedup: "4x"
+    
+  predicted:
+    algorithm: "WeDLM Streaming"
+    complexity: "O(N/k × W) where k=tokens/step, W=window"
+    speedup: "3-10x"
+    
+  patterns_applied:
+    - name: MLS
+      description: "Parallel token prediction in window"
+      contribution: "Base parallelism"
+      
+    - name: D&C
+      description: "Topological reordering separates committed/masked"
+      contribution: "KV cache compatibility"
+      
+    - name: PRE
+      description: "KV cache for committed prefix"
+      contribution: "2-3x speedup from cache reuse"
+      
+    - name: FDT
+      description: "Streaming output transformation"
+      contribution: "Real-time generation"
+      
+  confidence: 0.85
+  timeline: "v43 (immediate)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GENERATION CONFIG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+generation:
+  output_path: "trinity/output/wedlm_decoder_v2.zig"
+  test_output_path: "trinity/output/wedlm_decoder_v2_test.zig"
+  
+  features:
+    - topological_reordering
+    - distance_penalty
+    - sliding_window
+    - kv_cache
+    - confidence_calibration
+    - streaming_output
+    
+  optimizations:
+    - simd_scoring
+    - cache_prefetch
+    - batch_commit

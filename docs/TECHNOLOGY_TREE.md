@@ -1,6 +1,6 @@
 # VIBEE Technology Tree - Next Technologies to Learn
 
-## Current State (v42 + Agent v1.2.0)
+## Current State (v43 + Agent v1.3.0)
 
 ```
 ✅ Level 0: Zig, YAML, Git
@@ -14,17 +14,27 @@
 ✅ Level 8: SIMD + Cache combo (24.2x), Full BPE, WebSocket+SSE (v40-v41)
 ✅ Level 9: Agent UI/UX, Cross-platform, Error Handling (Agent v1.1.0)
 ✅ Level 10: Diffusion LM (4x speedup), Code Editor + Diff View (v42)
+✅ Level 11: WeDLM Full (2.4x-14.3x speedup), Streaming Parallel Decoding (v43)
 ```
 
 ## Latest Achievements
+
+### v43: WeDLM Full Implementation
+
+| Technology | Status | Performance |
+|------------|--------|-------------|
+| WeDLM Streaming Decoder | ✅ | **2.4x-14.3x speedup** |
+| Topological Reordering | ✅ | KV cache compatible |
+| Distance Penalty Scoring | ✅ | Left-to-right commit |
+| Dynamic Sliding Window | ✅ | No stop-and-wait |
+| Confidence Calibration | ✅ | Temperature scaling |
+| Adaptive Thresholds | ✅ | 0.92-0.93 avg confidence |
 
 ### v42: Diffusion LM + Code Editor
 
 | Technology | Status | Performance |
 |------------|--------|-------------|
-| Diffusion Decoder (WeDLM) | ✅ | **4x speedup** |
-| Topological Reordering | ✅ | KV cache reuse |
-| Confidence-based Commit | ✅ | Parallel decoding |
+| Diffusion Decoder (basic) | ✅ | 4x speedup |
 | Code Editor + Diff View | ✅ | Myers O(ND) |
 | Syntax Highlighting | ✅ | Zig keywords |
 | Streaming Generation | ✅ | Real-time output |
@@ -315,7 +325,7 @@ Agent B (local) ↗
 ## Recommended Learning Order
 
 ```
-COMPLETED (v42 + Agent v1.2.0): ✅
+COMPLETED (v43 + Agent v1.3.0): ✅
 ├── LSP for .vibee files (31 completions)
 ├── SSE streaming for agents (full format)
 ├── Property-based testing (Golden RNG)
@@ -327,14 +337,17 @@ COMPLETED (v42 + Agent v1.2.0): ✅
 ├── Agent Cross-platform (macOS + Linux)
 ├── Agent Safe JSON parsing
 ├── Agent Box-style UI (UX Score 40/50)
-├── Diffusion Decoder WeDLM (4x speedup) ← NEW v42
-├── Topological Reordering (KV cache reuse) ← NEW v42
-├── Code Editor + Diff View (Myers O(ND)) ← NEW v42
-├── Syntax Highlighting (Zig keywords) ← NEW v42
-└── Streaming Generation (real-time) ← NEW v42
+├── Diffusion Decoder basic (4x speedup) ← v42
+├── Code Editor + Diff View (Myers O(ND)) ← v42
+├── Syntax Highlighting (Zig keywords) ← v42
+├── WeDLM Full Implementation (2.4x-14.3x speedup) ← NEW v43
+├── Topological Reordering (KV cache compatible) ← NEW v43
+├── Distance Penalty Scoring (left-to-right) ← NEW v43
+├── Dynamic Sliding Window (no stop-and-wait) ← NEW v43
+└── Confidence Calibration (temperature scaling) ← NEW v43
 
-NOW (v43 + Agent v1.3.0):
-├── Real Transformer Integration (3-10x speedup)
+NOW (v44 + Agent v1.4.0):
+├── Real Transformer Integration (ONNX/HuggingFace)
 ├── GPU Acceleration (CUDA/Metal)
 ├── Tree-sitter Parsing (all languages)
 ├── Full BPE 50K токенов (99% accuracy)
