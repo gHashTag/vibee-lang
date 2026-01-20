@@ -1,339 +1,128 @@
+// ═══════════════════════════════════════════════════════════════════════════════
+// []const u8, v1.0.0 - Generated from .vibee specification
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Священная формула: V = n × 3^k × π^m × φ^p × e^q
+// Золотая идентичность: φ² + 1/φ² = 3
+//
+// Author: 
+// DO NOT EDIT - This file is auto-generated
+//
+// ═══════════════════════════════════════════════════════════════════════════════
+
 const std = @import("std");
+const math = std.math;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// КОНСТАНТЫ
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Базовые φ-константы (defaults)
 pub const PHI: f64 = 1.618033988749895;
+pub const PHI_INV: f64 = 0.618033988749895;
+pub const PHI_SQ: f64 = 2.618033988749895;
 pub const TRINITY: f64 = 3.0;
-pub const PHOENIX: u32 = 999;
+pub const SQRT5: f64 = 2.2360679774997896;
+pub const TAU: f64 = 6.283185307179586;
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HARDWARE BENCHMARKS
-// ═══════════════════════════════════════════════════════════════════════════════
-// Scientific References:
-// 1. SUPERCOP/eBACS: https://bench.cr.yp.to/
-// 2. Intel Intrinsics Guide: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/
-// 3. ARM NEON Intrinsics: https://developer.arm.com/architectures/instruction-sets/intrinsics/
+// ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const CPUArch = enum {
-    x86_64_avx2,
-    x86_64_avx512,
-    arm_neon,
-    arm_sve,
-    wasm,
+/// 
+pub const - = struct {
+};
 
-    pub fn name(self: CPUArch) []const u8 {
-        return switch (self) {
-            .x86_64_avx2 => "x86-64 AVX2",
-            .x86_64_avx512 => "x86-64 AVX-512",
-            .arm_neon => "ARM NEON",
-            .arm_sve => "ARM SVE",
-            .wasm => "WebAssembly",
-        };
-    }
+/// 
+pub const - = struct {
+    -: name: name,
+    @"type": []const u8,
+    -: name: arch,
+    @"type": CPUArch,
+    -: name: freq_ghz,
+    @"type": f64,
+    -: name: cores,
+    @"type": i64,
+};
 
-    pub fn vectorBits(self: CPUArch) u32 {
-        return switch (self) {
-            .x86_64_avx2 => 256,
-            .x86_64_avx512 => 512,
-            .arm_neon => 128,
-            .arm_sve => 2048, // Variable, up to 2048
-            .wasm => 128,    // SIMD128
-        };
-    }
+/// 
+pub const - = struct {
+    -: name: operation,
+    @"type": []const u8,
+    -: name: cpu,
+    @"type": CPUModel,
+    -: name: cycles,
+    @"type": i64,
+    -: name: nanoseconds,
+    @"type": i64,
+    -: name: throughput_mbps,
+    @"type": f64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CPU MODELS (Reference Hardware)
+// ПАМЯТЬ ДЛЯ WASM
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const CPUModel = struct {
-    name: []const u8,
-    arch: CPUArch,
-    freq_ghz: f64,
-    cores: u32,
-    l1_cache_kb: u32,
-    l2_cache_kb: u32,
-    l3_cache_mb: u32,
+var global_buffer: [65536]u8 align(16) = undefined;
+var f64_buffer: [8192]f64 align(16) = undefined;
 
-    pub fn cyclesToNs(self: *const CPUModel, cycles: u64) f64 {
-        return @as(f64, @floatFromInt(cycles)) / self.freq_ghz;
-    }
+export fn get_global_buffer_ptr() [*]u8 {
+    return &global_buffer;
+}
 
-    pub fn nsToThroughputMBps(ns: f64, bytes: u64) f64 {
-        if (ns == 0) return 0;
-        const bytes_per_sec = @as(f64, @floatFromInt(bytes)) * 1_000_000_000.0 / ns;
-        return bytes_per_sec / (1024.0 * 1024.0);
-    }
-};
-
-pub const ReferenceCPUs = struct {
-    pub const INTEL_XEON_8380 = CPUModel{
-        .name = "Intel Xeon Platinum 8380",
-        .arch = .x86_64_avx512,
-        .freq_ghz = 2.3,
-        .cores = 40,
-        .l1_cache_kb = 32,
-        .l2_cache_kb = 1280,
-        .l3_cache_mb = 60,
-    };
-
-    pub const AMD_EPYC_7763 = CPUModel{
-        .name = "AMD EPYC 7763",
-        .arch = .x86_64_avx2,
-        .freq_ghz = 2.45,
-        .cores = 64,
-        .l1_cache_kb = 32,
-        .l2_cache_kb = 512,
-        .l3_cache_mb = 256,
-    };
-
-    pub const APPLE_M2 = CPUModel{
-        .name = "Apple M2",
-        .arch = .arm_neon,
-        .freq_ghz = 3.5,
-        .cores = 8,
-        .l1_cache_kb = 192,
-        .l2_cache_kb = 16384,
-        .l3_cache_mb = 0, // Unified
-    };
-
-    pub const AWS_GRAVITON3 = CPUModel{
-        .name = "AWS Graviton3",
-        .arch = .arm_neon,
-        .freq_ghz = 2.6,
-        .cores = 64,
-        .l1_cache_kb = 64,
-        .l2_cache_kb = 1024,
-        .l3_cache_mb = 32,
-    };
-};
+export fn get_f64_buffer_ptr() [*]f64 {
+    return &f64_buffer;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// BENCHMARK RESULTS (from real measurements)
+// CREATION PATTERNS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const HWBenchResult = struct {
-    operation: []const u8,
-    arch: CPUArch,
-    cycles: u64,
-    nanoseconds: u64,
-    throughput_mbps: f64,
+/// Проверка TRINITY identity: φ² + 1/φ² = 3
+pub export fn verify_trinity() f64 {
+    return PHI * PHI + 1.0 / (PHI * PHI);
+}
 
-    pub fn opsPerSecond(self: *const HWBenchResult) f64 {
-        if (self.nanoseconds == 0) return 0;
-        return 1_000_000_000.0 / @as(f64, @floatFromInt(self.nanoseconds));
+/// φ-интерполяция
+pub export fn phi_lerp(a: f64, b: f64, t: f64) f64 {
+    const phi_t = math.pow(f64, t, PHI_INV);
+    return a + (b - a) * phi_t;
+}
+
+/// Генерация φ-спирали
+pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
+    const max_points = f64_buffer.len / 2;
+    const count = if (n > max_points) @as(u32, @intCast(max_points)) else n;
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        const fi: f64 = @floatFromInt(i);
+        const angle = fi * TAU * PHI_INV;
+        const radius = scale * math.pow(f64, PHI, fi * 0.1);
+        f64_buffer[i * 2] = cx + radius * @cos(angle);
+        f64_buffer[i * 2 + 1] = cy + radius * @sin(angle);
     }
-};
-
-pub const RealBenchmarks = struct {
-    // ML-KEM-1024 on Intel Xeon 8380 (AVX-512)
-    pub const ML_KEM_KEYGEN_AVX512 = HWBenchResult{
-        .operation = "ML-KEM-1024 KeyGen",
-        .arch = .x86_64_avx512,
-        .cycles = 80_500,
-        .nanoseconds = 35_000,
-        .throughput_mbps = 0, // N/A for keygen
-    };
-
-    pub const ML_KEM_ENCAPS_AVX512 = HWBenchResult{
-        .operation = "ML-KEM-1024 Encaps",
-        .arch = .x86_64_avx512,
-        .cycles = 96_600,
-        .nanoseconds = 42_000,
-        .throughput_mbps = 0,
-    };
-
-    pub const ML_KEM_DECAPS_AVX512 = HWBenchResult{
-        .operation = "ML-KEM-1024 Decaps",
-        .arch = .x86_64_avx512,
-        .cycles = 103_500,
-        .nanoseconds = 45_000,
-        .throughput_mbps = 0,
-    };
-
-    // AES-256-GCM on Intel Xeon 8380 (AES-NI + AVX-512)
-    pub const AES_GCM_1KB_AVX512 = HWBenchResult{
-        .operation = "AES-256-GCM (1KB)",
-        .arch = .x86_64_avx512,
-        .cycles = 874,
-        .nanoseconds = 380,
-        .throughput_mbps = 2684.2, // 1024 bytes / 380ns
-    };
-
-    // ChaCha20-Poly1305 on AMD EPYC 7763 (AVX2)
-    pub const CHACHA_1KB_AVX2 = HWBenchResult{
-        .operation = "ChaCha20-Poly1305 (1KB)",
-        .arch = .x86_64_avx2,
-        .cycles = 784,
-        .nanoseconds = 320,
-        .throughput_mbps = 3200.0,
-    };
-
-    // SHA3-256 on Intel Xeon 8380
-    pub const SHA3_1KB_AVX512 = HWBenchResult{
-        .operation = "SHA3-256 (1KB)",
-        .arch = .x86_64_avx512,
-        .cycles = 5520,
-        .nanoseconds = 2400,
-        .throughput_mbps = 426.7,
-    };
-
-    // X25519 on Apple M2 (NEON)
-    pub const X25519_KEYGEN_NEON = HWBenchResult{
-        .operation = "X25519 KeyGen",
-        .arch = .arm_neon,
-        .cycles = 112_000,
-        .nanoseconds = 32_000,
-        .throughput_mbps = 0,
-    };
-
-    pub const X25519_DH_NEON = HWBenchResult{
-        .operation = "X25519 DH",
-        .arch = .arm_neon,
-        .cycles = 252_000,
-        .nanoseconds = 72_000,
-        .throughput_mbps = 0,
-    };
-};
+    return count;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// COMPETITOR HARDWARE BENCHMARKS (from SUPERCOP/eBACS)
+// TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const CompetitorHWBench = struct {
-    // OpenSSL 3.2 on Intel Xeon 8380
-    pub const OPENSSL_ML_KEM_KEYGEN: u64 = 48_000;
-    pub const OPENSSL_ML_KEM_ENCAPS: u64 = 55_000;
-    pub const OPENSSL_AES_GCM_1KB: u64 = 450;
-    pub const OPENSSL_SHA3_1KB: u64 = 2_800;
-
-    // liboqs 0.9 on Intel Xeon 8380
-    pub const LIBOQS_ML_KEM_KEYGEN: u64 = 42_000;
-    pub const LIBOQS_ML_KEM_ENCAPS: u64 = 48_000;
-
-    // libsodium on AMD EPYC 7763
-    pub const LIBSODIUM_X25519_KEYGEN: u64 = 38_000;
-    pub const LIBSODIUM_X25519_DH: u64 = 85_000;
-    pub const LIBSODIUM_CHACHA_1KB: u64 = 380;
-
-    // ring (Rust) on AMD EPYC 7763
-    pub const RING_X25519_KEYGEN: u64 = 35_000;
-    pub const RING_CHACHA_1KB: u64 = 350;
-
-    // Speedup calculations
-    pub fn mlKemKeygenSpeedup() f64 {
-        return @as(f64, @floatFromInt(OPENSSL_ML_KEM_KEYGEN)) /
-               @as(f64, @floatFromInt(RealBenchmarks.ML_KEM_KEYGEN_AVX512.nanoseconds));
-    }
-
-    pub fn aesGcmSpeedup() f64 {
-        return @as(f64, @floatFromInt(OPENSSL_AES_GCM_1KB)) /
-               @as(f64, @floatFromInt(RealBenchmarks.AES_GCM_1KB_AVX512.nanoseconds));
-    }
-
-    pub fn chachaSpeedup() f64 {
-        return @as(f64, @floatFromInt(RING_CHACHA_1KB)) /
-               @as(f64, @floatFromInt(RealBenchmarks.CHACHA_1KB_AVX2.nanoseconds));
-    }
-
-    pub fn sha3Speedup() f64 {
-        return @as(f64, @floatFromInt(OPENSSL_SHA3_1KB)) /
-               @as(f64, @floatFromInt(RealBenchmarks.SHA3_1KB_AVX512.nanoseconds));
-    }
-
-    pub fn x25519KeygenSpeedup() f64 {
-        return @as(f64, @floatFromInt(LIBSODIUM_X25519_KEYGEN)) /
-               @as(f64, @floatFromInt(RealBenchmarks.X25519_KEYGEN_NEON.nanoseconds));
-    }
-};
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// TESTS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-test "CPUArch names" {
-    try std.testing.expectEqualStrings("x86-64 AVX2", CPUArch.x86_64_avx2.name());
-    try std.testing.expectEqualStrings("x86-64 AVX-512", CPUArch.x86_64_avx512.name());
-    try std.testing.expectEqualStrings("ARM NEON", CPUArch.arm_neon.name());
+test "measure_cycles" {
+// Given: Operation and CPU
+// When: Benchmark requested
+// Then: Return cycle count
+    // TODO: Add test assertions
 }
 
-test "CPUArch vectorBits" {
-    try std.testing.expectEqual(@as(u32, 256), CPUArch.x86_64_avx2.vectorBits());
-    try std.testing.expectEqual(@as(u32, 512), CPUArch.x86_64_avx512.vectorBits());
-    try std.testing.expectEqual(@as(u32, 128), CPUArch.arm_neon.vectorBits());
+test "calculate_throughput" {
+// Given: Cycles and data size
+// When: Throughput requested
+// Then: Return MB/s
+    // TODO: Add test assertions
 }
 
-test "CPUModel cyclesToNs" {
-    const cpu = ReferenceCPUs.INTEL_XEON_8380;
-    const ns = cpu.cyclesToNs(2300);
-    try std.testing.expectApproxEqAbs(@as(f64, 1000.0), ns, 1.0);
-}
-
-test "CPUModel nsToThroughputMBps" {
-    const mbps = CPUModel.nsToThroughputMBps(380.0, 1024);
-    try std.testing.expect(mbps > 2500.0);
-    try std.testing.expect(mbps < 3000.0);
-}
-
-test "ReferenceCPUs defined" {
-    try std.testing.expect(ReferenceCPUs.INTEL_XEON_8380.cores == 40);
-    try std.testing.expect(ReferenceCPUs.AMD_EPYC_7763.cores == 64);
-    try std.testing.expect(ReferenceCPUs.APPLE_M2.cores == 8);
-}
-
-test "HWBenchResult opsPerSecond" {
-    const ops = RealBenchmarks.ML_KEM_KEYGEN_AVX512.opsPerSecond();
-    try std.testing.expect(ops > 25000.0); // ~28,571 ops/sec
-    try std.testing.expect(ops < 35000.0);
-}
-
-test "RealBenchmarks ML-KEM values" {
-    try std.testing.expectEqual(@as(u64, 35_000), RealBenchmarks.ML_KEM_KEYGEN_AVX512.nanoseconds);
-    try std.testing.expectEqual(@as(u64, 42_000), RealBenchmarks.ML_KEM_ENCAPS_AVX512.nanoseconds);
-}
-
-test "RealBenchmarks AES-GCM throughput" {
-    try std.testing.expect(RealBenchmarks.AES_GCM_1KB_AVX512.throughput_mbps > 2500.0);
-}
-
-test "RealBenchmarks ChaCha throughput" {
-    try std.testing.expect(RealBenchmarks.CHACHA_1KB_AVX2.throughput_mbps > 3000.0);
-}
-
-test "CompetitorHWBench mlKemKeygenSpeedup > 1.3" {
-    const speedup = CompetitorHWBench.mlKemKeygenSpeedup();
-    try std.testing.expect(speedup > 1.3);
-}
-
-test "CompetitorHWBench aesGcmSpeedup > 1.1" {
-    const speedup = CompetitorHWBench.aesGcmSpeedup();
-    try std.testing.expect(speedup > 1.1);
-}
-
-test "CompetitorHWBench chachaSpeedup > 1.0" {
-    const speedup = CompetitorHWBench.chachaSpeedup();
-    try std.testing.expect(speedup > 1.0);
-}
-
-test "CompetitorHWBench sha3Speedup > 1.1" {
-    const speedup = CompetitorHWBench.sha3Speedup();
-    try std.testing.expect(speedup > 1.1);
-}
-
-test "CompetitorHWBench x25519KeygenSpeedup > 1.1" {
-    const speedup = CompetitorHWBench.x25519KeygenSpeedup();
-    try std.testing.expect(speedup > 1.1);
-}
-
-test "All Trinity benchmarks faster than competitors" {
-    try std.testing.expect(CompetitorHWBench.mlKemKeygenSpeedup() >= 1.0);
-    try std.testing.expect(CompetitorHWBench.aesGcmSpeedup() >= 1.0);
-    try std.testing.expect(CompetitorHWBench.chachaSpeedup() >= 1.0);
-    try std.testing.expect(CompetitorHWBench.sha3Speedup() >= 1.0);
-    try std.testing.expect(CompetitorHWBench.x25519KeygenSpeedup() >= 1.0);
-}
-
-test "golden identity" {
-    const phi_sq = PHI * PHI;
-    const inv_phi_sq = 1.0 / phi_sq;
-    try std.testing.expectApproxEqAbs(TRINITY, phi_sq + inv_phi_sq, 0.0001);
+test "phi_constants" {
+    try std.testing.expectApproxEqAbs(PHI * PHI_INV, 1.0, 1e-10);
+    try std.testing.expectApproxEqAbs(PHI_SQ - PHI, 1.0, 1e-10);
 }

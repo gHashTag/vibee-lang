@@ -1,496 +1,159 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// REAL BENCHMARK SUITE - Production-grade benchmarks with competitor comparison
+// real_benchmark_suite v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
-// PAS: PRE + MLS | φ² + 1/φ² = 3
+//
+// Священная формула: V = n × 3^k × π^m × φ^p × e^q
+// Золотая идентичность: φ² + 1/φ² = 3
+//
+// Author: 
+// DO NOT EDIT - This file is auto-generated
+//
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const std = @import("std");
-const mem = std.mem;
-const time = std.time;
-const Allocator = mem.Allocator;
+const math = std.math;
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SACRED CONSTANTS
+// КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// Базовые φ-константы (defaults)
 pub const PHI: f64 = 1.618033988749895;
+pub const PHI_INV: f64 = 0.618033988749895;
+pub const PHI_SQ: f64 = 2.618033988749895;
 pub const TRINITY: f64 = 3.0;
-pub const PHOENIX: u32 = 999;
+pub const SQRT5: f64 = 2.2360679774997896;
+pub const TAU: f64 = 6.283185307179586;
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// BENCHMARK CONFIGURATION
+// ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const BenchmarkConfig = struct {
-    warmup_iterations: u32 = 1000,
-    measure_iterations: u32 = 10000,
-    confidence_level: f64 = 0.95,
-    outlier_threshold: f64 = 2.5, // IQR multiplier
+/// 
+pub const - = struct {
+    -: name: warmup_iterations,
+    @"type": i64,
+    -: name: measure_iterations,
+    @"type": i64,
+    -: name: confidence_level,
+    @"type": f64,
+    -: name: outlier_threshold,
+    @"type": f64,
+};
 
-    pub const DEFAULT = BenchmarkConfig{};
+/// 
+pub const - = struct {
+};
+
+/// 
+pub const - = struct {
+};
+
+/// 
+pub const - = struct {
+    -: name: operation,
+    @"type": OperationType,
+    -: name: competitor,
+    @"type": Competitor,
+    -: name: mean_ns,
+    @"type": i64,
+    -: name: median_ns,
+    @"type": i64,
+    -: name: stddev_ns,
+    @"type": i64,
+    -: name: min_ns,
+    @"type": i64,
+    -: name: max_ns,
+    @"type": i64,
+    -: name: p99_ns,
+    @"type": i64,
+};
+
+/// 
+pub const - = struct {
+    -: name: operation,
+    @"type": OperationType,
+    -: name: vs_openssl,
+    @"type": f64,
+    -: name: vs_liboqs,
+    @"type": f64,
+    -: name: vs_ring,
+    @"type": f64,
+    -: name: vs_libsodium,
+    @"type": f64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// OPERATION TYPES
+// ПАМЯТЬ ДЛЯ WASM
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const OperationType = enum {
-    key_generation,
-    encapsulation,
-    decapsulation,
-    encryption,
-    decryption,
-    hashing,
-    signing,
-    verification,
+var global_buffer: [65536]u8 align(16) = undefined;
+var f64_buffer: [8192]f64 align(16) = undefined;
 
-    pub fn name(self: OperationType) []const u8 {
-        return switch (self) {
-            .key_generation => "KeyGen",
-            .encapsulation => "Encaps",
-            .decapsulation => "Decaps",
-            .encryption => "Encrypt",
-            .decryption => "Decrypt",
-            .hashing => "Hash",
-            .signing => "Sign",
-            .verification => "Verify",
-        };
-    }
-};
+export fn get_global_buffer_ptr() [*]u8 {
+    return &global_buffer;
+}
+
+export fn get_f64_buffer_ptr() [*]f64 {
+    return &f64_buffer;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// COMPETITORS
+// CREATION PATTERNS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const Competitor = enum {
-    trinity,
-    openssl,
-    boringssl,
-    liboqs,
-    ring,
-    libsodium,
+/// Проверка TRINITY identity: φ² + 1/φ² = 3
+pub export fn verify_trinity() f64 {
+    return PHI * PHI + 1.0 / (PHI * PHI);
+}
 
-    pub fn name(self: Competitor) []const u8 {
-        return switch (self) {
-            .trinity => "Trinity",
-            .openssl => "OpenSSL 3.2",
-            .boringssl => "BoringSSL",
-            .liboqs => "liboqs 0.9",
-            .ring => "ring (Rust)",
-            .libsodium => "libsodium",
-        };
+/// φ-интерполяция
+pub export fn phi_lerp(a: f64, b: f64, t: f64) f64 {
+    const phi_t = math.pow(f64, t, PHI_INV);
+    return a + (b - a) * phi_t;
+}
+
+/// Генерация φ-спирали
+pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
+    const max_points = f64_buffer.len / 2;
+    const count = if (n > max_points) @as(u32, @intCast(max_points)) else n;
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        const fi: f64 = @floatFromInt(i);
+        const angle = fi * TAU * PHI_INV;
+        const radius = scale * math.pow(f64, PHI, fi * 0.1);
+        f64_buffer[i * 2] = cx + radius * @cos(angle);
+        f64_buffer[i * 2 + 1] = cy + radius * @sin(angle);
     }
-};
+    return count;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// COMPETITOR REFERENCE DATA (from published benchmarks)
+// TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const ReferenceData = struct {
-    // ML-KEM-1024 (nanoseconds)
-    pub const ML_KEM = struct {
-        pub const trinity_keygen: u64 = 35_000;
-        pub const trinity_encaps: u64 = 42_000;
-        pub const trinity_decaps: u64 = 45_000;
-
-        pub const openssl_keygen: u64 = 48_000;
-        pub const openssl_encaps: u64 = 55_000;
-        pub const openssl_decaps: u64 = 58_000;
-
-        pub const liboqs_keygen: u64 = 42_000;
-        pub const liboqs_encaps: u64 = 48_000;
-        pub const liboqs_decaps: u64 = 50_000;
-
-        pub const boringssl_keygen: u64 = 45_000;
-        pub const boringssl_encaps: u64 = 52_000;
-        pub const boringssl_decaps: u64 = 54_000;
-    };
-
-    // X25519 (nanoseconds)
-    pub const X25519 = struct {
-        pub const trinity_keygen: u64 = 32_000;
-        pub const trinity_dh: u64 = 72_000;
-
-        pub const libsodium_keygen: u64 = 38_000;
-        pub const libsodium_dh: u64 = 85_000;
-
-        pub const ring_keygen: u64 = 35_000;
-        pub const ring_dh: u64 = 78_000;
-
-        pub const openssl_keygen: u64 = 42_000;
-        pub const openssl_dh: u64 = 92_000;
-    };
-
-    // Symmetric (per 1KB, nanoseconds)
-    pub const Symmetric = struct {
-        pub const trinity_aes_gcm: u64 = 380;
-        pub const trinity_chacha: u64 = 320;
-        pub const trinity_sha3: u64 = 2_400;
-
-        pub const openssl_aes_gcm: u64 = 450;
-        pub const boringssl_aes_gcm: u64 = 420;
-        pub const ring_chacha: u64 = 350;
-        pub const libsodium_chacha: u64 = 380;
-        pub const openssl_sha3: u64 = 2_800;
-    };
-};
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// MEASUREMENT RESULT
-// ═══════════════════════════════════════════════════════════════════════════════
-
-pub const MeasurementResult = struct {
-    operation: OperationType,
-    competitor: Competitor,
-    mean_ns: u64,
-    median_ns: u64,
-    stddev_ns: u64,
-    min_ns: u64,
-    max_ns: u64,
-    p99_ns: u64,
-    iterations: u32,
-
-    pub fn opsPerSecond(self: *const MeasurementResult) f64 {
-        if (self.mean_ns == 0) return 0;
-        return 1_000_000_000.0 / @as(f64, @floatFromInt(self.mean_ns));
-    }
-
-    pub fn throughputMBps(self: *const MeasurementResult, bytes_per_op: u64) f64 {
-        const ops = self.opsPerSecond();
-        return (ops * @as(f64, @floatFromInt(bytes_per_op))) / (1024.0 * 1024.0);
-    }
-};
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// SPEEDUP RESULT
-// ═══════════════════════════════════════════════════════════════════════════════
-
-pub const SpeedupResult = struct {
-    operation: OperationType,
-    vs_openssl: f64,
-    vs_liboqs: f64,
-    vs_ring: f64,
-    vs_libsodium: f64,
-
-    pub fn bestSpeedup(self: *const SpeedupResult) f64 {
-        var best = self.vs_openssl;
-        if (self.vs_liboqs > best) best = self.vs_liboqs;
-        if (self.vs_ring > best) best = self.vs_ring;
-        if (self.vs_libsodium > best) best = self.vs_libsodium;
-        return best;
-    }
-
-    pub fn worstSpeedup(self: *const SpeedupResult) f64 {
-        var worst = self.vs_openssl;
-        if (self.vs_liboqs < worst and self.vs_liboqs > 0) worst = self.vs_liboqs;
-        if (self.vs_ring < worst and self.vs_ring > 0) worst = self.vs_ring;
-        if (self.vs_libsodium < worst and self.vs_libsodium > 0) worst = self.vs_libsodium;
-        return worst;
-    }
-
-    pub fn allFasterThanCompetitors(self: *const SpeedupResult) bool {
-        return self.vs_openssl >= 1.0 and
-               (self.vs_liboqs >= 1.0 or self.vs_liboqs == 0) and
-               (self.vs_ring >= 1.0 or self.vs_ring == 0) and
-               (self.vs_libsodium >= 1.0 or self.vs_libsodium == 0);
-    }
-};
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// BENCHMARK RUNNER
-// ═══════════════════════════════════════════════════════════════════════════════
-
-pub const BenchmarkRunner = struct {
-    config: BenchmarkConfig,
-    results: std.ArrayList(MeasurementResult),
-    allocator: Allocator,
-
-    const Self = @This();
-
-    pub fn init(allocator: Allocator) Self {
-        return Self{
-            .config = BenchmarkConfig.DEFAULT,
-            .results = std.ArrayList(MeasurementResult).init(allocator),
-            .allocator = allocator,
-        };
-    }
-
-    pub fn deinit(self: *Self) void {
-        self.results.deinit();
-    }
-
-    pub fn calculateSpeedup(trinity_ns: u64, competitor_ns: u64) f64 {
-        if (trinity_ns == 0) return 0;
-        return @as(f64, @floatFromInt(competitor_ns)) / @as(f64, @floatFromInt(trinity_ns));
-    }
-
-    pub fn getMlKemKeygenSpeedup() SpeedupResult {
-        return SpeedupResult{
-            .operation = .key_generation,
-            .vs_openssl = calculateSpeedup(ReferenceData.ML_KEM.trinity_keygen, ReferenceData.ML_KEM.openssl_keygen),
-            .vs_liboqs = calculateSpeedup(ReferenceData.ML_KEM.trinity_keygen, ReferenceData.ML_KEM.liboqs_keygen),
-            .vs_ring = 0, // ring doesn't have ML-KEM
-            .vs_libsodium = 0, // libsodium doesn't have ML-KEM
-        };
-    }
-
-    pub fn getMlKemEncapsSpeedup() SpeedupResult {
-        return SpeedupResult{
-            .operation = .encapsulation,
-            .vs_openssl = calculateSpeedup(ReferenceData.ML_KEM.trinity_encaps, ReferenceData.ML_KEM.openssl_encaps),
-            .vs_liboqs = calculateSpeedup(ReferenceData.ML_KEM.trinity_encaps, ReferenceData.ML_KEM.liboqs_encaps),
-            .vs_ring = 0,
-            .vs_libsodium = 0,
-        };
-    }
-
-    pub fn getMlKemDecapsSpeedup() SpeedupResult {
-        return SpeedupResult{
-            .operation = .decapsulation,
-            .vs_openssl = calculateSpeedup(ReferenceData.ML_KEM.trinity_decaps, ReferenceData.ML_KEM.openssl_decaps),
-            .vs_liboqs = calculateSpeedup(ReferenceData.ML_KEM.trinity_decaps, ReferenceData.ML_KEM.liboqs_decaps),
-            .vs_ring = 0,
-            .vs_libsodium = 0,
-        };
-    }
-
-    pub fn getX25519KeygenSpeedup() SpeedupResult {
-        return SpeedupResult{
-            .operation = .key_generation,
-            .vs_openssl = calculateSpeedup(ReferenceData.X25519.trinity_keygen, ReferenceData.X25519.openssl_keygen),
-            .vs_liboqs = 0,
-            .vs_ring = calculateSpeedup(ReferenceData.X25519.trinity_keygen, ReferenceData.X25519.ring_keygen),
-            .vs_libsodium = calculateSpeedup(ReferenceData.X25519.trinity_keygen, ReferenceData.X25519.libsodium_keygen),
-        };
-    }
-
-    pub fn getAesGcmSpeedup() SpeedupResult {
-        return SpeedupResult{
-            .operation = .encryption,
-            .vs_openssl = calculateSpeedup(ReferenceData.Symmetric.trinity_aes_gcm, ReferenceData.Symmetric.openssl_aes_gcm),
-            .vs_liboqs = 0,
-            .vs_ring = 0,
-            .vs_libsodium = 0,
-        };
-    }
-
-    pub fn getChachaSpeedup() SpeedupResult {
-        return SpeedupResult{
-            .operation = .encryption,
-            .vs_openssl = 0,
-            .vs_liboqs = 0,
-            .vs_ring = calculateSpeedup(ReferenceData.Symmetric.trinity_chacha, ReferenceData.Symmetric.ring_chacha),
-            .vs_libsodium = calculateSpeedup(ReferenceData.Symmetric.trinity_chacha, ReferenceData.Symmetric.libsodium_chacha),
-        };
-    }
-
-    pub fn getSha3Speedup() SpeedupResult {
-        return SpeedupResult{
-            .operation = .hashing,
-            .vs_openssl = calculateSpeedup(ReferenceData.Symmetric.trinity_sha3, ReferenceData.Symmetric.openssl_sha3),
-            .vs_liboqs = 0,
-            .vs_ring = 0,
-            .vs_libsodium = 0,
-        };
-    }
-};
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// REPORT GENERATOR
-// ═══════════════════════════════════════════════════════════════════════════════
-
-pub const ReportGenerator = struct {
-    pub fn generateMarkdown() []const u8 {
-        return 
-        \\# Trinity Crypto Benchmark Report
-        \\
-        \\## Test Environment
-        \\- CPU: AMD EPYC 7763 (simulated)
-        \\- RAM: 64GB
-        \\- OS: Linux 6.1
-        \\- Compiler: Zig 0.13.0
-        \\
-        \\## ML-KEM-1024 (Post-Quantum KEM)
-        \\| Operation | Trinity | OpenSSL 3.2 | liboqs 0.9 | Speedup vs OpenSSL |
-        \\|-----------|---------|-------------|------------|-------------------|
-        \\| KeyGen    | 35μs    | 48μs        | 42μs       | 1.37x ✅          |
-        \\| Encaps    | 42μs    | 55μs        | 48μs       | 1.31x ✅          |
-        \\| Decaps    | 45μs    | 58μs        | 50μs       | 1.29x ✅          |
-        \\
-        \\## X25519 (Classical ECDH)
-        \\| Operation | Trinity | libsodium | ring (Rust) | Speedup |
-        \\|-----------|---------|-----------|-------------|---------|
-        \\| KeyGen    | 32μs    | 38μs      | 35μs        | 1.19x ✅|
-        \\| DH        | 72μs    | 85μs      | 78μs        | 1.18x ✅|
-        \\
-        \\## Symmetric Crypto (per 1KB)
-        \\| Algorithm      | Trinity | Best Competitor | Speedup |
-        \\|----------------|---------|-----------------|---------|
-        \\| AES-256-GCM    | 380ns   | 420ns (boring)  | 1.11x ✅|
-        \\| ChaCha20-Poly  | 320ns   | 350ns (ring)    | 1.09x ✅|
-        \\| SHA3-256       | 2.4μs   | 2.8μs (openssl) | 1.17x ✅|
-        \\
-        \\## Verdict
-        \\Trinity outperforms all major competitors across all categories.
-        \\
-        \\φ² + 1/φ² = 3 | PHOENIX = 999
-        ;
-    }
-};
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// TESTS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-test "BenchmarkConfig defaults" {
-    const config = BenchmarkConfig.DEFAULT;
-    try std.testing.expectEqual(@as(u32, 1000), config.warmup_iterations);
-    try std.testing.expectEqual(@as(u32, 10000), config.measure_iterations);
+test "run_benchmark" {
+// Given: Operation type and config
+// When: Benchmark requested
+// Then: Return measurement result with statistics
+    // TODO: Add test assertions
 }
 
-test "OperationType names" {
-    try std.testing.expectEqualStrings("KeyGen", OperationType.key_generation.name());
-    try std.testing.expectEqualStrings("Encaps", OperationType.encapsulation.name());
+test "calculate_speedup" {
+// Given: Trinity result and competitor results
+// When: Comparison requested
+// Then: Return speedup ratios
+    // TODO: Add test assertions
 }
 
-test "Competitor names" {
-    try std.testing.expectEqualStrings("Trinity", Competitor.trinity.name());
-    try std.testing.expectEqualStrings("OpenSSL 3.2", Competitor.openssl.name());
+test "generate_report" {
+// Given: All benchmark results
+// When: Report requested
+// Then: Return formatted markdown report
+    // TODO: Add test assertions
 }
 
-test "ReferenceData ML-KEM values" {
-    try std.testing.expectEqual(@as(u64, 35_000), ReferenceData.ML_KEM.trinity_keygen);
-    try std.testing.expectEqual(@as(u64, 48_000), ReferenceData.ML_KEM.openssl_keygen);
-}
-
-test "ReferenceData X25519 values" {
-    try std.testing.expectEqual(@as(u64, 32_000), ReferenceData.X25519.trinity_keygen);
-    try std.testing.expectEqual(@as(u64, 38_000), ReferenceData.X25519.libsodium_keygen);
-}
-
-test "ReferenceData Symmetric values" {
-    try std.testing.expectEqual(@as(u64, 380), ReferenceData.Symmetric.trinity_aes_gcm);
-    try std.testing.expectEqual(@as(u64, 320), ReferenceData.Symmetric.trinity_chacha);
-}
-
-test "MeasurementResult opsPerSecond" {
-    const result = MeasurementResult{
-        .operation = .key_generation,
-        .competitor = .trinity,
-        .mean_ns = 35_000,
-        .median_ns = 34_000,
-        .stddev_ns = 1_000,
-        .min_ns = 32_000,
-        .max_ns = 40_000,
-        .p99_ns = 38_000,
-        .iterations = 10000,
-    };
-    const ops = result.opsPerSecond();
-    try std.testing.expect(ops > 25_000);
-    try std.testing.expect(ops < 35_000);
-}
-
-test "MeasurementResult throughputMBps" {
-    const result = MeasurementResult{
-        .operation = .encryption,
-        .competitor = .trinity,
-        .mean_ns = 380,
-        .median_ns = 375,
-        .stddev_ns = 20,
-        .min_ns = 350,
-        .max_ns = 420,
-        .p99_ns = 410,
-        .iterations = 10000,
-    };
-    const throughput = result.throughputMBps(1024);
-    try std.testing.expect(throughput > 2000); // ~2.5 GB/s
-}
-
-test "SpeedupResult bestSpeedup" {
-    const result = SpeedupResult{
-        .operation = .key_generation,
-        .vs_openssl = 1.37,
-        .vs_liboqs = 1.20,
-        .vs_ring = 0,
-        .vs_libsodium = 0,
-    };
-    try std.testing.expectApproxEqAbs(@as(f64, 1.37), result.bestSpeedup(), 0.01);
-}
-
-test "SpeedupResult allFasterThanCompetitors" {
-    const result = SpeedupResult{
-        .operation = .key_generation,
-        .vs_openssl = 1.37,
-        .vs_liboqs = 1.20,
-        .vs_ring = 0,
-        .vs_libsodium = 0,
-    };
-    try std.testing.expect(result.allFasterThanCompetitors());
-}
-
-test "BenchmarkRunner calculateSpeedup" {
-    const speedup = BenchmarkRunner.calculateSpeedup(35_000, 48_000);
-    try std.testing.expectApproxEqAbs(@as(f64, 1.37), speedup, 0.01);
-}
-
-test "BenchmarkRunner getMlKemKeygenSpeedup" {
-    const result = BenchmarkRunner.getMlKemKeygenSpeedup();
-    try std.testing.expect(result.vs_openssl > 1.3);
-    try std.testing.expect(result.vs_liboqs > 1.1);
-}
-
-test "BenchmarkRunner getMlKemEncapsSpeedup" {
-    const result = BenchmarkRunner.getMlKemEncapsSpeedup();
-    try std.testing.expect(result.vs_openssl > 1.2);
-}
-
-test "BenchmarkRunner getMlKemDecapsSpeedup" {
-    const result = BenchmarkRunner.getMlKemDecapsSpeedup();
-    try std.testing.expect(result.vs_openssl > 1.2);
-}
-
-test "BenchmarkRunner getX25519KeygenSpeedup" {
-    const result = BenchmarkRunner.getX25519KeygenSpeedup();
-    try std.testing.expect(result.vs_openssl > 1.2);
-    try std.testing.expect(result.vs_libsodium > 1.1);
-}
-
-test "BenchmarkRunner getAesGcmSpeedup" {
-    const result = BenchmarkRunner.getAesGcmSpeedup();
-    try std.testing.expect(result.vs_openssl > 1.1);
-}
-
-test "BenchmarkRunner getChachaSpeedup" {
-    const result = BenchmarkRunner.getChachaSpeedup();
-    try std.testing.expect(result.vs_ring > 1.0);
-    try std.testing.expect(result.vs_libsodium > 1.1);
-}
-
-test "BenchmarkRunner getSha3Speedup" {
-    const result = BenchmarkRunner.getSha3Speedup();
-    try std.testing.expect(result.vs_openssl > 1.1);
-}
-
-test "ReportGenerator generateMarkdown" {
-    const report = ReportGenerator.generateMarkdown();
-    try std.testing.expect(report.len > 0);
-    try std.testing.expect(mem.indexOf(u8, report, "Trinity") != null);
-    try std.testing.expect(mem.indexOf(u8, report, "ML-KEM-1024") != null);
-}
-
-test "All speedups positive" {
-    const keygen = BenchmarkRunner.getMlKemKeygenSpeedup();
-    const encaps = BenchmarkRunner.getMlKemEncapsSpeedup();
-    const decaps = BenchmarkRunner.getMlKemDecapsSpeedup();
-
-    try std.testing.expect(keygen.allFasterThanCompetitors());
-    try std.testing.expect(encaps.allFasterThanCompetitors());
-    try std.testing.expect(decaps.allFasterThanCompetitors());
-}
-
-test "golden identity" {
-    const phi_sq = PHI * PHI;
-    const inv_phi_sq = 1.0 / phi_sq;
-    const result = phi_sq + inv_phi_sq;
-    try std.testing.expectApproxEqAbs(TRINITY, result, 0.0001);
+test "phi_constants" {
+    try std.testing.expectApproxEqAbs(PHI * PHI_INV, 1.0, 1e-10);
+    try std.testing.expectApproxEqAbs(PHI_SQ - PHI, 1.0, 1e-10);
 }

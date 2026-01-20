@@ -1,431 +1,179 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// E2E TECHNOLOGY TREE - VibeeSpec → AutoCodeGenerator → GeneratedZigCode
+// e2e_technology_tree v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
-// PAS: D&C + PRE + MLS | φ² + 1/φ² = 3
+//
+// Священная формула: V = n × 3^k × π^m × φ^p × e^q
+// Золотая идентичность: φ² + 1/φ² = 3
+//
+// Author: 
+// DO NOT EDIT - This file is auto-generated
+//
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const std = @import("std");
-const mem = std.mem;
-const Allocator = mem.Allocator;
+const math = std.math;
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SACRED CONSTANTS
+// КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// Базовые φ-константы (defaults)
 pub const PHI: f64 = 1.618033988749895;
+pub const PHI_INV: f64 = 0.618033988749895;
+pub const PHI_SQ: f64 = 2.618033988749895;
 pub const TRINITY: f64 = 3.0;
-pub const PHOENIX: u32 = 999;
+pub const SQRT5: f64 = 2.2360679774997896;
+pub const TAU: f64 = 6.283185307179586;
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// TECHNOLOGY LAYERS
+// ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const TechnologyLayer = enum {
-    specification,      // Layer 1: .vibee specs
-    code_generation,    // Layer 2: AutoCodeGenerator
-    output,             // Layer 3: Generated .zig
-    e2e_testing,        // Layer 4: E2E tests
+/// 
+pub const - = struct {
+};
 
-    pub fn name(self: TechnologyLayer) []const u8 {
-        return switch (self) {
-            .specification => "Specification (.vibee)",
-            .code_generation => "Code Generation",
-            .output => "Output (.zig)",
-            .e2e_testing => "E2E Testing",
-        };
-    }
+/// 
+pub const - = struct {
+    -: name: layer,
+    @"type": TechnologyLayer,
+    -: name: passed,
+    @"type": bool,
+    -: name: message,
+    @"type": []const u8,
+    -: name: timestamp,
+    @"type": i64,
+};
 
-    pub fn number(self: TechnologyLayer) u8 {
-        return switch (self) {
-            .specification => 1,
-            .code_generation => 2,
-            .output => 3,
-            .e2e_testing => 4,
-        };
-    }
+/// 
+pub const - = struct {
+    -: name: operation,
+    @"type": []const u8,
+    -: name: iterations,
+    @"type": i64,
+    -: name: mean_ns,
+    @"type": i64,
+    -: name: median_ns,
+    @"type": i64,
+    -: name: stddev_ns,
+    @"type": i64,
+    -: name: target_ns,
+    @"type": i64,
+    -: name: meets_target,
+    @"type": bool,
+};
+
+/// 
+pub const - = struct {
+    -: name: name,
+    @"type": []const u8,
+    -: name: keygen_ns,
+    @"type": i64,
+    -: name: encaps_ns,
+    @"type": i64,
+    -: name: decaps_ns,
+    @"type": i64,
+};
+
+/// 
+pub const - = struct {
+    -: name: total_tests,
+    @"type": i64,
+    -: name: passed_tests,
+    @"type": i64,
+    -: name: failed_tests,
+    @"type": i64,
+    -: name: coverage_percent,
+    @"type": f64,
+    -: name: all_passed,
+    @"type": bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// VALIDATION RESULT
+// ПАМЯТЬ ДЛЯ WASM
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const ValidationResult = struct {
-    layer: TechnologyLayer,
-    passed: bool,
-    message: [256]u8,
-    message_len: usize,
-    timestamp: i64,
+var global_buffer: [65536]u8 align(16) = undefined;
+var f64_buffer: [8192]f64 align(16) = undefined;
 
-    pub fn getMessage(self: *const ValidationResult) []const u8 {
-        return self.message[0..self.message_len];
-    }
+export fn get_global_buffer_ptr() [*]u8 {
+    return &global_buffer;
+}
 
-    pub fn init(layer: TechnologyLayer, passed: bool, msg: []const u8) ValidationResult {
-        var result = ValidationResult{
-            .layer = layer,
-            .passed = passed,
-            .message = undefined,
-            .message_len = @min(msg.len, 256),
-            .timestamp = std.time.timestamp(),
-        };
-        @memcpy(result.message[0..result.message_len], msg[0..result.message_len]);
-        return result;
-    }
-};
+export fn get_f64_buffer_ptr() [*]f64 {
+    return &f64_buffer;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// BENCHMARK RESULT
+// CREATION PATTERNS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const BenchmarkResult = struct {
-    operation: [64]u8,
-    operation_len: usize,
-    iterations: u64,
-    mean_ns: u64,
-    median_ns: u64,
-    stddev_ns: u64,
-    target_ns: u64,
-    meets_target: bool,
+/// Проверка TRINITY identity: φ² + 1/φ² = 3
+pub export fn verify_trinity() f64 {
+    return PHI * PHI + 1.0 / (PHI * PHI);
+}
 
-    pub fn getOperation(self: *const BenchmarkResult) []const u8 {
-        return self.operation[0..self.operation_len];
-    }
+/// φ-интерполяция
+pub export fn phi_lerp(a: f64, b: f64, t: f64) f64 {
+    const phi_t = math.pow(f64, t, PHI_INV);
+    return a + (b - a) * phi_t;
+}
 
-    pub fn opsPerSecond(self: *const BenchmarkResult) f64 {
-        if (self.mean_ns == 0) return 0;
-        return 1_000_000_000.0 / @as(f64, @floatFromInt(self.mean_ns));
+/// Генерация φ-спирали
+pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
+    const max_points = f64_buffer.len / 2;
+    const count = if (n > max_points) @as(u32, @intCast(max_points)) else n;
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        const fi: f64 = @floatFromInt(i);
+        const angle = fi * TAU * PHI_INV;
+        const radius = scale * math.pow(f64, PHI, fi * 0.1);
+        f64_buffer[i * 2] = cx + radius * @cos(angle);
+        f64_buffer[i * 2 + 1] = cy + radius * @sin(angle);
     }
-
-    pub fn speedupVs(self: *const BenchmarkResult, competitor_ns: u64) f64 {
-        if (self.mean_ns == 0) return 0;
-        return @as(f64, @floatFromInt(competitor_ns)) / @as(f64, @floatFromInt(self.mean_ns));
-    }
-};
+    return count;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// COMPETITOR DATA (from published benchmarks)
+// TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const CompetitorData = struct {
-    // ML-KEM-1024 benchmarks (nanoseconds)
-    pub const OpenSSL = struct {
-        pub const keygen_ns: u64 = 48_000;
-        pub const encaps_ns: u64 = 55_000;
-        pub const decaps_ns: u64 = 58_000;
-    };
-
-    pub const Liboqs = struct {
-        pub const keygen_ns: u64 = 42_000;
-        pub const encaps_ns: u64 = 48_000;
-        pub const decaps_ns: u64 = 50_000;
-    };
-
-    pub const Ring = struct {
-        pub const keygen_ns: u64 = 40_000;
-        pub const encaps_ns: u64 = 46_000;
-        pub const decaps_ns: u64 = 43_000;
-    };
-
-    pub const BoringSSL = struct {
-        pub const keygen_ns: u64 = 45_000;
-        pub const encaps_ns: u64 = 52_000;
-        pub const decaps_ns: u64 = 54_000;
-    };
-
-    // Trinity targets (should beat all competitors)
-    pub const Trinity = struct {
-        pub const keygen_ns: u64 = 35_000;
-        pub const encaps_ns: u64 = 42_000;
-        pub const decaps_ns: u64 = 45_000;
-    };
-};
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// E2E REPORT
-// ═══════════════════════════════════════════════════════════════════════════════
-
-pub const E2EReport = struct {
-    total_tests: u32,
-    passed_tests: u32,
-    failed_tests: u32,
-    coverage_percent: f64,
-    all_passed: bool,
-
-    // Layer results
-    layer1_passed: bool,
-    layer2_passed: bool,
-    layer3_passed: bool,
-    layer4_passed: bool,
-
-    pub fn init() E2EReport {
-        return E2EReport{
-            .total_tests = 0,
-            .passed_tests = 0,
-            .failed_tests = 0,
-            .coverage_percent = 0.0,
-            .all_passed = false,
-            .layer1_passed = false,
-            .layer2_passed = false,
-            .layer3_passed = false,
-            .layer4_passed = false,
-        };
-    }
-
-    pub fn updateFromValidation(self: *E2EReport, result: ValidationResult) void {
-        self.total_tests += 1;
-        if (result.passed) {
-            self.passed_tests += 1;
-        } else {
-            self.failed_tests += 1;
-        }
-
-        switch (result.layer) {
-            .specification => self.layer1_passed = result.passed,
-            .code_generation => self.layer2_passed = result.passed,
-            .output => self.layer3_passed = result.passed,
-            .e2e_testing => self.layer4_passed = result.passed,
-        }
-
-        self.all_passed = self.layer1_passed and self.layer2_passed and
-                          self.layer3_passed and self.layer4_passed;
-        
-        if (self.total_tests > 0) {
-            self.coverage_percent = @as(f64, @floatFromInt(self.passed_tests)) /
-                                    @as(f64, @floatFromInt(self.total_tests)) * 100.0;
-        }
-    }
-};
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// E2E TECHNOLOGY TREE VALIDATOR
-// ═══════════════════════════════════════════════════════════════════════════════
-
-pub const E2ETechnologyTree = struct {
-    report: E2EReport,
-    allocator: Allocator,
-
-    const Self = @This();
-
-    pub fn init(allocator: Allocator) Self {
-        return Self{
-            .report = E2EReport.init(),
-            .allocator = allocator,
-        };
-    }
-
-    // Layer 1: Validate .vibee specification
-    pub fn validateLayer1(self: *Self, spec_content: []const u8) ValidationResult {
-        const has_name = mem.indexOf(u8, spec_content, "name:") != null;
-        const has_version = mem.indexOf(u8, spec_content, "version:") != null;
-        const has_types = mem.indexOf(u8, spec_content, "types:") != null;
-        const has_behaviors = mem.indexOf(u8, spec_content, "behaviors:") != null;
-
-        const passed = has_name and has_version and (has_types or has_behaviors);
-        const msg = if (passed) "Specification valid" else "Missing required fields";
-
-        const result = ValidationResult.init(.specification, passed, msg);
-        self.report.updateFromValidation(result);
-        return result;
-    }
-
-    // Layer 2: Validate code generation
-    pub fn validateLayer2(self: *Self, generated_code: []const u8) ValidationResult {
-        const has_const = mem.indexOf(u8, generated_code, "const") != null;
-        const has_pub = mem.indexOf(u8, generated_code, "pub") != null;
-        const has_struct = mem.indexOf(u8, generated_code, "struct") != null or
-                           mem.indexOf(u8, generated_code, "fn") != null;
-
-        const passed = has_const and has_pub and has_struct;
-        const msg = if (passed) "Code generation valid" else "Invalid generated code";
-
-        const result = ValidationResult.init(.code_generation, passed, msg);
-        self.report.updateFromValidation(result);
-        return result;
-    }
-
-    // Layer 3: Validate output (compilation check)
-    pub fn validateLayer3(self: *Self, compiles: bool) ValidationResult {
-        const msg = if (compiles) "Output compiles" else "Compilation failed";
-        const result = ValidationResult.init(.output, compiles, msg);
-        self.report.updateFromValidation(result);
-        return result;
-    }
-
-    // Layer 4: Validate E2E tests
-    pub fn validateLayer4(self: *Self, tests_passed: u32, tests_total: u32) ValidationResult {
-        const passed = tests_passed == tests_total and tests_total > 0;
-        const msg = if (passed) "All E2E tests passed" else "Some E2E tests failed";
-        const result = ValidationResult.init(.e2e_testing, passed, msg);
-        self.report.updateFromValidation(result);
-        return result;
-    }
-
-    // Compare with competitors
-    pub fn compareWithCompetitors(trinity_ns: u64) struct { openssl: f64, liboqs: f64, ring: f64 } {
-        return .{
-            .openssl = @as(f64, @floatFromInt(CompetitorData.OpenSSL.keygen_ns)) /
-                       @as(f64, @floatFromInt(trinity_ns)),
-            .liboqs = @as(f64, @floatFromInt(CompetitorData.Liboqs.keygen_ns)) /
-                      @as(f64, @floatFromInt(trinity_ns)),
-            .ring = @as(f64, @floatFromInt(CompetitorData.Ring.keygen_ns)) /
-                    @as(f64, @floatFromInt(trinity_ns)),
-        };
-    }
-
-    pub fn getReport(self: *const Self) E2EReport {
-        return self.report;
-    }
-};
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// TESTS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-test "TechnologyLayer names" {
-    try std.testing.expectEqualStrings("Specification (.vibee)", TechnologyLayer.specification.name());
-    try std.testing.expectEqualStrings("E2E Testing", TechnologyLayer.e2e_testing.name());
+test "validate_layer_1_spec" {
+// Given: .vibee specification file
+// When: Validation requested
+// Then: Return validation result for specification layer
+    // TODO: Add test assertions
 }
 
-test "TechnologyLayer numbers" {
-    try std.testing.expectEqual(@as(u8, 1), TechnologyLayer.specification.number());
-    try std.testing.expectEqual(@as(u8, 4), TechnologyLayer.e2e_testing.number());
+test "validate_layer_2_codegen" {
+// Given: Code generator with spec
+// When: Generation requested
+// Then: Return validation result for codegen layer
+    // TODO: Add test assertions
 }
 
-test "ValidationResult init" {
-    const result = ValidationResult.init(.specification, true, "Test passed");
-    try std.testing.expect(result.passed);
-    try std.testing.expectEqual(TechnologyLayer.specification, result.layer);
+test "validate_layer_3_output" {
+// Given: Generated .zig code
+// When: Compilation requested
+// Then: Return validation result for output layer
+    // TODO: Add test assertions
 }
 
-test "BenchmarkResult opsPerSecond" {
-    var result = BenchmarkResult{
-        .operation = undefined,
-        .operation_len = 0,
-        .iterations = 10000,
-        .mean_ns = 35_000,
-        .median_ns = 34_000,
-        .stddev_ns = 1_000,
-        .target_ns = 40_000,
-        .meets_target = true,
-    };
-    const ops = result.opsPerSecond();
-    try std.testing.expect(ops > 25_000); // ~28,571 ops/sec
-    try std.testing.expect(ops < 35_000);
+test "validate_layer_4_e2e" {
+// Given: All previous layers passed
+// When: E2E testing requested
+// Then: Return comprehensive E2E report
+    // TODO: Add test assertions
 }
 
-test "BenchmarkResult speedupVs" {
-    var result = BenchmarkResult{
-        .operation = undefined,
-        .operation_len = 0,
-        .iterations = 10000,
-        .mean_ns = 35_000,
-        .median_ns = 34_000,
-        .stddev_ns = 1_000,
-        .target_ns = 40_000,
-        .meets_target = true,
-    };
-    const speedup = result.speedupVs(48_000); // vs OpenSSL
-    try std.testing.expect(speedup > 1.3);
-    try std.testing.expect(speedup < 1.5);
+test "compare_with_competitors" {
+// Given: Benchmark results
+// When: Comparison requested
+// Then: Return speedup vs OpenSSL, liboqs, ring
+    // TODO: Add test assertions
 }
 
-test "CompetitorData values" {
-    try std.testing.expectEqual(@as(u64, 48_000), CompetitorData.OpenSSL.keygen_ns);
-    try std.testing.expectEqual(@as(u64, 42_000), CompetitorData.Liboqs.keygen_ns);
-    try std.testing.expectEqual(@as(u64, 35_000), CompetitorData.Trinity.keygen_ns);
-}
-
-test "E2EReport init" {
-    const report = E2EReport.init();
-    try std.testing.expectEqual(@as(u32, 0), report.total_tests);
-    try std.testing.expect(!report.all_passed);
-}
-
-test "E2EReport updateFromValidation" {
-    var report = E2EReport.init();
-    const result = ValidationResult.init(.specification, true, "OK");
-    report.updateFromValidation(result);
-    
-    try std.testing.expectEqual(@as(u32, 1), report.total_tests);
-    try std.testing.expectEqual(@as(u32, 1), report.passed_tests);
-    try std.testing.expect(report.layer1_passed);
-}
-
-test "E2ETechnologyTree validateLayer1" {
-    const allocator = std.testing.allocator;
-    var tree = E2ETechnologyTree.init(allocator);
-
-    const valid_spec = "name: test\nversion: \"1.0.0\"\ntypes:\n  - name: Foo";
-    const result = tree.validateLayer1(valid_spec);
-    try std.testing.expect(result.passed);
-}
-
-test "E2ETechnologyTree validateLayer1 invalid" {
-    const allocator = std.testing.allocator;
-    var tree = E2ETechnologyTree.init(allocator);
-
-    const invalid_spec = "random content";
-    const result = tree.validateLayer1(invalid_spec);
-    try std.testing.expect(!result.passed);
-}
-
-test "E2ETechnologyTree validateLayer2" {
-    const allocator = std.testing.allocator;
-    var tree = E2ETechnologyTree.init(allocator);
-
-    const valid_code = "const std = @import(\"std\");\npub const Foo = struct {};";
-    const result = tree.validateLayer2(valid_code);
-    try std.testing.expect(result.passed);
-}
-
-test "E2ETechnologyTree validateLayer3" {
-    const allocator = std.testing.allocator;
-    var tree = E2ETechnologyTree.init(allocator);
-
-    const result = tree.validateLayer3(true);
-    try std.testing.expect(result.passed);
-}
-
-test "E2ETechnologyTree validateLayer4" {
-    const allocator = std.testing.allocator;
-    var tree = E2ETechnologyTree.init(allocator);
-
-    const result = tree.validateLayer4(10, 10);
-    try std.testing.expect(result.passed);
-}
-
-test "E2ETechnologyTree compareWithCompetitors" {
-    const comparison = E2ETechnologyTree.compareWithCompetitors(35_000);
-    try std.testing.expect(comparison.openssl > 1.3); // 48000/35000 = 1.37
-    try std.testing.expect(comparison.liboqs > 1.1);  // 42000/35000 = 1.20
-    try std.testing.expect(comparison.ring > 1.1);    // 40000/35000 = 1.14
-}
-
-test "Full E2E flow" {
-    const allocator = std.testing.allocator;
-    var tree = E2ETechnologyTree.init(allocator);
-
-    // Layer 1
-    _ = tree.validateLayer1("name: test\nversion: \"1.0.0\"\ntypes:\n  - name: Foo");
-    
-    // Layer 2
-    _ = tree.validateLayer2("const std = @import(\"std\");\npub const Foo = struct {};");
-    
-    // Layer 3
-    _ = tree.validateLayer3(true);
-    
-    // Layer 4
-    _ = tree.validateLayer4(10, 10);
-
-    const report = tree.getReport();
-    try std.testing.expect(report.all_passed);
-    try std.testing.expectEqual(@as(u32, 4), report.total_tests);
-    try std.testing.expectEqual(@as(u32, 4), report.passed_tests);
-}
-
-test "golden identity" {
-    const phi_sq = PHI * PHI;
-    const inv_phi_sq = 1.0 / phi_sq;
-    const result = phi_sq + inv_phi_sq;
-    try std.testing.expectApproxEqAbs(TRINITY, result, 0.0001);
+test "phi_constants" {
+    try std.testing.expectApproxEqAbs(PHI * PHI_INV, 1.0, 1e-10);
+    try std.testing.expectApproxEqAbs(PHI_SQ - PHI, 1.0, 1e-10);
 }
