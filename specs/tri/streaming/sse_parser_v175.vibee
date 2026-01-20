@@ -1,0 +1,207 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# SSE PARSER v175 - Server-Sent Events Parser
+# ═══════════════════════════════════════════════════════════════════════════════
+# RFC 8895: Server-Sent Events
+# PAS Pattern: PRE + FDT
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: sse_parser
+version: "1.7.5"
+language: zig
+module: sse_parser
+
+sacred_constants:
+  phi: 1.618033988749895
+  phi_inv: 0.618033988749895
+  phi_sq: 2.618033988749895
+  trinity: 3.0
+  phoenix: 999
+
+creation_pattern:
+  source: RawSSEStream
+  transformer: SSEParser
+  result: ParsedEvents
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  SSEFieldType:
+    enum:
+      - event
+      - data
+      - id
+      - retry
+      - comment
+
+  SSEEvent:
+    fields:
+      event_type: String?
+      data: String
+      id: String?
+      retry: Int?
+
+  ParserState:
+    enum:
+      - idle
+      - reading_field
+      - reading_value
+      - event_complete
+      - error
+
+  ParseResult:
+    fields:
+      success: Bool
+      event: SSEEvent?
+      error: String?
+      bytes_consumed: Int
+
+  StreamStats:
+    fields:
+      events_parsed: Int
+      bytes_processed: Int
+      errors: Int
+      start_time: Timestamp
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: parse_line
+    given: "Raw SSE line"
+    when: "Line received"
+    then: "Extract field type and value"
+    pas_pattern: PRE
+    complexity: O(n)
+    test_cases:
+      - name: test_data_line
+        input: '"data: Hello World"'
+        expected: '{"field": "data", "value": "Hello World"}'
+      - name: test_event_line
+        input: '"event: message"'
+        expected: '{"field": "event", "value": "message"}'
+      - name: test_id_line
+        input: '"id: 123"'
+        expected: '{"field": "id", "value": "123"}'
+      - name: test_comment
+        input: '": this is a comment"'
+        expected: '{"field": "comment", "value": "this is a comment"}'
+
+  - name: parse_json_delta
+    given: "JSON data from SSE"
+    when: "Delta extraction needed"
+    then: "Extract content delta from JSON"
+    pas_pattern: PRE
+    complexity: O(n)
+    test_cases:
+      - name: test_openai_format
+        input: '{"choices":[{"delta":{"content":"Hello"}}]}'
+        expected: '{"content": "Hello"}'
+      - name: test_anthropic_format
+        input: '{"delta":{"text":"World"}}'
+        expected: '{"content": "World"}'
+      - name: test_done_signal
+        input: '"[DONE]"'
+        expected: '{"done": true}'
+
+  - name: detect_provider
+    given: "First SSE event"
+    when: "Provider detection needed"
+    then: "Identify API provider format"
+    pas_pattern: PRE
+    complexity: O(1)
+    test_cases:
+      - name: test_openai
+        input: '{"choices":[...]}'
+        expected: '{"provider": "openai"}'
+      - name: test_anthropic
+        input: '{"type":"content_block_delta"}'
+        expected: '{"provider": "anthropic"}'
+      - name: test_deepseek
+        input: '{"model":"deepseek-chat"}'
+        expected: '{"provider": "deepseek"}'
+
+  - name: handle_multiline_data
+    given: "Multiple data lines"
+    when: "Multiline content"
+    then: "Concatenate with newlines"
+    pas_pattern: PRE
+    complexity: O(n)
+    test_cases:
+      - name: test_multiline
+        input: '["data: line1", "data: line2"]'
+        expected: '{"data": "line1\\nline2"}'
+
+  - name: validate_event
+    given: "Parsed SSE event"
+    when: "Validation needed"
+    then: "Check event structure"
+    pas_pattern: PRE
+    complexity: O(1)
+    test_cases:
+      - name: test_valid
+        input: '{"data": "content"}'
+        expected: '{"valid": true}'
+      - name: test_invalid
+        input: '{}'
+        expected: '{"valid": false}'
+
+  - name: reset_parser
+    given: "Parser in any state"
+    when: "Reset requested"
+    then: "Clear state for new stream"
+    pas_pattern: PRE
+    complexity: O(1)
+    test_cases:
+      - name: test_reset
+        input: '{"state": "error"}'
+        expected: '{"state": "idle"}'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SSE PROTOCOL REFERENCE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+protocol:
+  format: |
+    event: <event-type>
+    data: <data>
+    id: <id>
+    retry: <milliseconds>
+    
+    (blank line ends event)
+
+  examples:
+    simple: |
+      data: Hello World
+      
+    with_event: |
+      event: message
+      data: {"text": "Hello"}
+      
+    multiline: |
+      data: line 1
+      data: line 2
+      
+    with_id: |
+      id: 123
+      data: content
+
+  providers:
+    openai:
+      format: 'data: {"choices":[{"delta":{"content":"token"}}]}'
+      done: 'data: [DONE]'
+    
+    anthropic:
+      format: 'data: {"type":"content_block_delta","delta":{"text":"token"}}'
+      done: 'data: {"type":"message_stop"}'
+    
+    deepseek:
+      format: 'data: {"choices":[{"delta":{"content":"token"}}]}'
+      done: 'data: [DONE]'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════

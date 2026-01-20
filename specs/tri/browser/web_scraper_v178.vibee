@@ -1,0 +1,214 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# WEB SCRAPER v178 - HTML Content Extraction
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS Pattern: PRE + HSH (Precomputation + Hashing for caching)
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: web_scraper
+version: "1.7.8"
+language: zig
+module: web_scraper
+
+sacred_constants:
+  phi: 1.618033988749895
+  phi_inv: 0.618033988749895
+  phi_sq: 2.618033988749895
+  trinity: 3.0
+  phoenix: 999
+
+creation_pattern:
+  source: HTMLContent
+  transformer: WebScraper
+  result: ExtractedData
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  SelectorType:
+    enum:
+      - css
+      - xpath
+      - regex
+      - text_match
+
+  HTMLElement:
+    fields:
+      tag: String
+      attributes: Map<String, String>
+      text: String?
+      children: List<HTMLElement>
+
+  ExtractionRule:
+    fields:
+      name: String
+      selector: String
+      selector_type: SelectorType
+      attribute: String?
+      transform: String?
+
+  ExtractedData:
+    fields:
+      url: String
+      title: String?
+      content: String?
+      links: List<String>
+      images: List<String>
+      metadata: Map<String, String>
+      extracted_at: Timestamp
+
+  ScraperConfig:
+    fields:
+      user_agent: String = "VIBEE-Scraper/1.0"
+      timeout_ms: Int = 30000
+      follow_redirects: Bool = true
+      max_redirects: Int = 5
+      cache_enabled: Bool = true
+      cache_ttl_seconds: Int = 3600
+
+  CacheEntry:
+    fields:
+      url_hash: String
+      content: String
+      fetched_at: Timestamp
+      expires_at: Timestamp
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: fetch_html
+    given: "URL"
+    when: "HTML fetch needed"
+    then: "Return raw HTML content"
+    pas_pattern: PRE
+    complexity: O(n)
+    test_cases:
+      - name: test_fetch
+        input: '{"url": "https://example.com"}'
+        expected: '{"success": true, "html_length": ">0"}'
+
+  - name: extract_title
+    given: "HTML content"
+    when: "Title extraction needed"
+    then: "Return page title"
+    pas_pattern: PRE
+    complexity: O(n)
+    test_cases:
+      - name: test_title
+        input: '{"html": "<html><head><title>Test</title></head></html>"}'
+        expected: '{"title": "Test"}'
+
+  - name: extract_links
+    given: "HTML content"
+    when: "Link extraction needed"
+    then: "Return all href values"
+    pas_pattern: PRE
+    complexity: O(n)
+    test_cases:
+      - name: test_links
+        input: '{"html": "<a href=\"/page1\">Link</a><a href=\"/page2\">Link2</a>"}'
+        expected: '{"links": ["/page1", "/page2"]}'
+
+  - name: extract_text
+    given: "HTML content"
+    when: "Text extraction needed"
+    then: "Return text without HTML tags"
+    pas_pattern: PRE
+    complexity: O(n)
+    test_cases:
+      - name: test_text
+        input: '{"html": "<p>Hello <b>World</b></p>"}'
+        expected: '{"text": "Hello World"}'
+
+  - name: apply_selector
+    given: "HTML and CSS selector"
+    when: "Element selection needed"
+    then: "Return matching elements"
+    pas_pattern: PRE
+    complexity: O(n*m)
+    test_cases:
+      - name: test_class_selector
+        input: '{"html": "<div class=\"item\">A</div><div class=\"item\">B</div>", "selector": ".item"}'
+        expected: '{"elements": ["A", "B"]}'
+
+  - name: cache_lookup
+    given: "URL"
+    when: "Cache check needed"
+    then: "Return cached content if valid"
+    pas_pattern: HSH
+    complexity: O(1)
+    test_cases:
+      - name: test_cache_hit
+        input: '{"url_hash": "abc123", "cache_valid": true}'
+        expected: '{"hit": true}'
+      - name: test_cache_miss
+        input: '{"url_hash": "xyz789", "cache_valid": false}'
+        expected: '{"hit": false}'
+
+  - name: hash_url
+    given: "URL string"
+    when: "Cache key needed"
+    then: "Return URL hash"
+    pas_pattern: HSH
+    complexity: O(n)
+    test_cases:
+      - name: test_hash
+        input: '{"url": "https://example.com/page"}'
+        expected: '{"hash_length": 64}'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXTRACTION PATTERNS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+common_patterns:
+  title:
+    selector: "title"
+    type: css
+    
+  meta_description:
+    selector: 'meta[name="description"]'
+    type: css
+    attribute: "content"
+    
+  og_image:
+    selector: 'meta[property="og:image"]'
+    type: css
+    attribute: "content"
+    
+  all_links:
+    selector: "a[href]"
+    type: css
+    attribute: "href"
+    
+  all_images:
+    selector: "img[src]"
+    type: css
+    attribute: "src"
+    
+  main_content:
+    selector: "article, main, .content, #content"
+    type: css
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE TARGETS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+performance:
+  targets:
+    fetch_timeout_ms: 30000
+    parse_per_kb_us: 100
+    cache_lookup_us: 10
+
+  benchmarks:
+    - name: "Parse 100KB HTML"
+      target_ms: 10
+    - name: "Extract 1000 links"
+      target_ms: 5
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
