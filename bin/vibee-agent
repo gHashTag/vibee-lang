@@ -425,17 +425,100 @@ If no tool is needed, just respond normally."
     # Build messages array
     local deepseek_messages=$(echo "$messages" | jq --arg sys "$tool_prompt" '[{role: "system", content: $sys}] + .')
     
-    local response=$(curl -s https://api.deepseek.com/v1/chat/completions \
+    # Check if streaming is enabled
+    if [ "${VIBEE_STREAM:-true}" = "true" ]; then
+        call_deepseek_streaming "$deepseek_messages"
+    else
+        local response=$(curl -s https://api.deepseek.com/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
+            -d "{
+                \"model\": \"$MODEL\",
+                \"max_tokens\": $MAX_TOKENS,
+                \"messages\": $deepseek_messages
+            }")
+        
+        # Convert to Anthropic format
+        convert_deepseek_response "$response"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STREAMING SUPPORT - DeepSeek SSE (v172)
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+call_deepseek_streaming() {
+    local messages="$1"
+    local full_response=""
+    local token_count=0
+    local has_tool_call=false
+    local tool_name=""
+    local tool_input=""
+    
+    # Show streaming indicator
+    echo -ne "${CYAN}" >&2
+    
+    # Make streaming request with -N for unbuffered output
+    curl -sN https://api.deepseek.com/v1/chat/completions \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
         -d "{
             \"model\": \"$MODEL\",
             \"max_tokens\": $MAX_TOKENS,
-            \"messages\": $deepseek_messages
-        }")
+            \"stream\": true,
+            \"messages\": $messages
+        }" 2>/dev/null | while IFS= read -r line; do
+        
+        # Skip empty lines
+        [[ -z "$line" ]] && continue
+        
+        # Check for done signal
+        if [[ "$line" == "data: [DONE]" ]]; then
+            echo -ne "${NC}" >&2
+            echo ""  # Final newline
+            break
+        fi
+        
+        # Parse SSE data line
+        if [[ "$line" == data:* ]]; then
+            local json="${line#data: }"
+            
+            # Extract content delta
+            local content=$(echo "$json" | jq -r '.choices[0].delta.content // empty' 2>/dev/null)
+            
+            if [[ -n "$content" ]]; then
+                # Output token immediately (real-time streaming)
+                printf "%s" "$content" >&2
+                
+                token_count=$((token_count + 1))
+                full_response+="$content"
+                
+                # Check for tool call pattern in accumulated response
+                if echo "$full_response" | grep -q "TOOL_CALL:"; then
+                    has_tool_call=true
+                fi
+            fi
+        fi
+    done
     
-    # Convert to Anthropic format
-    convert_deepseek_response "$response"
+    echo -ne "${NC}" >&2
+    
+    # Build response in Anthropic format
+    if [ "$has_tool_call" = true ]; then
+        # Extract tool info from full response
+        tool_name=$(echo "$full_response" | grep "TOOL_CALL:" | head -1 | sed 's/TOOL_CALL: *//' | tr -d '\r\n')
+        tool_input=$(echo "$full_response" | grep -A1 "TOOL_INPUT:" | tail -1 | tr -d '\r\n' | sed 's/^TOOL_INPUT: *//')
+        
+        if echo "$tool_input" | jq . > /dev/null 2>&1; then
+            local tool_id="deepseek_stream_$(date +%s)"
+            echo "{\"content\": [{\"type\": \"tool_use\", \"id\": \"$tool_id\", \"name\": \"$tool_name\", \"input\": $tool_input}], \"stop_reason\": \"tool_use\"}"
+        else
+            echo "{\"content\": [{\"type\": \"text\", \"text\": $(echo "$full_response" | jq -Rs .)}], \"stop_reason\": \"end_turn\"}"
+        fi
+    else
+        echo "{\"content\": [{\"type\": \"text\", \"text\": $(echo "$full_response" | jq -Rs .)}], \"stop_reason\": \"end_turn\"}"
+    fi
 }
 
 convert_deepseek_response() {
