@@ -1,0 +1,218 @@
+# VIBEE Specification: RGA Text Algorithm v1303
+# YOLO XV - Production Ascension
+# Based on: Replicated Growable Array (Roh et al. 2011)
+
+name: browser_crdt_rga
+version: "1303"
+language: zig
+module: browser_crdt_rga
+
+types:
+  RGADoc:
+    fields:
+      site_id: Int
+      counter: Int
+      head: RGANode
+      nodes: Map
+      tombstones: Int
+
+  RGANode:
+    fields:
+      id: RGAID
+      value: String
+      deleted: Bool
+      next: String
+      prev: String
+      timestamp: Int
+
+  RGAID:
+    fields:
+      site: Int
+      seq: Int
+
+  RGAOp:
+    fields:
+      op_type: String
+      id: RGAID
+      value: String
+      ref_id: RGAID
+      timestamp: Int
+
+  RGAState:
+    fields:
+      nodes: List
+      version_vector: Map
+      site_id: Int
+
+  RGASplit:
+    fields:
+      left: RGANode
+      right: RGANode
+      split_point: Int
+
+behaviors:
+  - name: create_rga
+    given: "Site ID"
+    when: "Creating new RGA document"
+    then: "Returns initialized RGA with head sentinel"
+
+  - name: insert_after
+    given: "RGA, reference ID, value"
+    when: "Inserting character after reference"
+    then: "Creates node, links after reference, broadcasts op"
+
+  - name: insert_at_index
+    given: "RGA, index, value"
+    when: "Inserting at visible index"
+    then: "Finds reference node, inserts after"
+
+  - name: delete_node
+    given: "RGA, node ID"
+    when: "Deleting character"
+    then: "Marks node as tombstone"
+
+  - name: delete_range
+    given: "RGA, start index, length"
+    when: "Deleting range"
+    then: "Marks all nodes in range as tombstones"
+
+  - name: apply_remote_insert
+    given: "RGA, insert operation"
+    when: "Receiving remote insert"
+    then: "Integrates node at correct position"
+
+  - name: apply_remote_delete
+    given: "RGA, delete operation"
+    when: "Receiving remote delete"
+    then: "Marks node as tombstone"
+
+  - name: find_insert_position
+    given: "RGA, reference ID, new ID"
+    when: "Determining insert position"
+    then: "Returns correct position using ID ordering"
+
+  - name: compare_ids
+    given: "Two RGAIDs"
+    when: "Comparing for ordering"
+    then: "Returns comparison based on (timestamp, site)"
+
+  - name: get_visible_text
+    given: "RGA"
+    when: "Getting current text"
+    then: "Returns string of non-deleted nodes"
+
+  - name: get_visible_length
+    given: "RGA"
+    when: "Getting text length"
+    then: "Returns count of non-deleted nodes"
+
+  - name: index_to_node
+    given: "RGA, visible index"
+    when: "Finding node at index"
+    then: "Returns node at visible position"
+
+  - name: node_to_index
+    given: "RGA, node ID"
+    when: "Finding index of node"
+    then: "Returns visible index or -1 if deleted"
+
+  - name: gc_tombstones
+    given: "RGA, version vector"
+    when: "Garbage collecting"
+    then: "Removes tombstones seen by all sites"
+
+  - name: split_node
+    given: "RGA, node ID, offset"
+    when: "Splitting for formatting"
+    then: "Returns two nodes with split content"
+
+  - name: encode_state
+    given: "RGA"
+    when: "Serializing state"
+    then: "Returns encoded state for sync"
+
+  - name: decode_state
+    given: "Encoded state"
+    when: "Deserializing state"
+    then: "Returns reconstructed RGA"
+
+  - name: merge_states
+    given: "Two RGA states"
+    when: "Merging concurrent states"
+    then: "Returns merged state"
+
+creation_pattern:
+  source: RGADoc
+  transformer: RGAAlgorithm
+  result: CollaborativeText
+
+scientific_references:
+  - author: "Roh et al."
+    title: "Replicated abstract data types: Building blocks for collaborative applications"
+    venue: "JPDC"
+    year: 2011
+  - author: "Attiya et al."
+    title: "Specification and Complexity of Collaborative Text Editing"
+    venue: "PODC"
+    year: 2016
+
+test_cases:
+  - name: test_concurrent_insert_same_position
+    input:
+      site1_insert: {ref: "head", value: "A"}
+      site2_insert: {ref: "head", value: "B"}
+    expected:
+      convergent: true
+      order_deterministic: true
+
+  - name: test_insert_delete_interleaving
+    input:
+      site1_insert: {index: 0, value: "X"}
+      site2_delete: {index: 0}
+    expected:
+      convergent: true
+
+  - name: test_tombstone_preservation
+    input:
+      insert: {value: "A"}
+      delete: {index: 0}
+    expected:
+      tombstone_exists: true
+      visible_length: 0
+
+  - name: test_id_ordering
+    input:
+      id1: {site: 1, seq: 5}
+      id2: {site: 2, seq: 5}
+    expected:
+      id1_less_than_id2: true
+
+  - name: test_gc_tombstones
+    input:
+      tombstones: 100
+      all_sites_seen: true
+    expected:
+      tombstones_after_gc: 0
+
+  - name: test_index_stability
+    input:
+      initial: "Hello"
+      insert: {index: 0, value: "X"}
+    expected:
+      original_h_at: 1
+
+  - name: test_split_merge
+    input:
+      text: "HelloWorld"
+      split_at: 5
+    expected:
+      left: "Hello"
+      right: "World"
+
+  - name: test_large_document
+    input:
+      operations: 10000
+      concurrent_sites: 10
+    expected:
+      convergent: true
+      performance_acceptable: true

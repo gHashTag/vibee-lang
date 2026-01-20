@@ -1,0 +1,297 @@
+# VIBEE Specification: Automerge CRDT Integration v1302
+# YOLO XV - Production Ascension
+# Based on: Automerge (Kleppmann), JSON CRDT
+
+name: browser_crdt_automerge
+version: "1302"
+language: zig
+module: browser_crdt_automerge
+
+types:
+  AutomergeDoc:
+    fields:
+      actor_id: String
+      seq: Int
+      deps: List
+      ops: List
+      clock: Map
+      history: List
+
+  AutomergeChange:
+    fields:
+      actor: String
+      seq: Int
+      start_op: Int
+      time: Int
+      message: String
+      deps: List
+      ops: List
+      hash: String
+
+  AutomergeOp:
+    fields:
+      obj: String
+      key: String
+      action: String
+      value: String
+      datatype: String
+      pred: List
+      insert: Bool
+
+  AutomergePatch:
+    fields:
+      path: List
+      action: String
+      value: String
+      conflict: Bool
+
+  AutomergeText:
+    fields:
+      obj_id: String
+      length: Int
+      spans: List
+
+  AutomergeList:
+    fields:
+      obj_id: String
+      length: Int
+      elements: List
+
+  AutomergeMap:
+    fields:
+      obj_id: String
+      keys: List
+      entries: Map
+
+  AutomergeCounter:
+    fields:
+      obj_id: String
+      value: Int
+
+  AutomergeCursor:
+    fields:
+      obj_id: String
+      elem_id: String
+      index: Int
+
+  SyncState:
+    fields:
+      shared_heads: List
+      last_sent_heads: List
+      their_heads: List
+      their_need: List
+      their_have: List
+      sent_hashes: List
+
+  SyncMessage:
+    fields:
+      heads: List
+      need: List
+      have: List
+      changes: List
+
+behaviors:
+  - name: create_doc
+    given: "Optional actor ID"
+    when: "Creating new Automerge document"
+    then: "Returns initialized doc with unique actor"
+
+  - name: clone_doc
+    given: "Existing document"
+    when: "Creating independent copy"
+    then: "Returns deep clone with same history"
+
+  - name: fork_doc
+    given: "Existing document"
+    when: "Creating branch"
+    then: "Returns fork with new actor ID"
+
+  - name: merge_docs
+    given: "Two documents"
+    when: "Merging concurrent changes"
+    then: "Returns merged document preserving all ops"
+
+  - name: change_doc
+    given: "Document, change function"
+    when: "Making local changes"
+    then: "Creates change, updates doc, returns patches"
+
+  - name: apply_changes
+    given: "Document, list of changes"
+    when: "Applying remote changes"
+    then: "Integrates changes, returns patches"
+
+  - name: get_changes
+    given: "Document, optional heads"
+    when: "Getting changes since heads"
+    then: "Returns list of changes"
+
+  - name: get_all_changes
+    given: "Document"
+    when: "Getting complete history"
+    then: "Returns all changes in causal order"
+
+  - name: get_heads
+    given: "Document"
+    when: "Getting current heads"
+    then: "Returns list of head hashes"
+
+  - name: save_doc
+    given: "Document"
+    when: "Serializing for storage"
+    then: "Returns compact binary encoding"
+
+  - name: load_doc
+    given: "Binary data"
+    when: "Loading from storage"
+    then: "Returns reconstructed document"
+
+  - name: save_incremental
+    given: "Document"
+    when: "Saving only new changes"
+    then: "Returns incremental binary"
+
+  - name: load_incremental
+    given: "Document, binary data"
+    when: "Loading incremental update"
+    then: "Applies changes to document"
+
+  - name: init_sync_state
+    given: "Nothing"
+    when: "Starting sync session"
+    then: "Returns initial sync state"
+
+  - name: generate_sync_message
+    given: "Document, sync state"
+    when: "Creating sync message"
+    then: "Returns message and updated state"
+
+  - name: receive_sync_message
+    given: "Document, sync state, message"
+    when: "Processing sync message"
+    then: "Returns patches and updated state"
+
+  - name: text_insert
+    given: "Document, text object, index, string"
+    when: "Inserting text"
+    then: "Creates insert ops"
+
+  - name: text_delete
+    given: "Document, text object, index, count"
+    when: "Deleting text"
+    then: "Creates delete ops"
+
+  - name: list_insert
+    given: "Document, list object, index, value"
+    when: "Inserting into list"
+    then: "Creates insert op"
+
+  - name: list_delete
+    given: "Document, list object, index"
+    when: "Deleting from list"
+    then: "Creates delete op"
+
+  - name: map_set
+    given: "Document, map object, key, value"
+    when: "Setting map key"
+    then: "Creates set op"
+
+  - name: map_delete
+    given: "Document, map object, key"
+    when: "Deleting map key"
+    then: "Creates delete op"
+
+  - name: increment_counter
+    given: "Document, counter object, delta"
+    when: "Incrementing counter"
+    then: "Creates increment op"
+
+  - name: get_cursor
+    given: "Document, text object, index"
+    when: "Creating stable cursor"
+    then: "Returns cursor that survives edits"
+
+  - name: cursor_to_index
+    given: "Document, cursor"
+    when: "Resolving cursor position"
+    then: "Returns current index"
+
+  - name: get_conflicts
+    given: "Document, path"
+    when: "Checking for conflicts"
+    then: "Returns conflicting values if any"
+
+creation_pattern:
+  source: AutomergeDoc
+  transformer: AutomergeCRDT
+  result: MergedDocument
+
+scientific_references:
+  - author: "Kleppmann, Beresford"
+    title: "A Conflict-Free Replicated JSON Datatype"
+    venue: "IEEE TPDS"
+    year: 2017
+  - author: "Kleppmann et al."
+    title: "Automerge: Real-time data sync"
+    year: 2023
+    url: "https://automerge.org"
+
+test_cases:
+  - name: test_concurrent_map_set
+    input:
+      doc1_set: {key: "x", value: 1}
+      doc2_set: {key: "x", value: 2}
+    expected:
+      has_conflict: true
+      values: [1, 2]
+
+  - name: test_text_concurrent_edit
+    input:
+      initial: "Hello"
+      doc1_insert: {index: 5, text: " World"}
+      doc2_insert: {index: 5, text: "!"}
+    expected:
+      convergent: true
+
+  - name: test_sync_protocol
+    input:
+      doc1_changes: 5
+      doc2_changes: 3
+    expected:
+      synced: true
+      messages_exchanged: 2
+
+  - name: test_save_load_roundtrip
+    input:
+      doc_ops: 100
+    expected:
+      loaded_equals_original: true
+
+  - name: test_cursor_stability
+    input:
+      initial: "Hello World"
+      cursor_at: 6
+      insert_before: {index: 0, text: "Say "}
+    expected:
+      cursor_resolves_to: 10
+
+  - name: test_counter_increment
+    input:
+      doc1_inc: 5
+      doc2_inc: 3
+    expected:
+      final_value: 8
+
+  - name: test_list_move
+    input:
+      initial: [1, 2, 3]
+      move: {from: 0, to: 2}
+    expected:
+      result: [2, 3, 1]
+
+  - name: test_nested_objects
+    input:
+      structure: {a: {b: {c: 1}}}
+      update: {path: ["a", "b", "c"], value: 2}
+    expected:
+      result: {a: {b: {c: 2}}}

@@ -1,0 +1,244 @@
+# VIBEE Specification: Vector Clocks v1305
+# YOLO XV - Production Ascension
+# Based on: Lamport (1978), Fidge/Mattern (1988)
+
+name: browser_crdt_vector_clock
+version: "1305"
+language: zig
+module: browser_crdt_vector_clock
+
+types:
+  VectorClock:
+    fields:
+      entries: Map
+      site_id: String
+
+  ClockEntry:
+    fields:
+      site: String
+      counter: Int
+
+  CausalOrder:
+    fields:
+      before: Bool
+      after: Bool
+      concurrent: Bool
+
+  HybridLogicalClock:
+    fields:
+      physical: Int
+      logical: Int
+      site_id: String
+
+  VersionVector:
+    fields:
+      versions: Map
+      exceptions: List
+
+  DottedVersionVector:
+    fields:
+      base: VersionVector
+      dots: List
+
+  Dot:
+    fields:
+      site: String
+      counter: Int
+
+  IntervalTreeClock:
+    fields:
+      id: ITCId
+      event: ITCEvent
+
+  ITCId:
+    fields:
+      value: Int
+      left: String
+      right: String
+
+  ITCEvent:
+    fields:
+      value: Int
+      left: String
+      right: String
+
+behaviors:
+  - name: create_vector_clock
+    given: "Site ID"
+    when: "Creating new clock"
+    then: "Returns clock with site entry at 0"
+
+  - name: increment
+    given: "VectorClock"
+    when: "Local event occurs"
+    then: "Increments own entry"
+
+  - name: merge
+    given: "Two VectorClocks"
+    when: "Receiving remote clock"
+    then: "Returns pointwise maximum"
+
+  - name: compare
+    given: "Two VectorClocks"
+    when: "Determining causal order"
+    then: "Returns before/after/concurrent"
+
+  - name: happens_before
+    given: "VectorClock A, VectorClock B"
+    when: "Checking causality"
+    then: "Returns true if A < B"
+
+  - name: is_concurrent
+    given: "Two VectorClocks"
+    when: "Checking concurrency"
+    then: "Returns true if neither dominates"
+
+  - name: create_hlc
+    given: "Site ID"
+    when: "Creating hybrid logical clock"
+    then: "Returns HLC with current physical time"
+
+  - name: hlc_send
+    given: "HLC"
+    when: "Sending message"
+    then: "Returns updated HLC timestamp"
+
+  - name: hlc_receive
+    given: "HLC, remote timestamp"
+    when: "Receiving message"
+    then: "Returns merged HLC"
+
+  - name: hlc_to_timestamp
+    given: "HLC"
+    when: "Converting to sortable timestamp"
+    then: "Returns 64-bit timestamp"
+
+  - name: create_version_vector
+    given: "Nothing"
+    when: "Creating version vector"
+    then: "Returns empty version vector"
+
+  - name: vv_add
+    given: "VersionVector, site, counter"
+    when: "Adding version"
+    then: "Updates vector"
+
+  - name: vv_contains
+    given: "VersionVector, site, counter"
+    when: "Checking if version seen"
+    then: "Returns true if contained"
+
+  - name: vv_diff
+    given: "Two VersionVectors"
+    when: "Computing difference"
+    then: "Returns missing versions"
+
+  - name: create_dvv
+    given: "Nothing"
+    when: "Creating dotted version vector"
+    then: "Returns empty DVV"
+
+  - name: dvv_update
+    given: "DVV, dot"
+    when: "Adding new version"
+    then: "Adds dot, compacts if possible"
+
+  - name: dvv_sync
+    given: "Two DVVs"
+    when: "Synchronizing"
+    then: "Returns merged DVV"
+
+  - name: create_itc
+    given: "Nothing"
+    when: "Creating interval tree clock"
+    then: "Returns seed ITC"
+
+  - name: itc_fork
+    given: "ITC"
+    when: "Forking for new site"
+    then: "Returns two ITCs with split ID"
+
+  - name: itc_join
+    given: "Two ITCs"
+    when: "Joining sites"
+    then: "Returns merged ITC"
+
+  - name: itc_event
+    given: "ITC"
+    when: "Recording event"
+    then: "Increments event counter"
+
+creation_pattern:
+  source: VectorClock
+  transformer: CausalityTracker
+  result: CausalOrdering
+
+scientific_references:
+  - author: "Lamport"
+    title: "Time, Clocks, and the Ordering of Events"
+    venue: "CACM"
+    year: 1978
+  - author: "Fidge"
+    title: "Timestamps in Message-Passing Systems"
+    venue: "ACSC"
+    year: 1988
+  - author: "Kulkarni et al."
+    title: "Logical Physical Clocks and Consistent Snapshots"
+    venue: "OPODIS"
+    year: 2014
+
+test_cases:
+  - name: test_happens_before
+    input:
+      vc1: {A: 1, B: 0}
+      vc2: {A: 1, B: 1}
+    expected:
+      vc1_before_vc2: true
+
+  - name: test_concurrent
+    input:
+      vc1: {A: 2, B: 1}
+      vc2: {A: 1, B: 2}
+    expected:
+      concurrent: true
+
+  - name: test_merge
+    input:
+      vc1: {A: 2, B: 1}
+      vc2: {A: 1, B: 3}
+    expected:
+      merged: {A: 2, B: 3}
+
+  - name: test_hlc_monotonic
+    input:
+      physical_time_backwards: true
+    expected:
+      hlc_still_increases: true
+
+  - name: test_vv_diff
+    input:
+      vv1: {A: 5, B: 3}
+      vv2: {A: 3, B: 5}
+    expected:
+      missing_in_vv2: [{A: 4}, {A: 5}]
+      missing_in_vv1: [{B: 4}, {B: 5}]
+
+  - name: test_dvv_compaction
+    input:
+      dots: [{A: 1}, {A: 2}, {A: 3}]
+    expected:
+      compacted_to: {A: 3}
+
+  - name: test_itc_fork_join
+    input:
+      seed: "initial"
+      fork_count: 4
+    expected:
+      all_unique_ids: true
+      join_recovers_seed: true
+
+  - name: test_causality_chain
+    input:
+      events: ["A sends", "B receives", "B sends", "C receives"]
+    expected:
+      total_order_preserved: true

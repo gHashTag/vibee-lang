@@ -1,0 +1,150 @@
+# VIBEE Specification: Plan Repair v1322
+# YOLO XV - Production Ascension
+
+name: browser_plan_repair
+version: "1322"
+language: zig
+module: browser_plan_repair
+
+types:
+  PlanRepairEngine:
+    fields:
+      original_plan: List
+      current_state: Map
+      goal: Map
+      domain: String
+
+  RepairStrategy:
+    fields:
+      strategy_type: String
+      max_attempts: Int
+      timeout_ms: Int
+
+  PlanFailure:
+    fields:
+      failed_action: String
+      failure_reason: String
+      current_state: Map
+      remaining_plan: List
+
+  RepairResult:
+    fields:
+      success: Bool
+      repaired_plan: List
+      repair_cost: Float
+      strategy_used: String
+
+  PlanDiff:
+    fields:
+      added_actions: List
+      removed_actions: List
+      modified_actions: List
+
+behaviors:
+  - name: create_repair_engine
+    given: "Domain, goal"
+    when: "Creating repair engine"
+    then: "Returns initialized engine"
+
+  - name: detect_failure
+    given: "Engine, expected state, actual state"
+    when: "Detecting plan failure"
+    then: "Returns failure info"
+
+  - name: repair_plan
+    given: "Engine, failure, strategy"
+    when: "Repairing plan"
+    then: "Returns repaired plan"
+
+  - name: local_repair
+    given: "Engine, failure"
+    when: "Attempting local repair"
+    then: "Patches around failure"
+
+  - name: replan_from_current
+    given: "Engine, current state"
+    when: "Replanning completely"
+    then: "Returns new plan"
+
+  - name: plan_merging
+    given: "Original plan, repair patch"
+    when: "Merging repair"
+    then: "Returns merged plan"
+
+  - name: validate_repair
+    given: "Engine, repaired plan"
+    when: "Validating repair"
+    then: "Returns validation result"
+
+  - name: compute_repair_cost
+    given: "Original plan, repaired plan"
+    when: "Computing cost"
+    then: "Returns repair cost"
+
+  - name: get_plan_diff
+    given: "Original plan, repaired plan"
+    when: "Computing diff"
+    then: "Returns plan differences"
+
+  - name: rollback_to_checkpoint
+    given: "Engine, checkpoint"
+    when: "Rolling back"
+    then: "Restores checkpoint state"
+
+creation_pattern:
+  source: PlanRepairEngine
+  transformer: PlanRepair
+  result: RepairedPlan
+
+test_cases:
+  - name: test_failure_detection
+    input:
+      expected: {door_open: true}
+      actual: {door_open: false}
+    expected:
+      failure_detected: true
+
+  - name: test_local_repair
+    input:
+      failure: "open_door"
+      alternative: "break_window"
+    expected:
+      locally_repaired: true
+
+  - name: test_full_replan
+    input:
+      local_repair_failed: true
+    expected:
+      replanned: true
+
+  - name: test_plan_merging
+    input:
+      original: ["a", "b", "c"]
+      patch: ["b'"]
+    expected:
+      merged: ["a", "b'", "c"]
+
+  - name: test_validation
+    input:
+      repaired_plan: ["a", "b", "c"]
+    expected:
+      valid: true
+
+  - name: test_repair_cost
+    input:
+      original_cost: 10
+      repaired_cost: 15
+    expected:
+      repair_cost: 5
+
+  - name: test_rollback
+    input:
+      checkpoint: "state_1"
+    expected:
+      rolled_back: true
+
+  - name: test_no_repair_possible
+    input:
+      impossible_goal: true
+    expected:
+      repair_failed: true

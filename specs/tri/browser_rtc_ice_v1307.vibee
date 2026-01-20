@@ -1,0 +1,235 @@
+# VIBEE Specification: ICE/STUN/TURN v1307
+# YOLO XV - Production Ascension
+# Based on: RFC 8445 (ICE), RFC 5389 (STUN), RFC 5766 (TURN)
+
+name: browser_rtc_ice
+version: "1307"
+language: zig
+module: browser_rtc_ice
+
+types:
+  ICEAgent:
+    fields:
+      role: String
+      local_candidates: List
+      remote_candidates: List
+      candidate_pairs: List
+      selected_pair: String
+      state: String
+
+  ICECandidate:
+    fields:
+      foundation: String
+      component: Int
+      protocol: String
+      priority: Int
+      ip: String
+      port: Int
+      candidate_type: String
+      rel_addr: String
+      rel_port: Int
+
+  CandidatePair:
+    fields:
+      local: ICECandidate
+      remote: ICECandidate
+      priority: Int
+      state: String
+      nominated: Bool
+
+  STUNMessage:
+    fields:
+      msg_type: Int
+      length: Int
+      magic_cookie: Int
+      transaction_id: String
+      attributes: List
+
+  STUNAttribute:
+    fields:
+      attr_type: Int
+      length: Int
+      value: String
+
+  TURNAllocation:
+    fields:
+      relayed_address: String
+      relayed_port: Int
+      lifetime: Int
+      permissions: List
+      channels: List
+
+  TURNChannel:
+    fields:
+      channel_number: Int
+      peer_address: String
+      peer_port: Int
+      expiry: Int
+
+  ConnectivityCheck:
+    fields:
+      pair: CandidatePair
+      transaction_id: String
+      timestamp: Int
+      retransmit_count: Int
+
+behaviors:
+  - name: create_ice_agent
+    given: "Role (controlling/controlled)"
+    when: "Creating ICE agent"
+    then: "Returns initialized agent"
+
+  - name: gather_candidates
+    given: "ICE agent, STUN/TURN servers"
+    when: "Gathering local candidates"
+    then: "Returns host, srflx, relay candidates"
+
+  - name: add_remote_candidate
+    given: "ICE agent, candidate"
+    when: "Receiving remote candidate"
+    then: "Adds to list, forms pairs"
+
+  - name: form_candidate_pairs
+    given: "ICE agent"
+    when: "Pairing candidates"
+    then: "Creates pairs sorted by priority"
+
+  - name: compute_pair_priority
+    given: "Local candidate, remote candidate, role"
+    when: "Computing pair priority"
+    then: "Returns 64-bit priority"
+
+  - name: start_connectivity_checks
+    given: "ICE agent"
+    when: "Beginning checks"
+    then: "Sends STUN binding requests"
+
+  - name: handle_stun_request
+    given: "ICE agent, STUN request"
+    when: "Receiving binding request"
+    then: "Sends response, triggers check"
+
+  - name: handle_stun_response
+    given: "ICE agent, STUN response"
+    when: "Receiving binding response"
+    then: "Updates pair state"
+
+  - name: nominate_pair
+    given: "ICE agent, pair"
+    when: "Selecting pair (controlling)"
+    then: "Sends nomination, updates state"
+
+  - name: create_stun_request
+    given: "Transaction ID, attributes"
+    when: "Creating STUN message"
+    then: "Returns encoded message"
+
+  - name: parse_stun_message
+    given: "Raw bytes"
+    when: "Parsing STUN message"
+    then: "Returns parsed message"
+
+  - name: compute_message_integrity
+    given: "STUN message, key"
+    when: "Computing HMAC"
+    then: "Returns integrity attribute"
+
+  - name: verify_message_integrity
+    given: "STUN message, key"
+    when: "Verifying HMAC"
+    then: "Returns true if valid"
+
+  - name: allocate_turn
+    given: "TURN server, credentials"
+    when: "Requesting allocation"
+    then: "Returns allocation with relayed address"
+
+  - name: refresh_allocation
+    given: "Allocation"
+    when: "Refreshing before expiry"
+    then: "Extends lifetime"
+
+  - name: create_permission
+    given: "Allocation, peer address"
+    when: "Creating permission"
+    then: "Allows traffic from peer"
+
+  - name: bind_channel
+    given: "Allocation, peer address"
+    when: "Binding channel"
+    then: "Returns channel number for efficient relay"
+
+  - name: send_via_turn
+    given: "Allocation, peer, data"
+    when: "Sending relayed data"
+    then: "Sends via TURN server"
+
+creation_pattern:
+  source: ICEAgent
+  transformer: ICEConnectivity
+  result: P2PConnection
+
+scientific_references:
+  - author: "IETF"
+    title: "RFC 8445: ICE"
+    year: 2018
+  - author: "IETF"
+    title: "RFC 5389: STUN"
+    year: 2008
+  - author: "IETF"
+    title: "RFC 5766: TURN"
+    year: 2010
+
+test_cases:
+  - name: test_candidate_gathering
+    input:
+      stun_server: "stun.example.com:3478"
+    expected:
+      host_candidates: true
+      srflx_candidates: true
+
+  - name: test_pair_priority
+    input:
+      controlling: true
+      local_priority: 100
+      remote_priority: 200
+    expected:
+      pair_priority_computed: true
+
+  - name: test_connectivity_check
+    input:
+      pair: "host-host"
+    expected:
+      check_succeeds: true
+
+  - name: test_nomination
+    input:
+      role: "controlling"
+      valid_pairs: 3
+    expected:
+      one_nominated: true
+
+  - name: test_stun_integrity
+    input:
+      message: "binding_request"
+      key: "secret"
+    expected:
+      integrity_valid: true
+
+  - name: test_turn_allocation
+    input:
+      turn_server: "turn.example.com:3478"
+    expected:
+      relayed_address_received: true
+
+  - name: test_channel_binding
+    input:
+      peer: "192.168.1.100:5000"
+    expected:
+      channel_bound: true
+
+  - name: test_ice_restart
+    input:
+      connection_failed: true
+    expected:
+      new_candidates_gathered: true

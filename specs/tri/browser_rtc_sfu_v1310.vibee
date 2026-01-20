@@ -1,0 +1,167 @@
+# VIBEE Specification: SFU Architecture v1310
+# YOLO XV - Production Ascension
+
+name: browser_rtc_sfu
+version: "1310"
+language: zig
+module: browser_rtc_sfu
+
+types:
+  SFUServer:
+    fields:
+      server_id: String
+      rooms: Map
+      publishers: Map
+      subscribers: Map
+
+  SFURoom:
+    fields:
+      room_id: String
+      publishers: List
+      subscribers: List
+      recording: Bool
+
+  Publisher:
+    fields:
+      peer_id: String
+      tracks: List
+      simulcast_layers: List
+      bitrate: Int
+
+  Subscriber:
+    fields:
+      peer_id: String
+      subscriptions: List
+      preferred_layer: Int
+
+  MediaTrack:
+    fields:
+      track_id: String
+      kind: String
+      codec: String
+      bitrate: Int
+      simulcast: Bool
+
+  SimulcastLayer:
+    fields:
+      rid: String
+      width: Int
+      height: Int
+      bitrate: Int
+      fps: Int
+
+  Subscription:
+    fields:
+      publisher_id: String
+      track_id: String
+      layer: Int
+      paused: Bool
+
+behaviors:
+  - name: create_sfu
+    given: "Configuration"
+    when: "Starting SFU server"
+    then: "Returns initialized SFU"
+
+  - name: create_room
+    given: "SFU, room ID"
+    when: "Creating room"
+    then: "Returns room instance"
+
+  - name: publish_track
+    given: "SFU, room, peer, track"
+    when: "Publishing media"
+    then: "Adds track, notifies subscribers"
+
+  - name: unpublish_track
+    given: "SFU, room, peer, track"
+    when: "Unpublishing media"
+    then: "Removes track, notifies subscribers"
+
+  - name: subscribe_track
+    given: "SFU, room, subscriber, publisher, track"
+    when: "Subscribing to track"
+    then: "Creates subscription, forwards media"
+
+  - name: unsubscribe_track
+    given: "SFU, subscription"
+    when: "Unsubscribing"
+    then: "Removes subscription"
+
+  - name: switch_layer
+    given: "SFU, subscription, layer"
+    when: "Switching simulcast layer"
+    then: "Updates forwarded layer"
+
+  - name: pause_subscription
+    given: "SFU, subscription"
+    when: "Pausing subscription"
+    then: "Stops forwarding media"
+
+  - name: resume_subscription
+    given: "SFU, subscription"
+    when: "Resuming subscription"
+    then: "Resumes forwarding media"
+
+  - name: get_room_stats
+    given: "SFU, room"
+    when: "Getting statistics"
+    then: "Returns room stats"
+
+creation_pattern:
+  source: SFUServer
+  transformer: SelectiveForwarding
+  result: ScalableVideoConference
+
+test_cases:
+  - name: test_publish_subscribe
+    input:
+      publisher: "peer-1"
+      subscriber: "peer-2"
+    expected:
+      media_forwarded: true
+
+  - name: test_simulcast_layers
+    input:
+      layers: 3
+      subscriber_bandwidth: "low"
+    expected:
+      lowest_layer_selected: true
+
+  - name: test_layer_switching
+    input:
+      current_layer: 0
+      target_layer: 2
+    expected:
+      switched: true
+
+  - name: test_multiple_publishers
+    input:
+      publishers: 10
+      subscribers: 50
+    expected:
+      all_forwarded: true
+
+  - name: test_pause_resume
+    input:
+      paused: true
+    expected:
+      no_media_during_pause: true
+
+  - name: test_publisher_disconnect
+    input:
+      publisher_leaves: true
+    expected:
+      subscribers_notified: true
+
+  - name: test_bandwidth_estimation
+    input:
+      available_bandwidth: 500000
+    expected:
+      layer_adjusted: true
+
+  - name: test_recording
+    input:
+      recording_enabled: true
+    expected:
+      media_recorded: true

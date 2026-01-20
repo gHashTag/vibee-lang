@@ -1,0 +1,232 @@
+# VIBEE Specification: Peritext Rich Text CRDT v1304
+# YOLO XV - Production Ascension
+# Based on: Peritext (Litt et al. 2022, CSCW)
+
+name: browser_crdt_peritext
+version: "1304"
+language: zig
+module: browser_crdt_peritext
+
+types:
+  PeritextDoc:
+    fields:
+      text: RGAText
+      marks: MarkSet
+      site_id: Int
+      lamport: Int
+
+  RGAText:
+    fields:
+      head: TextNode
+      nodes: Map
+      length: Int
+
+  TextNode:
+    fields:
+      id: NodeID
+      char: String
+      deleted: Bool
+      next: String
+      marks: List
+
+  NodeID:
+    fields:
+      site: Int
+      seq: Int
+      lamport: Int
+
+  Mark:
+    fields:
+      id: MarkID
+      mark_type: String
+      value: String
+      start: Anchor
+      end: Anchor
+      deleted: Bool
+
+  MarkID:
+    fields:
+      site: Int
+      seq: Int
+
+  Anchor:
+    fields:
+      node_id: NodeID
+      side: String
+      sticky: String
+
+  MarkOp:
+    fields:
+      op_type: String
+      mark: Mark
+      timestamp: Int
+
+  Span:
+    fields:
+      text: String
+      marks: List
+      start_index: Int
+      end_index: Int
+
+  Selection:
+    fields:
+      anchor: Anchor
+      focus: Anchor
+      marks: List
+
+behaviors:
+  - name: create_peritext
+    given: "Site ID"
+    when: "Creating rich text document"
+    then: "Returns initialized Peritext doc"
+
+  - name: insert_text
+    given: "Peritext, index, text"
+    when: "Inserting plain text"
+    then: "Creates nodes, inherits marks from context"
+
+  - name: delete_text
+    given: "Peritext, start, end"
+    when: "Deleting text range"
+    then: "Marks nodes as deleted"
+
+  - name: add_mark
+    given: "Peritext, start, end, mark type, value"
+    when: "Adding formatting mark"
+    then: "Creates mark with anchors"
+
+  - name: remove_mark
+    given: "Peritext, start, end, mark type"
+    when: "Removing formatting"
+    then: "Marks mark as deleted or splits"
+
+  - name: toggle_mark
+    given: "Peritext, start, end, mark type"
+    when: "Toggling formatting"
+    then: "Adds if absent, removes if present"
+
+  - name: create_anchor
+    given: "Peritext, index, side, sticky"
+    when: "Creating stable anchor"
+    then: "Returns anchor at node boundary"
+
+  - name: resolve_anchor
+    given: "Peritext, anchor"
+    when: "Getting current index"
+    then: "Returns index accounting for edits"
+
+  - name: get_marks_at
+    given: "Peritext, index"
+    when: "Getting active marks"
+    then: "Returns list of marks covering index"
+
+  - name: get_spans
+    given: "Peritext"
+    when: "Getting formatted spans"
+    then: "Returns list of spans with marks"
+
+  - name: apply_remote_op
+    given: "Peritext, operation"
+    when: "Receiving remote operation"
+    then: "Integrates op, resolves conflicts"
+
+  - name: resolve_mark_conflict
+    given: "Two overlapping marks"
+    when: "Concurrent mark operations"
+    then: "Uses LWW with site ID tiebreaker"
+
+  - name: expand_mark
+    given: "Mark, direction"
+    when: "Text inserted at boundary"
+    then: "Expands or not based on sticky"
+
+  - name: split_mark
+    given: "Mark, index"
+    when: "Removing mark from middle"
+    then: "Creates two marks"
+
+  - name: merge_adjacent_marks
+    given: "Peritext"
+    when: "Optimizing mark storage"
+    then: "Merges adjacent identical marks"
+
+  - name: encode_delta
+    given: "Peritext, since version"
+    when: "Creating sync delta"
+    then: "Returns encoded operations"
+
+  - name: apply_delta
+    given: "Peritext, delta"
+    when: "Applying sync delta"
+    then: "Integrates all operations"
+
+creation_pattern:
+  source: PeritextDoc
+  transformer: PeritextCRDT
+  result: RichTextDocument
+
+scientific_references:
+  - author: "Litt, Lim, Kleppmann, van Hardenberg"
+    title: "Peritext: A CRDT for Collaborative Rich Text Editing"
+    venue: "CSCW 2022"
+    year: 2022
+    doi: "10.1145/3555644"
+
+test_cases:
+  - name: test_concurrent_bold
+    input:
+      site1_bold: {start: 0, end: 5}
+      site2_bold: {start: 3, end: 8}
+    expected:
+      merged_bold: {start: 0, end: 8}
+
+  - name: test_overlapping_marks
+    input:
+      bold: {start: 0, end: 10}
+      italic: {start: 5, end: 15}
+    expected:
+      spans: 3
+      middle_has_both: true
+
+  - name: test_mark_expansion
+    input:
+      bold: {start: 0, end: 5, sticky: "after"}
+      insert_at: 5
+    expected:
+      bold_includes_insert: true
+
+  - name: test_mark_split
+    input:
+      bold: {start: 0, end: 10}
+      unbold: {start: 3, end: 7}
+    expected:
+      bold_spans: 2
+
+  - name: test_anchor_stability
+    input:
+      anchor_at: 5
+      insert_before: {index: 3, text: "XX"}
+    expected:
+      anchor_resolves_to: 7
+
+  - name: test_delete_with_marks
+    input:
+      text: "Hello World"
+      bold: {start: 0, end: 5}
+      delete: {start: 2, end: 8}
+    expected:
+      remaining_bold: {start: 0, end: 2}
+
+  - name: test_concurrent_format_unformat
+    input:
+      site1_bold: {start: 0, end: 5}
+      site2_unbold: {start: 0, end: 5}
+    expected:
+      lww_winner: "later_timestamp"
+
+  - name: test_nested_marks
+    input:
+      bold: {start: 0, end: 10}
+      link: {start: 2, end: 8, url: "http://example.com"}
+    expected:
+      link_inside_bold: true
