@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// property_tests_v100 v100.0.0 - Generated from .vibee specification
+// quantum_auth_v114 v114.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -22,65 +22,51 @@ pub const PHI_INV: f64 = 0.618033988749895;
 pub const TAU: f64 = 6.283185307179586;
 pub const PHI_SQ: f64 = 2.618033988749895;
 
-pub const PHI_SQ: f64 = 0;
+pub const QUBIT_COUNT: f64 = 0;
 
-pub const PHI_INV: f64 = 0;
-
-pub const GOLDEN_IDENTITY: f64 = 0;
-
-pub const TEST_ITERATIONS: f64 = 0;
-
-pub const SEED: f64 = 0;
+pub const ERROR_RATE: f64 = 0;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const PropertyTest = struct {
+pub const QuantumState = struct {
+    qubits: i64,
+    fidelity: f64,
+    coherence_time: i64,
+    entangled: bool,
+};
+
+/// 
+pub const QuantumChannel = struct {
+    id: []const u8,
+    distance_km: f64,
+    loss_db: f64,
+    secure: bool,
+};
+
+/// 
+pub const QuantumKey = struct {
+    bits: []const u8,
+    error_rate: f64,
+    privacy_amplified: bool,
+    timestamp: i64,
+};
+
+/// 
+pub const QuantumSignature = struct {
+    message_hash: []const u8,
+    quantum_state: []const u8,
+    verification_key: []const u8,
+};
+
+/// 
+pub const QuantumProtocol = struct {
     name: []const u8,
-    generator: []const u8,
-    property: []const u8,
-    iterations: i64,
-    seed: i64,
-    shrink_enabled: bool,
-};
-
-/// 
-pub const Generator = struct {
-    name: []const u8,
-    min_value: f64,
-    max_value: f64,
-    distribution: []const u8,
-    constraints: []const u8,
-};
-
-/// 
-pub const TestResult = struct {
-    test_name: []const u8,
-    passed: bool,
-    iterations_run: i64,
-    counterexample: ?[]const u8,
-    shrunk_input: ?[]const u8,
-    execution_time: f64,
-};
-
-/// 
-pub const PropertyViolation = struct {
-    property: []const u8,
-    input: []const u8,
-    expected: []const u8,
-    actual: []const u8,
-    shrink_steps: i64,
-};
-
-/// 
-pub const TestSuite = struct {
-    name: []const u8,
-    tests: []const u8,
-    total_iterations: i64,
-    pass_rate: f64,
-    coverage: f64,
+    security_level: i64,
+    classical_bits: i64,
+    quantum_bits: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -132,87 +118,87 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "golden_identity_property" {
-// Given: Any float x
-// When: Compute x² + 1/x²
-// Then: Result approaches 3 as x approaches φ
+test "prepare_qubits" {
+// Given: Classical bits
+// When: Encode in qubits
+// Then: Quantum state ready
     // TODO: Add test assertions
 }
 
-test "phi_multiplication_property" {
-// Given: φ value
-// When: Multiply φ × φ
-// Then: Result equals φ + 1
+test "transmit_quantum" {
+// Given: Quantum channel
+// When: Send qubits
+// Then: Qubits received
     // TODO: Add test assertions
 }
 
-test "fibonacci_ratio_property" {
-// Given: Fibonacci sequence
-// When: Compute ratio of consecutive terms
-// Then: Ratio converges to φ
+test "measure_basis" {
+// Given: Received qubits
+// When: Choose basis
+// Then: Bits extracted
     // TODO: Add test assertions
 }
 
-test "commutative_property" {
-// Given: Two values a, b
-// When: Apply operation
-// Then: a op b equals b op a
+test "sift_keys" {
+// Given: Basis comparison
+// When: Keep matching
+// Then: Sifted key
     // TODO: Add test assertions
 }
 
-test "associative_property" {
-// Given: Three values a, b, c
-// When: Apply operation
-// Then: (a op b) op c equals a op (b op c)
+test "estimate_error" {
+// Given: Sample bits
+// When: Compare subset
+// Then: Error rate known
     // TODO: Add test assertions
 }
 
-test "identity_property" {
-// Given: Value and identity element
-// When: Apply operation with identity
-// Then: Result equals original value
+test "privacy_amplify" {
+// Given: Raw key
+// When: Hash compress
+// Then: Secure key
     // TODO: Add test assertions
 }
 
-test "inverse_property" {
-// Given: Value and its inverse
-// When: Apply operation
-// Then: Result equals identity
+test "detect_eavesdrop" {
+// Given: Error rate
+// When: Check threshold
+// Then: Eve detected
     // TODO: Add test assertions
 }
 
-test "distributive_property" {
-// Given: Three values a, b, c
-// When: Apply distribution
-// Then: a × (b + c) equals a×b + a×c
+test "entangle_pairs" {
+// Given: Two particles
+// When: Create Bell state
+// Then: Entangled pair
     // TODO: Add test assertions
 }
 
-test "idempotent_property" {
-// Given: Value x
-// When: Apply operation twice
-// Then: f(f(x)) equals f(x)
+test "teleport_state" {
+// Given: Entangled pair
+// When: Bell measurement
+// Then: State teleported
     // TODO: Add test assertions
 }
 
-test "monotonic_property" {
-// Given: Ordered inputs
-// When: Apply function
-// Then: Output preserves order
+test "quantum_sign" {
+// Given: Message
+// When: Apply quantum sig
+// Then: Signature created
     // TODO: Add test assertions
 }
 
-test "bounded_property" {
-// Given: Input in range [min, max]
-// When: Apply function
-// Then: Output in expected range
+test "verify_quantum" {
+// Given: Signature
+// When: Quantum verify
+// Then: Authenticity proven
     // TODO: Add test assertions
 }
 
-test "deterministic_property" {
-// Given: Same input
-// When: Apply function multiple times
-// Then: Same output every time
+test "phi_security" {
+// Given: Security params
+// When: Apply φ scaling
+// Then: Optimal security
     // TODO: Add test assertions
 }
 

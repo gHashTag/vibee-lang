@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// property_tests_v100 v100.0.0 - Generated from .vibee specification
+// incident_response_v110 v110.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -22,65 +22,54 @@ pub const PHI_INV: f64 = 0.618033988749895;
 pub const TAU: f64 = 6.283185307179586;
 pub const PHI_SQ: f64 = 2.618033988749895;
 
-pub const PHI_SQ: f64 = 0;
+pub const SLA_MINUTES: f64 = 0;
 
-pub const PHI_INV: f64 = 0;
-
-pub const GOLDEN_IDENTITY: f64 = 0;
-
-pub const TEST_ITERATIONS: f64 = 0;
-
-pub const SEED: f64 = 0;
+pub const ESCALATION_LEVELS: f64 = 0;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const PropertyTest = struct {
+pub const Incident = struct {
+    id: []const u8,
+    severity: i64,
+    status: []const u8,
+    assigned_to: []const u8,
+    created_at: i64,
+    resolved_at: ?[]const u8,
+};
+
+/// 
+pub const Playbook = struct {
     name: []const u8,
-    generator: []const u8,
-    property: []const u8,
-    iterations: i64,
-    seed: i64,
-    shrink_enabled: bool,
+    trigger: []const u8,
+    steps: []const u8,
+    automation_level: f64,
 };
 
 /// 
-pub const Generator = struct {
-    name: []const u8,
-    min_value: f64,
-    max_value: f64,
-    distribution: []const u8,
-    constraints: []const u8,
+pub const EscalationPath = struct {
+    levels: []const u8,
+    timeouts: []const u8,
+    notifications: []const u8,
 };
 
 /// 
-pub const TestResult = struct {
-    test_name: []const u8,
-    passed: bool,
-    iterations_run: i64,
-    counterexample: ?[]const u8,
-    shrunk_input: ?[]const u8,
-    execution_time: f64,
+pub const ForensicEvidence = struct {
+    incident_id: []const u8,
+    evidence_type: []const u8,
+    hash: []const u8,
+    chain_of_custody: []const u8,
 };
 
 /// 
-pub const PropertyViolation = struct {
-    property: []const u8,
-    input: []const u8,
-    expected: []const u8,
-    actual: []const u8,
-    shrink_steps: i64,
-};
-
-/// 
-pub const TestSuite = struct {
-    name: []const u8,
-    tests: []const u8,
-    total_iterations: i64,
-    pass_rate: f64,
-    coverage: f64,
+pub const PostMortem = struct {
+    incident_id: []const u8,
+    root_cause: []const u8,
+    timeline: []const u8,
+    lessons_learned: []const u8,
+    action_items: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -132,87 +121,87 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "golden_identity_property" {
-// Given: Any float x
-// When: Compute x² + 1/x²
-// Then: Result approaches 3 as x approaches φ
+test "create_incident" {
+// Given: Alert triggered
+// When: Open ticket
+// Then: Incident created
     // TODO: Add test assertions
 }
 
-test "phi_multiplication_property" {
-// Given: φ value
-// When: Multiply φ × φ
-// Then: Result equals φ + 1
+test "assign_responder" {
+// Given: Incident severity
+// When: Match skills
+// Then: Responder assigned
     // TODO: Add test assertions
 }
 
-test "fibonacci_ratio_property" {
-// Given: Fibonacci sequence
-// When: Compute ratio of consecutive terms
-// Then: Ratio converges to φ
+test "execute_playbook" {
+// Given: Incident type
+// When: Run automation
+// Then: Steps executed
     // TODO: Add test assertions
 }
 
-test "commutative_property" {
-// Given: Two values a, b
-// When: Apply operation
-// Then: a op b equals b op a
+test "escalate_incident" {
+// Given: SLA breach
+// When: Notify next level
+// Then: Escalated
     // TODO: Add test assertions
 }
 
-test "associative_property" {
-// Given: Three values a, b, c
-// When: Apply operation
-// Then: (a op b) op c equals a op (b op c)
+test "contain_threat" {
+// Given: Active attack
+// When: Isolate systems
+// Then: Threat contained
     // TODO: Add test assertions
 }
 
-test "identity_property" {
-// Given: Value and identity element
-// When: Apply operation with identity
-// Then: Result equals original value
+test "eradicate_malware" {
+// Given: Infection found
+// When: Remove artifacts
+// Then: System clean
     // TODO: Add test assertions
 }
 
-test "inverse_property" {
-// Given: Value and its inverse
-// When: Apply operation
-// Then: Result equals identity
+test "recover_systems" {
+// Given: Threat eliminated
+// When: Restore services
+// Then: Operations resumed
     // TODO: Add test assertions
 }
 
-test "distributive_property" {
-// Given: Three values a, b, c
-// When: Apply distribution
-// Then: a × (b + c) equals a×b + a×c
+test "collect_evidence" {
+// Given: Incident scope
+// When: Preserve data
+// Then: Evidence secured
     // TODO: Add test assertions
 }
 
-test "idempotent_property" {
-// Given: Value x
-// When: Apply operation twice
-// Then: f(f(x)) equals f(x)
+test "communicate_status" {
+// Given: Stakeholders
+// When: Send updates
+// Then: All informed
     // TODO: Add test assertions
 }
 
-test "monotonic_property" {
-// Given: Ordered inputs
-// When: Apply function
-// Then: Output preserves order
+test "close_incident" {
+// Given: Resolution confirmed
+// When: Document closure
+// Then: Incident closed
     // TODO: Add test assertions
 }
 
-test "bounded_property" {
-// Given: Input in range [min, max]
-// When: Apply function
-// Then: Output in expected range
+test "conduct_postmortem" {
+// Given: Incident resolved
+// When: Analyze timeline
+// Then: Lessons documented
     // TODO: Add test assertions
 }
 
-test "deterministic_property" {
-// Given: Same input
-// When: Apply function multiple times
-// Then: Same output every time
+test "phi_response_time" {
+// Given: Response metrics
+// When: Optimize by φ
+// Then: Faster response
     // TODO: Add test assertions
 }
 
