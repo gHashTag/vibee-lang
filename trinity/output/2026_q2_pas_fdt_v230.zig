@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// []const u8, v[]const u8, - Generated from .vibee specification
+// pas_fdt_v230 v230.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,11 +30,54 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Milestone = struct {
-    name: []const u8,
-    tiers: []const u8,
-    status: []const u8,
-    target: []const u8,
+pub const FDTConfig = struct {
+    webcodecs: bool,
+    audio_worklets: bool,
+    mediastream: bool,
+    video_analysis: bool,
+};
+
+/// 
+pub const VideoFrame = struct {
+    width: i64,
+    height: i64,
+    format: []const u8,
+    timestamp: i64,
+};
+
+/// 
+pub const AudioBuffer = struct {
+    sample_rate: i64,
+    channels: i64,
+    length: i64,
+};
+
+/// 
+pub const MediaAnalysis = struct {
+    frame_count: i64,
+    duration_ms: i64,
+    bitrate_kbps: i64,
+};
+
+/// 
+pub const FDTMetrics = struct {
+    frames_processed: i64,
+    encode_time_ms: f64,
+    decode_time_ms: f64,
+    compression_ratio: f64,
+};
+
+/// 
+pub const StreamTransform = struct {
+    @"type": []const u8,
+    params: []const u8,
+};
+
+/// 
+pub const FDTOptimization = struct {
+    hardware_accel: bool,
+    simd: bool,
+    wasm: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -86,10 +129,31 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_milestone_progress" {
-// Given: Milestone ID
-// When: Progress check
-// Then: Returns completion %
+test "webcodecs_processing" {
+// Given: Video/audio content
+// When: FDT enabled
+// Then: Process with WebCodecs
+    // TODO: Add test assertions
+}
+
+test "audio_worklet_analysis" {
+// Given: Audio stream
+// When: Analysis needed
+// Then: Process in worklet
+    // TODO: Add test assertions
+}
+
+test "mediastream_transform" {
+// Given: Media stream
+// When: Transform needed
+// Then: Apply insertable stream
+    // TODO: Add test assertions
+}
+
+test "video_screenshot_analysis" {
+// Given: Screenshot
+// When: Visual testing
+// Then: Analyze with FDT
     // TODO: Add test assertions
 }
 

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// []const u8, v[]const u8, - Generated from .vibee specification
+// llm_v235 v235.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,11 +30,54 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Milestone = struct {
+pub const LLMConfig = struct {
+    model: []const u8,
+    api_key: []const u8,
+    temperature: f64,
+    max_tokens: i64,
+};
+
+/// 
+pub const TestPrompt = struct {
+    description: []const u8,
+    context: []const u8,
+    examples: []const u8,
+};
+
+/// 
+pub const GeneratedTest = struct {
+    code: []const u8,
+    description: []const u8,
+    confidence: f64,
+};
+
+/// 
+pub const LLMResponse = struct {
+    content: []const u8,
+    tokens_used: i64,
+    finish_reason: []const u8,
+};
+
+/// 
+pub const TestSuggestion = struct {
+    @"type": []const u8,
+    priority: i64,
+    rationale: []const u8,
+};
+
+/// 
+pub const LLMMetrics = struct {
+    tests_generated: i64,
+    acceptance_rate: f64,
+    avg_quality_score: f64,
+    tokens_used: i64,
+};
+
+/// 
+pub const PromptTemplate = struct {
     name: []const u8,
-    tiers: []const u8,
-    status: []const u8,
-    target: []const u8,
+    template: []const u8,
+    variables: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -86,10 +129,31 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_milestone_progress" {
-// Given: Milestone ID
-// When: Progress check
-// Then: Returns completion %
+test "generate_tests_from_description" {
+// Given: Natural language description
+// When: LLM enabled
+// Then: Generate test code
+    // TODO: Add test assertions
+}
+
+test "suggest_test_cases" {
+// Given: Application context
+// When: Suggestions requested
+// Then: Suggest test scenarios
+    // TODO: Add test assertions
+}
+
+test "explain_failures" {
+// Given: Test failure
+// When: Explanation needed
+// Then: Generate explanation
+    // TODO: Add test assertions
+}
+
+test "refactor_tests" {
+// Given: Existing tests
+// When: Refactoring needed
+// Then: Improve test code
     // TODO: Add test assertions
 }
 

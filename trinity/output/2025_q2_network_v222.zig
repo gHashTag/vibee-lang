@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// []const u8, v[]const u8, - Generated from .vibee specification
+// network_v222 v222.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,11 +30,58 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Milestone = struct {
-    name: []const u8,
-    tiers: []const u8,
-    status: []const u8,
-    target: []const u8,
+pub const NetworkRequest = struct {
+    request_id: []const u8,
+    url: []const u8,
+    method: []const u8,
+    headers: []const u8,
+    post_data: []const u8,
+};
+
+/// 
+pub const NetworkResponse = struct {
+    status: i64,
+    headers: []const u8,
+    body: []const u8,
+    timing: []const u8,
+};
+
+/// 
+pub const RouteHandler = struct {
+    pattern: []const u8,
+    handler: []const u8,
+    priority: i64,
+};
+
+/// 
+pub const MockResponse = struct {
+    status: i64,
+    headers: []const u8,
+    body: []const u8,
+    delay_ms: i64,
+};
+
+/// 
+pub const NetworkConditions = struct {
+    offline: bool,
+    latency_ms: i64,
+    download_kbps: i64,
+    upload_kbps: i64,
+};
+
+/// 
+pub const HAR = struct {
+    version: []const u8,
+    entries: []const u8,
+    pages: []const u8,
+};
+
+/// 
+pub const NetworkMetrics = struct {
+    requests: i64,
+    bytes_sent: i64,
+    bytes_received: i64,
+    blocked: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -86,10 +133,52 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_milestone_progress" {
-// Given: Milestone ID
-// When: Progress check
-// Then: Returns completion %
+test "intercept_requests" {
+// Given: URL pattern
+// When: Request matches
+// Then: Intercept and handle
+    // TODO: Add test assertions
+}
+
+test "mock_responses" {
+// Given: Route handler
+// When: Request intercepted
+// Then: Return mock response
+    // TODO: Add test assertions
+}
+
+test "modify_requests" {
+// Given: Intercepted request
+// When: Modification needed
+// Then: Modify and continue
+    // TODO: Add test assertions
+}
+
+test "throttle_network" {
+// Given: Network conditions
+// When: Throttling enabled
+// Then: Apply conditions
+    // TODO: Add test assertions
+}
+
+test "capture_har" {
+// Given: Network activity
+// When: HAR capture enabled
+// Then: Generate HAR file
+    // TODO: Add test assertions
+}
+
+test "block_resources" {
+// Given: Resource patterns
+// When: Blocking enabled
+// Then: Block matching resources
+    // TODO: Add test assertions
+}
+
+test "websocket_intercept" {
+// Given: WebSocket connection
+// When: Interception enabled
+// Then: Intercept messages
     // TODO: Add test assertions
 }
 

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// []const u8, v[]const u8, - Generated from .vibee specification
+// actions_v221 v221.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,11 +30,56 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Milestone = struct {
-    name: []const u8,
-    tiers: []const u8,
-    status: []const u8,
+pub const MouseAction = struct {
+    @"type": []const u8,
+    x: f64,
+    y: f64,
+    button: []const u8,
+    click_count: i64,
+};
+
+/// 
+pub const KeyboardAction = struct {
+    @"type": []const u8,
+    key: []const u8,
+    modifiers: []const u8,
+    text: []const u8,
+};
+
+/// 
+pub const TouchAction = struct {
+    @"type": []const u8,
+    x: f64,
+    y: f64,
+    radius: f64,
+    pressure: f64,
+};
+
+/// 
+pub const DragAction = struct {
+    source: []const u8,
     target: []const u8,
+    steps: i64,
+};
+
+/// 
+pub const FileUpload = struct {
+    element: []const u8,
+    files: []const u8,
+    multiple: bool,
+};
+
+/// 
+pub const ActionSequence = struct {
+    actions: []const u8,
+    timeout_ms: i64,
+};
+
+/// 
+pub const ActionMetrics = struct {
+    actions_performed: i64,
+    avg_duration_ms: f64,
+    errors: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -86,10 +131,52 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_milestone_progress" {
-// Given: Milestone ID
-// When: Progress check
-// Then: Returns completion %
+test "click_element" {
+// Given: Element handle
+// When: Click requested
+// Then: Perform click
+    // TODO: Add test assertions
+}
+
+test "type_text" {
+// Given: Text input
+// When: Type requested
+// Then: Input text
+    // TODO: Add test assertions
+}
+
+test "drag_and_drop" {
+// Given: Source and target
+// When: Drag requested
+// Then: Perform drag
+    // TODO: Add test assertions
+}
+
+test "upload_files" {
+// Given: File input element
+// When: Upload requested
+// Then: Set files
+    // TODO: Add test assertions
+}
+
+test "hover_element" {
+// Given: Element handle
+// When: Hover requested
+// Then: Move mouse over
+    // TODO: Add test assertions
+}
+
+test "scroll_element" {
+// Given: Scroll target
+// When: Scroll requested
+// Then: Scroll into view
+    // TODO: Add test assertions
+}
+
+test "touch_actions" {
+// Given: Touch target
+// When: Touch requested
+// Then: Perform touch
     // TODO: Add test assertions
 }
 

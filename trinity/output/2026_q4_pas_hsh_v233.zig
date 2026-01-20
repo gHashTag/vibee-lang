@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// []const u8, v[]const u8, - Generated from .vibee specification
+// pas_hsh_v233 v233.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,11 +30,53 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Milestone = struct {
-    name: []const u8,
-    tiers: []const u8,
-    status: []const u8,
-    target: []const u8,
+pub const HSHConfig = struct {
+    content_addressable: bool,
+    merkle_dom: bool,
+    bloom_filters: bool,
+    hash_algorithm: []const u8,
+};
+
+/// 
+pub const ContentHash = struct {
+    algorithm: []const u8,
+    digest: []const u8,
+    size: i64,
+};
+
+/// 
+pub const MerkleNode = struct {
+    hash: []const u8,
+    children: []const u8,
+    data: []const u8,
+};
+
+/// 
+pub const BloomFilter = struct {
+    bits: i64,
+    hash_count: i64,
+    fpr: f64,
+};
+
+/// 
+pub const HSHMetrics = struct {
+    hashes_computed: i64,
+    dedup_ratio: f64,
+    lookup_time_us: f64,
+};
+
+/// 
+pub const HashIndex = struct {
+    entries: i64,
+    collisions: i64,
+    load_factor: f64,
+};
+
+/// 
+pub const HSHOptimization = struct {
+    simd_hash: bool,
+    incremental: bool,
+    parallel: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -86,10 +128,31 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_milestone_progress" {
-// Given: Milestone ID
-// When: Progress check
-// Then: Returns completion %
+test "content_addressable_storage" {
+// Given: Test artifacts
+// When: HSH enabled
+// Then: Store by content hash
+    // TODO: Add test assertions
+}
+
+test "merkle_dom_diffing" {
+// Given: DOM trees
+// When: Diff needed
+// Then: Use Merkle tree
+    // TODO: Add test assertions
+}
+
+test "bloom_filter_elements" {
+// Given: Element set
+// When: Membership test
+// Then: Use Bloom filter
+    // TODO: Add test assertions
+}
+
+test "hash_based_caching" {
+// Given: Cacheable data
+// When: Caching needed
+// Then: Use hash as key
     // TODO: Add test assertions
 }
 

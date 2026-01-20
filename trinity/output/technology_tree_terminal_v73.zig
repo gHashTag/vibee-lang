@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// []const u8, v[]const u8, - Generated from .vibee specification
+// "Superintelligence" v73.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,11 +30,27 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Milestone = struct {
+pub const TechTier = struct {
+    id: i64,
     name: []const u8,
-    tiers: []const u8,
     status: []const u8,
+    tests: i64,
     target: []const u8,
+};
+
+/// 
+pub const CompetitorTiers = struct {
+    name: []const u8,
+    complete_tiers: i64,
+    total_tests: i64,
+};
+
+/// 
+pub const VersionStats = struct {
+    version: []const u8,
+    complete_tiers: i64,
+    tests: i64,
+    swe_bench: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -86,10 +102,31 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_milestone_progress" {
-// Given: Milestone ID
-// When: Progress check
-// Then: Returns completion %
+test "get_complete_tiers" {
+// Given: All tiers
+// When: Count requested
+// Then: Returns complete tier count
+    // TODO: Add test assertions
+}
+
+test "get_total_tests" {
+// Given: All tiers
+// When: Sum requested
+// Then: Returns total tests
+    // TODO: Add test assertions
+}
+
+test "compare_with_competitor" {
+// Given: Competitor name
+// When: Comparison requested
+// Then: Returns tier difference
+    // TODO: Add test assertions
+}
+
+test "get_next_milestone" {
+// Given: Current state
+// When: Planning requested
+// Then: Returns next tier to complete
     // TODO: Add test assertions
 }
 

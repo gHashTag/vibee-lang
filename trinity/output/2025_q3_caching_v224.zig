@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// []const u8, v[]const u8, - Generated from .vibee specification
+// caching_v224 v224.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,11 +30,59 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Milestone = struct {
-    name: []const u8,
-    tiers: []const u8,
-    status: []const u8,
-    target: []const u8,
+pub const CacheEntry = struct {
+    key: []const u8,
+    value: []const u8,
+    ttl_ms: i64,
+    created_at: i64,
+    hits: i64,
+};
+
+/// 
+pub const CacheStrategy = struct {
+    @"type": []const u8,
+    max_size: i64,
+    eviction: []const u8,
+};
+
+/// 
+pub const StateSnapshot = struct {
+    id: []const u8,
+    url: []const u8,
+    cookies: []const u8,
+    storage: []const u8,
+    timestamp: i64,
+};
+
+/// 
+pub const ResourceCache = struct {
+    url: []const u8,
+    content: []const u8,
+    content_type: []const u8,
+    etag: []const u8,
+};
+
+/// 
+pub const SessionCache = struct {
+    session_id: []const u8,
+    browser_state: []const u8,
+    page_state: []const u8,
+};
+
+/// 
+pub const CacheMetrics = struct {
+    hits: i64,
+    misses: i64,
+    hit_rate: f64,
+    size_mb: f64,
+};
+
+/// 
+pub const CacheConfig = struct {
+    enabled: bool,
+    max_size_mb: i64,
+    ttl_seconds: i64,
+    persistence: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -86,10 +134,52 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_milestone_progress" {
-// Given: Milestone ID
-// When: Progress check
-// Then: Returns completion %
+test "cache_resources" {
+// Given: Network resources
+// When: Caching enabled
+// Then: Store in cache
+    // TODO: Add test assertions
+}
+
+test "snapshot_state" {
+// Given: Browser state
+// When: Snapshot requested
+// Then: Capture state
+    // TODO: Add test assertions
+}
+
+test "restore_state" {
+// Given: State snapshot
+// When: Restore requested
+// Then: Apply state
+    // TODO: Add test assertions
+}
+
+test "cache_sessions" {
+// Given: Browser session
+// When: Session caching
+// Then: Persist session
+    // TODO: Add test assertions
+}
+
+test "evict_entries" {
+// Given: Cache full
+// When: Eviction needed
+// Then: Remove entries
+    // TODO: Add test assertions
+}
+
+test "persist_cache" {
+// Given: Cache data
+// When: Persistence enabled
+// Then: Write to disk
+    // TODO: Add test assertions
+}
+
+test "warm_cache" {
+// Given: Cold start
+// When: Warming enabled
+// Then: Pre-populate cache
     // TODO: Add test assertions
 }
 

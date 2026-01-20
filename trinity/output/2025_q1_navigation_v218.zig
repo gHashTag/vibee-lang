@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// []const u8, v[]const u8, - Generated from .vibee specification
+// navigation_v218 v218.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,11 +30,56 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Milestone = struct {
+pub const NavigationOptions = struct {
+    url: []const u8,
+    timeout_ms: i64,
+    wait_until: []const u8,
+    referer: []const u8,
+};
+
+/// 
+pub const LoadState = struct {
+    domcontentloaded: bool,
+    load: bool,
+    networkidle: bool,
+};
+
+/// 
+pub const NavigationResult = struct {
+    url: []const u8,
+    status: i64,
+    headers: []const u8,
+    timing: []const u8,
+};
+
+/// 
+pub const FrameInfo = struct {
+    frame_id: []const u8,
+    parent_id: []const u8,
+    url: []const u8,
     name: []const u8,
-    tiers: []const u8,
-    status: []const u8,
-    target: []const u8,
+};
+
+/// 
+pub const HistoryEntry = struct {
+    id: i64,
+    url: []const u8,
+    title: []const u8,
+};
+
+/// 
+pub const NavigationMetrics = struct {
+    ttfb_ms: f64,
+    dom_ready_ms: f64,
+    load_ms: f64,
+    network_idle_ms: f64,
+};
+
+/// 
+pub const WaitCondition = struct {
+    @"type": []const u8,
+    value: []const u8,
+    timeout_ms: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -86,10 +131,52 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_milestone_progress" {
-// Given: Milestone ID
-// When: Progress check
-// Then: Returns completion %
+test "navigate_to_url" {
+// Given: Target URL
+// When: Navigation requested
+// Then: Load page and wait
+    // TODO: Add test assertions
+}
+
+test "reload_page" {
+// Given: Current page
+// When: Reload requested
+// Then: Refresh page
+    // TODO: Add test assertions
+}
+
+test "go_back_forward" {
+// Given: History available
+// When: Navigation requested
+// Then: Navigate history
+    // TODO: Add test assertions
+}
+
+test "wait_for_load" {
+// Given: Page loading
+// When: Wait condition
+// Then: Wait until ready
+    // TODO: Add test assertions
+}
+
+test "handle_frames" {
+// Given: Page with frames
+// When: Frame navigation
+// Then: Track frame tree
+    // TODO: Add test assertions
+}
+
+test "intercept_navigation" {
+// Given: Navigation event
+// When: Interception enabled
+// Then: Allow/block navigation
+    // TODO: Add test assertions
+}
+
+test "capture_metrics" {
+// Given: Navigation complete
+// When: Metrics requested
+// Then: Return timing data
     // TODO: Add test assertions
 }
 

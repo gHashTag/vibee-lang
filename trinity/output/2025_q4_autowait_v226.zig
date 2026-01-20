@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// []const u8, v[]const u8, - Generated from .vibee specification
+// autowait_v226 v226.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,11 +30,56 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Milestone = struct {
-    name: []const u8,
-    tiers: []const u8,
-    status: []const u8,
-    target: []const u8,
+pub const WaitStrategy = struct {
+    @"type": []const u8,
+    timeout_ms: i64,
+    polling_ms: i64,
+    condition: []const u8,
+};
+
+/// 
+pub const WaitCondition = struct {
+    visible: bool,
+    enabled: bool,
+    stable: bool,
+    network_idle: bool,
+};
+
+/// 
+pub const AnimationState = struct {
+    animating: bool,
+    duration_ms: i64,
+    remaining_ms: i64,
+};
+
+/// 
+pub const NetworkState = struct {
+    pending_requests: i64,
+    idle_time_ms: i64,
+    threshold: i64,
+};
+
+/// 
+pub const StabilityCheck = struct {
+    position_stable: bool,
+    size_stable: bool,
+    content_stable: bool,
+    check_count: i64,
+};
+
+/// 
+pub const WaitMetrics = struct {
+    total_waits: i64,
+    avg_wait_ms: f64,
+    timeouts: i64,
+    early_returns: i64,
+};
+
+/// 
+pub const AdaptiveConfig = struct {
+    base_timeout_ms: i64,
+    multiplier: f64,
+    max_timeout_ms: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -86,10 +131,52 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_milestone_progress" {
-// Given: Milestone ID
-// When: Progress check
-// Then: Returns completion %
+test "wait_for_visible" {
+// Given: Element selector
+// When: Visibility needed
+// Then: Wait until visible
+    // TODO: Add test assertions
+}
+
+test "wait_for_enabled" {
+// Given: Interactive element
+// When: Interaction needed
+// Then: Wait until enabled
+    // TODO: Add test assertions
+}
+
+test "wait_for_stable" {
+// Given: Dynamic element
+// When: Stability needed
+// Then: Wait until stable
+    // TODO: Add test assertions
+}
+
+test "wait_for_network" {
+// Given: Network activity
+// When: Idle needed
+// Then: Wait for idle
+    // TODO: Add test assertions
+}
+
+test "wait_for_animation" {
+// Given: Animated element
+// When: Animation complete
+// Then: Wait for finish
+    // TODO: Add test assertions
+}
+
+test "adaptive_timeout" {
+// Given: Wait history
+// When: Timeout calculation
+// Then: Adjust timeout
+    // TODO: Add test assertions
+}
+
+test "combine_conditions" {
+// Given: Multiple conditions
+// When: Complex wait
+// Then: Wait for all/any
     // TODO: Add test assertions
 }
 

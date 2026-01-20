@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// []const u8, v[]const u8, - Generated from .vibee specification
+// elements_v219 v219.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,11 +30,57 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Milestone = struct {
-    name: []const u8,
-    tiers: []const u8,
-    status: []const u8,
-    target: []const u8,
+pub const ElementHandle = struct {
+    object_id: []const u8,
+    node_id: i64,
+    backend_node_id: i64,
+    frame_id: []const u8,
+};
+
+/// 
+pub const Selector = struct {
+    css: []const u8,
+    xpath: []const u8,
+    text: []const u8,
+    role: []const u8,
+};
+
+/// 
+pub const BoundingBox = struct {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+};
+
+/// 
+pub const ElementState = struct {
+    visible: bool,
+    enabled: bool,
+    editable: bool,
+    checked: bool,
+};
+
+/// 
+pub const QueryOptions = struct {
+    timeout_ms: i64,
+    strict: bool,
+    has_text: []const u8,
+};
+
+/// 
+pub const ElementInfo = struct {
+    tag_name: []const u8,
+    attributes: []const u8,
+    text_content: []const u8,
+    inner_html: []const u8,
+};
+
+/// 
+pub const QueryMetrics = struct {
+    queries_executed: i64,
+    avg_time_ms: f64,
+    cache_hits: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -86,10 +132,52 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_milestone_progress" {
-// Given: Milestone ID
-// When: Progress check
-// Then: Returns completion %
+test "query_selector" {
+// Given: CSS selector
+// When: Element query
+// Then: Return element handle
+    // TODO: Add test assertions
+}
+
+test "query_all" {
+// Given: Selector matching multiple
+// When: Query all
+// Then: Return all matches
+    // TODO: Add test assertions
+}
+
+test "wait_for_selector" {
+// Given: Selector
+// When: Element not present
+// Then: Wait until appears
+    // TODO: Add test assertions
+}
+
+test "get_bounding_box" {
+// Given: Element handle
+// When: Position needed
+// Then: Return coordinates
+    // TODO: Add test assertions
+}
+
+test "get_attributes" {
+// Given: Element handle
+// When: Attributes needed
+// Then: Return attribute map
+    // TODO: Add test assertions
+}
+
+test "get_text_content" {
+// Given: Element handle
+// When: Text needed
+// Then: Return text content
+    // TODO: Add test assertions
+}
+
+test "check_state" {
+// Given: Element handle
+// When: State check
+// Then: Return element state
     // TODO: Add test assertions
 }
 

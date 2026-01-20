@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// []const u8, v[]const u8, - Generated from .vibee specification
+// visual_ai_v236 v236.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,11 +30,54 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Milestone = struct {
-    name: []const u8,
-    tiers: []const u8,
-    status: []const u8,
-    target: []const u8,
+pub const VisualAIConfig = struct {
+    model: []const u8,
+    threshold: f64,
+    regions: []const u8,
+};
+
+/// 
+pub const VisualDiff = struct {
+    baseline: []const u8,
+    current: []const u8,
+    diff_percent: f64,
+    regions: []const u8,
+};
+
+/// 
+pub const ElementDetection = struct {
+    bounding_box: []const u8,
+    label: []const u8,
+    confidence: f64,
+};
+
+/// 
+pub const LayoutAnalysis = struct {
+    structure: []const u8,
+    anomalies: []const u8,
+    score: f64,
+};
+
+/// 
+pub const VisualAIMetrics = struct {
+    comparisons: i64,
+    false_positives: i64,
+    accuracy: f64,
+    inference_time_ms: f64,
+};
+
+/// 
+pub const VisualBaseline = struct {
+    id: []const u8,
+    screenshot: []const u8,
+    metadata: []const u8,
+};
+
+/// 
+pub const VisualAIOptimization = struct {
+    gpu_accel: bool,
+    batch_processing: bool,
+    caching: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -86,10 +129,31 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_milestone_progress" {
-// Given: Milestone ID
-// When: Progress check
-// Then: Returns completion %
+test "intelligent_visual_comparison" {
+// Given: Screenshots
+// When: Visual AI enabled
+// Then: Compare semantically
+    // TODO: Add test assertions
+}
+
+test "automatic_element_detection" {
+// Given: Screenshot
+// When: Detection needed
+// Then: Detect UI elements
+    // TODO: Add test assertions
+}
+
+test "layout_anomaly_detection" {
+// Given: Page layout
+// When: Anomaly check
+// Then: Detect layout issues
+    // TODO: Add test assertions
+}
+
+test "visual_regression_learning" {
+// Given: Historical data
+// When: Learning enabled
+// Then: Learn acceptable changes
     // TODO: Add test assertions
 }
 

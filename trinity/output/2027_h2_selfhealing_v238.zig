@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// []const u8, v[]const u8, - Generated from .vibee specification
+// selfhealing_v238 v238.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,11 +30,54 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Milestone = struct {
-    name: []const u8,
-    tiers: []const u8,
-    status: []const u8,
-    target: []const u8,
+pub const SelfHealingConfig = struct {
+    enabled: bool,
+    confidence_threshold: f64,
+    auto_commit: bool,
+};
+
+/// 
+pub const HealingAction = struct {
+    @"type": []const u8,
+    original: []const u8,
+    healed: []const u8,
+    confidence: f64,
+};
+
+/// 
+pub const HealingHistory = struct {
+    test_id: []const u8,
+    healings: []const u8,
+    success_rate: f64,
+};
+
+/// 
+pub const BreakageDetection = struct {
+    test_id: []const u8,
+    failure_type: []const u8,
+    suggested_fix: []const u8,
+};
+
+/// 
+pub const SelfHealingMetrics = struct {
+    healings_attempted: i64,
+    healings_successful: i64,
+    auto_fixed: i64,
+    manual_review: i64,
+};
+
+/// 
+pub const HealingStrategy = struct {
+    selector_healing: bool,
+    wait_healing: bool,
+    assertion_healing: bool,
+};
+
+/// 
+pub const HealingOptimization = struct {
+    learning_rate: f64,
+    feedback_loop: bool,
+    rollback_enabled: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -86,10 +129,31 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_milestone_progress" {
-// Given: Milestone ID
-// When: Progress check
-// Then: Returns completion %
+test "automatic_selector_healing" {
+// Given: Broken selector
+// When: Self-healing enabled
+// Then: Find and apply fix
+    // TODO: Add test assertions
+}
+
+test "wait_strategy_adaptation" {
+// Given: Timing failure
+// When: Wait healing enabled
+// Then: Adjust wait strategy
+    // TODO: Add test assertions
+}
+
+test "assertion_correction" {
+// Given: Assertion failure
+// When: Assertion healing enabled
+// Then: Suggest correction
+    // TODO: Add test assertions
+}
+
+test "continuous_learning" {
+// Given: Healing feedback
+// When: Learning enabled
+// Then: Improve healing model
     // TODO: Add test assertions
 }
 

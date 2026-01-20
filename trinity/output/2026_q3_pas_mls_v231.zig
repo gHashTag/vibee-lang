@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// []const u8, v[]const u8, - Generated from .vibee specification
+// pas_mls_v231 v231.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,11 +30,54 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Milestone = struct {
+pub const MLSConfig = struct {
+    neural_selectors: bool,
+    visual_detection: bool,
+    accessibility_inference: bool,
+    model_path: []const u8,
+};
+
+/// 
+pub const NeuralSelector = struct {
+    embedding: []const u8,
+    confidence: f64,
+    fallbacks: []const u8,
+};
+
+/// 
+pub const VisualDetection = struct {
+    bounding_box: []const u8,
+    label: []const u8,
+    confidence: f64,
+};
+
+/// 
+pub const A11yInference = struct {
+    role: []const u8,
     name: []const u8,
-    tiers: []const u8,
-    status: []const u8,
-    target: []const u8,
+    confidence: f64,
+};
+
+/// 
+pub const MLSMetrics = struct {
+    predictions: i64,
+    accuracy: f64,
+    healing_rate: f64,
+    inference_time_ms: f64,
+};
+
+/// 
+pub const MLModel = struct {
+    name: []const u8,
+    version: []const u8,
+    size_mb: f64,
+};
+
+/// 
+pub const MLSOptimization = struct {
+    quantized: bool,
+    cached: bool,
+    gpu_accel: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -86,10 +129,31 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_milestone_progress" {
-// Given: Milestone ID
-// When: Progress check
-// Then: Returns completion %
+test "neural_selector_engine" {
+// Given: Element to locate
+// When: MLS enabled
+// Then: Use neural network
+    // TODO: Add test assertions
+}
+
+test "visual_element_detection" {
+// Given: Screenshot
+// When: Visual locator
+// Then: Detect elements visually
+    // TODO: Add test assertions
+}
+
+test "accessibility_inference" {
+// Given: Element without ARIA
+// When: A11y testing
+// Then: Infer accessibility role
+    // TODO: Add test assertions
+}
+
+test "ml_model_management" {
+// Given: ML models
+// When: Model needed
+// Then: Load and cache
     // TODO: Add test assertions
 }
 

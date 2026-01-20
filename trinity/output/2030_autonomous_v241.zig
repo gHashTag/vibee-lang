@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// []const u8, v[]const u8, - Generated from .vibee specification
+// autonomous_v241 v241.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,11 +30,55 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Milestone = struct {
-    name: []const u8,
-    tiers: []const u8,
-    status: []const u8,
-    target: []const u8,
+pub const AutonomousConfig = struct {
+    self_writing: bool,
+    self_healing: bool,
+    self_optimizing: bool,
+    human_oversight: bool,
+};
+
+/// 
+pub const AutonomousAgent = struct {
+    id: []const u8,
+    capabilities: []const u8,
+    learning_rate: f64,
+    confidence: f64,
+};
+
+/// 
+pub const TestGeneration = struct {
+    source: []const u8,
+    tests_generated: i64,
+    coverage: f64,
+};
+
+/// 
+pub const SelfOptimization = struct {
+    metric: []const u8,
+    improvement: f64,
+    iterations: i64,
+};
+
+/// 
+pub const AutonomousMetrics = struct {
+    tests_written: i64,
+    tests_healed: i64,
+    optimizations: i64,
+    human_interventions: i64,
+};
+
+/// 
+pub const AgentDecision = struct {
+    action: []const u8,
+    confidence: f64,
+    rationale: []const u8,
+};
+
+/// 
+pub const AutonomousGoal = struct {
+    objective: []const u8,
+    constraints: []const u8,
+    success_criteria: f64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -86,10 +130,31 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_milestone_progress" {
-// Given: Milestone ID
-// When: Progress check
-// Then: Returns completion %
+test "self_writing_tests" {
+// Given: Application code
+// When: Autonomous enabled
+// Then: Generate tests automatically
+    // TODO: Add test assertions
+}
+
+test "self_healing_maintenance" {
+// Given: Test failures
+// When: Healing enabled
+// Then: Fix automatically
+    // TODO: Add test assertions
+}
+
+test "self_optimizing_performance" {
+// Given: Performance data
+// When: Optimization enabled
+// Then: Optimize continuously
+    // TODO: Add test assertions
+}
+
+test "zero_config_setup" {
+// Given: New project
+// When: Setup needed
+// Then: Configure automatically
     // TODO: Add test assertions
 }
 

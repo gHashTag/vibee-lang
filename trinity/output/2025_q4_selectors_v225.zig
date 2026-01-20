@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// []const u8, v[]const u8, - Generated from .vibee specification
+// selectors_v225 v225.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,11 +30,59 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Milestone = struct {
-    name: []const u8,
-    tiers: []const u8,
-    status: []const u8,
-    target: []const u8,
+pub const SmartSelector = struct {
+    primary: []const u8,
+    fallbacks: []const u8,
+    confidence: f64,
+    strategy: []const u8,
+};
+
+/// 
+pub const SelectorStrategy = struct {
+    css: bool,
+    xpath: bool,
+    text: bool,
+    role: bool,
+    visual: bool,
+};
+
+/// 
+pub const ElementFingerprint = struct {
+    tag: []const u8,
+    attributes: []const u8,
+    position: []const u8,
+    text_hash: []const u8,
+};
+
+/// 
+pub const SelectorScore = struct {
+    uniqueness: f64,
+    stability: f64,
+    readability: f64,
+    performance: f64,
+};
+
+/// 
+pub const SelectorHistory = struct {
+    selector: []const u8,
+    success_count: i64,
+    failure_count: i64,
+    last_used: i64,
+};
+
+/// 
+pub const SelectorSuggestion = struct {
+    selector: []const u8,
+    @"type": []const u8,
+    score: f64,
+    reason: []const u8,
+};
+
+/// 
+pub const SelectorMetrics = struct {
+    generated: i64,
+    healed: i64,
+    avg_confidence: f64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -86,10 +134,52 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_milestone_progress" {
-// Given: Milestone ID
-// When: Progress check
-// Then: Returns completion %
+test "generate_selector" {
+// Given: Target element
+// When: Selector needed
+// Then: Generate optimal selector
+    // TODO: Add test assertions
+}
+
+test "heal_selector" {
+// Given: Broken selector
+// When: Element not found
+// Then: Find alternative
+    // TODO: Add test assertions
+}
+
+test "score_selector" {
+// Given: Candidate selectors
+// When: Ranking needed
+// Then: Score and rank
+    // TODO: Add test assertions
+}
+
+test "suggest_selectors" {
+// Given: Element context
+// When: Suggestions requested
+// Then: Return ranked suggestions
+    // TODO: Add test assertions
+}
+
+test "track_history" {
+// Given: Selector usage
+// When: Tracking enabled
+// Then: Record history
+    // TODO: Add test assertions
+}
+
+test "optimize_selectors" {
+// Given: Selector history
+// When: Optimization run
+// Then: Improve selectors
+    // TODO: Add test assertions
+}
+
+test "validate_selectors" {
+// Given: Selector set
+// When: Validation requested
+// Then: Check validity
     // TODO: Add test assertions
 }
 

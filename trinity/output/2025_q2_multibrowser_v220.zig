@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// []const u8, v[]const u8, - Generated from .vibee specification
+// multibrowser_v220 v220.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,11 +30,56 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Milestone = struct {
-    name: []const u8,
-    tiers: []const u8,
-    status: []const u8,
-    target: []const u8,
+pub const BrowserType = struct {
+    chromium: []const u8,
+    firefox: []const u8,
+    webkit: []const u8,
+    edge: []const u8,
+};
+
+/// 
+pub const BrowserConfig = struct {
+    browser_type: []const u8,
+    executable_path: []const u8,
+    headless: bool,
+    args: []const u8,
+};
+
+/// 
+pub const BrowserInstance = struct {
+    pid: i64,
+    ws_endpoint: []const u8,
+    version: []const u8,
+    platform: []const u8,
+};
+
+/// 
+pub const ProtocolAdapter = struct {
+    browser: []const u8,
+    protocol: []const u8,
+    version: []const u8,
+};
+
+/// 
+pub const CapabilityMatrix = struct {
+    feature: []const u8,
+    chromium: bool,
+    firefox: bool,
+    webkit: bool,
+};
+
+/// 
+pub const BrowserMetrics = struct {
+    startup_ms: f64,
+    memory_mb: i64,
+    cpu_percent: f64,
+};
+
+/// 
+pub const CrossBrowserTest = struct {
+    browsers: []const u8,
+    parallel: bool,
+    results: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -86,10 +131,52 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_milestone_progress" {
-// Given: Milestone ID
-// When: Progress check
-// Then: Returns completion %
+test "launch_chromium" {
+// Given: Chromium config
+// When: Launch requested
+// Then: Start Chromium browser
+    // TODO: Add test assertions
+}
+
+test "launch_firefox" {
+// Given: Firefox config
+// When: Launch requested
+// Then: Start Firefox browser
+    // TODO: Add test assertions
+}
+
+test "launch_webkit" {
+// Given: WebKit config
+// When: Launch requested
+// Then: Start WebKit browser
+    // TODO: Add test assertions
+}
+
+test "abstract_protocol" {
+// Given: Browser-specific protocol
+// When: Command execution
+// Then: Translate to common API
+    // TODO: Add test assertions
+}
+
+test "parallel_browsers" {
+// Given: Multiple browser configs
+// When: Parallel execution
+// Then: Run across browsers
+    // TODO: Add test assertions
+}
+
+test "capability_detection" {
+// Given: Browser instance
+// When: Feature check
+// Then: Return capabilities
+    // TODO: Add test assertions
+}
+
+test "browser_download" {
+// Given: Browser type
+// When: Not installed
+// Then: Download browser
     // TODO: Add test assertions
 }
 

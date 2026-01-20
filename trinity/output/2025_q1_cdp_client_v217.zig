@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// []const u8, v[]const u8, - Generated from .vibee specification
+// cdp_client_v217 v217.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,11 +30,58 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Milestone = struct {
-    name: []const u8,
-    tiers: []const u8,
-    status: []const u8,
-    target: []const u8,
+pub const CDPConnection = struct {
+    websocket_url: []const u8,
+    session_id: []const u8,
+    target_id: []const u8,
+    connected: bool,
+    protocol_version: []const u8,
+};
+
+/// 
+pub const CDPMessage = struct {
+    id: i64,
+    method: []const u8,
+    params: []const u8,
+    session_id: []const u8,
+};
+
+/// 
+pub const CDPResponse = struct {
+    id: i64,
+    result: []const u8,
+    @"error": []const u8,
+};
+
+/// 
+pub const CDPEvent = struct {
+    method: []const u8,
+    params: []const u8,
+    session_id: []const u8,
+};
+
+/// 
+pub const BrowserContext = struct {
+    context_id: []const u8,
+    incognito: bool,
+    proxy: []const u8,
+};
+
+/// 
+pub const Target = struct {
+    target_id: []const u8,
+    @"type": []const u8,
+    title: []const u8,
+    url: []const u8,
+    attached: bool,
+};
+
+/// 
+pub const CDPMetrics = struct {
+    messages_sent: i64,
+    messages_received: i64,
+    avg_latency_ms: f64,
+    errors: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -86,10 +133,52 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_milestone_progress" {
-// Given: Milestone ID
-// When: Progress check
-// Then: Returns completion %
+test "connect_browser" {
+// Given: Browser WebSocket endpoint
+// When: Connection requested
+// Then: Establish CDP connection
+    // TODO: Add test assertions
+}
+
+test "send_command" {
+// Given: CDP method and params
+// When: Command execution
+// Then: Send and await response
+    // TODO: Add test assertions
+}
+
+test "handle_events" {
+// Given: CDP event stream
+// When: Events received
+// Then: Dispatch to handlers
+    // TODO: Add test assertions
+}
+
+test "manage_sessions" {
+// Given: Multiple targets
+// When: Session management
+// Then: Track active sessions
+    // TODO: Add test assertions
+}
+
+test "create_context" {
+// Given: Isolation needed
+// When: New context requested
+// Then: Create browser context
+    // TODO: Add test assertions
+}
+
+test "attach_target" {
+// Given: Target available
+// When: Attachment requested
+// Then: Attach to target
+    // TODO: Add test assertions
+}
+
+test "handle_errors" {
+// Given: CDP error
+// When: Error received
+// Then: Handle gracefully
     // TODO: Add test assertions
 }
 
