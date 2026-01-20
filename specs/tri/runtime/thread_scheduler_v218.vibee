@@ -1,0 +1,146 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# THREAD SCHEDULER v218 - Work-Stealing Task Scheduler
+# ═══════════════════════════════════════════════════════════════════════════════
+# Based on: Tokio, Rayon, Go scheduler
+# Scientific: SOSP 2023 (Shinjuku), EuroSys 2024 (Work-Stealing)
+# PAS Pattern: D&C + PRE
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: thread_scheduler
+version: "2.1.8"
+language: zig
+module: thread_scheduler
+
+sacred_constants:
+  phi: 1.618033988749895
+  phi_inv: 0.618033988749895
+  phi_sq: 2.618033988749895
+  trinity: 3.0
+  phoenix: 999
+
+creation_pattern:
+  source: TaskQueue
+  transformer: WorkStealingScheduler
+  result: ExecutedTasks
+
+types:
+  TaskState:
+    enum:
+      - pending
+      - running
+      - blocked
+      - completed
+      - cancelled
+
+  TaskPriority:
+    enum:
+      - low
+      - normal
+      - high
+      - realtime
+
+  Task:
+    fields:
+      id: Int
+      priority: TaskPriority
+      state: TaskState
+      affinity: Int?
+
+  Worker:
+    fields:
+      id: Int
+      local_queue: List<Int>
+      steal_count: Int
+      cpu_affinity: Int
+
+  SchedulerConfig:
+    fields:
+      num_workers: Int
+      queue_size: Int
+      steal_batch: Int
+      preempt_quantum_us: Int
+
+  SchedulerStats:
+    fields:
+      tasks_completed: Int
+      steals_total: Int
+      cpu_utilization: Float
+      avg_latency_us: Int
+
+  StealResult:
+    fields:
+      stolen_count: Int
+      from_worker: Int
+      to_worker: Int
+
+behaviors:
+  - name: spawn_task
+    given: "Task definition"
+    when: "Spawn requested"
+    then: "Add to scheduler"
+    pas_pattern: PRE
+    complexity: O(1)
+    test_cases:
+      - name: test_spawn
+        input: '{"task": {...}}'
+        expected: '{"task_id": 1}'
+
+  - name: schedule_next
+    given: "Worker state"
+    when: "Worker idle"
+    then: "Select next task"
+    pas_pattern: D&C
+    complexity: O(1)
+    test_cases:
+      - name: test_schedule
+        input: '{"worker_id": 0}'
+        expected: '{"task_id": 5}'
+
+  - name: work_steal
+    given: "Empty local queue"
+    when: "Stealing needed"
+    then: "Steal from other worker"
+    pas_pattern: D&C
+    complexity: O(w)
+    test_cases:
+      - name: test_steal
+        input: '{"thief": 0}'
+        expected: '{"stolen": 4}'
+
+  - name: preempt
+    given: "Running task"
+    when: "Quantum expired"
+    then: "Preempt and reschedule"
+    pas_pattern: PRE
+    complexity: O(1)
+    test_cases:
+      - name: test_preempt
+        input: '{"task_id": 1}'
+        expected: '{"preempted": true}'
+
+  - name: block_task
+    given: "Blocking operation"
+    when: "Task blocks"
+    then: "Park and schedule other"
+    pas_pattern: PRE
+    complexity: O(1)
+    test_cases:
+      - name: test_block
+        input: '{"task_id": 1}'
+        expected: '{"blocked": true}'
+
+  - name: get_stats
+    given: "Scheduler state"
+    when: "Stats requested"
+    then: "Return statistics"
+    pas_pattern: PRE
+    complexity: O(w)
+    test_cases:
+      - name: test_stats
+        input: '{}'
+        expected: '{"cpu_utilization": 0.95}'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
