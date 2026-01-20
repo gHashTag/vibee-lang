@@ -249,6 +249,28 @@ TOOLS='[
       },
       "required": ["pattern"]
     }
+  },
+  {
+    "name": "open_browser",
+    "description": "Open a URL in the default web browser",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "url": {"type": "string", "description": "URL to open (e.g., https://google.com)"}
+      },
+      "required": ["url"]
+    }
+  },
+  {
+    "name": "fetch_url",
+    "description": "Fetch content from a URL and return as text",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "url": {"type": "string", "description": "URL to fetch"}
+      },
+      "required": ["url"]
+    }
   }
 ]'
 
@@ -346,6 +368,37 @@ execute_tool() {
             local path=$(echo "$tool_input" | jq -r '.path // "."')
             grep -r "$pattern" "$path" 2>&1 | head -30
             ;;
+        "open_browser")
+            local url=$(echo "$tool_input" | jq -r '.url')
+            # Ensure URL has protocol
+            if [[ ! "$url" =~ ^https?:// ]]; then
+                url="https://$url"
+            fi
+            echo "🌐 Opening: $url"
+            # Try different browser commands based on OS
+            if command -v xdg-open &> /dev/null; then
+                xdg-open "$url" 2>/dev/null &
+                echo "✅ Opened in default browser (Linux)"
+            elif command -v open &> /dev/null; then
+                open "$url" 2>/dev/null &
+                echo "✅ Opened in default browser (macOS)"
+            elif command -v start &> /dev/null; then
+                start "$url" 2>/dev/null &
+                echo "✅ Opened in default browser (Windows)"
+            else
+                echo "⚠️ No browser command found. URL: $url"
+                echo "Try: xdg-open $url"
+            fi
+            ;;
+        "fetch_url")
+            local url=$(echo "$tool_input" | jq -r '.url')
+            # Ensure URL has protocol
+            if [[ ! "$url" =~ ^https?:// ]]; then
+                url="https://$url"
+            fi
+            echo "📥 Fetching: $url"
+            curl -sL "$url" 2>&1 | head -200
+            ;;
         *)
             echo "Unknown tool: $tool_name"
             ;;
@@ -418,6 +471,8 @@ Available tools:
 - write_file: Write to file. Input: {\"path\": \"filepath\", \"content\": \"text\"}
 - run_command: Execute shell command. Input: {\"command\": \"cmd\"}
 - list_files: List directory. Input: {\"path\": \"dirpath\"}
+- open_browser: Open URL in browser. Input: {\"url\": \"https://example.com\"}
+- fetch_url: Fetch URL content. Input: {\"url\": \"https://example.com\"}
 
 After I show you tool results, continue your response.
 If no tool is needed, just respond normally."
@@ -450,33 +505,19 @@ If no tool is needed, just respond normally."
 
 call_deepseek_streaming() {
     local messages="$1"
-    local full_response=""
-    local token_count=0
-    local has_tool_call=false
-    local tool_name=""
-    local tool_input=""
+    local tmpfile=$(mktemp)
     
     # Show streaming indicator
     echo -ne "${CYAN}" >&2
     
     # Make streaming request with -N for unbuffered output
-    curl -sN https://api.deepseek.com/v1/chat/completions \
-        -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
-        -d "{
-            \"model\": \"$MODEL\",
-            \"max_tokens\": $MAX_TOKENS,
-            \"stream\": true,
-            \"messages\": $messages
-        }" 2>/dev/null | while IFS= read -r line; do
-        
+    # Use process substitution to avoid subshell variable scope issues
+    while IFS= read -r line; do
         # Skip empty lines
         [[ -z "$line" ]] && continue
         
         # Check for done signal
         if [[ "$line" == "data: [DONE]" ]]; then
-            echo -ne "${NC}" >&2
-            echo ""  # Final newline
             break
         fi
         
@@ -491,24 +532,32 @@ call_deepseek_streaming() {
                 # Output token immediately (real-time streaming)
                 printf "%s" "$content" >&2
                 
-                token_count=$((token_count + 1))
-                full_response+="$content"
-                
-                # Check for tool call pattern in accumulated response
-                if echo "$full_response" | grep -q "TOOL_CALL:"; then
-                    has_tool_call=true
-                fi
+                # Save to temp file for later processing
+                printf "%s" "$content" >> "$tmpfile"
             fi
         fi
-    done
+    done < <(curl -sN https://api.deepseek.com/v1/chat/completions \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
+        -d "{
+            \"model\": \"$MODEL\",
+            \"max_tokens\": $MAX_TOKENS,
+            \"stream\": true,
+            \"messages\": $messages
+        }" 2>/dev/null)
     
     echo -ne "${NC}" >&2
+    echo "" >&2  # Final newline
+    
+    # Read full response from temp file
+    local full_response=$(cat "$tmpfile" 2>/dev/null)
+    rm -f "$tmpfile"
     
     # Build response in Anthropic format
-    if [ "$has_tool_call" = true ]; then
+    if echo "$full_response" | grep -q "TOOL_CALL:"; then
         # Extract tool info from full response
-        tool_name=$(echo "$full_response" | grep "TOOL_CALL:" | head -1 | sed 's/TOOL_CALL: *//' | tr -d '\r\n')
-        tool_input=$(echo "$full_response" | grep -A1 "TOOL_INPUT:" | tail -1 | tr -d '\r\n' | sed 's/^TOOL_INPUT: *//')
+        local tool_name=$(echo "$full_response" | grep "TOOL_CALL:" | head -1 | sed 's/TOOL_CALL: *//' | tr -d '\r\n')
+        local tool_input=$(echo "$full_response" | grep -A1 "TOOL_INPUT:" | tail -1 | tr -d '\r\n' | sed 's/^TOOL_INPUT: *//')
         
         if echo "$tool_input" | jq . > /dev/null 2>&1; then
             local tool_id="deepseek_stream_$(date +%s)"
