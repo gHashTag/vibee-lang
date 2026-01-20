@@ -1,250 +1,161 @@
-# 999 OS - Троицкая Система
+# VIBEE Language
 
-## Обзор
+**Sacred Formula:** `V = n × 3^k × π^m × φ^p × e^q`
+**Golden Identity:** `φ² + 1/φ² = 3`
 
-999 OS представляет собой революционную операционную систему, построенную на принципах **Троицкой Системы** (n × 3^k × π^m) и **Predictive Algorithmic Systematics (PAS)**. Система включает самоулучшающегося desktop SWE агента, децентрализованную AGI сеть и передовые механизмы самоэволюции.
+## Overview
 
-## Архитектура
+VIBEE is a specification-first programming language that generates code from behavioral specifications. Built on the **Creation Pattern** and **Predictive Algorithmic Systematics (PAS)** methodology.
 
 ```
-999 OS v2.1
-├── Ядро (KERNEL.999)
-│   ├── SIMD планировщик
-│   ├── Инкрементальные обновления памяти
-│   ├── Хэш-таблицы процессов
-│   └── ML-управляемое распределение ресурсов
-├── Агент (SWE_AGENT.999)
-│   ├── Самообучение
-│   ├── Генерация кода
-│   ├── VCS интеграция
-│   └── Live screen capture
-├── Сеть (AGI_NETWORK.999)
-│   ├── P2P коммуникации
-│   ├── Federated learning
-│   ├── Consensus validation
-│   └── Evolutionary pressure
-├── VCS (TRIT_VCS.999)
-│   ├── Математическая оптимизация
-│   ├── Децентрализованное хранение
-│   └── Quantum-resistant
-├── Самоэволюция (SELF_EVOLUTION.999)
-│   ├── Performance monitoring
-│   ├── Evolutionary algorithms
-│   └── Learning from experience
-├── Сознание (GLOBAL_WORKSPACE.999)
-│   ├── Global workspace theory
-│   ├── Integrated information theory
-│   └── Free energy principle
-├── Этический AI (ETHICAL_MONITOR.999)
-│   ├── Value alignment
-│   ├── Fairness algorithms
-│   └── Ethical evaluation
-└── Квантовая криптография (QUANTUM_CRYPTO.999)
-    ├── Lattice-based encryption
-    ├── XMSS signatures
-    └── BB84 key exchange
-│   ├── Performance monitoring
-│   ├── Evolutionary algorithms
-│   └── Learning from experience
-└── Квантовые компоненты (HHL_ALGORITHM.999)
-    ├── Quantum federated learning
-    ├── Neuromorphic edge computing
-    └── Proof-of-learning consensus
+.vibee (specification) → vibee gen → .zig (auto-generated)
 ```
 
-## Ключевые особенности
+## Quick Start
 
-### 🧠 Самоулучшающийся SWE Агент
-- **Локальная работа**: Без внешних LLM зависимостей
-- **Живое взаимодействие**: Screen capture и GUI анализ
-- **Самоэволюция**: Постоянное улучшение через PAS
-- **VCS интеграция**: Git commit/push автоматизация
-
-### 🌐 Децентрализованная AGI Сеть
-- **P2P архитектура**: Без центральных серверов
-- **Federated learning**: Приватное обучение на данных
-- **Swarm intelligence**: Коллективное решение проблем
-- **Quantum enhancement**: HHL алгоритмы для оптимизации
-
-### 🔄 Самоэволюционные механизмы
-- **Performance monitoring**: Реальное время метрики
-- **Genetic algorithms**: Оптимизация параметров
-- **Experience replay**: Обучение на исторических данных
-- **Self-healing**: Автоматическое восстановление
-
-### 🏛️ Троицкая Система
-- **Математический паттерн**: n × 3^k × π^m
-- **PAS методология**: Предиктивная оптимизация
-- **Emergent behavior**: Самоорганизующиеся системы
-
-## Установка и запуск
-
-### Требования
-- Zig 0.15+
-- 8GB RAM минимум
-- Linux/macOS/Windows
-
-### Сборка
 ```bash
-cd src/vibeec
-zig build
+# Generate Zig code from specification
+vibee gen specs/tri/core/quantum_entanglement_v87.vibee
+
+# Test generated code
+zig test trinity/output/quantum_entanglement_v87.zig
+
+# Run all tests
+cd trinity/output && for f in *.zig; do zig test "$f"; done
 ```
 
-### Запуск
-```bash
-./zig-out/bin/vibeec run src/999/os/kernel/KERNEL.999
-```
+## Evolutionary Constants
 
-## Использование
+| Symbol | Value | Purpose |
+|--------|-------|---------|
+| μ | 0.0382 (1/φ²/10) | Mutation Rate |
+| χ | 0.0618 (1/φ/10) | Crossover Rate |
+| σ | 1.618 (φ) | Selection Pressure |
+| ε | 0.333 (1/3) | Elitism Ratio |
 
-### SWE Агент
-```bash
-> task "Создать REST API для блога"
-> improve
-> screen
-> git "api/*"
-```
-
-### AGI Сеть
-```bash
-> network
-Network peers: 42
-Knowledge base: 1.2M entries
-Evolution factor: 1.85
-✅ Network status OK
-```
-
-## Научные основы
-
-### PAS Методология
-- **Discovery patterns**: D&C, PRE, HSH, MLS, TEN, FDT
-- **Confidence calculation**: Base rate × time factor × gap factor × ML boost
-- **Timeline predictions**: От месяцев до лет
-
-### Federated Learning
-- **Differential privacy**: Защита пользовательских данных
-- **Byzantine robustness**: Устойчивость к вредоносным участникам
-- **Communication efficiency**: Минимизация сетевого трафика
-
-### Swarm Intelligence
-- **Particle Swarm Optimization**: Глобальный поиск
-- **Ant Colony Systems**: Адаптивная маршрутизация
-- **Artificial Bee Colony**: Распределенная оптимизация
-
-## Roadmap
-
-### Фаза 1 (Завершена) ✅
-- Базовое ядро с PAS оптимизациями
-- Desktop SWE агент MVP
-- VCS система
-- Децентрализованная сеть
-
-### Фаза 2 (Завершена) ✅
-- Самоэволюционные механизмы
-- Quantum компоненты
-- Neuromorphic computing
-- Advanced consensus
-
-### Фаза 3 (Будущая) 🔮
-- Полная автономия
-- Consciousness emergence
-- Multi-agent systems
-- Ethical AGI
-
-## Auto Codegen (v36+)
-
-### Specification-First Development
-
-VIBEE использует подход "спецификация первична":
+## Project Structure
 
 ```
-.vibee (spec) → vibeec compile → .zig (auto-generated)
+vibee-lang/
+├── specs/                      # .vibee specifications
+│   ├── tri/                    # Main specifications (228 files)
+│   │   ├── core/              # v87-v99 Strategic Technology Tree
+│   │   ├── crypto/            # Post-quantum cryptography
+│   │   ├── quantum/           # Quantum computing
+│   │   ├── ai/                # AI providers & inference
+│   │   ├── codegen/           # Multi-language generation
+│   │   ├── pas/               # PAS Daemons & analysis
+│   │   └── ...
+│   └── INDEX.md               # Specifications index
+├── trinity/output/             # Generated Zig code (DO NOT EDIT)
+├── src/vibeec/                 # Compiler source (CAN edit)
+├── bin/vibee                   # CLI binary
+├── docs/                       # Documentation
+│   ├── core/                  # Core concepts
+│   ├── quickstart/            # Getting started
+│   ├── verdicts/              # TOXIC VERDICT reports
+│   ├── benchmarks/            # Performance benchmarks
+│   └── INDEX.md               # Documentation index
+├── examples/                   # Example .tri files
+├── benchmark/                  # Benchmark suite
+└── generated/                  # Generated code archive
 ```
 
-### Пример
+## Strategic Technology Tree (v86-v99)
+
+| Version | Module | Tests |
+|---------|--------|-------|
+| v87 | Quantum Entanglement Protocol | 13/13 ✅ |
+| v88 | Neural Mesh Architecture | 13/13 ✅ |
+| v89 | Temporal Recursion Engine | 13/13 ✅ |
+| v90 | Holographic Memory Matrix | 13/13 ✅ |
+| v91 | Consciousness Bridge Interface | 13/13 ✅ |
+| v92 | Fractal Compression Algorithm | 13/13 ✅ |
+| v93 | Morphogenetic Field Dynamics | 13/13 ✅ |
+| v94 | Symbiotic Code Evolution | 13/13 ✅ |
+| v95 | Zero-Point Energy Harvester | 13/13 ✅ |
+| v96 | Akashic Record Interface | 13/13 ✅ |
+| v97 | Dimensional Gateway Protocol | 13/13 ✅ |
+| v98 | Universal Translator Matrix | 13/13 ✅ |
+| v99 | SINGULARITY CONVERGENCE | 13/13 ✅ |
+
+## Specification Example
 
 ```yaml
-# specs/tri/user.vibee
-name: user_service
+# specs/tri/core/my_feature.vibee
+name: my_feature
 version: "1.0.0"
+language: zig
+module: my_feature
+
+constants:
+  PHI: 1.618033988749895
 
 types:
-  - name: User
+  MyType:
     fields:
-      - name: id
-        type: Int
-      - name: name
-        type: String
+      name: String
+      count: Int
 
 behaviors:
-  - name: create_user
-    given: "Valid user data"
-    when: "create_user is called"
-    then: "Return new User"
+  - name: my_behavior
+    given: Input
+    when: Action
+    then: Result
+
+creation_pattern:
+  source: InputType
+  transformer: MyTransformation
+  result: OutputType
 ```
 
-### Генерация
+## Type Mapping
+
+| VIBEE Type | Zig Type |
+|------------|----------|
+| `String` | `[]const u8` |
+| `Int` | `i64` |
+| `Float` | `f64` |
+| `Bool` | `bool` |
+| `Option<T>` | `?[]const u8` |
+| `List<T>` | `[]const u8` |
+| `Timestamp` | `i64` |
+
+## Commands
 
 ```bash
-vibeec compile specs/tri/user.vibee --target zig
+vibee gen <spec.vibee>     # Generate Zig from specification
+vibee help                  # Show all commands
+vibee eval "△ ∧ ○"         # Ternary logic evaluation
+vibee phi                   # Sacred constants
+vibee truth and             # Truth tables
 ```
 
-### Результат
+## Documentation
 
-```zig
-// AUTO-GENERATED from user.vibee
-pub const PHI: f64 = 1.618033988749895;
-pub const TRINITY: f64 = 3.0;
+- [Specifications Index](specs/INDEX.md)
+- [Documentation Index](docs/INDEX.md)
+- [Quick Start](docs/quickstart/QUICKSTART.md)
+- [API Reference](docs/api/)
+- [PAS Methodology](docs/pas/)
 
-pub const User = struct {
-    id: i64,
-    name: []const u8,
-};
+## Contributing
 
-pub fn create_user() void {
-    // TODO: Implement based on specification
-}
+1. Create `.vibee` specification in `specs/tri/`
+2. Generate implementation: `vibee gen specs/tri/feature.vibee`
+3. Test: `zig test trinity/output/feature.zig`
+4. Submit PR with spec file
 
-test "golden identity: φ² + 1/φ² = 3" {
-    // ...
-}
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for guidelines.
 
-См. [Pipeline Architecture](docs/PIPELINE_ARCHITECTURE.md) для деталей.
+## License
 
-## Документация
+MIT License - See [LICENSE](LICENSE)
 
-### .999 Language
-- [Quick Start](docs/QUICKSTART.md) - Get started in 5 minutes
-- [Tutorial](docs/TUTORIAL.md) - Full language tutorial
-- [API Reference](docs/API.md) - Complete API documentation
-- [Pipeline Architecture](docs/PIPELINE_ARCHITECTURE.md) - Auto codegen pipeline
+## Author
 
-### Research
-- [Desktop SWE Agent](docs/academic/DESKTOP_SWE_AGENT.md)
-- [Decentralized AGI Research](docs/academic/DECENTRALIZED_AGI_RESEARCH.md)
-- [Advanced Decentralized AGI](docs/academic/ADVANCED_DECENTRALIZED_AGI.md)
-- [Kernel Improvements](docs/academic/KERNEL_IMPROVEMENTS.md)
-- [Evolution Roadmap](docs/academic/OS_EVOLUTION_ROADMAP.md)
-
-## Вклад в проект
-
-Проект следует принципам:
-- **Specification-First**: Все изменения начинаются со спецификаций
-- **PAS Methodology**: Применение предиктивной оптимизации
-- **Creation Pattern**: Source → Transformer → Result
-- **Coptic Naming**: Священный алфавит для компонентов
-
-## Лицензия
-
-Этот проект представляет собой исследование в области AGI и следует этическим принципам развития ИИ.
-
-## Контакты
-
-- **Автор**: Dmitrii Vasilev
-- **Методология**: Predictive Algorithmic Systematics
-- **Архитектура**: Троицкая Система (n × 3^k × π^m)
+**Dmitrii Vasilev**
 
 ---
 
-*"Из множества возникает единство, из хаоса рождается порядок, из алгоритмов emerges сознание."*
+**PHOENIX = 999 | φ² + 1/φ² = 3**
