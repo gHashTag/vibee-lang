@@ -1,0 +1,153 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# INCREMENTAL COMPILE v207 - Smart Recompilation System
+# ═══════════════════════════════════════════════════════════════════════════════
+# Based on: Rust incremental, Salsa, Query-based compilation
+# Scientific: PLDI 2020 (Salsa), OOPSLA 2019 (Incremental)
+# PAS Pattern: PRE + HSH
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: incremental_compile
+version: "2.0.7"
+language: zig
+module: incremental_compile
+
+sacred_constants:
+  phi: 1.618033988749895
+  phi_inv: 0.618033988749895
+  phi_sq: 2.618033988749895
+  trinity: 3.0
+  phoenix: 999
+
+creation_pattern:
+  source: ModifiedFiles
+  transformer: IncrementalCompiler
+  result: MinimalRecompile
+
+types:
+  ChangeType:
+    enum:
+      - added
+      - modified
+      - deleted
+      - renamed
+
+  FileChange:
+    fields:
+      path: String
+      change_type: ChangeType
+      hash_before: String?
+      hash_after: String?
+
+  DependencyNode:
+    fields:
+      id: String
+      path: String
+      hash: String
+      dependents: List<String>
+      dependencies: List<String>
+
+  DependencyGraph:
+    fields:
+      nodes: List<DependencyNode>
+      edges: List<String>
+      root_nodes: List<String>
+
+  CompileUnit:
+    fields:
+      path: String
+      hash: String
+      ast_cache: String?
+      output_cache: String?
+
+  RecompileSet:
+    fields:
+      files: List<String>
+      reason: String
+      estimated_time_ms: Int
+
+  CompileResult:
+    fields:
+      success: Bool
+      recompiled: List<String>
+      cached: List<String>
+      time_ms: Int
+      cache_hit_rate: Float
+
+  CacheStats:
+    fields:
+      total_files: Int
+      cached_files: Int
+      cache_size_bytes: Int
+      hit_rate: Float
+
+behaviors:
+  - name: detect_changes
+    given: "File system state"
+    when: "Change detection requested"
+    then: "Return list of changes"
+    pas_pattern: HSH
+    complexity: O(n)
+    test_cases:
+      - name: test_detect
+        input: '{"watch_paths": [...]}'
+        expected: '{"changes": [...]}'
+
+  - name: build_dep_graph
+    given: "Project files"
+    when: "Graph build requested"
+    then: "Build dependency graph"
+    pas_pattern: PRE
+    complexity: O(n + e)
+    test_cases:
+      - name: test_graph
+        input: '{"files": [...]}'
+        expected: '{"graph": {...}}'
+
+  - name: compute_recompile_set
+    given: "Changes and dep graph"
+    when: "Recompile set needed"
+    then: "Minimal set of files to recompile"
+    pas_pattern: PRE
+    complexity: O(n)
+    test_cases:
+      - name: test_recompile_set
+        input: '{"changes": [...], "graph": {...}}'
+        expected: '{"files": [...]}'
+
+  - name: compile_incremental
+    given: "Recompile set"
+    when: "Compilation requested"
+    then: "Compile only changed files"
+    pas_pattern: PRE
+    complexity: O(k)
+    test_cases:
+      - name: test_compile
+        input: '{"files": [...]}'
+        expected: '{"success": true}'
+
+  - name: invalidate_cache
+    given: "File path"
+    when: "Invalidation requested"
+    then: "Invalidate file and dependents"
+    pas_pattern: HSH
+    complexity: O(d)
+    test_cases:
+      - name: test_invalidate
+        input: '{"path": "module.vibee"}'
+        expected: '{"invalidated": [...]}'
+
+  - name: get_cache_stats
+    given: "Cache state"
+    when: "Stats requested"
+    then: "Return cache statistics"
+    pas_pattern: PRE
+    complexity: O(1)
+    test_cases:
+      - name: test_stats
+        input: '{}'
+        expected: '{"hit_rate": 0.85}'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
