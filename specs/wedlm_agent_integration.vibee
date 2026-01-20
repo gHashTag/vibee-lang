@@ -1,0 +1,556 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# WeDLM AGENT INTEGRATION - Fast Code Generation for VIBEE Agent
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3 | PHOENIX = 999 = 3³ × 37
+# Integrates WeDLM streaming parallel decoder into vibee-agent
+# Target: 3-10x faster code generation via parallel decoding
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: wedlm_agent_integration
+version: "1.0.0"
+language: zig
+module: trinity.agent.wedlm
+
+imports:
+  - wedlm_integrated
+  - transformer_backend
+  - terminal_agent
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREATION PATTERN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+creation_pattern:
+  source: AgentTask
+  transformer: WeDLMCodeGenerator
+  result: GeneratedCode
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SACRED CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  PHI: 1.618033988749895
+  PHOENIX: 999
+  TRINITY: 3
+  
+  # WeDLM Agent defaults
+  DEFAULT_WINDOW_SIZE: 16
+  DEFAULT_CONFIDENCE_THRESHOLD: 0.75
+  DEFAULT_DISTANCE_PENALTY: 0.08
+  DEFAULT_MAX_TOKENS: 2048
+  DEFAULT_TEMPERATURE: 0.7
+  
+  # Code generation tokens
+  CODE_START_TOKEN: 50260
+  CODE_END_TOKEN: 50261
+  NEWLINE_TOKEN: 198
+  INDENT_TOKEN: 220
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # Agent task for code generation
+  AgentTask:
+    task_type: TaskType
+    description: string
+    context: []string
+    target_language: Language
+    max_tokens: u32
+    
+  TaskType:
+    enum:
+      - CODE_GENERATION
+      - CODE_COMPLETION
+      - CODE_REFACTOR
+      - CODE_FIX
+      - SPEC_TO_CODE
+      
+  Language:
+    enum:
+      - ZIG
+      - VIBEE
+      - PYTHON
+      - RUST
+      - GO
+      
+  # Generated code result
+  GeneratedCode:
+    code: string
+    language: Language
+    tokens_generated: u32
+    generation_time_ms: f64
+    speedup_vs_ar: f32
+    confidence: f32
+    
+  # Agent configuration
+  WeDLMAgentConfig:
+    wedlm_config: WeDLMConfig
+    model_config: ModelConfig
+    tokenizer_path: string
+    max_context_tokens: u32
+    streaming_enabled: bool
+    
+  # Streaming callback
+  StreamCallback:
+    fn_ptr: fn(token: u32, text: string) void
+    
+  # Generation statistics
+  AgentGenerationStats:
+    total_generations: u64
+    total_tokens: u64
+    total_time_ms: f64
+    avg_speedup: f32
+    avg_confidence: f32
+    cache_hit_rate: f32
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMPONENTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+components:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TOKENIZER (BPE for code)
+  # ─────────────────────────────────────────────────────────────────────────────
+  CodeTokenizer:
+    description: |
+      BPE tokenizer optimized for code.
+      Handles indentation, keywords, and special tokens.
+      
+    fields:
+      vocab: map[string]u32
+      merges: []Merge
+      special_tokens: map[string]u32
+      
+    methods:
+      init:
+        input: vocab_path string
+        output: CodeTokenizer
+        
+      encode:
+        input: text string
+        output: tokens []u32
+        algorithm: |
+          1. Pre-tokenize (split on whitespace, preserve indentation)
+          2. Apply BPE merges
+          3. Map to token IDs
+          4. Add special tokens if needed
+          
+      decode:
+        input: tokens []u32
+        output: text string
+        algorithm: |
+          1. Map token IDs to strings
+          2. Join with appropriate spacing
+          3. Handle special tokens
+          
+      encodeWithContext:
+        input: prompt string, context []string
+        output: tokens []u32
+        algorithm: |
+          1. Encode context files
+          2. Add separator tokens
+          3. Encode prompt
+          4. Truncate to max_context if needed
+          
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PROMPT BUILDER
+  # ─────────────────────────────────────────────────────────────────────────────
+  PromptBuilder:
+    description: |
+      Builds prompts for code generation tasks.
+      Formats context, instructions, and examples.
+      
+    methods:
+      buildCodeGenPrompt:
+        input: task AgentTask
+        output: prompt string
+        algorithm: |
+          1. Add system instruction for language
+          2. Add context files (if any)
+          3. Add task description
+          4. Add code start marker
+          
+      buildCompletionPrompt:
+        input: code_prefix string, language Language
+        output: prompt string
+        
+      buildRefactorPrompt:
+        input: original_code string, instructions string
+        output: prompt string
+        
+      buildSpecToCodePrompt:
+        input: vibee_spec string, target_language Language
+        output: prompt string
+        algorithm: |
+          1. Parse .vibee specification
+          2. Extract creation pattern
+          3. Extract behaviors
+          4. Format as code generation prompt
+          
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WeDLM CODE GENERATOR (Main Component)
+  # ─────────────────────────────────────────────────────────────────────────────
+  WeDLMCodeGenerator:
+    description: |
+      Main code generation component using WeDLM decoder.
+      Integrates tokenizer, prompt builder, and decoder.
+      Provides 3-10x speedup over autoregressive generation.
+      
+    fields:
+      config: WeDLMAgentConfig
+      decoder: IntegratedWeDLMDecoder
+      tokenizer: CodeTokenizer
+      prompt_builder: PromptBuilder
+      stats: AgentGenerationStats
+      allocator: Allocator
+      
+    methods:
+      init:
+        input: allocator Allocator, config WeDLMAgentConfig
+        output: WeDLMCodeGenerator
+        algorithm: |
+          1. Initialize tokenizer from vocab path
+          2. Initialize WeDLM decoder with config
+          3. Initialize prompt builder
+          4. Reset stats
+          
+      deinit:
+        description: Release all resources
+        
+      generate:
+        input: task AgentTask
+        output: GeneratedCode
+        algorithm: |
+          1. Build prompt from task:
+             prompt = prompt_builder.build(task)
+             
+          2. Tokenize prompt:
+             prompt_tokens = tokenizer.encode(prompt)
+             
+          3. Generate with WeDLM:
+             start_time = now()
+             result = decoder.generate(prompt_tokens, task.max_tokens)
+             generation_time = now() - start_time
+             
+          4. Decode tokens to code:
+             code = tokenizer.decode(result.tokens)
+             
+          5. Post-process:
+             code = extractCode(code, task.target_language)
+             
+          6. Update stats:
+             stats.total_generations += 1
+             stats.total_tokens += result.stats.total_tokens
+             stats.total_time_ms += generation_time
+             
+          7. Return result:
+             return GeneratedCode{
+               code: code,
+               language: task.target_language,
+               tokens_generated: result.stats.total_tokens,
+               generation_time_ms: generation_time,
+               speedup_vs_ar: result.stats.speedup_vs_ar,
+               confidence: result.stats.avg_confidence,
+             }
+             
+      generateStreaming:
+        input: task AgentTask, callback StreamCallback
+        output: GeneratedCode
+        algorithm: |
+          1. Build and tokenize prompt
+          2. Generate with streaming callback:
+             decoder.generateStreaming(tokens, max_tokens, fn(token) {
+               text = tokenizer.decode([token])
+               callback(token, text)
+             })
+          3. Return final result
+          
+      generateFromSpec:
+        input: vibee_spec string, target_language Language
+        output: GeneratedCode
+        algorithm: |
+          1. Build spec-to-code prompt
+          2. Generate code
+          3. Validate against spec behaviors
+          4. Return result
+          
+      extractCode:
+        input: raw_output string, language Language
+        output: code string
+        algorithm: |
+          1. Find code block markers
+          2. Extract code between markers
+          3. Clean up formatting
+          4. Validate syntax (basic)
+          
+      getStats:
+        output: AgentGenerationStats
+        
+      resetStats:
+        description: Reset generation statistics
+        
+  # ─────────────────────────────────────────────────────────────────────────────
+  # VIBEE AGENT WITH WeDLM
+  # ─────────────────────────────────────────────────────────────────────────────
+  VibeeAgentWeDLM:
+    description: |
+      Full VIBEE agent with WeDLM-accelerated code generation.
+      Combines terminal agent capabilities with fast generation.
+      
+    fields:
+      generator: WeDLMCodeGenerator
+      context: AgentContext
+      allocator: Allocator
+      
+    methods:
+      init:
+        input: allocator Allocator, config WeDLMAgentConfig
+        output: VibeeAgentWeDLM
+        
+      deinit:
+        description: Release resources
+        
+      executeTask:
+        input: task AgentTask
+        output: ExecutionResult
+        algorithm: |
+          1. Set state to thinking
+          2. Analyze task requirements
+          3. Set state to generating
+          4. Generate code with WeDLM:
+             code = generator.generate(task)
+          5. Set state to testing
+          6. Run tests on generated code
+          7. If tests fail and retries < max:
+             - Analyze errors
+             - Create fix task
+             - Retry generation
+          8. Set state to complete/error
+          9. Return result
+          
+      generateVibeeSpec:
+        input: description string, name string
+        output: spec_path string
+        algorithm: |
+          1. Generate .vibee spec from description
+          2. Write to specs/tri/{name}.vibee
+          3. Return path
+          
+      generateFromVibee:
+        input: spec_path string
+        output: GeneratedCode
+        algorithm: |
+          1. Read .vibee specification
+          2. Create SPEC_TO_CODE task
+          3. Generate code
+          4. Write to trinity/output/
+          5. Return result
+          
+      selfImprove:
+        input: feedback string
+        output: improvement_applied bool
+        algorithm: |
+          1. Analyze feedback
+          2. Identify improvement areas
+          3. Generate improved version
+          4. Test improvement
+          5. Apply if tests pass
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS (BDD)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Code Generation
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: generate_zig_code
+    given: Agent with WeDLM decoder initialized
+    when: Code generation task is submitted
+    then: Returns generated Zig code with speedup metrics
+    test_cases:
+      - name: simple_function
+        input:
+          task_type: CODE_GENERATION
+          description: "Create a function that adds two numbers"
+          target_language: ZIG
+          max_tokens: 256
+        expected:
+          code_contains: "fn add"
+          code_contains: "return"
+          speedup_vs_ar: ">= 2.0"
+          
+      - name: struct_with_methods
+        input:
+          task_type: CODE_GENERATION
+          description: "Create a Point struct with x, y fields and distance method"
+          target_language: ZIG
+          max_tokens: 512
+        expected:
+          code_contains: "const Point"
+          code_contains: "pub fn distance"
+          
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Spec to Code
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: generate_from_vibee_spec
+    given: Valid .vibee specification
+    when: generateFromSpec is called
+    then: Returns code matching specification
+    test_cases:
+      - name: simple_spec
+        input:
+          vibee_spec: |
+            name: calculator
+            creation_pattern:
+              source: Numbers
+              transformer: Calculator
+              result: Result
+            behaviors:
+              - name: add
+                given: Two numbers
+                when: add is called
+                then: Returns sum
+          target_language: ZIG
+        expected:
+          code_contains: "Calculator"
+          code_contains: "add"
+          
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Streaming Generation
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: streaming_code_generation
+    given: Agent with streaming enabled
+    when: generateStreaming is called
+    then: Callback receives tokens as they are generated
+    test_cases:
+      - name: stream_function
+        input:
+          task_type: CODE_GENERATION
+          description: "Create a hello world function"
+          streaming_enabled: true
+        expected:
+          callback_called: ">= 10"
+          final_code_valid: true
+          
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Performance
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: wedlm_speedup
+    given: Agent generating 100+ tokens
+    when: Generation completes
+    then: Achieves 3-10x speedup vs autoregressive
+    test_cases:
+      - name: benchmark_100_tokens
+        input:
+          max_tokens: 100
+          window_size: 16
+          confidence_threshold: 0.75
+        expected:
+          min_speedup: 3.0
+          max_steps: 34
+          
+      - name: benchmark_500_tokens
+        input:
+          max_tokens: 500
+          window_size: 32
+          confidence_threshold: 0.7
+        expected:
+          min_speedup: 4.0
+          
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ONNX Backend Integration
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: onnx_backend_generation
+    given: Agent with ONNX backend configured
+    when: Code generation is requested
+    then: Uses ONNX model for inference
+    test_cases:
+      - name: onnx_generation
+        input:
+          backend_type: ONNX
+          model_path: "models/gpt2-lm-head.onnx"
+          task_type: CODE_GENERATION
+        expected:
+          model_used: true
+          generation_success: true
+          
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Golden Identity
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: golden_identity
+    given: Sacred constant PHI
+    when: Golden identity is computed
+    then: φ² + 1/φ² = 3
+    test_cases:
+      - name: verify_identity
+        input:
+          phi: 1.618033988749895
+        expected:
+          result: 3.0
+          tolerance: 0.0001
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_analysis:
+  current:
+    algorithm: "Autoregressive generation"
+    complexity: "O(n) steps for n tokens"
+    latency: "High (sequential)"
+    
+  predicted:
+    algorithm: "WeDLM parallel decoding"
+    complexity: "O(n/k) steps where k = avg tokens per step"
+    latency: "3-10x lower"
+    
+  patterns_applied:
+    - name: D&C
+      description: "Parallel token prediction"
+      contribution: "3-10x speedup"
+      
+    - name: PRE
+      description: "KV cache for committed tokens"
+      contribution: "O(k) computation per step"
+      
+    - name: MLS
+      description: "Confidence-based commitment"
+      contribution: "Adaptive parallelism"
+      
+  confidence: 0.80
+  timeline: "v47"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GENERATION CONFIG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+generation:
+  output_path: "trinity/output/wedlm_agent_integration.zig"
+  
+  features:
+    - code_tokenizer
+    - prompt_builder
+    - wedlm_code_generator
+    - vibee_agent_wedlm
+    - streaming_support
+    - onnx_integration
+    
+  imports:
+    - wedlm_integrated
+    - transformer_backend
+    - terminal_agent
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# METADATA
+# ═══════════════════════════════════════════════════════════════════════════════
+
+metadata:
+  author: "Dmitrii Vasilev"
+  created: "2026-01-20"
+  pas_confidence: 0.80
+  target_speedup: "3-10x"
+  sacred_formula: "V = n × 3^k × π^m × φ^p × e^q"
