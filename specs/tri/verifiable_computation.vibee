@@ -1,0 +1,127 @@
+# Verifiable Computation - Outsourced Computation Verification
+# Tier 18: Trustless Cloud Computing
+
+name: verifiable_computation
+version: "1.0.0"
+language: zig
+module: verifiable_computation
+
+systems:
+  pinocchio:
+    name: "Pinocchio"
+    paper: "Parno et al. - IEEE S&P 2013"
+    proof_system: "QAP-based SNARK"
+    
+  geppetto:
+    name: "Geppetto"
+    paper: "Costello et al. - IEEE S&P 2015"
+    proof_system: "Multi-prover"
+    
+  vsql:
+    name: "vSQL"
+    paper: "Zhang et al. - IEEE S&P 2017"
+    proof_system: "Database verification"
+
+types:
+  VCSystem:
+    fields:
+      name: String
+      prover_time: Float
+      verifier_time: Float
+      proof_size: Int
+
+behaviors:
+  - name: generate_proof
+    given: "Computation and witness"
+    when: "Proof generation"
+    then: "Returns verifiable proof"
+
+ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ: """
+const std = @import("std");
+
+pub const VCSystem = struct {
+    name: []const u8,
+    prover_time_ms: f64,
+    verifier_time_ms: f64,
+    proof_size_bytes: usize,
+    paper: []const u8,
+};
+
+pub const systems = [_]VCSystem{
+    .{ .name = "Pinocchio", .prover_time_ms = 1000.0, .verifier_time_ms = 10.0, .proof_size_bytes = 288, .paper = "IEEE S&P 2013" },
+    .{ .name = "Geppetto", .prover_time_ms = 800.0, .verifier_time_ms = 8.0, .proof_size_bytes = 320, .paper = "IEEE S&P 2015" },
+    .{ .name = "vSQL", .prover_time_ms = 500.0, .verifier_time_ms = 5.0, .proof_size_bytes = 256, .paper = "IEEE S&P 2017" },
+    .{ .name = "Ligero", .prover_time_ms = 200.0, .verifier_time_ms = 50.0, .proof_size_bytes = 50000, .paper = "CCS 2017" },
+};
+
+pub fn getFastestProver() VCSystem {
+    var min_time: f64 = std.math.floatMax(f64);
+    var fastest: VCSystem = systems[0];
+    for (systems) |s| {
+        if (s.prover_time_ms < min_time) {
+            min_time = s.prover_time_ms;
+            fastest = s;
+        }
+    }
+    return fastest;
+}
+
+pub fn getFastestVerifier() VCSystem {
+    var min_time: f64 = std.math.floatMax(f64);
+    var fastest: VCSystem = systems[0];
+    for (systems) |s| {
+        if (s.verifier_time_ms < min_time) {
+            min_time = s.verifier_time_ms;
+            fastest = s;
+        }
+    }
+    return fastest;
+}
+
+pub fn getSmallestProof() VCSystem {
+    var min_size: usize = std.math.maxInt(usize);
+    var smallest: VCSystem = systems[0];
+    for (systems) |s| {
+        if (s.proof_size_bytes < min_size) {
+            min_size = s.proof_size_bytes;
+            smallest = s;
+        }
+    }
+    return smallest;
+}
+
+test "4 VC systems" {
+    try std.testing.expectEqual(@as(usize, 4), systems.len);
+}
+
+test "Ligero fastest prover (200ms)" {
+    const fastest = getFastestProver();
+    try std.testing.expect(std.mem.eql(u8, fastest.name, "Ligero"));
+}
+
+test "vSQL fastest verifier (5ms)" {
+    const fastest = getFastestVerifier();
+    try std.testing.expect(std.mem.eql(u8, fastest.name, "vSQL"));
+}
+
+test "vSQL smallest proof (256 bytes)" {
+    const smallest = getSmallestProof();
+    try std.testing.expect(std.mem.eql(u8, smallest.name, "vSQL"));
+}
+
+test "Pinocchio proof 288 bytes" {
+    try std.testing.expectEqual(@as(usize, 288), systems[0].proof_size_bytes);
+}
+
+test "Ligero large proof (50KB)" {
+    try std.testing.expectEqual(@as(usize, 50000), systems[3].proof_size_bytes);
+}
+
+test "Pinocchio verifier 10ms" {
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), systems[0].verifier_time_ms, 0.1);
+}
+
+test "Geppetto from 2015" {
+    try std.testing.expect(std.mem.eql(u8, systems[1].paper, "IEEE S&P 2015"));
+}
+"""

@@ -1,0 +1,80 @@
+const std = @import("std");
+
+pub const AggregationProtocol = struct {
+    name: []const u8,
+    complexity: []const u8,
+    rounds: i64,
+    byzantine_robust: bool,
+    dropout_tolerance: bool,
+};
+
+pub const protocols = [_]AggregationProtocol{
+    .{ .name = "SecAgg", .complexity = "O(n²)", .rounds = 4, .byzantine_robust = false, .dropout_tolerance = true },
+    .{ .name = "Turbo-Aggregate", .complexity = "O(n log n)", .rounds = 3, .byzantine_robust = false, .dropout_tolerance = true },
+    .{ .name = "FLAME", .complexity = "O(n²)", .rounds = 5, .byzantine_robust = true, .dropout_tolerance = true },
+    .{ .name = "RoFL", .complexity = "O(n)", .rounds = 2, .byzantine_robust = true, .dropout_tolerance = false },
+};
+
+pub fn secureAggregate(values: []const i64, n: usize) i64 {
+    var sum: i64 = 0;
+    for (0..@min(n, values.len)) |i| {
+        sum += values[i];
+    }
+    return sum;
+}
+
+pub fn getFastestProtocol() AggregationProtocol {
+    var min_rounds: i64 = std.math.maxInt(i64);
+    var fastest: AggregationProtocol = protocols[0];
+    for (protocols) |p| {
+        if (p.rounds < min_rounds) {
+            min_rounds = p.rounds;
+            fastest = p;
+        }
+    }
+    return fastest;
+}
+
+pub fn getByzantineRobust() i64 {
+    var count: i64 = 0;
+    for (protocols) |p| {
+        if (p.byzantine_robust) count += 1;
+    }
+    return count;
+}
+
+test "4 aggregation protocols" {
+    try std.testing.expectEqual(@as(usize, 4), protocols.len);
+}
+
+test "SecAgg has 4 rounds" {
+    try std.testing.expectEqual(@as(i64, 4), protocols[0].rounds);
+}
+
+test "RoFL fastest (2 rounds)" {
+    const fastest = getFastestProtocol();
+    try std.testing.expect(std.mem.eql(u8, fastest.name, "RoFL"));
+}
+
+test "2 byzantine-robust protocols" {
+    const count = getByzantineRobust();
+    try std.testing.expectEqual(@as(i64, 2), count);
+}
+
+test "Turbo-Aggregate O(n log n)" {
+    try std.testing.expect(std.mem.eql(u8, protocols[1].complexity, "O(n log n)"));
+}
+
+test "Secure aggregation sum" {
+    const values = [_]i64{ 10, 20, 30, 40 };
+    const sum = secureAggregate(&values, 4);
+    try std.testing.expectEqual(@as(i64, 100), sum);
+}
+
+test "SecAgg has dropout tolerance" {
+    try std.testing.expect(protocols[0].dropout_tolerance);
+}
+
+test "FLAME is byzantine robust" {
+    try std.testing.expect(protocols[2].byzantine_robust);
+}
