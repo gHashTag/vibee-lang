@@ -1,0 +1,181 @@
+const std = @import("std");
+
+// ═══════════════════════════════════════════════════════════════
+// FULLY HOMOMORPHIC ENCRYPTION SCHEMES
+// TFHE, CKKS, BGV, BFV - Tier 10
+// ═══════════════════════════════════════════════════════════════
+
+pub const FHEType = enum {
+    Boolean,      // TFHE
+    Approximate,  // CKKS
+    ExactInteger, // BGV, BFV
+};
+
+pub const FHEScheme = struct {
+    name: []const u8,
+    paper: []const u8,
+    year: i64,
+    fhe_type: FHEType,
+    add_ms: f64,
+    mult_ms: f64,
+    bootstrap_ms: f64,
+};
+
+pub const FHEParams = struct {
+    poly_modulus_degree: usize,
+    coeff_modulus_bits: []const usize,
+    plain_modulus: usize,
+    security_level: usize,
+};
+
+pub const Ciphertext = struct {
+    scheme: []const u8,
+    level: i64,
+    noise_budget: i64,
+    size_bytes: usize,
+};
+
+// Scheme Database
+pub const schemes = [_]FHEScheme{
+    .{ .name = "TFHE", .paper = "ASIACRYPT 2016", .year = 2016, .fhe_type = .Boolean, .add_ms = 0.01, .mult_ms = 13.0, .bootstrap_ms = 13.0 },
+    .{ .name = "CKKS", .paper = "ASIACRYPT 2017", .year = 2017, .fhe_type = .Approximate, .add_ms = 0.1, .mult_ms = 10.0, .bootstrap_ms = 100.0 },
+    .{ .name = "BGV", .paper = "ITCS 2012", .year = 2012, .fhe_type = .ExactInteger, .add_ms = 0.05, .mult_ms = 5.0, .bootstrap_ms = 500.0 },
+    .{ .name = "BFV", .paper = "ePrint 2012", .year = 2012, .fhe_type = .ExactInteger, .add_ms = 0.05, .mult_ms = 8.0, .bootstrap_ms = 600.0 },
+};
+
+// Standard parameter sets
+pub const param_sets = [_]FHEParams{
+    .{ .poly_modulus_degree = 4096, .coeff_modulus_bits = &[_]usize{ 40, 40, 40 }, .plain_modulus = 65537, .security_level = 128 },
+    .{ .poly_modulus_degree = 8192, .coeff_modulus_bits = &[_]usize{ 60, 40, 40, 60 }, .plain_modulus = 65537, .security_level = 128 },
+    .{ .poly_modulus_degree = 16384, .coeff_modulus_bits = &[_]usize{ 60, 40, 40, 40, 40, 60 }, .plain_modulus = 65537, .security_level = 128 },
+    .{ .poly_modulus_degree = 32768, .coeff_modulus_bits = &[_]usize{ 60, 40, 40, 40, 40, 40, 40, 60 }, .plain_modulus = 65537, .security_level = 128 },
+};
+
+// Applications
+pub const Application = struct {
+    name: []const u8,
+    scheme: []const u8,
+    slowdown_factor: f64,
+};
+
+pub const applications = [_]Application{
+    .{ .name = "Private ML", .scheme = "CKKS", .slowdown_factor = 1000.0 },
+    .{ .name = "Private Database", .scheme = "BFV", .slowdown_factor = 100.0 },
+    .{ .name = "Genomics", .scheme = "CKKS", .slowdown_factor = 500.0 },
+    .{ .name = "Boolean Circuits", .scheme = "TFHE", .slowdown_factor = 10000.0 },
+};
+
+pub fn getSchemeByName(name: []const u8) ?FHEScheme {
+    for (schemes) |s| {
+        if (std.mem.eql(u8, s.name, name)) return s;
+    }
+    return null;
+}
+
+pub fn getFastestBootstrap() FHEScheme {
+    var min_time: f64 = std.math.floatMax(f64);
+    var fastest: FHEScheme = schemes[0];
+    for (schemes) |s| {
+        if (s.bootstrap_ms < min_time) {
+            min_time = s.bootstrap_ms;
+            fastest = s;
+        }
+    }
+    return fastest;
+}
+
+pub fn getFastestMult() FHEScheme {
+    var min_time: f64 = std.math.floatMax(f64);
+    var fastest: FHEScheme = schemes[0];
+    for (schemes) |s| {
+        if (s.mult_ms < min_time) {
+            min_time = s.mult_ms;
+            fastest = s;
+        }
+    }
+    return fastest;
+}
+
+pub fn getApproximateSchemes() i64 {
+    var count: i64 = 0;
+    for (schemes) |s| {
+        if (s.fhe_type == .Approximate) count += 1;
+    }
+    return count;
+}
+
+pub fn estimateCiphertextSize(params: FHEParams) usize {
+    // Rough estimate: 2 * poly_degree * sum(coeff_bits) / 8
+    var total_bits: usize = 0;
+    for (params.coeff_modulus_bits) |bits| {
+        total_bits += bits;
+    }
+    return 2 * params.poly_modulus_degree * total_bits / 8;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════
+
+test "4 FHE schemes defined" {
+    try std.testing.expectEqual(@as(usize, 4), schemes.len);
+}
+
+test "TFHE is Boolean type" {
+    const tfhe = getSchemeByName("TFHE");
+    try std.testing.expect(tfhe != null);
+    try std.testing.expectEqual(FHEType.Boolean, tfhe.?.fhe_type);
+}
+
+test "CKKS is Approximate type" {
+    const ckks = getSchemeByName("CKKS");
+    try std.testing.expect(ckks != null);
+    try std.testing.expectEqual(FHEType.Approximate, ckks.?.fhe_type);
+}
+
+test "TFHE has fastest bootstrap (13ms)" {
+    const fastest = getFastestBootstrap();
+    try std.testing.expect(std.mem.eql(u8, fastest.name, "TFHE"));
+    try std.testing.expectApproxEqAbs(@as(f64, 13.0), fastest.bootstrap_ms, 0.1);
+}
+
+test "BGV has fastest mult (5ms)" {
+    const fastest = getFastestMult();
+    try std.testing.expect(std.mem.eql(u8, fastest.name, "BGV"));
+}
+
+test "1 approximate scheme (CKKS)" {
+    const count = getApproximateSchemes();
+    try std.testing.expectEqual(@as(i64, 1), count);
+}
+
+test "4 parameter sets" {
+    try std.testing.expectEqual(@as(usize, 4), param_sets.len);
+}
+
+test "Smallest poly degree 4096" {
+    try std.testing.expectEqual(@as(usize, 4096), param_sets[0].poly_modulus_degree);
+}
+
+test "Largest poly degree 32768" {
+    try std.testing.expectEqual(@as(usize, 32768), param_sets[3].poly_modulus_degree);
+}
+
+test "4 FHE applications" {
+    try std.testing.expectEqual(@as(usize, 4), applications.len);
+}
+
+test "Private ML uses CKKS" {
+    try std.testing.expect(std.mem.eql(u8, applications[0].scheme, "CKKS"));
+}
+
+test "Ciphertext size estimation" {
+    const size = estimateCiphertextSize(param_sets[0]);
+    try std.testing.expect(size > 10000);
+}
+
+test "BGV from 2012" {
+    const bgv = getSchemeByName("BGV");
+    try std.testing.expect(bgv != null);
+    try std.testing.expectEqual(@as(i64, 2012), bgv.?.year);
+}
