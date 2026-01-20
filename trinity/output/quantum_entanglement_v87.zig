@@ -17,7 +17,10 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const PHI: f64 = 0;
+pub const PHI: f64 = 1.618033988749895;
+pub const PHI_INV: f64 = 0.618033988749895;
+pub const TAU: f64 = 6.283185307179586;
+pub const PHI_SQ: f64 = 2.618033988749895;
 
 pub const PLANCK: f64 = 0;
 
