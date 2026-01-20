@@ -1,0 +1,87 @@
+const std = @import("std");
+
+pub const SSEScheme = struct {
+    name: []const u8,
+    search_time: []const u8,
+    update_time: []const u8,
+    dynamic: bool,
+    leakage: []const u8,
+};
+
+pub const SSEIndex = struct {
+    keywords: i64,
+    documents: i64,
+    index_size_bytes: i64,
+    
+    pub fn avgDocsPerKeyword(self: *const SSEIndex) f64 {
+        return @as(f64, @floatFromInt(self.documents)) / @as(f64, @floatFromInt(self.keywords));
+    }
+};
+
+pub const schemes = [_]SSEScheme{
+    .{ .name = "SSE-1", .search_time = "O(n)", .update_time = "N/A", .dynamic = false, .leakage = "access pattern" },
+    .{ .name = "SSE-2", .search_time = "O(m)", .update_time = "N/A", .dynamic = false, .leakage = "search pattern" },
+    .{ .name = "DSSE", .search_time = "O(m log N)", .update_time = "O(log N)", .dynamic = true, .leakage = "minimal" },
+    .{ .name = "OSSE", .search_time = "O(N)", .update_time = "O(N)", .dynamic = true, .leakage = "none" },
+    .{ .name = "Blind Seer", .search_time = "O(m)", .update_time = "O(1)", .dynamic = true, .leakage = "search pattern" },
+};
+
+pub fn getDynamicSchemes() i64 {
+    var count: i64 = 0;
+    for (schemes) |s| { if (s.dynamic) count += 1; }
+    return count;
+}
+
+pub fn getNoLeakageSchemes() i64 {
+    var count: i64 = 0;
+    for (schemes) |s| {
+        if (std.mem.eql(u8, s.leakage, "none")) count += 1;
+    }
+    return count;
+}
+
+pub fn searchCost(m: i64, n: i64, scheme_idx: usize) i64 {
+    _ = n;
+    // Simplified: return m for O(m) schemes
+    return switch (scheme_idx) {
+        0 => m * 10, // O(n) - expensive
+        1, 4 => m,   // O(m)
+        2 => m * 2,  // O(m log N)
+        3 => m * 100, // O(N) - very expensive
+        else => m,
+    };
+}
+
+test "5 SSE schemes" {
+    try std.testing.expectEqual(@as(usize, 5), schemes.len);
+}
+
+test "3 dynamic schemes" {
+    try std.testing.expectEqual(@as(i64, 3), getDynamicSchemes());
+}
+
+test "1 no-leakage scheme (OSSE)" {
+    try std.testing.expectEqual(@as(i64, 1), getNoLeakageSchemes());
+}
+
+test "SSE-2 search time O(m)" {
+    try std.testing.expect(std.mem.eql(u8, schemes[1].search_time, "O(m)"));
+}
+
+test "DSSE is dynamic" {
+    try std.testing.expect(schemes[2].dynamic);
+}
+
+test "SSE-1 is not dynamic" {
+    try std.testing.expect(!schemes[0].dynamic);
+}
+
+test "Index avg docs per keyword" {
+    const index = SSEIndex{ .keywords = 1000, .documents = 10000, .index_size_bytes = 1000000 };
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), index.avgDocsPerKeyword(), 0.01);
+}
+
+test "Search cost calculation" {
+    const cost = searchCost(100, 1000, 1);
+    try std.testing.expectEqual(@as(i64, 100), cost);
+}
