@@ -1,0 +1,75 @@
+name: paper_pipeline_parallel_v593
+version: "593.0.0"
+language: zig
+module: paper_pipeline_parallel_v593
+
+types:
+  PipelineParallel:
+    fields:
+      pp_id: String
+      num_stages: Int
+      num_microbatches: Int
+      schedule: String
+      phi_bubbles: Bool
+
+  PipelineStage:
+    fields:
+      stage_id: String
+      rank: Int
+      layers: List<String>
+      input_queue: List<Object>
+
+  Microbatch:
+    fields:
+      microbatch_id: String
+      batch_data: Object
+      current_stage: Int
+      forward_done: Bool
+
+  PipelineMetrics:
+    fields:
+      bubble_ratio: Float
+      throughput: Float
+      memory_per_stage: Int
+      phi_efficiency: Float
+
+behaviors:
+  - name: create_pp
+    given: PP config
+    when: Creation
+    then: Initialize pipeline parallel
+
+  - name: partition_model
+    given: Model layers
+    when: Partitioning needed
+    then: Assign layers to stages
+
+  - name: schedule_1f1b
+    given: Microbatches
+    when: 1F1B schedule
+    then: Interleave forward backward
+
+  - name: schedule_gpipe
+    given: Microbatches
+    When: GPipe schedule
+    then: All forward then backward
+
+  - name: send_activation
+    given: Stage output
+    When: Forward pass
+    then: Send to next stage
+
+  - name: send_gradient
+    given: Stage gradient
+    When: Backward pass
+    then: Send to previous stage
+
+  - name: minimize_bubbles
+    given: Schedule
+    When: Optimization needed
+    then: Reduce pipeline bubbles
+
+  - name: get_metrics
+    given: PP state
+    When: Metrics query
+    then: Return PP metrics
