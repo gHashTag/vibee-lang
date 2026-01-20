@@ -741,6 +741,246 @@ run_agent() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# VOICE CONTROL (v166-v170)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+VOICE_ENABLED=false
+WAKE_WORD="vibee"
+VOICE_LANG="${VIBEE_VOICE_LANG:-en-US}"
+
+# Check voice dependencies
+check_voice_deps() {
+    local missing=""
+    
+    # Check for speech recognition (whisper.cpp or online)
+    if ! command -v whisper &> /dev/null && ! command -v curl &> /dev/null; then
+        missing="$missing whisper/curl"
+    fi
+    
+    # Check for text-to-speech
+    if ! command -v espeak &> /dev/null && ! command -v say &> /dev/null && ! command -v piper &> /dev/null; then
+        missing="$missing espeak/say/piper"
+    fi
+    
+    # Check for audio recording
+    if ! command -v arecord &> /dev/null && ! command -v sox &> /dev/null && ! command -v rec &> /dev/null; then
+        missing="$missing arecord/sox"
+    fi
+    
+    if [ -n "$missing" ]; then
+        echo -e "${YELLOW}⚠️  Voice dependencies missing:$missing${NC}"
+        echo -e "${GRAY}   Install: apt install espeak sox alsa-utils${NC}"
+        return 1
+    fi
+    return 0
+}
+
+# Text-to-Speech
+speak() {
+    local text="$1"
+    echo -e "${CYAN}🔊 $text${NC}"
+    
+    if command -v espeak &> /dev/null; then
+        espeak -v "$VOICE_LANG" "$text" 2>/dev/null &
+    elif command -v say &> /dev/null; then
+        say "$text" &
+    elif command -v piper &> /dev/null; then
+        echo "$text" | piper --output-raw | aplay -r 22050 -f S16_LE -t raw - 2>/dev/null &
+    fi
+}
+
+# Record audio
+record_audio() {
+    local duration="${1:-5}"
+    local output="/tmp/vibee_voice_$$.wav"
+    
+    echo -e "${MAGENTA}🎤 Listening... (${duration}s)${NC}"
+    
+    if command -v rec &> /dev/null; then
+        rec -q "$output" rate 16k silence 1 0.1 1% 1 1.0 1% trim 0 "$duration" 2>/dev/null
+    elif command -v arecord &> /dev/null; then
+        timeout "$duration" arecord -q -f S16_LE -r 16000 -c 1 "$output" 2>/dev/null
+    elif command -v sox &> /dev/null; then
+        timeout "$duration" sox -d -r 16000 -c 1 "$output" 2>/dev/null
+    else
+        echo -e "${RED}No audio recorder found${NC}"
+        return 1
+    fi
+    
+    echo "$output"
+}
+
+# Speech-to-Text using Whisper API or local whisper.cpp
+transcribe_audio() {
+    local audio_file="$1"
+    local text=""
+    
+    if [ ! -f "$audio_file" ]; then
+        return 1
+    fi
+    
+    # Try local whisper.cpp first
+    if command -v whisper &> /dev/null; then
+        text=$(whisper "$audio_file" --language en --output-txt 2>/dev/null | tail -1)
+    # Try OpenAI Whisper API
+    elif [ -n "$OPENAI_API_KEY" ]; then
+        text=$(curl -s https://api.openai.com/v1/audio/transcriptions \
+            -H "Authorization: Bearer $OPENAI_API_KEY" \
+            -F file="@$audio_file" \
+            -F model="whisper-1" \
+            -F language="en" | jq -r '.text // empty')
+    # Try Groq Whisper API (free tier)
+    elif [ -n "$GROQ_API_KEY" ]; then
+        text=$(curl -s https://api.groq.com/openai/v1/audio/transcriptions \
+            -H "Authorization: Bearer $GROQ_API_KEY" \
+            -F file="@$audio_file" \
+            -F model="whisper-large-v3" | jq -r '.text // empty')
+    fi
+    
+    rm -f "$audio_file" 2>/dev/null
+    echo "$text"
+}
+
+# Parse voice command to action
+parse_voice_command() {
+    local text="$1"
+    text=$(echo "$text" | tr '[:upper:]' '[:lower:]')
+    
+    # Remove wake word
+    text=$(echo "$text" | sed "s/^$WAKE_WORD[,. ]*//" | sed 's/^[ ]*//')
+    
+    case "$text" in
+        "list files"|"show files"|"ls")
+            echo "ls -la"
+            ;;
+        "git status"|"show git status"|"status")
+            echo "git status"
+            ;;
+        "git log"|"show log")
+            echo "git log --oneline -10"
+            ;;
+        "git diff"|"show diff")
+            echo "git diff"
+            ;;
+        "git push"|"push")
+            echo "git push"
+            ;;
+        "git pull"|"pull")
+            echo "git pull"
+            ;;
+        "run tests"|"test"|"tests")
+            echo "zig test trinity/output/*.zig 2>&1 | head -20"
+            ;;
+        "build"|"compile")
+            echo "cd src/vibeec && zig build"
+            ;;
+        "clear"|"clear screen")
+            echo "clear"
+            ;;
+        "help"|"show help")
+            echo "__HELP__"
+            ;;
+        "stop"|"exit"|"quit"|"goodbye")
+            echo "__EXIT__"
+            ;;
+        go\ to\ *|cd\ *)
+            local dir=$(echo "$text" | sed 's/^go to //' | sed 's/^cd //')
+            echo "cd $dir"
+            ;;
+        search\ *|find\ *)
+            local query=$(echo "$text" | sed 's/^search //' | sed 's/^find //')
+            echo "grep -r '$query' . 2>/dev/null | head -20"
+            ;;
+        *)
+            # Pass to AI agent
+            echo "__AI__:$text"
+            ;;
+    esac
+}
+
+# Voice mode loop
+voice_mode() {
+    echo -e "${CYAN}┌─ Voice Mode ───────────────────────────────────────────────┐${NC}"
+    echo -e "${CYAN}│${NC}  Wake word: ${YELLOW}$WAKE_WORD${NC}"
+    echo -e "${CYAN}│${NC}  Say '${YELLOW}$WAKE_WORD, help${NC}' for commands"
+    echo -e "${CYAN}│${NC}  Say '${YELLOW}$WAKE_WORD, stop${NC}' to exit voice mode"
+    echo -e "${CYAN}└─────────────────────────────────────────────────────────────┘${NC}"
+    
+    speak "Voice mode activated. Say $WAKE_WORD followed by your command."
+    
+    while true; do
+        # Record audio
+        local audio_file=$(record_audio 5)
+        
+        if [ -z "$audio_file" ] || [ ! -f "$audio_file" ]; then
+            continue
+        fi
+        
+        # Transcribe
+        local text=$(transcribe_audio "$audio_file")
+        
+        if [ -z "$text" ]; then
+            continue
+        fi
+        
+        echo -e "${GREEN}📝 Heard: $text${NC}"
+        
+        # Check for wake word
+        if ! echo "$text" | grep -qi "$WAKE_WORD"; then
+            continue
+        fi
+        
+        # Parse command
+        local command=$(parse_voice_command "$text")
+        
+        case "$command" in
+            __EXIT__)
+                speak "Goodbye!"
+                echo -e "${GREEN}Voice mode deactivated${NC}"
+                return 0
+                ;;
+            __HELP__)
+                speak "Available commands: list files, git status, run tests, go to directory, search, stop"
+                echo -e "${CYAN}Commands: list files, git status, git log, git push, git pull, run tests, build, go to [dir], search [text], stop${NC}"
+                ;;
+            __AI__:*)
+                local ai_query="${command#__AI__:}"
+                speak "Processing: $ai_query"
+                run_agent "$ai_query"
+                speak "Done"
+                ;;
+            *)
+                echo -e "${YELLOW}⚡ Executing: $command${NC}"
+                speak "Executing $command"
+                
+                # Handle cd specially
+                if [[ "$command" == cd\ * ]]; then
+                    local dir="${command#cd }"
+                    if cd "$dir" 2>/dev/null; then
+                        WORKDIR=$(pwd)
+                        speak "Changed to $WORKDIR"
+                        echo -e "${GREEN}📂 $WORKDIR${NC}"
+                    else
+                        speak "Directory not found"
+                        echo -e "${RED}Directory not found: $dir${NC}"
+                    fi
+                else
+                    local result=$(eval "$command" 2>&1)
+                    echo "$result" | head -10
+                    
+                    local lines=$(echo "$result" | wc -l)
+                    if [ "$lines" -lt 5 ]; then
+                        speak "$result"
+                    else
+                        speak "Command completed with $lines lines of output"
+                    fi
+                fi
+                ;;
+        esac
+    done
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # INTERACTIVE MODE
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -777,6 +1017,8 @@ interactive_mode() {
                 echo -e "${CYAN}│${NC}  ${YELLOW}/quit${NC}              Exit"
                 echo -e "${CYAN}│${NC}  ${YELLOW}/help${NC}              Show this help"
                 echo -e "${CYAN}│${NC}  ${YELLOW}/clear${NC}             Clear screen"
+                echo -e "${CYAN}│${NC}  ${YELLOW}/voice${NC}             🎤 Voice control mode"
+                echo -e "${CYAN}│${NC}  ${YELLOW}/speak${NC} <text>      🔊 Text-to-speech"
                 echo -e "${CYAN}│${NC}  ${YELLOW}/model${NC} <name>      Switch model"
                 echo -e "${CYAN}│${NC}  ${YELLOW}/provider${NC} <name>   Switch provider"
                 echo -e "${CYAN}│${NC}  ${YELLOW}/sessions${NC}          List sessions"
@@ -786,8 +1028,14 @@ interactive_mode() {
                 echo -e "${CYAN}│${NC}  ${GREEN}deepseek${NC}   DeepSeek (DEEPSEEK_API_KEY)"
                 echo -e "${CYAN}│${NC}  ${GREEN}openai${NC}     GPT-4 (OPENAI_API_KEY)"
                 echo -e "${CYAN}│${NC}  ${GREEN}ollama${NC}     Local (ollama serve)"
+                echo -e "${CYAN}├─ Voice Commands ───────────────────────────────────────────┤${NC}"
+                echo -e "${CYAN}│${NC}  ${MAGENTA}vibee, list files${NC}     ls -la"
+                echo -e "${CYAN}│${NC}  ${MAGENTA}vibee, git status${NC}     git status"
+                echo -e "${CYAN}│${NC}  ${MAGENTA}vibee, run tests${NC}      zig test"
+                echo -e "${CYAN}│${NC}  ${MAGENTA}vibee, go to src${NC}      cd src"
+                echo -e "${CYAN}│${NC}  ${MAGENTA}vibee, search main${NC}    grep -r 'main'"
+                echo -e "${CYAN}│${NC}  ${MAGENTA}vibee, stop${NC}           exit voice mode"
                 echo -e "${CYAN}└─────────────────────────────────────────────────────────────┘${NC}"
-                echo "  ollama     Local (ollama serve)"
                 echo ""
                 ;;
             /clear)
@@ -809,7 +1057,21 @@ interactive_mode() {
                 echo -e "\n${CYAN}Provider: $PROVIDER${NC}"
                 echo -e "${CYAN}Model: $MODEL${NC}"
                 echo -e "${CYAN}Session: $CURRENT_SESSION${NC}"
+                echo -e "${CYAN}Voice: $(check_voice_deps && echo 'Available' || echo 'Not available')${NC}"
                 echo ""
+                ;;
+            /voice)
+                if check_voice_deps; then
+                    voice_mode
+                else
+                    echo -e "${RED}Voice mode requires: espeak, sox/arecord${NC}"
+                    echo -e "${GRAY}Install: apt install espeak sox alsa-utils${NC}"
+                    echo -e "${GRAY}Or use OPENAI_API_KEY for cloud transcription${NC}"
+                fi
+                ;;
+            /speak\ *)
+                local text="${input#/speak }"
+                speak "$text"
                 ;;
             *)
                 run_agent "$input"
