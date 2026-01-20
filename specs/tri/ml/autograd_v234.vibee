@@ -1,0 +1,136 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# AUTOGRAD v234 - Automatic Differentiation
+# ═══════════════════════════════════════════════════════════════════════════════
+# Based on: JAX, PyTorch Autograd, Enzyme
+# Scientific: NeurIPS 2023 (JAX), ICML 2024 (Efficient AD)
+# PAS Pattern: ALG + FDT
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: autograd
+version: "2.3.4"
+language: zig
+module: autograd
+
+sacred_constants:
+  phi: 1.618033988749895
+  phi_sq: 2.618033988749895
+  trinity: 3.0
+  phoenix: 999
+
+creation_pattern:
+  source: ComputeGraph
+  transformer: AutodiffEngine
+  result: GradientFunction
+
+types:
+  ADMode:
+    enum:
+      - forward
+      - reverse
+      - mixed
+
+  DiffOp:
+    fields:
+      primal: String
+      tangent: String
+      adjoint: String
+
+  TapeEntry:
+    fields:
+      op: String
+      inputs: List<Int>
+      output: Int
+      saved_tensors: List<Int>
+
+  GradTape:
+    fields:
+      entries: List<TapeEntry>
+      watched: List<Int>
+
+  Gradient:
+    fields:
+      wrt: Int
+      value: String
+      shape: List<Int>
+
+  JVPResult:
+    fields:
+      primal: String
+      tangent: String
+
+  VJPResult:
+    fields:
+      primal: String
+      cotangent_fn: String
+
+behaviors:
+  - name: forward_diff
+    given: "Function and tangent"
+    when: "Forward mode AD"
+    then: "Compute JVP"
+    pas_pattern: FDT
+    complexity: O(n)
+    test_cases:
+      - name: test_forward
+        input: '{"fn": {...}, "tangent": {...}}'
+        expected: '{"jvp": {...}}'
+
+  - name: reverse_diff
+    given: "Function and cotangent"
+    when: "Reverse mode AD"
+    then: "Compute VJP"
+    pas_pattern: ALG
+    complexity: O(n)
+    test_cases:
+      - name: test_reverse
+        input: '{"fn": {...}, "cotangent": {...}}'
+        expected: '{"vjp": {...}}'
+
+  - name: record_op
+    given: "Operation"
+    when: "Tape recording"
+    then: "Add to gradient tape"
+    pas_pattern: ALG
+    complexity: O(1)
+    test_cases:
+      - name: test_record
+        input: '{"op": "mul", "inputs": [...]}'
+        expected: '{"recorded": true}'
+
+  - name: backward_pass
+    given: "Tape and output grad"
+    when: "Backward pass"
+    then: "Compute all gradients"
+    pas_pattern: ALG
+    complexity: O(n)
+    test_cases:
+      - name: test_backward
+        input: '{"tape": {...}, "output_grad": {...}}'
+        expected: '{"grads": {...}}'
+
+  - name: grad_fn
+    given: "Scalar function"
+    when: "Gradient function"
+    then: "Return gradient function"
+    pas_pattern: FDT
+    complexity: O(1)
+    test_cases:
+      - name: test_grad
+        input: '{"fn": {...}}'
+        expected: '{"grad_fn": {...}}'
+
+  - name: hessian
+    given: "Scalar function"
+    when: "Hessian computation"
+    then: "Compute second derivatives"
+    pas_pattern: ALG
+    complexity: O(n^2)
+    test_cases:
+      - name: test_hessian
+        input: '{"fn": {...}}'
+        expected: '{"hessian": {...}}'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
