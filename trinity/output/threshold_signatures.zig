@@ -1,0 +1,175 @@
+const std = @import("std");
+
+// ═══════════════════════════════════════════════════════════════
+// THRESHOLD SIGNATURES - GG20, FROST, Threshold BLS
+// Tier 9: Distributed Key Management
+// ═══════════════════════════════════════════════════════════════
+
+pub const Curve = enum {
+    Secp256k1,
+    Ed25519,
+    BLS12_381,
+};
+
+pub const ThresholdScheme = struct {
+    name: []const u8,
+    paper: []const u8,
+    curve: Curve,
+    rounds: i64,
+    keygen_ms: f64,
+    sign_ms: f64,
+};
+
+pub const ThresholdParams = struct {
+    n: i64, // total parties
+    t: i64, // threshold (t-of-n)
+    curve: Curve,
+    
+    pub fn isValid(self: *const ThresholdParams) bool {
+        return self.t > 0 and self.t <= self.n and self.n > 0;
+    }
+};
+
+pub const KeyShare = struct {
+    party_id: i64,
+    share_x: i64,
+    share_y: i64,
+    public_key_x: i64,
+    public_key_y: i64,
+};
+
+pub const PartialSignature = struct {
+    party_id: i64,
+    r: i64,
+    s: i64,
+};
+
+// Threshold Schemes Database
+pub const schemes = [_]ThresholdScheme{
+    .{ .name = "GG20", .paper = "ePrint 2020", .curve = .Secp256k1, .rounds = 4, .keygen_ms = 500.0, .sign_ms = 200.0 },
+    .{ .name = "FROST", .paper = "SAC 2020", .curve = .Ed25519, .rounds = 2, .keygen_ms = 100.0, .sign_ms = 50.0 },
+    .{ .name = "Threshold BLS", .paper = "PKC 2003", .curve = .BLS12_381, .rounds = 1, .keygen_ms = 200.0, .sign_ms = 10.0 },
+};
+
+// Simulated DKG (Distributed Key Generation)
+pub fn distributedKeygen(params: ThresholdParams, seed: u64) [8]KeyShare {
+    var shares: [8]KeyShare = undefined;
+    
+    const n = @as(usize, @intCast(@min(params.n, 8)));
+    for (0..n) |i| {
+        shares[i] = KeyShare{
+            .party_id = @as(i64, @intCast(i + 1)),
+            .share_x = @as(i64, @intCast((seed + i) % 1000)),
+            .share_y = @as(i64, @intCast((seed * 2 + i) % 1000)),
+            .public_key_x = @as(i64, @intCast((seed + 100) % 1000)),
+            .public_key_y = @as(i64, @intCast((seed + 200) % 1000)),
+        };
+    }
+    
+    return shares;
+}
+
+// Simulated threshold signing
+pub fn thresholdSign(shares: []const KeyShare, t: usize, message: []const u8) PartialSignature {
+    _ = message;
+    var r: i64 = 0;
+    var s: i64 = 0;
+    
+    for (0..@min(t, shares.len)) |i| {
+        r += shares[i].share_x;
+        s += shares[i].share_y;
+    }
+    
+    return PartialSignature{
+        .party_id = 0, // combined
+        .r = @mod(r, 1000),
+        .s = @mod(s, 1000),
+    };
+}
+
+pub fn getFastestScheme() ThresholdScheme {
+    var min_rounds: i64 = std.math.maxInt(i64);
+    var fastest: ThresholdScheme = schemes[0];
+    for (schemes) |s| {
+        if (s.rounds < min_rounds) {
+            min_rounds = s.rounds;
+            fastest = s;
+        }
+    }
+    return fastest;
+}
+
+pub fn getFastestSigning() ThresholdScheme {
+    var min_time: f64 = std.math.floatMax(f64);
+    var fastest: ThresholdScheme = schemes[0];
+    for (schemes) |s| {
+        if (s.sign_ms < min_time) {
+            min_time = s.sign_ms;
+            fastest = s;
+        }
+    }
+    return fastest;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════
+
+test "3 threshold schemes" {
+    try std.testing.expectEqual(@as(usize, 3), schemes.len);
+}
+
+test "GG20 has 4 rounds" {
+    try std.testing.expectEqual(@as(i64, 4), schemes[0].rounds);
+}
+
+test "FROST has 2 rounds" {
+    try std.testing.expectEqual(@as(i64, 2), schemes[1].rounds);
+}
+
+test "Threshold BLS has 1 round (fastest)" {
+    const fastest = getFastestScheme();
+    try std.testing.expect(std.mem.eql(u8, fastest.name, "Threshold BLS"));
+}
+
+test "Threshold BLS fastest signing (10ms)" {
+    const fastest = getFastestSigning();
+    try std.testing.expect(std.mem.eql(u8, fastest.name, "Threshold BLS"));
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), fastest.sign_ms, 0.1);
+}
+
+test "Valid threshold params" {
+    const params = ThresholdParams{ .n = 5, .t = 3, .curve = .Secp256k1 };
+    try std.testing.expect(params.isValid());
+}
+
+test "Invalid threshold params (t > n)" {
+    const params = ThresholdParams{ .n = 3, .t = 5, .curve = .Secp256k1 };
+    try std.testing.expect(!params.isValid());
+}
+
+test "DKG generates shares" {
+    const params = ThresholdParams{ .n = 5, .t = 3, .curve = .Secp256k1 };
+    const shares = distributedKeygen(params, 12345);
+    try std.testing.expectEqual(@as(i64, 1), shares[0].party_id);
+    try std.testing.expectEqual(@as(i64, 2), shares[1].party_id);
+}
+
+test "Threshold signing produces signature" {
+    const params = ThresholdParams{ .n = 5, .t = 3, .curve = .Secp256k1 };
+    const shares = distributedKeygen(params, 12345);
+    const sig = thresholdSign(&shares, 3, "test message");
+    try std.testing.expect(sig.r != 0 or sig.s != 0);
+}
+
+test "GG20 uses secp256k1" {
+    try std.testing.expectEqual(Curve.Secp256k1, schemes[0].curve);
+}
+
+test "FROST uses ed25519" {
+    try std.testing.expectEqual(Curve.Ed25519, schemes[1].curve);
+}
+
+test "BLS uses BLS12-381" {
+    try std.testing.expectEqual(Curve.BLS12_381, schemes[2].curve);
+}
