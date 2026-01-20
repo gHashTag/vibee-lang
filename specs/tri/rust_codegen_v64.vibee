@@ -1,0 +1,285 @@
+# Rust Codegen V64 - New Target Generation
+# Generate idiomatic Rust code from VIBEE specifications
+
+name: rust_codegen_v64
+version: "64.0.0"
+language: zig
+module: rust_codegen
+
+creation_pattern:
+  source: VibeeSpec
+  transformer: RustCodeGenerator
+  result: RustSourceCode
+
+# PAS Analysis
+pas_patterns:
+  - pattern: PRE
+    application: "Precomputed Rust templates"
+    speedup: "3x"
+  - pattern: ALG
+    application: "Type mapping optimization"
+    speedup: "2x"
+
+types:
+  RustType:
+    description: "Rust type representation"
+    variants:
+      - String
+      - I64
+      - F64
+      - Bool
+      - Vec
+      - Option
+      - HashMap
+      - Result
+      - Custom
+
+  RustTypeMapping:
+    description: "VIBEE to Rust type mapping"
+    fields:
+      vibee_type: String
+      rust_type: String
+      requires_import: Bool
+      import_path: String
+
+  RustStruct:
+    description: "Generated Rust struct"
+    fields:
+      name: String
+      fields: List<RustField>
+      derives: List<String>
+      visibility: String
+      doc_comment: String
+
+  RustField:
+    description: "Struct field definition"
+    fields:
+      name: String
+      rust_type: String
+      visibility: String
+      serde_rename: String
+      default_value: String
+
+  RustFunction:
+    description: "Generated Rust function"
+    fields:
+      name: String
+      params: List<RustParam>
+      return_type: String
+      body: String
+      is_async: Bool
+      visibility: String
+
+  RustParam:
+    description: "Function parameter"
+    fields:
+      name: String
+      rust_type: String
+      is_ref: Bool
+      is_mut: Bool
+
+  RustImpl:
+    description: "impl block for struct"
+    fields:
+      struct_name: String
+      trait_name: String
+      functions: List<RustFunction>
+
+  RustModule:
+    description: "Complete Rust module"
+    fields:
+      name: String
+      imports: List<String>
+      structs: List<RustStruct>
+      impls: List<RustImpl>
+      tests: List<RustTest>
+
+  RustTest:
+    description: "Rust test function"
+    fields:
+      name: String
+      body: String
+      should_panic: Bool
+
+  CodegenConfig:
+    description: "Rust codegen configuration"
+    fields:
+      edition: String
+      use_serde: Bool
+      use_thiserror: Bool
+      use_async: Bool
+      derive_debug: Bool
+      derive_clone: Bool
+
+behaviors:
+  - name: map_vibee_type_to_rust
+    given: "VIBEE type specification"
+    when: "Type mapping requested"
+    then: "Corresponding Rust type"
+    test_cases:
+      - name: map_string
+        input: "String"
+        expected: "String"
+      - name: map_int
+        input: "Int"
+        expected: "i64"
+      - name: map_float
+        input: "Float"
+        expected: "f64"
+      - name: map_bool
+        input: "Bool"
+        expected: "bool"
+      - name: map_option
+        input: "Option<String>"
+        expected: "Option<String>"
+      - name: map_list
+        input: "List<Int>"
+        expected: "Vec<i64>"
+      - name: map_map
+        input: "Map<String,Int>"
+        expected: "HashMap<String, i64>"
+      - name: map_timestamp
+        input: "Timestamp"
+        expected: "i64"
+
+  - name: generate_struct
+    given: "VIBEE type definition"
+    when: "Struct generation requested"
+    then: "Rust struct with derives"
+    test_cases:
+      - name: simple_struct
+        input: "User { name: String, age: Int }"
+        expected: |
+          #[derive(Debug, Clone)]
+          pub struct User {
+              pub name: String,
+              pub age: i64,
+          }
+      - name: struct_with_option
+        input: "Config { timeout: Option<Int> }"
+        expected: |
+          #[derive(Debug, Clone)]
+          pub struct Config {
+              pub timeout: Option<i64>,
+          }
+
+  - name: generate_impl
+    given: "VIBEE behaviors"
+    when: "Impl block generation"
+    then: "Rust impl with methods"
+    test_cases:
+      - name: new_constructor
+        input: "behavior: create_user"
+        expected: |
+          impl User {
+              pub fn new(name: String, age: i64) -> Self {
+                  Self { name, age }
+              }
+          }
+
+  - name: generate_tests
+    given: "VIBEE test_cases"
+    when: "Test generation requested"
+    then: "Rust #[test] functions"
+    test_cases:
+      - name: simple_test
+        input: "test: create_user_valid"
+        expected: |
+          #[test]
+          fn test_create_user_valid() {
+              let user = User::new("Alice".to_string(), 30);
+              assert_eq!(user.name, "Alice");
+          }
+
+  - name: generate_serde_derives
+    given: "Struct with serialization needs"
+    when: "Serde enabled in config"
+    then: "Serde derives and attributes"
+    test_cases:
+      - name: serde_struct
+        input: "User with serde=true"
+        expected: |
+          #[derive(Debug, Clone, Serialize, Deserialize)]
+          #[serde(rename_all = "camelCase")]
+          pub struct User { ... }
+
+  - name: generate_error_type
+    given: "VIBEE error definitions"
+    when: "Error type generation"
+    then: "thiserror enum"
+    test_cases:
+      - name: error_enum
+        input: "errors: [NotFound, InvalidInput]"
+        expected: |
+          #[derive(Debug, thiserror::Error)]
+          pub enum Error {
+              #[error("Not found")]
+              NotFound,
+              #[error("Invalid input: {0}")]
+              InvalidInput(String),
+          }
+
+  - name: generate_async_function
+    given: "VIBEE async behavior"
+    when: "Async generation enabled"
+    then: "async fn with tokio"
+    test_cases:
+      - name: async_fetch
+        input: "behavior: fetch_data (async)"
+        expected: |
+          pub async fn fetch_data(&self) -> Result<Data, Error> {
+              // Implementation
+          }
+
+  - name: generate_module
+    given: "Complete VIBEE spec"
+    when: "Full module generation"
+    then: "Complete Rust module"
+    test_cases:
+      - name: full_module
+        input: "ai_provider.vibee"
+        expected: "mod ai_provider { ... }"
+
+  - name: handle_reserved_words
+    given: "Field named 'type' or 'error'"
+    when: "Generating Rust code"
+    then: "Use r# prefix"
+    test_cases:
+      - name: reserved_type
+        input: "field: type"
+        expected: "r#type: String"
+      - name: reserved_error
+        input: "field: error"
+        expected: "error: String"
+
+rust_type_table:
+  String: "String"
+  Int: "i64"
+  Float: "f64"
+  Bool: "bool"
+  Timestamp: "i64"
+  Object: "serde_json::Value"
+  Option: "Option<T>"
+  List: "Vec<T>"
+  Map: "HashMap<K, V>"
+
+default_derives:
+  - Debug
+  - Clone
+
+optional_derives:
+  serde: [Serialize, Deserialize]
+  eq: [PartialEq, Eq]
+  hash: [Hash]
+  default: [Default]
+
+cargo_dependencies:
+  required:
+    - "serde = { version = \"1.0\", features = [\"derive\"] }"
+    - "serde_json = \"1.0\""
+  optional:
+    - "thiserror = \"1.0\""
+    - "tokio = { version = \"1.0\", features = [\"full\"] }"
+    - "async-trait = \"0.1\""
+
+# φ² + 1/φ² = 3 | PHOENIX = 999

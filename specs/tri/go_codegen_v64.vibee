@@ -1,0 +1,301 @@
+# Go Codegen V64 - New Target Generation
+# Generate idiomatic Go code from VIBEE specifications
+
+name: go_codegen_v64
+version: "64.0.0"
+language: zig
+module: go_codegen
+
+creation_pattern:
+  source: VibeeSpec
+  transformer: GoCodeGenerator
+  result: GoSourceCode
+
+# PAS Analysis
+pas_patterns:
+  - pattern: PRE
+    application: "Precomputed Go templates"
+    speedup: "3x"
+  - pattern: ALG
+    application: "Interface-based design"
+    speedup: "2x"
+
+types:
+  GoType:
+    description: "Go type representation"
+    variants:
+      - String
+      - Int64
+      - Float64
+      - Bool
+      - Slice
+      - Map
+      - Pointer
+      - Interface
+      - Struct
+      - Error
+
+  GoTypeMapping:
+    description: "VIBEE to Go type mapping"
+    fields:
+      vibee_type: String
+      go_type: String
+      requires_import: Bool
+      import_path: String
+
+  GoStruct:
+    description: "Generated Go struct"
+    fields:
+      name: String
+      fields: List<GoField>
+      json_tags: Bool
+      doc_comment: String
+
+  GoField:
+    description: "Struct field definition"
+    fields:
+      name: String
+      go_type: String
+      json_tag: String
+      omitempty: Bool
+
+  GoFunction:
+    description: "Generated Go function"
+    fields:
+      name: String
+      receiver: String
+      params: List<GoParam>
+      returns: List<String>
+      body: String
+
+  GoParam:
+    description: "Function parameter"
+    fields:
+      name: String
+      go_type: String
+
+  GoInterface:
+    description: "Go interface definition"
+    fields:
+      name: String
+      methods: List<GoMethodSig>
+
+  GoMethodSig:
+    description: "Interface method signature"
+    fields:
+      name: String
+      params: List<GoParam>
+      returns: List<String>
+
+  GoPackage:
+    description: "Complete Go package"
+    fields:
+      name: String
+      imports: List<String>
+      structs: List<GoStruct>
+      interfaces: List<GoInterface>
+      functions: List<GoFunction>
+      tests: List<GoTest>
+
+  GoTest:
+    description: "Go test function"
+    fields:
+      name: String
+      body: String
+      table_driven: Bool
+
+  GoCodegenConfig:
+    description: "Go codegen configuration"
+    fields:
+      package_name: String
+      use_json_tags: Bool
+      use_interfaces: Bool
+      generate_mocks: Bool
+      go_version: String
+
+behaviors:
+  - name: map_vibee_type_to_go
+    given: "VIBEE type specification"
+    when: "Type mapping requested"
+    then: "Corresponding Go type"
+    test_cases:
+      - name: map_string
+        input: "String"
+        expected: "string"
+      - name: map_int
+        input: "Int"
+        expected: "int64"
+      - name: map_float
+        input: "Float"
+        expected: "float64"
+      - name: map_bool
+        input: "Bool"
+        expected: "bool"
+      - name: map_option
+        input: "Option<String>"
+        expected: "*string"
+      - name: map_list
+        input: "List<Int>"
+        expected: "[]int64"
+      - name: map_map
+        input: "Map<String,Int>"
+        expected: "map[string]int64"
+      - name: map_timestamp
+        input: "Timestamp"
+        expected: "int64"
+
+  - name: generate_struct
+    given: "VIBEE type definition"
+    when: "Struct generation requested"
+    then: "Go struct with json tags"
+    test_cases:
+      - name: simple_struct
+        input: "User { name: String, age: Int }"
+        expected: |
+          // User represents a user entity
+          type User struct {
+              Name string `json:"name"`
+              Age  int64  `json:"age"`
+          }
+      - name: struct_with_option
+        input: "Config { timeout: Option<Int> }"
+        expected: |
+          type Config struct {
+              Timeout *int64 `json:"timeout,omitempty"`
+          }
+
+  - name: generate_constructor
+    given: "VIBEE type with fields"
+    when: "Constructor generation"
+    then: "NewXxx function"
+    test_cases:
+      - name: new_user
+        input: "User { name: String, age: Int }"
+        expected: |
+          func NewUser(name string, age int64) *User {
+              return &User{
+                  Name: name,
+                  Age:  age,
+              }
+          }
+
+  - name: generate_interface
+    given: "VIBEE behaviors"
+    when: "Interface generation"
+    then: "Go interface definition"
+    test_cases:
+      - name: service_interface
+        input: "behaviors: [create, read, update, delete]"
+        expected: |
+          type UserService interface {
+              Create(ctx context.Context, user *User) error
+              Read(ctx context.Context, id string) (*User, error)
+              Update(ctx context.Context, user *User) error
+              Delete(ctx context.Context, id string) error
+          }
+
+  - name: generate_tests
+    given: "VIBEE test_cases"
+    when: "Test generation requested"
+    then: "Go table-driven tests"
+    test_cases:
+      - name: table_test
+        input: "test: create_user_valid"
+        expected: |
+          func TestCreateUser(t *testing.T) {
+              tests := []struct {
+                  name    string
+                  input   User
+                  wantErr bool
+              }{
+                  {"valid user", User{Name: "Alice", Age: 30}, false},
+              }
+              for _, tt := range tests {
+                  t.Run(tt.name, func(t *testing.T) {
+                      // test implementation
+                  })
+              }
+          }
+
+  - name: generate_error_type
+    given: "VIBEE error definitions"
+    when: "Error type generation"
+    then: "Go error variables"
+    test_cases:
+      - name: error_vars
+        input: "errors: [NotFound, InvalidInput]"
+        expected: |
+          var (
+              ErrNotFound     = errors.New("not found")
+              ErrInvalidInput = errors.New("invalid input")
+          )
+
+  - name: generate_json_marshal
+    given: "Struct with custom serialization"
+    when: "Custom JSON needed"
+    then: "MarshalJSON/UnmarshalJSON"
+    test_cases:
+      - name: custom_marshal
+        input: "Timestamp field"
+        expected: |
+          func (t *Timestamp) MarshalJSON() ([]byte, error) {
+              return json.Marshal(t.Unix())
+          }
+
+  - name: generate_package
+    given: "Complete VIBEE spec"
+    when: "Full package generation"
+    then: "Complete Go package"
+    test_cases:
+      - name: full_package
+        input: "ai_provider.vibee"
+        expected: "package aiprovider"
+
+  - name: handle_go_naming
+    given: "VIBEE snake_case names"
+    when: "Generating Go code"
+    then: "Convert to PascalCase/camelCase"
+    test_cases:
+      - name: struct_name
+        input: "user_profile"
+        expected: "UserProfile"
+      - name: field_name
+        input: "first_name"
+        expected: "FirstName"
+      - name: private_field
+        input: "_internal"
+        expected: "internal"
+
+go_type_table:
+  String: "string"
+  Int: "int64"
+  Float: "float64"
+  Bool: "bool"
+  Timestamp: "int64"
+  Object: "interface{}"
+  Option: "*T"
+  List: "[]T"
+  Map: "map[K]V"
+
+standard_imports:
+  - "context"
+  - "encoding/json"
+  - "errors"
+  - "fmt"
+  - "time"
+
+test_imports:
+  - "testing"
+  - "github.com/stretchr/testify/assert"
+  - "github.com/stretchr/testify/require"
+
+go_mod_template: |
+  module github.com/vibee-lang/generated/{module}
+  
+  go 1.21
+  
+  require (
+      github.com/stretchr/testify v1.8.4
+  )
+
+# φ² + 1/φ² = 3 | PHOENIX = 999
