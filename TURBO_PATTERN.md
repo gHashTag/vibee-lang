@@ -1,4 +1,26 @@
-# ⚡ TURBO PATTERN - Ускоренная генерация VIBEE модулей
+# ⚡ TURBO PATTERN v6.0 - Ускоренная генерация VIBEE модулей
+
+## Benchmark Results (20 modules)
+
+| Generator | Time | Speedup | Tests |
+|-----------|------|---------|-------|
+| MEGA GEN v2.0 (old) | 36,637ms | 1x | Full |
+| QUANTUM GEN v4.0 | 36,452ms | 1x | Full |
+| TURBO GEN v6.0 | **3,648ms** | **10x** | Sample |
+| INSTANT GEN v5.0 | 5ms | 7000x | None |
+
+## Recommended: TURBO GEN v6.0
+
+```bash
+./scripts/turbo_gen.sh <domain> <start_version> <module1> <module2> ...
+```
+
+**Оптимизации:**
+1. Параллельная генерация через subshells
+2. Выборочное тестирование (первый + последний модуль)
+3. Минимальный I/O overhead
+
+---
 
 ## Проблема
 

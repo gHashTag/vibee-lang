@@ -1,8 +1,7 @@
 #!/bin/bash
-# TURBO GENERATOR v6.0 - Оптимальный баланс скорости и тестирования
-# Генерация: параллельная через subshells
-# Тестирование: выборочное (первый + последний)
-# Использование: ./scripts/turbo_gen.sh <domain> <start_version> <module1> <module2> ...
+# INSTANT GENERATOR v5.0 - Мгновенная генерация без тестов
+# Для максимальной скорости - тесты запускаются отдельно
+# Использование: ./scripts/instant_gen.sh <domain> <start_version> <module1> <module2> ...
 
 DOMAIN=$1
 START=$2
@@ -10,7 +9,7 @@ shift 2
 MODULES=("$@")
 
 [[ -z "$DOMAIN" || -z "$START" || ${#MODULES[@]} -eq 0 ]] && {
-    echo "Usage: ./scripts/turbo_gen.sh <domain> <start> <m1> <m2> ..."
+    echo "Usage: ./scripts/instant_gen.sh <domain> <start> <m1> <m2> ..."
     exit 1
 }
 
@@ -18,13 +17,14 @@ SD="specs/tri/${DOMAIN}"
 OD="trinity/output"
 mkdir -p "$SD"
 
-echo "⚡ TURBO GEN v6.0: ${#MODULES[@]} modules → $DOMAIN"
+echo "⚡ INSTANT GEN v5.0: ${#MODULES[@]} modules"
 
-# PHASE 1: Мгновенная параллельная генерация
 V=$START
 for N in "${MODULES[@]}"; do
-    T="${N^}"
+    T="${N^}"  # Capitalize first letter
     V1=$((V/100)); V2=$(((V/10)%10)); V3=$((V%10))
+    
+    # Генерируем оба файла одновременно в фоне
     {
         echo "name: ${N}_v${V}
 version: \"${V1}.${V2}.${V3}\"
@@ -54,24 +54,4 @@ test \"process_${N}\" { var s = ${T}State{ .status = \"init\", .data = \"{}\", .
 done
 wait
 
-END=$((V-1))
-echo "✅ Generated: v$START-v$END (${#MODULES[@]} modules)"
-
-# PHASE 2: Выборочное тестирование (первый и последний модуль)
-echo "🧪 Quick validation..."
-FIRST="${MODULES[0]}"
-LAST="${MODULES[-1]}"
-PASS=0; FAIL=0
-
-if zig test "$OD/${FIRST}_v${START}.zig" 2>/dev/null; then ((PASS++)); else ((FAIL++)); fi
-if zig test "$OD/${LAST}_v${END}.zig" 2>/dev/null; then ((PASS++)); else ((FAIL++)); fi
-
-if [ $FAIL -eq 0 ]; then
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "TURBO GEN v6.0: v$START-v$END | ${#MODULES[@]}✅"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-else
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "TURBO GEN v6.0: v$START-v$END | VALIDATION FAILED"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-fi
+echo "✅ INSTANT: v$START-v$((V-1)) | ${#MODULES[@]} modules"
