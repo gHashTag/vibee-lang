@@ -1,0 +1,245 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# MULTI-FILE EDIT v190 - Atomic Multi-File Operations
+# ═══════════════════════════════════════════════════════════════════════════════
+# Competitors: Cursor (multi-file), Aider (whole repo), Claude Code
+# Scientific: Transactional file systems, ACID properties
+# PAS Pattern: D&C + ALG
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: multi_file_edit
+version: "1.9.0"
+language: zig
+module: multi_file_edit
+
+sacred_constants:
+  phi: 1.618033988749895
+  phi_inv: 0.618033988749895
+  phi_sq: 2.618033988749895
+  trinity: 3.0
+  phoenix: 999
+
+creation_pattern:
+  source: EditPlan
+  transformer: MultiFileEditor
+  result: EditResult
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  EditOperation:
+    enum:
+      - create
+      - modify
+      - delete
+      - rename
+      - move
+
+  FileEdit:
+    fields:
+      path: String
+      operation: EditOperation
+      content: String?
+      old_content: String?
+      new_path: String?
+
+  EditPlan:
+    fields:
+      description: String
+      edits: List<FileEdit>
+      dependencies: List<String>
+      rollback_enabled: Bool = true
+
+  EditResult:
+    fields:
+      success: Bool
+      files_modified: Int
+      files_created: Int
+      files_deleted: Int
+      errors: List<String>
+      rollback_available: Bool
+
+  DiffHunk:
+    fields:
+      path: String
+      start_line: Int
+      end_line: Int
+      old_lines: List<String>
+      new_lines: List<String>
+
+  ConflictResolution:
+    enum:
+      - keep_ours
+      - keep_theirs
+      - merge
+      - manual
+
+  Transaction:
+    fields:
+      id: String
+      edits: List<FileEdit>
+      status: String
+      started_at: Timestamp
+      completed_at: Timestamp?
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: plan_edits
+    given: "User request and context"
+    when: "Multi-file edit requested"
+    then: "Generate edit plan with dependencies"
+    pas_pattern: D&C
+    complexity: O(n*m)
+    test_cases:
+      - name: test_plan
+        input: '{"request": "rename User to Person in all files"}'
+        expected: '{"edits": [...]}'
+
+  - name: validate_plan
+    given: "Edit plan"
+    when: "Validation requested"
+    then: "Check for conflicts and dependencies"
+    pas_pattern: ALG
+    complexity: O(n^2)
+    test_cases:
+      - name: test_valid
+        input: '{"edits": [...]}'
+        expected: '{"valid": true}'
+
+  - name: execute_plan
+    given: "Validated edit plan"
+    when: "Execution requested"
+    then: "Apply all edits atomically"
+    pas_pattern: D&C
+    complexity: O(n)
+    test_cases:
+      - name: test_execute
+        input: '{"plan": {...}}'
+        expected: '{"success": true}'
+
+  - name: create_backup
+    given: "Files to modify"
+    when: "Before execution"
+    then: "Create backup for rollback"
+    pas_pattern: PRE
+    complexity: O(n)
+    test_cases:
+      - name: test_backup
+        input: '{"files": ["a.zig", "b.zig"]}'
+        expected: '{"backup_id": "..."}'
+
+  - name: rollback
+    given: "Transaction ID"
+    when: "Rollback requested"
+    then: "Restore all files to previous state"
+    pas_pattern: D&C
+    complexity: O(n)
+    test_cases:
+      - name: test_rollback
+        input: '{"transaction_id": "abc123"}'
+        expected: '{"restored": true}'
+
+  - name: detect_conflicts
+    given: "Edit plan"
+    when: "Conflict detection needed"
+    then: "Return list of conflicts"
+    pas_pattern: ALG
+    complexity: O(n^2)
+    test_cases:
+      - name: test_no_conflict
+        input: '{"edits": [...]}'
+        expected: '{"conflicts": []}'
+
+  - name: generate_diff
+    given: "Edit plan"
+    when: "Preview requested"
+    then: "Return unified diff for all files"
+    pas_pattern: PRE
+    complexity: O(n*m)
+    test_cases:
+      - name: test_diff
+        input: '{"edits": [...]}'
+        expected: '{"diff": "..."}'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# EDIT PATTERNS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+edit_patterns:
+  rename_symbol:
+    description: "Rename a symbol across all files"
+    steps:
+      - "Find all occurrences"
+      - "Generate edit plan"
+      - "Validate no conflicts"
+      - "Execute atomically"
+
+  extract_type:
+    description: "Extract type to separate file"
+    steps:
+      - "Identify type definition"
+      - "Create new file"
+      - "Add import to original"
+      - "Update all references"
+
+  move_function:
+    description: "Move function to different module"
+    steps:
+      - "Copy function to target"
+      - "Update imports in target"
+      - "Replace original with import"
+      - "Update all callers"
+
+  refactor_module:
+    description: "Split module into multiple files"
+    steps:
+      - "Analyze module structure"
+      - "Create new files for each component"
+      - "Update imports"
+      - "Remove original"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ACID PROPERTIES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+acid:
+  atomicity:
+    description: "All edits succeed or all fail"
+    implementation: "Transaction with rollback"
+
+  consistency:
+    description: "Edits maintain valid state"
+    implementation: "Pre-validation of plan"
+
+  isolation:
+    description: "Concurrent edits don't interfere"
+    implementation: "File locking"
+
+  durability:
+    description: "Completed edits persist"
+    implementation: "Backup before, commit after"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE TARGETS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+performance:
+  targets:
+    plan_generation_ms: 100
+    validation_ms: 50
+    execution_per_file_ms: 10
+    rollback_ms: 100
+
+  limits:
+    max_files_per_edit: 100
+    max_edits_per_plan: 1000
+    max_file_size_mb: 10
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════

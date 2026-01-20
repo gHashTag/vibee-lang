@@ -1,0 +1,299 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# LSP SERVER v187 - Language Server Protocol for VIBEE
+# ═══════════════════════════════════════════════════════════════════════════════
+# Based on: Microsoft LSP Specification 3.17
+# Scientific refs: "Language Server Protocol" (Microsoft, 2016)
+# PAS Pattern: D&C + PRE
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: lsp_server
+version: "1.8.7"
+language: zig
+module: lsp_server
+
+sacred_constants:
+  phi: 1.618033988749895
+  phi_inv: 0.618033988749895
+  phi_sq: 2.618033988749895
+  trinity: 3.0
+  phoenix: 999
+
+creation_pattern:
+  source: LSPRequest
+  transformer: LSPServer
+  result: LSPResponse
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  LSPMethod:
+    enum:
+      - initialize
+      - initialized
+      - shutdown
+      - exit
+      - textDocument_didOpen
+      - textDocument_didChange
+      - textDocument_didClose
+      - textDocument_completion
+      - textDocument_hover
+      - textDocument_definition
+      - textDocument_references
+      - textDocument_formatting
+      - textDocument_diagnostic
+
+  Position:
+    fields:
+      line: Int
+      character: Int
+
+  Range:
+    fields:
+      start: Position
+      end: Position
+
+  TextDocumentIdentifier:
+    fields:
+      uri: String
+
+  TextDocumentItem:
+    fields:
+      uri: String
+      languageId: String
+      version: Int
+      text: String
+
+  CompletionItem:
+    fields:
+      label: String
+      kind: Int
+      detail: String?
+      documentation: String?
+      insertText: String?
+
+  Diagnostic:
+    fields:
+      range: Range
+      severity: Int
+      message: String
+      source: String
+
+  LSPRequest:
+    fields:
+      jsonrpc: String = "2.0"
+      id: Int?
+      method: String
+      params: Object?
+
+  LSPResponse:
+    fields:
+      jsonrpc: String = "2.0"
+      id: Int?
+      result: Object?
+      error: LSPError?
+
+  LSPError:
+    fields:
+      code: Int
+      message: String
+
+  ServerCapabilities:
+    fields:
+      textDocumentSync: Int
+      completionProvider: Bool
+      hoverProvider: Bool
+      definitionProvider: Bool
+      referencesProvider: Bool
+      documentFormattingProvider: Bool
+      diagnosticProvider: Bool
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: handle_initialize
+    given: "Initialize request from client"
+    when: "Server starts"
+    then: "Return server capabilities"
+    pas_pattern: PRE
+    complexity: O(1)
+    test_cases:
+      - name: test_init
+        input: '{"method": "initialize"}'
+        expected: '{"capabilities": {...}}'
+
+  - name: handle_completion
+    given: "Completion request at position"
+    when: "User triggers autocomplete"
+    then: "Return completion items for .vibee"
+    pas_pattern: PRE
+    complexity: O(n)
+    test_cases:
+      - name: test_completion_types
+        input: '{"position": {"line": 5, "character": 2}, "trigger": "types:"}'
+        expected: '{"items": ["String", "Int", "Float", "Bool"]}'
+
+  - name: handle_hover
+    given: "Hover request at position"
+    when: "User hovers over symbol"
+    then: "Return documentation"
+    pas_pattern: PRE
+    complexity: O(1)
+    test_cases:
+      - name: test_hover_phi
+        input: '{"symbol": "phi"}'
+        expected: '{"contents": "Golden ratio: 1.618..."}'
+
+  - name: handle_definition
+    given: "Go-to-definition request"
+    when: "User requests definition"
+    then: "Return location of definition"
+    pas_pattern: D&C
+    complexity: O(n)
+    test_cases:
+      - name: test_goto_type
+        input: '{"symbol": "UserType"}'
+        expected: '{"uri": "...", "range": {...}}'
+
+  - name: handle_diagnostics
+    given: "Document content"
+    when: "Validation requested"
+    then: "Return list of diagnostics"
+    pas_pattern: D&C
+    complexity: O(n)
+    test_cases:
+      - name: test_valid_spec
+        input: '{"text": "name: test\\nversion: 1.0.0"}'
+        expected: '{"diagnostics": []}'
+
+  - name: parse_json_rpc
+    given: "Raw JSON-RPC message"
+    when: "Message received"
+    then: "Parse and route to handler"
+    pas_pattern: PRE
+    complexity: O(n)
+    test_cases:
+      - name: test_parse
+        input: '{"jsonrpc": "2.0", "method": "initialize", "id": 1}'
+        expected: '{"method": "initialize"}'
+
+  - name: send_response
+    given: "Response object"
+    when: "Handler completes"
+    then: "Serialize and send JSON-RPC response"
+    pas_pattern: PRE
+    complexity: O(n)
+    test_cases:
+      - name: test_send
+        input: '{"id": 1, "result": {}}'
+        expected: '{"jsonrpc": "2.0", "id": 1, "result": {}}'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LSP CAPABILITIES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+capabilities:
+  textDocumentSync:
+    openClose: true
+    change: 2  # Incremental
+    save: true
+
+  completionProvider:
+    triggerCharacters: [":", " ", "\n"]
+    resolveProvider: true
+
+  hoverProvider: true
+  definitionProvider: true
+  referencesProvider: true
+  documentFormattingProvider: true
+
+  diagnosticProvider:
+    interFileDependencies: false
+    workspaceDiagnostics: false
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMPLETION ITEMS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+completion_items:
+  keywords:
+    - label: "name"
+      kind: 14  # Keyword
+      detail: "Specification name"
+      insertText: "name: "
+
+    - label: "version"
+      kind: 14
+      detail: "Specification version"
+      insertText: 'version: "1.0.0"'
+
+    - label: "types"
+      kind: 14
+      detail: "Type definitions"
+      insertText: "types:\n  "
+
+    - label: "behaviors"
+      kind: 14
+      detail: "Behavior specifications"
+      insertText: "behaviors:\n  - name: "
+
+  types:
+    - label: "String"
+      kind: 6  # Variable
+      detail: "Text type → []const u8"
+
+    - label: "Int"
+      kind: 6
+      detail: "Integer type → i64"
+
+    - label: "Float"
+      kind: 6
+      detail: "Floating point → f64"
+
+    - label: "Bool"
+      kind: 6
+      detail: "Boolean → bool"
+
+    - label: "List<T>"
+      kind: 6
+      detail: "List type"
+
+    - label: "Map<K,V>"
+      kind: 6
+      detail: "Map type"
+
+  sacred:
+    - label: "phi"
+      kind: 21  # Constant
+      detail: "φ = 1.618033988749895"
+
+    - label: "trinity"
+      kind: 21
+      detail: "φ² + 1/φ² = 3"
+
+    - label: "phoenix"
+      kind: 21
+      detail: "999"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SCIENTIFIC REFERENCES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+references:
+  - title: "Language Server Protocol Specification"
+    authors: "Microsoft"
+    year: 2016
+    url: "https://microsoft.github.io/language-server-protocol/"
+
+  - title: "A Language Server for Zig"
+    authors: "Zig Software Foundation"
+    year: 2020
+    url: "https://github.com/zigtools/zls"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════

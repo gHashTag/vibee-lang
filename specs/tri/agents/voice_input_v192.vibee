@@ -1,0 +1,255 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# VOICE INPUT v192 - Speech-to-Specification
+# ═══════════════════════════════════════════════════════════════════════════════
+# Competitors: Cursor (voice), GitHub Copilot Voice
+# Scientific: Whisper (OpenAI), speech recognition
+# PAS Pattern: FDT + MLS
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: voice_input
+version: "1.9.2"
+language: zig
+module: voice_input
+
+sacred_constants:
+  phi: 1.618033988749895
+  phi_inv: 0.618033988749895
+  phi_sq: 2.618033988749895
+  trinity: 3.0
+  phoenix: 999
+
+creation_pattern:
+  source: AudioStream
+  transformer: VoiceProcessor
+  result: VibeeCommand
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  AudioFormat:
+    enum:
+      - wav
+      - mp3
+      - ogg
+      - webm
+      - raw_pcm
+
+  TranscriptionProvider:
+    enum:
+      - whisper_local
+      - whisper_api
+      - groq_whisper
+      - deepgram
+      - google_speech
+
+  VoiceCommand:
+    enum:
+      - create_spec
+      - add_type
+      - add_behavior
+      - generate
+      - test
+      - navigate
+      - edit
+
+  AudioStream:
+    fields:
+      format: AudioFormat
+      sample_rate: Int
+      channels: Int
+      data: List<Float>
+
+  TranscriptionResult:
+    fields:
+      text: String
+      confidence: Float
+      language: String
+      duration_ms: Int
+
+  VibeeCommand:
+    fields:
+      command: VoiceCommand
+      parameters: Map<String, String>
+      raw_text: String
+      confidence: Float
+
+  VoiceConfig:
+    fields:
+      provider: TranscriptionProvider
+      language: String = "en"
+      wake_word: String? = "vibee"
+      continuous: Bool = false
+      noise_reduction: Bool = true
+
+  WakeWordDetection:
+    fields:
+      detected: Bool
+      confidence: Float
+      timestamp_ms: Int
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: capture_audio
+    given: "Microphone input"
+    when: "Recording started"
+    then: "Return audio stream"
+    pas_pattern: FDT
+    complexity: O(n)
+    test_cases:
+      - name: test_capture
+        input: '{"duration_ms": 5000}'
+        expected: '{"samples": ">0"}'
+
+  - name: detect_wake_word
+    given: "Audio stream"
+    when: "Wake word detection enabled"
+    then: "Return detection result"
+    pas_pattern: MLS
+    complexity: O(n)
+    test_cases:
+      - name: test_wake_word
+        input: '{"audio": [...], "wake_word": "vibee"}'
+        expected: '{"detected": true}'
+
+  - name: transcribe
+    given: "Audio stream"
+    when: "Transcription requested"
+    then: "Return text transcription"
+    pas_pattern: MLS
+    complexity: O(n)
+    test_cases:
+      - name: test_transcribe
+        input: '{"audio": [...]}'
+        expected: '{"text": "create a user type"}'
+
+  - name: parse_command
+    given: "Transcribed text"
+    when: "Command parsing needed"
+    then: "Extract VIBEE command"
+    pas_pattern: PRE
+    complexity: O(n)
+    test_cases:
+      - name: test_create
+        input: '{"text": "create a user type with name and email"}'
+        expected: '{"command": "add_type", "params": {"name": "User"}}'
+
+  - name: apply_noise_reduction
+    given: "Raw audio"
+    when: "Noise reduction enabled"
+    then: "Return cleaned audio"
+    pas_pattern: FDT
+    complexity: O(n log n)
+    test_cases:
+      - name: test_denoise
+        input: '{"audio": [...], "noise_level": 0.3}'
+        expected: '{"cleaned": true}'
+
+  - name: validate_command
+    given: "Parsed command"
+    when: "Validation needed"
+    then: "Check command validity"
+    pas_pattern: PRE
+    complexity: O(1)
+    test_cases:
+      - name: test_valid
+        input: '{"command": "add_type"}'
+        expected: '{"valid": true}'
+
+  - name: execute_voice_command
+    given: "Valid command"
+    when: "Execution requested"
+    then: "Execute and return result"
+    pas_pattern: D&C
+    complexity: O(n)
+    test_cases:
+      - name: test_execute
+        input: '{"command": "generate"}'
+        expected: '{"success": true}'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMMAND PATTERNS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+command_patterns:
+  create_spec:
+    patterns:
+      - "create a new spec called {name}"
+      - "new specification {name}"
+      - "start a new {name} spec"
+    example: "create a new spec called user_service"
+
+  add_type:
+    patterns:
+      - "add a type called {name} with fields {fields}"
+      - "create type {name}"
+      - "define {name} type"
+    example: "add a type called User with fields name and email"
+
+  add_behavior:
+    patterns:
+      - "add behavior {name} that {description}"
+      - "create function {name}"
+      - "define {name} behavior"
+    example: "add behavior create_user that creates a new user"
+
+  generate:
+    patterns:
+      - "generate code"
+      - "compile"
+      - "build"
+    example: "generate code"
+
+  test:
+    patterns:
+      - "run tests"
+      - "test"
+      - "verify"
+    example: "run tests"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROVIDER CONFIGS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+providers:
+  whisper_local:
+    model: "whisper-small"
+    offline: true
+    latency_ms: 500
+
+  whisper_api:
+    endpoint: "https://api.openai.com/v1/audio/transcriptions"
+    model: "whisper-1"
+    offline: false
+    latency_ms: 200
+
+  groq_whisper:
+    endpoint: "https://api.groq.com/openai/v1/audio/transcriptions"
+    model: "whisper-large-v3"
+    offline: false
+    latency_ms: 100
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE TARGETS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+performance:
+  targets:
+    wake_word_latency_ms: 100
+    transcription_latency_ms: 500
+    command_parse_ms: 10
+    total_latency_ms: 700
+
+  accuracy:
+    transcription: 0.95
+    command_recognition: 0.90
+    wake_word: 0.99
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
