@@ -1,0 +1,193 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ЖАР-ПТИЦА v28 - SELF-EVOLUTION ENGINE
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS PATTERNS: GEN, PRE, D&C, MLS
+# CONFIDENCE: 78%
+# SPEEDUP: 3x
+# 999 = 3³ × 37 = PHOENIX GENERATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: zhar_ptitsa_v28
+version: "28.0.0"
+language: zig
+module: zhar_ptitsa
+
+sacred_constants:
+  phi: 1.618033988749895
+  golden_identity: 3.0
+  phoenix_generations: 999
+  mutation_rate: 0.0382      # 1/φ²/10
+  crossover_rate: 0.0618     # 1/φ/10
+  selection_pressure: 1.618  # φ
+  elitism: 0.333             # 1/3 = TRINITY
+
+creation_pattern:
+  source: Population
+  transformer: ZharPtitsa
+  result: EvolvedPopulation
+
+pas_analysis:
+  current_complexity: "O(999 × p × f)"
+  theoretical_lower: "Ω(999 × p)"
+  gap: "f×"
+  patterns:
+    - name: GEN
+      application: "Core genetic algorithm"
+      confidence: 1.00
+      speedup: "baseline"
+    - name: PRE
+      application: "Fitness caching"
+      confidence: 0.85
+      speedup: "3x"
+    - name: D_and_C
+      application: "Island model parallelism"
+      confidence: 0.80
+      speedup: "4x"
+    - name: MLS
+      application: "ML-guided mutation"
+      confidence: 0.65
+      speedup: "1.5x"
+
+structures:
+  Genome:
+    fields:
+      - name: genes
+        type: "[]u8"
+      - name: fitness
+        type: f64
+      - name: generation
+        type: u64
+    methods:
+      - name: hash
+        returns: u64
+      - name: mutate
+        params: ["rate: f64"]
+        returns: void
+      - name: crossover
+        params: ["other: *Genome"]
+        returns: "*Genome"
+        
+  FitnessCache:
+    fields:
+      - name: cache
+        type: "std.AutoHashMap(u64, f64)"
+      - name: hits
+        type: u64
+      - name: misses
+        type: u64
+    methods:
+      - name: evaluate
+        params: ["genome: *Genome"]
+        returns: f64
+        complexity: "O(1) cached, O(f) uncached"
+      - name: hitRate
+        returns: f64
+        
+  Island:
+    fields:
+      - name: population
+        type: "[]Genome"
+      - name: best
+        type: "*Genome"
+      - name: generation
+        type: u64
+    methods:
+      - name: evolveStep
+        returns: void
+      - name: migrate
+        params: ["other: *Island"]
+        returns: void
+        
+  IslandEvolver:
+    fields:
+      - name: islands
+        type: "[4]Island"
+      - name: migration_interval
+        type: u32
+        default: 50
+    methods:
+      - name: evolve
+        params: ["generations: u64"]
+        returns: "*Genome"
+        
+  PhoenixPhase:
+    type: enum
+    values:
+      - BIRTH
+      - GROWTH
+      - MATURITY
+      - REBIRTH
+      
+  ZharPtitsa:
+    fields:
+      - name: population
+        type: "[]Genome"
+      - name: generation
+        type: u64
+      - name: phase
+        type: PhoenixPhase
+      - name: fitness_cache
+        type: FitnessCache
+      - name: island_evolver
+        type: "?IslandEvolver"
+    methods:
+      - name: init
+        returns: ZharPtitsa
+      - name: evolve
+        returns: "*Genome"
+      - name: rebirth
+        returns: void
+      - name: phiWeightedSelect
+        returns: "*Genome"
+
+behaviors:
+  - name: fitness_caching
+    given: "FitnessCache initialized"
+    when: "evaluate called twice with same genome"
+    then: "Second call returns cached value in O(1)"
+    test_cases:
+      - name: cache_hit
+        input:
+          genome_hash: 12345
+        expected:
+          cached: true
+          
+  - name: island_migration
+    given: "4 islands with populations"
+    when: "migrate called at interval 50"
+    then: "Best individuals exchanged"
+    test_cases:
+      - name: migration_test
+        input:
+          generation: 50
+        expected:
+          migrated: true
+          
+  - name: phoenix_rebirth
+    given: "Generation 999 reached"
+    when: "rebirth called"
+    then: "Population reset with elite preserved"
+    test_cases:
+      - name: rebirth_test
+        input:
+          generation: 999
+        expected:
+          phase: "REBIRTH"
+          elite_preserved: true
+          
+  - name: phi_weighted_selection
+    given: "Population with varied fitness"
+    when: "phiWeightedSelect called"
+    then: "Selection pressure = φ applied"
+    test_cases:
+      - name: phi_select
+        input: {}
+        expected:
+          pressure: 1.618
+
+codegen:
+  targets:
+    - format: zig
+      output: "generated/zhar_ptitsa_v28.zig"
+    - format: 999
+      output: "generated/zhar_ptitsa_v28.999"

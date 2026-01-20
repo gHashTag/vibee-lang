@@ -1,0 +1,344 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRINITY φ-Structures Specification
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# φ-оптимизированные структуры данных
+# Золотая идентичность: φ² + 1/φ² = 3
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: phi_structures
+version: "24.φ"
+author: "TRINITY"
+license: "MIT"
+
+imports:
+  - phi_core
+
+targets:
+  - zig
+  - rust
+  - gleam
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ТИПЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # φ-Node: Узел с φ-весом
+  # ─────────────────────────────────────────────────────────────────────────────
+  
+  PhiNode:
+    generic: T
+    fields:
+      id: u64
+      value: T
+      phi_weight: f64
+      phi_level: u32
+    invariants:
+      - "phi_weight > 0"
+      - "phi_weight = φ^(-phi_level)"
+    description: "Узел с весом, пропорциональным φ^(-level)"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # φ-Edge: Ребро с φ-весом
+  # ─────────────────────────────────────────────────────────────────────────────
+  
+  PhiEdge:
+    fields:
+      source: u64
+      target: u64
+      weight: f64
+      phi_factor: f64
+    invariants:
+      - "weight = fibonacci(k) / fibonacci(k+1) для некоторого k"
+    description: "Ребро с весом из отношений Фибоначчи"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # φ-Tree: Дерево с φ-балансировкой
+  # ─────────────────────────────────────────────────────────────────────────────
+  
+  PhiTree:
+    generic: T
+    fields:
+      root: "Option<PhiNode<T>>"
+      children: "Array<PhiTree<T>>"
+      size: u32
+      depth: u32
+      phi_balance: f64
+    invariants:
+      - "phi_balance = |left.size - right.size × φ| < ε"
+      - "depth ≤ log_φ(size)"
+    description: "Дерево с φ-балансировкой (отношение размеров ≈ φ)"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Fibonacci Heap
+  # ─────────────────────────────────────────────────────────────────────────────
+  
+  FibonacciHeap:
+    generic: T
+    fields:
+      min: "Option<FibNode<T>>"
+      roots: "Array<FibNode<T>>"
+      size: u32
+      max_degree: u32
+    invariants:
+      - "max_degree ≤ log_φ(size)"
+      - "каждое дерево - min-heap"
+    description: "Куча Фибоначчи с амортизированным O(1) insert"
+    
+  FibNode:
+    generic: T
+    fields:
+      key: T
+      degree: u32
+      marked: bool
+      parent: "Option<*FibNode<T>>"
+      child: "Option<*FibNode<T>>"
+      left: "*FibNode<T>"
+      right: "*FibNode<T>"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # φ-Graph: Граф с φ-метриками
+  # ─────────────────────────────────────────────────────────────────────────────
+  
+  PhiGraph:
+    generic: T
+    fields:
+      nodes: "Array<PhiNode<T>>"
+      edges: "Array<PhiEdge>"
+      adjacency: "HashMap<u64, Array<u64>>"
+      phi_density: f64
+    invariants:
+      - "phi_density = edges.len / (nodes.len × φ)"
+    description: "Граф с φ-оптимизированной плотностью"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREATION PATTERNS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+creation_patterns:
+
+  phi_tree_insert:
+    source: "(tree: PhiTree<T>, value: T)"
+    transformer: "φ-балансированная вставка"
+    result: "PhiTree<T>"
+    
+  phi_tree_search:
+    source: "(tree: PhiTree<T>, key: T)"
+    transformer: "φ-направленный поиск"
+    result: "Option<PhiNode<T>>"
+    
+  fib_heap_insert:
+    source: "(heap: FibonacciHeap<T>, key: T)"
+    transformer: "Ленивая вставка в корневой список"
+    result: "FibonacciHeap<T>"
+    
+  fib_heap_extract_min:
+    source: "FibonacciHeap<T>"
+    transformer: "Извлечение минимума + consolidate"
+    result: "(T, FibonacciHeap<T>)"
+    
+  phi_graph_add_node:
+    source: "(graph: PhiGraph<T>, value: T)"
+    transformer: "Добавление узла с φ-весом"
+    result: "PhiGraph<T>"
+    
+  phi_graph_add_edge:
+    source: "(graph: PhiGraph<T>, from: u64, to: u64)"
+    transformer: "Добавление ребра с Fibonacci-весом"
+    result: "PhiGraph<T>"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # φ-Tree
+  # ─────────────────────────────────────────────────────────────────────────────
+  
+  - name: phi_tree_balance
+    given: "φ-дерево после вставки"
+    when: "проверяем баланс"
+    then: "|left.size - right.size × φ| < 1"
+    test_cases:
+      - input: { insertions: [5, 3, 8, 1, 4, 7, 9] }
+        expected:
+          balanced: true
+          depth: 3
+          
+  - name: phi_tree_search_complexity
+    given: "φ-дерево размера n"
+    when: "ищем элемент"
+    then: "время поиска O(log_φ n)"
+    test_cases:
+      - input: { size: 1000, searches: 100 }
+        expected:
+          max_comparisons: 15  # log_φ(1000) ≈ 14.3
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Fibonacci Heap
+  # ─────────────────────────────────────────────────────────────────────────────
+  
+  - name: fib_heap_insert_o1
+    given: "Fibonacci heap"
+    when: "вставляем элемент"
+    then: "амортизированное время O(1)"
+    test_cases:
+      - input: { insertions: 10000 }
+        expected:
+          amortized_time: "O(1)"
+          
+  - name: fib_heap_extract_min_log
+    given: "Fibonacci heap размера n"
+    when: "извлекаем минимум"
+    then: "амортизированное время O(log n)"
+    test_cases:
+      - input: { size: 1000, extractions: 100 }
+        expected:
+          max_degree: 15  # log_φ(1000)
+          
+  - name: fib_heap_decrease_key_o1
+    given: "Fibonacci heap с узлом x"
+    when: "уменьшаем ключ x"
+    then: "амортизированное время O(1)"
+    test_cases:
+      - input: { operations: 1000 }
+        expected:
+          amortized_time: "O(1)"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # φ-Graph
+  # ─────────────────────────────────────────────────────────────────────────────
+  
+  - name: phi_graph_density
+    given: "φ-граф с n узлами"
+    when: "добавляем рёбра"
+    then: "оптимальная плотность ≈ n × φ рёбер"
+    test_cases:
+      - input: { nodes: 100 }
+        expected:
+          optimal_edges: 162  # 100 × φ
+          
+  - name: phi_graph_weights
+    given: "φ-граф"
+    when: "проверяем веса рёбер"
+    then: "веса = F(k)/F(k+1) → 1/φ"
+    test_cases:
+      - input: { edges: 10 }
+        expected:
+          weight_limit: 0.618033988749895
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ALGORITHMS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+algorithms:
+
+  phi_tree_insert:
+    description: "Вставка в φ-дерево с балансировкой"
+    complexity: "O(log_φ n)"
+    pattern: "Recursive"
+    steps:
+      - "Найти позицию для вставки (как в BST)"
+      - "Вставить узел с phi_level = depth"
+      - "Вычислить phi_weight = φ^(-phi_level)"
+      - "Проверить φ-баланс: |left - right × φ|"
+      - "Если нарушен - выполнить φ-ротацию"
+      
+  phi_rotation:
+    description: "φ-ротация для восстановления баланса"
+    complexity: "O(1)"
+    pattern: "Local"
+    steps:
+      - "Определить направление дисбаланса"
+      - "Выполнить ротацию (как в AVL)"
+      - "Пересчитать phi_weight для затронутых узлов"
+      - "Обновить phi_level"
+      
+  fib_heap_consolidate:
+    description: "Консолидация корневого списка"
+    complexity: "O(log n) амортизированно"
+    pattern: "Iterative"
+    steps:
+      - "Создать массив A[0..D(n)] где D(n) = log_φ(n)"
+      - "Для каждого корня w:"
+      - "  d = w.degree"
+      - "  Пока A[d] ≠ null:"
+      - "    Связать w и A[d] (меньший - родитель)"
+      - "    A[d] = null, d += 1"
+      - "  A[d] = w"
+      - "Перестроить корневой список из A"
+      - "Найти новый минимум"
+      
+  phi_graph_layout:
+    description: "Force-directed layout с φ-весами"
+    complexity: "O(n² × iterations)"
+    pattern: "Iterative"
+    steps:
+      - "Инициализировать позиции (φ-спираль)"
+      - "Для каждой итерации:"
+      - "  Вычислить отталкивание: F = φ × k² / d"
+      - "  Вычислить притяжение: F = d² / (k × φ)"
+      - "  Применить силы с φ-демпфированием"
+      - "  Ограничить перемещение"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MEMORY LAYOUT (для WASM)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+memory_layout:
+
+  PhiNode:
+    size: 32
+    alignment: 8
+    fields:
+      - { name: id, offset: 0, size: 8 }
+      - { name: value_ptr, offset: 8, size: 8 }
+      - { name: phi_weight, offset: 16, size: 8 }
+      - { name: phi_level, offset: 24, size: 4 }
+      - { name: padding, offset: 28, size: 4 }
+      
+  FibNode:
+    size: 56
+    alignment: 8
+    fields:
+      - { name: key_ptr, offset: 0, size: 8 }
+      - { name: degree, offset: 8, size: 4 }
+      - { name: marked, offset: 12, size: 1 }
+      - { name: padding, offset: 13, size: 3 }
+      - { name: parent, offset: 16, size: 8 }
+      - { name: child, offset: 24, size: 8 }
+      - { name: left, offset: 32, size: 8 }
+      - { name: right, offset: 40, size: 8 }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS PREDICTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_predictions:
+
+  - target: phi_tree
+    current: "O(log n) operations"
+    predicted: "O(log_φ n) with better constants"
+    confidence: 0.85
+    pattern: "ALG"
+    reasoning: "φ-балансировка даёт меньшую глубину чем AVL"
+    
+  - target: fib_heap
+    current: "O(1) insert, O(log n) extract"
+    predicted: "Cache-optimized O(1) insert"
+    confidence: 0.70
+    pattern: "PRE"
+    timeline: "2027"
+    
+  - target: phi_graph_layout
+    current: "O(n² × iter)"
+    predicted: "O(n log n × iter) с Barnes-Hut"
+    confidence: 0.90
+    pattern: "D&C"
+    status: "known_improvement"

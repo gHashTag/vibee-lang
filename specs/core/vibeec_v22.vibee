@@ -1,0 +1,551 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# VIBEEC V22 - COMPILER WITH ERROR REPORTER & COLOR OUTPUT
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS DAEMON V34 - Enhanced Compiler with Diagnostics
+# Extends: vibee_unified_compiler.vibee
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: vibeec_v22
+version: "22.0.0"
+language: zig
+module: vibeec_v22
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SACRED FORMULA
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sacred_formula:
+  equation: "V = n × 3^k × π^m × φ^p × e^q"
+  golden_identity: "φ² + 1/φ² = 3"
+  self_evolution: enabled
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREATION PATTERN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+creation_pattern:
+  source: ".vibee Specification + CLI Arguments"
+  transformer: "VIBEEC V22 Compiler"
+  result: "Code + Colored Diagnostics + PAS Report"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS ANALYSIS - V22 IMPROVEMENTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_analysis:
+  improvements:
+    - id: ERROR-REPORTER
+      name: "Structured Error Reporter"
+      pattern: PRE
+      current: "Basic error strings"
+      predicted: "Rich diagnostics with source context"
+      speedup: 1.0
+      confidence: 0.95
+      features:
+        - "Line/column tracking"
+        - "Source snippet display"
+        - "Error codes"
+        - "Suggestions"
+        
+    - id: COLOR-OUTPUT
+      name: "ANSI Color Output"
+      pattern: PRE
+      current: "Plain text"
+      predicted: "Colored terminal output"
+      speedup: 1.0
+      confidence: 0.98
+      features:
+        - "Error: red"
+        - "Warning: yellow"
+        - "Info: cyan"
+        - "Success: green"
+        - "Code: bold"
+        
+    - id: DIAGNOSTIC-SPANS
+      name: "Source Spans with Underlines"
+      pattern: ALG
+      current: "No source context"
+      predicted: "Rust-style error display"
+      speedup: 1.0
+      confidence: 0.90
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES - ERROR REPORTER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ANSI COLOR CODES
+  # ─────────────────────────────────────────────────────────────────────────────
+  
+  - name: Color
+    kind: enum
+    description: "ANSI color codes for terminal output"
+    values:
+      - reset       # \x1b[0m
+      - bold        # \x1b[1m
+      - dim         # \x1b[2m
+      - red         # \x1b[31m
+      - green       # \x1b[32m
+      - yellow      # \x1b[33m
+      - blue        # \x1b[34m
+      - magenta     # \x1b[35m
+      - cyan        # \x1b[36m
+      - white       # \x1b[37m
+      - bright_red  # \x1b[91m
+      - bright_green # \x1b[92m
+      - bright_yellow # \x1b[93m
+      - bright_cyan # \x1b[96m
+    methods:
+      - name: code
+        returns: "[]const u8"
+        description: "Returns ANSI escape sequence"
+
+  - name: ColorWriter
+    kind: struct
+    description: "Writer that supports colored output"
+    fields:
+      - name: writer
+        type: "std.io.AnyWriter"
+      - name: use_color
+        type: "bool"
+        description: "Enable/disable colors (for piping)"
+      - name: is_tty
+        type: "bool"
+    methods:
+      - name: init
+        params: ["writer: std.io.AnyWriter", "force_color: ?bool"]
+        returns: "ColorWriter"
+      - name: setColor
+        params: ["color: Color"]
+        returns: "!void"
+      - name: resetColor
+        returns: "!void"
+      - name: print
+        params: ["comptime fmt: []const u8", "args: anytype"]
+        returns: "!void"
+      - name: printColored
+        params: ["color: Color", "comptime fmt: []const u8", "args: anytype"]
+        returns: "!void"
+      - name: bold
+        params: ["text: []const u8"]
+        returns: "!void"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SOURCE LOCATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: SourceLocation
+    kind: struct
+    description: "Location in source file"
+    fields:
+      - name: file
+        type: "[]const u8"
+      - name: line
+        type: "u32"
+      - name: column
+        type: "u32"
+      - name: offset
+        type: "usize"
+        description: "Byte offset in source"
+    methods:
+      - name: format
+        returns: "[]const u8"
+        description: "Returns 'file:line:column'"
+
+  - name: SourceSpan
+    kind: struct
+    description: "Range in source file"
+    fields:
+      - name: start
+        type: "SourceLocation"
+      - name: end
+        type: "SourceLocation"
+      - name: source_line
+        type: "?[]const u8"
+        description: "The actual source line text"
+    methods:
+      - name: length
+        returns: "usize"
+      - name: getUnderline
+        returns: "[]const u8"
+        description: "Returns ^^^^ underline string"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DIAGNOSTIC TYPES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: DiagnosticSeverity
+    kind: enum
+    values:
+      - error_level   # Compilation fails
+      - warning       # Compilation continues
+      - info          # Informational
+      - hint          # Suggestion
+      - note          # Additional context
+
+  - name: DiagnosticCode
+    kind: enum
+    description: "Unique error codes for each error type"
+    values:
+      # Parser errors (E001-E099)
+      - E001_UNEXPECTED_TOKEN
+      - E002_UNCLOSED_BRACKET
+      - E003_INVALID_YAML
+      - E004_MISSING_FIELD
+      - E005_DUPLICATE_KEY
+      - E006_INVALID_INDENT
+      - E007_EXPECTED_COLON
+      - E008_INVALID_VALUE
+      # Semantic errors (E100-E199)
+      - E100_UNDEFINED_TYPE
+      - E101_TYPE_MISMATCH
+      - E102_UNDEFINED_REFERENCE
+      - E103_DUPLICATE_DEFINITION
+      - E104_INVALID_PATTERN
+      # PAS errors (E200-E299)
+      - E200_INVALID_COMPLEXITY
+      - E201_UNKNOWN_PATTERN
+      # Warnings (W001-W099)
+      - W001_UNUSED_TYPE
+      - W002_DEPRECATED_SYNTAX
+      - W003_MISSING_TEST_CASE
+    methods:
+      - name: message
+        returns: "[]const u8"
+        description: "Human-readable error message"
+      - name: severity
+        returns: "DiagnosticSeverity"
+
+  - name: Suggestion
+    kind: struct
+    description: "Fix suggestion for an error"
+    fields:
+      - name: message
+        type: "[]const u8"
+      - name: replacement
+        type: "?[]const u8"
+      - name: span
+        type: "?SourceSpan"
+
+  - name: Diagnostic
+    kind: struct
+    description: "A single diagnostic message"
+    fields:
+      - name: severity
+        type: "DiagnosticSeverity"
+      - name: code
+        type: "DiagnosticCode"
+      - name: message
+        type: "[]const u8"
+      - name: span
+        type: "SourceSpan"
+      - name: notes
+        type: "[]Diagnostic"
+        description: "Related notes"
+      - name: suggestions
+        type: "[]Suggestion"
+    methods:
+      - name: isError
+        returns: "bool"
+      - name: format
+        params: ["writer: ColorWriter"]
+        returns: "!void"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERROR REPORTER
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: ErrorReporter
+    kind: struct
+    description: "Collects and formats diagnostics"
+    fields:
+      - name: allocator
+        type: "Allocator"
+      - name: diagnostics
+        type: "ArrayList(Diagnostic)"
+      - name: source
+        type: "[]const u8"
+      - name: source_lines
+        type: "[][]const u8"
+      - name: file_name
+        type: "[]const u8"
+      - name: error_count
+        type: "u32"
+      - name: warning_count
+        type: "u32"
+      - name: max_errors
+        type: "u32"
+        description: "Stop after N errors"
+    methods:
+      - name: init
+        params: ["allocator: Allocator", "source: []const u8", "file_name: []const u8"]
+        returns: "!ErrorReporter"
+      - name: deinit
+      - name: report
+        params: ["severity: DiagnosticSeverity", "code: DiagnosticCode", "span: SourceSpan", "message: []const u8"]
+        returns: "!void"
+      - name: reportError
+        params: ["code: DiagnosticCode", "span: SourceSpan", "message: []const u8"]
+        returns: "!void"
+      - name: reportWarning
+        params: ["code: DiagnosticCode", "span: SourceSpan", "message: []const u8"]
+        returns: "!void"
+      - name: addNote
+        params: ["diagnostic: *Diagnostic", "message: []const u8", "span: ?SourceSpan"]
+        returns: "!void"
+      - name: addSuggestion
+        params: ["diagnostic: *Diagnostic", "message: []const u8", "replacement: ?[]const u8"]
+        returns: "!void"
+      - name: hasErrors
+        returns: "bool"
+      - name: render
+        params: ["writer: ColorWriter"]
+        returns: "!void"
+        description: "Render all diagnostics to writer"
+      - name: renderSummary
+        params: ["writer: ColorWriter"]
+        returns: "!void"
+        description: "Render error/warning counts"
+      - name: getSourceLine
+        params: ["line: u32"]
+        returns: "?[]const u8"
+      - name: createSpan
+        params: ["start_line: u32", "start_col: u32", "end_line: u32", "end_col: u32"]
+        returns: "SourceSpan"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ENHANCED COMPILER
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: CompilerV22
+    kind: struct
+    description: "Enhanced compiler with error reporting"
+    fields:
+      - name: allocator
+        type: "Allocator"
+      - name: parser
+        type: "ParserV2"
+      - name: codegen
+        type: "CodegenV3"
+      - name: pas_engine
+        type: "PASEngineV2"
+      - name: reporter
+        type: "ErrorReporter"
+      - name: color_writer
+        type: "ColorWriter"
+      - name: options
+        type: "CompilerOptions"
+    methods:
+      - name: init
+        params: ["allocator: Allocator", "options: CompilerOptions"]
+        returns: "!CompilerV22"
+      - name: deinit
+      - name: compile
+        params: ["source: []const u8", "file_name: []const u8"]
+        returns: "!CompileResult"
+      - name: compileFile
+        params: ["path: []const u8"]
+        returns: "!CompileResult"
+      - name: printDiagnostics
+        returns: "!void"
+
+  - name: CompilerOptions
+    kind: struct
+    fields:
+      - name: use_color
+        type: "bool"
+        default: "true"
+      - name: max_errors
+        type: "u32"
+        default: "20"
+      - name: warnings_as_errors
+        type: "bool"
+        default: "false"
+      - name: verbose
+        type: "bool"
+        default: "false"
+      - name: output_target
+        type: "OutputTarget"
+        default: "both"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: "color_writer_outputs_ansi"
+    given: "ColorWriter with use_color=true"
+    when: "printColored called with red"
+    then: "Output contains ANSI red escape sequence"
+    test_cases:
+      - name: red_output
+        input: { color: "red", text: "error" }
+        expected: { contains: "\x1b[31m" }
+
+  - name: "color_writer_no_color_when_disabled"
+    given: "ColorWriter with use_color=false"
+    when: "printColored called"
+    then: "Output contains no ANSI sequences"
+    test_cases:
+      - name: no_color
+        input: { use_color: false, text: "error" }
+        expected: { not_contains: "\x1b[" }
+
+  - name: "error_reporter_tracks_location"
+    given: "ErrorReporter with source"
+    when: "reportError called with span"
+    then: "Diagnostic contains correct line/column"
+    test_cases:
+      - name: location_tracking
+        input:
+          source: "line1\nline2\nline3"
+          error_line: 2
+          error_col: 3
+        expected:
+          line: 2
+          column: 3
+
+  - name: "error_reporter_shows_source_context"
+    given: "ErrorReporter with multi-line source"
+    when: "render called"
+    then: "Output shows source line with underline"
+    test_cases:
+      - name: source_context
+        input:
+          source: "name: test\nversion: invalid\nmodule: m"
+          error_line: 2
+        expected:
+          output_contains: "version: invalid"
+          output_contains: "^^^^^^^"
+
+  - name: "diagnostic_code_provides_message"
+    given: "DiagnosticCode E001_UNEXPECTED_TOKEN"
+    when: "message called"
+    then: "Returns human-readable message"
+    test_cases:
+      - name: error_message
+        input: { code: "E001_UNEXPECTED_TOKEN" }
+        expected: { message: "unexpected token" }
+
+  - name: "error_reporter_renders_rust_style"
+    given: "ErrorReporter with error"
+    when: "render called"
+    then: "Output matches Rust-style format"
+    test_cases:
+      - name: rust_style
+        input:
+          file: "test.vibee"
+          line: 5
+          column: 10
+          message: "unexpected token"
+        expected:
+          output_matches: |
+            error[E001]: unexpected token
+              --> test.vibee:5:10
+               |
+             5 |   invalid: syntax
+               |          ^^^^^^^
+               |
+
+  - name: "compiler_v22_reports_all_errors"
+    given: "CompilerV22 with invalid source"
+    when: "compile called"
+    then: "All errors collected and rendered"
+    test_cases:
+      - name: multiple_errors
+        input:
+          source: |
+            name: [unclosed
+            version: 
+            invalid
+        expected:
+          error_count: ">1"
+          has_diagnostics: true
+
+  - name: "compiler_v22_shows_suggestions"
+    given: "CompilerV22 with fixable error"
+    when: "compile called"
+    then: "Suggestion shown in output"
+    test_cases:
+      - name: suggestion
+        input:
+          source: "nmae: test"
+        expected:
+          suggestion_contains: "did you mean 'name'?"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# OUTPUT FORMAT SPECIFICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+output_format:
+  error_template: |
+    {red}error[{code}]{reset}: {bold}{message}{reset}
+      {blue}-->{reset} {file}:{line}:{column}
+       {blue}|{reset}
+     {line_num} {blue}|{reset} {source_line}
+       {blue}|{reset} {red}{underline}{reset}
+       {blue}|{reset}
+    {notes}
+    {suggestions}
+
+  warning_template: |
+    {yellow}warning[{code}]{reset}: {bold}{message}{reset}
+      {blue}-->{reset} {file}:{line}:{column}
+       {blue}|{reset}
+     {line_num} {blue}|{reset} {source_line}
+       {blue}|{reset} {yellow}{underline}{reset}
+
+  summary_template: |
+    {red}error{reset}: could not compile `{file}`
+    
+    {bold}Summary:{reset} {error_count} error(s), {warning_count} warning(s)
+
+  success_template: |
+    {green}✓{reset} Compiled {file} successfully
+       Generated: {outputs}
+       Time: {time_ms}ms
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ANSI ESCAPE CODES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ansi_codes:
+  reset: "\x1b[0m"
+  bold: "\x1b[1m"
+  dim: "\x1b[2m"
+  red: "\x1b[31m"
+  green: "\x1b[32m"
+  yellow: "\x1b[33m"
+  blue: "\x1b[34m"
+  magenta: "\x1b[35m"
+  cyan: "\x1b[36m"
+  white: "\x1b[37m"
+  bright_red: "\x1b[91m"
+  bright_green: "\x1b[92m"
+  bright_yellow: "\x1b[93m"
+  bright_cyan: "\x1b[96m"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SACRED CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  - name: PHI
+    value: 1.618033988749895
+  - name: GOLDEN_IDENTITY
+    value: 3.0
+  - name: VERSION
+    value: "22.0.0"
+  - name: COMPILER_NAME
+    value: "vibeec"
+  - name: MAX_ERRORS_DEFAULT
+    value: 20
+  - name: TAB_WIDTH
+    value: 4
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# END OF SPECIFICATION
+# ═══════════════════════════════════════════════════════════════════════════════
