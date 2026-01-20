@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// i18n_russian v9.3.5 - Generated from .vibee specification
+// go_codegen v10.8.3 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,39 +30,36 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const RussianCase = struct {
+pub const GoOutput = struct {
+    source_code: []const u8,
+    package_name: []const u8,
+    imports: []const u8,
+    structs: []const u8,
+    functions: []const u8,
+    tests: []const u8,
 };
 
 /// 
-pub const RussianGender = struct {
+pub const GoStruct = struct {
+    name: []const u8,
+    fields: []const u8,
+    tags: []const u8,
 };
 
 /// 
-pub const RussianInput = struct {
-    text: []const u8,
-    context: []const u8,
+pub const GoField = struct {
+    name: []const u8,
+    go_type: []const u8,
+    json_tag: []const u8,
 };
 
 /// 
-pub const ProcessedRussian = struct {
-    normalized: []const u8,
-    tokens: []const u8,
-    spec_keywords: []const u8,
-};
-
-/// 
-pub const RussianKeyword = struct {
-    russian: []const u8,
-    english: []const u8,
-    vibee_keyword: []const u8,
-};
-
-/// 
-pub const тип = struct {
-};
-
-/// 
-pub const fields = struct {
+pub const GoMethod = struct {
+    receiver: []const u8,
+    name: []const u8,
+    params: []const u8,
+    return_type: []const u8,
+    body: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -114,35 +111,40 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_russian_spec" {
-// Given: Russian specification text
-// When: Parsing
-// Then: Parsed specification
-// Test case: input='{"text": "Создать тип Пользователь с полями имя и возраст"}', expected='{"spec": "types:\\n  User:\\n    fields:\\n      name: String\\n      age: Int"}'
-// Test case: input='{"text": "Поведение: создать пользователя когда данные валидны"}', expected='{"spec": "behaviors:\\n  - name: create_user\\n    when: data is valid"}'
+test "generate_go_struct" {
+// Given: VIBEE type definition
+// When: Struct generation requested
+// Then: Go struct generated
+// Test case: input='{"name": "User", "fields": [{"name": "ID", "type": "Int"}, {"name": "Name", "type": "String"}]}', expected='{"code": "type User struct {\\n\\tID   int64  `json:\\"id\\"`\\n\\tName string `json:\\"name\\"`\\n}"}'
 }
 
-test "translate_keywords" {
-// Given: Russian keywords
-// When: Translation
-// Then: VIBEE keywords
-// Test case: input='{"russian": "тип"}', expected='{"vibee": "types"}'
-// Test case: input='{"russian": "поле"}', expected='{"vibee": "fields"}'
-// Test case: input='{"russian": "поведение"}', expected='{"vibee": "behaviors"}'
+test "generate_go_method" {
+// Given: VIBEE behavior
+// When: Method generation requested
+// Then: Go method generated
+// Test case: input='{"receiver": "User", "name": "Create"}', expected='{"code": "func (u *User) Create() error { ... }"}'
 }
 
-test "generate_russian_docs" {
-// Given: VIBEE specification
-// When: Documentation generation
-// Then: Russian documentation
-// Test case: input='{"spec": {...}}', expected='{"docs": "Тип User содержит поля..."}'
+test "generate_go_tests" {
+// Given: VIBEE test cases
+// When: Test generation requested
+// Then: Go tests generated
+// Test case: input='{"test_name": "TestCreate"}', expected='{"code": "func TestCreate(t *testing.T) { ... }"}'
 }
 
-test "verify_sacred_constants" {
-// Given: Output
-// When: Verification
-// Then: Constants verified
-// Test case: input='{"phi": 1.618}', expected='{"trinity": 3.0}'
+test "map_type_to_go" {
+// Given: VIBEE type
+// When: Type mapping
+// Then: Go type
+// Test case: input='{"vibee_type": "String"}', expected='{"go_type": "string"}'
+// Test case: input='{"vibee_type": "Int"}', expected='{"go_type": "int64"}'
+}
+
+test "generate_go_mod" {
+// Given: Module config
+// When: go.mod generation
+// Then: go.mod content
+// Test case: input='{"module": "github.com/vibee/user"}', expected='{"mod": "module github.com/vibee/user\\n\\ngo 1.21"}'
 }
 
 test "phi_constants" {

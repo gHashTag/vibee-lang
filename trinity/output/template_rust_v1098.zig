@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// i18n_russian v9.3.5 - Generated from .vibee specification
+// template_rust v10.9.8 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,39 +30,77 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const RussianCase = struct {
+pub const RustTemplate = struct {
+    name: []const u8,
+    pattern: []const u8,
+    placeholders: []const u8,
 };
 
 /// 
-pub const RussianGender = struct {
+pub const RustModule = struct {
+    name: []const u8,
+    uses: []const u8,
+    structs: []const u8,
+    enums: []const u8,
+    functions: []const u8,
+    impls: []const u8,
 };
 
 /// 
-pub const RussianInput = struct {
-    text: []const u8,
-    context: []const u8,
+pub const RustStruct = struct {
+    name: []const u8,
+    derives: []const u8,
+    fields: []const u8,
+    visibility: Visibility,
 };
 
 /// 
-pub const ProcessedRussian = struct {
-    normalized: []const u8,
-    tokens: []const u8,
-    spec_keywords: []const u8,
+pub const RustEnum = struct {
+    name: []const u8,
+    derives: []const u8,
+    variants: []const u8,
 };
 
 /// 
-pub const RussianKeyword = struct {
-    russian: []const u8,
-    english: []const u8,
-    vibee_keyword: []const u8,
+pub const RustFunction = struct {
+    name: []const u8,
+    params: []const u8,
+    return_type: ?[]const u8,
+    body: []const u8,
+    is_async: bool,
+    visibility: Visibility,
 };
 
 /// 
-pub const тип = struct {
+pub const RustField = struct {
+    name: []const u8,
+    field_type: []const u8,
+    visibility: Visibility,
 };
 
 /// 
-pub const fields = struct {
+pub const RustParam = struct {
+    name: []const u8,
+    param_type: []const u8,
+    is_mutable: bool,
+    is_reference: bool,
+};
+
+/// 
+pub const RustVariant = struct {
+    name: []const u8,
+    data: ?[]const u8,
+};
+
+/// 
+pub const RustImpl = struct {
+    target: []const u8,
+    trait_name: ?[]const u8,
+    methods: []const u8,
+};
+
+/// 
+pub const Visibility = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -114,35 +152,39 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_russian_spec" {
-// Given: Russian specification text
-// When: Parsing
-// Then: Parsed specification
-// Test case: input='{"text": "Создать тип Пользователь с полями имя и возраст"}', expected='{"spec": "types:\\n  User:\\n    fields:\\n      name: String\\n      age: Int"}'
-// Test case: input='{"text": "Поведение: создать пользователя когда данные валидны"}', expected='{"spec": "behaviors:\\n  - name: create_user\\n    when: data is valid"}'
+test "generate_struct" {
+// Given: VIBEE type definition
+// When: Struct generation
+// Then: Rust struct code
+// Test case: input='{"type": {"name": "User", "fields": [{"name": "id", "type": "Int"}]}}', expected='{"code": "#[derive(Debug, Clone)]\\npub struct User {\\n    pub id: i64,\\n}"}'
 }
 
-test "translate_keywords" {
-// Given: Russian keywords
-// When: Translation
-// Then: VIBEE keywords
-// Test case: input='{"russian": "тип"}', expected='{"vibee": "types"}'
-// Test case: input='{"russian": "поле"}', expected='{"vibee": "fields"}'
-// Test case: input='{"russian": "поведение"}', expected='{"vibee": "behaviors"}'
+test "generate_enum" {
+// Given: VIBEE enum definition
+// When: Enum generation
+// Then: Rust enum code
+// Test case: input='{"enum": {"name": "Status", "variants": ["Active", "Inactive"]}}', expected='{"code": "#[derive(Debug, Clone)]\\npub enum Status {\\n    Active,\\n    Inactive,\\n}"}'
 }
 
-test "generate_russian_docs" {
-// Given: VIBEE specification
-// When: Documentation generation
-// Then: Russian documentation
-// Test case: input='{"spec": {...}}', expected='{"docs": "Тип User содержит поля..."}'
+test "generate_function" {
+// Given: VIBEE behavior
+// When: Function generation
+// Then: Rust function code
+// Test case: input='{"behavior": {"name": "add", "params": ["a: i64", "b: i64"]}}', expected='{"code": "pub fn add(a: i64, b: i64) -> i64 {\\n    todo!()\\n}"}'
 }
 
-test "verify_sacred_constants" {
-// Given: Output
-// When: Verification
-// Then: Constants verified
-// Test case: input='{"phi": 1.618}', expected='{"trinity": 3.0}'
+test "generate_impl" {
+// Given: VIBEE type with behaviors
+// When: Impl generation
+// Then: Rust impl block
+// Test case: input='{"type": "User", "methods": [...]}', expected='{"code": "impl User {\\n    ...\\n}"}'
+}
+
+test "generate_test" {
+// Given: VIBEE test case
+// When: Test generation
+// Then: Rust test code
+// Test case: input='{"test": {"name": "test_add", "input": [1, 2], "expected": 3}}', expected='{"code": "#[test]\\nfn test_add() {\\n    assert_eq!(add(1, 2), 3);\\n}"}'
 }
 
 test "phi_constants" {

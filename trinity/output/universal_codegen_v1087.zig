@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// i18n_russian v9.3.5 - Generated from .vibee specification
+// universal_codegen v10.8.7 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,39 +30,25 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const RussianCase = struct {
+pub const CodegenRequest = struct {
+    spec_path: []const u8,
+    target_language: []const u8,
+    output_path: []const u8,
+    options: []const u8,
 };
 
 /// 
-pub const RussianGender = struct {
+pub const CodegenResult = struct {
+    success: bool,
+    output_files: []const u8,
+    errors: []const u8,
 };
 
 /// 
-pub const RussianInput = struct {
-    text: []const u8,
-    context: []const u8,
-};
-
-/// 
-pub const ProcessedRussian = struct {
-    normalized: []const u8,
-    tokens: []const u8,
-    spec_keywords: []const u8,
-};
-
-/// 
-pub const RussianKeyword = struct {
-    russian: []const u8,
-    english: []const u8,
-    vibee_keyword: []const u8,
-};
-
-/// 
-pub const тип = struct {
-};
-
-/// 
-pub const fields = struct {
+pub const SupportedLanguage = struct {
+    name: []const u8,
+    extension: []const u8,
+    codegen_module: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -114,35 +100,35 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_russian_spec" {
-// Given: Russian specification text
-// When: Parsing
-// Then: Parsed specification
-// Test case: input='{"text": "Создать тип Пользователь с полями имя и возраст"}', expected='{"spec": "types:\\n  User:\\n    fields:\\n      name: String\\n      age: Int"}'
-// Test case: input='{"text": "Поведение: создать пользователя когда данные валидны"}', expected='{"spec": "behaviors:\\n  - name: create_user\\n    when: data is valid"}'
+test "dispatch_codegen" {
+// Given: VIBEE spec and target language
+// When: Code generation requested
+// Then: Appropriate codegen called
+// Test case: input='{"spec": "user.vibee", "target": "python"}', expected='{"codegen": "python_codegen", "extension": ".py"}'
+// Test case: input='{"spec": "user.vibee", "target": "rust"}', expected='{"codegen": "rust_codegen", "extension": ".rs"}'
+// Test case: input='{"spec": "user.vibee", "target": "go"}', expected='{"codegen": "go_codegen", "extension": ".go"}'
 }
 
-test "translate_keywords" {
-// Given: Russian keywords
-// When: Translation
-// Then: VIBEE keywords
-// Test case: input='{"russian": "тип"}', expected='{"vibee": "types"}'
-// Test case: input='{"russian": "поле"}', expected='{"vibee": "fields"}'
-// Test case: input='{"russian": "поведение"}', expected='{"vibee": "behaviors"}'
+test "validate_target" {
+// Given: Target language name
+// When: Validation
+// Then: Valid or error
+// Test case: input='{"target": "python"}', expected='{"valid": true}'
+// Test case: input='{"target": "unknown"}', expected='{"valid": false, "error": "Unsupported language"}'
 }
 
-test "generate_russian_docs" {
-// Given: VIBEE specification
-// When: Documentation generation
-// Then: Russian documentation
-// Test case: input='{"spec": {...}}', expected='{"docs": "Тип User содержит поля..."}'
+test "generate_all_targets" {
+// Given: VIBEE spec
+// When: Multi-target generation
+// Then: Code for all languages
+// Test case: input='{"spec": "user.vibee", "targets": ["python", "rust", "go"]}', expected='{"files": ["user.py", "user.rs", "user.go"]}'
 }
 
-test "verify_sacred_constants" {
-// Given: Output
-// When: Verification
-// Then: Constants verified
-// Test case: input='{"phi": 1.618}', expected='{"trinity": 3.0}'
+test "get_supported_languages" {
+// Given: Nothing
+// When: Language list requested
+// Then: List of supported languages
+// Test case: input='{}', expected='{"languages": ["python", "rust", "go", "typescript", "java", "cpp", "zig"]}'
 }
 
 test "phi_constants" {

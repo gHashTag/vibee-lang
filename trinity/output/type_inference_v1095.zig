@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// i18n_russian v9.3.5 - Generated from .vibee specification
+// type_inference v10.9.5 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,39 +30,39 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const RussianCase = struct {
+pub const TypeInfo = struct {
+    base_type: BaseType,
+    generics: []const u8,
+    nullable: bool,
+    constraints: []const u8,
 };
 
 /// 
-pub const RussianGender = struct {
+pub const BaseType = struct {
 };
 
 /// 
-pub const RussianInput = struct {
-    text: []const u8,
+pub const TypeConstraint = struct {
+    kind: ConstraintKind,
+    target_type: TypeInfo,
+};
+
+/// 
+pub const ConstraintKind = struct {
+};
+
+/// 
+pub const InferenceResult = struct {
+    inferred_type: TypeInfo,
+    confidence: f64,
+    alternatives: []const u8,
+};
+
+/// 
+pub const TypeEquation = struct {
+    left: TypeInfo,
+    right: TypeInfo,
     context: []const u8,
-};
-
-/// 
-pub const ProcessedRussian = struct {
-    normalized: []const u8,
-    tokens: []const u8,
-    spec_keywords: []const u8,
-};
-
-/// 
-pub const RussianKeyword = struct {
-    russian: []const u8,
-    english: []const u8,
-    vibee_keyword: []const u8,
-};
-
-/// 
-pub const тип = struct {
-};
-
-/// 
-pub const fields = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -114,35 +114,40 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_russian_spec" {
-// Given: Russian specification text
-// When: Parsing
-// Then: Parsed specification
-// Test case: input='{"text": "Создать тип Пользователь с полями имя и возраст"}', expected='{"spec": "types:\\n  User:\\n    fields:\\n      name: String\\n      age: Int"}'
-// Test case: input='{"text": "Поведение: создать пользователя когда данные валидны"}', expected='{"spec": "behaviors:\\n  - name: create_user\\n    when: data is valid"}'
+test "infer_type" {
+// Given: Expression without type annotation
+// When: Type inference
+// Then: Inferred type
+// Test case: input='{"expr": "42"}', expected='{"type": "Int"}'
+// Test case: input='{"expr": "\"hello\""}', expected='{"type": "String"}'
 }
 
-test "translate_keywords" {
-// Given: Russian keywords
-// When: Translation
-// Then: VIBEE keywords
-// Test case: input='{"russian": "тип"}', expected='{"vibee": "types"}'
-// Test case: input='{"russian": "поле"}', expected='{"vibee": "fields"}'
-// Test case: input='{"russian": "поведение"}', expected='{"vibee": "behaviors"}'
+test "unify_types" {
+// Given: Two types
+// When: Unification
+// Then: Unified type or error
+// Test case: input='{"t1": "Int", "t2": "Int"}', expected='{"unified": "Int"}'
 }
 
-test "generate_russian_docs" {
-// Given: VIBEE specification
-// When: Documentation generation
-// Then: Russian documentation
-// Test case: input='{"spec": {...}}', expected='{"docs": "Тип User содержит поля..."}'
+test "solve_constraints" {
+// Given: Set of type constraints
+// When: Constraint solving
+// Then: Type substitution
+// Test case: input='{"constraints": [...]}', expected='{"substitution": {...}}'
 }
 
-test "verify_sacred_constants" {
-// Given: Output
-// When: Verification
-// Then: Constants verified
-// Test case: input='{"phi": 1.618}', expected='{"trinity": 3.0}'
+test "generalize_type" {
+// Given: Concrete type
+// When: Generalization
+// Then: Generic type
+// Test case: input='{"type": "List<Int>"}', expected='{"generic": "List<T>"}'
+}
+
+test "instantiate_type" {
+// Given: Generic type and arguments
+// When: Instantiation
+// Then: Concrete type
+// Test case: input='{"generic": "List<T>", "args": ["Int"]}', expected='{"concrete": "List<Int>"}'
 }
 
 test "phi_constants" {

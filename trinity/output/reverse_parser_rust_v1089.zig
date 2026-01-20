@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// i18n_russian v9.3.5 - Generated from .vibee specification
+// reverse_parser_rust v10.8.9 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,39 +30,23 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const RussianCase = struct {
+pub const RustParseResult = struct {
+    structs: []const u8,
+    impls: []const u8,
+    uses: []const u8,
 };
 
 /// 
-pub const RussianGender = struct {
+pub const ParsedStruct = struct {
+    name: []const u8,
+    fields: []const u8,
+    derives: []const u8,
 };
 
 /// 
-pub const RussianInput = struct {
-    text: []const u8,
-    context: []const u8,
-};
-
-/// 
-pub const ProcessedRussian = struct {
-    normalized: []const u8,
-    tokens: []const u8,
-    spec_keywords: []const u8,
-};
-
-/// 
-pub const RussianKeyword = struct {
-    russian: []const u8,
-    english: []const u8,
-    vibee_keyword: []const u8,
-};
-
-/// 
-pub const тип = struct {
-};
-
-/// 
-pub const fields = struct {
+pub const ParsedImpl = struct {
+    struct_name: []const u8,
+    methods: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -114,35 +98,33 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_russian_spec" {
-// Given: Russian specification text
-// When: Parsing
-// Then: Parsed specification
-// Test case: input='{"text": "Создать тип Пользователь с полями имя и возраст"}', expected='{"spec": "types:\\n  User:\\n    fields:\\n      name: String\\n      age: Int"}'
-// Test case: input='{"text": "Поведение: создать пользователя когда данные валидны"}', expected='{"spec": "behaviors:\\n  - name: create_user\\n    when: data is valid"}'
+test "parse_rust_struct" {
+// Given: Rust struct source
+// When: Struct parsing
+// Then: Parsed struct structure
+// Test case: input='{"code": "pub struct User {\\n    pub id: i64,\\n    pub name: String,\\n}"}', expected='{"name": "User", "fields": [{"name": "id", "type": "i64"}, {"name": "name", "type": "String"}]}'
 }
 
-test "translate_keywords" {
-// Given: Russian keywords
-// When: Translation
-// Then: VIBEE keywords
-// Test case: input='{"russian": "тип"}', expected='{"vibee": "types"}'
-// Test case: input='{"russian": "поле"}', expected='{"vibee": "fields"}'
-// Test case: input='{"russian": "поведение"}', expected='{"vibee": "behaviors"}'
+test "parse_rust_impl" {
+// Given: Rust impl block
+// When: Impl parsing
+// Then: Parsed impl structure
+// Test case: input='{"code": "impl User {\\n    pub fn new() -> Self { ... }\\n}"}', expected='{"struct": "User", "methods": [{"name": "new", "return": "Self"}]}'
 }
 
-test "generate_russian_docs" {
-// Given: VIBEE specification
-// When: Documentation generation
-// Then: Russian documentation
-// Test case: input='{"spec": {...}}', expected='{"docs": "Тип User содержит поля..."}'
+test "infer_vibee_type" {
+// Given: Rust type
+// When: Type inference
+// Then: VIBEE type
+// Test case: input='{"rust_type": "String"}', expected='{"vibee_type": "String"}'
+// Test case: input='{"rust_type": "i64"}', expected='{"vibee_type": "Int"}'
 }
 
-test "verify_sacred_constants" {
-// Given: Output
-// When: Verification
-// Then: Constants verified
-// Test case: input='{"phi": 1.618}', expected='{"trinity": 3.0}'
+test "generate_vibee_spec" {
+// Given: Parsed Rust code
+// When: Spec generation
+// Then: VIBEE specification
+// Test case: input='{"structs": [...], "impls": [...]}', expected='{"spec": "name: user\\n..."}'
 }
 
 test "phi_constants" {

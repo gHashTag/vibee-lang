@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// i18n_russian v9.3.5 - Generated from .vibee specification
+// python_codegen v10.8.1 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,39 +30,41 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const RussianCase = struct {
+pub const PythonOutput = struct {
+    source_code: []const u8,
+    imports: []const u8,
+    classes: []const u8,
+    functions: []const u8,
+    tests: []const u8,
 };
 
 /// 
-pub const RussianGender = struct {
+pub const PythonClass = struct {
+    name: []const u8,
+    fields: []const u8,
+    methods: []const u8,
+    decorators: []const u8,
 };
 
 /// 
-pub const RussianInput = struct {
-    text: []const u8,
-    context: []const u8,
+pub const PythonField = struct {
+    name: []const u8,
+    py_type: []const u8,
+    default: []const u8,
 };
 
 /// 
-pub const ProcessedRussian = struct {
-    normalized: []const u8,
-    tokens: []const u8,
-    spec_keywords: []const u8,
+pub const PythonMethod = struct {
+    name: []const u8,
+    params: []const u8,
+    return_type: []const u8,
+    body: []const u8,
 };
 
 /// 
-pub const RussianKeyword = struct {
-    russian: []const u8,
-    english: []const u8,
-    vibee_keyword: []const u8,
-};
-
-/// 
-pub const тип = struct {
-};
-
-/// 
-pub const fields = struct {
+pub const TypeMapping = struct {
+    vibee_type: []const u8,
+    python_type: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -114,35 +116,42 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_russian_spec" {
-// Given: Russian specification text
-// When: Parsing
-// Then: Parsed specification
-// Test case: input='{"text": "Создать тип Пользователь с полями имя и возраст"}', expected='{"spec": "types:\\n  User:\\n    fields:\\n      name: String\\n      age: Int"}'
-// Test case: input='{"text": "Поведение: создать пользователя когда данные валидны"}', expected='{"spec": "behaviors:\\n  - name: create_user\\n    when: data is valid"}'
+test "generate_python_class" {
+// Given: VIBEE type definition
+// When: Class generation requested
+// Then: Python dataclass generated
+// Test case: input='{"name": "User", "fields": [{"name": "id", "type": "Int"}, {"name": "name", "type": "String"}]}', expected='{"code": "@dataclass\\nclass User:\\n    id: int\\n    name: str"}'
+// Test case: input='{"name": "Config", "fields": [{"name": "value", "type": "Option<String>"}]}', expected='{"code": "@dataclass\\nclass Config:\\n    value: Optional[str] = None"}'
 }
 
-test "translate_keywords" {
-// Given: Russian keywords
-// When: Translation
-// Then: VIBEE keywords
-// Test case: input='{"russian": "тип"}', expected='{"vibee": "types"}'
-// Test case: input='{"russian": "поле"}', expected='{"vibee": "fields"}'
-// Test case: input='{"russian": "поведение"}', expected='{"vibee": "behaviors"}'
+test "generate_python_function" {
+// Given: VIBEE behavior definition
+// When: Function generation requested
+// Then: Python function generated
+// Test case: input='{"name": "create_user", "params": [{"name": "name", "type": "String"}], "return": "User"}', expected='{"code": "def create_user(name: str) -> User:\\n    pass"}'
 }
 
-test "generate_russian_docs" {
-// Given: VIBEE specification
-// When: Documentation generation
-// Then: Russian documentation
-// Test case: input='{"spec": {...}}', expected='{"docs": "Тип User содержит поля..."}'
+test "generate_python_tests" {
+// Given: VIBEE test cases
+// When: Test generation requested
+// Then: Pytest tests generated
+// Test case: input='{"test_name": "test_create", "assertions": [...]}', expected='{"code": "def test_create():\\n    assert ..."}'
 }
 
-test "verify_sacred_constants" {
-// Given: Output
-// When: Verification
-// Then: Constants verified
-// Test case: input='{"phi": 1.618}', expected='{"trinity": 3.0}'
+test "map_type_to_python" {
+// Given: VIBEE type
+// When: Type mapping
+// Then: Python type
+// Test case: input='{"vibee_type": "String"}', expected='{"python_type": "str"}'
+// Test case: input='{"vibee_type": "Int"}', expected='{"python_type": "int"}'
+// Test case: input='{"vibee_type": "List<String>"}', expected='{"python_type": "List[str]"}'
+}
+
+test "generate_imports" {
+// Given: Generated code
+// When: Import analysis
+// Then: Required imports
+// Test case: input='{"uses_dataclass": true, "uses_optional": true}', expected='{"imports": ["from dataclasses import dataclass", "from typing import Optional, List"]}'
 }
 
 test "phi_constants" {

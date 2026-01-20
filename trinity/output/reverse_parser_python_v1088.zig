@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// i18n_russian v9.3.5 - Generated from .vibee specification
+// reverse_parser_python v10.8.8 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,39 +30,33 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const RussianCase = struct {
+pub const PythonParseResult = struct {
+    classes: []const u8,
+    functions: []const u8,
+    imports: []const u8,
 };
 
 /// 
-pub const RussianGender = struct {
+pub const ParsedClass = struct {
+    name: []const u8,
+    fields: []const u8,
+    methods: []const u8,
+    decorators: []const u8,
 };
 
 /// 
-pub const RussianInput = struct {
-    text: []const u8,
-    context: []const u8,
+pub const ParsedField = struct {
+    name: []const u8,
+    type_hint: []const u8,
+    default_value: []const u8,
 };
 
 /// 
-pub const ProcessedRussian = struct {
-    normalized: []const u8,
-    tokens: []const u8,
-    spec_keywords: []const u8,
-};
-
-/// 
-pub const RussianKeyword = struct {
-    russian: []const u8,
-    english: []const u8,
-    vibee_keyword: []const u8,
-};
-
-/// 
-pub const тип = struct {
-};
-
-/// 
-pub const fields = struct {
+pub const ParsedMethod = struct {
+    name: []const u8,
+    params: []const u8,
+    return_type: []const u8,
+    docstring: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -114,35 +108,41 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_russian_spec" {
-// Given: Russian specification text
-// When: Parsing
-// Then: Parsed specification
-// Test case: input='{"text": "Создать тип Пользователь с полями имя и возраст"}', expected='{"spec": "types:\\n  User:\\n    fields:\\n      name: String\\n      age: Int"}'
-// Test case: input='{"text": "Поведение: создать пользователя когда данные валидны"}', expected='{"spec": "behaviors:\\n  - name: create_user\\n    when: data is valid"}'
+test "parse_python_class" {
+// Given: Python class source
+// When: Class parsing
+// Then: Parsed class structure
+// Test case: input='{"code": "@dataclass\\nclass User:\\n    id: int\\n    name: str"}', expected='{"name": "User", "fields": [{"name": "id", "type": "int"}, {"name": "name", "type": "str"}]}'
 }
 
-test "translate_keywords" {
-// Given: Russian keywords
-// When: Translation
-// Then: VIBEE keywords
-// Test case: input='{"russian": "тип"}', expected='{"vibee": "types"}'
-// Test case: input='{"russian": "поле"}', expected='{"vibee": "fields"}'
-// Test case: input='{"russian": "поведение"}', expected='{"vibee": "behaviors"}'
+test "parse_python_function" {
+// Given: Python function source
+// When: Function parsing
+// Then: Parsed function structure
+// Test case: input='{"code": "def create_user(name: str) -> User:\\n    pass"}', expected='{"name": "create_user", "params": [{"name": "name", "type": "str"}], "return": "User"}'
 }
 
-test "generate_russian_docs" {
-// Given: VIBEE specification
-// When: Documentation generation
-// Then: Russian documentation
-// Test case: input='{"spec": {...}}', expected='{"docs": "Тип User содержит поля..."}'
+test "infer_vibee_type" {
+// Given: Python type hint
+// When: Type inference
+// Then: VIBEE type
+// Test case: input='{"python_type": "str"}', expected='{"vibee_type": "String"}'
+// Test case: input='{"python_type": "int"}', expected='{"vibee_type": "Int"}'
+// Test case: input='{"python_type": "List[str]"}', expected='{"vibee_type": "List<String>"}'
 }
 
-test "verify_sacred_constants" {
-// Given: Output
-// When: Verification
-// Then: Constants verified
-// Test case: input='{"phi": 1.618}', expected='{"trinity": 3.0}'
+test "generate_vibee_spec" {
+// Given: Parsed Python code
+// When: Spec generation
+// Then: VIBEE specification
+// Test case: input='{"classes": [...], "functions": [...]}', expected='{"spec": "name: user\\nversion: 1.0.0\\ntypes:\\n  User:\\n    fields:\\n      id: Int"}'
+}
+
+test "extract_docstrings" {
+// Given: Python source
+// When: Docstring extraction
+// Then: Behavior descriptions
+// Test case: input='{"code": "def create():\\n    \\"\\"\\"Creates a user.\\"\\"\\"\\n    pass"}', expected='{"description": "Creates a user."}'
 }
 
 test "phi_constants" {

@@ -47,7 +47,7 @@ pub const ProcessedChinese = struct {
 };
 
 /// 
-pub const chinese_type = struct {
+pub const 类型 = struct {
 };
 
 /// 

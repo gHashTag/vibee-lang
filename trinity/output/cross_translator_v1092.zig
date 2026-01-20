@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// i18n_russian v9.3.5 - Generated from .vibee specification
+// cross_translator v10.9.2 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,39 +30,29 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const RussianCase = struct {
+pub const TranslationRequest = struct {
+    source_code: []const u8,
+    source_lang: LanguageType,
+    target_lang: LanguageType,
+    options: TranslationOptions,
 };
 
 /// 
-pub const RussianGender = struct {
+pub const TranslationResult = struct {
+    target_code: []const u8,
+    warnings: []const u8,
+    mappings: []const u8,
 };
 
 /// 
-pub const RussianInput = struct {
-    text: []const u8,
-    context: []const u8,
+pub const LanguageType = struct {
 };
 
 /// 
-pub const ProcessedRussian = struct {
-    normalized: []const u8,
-    tokens: []const u8,
-    spec_keywords: []const u8,
-};
-
-/// 
-pub const RussianKeyword = struct {
-    russian: []const u8,
-    english: []const u8,
-    vibee_keyword: []const u8,
-};
-
-/// 
-pub const тип = struct {
-};
-
-/// 
-pub const fields = struct {
+pub const TranslationOptions = struct {
+    preserve_comments: bool,
+    optimize_output: bool,
+    strict_types: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -114,35 +104,32 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_russian_spec" {
-// Given: Russian specification text
-// When: Parsing
-// Then: Parsed specification
-// Test case: input='{"text": "Создать тип Пользователь с полями имя и возраст"}', expected='{"spec": "types:\\n  User:\\n    fields:\\n      name: String\\n      age: Int"}'
-// Test case: input='{"text": "Поведение: создать пользователя когда данные валидны"}', expected='{"spec": "behaviors:\\n  - name: create_user\\n    when: data is valid"}'
+test "translate_code" {
+// Given: Source code in language A
+// When: Translation to language B
+// Then: Equivalent code in language B
+// Test case: input='{"source": "def add(a, b):\\n    return a + b", "from": "Python", "to": "Rust"}', expected='{"target": "fn add(a: i64, b: i64) -> i64 {\\n    a + b\\n}"}'
 }
 
-test "translate_keywords" {
-// Given: Russian keywords
-// When: Translation
-// Then: VIBEE keywords
-// Test case: input='{"russian": "тип"}', expected='{"vibee": "types"}'
-// Test case: input='{"russian": "поле"}', expected='{"vibee": "fields"}'
-// Test case: input='{"russian": "поведение"}', expected='{"vibee": "behaviors"}'
+test "detect_language" {
+// Given: Source code
+// When: Language detection
+// Then: Detected language
+// Test case: input='{"code": "def main():\\n    print(\"hello\")"}', expected='{"language": "Python"}'
 }
 
-test "generate_russian_docs" {
-// Given: VIBEE specification
-// When: Documentation generation
-// Then: Russian documentation
-// Test case: input='{"spec": {...}}', expected='{"docs": "Тип User содержит поля..."}'
+test "validate_translation" {
+// Given: Source and target code
+// When: Validation
+// Then: Validation result
+// Test case: input='{"source": "...", "target": "..."}', expected='{"valid": true}'
 }
 
-test "verify_sacred_constants" {
-// Given: Output
-// When: Verification
-// Then: Constants verified
-// Test case: input='{"phi": 1.618}', expected='{"trinity": 3.0}'
+test "optimize_translation" {
+// Given: Translated code
+// When: Optimization
+// Then: Optimized code
+// Test case: input='{"code": "..."}', expected='{"optimized": "..."}'
 }
 
 test "phi_constants" {

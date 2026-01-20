@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// i18n_russian v9.3.5 - Generated from .vibee specification
+// code_optimizer v10.9.6 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,39 +30,36 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const RussianCase = struct {
+pub const OptimizationPass = struct {
+    name: []const u8,
+    level: OptLevel,
+    enabled: bool,
 };
 
 /// 
-pub const RussianGender = struct {
+pub const OptLevel = struct {
 };
 
 /// 
-pub const RussianInput = struct {
-    text: []const u8,
-    context: []const u8,
+pub const OptimizationResult = struct {
+    code: []const u8,
+    passes_applied: []const u8,
+    metrics: OptMetrics,
 };
 
 /// 
-pub const ProcessedRussian = struct {
-    normalized: []const u8,
-    tokens: []const u8,
-    spec_keywords: []const u8,
+pub const OptMetrics = struct {
+    lines_before: i64,
+    lines_after: i64,
+    reduction_percent: f64,
+    time_ms: i64,
 };
 
 /// 
-pub const RussianKeyword = struct {
-    russian: []const u8,
-    english: []const u8,
-    vibee_keyword: []const u8,
-};
-
-/// 
-pub const тип = struct {
-};
-
-/// 
-pub const fields = struct {
+pub const DeadCodeInfo = struct {
+    unused_vars: []const u8,
+    unreachable_blocks: []const u8,
+    redundant_imports: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -114,35 +111,46 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_russian_spec" {
-// Given: Russian specification text
-// When: Parsing
-// Then: Parsed specification
-// Test case: input='{"text": "Создать тип Пользователь с полями имя и возраст"}', expected='{"spec": "types:\\n  User:\\n    fields:\\n      name: String\\n      age: Int"}'
-// Test case: input='{"text": "Поведение: создать пользователя когда данные валидны"}', expected='{"spec": "behaviors:\\n  - name: create_user\\n    when: data is valid"}'
+test "optimize_code" {
+// Given: Generated code
+// When: Optimization
+// Then: Optimized code
+// Test case: input='{"code": "...", "level": "Standard"}', expected='{"optimized": "...", "reduction": 15.0}'
 }
 
-test "translate_keywords" {
-// Given: Russian keywords
-// When: Translation
-// Then: VIBEE keywords
-// Test case: input='{"russian": "тип"}', expected='{"vibee": "types"}'
-// Test case: input='{"russian": "поле"}', expected='{"vibee": "fields"}'
-// Test case: input='{"russian": "поведение"}', expected='{"vibee": "behaviors"}'
+test "eliminate_dead_code" {
+// Given: Code with dead code
+// When: Dead code elimination
+// Then: Clean code
+// Test case: input='{"code": "x = 1\\ny = 2\\nreturn x"}', expected='{"code": "x = 1\\nreturn x"}'
 }
 
-test "generate_russian_docs" {
-// Given: VIBEE specification
-// When: Documentation generation
-// Then: Russian documentation
-// Test case: input='{"spec": {...}}', expected='{"docs": "Тип User содержит поля..."}'
+test "inline_functions" {
+// Given: Code with small functions
+// When: Function inlining
+// Then: Inlined code
+// Test case: input='{"code": "..."}', expected='{"inlined": "..."}'
 }
 
-test "verify_sacred_constants" {
-// Given: Output
-// When: Verification
-// Then: Constants verified
-// Test case: input='{"phi": 1.618}', expected='{"trinity": 3.0}'
+test "constant_fold" {
+// Given: Code with constant expressions
+// When: Constant folding
+// Then: Folded code
+// Test case: input='{"expr": "2 + 3 * 4"}', expected='{"result": "14"}'
+}
+
+test "simplify_expressions" {
+// Given: Complex expressions
+// When: Simplification
+// Then: Simplified expressions
+// Test case: input='{"expr": "x * 1 + 0"}', expected='{"simplified": "x"}'
+}
+
+test "optimize_loops" {
+// Given: Code with loops
+// When: Loop optimization
+// Then: Optimized loops
+// Test case: input='{"code": "..."}', expected='{"optimized": "..."}'
 }
 
 test "phi_constants" {

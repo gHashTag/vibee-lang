@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// i18n_russian v9.3.5 - Generated from .vibee specification
+// template_python v10.9.7 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,39 +30,49 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const RussianCase = struct {
+pub const PythonTemplate = struct {
+    name: []const u8,
+    pattern: []const u8,
+    placeholders: []const u8,
 };
 
 /// 
-pub const RussianGender = struct {
+pub const PythonModule = struct {
+    name: []const u8,
+    imports: []const u8,
+    classes: []const u8,
+    functions: []const u8,
 };
 
 /// 
-pub const RussianInput = struct {
-    text: []const u8,
-    context: []const u8,
+pub const PythonClass = struct {
+    name: []const u8,
+    bases: []const u8,
+    methods: []const u8,
+    attributes: []const u8,
 };
 
 /// 
-pub const ProcessedRussian = struct {
-    normalized: []const u8,
-    tokens: []const u8,
-    spec_keywords: []const u8,
+pub const PythonFunction = struct {
+    name: []const u8,
+    params: []const u8,
+    return_type: ?[]const u8,
+    body: []const u8,
+    decorators: []const u8,
 };
 
 /// 
-pub const RussianKeyword = struct {
-    russian: []const u8,
-    english: []const u8,
-    vibee_keyword: []const u8,
+pub const PythonParam = struct {
+    name: []const u8,
+    type_hint: ?[]const u8,
+    default: ?[]const u8,
 };
 
 /// 
-pub const тип = struct {
-};
-
-/// 
-pub const fields = struct {
+pub const PythonAttribute = struct {
+    name: []const u8,
+    type_hint: ?[]const u8,
+    value: ?[]const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -114,35 +124,32 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_russian_spec" {
-// Given: Russian specification text
-// When: Parsing
-// Then: Parsed specification
-// Test case: input='{"text": "Создать тип Пользователь с полями имя и возраст"}', expected='{"spec": "types:\\n  User:\\n    fields:\\n      name: String\\n      age: Int"}'
-// Test case: input='{"text": "Поведение: создать пользователя когда данные валидны"}', expected='{"spec": "behaviors:\\n  - name: create_user\\n    when: data is valid"}'
+test "generate_class" {
+// Given: VIBEE type definition
+// When: Class generation
+// Then: Python class code
+// Test case: input='{"type": {"name": "User", "fields": [{"name": "id", "type": "Int"}]}}', expected='{"code": "class User:\\n    def __init__(self, id: int):\\n        self.id = id"}'
 }
 
-test "translate_keywords" {
-// Given: Russian keywords
-// When: Translation
-// Then: VIBEE keywords
-// Test case: input='{"russian": "тип"}', expected='{"vibee": "types"}'
-// Test case: input='{"russian": "поле"}', expected='{"vibee": "fields"}'
-// Test case: input='{"russian": "поведение"}', expected='{"vibee": "behaviors"}'
+test "generate_function" {
+// Given: VIBEE behavior
+// When: Function generation
+// Then: Python function code
+// Test case: input='{"behavior": {"name": "add", "params": ["a", "b"]}}', expected='{"code": "def add(a, b):\\n    pass"}'
 }
 
-test "generate_russian_docs" {
-// Given: VIBEE specification
-// When: Documentation generation
-// Then: Russian documentation
-// Test case: input='{"spec": {...}}', expected='{"docs": "Тип User содержит поля..."}'
+test "generate_dataclass" {
+// Given: VIBEE type with fields
+// When: Dataclass generation
+// Then: Python dataclass code
+// Test case: input='{"type": {"name": "Point", "fields": [{"name": "x", "type": "Float"}]}}', expected='{"code": "@dataclass\\nclass Point:\\n    x: float"}'
 }
 
-test "verify_sacred_constants" {
-// Given: Output
-// When: Verification
-// Then: Constants verified
-// Test case: input='{"phi": 1.618}', expected='{"trinity": 3.0}'
+test "generate_test" {
+// Given: VIBEE test case
+// When: Test generation
+// Then: pytest test code
+// Test case: input='{"test": {"name": "test_add", "input": [1, 2], "expected": 3}}', expected='{"code": "def test_add():\\n    assert add(1, 2) == 3"}'
 }
 
 test "phi_constants" {

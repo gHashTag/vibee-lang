@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// i18n_russian v9.3.5 - Generated from .vibee specification
+// reverse_parser_ts v10.9.1 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,39 +30,11 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const RussianCase = struct {
-};
-
-/// 
-pub const RussianGender = struct {
-};
-
-/// 
-pub const RussianInput = struct {
-    text: []const u8,
-    context: []const u8,
-};
-
-/// 
-pub const ProcessedRussian = struct {
-    normalized: []const u8,
-    tokens: []const u8,
-    spec_keywords: []const u8,
-};
-
-/// 
-pub const RussianKeyword = struct {
-    russian: []const u8,
-    english: []const u8,
-    vibee_keyword: []const u8,
-};
-
-/// 
-pub const тип = struct {
-};
-
-/// 
-pub const fields = struct {
+pub const TSParseResult = struct {
+    interfaces: []const u8,
+    classes: []const u8,
+    types: []const u8,
+    functions: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -114,35 +86,32 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_russian_spec" {
-// Given: Russian specification text
-// When: Parsing
-// Then: Parsed specification
-// Test case: input='{"text": "Создать тип Пользователь с полями имя и возраст"}', expected='{"spec": "types:\\n  User:\\n    fields:\\n      name: String\\n      age: Int"}'
-// Test case: input='{"text": "Поведение: создать пользователя когда данные валидны"}', expected='{"spec": "behaviors:\\n  - name: create_user\\n    when: data is valid"}'
+test "parse_ts_interface" {
+// Given: TypeScript interface source
+// When: Interface parsing
+// Then: Parsed interface
+// Test case: input='{"code": "interface User {\\n  id: number;\\n  name: string;\\n}"}', expected='{"name": "User", "properties": [{"name": "id", "type": "number"}]}'
 }
 
-test "translate_keywords" {
-// Given: Russian keywords
-// When: Translation
-// Then: VIBEE keywords
-// Test case: input='{"russian": "тип"}', expected='{"vibee": "types"}'
-// Test case: input='{"russian": "поле"}', expected='{"vibee": "fields"}'
-// Test case: input='{"russian": "поведение"}', expected='{"vibee": "behaviors"}'
+test "parse_ts_class" {
+// Given: TypeScript class source
+// When: Class parsing
+// Then: Parsed class
+// Test case: input='{"code": "class UserService { ... }"}', expected='{"name": "UserService", "methods": [...]}'
 }
 
-test "generate_russian_docs" {
-// Given: VIBEE specification
-// When: Documentation generation
-// Then: Russian documentation
-// Test case: input='{"spec": {...}}', expected='{"docs": "Тип User содержит поля..."}'
+test "infer_vibee_type" {
+// Given: TypeScript type
+// When: Type inference
+// Then: VIBEE type
+// Test case: input='{"ts_type": "string"}', expected='{"vibee_type": "String"}'
 }
 
-test "verify_sacred_constants" {
-// Given: Output
-// When: Verification
-// Then: Constants verified
-// Test case: input='{"phi": 1.618}', expected='{"trinity": 3.0}'
+test "generate_vibee_spec" {
+// Given: Parsed TypeScript code
+// When: Spec generation
+// Then: VIBEE specification
+// Test case: input='{"interfaces": [...]}', expected='{"spec": "name: user\\n..."}'
 }
 
 test "phi_constants" {

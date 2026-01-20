@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// i18n_russian v9.3.5 - Generated from .vibee specification
+// cpp_codegen v10.8.6 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,39 +30,35 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const RussianCase = struct {
+pub const CppOutput = struct {
+    header: []const u8,
+    source: []const u8,
+    cmake: []const u8,
+    tests: []const u8,
 };
 
 /// 
-pub const RussianGender = struct {
+pub const CppClass = struct {
+    name: []const u8,
+    members: []const u8,
+    methods: []const u8,
+    namespace: []const u8,
 };
 
 /// 
-pub const RussianInput = struct {
-    text: []const u8,
-    context: []const u8,
+pub const CppMember = struct {
+    name: []const u8,
+    cpp_type: []const u8,
+    access: []const u8,
 };
 
 /// 
-pub const ProcessedRussian = struct {
-    normalized: []const u8,
-    tokens: []const u8,
-    spec_keywords: []const u8,
-};
-
-/// 
-pub const RussianKeyword = struct {
-    russian: []const u8,
-    english: []const u8,
-    vibee_keyword: []const u8,
-};
-
-/// 
-pub const тип = struct {
-};
-
-/// 
-pub const fields = struct {
+pub const CppMethod = struct {
+    name: []const u8,
+    params: []const u8,
+    return_type: []const u8,
+    is_const: bool,
+    body: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -114,35 +110,40 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_russian_spec" {
-// Given: Russian specification text
-// When: Parsing
-// Then: Parsed specification
-// Test case: input='{"text": "Создать тип Пользователь с полями имя и возраст"}', expected='{"spec": "types:\\n  User:\\n    fields:\\n      name: String\\n      age: Int"}'
-// Test case: input='{"text": "Поведение: создать пользователя когда данные валидны"}', expected='{"spec": "behaviors:\\n  - name: create_user\\n    when: data is valid"}'
+test "generate_cpp_header" {
+// Given: VIBEE type definition
+// When: Header generation requested
+// Then: C++ header generated
+// Test case: input='{"name": "User", "fields": [{"name": "id", "type": "Int"}]}', expected='{"code": "#pragma once\\n\\nclass User {\\npublic:\\n    int64_t id;\\n};"}'
 }
 
-test "translate_keywords" {
-// Given: Russian keywords
-// When: Translation
-// Then: VIBEE keywords
-// Test case: input='{"russian": "тип"}', expected='{"vibee": "types"}'
-// Test case: input='{"russian": "поле"}', expected='{"vibee": "fields"}'
-// Test case: input='{"russian": "поведение"}', expected='{"vibee": "behaviors"}'
+test "generate_cpp_source" {
+// Given: VIBEE behaviors
+// When: Source generation requested
+// Then: C++ source generated
+// Test case: input='{"class": "User"}', expected='{"code": "#include \\"User.hpp\\"\\n..."}'
 }
 
-test "generate_russian_docs" {
-// Given: VIBEE specification
-// When: Documentation generation
-// Then: Russian documentation
-// Test case: input='{"spec": {...}}', expected='{"docs": "Тип User содержит поля..."}'
+test "generate_cpp_tests" {
+// Given: VIBEE test cases
+// When: Test generation requested
+// Then: Google Test tests generated
+// Test case: input='{"test_name": "Create"}', expected='{"code": "TEST(UserTest, Create) { ... }"}'
 }
 
-test "verify_sacred_constants" {
-// Given: Output
-// When: Verification
-// Then: Constants verified
-// Test case: input='{"phi": 1.618}', expected='{"trinity": 3.0}'
+test "map_type_to_cpp" {
+// Given: VIBEE type
+// When: Type mapping
+// Then: C++ type
+// Test case: input='{"vibee_type": "String"}', expected='{"cpp_type": "std::string"}'
+// Test case: input='{"vibee_type": "Int"}', expected='{"cpp_type": "int64_t"}'
+}
+
+test "generate_cmake" {
+// Given: Project config
+// When: CMakeLists.txt generation
+// Then: CMake content
+// Test case: input='{"project": "vibee_user"}', expected='{"cmake": "cmake_minimum_required(VERSION 3.20)\\nproject(vibee_user)"}'
 }
 
 test "phi_constants" {

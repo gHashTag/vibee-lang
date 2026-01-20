@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// i18n_russian v9.3.5 - Generated from .vibee specification
+// semantic_analyzer v10.9.4 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,39 +30,65 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const RussianCase = struct {
+pub const SemanticContext = struct {
+    symbols: SymbolTable,
+    scopes: []const u8,
+    errors: []const u8,
+    warnings: []const u8,
 };
 
 /// 
-pub const RussianGender = struct {
+pub const SymbolTable = struct {
+    entries: std.StringHashMap([]const u8),
+    parent: ?[]const u8,
 };
 
 /// 
-pub const RussianInput = struct {
-    text: []const u8,
-    context: []const u8,
+pub const TypeInfo = struct {
+    type_name: []const u8,
+    is_generic: bool,
+    generics: []const u8,
 };
 
 /// 
-pub const ProcessedRussian = struct {
-    normalized: []const u8,
-    tokens: []const u8,
-    spec_keywords: []const u8,
+pub const Symbol = struct {
+    name: []const u8,
+    kind: SymbolKind,
+    type_info: []const u8,
+    scope_level: i64,
+    is_mutable: bool,
 };
 
 /// 
-pub const RussianKeyword = struct {
-    russian: []const u8,
-    english: []const u8,
-    vibee_keyword: []const u8,
+pub const SymbolKind = struct {
 };
 
 /// 
-pub const тип = struct {
+pub const Scope = struct {
+    level: i64,
+    symbols: []const u8,
+    parent_scope: ?[]const u8,
 };
 
 /// 
-pub const fields = struct {
+pub const SemanticError = struct {
+    code: []const u8,
+    message: []const u8,
+    line: i64,
+    column: i64,
+    severity: ErrorSeverity,
+};
+
+/// 
+pub const SemanticWarning = struct {
+    code: []const u8,
+    message: []const u8,
+    line: i64,
+    suggestion: ?[]const u8,
+};
+
+/// 
+pub const ErrorSeverity = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -114,35 +140,39 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_russian_spec" {
-// Given: Russian specification text
-// When: Parsing
-// Then: Parsed specification
-// Test case: input='{"text": "Создать тип Пользователь с полями имя и возраст"}', expected='{"spec": "types:\\n  User:\\n    fields:\\n      name: String\\n      age: Int"}'
-// Test case: input='{"text": "Поведение: создать пользователя когда данные валидны"}', expected='{"spec": "behaviors:\\n  - name: create_user\\n    when: data is valid"}'
+test "analyze_semantics" {
+// Given: Universal AST
+// When: Semantic analysis
+// Then: Annotated AST with semantic info
+// Test case: input='{"ast": {...}}', expected='{"annotated": {...}, "errors": []}'
 }
 
-test "translate_keywords" {
-// Given: Russian keywords
-// When: Translation
-// Then: VIBEE keywords
-// Test case: input='{"russian": "тип"}', expected='{"vibee": "types"}'
-// Test case: input='{"russian": "поле"}', expected='{"vibee": "fields"}'
-// Test case: input='{"russian": "поведение"}', expected='{"vibee": "behaviors"}'
+test "resolve_symbols" {
+// Given: AST with symbol references
+// When: Symbol resolution
+// Then: Resolved symbol table
+// Test case: input='{"ast": {...}}', expected='{"symbols": {...}}'
 }
 
-test "generate_russian_docs" {
-// Given: VIBEE specification
-// When: Documentation generation
-// Then: Russian documentation
-// Test case: input='{"spec": {...}}', expected='{"docs": "Тип User содержит поля..."}'
+test "check_types" {
+// Given: Annotated AST
+// When: Type checking
+// Then: Type-checked AST
+// Test case: input='{"ast": {...}}', expected='{"typed": {...}}'
 }
 
-test "verify_sacred_constants" {
-// Given: Output
-// When: Verification
-// Then: Constants verified
-// Test case: input='{"phi": 1.618}', expected='{"trinity": 3.0}'
+test "detect_unused" {
+// Given: Symbol table
+// When: Unused detection
+// Then: List of unused symbols
+// Test case: input='{"symbols": {...}}', expected='{"unused": [...]}'
+}
+
+test "validate_scopes" {
+// Given: AST with scopes
+// When: Scope validation
+// Then: Validation result
+// Test case: input='{"ast": {...}}', expected='{"valid": true}'
 }
 
 test "phi_constants" {
