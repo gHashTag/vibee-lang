@@ -1,0 +1,479 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ML-KEM-1024 ПОЛНАЯ РЕАЛИЗАЦИЯ (NIST FIPS 203)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Автор: Дмитрий Васильев
+# Версия: 2.0.0
+# Священная формула: V = n × 3^k × π^m × φ^p × e^q
+# Золотая идентичность: φ² + 1/φ² = 3
+#
+# ML-KEM-1024 (NIST Level 5) - максимальная постквантовая безопасность
+# Параметры: k=4, n=256, q=3329, η1=2, η2=2, du=11, dv=5
+# Источник: https://csrc.nist.gov/pubs/fips/203/final
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: ml_kem_1024_full
+version: "2.0.0"
+language: zig
+module: ml_kem_1024_full
+
+sacred_constants:
+  phi: 1.618033988749895
+  psi: 3.0
+  pi: 3.141592653589793
+  e: 2.718281828459045
+  golden_identity: "φ² + 1/φ² = 3"
+
+creation_pattern:
+  source: RandomSeed
+  transformer: LatticeKeyEncapsulation
+  result: SharedSecret
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ПАРАМЕТРЫ ML-KEM-1024
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  n: 256
+  k: 4
+  q: 3329
+  eta1: 2
+  eta2: 2
+  du: 11
+  dv: 5
+  public_key_size: 1568
+  secret_key_size: 3168
+  ciphertext_size: 1568
+  shared_secret_size: 32
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ТИПЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # Базовые криптографические типы
+  Coefficient:
+    fields:
+      value: Int
+    description: "Коэффициент полинома в Z_q"
+
+  Polynomial:
+    fields:
+      coeffs: List<Int>
+    description: "Полином степени n-1 в Z_q[X]/(X^n + 1)"
+
+  PolynomialVector:
+    fields:
+      polys: List<Polynomial>
+      dimension: Int
+    description: "Вектор из k полиномов"
+
+  PolynomialMatrix:
+    fields:
+      rows: List<PolynomialVector>
+      k: Int
+    description: "Матрица k×k полиномов"
+
+  # NTT структуры
+  NTTPolynomial:
+    fields:
+      coeffs: List<Int>
+      in_ntt_domain: Bool
+    description: "Полином в NTT представлении"
+
+  ZetaTable:
+    fields:
+      zetas: List<Int>
+      inv_zetas: List<Int>
+    description: "Таблица корней единицы для NTT"
+
+  # Ключи
+  MLKEMPublicKey:
+    fields:
+      t: PolynomialVector
+      rho: List<Int>
+    description: "Публичный ключ ML-KEM-1024"
+
+  MLKEMSecretKey:
+    fields:
+      s: PolynomialVector
+      public_key: MLKEMPublicKey
+      h_pk: List<Int>
+      z: List<Int>
+    description: "Секретный ключ ML-KEM-1024"
+
+  MLKEMKeyPair:
+    fields:
+      public_key: MLKEMPublicKey
+      secret_key: MLKEMSecretKey
+    description: "Пара ключей ML-KEM-1024"
+
+  # Шифротекст
+  MLKEMCiphertext:
+    fields:
+      u: PolynomialVector
+      v: Polynomial
+    description: "Шифротекст ML-KEM-1024"
+
+  # Результаты операций
+  EncapsulationResult:
+    fields:
+      ciphertext: MLKEMCiphertext
+      shared_secret: List<Int>
+    description: "Результат инкапсуляции"
+
+  DecapsulationResult:
+    fields:
+      shared_secret: List<Int>
+      valid: Bool
+    description: "Результат декапсуляции"
+
+  # Сэмплирование
+  CBDSample:
+    fields:
+      polynomial: Polynomial
+      eta: Int
+    description: "Результат CBD сэмплирования"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# АЛГОРИТМЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+algorithms:
+  # NTT операции
+  ntt_forward:
+    description: "Прямое NTT преобразование (Cooley-Tukey)"
+    complexity: "O(n log n)"
+    pattern: "D&C"
+    steps:
+      - "Инициализировать k=1, len=128"
+      - "Пока len >= 2:"
+      - "  Для каждого блока размера 2*len:"
+      - "    zeta = ZETAS[k]; k++"
+      - "    Для j в блоке:"
+      - "      t = zeta * a[j+len] mod q"
+      - "      a[j+len] = a[j] - t mod q"
+      - "      a[j] = a[j] + t mod q"
+      - "  len = len / 2"
+      - "Вернуть NTT представление"
+
+  ntt_inverse:
+    description: "Обратное NTT преобразование (Gentleman-Sande)"
+    complexity: "O(n log n)"
+    pattern: "D&C"
+    steps:
+      - "Инициализировать k=127, len=2"
+      - "Пока len <= 128:"
+      - "  Для каждого блока размера 2*len:"
+      - "    zeta = ZETAS[k]; k--"
+      - "    Для j в блоке:"
+      - "      t = a[j]"
+      - "      a[j] = (t + a[j+len]) mod q"
+      - "      a[j+len] = zeta * (t - a[j+len]) mod q"
+      - "  len = len * 2"
+      - "Умножить на n^(-1) mod q"
+      - "Вернуть полином"
+
+  ntt_multiply:
+    description: "Умножение полиномов в NTT домене"
+    complexity: "O(n)"
+    pattern: "Pointwise"
+    steps:
+      - "Для каждой пары коэффициентов (i=0..n/2-1):"
+      - "  a0, a1 = a[2i], a[2i+1]"
+      - "  b0, b1 = b[2i], b[2i+1]"
+      - "  zeta = ZETAS[64+i]"
+      - "  c[2i] = a0*b0 + a1*b1*zeta mod q"
+      - "  c[2i+1] = a0*b1 + a1*b0 mod q"
+      - "Вернуть произведение"
+
+  # Редукция
+  barrett_reduce:
+    description: "Barrett редукция для q=3329"
+    complexity: "O(1)"
+    pattern: "Algebraic"
+    steps:
+      - "v = 20159 (precomputed)"
+      - "t = (a * v + 2^25) >> 26"
+      - "t = a - t * q"
+      - "Вернуть t mod q"
+
+  montgomery_reduce:
+    description: "Montgomery редукция"
+    complexity: "O(1)"
+    pattern: "Algebraic"
+    steps:
+      - "QINV = -3327"
+      - "t = (a mod 2^16) * QINV mod 2^16"
+      - "Вернуть (a - t*q) >> 16"
+
+  # Сэмплирование
+  sample_cbd:
+    description: "Сэмплирование из центрированного биномиального распределения"
+    complexity: "O(n * eta)"
+    pattern: "Statistical"
+    steps:
+      - "Расширить seed через SHAKE-256"
+      - "Для каждого коэффициента i:"
+      - "  Взять 2*eta бит"
+      - "  a = popcount(первые eta бит)"
+      - "  b = popcount(вторые eta бит)"
+      - "  coeffs[i] = (a - b) mod q"
+      - "Вернуть полином"
+
+  sample_ntt:
+    description: "Сэмплирование равномерного полинома в NTT домене"
+    complexity: "O(n)"
+    pattern: "Statistical"
+    steps:
+      - "Инициализировать SHAKE-128 с seed"
+      - "Для каждого коэффициента:"
+      - "  Генерировать 3 байта"
+      - "  d1 = bytes[0] + 256*(bytes[1] mod 16)"
+      - "  d2 = bytes[1]/16 + 16*bytes[2]"
+      - "  Если d1 < q: добавить d1"
+      - "  Если d2 < q: добавить d2"
+      - "Вернуть NTT полином"
+
+  # Сжатие
+  compress:
+    description: "Сжатие коэффициентов до d бит"
+    complexity: "O(n)"
+    pattern: "Quantization"
+    steps:
+      - "Для каждого коэффициента x:"
+      - "  compressed = round((2^d / q) * x) mod 2^d"
+      - "Вернуть сжатый полином"
+
+  decompress:
+    description: "Декомпрессия коэффициентов"
+    complexity: "O(n)"
+    pattern: "Quantization"
+    steps:
+      - "Для каждого коэффициента x:"
+      - "  decompressed = round((q / 2^d) * x)"
+      - "Вернуть декомпрессированный полином"
+
+  # Основные операции ML-KEM
+  ml_kem_keygen:
+    description: "Генерация ключевой пары ML-KEM-1024"
+    complexity: "O(k² * n log n)"
+    pattern: "Lattice"
+    steps:
+      - "Сгенерировать d, z случайно"
+      - "(rho, sigma) = G(d)"
+      - "Сгенерировать матрицу A из rho"
+      - "Сэмплировать s, e из CBD(eta1)"
+      - "s_hat = NTT(s)"
+      - "e_hat = NTT(e)"
+      - "t_hat = A * s_hat + e_hat"
+      - "pk = (t_hat, rho)"
+      - "sk = (s_hat, pk, H(pk), z)"
+      - "Вернуть (pk, sk)"
+
+  ml_kem_encaps:
+    description: "Инкапсуляция shared secret"
+    complexity: "O(k² * n log n)"
+    pattern: "Lattice"
+    steps:
+      - "Сгенерировать m случайно"
+      - "(K, r) = G(m || H(pk))"
+      - "Сэмплировать r, e1, e2 из r"
+      - "r_hat = NTT(r)"
+      - "u = NTT^(-1)(A^T * r_hat) + e1"
+      - "v = NTT^(-1)(t^T * r_hat) + e2 + Decompress(Encode(m))"
+      - "c = (Compress(u, du), Compress(v, dv))"
+      - "K = KDF(K || H(c))"
+      - "Вернуть (c, K)"
+
+  ml_kem_decaps:
+    description: "Декапсуляция с implicit reject"
+    complexity: "O(k² * n log n)"
+    pattern: "Lattice"
+    steps:
+      - "u' = Decompress(c.u, du)"
+      - "v' = Decompress(c.v, dv)"
+      - "m' = Decode(v' - NTT^(-1)(s^T * NTT(u')))"
+      - "(K', r') = G(m' || H(pk))"
+      - "Реинкапсулировать с r' для получения c'"
+      - "Если c' == c:"
+      - "  K = KDF(K' || H(c))"
+      - "Иначе:"
+      - "  K = KDF(z || H(c)) (implicit reject)"
+      - "Вернуть K (constant-time выбор)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ПОВЕДЕНИЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: keygen_produces_valid_keys
+    given: "Случайный seed"
+    when: "Генерация ключей"
+    then: "Публичный и секретный ключи корректны"
+    test_cases:
+      - name: "keygen_nonzero"
+        input:
+          seed: "random"
+        expected:
+          public_key_nonzero: true
+          secret_key_nonzero: true
+
+  - name: encaps_decaps_roundtrip
+    given: "Валидная ключевая пара"
+    when: "Инкапсуляция и декапсуляция"
+    then: "Shared secrets совпадают"
+    test_cases:
+      - name: "roundtrip_success"
+        input:
+          keypair: "generated"
+        expected:
+          secrets_match: true
+
+  - name: ntt_inverse_identity
+    given: "Полином"
+    when: "NTT затем inverse NTT"
+    then: "Получаем исходный полином"
+    test_cases:
+      - name: "ntt_roundtrip"
+        input:
+          polynomial: [100, 200, 0, 0]
+        expected:
+          recovered: [100, 200, 0, 0]
+
+  - name: barrett_reduction_correct
+    given: "Число в расширенном диапазоне"
+    when: "Barrett редукция"
+    then: "Результат в [0, q)"
+    test_cases:
+      - name: "reduce_large"
+        input:
+          value: 10000
+        expected:
+          result_in_range: true
+
+  - name: cbd_sampling_distribution
+    given: "Seed и eta"
+    when: "CBD сэмплирование"
+    then: "Коэффициенты в [-eta, eta]"
+    test_cases:
+      - name: "cbd_eta2"
+        input:
+          eta: 2
+        expected:
+          coeffs_in_range: true
+
+  - name: compress_decompress_roundtrip
+    given: "Полином"
+    when: "Сжатие и декомпрессия"
+    then: "Значения близки к оригиналу"
+    test_cases:
+      - name: "compress_du11"
+        input:
+          d: 11
+        expected:
+          error_bounded: true
+
+  - name: implicit_reject_constant_time
+    given: "Невалидный шифротекст"
+    when: "Декапсуляция"
+    then: "Возвращается псевдослучайный ключ за константное время"
+    test_cases:
+      - name: "tampered_ciphertext"
+        input:
+          tampered: true
+        expected:
+          timing_constant: true
+          key_pseudorandom: true
+
+  - name: deterministic_keygen
+    given: "Одинаковый seed"
+    when: "Две генерации ключей"
+    then: "Ключи идентичны"
+    test_cases:
+      - name: "same_seed"
+        input:
+          seed: [42, 42, 42]
+        expected:
+          keys_identical: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS АНАЛИЗ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_analysis:
+  module: "ml_kem_1024_full"
+
+  predictions:
+    - target: "NTT throughput"
+      current: "10 μs per NTT"
+      predicted: "1 μs per NTT"
+      confidence: 0.85
+      patterns: [PRE, D&C]
+      timeline: "2026"
+      method: "AVX-512 vectorization, precomputed twiddle factors"
+
+    - target: "Keygen latency"
+      current: "0.5 ms"
+      predicted: "0.05 ms"
+      confidence: 0.80
+      patterns: [PRE, D&C]
+      timeline: "2026"
+      method: "Parallel matrix generation, cached A matrix"
+
+    - target: "Encaps/Decaps latency"
+      current: "0.3 ms"
+      predicted: "0.03 ms"
+      confidence: 0.80
+      patterns: [PRE, ALG]
+      timeline: "2026"
+      method: "Fused NTT operations, lazy reduction"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# БЕЗОПАСНОСТЬ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+security:
+  - name: "IND-CCA2"
+    description: "Indistinguishability under adaptive chosen-ciphertext attack"
+    level: "NIST Level 5"
+
+  - name: "Post-quantum"
+    description: "Устойчивость к атакам квантового компьютера"
+    basis: "Module-LWE problem"
+
+  - name: "Implicit reject"
+    description: "Constant-time отклонение невалидных шифротекстов"
+    implementation: "Timing-safe comparison and selection"
+
+constant_time_operations:
+  - "Декапсуляция (выбор между K' и z)"
+  - "Сравнение шифротекстов"
+  - "Все операции с секретным ключом"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NIST ТЕСТ-ВЕКТОРЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+nist_test_vectors:
+  source: "NIST FIPS 203 KAT"
+  algorithms:
+    - "ML-KEM-1024 KeyGen"
+    - "ML-KEM-1024 Encaps"
+    - "ML-KEM-1024 Decaps"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# OUTPUT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+output:
+  directory: "trinity/output"
+  files:
+    - "ml_kem_1024_full.zig"
+
+metadata:
+  creation_date: "2026-01-20"
+  author: "Dmitrii Vasilev"
+  sacred_formula: "V = n × 3^k × π^m × φ^p × e^q"
+  golden_identity: "φ² + 1/φ² = 3"
+  nist_standard: "FIPS 203"
+  security_level: "NIST Level 5"

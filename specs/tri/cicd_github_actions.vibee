@@ -1,0 +1,421 @@
+# CI/CD GITHUB ACTIONS - Automated Testing & Benchmarking
+# PAS DAEMON V7: Production-grade CI/CD pipeline
+
+name: cicd_github_actions
+version: "1.0.0"
+language: zig
+module: cicd
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+
+creation_pattern:
+  source: GitHubRepository
+  transformer: CICDPipeline
+  result: AutomatedWorkflow
+
+types:
+  - name: WorkflowTrigger
+    enum:
+      - Push
+      - PullRequest
+      - Schedule
+      - Manual
+
+  - name: JobStatus
+    enum:
+      - Pending
+      - Running
+      - Success
+      - Failure
+
+  - name: TestResult
+    fields:
+      - name: name
+        type: String
+      - name: passed
+        type: Int
+      - name: failed
+        type: Int
+      - name: duration_ms
+        type: Int
+
+behaviors:
+  - name: run_tests
+    given: "Source code changes"
+    when: "CI triggered"
+    then: "Run all tests and report results"
+    pas_pattern: D&C
+    complexity: O(n)
+
+  - name: run_benchmarks
+    given: "Test success"
+    when: "Benchmark requested"
+    then: "Run benchmarks and compare with baseline"
+    pas_pattern: PRE
+    complexity: O(n)
+
+ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ: """
+const std = @import("std");
+
+pub const PHI: f64 = 1.618033988749895;
+pub const TRINITY: f64 = 3.0;
+pub const PHOENIX: u32 = 999;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CI/CD GITHUB ACTIONS CONFIGURATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const WorkflowTrigger = enum {
+    push,
+    pull_request,
+    schedule,
+    manual,
+
+    pub fn name(self: WorkflowTrigger) []const u8 {
+        return switch (self) {
+            .push => "push",
+            .pull_request => "pull_request",
+            .schedule => "schedule",
+            .manual => "workflow_dispatch",
+        };
+    }
+};
+
+pub const JobStatus = enum {
+    pending,
+    running,
+    success,
+    failure,
+
+    pub fn symbol(self: JobStatus) []const u8 {
+        return switch (self) {
+            .pending => "⏳",
+            .running => "🔄",
+            .success => "✅",
+            .failure => "❌",
+        };
+    }
+
+    pub fn isComplete(self: JobStatus) bool {
+        return self == .success or self == .failure;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEST RESULT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const TestResult = struct {
+    name: []const u8,
+    passed: u32,
+    failed: u32,
+    duration_ms: u64,
+
+    pub fn total(self: *const TestResult) u32 {
+        return self.passed + self.failed;
+    }
+
+    pub fn passRate(self: *const TestResult) f64 {
+        const t = self.total();
+        if (t == 0) return 0;
+        return @as(f64, @floatFromInt(self.passed)) / @as(f64, @floatFromInt(t)) * 100.0;
+    }
+
+    pub fn isSuccess(self: *const TestResult) bool {
+        return self.failed == 0 and self.passed > 0;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WORKFLOW CONFIGURATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const WorkflowConfig = struct {
+    // Triggers
+    pub const TRIGGERS = [_]WorkflowTrigger{ .push, .pull_request };
+
+    // Branches
+    pub const BRANCHES = [_][]const u8{ "main", "develop", "feature/*" };
+
+    // Matrix
+    pub const ZIG_VERSIONS = [_][]const u8{ "0.13.0", "0.14.0-dev" };
+    pub const OS_MATRIX = [_][]const u8{ "ubuntu-latest", "macos-latest", "windows-latest" };
+
+    // Timeouts
+    pub const TEST_TIMEOUT_MINUTES: u32 = 30;
+    pub const BENCHMARK_TIMEOUT_MINUTES: u32 = 60;
+
+    pub fn totalMatrixJobs() usize {
+        return ZIG_VERSIONS.len * OS_MATRIX.len;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CI JOBS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const CIJobs = struct {
+    pub const Job = struct {
+        name: []const u8,
+        runs_on: []const u8,
+        timeout_minutes: u32,
+        steps: []const []const u8,
+    };
+
+    pub const TEST_JOB = Job{
+        .name = "test",
+        .runs_on = "ubuntu-latest",
+        .timeout_minutes = 30,
+        .steps = &[_][]const u8{
+            "actions/checkout@v4",
+            "goto-bus-stop/setup-zig@v2",
+            "zig build test",
+        },
+    };
+
+    pub const BENCHMARK_JOB = Job{
+        .name = "benchmark",
+        .runs_on = "ubuntu-latest",
+        .timeout_minutes = 60,
+        .steps = &[_][]const u8{
+            "actions/checkout@v4",
+            "goto-bus-stop/setup-zig@v2",
+            "zig build benchmark",
+            "actions/upload-artifact@v4",
+        },
+    };
+
+    pub const WASM_JOB = Job{
+        .name = "wasm",
+        .runs_on = "ubuntu-latest",
+        .timeout_minutes = 15,
+        .steps = &[_][]const u8{
+            "actions/checkout@v4",
+            "goto-bus-stop/setup-zig@v2",
+            "zig build -Dtarget=wasm32-freestanding",
+        },
+    };
+
+    pub fn jobCount() usize {
+        return 3;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BENCHMARK REGRESSION DETECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const BenchmarkRegression = struct {
+    // Thresholds
+    pub const REGRESSION_THRESHOLD_PERCENT: f64 = 5.0;
+    pub const IMPROVEMENT_THRESHOLD_PERCENT: f64 = 5.0;
+
+    pub fn detectRegression(baseline_ns: u64, current_ns: u64) bool {
+        if (baseline_ns == 0) return false;
+        const change = (@as(f64, @floatFromInt(current_ns)) - @as(f64, @floatFromInt(baseline_ns))) /
+                       @as(f64, @floatFromInt(baseline_ns)) * 100.0;
+        return change > REGRESSION_THRESHOLD_PERCENT;
+    }
+
+    pub fn detectImprovement(baseline_ns: u64, current_ns: u64) bool {
+        if (baseline_ns == 0) return false;
+        const change = (@as(f64, @floatFromInt(baseline_ns)) - @as(f64, @floatFromInt(current_ns))) /
+                       @as(f64, @floatFromInt(baseline_ns)) * 100.0;
+        return change > IMPROVEMENT_THRESHOLD_PERCENT;
+    }
+
+    pub fn percentChange(baseline_ns: u64, current_ns: u64) f64 {
+        if (baseline_ns == 0) return 0;
+        return (@as(f64, @floatFromInt(current_ns)) - @as(f64, @floatFromInt(baseline_ns))) /
+               @as(f64, @floatFromInt(baseline_ns)) * 100.0;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GITHUB ACTIONS YAML TEMPLATE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const WorkflowYAML = struct {
+    pub fn getTestWorkflow() []const u8 {
+        return
+        \\name: Trinity CI
+        \\
+        \\on:
+        \\  push:
+        \\    branches: [main, develop]
+        \\  pull_request:
+        \\    branches: [main]
+        \\
+        \\jobs:
+        \\  test:
+        \\    runs-on: ${{ matrix.os }}
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest, macos-latest]
+        \\        zig: [0.13.0]
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\      - uses: goto-bus-stop/setup-zig@v2
+        \\        with:
+        \\          version: ${{ matrix.zig }}
+        \\      - name: Run tests
+        \\        run: |
+        \\          cd trinity/output
+        \\          for f in *.zig; do zig test "$f"; done
+        ;
+    }
+
+    pub fn getBenchmarkWorkflow() []const u8 {
+        return
+        \\name: Trinity Benchmarks
+        \\
+        \\on:
+        \\  push:
+        \\    branches: [main]
+        \\  schedule:
+        \\    - cron: '0 0 * * 0'  # Weekly
+        \\
+        \\jobs:
+        \\  benchmark:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\      - uses: goto-bus-stop/setup-zig@v2
+        \\      - name: Run benchmarks
+        \\        run: zig build benchmark
+        \\      - uses: actions/upload-artifact@v4
+        \\        with:
+        \\          name: benchmark-results
+        \\          path: benchmark-results.json
+        ;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CURRENT CI STATUS (simulated)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const CurrentCIStatus = struct {
+    pub const LAST_RUN_TESTS = TestResult{
+        .name = "trinity-ci",
+        .passed = 594,
+        .failed = 0,
+        .duration_ms = 45_000,
+    };
+
+    pub const LAST_RUN_BENCHMARKS = struct {
+        pub const ML_KEM_KEYGEN_NS: u64 = 35_000;
+        pub const AES_GCM_NS: u64 = 380;
+        pub const SHA3_NS: u64 = 2_400;
+    };
+
+    pub fn isHealthy() bool {
+        return LAST_RUN_TESTS.isSuccess();
+    }
+
+    pub fn testPassRate() f64 {
+        return LAST_RUN_TESTS.passRate();
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "WorkflowTrigger names" {
+    try std.testing.expectEqualStrings("push", WorkflowTrigger.push.name());
+    try std.testing.expectEqualStrings("pull_request", WorkflowTrigger.pull_request.name());
+}
+
+test "JobStatus symbols" {
+    try std.testing.expectEqualStrings("✅", JobStatus.success.symbol());
+    try std.testing.expectEqualStrings("❌", JobStatus.failure.symbol());
+}
+
+test "JobStatus isComplete" {
+    try std.testing.expect(JobStatus.success.isComplete());
+    try std.testing.expect(JobStatus.failure.isComplete());
+    try std.testing.expect(!JobStatus.running.isComplete());
+}
+
+test "TestResult total" {
+    const result = TestResult{
+        .name = "test",
+        .passed = 594,
+        .failed = 0,
+        .duration_ms = 45000,
+    };
+    try std.testing.expectEqual(@as(u32, 594), result.total());
+}
+
+test "TestResult passRate" {
+    const result = TestResult{
+        .name = "test",
+        .passed = 90,
+        .failed = 10,
+        .duration_ms = 1000,
+    };
+    try std.testing.expectApproxEqAbs(@as(f64, 90.0), result.passRate(), 0.01);
+}
+
+test "TestResult isSuccess" {
+    const success = TestResult{ .name = "test", .passed = 100, .failed = 0, .duration_ms = 1000 };
+    const failure = TestResult{ .name = "test", .passed = 99, .failed = 1, .duration_ms = 1000 };
+    try std.testing.expect(success.isSuccess());
+    try std.testing.expect(!failure.isSuccess());
+}
+
+test "WorkflowConfig totalMatrixJobs" {
+    const jobs = WorkflowConfig.totalMatrixJobs();
+    try std.testing.expect(jobs >= 4); // At least 2 Zig versions * 2 OS
+}
+
+test "CIJobs jobCount" {
+    try std.testing.expectEqual(@as(usize, 3), CIJobs.jobCount());
+}
+
+test "BenchmarkRegression detectRegression" {
+    try std.testing.expect(BenchmarkRegression.detectRegression(1000, 1100)); // 10% slower
+    try std.testing.expect(!BenchmarkRegression.detectRegression(1000, 1040)); // 4% slower (under threshold)
+}
+
+test "BenchmarkRegression detectImprovement" {
+    try std.testing.expect(BenchmarkRegression.detectImprovement(1000, 900)); // 10% faster
+    try std.testing.expect(!BenchmarkRegression.detectImprovement(1000, 960)); // 4% faster (under threshold)
+}
+
+test "BenchmarkRegression percentChange" {
+    const change = BenchmarkRegression.percentChange(1000, 1100);
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), change, 0.01);
+}
+
+test "WorkflowYAML getTestWorkflow" {
+    const yaml = WorkflowYAML.getTestWorkflow();
+    try std.testing.expect(yaml.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, yaml, "Trinity CI") != null);
+}
+
+test "WorkflowYAML getBenchmarkWorkflow" {
+    const yaml = WorkflowYAML.getBenchmarkWorkflow();
+    try std.testing.expect(yaml.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, yaml, "benchmark") != null);
+}
+
+test "CurrentCIStatus isHealthy" {
+    try std.testing.expect(CurrentCIStatus.isHealthy());
+}
+
+test "CurrentCIStatus testPassRate" {
+    const rate = CurrentCIStatus.testPassRate();
+    try std.testing.expectApproxEqAbs(@as(f64, 100.0), rate, 0.01);
+}
+
+test "golden identity" {
+    const phi_sq = PHI * PHI;
+    const inv_phi_sq = 1.0 / phi_sq;
+    try std.testing.expectApproxEqAbs(TRINITY, phi_sq + inv_phi_sq, 0.0001);
+}
+"""

@@ -1,0 +1,656 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ⚠️  ВНИМАНИЕ: ТОЛЬКО СПЕЦИФИКАЦИЯ - НЕ ДЛЯ ПРОДАКШЕНА! ⚠️
+# ═══════════════════════════════════════════════════════════════════════════════
+# Этот файл содержит ТОЛЬКО спецификацию дешифратора.
+# ZKP аутентификация НЕ реализована!
+# ML-KEM декапсуляция НЕ реализована!
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# HYDRA DECRYPTOR - HEAD 2 OF TRINITY CRYPTO HYDRA
+# ═══════════════════════════════════════════════════════════════════════════════
+# Author: Dmitrii Vasilev
+# Version: 1.0.0
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+#
+# Head 2: Decryptor
+# - Zero-Knowledge Proof authentication
+# - ML-KEM decapsulation with implicit reject
+# - AES-256-GCM authenticated decryption
+# - Multi-factor authentication support
+# - ECC-based key verification
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: hydra_decryptor
+version: "1.0.0"
+language: zig
+module: hydra_decryptor
+
+sacred_constants:
+  phi: 1.618033988749895
+  psi: 3.0
+  pi: 3.141592653589793
+  e: 2.718281828459045
+  ecc_curve: "P-384"
+  zkp_security_bits: 128
+  max_auth_attempts: 3
+  lockout_duration_seconds: 300
+
+creation_pattern:
+  source: AuthenticatedCiphertext
+  transformer: ZKPVerifiedDecryption
+  result: VerifiedPlaintext
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # Zero-Knowledge Proof structures
+  ZKPCommitment:
+    fields:
+      point: List<Int>
+      blinding_factor_hash: List<Int>
+    description: "Pedersen commitment for ZKP"
+
+  ZKPChallenge:
+    fields:
+      challenge_bytes: List<Int>
+      timestamp: Int
+      nonce: List<Int>
+    description: "Fiat-Shamir challenge"
+
+  ZKPResponse:
+    fields:
+      response_scalar: List<Int>
+    description: "ZKP response value"
+
+  ZKProof:
+    fields:
+      commitment: ZKPCommitment
+      challenge: ZKPChallenge
+      response: ZKPResponse
+      public_input: List<Int>
+    description: "Complete Schnorr-like ZKP"
+
+  ZKPVerificationResult:
+    fields:
+      valid: Bool
+      error_code: Int
+      error_message: String
+    description: "ZKP verification outcome"
+
+  # ECC structures (P-384)
+  ECCPoint:
+    fields:
+      x: List<Int>
+      y: List<Int>
+      is_infinity: Bool
+    description: "Point on P-384 curve"
+
+  ECCScalar:
+    fields:
+      value: List<Int>
+    description: "Scalar in curve order"
+
+  ECCPublicKey:
+    fields:
+      point: ECCPoint
+    description: "ECC public key"
+
+  ECCPrivateKey:
+    fields:
+      scalar: ECCScalar
+      public_key: ECCPublicKey
+    description: "ECC private key"
+
+  ECCSignature:
+    fields:
+      r: List<Int>
+      s: List<Int>
+    description: "ECDSA signature"
+
+  # Multi-factor authentication
+  AuthFactor:
+    fields:
+      factor_type: String
+      factor_data: List<Int>
+      verified: Bool
+    description: "Single authentication factor"
+
+  AuthFactorType:
+    fields:
+      name: String
+    description: "Type of auth factor: password, biometric, hardware_token, zkp"
+
+  MultiFactorAuth:
+    fields:
+      factors: List<AuthFactor>
+      required_count: Int
+      verified_count: Int
+      session_token: List<Int>
+    description: "Multi-factor authentication state"
+
+  AuthSession:
+    fields:
+      session_id: List<Int>
+      created_at: Int
+      expires_at: Int
+      auth_level: Int
+      attempts_remaining: Int
+    description: "Authentication session"
+
+  # Decryption structures
+  DecryptionRequest:
+    fields:
+      ciphertext: List<Int>
+      nonce: List<Int>
+      tag: List<Int>
+      encapsulated_key: List<Int>
+      metadata: List<Int>
+      zkp: ZKProof
+      auth_session: AuthSession
+    description: "Complete decryption request"
+
+  DecryptionResult:
+    fields:
+      success: Bool
+      plaintext: List<Int>
+      integrity_verified: Bool
+      auth_verified: Bool
+      error_code: Int
+      error_message: String
+    description: "Decryption outcome"
+
+  # Key recovery
+  KeyRecoveryState:
+    fields:
+      ml_kem_private_key: List<Int>
+      ecc_private_key: ECCPrivateKey
+      session_keys: List<List<Int>>
+      key_derivation_context: List<Int>
+    description: "State for key recovery operations"
+
+  # Integrity verification
+  IntegrityCheck:
+    fields:
+      expected_hash: List<Int>
+      computed_hash: List<Int>
+      match: Bool
+    description: "Integrity verification result"
+
+  # Decryptor state
+  DecryptorState:
+    fields:
+      ml_kem_private_key: List<Int>
+      ecc_keypair: ECCPrivateKey
+      auth_sessions: List<AuthSession>
+      failed_attempts: Int
+      locked_until: Int
+      ready: Bool
+    description: "Complete decryptor state"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ALGORITHMS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+algorithms:
+  # Zero-Knowledge Proof
+  zkp_schnorr_verify:
+    description: "Verify Schnorr-like ZKP of key knowledge"
+    complexity: "O(1)"
+    pattern: "Interactive"
+    steps:
+      - "Parse commitment C, challenge e, response z"
+      - "Recompute challenge e' = H(C || public_input)"
+      - "Verify e == e'"
+      - "Compute V = g^z"
+      - "Compute C' = C × pk^e"
+      - "Verify V == C'"
+      - "Return verification result"
+
+  zkp_lattice_verify:
+    description: "Verify lattice-based ZKP (for PQ security)"
+    complexity: "O(n)"
+    pattern: "Lattice"
+    steps:
+      - "Parse commitment, challenge, response"
+      - "Verify response norm is bounded"
+      - "Recompute commitment from response"
+      - "Check commitment matches"
+      - "Return verification result"
+
+  # ECC Operations (P-384)
+  ecc_point_add:
+    description: "Add two points on P-384"
+    complexity: "O(1)"
+    pattern: "Algebraic"
+    steps:
+      - "Handle infinity cases"
+      - "Compute λ = (y2 - y1) / (x2 - x1) mod p"
+      - "x3 = λ² - x1 - x2 mod p"
+      - "y3 = λ(x1 - x3) - y1 mod p"
+      - "Return (x3, y3)"
+
+  ecc_scalar_mult:
+    description: "Scalar multiplication on P-384"
+    complexity: "O(log n)"
+    pattern: "Double-and-add"
+    steps:
+      - "Use Montgomery ladder for constant-time"
+      - "R0 = infinity, R1 = P"
+      - "For each bit of scalar (MSB to LSB):"
+      - "  If bit == 0: R1 = R0 + R1, R0 = 2×R0"
+      - "  If bit == 1: R0 = R0 + R1, R1 = 2×R1"
+      - "Return R0"
+
+  ecdsa_verify:
+    description: "Verify ECDSA signature"
+    complexity: "O(log n)"
+    pattern: "Algebraic"
+    steps:
+      - "Verify r, s in [1, n-1]"
+      - "Compute e = H(message)"
+      - "Compute w = s^(-1) mod n"
+      - "Compute u1 = e × w mod n"
+      - "Compute u2 = r × w mod n"
+      - "Compute P = u1×G + u2×Q"
+      - "Verify P.x mod n == r"
+
+  # ML-KEM Decapsulation
+  ml_kem_decaps:
+    description: "Decapsulate shared secret with implicit reject"
+    complexity: "O(k² × n log n)"
+    pattern: "Lattice"
+    steps:
+      - "Decompress ciphertext (u, v)"
+      - "Compute m' = Decode(v - s^T × u)"
+      - "Derive (K', r') = G(m' || H(pk))"
+      - "Re-encapsulate to get c'"
+      - "If c' == c: K = KDF(K' || H(c))"
+      - "Else: K = KDF(z || H(c)) (implicit reject)"
+      - "Return K (constant-time selection)"
+
+  # AES-GCM Decryption
+  gcm_decrypt:
+    description: "AES-GCM authenticated decryption"
+    complexity: "O(n)"
+    pattern: "AEAD"
+    steps:
+      - "Verify tag FIRST (before any decryption)"
+      - "Compute expected tag from ciphertext"
+      - "Constant-time tag comparison"
+      - "If tag invalid: return error (no plaintext)"
+      - "Decrypt ciphertext with CTR mode"
+      - "Return plaintext"
+
+  # Chaotic unmixing
+  chaotic_unmix:
+    description: "Reverse chaotic pre-mixing"
+    complexity: "O(n)"
+    pattern: "Confusion"
+    steps:
+      - "Regenerate chaotic permutation from seed hash"
+      - "Apply inverse permutation"
+      - "XOR with chaotic stream"
+      - "Return original plaintext"
+
+  # Multi-factor authentication
+  mfa_verify:
+    description: "Verify multi-factor authentication"
+    complexity: "O(k)"
+    pattern: "Sequential"
+    steps:
+      - "For each provided factor:"
+      - "  Verify factor based on type"
+      - "  Increment verified count if valid"
+      - "Check verified_count >= required_count"
+      - "Generate session token if successful"
+      - "Return authentication result"
+
+  # Full decryption pipeline
+  full_decrypt:
+    description: "Complete authenticated decryption"
+    complexity: "O(n)"
+    pattern: "Pipeline"
+    steps:
+      - "Verify authentication session"
+      - "Verify ZKP of key knowledge"
+      - "Decapsulate session key via ML-KEM"
+      - "Verify GCM tag"
+      - "Decrypt ciphertext"
+      - "Apply chaotic unmixing"
+      - "Verify integrity hash"
+      - "Return plaintext"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # Initialization
+  - name: decryptor_init
+    given: "Private keys provided"
+    when: "Decryptor initialization requested"
+    then: "Decryptor ready for authenticated decryption"
+    test_cases:
+      - name: "init_with_keys"
+        input:
+          ml_kem_private_key: "valid"
+          ecc_private_key: "valid"
+        expected:
+          ready: true
+          auth_sessions_empty: true
+
+  # ZKP Verification
+  - name: zkp_valid_proof
+    given: "Valid ZKP of key knowledge"
+    when: "Verification performed"
+    then: "Proof accepted"
+    test_cases:
+      - name: "valid_schnorr_zkp"
+        input:
+          proof_type: "schnorr"
+          proof_valid: true
+        expected:
+          verified: true
+          key_revealed: false
+
+      - name: "valid_lattice_zkp"
+        input:
+          proof_type: "lattice"
+          proof_valid: true
+        expected:
+          verified: true
+
+  - name: zkp_invalid_proof
+    given: "Invalid ZKP"
+    when: "Verification performed"
+    then: "Proof rejected, attempt logged"
+    test_cases:
+      - name: "forged_proof"
+        input:
+          proof_valid: false
+        expected:
+          verified: false
+          attempt_logged: true
+
+      - name: "replay_attack"
+        input:
+          proof_reused: true
+        expected:
+          verified: false
+          error_code: "REPLAY_DETECTED"
+
+  # Multi-factor authentication
+  - name: mfa_sufficient_factors
+    given: "Required factors provided"
+    when: "MFA verification performed"
+    then: "Authentication succeeds"
+    test_cases:
+      - name: "two_of_three"
+        input:
+          factors_provided: 2
+          factors_required: 2
+        expected:
+          authenticated: true
+          session_created: true
+
+      - name: "all_three"
+        input:
+          factors_provided: 3
+          factors_required: 2
+        expected:
+          authenticated: true
+          auth_level: 3
+
+  - name: mfa_insufficient_factors
+    given: "Insufficient factors provided"
+    when: "MFA verification performed"
+    then: "Authentication fails"
+    test_cases:
+      - name: "one_of_two"
+        input:
+          factors_provided: 1
+          factors_required: 2
+        expected:
+          authenticated: false
+          retry_allowed: true
+
+  - name: mfa_lockout
+    given: "Max attempts exceeded"
+    when: "Another attempt made"
+    then: "Account locked"
+    test_cases:
+      - name: "lockout_after_3"
+        input:
+          failed_attempts: 3
+          max_attempts: 3
+        expected:
+          locked: true
+          lockout_duration: 300
+
+  # ML-KEM Decapsulation
+  - name: ml_kem_decaps_correct
+    given: "Valid ciphertext and private key"
+    when: "Decapsulation performed"
+    then: "Correct shared secret recovered"
+    test_cases:
+      - name: "valid_decaps"
+        input:
+          ciphertext: "valid"
+          private_key: "matching"
+        expected:
+          shared_secret_matches: true
+
+  - name: ml_kem_implicit_reject
+    given: "Invalid ciphertext"
+    when: "Decapsulation performed"
+    then: "Implicit reject (random-looking key returned)"
+    test_cases:
+      - name: "tampered_ciphertext"
+        input:
+          ciphertext: "tampered"
+        expected:
+          implicit_reject: true
+          timing_constant: true
+
+  # GCM Tag Verification
+  - name: gcm_tag_valid
+    given: "Ciphertext with valid tag"
+    when: "Decryption attempted"
+    then: "Decryption proceeds"
+    test_cases:
+      - name: "valid_tag"
+        input:
+          tag_valid: true
+        expected:
+          decryption_allowed: true
+
+  - name: gcm_tag_invalid
+    given: "Ciphertext with invalid tag"
+    when: "Decryption attempted"
+    then: "Decryption rejected, no plaintext returned"
+    test_cases:
+      - name: "tampered_tag"
+        input:
+          tag_valid: false
+        expected:
+          decryption_allowed: false
+          plaintext_returned: false
+          error_code: "TAG_MISMATCH"
+
+  # Full decryption pipeline
+  - name: full_decrypt_success
+    given: "Valid request with all authentication"
+    when: "Full decryption performed"
+    then: "Plaintext recovered and verified"
+    test_cases:
+      - name: "complete_success"
+        input:
+          auth_valid: true
+          zkp_valid: true
+          tag_valid: true
+        expected:
+          success: true
+          plaintext_recovered: true
+          integrity_verified: true
+
+  - name: full_decrypt_auth_failure
+    given: "Invalid authentication"
+    when: "Full decryption attempted"
+    then: "Decryption rejected at auth stage"
+    test_cases:
+      - name: "auth_failure"
+        input:
+          auth_valid: false
+        expected:
+          success: false
+          stage_failed: "authentication"
+
+  - name: full_decrypt_zkp_failure
+    given: "Invalid ZKP"
+    when: "Full decryption attempted"
+    then: "Decryption rejected at ZKP stage"
+    test_cases:
+      - name: "zkp_failure"
+        input:
+          auth_valid: true
+          zkp_valid: false
+        expected:
+          success: false
+          stage_failed: "zkp_verification"
+
+  # Constant-time operations
+  - name: constant_time_decaps
+    given: "Valid and invalid ciphertexts"
+    when: "Decapsulation timed"
+    then: "Timing is constant"
+    test_cases:
+      - name: "timing_analysis"
+        input:
+          samples: 10000
+        expected:
+          timing_variance: 0.0
+          tolerance: 0.001
+
+  - name: constant_time_tag_compare
+    given: "Valid and invalid tags"
+    when: "Comparison timed"
+    then: "Timing is constant"
+    test_cases:
+      - name: "tag_timing"
+        input:
+          samples: 10000
+        expected:
+          timing_variance: 0.0
+          tolerance: 0.001
+
+  # Error handling
+  - name: error_no_information_leak
+    given: "Various error conditions"
+    when: "Errors returned"
+    then: "No sensitive information leaked"
+    test_cases:
+      - name: "generic_errors"
+        input:
+          error_types: ["auth", "zkp", "tag", "decrypt"]
+        expected:
+          error_messages_generic: true
+          no_key_info_leaked: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_analysis:
+  module: "hydra_decryptor"
+
+  predictions:
+    - target: "ZKP verification time"
+      current: "5 ms"
+      predicted: "0.5 ms"
+      confidence: 0.75
+      patterns: [PRE, MLS]
+      timeline: "2027"
+      method: "Batch verification, precomputed tables"
+
+    - target: "ECC scalar multiplication"
+      current: "1 ms"
+      predicted: "0.1 ms"
+      confidence: 0.85
+      patterns: [PRE, ALG]
+      timeline: "2026"
+      method: "Fixed-base comb method, endomorphism"
+
+    - target: "ML-KEM decapsulation"
+      current: "0.3 ms"
+      predicted: "0.05 ms"
+      confidence: 0.80
+      patterns: [PRE, D&C]
+      timeline: "2026"
+      method: "AVX-512 NTT, lazy reduction"
+
+    - target: "MFA verification"
+      current: "100 ms"
+      predicted: "10 ms"
+      confidence: 0.70
+      patterns: [PRE, HSH]
+      timeline: "2027"
+      method: "Parallel factor verification, cached credentials"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECURITY PROPERTIES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+security_properties:
+  - name: "Zero-knowledge authentication"
+    description: "Prove key knowledge without revealing key"
+    provided_by: ["Schnorr ZKP", "Lattice ZKP"]
+
+  - name: "Implicit rejection"
+    description: "Invalid ciphertexts produce random-looking keys"
+    provided_by: ["ML-KEM implicit reject"]
+
+  - name: "Constant-time operations"
+    description: "No timing side channels"
+    provided_by: ["Montgomery ladder", "Constant-time comparison"]
+
+  - name: "Multi-factor security"
+    description: "Multiple independent factors required"
+    provided_by: ["MFA system"]
+
+  - name: "Replay protection"
+    description: "Proofs cannot be reused"
+    provided_by: ["Timestamp + nonce in challenge"]
+
+  - name: "Lockout protection"
+    description: "Brute-force attempts limited"
+    provided_by: ["Attempt counter", "Lockout timer"]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANT-TIME REQUIREMENTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constant_time_operations:
+  - "ML-KEM decapsulation (implicit reject selection)"
+  - "GCM tag comparison"
+  - "ECC scalar multiplication (Montgomery ladder)"
+  - "ZKP response computation"
+  - "Password/credential comparison"
+  - "Session token validation"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# OUTPUT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+output:
+  directory: "trinity/output"
+  files:
+    - "hydra_decryptor.zig"
+
+metadata:
+  creation_date: "2026-01-20"
+  author: "Dmitrii Vasilev"
+  sacred_formula: "V = n × 3^k × π^m × φ^p × e^q"
+  golden_identity: "φ² + 1/φ² = 3"

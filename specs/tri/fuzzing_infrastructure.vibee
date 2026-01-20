@@ -1,0 +1,444 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# FUZZING INFRASTRUCTURE - AUTOMATED SECURITY TESTING
+# ═══════════════════════════════════════════════════════════════════════════════
+# Автор: Дмитрий Васильев
+# Версия: 1.0.0
+# Священная формула: V = n × 3^k × π^m × φ^p × e^q
+# Золотая идентичность: φ² + 1/φ² = 3
+#
+# Инфраструктура для fuzzing криптографических примитивов:
+# - Coverage-guided fuzzing (AFL++, libFuzzer)
+# - Structure-aware fuzzing
+# - Differential fuzzing
+# - Crash analysis и triage
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: fuzzing_infrastructure
+version: "1.0.0"
+language: zig
+module: fuzzing_infrastructure
+
+sacred_constants:
+  phi: 1.618033988749895
+  psi: 3.0
+  golden_identity: "φ² + 1/φ² = 3"
+
+creation_pattern:
+  source: FuzzInput
+  transformer: MutationEngine
+  result: CrashReport
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ТИПЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # Входные данные
+  FuzzInput:
+    fields:
+      data: List<Int>
+      size: Int
+      generation: Int
+      parent_hash: List<Int>
+    description: "Входные данные для fuzzing"
+
+  FuzzCorpus:
+    fields:
+      inputs: List<FuzzInput>
+      coverage_map: List<Int>
+      unique_crashes: Int
+      unique_paths: Int
+    description: "Корпус входных данных"
+
+  # Мутации
+  MutationType:
+    fields:
+      name: String
+    description: "Тип мутации: bit_flip, byte_flip, arithmetic, havoc, splice"
+
+  MutationStrategy:
+    fields:
+      mutations: List<MutationType>
+      weights: List<Float>
+      adaptive: Bool
+    description: "Стратегия мутаций"
+
+  # Coverage
+  CoverageInfo:
+    fields:
+      edge_coverage: Int
+      block_coverage: Int
+      function_coverage: Int
+      coverage_map: List<Int>
+      new_coverage: Bool
+    description: "Информация о покрытии"
+
+  # Crashes
+  CrashType:
+    fields:
+      name: String
+    description: "Тип краша: segfault, abort, timeout, asan, ubsan"
+
+  CrashInfo:
+    fields:
+      crash_type: CrashType
+      input: FuzzInput
+      stack_trace: List<String>
+      address: Int
+      signal: Int
+      reproducible: Bool
+    description: "Информация о краше"
+
+  CrashBucket:
+    fields:
+      crashes: List<CrashInfo>
+      unique_stack_hash: List<Int>
+      severity: String
+      count: Int
+    description: "Группа похожих крашей"
+
+  # Статистика
+  FuzzStats:
+    fields:
+      total_executions: Int
+      executions_per_second: Float
+      unique_crashes: Int
+      unique_paths: Int
+      coverage_percent: Float
+      runtime_seconds: Int
+      corpus_size: Int
+    description: "Статистика fuzzing"
+
+  # Конфигурация
+  FuzzConfig:
+    fields:
+      target: String
+      corpus_dir: String
+      output_dir: String
+      timeout_ms: Int
+      memory_limit_mb: Int
+      use_asan: Bool
+      use_ubsan: Bool
+      use_msan: Bool
+      dictionary: List<String>
+      seed: Int
+    description: "Конфигурация fuzzer"
+
+  # Отчёт
+  FuzzReport:
+    fields:
+      config: FuzzConfig
+      stats: FuzzStats
+      crashes: List<CrashBucket>
+      coverage: CoverageInfo
+      recommendations: List<String>
+    description: "Отчёт о fuzzing"
+
+  # Differential fuzzing
+  DifferentialResult:
+    fields:
+      input: FuzzInput
+      outputs: List<List<Int>>
+      implementations: List<String>
+      mismatch: Bool
+      mismatch_details: String
+    description: "Результат differential fuzzing"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# АЛГОРИТМЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+algorithms:
+  # Мутации
+  bit_flip:
+    description: "Переключение одного бита"
+    complexity: "O(1)"
+    pattern: "Mutation"
+    steps:
+      - "Выбрать случайную позицию"
+      - "XOR с 1 << bit_position"
+      - "Вернуть мутированный вход"
+
+  byte_flip:
+    description: "Переключение байта"
+    complexity: "O(1)"
+    pattern: "Mutation"
+    steps:
+      - "Выбрать случайную позицию"
+      - "XOR с 0xFF"
+      - "Вернуть мутированный вход"
+
+  arithmetic:
+    description: "Арифметическая мутация"
+    complexity: "O(1)"
+    pattern: "Mutation"
+    steps:
+      - "Выбрать случайную позицию"
+      - "Интерпретировать как int8/16/32"
+      - "Добавить/вычесть малое число"
+      - "Вернуть мутированный вход"
+
+  havoc:
+    description: "Случайная комбинация мутаций"
+    complexity: "O(k)"
+    pattern: "Mutation"
+    steps:
+      - "Выбрать k случайных мутаций"
+      - "Применить последовательно"
+      - "Вернуть мутированный вход"
+
+  splice:
+    description: "Скрещивание двух входов"
+    complexity: "O(n)"
+    pattern: "Mutation"
+    steps:
+      - "Выбрать два входа из корпуса"
+      - "Выбрать точку разреза"
+      - "Объединить части"
+      - "Вернуть новый вход"
+
+  # Coverage-guided fuzzing
+  coverage_guided_loop:
+    description: "Основной цикл coverage-guided fuzzing"
+    complexity: "O(iterations)"
+    pattern: "Iterative"
+    steps:
+      - "Выбрать вход из корпуса"
+      - "Применить мутацию"
+      - "Выполнить target с инструментацией"
+      - "Собрать coverage"
+      - "Если новое покрытие: добавить в корпус"
+      - "Если краш: сохранить и классифицировать"
+      - "Обновить статистику"
+      - "Повторить"
+
+  # Crash analysis
+  crash_triage:
+    description: "Классификация и дедупликация крашей"
+    complexity: "O(n)"
+    pattern: "Classification"
+    steps:
+      - "Извлечь stack trace"
+      - "Вычислить hash верхних фреймов"
+      - "Найти bucket с таким hash"
+      - "Если нет: создать новый bucket"
+      - "Добавить краш в bucket"
+      - "Определить severity"
+
+  minimize_crash:
+    description: "Минимизация краш-входа"
+    complexity: "O(n log n)"
+    pattern: "Reduction"
+    steps:
+      - "Бинарный поиск минимального размера"
+      - "Для каждого байта:"
+      - "  Попробовать удалить"
+      - "  Если всё ещё крашит: оставить удалённым"
+      - "Вернуть минимальный вход"
+
+  # Differential fuzzing
+  differential_fuzz:
+    description: "Сравнение нескольких реализаций"
+    complexity: "O(n * implementations)"
+    pattern: "Comparison"
+    steps:
+      - "Сгенерировать вход"
+      - "Для каждой реализации:"
+      - "  Выполнить с входом"
+      - "  Сохранить выход"
+      - "Сравнить все выходы"
+      - "Если различаются: записать mismatch"
+
+  # Structure-aware fuzzing
+  structure_aware_mutate:
+    description: "Мутация с учётом структуры"
+    complexity: "O(n)"
+    pattern: "Mutation"
+    steps:
+      - "Распарсить вход по грамматике"
+      - "Выбрать узел AST"
+      - "Мутировать узел (сохраняя валидность)"
+      - "Сериализовать обратно"
+      - "Вернуть мутированный вход"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ПОВЕДЕНИЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: fuzzer_finds_known_bug
+    given: "Target с известным багом"
+    when: "Fuzzing запущен"
+    then: "Баг найден"
+    test_cases:
+      - name: "buffer_overflow"
+        input:
+          target: "vulnerable_function"
+          timeout: 60
+        expected:
+          crash_found: true
+          crash_type: "asan"
+
+  - name: coverage_increases
+    given: "Начальный корпус"
+    when: "Fuzzing выполняется"
+    then: "Coverage растёт"
+    test_cases:
+      - name: "coverage_growth"
+        input:
+          initial_corpus: 10
+          iterations: 10000
+        expected:
+          coverage_increased: true
+
+  - name: crash_minimization_works
+    given: "Краш-вход 1000 байт"
+    when: "Минимизация выполнена"
+    then: "Размер уменьшен"
+    test_cases:
+      - name: "minimize_crash"
+        input:
+          crash_size: 1000
+        expected:
+          minimized_size: 100
+          still_crashes: true
+
+  - name: differential_detects_mismatch
+    given: "Две реализации с разным поведением"
+    when: "Differential fuzzing"
+    then: "Mismatch обнаружен"
+    test_cases:
+      - name: "impl_mismatch"
+        input:
+          impl1: "reference"
+          impl2: "optimized"
+        expected:
+          mismatch_found: true
+
+  - name: corpus_deduplication
+    given: "Корпус с дубликатами"
+    when: "Дедупликация выполнена"
+    then: "Дубликаты удалены"
+    test_cases:
+      - name: "dedup_corpus"
+        input:
+          corpus_size: 1000
+          duplicates: 200
+        expected:
+          final_size: 800
+
+  - name: timeout_handling
+    given: "Target с бесконечным циклом"
+    when: "Fuzzing с timeout"
+    then: "Timeout обнаружен"
+    test_cases:
+      - name: "infinite_loop"
+        input:
+          timeout_ms: 1000
+        expected:
+          timeout_detected: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TARGETS ДЛЯ FUZZING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+fuzz_targets:
+  - name: "fuzz_aes_gcm"
+    description: "Fuzzing AES-GCM encryption/decryption"
+    input_format: "key[32] || nonce[12] || plaintext[*]"
+    sanitizers: [asan, ubsan]
+
+  - name: "fuzz_ml_kem"
+    description: "Fuzzing ML-KEM encaps/decaps"
+    input_format: "seed[32] || message[32]"
+    sanitizers: [asan, ubsan, msan]
+
+  - name: "fuzz_sha3"
+    description: "Fuzzing SHA3-256"
+    input_format: "data[*]"
+    sanitizers: [asan]
+
+  - name: "fuzz_zkp"
+    description: "Fuzzing ZKP prove/verify"
+    input_format: "secret[32] || public_input[*]"
+    sanitizers: [asan, ubsan]
+
+  - name: "fuzz_parser"
+    description: "Fuzzing .vibee parser"
+    input_format: "vibee_source[*]"
+    sanitizers: [asan, ubsan]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS АНАЛИЗ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_analysis:
+  module: "fuzzing_infrastructure"
+
+  predictions:
+    - target: "Executions per second"
+      current: "1000 exec/s"
+      predicted: "100000 exec/s"
+      confidence: 0.80
+      patterns: [D&C, PRE]
+      timeline: "2027"
+      method: "Persistent mode, fork server, parallel fuzzing"
+
+    - target: "Bug detection rate"
+      current: "Manual corpus"
+      predicted: "ML-guided corpus"
+      confidence: 0.70
+      patterns: [MLS]
+      timeline: "2028"
+      method: "Neural network guided mutation"
+
+    - target: "Coverage efficiency"
+      current: "Random mutation"
+      predicted: "Symbolic execution hybrid"
+      confidence: 0.65
+      patterns: [MLS, ALG]
+      timeline: "2028"
+      method: "Concolic execution for hard-to-reach paths"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ИНТЕГРАЦИЯ С ИНСТРУМЕНТАМИ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tool_integration:
+  afl_plus_plus:
+    description: "American Fuzzy Lop++"
+    features:
+      - "Coverage-guided"
+      - "Persistent mode"
+      - "Custom mutators"
+    command: "afl-fuzz -i corpus -o output -- ./target @@"
+
+  libfuzzer:
+    description: "LLVM libFuzzer"
+    features:
+      - "In-process fuzzing"
+      - "Sanitizer integration"
+      - "Corpus merging"
+    command: "./fuzz_target corpus/"
+
+  honggfuzz:
+    description: "Google Honggfuzz"
+    features:
+      - "Hardware-based coverage"
+      - "Persistent mode"
+      - "Crash deduplication"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# OUTPUT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+output:
+  directory: "trinity/output"
+  files:
+    - "fuzzing_infrastructure.zig"
+
+metadata:
+  creation_date: "2026-01-20"
+  author: "Dmitrii Vasilev"
+  sacred_formula: "V = n × 3^k × π^m × φ^p × e^q"
+  golden_identity: "φ² + 1/φ² = 3"

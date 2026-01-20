@@ -1,0 +1,426 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CAVP FULL TEST SUITE - NIST CRYPTOGRAPHIC ALGORITHM VALIDATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# Автор: Дмитрий Васильев
+# Версия: 1.0.0
+# Священная формула: V = n × 3^k × π^m × φ^p × e^q
+# Золотая идентичность: φ² + 1/φ² = 3
+#
+# Полный набор NIST CAVP тестов:
+# - FIPS 197: AES
+# - FIPS 198: HMAC
+# - FIPS 202: SHA-3
+# - FIPS 203: ML-KEM
+# - SP 800-38D: GCM
+# - SP 800-22: Random Number Generation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: cavp_full_suite
+version: "1.0.0"
+language: zig
+module: cavp_full_suite
+
+sacred_constants:
+  phi: 1.618033988749895
+  psi: 3.0
+  golden_identity: "φ² + 1/φ² = 3"
+
+creation_pattern:
+  source: CryptographicPrimitives
+  transformer: NISTValidation
+  result: ComplianceReport
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ТИПЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # Тест-векторы
+  TestVector:
+    fields:
+      id: String
+      algorithm: String
+      key: List<Int>
+      input: List<Int>
+      expected_output: List<Int>
+      additional_data: List<Int>
+    description: "Единичный тест-вектор CAVP"
+
+  TestVectorSet:
+    fields:
+      name: String
+      algorithm: String
+      source: String
+      vectors: List<TestVector>
+      count: Int
+    description: "Набор тест-векторов"
+
+  # Результаты
+  TestResult:
+    fields:
+      vector_id: String
+      passed: Bool
+      expected: List<Int>
+      actual: List<Int>
+      duration_ns: Int
+    description: "Результат одного теста"
+
+  TestSuiteResult:
+    fields:
+      suite_name: String
+      algorithm: String
+      total_tests: Int
+      passed_tests: Int
+      failed_tests: Int
+      pass_rate: Float
+      duration_ms: Int
+      failures: List<TestResult>
+    description: "Результат набора тестов"
+
+  # Статистические тесты
+  StatisticalTestResult:
+    fields:
+      test_name: String
+      p_value: Float
+      passed: Bool
+      sample_size: Int
+      statistic: Float
+    description: "Результат статистического теста"
+
+  SP800_22_Result:
+    fields:
+      frequency_test: StatisticalTestResult
+      block_frequency_test: StatisticalTestResult
+      runs_test: StatisticalTestResult
+      longest_run_test: StatisticalTestResult
+      binary_matrix_rank_test: StatisticalTestResult
+      dft_test: StatisticalTestResult
+      non_overlapping_template_test: StatisticalTestResult
+      overlapping_template_test: StatisticalTestResult
+      universal_test: StatisticalTestResult
+      linear_complexity_test: StatisticalTestResult
+      serial_test: StatisticalTestResult
+      approximate_entropy_test: StatisticalTestResult
+      cumulative_sums_test: StatisticalTestResult
+      random_excursions_test: StatisticalTestResult
+      random_excursions_variant_test: StatisticalTestResult
+      overall_passed: Bool
+    description: "Полный результат SP 800-22"
+
+  # Общий отчёт
+  CAVPReport:
+    fields:
+      timestamp: Int
+      aes_result: TestSuiteResult
+      sha3_result: TestSuiteResult
+      gcm_result: TestSuiteResult
+      ml_kem_result: TestSuiteResult
+      hmac_result: TestSuiteResult
+      sp800_22_result: SP800_22_Result
+      overall_compliance: Bool
+      total_passed: Int
+      total_failed: Int
+    description: "Полный отчёт CAVP валидации"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ТЕСТ-ВЕКТОРЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_vectors:
+  # SHA3-256 (FIPS 202)
+  sha3_256:
+    - id: "SHA3-256-Empty"
+      input: []
+      expected: [0xa7, 0xff, 0xc6, 0xf8, 0xbf, 0x1e, 0xd7, 0x66,
+                 0x51, 0xc1, 0x47, 0x56, 0xa0, 0x61, 0xd6, 0x62,
+                 0xf5, 0x80, 0xff, 0x4d, 0xe4, 0x3b, 0x49, 0xfa,
+                 0x82, 0xd8, 0x0a, 0x4b, 0x80, 0xf8, 0x43, 0x4a]
+
+    - id: "SHA3-256-abc"
+      input: [0x61, 0x62, 0x63]
+      expected: [0x3a, 0x98, 0x5d, 0xa7, 0x4f, 0xe2, 0x25, 0xb2,
+                 0x04, 0x5c, 0x17, 0x2d, 0x6b, 0xd3, 0x90, 0xbd,
+                 0x85, 0x5f, 0x08, 0x6e, 0x3e, 0x9d, 0x52, 0x5b,
+                 0x46, 0xbf, 0xe2, 0x45, 0x11, 0x43, 0x15, 0x32]
+
+    - id: "SHA3-256-448bit"
+      input: "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+      expected: [0x41, 0xc0, 0xdb, 0xa2, 0xa9, 0xd6, 0x24, 0x08,
+                 0x49, 0x10, 0x03, 0x76, 0xa8, 0x23, 0x5e, 0x2c,
+                 0x82, 0xe1, 0xb9, 0x99, 0x8a, 0x99, 0x9e, 0x21,
+                 0xdb, 0x32, 0xdd, 0x97, 0x49, 0x6d, 0x33, 0x76]
+
+  # AES-256-GCM (SP 800-38D)
+  aes_256_gcm:
+    - id: "GCM-Empty"
+      key: [0x00] * 32
+      nonce: [0x00] * 12
+      plaintext: []
+      aad: []
+      ciphertext: []
+      tag: [0x53, 0x0f, 0x8a, 0xfb, 0xc7, 0x45, 0x36, 0xb9,
+            0xa9, 0x63, 0xb4, 0xf1, 0xc4, 0xcb, 0x73, 0x8b]
+
+    - id: "GCM-16byte"
+      key: [0xfe, 0xff, 0xe9, 0x92, 0x86, 0x65, 0x73, 0x1c,
+            0x6d, 0x6a, 0x8f, 0x94, 0x67, 0x30, 0x83, 0x08,
+            0xfe, 0xff, 0xe9, 0x92, 0x86, 0x65, 0x73, 0x1c,
+            0x6d, 0x6a, 0x8f, 0x94, 0x67, 0x30, 0x83, 0x08]
+      nonce: [0xca, 0xfe, 0xba, 0xbe, 0xfa, 0xce, 0xdb, 0xad,
+              0xde, 0xca, 0xf8, 0x88]
+      plaintext: [0xd9, 0x31, 0x32, 0x25, 0xf8, 0x84, 0x06, 0xe5,
+                  0xa5, 0x59, 0x09, 0xc5, 0xaf, 0xf5, 0x26, 0x9a]
+      aad: []
+      tag: [0x64, 0x3a, 0x8c, 0xdc, 0xbf, 0xe5, 0xc0, 0xc9,
+            0x75, 0x98, 0xa2, 0xbd, 0x25, 0x55, 0xd1, 0xaa]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# АЛГОРИТМЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+algorithms:
+  # KAT тесты
+  run_kat_test:
+    description: "Запуск Known Answer Test"
+    complexity: "O(n)"
+    pattern: "Validation"
+    steps:
+      - "Загрузить тест-вектор"
+      - "Выполнить алгоритм с входными данными"
+      - "Сравнить результат с ожидаемым"
+      - "Записать результат (pass/fail)"
+
+  run_mct_test:
+    description: "Запуск Monte Carlo Test"
+    complexity: "O(iterations)"
+    pattern: "Iterative"
+    steps:
+      - "Инициализировать seed"
+      - "Для 100 внешних итераций:"
+      - "  Для 1000 внутренних итераций:"
+      - "    Применить алгоритм"
+      - "    Использовать выход как вход"
+      - "  Записать промежуточный результат"
+      - "Сравнить финальный результат"
+
+  # Статистические тесты SP 800-22
+  frequency_test:
+    description: "Monobit frequency test"
+    complexity: "O(n)"
+    pattern: "Statistical"
+    steps:
+      - "Подсчитать единицы и нули"
+      - "S = |ones - zeros|"
+      - "s_obs = S / sqrt(n)"
+      - "p_value = erfc(s_obs / sqrt(2))"
+      - "Pass если p_value >= 0.01"
+
+  block_frequency_test:
+    description: "Frequency test within M-bit blocks"
+    complexity: "O(n)"
+    pattern: "Statistical"
+    steps:
+      - "Разбить на блоки по M бит"
+      - "Вычислить долю единиц в каждом блоке"
+      - "chi_sq = 4M * sum((pi - 0.5)^2)"
+      - "p_value = igamc(N/2, chi_sq/2)"
+      - "Pass если p_value >= 0.01"
+
+  runs_test:
+    description: "Test for runs of consecutive bits"
+    complexity: "O(n)"
+    pattern: "Statistical"
+    steps:
+      - "Подсчитать runs (последовательности одинаковых бит)"
+      - "Вычислить ожидаемое число runs"
+      - "Вычислить chi-square статистику"
+      - "p_value = erfc(|V - expected| / (2 * sqrt(2n) * pi * (1-pi)))"
+      - "Pass если p_value >= 0.01"
+
+  longest_run_test:
+    description: "Test for longest run of ones"
+    complexity: "O(n)"
+    pattern: "Statistical"
+    steps:
+      - "Разбить на блоки"
+      - "Найти longest run в каждом блоке"
+      - "Классифицировать по категориям"
+      - "Вычислить chi-square"
+      - "Pass если p_value >= 0.01"
+
+  dft_test:
+    description: "Discrete Fourier Transform test"
+    complexity: "O(n log n)"
+    pattern: "Frequency"
+    steps:
+      - "Преобразовать биты в ±1"
+      - "Вычислить DFT"
+      - "Вычислить модули первых n/2 компонент"
+      - "Подсчитать пики выше threshold"
+      - "Pass если число пиков в ожидаемом диапазоне"
+
+  # Полный запуск
+  run_full_cavp:
+    description: "Запуск полного набора CAVP тестов"
+    complexity: "O(n * vectors)"
+    pattern: "Comprehensive"
+    steps:
+      - "Запустить SHA3-256 KAT"
+      - "Запустить AES-256-GCM KAT"
+      - "Запустить ML-KEM-1024 KAT"
+      - "Запустить HMAC-SHA3 KAT"
+      - "Запустить SP 800-22 статистические тесты"
+      - "Агрегировать результаты"
+      - "Сгенерировать отчёт"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ПОВЕДЕНИЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: sha3_256_kat_pass
+    given: "NIST SHA3-256 тест-векторы"
+    when: "Запуск KAT тестов"
+    then: "Все векторы проходят"
+    test_cases:
+      - name: "sha3_empty"
+        input:
+          data: []
+        expected:
+          hash_matches: true
+
+      - name: "sha3_abc"
+        input:
+          data: "abc"
+        expected:
+          hash_matches: true
+
+      - name: "sha3_448bit"
+        input:
+          data: "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+        expected:
+          hash_matches: true
+
+  - name: aes_gcm_kat_pass
+    given: "NIST AES-GCM тест-векторы"
+    when: "Запуск KAT тестов"
+    then: "Все векторы проходят"
+    test_cases:
+      - name: "gcm_empty"
+        input:
+          key: [0] * 32
+          nonce: [0] * 12
+          plaintext: []
+        expected:
+          tag_matches: true
+
+      - name: "gcm_16byte"
+        input:
+          key: "feffe992..."
+          plaintext: "d9313225..."
+        expected:
+          ciphertext_matches: true
+          tag_matches: true
+
+  - name: sp800_22_random_pass
+    given: "Криптографически случайные данные"
+    when: "Запуск SP 800-22 тестов"
+    then: "Все 15 тестов проходят"
+    test_cases:
+      - name: "csprng_1mb"
+        input:
+          source: "std.crypto.random"
+          size: 1000000
+        expected:
+          frequency_pass: true
+          runs_pass: true
+          all_15_pass: true
+
+  - name: sp800_22_biased_fail
+    given: "Смещённые данные (все единицы)"
+    when: "Запуск SP 800-22 тестов"
+    then: "Тесты проваливаются"
+    test_cases:
+      - name: "all_ones"
+        input:
+          data: [0xFF] * 1000
+        expected:
+          frequency_pass: false
+
+  - name: full_cavp_compliance
+    given: "Все криптографические примитивы"
+    when: "Полный CAVP запуск"
+    then: "100% соответствие"
+    test_cases:
+      - name: "full_suite"
+        input:
+          run_all: true
+        expected:
+          sha3_pass_rate: 100
+          aes_gcm_pass_rate: 100
+          sp800_22_pass: true
+
+  - name: test_timing_consistency
+    given: "Одинаковые входные данные"
+    when: "Многократный запуск тестов"
+    then: "Время выполнения стабильно"
+    test_cases:
+      - name: "timing_variance"
+        input:
+          iterations: 100
+        expected:
+          variance_percent: 10
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS АНАЛИЗ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_analysis:
+  module: "cavp_full_suite"
+
+  predictions:
+    - target: "Full CAVP runtime"
+      current: "60 seconds"
+      predicted: "6 seconds"
+      confidence: 0.85
+      patterns: [D&C, PRE]
+      timeline: "2026"
+      method: "Parallel test execution, cached vectors"
+
+    - target: "SP 800-22 runtime"
+      current: "30 seconds"
+      predicted: "3 seconds"
+      confidence: 0.80
+      patterns: [D&C, FDT]
+      timeline: "2026"
+      method: "FFT-based DFT test, parallel statistical tests"
+
+    - target: "Test coverage"
+      current: "Basic KAT"
+      predicted: "Full CAVP + MCT"
+      confidence: 0.90
+      patterns: [PRE]
+      timeline: "2026"
+      method: "Preloaded NIST vector database"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# OUTPUT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+output:
+  directory: "trinity/output"
+  files:
+    - "cavp_full_suite.zig"
+
+metadata:
+  creation_date: "2026-01-20"
+  author: "Dmitrii Vasilev"
+  sacred_formula: "V = n × 3^k × π^m × φ^p × e^q"
+  golden_identity: "φ² + 1/φ² = 3"
+  nist_standards:
+    - "FIPS 197 (AES)"
+    - "FIPS 198 (HMAC)"
+    - "FIPS 202 (SHA-3)"
+    - "FIPS 203 (ML-KEM)"
+    - "SP 800-38D (GCM)"
+    - "SP 800-22 (RNG)"

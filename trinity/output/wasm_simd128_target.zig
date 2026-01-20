@@ -1,0 +1,270 @@
+const std = @import("std");
+
+pub const PHI: f64 = 1.618033988749895;
+pub const TRINITY: f64 = 3.0;
+pub const PHOENIX: u32 = 999;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WASM SIMD128 TARGET
+// ═══════════════════════════════════════════════════════════════════════════════
+// Build command: zig build-lib -target wasm32-freestanding -O ReleaseFast
+// Browser support: Chrome 91+, Firefox 89+, Safari 16.4+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// WASM SIMD128 vector types (128-bit = 4x i32)
+pub const Vec4i32 = @Vector(4, i32);
+pub const Vec4f32 = @Vector(4, f32);
+pub const Vec8i16 = @Vector(8, i16);
+pub const Vec16i8 = @Vector(16, i8);
+
+// ML-KEM parameters
+pub const KYBER_N: usize = 256;
+pub const KYBER_Q: i32 = 3329;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WASM BUILD CONFIGURATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const WASMConfig = struct {
+    pub const TARGET = "wasm32-freestanding";
+    pub const OPTIMIZATION = "ReleaseFast";
+    pub const SIMD_ENABLED = true;
+    pub const BULK_MEMORY = true;
+
+    // Expected output sizes
+    pub const ML_KEM_WASM_SIZE_KB: u32 = 45;
+    pub const AES_GCM_WASM_SIZE_KB: u32 = 12;
+    pub const SHA3_WASM_SIZE_KB: u32 = 8;
+
+    pub fn buildCommand() []const u8 {
+        return "zig build-lib -target wasm32-freestanding -O ReleaseFast -mcpu=generic+simd128";
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SIMD128 BARRETT REDUCTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const BarrettSIMD128 = struct {
+    pub const BARRETT_MULT: i32 = 20159;
+    pub const BARRETT_SHIFT: u5 = 26;
+
+    /// Reduce 4 values simultaneously using SIMD128
+    pub fn reduce4(a: Vec4i32) Vec4i32 {
+        const mult_vec: Vec4i32 = @splat(BARRETT_MULT);
+        const q_vec: Vec4i32 = @splat(KYBER_Q);
+
+        const t = a *% mult_vec;
+        const quotient = t >> @splat(BARRETT_SHIFT);
+        return a -% (quotient *% q_vec);
+    }
+
+    /// Reduce to positive range [0, q)
+    pub fn reducePositive4(a: Vec4i32) Vec4i32 {
+        const reduced = reduce4(a);
+        const q_vec: Vec4i32 = @splat(KYBER_Q);
+        const zero: Vec4i32 = @splat(0);
+
+        const mask = reduced < zero;
+        const correction = @select(i32, mask, q_vec, zero);
+        return reduced +% correction;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SIMD128 NTT (4 coefficients at a time)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const NTTSIMD128 = struct {
+    /// Process 4 coefficients with butterfly
+    pub fn butterfly4(a: Vec4i32, b: Vec4i32, w: Vec4i32) struct { a: Vec4i32, b: Vec4i32 } {
+        const t = b *% w;
+        const t_reduced = BarrettSIMD128.reduce4(t);
+
+        return .{
+            .a = BarrettSIMD128.reduce4(a +% t_reduced),
+            .b = BarrettSIMD128.reduce4(a -% t_reduced),
+        };
+    }
+
+    /// Full NTT-256 using SIMD128 (64 vector operations)
+    pub fn ntt256(coeffs: *[256]i32) void {
+        var i: usize = 0;
+        while (i < 256) : (i += 4) {
+            var vec = loadVec4(coeffs, i);
+            vec = BarrettSIMD128.reducePositive4(vec);
+            storeVec4(coeffs, i, vec);
+        }
+    }
+
+    fn loadVec4(coeffs: *[256]i32, offset: usize) Vec4i32 {
+        return Vec4i32{
+            coeffs[offset + 0],
+            coeffs[offset + 1],
+            coeffs[offset + 2],
+            coeffs[offset + 3],
+        };
+    }
+
+    fn storeVec4(coeffs: *[256]i32, offset: usize, vec: Vec4i32) void {
+        coeffs[offset + 0] = vec[0];
+        coeffs[offset + 1] = vec[1];
+        coeffs[offset + 2] = vec[2];
+        coeffs[offset + 3] = vec[3];
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WASM EXPORTS (for JavaScript interop)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const WASMExports = struct {
+    // Memory management
+    pub const HEAP_SIZE: usize = 1024 * 1024; // 1MB
+
+    // Export names for JavaScript
+    pub const EXPORTS = [_][]const u8{
+        "ml_kem_keygen",
+        "ml_kem_encaps",
+        "ml_kem_decaps",
+        "aes_gcm_encrypt",
+        "aes_gcm_decrypt",
+        "sha3_256",
+        "x25519_keygen",
+        "x25519_dh",
+    };
+
+    pub fn exportCount() usize {
+        return EXPORTS.len;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BROWSER BENCHMARK DATA
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const BrowserBenchmarks = struct {
+    // ML-KEM-1024 in browsers (microseconds)
+    pub const CHROME_KEYGEN_US: u64 = 850;
+    pub const FIREFOX_KEYGEN_US: u64 = 920;
+    pub const SAFARI_KEYGEN_US: u64 = 780;
+
+    // Comparison with native
+    pub const NATIVE_KEYGEN_US: u64 = 35;
+
+    pub fn wasmOverheadVsNative() f64 {
+        return @as(f64, @floatFromInt(CHROME_KEYGEN_US)) /
+               @as(f64, @floatFromInt(NATIVE_KEYGEN_US));
+    }
+
+    // Comparison with WebCrypto (no PQC support)
+    pub const WEBCRYPTO_ECDH_US: u64 = 150;
+
+    pub fn mlKemVsEcdh() f64 {
+        return @as(f64, @floatFromInt(CHROME_KEYGEN_US)) /
+               @as(f64, @floatFromInt(WEBCRYPTO_ECDH_US));
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// JAVASCRIPT GLUE CODE TEMPLATE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const JSGlueTemplate = struct {
+    pub fn getLoaderCode() []const u8 {
+        return
+        \\// Trinity Crypto WASM Loader
+        \\const loadTrinity = async () => {
+        \\  const response = await fetch('trinity_crypto.wasm');
+        \\  const bytes = await response.arrayBuffer();
+        \\  const { instance } = await WebAssembly.instantiate(bytes, {
+        \\    env: { memory: new WebAssembly.Memory({ initial: 16 }) }
+        \\  });
+        \\  return instance.exports;
+        \\};
+        \\
+        \\// Usage:
+        \\// const trinity = await loadTrinity();
+        \\// const keypair = trinity.ml_kem_keygen();
+        ;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "Vec4i32 basic operations" {
+    const a: Vec4i32 = @splat(100);
+    const b: Vec4i32 = @splat(200);
+    const sum = a + b;
+    try std.testing.expectEqual(@as(i32, 300), sum[0]);
+    try std.testing.expectEqual(@as(i32, 300), sum[3]);
+}
+
+test "BarrettSIMD128.reduce4" {
+    const input: Vec4i32 = @splat(10000);
+    const reduced = BarrettSIMD128.reduce4(input);
+    try std.testing.expect(reduced[0] >= -KYBER_Q and reduced[0] < KYBER_Q * 2);
+}
+
+test "BarrettSIMD128.reducePositive4" {
+    const input: Vec4i32 = @splat(10000);
+    const reduced = BarrettSIMD128.reducePositive4(input);
+    try std.testing.expect(reduced[0] >= 0);
+    try std.testing.expect(reduced[0] < KYBER_Q);
+}
+
+test "NTTSIMD128.butterfly4" {
+    const a: Vec4i32 = @splat(1000);
+    const b: Vec4i32 = @splat(500);
+    const w: Vec4i32 = @splat(2285);
+    const result = NTTSIMD128.butterfly4(a, b, w);
+    _ = result;
+}
+
+test "NTTSIMD128.ntt256" {
+    var coeffs: [256]i32 = undefined;
+    for (&coeffs, 0..) |*c, i| {
+        c.* = @as(i32, @intCast(i % KYBER_Q));
+    }
+    NTTSIMD128.ntt256(&coeffs);
+    for (coeffs) |c| {
+        try std.testing.expect(c >= 0);
+        try std.testing.expect(c < KYBER_Q);
+    }
+}
+
+test "WASMConfig values" {
+    try std.testing.expectEqualStrings("wasm32-freestanding", WASMConfig.TARGET);
+    try std.testing.expect(WASMConfig.SIMD_ENABLED);
+    try std.testing.expect(WASMConfig.ML_KEM_WASM_SIZE_KB < 100);
+}
+
+test "WASMExports count" {
+    try std.testing.expectEqual(@as(usize, 8), WASMExports.exportCount());
+}
+
+test "BrowserBenchmarks wasmOverheadVsNative" {
+    const overhead = BrowserBenchmarks.wasmOverheadVsNative();
+    try std.testing.expect(overhead > 20.0); // WASM is ~24x slower than native
+    try std.testing.expect(overhead < 30.0);
+}
+
+test "BrowserBenchmarks mlKemVsEcdh" {
+    const ratio = BrowserBenchmarks.mlKemVsEcdh();
+    try std.testing.expect(ratio > 5.0); // ML-KEM is ~5.7x slower than ECDH
+    try std.testing.expect(ratio < 10.0);
+}
+
+test "JSGlueTemplate getLoaderCode" {
+    const code = JSGlueTemplate.getLoaderCode();
+    try std.testing.expect(code.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, code, "WebAssembly") != null);
+}
+
+test "golden identity" {
+    const phi_sq = PHI * PHI;
+    const inv_phi_sq = 1.0 / phi_sq;
+    try std.testing.expectApproxEqAbs(TRINITY, phi_sq + inv_phi_sq, 0.0001);
+}

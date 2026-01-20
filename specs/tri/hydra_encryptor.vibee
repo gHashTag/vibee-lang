@@ -1,0 +1,606 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ⚠️  ВНИМАНИЕ: ТОЛЬКО СПЕЦИФИКАЦИЯ - НЕ ДЛЯ ПРОДАКШЕНА! ⚠️
+# ═══════════════════════════════════════════════════════════════════════════════
+# Этот файл содержит ТОЛЬКО спецификацию шифратора.
+# Lorenz PRNG НЕ является криптографически стойким ГПСЧ!
+# ML-KEM и AES-GCM НЕ реализованы - только структуры данных.
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# HYDRA ENCRYPTOR - HEAD 1 OF TRINITY CRYPTO HYDRA
+# ═══════════════════════════════════════════════════════════════════════════════
+# Author: Dmitrii Vasilev
+# Version: 1.0.0
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+#
+# Head 1: Encryptor
+# - Lorenz attractor chaotic mixing
+# - ML-KEM-1024 lattice-based key encapsulation
+# - AES-256-GCM authenticated encryption
+# - Dynamic key rotation based on entropy
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: hydra_encryptor
+version: "1.0.0"
+language: zig
+module: hydra_encryptor
+
+sacred_constants:
+  phi: 1.618033988749895
+  psi: 3.0
+  pi: 3.141592653589793
+  e: 2.718281828459045
+  lorenz_sigma: 10.0
+  lorenz_rho: 28.0
+  lorenz_beta: 2.666666666666667
+  dt: 0.01
+  chaotic_warmup: 1000
+  ml_kem_dimension: 1024
+  ml_kem_modulus: 3329
+  aes_key_bits: 256
+  gcm_nonce_bits: 96
+  gcm_tag_bits: 128
+
+creation_pattern:
+  source: PlaintextWithEntropy
+  transformer: ChaoticLatticeFusion
+  result: AuthenticatedCiphertext
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # Lorenz Chaotic System
+  LorenzState:
+    fields:
+      x: Float
+      y: Float
+      z: Float
+      iteration: Int
+    description: "State of Lorenz attractor"
+
+  LorenzConfig:
+    fields:
+      sigma: Float
+      rho: Float
+      beta: Float
+      dt: Float
+      warmup_iterations: Int
+    description: "Lorenz system parameters"
+
+  ChaoticPRNG:
+    fields:
+      state: LorenzState
+      config: LorenzConfig
+      buffer: List<Int>
+      buffer_index: Int
+    description: "Chaotic pseudo-random number generator"
+
+  # ML-KEM (Kyber) structures
+  Polynomial:
+    fields:
+      coefficients: List<Int>
+      degree: Int
+    description: "Polynomial in Z_q[X]/(X^n + 1)"
+
+  PolynomialVector:
+    fields:
+      polynomials: List<Polynomial>
+      dimension: Int
+    description: "Vector of polynomials"
+
+  MLKEMPublicKey:
+    fields:
+      rho: List<Int>
+      t: PolynomialVector
+    description: "ML-KEM public key (ρ, t)"
+
+  MLKEMPrivateKey:
+    fields:
+      s: PolynomialVector
+      public_key: MLKEMPublicKey
+      z: List<Int>
+    description: "ML-KEM private key with implicit reject value"
+
+  MLKEMCiphertext:
+    fields:
+      u: PolynomialVector
+      v: Polynomial
+    description: "ML-KEM ciphertext (u, v)"
+
+  # AES-GCM structures
+  AESKey:
+    fields:
+      key_bytes: List<Int>
+      expanded_key: List<Int>
+    description: "AES-256 key with expansion"
+
+  GCMNonce:
+    fields:
+      nonce_bytes: List<Int>
+    description: "96-bit GCM nonce"
+
+  GCMTag:
+    fields:
+      tag_bytes: List<Int>
+    description: "128-bit GCM authentication tag"
+
+  # Encryptor state
+  EncryptorState:
+    fields:
+      chaotic_prng: ChaoticPRNG
+      ml_kem_keypair: MLKEMPrivateKey
+      session_key: AESKey
+      nonce_counter: Int
+      entropy_pool: List<Int>
+      ready: Bool
+    description: "Complete encryptor state"
+
+  # Input/Output
+  EncryptionInput:
+    fields:
+      plaintext: List<Int>
+      additional_data: List<Int>
+      entropy_seed: List<Int>
+    description: "Input for encryption"
+
+  EncryptionOutput:
+    fields:
+      ciphertext: List<Int>
+      nonce: GCMNonce
+      tag: GCMTag
+      encapsulated_key: MLKEMCiphertext
+      chaotic_seed_hash: List<Int>
+      timestamp: Int
+    description: "Complete encryption output"
+
+  # Entropy management
+  EntropySource:
+    fields:
+      hardware_entropy: List<Int>
+      timestamp_entropy: Int
+      chaotic_entropy: List<Int>
+      combined_entropy: List<Int>
+    description: "Combined entropy sources"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ALGORITHMS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+algorithms:
+  # Lorenz Attractor
+  lorenz_init:
+    description: "Initialize Lorenz attractor from seed"
+    complexity: "O(warmup)"
+    pattern: "Iterative"
+    steps:
+      - "Parse seed into initial (x, y, z)"
+      - "Set σ=10, ρ=28, β=8/3"
+      - "Run warmup_iterations to reach attractor"
+      - "Return initialized state"
+
+  lorenz_evolve:
+    description: "Evolve Lorenz state by one step"
+    complexity: "O(1)"
+    pattern: "Runge-Kutta"
+    steps:
+      - "k1_x = σ × (y - x)"
+      - "k1_y = x × (ρ - z) - y"
+      - "k1_z = x × y - β × z"
+      - "Apply RK4 integration"
+      - "Return new state"
+
+  chaotic_bytes:
+    description: "Generate n bytes from chaotic state"
+    complexity: "O(n)"
+    pattern: "Iterative"
+    steps:
+      - "For each byte needed:"
+      - "  Evolve Lorenz 10 steps"
+      - "  Extract fractional part of x"
+      - "  Scale to [0, 255]"
+      - "  Apply SHA3 mixing every 32 bytes"
+      - "Return byte array"
+
+  # ML-KEM Operations
+  ntt_forward:
+    description: "Number Theoretic Transform"
+    complexity: "O(n log n)"
+    pattern: "D&C"
+    steps:
+      - "Apply Cooley-Tukey butterfly"
+      - "Use precomputed roots of unity"
+      - "Return NTT representation"
+
+  ntt_inverse:
+    description: "Inverse NTT"
+    complexity: "O(n log n)"
+    pattern: "D&C"
+    steps:
+      - "Apply inverse butterfly"
+      - "Multiply by n^(-1) mod q"
+      - "Return polynomial representation"
+
+  sample_cbd:
+    description: "Sample from centered binomial distribution"
+    complexity: "O(n)"
+    pattern: "Statistical"
+    steps:
+      - "For each coefficient:"
+      - "  Sample 2η bits"
+      - "  Count ones in each half"
+      - "  Coefficient = diff of counts"
+      - "Return polynomial"
+
+  ml_kem_keygen:
+    description: "Generate ML-KEM-1024 keypair"
+    complexity: "O(k² × n log n)"
+    pattern: "Lattice"
+    steps:
+      - "Sample ρ, σ uniformly random"
+      - "Generate A from ρ via SHAKE-128"
+      - "Sample s, e from CBD(η₁)"
+      - "Compute t = NTT(A × s + e)"
+      - "Return (pk=(ρ,t), sk=(s,pk,z))"
+
+  ml_kem_encaps:
+    description: "Encapsulate shared secret"
+    complexity: "O(k² × n log n)"
+    pattern: "Lattice"
+    steps:
+      - "Sample random m ∈ {0,1}^256"
+      - "(K, r) = G(m || H(pk))"
+      - "Sample r, e₁, e₂ from r"
+      - "u = NTT⁻¹(A^T × r) + e₁"
+      - "v = NTT⁻¹(t^T × r) + e₂ + Decompress(m)"
+      - "c = (Compress(u), Compress(v))"
+      - "K = KDF(K || H(c))"
+      - "Return (c, K)"
+
+  # AES-256-GCM
+  aes_key_expansion:
+    description: "Expand 256-bit key to round keys"
+    complexity: "O(1)"
+    pattern: "Iterative"
+    steps:
+      - "Apply Rijndael key schedule"
+      - "Generate 15 round keys"
+      - "Return expanded key"
+
+  aes_encrypt_block:
+    description: "Encrypt single 128-bit block"
+    complexity: "O(1)"
+    pattern: "SPN"
+    steps:
+      - "AddRoundKey(state, key[0])"
+      - "For round 1 to 13:"
+      - "  SubBytes, ShiftRows, MixColumns, AddRoundKey"
+      - "SubBytes, ShiftRows, AddRoundKey(key[14])"
+      - "Return ciphertext block"
+
+  gcm_encrypt:
+    description: "AES-GCM authenticated encryption"
+    complexity: "O(n)"
+    pattern: "AEAD"
+    steps:
+      - "Generate counter block from nonce"
+      - "Encrypt plaintext with CTR mode"
+      - "Compute GHASH over AAD and ciphertext"
+      - "Generate tag = GHASH ⊕ E(K, J₀)"
+      - "Return (ciphertext, tag)"
+
+  # Hybrid encryption
+  hybrid_encrypt:
+    description: "Full hybrid encryption pipeline"
+    complexity: "O(n)"
+    pattern: "Hybrid"
+    steps:
+      - "Generate chaotic nonce (96 bits)"
+      - "Apply chaotic pre-mixing to plaintext"
+      - "Encapsulate session key via ML-KEM"
+      - "Derive AES key from shared secret"
+      - "Encrypt with AES-256-GCM"
+      - "Hash chaotic seed for metadata"
+      - "Return complete output"
+
+  chaotic_premix:
+    description: "Apply chaotic transformation to plaintext"
+    complexity: "O(n)"
+    pattern: "Confusion"
+    steps:
+      - "Generate chaotic permutation"
+      - "XOR plaintext with chaotic stream"
+      - "Apply byte-level permutation"
+      - "Return mixed plaintext"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # Initialization
+  - name: encryptor_init
+    given: "Entropy seed provided"
+    when: "Encryptor initialization requested"
+    then: "All components initialized and ready"
+    test_cases:
+      - name: "init_with_seed"
+        input:
+          seed: [1, 2, 3, 4, 5, 6, 7, 8]
+        expected:
+          lorenz_initialized: true
+          ml_kem_keypair_generated: true
+          ready: true
+
+      - name: "init_deterministic"
+        input:
+          seed: [42, 42, 42, 42]
+        expected:
+          reproducible: true
+
+  # Lorenz PRNG
+  - name: lorenz_entropy_quality
+    given: "Initialized Lorenz PRNG"
+    when: "1MB of bytes generated"
+    then: "Passes NIST SP 800-22 tests"
+    test_cases:
+      - name: "frequency_test"
+        input:
+          bytes: 1000000
+        expected:
+          p_value: 0.01
+          pass: true
+
+      - name: "runs_test"
+        input:
+          bytes: 1000000
+        expected:
+          p_value: 0.01
+          pass: true
+
+  - name: lorenz_sensitivity
+    given: "Two seeds differing by 10^-15"
+    when: "1000 iterations evolved"
+    then: "States completely diverged"
+    test_cases:
+      - name: "butterfly_effect"
+        input:
+          seed1: [1.0, 1.0, 1.0]
+          seed2: [1.000000000000001, 1.0, 1.0]
+          iterations: 1000
+        expected:
+          correlation: 0.0
+          tolerance: 0.01
+
+  # ML-KEM
+  - name: ml_kem_correctness
+    given: "Valid ML-KEM keypair"
+    when: "Encapsulation and decapsulation performed"
+    then: "Same shared secret recovered"
+    test_cases:
+      - name: "encaps_decaps_roundtrip"
+        input:
+          keypair: "generated"
+        expected:
+          shared_secrets_match: true
+
+  - name: ml_kem_ciphertext_size
+    given: "ML-KEM-1024 parameters"
+    when: "Ciphertext generated"
+    then: "Size matches specification"
+    test_cases:
+      - name: "ciphertext_1568_bytes"
+        input:
+          dimension: 1024
+        expected:
+          ciphertext_bytes: 1568
+
+  # AES-GCM
+  - name: aes_gcm_nist_vectors
+    given: "NIST test vectors"
+    when: "Encryption performed"
+    then: "Output matches expected"
+    test_cases:
+      - name: "gcm_test_case_1"
+        input:
+          key: "00000000000000000000000000000000"
+          nonce: "000000000000000000000000"
+          plaintext: ""
+          aad: ""
+        expected:
+          ciphertext: ""
+          tag: "58e2fccefa7e3061367f1d57a4e7455a"
+
+      - name: "gcm_test_case_2"
+        input:
+          key: "feffe9928665731c6d6a8f9467308308"
+          nonce: "cafebabefacedbaddecaf888"
+          plaintext: "d9313225f88406e5a55909c5aff5269a"
+          aad: ""
+        expected:
+          tag_valid: true
+
+  - name: aes_gcm_authentication
+    given: "Ciphertext with valid tag"
+    when: "Tag verification performed"
+    then: "Verification succeeds"
+    test_cases:
+      - name: "valid_tag"
+        input:
+          tampered: false
+        expected:
+          verified: true
+
+      - name: "tampered_ciphertext"
+        input:
+          tampered: true
+        expected:
+          verified: false
+
+  # Hybrid encryption
+  - name: hybrid_roundtrip
+    given: "Plaintext message"
+    when: "Hybrid encryption and decryption"
+    then: "Original recovered exactly"
+    test_cases:
+      - name: "small_message"
+        input:
+          plaintext: "φ² + 1/φ² = 3"
+        expected:
+          recovered: "φ² + 1/φ² = 3"
+
+      - name: "large_message"
+        input:
+          plaintext_size: 1048576
+        expected:
+          recovered_matches: true
+
+  - name: hybrid_avalanche
+    given: "Two plaintexts differing by 1 bit"
+    when: "Both encrypted"
+    then: "Ciphertexts differ by ~50%"
+    test_cases:
+      - name: "single_bit_flip"
+        input:
+          plaintext1: [0x00, 0x00, 0x00, 0x00]
+          plaintext2: [0x01, 0x00, 0x00, 0x00]
+        expected:
+          bit_difference_percent: 50
+          tolerance: 5
+
+  - name: hybrid_performance
+    given: "1KB plaintext"
+    when: "Encryption performed"
+    then: "Completes in <1ms"
+    test_cases:
+      - name: "latency_1kb"
+        input:
+          plaintext_size: 1024
+        expected:
+          latency_us: 1000
+
+      - name: "throughput"
+        input:
+          plaintext_size: 1048576
+        expected:
+          throughput_mbps: 1000
+
+  # Chaotic pre-mixing
+  - name: chaotic_diffusion
+    given: "Plaintext with pattern"
+    when: "Chaotic pre-mixing applied"
+    then: "Pattern completely destroyed"
+    test_cases:
+      - name: "pattern_destruction"
+        input:
+          plaintext: [0xAA, 0xAA, 0xAA, 0xAA]
+        expected:
+          entropy_increase: true
+          pattern_correlation: 0.0
+
+  # Entropy management
+  - name: entropy_combination
+    given: "Multiple entropy sources"
+    when: "Combined"
+    then: "Entropy at least max of inputs"
+    test_cases:
+      - name: "entropy_floor"
+        input:
+          source1_entropy: 128
+          source2_entropy: 64
+        expected:
+          combined_entropy: 128
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_analysis:
+  module: "hydra_encryptor"
+
+  predictions:
+    - target: "Lorenz PRNG throughput"
+      current: "50 MB/s"
+      predicted: "500 MB/s"
+      confidence: 0.80
+      patterns: [PRE, ALG]
+      timeline: "2026"
+      method: "SIMD vectorization, precomputed tables"
+
+    - target: "NTT performance"
+      current: "10 μs"
+      predicted: "1 μs"
+      confidence: 0.85
+      patterns: [PRE, D&C]
+      timeline: "2026"
+      method: "AVX-512 NTT, cache-optimized butterfly"
+
+    - target: "AES-GCM throughput"
+      current: "5 GB/s"
+      predicted: "20 GB/s"
+      confidence: 0.90
+      patterns: [PRE]
+      timeline: "2026"
+      method: "AES-NI + PCLMULQDQ hardware acceleration"
+
+    - target: "Chaotic pre-mix latency"
+      current: "100 μs"
+      predicted: "10 μs"
+      confidence: 0.75
+      patterns: [ALG, HSH]
+      timeline: "2027"
+      method: "Fused permutation-XOR operations"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECURITY PROPERTIES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+security_properties:
+  - name: "IND-CCA2 security"
+    description: "Indistinguishability under adaptive chosen-ciphertext attack"
+    provided_by: ["ML-KEM", "AES-GCM"]
+
+  - name: "Post-quantum security"
+    description: "Resistant to quantum computer attacks"
+    provided_by: ["ML-KEM-1024"]
+    security_level: "NIST Level 5"
+
+  - name: "Authenticated encryption"
+    description: "Ciphertext integrity and authenticity"
+    provided_by: ["AES-256-GCM"]
+
+  - name: "Forward secrecy"
+    description: "Past sessions secure if long-term key compromised"
+    provided_by: ["Ephemeral ML-KEM encapsulation"]
+
+  - name: "Entropy amplification"
+    description: "Chaotic mixing increases effective entropy"
+    provided_by: ["Lorenz PRNG", "Chaotic pre-mixing"]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANT-TIME REQUIREMENTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constant_time_operations:
+  - "ML-KEM decapsulation (implicit reject)"
+  - "AES key expansion"
+  - "AES block encryption"
+  - "GCM tag computation"
+  - "Polynomial comparison"
+  - "Secret key operations"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# OUTPUT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+output:
+  directory: "trinity/output"
+  files:
+    - "hydra_encryptor.zig"
+
+metadata:
+  creation_date: "2026-01-20"
+  author: "Dmitrii Vasilev"
+  sacred_formula: "V = n × 3^k × π^m × φ^p × e^q"
+  golden_identity: "φ² + 1/φ² = 3"

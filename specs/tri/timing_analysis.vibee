@@ -1,0 +1,382 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIMING ANALYSIS - SIDE-CHANNEL DETECTION
+# ═══════════════════════════════════════════════════════════════════════════════
+# Автор: Дмитрий Васильев
+# Версия: 1.0.0
+# Священная формула: V = n × 3^k × π^m × φ^p × e^q
+# Золотая идентичность: φ² + 1/φ² = 3
+#
+# Инструменты для обнаружения timing side-channels:
+# - Статистический анализ времени выполнения
+# - Корреляционный анализ с входными данными
+# - Детекция data-dependent branches
+# - Интеграция с ctgrind/valgrind
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: timing_analysis
+version: "1.0.0"
+language: zig
+module: timing_analysis
+
+sacred_constants:
+  phi: 1.618033988749895
+  psi: 3.0
+  golden_identity: "φ² + 1/φ² = 3"
+
+creation_pattern:
+  source: CryptographicOperation
+  transformer: TimingMeasurement
+  result: SideChannelReport
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ТИПЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # Измерения
+  TimingSample:
+    fields:
+      input_hash: List<Int>
+      duration_ns: Int
+      cpu_cycles: Int
+      cache_misses: Int
+    description: "Единичное измерение времени"
+
+  TimingDataset:
+    fields:
+      samples: List<TimingSample>
+      operation_name: String
+      sample_count: Int
+      input_size: Int
+    description: "Набор измерений"
+
+  # Статистика
+  TimingStatistics:
+    fields:
+      mean_ns: Float
+      std_dev_ns: Float
+      min_ns: Int
+      max_ns: Int
+      median_ns: Int
+      percentile_95: Int
+      percentile_99: Int
+      coefficient_of_variation: Float
+    description: "Статистика времени выполнения"
+
+  # Корреляционный анализ
+  CorrelationResult:
+    fields:
+      input_bit_correlations: List<Float>
+      key_bit_correlations: List<Float>
+      hamming_weight_correlation: Float
+      max_correlation: Float
+      significant_correlations: Int
+    description: "Результат корреляционного анализа"
+
+  # Детекция утечек
+  LeakageDetection:
+    fields:
+      t_statistic: Float
+      p_value: Float
+      leaked_bits: List<Int>
+      confidence: Float
+      vulnerable: Bool
+    description: "Результат детекции утечек"
+
+  # Welch's t-test
+  TTestResult:
+    fields:
+      t_value: Float
+      degrees_of_freedom: Float
+      p_value: Float
+      significant: Bool
+    description: "Результат t-теста"
+
+  # Отчёт
+  TimingReport:
+    fields:
+      operation: String
+      statistics: TimingStatistics
+      correlation: CorrelationResult
+      leakage: LeakageDetection
+      constant_time: Bool
+      recommendations: List<String>
+    description: "Полный отчёт timing analysis"
+
+  # Конфигурация
+  AnalysisConfig:
+    fields:
+      sample_count: Int
+      warmup_iterations: Int
+      correlation_threshold: Float
+      significance_level: Float
+      use_rdtsc: Bool
+    description: "Конфигурация анализа"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# АЛГОРИТМЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+algorithms:
+  # Измерение времени
+  measure_timing:
+    description: "Точное измерение времени выполнения"
+    complexity: "O(1)"
+    pattern: "Measurement"
+    steps:
+      - "Сбросить кэш (опционально)"
+      - "Барьер памяти"
+      - "Прочитать TSC (RDTSC)"
+      - "Выполнить операцию"
+      - "Барьер памяти"
+      - "Прочитать TSC"
+      - "Вычислить разницу"
+      - "Вернуть cycles/nanoseconds"
+
+  collect_samples:
+    description: "Сбор статистически значимого набора измерений"
+    complexity: "O(n)"
+    pattern: "Statistical"
+    steps:
+      - "Прогрев (warmup_iterations)"
+      - "Для каждого sample:"
+      - "  Сгенерировать случайный вход"
+      - "  Измерить время выполнения"
+      - "  Записать (input_hash, timing)"
+      - "Вернуть dataset"
+
+  # Статистический анализ
+  compute_statistics:
+    description: "Вычисление статистик времени"
+    complexity: "O(n log n)"
+    pattern: "Statistical"
+    steps:
+      - "Сортировать измерения"
+      - "mean = sum(samples) / n"
+      - "std_dev = sqrt(sum((x - mean)^2) / n)"
+      - "median = samples[n/2]"
+      - "percentile_95 = samples[0.95*n]"
+      - "cv = std_dev / mean"
+      - "Вернуть статистики"
+
+  # Корреляционный анализ
+  compute_correlations:
+    description: "Вычисление корреляций timing с входными данными"
+    complexity: "O(n * bits)"
+    pattern: "Statistical"
+    steps:
+      - "Для каждого бита входа:"
+      - "  Разделить samples на группы (bit=0, bit=1)"
+      - "  Вычислить Pearson correlation"
+      - "  Записать корреляцию"
+      - "Вычислить корреляцию с Hamming weight"
+      - "Найти максимальную корреляцию"
+      - "Вернуть результат"
+
+  # Welch's t-test
+  welch_t_test:
+    description: "Welch's t-test для двух групп"
+    complexity: "O(n)"
+    pattern: "Statistical"
+    steps:
+      - "Вычислить mean1, mean2"
+      - "Вычислить var1, var2"
+      - "t = (mean1 - mean2) / sqrt(var1/n1 + var2/n2)"
+      - "df = (var1/n1 + var2/n2)^2 / ..."
+      - "p_value = 2 * (1 - t_cdf(|t|, df))"
+      - "Вернуть (t, df, p_value)"
+
+  # Leakage detection (TVLA)
+  tvla_test:
+    description: "Test Vector Leakage Assessment"
+    complexity: "O(n)"
+    pattern: "Statistical"
+    steps:
+      - "Разделить данные на fixed и random"
+      - "Для каждой точки времени:"
+      - "  Выполнить Welch's t-test"
+      - "  Если |t| > 4.5: утечка обнаружена"
+      - "Агрегировать результаты"
+      - "Вернуть отчёт"
+
+  # Dudect-style analysis
+  dudect_analysis:
+    description: "Dudect-style constant-time verification"
+    complexity: "O(n)"
+    pattern: "Statistical"
+    steps:
+      - "Собрать timing для класса A (fixed input)"
+      - "Собрать timing для класса B (random input)"
+      - "Применить percentile cropping (5%)"
+      - "Выполнить t-test"
+      - "Если |t| > threshold: не constant-time"
+      - "Вернуть результат"
+
+  # Полный анализ
+  full_timing_analysis:
+    description: "Полный timing analysis операции"
+    complexity: "O(n * bits)"
+    pattern: "Comprehensive"
+    steps:
+      - "Собрать samples"
+      - "Вычислить статистики"
+      - "Выполнить корреляционный анализ"
+      - "Выполнить TVLA"
+      - "Выполнить dudect"
+      - "Сгенерировать рекомендации"
+      - "Вернуть отчёт"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ПОВЕДЕНИЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: constant_time_operation_passes
+    given: "Constant-time криптографическая операция"
+    when: "Timing analysis выполнен"
+    then: "Корреляции ниже порога"
+    test_cases:
+      - name: "aes_constant_time"
+        input:
+          operation: "AES-256 encryption"
+          samples: 10000
+        expected:
+          max_correlation: 0.01
+          constant_time: true
+
+      - name: "comparison_constant_time"
+        input:
+          operation: "crypto.utils.timingSafeEql"
+          samples: 10000
+        expected:
+          max_correlation: 0.01
+          constant_time: true
+
+  - name: variable_time_operation_detected
+    given: "Variable-time операция"
+    when: "Timing analysis выполнен"
+    then: "Утечка обнаружена"
+    test_cases:
+      - name: "naive_comparison"
+        input:
+          operation: "std.mem.eql (early exit)"
+          samples: 10000
+        expected:
+          constant_time: false
+          correlation_detected: true
+
+  - name: tvla_detects_leakage
+    given: "Операция с data-dependent timing"
+    when: "TVLA тест выполнен"
+    then: "t-statistic > 4.5"
+    test_cases:
+      - name: "branch_on_secret"
+        input:
+          operation: "if (secret_bit) slow_path else fast_path"
+        expected:
+          t_statistic: 4.5
+          vulnerable: true
+
+  - name: statistics_computed_correctly
+    given: "Набор измерений"
+    when: "Статистики вычислены"
+    then: "Значения корректны"
+    test_cases:
+      - name: "known_distribution"
+        input:
+          samples: [100, 100, 100, 100, 100]
+        expected:
+          mean: 100
+          std_dev: 0
+          cv: 0
+
+  - name: correlation_threshold_configurable
+    given: "Конфигурация с порогом"
+    when: "Анализ выполнен"
+    then: "Порог применён"
+    test_cases:
+      - name: "strict_threshold"
+        input:
+          threshold: 0.001
+        expected:
+          threshold_applied: true
+
+  - name: warmup_removes_outliers
+    given: "Холодный кэш"
+    when: "Warmup выполнен"
+    then: "Первые измерения отброшены"
+    test_cases:
+      - name: "warmup_100"
+        input:
+          warmup_iterations: 100
+        expected:
+          outliers_removed: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAS АНАЛИЗ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pas_analysis:
+  module: "timing_analysis"
+
+  predictions:
+    - target: "Measurement precision"
+      current: "1 μs"
+      predicted: "1 ns"
+      confidence: 0.80
+      patterns: [PRE, ALG]
+      timeline: "2027"
+      method: "RDTSC with serialization, statistical denoising"
+
+    - target: "Analysis throughput"
+      current: "1000 samples/sec"
+      predicted: "100000 samples/sec"
+      confidence: 0.75
+      patterns: [D&C, PRE]
+      timeline: "2027"
+      method: "Parallel measurement, batch processing"
+
+    - target: "Detection sensitivity"
+      current: "5% timing difference"
+      predicted: "0.1% timing difference"
+      confidence: 0.70
+      patterns: [MLS, ALG]
+      timeline: "2028"
+      method: "ML-based anomaly detection, advanced statistics"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ИНТЕГРАЦИЯ С ИНСТРУМЕНТАМИ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tool_integration:
+  ctgrind:
+    description: "Valgrind-based constant-time checker"
+    usage: "valgrind --tool=ctgrind ./binary"
+    detects:
+      - "Branches on secret data"
+      - "Memory access patterns"
+      - "Variable-time instructions"
+
+  dudect:
+    description: "Statistical timing leakage detection"
+    method: "Welch's t-test on timing distributions"
+    threshold: 4.5
+
+  timecop:
+    description: "Timing side-channel detection"
+    method: "Instruction-level timing analysis"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# OUTPUT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+output:
+  directory: "trinity/output"
+  files:
+    - "timing_analysis.zig"
+
+metadata:
+  creation_date: "2026-01-20"
+  author: "Dmitrii Vasilev"
+  sacred_formula: "V = n × 3^k × π^m × φ^p × e^q"
+  golden_identity: "φ² + 1/φ² = 3"
