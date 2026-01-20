@@ -30,32 +30,43 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const PatternApplication = struct {
-    pattern: []const u8,
-    component: []const u8,
-    before: []const u8,
-    after: []const u8,
-    speedup: f64,
-    paper: []const u8,
-    verified: bool,
+pub const - = struct {
+    -: name: name,
+    @"type": []const u8,
+    -: name: field_type,
+    @"type": []const u8,
+    -: name: optional,
+    @"type": bool,
 };
 
 /// 
-pub const HistoricalBreakthrough = struct {
-    algorithm: []const u8,
-    year: i64,
-    insight: []const u8,
-    complexity_before: []const u8,
-    complexity_after: []const u8,
+pub const - = struct {
+    -: name: name,
+    @"type": []const u8,
+    -: name: fields,
+    @"type": []const u8,
 };
 
 /// 
-pub const TrinityOptimization = struct {
-    component: []const u8,
-    pattern: []const u8,
-    speedup: f64,
-    status: []const u8,
-    tests: i64,
+pub const - = struct {
+    -: name: name,
+    @"type": []const u8,
+    -: name: given,
+    @"type": []const u8,
+    -: name: when,
+    @"type": []const u8,
+    -: name: then,
+    @"type": []const u8,
+};
+
+/// 
+pub const - = struct {
+    -: name: name,
+    @"type": []const u8,
+    -: name: input,
+    @"type": []const u8,
+    -: name: expected,
+    @"type": []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -107,24 +118,31 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "apply_pattern" {
-// Given: Algorithm and pattern
-// When: Optimization requested
-// Then: Returns optimized version
+test "parse_spec" {
+// Given: .vibee file content
+// When: Parser reads file
+// Then: Return parsed specification
     // TODO: Add test assertions
 }
 
-test "calculate_combined_speedup" {
-// Given: Multiple patterns
-// When: Stacked optimizations
-// Then: Returns total speedup
+test "generate_struct" {
+// Given: TypeDef with fields
+// When: Generator processes type
+// Then: Output Zig struct definition
     // TODO: Add test assertions
 }
 
-test "verify_optimization" {
-// Given: Optimized code
-// When: Correctness check
-// Then: Returns verification status
+test "generate_function" {
+// Given: BehaviorDef
+// When: Generator processes behavior
+// Then: Output Zig function
+    // TODO: Add test assertions
+}
+
+test "generate_test" {
+// Given: TestCase
+// When: Generator processes test
+// Then: Output Zig test block
     // TODO: Add test assertions
 }
 

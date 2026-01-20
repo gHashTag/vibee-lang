@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// []const u8, v1.0.0 - Generated from .vibee specification
+// extract v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -30,32 +30,18 @@ pub const TAU: f64 = 6.283185307179586;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const PatternApplication = struct {
-    pattern: []const u8,
-    component: []const u8,
-    before: []const u8,
-    after: []const u8,
-    speedup: f64,
-    paper: []const u8,
-    verified: bool,
+pub const ExtractResult = struct {
+    success: bool,
+    input_path: []const u8,
+    output_path: []const u8,
+    bytes_extracted: i64,
 };
 
 /// 
-pub const HistoricalBreakthrough = struct {
-    algorithm: []const u8,
-    year: i64,
-    insight: []const u8,
-    complexity_before: []const u8,
-    complexity_after: []const u8,
-};
-
-/// 
-pub const TrinityOptimization = struct {
-    component: []const u8,
-    pattern: []const u8,
-    speedup: f64,
-    status: []const u8,
-    tests: i64,
+pub const TriFile = struct {
+    path: []const u8,
+    content: []const u8,
+    has_zig_output: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -107,25 +93,25 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "apply_pattern" {
-// Given: Algorithm and pattern
-// When: Optimization requested
-// Then: Returns optimized version
-    // TODO: Add test assertions
+test "extract_zig_block" {
+// Given: .tri file with ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ block
+// When: Run extractor on file
+// Then: Extract content between triple quotes to .zig file
+// Test case: input=tri_path: "trinity/ЦАРСТВО/.../file.tri", expected=
 }
 
-test "calculate_combined_speedup" {
-// Given: Multiple patterns
-// When: Stacked optimizations
-// Then: Returns total speedup
-    // TODO: Add test assertions
+test "derive_output_path" {
+// Given: Input .tri path
+// When: Need output path
+// Then: Convert to trinity/output/<name>.zig
+// Test case: input=tri_path: "trinity/ЦАРСТВО/ⲘⲈⲆⲚⲞⲈ/ⲧⲣⲓ/ⲧⲉⲥⲧ.tri", expected=
 }
 
-test "verify_optimization" {
-// Given: Optimized code
-// When: Correctness check
-// Then: Returns verification status
-    // TODO: Add test assertions
+test "validate_extraction" {
+// Given: Extracted .zig file
+// When: Run zig test
+// Then: All tests should pass
+// Test case: input=zig_path: "trinity/output/test.zig", expected=
 }
 
 test "phi_constants" {
