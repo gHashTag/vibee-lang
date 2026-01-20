@@ -1,0 +1,321 @@
+# WEBSOCKET CLIENT V156 - Real WebSocket Implementation
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# Priority: P0 | Timeline: 1 week
+name: websocket_client_v156
+version: "156.0.0"
+language: zig
+module: websocket_client
+
+creation_pattern:
+  source: WebSocketSpec
+  transformer: WSClientGenerator
+  result: WebSocketClient
+
+types:
+  # WebSocket Frame
+  WSFrame:
+    fields:
+      fin: Bool
+      opcode: Int
+      mask: Bool
+      payload_len: Int
+      masking_key: Option<String>
+      payload: String
+
+  # WebSocket Opcodes
+  WSOpcode:
+    fields:
+      continuation: Int
+      text: Int
+      binary: Int
+      close: Int
+      ping: Int
+      pong: Int
+
+  # Connection State
+  WSState:
+    fields:
+      connecting: Bool
+      open: Bool
+      closing: Bool
+      closed: Bool
+
+  # WebSocket Connection
+  WSConnection:
+    fields:
+      url: String
+      state: String
+      socket_fd: Int
+      protocol: Option<String>
+      extensions: List<String>
+
+  # Handshake Request
+  WSHandshake:
+    fields:
+      host: String
+      path: String
+      key: String
+      version: Int
+      protocols: List<String>
+
+  # Handshake Response
+  WSHandshakeResponse:
+    fields:
+      status: Int
+      accept_key: String
+      protocol: Option<String>
+      extensions: List<String>
+
+  # Message
+  WSMessage:
+    fields:
+      message_type: String
+      data: String
+      is_binary: Bool
+
+  # Close Frame
+  WSClose:
+    fields:
+      code: Int
+      reason: String
+
+  # Error
+  WSError:
+    fields:
+      error_type: String
+      message: String
+      code: Int
+
+  # Config
+  WSConfig:
+    fields:
+      url: String
+      protocols: List<String>
+      headers: Map<String, String>
+      timeout_ms: Int
+      max_frame_size: Int
+
+behaviors:
+  # Connection Lifecycle
+  - name: connect
+    given: "WebSocket URL"
+    when: "Connect request"
+    then: "Connection established"
+    test_cases:
+      - name: connect_ws
+        input: "ws://localhost:9222"
+        expected: "connected"
+      - name: connect_wss
+        input: "wss://secure.example.com"
+        expected: "connected"
+
+  - name: handshake
+    given: "TCP connection"
+    when: "Send handshake"
+    then: "Handshake complete"
+    test_cases:
+      - name: handshake
+        input: "tcp socket"
+        expected: "101 Switching Protocols"
+
+  - name: close
+    given: "Open connection"
+    when: "Close request"
+    then: "Connection closed"
+    test_cases:
+      - name: close_normal
+        input: "code: 1000"
+        expected: "closed"
+      - name: close_error
+        input: "code: 1006"
+        expected: "closed"
+
+  # Frame Operations
+  - name: send_frame
+    given: "Frame data"
+    when: "Send"
+    then: "Frame sent"
+    test_cases:
+      - name: send_text
+        input: "text frame"
+        expected: "sent"
+      - name: send_binary
+        input: "binary frame"
+        expected: "sent"
+
+  - name: receive_frame
+    given: "Open connection"
+    when: "Data available"
+    then: "Frame received"
+    test_cases:
+      - name: receive
+        input: "connection"
+        expected: "frame"
+
+  - name: parse_frame
+    given: "Raw bytes"
+    when: "Parse"
+    then: "WSFrame struct"
+    test_cases:
+      - name: parse
+        input: "bytes"
+        expected: "frame"
+
+  - name: encode_frame
+    given: "WSFrame"
+    when: "Encode"
+    then: "Raw bytes"
+    test_cases:
+      - name: encode
+        input: "frame"
+        expected: "bytes"
+
+  # Message Operations
+  - name: send_text
+    given: "Text message"
+    when: "Send"
+    then: "Message sent"
+    test_cases:
+      - name: text
+        input: "hello"
+        expected: "sent"
+
+  - name: send_binary
+    given: "Binary data"
+    when: "Send"
+    then: "Data sent"
+    test_cases:
+      - name: binary
+        input: "bytes"
+        expected: "sent"
+
+  - name: send_json
+    given: "JSON object"
+    when: "Send"
+    then: "JSON sent"
+    test_cases:
+      - name: json
+        input: "{\"method\": \"Page.navigate\"}"
+        expected: "sent"
+
+  # Control Frames
+  - name: ping
+    given: "Connection"
+    when: "Send ping"
+    then: "Ping sent"
+    test_cases:
+      - name: ping
+        input: "connection"
+        expected: "ping sent"
+
+  - name: pong
+    given: "Ping received"
+    when: "Send pong"
+    then: "Pong sent"
+    test_cases:
+      - name: pong
+        input: "ping"
+        expected: "pong sent"
+
+  # Utilities
+  - name: generate_key
+    given: "Random bytes"
+    when: "Generate"
+    then: "Base64 key"
+    test_cases:
+      - name: key
+        input: "random"
+        expected: "base64"
+
+  - name: compute_accept
+    given: "Client key"
+    when: "Compute"
+    then: "Accept key"
+    test_cases:
+      - name: accept
+        input: "client_key"
+        expected: "accept_key"
+
+  - name: mask_payload
+    given: "Payload and key"
+    when: "Mask"
+    then: "Masked payload"
+    test_cases:
+      - name: mask
+        input: "payload, key"
+        expected: "masked"
+
+  - name: unmask_payload
+    given: "Masked payload and key"
+    when: "Unmask"
+    then: "Original payload"
+    test_cases:
+      - name: unmask
+        input: "masked, key"
+        expected: "original"
+
+# WebSocket Protocol (RFC 6455)
+protocol:
+  version: 13
+  magic_guid: "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+  
+  opcodes:
+    continuation: 0x0
+    text: 0x1
+    binary: 0x2
+    close: 0x8
+    ping: 0x9
+    pong: 0xA
+    
+  close_codes:
+    normal: 1000
+    going_away: 1001
+    protocol_error: 1002
+    unsupported: 1003
+    no_status: 1005
+    abnormal: 1006
+    invalid_data: 1007
+    policy_violation: 1008
+    message_too_big: 1009
+    extension_required: 1010
+    internal_error: 1011
+
+# Frame Format
+frame_format:
+  header:
+    - "FIN (1 bit)"
+    - "RSV1-3 (3 bits)"
+    - "Opcode (4 bits)"
+    - "MASK (1 bit)"
+    - "Payload length (7 bits or 7+16 or 7+64)"
+    - "Masking key (0 or 4 bytes)"
+  payload: "Application data"
+
+# Handshake
+handshake:
+  request:
+    - "GET /path HTTP/1.1"
+    - "Host: server.example.com"
+    - "Upgrade: websocket"
+    - "Connection: Upgrade"
+    - "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="
+    - "Sec-WebSocket-Version: 13"
+  response:
+    - "HTTP/1.1 101 Switching Protocols"
+    - "Upgrade: websocket"
+    - "Connection: Upgrade"
+    - "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+
+# PAS Optimizations
+pas_optimizations:
+  PRE:
+    optimization: "Buffer pooling"
+    speedup: "2x"
+  DC:
+    optimization: "Async I/O"
+    speedup: "10x throughput"
+  HSH:
+    optimization: "Frame lookup"
+    speedup: "O(1)"
+
+# φ² + 1/φ² = 3 | PHOENIX = 999

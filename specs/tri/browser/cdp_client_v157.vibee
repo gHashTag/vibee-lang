@@ -1,0 +1,373 @@
+# CDP CLIENT V157 - Chrome DevTools Protocol Client
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# Priority: P0 | Timeline: 2 weeks
+name: cdp_client_v157
+version: "157.0.0"
+language: zig
+module: cdp_client
+
+creation_pattern:
+  source: CDPSpec
+  transformer: CDPClientGenerator
+  result: CDPClient
+
+types:
+  # CDP Session
+  CDPSession:
+    fields:
+      session_id: String
+      target_id: String
+      ws_connection: String
+      message_id: Int
+
+  # CDP Command
+  CDPCommand:
+    fields:
+      id: Int
+      method: String
+      params: String
+      session_id: Option<String>
+
+  # CDP Response
+  CDPResponse:
+    fields:
+      id: Int
+      result: Option<String>
+      error: Option<CDPError>
+
+  # CDP Error
+  CDPError:
+    fields:
+      code: Int
+      message: String
+      data: Option<String>
+
+  # CDP Event
+  CDPEvent:
+    fields:
+      method: String
+      params: String
+      session_id: Option<String>
+
+  # Target Info
+  TargetInfo:
+    fields:
+      target_id: String
+      target_type: String
+      title: String
+      url: String
+      attached: Bool
+
+  # Frame Info
+  FrameInfo:
+    fields:
+      frame_id: String
+      parent_id: Option<String>
+      url: String
+      name: String
+
+  # Node
+  DOMNode:
+    fields:
+      node_id: Int
+      backend_node_id: Int
+      node_type: Int
+      node_name: String
+      node_value: String
+      children: List<Int>
+
+  # Remote Object
+  RemoteObject:
+    fields:
+      object_type: String
+      subtype: Option<String>
+      value: Option<String>
+      object_id: Option<String>
+
+  # Screenshot Data
+  ScreenshotData:
+    fields:
+      data: String
+      format: String
+
+  # Cookie
+  CDPCookie:
+    fields:
+      name: String
+      value: String
+      domain: String
+      path: String
+      expires: Float
+      size: Int
+      http_only: Bool
+      secure: Bool
+      same_site: String
+
+behaviors:
+  # Session Management
+  - name: create_session
+    given: "Target ID"
+    when: "Attach to target"
+    then: "Session created"
+    test_cases:
+      - name: create
+        input: "target_id"
+        expected: "session_id"
+
+  - name: send_command
+    given: "CDP command"
+    when: "Send via WebSocket"
+    then: "Response received"
+    test_cases:
+      - name: send
+        input: "command"
+        expected: "response"
+
+  - name: wait_for_event
+    given: "Event name"
+    when: "Listen"
+    then: "Event received"
+    test_cases:
+      - name: wait
+        input: "Page.loadEventFired"
+        expected: "event"
+
+  # Browser Domain
+  - name: browser_get_version
+    given: "Session"
+    when: "Browser.getVersion"
+    then: "Version info"
+    test_cases:
+      - name: version
+        input: "session"
+        expected: "version"
+
+  - name: browser_close
+    given: "Session"
+    when: "Browser.close"
+    then: "Browser closed"
+    test_cases:
+      - name: close
+        input: "session"
+        expected: "closed"
+
+  # Target Domain
+  - name: target_get_targets
+    given: "Session"
+    when: "Target.getTargets"
+    then: "Target list"
+    test_cases:
+      - name: targets
+        input: "session"
+        expected: "targets"
+
+  - name: target_create_target
+    given: "URL"
+    when: "Target.createTarget"
+    then: "New target"
+    test_cases:
+      - name: create_target
+        input: "https://google.com"
+        expected: "target_id"
+
+  - name: target_close_target
+    given: "Target ID"
+    when: "Target.closeTarget"
+    then: "Target closed"
+    test_cases:
+      - name: close_target
+        input: "target_id"
+        expected: "closed"
+
+  # Page Domain
+  - name: page_navigate
+    given: "URL"
+    when: "Page.navigate"
+    then: "Navigation started"
+    test_cases:
+      - name: navigate
+        input: "https://google.com"
+        expected: "frame_id"
+
+  - name: page_reload
+    given: "Session"
+    when: "Page.reload"
+    then: "Page reloaded"
+    test_cases:
+      - name: reload
+        input: "session"
+        expected: "reloaded"
+
+  - name: page_screenshot
+    given: "Options"
+    when: "Page.captureScreenshot"
+    then: "Base64 image"
+    test_cases:
+      - name: screenshot
+        input: "format: png"
+        expected: "base64"
+
+  - name: page_get_frame_tree
+    given: "Session"
+    when: "Page.getFrameTree"
+    then: "Frame tree"
+    test_cases:
+      - name: frames
+        input: "session"
+        expected: "frame_tree"
+
+  # DOM Domain
+  - name: dom_get_document
+    given: "Session"
+    when: "DOM.getDocument"
+    then: "Root node"
+    test_cases:
+      - name: document
+        input: "session"
+        expected: "root_node"
+
+  - name: dom_query_selector
+    given: "Node ID and selector"
+    when: "DOM.querySelector"
+    then: "Node ID"
+    test_cases:
+      - name: query
+        input: "root, #main"
+        expected: "node_id"
+
+  - name: dom_query_selector_all
+    given: "Node ID and selector"
+    when: "DOM.querySelectorAll"
+    then: "Node IDs"
+    test_cases:
+      - name: query_all
+        input: "root, div"
+        expected: "node_ids"
+
+  - name: dom_get_outer_html
+    given: "Node ID"
+    when: "DOM.getOuterHTML"
+    then: "HTML string"
+    test_cases:
+      - name: html
+        input: "node_id"
+        expected: "html"
+
+  # Runtime Domain
+  - name: runtime_evaluate
+    given: "Expression"
+    when: "Runtime.evaluate"
+    then: "Result"
+    test_cases:
+      - name: eval
+        input: "document.title"
+        expected: "title"
+
+  - name: runtime_call_function
+    given: "Function and args"
+    when: "Runtime.callFunctionOn"
+    then: "Return value"
+    test_cases:
+      - name: call
+        input: "fn, args"
+        expected: "result"
+
+  # Input Domain
+  - name: input_dispatch_mouse
+    given: "Mouse event"
+    when: "Input.dispatchMouseEvent"
+    then: "Event dispatched"
+    test_cases:
+      - name: click
+        input: "mousePressed, x, y"
+        expected: "dispatched"
+
+  - name: input_dispatch_key
+    given: "Key event"
+    when: "Input.dispatchKeyEvent"
+    then: "Event dispatched"
+    test_cases:
+      - name: key
+        input: "keyDown, Enter"
+        expected: "dispatched"
+
+  - name: input_insert_text
+    given: "Text"
+    when: "Input.insertText"
+    then: "Text inserted"
+    test_cases:
+      - name: type
+        input: "hello world"
+        expected: "inserted"
+
+  # Network Domain
+  - name: network_enable
+    given: "Session"
+    when: "Network.enable"
+    then: "Network events enabled"
+    test_cases:
+      - name: enable
+        input: "session"
+        expected: "enabled"
+
+  - name: network_get_cookies
+    given: "URLs"
+    when: "Network.getCookies"
+    then: "Cookies"
+    test_cases:
+      - name: cookies
+        input: "urls"
+        expected: "cookies"
+
+  - name: network_set_cookie
+    given: "Cookie data"
+    when: "Network.setCookie"
+    then: "Cookie set"
+    test_cases:
+      - name: set_cookie
+        input: "cookie"
+        expected: "set"
+
+# CDP Domains
+cdp_domains:
+  Browser:
+    methods: ["getVersion", "close", "getWindowBounds", "setWindowBounds"]
+  Target:
+    methods: ["getTargets", "createTarget", "closeTarget", "attachToTarget", "detachFromTarget"]
+  Page:
+    methods: ["navigate", "reload", "captureScreenshot", "getFrameTree", "enable", "disable"]
+    events: ["loadEventFired", "domContentEventFired", "frameNavigated"]
+  DOM:
+    methods: ["getDocument", "querySelector", "querySelectorAll", "getOuterHTML", "setOuterHTML"]
+  Runtime:
+    methods: ["evaluate", "callFunctionOn", "getProperties"]
+  Input:
+    methods: ["dispatchMouseEvent", "dispatchKeyEvent", "insertText"]
+  Network:
+    methods: ["enable", "disable", "getCookies", "setCookie", "deleteCookies"]
+    events: ["requestWillBeSent", "responseReceived", "loadingFinished"]
+  Fetch:
+    methods: ["enable", "disable", "continueRequest", "fulfillRequest", "failRequest"]
+    events: ["requestPaused"]
+
+# Connection Flow
+connection_flow:
+  1_discover: "GET http://localhost:9222/json/version"
+  2_connect: "WebSocket to webSocketDebuggerUrl"
+  3_attach: "Target.attachToTarget"
+  4_command: "Send CDP commands"
+  5_events: "Receive CDP events"
+
+# PAS Optimizations
+pas_optimizations:
+  PRE:
+    optimization: "Command response cache"
+    speedup: "3x for repeated queries"
+  DC:
+    optimization: "Parallel target operations"
+    speedup: "Nx for multiple tabs"
+  HSH:
+    optimization: "Event handler lookup"
+    speedup: "O(1)"
+
+# φ² + 1/φ² = 3 | PHOENIX = 999
