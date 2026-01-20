@@ -1,0 +1,317 @@
+# TypeScript Codegen V78 - New Target Generation
+# Generate idiomatic TypeScript code from VIBEE specifications
+
+name: typescript_codegen_v78
+version: "78.0.0"
+language: zig
+module: typescript_codegen
+
+creation_pattern:
+  source: VibeeSpec
+  transformer: TypeScriptCodeGenerator
+  result: TypeScriptSourceCode
+
+# PAS Analysis
+pas_patterns:
+  - pattern: PRE
+    application: "Precomputed TypeScript templates"
+    speedup: "3x"
+  - pattern: ALG
+    application: "Type inference optimization"
+    speedup: "2x"
+
+types:
+  TSType:
+    description: "TypeScript type representation"
+    variants:
+      - String
+      - Number
+      - Boolean
+      - Array
+      - Object
+      - Union
+      - Intersection
+      - Generic
+      - Literal
+      - Enum
+      - Interface
+      - Type
+
+  TSTypeMapping:
+    description: "VIBEE to TypeScript type mapping"
+    fields:
+      vibee_type: String
+      ts_type: String
+      is_nullable: Bool
+
+  TSInterface:
+    description: "Generated TypeScript interface"
+    fields:
+      name: String
+      properties: List<TSProperty>
+      extends: List<String>
+      is_exported: Bool
+      is_readonly: Bool
+
+  TSProperty:
+    description: "Interface property"
+    fields:
+      name: String
+      ts_type: String
+      is_optional: Bool
+      is_readonly: Bool
+
+  TSClass:
+    description: "Generated TypeScript class"
+    fields:
+      name: String
+      properties: List<TSProperty>
+      methods: List<TSMethod>
+      implements_list: List<String>
+      extends_class: String
+      is_exported: Bool
+
+  TSMethod:
+    description: "Class method"
+    fields:
+      name: String
+      params: List<TSParam>
+      return_type: String
+      body: String
+      is_async: Bool
+      is_static: Bool
+      visibility: String
+
+  TSParam:
+    description: "Method parameter"
+    fields:
+      name: String
+      ts_type: String
+      is_optional: Bool
+      default_value: String
+
+  TSEnum:
+    description: "TypeScript enum"
+    fields:
+      name: String
+      members: List<TSEnumMember>
+      is_const: Bool
+
+  TSEnumMember:
+    description: "Enum member"
+    fields:
+      name: String
+      value: String
+
+  TSModule:
+    description: "Complete TypeScript module"
+    fields:
+      name: String
+      imports: List<TSImport>
+      interfaces: List<TSInterface>
+      classes: List<TSClass>
+      enums: List<TSEnum>
+      functions: List<TSMethod>
+      exports: List<String>
+
+  TSImport:
+    description: "Import statement"
+    fields:
+      names: List<String>
+      from: String
+      is_type_only: Bool
+
+  TSCodegenConfig:
+    description: "TypeScript codegen configuration"
+    fields:
+      strict: Bool
+      use_interfaces: Bool
+      use_classes: Bool
+      use_zod: Bool
+      use_io_ts: Bool
+      target: String
+      module: String
+
+behaviors:
+  - name: map_vibee_type_to_ts
+    given: "VIBEE type specification"
+    when: "Type mapping requested"
+    then: "Corresponding TypeScript type"
+    test_cases:
+      - name: map_string
+        input: "String"
+        expected: "string"
+      - name: map_int
+        input: "Int"
+        expected: "number"
+      - name: map_float
+        input: "Float"
+        expected: "number"
+      - name: map_bool
+        input: "Bool"
+        expected: "boolean"
+      - name: map_option
+        input: "Option<String>"
+        expected: "string | null"
+      - name: map_list
+        input: "List<Int>"
+        expected: "number[]"
+      - name: map_map
+        input: "Map<String,Int>"
+        expected: "Record<string, number>"
+      - name: map_timestamp
+        input: "Timestamp"
+        expected: "number"
+
+  - name: generate_interface
+    given: "VIBEE type definition"
+    when: "Interface generation requested"
+    then: "TypeScript interface"
+    test_cases:
+      - name: simple_interface
+        input: "User { name: String, age: Int }"
+        expected: |
+          export interface User {
+            name: string;
+            age: number;
+          }
+      - name: interface_with_optional
+        input: "Config { timeout?: Int }"
+        expected: |
+          export interface Config {
+            timeout?: number;
+          }
+
+  - name: generate_class
+    given: "VIBEE type with behaviors"
+    when: "Class generation requested"
+    then: "TypeScript class with methods"
+    test_cases:
+      - name: class_with_constructor
+        input: "User with create behavior"
+        expected: |
+          export class User {
+            constructor(
+              public name: string,
+              public age: number
+            ) {}
+          }
+
+  - name: generate_enum
+    given: "VIBEE enum definition"
+    when: "Enum generation requested"
+    then: "TypeScript enum"
+    test_cases:
+      - name: string_enum
+        input: "Status: [Active, Inactive, Pending]"
+        expected: |
+          export enum Status {
+            Active = 'Active',
+            Inactive = 'Inactive',
+            Pending = 'Pending',
+          }
+
+  - name: generate_zod_schema
+    given: "VIBEE type definition"
+    when: "Zod validation enabled"
+    then: "Zod schema for runtime validation"
+    test_cases:
+      - name: zod_user
+        input: "User { name: String, age: Int }"
+        expected: |
+          export const UserSchema = z.object({
+            name: z.string(),
+            age: z.number(),
+          });
+          export type User = z.infer<typeof UserSchema>;
+
+  - name: generate_async_function
+    given: "VIBEE async behavior"
+    when: "Async function generation"
+    then: "async/await TypeScript function"
+    test_cases:
+      - name: async_fetch
+        input: "behavior: fetch_data (async)"
+        expected: |
+          export async function fetchData(): Promise<Data> {
+            // Implementation
+          }
+
+  - name: generate_type_guards
+    given: "Union type definition"
+    when: "Type guard generation"
+    then: "TypeScript type guard function"
+    test_cases:
+      - name: user_guard
+        input: "User | Admin"
+        expected: |
+          export function isUser(value: User | Admin): value is User {
+            return 'name' in value;
+          }
+
+  - name: generate_barrel_export
+    given: "Multiple modules"
+    when: "Index file generation"
+    then: "Barrel export index.ts"
+    test_cases:
+      - name: barrel
+        input: "[user.ts, config.ts]"
+        expected: |
+          export * from './user';
+          export * from './config';
+
+  - name: generate_tests
+    given: "VIBEE test_cases"
+    when: "Test generation requested"
+    then: "Jest/Vitest test file"
+    test_cases:
+      - name: jest_test
+        input: "test: create_user_valid"
+        expected: |
+          describe('User', () => {
+            it('should create valid user', () => {
+              const user = new User('Alice', 30);
+              expect(user.name).toBe('Alice');
+            });
+          });
+
+  - name: handle_reserved_words
+    given: "Field named 'class' or 'function'"
+    when: "Generating TypeScript code"
+    then: "Use safe naming"
+    test_cases:
+      - name: reserved_class
+        input: "field: class"
+        expected: "_class: string"
+
+ts_type_table:
+  String: "string"
+  Int: "number"
+  Float: "number"
+  Bool: "boolean"
+  Timestamp: "number"
+  Object: "Record<string, unknown>"
+  Option: "T | null"
+  List: "T[]"
+  Map: "Record<K, V>"
+
+tsconfig_template:
+  compilerOptions:
+    target: "ES2022"
+    module: "ESNext"
+    moduleResolution: "bundler"
+    strict: true
+    esModuleInterop: true
+    skipLibCheck: true
+    declaration: true
+    outDir: "./dist"
+
+package_json_deps:
+  required:
+    - "typescript: ^5.0.0"
+  optional:
+    - "zod: ^3.22.0"
+    - "io-ts: ^2.2.0"
+    - "vitest: ^1.0.0"
+
+# φ² + 1/φ² = 3 | PHOENIX = 999
