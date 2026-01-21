@@ -1,4 +1,4 @@
-// VIBEE Browser - Tauri 2 Backend
+// VIBEE Browser - Tauri 2 with Multi-Window Navigation
 // φ² + 1/φ² = 3 | PHOENIX = 999
 
 #![cfg_attr(
@@ -6,7 +6,7 @@
     windows_subsystem = "windows"
 )]
 
-use tauri::Manager;
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 const PHI: f64 = 1.618033988749895;
 const VERSION: &str = "2482.0.0";
@@ -32,32 +32,30 @@ fn get_version() -> String {
 }
 
 #[tauri::command]
-fn eval_ternary(expr: String) -> serde_json::Value {
-    let result = if expr.contains("AND") {
-        if expr.contains("unknown") || expr.contains("0") {
-            ("unknown", 0)
-        } else if expr.contains("false") || expr.contains("-1") {
-            ("false", -1)
-        } else {
-            ("true", 1)
-        }
-    } else if expr.contains("OR") {
-        if expr.contains("true") || expr.contains("1") {
-            ("true", 1)
-        } else if expr.contains("unknown") || expr.contains("0") {
-            ("unknown", 0)
-        } else {
-            ("false", -1)
-        }
-    } else {
-        ("unknown", 0)
-    };
+async fn open_url(url: String, app: tauri::AppHandle) -> Result<(), String> {
+    // Open URL in a new browser window
+    let window_id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
     
-    serde_json::json!({
-        "expression": expr,
-        "result": result.0,
-        "value": result.1
-    })
+    let label = format!("browser_{}", window_id);
+    
+    let parsed_url: url::Url = url.parse()
+        .map_err(|e| format!("Invalid URL: {}", e))?;
+    
+    WebviewWindowBuilder::new(
+        &app,
+        &label,
+        WebviewUrl::External(parsed_url)
+    )
+    .title(format!("VIBEE - {}", url))
+    .inner_size(1280.0, 900.0)
+    .center()
+    .build()
+    .map_err(|e| format!("Failed to open: {}", e))?;
+    
+    Ok(())
 }
 
 fn main() {
@@ -65,11 +63,10 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
-            window.set_title("VIBEE Browser - φ² + 1/φ² = 3 | PHOENIX = 999").unwrap();
+            window.set_title("VIBEE Browser - φ² + 1/φ² = 3").unwrap();
             
             println!("╔═══════════════════════════════════════════════════════════════╗");
             println!("║  VIBEE Browser v{}                                      ║", VERSION);
-            println!("║  Ternary Logic AI Browser                                     ║");
             println!("║  φ² + 1/φ² = 3 | PHOENIX = 999                                ║");
             println!("╚═══════════════════════════════════════════════════════════════╝");
             
@@ -78,7 +75,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_phi,
             get_version,
-            eval_ternary
+            open_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running VIBEE Browser");
