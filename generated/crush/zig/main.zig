@@ -220,11 +220,16 @@ fn printHelp(writer: anytype) !void {
         \\            quantum bench    - Benchmark model
         \\            quantum info     - Model information
         \\
-        \\INFERENCE SERVER:
+        \\INFERENCE SERVER (v2):
         \\  serve     Start OpenAI-compatible inference server
         \\            serve --port 8000    - Custom port
         \\            serve --host 0.0.0.0 - Custom host
+        \\            serve --kv-cache     - Enable KV-cache optimization
+        \\            serve --speculative  - Enable speculative decoding
+        \\            serve --flash-attn   - Enable Flash Attention
+        \\            serve --quant int4   - Enable INT4 quantization
         \\            Endpoints: /v1/completions, /v1/chat/completions
+        \\            Inference: /v1/inference/info, /v1/inference/stats
         \\
         \\RAG (IGLA Retrieval-Augmented Generation):
         \\  rag       RAG pipeline for document retrieval and generation

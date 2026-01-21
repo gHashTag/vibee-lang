@@ -1,0 +1,130 @@
+# VIBEE Specification - IGLA Flash Attention
+# Memory-efficient attention computation
+# Inference Optimization v1
+# φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: igla_flash_attention
+version: "1.0.0"
+language: zig
+module: igla_flash_attention
+
+types:
+  FlashAttentionConfig:
+    fields:
+      head_dim: Int
+      num_heads: Int
+      block_size: Int
+      use_causal: Bool
+      softmax_scale: Float
+
+  AttentionInput:
+    fields:
+      query: String
+      key: String
+      value: String
+      attention_mask: String
+
+  AttentionOutput:
+    fields:
+      output: String
+      softmax_lse: String
+
+  BlockInfo:
+    fields:
+      block_q: Int
+      block_k: Int
+      num_blocks: Int
+
+  FlashAttentionV2:
+    fields:
+      version: String
+      supports_variable_len: Bool
+      supports_alibi: Bool
+      supports_sliding_window: Bool
+
+  SlidingWindow:
+    fields:
+      window_size: Int
+      sink_tokens: Int
+
+  AttentionMetrics:
+    fields:
+      total_flops: Int
+      memory_saved_mb: Float
+      speedup_vs_naive: Float
+      avg_latency_ms: Float
+
+behaviors:
+  - name: flash_attention_forward
+    given: Q, K, V tensors
+    when: Forward pass
+    then: Attention output computed
+
+  - name: flash_attention_backward
+    given: Gradients
+    when: Backward pass
+    then: Gradients computed
+
+  - name: compute_block_attention
+    given: Block indices
+    when: Block computation
+    then: Block attention computed
+
+  - name: apply_causal_mask
+    given: Attention scores
+    when: Masking
+    then: Causal mask applied
+
+  - name: apply_alibi
+    given: Attention scores
+    when: ALiBi
+    then: Position bias added
+
+  - name: sliding_window_attention
+    given: Window config
+    when: Sliding window
+    then: Windowed attention computed
+
+  - name: fused_softmax
+    given: Scores
+    when: Softmax
+    then: Fused softmax computed
+
+  - name: get_memory_savings
+    given: Sequence length
+    when: Memory query
+    then: Memory savings returned
+
+  - name: get_metrics
+    given: Attention module
+    when: Metrics requested
+    then: Attention metrics returned
+
+test_cases:
+  - name: test_forward
+    input: { seq_len: 1024, head_dim: 64 }
+    expected: { output_shape: "[1024, 64]" }
+
+  - name: test_causal
+    input: { causal: true }
+    expected: { masked: true }
+
+  - name: test_alibi
+    input: { use_alibi: true }
+    expected: { bias_added: true }
+
+  - name: test_sliding
+    input: { window: 256 }
+    expected: { windowed: true }
+
+  - name: test_memory
+    input: { seq_len: 4096 }
+    expected: { savings_positive: true }
+
+  - name: test_speedup
+    input: { seq_len: 2048 }
+    expected: { speedup_range: [2.0, 4.0] }
+
+  - name: test_metrics
+    input: {}
+    expected: { total_flops: 0 }
