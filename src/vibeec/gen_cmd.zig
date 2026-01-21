@@ -191,6 +191,7 @@ fn printMultiUsage() void {
 
 fn generateMultiLang(allocator: std.mem.Allocator, input_path: []const u8, target_lang: []const u8) !void {
     const multi_lang = @import("multi_lang_codegen.zig");
+    const lang_gen = @import("lang_generators.zig");
     
     std.debug.print("\n", .{});
     std.debug.print("═══════════════════════════════════════════════════════════════════════════════\n", .{});
@@ -216,21 +217,98 @@ fn generateMultiLang(allocator: std.mem.Allocator, input_path: []const u8, targe
     
     std.debug.print("  ✓ Read {d} bytes\n", .{content.len});
     
+    // Parse spec - extract name and version from content
+    const basename = std.fs.path.basename(input_path);
+    var spec_name: []const u8 = std.fs.path.stem(basename);
+    var spec_version: []const u8 = "1.0.0";
+    
+    // Simple parsing for name: and version:
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len > 5 and std.mem.eql(u8, trimmed[0..5], "name:")) {
+            const value = std.mem.trim(u8, trimmed[5..], " \t\"");
+            if (value.len > 0 and !std.mem.eql(u8, value, "String")) spec_name = value;
+        } else if (trimmed.len > 8 and std.mem.eql(u8, trimmed[0..8], "version:")) {
+            const value = std.mem.trim(u8, trimmed[8..], " \t\"");
+            if (value.len > 0) spec_version = value;
+        }
+    }
+    
+    const spec = lang_gen.ParsedSpec{
+        .name = spec_name,
+        .version = spec_version,
+        .types = &[_]lang_gen.TypeDef{},
+        .behaviors = &[_]lang_gen.Behavior{},
+    };
+    
+    std.debug.print("  ✓ Parsed: {s} v{s}\n", .{spec.name, spec.version});
+    
+    // Create output directory
+    const output_dir = "generated/multi";
+    std.fs.cwd().makePath(output_dir) catch {};
+    
     if (std.mem.eql(u8, target_lang, "all")) {
         // Generate for all languages
         const languages = multi_lang.getAllLanguages();
         std.debug.print("  ✓ Generating for {d} languages...\n\n", .{languages.len});
         
+        var generated: usize = 0;
         for (languages) |lang| {
             const ext = multi_lang.getExtension(lang);
-            std.debug.print("    ✓ {s} (.{s})\n", .{lang, ext});
+            
+            // Generate code
+            const code = lang_gen.generateForLanguage(allocator, spec, lang) catch |err| {
+                std.debug.print("    ❌ {s} - error: {any}\n", .{lang, err});
+                continue;
+            };
+            defer allocator.free(code);
+            
+            // Write to file
+            var path_buf: [256]u8 = undefined;
+            const output_path = std.fmt.bufPrint(&path_buf, "{s}/{s}.{s}", .{output_dir, spec_name, ext}) catch continue;
+            
+            const out_file = std.fs.cwd().createFile(output_path, .{}) catch |err| {
+                std.debug.print("    ❌ {s} - write error: {any}\n", .{lang, err});
+                continue;
+            };
+            defer out_file.close();
+            out_file.writeAll(code) catch continue;
+            
+            std.debug.print("    ✓ {s} -> {s}\n", .{lang, output_path});
+            generated += 1;
         }
         
-        std.debug.print("\n  Total: {d} languages\n", .{languages.len});
+        std.debug.print("\n  Generated: {d}/{d} files\n", .{generated, languages.len});
+        std.debug.print("  Output: {s}/\n", .{output_dir});
     } else {
         // Generate for single language
         const ext = multi_lang.getExtension(target_lang);
-        std.debug.print("  ✓ Generating {s} code (.{s})...\n", .{target_lang, ext});
+        
+        const code = lang_gen.generateForLanguage(allocator, spec, target_lang) catch |err| {
+            std.debug.print("  ❌ Error generating {s}: {any}\n", .{target_lang, err});
+            return;
+        };
+        defer allocator.free(code);
+        
+        var path_buf: [256]u8 = undefined;
+        const output_path = std.fmt.bufPrint(&path_buf, "{s}/{s}.{s}", .{output_dir, spec_name, ext}) catch {
+            std.debug.print("  ❌ Path error\n", .{});
+            return;
+        };
+        
+        const out_file = std.fs.cwd().createFile(output_path, .{}) catch |err| {
+            std.debug.print("  ❌ Could not create file: {any}\n", .{err});
+            return;
+        };
+        defer out_file.close();
+        out_file.writeAll(code) catch |err| {
+            std.debug.print("  ❌ Write error: {any}\n", .{err});
+            return;
+        };
+        
+        std.debug.print("  ✓ Generated {s} -> {s}\n", .{target_lang, output_path});
+        std.debug.print("  ✓ {d} bytes written\n", .{code.len});
     }
     
     std.debug.print("\n", .{});
