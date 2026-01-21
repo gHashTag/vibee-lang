@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VIBEE WASM UI Demo | φ² + 1/φ² = 3</title>
+<style>
+:root {
+  --phi: 1.618033988749895;
+  --phi-inv: 0.618033988749895;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+  background: #0a0a0a;
+  color: #fff;
+  overflow: hidden;
+  height: 100vh;
+}
+.container {
+  display: flex;
+  height: 100vh;
+  position: relative;
+}
+.panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.panel-left {
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+}
+.panel-right {
+  background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
+}
+.panel-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.6);
+}
+.panel-content {
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+}
+.splitter {
+  width: 6px;
+  background: rgba(255,255,255,0.05);
+  cursor: col-resize;
+  position: relative;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+.splitter:hover, .splitter.dragging {
+  background: rgba(255,215,0,0.3);
+}
+.splitter::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 2px;
+  height: 40px;
+  background: rgba(255,255,255,0.2);
+  border-radius: 1px;
+}
+.splitter.dragging::after {
+  background: #ffd700;
+}
+.hud {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 24px;
+  padding: 12px 24px;
+  background: rgba(0,0,0,0.8);
+  backdrop-filter: blur(20px);
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.1);
+}
+.stat {
+  text-align: center;
+}
+.stat-value {
+  font-size: 16px;
+  font-weight: 600;
+  font-family: 'SF Mono', Monaco, monospace;
+  color: #ffd700;
+}
+.stat-label {
+  font-size: 10px;
+  color: rgba(255,255,255,0.5);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 4px;
+}
+.formula {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  padding: 8px 16px;
+  background: rgba(0,0,0,0.6);
+  backdrop-filter: blur(20px);
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.1);
+  font-family: 'SF Mono', Monaco, monospace;
+  font-size: 12px;
+  color: rgba(255,255,255,0.6);
+}
+.snap-indicator {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 60px;
+  background: rgba(255,215,0,0.5);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.snap-indicator.visible {
+  opacity: 1;
+}
+.code-block {
+  background: rgba(0,0,0,0.3);
+  border-radius: 8px;
+  padding: 16px;
+  font-family: 'SF Mono', Monaco, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgba(255,255,255,0.8);
+  margin-bottom: 16px;
+}
+.code-comment { color: rgba(255,255,255,0.4); }
+.code-keyword { color: #ff79c6; }
+.code-string { color: #f1fa8c; }
+.code-number { color: #bd93f9; }
+.info-card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+.info-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.info-text {
+  font-size: 12px;
+  color: rgba(255,255,255,0.6);
+  line-height: 1.5;
+}
+.status {
+  position: fixed;
+  top: 20px;
+  left: 20px;
+  padding: 8px 16px;
+  background: rgba(0,0,0,0.6);
+  backdrop-filter: blur(20px);
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.1);
+  font-size: 12px;
+}
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+}
+.status-dot.loading { background: #ffd700; animation: pulse 1s infinite; }
+.status-dot.ready { background: #50fa7b; }
+.status-dot.error { background: #ff5555; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+</style>
+</head>
+<body>
+
+<div class="status" id="status">
+  <span class="status-dot loading" id="statusDot"></span>
+  <span id="statusText">Loading WASM...</span>
+</div>
+
+<div class="formula">φ² + 1/φ² = 3</div>
+
+<div class="container" id="container">
+  <div class="panel panel-left" id="panelLeft">
+    <div class="panel-header">Editor (φ ratio)</div>
+    <div class="panel-content">
+      <div class="code-block">
+<span class="code-comment"># VIBEE Specification</span>
+<span class="code-keyword">name:</span> <span class="code-string">phi_ui_demo</span>
+<span class="code-keyword">version:</span> <span class="code-string">"1.0.0"</span>
+
+<span class="code-keyword">constants:</span>
+  <span class="code-keyword">PHI:</span> <span class="code-number">1.618033988749895</span>
+  <span class="code-keyword">PHI_INV:</span> <span class="code-number">0.618033988749895</span>
+
+<span class="code-keyword">behaviors:</span>
+  - <span class="code-keyword">name:</span> <span class="code-string">split_phi</span>
+    <span class="code-keyword">given:</span> Total size
+    <span class="code-keyword">when:</span> Split by φ
+    <span class="code-keyword">then:</span> Two sizes (φ ratio)
+      </div>
+      <div class="info-card">
+        <div class="info-title">φ-Based Layout</div>
+        <div class="info-text">
+          This splitter snaps to golden ratio positions:
+          • 0.618 (1/φ) - Primary snap
+          • 0.382 (1-1/φ) - Secondary snap
+          • 0.500 - Center snap
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="splitter" id="splitter"></div>
+  
+  <div class="panel panel-right" id="panelRight">
+    <div class="panel-header">Preview (1-φ ratio)</div>
+    <div class="panel-content">
+      <div class="info-card">
+        <div class="info-title">WASM-Powered UI</div>
+        <div class="info-text">
+          All layout calculations run in WebAssembly compiled from Zig.
+          The splitter position, snap detection, and φ calculations
+          are performed by the WASM module.
+        </div>
+      </div>
+      <div class="info-card">
+        <div class="info-title">Double-Click to Reset</div>
+        <div class="info-text">
+          Double-click the splitter to reset it to the golden ratio position.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="snap-indicator" id="snapIndicator"></div>
+
+<div class="hud">
+  <div class="stat">
+    <div class="stat-value" id="leftWidth">--</div>
+    <div class="stat-label">Left (px)</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value" id="rightWidth">--</div>
+    <div class="stat-label">Right (px)</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value" id="ratio">--</div>
+    <div class="stat-label">Ratio</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value" id="phiDiff">--</div>
+    <div class="stat-label">φ Diff</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value" id="trinity">--</div>
+    <div class="stat-label">Trinity</div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════════
+// VIBEE WASM UI Bridge - Minimal JS Layer
+// φ² + 1/φ² = 3
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const PHI = 1.618033988749895;
+const PHI_INV = 0.618033988749895;
+
+let wasm = null;
+let wasmReady = false;
+
+// DOM Elements
+const container = document.getElementById('container');
+const panelLeft = document.getElementById('panelLeft');
+const panelRight = document.getElementById('panelRight');
+const splitter = document.getElementById('splitter');
+const snapIndicator = document.getElementById('snapIndicator');
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+
+// HUD Elements
+const leftWidthEl = document.getElementById('leftWidth');
+const rightWidthEl = document.getElementById('rightWidth');
+const ratioEl = document.getElementById('ratio');
+const phiDiffEl = document.getElementById('phiDiff');
+const trinityEl = document.getElementById('trinity');
+
+// State
+let isDragging = false;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WASM Loading
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function loadWasm() {
+  try {
+    const response = await fetch('phi_ui.wasm');
+    const bytes = await response.arrayBuffer();
+    const { instance } = await WebAssembly.instantiate(bytes, {
+      env: {
+        // No imports needed - pure computation
+      }
+    });
+    
+    wasm = instance.exports;
+    wasmReady = true;
+    
+    // Initialize UI with window dimensions
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    wasm.ui_init(width, height);
+    
+    // Update status
+    statusDot.className = 'status-dot ready';
+    statusText.textContent = 'WASM Ready';
+    
+    // Verify trinity identity
+    const trinity = wasm.verify_trinity();
+    trinityEl.textContent = trinity.toFixed(10);
+    
+    // Initial render
+    updateLayout();
+    
+    console.log('WASM loaded successfully');
+    console.log('φ =', wasm.get_phi());
+    console.log('1/φ =', wasm.get_phi_inv());
+    console.log('φ² + 1/φ² =', trinity);
+    
+  } catch (error) {
+    console.error('WASM load error:', error);
+    statusDot.className = 'status-dot error';
+    statusText.textContent = 'WASM Error';
+    
+    // Fallback to JS-only mode
+    wasmReady = false;
+    initFallback();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Fallback (JS-only mode if WASM fails)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let fallbackPosition = 0;
+
+function initFallback() {
+  fallbackPosition = window.innerWidth * PHI_INV;
+  updateLayoutFallback();
+}
+
+function updateLayoutFallback() {
+  const width = window.innerWidth;
+  const leftW = fallbackPosition;
+  const rightW = width - fallbackPosition;
+  
+  panelLeft.style.width = leftW + 'px';
+  panelRight.style.width = rightW + 'px';
+  
+  leftWidthEl.textContent = Math.round(leftW);
+  rightWidthEl.textContent = Math.round(rightW);
+  ratioEl.textContent = (leftW / width).toFixed(3);
+  phiDiffEl.textContent = Math.abs(leftW / width - PHI_INV).toFixed(4);
+  trinityEl.textContent = (PHI * PHI + 1 / (PHI * PHI)).toFixed(10);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Layout Update (WASM-powered)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function updateLayout() {
+  if (!wasmReady) {
+    updateLayoutFallback();
+    return;
+  }
+  
+  const leftW = wasm.layout_get_left_width();
+  const rightW = wasm.layout_get_right_width();
+  const ratio = wasm.layout_get_phi_ratio();
+  
+  panelLeft.style.width = leftW + 'px';
+  panelRight.style.width = rightW + 'px';
+  
+  // Update HUD
+  leftWidthEl.textContent = Math.round(leftW);
+  rightWidthEl.textContent = Math.round(rightW);
+  ratioEl.textContent = ratio.toFixed(3);
+  phiDiffEl.textContent = Math.abs(ratio - PHI_INV).toFixed(4);
+  
+  // Check snap points for indicator
+  const pos = wasm.splitter_get_position();
+  const width = wasm.ui_get_width();
+  const snapCount = wasm.get_snap_point_count();
+  
+  let nearSnap = false;
+  for (let i = 0; i < snapCount; i++) {
+    const snapPos = wasm.get_snap_point(i, width);
+    if (Math.abs(pos - snapPos) < 30) {
+      snapIndicator.style.left = snapPos + 'px';
+      nearSnap = true;
+      break;
+    }
+  }
+  
+  snapIndicator.classList.toggle('visible', nearSnap && isDragging);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Event Handlers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+splitter.addEventListener('mousedown', (e) => {
+  isDragging = true;
+  splitter.classList.add('dragging');
+  
+  if (wasmReady) {
+    wasm.splitter_start_drag(e.clientX);
+  }
+  
+  e.preventDefault();
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  
+  if (wasmReady) {
+    wasm.splitter_update_drag(e.clientX);
+  } else {
+    fallbackPosition = Math.max(100, Math.min(e.clientX, window.innerWidth - 100));
+  }
+  
+  updateLayout();
+});
+
+document.addEventListener('mouseup', () => {
+  if (!isDragging) return;
+  
+  isDragging = false;
+  splitter.classList.remove('dragging');
+  snapIndicator.classList.remove('visible');
+  
+  if (wasmReady) {
+    const snappedPos = wasm.splitter_end_drag();
+    console.log('Snapped to:', snappedPos);
+  }
+  
+  updateLayout();
+});
+
+splitter.addEventListener('dblclick', () => {
+  if (wasmReady) {
+    wasm.splitter_reset_to_phi();
+  } else {
+    fallbackPosition = window.innerWidth * PHI_INV;
+  }
+  updateLayout();
+});
+
+window.addEventListener('resize', () => {
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  
+  if (wasmReady) {
+    wasm.ui_resize(width, height);
+  }
+  
+  updateLayout();
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Initialize
+// ═══════════════════════════════════════════════════════════════════════════════
+
+loadWasm();
+</script>
+
+</body>
+</html>
