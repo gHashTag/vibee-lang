@@ -12,6 +12,7 @@ const config = @import("config.zig");
 const agent = @import("agent.zig");
 const session = @import("session.zig");
 const tui = @import("tui.zig");
+const serve = @import("serve.zig");
 
 const VERSION = "1.0.0";
 const PHI: f64 = 1.618033988749895;
@@ -161,6 +162,8 @@ pub fn main() !void {
         try runChain(allocator, stdout);
     } else if (std.mem.eql(u8, command, "quantum")) {
         try runQuantum(allocator, stdout, args[2..]);
+    } else if (std.mem.eql(u8, command, "serve")) {
+        try runServe(allocator, stdout, args[2..]);
     } else {
         try stdout.print("Unknown command: {s}\n", .{command});
         try stdout.print("Run 'vibee help' for usage.\n", .{});
@@ -209,6 +212,12 @@ fn printHelp(writer: anytype) !void {
         \\            quantum bench    - Benchmark model
         \\            quantum info     - Model information
         \\
+        \\INFERENCE SERVER:
+        \\  serve     Start OpenAI-compatible inference server
+        \\            serve --port 8000    - Custom port
+        \\            serve --host 0.0.0.0 - Custom host
+        \\            Endpoints: /v1/completions, /v1/chat/completions
+        \\
         \\GENERAL:
         \\  chat      Interactive chat session
         \\  config    Manage configuration
@@ -236,6 +245,7 @@ fn printHelp(writer: anytype) !void {
         \\  vibee pas analyze             PAS analysis
         \\  vibee phi                     Sacred constants
         \\  vibee gen spec.vibee          Generate Zig from .vibee
+        \\  vibee serve --port 8000       Start inference server
         \\
         \\Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
         \\
@@ -1502,4 +1512,71 @@ fn runChain(allocator: std.mem.Allocator, writer: anytype) !void {
     try writer.print("═══════════════════════════════════════════════════════════════════════════════\n\n", .{});
     try writer.print("  SPEEDUP: Sequential 30s → Parallel 5s (6x faster)\n\n", .{});
     try writer.print("φ² + 1/φ² = 3 | PHOENIX = 999 | КОЩЕЙ БЕССМЕРТЕН\n\n", .{});
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INFERENCE SERVER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn runServe(allocator: std.mem.Allocator, writer: anytype, args: []const []const u8) !void {
+    _ = allocator;
+    
+    var server_config = serve.ServerConfig.default();
+    
+    // Parse arguments
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--port") and i + 1 < args.len) {
+            server_config.port = std.fmt.parseInt(u16, args[i + 1], 10) catch 8000;
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--host") and i + 1 < args.len) {
+            server_config.host = args[i + 1];
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--help") or std.mem.eql(u8, args[i], "-h")) {
+            try printServeHelp(writer);
+            return;
+        }
+    }
+    
+    // Start server
+    try serve.runServer(server_config, writer);
+}
+
+fn printServeHelp(writer: anytype) !void {
+    try writer.print(
+        \\
+        \\╔═══════════════════════════════════════════════════════════════╗
+        \\║  iGLA INFERENCE SERVER                                        ║
+        \\║  OpenAI-compatible API | VM Trinity Runtime                   ║
+        \\╚═══════════════════════════════════════════════════════════════╝
+        \\
+        \\USAGE:
+        \\  vibee serve [options]
+        \\
+        \\OPTIONS:
+        \\  --port <port>    Server port (default: 8000)
+        \\  --host <host>    Server host (default: 0.0.0.0)
+        \\  --help, -h       Show this help
+        \\
+        \\ENDPOINTS:
+        \\  GET  /health              Health check
+        \\  GET  /v1/models           List available models
+        \\  POST /v1/completions      Text completion (OpenAI-compatible)
+        \\  POST /v1/chat/completions Chat completion (OpenAI-compatible)
+        \\  GET  /phi                 Sacred constants
+        \\  GET  /metrics             Prometheus metrics
+        \\
+        \\EXAMPLES:
+        \\  vibee serve                    Start on port 8000
+        \\  vibee serve --port 3000        Start on port 3000
+        \\  vibee serve --host 127.0.0.1   Localhost only
+        \\
+        \\API USAGE:
+        \\  curl http://localhost:8000/health
+        \\  curl http://localhost:8000/v1/models
+        \\  curl -X POST http://localhost:8000/v1/chat/completions
+        \\
+        \\φ² + 1/φ² = 3 | PHOENIX = 999
+        \\
+    , .{});
 }
