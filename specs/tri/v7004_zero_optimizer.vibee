@@ -1,0 +1,76 @@
+# v7004 - ZeRO Optimizer
+# =======================
+# Zero Redundancy Optimizer Stage 1/2/3
+# Based on: Rajbhandari et al. 2020
+# φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: zero_optimizer
+version: "7.0.4"
+language: zig
+module: zero_optimizer
+
+constants:
+  PHI: 1.618033988749895
+
+types:
+  ZeROConfig:
+    fields:
+      stage: Int
+      reduce_bucket_size: Int
+      allgather_bucket_size: Int
+      offload_optimizer: Bool
+      offload_param: Bool
+      
+  ZeROState:
+    fields:
+      partitioned_params: List
+      partitioned_grads: List
+      partitioned_optimizer_states: List
+      
+  PartitionInfo:
+    fields:
+      param_id: Int
+      start_idx: Int
+      end_idx: Int
+      owner_rank: Int
+
+behaviors:
+  - name: zero_stage1_step
+    given: Gradients и optimizer
+    when: ZeRO-1 (optimizer state partition)
+    then: Вернуть updated params
+    
+  - name: zero_stage2_step
+    given: Gradients и optimizer
+    when: ZeRO-2 (+ gradient partition)
+    then: Вернуть updated params
+    
+  - name: zero_stage3_forward
+    given: Input и partitioned params
+    when: ZeRO-3 forward
+    then: Gather params, compute, release
+    
+  - name: zero_stage3_backward
+    given: Loss и partitioned params
+    when: ZeRO-3 backward
+    then: Вернуть partitioned gradients
+    
+  - name: partition_parameters
+    given: Model и world_size
+    when: Initial partitioning
+    then: Вернуть partitioned model
+    
+  - name: all_gather_params
+    given: Partitioned params
+    when: Gathering for forward
+    then: Вернуть full params
+    
+  - name: reduce_scatter_grads
+    given: Full gradients
+    when: Distributing gradients
+    then: Вернуть partitioned grads
+    
+  - name: offload_to_cpu
+    given: Tensor
+    when: CPU offloading
+    then: Move to CPU memory
