@@ -34,14 +34,15 @@
 
 ```bash
 # Генерация кода для ВСЕХ 42 языков из одной .vibee спецификации
-vibeec gen-multi specs/tri/sacred_formula.vibee all
+cd vibee-lang
+./src/vibeec/gen_cmd gen-multi specs/tri/igla_sacred_formula.vibee all
 
-# Результат: 42 файла за 1 секунду!
-# → sacred_formula.py   (Python)
-# → sacred_formula.rs   (Rust)
-# → sacred_formula.go   (Go)
-# → sacred_formula.ts   (TypeScript)
-# → sacred_formula.java (Java)
+# Результат: 42 файла в generated/multi/
+# → igla_sacred_formula.py   (Python)
+# → igla_sacred_formula.rs   (Rust)
+# → igla_sacred_formula.go   (Go)
+# → igla_sacred_formula.ts   (TypeScript)
+# → igla_sacred_formula.java (Java)
 # → ... и еще 37 языков!
 ```
 
@@ -733,10 +734,10 @@ behaviors:
 
 ```bash
 # Генерация Python кода
-vibeec gen-multi specs/tri/feature.vibee python
+./src/vibeec/gen_cmd gen-multi specs/tri/feature.vibee python
 
 # Генерация для ВСЕХ 42 языков
-vibeec gen-multi specs/tri/feature.vibee all
+./src/vibeec/gen_cmd gen-multi specs/tri/feature.vibee all
 ```
 
 **Поддерживаемые языки (42):**
@@ -905,13 +906,16 @@ sacred_numbers:
 ### Генерация кода из .vibee:
 
 ```bash
-# Компиляция
-cd src/vibeec && zig build
+# Генерация Zig кода из спецификации
+cd vibee-lang
+./bin/vibee gen specs/tri/igla_sacred_formula.vibee
 
-# Генерация кода из спецификации
-./zig-out/bin/vibeec gen ../../specs/sacred_formula.vibee
+# Результат: trinity/output/igla_sacred_formula.zig
 
-# Результат: generated/sacred_formula.zig + тесты + документация
+# Генерация для 42 языков
+./src/vibeec/gen_cmd gen-multi specs/tri/igla_sacred_formula.vibee all
+
+# Результат: generated/multi/igla_sacred_formula.{py,rs,go,ts,...}
 ```
 
 ### Почему VIBEE быстрее традиционной разработки?
@@ -981,11 +985,11 @@ cd src/vibeec && zig build
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### KOSCHEI MODE — Бессмертная самоэволюция
+#### KOSCHEI MODE — Бессмертная самоэволюция (Концепция)
 
-```bash
-# KOSCHEI CYCLE: автономная разработка
-vibee koschei start
+```
+# KOSCHEI CYCLE: автономная разработка (PLANNED)
+# Реализовано как набор .vibee спецификаций
 
 # Цикл:
 # 1. Анализ задачи
