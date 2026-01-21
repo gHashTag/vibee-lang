@@ -30,19 +30,19 @@ var edges_buffer: [MAX_EDGES]PhiEdge align(16) = undefined;
 var node_count: u32 = 0;
 var edge_count: u32 = 0;
 
-export fn get_nodes_ptr() [*]PhiNode {
+fn get_nodes_ptr() [*]PhiNode {
     return &nodes_buffer;
 }
 
-export fn get_edges_ptr() [*]PhiEdge {
+fn get_edges_ptr() [*]PhiEdge {
     return &edges_buffer;
 }
 
-export fn get_node_count() u32 {
+fn get_node_count() u32 {
     return node_count;
 }
 
-export fn get_edge_count() u32 {
+fn get_edge_count() u32 {
     return edge_count;
 }
 
@@ -104,14 +104,14 @@ pub const PhiEdge = extern struct {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Инициализация φ-дерева
-export fn phi_tree_init() void {
+fn phi_tree_init() void {
     node_count = 0;
     edge_count = 0;
 }
 
 /// Вставка в φ-дерево
 /// Возвращает индекс нового узла
-export fn phi_tree_insert(value: f64) u32 {
+fn phi_tree_insert(value: f64) u32 {
     if (node_count >= MAX_NODES) return PhiNode.NONE;
     
     const new_idx = node_count;
@@ -308,7 +308,7 @@ fn update_phi_weights(idx: u32) void {
 }
 
 /// Поиск в φ-дереве
-export fn phi_tree_search(value: f64) u32 {
+fn phi_tree_search(value: f64) u32 {
     var current: u32 = 0;
     
     while (current < node_count) {
@@ -331,7 +331,7 @@ export fn phi_tree_search(value: f64) u32 {
 }
 
 /// Глубина φ-дерева
-export fn phi_tree_depth() u32 {
+fn phi_tree_depth() u32 {
     return compute_depth(0);
 }
 
@@ -369,14 +369,14 @@ var fib_min: u32 = FibNode.NONE;
 var fib_count: u32 = 0;
 var fib_size: u32 = 0;
 
-export fn fib_heap_init() void {
+fn fib_heap_init() void {
     fib_min = FibNode.NONE;
     fib_count = 0;
     fib_size = 0;
 }
 
 /// Вставка в Fibonacci heap - O(1)
-export fn fib_heap_insert(key: f64) u32 {
+fn fib_heap_insert(key: f64) u32 {
     if (fib_count >= MAX_NODES) return FibNode.NONE;
     
     const idx = fib_count;
@@ -420,13 +420,13 @@ fn fib_list_insert(list_node: u32, new_node: u32) void {
 }
 
 /// Получение минимума - O(1)
-export fn fib_heap_min() f64 {
+fn fib_heap_min() f64 {
     if (fib_min == FibNode.NONE) return math.inf(f64);
     return fib_nodes[fib_min].key;
 }
 
 /// Извлечение минимума - O(log n) амортизированно
-export fn fib_heap_extract_min() f64 {
+fn fib_heap_extract_min() f64 {
     if (fib_min == FibNode.NONE) return math.inf(f64);
     
     const min_idx = fib_min;
@@ -551,7 +551,7 @@ fn fib_link(child: u32, parent: u32) void {
 }
 
 /// Размер кучи
-export fn fib_heap_size() u32 {
+fn fib_heap_size() u32 {
     return fib_size;
 }
 
@@ -562,13 +562,13 @@ export fn fib_heap_size() u32 {
 var graph_node_count: u32 = 0;
 var graph_edge_count: u32 = 0;
 
-export fn phi_graph_init() void {
+fn phi_graph_init() void {
     graph_node_count = 0;
     graph_edge_count = 0;
 }
 
 /// Добавление узла в граф
-export fn phi_graph_add_node(value: f64) u32 {
+fn phi_graph_add_node(value: f64) u32 {
     if (graph_node_count >= MAX_NODES) return PhiNode.NONE;
     
     const idx = graph_node_count;
@@ -579,7 +579,7 @@ export fn phi_graph_add_node(value: f64) u32 {
 }
 
 /// Добавление ребра с Fibonacci-весом
-export fn phi_graph_add_edge(source: u64, target: u64) u32 {
+fn phi_graph_add_edge(source: u64, target: u64) u32 {
     if (graph_edge_count >= MAX_EDGES) return PhiNode.NONE;
     
     const idx = graph_edge_count;
@@ -591,7 +591,7 @@ export fn phi_graph_add_edge(source: u64, target: u64) u32 {
 }
 
 /// Плотность графа (оптимальная ≈ n × φ рёбер)
-export fn phi_graph_density() f64 {
+fn phi_graph_density() f64 {
     if (graph_node_count == 0) return 0.0;
     const n: f64 = @floatFromInt(graph_node_count);
     const e: f64 = @floatFromInt(graph_edge_count);
@@ -599,12 +599,12 @@ export fn phi_graph_density() f64 {
 }
 
 /// Количество узлов
-export fn phi_graph_node_count() u32 {
+fn phi_graph_node_count() u32 {
     return graph_node_count;
 }
 
 /// Количество рёбер
-export fn phi_graph_edge_count() u32 {
+fn phi_graph_edge_count() u32 {
     return graph_edge_count;
 }
 

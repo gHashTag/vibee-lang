@@ -349,7 +349,7 @@ var global_coverage = CoverageTracker.init();
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// LibFuzzer entry point
-export fn LLVMFuzzerTestOneInput(data: [*]const u8, size: usize) c_int {
+fn LLVMFuzzerTestOneInput(data: [*]const u8, size: usize) c_int {
     if (size == 0) return 0;
     
     const slice = data[0..size];

@@ -57,11 +57,11 @@ pub const Turing_degreeResult = struct {
 var global_buffer: [65536]u8 align(16) = undefined;
 var f64_buffer: [8192]f64 align(16) = undefined;
 
-export fn get_global_buffer_ptr() [*]u8 {
+fn get_global_buffer_ptr() [*]u8 {
     return &global_buffer;
 }
 
-export fn get_f64_buffer_ptr() [*]f64 {
+fn get_f64_buffer_ptr() [*]f64 {
     return &f64_buffer;
 }
 
@@ -70,18 +70,18 @@ export fn get_f64_buffer_ptr() [*]f64 {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Проверка TRINITY identity: φ² + 1/φ² = 3
-pub export fn verify_trinity() f64 {
+fn verify_trinity() f64 {
     return PHI * PHI + 1.0 / (PHI * PHI);
 }
 
 /// φ-интерполяция
-pub export fn phi_lerp(a: f64, b: f64, t: f64) f64 {
+fn phi_lerp(a: f64, b: f64, t: f64) f64 {
     const phi_t = math.pow(f64, t, PHI_INV);
     return a + (b - a) * phi_t;
 }
 
 /// Генерация φ-спирали
-pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
+fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
     const max_points = f64_buffer.len / 2;
     const count = if (n > max_points) @as(u32, @intCast(max_points)) else n;
     var i: u32 = 0;

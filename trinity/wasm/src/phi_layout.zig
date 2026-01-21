@@ -106,19 +106,19 @@ var layout_config: LayoutConfig = LayoutConfig{
     .convergence_threshold = 0.1,
 };
 
-export fn get_layout_nodes_ptr() [*]LayoutNode {
+fn get_layout_nodes_ptr() [*]LayoutNode {
     return &layout_nodes;
 }
 
-export fn get_layout_edges_ptr() [*]LayoutEdge {
+fn get_layout_edges_ptr() [*]LayoutEdge {
     return &layout_edges;
 }
 
-export fn get_layout_node_count() u32 {
+fn get_layout_node_count() u32 {
     return layout_node_count;
 }
 
-export fn get_layout_edge_count() u32 {
+fn get_layout_edge_count() u32 {
     return layout_edge_count;
 }
 
@@ -127,7 +127,7 @@ export fn get_layout_edge_count() u32 {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Инициализация layout
-export fn layout_init(width: f64, height: f64) void {
+fn layout_init(width: f64, height: f64) void {
     layout_config.width = width;
     layout_config.height = if (height > 0) height else width / PHI;
     layout_node_count = 0;
@@ -135,7 +135,7 @@ export fn layout_init(width: f64, height: f64) void {
 }
 
 /// Добавление узла
-export fn layout_add_node(id: u64, x: f64, y: f64) u32 {
+fn layout_add_node(id: u64, x: f64, y: f64) u32 {
     if (layout_node_count >= MAX_LAYOUT_NODES) return 0xFFFFFFFF;
     
     const idx = layout_node_count;
@@ -157,7 +157,7 @@ export fn layout_add_node(id: u64, x: f64, y: f64) u32 {
 }
 
 /// Добавление ребра
-export fn layout_add_edge(source: u32, target: u32) u32 {
+fn layout_add_edge(source: u32, target: u32) u32 {
     if (layout_edge_count >= MAX_LAYOUT_EDGES) return 0xFFFFFFFF;
     if (source >= layout_node_count or target >= layout_node_count) return 0xFFFFFFFF;
     
@@ -178,7 +178,7 @@ export fn layout_add_edge(source: u32, target: u32) u32 {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Размещение узлов по φ-спирали
-export fn layout_phi_spiral() void {
+fn layout_phi_spiral() void {
     const cx = layout_config.width / 2.0;
     const cy = layout_config.height / 2.0;
     const scale = @min(layout_config.width, layout_config.height) * 0.4;
@@ -195,7 +195,7 @@ export fn layout_phi_spiral() void {
 }
 
 /// Размещение по Fermat спирали (подсолнух)
-export fn layout_fermat_spiral() void {
+fn layout_fermat_spiral() void {
     const cx = layout_config.width / 2.0;
     const cy = layout_config.height / 2.0;
     const scale = @min(layout_config.width, layout_config.height) * 0.45 / @sqrt(@as(f64, @floatFromInt(layout_node_count)));
@@ -216,7 +216,7 @@ export fn layout_fermat_spiral() void {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Один шаг force-directed layout
-export fn layout_force_step() f64 {
+fn layout_force_step() f64 {
     // Сбрасываем силы
     var i: u32 = 0;
     while (i < layout_node_count) : (i += 1) {
@@ -325,7 +325,7 @@ fn apply_forces() f64 {
 }
 
 /// Полный force-directed layout
-export fn layout_force_directed(iterations: u32) f64 {
+fn layout_force_directed(iterations: u32) f64 {
     // Начальное размещение по φ-спирали
     layout_phi_spiral();
     
@@ -351,7 +351,7 @@ export fn layout_force_directed(iterations: u32) f64 {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Иерархическое размещение с φ-пропорциями
-export fn layout_hierarchical(root: u32) void {
+fn layout_hierarchical(root: u32) void {
     if (root >= layout_node_count) return;
     
     // Определяем уровни (BFS)
@@ -423,7 +423,7 @@ export fn layout_hierarchical(root: u32) void {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Радиальное размещение с φ-секторами
-export fn layout_radial(center_node: u32) void {
+fn layout_radial(center_node: u32) void {
     if (center_node >= layout_node_count) return;
     
     const cx = layout_config.width / 2.0;
@@ -501,7 +501,7 @@ export fn layout_radial(center_node: u32) void {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Вычисление энергии системы
-export fn layout_energy() f64 {
+fn layout_energy() f64 {
     var energy: f64 = 0.0;
     
     var i: u32 = 0;
@@ -514,7 +514,7 @@ export fn layout_energy() f64 {
 }
 
 /// Центрирование layout
-export fn layout_center() void {
+fn layout_center() void {
     if (layout_node_count == 0) return;
     
     // Находим центр масс

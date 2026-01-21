@@ -449,7 +449,7 @@ pub const WasmCodeGen = struct {
 // VERIFY TRINITY
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export fn verify_trinity() f64 {
+fn verify_trinity() f64 {
     return PHI * PHI + 1.0 / (PHI * PHI);
 }
 

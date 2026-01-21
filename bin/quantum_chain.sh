@@ -8,6 +8,10 @@ VIBEE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SPECS_DIR="$VIBEE_ROOT/specs/tri"
 OUTPUT_DIR="$VIBEE_ROOT/trinity/output"
 VIBEE_BIN="$VIBEE_ROOT/bin/vibee"
+CACHE_DIR="$VIBEE_ROOT/.quantum_cache"
+
+# Ensure cache directory exists
+mkdir -p "$CACHE_DIR"
 
 # Цвета
 RED='\033[0;31m'
@@ -31,38 +35,94 @@ quantum_banner() {
     echo -e "${NC}"
 }
 
-# PHASE 1: Parallel Code Generation
+# HASH FUNCTIONS
+get_file_hash() {
+    md5sum "$1" 2>/dev/null | cut -d' ' -f1
+}
+
+is_cached() {
+    local file="$1"
+    local cache_file="$CACHE_DIR/$(basename "$file").hash"
+    local current_hash=$(get_file_hash "$file")
+    
+    if [ -f "$cache_file" ]; then
+        local cached_hash=$(cat "$cache_file")
+        [ "$current_hash" = "$cached_hash" ] && return 0
+    fi
+    return 1
+}
+
+update_cache() {
+    local file="$1"
+    local cache_file="$CACHE_DIR/$(basename "$file").hash"
+    get_file_hash "$file" > "$cache_file"
+}
+
+# PHASE 1: Parallel Code Generation (Incremental)
 quantum_gen() {
     local pattern="$1"
+    local incremental="${2:-true}"
     echo -e "${YELLOW}⚡ QUANTUM GEN: $pattern${NC}"
     local start=$(date +%s%N)
+    local skipped=0
     
     for f in $SPECS_DIR/$pattern; do
-        [ -f "$f" ] && ("$VIBEE_BIN" gen "$f" >/dev/null 2>&1) &
+        [ -f "$f" ] || continue
         ((TOTAL_SPECS++)) || true
+        
+        if [ "$incremental" = "true" ] && is_cached "$f"; then
+            ((skipped++)) || true
+            continue
+        fi
+        
+        (
+            "$VIBEE_BIN" gen "$f" >/dev/null 2>&1
+            update_cache "$f"
+        ) &
     done
     wait
     
     local end=$(date +%s%N)
     local ms=$(( (end - start) / 1000000 ))
-    echo -e "${GREEN}✓ Generated $TOTAL_SPECS specs in ${ms}ms${NC}"
+    local generated=$((TOTAL_SPECS - skipped))
+    echo -e "${GREEN}✓ Generated $generated, skipped $skipped (cached) in ${ms}ms${NC}"
 }
 
-# PHASE 2: Parallel Testing
+# PHASE 2: Parallel Testing (Incremental)
 quantum_test() {
     local pattern="$1"
+    local incremental="${2:-true}"
     echo -e "${YELLOW}⚡ QUANTUM TEST: $pattern${NC}"
     local start=$(date +%s%N)
     local tmpdir=$(mktemp -d)
+    local skipped=0
+    local total_files=0
     
     for f in $OUTPUT_DIR/$pattern; do
-        [ -f "$f" ] && (
+        [ -f "$f" ] || continue
+        [[ "$(basename "$f")" == unified_* ]] && continue
+        ((total_files++)) || true
+        
+        if [ "$incremental" = "true" ] && is_cached "$f"; then
+            # Load cached result
+            local cache_result="$CACHE_DIR/$(basename "$f").result"
+            if [ -f "$cache_result" ]; then
+                cat "$cache_result" >> "$tmpdir/results"
+                ((skipped++)) || true
+                continue
+            fi
+        fi
+        
+        (
             result=$(zig test "$f" 2>&1)
             if echo "$result" | grep -q "All.*tests passed"; then
                 count=$(echo "$result" | grep -oP 'All \K\d+')
                 echo "PASS:$count:$f" >> "$tmpdir/results"
+                echo "PASS:$count:$f" > "$CACHE_DIR/$(basename "$f").result"
+                update_cache "$f"
             else
                 echo "FAIL:0:$f" >> "$tmpdir/results"
+                rm -f "$CACHE_DIR/$(basename "$f").result" "$CACHE_DIR/$(basename "$f").hash"
             fi
         ) &
     done
@@ -73,10 +133,10 @@ quantum_test() {
         if [ "$status" = "PASS" ]; then
             ((PASSED++)) || true
             ((TOTAL_TESTS+=count)) || true
-            echo -e "${GREEN}✓ $file ($count tests)${NC}"
+            echo -e "${GREEN}✓ $(basename "$file") ($count tests)${NC}"
         else
             ((FAILED++)) || true
-            echo -e "${RED}✗ $file${NC}"
+            echo -e "${RED}✗ $(basename "$file")${NC}"
         fi
     done < "$tmpdir/results" 2>/dev/null || true
     
@@ -84,7 +144,8 @@ quantum_test() {
     
     local end=$(date +%s%N)
     local ms=$(( (end - start) / 1000000 ))
-    echo -e "${GREEN}✓ Tested in ${ms}ms${NC}"
+    local tested=$((total_files - skipped))
+    echo -e "${GREEN}✓ Tested $tested, skipped $skipped (cached) in ${ms}ms${NC}"
 }
 
 # PHASE 3: Git Operations

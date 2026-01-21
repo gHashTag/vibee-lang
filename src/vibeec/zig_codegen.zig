@@ -266,7 +266,7 @@ pub const ZigCodeGen = struct {
     
     fn generatePatternFunction(self: *Self, pattern: CreationPattern) !void {
         if (std.mem.eql(u8, pattern.name, "phi_power")) {
-            try self.builder.writeLine("pub export fn phi_power(n: i32) f64 {");
+            try self.builder.writeLine("fn phi_power(n: i32) f64 {");
             self.builder.incIndent();
             try self.builder.writeLine("if (n == 0) return 1.0;");
             try self.builder.writeLine("if (n == 1) return PHI;");
@@ -287,7 +287,7 @@ pub const ZigCodeGen = struct {
             self.builder.decIndent();
             try self.builder.writeLine("}");
         } else if (std.mem.eql(u8, pattern.name, "fibonacci")) {
-            try self.builder.writeLine("pub export fn fibonacci(n: u32) u64 {");
+            try self.builder.writeLine("fn fibonacci(n: u32) u64 {");
             self.builder.incIndent();
             try self.builder.writeLine("if (n == 0) return 0;");
             try self.builder.writeLine("if (n <= 2) return 1;");
@@ -300,7 +300,7 @@ pub const ZigCodeGen = struct {
             self.builder.decIndent();
             try self.builder.writeLine("}");
         } else if (std.mem.eql(u8, pattern.name, "lucas")) {
-            try self.builder.writeLine("pub export fn lucas(n: u32) u64 {");
+            try self.builder.writeLine("fn lucas(n: u32) u64 {");
             self.builder.incIndent();
             try self.builder.writeLine("if (n == 0) return 2;");
             try self.builder.writeLine("if (n == 1) return 1;");
@@ -318,14 +318,14 @@ pub const ZigCodeGen = struct {
     fn generateStandardFunctions(self: *Self) !void {
         // verify_trinity
         try self.builder.writeLine("/// Проверка TRINITY identity: φ² + 1/φ² = 3");
-        try self.builder.writeLine("pub export fn verify_trinity() f64 {");
+        try self.builder.writeLine("fn verify_trinity() f64 {");
         try self.builder.writeLine("    return PHI * PHI + 1.0 / (PHI * PHI);");
         try self.builder.writeLine("}");
         try self.builder.newline();
         
         // phi_lerp
         try self.builder.writeLine("/// φ-интерполяция");
-        try self.builder.writeLine("pub export fn phi_lerp(a: f64, b: f64, t: f64) f64 {");
+        try self.builder.writeLine("fn phi_lerp(a: f64, b: f64, t: f64) f64 {");
         try self.builder.writeLine("    const phi_t = math.pow(f64, t, PHI_INV);");
         try self.builder.writeLine("    return a + (b - a) * phi_t;");
         try self.builder.writeLine("}");
@@ -333,7 +333,7 @@ pub const ZigCodeGen = struct {
         
         // generate_phi_spiral
         try self.builder.writeLine("/// Генерация φ-спирали");
-        try self.builder.writeLine("pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {");
+        try self.builder.writeLine("fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {");
         self.builder.incIndent();
         try self.builder.writeLine("const max_points = f64_buffer.len / 2;");
         try self.builder.writeLine("const count = if (n > max_points) @as(u32, @intCast(max_points)) else n;");

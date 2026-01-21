@@ -59,19 +59,19 @@ var hash_output: Hash256 = undefined;
 var verification_records: [256]VerificationRecord align(16) = undefined;
 var record_count: u32 = 0;
 
-export fn get_hash_input_ptr() [*]u8 {
+fn get_hash_input_ptr() [*]u8 {
     return &hash_input_buffer;
 }
 
-export fn get_hash_output_ptr() [*]u8 {
+fn get_hash_output_ptr() [*]u8 {
     return &hash_output;
 }
 
-export fn get_merkle_nodes_ptr() [*]MerkleNode {
+fn get_merkle_nodes_ptr() [*]MerkleNode {
     return &merkle_nodes;
 }
 
-export fn get_merkle_node_count() u32 {
+fn get_merkle_node_count() u32 {
     return merkle_node_count;
 }
 
@@ -129,7 +129,7 @@ fn gamma1(x: u32) u32 {
 }
 
 /// SHA-256 хеширование
-export fn sha256(data_len: u32) void {
+fn sha256(data_len: u32) void {
     var h = H_INIT;
     
     // Подготовка сообщения
@@ -232,7 +232,7 @@ export fn sha256(data_len: u32) void {
 var phi_hash_temp: [128]u8 = undefined;
 
 /// φ-усиленное хеширование (TRINITY rounds)
-export fn phi_hash(data_len: u32, rounds: u32) void {
+fn phi_hash(data_len: u32, rounds: u32) void {
     // Первый раунд - хешируем оригинальные данные
     sha256(data_len);
     
@@ -258,13 +258,13 @@ export fn phi_hash(data_len: u32, rounds: u32) void {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Инициализация Merkle tree
-export fn merkle_init() void {
+fn merkle_init() void {
     merkle_node_count = 0;
     merkle_root_idx = MerkleNode.NONE;
 }
 
 /// Добавление листа в Merkle tree
-export fn merkle_add_leaf(hash_ptr: [*]const u8) u32 {
+fn merkle_add_leaf(hash_ptr: [*]const u8) u32 {
     if (merkle_node_count >= MAX_MERKLE_NODES) return MerkleNode.NONE;
     
     const idx = merkle_node_count;
@@ -278,7 +278,7 @@ export fn merkle_add_leaf(hash_ptr: [*]const u8) u32 {
 }
 
 /// Построение Merkle tree из листьев
-export fn merkle_build(leaf_count: u32) u32 {
+fn merkle_build(leaf_count: u32) u32 {
     if (leaf_count == 0) return MerkleNode.NONE;
     if (leaf_count == 1) {
         merkle_root_idx = 0;
@@ -326,14 +326,14 @@ export fn merkle_build(leaf_count: u32) u32 {
 }
 
 /// Получение корня Merkle tree
-export fn merkle_get_root(out_ptr: [*]u8) bool {
+fn merkle_get_root(out_ptr: [*]u8) bool {
     if (merkle_root_idx == MerkleNode.NONE) return false;
     @memcpy(out_ptr[0..32], &merkle_nodes[merkle_root_idx].hash);
     return true;
 }
 
 /// Генерация Merkle proof для листа
-export fn merkle_proof_generate(leaf_idx: u32, proof_ptr: [*]u8) u32 {
+fn merkle_proof_generate(leaf_idx: u32, proof_ptr: [*]u8) u32 {
     if (leaf_idx >= merkle_node_count) return 0;
     
     var proof_len: u32 = 0;
@@ -375,7 +375,7 @@ export fn merkle_proof_generate(leaf_idx: u32, proof_ptr: [*]u8) u32 {
 }
 
 /// Проверка Merkle proof
-export fn merkle_proof_verify(leaf_hash_ptr: [*]const u8, proof_ptr: [*]const u8, proof_len: u32, root_ptr: [*]const u8) bool {
+fn merkle_proof_verify(leaf_hash_ptr: [*]const u8, proof_ptr: [*]const u8, proof_len: u32, root_ptr: [*]const u8) bool {
     @memcpy(hash_input_buffer[0..32], leaf_hash_ptr[0..32]);
     var current_hash: Hash256 = undefined;
     @memcpy(&current_hash, leaf_hash_ptr[0..32]);
@@ -406,7 +406,7 @@ export fn merkle_proof_verify(leaf_hash_ptr: [*]const u8, proof_ptr: [*]const u8
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Создание записи верификации
-export fn create_verification_record(content_len: u32) u32 {
+fn create_verification_record(content_len: u32) u32 {
     if (record_count >= 256) return 0xFFFFFFFF;
     
     const idx = record_count;
@@ -435,7 +435,7 @@ export fn create_verification_record(content_len: u32) u32 {
 }
 
 /// Проверка контента против записи
-export fn verify_content(record_idx: u32, content_len: u32) bool {
+fn verify_content(record_idx: u32, content_len: u32) bool {
     if (record_idx >= record_count) return false;
     
     const record = &verification_records[record_idx];
@@ -452,7 +452,7 @@ export fn verify_content(record_idx: u32, content_len: u32) bool {
 }
 
 /// Получение количества записей
-export fn get_record_count() u32 {
+fn get_record_count() u32 {
     return record_count;
 }
 
