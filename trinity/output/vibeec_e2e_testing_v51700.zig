@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// abductive_reasoning_v16680 v1.0.0 - Generated from .vibee specification
+// vibeec_e2e_testing_v51700 v51700.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,29 +33,35 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Observation = struct {
-    fact: []const u8,
-    confidence: f64,
+pub const E2ETestConfig = struct {
+    spec_directory: []const u8,
+    output_directory: []const u8,
+    cleanup_after: bool,
+    parallel_tests: i64,
 };
 
 /// 
-pub const Hypothesis = struct {
-    explanation: []const u8,
-    assumptions: []const u8,
-    score: f64,
+pub const E2ETestCase = struct {
+    spec_file: []const u8,
+    expected_output: []const u8,
+    test_compilation: bool,
+    test_execution: bool,
 };
 
 /// 
-pub const AbductiveProblem = struct {
-    observations: []const u8,
-    background: []const u8,
-    abducibles: []const u8,
+pub const E2EResult = struct {
+    spec_parsed: bool,
+    code_generated: bool,
+    code_compiled: bool,
+    tests_passed: bool,
 };
 
 /// 
-pub const AbductiveResult = struct {
-    explanations: []const u8,
-    best_explanation: []const u8,
+pub const E2ESummary = struct {
+    total_specs: i64,
+    successful_e2e: i64,
+    failed_e2e: i64,
+    success_rate: f64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -107,24 +113,31 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "generate_hypotheses" {
-// Given: Observations and background
-// When: Abductive search
-// Then: Return candidate explanations
+test "run_full_e2e_test" {
+// Given: .vibee specification file
+// When: E2E test triggered
+// Then: Full pipeline validated
     // TODO: Add test assertions
 }
 
-test "evaluate_hypothesis" {
-// Given: Hypothesis
-// When: Score by criteria
-// Then: Return evaluation
+test "validate_spec_to_zig" {
+// Given: Spec file path
+// When: Validation triggered
+// Then: Generated Zig code validated
     // TODO: Add test assertions
 }
 
-test "select_best" {
-// Given: Candidate hypotheses
-// When: Inference to best explanation
-// Then: Return best hypothesis
+test "run_generated_tests" {
+// Given: Generated Zig file with tests
+// When: Test execution triggered
+// Then: All embedded tests run
+    // TODO: Add test assertions
+}
+
+test "generate_e2e_report" {
+// Given: All E2E results
+// When: Report generation triggered
+// Then: Comprehensive E2E report
     // TODO: Add test assertions
 }
 

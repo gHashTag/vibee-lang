@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// abductive_reasoning_v16680 v1.0.0 - Generated from .vibee specification
+// vibeec_technology_tree_v51900 v51900.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,29 +33,34 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Observation = struct {
-    fact: []const u8,
-    confidence: f64,
+pub const TechNode = struct {
+    id: []const u8,
+    name: []const u8,
+    tier: i64,
+    unlocked: bool,
 };
 
 /// 
-pub const Hypothesis = struct {
-    explanation: []const u8,
-    assumptions: []const u8,
-    score: f64,
+pub const TechDependency = struct {
+    from_node: []const u8,
+    to_node: []const u8,
+    required: bool,
 };
 
 /// 
-pub const AbductiveProblem = struct {
-    observations: []const u8,
-    background: []const u8,
-    abducibles: []const u8,
+pub const TechProgress = struct {
+    total_nodes: i64,
+    unlocked_nodes: i64,
+    current_tier: i64,
+    next_unlock: []const u8,
 };
 
 /// 
-pub const AbductiveResult = struct {
-    explanations: []const u8,
-    best_explanation: []const u8,
+pub const ResearchPath = struct {
+    name: []const u8,
+    nodes_in_path: i64,
+    estimated_time: i64,
+    priority: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -107,24 +112,31 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "generate_hypotheses" {
-// Given: Observations and background
-// When: Abductive search
-// Then: Return candidate explanations
+test "get_available_techs" {
+// Given: Current progress state
+// When: Query triggered
+// Then: List of unlockable technologies
     // TODO: Add test assertions
 }
 
-test "evaluate_hypothesis" {
-// Given: Hypothesis
-// When: Score by criteria
-// Then: Return evaluation
+test "unlock_technology" {
+// Given: Technology node ID
+// When: Unlock triggered
+// Then: Node unlocked if dependencies met
     // TODO: Add test assertions
 }
 
-test "select_best" {
-// Given: Candidate hypotheses
-// When: Inference to best explanation
-// Then: Return best hypothesis
+test "calculate_optimal_path" {
+// Given: Target technology
+// When: Path calculation triggered
+// Then: Optimal research path returned
+    // TODO: Add test assertions
+}
+
+test "export_tech_tree_graph" {
+// Given: Full technology tree
+// When: Export triggered
+// Then: DOT format graph for visualization
     // TODO: Add test assertions
 }
 

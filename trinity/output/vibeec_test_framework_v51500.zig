@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// abductive_reasoning_v16680 v1.0.0 - Generated from .vibee specification
+// vibeec_test_framework_v51500 v51500.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,29 +33,35 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Observation = struct {
-    fact: []const u8,
-    confidence: f64,
+pub const TestConfig = struct {
+    parallel_execution: bool,
+    timeout_ms: i64,
+    verbose_output: bool,
+    fail_fast: bool,
 };
 
 /// 
-pub const Hypothesis = struct {
-    explanation: []const u8,
-    assumptions: []const u8,
-    score: f64,
+pub const TestCase = struct {
+    name: []const u8,
+    module: []const u8,
+    expected_result: []const u8,
+    actual_result: []const u8,
 };
 
 /// 
-pub const AbductiveProblem = struct {
-    observations: []const u8,
-    background: []const u8,
-    abducibles: []const u8,
+pub const TestResult = struct {
+    passed: bool,
+    execution_time_ns: i64,
+    memory_used: i64,
+    error_message: []const u8,
 };
 
 /// 
-pub const AbductiveResult = struct {
-    explanations: []const u8,
-    best_explanation: []const u8,
+pub const TestSuite = struct {
+    name: []const u8,
+    total_tests: i64,
+    passed_tests: i64,
+    failed_tests: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -107,24 +113,31 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "generate_hypotheses" {
-// Given: Observations and background
-// When: Abductive search
-// Then: Return candidate explanations
+test "run_single_test" {
+// Given: Test case definition
+// When: Test execution triggered
+// Then: TestResult with pass/fail status
     // TODO: Add test assertions
 }
 
-test "evaluate_hypothesis" {
-// Given: Hypothesis
-// When: Score by criteria
-// Then: Return evaluation
+test "run_test_suite" {
+// Given: Collection of test cases
+// When: Suite execution triggered
+// Then: TestSuite summary with all results
     // TODO: Add test assertions
 }
 
-test "select_best" {
-// Given: Candidate hypotheses
-// When: Inference to best explanation
-// Then: Return best hypothesis
+test "generate_test_from_behavior" {
+// Given: Behavior specification
+// When: Test generation triggered
+// Then: Zig test function generated
+    // TODO: Add test assertions
+}
+
+test "validate_generated_code" {
+// Given: Generated Zig file
+// When: Validation triggered
+// Then: Compilation and test results
     // TODO: Add test assertions
 }
 

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// abductive_reasoning_v16680 v1.0.0 - Generated from .vibee specification
+// vibeec_type_system_v51300 v51300.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,29 +33,34 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Observation = struct {
-    fact: []const u8,
-    confidence: f64,
+pub const TypeInfo = struct {
+    name: []const u8,
+    kind: []const u8,
+    size_bytes: i64,
+    alignment: i64,
 };
 
 /// 
-pub const Hypothesis = struct {
-    explanation: []const u8,
-    assumptions: []const u8,
-    score: f64,
+pub const TypeMapping = struct {
+    vibee_type: []const u8,
+    zig_type: []const u8,
+    is_primitive: bool,
+    requires_allocation: bool,
 };
 
 /// 
-pub const AbductiveProblem = struct {
-    observations: []const u8,
-    background: []const u8,
-    abducibles: []const u8,
+pub const TypeCheckResult = struct {
+    valid: bool,
+    inferred_type: []const u8,
+    errors_count: i64,
+    warnings_count: i64,
 };
 
 /// 
-pub const AbductiveResult = struct {
-    explanations: []const u8,
-    best_explanation: []const u8,
+pub const GenericType = struct {
+    base_type: []const u8,
+    type_parameter: []const u8,
+    constraints: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -107,24 +112,31 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "generate_hypotheses" {
-// Given: Observations and background
-// When: Abductive search
-// Then: Return candidate explanations
+test "map_vibee_to_zig" {
+// Given: VIBEE type name
+// When: Type mapping requested
+// Then: Corresponding Zig type returned
     // TODO: Add test assertions
 }
 
-test "evaluate_hypothesis" {
-// Given: Hypothesis
-// When: Score by criteria
-// Then: Return evaluation
+test "check_type_compatibility" {
+// Given: Two type definitions
+// When: Compatibility check triggered
+// Then: Compatibility result with details
     // TODO: Add test assertions
 }
 
-test "select_best" {
-// Given: Candidate hypotheses
-// When: Inference to best explanation
-// Then: Return best hypothesis
+test "infer_field_type" {
+// Given: Field definition with value
+// When: Type inference triggered
+// Then: Inferred type returned
+    // TODO: Add test assertions
+}
+
+test "resolve_generic_type" {
+// Given: Generic type with parameter
+// When: Resolution triggered
+// Then: Concrete type instantiated
     // TODO: Add test assertions
 }
 

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// abductive_reasoning_v16680 v1.0.0 - Generated from .vibee specification
+// vibeec_parser_enhanced_v51100 v51100.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,29 +33,35 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Observation = struct {
-    fact: []const u8,
-    confidence: f64,
+pub const ParserConfig = struct {
+    simd_enabled: bool,
+    parallel_chunks: i64,
+    cache_enabled: bool,
+    strict_mode: bool,
 };
 
 /// 
-pub const Hypothesis = struct {
-    explanation: []const u8,
-    assumptions: []const u8,
-    score: f64,
+pub const ParsedSpec = struct {
+    name: []const u8,
+    version: []const u8,
+    types_count: i64,
+    behaviors_count: i64,
 };
 
 /// 
-pub const AbductiveProblem = struct {
-    observations: []const u8,
-    background: []const u8,
-    abducibles: []const u8,
+pub const ParserMetrics = struct {
+    tokens_parsed: i64,
+    parse_time_ns: i64,
+    memory_used: i64,
+    cache_hits: i64,
 };
 
 /// 
-pub const AbductiveResult = struct {
-    explanations: []const u8,
-    best_explanation: []const u8,
+pub const TokenStream = struct {
+    position: i64,
+    length: i64,
+    line_number: i64,
+    column: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -107,24 +113,31 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "generate_hypotheses" {
-// Given: Observations and background
-// When: Abductive search
-// Then: Return candidate explanations
+test "parse_vibee_file" {
+// Given: Valid .vibee file path
+// When: Parse triggered
+// Then: ParsedSpec returned with metrics
     // TODO: Add test assertions
 }
 
-test "evaluate_hypothesis" {
-// Given: Hypothesis
-// When: Score by criteria
-// Then: Return evaluation
+test "tokenize_with_simd" {
+// Given: Raw file content
+// When: SIMD tokenization triggered
+// Then: TokenStream with 3x speedup
     // TODO: Add test assertions
 }
 
-test "select_best" {
-// Given: Candidate hypotheses
-// When: Inference to best explanation
-// Then: Return best hypothesis
+test "validate_syntax" {
+// Given: Token stream
+// When: Validation triggered
+// Then: Syntax errors reported
+    // TODO: Add test assertions
+}
+
+test "cache_parsed_result" {
+// Given: Parsed specification
+// When: Caching enabled
+// Then: Result cached for incremental builds
     // TODO: Add test assertions
 }
 

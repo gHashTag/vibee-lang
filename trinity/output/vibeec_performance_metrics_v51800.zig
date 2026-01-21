@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// abductive_reasoning_v16680 v1.0.0 - Generated from .vibee specification
+// vibeec_performance_metrics_v51800 v51800.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,29 +33,36 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Observation = struct {
-    fact: []const u8,
-    confidence: f64,
+pub const MetricsConfig = struct {
+    collect_memory: bool,
+    collect_cpu: bool,
+    collect_io: bool,
+    sample_rate_ms: i64,
 };
 
 /// 
-pub const Hypothesis = struct {
-    explanation: []const u8,
-    assumptions: []const u8,
-    score: f64,
+pub const PerformanceSnapshot = struct {
+    timestamp_ns: i64,
+    memory_bytes: i64,
+    cpu_percent: f64,
+    io_operations: i64,
 };
 
 /// 
-pub const AbductiveProblem = struct {
-    observations: []const u8,
-    background: []const u8,
-    abducibles: []const u8,
+pub const CompilerPerformance = struct {
+    parse_throughput: f64,
+    codegen_throughput: f64,
+    optimization_ratio: f64,
+    total_throughput: f64,
 };
 
 /// 
-pub const AbductiveResult = struct {
-    explanations: []const u8,
-    best_explanation: []const u8,
+pub const HistoricalComparison = struct {
+    version_a: []const u8,
+    version_b: []const u8,
+    parse_improvement: f64,
+    codegen_improvement: f64,
+    memory_improvement: f64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -107,24 +114,31 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "generate_hypotheses" {
-// Given: Observations and background
-// When: Abductive search
-// Then: Return candidate explanations
+test "collect_metrics" {
+// Given: Running compilation
+// When: Metrics collection enabled
+// Then: PerformanceSnapshot recorded
     // TODO: Add test assertions
 }
 
-test "evaluate_hypothesis" {
-// Given: Hypothesis
-// When: Score by criteria
-// Then: Return evaluation
+test "calculate_throughput" {
+// Given: Compilation metrics
+// When: Throughput calculation triggered
+// Then: Lines per second calculated
     // TODO: Add test assertions
 }
 
-test "select_best" {
-// Given: Candidate hypotheses
-// When: Inference to best explanation
-// Then: Return best hypothesis
+test "compare_versions" {
+// Given: Two version metrics
+// When: Comparison triggered
+// Then: HistoricalComparison with deltas
+    // TODO: Add test assertions
+}
+
+test "export_metrics_json" {
+// Given: Collected metrics
+// When: Export triggered
+// Then: JSON file with all metrics
     // TODO: Add test assertions
 }
 

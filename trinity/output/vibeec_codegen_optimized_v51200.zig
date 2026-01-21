@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// abductive_reasoning_v16680 v1.0.0 - Generated from .vibee specification
+// vibeec_codegen_optimized_v51200 v51200.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,29 +33,34 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Observation = struct {
-    fact: []const u8,
+pub const CodegenConfig = struct {
+    target_language: []const u8,
+    optimization_level: i64,
+    inline_threshold: i64,
+    emit_debug_info: bool,
+};
+
+/// 
+pub const GeneratedCode = struct {
+    content: []const u8,
+    line_count: i64,
+    struct_count: i64,
+    function_count: i64,
+};
+
+/// 
+pub const CodegenMetrics = struct {
+    generation_time_ns: i64,
+    output_size_bytes: i64,
+    templates_used: i64,
+    optimizations_applied: i64,
+};
+
+/// 
+pub const TemplateSelection = struct {
+    template_id: i64,
     confidence: f64,
-};
-
-/// 
-pub const Hypothesis = struct {
-    explanation: []const u8,
-    assumptions: []const u8,
-    score: f64,
-};
-
-/// 
-pub const AbductiveProblem = struct {
-    observations: []const u8,
-    background: []const u8,
-    abducibles: []const u8,
-};
-
-/// 
-pub const AbductiveResult = struct {
-    explanations: []const u8,
-    best_explanation: []const u8,
+    ml_guided: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -107,24 +112,31 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "generate_hypotheses" {
-// Given: Observations and background
-// When: Abductive search
-// Then: Return candidate explanations
+test "generate_zig_code" {
+// Given: Parsed VibeeSpec
+// When: Code generation triggered
+// Then: Zig code in trinity/output
     // TODO: Add test assertions
 }
 
-test "evaluate_hypothesis" {
-// Given: Hypothesis
-// When: Score by criteria
-// Then: Return evaluation
+test "apply_egraph_optimization" {
+// Given: Generated AST
+// When: E-graph optimization enabled
+// Then: Optimized code with 1.5x improvement
     // TODO: Add test assertions
 }
 
-test "select_best" {
-// Given: Candidate hypotheses
-// When: Inference to best explanation
-// Then: Return best hypothesis
+test "select_template_ml" {
+// Given: Type definition
+// When: ML template selection enabled
+// Then: Optimal template selected
+    // TODO: Add test assertions
+}
+
+test "emit_test_code" {
+// Given: Behavior specifications
+// When: Test generation enabled
+// Then: Zig test functions generated
     // TODO: Add test assertions
 }
 

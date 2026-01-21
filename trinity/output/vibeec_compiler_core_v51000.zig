@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// abductive_reasoning_v16680 v1.0.0 - Generated from .vibee specification
+// vibeec_compiler_core_v51000 v51000.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,29 +33,35 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Observation = struct {
-    fact: []const u8,
-    confidence: f64,
+pub const CompilerConfig = struct {
+    optimization_level: i64,
+    target_platform: []const u8,
+    debug_mode: bool,
+    simd_enabled: bool,
 };
 
 /// 
-pub const Hypothesis = struct {
-    explanation: []const u8,
-    assumptions: []const u8,
-    score: f64,
+pub const CompilationUnit = struct {
+    source_path: []const u8,
+    output_path: []const u8,
+    ast_cache: bool,
+    incremental: bool,
 };
 
 /// 
-pub const AbductiveProblem = struct {
-    observations: []const u8,
-    background: []const u8,
-    abducibles: []const u8,
+pub const CompilerMetrics = struct {
+    parse_time_ns: i64,
+    codegen_time_ns: i64,
+    optimize_time_ns: i64,
+    total_time_ns: i64,
 };
 
 /// 
-pub const AbductiveResult = struct {
-    explanations: []const u8,
-    best_explanation: []const u8,
+pub const CompilerResult = struct {
+    success: bool,
+    output_size: i64,
+    warnings_count: i64,
+    errors_count: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -107,24 +113,31 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "generate_hypotheses" {
-// Given: Observations and background
-// When: Abductive search
-// Then: Return candidate explanations
+test "initialize_compiler" {
+// Given: Empty compiler state
+// When: Initialization triggered
+// Then: Compiler ready with default config
     // TODO: Add test assertions
 }
 
-test "evaluate_hypothesis" {
-// Given: Hypothesis
-// When: Score by criteria
-// Then: Return evaluation
+test "compile_vibee_spec" {
+// Given: Valid .vibee specification
+// When: Compilation triggered
+// Then: Zig code generated in trinity/output
     // TODO: Add test assertions
 }
 
-test "select_best" {
-// Given: Candidate hypotheses
-// When: Inference to best explanation
-// Then: Return best hypothesis
+test "optimize_output" {
+// Given: Generated code
+// When: Optimization pass triggered
+// Then: Optimized code with metrics
+    // TODO: Add test assertions
+}
+
+test "validate_output" {
+// Given: Generated Zig code
+// When: Validation triggered
+// Then: Compilation check passed
     // TODO: Add test assertions
 }
 

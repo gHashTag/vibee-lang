@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// abductive_reasoning_v16680 v1.0.0 - Generated from .vibee specification
+// vibeec_benchmark_suite_v51600 v51600.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,29 +33,36 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const Observation = struct {
-    fact: []const u8,
-    confidence: f64,
+pub const BenchmarkConfig = struct {
+    iterations: i64,
+    warmup_iterations: i64,
+    measure_memory: bool,
+    compare_baseline: bool,
 };
 
 /// 
-pub const Hypothesis = struct {
-    explanation: []const u8,
-    assumptions: []const u8,
-    score: f64,
+pub const BenchmarkResult = struct {
+    name: []const u8,
+    mean_time_ns: i64,
+    std_dev_ns: i64,
+    min_time_ns: i64,
+    max_time_ns: i64,
 };
 
 /// 
-pub const AbductiveProblem = struct {
-    observations: []const u8,
-    background: []const u8,
-    abducibles: []const u8,
+pub const PerformanceComparison = struct {
+    baseline_version: []const u8,
+    current_version: []const u8,
+    speedup_factor: f64,
+    memory_reduction: f64,
 };
 
 /// 
-pub const AbductiveResult = struct {
-    explanations: []const u8,
-    best_explanation: []const u8,
+pub const BenchmarkSuite = struct {
+    name: []const u8,
+    total_benchmarks: i64,
+    total_time_ms: i64,
+    improvements_count: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -107,24 +114,31 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "generate_hypotheses" {
-// Given: Observations and background
-// When: Abductive search
-// Then: Return candidate explanations
+test "run_parser_benchmark" {
+// Given: Set of .vibee files
+// When: Parser benchmark triggered
+// Then: Parse time metrics collected
     // TODO: Add test assertions
 }
 
-test "evaluate_hypothesis" {
-// Given: Hypothesis
-// When: Score by criteria
-// Then: Return evaluation
+test "run_codegen_benchmark" {
+// Given: Parsed specifications
+// When: Codegen benchmark triggered
+// Then: Generation time metrics collected
     // TODO: Add test assertions
 }
 
-test "select_best" {
-// Given: Candidate hypotheses
-// When: Inference to best explanation
-// Then: Return best hypothesis
+test "compare_with_baseline" {
+// Given: Current and baseline results
+// When: Comparison triggered
+// Then: PerformanceComparison with speedup
+    // TODO: Add test assertions
+}
+
+test "generate_benchmark_report" {
+// Given: All benchmark results
+// When: Report generation triggered
+// Then: Markdown report with charts
     // TODO: Add test assertions
 }
 
