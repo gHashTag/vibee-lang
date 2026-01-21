@@ -1,0 +1,127 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# VIBEE GC Allocator - Memory Allocation Strategies
+# ═══════════════════════════════════════════════════════════════════════════════
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# PAS Patterns: PRE (size classes), D&C (segregated lists)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: vibee_gc_allocator
+version: "1.1.0"
+language: zig
+module: vibee_gc_allocator
+
+constants:
+  PHI: 1.6180339887498948482
+  PHOENIX: 999
+  MIN_ALLOC: 16
+  MAX_SMALL: 256
+  SIZE_CLASSES: 16
+
+types:
+  AllocConfig:
+    fields:
+      use_size_classes: Bool
+      thread_local_cache: Bool
+      alignment: Int
+
+  SizeClass:
+    fields:
+      size: Int
+      free_list: Int
+      allocated: Int
+      available: Int
+
+  Block:
+    fields:
+      start: Int
+      size: Int
+      next: Int
+      prev: Int
+
+  ThreadCache:
+    fields:
+      thread_id: Int
+      local_free: List<Int>
+      central_cache: Int
+
+  AllocStats:
+    fields:
+      total_allocated: Int
+      total_freed: Int
+      fragmentation: Float
+      peak_usage: Int
+
+  LargeObject:
+    fields:
+      address: Int
+      size: Int
+      next: Int
+
+behaviors:
+  - name: init_allocator
+    given: AllocConfig
+    when: Initialize allocator
+    then: Allocator ready
+
+  - name: alloc_small
+    given: Size <= MAX_SMALL
+    when: Small allocation
+    then: Pointer from size class
+
+  - name: alloc_large
+    given: Size > MAX_SMALL
+    when: Large allocation
+    then: Pointer from large pool
+
+  - name: free_small
+    given: Small object
+    when: Return to pool
+    then: Added to free list
+
+  - name: free_large
+    given: Large object
+    when: Return to pool
+    then: Memory unmapped
+
+  - name: get_size_class
+    given: Size
+    when: Determine class
+    then: SizeClass index
+
+  - name: refill_cache
+    given: ThreadCache
+    when: Local cache empty
+    then: Refilled from central
+
+  - name: flush_cache
+    given: ThreadCache
+    when: Cache too full
+    then: Returned to central
+
+  - name: coalesce
+    given: Adjacent blocks
+    when: Both free
+    then: Merged block
+
+  - name: split_block
+    given: Large block
+    when: Smaller needed
+    then: Block split
+
+  - name: get_stats
+    given: Nothing
+    when: Query stats
+    then: AllocStats returned
+
+test_cases:
+  - name: test_alloc_small
+    input:
+      size: 32
+    expected:
+      class: 2
+
+  - name: test_alloc_large
+    input:
+      size: 1024
+    expected:
+      from_large_pool: true
