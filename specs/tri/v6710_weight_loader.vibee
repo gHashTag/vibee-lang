@@ -1,0 +1,106 @@
+# ═══════════════════════════════════════════════════════════════
+# v6710: WEIGHT LOADER - Model Weight Loading (Safetensors/GGUF)
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════
+
+name: weight_loader
+version: "6710.0.0"
+language: zig
+module: v6710_weight_loader
+
+creation_pattern:
+  source: WeightFile
+  transformer: WeightLoader
+  result: LoadedModel
+
+types:
+  TensorInfo:
+    fields:
+      name: String
+      dtype: DataType
+      shape: List<Int>
+      offset: Int
+      size: Int
+
+  DataType:
+    enum:
+      - F32
+      - F16
+      - BF16
+      - Q8_0
+      - Q4_0
+      - Q4_1
+
+  WeightFormat:
+    enum:
+      - Safetensors
+      - GGUF
+      - PyTorch
+      - Raw
+
+  ModelWeights:
+    fields:
+      format: WeightFormat
+      tensors: Map<String, TensorInfo>
+      metadata: Map<String, String>
+      total_size: Int
+
+  LoadConfig:
+    fields:
+      path: String
+      format: WeightFormat
+      quantize: Bool
+      target_dtype: DataType
+      memory_map: Bool
+
+behaviors:
+  - name: detect_format
+    given: File path
+    when: Detect weight format from extension/header
+    then: Return detected format
+
+  - name: load_safetensors
+    given: Safetensors file path
+    when: Parse header and load tensors
+    then: Return ModelWeights
+
+  - name: load_gguf
+    given: GGUF file path
+    when: Parse GGUF header and load tensors
+    then: Return ModelWeights
+
+  - name: quantize_tensor
+    given: F32 tensor and target dtype
+    when: Quantize to lower precision
+    then: Return quantized tensor
+
+  - name: dequantize_tensor
+    given: Quantized tensor
+    when: Convert back to F32
+    then: Return F32 tensor
+
+test_cases:
+  - name: test_format_detection
+    input:
+      path: "model.safetensors"
+    expected:
+      format: Safetensors
+
+  - name: test_gguf_detection
+    input:
+      path: "model.gguf"
+    expected:
+      format: GGUF
+
+  - name: test_quantize_roundtrip
+    input:
+      tensor: [1.0, 2.0, 3.0]
+      dtype: Q8_0
+    expected:
+      max_error_lt: 0.1
+
+  - name: test_memory_map
+    input:
+      use_mmap: true
+    expected:
+      memory_efficient: true

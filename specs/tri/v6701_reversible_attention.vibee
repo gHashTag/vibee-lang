@@ -1,0 +1,197 @@
+# ═══════════════════════════════════════════════════════════════
+# v6701: REVERSIBLE ATTENTION - Memory-Free Backward Pass
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════
+
+name: reversible_attention
+version: "6701.0.0"
+language: zig
+module: v6701_reversible_attention
+
+creation_pattern:
+  source: HiddenStates
+  transformer: ReversibleAttention
+  result: HiddenStatesWithGradients
+
+# ═══════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════
+
+types:
+  ReversibleConfig:
+    fields:
+      hidden_size: Int
+      num_heads: Int
+      head_dim: Int
+      dropout: Float
+      use_grover: Bool
+
+  ReversibleState:
+    fields:
+      x1: List<Float>
+      x2: List<Float>
+      shape: List<Int>
+
+  AttentionOutput:
+    fields:
+      output: List<Float>
+      attention_weights: List<Float>
+
+  ReversibleLayer:
+    fields:
+      attention: AttentionWeights
+      ffn: FFNWeights
+      norm1_weight: List<Float>
+      norm1_bias: List<Float>
+      norm2_weight: List<Float>
+      norm2_bias: List<Float>
+
+  AttentionWeights:
+    fields:
+      q_weight: List<Float>
+      k_weight: List<Float>
+      v_weight: List<Float>
+      o_weight: List<Float>
+
+  FFNWeights:
+    fields:
+      up_weight: List<Float>
+      down_weight: List<Float>
+      up_bias: List<Float>
+      down_bias: List<Float>
+
+  GradientState:
+    fields:
+      dx1: List<Float>
+      dx2: List<Float>
+      d_attention: AttentionWeights
+      d_ffn: FFNWeights
+
+# ═══════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: split_input
+    given: Input tensor of shape [batch, seq, hidden]
+    when: Split for reversible computation
+    then: Return two halves x1, x2 each of shape [batch, seq, hidden/2]
+    formula: "x1 = x[:, :, :hidden/2], x2 = x[:, :, hidden/2:]"
+
+  - name: merge_output
+    given: Two halves x1, x2
+    when: Merge after reversible computation
+    then: Return concatenated tensor
+    formula: "output = concat(x1, x2, dim=-1)"
+
+  - name: reversible_forward
+    given: ReversibleState (x1, x2) and layer weights
+    when: Forward pass through reversible layer
+    then: Return new state (y1, y2)
+    formula: |
+      y1 = x1 + Attention(x2)
+      y2 = x2 + FFN(y1)
+    properties:
+      - memory_free: true
+      - invertible: true
+
+  - name: reversible_backward
+    given: Output state (y1, y2) and layer weights
+    when: Reconstruct input without stored activations
+    then: Return input state (x1, x2)
+    formula: |
+      x2 = y2 - FFN(y1)
+      x1 = y1 - Attention(x2)
+    properties:
+      - exact_reconstruction: true
+      - no_activation_storage: true
+
+  - name: compute_gradients_on_fly
+    given: Output state, target, and layer weights
+    when: Compute gradients during backward reconstruction
+    then: Return gradients for all parameters
+    steps:
+      - Reconstruct activations layer by layer
+      - Compute local gradients at each step
+      - Accumulate parameter gradients
+      - Return gradient state
+
+  - name: grover_attention
+    given: Q, K, V matrices and target mask
+    when: Apply Grover-amplified attention
+    then: Return attention with amplified important tokens
+    formula: |
+      scores = QK^T / sqrt(d)
+      amplified = grover_amplify(scores, target_mask)
+      output = softmax(amplified) @ V
+
+  - name: phi_layer_norm
+    given: Input tensor and norm parameters
+    when: Apply layer norm with φ scaling
+    then: Return normalized tensor scaled by golden ratio
+    formula: "output = φ × (x - mean) / sqrt(var + eps) × weight + bias"
+
+# ═══════════════════════════════════════════════════════════════
+# TEST CASES
+# ═══════════════════════════════════════════════════════════════
+
+test_cases:
+  - name: test_split_merge_identity
+    input:
+      tensor: [1.0, 2.0, 3.0, 4.0]
+    expected:
+      after_split_merge: [1.0, 2.0, 3.0, 4.0]
+
+  - name: test_reversible_reconstruction
+    input:
+      x1: [1.0, 2.0]
+      x2: [3.0, 4.0]
+    expected:
+      reconstruction_error: 0.0
+
+  - name: test_forward_backward_inverse
+    input:
+      input_state: {x1: [0.5, 0.5], x2: [0.5, 0.5]}
+    expected:
+      is_inverse: true
+
+  - name: test_memory_usage
+    input:
+      batch_size: 32
+      seq_length: 128
+      hidden_size: 384
+    expected:
+      activation_memory: 0
+
+  - name: test_gradient_accuracy
+    input:
+      numerical_grad: [0.1, 0.2, 0.3]
+      computed_grad: [0.1, 0.2, 0.3]
+    expected:
+      max_diff_lt: 0.0001
+
+  - name: test_grover_amplification
+    input:
+      attention_scores: [0.25, 0.25, 0.25, 0.25]
+      target_idx: 0
+    expected:
+      amplified_score_gt: 0.5
+
+  - name: test_phi_norm_scale
+    input:
+      input: [1.0, 1.0, 1.0]
+    expected:
+      output_scaled_by_phi: true
+
+  - name: test_layer_invertibility
+    input:
+      random_input: true
+      num_layers: 6
+    expected:
+      all_layers_invertible: true
+
+  - name: test_gradient_checkpointing_not_needed
+    input:
+      use_reversible: true
+    expected:
+      checkpoints_stored: 0

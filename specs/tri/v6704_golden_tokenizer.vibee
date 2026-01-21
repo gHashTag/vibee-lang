@@ -1,0 +1,230 @@
+# ═══════════════════════════════════════════════════════════════
+# v6704: GOLDEN TOKENIZER - φ-Optimized BPE Tokenizer
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════
+
+name: golden_tokenizer
+version: "6704.0.0"
+language: zig
+module: v6704_golden_tokenizer
+
+creation_pattern:
+  source: RawText
+  transformer: GoldenTokenizer
+  result: TokenSequence
+
+# ═══════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════
+
+constants:
+  PHI: 1.618033988749895
+  PHI_INV: 0.618033988749895
+  VOCAB_SIZE: 30522
+  MAX_TOKEN_LENGTH: 50
+  SPECIAL_TOKENS:
+    PAD: 0
+    UNK: 1
+    CLS: 2
+    SEP: 3
+    MASK: 4
+
+# ═══════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════
+
+types:
+  Token:
+    fields:
+      id: Int
+      text: String
+      start: Int
+      end: Int
+
+  TokenSequence:
+    fields:
+      tokens: List<Token>
+      input_ids: List<Int>
+      attention_mask: List<Int>
+      token_type_ids: List<Int>
+
+  BPEMerge:
+    fields:
+      pair: Tuple<String, String>
+      merged: String
+      frequency: Int
+      phi_score: Float
+
+  Vocabulary:
+    fields:
+      token_to_id: Map<String, Int>
+      id_to_token: Map<Int, String>
+      merges: List<BPEMerge>
+      size: Int
+
+  TokenizerConfig:
+    fields:
+      vocab_size: Int
+      max_length: Int
+      pad_token: String
+      unk_token: String
+      cls_token: String
+      sep_token: String
+      mask_token: String
+      use_phi_scoring: Bool
+
+  GoldenTokenizer:
+    fields:
+      config: TokenizerConfig
+      vocab: Vocabulary
+      cache: Map<String, List<Int>>
+
+  FibonacciSplit:
+    fields:
+      positions: List<Int>
+      ratios: List<Float>
+
+# ═══════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: phi_score_merge
+    given: BPE merge candidate with frequency
+    when: Score merge using golden ratio
+    then: Return φ-weighted score
+    formula: "score = frequency × φ^(-length_diff) × (1 + φ_bonus)"
+    description: |
+      Merges that create tokens with lengths in Fibonacci sequence
+      get bonus: φ_bonus = 0.1 if len in {1,2,3,5,8,13,21}
+
+  - name: fibonacci_split
+    given: Long word
+    when: Split at Fibonacci positions
+    then: Return subwords at golden ratio positions
+    formula: |
+      positions = [0, F(1), F(2), F(3), ...] where F(n) < len(word)
+      Split word at these positions
+
+  - name: train_bpe
+    given: Corpus and vocab size
+    when: Train BPE with φ-scoring
+    then: Return trained vocabulary
+    steps:
+      - Initialize with character vocabulary
+      - While vocab_size not reached:
+        - Find most frequent pair
+        - Compute φ-score
+        - If φ-score > threshold: merge
+        - Add to vocabulary
+      - Return vocabulary with merges
+
+  - name: encode
+    given: Text and tokenizer
+    when: Tokenize text
+    then: Return token sequence
+    steps:
+      - Normalize text (lowercase, unicode)
+      - Split into words
+      - Apply BPE merges
+      - Map to token ids
+      - Add special tokens
+      - Return sequence
+
+  - name: decode
+    given: Token ids and tokenizer
+    when: Convert back to text
+    then: Return original text
+    steps:
+      - Map ids to tokens
+      - Join tokens
+      - Remove special tokens
+      - Denormalize
+      - Return text
+
+  - name: encode_batch
+    given: List of texts and tokenizer
+    when: Tokenize batch
+    then: Return padded batch of sequences
+    steps:
+      - Encode each text
+      - Find max length
+      - Pad to max length
+      - Return batch
+
+  - name: golden_subword_split
+    given: Word
+    when: Split using golden ratio
+    then: Return subwords at φ positions
+    formula: |
+      For word of length n:
+      split_pos = round(n × φ_inv) = round(n × 0.618)
+      Recursively split each part
+
+  - name: cache_lookup
+    given: Word and cache
+    when: Check if tokenization cached
+    then: Return cached tokens or None
+    formula: "O(1) lookup in hash map"
+
+# ═══════════════════════════════════════════════════════════════
+# TEST CASES
+# ═══════════════════════════════════════════════════════════════
+
+test_cases:
+  - name: test_phi_score
+    input:
+      frequency: 100
+      length_diff: 1
+    expected:
+      score_gt: 50
+
+  - name: test_fibonacci_positions
+    input:
+      word_length: 21
+    expected:
+      positions: [0, 1, 2, 3, 5, 8, 13, 21]
+
+  - name: test_encode_simple
+    input:
+      text: "hello world"
+    expected:
+      num_tokens_gte: 2
+
+  - name: test_decode_roundtrip
+    input:
+      text: "The quick brown fox"
+    expected:
+      decoded_equals_input: true
+
+  - name: test_special_tokens
+    input:
+      text: "test"
+    expected:
+      starts_with_cls: true
+      ends_with_sep: true
+
+  - name: test_batch_padding
+    input:
+      texts: ["short", "this is longer"]
+    expected:
+      all_same_length: true
+
+  - name: test_golden_split
+    input:
+      word: "internationalization"
+    expected:
+      split_at_phi_ratio: true
+
+  - name: test_cache_hit
+    input:
+      word: "repeated"
+      encode_twice: true
+    expected:
+      second_from_cache: true
+
+  - name: test_unk_handling
+    input:
+      text: "xyz123unknown"
+    expected:
+      contains_unk: true

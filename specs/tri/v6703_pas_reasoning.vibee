@@ -1,0 +1,261 @@
+# ═══════════════════════════════════════════════════════════════
+# v6703: PAS REASONING - Predictive Algorithmic Systematics
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════
+
+name: pas_reasoning
+version: "6703.0.0"
+language: zig
+module: v6703_pas_reasoning
+
+creation_pattern:
+  source: Observation
+  transformer: PASEngine
+  result: ReasonedAction
+
+# ═══════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════
+
+types:
+  Observation:
+    fields:
+      context: List<Float>
+      question: String
+      history: List<String>
+      timestamp: Int
+
+  Prediction:
+    fields:
+      outcome: String
+      probability: Float
+      confidence: Float
+      horizon: Int
+      reasoning: String
+
+  Action:
+    fields:
+      action_type: ActionType
+      content: String
+      expected_reward: Float
+      risk: Float
+      reasoning_steps: List<String>
+
+  ActionType:
+    enum:
+      - Answer
+      - Clarify
+      - Search
+      - Compute
+      - Delegate
+      - Refuse
+
+  Counterfactual:
+    fields:
+      factual_action: Action
+      alternative_action: Action
+      factual_outcome: Float
+      counterfactual_outcome: Float
+      regret: Float
+
+  PASConfig:
+    fields:
+      prediction_horizon: Int
+      num_candidates: Int
+      exploration_rate: Float
+      phi_discount: Float
+      counterfactual_samples: Int
+
+  PASState:
+    fields:
+      observations: List<Observation>
+      predictions: List<Prediction>
+      actions_taken: List<Action>
+      counterfactuals: List<Counterfactual>
+      total_reward: Float
+      accuracy: Float
+
+  ReasoningChain:
+    fields:
+      steps: List<ReasoningStep>
+      conclusion: String
+      confidence: Float
+      alternatives_considered: Int
+
+  ReasoningStep:
+    fields:
+      step_type: StepType
+      content: String
+      confidence: Float
+      evidence: List<String>
+
+  StepType:
+    enum:
+      - Observe
+      - Hypothesize
+      - Predict
+      - Verify
+      - Conclude
+      - Backtrack
+
+  ReasonedAction:
+    fields:
+      action: Action
+      reasoning_chain: ReasoningChain
+      counterfactual_analysis: Counterfactual
+      self_improvement: String
+
+# ═══════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: observe
+    given: Current context and question
+    when: Create observation
+    then: Return structured observation
+    steps:
+      - Encode context into embedding
+      - Parse question intent
+      - Retrieve relevant history
+      - Return observation
+
+  - name: predict
+    given: Observation and horizon
+    when: Predict future outcomes
+    then: Return predictions with confidence
+    formula: "P(outcome|obs) = model(obs) with confidence from entropy"
+
+  - name: generate_candidates
+    given: Observation and config
+    when: Generate action candidates
+    then: Return ranked list of possible actions
+    steps:
+      - Generate diverse candidates
+      - Score by expected reward
+      - Filter by risk threshold
+      - Return top-k candidates
+
+  - name: select_action
+    given: Candidates and selection policy
+    when: Choose best action
+    then: Return selected action with reasoning
+    formula: "argmax(expected_reward - risk × phi_discount)"
+
+  - name: compute_counterfactual
+    given: Factual action and alternative
+    when: Estimate what would have happened
+    then: Return counterfactual analysis
+    formula: "regret = max(0, counterfactual_outcome - factual_outcome)"
+
+  - name: update_from_counterfactual
+    given: Counterfactual analysis
+    when: Learn from alternative outcomes
+    then: Update policy weights
+    formula: "weight_update = learning_rate × regret × gradient"
+
+  - name: chain_of_thought
+    given: Question and context
+    when: Build reasoning chain
+    then: Return step-by-step reasoning
+    steps:
+      - Observe: What do we know?
+      - Hypothesize: What could be true?
+      - Predict: What would follow?
+      - Verify: Does it match evidence?
+      - Conclude: What's the answer?
+
+  - name: self_reflect
+    given: Action taken and outcome
+    when: Analyze own reasoning
+    then: Return self-improvement suggestions
+    steps:
+      - Compare prediction vs actual
+      - Identify reasoning errors
+      - Generate improvement suggestions
+      - Update confidence calibration
+
+  - name: pas_cycle
+    given: Question and PAS state
+    when: Execute full PAS cycle
+    then: Return reasoned action
+    formula: |
+      1. observe(question)
+      2. predict(observation)
+      3. generate_candidates(observation)
+      4. select_action(candidates)
+      5. compute_counterfactual(action, alternatives)
+      6. self_reflect(action, outcome)
+      7. return reasoned_action
+
+# ═══════════════════════════════════════════════════════════════
+# TEST CASES
+# ═══════════════════════════════════════════════════════════════
+
+test_cases:
+  - name: test_observe
+    input:
+      context: "User asks about weather"
+      question: "Will it rain tomorrow?"
+    expected:
+      observation_valid: true
+
+  - name: test_predict_confidence
+    input:
+      observation: "Clear sky today"
+      horizon: 1
+    expected:
+      confidence_range: [0.0, 1.0]
+
+  - name: test_generate_candidates
+    input:
+      observation: "Math question"
+      num_candidates: 5
+    expected:
+      candidates_count: 5
+
+  - name: test_select_optimal
+    input:
+      candidates:
+        - {reward: 0.8, risk: 0.1}
+        - {reward: 0.9, risk: 0.5}
+        - {reward: 0.7, risk: 0.05}
+    expected:
+      selected_idx: 0
+
+  - name: test_counterfactual_regret
+    input:
+      factual_outcome: 0.6
+      counterfactual_outcome: 0.8
+    expected:
+      regret: 0.2
+
+  - name: test_chain_of_thought
+    input:
+      question: "Is 17 prime?"
+    expected:
+      steps_count_gte: 3
+      conclusion: "Yes"
+
+  - name: test_self_reflection
+    input:
+      predicted_confidence: 0.9
+      actual_correct: false
+    expected:
+      calibration_update: true
+
+  - name: test_pas_cycle_complete
+    input:
+      question: "What is 2+2?"
+    expected:
+      action_type: Answer
+      content: "4"
+      confidence_gt: 0.95
+
+  - name: test_phi_discount
+    input:
+      reward: 1.0
+      risk: 0.5
+      phi_discount: 1.618
+    expected:
+      score: 0.191
