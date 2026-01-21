@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// "Награда" v139.0.0 - Generated from .vibee specification
+// brain_inspired_v14080 v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,72 +33,40 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DisclosureStep = struct {
-    step_number: i64,
-    name: []const u8,
-    description: []const u8,
-    duration: []const u8,
-    tips: []const u8,
+pub const CorticalModel = struct {
+    htm: []const u8,
+    sparse_coding: []const u8,
+    predictive_coding: []const u8,
+    thousand_brains: []const u8,
 };
 
 /// 
-pub const ReportSection = struct {
-    section: []const u8,
-    required: bool,
-    content_guide: []const u8,
-    example: []const u8,
+pub const CorticalColumn = struct {
+    mini_columns: []const u8,
+    num_cells: i64,
+    active_cells: []const u8,
 };
 
 /// 
-pub const CVSSCalculation = struct {
-    metric: []const u8,
-    options: []const u8,
-    description: []const u8,
+pub const SpatialPooler = struct {
+    input_dim: i64,
+    column_dim: i64,
+    sparsity: f64,
 };
 
 /// 
-pub const CommunicationTemplate = struct {
-    situation: []const u8,
-    template: []const u8,
-    tone: []const u8,
+pub const TemporalMemory = struct {
+    columns: []const u8,
+    segments: []const u8,
+    synapses: []const u8,
 };
 
 /// 
-pub const DisputeResolution = struct {
-    issue: []const u8,
-    resolution: []const u8,
-    escalation: []const u8,
-};
-
-/// 
-pub const PaymentProcess = struct {
-    platform: []const u8,
-    methods: []const u8,
-    timeline: []const u8,
-    tax_notes: []const u8,
-};
-
-/// 
-pub const ReputationBuilding = struct {
-    action: []const u8,
-    impact: []const u8,
-    frequency: []const u8,
-};
-
-/// 
-pub const SuccessfulReport = struct {
-    steps: []const u8,
-    report: []const u8,
-    communication: []const u8,
-    payment: PaymentProcess,
-};
-
-/// 
-pub const tips = struct {
-};
-
-/// 
-pub const remediation_section = struct {
+pub const CorticalConfig = struct {
+    model: []const u8,
+    num_columns: i64,
+    cells_per_column: i64,
+    sparsity: f64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -150,46 +118,32 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "prepare_report" {
-// Given: Vulnerability finding
-// When: Report preparation
-// Then: Complete report
-// Test case: input="finding", expected="report ready"
+test "spatial_pool" {
+// Given: Input SDR
+// When: Pooling done
+// Then: Returns active columns
+    // TODO: Add test assertions
 }
 
-test "calculate_severity" {
-// Given: Vulnerability details
-// When: CVSS calculation
-// Then: Severity score
-// Test case: input="details", expected="score"
+test "temporal_predict" {
+// Given: Active columns
+// When: Prediction done
+// Then: Returns predicted cells
+    // TODO: Add test assertions
 }
 
-test "submit_report" {
-// Given: Complete report
-// When: Submission
-// Then: Report submitted
-// Test case: input="report", expected="submitted"
+test "learn_sequence" {
+// Given: Sequence of SDRs
+// When: Learning done
+// Then: Returns updated memory
+    // TODO: Add test assertions
 }
 
-test "handle_response" {
-// Given: Company response
-// When: Communication
-// Then: Appropriate reply
-// Test case: input="response", expected="reply sent"
-}
-
-test "resolve_dispute" {
-// Given: Disagreement
-// When: Dispute resolution
-// Then: Resolution
-// Test case: input="disagreement", expected="resolved"
-}
-
-test "receive_bounty" {
-// Given: Accepted report
-// When: Payment
-// Then: Bounty received
-// Test case: input="accepted", expected="paid"
+test "recognize_pattern" {
+// Given: Input pattern
+// When: Recognition done
+// Then: Returns match score
+    // TODO: Add test assertions
 }
 
 test "phi_constants" {
