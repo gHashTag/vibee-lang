@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// cdp_dom_v2317 v2317.0.0 - Generated from .vibee specification
+// cdp_element_v2551 v2551.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,34 +33,41 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
+pub const Element = struct {
     node_id: i64,
     backend_node_id: i64,
-    node_type: i64,
-    node_name: []const u8,
-    local_name: []const u8,
-    node_value: []const u8,
-    child_node_count: ?[]const u8,
-    children: ?[]const u8,
-    attributes: ?[]const u8,
+    object_id: []const u8,
+    tag_name: []const u8,
+    attributes: []const u8,
+    bounding_box: []const u8,
+    is_visible: bool,
+    is_clickable: bool,
 };
 
 /// 
-pub const BoxModel = struct {
-    content: []const u8,
-    padding: []const u8,
-    border: []const u8,
-    margin: []const u8,
-    width: i64,
-    height: i64,
+pub const BoundingBox = struct {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    center_x: f64,
+    center_y: f64,
 };
 
 /// 
-pub const RGBA = struct {
-    r: i64,
-    g: i64,
-    b: i64,
-    a: f64,
+pub const ElementQuery = struct {
+    selector: []const u8,
+    xpath: []const u8,
+    text: []const u8,
+    visible_only: bool,
+    timeout_ms: i64,
+};
+
+/// 
+pub const ElementList = struct {
+    elements: []const u8,
+    count: i64,
+    selector: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -112,74 +119,88 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_document" {
-// Given: Page loaded
-// When: DOM.getDocument called
-// Then: Document root returned
-// Test case: input={ depth: 1 }, expected={ node_id_greater_than: 0 }
+test "find_element" {
+// Given: CDPClient and CSS selector
+// When: Element search requested
+// Then: Return first matching Element or null
+    // TODO: Add test assertions
 }
 
-test "query_selector" {
-// Given: Document node
-// When: DOM.querySelector called
-// Then: Matching node returned
-// Test case: input={ selector: "body" }, expected={ node_found: true }
+test "find_elements" {
+// Given: CDPClient and CSS selector
+// When: Multiple elements search
+// Then: Return ElementList with all matches
+    // TODO: Add test assertions
 }
 
-test "query_selector_all" {
-// Given: Document node
-// When: DOM.querySelectorAll called
-// Then: All matching nodes returned
-// Test case: input={ selector: "div" }, expected={ nodes_returned: true }
+test "find_by_xpath" {
+// Given: CDPClient and XPath expression
+// When: XPath search requested
+// Then: Return matching Element
+    // TODO: Add test assertions
 }
 
-test "get_outer_html" {
-// Given: Node ID
-// When: DOM.getOuterHTML called
-// Then: HTML string returned
-// Test case: input={ node_id: 1 }, expected={ html_returned: true }
+test "find_by_text" {
+// Given: CDPClient and text content
+// When: Text search requested
+// Then: Return element containing text
+    // TODO: Add test assertions
 }
 
-test "set_outer_html" {
-// Given: Node ID and HTML
-// When: DOM.setOuterHTML called
-// Then: Node HTML replaced
-// Test case: input={ node_id: 1, outer_html: "<div>new</div>" }, expected={ replaced: true }
+test "find_by_placeholder" {
+// Given: CDPClient and placeholder text
+// When: Placeholder search requested
+// Then: Return input with matching placeholder
+    // TODO: Add test assertions
 }
 
-test "get_box_model" {
-// Given: Node ID
-// When: DOM.getBoxModel called
-// Then: Box model returned
-// Test case: input={ node_id: 1 }, expected={ model_returned: true }
+test "find_by_label" {
+// Given: CDPClient and label text
+// When: Label search requested
+// Then: Return input associated with label
+    // TODO: Add test assertions
 }
 
-test "set_attribute_value" {
-// Given: Node ID and attribute
-// When: DOM.setAttributeValue called
-// Then: Attribute set
-// Test case: input={ node_id: 1, name: "class", value: "test" }, expected={ attribute_set: true }
+test "get_bounding_box" {
+// Given: Element
+// When: Coordinates requested
+// Then: Return BoundingBox with center point
+    // TODO: Add test assertions
 }
 
-test "remove_attribute" {
-// Given: Node with attribute
-// When: DOM.removeAttribute called
-// Then: Attribute removed
-// Test case: input={ node_id: 1, name: "class" }, expected={ removed: true }
+test "is_visible" {
+// Given: Element
+// When: Visibility check requested
+// Then: Return true if element in viewport
+    // TODO: Add test assertions
 }
 
-test "focus" {
-// Given: Focusable node
-// When: DOM.focus called
-// Then: Node focused
-// Test case: input={ node_id: 1 }, expected={ focused: true }
+test "is_enabled" {
+// Given: Element
+// When: Enabled check requested
+// Then: Return true if not disabled
+    // TODO: Add test assertions
 }
 
-test "scroll_into_view" {
-// Given: Node ID
-// When: DOM.scrollIntoViewIfNeeded called
-// Then: Node scrolled into view
-// Test case: input={ node_id: 1 }, expected={ scrolled: true }
+test "get_attribute" {
+// Given: Element and attribute name
+// When: Attribute requested
+// Then: Return attribute value
+    // TODO: Add test assertions
+}
+
+test "get_text" {
+// Given: Element
+// When: Text content requested
+// Then: Return innerText
+    // TODO: Add test assertions
+}
+
+test "get_value" {
+// Given: Element (input/textarea)
+// When: Value requested
+// Then: Return current value
+    // TODO: Add test assertions
 }
 
 test "phi_constants" {

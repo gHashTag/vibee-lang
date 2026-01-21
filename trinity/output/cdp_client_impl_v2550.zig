@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// cdp_dom_v2317 v2317.0.0 - Generated from .vibee specification
+// cdp_client_impl_v2550 v2550.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,34 +33,46 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
-    node_id: i64,
-    backend_node_id: i64,
-    node_type: i64,
-    node_name: []const u8,
-    local_name: []const u8,
-    node_value: []const u8,
-    child_node_count: ?[]const u8,
-    children: ?[]const u8,
-    attributes: ?[]const u8,
+pub const CDPClient = struct {
+    ws_url: []const u8,
+    ws_connection: []const u8,
+    message_id: i64,
+    callbacks: []const u8,
+    event_handlers: []const u8,
+    connected: bool,
+    session_id: []const u8,
 };
 
 /// 
-pub const BoxModel = struct {
-    content: []const u8,
-    padding: []const u8,
-    border: []const u8,
-    margin: []const u8,
-    width: i64,
-    height: i64,
+pub const CDPRequest = struct {
+    id: i64,
+    method: []const u8,
+    params: []const u8,
+    session_id: []const u8,
 };
 
 /// 
-pub const RGBA = struct {
-    r: i64,
-    g: i64,
-    b: i64,
-    a: f64,
+pub const CDPResult = struct {
+    id: i64,
+    result: []const u8,
+    @"error": []const u8,
+    success: bool,
+};
+
+/// 
+pub const CDPError = struct {
+    code: i64,
+    message: []const u8,
+    data: []const u8,
+};
+
+/// 
+pub const TargetInfo = struct {
+    target_id: []const u8,
+    @"type": []const u8,
+    title: []const u8,
+    url: []const u8,
+    attached: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -112,74 +124,67 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_document" {
-// Given: Page loaded
-// When: DOM.getDocument called
-// Then: Document root returned
-// Test case: input={ depth: 1 }, expected={ node_id_greater_than: 0 }
+test "cdp_connect" {
+// Given: Chrome debug URL ws://127.0.0.1:9222/devtools/browser
+// When: Connection requested
+// Then: Establish WebSocket return CDPClient
+    // TODO: Add test assertions
 }
 
-test "query_selector" {
-// Given: Document node
-// When: DOM.querySelector called
-// Then: Matching node returned
-// Test case: input={ selector: "body" }, expected={ node_found: true }
+test "cdp_send" {
+// Given: CDPClient, method string, params object
+// When: Command sent
+// Then: Send JSON-RPC and return CDPResult
+    // TODO: Add test assertions
 }
 
-test "query_selector_all" {
-// Given: Document node
-// When: DOM.querySelectorAll called
-// Then: All matching nodes returned
-// Test case: input={ selector: "div" }, expected={ nodes_returned: true }
+test "cdp_send_async" {
+// Given: CDPClient, method, params, callback
+// When: Async command sent
+// Then: Send and call callback on response
+    // TODO: Add test assertions
 }
 
-test "get_outer_html" {
-// Given: Node ID
-// When: DOM.getOuterHTML called
-// Then: HTML string returned
-// Test case: input={ node_id: 1 }, expected={ html_returned: true }
+test "cdp_on_event" {
+// Given: CDPClient, event name, handler
+// When: Event subscription
+// Then: Register handler for CDP events
+    // TODO: Add test assertions
 }
 
-test "set_outer_html" {
-// Given: Node ID and HTML
-// When: DOM.setOuterHTML called
-// Then: Node HTML replaced
-// Test case: input={ node_id: 1, outer_html: "<div>new</div>" }, expected={ replaced: true }
+test "cdp_get_targets" {
+// Given: CDPClient
+// When: Target list requested
+// Then: Return all browser targets
+    // TODO: Add test assertions
 }
 
-test "get_box_model" {
-// Given: Node ID
-// When: DOM.getBoxModel called
-// Then: Box model returned
-// Test case: input={ node_id: 1 }, expected={ model_returned: true }
+test "cdp_attach_target" {
+// Given: CDPClient and target_id
+// When: Attachment requested
+// Then: Attach and return session_id
+    // TODO: Add test assertions
 }
 
-test "set_attribute_value" {
-// Given: Node ID and attribute
-// When: DOM.setAttributeValue called
-// Then: Attribute set
-// Test case: input={ node_id: 1, name: "class", value: "test" }, expected={ attribute_set: true }
+test "cdp_new_page" {
+// Given: CDPClient
+// When: New page requested
+// Then: Create new tab and return target_id
+    // TODO: Add test assertions
 }
 
-test "remove_attribute" {
-// Given: Node with attribute
-// When: DOM.removeAttribute called
-// Then: Attribute removed
-// Test case: input={ node_id: 1, name: "class" }, expected={ removed: true }
+test "cdp_close_page" {
+// Given: CDPClient and target_id
+// When: Page close requested
+// Then: Close tab
+    // TODO: Add test assertions
 }
 
-test "focus" {
-// Given: Focusable node
-// When: DOM.focus called
-// Then: Node focused
-// Test case: input={ node_id: 1 }, expected={ focused: true }
-}
-
-test "scroll_into_view" {
-// Given: Node ID
-// When: DOM.scrollIntoViewIfNeeded called
-// Then: Node scrolled into view
-// Test case: input={ node_id: 1 }, expected={ scrolled: true }
+test "cdp_disconnect" {
+// Given: CDPClient
+// When: Disconnect requested
+// Then: Close WebSocket cleanly
+    // TODO: Add test assertions
 }
 
 test "phi_constants" {

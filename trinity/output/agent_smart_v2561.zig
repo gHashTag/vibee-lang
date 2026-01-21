@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// cdp_dom_v2317 v2317.0.0 - Generated from .vibee specification
+// agent_smart_v2561 v2561.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,34 +33,40 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
-    node_id: i64,
-    backend_node_id: i64,
-    node_type: i64,
-    node_name: []const u8,
-    local_name: []const u8,
-    node_value: []const u8,
-    child_node_count: ?[]const u8,
-    children: ?[]const u8,
-    attributes: ?[]const u8,
+pub const SmartSelector = struct {
+    primary: []const u8,
+    fallbacks: []const u8,
+    text_hint: []const u8,
+    role: []const u8,
+    near_text: []const u8,
 };
 
 /// 
-pub const BoxModel = struct {
-    content: []const u8,
-    padding: []const u8,
-    border: []const u8,
-    margin: []const u8,
-    width: i64,
-    height: i64,
+pub const ElementMatch = struct {
+    element: []const u8,
+    confidence: f64,
+    strategy_used: []const u8,
+    selector_found: []const u8,
 };
 
 /// 
-pub const RGBA = struct {
-    r: i64,
-    g: i64,
-    b: i64,
-    a: f64,
+pub const FindStrategy = struct {
+    by_id: bool,
+    by_name: bool,
+    by_class: bool,
+    by_text: bool,
+    by_placeholder: bool,
+    by_label: bool,
+    by_role: bool,
+    by_test_id: bool,
+};
+
+/// 
+pub const SmartClickOptions = struct {
+    strategies: []const u8,
+    timeout_ms: i64,
+    retry_count: i64,
+    screenshot_on_fail: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -112,74 +118,74 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_document" {
-// Given: Page loaded
-// When: DOM.getDocument called
-// Then: Document root returned
-// Test case: input={ depth: 1 }, expected={ node_id_greater_than: 0 }
+test "smart_find" {
+// Given: CDPClient and SmartSelector
+// When: Smart search requested
+// Then: Try strategies until element found
+    // TODO: Add test assertions
 }
 
-test "query_selector" {
-// Given: Document node
-// When: DOM.querySelector called
-// Then: Matching node returned
-// Test case: input={ selector: "body" }, expected={ node_found: true }
+test "smart_click" {
+// Given: CDPClient and SmartSelector
+// When: Smart click requested
+// Then: Find and click with fallbacks
+    // TODO: Add test assertions
 }
 
-test "query_selector_all" {
-// Given: Document node
-// When: DOM.querySelectorAll called
-// Then: All matching nodes returned
-// Test case: input={ selector: "div" }, expected={ nodes_returned: true }
+test "smart_type" {
+// Given: CDPClient, SmartSelector, text
+// When: Smart type requested
+// Then: Find input and type with fallbacks
+    // TODO: Add test assertions
 }
 
-test "get_outer_html" {
-// Given: Node ID
-// When: DOM.getOuterHTML called
-// Then: HTML string returned
-// Test case: input={ node_id: 1 }, expected={ html_returned: true }
+test "find_button_by_text" {
+// Given: CDPClient and button text
+// When: Button search requested
+// Then: Find button/input[submit] by text
+    // TODO: Add test assertions
 }
 
-test "set_outer_html" {
-// Given: Node ID and HTML
-// When: DOM.setOuterHTML called
-// Then: Node HTML replaced
-// Test case: input={ node_id: 1, outer_html: "<div>new</div>" }, expected={ replaced: true }
+test "find_link_by_text" {
+// Given: CDPClient and link text
+// When: Link search requested
+// Then: Find anchor by text content
+    // TODO: Add test assertions
 }
 
-test "get_box_model" {
-// Given: Node ID
-// When: DOM.getBoxModel called
-// Then: Box model returned
-// Test case: input={ node_id: 1 }, expected={ model_returned: true }
+test "find_input_by_label" {
+// Given: CDPClient and label text
+// When: Labeled input search requested
+// Then: Find input associated with label
+    // TODO: Add test assertions
 }
 
-test "set_attribute_value" {
-// Given: Node ID and attribute
-// When: DOM.setAttributeValue called
-// Then: Attribute set
-// Test case: input={ node_id: 1, name: "class", value: "test" }, expected={ attribute_set: true }
+test "find_by_test_id" {
+// Given: CDPClient and test_id
+// When: Test ID search requested
+// Then: Find by data-testid attribute
+    // TODO: Add test assertions
 }
 
-test "remove_attribute" {
-// Given: Node with attribute
-// When: DOM.removeAttribute called
-// Then: Attribute removed
-// Test case: input={ node_id: 1, name: "class" }, expected={ removed: true }
+test "find_near_text" {
+// Given: CDPClient, element_type, near_text
+// When: Proximity search requested
+// Then: Find element near specified text
+    // TODO: Add test assertions
 }
 
-test "focus" {
-// Given: Focusable node
-// When: DOM.focus called
-// Then: Node focused
-// Test case: input={ node_id: 1 }, expected={ focused: true }
+test "auto_detect_form_fields" {
+// Given: CDPClient
+// When: Form detection requested
+// Then: Return all fillable fields with labels
+    // TODO: Add test assertions
 }
 
-test "scroll_into_view" {
-// Given: Node ID
-// When: DOM.scrollIntoViewIfNeeded called
-// Then: Node scrolled into view
-// Test case: input={ node_id: 1 }, expected={ scrolled: true }
+test "suggest_selectors" {
+// Given: CDPClient and element description
+// When: Selector suggestion requested
+// Then: Return ranked selector options
+    // TODO: Add test assertions
 }
 
 test "phi_constants" {

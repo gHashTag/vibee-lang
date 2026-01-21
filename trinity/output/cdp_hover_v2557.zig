@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// cdp_dom_v2317 v2317.0.0 - Generated from .vibee specification
+// cdp_hover_v2557 v2557.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,34 +33,26 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
-    node_id: i64,
-    backend_node_id: i64,
-    node_type: i64,
-    node_name: []const u8,
-    local_name: []const u8,
-    node_value: []const u8,
-    child_node_count: ?[]const u8,
-    children: ?[]const u8,
-    attributes: ?[]const u8,
+pub const HoverOptions = struct {
+    duration_ms: i64,
+    position: []const u8,
+    offset_x: f64,
+    offset_y: f64,
 };
 
 /// 
-pub const BoxModel = struct {
-    content: []const u8,
-    padding: []const u8,
-    border: []const u8,
-    margin: []const u8,
-    width: i64,
-    height: i64,
+pub const HoverResult = struct {
+    success: bool,
+    x: f64,
+    y: f64,
+    tooltip_appeared: bool,
 };
 
 /// 
-pub const RGBA = struct {
-    r: i64,
-    g: i64,
-    b: i64,
-    a: f64,
+pub const MousePosition = struct {
+    x: f64,
+    y: f64,
+    element_under: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -112,74 +104,60 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_document" {
-// Given: Page loaded
-// When: DOM.getDocument called
-// Then: Document root returned
-// Test case: input={ depth: 1 }, expected={ node_id_greater_than: 0 }
+test "hover" {
+// Given: CDPClient and selector
+// When: Hover requested
+// Then: Move mouse to element center
+    // TODO: Add test assertions
 }
 
-test "query_selector" {
-// Given: Document node
-// When: DOM.querySelector called
-// Then: Matching node returned
-// Test case: input={ selector: "body" }, expected={ node_found: true }
+test "hover_at" {
+// Given: CDPClient, x, y
+// When: Coordinate hover requested
+// Then: Move mouse to position
+    // TODO: Add test assertions
 }
 
-test "query_selector_all" {
-// Given: Document node
-// When: DOM.querySelectorAll called
-// Then: All matching nodes returned
-// Test case: input={ selector: "div" }, expected={ nodes_returned: true }
+test "hover_and_wait" {
+// Given: CDPClient, selector, duration_ms
+// When: Sustained hover requested
+// Then: Hover and wait for effects
+    // TODO: Add test assertions
 }
 
-test "get_outer_html" {
-// Given: Node ID
-// When: DOM.getOuterHTML called
-// Then: HTML string returned
-// Test case: input={ node_id: 1 }, expected={ html_returned: true }
+test "hover_for_tooltip" {
+// Given: CDPClient, selector, tooltip_selector
+// When: Tooltip hover requested
+// Then: Hover until tooltip appears
+    // TODO: Add test assertions
 }
 
-test "set_outer_html" {
-// Given: Node ID and HTML
-// When: DOM.setOuterHTML called
-// Then: Node HTML replaced
-// Test case: input={ node_id: 1, outer_html: "<div>new</div>" }, expected={ replaced: true }
+test "hover_menu_item" {
+// Given: CDPClient, menu_selector, item_selector
+// When: Menu hover requested
+// Then: Hover to open submenu
+    // TODO: Add test assertions
 }
 
-test "get_box_model" {
-// Given: Node ID
-// When: DOM.getBoxModel called
-// Then: Box model returned
-// Test case: input={ node_id: 1 }, expected={ model_returned: true }
+test "move_mouse_path" {
+// Given: CDPClient, points array
+// When: Path movement requested
+// Then: Move mouse along path
+    // TODO: Add test assertions
 }
 
-test "set_attribute_value" {
-// Given: Node ID and attribute
-// When: DOM.setAttributeValue called
-// Then: Attribute set
-// Test case: input={ node_id: 1, name: "class", value: "test" }, expected={ attribute_set: true }
+test "get_mouse_position" {
+// Given: CDPClient
+// When: Position requested
+// Then: Return current MousePosition
+    // TODO: Add test assertions
 }
 
-test "remove_attribute" {
-// Given: Node with attribute
-// When: DOM.removeAttribute called
-// Then: Attribute removed
-// Test case: input={ node_id: 1, name: "class" }, expected={ removed: true }
-}
-
-test "focus" {
-// Given: Focusable node
-// When: DOM.focus called
-// Then: Node focused
-// Test case: input={ node_id: 1 }, expected={ focused: true }
-}
-
-test "scroll_into_view" {
-// Given: Node ID
-// When: DOM.scrollIntoViewIfNeeded called
-// Then: Node scrolled into view
-// Test case: input={ node_id: 1 }, expected={ scrolled: true }
+test "leave_element" {
+// Given: CDPClient and selector
+// When: Mouse leave requested
+// Then: Move mouse outside element
+    // TODO: Add test assertions
 }
 
 test "phi_constants" {

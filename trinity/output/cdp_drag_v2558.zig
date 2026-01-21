@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// cdp_dom_v2317 v2317.0.0 - Generated from .vibee specification
+// cdp_drag_v2558 v2558.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,34 +33,27 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
-    node_id: i64,
-    backend_node_id: i64,
-    node_type: i64,
-    node_name: []const u8,
-    local_name: []const u8,
-    node_value: []const u8,
-    child_node_count: ?[]const u8,
-    children: ?[]const u8,
-    attributes: ?[]const u8,
+pub const DragOptions = struct {
+    steps: i64,
+    delay_ms: i64,
+    source_position: []const u8,
+    target_position: []const u8,
 };
 
 /// 
-pub const BoxModel = struct {
-    content: []const u8,
-    padding: []const u8,
-    border: []const u8,
-    margin: []const u8,
-    width: i64,
-    height: i64,
+pub const DragResult = struct {
+    success: bool,
+    start_x: f64,
+    start_y: f64,
+    end_x: f64,
+    end_y: f64,
 };
 
 /// 
-pub const RGBA = struct {
-    r: i64,
-    g: i64,
-    b: i64,
-    a: f64,
+pub const DragData = struct {
+    items: []const u8,
+    files: []const u8,
+    drag_operations_mask: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -112,74 +105,53 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_document" {
-// Given: Page loaded
-// When: DOM.getDocument called
-// Then: Document root returned
-// Test case: input={ depth: 1 }, expected={ node_id_greater_than: 0 }
+test "drag_and_drop" {
+// Given: CDPClient, source_selector, target_selector
+// When: Drag drop requested
+// Then: Drag element to target
+    // TODO: Add test assertions
 }
 
-test "query_selector" {
-// Given: Document node
-// When: DOM.querySelector called
-// Then: Matching node returned
-// Test case: input={ selector: "body" }, expected={ node_found: true }
+test "drag_to_coordinates" {
+// Given: CDPClient, selector, target_x, target_y
+// When: Coordinate drag requested
+// Then: Drag element to position
+    // TODO: Add test assertions
 }
 
-test "query_selector_all" {
-// Given: Document node
-// When: DOM.querySelectorAll called
-// Then: All matching nodes returned
-// Test case: input={ selector: "div" }, expected={ nodes_returned: true }
+test "drag_by_offset" {
+// Given: CDPClient, selector, offset_x, offset_y
+// When: Offset drag requested
+// Then: Drag element by offset
+    // TODO: Add test assertions
 }
 
-test "get_outer_html" {
-// Given: Node ID
-// When: DOM.getOuterHTML called
-// Then: HTML string returned
-// Test case: input={ node_id: 1 }, expected={ html_returned: true }
+test "drag_slider" {
+// Given: CDPClient, slider_selector, value_percent
+// When: Slider drag requested
+// Then: Drag slider to percentage
+    // TODO: Add test assertions
 }
 
-test "set_outer_html" {
-// Given: Node ID and HTML
-// When: DOM.setOuterHTML called
-// Then: Node HTML replaced
-// Test case: input={ node_id: 1, outer_html: "<div>new</div>" }, expected={ replaced: true }
+test "drag_file_to_element" {
+// Given: CDPClient, file_path, target_selector
+// When: File drag requested
+// Then: Simulate file drop on element
+    // TODO: Add test assertions
 }
 
-test "get_box_model" {
-// Given: Node ID
-// When: DOM.getBoxModel called
-// Then: Box model returned
-// Test case: input={ node_id: 1 }, expected={ model_returned: true }
+test "reorder_list_item" {
+// Given: CDPClient, item_selector, new_index
+// When: Reorder requested
+// Then: Drag item to new position
+    // TODO: Add test assertions
 }
 
-test "set_attribute_value" {
-// Given: Node ID and attribute
-// When: DOM.setAttributeValue called
-// Then: Attribute set
-// Test case: input={ node_id: 1, name: "class", value: "test" }, expected={ attribute_set: true }
-}
-
-test "remove_attribute" {
-// Given: Node with attribute
-// When: DOM.removeAttribute called
-// Then: Attribute removed
-// Test case: input={ node_id: 1, name: "class" }, expected={ removed: true }
-}
-
-test "focus" {
-// Given: Focusable node
-// When: DOM.focus called
-// Then: Node focused
-// Test case: input={ node_id: 1 }, expected={ focused: true }
-}
-
-test "scroll_into_view" {
-// Given: Node ID
-// When: DOM.scrollIntoViewIfNeeded called
-// Then: Node scrolled into view
-// Test case: input={ node_id: 1 }, expected={ scrolled: true }
+test "drag_with_steps" {
+// Given: CDPClient, source, target, steps
+// When: Smooth drag requested
+// Then: Drag with intermediate positions
+    // TODO: Add test assertions
 }
 
 test "phi_constants" {

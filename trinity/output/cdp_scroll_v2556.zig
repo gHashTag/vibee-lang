@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// cdp_dom_v2317 v2317.0.0 - Generated from .vibee specification
+// cdp_scroll_v2556 v2556.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,34 +33,33 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
-    node_id: i64,
-    backend_node_id: i64,
-    node_type: i64,
-    node_name: []const u8,
-    local_name: []const u8,
-    node_value: []const u8,
-    child_node_count: ?[]const u8,
-    children: ?[]const u8,
-    attributes: ?[]const u8,
+pub const ScrollOptions = struct {
+    behavior: []const u8,
+    block: []const u8,
+    @"inline": []const u8,
 };
 
 /// 
-pub const BoxModel = struct {
-    content: []const u8,
-    padding: []const u8,
-    border: []const u8,
-    margin: []const u8,
-    width: i64,
-    height: i64,
+pub const ScrollPosition = struct {
+    x: f64,
+    y: f64,
+    max_x: f64,
+    max_y: f64,
 };
 
 /// 
-pub const RGBA = struct {
-    r: i64,
-    g: i64,
-    b: i64,
-    a: f64,
+pub const ScrollResult = struct {
+    success: bool,
+    final_x: f64,
+    final_y: f64,
+};
+
+/// 
+pub const InfiniteScrollOptions = struct {
+    max_scrolls: i64,
+    delay_ms: i64,
+    selector: []const u8,
+    stop_condition: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -112,74 +111,67 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_document" {
-// Given: Page loaded
-// When: DOM.getDocument called
-// Then: Document root returned
-// Test case: input={ depth: 1 }, expected={ node_id_greater_than: 0 }
+test "scroll_to_element" {
+// Given: CDPClient and selector
+// When: Element scroll requested
+// Then: Scroll element into viewport center
+    // TODO: Add test assertions
 }
 
-test "query_selector" {
-// Given: Document node
-// When: DOM.querySelector called
-// Then: Matching node returned
-// Test case: input={ selector: "body" }, expected={ node_found: true }
+test "scroll_to_top" {
+// Given: CDPClient
+// When: Top scroll requested
+// Then: Scroll to page top
+    // TODO: Add test assertions
 }
 
-test "query_selector_all" {
-// Given: Document node
-// When: DOM.querySelectorAll called
-// Then: All matching nodes returned
-// Test case: input={ selector: "div" }, expected={ nodes_returned: true }
+test "scroll_to_bottom" {
+// Given: CDPClient
+// When: Bottom scroll requested
+// Then: Scroll to page bottom
+    // TODO: Add test assertions
 }
 
-test "get_outer_html" {
-// Given: Node ID
-// When: DOM.getOuterHTML called
-// Then: HTML string returned
-// Test case: input={ node_id: 1 }, expected={ html_returned: true }
+test "scroll_by" {
+// Given: CDPClient, delta_x, delta_y
+// When: Relative scroll requested
+// Then: Scroll by pixel amount
+    // TODO: Add test assertions
 }
 
-test "set_outer_html" {
-// Given: Node ID and HTML
-// When: DOM.setOuterHTML called
-// Then: Node HTML replaced
-// Test case: input={ node_id: 1, outer_html: "<div>new</div>" }, expected={ replaced: true }
-}
-
-test "get_box_model" {
-// Given: Node ID
-// When: DOM.getBoxModel called
-// Then: Box model returned
-// Test case: input={ node_id: 1 }, expected={ model_returned: true }
-}
-
-test "set_attribute_value" {
-// Given: Node ID and attribute
-// When: DOM.setAttributeValue called
-// Then: Attribute set
-// Test case: input={ node_id: 1, name: "class", value: "test" }, expected={ attribute_set: true }
-}
-
-test "remove_attribute" {
-// Given: Node with attribute
-// When: DOM.removeAttribute called
-// Then: Attribute removed
-// Test case: input={ node_id: 1, name: "class" }, expected={ removed: true }
-}
-
-test "focus" {
-// Given: Focusable node
-// When: DOM.focus called
-// Then: Node focused
-// Test case: input={ node_id: 1 }, expected={ focused: true }
+test "scroll_to" {
+// Given: CDPClient, x, y
+// When: Absolute scroll requested
+// Then: Scroll to exact position
+    // TODO: Add test assertions
 }
 
 test "scroll_into_view" {
-// Given: Node ID
-// When: DOM.scrollIntoViewIfNeeded called
-// Then: Node scrolled into view
-// Test case: input={ node_id: 1 }, expected={ scrolled: true }
+// Given: CDPClient, selector, ScrollOptions
+// When: View scroll requested
+// Then: Scroll element into view with options
+    // TODO: Add test assertions
+}
+
+test "get_scroll_position" {
+// Given: CDPClient
+// When: Position requested
+// Then: Return current ScrollPosition
+    // TODO: Add test assertions
+}
+
+test "infinite_scroll" {
+// Given: CDPClient, InfiniteScrollOptions
+// When: Infinite scroll requested
+// Then: Scroll until condition or max
+    // TODO: Add test assertions
+}
+
+test "scroll_element" {
+// Given: CDPClient, container_selector, delta_y
+// When: Container scroll requested
+// Then: Scroll within scrollable element
+    // TODO: Add test assertions
 }
 
 test "phi_constants" {

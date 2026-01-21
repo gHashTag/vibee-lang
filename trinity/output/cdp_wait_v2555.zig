@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// cdp_dom_v2317 v2317.0.0 - Generated from .vibee specification
+// cdp_wait_v2555 v2555.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,34 +33,36 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
-    node_id: i64,
-    backend_node_id: i64,
-    node_type: i64,
-    node_name: []const u8,
-    local_name: []const u8,
-    node_value: []const u8,
-    child_node_count: ?[]const u8,
-    children: ?[]const u8,
-    attributes: ?[]const u8,
+pub const WaitOptions = struct {
+    timeout_ms: i64,
+    polling_ms: i64,
+    visible: bool,
+    hidden: bool,
+    enabled: bool,
 };
 
 /// 
-pub const BoxModel = struct {
-    content: []const u8,
-    padding: []const u8,
-    border: []const u8,
-    margin: []const u8,
-    width: i64,
-    height: i64,
+pub const WaitResult = struct {
+    success: bool,
+    elapsed_ms: i64,
+    element: []const u8,
+    timed_out: bool,
 };
 
 /// 
-pub const RGBA = struct {
-    r: i64,
-    g: i64,
-    b: i64,
-    a: f64,
+pub const WaitCondition = struct {
+    @"type": []const u8,
+    selector: []const u8,
+    text: []const u8,
+    url_pattern: []const u8,
+    js_expression: []const u8,
+};
+
+/// 
+pub const NetworkIdleOptions = struct {
+    timeout_ms: i64,
+    idle_time_ms: i64,
+    max_inflight: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -112,74 +114,74 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "get_document" {
-// Given: Page loaded
-// When: DOM.getDocument called
-// Then: Document root returned
-// Test case: input={ depth: 1 }, expected={ node_id_greater_than: 0 }
+test "wait_for_selector" {
+// Given: CDPClient, selector, timeout_ms
+// When: Element wait requested
+// Then: Wait until element exists in DOM
+    // TODO: Add test assertions
 }
 
-test "query_selector" {
-// Given: Document node
-// When: DOM.querySelector called
-// Then: Matching node returned
-// Test case: input={ selector: "body" }, expected={ node_found: true }
+test "wait_for_visible" {
+// Given: CDPClient, selector, timeout_ms
+// When: Visibility wait requested
+// Then: Wait until element visible
+    // TODO: Add test assertions
 }
 
-test "query_selector_all" {
-// Given: Document node
-// When: DOM.querySelectorAll called
-// Then: All matching nodes returned
-// Test case: input={ selector: "div" }, expected={ nodes_returned: true }
+test "wait_for_hidden" {
+// Given: CDPClient, selector, timeout_ms
+// When: Hidden wait requested
+// Then: Wait until element hidden/removed
+    // TODO: Add test assertions
 }
 
-test "get_outer_html" {
-// Given: Node ID
-// When: DOM.getOuterHTML called
-// Then: HTML string returned
-// Test case: input={ node_id: 1 }, expected={ html_returned: true }
+test "wait_for_enabled" {
+// Given: CDPClient, selector, timeout_ms
+// When: Enabled wait requested
+// Then: Wait until element not disabled
+    // TODO: Add test assertions
 }
 
-test "set_outer_html" {
-// Given: Node ID and HTML
-// When: DOM.setOuterHTML called
-// Then: Node HTML replaced
-// Test case: input={ node_id: 1, outer_html: "<div>new</div>" }, expected={ replaced: true }
+test "wait_for_text" {
+// Given: CDPClient, selector, text, timeout_ms
+// When: Text wait requested
+// Then: Wait until element contains text
+    // TODO: Add test assertions
 }
 
-test "get_box_model" {
-// Given: Node ID
-// When: DOM.getBoxModel called
-// Then: Box model returned
-// Test case: input={ node_id: 1 }, expected={ model_returned: true }
+test "wait_for_navigation" {
+// Given: CDPClient, timeout_ms
+// When: Navigation wait requested
+// Then: Wait for page load complete
+    // TODO: Add test assertions
 }
 
-test "set_attribute_value" {
-// Given: Node ID and attribute
-// When: DOM.setAttributeValue called
-// Then: Attribute set
-// Test case: input={ node_id: 1, name: "class", value: "test" }, expected={ attribute_set: true }
+test "wait_for_url" {
+// Given: CDPClient, url_pattern, timeout_ms
+// When: URL wait requested
+// Then: Wait until URL matches pattern
+    // TODO: Add test assertions
 }
 
-test "remove_attribute" {
-// Given: Node with attribute
-// When: DOM.removeAttribute called
-// Then: Attribute removed
-// Test case: input={ node_id: 1, name: "class" }, expected={ removed: true }
+test "wait_for_network_idle" {
+// Given: CDPClient, NetworkIdleOptions
+// When: Network idle wait requested
+// Then: Wait until no pending requests
+    // TODO: Add test assertions
 }
 
-test "focus" {
-// Given: Focusable node
-// When: DOM.focus called
-// Then: Node focused
-// Test case: input={ node_id: 1 }, expected={ focused: true }
+test "wait_for_function" {
+// Given: CDPClient, js_expression, timeout_ms
+// When: JS condition wait requested
+// Then: Wait until JS returns truthy
+    // TODO: Add test assertions
 }
 
-test "scroll_into_view" {
-// Given: Node ID
-// When: DOM.scrollIntoViewIfNeeded called
-// Then: Node scrolled into view
-// Test case: input={ node_id: 1 }, expected={ scrolled: true }
+test "wait_ms" {
+// Given: CDPClient and milliseconds
+// When: Fixed delay requested
+// Then: Sleep for specified time
+    // TODO: Add test assertions
 }
 
 test "phi_constants" {
