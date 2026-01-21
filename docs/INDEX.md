@@ -10,6 +10,7 @@
 |-----------|-------------|
 | [quickstart/](quickstart/) | Getting started guides |
 | [guides/](guides/) | User guides, tutorials |
+| [guides/VIBEE_LANGUAGE_GUIDE.md](guides/VIBEE_LANGUAGE_GUIDE.md) | **📖 VIBEE Language Reference** |
 | [core/](core/) | Core concepts, API |
 
 ### 🔬 Technical Documentation
@@ -51,9 +52,10 @@
 
 ## 🔗 Quick Links
 
-### Getting Started
-- [Quickstart Guide](quickstart/QUICKSTART.md)
-- [Tutorial](quickstart/TUTORIAL.md)
+### 📖 Learn VIBEE
+- **[VIBEE Language Guide](guides/VIBEE_LANGUAGE_GUIDE.md)** - Complete language reference
+- [Quickstart Guide](quickstart/QUICKSTART.md) - Get started in 5 minutes
+- [Tutorial](quickstart/TUTORIAL.md) - Step-by-step tutorial
 
 ### Key Features (January 2026)
 - [iGLA v6 IMMORTAL](igla/) - 15000× inference speedup
@@ -77,6 +79,24 @@
 | Supported languages | **42** |
 | FFI modules | **40** |
 | Tests | **2000+** |
+
+---
+
+## 🛠️ Commands
+
+```bash
+# Generate Zig from .vibee
+vibee gen specs/tri/feature.vibee
+
+# Generate for 42 languages
+vibee gen-multi specs/tri/feature.vibee all
+
+# Test generated code
+zig test trinity/output/feature.zig
+
+# Show help
+vibee help
+```
 
 ---
 
