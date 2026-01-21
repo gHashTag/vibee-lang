@@ -665,13 +665,16 @@ behaviors:
 
 | Метрика | Значение |
 |---------|----------|
-| Файлов .vibee | **667+** |
-| Файлов .zig (компилятор) | **60+** |
-| Файлов .zig (сгенерированный код) | **2000+** |
-| Файлов .md (документация) | **6189** |
-| Строк кода компилятора | **20,000+** |
+| Файлов .vibee | **9,900+** |
+| Файлов .zig (компилятор) | **86+** |
+| Файлов .zig (сгенерированный код) | **18,800+** |
+| Файлов .md (документация) | **6,000+** |
+| Строк кода компилятора | **25,000+** |
 | Поддерживаемых языков | **42** |
 | FFI модулей | **40** |
+| iGLA модулей | **50+** |
+| RAG модулей | **60** |
+| Тестов всего | **2,500+** |
 | Время разработки | **2 недели** |
 
 ### Архитектура VIBEE:
@@ -717,7 +720,12 @@ behaviors:
 | `pas_predictions.zig` | PAS движок предсказаний | 600+ |
 | `vm_trinity.zig` | Троичная виртуальная машина | 900+ |
 | `jit_v2.zig` | JIT компилятор | 700+ |
+| `tracing_jit.zig` | Tracing JIT (5-50x для hot loops) | 500+ |
+| `inline_cache.zig` | Polymorphic Inline Caches (2-5x) | 400+ |
 | `gc_immix.zig` | Сборщик мусора Immix | 400+ |
+| `antipattern_detector.zig` | Детектор нарушений методологии | 600+ |
+| `egraph_optimizer_igla.zig` | E-Graph оптимизатор | 800+ |
+| `superopt_igla.zig` | Суперооптимизатор | 700+ |
 
 ### 🌍 VIBEE GEN-MULTI: Генерация для 42 языков
 
@@ -952,7 +960,7 @@ cd src/vibeec && zig build
 | **iGLA v6 IMMORTAL** | Inference-Guided Language Acceleration | 50+ | 300+ |
 | **KOSCHEI MODE** | Автономная система самоэволюции | 114 | 766 |
 | **RAG Pipeline** | Retrieval-Augmented Generation | 16 | 99 |
-| **Agent Browser** | Chromium + Monaco + AI Agent | 32 | 200+ |
+| **Agent Browser** | Chromium + Monaco + AI (WIP) | 32 specs | planned |
 | **LLM Inference** | llama.cpp интеграция | 10 | 50+ |
 | **GEN-MULTI** | Генерация для 42 языков | 42 | 350+ |
 | **FFI System** | Интеграция с 40 языками | 40 | 350+ |
@@ -990,42 +998,89 @@ vibee koschei start
 
 **114 модулей | 766 тестов | 10 уровней эволюции**
 
-#### RAG Pipeline — Retrieval-Augmented Generation
-
-```yaml
-# specs/tri/igla_rag_pipeline.vibee
-name: igla_rag_pipeline
-version: "1.0.0"
-
-components:
-  - embeddings: text-embedding-3-small
-  - vectorstore: FAISS / Qdrant / Pinecone
-  - retriever: similarity_search (top_k=5)
-  - chunker: recursive_text_splitter (1000 tokens)
-  - generator: GPT-4 / Claude / Llama
-
-behaviors:
-  - name: retrieve_and_generate
-    given: User query
-    when: RAG pipeline executed
-    then: Returns grounded response with citations
-```
-
-#### Agent Browser — AI в браузере
+#### RAG Pipeline v3 — Production-Ready RAG
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    VIBEE Agent Browser                          │
+│                    RAG Pipeline v3                              │
 ├─────────────────────────────────────────────────────────────────┤
-│  Chromium Engine      → Real browser rendering                  │
-│  Monaco Editor        → VS Code-level editing                   │
-│  CDP Protocol         → Full browser automation                 │
-│  AI Agent             → Claude/GPT integration                  │
-│  Screen Capture       → Visual understanding                    │
+│  ONNX Runtime       → Local inference (no API calls)           │
+│  MiniLM-L6-v2       → 384-dim embeddings, 80MB model           │
+│  Persistent Store   → SQLite + FAISS index                     │
+│  Streaming          → Token-by-token generation                │
+│  CLIP Integration   → Multi-modal (text + images)              │
+│  RAGAS Evaluation   → Faithfulness, relevance metrics          │
+│  BEIR Benchmarks    → Standard IR evaluation                   │
 ├─────────────────────────────────────────────────────────────────┤
-│  32 модуля | 200+ тестов | Production Ready                     │
+│  60 модулей | 520 тестов | 100% pass                           │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+**Ключевые компоненты:**
+
+| Компонент | Описание | Модулей |
+|-----------|----------|---------|
+| `igla_onnx_runtime` | ONNX inference engine | 8 |
+| `igla_minilm_embeddings` | MiniLM-L6-v2 embeddings | 6 |
+| `igla_persistent_store` | SQLite + FAISS persistence | 10 |
+| `igla_streaming_rag` | Token streaming | 8 |
+| `igla_clip_multimodal` | CLIP image+text | 12 |
+| `igla_ragas_eval` | RAG evaluation metrics | 8 |
+| `igla_beir_benchmark` | IR benchmarks | 8 |
+
+```yaml
+# specs/tri/igla_rag_v3.vibee
+name: igla_rag_v3
+version: "3.0.0"
+
+components:
+  - embeddings: MiniLM-L6-v2 (ONNX, local)
+  - vectorstore: FAISS + SQLite (persistent)
+  - retriever: hybrid_search (dense + sparse)
+  - chunker: semantic_chunker (φ-based splits)
+  - generator: streaming (token-by-token)
+  - evaluator: RAGAS + BEIR
+
+behaviors:
+  - name: embed_and_store
+    given: Document corpus
+    when: Indexing performed
+    then: Persistent vector index created
+
+  - name: retrieve_and_stream
+    given: User query
+    when: RAG pipeline executed
+    then: Streams grounded response with citations
+```
+
+#### Agent Browser — Спецификации для AI-браузера (WIP)
+
+**В разработке:** спецификации для AI-powered браузера с φ-based UI.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Agent Browser (PLANNED)                      │
+├─────────────────────────────────────────────────────────────────┤
+│  Chromium Engine      → Real browser rendering                  │
+│  Monaco Editor        → VS Code-level code editing              │
+│  AI Sidebar           → Claude/GPT streaming chat               │
+│  φ-Layout             → Golden ratio based UI splits            │
+│  CDP Protocol         → Full browser automation                 │
+├─────────────────────────────────────────────────────────────────┤
+│  Status: Specifications ready, implementation in progress       │
+│  32 .vibee specs | Target: Q2 2026                              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Готовые спецификации:**
+
+| Спецификация | Описание |
+|--------------|----------|
+| `browser_core.vibee` | Основной движок браузера |
+| `browser_ai_sidebar.vibee` | AI чат-панель |
+| `browser_monaco.vibee` | Интеграция Monaco Editor |
+| `browser_cdp.vibee` | Chrome DevTools Protocol |
+| `browser_phi_layout.vibee` | φ-based разметка UI |
 
 ---
 
@@ -1836,6 +1891,30 @@ PHI = (1 + 5**0.5) / 2
 result = PHI**2 + 1/PHI**2
 print(f"φ² + 1/φ² = {result}")  # 3.0000000000000004
 ```
+
+---
+
+## 📚 Документация
+
+### Где изучить VIBEE:
+
+| Документ | Описание | Ссылка |
+|----------|----------|--------|
+| **VIBEE Language Guide** | Полный справочник языка | [docs/guides/VIBEE_LANGUAGE_GUIDE.md](https://github.com/gHashTag/vibee-lang/blob/main/docs/guides/VIBEE_LANGUAGE_GUIDE.md) |
+| **Documentation Index** | Индекс всей документации | [docs/INDEX.md](https://github.com/gHashTag/vibee-lang/blob/main/docs/INDEX.md) |
+| **Quickstart** | Быстрый старт за 5 минут | [docs/quickstart/QUICKSTART.md](https://github.com/gHashTag/vibee-lang/blob/main/docs/quickstart/QUICKSTART.md) |
+| **AGENTS.md** | Гайдлайны для AI агентов | [AGENTS.md](https://github.com/gHashTag/vibee-lang/blob/main/AGENTS.md) |
+| **CLAUDE.md** | Правила разработки | [CLAUDE.md](https://github.com/gHashTag/vibee-lang/blob/main/CLAUDE.md) |
+
+### Техническая документация:
+
+| Раздел | Описание |
+|--------|----------|
+| [docs/igla/](https://github.com/gHashTag/vibee-lang/tree/main/docs/igla) | iGLA inference & training |
+| [docs/koschei/](https://github.com/gHashTag/vibee-lang/tree/main/docs/koschei) | KOSCHEI autonomous system |
+| [docs/browser/](https://github.com/gHashTag/vibee-lang/tree/main/docs/browser) | VIBEE Browser documentation |
+| [docs/pas/](https://github.com/gHashTag/vibee-lang/tree/main/docs/pas) | PAS methodology |
+| [docs/scientific/](https://github.com/gHashTag/vibee-lang/tree/main/docs/scientific) | Scientific papers |
 
 ---
 
