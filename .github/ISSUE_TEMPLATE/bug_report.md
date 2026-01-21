@@ -7,10 +7,15 @@ labels: bug
 ## Description
 <!-- Clear description of the bug -->
 
+## Environment
+- OS: 
+- Zig version: 
+- VIBEE version: 
+
 ## Steps to Reproduce
-1.
-2.
-3.
+1. 
+2. 
+3. 
 
 ## Expected Behavior
 <!-- What should happen -->
@@ -18,12 +23,16 @@ labels: bug
 ## Actual Behavior
 <!-- What actually happens -->
 
-## Environment
-- OS:
-- Gleam version:
-- Erlang version:
+## Relevant Spec File
+<!-- If applicable, include the .vibee spec -->
+```yaml
+# specs/tri/_____.vibee
+```
 
-## Logs
+## Error Output
 ```
-<!-- Paste relevant logs -->
+<!-- Paste error messages here -->
 ```
+
+## Additional Context
+<!-- Any other relevant information -->
