@@ -54,8 +54,8 @@ pub const BlurPass = struct {
 
 /// 
 pub const GaussianKernel = struct {
-    weights: List,
-    offsets: List,
+    weights: []const u8,
+    offsets: []const u8,
     size: i64,
 };
 

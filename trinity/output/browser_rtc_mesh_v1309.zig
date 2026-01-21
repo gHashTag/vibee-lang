@@ -32,8 +32,8 @@ pub const TAU: f64 = 6.283185307179586;
 /// 
 pub const MeshNetwork = struct {
     local_peer: []const u8,
-    peers: Map,
-    connections: Map,
+    peers: std.StringHashMap([]const u8),
+    connections: std.StringHashMap([]const u8),
     topology: []const u8,
 };
 
@@ -54,7 +54,7 @@ pub const MeshMessage = struct {
     msg_type: []const u8,
     payload: []const u8,
     ttl: i64,
-    hops: List,
+    hops: []const u8,
 };
 
 /// 

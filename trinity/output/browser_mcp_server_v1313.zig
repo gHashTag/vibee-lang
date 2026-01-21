@@ -34,9 +34,9 @@ pub const MCPServer = struct {
     name: []const u8,
     version: []const u8,
     capabilities: ServerCapabilities,
-    tools: Map,
-    resources: Map,
-    prompts: Map,
+    tools: std.StringHashMap([]const u8),
+    resources: std.StringHashMap([]const u8),
+    prompts: std.StringHashMap([]const u8),
 };
 
 /// 
@@ -45,7 +45,7 @@ pub const ServerCapabilities = struct {
     resources: bool,
     prompts: bool,
     logging: bool,
-    experimental: Map,
+    experimental: std.StringHashMap([]const u8),
 };
 
 /// 
@@ -53,14 +53,14 @@ pub const MCPRequest = struct {
     jsonrpc: []const u8,
     id: i64,
     method: []const u8,
-    params: Map,
+    params: std.StringHashMap([]const u8),
 };
 
 /// 
 pub const MCPResponse = struct {
     jsonrpc: []const u8,
     id: i64,
-    result: Map,
+    result: std.StringHashMap([]const u8),
     @"error": MCPError,
 };
 
@@ -68,28 +68,28 @@ pub const MCPResponse = struct {
 pub const MCPError = struct {
     code: i64,
     message: []const u8,
-    data: Map,
+    data: std.StringHashMap([]const u8),
 };
 
 /// 
 pub const MCPNotification = struct {
     jsonrpc: []const u8,
     method: []const u8,
-    params: Map,
+    params: std.StringHashMap([]const u8),
 };
 
 /// 
 pub const InitializeParams = struct {
     protocol_version: []const u8,
-    capabilities: Map,
-    client_info: Map,
+    capabilities: std.StringHashMap([]const u8),
+    client_info: std.StringHashMap([]const u8),
 };
 
 /// 
 pub const InitializeResult = struct {
     protocol_version: []const u8,
     capabilities: ServerCapabilities,
-    server_info: Map,
+    server_info: std.StringHashMap([]const u8),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

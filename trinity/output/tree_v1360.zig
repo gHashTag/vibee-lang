@@ -32,7 +32,7 @@ pub const TAU: f64 = 6.283185307179586;
 /// 
 pub const TechNode1360 = struct {
     name: []const u8,
-    dependencies: List,
+    dependencies: []const u8,
     unlocked: bool,
 };
 

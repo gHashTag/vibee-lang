@@ -31,19 +31,19 @@ pub const TAU: f64 = 6.283185307179586;
 
 /// 
 pub const SamplingRequest = struct {
-    messages: List,
+    messages: []const u8,
     model_preferences: ModelPreferences,
     system_prompt: []const u8,
     include_context: []const u8,
     temperature: f64,
     max_tokens: i64,
-    stop_sequences: List,
-    metadata: Map,
+    stop_sequences: []const u8,
+    metadata: std.StringHashMap([]const u8),
 };
 
 /// 
 pub const ModelPreferences = struct {
-    hints: List,
+    hints: []const u8,
     cost_priority: f64,
     speed_priority: f64,
     intelligence_priority: f64,

@@ -32,31 +32,31 @@ pub const TAU: f64 = 6.283185307179586;
 /// 
 pub const SFUServer = struct {
     server_id: []const u8,
-    rooms: Map,
-    publishers: Map,
-    subscribers: Map,
+    rooms: std.StringHashMap([]const u8),
+    publishers: std.StringHashMap([]const u8),
+    subscribers: std.StringHashMap([]const u8),
 };
 
 /// 
 pub const SFURoom = struct {
     room_id: []const u8,
-    publishers: List,
-    subscribers: List,
+    publishers: []const u8,
+    subscribers: []const u8,
     recording: bool,
 };
 
 /// 
 pub const Publisher = struct {
     peer_id: []const u8,
-    tracks: List,
-    simulcast_layers: List,
+    tracks: []const u8,
+    simulcast_layers: []const u8,
     bitrate: i64,
 };
 
 /// 
 pub const Subscriber = struct {
     peer_id: []const u8,
-    subscriptions: List,
+    subscriptions: []const u8,
     preferred_layer: i64,
 };
 

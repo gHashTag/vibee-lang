@@ -34,7 +34,7 @@ pub const RGADoc = struct {
     site_id: i64,
     counter: i64,
     head: RGANode,
-    nodes: Map,
+    nodes: std.StringHashMap([]const u8),
     tombstones: i64,
 };
 
@@ -65,8 +65,8 @@ pub const RGAOp = struct {
 
 /// 
 pub const RGAState = struct {
-    nodes: List,
-    version_vector: Map,
+    nodes: []const u8,
+    version_vector: std.StringHashMap([]const u8),
     site_id: i64,
 };
 

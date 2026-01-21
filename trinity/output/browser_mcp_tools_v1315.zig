@@ -34,20 +34,20 @@ pub const ToolDefinition = struct {
     name: []const u8,
     description: []const u8,
     input_schema: JSONSchema,
-    annotations: Map,
+    annotations: std.StringHashMap([]const u8),
 };
 
 /// 
 pub const JSONSchema = struct {
     schema_type: []const u8,
-    properties: Map,
-    required: List,
+    properties: std.StringHashMap([]const u8),
+    required: []const u8,
     additional_properties: bool,
 };
 
 /// 
 pub const ToolResult = struct {
-    content: List,
+    content: []const u8,
     is_error: bool,
 };
 
@@ -66,9 +66,9 @@ pub const ImageContent = struct {
 
 /// 
 pub const ToolRegistry = struct {
-    tools: Map,
-    handlers: Map,
-    middleware: List,
+    tools: std.StringHashMap([]const u8),
+    handlers: std.StringHashMap([]const u8),
+    middleware: []const u8,
 };
 
 /// 

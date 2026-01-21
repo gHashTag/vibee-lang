@@ -43,7 +43,7 @@ pub const IslandContent = struct {
     title: []const u8,
     subtitle: []const u8,
     icon: []const u8,
-    actions: List,
+    actions: []const u8,
 };
 
 /// 
@@ -51,7 +51,7 @@ pub const IslandAnimation = struct {
     from_state: []const u8,
     to_state: []const u8,
     duration_ms: i64,
-    spring_config: Map,
+    spring_config: std.StringHashMap([]const u8),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

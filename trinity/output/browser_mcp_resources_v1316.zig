@@ -35,7 +35,7 @@ pub const ResourceDefinition = struct {
     name: []const u8,
     description: []const u8,
     mime_type: []const u8,
-    annotations: Map,
+    annotations: std.StringHashMap([]const u8),
 };
 
 /// 
@@ -56,9 +56,9 @@ pub const ResourceTemplate = struct {
 
 /// 
 pub const ResourceRegistry = struct {
-    resources: Map,
-    templates: Map,
-    handlers: Map,
+    resources: std.StringHashMap([]const u8),
+    templates: std.StringHashMap([]const u8),
+    handlers: std.StringHashMap([]const u8),
 };
 
 /// 

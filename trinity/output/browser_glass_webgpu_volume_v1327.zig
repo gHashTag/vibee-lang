@@ -46,9 +46,9 @@ pub const VolumetricConfig = struct {
 
 /// 
 pub const FogVolume = struct {
-    bounds: List,
+    bounds: []const u8,
     density_texture: []const u8,
-    color: List,
+    color: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

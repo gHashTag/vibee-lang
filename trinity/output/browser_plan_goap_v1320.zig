@@ -31,18 +31,18 @@ pub const TAU: f64 = 6.283185307179586;
 
 /// 
 pub const GOAPAgent = struct {
-    actions: List,
-    goals: List,
+    actions: []const u8,
+    goals: []const u8,
     world_state: WorldState,
-    current_plan: List,
+    current_plan: []const u8,
 };
 
 /// 
 pub const GOAPAction = struct {
     name: []const u8,
     cost: f64,
-    preconditions: Map,
-    effects: Map,
+    preconditions: std.StringHashMap([]const u8),
+    effects: std.StringHashMap([]const u8),
     procedural_precondition: []const u8,
 };
 
@@ -50,17 +50,17 @@ pub const GOAPAction = struct {
 pub const GOAPGoal = struct {
     name: []const u8,
     priority: f64,
-    desired_state: Map,
+    desired_state: std.StringHashMap([]const u8),
 };
 
 /// 
 pub const WorldState = struct {
-    facts: Map,
+    facts: std.StringHashMap([]const u8),
 };
 
 /// 
 pub const GOAPPlan = struct {
-    actions: List,
+    actions: []const u8,
     total_cost: f64,
     goal: GOAPGoal,
 };

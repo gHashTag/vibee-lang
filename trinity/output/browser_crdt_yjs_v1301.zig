@@ -34,18 +34,18 @@ pub const YDoc = struct {
     guid: []const u8,
     gc: bool,
     client_id: i64,
-    share: Map,
+    share: std.StringHashMap([]const u8),
     store: YStore,
-    subdocs: List,
-    transaction_handlers: List,
-    update_handlers: List,
+    subdocs: []const u8,
+    transaction_handlers: []const u8,
+    update_handlers: []const u8,
 };
 
 /// 
 pub const YStore = struct {
-    clients: Map,
-    pending_structs: List,
-    pending_ds: List,
+    clients: std.StringHashMap([]const u8),
+    pending_structs: []const u8,
+    pending_ds: []const u8,
 };
 
 /// 
@@ -53,7 +53,7 @@ pub const YText = struct {
     doc: []const u8,
     start: YItem,
     length: i64,
-    search_marker: List,
+    search_marker: []const u8,
 };
 
 /// 
@@ -61,14 +61,14 @@ pub const YArray = struct {
     doc: []const u8,
     start: YItem,
     length: i64,
-    preliminary_content: List,
+    preliminary_content: []const u8,
 };
 
 /// 
 pub const YMap = struct {
     doc: []const u8,
-    map: Map,
-    preliminary_content: Map,
+    map: std.StringHashMap([]const u8),
+    preliminary_content: std.StringHashMap([]const u8),
 };
 
 /// 
@@ -103,18 +103,18 @@ pub const YTransaction = struct {
     doc: []const u8,
     local: bool,
     origin: []const u8,
-    before_state: Map,
-    after_state: Map,
-    changed: Map,
-    changed_parent_types: Map,
-    deleted_structs: List,
-    meta: Map,
+    before_state: std.StringHashMap([]const u8),
+    after_state: std.StringHashMap([]const u8),
+    changed: std.StringHashMap([]const u8),
+    changed_parent_types: std.StringHashMap([]const u8),
+    deleted_structs: []const u8,
+    meta: std.StringHashMap([]const u8),
 };
 
 /// 
 pub const YUpdate = struct {
-    structs: List,
-    ds: List,
+    structs: []const u8,
+    ds: []const u8,
     encoded: []const u8,
 };
 
@@ -122,16 +122,16 @@ pub const YUpdate = struct {
 pub const YAwareness = struct {
     doc: []const u8,
     client_id: i64,
-    states: Map,
-    meta: Map,
+    states: std.StringHashMap([]const u8),
+    meta: std.StringHashMap([]const u8),
 };
 
 /// 
 pub const YUndoManager = struct {
-    scope: List,
-    tracked_origins: List,
-    undo_stack: List,
-    redo_stack: List,
+    scope: []const u8,
+    tracked_origins: []const u8,
+    undo_stack: []const u8,
+    redo_stack: []const u8,
     undoing: bool,
     redoing: bool,
 };

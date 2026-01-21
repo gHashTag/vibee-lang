@@ -31,10 +31,10 @@ pub const TAU: f64 = 6.283185307179586;
 
 /// 
 pub const PlanExecutor = struct {
-    plan: List,
+    plan: []const u8,
     current_step: i64,
-    state: Map,
-    action_handlers: Map,
+    state: std.StringHashMap([]const u8),
+    action_handlers: std.StringHashMap([]const u8),
 };
 
 /// 
@@ -42,7 +42,7 @@ pub const ExecutionContext = struct {
     executor: PlanExecutor,
     timeout_ms: i64,
     retry_policy: RetryPolicy,
-    observers: List,
+    observers: []const u8,
 };
 
 /// 
@@ -55,16 +55,16 @@ pub const RetryPolicy = struct {
 /// 
 pub const ExecutionResult = struct {
     success: bool,
-    final_state: Map,
-    executed_actions: List,
-    errors: List,
+    final_state: std.StringHashMap([]const u8),
+    executed_actions: []const u8,
+    errors: []const u8,
 };
 
 /// 
 pub const ActionResult = struct {
     action: []const u8,
     success: bool,
-    new_state: Map,
+    new_state: std.StringHashMap([]const u8),
     duration_ms: i64,
     @"error": []const u8,
 };

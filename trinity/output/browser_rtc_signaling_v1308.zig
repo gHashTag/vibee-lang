@@ -31,17 +31,17 @@ pub const TAU: f64 = 6.283185307179586;
 
 /// 
 pub const SignalingServer = struct {
-    rooms: Map,
-    connections: Map,
-    pending_offers: Map,
+    rooms: std.StringHashMap([]const u8),
+    connections: std.StringHashMap([]const u8),
+    pending_offers: std.StringHashMap([]const u8),
 };
 
 /// 
 pub const SignalingRoom = struct {
     room_id: []const u8,
-    participants: List,
+    participants: []const u8,
     created_at: i64,
-    metadata: Map,
+    metadata: std.StringHashMap([]const u8),
 };
 
 /// 

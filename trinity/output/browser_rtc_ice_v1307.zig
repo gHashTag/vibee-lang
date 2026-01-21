@@ -32,9 +32,9 @@ pub const TAU: f64 = 6.283185307179586;
 /// 
 pub const ICEAgent = struct {
     role: []const u8,
-    local_candidates: List,
-    remote_candidates: List,
-    candidate_pairs: List,
+    local_candidates: []const u8,
+    remote_candidates: []const u8,
+    candidate_pairs: []const u8,
     selected_pair: []const u8,
     state: []const u8,
 };
@@ -67,7 +67,7 @@ pub const STUNMessage = struct {
     length: i64,
     magic_cookie: i64,
     transaction_id: []const u8,
-    attributes: List,
+    attributes: []const u8,
 };
 
 /// 
@@ -82,8 +82,8 @@ pub const TURNAllocation = struct {
     relayed_address: []const u8,
     relayed_port: i64,
     lifetime: i64,
-    permissions: List,
-    channels: List,
+    permissions: []const u8,
+    channels: []const u8,
 };
 
 /// 

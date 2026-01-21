@@ -42,10 +42,10 @@ pub const MCTSNode = struct {
     state: []const u8,
     action: []const u8,
     parent: []const u8,
-    children: List,
+    children: []const u8,
     visits: i64,
     value: f64,
-    untried_actions: List,
+    untried_actions: []const u8,
 };
 
 /// 
@@ -59,8 +59,8 @@ pub const MCTSConfig = struct {
 /// 
 pub const MCTSResult = struct {
     best_action: []const u8,
-    visit_counts: Map,
-    values: Map,
+    visit_counts: std.StringHashMap([]const u8),
+    values: std.StringHashMap([]const u8),
     iterations: i64,
 };
 

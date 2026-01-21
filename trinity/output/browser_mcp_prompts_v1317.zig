@@ -33,8 +33,8 @@ pub const TAU: f64 = 6.283185307179586;
 pub const PromptDefinition = struct {
     name: []const u8,
     description: []const u8,
-    arguments: List,
-    annotations: Map,
+    arguments: []const u8,
+    annotations: std.StringHashMap([]const u8),
 };
 
 /// 
@@ -59,14 +59,14 @@ pub const PromptContent = struct {
 
 /// 
 pub const PromptRegistry = struct {
-    prompts: Map,
-    renderers: Map,
+    prompts: std.StringHashMap([]const u8),
+    renderers: std.StringHashMap([]const u8),
 };
 
 /// 
 pub const RenderedPrompt = struct {
     description: []const u8,
-    messages: List,
+    messages: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

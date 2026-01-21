@@ -47,7 +47,7 @@ pub const CongestionController = struct {
 
 /// 
 pub const TransportFeedback = struct {
-    packets: List,
+    packets: []const u8,
     reference_time: i64,
     feedback_count: i64,
 };
@@ -64,7 +64,7 @@ pub const PacketInfo = struct {
 /// 
 pub const REMBMessage = struct {
     bitrate: i64,
-    ssrcs: List,
+    ssrcs: []const u8,
     timestamp: i64,
 };
 

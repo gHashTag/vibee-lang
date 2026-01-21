@@ -31,9 +31,9 @@ pub const TAU: f64 = 6.283185307179586;
 
 /// 
 pub const PlanRepairEngine = struct {
-    original_plan: List,
-    current_state: Map,
-    goal: Map,
+    original_plan: []const u8,
+    current_state: std.StringHashMap([]const u8),
+    goal: std.StringHashMap([]const u8),
     domain: []const u8,
 };
 
@@ -48,23 +48,23 @@ pub const RepairStrategy = struct {
 pub const PlanFailure = struct {
     failed_action: []const u8,
     failure_reason: []const u8,
-    current_state: Map,
-    remaining_plan: List,
+    current_state: std.StringHashMap([]const u8),
+    remaining_plan: []const u8,
 };
 
 /// 
 pub const RepairResult = struct {
     success: bool,
-    repaired_plan: List,
+    repaired_plan: []const u8,
     repair_cost: f64,
     strategy_used: []const u8,
 };
 
 /// 
 pub const PlanDiff = struct {
-    added_actions: List,
-    removed_actions: List,
-    modified_actions: List,
+    added_actions: []const u8,
+    removed_actions: []const u8,
+    modified_actions: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

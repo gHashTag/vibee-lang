@@ -32,16 +32,16 @@ pub const TAU: f64 = 6.283185307179586;
 /// 
 pub const PlanVerifier = struct {
     domain: []const u8,
-    constraints: List,
-    invariants: List,
+    constraints: []const u8,
+    invariants: []const u8,
 };
 
 /// 
 pub const VerificationResult = struct {
     valid: bool,
-    errors: List,
-    warnings: List,
-    trace: List,
+    errors: []const u8,
+    warnings: []const u8,
+    trace: []const u8,
 };
 
 /// 
@@ -60,15 +60,15 @@ pub const StateInvariant = struct {
 
 /// 
 pub const ExecutionTrace = struct {
-    steps: List,
-    final_state: Map,
+    steps: []const u8,
+    final_state: std.StringHashMap([]const u8),
 };
 
 /// 
 pub const TraceStep = struct {
     action: []const u8,
-    pre_state: Map,
-    post_state: Map,
+    pre_state: std.StringHashMap([]const u8),
+    post_state: std.StringHashMap([]const u8),
     satisfied_preconditions: bool,
 };
 

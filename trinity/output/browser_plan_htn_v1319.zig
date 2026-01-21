@@ -32,17 +32,17 @@ pub const TAU: f64 = 6.283185307179586;
 /// 
 pub const HTNDomain = struct {
     name: []const u8,
-    operators: Map,
-    methods: Map,
-    axioms: List,
+    operators: std.StringHashMap([]const u8),
+    methods: std.StringHashMap([]const u8),
+    axioms: []const u8,
 };
 
 /// 
 pub const HTNOperator = struct {
     name: []const u8,
-    parameters: List,
-    preconditions: List,
-    effects: List,
+    parameters: []const u8,
+    preconditions: []const u8,
+    effects: []const u8,
     cost: f64,
 };
 
@@ -50,36 +50,36 @@ pub const HTNOperator = struct {
 pub const HTNMethod = struct {
     name: []const u8,
     task: []const u8,
-    parameters: List,
-    preconditions: List,
-    subtasks: List,
+    parameters: []const u8,
+    preconditions: []const u8,
+    subtasks: []const u8,
 };
 
 /// 
 pub const HTNTask = struct {
     name: []const u8,
-    parameters: List,
+    parameters: []const u8,
     primitive: bool,
 };
 
 /// 
 pub const HTNPlan = struct {
-    actions: List,
+    actions: []const u8,
     total_cost: f64,
     depth: i64,
 };
 
 /// 
 pub const HTNState = struct {
-    facts: Map,
-    objects: Map,
+    facts: std.StringHashMap([]const u8),
+    objects: std.StringHashMap([]const u8),
 };
 
 /// 
 pub const HTNProblem = struct {
     domain: HTNDomain,
     initial_state: HTNState,
-    tasks: List,
+    tasks: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

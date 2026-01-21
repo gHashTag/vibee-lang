@@ -32,15 +32,15 @@ pub const TAU: f64 = 6.283185307179586;
 /// 
 pub const MerkleDAG = struct {
     root: []const u8,
-    nodes: Map,
-    pending: List,
+    nodes: std.StringHashMap([]const u8),
+    pending: []const u8,
 };
 
 /// 
 pub const MerkleNode = struct {
     hash: []const u8,
     data: []const u8,
-    links: List,
+    links: []const u8,
     size: i64,
 };
 
@@ -54,7 +54,7 @@ pub const MerkleLink = struct {
 /// 
 pub const MerkleProof = struct {
     leaf: []const u8,
-    path: List,
+    path: []const u8,
     root: []const u8,
 };
 
@@ -70,14 +70,14 @@ pub const SyncState = struct {
     local_root: []const u8,
     remote_root: []const u8,
     common_ancestor: []const u8,
-    missing_local: List,
-    missing_remote: List,
+    missing_local: []const u8,
+    missing_remote: []const u8,
 };
 
 /// 
 pub const DeltaSync = struct {
     base: []const u8,
-    changes: List,
+    changes: []const u8,
     new_root: []const u8,
 };
 

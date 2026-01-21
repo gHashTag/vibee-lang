@@ -32,7 +32,7 @@ pub const TAU: f64 = 6.283185307179586;
 /// 
 pub const E2EScenario1350 = struct {
     name: []const u8,
-    steps: List,
+    steps: []const u8,
     timeout_ms: i64,
 };
 

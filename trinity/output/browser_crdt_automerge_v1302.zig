@@ -33,10 +33,10 @@ pub const TAU: f64 = 6.283185307179586;
 pub const AutomergeDoc = struct {
     actor_id: []const u8,
     seq: i64,
-    deps: List,
-    ops: List,
-    clock: Map,
-    history: List,
+    deps: []const u8,
+    ops: []const u8,
+    clock: std.StringHashMap([]const u8),
+    history: []const u8,
 };
 
 /// 
@@ -46,8 +46,8 @@ pub const AutomergeChange = struct {
     start_op: i64,
     time: i64,
     message: []const u8,
-    deps: List,
-    ops: List,
+    deps: []const u8,
+    ops: []const u8,
     hash: []const u8,
 };
 
@@ -58,13 +58,13 @@ pub const AutomergeOp = struct {
     action: []const u8,
     value: []const u8,
     datatype: []const u8,
-    pred: List,
+    pred: []const u8,
     insert: bool,
 };
 
 /// 
 pub const AutomergePatch = struct {
-    path: List,
+    path: []const u8,
     action: []const u8,
     value: []const u8,
     conflict: bool,
@@ -74,21 +74,21 @@ pub const AutomergePatch = struct {
 pub const AutomergeText = struct {
     obj_id: []const u8,
     length: i64,
-    spans: List,
+    spans: []const u8,
 };
 
 /// 
 pub const AutomergeList = struct {
     obj_id: []const u8,
     length: i64,
-    elements: List,
+    elements: []const u8,
 };
 
 /// 
 pub const AutomergeMap = struct {
     obj_id: []const u8,
-    keys: List,
-    entries: Map,
+    keys: []const u8,
+    entries: std.StringHashMap([]const u8),
 };
 
 /// 
@@ -106,20 +106,20 @@ pub const AutomergeCursor = struct {
 
 /// 
 pub const SyncState = struct {
-    shared_heads: List,
-    last_sent_heads: List,
-    their_heads: List,
-    their_need: List,
-    their_have: List,
-    sent_hashes: List,
+    shared_heads: []const u8,
+    last_sent_heads: []const u8,
+    their_heads: []const u8,
+    their_need: []const u8,
+    their_have: []const u8,
+    sent_hashes: []const u8,
 };
 
 /// 
 pub const SyncMessage = struct {
-    heads: List,
-    need: List,
-    have: List,
-    changes: List,
+    heads: []const u8,
+    need: []const u8,
+    have: []const u8,
+    changes: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

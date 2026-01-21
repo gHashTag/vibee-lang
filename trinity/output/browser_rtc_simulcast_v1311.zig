@@ -31,8 +31,8 @@ pub const TAU: f64 = 6.283185307179586;
 
 /// 
 pub const SimulcastEncoder = struct {
-    layers: List,
-    active_layers: List,
+    layers: []const u8,
+    active_layers: []const u8,
     codec: []const u8,
     keyframe_interval: i64,
 };
@@ -48,7 +48,7 @@ pub const SimulcastLayer = struct {
 
 /// 
 pub const SimulcastReceiver = struct {
-    available_layers: List,
+    available_layers: []const u8,
     selected_layer: []const u8,
     bandwidth_estimate: i64,
 };

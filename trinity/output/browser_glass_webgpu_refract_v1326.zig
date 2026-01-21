@@ -47,7 +47,7 @@ pub const RefractionConfig = struct {
 
 /// 
 pub const GlassMaterial = struct {
-    base_color: List,
+    base_color: []const u8,
     roughness: f64,
     ior: f64,
     thickness: f64,

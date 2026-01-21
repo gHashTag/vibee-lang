@@ -32,9 +32,9 @@ pub const TAU: f64 = 6.283185307179586;
 /// 
 pub const MCPClient = struct {
     transport: []const u8,
-    server_info: Map,
-    server_capabilities: Map,
-    pending_requests: Map,
+    server_info: std.StringHashMap([]const u8),
+    server_capabilities: std.StringHashMap([]const u8),
+    pending_requests: std.StringHashMap([]const u8),
 };
 
 /// 
@@ -42,7 +42,7 @@ pub const ClientCapabilities = struct {
     sampling: bool,
     elicitation: bool,
     roots: bool,
-    experimental: Map,
+    experimental: std.StringHashMap([]const u8),
 };
 
 /// 
@@ -55,8 +55,8 @@ pub const Transport = struct {
 
 /// 
 pub const SamplingRequest = struct {
-    messages: List,
-    model_preferences: Map,
+    messages: []const u8,
+    model_preferences: std.StringHashMap([]const u8),
     system_prompt: []const u8,
     max_tokens: i64,
 };
@@ -72,12 +72,12 @@ pub const SamplingResponse = struct {
 /// 
 pub const ElicitationRequest = struct {
     message: []const u8,
-    requested_schema: Map,
+    requested_schema: std.StringHashMap([]const u8),
 };
 
 /// 
 pub const ElicitationResponse = struct {
-    content: Map,
+    content: std.StringHashMap([]const u8),
     action: []const u8,
 };
 

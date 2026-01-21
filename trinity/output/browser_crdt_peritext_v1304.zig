@@ -40,7 +40,7 @@ pub const PeritextDoc = struct {
 /// 
 pub const RGAText = struct {
     head: TextNode,
-    nodes: Map,
+    nodes: std.StringHashMap([]const u8),
     length: i64,
 };
 
@@ -50,7 +50,7 @@ pub const TextNode = struct {
     char: []const u8,
     deleted: bool,
     next: []const u8,
-    marks: List,
+    marks: []const u8,
 };
 
 /// 
@@ -93,7 +93,7 @@ pub const MarkOp = struct {
 /// 
 pub const Span = struct {
     text: []const u8,
-    marks: List,
+    marks: []const u8,
     start_index: i64,
     end_index: i64,
 };
@@ -102,7 +102,7 @@ pub const Span = struct {
 pub const Selection = struct {
     anchor: Anchor,
     focus: Anchor,
-    marks: List,
+    marks: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

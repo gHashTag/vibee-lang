@@ -31,7 +31,7 @@ pub const TAU: f64 = 6.283185307179586;
 
 /// 
 pub const VectorClock = struct {
-    entries: Map,
+    entries: std.StringHashMap([]const u8),
     site_id: []const u8,
 };
 
@@ -57,14 +57,14 @@ pub const HybridLogicalClock = struct {
 
 /// 
 pub const VersionVector = struct {
-    versions: Map,
-    exceptions: List,
+    versions: std.StringHashMap([]const u8),
+    exceptions: []const u8,
 };
 
 /// 
 pub const DottedVersionVector = struct {
     base: VersionVector,
-    dots: List,
+    dots: []const u8,
 };
 
 /// 
