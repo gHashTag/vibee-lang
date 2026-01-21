@@ -106,6 +106,9 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     const stdout = std.io.getStdOut().writer();
+    _ = stdout; // Zig 0.15 compatibility
+    const stdout_file = std.io.getStdOut();
+    const stdout_writer = stdout_file.writer();
 
     // Get command line args
     const args = try std.process.argsAlloc(allocator);
