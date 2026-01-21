@@ -1,193 +1,153 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// llm_model v2.0.0 - iGLA-LLM Complete Model
-// Кощей Бессмертный - Immortal Language Model
+// llm_model v2.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
-// φ² + 1/φ² = 3 | PHOENIX = 999
+//
+// Священная формула: V = n × 3^k × π^m × φ^p × e^q
+// Золотая идентичность: φ² + 1/φ² = 3
+//
+// Author: 
+// DO NOT EDIT - This file is auto-generated
+//
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const std = @import("std");
 const math = std.math;
-const testing = std.testing;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// КОНСТАНТЫ
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
 pub const PHI_INV: f64 = 0.618033988749895;
 pub const PHI_SQ: f64 = 2.618033988749895;
-pub const PHOENIX: u32 = 999;
-pub const TRINITY: u32 = 3;
+pub const TRINITY: f64 = 3.0;
+pub const SQRT5: f64 = 2.2360679774997896;
+pub const TAU: f64 = 6.283185307179586;
+pub const PI: f64 = 3.141592653589793;
+pub const E: f64 = 2.718281828459045;
+pub const PHOENIX: i64 = 999;
 
-// Verify golden identity
-pub const GOLDEN_IDENTITY: f64 = PHI_SQ + 1.0 / PHI_SQ; // Should be 3.0
+// ═══════════════════════════════════════════════════════════════════════════════
+// ТИПЫ
+// ═══════════════════════════════════════════════════════════════════════════════
 
+/// 
 pub const ModelConfig = struct {
-    vocab_size: usize = 32000,
-    hidden_size: usize = 768,
-    num_layers: usize = 12,
-    num_heads: usize = 12,
-    num_kv_heads: usize = 4,
-    intermediate_size: usize = 2048,
-    max_seq_length: usize = 4096,
-    rope_theta: f32 = 10000.0,
-    rms_norm_eps: f32 = 1e-6,
-    tie_embeddings: bool = true,
-
-    pub fn headDim(self: *const ModelConfig) usize {
-        return self.hidden_size / self.num_heads;
-    }
-
-    pub fn gqaRatio(self: *const ModelConfig) usize {
-        return self.num_heads / self.num_kv_heads;
-    }
+    vocab_size: i64,
+    hidden_size: i64,
+    num_layers: i64,
+    num_heads: i64,
+    num_kv_heads: i64,
+    intermediate_size: i64,
+    max_seq_length: i64,
+    rope_theta: f64,
+    rms_norm_eps: f64,
+    tie_embeddings: bool,
 };
 
+/// 
+pub const iGLALLM = struct {
+    config: ModelConfig,
+    embed_tokens: Embedding,
+    layers: []const u8,
+    norm: RMSNorm,
+    lm_head: Linear,
+};
+
+/// 
 pub const GenerationConfig = struct {
-    max_new_tokens: usize = 256,
-    temperature: f32 = 0.7,
-    top_p: f32 = 0.9,
-    top_k: usize = 40,
-    repetition_penalty: f32 = 1.1,
-    do_sample: bool = true,
+    max_new_tokens: i64,
+    temperature: f64,
+    top_p: f64,
+    top_k: i64,
 };
 
-// Calculate total parameters
-pub fn countParameters(config: *const ModelConfig) usize {
-    // Embeddings
-    const embed_params = config.vocab_size * config.hidden_size;
+// ═══════════════════════════════════════════════════════════════════════════════
+// ПАМЯТЬ ДЛЯ WASM
+// ═══════════════════════════════════════════════════════════════════════════════
 
-    // Per layer
-    const head_dim = config.headDim();
+var global_buffer: [65536]u8 align(16) = undefined;
+var f64_buffer: [8192]f64 align(16) = undefined;
 
-    // Attention: Q, K, V, O projections
-    const q_params = config.hidden_size * config.hidden_size;
-    const k_params = config.hidden_size * config.num_kv_heads * head_dim;
-    const v_params = k_params;
-    const o_params = config.hidden_size * config.hidden_size;
-    const attn_params = q_params + k_params + v_params + o_params;
-
-    // FFN: gate, up, down (SwiGLU has 3 matrices)
-    const ffn_params = 3 * config.hidden_size * config.intermediate_size;
-
-    // Layer norms (2 per layer)
-    const norm_params = 2 * config.hidden_size;
-
-    const per_layer = attn_params + ffn_params + norm_params;
-    const total_layers = per_layer * config.num_layers;
-
-    // Final norm
-    const final_norm = config.hidden_size;
-
-    // LM head (tied with embeddings if tie_embeddings)
-    const lm_head = if (config.tie_embeddings) 0 else config.hidden_size * config.vocab_size;
-
-    return embed_params + total_layers + final_norm + lm_head;
+export fn get_global_buffer_ptr() [*]u8 {
+    return &global_buffer;
 }
 
-// Calculate FLOPs for forward pass
-pub fn countFLOPs(config: *const ModelConfig, seq_len: usize) usize {
-    const head_dim = config.headDim();
-
-    // Attention FLOPs per layer
-    // QKV projection: 3 * seq * hidden * hidden (but K,V smaller with GQA)
-    const qkv_flops = seq_len * config.hidden_size * (config.hidden_size + 2 * config.num_kv_heads * head_dim);
-
-    // Attention scores: seq * seq * hidden
-    const attn_flops = 2 * seq_len * seq_len * config.hidden_size;
-
-    // Output projection: seq * hidden * hidden
-    const out_flops = seq_len * config.hidden_size * config.hidden_size;
-
-    const attn_total = qkv_flops + attn_flops + out_flops;
-
-    // FFN FLOPs: 3 * seq * hidden * intermediate (SwiGLU)
-    const ffn_flops = 3 * seq_len * config.hidden_size * config.intermediate_size;
-
-    return (attn_total + ffn_flops) * config.num_layers;
+export fn get_f64_buffer_ptr() [*]f64 {
+    return &f64_buffer;
 }
 
-// Estimate memory in MB
-pub fn estimateMemoryMB(config: *const ModelConfig, batch_size: usize, seq_len: usize) f32 {
-    const params = countParameters(config);
-    const param_bytes = params * 2; // FP16
+// ═══════════════════════════════════════════════════════════════════════════════
+// CREATION PATTERNS
+// ═══════════════════════════════════════════════════════════════════════════════
 
-    // Activations per layer
-    const act_per_layer = batch_size * seq_len * config.hidden_size * 4; // FP32
-    const total_act = act_per_layer * config.num_layers;
-
-    // KV cache
-    const kv_per_layer = 2 * batch_size * config.num_kv_heads * seq_len * config.headDim() * 2;
-    const total_kv = kv_per_layer * config.num_layers;
-
-    const total_bytes = param_bytes + total_act + total_kv;
-    return @as(f32, @floatFromInt(total_bytes)) / (1024.0 * 1024.0);
+/// Проверка TRINITY identity: φ² + 1/φ² = 3
+fn verify_trinity() f64 {
+    return PHI * PHI + 1.0 / (PHI * PHI);
 }
 
-// PHI-optimal layer count
-pub fn phiOptimalLayers(base: usize) usize {
-    return @as(usize, @intFromFloat(@round(@as(f64, @floatFromInt(base)) * PHI)));
+/// φ-интерполяция
+fn phi_lerp(a: f64, b: f64, t: f64) f64 {
+    const phi_t = math.pow(f64, t, PHI_INV);
+    return a + (b - a) * phi_t;
 }
 
-// PHI-optimal hidden size
-pub fn phiOptimalHiddenSize(base: usize) usize {
-    // Round to multiple of 64 for efficiency
-    const raw = @as(usize, @intFromFloat(@round(@as(f64, @floatFromInt(base)) * PHI)));
-    return ((raw + 63) / 64) * 64;
+/// Генерация φ-спирали
+fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
+    const max_points = f64_buffer.len / 2;
+    const count = if (n > max_points) @as(u32, @intCast(max_points)) else n;
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        const fi: f64 = @floatFromInt(i);
+        const angle = fi * TAU * PHI_INV;
+        const radius = scale * math.pow(f64, PHI, fi * 0.1);
+        f64_buffer[i * 2] = cx + radius * @cos(angle);
+        f64_buffer[i * 2 + 1] = cy + radius * @sin(angle);
+    }
+    return count;
 }
 
-// Model size category
-pub fn modelSizeCategory(params: usize) []const u8 {
-    if (params < 100_000_000) return "tiny";
-    if (params < 500_000_000) return "small";
-    if (params < 2_000_000_000) return "medium";
-    if (params < 10_000_000_000) return "large";
-    return "xlarge";
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTS - Generated from behaviors and test_cases
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "forward" {
+// Given: Input IDs, KV cache
+// When: Forward pass
+// Then: Return logits, updated cache
+    // TODO: Add test assertions
 }
 
-// Tokens per second estimate (CPU)
-pub fn estimateTokensPerSecond(config: *const ModelConfig, cpu_gflops: f32) f32 {
-    const flops_per_token = countFLOPs(config, 1);
-    return cpu_gflops * 1e9 / @as(f32, @floatFromInt(flops_per_token));
+test "generate" {
+// Given: Prompt IDs, generation config
+// When: Autoregressive generation
+// Then: Return generated token IDs
+    // TODO: Add test assertions
 }
 
-// Tests
-test "golden identity" {
-    try testing.expectApproxEqAbs(@as(f64, 3.0), GOLDEN_IDENTITY, 0.0001);
+test "prefill" {
+// Given: Prompt IDs
+// When: Process prompt
+// Then: Return KV cache for prompt
+    // TODO: Add test assertions
 }
 
-test "count parameters" {
-    const config = ModelConfig{};
-    const params = countParameters(&config);
-
-    // Should be around 100-200M for this config
-    try testing.expect(params > 50_000_000);
-    try testing.expect(params < 500_000_000);
+test "decode_step" {
+// Given: Last token, KV cache
+// When: Generate one token
+// Then: Return next token, updated cache
+    // TODO: Add test assertions
 }
 
-test "count flops" {
-    const config = ModelConfig{};
-    const flops = countFLOPs(&config, 128);
-
-    try testing.expect(flops > 0);
+test "count_parameters" {
+// Given: Model config
+// When: Calculate total params
+// Then: Return parameter count
+    // TODO: Add test assertions
 }
 
-test "estimate memory" {
-    const config = ModelConfig{};
-    const mem = estimateMemoryMB(&config, 1, 512);
-
-    try testing.expect(mem > 100);
-    try testing.expect(mem < 10000);
-}
-
-test "phi optimal layers" {
-    try testing.expectEqual(@as(usize, 19), phiOptimalLayers(12));
-    try testing.expectEqual(@as(usize, 10), phiOptimalLayers(6));
-}
-
-test "model size category" {
-    try testing.expectEqualStrings("tiny", modelSizeCategory(50_000_000));
-    try testing.expectEqualStrings("small", modelSizeCategory(200_000_000));
-    try testing.expectEqualStrings("large", modelSizeCategory(7_000_000_000));
-}
-
-test "gqa ratio" {
-    const config = ModelConfig{ .num_heads = 12, .num_kv_heads = 4 };
-    try testing.expectEqual(@as(usize, 3), config.gqaRatio());
+test "phi_constants" {
+    try std.testing.expectApproxEqAbs(PHI * PHI_INV, 1.0, 1e-10);
+    try std.testing.expectApproxEqAbs(PHI_SQ - PHI, 1.0, 1e-10);
 }

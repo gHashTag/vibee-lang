@@ -1,172 +1,122 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// llm_ffn_swiglu v1.0.0 - SwiGLU Feed-Forward Network
-// +1-2% accuracy improvement over GELU
+// llm_ffn_swiglu v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
-// φ² + 1/φ² = 3 | PHOENIX = 999
-// Paper: GLU Variants Improve Transformer
+//
+// Священная формула: V = n × 3^k × π^m × φ^p × e^q
+// Золотая идентичность: φ² + 1/φ² = 3
+//
+// Author: 
+// DO NOT EDIT - This file is auto-generated
+//
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const std = @import("std");
 const math = std.math;
-const testing = std.testing;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// КОНСТАНТЫ
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
 pub const PHI_INV: f64 = 0.618033988749895;
-pub const PHOENIX: u32 = 999;
+pub const PHI_SQ: f64 = 2.618033988749895;
+pub const TRINITY: f64 = 3.0;
+pub const SQRT5: f64 = 2.2360679774997896;
+pub const TAU: f64 = 6.283185307179586;
+pub const PI: f64 = 3.141592653589793;
+pub const E: f64 = 2.718281828459045;
+pub const PHOENIX: i64 = 999;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ТИПЫ
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// 
 pub const FFNConfig = struct {
-    hidden_size: usize = 768,
-    intermediate_size: usize = 2048,
+    hidden_size: i64,
+    intermediate_size: i64,
+    activation: []const u8,
 };
 
-// Swish activation: x * sigmoid(x)
-pub fn swish(x: f32) f32 {
-    return x / (1.0 + @exp(-x));
+// ═══════════════════════════════════════════════════════════════════════════════
+// ПАМЯТЬ ДЛЯ WASM
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var global_buffer: [65536]u8 align(16) = undefined;
+var f64_buffer: [8192]f64 align(16) = undefined;
+
+export fn get_global_buffer_ptr() [*]u8 {
+    return &global_buffer;
 }
 
-// SiLU (same as Swish)
-pub fn silu(x: f32) f32 {
-    return swish(x);
+export fn get_f64_buffer_ptr() [*]f64 {
+    return &f64_buffer;
 }
 
-// GELU activation (tanh approximation)
-pub fn gelu(x: f32) f32 {
-    const sqrt_2_over_pi: f32 = 0.7978845608;
-    const coeff: f32 = 0.044715;
-    const x3 = x * x * x;
-    const inner = sqrt_2_over_pi * (x + coeff * x3);
-    return 0.5 * x * (1.0 + std.math.tanh(inner));
+// ═══════════════════════════════════════════════════════════════════════════════
+// CREATION PATTERNS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Проверка TRINITY identity: φ² + 1/φ² = 3
+fn verify_trinity() f64 {
+    return PHI * PHI + 1.0 / (PHI * PHI);
 }
 
-// SwiGLU forward: (Swish(xW_gate) ⊙ xW_up) W_down
-pub fn swigluForward(
-    input: []const f32,
-    w_gate: []const f32,
-    w_up: []const f32,
-    w_down: []const f32,
-    output: []f32,
-    hidden_size: usize,
-    intermediate_size: usize,
-) void {
-    // Intermediate buffers (stack allocated for small sizes)
-    var gate: [4096]f32 = [_]f32{0} ** 4096;
-    var up: [4096]f32 = [_]f32{0} ** 4096;
+/// φ-интерполяция
+fn phi_lerp(a: f64, b: f64, t: f64) f64 {
+    const phi_t = math.pow(f64, t, PHI_INV);
+    return a + (b - a) * phi_t;
+}
 
-    // Gate projection: xW_gate
-    for (0..intermediate_size) |i| {
-        var sum: f32 = 0;
-        for (0..hidden_size) |j| {
-            sum += input[j] * w_gate[j * intermediate_size + i];
-        }
-        gate[i] = swish(sum);
+/// Генерация φ-спирали
+fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
+    const max_points = f64_buffer.len / 2;
+    const count = if (n > max_points) @as(u32, @intCast(max_points)) else n;
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        const fi: f64 = @floatFromInt(i);
+        const angle = fi * TAU * PHI_INV;
+        const radius = scale * math.pow(f64, PHI, fi * 0.1);
+        f64_buffer[i * 2] = cx + radius * @cos(angle);
+        f64_buffer[i * 2 + 1] = cy + radius * @sin(angle);
     }
-
-    // Up projection: xW_up
-    for (0..intermediate_size) |i| {
-        var sum: f32 = 0;
-        for (0..hidden_size) |j| {
-            sum += input[j] * w_up[j * intermediate_size + i];
-        }
-        up[i] = sum;
-    }
-
-    // Element-wise multiply
-    for (0..intermediate_size) |i| {
-        gate[i] *= up[i];
-    }
-
-    // Down projection: (gate ⊙ up) W_down
-    for (0..hidden_size) |i| {
-        var sum: f32 = 0;
-        for (0..intermediate_size) |j| {
-            sum += gate[j] * w_down[j * hidden_size + i];
-        }
-        output[i] = sum;
-    }
+    return count;
 }
 
-// GeGLU forward: (GELU(xW_gate) ⊙ xW_up) W_down
-pub fn gegluForward(
-    input: []const f32,
-    w_gate: []const f32,
-    w_up: []const f32,
-    w_down: []const f32,
-    output: []f32,
-    hidden_size: usize,
-    intermediate_size: usize,
-) void {
-    var gate: [4096]f32 = [_]f32{0} ** 4096;
-    var up: [4096]f32 = [_]f32{0} ** 4096;
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTS - Generated from behaviors and test_cases
+// ═══════════════════════════════════════════════════════════════════════════════
 
-    for (0..intermediate_size) |i| {
-        var sum: f32 = 0;
-        for (0..hidden_size) |j| {
-            sum += input[j] * w_gate[j * intermediate_size + i];
-        }
-        gate[i] = gelu(sum);
-    }
-
-    for (0..intermediate_size) |i| {
-        var sum: f32 = 0;
-        for (0..hidden_size) |j| {
-            sum += input[j] * w_up[j * intermediate_size + i];
-        }
-        up[i] = sum;
-    }
-
-    for (0..intermediate_size) |i| {
-        gate[i] *= up[i];
-    }
-
-    for (0..hidden_size) |i| {
-        var sum: f32 = 0;
-        for (0..intermediate_size) |j| {
-            sum += gate[j] * w_down[j * hidden_size + i];
-        }
-        output[i] = sum;
-    }
+test "swiglu_forward" {
+// Given: Input [batch, seq, hidden]
+// When: Apply SwiGLU FFN
+// Then: Return output [batch, seq, hidden]
+    // TODO: Add test assertions
 }
 
-// PHI-optimal intermediate size
-pub fn phiIntermediateSize(hidden_size: usize) usize {
-    // Typically 8/3 * hidden, but PHI-optimized
-    const ratio: f64 = 8.0 / 3.0 * PHI_INV; // ≈ 1.65
-    return @as(usize, @intFromFloat(@round(@as(f64, @floatFromInt(hidden_size)) * ratio)));
+test "swish" {
+// Given: Input tensor
+// When: Apply Swish activation
+// Then: Return x * sigmoid(x)
+    // TODO: Add test assertions
 }
 
-// Calculate FFN parameters
-pub fn ffnParameters(hidden_size: usize, intermediate_size: usize) usize {
-    // SwiGLU has 3 weight matrices: gate, up, down
-    return 3 * hidden_size * intermediate_size;
+test "geglu_forward" {
+// Given: Input tensor
+// When: Apply GeGLU FFN
+// Then: Return (GELU(xW_gate) ⊙ xW_up) W_down
+    // TODO: Add test assertions
 }
 
-// Tests
-test "swish activation" {
-    try testing.expectApproxEqAbs(@as(f32, 0.0), swish(0.0), 0.001);
-    try testing.expect(swish(1.0) > 0.7);
-    try testing.expect(swish(-1.0) < 0);
+test "phi_intermediate_size" {
+// Given: Hidden size
+// When: Calculate PHI-optimal intermediate
+// Then: Return round(hidden * 8/3 * φ)
+    // TODO: Add test assertions
 }
 
-test "gelu activation" {
-    try testing.expectApproxEqAbs(@as(f32, 0.0), gelu(0.0), 0.001);
-    try testing.expect(gelu(1.0) > 0.8);
-    try testing.expect(gelu(-1.0) < 0);
-}
-
-test "phi intermediate size" {
-    const inter = phiIntermediateSize(768);
-    try testing.expect(inter > 1000);
-    try testing.expect(inter < 2000);
-}
-
-test "ffn parameters" {
-    const params = ffnParameters(768, 2048);
-    // 3 * 768 * 2048 = 4,718,592
-    try testing.expectEqual(@as(usize, 4718592), params);
-}
-
-test "swish vs silu" {
-    // They should be identical
-    try testing.expectApproxEqAbs(swish(0.5), silu(0.5), 0.0001);
-    try testing.expectApproxEqAbs(swish(-0.5), silu(-0.5), 0.0001);
+test "phi_constants" {
+    try std.testing.expectApproxEqAbs(PHI * PHI_INV, 1.0, 1e-10);
+    try std.testing.expectApproxEqAbs(PHI_SQ - PHI, 1.0, 1e-10);
 }

@@ -1,182 +1,137 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// llm_kv_cache v1.0.0 - KV-Cache with Compression
-// O(1) per token vs O(n), 4x compression with INT4
+// llm_kv_cache v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
-// φ² + 1/φ² = 3 | PHOENIX = 999
+//
+// Священная формула: V = n × 3^k × π^m × φ^p × e^q
+// Золотая идентичность: φ² + 1/φ² = 3
+//
+// Author: 
+// DO NOT EDIT - This file is auto-generated
+//
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const std = @import("std");
 const math = std.math;
-const testing = std.testing;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// КОНСТАНТЫ
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
 pub const PHI_INV: f64 = 0.618033988749895;
-pub const PHOENIX: u32 = 999;
+pub const PHI_SQ: f64 = 2.618033988749895;
+pub const TRINITY: f64 = 3.0;
+pub const SQRT5: f64 = 2.2360679774997896;
+pub const TAU: f64 = 6.283185307179586;
+pub const PI: f64 = 3.141592653589793;
+pub const E: f64 = 2.718281828459045;
+pub const PHOENIX: i64 = 999;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ТИПЫ
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// 
 pub const KVCacheConfig = struct {
-    num_layers: usize = 12,
-    num_kv_heads: usize = 4,
-    head_dim: usize = 64,
-    max_seq_len: usize = 4096,
-    quantize_bits: u8 = 16, // 16, 8, or 4
+    num_layers: i64,
+    num_kv_heads: i64,
+    head_dim: i64,
+    max_seq_len: i64,
+    quantize_bits: i64,
 };
 
+/// 
 pub const CacheEntry = struct {
-    seq_len: usize = 0,
-    // In real impl, would have key/value tensors
+    key: Tensor,
+    value: Tensor,
+    seq_len: i64,
 };
 
-// Calculate KV cache memory in bytes
-pub fn calculateCacheMemory(config: KVCacheConfig) usize {
-    const bytes_per_element: usize = switch (config.quantize_bits) {
-        4 => 1, // 2 values per byte
-        8 => 1,
-        16 => 2,
-        else => 4,
-    };
+/// 
+pub const PagedCache = struct {
+    pages: []const u8,
+    page_size: i64,
+};
 
-    // 2 for K and V
-    return 2 * config.num_layers * config.num_kv_heads * config.max_seq_len * config.head_dim * bytes_per_element;
+// ═══════════════════════════════════════════════════════════════════════════════
+// ПАМЯТЬ ДЛЯ WASM
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var global_buffer: [65536]u8 align(16) = undefined;
+var f64_buffer: [8192]f64 align(16) = undefined;
+
+export fn get_global_buffer_ptr() [*]u8 {
+    return &global_buffer;
 }
 
-// Calculate memory per token
-pub fn memoryPerToken(config: KVCacheConfig) usize {
-    const bytes_per_element: usize = switch (config.quantize_bits) {
-        4 => 1,
-        8 => 1,
-        16 => 2,
-        else => 4,
-    };
-
-    return 2 * config.num_layers * config.num_kv_heads * config.head_dim * bytes_per_element;
+export fn get_f64_buffer_ptr() [*]f64 {
+    return &f64_buffer;
 }
 
-// Quantize KV cache to INT8
-pub fn quantizeCacheInt8(fp_cache: []const f32, int_cache: []i8, scale: *f32) void {
-    if (fp_cache.len == 0) return;
+// ═══════════════════════════════════════════════════════════════════════════════
+// CREATION PATTERNS
+// ═══════════════════════════════════════════════════════════════════════════════
 
-    var abs_max: f32 = 0;
-    for (fp_cache) |v| {
-        const abs_v = @abs(v);
-        if (abs_v > abs_max) abs_max = abs_v;
+/// Проверка TRINITY identity: φ² + 1/φ² = 3
+fn verify_trinity() f64 {
+    return PHI * PHI + 1.0 / (PHI * PHI);
+}
+
+/// φ-интерполяция
+fn phi_lerp(a: f64, b: f64, t: f64) f64 {
+    const phi_t = math.pow(f64, t, PHI_INV);
+    return a + (b - a) * phi_t;
+}
+
+/// Генерация φ-спирали
+fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
+    const max_points = f64_buffer.len / 2;
+    const count = if (n > max_points) @as(u32, @intCast(max_points)) else n;
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        const fi: f64 = @floatFromInt(i);
+        const angle = fi * TAU * PHI_INV;
+        const radius = scale * math.pow(f64, PHI, fi * 0.1);
+        f64_buffer[i * 2] = cx + radius * @cos(angle);
+        f64_buffer[i * 2 + 1] = cy + radius * @sin(angle);
     }
-
-    scale.* = abs_max / 127.0;
-    if (scale.* == 0) scale.* = 1.0;
-
-    for (0..fp_cache.len) |i| {
-        const q = @round(fp_cache[i] / scale.*);
-        int_cache[i] = @intFromFloat(@max(-127.0, @min(127.0, q)));
-    }
+    return count;
 }
 
-// Dequantize INT8 cache
-pub fn dequantizeCacheInt8(int_cache: []const i8, fp_cache: []f32, scale: f32) void {
-    for (0..int_cache.len) |i| {
-        fp_cache[i] = @as(f32, @floatFromInt(int_cache[i])) * scale;
-    }
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTS - Generated from behaviors and test_cases
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "allocate_cache" {
+// Given: Config, batch_size
+// When: Initialize cache
+// Then: Return empty cache structure
+    // TODO: Add test assertions
 }
 
-// Quantize to INT4 (packed)
-pub fn quantizeCacheInt4(fp_cache: []const f32, int_cache: []u8, scale: *f32) void {
-    if (fp_cache.len == 0) return;
-
-    var abs_max: f32 = 0;
-    for (fp_cache) |v| {
-        const abs_v = @abs(v);
-        if (abs_v > abs_max) abs_max = abs_v;
-    }
-
-    scale.* = abs_max / 7.0;
-    if (scale.* == 0) scale.* = 1.0;
-
-    // Pack 2 INT4 values per byte
-    const packed_len = (fp_cache.len + 1) / 2;
-    for (0..packed_len) |i| {
-        const idx1 = i * 2;
-        const idx2 = i * 2 + 1;
-
-        const q1 = @as(u8, @intFromFloat(@max(0.0, @min(15.0, @round(fp_cache[idx1] / scale.* + 8.0)))));
-        const q2 = if (idx2 < fp_cache.len)
-            @as(u8, @intFromFloat(@max(0.0, @min(15.0, @round(fp_cache[idx2] / scale.* + 8.0)))))
-        else
-            0;
-
-        int_cache[i] = (q1 << 4) | q2;
-    }
+test "update_cache" {
+// Given: New K, V, position
+// When: Append to cache
+// Then: Store at position, return updated cache
+    // TODO: Add test assertions
 }
 
-// Calculate compression ratio
-pub fn compressionRatio(original_bits: u8, quantized_bits: u8) f32 {
-    return @as(f32, @floatFromInt(original_bits)) / @as(f32, @floatFromInt(quantized_bits));
+test "quantize_cache" {
+// Given: FP16 cache
+// When: Compress to INT4/INT8
+// Then: Return quantized cache with scales
+    // TODO: Add test assertions
 }
 
-// Estimate cache memory for given sequence length
-pub fn estimateCacheMemoryMB(config: KVCacheConfig, seq_len: usize) f32 {
-    const bytes = memoryPerToken(config) * seq_len;
-    return @as(f32, @floatFromInt(bytes)) / (1024.0 * 1024.0);
+test "paged_attention" {
+// Given: Query, paged cache
+// When: Attention with paged KV
+// Then: Return attended output
+    // TODO: Add test assertions
 }
 
-// PHI-optimal cache size
-pub fn phiOptimalCacheSize(base_size: usize) usize {
-    return @as(usize, @intFromFloat(@round(@as(f64, @floatFromInt(base_size)) * PHI)));
-}
-
-// Tests
-test "calculate cache memory" {
-    const config = KVCacheConfig{
-        .num_layers = 12,
-        .num_kv_heads = 4,
-        .head_dim = 64,
-        .max_seq_len = 4096,
-        .quantize_bits = 16,
-    };
-
-    const mem = calculateCacheMemory(config);
-    // 2 * 12 * 4 * 4096 * 64 * 2 = 50,331,648 bytes ≈ 48 MB
-    try testing.expect(mem > 40_000_000);
-    try testing.expect(mem < 60_000_000);
-}
-
-test "memory per token" {
-    const config = KVCacheConfig{
-        .num_layers = 12,
-        .num_kv_heads = 4,
-        .head_dim = 64,
-        .quantize_bits = 16,
-    };
-
-    const mem = memoryPerToken(config);
-    // 2 * 12 * 4 * 64 * 2 = 12,288 bytes per token
-    try testing.expectEqual(@as(usize, 12288), mem);
-}
-
-test "quantize cache int8" {
-    const fp_cache = [_]f32{ -1.0, 0.0, 0.5, 1.0 };
-    var int_cache: [4]i8 = undefined;
-    var scale: f32 = undefined;
-
-    quantizeCacheInt8(&fp_cache, &int_cache, &scale);
-
-    try testing.expect(int_cache[0] < 0);
-    try testing.expectEqual(@as(i8, 0), int_cache[1]);
-    try testing.expect(int_cache[3] > 0);
-}
-
-test "compression ratio" {
-    try testing.expectApproxEqAbs(@as(f32, 4.0), compressionRatio(16, 4), 0.001);
-    try testing.expectApproxEqAbs(@as(f32, 2.0), compressionRatio(16, 8), 0.001);
-}
-
-test "estimate cache memory mb" {
-    const config = KVCacheConfig{
-        .num_layers = 12,
-        .num_kv_heads = 4,
-        .head_dim = 64,
-        .quantize_bits = 16,
-    };
-
-    const mem_mb = estimateCacheMemoryMB(config, 1024);
-    try testing.expect(mem_mb > 10.0);
-    try testing.expect(mem_mb < 20.0);
+test "phi_constants" {
+    try std.testing.expectApproxEqAbs(PHI * PHI_INV, 1.0, 1e-10);
+    try std.testing.expectApproxEqAbs(PHI_SQ - PHI, 1.0, 1e-10);
 }

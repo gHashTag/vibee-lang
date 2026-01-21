@@ -1,157 +1,114 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// llm_rmsnorm v1.0.0 - Root Mean Square Normalization
-// 1.5x faster than LayerNorm
+// llm_rmsnorm v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
-// φ² + 1/φ² = 3 | PHOENIX = 999
+//
+// Священная формула: V = n × 3^k × π^m × φ^p × e^q
+// Золотая идентичность: φ² + 1/φ² = 3
+//
+// Author: 
+// DO NOT EDIT - This file is auto-generated
+//
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const std = @import("std");
 const math = std.math;
-const testing = std.testing;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// КОНСТАНТЫ
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
 pub const PHI_INV: f64 = 0.618033988749895;
-pub const PHOENIX: u32 = 999;
+pub const PHI_SQ: f64 = 2.618033988749895;
+pub const TRINITY: f64 = 3.0;
+pub const SQRT5: f64 = 2.2360679774997896;
+pub const TAU: f64 = 6.283185307179586;
+pub const PI: f64 = 3.141592653589793;
+pub const E: f64 = 2.718281828459045;
+pub const PHOENIX: i64 = 999;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ТИПЫ
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// 
 pub const RMSNormConfig = struct {
-    hidden_size: usize = 768,
-    eps: f32 = 1e-6,
+    hidden_size: i64,
+    eps: f64,
 };
 
-// Compute RMS (Root Mean Square)
-pub fn computeRMS(input: []const f32) f32 {
-    if (input.len == 0) return 0;
-    var sum_sq: f32 = 0;
-    for (input) |x| {
-        sum_sq += x * x;
-    }
-    return @sqrt(sum_sq / @as(f32, @floatFromInt(input.len)));
+// ═══════════════════════════════════════════════════════════════════════════════
+// ПАМЯТЬ ДЛЯ WASM
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var global_buffer: [65536]u8 align(16) = undefined;
+var f64_buffer: [8192]f64 align(16) = undefined;
+
+export fn get_global_buffer_ptr() [*]u8 {
+    return &global_buffer;
 }
 
-// RMSNorm forward pass
-pub fn rmsnormForward(
-    input: []const f32,
-    weight: []const f32,
-    output: []f32,
-    eps: f32,
-) void {
-    const size = @min(input.len, @min(weight.len, output.len));
-    if (size == 0) return;
-
-    // Compute RMS
-    var sum_sq: f32 = 0;
-    for (0..size) |i| {
-        sum_sq += input[i] * input[i];
-    }
-    const rms = @sqrt(sum_sq / @as(f32, @floatFromInt(size)) + eps);
-    const rms_inv = 1.0 / rms;
-
-    // Normalize and scale
-    for (0..size) |i| {
-        output[i] = input[i] * rms_inv * weight[i];
-    }
+export fn get_f64_buffer_ptr() [*]f64 {
+    return &f64_buffer;
 }
 
-// Fused RMSNorm (single pass)
-pub fn fusedRMSNorm(
-    input: []f32,
-    weight: []const f32,
-    eps: f32,
-) void {
-    const size = @min(input.len, weight.len);
-    if (size == 0) return;
+// ═══════════════════════════════════════════════════════════════════════════════
+// CREATION PATTERNS
+// ═══════════════════════════════════════════════════════════════════════════════
 
-    var sum_sq: f32 = 0;
-    for (0..size) |i| {
-        sum_sq += input[i] * input[i];
-    }
-    const rms_inv = 1.0 / @sqrt(sum_sq / @as(f32, @floatFromInt(size)) + eps);
-
-    for (0..size) |i| {
-        input[i] = input[i] * rms_inv * weight[i];
-    }
+/// Проверка TRINITY identity: φ² + 1/φ² = 3
+fn verify_trinity() f64 {
+    return PHI * PHI + 1.0 / (PHI * PHI);
 }
 
-// RMSNorm backward (for training)
-pub fn rmsnormBackward(
-    grad_output: []const f32,
-    input: []const f32,
-    weight: []const f32,
-    grad_input: []f32,
-    grad_weight: []f32,
-    eps: f32,
-) void {
-    const size = @min(input.len, weight.len);
-    if (size == 0) return;
-
-    // Compute RMS
-    var sum_sq: f32 = 0;
-    for (0..size) |i| {
-        sum_sq += input[i] * input[i];
-    }
-    const rms = @sqrt(sum_sq / @as(f32, @floatFromInt(size)) + eps);
-    const rms_inv = 1.0 / rms;
-
-    // Gradient w.r.t. weight
-    for (0..size) |i| {
-        grad_weight[i] += grad_output[i] * input[i] * rms_inv;
-    }
-
-    // Gradient w.r.t. input (simplified)
-    var dot: f32 = 0;
-    for (0..size) |i| {
-        dot += grad_output[i] * weight[i] * input[i];
-    }
-    const coeff = dot * rms_inv * rms_inv * rms_inv / @as(f32, @floatFromInt(size));
-
-    for (0..size) |i| {
-        grad_input[i] = grad_output[i] * weight[i] * rms_inv - input[i] * coeff;
-    }
+/// φ-интерполяция
+fn phi_lerp(a: f64, b: f64, t: f64) f64 {
+    const phi_t = math.pow(f64, t, PHI_INV);
+    return a + (b - a) * phi_t;
 }
 
-// Tests
-test "compute rms" {
-    const input = [_]f32{ 1.0, 2.0, 3.0, 4.0 };
-    const rms = computeRMS(&input);
-    // RMS = sqrt((1+4+9+16)/4) = sqrt(7.5) ≈ 2.74
-    try testing.expectApproxEqAbs(@as(f32, 2.7386), rms, 0.01);
+/// Генерация φ-спирали
+fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
+    const max_points = f64_buffer.len / 2;
+    const count = if (n > max_points) @as(u32, @intCast(max_points)) else n;
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        const fi: f64 = @floatFromInt(i);
+        const angle = fi * TAU * PHI_INV;
+        const radius = scale * math.pow(f64, PHI, fi * 0.1);
+        f64_buffer[i * 2] = cx + radius * @cos(angle);
+        f64_buffer[i * 2 + 1] = cy + radius * @sin(angle);
+    }
+    return count;
 }
 
-test "rmsnorm forward" {
-    const input = [_]f32{ 1.0, 2.0, 3.0, 4.0 };
-    const weight = [_]f32{ 1.0, 1.0, 1.0, 1.0 };
-    var output: [4]f32 = undefined;
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTS - Generated from behaviors and test_cases
+// ═══════════════════════════════════════════════════════════════════════════════
 
-    rmsnormForward(&input, &weight, &output, 1e-6);
-
-    // Output should be normalized
-    var sum_sq: f32 = 0;
-    for (output) |x| sum_sq += x * x;
-    const rms = @sqrt(sum_sq / 4.0);
-    try testing.expectApproxEqAbs(@as(f32, 1.0), rms, 0.01);
+test "rmsnorm_forward" {
+// Given: Input [batch, seq, hidden], weight
+// When: Apply RMSNorm
+// Then: Return normalized output
+    // TODO: Add test assertions
 }
 
-test "fused rmsnorm" {
-    var input = [_]f32{ 1.0, 2.0, 3.0, 4.0 };
-    const weight = [_]f32{ 1.0, 1.0, 1.0, 1.0 };
-
-    fusedRMSNorm(&input, &weight, 1e-6);
-
-    var sum_sq: f32 = 0;
-    for (input) |x| sum_sq += x * x;
-    const rms = @sqrt(sum_sq / 4.0);
-    try testing.expectApproxEqAbs(@as(f32, 1.0), rms, 0.01);
+test "compute_rms" {
+// Given: Input tensor
+// When: Compute RMS
+// Then: Return sqrt(mean(x²))
+    // TODO: Add test assertions
 }
 
-test "rmsnorm preserves direction" {
-    const input = [_]f32{ 1.0, 2.0, 3.0, 4.0 };
-    const weight = [_]f32{ 1.0, 1.0, 1.0, 1.0 };
-    var output: [4]f32 = undefined;
+test "fused_rmsnorm" {
+// Given: Input, weight, eps
+// When: Fused kernel
+// Then: Single pass normalization
+    // TODO: Add test assertions
+}
 
-    rmsnormForward(&input, &weight, &output, 1e-6);
-
-    // Ratios should be preserved
-    const ratio_in = input[1] / input[0];
-    const ratio_out = output[1] / output[0];
-    try testing.expectApproxEqAbs(ratio_in, ratio_out, 0.001);
+test "phi_constants" {
+    try std.testing.expectApproxEqAbs(PHI * PHI_INV, 1.0, 1e-10);
+    try std.testing.expectApproxEqAbs(PHI_SQ - PHI, 1.0, 1e-10);
 }

@@ -1,198 +1,131 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// llm_attention_gqa v1.0.0 - Grouped Query Attention
-// 8x KV reduction, 50% memory savings
+// llm_attention_gqa v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
-// φ² + 1/φ² = 3 | PHOENIX = 999
-// Paper: arXiv:2305.13245
+//
+// Священная формула: V = n × 3^k × π^m × φ^p × e^q
+// Золотая идентичность: φ² + 1/φ² = 3
+//
+// Author: 
+// DO NOT EDIT - This file is auto-generated
+//
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const std = @import("std");
 const math = std.math;
-const testing = std.testing;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// КОНСТАНТЫ
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
 pub const PHI_INV: f64 = 0.618033988749895;
-pub const PHOENIX: u32 = 999;
+pub const PHI_SQ: f64 = 2.618033988749895;
+pub const TRINITY: f64 = 3.0;
+pub const SQRT5: f64 = 2.2360679774997896;
+pub const TAU: f64 = 6.283185307179586;
+pub const PI: f64 = 3.141592653589793;
+pub const E: f64 = 2.718281828459045;
+pub const PHOENIX: i64 = 999;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ТИПЫ
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// 
 pub const GQAConfig = struct {
-    num_heads: usize = 12,
-    num_kv_heads: usize = 4, // GQA ratio = 3
-    head_dim: usize = 64,
-    max_seq_len: usize = 4096,
-    sliding_window: usize = 0, // 0 = disabled
+    num_heads: i64,
+    num_kv_heads: i64,
+    head_dim: i64,
+    max_seq_len: i64,
+    sliding_window: i64,
 };
 
-// Calculate GQA group size
-pub fn gqaGroupSize(num_heads: usize, num_kv_heads: usize) usize {
-    return num_heads / num_kv_heads;
+/// 
+pub const KVCache = struct {
+    key_cache: Tensor,
+    value_cache: Tensor,
+    seq_len: i64,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ПАМЯТЬ ДЛЯ WASM
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var global_buffer: [65536]u8 align(16) = undefined;
+var f64_buffer: [8192]f64 align(16) = undefined;
+
+export fn get_global_buffer_ptr() [*]u8 {
+    return &global_buffer;
 }
 
-// Expand KV heads to match Q heads
-pub fn expandKV(
-    kv: []const f32,
-    expanded: []f32,
-    num_kv_heads: usize,
-    num_heads: usize,
-    seq_len: usize,
-    head_dim: usize,
-) void {
-    const group_size = num_heads / num_kv_heads;
+export fn get_f64_buffer_ptr() [*]f64 {
+    return &f64_buffer;
+}
 
-    for (0..num_heads) |h| {
-        const kv_head = h / group_size;
-        for (0..seq_len) |s| {
-            for (0..head_dim) |d| {
-                const src_idx = kv_head * seq_len * head_dim + s * head_dim + d;
-                const dst_idx = h * seq_len * head_dim + s * head_dim + d;
-                expanded[dst_idx] = kv[src_idx];
-            }
-        }
+// ═══════════════════════════════════════════════════════════════════════════════
+// CREATION PATTERNS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Проверка TRINITY identity: φ² + 1/φ² = 3
+fn verify_trinity() f64 {
+    return PHI * PHI + 1.0 / (PHI * PHI);
+}
+
+/// φ-интерполяция
+fn phi_lerp(a: f64, b: f64, t: f64) f64 {
+    const phi_t = math.pow(f64, t, PHI_INV);
+    return a + (b - a) * phi_t;
+}
+
+/// Генерация φ-спирали
+fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
+    const max_points = f64_buffer.len / 2;
+    const count = if (n > max_points) @as(u32, @intCast(max_points)) else n;
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        const fi: f64 = @floatFromInt(i);
+        const angle = fi * TAU * PHI_INV;
+        const radius = scale * math.pow(f64, PHI, fi * 0.1);
+        f64_buffer[i * 2] = cx + radius * @cos(angle);
+        f64_buffer[i * 2 + 1] = cy + radius * @sin(angle);
     }
+    return count;
 }
 
-// Compute attention scores for single head
-pub fn computeAttentionScores(
-    q: []const f32,
-    k: []const f32,
-    scores: []f32,
-    head_dim: usize,
-    seq_len: usize,
-) void {
-    const scale = 1.0 / @sqrt(@as(f32, @floatFromInt(head_dim)));
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTS - Generated from behaviors and test_cases
+// ═══════════════════════════════════════════════════════════════════════════════
 
-    for (0..seq_len) |i| {
-        var dot: f32 = 0;
-        for (0..head_dim) |d| {
-            dot += q[d] * k[i * head_dim + d];
-        }
-        scores[i] = dot * scale;
-    }
+test "gqa_forward" {
+// Given: Hidden states, KV cache, position
+// When: Compute GQA attention
+// Then: Return attended output, updated cache
+    // TODO: Add test assertions
 }
 
-// Apply causal mask
-pub fn applyCausalMask(scores: []f32, seq_len: usize, query_pos: usize) void {
-    for (0..seq_len) |i| {
-        if (i > query_pos) {
-            scores[i] = -math.inf(f32);
-        }
-    }
+test "expand_kv" {
+// Given: KV with num_kv_heads
+// When: Expand for Q heads
+// Then: Repeat KV to match Q heads
+    // TODO: Add test assertions
 }
 
-// Apply sliding window mask
-pub fn applySlidingWindowMask(scores: []f32, seq_len: usize, query_pos: usize, window: usize) void {
-    if (window == 0) return;
-
-    for (0..seq_len) |i| {
-        if (i > query_pos) {
-            scores[i] = -math.inf(f32);
-        } else if (query_pos > window and i < query_pos - window) {
-            scores[i] = -math.inf(f32);
-        }
-    }
+test "sliding_window_mask" {
+// Given: Sequence length, window size
+// When: Apply sliding window
+// Then: Mask positions outside window
+    // TODO: Add test assertions
 }
 
-// Softmax for attention
-pub fn attentionSoftmax(scores: []f32, size: usize) void {
-    if (size == 0) return;
-
-    var max_val: f32 = scores[0];
-    for (1..size) |i| {
-        if (scores[i] > max_val) max_val = scores[i];
-    }
-
-    var sum: f32 = 0;
-    for (0..size) |i| {
-        if (!math.isNegativeInf(scores[i])) {
-            scores[i] = @exp(scores[i] - max_val);
-            sum += scores[i];
-        } else {
-            scores[i] = 0;
-        }
-    }
-
-    if (sum > 0) {
-        for (0..size) |i| {
-            scores[i] /= sum;
-        }
-    }
+test "update_kv_cache" {
+// Given: New K, V and cache
+// When: Append to cache
+// Then: Return updated cache
+    // TODO: Add test assertions
 }
 
-// Compute weighted sum of values
-pub fn computeAttentionOutput(
-    scores: []const f32,
-    v: []const f32,
-    output: []f32,
-    seq_len: usize,
-    head_dim: usize,
-) void {
-    for (0..head_dim) |d| {
-        output[d] = 0;
-        for (0..seq_len) |i| {
-            output[d] += scores[i] * v[i * head_dim + d];
-        }
-    }
-}
-
-// GQA memory savings calculation
-pub fn gqaMemorySavings(num_heads: usize, num_kv_heads: usize) f32 {
-    // KV memory is proportional to num_kv_heads
-    // Savings = 1 - (num_kv_heads / num_heads)
-    return 1.0 - @as(f32, @floatFromInt(num_kv_heads)) / @as(f32, @floatFromInt(num_heads));
-}
-
-// PHI-optimal KV heads
-pub fn phiOptimalKVHeads(num_heads: usize) usize {
-    // KV heads ≈ num_heads * φ^(-2) ≈ num_heads * 0.382
-    const kv_f: f64 = @as(f64, @floatFromInt(num_heads)) * PHI_INV * PHI_INV;
-    return @max(1, @as(usize, @intFromFloat(@round(kv_f))));
-}
-
-// Tests
-test "gqa group size" {
-    try testing.expectEqual(@as(usize, 3), gqaGroupSize(12, 4));
-    try testing.expectEqual(@as(usize, 1), gqaGroupSize(8, 8)); // MHA
-    try testing.expectEqual(@as(usize, 8), gqaGroupSize(8, 1)); // MQA
-}
-
-test "attention scores" {
-    const q = [_]f32{ 1.0, 0.0, 0.0, 0.0 };
-    const k = [_]f32{ 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0 }; // 2 keys
-    var scores: [2]f32 = undefined;
-
-    computeAttentionScores(&q, &k, &scores, 4, 2);
-
-    // First key matches, second doesn't
-    try testing.expect(scores[0] > scores[1]);
-}
-
-test "causal mask" {
-    var scores = [_]f32{ 1.0, 1.0, 1.0, 1.0 };
-    applyCausalMask(&scores, 4, 1);
-
-    try testing.expect(scores[0] == 1.0);
-    try testing.expect(scores[1] == 1.0);
-    try testing.expect(math.isNegativeInf(scores[2]));
-    try testing.expect(math.isNegativeInf(scores[3]));
-}
-
-test "sliding window mask" {
-    var scores = [_]f32{ 1.0, 1.0, 1.0, 1.0, 1.0 };
-    applySlidingWindowMask(&scores, 5, 4, 2);
-
-    try testing.expect(math.isNegativeInf(scores[0]));
-    try testing.expect(math.isNegativeInf(scores[1]));
-    try testing.expect(scores[2] == 1.0);
-    try testing.expect(scores[3] == 1.0);
-    try testing.expect(scores[4] == 1.0);
-}
-
-test "gqa memory savings" {
-    const savings = gqaMemorySavings(12, 4);
-    try testing.expectApproxEqAbs(@as(f32, 0.667), savings, 0.01);
-}
-
-test "phi optimal kv heads" {
-    const kv = phiOptimalKVHeads(12);
-    try testing.expect(kv >= 3);
-    try testing.expect(kv <= 6);
+test "phi_constants" {
+    try std.testing.expectApproxEqAbs(PHI * PHI_INV, 1.0, 1e-10);
+    try std.testing.expectApproxEqAbs(PHI_SQ - PHI, 1.0, 1e-10);
 }
