@@ -1,0 +1,42 @@
+# VIBEE ML Training Container
+# ============================
+#
+# Optimized container for LLM training with DeepSpeed/FSDP.
+#
+# Build:
+#   docker build -f Dockerfile.training -t vibee-training .
+
+FROM nvidia/cuda:12.1-devel-ubuntu22.04
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3-pip \
+    git \
+    ninja-build \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install PyTorch and training dependencies
+RUN pip3 install --no-cache-dir \
+    torch>=2.1.0 \
+    transformers>=4.36.0 \
+    accelerate>=0.25.0 \
+    deepspeed>=0.12.0 \
+    flash-attn>=2.4.0 \
+    bitsandbytes>=0.41.0 \
+    wandb \
+    tensorboard
+
+# Install VIBEE ML
+COPY implementations/python /app/vibee-ml
+RUN pip3 install -e /app/vibee-ml[training]
+
+# Set environment variables
+ENV CUDA_VISIBLE_DEVICES=all
+ENV NCCL_DEBUG=INFO
+ENV TORCH_DISTRIBUTED_DEBUG=DETAIL
+
+WORKDIR /workspace
+
+# Default command
+CMD ["python3", "-c", "import vibee_ml; print(f'VIBEE ML v{vibee_ml.__version__} ready for training')"]

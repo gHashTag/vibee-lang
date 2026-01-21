@@ -1,0 +1,47 @@
+# VIBEE ML Inference Container
+# ============================
+#
+# Optimized container for LLM inference with vLLM.
+#
+# Build:
+#   docker build -f Dockerfile.inference -t vibee-inference .
+#
+# Run:
+#   docker run --gpus all -p 8000:8000 vibee-inference --model meta-llama/Llama-2-7b-chat-hf
+
+FROM nvidia/cuda:12.1-devel-ubuntu22.04
+
+# Install Python and dependencies
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3-pip \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install vLLM and dependencies
+RUN pip3 install --no-cache-dir \
+    vllm>=0.3.0 \
+    torch>=2.1.0 \
+    transformers>=4.36.0 \
+    accelerate>=0.25.0 \
+    flash-attn>=2.4.0
+
+# Install VIBEE ML
+COPY implementations/python /app/vibee-ml
+RUN pip3 install -e /app/vibee-ml
+
+# Set environment variables
+ENV CUDA_VISIBLE_DEVICES=all
+ENV VLLM_USE_MODELSCOPE=False
+
+WORKDIR /app
+
+# Default command
+ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+CMD ["--help"]
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+EXPOSE 8000

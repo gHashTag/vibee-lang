@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""
+VIBEE Serving CLI
+=================
+
+Quick model serving with vLLM/TGI.
+
+Usage:
+    vibee-serve --model meta-llama/Llama-2-7b-chat-hf --port 8000
+    vibee-serve --model ./my-model --backend tgi --port 8080
+"""
+
+import argparse
+import subprocess
+import sys
+
+def main():
+    parser = argparse.ArgumentParser(description="VIBEE Serving CLI")
+    parser.add_argument("--model", type=str, required=True, help="Model name or path")
+    parser.add_argument("--port", type=int, default=8000, help="Port to serve on")
+    parser.add_argument("--backend", type=str, default="vllm", choices=["vllm", "tgi"], help="Serving backend")
+    parser.add_argument("--tensor-parallel", type=int, default=1, help="Tensor parallel size")
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.9, help="GPU memory utilization")
+    parser.add_argument("--max-model-len", type=int, default=4096, help="Maximum model length")
+    parser.add_argument("--quantization", type=str, default=None, choices=["awq", "gptq", None], help="Quantization method")
+    
+    args = parser.parse_args()
+    
+    print("VIBEE Serving CLI v2.6.0")
+    print("=" * 40)
+    print(f"Model: {args.model}")
+    print(f"Backend: {args.backend}")
+    print(f"Port: {args.port}")
+    print(f"Tensor Parallel: {args.tensor_parallel}")
+    print(f"GPU Memory: {args.gpu_memory_utilization}")
+    print("=" * 40)
+    
+    if args.backend == "vllm":
+        cmd = [
+            sys.executable, "-m", "vllm.entrypoints.openai.api_server",
+            "--model", args.model,
+            "--port", str(args.port),
+            "--tensor-parallel-size", str(args.tensor_parallel),
+            "--gpu-memory-utilization", str(args.gpu_memory_utilization),
+            "--max-model-len", str(args.max_model_len),
+        ]
+        if args.quantization:
+            cmd.extend(["--quantization", args.quantization])
+        
+        print(f"Running: {' '.join(cmd)}")
+        # subprocess.run(cmd)  # Uncomment to actually run
+        
+    elif args.backend == "tgi":
+        cmd = [
+            "docker", "run", "--gpus", "all",
+            "-p", f"{args.port}:80",
+            "ghcr.io/huggingface/text-generation-inference:latest",
+            "--model-id", args.model,
+            "--num-shard", str(args.tensor_parallel),
+        ]
+        print(f"Running: {' '.join(cmd)}")
+        # subprocess.run(cmd)  # Uncomment to actually run
+    
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
