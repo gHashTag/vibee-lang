@@ -160,16 +160,39 @@ pub const ZigCodeGen = struct {
             }
         }
         
-        if (!has_phi) {
-            try self.builder.writeLine("// Базовые φ-константы (defaults)");
-            try self.builder.writeLine("pub const PHI: f64 = 1.618033988749895;");
-            try self.builder.writeLine("pub const PHI_INV: f64 = 0.618033988749895;");
-            try self.builder.writeLine("pub const PHI_SQ: f64 = 2.618033988749895;");
-            try self.builder.writeLine("pub const TRINITY: f64 = 3.0;");
-            try self.builder.writeLine("pub const SQRT5: f64 = 2.2360679774997896;");
-            try self.builder.writeLine("pub const TAU: f64 = 6.283185307179586;");
-            try self.builder.newline();
+        // Добавляем базовые φ-константы если их нет
+        try self.builder.writeLine("// Базовые φ-константы (Sacred Formula)");
+        
+        var has_phi_inv = false;
+        var has_phi_sq = false;
+        var has_trinity = false;
+        var has_sqrt5 = false;
+        var has_tau = false;
+        var has_pi = false;
+        var has_e = false;
+        var has_phoenix = false;
+        
+        for (constants) |c| {
+            if (std.mem.eql(u8, c.name, "PHI_INV")) has_phi_inv = true;
+            if (std.mem.eql(u8, c.name, "PHI_SQ")) has_phi_sq = true;
+            if (std.mem.eql(u8, c.name, "TRINITY")) has_trinity = true;
+            if (std.mem.eql(u8, c.name, "SQRT5")) has_sqrt5 = true;
+            if (std.mem.eql(u8, c.name, "TAU")) has_tau = true;
+            if (std.mem.eql(u8, c.name, "PI")) has_pi = true;
+            if (std.mem.eql(u8, c.name, "E")) has_e = true;
+            if (std.mem.eql(u8, c.name, "PHOENIX")) has_phoenix = true;
         }
+        
+        if (!has_phi) try self.builder.writeLine("pub const PHI: f64 = 1.618033988749895;");
+        if (!has_phi_inv) try self.builder.writeLine("pub const PHI_INV: f64 = 0.618033988749895;");
+        if (!has_phi_sq) try self.builder.writeLine("pub const PHI_SQ: f64 = 2.618033988749895;");
+        if (!has_trinity) try self.builder.writeLine("pub const TRINITY: f64 = 3.0;");
+        if (!has_sqrt5) try self.builder.writeLine("pub const SQRT5: f64 = 2.2360679774997896;");
+        if (!has_tau) try self.builder.writeLine("pub const TAU: f64 = 6.283185307179586;");
+        if (!has_pi) try self.builder.writeLine("pub const PI: f64 = 3.141592653589793;");
+        if (!has_e) try self.builder.writeLine("pub const E: f64 = 2.718281828459045;");
+        if (!has_phoenix) try self.builder.writeLine("pub const PHOENIX: i64 = 999;");
+        try self.builder.newline();
     }
     
     fn writeTypes(self: *Self, types: []const TypeDef) !void {

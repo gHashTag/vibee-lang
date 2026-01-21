@@ -382,7 +382,10 @@ pub const VibeeParser = struct {
             }
             
             self.skipColon();
-            self.skipToNextLine();
+            
+            // Пробуем прочитать inline значение (формат: NAME: VALUE)
+            self.skipInlineWhitespace();
+            const inline_value = self.readValue();
             
             var constant = Constant{
                 .name = name,
@@ -390,26 +393,35 @@ pub const VibeeParser = struct {
                 .description = "",
             };
             
-            // Читаем вложенные поля (отступ 4 пробела)
-            while (self.pos < self.source.len) {
-                self.skipEmptyLinesAndComments();
-                if (self.pos >= self.source.len) break;
-                
-                const field_indent = self.countIndent();
-                if (field_indent < 4) break; // Меньше 4 = следующая константа или конец
-                self.pos += field_indent;
-                
-                const field_key = self.readKey();
-                if (field_key.len == 0) break;
-                self.skipColon();
-                
-                if (std.mem.eql(u8, field_key, "value")) {
-                    const value_str = self.readValue();
-                    constant.value = std.fmt.parseFloat(f64, value_str) catch 0;
-                } else if (std.mem.eql(u8, field_key, "description")) {
-                    constant.description = self.readQuotedValue();
-                }
+            if (inline_value.len > 0) {
+                // Inline формат: PHI: 1.618
+                constant.value = std.fmt.parseFloat(f64, inline_value) catch 0;
                 self.skipToNextLine();
+            } else {
+                // Nested формат
+                self.skipToNextLine();
+                
+                // Читаем вложенные поля (отступ 4 пробела)
+                while (self.pos < self.source.len) {
+                    self.skipEmptyLinesAndComments();
+                    if (self.pos >= self.source.len) break;
+                    
+                    const field_indent = self.countIndent();
+                    if (field_indent < 4) break; // Меньше 4 = следующая константа или конец
+                    self.pos += field_indent;
+                    
+                    const field_key = self.readKey();
+                    if (field_key.len == 0) break;
+                    self.skipColon();
+                    
+                    if (std.mem.eql(u8, field_key, "value")) {
+                        const value_str = self.readValue();
+                        constant.value = std.fmt.parseFloat(f64, value_str) catch 0;
+                    } else if (std.mem.eql(u8, field_key, "description")) {
+                        constant.description = self.readQuotedValue();
+                    }
+                    self.skipToNextLine();
+                }
             }
             
             try constants.append(constant);
