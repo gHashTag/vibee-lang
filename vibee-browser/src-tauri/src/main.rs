@@ -1,4 +1,4 @@
-// VIBEE Browser - Tauri Backend
+// VIBEE Browser - Tauri 2 Backend
 // φ² + 1/φ² = 3 | PHOENIX = 999
 
 #![cfg_attr(
@@ -8,7 +8,6 @@
 
 use tauri::Manager;
 
-// Sacred constants
 const PHI: f64 = 1.618033988749895;
 const VERSION: &str = "2482.0.0";
 
@@ -34,7 +33,6 @@ fn get_version() -> String {
 
 #[tauri::command]
 fn eval_ternary(expr: String) -> serde_json::Value {
-    // Simple ternary logic evaluation
     let result = if expr.contains("AND") {
         if expr.contains("unknown") || expr.contains("0") {
             ("unknown", 0)
@@ -62,20 +60,11 @@ fn eval_ternary(expr: String) -> serde_json::Value {
     })
 }
 
-#[tauri::command]
-async fn navigate(url: String, window: tauri::Window) -> Result<(), String> {
-    // For navigation, we'd need a webview - this is a placeholder
-    println!("Navigate to: {}", url);
-    window.emit("navigation", url).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            let window = app.get_window("main").unwrap();
-            
-            // Set window title with sacred formula
+            let window = app.get_webview_window("main").unwrap();
             window.set_title("VIBEE Browser - φ² + 1/φ² = 3 | PHOENIX = 999").unwrap();
             
             println!("╔═══════════════════════════════════════════════════════════════╗");
@@ -89,8 +78,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_phi,
             get_version,
-            eval_ternary,
-            navigate
+            eval_ternary
         ])
         .run(tauri::generate_context!())
         .expect("error while running VIBEE Browser");
