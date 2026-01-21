@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// browser_glass_v1330 v1330 - Generated from .vibee specification
+// browser_self_spec v13254.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,10 +33,43 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const GlassConfig1330 = struct {
-    enabled: bool,
-    intensity: f64,
-    quality: []const u8,
+pub const SelfSpecConfig = struct {
+    draft_layers: i64,
+    verify_layers: i64,
+    speculation_depth: i64,
+    acceptance_threshold: f64,
+};
+
+/// 
+pub const DraftToken = struct {
+    token_id: i64,
+    probability: f64,
+    layer_source: i64,
+    speculative: bool,
+};
+
+/// 
+pub const VerificationResult = struct {
+    accepted_count: i64,
+    rejected_count: i64,
+    acceptance_rate: f64,
+    speedup_achieved: f64,
+};
+
+/// 
+pub const SelfSpecState = struct {
+    config: []const u8,
+    draft_cache: []const u8,
+    verify_cache: []const u8,
+    active: bool,
+};
+
+/// 
+pub const SelfSpecMetrics = struct {
+    tokens_drafted: i64,
+    tokens_accepted: i64,
+    average_speedup: f64,
+    memory_overhead: f64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -88,24 +121,45 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "init_glass_1330" {
-// Given: Configuration
-// When: Initializing
-// Then: Returns initialized module
+test "create_self_spec_config" {
+// Given: Layer parameters
+// When: Config creation
+// Then: Returns SelfSpecConfig
     // TODO: Add test assertions
 }
 
-test "apply_effect_1330" {
-// Given: Input texture
-// When: Applying effect
-// Then: Returns processed texture
+test "generate_draft_tokens" {
+// Given: Input and SelfSpecState
+// When: Draft generation
+// Then: Returns list of DraftTokens
     // TODO: Add test assertions
 }
 
-test "update_params_1330" {
-// Given: New parameters
-// When: Updating
-// Then: Updates effect parameters
+test "verify_draft_tokens" {
+// Given: DraftTokens and model
+// When: Verification
+// Then: Returns VerificationResult
+    // TODO: Add test assertions
+}
+
+test "accept_tokens" {
+// Given: VerificationResult
+// When: Token acceptance
+// Then: Returns accepted token sequence
+    // TODO: Add test assertions
+}
+
+test "measure_self_spec" {
+// Given: SelfSpecState
+// When: Metrics collection
+// Then: Returns SelfSpecMetrics
+    // TODO: Add test assertions
+}
+
+test "optimize_speculation" {
+// Given: SelfSpecMetrics
+// When: Optimization needed
+// Then: Returns optimized config
     // TODO: Add test assertions
 }
 

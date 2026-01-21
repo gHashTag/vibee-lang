@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// browser_glass_v1330 v1330 - Generated from .vibee specification
+// ai_self_spec_browser v13283.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,10 +33,43 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const GlassConfig1330 = struct {
-    enabled: bool,
-    intensity: f64,
-    quality: []const u8,
+pub const SelfSpecBrowserConfig = struct {
+    draft_layers: i64,
+    verify_layers: i64,
+    speculation_length: i64,
+    browser_optimized: bool,
+};
+
+/// 
+pub const BrowserDraft = struct {
+    draft_id: i64,
+    tokens: []const u8,
+    probabilities: []const u8,
+    layer_source: i64,
+};
+
+/// 
+pub const BrowserVerification = struct {
+    accepted: []const u8,
+    rejected: []const u8,
+    acceptance_rate: f64,
+    speedup: f64,
+};
+
+/// 
+pub const SelfSpecBrowserResult = struct {
+    output: []const u8,
+    drafts_generated: i64,
+    tokens_accepted: i64,
+    total_speedup: f64,
+};
+
+/// 
+pub const SelfSpecBrowserMetrics = struct {
+    draft_quality: f64,
+    acceptance_rate: f64,
+    decode_speedup: f64,
+    memory_overhead: f64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -88,24 +121,45 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "init_glass_1330" {
-// Given: Configuration
-// When: Initializing
-// Then: Returns initialized module
+test "create_self_spec_browser_config" {
+// Given: Spec parameters
+// When: Config creation
+// Then: Returns SelfSpecBrowserConfig
     // TODO: Add test assertions
 }
 
-test "apply_effect_1330" {
-// Given: Input texture
-// When: Applying effect
-// Then: Returns processed texture
+test "generate_browser_draft" {
+// Given: Input and config
+// When: Draft generation
+// Then: Returns BrowserDraft
     // TODO: Add test assertions
 }
 
-test "update_params_1330" {
-// Given: New parameters
-// When: Updating
-// Then: Updates effect parameters
+test "verify_browser_draft" {
+// Given: BrowserDraft
+// When: Verification requested
+// Then: Returns BrowserVerification
+    // TODO: Add test assertions
+}
+
+test "decode_self_spec" {
+// Given: Input and config
+// When: Decoding requested
+// Then: Returns SelfSpecBrowserResult
+    // TODO: Add test assertions
+}
+
+test "optimize_speculation" {
+// Given: Metrics
+// When: Optimization needed
+// Then: Returns optimized config
+    // TODO: Add test assertions
+}
+
+test "measure_self_spec_browser" {
+// Given: SelfSpecBrowserResult
+// When: Metrics collection
+// Then: Returns SelfSpecBrowserMetrics
     // TODO: Add test assertions
 }
 

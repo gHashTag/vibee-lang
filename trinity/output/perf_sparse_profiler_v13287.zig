@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// browser_glass_v1330 v1330 - Generated from .vibee specification
+// perf_sparse_profiler v13287.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,10 +33,43 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const GlassConfig1330 = struct {
-    enabled: bool,
-    intensity: f64,
-    quality: []const u8,
+pub const SparseProfilerConfig = struct {
+    sampling_rate: f64,
+    importance_threshold: f64,
+    adaptive: bool,
+    overhead_target: f64,
+};
+
+/// 
+pub const ProfileSample = struct {
+    sample_id: i64,
+    location: []const u8,
+    duration_ns: i64,
+    importance: f64,
+};
+
+/// 
+pub const SparseProfile = struct {
+    samples: []const u8,
+    total_samples: i64,
+    sparse_samples: i64,
+    coverage: f64,
+};
+
+/// 
+pub const SparseProfilerResult = struct {
+    profile: []const u8,
+    hotspots: []const u8,
+    overhead_percent: f64,
+    accuracy: f64,
+};
+
+/// 
+pub const SparseProfilerMetrics = struct {
+    sampling_efficiency: f64,
+    overhead: f64,
+    hotspot_accuracy: f64,
+    coverage: f64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -88,24 +121,45 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "init_glass_1330" {
-// Given: Configuration
-// When: Initializing
-// Then: Returns initialized module
+test "create_sparse_profiler_config" {
+// Given: Profiler parameters
+// When: Config creation
+// Then: Returns SparseProfilerConfig
     // TODO: Add test assertions
 }
 
-test "apply_effect_1330" {
-// Given: Input texture
-// When: Applying effect
-// Then: Returns processed texture
+test "start_profiling" {
+// Given: SparseProfilerConfig
+// When: Profiling start
+// Then: Returns profiling handle
     // TODO: Add test assertions
 }
 
-test "update_params_1330" {
-// Given: New parameters
-// When: Updating
-// Then: Updates effect parameters
+test "sample_sparse" {
+// Given: Location and importance
+// When: Sampling decision
+// Then: Returns ProfileSample or skip
+    // TODO: Add test assertions
+}
+
+test "build_sparse_profile" {
+// Given: Samples
+// When: Profile construction
+// Then: Returns SparseProfile
+    // TODO: Add test assertions
+}
+
+test "analyze_hotspots" {
+// Given: SparseProfile
+// When: Analysis requested
+// Then: Returns SparseProfilerResult
+    // TODO: Add test assertions
+}
+
+test "measure_sparse_profiler" {
+// Given: SparseProfilerResult
+// When: Metrics collection
+// Then: Returns SparseProfilerMetrics
     // TODO: Add test assertions
 }
 
