@@ -92,18 +92,28 @@ quantum_git() {
     echo -e "${YELLOW}⚡ QUANTUM GIT${NC}"
     cd "$VIBEE_ROOT"
     
-    git pull --rebase 2>/dev/null || git pull || true
+    # 1. Pull with merge (not rebase)
+    echo -e "${CYAN}  → git pull (merge)${NC}"
+    git pull --no-rebase 2>/dev/null || git pull || true
+    
+    # 2. Add all changes
+    echo -e "${CYAN}  → git add -A${NC}"
     git add -A
     
+    # 3. Commit
     local msg="$1"
     [ -z "$msg" ] && msg="quantum: auto-commit $(date +%Y%m%d-%H%M%S)"
     
+    echo -e "${CYAN}  → git commit${NC}"
     git commit -m "$msg
 
-Co-authored-by: Ona <no-reply@ona.com>" 2>/dev/null || echo "Nothing to commit"
+Co-authored-by: Ona <no-reply@ona.com>" 2>/dev/null || echo "  Nothing to commit"
     
-    git push 2>/dev/null || echo "Push failed or nothing to push"
-    echo -e "${GREEN}✓ Git complete${NC}"
+    # 4. Push
+    echo -e "${CYAN}  → git push${NC}"
+    git push 2>/dev/null || echo "  Push failed or nothing to push"
+    
+    echo -e "${GREEN}✓ Git complete (pull → merge → add → commit → push)${NC}"
 }
 
 # PHASE 4: Unified Test
