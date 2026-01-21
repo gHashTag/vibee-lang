@@ -17,13 +17,16 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Базовые φ-константы (defaults)
+// Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
 pub const PHI_INV: f64 = 0.618033988749895;
 pub const PHI_SQ: f64 = 2.618033988749895;
 pub const TRINITY: f64 = 3.0;
 pub const SQRT5: f64 = 2.2360679774997896;
 pub const TAU: f64 = 6.283185307179586;
+pub const PI: f64 = 3.141592653589793;
+pub const E: f64 = 2.718281828459045;
+pub const PHOENIX: i64 = 999;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ТИПЫ
@@ -65,11 +68,11 @@ pub const ActionPayload = struct {
 var global_buffer: [65536]u8 align(16) = undefined;
 var f64_buffer: [8192]f64 align(16) = undefined;
 
-fn get_global_buffer_ptr() [*]u8 {
+export fn get_global_buffer_ptr() [*]u8 {
     return &global_buffer;
 }
 
-fn get_f64_buffer_ptr() [*]f64 {
+export fn get_f64_buffer_ptr() [*]f64 {
     return &f64_buffer;
 }
 
