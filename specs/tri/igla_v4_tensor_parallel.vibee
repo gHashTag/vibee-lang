@@ -1,0 +1,51 @@
+# iGLA v4 Tensor Parallelism - Multi-Core Scaling
+# Paper: Megatron-LM "Efficient Large-Scale Language Model Training"
+# φ² + 1/φ² = 3 | КОЩЕЙ БЕССМЕРТЕН
+
+name: igla_v4_tensor_parallel
+version: "4.0.0"
+language: zig
+module: igla_v4_tensor_parallel
+
+types:
+  TPConfig:
+    fields:
+      world_size: Int
+      rank: Int
+      comm_backend: String
+      
+  ColumnParallel:
+    fields:
+      weight_shard: String
+      gather_output: Bool
+      
+  RowParallel:
+    fields:
+      weight_shard: String
+      reduce_scatter: Bool
+
+behaviors:
+  - name: column_parallel_linear
+    given: "Input X, weight W split column-wise"
+    when: "Forward pass"
+    then: "Y = X @ W_shard, all-gather if needed"
+    
+  - name: row_parallel_linear
+    given: "Input X split, weight W split row-wise"
+    when: "Forward pass"
+    then: "Y_partial = X_shard @ W_shard, all-reduce"
+    
+  - name: attention_parallel
+    given: "Q, K, V heads distributed"
+    when: "Parallel attention"
+    then: "Each rank computes subset of heads"
+    
+  - name: mlp_parallel
+    given: "MLP weights distributed"
+    when: "Column then row parallel"
+    then: "Efficient 2-step parallelism"
+    
+  - name: all_reduce_sync
+    given: "Partial results from all ranks"
+    when: "Synchronization point"
+    then: "Sum reduced across all ranks"
