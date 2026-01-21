@@ -52,7 +52,55 @@ curl -L -o models/llama-2-7b.gguf \
 | GET | `/health` | Health check |
 | GET | `/v1/models` | List available models |
 | POST | `/v1/completions` | Text completion |
-| POST | `/v1/chat/completions` | Chat completion |
+| POST | `/v1/chat/completions` | Chat completion (supports streaming) |
+
+## SSE Streaming
+
+Real-time token streaming is supported via `stream: true`:
+
+```bash
+# Streaming request
+curl -N -X POST http://localhost:8001/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello!"}],"stream":true}'
+```
+
+Response format (Server-Sent Events):
+```
+data: {"choices":[{"delta":{"content":"Hello"}}]}
+data: {"choices":[{"delta":{"content":"!"}}]}
+data: {"choices":[{"delta":{"content":" How"}}]}
+...
+data: [DONE]
+```
+
+### Streaming Demo Script
+
+```bash
+# Use the included demo script
+./scripts/stream_chat.sh 8001 "Your question here"
+```
+
+### Python Streaming Example
+
+```python
+import requests
+import json
+
+response = requests.post(
+    "http://localhost:8001/v1/chat/completions",
+    json={"messages": [{"role": "user", "content": "Hello!"}], "stream": True},
+    stream=True
+)
+
+for line in response.iter_lines():
+    if line:
+        data = line.decode().removeprefix("data: ")
+        if data != "[DONE]":
+            chunk = json.loads(data)
+            content = chunk["choices"][0]["delta"].get("content", "")
+            print(content, end="", flush=True)
+```
 
 ## API Examples
 
@@ -210,11 +258,21 @@ print(response.choices[0].message.content)
 ## Supported Models
 
 Any GGUF format model works:
-- TinyLlama (1.1B) - Fast, small
-- Phi-2 (2.7B) - Good balance
-- Llama 2 (7B/13B) - High quality
-- Mistral (7B) - State of the art
-- Mixtral (8x7B) - MoE architecture
+
+| Model | Size | Speed | Quality | Best For |
+|-------|------|-------|---------|----------|
+| TinyLlama 1.1B | 638MB | 45 tok/s | ⭐⭐ | Quick tests, low RAM |
+| Phi-2 2.7B | 1.7GB | 16 tok/s | ⭐⭐⭐ | Reasoning, balanced |
+| Mistral 7B | 4.1GB | ~8 tok/s | ⭐⭐⭐⭐ | Production quality |
+| Llama 2 7B | 4GB | ~8 tok/s | ⭐⭐⭐⭐ | General purpose |
+
+### Benchmark Results (CPU, 4 threads)
+
+```
+TinyLlama 1.1B:  45 tokens/sec, basic math ✅, reasoning ⚠️
+Phi-2 2.7B:      16 tokens/sec, math ✅, reasoning ✅
+Mistral 7B:      ~8 tokens/sec, best quality overall
+```
 
 ## Performance Tips
 
