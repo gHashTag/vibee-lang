@@ -23,9 +23,15 @@ pub const ServerConfig = struct {
     max_connections: u32 = 1000,
     timeout_ms: u32 = 30000,
     model_path: ?[]const u8 = null,
+    ctx_size: u32 = 2048,
+    threads: u32 = 4,
     
     pub fn default() ServerConfig {
         return .{};
+    }
+    
+    pub fn hasModel(self: *const ServerConfig) bool {
+        return self.model_path != null;
     }
 };
 

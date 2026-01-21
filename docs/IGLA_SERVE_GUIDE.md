@@ -4,20 +4,46 @@
 
 ## Overview
 
-`vibee serve` starts an OpenAI-compatible inference server built on VM Trinity runtime.
+`vibee serve` starts an OpenAI-compatible inference server with real LLM inference via llama.cpp.
 
 ## Quick Start
 
 ```bash
-# Start server on default port 8000
+# Mock server (for testing, no model needed)
 vibee serve
 
-# Custom port
-vibee serve --port 3000
+# Real inference with GGUF model
+vibee serve -m models/tinyllama-1.1b-q4_k_m.gguf
 
-# Localhost only
-vibee serve --host 127.0.0.1
+# Custom port and context size
+vibee serve -m model.gguf --port 3000 --ctx 4096 --threads 8
 ```
+
+## Download a Model
+
+```bash
+# TinyLlama 1.1B (638MB, fast)
+curl -L -o models/tinyllama.gguf \
+  "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+
+# Phi-2 2.7B (1.6GB, smarter)
+curl -L -o models/phi-2.gguf \
+  "https://huggingface.co/TheBloke/phi-2-GGUF/resolve/main/phi-2.Q4_K_M.gguf"
+
+# Llama 2 7B (4GB, best quality)
+curl -L -o models/llama-2-7b.gguf \
+  "https://huggingface.co/TheBloke/Llama-2-7B-Chat-GGUF/resolve/main/llama-2-7b-chat.Q4_K_M.gguf"
+```
+
+## Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-m, --model` | none | Path to GGUF model (enables real inference) |
+| `--port` | 8000 | Server port |
+| `--host` | 0.0.0.0 | Server host |
+| `--ctx` | 2048 | Context size |
+| `--threads` | 4 | CPU threads |
 
 ## Endpoints
 
@@ -27,8 +53,6 @@ vibee serve --host 127.0.0.1
 | GET | `/v1/models` | List available models |
 | POST | `/v1/completions` | Text completion |
 | POST | `/v1/chat/completions` | Chat completion |
-| GET | `/phi` | Sacred constants |
-| GET | `/metrics` | Prometheus metrics |
 
 ## API Examples
 
@@ -183,13 +207,21 @@ print(response.choices[0].message.content)
 | `--port` | 8000 | Server port |
 | `--host` | 0.0.0.0 | Server host |
 
-## Future Features
+## Supported Models
 
-- [ ] Real model loading (vLLM/TensorRT-LLM)
-- [ ] WebSocket streaming
-- [ ] Authentication (API keys)
-- [ ] Rate limiting
-- [ ] GPU inference
+Any GGUF format model works:
+- TinyLlama (1.1B) - Fast, small
+- Phi-2 (2.7B) - Good balance
+- Llama 2 (7B/13B) - High quality
+- Mistral (7B) - State of the art
+- Mixtral (8x7B) - MoE architecture
+
+## Performance Tips
+
+1. **Use Q4_K_M quantization** - Best speed/quality balance
+2. **Set context size** - Lower = faster (`--ctx 512` for quick tests)
+3. **Increase threads** - Match your CPU cores (`--threads 8`)
+4. **Use GPU** - Build llama.cpp with CUDA for 10x speedup
 
 ## Sacred Formula
 

@@ -1519,8 +1519,6 @@ fn runChain(allocator: std.mem.Allocator, writer: anytype) !void {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 fn runServe(allocator: std.mem.Allocator, writer: anytype, args: []const []const u8) !void {
-    _ = allocator;
-    
     var server_config = serve.ServerConfig.default();
     
     // Parse arguments
@@ -1532,14 +1530,73 @@ fn runServe(allocator: std.mem.Allocator, writer: anytype, args: []const []const
         } else if (std.mem.eql(u8, args[i], "--host") and i + 1 < args.len) {
             server_config.host = args[i + 1];
             i += 1;
+        } else if (std.mem.eql(u8, args[i], "--model") and i + 1 < args.len) {
+            server_config.model_path = args[i + 1];
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "-m") and i + 1 < args.len) {
+            server_config.model_path = args[i + 1];
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--ctx") and i + 1 < args.len) {
+            server_config.ctx_size = std.fmt.parseInt(u32, args[i + 1], 10) catch 2048;
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--threads") and i + 1 < args.len) {
+            server_config.threads = std.fmt.parseInt(u32, args[i + 1], 10) catch 4;
+            i += 1;
         } else if (std.mem.eql(u8, args[i], "--help") or std.mem.eql(u8, args[i], "-h")) {
             try printServeHelp(writer);
             return;
         }
     }
     
-    // Start server
-    try serve.runServer(server_config, writer);
+    // If model specified, use llama-server
+    if (server_config.hasModel()) {
+        try runLlamaServer(allocator, writer, server_config);
+    } else {
+        // Mock server
+        try serve.runServer(server_config, writer);
+    }
+}
+
+fn runLlamaServer(allocator: std.mem.Allocator, writer: anytype, cfg: serve.ServerConfig) !void {
+    try writer.print("\n", .{});
+    try writer.print("╔═══════════════════════════════════════════════════════════════╗\n", .{});
+    try writer.print("║  iGLA INFERENCE SERVER (llama.cpp backend)                    ║\n", .{});
+    try writer.print("║  OpenAI-compatible API | Real LLM Inference                   ║\n", .{});
+    try writer.print("║  φ² + 1/φ² = 3 | PHOENIX = 999                                ║\n", .{});
+    try writer.print("╚═══════════════════════════════════════════════════════════════╝\n", .{});
+    try writer.print("\n", .{});
+    try writer.print("  Model: {s}\n", .{cfg.model_path.?});
+    try writer.print("  Port:  {d}\n", .{cfg.port});
+    try writer.print("  Ctx:   {d}\n", .{cfg.ctx_size});
+    try writer.print("\n", .{});
+    try writer.print("  Starting llama-server...\n", .{});
+    try writer.print("\n", .{});
+    
+    var port_buf: [8]u8 = undefined;
+    const port_str = std.fmt.bufPrint(&port_buf, "{d}", .{cfg.port}) catch "8000";
+    
+    var ctx_buf: [16]u8 = undefined;
+    const ctx_str = std.fmt.bufPrint(&ctx_buf, "{d}", .{cfg.ctx_size}) catch "2048";
+    
+    var threads_buf: [8]u8 = undefined;
+    const threads_str = std.fmt.bufPrint(&threads_buf, "{d}", .{cfg.threads}) catch "4";
+    
+    const argv = [_][]const u8{
+        "bin/llama-server",
+        "-m", cfg.model_path.?,
+        "--port", port_str,
+        "--host", cfg.host,
+        "-c", ctx_str,
+        "-t", threads_str,
+        "--log-disable",
+    };
+    
+    var child = std.process.Child.init(&argv, allocator);
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
+    
+    try child.spawn();
+    _ = try child.wait();
 }
 
 fn printServeHelp(writer: anytype) !void {
@@ -1547,33 +1604,37 @@ fn printServeHelp(writer: anytype) !void {
         \\
         \\╔═══════════════════════════════════════════════════════════════╗
         \\║  iGLA INFERENCE SERVER                                        ║
-        \\║  OpenAI-compatible API | VM Trinity Runtime                   ║
+        \\║  OpenAI-compatible API | llama.cpp backend                    ║
         \\╚═══════════════════════════════════════════════════════════════╝
         \\
         \\USAGE:
         \\  vibee serve [options]
         \\
         \\OPTIONS:
-        \\  --port <port>    Server port (default: 8000)
-        \\  --host <host>    Server host (default: 0.0.0.0)
-        \\  --help, -h       Show this help
+        \\  -m, --model <path>   Path to GGUF model file (enables real inference)
+        \\  --port <port>        Server port (default: 8000)
+        \\  --host <host>        Server host (default: 0.0.0.0)
+        \\  --ctx <size>         Context size (default: 2048)
+        \\  --threads <n>        CPU threads (default: 4)
+        \\  --help, -h           Show this help
+        \\
+        \\MODES:
+        \\  Without --model:     Mock server (for testing)
+        \\  With --model:        Real LLM inference via llama.cpp
         \\
         \\ENDPOINTS:
         \\  GET  /health              Health check
         \\  GET  /v1/models           List available models
-        \\  POST /v1/completions      Text completion (OpenAI-compatible)
-        \\  POST /v1/chat/completions Chat completion (OpenAI-compatible)
-        \\  GET  /phi                 Sacred constants
-        \\  GET  /metrics             Prometheus metrics
+        \\  POST /v1/completions      Text completion
+        \\  POST /v1/chat/completions Chat completion
         \\
         \\EXAMPLES:
-        \\  vibee serve                    Start on port 8000
-        \\  vibee serve --port 3000        Start on port 3000
-        \\  vibee serve --host 127.0.0.1   Localhost only
+        \\  vibee serve                                    Mock server
+        \\  vibee serve -m models/tinyllama.gguf           Real inference
+        \\  vibee serve -m model.gguf --port 3000          Custom port
         \\
         \\API USAGE:
         \\  curl http://localhost:8000/health
-        \\  curl http://localhost:8000/v1/models
         \\  curl -X POST http://localhost:8000/v1/chat/completions
         \\
         \\φ² + 1/φ² = 3 | PHOENIX = 999
