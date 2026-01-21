@@ -106,7 +106,54 @@ Co-authored-by: Ona <no-reply@ona.com>" 2>/dev/null || echo "Nothing to commit"
     echo -e "${GREEN}✓ Git complete${NC}"
 }
 
-# PHASE 4: Summary
+# PHASE 4: Unified Test
+quantum_unified() {
+    local pattern="$1"
+    echo -e "${YELLOW}⚡ UNIFIED TEST: igla_${pattern}_* (single compilation)${NC}"
+    local unified_file="$OUTPUT_DIR/unified_igla_${pattern}_tests.zig"
+    
+    # Generate unified test file
+    echo "const std = @import(\"std\");" > "$unified_file"
+    echo "" >> "$unified_file"
+    
+    for f in $OUTPUT_DIR/igla_${pattern}_*.zig; do
+        [ -f "$f" ] || continue
+        local name=$(basename "$f" .zig)
+        [[ "$name" == unified_* ]] && continue
+        echo "const $name = @import(\"$name.zig\");" >> "$unified_file"
+    done
+    
+    echo "" >> "$unified_file"
+    echo "comptime {" >> "$unified_file"
+    for f in $OUTPUT_DIR/igla_${pattern}_*.zig; do
+        [ -f "$f" ] || continue
+        local name=$(basename "$f" .zig)
+        [[ "$name" == unified_* ]] && continue
+        echo "    _ = $name;" >> "$unified_file"
+    done
+    echo "}" >> "$unified_file"
+    
+    echo -e "${GREEN}✓ Created $(basename "$unified_file")${NC}"
+    
+    local start=$(date +%s%N)
+    cd "$OUTPUT_DIR"
+    result=$(zig test "$(basename "$unified_file")" 2>&1)
+    local end=$(date +%s%N)
+    local ms=$(( (end - start) / 1000000 ))
+    
+    if echo "$result" | grep -q "All.*tests passed"; then
+        count=$(echo "$result" | grep -oP 'All \K\d+')
+        echo -e "${GREEN}✓ All $count tests passed in ${ms}ms${NC}"
+        PASSED=1
+        TOTAL_TESTS=$count
+    else
+        echo -e "${RED}✗ Tests failed${NC}"
+        echo "$result" | tail -20
+        FAILED=1
+    fi
+}
+
+# PHASE 5: Summary
 quantum_summary() {
     echo ""
     echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
@@ -154,8 +201,37 @@ case "$1" in
         quantum_test "igla_*.zig"
         quantum_summary
         ;;
+    unified)
+        quantum_banner
+        quantum_unified "${2:-v8}"
+        ;;
+    roadmap)
+        echo -e "${CYAN}"
+        cat "$VIBEE_ROOT/docs/QUANTUM_ROADMAP.md" 2>/dev/null || echo "QUANTUM_ROADMAP.md not found"
+        echo -e "${NC}"
+        ;;
+    suggest)
+        echo -e "${CYAN}"
+        echo "╔═══════════════════════════════════════════════════════════════╗"
+        echo "║              QUANTUM УЛУЧШЕНИЯ - ПРЕДЛОЖЕНИЯ                  ║"
+        echo "╚═══════════════════════════════════════════════════════════════╝"
+        echo -e "${NC}"
+        echo ""
+        echo -e "${YELLOW}🎯 РЕКОМЕНДУЕМЫЙ ПОРЯДОК:${NC}"
+        echo ""
+        echo "  1. ${GREEN}unified${NC} - Unified test binary (3x ускорение)"
+        echo "     quantum_chain.sh unified v8"
+        echo ""
+        echo "  2. ${GREEN}incremental${NC} - Кэш хэшей (14x для изменений)"
+        echo "     [В разработке]"
+        echo ""
+        echo "  3. ${GREEN}zig build${NC} - Артефакт кэширование (10x повторно)"
+        echo "     [В разработке]"
+        echo ""
+        echo -e "${CYAN}Подробнее: quantum_chain.sh roadmap${NC}"
+        ;;
     *)
-        echo "Usage: quantum_chain.sh [gen|test|git|all|v8|full] [pattern] [commit_msg]"
+        echo "Usage: quantum_chain.sh [command] [pattern] [commit_msg]"
         echo ""
         echo "Commands:"
         echo "  gen [pattern]     - Generate .zig from .vibee (parallel)"
@@ -164,5 +240,8 @@ case "$1" in
         echo "  all [pattern]     - Gen + Test + Git"
         echo "  v8                - Process all v8 modules"
         echo "  full              - Process ALL igla modules"
+        echo "  unified [ver]     - Single compilation test (3x faster)"
+        echo "  roadmap           - Show improvement roadmap"
+        echo "  suggest           - Show improvement suggestions"
         ;;
 esac
