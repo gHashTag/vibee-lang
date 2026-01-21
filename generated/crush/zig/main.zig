@@ -2416,8 +2416,9 @@ fn printBenchInfo(writer: anytype) !void {
 fn runBenchRun(writer: anytype, args: []const []const u8) !void {
     var dataset: []const u8 = "lite";
     var limit: u32 = 5;
-    var timeout: u32 = 1800;
+
     var run_id: []const u8 = "igla-run-001";
+    var real_mode: bool = false;
     
     // Parse args
     var i: usize = 0;
@@ -2428,14 +2429,15 @@ fn runBenchRun(writer: anytype, args: []const []const u8) !void {
         } else if (std.mem.eql(u8, args[i], "--limit") and i + 1 < args.len) {
             limit = std.fmt.parseInt(u32, args[i + 1], 10) catch 5;
             i += 1;
-        } else if (std.mem.eql(u8, args[i], "--timeout") and i + 1 < args.len) {
-            timeout = std.fmt.parseInt(u32, args[i + 1], 10) catch 1800;
-            i += 1;
         } else if (std.mem.eql(u8, args[i], "--run-id") and i + 1 < args.len) {
             run_id = args[i + 1];
             i += 1;
+        } else if (std.mem.eql(u8, args[i], "--real")) {
+            real_mode = true;
         }
     }
+    
+
     
     try writer.print("═══════════════════════════════════════════════════════════════════════════════\n", .{});
     try writer.print("                    IGLA SWE-BENCH EVALUATION\n", .{});
@@ -2444,14 +2446,32 @@ fn runBenchRun(writer: anytype, args: []const []const u8) !void {
     try writer.print("CONFIGURATION:\n", .{});
     try writer.print("  Dataset:        {s}\n", .{dataset});
     try writer.print("  Limit:          {d} instances\n", .{limit});
-    try writer.print("  Timeout:        {d} seconds\n", .{timeout});
+    try writer.print("  Mode:           {s}\n", .{if (real_mode) "REAL (LLM)" else "SIMULATION"});
     try writer.print("  Run ID:         {s}\n\n", .{run_id});
+    
+    if (real_mode) {
+        try writer.print("REAL MODE ENABLED\n", .{});
+        try writer.print("To run with real LLM, use Python script:\n\n", .{});
+        try writer.print("  export OPENAI_API_KEY=sk-...\n", .{});
+        try writer.print("  python3 scripts/swe_bench_runner.py \\\n", .{});
+        try writer.print("    --limit {d} \\\n", .{limit});
+        try writer.print("    --provider openai \\\n", .{});
+        try writer.print("    --model gpt-4\n\n", .{});
+        try writer.print("Or with Anthropic:\n\n", .{});
+        try writer.print("  export ANTHROPIC_API_KEY=sk-ant-...\n", .{});
+        try writer.print("  python3 scripts/swe_bench_runner.py \\\n", .{});
+        try writer.print("    --limit {d} \\\n", .{limit});
+        try writer.print("    --provider anthropic \\\n", .{});
+        try writer.print("    --model claude-3-opus-20240229\n\n", .{});
+        try writer.print("φ² + 1/φ² = 3 | PHOENIX = 999\n\n", .{});
+        return;
+    }
     
     try writer.print("LOADING DATASET...\n", .{});
     try writer.print("  ✓ Loaded data/swe_bench/sample_instances.json\n", .{});
     try writer.print("  ✓ Found 5 sample instances\n\n", .{});
     
-    try writer.print("RUNNING EVALUATION:\n", .{});
+    try writer.print("RUNNING EVALUATION (SIMULATION):\n", .{});
     
     // Simulate running instances
     const instances = [_][]const u8{
@@ -2478,7 +2498,7 @@ fn runBenchRun(writer: anytype, args: []const []const u8) !void {
     
     try writer.print("\n", .{});
     try writer.print("═══════════════════════════════════════════════════════════════════════════════\n", .{});
-    try writer.print("                    EVALUATION COMPLETE\n", .{});
+    try writer.print("                    EVALUATION COMPLETE (SIMULATION)\n", .{});
     try writer.print("═══════════════════════════════════════════════════════════════════════════════\n\n", .{});
     
     try writer.print("RESULTS:\n", .{});
@@ -2487,13 +2507,9 @@ fn runBenchRun(writer: anytype, args: []const []const u8) !void {
     try writer.print("  Failed:         {d}\n", .{limit - resolved});
     try writer.print("  Percentage:     {d:.2}%%\n\n", .{pct});
     
-    try writer.print("COMPARISON:\n", .{});
-    try writer.print("  IGLA:           {d:.2}%%\n", .{pct});
-    try writer.print("  SWE-Agent:      12.29%%\n", .{});
-    try writer.print("  Devin:          13.86%%\n", .{});
-    try writer.print("  OpenHands:      21.00%%\n\n", .{});
+    try writer.print("⚠️  This is a SIMULATION. For real LLM evaluation:\n", .{});
+    try writer.print("    vibee bench run --real --limit {d}\n\n", .{limit});
     
-    try writer.print("Report saved to: logs/bench/{s}/report.json\n\n", .{run_id});
     try writer.print("φ² + 1/φ² = 3 | PHOENIX = 999\n\n", .{});
 }
 

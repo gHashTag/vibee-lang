@@ -1,0 +1,176 @@
+# IGLA LLM Client
+# Universal client for LLM APIs (OpenAI, Anthropic, Local)
+# φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: igla_llm_client
+version: "1.0.0"
+language: zig
+module: igla_llm_client
+
+sacred_constants:
+  phi: 1.618033988749895
+  phoenix: 999
+  trinity: 3
+
+creation_pattern:
+  source: LLMRequest
+  transformer: LLMClient
+  result: LLMResponse
+
+types:
+  LLMProvider:
+    enum:
+      - OpenAI
+      - Anthropic
+      - Local
+      - Ollama
+
+  LLMConfig:
+    fields:
+      provider: String
+      api_key: String
+      base_url: String
+      model: String
+      max_tokens: Int
+      temperature: Float
+      timeout_ms: Int
+
+  Message:
+    fields:
+      role: String
+      content: String
+
+  LLMRequest:
+    fields:
+      messages: List<Message>
+      system_prompt: String
+      max_tokens: Int
+      temperature: Float
+      stop_sequences: List<String>
+
+  LLMResponse:
+    fields:
+      content: String
+      model: String
+      usage_prompt_tokens: Int
+      usage_completion_tokens: Int
+      finish_reason: String
+      latency_ms: Int
+
+  StreamChunk:
+    fields:
+      delta: String
+      finish_reason: String
+      index: Int
+
+  LLMError:
+    fields:
+      code: Int
+      message: String
+      provider: String
+      retryable: Bool
+
+behaviors:
+  - name: create_config
+    given: "Provider and API key"
+    when: "Config creation requested"
+    then: "Returns LLMConfig with defaults"
+
+  - name: create_openai_config
+    given: "API key"
+    when: "OpenAI config requested"
+    then: "Returns config for OpenAI API"
+
+  - name: create_anthropic_config
+    given: "API key"
+    when: "Anthropic config requested"
+    then: "Returns config for Anthropic API"
+
+  - name: create_local_config
+    given: "Base URL"
+    when: "Local LLM config requested"
+    then: "Returns config for local server"
+
+  - name: complete
+    given: "LLMConfig and LLMRequest"
+    when: "Completion requested"
+    then: "Returns LLMResponse"
+
+  - name: complete_stream
+    given: "LLMConfig and LLMRequest"
+    when: "Streaming completion requested"
+    then: "Yields StreamChunk iterator"
+
+  - name: chat
+    given: "LLMConfig and list of Messages"
+    when: "Chat completion requested"
+    then: "Returns LLMResponse"
+
+  - name: build_openai_request
+    given: "LLMRequest"
+    when: "OpenAI format needed"
+    then: "Returns JSON string for OpenAI API"
+
+  - name: build_anthropic_request
+    given: "LLMRequest"
+    when: "Anthropic format needed"
+    then: "Returns JSON string for Anthropic API"
+
+  - name: parse_openai_response
+    given: "JSON response string"
+    when: "OpenAI response received"
+    then: "Returns LLMResponse"
+
+  - name: parse_anthropic_response
+    given: "JSON response string"
+    when: "Anthropic response received"
+    then: "Returns LLMResponse"
+
+  - name: retry_with_backoff
+    given: "Failed request and retry count"
+    when: "Retryable error occurred"
+    then: "Retries with exponential backoff"
+
+  - name: validate_api_key
+    given: "LLMConfig"
+    when: "Validation requested"
+    then: "Returns true if API key is valid format"
+
+test_cases:
+  - name: test_openai_config
+    input:
+      api_key: "sk-test123"
+    expected:
+      provider: "OpenAI"
+      model: "gpt-4"
+
+  - name: test_anthropic_config
+    input:
+      api_key: "sk-ant-test123"
+    expected:
+      provider: "Anthropic"
+      model: "claude-3-opus"
+
+  - name: test_request_building
+    input:
+      messages: [{"role": "user", "content": "Hello"}]
+    expected:
+      valid_json: true
+
+  - name: test_response_parsing
+    input:
+      json: '{"choices": [{"message": {"content": "Hi"}}]}'
+    expected:
+      content: "Hi"
+
+  - name: test_error_handling
+    input:
+      status_code: 429
+    expected:
+      retryable: true
+
+  - name: test_validation
+    input:
+      api_key: "sk-valid"
+    expected:
+      valid: true

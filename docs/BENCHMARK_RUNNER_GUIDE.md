@@ -8,14 +8,51 @@ Run real-world GitHub issue benchmarks with IGLA SWE Agent.
 # Show benchmark info
 vibee bench info
 
-# Run evaluation on 5 instances
+# Run simulation (no API key needed)
 vibee bench run --dataset lite --limit 5
 
-# Generate report
-vibee bench report --run-id igla-run-001
+# Run with real LLM
+vibee bench run --real --limit 5
+```
 
-# Compare with competitors
-vibee bench compare
+## Real LLM Evaluation
+
+### Demo Mode (No API Key)
+
+```bash
+python3 scripts/swe_bench_runner.py --provider demo --limit 5
+```
+
+Uses gold patches from dataset to verify harness works.
+
+### OpenAI
+
+```bash
+export OPENAI_API_KEY=sk-...
+python3 scripts/swe_bench_runner.py \
+  --provider openai \
+  --model gpt-4 \
+  --limit 5
+```
+
+### Anthropic
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+python3 scripts/swe_bench_runner.py \
+  --provider anthropic \
+  --model claude-3-opus-20240229 \
+  --limit 5
+```
+
+### Local LLM (OpenAI-compatible)
+
+```bash
+python3 scripts/swe_bench_runner.py \
+  --provider local \
+  --base-url http://localhost:8000 \
+  --model local-model \
+  --limit 5
 ```
 
 ## Datasets
