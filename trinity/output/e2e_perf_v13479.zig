@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// browser_prod_v1339 v1339 - Generated from .vibee specification
+// e2e_perf v13479.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,10 +33,31 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const ProdConfig1339 = struct {
-    enabled: bool,
-    endpoint: []const u8,
-    sampling_rate: f64,
+pub const E2e_perfConfig = struct {
+    test_suite: []const u8,
+    timeout_ms: i64,
+    parallel: bool,
+};
+
+/// 
+pub const E2e_perfTestCase = struct {
+    test_id: []const u8,
+    name: []const u8,
+    steps: []const u8,
+};
+
+/// 
+pub const E2e_perfResult = struct {
+    passed: bool,
+    tests_run: i64,
+    duration_ms: i64,
+};
+
+/// 
+pub const E2e_perfMetrics = struct {
+    pass_rate: f64,
+    coverage: f64,
+    speedup: f64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -46,11 +67,11 @@ pub const ProdConfig1339 = struct {
 var global_buffer: [65536]u8 align(16) = undefined;
 var f64_buffer: [8192]f64 align(16) = undefined;
 
-fn get_global_buffer_ptr() [*]u8 {
+export fn get_global_buffer_ptr() [*]u8 {
     return &global_buffer;
 }
 
-fn get_f64_buffer_ptr() [*]f64 {
+export fn get_f64_buffer_ptr() [*]f64 {
     return &f64_buffer;
 }
 
@@ -59,18 +80,18 @@ fn get_f64_buffer_ptr() [*]f64 {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Проверка TRINITY identity: φ² + 1/φ² = 3
-fn verify_trinity() f64 {
+pub export fn verify_trinity() f64 {
     return PHI * PHI + 1.0 / (PHI * PHI);
 }
 
 /// φ-интерполяция
-fn phi_lerp(a: f64, b: f64, t: f64) f64 {
+pub export fn phi_lerp(a: f64, b: f64, t: f64) f64 {
     const phi_t = math.pow(f64, t, PHI_INV);
     return a + (b - a) * phi_t;
 }
 
 /// Генерация φ-спирали
-fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
+pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
     const max_points = f64_buffer.len / 2;
     const count = if (n > max_points) @as(u32, @intCast(max_points)) else n;
     var i: u32 = 0;
@@ -88,24 +109,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "init_prod_1339" {
-// Given: Configuration
-// When: Initializing
-// Then: Returns initialized module
+test "create_e2e_perf_config" {
+// Given: Config parameters
+// When: Config creation
+// Then: Returns E2e_perfConfig
     // TODO: Add test assertions
 }
 
-test "collect_1339" {
-// Given: Data
-// When: Collecting
-// Then: Collects telemetry
+test "run_e2e_perf_test" {
+// Given: E2e_perfTestCase
+// When: Test execution
+// Then: Returns E2e_perfResult
     // TODO: Add test assertions
 }
 
-test "export_1339" {
-// Given: Batch
-// When: Exporting
-// Then: Exports to backend
+test "run_e2e_perf_suite" {
+// Given: E2e_perfConfig
+// When: Suite execution
+// Then: Returns E2e_perfResult
+    // TODO: Add test assertions
+}
+
+test "get_e2e_perf_metrics" {
+// Given: E2e_perfResult
+// When: Metrics query
+// Then: Returns E2e_perfMetrics
+    // TODO: Add test assertions
+}
+
+test "generate_e2e_perf_report" {
+// Given: E2e_perfResult
+// When: Report generation
+// Then: Returns report
+    // TODO: Add test assertions
+}
+
+test "verify_e2e_perf" {
+// Given: Expected results
+// When: Verification
+// Then: Returns verification result
     // TODO: Add test assertions
 }
 

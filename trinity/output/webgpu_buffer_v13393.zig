@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// browser_prod_v1339 v1339 - Generated from .vibee specification
+// webgpu_buffer v13393.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,10 +33,34 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const ProdConfig1339 = struct {
-    enabled: bool,
-    endpoint: []const u8,
-    sampling_rate: f64,
+pub const BufferConfig = struct {
+    size: i64,
+    usage: []const u8,
+    mapped_at_creation: bool,
+    label: []const u8,
+};
+
+/// 
+pub const GPUBuffer = struct {
+    buffer_id: []const u8,
+    size: i64,
+    usage: []const u8,
+    mapped: bool,
+};
+
+/// 
+pub const BufferMapping = struct {
+    buffer_id: []const u8,
+    offset: i64,
+    size: i64,
+    mode: []const u8,
+};
+
+/// 
+pub const BufferResult = struct {
+    success: bool,
+    buffer_id: []const u8,
+    error_message: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -46,11 +70,11 @@ pub const ProdConfig1339 = struct {
 var global_buffer: [65536]u8 align(16) = undefined;
 var f64_buffer: [8192]f64 align(16) = undefined;
 
-fn get_global_buffer_ptr() [*]u8 {
+export fn get_global_buffer_ptr() [*]u8 {
     return &global_buffer;
 }
 
-fn get_f64_buffer_ptr() [*]f64 {
+export fn get_f64_buffer_ptr() [*]f64 {
     return &f64_buffer;
 }
 
@@ -59,18 +83,18 @@ fn get_f64_buffer_ptr() [*]f64 {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Проверка TRINITY identity: φ² + 1/φ² = 3
-fn verify_trinity() f64 {
+pub export fn verify_trinity() f64 {
     return PHI * PHI + 1.0 / (PHI * PHI);
 }
 
 /// φ-интерполяция
-fn phi_lerp(a: f64, b: f64, t: f64) f64 {
+pub export fn phi_lerp(a: f64, b: f64, t: f64) f64 {
     const phi_t = math.pow(f64, t, PHI_INV);
     return a + (b - a) * phi_t;
 }
 
 /// Генерация φ-спирали
-fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
+pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
     const max_points = f64_buffer.len / 2;
     const count = if (n > max_points) @as(u32, @intCast(max_points)) else n;
     var i: u32 = 0;
@@ -88,24 +112,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "init_prod_1339" {
-// Given: Configuration
-// When: Initializing
-// Then: Returns initialized module
+test "create_buffer" {
+// Given: BufferConfig
+// When: Buffer creation
+// Then: Returns GPUBuffer
     // TODO: Add test assertions
 }
 
-test "collect_1339" {
-// Given: Data
-// When: Collecting
-// Then: Collects telemetry
+test "map_buffer" {
+// Given: BufferMapping
+// When: Mapping requested
+// Then: Returns mapped range
     // TODO: Add test assertions
 }
 
-test "export_1339" {
-// Given: Batch
-// When: Exporting
-// Then: Exports to backend
+test "unmap_buffer" {
+// Given: GPUBuffer
+// When: Unmap requested
+// Then: Returns BufferResult
+    // TODO: Add test assertions
+}
+
+test "write_buffer" {
+// Given: Buffer, offset, data
+// When: Write requested
+// Then: Returns BufferResult
+    // TODO: Add test assertions
+}
+
+test "copy_buffer" {
+// Given: Source and dest
+// When: Copy requested
+// Then: Returns BufferResult
+    // TODO: Add test assertions
+}
+
+test "destroy_buffer" {
+// Given: GPUBuffer
+// When: Destruction
+// Then: Returns BufferResult
     // TODO: Add test assertions
 }
 
