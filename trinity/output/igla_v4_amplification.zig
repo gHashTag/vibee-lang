@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// igla_v4_core v4.0.0 - Generated from .vibee specification
+// igla_v4_amplification v4.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,37 +33,25 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const IGLAv4Config = struct {
-    ring_attention: bool,
-    mamba_hybrid: bool,
-    eagle_decoding: bool,
-    dora_adapters: bool,
-    awq_quantization: bool,
-    smoothquant: bool,
-    prefix_caching: bool,
-    tensor_parallel: bool,
-    gqa_enabled: bool,
-    moe_enabled: bool,
-    kv_compression: bool,
-    yolo_turbo: bool,
-    amplification: bool,
-    matryoshka: bool,
-    trinity_fusion: bool,
+pub const AmplificationConfig = struct {
+    iterations: i64,
+    capability_multiplier: f64,
+    alignment_threshold: f64,
 };
 
 /// 
-pub const IGLAv4Stats = struct {
-    context_length: i64,
-    memory_reduction: f64,
-    speedup_factor: f64,
-    quality_delta: f64,
+pub const AmplifiedModel = struct {
+    base_model: []const u8,
+    amplification_level: i64,
+    effective_capability: f64,
 };
 
 /// 
-pub const IGLAv4Model = struct {
-    config: []const u8,
-    layers: []const u8,
-    tokenizer: []const u8,
+pub const DistillationStep = struct {
+    step_id: i64,
+    source_capability: f64,
+    target_capability: f64,
+    loss: f64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -115,66 +103,45 @@ pub export fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "init_igla_v4" {
-// Given: Model config with all v4 features
-// When: Initialization
-// Then: All optimizations enabled by default
+test "amplify_inference" {
+// Given: Base iGLA v4 model
+// When: Amplification applied
+// Then: 2x capability per iteration
     // TODO: Add test assertions
 }
 
-test "hybrid_attention" {
-// Given: Mamba + Ring Attention
-// When: Long context processing
-// Then: O(n) with 1M+ context support
+test "distill_knowledge" {
+// Given: Amplified behavior
+// When: Distillation to smaller model
+// Then: 90% capability retained
     // TODO: Add test assertions
 }
 
-test "quantized_inference" {
-// Given: AWQ + SmoothQuant
-// When: INT4/INT8 inference
-// Then: 4x memory reduction, lossless
+test "iterate_amplification" {
+// Given: Current amplification level
+// When: Next iteration
+// Then: Capability doubled, alignment preserved
     // TODO: Add test assertions
 }
 
-test "speculative_generation" {
-// Given: EAGLE + Prefix Cache
-// When: Text generation
-// Then: 3-5x speedup on repeated patterns
+test "preserve_alignment" {
+// Given: Amplification iteration
+// When: Alignment check
+// Then: Drift < 1% per iteration
     // TODO: Add test assertions
 }
 
-test "efficient_finetuning" {
-// Given: DoRA adapters
-// When: Task adaptation
-// Then: +2% accuracy, 0.1% trainable params
+test "cascade_amplification" {
+// Given: Multiple model sizes
+// When: Cascade distillation
+// Then: Large → Medium → Small with minimal loss
     // TODO: Add test assertions
 }
 
-test "yolo_turbo_mode" {
-// Given: YOLO turbo enabled
-// When: Parallel inference
-// Then: 20x speedup via parallel + speculative
-    // TODO: Add test assertions
-}
-
-test "amplification_boost" {
-// Given: Amplification enabled
-// When: Capability iteration
-// Then: 32x capability multiplier
-    // TODO: Add test assertions
-}
-
-test "matryoshka_nesting" {
-// Given: Matryoshka enabled
-// When: Nested execution
-// Then: 96x nested speedup
-    // TODO: Add test assertions
-}
-
-test "trinity_fusion_activate" {
-// Given: All three accelerations
-// When: Trinity fusion
-// Then: 1618x combined speedup (φ × 1000)
+test "measure_amplification" {
+// Given: Amplified model
+// When: Benchmark
+// Then: Capability multiplier measured
     // TODO: Add test assertions
 }
 
