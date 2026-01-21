@@ -1,6 +1,8 @@
-# QuantumMiniLM Technology Tree
+# QuantumMiniLM Technology Tree v2.0
 
 **φ² + 1/φ² = 3 | PHOENIX = 999**
+
+**Version:** 2.0 | **Modules:** 50 | **Tests:** 351
 
 ## Overview
 
@@ -131,12 +133,55 @@ INPUT ──► Tokenization ──► Embedding ──► Attention ──► F
                                            v6734_sliding
 ```
 
+### Layer 4: Advanced Inference & Training (v674x-v675x) - 96 tests
+
+| Module | Description | Tests |
+|--------|-------------|-------|
+| v6740_speculative_decoding | Draft model speculation | 6 |
+| v6741_bitnet_ternary | Ternary weights {-1,0,+1} = Trinity | 6 |
+| v6742_state_space_model | Mamba-style SSM, O(N) | 6 |
+| v6743_lora_adapter | Low-rank adaptation | 6 |
+| v6744_kv_cache_compression | KV cache quantization | 6 |
+| v6745_moe_router | Mixture of Experts | 6 |
+| v6746_activation_checkpoint_v2 | Selective checkpointing | 6 |
+| v6747_token_merging | ToMe token reduction | 6 |
+| v6748_early_exit | Adaptive depth | 6 |
+| v6749_weight_sharing | ALBERT-style sharing | 6 |
+| v6750_continuous_batching | Production inference | 6 |
+| v6751_prefix_caching | KV reuse | 6 |
+| v6752_tensor_parallelism | Model sharding | 6 |
+| v6753_pipeline_parallelism | Layer distribution | 6 |
+| v6754_sequence_parallelism | Ring attention | 6 |
+| v6755_zero_optimizer | ZeRO stages 1-3 | 6 |
+
+## Scientific References
+
+| Paper | Year | Key Innovation |
+|-------|------|----------------|
+| MiniLM v1/v2 | 2020-21 | Self-attention distillation |
+| DistilBERT | 2019 | 40% smaller, 60% faster |
+| Flash Attention | 2022 | O(N) memory attention |
+| Mamba | 2023 | State space models |
+| BitNet b1.58 | 2024 | Ternary weights = Trinity! |
+| Speculative Decoding | 2023 | 2-3x inference speedup |
+| LoRA | 2021 | 0.1% trainable params |
+| ZeRO | 2020 | Distributed optimizer |
+
 ## Test Summary
 
-- **Total Modules:** 34
-- **Total Tests:** 255
+- **Total Modules:** 50
+- **Total Tests:** 351
 - **Pass Rate:** 100%
 - **Language:** Zig (no GC, systems-level)
+
+## Future Roadmap
+
+```
+v676x: Multimodal Extension (Vision + Audio)
+v677x: Quantum Hardware Integration
+v678x: Edge/Mobile Deployment
+v679x: Neuromorphic Computing
+```
 
 ---
 
