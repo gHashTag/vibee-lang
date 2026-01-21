@@ -590,8 +590,18 @@ pub const ZigCodeGen = struct {
             return "[]const u8"; // Simplified: List<T> -> slice
         }
         
+        // Plain List type -> slice
+        if (std.mem.eql(u8, type_name, "List")) {
+            return "[]const u8";
+        }
+        
         // Generic types Map<K,V> -> std.StringHashMap
         if (std.mem.startsWith(u8, type_name, "Map<")) {
+            return "std.StringHashMap([]const u8)";
+        }
+        
+        // Plain Map type -> std.StringHashMap
+        if (std.mem.eql(u8, type_name, "Map")) {
             return "std.StringHashMap([]const u8)";
         }
         

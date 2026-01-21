@@ -32,7 +32,7 @@ pub const TAU: f64 = 6.283185307179586;
 /// 
 pub const Config2126 = struct {
     enabled: bool,
-    options: Map,
+    options: std.StringHashMap([]const u8),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -35,7 +35,7 @@ pub const QUICConnection = struct {
     state: []const u8,
     local_addr: []const u8,
     remote_addr: []const u8,
-    streams: Map,
+    streams: std.StringHashMap([]const u8),
     datagrams_enabled: bool,
 };
 
