@@ -1,0 +1,100 @@
+# iGLA Reranker
+# Cross-Encoder reranking for improved precision
+# Scientific basis: Nogueira & Cho 2019, Khattab & Zaharia 2020 (ColBERT)
+# φ² + 1/φ² = 3 | V = n × 3^k × π^m × φ^p
+
+name: igla_reranker
+version: "1.0.0"
+language: zig
+module: igla_reranker
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+
+scientific_references:
+  - "Nogueira & Cho 2019: Passage Re-ranking with BERT"
+  - "Khattab & Zaharia 2020: ColBERT"
+  - "Nogueira et al. 2020: Document Ranking with BERT"
+  - "Gao et al. 2021: Rethink Training of BERT Rerankers"
+
+types:
+  RerankerConfig:
+    fields:
+      model_name: String
+      max_length: Int
+      batch_size: Int
+      score_threshold: Float
+
+  QueryDocPair:
+    fields:
+      query: String
+      document: String
+      initial_rank: Int
+
+  RerankerScore:
+    fields:
+      doc_id: Int
+      relevance_score: Float
+      initial_rank: Int
+      final_rank: Int
+
+  CrossEncoderInput:
+    fields:
+      input_ids: String
+      attention_mask: String
+      token_type_ids: String
+
+  RerankerOutput:
+    fields:
+      scores: String
+      rankings: String
+      latency_ms: Float
+
+  ColBERTScore:
+    fields:
+      doc_id: Int
+      max_sim_score: Float
+      token_scores: String
+
+behaviors:
+  - name: encode_pair
+    given: "Query, Document"
+    when: "Cross-encoder input"
+    then: "CrossEncoderInput tokens"
+
+  - name: score_pair
+    given: "CrossEncoderInput"
+    when: "Relevance scoring"
+    then: "Relevance score in [0, 1]"
+
+  - name: rerank_batch
+    given: "Query, List of documents"
+    when: "Batch reranking"
+    then: "Reordered documents by relevance"
+
+  - name: colbert_score
+    given: "Query tokens, Doc tokens"
+    when: "Late interaction"
+    then: "MaxSim score"
+
+  - name: filter_by_threshold
+    given: "Scores, threshold"
+    when: "Filtering"
+    then: "Documents above threshold"
+
+  - name: cascade_rerank
+    given: "Initial results, stages"
+    when: "Multi-stage reranking"
+    then: "Progressively refined results"
+
+  - name: diversity_rerank
+    given: "Results, lambda"
+    when: "MMR reranking"
+    then: "Diverse result set"
+
+  - name: phi_relevance_boost
+    given: "Relevance scores"
+    when: "Sacred boosting"
+    then: "φ-enhanced relevance"
