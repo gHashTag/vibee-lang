@@ -34,8 +34,7 @@
 
 ```bash
 # Генерация кода для ВСЕХ 42 языков из одной .vibee спецификации
-cd vibee-lang
-./bin/vibee gen-multi specs/tri/igla_sacred_formula.vibee all
+vibee gen-multi specs/tri/igla_sacred_formula.vibee all
 
 # Результат: 42 файла в generated/multi/
 # → igla_sacred_formula.py   (Python)
@@ -441,7 +440,6 @@ curl -s https://raw.githubusercontent.com/gHashTag/vibee-lang/main/experiments/g
 
 Или локально:
 ```bash
-cd vibee-lang
 python3 experiments/golden_key_mega_proof.py
 ```
 
@@ -734,10 +732,10 @@ behaviors:
 
 ```bash
 # Генерация Python кода
-./bin/vibee gen-multi specs/tri/feature.vibee python
+vibee gen-multi specs/tri/feature.vibee python
 
 # Генерация для ВСЕХ 42 языков
-./bin/vibee gen-multi specs/tri/feature.vibee all
+vibee gen-multi specs/tri/feature.vibee all
 ```
 
 **Поддерживаемые языки (42):**
@@ -907,13 +905,12 @@ sacred_numbers:
 
 ```bash
 # Генерация Zig кода из спецификации
-cd vibee-lang
-./bin/vibee gen specs/tri/igla_sacred_formula.vibee
+vibee gen specs/tri/igla_sacred_formula.vibee
 
 # Результат: trinity/output/igla_sacred_formula.zig
 
 # Генерация для 42 языков
-./bin/vibee gen-multi specs/tri/igla_sacred_formula.vibee all
+vibee gen-multi specs/tri/igla_sacred_formula.vibee all
 
 # Результат: generated/multi/igla_sacred_formula.{py,rs,go,ts,...}
 ```
@@ -991,17 +988,16 @@ cd vibee-lang
 
 ```bash
 # Запуск KOSCHEI (16 звеньев Златой Цепи)
-cd vibee-lang
-./bin/vibee koschei          # По умолчанию показывает 16 звеньев
+vibee koschei          # По умолчанию показывает 16 звеньев
 
 # Архитектура Лукоморья
-./bin/vibee koschei chain
+vibee koschei chain
 
 # Статус от Кота Учёного
-./bin/vibee koschei status
+vibee koschei status
 
 # Попытка остановить (невозможно!)
-./bin/vibee koschei stop
+vibee koschei stop
 ```
 
 **ЗЛАТАЯ ЦЕПЬ — 16 ЗВЕНЬЕВ:**
