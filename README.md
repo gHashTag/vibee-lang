@@ -4,8 +4,10 @@
 **Golden Identity:** `φ² + 1/φ² = 3`
 
 [![Tests](https://img.shields.io/badge/tests-2000%2B-brightgreen)](trinity/output/)
-[![Languages](https://img.shields.io/badge/languages-42-blue)](#gen-multi-42-languages)
-[![FFI](https://img.shields.io/badge/FFI-40%20modules-orange)](#ffi-modules)
+[![Languages](https://img.shields.io/badge/languages-42-blue)](#-gen-multi-42-languages)
+[![FFI](https://img.shields.io/badge/FFI-40%20modules-orange)](#-ffi-modules)
+[![Docs](https://img.shields.io/badge/docs-online-blue)](docs/INDEX.md)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ## Overview
 
@@ -157,10 +159,32 @@ vibee serve                         # LLM inference server
 
 ## 📚 Documentation
 
-- [Habr Article: Golden Key](docs/habr/HABR_ARTICLE_GOLDEN_KEY_V4.md)
+### 📖 Learn VIBEE
+- **[VIBEE Language Guide](docs/guides/VIBEE_LANGUAGE_GUIDE.md)** - Complete language reference
+- [Documentation Index](docs/INDEX.md) - All documentation
+- [Quickstart](docs/quickstart/QUICKSTART.md) - Get started in 5 minutes
+
+### 📰 Articles & Research
+- [Habr Article: Golden Key](docs/habr/HABR_ARTICLE_GOLDEN_KEY_V4.md) - Main article (RU)
+- [iGLA Documentation](docs/igla/) - Inference acceleration
+- [KOSCHEI System](docs/koschei/) - Autonomous evolution
+- [Scientific Papers](docs/scientific/) - Research references
+
+### 🛠️ Development
 - [AGENTS.md](AGENTS.md) - AI Agent Guidelines
 - [CLAUDE.md](CLAUDE.md) - Development Guidelines
 - [CONTRIBUTING.md](CONTRIBUTING.md) - Contribution Guide
+
+## 📈 Project Statistics
+
+| Metric | Value |
+|--------|-------|
+| Specifications (.vibee) | **667+** |
+| Generated modules (.zig) | **2000+** |
+| Supported languages | **42** |
+| FFI modules | **40** |
+| Tests passing | **2000+** |
+| Lines of compiler code | **20,000+** |
 
 ## 🤝 Contributing
 
