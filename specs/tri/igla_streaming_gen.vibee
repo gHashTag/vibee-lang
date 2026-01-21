@@ -1,0 +1,145 @@
+# VIBEE Specification - IGLA Streaming Generation
+# Server-Sent Events streaming for LLM output
+# RAG v3 - Streaming Generation
+# φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: igla_streaming_gen
+version: "3.0.0"
+language: zig
+module: igla_streaming_gen
+
+types:
+  StreamConfig:
+    fields:
+      chunk_size: Int
+      flush_interval_ms: Int
+      max_tokens: Int
+      temperature: Float
+      top_p: Float
+
+  StreamChunk:
+    fields:
+      id: String
+      content: String
+      index: Int
+      finish_reason: String
+      created_at: Int
+
+  StreamState:
+    fields:
+      id: String
+      status: String
+      tokens_generated: Int
+      start_time: Int
+      last_chunk_time: Int
+
+  SSEEvent:
+    fields:
+      event_type: String
+      data: String
+      id: String
+      retry: Int
+
+  StreamRequest:
+    fields:
+      prompt: String
+      context: String
+      max_tokens: Int
+      stream: Bool
+
+  StreamResponse:
+    fields:
+      id: String
+      model: String
+      chunks: String
+      total_tokens: Int
+      finish_reason: String
+
+  TokenBuffer:
+    fields:
+      tokens: String
+      count: Int
+      capacity: Int
+
+  StreamMetrics:
+    fields:
+      total_streams: Int
+      avg_tokens_per_stream: Float
+      avg_latency_first_token_ms: Float
+      avg_tokens_per_second: Float
+
+behaviors:
+  - name: start_stream
+    given: Stream request
+    when: Stream started
+    then: Stream state created
+
+  - name: generate_chunk
+    given: Active stream
+    when: Token generated
+    then: Chunk emitted
+
+  - name: flush_buffer
+    given: Token buffer
+    when: Flush triggered
+    then: Buffered tokens sent
+
+  - name: format_sse
+    given: Chunk data
+    when: SSE formatting
+    then: SSE event string returned
+
+  - name: handle_backpressure
+    given: Slow consumer
+    when: Buffer full
+    then: Generation paused
+
+  - name: resume_stream
+    given: Paused stream
+    when: Consumer ready
+    then: Generation resumed
+
+  - name: cancel_stream
+    given: Active stream
+    when: Cancel requested
+    then: Stream terminated
+
+  - name: complete_stream
+    given: Generation done
+    when: EOS reached
+    then: Stream completed
+
+  - name: get_stream_state
+    given: Stream ID
+    when: State requested
+    then: Current state returned
+
+  - name: get_metrics
+    given: Stream manager
+    when: Metrics requested
+    then: Stream metrics returned
+
+test_cases:
+  - name: test_start_stream
+    input: { prompt: "Hello" }
+    expected: { started: true }
+
+  - name: test_generate_chunk
+    input: { stream_id: "s1" }
+    expected: { has_content: true }
+
+  - name: test_format_sse
+    input: { data: "token" }
+    expected: { format: "data: token\n\n" }
+
+  - name: test_cancel
+    input: { stream_id: "s1" }
+    expected: { cancelled: true }
+
+  - name: test_complete
+    input: { stream_id: "s1" }
+    expected: { completed: true }
+
+  - name: test_metrics
+    input: {}
+    expected: { total_streams: 0 }
