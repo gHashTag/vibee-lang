@@ -1,0 +1,67 @@
+# QML LoRA - Low-Rank Adaptation
+# Эффективное дообучение с минимальными параметрами
+# φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: qml_lora
+version: "1.0.0"
+language: zig
+module: qml_lora
+
+sacred_formula:
+  expression: "V = n × 3^k × π^m × φ^p"
+  golden_identity: "φ² + 1/φ² = 3"
+
+creation_pattern:
+  source: PretrainedModel
+  transformer: LoRAInjection
+  result: AdaptedModel
+
+types:
+  LoRAConfig:
+    fields:
+      rank: Int  # Typically 4-64
+      alpha: Float  # Scaling factor
+      dropout: Float
+      target_modules: List<String>  # ["q_proj", "v_proj"]
+      
+  LoRALayer:
+    fields:
+      A: Tensor  # [r, d_in] - down projection
+      B: Tensor  # [d_out, r] - up projection
+      scaling: Float  # alpha / rank
+      
+  LoRAMergeConfig:
+    fields:
+      merge_weights: Bool
+      unload_after_merge: Bool
+
+behaviors:
+  - name: init_lora_weights
+    given: "Original weight shape [d_out, d_in], rank r"
+    when: "Initialize LoRA matrices"
+    then: "A ~ N(0, 1), B = 0"
+    paper: "arXiv:2106.09685"
+    
+  - name: lora_forward
+    given: "Input x, original W, LoRA (A, B)"
+    when: "Forward pass with LoRA"
+    then: "Return W*x + (B*A)*x * scaling"
+    trainable_params: "r * (d_in + d_out) vs d_in * d_out"
+    
+  - name: merge_lora
+    given: "Original weights W, LoRA (A, B), scaling"
+    when: "Merge LoRA into base model"
+    then: "Return W + B*A*scaling"
+    inference_latency: "Zero additional"
+    
+  - name: unmerge_lora
+    given: "Merged weights, LoRA (A, B), scaling"
+    when: "Separate LoRA from base"
+    then: "Return original W"
+    
+  - name: phi_optimal_rank
+    given: "Model dimension d"
+    when: "Calculate optimal LoRA rank"
+    then: "Return rank following PHI"
+    formula: "rank = round(d * φ^(-k)) for k in [3,4,5]"
+    typical: "d=768 → rank ∈ [8, 16, 32]"

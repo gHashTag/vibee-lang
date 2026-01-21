@@ -1,0 +1,74 @@
+# QML Sparse - Разреженные вычисления
+# Sparse Attention + Pruning для эффективности
+# φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: qml_sparse
+version: "1.0.0"
+language: zig
+module: qml_sparse
+
+sacred_formula:
+  expression: "V = n × 3^k × π^m × φ^p"
+  golden_identity: "φ² + 1/φ² = 3"
+
+creation_pattern:
+  source: DenseModel
+  transformer: SparsificationPipeline
+  result: SparseModel
+
+types:
+  SparseConfig:
+    fields:
+      target_sparsity: Float  # 0.9 = 90% zeros
+      pruning_type: PruningType
+      schedule: PruningSchedule
+      
+  PruningType:
+    variants:
+      - magnitude  # Remove smallest weights
+      - movement  # Remove weights moving toward zero
+      - structured  # Remove entire neurons/heads
+      - unstructured  # Remove individual weights
+      
+  PruningSchedule:
+    variants:
+      - one_shot  # Prune once
+      - gradual  # Prune over training
+      - iterative  # Prune-retrain cycles
+      
+  SparseTensor:
+    fields:
+      indices: Tensor  # Non-zero indices
+      values: Tensor  # Non-zero values
+      shape: TensorShape
+      sparsity: Float
+
+behaviors:
+  - name: magnitude_pruning
+    given: "Dense tensor, target sparsity"
+    when: "Prune by magnitude"
+    then: "Return sparse tensor with smallest weights zeroed"
+    
+  - name: movement_pruning
+    given: "Weights, gradients, history"
+    when: "Prune by movement toward zero"
+    then: "Return mask for weights to prune"
+    paper: "arXiv:2005.07683"
+    
+  - name: structured_head_pruning
+    given: "Attention weights, importance scores"
+    when: "Remove entire attention heads"
+    then: "Return model with fewer heads"
+    speedup: "Linear with heads removed"
+    
+  - name: sparse_matmul
+    given: "Sparse A, dense B"
+    when: "Sparse matrix multiplication"
+    then: "Return dense result efficiently"
+    complexity: "O(nnz * N) vs O(M * K * N)"
+    
+  - name: gradual_pruning_schedule
+    given: "Initial sparsity, final sparsity, steps"
+    when: "Calculate pruning schedule"
+    then: "Return sparsity at each step"
+    formula: "s_t = s_f + (s_i - s_f)(1 - t/T)³"

@@ -1,0 +1,75 @@
+# QML Checkpoint - Gradient Checkpointing
+# Субlinейное использование памяти при тренировке
+# φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: qml_checkpoint
+version: "1.0.0"
+language: zig
+module: qml_checkpoint
+
+sacred_formula:
+  expression: "V = n × 3^k × π^m × φ^p"
+  golden_identity: "φ² + 1/φ² = 3"
+
+creation_pattern:
+  source: ComputationGraph
+  transformer: CheckpointStrategy
+  result: MemoryEfficientGraph
+
+types:
+  CheckpointConfig:
+    fields:
+      strategy: CheckpointStrategy
+      checkpoint_ratio: Float  # Fraction of layers to checkpoint
+      recompute_granularity: Granularity
+      
+  CheckpointStrategy:
+    variants:
+      - none  # Store all activations
+      - sqrt  # Checkpoint every sqrt(n) layers
+      - uniform  # Checkpoint every k layers
+      - selective  # Checkpoint expensive layers only
+      
+  Granularity:
+    variants:
+      - full_layer  # Recompute entire layer
+      - attention_only  # Only recompute attention
+      - ffn_only  # Only recompute FFN
+      
+  MemoryProfile:
+    fields:
+      peak_memory: Int
+      activation_memory: Int
+      gradient_memory: Int
+      recompute_overhead: Float
+
+behaviors:
+  - name: checkpoint_forward
+    given: "Layer function, input, checkpoint flag"
+    when: "Forward pass with checkpointing"
+    then: "Store input only, not intermediate activations"
+    paper: "arXiv:1604.06174"
+    
+  - name: checkpoint_backward
+    given: "Stored input, gradient"
+    when: "Backward pass"
+    then: "Recompute forward, then compute gradients"
+    memory: "O(1) per layer vs O(activations)"
+    
+  - name: sqrt_checkpoint_schedule
+    given: "Number of layers n"
+    when: "Optimal checkpointing"
+    then: "Checkpoint every sqrt(n) layers"
+    memory: "O(sqrt(n)) vs O(n)"
+    compute_overhead: "~33%"
+    
+  - name: selective_checkpoint
+    given: "Layer memory costs"
+    when: "Memory-aware checkpointing"
+    then: "Checkpoint layers with highest activation memory"
+    
+  - name: estimate_memory_savings
+    given: "Model config, checkpoint config"
+    when: "Predict memory usage"
+    then: "Return expected peak memory"
+    formula: "peak = params + sqrt(layers) * activation_per_layer"

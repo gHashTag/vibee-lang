@@ -1,0 +1,79 @@
+# QML Quantizer - Квантизация весов
+# INT8/INT4 квантизация для CPU inference
+# φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: qml_quantizer
+version: "1.0.0"
+language: zig
+module: qml_quantizer
+
+sacred_formula:
+  expression: "V = n × 3^k × π^m × φ^p"
+  golden_identity: "φ² + 1/φ² = 3"
+
+creation_pattern:
+  source: FP32Model
+  transformer: QuantizationPipeline
+  result: QuantizedModel
+
+types:
+  QuantConfig:
+    fields:
+      weight_bits: Int  # 8, 4, 2
+      activation_bits: Int
+      symmetric: Bool
+      per_channel: Bool
+      calibration_method: CalibrationMethod
+      
+  CalibrationMethod:
+    variants:
+      - minmax  # Use min/max of calibration data
+      - percentile  # Use 99.99th percentile
+      - mse  # Minimize MSE
+      - entropy  # Minimize KL divergence
+      
+  QuantParams:
+    fields:
+      scale: Float
+      zero_point: Int
+      bits: Int
+      
+  QuantizedTensor:
+    fields:
+      data: Tensor  # INT8/INT4
+      params: QuantParams
+
+behaviors:
+  - name: calibrate
+    given: "Model, calibration dataset"
+    when: "Determine quantization parameters"
+    then: "Return QuantParams for each layer"
+    samples: "100-1000 representative inputs"
+    
+  - name: quantize_weights
+    given: "FP32 weights, QuantConfig"
+    when: "Static weight quantization"
+    then: "Return INT8 weights with scale/zero_point"
+    formula: "q = round(w / scale) + zero_point"
+    
+  - name: quantize_activations
+    given: "FP32 activations, calibrated params"
+    when: "Dynamic activation quantization"
+    then: "Return quantized activations"
+    
+  - name: qat_forward
+    given: "Input, quantized weights"
+    when: "Quantization-aware training forward"
+    then: "Simulate quantization with STE"
+    paper: "arXiv:1712.05877"
+    
+  - name: int8_matmul
+    given: "INT8 A, INT8 B, scales"
+    when: "Quantized matrix multiplication"
+    then: "Return INT32 accumulator, rescale to INT8/FP32"
+    speedup: "2-4x on CPU with VNNI"
+    
+  - name: mixed_precision_inference
+    given: "Quantized model, input"
+    when: "Inference with mixed precision"
+    then: "INT8 compute, FP32 accumulate, INT8 output"

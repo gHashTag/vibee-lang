@@ -1,0 +1,88 @@
+# QML Attention - Квантовый Attention механизм
+# Memory-efficient + Sparse attention для CPU
+# φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: qml_attention
+version: "1.0.0"
+language: zig
+module: qml_attention
+
+sacred_formula:
+  expression: "V = n × 3^k × π^m × φ^p"
+  golden_identity: "φ² + 1/φ² = 3"
+
+creation_pattern:
+  source: QueryKeyValue
+  transformer: EfficientAttention
+  result: AttentionOutput
+
+types:
+  AttentionConfig:
+    fields:
+      num_heads: Int
+      head_dim: Int
+      max_seq_len: Int
+      dropout: Float
+      use_flash: Bool
+      use_sparse: Bool
+      sparse_block_size: Int
+
+  AttentionMask:
+    fields:
+      mask_type: MaskType
+      causal: Bool
+      local_window: Int
+
+  MaskType:
+    variants:
+      - full
+      - causal
+      - local
+      - global_local
+      - dilated
+
+  AttentionOutput:
+    fields:
+      output: Tensor
+      attention_weights: Option<Tensor>
+
+behaviors:
+  - name: scaled_dot_product
+    given: "Q[B,H,S,D], K[B,H,S,D], V[B,H,S,D]"
+    when: "Standard attention"
+    then: "Return attention output"
+    complexity: "O(S² * D)"
+    memory: "O(S²)"
+    
+  - name: flash_attention_cpu
+    given: "Q, K, V tensors"
+    when: "Memory-efficient attention"
+    then: "Return output with O(S) memory"
+    paper: "arXiv:2205.14135"
+    tiling: "Block-wise computation"
+    
+  - name: sparse_attention
+    given: "Q, K, V with sparse pattern"
+    when: "Longformer-style attention"
+    then: "Return output with O(S) complexity"
+    patterns:
+      - local_window
+      - global_tokens
+      - dilated
+    
+  - name: multi_head_attention
+    given: "Input tensor, attention config"
+    when: "Full MHA forward pass"
+    then: "Return attended output"
+    steps:
+      - project_qkv
+      - split_heads
+      - attention_fn
+      - concat_heads
+      - output_projection
+      
+  - name: rotary_position_embedding
+    given: "Q, K tensors, positions"
+    when: "Apply RoPE"
+    then: "Return position-encoded Q, K"
+    formula: "rotate by θ = position * base^(-2i/d)"

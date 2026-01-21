@@ -1,0 +1,108 @@
+# QML Training - Цикл тренировки на CPU
+# Оптимизированный training loop для CPU
+# φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: qml_training
+version: "1.0.0"
+language: zig
+module: qml_training
+
+sacred_formula:
+  expression: "V = n × 3^k × π^m × φ^p"
+  golden_identity: "φ² + 1/φ² = 3"
+
+creation_pattern:
+  source: TrainingConfig
+  transformer: CPUTrainer
+  result: TrainedModel
+
+types:
+  TrainingConfig:
+    fields:
+      batch_size: Int  # 32-64 for CPU
+      learning_rate: Float  # 5e-5
+      warmup_steps: Int
+      total_steps: Int
+      weight_decay: Float
+      gradient_accumulation: Int
+      max_grad_norm: Float
+      
+  OptimizerConfig:
+    fields:
+      optimizer_type: OptimizerType
+      beta1: Float
+      beta2: Float
+      epsilon: Float
+      
+  OptimizerType:
+    variants:
+      - adamw
+      - adam_mini  # Memory-efficient
+      - adafactor  # Even more memory-efficient
+      - sgd_momentum
+      
+  TrainingState:
+    fields:
+      step: Int
+      epoch: Int
+      loss: Float
+      learning_rate: Float
+      grad_norm: Float
+      
+  Metrics:
+    fields:
+      train_loss: Float
+      eval_loss: Float
+      accuracy: Float
+      throughput: Float  # samples/sec
+
+behaviors:
+  - name: create_optimizer
+    given: "Model parameters, OptimizerConfig"
+    when: "Initialize optimizer"
+    then: "Return optimizer with state"
+    
+  - name: lr_schedule
+    given: "Current step, warmup, total"
+    when: "Calculate learning rate"
+    then: "Return LR with linear warmup + cosine decay"
+    formula: "warmup: lr * step/warmup, decay: lr * cos(π * (step-warmup)/(total-warmup))"
+    
+  - name: train_epoch
+    given: "Model, dataloader, optimizer"
+    when: "Train for one epoch"
+    then: "Return average loss"
+    steps:
+      - forward_pass
+      - compute_loss
+      - backward_pass
+      - gradient_clip
+      - optimizer_step
+      - lr_update
+      
+  - name: gradient_accumulation
+    given: "Micro-batches, accumulation_steps"
+    when: "Simulate larger batch"
+    then: "Accumulate gradients, step every N batches"
+    memory: "Constant regardless of effective batch size"
+    
+  - name: mixed_precision_step
+    given: "Model, batch, scaler"
+    when: "Training with BF16/FP16"
+    then: "Forward in low precision, accumulate in FP32"
+    speedup: "1.5-2x on supported CPUs"
+    
+  - name: evaluate
+    given: "Model, eval_dataloader"
+    when: "Evaluation"
+    then: "Return Metrics"
+    
+  - name: checkpoint
+    given: "Model, optimizer, step"
+    when: "Save training state"
+    then: "Write checkpoint to disk"
+    includes:
+      - model_weights
+      - optimizer_state
+      - lr_scheduler_state
+      - rng_state
