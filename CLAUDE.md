@@ -212,7 +212,7 @@ behaviors:
 
 # GENERATION
 ./bin/vibee gen <spec.vibee>                    # Zig
-./src/vibeec/gen_cmd gen-multi <spec> all       # 42 languages
+./bin/vibee gen-multi <spec.vibee> all           # 42 languages
 
 # TESTING
 zig test trinity/output/<module>.zig

@@ -35,7 +35,7 @@
 ```bash
 # Генерация кода для ВСЕХ 42 языков из одной .vibee спецификации
 cd vibee-lang
-./src/vibeec/gen_cmd gen-multi specs/tri/igla_sacred_formula.vibee all
+./bin/vibee gen-multi specs/tri/igla_sacred_formula.vibee all
 
 # Результат: 42 файла в generated/multi/
 # → igla_sacred_formula.py   (Python)
@@ -734,10 +734,10 @@ behaviors:
 
 ```bash
 # Генерация Python кода
-./src/vibeec/gen_cmd gen-multi specs/tri/feature.vibee python
+./bin/vibee gen-multi specs/tri/feature.vibee python
 
 # Генерация для ВСЕХ 42 языков
-./src/vibeec/gen_cmd gen-multi specs/tri/feature.vibee all
+./bin/vibee gen-multi specs/tri/feature.vibee all
 ```
 
 **Поддерживаемые языки (42):**
@@ -913,7 +913,7 @@ cd vibee-lang
 # Результат: trinity/output/igla_sacred_formula.zig
 
 # Генерация для 42 языков
-./src/vibeec/gen_cmd gen-multi specs/tri/igla_sacred_formula.vibee all
+./bin/vibee gen-multi specs/tri/igla_sacred_formula.vibee all
 
 # Результат: generated/multi/igla_sacred_formula.{py,rs,go,ts,...}
 ```
