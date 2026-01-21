@@ -1,0 +1,70 @@
+# v3202 - Flash Attention
+# ========================
+# IO-aware exact attention with O(N) memory
+# φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: flash_attention
+version: "3.2.2"
+language: zig
+module: flash_attention
+
+constants:
+  PHI: 1.618033988749895
+  BLOCK_SIZE_Q: 64
+  BLOCK_SIZE_KV: 64
+  SRAM_SIZE: 65536
+
+types:
+  FlashConfig:
+    fields:
+      block_size_q: Int
+      block_size_kv: Int
+      is_causal: Bool
+      dropout: Float
+      
+  TiledState:
+    fields:
+      output_block: List
+      row_max: List
+      row_sum: List
+      
+  FlashResult:
+    fields:
+      output: List
+      logsumexp: List
+
+behaviors:
+  - name: flash_attention_forward
+    given: Q, K, V tensors
+    when: Computing attention with tiling
+    then: Return output with O(N) memory
+    
+  - name: load_qkv_block
+    given: Block indices
+    when: Loading Q/K/V tiles to SRAM
+    then: Return loaded blocks
+    
+  - name: compute_block_attention
+    given: Q_block, K_block, V_block
+    when: Computing local attention
+    then: Return partial output and statistics
+    
+  - name: update_output_statistics
+    given: Old and new statistics
+    when: Merging block results
+    then: Return updated output with correct scaling
+    
+  - name: apply_causal_mask_block
+    given: Block position and scores
+    when: Masking future positions
+    then: Return masked block scores
+    
+  - name: flash_attention_backward
+    given: Gradient and saved tensors
+    when: Computing gradients with recomputation
+    then: Return dQ, dK, dV without storing attention
+    
+  - name: estimate_memory_usage
+    given: Sequence length and config
+    when: Estimating memory
+    then: Return memory in bytes (should be O(N))
