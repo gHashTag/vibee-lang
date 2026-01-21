@@ -19,6 +19,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif;ba
 .nav-right{margin-left:auto;display:flex;align-items:center;gap:12px;font-size:11px}
 .nav-formula{color:rgba(255,255,255,0.4);font-family:'SF Mono',Monaco,monospace}
 .app{display:flex;height:calc(100vh - var(--nav-height));margin-top:var(--nav-height)}
+.screens-container{flex:1;overflow:hidden;position:relative}
+.screen{display:none;width:100%;height:100%;position:absolute;top:0;left:0}
+.screen.active{display:block}
+.browser-panel{width:100%;height:100%;display:flex;flex-direction:column;background:#111}
+.global-chat{width:320px;flex-shrink:0;display:flex;flex-direction:column;background:linear-gradient(180deg,#0f0f1a 0%,#1a1a2e 100%)}
 .screen{display:none;width:100%;height:100%;opacity:0;transition:opacity 0.2s}
 .screen.active{display:flex;opacity:1}
 .panel{height:100%;display:flex;flex-direction:column;overflow:hidden}
@@ -137,9 +142,12 @@ body.dragging *{cursor:col-resize!important;user-select:none!important}
 </div>
 </nav>
 <div class="app" id="app">
-<div class="panel browser-panel" id="browserPanel">
+<!-- Left: Screens -->
+<div class="screens-container" id="screensContainer">
+<!-- Browser Screen -->
+<div class="screen active" id="browser-screen">
+<div class="browser-panel">
 <div class="panel-header">
-<span class="logo">VIBEE</span>
 <button class="nav-btn" id="backBtn">←</button>
 <button class="nav-btn" id="fwdBtn">→</button>
 <button class="nav-btn" id="refreshBtn">↻</button>
@@ -147,32 +155,7 @@ body.dragging *{cursor:col-resize!important;user-select:none!important}
 </div>
 <div class="panel-content"><iframe class="browser-frame" id="browserFrame" src="about:blank"></iframe></div>
 </div>
-<div class="splitter" id="splitter1"><div class="splitter-handle"></div></div>
-<div class="panel chat-panel" id="chatPanel">
-<div class="panel-header"><span>AI Chat</span></div>
-<div class="panel-content" style="display:flex;flex-direction:column">
-<div class="chat-messages" id="chatMessages">
-<div class="message ai">Welcome to VIBEE Browser! I can help you with coding, browsing, and debugging. φ² + 1/φ² = 3</div>
 </div>
-<div class="chat-input-area">
-<textarea class="chat-input" id="chatInput" placeholder="Ask AI..."></textarea>
-</div>
-</div>
-</div>
-<div class="splitter" id="splitter2"><div class="splitter-handle"></div></div>
-<div class="panel editor-panel" id="editorPanel">
-<div class="panel-header">
-<div class="editor-tabs">
-<div class="editor-tab active">main.vibee</div>
-<div class="editor-tab">+</div>
-</div>
-</div>
-<div class="panel-content">
-<div id="monacoContainer" style="width:100%;height:100%"></div>
-</div>
-</div>
-</div>
-<div class="snap-indicator" id="snapIndicator"></div>
 
 <!-- Vibecoding Screen -->
 <div class="screen" id="vibecoding-screen">
@@ -273,6 +256,26 @@ body.dragging *{cursor:col-resize!important;user-select:none!important}
 </div>
 </div>
 </div>
+<!-- End screens-container -->
+</div>
+
+<!-- Global Splitter -->
+<div class="splitter" id="splitter1"><div class="splitter-handle"></div></div>
+
+<!-- Global Chat (always visible) -->
+<div class="global-chat" id="chatPanel">
+<div class="panel-header"><span>🤖 AI Chat</span></div>
+<div class="panel-content" style="display:flex;flex-direction:column">
+<div class="chat-messages" id="chatMessages">
+<div class="message ai">Welcome to VIBEE! I can help with coding, browsing, and debugging. φ² + 1/φ² = 3</div>
+</div>
+<div class="chat-input-area">
+<textarea class="chat-input" id="chatInput" placeholder="Ask AI..."></textarea>
+</div>
+</div>
+</div>
+</div>
+<div class="snap-indicator" id="snapIndicator"></div>
 <div class="hud">
 <div class="stat"><div class="stat-value" id="browserW">--</div><div class="stat-label">Browser</div></div>
 <div class="stat"><div class="stat-value" id="chatW">--</div><div class="stat-label">Chat</div></div>
@@ -283,8 +286,9 @@ body.dragging *{cursor:col-resize!important;user-select:none!important}
 <script>
 const PHI=1.618033988749895,PHI_INV=0.618033988749895;
 let wasm=null,wasmReady=false,activeSplitter=0;
-const browserPanel=document.getElementById('browserPanel'),chatPanel=document.getElementById('chatPanel'),editorPanel=document.getElementById('editorPanel');
-const splitter1=document.getElementById('splitter1'),splitter2=document.getElementById('splitter2'),snapIndicator=document.getElementById('snapIndicator');
+const screensContainer=document.getElementById('screensContainer'),chatPanel=document.getElementById('chatPanel');
+const splitter1=document.getElementById('splitter1'),snapIndicator=document.getElementById('snapIndicator');
+let chatWidth=320;
 const statusDot=document.getElementById('statusDot'),statusText=document.getElementById('statusText');
 const browserW=document.getElementById('browserW'),chatW=document.getElementById('chatW'),editorW=document.getElementById('editorW');
 const fpsVal=document.getElementById('fpsVal'),trinityVal=document.getElementById('trinityVal');
@@ -302,50 +306,39 @@ wasm.browser_init(window.innerWidth,window.innerHeight);
 trinityVal.textContent=wasm.verify_trinity().toFixed(6);
 statusDot.classList.add('ready');statusText.textContent='WASM Ready';
 console.log('VIBEE WASM loaded | φ²+1/φ²=',wasm.verify_trinity());
-}catch(e){console.warn('WASM fallback:',e.message);statusText.textContent='JS Mode';initFallback();}
+}catch(e){console.warn('WASM fallback:',e.message);statusText.textContent='JS Mode';}
 updateLayout();
 }
 
-let s1=0,s2=0;
-function initFallback(){s1=window.innerWidth*PHI_INV;s2=s1+(window.innerWidth-s1)*(1-PHI_INV);}
+
 
 function updateLayout(){
-let bw,cw,ew;
-if(wasmReady){bw=wasm.get_browser_width();cw=wasm.get_chat_width();ew=wasm.get_editor_width();}
-else{bw=s1-4;cw=s2-s1-8;ew=window.innerWidth-s2-4;}
-browserPanel.style.width=bw+'px';chatPanel.style.width=cw+'px';editorPanel.style.width=ew+'px';
-browserW.textContent=Math.round(bw);chatW.textContent=Math.round(cw);editorW.textContent=Math.round(ew);
+const totalW=window.innerWidth;
+const mainW=totalW-chatWidth-10;
+screensContainer.style.width=mainW+'px';
+chatPanel.style.width=chatWidth+'px';
+browserW.textContent=Math.round(mainW);chatW.textContent=Math.round(chatWidth);editorW.textContent='--';
 }
 
-function getSnapPoints(){const w=window.innerWidth;return[w*PHI_INV,w*(1-PHI_INV),w*0.5,w*0.75,w*0.25];}
 
-splitter1.addEventListener('mousedown',e=>{activeSplitter=1;splitter1.classList.add('dragging');document.body.classList.add('dragging');if(wasmReady)wasm.splitter1_start_drag();e.preventDefault();});
-splitter2.addEventListener('mousedown',e=>{activeSplitter=2;splitter2.classList.add('dragging');document.body.classList.add('dragging');if(wasmReady)wasm.splitter2_start_drag();e.preventDefault();});
+
+splitter1.addEventListener('mousedown',e=>{activeSplitter=1;splitter1.classList.add('dragging');document.body.classList.add('dragging');e.preventDefault();});
 
 document.addEventListener('mousemove',e=>{
 if(!activeSplitter)return;
-if(wasmReady)wasm.splitter_update(e.clientX);
-else{if(activeSplitter===1)s1=Math.max(200,Math.min(e.clientX,s2-200));else s2=Math.max(s1+200,Math.min(e.clientX,window.innerWidth-200));}
-const snaps=getSnapPoints();let near=false;
-for(const sp of snaps){if(Math.abs(e.clientX-sp)<25){snapIndicator.style.left=sp+'px';near=true;break;}}
-snapIndicator.classList.toggle('visible',near);
+chatWidth=Math.max(250,Math.min(window.innerWidth-e.clientX,500));
 updateLayout();
 });
 
 document.addEventListener('mouseup',()=>{
 if(!activeSplitter)return;
-if(wasmReady)wasm.splitter_end_drag();
-splitter1.classList.remove('dragging');splitter2.classList.remove('dragging');
+splitter1.classList.remove('dragging');
 document.body.classList.remove('dragging');
-snapIndicator.classList.remove('visible');activeSplitter=0;
-// Animate snap
-browserPanel.classList.add('animate');chatPanel.classList.add('animate');editorPanel.classList.add('animate');
+activeSplitter=0;
 updateLayout();
-setTimeout(()=>{browserPanel.classList.remove('animate');chatPanel.classList.remove('animate');editorPanel.classList.remove('animate');},200);
 });
 
-splitter1.addEventListener('dblclick',()=>{if(wasmReady)wasm.reset_to_phi_layout();else initFallback();updateLayout();});
-splitter2.addEventListener('dblclick',()=>{if(wasmReady)wasm.reset_to_phi_layout();else initFallback();updateLayout();});
+splitter1.addEventListener('dblclick',()=>{chatWidth=320;updateLayout();});
 
 window.addEventListener('resize',()=>{if(wasmReady)wasm.browser_resize(window.innerWidth,window.innerHeight);updateLayout();});
 
@@ -501,9 +494,7 @@ function switchScreen(screen){
 document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));
 document.querySelector(`[data-screen="${screen}"]`).classList.add('active');
 document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
-const screenEl=document.getElementById(`${screen}-screen`);
-if(screenEl)screenEl.classList.add('active');
-else document.getElementById('app').classList.add('active');
+document.getElementById(`${screen}-screen`).classList.add('active');
 // Init Monaco for Vibecoding
 if(screen==='vibecoding'&&!window.vcMonaco){initVCMonaco();}
 }
