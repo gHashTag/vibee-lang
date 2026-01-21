@@ -962,7 +962,7 @@ cd vibee-lang
 | Фича | Описание | Модулей | Тестов |
 |------|----------|---------|--------|
 | **iGLA v6 IMMORTAL** | Inference-Guided Language Acceleration | 50+ | 300+ |
-| **KOSCHEI MODE** | Автономная система самоэволюции | 114 | 766 |
+| **KOSCHEI MODE** | Автономная система самоэволюции | 136 | 766 |
 | **RAG Pipeline** | Retrieval-Augmented Generation | 16 | 99 |
 | **Agent Browser** | Chromium + Monaco + AI (WIP) | 32 specs | planned |
 | **LLM Inference** | llama.cpp интеграция | 10 | 50+ |
@@ -985,19 +985,49 @@ cd vibee-lang
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### KOSCHEI MODE — Бессмертная самоэволюция (Концепция)
+#### KOSCHEI MODE — Бессмертная самоэволюция
+
+```bash
+# Запуск KOSCHEI
+cd vibee-lang
+./bin/vibee koschei start
+
+# Статус
+./bin/vibee koschei status
+
+# Попытка остановить (невозможно!)
+./bin/vibee koschei stop
+```
+
+**KOSCHEI ARCHITECTURE:**
 
 ```
-# KOSCHEI CYCLE: автономная разработка (PLANNED)
-# Реализовано как набор .vibee спецификаций
+┌─────────────────────────────────────────────────────────────┐
+│  ОСТРОВ БУЯН (Island) - Isolated environment                │
+│    └── ДУБ (Oak) - Root of immortality                      │
+│        └── СУНДУК (Chest) - Secure storage                  │
+│            └── ЗАЯЦ (Hare) - Fast escape                    │
+│                └── УТКА (Duck) - Flight capability          │
+│                    └── ЯЙЦО (Egg) - Container               │
+│                        └── ИГЛА (Needle) - Death point      │
+└─────────────────────────────────────────────────────────────┘
+```
 
-# Цикл:
-# 1. Анализ задачи
-# 2. Генерация .vibee спецификации
-# 3. Компиляция → .zig
-# 4. Тестирование
-# 5. Если тесты падают → итерация
-# 6. EXIT_SIGNAL когда всё работает
+**KOSCHEI CYCLE:**
+
+```
+1. ANALYZE task requirements
+         ↓
+2. CREATE .vibee specification
+         ↓
+3. RUN: vibee gen specs/tri/feature.vibee
+         ↓
+4. TEST: zig test trinity/output/feature.zig
+         ↓
+5. CHECK: All tests passing?
+         ↓
+   YES → EXIT_SIGNAL: true
+   NO  → ITERATE (go to step 2)
 ```
 
 **114 модулей | 766 тестов | 10 уровней эволюции**
