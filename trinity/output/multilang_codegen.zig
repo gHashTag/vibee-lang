@@ -17,40 +17,58 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Базовые φ-константы (defaults)
+// Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
 pub const PHI_INV: f64 = 0.618033988749895;
 pub const PHI_SQ: f64 = 2.618033988749895;
 pub const TRINITY: f64 = 3.0;
 pub const SQRT5: f64 = 2.2360679774997896;
 pub const TAU: f64 = 6.283185307179586;
+pub const PI: f64 = 3.141592653589793;
+pub const E: f64 = 2.718281828459045;
+pub const PHOENIX: i64 = 999;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const - = struct {
+pub const TargetLanguage = struct {
+    name: []const u8,
+    extension: []const u8,
+    comment_prefix: []const u8,
+    type_mapping: []const u8,
 };
 
 /// 
-pub const - = struct {
-    -: name: vibee_type,
-    @"type": []const u8,
-    -: name: target_type,
-    @"type": []const u8,
+pub const CodegenConfig = struct {
+    source_spec: []const u8,
+    target_languages: []const u8,
+    output_dir: []const u8,
+    generate_tests: bool,
 };
 
 /// 
-pub const - = struct {
-    -: name: language,
-    @"type": Language,
-    -: name: code,
-    @"type": []const u8,
-    -: name: imports,
-    @"type": []const u8,
-    -: name: tests,
-    @"type": []const u8,
+pub const GeneratedOutput = struct {
+    language: []const u8,
+    filename: []const u8,
+    content: []const u8,
+    loc_count: i64,
+};
+
+/// 
+pub const TypeMapping = struct {
+    vibee_type: []const u8,
+    target_type: []const u8,
+    import_required: []const u8,
+};
+
+/// 
+pub const LanguageFeatures = struct {
+    has_generics: bool,
+    has_null_safety: bool,
+    has_pattern_matching: bool,
+    has_async: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -60,11 +78,11 @@ pub const - = struct {
 var global_buffer: [65536]u8 align(16) = undefined;
 var f64_buffer: [8192]f64 align(16) = undefined;
 
-fn get_global_buffer_ptr() [*]u8 {
+export fn get_global_buffer_ptr() [*]u8 {
     return &global_buffer;
 }
 
-fn get_f64_buffer_ptr() [*]f64 {
+export fn get_f64_buffer_ptr() [*]f64 {
     return &f64_buffer;
 }
 
@@ -102,38 +120,73 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "generate_zig" {
-// Given: VIBEE specification
-// When: Target is Zig
-// Then: Generate Zig code with tests
+test "get_supported_languages" {
+// Given: Request for language list
+// When: Languages queried
+// Then: Returns list of 40+ supported languages
     // TODO: Add test assertions
 }
 
-test "generate_python" {
-// Given: VIBEE specification
-// When: Target is Python
-// Then: Generate Python code with pytest
+test "map_vibee_type" {
+// Given: VIBEE type and target language
+// When: Type mapping requested
+// Then: Returns equivalent type in target language
     // TODO: Add test assertions
 }
 
-test "generate_go" {
-// Given: VIBEE specification
-// When: Target is Go
-// Then: Generate Go code with testing
+test "generate_struct" {
+// Given: Type definition and target language
+// When: Struct generation requested
+// Then: Returns struct/class in target syntax
     // TODO: Add test assertions
 }
 
-test "generate_rust" {
-// Given: VIBEE specification
-// When: Target is Rust
-// Then: Generate Rust code with #[test]
+test "generate_function" {
+// Given: Behavior definition and target language
+// When: Function generation requested
+// Then: Returns function in target syntax
     // TODO: Add test assertions
 }
 
-test "generate_typescript" {
-// Given: VIBEE specification
-// When: Target is TypeScript
-// Then: Generate TS code with Jest
+test "generate_test" {
+// Given: Test case and target language
+// When: Test generation requested
+// Then: Returns test in target framework
+    // TODO: Add test assertions
+}
+
+test "generate_imports" {
+// Given: Required types and target language
+// When: Import generation requested
+// Then: Returns import statements
+    // TODO: Add test assertions
+}
+
+test "generate_file_header" {
+// Given: Module name and target language
+// When: Header generation requested
+// Then: Returns file header with comments
+    // TODO: Add test assertions
+}
+
+test "calculate_loc" {
+// Given: Generated content
+// When: LOC calculation requested
+// Then: Returns line count excluding blanks
+    // TODO: Add test assertions
+}
+
+test "validate_output" {
+// Given: Generated code and target language
+// When: Validation requested
+// Then: Returns validation result
+    // TODO: Add test assertions
+}
+
+test "batch_generate" {
+// Given: Spec and list of target languages
+// When: Batch generation requested
+// Then: Returns map of language to generated code
     // TODO: Add test assertions
 }
 
