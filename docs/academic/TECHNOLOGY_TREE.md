@@ -1,5 +1,5 @@
-# VIBEE Technology Tree
-## φ² + 1/φ² = 3 | PHOENIX = 999
+# VIBEE Technology Tree v10149
+## φ² + 1/φ² = 3 | PHOENIX = 999 | ENTERPRISE INFRASTRUCTURE
 
 ```
                             ┌─────────────────────────────────────┐
