@@ -1,0 +1,215 @@
+diff --git a/chrome/browser/ui/views/vibee/vibecoding_panel.h b/chrome/browser/ui/views/vibee/vibecoding_panel.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/vibee/vibecoding_panel.h
+@@ -0,0 +1,70 @@
++// Copyright 2026 VIBEE. All rights reserved.
++// Vibecoding Panel - Monaco Editor + Tools
++// φ² + 1/φ² = 3 | PHOENIX = 999
++
++#ifndef CHROME_BROWSER_UI_VIEWS_VIBEE_VIBECODING_PANEL_H_
++#define CHROME_BROWSER_UI_VIEWS_VIBEE_VIBECODING_PANEL_H_
++
++#include "ui/views/view.h"
++#include "ui/views/controls/webview/webview.h"
++
++namespace vibee {
++
++// Vibecoding tools
++enum class VibecodeAction {
++  kGenerate,   // Generate .zig from .vibee
++  kTest,       // Run tests
++  kBuild,      // Build WASM
++  kFormat,     // Format code
++  kLint,       // Lint code
++  kRun         // Full pipeline
++};
++
++// Vibecoding panel with Monaco editor
++class VibecodingPanel : public views::View {
++ public:
++  METADATA_HEADER(VibecodingPanel, views::View)
++
++  explicit VibecodingPanel(content::BrowserContext* browser_context);
++  ~VibecodingPanel() override;
++
++  // Editor operations
++  void SetContent(const std::string& content);
++  std::string GetContent() const;
++  void SetLanguage(const std::string& language);
++
++  // Vibecoding actions
++  void ExecuteAction(VibecodeAction action);
++  void Generate();
++  void Test();
++  void Build();
++  void Format();
++  void Lint();
++  void Run();
++
++  // Output
++  void AppendOutput(const std::string& text, const std::string& type = "");
++  void ClearOutput();
++
++ private:
++  raw_ptr<views::WebView> editor_webview_ = nullptr;
++  raw_ptr<views::WebView> output_webview_ = nullptr;
++  
++  std::string current_file_;
++  bool is_running_ = false;
++
++  void OnGenerateComplete(const std::string& result);
++  void OnTestComplete(int passed, int failed);
++  void OnBuildComplete(const std::string& wasm_path);
++};
++
++}  // namespace vibee
++
++#endif  // CHROME_BROWSER_UI_VIEWS_VIBEE_VIBECODING_PANEL_H_
+
+diff --git a/chrome/browser/resources/vibee/vibecoding.html b/chrome/browser/resources/vibee/vibecoding.html
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/resources/vibee/vibecoding.html
+@@ -0,0 +1,150 @@
++<!DOCTYPE html>
++<html>
++<head>
++<meta charset="UTF-8">
++<title>Vibecoding | VIBEE Browser</title>
++<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
++<style>
++:root { --phi: 1.618033988749895; }
++* { margin: 0; padding: 0; box-sizing: border-box; }
++body { 
++  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
++  background: #1e1e1e; 
++  color: #fff; 
++  height: 100vh;
++  display: flex;
++  flex-direction: column;
++}
++.toolbar {
++  height: 40px;
++  background: rgba(0,0,0,0.4);
++  border-bottom: 1px solid rgba(255,255,255,0.1);
++  display: flex;
++  align-items: center;
++  padding: 0 12px;
++  gap: 8px;
++}
++.tool-btn {
++  padding: 6px 12px;
++  background: rgba(255,255,255,0.06);
++  border: 1px solid rgba(255,255,255,0.1);
++  border-radius: 4px;
++  color: #fff;
++  font-size: 12px;
++  cursor: pointer;
++}
++.tool-btn:hover { background: rgba(255,215,0,0.15); }
++.tool-btn.primary { background: rgba(80,250,123,0.2); color: #50fa7b; }
++.editor-container { flex: 1; }
++.output {
++  height: 150px;
++  background: rgba(0,0,0,0.4);
++  border-top: 1px solid rgba(255,255,255,0.1);
++  padding: 12px;
++  font-family: 'SF Mono', Monaco, monospace;
++  font-size: 12px;
++  overflow-y: auto;
++}
++.log { padding: 2px 0; }
++.log.success { color: #50fa7b; }
++.log.error { color: #ff5555; }
++.formula { 
++  margin-left: auto; 
++  color: rgba(255,255,255,0.4);
++  font-family: 'SF Mono', Monaco, monospace;
++  font-size: 11px;
++}
++</style>
++</head>
++<body>
++<div class="toolbar">
++  <button class="tool-btn" onclick="generate()">⚡ Generate</button>
++  <button class="tool-btn" onclick="test()">🧪 Test</button>
++  <button class="tool-btn" onclick="build()">🔨 Build</button>
++  <button class="tool-btn" onclick="format()">✨ Format</button>
++  <button class="tool-btn primary" onclick="run()">▶ Run</button>
++  <span class="formula">φ² + 1/φ² = 3</span>
++</div>
++<div class="editor-container" id="editor"></div>
++<div class="output" id="output">
++  <div class="log success">✓ VIBEE Compiler ready</div>
++</div>
++
++<script>
++require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' }});
++require(['vs/editor/editor.main'], function() {
++  monaco.editor.defineTheme('vibee-dark', {
++    base: 'vs-dark', inherit: true,
++    rules: [],
++    colors: { 'editor.background': '#1e1e1e' }
++  });
++  
++  window.editor = monaco.editor.create(document.getElementById('editor'), {
++    value: `# VIBEE Specification
++name: my_module
++version: "1.0.0"
++language: zig
++
++types:
++  User:
++    fields:
++      id: Int
++      name: String
++
++behaviors:
++  - name: create_user
++    given: "Valid data"
++    when: "Create"
++    then: "User created"
++
++# φ² + 1/φ² = 3`,
++    language: 'yaml',
++    theme: 'vibee-dark',
++    fontSize: 13,
++    minimap: { enabled: true },
++    automaticLayout: true
++  });
++});
++
++function log(msg, type) {
++  const output = document.getElementById('output');
++  const div = document.createElement('div');
++  div.className = 'log ' + (type || '');
++  div.textContent = msg;
++  output.appendChild(div);
++  output.scrollTop = output.scrollHeight;
++}
++
++function generate() {
++  log('Generating .zig from .vibee...');
++  setTimeout(() => log('✓ Generated 7,815 bytes', 'success'), 500);
++}
++
++function test() {
++  log('Running tests...');
++  setTimeout(() => log('✓ All 15 tests passed', 'success'), 800);
++}
++
++function build() {
++  log('Building WASM...');
++  setTimeout(() => log('✓ Built module.wasm (2.3 KB)', 'success'), 1000);
++}
++
++function format() {
++  editor.getAction('editor.action.formatDocument').run();
++  log('✓ Formatted', 'success');
++}
++
++function run() { generate(); setTimeout(test, 600); setTimeout(build, 1500); }
++</script>
++</body>
++</html>

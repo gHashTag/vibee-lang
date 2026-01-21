@@ -1,0 +1,123 @@
+diff --git a/chrome/browser/ui/views/side_panel/vibee_side_panel.h b/chrome/browser/ui/views/side_panel/vibee_side_panel.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/side_panel/vibee_side_panel.h
+@@ -0,0 +1,45 @@
++// Copyright 2026 VIBEE. All rights reserved.
++// φ² + 1/φ² = 3 | PHOENIX = 999
++
++#ifndef CHROME_BROWSER_UI_VIEWS_SIDE_PANEL_VIBEE_SIDE_PANEL_H_
++#define CHROME_BROWSER_UI_VIEWS_SIDE_PANEL_VIBEE_SIDE_PANEL_H_
++
++#include "ui/views/view.h"
++#include "ui/views/controls/webview/webview.h"
++
++namespace vibee {
++
++// Golden ratio constant
++constexpr double kPhi = 1.618033988749895;
++constexpr double kPhiInverse = 0.618033988749895;
++
++// VIBEE AI Sidebar - Global chat panel
++class VibeeSidePanel : public views::View {
++ public:
++  METADATA_HEADER(VibeeSidePanel, views::View)
++
++  explicit VibeeSidePanel(content::BrowserContext* browser_context);
++  ~VibeeSidePanel() override;
++
++  // Initialize AI chat
++  void InitializeChat();
++
++  // Send message to AI
++  void SendMessage(const std::u16string& message);
++
++  // Get panel width based on φ ratio
++  int GetPhiWidth(int total_width) const {
++    return static_cast<int>(total_width * (1.0 - kPhiInverse));
++  }
++
++ private:
++  raw_ptr<views::WebView> chat_webview_ = nullptr;
++  std::string api_key_;
++  bool is_streaming_ = false;
++
++  void OnMessageReceived(const std::string& response);
++  void OnStreamChunk(const std::string& chunk);
++};
++
++}  // namespace vibee
++
++#endif  // CHROME_BROWSER_UI_VIEWS_SIDE_PANEL_VIBEE_SIDE_PANEL_H_
+
+diff --git a/chrome/browser/ui/views/side_panel/vibee_side_panel.cc b/chrome/browser/ui/views/side_panel/vibee_side_panel.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/side_panel/vibee_side_panel.cc
+@@ -0,0 +1,80 @@
++// Copyright 2026 VIBEE. All rights reserved.
++// φ² + 1/φ² = 3 | PHOENIX = 999
++
++#include "chrome/browser/ui/views/side_panel/vibee_side_panel.h"
++
++#include "base/strings/utf_string_conversions.h"
++#include "ui/views/layout/fill_layout.h"
++
++namespace vibee {
++
++BEGIN_METADATA(VibeeSidePanel)
++END_METADATA
++
++VibeeSidePanel::VibeeSidePanel(content::BrowserContext* browser_context) {
++  SetLayoutManager(std::make_unique<views::FillLayout>());
++  
++  // Create WebView for chat UI
++  chat_webview_ = AddChildView(
++      std::make_unique<views::WebView>(browser_context));
++  
++  // Load VIBEE chat HTML
++  chat_webview_->LoadInitialURL(GURL("chrome://vibee-chat/"));
++  
++  InitializeChat();
++}
++
++VibeeSidePanel::~VibeeSidePanel() = default;
++
++void VibeeSidePanel::InitializeChat() {
++  // Initialize AI connection
++  // API key from settings or environment
++  api_key_ = GetVibeeSetting("ai_api_key");
++}
++
++void VibeeSidePanel::SendMessage(const std::u16string& message) {
++  if (is_streaming_) return;
++  
++  is_streaming_ = true;
++  
++  // Send to AI API
++  auto request = CreateAIRequest(base::UTF16ToUTF8(message));
++  
++  // Stream response
++  network_service_->SendRequest(
++      std::move(request),
++      base::BindRepeating(&VibeeSidePanel::OnStreamChunk,
++                          base::Unretained(this)),
++      base::BindOnce(&VibeeSidePanel::OnMessageReceived,
++                     base::Unretained(this)));
++}
++
++void VibeeSidePanel::OnStreamChunk(const std::string& chunk) {
++  // Update chat UI with streaming chunk
++  chat_webview_->ExecuteJavaScript(
++      base::UTF8ToUTF16("appendChunk('" + chunk + "')"));
++}
++
++void VibeeSidePanel::OnMessageReceived(const std::string& response) {
++  is_streaming_ = false;
++  
++  // Finalize message in UI
++  chat_webview_->ExecuteJavaScript(
++      base::UTF8ToUTF16("finalizeMessage()"));
++}
++
++}  // namespace vibee
