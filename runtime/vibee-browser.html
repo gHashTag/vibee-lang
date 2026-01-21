@@ -4,19 +4,23 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>VIBEE Browser | φ² + 1/φ² = 3</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
 <style>
 :root{--phi:1.618033988749895;--phi-inv:0.618033988749895}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif;background:#0a0a0a;color:#fff;height:100vh;overflow:hidden}
 .app{display:flex;height:100vh}
 .panel{height:100%;display:flex;flex-direction:column;overflow:hidden}
-.panel-header{height:40px;padding:0 16px;display:flex;align-items:center;gap:12px;background:rgba(0,0,0,0.6);border-bottom:1px solid rgba(255,255,255,0.08);font-size:12px;font-weight:500}
+.panel-header{height:40px;padding:0 16px;display:flex;align-items:center;gap:12px;background:rgba(0,0,0,0.4);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-bottom:1px solid rgba(255,255,255,0.08);font-size:12px;font-weight:500}
 .panel-content{flex:1;overflow:hidden;position:relative}
 .browser-panel{background:#111}
 .chat-panel{background:linear-gradient(180deg,#0f0f1a 0%,#1a1a2e 100%)}
 .editor-panel{background:#1e1e1e}
 .splitter{width:8px;background:rgba(255,255,255,0.02);cursor:col-resize;display:flex;align-items:center;justify-content:center;transition:background 0.2s}
 .splitter:hover,.splitter.dragging{background:rgba(255,215,0,0.3)}
+/* φ-easing: cubic-bezier based on golden ratio */
+.phi-ease{transition:all 0.382s cubic-bezier(0.618,0,0.382,1)}
+.panel{transition:width 0.1s cubic-bezier(0.618,0,0.382,1)}
 .splitter-handle{width:3px;height:50px;background:rgba(255,255,255,0.15);border-radius:2px}
 .splitter:hover .splitter-handle,.splitter.dragging .splitter-handle{background:#ffd700}
 .url-bar{flex:1;height:28px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:0 12px;color:#fff;font-size:12px;outline:none}
@@ -31,12 +35,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif;ba
 .message{margin-bottom:16px;padding:12px;border-radius:8px}
 .message.user{background:rgba(255,215,0,0.1);margin-left:20%}
 .message.ai{background:rgba(255,255,255,0.04);margin-right:20%}
+.typing{animation:blink 1s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
+.message code{background:rgba(255,255,255,0.1);padding:2px 6px;border-radius:4px;font-family:'SF Mono',Monaco,monospace;font-size:11px}
+.message pre{background:rgba(0,0,0,0.3);padding:12px;border-radius:8px;overflow-x:auto;margin:8px 0}
+.api-key-input{width:100%;padding:8px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;font-size:11px;margin-top:8px}
 .editor-tabs{display:flex;gap:2px;padding:0 8px}
 .editor-tab{padding:8px 16px;background:rgba(255,255,255,0.04);border-radius:6px 6px 0 0;font-size:11px;cursor:pointer}
 .editor-tab.active{background:#1e1e1e}
 .editor-content{flex:1;background:#1e1e1e;font-family:'SF Mono',Monaco,monospace;font-size:13px;padding:16px;overflow:auto;white-space:pre}
 .line-numbers{color:rgba(255,255,255,0.3);user-select:none}
-.hud{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);display:flex;gap:24px;padding:12px 24px;background:rgba(0,0,0,0.8);backdrop-filter:blur(20px);border-radius:12px;border:1px solid rgba(255,255,255,0.1)}
+.hud{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);display:flex;gap:24px;padding:12px 24px;background:rgba(20,20,30,0.7);backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);border-radius:16px;border:1px solid rgba(255,255,255,0.1);box-shadow:0 8px 32px rgba(0,0,0,0.4)}
 .stat{text-align:center}
 .stat-value{font-size:16px;font-weight:600;font-family:'SF Mono',Monaco,monospace;color:#ffd700}
 .stat-label{font-size:9px;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:0.5px;margin-top:2px}
@@ -83,26 +92,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif;ba
 </div>
 </div>
 <div class="panel-content">
-<div class="editor-content" id="editorContent"># VIBEE Specification
-name: my_app
-version: "1.0.0"
-
-constants:
-  PHI: 1.618033988749895
-
-types:
-  User:
-    fields:
-      id: Int
-      name: String
-
-behaviors:
-  - name: create_user
-    given: "Valid data"
-    when: "Create"
-    then: "User created"
-
-# φ² + 1/φ² = 3</div>
+<div id="monacoContainer" style="width:100%;height:100%"></div>
 </div>
 </div>
 </div>
@@ -183,12 +173,73 @@ document.getElementById('backBtn').onclick=()=>history.back();
 document.getElementById('fwdBtn').onclick=()=>history.forward();
 document.getElementById('refreshBtn').onclick=()=>{browserFrame.src=browserFrame.src;};
 
+// AI Chat with streaming
+const AI_CONFIG={
+provider:'openai',
+model:'gpt-4',
+apiKey:localStorage.getItem('OPENAI_API_KEY')||'',
+streaming:true
+};
+
+async function sendToAI(message){
+const msgDiv=document.createElement('div');
+msgDiv.className='message ai';
+msgDiv.innerHTML='<span class="typing">●●●</span>';
+chatMessages.appendChild(msgDiv);
+chatMessages.scrollTop=chatMessages.scrollHeight;
+
+if(!AI_CONFIG.apiKey){
+msgDiv.innerHTML='⚠️ Set API key: <code>localStorage.setItem("OPENAI_API_KEY","sk-...")</code>';
+return;
+}
+
+try{
+const response=await fetch('https://api.openai.com/v1/chat/completions',{
+method:'POST',
+headers:{'Content-Type':'application/json','Authorization':`Bearer ${AI_CONFIG.apiKey}`},
+body:JSON.stringify({
+model:AI_CONFIG.model,
+messages:[{role:'system',content:'You are VIBEE AI assistant. Help with coding, browsing, debugging. Be concise. φ² + 1/φ² = 3'},{role:'user',content:message}],
+stream:true,max_tokens:1024
+})
+});
+
+if(!response.ok)throw new Error(`API error: ${response.status}`);
+
+const reader=response.body.getReader();
+const decoder=new TextDecoder();
+let fullText='';
+msgDiv.innerHTML='';
+
+while(true){
+const{done,value}=await reader.read();
+if(done)break;
+const chunk=decoder.decode(value);
+const lines=chunk.split('\n').filter(l=>l.startsWith('data:'));
+for(const line of lines){
+const data=line.slice(5).trim();
+if(data==='[DONE]')continue;
+try{
+const json=JSON.parse(data);
+const content=json.choices?.[0]?.delta?.content||'';
+fullText+=content;
+msgDiv.innerHTML=fullText.replace(/\n/g,'<br>');
+chatMessages.scrollTop=chatMessages.scrollHeight;
+}catch(e){}
+}
+}
+}catch(err){
+msgDiv.innerHTML=`❌ Error: ${err.message}`;
+}
+}
+
 chatInput.addEventListener('keydown',e=>{
 if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();
 const msg=chatInput.value.trim();if(!msg)return;
 chatMessages.innerHTML+=`<div class="message user">${msg}</div>`;
-chatMessages.innerHTML+=`<div class="message ai">Processing: "${msg}"... (AI integration pending)</div>`;
-chatInput.value='';chatMessages.scrollTop=chatMessages.scrollHeight;}
+chatInput.value='';
+sendToAI(msg);
+}
 });
 
 let lastTime=0;
@@ -198,7 +249,120 @@ else{if(lastTime)fpsVal.textContent=Math.round(1000/(t-lastTime));lastTime=t;}
 requestAnimationFrame(animate);
 }
 
+// CDP WebSocket Client
+const CDP={
+ws:null,msgId:0,callbacks:new Map(),events:new Map(),
+connect(url){
+return new Promise((resolve,reject)=>{
+this.ws=new WebSocket(url);
+this.ws.onopen=()=>{console.log('CDP connected');resolve();};
+this.ws.onerror=e=>reject(e);
+this.ws.onmessage=e=>{
+const msg=JSON.parse(e.data);
+if(msg.id!==undefined){
+const cb=this.callbacks.get(msg.id);
+if(cb){this.callbacks.delete(msg.id);msg.error?cb.reject(msg.error):cb.resolve(msg.result);}
+}else if(msg.method){
+const handlers=this.events.get(msg.method)||[];
+handlers.forEach(h=>h(msg.params));
+}
+};
+});
+},
+send(method,params={}){
+return new Promise((resolve,reject)=>{
+const id=++this.msgId;
+this.callbacks.set(id,{resolve,reject});
+this.ws.send(JSON.stringify({id,method,params}));
+});
+},
+on(event,handler){
+if(!this.events.has(event))this.events.set(event,[]);
+this.events.get(event).push(handler);
+},
+async navigate(url){return this.send('Page.navigate',{url});},
+async screenshot(format='png'){return this.send('Page.captureScreenshot',{format});},
+async evaluate(expr){return this.send('Runtime.evaluate',{expression:expr,returnByValue:true});},
+async click(x,y){
+await this.send('Input.dispatchMouseEvent',{type:'mousePressed',x,y,button:'left',clickCount:1});
+await this.send('Input.dispatchMouseEvent',{type:'mouseReleased',x,y,button:'left',clickCount:1});
+}
+};
+
+// Real-time Collaboration (CRDT-based)
+const Collab={
+ws:null,userId:Math.random().toString(36).slice(2,8),
+cursors:new Map(),
+connect(url){
+this.ws=new WebSocket(url);
+this.ws.onmessage=e=>{
+const msg=JSON.parse(e.data);
+if(msg.type==='cursor')this.updateCursor(msg);
+else if(msg.type==='operation')this.applyOperation(msg);
+};
+},
+broadcast(type,data){
+if(this.ws?.readyState===1)this.ws.send(JSON.stringify({type,userId:this.userId,...data}));
+},
+updateCursor(msg){this.cursors.set(msg.userId,msg);},
+applyOperation(msg){
+if(window.monacoEditor&&msg.userId!==this.userId){
+// Apply remote operation to Monaco
+console.log('Remote op:',msg);
+}
+}
+};
+
+// Collab.connect('wss://your-collab-server.com/room/123');
+
 loadWasm();requestAnimationFrame(animate);
+
+// Monaco Editor initialization
+require.config({paths:{'vs':'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs'}});
+require(['vs/editor/editor.main'],function(){
+monaco.editor.defineTheme('vibee-dark',{
+base:'vs-dark',inherit:true,
+rules:[{token:'comment',foreground:'6A9955'},{token:'keyword',foreground:'C586C0'},{token:'string',foreground:'CE9178'}],
+colors:{'editor.background':'#1e1e1e','editor.foreground':'#d4d4d4'}
+});
+window.monacoEditor=monaco.editor.create(document.getElementById('monacoContainer'),{
+value:`# VIBEE Specification
+name: my_app
+version: "1.0.0"
+language: zig
+module: my_app
+
+constants:
+  PHI: 1.618033988749895
+  PHOENIX: 999
+
+types:
+  User:
+    fields:
+      id: Int
+      name: String
+      email: String
+
+behaviors:
+  - name: create_user
+    given: "Valid user data"
+    when: "Create user"
+    then: "User created successfully"
+    test_cases:
+      - name: test_create
+        input: '{"name": "Alice"}'
+        expected: '{"success": true}'
+
+# φ² + 1/φ² = 3 | PHOENIX = 999`,
+language:'yaml',theme:'vibee-dark',
+fontSize:13,fontFamily:"'SF Mono',Monaco,monospace",
+minimap:{enabled:true,scale:1},
+scrollBeyondLastLine:false,
+automaticLayout:true,
+tabSize:2
+});
+console.log('Monaco Editor initialized');
+});
 </script>
 </body>
 </html>
