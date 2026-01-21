@@ -36,7 +36,7 @@ pub const PHOENIX: i64 = 999;
 pub const ScrollOptions = struct {
     behavior: []const u8,
     block: []const u8,
-    @"inline": []const u8,
+    inline: []const u8,
 };
 
 /// 
@@ -69,11 +69,11 @@ pub const InfiniteScrollOptions = struct {
 var global_buffer: [65536]u8 align(16) = undefined;
 var f64_buffer: [8192]f64 align(16) = undefined;
 
-fn get_global_buffer_ptr() [*]u8 {
+export fn get_global_buffer_ptr() [*]u8 {
     return &global_buffer;
 }
 
-fn get_f64_buffer_ptr() [*]f64 {
+export fn get_f64_buffer_ptr() [*]f64 {
     return &f64_buffer;
 }
 
