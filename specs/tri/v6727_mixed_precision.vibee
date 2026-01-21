@@ -1,0 +1,81 @@
+# ═══════════════════════════════════════════════════════════════
+# v6727: MIXED PRECISION TRAINING
+# FP16/BF16 with loss scaling
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════
+
+name: mixed_precision
+version: "6727.0.0"
+language: zig
+module: v6727_mixed_precision
+
+creation_pattern:
+  source: FP32Training
+  transformer: MixedPrecisionWrapper
+  result: FP16Training
+
+types:
+  PrecisionMode:
+    enum:
+      - FP32
+      - FP16
+      - BF16
+      - TF32
+
+  LossScaler:
+    fields:
+      scale: Float
+      growth_factor: Float
+      backoff_factor: Float
+      growth_interval: Int
+      consecutive_good: Int
+
+  MixedPrecisionConfig:
+    fields:
+      compute_dtype: PrecisionMode
+      param_dtype: PrecisionMode
+      output_dtype: PrecisionMode
+      loss_scale: String
+
+behaviors:
+  - name: cast_forward
+    given: FP32 input
+    when: Cast to FP16 for forward
+    then: Return FP16 tensor
+
+  - name: cast_backward
+    given: FP16 gradients
+    when: Cast to FP32 for accumulation
+    then: Return FP32 gradients
+
+  - name: dynamic_loss_scaling
+    given: Current scale and overflow status
+    when: Adjust loss scale
+    then: Return new scale
+    formula: "scale *= growth if no overflow, scale /= backoff if overflow"
+
+  - name: check_overflow
+    given: Gradients
+    when: Check for inf/nan
+    then: Return overflow status
+
+  - name: unscale_gradients
+    given: Scaled gradients and scale
+    when: Unscale for optimizer
+    then: Return unscaled gradients
+    formula: "grad = scaled_grad / loss_scale"
+
+test_cases:
+  - name: test_fp16_cast
+    expected: dtype == FP16
+
+  - name: test_loss_scaling
+    input: {scale: 1024, overflow: false}
+    expected: new_scale >= 1024
+
+  - name: test_overflow_detection
+    input: {grad: inf}
+    expected: overflow == true
+
+  - name: test_training_stability
+    expected: no_nan_loss == true

@@ -1,0 +1,80 @@
+# ═══════════════════════════════════════════════════════════════
+# v6733: GROUP QUERY ATTENTION (GQA)
+# Shared KV heads for efficiency
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════
+
+name: group_query_attention
+version: "6733.0.0"
+language: zig
+module: v6733_group_query_attention
+
+creation_pattern:
+  source: MultiHeadAttention
+  transformer: GroupQueryTransform
+  result: GroupQueryAttention
+
+types:
+  GQAConfig:
+    fields:
+      num_query_heads: Int
+      num_kv_heads: Int
+      head_dim: Int
+      group_size: Int
+
+  GQAWeights:
+    fields:
+      q_weight: List<Float>
+      k_weight: List<Float>
+      v_weight: List<Float>
+      o_weight: List<Float>
+
+behaviors:
+  - name: compute_group_size
+    given: Query heads and KV heads
+    when: Compute queries per KV head
+    then: Return group size
+    formula: "group_size = num_query_heads / num_kv_heads"
+
+  - name: expand_kv
+    given: KV with fewer heads
+    when: Expand to match query heads
+    then: Return expanded KV
+    formula: "kv_expanded = repeat_interleave(kv, group_size)"
+
+  - name: gqa_forward
+    given: Q, K, V with different head counts
+    when: Compute grouped attention
+    then: Return attention output
+    algorithm: |
+      K_expanded = expand_kv(K)
+      V_expanded = expand_kv(V)
+      return standard_attention(Q, K_expanded, V_expanded)
+
+  - name: phi_kv_heads
+    given: Query heads
+    when: Compute φ-optimal KV heads
+    then: Return KV heads based on golden ratio
+    formula: "kv_heads = round(query_heads / φ)"
+
+  - name: memory_savings
+    given: Config
+    when: Compute KV cache savings
+    then: Return memory reduction factor
+    formula: "savings = 1 - (kv_heads / query_heads)"
+
+test_cases:
+  - name: test_group_size
+    input: {q_heads: 12, kv_heads: 4}
+    expected: group_size == 3
+
+  - name: test_phi_kv_heads
+    input: {q_heads: 12}
+    expected: kv_heads == 7 or kv_heads == 8
+
+  - name: test_output_shape
+    expected: output_shape == input_shape
+
+  - name: test_memory_savings
+    input: {q_heads: 12, kv_heads: 4}
+    expected: savings == 0.67

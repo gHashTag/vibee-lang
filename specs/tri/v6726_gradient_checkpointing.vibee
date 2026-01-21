@@ -1,0 +1,81 @@
+# ═══════════════════════════════════════════════════════════════
+# v6726: GRADIENT CHECKPOINTING
+# Trade compute for memory
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════
+
+name: gradient_checkpointing
+version: "6726.0.0"
+language: zig
+module: v6726_gradient_checkpointing
+
+creation_pattern:
+  source: FullActivations
+  transformer: CheckpointStrategy
+  result: CheckpointedActivations
+
+types:
+  CheckpointStrategy:
+    enum:
+      - NONE
+      - EVERY_LAYER
+      - SQRT_N
+      - PHI_OPTIMAL
+      - SELECTIVE
+
+  CheckpointConfig:
+    fields:
+      strategy: CheckpointStrategy
+      checkpoint_layers: List<Int>
+      memory_budget: Int
+
+  MemoryProfile:
+    fields:
+      peak_memory: Int
+      activation_memory: Int
+      gradient_memory: Int
+      checkpoint_memory: Int
+
+behaviors:
+  - name: sqrt_n_checkpoints
+    given: N layers
+    when: Checkpoint every √N layers
+    then: Return checkpoint indices
+    formula: "checkpoints at [0, √N, 2√N, ...]"
+
+  - name: phi_optimal_checkpoints
+    given: N layers
+    when: Checkpoint at φ-optimal positions
+    then: Return Fibonacci-spaced checkpoints
+    formula: "checkpoints at Fibonacci positions"
+
+  - name: recompute_activations
+    given: Checkpoint and layer range
+    when: Recompute activations for backward
+    then: Return recomputed activations
+
+  - name: estimate_memory
+    given: Model config and strategy
+    when: Estimate memory usage
+    then: Return memory profile
+    formula: "memory = O(√N) with checkpointing vs O(N)"
+
+  - name: selective_checkpoint
+    given: Layer importance scores
+    when: Checkpoint only important layers
+    then: Return selective checkpoints
+
+test_cases:
+  - name: test_sqrt_n
+    input: {layers: 16}
+    expected: checkpoints == [0, 4, 8, 12]
+
+  - name: test_phi_optimal
+    input: {layers: 12}
+    expected: checkpoints_at_fibonacci == true
+
+  - name: test_memory_reduction
+    expected: memory < full_memory
+
+  - name: test_gradient_correctness
+    expected: grad_diff < 1e-6

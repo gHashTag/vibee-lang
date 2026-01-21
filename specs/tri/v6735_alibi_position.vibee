@@ -1,0 +1,74 @@
+# ═══════════════════════════════════════════════════════════════
+# v6735: ALiBi POSITION BIAS
+# Attention with Linear Biases
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════
+
+name: alibi_position
+version: "6735.0.0"
+language: zig
+module: v6735_alibi_position
+
+creation_pattern:
+  source: LearnedPositions
+  transformer: ALiBiTransform
+  result: LinearBiasPositions
+
+types:
+  ALiBiConfig:
+    fields:
+      num_heads: Int
+      max_seq_len: Int
+      use_phi_slopes: Bool
+
+  ALiBiSlopes:
+    fields:
+      slopes: List<Float>
+      num_heads: Int
+
+behaviors:
+  - name: compute_slopes
+    given: Number of heads
+    when: Compute head-specific slopes
+    then: Return geometric sequence of slopes
+    formula: "slopes = [2^(-8/n), 2^(-16/n), ..., 2^(-8)]"
+
+  - name: phi_slopes
+    given: Number of heads
+    when: Compute φ-based slopes
+    then: Return golden ratio sequence
+    formula: "slopes = [φ^(-1), φ^(-2), ..., φ^(-n)]"
+
+  - name: compute_bias
+    given: Slopes and positions
+    when: Compute position bias matrix
+    then: Return bias to add to attention scores
+    formula: "bias[i,j] = -slope × |i - j|"
+
+  - name: alibi_attention
+    given: Q, K, V and slopes
+    when: Compute attention with ALiBi
+    then: Return attention with position bias
+    formula: "attn = softmax(QK^T / √d + bias) × V"
+
+  - name: extrapolate_positions
+    given: Trained length and target length
+    when: Extend to longer sequences
+    then: Return attention for longer sequences
+    note: "ALiBi naturally extrapolates without modification"
+
+test_cases:
+  - name: test_slopes_geometric
+    input: {heads: 8}
+    expected: slopes_form_geometric_sequence == true
+
+  - name: test_phi_slopes
+    input: {heads: 12}
+    expected: slopes_follow_phi == true
+
+  - name: test_bias_symmetric
+    expected: bias[i,j] == bias[j,i]
+
+  - name: test_extrapolation
+    input: {trained: 512, target: 2048}
+    expected: works_without_finetuning == true

@@ -1,0 +1,84 @@
+# ═══════════════════════════════════════════════════════════════
+# v6724: SPARSE ATTENTION
+# O(n√n) or O(n log n) attention
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════
+
+name: sparse_attention
+version: "6724.0.0"
+language: zig
+module: v6724_sparse_attention
+
+creation_pattern:
+  source: DenseAttention
+  transformer: SparsityPattern
+  result: SparseAttention
+
+types:
+  SparsityPattern:
+    enum:
+      - LOCAL_WINDOW
+      - STRIDED
+      - RANDOM
+      - LONGFORMER
+      - BIGBIRD
+      - PHI_SPIRAL
+
+  SparseConfig:
+    fields:
+      pattern: SparsityPattern
+      window_size: Int
+      stride: Int
+      num_global_tokens: Int
+      num_random_tokens: Int
+
+  SparseMask:
+    fields:
+      indices: List<Tuple<Int, Int>>
+      density: Float
+      pattern: SparsityPattern
+
+behaviors:
+  - name: local_window_mask
+    given: Sequence length and window size
+    when: Create local attention mask
+    then: Return mask attending to nearby tokens
+    formula: "mask[i,j] = 1 if |i-j| <= window_size/2"
+
+  - name: strided_mask
+    given: Sequence length and stride
+    when: Create strided attention mask
+    then: Return mask with periodic attention
+    formula: "mask[i,j] = 1 if j % stride == 0"
+
+  - name: phi_spiral_mask
+    given: Sequence length
+    when: Create φ-based spiral pattern
+    then: Return mask following golden spiral
+    formula: "mask[i,j] = 1 if j in fibonacci_positions(i)"
+
+  - name: sparse_attention_forward
+    given: Q, K, V and sparse mask
+    when: Compute sparse attention
+    then: Return output with O(n × density) complexity
+    formula: "Attention only at mask[i,j] = 1 positions"
+
+  - name: combine_patterns
+    given: Multiple patterns
+    when: Union of patterns
+    then: Return combined sparse mask
+
+test_cases:
+  - name: test_local_window
+    input: {seq_len: 128, window: 16}
+    expected: density < 0.2
+
+  - name: test_strided
+    input: {seq_len: 128, stride: 8}
+    expected: density < 0.15
+
+  - name: test_phi_spiral
+    expected: follows_fibonacci == true
+
+  - name: test_complexity
+    expected: ops < n_squared

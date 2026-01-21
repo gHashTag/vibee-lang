@@ -1,0 +1,78 @@
+# ═══════════════════════════════════════════════════════════════
+# v6731: FLASH ATTENTION
+# IO-aware exact attention
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════
+
+name: flash_attention
+version: "6731.0.0"
+language: zig
+module: v6731_flash_attention
+
+creation_pattern:
+  source: StandardAttention
+  transformer: FlashAlgorithm
+  result: FlashAttention
+
+types:
+  FlashConfig:
+    fields:
+      block_size_q: Int
+      block_size_kv: Int
+      causal: Bool
+      softmax_scale: Float
+
+  TiledComputation:
+    fields:
+      q_blocks: Int
+      kv_blocks: Int
+      sram_size: Int
+
+behaviors:
+  - name: compute_block_sizes
+    given: SRAM size and head dimension
+    when: Compute optimal block sizes
+    then: Return block sizes fitting in SRAM
+    formula: "block = sqrt(SRAM / (3 × head_dim × sizeof(float)))"
+
+  - name: flash_forward
+    given: Q, K, V and config
+    when: Compute attention with tiling
+    then: Return output without materializing full attention matrix
+    algorithm: |
+      for each Q block:
+        for each KV block:
+          compute local attention
+          update running softmax
+          accumulate output
+
+  - name: flash_backward
+    given: Output gradient and saved statistics
+    when: Compute gradients with recomputation
+    then: Return dQ, dK, dV without storing attention matrix
+
+  - name: online_softmax
+    given: Block of scores
+    when: Update running max and sum
+    then: Return normalized attention weights
+    formula: "m_new = max(m_old, block_max), l_new = l_old × exp(m_old - m_new) + block_sum"
+
+  - name: phi_block_size
+    given: Head dimension
+    when: Compute φ-optimal block size
+    then: Return block size based on golden ratio
+    formula: "block = round(head_dim × φ)"
+
+test_cases:
+  - name: test_block_sizes
+    input: {sram: 96000, head_dim: 64}
+    expected: block_size > 0
+
+  - name: test_correctness
+    expected: max_diff_vs_standard < 1e-5
+
+  - name: test_memory
+    expected: memory < standard_memory
+
+  - name: test_speedup
+    expected: speedup > 2.0

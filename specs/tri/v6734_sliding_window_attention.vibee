@@ -1,0 +1,74 @@
+# ═══════════════════════════════════════════════════════════════
+# v6734: SLIDING WINDOW ATTENTION
+# Local attention with global receptive field
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════
+
+name: sliding_window_attention
+version: "6734.0.0"
+language: zig
+module: v6734_sliding_window_attention
+
+creation_pattern:
+  source: FullAttention
+  transformer: SlidingWindow
+  result: WindowedAttention
+
+types:
+  SlidingWindowConfig:
+    fields:
+      window_size: Int
+      num_layers: Int
+      use_global_tokens: Bool
+      global_token_indices: List<Int>
+
+  WindowMask:
+    fields:
+      local_mask: List<List<Bool>>
+      global_mask: List<Bool>
+      effective_context: Int
+
+behaviors:
+  - name: create_window_mask
+    given: Sequence length and window size
+    when: Create sliding window mask
+    then: Return mask with local attention
+    formula: "mask[i,j] = 1 if |i-j| <= window_size/2"
+
+  - name: effective_context_length
+    given: Window size and num layers
+    when: Compute effective receptive field
+    then: Return total context accessible
+    formula: "effective = window_size × num_layers"
+
+  - name: phi_window_size
+    given: Sequence length
+    when: Compute φ-optimal window
+    then: Return window based on golden ratio
+    formula: "window = round(seq_len / φ²)"
+
+  - name: sliding_attention_forward
+    given: Q, K, V and window config
+    when: Compute windowed attention
+    then: Return output with O(n × window) complexity
+
+  - name: add_global_tokens
+    given: Window attention and global indices
+    when: Add global attention for special tokens
+    then: Return hybrid local-global attention
+
+test_cases:
+  - name: test_window_mask
+    input: {seq_len: 128, window: 32}
+    expected: sparsity > 0.7
+
+  - name: test_effective_context
+    input: {window: 32, layers: 6}
+    expected: effective == 192
+
+  - name: test_phi_window
+    input: {seq_len: 512}
+    expected: window == 195 or window == 196
+
+  - name: test_complexity
+    expected: ops == O(n × window)

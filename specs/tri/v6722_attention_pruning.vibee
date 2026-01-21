@@ -1,0 +1,75 @@
+# ═══════════════════════════════════════════════════════════════
+# v6722: ATTENTION PRUNING
+# Remove unimportant attention heads
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════
+
+name: attention_pruning
+version: "6722.0.0"
+language: zig
+module: v6722_attention_pruning
+
+creation_pattern:
+  source: FullAttention
+  transformer: PruningAlgorithm
+  result: PrunedAttention
+
+types:
+  HeadImportance:
+    fields:
+      layer: Int
+      head: Int
+      importance: Float
+      gradient_norm: Float
+
+  PruningConfig:
+    fields:
+      target_sparsity: Float
+      importance_metric: String
+      structured: Bool
+      phi_threshold: Float
+
+  PrunedModel:
+    fields:
+      remaining_heads: List<Tuple<Int, Int>>
+      sparsity: Float
+      speedup: Float
+
+behaviors:
+  - name: compute_head_importance
+    given: Model and validation data
+    when: Compute importance scores
+    then: Return importance for each head
+    formula: "importance = E[|∂L/∂head|] over validation set"
+
+  - name: prune_by_importance
+    given: Importance scores and target sparsity
+    when: Remove least important heads
+    then: Return pruned model
+    formula: "Keep top (1-sparsity) × num_heads heads"
+
+  - name: phi_structured_pruning
+    given: Model and φ ratio
+    when: Prune to φ-optimal structure
+    then: Return model with φ-ratio heads per layer
+    formula: "Keep ceil(num_heads × φ_inv) heads"
+
+  - name: fine_tune_pruned
+    given: Pruned model and data
+    when: Fine-tune after pruning
+    then: Return recovered model
+
+test_cases:
+  - name: test_importance_computation
+    expected: all_importances >= 0
+
+  - name: test_sparsity_target
+    input: {target: 0.5}
+    expected: actual_sparsity >= 0.45
+
+  - name: test_phi_pruning
+    input: {heads: 12}
+    expected: remaining == 7 or remaining == 8
+
+  - name: test_speedup
+    expected: speedup > 1.0

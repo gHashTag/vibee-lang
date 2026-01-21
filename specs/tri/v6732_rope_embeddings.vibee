@@ -1,0 +1,74 @@
+# ═══════════════════════════════════════════════════════════════
+# v6732: ROTARY POSITION EMBEDDINGS (RoPE)
+# Rotation-based position encoding
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════
+
+name: rope_embeddings
+version: "6732.0.0"
+language: zig
+module: v6732_rope_embeddings
+
+creation_pattern:
+  source: AbsolutePositions
+  transformer: RotaryEncoding
+  result: RelativePositions
+
+types:
+  RoPEConfig:
+    fields:
+      dim: Int
+      max_seq_len: Int
+      base: Float
+      scaling_factor: Float
+
+  RotaryCache:
+    fields:
+      cos_cache: List<List<Float>>
+      sin_cache: List<List<Float>>
+      max_cached: Int
+
+behaviors:
+  - name: compute_freqs
+    given: Dimension and base
+    when: Compute rotation frequencies
+    then: Return frequency for each dimension pair
+    formula: "freq_i = 1 / (base^(2i/dim))"
+
+  - name: apply_rotary
+    given: Query/Key and position
+    when: Apply rotation
+    then: Return rotated tensor
+    formula: |
+      q_rot = q × cos(pos × freq) + rotate_half(q) × sin(pos × freq)
+
+  - name: rotate_half
+    given: Tensor
+    when: Rotate pairs of dimensions
+    then: Return [-x2, x1, -x4, x3, ...]
+
+  - name: phi_base
+    given: Standard base 10000
+    when: Compute φ-optimal base
+    then: Return base scaled by golden ratio
+    formula: "phi_base = 10000 × φ"
+
+  - name: ntk_scaling
+    given: Original max length and target length
+    when: Apply NTK-aware scaling
+    then: Return scaled frequencies for extrapolation
+    formula: "base_scaled = base × (target/original)^(dim/(dim-2))"
+
+test_cases:
+  - name: test_frequency_computation
+    input: {dim: 64, base: 10000}
+    expected: freqs_decrease == true
+
+  - name: test_rotation_orthogonal
+    expected: norm_preserved == true
+
+  - name: test_relative_position
+    expected: dot(q_i, k_j) depends_on (i-j)
+
+  - name: test_extrapolation
+    expected: works_beyond_training_length == true
