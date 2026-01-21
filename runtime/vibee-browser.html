@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VIBEE Browser | φ² + 1/φ² = 3</title>
+<style>
+:root{--phi:1.618033988749895;--phi-inv:0.618033988749895}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif;background:#0a0a0a;color:#fff;height:100vh;overflow:hidden}
+.app{display:flex;height:100vh}
+.panel{height:100%;display:flex;flex-direction:column;overflow:hidden}
+.panel-header{height:40px;padding:0 16px;display:flex;align-items:center;gap:12px;background:rgba(0,0,0,0.6);border-bottom:1px solid rgba(255,255,255,0.08);font-size:12px;font-weight:500}
+.panel-content{flex:1;overflow:hidden;position:relative}
+.browser-panel{background:#111}
+.chat-panel{background:linear-gradient(180deg,#0f0f1a 0%,#1a1a2e 100%)}
+.editor-panel{background:#1e1e1e}
+.splitter{width:8px;background:rgba(255,255,255,0.02);cursor:col-resize;display:flex;align-items:center;justify-content:center;transition:background 0.2s}
+.splitter:hover,.splitter.dragging{background:rgba(255,215,0,0.3)}
+.splitter-handle{width:3px;height:50px;background:rgba(255,255,255,0.15);border-radius:2px}
+.splitter:hover .splitter-handle,.splitter.dragging .splitter-handle{background:#ffd700}
+.url-bar{flex:1;height:28px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:0 12px;color:#fff;font-size:12px;outline:none}
+.url-bar:focus{border-color:rgba(255,215,0,0.5)}
+.nav-btn{width:28px;height:28px;background:rgba(255,255,255,0.06);border:none;border-radius:6px;color:#fff;cursor:pointer;font-size:14px}
+.nav-btn:hover{background:rgba(255,255,255,0.12)}
+.browser-frame{width:100%;height:100%;border:none;background:#fff}
+.chat-messages{flex:1;padding:16px;overflow-y:auto}
+.chat-input-area{padding:12px;border-top:1px solid rgba(255,255,255,0.08)}
+.chat-input{width:100%;height:80px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:12px;color:#fff;font-size:13px;resize:none;outline:none}
+.chat-input:focus{border-color:rgba(255,215,0,0.5)}
+.message{margin-bottom:16px;padding:12px;border-radius:8px}
+.message.user{background:rgba(255,215,0,0.1);margin-left:20%}
+.message.ai{background:rgba(255,255,255,0.04);margin-right:20%}
+.editor-tabs{display:flex;gap:2px;padding:0 8px}
+.editor-tab{padding:8px 16px;background:rgba(255,255,255,0.04);border-radius:6px 6px 0 0;font-size:11px;cursor:pointer}
+.editor-tab.active{background:#1e1e1e}
+.editor-content{flex:1;background:#1e1e1e;font-family:'SF Mono',Monaco,monospace;font-size:13px;padding:16px;overflow:auto;white-space:pre}
+.line-numbers{color:rgba(255,255,255,0.3);user-select:none}
+.hud{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);display:flex;gap:24px;padding:12px 24px;background:rgba(0,0,0,0.8);backdrop-filter:blur(20px);border-radius:12px;border:1px solid rgba(255,255,255,0.1)}
+.stat{text-align:center}
+.stat-value{font-size:16px;font-weight:600;font-family:'SF Mono',Monaco,monospace;color:#ffd700}
+.stat-label{font-size:9px;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:0.5px;margin-top:2px}
+.snap-indicator{position:fixed;top:0;width:2px;height:100%;background:rgba(255,215,0,0.5);pointer-events:none;opacity:0;transition:opacity 0.2s;z-index:100}
+.snap-indicator.visible{opacity:1}
+.status{position:fixed;top:8px;right:8px;padding:6px 12px;background:rgba(0,0,0,0.6);backdrop-filter:blur(10px);border-radius:6px;font-size:11px;display:flex;align-items:center;gap:6px;z-index:1000}
+.status-dot{width:6px;height:6px;border-radius:50%;background:#ffd700;animation:pulse 1s infinite}
+.status-dot.ready{background:#50fa7b;animation:none}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+.logo{font-weight:600;color:#ffd700}
+</style>
+</head>
+<body>
+<div class="status"><span class="status-dot" id="statusDot"></span><span id="statusText">Loading...</span></div>
+<div class="app" id="app">
+<div class="panel browser-panel" id="browserPanel">
+<div class="panel-header">
+<span class="logo">VIBEE</span>
+<button class="nav-btn" id="backBtn">←</button>
+<button class="nav-btn" id="fwdBtn">→</button>
+<button class="nav-btn" id="refreshBtn">↻</button>
+<input type="text" class="url-bar" id="urlBar" placeholder="Enter URL..." value="https://google.com">
+</div>
+<div class="panel-content"><iframe class="browser-frame" id="browserFrame" src="about:blank"></iframe></div>
+</div>
+<div class="splitter" id="splitter1"><div class="splitter-handle"></div></div>
+<div class="panel chat-panel" id="chatPanel">
+<div class="panel-header"><span>AI Chat</span></div>
+<div class="panel-content" style="display:flex;flex-direction:column">
+<div class="chat-messages" id="chatMessages">
+<div class="message ai">Welcome to VIBEE Browser! I can help you with coding, browsing, and debugging. φ² + 1/φ² = 3</div>
+</div>
+<div class="chat-input-area">
+<textarea class="chat-input" id="chatInput" placeholder="Ask AI..."></textarea>
+</div>
+</div>
+</div>
+<div class="splitter" id="splitter2"><div class="splitter-handle"></div></div>
+<div class="panel editor-panel" id="editorPanel">
+<div class="panel-header">
+<div class="editor-tabs">
+<div class="editor-tab active">main.vibee</div>
+<div class="editor-tab">+</div>
+</div>
+</div>
+<div class="panel-content">
+<div class="editor-content" id="editorContent"># VIBEE Specification
+name: my_app
+version: "1.0.0"
+
+constants:
+  PHI: 1.618033988749895
+
+types:
+  User:
+    fields:
+      id: Int
+      name: String
+
+behaviors:
+  - name: create_user
+    given: "Valid data"
+    when: "Create"
+    then: "User created"
+
+# φ² + 1/φ² = 3</div>
+</div>
+</div>
+</div>
+<div class="snap-indicator" id="snapIndicator"></div>
+<div class="hud">
+<div class="stat"><div class="stat-value" id="browserW">--</div><div class="stat-label">Browser</div></div>
+<div class="stat"><div class="stat-value" id="chatW">--</div><div class="stat-label">Chat</div></div>
+<div class="stat"><div class="stat-value" id="editorW">--</div><div class="stat-label">Editor</div></div>
+<div class="stat"><div class="stat-value" id="fpsVal">--</div><div class="stat-label">FPS</div></div>
+<div class="stat"><div class="stat-value" id="trinityVal">--</div><div class="stat-label">φ²+1/φ²</div></div>
+</div>
+<script>
+const PHI=1.618033988749895,PHI_INV=0.618033988749895;
+let wasm=null,wasmReady=false,activeSplitter=0;
+const browserPanel=document.getElementById('browserPanel'),chatPanel=document.getElementById('chatPanel'),editorPanel=document.getElementById('editorPanel');
+const splitter1=document.getElementById('splitter1'),splitter2=document.getElementById('splitter2'),snapIndicator=document.getElementById('snapIndicator');
+const statusDot=document.getElementById('statusDot'),statusText=document.getElementById('statusText');
+const browserW=document.getElementById('browserW'),chatW=document.getElementById('chatW'),editorW=document.getElementById('editorW');
+const fpsVal=document.getElementById('fpsVal'),trinityVal=document.getElementById('trinityVal');
+const urlBar=document.getElementById('urlBar'),browserFrame=document.getElementById('browserFrame');
+const chatInput=document.getElementById('chatInput'),chatMessages=document.getElementById('chatMessages');
+
+async function loadWasm(){
+try{
+const r=await fetch('vibee_browser.wasm');
+if(!r.ok)throw new Error('WASM not found');
+const b=await r.arrayBuffer();
+const{instance}=await WebAssembly.instantiate(b,{env:{}});
+wasm=instance.exports;wasmReady=true;
+wasm.browser_init(window.innerWidth,window.innerHeight);
+trinityVal.textContent=wasm.verify_trinity().toFixed(6);
+statusDot.classList.add('ready');statusText.textContent='WASM Ready';
+console.log('VIBEE WASM loaded | φ²+1/φ²=',wasm.verify_trinity());
+}catch(e){console.warn('WASM fallback:',e.message);statusText.textContent='JS Mode';initFallback();}
+updateLayout();
+}
+
+let s1=0,s2=0;
+function initFallback(){s1=window.innerWidth*PHI_INV;s2=s1+(window.innerWidth-s1)*(1-PHI_INV);}
+
+function updateLayout(){
+let bw,cw,ew;
+if(wasmReady){bw=wasm.get_browser_width();cw=wasm.get_chat_width();ew=wasm.get_editor_width();}
+else{bw=s1-4;cw=s2-s1-8;ew=window.innerWidth-s2-4;}
+browserPanel.style.width=bw+'px';chatPanel.style.width=cw+'px';editorPanel.style.width=ew+'px';
+browserW.textContent=Math.round(bw);chatW.textContent=Math.round(cw);editorW.textContent=Math.round(ew);
+}
+
+function getSnapPoints(){const w=window.innerWidth;return[w*PHI_INV,w*(1-PHI_INV),w*0.5,w*0.75,w*0.25];}
+
+splitter1.addEventListener('mousedown',e=>{activeSplitter=1;splitter1.classList.add('dragging');if(wasmReady)wasm.splitter1_start_drag();e.preventDefault();});
+splitter2.addEventListener('mousedown',e=>{activeSplitter=2;splitter2.classList.add('dragging');if(wasmReady)wasm.splitter2_start_drag();e.preventDefault();});
+
+document.addEventListener('mousemove',e=>{
+if(!activeSplitter)return;
+if(wasmReady)wasm.splitter_update(e.clientX);
+else{if(activeSplitter===1)s1=Math.max(200,Math.min(e.clientX,s2-200));else s2=Math.max(s1+200,Math.min(e.clientX,window.innerWidth-200));}
+const snaps=getSnapPoints();let near=false;
+for(const sp of snaps){if(Math.abs(e.clientX-sp)<25){snapIndicator.style.left=sp+'px';near=true;break;}}
+snapIndicator.classList.toggle('visible',near);
+updateLayout();
+});
+
+document.addEventListener('mouseup',()=>{
+if(!activeSplitter)return;
+if(wasmReady)wasm.splitter_end_drag();
+splitter1.classList.remove('dragging');splitter2.classList.remove('dragging');
+snapIndicator.classList.remove('visible');activeSplitter=0;updateLayout();
+});
+
+splitter1.addEventListener('dblclick',()=>{if(wasmReady)wasm.reset_to_phi_layout();else initFallback();updateLayout();});
+splitter2.addEventListener('dblclick',()=>{if(wasmReady)wasm.reset_to_phi_layout();else initFallback();updateLayout();});
+
+window.addEventListener('resize',()=>{if(wasmReady)wasm.browser_resize(window.innerWidth,window.innerHeight);updateLayout();});
+
+urlBar.addEventListener('keydown',e=>{if(e.key==='Enter'){let url=urlBar.value;if(!url.startsWith('http'))url='https://'+url;browserFrame.src=url;}});
+document.getElementById('backBtn').onclick=()=>history.back();
+document.getElementById('fwdBtn').onclick=()=>history.forward();
+document.getElementById('refreshBtn').onclick=()=>{browserFrame.src=browserFrame.src;};
+
+chatInput.addEventListener('keydown',e=>{
+if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();
+const msg=chatInput.value.trim();if(!msg)return;
+chatMessages.innerHTML+=`<div class="message user">${msg}</div>`;
+chatMessages.innerHTML+=`<div class="message ai">Processing: "${msg}"... (AI integration pending)</div>`;
+chatInput.value='';chatMessages.scrollTop=chatMessages.scrollHeight;}
+});
+
+let lastTime=0;
+function animate(t){
+if(wasmReady){wasm.tick(t);fpsVal.textContent=wasm.get_fps().toFixed(0);}
+else{if(lastTime)fpsVal.textContent=Math.round(1000/(t-lastTime));lastTime=t;}
+requestAnimationFrame(animate);
+}
+
+loadWasm();requestAnimationFrame(animate);
+</script>
+</body>
+</html>

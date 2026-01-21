@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VIBEE WASM UI | φ² + 1/φ² = 3</title>
+<style>
+:root {
+  --phi: 1.618033988749895;
+  --phi-inv: 0.618033988749895;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+  background: #0a0a0a;
+  color: #fff;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Main container */
+.app {
+  display: flex;
+  height: 100vh;
+}
+
+/* Left Panel */
+.left-panel {
+  width: var(--panel-width, 300px);
+  height: 100%;
+  background: linear-gradient(180deg, #1a1a2e 0%, #0f0f1a 100%);
+  border-right: 1px solid rgba(255,255,255,0.1);
+  display: flex;
+  flex-direction: column;
+  transition: width 0.1s ease;
+}
+
+.panel-header {
+  padding: 20px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+  text-align: center;
+}
+
+.panel-header h1 {
+  font-size: 24px;
+  font-weight: 300;
+  letter-spacing: 2px;
+  margin-bottom: 8px;
+}
+
+.panel-header .formula {
+  font-family: 'SF Mono', Monaco, monospace;
+  font-size: 14px;
+  color: #ffd700;
+}
+
+.panel-content {
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.module-list {
+  list-style: none;
+}
+
+.module-item {
+  padding: 12px 16px;
+  margin-bottom: 8px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.module-item:hover {
+  background: rgba(255,255,255,0.08);
+  border-color: rgba(255,215,0,0.3);
+  transform: translateX(4px);
+}
+
+.module-color {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+
+.module-name {
+  flex: 1;
+  font-size: 14px;
+}
+
+.module-count {
+  font-size: 12px;
+  color: rgba(255,255,255,0.5);
+}
+
+/* Splitter */
+.splitter {
+  width: 8px;
+  background: rgba(255,255,255,0.02);
+  cursor: col-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+
+.splitter:hover {
+  background: rgba(255,215,0,0.2);
+}
+
+.splitter.dragging {
+  background: rgba(255,215,0,0.4);
+}
+
+.splitter-handle {
+  width: 4px;
+  height: 60px;
+  background: rgba(255,255,255,0.2);
+  border-radius: 2px;
+  transition: background 0.2s;
+}
+
+.splitter:hover .splitter-handle,
+.splitter.dragging .splitter-handle {
+  background: #ffd700;
+}
+
+/* Right Panel */
+.right-panel {
+  flex: 1;
+  height: 100%;
+  background: linear-gradient(180deg, #0f0f1a 0%, #1a1a2e 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+
+.phi-spiral {
+  width: 400px;
+  height: 400px;
+  position: relative;
+}
+
+.phi-spiral canvas {
+  width: 100%;
+  height: 100%;
+}
+
+/* Stats HUD */
+.stats-hud {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 30px;
+  padding: 16px 32px;
+  background: rgba(0,0,0,0.8);
+  backdrop-filter: blur(20px);
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.1);
+}
+
+.stat {
+  text-align: center;
+}
+
+.stat-value {
+  font-size: 20px;
+  font-weight: 600;
+  font-family: 'SF Mono', Monaco, monospace;
+  color: #ffd700;
+}
+
+.stat-label {
+  font-size: 10px;
+  color: rgba(255,255,255,0.5);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-top: 4px;
+}
+
+/* Snap indicator */
+.snap-indicator {
+  position: fixed;
+  top: 0;
+  width: 3px;
+  height: 100%;
+  background: linear-gradient(180deg, transparent, #ffd700, transparent);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+  z-index: 100;
+}
+
+.snap-indicator.visible {
+  opacity: 1;
+}
+
+/* Status */
+.status {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  padding: 10px 16px;
+  background: rgba(0,0,0,0.6);
+  backdrop-filter: blur(10px);
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.1);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ffd700;
+  animation: pulse 1s infinite;
+}
+
+.status-dot.ready {
+  background: #50fa7b;
+  animation: none;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Instructions */
+.instructions {
+  position: fixed;
+  top: 20px;
+  left: 20px;
+  padding: 12px 16px;
+  background: rgba(0,0,0,0.6);
+  backdrop-filter: blur(10px);
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.1);
+  font-size: 11px;
+  color: rgba(255,255,255,0.6);
+  line-height: 1.6;
+}
+
+.instructions kbd {
+  background: rgba(255,255,255,0.1);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'SF Mono', Monaco, monospace;
+}
+</style>
+</head>
+<body>
+
+<div class="status">
+  <span class="status-dot" id="statusDot"></span>
+  <span id="statusText">Loading WASM...</span>
+</div>
+
+<div class="instructions">
+  <strong>Controls:</strong><br>
+  • Drag splitter to resize<br>
+  • <kbd>Double-click</kbd> reset to φ<br>
+  • Snaps to φ, 1-φ, 0.5
+</div>
+
+<div class="app">
+  <!-- Left Panel -->
+  <div class="left-panel" id="leftPanel">
+    <div class="panel-header">
+      <h1>VIBEE</h1>
+      <div class="formula">φ² + 1/φ² = 3</div>
+    </div>
+    <div class="panel-content">
+      <ul class="module-list">
+        <li class="module-item">
+          <span class="module-color" style="background: #4169E1"></span>
+          <span class="module-name">CORE</span>
+          <span class="module-count">10</span>
+        </li>
+        <li class="module-item">
+          <span class="module-color" style="background: #32CD32"></span>
+          <span class="module-name">PAS</span>
+          <span class="module-count">10</span>
+        </li>
+        <li class="module-item">
+          <span class="module-color" style="background: #FF6347"></span>
+          <span class="module-name">EVOLUTION</span>
+          <span class="module-count">10</span>
+        </li>
+        <li class="module-item">
+          <span class="module-color" style="background: #FFD700"></span>
+          <span class="module-name">AGENTS</span>
+          <span class="module-count">10</span>
+        </li>
+        <li class="module-item">
+          <span class="module-color" style="background: #FF69B4"></span>
+          <span class="module-name">VISUALIZATION</span>
+          <span class="module-count">10</span>
+        </li>
+        <li class="module-item">
+          <span class="module-color" style="background: #00CED1"></span>
+          <span class="module-name">QUANTUM</span>
+          <span class="module-count">5</span>
+        </li>
+        <li class="module-item">
+          <span class="module-color" style="background: #9370DB"></span>
+          <span class="module-name">BLOCKCHAIN</span>
+          <span class="module-count">3</span>
+        </li>
+        <li class="module-item">
+          <span class="module-color" style="background: #20B2AA"></span>
+          <span class="module-name">INTEGRATION</span>
+          <span class="module-count">5</span>
+        </li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Splitter -->
+  <div class="splitter" id="splitter">
+    <div class="splitter-handle"></div>
+  </div>
+
+  <!-- Right Panel -->
+  <div class="right-panel" id="rightPanel">
+    <div class="phi-spiral">
+      <canvas id="spiralCanvas"></canvas>
+    </div>
+  </div>
+</div>
+
+<div class="snap-indicator" id="snapIndicator"></div>
+
+<div class="stats-hud">
+  <div class="stat">
+    <div class="stat-value" id="leftWidth">300</div>
+    <div class="stat-label">Left (px)</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value" id="rightWidth">--</div>
+    <div class="stat-label">Right (px)</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value" id="ratio">0.000</div>
+    <div class="stat-label">Ratio</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value" id="phiDiff">0.000</div>
+    <div class="stat-label">φ Diff</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value" id="trinity">--</div>
+    <div class="stat-label">φ²+1/φ²</div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════════
+// VIBEE WASM UI - Pure WASM-powered layout
+// φ² + 1/φ² = 3 | PHOENIX = 999
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const PHI = 1.618033988749895;
+const PHI_INV = 0.618033988749895;
+const SNAP_THRESHOLD = 25;
+
+let wasm = null;
+let wasmReady = false;
+let isDragging = false;
+let panelWidth = 300;
+const minWidth = 200;
+const maxWidth = 600;
+
+// DOM elements
+const leftPanel = document.getElementById('leftPanel');
+const splitter = document.getElementById('splitter');
+const snapIndicator = document.getElementById('snapIndicator');
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+const spiralCanvas = document.getElementById('spiralCanvas');
+const ctx = spiralCanvas.getContext('2d');
+
+// Stats elements
+const leftWidthEl = document.getElementById('leftWidth');
+const rightWidthEl = document.getElementById('rightWidth');
+const ratioEl = document.getElementById('ratio');
+const phiDiffEl = document.getElementById('phiDiff');
+const trinityEl = document.getElementById('trinity');
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WASM Loading
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function loadWasm() {
+  try {
+    const response = await fetch('phi_ui.wasm');
+    if (!response.ok) throw new Error('WASM file not found');
+    
+    const bytes = await response.arrayBuffer();
+    const { instance } = await WebAssembly.instantiate(bytes, { env: {} });
+    
+    wasm = instance.exports;
+    wasmReady = true;
+    
+    // Initialize
+    wasm.ui_init(window.innerWidth, window.innerHeight);
+    
+    // Verify trinity
+    const trinity = wasm.verify_trinity();
+    trinityEl.textContent = trinity.toFixed(6);
+    
+    statusDot.classList.add('ready');
+    statusText.textContent = 'WASM Ready ✓';
+    
+    console.log('🔺 WASM loaded');
+    console.log('   φ =', wasm.get_phi());
+    console.log('   1/φ =', wasm.get_phi_inv());
+    console.log('   φ² + 1/φ² =', trinity);
+    
+  } catch (error) {
+    console.warn('WASM not available, using JS fallback:', error.message);
+    statusText.textContent = 'JS Fallback';
+    trinityEl.textContent = (PHI * PHI + 1 / (PHI * PHI)).toFixed(6);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Snap Points
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function getSnapPoints() {
+  return [
+    { pos: maxWidth * PHI_INV, label: 'φ' },           // 0.618
+    { pos: maxWidth * (1 - PHI_INV), label: '1-φ' },   // 0.382
+    { pos: maxWidth * 0.5, label: '½' },               // 0.5
+  ];
+}
+
+function snapToPoint(width) {
+  const snapPoints = getSnapPoints();
+  for (const sp of snapPoints) {
+    if (Math.abs(width - sp.pos) < SNAP_THRESHOLD) {
+      console.log('🔺 Snapped to', sp.label, '=', sp.pos.toFixed(0) + 'px');
+      return sp.pos;
+    }
+  }
+  return width;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Layout Update
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function updateLayout() {
+  const totalWidth = window.innerWidth;
+  const rightWidth = totalWidth - panelWidth - 8; // 8px splitter
+  
+  document.documentElement.style.setProperty('--panel-width', panelWidth + 'px');
+  
+  // Update stats
+  leftWidthEl.textContent = Math.round(panelWidth);
+  rightWidthEl.textContent = Math.round(rightWidth);
+  
+  const ratio = panelWidth / maxWidth;
+  ratioEl.textContent = ratio.toFixed(3);
+  phiDiffEl.textContent = Math.abs(ratio - PHI_INV).toFixed(3);
+  
+  // Draw spiral
+  drawPhiSpiral();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// φ-Spiral Drawing
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function drawPhiSpiral() {
+  const rect = spiralCanvas.getBoundingClientRect();
+  spiralCanvas.width = rect.width * 2;
+  spiralCanvas.height = rect.height * 2;
+  ctx.scale(2, 2);
+  
+  const cx = rect.width / 2;
+  const cy = rect.height / 2;
+  const maxR = Math.min(cx, cy) * 0.9;
+  
+  // Clear
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  
+  // Draw spiral
+  ctx.beginPath();
+  ctx.strokeStyle = 'rgba(255, 215, 0, 0.6)';
+  ctx.lineWidth = 2;
+  
+  for (let i = 0; i < 720; i++) {
+    const angle = (i / 180) * Math.PI;
+    const r = maxR * Math.pow(PHI_INV, angle / (2 * Math.PI));
+    const x = cx + r * Math.cos(angle);
+    const y = cy + r * Math.sin(angle);
+    
+    if (i === 0) {
+      ctx.moveTo(x, y);
+    } else {
+      ctx.lineTo(x, y);
+    }
+  }
+  ctx.stroke();
+  
+  // Draw modules as dots on spiral
+  const colors = ['#4169E1', '#32CD32', '#FF6347', '#FFD700', '#FF69B4', '#00CED1', '#9370DB', '#20B2AA'];
+  
+  for (let i = 0; i < 65; i++) {
+    const angle = (i * PHI * 2 * Math.PI) % (4 * Math.PI);
+    const r = maxR * 0.2 + (i / 65) * maxR * 0.7;
+    const x = cx + r * Math.cos(angle);
+    const y = cy + r * Math.sin(angle);
+    
+    ctx.beginPath();
+    ctx.fillStyle = colors[i % colors.length];
+    ctx.arc(x, y, 4, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+  
+  // Center text
+  ctx.fillStyle = '#ffd700';
+  ctx.font = '14px SF Mono, Monaco, monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('65 MODULES', cx, cy - 10);
+  ctx.fillText('φ-SPIRAL', cx, cy + 10);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Event Handlers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+splitter.addEventListener('mousedown', (e) => {
+  isDragging = true;
+  splitter.classList.add('dragging');
+  e.preventDefault();
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  
+  const newWidth = Math.max(minWidth, Math.min(e.clientX, maxWidth));
+  panelWidth = newWidth;
+  
+  // Check snap points
+  const snapPoints = getSnapPoints();
+  let nearSnap = false;
+  
+  for (const sp of snapPoints) {
+    if (Math.abs(newWidth - sp.pos) < SNAP_THRESHOLD) {
+      snapIndicator.style.left = sp.pos + 'px';
+      nearSnap = true;
+      break;
+    }
+  }
+  
+  snapIndicator.classList.toggle('visible', nearSnap);
+  updateLayout();
+});
+
+document.addEventListener('mouseup', () => {
+  if (!isDragging) return;
+  
+  isDragging = false;
+  splitter.classList.remove('dragging');
+  snapIndicator.classList.remove('visible');
+  
+  // Snap
+  panelWidth = snapToPoint(panelWidth);
+  updateLayout();
+});
+
+// Double-click to reset to φ
+splitter.addEventListener('dblclick', () => {
+  panelWidth = maxWidth * PHI_INV;
+  console.log('🔺 Reset to φ =', panelWidth.toFixed(0) + 'px');
+  updateLayout();
+});
+
+// Window resize
+window.addEventListener('resize', () => {
+  if (wasmReady) {
+    wasm.ui_resize(window.innerWidth, window.innerHeight);
+  }
+  updateLayout();
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Initialize
+// ═══════════════════════════════════════════════════════════════════════════════
+
+loadWasm();
+updateLayout();
+
+console.log('🔺 VIBEE WASM UI Demo');
+console.log('   Drag splitter to resize');
+console.log('   Double-click to reset to φ');
+</script>
+
+</body>
+</html>
