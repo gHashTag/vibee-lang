@@ -1,0 +1,60 @@
+# LLM Mixture of Experts (MoE)
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# Paper: Switch Transformer (arXiv:2101.03961)
+
+name: llm_moe
+version: "1.0.0"
+language: zig
+module: llm_moe
+
+sacred_formula:
+  expression: "V = n × 3^k × π^m × φ^p"
+  golden_identity: "φ² + 1/φ² = 3"
+
+creation_pattern:
+  source: HiddenStates
+  transformer: MoELayer
+  result: ExpertOutput
+
+types:
+  MoEConfig:
+    fields:
+      num_experts: Int  # 8
+      num_experts_per_tok: Int  # 2
+      hidden_size: Int
+      intermediate_size: Int
+      
+  Router:
+    fields:
+      gate: Tensor  # [hidden, num_experts]
+      
+  Expert:
+    fields:
+      ffn: SwiGLUFFN
+      
+behaviors:
+  - name: route_tokens
+    given: "Hidden states [batch, seq, hidden]"
+    when: "Compute routing"
+    then: "Return expert assignments, weights"
+    formula: "softmax(hidden @ gate)"
+    
+  - name: top_k_routing
+    given: "Router logits, k"
+    when: "Select top-k experts"
+    then: "Return indices, weights for top-k"
+    
+  - name: moe_forward
+    given: "Hidden states, experts, router"
+    when: "Forward through MoE"
+    then: "Return weighted sum of expert outputs"
+    
+  - name: load_balancing_loss
+    given: "Router assignments"
+    when: "Compute auxiliary loss"
+    then: "Return loss to balance expert usage"
+    
+  - name: capacity_factor
+    given: "Batch size, num_experts, k"
+    when: "Calculate expert capacity"
+    then: "Return max tokens per expert"
