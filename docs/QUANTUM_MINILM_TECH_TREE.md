@@ -1,8 +1,8 @@
-# QuantumMiniLM Technology Tree v2.0
+# QuantumMiniLM Technology Tree v3.0
 
-**φ² + 1/φ² = 3 | PHOENIX = 999**
+**φ² + 1/φ² = 3 | PHOENIX = 999 | iGLA КОЩЕЙ БЕССМЕРТНЫЙ**
 
-**Version:** 2.0 | **Modules:** 50 | **Tests:** 351
+**Version:** 3.0 | **Modules:** 73 | **Tests:** 491
 
 ## Overview
 
@@ -167,22 +167,65 @@ INPUT ──► Tokenization ──► Embedding ──► Attention ──► F
 | LoRA | 2021 | 0.1% trainable params |
 | ZeRO | 2020 | Distributed optimizer |
 
+### Layer 5: iGLA - Кощей Бессмертный (v676x-v677x) - 96 tests
+
+| Module | Description | Tests |
+|--------|-------------|-------|
+| v6760_igla_core | Gated Linear Attention O(N) | 6 |
+| v6761_rwkv_linear | RWKV Linear RNN | 6 |
+| v6762_retnet | Retentive Network | 6 |
+| v6763_hyena_operator | Long convolutions | 6 |
+| v6764_hgrn | Hierarchical Gated RNN | 6 |
+| v6765_xlstm | Extended LSTM | 6 |
+| v6766_griffin | Google's Gated LRU | 6 |
+| v6767_differential_attention | Noise cancellation | 6 |
+| v6768_multiscale_retention | Per-head decay | 6 |
+| v6769_infini_attention | Infinite context | 6 |
+| v6770_ring_attention | Distributed attention | 6 |
+| v6771_titans_memory | Memory layers | 6 |
+| v6772_ttt_layer | Test-Time Training | 6 |
+| v6773_associative_memory | Pattern storage | 6 |
+| v6774_hopfield_modern | Attention = Hopfield | 6 |
+| v6775_ntm_lite | Neural Turing Machine | 6 |
+
+### Layer 6: Training Pipeline (v678x) - 44 tests
+
+| Module | Description | Tests |
+|--------|-------------|-------|
+| v6780_dataset_loader | GLUE, SQuAD support | 6 |
+| v6781_data_collator | Dynamic padding | 6 |
+| v6782_training_loop_v2 | Full pipeline | 7 |
+| v6783_eval_metrics | Accuracy, F1, MCC | 6 |
+| v6784_checkpoint_manager | Save/Load | 6 |
+| v6785_lr_finder | Learning rate search | 6 |
+| v6786_gradient_accumulation | Large batch simulation | 7 |
+
 ## Test Summary
 
-- **Total Modules:** 50
-- **Total Tests:** 351
+- **Total Modules:** 73
+- **Total Tests:** 491
 - **Pass Rate:** 100%
 - **Language:** Zig (no GC, systems-level)
+
+## iGLA - Кощей Бессмертный
+
+```
+h_t = G_t ⊙ h_{t-1} + (1 - G_t) ⊙ (K_t^T V_t)
+
+G_t = "Кощеева игла" - контролирует бессмертие состояния
+Complexity: O(N) vs O(N²) for Transformer
+Context: INFINITE!
+```
 
 ## Future Roadmap
 
 ```
-v676x: Multimodal Extension (Vision + Audio)
-v677x: Quantum Hardware Integration
-v678x: Edge/Mobile Deployment
-v679x: Neuromorphic Computing
+v679x: Multimodal Extension (Vision + Audio)
+v680x: Distributed Training (multi-GPU)
+v681x: Production Deployment
+v682x: Neuromorphic Computing
 ```
 
 ---
 
-**φ² + 1/φ² = 3 | PHOENIX = 999**
+**φ² + 1/φ² = 3 | PHOENIX = 999 | iGLA КОЩЕЙ БЕССМЕРТНЫЙ**
