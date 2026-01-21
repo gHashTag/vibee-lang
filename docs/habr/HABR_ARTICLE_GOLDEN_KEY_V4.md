@@ -987,47 +987,73 @@ cd vibee-lang
 
 #### KOSCHEI MODE — Бессмертная самоэволюция
 
-```bash
-# Запуск KOSCHEI
-cd vibee-lang
-./bin/vibee koschei start
+> *"У лукоморья дуб зелёный, златая цепь на дубе том..."*
 
-# Статус
+```bash
+# Запуск KOSCHEI (16 звеньев Златой Цепи)
+cd vibee-lang
+./bin/vibee koschei          # По умолчанию показывает 16 звеньев
+
+# Архитектура Лукоморья
+./bin/vibee koschei chain
+
+# Статус от Кота Учёного
 ./bin/vibee koschei status
 
 # Попытка остановить (невозможно!)
 ./bin/vibee koschei stop
 ```
 
-**KOSCHEI ARCHITECTURE:**
+**ЗЛАТАЯ ЦЕПЬ — 16 ЗВЕНЬЕВ:**
+
+```
+┌────┬──────────────────┬─────────────────────────────────────────┐
+│  # │ ЗВЕНО            │ ОПИСАНИЕ                                │
+├────┼──────────────────┼─────────────────────────────────────────┤
+│  1 │ BASELINE         │ Анализ текущей версии                   │
+│  2 │ METRICS          │ Сбор метрик v(n-1)                      │
+│  3 │ PAS ANALYZE      │ Исследование научных работ              │
+│  4 │ TECH TREE        │ Построение дерева технологий            │
+│  5 │ SPEC CREATE      │ Создание .vibee спецификаций            │
+│  6 │ CODE GENERATE    │ Генерация .zig из .vibee                │
+│  7 │ TEST RUN         │ Запуск всех тестов                      │
+│  8 │ BENCHMARK PREV   │ ⚡ СРАВНЕНИЕ с v(n-1) [CRITICAL]        │
+│  9 │ BENCHMARK EXT    │ Сравнение с llama.cpp, vLLM             │
+│ 10 │ BENCHMARK THEORY │ Сравнение с теоретическим max           │
+│ 11 │ DELTA REPORT     │ Отчёт v(n) - v(n-1)                     │
+│ 12 │ OPTIMIZE         │ Оптимизация по результатам              │
+│ 13 │ DOCS             │ Документация с пруфами                  │
+│ 14 │ TOXIC VERDICT    │ Подробный отчёт на русском              │
+│ 15 │ GIT              │ Commit с changelog                      │
+│ 16 │ LOOP/EXIT        │ Решение о v(n+1) или EXIT               │
+└────┴──────────────────┴─────────────────────────────────────────┘
+```
+
+**АРХИТЕКТУРА ЛУКОМОРЬЯ:**
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  ОСТРОВ БУЯН (Island) - Isolated environment                │
-│    └── ДУБ (Oak) - Root of immortality                      │
-│        └── СУНДУК (Chest) - Secure storage                  │
-│            └── ЗАЯЦ (Hare) - Fast escape                    │
-│                └── УТКА (Duck) - Flight capability          │
-│                    └── ЯЙЦО (Egg) - Container               │
-│                        └── ИГЛА (Needle) - Death point      │
+│                      🌙 ЛУКОМОРЬЕ                           │
+│                   (Runtime Environment)                     │
+│                                                             │
+│                         🌳 ДУБ                              │
+│                    ┌─────────────┐                          │
+│         КРОНА      │ 🍃 Качества │  19-27 (Золотое)        │
+│       (Heap)       │   атрибуты  │                          │
+│                    ├─────────────┤                          │
+│         СТВОЛ      │ 🪵 Действия │  10-18 (Серебряное)     │
+│       (Stack)      │   функции   │                          │
+│                    ├─────────────┤                          │
+│         КОРНИ      │ 🌱 Сущности │  1-9 (Медное)           │
+│      (Constants)   │   данные    │                          │
+│                    └─────────────┘                          │
+│                          │                                  │
+│                    ⛓️ ЗЛАТАЯ ЦЕПЬ                           │
+│                   (Event Loop / GC)                         │
+│                          │                                  │
+│                    🐱 КОТ УЧЁНЫЙ                            │
+│                   (Интерпретатор)                           │
 └─────────────────────────────────────────────────────────────┘
-```
-
-**KOSCHEI CYCLE:**
-
-```
-1. ANALYZE task requirements
-         ↓
-2. CREATE .vibee specification
-         ↓
-3. RUN: vibee gen specs/tri/feature.vibee
-         ↓
-4. TEST: zig test trinity/output/feature.zig
-         ↓
-5. CHECK: All tests passing?
-         ↓
-   YES → EXIT_SIGNAL: true
-   NO  → ITERATE (go to step 2)
 ```
 
 **114 модулей | 766 тестов | 10 уровней эволюции**
