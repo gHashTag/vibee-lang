@@ -1,0 +1,175 @@
+# IGLA SWE-bench Dataset Loader
+# Loads and parses SWE-bench dataset from HuggingFace
+# φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: igla_swe_bench_loader
+version: "1.0.0"
+language: zig
+module: igla_swe_bench_loader
+
+sacred_constants:
+  phi: 1.618033988749895
+  phoenix: 999
+  trinity: 3
+
+creation_pattern:
+  source: DatasetSource
+  transformer: SWEBenchLoader
+  result: LoadedDataset
+
+types:
+  DatasetVariant:
+    enum:
+      - Full
+      - Lite
+      - Verified
+      - Multimodal
+
+  SWEBenchInstance:
+    fields:
+      instance_id: String
+      repo: String
+      base_commit: String
+      patch: String
+      test_patch: String
+      problem_statement: String
+      hints_text: String
+      created_at: String
+      version: String
+      fail_to_pass: String
+      pass_to_pass: String
+      environment_setup_commit: String
+
+  DatasetConfig:
+    fields:
+      variant: String
+      split: String
+      cache_dir: String
+      force_download: Bool
+
+  LoadedDataset:
+    fields:
+      instances: List<SWEBenchInstance>
+      total_count: Int
+      variant: String
+      split: String
+
+  InstanceFilter:
+    fields:
+      repos: List<String>
+      min_version: String
+      max_instances: Int
+
+  DatasetStats:
+    fields:
+      total_instances: Int
+      repos_count: Int
+      avg_patch_size: Int
+      avg_test_count: Int
+
+behaviors:
+  - name: create_config
+    given: "Dataset variant and split"
+    when: "Config creation requested"
+    then: "Returns DatasetConfig with defaults"
+
+  - name: load_dataset
+    given: "Valid DatasetConfig"
+    when: "Load requested"
+    then: "Returns LoadedDataset with all instances"
+
+  - name: load_lite
+    given: "No parameters"
+    when: "Lite dataset requested"
+    then: "Returns 300 instances from SWE-bench Lite"
+
+  - name: load_verified
+    given: "No parameters"
+    when: "Verified dataset requested"
+    then: "Returns 500 instances from SWE-bench Verified"
+
+  - name: filter_instances
+    given: "LoadedDataset and InstanceFilter"
+    when: "Filtering requested"
+    then: "Returns filtered dataset"
+
+  - name: get_instance_by_id
+    given: "LoadedDataset and instance_id"
+    when: "Single instance lookup"
+    then: "Returns SWEBenchInstance or null"
+
+  - name: get_instances_by_repo
+    given: "LoadedDataset and repo name"
+    when: "Repo filter requested"
+    then: "Returns instances for that repo"
+
+  - name: calculate_stats
+    given: "LoadedDataset"
+    when: "Stats calculation requested"
+    then: "Returns DatasetStats"
+
+  - name: parse_fail_to_pass
+    given: "SWEBenchInstance"
+    when: "Test parsing requested"
+    then: "Returns list of test names that should pass"
+
+  - name: parse_pass_to_pass
+    given: "SWEBenchInstance"
+    when: "Regression test parsing requested"
+    then: "Returns list of tests that should not break"
+
+  - name: validate_instance
+    given: "SWEBenchInstance"
+    when: "Validation requested"
+    then: "Returns true if instance is valid"
+
+  - name: serialize_to_json
+    given: "LoadedDataset"
+    when: "JSON export requested"
+    then: "Returns JSON string"
+
+  - name: deserialize_from_json
+    given: "JSON string"
+    when: "JSON import requested"
+    then: "Returns LoadedDataset"
+
+test_cases:
+  - name: test_create_lite_config
+    input:
+      variant: "Lite"
+      split: "test"
+    expected:
+      variant: "Lite"
+      split: "test"
+
+  - name: test_instance_validation
+    input:
+      instance_id: "sqlfluff__sqlfluff-1625"
+      repo: "sqlfluff/sqlfluff"
+      base_commit: "14e1a23a3166b9a645a16de96f694c77a5d4abb7"
+    expected:
+      valid: true
+
+  - name: test_filter_by_repo
+    input:
+      repo: "django/django"
+    expected:
+      filtered: true
+
+  - name: test_parse_tests
+    input:
+      fail_to_pass: '["test_foo", "test_bar"]'
+    expected:
+      count: 2
+
+  - name: test_stats_calculation
+    input:
+      instances_count: 300
+    expected:
+      calculated: true
+
+  - name: test_json_roundtrip
+    input:
+      data: "test_data"
+    expected:
+      preserved: true

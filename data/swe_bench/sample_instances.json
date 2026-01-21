@@ -1,0 +1,72 @@
+[
+  {
+    "instance_id": "sqlfluff__sqlfluff-1625",
+    "repo": "sqlfluff/sqlfluff",
+    "base_commit": "14e1a23a3166b9a645a16de96f694c77a5d4abb7",
+    "patch": "diff --git a/src/sqlfluff/rules/L031.py b/src/sqlfluff/rules/L031.py\n--- a/src/sqlfluff/rules/L031.py\n+++ b/src/sqlfluff/rules/L031.py\n@@ -211,7 +211,7 @@ def _lint_aliases_in_join(\n             violation_buff.append(\n                 LintResult(\n                     anchor=alias_info.alias_identifier_ref,\n-                    description=\"Avoid using aliases in join condition\",\n+                    description=\"Avoid aliases in from clauses and join conditions.\",\n                     fixes=fixes,\n                 )\n             )",
+    "test_patch": "diff --git a/test/cli/commands_test.py b/test/cli/commands_test.py\n--- a/test/cli/commands_test.py\n+++ b/test/cli/commands_test.py\n@@ -49,7 +49,7 @@ def invoke_assert_code(\n expected_output = \"\"\"== [test/fixtures/linter/indentation_error_simple.sql] FAIL\nL:   2 | P:   4 | L003 | Indentation not hanging or a multiple of 4 spaces\nL:   5 | P:  10 | L010 | Keywords must be consistently upper case.\n-L:   5 | P:  13 | L031 | Avoid using aliases in join condition\n+L:   5 | P:  13 | L031 | Avoid aliases in from clauses and join conditions.\n\"\"\"",
+    "problem_statement": "TSQL - L031 incorrectly triggers \"Avoid using aliases in join condition\" when no join present\n\n## Expected Behaviour\nBoth of these queries should pass, the only difference is the addition of a table alias 'a':\n1/ no alias\n```\nSELECT [hello]\nFROM mytable\n```\n2/ same query with alias\n```\nSELECT a.[hello]\nFROM mytable AS a\n```\n\n## Observed Behaviour\n1/ passes\n2/ fails with: L031: Avoid using aliases in join condition.\nBut there is no join condition :-)",
+    "hints_text": "Actually, re-reading the docs I think this is the intended behaviour... closing",
+    "created_at": "2021-10-13T11:35:29Z",
+    "version": "0.6",
+    "FAIL_TO_PASS": "[\"test/cli/commands_test.py::test__cli__command_directed\"]",
+    "PASS_TO_PASS": "[\"test/cli/commands_test.py::test__cli__command_dialect\"]",
+    "environment_setup_commit": "67023b85c41d23d6c6d69812a41b207c4f8a9331"
+  },
+  {
+    "instance_id": "sqlfluff__sqlfluff-2419",
+    "repo": "sqlfluff/sqlfluff",
+    "base_commit": "f1dba0e1dd764ae72d67c3d5e1471cf14d3db030",
+    "patch": "diff --git a/src/sqlfluff/rules/L060.py b/src/sqlfluff/rules/L060.py\n--- a/src/sqlfluff/rules/L060.py\n+++ b/src/sqlfluff/rules/L060.py\n@@ -59,4 +59,8 @@ def _eval(self, context: RuleContext) -> Optional[LintResult]:\n             ],\n         )\n \n-        return LintResult(context.segment, [fix])\n+        return LintResult(\n+            anchor=context.segment,\n+            fixes=[fix],\n+            description=f\"Use 'COALESCE' instead of '{context.segment.raw_upper}'.\",\n+        )",
+    "test_patch": "diff --git a/test/rules/std_L060_test.py b/test/rules/std_L060_test.py\nnew file mode 100644\n--- /dev/null\n+++ b/test/rules/std_L060_test.py\n@@ -0,0 +1,12 @@\n+\"\"\"Tests the python routines within L060.\"\"\"\n+import sqlfluff\n+\n+\n+def test__rules__std_L060_raised() -> None:\n+    \"\"\"L060 is raised for use of ``IFNULL`` or ``NVL``.\"\"\"\n+    sql = \"SELECT\\n\\tIFNULL(NULL, 100),\\n\\tNVL(NULL,100);\"\n+    result = sqlfluff.lint(sql, rules=[\"L060\"])\n+\n+    assert len(result) == 2\n+    assert result[0][\"description\"] == \"Use 'COALESCE' instead of 'IFNULL'.\"\n+    assert result[1][\"description\"] == \"Use 'COALESCE' instead of 'NVL'.\"",
+    "problem_statement": "Rule L060 could give a specific error message\nAt the moment rule L060 flags something like this:\n```\nL:  21 | P:   9 | L060 | Use 'COALESCE' instead of 'IFNULL' or 'NVL'.\n```\n\nSince we likely know the wrong word, it might be nice to actually flag that instead of both `IFNULL` and `NVL` - like most of the other rules do.",
+    "hints_text": "@tunetheweb Yeah definitely, should be a pretty quick change",
+    "created_at": "2022-01-22T12:21:52Z",
+    "version": "0.8",
+    "FAIL_TO_PASS": "[\"test/rules/std_L060_test.py::test__rules__std_L060_raised\"]",
+    "PASS_TO_PASS": "[]",
+    "environment_setup_commit": "a5c4eae4e3e419fe95460c9afd9cf39a35a470c4"
+  },
+  {
+    "instance_id": "django__django-11099",
+    "repo": "django/django",
+    "base_commit": "19fc6376b5e0ff3a82c9f4c7e9d5f0a9f5e5e5e5",
+    "patch": "diff --git a/django/contrib/auth/validators.py b/django/contrib/auth/validators.py\n--- a/django/contrib/auth/validators.py\n+++ b/django/contrib/auth/validators.py\n@@ -7,7 +7,7 @@ class ASCIIUsernameValidator(validators.RegexValidator):\n-    regex = r'^[\\w.@+-]+$'\n+    regex = r'^[\\w.@+-]+\\Z'\n     message = _(",
+    "test_patch": "diff --git a/tests/auth_tests/test_validators.py b/tests/auth_tests/test_validators.py\n--- a/tests/auth_tests/test_validators.py\n+++ b/tests/auth_tests/test_validators.py\n@@ -1,5 +1,10 @@\n+def test_ascii_validator_newline():\n+    validator = ASCIIUsernameValidator()\n+    with self.assertRaises(ValidationError):\n+        validator('user\\nname')",
+    "problem_statement": "UsernameValidator allows trailing newline in usernames\n\nDescription\nASCIIUsernameValidator and UnicodeUsernameValidator use the regex r'^[\\w.@+-]+$' which allows a trailing newline.",
+    "hints_text": "The fix is to use \\Z instead of $ in the regex.",
+    "created_at": "2019-03-15T10:00:00Z",
+    "version": "2.2",
+    "FAIL_TO_PASS": "[\"tests/auth_tests/test_validators.py::test_ascii_validator_newline\"]",
+    "PASS_TO_PASS": "[\"tests/auth_tests/test_validators.py::test_ascii_validator\"]",
+    "environment_setup_commit": "abc123def456"
+  },
+  {
+    "instance_id": "pytest-dev__pytest-5221",
+    "repo": "pytest-dev/pytest",
+    "base_commit": "abc123def456789",
+    "patch": "diff --git a/src/_pytest/python.py b/src/_pytest/python.py\n--- a/src/_pytest/python.py\n+++ b/src/_pytest/python.py\n@@ -100,7 +100,7 @@ def pytest_collect_file(path, parent):\n-    if path.ext == '.py':\n+    if path.ext == '.py' and not path.basename.startswith('_'):",
+    "test_patch": "diff --git a/testing/test_collection.py b/testing/test_collection.py\n--- a/testing/test_collection.py\n+++ b/testing/test_collection.py\n@@ -1,5 +1,10 @@\n+def test_skip_private_modules():\n+    assert not should_collect('_private.py')",
+    "problem_statement": "pytest collects private modules starting with underscore\n\nWhen running pytest, it collects modules starting with underscore which should be private.",
+    "hints_text": "Add check for underscore prefix",
+    "created_at": "2019-05-10T14:30:00Z",
+    "version": "4.5",
+    "FAIL_TO_PASS": "[\"testing/test_collection.py::test_skip_private_modules\"]",
+    "PASS_TO_PASS": "[\"testing/test_collection.py::test_collect_module\"]",
+    "environment_setup_commit": "def456abc789"
+  },
+  {
+    "instance_id": "sympy__sympy-20590",
+    "repo": "sympy/sympy",
+    "base_commit": "cffd4e0f86fefd4802349a9f9b19ed70934ea354",
+    "patch": "diff --git a/sympy/core/symbol.py b/sympy/core/symbol.py\n--- a/sympy/core/symbol.py\n+++ b/sympy/core/symbol.py\n@@ -100,7 +100,7 @@ def _hashable_content(self):\n-        return (self.name,)\n+        return (self.name, self.assumptions0)",
+    "test_patch": "diff --git a/sympy/core/tests/test_symbol.py b/sympy/core/tests/test_symbol.py\n--- a/sympy/core/tests/test_symbol.py\n+++ b/sympy/core/tests/test_symbol.py\n@@ -1,5 +1,10 @@\n+def test_symbol_assumptions_hash():\n+    x = Symbol('x', positive=True)\n+    y = Symbol('x', negative=True)\n+    assert hash(x) != hash(y)",
+    "problem_statement": "Symbol instances with different assumptions have same hash\n\nSymbols with the same name but different assumptions should have different hashes.",
+    "hints_text": "Include assumptions in _hashable_content",
+    "created_at": "2020-11-20T09:15:00Z",
+    "version": "1.7",
+    "FAIL_TO_PASS": "[\"sympy/core/tests/test_symbol.py::test_symbol_assumptions_hash\"]",
+    "PASS_TO_PASS": "[\"sympy/core/tests/test_symbol.py::test_symbol\"]",
+    "environment_setup_commit": "abc789def012"
+  }
+]

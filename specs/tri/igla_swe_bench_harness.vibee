@@ -1,0 +1,208 @@
+# IGLA SWE-bench Harness
+# Execution harness for running SWE-bench evaluations
+# φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: igla_swe_bench_harness
+version: "1.0.0"
+language: zig
+module: igla_swe_bench_harness
+
+sacred_constants:
+  phi: 1.618033988749895
+  phoenix: 999
+  trinity: 3
+
+creation_pattern:
+  source: SWEBenchInstance
+  transformer: HarnessExecutor
+  result: ExecutionResult
+
+types:
+  ExecutionMode:
+    enum:
+      - Docker
+      - Local
+      - Sandbox
+      - Modal
+
+  HarnessConfig:
+    fields:
+      mode: String
+      timeout_seconds: Int
+      max_workers: Int
+      cache_level: String
+      force_rebuild: Bool
+      run_id: String
+
+  PatchApplication:
+    fields:
+      instance_id: String
+      patch_content: String
+      applied: Bool
+      error_message: String
+
+  TestExecution:
+    fields:
+      instance_id: String
+      test_command: String
+      stdout: String
+      stderr: String
+      exit_code: Int
+      duration_ms: Int
+      timed_out: Bool
+
+  ExecutionResult:
+    fields:
+      instance_id: String
+      patch_applied: Bool
+      tests_passed: Bool
+      fail_to_pass_results: String
+      pass_to_pass_results: String
+      total_duration_ms: Int
+      error: String
+
+  BatchExecutionResult:
+    fields:
+      run_id: String
+      total_instances: Int
+      completed: Int
+      resolved: Int
+      failed: Int
+      errors: Int
+      duration_seconds: Int
+
+  GitOperation:
+    fields:
+      operation: String
+      repo_path: String
+      commit: String
+      success: Bool
+
+  ContainerConfig:
+    fields:
+      image_name: String
+      workdir: String
+      user: String
+      memory_limit: String
+      cpu_limit: Float
+
+behaviors:
+  - name: create_harness_config
+    given: "Execution parameters"
+    when: "Config creation requested"
+    then: "Returns HarnessConfig with validated settings"
+
+  - name: setup_environment
+    given: "SWEBenchInstance and HarnessConfig"
+    when: "Environment setup requested"
+    then: "Clones repo, checks out commit, installs deps"
+
+  - name: apply_patch
+    given: "SWEBenchInstance and patch content"
+    when: "Patch application requested"
+    then: "Returns PatchApplication result"
+
+  - name: run_tests
+    given: "SWEBenchInstance and test_patch"
+    when: "Test execution requested"
+    then: "Returns TestExecution result"
+
+  - name: run_single_instance
+    given: "SWEBenchInstance, prediction patch, HarnessConfig"
+    when: "Single instance evaluation requested"
+    then: "Returns ExecutionResult"
+
+  - name: run_batch
+    given: "List of instances, predictions, HarnessConfig"
+    when: "Batch evaluation requested"
+    then: "Returns BatchExecutionResult"
+
+  - name: git_clone
+    given: "Repo URL and target path"
+    when: "Clone requested"
+    then: "Returns GitOperation result"
+
+  - name: git_checkout
+    given: "Repo path and commit hash"
+    when: "Checkout requested"
+    then: "Returns GitOperation result"
+
+  - name: git_apply
+    given: "Repo path and patch content"
+    when: "Git apply requested"
+    then: "Returns GitOperation result"
+
+  - name: git_diff
+    given: "Repo path"
+    when: "Diff requested"
+    then: "Returns current diff as string"
+
+  - name: create_container
+    given: "ContainerConfig"
+    when: "Container creation requested"
+    then: "Returns container ID or error"
+
+  - name: exec_in_container
+    given: "Container ID and command"
+    when: "Execution requested"
+    then: "Returns stdout, stderr, exit_code"
+
+  - name: cleanup_container
+    given: "Container ID"
+    when: "Cleanup requested"
+    then: "Removes container and returns success"
+
+  - name: parse_test_output
+    given: "Test stdout and test framework"
+    when: "Parsing requested"
+    then: "Returns structured test results"
+
+  - name: check_fail_to_pass
+    given: "TestExecution and expected tests"
+    when: "Verification requested"
+    then: "Returns true if all fail_to_pass tests now pass"
+
+  - name: check_pass_to_pass
+    given: "TestExecution and expected tests"
+    when: "Regression check requested"
+    then: "Returns true if no regressions"
+
+test_cases:
+  - name: test_config_creation
+    input:
+      mode: "Docker"
+      timeout: 1800
+    expected:
+      valid: true
+
+  - name: test_patch_application
+    input:
+      patch: "diff --git a/file.py"
+    expected:
+      applied: true
+
+  - name: test_git_operations
+    input:
+      operation: "checkout"
+      commit: "abc123"
+    expected:
+      success: true
+
+  - name: test_test_execution
+    input:
+      command: "pytest test.py"
+    expected:
+      executed: true
+
+  - name: test_batch_execution
+    input:
+      instances: 5
+    expected:
+      completed: 5
+
+  - name: test_container_lifecycle
+    input:
+      image: "python:3.9"
+    expected:
+      created: true
+      cleaned: true

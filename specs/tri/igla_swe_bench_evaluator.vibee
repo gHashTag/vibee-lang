@@ -1,0 +1,195 @@
+# IGLA SWE-bench Evaluator
+# Evaluates and grades SWE-bench predictions
+# φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: igla_swe_bench_evaluator
+version: "1.0.0"
+language: zig
+module: igla_swe_bench_evaluator
+
+sacred_constants:
+  phi: 1.618033988749895
+  phoenix: 999
+  trinity: 3
+
+creation_pattern:
+  source: ExecutionResult
+  transformer: Evaluator
+  result: EvaluationReport
+
+types:
+  TestStatus:
+    enum:
+      - Passed
+      - Failed
+      - Error
+      - Timeout
+      - Skipped
+
+  TestResult:
+    fields:
+      test_name: String
+      status: String
+      duration_ms: Int
+      error_message: String
+
+  InstanceEvaluation:
+    fields:
+      instance_id: String
+      resolved: Bool
+      fail_to_pass_status: String
+      pass_to_pass_status: String
+      tests_passed: Int
+      tests_failed: Int
+      tests_error: Int
+
+  EvaluationReport:
+    fields:
+      run_id: String
+      dataset_variant: String
+      total_instances: Int
+      resolved_count: Int
+      resolved_percentage: Float
+      evaluations: List<InstanceEvaluation>
+      timestamp: String
+
+  GradingCriteria:
+    fields:
+      require_all_fail_to_pass: Bool
+      require_all_pass_to_pass: Bool
+      allow_partial_credit: Bool
+
+  ComparisonResult:
+    fields:
+      baseline_resolved: Float
+      current_resolved: Float
+      improvement: Float
+      statistical_significance: Float
+
+  LeaderboardEntry:
+    fields:
+      model_name: String
+      resolved_percentage: Float
+      total_instances: Int
+      submission_date: String
+      notes: String
+
+  ErrorAnalysis:
+    fields:
+      patch_apply_failures: Int
+      test_timeouts: Int
+      test_errors: Int
+      regression_failures: Int
+
+behaviors:
+  - name: evaluate_instance
+    given: "ExecutionResult and SWEBenchInstance"
+    when: "Evaluation requested"
+    then: "Returns InstanceEvaluation"
+
+  - name: evaluate_batch
+    given: "List of ExecutionResults and instances"
+    when: "Batch evaluation requested"
+    then: "Returns EvaluationReport"
+
+  - name: grade_fail_to_pass
+    given: "Test results and expected fail_to_pass tests"
+    when: "Grading requested"
+    then: "Returns true if all expected tests pass"
+
+  - name: grade_pass_to_pass
+    given: "Test results and expected pass_to_pass tests"
+    when: "Regression grading requested"
+    then: "Returns true if no regressions"
+
+  - name: calculate_resolved_percentage
+    given: "EvaluationReport"
+    when: "Percentage calculation requested"
+    then: "Returns resolved/total * 100"
+
+  - name: compare_to_baseline
+    given: "Current report and baseline report"
+    when: "Comparison requested"
+    then: "Returns ComparisonResult"
+
+  - name: analyze_errors
+    given: "EvaluationReport"
+    when: "Error analysis requested"
+    then: "Returns ErrorAnalysis breakdown"
+
+  - name: generate_leaderboard_entry
+    given: "EvaluationReport and model name"
+    when: "Leaderboard entry requested"
+    then: "Returns LeaderboardEntry"
+
+  - name: parse_pytest_output
+    given: "Pytest stdout"
+    when: "Parsing requested"
+    then: "Returns list of TestResult"
+
+  - name: parse_unittest_output
+    given: "Unittest stdout"
+    when: "Parsing requested"
+    then: "Returns list of TestResult"
+
+  - name: match_test_names
+    given: "Actual test names and expected patterns"
+    when: "Matching requested"
+    then: "Returns matched test results"
+
+  - name: calculate_confidence_interval
+    given: "Resolved count and total count"
+    when: "CI calculation requested"
+    then: "Returns 95% confidence interval"
+
+  - name: export_to_json
+    given: "EvaluationReport"
+    when: "JSON export requested"
+    then: "Returns JSON string"
+
+  - name: export_to_csv
+    given: "EvaluationReport"
+    when: "CSV export requested"
+    then: "Returns CSV string"
+
+test_cases:
+  - name: test_instance_evaluation
+    input:
+      resolved: true
+      tests_passed: 5
+    expected:
+      evaluated: true
+
+  - name: test_percentage_calculation
+    input:
+      resolved: 30
+      total: 300
+    expected:
+      percentage: 10.0
+
+  - name: test_fail_to_pass_grading
+    input:
+      expected: ["test_foo"]
+      actual_passed: ["test_foo"]
+    expected:
+      grade: true
+
+  - name: test_regression_detection
+    input:
+      expected_pass: ["test_bar"]
+      actual_failed: ["test_bar"]
+    expected:
+      regression: true
+
+  - name: test_pytest_parsing
+    input:
+      output: "PASSED test_foo"
+    expected:
+      parsed: true
+
+  - name: test_comparison
+    input:
+      baseline: 10.0
+      current: 15.0
+    expected:
+      improvement: 5.0
