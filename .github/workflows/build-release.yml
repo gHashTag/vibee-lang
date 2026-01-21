@@ -1,0 +1,157 @@
+# VIBEE Browser - Build & Release
+# Creates .dmg (macOS), .exe (Windows), .AppImage (Linux)
+# φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g., 2482.0.0)'
+        required: true
+        default: '2482.0.0'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli
+
+      - name: Build VIBEE Browser (macOS)
+        working-directory: vibee-browser
+        run: |
+          npm install
+          cargo tauri build --target universal-apple-darwin
+
+      - name: Upload macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibee-browser-macos
+          path: |
+            vibee-browser/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            vibee-browser/src-tauri/target/release/bundle/dmg/*.dmg
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli
+
+      - name: Build VIBEE Browser (Windows)
+        working-directory: vibee-browser
+        run: |
+          npm install
+          cargo tauri build
+
+      - name: Upload Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibee-browser-windows
+          path: |
+            vibee-browser/src-tauri/target/release/bundle/msi/*.msi
+            vibee-browser/src-tauri/target/release/bundle/nsis/*.exe
+
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli
+
+      - name: Build VIBEE Browser (Linux)
+        working-directory: vibee-browser
+        run: |
+          npm install
+          cargo tauri build
+
+      - name: Upload Linux AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibee-browser-linux
+          path: |
+            vibee-browser/src-tauri/target/release/bundle/appimage/*.AppImage
+            vibee-browser/src-tauri/target/release/bundle/deb/*.deb
+
+  release:
+    needs: [build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            vibee-browser-macos/*.dmg
+            vibee-browser-windows/*.msi
+            vibee-browser-windows/*.exe
+            vibee-browser-linux/*.AppImage
+            vibee-browser-linux/*.deb
+          body: |
+            ## VIBEE Browser Release
+            
+            **φ² + 1/φ² = 3 | PHOENIX = 999**
+            
+            ### Downloads
+            - **macOS**: `VIBEE-Browser_*.dmg`
+            - **Windows**: `VIBEE-Browser_*.msi` or `VIBEE-Browser_*.exe`
+            - **Linux**: `VIBEE-Browser_*.AppImage` or `VIBEE-Browser_*.deb`
+            
+            ### Features
+            - Chrome DevTools Protocol (CDP) integration
+            - AI Agent automation
+            - Ternary logic interface
+            - Golden ratio UI (φ = 1.618...)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
