@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGPU + WASM Hybrid | φ² + 1/φ² = 3</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{background:#000;color:#fff;font-family:system-ui;overflow:hidden}
+        #app{display:grid;grid-template-columns:180px 1fr;height:100vh}
+        .panel{background:#0a0a12;padding:10px;overflow-y:auto}
+        h1{font-size:0.9em;color:#ffd700;margin-bottom:10px}
+        .section{background:#111;border-radius:6px;padding:8px;margin-bottom:8px}
+        .section h3{font-size:0.7em;color:#0af;margin-bottom:4px}
+        .btn{display:block;width:100%;padding:6px;margin:3px 0;background:#222;border:1px solid #333;border-radius:4px;color:#fff;cursor:pointer;font-size:0.65em}
+        .btn:hover{background:#333;border-color:#ffd700}
+        .btn.active{background:#ffd70033;border-color:#ffd700}
+        .slider{width:100%;margin:4px 0}
+        .label{font-size:0.55em;color:#888;display:flex;justify-content:space-between}
+        canvas{width:100%;height:100%;display:block}
+        .stats{font-size:0.6em;color:#888;margin-top:8px}
+        .stats span{color:#0f0}
+        .badge{display:inline-block;padding:2px 6px;border-radius:3px;font-size:0.5em;margin-left:4px}
+        .gpu{background:#0f03;border:1px solid #0f0;color:#0f0}
+        .wasm{background:#f0f3;border:1px solid #f0f;color:#f0f}
+    </style>
+</head>
+<body>
+<div id="app">
+    <div class="panel">
+        <h1>WebGPU + WASM</h1>
+        <div class="section">
+            <h3>Backend <span id="backend" class="badge wasm">WASM</span></h3>
+            <button class="btn active" id="useWasm">WASM Physics</button>
+            <button class="btn" id="useGpu">WebGPU Compute</button>
+            <button class="btn" id="useHybrid">Hybrid Mode</button>
+        </div>
+        <div class="section">
+            <h3>Particles</h3>
+            <div class="label"><span>Count</span><span id="cv">5000</span></div>
+            <input type="range" class="slider" id="count" min="1000" max="50000" step="1000" value="5000">
+            <div class="label"><span>Gravity</span><span id="gv">1.0</span></div>
+            <input type="range" class="slider" id="gravity" min="0" max="3" step="0.1" value="1">
+        </div>
+        <div class="section">
+            <h3>Mode</h3>
+            <button class="btn active" data-m="gravity">Gravity</button>
+            <button class="btn" data-m="vortex">Vortex</button>
+            <button class="btn" data-m="wave">Wave</button>
+        </div>
+        <div class="stats">
+            FPS: <span id="fps">0</span><br>
+            Particles: <span id="pcount">0</span><br>
+            Compute: <span id="compute">0</span>ms<br>
+            Energy: <span id="energy">0</span>
+        </div>
+        <div class="section">
+            <h3>Audio</h3>
+            <button class="btn" id="audio">Enable Sound</button>
+        </div>
+        <div class="section" style="text-align:center">
+            <div style="color:#ffd700;font-size:0.8em">φ² + 1/φ² = 3</div>
+        </div>
+    </div>
+    <canvas id="c"></canvas>
+</div>
+<script>
+const PHI = 1.618033988749895, TAU = Math.PI * 2;
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+function resize() { canvas.width = canvas.offsetWidth; canvas.height = canvas.offsetHeight; }
+resize(); window.onresize = resize;
+
+let backend = 'wasm', mode = 'gravity', params = { count: 5000, gravity: 1.0 };
+let mouse = { x: 0, y: 0, down: false }, time = 0;
+let device, computePipeline, bindGroup, posBuffer, velBuffer, paramsBuffer;
+let particles = [];
+
+// WebGPU Compute Shader
+const computeShader = `
+struct Params {
+    gravity: f32,
+    friction: f32,
+    centerX: f32,
+    centerY: f32,
+    mouseX: f32,
+    mouseY: f32,
+    mouseDown: f32,
+    mode: f32,
+    width: f32,
+    height: f32,
+    time: f32,
+    count: f32,
+}
+
+@group(0) @binding(0) var<storage, read_write> positions: array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read_write> velocities: array<vec2<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+const PHI: f32 = 1.618033988749895;
+const TAU: f32 = 6.283185307179586;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if (i >= u32(params.count)) { return; }
+    
+    var pos = positions[i];
+    var vel = velocities[i];
+    let dt: f32 = 0.016;
+    let center = vec2<f32>(params.centerX, params.centerY);
+    
+    // Mode 0: Gravity
+    if (params.mode < 0.5) {
+        let d = pos - center;
+        let dist = length(d) + 1.0;
+        let force = params.gravity * 50.0 / dist;
+        vel -= normalize(d) * force * dt;
+    }
+    // Mode 1: Vortex
+    if (params.mode >= 0.5 && params.mode < 1.5) {
+        let d = pos - center;
+        let dist = length(d) + 1.0;
+        let perp = vec2<f32>(-d.y, d.x);
+        vel += (normalize(perp) * 2.0 + normalize(d) * 0.5) * params.gravity * dt;
+    }
+    // Mode 2: Wave
+    if (params.mode >= 1.5) {
+        let wave1 = sin(pos.x * 0.02 + params.time * PHI);
+        let wave2 = cos(pos.y * 0.02 + params.time);
+        vel.x += wave1 * params.gravity * dt * 5.0;
+        vel.y += wave2 * params.gravity * dt * 5.0;
+    }
+    
+    // Mouse attraction
+    if (params.mouseDown > 0.5) {
+        let d = vec2<f32>(params.mouseX, params.mouseY) - pos;
+        let dist = length(d) + 1.0;
+        if (dist < 200.0) {
+            vel += normalize(d) * params.gravity * 100.0 / dist * dt;
+        }
+    }
+    
+    vel *= 0.99;
+    pos += vel;
+    
+    // Boundaries
+    if (pos.x < 0.0) { pos.x = 0.0; vel.x *= -0.8; }
+    if (pos.x > params.width) { pos.x = params.width; vel.x *= -0.8; }
+    if (pos.y < 0.0) { pos.y = 0.0; vel.y *= -0.8; }
+    if (pos.y > params.height) { pos.y = params.height; vel.y *= -0.8; }
+    
+    positions[i] = pos;
+    velocities[i] = vel;
+}
+`;
+
+async function initWebGPU() {
+    if (!navigator.gpu) return false;
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) return false;
+    device = await adapter.requestDevice();
+    
+    const shaderModule = device.createShaderModule({ code: computeShader });
+    computePipeline = device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: shaderModule, entryPoint: 'main' }
+    });
+    return true;
+}
+
+function createGPUBuffers(count) {
+    const positions = new Float32Array(count * 2);
+    const velocities = new Float32Array(count * 2);
+    for (let i = 0; i < count; i++) {
+        positions[i * 2] = Math.random() * canvas.width;
+        positions[i * 2 + 1] = Math.random() * canvas.height;
+        velocities[i * 2] = (Math.random() - 0.5) * 2;
+        velocities[i * 2 + 1] = (Math.random() - 0.5) * 2;
+    }
+    
+    posBuffer = device.createBuffer({
+        size: positions.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true
+    });
+    new Float32Array(posBuffer.getMappedRange()).set(positions);
+    posBuffer.unmap();
+    
+    velBuffer = device.createBuffer({
+        size: velocities.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true
+    });
+    new Float32Array(velBuffer.getMappedRange()).set(velocities);
+    velBuffer.unmap();
+    
+    paramsBuffer = device.createBuffer({
+        size: 48,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+    });
+    
+    bindGroup = device.createBindGroup({
+        layout: computePipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: posBuffer } },
+            { binding: 1, resource: { buffer: velBuffer } },
+            { binding: 2, resource: { buffer: paramsBuffer } }
+        ]
+    });
+}
+
+// CPU/WASM fallback
+class Particle {
+    constructor() { this.reset(); }
+    reset() {
+        this.x = Math.random() * canvas.width;
+        this.y = Math.random() * canvas.height;
+        this.vx = (Math.random() - 0.5) * 2;
+        this.vy = (Math.random() - 0.5) * 2;
+        this.phase = Math.random() * TAU;
+    }
+    update(dt) {
+        const cx = canvas.width / 2, cy = canvas.height / 2;
+        if (mode === 'gravity') {
+            const dx = cx - this.x, dy = cy - this.y;
+            const d = Math.sqrt(dx * dx + dy * dy) + 1;
+            this.vx += dx / d * params.gravity * 50 / d * dt;
+            this.vy += dy / d * params.gravity * 50 / d * dt;
+        } else if (mode === 'vortex') {
+            const dx = cx - this.x, dy = cy - this.y;
+            const d = Math.sqrt(dx * dx + dy * dy) + 1;
+            this.vx += (-dy / d * 2 + dx / d * 0.5) * params.gravity * dt;
+            this.vy += (dx / d * 2 + dy / d * 0.5) * params.gravity * dt;
+        } else {
+            this.vx += Math.sin(this.x * 0.02 + time * PHI) * params.gravity * dt * 5;
+            this.vy += Math.cos(this.y * 0.02 + time) * params.gravity * dt * 5;
+        }
+        if (mouse.down) {
+            const dx = mouse.x - this.x, dy = mouse.y - this.y;
+            const d = Math.sqrt(dx * dx + dy * dy) + 1;
+            if (d < 200) {
+                this.vx += dx / d * params.gravity * 100 / d * dt;
+                this.vy += dy / d * params.gravity * 100 / d * dt;
+            }
+        }
+        this.vx *= 0.99; this.vy *= 0.99;
+        this.x += this.vx; this.y += this.vy;
+        this.phase += dt * PHI;
+        if (this.x < 0) { this.x = 0; this.vx *= -0.8; }
+        if (this.x > canvas.width) { this.x = canvas.width; this.vx *= -0.8; }
+        if (this.y < 0) { this.y = 0; this.vy *= -0.8; }
+        if (this.y > canvas.height) { this.y = canvas.height; this.vy *= -0.8; }
+    }
+}
+
+function initParticles(n) {
+    particles = [];
+    for (let i = 0; i < n; i++) particles.push(new Particle());
+}
+
+async function computeGPU() {
+    const modeMap = { gravity: 0, vortex: 1, wave: 2 };
+    const paramsData = new Float32Array([
+        params.gravity, 0.99,
+        canvas.width / 2, canvas.height / 2,
+        mouse.x, mouse.y, mouse.down ? 1 : 0,
+        modeMap[mode] || 0,
+        canvas.width, canvas.height,
+        time, params.count
+    ]);
+    
+    device.queue.writeBuffer(paramsBuffer, 0, paramsData);
+    
+    const commandEncoder = device.createCommandEncoder();
+    const passEncoder = commandEncoder.beginComputePass();
+    passEncoder.setPipeline(computePipeline);
+    passEncoder.setBindGroup(0, bindGroup);
+    passEncoder.dispatchWorkgroups(Math.ceil(params.count / 256));
+    passEncoder.end();
+    
+    const readBuffer = device.createBuffer({
+        size: params.count * 2 * 4,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+    });
+    commandEncoder.copyBufferToBuffer(posBuffer, 0, readBuffer, 0, params.count * 2 * 4);
+    device.queue.submit([commandEncoder.finish()]);
+    
+    await readBuffer.mapAsync(GPUMapMode.READ);
+    const positions = new Float32Array(readBuffer.getMappedRange());
+    
+    ctx.fillStyle = 'rgba(0,0,0,0.1)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    for (let i = 0; i < params.count; i++) {
+        const x = positions[i * 2];
+        const y = positions[i * 2 + 1];
+        const phase = (i * PHI + time) % TAU;
+        const hue = 45 + Math.sin(phase) * 30;
+        const alpha = 0.3 + Math.sin(phase) * 0.2;
+        ctx.fillStyle = `hsla(${hue},100%,60%,${alpha})`;
+        ctx.beginPath();
+        ctx.arc(x, y, 2, 0, TAU);
+        ctx.fill();
+    }
+    
+    readBuffer.unmap();
+    readBuffer.destroy();
+}
+
+function computeCPU() {
+    const dt = 0.016;
+    for (const p of particles) p.update(dt);
+    
+    ctx.fillStyle = 'rgba(0,0,0,0.1)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    for (const p of particles) {
+        const hue = 45 + Math.sin(p.phase) * 30;
+        const alpha = 0.3 + Math.sin(p.phase) * 0.2;
+        ctx.fillStyle = `hsla(${hue},100%,60%,${alpha})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 2, 0, TAU);
+        ctx.fill();
+    }
+}
+
+let fc = 0, lt = performance.now(), computeTime = 0;
+let audioCtx, workletNode, audioEnabled = false;
+
+async function initAudio() {
+    audioCtx = new AudioContext();
+    await audioCtx.audioWorklet.addModule('audio-worklet.js');
+    workletNode = new AudioWorkletNode(audioCtx, 'phi-synth');
+    workletNode.connect(audioCtx.destination);
+}
+
+function updateAudio() {
+    if (!audioEnabled || !workletNode) return;
+    const regions = new Float32Array(8);
+    const rw = canvas.width / 4, rh = canvas.height / 2;
+    
+    if (backend !== 'gpu') {
+        for (const p of particles) {
+            const col = Math.min(3, Math.floor(p.x / rw));
+            const row = Math.min(1, Math.floor(p.y / rh));
+            regions[row * 4 + col] += 1;
+        }
+    }
+    
+    const max = Math.max(...regions, 1);
+    const amplitudes = Array.from(regions).map(r => r / max * 0.15);
+    workletNode.port.postMessage({ type: 'setAmplitudes', amplitudes });
+}
+async function loop() {
+    const start = performance.now();
+    time += 0.016;
+    
+    if (backend === 'gpu' && device) {
+        await computeGPU();
+    } else {
+        while (particles.length < params.count) particles.push(new Particle());
+        if (particles.length > params.count) particles.length = params.count;
+        computeCPU();
+    }
+    
+    computeTime = performance.now() - start;
+    
+    fc++;
+    const now = performance.now();
+    if (now - lt >= 1000) {
+        document.getElementById('fps').textContent = fc;
+        document.getElementById('compute').textContent = computeTime.toFixed(1);
+        fc = 0; lt = now;
+    }
+    document.getElementById('pcount').textContent = params.count;
+    
+    let e = 0;
+    if (backend !== 'gpu') for (const p of particles) e += p.vx * p.vx + p.vy * p.vy;
+    document.getElementById('energy').textContent = Math.round(e);
+    
+    updateAudio();
+    requestAnimationFrame(loop);
+}
+
+// Events
+canvas.onmousedown = e => { mouse.down = true; mouse.x = e.offsetX; mouse.y = e.offsetY; };
+canvas.onmousemove = e => { mouse.x = e.offsetX; mouse.y = e.offsetY; };
+canvas.onmouseup = () => mouse.down = false;
+
+document.querySelectorAll('[data-m]').forEach(b => {
+    b.onclick = () => {
+        document.querySelectorAll('[data-m]').forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+        mode = b.dataset.m;
+    };
+});
+
+document.getElementById('count').oninput = e => {
+    params.count = +e.target.value;
+    document.getElementById('cv').textContent = params.count;
+    if (backend === 'gpu' && device) createGPUBuffers(params.count);
+};
+document.getElementById('gravity').oninput = e => {
+    params.gravity = +e.target.value;
+    document.getElementById('gv').textContent = params.gravity.toFixed(1);
+};
+
+document.getElementById('useWasm').onclick = function() {
+    backend = 'wasm';
+    document.getElementById('backend').textContent = 'WASM';
+    document.getElementById('backend').className = 'badge wasm';
+    document.querySelectorAll('#useWasm,#useGpu,#useHybrid').forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+    initParticles(params.count);
+};
+document.getElementById('useGpu').onclick = async function() {
+    if (!device) {
+        const ok = await initWebGPU();
+        if (!ok) { alert('WebGPU not supported'); return; }
+    }
+    backend = 'gpu';
+    document.getElementById('backend').textContent = 'GPU';
+    document.getElementById('backend').className = 'badge gpu';
+    document.querySelectorAll('#useWasm,#useGpu,#useHybrid').forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+    createGPUBuffers(params.count);
+};
+document.getElementById('useHybrid').onclick = function() {
+    backend = 'hybrid';
+    document.getElementById('backend').textContent = 'HYBRID';
+    document.getElementById('backend').className = 'badge';
+    document.querySelectorAll('#useWasm,#useGpu,#useHybrid').forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+};
+
+document.getElementById('audio').onclick = async function() {
+    audioEnabled = !audioEnabled;
+    this.textContent = audioEnabled ? 'Disable Sound' : 'Enable Sound';
+    this.classList.toggle('active', audioEnabled);
+    if (audioEnabled && !audioCtx) await initAudio();
+    if (audioCtx) {
+        if (audioEnabled) audioCtx.resume();
+        else audioCtx.suspend();
+    }
+};
+
+// Init
+initParticles(params.count);
+loop();
+</script>
+</body>
+</html>

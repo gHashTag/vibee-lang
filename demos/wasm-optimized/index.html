@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WASM Optimized | φ² + 1/φ² = 3</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{background:#000;color:#fff;font-family:system-ui;overflow:hidden}
+        #app{display:grid;grid-template-columns:180px 1fr;height:100vh}
+        .panel{background:#0a0a12;padding:10px;overflow-y:auto}
+        h1{font-size:0.9em;color:#ffd700;margin-bottom:10px}
+        .section{background:#111;border-radius:6px;padding:8px;margin-bottom:8px}
+        .section h3{font-size:0.7em;color:#0af;margin-bottom:4px}
+        .btn{display:block;width:100%;padding:6px;margin:3px 0;background:#222;border:1px solid #333;border-radius:4px;color:#fff;cursor:pointer;font-size:0.65em}
+        .btn:hover{background:#333;border-color:#ffd700}
+        .btn.active{background:#ffd70033;border-color:#ffd700}
+        canvas{width:100%;height:100%;display:block}
+        .stats{font-size:0.6em;color:#888;margin-top:8px}
+        .stats span{color:#0f0}
+        .size{font-size:0.55em;color:#0af;margin-top:6px}
+    </style>
+</head>
+<body>
+<div id="app">
+    <div class="panel">
+        <h1>WASM Optimized</h1>
+        <div class="section">
+            <h3>Modules</h3>
+            <div class="size">quantum: <span id="qs">loading...</span></div>
+            <div class="size">photon: <span id="ps">loading...</span></div>
+        </div>
+        <div class="section">
+            <h3>Quantum</h3>
+            <button class="btn" id="qcreate">Create Qubit</button>
+            <button class="btn" id="qhadamard">Hadamard</button>
+            <button class="btn" id="qentangle">Entangle</button>
+            <div class="stats">
+                Qubits: <span id="qcount">0</span><br>
+                P(|0⟩): <span id="p0">0</span><br>
+                P(|1⟩): <span id="p1">0</span>
+            </div>
+        </div>
+        <div class="section">
+            <h3>Photons</h3>
+            <button class="btn" id="spawn">Spawn Burst</button>
+            <button class="btn" id="vortex">Vortex</button>
+            <div class="stats">
+                Count: <span id="pcount">0</span><br>
+                Energy: <span id="energy">0</span><br>
+                FPS: <span id="fps">0</span>
+            </div>
+        </div>
+        <div class="section" style="text-align:center">
+            <div style="color:#ffd700;font-size:0.8em">φ² + 1/φ² = 3</div>
+            <div style="color:#f66;font-size:0.6em">PHOENIX = 999</div>
+        </div>
+    </div>
+    <canvas id="c"></canvas>
+</div>
+<script>
+const PHI = 1.618033988749895, TAU = Math.PI * 2;
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+function resize() { canvas.width = canvas.offsetWidth; canvas.height = canvas.offsetHeight; }
+resize(); window.onresize = resize;
+
+let quantum, photon, qInstance, pInstance;
+let vortexMode = false, mouse = { x: 0, y: 0, down: false };
+
+async function loadWasm() {
+    // Load quantum module
+    const qRes = await fetch('quantum_core_opt.wasm');
+    const qBuf = await qRes.arrayBuffer();
+    document.getElementById('qs').textContent = (qBuf.byteLength / 1024).toFixed(1) + ' KB';
+    const qMod = await WebAssembly.instantiate(qBuf, { env: {} });
+    qInstance = qMod.instance.exports;
+    qInstance.init();
+    
+    // Load photon module
+    const pRes = await fetch('photon_engine_opt.wasm');
+    const pBuf = await pRes.arrayBuffer();
+    document.getElementById('ps').textContent = (pBuf.byteLength / 1024).toFixed(1) + ' KB';
+    const pMod = await WebAssembly.instantiate(pBuf, { env: {} });
+    pInstance = pMod.instance.exports;
+    pInstance.init();
+    pInstance.set_bounds(canvas.width, canvas.height);
+    pInstance.set_params(1.0, 0.99, 0.02);
+    
+    console.log('WASM loaded! Golden identity:', qInstance.golden_identity());
+    loop();
+}
+
+let fc = 0, lt = performance.now();
+function loop() {
+    const dt = 0.016;
+    
+    // Update photons
+    if (pInstance) {
+        if (vortexMode) {
+            pInstance.apply_vortex(canvas.width / 2, canvas.height / 2, 2.0);
+        }
+        if (mouse.down) {
+            pInstance.apply_attraction(mouse.x, mouse.y, 2.0);
+        }
+        pInstance.update(dt);
+    }
+    
+    // Render
+    ctx.fillStyle = 'rgba(0,0,0,0.15)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    if (pInstance) {
+        for (let i = 0; i < 500; i++) {
+            if (!pInstance.is_active(i)) continue;
+            const x = pInstance.get_x(i);
+            const y = pInstance.get_y(i);
+            const amp = pInstance.get_amplitude(i);
+            const phase = pInstance.get_phase(i);
+            const hue = 45 + Math.sin(phase) * 30;
+            const alpha = amp * (0.3 + Math.sin(phase) * 0.2);
+            ctx.fillStyle = `hsla(${hue},100%,60%,${alpha})`;
+            ctx.beginPath();
+            ctx.arc(x, y, 2 + amp * 3, 0, TAU);
+            ctx.fill();
+        }
+        document.getElementById('pcount').textContent = pInstance.get_count();
+        document.getElementById('energy').textContent = Math.round(pInstance.get_energy());
+    }
+    
+    // Update quantum stats
+    if (qInstance) {
+        document.getElementById('qcount').textContent = qInstance.get_qubit_count();
+        if (qInstance.get_qubit_count() > 0) {
+            document.getElementById('p0').textContent = qInstance.measure_probability_0(0).toFixed(3);
+            document.getElementById('p1').textContent = qInstance.measure_probability_1(0).toFixed(3);
+        }
+    }
+    
+    fc++;
+    const now = performance.now();
+    if (now - lt >= 1000) {
+        document.getElementById('fps').textContent = fc;
+        fc = 0; lt = now;
+    }
+    
+    requestAnimationFrame(loop);
+}
+
+// Event handlers
+canvas.onmousedown = e => { mouse.down = true; mouse.x = e.offsetX; mouse.y = e.offsetY; };
+canvas.onmousemove = e => { mouse.x = e.offsetX; mouse.y = e.offsetY; };
+canvas.onmouseup = () => mouse.down = false;
+canvas.onclick = e => {
+    if (pInstance) pInstance.spawn_burst(e.offsetX, e.offsetY, 20, 30);
+};
+
+document.getElementById('qcreate').onclick = () => {
+    if (qInstance) qInstance.create_qubit();
+};
+document.getElementById('qhadamard').onclick = () => {
+    if (qInstance && qInstance.get_qubit_count() > 0) qInstance.hadamard(0);
+};
+document.getElementById('qentangle').onclick = () => {
+    if (qInstance && qInstance.get_qubit_count() < 2) qInstance.create_qubit();
+    if (qInstance && qInstance.get_qubit_count() >= 2) qInstance.entangle(0, 1);
+};
+document.getElementById('spawn').onclick = () => {
+    if (pInstance) pInstance.spawn_burst(canvas.width / 2, canvas.height / 2, 50, 50);
+};
+document.getElementById('vortex').onclick = function() {
+    vortexMode = !vortexMode;
+    this.classList.toggle('active', vortexMode);
+};
+
+loadWasm();
+</script>
+</body>
+</html>
