@@ -6,30 +6,30 @@
 
 ---
 
-## История: как язык для вайбкодеров стал языком квантовых вычислений
+## The Story: How a Language for Vibecoders Became a Quantum Computing Language
 
-Я начинал VIBEE как простой инструмент для вайбкодеров — людей, которые хотят писать код через спецификации, а не руками. Идея была простая: пишешь `.vibee` файл, получаешь готовый код на 42 языках.
+I started VIBEE as a simple tool for vibecoders — people who want to write code through specifications, not by hand. The idea was simple: write a `.vibee` file, get ready-to-use code in 42 languages.
 
-Но когда я добавил троичную логику (TRUE/FALSE/UNKNOWN вместо бинарной TRUE/FALSE), произошло неожиданное открытие:
+But when I added ternary logic (TRUE/FALSE/UNKNOWN instead of binary TRUE/FALSE), an unexpected discovery happened:
 
 ```
 φ² + 1/φ² = 3
 ```
 
-Золотое сечение в квадрате плюс единица делённая на золотое сечение в квадрате равно **ровно трём**. Не приблизительно — математически точно.
+The golden ratio squared plus one divided by the golden ratio squared equals **exactly three**. Not approximately — mathematically exact.
 
-**Три** — это:
-- 3 состояния кутрита (квантовый аналог кубита)
-- 3 нуклеотида в кодоне ДНК
-- 3 значения троичной логики
-- 3 кварка в протоне
+**Three** is:
+- 3 states of a qutrit (quantum analog of qubit)
+- 3 nucleotides in a DNA codon
+- 3 values of ternary logic
+- 3 quarks in a proton
 
-Я создавал язык для вайбкодеров. А создал спецификацию для квантовых вычислений на кутритах.
+I was building a language for vibecoders. I ended up creating a specification for qutrit-based quantum computing.
 
-**VIBEE теперь:**
-- Specification-first язык → генерация кода на 42 языках
-- Троичная логика → нативная поддержка кутритов
-- Златая Цепь → автономная разработка AI-агентами
+**VIBEE is now:**
+- Specification-first language → code generation for 42 languages
+- Ternary logic → native qutrit support
+- Golden Chain → autonomous AI-agent development
 
 ---
 
