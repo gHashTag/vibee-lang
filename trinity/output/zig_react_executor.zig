@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// zig_response_parser v1.0.0 - Generated from .vibee specification
+// zig_react_executor v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -17,6 +17,12 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
+pub const MAX_STEPS: f64 = 30;
+
+pub const DEFAULT_TIMEOUT_MS: f64 = 120000;
+
+pub const OBSERVATION_MAX_TOKENS: f64 = 4000;
+
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
 pub const PHI_INV: f64 = 0.618033988749895;
@@ -33,30 +39,38 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const ParsedThought = struct {
-    content: []const u8,
-    confidence: f64,
+pub const ExecutorState = struct {
 };
 
 /// 
-pub const ParsedAction = struct {
-    action_type: []const u8,
-    selector: ?[]const u8,
-    value: ?[]const u8,
-    coordinates: ?[]const u8,
+pub const ExecutorConfig = struct {
+    max_steps: i64,
+    timeout_ms: i64,
+    llm_provider: []const u8,
+    model: []const u8,
+    verbose: bool,
+    save_trajectory: bool,
 };
 
 /// 
-pub const ParsedResponse = struct {
-    thought: ParsedThought,
-    action: ParsedAction,
-    is_final_answer: bool,
+pub const StepResult = struct {
+    step_number: i64,
+    thought: []const u8,
+    action: []const u8,
+    observation: []const u8,
+    success: bool,
+    duration_ms: i64,
+};
+
+/// 
+pub const ExecutionResult = struct {
+    task_id: i64,
+    success: bool,
     final_answer: ?[]const u8,
-    raw_response: []const u8,
-};
-
-/// 
-pub const ParseError = struct {
+    steps: []const u8,
+    total_tokens: i64,
+    total_time_ms: i64,
+    error_message: ?[]const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -108,38 +122,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse" {
-// Given: Raw LLM response string
-// When: Extracting structured data
-// Then: Returns ParsedResponse or error
+test "execute" {
+// Given: WebArena task and browser instance
+// When: Running full ReAct loop
+// Then: Returns ExecutionResult
     // TODO: Add test assertions
 }
 
-test "extract_thought" {
-// Given: Response text
-// When: Finding Thought section
-// Then: Returns thought content
+test "observe" {
+// Given: Browser state
+// When: Extracting page observation
+// Then: Returns observation string
     // TODO: Add test assertions
 }
 
-test "extract_action" {
-// Given: Response text
-// When: Finding Action and Action Input
-// Then: Returns ParsedAction
+test "think" {
+// Given: Observation and context
+// When: Calling LLM for next action
+// Then: Returns thought and action
     // TODO: Add test assertions
 }
 
-test "is_final_answer" {
-// Given: ParsedAction
-// When: Checking if action is stop/final_answer
+test "act" {
+// Given: Parsed action
+// When: Executing action in browser
+// Then: Returns action result
+    // TODO: Add test assertions
+}
+
+test "evaluate" {
+// Given: Current state and task
+// When: Checking task completion
 // Then: Returns true if task complete
     // TODO: Add test assertions
 }
 
-test "validate" {
-// Given: ParsedResponse
-// When: Checking response validity
-// Then: Returns true if valid format
+test "should_stop" {
+// Given: Current state
+// When: Checking termination conditions
+// Then: Returns true if should stop
     // TODO: Add test assertions
 }
 

@@ -60,12 +60,43 @@
 
 ---
 
-## Метрики v16
+## Метрики v17
 
-- **Specs**: 15 новых GAIA модулей
-- **Tests**: 96 (GAIA) + 42 (v15) = 138 total
-- **Modules**: 44 generated .zig files
-- **Architecture coverage**: 100% of top techniques
+- **GAIA Specs**: 15 модулей
+- **LLM Specs**: 6 модулей (NEW!)
+- **Total Specs**: 21
+- **Tests**: 133 (GAIA 96 + LLM 37)
+- **Modules**: 50 generated .zig files
+- **Architecture coverage**: 100%
+
+## LLM Integration v17
+
+| Модуль | Описание |
+|--------|----------|
+| zig_llm_client | Universal LLM interface |
+| zig_openai_provider | OpenAI GPT-4/GPT-4o |
+| zig_claude_provider | Anthropic Claude |
+| zig_react_prompt | WebArena prompts |
+| zig_response_parser | Thought/Action extraction |
+| zig_react_executor | Full ReAct loop |
+
+## Полный стек v17
+
+```
+┌─────────────────────────────────────────┐
+│           LLM Layer (v17)               │
+│  OpenAI ←→ Claude ←→ ReAct Executor     │
+├─────────────────────────────────────────┤
+│           GAIA Layer (v16)              │
+│  Memory, Planning, Evaluation           │
+├─────────────────────────────────────────┤
+│           Browser Layer (v14-15)        │
+│  CDP ←→ WebSocket ←→ Browser API        │
+├─────────────────────────────────────────┤
+│           Task Layer (v15)              │
+│  WebArena Parser ←→ Executor            │
+└─────────────────────────────────────────┘
+```
 
 ---
 

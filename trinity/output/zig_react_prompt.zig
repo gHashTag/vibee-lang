@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// zig_response_parser v1.0.0 - Generated from .vibee specification
+// zig_react_prompt v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,30 +33,30 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const ParsedThought = struct {
-    content: []const u8,
-    confidence: f64,
+pub const PromptType = struct {
 };
 
 /// 
-pub const ParsedAction = struct {
-    action_type: []const u8,
-    selector: ?[]const u8,
-    value: ?[]const u8,
-    coordinates: ?[]const u8,
+pub const WebArenaAction = struct {
 };
 
 /// 
-pub const ParsedResponse = struct {
-    thought: ParsedThought,
-    action: ParsedAction,
-    is_final_answer: bool,
-    final_answer: ?[]const u8,
-    raw_response: []const u8,
+pub const PromptContext = struct {
+    task_intent: []const u8,
+    current_url: []const u8,
+    page_title: []const u8,
+    observation: []const u8,
+    history: []const u8,
+    available_actions: []const u8,
+    step_number: i64,
+    max_steps: i64,
 };
 
 /// 
-pub const ParseError = struct {
+pub const GeneratedPrompt = struct {
+    system_prompt: []const u8,
+    user_prompt: []const u8,
+    few_shot_examples: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -108,38 +108,38 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse" {
-// Given: Raw LLM response string
-// When: Extracting structured data
-// Then: Returns ParsedResponse or error
+test "build_system_prompt" {
+// Given: Task type
+// When: Creating system message for WebArena
+// Then: Returns optimized system prompt
     // TODO: Add test assertions
 }
 
-test "extract_thought" {
-// Given: Response text
-// When: Finding Thought section
-// Then: Returns thought content
+test "build_observation_prompt" {
+// Given: PromptContext
+// When: Formatting page observation for LLM
+// Then: Returns formatted observation
     // TODO: Add test assertions
 }
 
-test "extract_action" {
-// Given: Response text
-// When: Finding Action and Action Input
-// Then: Returns ParsedAction
+test "build_action_prompt" {
+// Given: PromptContext
+// When: Requesting next action from LLM
+// Then: Returns action request prompt
     // TODO: Add test assertions
 }
 
-test "is_final_answer" {
-// Given: ParsedAction
-// When: Checking if action is stop/final_answer
-// Then: Returns true if task complete
+test "add_few_shot_examples" {
+// Given: Task type
+// When: Adding in-context examples
+// Then: Returns examples for similar tasks
     // TODO: Add test assertions
 }
 
-test "validate" {
-// Given: ParsedResponse
-// When: Checking response validity
-// Then: Returns true if valid format
+test "format_history" {
+// Given: List of previous steps
+// When: Summarizing action history
+// Then: Returns formatted history string
     // TODO: Add test assertions
 }
 

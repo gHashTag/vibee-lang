@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// zig_response_parser v1.0.0 - Generated from .vibee specification
+// zig_llm_client v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -17,6 +17,12 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
+pub const DEFAULT_MAX_TOKENS: f64 = 4096;
+
+pub const DEFAULT_TEMPERATURE: f64 = 0.7;
+
+pub const DEFAULT_TIMEOUT_MS: f64 = 60000;
+
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
 pub const PHI_INV: f64 = 0.618033988749895;
@@ -33,30 +39,38 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const ParsedThought = struct {
+pub const LLMProvider = struct {
+};
+
+/// 
+pub const LLMMessage = struct {
+    role: []const u8,
     content: []const u8,
-    confidence: f64,
 };
 
 /// 
-pub const ParsedAction = struct {
-    action_type: []const u8,
-    selector: ?[]const u8,
-    value: ?[]const u8,
-    coordinates: ?[]const u8,
+pub const LLMConfig = struct {
+    provider: LLMProvider,
+    api_key: []const u8,
+    model: []const u8,
+    max_tokens: i64,
+    temperature: f64,
+    timeout_ms: i64,
 };
 
 /// 
-pub const ParsedResponse = struct {
-    thought: ParsedThought,
-    action: ParsedAction,
-    is_final_answer: bool,
-    final_answer: ?[]const u8,
-    raw_response: []const u8,
+pub const LLMResponse = struct {
+    content: []const u8,
+    finish_reason: []const u8,
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    total_tokens: i64,
+    latency_ms: i64,
+    model: []const u8,
 };
 
 /// 
-pub const ParseError = struct {
+pub const LLMError = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -108,38 +122,38 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse" {
-// Given: Raw LLM response string
-// When: Extracting structured data
-// Then: Returns ParsedResponse or error
+test "create_client" {
+// Given: LLMConfig
+// When: Initializing LLM client
+// Then: Returns configured client instance
     // TODO: Add test assertions
 }
 
-test "extract_thought" {
-// Given: Response text
-// When: Finding Thought section
-// Then: Returns thought content
+test "chat" {
+// Given: List of LLMMessage
+// When: Sending chat completion request
+// Then: Returns LLMResponse
     // TODO: Add test assertions
 }
 
-test "extract_action" {
-// Given: Response text
-// When: Finding Action and Action Input
-// Then: Returns ParsedAction
+test "chat_with_system" {
+// Given: System prompt and user message
+// When: Sending chat with system context
+// Then: Returns LLMResponse
     // TODO: Add test assertions
 }
 
-test "is_final_answer" {
-// Given: ParsedAction
-// When: Checking if action is stop/final_answer
-// Then: Returns true if task complete
+test "stream_chat" {
+// Given: List of LLMMessage and callback
+// When: Streaming response tokens
+// Then: Calls callback for each token
     // TODO: Add test assertions
 }
 
-test "validate" {
-// Given: ParsedResponse
-// When: Checking response validity
-// Then: Returns true if valid format
+test "count_tokens" {
+// Given: Text string
+// When: Estimating token count
+// Then: Returns approximate token count
     // TODO: Add test assertions
 }
 

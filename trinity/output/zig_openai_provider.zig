@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// zig_response_parser v1.0.0 - Generated from .vibee specification
+// zig_openai_provider v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -17,6 +17,14 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
+pub const OPENAI_API_URL: f64 = 0;
+
+pub const DEFAULT_MODEL: f64 = 0;
+
+pub const GPT4O_MODEL: f64 = 0;
+
+pub const GPT4_MODEL: f64 = 0;
+
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
 pub const PHI_INV: f64 = 0.618033988749895;
@@ -33,30 +41,27 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const ParsedThought = struct {
-    content: []const u8,
-    confidence: f64,
+pub const OpenAIConfig = struct {
+    api_key: []const u8,
+    model: []const u8,
+    max_tokens: i64,
+    temperature: f64,
+    organization: ?[]const u8,
 };
 
 /// 
-pub const ParsedAction = struct {
-    action_type: []const u8,
-    selector: ?[]const u8,
-    value: ?[]const u8,
-    coordinates: ?[]const u8,
+pub const OpenAIUsage = struct {
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    total_tokens: i64,
 };
 
 /// 
-pub const ParsedResponse = struct {
-    thought: ParsedThought,
-    action: ParsedAction,
-    is_final_answer: bool,
-    final_answer: ?[]const u8,
-    raw_response: []const u8,
-};
-
-/// 
-pub const ParseError = struct {
+pub const OpenAIChoice = struct {
+    index: i64,
+    message_content: []const u8,
+    message_role: []const u8,
+    finish_reason: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -108,38 +113,38 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse" {
-// Given: Raw LLM response string
-// When: Extracting structured data
-// Then: Returns ParsedResponse or error
+test "init" {
+// Given: OpenAIConfig
+// When: Creating OpenAI provider
+// Then: Returns initialized provider
     // TODO: Add test assertions
 }
 
-test "extract_thought" {
-// Given: Response text
-// When: Finding Thought section
-// Then: Returns thought content
+test "complete" {
+// Given: Messages array
+// When: Calling chat completions API
+// Then: Returns response with content
     // TODO: Add test assertions
 }
 
-test "extract_action" {
-// Given: Response text
-// When: Finding Action and Action Input
-// Then: Returns ParsedAction
+test "build_request" {
+// Given: Messages and config
+// When: Building JSON request body
+// Then: Returns JSON string
     // TODO: Add test assertions
 }
 
-test "is_final_answer" {
-// Given: ParsedAction
-// When: Checking if action is stop/final_answer
-// Then: Returns true if task complete
+test "parse_response" {
+// Given: API response JSON
+// When: Extracting content and usage
+// Then: Returns parsed response
     // TODO: Add test assertions
 }
 
-test "validate" {
-// Given: ParsedResponse
-// When: Checking response validity
-// Then: Returns true if valid format
+test "handle_error" {
+// Given: HTTP status code
+// When: Processing API error
+// Then: Returns appropriate error type
     // TODO: Add test assertions
 }
 
