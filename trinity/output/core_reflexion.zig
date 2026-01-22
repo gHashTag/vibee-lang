@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// core_reflexion v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,44 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
-};
-
-/// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
-};
-
-/// 
-pub const RunResult = struct {
-    run_id: []const u8,
+pub const Episode = struct {
+    episode_id: i64,
+    task: []const u8,
+    trajectory: []const u8,
+    outcome: []const u8,
     success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const Reflection = struct {
+    episode_id: i64,
+    what_went_wrong: []const u8,
+    what_to_improve: []const u8,
+    lessons_learned: []const u8,
+    confidence: f64,
+};
+
+/// 
+pub const ReflectionMemory = struct {
+    reflections: []const u8,
+    max_size: i64,
+    retrieval_k: i64,
+};
+
+/// 
+pub const TrialResult = struct {
+    trial_number: i64,
+    success: bool,
+    steps_taken: i64,
+    reflection: ?[]const u8,
+};
+
+/// 
+pub const ReflexionConfig = struct {
+    max_trials: i64,
+    memory_size: i64,
+    reflection_prompt: []const u8,
+    enable_self_eval: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +122,52 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "execute_trial" {
+// Given: Task and ReflectionMemory
+// When: Running one trial attempt
+// Then: Return TrialResult
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "generate_reflection" {
+// Given: Episode with failure
+// When: Analyzing what went wrong
+// Then: Return Reflection
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "store_reflection" {
+// Given: ReflectionMemory and Reflection
+// When: Adding to episodic memory
+// Then: Return updated ReflectionMemory
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "retrieve_relevant" {
+// Given: ReflectionMemory and current_task
+// When: Getting relevant past reflections
+// Then: Return list of relevant Reflections
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "self_evaluate" {
+// Given: Episode trajectory
+// When: Internally simulating feedback
+// Then: Return evaluation score
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "run_reflexion" {
+// Given: Task and ReflexionConfig
+// When: Running full reflexion loop
+// Then: Return final result after trials
+    // TODO: Add test assertions
+}
+
+test "improve_from_feedback" {
+// Given: Reflection and current_strategy
+// When: Updating decision making
+// Then: Return improved strategy
     // TODO: Add test assertions
 }
 

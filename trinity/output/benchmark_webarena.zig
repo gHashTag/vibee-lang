@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// benchmark_webarena v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,39 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
+pub const WebArenaTask = struct {
+    task_id: []const u8,
+    site: []const u8,
+    intent: []const u8,
+    start_url: []const u8,
+    eval_type: []const u8,
 };
 
 /// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
-};
-
-/// 
-pub const RunResult = struct {
-    run_id: []const u8,
+pub const WebArenaResult = struct {
+    task_id: []const u8,
     success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+    steps: i64,
+    final_url: []const u8,
+    time_ms: i64,
+    trajectory: []const u8,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
+pub const WebArenaMetrics = struct {
+    success_rate: f64,
+    avg_steps: f64,
+    avg_time_ms: f64,
+    by_site: std.StringHashMap([]const u8),
+};
+
+/// 
+pub const WebArenaConfig = struct {
+    tasks_path: []const u8,
+    max_steps: i64,
     timeout_ms: i64,
-    retry_failed: bool,
+    headless: bool,
+    sites: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +117,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "load_tasks" {
+// Given: WebArenaConfig
+// When: Loading WebArena tasks
+// Then: Return list of WebArenaTasks
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "run_task" {
+// Given: WebArenaTask
+// When: Executing single task
+// Then: Return WebArenaResult
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "run_benchmark" {
+// Given: WebArenaConfig
+// When: Running full benchmark
+// Then: Return WebArenaMetrics
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "evaluate_task" {
+// Given: WebArenaResult and task
+// When: Evaluating success
+// Then: Return evaluation result
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "save_trajectory" {
+// Given: WebArenaResult and path
+// When: Saving execution trace
+// Then: Return save status
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "replay_trajectory" {
+// Given: Trajectory path
+// When: Replaying execution
+// Then: Return replay result
     // TODO: Add test assertions
 }
 

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// memory_episodic v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,44 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
-};
-
-/// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
+pub const Episode = struct {
+    episode_id: []const u8,
+    task: []const u8,
     start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
-};
-
-/// 
-pub const RunResult = struct {
-    run_id: []const u8,
+    end_time: i64,
     success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+    steps: []const u8,
+    outcome: []const u8,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const EpisodeStep = struct {
+    step_id: i64,
+    action: []const u8,
+    observation: []const u8,
+    reward: f64,
+    timestamp: i64,
+};
+
+/// 
+pub const EpisodicMemory = struct {
+    episodes: []const u8,
+    max_episodes: i64,
+    index: std.StringHashMap([]const u8),
+};
+
+/// 
+pub const RetrievalQuery = struct {
+    task_description: []const u8,
+    context: []const u8,
+    k: i64,
+};
+
+/// 
+pub const RetrievalResult = struct {
+    episodes: []const u8,
+    relevance_scores: []const u8,
+    total_found: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +122,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "store_episode" {
+// Given: Episode
+// When: Task completed (success or failure)
+// Then: Add to episodic memory
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "retrieve_similar" {
+// Given: RetrievalQuery
+// When: Need relevant past experiences
+// Then: Return RetrievalResult
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "get_successful_episodes" {
+// Given: Task type
+// When: Need successful examples
+// Then: Return list of successful Episodes
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "get_failed_episodes" {
+// Given: Task type
+// When: Learning from failures
+// Then: Return list of failed Episodes
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "compute_similarity" {
+// Given: Two Episodes
+// When: Comparing experiences
+// Then: Return similarity score
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "prune_old" {
+// Given: EpisodicMemory and max_age
+// When: Memory cleanup
+// Then: Return pruned EpisodicMemory
     // TODO: Add test assertions
 }
 

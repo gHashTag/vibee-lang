@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// llm_client_openai v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,42 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
+pub const OpenAIConfig = struct {
+    api_key: []const u8,
+    model: []const u8,
+    base_url: []const u8,
+    organization: ?[]const u8,
+};
+
+/// 
+pub const ChatMessage = struct {
+    role: []const u8,
+    content: []const u8,
+    name: ?[]const u8,
+};
+
+/// 
+pub const ChatRequest = struct {
+    messages: []const u8,
+    model: []const u8,
+    temperature: f64,
+    max_tokens: i64,
+    stream: bool,
+};
+
+/// 
+pub const ChatResponse = struct {
+    content: []const u8,
+    finish_reason: []const u8,
+    usage_prompt: i64,
+    usage_completion: i64,
+    model: []const u8,
+};
+
+/// 
+pub const FunctionCall = struct {
     name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
-};
-
-/// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
-};
-
-/// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
-};
-
-/// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+    arguments: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +120,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "create_client" {
+// Given: OpenAIConfig
+// When: Initializing client
+// Then: Return client handle
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "chat" {
+// Given: ChatRequest
+// When: Making chat completion
+// Then: Return ChatResponse
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "chat_stream" {
+// Given: ChatRequest
+// When: Streaming chat
+// Then: Yield tokens
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "with_functions" {
+// Given: ChatRequest and functions
+// When: Using function calling
+// Then: Return response with function calls
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "embed" {
+// Given: Text
+// When: Getting embeddings
+// Then: Return embedding vector
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "count_tokens" {
+// Given: Messages
+// When: Counting tokens
+// Then: Return token count
     // TODO: Add test assertions
 }
 

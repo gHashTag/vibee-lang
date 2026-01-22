@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_gaia v1.0.0 - Generated from .vibee specification
+// benchmark_gaia v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -37,41 +37,34 @@ pub const GAIATask = struct {
     task_id: []const u8,
     level: i64,
     question: []const u8,
-    required_tools: []const u8,
     expected_answer: []const u8,
-};
-
-/// 
-pub const DifficultyLevel = struct {
-    level_number: i64,
-    description: []const u8,
-    avg_steps_required: i64,
-    tool_complexity: []const u8,
-};
-
-/// 
-pub const ToolUsage = struct {
-    tool_name: []const u8,
-    invocation_count: i64,
-    success_rate: f64,
-    avg_latency_ms: i64,
+    file_path: ?[]const u8,
 };
 
 /// 
 pub const GAIAResult = struct {
     task_id: []const u8,
-    agent_answer: []const u8,
-    is_correct: bool,
-    reasoning_trace: []const u8,
-    tools_used: []const u8,
+    predicted_answer: []const u8,
+    correct: bool,
+    steps_taken: i64,
+    time_ms: i64,
 };
 
 /// 
-pub const LevelScore = struct {
-    level: i64,
-    tasks_attempted: i64,
-    tasks_correct: i64,
-    accuracy: f64,
+pub const GAIAMetrics = struct {
+    level1_accuracy: f64,
+    level2_accuracy: f64,
+    level3_accuracy: f64,
+    overall_accuracy: f64,
+    avg_time_ms: f64,
+};
+
+/// 
+pub const GAIAConfig = struct {
+    dataset_path: []const u8,
+    max_steps: i64,
+    timeout_ms: i64,
+    levels: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -123,45 +116,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "load_level_tasks" {
-// Given: GAIA level specification (1, 2, or 3)
-// When: Task loader filters by difficulty
-// Then: Returns tasks for specified level
+test "load_tasks" {
+// Given: GAIAConfig
+// When: Loading GAIA dataset
+// Then: Return list of GAIATasks
+    // TODO: Add test assertions
+}
+
+test "run_task" {
+// Given: GAIATask
+// When: Executing single task
+// Then: Return GAIAResult
+    // TODO: Add test assertions
+}
+
+test "run_benchmark" {
+// Given: GAIAConfig
+// When: Running full benchmark
+// Then: Return GAIAMetrics
     // TODO: Add test assertions
 }
 
 test "evaluate_answer" {
-// Given: Agent answer and ground truth
-// When: Answer comparison runs
-// Then: Returns correctness with explanation
+// Given: Predicted and expected
+// When: Checking correctness
+// Then: Return bool
     // TODO: Add test assertions
 }
 
-test "track_tool_usage" {
-// Given: Agent execution trace
-// When: Tool invocations are analyzed
-// Then: Returns tool usage statistics
+test "export_results" {
+// Given: Results and format
+// When: Exporting for submission
+// Then: Return export path
     // TODO: Add test assertions
 }
 
-test "compute_level_score" {
-// Given: All results for a specific level
-// When: Level aggregation runs
-// Then: Returns accuracy for that difficulty tier
-    // TODO: Add test assertions
-}
-
-test "assess_reasoning_quality" {
-// Given: Agent reasoning trace
-// When: Reasoning analysis runs
-// Then: Returns quality metrics for thought process
-    // TODO: Add test assertions
-}
-
-test "benchmark_against_sota" {
-// Given: Agent scores across all levels
-// When: Comparison with top performers
-// Then: Returns ranking and gap analysis
+test "compare_with_leaderboard" {
+// Given: GAIAMetrics
+// When: Comparing with others
+// Then: Return ranking info
     // TODO: Add test assertions
 }
 

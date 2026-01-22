@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// action_browser_extract v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,36 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
+pub const ExtractRequest = struct {
+    selector: []const u8,
+    extract_type: []const u8,
+    attribute: ?[]const u8,
+    multiple: bool,
 };
 
 /// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
-};
-
-/// 
-pub const RunResult = struct {
-    run_id: []const u8,
+pub const ExtractResult = struct {
     success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+    data: []const u8,
+    count: i64,
+    @"error": ?[]const u8,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const DOMElement = struct {
+    tag_name: []const u8,
+    attributes: std.StringHashMap([]const u8),
+    text_content: []const u8,
+    inner_html: []const u8,
+    children_count: i64,
+};
+
+/// 
+pub const TableData = struct {
+    headers: []const u8,
+    rows: []const u8,
+    row_count: i64,
+    col_count: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +114,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "extract_text" {
+// Given: Selector
+// When: Getting element text
+// Then: Return text string
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "extract_attribute" {
+// Given: Selector and attribute
+// When: Getting attribute value
+// Then: Return attribute value
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "extract_html" {
+// Given: Selector
+// When: Getting inner HTML
+// Then: Return HTML string
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "extract_all" {
+// Given: Selector
+// When: Getting all matching elements
+// Then: Return list of DOMElements
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "extract_table" {
+// Given: Table selector
+// When: Extracting table data
+// Then: Return TableData
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "extract_links" {
+// Given: Container selector
+// When: Getting all links
+// Then: Return list of URLs
     // TODO: Add test assertions
 }
 

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// planning_goal_decomposition v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,34 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
+pub const DecomposedGoal = struct {
+    original_goal: []const u8,
+    subgoals: []const u8,
+    dependencies: std.StringHashMap([]const u8),
+    estimated_steps: i64,
 };
 
 /// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
+pub const Subgoal = struct {
+    subgoal_id: []const u8,
+    description: []const u8,
+    dependencies: []const u8,
+    estimated_difficulty: f64,
     status: []const u8,
 };
 
 /// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+pub const DependencyGraph = struct {
+    nodes: []const u8,
+    edges: []const u8,
+    topological_order: []const u8,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const DecompositionStrategy = struct {
+    strategy_type: []const u8,
+    max_subgoals: i64,
+    min_granularity: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +112,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "decompose" {
+// Given: Goal and strategy
+// When: Breaking down goal
+// Then: Return DecomposedGoal
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "build_dependency_graph" {
+// Given: List of Subgoals
+// When: Analyzing dependencies
+// Then: Return DependencyGraph
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "get_ready_subgoals" {
+// Given: DecomposedGoal and completed
+// When: Finding executable subgoals
+// Then: Return list of ready Subgoals
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "estimate_difficulty" {
+// Given: Subgoal
+// When: Estimating complexity
+// Then: Return difficulty score
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "merge_subgoals" {
+// Given: Two similar Subgoals
+// When: Reducing redundancy
+// Then: Return merged Subgoal
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "validate_decomposition" {
+// Given: DecomposedGoal
+// When: Checking completeness
+// Then: Return validation result
     // TODO: Add test assertions
 }
 

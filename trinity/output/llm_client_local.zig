@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// llm_client_local v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,34 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
+pub const LocalConfig = struct {
+    backend: []const u8,
+    model_path: []const u8,
+    host: []const u8,
+    port: i64,
+};
+
+/// 
+pub const LocalRequest = struct {
+    prompt: []const u8,
+    max_tokens: i64,
+    temperature: f64,
+    stop_sequences: []const u8,
+};
+
+/// 
+pub const LocalResponse = struct {
+    content: []const u8,
+    tokens_generated: i64,
+    generation_time_ms: i64,
+};
+
+/// 
+pub const ModelInfo = struct {
     name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
-};
-
-/// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
-};
-
-/// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
-};
-
-/// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+    size_bytes: i64,
+    quantization: []const u8,
+    context_length: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +112,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "create_client" {
+// Given: LocalConfig
+// When: Connecting to local model
+// Then: Return client handle
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "generate" {
+// Given: LocalRequest
+// When: Generating text
+// Then: Return LocalResponse
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "generate_stream" {
+// Given: LocalRequest
+// When: Streaming generation
+// Then: Yield tokens
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "list_models" {
+// Given: Nothing
+// When: Getting available models
+// Then: Return list of ModelInfo
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "load_model" {
+// Given: Model name
+// When: Loading model into memory
+// Then: Return load status
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "unload_model" {
+// Given: Model name
+// When: Unloading model
+// Then: Return unload status
     // TODO: Add test assertions
 }
 

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// action_search_web v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,35 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
+pub const SearchRequest = struct {
+    query: []const u8,
+    num_results: i64,
+    search_engine: []const u8,
+    safe_search: bool,
 };
 
 /// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
+pub const SearchResult = struct {
+    title: []const u8,
+    url: []const u8,
+    snippet: []const u8,
+    position: i64,
 };
 
 /// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+pub const SearchResponse = struct {
+    query: []const u8,
+    results: []const u8,
+    total_results: i64,
+    search_time_ms: i64,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const SearchFilter = struct {
+    site: ?[]const u8,
+    date_range: ?[]const u8,
+    file_type: ?[]const u8,
+    language: ?[]const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +113,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "search" {
+// Given: SearchRequest
+// When: Performing web search
+// Then: Return SearchResponse
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "search_google" {
+// Given: Query and num_results
+// When: Searching Google
+// Then: Return SearchResponse
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "search_with_filter" {
+// Given: Query and SearchFilter
+// When: Filtered search
+// Then: Return SearchResponse
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "get_search_suggestions" {
+// Given: Partial query
+// When: Getting autocomplete
+// Then: Return list of suggestions
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "search_images" {
+// Given: Query
+// When: Searching images
+// Then: Return image results
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "search_news" {
+// Given: Query
+// When: Searching news
+// Then: Return news results
     // TODO: Add test assertions
 }
 

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// context_sliding v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,35 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
+pub const SlidingWindow = struct {
+    buffer: []const u8,
+    window_size: i64,
+    overlap_size: i64,
+    current_position: i64,
 };
 
 /// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
+pub const WindowShift = struct {
+    dropped_items: []const u8,
+    kept_items: []const u8,
+    new_items: []const u8,
+    summary_of_dropped: []const u8,
 };
 
 /// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+pub const SlidingConfig = struct {
+    window_size: i64,
+    overlap_ratio: f64,
+    summarize_dropped: bool,
+    preserve_system: bool,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const WindowState = struct {
+    total_processed: i64,
+    current_window_start: i64,
+    current_window_end: i64,
+    summaries: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +113,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "slide" {
+// Given: SlidingWindow and new_items
+// When: Adding new content
+// Then: Return WindowShift
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "get_current_window" {
+// Given: SlidingWindow
+// When: Getting active context
+// Then: Return current window content
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "summarize_dropped" {
+// Given: Dropped items
+// When: Preserving dropped info
+// Then: Return summary string
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "restore_context" {
+// Given: WindowState and position
+// When: Restoring previous context
+// Then: Return restored window
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "get_overlap" {
+// Given: SlidingWindow
+// When: Getting overlap region
+// Then: Return overlap content
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "optimize_overlap" {
+// Given: SlidingWindow and task
+// When: Adjusting overlap for task
+// Then: Return optimized overlap_size
     // TODO: Add test assertions
 }
 

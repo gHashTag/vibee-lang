@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// context_priority v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,35 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
+pub const PriorityScore = struct {
+    item_id: []const u8,
+    recency_score: f64,
+    relevance_score: f64,
+    importance_score: f64,
+    final_score: f64,
 };
 
 /// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
+pub const PriorityConfig = struct {
+    recency_weight: f64,
+    relevance_weight: f64,
+    importance_weight: f64,
+    decay_rate: f64,
 };
 
 /// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+pub const PrioritizedItem = struct {
+    item_id: []const u8,
+    content: []const u8,
+    priority: f64,
+    token_count: i64,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const PriorityQueue = struct {
+    items: []const u8,
+    total_tokens: i64,
+    max_tokens: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +113,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "compute_priority" {
+// Given: Item and context
+// When: Scoring item priority
+// Then: Return PriorityScore
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "rank_items" {
+// Given: List of items
+// When: Ordering by priority
+// Then: Return sorted list
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "select_top_k" {
+// Given: Items and k
+// When: Selecting highest priority
+// Then: Return top k items
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "select_by_budget" {
+// Given: Items and token_budget
+// When: Fitting to token limit
+// Then: Return items within budget
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "update_priorities" {
+// Given: PriorityQueue and new_item
+// When: Adding new item
+// Then: Return updated queue
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "evict_lowest" {
+// Given: PriorityQueue
+// When: Queue full
+// Then: Return evicted item
     // TODO: Add test assertions
 }
 

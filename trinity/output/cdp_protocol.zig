@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// cdp_protocol v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,38 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
+pub const CDPSession = struct {
+    session_id: []const u8,
+    target_id: []const u8,
+    connected: bool,
 };
 
 /// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
+pub const CDPCommand = struct {
+    id: i64,
+    method: []const u8,
+    params: []const u8,
 };
 
 /// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+pub const CDPResponse = struct {
+    id: i64,
+    result: ?[]const u8,
+    @"error": ?[]const u8,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const CDPEvent = struct {
+    method: []const u8,
+    params: []const u8,
+};
+
+/// 
+pub const CDPTarget = struct {
+    target_id: []const u8,
+    target_type: []const u8,
+    url: []const u8,
+    title: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +116,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "connect" {
+// Given: WebSocket URL
+// When: Connecting to browser
+// Then: Return CDPSession
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "send_command" {
+// Given: CDPCommand
+// When: Sending CDP command
+// Then: Return CDPResponse
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "subscribe_event" {
+// Given: Event name
+// When: Subscribing to events
+// Then: Return subscription handle
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "get_targets" {
+// Given: Nothing
+// When: Listing targets
+// Then: Return list of CDPTargets
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "attach_target" {
+// Given: Target ID
+// When: Attaching to target
+// Then: Return CDPSession
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "detach" {
+// Given: CDPSession
+// When: Detaching from target
+// Then: Return detach status
     // TODO: Add test assertions
 }
 

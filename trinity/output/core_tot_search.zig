@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// core_tot_search v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,47 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
+pub const ThoughtNode = struct {
+    node_id: i64,
+    parent_id: ?[]const u8,
+    thought: []const u8,
+    value: f64,
+    depth: i64,
+    children: []const u8,
 };
 
 /// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
+pub const ThoughtTree = struct {
+    root_id: i64,
+    nodes: std.StringHashMap([]const u8),
+    current_path: []const u8,
+    best_path: []const u8,
+    best_value: f64,
 };
 
 /// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+pub const SearchStrategy = struct {
+    strategy_type: []const u8,
+    beam_width: i64,
+    max_depth: i64,
+    pruning_threshold: f64,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const EvaluationResult = struct {
+    node_id: i64,
+    value: f64,
+    is_terminal: bool,
+    reasoning: []const u8,
+};
+
+/// 
+pub const ToTConfig = struct {
+    max_thoughts_per_step: i64,
+    max_depth: i64,
+    search_strategy: []const u8,
+    value_threshold: f64,
+    enable_backtrack: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +125,59 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "generate_thoughts" {
+// Given: Current state and num_thoughts
+// When: Expanding thought tree
+// Then: Return list of ThoughtNodes
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "evaluate_thought" {
+// Given: ThoughtNode and context
+// When: Scoring thought quality
+// Then: Return EvaluationResult
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "select_best" {
+// Given: List of ThoughtNodes
+// When: Choosing next thought to explore
+// Then: Return best ThoughtNode
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "bfs_search" {
+// Given: ThoughtTree and ToTConfig
+// When: Using breadth-first search
+// Then: Return solution path
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "dfs_search" {
+// Given: ThoughtTree and ToTConfig
+// When: Using depth-first search
+// Then: Return solution path
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "beam_search" {
+// Given: ThoughtTree and beam_width
+// When: Using beam search
+// Then: Return top-k solution paths
+    // TODO: Add test assertions
+}
+
+test "backtrack" {
+// Given: ThoughtTree and failed_node
+// When: Current path fails
+// Then: Return alternative path
+    // TODO: Add test assertions
+}
+
+test "solve" {
+// Given: Problem and ToTConfig
+// When: Running full ToT search
+// Then: Return solution or failure
     // TODO: Add test assertions
 }
 

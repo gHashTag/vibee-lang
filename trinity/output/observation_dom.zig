@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// observation_dom v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,36 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
+pub const DOMTree = struct {
+    root: []const u8,
+    nodes: std.StringHashMap([]const u8),
+    total_nodes: i64,
 };
 
 /// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
+pub const DOMNode = struct {
+    node_id: []const u8,
+    tag: []const u8,
+    attributes: std.StringHashMap([]const u8),
+    text: []const u8,
+    children: []const u8,
+    parent: ?[]const u8,
 };
 
 /// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+pub const InteractiveElement = struct {
+    selector: []const u8,
+    element_type: []const u8,
+    label: []const u8,
+    is_visible: bool,
+    is_enabled: bool,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const AccessibilityTree = struct {
+    nodes: []const u8,
+    roles: std.StringHashMap([]const u8),
+    labels: std.StringHashMap([]const u8),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +114,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "get_dom_tree" {
+// Given: Nothing
+// When: Getting full DOM
+// Then: Return DOMTree
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "get_interactive_elements" {
+// Given: Nothing
+// When: Finding clickable elements
+// Then: Return list of InteractiveElements
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "get_forms" {
+// Given: Nothing
+// When: Finding forms
+// Then: Return list of form elements
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "get_accessibility_tree" {
+// Given: Nothing
+// When: Getting a11y tree
+// Then: Return AccessibilityTree
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "find_element" {
+// Given: Selector
+// When: Finding specific element
+// Then: Return DOMNode
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "get_visible_text" {
+// Given: Nothing
+// When: Getting visible page text
+// Then: Return text string
     // TODO: Add test assertions
 }
 

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// async_runtime v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,31 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
+pub const EventLoop = struct {
+    running: bool,
+    pending_tasks: i64,
+    completed_tasks: i64,
 };
 
 /// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
+pub const AsyncTask = struct {
+    task_id: []const u8,
     status: []const u8,
+    result: ?[]const u8,
 };
 
 /// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+pub const Future = struct {
+    future_id: []const u8,
+    ready: bool,
+    value: ?[]const u8,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const RuntimeConfig = struct {
+    num_workers: i64,
+    task_queue_size: i64,
+    io_threads: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +109,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "create_runtime" {
+// Given: RuntimeConfig
+// When: Creating async runtime
+// Then: Return EventLoop
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "spawn_task" {
+// Given: Task function
+// When: Spawning async task
+// Then: Return AsyncTask
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "await_task" {
+// Given: AsyncTask
+// When: Waiting for task
+// Then: Return task result
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "run_until_complete" {
+// Given: EventLoop
+// When: Running event loop
+// Then: Return when all complete
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
+test "cancel_task" {
+// Given: AsyncTask
+// When: Cancelling task
 // Then: Return cancel status
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "shutdown" {
+// Given: EventLoop
+// When: Shutting down runtime
+// Then: Return shutdown status
     // TODO: Add test assertions
 }
 

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// llm_streaming v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,32 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
+pub const StreamToken = struct {
+    token: []const u8,
+    index: i64,
+    is_final: bool,
+    finish_reason: ?[]const u8,
 };
 
 /// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
+pub const StreamBuffer = struct {
+    tokens: []const u8,
+    total_tokens: i64,
+    complete: bool,
 };
 
 /// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+pub const StreamConfig = struct {
+    buffer_size: i64,
+    flush_interval_ms: i64,
+    on_token_callback: bool,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const StreamStats = struct {
+    tokens_received: i64,
+    time_to_first_token_ms: i64,
+    tokens_per_second: f64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +110,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "start_stream" {
+// Given: Request
+// When: Beginning stream
+// Then: Return stream handle
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "read_token" {
+// Given: Stream handle
+// When: Getting next token
+// Then: Return StreamToken
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "read_all" {
+// Given: Stream handle
+// When: Getting all tokens
+// Then: Return StreamBuffer
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
-    // TODO: Add test assertions
-}
-
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
+test "cancel_stream" {
+// Given: Stream handle
+// When: Cancelling stream
 // Then: Return cancel status
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "get_stats" {
+// Given: Stream handle
+// When: Getting stream stats
+// Then: Return StreamStats
+    // TODO: Add test assertions
+}
+
+test "buffer_until" {
+// Given: Stream and condition
+// When: Buffering tokens
+// Then: Return buffered content
     // TODO: Add test assertions
 }
 

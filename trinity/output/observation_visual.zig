@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// observation_visual v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,35 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
+pub const VisualObservation = struct {
+    screenshot: []const u8,
+    width: i64,
+    height: i64,
+    timestamp: i64,
 };
 
 /// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
+pub const BoundingBox = struct {
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+    label: []const u8,
 };
 
 /// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+pub const VisualElement = struct {
+    bbox: []const u8,
+    element_type: []const u8,
+    text: ?[]const u8,
+    confidence: f64,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const OCRResult = struct {
+    text: []const u8,
+    boxes: []const u8,
+    confidence: f64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +113,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "capture" {
+// Given: Nothing
+// When: Taking visual observation
+// Then: Return VisualObservation
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "detect_elements" {
+// Given: VisualObservation
+// When: Finding UI elements
+// Then: Return list of VisualElements
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "ocr" {
+// Given: VisualObservation
+// When: Extracting text from image
+// Then: Return OCRResult
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "find_text" {
+// Given: Text to find
+// When: Locating text in screenshot
+// Then: Return BoundingBox
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "compare_visual" {
+// Given: Two VisualObservations
+// When: Detecting changes
+// Then: Return difference regions
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "describe_scene" {
+// Given: VisualObservation
+// When: Getting scene description
+// Then: Return description string
     // TODO: Add test assertions
 }
 

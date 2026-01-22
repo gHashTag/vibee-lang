@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// agent_config v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,36 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
-};
-
-/// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
-};
-
-/// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
-};
-
-/// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
+pub const AgentConfig = struct {
+    llm_provider: []const u8,
+    llm_model: []const u8,
+    llm_api_key: []const u8,
+    max_steps: i64,
     timeout_ms: i64,
-    retry_failed: bool,
+    reasoning_strategy: []const u8,
+};
+
+/// 
+pub const MemoryConfig = struct {
+    episodic_enabled: bool,
+    semantic_enabled: bool,
+    working_size: i64,
+    long_term_path: ?[]const u8,
+};
+
+/// 
+pub const BrowserConfig = struct {
+    headless: bool,
+    viewport_width: i64,
+    viewport_height: i64,
+    user_agent: ?[]const u8,
+};
+
+/// 
+pub const ConfigValidation = struct {
+    valid: bool,
+    errors: []const u8,
+    warnings: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +114,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "load_config" {
+// Given: Config path
+// When: Loading configuration
+// Then: Return AgentConfig
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "save_config" {
+// Given: AgentConfig and path
+// When: Saving configuration
+// Then: Return save status
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "validate_config" {
+// Given: AgentConfig
+// When: Validating configuration
+// Then: Return ConfigValidation
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "merge_configs" {
+// Given: Base and override configs
+// When: Merging configurations
+// Then: Return merged AgentConfig
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "get_default" {
+// Given: Nothing
+// When: Getting default config
+// Then: Return default AgentConfig
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "from_env" {
+// Given: Nothing
+// When: Loading from environment
+// Then: Return AgentConfig
     // TODO: Add test assertions
 }
 

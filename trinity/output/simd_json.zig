@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// simd_json v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,31 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
+pub const SimdParser = struct {
+    buffer_size: i64,
+    simd_width: i64,
 };
 
 /// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
-};
-
-/// 
-pub const RunResult = struct {
-    run_id: []const u8,
+pub const SimdParseResult = struct {
     success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+    value: []const u8,
+    parse_time_ns: i64,
+    throughput_gbps: f64,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const SimdConfig = struct {
+    use_avx2: bool,
+    use_avx512: bool,
+    use_neon: bool,
+};
+
+/// 
+pub const ParseStats = struct {
+    bytes_processed: i64,
+    time_ns: i64,
+    throughput_mbps: f64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +109,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "create_parser" {
+// Given: SimdConfig
+// When: Creating SIMD parser
+// Then: Return SimdParser
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "parse_simd" {
+// Given: JSON bytes
+// When: SIMD parsing
+// Then: Return SimdParseResult
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "validate_simd" {
+// Given: JSON bytes
+// When: SIMD validation
+// Then: Return validation result
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "find_key_simd" {
+// Given: JSON bytes and key
+// When: Finding key with SIMD
+// Then: Return value position
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "benchmark_parse" {
+// Given: JSON bytes and iterations
+// When: Benchmarking parser
+// Then: Return ParseStats
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "get_capabilities" {
+// Given: Nothing
+// When: Checking SIMD support
+// Then: Return SimdConfig
     // TODO: Add test assertions
 }
 

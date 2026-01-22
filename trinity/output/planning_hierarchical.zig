@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// planning_hierarchical v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,39 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
-};
-
-/// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
+pub const Goal = struct {
+    goal_id: []const u8,
+    description: []const u8,
+    level: i64,
+    parent_id: ?[]const u8,
+    children: []const u8,
     status: []const u8,
 };
 
 /// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+pub const Plan = struct {
+    plan_id: []const u8,
+    root_goal: []const u8,
+    goals: std.StringHashMap([]const u8),
+    current_goal: []const u8,
+    completed_goals: []const u8,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
+pub const PlanStep = struct {
+    step_id: i64,
+    goal_id: []const u8,
+    action: []const u8,
+    preconditions: []const u8,
+    effects: []const u8,
+};
+
+/// 
+pub const PlanningConfig = struct {
+    max_depth: i64,
+    max_subgoals: i64,
+    enable_replanning: bool,
     timeout_ms: i64,
-    retry_failed: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +117,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "create_plan" {
+// Given: High-level goal
+// When: Starting task planning
+// Then: Return Plan with goal hierarchy
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "decompose_goal" {
+// Given: Goal
+// When: Breaking into subgoals
+// Then: Return list of subgoals
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "get_next_action" {
+// Given: Plan and current_state
+// When: Deciding next action
+// Then: Return PlanStep
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "update_plan" {
+// Given: Plan and observation
+// When: Adapting to new information
+// Then: Return updated Plan
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "replan" {
+// Given: Plan and failure_reason
+// When: Current plan fails
+// Then: Return new Plan
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "is_goal_achieved" {
+// Given: Goal and current_state
+// When: Checking goal completion
+// Then: Return bool
     // TODO: Add test assertions
 }
 

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// process_ipc v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,31 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
+pub const IPCChannel = struct {
+    channel_id: []const u8,
+    channel_type: []const u8,
+    connected: bool,
+};
+
+/// 
+pub const IPCMessage = struct {
+    message_id: []const u8,
+    payload: []const u8,
+    timestamp: i64,
+};
+
+/// 
+pub const SharedMemory = struct {
     name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
+    size: i64,
+    attached: bool,
 };
 
 /// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
-};
-
-/// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
-};
-
-/// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
+pub const IPCConfig = struct {
+    channel_type: []const u8,
+    buffer_size: i64,
     timeout_ms: i64,
-    retry_failed: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +109,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "create_channel" {
+// Given: IPCConfig
+// When: Creating IPC channel
+// Then: Return IPCChannel
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "connect_channel" {
+// Given: Channel name
+// When: Connecting to channel
+// Then: Return IPCChannel
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "send_message" {
+// Given: IPCChannel and IPCMessage
+// When: Sending message
+// Then: Return send status
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "receive_message" {
+// Given: IPCChannel
+// When: Receiving message
+// Then: Return IPCMessage
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "create_shared_memory" {
+// Given: Name and size
+// When: Creating shared memory
+// Then: Return SharedMemory
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "close_channel" {
+// Given: IPCChannel
+// When: Closing channel
+// Then: Return close status
     // TODO: Add test assertions
 }
 

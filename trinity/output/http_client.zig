@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// http_client v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,35 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
-};
-
-/// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
-};
-
-/// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
-};
-
-/// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
+pub const HttpRequest = struct {
+    method: []const u8,
+    url: []const u8,
+    headers: std.StringHashMap([]const u8),
+    body: ?[]const u8,
     timeout_ms: i64,
-    retry_failed: bool,
+};
+
+/// 
+pub const HttpResponse = struct {
+    status: i64,
+    headers: std.StringHashMap([]const u8),
+    body: []const u8,
+    latency_ms: i64,
+};
+
+/// 
+pub const ConnectionPool = struct {
+    host: []const u8,
+    port: i64,
+    max_connections: i64,
+    active: i64,
+};
+
+/// 
+pub const TLSConfig = struct {
+    verify_cert: bool,
+    ca_path: ?[]const u8,
+    client_cert: ?[]const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +113,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "request" {
+// Given: HttpRequest
+// When: Making HTTP request
+// Then: Return HttpResponse
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "get" {
+// Given: URL
+// When: GET request
+// Then: Return HttpResponse
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "post" {
+// Given: URL and body
+// When: POST request
+// Then: Return HttpResponse
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "create_pool" {
+// Given: Host and max_connections
+// When: Creating connection pool
+// Then: Return ConnectionPool
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "close_pool" {
+// Given: ConnectionPool
+// When: Closing pool
+// Then: Return close status
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "set_tls" {
+// Given: TLSConfig
+// When: Configuring TLS
+// Then: Return config status
     // TODO: Add test assertions
 }
 

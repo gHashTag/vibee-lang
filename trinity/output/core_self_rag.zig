@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// core_self_rag v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,47 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
+pub const RetrievalToken = struct {
+    token_type: []const u8,
+    value: []const u8,
 };
 
 /// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
+pub const RetrievalDecision = struct {
+    should_retrieve: bool,
+    query: ?[]const u8,
+    confidence: f64,
 };
 
 /// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+pub const Passage = struct {
+    passage_id: []const u8,
+    content: []const u8,
+    relevance_score: f64,
+    source: []const u8,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const CritiqueToken = struct {
+    is_supported: bool,
+    is_useful: bool,
+    reasoning: []const u8,
+};
+
+/// 
+pub const GenerationSegment = struct {
+    content: []const u8,
+    retrieval_used: bool,
+    passages_cited: []const u8,
+    critique: []const u8,
+};
+
+/// 
+pub const SelfRAGConfig = struct {
+    retrieval_threshold: f64,
+    max_passages: i64,
+    enable_critique: bool,
+    citation_required: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +125,52 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "decide_retrieval" {
+// Given: Current context and query
+// When: Deciding if retrieval needed
+// Then: Return RetrievalDecision
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "retrieve_passages" {
+// Given: Query and max_passages
+// When: Fetching relevant passages
+// Then: Return list of Passages
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "generate_with_passages" {
+// Given: Context and Passages
+// When: Generating response with citations
+// Then: Return GenerationSegment
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "critique_generation" {
+// Given: GenerationSegment and Passages
+// When: Self-evaluating generation quality
+// Then: Return CritiqueToken
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "is_supported" {
+// Given: Claim and Passages
+// When: Checking factual support
+// Then: Return support score
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "is_useful" {
+// Given: GenerationSegment and task
+// When: Checking response utility
+// Then: Return utility score
+    // TODO: Add test assertions
+}
+
+test "generate_self_rag" {
+// Given: Query and SelfRAGConfig
+// When: Running full Self-RAG pipeline
+// Then: Return final response with citations
     // TODO: Add test assertions
 }
 

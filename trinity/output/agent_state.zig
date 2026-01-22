@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// agent_state v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,36 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
-};
-
-/// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
+pub const AgentState = struct {
+    phase: []const u8,
+    current_task: ?[]const u8,
+    step_count: i64,
     start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
+    last_action: ?[]const u8,
 };
 
 /// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+pub const TaskState = struct {
+    task_id: []const u8,
+    goal: []const u8,
+    progress: f64,
+    steps_taken: i64,
+    observations: []const u8,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const StateSnapshot = struct {
+    snapshot_id: []const u8,
+    state: []const u8,
+    timestamp: i64,
+};
+
+/// 
+pub const StateTransition = struct {
+    from_state: []const u8,
+    to_state: []const u8,
+    trigger: []const u8,
+    timestamp: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +114,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "get_state" {
+// Given: Agent
+// When: Getting current state
+// Then: Return AgentState
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "update_state" {
+// Given: AgentState and updates
+// When: Updating state
+// Then: Return updated AgentState
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "create_snapshot" {
+// Given: AgentState
+// When: Creating state snapshot
+// Then: Return StateSnapshot
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
-    // TODO: Add test assertions
-}
-
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "restore_snapshot" {
+// Given: StateSnapshot
+// When: Restoring state
+// Then: Return restored AgentState
     // TODO: Add test assertions
 }
 
 test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+// Given: Agent
+// When: Getting state history
+// Then: Return list of StateTransitions
+    // TODO: Add test assertions
+}
+
+test "reset_state" {
+// Given: Agent
+// When: Resetting to initial
+// Then: Return fresh AgentState
     // TODO: Add test assertions
 }
 

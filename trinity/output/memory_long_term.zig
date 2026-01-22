@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// memory_long_term v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,45 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
+pub const MemoryEntry = struct {
+    entry_id: []const u8,
+    content: []const u8,
+    embedding: []const u8,
+    metadata: std.StringHashMap([]const u8),
+    created_at: i64,
+    last_accessed: i64,
 };
 
 /// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
+pub const MemoryIndex = struct {
+    index_type: []const u8,
+    dimension: i64,
+    num_entries: i64,
+    index_path: []const u8,
 };
 
 /// 
-pub const RunResult = struct {
-    run_id: []const u8,
-    success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+pub const SearchResult = struct {
+    entry_id: []const u8,
+    content: []const u8,
+    score: f64,
+    metadata: std.StringHashMap([]const u8),
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const LongTermMemory = struct {
+    index: []const u8,
+    storage_path: []const u8,
+    total_entries: i64,
+    embedding_model: []const u8,
+};
+
+/// 
+pub const PersistConfig = struct {
+    storage_path: []const u8,
+    auto_save: bool,
+    save_interval_ms: i64,
+    compression: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +123,52 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "store" {
+// Given: Content and metadata
+// When: Persisting to long-term memory
+// Then: Return entry_id
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "search" {
+// Given: Query embedding and k
+// When: Searching long-term memory
+// Then: Return list of SearchResults
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "search_by_text" {
+// Given: Query text and k
+// When: Text-based search
+// Then: Return list of SearchResults
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "delete" {
+// Given: Entry ID
+// When: Removing from memory
+// Then: Return success status
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "save_to_disk" {
+// Given: LongTermMemory and path
+// When: Persisting to disk
+// Then: Return save status
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "load_from_disk" {
+// Given: Path
+// When: Loading from disk
+// Then: Return LongTermMemory
+    // TODO: Add test assertions
+}
+
+test "get_stats" {
+// Given: LongTermMemory
+// When: Getting memory statistics
+// Then: Return stats map
     // TODO: Add test assertions
 }
 

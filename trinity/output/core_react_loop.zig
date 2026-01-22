@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// core_react_loop v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,54 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
+pub const Thought = struct {
+    content: []const u8,
+    reasoning_type: []const u8,
+    confidence: f64,
+    timestamp: i64,
 };
 
 /// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
+pub const Action = struct {
+    action_type: []const u8,
+    target: ?[]const u8,
+    parameters: std.StringHashMap([]const u8),
+    thought_id: i64,
 };
 
 /// 
-pub const RunResult = struct {
-    run_id: []const u8,
+pub const Observation = struct {
+    content: []const u8,
+    source: []const u8,
     success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+    timestamp: i64,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const ReActStep = struct {
+    step_number: i64,
+    thought: []const u8,
+    action: []const u8,
+    observation: []const u8,
+    duration_ms: i64,
+};
+
+/// 
+pub const ReActState = struct {
+    task: []const u8,
+    steps: []const u8,
+    current_step: i64,
+    max_steps: i64,
+    done: bool,
+    final_answer: ?[]const u8,
+};
+
+/// 
+pub const ReActConfig = struct {
+    max_steps: i64,
+    thought_budget_tokens: i64,
+    action_timeout_ms: i64,
+    enable_backtrack: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +132,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "think" {
+// Given: Current observation and task context
+// When: Agent needs to reason about next action
+// Then: Return Thought with reasoning trace
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "act" {
+// Given: Thought and available tools
+// When: Agent decides on action
+// Then: Return Action to execute
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "observe" {
+// Given: Action execution result
+// When: Environment returns feedback
+// Then: Return Observation with structured data
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "step" {
+// Given: ReActState
+// When: Executing one think-act-observe cycle
+// Then: Return updated ReActState
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "run" {
+// Given: Task and ReActConfig
+// When: Running full ReAct loop
+// Then: Return final answer or failure
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "should_stop" {
+// Given: ReActState and Observation
+// When: Checking termination condition
+// Then: Return bool indicating if task complete
     // TODO: Add test assertions
 }
 

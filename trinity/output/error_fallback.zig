@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// benchmark_runner v11.0.0 - Generated from .vibee specification
+// error_fallback v11.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,35 +33,32 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BenchmarkSuite = struct {
-    name: []const u8,
-    benchmarks: []const u8,
-    config: []const u8,
+pub const FallbackChain = struct {
+    primary: []const u8,
+    fallbacks: []const u8,
+    current_index: i64,
 };
 
 /// 
-pub const BenchmarkRun = struct {
-    run_id: []const u8,
-    suite: []const u8,
-    start_time: i64,
-    end_time: ?[]const u8,
-    status: []const u8,
-};
-
-/// 
-pub const RunResult = struct {
-    run_id: []const u8,
+pub const FallbackResult = struct {
     success: bool,
-    metrics: std.StringHashMap([]const u8),
-    errors: []const u8,
+    used_fallback: bool,
+    fallback_index: i64,
+    result: ?[]const u8,
 };
 
 /// 
-pub const RunnerConfig = struct {
-    parallel: bool,
-    max_workers: i64,
-    timeout_ms: i64,
-    retry_failed: bool,
+pub const FallbackConfig = struct {
+    timeout_per_fallback_ms: i64,
+    stop_on_success: bool,
+    collect_all_errors: bool,
+};
+
+/// 
+pub const FallbackOption = struct {
+    name: []const u8,
+    priority: i64,
+    condition: ?[]const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -113,45 +110,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_suite" {
-// Given: Name and benchmarks
-// When: Creating benchmark suite
-// Then: Return BenchmarkSuite
+test "try_with_fallback" {
+// Given: Primary operation and fallbacks
+// When: Executing with fallback
+// Then: Return FallbackResult
     // TODO: Add test assertions
 }
 
-test "run_suite" {
-// Given: BenchmarkSuite and RunnerConfig
-// When: Running benchmark suite
-// Then: Return RunResult
+test "add_fallback" {
+// Given: FallbackChain and FallbackOption
+// When: Adding fallback option
+// Then: Return updated chain
     // TODO: Add test assertions
 }
 
-test "run_single" {
-// Given: Benchmark name
-// When: Running single benchmark
-// Then: Return RunResult
+test "get_next_fallback" {
+// Given: FallbackChain
+// When: Getting next option
+// Then: Return FallbackOption
     // TODO: Add test assertions
 }
 
-test "get_status" {
-// Given: Run ID
-// When: Checking run status
-// Then: Return BenchmarkRun
+test "evaluate_condition" {
+// Given: FallbackOption and context
+// When: Checking if fallback applies
+// Then: Return bool
     // TODO: Add test assertions
 }
 
-test "cancel_run" {
-// Given: Run ID
-// When: Cancelling run
-// Then: Return cancel status
+test "reset_chain" {
+// Given: FallbackChain
+// When: Resetting to primary
+// Then: Return reset chain
     // TODO: Add test assertions
 }
 
-test "get_history" {
-// Given: Suite name
-// When: Getting run history
-// Then: Return list of BenchmarkRuns
+test "get_fallback_stats" {
+// Given: FallbackChain
+// When: Getting usage stats
+// Then: Return stats map
     // TODO: Add test assertions
 }
 
