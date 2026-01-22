@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bloom Benchmark | φ² + 1/φ² = 3</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{background:#0a0a12;color:#fff;font-family:system-ui;padding:20px}
+        h1{color:#ffd700;text-align:center;margin-bottom:20px}
+        .container{display:grid;grid-template-columns:1fr 1fr;gap:20px;max-width:1200px;margin:0 auto}
+        .panel{background:#111;border-radius:8px;padding:15px}
+        .panel h2{font-size:1em;color:#0af;margin-bottom:10px;display:flex;justify-content:space-between}
+        .badge{padding:4px 10px;border-radius:4px;font-size:0.7em}
+        .off{background:#3333;border:1px solid #333;color:#888}
+        .on{background:#f0f3;border:1px solid #f0f;color:#f0f}
+        canvas{width:100%;height:250px;background:#000;border-radius:4px}
+        .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:10px}
+        .stat{background:#0a0a12;padding:10px;border-radius:4px;text-align:center}
+        .stat-value{font-size:1.5em;font-weight:bold}
+        .stat-label{font-size:0.7em;color:#888}
+        .green{color:#0f0}
+        .yellow{color:#ff0}
+        .results{margin-top:20px;background:#111;border-radius:8px;padding:15px;max-width:1200px;margin:20px auto}
+        .results h3{color:#ffd700;margin-bottom:10px}
+        .bar{height:30px;background:#222;border-radius:4px;margin:5px 0;overflow:hidden}
+        .bar-fill{height:100%;display:flex;align-items:center;padding:0 10px;font-size:0.8em}
+        .bar-off{background:linear-gradient(90deg,#666,#444)}
+        .bar-on{background:linear-gradient(90deg,#f0f,#a0a)}
+        .controls{text-align:center;margin:20px 0}
+        .btn{padding:10px 20px;margin:5px;background:#222;border:1px solid #333;border-radius:4px;color:#fff;cursor:pointer}
+        .btn:hover{background:#333;border-color:#ffd700}
+        .btn.active{background:#ffd70033;border-color:#ffd700}
+    </style>
+</head>
+<body>
+<h1>Bloom Post-Processing Benchmark</h1>
+
+<div class="container">
+    <div class="panel">
+        <h2>Without Bloom <span class="badge off">OFF</span></h2>
+        <canvas id="canvasOff"></canvas>
+        <div class="stats">
+            <div class="stat"><div class="stat-value green" id="fpsOff">0</div><div class="stat-label">FPS</div></div>
+            <div class="stat"><div class="stat-value yellow" id="timeOff">0</div><div class="stat-label">ms/frame</div></div>
+        </div>
+    </div>
+    <div class="panel">
+        <h2>With Bloom <span class="badge on">ON</span></h2>
+        <canvas id="canvasOn"></canvas>
+        <div class="stats">
+            <div class="stat"><div class="stat-value green" id="fpsOn">0</div><div class="stat-label">FPS</div></div>
+            <div class="stat"><div class="stat-value yellow" id="timeOn">0</div><div class="stat-label">ms/frame</div></div>
+        </div>
+    </div>
+</div>
+
+<div class="controls">
+    <button class="btn" data-c="10000">10K</button>
+    <button class="btn active" data-c="50000">50K</button>
+    <button class="btn" data-c="100000">100K</button>
+    <button class="btn" data-c="200000">200K</button>
+</div>
+
+<div class="results">
+    <h3>Performance Impact</h3>
+    <div style="display:flex;align-items:center;margin:10px 0">
+        <span style="width:100px;font-size:0.8em">No Bloom:</span>
+        <div class="bar" style="flex:1"><div class="bar-fill bar-off" id="barOff" style="width:50%">0 FPS</div></div>
+    </div>
+    <div style="display:flex;align-items:center;margin:10px 0">
+        <span style="width:100px;font-size:0.8em">With Bloom:</span>
+        <div class="bar" style="flex:1"><div class="bar-fill bar-on" id="barOn" style="width:50%">0 FPS</div></div>
+    </div>
+    <div style="text-align:center;margin-top:15px;font-size:1.2em">
+        Bloom overhead: <span id="overhead" style="color:#f0f">0%</span>
+    </div>
+</div>
+
+<script>
+const PHI = 1.618033988749895, TAU = Math.PI * 2;
+let particleCount = 50000;
+
+// Shared shader code
+const computeCode = `
+struct P{g:f32,f:f32,cx:f32,cy:f32,w:f32,h:f32,t:f32,n:f32}
+@group(0)@binding(0) var<storage,read_write> pos:array<vec4<f32>>;
+@group(0)@binding(1) var<storage,read_write> vel:array<vec4<f32>>;
+@group(0)@binding(2) var<storage,read_write> col:array<vec4<f32>>;
+@group(0)@binding(3) var<uniform> p:P;
+@compute @workgroup_size(256) fn main(@builtin(global_invocation_id) id:vec3<u32>){
+    let i=id.x;if(i>=u32(p.n)){return;}
+    var ps=pos[i].xy;var v=vel[i].xy;let ph=pos[i].z;
+    let d=ps-vec2<f32>(p.cx,p.cy);let dist=length(d)+1.0;
+    v-=normalize(d)*p.g*80.0/dist*0.016;v*=0.995;ps+=v;
+    if(ps.x<0.0){ps.x+=p.w;}if(ps.x>p.w){ps.x-=p.w;}
+    if(ps.y<0.0){ps.y+=p.h;}if(ps.y>p.h){ps.y-=p.h;}
+    let np=ph+0.032*1.618;let spd=length(v);let hue=fract(np/6.28+spd*0.01);
+    let h=hue*6.0;let cv=0.9;let x=cv*(1.0-abs(fract(h/2.0)*2.0-1.0));
+    var rgb:vec3<f32>;
+    if(h<1.0){rgb=vec3<f32>(cv,x,0.0);}else if(h<2.0){rgb=vec3<f32>(x,cv,0.0);}
+    else if(h<3.0){rgb=vec3<f32>(0.0,cv,x);}else if(h<4.0){rgb=vec3<f32>(0.0,x,cv);}
+    else if(h<5.0){rgb=vec3<f32>(x,0.0,cv);}else{rgb=vec3<f32>(cv,0.0,x);}
+    pos[i]=vec4<f32>(ps,np,1.0);vel[i]=vec4<f32>(v,0.0,0.0);col[i]=vec4<f32>(rgb+0.1,0.7);
+}`;
+
+const vertexCode = `
+struct U{res:vec2<f32>,sz:f32,_:f32}
+@group(0)@binding(0) var<storage,read> pos:array<vec4<f32>>;
+@group(0)@binding(1) var<storage,read> col:array<vec4<f32>>;
+@group(0)@binding(2) var<uniform> u:U;
+const q=array<vec2<f32>,6>(vec2<f32>(-1,-1),vec2<f32>(1,-1),vec2<f32>(-1,1),vec2<f32>(-1,1),vec2<f32>(1,-1),vec2<f32>(1,1));
+struct VO{@builtin(position) p:vec4<f32>,@location(0) c:vec4<f32>,@location(1) uv:vec2<f32>}
+@vertex fn main(@builtin(vertex_index) vi:u32,@builtin(instance_index) ii:u32)->VO{
+    var o:VO;let qv=q[vi];let pp=pos[ii].xy;let sz=u.sz*(1.0+sin(pos[ii].z)*0.3);
+    let p=(pp+qv*sz)/u.res*2.0-1.0;o.p=vec4<f32>(p.x,-p.y,0.0,1.0);o.c=col[ii];o.uv=qv;return o;
+}`;
+
+const fragmentCode = `
+@fragment fn main(@location(0) c:vec4<f32>,@location(1) uv:vec2<f32>)->@location(0) vec4<f32>{
+    let d=length(uv);if(d>1.0){discard;}
+    let g=exp(-d*d*1.5);let i=smoothstep(1.0,0.0,d)*0.8+g*0.5;
+    return vec4<f32>(c.rgb*i,c.a*i);
+}`;
+
+const blurHCode = `
+@group(0)@binding(0) var inTex:texture_2d<f32>;
+@group(0)@binding(1) var outTex:texture_storage_2d<rgba16float,write>;
+const w=array<f32,5>(0.227027,0.1945946,0.1216216,0.054054,0.016216);
+@compute @workgroup_size(16,16) fn main(@builtin(global_invocation_id) id:vec3<u32>){
+    let dims=textureDimensions(inTex);let uv=vec2<i32>(id.xy);
+    if(uv.x>=i32(dims.x)||uv.y>=i32(dims.y)){return;}
+    var r=textureLoad(inTex,uv,0).rgb*w[0];
+    for(var i=1;i<5;i++){r+=textureLoad(inTex,uv+vec2<i32>(i*2,0),0).rgb*w[i];r+=textureLoad(inTex,uv-vec2<i32>(i*2,0),0).rgb*w[i];}
+    textureStore(outTex,uv,vec4<f32>(r,1.0));
+}`;
+
+const blurVCode = `
+@group(0)@binding(0) var inTex:texture_2d<f32>;
+@group(0)@binding(1) var outTex:texture_storage_2d<rgba16float,write>;
+const w=array<f32,5>(0.227027,0.1945946,0.1216216,0.054054,0.016216);
+@compute @workgroup_size(16,16) fn main(@builtin(global_invocation_id) id:vec3<u32>){
+    let dims=textureDimensions(inTex);let uv=vec2<i32>(id.xy);
+    if(uv.x>=i32(dims.x)||uv.y>=i32(dims.y)){return;}
+    var r=textureLoad(inTex,uv,0).rgb*w[0];
+    for(var i=1;i<5;i++){r+=textureLoad(inTex,uv+vec2<i32>(0,i*2),0).rgb*w[i];r+=textureLoad(inTex,uv-vec2<i32>(0,i*2),0).rgb*w[i];}
+    textureStore(outTex,uv,vec4<f32>(r,1.0));
+}`;
+
+const compositeVert = `@vertex fn main(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32>{let p=array<vec2<f32>,6>(vec2<f32>(-1,-1),vec2<f32>(1,-1),vec2<f32>(-1,1),vec2<f32>(-1,1),vec2<f32>(1,-1),vec2<f32>(1,1));return vec4<f32>(p[i],0.0,1.0);}`;
+const compositeFrag = `
+@group(0)@binding(0) var sceneTex:texture_2d<f32>;
+@group(0)@binding(1) var bloomTex:texture_2d<f32>;
+@group(0)@binding(2) var samp:sampler;
+@group(0)@binding(3) var<uniform> intensity:f32;
+@fragment fn main(@builtin(position) pos:vec4<f32>)->@location(0) vec4<f32>{
+    let dims=vec2<f32>(textureDimensions(sceneTex));let uv=pos.xy/dims;
+    return vec4<f32>(textureSample(sceneTex,samp,uv).rgb+textureSample(bloomTex,samp,uv).rgb*intensity,1.0);
+}`;
+
+class Renderer {
+    constructor(canvas, withBloom) {
+        this.canvas = canvas;
+        this.withBloom = withBloom;
+        this.time = 0;
+        this.fps = 0;
+        this.frameTime = 0;
+        this.fc = 0;
+        this.lt = performance.now();
+    }
+    
+    async init(device, format) {
+        this.device = device;
+        this.format = format;
+        this.context = this.canvas.getContext('webgpu');
+        this.context.configure({ device, format, alphaMode: 'premultiplied' });
+        
+        this.computePipeline = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: computeCode }), entryPoint: 'main' }});
+        
+        const targetFormat = this.withBloom ? 'rgba16float' : format;
+        this.renderPipeline = device.createRenderPipeline({
+            layout: 'auto',
+            vertex: { module: device.createShaderModule({ code: vertexCode }), entryPoint: 'main' },
+            fragment: { module: device.createShaderModule({ code: fragmentCode }), entryPoint: 'main',
+                targets: [{ format: targetFormat, blend: { color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' }, alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' }}}]},
+            primitive: { topology: 'triangle-list' }
+        });
+        
+        if (this.withBloom) {
+            this.blurHPipeline = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: blurHCode }), entryPoint: 'main' }});
+            this.blurVPipeline = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: blurVCode }), entryPoint: 'main' }});
+            this.compositePipeline = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: { module: device.createShaderModule({ code: compositeVert }), entryPoint: 'main' },
+                fragment: { module: device.createShaderModule({ code: compositeFrag }), entryPoint: 'main', targets: [{ format }]},
+                primitive: { topology: 'triangle-list' }
+            });
+            this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+            this.intensityBuffer = device.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        }
+        
+        this.createBuffers();
+        if (this.withBloom) this.createTextures();
+    }
+    
+    createTextures() {
+        const w = this.canvas.width, h = this.canvas.height;
+        this.sceneTexture = this.device.createTexture({ size: [w, h], format: 'rgba16float', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+        this.blurTexture1 = this.device.createTexture({ size: [w, h], format: 'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+        this.blurTexture2 = this.device.createTexture({ size: [w, h], format: 'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+    }
+    
+    createBuffers() {
+        const n = particleCount;
+        const positions = new Float32Array(n * 4);
+        const velocities = new Float32Array(n * 4);
+        const colors = new Float32Array(n * 4);
+        for (let i = 0; i < n; i++) {
+            positions[i*4] = Math.random() * this.canvas.width;
+            positions[i*4+1] = Math.random() * this.canvas.height;
+            positions[i*4+2] = Math.random() * TAU;
+            velocities[i*4] = (Math.random() - 0.5) * 4;
+            velocities[i*4+1] = (Math.random() - 0.5) * 4;
+            colors[i*4] = 1; colors[i*4+1] = 0.8; colors[i*4+2] = 0.3; colors[i*4+3] = 0.8;
+        }
+        this.posBuffer = this.device.createBuffer({ size: positions.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+        new Float32Array(this.posBuffer.getMappedRange()).set(positions); this.posBuffer.unmap();
+        this.velBuffer = this.device.createBuffer({ size: velocities.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+        new Float32Array(this.velBuffer.getMappedRange()).set(velocities); this.velBuffer.unmap();
+        this.colorBuffer = this.device.createBuffer({ size: colors.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+        new Float32Array(this.colorBuffer.getMappedRange()).set(colors); this.colorBuffer.unmap();
+        this.paramsBuffer = this.device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        this.renderUniformBuffer = this.device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    }
+    
+    render() {
+        const start = performance.now();
+        this.time += 0.016;
+        
+        this.device.queue.writeBuffer(this.paramsBuffer, 0, new Float32Array([1, 0.995, this.canvas.width/2, this.canvas.height/2, this.canvas.width, this.canvas.height, this.time, particleCount]));
+        this.device.queue.writeBuffer(this.renderUniformBuffer, 0, new Float32Array([this.canvas.width, this.canvas.height, 3, 0]));
+        
+        const cmd = this.device.createCommandEncoder();
+        
+        // Compute
+        const computeBG = this.device.createBindGroup({ layout: this.computePipeline.getBindGroupLayout(0), entries: [
+            { binding: 0, resource: { buffer: this.posBuffer }}, { binding: 1, resource: { buffer: this.velBuffer }},
+            { binding: 2, resource: { buffer: this.colorBuffer }}, { binding: 3, resource: { buffer: this.paramsBuffer }}
+        ]});
+        const cp = cmd.beginComputePass();
+        cp.setPipeline(this.computePipeline); cp.setBindGroup(0, computeBG);
+        cp.dispatchWorkgroups(Math.ceil(particleCount / 256)); cp.end();
+        
+        const renderBG = this.device.createBindGroup({ layout: this.renderPipeline.getBindGroupLayout(0), entries: [
+            { binding: 0, resource: { buffer: this.posBuffer }}, { binding: 1, resource: { buffer: this.colorBuffer }},
+            { binding: 2, resource: { buffer: this.renderUniformBuffer }}
+        ]});
+        
+        if (this.withBloom) {
+            // Render to scene texture
+            const rp = cmd.beginRenderPass({ colorAttachments: [{ view: this.sceneTexture.createView(), clearValue: {r:0,g:0,b:0,a:1}, loadOp: 'clear', storeOp: 'store' }]});
+            rp.setPipeline(this.renderPipeline); rp.setBindGroup(0, renderBG);
+            rp.draw(6, particleCount); rp.end();
+            
+            // Blur H
+            const blurHBG = this.device.createBindGroup({ layout: this.blurHPipeline.getBindGroupLayout(0), entries: [
+                { binding: 0, resource: this.sceneTexture.createView() }, { binding: 1, resource: this.blurTexture1.createView() }
+            ]});
+            const bh = cmd.beginComputePass();
+            bh.setPipeline(this.blurHPipeline); bh.setBindGroup(0, blurHBG);
+            bh.dispatchWorkgroups(Math.ceil(this.canvas.width/16), Math.ceil(this.canvas.height/16)); bh.end();
+            
+            // Blur V
+            const blurVBG = this.device.createBindGroup({ layout: this.blurVPipeline.getBindGroupLayout(0), entries: [
+                { binding: 0, resource: this.blurTexture1.createView() }, { binding: 1, resource: this.blurTexture2.createView() }
+            ]});
+            const bv = cmd.beginComputePass();
+            bv.setPipeline(this.blurVPipeline); bv.setBindGroup(0, blurVBG);
+            bv.dispatchWorkgroups(Math.ceil(this.canvas.width/16), Math.ceil(this.canvas.height/16)); bv.end();
+            
+            // Composite
+            this.device.queue.writeBuffer(this.intensityBuffer, 0, new Float32Array([1.5]));
+            const compositeBG = this.device.createBindGroup({ layout: this.compositePipeline.getBindGroupLayout(0), entries: [
+                { binding: 0, resource: this.sceneTexture.createView() }, { binding: 1, resource: this.blurTexture2.createView() },
+                { binding: 2, resource: this.sampler }, { binding: 3, resource: { buffer: this.intensityBuffer }}
+            ]});
+            const fp = cmd.beginRenderPass({ colorAttachments: [{ view: this.context.getCurrentTexture().createView(), clearValue: {r:0,g:0,b:0,a:1}, loadOp: 'clear', storeOp: 'store' }]});
+            fp.setPipeline(this.compositePipeline); fp.setBindGroup(0, compositeBG);
+            fp.draw(6); fp.end();
+        } else {
+            // Direct render
+            const rp = cmd.beginRenderPass({ colorAttachments: [{ view: this.context.getCurrentTexture().createView(), clearValue: {r:0,g:0,b:0,a:1}, loadOp: 'clear', storeOp: 'store' }]});
+            rp.setPipeline(this.renderPipeline); rp.setBindGroup(0, renderBG);
+            rp.draw(6, particleCount); rp.end();
+        }
+        
+        this.device.queue.submit([cmd.finish()]);
+        this.frameTime = performance.now() - start;
+        
+        this.fc++;
+        const now = performance.now();
+        if (now - this.lt >= 1000) {
+            this.fps = this.fc;
+            this.fc = 0; this.lt = now;
+        }
+    }
+}
+
+let rendererOff, rendererOn, device;
+
+async function init() {
+    if (!navigator.gpu) return;
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) return;
+    device = await adapter.requestDevice();
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    
+    const canvasOff = document.getElementById('canvasOff');
+    const canvasOn = document.getElementById('canvasOn');
+    canvasOff.width = canvasOff.offsetWidth;
+    canvasOff.height = canvasOff.offsetHeight;
+    canvasOn.width = canvasOn.offsetWidth;
+    canvasOn.height = canvasOn.offsetHeight;
+    
+    rendererOff = new Renderer(canvasOff, false);
+    rendererOn = new Renderer(canvasOn, true);
+    
+    await rendererOff.init(device, format);
+    await rendererOn.init(device, format);
+    
+    loop();
+}
+
+function loop() {
+    rendererOff.render();
+    rendererOn.render();
+    
+    document.getElementById('fpsOff').textContent = rendererOff.fps;
+    document.getElementById('timeOff').textContent = rendererOff.frameTime.toFixed(1);
+    document.getElementById('fpsOn').textContent = rendererOn.fps;
+    document.getElementById('timeOn').textContent = rendererOn.frameTime.toFixed(1);
+    
+    const maxFps = Math.max(rendererOff.fps, rendererOn.fps, 1);
+    document.getElementById('barOff').style.width = (rendererOff.fps / maxFps * 100) + '%';
+    document.getElementById('barOff').textContent = rendererOff.fps + ' FPS';
+    document.getElementById('barOn').style.width = (rendererOn.fps / maxFps * 100) + '%';
+    document.getElementById('barOn').textContent = rendererOn.fps + ' FPS';
+    
+    const overhead = rendererOff.fps > 0 ? Math.round((1 - rendererOn.fps / rendererOff.fps) * 100) : 0;
+    document.getElementById('overhead').textContent = overhead + '%';
+    
+    requestAnimationFrame(loop);
+}
+
+document.querySelectorAll('[data-c]').forEach(b => {
+    b.onclick = () => {
+        document.querySelectorAll('[data-c]').forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+        particleCount = +b.dataset.c;
+        if (rendererOff) { rendererOff.createBuffers(); if (rendererOff.withBloom) rendererOff.createTextures(); }
+        if (rendererOn) { rendererOn.createBuffers(); if (rendererOn.withBloom) rendererOn.createTextures(); }
+    };
+});
+
+init();
+</script>
+</body>
+</html>

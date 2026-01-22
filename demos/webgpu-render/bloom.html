@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGPU Bloom | φ² + 1/φ² = 3</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{background:#000;color:#fff;font-family:system-ui;overflow:hidden}
+        #app{display:grid;grid-template-columns:180px 1fr;height:100vh}
+        .panel{background:#0a0a12;padding:10px;overflow-y:auto}
+        h1{font-size:0.9em;color:#ffd700;margin-bottom:10px}
+        .section{background:#111;border-radius:6px;padding:8px;margin-bottom:8px}
+        .section h3{font-size:0.7em;color:#0af;margin-bottom:4px}
+        .btn{display:block;width:100%;padding:6px;margin:3px 0;background:#222;border:1px solid #333;border-radius:4px;color:#fff;cursor:pointer;font-size:0.65em}
+        .btn:hover{background:#333;border-color:#ffd700}
+        .btn.active{background:#ffd70033;border-color:#ffd700}
+        .slider{width:100%;margin:4px 0}
+        .label{font-size:0.55em;color:#888;display:flex;justify-content:space-between}
+        canvas{width:100%;height:100%;display:block}
+        .stats{font-size:0.6em;color:#888}
+        .stats span{color:#0f0}
+        .badge{padding:2px 6px;border-radius:3px;font-size:0.5em}
+        .gpu{background:#0f03;border:1px solid #0f0;color:#0f0}
+    </style>
+</head>
+<body>
+<div id="app">
+    <div class="panel">
+        <h1>WebGPU Bloom</h1>
+        <div class="section">
+            <h3>Status <span id="status" class="badge">Init</span></h3>
+        </div>
+        <div class="section">
+            <h3>Bloom</h3>
+            <button class="btn active" id="bloomBtn">Bloom: ON</button>
+            <div class="label"><span>Intensity</span><span id="iv">1.5</span></div>
+            <input type="range" class="slider" id="intensity" min="0" max="3" step="0.1" value="1.5">
+            <div class="label"><span>Threshold</span><span id="tv">0.3</span></div>
+            <input type="range" class="slider" id="threshold" min="0" max="1" step="0.05" value="0.3">
+            <div class="label"><span>Radius</span><span id="rv">4</span></div>
+            <input type="range" class="slider" id="radius" min="1" max="8" step="1" value="4">
+        </div>
+        <div class="section">
+            <h3>Particles</h3>
+            <div class="label"><span>Count</span><span id="cv">50000</span></div>
+            <input type="range" class="slider" id="count" min="10000" max="200000" step="10000" value="50000">
+        </div>
+        <div class="section">
+            <h3>Mode</h3>
+            <button class="btn active" data-m="gravity">Gravity</button>
+            <button class="btn" data-m="vortex">Vortex</button>
+            <button class="btn" data-m="wave">Wave</button>
+        </div>
+        <div class="stats">
+            FPS: <span id="fps">0</span><br>
+            GPU: <span id="gpu">0</span>ms
+        </div>
+        <div class="section" style="text-align:center">
+            <div style="color:#ffd700">φ² + 1/φ² = 3</div>
+        </div>
+    </div>
+    <canvas id="c"></canvas>
+</div>
+<script>
+const PHI = 1.618033988749895, TAU = Math.PI * 2;
+let canvas, device, context, format;
+let computePipeline, renderPipeline, blurHPipeline, blurVPipeline, compositePipeline;
+let posBuffer, velBuffer, colorBuffer, paramsBuffer;
+let sceneTexture, brightTexture, blurTexture1, blurTexture2;
+let params = { count: 50000, intensity: 1.5, threshold: 0.3, radius: 4, bloom: true };
+let mode = 'gravity', mouse = { x: 0, y: 0, down: false }, time = 0;
+
+const computeCode = `
+struct P { g:f32,f:f32,cx:f32,cy:f32,mx:f32,my:f32,md:f32,m:f32,w:f32,h:f32,t:f32,n:f32 }
+@group(0)@binding(0) var<storage,read_write> pos:array<vec4<f32>>;
+@group(0)@binding(1) var<storage,read_write> vel:array<vec4<f32>>;
+@group(0)@binding(2) var<storage,read_write> col:array<vec4<f32>>;
+@group(0)@binding(3) var<uniform> p:P;
+const PHI:f32=1.618033988749895;
+@compute @workgroup_size(256) fn main(@builtin(global_invocation_id) id:vec3<u32>) {
+    let i=id.x; if(i>=u32(p.n)){return;}
+    var ps=pos[i].xy; var v=vel[i].xy; let ph=pos[i].z;
+    let c=vec2<f32>(p.cx,p.cy); let d=ps-c; let dist=length(d)+1.0;
+    if(p.m<0.5){v-=normalize(d)*p.g*80.0/dist*0.016;}
+    else if(p.m<1.5){let perp=vec2<f32>(-d.y,d.x);v+=(normalize(perp)*3.0+normalize(d)*0.3)*p.g*0.016;}
+    else{v.x+=sin(ps.x*0.01+p.t*PHI)*p.g*0.24;v.y+=cos(ps.y*0.01+p.t)*p.g*0.24;}
+    if(p.md>0.5){let md=vec2<f32>(p.mx,p.my)-ps;let mdi=length(md)+1.0;if(mdi<300.0){v+=normalize(md)*p.g*200.0/mdi*0.016;}}
+    v*=0.995;ps+=v;
+    if(ps.x<0.0){ps.x+=p.w;}if(ps.x>p.w){ps.x-=p.w;}if(ps.y<0.0){ps.y+=p.h;}if(ps.y>p.h){ps.y-=p.h;}
+    let np=ph+0.032*PHI; let spd=length(v); let hue=fract(np/6.28+spd*0.01);
+    let h=hue*6.0;let cv=0.9;let x=cv*(1.0-abs(fract(h/2.0)*2.0-1.0));let m=0.1;
+    var rgb:vec3<f32>;
+    if(h<1.0){rgb=vec3<f32>(cv,x,0.0);}else if(h<2.0){rgb=vec3<f32>(x,cv,0.0);}
+    else if(h<3.0){rgb=vec3<f32>(0.0,cv,x);}else if(h<4.0){rgb=vec3<f32>(0.0,x,cv);}
+    else if(h<5.0){rgb=vec3<f32>(x,0.0,cv);}else{rgb=vec3<f32>(cv,0.0,x);}
+    pos[i]=vec4<f32>(ps,np,1.0);vel[i]=vec4<f32>(v,0.0,0.0);col[i]=vec4<f32>(rgb+m,0.6+sin(np)*0.3);
+}`;
+
+const vertexCode = `
+struct U{res:vec2<f32>,sz:f32,_:f32}
+@group(0)@binding(0) var<storage,read> pos:array<vec4<f32>>;
+@group(0)@binding(1) var<storage,read> col:array<vec4<f32>>;
+@group(0)@binding(2) var<uniform> u:U;
+const q=array<vec2<f32>,6>(vec2<f32>(-1,-1),vec2<f32>(1,-1),vec2<f32>(-1,1),vec2<f32>(-1,1),vec2<f32>(1,-1),vec2<f32>(1,1));
+struct VO{@builtin(position) p:vec4<f32>,@location(0) c:vec4<f32>,@location(1) uv:vec2<f32>}
+@vertex fn main(@builtin(vertex_index) vi:u32,@builtin(instance_index) ii:u32)->VO{
+    var o:VO;let qv=q[vi];let pp=pos[ii].xy;let sz=u.sz*(1.0+sin(pos[ii].z)*0.3);
+    let p=(pp+qv*sz)/u.res*2.0-1.0;o.p=vec4<f32>(p.x,-p.y,0.0,1.0);o.c=col[ii];o.uv=qv;return o;
+}`;
+
+const fragmentCode = `
+@fragment fn main(@location(0) c:vec4<f32>,@location(1) uv:vec2<f32>)->@location(0) vec4<f32>{
+    let d=length(uv);if(d>1.0){discard;}
+    let g=exp(-d*d*1.5);let core=smoothstep(1.0,0.0,d);let i=core*0.8+g*0.5;
+    return vec4<f32>(c.rgb*i,c.a*i);
+}`;
+
+const blurHCode = `
+@group(0)@binding(0) var inTex:texture_2d<f32>;
+@group(0)@binding(1) var outTex:texture_storage_2d<rgba16float,write>;
+@group(0)@binding(2) var<uniform> params:vec4<f32>;
+const weights=array<f32,5>(0.227027,0.1945946,0.1216216,0.054054,0.016216);
+@compute @workgroup_size(16,16) fn main(@builtin(global_invocation_id) id:vec3<u32>){
+    let dims=textureDimensions(inTex);let uv=vec2<i32>(id.xy);
+    if(uv.x>=i32(dims.x)||uv.y>=i32(dims.y)){return;}
+    var result=textureLoad(inTex,uv,0).rgb*weights[0];
+    let r=i32(params.z);
+    for(var i=1;i<5;i++){let off=i*r;
+        result+=textureLoad(inTex,uv+vec2<i32>(off,0),0).rgb*weights[i];
+        result+=textureLoad(inTex,uv-vec2<i32>(off,0),0).rgb*weights[i];
+    }
+    textureStore(outTex,uv,vec4<f32>(result,1.0));
+}`;
+
+const blurVCode = `
+@group(0)@binding(0) var inTex:texture_2d<f32>;
+@group(0)@binding(1) var outTex:texture_storage_2d<rgba16float,write>;
+@group(0)@binding(2) var<uniform> params:vec4<f32>;
+const weights=array<f32,5>(0.227027,0.1945946,0.1216216,0.054054,0.016216);
+@compute @workgroup_size(16,16) fn main(@builtin(global_invocation_id) id:vec3<u32>){
+    let dims=textureDimensions(inTex);let uv=vec2<i32>(id.xy);
+    if(uv.x>=i32(dims.x)||uv.y>=i32(dims.y)){return;}
+    var result=textureLoad(inTex,uv,0).rgb*weights[0];
+    let r=i32(params.z);
+    for(var i=1;i<5;i++){let off=i*r;
+        result+=textureLoad(inTex,uv+vec2<i32>(0,off),0).rgb*weights[i];
+        result+=textureLoad(inTex,uv-vec2<i32>(0,off),0).rgb*weights[i];
+    }
+    textureStore(outTex,uv,vec4<f32>(result,1.0));
+}`;
+
+const compositeVert = `
+@vertex fn main(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32>{
+    let pos=array<vec2<f32>,6>(vec2<f32>(-1,-1),vec2<f32>(1,-1),vec2<f32>(-1,1),vec2<f32>(-1,1),vec2<f32>(1,-1),vec2<f32>(1,1));
+    return vec4<f32>(pos[i],0.0,1.0);
+}`;
+
+const compositeFrag = `
+@group(0)@binding(0) var sceneTex:texture_2d<f32>;
+@group(0)@binding(1) var bloomTex:texture_2d<f32>;
+@group(0)@binding(2) var samp:sampler;
+@group(0)@binding(3) var<uniform> params:vec4<f32>;
+@fragment fn main(@builtin(position) pos:vec4<f32>)->@location(0) vec4<f32>{
+    let dims=vec2<f32>(textureDimensions(sceneTex));let uv=pos.xy/dims;
+    let scene=textureSample(sceneTex,samp,uv).rgb;
+    let bloom=textureSample(bloomTex,samp,uv).rgb;
+    let result=scene+bloom*params.x;
+    return vec4<f32>(result,1.0);
+}`;
+
+async function init() {
+    canvas = document.getElementById('c');
+    canvas.width = canvas.offsetWidth;
+    canvas.height = canvas.offsetHeight;
+    
+    if (!navigator.gpu) { document.getElementById('status').textContent = 'No WebGPU'; return false; }
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) { document.getElementById('status').textContent = 'No adapter'; return false; }
+    device = await adapter.requestDevice();
+    context = canvas.getContext('webgpu');
+    format = navigator.gpu.getPreferredCanvasFormat();
+    context.configure({ device, format, alphaMode: 'premultiplied' });
+    
+    document.getElementById('status').textContent = 'GPU';
+    document.getElementById('status').className = 'badge gpu';
+    
+    createPipelines();
+    createBuffers();
+    createTextures();
+    return true;
+}
+
+function createPipelines() {
+    computePipeline = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: computeCode }), entryPoint: 'main' }});
+    
+    renderPipeline = device.createRenderPipeline({
+        layout: 'auto',
+        vertex: { module: device.createShaderModule({ code: vertexCode }), entryPoint: 'main' },
+        fragment: { module: device.createShaderModule({ code: fragmentCode }), entryPoint: 'main',
+            targets: [{ format: 'rgba16float', blend: { color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' }, alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' }}}]},
+        primitive: { topology: 'triangle-list' }
+    });
+    
+    blurHPipeline = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: blurHCode }), entryPoint: 'main' }});
+    blurVPipeline = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: blurVCode }), entryPoint: 'main' }});
+    
+    compositePipeline = device.createRenderPipeline({
+        layout: 'auto',
+        vertex: { module: device.createShaderModule({ code: compositeVert }), entryPoint: 'main' },
+        fragment: { module: device.createShaderModule({ code: compositeFrag }), entryPoint: 'main', targets: [{ format }]},
+        primitive: { topology: 'triangle-list' }
+    });
+}
+
+function createTextures() {
+    const w = canvas.width, h = canvas.height;
+    sceneTexture = device.createTexture({ size: [w, h], format: 'rgba16float', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+    blurTexture1 = device.createTexture({ size: [w, h], format: 'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+    blurTexture2 = device.createTexture({ size: [w, h], format: 'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+}
+
+function createBuffers() {
+    const n = params.count;
+    const positions = new Float32Array(n * 4);
+    const velocities = new Float32Array(n * 4);
+    const colors = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) {
+        positions[i*4] = Math.random() * canvas.width;
+        positions[i*4+1] = Math.random() * canvas.height;
+        positions[i*4+2] = Math.random() * TAU;
+        positions[i*4+3] = 1;
+        velocities[i*4] = (Math.random() - 0.5) * 4;
+        velocities[i*4+1] = (Math.random() - 0.5) * 4;
+        colors[i*4] = 1; colors[i*4+1] = 0.8; colors[i*4+2] = 0.3; colors[i*4+3] = 0.8;
+    }
+    posBuffer = device.createBuffer({ size: positions.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+    new Float32Array(posBuffer.getMappedRange()).set(positions); posBuffer.unmap();
+    velBuffer = device.createBuffer({ size: velocities.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+    new Float32Array(velBuffer.getMappedRange()).set(velocities); velBuffer.unmap();
+    colorBuffer = device.createBuffer({ size: colors.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+    new Float32Array(colorBuffer.getMappedRange()).set(colors); colorBuffer.unmap();
+    paramsBuffer = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    window.renderUniformBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    window.blurParamsBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    window.compositeParamsBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    window.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+}
+
+let fc = 0, lt = performance.now(), gpuTime = 0;
+
+function render() {
+    const start = performance.now();
+    time += 0.016;
+    const modeMap = { gravity: 0, vortex: 1, wave: 2 };
+    
+    device.queue.writeBuffer(paramsBuffer, 0, new Float32Array([params.gravity || 1, 0.995, canvas.width/2, canvas.height/2, mouse.x, mouse.y, mouse.down ? 1 : 0, modeMap[mode] || 0, canvas.width, canvas.height, time, params.count]));
+    device.queue.writeBuffer(window.renderUniformBuffer, 0, new Float32Array([canvas.width, canvas.height, 3, 0]));
+    device.queue.writeBuffer(window.blurParamsBuffer, 0, new Float32Array([params.intensity, params.threshold, params.radius, 0]));
+    device.queue.writeBuffer(window.compositeParamsBuffer, 0, new Float32Array([params.intensity, params.threshold, params.radius, 0]));
+    
+    const cmd = device.createCommandEncoder();
+    
+    // Compute
+    const computeBG = device.createBindGroup({ layout: computePipeline.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: posBuffer }}, { binding: 1, resource: { buffer: velBuffer }},
+        { binding: 2, resource: { buffer: colorBuffer }}, { binding: 3, resource: { buffer: paramsBuffer }}
+    ]});
+    const cp = cmd.beginComputePass();
+    cp.setPipeline(computePipeline); cp.setBindGroup(0, computeBG);
+    cp.dispatchWorkgroups(Math.ceil(params.count / 256)); cp.end();
+    
+    // Render to scene texture
+    const renderBG = device.createBindGroup({ layout: renderPipeline.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: posBuffer }}, { binding: 1, resource: { buffer: colorBuffer }},
+        { binding: 2, resource: { buffer: window.renderUniformBuffer }}
+    ]});
+    const rp = cmd.beginRenderPass({ colorAttachments: [{ view: sceneTexture.createView(), clearValue: {r:0,g:0,b:0,a:1}, loadOp: 'clear', storeOp: 'store' }]});
+    rp.setPipeline(renderPipeline); rp.setBindGroup(0, renderBG);
+    rp.draw(6, params.count); rp.end();
+    
+    if (params.bloom) {
+        // Blur H
+        const blurHBG = device.createBindGroup({ layout: blurHPipeline.getBindGroupLayout(0), entries: [
+            { binding: 0, resource: sceneTexture.createView() },
+            { binding: 1, resource: blurTexture1.createView() },
+            { binding: 2, resource: { buffer: window.blurParamsBuffer }}
+        ]});
+        const bh = cmd.beginComputePass();
+        bh.setPipeline(blurHPipeline); bh.setBindGroup(0, blurHBG);
+        bh.dispatchWorkgroups(Math.ceil(canvas.width/16), Math.ceil(canvas.height/16)); bh.end();
+        
+        // Blur V
+        const blurVBG = device.createBindGroup({ layout: blurVPipeline.getBindGroupLayout(0), entries: [
+            { binding: 0, resource: blurTexture1.createView() },
+            { binding: 1, resource: blurTexture2.createView() },
+            { binding: 2, resource: { buffer: window.blurParamsBuffer }}
+        ]});
+        const bv = cmd.beginComputePass();
+        bv.setPipeline(blurVPipeline); bv.setBindGroup(0, blurVBG);
+        bv.dispatchWorkgroups(Math.ceil(canvas.width/16), Math.ceil(canvas.height/16)); bv.end();
+        
+        // Composite
+        const compositeBG = device.createBindGroup({ layout: compositePipeline.getBindGroupLayout(0), entries: [
+            { binding: 0, resource: sceneTexture.createView() },
+            { binding: 1, resource: blurTexture2.createView() },
+            { binding: 2, resource: window.sampler },
+            { binding: 3, resource: { buffer: window.compositeParamsBuffer }}
+        ]});
+        const fp = cmd.beginRenderPass({ colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: {r:0,g:0,b:0,a:1}, loadOp: 'clear', storeOp: 'store' }]});
+        fp.setPipeline(compositePipeline); fp.setBindGroup(0, compositeBG);
+        fp.draw(6); fp.end();
+    } else {
+        // Direct copy (no bloom)
+        const compositeBG = device.createBindGroup({ layout: compositePipeline.getBindGroupLayout(0), entries: [
+            { binding: 0, resource: sceneTexture.createView() },
+            { binding: 1, resource: sceneTexture.createView() },
+            { binding: 2, resource: window.sampler },
+            { binding: 3, resource: { buffer: window.compositeParamsBuffer }}
+        ]});
+        device.queue.writeBuffer(window.compositeParamsBuffer, 0, new Float32Array([0, 0, 0, 0]));
+        const fp = cmd.beginRenderPass({ colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: {r:0,g:0,b:0,a:1}, loadOp: 'clear', storeOp: 'store' }]});
+        fp.setPipeline(compositePipeline); fp.setBindGroup(0, compositeBG);
+        fp.draw(6); fp.end();
+    }
+    
+    device.queue.submit([cmd.finish()]);
+    gpuTime = performance.now() - start;
+    
+    fc++;
+    const now = performance.now();
+    if (now - lt >= 1000) {
+        document.getElementById('fps').textContent = fc;
+        document.getElementById('gpu').textContent = gpuTime.toFixed(1);
+        fc = 0; lt = now;
+    }
+    requestAnimationFrame(render);
+}
+
+// Events
+document.addEventListener('DOMContentLoaded', async () => {
+    canvas = document.getElementById('c');
+    canvas.onmousedown = e => { mouse.down = true; mouse.x = e.offsetX; mouse.y = e.offsetY; };
+    canvas.onmousemove = e => { mouse.x = e.offsetX; mouse.y = e.offsetY; };
+    canvas.onmouseup = () => mouse.down = false;
+    canvas.ontouchstart = e => { e.preventDefault(); mouse.down = true; mouse.x = e.touches[0].clientX; mouse.y = e.touches[0].clientY; };
+    canvas.ontouchmove = e => { e.preventDefault(); mouse.x = e.touches[0].clientX; mouse.y = e.touches[0].clientY; };
+    canvas.ontouchend = () => mouse.down = false;
+    
+    document.querySelectorAll('[data-m]').forEach(b => {
+        b.onclick = () => { document.querySelectorAll('[data-m]').forEach(x => x.classList.remove('active')); b.classList.add('active'); mode = b.dataset.m; };
+    });
+    document.getElementById('bloomBtn').onclick = function() { params.bloom = !params.bloom; this.textContent = 'Bloom: ' + (params.bloom ? 'ON' : 'OFF'); this.classList.toggle('active', params.bloom); };
+    document.getElementById('intensity').oninput = e => { params.intensity = +e.target.value; document.getElementById('iv').textContent = params.intensity.toFixed(1); };
+    document.getElementById('threshold').oninput = e => { params.threshold = +e.target.value; document.getElementById('tv').textContent = params.threshold.toFixed(2); };
+    document.getElementById('radius').oninput = e => { params.radius = +e.target.value; document.getElementById('rv').textContent = params.radius; };
+    document.getElementById('count').oninput = e => { params.count = +e.target.value; document.getElementById('cv').textContent = params.count; createBuffers(); };
+    
+    if (await init()) render();
+});
+</script>
+</body>
+</html>
