@@ -17,6 +17,7 @@ const Allocator = std.mem.Allocator;
 const real_agent = @import("real_agent.zig");
 const http_client = @import("http_client.zig");
 const openai = @import("openai_client.zig");
+const anthropic = @import("anthropic_client.zig");
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // STATE
@@ -168,15 +169,25 @@ pub const Action = struct {
 // PLANNING AGENT
 // ═══════════════════════════════════════════════════════════════════════════════
 
+pub const LLMProvider = enum {
+    ollama, // Local Ollama (default)
+    openai, // OpenAI GPT-4
+    groq, // Groq (fast, free)
+    anthropic, // Anthropic Claude
+    huggingface, // HuggingFace
+    together, // Together AI
+};
+
 pub const PlanningAgent = struct {
     allocator: Allocator,
     browser: real_agent.RealAgent,
     http: http_client.HttpClient,
     llm_client: ?openai.OpenAIClient,
+    anthropic_client: ?anthropic.AnthropicClient,
     state: AgentState,
     model: []const u8,
     use_json_mode: bool,
-    use_openai_client: bool,
+    current_provider: LLMProvider,
     // Static buffers to avoid memory leaks
     url_buf: [512]u8 = undefined,
     title_buf: [256]u8 = undefined,
@@ -214,10 +225,11 @@ pub const PlanningAgent = struct {
             .browser = real_agent.RealAgent.init(allocator, .{}),
             .http = http_client.HttpClient.init(allocator),
             .llm_client = null,
+            .anthropic_client = null,
             .state = AgentState.init(allocator, goal, max_steps),
             .model = "qwen2.5:3b",
             .use_json_mode = false,
-            .use_openai_client = false,
+            .current_provider = .ollama,
         };
     }
 
@@ -228,10 +240,11 @@ pub const PlanningAgent = struct {
             .browser = real_agent.RealAgent.init(allocator, .{}),
             .http = http_client.HttpClient.init(allocator),
             .llm_client = openai.OpenAIClient.init(allocator, api_key),
+            .anthropic_client = null,
             .state = AgentState.init(allocator, goal, max_steps),
             .model = openai.OPENAI_MODEL,
             .use_json_mode = false,
-            .use_openai_client = true,
+            .current_provider = .openai,
         };
     }
 
@@ -242,10 +255,11 @@ pub const PlanningAgent = struct {
             .browser = real_agent.RealAgent.init(allocator, .{}),
             .http = http_client.HttpClient.init(allocator),
             .llm_client = openai.OpenAIClient.initGroq(allocator, api_key),
+            .anthropic_client = null,
             .state = AgentState.init(allocator, goal, max_steps),
             .model = openai.GROQ_MODEL,
             .use_json_mode = false,
-            .use_openai_client = true,
+            .current_provider = .groq,
         };
     }
 
@@ -256,17 +270,54 @@ pub const PlanningAgent = struct {
             .browser = real_agent.RealAgent.init(allocator, .{}),
             .http = http_client.HttpClient.init(allocator),
             .llm_client = openai.OpenAIClient.initHuggingFace(allocator, api_key),
+            .anthropic_client = null,
             .state = AgentState.init(allocator, goal, max_steps),
             .model = openai.HUGGINGFACE_MODEL,
             .use_json_mode = false,
-            .use_openai_client = true,
+            .current_provider = .huggingface,
+        };
+    }
+
+    /// Initialize with Anthropic Claude
+    pub fn initWithAnthropic(allocator: Allocator, goal: []const u8, max_steps: u32, api_key: []const u8) Self {
+        return Self{
+            .allocator = allocator,
+            .browser = real_agent.RealAgent.init(allocator, .{}),
+            .http = http_client.HttpClient.init(allocator),
+            .llm_client = null,
+            .anthropic_client = anthropic.AnthropicClient.init(allocator, api_key),
+            .state = AgentState.init(allocator, goal, max_steps),
+            .model = anthropic.DEFAULT_MODEL,
+            .use_json_mode = false,
+            .current_provider = .anthropic,
+        };
+    }
+
+    /// Initialize with Claude 3 Opus (best reasoning)
+    pub fn initWithClaudeOpus(allocator: Allocator, goal: []const u8, max_steps: u32, api_key: []const u8) Self {
+        return Self{
+            .allocator = allocator,
+            .browser = real_agent.RealAgent.init(allocator, .{}),
+            .http = http_client.HttpClient.init(allocator),
+            .llm_client = null,
+            .anthropic_client = anthropic.AnthropicClient.initWithModel(allocator, api_key, anthropic.CLAUDE_3_OPUS),
+            .state = AgentState.init(allocator, goal, max_steps),
+            .model = anthropic.CLAUDE_3_OPUS,
+            .use_json_mode = false,
+            .current_provider = .anthropic,
         };
     }
 
     /// Switch LLM provider at runtime
-    pub fn setProvider(self: *Self, provider: openai.Provider, api_key: ?[]const u8) void {
+    pub fn setProvider(self: *Self, provider: LLMProvider, api_key: ?[]const u8) void {
+        // Cleanup existing clients
         if (self.llm_client) |*client| {
             client.deinit();
+            self.llm_client = null;
+        }
+        if (self.anthropic_client) |*client| {
+            client.deinit();
+            self.anthropic_client = null;
         }
 
         switch (provider) {
@@ -274,33 +325,40 @@ pub const PlanningAgent = struct {
                 if (api_key) |key| {
                     self.llm_client = openai.OpenAIClient.init(self.allocator, key);
                     self.model = openai.OPENAI_MODEL;
-                    self.use_openai_client = true;
+                    self.current_provider = .openai;
                 }
             },
             .groq => {
                 if (api_key) |key| {
                     self.llm_client = openai.OpenAIClient.initGroq(self.allocator, key);
                     self.model = openai.GROQ_MODEL;
-                    self.use_openai_client = true;
+                    self.current_provider = .groq;
                 }
             },
             .together => {
                 if (api_key) |key| {
                     self.llm_client = openai.OpenAIClient.initTogether(self.allocator, key);
                     self.model = openai.TOGETHER_MODEL;
-                    self.use_openai_client = true;
+                    self.current_provider = .together;
                 }
             },
             .ollama => {
                 self.llm_client = openai.OpenAIClient.initOllama(self.allocator);
                 self.model = openai.OLLAMA_MODEL;
-                self.use_openai_client = true;
+                self.current_provider = .ollama;
             },
             .huggingface => {
                 if (api_key) |key| {
                     self.llm_client = openai.OpenAIClient.initHuggingFace(self.allocator, key);
                     self.model = openai.HUGGINGFACE_MODEL;
-                    self.use_openai_client = true;
+                    self.current_provider = .huggingface;
+                }
+            },
+            .anthropic => {
+                if (api_key) |key| {
+                    self.anthropic_client = anthropic.AnthropicClient.init(self.allocator, key);
+                    self.model = anthropic.DEFAULT_MODEL;
+                    self.current_provider = .anthropic;
                 }
             },
         }
@@ -311,10 +369,41 @@ pub const PlanningAgent = struct {
         self.use_json_mode = true;
     }
 
+    /// Analyze page with vision (screenshot + GPT-4V)
+    pub fn analyzeWithVision(self: *Self, prompt: []const u8) ![]const u8 {
+        // Capture screenshot
+        const screenshot = self.browser.captureScreenshot() catch return error.ScreenshotFailed;
+        defer self.allocator.free(screenshot);
+
+        // Use GPT-4V for analysis
+        if (self.llm_client) |*client| {
+            var response = client.chatWithVision(prompt, screenshot) catch return error.VisionFailed;
+            defer response.deinit();
+            return self.allocator.dupe(u8, response.content) catch return error.OutOfMemory;
+        }
+
+        return error.NoVisionClient;
+    }
+
+    /// Find element by visual description
+    pub fn findElementByVision(self: *Self, description: []const u8) ![]const u8 {
+        var prompt_buf: [1024]u8 = undefined;
+        const prompt = std.fmt.bufPrint(&prompt_buf,
+            \\Look at this webpage screenshot. Find the element that matches: "{s}"
+            \\Return ONLY a CSS selector for that element (e.g., #id, .class, button, a).
+            \\If you can't find it, return "not_found".
+        , .{description}) catch return error.OutOfMemory;
+
+        return self.analyzeWithVision(prompt);
+    }
+
     pub fn deinit(self: *Self) void {
         self.browser.deinit();
         self.http.deinit();
         if (self.llm_client) |*client| {
+            client.deinit();
+        }
+        if (self.anthropic_client) |*client| {
             client.deinit();
         }
         self.state.deinit();
@@ -822,12 +911,21 @@ pub const PlanningAgent = struct {
         return self.callLLMWithFormat(prompt, false);
     }
 
-    /// Call LLM with JSON format option - supports OpenAI/Groq/HuggingFace or Ollama
+    /// Call LLM with JSON format option - supports OpenAI/Groq/HuggingFace/Anthropic or Ollama
     fn callLLMWithFormat(self: *Self, prompt: []const u8, json_mode: bool) ![]const u8 {
         _ = json_mode; // TODO: implement JSON mode for OpenAI client
 
+        // Use Anthropic Claude if configured
+        if (self.current_provider == .anthropic) {
+            if (self.anthropic_client) |*client| {
+                var response = client.chat(prompt) catch return error.ConnectionFailed;
+                defer response.deinit();
+                return self.allocator.dupe(u8, response.content) catch return error.OutOfMemory;
+            }
+        }
+
         // Use OpenAI-compatible client if configured
-        if (self.use_openai_client) {
+        if (self.current_provider != .ollama) {
             if (self.llm_client) |*client| {
                 var response = client.chat(prompt) catch return error.ConnectionFailed;
                 defer response.deinit();
@@ -1125,7 +1223,7 @@ test "PlanningAgent with OpenAI initialization" {
     defer agent.deinit();
 
     try std.testing.expectEqualStrings("Test goal", agent.state.goal);
-    try std.testing.expect(agent.use_openai_client);
+    try std.testing.expectEqual(LLMProvider.openai, agent.current_provider);
     try std.testing.expect(agent.llm_client != null);
 }
 
@@ -1134,7 +1232,7 @@ test "PlanningAgent with Groq initialization" {
     var agent = PlanningAgent.initWithGroq(allocator, "Test goal", 5, "test-groq-key");
     defer agent.deinit();
 
-    try std.testing.expect(agent.use_openai_client);
+    try std.testing.expectEqual(LLMProvider.groq, agent.current_provider);
     try std.testing.expectEqualStrings(openai.GROQ_MODEL, agent.model);
 }
 
@@ -1143,8 +1241,27 @@ test "PlanningAgent with HuggingFace initialization" {
     var agent = PlanningAgent.initWithHuggingFace(allocator, "Test goal", 5, "hf_test_key");
     defer agent.deinit();
 
-    try std.testing.expect(agent.use_openai_client);
+    try std.testing.expectEqual(LLMProvider.huggingface, agent.current_provider);
     try std.testing.expectEqualStrings(openai.HUGGINGFACE_MODEL, agent.model);
+}
+
+test "PlanningAgent with Anthropic initialization" {
+    const allocator = std.testing.allocator;
+    var agent = PlanningAgent.initWithAnthropic(allocator, "Test goal", 5, "sk-ant-test");
+    defer agent.deinit();
+
+    try std.testing.expectEqual(LLMProvider.anthropic, agent.current_provider);
+    try std.testing.expectEqualStrings(anthropic.DEFAULT_MODEL, agent.model);
+    try std.testing.expect(agent.anthropic_client != null);
+}
+
+test "PlanningAgent with Claude Opus initialization" {
+    const allocator = std.testing.allocator;
+    var agent = PlanningAgent.initWithClaudeOpus(allocator, "Test goal", 5, "sk-ant-test");
+    defer agent.deinit();
+
+    try std.testing.expectEqual(LLMProvider.anthropic, agent.current_provider);
+    try std.testing.expectEqualStrings(anthropic.CLAUDE_3_OPUS, agent.model);
 }
 
 test "PlanningAgent setProvider" {
@@ -1152,13 +1269,18 @@ test "PlanningAgent setProvider" {
     var agent = PlanningAgent.init(allocator, "Test goal", 5);
     defer agent.deinit();
 
-    // Initially no OpenAI client
-    try std.testing.expect(!agent.use_openai_client);
+    // Initially Ollama
+    try std.testing.expectEqual(LLMProvider.ollama, agent.current_provider);
 
     // Switch to Groq
     agent.setProvider(.groq, "test-groq-key");
-    try std.testing.expect(agent.use_openai_client);
+    try std.testing.expectEqual(LLMProvider.groq, agent.current_provider);
     try std.testing.expectEqualStrings(openai.GROQ_MODEL, agent.model);
+
+    // Switch to Anthropic
+    agent.setProvider(.anthropic, "sk-ant-test");
+    try std.testing.expectEqual(LLMProvider.anthropic, agent.current_provider);
+    try std.testing.expectEqualStrings(anthropic.DEFAULT_MODEL, agent.model);
 
     // Switch to Ollama (no API key needed)
     agent.setProvider(.ollama, null);
@@ -1193,7 +1315,66 @@ test "Provider switching preserves state" {
     // State should be preserved
     try std.testing.expectEqualStrings("Navigate to example.com", agent.state.goal);
     try std.testing.expectEqual(@as(u32, 10), agent.state.max_steps);
-    try std.testing.expect(agent.use_openai_client);
+    try std.testing.expectEqual(LLMProvider.openai, agent.current_provider);
+}
+
+test "Claude vs GPT-4 model comparison" {
+    // Compare model names and capabilities
+    try std.testing.expectEqualStrings("gpt-4o-mini", openai.OPENAI_MODEL);
+    try std.testing.expectEqualStrings("claude-3-5-sonnet-20241022", anthropic.DEFAULT_MODEL);
+    try std.testing.expectEqualStrings("claude-3-opus-20240229", anthropic.CLAUDE_3_OPUS);
+
+    // Verify different API endpoints
+    try std.testing.expect(!std.mem.eql(u8, openai.OPENAI_URL, anthropic.ANTHROPIC_URL));
+
+    // Verify Anthropic uses Messages API (different from OpenAI)
+    try std.testing.expect(std.mem.indexOf(u8, anthropic.ANTHROPIC_URL, "/messages") != null);
+    try std.testing.expect(std.mem.indexOf(u8, openai.OPENAI_URL, "/chat/completions") != null);
+}
+
+test "All LLM providers available" {
+    const allocator = std.testing.allocator;
+
+    // Test all provider initializations
+    var agent1 = PlanningAgent.initWithOpenAI(allocator, "goal", 5, "key");
+    defer agent1.deinit();
+    try std.testing.expectEqual(LLMProvider.openai, agent1.current_provider);
+
+    var agent2 = PlanningAgent.initWithGroq(allocator, "goal", 5, "key");
+    defer agent2.deinit();
+    try std.testing.expectEqual(LLMProvider.groq, agent2.current_provider);
+
+    var agent3 = PlanningAgent.initWithAnthropic(allocator, "goal", 5, "key");
+    defer agent3.deinit();
+    try std.testing.expectEqual(LLMProvider.anthropic, agent3.current_provider);
+
+    var agent4 = PlanningAgent.initWithHuggingFace(allocator, "goal", 5, "key");
+    defer agent4.deinit();
+    try std.testing.expectEqual(LLMProvider.huggingface, agent4.current_provider);
+
+    var agent5 = PlanningAgent.init(allocator, "goal", 5);
+    defer agent5.deinit();
+    try std.testing.expectEqual(LLMProvider.ollama, agent5.current_provider);
+}
+
+test "Vision methods exist" {
+    const allocator = std.testing.allocator;
+    var agent = PlanningAgent.initWithOpenAI(allocator, "Find the login button", 5, "test-key");
+    defer agent.deinit();
+
+    // Methods should exist (will fail without browser connection)
+    _ = agent.analyzeWithVision("What do you see?") catch |err| {
+        // Expected to fail without browser
+        try std.testing.expect(err == error.ScreenshotFailed);
+    };
+
+    _ = agent.findElementByVision("login button") catch |err| {
+        try std.testing.expect(err == error.ScreenshotFailed);
+    };
+}
+
+test "Vision model constant" {
+    try std.testing.expectEqualStrings("gpt-4o", openai.GPT4V_MODEL);
 }
 
 test "DOM element selection from parseJsonAction" {

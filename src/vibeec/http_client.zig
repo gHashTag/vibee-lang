@@ -143,6 +143,52 @@ pub const HttpClient = struct {
             .allocator = self.allocator,
         };
     }
+
+    /// Make a POST request with Anthropic-specific headers
+    /// Anthropic requires: x-api-key, anthropic-version, content-type
+    pub fn postJsonAnthropic(self: *Self, url: []const u8, body: []const u8, api_key: []const u8) HttpError!HttpResponse {
+        const start_time = std.time.nanoTimestamp();
+
+        const uri = std.Uri.parse(url) catch return HttpError.InvalidUrl;
+
+        var server_header_buffer: [16 * 1024]u8 = undefined;
+
+        // Anthropic-specific headers
+        const extra_headers = [_]std.http.Header{
+            .{ .name = "User-Agent", .value = "VIBEE-Agent/23.3 (Zig)" },
+            .{ .name = "Accept", .value = "application/json" },
+            .{ .name = "Content-Type", .value = "application/json" },
+            .{ .name = "x-api-key", .value = api_key },
+            .{ .name = "anthropic-version", .value = "2023-06-01" },
+        };
+
+        var req = self.client.open(
+            .POST,
+            uri,
+            .{
+                .server_header_buffer = &server_header_buffer,
+                .extra_headers = &extra_headers,
+            },
+        ) catch return HttpError.ConnectionFailed;
+        defer req.deinit();
+
+        req.transfer_encoding = .{ .content_length = body.len };
+        req.send() catch return HttpError.ConnectionFailed;
+        req.writer().writeAll(body) catch return HttpError.RequestFailed;
+        req.finish() catch return HttpError.RequestFailed;
+        req.wait() catch return HttpError.Timeout;
+
+        const response_body = req.reader().readAllAlloc(self.allocator, 10 * 1024 * 1024) catch return HttpError.OutOfMemory;
+
+        const end_time = std.time.nanoTimestamp();
+
+        return HttpResponse{
+            .status = @intFromEnum(req.response.status),
+            .body = response_body,
+            .latency_ns = @intCast(end_time - start_time),
+            .allocator = self.allocator,
+        };
+    }
 };
 
 test "HttpClient initialization" {

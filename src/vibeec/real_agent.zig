@@ -519,6 +519,60 @@ pub const RealAgent = struct {
         return AgentError.EvaluationFailed;
     }
 
+    /// Capture screenshot as base64 PNG
+    pub fn captureScreenshot(self: *Self) AgentError![]const u8 {
+        if (!self.connected) return AgentError.BrowserConnectionFailed;
+
+        // CDP Page.captureScreenshot command
+        var cmd_buf: [256]u8 = undefined;
+        const cmd = std.fmt.bufPrint(&cmd_buf, "{{\"id\":{d},\"method\":\"Page.captureScreenshot\",\"params\":{{\"format\":\"png\"}}}}", .{self.message_id}) catch return AgentError.OutOfMemory;
+        self.message_id += 1;
+
+        self.ws.sendText(cmd) catch return AgentError.EvaluationFailed;
+
+        const frame = self.ws.receive() catch return AgentError.EvaluationFailed;
+        defer self.allocator.free(frame.payload);
+
+        // Extract base64 data from response: {"result":{"data":"base64..."}}
+        if (std.mem.indexOf(u8, frame.payload, "\"data\":\"")) |start| {
+            const data_start = start + 8;
+            var data_end = data_start;
+            while (data_end < frame.payload.len and frame.payload[data_end] != '"') : (data_end += 1) {}
+            return self.allocator.dupe(u8, frame.payload[data_start..data_end]) catch return AgentError.OutOfMemory;
+        }
+
+        return AgentError.ParseError;
+    }
+
+    /// Capture screenshot of specific element
+    pub fn captureElementScreenshot(self: *Self, selector: []const u8) AgentError![]const u8 {
+        if (!self.connected) return AgentError.BrowserConnectionFailed;
+
+        // First get element bounding box
+        var js_buf: [512]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buf,
+            \\(function(){{
+            \\  var el = document.querySelector('{s}');
+            \\  if(!el) return null;
+            \\  var rect = el.getBoundingClientRect();
+            \\  return JSON.stringify({{x:rect.x,y:rect.y,width:rect.width,height:rect.height}});
+            \\}})()
+        , .{selector}) catch return AgentError.OutOfMemory;
+
+        var cmd_buf: [1024]u8 = undefined;
+        const cmd = std.fmt.bufPrint(&cmd_buf, "{{\"id\":{d},\"method\":\"Runtime.evaluate\",\"params\":{{\"expression\":\"{s}\"}}}}", .{ self.message_id, js }) catch return AgentError.OutOfMemory;
+        self.message_id += 1;
+
+        self.ws.sendText(cmd) catch return AgentError.EvaluationFailed;
+
+        const frame = self.ws.receive() catch return AgentError.EvaluationFailed;
+        defer self.allocator.free(frame.payload);
+
+        // For now, just capture full screenshot
+        // TODO: Parse bounding box and use clip parameter
+        return self.captureScreenshot();
+    }
+
     /// Close connection
     pub fn close(self: *Self) void {
         self.ws.close();
@@ -606,6 +660,28 @@ test "checkBox method exists" {
         try std.testing.expect(err == AgentError.BrowserConnectionFailed);
     };
     _ = agent.checkBox("input#newsletter", false) catch |err| {
+        try std.testing.expect(err == AgentError.BrowserConnectionFailed);
+    };
+}
+
+test "captureScreenshot method exists" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Should fail with BrowserConnectionFailed since not connected
+    _ = agent.captureScreenshot() catch |err| {
+        try std.testing.expect(err == AgentError.BrowserConnectionFailed);
+    };
+}
+
+test "captureElementScreenshot method exists" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Should fail with BrowserConnectionFailed since not connected
+    _ = agent.captureElementScreenshot("#main") catch |err| {
         try std.testing.expect(err == AgentError.BrowserConnectionFailed);
     };
 }

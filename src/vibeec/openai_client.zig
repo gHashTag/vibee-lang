@@ -234,6 +234,33 @@ pub const OpenAIClient = struct {
         }
     }
 
+    /// Chat with vision (image analysis)
+    pub fn chatWithVision(self: *Self, prompt: []const u8, image_base64: []const u8) OpenAIError!ChatResponse {
+        const start_time = std.time.nanoTimestamp();
+
+        // Build vision request
+        const request_body = buildVisionRequest(self.allocator, GPT4V_MODEL, prompt, image_base64) catch return OpenAIError.OutOfMemory;
+        defer self.allocator.free(request_body);
+
+        // Build auth header
+        var auth_buf: [256]u8 = undefined;
+        const auth_header = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{self.api_key}) catch return OpenAIError.OutOfMemory;
+
+        // Make HTTP request
+        var response = self.http_client.postJson(self.base_url, request_body, auth_header) catch return OpenAIError.NetworkError;
+        defer response.deinit();
+
+        const end_time = std.time.nanoTimestamp();
+
+        // Check status
+        if (response.status == 401) return OpenAIError.InvalidApiKey;
+        if (response.status == 429) return OpenAIError.RateLimited;
+        if (response.status != 200) return OpenAIError.ApiError;
+
+        // Parse response (same format as chat)
+        return self.parseResponse(response.body, @intCast(end_time - start_time)) catch return OpenAIError.ParseError;
+    }
+
     fn parseResponse(self: *Self, body: []const u8, latency_ns: i64) !ChatResponse {
         var parser = json.JsonParser.init(self.allocator);
         var result = try parser.parse(body);
@@ -308,6 +335,146 @@ test "phi constant" {
     const phi: f64 = (1.0 + @sqrt(5.0)) / 2.0;
     const result = phi * phi + 1.0 / (phi * phi);
     try std.testing.expectApproxEqAbs(3.0, result, 0.0001);
+}
+
+// ============================================================================
+// VISION SUPPORT (GPT-4V)
+// ============================================================================
+
+pub const GPT4V_MODEL = "gpt-4o"; // Vision-capable model
+
+/// Build vision request with image
+pub fn buildVisionRequest(allocator: Allocator, model: []const u8, prompt: []const u8, image_base64: []const u8) ![]u8 {
+    var buffer = std.ArrayList(u8).init(allocator);
+    errdefer buffer.deinit();
+
+    const writer = buffer.writer();
+
+    try writer.writeAll("{\"model\":\"");
+    try writer.writeAll(model);
+    try writer.writeAll("\",\"messages\":[{\"role\":\"user\",\"content\":[");
+
+    // Text content
+    try writer.writeAll("{\"type\":\"text\",\"text\":\"");
+    for (prompt) |c| {
+        switch (c) {
+            '"' => try writer.writeAll("\\\""),
+            '\\' => try writer.writeAll("\\\\"),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            else => try writer.writeByte(c),
+        }
+    }
+    try writer.writeAll("\"},");
+
+    // Image content
+    try writer.writeAll("{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,");
+    try writer.writeAll(image_base64);
+    try writer.writeAll("\"}}");
+
+    try writer.writeAll("]}],\"max_tokens\":1024}");
+
+    return buffer.toOwnedSlice();
+}
+
+test "buildVisionRequest" {
+    const allocator = std.testing.allocator;
+    const vision_json = try buildVisionRequest(allocator, GPT4V_MODEL, "What do you see?", "iVBORw0KGgo=");
+    defer allocator.free(vision_json);
+
+    try std.testing.expect(std.mem.indexOf(u8, vision_json, "\"type\":\"text\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vision_json, "\"type\":\"image_url\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vision_json, "data:image/png;base64,") != null);
+}
+
+// ============================================================================
+// STREAMING SUPPORT
+// ============================================================================
+
+/// Build streaming request (adds "stream": true)
+pub fn buildStreamingRequest(allocator: Allocator, model: []const u8, prompt: []const u8) ![]u8 {
+    var buffer = std.ArrayList(u8).init(allocator);
+    errdefer buffer.deinit();
+
+    const writer = buffer.writer();
+
+    try writer.writeAll("{\"model\":\"");
+    try writer.writeAll(model);
+    try writer.writeAll("\",\"messages\":[{\"role\":\"user\",\"content\":\"");
+
+    // Escape prompt
+    for (prompt) |c| {
+        switch (c) {
+            '"' => try writer.writeAll("\\\""),
+            '\\' => try writer.writeAll("\\\\"),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            else => try writer.writeByte(c),
+        }
+    }
+
+    try writer.writeAll("\"}],\"stream\":true,\"max_tokens\":1024}");
+
+    return buffer.toOwnedSlice();
+}
+
+/// Parse SSE chunk from streaming response
+/// Format: data: {"choices":[{"delta":{"content":"token"}}]}
+pub fn parseStreamChunk(chunk: []const u8) ?[]const u8 {
+    // Skip "data: " prefix
+    const data_prefix = "data: ";
+    if (!std.mem.startsWith(u8, chunk, data_prefix)) return null;
+
+    const json_part = chunk[data_prefix.len..];
+
+    // Check for [DONE]
+    if (std.mem.eql(u8, std.mem.trim(u8, json_part, " \n\r"), "[DONE]")) return null;
+
+    // Extract content from delta
+    if (std.mem.indexOf(u8, json_part, "\"content\":\"")) |start| {
+        const content_start = start + 11;
+        var content_end = content_start;
+        var escaped = false;
+        while (content_end < json_part.len) : (content_end += 1) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (json_part[content_end] == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (json_part[content_end] == '"') break;
+        }
+        return json_part[content_start..content_end];
+    }
+
+    return null;
+}
+
+test "buildStreamingRequest" {
+    const allocator = std.testing.allocator;
+    const stream_json = try buildStreamingRequest(allocator, OPENAI_MODEL, "Hello");
+    defer allocator.free(stream_json);
+
+    try std.testing.expect(std.mem.indexOf(u8, stream_json, "\"stream\":true") != null);
+}
+
+test "parseStreamChunk" {
+    const chunk1 = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}";
+    const result1 = parseStreamChunk(chunk1);
+    try std.testing.expect(result1 != null);
+    try std.testing.expectEqualStrings("Hello", result1.?);
+
+    const chunk2 = "data: [DONE]";
+    const result2 = parseStreamChunk(chunk2);
+    try std.testing.expect(result2 == null);
+
+    const chunk3 = "invalid";
+    const result3 = parseStreamChunk(chunk3);
+    try std.testing.expect(result3 == null);
 }
 
 test "Groq client initialization" {

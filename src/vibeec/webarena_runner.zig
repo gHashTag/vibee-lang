@@ -457,3 +457,71 @@ test "BENCHMARK_TASKS categories" {
         try std.testing.expect(task.id >= 16 and task.id <= 20);
     }
 }
+
+// ============================================================================
+// WEBARENA DOCKER SETUP
+// ============================================================================
+
+/// Docker setup commands for WebArena benchmark
+pub const DOCKER_SETUP = struct {
+    pub const CHROME_IMAGE = "browserless/chrome:latest";
+    pub const CHROME_PORT: u16 = 9222;
+
+    /// Docker run command for Chrome
+    pub fn getChromeCommand() []const u8 {
+        return "docker run -d --name vibee-chrome -p 9222:3000 --shm-size=2gb browserless/chrome:latest";
+    }
+
+    /// Docker stop command
+    pub fn getStopCommand() []const u8 {
+        return "docker stop vibee-chrome && docker rm vibee-chrome";
+    }
+
+    /// Check if Chrome container is running
+    pub fn getCheckCommand() []const u8 {
+        return "docker ps --filter name=vibee-chrome --format '{{.Status}}'";
+    }
+};
+
+/// CI/CD configuration for benchmarks
+pub const CI_CONFIG = struct {
+    pub const GITHUB_ACTIONS_WORKFLOW =
+        \\name: WebArena Benchmark
+        \\on:
+        \\  push:
+        \\    branches: [main]
+        \\  schedule:
+        \\    - cron: '0 0 * * 0'  # Weekly
+        \\
+        \\jobs:
+        \\  benchmark:
+        \\    runs-on: ubuntu-latest
+        \\    services:
+        \\      chrome:
+        \\        image: browserless/chrome:latest
+        \\        ports:
+        \\          - 9222:3000
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\      - name: Setup Zig
+        \\        uses: goto-bus-stop/setup-zig@v2
+        \\      - name: Run Benchmark
+        \\        run: zig build-exe src/vibeec/webarena_runner.zig && ./webarena_runner
+        \\      - name: Upload Results
+        \\        uses: actions/upload-artifact@v4
+        \\        with:
+        \\          name: benchmark-results
+        \\          path: results/
+    ;
+};
+
+test "DOCKER_SETUP commands" {
+    try std.testing.expect(DOCKER_SETUP.getChromeCommand().len > 0);
+    try std.testing.expect(DOCKER_SETUP.getStopCommand().len > 0);
+    try std.testing.expectEqual(@as(u16, 9222), DOCKER_SETUP.CHROME_PORT);
+}
+
+test "CI_CONFIG exists" {
+    try std.testing.expect(CI_CONFIG.GITHUB_ACTIONS_WORKFLOW.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, CI_CONFIG.GITHUB_ACTIONS_WORKFLOW, "WebArena") != null);
+}
