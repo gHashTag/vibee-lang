@@ -14,7 +14,7 @@ We take security seriously. If you discover a security vulnerability, please rep
 ### How to Report
 
 1. **DO NOT** create a public GitHub issue for security vulnerabilities
-2. Email security concerns to: **security@vibee-lang.dev** (or create private advisory)
+2. Email security concerns to: **reactnativeinitru@gmail.com** (or create private advisory)
 3. Include:
    - Description of the vulnerability
    - Steps to reproduce
