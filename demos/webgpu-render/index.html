@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGPU Render Pipeline | φ² + 1/φ² = 3</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{background:#000;color:#fff;font-family:system-ui;overflow:hidden}
+        #app{display:grid;grid-template-columns:200px 1fr;height:100vh}
+        .panel{background:#0a0a12;padding:12px;overflow-y:auto}
+        h1{font-size:1em;color:#ffd700;margin-bottom:12px}
+        .section{background:#111;border-radius:6px;padding:10px;margin-bottom:10px}
+        .section h3{font-size:0.75em;color:#0af;margin-bottom:6px}
+        .btn{display:block;width:100%;padding:8px;margin:4px 0;background:#222;border:1px solid #333;border-radius:4px;color:#fff;cursor:pointer;font-size:0.7em}
+        .btn:hover{background:#333;border-color:#ffd700}
+        .btn.active{background:#ffd70033;border-color:#ffd700}
+        .slider{width:100%;margin:6px 0}
+        .label{font-size:0.6em;color:#888;display:flex;justify-content:space-between}
+        canvas{width:100%;height:100%;display:block}
+        .stats{font-size:0.65em;color:#888;margin-top:10px}
+        .stats span{color:#0f0}
+        .badge{display:inline-block;padding:3px 8px;border-radius:4px;font-size:0.6em}
+        .gpu{background:#0f03;border:1px solid #0f0;color:#0f0}
+        .error{background:#f003;border:1px solid #f00;color:#f00}
+    </style>
+</head>
+<body>
+<div id="app">
+    <div class="panel">
+        <h1>WebGPU Render</h1>
+        <div class="section">
+            <h3>Status <span id="status" class="badge">Init...</span></h3>
+        </div>
+        <div class="section">
+            <h3>Particles</h3>
+            <div class="label"><span>Count</span><span id="cv">100000</span></div>
+            <input type="range" class="slider" id="count" min="10000" max="500000" step="10000" value="100000">
+            <div class="label"><span>Size</span><span id="sv">3.0</span></div>
+            <input type="range" class="slider" id="size" min="1" max="10" step="0.5" value="3">
+        </div>
+        <div class="section">
+            <h3>Physics</h3>
+            <button class="btn active" data-m="gravity">Gravity</button>
+            <button class="btn" data-m="vortex">Vortex</button>
+            <button class="btn" data-m="wave">Wave</button>
+            <button class="btn" data-m="explode">Explode</button>
+            <div class="label" style="margin-top:8px"><span>Strength</span><span id="gv">1.0</span></div>
+            <input type="range" class="slider" id="gravity" min="0" max="5" step="0.1" value="1">
+        </div>
+        <div class="section">
+            <h3>Visual</h3>
+            <button class="btn active" id="bloom">Bloom: ON</button>
+            <div class="label"><span>Glow</span><span id="glowv">1.5</span></div>
+            <input type="range" class="slider" id="glow" min="0" max="3" step="0.1" value="1.5">
+        </div>
+        <div class="stats">
+            FPS: <span id="fps">0</span><br>
+            Particles: <span id="pcount">0</span><br>
+            GPU Time: <span id="gputime">0</span>ms<br>
+            Draw Calls: <span id="draws">0</span>
+        </div>
+        <div class="section" style="text-align:center">
+            <div style="color:#ffd700;font-size:1em">φ² + 1/φ² = 3</div>
+            <div style="color:#f66;font-size:0.8em">PHOENIX = 999</div>
+        </div>
+    </div>
+    <canvas id="c"></canvas>
+</div>
+<script>
+const PHI = 1.618033988749895, TAU = Math.PI * 2;
+
+let canvas, device, context, format;
+let computePipeline, renderPipeline, bloomPipeline;
+let posBuffer, velBuffer, colorBuffer, paramsBuffer;
+let bindGroup, renderBindGroup;
+let params = { count: 100000, size: 3, gravity: 1, glow: 1.5, bloom: true };
+let mode = 'gravity', mouse = { x: 0, y: 0, down: false }, time = 0;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WGSL SHADERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+const computeShader = `
+struct Params {
+    gravity: f32,
+    friction: f32,
+    centerX: f32,
+    centerY: f32,
+    mouseX: f32,
+    mouseY: f32,
+    mouseDown: f32,
+    mode: f32,
+    width: f32,
+    height: f32,
+    time: f32,
+    count: f32,
+}
+
+@group(0) @binding(0) var<storage, read_write> positions: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> velocities: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> colors: array<vec4<f32>>;
+@group(0) @binding(3) var<uniform> params: Params;
+
+const PHI: f32 = 1.618033988749895;
+const TAU: f32 = 6.283185307179586;
+
+fn hash(p: vec2<f32>) -> f32 {
+    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if (i >= u32(params.count)) { return; }
+    
+    var pos = positions[i].xy;
+    var vel = velocities[i].xy;
+    let phase = positions[i].z;
+    let life = positions[i].w;
+    let dt: f32 = 0.016;
+    
+    let center = vec2<f32>(params.centerX, params.centerY);
+    let mouse = vec2<f32>(params.mouseX, params.mouseY);
+    
+    // Mode 0: Gravity
+    if (params.mode < 0.5) {
+        let d = pos - center;
+        let dist = length(d) + 1.0;
+        let force = params.gravity * 80.0 / dist;
+        vel -= normalize(d) * force * dt;
+    }
+    
+    // Mode 1: Vortex
+    if (params.mode >= 0.5 && params.mode < 1.5) {
+        let d = pos - center;
+        let dist = length(d) + 1.0;
+        let perp = vec2<f32>(-d.y, d.x);
+        vel += (normalize(perp) * 3.0 + normalize(d) * 0.3) * params.gravity * dt;
+    }
+    
+    // Mode 2: Wave
+    if (params.mode >= 1.5 && params.mode < 2.5) {
+        let wave1 = sin(pos.x * 0.01 + params.time * PHI) * cos(pos.y * 0.01);
+        let wave2 = sin(pos.y * 0.01 + params.time) * cos(pos.x * 0.01 * PHI);
+        vel.x += wave1 * params.gravity * dt * 15.0;
+        vel.y += wave2 * params.gravity * dt * 15.0;
+    }
+    
+    // Mode 3: Explode
+    if (params.mode >= 2.5) {
+        let d = pos - center;
+        let dist = length(d) + 1.0;
+        let force = params.gravity * 50.0 / (dist * dist) * sin(params.time * 2.0);
+        vel += normalize(d) * force * dt;
+    }
+    
+    // Mouse interaction
+    if (params.mouseDown > 0.5) {
+        let d = mouse - pos;
+        let dist = length(d) + 1.0;
+        if (dist < 300.0) {
+            let force = params.gravity * 200.0 / dist;
+            vel += normalize(d) * force * dt;
+        }
+    }
+    
+    // Apply friction
+    vel *= 0.995;
+    
+    // Update position
+    pos += vel;
+    
+    // Boundaries with wrap
+    if (pos.x < 0.0) { pos.x += params.width; }
+    if (pos.x > params.width) { pos.x -= params.width; }
+    if (pos.y < 0.0) { pos.y += params.height; }
+    if (pos.y > params.height) { pos.y -= params.height; }
+    
+    // Update phase
+    let newPhase = phase + dt * PHI * 2.0;
+    
+    // Calculate color based on velocity and phase
+    let speed = length(vel);
+    let hue = fract(phase / TAU + speed * 0.01);
+    let sat = 0.8 + sin(newPhase) * 0.2;
+    let val = 0.6 + speed * 0.02;
+    
+    // HSV to RGB
+    let h = hue * 6.0;
+    let c = val * sat;
+    let x = c * (1.0 - abs(fract(h / 2.0) * 2.0 - 1.0));
+    let m = val - c;
+    
+    var rgb: vec3<f32>;
+    if (h < 1.0) { rgb = vec3<f32>(c, x, 0.0); }
+    else if (h < 2.0) { rgb = vec3<f32>(x, c, 0.0); }
+    else if (h < 3.0) { rgb = vec3<f32>(0.0, c, x); }
+    else if (h < 4.0) { rgb = vec3<f32>(0.0, x, c); }
+    else if (h < 5.0) { rgb = vec3<f32>(x, 0.0, c); }
+    else { rgb = vec3<f32>(c, 0.0, x); }
+    rgb += m;
+    
+    positions[i] = vec4<f32>(pos, newPhase, life);
+    velocities[i] = vec4<f32>(vel, 0.0, 0.0);
+    colors[i] = vec4<f32>(rgb, 0.5 + sin(newPhase) * 0.3);
+}
+`;
+
+const vertexShader = `
+struct Uniforms {
+    resolution: vec2<f32>,
+    pointSize: f32,
+    glow: f32,
+}
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) uv: vec2<f32>,
+}
+
+@group(0) @binding(0) var<storage, read> positions: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> colors: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> uniforms: Uniforms;
+
+// Quad vertices for instanced rendering
+const quadVertices = array<vec2<f32>, 6>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>(1.0, -1.0),
+    vec2<f32>(-1.0, 1.0),
+    vec2<f32>(-1.0, 1.0),
+    vec2<f32>(1.0, -1.0),
+    vec2<f32>(1.0, 1.0),
+);
+
+@vertex
+fn main(
+    @builtin(vertex_index) vertexIndex: u32,
+    @builtin(instance_index) instanceIndex: u32
+) -> VertexOutput {
+    var output: VertexOutput;
+    
+    let quadVertex = quadVertices[vertexIndex];
+    let particlePos = positions[instanceIndex].xy;
+    let particlePhase = positions[instanceIndex].z;
+    
+    // Size varies with phase
+    let size = uniforms.pointSize * (1.0 + sin(particlePhase) * 0.3);
+    
+    // Convert to clip space
+    let pos = (particlePos + quadVertex * size) / uniforms.resolution * 2.0 - 1.0;
+    output.position = vec4<f32>(pos.x, -pos.y, 0.0, 1.0);
+    output.color = colors[instanceIndex];
+    output.uv = quadVertex;
+    
+    return output;
+}
+`;
+
+const fragmentShader = `
+struct Uniforms {
+    resolution: vec2<f32>,
+    pointSize: f32,
+    glow: f32,
+}
+
+@group(0) @binding(2) var<uniform> uniforms: Uniforms;
+
+@fragment
+fn main(
+    @location(0) color: vec4<f32>,
+    @location(1) uv: vec2<f32>
+) -> @location(0) vec4<f32> {
+    // Circular particle with soft edge
+    let dist = length(uv);
+    if (dist > 1.0) { discard; }
+    
+    // Soft glow falloff
+    let glow = exp(-dist * dist * uniforms.glow);
+    let core = smoothstep(1.0, 0.0, dist);
+    
+    // Combine core and glow
+    let intensity = core * 0.8 + glow * 0.5;
+    
+    return vec4<f32>(color.rgb * intensity, color.a * intensity);
+}
+`;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INITIALIZATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function init() {
+    canvas = document.getElementById('c');
+    
+    if (!navigator.gpu) {
+        document.getElementById('status').textContent = 'WebGPU not supported';
+        document.getElementById('status').className = 'badge error';
+        return false;
+    }
+    
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) {
+        document.getElementById('status').textContent = 'No GPU adapter';
+        document.getElementById('status').className = 'badge error';
+        return false;
+    }
+    
+    device = await adapter.requestDevice();
+    context = canvas.getContext('webgpu');
+    format = navigator.gpu.getPreferredCanvasFormat();
+    
+    context.configure({
+        device,
+        format,
+        alphaMode: 'premultiplied',
+    });
+    
+    document.getElementById('status').textContent = 'GPU Ready';
+    document.getElementById('status').className = 'badge gpu';
+    
+    createPipelines();
+    createBuffers();
+    
+    return true;
+}
+
+function createPipelines() {
+    // Compute pipeline
+    const computeModule = device.createShaderModule({ code: computeShader });
+    computePipeline = device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: computeModule, entryPoint: 'main' }
+    });
+    
+    // Render pipeline
+    const vertexModule = device.createShaderModule({ code: vertexShader });
+    const fragmentModule = device.createShaderModule({ code: fragmentShader });
+    
+    renderPipeline = device.createRenderPipeline({
+        layout: 'auto',
+        vertex: {
+            module: vertexModule,
+            entryPoint: 'main',
+        },
+        fragment: {
+            module: fragmentModule,
+            entryPoint: 'main',
+            targets: [{
+                format,
+                blend: {
+                    color: {
+                        srcFactor: 'src-alpha',
+                        dstFactor: 'one',
+                        operation: 'add',
+                    },
+                    alpha: {
+                        srcFactor: 'one',
+                        dstFactor: 'one',
+                        operation: 'add',
+                    },
+                },
+            }],
+        },
+        primitive: {
+            topology: 'triangle-list',
+        },
+    });
+}
+
+function createBuffers() {
+    const count = params.count;
+    
+    // Initialize particle data
+    const positions = new Float32Array(count * 4);
+    const velocities = new Float32Array(count * 4);
+    const colors = new Float32Array(count * 4);
+    
+    for (let i = 0; i < count; i++) {
+        positions[i * 4] = Math.random() * canvas.width;
+        positions[i * 4 + 1] = Math.random() * canvas.height;
+        positions[i * 4 + 2] = Math.random() * TAU; // phase
+        positions[i * 4 + 3] = 1.0; // life
+        
+        velocities[i * 4] = (Math.random() - 0.5) * 4;
+        velocities[i * 4 + 1] = (Math.random() - 0.5) * 4;
+        
+        colors[i * 4] = 1.0;
+        colors[i * 4 + 1] = 0.8;
+        colors[i * 4 + 2] = 0.3;
+        colors[i * 4 + 3] = 0.8;
+    }
+    
+    posBuffer = device.createBuffer({
+        size: positions.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true,
+    });
+    new Float32Array(posBuffer.getMappedRange()).set(positions);
+    posBuffer.unmap();
+    
+    velBuffer = device.createBuffer({
+        size: velocities.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true,
+    });
+    new Float32Array(velBuffer.getMappedRange()).set(velocities);
+    velBuffer.unmap();
+    
+    colorBuffer = device.createBuffer({
+        size: colors.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true,
+    });
+    new Float32Array(colorBuffer.getMappedRange()).set(colors);
+    colorBuffer.unmap();
+    
+    paramsBuffer = device.createBuffer({
+        size: 48,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    
+    // Compute bind group
+    bindGroup = device.createBindGroup({
+        layout: computePipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: posBuffer } },
+            { binding: 1, resource: { buffer: velBuffer } },
+            { binding: 2, resource: { buffer: colorBuffer } },
+            { binding: 3, resource: { buffer: paramsBuffer } },
+        ],
+    });
+    
+    // Render uniforms
+    const renderUniformBuffer = device.createBuffer({
+        size: 16,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    
+    renderBindGroup = device.createBindGroup({
+        layout: renderPipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: posBuffer } },
+            { binding: 1, resource: { buffer: colorBuffer } },
+            { binding: 2, resource: { buffer: renderUniformBuffer } },
+        ],
+    });
+    
+    // Store for updates
+    window.renderUniformBuffer = renderUniformBuffer;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RENDER LOOP
+// ═══════════════════════════════════════════════════════════════════════════
+
+let fc = 0, lt = performance.now(), gpuTime = 0;
+
+function render() {
+    const start = performance.now();
+    time += 0.016;
+    
+    // Update compute params
+    const modeMap = { gravity: 0, vortex: 1, wave: 2, explode: 3 };
+    const paramsData = new Float32Array([
+        params.gravity, 0.995,
+        canvas.width / 2, canvas.height / 2,
+        mouse.x, mouse.y, mouse.down ? 1 : 0,
+        modeMap[mode] || 0,
+        canvas.width, canvas.height,
+        time, params.count
+    ]);
+    device.queue.writeBuffer(paramsBuffer, 0, paramsData);
+    
+    // Update render uniforms
+    const renderUniforms = new Float32Array([
+        canvas.width, canvas.height,
+        params.size, params.glow
+    ]);
+    device.queue.writeBuffer(window.renderUniformBuffer, 0, renderUniforms);
+    
+    const commandEncoder = device.createCommandEncoder();
+    
+    // Compute pass
+    const computePass = commandEncoder.beginComputePass();
+    computePass.setPipeline(computePipeline);
+    computePass.setBindGroup(0, bindGroup);
+    computePass.dispatchWorkgroups(Math.ceil(params.count / 256));
+    computePass.end();
+    
+    // Render pass
+    const textureView = context.getCurrentTexture().createView();
+    const renderPass = commandEncoder.beginRenderPass({
+        colorAttachments: [{
+            view: textureView,
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store',
+        }],
+    });
+    
+    renderPass.setPipeline(renderPipeline);
+    renderPass.setBindGroup(0, renderBindGroup);
+    renderPass.draw(6, params.count); // 6 vertices per quad, instanced
+    renderPass.end();
+    
+    device.queue.submit([commandEncoder.finish()]);
+    
+    gpuTime = performance.now() - start;
+    
+    // Stats
+    fc++;
+    const now = performance.now();
+    if (now - lt >= 1000) {
+        document.getElementById('fps').textContent = fc;
+        document.getElementById('gputime').textContent = gpuTime.toFixed(1);
+        document.getElementById('draws').textContent = '1';
+        fc = 0; lt = now;
+    }
+    document.getElementById('pcount').textContent = params.count.toLocaleString();
+    
+    requestAnimationFrame(render);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EVENT HANDLERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+function resize() {
+    canvas.width = canvas.offsetWidth;
+    canvas.height = canvas.offsetHeight;
+    if (context) {
+        context.configure({
+            device,
+            format,
+            alphaMode: 'premultiplied',
+        });
+    }
+}
+
+window.onresize = resize;
+
+document.addEventListener('DOMContentLoaded', async () => {
+    resize();
+    
+    canvas = document.getElementById('c');
+    canvas.onmousedown = e => { mouse.down = true; mouse.x = e.offsetX; mouse.y = e.offsetY; };
+    canvas.onmousemove = e => { mouse.x = e.offsetX; mouse.y = e.offsetY; };
+    canvas.onmouseup = () => mouse.down = false;
+    canvas.ontouchstart = e => { e.preventDefault(); mouse.down = true; const t = e.touches[0]; mouse.x = t.clientX; mouse.y = t.clientY; };
+    canvas.ontouchmove = e => { e.preventDefault(); const t = e.touches[0]; mouse.x = t.clientX; mouse.y = t.clientY; };
+    canvas.ontouchend = () => mouse.down = false;
+    
+    document.querySelectorAll('[data-m]').forEach(b => {
+        b.onclick = () => {
+            document.querySelectorAll('[data-m]').forEach(x => x.classList.remove('active'));
+            b.classList.add('active');
+            mode = b.dataset.m;
+        };
+    });
+    
+    document.getElementById('count').oninput = e => {
+        params.count = +e.target.value;
+        document.getElementById('cv').textContent = params.count.toLocaleString();
+        createBuffers();
+    };
+    document.getElementById('size').oninput = e => {
+        params.size = +e.target.value;
+        document.getElementById('sv').textContent = params.size.toFixed(1);
+    };
+    document.getElementById('gravity').oninput = e => {
+        params.gravity = +e.target.value;
+        document.getElementById('gv').textContent = params.gravity.toFixed(1);
+    };
+    document.getElementById('glow').oninput = e => {
+        params.glow = +e.target.value;
+        document.getElementById('glowv').textContent = params.glow.toFixed(1);
+    };
+    document.getElementById('bloom').onclick = function() {
+        params.bloom = !params.bloom;
+        this.textContent = 'Bloom: ' + (params.bloom ? 'ON' : 'OFF');
+        this.classList.toggle('active', params.bloom);
+    };
+    
+    const ok = await init();
+    if (ok) render();
+});
+</script>
+</body>
+</html>

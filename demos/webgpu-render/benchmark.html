@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Benchmark: Canvas2D vs WebGPU | φ² + 1/φ² = 3</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{background:#0a0a12;color:#fff;font-family:system-ui;padding:20px}
+        h1{color:#ffd700;margin-bottom:20px;text-align:center}
+        .container{display:grid;grid-template-columns:1fr 1fr;gap:20px;max-width:1400px;margin:0 auto}
+        .panel{background:#111;border-radius:8px;padding:15px}
+        .panel h2{font-size:1em;color:#0af;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center}
+        .badge{padding:4px 10px;border-radius:4px;font-size:0.7em}
+        .canvas2d{background:#f0f3;border:1px solid #f0f;color:#f0f}
+        .webgpu{background:#0f03;border:1px solid #0f0;color:#0f0}
+        canvas{width:100%;height:300px;background:#000;border-radius:4px;display:block}
+        .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px}
+        .stat{background:#0a0a12;padding:10px;border-radius:4px;text-align:center}
+        .stat-value{font-size:1.5em;color:#0f0;font-weight:bold}
+        .stat-label{font-size:0.7em;color:#888}
+        .controls{margin-top:20px;text-align:center}
+        .btn{padding:10px 20px;margin:5px;background:#222;border:1px solid #333;border-radius:4px;color:#fff;cursor:pointer;font-size:0.8em}
+        .btn:hover{background:#333;border-color:#ffd700}
+        .btn.active{background:#ffd70033;border-color:#ffd700}
+        .results{margin-top:20px;background:#111;border-radius:8px;padding:15px}
+        .results h3{color:#ffd700;margin-bottom:10px}
+        .bar{height:30px;background:#222;border-radius:4px;margin:5px 0;position:relative;overflow:hidden}
+        .bar-fill{height:100%;border-radius:4px;display:flex;align-items:center;padding:0 10px;font-size:0.8em}
+        .bar-canvas{background:linear-gradient(90deg,#f0f,#a0a)}
+        .bar-webgpu{background:linear-gradient(90deg,#0f0,#0a0)}
+    </style>
+</head>
+<body>
+<h1>Benchmark: Canvas2D vs WebGPU Render Pipeline</h1>
+
+<div class="container">
+    <div class="panel">
+        <h2>Canvas2D <span class="badge canvas2d">CPU</span></h2>
+        <canvas id="canvas2d"></canvas>
+        <div class="stats">
+            <div class="stat"><div class="stat-value" id="fps2d">0</div><div class="stat-label">FPS</div></div>
+            <div class="stat"><div class="stat-value" id="time2d">0</div><div class="stat-label">ms/frame</div></div>
+            <div class="stat"><div class="stat-value" id="particles2d">0</div><div class="stat-label">particles</div></div>
+        </div>
+    </div>
+    <div class="panel">
+        <h2>WebGPU <span class="badge webgpu">GPU</span></h2>
+        <canvas id="webgpu"></canvas>
+        <div class="stats">
+            <div class="stat"><div class="stat-value" id="fpsGpu">0</div><div class="stat-label">FPS</div></div>
+            <div class="stat"><div class="stat-value" id="timeGpu">0</div><div class="stat-label">ms/frame</div></div>
+            <div class="stat"><div class="stat-value" id="particlesGpu">0</div><div class="stat-label">particles</div></div>
+        </div>
+    </div>
+</div>
+
+<div class="controls">
+    <button class="btn" data-c="1000">1K</button>
+    <button class="btn" data-c="5000">5K</button>
+    <button class="btn active" data-c="10000">10K</button>
+    <button class="btn" data-c="50000">50K</button>
+    <button class="btn" data-c="100000">100K</button>
+    <button class="btn" data-c="500000">500K</button>
+</div>
+
+<div class="results">
+    <h3>Performance Comparison</h3>
+    <div style="display:flex;align-items:center;margin:10px 0">
+        <span style="width:80px;font-size:0.8em">Canvas2D:</span>
+        <div class="bar" style="flex:1"><div class="bar-fill bar-canvas" id="bar2d" style="width:50%">0 FPS</div></div>
+    </div>
+    <div style="display:flex;align-items:center;margin:10px 0">
+        <span style="width:80px;font-size:0.8em">WebGPU:</span>
+        <div class="bar" style="flex:1"><div class="bar-fill bar-webgpu" id="barGpu" style="width:50%">0 FPS</div></div>
+    </div>
+    <div style="text-align:center;margin-top:15px;color:#ffd700;font-size:1.2em">
+        WebGPU is <span id="speedup">0</span>x faster
+    </div>
+</div>
+
+<script>
+const PHI = 1.618033988749895, TAU = Math.PI * 2;
+let particleCount = 10000;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CANVAS2D RENDERER
+// ═══════════════════════════════════════════════════════════════════════════
+
+const canvas2d = document.getElementById('canvas2d');
+const ctx = canvas2d.getContext('2d');
+let particles2d = [];
+
+class Particle2D {
+    constructor(w, h) {
+        this.x = Math.random() * w;
+        this.y = Math.random() * h;
+        this.vx = (Math.random() - 0.5) * 2;
+        this.vy = (Math.random() - 0.5) * 2;
+        this.phase = Math.random() * TAU;
+        this.hue = 45 + Math.random() * 30;
+    }
+    update(w, h, dt) {
+        const cx = w / 2, cy = h / 2;
+        const dx = cx - this.x, dy = cy - this.y;
+        const d = Math.sqrt(dx * dx + dy * dy) + 1;
+        this.vx += dx / d * 50 / d * dt;
+        this.vy += dy / d * 50 / d * dt;
+        this.vx *= 0.99; this.vy *= 0.99;
+        this.x += this.vx; this.y += this.vy;
+        this.phase += dt * PHI;
+        if (this.x < 0) this.x += w;
+        if (this.x > w) this.x -= w;
+        if (this.y < 0) this.y += h;
+        if (this.y > h) this.y -= h;
+    }
+    draw(ctx) {
+        const a = 0.3 + Math.sin(this.phase) * 0.2;
+        ctx.fillStyle = `hsla(${this.hue},100%,60%,${a})`;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, 2, 0, TAU);
+        ctx.fill();
+    }
+}
+
+function initCanvas2D() {
+    canvas2d.width = canvas2d.offsetWidth;
+    canvas2d.height = canvas2d.offsetHeight;
+    particles2d = [];
+    for (let i = 0; i < particleCount; i++) {
+        particles2d.push(new Particle2D(canvas2d.width, canvas2d.height));
+    }
+}
+
+let fps2d = 0, fc2d = 0, lt2d = performance.now(), frameTime2d = 0;
+
+function render2D() {
+    const start = performance.now();
+    const dt = 0.016;
+    
+    ctx.fillStyle = 'rgba(0,0,0,0.1)';
+    ctx.fillRect(0, 0, canvas2d.width, canvas2d.height);
+    
+    for (const p of particles2d) {
+        p.update(canvas2d.width, canvas2d.height, dt);
+        p.draw(ctx);
+    }
+    
+    frameTime2d = performance.now() - start;
+    fc2d++;
+    
+    const now = performance.now();
+    if (now - lt2d >= 1000) {
+        fps2d = fc2d;
+        document.getElementById('fps2d').textContent = fps2d;
+        document.getElementById('time2d').textContent = frameTime2d.toFixed(1);
+        document.getElementById('particles2d').textContent = particles2d.length.toLocaleString();
+        fc2d = 0; lt2d = now;
+        updateBars();
+    }
+    
+    requestAnimationFrame(render2D);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WEBGPU RENDERER
+// ═══════════════════════════════════════════════════════════════════════════
+
+const canvasGpu = document.getElementById('webgpu');
+let device, context, format, computePipeline, renderPipeline;
+let posBuffer, velBuffer, colorBuffer, paramsBuffer, bindGroup, renderBindGroup;
+let time = 0;
+
+const computeShader = `
+struct Params { gravity: f32, friction: f32, cx: f32, cy: f32, w: f32, h: f32, time: f32, count: f32 }
+@group(0) @binding(0) var<storage, read_write> pos: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> vel: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> col: array<vec4<f32>>;
+@group(0) @binding(3) var<uniform> p: Params;
+const PHI: f32 = 1.618033988749895;
+const TAU: f32 = 6.283185307179586;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if (i >= u32(p.count)) { return; }
+    var ps = pos[i].xy; var v = vel[i].xy; let ph = pos[i].z;
+    let d = ps - vec2<f32>(p.cx, p.cy); let dist = length(d) + 1.0;
+    v -= normalize(d) * 50.0 / dist * 0.016;
+    v *= 0.99; ps += v;
+    if (ps.x < 0.0) { ps.x += p.w; } if (ps.x > p.w) { ps.x -= p.w; }
+    if (ps.y < 0.0) { ps.y += p.h; } if (ps.y > p.h) { ps.y -= p.h; }
+    let np = ph + 0.016 * PHI * 2.0;
+    let spd = length(v); let hue = fract(np / TAU + spd * 0.01);
+    let h = hue * 6.0; let c = 0.8; let x = c * (1.0 - abs(fract(h / 2.0) * 2.0 - 1.0)); let m = 0.2;
+    var rgb: vec3<f32>;
+    if (h < 1.0) { rgb = vec3<f32>(c, x, 0.0); } else if (h < 2.0) { rgb = vec3<f32>(x, c, 0.0); }
+    else if (h < 3.0) { rgb = vec3<f32>(0.0, c, x); } else if (h < 4.0) { rgb = vec3<f32>(0.0, x, c); }
+    else if (h < 5.0) { rgb = vec3<f32>(x, 0.0, c); } else { rgb = vec3<f32>(c, 0.0, x); }
+    pos[i] = vec4<f32>(ps, np, 1.0); vel[i] = vec4<f32>(v, 0.0, 0.0);
+    col[i] = vec4<f32>(rgb + m, 0.5 + sin(np) * 0.3);
+}`;
+
+const vertexShader = `
+struct U { res: vec2<f32>, size: f32, glow: f32 }
+struct VO { @builtin(position) p: vec4<f32>, @location(0) c: vec4<f32>, @location(1) uv: vec2<f32> }
+@group(0) @binding(0) var<storage, read> pos: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> col: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> u: U;
+const q = array<vec2<f32>, 6>(vec2<f32>(-1,-1),vec2<f32>(1,-1),vec2<f32>(-1,1),vec2<f32>(-1,1),vec2<f32>(1,-1),vec2<f32>(1,1));
+@vertex fn main(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VO {
+    var o: VO; let qv = q[vi]; let pp = pos[ii].xy;
+    let sz = u.size * (1.0 + sin(pos[ii].z) * 0.3);
+    let p = (pp + qv * sz) / u.res * 2.0 - 1.0;
+    o.p = vec4<f32>(p.x, -p.y, 0.0, 1.0); o.c = col[ii]; o.uv = qv; return o;
+}`;
+
+const fragmentShader = `
+struct U { res: vec2<f32>, size: f32, glow: f32 }
+@group(0) @binding(2) var<uniform> u: U;
+@fragment fn main(@location(0) c: vec4<f32>, @location(1) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let d = length(uv); if (d > 1.0) { discard; }
+    let g = exp(-d * d * u.glow); let core = smoothstep(1.0, 0.0, d);
+    let i = core * 0.8 + g * 0.5;
+    return vec4<f32>(c.rgb * i, c.a * i);
+}`;
+
+async function initWebGPU() {
+    if (!navigator.gpu) return false;
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) return false;
+    device = await adapter.requestDevice();
+    context = canvasGpu.getContext('webgpu');
+    format = navigator.gpu.getPreferredCanvasFormat();
+    context.configure({ device, format, alphaMode: 'premultiplied' });
+    
+    const cm = device.createShaderModule({ code: computeShader });
+    computePipeline = device.createComputePipeline({ layout: 'auto', compute: { module: cm, entryPoint: 'main' } });
+    
+    const vm = device.createShaderModule({ code: vertexShader });
+    const fm = device.createShaderModule({ code: fragmentShader });
+    renderPipeline = device.createRenderPipeline({
+        layout: 'auto', vertex: { module: vm, entryPoint: 'main' },
+        fragment: { module: fm, entryPoint: 'main', targets: [{ format, blend: {
+            color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' },
+            alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' }
+        }}]},
+        primitive: { topology: 'triangle-list' }
+    });
+    
+    createGPUBuffers();
+    return true;
+}
+
+function createGPUBuffers() {
+    const count = particleCount;
+    const positions = new Float32Array(count * 4);
+    const velocities = new Float32Array(count * 4);
+    const colors = new Float32Array(count * 4);
+    
+    for (let i = 0; i < count; i++) {
+        positions[i * 4] = Math.random() * canvasGpu.width;
+        positions[i * 4 + 1] = Math.random() * canvasGpu.height;
+        positions[i * 4 + 2] = Math.random() * TAU;
+        positions[i * 4 + 3] = 1;
+        velocities[i * 4] = (Math.random() - 0.5) * 2;
+        velocities[i * 4 + 1] = (Math.random() - 0.5) * 2;
+        colors[i * 4] = 1; colors[i * 4 + 1] = 0.8; colors[i * 4 + 2] = 0.3; colors[i * 4 + 3] = 0.8;
+    }
+    
+    posBuffer = device.createBuffer({ size: positions.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+    new Float32Array(posBuffer.getMappedRange()).set(positions); posBuffer.unmap();
+    velBuffer = device.createBuffer({ size: velocities.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+    new Float32Array(velBuffer.getMappedRange()).set(velocities); velBuffer.unmap();
+    colorBuffer = device.createBuffer({ size: colors.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+    new Float32Array(colorBuffer.getMappedRange()).set(colors); colorBuffer.unmap();
+    paramsBuffer = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    
+    bindGroup = device.createBindGroup({ layout: computePipeline.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: posBuffer } }, { binding: 1, resource: { buffer: velBuffer } },
+        { binding: 2, resource: { buffer: colorBuffer } }, { binding: 3, resource: { buffer: paramsBuffer } }
+    ]});
+    
+    const renderUniformBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    renderBindGroup = device.createBindGroup({ layout: renderPipeline.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: posBuffer } }, { binding: 1, resource: { buffer: colorBuffer } },
+        { binding: 2, resource: { buffer: renderUniformBuffer } }
+    ]});
+    window.renderUniformBuffer = renderUniformBuffer;
+}
+
+let fpsGpu = 0, fcGpu = 0, ltGpu = performance.now(), frameTimeGpu = 0;
+
+function renderGPU() {
+    const start = performance.now();
+    time += 0.016;
+    
+    device.queue.writeBuffer(paramsBuffer, 0, new Float32Array([1, 0.99, canvasGpu.width/2, canvasGpu.height/2, canvasGpu.width, canvasGpu.height, time, particleCount]));
+    device.queue.writeBuffer(window.renderUniformBuffer, 0, new Float32Array([canvasGpu.width, canvasGpu.height, 3, 1.5]));
+    
+    const cmd = device.createCommandEncoder();
+    const cp = cmd.beginComputePass();
+    cp.setPipeline(computePipeline); cp.setBindGroup(0, bindGroup);
+    cp.dispatchWorkgroups(Math.ceil(particleCount / 256)); cp.end();
+    
+    const rp = cmd.beginRenderPass({ colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: {r:0,g:0,b:0,a:1}, loadOp: 'clear', storeOp: 'store' }]});
+    rp.setPipeline(renderPipeline); rp.setBindGroup(0, renderBindGroup);
+    rp.draw(6, particleCount); rp.end();
+    
+    device.queue.submit([cmd.finish()]);
+    
+    frameTimeGpu = performance.now() - start;
+    fcGpu++;
+    
+    const now = performance.now();
+    if (now - ltGpu >= 1000) {
+        fpsGpu = fcGpu;
+        document.getElementById('fpsGpu').textContent = fpsGpu;
+        document.getElementById('timeGpu').textContent = frameTimeGpu.toFixed(1);
+        document.getElementById('particlesGpu').textContent = particleCount.toLocaleString();
+        fcGpu = 0; ltGpu = now;
+        updateBars();
+    }
+    
+    requestAnimationFrame(renderGPU);
+}
+
+function updateBars() {
+    const maxFps = Math.max(fps2d, fpsGpu, 1);
+    document.getElementById('bar2d').style.width = (fps2d / maxFps * 100) + '%';
+    document.getElementById('bar2d').textContent = fps2d + ' FPS';
+    document.getElementById('barGpu').style.width = (fpsGpu / maxFps * 100) + '%';
+    document.getElementById('barGpu').textContent = fpsGpu + ' FPS';
+    const speedup = fps2d > 0 ? (fpsGpu / fps2d).toFixed(1) : '∞';
+    document.getElementById('speedup').textContent = speedup;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════════════════
+
+document.querySelectorAll('[data-c]').forEach(b => {
+    b.onclick = () => {
+        document.querySelectorAll('[data-c]').forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+        particleCount = +b.dataset.c;
+        initCanvas2D();
+        if (device) createGPUBuffers();
+    };
+});
+
+window.onload = async () => {
+    canvasGpu.width = canvasGpu.offsetWidth;
+    canvasGpu.height = canvasGpu.offsetHeight;
+    initCanvas2D();
+    const ok = await initWebGPU();
+    if (ok) renderGPU();
+    render2D();
+};
+</script>
+</body>
+</html>
