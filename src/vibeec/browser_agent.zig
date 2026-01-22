@@ -102,6 +102,7 @@ pub const BrowserAgent = struct {
             .groq => openai.OpenAIClient.initGroq(allocator, config.llm_api_key),
             .together => openai.OpenAIClient.initTogether(allocator, config.llm_api_key),
             .ollama => openai.OpenAIClient.initOllama(allocator),
+            .huggingface => openai.OpenAIClient.initHuggingFace(allocator, config.llm_api_key),
         };
         llm.setModel(config.llm_model);
 
@@ -345,6 +346,18 @@ test "BrowserAgentConfig defaults" {
     try std.testing.expectEqual(openai.Provider.groq, config.llm_provider);
     try std.testing.expectEqual(@as(u32, 30), config.max_steps);
     try std.testing.expectEqualStrings("localhost", config.browser_host);
+}
+
+test "BrowserAgent with HuggingFace" {
+    const allocator = std.testing.allocator;
+    var agent = BrowserAgent.init(allocator, .{
+        .llm_api_key = "hf_test_key",
+        .llm_provider = .huggingface,
+        .llm_model = openai.HUGGINGFACE_MODEL,
+    });
+    defer agent.deinit();
+
+    try std.testing.expectEqualStrings(openai.HUGGINGFACE_URL, agent.llm.base_url);
 }
 
 test "phi constant" {

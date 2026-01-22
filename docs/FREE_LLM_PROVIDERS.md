@@ -7,7 +7,42 @@
 
 ## Поддерживаемые провайдеры
 
-### 1. Groq (РЕКОМЕНДУЕТСЯ)
+### 1. HuggingFace (РЕКОМЕНДУЕТСЯ - БЕСПЛАТНО!)
+
+**URL**: https://huggingface.co
+**API**: OpenAI-совместимый через Router
+**Бесплатный tier**: Да (с rate limits)
+
+```zig
+const openai = @import("openai_client.zig");
+
+// Создание клиента HuggingFace
+var client = openai.OpenAIClient.initHuggingFace(allocator, "hf_your_token");
+
+// Или через Agent
+var agent = Agent.init(allocator, .{
+    .api_key = "hf_your_token",
+    .provider = .huggingface,
+    .model = openai.HF_QWEN_25, // Qwen/Qwen2.5-72B-Instruct
+});
+```
+
+**Модели**:
+| Модель | ID | Latency | Качество |
+|--------|-----|---------|----------|
+| Qwen 2.5 72B | `Qwen/Qwen2.5-72B-Instruct` | ~300ms | ★★★★★ |
+| Llama 3.3 70B | `meta-llama/Llama-3.3-70B-Instruct` | ~284ms | ★★★★★ |
+| DeepSeek R1 | `deepseek-ai/DeepSeek-R1` | ~8000ms | ★★★★★ |
+| GPT-OSS 120B | `openai/gpt-oss-120b` | ~500ms | ★★★★★ |
+
+**Реальные тесты**:
+- ✅ Qwen 2.5 72B: "2+2?" → "4" (правильно!)
+- ✅ WebArena prompt → Правильный формат Thought/Action/Input
+- ✅ Llama 3.3 70B: 284ms latency
+
+---
+
+### 2. Groq
 
 **URL**: https://console.groq.com
 **API**: OpenAI-совместимый
@@ -106,20 +141,21 @@ client.setModel("llama-3.1-8b-instant");
 
 ## Рекомендации для WebArena
 
-| Сценарий | Провайдер | Модель |
-|----------|-----------|--------|
-| Продакшн | Groq | Llama 3.3 70B |
-| Быстрые тесты | Groq | Llama 3.1 8B |
-| Разработка | Ollama | Llama 3.2 3B |
-| Офлайн | Ollama | Phi-3 Mini |
+| Сценарий | Провайдер | Модель | Причина |
+|----------|-----------|--------|---------|
+| **Продакшн** | HuggingFace | Qwen 2.5 72B | Бесплатно, отличное качество |
+| **Быстрые тесты** | HuggingFace | Llama 3.3 70B | 284ms latency |
+| **Разработка** | Ollama | Llama 3.2 3B | Локально, без limits |
+| **Офлайн** | Ollama | Phi-3 Mini | Работает без интернета |
 
 ---
 
 ## Получение API ключей
 
-1. **Groq**: https://console.groq.com/keys
-2. **Together**: https://api.together.xyz/settings/api-keys
-3. **Ollama**: Не требуется
+1. **HuggingFace**: https://huggingface.co/settings/tokens (БЕСПЛАТНО!)
+2. **Groq**: https://console.groq.com/keys
+3. **Together**: https://api.together.xyz/settings/api-keys
+4. **Ollama**: Не требуется
 
 ---
 

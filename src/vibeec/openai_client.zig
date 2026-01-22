@@ -13,6 +13,7 @@ pub const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 pub const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 pub const TOGETHER_URL = "https://api.together.xyz/v1/chat/completions";
 pub const OLLAMA_URL = "http://localhost:11434/v1/chat/completions";
+pub const HUGGINGFACE_URL = "https://router.huggingface.co/v1/chat/completions";
 
 // Default models per provider
 pub const OPENAI_MODEL = "gpt-4o-mini";
@@ -20,12 +21,19 @@ pub const GROQ_MODEL = "llama-3.3-70b-versatile"; // FREE!
 pub const GROQ_FAST_MODEL = "llama-3.1-8b-instant"; // VERY FAST!
 pub const TOGETHER_MODEL = "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo";
 pub const OLLAMA_MODEL = "llama3.2:3b";
+// HuggingFace models (FREE with API key!)
+pub const HF_GPT_OSS = "openai/gpt-oss-120b";
+pub const HF_DEEPSEEK_R1 = "deepseek-ai/DeepSeek-R1";
+pub const HF_LLAMA_33 = "meta-llama/Llama-3.3-70B-Instruct";
+pub const HF_QWEN_25 = "Qwen/Qwen2.5-72B-Instruct";
+pub const HUGGINGFACE_MODEL = "Qwen/Qwen2.5-72B-Instruct"; // Default HF model
 
 pub const Provider = enum {
     openai,
     groq,
     together,
     ollama,
+    huggingface,
 };
 
 pub const OpenAIError = error{
@@ -109,6 +117,17 @@ pub const OpenAIClient = struct {
         };
     }
 
+    /// Create client for HuggingFace (FREE with API key!)
+    pub fn initHuggingFace(allocator: Allocator, api_key: []const u8) Self {
+        return Self{
+            .allocator = allocator,
+            .http_client = http.HttpClient.init(allocator),
+            .api_key = api_key,
+            .model = HUGGINGFACE_MODEL,
+            .base_url = HUGGINGFACE_URL,
+        };
+    }
+
     /// Switch to a different provider
     pub fn setProvider(self: *Self, provider: Provider) void {
         switch (provider) {
@@ -127,6 +146,10 @@ pub const OpenAIClient = struct {
             .ollama => {
                 self.base_url = OLLAMA_URL;
                 self.model = OLLAMA_MODEL;
+            },
+            .huggingface => {
+                self.base_url = HUGGINGFACE_URL;
+                self.model = HUGGINGFACE_MODEL;
             },
         }
     }
@@ -343,4 +366,30 @@ test "setModel changes model" {
 
     client.setModel(GROQ_FAST_MODEL);
     try std.testing.expectEqualStrings(GROQ_FAST_MODEL, client.model);
+}
+
+test "HuggingFace client initialization" {
+    const allocator = std.testing.allocator;
+    var client = OpenAIClient.initHuggingFace(allocator, "hf_test_key");
+    defer client.deinit();
+
+    try std.testing.expectEqualStrings(HUGGINGFACE_MODEL, client.model);
+    try std.testing.expectEqualStrings(HUGGINGFACE_URL, client.base_url);
+}
+
+test "setProvider to HuggingFace" {
+    const allocator = std.testing.allocator;
+    var client = OpenAIClient.init(allocator, "test-key");
+    defer client.deinit();
+
+    client.setProvider(.huggingface);
+    try std.testing.expectEqualStrings(HUGGINGFACE_URL, client.base_url);
+    try std.testing.expectEqualStrings(HUGGINGFACE_MODEL, client.model);
+}
+
+test "HuggingFace models constants" {
+    try std.testing.expectEqualStrings("openai/gpt-oss-120b", HF_GPT_OSS);
+    try std.testing.expectEqualStrings("deepseek-ai/DeepSeek-R1", HF_DEEPSEEK_R1);
+    try std.testing.expectEqualStrings("meta-llama/Llama-3.3-70B-Instruct", HF_LLAMA_33);
+    try std.testing.expectEqualStrings("Qwen/Qwen2.5-72B-Instruct", HF_QWEN_25);
 }

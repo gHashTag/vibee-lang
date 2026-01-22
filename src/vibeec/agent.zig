@@ -103,6 +103,7 @@ pub const Agent = struct {
             .groq => openai.OpenAIClient.initGroq(allocator, config.api_key),
             .together => openai.OpenAIClient.initTogether(allocator, config.api_key),
             .ollama => openai.OpenAIClient.initOllama(allocator),
+            .huggingface => openai.OpenAIClient.initHuggingFace(allocator, config.api_key),
         };
         llm.setModel(config.model);
 
@@ -393,4 +394,17 @@ test "WebArena system prompt exists" {
     try std.testing.expect(Agent.WEBARENA_SYSTEM_PROMPT.len > 100);
     try std.testing.expect(std.mem.indexOf(u8, Agent.WEBARENA_SYSTEM_PROMPT, "click") != null);
     try std.testing.expect(std.mem.indexOf(u8, Agent.WEBARENA_SYSTEM_PROMPT, "stop") != null);
+}
+
+test "Agent with HuggingFace provider" {
+    const allocator = std.testing.allocator;
+    var agent = Agent.init(allocator, .{
+        .api_key = "hf_test_key",
+        .provider = .huggingface,
+        .model = openai.HUGGINGFACE_MODEL,
+    });
+    defer agent.deinit();
+
+    try std.testing.expectEqualStrings(openai.HUGGINGFACE_URL, agent.llm.base_url);
+    try std.testing.expectEqualStrings(openai.HUGGINGFACE_MODEL, agent.llm.model);
 }
