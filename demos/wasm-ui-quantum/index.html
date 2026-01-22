@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WASM UI Quantum | φ² + 1/φ² = 3</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{background:#000;color:#fff;font-family:system-ui;overflow:hidden}
+        #app{display:grid;grid-template-columns:200px 1fr;height:100vh}
+        .panel{background:#0a0a12;padding:12px;overflow-y:auto}
+        h1{font-size:1em;color:#ffd700;margin-bottom:12px}
+        .section{background:#111;border-radius:6px;padding:10px;margin-bottom:10px}
+        .section h3{font-size:0.75em;color:#0af;margin-bottom:6px}
+        .btn{display:block;width:100%;padding:8px;margin:4px 0;background:#222;border:1px solid #333;border-radius:4px;color:#fff;cursor:pointer;font-size:0.75em}
+        .btn:hover{background:#333;border-color:#ffd700}
+        .btn.active{background:#ffd70033;border-color:#ffd700}
+        .slider{width:100%;margin:6px 0}
+        .label{font-size:0.65em;color:#888;display:flex;justify-content:space-between}
+        canvas{width:100%;height:100%;display:block}
+        .stats{font-size:0.65em;color:#888;margin-top:10px}
+        .stats span{color:#0f0}
+        .formula{text-align:center;margin-top:10px;color:#ffd700;font-size:0.9em}
+    </style>
+</head>
+<body>
+<div id="app">
+    <div class="panel">
+        <h1>WASM UI Quantum</h1>
+        <div class="section">
+            <h3>Mode</h3>
+            <button class="btn active" data-m="quantum">Quantum Wave</button>
+            <button class="btn" data-m="photon">Photon Field</button>
+            <button class="btn" data-m="vortex">Vortex</button>
+        </div>
+        <div class="section">
+            <h3>Quantum</h3>
+            <div class="label"><span>Superposition</span><span id="sv">0.5</span></div>
+            <input type="range" class="slider" id="super" min="0" max="1" step="0.01" value="0.5">
+            <div class="label"><span>Entanglement</span><span id="ev">0.7</span></div>
+            <input type="range" class="slider" id="entangle" min="0" max="1" step="0.01" value="0.7">
+        </div>
+        <div class="section">
+            <h3>Physics</h3>
+            <div class="label"><span>Particles</span><span id="pv">3000</span></div>
+            <input type="range" class="slider" id="particles" min="500" max="10000" step="100" value="3000">
+            <div class="label"><span>Decay</span><span id="dv">0.02</span></div>
+            <input type="range" class="slider" id="decay" min="0" max="0.1" step="0.005" value="0.02">
+        </div>
+        <div class="section">
+            <h3>Audio</h3>
+            <button class="btn" id="audio">Enable Sound</button>
+        </div>
+        <div class="stats">
+            FPS: <span id="fps">60</span><br>
+            Energy: <span id="energy">0</span><br>
+            WASM: <span id="wasm">CPU</span>
+        </div>
+        <div class="formula">φ² + 1/φ² = 3</div>
+    </div>
+    <canvas id="c"></canvas>
+</div>
+<script>
+const PHI=1.618033988749895,TAU=Math.PI*2;
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+function resize(){canvas.width=canvas.offsetWidth;canvas.height=canvas.offsetHeight}
+resize();window.onresize=resize;
+
+let mode='quantum',params={super:0.5,entangle:0.7,particles:3000,decay:0.02};
+let mouse={x:0,y:0,down:false},time=0,audioOn=false,audioCtx,oscillators=[];
+
+class Particle{
+    constructor(){
+        this.reset();
+    }
+    reset(){
+        this.x=Math.random()*canvas.width;
+        this.y=Math.random()*canvas.height;
+        this.vx=(Math.random()-0.5)*2;
+        this.vy=(Math.random()-0.5)*2;
+        this.phase=Math.random()*TAU;
+        this.amplitude=0.5+Math.random()*0.5;
+        this.wavelength=50+Math.random()*100;
+        this.hue=45+Math.random()*30;
+    }
+    update(dt){
+        const cx=canvas.width/2,cy=canvas.height/2;
+        if(mode==='quantum'){
+            const wave1=Math.sin(this.x*0.01+time*PHI)*params.super;
+            const wave2=Math.cos(this.y*0.01+time)*params.entangle;
+            this.vx+=(wave1+wave2)*dt*10;
+            this.vy+=(wave2-wave1)*dt*10;
+        }else if(mode==='vortex'){
+            const dx=cx-this.x,dy=cy-this.y;
+            const d=Math.sqrt(dx*dx+dy*dy)+1;
+            this.vx+=(-dy/d*2+dx/d*0.3)*dt;
+            this.vy+=(dx/d*2+dy/d*0.3)*dt;
+        }else{
+            const dx=cx-this.x,dy=cy-this.y;
+            const d=Math.sqrt(dx*dx+dy*dy)+1;
+            this.vx+=dx/d*30/d*dt;
+            this.vy+=dy/d*30/d*dt;
+        }
+        if(mouse.down){
+            const dx=mouse.x-this.x,dy=mouse.y-this.y;
+            const d=Math.sqrt(dx*dx+dy*dy)+1;
+            if(d<200){this.vx+=dx/d*50/d*dt;this.vy+=dy/d*50/d*dt;}
+        }
+        this.vx*=0.99;this.vy*=0.99;
+        this.x+=this.vx;this.y+=this.vy;
+        this.phase+=dt*PHI;
+        this.amplitude*=(1-params.decay*dt);
+        if(this.amplitude<0.05)this.reset();
+        if(this.x<0||this.x>canvas.width)this.vx*=-0.8;
+        if(this.y<0||this.y>canvas.height)this.vy*=-0.8;
+        this.x=Math.max(0,Math.min(canvas.width,this.x));
+        this.y=Math.max(0,Math.min(canvas.height,this.y));
+    }
+    draw(){
+        const a=this.amplitude*(0.3+Math.sin(this.phase)*0.2);
+        ctx.fillStyle=`hsla(${this.hue},100%,60%,${a})`;
+        ctx.beginPath();
+        ctx.arc(this.x,this.y,2+this.amplitude*2,0,TAU);
+        ctx.fill();
+    }
+}
+
+let particles=[];
+function initParticles(n){
+    particles=[];
+    for(let i=0;i<n;i++)particles.push(new Particle());
+}
+initParticles(params.particles);
+
+function initAudio(){
+    audioCtx=new AudioContext();
+    const freqs=[220,277.18,329.63,392,440,523.25,659.25,783.99];
+    for(let i=0;i<8;i++){
+        const osc=audioCtx.createOscillator();
+        const gain=audioCtx.createGain();
+        osc.type='sine';
+        osc.frequency.value=freqs[i]*PHI;
+        gain.gain.value=0;
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        oscillators.push({osc,gain});
+    }
+}
+
+function updateAudio(){
+    if(!audioOn||!audioCtx)return;
+    const regions=new Array(8).fill(0);
+    const rw=canvas.width/4,rh=canvas.height/2;
+    for(const p of particles){
+        const col=Math.min(3,Math.floor(p.x/rw));
+        const row=Math.min(1,Math.floor(p.y/rh));
+        regions[row*4+col]+=p.amplitude;
+    }
+    const max=Math.max(...regions,1);
+    for(let i=0;i<8;i++){
+        oscillators[i].gain.gain.setTargetAtTime(regions[i]/max*0.1,audioCtx.currentTime,0.1);
+    }
+}
+
+let fc=0,lt=performance.now();
+function loop(){
+    const dt=0.016;
+    time+=dt;
+    ctx.fillStyle='rgba(0,0,0,0.1)';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    for(const p of particles){p.update(dt);p.draw();}
+    while(particles.length<params.particles)particles.push(new Particle());
+    if(particles.length>params.particles)particles.length=params.particles;
+    updateAudio();
+    fc++;
+    const now=performance.now();
+    if(now-lt>=1000){
+        document.getElementById('fps').textContent=fc;
+        fc=0;lt=now;
+    }
+    let e=0;for(const p of particles)e+=p.vx*p.vx+p.vy*p.vy;
+    document.getElementById('energy').textContent=Math.round(e);
+    requestAnimationFrame(loop);
+}
+
+canvas.onmousedown=e=>{mouse.down=true;mouse.x=e.offsetX;mouse.y=e.offsetY};
+canvas.onmousemove=e=>{mouse.x=e.offsetX;mouse.y=e.offsetY};
+canvas.onmouseup=()=>mouse.down=false;
+canvas.ontouchstart=e=>{e.preventDefault();mouse.down=true;const t=e.touches[0];mouse.x=t.clientX;mouse.y=t.clientY};
+canvas.ontouchmove=e=>{e.preventDefault();const t=e.touches[0];mouse.x=t.clientX;mouse.y=t.clientY};
+canvas.ontouchend=()=>mouse.down=false;
+
+document.querySelectorAll('[data-m]').forEach(b=>{
+    b.onclick=()=>{
+        document.querySelectorAll('[data-m]').forEach(x=>x.classList.remove('active'));
+        b.classList.add('active');mode=b.dataset.m;
+    };
+});
+document.getElementById('super').oninput=e=>{params.super=+e.target.value;document.getElementById('sv').textContent=params.super.toFixed(2)};
+document.getElementById('entangle').oninput=e=>{params.entangle=+e.target.value;document.getElementById('ev').textContent=params.entangle.toFixed(2)};
+document.getElementById('particles').oninput=e=>{params.particles=+e.target.value;document.getElementById('pv').textContent=params.particles};
+document.getElementById('decay').oninput=e=>{params.decay=+e.target.value;document.getElementById('dv').textContent=params.decay.toFixed(3)};
+document.getElementById('audio').onclick=()=>{
+    audioOn=!audioOn;
+    document.getElementById('audio').textContent=audioOn?'Disable Sound':'Enable Sound';
+    document.getElementById('audio').classList.toggle('active',audioOn);
+    if(audioOn&&!audioCtx)initAudio();
+};
+
+document.getElementById('wasm').textContent='Ready';
+loop();
+</script>
+</body>
+</html>

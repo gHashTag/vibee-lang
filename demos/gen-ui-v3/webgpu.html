@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GEN UI v3.1 - WebGPU Compute | φ² + 1/φ² = 3</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{background:#000;color:#fff;font-family:system-ui;overflow:hidden}
+        #app{display:grid;grid-template-columns:220px 1fr 220px;height:100vh}
+        .panel{background:#0a0a12;padding:12px;overflow-y:auto}
+        .panel-r{border-left:1px solid #222}
+        h1{font-size:1em;color:#ffd700;margin-bottom:8px}
+        .section{background:#111;border-radius:6px;padding:10px;margin-bottom:10px}
+        .section h3{font-size:0.75em;color:#0af;margin-bottom:6px}
+        .btn{display:block;width:100%;padding:6px;margin:3px 0;background:#222;border:1px solid #333;border-radius:4px;color:#fff;cursor:pointer;font-size:0.7em}
+        .btn:hover{background:#333;border-color:#ffd700}
+        .btn.active{background:#ffd70033;border-color:#ffd700}
+        .slider{width:100%;margin:6px 0}
+        .label{font-size:0.65em;color:#888;display:flex;justify-content:space-between}
+        canvas{width:100%;height:100%;display:block;touch-action:none}
+        .stats{font-size:0.65em;color:#888}
+        .stats span{color:#0f0}
+        .info{position:absolute;top:8px;left:230px;background:#000a;padding:6px 10px;border-radius:4px;font-size:0.7em}
+        .wrap{position:relative;background:#000}
+        .gpu-badge{background:#0f03;border:1px solid #0f0;color:#0f0;padding:2px 6px;border-radius:3px;font-size:0.6em}
+        .cpu-badge{background:#f003;border:1px solid #f00;color:#f00;padding:2px 6px;border-radius:3px;font-size:0.6em}
+    </style>
+</head>
+<body>
+<div id="app">
+    <div class="panel">
+        <h1>GEN UI v3.1</h1>
+        <div class="section">
+            <h3>Mode</h3>
+            <button class="btn active" data-m="gravity">Gravity Wells</button>
+            <button class="btn" data-m="collision">Collisions</button>
+            <button class="btn" data-m="vortex">Vortex</button>
+            <button class="btn" data-m="wave">Wave Interference</button>
+        </div>
+        <div class="section">
+            <h3>Emotion</h3>
+            <button class="btn active" data-e="joy">Joy</button>
+            <button class="btn" data-e="calm">Calm</button>
+            <button class="btn" data-e="energy">Energy</button>
+        </div>
+        <div class="section">
+            <h3>Physics</h3>
+            <div class="label"><span>Gravity</span><span id="gv">1.0</span></div>
+            <input type="range" class="slider" id="gravity" min="0" max="3" step="0.1" value="1">
+            <div class="label"><span>Friction</span><span id="fv">0.99</span></div>
+            <input type="range" class="slider" id="friction" min="0.9" max="1" step="0.01" value="0.99">
+            <div class="label"><span>Photons</span><span id="cv">10000</span></div>
+            <input type="range" class="slider" id="count" min="1000" max="50000" step="1000" value="10000">
+        </div>
+    </div>
+    <div class="wrap">
+        <canvas id="c"></canvas>
+        <div class="info">
+            <span id="fps">60</span> FPS | 
+            <span id="ph">0</span> photons | 
+            <span id="mode">gravity</span> |
+            <span id="gpubadge" class="cpu-badge">CPU</span>
+        </div>
+    </div>
+    <div class="panel panel-r">
+        <div class="section">
+            <h3>Audio</h3>
+            <button class="btn" id="audio">Enable Sound</button>
+        </div>
+        <div class="section">
+            <h3>Stats</h3>
+            <div class="stats">
+                Energy: <span id="energy">0</span><br>
+                GPU Time: <span id="gputime">0</span>ms<br>
+                Compute: <span id="compute">checking...</span>
+            </div>
+        </div>
+        <div class="section" style="text-align:center">
+            <div style="color:#ffd700;font-size:1.2em">φ² + 1/φ² = 3</div>
+            <div style="color:#f66;font-size:0.8em">PHOENIX = 999</div>
+        </div>
+    </div>
+</div>
+<script>
+const PHI = 1.618033988749895, TAU = Math.PI * 2;
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+function resize() { canvas.width = canvas.offsetWidth; canvas.height = canvas.offsetHeight; }
+resize(); window.onresize = resize;
+
+const emotions = { joy: { h: 45, s: 1, b: 1.2 }, calm: { h: 200, s: .5, b: .8 }, energy: { h: 0, s: 1, b: 1.5 } };
+let mode = 'gravity', emo = emotions.joy, params = { g: 1, f: .99, n: 10000 };
+let mouse = { x: 0, y: 0, down: false }, touches = [], audioOn = false, audioCtx;
+let useGPU = false, device, computePipeline, bindGroup, posBuffer, velBuffer, paramsBuffer;
+let audioCtx, masterGain, oscillators = [], panners = [];
+
+// WebGPU Compute Shader - WGSL
+const computeShader = `
+struct Params {
+    gravity: f32,
+    friction: f32,
+    centerX: f32,
+    centerY: f32,
+    mouseX: f32,
+    mouseY: f32,
+    mouseDown: f32,
+    mode: f32,
+    width: f32,
+    height: f32,
+    time: f32,
+    count: f32,
+}
+
+@group(0) @binding(0) var<storage, read_write> positions: array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read_write> velocities: array<vec2<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+const PHI: f32 = 1.618033988749895;
+const TAU: f32 = 6.283185307179586;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if (i >= u32(params.count)) { return; }
+    
+    var pos = positions[i];
+    var vel = velocities[i];
+    let dt: f32 = 0.016;
+    
+    let center = vec2<f32>(params.centerX, params.centerY);
+    let mouse = vec2<f32>(params.mouseX, params.mouseY);
+    
+    // Mode 0: Gravity Wells
+    if (params.mode < 0.5) {
+        let d = pos - center;
+        let dist = length(d) + 1.0;
+        let force = params.gravity * 50.0 / dist;
+        vel -= normalize(d) * force * dt;
+    }
+    
+    // Mode 1: Vortex
+    if (params.mode >= 0.5 && params.mode < 1.5) {
+        let d = pos - center;
+        let dist = length(d) + 1.0;
+        let perpendicular = vec2<f32>(-d.y, d.x);
+        vel += (normalize(perpendicular) * 2.0 + normalize(d) * 0.5) * params.gravity * dt;
+    }
+    
+    // Mode 2: Wave Interference
+    if (params.mode >= 1.5 && params.mode < 2.5) {
+        let wave1 = sin(pos.x * 0.02 + params.time * PHI) * cos(pos.y * 0.02);
+        let wave2 = sin(pos.y * 0.02 + params.time) * cos(pos.x * 0.02 * PHI);
+        let interference = (wave1 + wave2) * params.gravity * 2.0;
+        vel.x += cos(interference * TAU) * dt * 10.0;
+        vel.y += sin(interference * TAU) * dt * 10.0;
+    }
+    
+    // Mouse attraction
+    if (params.mouseDown > 0.5) {
+        let d = mouse - pos;
+        let dist = length(d) + 1.0;
+        if (dist < 200.0) {
+            let force = params.gravity * 100.0 / dist;
+            vel += normalize(d) * force * dt;
+        }
+    }
+    
+    // Apply friction
+    vel *= params.friction;
+    
+    // Update position
+    pos += vel;
+    
+    // Boundary collision
+    if (pos.x < 0.0) { pos.x = 0.0; vel.x *= -0.8; }
+    if (pos.x > params.width) { pos.x = params.width; vel.x *= -0.8; }
+    if (pos.y < 0.0) { pos.y = 0.0; vel.y *= -0.8; }
+    if (pos.y > params.height) { pos.y = params.height; vel.y *= -0.8; }
+    
+    positions[i] = pos;
+    velocities[i] = vel;
+}
+`;
+
+async function initWebGPU() {
+    if (!navigator.gpu) {
+        document.getElementById('compute').textContent = 'WebGPU not supported';
+        return false;
+    }
+    
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) {
+        document.getElementById('compute').textContent = 'No GPU adapter';
+        return false;
+    }
+    
+    device = await adapter.requestDevice();
+    
+    const shaderModule = device.createShaderModule({ code: computeShader });
+    
+    computePipeline = device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: shaderModule, entryPoint: 'main' }
+    });
+    
+    document.getElementById('compute').textContent = 'WebGPU Active';
+    document.getElementById('gpubadge').textContent = 'GPU';
+    document.getElementById('gpubadge').className = 'gpu-badge';
+    return true;
+}
+
+function createBuffers(count) {
+    const positions = new Float32Array(count * 2);
+    const velocities = new Float32Array(count * 2);
+    
+    for (let i = 0; i < count; i++) {
+        positions[i * 2] = Math.random() * canvas.width;
+        positions[i * 2 + 1] = Math.random() * canvas.height;
+        velocities[i * 2] = (Math.random() - 0.5) * 4;
+        velocities[i * 2 + 1] = (Math.random() - 0.5) * 4;
+    }
+    
+    posBuffer = device.createBuffer({
+        size: positions.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true
+    });
+    new Float32Array(posBuffer.getMappedRange()).set(positions);
+    posBuffer.unmap();
+    
+    velBuffer = device.createBuffer({
+        size: velocities.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true
+    });
+    new Float32Array(velBuffer.getMappedRange()).set(velocities);
+    velBuffer.unmap();
+    
+    paramsBuffer = device.createBuffer({
+        size: 48, // 12 floats * 4 bytes
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+    });
+    
+    bindGroup = device.createBindGroup({
+        layout: computePipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: posBuffer } },
+            { binding: 1, resource: { buffer: velBuffer } },
+            { binding: 2, resource: { buffer: paramsBuffer } }
+        ]
+    });
+}
+
+let time = 0;
+async function computeGPU() {
+    const modeMap = { gravity: 0, vortex: 1, wave: 2, collision: 0 };
+    const paramsData = new Float32Array([
+        params.g, params.f,
+        canvas.width / 2, canvas.height / 2,
+        mouse.x, mouse.y, mouse.down ? 1 : 0,
+        modeMap[mode] || 0,
+        canvas.width, canvas.height,
+        time, params.n
+    ]);
+    time += 0.016;
+    
+    device.queue.writeBuffer(paramsBuffer, 0, paramsData);
+    
+    const commandEncoder = device.createCommandEncoder();
+    const passEncoder = commandEncoder.beginComputePass();
+    passEncoder.setPipeline(computePipeline);
+    passEncoder.setBindGroup(0, bindGroup);
+    passEncoder.dispatchWorkgroups(Math.ceil(params.n / 256));
+    passEncoder.end();
+    
+    const readBuffer = device.createBuffer({
+        size: params.n * 2 * 4,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+    });
+    commandEncoder.copyBufferToBuffer(posBuffer, 0, readBuffer, 0, params.n * 2 * 4);
+    
+    device.queue.submit([commandEncoder.finish()]);
+    
+    await readBuffer.mapAsync(GPUMapMode.READ);
+    const positions = new Float32Array(readBuffer.getMappedRange());
+    
+    // Render
+    ctx.fillStyle = 'rgba(0,0,0,0.1)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    const hue = emo.h;
+    for (let i = 0; i < params.n; i++) {
+        const x = positions[i * 2];
+        const y = positions[i * 2 + 1];
+        const phase = (i * PHI + time) % TAU;
+        const alpha = 0.3 + Math.sin(phase) * 0.2;
+        ctx.fillStyle = `hsla(${hue + (i % 30) - 15},${emo.s * 100}%,${emo.b * 40}%,${alpha})`;
+        ctx.beginPath();
+        ctx.arc(x, y, 2 + (i % 3), 0, TAU);
+        ctx.fill();
+    }
+    
+    // Update spatial audio
+    updateAudio(positions);
+    
+    readBuffer.unmap();
+    readBuffer.destroy();
+}
+
+// CPU Fallback
+let photons = [];
+class Photon {
+    constructor(x, y) {
+        this.x = x; this.y = y;
+        this.vx = (Math.random() - .5) * 4;
+        this.vy = (Math.random() - .5) * 4;
+        this.r = 2 + Math.random() * 3;
+        this.phase = Math.random() * TAU;
+        this.hue = emo.h + Math.random() * 30 - 15;
+    }
+    update(dt) {
+        const cx = canvas.width / 2, cy = canvas.height / 2;
+        if (mode === 'gravity' || mode === 'collision') {
+            const dx = cx - this.x, dy = cy - this.y;
+            const d = Math.sqrt(dx * dx + dy * dy) + 1;
+            const f = params.g * 50 / d;
+            this.vx += dx / d * f * dt; this.vy += dy / d * f * dt;
+        }
+        if (mode === 'vortex') {
+            const dx = cx - this.x, dy = cy - this.y;
+            const d = Math.sqrt(dx * dx + dy * dy) + 1;
+            this.vx += (-dy / d * 2 + dx / d * .5) * params.g * dt;
+            this.vy += (dx / d * 2 + dy / d * .5) * params.g * dt;
+        }
+        if (mode === 'wave') {
+            const wave1 = Math.sin(this.x * 0.02 + time * PHI) * Math.cos(this.y * 0.02);
+            const wave2 = Math.sin(this.y * 0.02 + time) * Math.cos(this.x * 0.02 * PHI);
+            const interference = (wave1 + wave2) * params.g * 2;
+            this.vx += Math.cos(interference * TAU) * dt * 10;
+            this.vy += Math.sin(interference * TAU) * dt * 10;
+        }
+        if (mouse.down) {
+            const dx = mouse.x - this.x, dy = mouse.y - this.y;
+            const d = Math.sqrt(dx * dx + dy * dy) + 1;
+            if (d < 200) {
+                const f = params.g * 100 / d;
+                this.vx += dx / d * f * dt; this.vy += dy / d * f * dt;
+            }
+        }
+        this.vx *= params.f; this.vy *= params.f;
+        this.x += this.vx; this.y += this.vy;
+        this.phase += dt * PHI;
+        if (this.x < 0) { this.x = 0; this.vx *= -.8; }
+        if (this.x > canvas.width) { this.x = canvas.width; this.vx *= -.8; }
+        if (this.y < 0) { this.y = 0; this.vy *= -.8; }
+        if (this.y > canvas.height) { this.y = canvas.height; this.vy *= -.8; }
+    }
+    draw() {
+        const a = .3 + Math.sin(this.phase) * .2;
+        ctx.fillStyle = `hsla(${this.hue},${emo.s * 100}%,${emo.b * 40}%,${a})`;
+        ctx.beginPath(); ctx.arc(this.x, this.y, this.r, 0, TAU); ctx.fill();
+    }
+}
+
+function spawnCPU(n) {
+    for (let i = 0; i < n; i++) {
+        photons.push(new Photon(Math.random() * canvas.width, Math.random() * canvas.height));
+    }
+}
+
+function renderCPU() {
+    ctx.fillStyle = 'rgba(0,0,0,0.1)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    for (const p of photons) p.draw();
+    
+    // Update audio from CPU photons
+    if (audioOn && photons.length > 0) {
+        const positions = new Float32Array(photons.length * 2);
+        for (let i = 0; i < photons.length; i++) {
+            positions[i * 2] = photons[i].x;
+            positions[i * 2 + 1] = photons[i].y;
+        }
+        updateAudio(positions);
+    }
+}
+
+let fc = 0, lt = performance.now(), gpuTime = 0;
+async function loop() {
+    const start = performance.now();
+    
+    if (useGPU) {
+        await computeGPU();
+    } else {
+        const dt = .016;
+        time += dt;
+        for (const p of photons) p.update(dt);
+        while (photons.length < params.n) spawnCPU(10);
+        if (photons.length > params.n) photons = photons.slice(-params.n);
+        renderCPU();
+    }
+    
+    gpuTime = performance.now() - start;
+    
+    fc++;
+    const now = performance.now();
+    if (now - lt >= 1000) {
+        document.getElementById('fps').textContent = fc;
+        document.getElementById('gputime').textContent = gpuTime.toFixed(1);
+        fc = 0; lt = now;
+    }
+    document.getElementById('ph').textContent = params.n;
+    
+    let e = 0;
+    if (!useGPU) for (const p of photons) e += p.vx * p.vx + p.vy * p.vy;
+    document.getElementById('energy').textContent = Math.round(e);
+    
+    requestAnimationFrame(loop);
+}
+
+canvas.onmousedown = e => { mouse.down = true; mouse.x = e.offsetX; mouse.y = e.offsetY; };
+canvas.onmousemove = e => { mouse.x = e.offsetX; mouse.y = e.offsetY; };
+canvas.onmouseup = () => mouse.down = false;
+canvas.ontouchstart = e => { e.preventDefault(); const t = e.touches[0]; mouse.down = true; mouse.x = t.clientX - canvas.offsetLeft; mouse.y = t.clientY - canvas.offsetTop; };
+canvas.ontouchmove = e => { e.preventDefault(); const t = e.touches[0]; mouse.x = t.clientX - canvas.offsetLeft; mouse.y = t.clientY - canvas.offsetTop; };
+canvas.ontouchend = () => mouse.down = false;
+
+document.querySelectorAll('[data-m]').forEach(b => {
+    b.onclick = () => {
+        document.querySelectorAll('[data-m]').forEach(x => x.classList.remove('active'));
+        b.classList.add('active'); mode = b.dataset.m;
+        document.getElementById('mode').textContent = mode;
+    };
+});
+document.querySelectorAll('[data-e]').forEach(b => {
+    b.onclick = () => {
+        document.querySelectorAll('[data-e]').forEach(x => x.classList.remove('active'));
+        b.classList.add('active'); emo = emotions[b.dataset.e];
+        photons.forEach(p => p.hue = emo.h + Math.random() * 30 - 15);
+    };
+});
+document.getElementById('gravity').oninput = e => { params.g = +e.target.value; document.getElementById('gv').textContent = params.g.toFixed(1); };
+document.getElementById('friction').oninput = e => { params.f = +e.target.value; document.getElementById('fv').textContent = params.f.toFixed(2); };
+document.getElementById('count').oninput = e => {
+    params.n = +e.target.value;
+    document.getElementById('cv').textContent = params.n;
+    if (useGPU) createBuffers(params.n);
+};
+document.getElementById('audio').onclick = () => {
+    audioOn = !audioOn;
+    document.getElementById('audio').textContent = audioOn ? 'Disable Sound' : 'Enable Sound';
+    document.getElementById('audio').classList.toggle('active', audioOn);
+    if (audioOn && !audioCtx) initAudio();
+    if (!audioOn && masterGain) masterGain.gain.setValueAtTime(0, audioCtx.currentTime);
+    if (audioOn && masterGain) masterGain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+};
+
+function initAudio() {
+    audioCtx = new AudioContext();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = 0.3;
+    masterGain.connect(audioCtx.destination);
+    
+    // Create 8 spatial oscillators for different regions
+    const freqs = [220, 277.18, 329.63, 392, 440, 523.25, 659.25, 783.99]; // A minor scale * PHI
+    for (let i = 0; i < 8; i++) {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        const panner = audioCtx.createStereoPanner();
+        
+        osc.type = 'sine';
+        osc.frequency.value = freqs[i] * (1 + (i % 3) * 0.01 * PHI);
+        gain.gain.value = 0;
+        panner.pan.value = (i / 7) * 2 - 1; // -1 to 1
+        
+        osc.connect(gain);
+        gain.connect(panner);
+        panner.connect(masterGain);
+        osc.start();
+        
+        oscillators.push({ osc, gain });
+        panners.push(panner);
+    }
+}
+
+function updateAudio(positions) {
+    if (!audioOn || !audioCtx || !positions) return;
+    
+    // Divide canvas into 8 regions and count photon density
+    const regions = new Array(8).fill(0);
+    const regionWidth = canvas.width / 4;
+    const regionHeight = canvas.height / 2;
+    
+    const count = Math.min(positions.length / 2, params.n);
+    for (let i = 0; i < count; i++) {
+        const x = positions[i * 2];
+        const y = positions[i * 2 + 1];
+        const col = Math.min(3, Math.floor(x / regionWidth));
+        const row = Math.min(1, Math.floor(y / regionHeight));
+        const region = row * 4 + col;
+        if (region >= 0 && region < 8) regions[region]++;
+    }
+    
+    // Normalize and apply to oscillators
+    const maxDensity = Math.max(...regions, 1);
+    for (let i = 0; i < 8; i++) {
+        const density = regions[i] / maxDensity;
+        const targetGain = density * 0.15;
+        oscillators[i].gain.gain.setTargetAtTime(targetGain, audioCtx.currentTime, 0.1);
+        
+        // Modulate frequency based on mode
+        const baseFreq = [220, 277.18, 329.63, 392, 440, 523.25, 659.25, 783.99][i];
+        const modeOffset = mode === 'vortex' ? Math.sin(time * PHI + i) * 20 : 
+                          mode === 'wave' ? Math.sin(time + i * PHI) * 30 : 0;
+        oscillators[i].osc.frequency.setTargetAtTime(baseFreq + modeOffset, audioCtx.currentTime, 0.1);
+    }
+}
+
+// Initialize
+(async () => {
+    useGPU = await initWebGPU();
+    if (useGPU) {
+        createBuffers(params.n);
+    } else {
+        spawnCPU(params.n);
+    }
+    loop();
+})();
+</script>
+</body>
+</html>

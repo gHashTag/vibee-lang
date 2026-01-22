@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GEN UI v3.0 - WebGPU + Physics | φ² + 1/φ² = 3</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{background:#000;color:#fff;font-family:system-ui;overflow:hidden}
+        #app{display:grid;grid-template-columns:220px 1fr 220px;height:100vh}
+        .panel{background:#0a0a12;padding:12px;overflow-y:auto}
+        .panel-r{border-left:1px solid #222}
+        h1{font-size:1em;color:#ffd700;margin-bottom:8px}
+        .section{background:#111;border-radius:6px;padding:10px;margin-bottom:10px}
+        .section h3{font-size:0.75em;color:#0af;margin-bottom:6px}
+        .btn{display:block;width:100%;padding:6px;margin:3px 0;background:#222;border:1px solid #333;border-radius:4px;color:#fff;cursor:pointer;font-size:0.7em}
+        .btn:hover{background:#333;border-color:#ffd700}
+        .btn.active{background:#ffd70033;border-color:#ffd700}
+        .slider{width:100%;margin:6px 0}
+        .label{font-size:0.65em;color:#888;display:flex;justify-content:space-between}
+        canvas{width:100%;height:100%;display:block;touch-action:none}
+        .stats{font-size:0.65em;color:#888}
+        .stats span{color:#0f0}
+        .info{position:absolute;top:8px;left:230px;background:#000a;padding:6px 10px;border-radius:4px;font-size:0.7em}
+        .wrap{position:relative;background:#000}
+    </style>
+</head>
+<body>
+<div id="app">
+    <div class="panel">
+        <h1>🔮 GEN UI v3</h1>
+        <div class="section">
+            <h3>🌊 Mode</h3>
+            <button class="btn active" data-m="gravity">Gravity Wells</button>
+            <button class="btn" data-m="collision">Collisions</button>
+            <button class="btn" data-m="vortex">Vortex</button>
+            <button class="btn" data-m="attract">Attract/Repel</button>
+        </div>
+        <div class="section">
+            <h3>🎭 Emotion</h3>
+            <button class="btn active" data-e="joy">Joy</button>
+            <button class="btn" data-e="calm">Calm</button>
+            <button class="btn" data-e="energy">Energy</button>
+        </div>
+        <div class="section">
+            <h3>⚙️ Physics</h3>
+            <div class="label"><span>Gravity</span><span id="gv">1.0</span></div>
+            <input type="range" class="slider" id="gravity" min="0" max="3" step="0.1" value="1">
+            <div class="label"><span>Friction</span><span id="fv">0.99</span></div>
+            <input type="range" class="slider" id="friction" min="0.9" max="1" step="0.01" value="0.99">
+            <div class="label"><span>Photons</span><span id="cv">2000</span></div>
+            <input type="range" class="slider" id="count" min="500" max="5000" step="100" value="2000">
+        </div>
+    </div>
+    <div class="wrap">
+        <canvas id="c"></canvas>
+        <div class="info"><span id="fps">60</span> FPS | <span id="ph">0</span> photons | <span id="mode">gravity</span></div>
+    </div>
+    <div class="panel panel-r">
+        <div class="section">
+            <h3>🔊 Audio</h3>
+            <button class="btn" id="audio">Enable Sound</button>
+        </div>
+        <div class="section">
+            <h3>📊 Stats</h3>
+            <div class="stats">
+                Energy: <span id="energy">0</span><br>
+                Collisions: <span id="cols">0</span>/s<br>
+                GPU: <span id="gpu">checking...</span>
+            </div>
+        </div>
+        <div class="section" style="text-align:center">
+            <div style="color:#ffd700;font-size:1.2em">φ² + 1/φ² = 3</div>
+            <div style="color:#f66;font-size:0.8em">PHOENIX = 999</div>
+        </div>
+    </div>
+</div>
+<script>
+const PHI=1.618033988749895,TAU=Math.PI*2;
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+function resize(){canvas.width=canvas.offsetWidth;canvas.height=canvas.offsetHeight}
+resize();window.onresize=resize;
+
+const emotions={joy:{h:45,s:1,b:1.2},calm:{h:200,s:.5,b:.8},energy:{h:0,s:1,b:1.5}};
+let photons=[],mode='gravity',emo=emotions.joy,params={g:1,f:.99,n:2000};
+let mouse={x:0,y:0,down:false},touches=[],audioOn=false,audioCtx,cols=0,lastCols=0;
+
+class Photon{
+    constructor(x,y){
+        this.x=x;this.y=y;
+        this.vx=(Math.random()-.5)*4;
+        this.vy=(Math.random()-.5)*4;
+        this.r=2+Math.random()*3;
+        this.m=this.r*this.r;
+        this.phase=Math.random()*TAU;
+        this.life=1;
+        this.hue=emo.h+Math.random()*30-15;
+    }
+    update(dt){
+        const cx=canvas.width/2,cy=canvas.height/2;
+        if(mode==='gravity'){
+            const dx=cx-this.x,dy=cy-this.y;
+            const d=Math.sqrt(dx*dx+dy*dy)+1;
+            const f=params.g*50/d;
+            this.vx+=dx/d*f*dt;this.vy+=dy/d*f*dt;
+        }
+        if(mode==='vortex'){
+            const dx=cx-this.x,dy=cy-this.y;
+            const d=Math.sqrt(dx*dx+dy*dy)+1;
+            this.vx+=(-dy/d*2+dx/d*.5)*params.g*dt;
+            this.vy+=(dx/d*2+dy/d*.5)*params.g*dt;
+        }
+        if(mode==='attract'&&mouse.down){
+            const dx=mouse.x-this.x,dy=mouse.y-this.y;
+            const d=Math.sqrt(dx*dx+dy*dy)+1;
+            const f=params.g*100/d;
+            this.vx+=dx/d*f*dt;this.vy+=dy/d*f*dt;
+        }
+        for(const t of touches){
+            const dx=t.x-this.x,dy=t.y-this.y;
+            const d=Math.sqrt(dx*dx+dy*dy)+1;
+            if(d<150){
+                const f=params.g*80/d;
+                this.vx+=dx/d*f*dt;this.vy+=dy/d*f*dt;
+            }
+        }
+        this.vx*=params.f;this.vy*=params.f;
+        this.x+=this.vx;this.y+=this.vy;
+        this.phase+=dt*PHI;
+        if(this.x<0){this.x=0;this.vx*=-.8}
+        if(this.x>canvas.width){this.x=canvas.width;this.vx*=-.8}
+        if(this.y<0){this.y=0;this.vy*=-.8}
+        if(this.y>canvas.height){this.y=canvas.height;this.vy*=-.8}
+    }
+    collide(o){
+        const dx=o.x-this.x,dy=o.y-this.y;
+        const d=Math.sqrt(dx*dx+dy*dy);
+        if(d<this.r+o.r&&d>0){
+            cols++;
+            const nx=dx/d,ny=dy/d;
+            const p=2*(this.vx*nx+this.vy*ny-o.vx*nx-o.vy*ny)/(this.m+o.m);
+            this.vx-=p*o.m*nx;this.vy-=p*o.m*ny;
+            o.vx+=p*this.m*nx;o.vy+=p*this.m*ny;
+            const overlap=(this.r+o.r-d)/2;
+            this.x-=overlap*nx;this.y-=overlap*ny;
+            o.x+=overlap*nx;o.y+=overlap*ny;
+        }
+    }
+    draw(){
+        const a=.3+Math.sin(this.phase)*.2;
+        ctx.fillStyle=`hsla(${this.hue},${emo.s*100}%,${emo.b*40}%,${a})`;
+        ctx.beginPath();ctx.arc(this.x,this.y,this.r,0,TAU);ctx.fill();
+    }
+}
+
+function spawn(n){
+    for(let i=0;i<n;i++){
+        photons.push(new Photon(Math.random()*canvas.width,Math.random()*canvas.height));
+    }
+}
+
+function render(){
+    ctx.fillStyle='rgba(0,0,0,0.1)';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    for(const p of photons)p.draw();
+}
+
+let fc=0,lt=performance.now();
+function loop(){
+    const dt=.016;
+    for(const p of photons)p.update(dt);
+    if(mode==='collision'){
+        for(let i=0;i<photons.length;i++){
+            for(let j=i+1;j<photons.length;j++){
+                photons[i].collide(photons[j]);
+            }
+        }
+    }
+    while(photons.length<params.n)spawn(10);
+    if(photons.length>params.n)photons=photons.slice(-params.n);
+    render();
+    fc++;
+    const now=performance.now();
+    if(now-lt>=1000){
+        document.getElementById('fps').textContent=fc;
+        document.getElementById('cols').textContent=cols-lastCols;
+        lastCols=cols;
+        fc=0;lt=now;
+    }
+    document.getElementById('ph').textContent=photons.length;
+    let e=0;for(const p of photons)e+=p.vx*p.vx+p.vy*p.vy;
+    document.getElementById('energy').textContent=Math.round(e);
+    requestAnimationFrame(loop);
+}
+
+canvas.onmousedown=e=>{mouse.down=true;mouse.x=e.offsetX;mouse.y=e.offsetY};
+canvas.onmousemove=e=>{mouse.x=e.offsetX;mouse.y=e.offsetY};
+canvas.onmouseup=()=>mouse.down=false;
+canvas.ontouchstart=e=>{e.preventDefault();touches=Array.from(e.touches).map(t=>({x:t.clientX-canvas.offsetLeft,y:t.clientY-canvas.offsetTop}))};
+canvas.ontouchmove=e=>{e.preventDefault();touches=Array.from(e.touches).map(t=>({x:t.clientX-canvas.offsetLeft,y:t.clientY-canvas.offsetTop}))};
+canvas.ontouchend=()=>touches=[];
+
+document.querySelectorAll('[data-m]').forEach(b=>{
+    b.onclick=()=>{
+        document.querySelectorAll('[data-m]').forEach(x=>x.classList.remove('active'));
+        b.classList.add('active');mode=b.dataset.m;
+        document.getElementById('mode').textContent=mode;
+    }
+});
+document.querySelectorAll('[data-e]').forEach(b=>{
+    b.onclick=()=>{
+        document.querySelectorAll('[data-e]').forEach(x=>x.classList.remove('active'));
+        b.classList.add('active');emo=emotions[b.dataset.e];
+        photons.forEach(p=>p.hue=emo.h+Math.random()*30-15);
+    }
+});
+document.getElementById('gravity').oninput=e=>{params.g=+e.target.value;document.getElementById('gv').textContent=params.g.toFixed(1)};
+document.getElementById('friction').oninput=e=>{params.f=+e.target.value;document.getElementById('fv').textContent=params.f.toFixed(2)};
+document.getElementById('count').oninput=e=>{params.n=+e.target.value;document.getElementById('cv').textContent=params.n};
+document.getElementById('audio').onclick=()=>{
+    audioOn=!audioOn;
+    document.getElementById('audio').textContent=audioOn?'Disable Sound':'Enable Sound';
+    document.getElementById('audio').classList.toggle('active',audioOn);
+    if(audioOn&&!audioCtx)audioCtx=new AudioContext();
+};
+
+document.getElementById('gpu').textContent=navigator.gpu?'WebGPU Ready':'CPU Fallback';
+spawn(params.n);loop();
+</script>
+</body>
+</html>
