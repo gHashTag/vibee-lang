@@ -1,0 +1,163 @@
+# IGLA MCP Server
+# Model Context Protocol server for IGLA SWE Agent
+# φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: igla_mcp_server
+version: "1.0.0"
+language: zig
+module: igla_mcp_server
+
+sacred_constants:
+  phi: 1.618033988749895
+  phoenix: 999
+  trinity: 3
+
+creation_pattern:
+  source: MCPRequest
+  transformer: MCPServer
+  result: MCPResponse
+
+types:
+  TransportType:
+    enum:
+      - Stdio
+      - SSE
+      - WebSocket
+
+  ServerConfig:
+    fields:
+      name: String
+      version: String
+      transport: String
+      capabilities: List<String>
+
+  MCPRequest:
+    fields:
+      jsonrpc: String
+      id: Int
+      method: String
+      params: Object
+
+  MCPResponse:
+    fields:
+      jsonrpc: String
+      id: Int
+      result: Object
+      error: Object
+
+  MCPError:
+    fields:
+      code: Int
+      message: String
+      data: Object
+
+  ServerCapabilities:
+    fields:
+      tools: Bool
+      resources: Bool
+      prompts: Bool
+      logging: Bool
+
+  InitializeParams:
+    fields:
+      protocol_version: String
+      capabilities: Object
+      client_info: Object
+
+  InitializeResult:
+    fields:
+      protocol_version: String
+      capabilities: Object
+      server_info: Object
+
+behaviors:
+  - name: create_server
+    given: "ServerConfig"
+    when: "Server creation requested"
+    then: "Returns configured MCP server"
+
+  - name: initialize
+    given: "InitializeParams"
+    when: "Client sends initialize request"
+    then: "Returns InitializeResult with capabilities"
+
+  - name: handle_request
+    given: "MCPRequest"
+    when: "Request received"
+    then: "Routes to appropriate handler"
+
+  - name: list_tools
+    given: "No parameters"
+    when: "tools/list requested"
+    then: "Returns list of available tools"
+
+  - name: call_tool
+    given: "Tool name and arguments"
+    when: "tools/call requested"
+    then: "Executes tool and returns result"
+
+  - name: list_resources
+    given: "No parameters"
+    when: "resources/list requested"
+    then: "Returns list of available resources"
+
+  - name: read_resource
+    given: "Resource URI"
+    when: "resources/read requested"
+    then: "Returns resource content"
+
+  - name: list_prompts
+    given: "No parameters"
+    when: "prompts/list requested"
+    then: "Returns list of available prompts"
+
+  - name: get_prompt
+    given: "Prompt name and arguments"
+    when: "prompts/get requested"
+    then: "Returns rendered prompt"
+
+  - name: send_response
+    given: "MCPResponse"
+    when: "Response ready"
+    then: "Sends JSON-RPC response"
+
+  - name: send_error
+    given: "MCPError and request id"
+    when: "Error occurred"
+    then: "Sends JSON-RPC error response"
+
+  - name: run_stdio
+    given: "ServerConfig"
+    when: "Stdio transport selected"
+    then: "Runs server on stdin/stdout"
+
+test_cases:
+  - name: test_server_creation
+    input:
+      name: "igla-swe"
+      version: "1.0.0"
+    expected:
+      created: true
+
+  - name: test_initialize
+    input:
+      protocol_version: "2024-11-05"
+    expected:
+      capabilities_returned: true
+
+  - name: test_list_tools
+    input: {}
+    expected:
+      tools_count_gt: 0
+
+  - name: test_tool_call
+    input:
+      name: "generate_patch"
+    expected:
+      executed: true
+
+  - name: test_error_handling
+    input:
+      invalid_method: true
+    expected:
+      error_returned: true
