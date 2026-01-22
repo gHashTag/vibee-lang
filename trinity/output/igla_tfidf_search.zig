@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// igla_bm25_search v1.0.0 - Generated from .vibee specification
+// igla_tfidf_search v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,31 +33,24 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BM25Config = struct {
-    k1: f64,
-    b: f64,
-    avg_doc_length: f64,
-};
-
-/// 
-pub const TermFrequency = struct {
-    term: []const u8,
-    frequency: i64,
-    doc_frequency: i64,
-};
-
-/// 
-pub const BM25Score = struct {
+pub const TFIDFVector = struct {
     doc_id: []const u8,
-    score: f64,
-    matched_terms: []const u8,
+    terms: []const u8,
+    weights: []const u8,
 };
 
 /// 
-pub const SearchResult = struct {
-    results: []const u8,
-    query: []const u8,
-    total_docs: i64,
+pub const TFIDFIndex = struct {
+    vectors: []const u8,
+    vocabulary: []const u8,
+    idf_values: []const u8,
+};
+
+/// 
+pub const TFIDFResult = struct {
+    doc_id: []const u8,
+    similarity: f64,
+    matched_terms: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -109,45 +102,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "build_index" {
+test "build_vocabulary" {
 // Given: List of documents
+// When: Vocabulary building requested
+// Then: Returns unique terms list
+    // TODO: Add test assertions
+}
+
+test "compute_tfidf" {
+// Given: Document and vocabulary
+// When: TF-IDF computation requested
+// Then: Returns TFIDFVector
+    // TODO: Add test assertions
+}
+
+test "build_index" {
+// Given: Documents
 // When: Index building requested
-// Then: Returns term frequency index
+// Then: Returns TFIDFIndex
     // TODO: Add test assertions
 }
 
 test "search" {
 // Given: Query and index
 // When: Search requested
-// Then: Returns ranked SearchResult
+// Then: Returns ranked results
     // TODO: Add test assertions
 }
 
-test "calculate_idf" {
-// Given: Term and corpus size
-// When: IDF calculation requested
-// Then: Returns inverse document frequency
+test "cosine_similarity" {
+// Given: Two vectors
+// When: Similarity calculation requested
+// Then: Returns similarity score
     // TODO: Add test assertions
 }
 
-test "calculate_tf" {
-// Given: Term and document
-// When: TF calculation requested
-// Then: Returns term frequency score
-    // TODO: Add test assertions
-}
-
-test "score_document" {
-// Given: Query terms and document
-// When: Scoring requested
-// Then: Returns BM25Score
-    // TODO: Add test assertions
-}
-
-test "tokenize" {
-// Given: Text
-// When: Tokenization requested
-// Then: Returns list of tokens
+test "normalize_vector" {
+// Given: Vector
+// When: Normalization requested
+// Then: Returns normalized vector
     // TODO: Add test assertions
 }
 

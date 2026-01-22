@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// igla_bm25_search v1.0.0 - Generated from .vibee specification
+// igla_ast_parser v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,31 +33,30 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BM25Config = struct {
-    k1: f64,
-    b: f64,
-    avg_doc_length: f64,
+pub const ASTNodeType = struct {
 };
 
 /// 
-pub const TermFrequency = struct {
-    term: []const u8,
-    frequency: i64,
-    doc_frequency: i64,
+pub const ASTNode = struct {
+    node_type: []const u8,
+    value: []const u8,
+    line: i64,
+    column: i64,
+    children: []const u8,
 };
 
 /// 
-pub const BM25Score = struct {
-    doc_id: []const u8,
-    score: f64,
-    matched_terms: []const u8,
+pub const AST = struct {
+    root: ASTNode,
+    nodes: []const u8,
+    file_path: []const u8,
 };
 
 /// 
-pub const SearchResult = struct {
-    results: []const u8,
-    query: []const u8,
-    total_docs: i64,
+pub const ParseResult = struct {
+    ast: AST,
+    errors: []const u8,
+    success: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -109,45 +108,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "build_index" {
-// Given: List of documents
-// When: Index building requested
-// Then: Returns term frequency index
+test "parse_file" {
+// Given: File content and language
+// When: Parsing requested
+// Then: Returns ParseResult
     // TODO: Add test assertions
 }
 
-test "search" {
-// Given: Query and index
-// When: Search requested
-// Then: Returns ranked SearchResult
+test "find_node" {
+// Given: AST and node type
+// When: Node search requested
+// Then: Returns matching nodes
     // TODO: Add test assertions
 }
 
-test "calculate_idf" {
-// Given: Term and corpus size
-// When: IDF calculation requested
-// Then: Returns inverse document frequency
+test "get_children" {
+// Given: ASTNode
+// When: Children requested
+// Then: Returns child nodes
     // TODO: Add test assertions
 }
 
-test "calculate_tf" {
-// Given: Term and document
-// When: TF calculation requested
-// Then: Returns term frequency score
+test "get_parent" {
+// Given: ASTNode and AST
+// When: Parent requested
+// Then: Returns parent node
     // TODO: Add test assertions
 }
 
-test "score_document" {
-// Given: Query terms and document
-// When: Scoring requested
-// Then: Returns BM25Score
+test "traverse_preorder" {
+// Given: AST
+// When: Preorder traversal requested
+// Then: Returns nodes in preorder
     // TODO: Add test assertions
 }
 
-test "tokenize" {
-// Given: Text
-// When: Tokenization requested
-// Then: Returns list of tokens
+test "traverse_postorder" {
+// Given: AST
+// When: Postorder traversal requested
+// Then: Returns nodes in postorder
     // TODO: Add test assertions
 }
 

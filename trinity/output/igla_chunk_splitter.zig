@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// igla_bm25_search v1.0.0 - Generated from .vibee specification
+// igla_chunk_splitter v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,31 +33,32 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BM25Config = struct {
-    k1: f64,
-    b: f64,
-    avg_doc_length: f64,
+pub const ChunkStrategy = struct {
 };
 
 /// 
-pub const TermFrequency = struct {
-    term: []const u8,
-    frequency: i64,
-    doc_frequency: i64,
+pub const CodeChunk = struct {
+    id: []const u8,
+    file_path: []const u8,
+    start_line: i64,
+    end_line: i64,
+    content: []const u8,
+    chunk_type: []const u8,
 };
 
 /// 
-pub const BM25Score = struct {
-    doc_id: []const u8,
-    score: f64,
-    matched_terms: []const u8,
+pub const SplitConfig = struct {
+    strategy: []const u8,
+    max_chunk_size: i64,
+    min_chunk_size: i64,
+    overlap: i64,
 };
 
 /// 
-pub const SearchResult = struct {
-    results: []const u8,
-    query: []const u8,
-    total_docs: i64,
+pub const ChunkResult = struct {
+    chunks: []const u8,
+    total_chunks: i64,
+    avg_chunk_size: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -109,45 +110,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "build_index" {
-// Given: List of documents
-// When: Index building requested
-// Then: Returns term frequency index
+test "split_file" {
+// Given: File content and SplitConfig
+// When: Splitting requested
+// Then: Returns ChunkResult
     // TODO: Add test assertions
 }
 
-test "search" {
-// Given: Query and index
-// When: Search requested
-// Then: Returns ranked SearchResult
+test "split_by_functions" {
+// Given: File content
+// When: Function-based split requested
+// Then: Returns chunks at function boundaries
     // TODO: Add test assertions
 }
 
-test "calculate_idf" {
-// Given: Term and corpus size
-// When: IDF calculation requested
-// Then: Returns inverse document frequency
+test "split_by_classes" {
+// Given: File content
+// When: Class-based split requested
+// Then: Returns chunks at class boundaries
     // TODO: Add test assertions
 }
 
-test "calculate_tf" {
-// Given: Term and document
-// When: TF calculation requested
-// Then: Returns term frequency score
+test "split_fixed_size" {
+// Given: Content and size
+// When: Fixed size split requested
+// Then: Returns equal-sized chunks
     // TODO: Add test assertions
 }
 
-test "score_document" {
-// Given: Query terms and document
-// When: Scoring requested
-// Then: Returns BM25Score
+test "detect_boundaries" {
+// Given: File content
+// When: Boundary detection requested
+// Then: Returns list of line numbers
     // TODO: Add test assertions
 }
 
-test "tokenize" {
-// Given: Text
-// When: Tokenization requested
-// Then: Returns list of tokens
+test "merge_small_chunks" {
+// Given: Chunks and min_size
+// When: Merge requested
+// Then: Returns merged chunks
     // TODO: Add test assertions
 }
 

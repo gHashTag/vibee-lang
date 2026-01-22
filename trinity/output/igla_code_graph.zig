@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// igla_bm25_search v1.0.0 - Generated from .vibee specification
+// igla_code_graph v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,31 +33,31 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BM25Config = struct {
-    k1: f64,
-    b: f64,
-    avg_doc_length: f64,
+pub const EdgeType = struct {
 };
 
 /// 
-pub const TermFrequency = struct {
-    term: []const u8,
-    frequency: i64,
-    doc_frequency: i64,
+pub const GraphNode = struct {
+    id: []const u8,
+    name: []const u8,
+    node_type: []const u8,
+    file_path: []const u8,
 };
 
 /// 
-pub const BM25Score = struct {
-    doc_id: []const u8,
-    score: f64,
-    matched_terms: []const u8,
+pub const GraphEdge = struct {
+    source: []const u8,
+    target: []const u8,
+    edge_type: []const u8,
+    weight: f64,
 };
 
 /// 
-pub const SearchResult = struct {
-    results: []const u8,
-    query: []const u8,
-    total_docs: i64,
+pub const CodeGraph = struct {
+    nodes: []const u8,
+    edges: []const u8,
+    node_count: i64,
+    edge_count: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -109,45 +109,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "build_index" {
-// Given: List of documents
-// When: Index building requested
-// Then: Returns term frequency index
+test "build_graph" {
+// Given: List of files
+// When: Graph building requested
+// Then: Returns CodeGraph
     // TODO: Add test assertions
 }
 
-test "search" {
-// Given: Query and index
-// When: Search requested
-// Then: Returns ranked SearchResult
+test "add_node" {
+// Given: GraphNode
+// When: Node addition requested
+// Then: Returns updated graph
     // TODO: Add test assertions
 }
 
-test "calculate_idf" {
-// Given: Term and corpus size
-// When: IDF calculation requested
-// Then: Returns inverse document frequency
+test "add_edge" {
+// Given: GraphEdge
+// When: Edge addition requested
+// Then: Returns updated graph
     // TODO: Add test assertions
 }
 
-test "calculate_tf" {
-// Given: Term and document
-// When: TF calculation requested
-// Then: Returns term frequency score
+test "find_dependencies" {
+// Given: Node id
+// When: Dependency search requested
+// Then: Returns dependent nodes
     // TODO: Add test assertions
 }
 
-test "score_document" {
-// Given: Query terms and document
-// When: Scoring requested
-// Then: Returns BM25Score
+test "find_dependents" {
+// Given: Node id
+// When: Dependents search requested
+// Then: Returns nodes that depend on it
     // TODO: Add test assertions
 }
 
-test "tokenize" {
-// Given: Text
-// When: Tokenization requested
-// Then: Returns list of tokens
+test "shortest_path" {
+// Given: Source and target nodes
+// When: Path finding requested
+// Then: Returns shortest path
     // TODO: Add test assertions
 }
 

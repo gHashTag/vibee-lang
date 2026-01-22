@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// igla_bm25_search v1.0.0 - Generated from .vibee specification
+// igla_query_expander v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,31 +33,21 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const BM25Config = struct {
-    k1: f64,
-    b: f64,
-    avg_doc_length: f64,
+pub const ExpansionType = struct {
 };
 
 /// 
-pub const TermFrequency = struct {
-    term: []const u8,
-    frequency: i64,
-    doc_frequency: i64,
+pub const ExpandedQuery = struct {
+    original: []const u8,
+    expanded_terms: []const u8,
+    expansion_types: []const u8,
 };
 
 /// 
-pub const BM25Score = struct {
-    doc_id: []const u8,
-    score: f64,
-    matched_terms: []const u8,
-};
-
-/// 
-pub const SearchResult = struct {
-    results: []const u8,
-    query: []const u8,
-    total_docs: i64,
+pub const ExpansionConfig = struct {
+    max_expansions: i64,
+    include_code_patterns: bool,
+    case_variations: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -109,45 +99,45 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "build_index" {
-// Given: List of documents
-// When: Index building requested
-// Then: Returns term frequency index
+test "expand_query" {
+// Given: Query and config
+// When: Expansion requested
+// Then: Returns ExpandedQuery
     // TODO: Add test assertions
 }
 
-test "search" {
-// Given: Query and index
-// When: Search requested
-// Then: Returns ranked SearchResult
+test "add_synonyms" {
+// Given: Term
+// When: Synonym expansion requested
+// Then: Returns synonyms list
     // TODO: Add test assertions
 }
 
-test "calculate_idf" {
-// Given: Term and corpus size
-// When: IDF calculation requested
-// Then: Returns inverse document frequency
+test "add_code_patterns" {
+// Given: Term
+// When: Code pattern expansion requested
+// Then: Returns code patterns
     // TODO: Add test assertions
 }
 
-test "calculate_tf" {
-// Given: Term and document
-// When: TF calculation requested
-// Then: Returns term frequency score
+test "expand_camel_case" {
+// Given: Term
+// When: CamelCase expansion requested
+// Then: Returns split terms
     // TODO: Add test assertions
 }
 
-test "score_document" {
-// Given: Query terms and document
-// When: Scoring requested
-// Then: Returns BM25Score
+test "expand_snake_case" {
+// Given: Term
+// When: SnakeCase expansion requested
+// Then: Returns split terms
     // TODO: Add test assertions
 }
 
-test "tokenize" {
-// Given: Text
-// When: Tokenization requested
-// Then: Returns list of tokens
+test "combine_expansions" {
+// Given: List of expansions
+// When: Combination requested
+// Then: Returns deduplicated list
     // TODO: Add test assertions
 }
 
