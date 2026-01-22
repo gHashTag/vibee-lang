@@ -67,8 +67,11 @@ pub const RealAgent = struct {
     pub fn navigate(self: *Self, url: []const u8) AgentError!void {
         if (!self.connected) return AgentError.BrowserConnectionFailed;
 
-        var cmd_buf: [1024]u8 = undefined;
-        const cmd = std.fmt.bufPrint(&cmd_buf, "{{\"id\":{d},\"method\":\"Page.navigate\",\"params\":{{\"url\":\"{s}\"}}}}", .{ self.message_id, url }) catch return AgentError.OutOfMemory;
+        // Limit URL length to prevent buffer overflow
+        const safe_url = if (url.len > 500) url[0..500] else url;
+
+        var cmd_buf: [2048]u8 = undefined;
+        const cmd = std.fmt.bufPrint(&cmd_buf, "{{\"id\":{d},\"method\":\"Page.navigate\",\"params\":{{\"url\":\"{s}\"}}}}", .{ self.message_id, safe_url }) catch return AgentError.OutOfMemory;
         self.message_id += 1;
 
         self.ws.sendText(cmd) catch return AgentError.NavigationFailed;
