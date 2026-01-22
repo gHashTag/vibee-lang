@@ -166,5 +166,66 @@ curl http://localhost:11434/api/generate -d '{
 }'
 ```
 
+## Autonomous Agent Loop (v21.3)
+
+Full observe-think-act automation loop.
+
+### Specification
+
+`specs/tri/agent_loop_v21.vibee` - 10 types, 12 behaviors
+
+### Usage
+
+```bash
+# Run agent with task
+./scripts/agent_loop.sh "Get the page title" "https://example.com"
+
+# Run agent on Google
+./scripts/agent_loop.sh "Navigate to Google" "https://www.google.com"
+```
+
+### Agent Loop Flow
+
+```
+┌─────────────────────────────────────────┐
+│           AGENT LOOP                    │
+├─────────────────────────────────────────┤
+│  1. OBSERVE → Get page state via CDP    │
+│  2. THINK   → Ask LLM for next action   │
+│  3. ACT     → Execute action via CDP    │
+│  4. CHECK   → Is task complete?         │
+│  5. LOOP    → If not done, go to 1      │
+└─────────────────────────────────────────┘
+```
+
+### Action Format
+
+LLM responds with:
+```
+Thought: [reasoning]
+Action: [goto|click|type|scroll|done|fail]
+Input: [parameters]
+```
+
+### Latency Benchmarks
+
+| Phase | Latency |
+|-------|---------|
+| OBSERVE | ~4ms |
+| THINK | ~880ms |
+| ACT | ~1000ms |
+| **LOOP** | **~1900ms/step** |
+
+### Configuration
+
+```bash
+CDP_HOST="localhost"
+CDP_PORT="9222"
+OLLAMA_HOST="localhost"
+OLLAMA_PORT="11434"
+MODEL="qwen2.5:0.5b"
+MAX_STEPS=5
+```
+
 ---
 φ² + 1/φ² = 3 | PHOENIX = 999
