@@ -69,25 +69,31 @@ think() {
     local url=$(echo "$observation" | python3 -c "import json,sys; print(json.load(sys.stdin).get('url',''))" 2>/dev/null)
     local title=$(echo "$observation" | python3 -c "import json,sys; print(json.load(sys.stdin).get('title',''))" 2>/dev/null)
     
-    local prompt="You are a browser automation agent. Execute the task step by step.
+    local prompt="You are a browser agent. You can ONLY use these 6 actions:
+
+ALLOWED ACTIONS (use EXACTLY one):
+- goto: Navigate to URL. Input: full URL (e.g., https://example.com)
+- click: Click element. Input: CSS selector (e.g., button#submit)
+- type: Type text. Input: selector|text (e.g., input#search|hello)
+- scroll: Scroll page. Input: up or down
+- done: Task complete. Input: the result/answer
+- fail: Cannot complete. Input: reason why
+
+CURRENT STATE:
+URL: ${url}
+Title: ${title}
+Step: ${step}/${MAX_STEPS}
 
 TASK: ${task}
 
-CURRENT PAGE:
-- URL: ${url}
-- Title: ${title}
-
-STEP: ${step}/${MAX_STEPS}
-
 ${history}
 
-Respond EXACTLY in this format (no extra text):
-Thought: [your reasoning about what to do next]
-Action: [goto|click|type|scroll|done|fail]
-Input: [url for goto, selector for click, text for type, or result for done]
+IMPORTANT: If the answer is already visible (like page title), use 'done' immediately!
 
-If task is complete, use Action: done with the result in Input.
-If task cannot be completed, use Action: fail with reason in Input."
+Respond in EXACTLY this format:
+Thought: [one sentence reasoning]
+Action: [goto|click|type|scroll|done|fail]
+Input: [parameter for the action]"
 
     local response=$(curl -s "http://${OLLAMA_HOST}:${OLLAMA_PORT}/api/generate" \
         -d "$(python3 -c "import json; print(json.dumps({'model':'${MODEL}','prompt':'''${prompt}''','stream':False}))")" 2>/dev/null | \
@@ -226,8 +232,8 @@ run_agent() {
         history="${history}
 Step ${step}: ${action} ${input} -> ${result}"
         
-        # Check if done
-        if [ "$result" = "done" ] || [ "$result" = "fail" ]; then
+        # Check if done (check if result contains "done" or "fail")
+        if echo "$result" | grep -q "^done$\|^fail$"; then
             break
         fi
         

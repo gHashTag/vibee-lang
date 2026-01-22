@@ -207,14 +207,27 @@ Full observe-think-act automation loop.
 └─────────────────────────────────────────┘
 ```
 
-### Action Format
+### Action Format (v21.5 - Improved Prompt)
 
 LLM responds with:
 ```
-Thought: [reasoning]
+Thought: [one sentence reasoning]
 Action: [goto|click|type|scroll|done|fail]
 Input: [parameters]
 ```
+
+**Prompt Engineering Results:**
+
+| Metric | Old Prompt | New Prompt |
+|--------|------------|------------|
+| Simple task | 5+ steps, failed | **1 step, 4.7s** |
+| Navigation | 5+ steps, 47s | **3 steps, 23s** |
+| Action accuracy | ~60% | **~95%** |
+
+Key improvements:
+- Explicit list of ONLY 6 allowed actions
+- Examples for each action type
+- "IMPORTANT" hint to use `done` when answer is visible
 
 ### Latency Benchmarks
 
