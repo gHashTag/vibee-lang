@@ -15,11 +15,14 @@ pub const AgentError = error{
     OutOfMemory,
 };
 
+pub const Provider = openai.Provider;
+
 pub const AgentConfig = struct {
     api_key: []const u8,
     model: []const u8 = "gpt-4o-mini",
     max_steps: u32 = 10,
     verbose: bool = false,
+    provider: Provider = .openai,
 };
 
 pub const AgentStep = struct {
@@ -71,8 +74,36 @@ pub const Agent = struct {
         \\When you have the answer, use: Action: final_answer
     ;
 
+    // WebArena-optimized system prompt
+    const WEBARENA_SYSTEM_PROMPT =
+        \\You are an autonomous web agent that completes tasks on websites.
+        \\
+        \\AVAILABLE ACTIONS:
+        \\- click [selector]: Click on an element (e.g., click [#submit-btn])
+        \\- type [selector] [text]: Type text into input (e.g., type [#search] "query")
+        \\- goto [url]: Navigate to URL
+        \\- scroll [direction]: Scroll up/down
+        \\- stop [answer]: Complete task with final answer
+        \\
+        \\FORMAT:
+        \\Thought: [your reasoning about the current page and next step]
+        \\Action: [action name]
+        \\Action Input: [action parameters]
+        \\
+        \\RULES:
+        \\1. Analyze the page observation carefully
+        \\2. Take ONE action at a time
+        \\3. Use stop [answer] when task is complete
+        \\4. Be concise in your reasoning
+    ;
+
     pub fn init(allocator: Allocator, config: AgentConfig) Self {
-        var llm = openai.OpenAIClient.init(allocator, config.api_key);
+        var llm = switch (config.provider) {
+            .openai => openai.OpenAIClient.init(allocator, config.api_key),
+            .groq => openai.OpenAIClient.initGroq(allocator, config.api_key),
+            .together => openai.OpenAIClient.initTogether(allocator, config.api_key),
+            .ollama => openai.OpenAIClient.initOllama(allocator),
+        };
         llm.setModel(config.model);
 
         return Self{
@@ -318,4 +349,48 @@ test "phi constant" {
     const phi: f64 = (1.0 + @sqrt(5.0)) / 2.0;
     const result = phi * phi + 1.0 / (phi * phi);
     try std.testing.expectApproxEqAbs(3.0, result, 0.0001);
+}
+
+test "Agent with Groq provider" {
+    const allocator = std.testing.allocator;
+    var agent = Agent.init(allocator, .{
+        .api_key = "test-groq-key",
+        .provider = .groq,
+        .model = openai.GROQ_MODEL,
+    });
+    defer agent.deinit();
+
+    try std.testing.expectEqualStrings(openai.GROQ_URL, agent.llm.base_url);
+    try std.testing.expectEqualStrings(openai.GROQ_MODEL, agent.llm.model);
+}
+
+test "Agent with Together provider" {
+    const allocator = std.testing.allocator;
+    var agent = Agent.init(allocator, .{
+        .api_key = "test-together-key",
+        .provider = .together,
+    });
+    defer agent.deinit();
+
+    try std.testing.expectEqualStrings(openai.TOGETHER_URL, agent.llm.base_url);
+}
+
+test "Agent with Ollama provider" {
+    const allocator = std.testing.allocator;
+    var agent = Agent.init(allocator, .{
+        .api_key = "", // not needed for Ollama
+        .provider = .ollama,
+        .model = openai.OLLAMA_MODEL,
+    });
+    defer agent.deinit();
+
+    try std.testing.expectEqualStrings(openai.OLLAMA_URL, agent.llm.base_url);
+    try std.testing.expectEqualStrings(openai.OLLAMA_MODEL, agent.llm.model);
+}
+
+test "WebArena system prompt exists" {
+    // Verify WebArena prompt is defined
+    try std.testing.expect(Agent.WEBARENA_SYSTEM_PROMPT.len > 100);
+    try std.testing.expect(std.mem.indexOf(u8, Agent.WEBARENA_SYSTEM_PROMPT, "click") != null);
+    try std.testing.expect(std.mem.indexOf(u8, Agent.WEBARENA_SYSTEM_PROMPT, "stop") != null);
 }

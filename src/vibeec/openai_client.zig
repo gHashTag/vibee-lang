@@ -1,5 +1,5 @@
 // VIBEE OpenAI Client - Pure Zig Implementation
-// GPT-4, GPT-4o API calls
+// Supports: OpenAI, Groq (FREE), Together AI, Ollama
 // Uses http_client.zig and json_parser.zig
 // φ² + 1/φ² = 3
 
@@ -7,6 +7,26 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const http = @import("http_client.zig");
 const json = @import("json_parser.zig");
+
+// Provider URLs (all OpenAI-compatible)
+pub const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
+pub const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+pub const TOGETHER_URL = "https://api.together.xyz/v1/chat/completions";
+pub const OLLAMA_URL = "http://localhost:11434/v1/chat/completions";
+
+// Default models per provider
+pub const OPENAI_MODEL = "gpt-4o-mini";
+pub const GROQ_MODEL = "llama-3.3-70b-versatile"; // FREE!
+pub const GROQ_FAST_MODEL = "llama-3.1-8b-instant"; // VERY FAST!
+pub const TOGETHER_MODEL = "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo";
+pub const OLLAMA_MODEL = "llama3.2:3b";
+
+pub const Provider = enum {
+    openai,
+    groq,
+    together,
+    ollama,
+};
 
 pub const OpenAIError = error{
     ApiError,
@@ -51,17 +71,73 @@ pub const OpenAIClient = struct {
             .allocator = allocator,
             .http_client = http.HttpClient.init(allocator),
             .api_key = api_key,
-            .model = "gpt-4o-mini",
-            .base_url = "https://api.openai.com/v1/chat/completions",
+            .model = OPENAI_MODEL,
+            .base_url = OPENAI_URL,
         };
+    }
+
+    /// Create client for Groq (FREE, FAST!)
+    pub fn initGroq(allocator: Allocator, api_key: []const u8) Self {
+        return Self{
+            .allocator = allocator,
+            .http_client = http.HttpClient.init(allocator),
+            .api_key = api_key,
+            .model = GROQ_MODEL,
+            .base_url = GROQ_URL,
+        };
+    }
+
+    /// Create client for Together AI
+    pub fn initTogether(allocator: Allocator, api_key: []const u8) Self {
+        return Self{
+            .allocator = allocator,
+            .http_client = http.HttpClient.init(allocator),
+            .api_key = api_key,
+            .model = TOGETHER_MODEL,
+            .base_url = TOGETHER_URL,
+        };
+    }
+
+    /// Create client for Ollama (local, no API key needed)
+    pub fn initOllama(allocator: Allocator) Self {
+        return Self{
+            .allocator = allocator,
+            .http_client = http.HttpClient.init(allocator),
+            .api_key = "ollama", // not used
+            .model = OLLAMA_MODEL,
+            .base_url = OLLAMA_URL,
+        };
+    }
+
+    /// Switch to a different provider
+    pub fn setProvider(self: *Self, provider: Provider) void {
+        switch (provider) {
+            .openai => {
+                self.base_url = OPENAI_URL;
+                self.model = OPENAI_MODEL;
+            },
+            .groq => {
+                self.base_url = GROQ_URL;
+                self.model = GROQ_MODEL;
+            },
+            .together => {
+                self.base_url = TOGETHER_URL;
+                self.model = TOGETHER_MODEL;
+            },
+            .ollama => {
+                self.base_url = OLLAMA_URL;
+                self.model = OLLAMA_MODEL;
+            },
+        }
+    }
+
+    /// Set custom model
+    pub fn setModel(self: *Self, model: []const u8) void {
+        self.model = model;
     }
 
     pub fn deinit(self: *Self) void {
         self.http_client.deinit();
-    }
-
-    pub fn setModel(self: *Self, model: []const u8) void {
-        self.model = model;
     }
 
     /// Simple chat completion with single user message
@@ -209,4 +285,62 @@ test "phi constant" {
     const phi: f64 = (1.0 + @sqrt(5.0)) / 2.0;
     const result = phi * phi + 1.0 / (phi * phi);
     try std.testing.expectApproxEqAbs(3.0, result, 0.0001);
+}
+
+test "Groq client initialization" {
+    const allocator = std.testing.allocator;
+    var client = OpenAIClient.initGroq(allocator, "test-groq-key");
+    defer client.deinit();
+
+    try std.testing.expectEqualStrings(GROQ_MODEL, client.model);
+    try std.testing.expectEqualStrings(GROQ_URL, client.base_url);
+}
+
+test "Together client initialization" {
+    const allocator = std.testing.allocator;
+    var client = OpenAIClient.initTogether(allocator, "test-together-key");
+    defer client.deinit();
+
+    try std.testing.expectEqualStrings(TOGETHER_MODEL, client.model);
+    try std.testing.expectEqualStrings(TOGETHER_URL, client.base_url);
+}
+
+test "Ollama client initialization" {
+    const allocator = std.testing.allocator;
+    var client = OpenAIClient.initOllama(allocator);
+    defer client.deinit();
+
+    try std.testing.expectEqualStrings(OLLAMA_MODEL, client.model);
+    try std.testing.expectEqualStrings(OLLAMA_URL, client.base_url);
+}
+
+test "setProvider switches correctly" {
+    const allocator = std.testing.allocator;
+    var client = OpenAIClient.init(allocator, "test-key");
+    defer client.deinit();
+
+    // Start with OpenAI
+    try std.testing.expectEqualStrings(OPENAI_URL, client.base_url);
+
+    // Switch to Groq
+    client.setProvider(.groq);
+    try std.testing.expectEqualStrings(GROQ_URL, client.base_url);
+    try std.testing.expectEqualStrings(GROQ_MODEL, client.model);
+
+    // Switch to Together
+    client.setProvider(.together);
+    try std.testing.expectEqualStrings(TOGETHER_URL, client.base_url);
+
+    // Switch to Ollama
+    client.setProvider(.ollama);
+    try std.testing.expectEqualStrings(OLLAMA_URL, client.base_url);
+}
+
+test "setModel changes model" {
+    const allocator = std.testing.allocator;
+    var client = OpenAIClient.initGroq(allocator, "test-key");
+    defer client.deinit();
+
+    client.setModel(GROQ_FAST_MODEL);
+    try std.testing.expectEqualStrings(GROQ_FAST_MODEL, client.model);
 }
