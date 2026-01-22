@@ -68,9 +68,8 @@ pub const WebSocketClient = struct {
         self.port = parsed.port;
         self.path = parsed.path;
 
-        // TCP connect
-        const address = net.Address.resolveIp(self.host, self.port) catch return WebSocketError.ConnectionFailed;
-        self.stream = net.tcpConnectToAddress(address) catch return WebSocketError.ConnectionFailed;
+        // TCP connect using tcpConnectToHost (handles DNS resolution)
+        self.stream = net.tcpConnectToHost(self.allocator, self.host, self.port) catch return WebSocketError.ConnectionFailed;
 
         // WebSocket handshake
         try self.performHandshake();
@@ -83,20 +82,12 @@ pub const WebSocketClient = struct {
         // Generate random key
         var key_bytes: [16]u8 = undefined;
         std.crypto.random.bytes(&key_bytes);
-        const key = std.base64.standard.Encoder.encode(&key_bytes);
+        var key_buf: [24]u8 = undefined;
+        const key = std.base64.standard.Encoder.encode(&key_buf, &key_bytes);
 
-        // Build HTTP upgrade request
+        // Build HTTP upgrade request with proper CRLF
         var request_buf: [1024]u8 = undefined;
-        const request = std.fmt.bufPrint(&request_buf,
-            \\GET {s} HTTP/1.1
-            \\Host: {s}:{d}
-            \\Upgrade: websocket
-            \\Connection: Upgrade
-            \\Sec-WebSocket-Key: {s}
-            \\Sec-WebSocket-Version: 13
-            \\
-            \\
-        , .{ self.path, self.host, self.port, key }) catch return WebSocketError.HandshakeFailed;
+        const request = std.fmt.bufPrint(&request_buf, "GET {s} HTTP/1.1\r\nHost: {s}:{d}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {s}\r\nSec-WebSocket-Version: 13\r\n\r\n", .{ self.path, self.host, self.port, key }) catch return WebSocketError.HandshakeFailed;
 
         // Send request
         _ = stream.write(request) catch return WebSocketError.ConnectionFailed;

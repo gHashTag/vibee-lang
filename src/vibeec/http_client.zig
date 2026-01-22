@@ -62,6 +62,12 @@ pub const HttpClient = struct {
         return self.request(.POST, url, body, auth_token);
     }
 
+    /// Make a POST request (simple version)
+    pub fn post(self: *Self, url: []const u8, body: []const u8, content_type: []const u8) HttpError!HttpResponse {
+        _ = content_type; // Content-Type is set in request()
+        return self.request(.POST, url, body, null);
+    }
+
     /// Make a generic HTTP request
     pub fn request(
         self: *Self,
@@ -112,6 +118,11 @@ pub const HttpClient = struct {
         ) catch return HttpError.ConnectionFailed;
         defer req.deinit();
 
+        // Set content length for POST/PUT/PATCH
+        if (body) |b| {
+            req.transfer_encoding = .{ .content_length = b.len };
+        }
+
         req.send() catch return HttpError.ConnectionFailed;
 
         if (body) |b| {
@@ -126,7 +137,7 @@ pub const HttpClient = struct {
         const end_time = std.time.nanoTimestamp();
 
         return HttpResponse{
-            .status = @intFromEnum(req.status),
+            .status = @intFromEnum(req.response.status),
             .body = response_body,
             .latency_ns = @intCast(end_time - start_time),
             .allocator = self.allocator,

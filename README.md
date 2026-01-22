@@ -72,25 +72,55 @@ cd trinity/output && ls *.zig | xargs -P 8 -I {} zig test {}
 | **FFI System** | Integration with 40 languages | 40 | 350+ |
 | **E2E Pipeline v21** | Chrome CDP + Ollama LLM Agent | 4 | 35+ |
 
-## 🤖 E2E Browser Agent (NEW v21)
+## 🤖 Real Browser Agent (v22.7)
 
-Автономный браузерный агент с локальным LLM:
+**Pure Zig implementation** - no shell scripts, no external dependencies:
 
 ```bash
-# Запуск агента
-./scripts/agent_loop.sh "Go to example.com and report the title" ""
-
-# Результат: 2 шага, ~16с
-# Step 1: goto https://example.com
-# Step 2: done → "Example Domain"
+# Build and run the demo
+cd src/vibeec && zig build-exe demo_agent.zig && ./demo_agent
 ```
 
-**Компоненты:**
-- Chrome CDP (headless browser)
-- Ollama + qwen2.5:3b (local LLM)
-- Observe-Think-Act loop
+**Output:**
+```
+╔══════════════════════════════════════════════════════════════════╗
+║           VIBEE AGENT v22.7 - REAL INTEGRATION DEMO              ║
+╚══════════════════════════════════════════════════════════════════╝
 
-**Документация:** [docs/E2E_DEMO.md](docs/E2E_DEMO.md) | [docs/E2E_PIPELINE_GUIDE.md](docs/E2E_PIPELINE_GUIDE.md)
+[1/5] Discovering Chrome targets...
+  Found target: ws://localhost:9222/devtools/page/...
+
+[2/5] Connecting to Chrome CDP...
+  Connected!
+
+[3/5] Navigating to example.com...
+  Navigation started!
+
+[4/5] Getting page title...
+  Title: Example Domain
+
+[5/5] Asking LLM about the page...
+  LLM Response: Example domain refers to specific subdomains...
+
+╔══════════════════════════════════════════════════════════════════╗
+║  ✓ Chrome CDP connection: WORKING                                ║
+║  ✓ Page navigation: WORKING                                      ║
+║  ✓ DOM evaluation: WORKING                                       ║
+║  ✓ Ollama LLM integration: WORKING                               ║
+╚══════════════════════════════════════════════════════════════════╝
+```
+
+**Components (Pure Zig):**
+- `websocket.zig` - RFC 6455 WebSocket client
+- `http_client.zig` - HTTP/1.1 client using std.http
+- `cdp_client.zig` - Chrome DevTools Protocol
+- `real_agent.zig` - Browser + LLM integration
+
+**Requirements:**
+- Chrome with `--remote-debugging-port=9222`
+- Ollama running on port 11434
+
+**Documentation:** [docs/E2E_DEMO.md](docs/E2E_DEMO.md) | [docs/E2E_PIPELINE_GUIDE.md](docs/E2E_PIPELINE_GUIDE.md)
 
 ## 📁 Project Structure
 
