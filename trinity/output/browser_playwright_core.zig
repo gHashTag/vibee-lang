@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// browser_dom_parser v1.0.0 - Generated from .vibee specification
+// browser_playwright_core v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,44 +33,56 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
-    node_id: []const u8,
-    node_type: []const u8,
-    tag_name: ?[]const u8,
-    text_content: ?[]const u8,
-    attributes: std.StringHashMap([]const u8),
-    children: []const u8,
+pub const PlaywrightInstance = struct {
+    instance_id: []const u8,
+    browser_type: []const u8,
+    is_headless: bool,
+    viewport_width: i64,
+    viewport_height: i64,
 };
 
 /// 
-pub const DOMTree = struct {
-    tree_id: []const u8,
-    root: []const u8,
-    node_count: i64,
-    depth: i64,
+pub const BrowserContext = struct {
+    context_id: []const u8,
+    instance_id: []const u8,
+    user_agent: []const u8,
+    locale: []const u8,
+    timezone: []const u8,
+    permissions: []const u8,
 };
 
 /// 
-pub const DOMQuery = struct {
-    query_type: []const u8,
-    selector: []const u8,
-    scope: ?[]const u8,
-};
-
-/// 
-pub const DOMDiff = struct {
-    diff_id: []const u8,
-    added_nodes: []const u8,
-    removed_nodes: []const u8,
-    modified_nodes: []const u8,
-};
-
-/// 
-pub const DOMSnapshot = struct {
-    snapshot_id: []const u8,
-    html: []const u8,
-    timestamp: i64,
+pub const Page = struct {
+    page_id: []const u8,
+    context_id: []const u8,
     url: []const u8,
+    title: []const u8,
+    is_closed: bool,
+    load_state: []const u8,
+};
+
+/// 
+pub const LaunchOptions = struct {
+    headless: bool,
+    slow_mo: i64,
+    timeout: i64,
+    args: []const u8,
+    proxy: ?[]const u8,
+};
+
+/// 
+pub const BrowserType = struct {
+    type_name: []const u8,
+    executable_path: ?[]const u8,
+    channel: ?[]const u8,
+};
+
+/// 
+pub const PlaywrightError = struct {
+    error_type: []const u8,
+    message: []const u8,
+    selector: ?[]const u8,
+    timeout_ms: ?[]const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -122,59 +134,59 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_html" {
-// Given: HTML string
-// When: DOM parsing needed
-// Then: Returns DOM tree
+test "launch_browser" {
+// Given: Browser type and launch options
+// When: Browser launch needed
+// Then: Returns Playwright instance
     // TODO: Add test assertions
 }
 
-test "query_nodes" {
-// Given: DOM tree and query
-// When: Node query needed
-// Then: Returns matching nodes
+test "create_context" {
+// Given: Instance and context options
+// When: New context needed
+// Then: Returns browser context
     // TODO: Add test assertions
 }
 
-test "get_node_path" {
-// Given: DOM tree and node
-// When: Path extraction needed
-// Then: Returns XPath or CSS path
+test "new_page" {
+// Given: Browser context
+// When: New page needed
+// Then: Returns page handle
     // TODO: Add test assertions
 }
 
-test "compare_trees" {
-// Given: Two DOM trees
-// When: Diff needed
-// Then: Returns DOM diff
+test "close_page" {
+// Given: Page handle
+// When: Page cleanup needed
+// Then: Returns close result
     // TODO: Add test assertions
 }
 
-test "serialize_tree" {
-// Given: DOM tree
-// When: Serialization needed
-// Then: Returns HTML string
+test "close_context" {
+// Given: Context handle
+// When: Context cleanup needed
+// Then: Returns close result
     // TODO: Add test assertions
 }
 
-test "find_interactive" {
-// Given: DOM tree
-// When: Interactive elements needed
-// Then: Returns clickable/typeable elements
+test "close_browser" {
+// Given: Instance handle
+// When: Browser cleanup needed
+// Then: Returns close result
     // TODO: Add test assertions
 }
 
-test "extract_text_nodes" {
-// Given: DOM tree
-// When: Text extraction needed
-// Then: Returns text content
+test "get_browser_version" {
+// Given: Instance handle
+// When: Version check needed
+// Then: Returns browser version string
     // TODO: Add test assertions
 }
 
-test "snapshot_dom" {
-// Given: Page
-// When: DOM snapshot needed
-// Then: Returns DOM snapshot
+test "is_connected" {
+// Given: Instance handle
+// When: Connection check needed
+// Then: Returns connection status
     // TODO: Add test assertions
 }
 

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// browser_dom_parser v1.0.0 - Generated from .vibee specification
+// browser_playwright_network v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,44 +33,53 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
-    node_id: []const u8,
-    node_type: []const u8,
-    tag_name: ?[]const u8,
-    text_content: ?[]const u8,
-    attributes: std.StringHashMap([]const u8),
-    children: []const u8,
-};
-
-/// 
-pub const DOMTree = struct {
-    tree_id: []const u8,
-    root: []const u8,
-    node_count: i64,
-    depth: i64,
-};
-
-/// 
-pub const DOMQuery = struct {
-    query_type: []const u8,
-    selector: []const u8,
-    scope: ?[]const u8,
-};
-
-/// 
-pub const DOMDiff = struct {
-    diff_id: []const u8,
-    added_nodes: []const u8,
-    removed_nodes: []const u8,
-    modified_nodes: []const u8,
-};
-
-/// 
-pub const DOMSnapshot = struct {
-    snapshot_id: []const u8,
-    html: []const u8,
-    timestamp: i64,
+pub const NetworkRequest = struct {
+    request_id: []const u8,
     url: []const u8,
+    method: []const u8,
+    headers: std.StringHashMap([]const u8),
+    post_data: ?[]const u8,
+    resource_type: []const u8,
+};
+
+/// 
+pub const NetworkResponse = struct {
+    response_id: []const u8,
+    request_id: []const u8,
+    status: i64,
+    status_text: []const u8,
+    headers: std.StringHashMap([]const u8),
+    body: ?[]const u8,
+};
+
+/// 
+pub const RouteHandler = struct {
+    handler_id: []const u8,
+    url_pattern: []const u8,
+    handler_type: []const u8,
+};
+
+/// 
+pub const MockResponse = struct {
+    status: i64,
+    headers: std.StringHashMap([]const u8),
+    body: []const u8,
+    content_type: []const u8,
+};
+
+/// 
+pub const NetworkConditions = struct {
+    offline: bool,
+    download_throughput: i64,
+    upload_throughput: i64,
+    latency: i64,
+};
+
+/// 
+pub const RequestFilter = struct {
+    url_pattern: ?[]const u8,
+    resource_types: []const u8,
+    methods: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -122,59 +131,59 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_html" {
-// Given: HTML string
-// When: DOM parsing needed
-// Then: Returns DOM tree
+test "intercept_route" {
+// Given: Page and URL pattern
+// When: Request interception needed
+// Then: Returns route handler
     // TODO: Add test assertions
 }
 
-test "query_nodes" {
-// Given: DOM tree and query
-// When: Node query needed
-// Then: Returns matching nodes
+test "fulfill_route" {
+// Given: Route and mock response
+// When: Mock response needed
+// Then: Returns fulfill result
     // TODO: Add test assertions
 }
 
-test "get_node_path" {
-// Given: DOM tree and node
-// When: Path extraction needed
-// Then: Returns XPath or CSS path
+test "abort_route" {
+// Given: Route and error reason
+// When: Request abort needed
+// Then: Returns abort result
     // TODO: Add test assertions
 }
 
-test "compare_trees" {
-// Given: Two DOM trees
-// When: Diff needed
-// Then: Returns DOM diff
+test "continue_route" {
+// Given: Route and modifications
+// When: Modified continue needed
+// Then: Returns continue result
     // TODO: Add test assertions
 }
 
-test "serialize_tree" {
-// Given: DOM tree
-// When: Serialization needed
-// Then: Returns HTML string
+test "wait_for_request" {
+// Given: Page and URL pattern
+// When: Request wait needed
+// Then: Returns captured request
     // TODO: Add test assertions
 }
 
-test "find_interactive" {
-// Given: DOM tree
-// When: Interactive elements needed
-// Then: Returns clickable/typeable elements
+test "wait_for_response" {
+// Given: Page and URL pattern
+// When: Response wait needed
+// Then: Returns captured response
     // TODO: Add test assertions
 }
 
-test "extract_text_nodes" {
-// Given: DOM tree
-// When: Text extraction needed
-// Then: Returns text content
+test "set_offline" {
+// Given: Context and offline state
+// When: Offline mode needed
+// Then: Returns state change result
     // TODO: Add test assertions
 }
 
-test "snapshot_dom" {
-// Given: Page
-// When: DOM snapshot needed
-// Then: Returns DOM snapshot
+test "emulate_network" {
+// Given: Context and conditions
+// When: Network throttling needed
+// Then: Returns emulation result
     // TODO: Add test assertions
 }
 

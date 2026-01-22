@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// browser_dom_parser v1.0.0 - Generated from .vibee specification
+// browser_form_handler v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,44 +33,49 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
-    node_id: []const u8,
-    node_type: []const u8,
-    tag_name: ?[]const u8,
-    text_content: ?[]const u8,
-    attributes: std.StringHashMap([]const u8),
-    children: []const u8,
+pub const FormField = struct {
+    field_id: []const u8,
+    field_type: []const u8,
+    name: []const u8,
+    label: ?[]const u8,
+    is_required: bool,
+    current_value: ?[]const u8,
 };
 
 /// 
-pub const DOMTree = struct {
-    tree_id: []const u8,
-    root: []const u8,
-    node_count: i64,
-    depth: i64,
+pub const FormData = struct {
+    form_id: []const u8,
+    fields: []const u8,
+    action: []const u8,
+    method: []const u8,
 };
 
 /// 
-pub const DOMQuery = struct {
-    query_type: []const u8,
-    selector: []const u8,
-    scope: ?[]const u8,
+pub const FormFillRequest = struct {
+    form_selector: []const u8,
+    field_values: std.StringHashMap([]const u8),
+    submit_after: bool,
 };
 
 /// 
-pub const DOMDiff = struct {
-    diff_id: []const u8,
-    added_nodes: []const u8,
-    removed_nodes: []const u8,
-    modified_nodes: []const u8,
+pub const FormValidation = struct {
+    is_valid: bool,
+    errors: []const u8,
+    missing_required: []const u8,
 };
 
 /// 
-pub const DOMSnapshot = struct {
-    snapshot_id: []const u8,
-    html: []const u8,
-    timestamp: i64,
-    url: []const u8,
+pub const SelectOption = struct {
+    value: []const u8,
+    label: []const u8,
+    is_selected: bool,
+};
+
+/// 
+pub const FileUpload = struct {
+    field_selector: []const u8,
+    file_path: []const u8,
+    file_name: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -122,59 +127,59 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_html" {
-// Given: HTML string
-// When: DOM parsing needed
-// Then: Returns DOM tree
+test "analyze_form" {
+// Given: Page and form selector
+// When: Form analysis needed
+// Then: Returns form structure
     // TODO: Add test assertions
 }
 
-test "query_nodes" {
-// Given: DOM tree and query
-// When: Node query needed
-// Then: Returns matching nodes
+test "fill_field" {
+// Given: Page, selector, and value
+// When: Single field fill needed
+// Then: Returns fill result
     // TODO: Add test assertions
 }
 
-test "get_node_path" {
-// Given: DOM tree and node
-// When: Path extraction needed
-// Then: Returns XPath or CSS path
+test "fill_form" {
+// Given: Page and form fill request
+// When: Full form fill needed
+// Then: Returns fill result
     // TODO: Add test assertions
 }
 
-test "compare_trees" {
-// Given: Two DOM trees
-// When: Diff needed
-// Then: Returns DOM diff
+test "select_option" {
+// Given: Page, selector, and option
+// When: Select/dropdown needed
+// Then: Returns selection result
     // TODO: Add test assertions
 }
 
-test "serialize_tree" {
-// Given: DOM tree
-// When: Serialization needed
-// Then: Returns HTML string
+test "check_checkbox" {
+// Given: Page, selector, and state
+// When: Checkbox toggle needed
+// Then: Returns check result
     // TODO: Add test assertions
 }
 
-test "find_interactive" {
-// Given: DOM tree
-// When: Interactive elements needed
-// Then: Returns clickable/typeable elements
+test "upload_file" {
+// Given: Page and file upload
+// When: File upload needed
+// Then: Returns upload result
     // TODO: Add test assertions
 }
 
-test "extract_text_nodes" {
-// Given: DOM tree
-// When: Text extraction needed
-// Then: Returns text content
+test "submit_form" {
+// Given: Page and form selector
+// When: Form submission needed
+// Then: Returns submission result
     // TODO: Add test assertions
 }
 
-test "snapshot_dom" {
-// Given: Page
-// When: DOM snapshot needed
-// Then: Returns DOM snapshot
+test "validate_form" {
+// Given: Page and form selector
+// When: Validation check needed
+// Then: Returns validation result
     // TODO: Add test assertions
 }
 

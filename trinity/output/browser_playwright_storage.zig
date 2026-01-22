@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// browser_dom_parser v1.0.0 - Generated from .vibee specification
+// browser_playwright_storage v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,44 +33,41 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
-    node_id: []const u8,
-    node_type: []const u8,
-    tag_name: ?[]const u8,
-    text_content: ?[]const u8,
-    attributes: std.StringHashMap([]const u8),
-    children: []const u8,
+pub const Cookie = struct {
+    name: []const u8,
+    value: []const u8,
+    domain: []const u8,
+    path: []const u8,
+    expires: ?[]const u8,
+    http_only: bool,
+    secure: bool,
+    same_site: []const u8,
 };
 
 /// 
-pub const DOMTree = struct {
-    tree_id: []const u8,
-    root: []const u8,
-    node_count: i64,
-    depth: i64,
+pub const StorageItem = struct {
+    key: []const u8,
+    value: []const u8,
 };
 
 /// 
-pub const DOMQuery = struct {
-    query_type: []const u8,
-    selector: []const u8,
-    scope: ?[]const u8,
+pub const StorageState = struct {
+    cookies: []const u8,
+    local_storage: []const u8,
+    session_storage: []const u8,
 };
 
 /// 
-pub const DOMDiff = struct {
-    diff_id: []const u8,
-    added_nodes: []const u8,
-    removed_nodes: []const u8,
-    modified_nodes: []const u8,
+pub const StorageOrigin = struct {
+    origin: []const u8,
+    local_storage: []const u8,
 };
 
 /// 
-pub const DOMSnapshot = struct {
-    snapshot_id: []const u8,
-    html: []const u8,
-    timestamp: i64,
-    url: []const u8,
+pub const CookieFilter = struct {
+    name: ?[]const u8,
+    domain: ?[]const u8,
+    path: ?[]const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -122,59 +119,59 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_html" {
-// Given: HTML string
-// When: DOM parsing needed
-// Then: Returns DOM tree
+test "get_cookies" {
+// Given: Context and optional filter
+// When: Cookie retrieval needed
+// Then: Returns list of cookies
     // TODO: Add test assertions
 }
 
-test "query_nodes" {
-// Given: DOM tree and query
-// When: Node query needed
-// Then: Returns matching nodes
+test "set_cookies" {
+// Given: Context and cookies
+// When: Cookie setting needed
+// Then: Returns set result
     // TODO: Add test assertions
 }
 
-test "get_node_path" {
-// Given: DOM tree and node
-// When: Path extraction needed
-// Then: Returns XPath or CSS path
+test "clear_cookies" {
+// Given: Context
+// When: Cookie clearing needed
+// Then: Returns clear result
     // TODO: Add test assertions
 }
 
-test "compare_trees" {
-// Given: Two DOM trees
-// When: Diff needed
-// Then: Returns DOM diff
+test "get_local_storage" {
+// Given: Page and origin
+// When: localStorage retrieval needed
+// Then: Returns storage items
     // TODO: Add test assertions
 }
 
-test "serialize_tree" {
-// Given: DOM tree
-// When: Serialization needed
-// Then: Returns HTML string
+test "set_local_storage" {
+// Given: Page, key, and value
+// When: localStorage setting needed
+// Then: Returns set result
     // TODO: Add test assertions
 }
 
-test "find_interactive" {
-// Given: DOM tree
-// When: Interactive elements needed
-// Then: Returns clickable/typeable elements
-    // TODO: Add test assertions
-}
-
-test "extract_text_nodes" {
-// Given: DOM tree
-// When: Text extraction needed
-// Then: Returns text content
-    // TODO: Add test assertions
-}
-
-test "snapshot_dom" {
+test "clear_local_storage" {
 // Given: Page
-// When: DOM snapshot needed
-// Then: Returns DOM snapshot
+// When: localStorage clearing needed
+// Then: Returns clear result
+    // TODO: Add test assertions
+}
+
+test "save_storage_state" {
+// Given: Context and path
+// When: State persistence needed
+// Then: Returns saved state
+    // TODO: Add test assertions
+}
+
+test "load_storage_state" {
+// Given: Context and path
+// When: State restoration needed
+// Then: Returns load result
     // TODO: Add test assertions
 }
 

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// browser_dom_parser v1.0.0 - Generated from .vibee specification
+// browser_accessibility_tree v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,44 +33,45 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
+pub const A11yNode = struct {
     node_id: []const u8,
-    node_type: []const u8,
-    tag_name: ?[]const u8,
-    text_content: ?[]const u8,
-    attributes: std.StringHashMap([]const u8),
+    role: []const u8,
+    name: []const u8,
+    description: ?[]const u8,
+    value: ?[]const u8,
     children: []const u8,
 };
 
 /// 
-pub const DOMTree = struct {
+pub const A11yTree = struct {
     tree_id: []const u8,
     root: []const u8,
     node_count: i64,
-    depth: i64,
 };
 
 /// 
-pub const DOMQuery = struct {
-    query_type: []const u8,
-    selector: []const u8,
-    scope: ?[]const u8,
+pub const A11yRole = struct {
+    role_name: []const u8,
+    is_interactive: bool,
+    is_landmark: bool,
 };
 
 /// 
-pub const DOMDiff = struct {
-    diff_id: []const u8,
-    added_nodes: []const u8,
-    removed_nodes: []const u8,
-    modified_nodes: []const u8,
+pub const A11yState = struct {
+    checked: ?[]const u8,
+    disabled: bool,
+    expanded: ?[]const u8,
+    focused: bool,
+    pressed: ?[]const u8,
+    selected: bool,
 };
 
 /// 
-pub const DOMSnapshot = struct {
+pub const A11ySnapshot = struct {
     snapshot_id: []const u8,
-    html: []const u8,
+    tree: []const u8,
+    interesting_only: bool,
     timestamp: i64,
-    url: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -122,59 +123,59 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_html" {
-// Given: HTML string
-// When: DOM parsing needed
-// Then: Returns DOM tree
+test "get_accessibility_tree" {
+// Given: Page
+// When: A11y tree needed
+// Then: Returns accessibility tree
     // TODO: Add test assertions
 }
 
-test "query_nodes" {
-// Given: DOM tree and query
-// When: Node query needed
+test "get_node_by_role" {
+// Given: Tree and role
+// When: Role-based search needed
 // Then: Returns matching nodes
     // TODO: Add test assertions
 }
 
-test "get_node_path" {
-// Given: DOM tree and node
-// When: Path extraction needed
-// Then: Returns XPath or CSS path
+test "get_node_by_name" {
+// Given: Tree and name
+// When: Name-based search needed
+// Then: Returns matching nodes
     // TODO: Add test assertions
 }
 
-test "compare_trees" {
-// Given: Two DOM trees
-// When: Diff needed
-// Then: Returns DOM diff
-    // TODO: Add test assertions
-}
-
-test "serialize_tree" {
-// Given: DOM tree
-// When: Serialization needed
-// Then: Returns HTML string
-    // TODO: Add test assertions
-}
-
-test "find_interactive" {
-// Given: DOM tree
+test "get_interactive_nodes" {
+// Given: Tree
 // When: Interactive elements needed
-// Then: Returns clickable/typeable elements
+// Then: Returns actionable nodes
     // TODO: Add test assertions
 }
 
-test "extract_text_nodes" {
-// Given: DOM tree
-// When: Text extraction needed
-// Then: Returns text content
+test "get_landmarks" {
+// Given: Tree
+// When: Landmark navigation needed
+// Then: Returns landmark nodes
     // TODO: Add test assertions
 }
 
-test "snapshot_dom" {
-// Given: Page
-// When: DOM snapshot needed
-// Then: Returns DOM snapshot
+test "snapshot_a11y" {
+// Given: Page and options
+// When: A11y snapshot needed
+// Then: Returns a11y snapshot
+    // TODO: Add test assertions
+}
+
+test "describe_element" {
+// Given: A11y node
+// When: Element description needed
+// Then: Returns human-readable description
+    // TODO: Add test assertions
+}
+
+test "find_by_label" {
+// Given: Tree and label text
+// When: Label search needed
+// Then: Returns labeled element
     // TODO: Add test assertions
 }
 

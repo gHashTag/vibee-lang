@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// browser_dom_parser v1.0.0 - Generated from .vibee specification
+// browser_playwright_actions v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,44 +33,60 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
-    node_id: []const u8,
-    node_type: []const u8,
-    tag_name: ?[]const u8,
-    text_content: ?[]const u8,
-    attributes: std.StringHashMap([]const u8),
-    children: []const u8,
+pub const ClickOptions = struct {
+    button: []const u8,
+    click_count: i64,
+    delay: i64,
+    force: bool,
+    modifiers: []const u8,
+    position_x: ?[]const u8,
+    position_y: ?[]const u8,
 };
 
 /// 
-pub const DOMTree = struct {
-    tree_id: []const u8,
-    root: []const u8,
-    node_count: i64,
-    depth: i64,
+pub const TypeOptions = struct {
+    delay: i64,
+    no_wait_after: bool,
+    timeout: i64,
 };
 
 /// 
-pub const DOMQuery = struct {
-    query_type: []const u8,
-    selector: []const u8,
-    scope: ?[]const u8,
+pub const ScrollOptions = struct {
+    direction: []const u8,
+    amount: i64,
+    behavior: []const u8,
 };
 
 /// 
-pub const DOMDiff = struct {
-    diff_id: []const u8,
-    added_nodes: []const u8,
-    removed_nodes: []const u8,
-    modified_nodes: []const u8,
+pub const HoverOptions = struct {
+    force: bool,
+    modifiers: []const u8,
+    position_x: ?[]const u8,
+    position_y: ?[]const u8,
+    timeout: i64,
 };
 
 /// 
-pub const DOMSnapshot = struct {
-    snapshot_id: []const u8,
-    html: []const u8,
-    timestamp: i64,
-    url: []const u8,
+pub const DragOptions = struct {
+    source_position_x: i64,
+    source_position_y: i64,
+    target_position_x: i64,
+    target_position_y: i64,
+    force: bool,
+};
+
+/// 
+pub const KeyboardAction = struct {
+    action_type: []const u8,
+    key: []const u8,
+    modifiers: []const u8,
+};
+
+/// 
+pub const ActionResult = struct {
+    success: bool,
+    duration_ms: i64,
+    @"error": ?[]const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -122,59 +138,73 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_html" {
-// Given: HTML string
-// When: DOM parsing needed
-// Then: Returns DOM tree
+test "click" {
+// Given: Page, selector, and click options
+// When: Click action needed
+// Then: Returns action result
     // TODO: Add test assertions
 }
 
-test "query_nodes" {
-// Given: DOM tree and query
-// When: Node query needed
-// Then: Returns matching nodes
+test "double_click" {
+// Given: Page, selector, and options
+// When: Double click needed
+// Then: Returns action result
     // TODO: Add test assertions
 }
 
-test "get_node_path" {
-// Given: DOM tree and node
-// When: Path extraction needed
-// Then: Returns XPath or CSS path
+test "right_click" {
+// Given: Page, selector, and options
+// When: Context menu needed
+// Then: Returns action result
     // TODO: Add test assertions
 }
 
-test "compare_trees" {
-// Given: Two DOM trees
-// When: Diff needed
-// Then: Returns DOM diff
+test "type_text" {
+// Given: Page, selector, text, and options
+// When: Text input needed
+// Then: Returns action result
     // TODO: Add test assertions
 }
 
-test "serialize_tree" {
-// Given: DOM tree
-// When: Serialization needed
-// Then: Returns HTML string
+test "fill" {
+// Given: Page, selector, and value
+// When: Form fill needed
+// Then: Returns action result
     // TODO: Add test assertions
 }
 
-test "find_interactive" {
-// Given: DOM tree
-// When: Interactive elements needed
-// Then: Returns clickable/typeable elements
+test "clear" {
+// Given: Page and selector
+// When: 
+// Then: Returns action result
     // TODO: Add test assertions
 }
 
-test "extract_text_nodes" {
-// Given: DOM tree
-// When: Text extraction needed
-// Then: Returns text content
+test "press_key" {
+// Given: Page and keyboard action
+// When: Key press needed
+// Then: Returns action result
     // TODO: Add test assertions
 }
 
-test "snapshot_dom" {
-// Given: Page
-// When: DOM snapshot needed
-// Then: Returns DOM snapshot
+test "hover" {
+// Given: Page, selector, and hover options
+// When: Hover needed
+// Then: Returns action result
+    // TODO: Add test assertions
+}
+
+test "scroll" {
+// Given: Page and scroll options
+// When: Scrolling needed
+// Then: Returns action result
+    // TODO: Add test assertions
+}
+
+test "drag_and_drop" {
+// Given: Page, source, target, and options
+// When: Drag operation needed
+// Then: Returns action result
     // TODO: Add test assertions
 }
 

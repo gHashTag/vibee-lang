@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// browser_dom_parser v1.0.0 - Generated from .vibee specification
+// browser_webarena_adapter v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,44 +33,46 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
-    node_id: []const u8,
-    node_type: []const u8,
-    tag_name: ?[]const u8,
-    text_content: ?[]const u8,
-    attributes: std.StringHashMap([]const u8),
-    children: []const u8,
+pub const WebArenaSite = struct {
+    site_id: []const u8,
+    site_type: []const u8,
+    base_url: []const u8,
+    login_url: ?[]const u8,
+    credentials: ?[]const u8,
 };
 
 /// 
-pub const DOMTree = struct {
-    tree_id: []const u8,
-    root: []const u8,
-    node_count: i64,
-    depth: i64,
+pub const WebArenaAction = struct {
+    action_id: []const u8,
+    action_type: []const u8,
+    site: []const u8,
+    parameters: std.StringHashMap([]const u8),
 };
 
 /// 
-pub const DOMQuery = struct {
-    query_type: []const u8,
-    selector: []const u8,
-    scope: ?[]const u8,
+pub const SiteCredentials = struct {
+    username: []const u8,
+    password: []const u8,
+    login_selector: []const u8,
+    password_selector: []const u8,
+    submit_selector: []const u8,
 };
 
 /// 
-pub const DOMDiff = struct {
-    diff_id: []const u8,
-    added_nodes: []const u8,
-    removed_nodes: []const u8,
-    modified_nodes: []const u8,
-};
-
-/// 
-pub const DOMSnapshot = struct {
-    snapshot_id: []const u8,
-    html: []const u8,
-    timestamp: i64,
+pub const WebArenaObservation = struct {
+    observation_id: []const u8,
     url: []const u8,
+    page_content: []const u8,
+    accessibility_tree: []const u8,
+    screenshot: ?[]const u8,
+};
+
+/// 
+pub const TaskContext = struct {
+    task_id: []const u8,
+    current_site: []const u8,
+    visited_sites: []const u8,
+    action_history: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -122,59 +124,59 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_html" {
-// Given: HTML string
-// When: DOM parsing needed
-// Then: Returns DOM tree
+test "initialize_site" {
+// Given: Site configuration
+// When: Site setup needed
+// Then: Returns initialized site
     // TODO: Add test assertions
 }
 
-test "query_nodes" {
-// Given: DOM tree and query
-// When: Node query needed
-// Then: Returns matching nodes
+test "login_to_site" {
+// Given: Site and credentials
+// When: Authentication needed
+// Then: Returns login result
     // TODO: Add test assertions
 }
 
-test "get_node_path" {
-// Given: DOM tree and node
-// When: Path extraction needed
-// Then: Returns XPath or CSS path
+test "execute_webarena_action" {
+// Given: Action specification
+// When: WebArena action needed
+// Then: Returns action result
     // TODO: Add test assertions
 }
 
-test "compare_trees" {
-// Given: Two DOM trees
-// When: Diff needed
-// Then: Returns DOM diff
+test "get_observation" {
+// Given: Page and observation config
+// When: Observation needed
+// Then: Returns WebArena observation
     // TODO: Add test assertions
 }
 
-test "serialize_tree" {
-// Given: DOM tree
-// When: Serialization needed
-// Then: Returns HTML string
+test "handle_site_specific" {
+// Given: Site type and action
+// When: 
+// Then: Returns adapted action
     // TODO: Add test assertions
 }
 
-test "find_interactive" {
-// Given: DOM tree
-// When: Interactive elements needed
-// Then: Returns clickable/typeable elements
+test "validate_task_completion" {
+// Given: Task and current state
+// When: Completion check needed
+// Then: Returns validation result
     // TODO: Add test assertions
 }
 
-test "extract_text_nodes" {
-// Given: DOM tree
-// When: Text extraction needed
-// Then: Returns text content
+test "reset_site_state" {
+// Given: Site
+// When: State reset needed
+// Then: Returns reset result
     // TODO: Add test assertions
 }
 
-test "snapshot_dom" {
-// Given: Page
-// When: DOM snapshot needed
-// Then: Returns DOM snapshot
+test "switch_site" {
+// Given: Current context and target site
+// When: Site switch needed
+// Then: Returns updated context
     // TODO: Add test assertions
 }
 

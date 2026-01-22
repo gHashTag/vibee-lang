@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// browser_dom_parser v1.0.0 - Generated from .vibee specification
+// browser_playwright_frames v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,44 +33,33 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
-    node_id: []const u8,
-    node_type: []const u8,
-    tag_name: ?[]const u8,
-    text_content: ?[]const u8,
-    attributes: std.StringHashMap([]const u8),
-    children: []const u8,
-};
-
-/// 
-pub const DOMTree = struct {
-    tree_id: []const u8,
-    root: []const u8,
-    node_count: i64,
-    depth: i64,
-};
-
-/// 
-pub const DOMQuery = struct {
-    query_type: []const u8,
-    selector: []const u8,
-    scope: ?[]const u8,
-};
-
-/// 
-pub const DOMDiff = struct {
-    diff_id: []const u8,
-    added_nodes: []const u8,
-    removed_nodes: []const u8,
-    modified_nodes: []const u8,
-};
-
-/// 
-pub const DOMSnapshot = struct {
-    snapshot_id: []const u8,
-    html: []const u8,
-    timestamp: i64,
+pub const Frame = struct {
+    frame_id: []const u8,
+    name: []const u8,
     url: []const u8,
+    parent_frame: ?[]const u8,
+    is_detached: bool,
+};
+
+/// 
+pub const FrameLocator = struct {
+    locator_id: []const u8,
+    selector: []const u8,
+    frame_id: []const u8,
+};
+
+/// 
+pub const FrameInfo = struct {
+    name: []const u8,
+    url: []const u8,
+    child_frames: []const u8,
+};
+
+/// 
+pub const FrameNavigationOptions = struct {
+    url: []const u8,
+    wait_until: []const u8,
+    timeout: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -122,59 +111,59 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_html" {
-// Given: HTML string
-// When: DOM parsing needed
-// Then: Returns DOM tree
-    // TODO: Add test assertions
-}
-
-test "query_nodes" {
-// Given: DOM tree and query
-// When: Node query needed
-// Then: Returns matching nodes
-    // TODO: Add test assertions
-}
-
-test "get_node_path" {
-// Given: DOM tree and node
-// When: Path extraction needed
-// Then: Returns XPath or CSS path
-    // TODO: Add test assertions
-}
-
-test "compare_trees" {
-// Given: Two DOM trees
-// When: Diff needed
-// Then: Returns DOM diff
-    // TODO: Add test assertions
-}
-
-test "serialize_tree" {
-// Given: DOM tree
-// When: Serialization needed
-// Then: Returns HTML string
-    // TODO: Add test assertions
-}
-
-test "find_interactive" {
-// Given: DOM tree
-// When: Interactive elements needed
-// Then: Returns clickable/typeable elements
-    // TODO: Add test assertions
-}
-
-test "extract_text_nodes" {
-// Given: DOM tree
-// When: Text extraction needed
-// Then: Returns text content
-    // TODO: Add test assertions
-}
-
-test "snapshot_dom" {
+test "get_main_frame" {
 // Given: Page
-// When: DOM snapshot needed
-// Then: Returns DOM snapshot
+// When: Main frame access needed
+// Then: Returns main frame
+    // TODO: Add test assertions
+}
+
+test "get_frames" {
+// Given: Page
+// When: Frame listing needed
+// Then: Returns all frames
+    // TODO: Add test assertions
+}
+
+test "get_frame_by_name" {
+// Given: Page and frame name
+// When: Named frame access needed
+// Then: Returns frame or null
+    // TODO: Add test assertions
+}
+
+test "get_frame_by_url" {
+// Given: Page and URL pattern
+// When: URL-based frame access needed
+// Then: Returns matching frame
+    // TODO: Add test assertions
+}
+
+test "frame_locator" {
+// Given: Page and iframe selector
+// When: Frame locator needed
+// Then: Returns frame locator
+    // TODO: Add test assertions
+}
+
+test "navigate_frame" {
+// Given: Frame and URL
+// When: Frame navigation needed
+// Then: Returns navigation result
+    // TODO: Add test assertions
+}
+
+test "evaluate_in_frame" {
+// Given: Frame and JavaScript
+// When: Frame script execution needed
+// Then: Returns evaluation result
+    // TODO: Add test assertions
+}
+
+test "wait_for_frame" {
+// Given: Page and frame predicate
+// When: Frame wait needed
+// Then: Returns frame when ready
     // TODO: Add test assertions
 }
 

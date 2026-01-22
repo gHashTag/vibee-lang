@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// browser_dom_parser v1.0.0 - Generated from .vibee specification
+// browser_playwright_extract v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,44 +33,57 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
-    node_id: []const u8,
-    node_type: []const u8,
-    tag_name: ?[]const u8,
-    text_content: ?[]const u8,
-    attributes: std.StringHashMap([]const u8),
-    children: []const u8,
-};
-
-/// 
-pub const DOMTree = struct {
-    tree_id: []const u8,
-    root: []const u8,
-    node_count: i64,
-    depth: i64,
-};
-
-/// 
-pub const DOMQuery = struct {
+pub const ExtractionQuery = struct {
     query_type: []const u8,
     selector: []const u8,
-    scope: ?[]const u8,
+    attribute: ?[]const u8,
 };
 
 /// 
-pub const DOMDiff = struct {
-    diff_id: []const u8,
-    added_nodes: []const u8,
-    removed_nodes: []const u8,
-    modified_nodes: []const u8,
+pub const TextExtraction = struct {
+    text: []const u8,
+    inner_text: []const u8,
+    text_content: []const u8,
 };
 
 /// 
-pub const DOMSnapshot = struct {
-    snapshot_id: []const u8,
-    html: []const u8,
-    timestamp: i64,
-    url: []const u8,
+pub const HTMLExtraction = struct {
+    inner_html: []const u8,
+    outer_html: []const u8,
+};
+
+/// 
+pub const AttributeExtraction = struct {
+    attribute_name: []const u8,
+    value: ?[]const u8,
+};
+
+/// 
+pub const TableExtraction = struct {
+    headers: []const u8,
+    rows: []const u8,
+    row_count: i64,
+};
+
+/// 
+pub const LinkExtraction = struct {
+    href: []const u8,
+    text: []const u8,
+    is_external: bool,
+};
+
+/// 
+pub const FormExtraction = struct {
+    action: []const u8,
+    method: []const u8,
+    fields: []const u8,
+};
+
+/// 
+pub const ExtractionResult = struct {
+    success: bool,
+    data: []const u8,
+    element_count: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -122,59 +135,59 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_html" {
-// Given: HTML string
-// When: DOM parsing needed
-// Then: Returns DOM tree
-    // TODO: Add test assertions
-}
-
-test "query_nodes" {
-// Given: DOM tree and query
-// When: Node query needed
-// Then: Returns matching nodes
-    // TODO: Add test assertions
-}
-
-test "get_node_path" {
-// Given: DOM tree and node
-// When: Path extraction needed
-// Then: Returns XPath or CSS path
-    // TODO: Add test assertions
-}
-
-test "compare_trees" {
-// Given: Two DOM trees
-// When: Diff needed
-// Then: Returns DOM diff
-    // TODO: Add test assertions
-}
-
-test "serialize_tree" {
-// Given: DOM tree
-// When: Serialization needed
-// Then: Returns HTML string
-    // TODO: Add test assertions
-}
-
-test "find_interactive" {
-// Given: DOM tree
-// When: Interactive elements needed
-// Then: Returns clickable/typeable elements
-    // TODO: Add test assertions
-}
-
-test "extract_text_nodes" {
-// Given: DOM tree
+test "extract_text" {
+// Given: Page and selector
 // When: Text extraction needed
 // Then: Returns text content
     // TODO: Add test assertions
 }
 
-test "snapshot_dom" {
-// Given: Page
-// When: DOM snapshot needed
-// Then: Returns DOM snapshot
+test "extract_html" {
+// Given: Page and selector
+// When: HTML extraction needed
+// Then: Returns HTML content
+    // TODO: Add test assertions
+}
+
+test "extract_attribute" {
+// Given: Page, selector, and attribute
+// When: Attribute extraction needed
+// Then: Returns attribute value
+    // TODO: Add test assertions
+}
+
+test "extract_all_text" {
+// Given: Page and selector
+// When: Multiple text extraction needed
+// Then: Returns list of texts
+    // TODO: Add test assertions
+}
+
+test "extract_table" {
+// Given: Page and table selector
+// When: Table extraction needed
+// Then: Returns table data
+    // TODO: Add test assertions
+}
+
+test "extract_links" {
+// Given: Page and optional selector
+// When: 
+// Then: Returns list of links
+    // TODO: Add test assertions
+}
+
+test "extract_form" {
+// Given: Page and form selector
+// When: Form extraction needed
+// Then: Returns form structure
+    // TODO: Add test assertions
+}
+
+test "evaluate_script" {
+// Given: Page and JavaScript
+// When: Custom extraction needed
+// Then: Returns script result
     // TODO: Add test assertions
 }
 

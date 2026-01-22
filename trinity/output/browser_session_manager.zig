@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// browser_dom_parser v1.0.0 - Generated from .vibee specification
+// browser_session_manager v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,44 +33,43 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
-    node_id: []const u8,
-    node_type: []const u8,
-    tag_name: ?[]const u8,
-    text_content: ?[]const u8,
-    attributes: std.StringHashMap([]const u8),
-    children: []const u8,
+pub const Session = struct {
+    session_id: []const u8,
+    context_id: []const u8,
+    pages: []const u8,
+    active_page: []const u8,
+    created_at: i64,
 };
 
 /// 
-pub const DOMTree = struct {
-    tree_id: []const u8,
-    root: []const u8,
-    node_count: i64,
-    depth: i64,
-};
-
-/// 
-pub const DOMQuery = struct {
-    query_type: []const u8,
-    selector: []const u8,
-    scope: ?[]const u8,
-};
-
-/// 
-pub const DOMDiff = struct {
-    diff_id: []const u8,
-    added_nodes: []const u8,
-    removed_nodes: []const u8,
-    modified_nodes: []const u8,
-};
-
-/// 
-pub const DOMSnapshot = struct {
-    snapshot_id: []const u8,
-    html: []const u8,
-    timestamp: i64,
+pub const TabInfo = struct {
+    tab_id: []const u8,
     url: []const u8,
+    title: []const u8,
+    is_active: bool,
+};
+
+/// 
+pub const WindowInfo = struct {
+    window_id: []const u8,
+    tabs: []const u8,
+    bounds: []const u8,
+    is_focused: bool,
+};
+
+/// 
+pub const SessionState = struct {
+    state_id: []const u8,
+    cookies: []const u8,
+    local_storage: std.StringHashMap([]const u8),
+    open_tabs: []const u8,
+};
+
+/// 
+pub const SessionConfig = struct {
+    persist_storage: bool,
+    restore_tabs: bool,
+    max_tabs: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -122,59 +121,59 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_html" {
-// Given: HTML string
-// When: DOM parsing needed
-// Then: Returns DOM tree
+test "create_session" {
+// Given: Context and config
+// When: New session needed
+// Then: Returns session handle
     // TODO: Add test assertions
 }
 
-test "query_nodes" {
-// Given: DOM tree and query
-// When: Node query needed
-// Then: Returns matching nodes
+test "open_tab" {
+// Given: Session and URL
+// When: New tab needed
+// Then: Returns tab info
     // TODO: Add test assertions
 }
 
-test "get_node_path" {
-// Given: DOM tree and node
-// When: Path extraction needed
-// Then: Returns XPath or CSS path
+test "close_tab" {
+// Given: Session and tab ID
+// When: Tab close needed
+// Then: Returns close result
     // TODO: Add test assertions
 }
 
-test "compare_trees" {
-// Given: Two DOM trees
-// When: Diff needed
-// Then: Returns DOM diff
+test "switch_tab" {
+// Given: Session and tab ID
+// When: Tab switch needed
+// Then: Returns switch result
     // TODO: Add test assertions
 }
 
-test "serialize_tree" {
-// Given: DOM tree
-// When: Serialization needed
-// Then: Returns HTML string
+test "get_all_tabs" {
+// Given: Session
+// When: Tab listing needed
+// Then: Returns all tabs
     // TODO: Add test assertions
 }
 
-test "find_interactive" {
-// Given: DOM tree
-// When: Interactive elements needed
-// Then: Returns clickable/typeable elements
+test "save_session" {
+// Given: Session and path
+// When: Session persistence needed
+// Then: Returns save result
     // TODO: Add test assertions
 }
 
-test "extract_text_nodes" {
-// Given: DOM tree
-// When: Text extraction needed
-// Then: Returns text content
+test "restore_session" {
+// Given: Path
+// When: 
+// Then: Returns restored session
     // TODO: Add test assertions
 }
 
-test "snapshot_dom" {
-// Given: Page
-// When: DOM snapshot needed
-// Then: Returns DOM snapshot
+test "duplicate_tab" {
+// Given: Session and tab ID
+// When: Tab duplication needed
+// Then: Returns new tab info
     // TODO: Add test assertions
 }
 

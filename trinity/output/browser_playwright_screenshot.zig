@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// browser_dom_parser v1.0.0 - Generated from .vibee specification
+// browser_playwright_screenshot v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,44 +33,48 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
-    node_id: []const u8,
-    node_type: []const u8,
-    tag_name: ?[]const u8,
-    text_content: ?[]const u8,
-    attributes: std.StringHashMap([]const u8),
-    children: []const u8,
+pub const ScreenshotOptions = struct {
+    full_page: bool,
+    clip_x: ?[]const u8,
+    clip_y: ?[]const u8,
+    clip_width: ?[]const u8,
+    clip_height: ?[]const u8,
+    omit_background: bool,
+    quality: ?[]const u8,
+    image_type: []const u8,
 };
 
 /// 
-pub const DOMTree = struct {
-    tree_id: []const u8,
-    root: []const u8,
-    node_count: i64,
-    depth: i64,
+pub const ElementScreenshotOptions = struct {
+    omit_background: bool,
+    quality: ?[]const u8,
+    image_type: []const u8,
 };
 
 /// 
-pub const DOMQuery = struct {
-    query_type: []const u8,
-    selector: []const u8,
-    scope: ?[]const u8,
+pub const ScreenshotData = struct {
+    data: []const u8,
+    width: i64,
+    height: i64,
+    format: []const u8,
+    size_bytes: i64,
 };
 
 /// 
-pub const DOMDiff = struct {
-    diff_id: []const u8,
-    added_nodes: []const u8,
-    removed_nodes: []const u8,
-    modified_nodes: []const u8,
+pub const ScreenshotComparison = struct {
+    match: bool,
+    diff_percent: f64,
+    diff_image: ?[]const u8,
 };
 
 /// 
-pub const DOMSnapshot = struct {
-    snapshot_id: []const u8,
-    html: []const u8,
-    timestamp: i64,
-    url: []const u8,
+pub const PDFOptions = struct {
+    format: []const u8,
+    print_background: bool,
+    margin_top: []const u8,
+    margin_bottom: []const u8,
+    margin_left: []const u8,
+    margin_right: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -122,59 +126,52 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_html" {
-// Given: HTML string
-// When: DOM parsing needed
-// Then: Returns DOM tree
+test "screenshot_page" {
+// Given: Page and screenshot options
+// When: Page capture needed
+// Then: Returns screenshot data
     // TODO: Add test assertions
 }
 
-test "query_nodes" {
-// Given: DOM tree and query
-// When: Node query needed
-// Then: Returns matching nodes
+test "screenshot_element" {
+// Given: Page, selector, and options
+// When: Element capture needed
+// Then: Returns element screenshot
     // TODO: Add test assertions
 }
 
-test "get_node_path" {
-// Given: DOM tree and node
-// When: Path extraction needed
-// Then: Returns XPath or CSS path
+test "screenshot_full_page" {
+// Given: Page and options
+// When: Full page capture needed
+// Then: Returns full page screenshot
     // TODO: Add test assertions
 }
 
-test "compare_trees" {
-// Given: Two DOM trees
-// When: Diff needed
-// Then: Returns DOM diff
-    // TODO: Add test assertions
-}
-
-test "serialize_tree" {
-// Given: DOM tree
-// When: Serialization needed
-// Then: Returns HTML string
-    // TODO: Add test assertions
-}
-
-test "find_interactive" {
-// Given: DOM tree
-// When: Interactive elements needed
-// Then: Returns clickable/typeable elements
-    // TODO: Add test assertions
-}
-
-test "extract_text_nodes" {
-// Given: DOM tree
-// When: Text extraction needed
-// Then: Returns text content
-    // TODO: Add test assertions
-}
-
-test "snapshot_dom" {
+test "screenshot_viewport" {
 // Given: Page
-// When: DOM snapshot needed
-// Then: Returns DOM snapshot
+// When: Viewport capture needed
+// Then: Returns viewport screenshot
+    // TODO: Add test assertions
+}
+
+test "compare_screenshots" {
+// Given: Two screenshot data
+// When: Visual comparison needed
+// Then: Returns comparison result
+    // TODO: Add test assertions
+}
+
+test "save_screenshot" {
+// Given: Screenshot data and path
+// When: File save needed
+// Then: Returns save result
+    // TODO: Add test assertions
+}
+
+test "generate_pdf" {
+// Given: Page and PDF options
+// When: PDF generation needed
+// Then: Returns PDF data
     // TODO: Add test assertions
 }
 

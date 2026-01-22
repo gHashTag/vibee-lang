@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// browser_dom_parser v1.0.0 - Generated from .vibee specification
+// browser_playwright_wait v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,44 +33,51 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
-    node_id: []const u8,
-    node_type: []const u8,
-    tag_name: ?[]const u8,
-    text_content: ?[]const u8,
-    attributes: std.StringHashMap([]const u8),
-    children: []const u8,
+pub const WaitCondition = struct {
+    condition_type: []const u8,
+    selector: ?[]const u8,
+    state: ?[]const u8,
+    timeout_ms: i64,
 };
 
 /// 
-pub const DOMTree = struct {
-    tree_id: []const u8,
-    root: []const u8,
-    node_count: i64,
-    depth: i64,
+pub const WaitForSelectorOptions = struct {
+    state: []const u8,
+    timeout: i64,
+    strict: bool,
 };
 
 /// 
-pub const DOMQuery = struct {
-    query_type: []const u8,
-    selector: []const u8,
-    scope: ?[]const u8,
+pub const WaitForNavigationOptions = struct {
+    url: ?[]const u8,
+    wait_until: []const u8,
+    timeout: i64,
 };
 
 /// 
-pub const DOMDiff = struct {
-    diff_id: []const u8,
-    added_nodes: []const u8,
-    removed_nodes: []const u8,
-    modified_nodes: []const u8,
+pub const WaitForLoadStateOptions = struct {
+    state: []const u8,
+    timeout: i64,
 };
 
 /// 
-pub const DOMSnapshot = struct {
-    snapshot_id: []const u8,
-    html: []const u8,
-    timestamp: i64,
-    url: []const u8,
+pub const WaitForFunctionOptions = struct {
+    polling: []const u8,
+    timeout: i64,
+};
+
+/// 
+pub const WaitResult = struct {
+    success: bool,
+    waited_ms: i64,
+    @"error": ?[]const u8,
+};
+
+/// 
+pub const RetryOptions = struct {
+    max_retries: i64,
+    delay_ms: i64,
+    backoff_multiplier: f64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -122,59 +129,59 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_html" {
-// Given: HTML string
-// When: DOM parsing needed
-// Then: Returns DOM tree
+test "wait_for_selector" {
+// Given: Page, selector, and options
+// When: Element wait needed
+// Then: Returns wait result
     // TODO: Add test assertions
 }
 
-test "query_nodes" {
-// Given: DOM tree and query
-// When: Node query needed
-// Then: Returns matching nodes
+test "wait_for_navigation" {
+// Given: Page and navigation options
+// When: Navigation wait needed
+// Then: Returns wait result
     // TODO: Add test assertions
 }
 
-test "get_node_path" {
-// Given: DOM tree and node
-// When: Path extraction needed
-// Then: Returns XPath or CSS path
+test "wait_for_load_state" {
+// Given: Page and load state
+// When: Load state wait needed
+// Then: Returns wait result
     // TODO: Add test assertions
 }
 
-test "compare_trees" {
-// Given: Two DOM trees
-// When: Diff needed
-// Then: Returns DOM diff
+test "wait_for_url" {
+// Given: Page and URL pattern
+// When: URL wait needed
+// Then: Returns wait result
     // TODO: Add test assertions
 }
 
-test "serialize_tree" {
-// Given: DOM tree
-// When: Serialization needed
-// Then: Returns HTML string
+test "wait_for_function" {
+// Given: Page and JavaScript function
+// When: Custom condition wait needed
+// Then: Returns wait result
     // TODO: Add test assertions
 }
 
-test "find_interactive" {
-// Given: DOM tree
-// When: Interactive elements needed
-// Then: Returns clickable/typeable elements
+test "wait_for_timeout" {
+// Given: Duration in milliseconds
+// When: Fixed delay needed
+// Then: Returns after timeout
     // TODO: Add test assertions
 }
 
-test "extract_text_nodes" {
-// Given: DOM tree
-// When: Text extraction needed
-// Then: Returns text content
+test "wait_for_response" {
+// Given: Page and URL pattern
+// When: Network response wait needed
+// Then: Returns response data
     // TODO: Add test assertions
 }
 
-test "snapshot_dom" {
-// Given: Page
-// When: DOM snapshot needed
-// Then: Returns DOM snapshot
+test "retry_until" {
+// Given: Action and retry options
+// When: Retry logic needed
+// Then: Returns final result
     // TODO: Add test assertions
 }
 

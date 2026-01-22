@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// browser_dom_parser v1.0.0 - Generated from .vibee specification
+// browser_playwright_selectors v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -33,44 +33,57 @@ pub const PHOENIX: i64 = 999;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// 
-pub const DOMNode = struct {
-    node_id: []const u8,
-    node_type: []const u8,
-    tag_name: ?[]const u8,
-    text_content: ?[]const u8,
-    attributes: std.StringHashMap([]const u8),
-    children: []const u8,
+pub const Selector = struct {
+    selector_type: []const u8,
+    value: []const u8,
+    is_strict: bool,
 };
 
 /// 
-pub const DOMTree = struct {
-    tree_id: []const u8,
-    root: []const u8,
-    node_count: i64,
-    depth: i64,
+pub const CSSSelector = struct {
+    css: []const u8,
+    pseudo_element: ?[]const u8,
 };
 
 /// 
-pub const DOMQuery = struct {
-    query_type: []const u8,
-    selector: []const u8,
-    scope: ?[]const u8,
+pub const XPathSelector = struct {
+    xpath: []const u8,
+    is_relative: bool,
 };
 
 /// 
-pub const DOMDiff = struct {
-    diff_id: []const u8,
-    added_nodes: []const u8,
-    removed_nodes: []const u8,
-    modified_nodes: []const u8,
+pub const TextSelector = struct {
+    text: []const u8,
+    exact: bool,
 };
 
 /// 
-pub const DOMSnapshot = struct {
-    snapshot_id: []const u8,
-    html: []const u8,
-    timestamp: i64,
-    url: []const u8,
+pub const RoleSelector = struct {
+    role: []const u8,
+    name: ?[]const u8,
+    checked: ?[]const u8,
+    disabled: ?[]const u8,
+    expanded: ?[]const u8,
+    pressed: ?[]const u8,
+};
+
+/// 
+pub const TestIdSelector = struct {
+    test_id: []const u8,
+    attribute_name: []const u8,
+};
+
+/// 
+pub const CombinedSelector = struct {
+    selectors: []const u8,
+    combinator: []const u8,
+};
+
+/// 
+pub const SelectorResult = struct {
+    found: bool,
+    count: i64,
+    first_element: ?[]const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -122,59 +135,66 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "parse_html" {
-// Given: HTML string
-// When: DOM parsing needed
-// Then: Returns DOM tree
+test "css" {
+// Given: CSS selector string
+// When: CSS selection needed
+// Then: Returns selector object
     // TODO: Add test assertions
 }
 
-test "query_nodes" {
-// Given: DOM tree and query
-// When: Node query needed
-// Then: Returns matching nodes
+test "xpath" {
+// Given: XPath expression
+// When: XPath selection needed
+// Then: Returns selector object
     // TODO: Add test assertions
 }
 
-test "get_node_path" {
-// Given: DOM tree and node
-// When: Path extraction needed
-// Then: Returns XPath or CSS path
+test "text" {
+// Given: Text content
+// When: Text-based selection needed
+// Then: Returns selector object
     // TODO: Add test assertions
 }
 
-test "compare_trees" {
-// Given: Two DOM trees
-// When: Diff needed
-// Then: Returns DOM diff
+test "role" {
+// Given: ARIA role and options
+// When: Role-based selection needed
+// Then: Returns selector object
     // TODO: Add test assertions
 }
 
-test "serialize_tree" {
-// Given: DOM tree
-// When: Serialization needed
-// Then: Returns HTML string
+test "test_id" {
+// Given: Test ID value
+// When: Test ID selection needed
+// Then: Returns selector object
     // TODO: Add test assertions
 }
 
-test "find_interactive" {
-// Given: DOM tree
-// When: Interactive elements needed
-// Then: Returns clickable/typeable elements
+test "combine" {
+// Given: Multiple selectors
+// When: Combined selection needed
+// Then: Returns combined selector
     // TODO: Add test assertions
 }
 
-test "extract_text_nodes" {
-// Given: DOM tree
-// When: Text extraction needed
-// Then: Returns text content
+test "nth" {
+// Given: Selector and index
+// When: Nth element needed
+// Then: Returns indexed selector
     // TODO: Add test assertions
 }
 
-test "snapshot_dom" {
-// Given: Page
-// When: DOM snapshot needed
-// Then: Returns DOM snapshot
+test "has" {
+// Given: Parent and child selectors
+// When: Has-child selection needed
+// Then: Returns filtered selector
+    // TODO: Add test assertions
+}
+
+test "visible" {
+// Given: Base selector
+// When: Visible-only selection needed
+// Then: Returns visibility-filtered selector
     // TODO: Add test assertions
 }
 
