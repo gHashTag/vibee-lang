@@ -135,14 +135,23 @@ ollama pull qwen2.5:0.5b
 | `POST /v1/chat/completions` | OpenAI-compatible chat |
 | `GET /api/tags` | List models |
 
-### Model Comparison (v21.4)
+### Model Comparison (v21.7)
 
 | Model | Size | Latency | Accuracy | Use Case |
 |-------|------|---------|----------|----------|
-| qwen2.5:0.5b | 397 MB | ~2s | Medium | Fast prototyping |
-| qwen2.5:3b | 1.9 GB | ~5s | High | Production agent |
+| qwen2.5:0.5b | 397 MB | ~2s | Low | Not recommended |
+| qwen2.5:1.5b | 986 MB | ~3s | Medium | Fast testing |
+| qwen2.5:3b | 1.9 GB | ~6s | High | **Production (default)** |
 
-**Recommendation**: Use 3b for reliable action parsing, 0.5b for speed testing.
+**Recommendation**: Use 3b for reliable results. 1.5b is faster but less stable.
+
+```bash
+# Use default (3b)
+./scripts/agent_loop.sh "task" "url"
+
+# Use faster model
+VIBEE_MODEL="qwen2.5:1.5b" ./scripts/agent_loop.sh "task" "url"
+```
 
 ### Latency Benchmarks
 
