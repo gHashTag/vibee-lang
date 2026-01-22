@@ -25,6 +25,7 @@ pub const PageState = struct {
     url: []const u8,
     title: []const u8,
     text_preview: []const u8, // First 500 chars of page text
+    dom_summary: []const u8, // Compact DOM for LLM
     step_number: u32,
 };
 
@@ -44,6 +45,7 @@ pub const AgentState = struct {
                 .url = "",
                 .title = "",
                 .text_preview = "",
+                .dom_summary = "",
                 .step_number = 0,
             },
             .history = std.ArrayList(HistoryEntry).init(allocator),
@@ -151,14 +153,32 @@ pub const PlanningAgent = struct {
     http: http_client.HttpClient,
     state: AgentState,
     model: []const u8,
+    use_json_mode: bool,
     // Static buffers to avoid memory leaks
     url_buf: [512]u8 = undefined,
     title_buf: [256]u8 = undefined,
+    dom_buf: [1024]u8 = undefined,
 
     const Self = @This();
 
     const few_shot = @import("few_shot_examples.zig");
     const SYSTEM_PROMPT = few_shot.FEW_SHOT_COMPACT;
+
+    // JSON format prompt for structured output
+    const JSON_PROMPT =
+        \\You are a browser agent. Return ONLY valid JSON.
+        \\Actions: navigate, click, type, enter, scroll, done
+        \\
+        \\Format: {"action":"ACTION","arg":"ARGUMENT"}
+        \\
+        \\Examples:
+        \\{"action":"navigate","arg":"https://example.com"}
+        \\{"action":"click","arg":"a"}
+        \\{"action":"type","arg":"hello"}
+        \\{"action":"enter","arg":""}
+        \\{"action":"scroll","arg":"down"}
+        \\{"action":"done","arg":"Task completed"}
+    ;
 
     pub fn init(allocator: Allocator, goal: []const u8, max_steps: u32) Self {
         return Self{
@@ -167,7 +187,13 @@ pub const PlanningAgent = struct {
             .http = http_client.HttpClient.init(allocator),
             .state = AgentState.init(allocator, goal, max_steps),
             .model = "qwen2.5:3b",
+            .use_json_mode = false,
         };
+    }
+
+    /// Enable JSON mode for structured output
+    pub fn enableJsonMode(self: *Self) void {
+        self.use_json_mode = true;
     }
 
     pub fn deinit(self: *Self) void {
@@ -272,7 +298,21 @@ pub const PlanningAgent = struct {
         // Skip text preview for now to avoid memory issues
         self.state.current_page.text_preview = "";
 
+        // Get DOM summary (optional, for enhanced mode)
+        self.state.current_page.dom_summary = "";
+
         self.state.current_page.step_number = self.state.current_step;
+    }
+
+    /// Get DOM summary for enhanced observation
+    pub fn getDOMSummary(self: *Self) []const u8 {
+        const dom = self.browser.getDOMSummary() catch return "";
+        defer self.allocator.free(dom);
+
+        // Copy to static buffer
+        const len = @min(dom.len, 1000);
+        @memcpy(self.dom_buf[0..len], dom[0..len]);
+        return self.dom_buf[0..len];
     }
 
     /// THINK: Ask LLM for next action
@@ -291,6 +331,36 @@ pub const PlanningAgent = struct {
         else
             self.state.current_page.title;
 
+        // Try JSON mode first
+        if (self.use_json_mode) {
+            const json_prompt = std.fmt.bufPrint(&prompt_buf,
+                \\{s}
+                \\
+                \\GOAL: {s}
+                \\URL: {s}
+                \\Title: {s}
+                \\
+                \\Return JSON:
+            , .{
+                JSON_PROMPT,
+                self.state.goal,
+                url_preview,
+                title_preview,
+            }) catch return Action.fail("Prompt too long");
+
+            const response = self.callLLMWithFormat(json_prompt, true) catch return Action.fail("LLM call failed");
+            defer self.allocator.free(response);
+
+            std.debug.print("    LLM JSON: {s}\n", .{response[0..@min(response.len, 100)]});
+
+            // Try JSON parsing
+            if (parseJsonAction(response)) |action| {
+                return action;
+            }
+            // Fall through to text parsing
+        }
+
+        // Text mode (fallback or default)
         const prompt = std.fmt.bufPrint(&prompt_buf,
             \\{s}
             \\
@@ -488,8 +558,13 @@ pub const PlanningAgent = struct {
         return false;
     }
 
-    /// Call Ollama LLM
+    /// Call Ollama LLM (with optional JSON mode)
     fn callLLM(self: *Self, prompt: []const u8) ![]const u8 {
+        return self.callLLMWithFormat(prompt, false);
+    }
+
+    /// Call Ollama LLM with JSON format option
+    fn callLLMWithFormat(self: *Self, prompt: []const u8, json_mode: bool) ![]const u8 {
         var url_buf: [256]u8 = undefined;
         const url = std.fmt.bufPrint(&url_buf, "http://localhost:11434/api/generate", .{}) catch return error.OutOfMemory;
 
@@ -514,7 +589,10 @@ pub const PlanningAgent = struct {
         }
 
         var body_buf: [16384]u8 = undefined;
-        const body = std.fmt.bufPrint(&body_buf, "{{\"model\":\"{s}\",\"prompt\":\"{s}\",\"stream\":false}}", .{ self.model, escaped[0..escaped_len] }) catch return error.OutOfMemory;
+        const body = if (json_mode)
+            std.fmt.bufPrint(&body_buf, "{{\"model\":\"{s}\",\"prompt\":\"{s}\",\"format\":\"json\",\"stream\":false}}", .{ self.model, escaped[0..escaped_len] }) catch return error.OutOfMemory
+        else
+            std.fmt.bufPrint(&body_buf, "{{\"model\":\"{s}\",\"prompt\":\"{s}\",\"stream\":false}}", .{ self.model, escaped[0..escaped_len] }) catch return error.OutOfMemory;
 
         var response = self.http.post(url, body, "application/json") catch return error.ConnectionFailed;
         defer response.deinit();
@@ -545,6 +623,49 @@ pub const PlanningAgent = struct {
         return error.ParseError;
     }
 };
+
+/// Parse JSON action response
+fn parseJsonAction(response: []const u8) ?Action {
+    // Find "action" field
+    const action_start = std.mem.indexOf(u8, response, "\"action\"") orelse return null;
+    const action_value_start = std.mem.indexOf(u8, response[action_start..], ":") orelse return null;
+    const after_colon = response[action_start + action_value_start + 1 ..];
+
+    // Find action value
+    const quote1 = std.mem.indexOf(u8, after_colon, "\"") orelse return null;
+    const quote2 = std.mem.indexOf(u8, after_colon[quote1 + 1 ..], "\"") orelse return null;
+    const action_type = after_colon[quote1 + 1 .. quote1 + 1 + quote2];
+
+    // Find "arg" field
+    var arg: []const u8 = "";
+    if (std.mem.indexOf(u8, response, "\"arg\"")) |arg_start| {
+        const arg_colon = std.mem.indexOf(u8, response[arg_start..], ":") orelse return null;
+        const arg_after = response[arg_start + arg_colon + 1 ..];
+        const arg_q1 = std.mem.indexOf(u8, arg_after, "\"") orelse return null;
+        const arg_q2 = std.mem.indexOf(u8, arg_after[arg_q1 + 1 ..], "\"") orelse return null;
+        arg = arg_after[arg_q1 + 1 .. arg_q1 + 1 + arg_q2];
+    }
+
+    // Map action type to Action
+    if (std.mem.eql(u8, action_type, "navigate")) {
+        return Action.navigate(arg);
+    } else if (std.mem.eql(u8, action_type, "click")) {
+        return Action.click(arg);
+    } else if (std.mem.eql(u8, action_type, "type")) {
+        return Action.typeText(arg);
+    } else if (std.mem.eql(u8, action_type, "enter")) {
+        return Action.pressEnter();
+    } else if (std.mem.eql(u8, action_type, "scroll")) {
+        if (std.mem.eql(u8, arg, "up")) {
+            return Action.scroll(-300);
+        }
+        return Action.scroll(300);
+    } else if (std.mem.eql(u8, action_type, "done")) {
+        return Action.done(arg);
+    }
+
+    return null;
+}
 
 /// Extract URL from text
 fn extractUrl(input: []const u8) []const u8 {

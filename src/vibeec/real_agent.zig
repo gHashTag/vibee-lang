@@ -329,6 +329,60 @@ pub const RealAgent = struct {
         try self.clickSelector(selector);
     }
 
+    /// Get compact DOM representation for LLM
+    pub fn getDOMSummary(self: *Self) AgentError![]const u8 {
+        if (!self.connected) return AgentError.BrowserConnectionFailed;
+
+        // JavaScript to extract compact DOM summary
+        const js =
+            \\(function(){
+            \\  var result = [];
+            \\  var els = document.querySelectorAll('a,button,input,textarea,select,[onclick]');
+            \\  for(var i=0; i<Math.min(els.length,20); i++){
+            \\    var el = els[i];
+            \\    var tag = el.tagName.toLowerCase();
+            \\    var text = (el.innerText||el.value||'').substring(0,30).trim();
+            \\    var id = el.id ? '#'+el.id : '';
+            \\    var cls = el.className ? '.'+el.className.split(' ')[0] : '';
+            \\    var href = el.href ? ' href='+el.href.substring(0,50) : '';
+            \\    var name = el.name ? ' name='+el.name : '';
+            \\    result.push(tag+id+cls+name+href+(text?' "'+text+'"':''));
+            \\  }
+            \\  return result.join('\\n');
+            \\})()
+        ;
+
+        var cmd_buf: [2048]u8 = undefined;
+        const cmd = std.fmt.bufPrint(&cmd_buf, "{{\"id\":{d},\"method\":\"Runtime.evaluate\",\"params\":{{\"expression\":\"{s}\"}}}}", .{ self.message_id, js }) catch return AgentError.OutOfMemory;
+        self.message_id += 1;
+
+        self.ws.sendText(cmd) catch return AgentError.EvaluationFailed;
+
+        const frame = self.ws.receive() catch return AgentError.EvaluationFailed;
+        defer self.allocator.free(frame.payload);
+
+        // Extract value from response
+        if (std.mem.indexOf(u8, frame.payload, "\"value\":\"")) |start| {
+            const value_start = start + 9;
+            var end = value_start;
+            var escaped = false;
+            while (end < frame.payload.len) : (end += 1) {
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+                if (frame.payload[end] == '\\') {
+                    escaped = true;
+                    continue;
+                }
+                if (frame.payload[end] == '"') break;
+            }
+            return self.allocator.dupe(u8, frame.payload[value_start..end]) catch return AgentError.OutOfMemory;
+        }
+
+        return self.allocator.dupe(u8, "") catch return AgentError.OutOfMemory;
+    }
+
     /// Get current URL
     pub fn getURL(self: *Self) AgentError![]const u8 {
         if (!self.connected) return AgentError.BrowserConnectionFailed;
