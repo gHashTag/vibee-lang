@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BEAM Photon Panel | VIBEE Browser</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            background: #0a0a0f;
+            color: #e0e0e0;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        .panel {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+        
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            background: linear-gradient(90deg, #1a1a2e, #16213e);
+            border-bottom: 1px solid #ffd70033;
+        }
+        
+        .header h1 {
+            font-size: 0.9em;
+            color: #ffd700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .header .phi {
+            font-size: 0.7em;
+            color: #888;
+        }
+        
+        .canvas-container {
+            flex: 1;
+            position: relative;
+            background: #000;
+        }
+        
+        canvas {
+            width: 100%;
+            height: 100%;
+            cursor: crosshair;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 8px;
+            padding: 8px 12px;
+            background: #0f0f1a;
+            border-top: 1px solid #2a2a4e;
+            flex-wrap: wrap;
+        }
+        
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .control-group label {
+            font-size: 0.7em;
+            color: #888;
+        }
+        
+        .emotion-btn {
+            padding: 4px 10px;
+            background: #2a2a4e;
+            border: 1px solid #3a3a6e;
+            border-radius: 4px;
+            color: #e0e0e0;
+            cursor: pointer;
+            font-size: 0.7em;
+            transition: all 0.2s;
+        }
+        
+        .emotion-btn:hover {
+            background: #3a3a6e;
+            border-color: #ffd700;
+        }
+        
+        .emotion-btn.active {
+            background: #ffd700;
+            color: #000;
+            border-color: #ffd700;
+        }
+        
+        input[type="range"] {
+            width: 80px;
+            height: 4px;
+            background: #2a2a4e;
+            border-radius: 2px;
+            outline: none;
+            -webkit-appearance: none;
+        }
+        
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 12px;
+            height: 12px;
+            background: #ffd700;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+        
+        .stats {
+            display: flex;
+            gap: 15px;
+            font-size: 0.7em;
+        }
+        
+        .stat {
+            color: #888;
+        }
+        
+        .stat-value {
+            color: #00d4ff;
+            font-weight: bold;
+        }
+        
+        .btn-clear {
+            padding: 4px 12px;
+            background: #ff4444;
+            border: none;
+            border-radius: 4px;
+            color: #fff;
+            cursor: pointer;
+            font-size: 0.7em;
+        }
+        
+        .btn-clear:hover {
+            background: #ff6666;
+        }
+    </style>
+</head>
+<body>
+    <div class="panel">
+        <div class="header">
+            <h1>
+                🔮 BEAM Photon
+                <span class="phi">φ² + 1/φ² = 3</span>
+            </h1>
+            <div class="stats">
+                <span class="stat">Photons: <span class="stat-value" id="count">0</span></span>
+                <span class="stat">FPS: <span class="stat-value" id="fps">60</span></span>
+            </div>
+        </div>
+        
+        <div class="canvas-container">
+            <canvas id="canvas"></canvas>
+        </div>
+        
+        <div class="controls">
+            <div class="control-group">
+                <label>Emotion:</label>
+                <button class="emotion-btn active" data-e="joy">Joy</button>
+                <button class="emotion-btn" data-e="calm">Calm</button>
+                <button class="emotion-btn" data-e="energy">Energy</button>
+                <button class="emotion-btn" data-e="mystery">Mystery</button>
+            </div>
+            
+            <div class="control-group">
+                <label>Freq:</label>
+                <input type="range" id="freq" min="0.5" max="5" step="0.1" value="1.618">
+            </div>
+            
+            <div class="control-group">
+                <label>Decay:</label>
+                <input type="range" id="decay" min="0.005" max="0.05" step="0.001" value="0.01">
+            </div>
+            
+            <button class="btn-clear" id="clear">Clear</button>
+        </div>
+    </div>
+
+    <script>
+        const PHI = 1.618033988749895;
+        const TAU = Math.PI * 2;
+        
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        function resize() {
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+        }
+        resize();
+        window.addEventListener('resize', resize);
+        
+        const emotions = {
+            joy: { hue: 45, sat: 1.0, bri: 1.2 },
+            calm: { hue: 200, sat: 0.5, bri: 0.8 },
+            energy: { hue: 0, sat: 1.0, bri: 1.5 },
+            mystery: { hue: 280, sat: 0.8, bri: 0.6 }
+        };
+        
+        let photons = [];
+        let time = 0;
+        let emotion = emotions.joy;
+        let freq = PHI;
+        let decay = 0.01;
+        let mouseDown = false;
+        let lastMouse = { x: 0, y: 0 };
+        let frameCount = 0;
+        let lastFps = performance.now();
+        
+        class Photon {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.wavelength = freq * 100;
+                this.phase = Math.random() * TAU;
+                this.amplitude = 1.0;
+            }
+            
+            waveAt(x, y, t) {
+                const dx = x - this.x;
+                const dy = y - this.y;
+                const r = Math.sqrt(dx * dx + dy * dy);
+                const k = TAU / this.wavelength;
+                const omega = k * PHI;
+                return this.amplitude * Math.cos(k * r - omega * t + this.phase) * Math.exp(-decay * r);
+            }
+            
+            evolve(dt) {
+                this.phase += dt * PHI;
+                if (this.phase > TAU) this.phase -= TAU;
+                this.amplitude *= (1 - dt * 0.02);
+            }
+        }
+        
+        function spawn(x, y) {
+            photons.push(new Photon(x, y));
+            if (photons.length > 300) photons = photons.slice(-300);
+        }
+        
+        function hsl2rgb(h, s, l) {
+            let r, g, b;
+            if (s === 0) { r = g = b = l; }
+            else {
+                const hue2rgb = (p, q, t) => {
+                    if (t < 0) t += 1;
+                    if (t > 1) t -= 1;
+                    if (t < 1/6) return p + (q - p) * 6 * t;
+                    if (t < 1/2) return q;
+                    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+                    return p;
+                };
+                const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+                const p = 2 * l - q;
+                r = hue2rgb(p, q, h + 1/3);
+                g = hue2rgb(p, q, h);
+                b = hue2rgb(p, q, h - 1/3);
+            }
+            return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+        }
+        
+        function render() {
+            const w = canvas.width, h = canvas.height;
+            const img = ctx.createImageData(w, h);
+            const d = img.data;
+            const step = 2;
+            
+            for (let y = 0; y < h; y += step) {
+                for (let x = 0; x < w; x += step) {
+                    let sum = 0;
+                    for (const p of photons) {
+                        if (p.amplitude > 0.01) sum += p.waveAt(x, y, time);
+                    }
+                    
+                    const i = (sum + 1) / 2;
+                    const hue = (emotion.hue + sum * 30) % 360;
+                    const bri = Math.min(1, i * emotion.bri);
+                    const [r, g, b] = hsl2rgb(hue / 360, emotion.sat, bri);
+                    
+                    for (let dy = 0; dy < step && y + dy < h; dy++) {
+                        for (let dx = 0; dx < step && x + dx < w; dx++) {
+                            const idx = ((y + dy) * w + (x + dx)) * 4;
+                            d[idx] = r; d[idx+1] = g; d[idx+2] = b; d[idx+3] = 255;
+                        }
+                    }
+                }
+            }
+            
+            ctx.putImageData(img, 0, 0);
+            
+            ctx.fillStyle = '#fff';
+            for (const p of photons) {
+                if (p.amplitude > 0.01) {
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, 2, 0, TAU);
+                    ctx.fill();
+                }
+            }
+        }
+        
+        function animate() {
+            time += 0.016;
+            
+            for (const p of photons) p.evolve(0.016);
+            photons = photons.filter(p => p.amplitude > 0.01);
+            
+            render();
+            
+            document.getElementById('count').textContent = photons.length;
+            
+            frameCount++;
+            const now = performance.now();
+            if (now - lastFps >= 1000) {
+                document.getElementById('fps').textContent = frameCount;
+                frameCount = 0;
+                lastFps = now;
+            }
+            
+            requestAnimationFrame(animate);
+        }
+        
+        canvas.addEventListener('mousedown', e => {
+            mouseDown = true;
+            const r = canvas.getBoundingClientRect();
+            spawn(e.clientX - r.left, e.clientY - r.top);
+            lastMouse = { x: e.clientX - r.left, y: e.clientY - r.top };
+        });
+        
+        canvas.addEventListener('mousemove', e => {
+            if (mouseDown) {
+                const r = canvas.getBoundingClientRect();
+                const x = e.clientX - r.left, y = e.clientY - r.top;
+                const dx = x - lastMouse.x, dy = y - lastMouse.y;
+                if (Math.sqrt(dx*dx + dy*dy) > 8) {
+                    spawn(x, y);
+                    lastMouse = { x, y };
+                }
+            }
+        });
+        
+        canvas.addEventListener('mouseup', () => mouseDown = false);
+        canvas.addEventListener('mouseleave', () => mouseDown = false);
+        
+        document.querySelectorAll('.emotion-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.emotion-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                emotion = emotions[btn.dataset.e];
+            });
+        });
+        
+        document.getElementById('freq').addEventListener('input', e => freq = parseFloat(e.target.value));
+        document.getElementById('decay').addEventListener('input', e => decay = parseFloat(e.target.value));
+        document.getElementById('clear').addEventListener('click', () => photons = []);
+        
+        animate();
+        
+        for (let i = 0; i < 5; i++) {
+            spawn(Math.random() * canvas.width, Math.random() * canvas.height);
+        }
+    </script>
+</body>
+</html>
