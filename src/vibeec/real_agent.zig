@@ -450,6 +450,75 @@ pub const RealAgent = struct {
         return AgentError.ParseError;
     }
 
+    /// Select option in dropdown by value or text
+    pub fn selectOption(self: *Self, selector: []const u8, value: []const u8) AgentError!void {
+        if (!self.connected) return AgentError.BrowserConnectionFailed;
+
+        // JavaScript to select option by value or visible text
+        var js_buf: [1024]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buf,
+            \\(function(){{
+            \\  var sel = document.querySelector('{s}');
+            \\  if(!sel) return 'not_found';
+            \\  for(var i=0; i<sel.options.length; i++){{
+            \\    if(sel.options[i].value==='{s}' || sel.options[i].text==='{s}'){{
+            \\      sel.selectedIndex = i;
+            \\      sel.dispatchEvent(new Event('change', {{bubbles:true}}));
+            \\      return 'ok';
+            \\    }}
+            \\  }}
+            \\  return 'option_not_found';
+            \\}})()
+        , .{ selector, value, value }) catch return AgentError.OutOfMemory;
+
+        var cmd_buf: [2048]u8 = undefined;
+        const cmd = std.fmt.bufPrint(&cmd_buf, "{{\"id\":{d},\"method\":\"Runtime.evaluate\",\"params\":{{\"expression\":\"{s}\"}}}}", .{ self.message_id, js }) catch return AgentError.OutOfMemory;
+        self.message_id += 1;
+
+        self.ws.sendText(cmd) catch return AgentError.EvaluationFailed;
+
+        const frame = self.ws.receive() catch return AgentError.EvaluationFailed;
+        defer self.allocator.free(frame.payload);
+
+        // Check result
+        if (std.mem.indexOf(u8, frame.payload, "\"value\":\"ok\"") != null) {
+            return;
+        }
+        return AgentError.EvaluationFailed;
+    }
+
+    /// Check or uncheck a checkbox
+    pub fn checkBox(self: *Self, selector: []const u8, checked: bool) AgentError!void {
+        if (!self.connected) return AgentError.BrowserConnectionFailed;
+
+        const check_str = if (checked) "true" else "false";
+
+        var js_buf: [512]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buf,
+            \\(function(){{
+            \\  var cb = document.querySelector('{s}');
+            \\  if(!cb) return 'not_found';
+            \\  cb.checked = {s};
+            \\  cb.dispatchEvent(new Event('change', {{bubbles:true}}));
+            \\  return 'ok';
+            \\}})()
+        , .{ selector, check_str }) catch return AgentError.OutOfMemory;
+
+        var cmd_buf: [1024]u8 = undefined;
+        const cmd = std.fmt.bufPrint(&cmd_buf, "{{\"id\":{d},\"method\":\"Runtime.evaluate\",\"params\":{{\"expression\":\"{s}\"}}}}", .{ self.message_id, js }) catch return AgentError.OutOfMemory;
+        self.message_id += 1;
+
+        self.ws.sendText(cmd) catch return AgentError.EvaluationFailed;
+
+        const frame = self.ws.receive() catch return AgentError.EvaluationFailed;
+        defer self.allocator.free(frame.payload);
+
+        if (std.mem.indexOf(u8, frame.payload, "\"value\":\"ok\"") != null) {
+            return;
+        }
+        return AgentError.EvaluationFailed;
+    }
+
     /// Close connection
     pub fn close(self: *Self) void {
         self.ws.close();
@@ -512,6 +581,31 @@ test "RealAgent methods exist" {
         try std.testing.expect(err == AgentError.BrowserConnectionFailed);
     };
     _ = agent.getURL() catch |err| {
+        try std.testing.expect(err == AgentError.BrowserConnectionFailed);
+    };
+}
+
+test "selectOption method exists" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Should fail with BrowserConnectionFailed since not connected
+    _ = agent.selectOption("select#country", "US") catch |err| {
+        try std.testing.expect(err == AgentError.BrowserConnectionFailed);
+    };
+}
+
+test "checkBox method exists" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Should fail with BrowserConnectionFailed since not connected
+    _ = agent.checkBox("input#agree", true) catch |err| {
+        try std.testing.expect(err == AgentError.BrowserConnectionFailed);
+    };
+    _ = agent.checkBox("input#newsletter", false) catch |err| {
         try std.testing.expect(err == AgentError.BrowserConnectionFailed);
     };
 }

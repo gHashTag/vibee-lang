@@ -16,6 +16,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const real_agent = @import("real_agent.zig");
 const http_client = @import("http_client.zig");
+const openai = @import("openai_client.zig");
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // STATE
@@ -77,6 +78,8 @@ pub const ActionType = enum {
     type_text,
     press_enter,
     scroll,
+    select_option, // For dropdown selection
+    check_box, // For checkbox toggle
     done,
     fail,
 };
@@ -141,6 +144,24 @@ pub const Action = struct {
         action.arg_len = len;
         return action;
     }
+
+    /// Select option in dropdown: "selector:value"
+    pub fn selectOption(selector_value: []const u8) Action {
+        var action = Action{ .action_type = .select_option };
+        const len = @min(selector_value.len, 255);
+        @memcpy(action.arg_buf[0..len], selector_value[0..len]);
+        action.arg_len = len;
+        return action;
+    }
+
+    /// Check/uncheck checkbox: "selector:true" or "selector:false"
+    pub fn checkBox(selector_checked: []const u8) Action {
+        var action = Action{ .action_type = .check_box };
+        const len = @min(selector_checked.len, 255);
+        @memcpy(action.arg_buf[0..len], selector_checked[0..len]);
+        action.arg_len = len;
+        return action;
+    }
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -151,9 +172,11 @@ pub const PlanningAgent = struct {
     allocator: Allocator,
     browser: real_agent.RealAgent,
     http: http_client.HttpClient,
+    llm_client: ?openai.OpenAIClient,
     state: AgentState,
     model: []const u8,
     use_json_mode: bool,
+    use_openai_client: bool,
     // Static buffers to avoid memory leaks
     url_buf: [512]u8 = undefined,
     title_buf: [256]u8 = undefined,
@@ -164,15 +187,20 @@ pub const PlanningAgent = struct {
     const few_shot = @import("few_shot_examples.zig");
     const SYSTEM_PROMPT = few_shot.FEW_SHOT_COMPACT;
 
-    // JSON format prompt for structured output
+    // JSON format prompt for structured output with DOM awareness
     const JSON_PROMPT =
         \\You are a browser agent. Return ONLY valid JSON.
         \\Actions: navigate, click, type, enter, scroll, done
         \\
         \\Format: {"action":"ACTION","arg":"ARGUMENT"}
         \\
+        \\DOM Elements format: tag#id.class name=X href=Y "text"
+        \\Use selectors from DOM: #id, .class, tag, or text content
+        \\
         \\Examples:
         \\{"action":"navigate","arg":"https://example.com"}
+        \\{"action":"click","arg":"#submit-btn"}
+        \\{"action":"click","arg":".search-input"}
         \\{"action":"click","arg":"a"}
         \\{"action":"type","arg":"hello"}
         \\{"action":"enter","arg":""}
@@ -185,10 +213,97 @@ pub const PlanningAgent = struct {
             .allocator = allocator,
             .browser = real_agent.RealAgent.init(allocator, .{}),
             .http = http_client.HttpClient.init(allocator),
+            .llm_client = null,
             .state = AgentState.init(allocator, goal, max_steps),
             .model = "qwen2.5:3b",
             .use_json_mode = false,
+            .use_openai_client = false,
         };
+    }
+
+    /// Initialize with OpenAI GPT-4
+    pub fn initWithOpenAI(allocator: Allocator, goal: []const u8, max_steps: u32, api_key: []const u8) Self {
+        return Self{
+            .allocator = allocator,
+            .browser = real_agent.RealAgent.init(allocator, .{}),
+            .http = http_client.HttpClient.init(allocator),
+            .llm_client = openai.OpenAIClient.init(allocator, api_key),
+            .state = AgentState.init(allocator, goal, max_steps),
+            .model = openai.OPENAI_MODEL,
+            .use_json_mode = false,
+            .use_openai_client = true,
+        };
+    }
+
+    /// Initialize with Groq (FREE, FAST!)
+    pub fn initWithGroq(allocator: Allocator, goal: []const u8, max_steps: u32, api_key: []const u8) Self {
+        return Self{
+            .allocator = allocator,
+            .browser = real_agent.RealAgent.init(allocator, .{}),
+            .http = http_client.HttpClient.init(allocator),
+            .llm_client = openai.OpenAIClient.initGroq(allocator, api_key),
+            .state = AgentState.init(allocator, goal, max_steps),
+            .model = openai.GROQ_MODEL,
+            .use_json_mode = false,
+            .use_openai_client = true,
+        };
+    }
+
+    /// Initialize with HuggingFace (FREE with API key!)
+    pub fn initWithHuggingFace(allocator: Allocator, goal: []const u8, max_steps: u32, api_key: []const u8) Self {
+        return Self{
+            .allocator = allocator,
+            .browser = real_agent.RealAgent.init(allocator, .{}),
+            .http = http_client.HttpClient.init(allocator),
+            .llm_client = openai.OpenAIClient.initHuggingFace(allocator, api_key),
+            .state = AgentState.init(allocator, goal, max_steps),
+            .model = openai.HUGGINGFACE_MODEL,
+            .use_json_mode = false,
+            .use_openai_client = true,
+        };
+    }
+
+    /// Switch LLM provider at runtime
+    pub fn setProvider(self: *Self, provider: openai.Provider, api_key: ?[]const u8) void {
+        if (self.llm_client) |*client| {
+            client.deinit();
+        }
+
+        switch (provider) {
+            .openai => {
+                if (api_key) |key| {
+                    self.llm_client = openai.OpenAIClient.init(self.allocator, key);
+                    self.model = openai.OPENAI_MODEL;
+                    self.use_openai_client = true;
+                }
+            },
+            .groq => {
+                if (api_key) |key| {
+                    self.llm_client = openai.OpenAIClient.initGroq(self.allocator, key);
+                    self.model = openai.GROQ_MODEL;
+                    self.use_openai_client = true;
+                }
+            },
+            .together => {
+                if (api_key) |key| {
+                    self.llm_client = openai.OpenAIClient.initTogether(self.allocator, key);
+                    self.model = openai.TOGETHER_MODEL;
+                    self.use_openai_client = true;
+                }
+            },
+            .ollama => {
+                self.llm_client = openai.OpenAIClient.initOllama(self.allocator);
+                self.model = openai.OLLAMA_MODEL;
+                self.use_openai_client = true;
+            },
+            .huggingface => {
+                if (api_key) |key| {
+                    self.llm_client = openai.OpenAIClient.initHuggingFace(self.allocator, key);
+                    self.model = openai.HUGGINGFACE_MODEL;
+                    self.use_openai_client = true;
+                }
+            },
+        }
     }
 
     /// Enable JSON mode for structured output
@@ -199,6 +314,9 @@ pub const PlanningAgent = struct {
     pub fn deinit(self: *Self) void {
         self.browser.deinit();
         self.http.deinit();
+        if (self.llm_client) |*client| {
+            client.deinit();
+        }
         self.state.deinit();
     }
 
@@ -298,8 +416,17 @@ pub const PlanningAgent = struct {
         // Skip text preview for now to avoid memory issues
         self.state.current_page.text_preview = "";
 
-        // Get DOM summary (optional, for enhanced mode)
-        self.state.current_page.dom_summary = "";
+        // Get DOM summary for enhanced observation
+        const dom = self.browser.getDOMSummary() catch null;
+        if (dom) |d| {
+            const len = @min(d.len, self.dom_buf.len - 1);
+            @memcpy(self.dom_buf[0..len], d[0..len]);
+            self.dom_buf[len] = 0;
+            self.state.current_page.dom_summary = self.dom_buf[0..len];
+            self.allocator.free(d);
+        } else {
+            self.state.current_page.dom_summary = "";
+        }
 
         self.state.current_page.step_number = self.state.current_step;
     }
@@ -331,22 +458,47 @@ pub const PlanningAgent = struct {
         else
             self.state.current_page.title;
 
-        // Try JSON mode first
+        // Try JSON mode first - includes DOM summary
         if (self.use_json_mode) {
-            const json_prompt = std.fmt.bufPrint(&prompt_buf,
-                \\{s}
-                \\
-                \\GOAL: {s}
-                \\URL: {s}
-                \\Title: {s}
-                \\
-                \\Return JSON:
-            , .{
-                JSON_PROMPT,
-                self.state.goal,
-                url_preview,
-                title_preview,
-            }) catch return Action.fail("Prompt too long");
+            const dom_preview = if (self.state.current_page.dom_summary.len > 0)
+                self.state.current_page.dom_summary[0..@min(self.state.current_page.dom_summary.len, 500)]
+            else
+                "";
+
+            const json_prompt = if (dom_preview.len > 0)
+                std.fmt.bufPrint(&prompt_buf,
+                    \\{s}
+                    \\
+                    \\GOAL: {s}
+                    \\URL: {s}
+                    \\Title: {s}
+                    \\
+                    \\DOM Elements:
+                    \\{s}
+                    \\
+                    \\Return JSON:
+                , .{
+                    JSON_PROMPT,
+                    self.state.goal,
+                    url_preview,
+                    title_preview,
+                    dom_preview,
+                }) catch return Action.fail("Prompt too long")
+            else
+                std.fmt.bufPrint(&prompt_buf,
+                    \\{s}
+                    \\
+                    \\GOAL: {s}
+                    \\URL: {s}
+                    \\Title: {s}
+                    \\
+                    \\Return JSON:
+                , .{
+                    JSON_PROMPT,
+                    self.state.goal,
+                    url_preview,
+                    title_preview,
+                }) catch return Action.fail("Prompt too long");
 
             const response = self.callLLMWithFormat(json_prompt, true) catch return Action.fail("LLM call failed");
             defer self.allocator.free(response);
@@ -360,24 +512,52 @@ pub const PlanningAgent = struct {
             // Fall through to text parsing
         }
 
-        // Text mode (fallback or default)
-        const prompt = std.fmt.bufPrint(&prompt_buf,
-            \\{s}
-            \\
-            \\GOAL: {s}
-            \\URL: {s}
-            \\Title: {s}
-            \\Step: {d}/{d}
-            \\
-            \\Next action:
-        , .{
-            SYSTEM_PROMPT,
-            self.state.goal,
-            url_preview,
-            title_preview,
-            self.state.current_step,
-            self.state.max_steps,
-        }) catch return Action.fail("Prompt too long");
+        // Text mode (fallback or default) - now includes DOM summary
+        const dom_preview = if (self.state.current_page.dom_summary.len > 0)
+            self.state.current_page.dom_summary[0..@min(self.state.current_page.dom_summary.len, 500)]
+        else
+            "";
+
+        const prompt = if (dom_preview.len > 0)
+            std.fmt.bufPrint(&prompt_buf,
+                \\{s}
+                \\
+                \\GOAL: {s}
+                \\URL: {s}
+                \\Title: {s}
+                \\Step: {d}/{d}
+                \\
+                \\DOM Elements:
+                \\{s}
+                \\
+                \\Next action:
+            , .{
+                SYSTEM_PROMPT,
+                self.state.goal,
+                url_preview,
+                title_preview,
+                self.state.current_step,
+                self.state.max_steps,
+                dom_preview,
+            }) catch return Action.fail("Prompt too long")
+        else
+            std.fmt.bufPrint(&prompt_buf,
+                \\{s}
+                \\
+                \\GOAL: {s}
+                \\URL: {s}
+                \\Title: {s}
+                \\Step: {d}/{d}
+                \\
+                \\Next action:
+            , .{
+                SYSTEM_PROMPT,
+                self.state.goal,
+                url_preview,
+                title_preview,
+                self.state.current_step,
+                self.state.max_steps,
+            }) catch return Action.fail("Prompt too long");
 
         // Call LLM
         const response = self.callLLM(prompt) catch return Action.fail("LLM call failed");
@@ -405,19 +585,38 @@ pub const PlanningAgent = struct {
             .click => {
                 if (arg.len > 0 and arg.len < 100) {
                     std.debug.print("    Clicking: {s}\n", .{arg});
+
+                    // Smart retry with exponential backoff and alternative selectors
                     var retry: u32 = 0;
-                    while (retry < max_retries) : (retry += 1) {
-                        // Try click with wait
+                    var success = false;
+
+                    while (retry < max_retries and !success) : (retry += 1) {
+                        // Try original selector first
                         self.browser.clickSelectorWithWait(arg, 2000) catch {
-                            if (retry < max_retries - 1) {
-                                std.debug.print("    Retry {d}/{d}...\n", .{ retry + 1, max_retries });
-                                std.time.sleep(500 * std.time.ns_per_ms);
-                                continue;
+                            // Exponential backoff: 500ms, 1000ms, 2000ms
+                            const delay_ms: u64 = 500 * std.math.pow(u64, 2, retry);
+                            std.debug.print("    Retry {d}/{d} (wait {d}ms)...\n", .{ retry + 1, max_retries, delay_ms });
+                            std.time.sleep(delay_ms * std.time.ns_per_ms);
+
+                            // Try alternative selectors on retry
+                            if (retry > 0) {
+                                // If selector is tag, try with :first-child
+                                if (arg[0] != '#' and arg[0] != '.') {
+                                    var alt_buf: [128]u8 = undefined;
+                                    const alt = std.fmt.bufPrint(&alt_buf, "{s}:first-child", .{arg}) catch arg;
+                                    self.browser.clickSelectorWithWait(alt, 1000) catch {
+                                        continue;
+                                    };
+                                    success = true;
+                                }
                             }
-                            std.debug.print("    Click failed after {d} retries\n", .{max_retries});
-                            break;
+                            continue;
                         };
-                        break; // Success
+                        success = true;
+                    }
+
+                    if (!success) {
+                        std.debug.print("    Click failed after {d} retries\n", .{max_retries});
                     }
                     std.time.sleep(1 * std.time.ns_per_s);
                 }
@@ -437,6 +636,29 @@ pub const PlanningAgent = struct {
                 const delta = action.scroll_delta;
                 std.debug.print("    Scrolling: {d}\n", .{delta});
                 try self.browser.scroll(delta);
+            },
+            .select_option => {
+                // Format: "selector:value"
+                if (std.mem.indexOf(u8, arg, ":")) |sep| {
+                    const selector = arg[0..sep];
+                    const value = arg[sep + 1 ..];
+                    std.debug.print("    Selecting option: {s} = {s}\n", .{ selector, value });
+                    self.browser.selectOption(selector, value) catch {
+                        std.debug.print("    Select failed\n", .{});
+                    };
+                }
+            },
+            .check_box => {
+                // Format: "selector:true" or "selector:false"
+                if (std.mem.indexOf(u8, arg, ":")) |sep| {
+                    const selector = arg[0..sep];
+                    const checked_str = arg[sep + 1 ..];
+                    const checked = std.mem.eql(u8, checked_str, "true");
+                    std.debug.print("    Checkbox: {s} = {}\n", .{ selector, checked });
+                    self.browser.checkBox(selector, checked) catch {
+                        std.debug.print("    Checkbox failed\n", .{});
+                    };
+                }
             },
             .done, .fail => {
                 // No browser action needed
@@ -515,34 +737,71 @@ pub const PlanningAgent = struct {
         return false;
     }
 
-    /// Quick heuristic goal check (no LLM)
+    /// Quick heuristic goal check (no LLM) - optimized v23.3
     fn quickGoalCheck(self: *Self) bool {
         const goal = self.state.goal;
         const url = self.state.current_page.url;
         const title = self.state.current_page.title;
 
-        // Check for common patterns
-        // "Go to X" - check if URL contains X
-        if (std.mem.indexOf(u8, goal, "Go to ") != null or
-            std.mem.indexOf(u8, goal, "go to ") != null or
-            std.mem.indexOf(u8, goal, "Navigate to ") != null or
-            std.mem.indexOf(u8, goal, "navigate to ") != null)
-        {
-            // Extract target from goal
-            const targets = [_][]const u8{
-                "example.com",
-                "google.com",
-                "github.com",
-                "wikipedia.org",
-            };
-
-            for (targets) |target| {
-                if (std.mem.indexOf(u8, goal, target) != null) {
-                    // Check if URL contains target
-                    if (std.mem.indexOf(u8, url, target) != null) {
+        // Pattern 1: Navigation goals - "Go to X", "Navigate to X", "Open X"
+        const nav_patterns = [_][]const u8{ "Go to ", "go to ", "Navigate to ", "navigate to ", "Open ", "open ", "Visit ", "visit " };
+        for (nav_patterns) |pattern| {
+            if (std.mem.indexOf(u8, goal, pattern) != null) {
+                // Extract domain from goal and check URL
+                const domains = [_][]const u8{
+                    "example.com",     "google.com",      "github.com",
+                    "wikipedia.org",   "duckduckgo.com",  "bing.com",
+                    "httpbin.org",     "ecosia.org",      "news.ycombinator.com",
+                    "jsonplaceholder", "ziglang.org",
+                };
+                for (domains) |domain| {
+                    if (std.mem.indexOf(u8, goal, domain) != null and
+                        std.mem.indexOf(u8, url, domain) != null)
+                    {
                         return true;
                     }
                 }
+            }
+        }
+
+        // Pattern 2: Search goals - check if on search results page
+        const search_patterns = [_][]const u8{ "search for", "Search for", "find ", "Find ", "look up", "Look up" };
+        for (search_patterns) |pattern| {
+            if (std.mem.indexOf(u8, goal, pattern) != null) {
+                // Check if URL contains search indicators
+                if (std.mem.indexOf(u8, url, "search") != null or
+                    std.mem.indexOf(u8, url, "?q=") != null or
+                    std.mem.indexOf(u8, url, "&q=") != null or
+                    std.mem.indexOf(u8, url, "query=") != null)
+                {
+                    return true;
+                }
+            }
+        }
+
+        // Pattern 3: Information extraction - "tell me", "what is", "find the"
+        const info_patterns = [_][]const u8{ "tell me", "Tell me", "what is", "What is", "find the", "Find the", "extract", "Extract" };
+        for (info_patterns) |pattern| {
+            if (std.mem.indexOf(u8, goal, pattern) != null) {
+                // If we have a title and URL, we likely have the info
+                if (title.len > 0 and !std.mem.eql(u8, title, "Unknown") and url.len > 10) {
+                    // Check if goal mentions title
+                    if (std.mem.indexOf(u8, goal, "title") != null or
+                        std.mem.indexOf(u8, goal, "Title") != null)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Pattern 4: Click goals - check if URL changed after click
+        if (std.mem.indexOf(u8, goal, "click") != null or
+            std.mem.indexOf(u8, goal, "Click") != null)
+        {
+            // If we're past step 1 and URL is not blank, click likely succeeded
+            if (self.state.current_step > 1 and !std.mem.eql(u8, url, "about:blank")) {
+                return false; // Let LLM decide
             }
         }
 
@@ -558,13 +817,30 @@ pub const PlanningAgent = struct {
         return false;
     }
 
-    /// Call Ollama LLM (with optional JSON mode)
+    /// Call LLM (with optional JSON mode)
     fn callLLM(self: *Self, prompt: []const u8) ![]const u8 {
         return self.callLLMWithFormat(prompt, false);
     }
 
-    /// Call Ollama LLM with JSON format option
+    /// Call LLM with JSON format option - supports OpenAI/Groq/HuggingFace or Ollama
     fn callLLMWithFormat(self: *Self, prompt: []const u8, json_mode: bool) ![]const u8 {
+        _ = json_mode; // TODO: implement JSON mode for OpenAI client
+
+        // Use OpenAI-compatible client if configured
+        if (self.use_openai_client) {
+            if (self.llm_client) |*client| {
+                var response = client.chat(prompt) catch return error.ConnectionFailed;
+                defer response.deinit();
+                return self.allocator.dupe(u8, response.content) catch return error.OutOfMemory;
+            }
+        }
+
+        // Fallback to direct Ollama API
+        return self.callOllamaDirectly(prompt);
+    }
+
+    /// Direct Ollama API call (legacy fallback)
+    fn callOllamaDirectly(self: *Self, prompt: []const u8) ![]const u8 {
         var url_buf: [256]u8 = undefined;
         const url = std.fmt.bufPrint(&url_buf, "http://localhost:11434/api/generate", .{}) catch return error.OutOfMemory;
 
@@ -589,10 +865,7 @@ pub const PlanningAgent = struct {
         }
 
         var body_buf: [16384]u8 = undefined;
-        const body = if (json_mode)
-            std.fmt.bufPrint(&body_buf, "{{\"model\":\"{s}\",\"prompt\":\"{s}\",\"format\":\"json\",\"stream\":false}}", .{ self.model, escaped[0..escaped_len] }) catch return error.OutOfMemory
-        else
-            std.fmt.bufPrint(&body_buf, "{{\"model\":\"{s}\",\"prompt\":\"{s}\",\"stream\":false}}", .{ self.model, escaped[0..escaped_len] }) catch return error.OutOfMemory;
+        const body = std.fmt.bufPrint(&body_buf, "{{\"model\":\"{s}\",\"prompt\":\"{s}\",\"stream\":false}}", .{ self.model, escaped[0..escaped_len] }) catch return error.OutOfMemory;
 
         var response = self.http.post(url, body, "application/json") catch return error.ConnectionFailed;
         defer response.deinit();
@@ -662,6 +935,10 @@ fn parseJsonAction(response: []const u8) ?Action {
         return Action.scroll(300);
     } else if (std.mem.eql(u8, action_type, "done")) {
         return Action.done(arg);
+    } else if (std.mem.eql(u8, action_type, "select")) {
+        return Action.selectOption(arg);
+    } else if (std.mem.eql(u8, action_type, "check") or std.mem.eql(u8, action_type, "checkbox")) {
+        return Action.checkBox(arg);
     }
 
     return null;
@@ -840,4 +1117,158 @@ test "phi constant" {
     const phi: f64 = (1.0 + @sqrt(5.0)) / 2.0;
     const result = phi * phi + 1.0 / (phi * phi);
     try std.testing.expectApproxEqAbs(3.0, result, 0.0001);
+}
+
+test "PlanningAgent with OpenAI initialization" {
+    const allocator = std.testing.allocator;
+    var agent = PlanningAgent.initWithOpenAI(allocator, "Test goal", 5, "test-api-key");
+    defer agent.deinit();
+
+    try std.testing.expectEqualStrings("Test goal", agent.state.goal);
+    try std.testing.expect(agent.use_openai_client);
+    try std.testing.expect(agent.llm_client != null);
+}
+
+test "PlanningAgent with Groq initialization" {
+    const allocator = std.testing.allocator;
+    var agent = PlanningAgent.initWithGroq(allocator, "Test goal", 5, "test-groq-key");
+    defer agent.deinit();
+
+    try std.testing.expect(agent.use_openai_client);
+    try std.testing.expectEqualStrings(openai.GROQ_MODEL, agent.model);
+}
+
+test "PlanningAgent with HuggingFace initialization" {
+    const allocator = std.testing.allocator;
+    var agent = PlanningAgent.initWithHuggingFace(allocator, "Test goal", 5, "hf_test_key");
+    defer agent.deinit();
+
+    try std.testing.expect(agent.use_openai_client);
+    try std.testing.expectEqualStrings(openai.HUGGINGFACE_MODEL, agent.model);
+}
+
+test "PlanningAgent setProvider" {
+    const allocator = std.testing.allocator;
+    var agent = PlanningAgent.init(allocator, "Test goal", 5);
+    defer agent.deinit();
+
+    // Initially no OpenAI client
+    try std.testing.expect(!agent.use_openai_client);
+
+    // Switch to Groq
+    agent.setProvider(.groq, "test-groq-key");
+    try std.testing.expect(agent.use_openai_client);
+    try std.testing.expectEqualStrings(openai.GROQ_MODEL, agent.model);
+
+    // Switch to Ollama (no API key needed)
+    agent.setProvider(.ollama, null);
+    try std.testing.expectEqualStrings(openai.OLLAMA_MODEL, agent.model);
+}
+
+test "LLM Provider comparison - model names" {
+    // GPT-4 vs Ollama model comparison
+    try std.testing.expectEqualStrings("gpt-4o-mini", openai.OPENAI_MODEL);
+    try std.testing.expectEqualStrings("llama3.2:3b", openai.OLLAMA_MODEL);
+    try std.testing.expectEqualStrings("llama-3.3-70b-versatile", openai.GROQ_MODEL);
+    try std.testing.expectEqualStrings("Qwen/Qwen2.5-72B-Instruct", openai.HUGGINGFACE_MODEL);
+
+    // Verify all providers have different URLs
+    try std.testing.expect(!std.mem.eql(u8, openai.OPENAI_URL, openai.OLLAMA_URL));
+    try std.testing.expect(!std.mem.eql(u8, openai.GROQ_URL, openai.OLLAMA_URL));
+    try std.testing.expect(!std.mem.eql(u8, openai.HUGGINGFACE_URL, openai.OLLAMA_URL));
+}
+
+test "Provider switching preserves state" {
+    const allocator = std.testing.allocator;
+    var agent = PlanningAgent.init(allocator, "Navigate to example.com", 10);
+    defer agent.deinit();
+
+    // Verify initial state
+    try std.testing.expectEqualStrings("Navigate to example.com", agent.state.goal);
+    try std.testing.expectEqual(@as(u32, 10), agent.state.max_steps);
+
+    // Switch provider
+    agent.setProvider(.openai, "sk-test-key");
+
+    // State should be preserved
+    try std.testing.expectEqualStrings("Navigate to example.com", agent.state.goal);
+    try std.testing.expectEqual(@as(u32, 10), agent.state.max_steps);
+    try std.testing.expect(agent.use_openai_client);
+}
+
+test "DOM element selection from parseJsonAction" {
+    // Test parsing JSON with DOM selectors
+    const json1 = "{\"action\":\"click\",\"arg\":\"#submit-btn\"}";
+    const action1 = parseJsonAction(json1);
+    try std.testing.expect(action1 != null);
+    try std.testing.expectEqual(ActionType.click, action1.?.action_type);
+    try std.testing.expectEqualStrings("#submit-btn", action1.?.getArg());
+
+    const json2 = "{\"action\":\"click\",\"arg\":\".search-input\"}";
+    const action2 = parseJsonAction(json2);
+    try std.testing.expect(action2 != null);
+    try std.testing.expectEqualStrings(".search-input", action2.?.getArg());
+
+    const json3 = "{\"action\":\"click\",\"arg\":\"button\"}";
+    const action3 = parseJsonAction(json3);
+    try std.testing.expect(action3 != null);
+    try std.testing.expectEqualStrings("button", action3.?.getArg());
+}
+
+test "DOM summary in PageState" {
+    const allocator = std.testing.allocator;
+    var state = AgentState.init(allocator, "Click the submit button", 5);
+    defer state.deinit();
+
+    // Simulate DOM summary
+    state.current_page.dom_summary = "button#submit.btn \"Submit\"\ninput.search name=q\na href=https://example.com \"Home\"";
+
+    // Verify DOM summary is stored
+    try std.testing.expect(state.current_page.dom_summary.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, state.current_page.dom_summary, "button#submit") != null);
+}
+
+test "parseActionDirect with DOM selectors" {
+    // Test direct parsing with DOM selectors
+    const action1 = parseActionDirect("click #login-btn");
+    try std.testing.expectEqual(ActionType.click, action1.action_type);
+    try std.testing.expectEqualStrings("#login-btn", action1.getArg());
+
+    const action2 = parseActionDirect("click .nav-link");
+    try std.testing.expectEqual(ActionType.click, action2.action_type);
+    try std.testing.expectEqualStrings(".nav-link", action2.getArg());
+
+    const action3 = parseActionDirect("click input[name=email]");
+    try std.testing.expectEqual(ActionType.click, action3.action_type);
+}
+
+test "Form actions - selectOption" {
+    const action = Action.selectOption("select#country:US");
+    try std.testing.expectEqual(ActionType.select_option, action.action_type);
+    try std.testing.expectEqualStrings("select#country:US", action.getArg());
+}
+
+test "Form actions - checkBox" {
+    const action1 = Action.checkBox("input#agree:true");
+    try std.testing.expectEqual(ActionType.check_box, action1.action_type);
+    try std.testing.expectEqualStrings("input#agree:true", action1.getArg());
+
+    const action2 = Action.checkBox("input#newsletter:false");
+    try std.testing.expectEqual(ActionType.check_box, action2.action_type);
+    try std.testing.expectEqualStrings("input#newsletter:false", action2.getArg());
+}
+
+test "parseJsonAction with form actions" {
+    // Test select action
+    const json1 = "{\"action\":\"select\",\"arg\":\"#country:USA\"}";
+    const action1 = parseJsonAction(json1);
+    try std.testing.expect(action1 != null);
+    try std.testing.expectEqual(ActionType.select_option, action1.?.action_type);
+    try std.testing.expectEqualStrings("#country:USA", action1.?.getArg());
+
+    // Test checkbox action
+    const json2 = "{\"action\":\"check\",\"arg\":\"#terms:true\"}";
+    const action2 = parseJsonAction(json2);
+    try std.testing.expect(action2 != null);
+    try std.testing.expectEqual(ActionType.check_box, action2.?.action_type);
 }

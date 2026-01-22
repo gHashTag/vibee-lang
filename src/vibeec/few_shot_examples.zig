@@ -122,3 +122,53 @@ pub const FEW_SHOT_COMPACT =
     \\
     \\YOUR TURN:
 ;
+
+// Optimized prompt with DOM awareness (v23.3)
+pub const FEW_SHOT_DOM_AWARE =
+    \\Browser agent. Use DOM elements to find correct selectors.
+    \\
+    \\Actions: navigate URL | click SEL | type TXT | enter | scroll down | select SEL:VAL | check SEL:true/false | done RESULT
+    \\
+    \\DOM format: tag#id.class name=X href=Y "text"
+    \\Use: #id, .class, tag, or [name=X] as selectors
+    \\
+    \\Examples:
+    \\DOM: button#submit.btn "Submit" → click #submit
+    \\DOM: input.search name=q → click .search then type query
+    \\DOM: a href=/login "Login" → click a
+    \\DOM: select#country → select #country:USA
+    \\DOM: input#agree type=checkbox → check #agree:true
+    \\
+    \\Strategy:
+    \\1. If goal is navigation → navigate URL
+    \\2. If need to interact → find element in DOM, use best selector
+    \\3. If goal achieved → done with result
+    \\4. Prefer #id > .class > tag selectors
+    \\
+    \\YOUR TURN:
+;
+
+// Ultra-compact for fast inference
+pub const FEW_SHOT_ULTRA =
+    \\Agent: navigate|click|type|enter|scroll|select|check|done
+    \\DOM: tag#id.class "text" → use #id or .class
+    \\Ex: button#go "Go" → click #go
+    \\Ex: input.q → type query
+    \\Ex: select#lang → select #lang:en
+    \\GO:
+;
+
+test "few shot prompts exist" {
+    const std = @import("std");
+    try std.testing.expect(FEW_SHOT_PROMPT.len > 0);
+    try std.testing.expect(FEW_SHOT_COMPACT.len > 0);
+    try std.testing.expect(FEW_SHOT_DOM_AWARE.len > 0);
+    try std.testing.expect(FEW_SHOT_ULTRA.len > 0);
+}
+
+test "phi constant" {
+    const std = @import("std");
+    const phi: f64 = (1.0 + @sqrt(5.0)) / 2.0;
+    const result = phi * phi + 1.0 / (phi * phi);
+    try std.testing.expectApproxEqAbs(3.0, result, 0.0001);
+}
