@@ -218,6 +218,14 @@ pub const PlanningAgent = struct {
                 const arg = action.getArg();
                 self.state.result = if (arg.len > 0) arg else "Unknown error";
                 std.debug.print("[FAIL] Reason: {s}\n", .{self.state.result.?});
+            } else {
+                // 4. REFLECT: Check if goal achieved
+                std.debug.print("[REFLECT] Checking if goal achieved...\n", .{});
+                if (self.reflect()) {
+                    self.state.done = true;
+                    self.state.result = "Goal achieved (auto-detected)";
+                    std.debug.print("[REFLECT] Goal achieved!\n", .{});
+                }
             }
 
             std.debug.print("\n", .{});
@@ -311,9 +319,10 @@ pub const PlanningAgent = struct {
         return self.parseAction(response);
     }
 
-    /// ACT: Execute the action
+    /// ACT: Execute the action with retry logic
     fn act(self: *Self, action: Action) !void {
         const arg = action.getArg();
+        const max_retries: u32 = 3;
 
         switch (action.action_type) {
             .navigate => {
@@ -326,9 +335,20 @@ pub const PlanningAgent = struct {
             .click => {
                 if (arg.len > 0 and arg.len < 100) {
                     std.debug.print("    Clicking: {s}\n", .{arg});
-                    self.browser.clickSelector(arg) catch {
-                        std.debug.print("    Click failed\n", .{});
-                    };
+                    var retry: u32 = 0;
+                    while (retry < max_retries) : (retry += 1) {
+                        // Try click with wait
+                        self.browser.clickSelectorWithWait(arg, 2000) catch {
+                            if (retry < max_retries - 1) {
+                                std.debug.print("    Retry {d}/{d}...\n", .{ retry + 1, max_retries });
+                                std.time.sleep(500 * std.time.ns_per_ms);
+                                continue;
+                            }
+                            std.debug.print("    Click failed after {d} retries\n", .{max_retries});
+                            break;
+                        };
+                        break; // Success
+                    }
                     std.time.sleep(1 * std.time.ns_per_s);
                 }
             },
@@ -376,6 +396,96 @@ pub const PlanningAgent = struct {
         const trimmed = std.mem.trim(u8, after_prefix, " \t\n\r");
 
         return parseActionDirect(trimmed);
+    }
+
+    /// REFLECT: Check if goal is achieved
+    fn reflect(self: *Self) bool {
+        // First: Quick heuristic check (no LLM call)
+        if (self.quickGoalCheck()) {
+            return true;
+        }
+
+        // Second: LLM-based check
+        var prompt_buf: [2048]u8 = undefined;
+
+        const url_preview = if (self.state.current_page.url.len > 50)
+            self.state.current_page.url[0..50]
+        else
+            self.state.current_page.url;
+
+        const title_preview = if (self.state.current_page.title.len > 50)
+            self.state.current_page.title[0..50]
+        else
+            self.state.current_page.title;
+
+        const prompt = std.fmt.bufPrint(&prompt_buf,
+            \\Is the goal achieved? Answer only YES or NO.
+            \\GOAL: {s}
+            \\URL: {s}
+            \\Title: {s}
+            \\Answer:
+        , .{
+            self.state.goal,
+            url_preview,
+            title_preview,
+        }) catch return false;
+
+        // Call LLM
+        const response = self.callLLM(prompt) catch return false;
+        defer self.allocator.free(response);
+
+        // Check for YES
+        if (std.mem.indexOf(u8, response, "YES") != null or
+            std.mem.indexOf(u8, response, "yes") != null or
+            std.mem.indexOf(u8, response, "Yes") != null)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    /// Quick heuristic goal check (no LLM)
+    fn quickGoalCheck(self: *Self) bool {
+        const goal = self.state.goal;
+        const url = self.state.current_page.url;
+        const title = self.state.current_page.title;
+
+        // Check for common patterns
+        // "Go to X" - check if URL contains X
+        if (std.mem.indexOf(u8, goal, "Go to ") != null or
+            std.mem.indexOf(u8, goal, "go to ") != null or
+            std.mem.indexOf(u8, goal, "Navigate to ") != null or
+            std.mem.indexOf(u8, goal, "navigate to ") != null)
+        {
+            // Extract target from goal
+            const targets = [_][]const u8{
+                "example.com",
+                "google.com",
+                "github.com",
+                "wikipedia.org",
+            };
+
+            for (targets) |target| {
+                if (std.mem.indexOf(u8, goal, target) != null) {
+                    // Check if URL contains target
+                    if (std.mem.indexOf(u8, url, target) != null) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // "Tell me the title" - if we have a title, we're done
+        if (std.mem.indexOf(u8, goal, "title") != null or
+            std.mem.indexOf(u8, goal, "Title") != null)
+        {
+            if (title.len > 0 and !std.mem.eql(u8, title, "Unknown")) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// Call Ollama LLM

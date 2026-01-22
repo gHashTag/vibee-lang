@@ -272,6 +272,63 @@ pub const RealAgent = struct {
         self.allocator.free(frame.payload);
     }
 
+    /// Wait for element to appear on page
+    pub fn waitForSelector(self: *Self, selector: []const u8, timeout_ms: u32) AgentError!bool {
+        if (!self.connected) return AgentError.BrowserConnectionFailed;
+
+        const start_time = std.time.milliTimestamp();
+        const timeout_end = start_time + @as(i64, timeout_ms);
+
+        while (std.time.milliTimestamp() < timeout_end) {
+            // Check if element exists
+            var cmd_buf: [1024]u8 = undefined;
+
+            // Escape selector
+            var escaped: [256]u8 = undefined;
+            var escaped_len: usize = 0;
+            for (selector) |c| {
+                if (c == '\'' or c == '\\') {
+                    escaped[escaped_len] = '\\';
+                    escaped_len += 1;
+                }
+                if (escaped_len < escaped.len) {
+                    escaped[escaped_len] = c;
+                    escaped_len += 1;
+                }
+            }
+
+            const js = std.fmt.bufPrint(&cmd_buf, "{{\"id\":{d},\"method\":\"Runtime.evaluate\",\"params\":{{\"expression\":\"document.querySelector('{s}') !== null\"}}}}", .{ self.message_id, escaped[0..escaped_len] }) catch return AgentError.OutOfMemory;
+            self.message_id += 1;
+
+            self.ws.sendText(js) catch return AgentError.EvaluationFailed;
+
+            const frame = self.ws.receive() catch return AgentError.EvaluationFailed;
+            defer self.allocator.free(frame.payload);
+
+            // Check if result is true
+            if (std.mem.indexOf(u8, frame.payload, "\"value\":true") != null) {
+                return true; // Element found
+            }
+
+            // Wait 100ms before next check
+            std.time.sleep(100 * std.time.ns_per_ms);
+        }
+
+        return false; // Timeout
+    }
+
+    /// Click element with wait
+    pub fn clickSelectorWithWait(self: *Self, selector: []const u8, timeout_ms: u32) AgentError!void {
+        // Wait for element
+        const found = try self.waitForSelector(selector, timeout_ms);
+        if (!found) {
+            return AgentError.EvaluationFailed; // Element not found
+        }
+
+        // Click
+        try self.clickSelector(selector);
+    }
+
     /// Get current URL
     pub fn getURL(self: *Self) AgentError![]const u8 {
         if (!self.connected) return AgentError.BrowserConnectionFailed;
