@@ -1,4 +1,4 @@
-# Zig CDP Implementation - v15
+# Zig CDP Implementation - v16
 
 Pure Zig implementation of Chrome DevTools Protocol for browser automation.
 
@@ -211,13 +211,36 @@ pub fn main() !void {
 | screenshot | `screenshot` | Capture screenshot |
 | stop | `stop "answer"` | Complete task with answer |
 
-### Test Results (v15)
+### Test Results (v16)
 
 | Module | Tests | Status |
 |--------|-------|--------|
 | webarena_task.zig | 8 | ✅ Pass |
 | webarena_executor.zig | 15 | ✅ Pass |
-| Full stack | 42 | ✅ Pass |
+| GAIA modules (15) | 96 | ✅ Pass |
+| Full stack | 138+ | ✅ Pass |
+
+## GAIA Agent Architecture (v16)
+
+15 new modules for WebArena #1:
+
+| Module | Purpose |
+|--------|---------|
+| zig_gaia_agent | Main agent |
+| zig_react_loop | ReAct pattern |
+| zig_observation | Page extraction |
+| zig_accessibility_tree | A11y tree |
+| zig_action_space | Actions |
+| zig_prompt_template | Prompts |
+| zig_memory | Context |
+| zig_planning | Decomposition |
+| zig_evaluation | Success check |
+| zig_error_recovery | Retry logic |
+| zig_multi_tab | Tabs |
+| zig_screenshot_analysis | Vision |
+| zig_dom_analysis | DOM |
+| zig_form_filling | Forms |
+| zig_navigation | Navigation |
 
 ---
 
