@@ -1,4 +1,4 @@
-# Zig CDP Implementation - v14
+# Zig CDP Implementation - v15
 
 Pure Zig implementation of Chrome DevTools Protocol for browser automation.
 
@@ -137,6 +137,87 @@ zig test src/vibeec/browser.zig
 - Path queries: ~15M queries/s
 - Zero external dependencies
 - Pure Zig implementation
+
+## WebArena Integration (v15)
+
+### Files
+
+| File | Purpose |
+|------|---------|
+| `src/vibeec/webarena_task.zig` | WebArena task config parser |
+| `src/vibeec/webarena_executor.zig` | Task executor with ReAct pattern |
+
+### Task Format
+
+WebArena tasks are JSON configs:
+
+```json
+{
+  "task_id": 1,
+  "sites": ["reddit"],
+  "require_login": true,
+  "start_url": "http://example.com/",
+  "intent": "tell me all subreddits starting with 'a'",
+  "eval": {
+    "eval_types": ["string_match"],
+    "reference_answers": ["announcements Art AskReddit"]
+  }
+}
+```
+
+### Executor Usage
+
+```zig
+const std = @import("std");
+const task_mod = @import("webarena_task.zig");
+const executor_mod = @import("webarena_executor.zig");
+const browser_mod = @import("browser.zig");
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Parse task
+    var task = try task_mod.parseTask(allocator, task_json);
+    defer task.deinit();
+
+    // Setup browser
+    var browser = browser_mod.Browser.init(allocator, .{});
+    defer browser.deinit();
+    try browser.connect();
+
+    // Execute
+    var executor = executor_mod.WebArenaExecutor.init(allocator, .{
+        .max_steps = 30,
+        .timeout_ms = 60000,
+    });
+    executor.setBrowser(&browser);
+
+    const result = try executor.executeTask(&task);
+    std.debug.print("Status: {}\n", .{result.status});
+}
+```
+
+### Supported Actions
+
+| Action | Format | Description |
+|--------|--------|-------------|
+| click | `click [selector]` or `click(x, y)` | Click element or coordinates |
+| type | `type "text"` | Type text input |
+| goto | `goto "url"` | Navigate to URL |
+| scroll | `scroll down` | Scroll page |
+| wait | `wait 2s` | Wait for time |
+| screenshot | `screenshot` | Capture screenshot |
+| stop | `stop "answer"` | Complete task with answer |
+
+### Test Results (v15)
+
+| Module | Tests | Status |
+|--------|-------|--------|
+| webarena_task.zig | 8 | ✅ Pass |
+| webarena_executor.zig | 15 | ✅ Pass |
+| Full stack | 42 | ✅ Pass |
 
 ---
 
