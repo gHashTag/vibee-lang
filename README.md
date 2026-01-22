@@ -70,6 +70,27 @@ cd trinity/output && ls *.zig | xargs -P 8 -I {} zig test {}
 | **Agent Browser** | Chromium + Monaco + AI Agent | 32 | 200+ |
 | **GEN-MULTI** | Code generation for 42 languages | 42 | 350+ |
 | **FFI System** | Integration with 40 languages | 40 | 350+ |
+| **E2E Pipeline v21** | Chrome CDP + Ollama LLM Agent | 4 | 35+ |
+
+## 🤖 E2E Browser Agent (NEW v21)
+
+Автономный браузерный агент с локальным LLM:
+
+```bash
+# Запуск агента
+./scripts/agent_loop.sh "Go to example.com and report the title" ""
+
+# Результат: 2 шага, ~16с
+# Step 1: goto https://example.com
+# Step 2: done → "Example Domain"
+```
+
+**Компоненты:**
+- Chrome CDP (headless browser)
+- Ollama + qwen2.5:3b (local LLM)
+- Observe-Think-Act loop
+
+**Документация:** [docs/E2E_DEMO.md](docs/E2E_DEMO.md) | [docs/E2E_PIPELINE_GUIDE.md](docs/E2E_PIPELINE_GUIDE.md)
 
 ## 📁 Project Structure
 
