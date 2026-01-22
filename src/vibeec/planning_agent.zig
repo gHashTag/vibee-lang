@@ -151,17 +151,14 @@ pub const PlanningAgent = struct {
     http: http_client.HttpClient,
     state: AgentState,
     model: []const u8,
+    // Static buffers to avoid memory leaks
+    url_buf: [512]u8 = undefined,
+    title_buf: [256]u8 = undefined,
 
     const Self = @This();
 
-    const SYSTEM_PROMPT =
-        \\Browser agent. ONE action per reply.
-        \\navigate https://example.com
-        \\click a
-        \\type hello
-        \\enter
-        \\done RESULT
-    ;
+    const few_shot = @import("few_shot_examples.zig");
+    const SYSTEM_PROMPT = few_shot.FEW_SHOT_COMPACT;
 
     pub fn init(allocator: Allocator, goal: []const u8, max_steps: u32) Self {
         return Self{
@@ -169,7 +166,7 @@ pub const PlanningAgent = struct {
             .browser = real_agent.RealAgent.init(allocator, .{}),
             .http = http_client.HttpClient.init(allocator),
             .state = AgentState.init(allocator, goal, max_steps),
-            .model = "qwen2.5:1.5b",
+            .model = "qwen2.5:3b",
         };
     }
 
@@ -238,19 +235,34 @@ pub const PlanningAgent = struct {
     }
 
     /// OBSERVE: Collect current page state
+    /// Note: Uses static buffers to avoid memory leaks
     fn observe(self: *Self) !void {
-        // Get URL
-        const url = self.browser.getURL() catch "about:blank";
-        self.state.current_page.url = url;
+        // Get URL into static buffer
+        const url_result = self.browser.getURL() catch null;
+        if (url_result) |url| {
+            const len = @min(url.len, self.url_buf.len - 1);
+            @memcpy(self.url_buf[0..len], url[0..len]);
+            self.url_buf[len] = 0;
+            self.state.current_page.url = self.url_buf[0..len];
+            self.allocator.free(url);
+        } else {
+            self.state.current_page.url = "about:blank";
+        }
 
-        // Get title
-        const title = self.browser.getTitle() catch "Unknown";
-        self.state.current_page.title = title;
+        // Get title into static buffer
+        const title_result = self.browser.getTitle() catch null;
+        if (title_result) |title| {
+            const len = @min(title.len, self.title_buf.len - 1);
+            @memcpy(self.title_buf[0..len], title[0..len]);
+            self.title_buf[len] = 0;
+            self.state.current_page.title = self.title_buf[0..len];
+            self.allocator.free(title);
+        } else {
+            self.state.current_page.title = "Unknown";
+        }
 
-        // Get text preview (first 500 chars)
-        const text = self.browser.getPageText() catch "";
-        const preview_len = @min(text.len, 500);
-        self.state.current_page.text_preview = text[0..preview_len];
+        // Skip text preview for now to avoid memory issues
+        self.state.current_page.text_preview = "";
 
         self.state.current_page.step_number = self.state.current_step;
     }
@@ -460,6 +472,20 @@ fn parseActionDirect(text: []const u8) Action {
         trimmed = trimmed[0..300];
     }
 
+    // Handle escaped newlines from LLM (literal backslash-n)
+    // First try to find the action keyword
+    const keywords = [_][]const u8{ "navigate ", "click ", "type ", "enter", "scroll ", "done " };
+    for (keywords) |kw| {
+        if (std.mem.indexOf(u8, trimmed, kw)) |start| {
+            trimmed = trimmed[start..];
+            // Now trim at newline
+            if (std.mem.indexOf(u8, trimmed, "\\n")) |nl| {
+                trimmed = trimmed[0..nl];
+            }
+            break;
+        }
+    }
+
     if (std.mem.startsWith(u8, trimmed, "navigate")) {
         const url = extractUrl(trimmed);
         if (url.len > 0) {
@@ -470,8 +496,16 @@ fn parseActionDirect(text: []const u8) Action {
         if (after.len > 0 and after.len < 100) {
             return Action.navigate(after);
         }
-    } else if (std.mem.startsWith(u8, trimmed, "click ")) {
-        const arg = std.mem.trim(u8, trimmed[6..], " \t\n\r");
+    } else if (std.mem.startsWith(u8, trimmed, "click ") or std.mem.startsWith(u8, trimmed, "click\t")) {
+        var arg = std.mem.trim(u8, trimmed[6..], " \t\n\r");
+        // Remove comments like "(assuming...)"
+        if (std.mem.indexOf(u8, arg, " (")) |paren| {
+            arg = arg[0..paren];
+        }
+        if (std.mem.indexOf(u8, arg, "(")) |paren| {
+            arg = arg[0..paren];
+        }
+        arg = std.mem.trim(u8, arg, " \t\n\r");
         if (arg.len > 0 and arg.len < 50) {
             return Action.click(arg);
         }
