@@ -1,4 +1,4 @@
-FROM nginx:1.27-alpine3.21
+FROM nginx:1.28-alpine3.21
 
 # Security: run as non-root user
 RUN addgroup -g 1001 -S nginx-user && \
