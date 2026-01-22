@@ -225,9 +225,27 @@ Input: [parameters]
 | Action accuracy | ~60% | **~95%** |
 
 Key improvements:
-- Explicit list of ONLY 6 allowed actions
+- Explicit list of 7 allowed actions (added `extract`)
 - Examples for each action type
+- Rules to prevent navigation loops
 - "IMPORTANT" hint to use `done` when answer is visible
+
+### Multi-Step Tasks (v21.6)
+
+| Task Type | Steps | Time |
+|-----------|-------|------|
+| Simple (report title) | 1 | ~6s |
+| Navigate + report | 2 | ~15s |
+| Navigate + extract + report | 3 | ~26s |
+
+**Example: 3-step task**
+```
+Task: "Go to example.com, extract info, and report"
+
+Step 1: goto https://example.com/
+Step 2: extract main heading
+Step 3: done Example Domain
+```
 
 ### Latency Benchmarks
 

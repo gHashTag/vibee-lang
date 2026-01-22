@@ -76,6 +76,7 @@ ALLOWED ACTIONS (use EXACTLY one):
 - click: Click element. Input: CSS selector (e.g., button#submit)
 - type: Type text. Input: selector|text (e.g., input#search|hello)
 - scroll: Scroll page. Input: up or down
+- extract: Get text from page. Input: what to extract (e.g., main heading, price)
 - done: Task complete. Input: the result/answer
 - fail: Cannot complete. Input: reason why
 
@@ -86,9 +87,13 @@ Step: ${step}/${MAX_STEPS}
 
 TASK: ${task}
 
+HISTORY:
 ${history}
 
-IMPORTANT: If the answer is already visible (like page title), use 'done' immediately!
+RULES:
+1. If you already navigated to a URL, don't navigate again - use the data!
+2. If the answer is visible (like page title), use 'done' immediately!
+3. The Title shown above IS the page title - no need to extract it separately!
 
 Respond in EXACTLY this format:
 Thought: [one sentence reasoning]
@@ -128,6 +133,22 @@ act() {
         scroll)
             log "Scroll action: $input (simulated)"
             success "Scroll simulated"
+            echo "success"
+            ;;
+        extract)
+            log "Extract action: $input"
+            # В реальности здесь был бы CDP запрос к DOM
+            # Пока возвращаем title как пример извлечённых данных
+            local page_data=$(curl -s "http://${CDP_HOST}:${CDP_PORT}/json/list" 2>/dev/null | \
+                python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for page in data:
+    if page.get('type') == 'page':
+        print(f\"Title: {page.get('title', 'N/A')}, URL: {page.get('url', 'N/A')}\")
+        break
+" 2>/dev/null)
+            success "Extracted: $page_data"
             echo "success"
             ;;
         done)
