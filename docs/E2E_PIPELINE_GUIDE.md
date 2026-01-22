@@ -135,13 +135,22 @@ ollama pull qwen2.5:0.5b
 | `POST /v1/chat/completions` | OpenAI-compatible chat |
 | `GET /api/tags` | List models |
 
-### Latency Benchmarks (qwen2.5:0.5b)
+### Model Comparison (v21.4)
 
-| Operation | Latency |
-|-----------|---------|
-| Simple question | ~300ms |
-| Browser action | ~600ms |
-| Chat completion | ~280ms |
+| Model | Size | Latency | Accuracy | Use Case |
+|-------|------|---------|----------|----------|
+| qwen2.5:0.5b | 397 MB | ~2s | Medium | Fast prototyping |
+| qwen2.5:3b | 1.9 GB | ~5s | High | Production agent |
+
+**Recommendation**: Use 3b for reliable action parsing, 0.5b for speed testing.
+
+### Latency Benchmarks
+
+| Operation | 0.5b | 3b |
+|-----------|------|-----|
+| Simple question | ~300ms | ~600ms |
+| Browser action | ~2s | ~5s |
+| Chat completion | ~280ms | ~600ms |
 
 ### Full E2E Flow
 

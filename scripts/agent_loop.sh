@@ -10,7 +10,7 @@ CDP_HOST="localhost"
 CDP_PORT="9222"
 OLLAMA_HOST="localhost"
 OLLAMA_PORT="11434"
-MODEL="qwen2.5:0.5b"
+MODEL="qwen2.5:3b"
 MAX_STEPS=5
 
 # Colors
