@@ -105,5 +105,66 @@ Action: [goto|click|type|scroll|extract]
 Input: [action parameters]
 ```
 
+## Ollama Local LLM (v21.2)
+
+Free local LLM - no API keys required.
+
+### Installation
+
+```bash
+# Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Start server
+ollama serve &
+
+# Pull model
+ollama pull qwen2.5:0.5b
+```
+
+### Specification
+
+`specs/tri/ollama_local_v21.vibee` - Local LLM client
+
+### API Endpoints
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/version` | Check Ollama status |
+| `POST /api/generate` | Text generation |
+| `POST /v1/chat/completions` | OpenAI-compatible chat |
+| `GET /api/tags` | List models |
+
+### Latency Benchmarks (qwen2.5:0.5b)
+
+| Operation | Latency |
+|-----------|---------|
+| Simple question | ~300ms |
+| Browser action | ~600ms |
+| Chat completion | ~280ms |
+
+### Full E2E Flow
+
+```bash
+# 1. Start Chrome CDP
+google-chrome --headless=new --remote-debugging-port=9222 --no-sandbox &
+
+# 2. Start Ollama
+ollama serve &
+
+# 3. Navigate
+curl -X PUT "http://localhost:9222/json/new?https://example.com"
+
+# 4. Get observation
+curl http://localhost:9222/json/list
+
+# 5. Ask LLM for action
+curl http://localhost:11434/api/generate -d '{
+  "model": "qwen2.5:0.5b",
+  "prompt": "Task: click link. Reply: Thought: Action: Input:",
+  "stream": false
+}'
+```
+
 ---
 φ² + 1/φ² = 3 | PHOENIX = 999
