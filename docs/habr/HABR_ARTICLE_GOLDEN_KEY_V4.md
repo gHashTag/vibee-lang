@@ -1,33 +1,28 @@
 # 🔑 Золотой Ключ: φ² + 1/φ² = 3
 
-## The Sacred Formula V = n × 3^k × π^m × φ^p × e^q: A Minimal Framework for Physical Constants
-
 **Один скрипт — 40 доказательств из 8 областей науки**
 
-*Автор: Dmitrii Vasilev | January 2026 | Версия 5.0 FINAL*
+*Автор: Dmitrii Vasilev | January 2026*
 
 ---
 
-## 🚀 Quick Start
+## Что вы узнаете из этой статьи
+
+1. **Священная формула** `V = n × 3^k × π^m × φ^p × e^q` — как 5 констант описывают физику Вселенной
+2. **VIBEE** — язык спецификаций, генерирующий код на 42 языках из одного файла
+3. **Златая Цепь** — workflow разработки без ручного кодирования
+
+---
+
+## 🚀 Быстрый старт (3 команды)
 
 ```bash
-# Install
-git clone https://github.com/gHashTag/vibee-lang
-cd vibee-lang
-
-# Generate code for 42 languages from one spec
+git clone https://github.com/gHashTag/vibee-lang && cd vibee-lang
 vibee gen-multi specs/tri/igla_sacred_formula.vibee all
-
-# Or generate Zig only
-vibee gen specs/tri/igla_sacred_formula.vibee
-
-# Run tests
 zig test trinity/output/igla_sacred_formula.zig
 ```
 
-**What is VIBEE?** A specification-first language where you write `.vibee` specs and generate code for 42+ programming languages. No manual coding — just specs.
-
-**What is Golden Chain?** The mandatory development workflow: Spec → Generate → Test → Toxic Verdict → Tech Tree Select.
+**Результат:** 42 файла на разных языках + проверенные тесты.
 
 ---
 
