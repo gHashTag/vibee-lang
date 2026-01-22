@@ -155,6 +155,152 @@ pub const Browser = struct {
         return self.evaluate("document.body.innerText");
     }
 
+    /// Get structured observation for LLM (WebArena format)
+    pub fn getObservation(self: *Self, max_length: usize) BrowserError![]const u8 {
+        if (!self.connected) return BrowserError.ConnectionFailed;
+
+        // Get page info via JavaScript
+        const js =
+            \\(function() {
+            \\  var title = document.title || '';
+            \\  var url = window.location.href;
+            \\  var text = document.body.innerText.substring(0, 2000);
+            \\  
+            \\  // Get interactive elements
+            \\  var elements = [];
+            \\  var interactable = document.querySelectorAll('a, button, input, select, textarea, [onclick], [role="button"]');
+            \\  for (var i = 0; i < Math.min(interactable.length, 50); i++) {
+            \\    var el = interactable[i];
+            \\    var rect = el.getBoundingClientRect();
+            \\    if (rect.width > 0 && rect.height > 0) {
+            \\      elements.push({
+            \\        tag: el.tagName.toLowerCase(),
+            \\        text: (el.innerText || el.value || el.placeholder || '').substring(0, 50),
+            \\        id: el.id || '',
+            \\        class: el.className || ''
+            \\      });
+            \\    }
+            \\  }
+            \\  
+            \\  return JSON.stringify({
+            \\    title: title,
+            \\    url: url,
+            \\    text: text,
+            \\    elements: elements
+            \\  });
+            \\})()
+        ;
+
+        const result = self.cdp_client.evaluate(js) catch return BrowserError.ConnectionFailed;
+        _ = max_length; // TODO: truncate if needed
+        return result;
+    }
+
+    /// Scroll page
+    pub fn scroll(self: *Self, direction: []const u8) BrowserError!void {
+        if (!self.connected) return BrowserError.ConnectionFailed;
+
+        var js_buf: [128]u8 = undefined;
+        const amount: i32 = if (std.mem.eql(u8, direction, "up")) -500 else 500;
+        const js = std.fmt.bufPrint(&js_buf, "window.scrollBy(0, {d})", .{amount}) catch return BrowserError.OutOfMemory;
+
+        _ = self.cdp_client.evaluate(js) catch return BrowserError.ConnectionFailed;
+    }
+
+    /// Go back in history
+    pub fn goBack(self: *Self) BrowserError!void {
+        if (!self.connected) return BrowserError.ConnectionFailed;
+        _ = self.cdp_client.evaluate("window.history.back()") catch return BrowserError.ConnectionFailed;
+        std.time.sleep(500 * std.time.ns_per_ms);
+    }
+
+    /// Press key (Enter, Tab, Escape, etc)
+    pub fn pressKey(self: *Self, key: []const u8) BrowserError!void {
+        if (!self.connected) return BrowserError.ConnectionFailed;
+
+        var js_buf: [256]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buf,
+            \\document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {{key: '{s}', bubbles: true}}))
+        , .{key}) catch return BrowserError.OutOfMemory;
+
+        _ = self.cdp_client.evaluate(js) catch return BrowserError.ConnectionFailed;
+    }
+
+    /// Execute action from parsed string (WebArena format)
+    /// Supports: click [selector], type [selector] [text], goto [url], scroll [direction], stop [answer]
+    pub fn executeAction(self: *Self, action: []const u8, action_input: []const u8) BrowserError![]const u8 {
+        if (!self.connected) return BrowserError.ConnectionFailed;
+
+        // Parse action type
+        if (std.mem.startsWith(u8, action, "click")) {
+            // click [selector] or click(x, y)
+            if (std.mem.indexOf(u8, action_input, "[")) |start| {
+                if (std.mem.indexOf(u8, action_input[start..], "]")) |end| {
+                    const selector = action_input[start + 1 .. start + end];
+                    try self.clickSelector(selector);
+                    return "Clicked element";
+                }
+            }
+            // Try as coordinates
+            if (std.mem.indexOf(u8, action_input, ",")) |comma| {
+                const x_str = std.mem.trim(u8, action_input[0..comma], " ()");
+                const y_str = std.mem.trim(u8, action_input[comma + 1 ..], " ()");
+                const x = std.fmt.parseFloat(f64, x_str) catch 0;
+                const y = std.fmt.parseFloat(f64, y_str) catch 0;
+                try self.click(x, y);
+                return "Clicked at coordinates";
+            }
+            return "Invalid click format";
+        } else if (std.mem.startsWith(u8, action, "type")) {
+            // type [selector] [text] or just type [text]
+            if (std.mem.indexOf(u8, action_input, "\"")) |start| {
+                const rest = action_input[start + 1 ..];
+                if (std.mem.indexOf(u8, rest, "\"")) |end| {
+                    const text = rest[0..end];
+                    try self.typeText(text);
+                    return "Typed text";
+                }
+            }
+            // Type the whole input
+            try self.typeText(action_input);
+            return "Typed text";
+        } else if (std.mem.startsWith(u8, action, "goto") or std.mem.startsWith(u8, action, "navigate")) {
+            // goto [url]
+            var url = action_input;
+            if (std.mem.indexOf(u8, action_input, "\"")) |start| {
+                const rest = action_input[start + 1 ..];
+                if (std.mem.indexOf(u8, rest, "\"")) |end| {
+                    url = rest[0..end];
+                }
+            }
+            try self.goto(url);
+            return "Navigated to URL";
+        } else if (std.mem.startsWith(u8, action, "scroll")) {
+            const direction = if (std.mem.indexOf(u8, action_input, "up") != null) "up" else "down";
+            try self.scroll(direction);
+            return "Scrolled page";
+        } else if (std.mem.startsWith(u8, action, "go_back") or std.mem.startsWith(u8, action, "back")) {
+            try self.goBack();
+            return "Went back";
+        } else if (std.mem.startsWith(u8, action, "press")) {
+            // press [key]
+            var key = action_input;
+            if (std.mem.indexOf(u8, action_input, "\"")) |start| {
+                const rest = action_input[start + 1 ..];
+                if (std.mem.indexOf(u8, rest, "\"")) |end| {
+                    key = rest[0..end];
+                }
+            }
+            try self.pressKey(key);
+            return "Pressed key";
+        } else if (std.mem.startsWith(u8, action, "stop") or std.mem.startsWith(u8, action, "final_answer")) {
+            // Task complete - return the answer
+            return action_input;
+        }
+
+        return "Unknown action";
+    }
+
     /// Close browser connection
     pub fn close(self: *Self) void {
         self.cdp_client.close();

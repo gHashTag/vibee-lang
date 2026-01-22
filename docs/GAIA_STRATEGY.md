@@ -60,14 +60,15 @@
 
 ---
 
-## Метрики v17
+## Метрики v19
 
 - **GAIA Specs**: 15 модулей
-- **LLM Specs**: 6 модулей (NEW!)
-- **Total Specs**: 21
-- **Tests**: 133 (GAIA 96 + LLM 37)
-- **Modules**: 50 generated .zig files
+- **LLM Specs**: 9 модулей
+- **Total Specs**: 24
+- **Tests**: 150+ (browser_agent 42, webarena_runner 17, etc.)
+- **Modules**: 53 generated .zig files
 - **Architecture coverage**: 100%
+- **Pipeline**: COMPLETE!
 
 ## LLM Integration v17
 
@@ -80,22 +81,45 @@
 | zig_response_parser | Thought/Action extraction |
 | zig_react_executor | Full ReAct loop |
 
-## Полный стек v17
+## Полный стек v19
 
 ```
 ┌─────────────────────────────────────────┐
-│           LLM Layer (v17)               │
-│  OpenAI ←→ Claude ←→ ReAct Executor     │
+│         WebArenaRunner (v19)            │
+│  Load Task → Execute → Evaluate         │
 ├─────────────────────────────────────────┤
-│           GAIA Layer (v16)              │
-│  Memory, Planning, Evaluation           │
+│         BrowserAgent (v19)              │
+│  Observe → Think → Act → Repeat         │
 ├─────────────────────────────────────────┤
-│           Browser Layer (v14-15)        │
-│  CDP ←→ WebSocket ←→ Browser API        │
+│           LLM Layer (v18)               │
+│  Groq (FREE!) / OpenAI / Ollama         │
 ├─────────────────────────────────────────┤
-│           Task Layer (v15)              │
-│  WebArena Parser ←→ Executor            │
+│           Browser Layer (v19)           │
+│  getObservation() + executeAction()     │
+├─────────────────────────────────────────┤
+│           CDP Layer (v14)               │
+│  WebSocket ←→ Chrome DevTools           │
 └─────────────────────────────────────────┘
+```
+
+## Использование v19
+
+```zig
+const runner = @import("webarena_runner.zig");
+
+// Создание runner с Groq (бесплатно!)
+var r = runner.WebArenaRunner.init(allocator, .{
+    .llm_api_key = "your-groq-key",
+    .llm_provider = .groq,
+    .verbose = true,
+});
+defer r.deinit();
+
+// Запуск задачи
+const result = try r.runTaskJson(task_json);
+
+// Вывод статистики
+r.printStats();
 ```
 
 ---
