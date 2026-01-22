@@ -19,6 +19,7 @@ pub const E2ETestSuite = struct {
     allocator: Allocator,
     results: std.ArrayList(E2ETestResult),
     ws_url: []const u8,
+    chrome_base_url: []const u8,
     total_passed: u32,
     total_failed: u32,
 
@@ -29,9 +30,25 @@ pub const E2ETestSuite = struct {
             .allocator = allocator,
             .results = std.ArrayList(E2ETestResult).init(allocator),
             .ws_url = ws_url,
+            .chrome_base_url = "http://localhost:9222",
             .total_passed = 0,
             .total_failed = 0,
         };
+    }
+
+    /// Create a new browser page for isolated testing
+    fn createNewPage(self: *Self) ?[]const u8 {
+        // Use HTTP client to create new page
+        var http = @import("http_client.zig").HttpClient.init(self.allocator);
+        defer http.deinit();
+
+        var url_buf: [256]u8 = undefined;
+        const url = std.fmt.bufPrint(&url_buf, "{s}/json/new?about:blank", .{self.chrome_base_url}) catch return null;
+
+        // Note: Chrome requires PUT for /json/new
+        // For now, we'll reuse the existing page
+        _ = url;
+        return self.ws_url;
     }
 
     pub fn deinit(self: *Self) void {
@@ -264,10 +281,34 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Default WebSocket URL - can be overridden
-    const ws_url = "ws://localhost:9222/devtools/page/1D3702FEE924E47155EB50E12BF9DE28";
+    // Get WebSocket URL from Chrome
+    const ws_url = getWebSocketUrl(allocator) catch {
+        std.debug.print("Failed to get WebSocket URL from Chrome. Is Chrome running?\n", .{});
+        std.debug.print("Start with: google-chrome --headless --remote-debugging-port=9222 --no-sandbox\n", .{});
+        return;
+    };
+    defer allocator.free(ws_url);
 
     try runAllTests(allocator, ws_url);
+}
+
+fn getWebSocketUrl(allocator: Allocator) ![]const u8 {
+    var http = @import("http_client.zig").HttpClient.init(allocator);
+    defer http.deinit();
+
+    // Get list of pages
+    var response = http.get("http://localhost:9222/json") catch return error.ChromeNotRunning;
+    defer response.deinit();
+
+    // Parse webSocketDebuggerUrl from first page
+    if (std.mem.indexOf(u8, response.body, "\"webSocketDebuggerUrl\": \"")) |start| {
+        const url_start = start + 25;
+        if (std.mem.indexOf(u8, response.body[url_start..], "\"")) |end| {
+            return allocator.dupe(u8, response.body[url_start .. url_start + end]);
+        }
+    }
+
+    return error.NoPageFound;
 }
 
 // ============================================================================

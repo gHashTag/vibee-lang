@@ -912,9 +912,42 @@ pub const PlanningAgent = struct {
     }
 
     /// Call LLM with JSON format option - supports OpenAI/Groq/HuggingFace/Anthropic or Ollama
+    /// Includes retry logic for invalid responses
     fn callLLMWithFormat(self: *Self, prompt: []const u8, json_mode: bool) ![]const u8 {
         _ = json_mode; // TODO: implement JSON mode for OpenAI client
 
+        const max_retries: u32 = 3;
+        var retry: u32 = 0;
+
+        while (retry < max_retries) : (retry += 1) {
+            const response = self.callLLMOnce(prompt) catch |err| {
+                if (retry < max_retries - 1) {
+                    std.time.sleep(500 * std.time.ns_per_ms);
+                    continue;
+                }
+                return err;
+            };
+
+            // Validate response
+            if (validateLLMResponse(response)) {
+                return response;
+            }
+
+            // Invalid response - log and retry
+            std.debug.print("    [LLM] Invalid response (retry {d}/{d}): {s}\n", .{ retry + 1, max_retries, response[0..@min(response.len, 50)] });
+            self.allocator.free(response);
+
+            if (retry < max_retries - 1) {
+                std.time.sleep(300 * std.time.ns_per_ms);
+            }
+        }
+
+        // All retries failed - return error
+        return error.InvalidResponse;
+    }
+
+    /// Single LLM call without retry
+    fn callLLMOnce(self: *Self, prompt: []const u8) ![]const u8 {
         // Use Anthropic Claude if configured
         if (self.current_provider == .anthropic) {
             if (self.anthropic_client) |*client| {
@@ -994,6 +1027,61 @@ pub const PlanningAgent = struct {
         return error.ParseError;
     }
 };
+
+/// Validate LLM response format
+pub fn validateLLMResponse(response: []const u8) bool {
+    const trimmed = std.mem.trim(u8, response, " \t\n\r");
+    if (trimmed.len == 0) return false;
+
+    // Valid commands start with these keywords
+    const valid_starts = [_][]const u8{
+        "navigate ",
+        "navigate\t",
+        "click ",
+        "click\t",
+        "type ",
+        "type\t",
+        "enter",
+        "scroll ",
+        "done ",
+        "done\t",
+        "select ",
+        "check ",
+    };
+
+    for (valid_starts) |start| {
+        if (std.mem.startsWith(u8, trimmed, start)) {
+            // Additional validation for navigate - must have URL
+            if (std.mem.startsWith(u8, trimmed, "navigate")) {
+                const rest = std.mem.trim(u8, trimmed[8..], " \t");
+                // Must not be literal "URL" or empty
+                if (rest.len == 0 or std.mem.eql(u8, rest, "URL")) {
+                    return false;
+                }
+                // Should contain . or be a valid URL
+                if (std.mem.indexOf(u8, rest, ".") != null or
+                    std.mem.startsWith(u8, rest, "http"))
+                {
+                    return true;
+                }
+                return false;
+            }
+            return true;
+        }
+    }
+
+    // Also valid if it's just "enter"
+    if (std.mem.eql(u8, trimmed, "enter")) return true;
+
+    // Check if response contains a URL (fallback)
+    if (std.mem.indexOf(u8, trimmed, "https://") != null or
+        std.mem.indexOf(u8, trimmed, "http://") != null)
+    {
+        return true;
+    }
+
+    return false;
+}
 
 /// Parse JSON action response
 fn parseJsonAction(response: []const u8) ?Action {
@@ -1375,6 +1463,47 @@ test "Vision methods exist" {
 
 test "Vision model constant" {
     try std.testing.expectEqualStrings("gpt-4o", openai.GPT4V_MODEL);
+}
+
+test "validateLLMResponse - valid responses" {
+    // Valid navigate
+    try std.testing.expect(validateLLMResponse("navigate https://example.com"));
+    try std.testing.expect(validateLLMResponse("navigate https://google.com/search"));
+    try std.testing.expect(validateLLMResponse("navigate http://localhost:8080"));
+
+    // Valid click
+    try std.testing.expect(validateLLMResponse("click a"));
+    try std.testing.expect(validateLLMResponse("click button"));
+    try std.testing.expect(validateLLMResponse("click #submit"));
+    try std.testing.expect(validateLLMResponse("click .nav-link"));
+
+    // Valid type
+    try std.testing.expect(validateLLMResponse("type hello world"));
+    try std.testing.expect(validateLLMResponse("type search query"));
+
+    // Valid enter
+    try std.testing.expect(validateLLMResponse("enter"));
+
+    // Valid done
+    try std.testing.expect(validateLLMResponse("done Task completed"));
+    try std.testing.expect(validateLLMResponse("done The title is Example"));
+}
+
+test "validateLLMResponse - invalid responses" {
+    // Invalid - literal "URL"
+    try std.testing.expect(!validateLLMResponse("navigate URL"));
+
+    // Invalid - empty
+    try std.testing.expect(!validateLLMResponse(""));
+    try std.testing.expect(!validateLLMResponse("   "));
+
+    // Invalid - explanation instead of command
+    try std.testing.expect(!validateLLMResponse("I will navigate to the website"));
+    try std.testing.expect(!validateLLMResponse("Let me click on the button"));
+
+    // Invalid - just text
+    try std.testing.expect(!validateLLMResponse("hello world"));
+    try std.testing.expect(!validateLLMResponse("example.com")); // no navigate prefix
 }
 
 test "DOM element selection from parseJsonAction" {

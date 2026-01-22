@@ -110,25 +110,28 @@ pub const FEW_SHOT_PROMPT =
     \\NOW YOUR TURN:
 ;
 
-// Compact few-shot for smaller context - IMPROVED v23.5
+// Compact few-shot for smaller context - FIXED v23.6
 pub const FEW_SHOT_COMPACT =
-    \\Reply with ONLY the action command, nothing else.
+    \\Browser bot. Output ONLY the command, nothing else.
     \\
-    \\Actions:
-    \\- navigate https://URL
-    \\- click SELECTOR
-    \\- type TEXT
-    \\- enter
-    \\- done RESULT
+    \\WRONG: "navigate URL" or "I will click"
+    \\CORRECT: "navigate https://example.com" or "click a"
+    \\
+    \\Commands:
+    \\navigate https://URL - go to website
+    \\click SELECTOR - click element (a, button, #id, .class)
+    \\type TEXT - type text
+    \\enter - press enter
+    \\done RESULT - task complete, report result
     \\
     \\Examples:
-    \\GOAL: Go to example.com → navigate https://example.com
+    \\GOAL: Go to google.com → navigate https://google.com
     \\GOAL: Click the link → click a
-    \\GOAL: Type hello → type hello
-    \\GOAL: Submit form → enter
-    \\GOAL: Report title "Example" → done The title is Example
+    \\GOAL: Search for cats → type cats
+    \\GOAL: Submit → enter
+    \\GOAL: What is the title? Title: Example → done The title is Example
     \\
-    \\Now your turn:
+    \\OUTPUT:
 ;
 
 // Optimized prompt with DOM awareness (v23.3)
