@@ -110,17 +110,25 @@ pub const FEW_SHOT_PROMPT =
     \\NOW YOUR TURN:
 ;
 
-// Compact few-shot for smaller context
+// Compact few-shot for smaller context - IMPROVED v23.5
 pub const FEW_SHOT_COMPACT =
-    \\Browser agent. Actions: navigate URL | click SEL | type TXT | enter | scroll down | done RESULT
+    \\Reply with ONLY the action command, nothing else.
     \\
-    \\Ex1: GOAL:Go to example.com URL:blank → navigate https://example.com
-    \\Ex2: GOAL:Click link URL:example.com Title:Example Domain → click a
-    \\Ex3: GOAL:Type hello URL:google.com → type hello
-    \\Ex4: GOAL:Submit URL:google.com → enter
-    \\Ex5: GOAL:Report title URL:example.com Title:Example Domain → done Title is Example Domain
+    \\Actions:
+    \\- navigate https://URL
+    \\- click SELECTOR
+    \\- type TEXT
+    \\- enter
+    \\- done RESULT
     \\
-    \\YOUR TURN:
+    \\Examples:
+    \\GOAL: Go to example.com → navigate https://example.com
+    \\GOAL: Click the link → click a
+    \\GOAL: Type hello → type hello
+    \\GOAL: Submit form → enter
+    \\GOAL: Report title "Example" → done The title is Example
+    \\
+    \\Now your turn:
 ;
 
 // Optimized prompt with DOM awareness (v23.3)
