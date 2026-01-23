@@ -1323,24 +1323,131 @@ pub const DOMExtractor = struct {
         };
     }
 
-    // Internal: Parse single element from JSON (v23.40)
+    // Internal: Parse single element from JSON (v23.40, v23.41)
     fn parseElementJson(self: *Self, json: []const u8, selector: []const u8) ?Element {
-        _ = json;
-        // Simplified parsing - in production would use proper JSON parser
-        return Element{
-            .tag_name = "div",
-            .element_type = .other,
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, json, .{}) catch return null;
+        defer parsed.deinit();
+
+        if (parsed.value != .object) return null;
+        const obj = parsed.value.object;
+
+        // Extract tag name
+        const tag_name = if (obj.get("tag")) |t| switch (t) {
+            .string => |s| self.allocator.dupe(u8, s) catch return null,
+            else => self.allocator.dupe(u8, "div") catch return null,
+        } else self.allocator.dupe(u8, "div") catch return null;
+
+        // Build element
+        var element = Element{
+            .tag_name = tag_name,
+            .element_type = ElementType.fromTagName(tag_name),
             .selector = self.allocator.dupe(u8, selector) catch return null,
-            .is_visible = true,
         };
+
+        // Extract optional string fields
+        if (obj.get("id")) |v| if (v == .string) {
+            element.id = self.allocator.dupe(u8, v.string) catch null;
+        };
+        if (obj.get("className")) |v| if (v == .string) {
+            element.class_name = self.allocator.dupe(u8, v.string) catch null;
+        };
+        if (obj.get("name")) |v| if (v == .string) {
+            element.name = self.allocator.dupe(u8, v.string) catch null;
+        };
+        if (obj.get("text")) |v| if (v == .string) {
+            element.text_content = self.allocator.dupe(u8, v.string) catch null;
+        };
+        if (obj.get("href")) |v| if (v == .string) {
+            element.href = self.allocator.dupe(u8, v.string) catch null;
+        };
+        if (obj.get("src")) |v| if (v == .string) {
+            element.src = self.allocator.dupe(u8, v.string) catch null;
+        };
+        if (obj.get("value")) |v| if (v == .string) {
+            element.value = self.allocator.dupe(u8, v.string) catch null;
+        };
+        if (obj.get("placeholder")) |v| if (v == .string) {
+            element.placeholder = self.allocator.dupe(u8, v.string) catch null;
+        };
+        if (obj.get("type")) |v| if (v == .string) {
+            element.input_type = self.allocator.dupe(u8, v.string) catch null;
+        };
+        if (obj.get("ariaLabel")) |v| if (v == .string) {
+            element.aria_label = self.allocator.dupe(u8, v.string) catch null;
+        };
+        if (obj.get("title")) |v| if (v == .string) {
+            element.title = self.allocator.dupe(u8, v.string) catch null;
+        };
+        if (obj.get("alt")) |v| if (v == .string) {
+            element.alt = self.allocator.dupe(u8, v.string) catch null;
+        };
+
+        // Extract boolean fields
+        if (obj.get("visible")) |v| if (v == .bool) {
+            element.is_visible = v.bool;
+        };
+        if (obj.get("enabled")) |v| if (v == .bool) {
+            element.is_enabled = v.bool;
+        };
+        if (obj.get("checked")) |v| if (v == .bool) {
+            element.is_checked = v.bool;
+        };
+
+        // Extract bounding box
+        if (obj.get("x")) |v| if (v == .integer) {
+            element.bounding_box.x = @intCast(v.integer);
+        };
+        if (obj.get("y")) |v| if (v == .integer) {
+            element.bounding_box.y = @intCast(v.integer);
+        };
+        if (obj.get("width")) |v| if (v == .integer) {
+            element.bounding_box.width = @intCast(v.integer);
+        };
+        if (obj.get("height")) |v| if (v == .integer) {
+            element.bounding_box.height = @intCast(v.integer);
+        };
+
+        // Handle input type for checkbox/radio
+        if (element.input_type) |itype| {
+            if (std.mem.eql(u8, itype, "checkbox")) {
+                element.element_type = .checkbox;
+            } else if (std.mem.eql(u8, itype, "radio")) {
+                element.element_type = .radio;
+            }
+        }
+
+        return element;
     }
 
-    // Internal: Parse multiple elements from JSON (v23.40)
+    // Internal: Parse multiple elements from JSON array (v23.40, v23.41)
     fn parseElementsJson(self: *Self, json: []const u8, base_selector: []const u8) []Element {
-        _ = json;
-        _ = base_selector;
-        // Simplified - return empty array, real impl would parse JSON
-        return self.allocator.alloc(Element, 0) catch return &[_]Element{};
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, json, .{}) catch return &[_]Element{};
+        defer parsed.deinit();
+
+        if (parsed.value != .array) return &[_]Element{};
+        const arr = parsed.value.array;
+
+        var elements = std.ArrayList(Element).init(self.allocator);
+
+        for (arr.items, 0..) |item, i| {
+            if (item != .object) continue;
+
+            // Serialize single object back to JSON for parseElementJson
+            var item_json = std.ArrayList(u8).init(self.allocator);
+            defer item_json.deinit();
+
+            std.json.stringify(item, .{}, item_json.writer()) catch continue;
+
+            // Generate indexed selector
+            var selector_buf: [256]u8 = undefined;
+            const indexed_selector = std.fmt.bufPrint(&selector_buf, "{s}:nth-child({d})", .{ base_selector, i + 1 }) catch base_selector;
+
+            if (self.parseElementJson(item_json.items, indexed_selector)) |element| {
+                elements.append(element) catch continue;
+            }
+        }
+
+        return elements.toOwnedSlice() catch &[_]Element{};
     }
 };
 
@@ -5237,6 +5344,182 @@ test "DOMExtractor init (v23.40)" {
     defer extractor.deinit();
 
     try std.testing.expect(extractor.cached_elements == null);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.41: JSON PARSER TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "DOMExtractor parseElementJson basic (v23.41)" {
+    // Use page allocator for this test to avoid leak tracking issues
+    // In production, Element fields would be freed by the caller
+    const allocator = std.heap.page_allocator;
+    var agent = RealAgent.init(allocator, AgentConfig{ .test_mode = true });
+    defer agent.deinit();
+
+    var extractor = DOMExtractor.init(allocator, &agent);
+    defer extractor.deinit();
+
+    const json =
+        \\{"tag": "a", "id": "link1", "text": "Click me", "href": "/home", "visible": true, "x": 10, "y": 20, "width": 100, "height": 30}
+    ;
+
+    const element = extractor.parseElementJson(json, "a#link1");
+    try std.testing.expect(element != null);
+
+    const el = element.?;
+    try std.testing.expectEqualStrings("a", el.tag_name);
+    try std.testing.expectEqual(ElementType.link, el.element_type);
+    try std.testing.expectEqualStrings("link1", el.id.?);
+    try std.testing.expectEqualStrings("Click me", el.text_content.?);
+    try std.testing.expectEqualStrings("/home", el.href.?);
+    try std.testing.expect(el.is_visible);
+    try std.testing.expectEqual(@as(i32, 10), el.bounding_box.x);
+    try std.testing.expectEqual(@as(u32, 100), el.bounding_box.width);
+}
+
+test "DOMExtractor parseElementJson input field (v23.41)" {
+    const allocator = std.heap.page_allocator;
+    var agent = RealAgent.init(allocator, AgentConfig{ .test_mode = true });
+    defer agent.deinit();
+
+    var extractor = DOMExtractor.init(allocator, &agent);
+    defer extractor.deinit();
+
+    const json =
+        \\{"tag": "input", "name": "email", "type": "email", "placeholder": "Enter email", "value": "", "enabled": true}
+    ;
+
+    const element = extractor.parseElementJson(json, "input[name=email]");
+    try std.testing.expect(element != null);
+
+    const el = element.?;
+    try std.testing.expectEqualStrings("input", el.tag_name);
+    try std.testing.expectEqual(ElementType.input, el.element_type);
+    try std.testing.expectEqualStrings("email", el.name.?);
+    try std.testing.expectEqualStrings("email", el.input_type.?);
+    try std.testing.expectEqualStrings("Enter email", el.placeholder.?);
+    try std.testing.expect(el.is_enabled);
+}
+
+test "DOMExtractor parseElementJson checkbox (v23.41)" {
+    const allocator = std.heap.page_allocator;
+    var agent = RealAgent.init(allocator, AgentConfig{ .test_mode = true });
+    defer agent.deinit();
+
+    var extractor = DOMExtractor.init(allocator, &agent);
+    defer extractor.deinit();
+
+    const json =
+        \\{"tag": "input", "type": "checkbox", "name": "agree", "checked": true}
+    ;
+
+    const element = extractor.parseElementJson(json, "input[name=agree]");
+    try std.testing.expect(element != null);
+
+    const el = element.?;
+    try std.testing.expectEqual(ElementType.checkbox, el.element_type);
+    try std.testing.expect(el.is_checked);
+}
+
+test "DOMExtractor parseElementJson button (v23.41)" {
+    const allocator = std.heap.page_allocator;
+    var agent = RealAgent.init(allocator, AgentConfig{ .test_mode = true });
+    defer agent.deinit();
+
+    var extractor = DOMExtractor.init(allocator, &agent);
+    defer extractor.deinit();
+
+    const json =
+        \\{"tag": "button", "text": "Submit", "ariaLabel": "Submit form", "enabled": true}
+    ;
+
+    const element = extractor.parseElementJson(json, "button.submit");
+    try std.testing.expect(element != null);
+
+    const el = element.?;
+    try std.testing.expectEqualStrings("button", el.tag_name);
+    try std.testing.expectEqual(ElementType.button, el.element_type);
+    try std.testing.expectEqualStrings("Submit", el.text_content.?);
+    try std.testing.expectEqualStrings("Submit form", el.aria_label.?);
+}
+
+test "DOMExtractor parseElementJson null fields (v23.41)" {
+    const allocator = std.heap.page_allocator;
+    var agent = RealAgent.init(allocator, AgentConfig{ .test_mode = true });
+    defer agent.deinit();
+
+    var extractor = DOMExtractor.init(allocator, &agent);
+    defer extractor.deinit();
+
+    const json =
+        \\{"tag": "div", "id": null, "text": null, "visible": true}
+    ;
+
+    const element = extractor.parseElementJson(json, "div");
+    try std.testing.expect(element != null);
+
+    const el = element.?;
+    try std.testing.expectEqualStrings("div", el.tag_name);
+    try std.testing.expect(el.id == null);
+    try std.testing.expect(el.text_content == null);
+}
+
+test "DOMExtractor parseElementJson invalid JSON (v23.41)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    var extractor = DOMExtractor.init(allocator, &agent);
+    defer extractor.deinit();
+
+    const element = extractor.parseElementJson("not valid json", "div");
+    try std.testing.expect(element == null);
+}
+
+test "DOMExtractor parseElementsJson array (v23.41)" {
+    const allocator = std.heap.page_allocator;
+    var agent = RealAgent.init(allocator, AgentConfig{ .test_mode = true });
+    defer agent.deinit();
+
+    var extractor = DOMExtractor.init(allocator, &agent);
+    defer extractor.deinit();
+
+    const json =
+        \\[{"tag": "a", "text": "Link 1", "href": "/page1"}, {"tag": "a", "text": "Link 2", "href": "/page2"}, {"tag": "a", "text": "Link 3", "href": "/page3"}]
+    ;
+
+    const elements = extractor.parseElementsJson(json, "a");
+
+    try std.testing.expectEqual(@as(usize, 3), elements.len);
+    try std.testing.expectEqualStrings("a", elements[0].tag_name);
+    try std.testing.expectEqualStrings("Link 1", elements[0].text_content.?);
+    try std.testing.expectEqualStrings("Link 2", elements[1].text_content.?);
+    try std.testing.expectEqualStrings("Link 3", elements[2].text_content.?);
+}
+
+test "DOMExtractor parseElementsJson empty array (v23.41)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    var extractor = DOMExtractor.init(allocator, &agent);
+    defer extractor.deinit();
+
+    const elements = extractor.parseElementsJson("[]", "a");
+    try std.testing.expectEqual(@as(usize, 0), elements.len);
+}
+
+test "DOMExtractor parseElementsJson invalid JSON (v23.41)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    var extractor = DOMExtractor.init(allocator, &agent);
+    defer extractor.deinit();
+
+    const elements = extractor.parseElementsJson("not an array", "a");
+    try std.testing.expectEqual(@as(usize, 0), elements.len);
 }
 
 test "RetryMetrics with histogram (v23.26)" {
