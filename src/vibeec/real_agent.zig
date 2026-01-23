@@ -63,6 +63,124 @@ pub const JitterStrategy = enum {
     }
 };
 
+// v23.33: Failure Pattern for adaptive strategy selection
+pub const FailurePattern = enum {
+    burst, // Multiple failures in quick succession - use full jitter
+    steady, // Consistent failure rate - use decorrelated jitter
+    random, // Unpredictable failures - use equal jitter
+    unknown, // Not enough data - use default
+
+    pub fn toString(self: FailurePattern) []const u8 {
+        return switch (self) {
+            .burst => "burst",
+            .steady => "steady",
+            .random => "random",
+            .unknown => "unknown",
+        };
+    }
+
+    /// Get recommended jitter strategy for this pattern (v23.33)
+    pub fn getRecommendedStrategy(self: FailurePattern) JitterStrategy {
+        return switch (self) {
+            .burst => .full, // Maximum spread to avoid thundering herd
+            .steady => .decorrelated, // AWS recommended for consistent load
+            .random => .equal, // Balanced approach for unpredictable failures
+            .unknown => .equal, // Default to balanced
+        };
+    }
+};
+
+// v23.33: Failure History for pattern detection
+pub const FailureHistory = struct {
+    // Sliding window of failure timestamps (last N failures)
+    const WINDOW_SIZE = 10;
+    timestamps: [WINDOW_SIZE]i64 = [_]i64{0} ** WINDOW_SIZE,
+    count: u32 = 0,
+    index: u32 = 0,
+
+    const Self = @This();
+
+    /// Record a failure timestamp (v23.33)
+    pub fn recordFailure(self: *Self, timestamp: i64) void {
+        self.timestamps[self.index] = timestamp;
+        self.index = (self.index + 1) % WINDOW_SIZE;
+        if (self.count < WINDOW_SIZE) {
+            self.count += 1;
+        }
+    }
+
+    /// Detect failure pattern from history (v23.33)
+    pub fn detectPattern(self: Self) FailurePattern {
+        if (self.count < 3) return .unknown;
+
+        // Calculate intervals between failures
+        var intervals: [WINDOW_SIZE - 1]i64 = undefined;
+        var interval_count: u32 = 0;
+        var sorted_timestamps: [WINDOW_SIZE]i64 = undefined;
+
+        // Copy and sort timestamps
+        var valid_count: u32 = 0;
+        for (self.timestamps) |ts| {
+            if (ts > 0) {
+                sorted_timestamps[valid_count] = ts;
+                valid_count += 1;
+            }
+        }
+
+        if (valid_count < 3) return .unknown;
+
+        // Simple bubble sort for small array
+        var i: u32 = 0;
+        while (i < valid_count - 1) : (i += 1) {
+            var j: u32 = 0;
+            while (j < valid_count - i - 1) : (j += 1) {
+                if (sorted_timestamps[j] > sorted_timestamps[j + 1]) {
+                    const tmp = sorted_timestamps[j];
+                    sorted_timestamps[j] = sorted_timestamps[j + 1];
+                    sorted_timestamps[j + 1] = tmp;
+                }
+            }
+        }
+
+        // Calculate intervals
+        i = 0;
+        while (i < valid_count - 1) : (i += 1) {
+            intervals[interval_count] = sorted_timestamps[i + 1] - sorted_timestamps[i];
+            interval_count += 1;
+        }
+
+        if (interval_count < 2) return .unknown;
+
+        // Analyze intervals
+        var sum: i64 = 0;
+        var min_interval: i64 = intervals[0];
+        var max_interval: i64 = intervals[0];
+
+        i = 0;
+        while (i < interval_count) : (i += 1) {
+            sum += intervals[i];
+            if (intervals[i] < min_interval) min_interval = intervals[i];
+            if (intervals[i] > max_interval) max_interval = intervals[i];
+        }
+
+        const avg: i64 = @divFloor(sum, @as(i64, @intCast(interval_count)));
+
+        // Burst: very short intervals (< 1 second average)
+        if (avg < 1000) return .burst;
+
+        // Steady: consistent intervals (max/min ratio < 3)
+        if (min_interval > 0 and @divFloor(max_interval, min_interval) < 3) return .steady;
+
+        // Random: high variance
+        return .random;
+    }
+
+    /// Reset history (v23.33)
+    pub fn reset(self: *Self) void {
+        self.* = FailureHistory{};
+    }
+};
+
 // v23.16: Retry configuration with exponential backoff
 pub const RetryConfig = struct {
     max_retries: u32 = 3,
@@ -79,6 +197,9 @@ pub const RetryConfig = struct {
     jitter_strategy: JitterStrategy = .equal,
     // v23.25: Previous delay for decorrelated jitter
     prev_delay_ms: u32 = 0,
+    // v23.33: Adaptive strategy based on failure patterns
+    adaptive_strategy: bool = false,
+    failure_history: FailureHistory = FailureHistory{},
 
     /// Calculate delay for given attempt (0-indexed)
     pub fn getDelay(self: RetryConfig, attempt: u32) u32 {
@@ -130,7 +251,7 @@ pub const RetryConfig = struct {
         return @max(result, 100); // Minimum 100ms
     }
 
-    /// Calculate delay with jitter using selected strategy (v23.25)
+    /// Calculate delay with jitter using selected strategy (v23.25, v23.33)
     /// Prevents thundering herd problem in distributed systems
     pub fn getDelayWithJitter(self: RetryConfig, attempt: u32) u32 {
         const base_delay = self.getDelay(attempt);
@@ -138,12 +259,30 @@ pub const RetryConfig = struct {
             return base_delay;
         }
 
+        // v23.33: Use adaptive strategy if enabled
+        const strategy = if (self.adaptive_strategy)
+            self.failure_history.detectPattern().getRecommendedStrategy()
+        else
+            self.jitter_strategy;
+
         // Use strategy-specific jitter calculation
-        return switch (self.jitter_strategy) {
+        return switch (strategy) {
             .full => self.getFullJitter(attempt),
             .decorrelated => self.getDecorrelatedJitter(attempt, self.prev_delay_ms),
             .equal => self.getEqualJitter(attempt),
         };
+    }
+
+    /// Get delay with adaptive strategy and record failure (v23.33)
+    pub fn getDelayWithAdaptive(self: *RetryConfig, attempt: u32) u32 {
+        // Record failure timestamp for pattern detection
+        self.failure_history.recordFailure(std.time.milliTimestamp());
+        return self.getDelayWithJitter(attempt);
+    }
+
+    /// Get current detected pattern (v23.33)
+    pub fn getDetectedPattern(self: RetryConfig) FailurePattern {
+        return self.failure_history.detectPattern();
     }
 
     /// Get equal jitter: delay/2 + random(0, delay/2) (v23.25)
@@ -4435,4 +4574,126 @@ test "RealAgent saveDomainCircuitBreakers (v23.32)" {
     // Check content contains our domain
     try std.testing.expect(std.mem.indexOf(u8, content, "test.com") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "OPEN") != null);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.33: ADAPTIVE RETRY STRATEGY TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "FailurePattern enum (v23.33)" {
+    try std.testing.expectEqualStrings("burst", FailurePattern.burst.toString());
+    try std.testing.expectEqualStrings("steady", FailurePattern.steady.toString());
+    try std.testing.expectEqualStrings("random", FailurePattern.random.toString());
+    try std.testing.expectEqualStrings("unknown", FailurePattern.unknown.toString());
+}
+
+test "FailurePattern getRecommendedStrategy (v23.33)" {
+    try std.testing.expectEqual(JitterStrategy.full, FailurePattern.burst.getRecommendedStrategy());
+    try std.testing.expectEqual(JitterStrategy.decorrelated, FailurePattern.steady.getRecommendedStrategy());
+    try std.testing.expectEqual(JitterStrategy.equal, FailurePattern.random.getRecommendedStrategy());
+    try std.testing.expectEqual(JitterStrategy.equal, FailurePattern.unknown.getRecommendedStrategy());
+}
+
+test "FailureHistory recordFailure (v23.33)" {
+    var history = FailureHistory{};
+    try std.testing.expectEqual(@as(u32, 0), history.count);
+
+    history.recordFailure(1000);
+    try std.testing.expectEqual(@as(u32, 1), history.count);
+
+    history.recordFailure(2000);
+    try std.testing.expectEqual(@as(u32, 2), history.count);
+}
+
+test "FailureHistory detectPattern unknown (v23.33)" {
+    var history = FailureHistory{};
+    // Not enough data
+    try std.testing.expectEqual(FailurePattern.unknown, history.detectPattern());
+
+    history.recordFailure(1000);
+    try std.testing.expectEqual(FailurePattern.unknown, history.detectPattern());
+
+    history.recordFailure(2000);
+    try std.testing.expectEqual(FailurePattern.unknown, history.detectPattern());
+}
+
+test "FailureHistory detectPattern burst (v23.33)" {
+    var history = FailureHistory{};
+    // Failures in quick succession (< 1 second apart)
+    history.recordFailure(1000);
+    history.recordFailure(1100);
+    history.recordFailure(1200);
+    history.recordFailure(1300);
+
+    try std.testing.expectEqual(FailurePattern.burst, history.detectPattern());
+}
+
+test "FailureHistory detectPattern steady (v23.33)" {
+    var history = FailureHistory{};
+    // Consistent intervals (5 seconds apart)
+    history.recordFailure(0);
+    history.recordFailure(5000);
+    history.recordFailure(10000);
+    history.recordFailure(15000);
+
+    try std.testing.expectEqual(FailurePattern.steady, history.detectPattern());
+}
+
+test "FailureHistory reset (v23.33)" {
+    var history = FailureHistory{};
+    history.recordFailure(1000);
+    history.recordFailure(2000);
+    try std.testing.expectEqual(@as(u32, 2), history.count);
+
+    history.reset();
+    try std.testing.expectEqual(@as(u32, 0), history.count);
+}
+
+test "RetryConfig adaptive_strategy default (v23.33)" {
+    const config = RetryConfig{};
+    try std.testing.expect(!config.adaptive_strategy);
+}
+
+test "RetryConfig getDetectedPattern (v23.33)" {
+    var config = RetryConfig{};
+    // Initially unknown
+    try std.testing.expectEqual(FailurePattern.unknown, config.getDetectedPattern());
+}
+
+test "RetryConfig getDelayWithAdaptive (v23.33)" {
+    var config = RetryConfig{
+        .initial_delay_ms = 500,
+        .adaptive_strategy = true,
+    };
+
+    // First call records failure and returns delay
+    const delay1 = config.getDelayWithAdaptive(0);
+    try std.testing.expect(delay1 > 0);
+    try std.testing.expectEqual(@as(u32, 1), config.failure_history.count);
+
+    // Second call records another failure
+    const delay2 = config.getDelayWithAdaptive(1);
+    try std.testing.expect(delay2 > 0);
+    try std.testing.expectEqual(@as(u32, 2), config.failure_history.count);
+}
+
+test "RetryConfig adaptive selects strategy based on pattern (v23.33)" {
+    var config = RetryConfig{
+        .initial_delay_ms = 500,
+        .adaptive_strategy = true,
+        .use_jitter = true,
+    };
+
+    // Simulate burst pattern
+    config.failure_history.recordFailure(1000);
+    config.failure_history.recordFailure(1100);
+    config.failure_history.recordFailure(1200);
+    config.failure_history.recordFailure(1300);
+
+    // Should detect burst and use full jitter
+    try std.testing.expectEqual(FailurePattern.burst, config.getDetectedPattern());
+
+    // getDelayWithJitter should use full jitter strategy
+    const delay = config.getDelayWithJitter(1);
+    try std.testing.expect(delay > 0);
 }
