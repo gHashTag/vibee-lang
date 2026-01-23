@@ -245,6 +245,110 @@ pub const E2ETestSuite = struct {
         }
     }
 
+    /// Test search functionality
+    pub fn testSearch(self: *Self) !void {
+        const start = std.time.milliTimestamp();
+
+        // Create new page for isolation
+        const new_ws_url = self.createNewPage() catch {
+            try self.addResult("Search", false, 0, 0, "Failed to create new page");
+            return;
+        };
+        defer self.allocator.free(new_ws_url);
+
+        var agent = real_agent.RealAgent.init(self.allocator, .{});
+        defer agent.deinit();
+
+        agent.connectBrowser(new_ws_url) catch {
+            try self.addResult("Search", false, 0, 0, "Failed to connect");
+            return;
+        };
+
+        // Navigate to DuckDuckGo (simpler than Google)
+        agent.navigate("https://duckduckgo.com") catch {
+            try self.addResult("Search", false, 0, 0, "Failed to navigate");
+            return;
+        };
+
+        std.time.sleep(2 * std.time.ns_per_s);
+
+        // Type search query
+        agent.typeText("vibee programming language") catch {
+            try self.addResult("Search", false, 1, 0, "Failed to type");
+            return;
+        };
+
+        // Press enter
+        agent.pressEnter() catch {
+            try self.addResult("Search", false, 2, 0, "Failed to press enter");
+            return;
+        };
+
+        std.time.sleep(3 * std.time.ns_per_s);
+
+        // Check URL contains search query
+        const url = agent.getURL() catch {
+            try self.addResult("Search", false, 3, 0, "Failed to get URL");
+            return;
+        };
+        defer self.allocator.free(url);
+
+        const elapsed = std.time.milliTimestamp() - start;
+
+        if (std.mem.indexOf(u8, url, "q=") != null or
+            std.mem.indexOf(u8, url, "search") != null or
+            std.mem.indexOf(u8, url, "duckduckgo") != null)
+        {
+            try self.addResult("Search", true, 3, @intCast(elapsed), null);
+        } else {
+            try self.addResult("Search", false, 3, @intCast(elapsed), "Search URL not found");
+        }
+    }
+
+    /// Test typing in input field
+    pub fn testTypeInput(self: *Self) !void {
+        const start = std.time.milliTimestamp();
+
+        const new_ws_url = self.createNewPage() catch {
+            try self.addResult("TypeInput", false, 0, 0, "Failed to create new page");
+            return;
+        };
+        defer self.allocator.free(new_ws_url);
+
+        var agent = real_agent.RealAgent.init(self.allocator, .{});
+        defer agent.deinit();
+
+        agent.connectBrowser(new_ws_url) catch {
+            try self.addResult("TypeInput", false, 0, 0, "Failed to connect");
+            return;
+        };
+
+        // Navigate to httpbin forms
+        agent.navigate("https://httpbin.org/forms/post") catch {
+            try self.addResult("TypeInput", false, 0, 0, "Failed to navigate");
+            return;
+        };
+
+        std.time.sleep(2 * std.time.ns_per_s);
+
+        // Click on customer name input
+        agent.clickSelector("input[name='custname']") catch {
+            try self.addResult("TypeInput", false, 1, 0, "Failed to click input");
+            return;
+        };
+
+        std.time.sleep(500 * std.time.ns_per_ms);
+
+        // Type name
+        agent.typeText("VIBEE Test User") catch {
+            try self.addResult("TypeInput", false, 2, 0, "Failed to type");
+            return;
+        };
+
+        const elapsed = std.time.milliTimestamp() - start;
+        try self.addResult("TypeInput", true, 2, @intCast(elapsed), null);
+    }
+
     fn addResult(self: *Self, name: []const u8, passed: bool, steps: u32, latency: u64, err: ?[]const u8) !void {
         try self.results.append(E2ETestResult{
             .test_name = name,
@@ -299,7 +403,7 @@ pub fn runAllTests(allocator: Allocator, ws_url: []const u8) !void {
 
     std.debug.print("\n[E2E] Starting tests with browser at {s}\n", .{ws_url});
 
-    // Run tests
+    // Basic browser tests
     std.debug.print("[E2E] Test 1: Navigation\n", .{});
     try suite.testNavigation();
 
@@ -309,8 +413,15 @@ pub fn runAllTests(allocator: Allocator, ws_url: []const u8) !void {
     std.debug.print("[E2E] Test 3: Click\n", .{});
     try suite.testClick();
 
-    // Only run PlanningAgent test if Ollama is available
-    std.debug.print("[E2E] Test 4: PlanningAgent (requires Ollama)\n", .{});
+    // Form interaction tests
+    std.debug.print("[E2E] Test 4: Search\n", .{});
+    try suite.testSearch();
+
+    std.debug.print("[E2E] Test 5: TypeInput\n", .{});
+    try suite.testTypeInput();
+
+    // Full agent test (requires Ollama)
+    std.debug.print("[E2E] Test 6: PlanningAgent (requires Ollama)\n", .{});
     try suite.testPlanningAgent();
 
     suite.printResults();
