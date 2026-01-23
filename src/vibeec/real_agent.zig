@@ -209,7 +209,11 @@ pub const RetryConfig = struct {
     max_delay_ms: u32 = 8000,
     // v23.17: Timeout adjustment on retry
     timeout_factor: f32 = 1.5, // Increase timeout by 50% on each retry
-    max_timeout_ms: u32 = 30000, // Cap at 30 seconds
+    max_timeout_ms: u32 = 30000, // Cap at 30 seconds (legacy, use specific caps)
+    // v23.38: Configurable timeout caps per operation type
+    selector_timeout_cap_ms: u32 = 30000, // Cap for waitForSelector (30s)
+    page_load_timeout_cap_ms: u32 = 60000, // Cap for waitForPageLoad (60s)
+    navigate_timeout_cap_ms: u32 = 45000, // Cap for navigate (45s)
     // v23.18: Jitter for distributed systems
     jitter_factor: f32 = 0.2, // ±20% random variation
     use_jitter: bool = true,
@@ -1356,6 +1360,7 @@ pub const NavigateOperation = struct {
 
 /// Wait for selector operation for RetryExecutor (v23.35)
 /// Wait for selector operation with timeout escalation (v23.35, v23.36)
+/// Wait for selector operation with timeout escalation (v23.35, v23.36, v23.38)
 pub const WaitSelectorOperation = struct {
     selector: []const u8,
     timeout_ms: u32,
@@ -1363,6 +1368,8 @@ pub const WaitSelectorOperation = struct {
     // v23.36: Timeout escalation
     timeout_multiplier: f32 = 1.5,
     current_attempt: u32 = 0,
+    // v23.38: Optional custom timeout cap (0 = use config default)
+    timeout_cap_ms: u32 = 0,
 
     const Self = @This();
 
@@ -1370,7 +1377,13 @@ pub const WaitSelectorOperation = struct {
         return .wait_selector;
     }
 
-    /// Get escalated timeout based on current attempt (v23.36)
+    /// Get timeout cap from config or custom value (v23.38)
+    fn getTimeoutCap(self: *Self) u32 {
+        if (self.timeout_cap_ms > 0) return self.timeout_cap_ms;
+        return self.agent.retry_config.selector_timeout_cap_ms;
+    }
+
+    /// Get escalated timeout based on current attempt (v23.36, v23.38)
     pub fn getEscalatedTimeout(self: *Self) u32 {
         if (self.current_attempt == 0) return self.timeout_ms;
         
@@ -1381,8 +1394,8 @@ pub const WaitSelectorOperation = struct {
         }
         
         const escalated = @as(f32, @floatFromInt(self.timeout_ms)) * multiplier;
-        // Cap at 30 seconds max
-        const max_timeout: u32 = 30000;
+        // v23.38: Use configurable cap
+        const max_timeout = self.getTimeoutCap();
         return @min(@as(u32, @intFromFloat(escalated)), max_timeout);
     }
 
@@ -1420,12 +1433,15 @@ pub const ClickOperation = struct {
 
 /// Wait for page load operation for RetryExecutor (v23.35)
 /// Wait for page load operation with timeout escalation (v23.35, v23.36)
+/// Wait for page load operation with timeout escalation (v23.35, v23.36, v23.38)
 pub const WaitPageLoadOperation = struct {
     timeout_ms: u32,
     agent: *RealAgent,
     // v23.36: Timeout escalation
     timeout_multiplier: f32 = 1.5,
     current_attempt: u32 = 0,
+    // v23.38: Optional custom timeout cap (0 = use config default)
+    timeout_cap_ms: u32 = 0,
 
     const Self = @This();
 
@@ -1433,7 +1449,13 @@ pub const WaitPageLoadOperation = struct {
         return .wait_page_load;
     }
 
-    /// Get escalated timeout based on current attempt (v23.36)
+    /// Get timeout cap from config or custom value (v23.38)
+    fn getTimeoutCap(self: *Self) u32 {
+        if (self.timeout_cap_ms > 0) return self.timeout_cap_ms;
+        return self.agent.retry_config.page_load_timeout_cap_ms;
+    }
+
+    /// Get escalated timeout based on current attempt (v23.36, v23.38)
     pub fn getEscalatedTimeout(self: *Self) u32 {
         if (self.current_attempt == 0) return self.timeout_ms;
         
@@ -1444,8 +1466,8 @@ pub const WaitPageLoadOperation = struct {
         }
         
         const escalated = @as(f32, @floatFromInt(self.timeout_ms)) * multiplier;
-        // Cap at 60 seconds max for page loads
-        const max_timeout: u32 = 60000;
+        // v23.38: Use configurable cap
+        const max_timeout = self.getTimeoutCap();
         return @min(@as(u32, @intFromFloat(escalated)), max_timeout);
     }
 
@@ -4878,8 +4900,57 @@ test "WaitSelectorOperation timeout cap at 30s (v23.36)" {
         op.nextAttempt();
     }
 
-    // Should be capped at 30 seconds
+    // Should be capped at 30 seconds (default config)
     try std.testing.expect(op.getEscalatedTimeout() <= 30000);
+}
+
+test "WaitSelectorOperation custom timeout cap (v23.38)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    var op = WaitSelectorOperation{
+        .selector = "#test",
+        .timeout_ms = 5000,
+        .agent = &agent,
+        .timeout_multiplier = 2.0,
+        .timeout_cap_ms = 15000, // Custom cap: 15 seconds
+    };
+
+    // Escalate many times
+    var i: u32 = 0;
+    while (i < 10) : (i += 1) {
+        op.nextAttempt();
+    }
+
+    // Should be capped at custom 15 seconds
+    try std.testing.expect(op.getEscalatedTimeout() <= 15000);
+}
+
+test "WaitSelectorOperation uses config cap when custom is 0 (v23.38)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    // Modify config cap
+    agent.retry_config.selector_timeout_cap_ms = 20000;
+
+    var op = WaitSelectorOperation{
+        .selector = "#test",
+        .timeout_ms = 5000,
+        .agent = &agent,
+        .timeout_multiplier = 2.0,
+        .timeout_cap_ms = 0, // Use config default
+    };
+
+    // Escalate many times
+    var i: u32 = 0;
+    while (i < 10) : (i += 1) {
+        op.nextAttempt();
+    }
+
+    // Should be capped at config's 20 seconds
+    try std.testing.expect(op.getEscalatedTimeout() <= 20000);
 }
 
 test "ClickOperation getType (v23.35)" {
@@ -4930,8 +5001,62 @@ test "WaitPageLoadOperation timeout cap at 60s (v23.36)" {
         op.nextAttempt();
     }
 
-    // Should be capped at 60 seconds for page loads
+    // Should be capped at 60 seconds for page loads (default config)
     try std.testing.expect(op.getEscalatedTimeout() <= 60000);
+}
+
+test "WaitPageLoadOperation custom timeout cap (v23.38)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    var op = WaitPageLoadOperation{
+        .timeout_ms = 10000,
+        .agent = &agent,
+        .timeout_multiplier = 2.0,
+        .timeout_cap_ms = 25000, // Custom cap: 25 seconds
+    };
+
+    // Escalate many times
+    var i: u32 = 0;
+    while (i < 10) : (i += 1) {
+        op.nextAttempt();
+    }
+
+    // Should be capped at custom 25 seconds
+    try std.testing.expect(op.getEscalatedTimeout() <= 25000);
+}
+
+test "WaitPageLoadOperation uses config cap when custom is 0 (v23.38)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    // Modify config cap
+    agent.retry_config.page_load_timeout_cap_ms = 45000;
+
+    var op = WaitPageLoadOperation{
+        .timeout_ms = 10000,
+        .agent = &agent,
+        .timeout_multiplier = 2.0,
+        .timeout_cap_ms = 0, // Use config default
+    };
+
+    // Escalate many times
+    var i: u32 = 0;
+    while (i < 10) : (i += 1) {
+        op.nextAttempt();
+    }
+
+    // Should be capped at config's 45 seconds
+    try std.testing.expect(op.getEscalatedTimeout() <= 45000);
+}
+
+test "RetryConfig timeout caps defaults (v23.38)" {
+    const config = RetryConfig{};
+    try std.testing.expectEqual(@as(u32, 30000), config.selector_timeout_cap_ms);
+    try std.testing.expectEqual(@as(u32, 60000), config.page_load_timeout_cap_ms);
+    try std.testing.expectEqual(@as(u32, 45000), config.navigate_timeout_cap_ms);
 }
 
 test "RetryExecutor fromAgent (v23.35)" {
