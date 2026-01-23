@@ -1036,6 +1036,210 @@ pub fn Pipeline(comptime T: type) type {
     };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.31: RETRY EXECUTOR - Integration of Pure Functions
+// Combines pure decision logic with effectful execution
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Operation type for retry executor (v23.31)
+pub const OperationType = enum {
+    navigate,
+    wait_selector,
+    wait_page_load,
+    click,
+    evaluate,
+
+    pub fn toString(self: OperationType) []const u8 {
+        return switch (self) {
+            .navigate => "navigate",
+            .wait_selector => "wait_selector",
+            .wait_page_load => "wait_page_load",
+            .click => "click",
+            .evaluate => "evaluate",
+        };
+    }
+};
+
+/// Retry execution result with detailed info (v23.31)
+pub const RetryExecutionResult = struct {
+    success: bool,
+    attempts: u32,
+    total_delay_ms: u32,
+    final_error: ?AgentError = null,
+    decisions: []const RetryDecision = &[_]RetryDecision{},
+};
+
+/// Retry Executor - bridges pure functions with effectful operations (v23.31)
+pub const RetryExecutor = struct {
+    config: RetryConfig,
+    metrics: *RetryMetrics,
+    circuit_breaker: *CircuitBreaker,
+    allocator: Allocator,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator, config: RetryConfig, metrics: *RetryMetrics, cb: *CircuitBreaker) Self {
+        return Self{
+            .allocator = allocator,
+            .config = config,
+            .metrics = metrics,
+            .circuit_breaker = cb,
+        };
+    }
+
+    /// Build retry context from current state (v23.31)
+    pub fn buildContext(self: Self, attempt: u32, error_category: ErrorCategory) RetryContext {
+        return RetryContext{
+            .attempt = attempt,
+            .max_retries = self.config.max_retries,
+            .error_category = error_category,
+            .circuit_state = self.circuit_breaker.state,
+            .base_delay_ms = self.config.initial_delay_ms,
+            .max_delay_ms = self.config.max_delay_ms,
+            .backoff_factor = self.config.backoff_factor,
+            .jitter_strategy = self.config.jitter_strategy,
+            .seed = @bitCast(std.time.milliTimestamp()),
+        };
+    }
+
+    /// Execute operation with pure retry logic (v23.31)
+    /// Uses makeRetryDecision for all retry decisions
+    pub fn executeWithRetry(
+        self: *Self,
+        op_type: OperationType,
+        comptime operation: fn (*anyopaque) AgentError!void,
+        context: *anyopaque,
+    ) RetryExecutionResult {
+        var attempt: u32 = 0;
+        var total_delay: u32 = 0;
+        var last_error: ?AgentError = null;
+
+        // Track operation
+        self.metrics.total_operations += 1;
+
+        // Check circuit breaker first using pure function
+        if (!shouldRetry(0, self.config.max_retries, self.circuit_breaker.state, .transient)) {
+            self.metrics.failed_operations += 1;
+            return RetryExecutionResult{
+                .success = false,
+                .attempts = 0,
+                .total_delay_ms = 0,
+                .final_error = AgentError.BrowserConnectionFailed,
+            };
+        }
+
+        while (attempt <= self.config.max_retries) {
+            // Try operation
+            operation(context) catch |err| {
+                last_error = err;
+                attempt += 1;
+
+                // Track retry by operation type
+                self.metrics.total_retries += 1;
+                switch (op_type) {
+                    .navigate => self.metrics.navigate_retries += 1,
+                    .wait_selector => self.metrics.selector_retries += 1,
+                    .wait_page_load => self.metrics.page_load_retries += 1,
+                    .click => self.metrics.click_retries += 1,
+                    .evaluate => {},
+                }
+
+                // Use pure function for retry decision
+                const error_category = classifyError(err);
+                const ctx = self.buildContext(attempt, error_category);
+                const decision = makeRetryDecision(ctx);
+
+                if (!decision.should_retry) {
+                    self.metrics.failed_operations += 1;
+                    self.circuit_breaker.recordFailure();
+                    return RetryExecutionResult{
+                        .success = false,
+                        .attempts = attempt,
+                        .total_delay_ms = total_delay,
+                        .final_error = err,
+                    };
+                }
+
+                // Apply delay
+                total_delay += decision.delay_ms;
+                self.metrics.total_delay_ms += decision.delay_ms;
+                if (decision.delay_ms > self.metrics.max_delay_ms) {
+                    self.metrics.max_delay_ms = decision.delay_ms;
+                }
+                self.metrics.recordDelay(decision.delay_ms);
+
+                std.debug.print("    [RETRY-EXEC] {s} attempt {d}/{d}, waiting {d}ms ({s})\n", .{
+                    op_type.toString(),
+                    attempt,
+                    self.config.max_retries + 1,
+                    decision.delay_ms,
+                    decision.reason,
+                });
+
+                std.time.sleep(@as(u64, decision.delay_ms) * std.time.ns_per_ms);
+                continue;
+            };
+
+            // Success
+            self.metrics.successful_operations += 1;
+            self.circuit_breaker.recordSuccess();
+            return RetryExecutionResult{
+                .success = true,
+                .attempts = attempt + 1,
+                .total_delay_ms = total_delay,
+            };
+        }
+
+        // Max retries exceeded
+        self.metrics.failed_operations += 1;
+        self.circuit_breaker.recordFailure();
+        return RetryExecutionResult{
+            .success = false,
+            .attempts = attempt,
+            .total_delay_ms = total_delay,
+            .final_error = last_error,
+        };
+    }
+
+    /// Simulate retry execution for testing (v23.31)
+    /// Pure function - no actual operation execution
+    pub fn simulateRetry(self: Self, failures_before_success: u32) RetryExecutionResult {
+        var attempt: u32 = 0;
+        var total_delay: u32 = 0;
+
+        while (attempt <= self.config.max_retries) {
+            if (attempt >= failures_before_success) {
+                // Success
+                return RetryExecutionResult{
+                    .success = true,
+                    .attempts = attempt + 1,
+                    .total_delay_ms = total_delay,
+                };
+            }
+
+            attempt += 1;
+            const ctx = self.buildContext(attempt, .transient);
+            const decision = makeRetryDecision(ctx);
+
+            if (!decision.should_retry) {
+                return RetryExecutionResult{
+                    .success = false,
+                    .attempts = attempt,
+                    .total_delay_ms = total_delay,
+                };
+            }
+
+            total_delay += decision.delay_ms;
+        }
+
+        return RetryExecutionResult{
+            .success = false,
+            .attempts = attempt,
+            .total_delay_ms = total_delay,
+        };
+    }
+};
+
 pub const RealAgent = struct {
     allocator: Allocator,
     config: AgentConfig,
@@ -3821,4 +4025,111 @@ test "Pipeline composition (v23.30)" {
         .get();
 
     try std.testing.expectEqual(@as(u32, 16), result);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.31: RETRY EXECUTOR TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "OperationType toString (v23.31)" {
+    try std.testing.expectEqualStrings("navigate", OperationType.navigate.toString());
+    try std.testing.expectEqualStrings("wait_selector", OperationType.wait_selector.toString());
+    try std.testing.expectEqualStrings("click", OperationType.click.toString());
+}
+
+test "RetryExecutor init (v23.31)" {
+    const allocator = std.testing.allocator;
+    var metrics = RetryMetrics{};
+    var cb = CircuitBreaker{};
+    const config = RetryConfig{};
+
+    const executor = RetryExecutor.init(allocator, config, &metrics, &cb);
+    try std.testing.expectEqual(config.max_retries, executor.config.max_retries);
+}
+
+test "RetryExecutor buildContext (v23.31)" {
+    const allocator = std.testing.allocator;
+    var metrics = RetryMetrics{};
+    var cb = CircuitBreaker{};
+    const config = RetryConfig{
+        .max_retries = 5,
+        .initial_delay_ms = 1000,
+        .jitter_strategy = .full,
+    };
+
+    const executor = RetryExecutor.init(allocator, config, &metrics, &cb);
+    const ctx = executor.buildContext(2, .transient);
+
+    try std.testing.expectEqual(@as(u32, 2), ctx.attempt);
+    try std.testing.expectEqual(@as(u32, 5), ctx.max_retries);
+    try std.testing.expectEqual(ErrorCategory.transient, ctx.error_category);
+    try std.testing.expectEqual(CircuitBreakerState.closed, ctx.circuit_state);
+    try std.testing.expectEqual(JitterStrategy.full, ctx.jitter_strategy);
+}
+
+test "RetryExecutor simulateRetry success on first try (v23.31)" {
+    const allocator = std.testing.allocator;
+    var metrics = RetryMetrics{};
+    var cb = CircuitBreaker{};
+    const config = RetryConfig{ .max_retries = 3 };
+
+    const executor = RetryExecutor.init(allocator, config, &metrics, &cb);
+    const result = executor.simulateRetry(0); // Success immediately
+
+    try std.testing.expect(result.success);
+    try std.testing.expectEqual(@as(u32, 1), result.attempts);
+    try std.testing.expectEqual(@as(u32, 0), result.total_delay_ms);
+}
+
+test "RetryExecutor simulateRetry success after retries (v23.31)" {
+    const allocator = std.testing.allocator;
+    var metrics = RetryMetrics{};
+    var cb = CircuitBreaker{};
+    const config = RetryConfig{
+        .max_retries = 3,
+        .initial_delay_ms = 100,
+    };
+
+    const executor = RetryExecutor.init(allocator, config, &metrics, &cb);
+    const result = executor.simulateRetry(2); // Fail twice, then succeed
+
+    try std.testing.expect(result.success);
+    try std.testing.expectEqual(@as(u32, 3), result.attempts);
+    try std.testing.expect(result.total_delay_ms > 0);
+}
+
+test "RetryExecutor simulateRetry failure after max retries (v23.31)" {
+    const allocator = std.testing.allocator;
+    var metrics = RetryMetrics{};
+    var cb = CircuitBreaker{};
+    const config = RetryConfig{ .max_retries = 2 };
+
+    const executor = RetryExecutor.init(allocator, config, &metrics, &cb);
+    const result = executor.simulateRetry(10); // Never succeed
+
+    try std.testing.expect(!result.success);
+    // max_retries=2 means: attempt 0 (fail), attempt 1 (fail), attempt 2 (fail) = 2 retries counted
+    try std.testing.expect(result.attempts >= 2);
+}
+
+test "RetryExecutor with open circuit breaker (v23.31)" {
+    const allocator = std.testing.allocator;
+    var metrics = RetryMetrics{};
+    var cb = CircuitBreaker{ .state = .open };
+    const config = RetryConfig{};
+
+    var executor = RetryExecutor.init(allocator, config, &metrics, &cb);
+
+    // Dummy operation that always fails
+    const DummyCtx = struct {
+        fn fail(_: *anyopaque) AgentError!void {
+            return AgentError.NavigationFailed;
+        }
+    };
+
+    var dummy: u32 = 0;
+    const result = executor.executeWithRetry(.navigate, DummyCtx.fail, @ptrCast(&dummy));
+
+    try std.testing.expect(!result.success);
+    try std.testing.expectEqual(@as(u32, 0), result.attempts);
 }
