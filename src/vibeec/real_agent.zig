@@ -46,6 +46,9 @@ pub const RetryConfig = struct {
     // v23.17: Timeout adjustment on retry
     timeout_factor: f32 = 1.5, // Increase timeout by 50% on each retry
     max_timeout_ms: u32 = 30000, // Cap at 30 seconds
+    // v23.18: Jitter for distributed systems
+    jitter_factor: f32 = 0.2, // ±20% random variation
+    use_jitter: bool = true,
 
     /// Calculate delay for given attempt (0-indexed)
     pub fn getDelay(self: RetryConfig, attempt: u32) u32 {
@@ -56,6 +59,38 @@ pub const RetryConfig = struct {
             delay *= self.backoff_factor;
         }
         const result: u32 = @intFromFloat(delay);
+        return @min(result, self.max_delay_ms);
+    }
+
+    /// Calculate delay with jitter (v23.18)
+    /// Prevents thundering herd problem in distributed systems
+    pub fn getDelayWithJitter(self: RetryConfig, attempt: u32) u32 {
+        const base_delay = self.getDelay(attempt);
+        if (!self.use_jitter or self.jitter_factor == 0) {
+            return base_delay;
+        }
+
+        // Generate pseudo-random jitter using timestamp
+        const now = std.time.milliTimestamp();
+        const seed: u64 = @bitCast(now);
+        var prng = std.Random.DefaultPrng.init(seed);
+        const random = prng.random();
+
+        // Calculate jitter range: delay * jitter_factor
+        const jitter_range: f32 = @as(f32, @floatFromInt(base_delay)) * self.jitter_factor;
+        const jitter_range_u32: u32 = @intFromFloat(jitter_range);
+
+        if (jitter_range_u32 == 0) return base_delay;
+
+        // Random value in range [-jitter_range, +jitter_range]
+        const random_offset = random.intRangeAtMost(u32, 0, jitter_range_u32 * 2);
+        const offset_i32: i32 = @as(i32, @intCast(random_offset)) - @as(i32, @intCast(jitter_range_u32));
+
+        // Apply jitter, ensure minimum of 100ms
+        const base_i32: i32 = @intCast(base_delay);
+        const result_i32 = base_i32 + offset_i32;
+        const result: u32 = @intCast(@max(result_i32, 100));
+
         return @min(result, self.max_delay_ms);
     }
 
@@ -717,7 +752,7 @@ pub const RealAgent = struct {
                 }
 
                 // Calculate backoff delay
-                const delay = self.retry_config.getDelay(attempts - 1);
+                const delay = self.retry_config.getDelayWithJitter(attempts - 1);
                 total_delay += delay;
                 std.debug.print("    [RETRY] Navigate attempt {d}/{d} failed, waiting {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay });
 
@@ -755,7 +790,7 @@ pub const RealAgent = struct {
                 if (attempts > self.retry_config.max_retries) {
                     return err;
                 }
-                const delay = self.retry_config.getDelay(attempts - 1);
+                const delay = self.retry_config.getDelayWithJitter(attempts - 1);
                 const next_timeout = self.retry_config.getTimeout(timeout_ms, attempts);
                 total_delay += delay;
                 std.debug.print("    [RETRY] waitForSelector attempt {d} failed, waiting {d}ms, next timeout: {d}ms\n", .{ attempts, delay, next_timeout });
@@ -777,7 +812,7 @@ pub const RealAgent = struct {
                 break;
             }
 
-            const delay = self.retry_config.getDelay(attempts - 1);
+            const delay = self.retry_config.getDelayWithJitter(attempts - 1);
             const next_timeout = self.retry_config.getTimeout(timeout_ms, attempts);
             total_delay += delay;
             std.debug.print("    [RETRY] Selector not found, attempt {d}/{d}, waiting {d}ms, next timeout: {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay, next_timeout });
@@ -805,7 +840,7 @@ pub const RealAgent = struct {
                 if (attempts > self.retry_config.max_retries) {
                     return err;
                 }
-                const delay = self.retry_config.getDelay(attempts - 1);
+                const delay = self.retry_config.getDelayWithJitter(attempts - 1);
                 total_delay += delay;
                 std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
                 continue;
@@ -824,7 +859,7 @@ pub const RealAgent = struct {
                 break;
             }
 
-            const delay = self.retry_config.getDelay(attempts - 1);
+            const delay = self.retry_config.getDelayWithJitter(attempts - 1);
             const next_timeout = self.retry_config.getTimeout(timeout_ms, attempts);
             total_delay += delay;
             std.debug.print("    [RETRY] Page load timeout, attempt {d}/{d}, waiting {d}ms, next timeout: {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay, next_timeout });
@@ -849,7 +884,7 @@ pub const RealAgent = struct {
                 if (attempts > self.retry_config.max_retries) {
                     return err;
                 }
-                const delay = self.retry_config.getDelay(attempts - 1);
+                const delay = self.retry_config.getDelayWithJitter(attempts - 1);
                 total_delay += delay;
                 std.debug.print("    [RETRY] Click failed, attempt {d}, waiting {d}ms\n", .{ attempts, delay });
                 std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
@@ -1493,4 +1528,48 @@ test "RetryConfig default timeout_factor" {
     const config = RetryConfig{};
     try std.testing.expectApproxEqAbs(@as(f32, 1.5), config.timeout_factor, 0.01);
     try std.testing.expectEqual(@as(u32, 30000), config.max_timeout_ms);
+}
+
+test "RetryConfig jitter defaults (v23.18)" {
+    const config = RetryConfig{};
+    try std.testing.expectApproxEqAbs(@as(f32, 0.2), config.jitter_factor, 0.01);
+    try std.testing.expect(config.use_jitter);
+}
+
+test "getDelayWithJitter within bounds (v23.18)" {
+    const config = RetryConfig{
+        .initial_delay_ms = 1000,
+        .jitter_factor = 0.2,
+        .use_jitter = true,
+    };
+
+    // Test multiple times to verify jitter is within bounds
+    var i: u32 = 0;
+    while (i < 10) : (i += 1) {
+        const delay = config.getDelayWithJitter(0);
+        // Base delay is 1000ms, jitter is ±20%, so range is [800, 1200]
+        try std.testing.expect(delay >= 800);
+        try std.testing.expect(delay <= 1200);
+    }
+}
+
+test "getDelayWithJitter disabled returns base delay" {
+    const config = RetryConfig{
+        .initial_delay_ms = 1000,
+        .use_jitter = false,
+    };
+
+    const delay = config.getDelayWithJitter(0);
+    try std.testing.expectEqual(@as(u32, 1000), delay);
+}
+
+test "getDelayWithJitter zero factor returns base delay" {
+    const config = RetryConfig{
+        .initial_delay_ms = 1000,
+        .jitter_factor = 0.0,
+        .use_jitter = true,
+    };
+
+    const delay = config.getDelayWithJitter(0);
+    try std.testing.expectEqual(@as(u32, 1000), delay);
 }
