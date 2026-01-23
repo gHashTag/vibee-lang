@@ -3860,40 +3860,144 @@ pub const RealAgent = struct {
     }
 
     /// Build prompt for LLM with page context (v23.45)
+    // v23.46: System prompt for agent role
+    const AGENT_SYSTEM_PROMPT =
+        \\You are a precise web automation agent. Your task is to interact with web pages to complete user goals.
+        \\
+        \\RULES:
+        \\1. Output ONLY valid JSON - no explanations, no markdown
+        \\2. Use exact CSS selectors from the page context
+        \\3. One action per response
+        \\4. Use "done" when the task is complete
+        \\
+        \\ACTION SCHEMA:
+        \\{
+        \\  "action": "click|type|navigate|scroll|select|done",
+        \\  "selector": "CSS selector (required for click/type/select)",
+        \\  "value": "text to type, URL to navigate, or option to select"
+        \\}
+    ;
+
+    // v23.46: Few-shot examples for better LLM understanding
+    const FEW_SHOT_EXAMPLES =
+        \\EXAMPLES:
+        \\
+        \\Task: Click the login button
+        \\Page: [button#login-btn] Login [/button]
+        \\Response: {"action": "click", "selector": "#login-btn"}
+        \\
+        \\Task: Enter email in the form
+        \\Page: [input#email placeholder="Email"] [/input]
+        \\Response: {"action": "type", "selector": "#email", "value": "user@example.com"}
+        \\
+        \\Task: Go to the products page
+        \\Page: [a href="/products"] Products [/a]
+        \\Response: {"action": "click", "selector": "a[href='/products']"}
+        \\
+        \\Task: Search for "laptop"
+        \\Page: [input#search-box] [/input] [button#search-btn] Search [/button]
+        \\Response: {"action": "type", "selector": "#search-box", "value": "laptop"}
+        \\
+        \\Task: Task is complete, form submitted successfully
+        \\Page: Thank you! Your order has been placed.
+        \\Response: {"action": "done"}
+        \\
+    ;
+
+    /// Build prompt for LLM with page context (v23.46)
+    /// Includes few-shot examples and structured element references
     pub fn buildPrompt(self: *Self, instruction: []const u8, page_text: []const u8) ![]u8 {
         var buffer = std.ArrayList(u8).init(self.allocator);
         errdefer buffer.deinit();
 
         const writer = buffer.writer();
 
-        // System context
-        try writer.writeAll("You are a web automation agent. Analyze the page and decide the next action.\n\n");
-        try writer.writeAll("TASK: ");
+        // Few-shot examples
+        try writer.writeAll(FEW_SHOT_EXAMPLES);
+        try writer.writeAll("\n");
+
+        // Current task
+        try writer.writeAll("NOW YOUR TURN:\n\n");
+        try writer.writeAll("Task: ");
         try writer.writeAll(instruction);
         try writer.writeAll("\n\n");
 
-        // Page content (truncated to avoid token limits)
-        try writer.writeAll("PAGE CONTENT:\n");
-        const max_content = @min(page_text.len, 4000);
-        try writer.writeAll(page_text[0..max_content]);
-        if (page_text.len > 4000) {
-            try writer.writeAll("\n... (truncated)");
-        }
-        try writer.writeAll("\n\n");
-
-        // Action format instructions
-        try writer.writeAll("Respond with a JSON action:\n");
-        try writer.writeAll("{\"action\": \"click|type|navigate|scroll|done\", \"selector\": \"CSS selector\", \"value\": \"text to type or URL\"}\n\n");
-        try writer.writeAll("Use \"done\" action when task is complete.\n");
+        // Page content with smart truncation
+        try writer.writeAll("Page:\n");
+        try self.writePageContext(writer, page_text);
+        try writer.writeAll("\n\nResponse: ");
 
         return buffer.toOwnedSlice();
     }
 
-    /// Call LLM and get response (v23.45)
+    /// Write page context with smart truncation (v23.46)
+    /// Prioritizes interactive elements over plain text
+    fn writePageContext(_: *Self, writer: anytype, page_text: []const u8) !void {
+        const max_length: usize = 6000; // Token budget for page content
+
+        if (page_text.len <= max_length) {
+            try writer.writeAll(page_text);
+            return;
+        }
+
+        // Smart truncation: keep beginning and end, truncate middle
+        const head_size = max_length * 2 / 3; // 4000 chars from start
+        const tail_size = max_length / 3; // 2000 chars from end
+
+        try writer.writeAll(page_text[0..head_size]);
+        try writer.writeAll("\n\n[... content truncated ...]\n\n");
+        try writer.writeAll(page_text[page_text.len - tail_size ..]);
+    }
+
+    /// Build element reference list for structured context (v23.46)
+    pub fn buildElementContext(self: *Self) ![]u8 {
+        if (self.dom_extractor) |dom| {
+            const elements = dom.getInteractiveElements() catch return self.allocator.dupe(u8, "[No elements]");
+
+            var buffer = std.ArrayList(u8).init(self.allocator);
+            errdefer buffer.deinit();
+
+            const writer = buffer.writer();
+            try writer.writeAll("INTERACTIVE ELEMENTS:\n");
+
+            var count: usize = 0;
+            for (elements) |elem| {
+                if (count >= 30) { // Limit to 30 elements
+                    try writer.writeAll("... and more elements\n");
+                    break;
+                }
+
+                // Format: [id] tag.class "text" (type)
+                try writer.print("[{d}] {s}", .{ count, elem.tag_name });
+                if (elem.id) |id| {
+                    try writer.print("#{s}", .{id});
+                }
+                if (elem.class_name) |class| {
+                    if (class.len > 0 and class.len < 30) {
+                        try writer.print(".{s}", .{class});
+                    }
+                }
+                const text = elem.getDisplayText();
+                if (text.len > 0) {
+                    const display_text = if (text.len > 40) text[0..40] else text;
+                    try writer.print(" \"{s}\"", .{display_text});
+                }
+                if (elem.input_type) |t| {
+                    try writer.print(" ({s})", .{t});
+                }
+                try writer.writeAll("\n");
+                count += 1;
+            }
+
+            return buffer.toOwnedSlice();
+        }
+        return self.allocator.dupe(u8, "[DOM extractor not initialized]");
+    }
+
+    /// Call LLM and get response (v23.46)
     pub fn callLLM(self: *Self, prompt: []const u8) ![]u8 {
         if (self.llm_client) |client| {
-            const system = "You are a precise web automation agent. Output only valid JSON actions.";
-            var response = client.chatWithSystem(system, prompt) catch |err| {
+            var response = client.chatWithSystem(AGENT_SYSTEM_PROMPT, prompt) catch |err| {
                 std.debug.print("[LLM] Error: {s}\n", .{@errorName(err)});
                 return AgentError.LLMConnectionFailed;
             };
@@ -8338,7 +8442,7 @@ test "RealAgent initLLM (v23.45)" {
     try std.testing.expect(agent.llm_client != null);
 }
 
-test "RealAgent buildPrompt (v23.45)" {
+test "RealAgent buildPrompt (v23.46)" {
     const allocator = std.testing.allocator;
     var agent = initTestAgent(allocator);
     defer agent.deinit();
@@ -8349,7 +8453,9 @@ test "RealAgent buildPrompt (v23.45)" {
     // Prompt should contain instruction and page content
     try std.testing.expect(std.mem.indexOf(u8, prompt, "Click the login button") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "Welcome to the site") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prompt, "JSON action") != null);
+    // v23.46: Check for few-shot examples
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "EXAMPLES:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "NOW YOUR TURN:") != null);
 }
 
 test "RealAgent callLLM without client (v23.45)" {
@@ -8378,4 +8484,55 @@ test "ActionExecutor execute done (v23.45)" {
     const result = agent.executeActionViaComponent(action);
 
     try std.testing.expect(result.success);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.46: PROMPT ENGINEERING TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "AGENT_SYSTEM_PROMPT contains rules (v23.46)" {
+    try std.testing.expect(std.mem.indexOf(u8, RealAgent.AGENT_SYSTEM_PROMPT, "RULES:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, RealAgent.AGENT_SYSTEM_PROMPT, "ACTION SCHEMA:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, RealAgent.AGENT_SYSTEM_PROMPT, "valid JSON") != null);
+}
+
+test "FEW_SHOT_EXAMPLES contains examples (v23.46)" {
+    try std.testing.expect(std.mem.indexOf(u8, RealAgent.FEW_SHOT_EXAMPLES, "EXAMPLES:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, RealAgent.FEW_SHOT_EXAMPLES, "click") != null);
+    try std.testing.expect(std.mem.indexOf(u8, RealAgent.FEW_SHOT_EXAMPLES, "type") != null);
+    try std.testing.expect(std.mem.indexOf(u8, RealAgent.FEW_SHOT_EXAMPLES, "done") != null);
+}
+
+test "buildPrompt smart truncation (v23.46)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    // Create long page content (10000 chars)
+    var long_content: [10000]u8 = undefined;
+    @memset(&long_content, 'x');
+    // Add markers at start and end
+    @memcpy(long_content[0..5], "START");
+    @memcpy(long_content[9995..10000], "END!!");
+
+    const prompt = try agent.buildPrompt("Test task", &long_content);
+    defer allocator.free(prompt);
+
+    // Should contain start marker
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "START") != null);
+    // Should contain end marker
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "END!!") != null);
+    // Should contain truncation notice
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "truncated") != null);
+}
+
+test "buildElementContext without DOM extractor (v23.46)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    const context = try agent.buildElementContext();
+    defer allocator.free(context);
+
+    try std.testing.expect(std.mem.indexOf(u8, context, "not initialized") != null);
 }
