@@ -164,6 +164,108 @@ pub const RetryMetrics = struct {
     }
 };
 
+// v23.22: Circuit Breaker Pattern
+pub const CircuitBreakerState = enum {
+    closed, // Normal operation, requests allowed
+    open, // Circuit tripped, requests blocked
+    half_open, // Testing if service recovered
+};
+
+pub const CircuitBreaker = struct {
+    state: CircuitBreakerState = .closed,
+    failure_count: u32 = 0,
+    success_count: u32 = 0,
+    last_failure_time: i64 = 0,
+    // Configuration
+    failure_threshold: u32 = 5, // Open after N failures
+    success_threshold: u32 = 3, // Close after N successes in half-open
+    reset_timeout_ms: u64 = 30000, // Time before trying half-open (30s)
+
+    const Self = @This();
+
+    /// Check if request can be executed
+    pub fn canExecute(self: *Self) bool {
+        switch (self.state) {
+            .closed => return true,
+            .open => {
+                // Check if reset timeout has passed
+                const now = std.time.milliTimestamp();
+                const elapsed: u64 = @intCast(@max(0, now - self.last_failure_time));
+                if (elapsed >= self.reset_timeout_ms) {
+                    // Transition to half-open
+                    self.state = .half_open;
+                    self.success_count = 0;
+                    std.debug.print("    [CIRCUIT] OPEN → HALF_OPEN (timeout elapsed)\n", .{});
+                    return true;
+                }
+                return false;
+            },
+            .half_open => return true,
+        }
+    }
+
+    /// Record successful operation
+    pub fn recordSuccess(self: *Self) void {
+        switch (self.state) {
+            .closed => {
+                // Reset failure count on success
+                self.failure_count = 0;
+            },
+            .half_open => {
+                self.success_count += 1;
+                if (self.success_count >= self.success_threshold) {
+                    // Transition to closed
+                    self.state = .closed;
+                    self.failure_count = 0;
+                    self.success_count = 0;
+                    std.debug.print("    [CIRCUIT] HALF_OPEN → CLOSED (recovered)\n", .{});
+                }
+            },
+            .open => {},
+        }
+    }
+
+    /// Record failed operation
+    pub fn recordFailure(self: *Self) void {
+        self.last_failure_time = std.time.milliTimestamp();
+
+        switch (self.state) {
+            .closed => {
+                self.failure_count += 1;
+                if (self.failure_count >= self.failure_threshold) {
+                    // Transition to open
+                    self.state = .open;
+                    std.debug.print("    [CIRCUIT] CLOSED → OPEN (threshold reached: {d} failures)\n", .{self.failure_count});
+                }
+            },
+            .half_open => {
+                // Single failure in half-open returns to open
+                self.state = .open;
+                self.success_count = 0;
+                std.debug.print("    [CIRCUIT] HALF_OPEN → OPEN (failure during test)\n", .{});
+            },
+            .open => {},
+        }
+    }
+
+    /// Reset circuit breaker
+    pub fn reset(self: *Self) void {
+        self.state = .closed;
+        self.failure_count = 0;
+        self.success_count = 0;
+        self.last_failure_time = 0;
+    }
+
+    /// Get current state as string
+    pub fn getStateString(self: Self) []const u8 {
+        return switch (self.state) {
+            .closed => "CLOSED",
+            .open => "OPEN",
+            .half_open => "HALF_OPEN",
+        };
+    }
+};
+
 pub const RealAgent = struct {
     allocator: Allocator,
     config: AgentConfig,
@@ -184,6 +286,8 @@ pub const RealAgent = struct {
     retry_config: RetryConfig = .{},
     // v23.19: Retry metrics
     retry_metrics: RetryMetrics = .{},
+    // v23.22: Circuit breaker
+    circuit_breaker: CircuitBreaker = .{},
 
     const Self = @This();
 
@@ -799,6 +903,16 @@ pub const RealAgent = struct {
 
     /// Navigate with retry on failure (v23.16)
     pub fn navigateWithRetry(self: *Self, url: []const u8) AgentError!RetryResult {
+        // v23.22: Check circuit breaker
+        if (!self.circuit_breaker.canExecute()) {
+            std.debug.print("    [CIRCUIT] Request blocked - circuit is OPEN\n", .{});
+            return RetryResult{
+                .success = false,
+                .attempts = 0,
+                .total_delay_ms = 0,
+            };
+        }
+
         var attempts: u32 = 0;
         var total_delay: u32 = 0;
 
@@ -814,6 +928,8 @@ pub const RealAgent = struct {
                 self.retry_metrics.navigate_retries += 1;
 
                 if (attempts > self.retry_config.max_retries) {
+                    // v23.22: Record failure
+                    self.circuit_breaker.recordFailure();
                     // v23.19: Track failure
                     self.retry_metrics.failed_operations += 1;
                     std.debug.print("    [RETRY] Navigate failed after {d} attempts\n", .{attempts});
@@ -838,6 +954,8 @@ pub const RealAgent = struct {
 
             // v23.19: Track success
             self.retry_metrics.successful_operations += 1;
+            // v23.22: Record success
+            self.circuit_breaker.recordSuccess();
 
             return RetryResult{
                 .success = true,
@@ -848,6 +966,8 @@ pub const RealAgent = struct {
 
         // v23.19: Track failure (max retries exceeded)
         self.retry_metrics.failed_operations += 1;
+        // v23.22: Record failure
+        self.circuit_breaker.recordFailure();
 
         return RetryResult{
             .success = false,
@@ -1049,6 +1169,21 @@ pub const RealAgent = struct {
     /// Reset retry metrics (v23.19)
     pub fn resetRetryMetrics(self: *Self) void {
         self.retry_metrics.reset();
+    }
+
+    /// Get circuit breaker state (v23.22)
+    pub fn getCircuitBreakerState(self: *Self) CircuitBreakerState {
+        return self.circuit_breaker.state;
+    }
+
+    /// Reset circuit breaker (v23.22)
+    pub fn resetCircuitBreaker(self: *Self) void {
+        self.circuit_breaker.reset();
+    }
+
+    /// Check if circuit breaker allows execution (v23.22)
+    pub fn isCircuitClosed(self: *Self) bool {
+        return self.circuit_breaker.canExecute();
     }
 
     /// Print retry metrics summary (v23.19)
@@ -1959,4 +2094,68 @@ test "printDomainStats method exists (v23.21)" {
     // Just verify method exists and doesn't crash
     // (output goes to debug, not captured in test)
     agent.printDomainStats();
+}
+
+test "CircuitBreaker initial state (v23.22)" {
+    var cb = CircuitBreaker{};
+    try std.testing.expectEqual(CircuitBreakerState.closed, cb.state);
+    try std.testing.expect(cb.canExecute());
+    try std.testing.expectEqualStrings("CLOSED", cb.getStateString());
+}
+
+test "CircuitBreaker opens after failures (v23.22)" {
+    var cb = CircuitBreaker{
+        .failure_threshold = 3,
+    };
+
+    // Record failures
+    cb.recordFailure();
+    try std.testing.expectEqual(CircuitBreakerState.closed, cb.state);
+    cb.recordFailure();
+    try std.testing.expectEqual(CircuitBreakerState.closed, cb.state);
+    cb.recordFailure();
+    // Should be open now
+    try std.testing.expectEqual(CircuitBreakerState.open, cb.state);
+    try std.testing.expect(!cb.canExecute());
+}
+
+test "CircuitBreaker success resets failure count (v23.22)" {
+    var cb = CircuitBreaker{
+        .failure_threshold = 3,
+    };
+
+    cb.recordFailure();
+    cb.recordFailure();
+    try std.testing.expectEqual(@as(u32, 2), cb.failure_count);
+
+    cb.recordSuccess();
+    try std.testing.expectEqual(@as(u32, 0), cb.failure_count);
+}
+
+test "CircuitBreaker reset (v23.22)" {
+    var cb = CircuitBreaker{
+        .failure_threshold = 2,
+    };
+
+    cb.recordFailure();
+    cb.recordFailure();
+    try std.testing.expectEqual(CircuitBreakerState.open, cb.state);
+
+    cb.reset();
+    try std.testing.expectEqual(CircuitBreakerState.closed, cb.state);
+    try std.testing.expectEqual(@as(u32, 0), cb.failure_count);
+}
+
+test "RealAgent circuit breaker methods (v23.22)" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Initial state
+    try std.testing.expectEqual(CircuitBreakerState.closed, agent.getCircuitBreakerState());
+    try std.testing.expect(agent.isCircuitClosed());
+
+    // Reset
+    agent.resetCircuitBreaker();
+    try std.testing.expectEqual(CircuitBreakerState.closed, agent.getCircuitBreakerState());
 }
