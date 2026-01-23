@@ -1451,6 +1451,368 @@ pub const DOMExtractor = struct {
     }
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.42: FORM INTERACTION - WebArena Form Operations
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Form field type (v23.42)
+pub const FormFieldType = enum {
+    text,
+    password,
+    email,
+    number,
+    tel,
+    url,
+    search,
+    textarea,
+    select,
+    checkbox,
+    radio,
+    file,
+    hidden,
+    date,
+    time,
+    datetime,
+    color,
+    range,
+    submit,
+    button,
+    other,
+
+    pub fn fromInputType(input_type: ?[]const u8) FormFieldType {
+        const t = input_type orelse return .text;
+        if (std.mem.eql(u8, t, "text")) return .text;
+        if (std.mem.eql(u8, t, "password")) return .password;
+        if (std.mem.eql(u8, t, "email")) return .email;
+        if (std.mem.eql(u8, t, "number")) return .number;
+        if (std.mem.eql(u8, t, "tel")) return .tel;
+        if (std.mem.eql(u8, t, "url")) return .url;
+        if (std.mem.eql(u8, t, "search")) return .search;
+        if (std.mem.eql(u8, t, "checkbox")) return .checkbox;
+        if (std.mem.eql(u8, t, "radio")) return .radio;
+        if (std.mem.eql(u8, t, "file")) return .file;
+        if (std.mem.eql(u8, t, "hidden")) return .hidden;
+        if (std.mem.eql(u8, t, "date")) return .date;
+        if (std.mem.eql(u8, t, "time")) return .time;
+        if (std.mem.eql(u8, t, "submit")) return .submit;
+        if (std.mem.eql(u8, t, "button")) return .button;
+        return .other;
+    }
+
+    pub fn toString(self: FormFieldType) []const u8 {
+        return switch (self) {
+            .text => "text",
+            .password => "password",
+            .email => "email",
+            .number => "number",
+            .tel => "tel",
+            .url => "url",
+            .search => "search",
+            .textarea => "textarea",
+            .select => "select",
+            .checkbox => "checkbox",
+            .radio => "radio",
+            .file => "file",
+            .hidden => "hidden",
+            .date => "date",
+            .time => "time",
+            .datetime => "datetime",
+            .color => "color",
+            .range => "range",
+            .submit => "submit",
+            .button => "button",
+            .other => "other",
+        };
+    }
+
+    pub fn isTextInput(self: FormFieldType) bool {
+        return switch (self) {
+            .text, .password, .email, .number, .tel, .url, .search, .textarea => true,
+            else => false,
+        };
+    }
+};
+
+/// Form field representation (v23.42)
+pub const FormField = struct {
+    selector: []const u8,
+    field_type: FormFieldType,
+    name: ?[]const u8 = null,
+    label: ?[]const u8 = null,
+    value: ?[]const u8 = null,
+    placeholder: ?[]const u8 = null,
+    is_required: bool = false,
+    is_disabled: bool = false,
+    is_readonly: bool = false,
+    // For select fields
+    options: ?[]const []const u8 = null,
+    // For checkbox/radio
+    is_checked: bool = false,
+
+    const Self = @This();
+
+    /// Create from Element (v23.42)
+    pub fn fromElement(element: Element) Self {
+        const field_type = if (std.mem.eql(u8, element.tag_name, "textarea"))
+            FormFieldType.textarea
+        else if (std.mem.eql(u8, element.tag_name, "select"))
+            FormFieldType.select
+        else
+            FormFieldType.fromInputType(element.input_type);
+
+        return Self{
+            .selector = element.selector,
+            .field_type = field_type,
+            .name = element.name,
+            .label = element.text_content,
+            .value = element.value,
+            .placeholder = element.placeholder,
+            .is_disabled = !element.is_enabled,
+            .is_checked = element.is_checked,
+        };
+    }
+
+    /// Check if field can accept text input (v23.42)
+    pub fn canType(self: Self) bool {
+        return self.field_type.isTextInput() and !self.is_disabled and !self.is_readonly;
+    }
+
+    /// Check if field is a selection type (v23.42)
+    pub fn isSelection(self: Self) bool {
+        return self.field_type == .select or self.field_type == .checkbox or self.field_type == .radio;
+    }
+};
+
+/// Form interaction handler (v23.42)
+pub const FormInteraction = struct {
+    allocator: Allocator,
+    agent: *RealAgent,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator, agent: *RealAgent) Self {
+        return Self{
+            .allocator = allocator,
+            .agent = agent,
+        };
+    }
+
+    /// Fill text input field (v23.42)
+    pub fn fillInput(self: *Self, selector: []const u8, value: []const u8) AgentError!void {
+        // Clear existing value and type new value
+        var js_buffer: [1024]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buffer,
+            \\(function() {{
+            \\  var el = document.querySelector('{s}');
+            \\  if (!el) return 'error:not_found';
+            \\  if (el.disabled) return 'error:disabled';
+            \\  el.focus();
+            \\  el.value = '{s}';
+            \\  el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            \\  el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            \\  return 'ok';
+            \\}})()
+        , .{ selector, value }) catch return AgentError.ParseError;
+
+        const result = try self.agent.evaluate(js);
+        defer self.allocator.free(result);
+
+        if (std.mem.startsWith(u8, result, "error:")) {
+            return AgentError.ElementNotFound;
+        }
+    }
+
+    /// Clear input field (v23.42)
+    pub fn clearInput(self: *Self, selector: []const u8) AgentError!void {
+        var js_buffer: [512]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buffer,
+            \\(function() {{
+            \\  var el = document.querySelector('{s}');
+            \\  if (!el) return 'error:not_found';
+            \\  el.value = '';
+            \\  el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            \\  return 'ok';
+            \\}})()
+        , .{selector}) catch return AgentError.ParseError;
+
+        const result = try self.agent.evaluate(js);
+        defer self.allocator.free(result);
+
+        if (std.mem.startsWith(u8, result, "error:")) {
+            return AgentError.ElementNotFound;
+        }
+    }
+
+    /// Select option from dropdown (v23.42)
+    pub fn selectOption(self: *Self, selector: []const u8, value: []const u8) AgentError!void {
+        var js_buffer: [1024]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buffer,
+            \\(function() {{
+            \\  var el = document.querySelector('{s}');
+            \\  if (!el) return 'error:not_found';
+            \\  if (el.tagName !== 'SELECT') return 'error:not_select';
+            \\  var found = false;
+            \\  for (var i = 0; i < el.options.length; i++) {{
+            \\    if (el.options[i].value === '{s}' || el.options[i].text === '{s}') {{
+            \\      el.selectedIndex = i;
+            \\      found = true;
+            \\      break;
+            \\    }}
+            \\  }}
+            \\  if (!found) return 'error:option_not_found';
+            \\  el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            \\  return 'ok';
+            \\}})()
+        , .{ selector, value, value }) catch return AgentError.ParseError;
+
+        const result = try self.agent.evaluate(js);
+        defer self.allocator.free(result);
+
+        if (std.mem.startsWith(u8, result, "error:")) {
+            return AgentError.ElementNotFound;
+        }
+    }
+
+    /// Check or uncheck checkbox (v23.42)
+    pub fn checkCheckbox(self: *Self, selector: []const u8, checked: bool) AgentError!void {
+        var js_buffer: [512]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buffer,
+            \\(function() {{
+            \\  var el = document.querySelector('{s}');
+            \\  if (!el) return 'error:not_found';
+            \\  if (el.type !== 'checkbox' && el.type !== 'radio') return 'error:not_checkbox';
+            \\  if (el.checked !== {s}) {{
+            \\    el.click();
+            \\  }}
+            \\  return 'ok';
+            \\}})()
+        , .{ selector, if (checked) "true" else "false" }) catch return AgentError.ParseError;
+
+        const result = try self.agent.evaluate(js);
+        defer self.allocator.free(result);
+
+        if (std.mem.startsWith(u8, result, "error:")) {
+            return AgentError.ElementNotFound;
+        }
+    }
+
+    /// Submit form (v23.42)
+    pub fn submitForm(self: *Self, selector: []const u8) AgentError!void {
+        var js_buffer: [512]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buffer,
+            \\(function() {{
+            \\  var el = document.querySelector('{s}');
+            \\  if (!el) return 'error:not_found';
+            \\  var form = el.tagName === 'FORM' ? el : el.closest('form');
+            \\  if (!form) return 'error:no_form';
+            \\  form.submit();
+            \\  return 'ok';
+            \\}})()
+        , .{selector}) catch return AgentError.ParseError;
+
+        const result = try self.agent.evaluate(js);
+        defer self.allocator.free(result);
+
+        if (std.mem.startsWith(u8, result, "error:")) {
+            return AgentError.ElementNotFound;
+        }
+    }
+
+    /// Click submit button (v23.42)
+    pub fn clickSubmit(self: *Self, selector: []const u8) AgentError!void {
+        var js_buffer: [512]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buffer,
+            \\(function() {{
+            \\  var el = document.querySelector('{s}');
+            \\  if (!el) return 'error:not_found';
+            \\  el.click();
+            \\  return 'ok';
+            \\}})()
+        , .{selector}) catch return AgentError.ParseError;
+
+        const result = try self.agent.evaluate(js);
+        defer self.allocator.free(result);
+
+        if (std.mem.startsWith(u8, result, "error:")) {
+            return AgentError.ElementNotFound;
+        }
+    }
+
+    /// Fill multiple form fields at once (v23.42)
+    pub fn fillForm(self: *Self, fields: []const FormFieldValue) AgentError!void {
+        for (fields) |field| {
+            switch (field.action) {
+                .fill => try self.fillInput(field.selector, field.value),
+                .select => try self.selectOption(field.selector, field.value),
+                .check => try self.checkCheckbox(field.selector, true),
+                .uncheck => try self.checkCheckbox(field.selector, false),
+                .clear => try self.clearInput(field.selector),
+            }
+        }
+    }
+
+    /// Get current value of input field (v23.42)
+    pub fn getInputValue(self: *Self, selector: []const u8) AgentError![]u8 {
+        var js_buffer: [512]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buffer,
+            \\(function() {{
+            \\  var el = document.querySelector('{s}');
+            \\  if (!el) return null;
+            \\  return el.value || '';
+            \\}})()
+        , .{selector}) catch return AgentError.ParseError;
+
+        return self.agent.evaluate(js);
+    }
+
+    /// Check if checkbox is checked (v23.42)
+    pub fn isChecked(self: *Self, selector: []const u8) AgentError!bool {
+        var js_buffer: [512]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buffer,
+            \\(function() {{
+            \\  var el = document.querySelector('{s}');
+            \\  if (!el) return 'false';
+            \\  return el.checked ? 'true' : 'false';
+            \\}})()
+        , .{selector}) catch return AgentError.ParseError;
+
+        const result = try self.agent.evaluate(js);
+        defer self.allocator.free(result);
+
+        return std.mem.eql(u8, result, "true");
+    }
+
+    /// Get selected option value from dropdown (v23.42)
+    pub fn getSelectedValue(self: *Self, selector: []const u8) AgentError![]u8 {
+        var js_buffer: [512]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buffer,
+            \\(function() {{
+            \\  var el = document.querySelector('{s}');
+            \\  if (!el || el.tagName !== 'SELECT') return '';
+            \\  return el.options[el.selectedIndex]?.value || '';
+            \\}})()
+        , .{selector}) catch return AgentError.ParseError;
+
+        return self.agent.evaluate(js);
+    }
+};
+
+/// Form field value for batch operations (v23.42)
+pub const FormFieldValue = struct {
+    selector: []const u8,
+    value: []const u8 = "",
+    action: FormAction = .fill,
+};
+
+/// Form action type (v23.42)
+pub const FormAction = enum {
+    fill,
+    select,
+    check,
+    uncheck,
+    clear,
+};
+
 // v23.22: Circuit Breaker Pattern
 pub const CircuitBreakerState = enum {
     closed, // Normal operation, requests allowed
@@ -5520,6 +5882,154 @@ test "DOMExtractor parseElementsJson invalid JSON (v23.41)" {
 
     const elements = extractor.parseElementsJson("not an array", "a");
     try std.testing.expectEqual(@as(usize, 0), elements.len);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.42: FORM INTERACTION TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "FormFieldType fromInputType (v23.42)" {
+    try std.testing.expectEqual(FormFieldType.text, FormFieldType.fromInputType("text"));
+    try std.testing.expectEqual(FormFieldType.password, FormFieldType.fromInputType("password"));
+    try std.testing.expectEqual(FormFieldType.email, FormFieldType.fromInputType("email"));
+    try std.testing.expectEqual(FormFieldType.checkbox, FormFieldType.fromInputType("checkbox"));
+    try std.testing.expectEqual(FormFieldType.radio, FormFieldType.fromInputType("radio"));
+    try std.testing.expectEqual(FormFieldType.submit, FormFieldType.fromInputType("submit"));
+    try std.testing.expectEqual(FormFieldType.text, FormFieldType.fromInputType(null));
+    try std.testing.expectEqual(FormFieldType.other, FormFieldType.fromInputType("unknown"));
+}
+
+test "FormFieldType toString (v23.42)" {
+    try std.testing.expectEqualStrings("text", FormFieldType.text.toString());
+    try std.testing.expectEqualStrings("password", FormFieldType.password.toString());
+    try std.testing.expectEqualStrings("email", FormFieldType.email.toString());
+    try std.testing.expectEqualStrings("checkbox", FormFieldType.checkbox.toString());
+}
+
+test "FormFieldType isTextInput (v23.42)" {
+    try std.testing.expect(FormFieldType.text.isTextInput());
+    try std.testing.expect(FormFieldType.password.isTextInput());
+    try std.testing.expect(FormFieldType.email.isTextInput());
+    try std.testing.expect(FormFieldType.textarea.isTextInput());
+    try std.testing.expect(!FormFieldType.checkbox.isTextInput());
+    try std.testing.expect(!FormFieldType.select.isTextInput());
+    try std.testing.expect(!FormFieldType.submit.isTextInput());
+}
+
+test "FormField fromElement (v23.42)" {
+    const element = Element{
+        .tag_name = "input",
+        .element_type = .input,
+        .selector = "input[name=email]",
+        .name = "email",
+        .input_type = "email",
+        .placeholder = "Enter email",
+        .is_enabled = true,
+    };
+
+    const field = FormField.fromElement(element);
+    try std.testing.expectEqual(FormFieldType.email, field.field_type);
+    try std.testing.expectEqualStrings("email", field.name.?);
+    try std.testing.expectEqualStrings("Enter email", field.placeholder.?);
+    try std.testing.expect(!field.is_disabled);
+}
+
+test "FormField fromElement textarea (v23.42)" {
+    const element = Element{
+        .tag_name = "textarea",
+        .element_type = .textarea,
+        .selector = "textarea[name=message]",
+        .name = "message",
+    };
+
+    const field = FormField.fromElement(element);
+    try std.testing.expectEqual(FormFieldType.textarea, field.field_type);
+}
+
+test "FormField fromElement select (v23.42)" {
+    const element = Element{
+        .tag_name = "select",
+        .element_type = .select,
+        .selector = "select[name=country]",
+        .name = "country",
+    };
+
+    const field = FormField.fromElement(element);
+    try std.testing.expectEqual(FormFieldType.select, field.field_type);
+}
+
+test "FormField canType (v23.42)" {
+    const text_field = FormField{
+        .selector = "input",
+        .field_type = .text,
+        .is_disabled = false,
+        .is_readonly = false,
+    };
+    try std.testing.expect(text_field.canType());
+
+    const disabled_field = FormField{
+        .selector = "input",
+        .field_type = .text,
+        .is_disabled = true,
+    };
+    try std.testing.expect(!disabled_field.canType());
+
+    const checkbox_field = FormField{
+        .selector = "input",
+        .field_type = .checkbox,
+    };
+    try std.testing.expect(!checkbox_field.canType());
+}
+
+test "FormField isSelection (v23.42)" {
+    const select_field = FormField{
+        .selector = "select",
+        .field_type = .select,
+    };
+    try std.testing.expect(select_field.isSelection());
+
+    const checkbox_field = FormField{
+        .selector = "input",
+        .field_type = .checkbox,
+    };
+    try std.testing.expect(checkbox_field.isSelection());
+
+    const text_field = FormField{
+        .selector = "input",
+        .field_type = .text,
+    };
+    try std.testing.expect(!text_field.isSelection());
+}
+
+test "FormInteraction init (v23.42)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    const form = FormInteraction.init(allocator, &agent);
+    try std.testing.expect(form.agent == &agent);
+}
+
+test "FormAction enum (v23.42)" {
+    const fill = FormAction.fill;
+    const select = FormAction.select;
+    const check = FormAction.check;
+
+    try std.testing.expect(fill == .fill);
+    try std.testing.expect(select == .select);
+    try std.testing.expect(check == .check);
+}
+
+test "FormFieldValue struct (v23.42)" {
+    const field = FormFieldValue{
+        .selector = "input[name=email]",
+        .value = "test@example.com",
+        .action = .fill,
+    };
+
+    try std.testing.expectEqualStrings("input[name=email]", field.selector);
+    try std.testing.expectEqualStrings("test@example.com", field.value);
+    try std.testing.expectEqual(FormAction.fill, field.action);
 }
 
 test "RetryMetrics with histogram (v23.26)" {
