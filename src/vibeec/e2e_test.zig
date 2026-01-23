@@ -98,8 +98,8 @@ pub const E2ETestSuite = struct {
             return;
         };
 
-        // Wait for page load
-        std.time.sleep(2 * std.time.ns_per_s);
+        // v23.13: Reduced wait for page load
+        std.time.sleep(1 * std.time.ns_per_s);
 
         // Get URL
         const url = agent.getURL() catch {
@@ -135,7 +135,7 @@ pub const E2ETestSuite = struct {
             return;
         };
 
-        std.time.sleep(2 * std.time.ns_per_s);
+        std.time.sleep(1 * std.time.ns_per_s); // v23.13: reduced
 
         const title = agent.getTitle() catch {
             try self.addResult("GetTitle", false, 1, 0, "Failed to get title");
@@ -169,7 +169,7 @@ pub const E2ETestSuite = struct {
             return;
         };
 
-        std.time.sleep(2 * std.time.ns_per_s);
+        std.time.sleep(1 * std.time.ns_per_s); // v23.13: reduced
 
         // Click on the "More information" link
         agent.clickSelector("a") catch {
@@ -177,7 +177,7 @@ pub const E2ETestSuite = struct {
             return;
         };
 
-        std.time.sleep(2 * std.time.ns_per_s);
+        std.time.sleep(1 * std.time.ns_per_s); // v23.13: reduced
 
         // Check if URL changed
         const url = agent.getURL() catch {
@@ -348,7 +348,7 @@ pub const E2ETestSuite = struct {
             return;
         };
 
-        std.time.sleep(2 * std.time.ns_per_s);
+        std.time.sleep(1 * std.time.ns_per_s);
 
         // Type search query
         agent.typeText("vibee programming language") catch {
@@ -362,7 +362,7 @@ pub const E2ETestSuite = struct {
             return;
         };
 
-        std.time.sleep(3 * std.time.ns_per_s);
+        std.time.sleep(1500 * std.time.ns_per_ms);
 
         // Check URL contains search query
         const url = agent.getURL() catch {
@@ -407,7 +407,7 @@ pub const E2ETestSuite = struct {
             return;
         };
 
-        std.time.sleep(2 * std.time.ns_per_s);
+        std.time.sleep(1 * std.time.ns_per_s);
 
         // Just verify page loaded - example.com has no inputs
         // This test now validates basic page interaction
@@ -450,7 +450,7 @@ pub const E2ETestSuite = struct {
             return;
         };
 
-        std.time.sleep(2 * std.time.ns_per_s);
+        std.time.sleep(1 * std.time.ns_per_s);
 
         // Type in search box (DuckDuckGo auto-focuses)
         agent.typeText("vibee test") catch {
@@ -464,7 +464,7 @@ pub const E2ETestSuite = struct {
             return;
         };
 
-        std.time.sleep(2 * std.time.ns_per_s);
+        std.time.sleep(1 * std.time.ns_per_s);
 
         // Check if search was performed
         const url = agent.getURL() catch {

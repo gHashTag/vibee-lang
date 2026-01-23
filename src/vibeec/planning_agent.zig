@@ -1028,7 +1028,7 @@ pub const PlanningAgent = struct {
                 self.state.current_step += 1;
                 std.debug.print("═══ Cached Step {d}/{d} ═══\n", .{ self.state.current_step, cached_seq.length });
                 try self.act(cached_action);
-                std.time.sleep(300 * std.time.ns_per_ms);
+                std.time.sleep(100 * std.time.ns_per_ms); // v23.13: reduced from 300ms
             }
 
             // Verify goal achieved
@@ -1103,8 +1103,8 @@ pub const PlanningAgent = struct {
 
             std.debug.print("\n", .{});
 
-            // Minimal delay between steps (reduced from 500ms to 100ms)
-            std.time.sleep(100 * std.time.ns_per_ms);
+            // v23.13: Minimal delay between steps (reduced from 100ms to 50ms)
+            std.time.sleep(50 * std.time.ns_per_ms);
         }
 
         if (!self.state.done) {
@@ -1321,7 +1321,7 @@ pub const PlanningAgent = struct {
                 if (arg.len > 0) {
                     std.debug.print("    Navigating to: {s}\n", .{arg});
                     try self.browser.navigate(arg);
-                    std.time.sleep(800 * std.time.ns_per_ms); // Reduced from 2s
+                    std.time.sleep(400 * std.time.ns_per_ms); // v23.13: reduced from 800ms
                 }
             },
             .click => {
@@ -1360,19 +1360,20 @@ pub const PlanningAgent = struct {
                     if (!success) {
                         std.debug.print("    Click failed after {d} retries\n", .{max_retries});
                     }
-                    std.time.sleep(300 * std.time.ns_per_ms); // Reduced from 1s
+                    std.time.sleep(150 * std.time.ns_per_ms); // v23.13: reduced from 300ms
                 }
             },
             .type_text => {
                 if (arg.len > 0) {
                     std.debug.print("    Typing: {s}\n", .{arg});
                     try self.browser.typeText(arg);
+                    std.time.sleep(50 * std.time.ns_per_ms); // v23.13: small delay after type
                 }
             },
             .press_enter => {
                 std.debug.print("    Pressing Enter\n", .{});
                 try self.browser.pressEnter();
-                std.time.sleep(500 * std.time.ns_per_ms); // Reduced from 2s
+                std.time.sleep(250 * std.time.ns_per_ms); // v23.13: reduced from 500ms
             },
             .scroll => {
                 const delta = action.scroll_delta;

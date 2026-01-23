@@ -317,6 +317,37 @@ pub const RealAgent = struct {
         return false; // Timeout
     }
 
+    /// Wait for page to finish loading (v23.13)
+    pub fn waitForPageLoad(self: *Self, timeout_ms: u32) AgentError!bool {
+        if (!self.connected) return AgentError.BrowserConnectionFailed;
+
+        const start_time = std.time.milliTimestamp();
+        const timeout_end = start_time + @as(i64, timeout_ms);
+
+        while (std.time.milliTimestamp() < timeout_end) {
+            var cmd_buf: [512]u8 = undefined;
+
+            // Check document.readyState
+            const js = std.fmt.bufPrint(&cmd_buf, "{{\"id\":{d},\"method\":\"Runtime.evaluate\",\"params\":{{\"expression\":\"document.readyState\"}}}}", .{self.message_id}) catch return AgentError.OutOfMemory;
+            self.message_id += 1;
+
+            self.ws.sendText(js) catch return AgentError.EvaluationFailed;
+
+            const frame = self.ws.receive() catch return AgentError.EvaluationFailed;
+            defer self.allocator.free(frame.payload);
+
+            // Check if complete
+            if (std.mem.indexOf(u8, frame.payload, "\"value\":\"complete\"") != null) {
+                return true;
+            }
+
+            // Wait 50ms before next check
+            std.time.sleep(50 * std.time.ns_per_ms);
+        }
+
+        return false; // Timeout
+    }
+
     /// Click element with wait
     pub fn clickSelectorWithWait(self: *Self, selector: []const u8, timeout_ms: u32) AgentError!void {
         // Wait for element
