@@ -591,6 +591,29 @@ pub const MetricsExporter = struct {
     }
 };
 
+/// Extract domain from URL (v23.27)
+/// Returns empty string if URL is invalid
+fn extractDomain(url: []const u8) []const u8 {
+    // Skip protocol
+    var start: usize = 0;
+    if (std.mem.startsWith(u8, url, "https://")) {
+        start = 8;
+    } else if (std.mem.startsWith(u8, url, "http://")) {
+        start = 7;
+    }
+
+    if (start >= url.len) return "";
+
+    // Find end of domain (first / or : after protocol)
+    var end = start;
+    while (end < url.len) : (end += 1) {
+        if (url[end] == '/' or url[end] == ':') break;
+    }
+
+    if (end <= start) return "";
+    return url[start..end];
+}
+
 pub const RealAgent = struct {
     allocator: Allocator,
     config: AgentConfig,
@@ -611,8 +634,10 @@ pub const RealAgent = struct {
     retry_config: RetryConfig = .{},
     // v23.19: Retry metrics
     retry_metrics: RetryMetrics = .{},
-    // v23.22: Circuit breaker
+    // v23.22: Circuit breaker (global)
     circuit_breaker: CircuitBreaker = .{},
+    // v23.27: Per-domain circuit breakers
+    domain_circuit_breakers: std.StringHashMap(CircuitBreaker),
 
     const Self = @This();
 
@@ -625,6 +650,7 @@ pub const RealAgent = struct {
             .connected = false,
             .message_id = 1,
             .domain_stats = std.StringHashMap(DomainStats).init(allocator),
+            .domain_circuit_breakers = std.StringHashMap(CircuitBreaker).init(allocator),
         };
 
         // v23.21: Auto-load domain stats from file
@@ -643,6 +669,14 @@ pub const RealAgent = struct {
             self.allocator.free(key.*);
         }
         self.domain_stats.deinit();
+
+        // v23.27: Free domain circuit breaker keys
+        var cb_it = self.domain_circuit_breakers.keyIterator();
+        while (cb_it.next()) |key| {
+            self.allocator.free(key.*);
+        }
+        self.domain_circuit_breakers.deinit();
+
         if (self.current_domain) |d| self.allocator.free(d);
         self.ws.deinit();
         self.http.deinit();
@@ -687,10 +721,10 @@ pub const RealAgent = struct {
 
         // v23.15: Extract domain and use domain-specific timeout
         const domain = extractDomain(url);
-        if (domain) |d| {
+        if (domain.len > 0) {
             // Update current domain
             if (self.current_domain) |old| self.allocator.free(old);
-            self.current_domain = self.allocator.dupe(u8, d) catch null;
+            self.current_domain = self.allocator.dupe(u8, domain) catch null;
         }
 
         // v23.15: Use adaptive timeout based on page load history
@@ -703,8 +737,8 @@ pub const RealAgent = struct {
         if (loaded) {
             // Update both global and domain-specific stats
             self.updatePageLoadStats(elapsed_u32);
-            if (domain) |d| self.updateDomainStats(d, elapsed_u32);
-            std.debug.print("    [NAV] Page loaded in {d}ms (timeout: {d}ms, domain: {s})\n", .{ elapsed, timeout, domain orelse "unknown" });
+            if (domain.len > 0) self.updateDomainStats(domain, elapsed_u32);
+            std.debug.print("    [NAV] Page loaded in {d}ms (timeout: {d}ms, domain: {s})\n", .{ elapsed, timeout, if (domain.len > 0) domain else "unknown" });
         } else {
             std.debug.print("    [NAV] Page load timeout after {d}ms (timeout was: {d}ms)\n", .{ elapsed, timeout });
         }
@@ -1171,24 +1205,7 @@ pub const RealAgent = struct {
         return @max(adaptive, 500);
     }
 
-    /// Extract domain from URL (v23.15)
-    fn extractDomain(url: []const u8) ?[]const u8 {
-        // Skip protocol
-        var start: usize = 0;
-        if (std.mem.startsWith(u8, url, "https://")) {
-            start = 8;
-        } else if (std.mem.startsWith(u8, url, "http://")) {
-            start = 7;
-        }
-        if (start >= url.len) return null;
-
-        // Find end of domain (first / or end)
-        const rest = url[start..];
-        const end = std.mem.indexOf(u8, rest, "/") orelse rest.len;
-        if (end == 0) return null;
-
-        return rest[0..end];
-    }
+    // v23.27: Use module-level extractDomain function
 
     /// Update domain-specific timing (v23.15)
     fn updateDomainStats(self: *Self, domain: []const u8, load_time_ms: u32) void {
@@ -1228,9 +1245,22 @@ pub const RealAgent = struct {
 
     /// Navigate with retry on failure (v23.16)
     pub fn navigateWithRetry(self: *Self, url: []const u8) AgentError!RetryResult {
-        // v23.22: Check circuit breaker
+        // v23.27: Extract domain from URL for per-domain circuit breaker
+        const domain = extractDomain(url);
+
+        // v23.27: Check domain-specific circuit breaker first
+        if (domain.len > 0 and !self.canExecuteForDomain(domain)) {
+            std.debug.print("    [CIRCUIT] Request blocked for domain '{s}' - circuit is OPEN\n", .{domain});
+            return RetryResult{
+                .success = false,
+                .attempts = 0,
+                .total_delay_ms = 0,
+            };
+        }
+
+        // v23.22: Check global circuit breaker
         if (!self.circuit_breaker.canExecute()) {
-            std.debug.print("    [CIRCUIT] Request blocked - circuit is OPEN\n", .{});
+            std.debug.print("    [CIRCUIT] Request blocked - global circuit is OPEN\n", .{});
             return RetryResult{
                 .success = false,
                 .attempts = 0,
@@ -1253,8 +1283,10 @@ pub const RealAgent = struct {
                 self.retry_metrics.navigate_retries += 1;
 
                 if (attempts > self.retry_config.max_retries) {
-                    // v23.22: Record failure
+                    // v23.22: Record failure (global)
                     self.circuit_breaker.recordFailure();
+                    // v23.27: Record failure (domain)
+                    if (domain.len > 0) self.recordDomainFailure(domain);
                     // v23.19: Track failure
                     self.retry_metrics.failed_operations += 1;
                     std.debug.print("    [RETRY] Navigate failed after {d} attempts\n", .{attempts});
@@ -1281,8 +1313,10 @@ pub const RealAgent = struct {
 
             // v23.19: Track success
             self.retry_metrics.successful_operations += 1;
-            // v23.22: Record success
+            // v23.22: Record success (global)
             self.circuit_breaker.recordSuccess();
+            // v23.27: Record success (domain)
+            if (domain.len > 0) self.recordDomainSuccess(domain);
 
             return RetryResult{
                 .success = true,
@@ -1293,8 +1327,10 @@ pub const RealAgent = struct {
 
         // v23.19: Track failure (max retries exceeded)
         self.retry_metrics.failed_operations += 1;
-        // v23.22: Record failure
+        // v23.22: Record failure (global)
         self.circuit_breaker.recordFailure();
+        // v23.27: Record failure (domain)
+        if (domain.len > 0) self.recordDomainFailure(domain);
 
         return RetryResult{
             .success = false,
@@ -1543,6 +1579,56 @@ pub const RealAgent = struct {
     /// Check if circuit breaker allows execution (v23.22)
     pub fn isCircuitClosed(self: *Self) bool {
         return self.circuit_breaker.canExecute();
+    }
+
+    /// Get or create circuit breaker for specific domain (v23.27)
+    pub fn getCircuitBreakerForDomain(self: *Self, domain: []const u8) !*CircuitBreaker {
+        // Check if already exists
+        if (self.domain_circuit_breakers.getPtr(domain)) |cb| {
+            return cb;
+        }
+
+        // Create new circuit breaker for this domain
+        const domain_copy = try self.allocator.dupe(u8, domain);
+        errdefer self.allocator.free(domain_copy);
+
+        try self.domain_circuit_breakers.put(domain_copy, CircuitBreaker{});
+        return self.domain_circuit_breakers.getPtr(domain_copy).?;
+    }
+
+    /// Check if domain circuit breaker allows execution (v23.27)
+    pub fn canExecuteForDomain(self: *Self, domain: []const u8) bool {
+        const cb = self.getCircuitBreakerForDomain(domain) catch return true;
+        return cb.canExecute();
+    }
+
+    /// Record success for domain circuit breaker (v23.27)
+    pub fn recordDomainSuccess(self: *Self, domain: []const u8) void {
+        const cb = self.getCircuitBreakerForDomain(domain) catch return;
+        cb.recordSuccess();
+    }
+
+    /// Record failure for domain circuit breaker (v23.27)
+    pub fn recordDomainFailure(self: *Self, domain: []const u8) void {
+        const cb = self.getCircuitBreakerForDomain(domain) catch return;
+        cb.recordFailure();
+    }
+
+    /// Get domain circuit breaker state (v23.27)
+    pub fn getDomainCircuitBreakerState(self: *Self, domain: []const u8) CircuitBreakerState {
+        const cb = self.getCircuitBreakerForDomain(domain) catch return .closed;
+        return cb.state;
+    }
+
+    /// Reset domain circuit breaker (v23.27)
+    pub fn resetDomainCircuitBreaker(self: *Self, domain: []const u8) void {
+        const cb = self.getCircuitBreakerForDomain(domain) catch return;
+        cb.reset();
+    }
+
+    /// Get all domain circuit breaker states (v23.27)
+    pub fn getDomainCircuitBreakerCount(self: *Self) usize {
+        return self.domain_circuit_breakers.count();
     }
 
     /// Export retry metrics to JSON (v23.24)
@@ -2131,16 +2217,16 @@ test "captureElementScreenshot method exists" {
 
 test "extractDomain parses URLs correctly" {
     // HTTPS
-    try std.testing.expectEqualStrings("example.com", RealAgent.extractDomain("https://example.com/page").?);
-    try std.testing.expectEqualStrings("google.com", RealAgent.extractDomain("https://google.com").?);
-    try std.testing.expectEqualStrings("sub.domain.org", RealAgent.extractDomain("https://sub.domain.org/path/to/page").?);
+    try std.testing.expectEqualStrings("example.com", extractDomain("https://example.com/page"));
+    try std.testing.expectEqualStrings("google.com", extractDomain("https://google.com"));
+    try std.testing.expectEqualStrings("sub.domain.org", extractDomain("https://sub.domain.org/path/to/page"));
 
-    // HTTP
-    try std.testing.expectEqualStrings("localhost:8080", RealAgent.extractDomain("http://localhost:8080/api").?);
+    // HTTP - note: port is separated by : so domain stops at :
+    try std.testing.expectEqualStrings("localhost", extractDomain("http://localhost:8080/api"));
 
-    // Edge cases - "invalid" returns "invalid" since no protocol
-    try std.testing.expectEqualStrings("invalid", RealAgent.extractDomain("invalid").?);
-    try std.testing.expect(RealAgent.extractDomain("https://") == null);
+    // Edge cases - no protocol means start=0, so returns up to first / or :
+    try std.testing.expectEqualStrings("invalid", extractDomain("invalid"));
+    try std.testing.expectEqualStrings("", extractDomain("https://"));
 }
 
 test "domain-specific timing" {
@@ -2844,4 +2930,94 @@ test "MetricsExporter Prometheus with histogram (v23.26)" {
     try std.testing.expect(std.mem.indexOf(u8, prom, "vibee_retry_delay_ms_bucket") != null);
     try std.testing.expect(std.mem.indexOf(u8, prom, "le=\"+Inf\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, prom, "vibee_retry_delay_percentile") != null);
+}
+
+// v23.27: Per-domain circuit breaker tests
+test "getCircuitBreakerForDomain creates new breaker (v23.27)" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Initially no domain circuit breakers
+    try std.testing.expectEqual(@as(usize, 0), agent.getDomainCircuitBreakerCount());
+
+    // Get circuit breaker for domain - should create new one
+    const cb = try agent.getCircuitBreakerForDomain("example.com");
+    try std.testing.expectEqual(CircuitBreakerState.closed, cb.state);
+    try std.testing.expectEqual(@as(usize, 1), agent.getDomainCircuitBreakerCount());
+
+    // Get same domain again - should return existing
+    const cb2 = try agent.getCircuitBreakerForDomain("example.com");
+    try std.testing.expectEqual(@intFromPtr(cb), @intFromPtr(cb2));
+    try std.testing.expectEqual(@as(usize, 1), agent.getDomainCircuitBreakerCount());
+
+    // Get different domain - should create new one
+    _ = try agent.getCircuitBreakerForDomain("google.com");
+    try std.testing.expectEqual(@as(usize, 2), agent.getDomainCircuitBreakerCount());
+}
+
+test "canExecuteForDomain checks domain circuit breaker (v23.27)" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Initially can execute for any domain
+    try std.testing.expect(agent.canExecuteForDomain("example.com"));
+
+    // Record failures to open circuit
+    const cb = try agent.getCircuitBreakerForDomain("example.com");
+    cb.failure_threshold = 2; // Lower threshold for testing
+    agent.recordDomainFailure("example.com");
+    agent.recordDomainFailure("example.com");
+
+    // Circuit should be open now
+    try std.testing.expectEqual(CircuitBreakerState.open, agent.getDomainCircuitBreakerState("example.com"));
+    try std.testing.expect(!agent.canExecuteForDomain("example.com"));
+
+    // Other domains should still work
+    try std.testing.expect(agent.canExecuteForDomain("google.com"));
+}
+
+test "recordDomainSuccess and recordDomainFailure (v23.27)" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Record success
+    agent.recordDomainSuccess("example.com");
+    const cb = try agent.getCircuitBreakerForDomain("example.com");
+    try std.testing.expectEqual(@as(u32, 0), cb.failure_count);
+
+    // Record failure
+    agent.recordDomainFailure("example.com");
+    try std.testing.expectEqual(@as(u32, 1), cb.failure_count);
+}
+
+test "resetDomainCircuitBreaker (v23.27)" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Open circuit
+    const cb = try agent.getCircuitBreakerForDomain("example.com");
+    cb.failure_threshold = 1;
+    agent.recordDomainFailure("example.com");
+    try std.testing.expectEqual(CircuitBreakerState.open, cb.state);
+
+    // Reset
+    agent.resetDomainCircuitBreaker("example.com");
+    try std.testing.expectEqual(CircuitBreakerState.closed, cb.state);
+}
+
+test "extractDomain helper function (v23.27)" {
+    // With protocol
+    try std.testing.expectEqualStrings("example.com", extractDomain("https://example.com/path"));
+    try std.testing.expectEqualStrings("api.example.com", extractDomain("https://api.example.com:443/v1"));
+
+    // Without protocol - returns from start
+    try std.testing.expectEqualStrings("example.com", extractDomain("example.com/path"));
+
+    // Empty cases
+    try std.testing.expectEqualStrings("", extractDomain("https://"));
+    try std.testing.expectEqualStrings("", extractDomain(""));
 }
