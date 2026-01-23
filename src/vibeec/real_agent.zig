@@ -3729,6 +3729,291 @@ pub const LLMUsageMetrics = struct {
     }
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.48: WEBARENA BENCHMARK RUNNER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Task category for WebArena (v23.48)
+pub const TaskCategory = enum {
+    navigation, // Navigate to specific page
+    form_fill, // Fill out forms
+    search, // Search for items
+    click_sequence, // Click through menus
+    data_extraction, // Extract information
+    multi_step, // Complex multi-step tasks
+
+    pub fn toString(self: TaskCategory) []const u8 {
+        return switch (self) {
+            .navigation => "navigation",
+            .form_fill => "form_fill",
+            .search => "search",
+            .click_sequence => "click_sequence",
+            .data_extraction => "data_extraction",
+            .multi_step => "multi_step",
+        };
+    }
+};
+
+/// WebArena task definition (v23.48)
+pub const WebArenaTask = struct {
+    id: []const u8,
+    instruction: []const u8,
+    start_url: []const u8,
+    category: TaskCategory,
+    expected_result: ?[]const u8 = null, // For validation
+    max_steps: u32 = 10,
+    timeout_ms: u32 = 60000,
+
+    /// Create a navigation task (v23.48)
+    pub fn navigation(id: []const u8, instruction: []const u8, url: []const u8) WebArenaTask {
+        return WebArenaTask{
+            .id = id,
+            .instruction = instruction,
+            .start_url = url,
+            .category = .navigation,
+        };
+    }
+
+    /// Create a form fill task (v23.48)
+    pub fn formFill(id: []const u8, instruction: []const u8, url: []const u8) WebArenaTask {
+        return WebArenaTask{
+            .id = id,
+            .instruction = instruction,
+            .start_url = url,
+            .category = .form_fill,
+        };
+    }
+
+    /// Create a search task (v23.48)
+    pub fn search(id: []const u8, instruction: []const u8, url: []const u8) WebArenaTask {
+        return WebArenaTask{
+            .id = id,
+            .instruction = instruction,
+            .start_url = url,
+            .category = .search,
+        };
+    }
+};
+
+/// Result of a single task execution (v23.48)
+pub const TaskResult = struct {
+    task_id: []const u8,
+    success: bool,
+    steps_taken: u32,
+    duration_ms: u64,
+    error_message: ?[]const u8 = null,
+    actions_executed: u32 = 0,
+    tokens_used: u32 = 0,
+
+    pub fn succeeded(task_id: []const u8, steps: u32, duration: u64, actions: u32, tokens: u32) TaskResult {
+        return TaskResult{
+            .task_id = task_id,
+            .success = true,
+            .steps_taken = steps,
+            .duration_ms = duration,
+            .actions_executed = actions,
+            .tokens_used = tokens,
+        };
+    }
+
+    pub fn failed(task_id: []const u8, steps: u32, duration: u64, err: []const u8) TaskResult {
+        return TaskResult{
+            .task_id = task_id,
+            .success = false,
+            .steps_taken = steps,
+            .duration_ms = duration,
+            .error_message = err,
+        };
+    }
+};
+
+/// Benchmark summary statistics (v23.48)
+pub const BenchmarkSummary = struct {
+    total_tasks: u32 = 0,
+    successful_tasks: u32 = 0,
+    failed_tasks: u32 = 0,
+    total_steps: u32 = 0,
+    total_duration_ms: u64 = 0,
+    total_tokens: u32 = 0,
+    total_actions: u32 = 0,
+
+    /// Success rate as percentage (v23.48)
+    pub fn successRate(self: BenchmarkSummary) f32 {
+        if (self.total_tasks == 0) return 0.0;
+        return @as(f32, @floatFromInt(self.successful_tasks)) / @as(f32, @floatFromInt(self.total_tasks)) * 100.0;
+    }
+
+    /// Average steps per task (v23.48)
+    pub fn avgSteps(self: BenchmarkSummary) f32 {
+        if (self.total_tasks == 0) return 0.0;
+        return @as(f32, @floatFromInt(self.total_steps)) / @as(f32, @floatFromInt(self.total_tasks));
+    }
+
+    /// Average duration per task in ms (v23.48)
+    pub fn avgDurationMs(self: BenchmarkSummary) u64 {
+        if (self.total_tasks == 0) return 0;
+        return self.total_duration_ms / self.total_tasks;
+    }
+
+    /// Average tokens per task (v23.48)
+    pub fn avgTokens(self: BenchmarkSummary) u32 {
+        if (self.total_tasks == 0) return 0;
+        return self.total_tokens / self.total_tasks;
+    }
+
+    /// Add task result to summary (v23.48)
+    pub fn addResult(self: *BenchmarkSummary, result: TaskResult) void {
+        self.total_tasks += 1;
+        self.total_steps += result.steps_taken;
+        self.total_duration_ms += result.duration_ms;
+        self.total_tokens += result.tokens_used;
+        self.total_actions += result.actions_executed;
+
+        if (result.success) {
+            self.successful_tasks += 1;
+        } else {
+            self.failed_tasks += 1;
+        }
+    }
+};
+
+/// WebArena Benchmark Runner (v23.48)
+pub const WebArenaBenchmark = struct {
+    allocator: Allocator,
+    agent: *RealAgent,
+    results: std.ArrayList(TaskResult),
+    summary: BenchmarkSummary,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator, agent: *RealAgent) Self {
+        return Self{
+            .allocator = allocator,
+            .agent = agent,
+            .results = std.ArrayList(TaskResult).init(allocator),
+            .summary = BenchmarkSummary{},
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.results.deinit();
+    }
+
+    /// Run a single task (v23.48)
+    pub fn runTask(self: *Self, task: WebArenaTask) TaskResult {
+        const start_time = std.time.milliTimestamp();
+
+        // Reset agent metrics for this task
+        self.agent.resetLLMMetrics();
+
+        std.debug.print("\n[BENCH] Task {s}: {s}\n", .{ task.id, task.instruction });
+        std.debug.print("[BENCH] URL: {s}\n", .{task.start_url});
+
+        // Navigate to start URL
+        self.agent.navigate(task.start_url) catch |err| {
+            const duration = @as(u64, @intCast(std.time.milliTimestamp() - start_time));
+            return TaskResult.failed(task.id, 0, duration, @errorName(err));
+        };
+
+        // Run the task
+        const action_results = self.agent.runTask(task.instruction, task.max_steps) catch |err| {
+            const duration = @as(u64, @intCast(std.time.milliTimestamp() - start_time));
+            return TaskResult.failed(task.id, 0, duration, @errorName(err));
+        };
+        defer self.allocator.free(action_results);
+
+        const duration = @as(u64, @intCast(std.time.milliTimestamp() - start_time));
+        const metrics = self.agent.getLLMMetricsSummary();
+
+        // Count successful actions
+        var successful_actions: u32 = 0;
+        for (action_results) |result| {
+            if (result.success) successful_actions += 1;
+        }
+
+        // Determine success (for now: at least one action executed)
+        const success = action_results.len > 0 and successful_actions > 0;
+
+        if (success) {
+            return TaskResult.succeeded(
+                task.id,
+                @intCast(action_results.len),
+                duration,
+                successful_actions,
+                metrics.totalTokens(),
+            );
+        } else {
+            return TaskResult.failed(task.id, @intCast(action_results.len), duration, "No successful actions");
+        }
+    }
+
+    /// Run all tasks in benchmark (v23.48)
+    pub fn runBenchmark(self: *Self, tasks: []const WebArenaTask) BenchmarkSummary {
+        std.debug.print("\n{'='*60}\n", .{});
+        std.debug.print("WEBARENA BENCHMARK - {d} tasks\n", .{tasks.len});
+        std.debug.print("{'='*60}\n", .{});
+
+        for (tasks) |task| {
+            const result = self.runTask(task);
+            self.results.append(result) catch {};
+            self.summary.addResult(result);
+
+            // Print result
+            if (result.success) {
+                std.debug.print("[BENCH] ✓ {s}: {d} steps, {d}ms, {d} tokens\n", .{
+                    task.id,
+                    result.steps_taken,
+                    result.duration_ms,
+                    result.tokens_used,
+                });
+            } else {
+                std.debug.print("[BENCH] ✗ {s}: {s}\n", .{
+                    task.id,
+                    result.error_message orelse "unknown error",
+                });
+            }
+        }
+
+        self.printSummary();
+        return self.summary;
+    }
+
+    /// Print benchmark summary (v23.48)
+    pub fn printSummary(self: *Self) void {
+        std.debug.print("\n{'='*60}\n", .{});
+        std.debug.print("BENCHMARK SUMMARY\n", .{});
+        std.debug.print("{'='*60}\n", .{});
+        std.debug.print("Total tasks:     {d}\n", .{self.summary.total_tasks});
+        std.debug.print("Successful:      {d} ({d:.1}%)\n", .{ self.summary.successful_tasks, self.summary.successRate() });
+        std.debug.print("Failed:          {d}\n", .{self.summary.failed_tasks});
+        std.debug.print("Avg steps:       {d:.1}\n", .{self.summary.avgSteps()});
+        std.debug.print("Avg duration:    {d}ms\n", .{self.summary.avgDurationMs()});
+        std.debug.print("Avg tokens:      {d}\n", .{self.summary.avgTokens()});
+        std.debug.print("Total tokens:    {d}\n", .{self.summary.total_tokens});
+        std.debug.print("{'='*60}\n", .{});
+    }
+
+    /// Get results by category (v23.48)
+    pub fn getResultsByCategory(self: *Self, tasks: []const WebArenaTask, category: TaskCategory) BenchmarkSummary {
+        var summary = BenchmarkSummary{};
+
+        for (tasks, 0..) |task, i| {
+            if (task.category == category and i < self.results.items.len) {
+                summary.addResult(self.results.items[i]);
+            }
+        }
+
+        return summary;
+    }
+};
+
+/// Sample WebArena tasks for testing (v23.48)
+pub const SAMPLE_TASKS = [_]WebArenaTask{
+    WebArenaTask.navigation("nav-1", "Go to the homepage", "https://example.com"),
+    WebArenaTask.search("search-1", "Search for 'laptop'", "https://example.com"),
+    WebArenaTask.formFill("form-1", "Fill the contact form with name 'John'", "https://example.com/contact"),
+};
+
 pub const RealAgent = struct {
     allocator: Allocator,
     config: AgentConfig,
@@ -8793,4 +9078,98 @@ test "RealAgent callLLMWithRetry without client (v23.47)" {
 
     const result = agent.callLLMWithRetry("test prompt");
     try std.testing.expectError(AgentError.ComponentNotInitialized, result);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.48: WEBARENA BENCHMARK TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "TaskCategory toString (v23.48)" {
+    try std.testing.expectEqualStrings("navigation", TaskCategory.navigation.toString());
+    try std.testing.expectEqualStrings("form_fill", TaskCategory.form_fill.toString());
+    try std.testing.expectEqualStrings("search", TaskCategory.search.toString());
+}
+
+test "WebArenaTask navigation factory (v23.48)" {
+    const task = WebArenaTask.navigation("test-1", "Go to homepage", "https://example.com");
+    try std.testing.expectEqualStrings("test-1", task.id);
+    try std.testing.expectEqualStrings("Go to homepage", task.instruction);
+    try std.testing.expectEqual(TaskCategory.navigation, task.category);
+}
+
+test "WebArenaTask formFill factory (v23.48)" {
+    const task = WebArenaTask.formFill("form-1", "Fill form", "https://example.com/form");
+    try std.testing.expectEqual(TaskCategory.form_fill, task.category);
+}
+
+test "WebArenaTask search factory (v23.48)" {
+    const task = WebArenaTask.search("search-1", "Search items", "https://example.com/search");
+    try std.testing.expectEqual(TaskCategory.search, task.category);
+}
+
+test "TaskResult succeeded (v23.48)" {
+    const result = TaskResult.succeeded("task-1", 5, 1000, 3, 500);
+    try std.testing.expect(result.success);
+    try std.testing.expectEqual(@as(u32, 5), result.steps_taken);
+    try std.testing.expectEqual(@as(u64, 1000), result.duration_ms);
+    try std.testing.expectEqual(@as(u32, 3), result.actions_executed);
+    try std.testing.expectEqual(@as(u32, 500), result.tokens_used);
+}
+
+test "TaskResult failed (v23.48)" {
+    const result = TaskResult.failed("task-1", 2, 500, "Connection error");
+    try std.testing.expect(!result.success);
+    try std.testing.expectEqualStrings("Connection error", result.error_message.?);
+}
+
+test "BenchmarkSummary initial values (v23.48)" {
+    const summary = BenchmarkSummary{};
+    try std.testing.expectEqual(@as(u32, 0), summary.total_tasks);
+    try std.testing.expectEqual(@as(f32, 0.0), summary.successRate());
+    try std.testing.expectEqual(@as(f32, 0.0), summary.avgSteps());
+}
+
+test "BenchmarkSummary addResult (v23.48)" {
+    var summary = BenchmarkSummary{};
+
+    const success = TaskResult.succeeded("t1", 5, 1000, 3, 500);
+    summary.addResult(success);
+
+    try std.testing.expectEqual(@as(u32, 1), summary.total_tasks);
+    try std.testing.expectEqual(@as(u32, 1), summary.successful_tasks);
+    try std.testing.expectEqual(@as(u32, 5), summary.total_steps);
+
+    const failure = TaskResult.failed("t2", 2, 500, "error");
+    summary.addResult(failure);
+
+    try std.testing.expectEqual(@as(u32, 2), summary.total_tasks);
+    try std.testing.expectEqual(@as(u32, 1), summary.failed_tasks);
+}
+
+test "BenchmarkSummary calculations (v23.48)" {
+    var summary = BenchmarkSummary{};
+
+    summary.addResult(TaskResult.succeeded("t1", 4, 1000, 2, 400));
+    summary.addResult(TaskResult.succeeded("t2", 6, 2000, 4, 600));
+
+    try std.testing.expectEqual(@as(f32, 100.0), summary.successRate());
+    try std.testing.expectEqual(@as(f32, 5.0), summary.avgSteps());
+    try std.testing.expectEqual(@as(u64, 1500), summary.avgDurationMs());
+    try std.testing.expectEqual(@as(u32, 500), summary.avgTokens());
+}
+
+test "WebArenaBenchmark init (v23.48)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    var benchmark = WebArenaBenchmark.init(allocator, &agent);
+    defer benchmark.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), benchmark.summary.total_tasks);
+}
+
+test "SAMPLE_TASKS defined (v23.48)" {
+    try std.testing.expectEqual(@as(usize, 3), SAMPLE_TASKS.len);
+    try std.testing.expectEqualStrings("nav-1", SAMPLE_TASKS[0].id);
 }
