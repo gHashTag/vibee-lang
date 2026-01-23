@@ -13,6 +13,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const websocket = @import("websocket.zig");
 const http_client = @import("http_client.zig");
+const anthropic = @import("anthropic_client.zig");
 
 pub const AgentError = error{
     BrowserConnectionFailed,
@@ -1836,6 +1837,7 @@ pub const ActionType = enum {
     refresh,
     hover,
     press_key,
+    done, // v23.45: Task completion signal
     none,
 
     pub fn toString(self: ActionType) []const u8 {
@@ -1856,6 +1858,7 @@ pub const ActionType = enum {
             .refresh => "refresh",
             .hover => "hover",
             .press_key => "press_key",
+            .done => "done",
             .none => "none",
         };
     }
@@ -1877,13 +1880,14 @@ pub const ActionType = enum {
         if (std.mem.eql(u8, s, "refresh") or std.mem.eql(u8, s, "reload")) return .refresh;
         if (std.mem.eql(u8, s, "hover")) return .hover;
         if (std.mem.eql(u8, s, "press") or std.mem.eql(u8, s, "press_key") or std.mem.eql(u8, s, "key")) return .press_key;
+        if (std.mem.eql(u8, s, "done") or std.mem.eql(u8, s, "complete") or std.mem.eql(u8, s, "finish")) return .done;
         return .none;
     }
 
     pub fn requiresSelector(self: ActionType) bool {
         return switch (self) {
             .click, .type_text, .select, .check, .uncheck, .submit, .hover, .extract => true,
-            .navigate, .scroll, .wait, .screenshot, .go_back, .go_forward, .refresh, .press_key, .none => false,
+            .navigate, .scroll, .wait, .screenshot, .go_back, .go_forward, .refresh, .press_key, .done, .none => false,
         };
     }
 
@@ -2124,6 +2128,7 @@ pub const ActionExecutor = struct {
             .refresh => self.executeRefresh(action),
             .hover => self.executeHover(action),
             .press_key => self.executePressKey(action),
+            .done => ActionResult.ok(action), // Task complete signal
             .screenshot, .none => ActionResult.fail(action, "Action not implemented"),
         };
 
@@ -3693,6 +3698,8 @@ pub const RealAgent = struct {
     form_interaction: ?*FormInteraction = null,
     action_executor: ?*ActionExecutor = null,
     action_parser: ?*ActionParser = null,
+    // v23.45: Anthropic LLM client
+    llm_client: ?*anthropic.AnthropicClient = null,
 
     const Self = @This();
 
@@ -3742,6 +3749,14 @@ pub const RealAgent = struct {
         self.action_executor = executor;
     }
 
+    /// Initialize LLM client with API key (v23.45)
+    pub fn initLLM(self: *Self, api_key: []const u8) !void {
+        const client = try self.allocator.create(anthropic.AnthropicClient);
+        client.* = anthropic.AnthropicClient.init(self.allocator, api_key);
+        client.setMaxTokens(2048); // Reasonable default for agent tasks
+        self.llm_client = client;
+    }
+
     pub fn deinit(self: *Self) void {
         // v23.21: Auto-save domain stats to file
         self.saveDomainStats() catch {};
@@ -3763,6 +3778,11 @@ pub const RealAgent = struct {
         if (self.dom_extractor) |dom| {
             dom.deinit();
             self.allocator.destroy(dom);
+        }
+        // v23.45: Deinit LLM client
+        if (self.llm_client) |client| {
+            client.deinit();
+            self.allocator.destroy(client);
         }
 
         // Free domain keys
@@ -3839,35 +3859,125 @@ pub const RealAgent = struct {
         return null;
     }
 
-    /// Run full task cycle: observe -> think -> act (v23.44)
+    /// Build prompt for LLM with page context (v23.45)
+    pub fn buildPrompt(self: *Self, instruction: []const u8, page_text: []const u8) ![]u8 {
+        var buffer = std.ArrayList(u8).init(self.allocator);
+        errdefer buffer.deinit();
+
+        const writer = buffer.writer();
+
+        // System context
+        try writer.writeAll("You are a web automation agent. Analyze the page and decide the next action.\n\n");
+        try writer.writeAll("TASK: ");
+        try writer.writeAll(instruction);
+        try writer.writeAll("\n\n");
+
+        // Page content (truncated to avoid token limits)
+        try writer.writeAll("PAGE CONTENT:\n");
+        const max_content = @min(page_text.len, 4000);
+        try writer.writeAll(page_text[0..max_content]);
+        if (page_text.len > 4000) {
+            try writer.writeAll("\n... (truncated)");
+        }
+        try writer.writeAll("\n\n");
+
+        // Action format instructions
+        try writer.writeAll("Respond with a JSON action:\n");
+        try writer.writeAll("{\"action\": \"click|type|navigate|scroll|done\", \"selector\": \"CSS selector\", \"value\": \"text to type or URL\"}\n\n");
+        try writer.writeAll("Use \"done\" action when task is complete.\n");
+
+        return buffer.toOwnedSlice();
+    }
+
+    /// Call LLM and get response (v23.45)
+    pub fn callLLM(self: *Self, prompt: []const u8) ![]u8 {
+        if (self.llm_client) |client| {
+            const system = "You are a precise web automation agent. Output only valid JSON actions.";
+            var response = client.chatWithSystem(system, prompt) catch |err| {
+                std.debug.print("[LLM] Error: {s}\n", .{@errorName(err)});
+                return AgentError.LLMConnectionFailed;
+            };
+            defer response.deinit();
+
+            std.debug.print("[LLM] Tokens: in={d}, out={d}, latency={d}ms\n", .{
+                response.input_tokens,
+                response.output_tokens,
+                @divFloor(response.latency_ns, 1_000_000),
+            });
+
+            return self.allocator.dupe(u8, response.content) catch return AgentError.OutOfMemory;
+        }
+        return AgentError.ComponentNotInitialized;
+    }
+
+    /// Run full task cycle: observe -> think -> act (v23.45)
     /// Returns list of action results from the task execution
     pub fn runTask(self: *Self, instruction: []const u8, max_steps: u32) ![]ActionResult {
         var results = std.ArrayList(ActionResult).init(self.allocator);
         errdefer results.deinit();
 
+        std.debug.print("[TASK] Starting: {s}\n", .{instruction});
+
         var step: u32 = 0;
         while (step < max_steps) : (step += 1) {
+            std.debug.print("[TASK] Step {d}/{d}\n", .{ step + 1, max_steps });
+
             // 1. OBSERVE: Get page context
             const page_text = self.getPageTextViaComponent() catch |err| {
-                std.debug.print("[TASK] Step {d}: Failed to get page text: {s}\n", .{ step, @errorName(err) });
+                std.debug.print("[TASK] Failed to get page: {s}\n", .{@errorName(err)});
                 break;
             };
             defer self.allocator.free(page_text);
 
-            // 2. Build context for LLM (simplified - real impl would call LLM)
-            std.debug.print("[TASK] Step {d}: Instruction: {s}\n", .{ step, instruction });
-            std.debug.print("[TASK] Page text length: {d} bytes\n", .{page_text.len});
+            // 2. THINK: Build prompt and call LLM
+            const prompt = self.buildPrompt(instruction, page_text) catch |err| {
+                std.debug.print("[TASK] Failed to build prompt: {s}\n", .{@errorName(err)});
+                break;
+            };
+            defer self.allocator.free(prompt);
 
-            // 3. For now, just log - real implementation would:
-            //    - Send context + instruction to LLM
-            //    - Parse LLM response into Action
-            //    - Execute action
-            //    - Check if task complete
+            const llm_response = self.callLLM(prompt) catch |err| {
+                std.debug.print("[TASK] LLM call failed: {s}\n", .{@errorName(err)});
+                break;
+            };
+            defer self.allocator.free(llm_response);
 
-            // Placeholder: task complete after first observation
-            break;
+            std.debug.print("[TASK] LLM response: {s}\n", .{llm_response});
+
+            // 3. PARSE: Convert LLM response to Action
+            if (self.action_parser) |parser| {
+                if (parser.parse(llm_response)) |action| {
+                    // Check if task is done
+                    // Check if task is done
+                    if (action.action_type == .done or action.action_type == .none) {
+                        std.debug.print("[TASK] Task completed ({s} action)\n", .{action.action_type.toString()});
+                        break;
+                    }
+
+                    // 4. ACT: Execute the action
+                    const result = self.executeActionViaComponent(action);
+                    try results.append(result);
+
+                    if (!result.success) {
+                        std.debug.print("[TASK] Action failed: {s}\n", .{result.error_message orelse "unknown"});
+                        // Continue trying - agent might recover
+                    } else {
+                        std.debug.print("[TASK] Action succeeded: {s}\n", .{action.action_type.toString()});
+                    }
+
+                    // Small delay between actions
+                    std.time.sleep(500 * std.time.ns_per_ms);
+                } else {
+                    std.debug.print("[TASK] Failed to parse LLM response\n", .{});
+                    break;
+                }
+            } else {
+                std.debug.print("[TASK] Action parser not initialized\n", .{});
+                break;
+            }
         }
 
+        std.debug.print("[TASK] Completed with {d} actions\n", .{results.items.len});
         return results.toOwnedSlice();
     }
 
@@ -8189,4 +8299,83 @@ test "RealAgent executeActionViaComponent without components (v23.44)" {
 test "ComponentNotInitialized error classification (v23.44)" {
     const category = classifyError(AgentError.ComponentNotInitialized);
     try std.testing.expectEqual(ErrorCategory.permanent, category);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.45: LLM INTEGRATION TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "ActionType done (v23.45)" {
+    try std.testing.expectEqual(ActionType.done, ActionType.fromString("done"));
+    try std.testing.expectEqual(ActionType.done, ActionType.fromString("complete"));
+    try std.testing.expectEqual(ActionType.done, ActionType.fromString("finish"));
+    try std.testing.expectEqualStrings("done", ActionType.done.toString());
+}
+
+test "ActionType done requiresSelector (v23.45)" {
+    try std.testing.expect(!ActionType.done.requiresSelector());
+    try std.testing.expect(!ActionType.done.requiresValue());
+}
+
+test "RealAgent llm_client field exists (v23.45)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    // LLM client should be null before initLLM
+    try std.testing.expect(agent.llm_client == null);
+}
+
+test "RealAgent initLLM (v23.45)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    // Initialize LLM client
+    try agent.initLLM("test-api-key");
+
+    // LLM client should be initialized
+    try std.testing.expect(agent.llm_client != null);
+}
+
+test "RealAgent buildPrompt (v23.45)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    const prompt = try agent.buildPrompt("Click the login button", "Welcome to the site. Login | Register");
+    defer allocator.free(prompt);
+
+    // Prompt should contain instruction and page content
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "Click the login button") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "Welcome to the site") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "JSON action") != null);
+}
+
+test "RealAgent callLLM without client (v23.45)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    // Without initLLM, callLLM should return ComponentNotInitialized
+    const result = agent.callLLM("test prompt");
+    try std.testing.expectError(AgentError.ComponentNotInitialized, result);
+}
+
+test "Action done isValid (v23.45)" {
+    const action = Action{ .action_type = .done };
+    try std.testing.expect(action.isValid());
+}
+
+test "ActionExecutor execute done (v23.45)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    try agent.initComponents();
+
+    const action = Action{ .action_type = .done };
+    const result = agent.executeActionViaComponent(action);
+
+    try std.testing.expect(result.success);
 }
