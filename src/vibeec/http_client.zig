@@ -57,6 +57,11 @@ pub const HttpClient = struct {
         return self.request(.GET, url, null, null);
     }
 
+    /// Make a PUT request (for Chrome DevTools Protocol)
+    pub fn put(self: *Self, url: []const u8) HttpError!HttpResponse {
+        return self.request(.PUT, url, null, null);
+    }
+
     /// Make a POST request with JSON body
     pub fn postJson(self: *Self, url: []const u8, body: []const u8, auth_token: ?[]const u8) HttpError!HttpResponse {
         return self.request(.POST, url, body, auth_token);

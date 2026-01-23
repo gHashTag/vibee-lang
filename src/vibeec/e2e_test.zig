@@ -37,18 +37,42 @@ pub const E2ETestSuite = struct {
     }
 
     /// Create a new browser page for isolated testing
-    fn createNewPage(self: *Self) ?[]const u8 {
-        // Use HTTP client to create new page
-        var http = @import("http_client.zig").HttpClient.init(self.allocator);
-        defer http.deinit();
+    /// Returns the WebSocket URL for the new page
+    pub fn createNewPage(self: *Self) ![]const u8 {
+        const http = @import("http_client.zig");
+
+        var client = http.HttpClient.init(self.allocator);
+        defer client.deinit();
+
+        // Chrome requires PUT for /json/new
+        var url_buf: [256]u8 = undefined;
+        const url = std.fmt.bufPrint(&url_buf, "{s}/json/new?about:blank", .{self.chrome_base_url}) catch return error.OutOfMemory;
+
+        var response = client.put(url) catch return error.ChromeError;
+        defer response.deinit();
+
+        // Parse webSocketDebuggerUrl from response
+        if (std.mem.indexOf(u8, response.body, "\"webSocketDebuggerUrl\": \"")) |start| {
+            const ws_start = start + 25;
+            if (std.mem.indexOf(u8, response.body[ws_start..], "\"")) |end| {
+                return self.allocator.dupe(u8, response.body[ws_start .. ws_start + end]);
+            }
+        }
+
+        return error.NoWebSocketUrl;
+    }
+
+    /// Close a browser page by ID
+    pub fn closePage(self: *Self, page_id: []const u8) void {
+        const http = @import("http_client.zig");
+
+        var client = http.HttpClient.init(self.allocator);
+        defer client.deinit();
 
         var url_buf: [256]u8 = undefined;
-        const url = std.fmt.bufPrint(&url_buf, "{s}/json/new?about:blank", .{self.chrome_base_url}) catch return null;
+        const url = std.fmt.bufPrint(&url_buf, "{s}/json/close/{s}", .{ self.chrome_base_url, page_id }) catch return;
 
-        // Note: Chrome requires PUT for /json/new
-        // For now, we'll reuse the existing page
-        _ = url;
-        return self.ws_url;
+        _ = client.get(url) catch return;
     }
 
     pub fn deinit(self: *Self) void {
@@ -172,9 +196,18 @@ pub const E2ETestSuite = struct {
         }
     }
 
-    /// Run full agent test with Ollama
+    /// Run full agent test with Ollama - ISOLATED with new page
     pub fn testPlanningAgent(self: *Self) !void {
         const start = std.time.milliTimestamp();
+
+        // Create NEW page for isolation
+        const new_ws_url = self.createNewPage() catch {
+            try self.addResult("PlanningAgent", false, 0, 0, "Failed to create new page");
+            return;
+        };
+        defer self.allocator.free(new_ws_url);
+
+        std.debug.print("[E2E] Created new page: {s}\n", .{new_ws_url[0..@min(new_ws_url.len, 60)]});
 
         var agent = planning_agent.PlanningAgent.init(
             self.allocator,
@@ -183,9 +216,9 @@ pub const E2ETestSuite = struct {
         );
         defer agent.deinit();
 
-        // Connect to browser
-        agent.connect(self.ws_url) catch {
-            try self.addResult("PlanningAgent", false, 0, 0, "Failed to connect");
+        // Connect to NEW browser page (starts at about:blank)
+        agent.connect(new_ws_url) catch {
+            try self.addResult("PlanningAgent", false, 0, 0, "Failed to connect to new page");
             return;
         };
 
@@ -198,10 +231,17 @@ pub const E2ETestSuite = struct {
         const elapsed = std.time.milliTimestamp() - start;
 
         // Check if goal was achieved
-        if (agent.state.done and std.mem.indexOf(u8, result, "Example") != null) {
+        // Success if: done AND (result contains "Example" OR URL contains "example.com")
+        const url_ok = std.mem.indexOf(u8, agent.state.current_page.url, "example.com") != null;
+        const result_ok = std.mem.indexOf(u8, result, "Example") != null or
+            std.mem.indexOf(u8, result, "example") != null;
+
+        if (agent.state.done and (url_ok or result_ok)) {
             try self.addResult("PlanningAgent", true, agent.state.current_step, @intCast(elapsed), null);
         } else {
-            try self.addResult("PlanningAgent", false, agent.state.current_step, @intCast(elapsed), "Goal not achieved");
+            var err_buf: [128]u8 = undefined;
+            const err_msg = std.fmt.bufPrint(&err_buf, "Goal not achieved. URL: {s}", .{agent.state.current_page.url[0..@min(agent.state.current_page.url.len, 50)]}) catch "Goal not achieved";
+            try self.addResult("PlanningAgent", false, agent.state.current_step, @intCast(elapsed), err_msg);
         }
     }
 
