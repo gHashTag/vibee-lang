@@ -1,0 +1,8 @@
+export { default as HeroSection } from './HeroSection'
+export { default as ProblemSection } from './ProblemSection'
+export { default as SolutionSection } from './SolutionSection'
+export { default as TractionSection } from './TractionSection'
+export { default as MarketSection } from './MarketSection'
+export { default as CompetitionSection } from './CompetitionSection'
+export { default as TeamSection } from './TeamSection'
+export { default as InvestSection } from './InvestSection'
