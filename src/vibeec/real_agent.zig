@@ -784,6 +784,258 @@ fn extractDomain(url: []const u8) []const u8 {
     return url[start..end];
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.29: FUNCTIONAL PROGRAMMING MODULE
+// Pure functions for retry logic - no side effects, deterministic output
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Error category for retry decisions (v23.29)
+pub const ErrorCategory = enum {
+    transient, // Network timeout, temporary unavailable - should retry
+    permanent, // 404, invalid input - should not retry
+    rate_limited, // 429 - should retry with longer delay
+    unknown, // Unknown error - default to retry
+
+    pub fn shouldRetry(self: ErrorCategory) bool {
+        return switch (self) {
+            .transient, .rate_limited, .unknown => true,
+            .permanent => false,
+        };
+    }
+
+    pub fn getDelayMultiplier(self: ErrorCategory) f32 {
+        return switch (self) {
+            .rate_limited => 3.0, // Triple delay for rate limiting
+            .transient => 1.0,
+            .unknown => 1.5,
+            .permanent => 0.0,
+        };
+    }
+};
+
+/// Retry decision result (v23.29)
+pub const RetryDecision = struct {
+    should_retry: bool,
+    delay_ms: u32,
+    reason: []const u8,
+};
+
+/// Retry context for decision making (v23.29)
+pub const RetryContext = struct {
+    attempt: u32,
+    max_retries: u32,
+    error_category: ErrorCategory,
+    circuit_state: CircuitBreakerState,
+    base_delay_ms: u32,
+    max_delay_ms: u32,
+    backoff_factor: f32,
+    jitter_strategy: JitterStrategy,
+    seed: u64, // For deterministic jitter in tests
+};
+
+/// Pure function: Calculate exponential backoff delay (v23.29)
+/// No side effects, deterministic output based on inputs
+pub fn calculateBackoff(attempt: u32, base_delay: u32, factor: f32, max_delay: u32) u32 {
+    if (attempt == 0) return base_delay;
+
+    var delay: f32 = @floatFromInt(base_delay);
+    var i: u32 = 0;
+    while (i < attempt) : (i += 1) {
+        delay *= factor;
+    }
+
+    const result: u32 = @intFromFloat(delay);
+    return @min(result, max_delay);
+}
+
+/// Pure function: Apply jitter to delay (v23.29)
+/// Deterministic when seed is provided
+pub fn applyJitter(delay: u32, strategy: JitterStrategy, jitter_factor: f32, seed: u64) u32 {
+    if (delay == 0 or jitter_factor == 0) return delay;
+
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+
+    return switch (strategy) {
+        .equal => blk: {
+            // Equal jitter: delay/2 + random(0, delay/2)
+            const half_delay = delay / 2;
+            const jitter = random.intRangeAtMost(u32, 0, half_delay);
+            break :blk @max(half_delay + jitter, 100);
+        },
+        .full => blk: {
+            // Full jitter: random(0, delay)
+            const result = random.intRangeAtMost(u32, 0, delay);
+            break :blk @max(result, 100);
+        },
+        .decorrelated => blk: {
+            // Decorrelated: random(base, delay * 3)
+            const upper = @min(delay * 3, std.math.maxInt(u32) / 2);
+            const base = delay / 3;
+            if (upper <= base) break :blk base;
+            const result = random.intRangeAtMost(u32, base, upper);
+            break :blk @max(result, 100);
+        },
+    };
+}
+
+/// Pure function: Determine if retry should happen (v23.29)
+pub fn shouldRetry(attempt: u32, max_retries: u32, circuit_state: CircuitBreakerState, error_category: ErrorCategory) bool {
+    // Circuit breaker check
+    if (circuit_state == .open) return false;
+
+    // Max retries check
+    if (attempt >= max_retries) return false;
+
+    // Error category check
+    return error_category.shouldRetry();
+}
+
+/// Pure function: Classify error into category (v23.29)
+pub fn classifyError(err: AgentError) ErrorCategory {
+    return switch (err) {
+        AgentError.NavigationFailed, AgentError.EvaluationFailed => .transient,
+        AgentError.BrowserConnectionFailed, AgentError.LLMConnectionFailed => .transient,
+        AgentError.ParseError => .permanent,
+        AgentError.OutOfMemory => .permanent,
+    };
+}
+
+/// Pure function: Make complete retry decision (v23.29)
+/// Combines all retry logic into single pure function
+pub fn makeRetryDecision(ctx: RetryContext) RetryDecision {
+    // Check if retry is allowed
+    if (!shouldRetry(ctx.attempt, ctx.max_retries, ctx.circuit_state, ctx.error_category)) {
+        const reason = if (ctx.circuit_state == .open)
+            "circuit breaker open"
+        else if (ctx.attempt >= ctx.max_retries)
+            "max retries exceeded"
+        else
+            "permanent error";
+
+        return RetryDecision{
+            .should_retry = false,
+            .delay_ms = 0,
+            .reason = reason,
+        };
+    }
+
+    // Calculate delay
+    var delay = calculateBackoff(ctx.attempt, ctx.base_delay_ms, ctx.backoff_factor, ctx.max_delay_ms);
+
+    // Apply error category multiplier
+    const multiplier = ctx.error_category.getDelayMultiplier();
+    delay = @intFromFloat(@as(f32, @floatFromInt(delay)) * multiplier);
+    delay = @min(delay, ctx.max_delay_ms);
+
+    // Apply jitter
+    delay = applyJitter(delay, ctx.jitter_strategy, 0.2, ctx.seed);
+
+    return RetryDecision{
+        .should_retry = true,
+        .delay_ms = delay,
+        .reason = "retry scheduled",
+    };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.30: FUNCTIONAL PIPELINE
+// Composable operations for data transformation
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Result type for functional error handling (v23.30)
+pub fn Result(comptime T: type, comptime E: type) type {
+    return union(enum) {
+        ok: T,
+        err: E,
+
+        const Self = @This();
+
+        pub fn isOk(self: Self) bool {
+            return self == .ok;
+        }
+
+        pub fn isErr(self: Self) bool {
+            return self == .err;
+        }
+
+        pub fn unwrap(self: Self) T {
+            return switch (self) {
+                .ok => |v| v,
+                .err => unreachable,
+            };
+        }
+
+        pub fn unwrapOr(self: Self, default: T) T {
+            return switch (self) {
+                .ok => |v| v,
+                .err => default,
+            };
+        }
+
+        pub fn unwrapErr(self: Self) E {
+            return switch (self) {
+                .ok => unreachable,
+                .err => |e| e,
+            };
+        }
+
+        /// Map: Transform success value (v23.30)
+        pub fn map(self: Self, comptime f: fn (T) T) Self {
+            return switch (self) {
+                .ok => |v| Self{ .ok = f(v) },
+                .err => |e| Self{ .err = e },
+            };
+        }
+
+        /// FlatMap: Chain operations that may fail (v23.30)
+        pub fn flatMap(self: Self, comptime f: fn (T) Self) Self {
+            return switch (self) {
+                .ok => |v| f(v),
+                .err => |e| Self{ .err = e },
+            };
+        }
+
+        /// MapErr: Transform error value (v23.30)
+        pub fn mapErr(self: Self, comptime f: fn (E) E) Self {
+            return switch (self) {
+                .ok => |v| Self{ .ok = v },
+                .err => |e| Self{ .err = f(e) },
+            };
+        }
+    };
+}
+
+/// Pipeline for composing operations (v23.30)
+pub fn Pipeline(comptime T: type) type {
+    return struct {
+        value: T,
+
+        const Self = @This();
+
+        pub fn init(value: T) Self {
+            return Self{ .value = value };
+        }
+
+        /// Pipe: Apply function to value (v23.30)
+        pub fn pipe(self: Self, comptime f: fn (T) T) Self {
+            return Self{ .value = f(self.value) };
+        }
+
+        /// Filter: Keep value if predicate is true (v23.30)
+        pub fn filter(self: Self, comptime pred: fn (T) bool, default: T) Self {
+            return Self{
+                .value = if (pred(self.value)) self.value else default,
+            };
+        }
+
+        /// Get final value
+        pub fn get(self: Self) T {
+            return self.value;
+        }
+    };
+}
+
 pub const RealAgent = struct {
     allocator: Allocator,
     config: AgentConfig,
@@ -3339,4 +3591,234 @@ test "RealAgent health methods (v23.28)" {
     const prom = try agent.exportHealthToPrometheus();
     defer allocator.free(prom);
     try std.testing.expect(prom.len > 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.29: FUNCTIONAL PROGRAMMING TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "ErrorCategory shouldRetry (v23.29)" {
+    try std.testing.expect(ErrorCategory.transient.shouldRetry());
+    try std.testing.expect(ErrorCategory.rate_limited.shouldRetry());
+    try std.testing.expect(ErrorCategory.unknown.shouldRetry());
+    try std.testing.expect(!ErrorCategory.permanent.shouldRetry());
+}
+
+test "ErrorCategory getDelayMultiplier (v23.29)" {
+    try std.testing.expectEqual(@as(f32, 1.0), ErrorCategory.transient.getDelayMultiplier());
+    try std.testing.expectEqual(@as(f32, 3.0), ErrorCategory.rate_limited.getDelayMultiplier());
+    try std.testing.expectEqual(@as(f32, 1.5), ErrorCategory.unknown.getDelayMultiplier());
+    try std.testing.expectEqual(@as(f32, 0.0), ErrorCategory.permanent.getDelayMultiplier());
+}
+
+test "calculateBackoff pure function (v23.29)" {
+    // Attempt 0 returns base delay
+    try std.testing.expectEqual(@as(u32, 500), calculateBackoff(0, 500, 2.0, 8000));
+
+    // Attempt 1: 500 * 2 = 1000
+    try std.testing.expectEqual(@as(u32, 1000), calculateBackoff(1, 500, 2.0, 8000));
+
+    // Attempt 2: 500 * 2 * 2 = 2000
+    try std.testing.expectEqual(@as(u32, 2000), calculateBackoff(2, 500, 2.0, 8000));
+
+    // Attempt 3: 500 * 2 * 2 * 2 = 4000
+    try std.testing.expectEqual(@as(u32, 4000), calculateBackoff(3, 500, 2.0, 8000));
+
+    // Attempt 4: 500 * 16 = 8000 (capped at max)
+    try std.testing.expectEqual(@as(u32, 8000), calculateBackoff(4, 500, 2.0, 8000));
+
+    // Attempt 5: would be 16000 but capped at 8000
+    try std.testing.expectEqual(@as(u32, 8000), calculateBackoff(5, 500, 2.0, 8000));
+}
+
+test "applyJitter deterministic with seed (v23.29)" {
+    const seed: u64 = 12345;
+
+    // Same seed should produce same result
+    const result1 = applyJitter(1000, .equal, 0.2, seed);
+    const result2 = applyJitter(1000, .equal, 0.2, seed);
+    try std.testing.expectEqual(result1, result2);
+
+    // Result should be within expected range
+    try std.testing.expect(result1 >= 100);
+    try std.testing.expect(result1 <= 1000);
+}
+
+test "applyJitter strategies (v23.29)" {
+    const seed: u64 = 54321;
+    const delay: u32 = 1000;
+
+    // Equal jitter: delay/2 + random(0, delay/2) = 500-1000
+    const equal = applyJitter(delay, .equal, 0.2, seed);
+    try std.testing.expect(equal >= 100);
+
+    // Full jitter: random(0, delay) = 0-1000
+    const full = applyJitter(delay, .full, 0.2, seed);
+    try std.testing.expect(full >= 100);
+    try std.testing.expect(full <= delay);
+
+    // Decorrelated jitter
+    const decorr = applyJitter(delay, .decorrelated, 0.2, seed);
+    try std.testing.expect(decorr >= 100);
+}
+
+test "shouldRetry pure function (v23.29)" {
+    // Should retry on transient error with closed circuit
+    try std.testing.expect(shouldRetry(0, 3, .closed, .transient));
+    try std.testing.expect(shouldRetry(1, 3, .closed, .transient));
+    try std.testing.expect(shouldRetry(2, 3, .closed, .transient));
+
+    // Should not retry when max retries exceeded
+    try std.testing.expect(!shouldRetry(3, 3, .closed, .transient));
+
+    // Should not retry when circuit is open
+    try std.testing.expect(!shouldRetry(0, 3, .open, .transient));
+
+    // Should not retry on permanent error
+    try std.testing.expect(!shouldRetry(0, 3, .closed, .permanent));
+
+    // Half-open circuit allows retry
+    try std.testing.expect(shouldRetry(0, 3, .half_open, .transient));
+}
+
+test "classifyError pure function (v23.29)" {
+    try std.testing.expectEqual(ErrorCategory.transient, classifyError(AgentError.NavigationFailed));
+    try std.testing.expectEqual(ErrorCategory.transient, classifyError(AgentError.BrowserConnectionFailed));
+    try std.testing.expectEqual(ErrorCategory.permanent, classifyError(AgentError.ParseError));
+    try std.testing.expectEqual(ErrorCategory.permanent, classifyError(AgentError.OutOfMemory));
+}
+
+test "makeRetryDecision pure function (v23.29)" {
+    // Should retry on first attempt
+    const ctx1 = RetryContext{
+        .attempt = 0,
+        .max_retries = 3,
+        .error_category = .transient,
+        .circuit_state = .closed,
+        .base_delay_ms = 500,
+        .max_delay_ms = 8000,
+        .backoff_factor = 2.0,
+        .jitter_strategy = .equal,
+        .seed = 12345,
+    };
+    const decision1 = makeRetryDecision(ctx1);
+    try std.testing.expect(decision1.should_retry);
+    try std.testing.expect(decision1.delay_ms > 0);
+
+    // Should not retry when circuit is open
+    const ctx2 = RetryContext{
+        .attempt = 0,
+        .max_retries = 3,
+        .error_category = .transient,
+        .circuit_state = .open,
+        .base_delay_ms = 500,
+        .max_delay_ms = 8000,
+        .backoff_factor = 2.0,
+        .jitter_strategy = .equal,
+        .seed = 12345,
+    };
+    const decision2 = makeRetryDecision(ctx2);
+    try std.testing.expect(!decision2.should_retry);
+    try std.testing.expectEqualStrings("circuit breaker open", decision2.reason);
+
+    // Should not retry on permanent error
+    const ctx3 = RetryContext{
+        .attempt = 0,
+        .max_retries = 3,
+        .error_category = .permanent,
+        .circuit_state = .closed,
+        .base_delay_ms = 500,
+        .max_delay_ms = 8000,
+        .backoff_factor = 2.0,
+        .jitter_strategy = .equal,
+        .seed = 12345,
+    };
+    const decision3 = makeRetryDecision(ctx3);
+    try std.testing.expect(!decision3.should_retry);
+    try std.testing.expectEqualStrings("permanent error", decision3.reason);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.30: FUNCTIONAL PIPELINE TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "Result type ok (v23.30)" {
+    const IntResult = Result(u32, []const u8);
+    const result = IntResult{ .ok = 42 };
+
+    try std.testing.expect(result.isOk());
+    try std.testing.expect(!result.isErr());
+    try std.testing.expectEqual(@as(u32, 42), result.unwrap());
+    try std.testing.expectEqual(@as(u32, 42), result.unwrapOr(0));
+}
+
+test "Result type err (v23.30)" {
+    const IntResult = Result(u32, []const u8);
+    const result = IntResult{ .err = "error" };
+
+    try std.testing.expect(!result.isOk());
+    try std.testing.expect(result.isErr());
+    try std.testing.expectEqual(@as(u32, 0), result.unwrapOr(0));
+    try std.testing.expectEqualStrings("error", result.unwrapErr());
+}
+
+fn double(x: u32) u32 {
+    return x * 2;
+}
+
+fn addTen(x: u32) u32 {
+    return x + 10;
+}
+
+test "Result map (v23.30)" {
+    const IntResult = Result(u32, []const u8);
+
+    // Map on ok
+    const ok_result = IntResult{ .ok = 5 };
+    const mapped = ok_result.map(double);
+    try std.testing.expectEqual(@as(u32, 10), mapped.unwrap());
+
+    // Map on err (should not apply function)
+    const err_result = IntResult{ .err = "error" };
+    const mapped_err = err_result.map(double);
+    try std.testing.expect(mapped_err.isErr());
+}
+
+test "Pipeline pipe (v23.30)" {
+    const result = Pipeline(u32).init(5)
+        .pipe(double) // 10
+        .pipe(addTen) // 20
+        .pipe(double) // 40
+        .get();
+
+    try std.testing.expectEqual(@as(u32, 40), result);
+}
+
+fn isEven(x: u32) bool {
+    return x % 2 == 0;
+}
+
+test "Pipeline filter (v23.30)" {
+    // Filter keeps value if predicate is true
+    const even = Pipeline(u32).init(4)
+        .filter(isEven, 0)
+        .get();
+    try std.testing.expectEqual(@as(u32, 4), even);
+
+    // Filter returns default if predicate is false
+    const odd = Pipeline(u32).init(5)
+        .filter(isEven, 0)
+        .get();
+    try std.testing.expectEqual(@as(u32, 0), odd);
+}
+
+test "Pipeline composition (v23.30)" {
+    // Complex pipeline: double, filter even, add 10
+    const result = Pipeline(u32).init(3)
+        .pipe(double) // 6
+        .filter(isEven, 0) // 6 (is even)
+        .pipe(addTen) // 16
+        .get();
+
+    try std.testing.expectEqual(@as(u32, 16), result);
 }
