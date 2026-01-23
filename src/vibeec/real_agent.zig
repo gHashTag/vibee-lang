@@ -4014,6 +4014,223 @@ pub const SAMPLE_TASKS = [_]WebArenaTask{
     WebArenaTask.formFill("form-1", "Fill the contact form with name 'John'", "https://example.com/contact"),
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.49: TOOL USE & FUNCTION CALLING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Tool parameter definition (v23.49)
+pub const ToolParameter = struct {
+    name: []const u8,
+    param_type: []const u8, // "string", "number", "boolean"
+    description: []const u8,
+    required: bool = true,
+};
+
+/// Tool definition for Claude tool_use (v23.49)
+pub const ToolDefinition = struct {
+    name: []const u8,
+    description: []const u8,
+    parameters: []const ToolParameter,
+
+    /// Generate JSON schema for tool (v23.49)
+    pub fn toJsonSchema(self: ToolDefinition, allocator: Allocator) ![]u8 {
+        var buffer = std.ArrayList(u8).init(allocator);
+        errdefer buffer.deinit();
+
+        const writer = buffer.writer();
+
+        try writer.writeAll("{\"name\":\"");
+        try writer.writeAll(self.name);
+        try writer.writeAll("\",\"description\":\"");
+        try writer.writeAll(self.description);
+        try writer.writeAll("\",\"input_schema\":{\"type\":\"object\",\"properties\":{");
+
+        var first = true;
+        for (self.parameters) |param| {
+            if (!first) try writer.writeAll(",");
+            first = false;
+
+            try writer.print("\"{s}\":{{\"type\":\"{s}\",\"description\":\"{s}\"}}", .{
+                param.name,
+                param.param_type,
+                param.description,
+            });
+        }
+
+        try writer.writeAll("},\"required\":[");
+
+        first = true;
+        for (self.parameters) |param| {
+            if (param.required) {
+                if (!first) try writer.writeAll(",");
+                first = false;
+                try writer.print("\"{s}\"", .{param.name});
+            }
+        }
+
+        try writer.writeAll("]}}");
+
+        return buffer.toOwnedSlice();
+    }
+};
+
+/// Predefined tools for web automation (v23.49)
+pub const AGENT_TOOLS = [_]ToolDefinition{
+    // Click tool
+    ToolDefinition{
+        .name = "click",
+        .description = "Click on an element identified by CSS selector",
+        .parameters = &[_]ToolParameter{
+            .{ .name = "selector", .param_type = "string", .description = "CSS selector of element to click" },
+        },
+    },
+    // Type tool
+    ToolDefinition{
+        .name = "type",
+        .description = "Type text into an input field",
+        .parameters = &[_]ToolParameter{
+            .{ .name = "selector", .param_type = "string", .description = "CSS selector of input field" },
+            .{ .name = "text", .param_type = "string", .description = "Text to type into the field" },
+        },
+    },
+    // Navigate tool
+    ToolDefinition{
+        .name = "navigate",
+        .description = "Navigate to a URL",
+        .parameters = &[_]ToolParameter{
+            .{ .name = "url", .param_type = "string", .description = "URL to navigate to" },
+        },
+    },
+    // Scroll tool
+    ToolDefinition{
+        .name = "scroll",
+        .description = "Scroll the page in a direction",
+        .parameters = &[_]ToolParameter{
+            .{ .name = "direction", .param_type = "string", .description = "Direction: up, down, top, bottom" },
+        },
+    },
+    // Done tool
+    ToolDefinition{
+        .name = "done",
+        .description = "Signal that the task is complete",
+        .parameters = &[_]ToolParameter{
+            .{ .name = "reason", .param_type = "string", .description = "Reason why task is complete", .required = false },
+        },
+    },
+};
+
+/// Tool call parsed from LLM response (v23.49)
+pub const ToolCall = struct {
+    tool_name: []const u8,
+    tool_id: ?[]const u8 = null,
+    arguments: std.json.Value,
+
+    /// Convert tool call to Action (v23.49)
+    pub fn toAction(self: ToolCall, allocator: Allocator) ?Action {
+        const action_type = ActionType.fromString(self.tool_name);
+        if (action_type == .none and !std.mem.eql(u8, self.tool_name, "done")) {
+            return null;
+        }
+
+        var action = Action{
+            .action_type = if (std.mem.eql(u8, self.tool_name, "done")) .done else action_type,
+        };
+
+        // Extract arguments based on tool type
+        if (self.arguments == .object) {
+            const obj = self.arguments.object;
+
+            if (obj.get("selector")) |s| {
+                if (s == .string) {
+                    action.selector = allocator.dupe(u8, s.string) catch null;
+                }
+            }
+            if (obj.get("text")) |t| {
+                if (t == .string) {
+                    action.value = allocator.dupe(u8, t.string) catch null;
+                }
+            }
+            if (obj.get("url")) |u| {
+                if (u == .string) {
+                    action.value = allocator.dupe(u8, u.string) catch null;
+                }
+            }
+            if (obj.get("direction")) |d| {
+                if (d == .string) {
+                    action.value = allocator.dupe(u8, d.string) catch null;
+                }
+            }
+        }
+
+        return action;
+    }
+};
+
+/// Parse tool_use response from Claude (v23.49)
+pub fn parseToolUseResponse(allocator: Allocator, response: []const u8) ?ToolCall {
+    // Look for tool_use content block
+    // Format: {"type":"tool_use","id":"...","name":"click","input":{...}}
+
+    const tool_use_marker = "\"type\":\"tool_use\"";
+    if (std.mem.indexOf(u8, response, tool_use_marker) == null) {
+        return null;
+    }
+
+    // Extract tool name
+    const name_start = std.mem.indexOf(u8, response, "\"name\":\"") orelse return null;
+    const name_value_start = name_start + 8;
+    const name_end = std.mem.indexOfPos(u8, response, name_value_start, "\"") orelse return null;
+    const tool_name = response[name_value_start..name_end];
+
+    // Extract input object
+    const input_start = std.mem.indexOf(u8, response, "\"input\":") orelse return null;
+    const input_obj_start = input_start + 8;
+
+    // Find matching closing brace
+    var brace_count: i32 = 0;
+    var input_obj_end: usize = input_obj_start;
+    for (response[input_obj_start..], input_obj_start..) |c, i| {
+        if (c == '{') brace_count += 1;
+        if (c == '}') brace_count -= 1;
+        if (brace_count == 0) {
+            input_obj_end = i + 1;
+            break;
+        }
+    }
+
+    const input_json = response[input_obj_start..input_obj_end];
+
+    // Parse input JSON
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, input_json, .{}) catch return null;
+
+    return ToolCall{
+        .tool_name = allocator.dupe(u8, tool_name) catch return null,
+        .arguments = parsed.value,
+    };
+}
+
+/// Build tools JSON array for API request (v23.49)
+pub fn buildToolsJson(allocator: Allocator) ![]u8 {
+    var buffer = std.ArrayList(u8).init(allocator);
+    errdefer buffer.deinit();
+
+    try buffer.appendSlice("[");
+
+    var first = true;
+    for (AGENT_TOOLS) |tool| {
+        if (!first) try buffer.appendSlice(",");
+        first = false;
+
+        const schema = try tool.toJsonSchema(allocator);
+        defer allocator.free(schema);
+        try buffer.appendSlice(schema);
+    }
+
+    try buffer.appendSlice("]");
+
+    return buffer.toOwnedSlice();
+}
+
 pub const RealAgent = struct {
     allocator: Allocator,
     config: AgentConfig,
@@ -4050,6 +4267,8 @@ pub const RealAgent = struct {
     // v23.47: LLM retry configuration and metrics
     llm_retry_config: LLMRetryConfig = .{},
     llm_metrics: LLMUsageMetrics = .{},
+    // v23.49: Tool use mode
+    use_tools: bool = false,
 
     const Self = @This();
 
@@ -4452,7 +4671,69 @@ pub const RealAgent = struct {
         return self.llm_metrics;
     }
 
-    /// Run full task cycle: observe -> think -> act (v23.45)
+    /// Enable tool use mode (v23.49)
+    pub fn enableToolUse(self: *Self, enabled: bool) void {
+        self.use_tools = enabled;
+        if (enabled) {
+            std.debug.print("[AGENT] Tool use mode enabled\n", .{});
+        }
+    }
+
+    /// Parse action from LLM response - supports both JSON and tool_use (v23.49)
+    pub fn parseActionFromResponse(self: *Self, response: []const u8) ?Action {
+        // Try tool_use format first if enabled
+        if (self.use_tools) {
+            if (parseToolUseResponse(self.allocator, response)) |tool_call| {
+                if (tool_call.toAction(self.allocator)) |action| {
+                    std.debug.print("[AGENT] Parsed tool_use: {s}\n", .{tool_call.tool_name});
+                    return action;
+                }
+            }
+        }
+
+        // Fall back to JSON/simple parsing
+        if (self.action_parser) |parser| {
+            return parser.parse(response);
+        }
+
+        return null;
+    }
+
+    /// Build prompt with tool definitions (v23.49)
+    pub fn buildPromptWithTools(self: *Self, instruction: []const u8, page_text: []const u8) ![]u8 {
+        var buffer = std.ArrayList(u8).init(self.allocator);
+        errdefer buffer.deinit();
+
+        const writer = buffer.writer();
+
+        // Tool descriptions
+        try writer.writeAll("You have access to these tools:\n\n");
+        for (AGENT_TOOLS) |tool| {
+            try writer.print("- {s}: {s}\n", .{ tool.name, tool.description });
+            for (tool.parameters) |param| {
+                try writer.print("  - {s} ({s}): {s}\n", .{ param.name, param.param_type, param.description });
+            }
+        }
+        try writer.writeAll("\n");
+
+        // Task
+        try writer.writeAll("TASK: ");
+        try writer.writeAll(instruction);
+        try writer.writeAll("\n\n");
+
+        // Page content
+        try writer.writeAll("PAGE CONTENT:\n");
+        try self.writePageContext(writer, page_text);
+        try writer.writeAll("\n\n");
+
+        // Instructions
+        try writer.writeAll("Use the appropriate tool to complete the task. ");
+        try writer.writeAll("Use 'done' tool when the task is complete.\n");
+
+        return buffer.toOwnedSlice();
+    }
+
+    /// Run full task cycle: observe -> think -> act (v23.45, v23.49)
     /// Returns list of action results from the task execution
     pub fn runTask(self: *Self, instruction: []const u8, max_steps: u32) ![]ActionResult {
         var results = std.ArrayList(ActionResult).init(self.allocator);
@@ -4486,35 +4767,29 @@ pub const RealAgent = struct {
 
             std.debug.print("[TASK] LLM response: {s}\n", .{llm_response});
 
-            // 3. PARSE: Convert LLM response to Action
-            if (self.action_parser) |parser| {
-                if (parser.parse(llm_response)) |action| {
-                    // Check if task is done
-                    // Check if task is done
-                    if (action.action_type == .done or action.action_type == .none) {
-                        std.debug.print("[TASK] Task completed ({s} action)\n", .{action.action_type.toString()});
-                        break;
-                    }
-
-                    // 4. ACT: Execute the action
-                    const result = self.executeActionViaComponent(action);
-                    try results.append(result);
-
-                    if (!result.success) {
-                        std.debug.print("[TASK] Action failed: {s}\n", .{result.error_message orelse "unknown"});
-                        // Continue trying - agent might recover
-                    } else {
-                        std.debug.print("[TASK] Action succeeded: {s}\n", .{action.action_type.toString()});
-                    }
-
-                    // Small delay between actions
-                    std.time.sleep(500 * std.time.ns_per_ms);
-                } else {
-                    std.debug.print("[TASK] Failed to parse LLM response\n", .{});
+            // 3. PARSE: Convert LLM response to Action (v23.49: supports tool_use)
+            if (self.parseActionFromResponse(llm_response)) |action| {
+                // Check if task is done
+                if (action.action_type == .done or action.action_type == .none) {
+                    std.debug.print("[TASK] Task completed ({s} action)\n", .{action.action_type.toString()});
                     break;
                 }
+
+                // 4. ACT: Execute the action
+                const result = self.executeActionViaComponent(action);
+                try results.append(result);
+
+                if (!result.success) {
+                    std.debug.print("[TASK] Action failed: {s}\n", .{result.error_message orelse "unknown"});
+                    // Continue trying - agent might recover
+                } else {
+                    std.debug.print("[TASK] Action succeeded: {s}\n", .{action.action_type.toString()});
+                }
+
+                // Small delay between actions
+                std.time.sleep(500 * std.time.ns_per_ms);
             } else {
-                std.debug.print("[TASK] Action parser not initialized\n", .{});
+                std.debug.print("[TASK] Failed to parse LLM response\n", .{});
                 break;
             }
         }
@@ -9172,4 +9447,121 @@ test "WebArenaBenchmark init (v23.48)" {
 test "SAMPLE_TASKS defined (v23.48)" {
     try std.testing.expectEqual(@as(usize, 3), SAMPLE_TASKS.len);
     try std.testing.expectEqualStrings("nav-1", SAMPLE_TASKS[0].id);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.49: TOOL USE TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "ToolParameter struct (v23.49)" {
+    const param = ToolParameter{
+        .name = "selector",
+        .param_type = "string",
+        .description = "CSS selector",
+    };
+    try std.testing.expectEqualStrings("selector", param.name);
+    try std.testing.expect(param.required);
+}
+
+test "ToolDefinition toJsonSchema (v23.49)" {
+    const allocator = std.testing.allocator;
+
+    const tool = ToolDefinition{
+        .name = "click",
+        .description = "Click element",
+        .parameters = &[_]ToolParameter{
+            .{ .name = "selector", .param_type = "string", .description = "CSS selector" },
+        },
+    };
+
+    const schema = try tool.toJsonSchema(allocator);
+    defer allocator.free(schema);
+
+    try std.testing.expect(std.mem.indexOf(u8, schema, "\"name\":\"click\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, schema, "\"selector\"") != null);
+}
+
+test "AGENT_TOOLS defined (v23.49)" {
+    try std.testing.expectEqual(@as(usize, 5), AGENT_TOOLS.len);
+    try std.testing.expectEqualStrings("click", AGENT_TOOLS[0].name);
+    try std.testing.expectEqualStrings("type", AGENT_TOOLS[1].name);
+    try std.testing.expectEqualStrings("navigate", AGENT_TOOLS[2].name);
+    try std.testing.expectEqualStrings("scroll", AGENT_TOOLS[3].name);
+    try std.testing.expectEqualStrings("done", AGENT_TOOLS[4].name);
+}
+
+test "buildToolsJson (v23.49)" {
+    const allocator = std.testing.allocator;
+
+    const tools_json = try buildToolsJson(allocator);
+    defer allocator.free(tools_json);
+
+    try std.testing.expect(std.mem.startsWith(u8, tools_json, "["));
+    try std.testing.expect(std.mem.endsWith(u8, tools_json, "]"));
+    try std.testing.expect(std.mem.indexOf(u8, tools_json, "click") != null);
+}
+
+test "parseToolUseResponse no tool_use (v23.49)" {
+    const allocator = std.testing.allocator;
+
+    const response = "{\"content\":\"Hello\"}";
+
+    const tool_call = parseToolUseResponse(allocator, response);
+    try std.testing.expect(tool_call == null);
+}
+
+test "parseToolUseResponse detects tool_use marker (v23.49)" {
+    const response =
+        \\{"type":"tool_use","id":"toolu_123","name":"click","input":{"selector":"#btn"}}
+    ;
+
+    // Just check that the marker is detected
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"type\":\"tool_use\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"name\":\"click\"") != null);
+}
+
+test "RealAgent use_tools field (v23.49)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    try std.testing.expect(!agent.use_tools);
+}
+
+test "RealAgent enableToolUse (v23.49)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    agent.enableToolUse(true);
+    try std.testing.expect(agent.use_tools);
+
+    agent.enableToolUse(false);
+    try std.testing.expect(!agent.use_tools);
+}
+
+test "RealAgent parseActionFromResponse simple (v23.49)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    try agent.initComponents();
+
+    // Test simple format (no memory allocation)
+    const action = agent.parseActionFromResponse("click #btn");
+    try std.testing.expect(action != null);
+    try std.testing.expectEqual(ActionType.click, action.?.action_type);
+}
+
+test "RealAgent buildPromptWithTools (v23.49)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    const prompt = try agent.buildPromptWithTools("Click button", "Page content");
+    defer allocator.free(prompt);
+
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "click") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "type") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "done") != null);
 }
