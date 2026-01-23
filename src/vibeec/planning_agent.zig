@@ -463,8 +463,8 @@ pub const PlanningAgent = struct {
 
             std.debug.print("\n", .{});
 
-            // Small delay between steps
-            std.time.sleep(500 * std.time.ns_per_ms);
+            // Minimal delay between steps (reduced from 500ms to 100ms)
+            std.time.sleep(100 * std.time.ns_per_ms);
         }
 
         if (!self.state.done) {
@@ -668,7 +668,7 @@ pub const PlanningAgent = struct {
                 if (arg.len > 0) {
                     std.debug.print("    Navigating to: {s}\n", .{arg});
                     try self.browser.navigate(arg);
-                    std.time.sleep(2 * std.time.ns_per_s); // Wait for page load
+                    std.time.sleep(800 * std.time.ns_per_ms); // Reduced from 2s
                 }
             },
             .click => {
@@ -707,7 +707,7 @@ pub const PlanningAgent = struct {
                     if (!success) {
                         std.debug.print("    Click failed after {d} retries\n", .{max_retries});
                     }
-                    std.time.sleep(1 * std.time.ns_per_s);
+                    std.time.sleep(300 * std.time.ns_per_ms); // Reduced from 1s
                 }
             },
             .type_text => {
@@ -719,7 +719,7 @@ pub const PlanningAgent = struct {
             .press_enter => {
                 std.debug.print("    Pressing Enter\n", .{});
                 try self.browser.pressEnter();
-                std.time.sleep(2 * std.time.ns_per_s);
+                std.time.sleep(500 * std.time.ns_per_ms); // Reduced from 2s
             },
             .scroll => {
                 const delta = action.scroll_delta;
@@ -779,7 +779,7 @@ pub const PlanningAgent = struct {
         return parseActionDirect(trimmed);
     }
 
-    /// REFLECT: Check if goal is achieved - optimized v23.8
+    /// REFLECT: Check if goal is achieved - optimized v23.9
     fn reflect(self: *Self) bool {
         // First: Quick heuristic check (no LLM call) - FAST PATH
         if (self.quickGoalCheck()) {
@@ -787,22 +787,29 @@ pub const PlanningAgent = struct {
             return true;
         }
 
-        // Skip LLM check if we just navigated to the target URL
-        // This saves ~10 seconds per task
+        // v23.9: Skip LLM reflect entirely for simple navigation goals
+        // LLM reflect adds ~5-10s latency with minimal benefit for nav tasks
+        const goal = self.state.goal;
         const url = self.state.current_page.url;
-        if (url.len > 10 and !std.mem.eql(u8, url, "about:blank")) {
-            // Check if goal mentions any part of current URL
-            const goal_lower = self.state.goal;
-            if (std.mem.indexOf(u8, url, "example.com") != null and
-                std.mem.indexOf(u8, goal_lower, "example") != null)
-            {
-                std.debug.print("    [REFLECT] URL matches goal pattern\n", .{});
-                return true;
+        
+        // If goal is simple navigation and we have a valid URL, skip LLM
+        const nav_keywords = [_][]const u8{ "Go to", "go to", "Navigate", "navigate", "Open", "open", "Visit", "visit" };
+        for (nav_keywords) |kw| {
+            if (std.mem.indexOf(u8, goal, kw) != null) {
+                if (url.len > 10 and !std.mem.eql(u8, url, "about:blank")) {
+                    std.debug.print("    [REFLECT] Skip LLM for nav goal (URL valid)\n", .{});
+                    return false; // Let quickGoalCheck handle it next iteration
+                }
             }
         }
 
-        // LLM-based check only if heuristics fail
-        // Note: This is slow (~5-10s), so we try to avoid it
+        // v23.9: For step 1, skip LLM reflect (action just executed)
+        if (self.state.current_step == 1) {
+            std.debug.print("    [REFLECT] Skip LLM on step 1\n", .{});
+            return false;
+        }
+
+        // LLM-based check only if heuristics fail and not a simple nav goal
         var prompt_buf: [2048]u8 = undefined;
 
         const url_preview = if (self.state.current_page.url.len > 50)
@@ -950,17 +957,17 @@ pub const PlanningAgent = struct {
     }
 
     /// Call LLM with JSON format option - supports OpenAI/Groq/HuggingFace/Anthropic or Ollama
-    /// Includes retry logic for invalid responses
+    /// Includes retry logic for invalid responses - v23.9 reduced delays
     fn callLLMWithFormat(self: *Self, prompt: []const u8, json_mode: bool) ![]const u8 {
         _ = json_mode; // TODO: implement JSON mode for OpenAI client
 
-        const max_retries: u32 = 3;
+        const max_retries: u32 = 2; // Reduced from 3
         var retry: u32 = 0;
 
         while (retry < max_retries) : (retry += 1) {
             const response = self.callLLMOnce(prompt) catch |err| {
                 if (retry < max_retries - 1) {
-                    std.time.sleep(500 * std.time.ns_per_ms);
+                    std.time.sleep(200 * std.time.ns_per_ms); // Reduced from 500ms
                     continue;
                 }
                 return err;
@@ -976,7 +983,7 @@ pub const PlanningAgent = struct {
             self.allocator.free(response);
 
             if (retry < max_retries - 1) {
-                std.time.sleep(300 * std.time.ns_per_ms);
+                std.time.sleep(100 * std.time.ns_per_ms); // Reduced from 300ms
             }
         }
 
