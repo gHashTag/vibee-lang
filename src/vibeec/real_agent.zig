@@ -911,22 +911,34 @@ pub const RealAgent = struct {
         var attempts: u32 = 0;
         var total_delay: u32 = 0;
 
+        // v23.20: Track operation
+        self.retry_metrics.total_operations += 1;
+
         while (attempts <= self.retry_config.max_retries) {
             // v23.17: Increase timeout on each retry
             const current_timeout = self.retry_config.getTimeout(timeout_ms, attempts);
 
             const loaded = self.waitForPageLoad(current_timeout) catch |err| {
                 attempts += 1;
+                // v23.20: Track retry
+                self.retry_metrics.total_retries += 1;
+                self.retry_metrics.page_load_retries += 1;
+
                 if (attempts > self.retry_config.max_retries) {
+                    self.retry_metrics.failed_operations += 1;
                     return err;
                 }
                 const delay = self.retry_config.getDelayWithJitter(attempts - 1);
                 total_delay += delay;
+                self.retry_metrics.total_delay_ms += delay;
+                if (delay > self.retry_metrics.max_delay_ms) self.retry_metrics.max_delay_ms = delay;
+
                 std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
                 continue;
             };
 
             if (loaded) {
+                self.retry_metrics.successful_operations += 1;
                 return RetryResult{
                     .success = true,
                     .attempts = attempts + 1,
@@ -935,6 +947,10 @@ pub const RealAgent = struct {
             }
 
             attempts += 1;
+            // v23.20: Track retry
+            self.retry_metrics.total_retries += 1;
+            self.retry_metrics.page_load_retries += 1;
+
             if (attempts > self.retry_config.max_retries) {
                 break;
             }
@@ -942,10 +958,14 @@ pub const RealAgent = struct {
             const delay = self.retry_config.getDelayWithJitter(attempts - 1);
             const next_timeout = self.retry_config.getTimeout(timeout_ms, attempts);
             total_delay += delay;
+            self.retry_metrics.total_delay_ms += delay;
+            if (delay > self.retry_metrics.max_delay_ms) self.retry_metrics.max_delay_ms = delay;
+
             std.debug.print("    [RETRY] Page load timeout, attempt {d}/{d}, waiting {d}ms, next timeout: {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay, next_timeout });
             std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
         }
 
+        self.retry_metrics.failed_operations += 1;
         return RetryResult{
             .success = false,
             .attempts = attempts,
@@ -953,24 +973,36 @@ pub const RealAgent = struct {
         };
     }
 
-    /// Click with retry (v23.16)
+    /// Click with retry (v23.16, v23.20: metrics)
     pub fn clickWithRetry(self: *Self, selector: []const u8) AgentError!RetryResult {
         var attempts: u32 = 0;
         var total_delay: u32 = 0;
 
+        // v23.20: Track operation
+        self.retry_metrics.total_operations += 1;
+
         while (attempts <= self.retry_config.max_retries) {
             self.clickSelector(selector) catch |err| {
                 attempts += 1;
+                // v23.20: Track retry
+                self.retry_metrics.total_retries += 1;
+                self.retry_metrics.click_retries += 1;
+
                 if (attempts > self.retry_config.max_retries) {
+                    self.retry_metrics.failed_operations += 1;
                     return err;
                 }
                 const delay = self.retry_config.getDelayWithJitter(attempts - 1);
                 total_delay += delay;
+                self.retry_metrics.total_delay_ms += delay;
+                if (delay > self.retry_metrics.max_delay_ms) self.retry_metrics.max_delay_ms = delay;
+
                 std.debug.print("    [RETRY] Click failed, attempt {d}, waiting {d}ms\n", .{ attempts, delay });
                 std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
                 continue;
             };
 
+            self.retry_metrics.successful_operations += 1;
             return RetryResult{
                 .success = true,
                 .attempts = attempts + 1,
@@ -978,6 +1010,7 @@ pub const RealAgent = struct {
             };
         }
 
+        self.retry_metrics.failed_operations += 1;
         return RetryResult{
             .success = false,
             .attempts = attempts,
