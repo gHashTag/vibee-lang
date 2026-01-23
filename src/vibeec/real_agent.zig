@@ -31,6 +31,12 @@ pub const AgentConfig = struct {
     model: []const u8 = "qwen2.5:0.5b",
 };
 
+// v23.15: Domain timing statistics
+pub const DomainStats = struct {
+    avg_load_ms: u32 = 500,
+    load_count: u32 = 0,
+};
+
 pub const RealAgent = struct {
     allocator: Allocator,
     config: AgentConfig,
@@ -38,9 +44,15 @@ pub const RealAgent = struct {
     http: http_client.HttpClient,
     connected: bool,
     message_id: u32,
-    // v23.14: Adaptive timing
+    // v23.14: Adaptive timing (global)
     avg_page_load_ms: u32 = 500,
     page_load_count: u32 = 0,
+    // v23.15: Domain-specific timing
+    domain_stats: std.StringHashMap(DomainStats),
+    current_domain: ?[]const u8 = null,
+    // v23.15: Network idle detection
+    pending_requests: u32 = 0,
+    last_network_activity: i64 = 0,
 
     const Self = @This();
 
@@ -52,10 +64,18 @@ pub const RealAgent = struct {
             .http = http_client.HttpClient.init(allocator),
             .connected = false,
             .message_id = 1,
+            .domain_stats = std.StringHashMap(DomainStats).init(allocator),
         };
     }
 
     pub fn deinit(self: *Self) void {
+        // Free domain keys
+        var it = self.domain_stats.keyIterator();
+        while (it.next()) |key| {
+            self.allocator.free(key.*);
+        }
+        self.domain_stats.deinit();
+        if (self.current_domain) |d| self.allocator.free(d);
         self.ws.deinit();
         self.http.deinit();
     }
@@ -64,6 +84,20 @@ pub const RealAgent = struct {
     pub fn connectBrowser(self: *Self, ws_url: []const u8) AgentError!void {
         self.ws.connect(ws_url) catch return AgentError.BrowserConnectionFailed;
         self.connected = true;
+
+        // v23.15: Enable Network domain for network idle detection
+        self.enableNetworkDomain() catch {};
+    }
+
+    /// Enable CDP Network domain (v23.15)
+    fn enableNetworkDomain(self: *Self) AgentError!void {
+        var cmd_buf: [256]u8 = undefined;
+        const cmd = std.fmt.bufPrint(&cmd_buf, "{{\"id\":{d},\"method\":\"Network.enable\"}}", .{self.message_id}) catch return AgentError.OutOfMemory;
+        self.message_id += 1;
+
+        self.ws.sendText(cmd) catch return AgentError.BrowserConnectionFailed;
+        const frame = self.ws.receive() catch return AgentError.BrowserConnectionFailed;
+        self.allocator.free(frame.payload);
     }
 
     /// Navigate to URL
@@ -83,15 +117,28 @@ pub const RealAgent = struct {
         const frame = self.ws.receive() catch return AgentError.NavigationFailed;
         self.allocator.free(frame.payload);
 
-        // v23.14: Wait for page to load instead of fixed sleep
+        // v23.15: Extract domain and use domain-specific timeout
+        const domain = extractDomain(url);
+        if (domain) |d| {
+            // Update current domain
+            if (self.current_domain) |old| self.allocator.free(old);
+            self.current_domain = self.allocator.dupe(u8, d) catch null;
+        }
+
+        // v23.15: Use adaptive timeout based on page load history
         const start = std.time.milliTimestamp();
-        const loaded = self.waitForPageLoad(2000) catch false; // 2s timeout
+        const timeout = self.getAdaptiveTimeout();
+        const loaded = self.waitForPageLoad(timeout) catch false;
         const elapsed = std.time.milliTimestamp() - start;
+        const elapsed_u32: u32 = @intCast(@min(elapsed, std.math.maxInt(u32)));
 
         if (loaded) {
-            std.debug.print("    [NAV] Page loaded in {d}ms (avg: {d}ms)\n", .{ elapsed, self.avg_page_load_ms });
+            // Update both global and domain-specific stats
+            self.updatePageLoadStats(elapsed_u32);
+            if (domain) |d| self.updateDomainStats(d, elapsed_u32);
+            std.debug.print("    [NAV] Page loaded in {d}ms (timeout: {d}ms, domain: {s})\n", .{ elapsed, timeout, domain orelse "unknown" });
         } else {
-            std.debug.print("    [NAV] Page load timeout after {d}ms\n", .{elapsed});
+            std.debug.print("    [NAV] Page load timeout after {d}ms (timeout was: {d}ms)\n", .{ elapsed, timeout });
         }
     }
 
@@ -334,6 +381,114 @@ pub const RealAgent = struct {
         return false; // Timeout
     }
 
+    /// Wait for multiple selectors in parallel (v23.15)
+    /// Returns when ALL selectors are found or timeout
+    pub fn waitForSelectors(self: *Self, selectors: []const []const u8, timeout_ms: u32) AgentError!bool {
+        if (!self.connected) return AgentError.BrowserConnectionFailed;
+        if (selectors.len == 0) return true;
+
+        const start_time = std.time.milliTimestamp();
+        const timeout_end = start_time + @as(i64, timeout_ms);
+
+        // Track which selectors are found
+        var found = [_]bool{false} ** 16; // Max 16 selectors
+        const count = @min(selectors.len, 16);
+        var all_found: usize = 0;
+
+        while (std.time.milliTimestamp() < timeout_end) {
+            // Check all unfound selectors in one iteration
+            for (selectors[0..count], 0..) |selector, i| {
+                if (found[i]) continue;
+
+                // Build JS to check selector
+                var cmd_buf: [1024]u8 = undefined;
+                var escaped: [256]u8 = undefined;
+                var escaped_len: usize = 0;
+                for (selector) |c| {
+                    if (c == '\'' or c == '\\') {
+                        escaped[escaped_len] = '\\';
+                        escaped_len += 1;
+                    }
+                    if (escaped_len < escaped.len) {
+                        escaped[escaped_len] = c;
+                        escaped_len += 1;
+                    }
+                }
+
+                const js = std.fmt.bufPrint(&cmd_buf, "{{\"id\":{d},\"method\":\"Runtime.evaluate\",\"params\":{{\"expression\":\"document.querySelector('{s}') !== null\"}}}}", .{ self.message_id, escaped[0..escaped_len] }) catch return AgentError.OutOfMemory;
+                self.message_id += 1;
+
+                self.ws.sendText(js) catch return AgentError.EvaluationFailed;
+
+                const frame = self.ws.receive() catch return AgentError.EvaluationFailed;
+                defer self.allocator.free(frame.payload);
+
+                if (std.mem.indexOf(u8, frame.payload, "\"value\":true") != null) {
+                    found[i] = true;
+                    all_found += 1;
+                }
+            }
+
+            // All found?
+            if (all_found == count) {
+                const elapsed = std.time.milliTimestamp() - start_time;
+                std.debug.print("    [WAIT] All {d} selectors found in {d}ms\n", .{ count, elapsed });
+                return true;
+            }
+
+            // Wait 50ms before next check (faster than single selector)
+            std.time.sleep(50 * std.time.ns_per_ms);
+        }
+
+        std.debug.print("    [WAIT] Timeout: found {d}/{d} selectors\n", .{ all_found, count });
+        return false;
+    }
+
+    /// Wait for ANY of the selectors (v23.15)
+    /// Returns index of first found selector, or null on timeout
+    pub fn waitForAnySelector(self: *Self, selectors: []const []const u8, timeout_ms: u32) AgentError!?usize {
+        if (!self.connected) return AgentError.BrowserConnectionFailed;
+        if (selectors.len == 0) return null;
+
+        const start_time = std.time.milliTimestamp();
+        const timeout_end = start_time + @as(i64, timeout_ms);
+        const count = @min(selectors.len, 16);
+
+        while (std.time.milliTimestamp() < timeout_end) {
+            for (selectors[0..count], 0..) |selector, i| {
+                var cmd_buf: [1024]u8 = undefined;
+                var escaped: [256]u8 = undefined;
+                var escaped_len: usize = 0;
+                for (selector) |c| {
+                    if (c == '\'' or c == '\\') {
+                        escaped[escaped_len] = '\\';
+                        escaped_len += 1;
+                    }
+                    if (escaped_len < escaped.len) {
+                        escaped[escaped_len] = c;
+                        escaped_len += 1;
+                    }
+                }
+
+                const js = std.fmt.bufPrint(&cmd_buf, "{{\"id\":{d},\"method\":\"Runtime.evaluate\",\"params\":{{\"expression\":\"document.querySelector('{s}') !== null\"}}}}", .{ self.message_id, escaped[0..escaped_len] }) catch return AgentError.OutOfMemory;
+                self.message_id += 1;
+
+                self.ws.sendText(js) catch return AgentError.EvaluationFailed;
+
+                const frame = self.ws.receive() catch return AgentError.EvaluationFailed;
+                defer self.allocator.free(frame.payload);
+
+                if (std.mem.indexOf(u8, frame.payload, "\"value\":true") != null) {
+                    return i;
+                }
+            }
+
+            std.time.sleep(50 * std.time.ns_per_ms);
+        }
+
+        return null;
+    }
+
     /// Wait for page to finish loading (v23.14: with adaptive timing)
     pub fn waitForPageLoad(self: *Self, timeout_ms: u32) AgentError!bool {
         if (!self.connected) return AgentError.BrowserConnectionFailed;
@@ -368,6 +523,60 @@ pub const RealAgent = struct {
         return false; // Timeout
     }
 
+    /// Wait for network to become idle (v23.15)
+    /// Waits until no network requests for idle_time_ms
+    pub fn waitForNetworkIdle(self: *Self, timeout_ms: u32, idle_time_ms: u32) AgentError!bool {
+        if (!self.connected) return AgentError.BrowserConnectionFailed;
+
+        const start_time = std.time.milliTimestamp();
+        const timeout_end = start_time + @as(i64, timeout_ms);
+        var idle_start: ?i64 = null;
+
+        while (std.time.milliTimestamp() < timeout_end) {
+            // Check pending requests via JS (simpler than CDP events)
+            var cmd_buf: [512]u8 = undefined;
+            const js = std.fmt.bufPrint(&cmd_buf, "{{\"id\":{d},\"method\":\"Runtime.evaluate\",\"params\":{{\"expression\":\"window.performance.getEntriesByType('resource').filter(r => !r.responseEnd).length\"}}}}", .{self.message_id}) catch return AgentError.OutOfMemory;
+            self.message_id += 1;
+
+            self.ws.sendText(js) catch return AgentError.EvaluationFailed;
+
+            const frame = self.ws.receive() catch return AgentError.EvaluationFailed;
+            defer self.allocator.free(frame.payload);
+
+            // Check if 0 pending requests
+            const is_idle = std.mem.indexOf(u8, frame.payload, "\"value\":0") != null;
+
+            if (is_idle) {
+                const now = std.time.milliTimestamp();
+                if (idle_start == null) {
+                    idle_start = now;
+                } else if (now - idle_start.? >= idle_time_ms) {
+                    // Network has been idle for required time
+                    const elapsed = now - start_time;
+                    std.debug.print("    [NET] Network idle after {d}ms\n", .{elapsed});
+                    return true;
+                }
+            } else {
+                idle_start = null; // Reset idle timer
+            }
+
+            std.time.sleep(50 * std.time.ns_per_ms);
+        }
+
+        std.debug.print("    [NET] Network idle timeout\n", .{});
+        return false;
+    }
+
+    /// Wait for page load AND network idle (v23.15)
+    pub fn waitForFullLoad(self: *Self, timeout_ms: u32) AgentError!bool {
+        // First wait for document ready
+        const page_loaded = try self.waitForPageLoad(timeout_ms / 2);
+        if (!page_loaded) return false;
+
+        // Then wait for network idle (100ms of no activity)
+        return self.waitForNetworkIdle(timeout_ms / 2, 100);
+    }
+
     /// Update adaptive page load statistics (v23.14)
     fn updatePageLoadStats(self: *Self, load_time_ms: u32) void {
         // Exponential moving average
@@ -382,9 +591,67 @@ pub const RealAgent = struct {
 
     /// Get adaptive timeout based on history (v23.14)
     pub fn getAdaptiveTimeout(self: *Self) u32 {
-        // Use 2x average with minimum of 500ms
+        // v23.15: Try domain-specific first
+        if (self.current_domain) |domain| {
+            if (self.domain_stats.get(domain)) |stats| {
+                const adaptive = stats.avg_load_ms * 2;
+                return @max(adaptive, 500);
+            }
+        }
+        // Fallback to global average
         const adaptive = self.avg_page_load_ms * 2;
         return @max(adaptive, 500);
+    }
+
+    /// Extract domain from URL (v23.15)
+    fn extractDomain(url: []const u8) ?[]const u8 {
+        // Skip protocol
+        var start: usize = 0;
+        if (std.mem.startsWith(u8, url, "https://")) {
+            start = 8;
+        } else if (std.mem.startsWith(u8, url, "http://")) {
+            start = 7;
+        }
+        if (start >= url.len) return null;
+
+        // Find end of domain (first / or end)
+        const rest = url[start..];
+        const end = std.mem.indexOf(u8, rest, "/") orelse rest.len;
+        if (end == 0) return null;
+
+        return rest[0..end];
+    }
+
+    /// Update domain-specific timing (v23.15)
+    fn updateDomainStats(self: *Self, domain: []const u8, load_time_ms: u32) void {
+        if (self.domain_stats.getPtr(domain)) |stats| {
+            // Update existing
+            if (stats.load_count == 0) {
+                stats.avg_load_ms = load_time_ms;
+            } else {
+                stats.avg_load_ms = (stats.avg_load_ms * 7 + load_time_ms * 3) / 10;
+            }
+            stats.load_count += 1;
+        } else {
+            // Create new entry
+            const key = self.allocator.dupe(u8, domain) catch return;
+            self.domain_stats.put(key, DomainStats{
+                .avg_load_ms = load_time_ms,
+                .load_count = 1,
+            }) catch {
+                self.allocator.free(key);
+            };
+        }
+    }
+
+    /// Get domain-specific timeout (v23.15)
+    pub fn getDomainTimeout(self: *Self, domain: []const u8) u32 {
+        if (self.domain_stats.get(domain)) |stats| {
+            const adaptive = stats.avg_load_ms * 2;
+            return @max(adaptive, 500);
+        }
+        // Fallback to global
+        return self.getAdaptiveTimeout();
     }
 
     /// Click element with wait
@@ -397,6 +664,42 @@ pub const RealAgent = struct {
 
         // Click
         try self.clickSelector(selector);
+    }
+
+    /// Fill form with parallel waiting for all fields (v23.15)
+    /// fields: array of {selector, value} pairs
+    pub fn fillFormWithWait(
+        self: *Self,
+        selectors: []const []const u8,
+        values: []const []const u8,
+        timeout_ms: u32,
+    ) AgentError!void {
+        if (selectors.len != values.len) return AgentError.ParseError;
+        if (selectors.len == 0) return;
+
+        // Wait for ALL form fields in parallel
+        const all_found = try self.waitForSelectors(selectors, timeout_ms);
+        if (!all_found) {
+            return AgentError.EvaluationFailed;
+        }
+
+        // Fill each field
+        for (selectors, values) |selector, value| {
+            try self.clickSelector(selector);
+            try self.typeText(value);
+        }
+    }
+
+    /// Click and wait for navigation (v23.15)
+    pub fn clickAndWaitForNavigation(self: *Self, selector: []const u8, timeout_ms: u32) AgentError!void {
+        // Click
+        try self.clickSelector(selector);
+
+        // Wait for page load
+        const loaded = try self.waitForPageLoad(timeout_ms);
+        if (!loaded) {
+            std.debug.print("    [CLICK] Navigation timeout after click\n", .{});
+        }
     }
 
     /// Get compact DOM representation for LLM
@@ -752,6 +1055,100 @@ test "captureElementScreenshot method exists" {
 
     // Should fail with BrowserConnectionFailed since not connected
     _ = agent.captureElementScreenshot("#main") catch |err| {
+        try std.testing.expect(err == AgentError.BrowserConnectionFailed);
+    };
+}
+
+test "extractDomain parses URLs correctly" {
+    // HTTPS
+    try std.testing.expectEqualStrings("example.com", RealAgent.extractDomain("https://example.com/page").?);
+    try std.testing.expectEqualStrings("google.com", RealAgent.extractDomain("https://google.com").?);
+    try std.testing.expectEqualStrings("sub.domain.org", RealAgent.extractDomain("https://sub.domain.org/path/to/page").?);
+
+    // HTTP
+    try std.testing.expectEqualStrings("localhost:8080", RealAgent.extractDomain("http://localhost:8080/api").?);
+
+    // Edge cases - "invalid" returns "invalid" since no protocol
+    try std.testing.expectEqualStrings("invalid", RealAgent.extractDomain("invalid").?);
+    try std.testing.expect(RealAgent.extractDomain("https://") == null);
+}
+
+test "domain-specific timing" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Initially no domain stats - falls back to global (500*2=1000, min 500)
+    try std.testing.expectEqual(@as(u32, 1000), agent.getDomainTimeout("example.com"));
+
+    // Add domain stats
+    agent.updateDomainStats("example.com", 100);
+    try std.testing.expectEqual(@as(u32, 500), agent.getDomainTimeout("example.com")); // 100*2=200, min 500
+
+    // Add more samples
+    agent.updateDomainStats("example.com", 300);
+    agent.updateDomainStats("example.com", 400);
+    // EMA: 100 -> (100*7+300*3)/10=160 -> (160*7+400*3)/10=232
+    // 232*2=464, min 500
+    try std.testing.expectEqual(@as(u32, 500), agent.getDomainTimeout("example.com"));
+
+    // Slow domain
+    agent.updateDomainStats("slow-site.com", 2000);
+    try std.testing.expectEqual(@as(u32, 4000), agent.getDomainTimeout("slow-site.com")); // 2000*2=4000
+}
+
+test "waitForSelectors method exists" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Should fail with BrowserConnectionFailed since not connected
+    const selectors = [_][]const u8{ "#btn1", "#btn2" };
+    _ = agent.waitForSelectors(&selectors, 100) catch |err| {
+        try std.testing.expect(err == AgentError.BrowserConnectionFailed);
+    };
+}
+
+test "waitForAnySelector method exists" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    const selectors = [_][]const u8{ "#success", "#error" };
+    _ = agent.waitForAnySelector(&selectors, 100) catch |err| {
+        try std.testing.expect(err == AgentError.BrowserConnectionFailed);
+    };
+}
+
+test "fillFormWithWait method exists" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    const selectors = [_][]const u8{ "#username", "#password" };
+    const values = [_][]const u8{ "user", "pass" };
+    _ = agent.fillFormWithWait(&selectors, &values, 100) catch |err| {
+        try std.testing.expect(err == AgentError.BrowserConnectionFailed);
+    };
+}
+
+test "waitForNetworkIdle method exists" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Should fail with BrowserConnectionFailed since not connected
+    _ = agent.waitForNetworkIdle(1000, 100) catch |err| {
+        try std.testing.expect(err == AgentError.BrowserConnectionFailed);
+    };
+}
+
+test "waitForFullLoad method exists" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    _ = agent.waitForFullLoad(1000) catch |err| {
         try std.testing.expect(err == AgentError.BrowserConnectionFailed);
     };
 }
