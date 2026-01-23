@@ -227,7 +227,7 @@ pub const PlanningAgent = struct {
             .llm_client = null,
             .anthropic_client = null,
             .state = AgentState.init(allocator, goal, max_steps),
-            .model = "qwen2.5:3b",
+            .model = "qwen2.5:1.5b", // v23.9: faster model for lower latency
             .use_json_mode = false,
             .current_provider = .ollama,
         };
