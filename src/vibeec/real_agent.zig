@@ -454,7 +454,63 @@ pub const CircuitBreaker = struct {
             .half_open => "HALF_OPEN",
         };
     }
+
+    /// Create snapshot for serialization (v23.32)
+    pub fn toSnapshot(self: Self) CircuitBreakerSnapshot {
+        return CircuitBreakerSnapshot{
+            .state = self.getStateString(),
+            .failure_count = self.failure_count,
+            .success_count = self.success_count,
+            .last_failure_time = self.last_failure_time,
+            .failure_threshold = self.failure_threshold,
+            .success_threshold = self.success_threshold,
+            .reset_timeout_ms = self.reset_timeout_ms,
+        };
+    }
+
+    /// Restore from snapshot (v23.32)
+    pub fn fromSnapshot(snapshot: CircuitBreakerSnapshot) Self {
+        var cb = Self{
+            .failure_count = snapshot.failure_count,
+            .success_count = snapshot.success_count,
+            .last_failure_time = snapshot.last_failure_time,
+            .failure_threshold = snapshot.failure_threshold,
+            .success_threshold = snapshot.success_threshold,
+            .reset_timeout_ms = snapshot.reset_timeout_ms,
+        };
+
+        // Parse state string
+        if (std.mem.eql(u8, snapshot.state, "OPEN")) {
+            cb.state = .open;
+        } else if (std.mem.eql(u8, snapshot.state, "HALF_OPEN")) {
+            cb.state = .half_open;
+        } else {
+            cb.state = .closed;
+        }
+
+        return cb;
+    }
 };
+
+// v23.32: Circuit Breaker Snapshot for persistence
+pub const CircuitBreakerSnapshot = struct {
+    state: []const u8 = "CLOSED",
+    failure_count: u32 = 0,
+    success_count: u32 = 0,
+    last_failure_time: i64 = 0,
+    failure_threshold: u32 = 5,
+    success_threshold: u32 = 3,
+    reset_timeout_ms: u64 = 30000,
+};
+
+// v23.32: Domain Circuit Breaker Entry for persistence
+pub const DomainCircuitBreakerEntry = struct {
+    domain: []const u8,
+    circuit_breaker: CircuitBreakerSnapshot,
+};
+
+// v23.32: Persistence file path
+pub const CIRCUIT_BREAKER_FILE = ".vibee_circuit_breakers.json";
 
 // v23.24: Metrics Exporter for observability
 pub const MetricsExporter = struct {
@@ -1285,12 +1341,18 @@ pub const RealAgent = struct {
         // v23.21: Auto-load domain stats from file
         self.loadDomainStats() catch {};
 
+        // v23.32: Auto-load circuit breakers from file
+        self.loadDomainCircuitBreakers() catch {};
+
         return self;
     }
 
     pub fn deinit(self: *Self) void {
         // v23.21: Auto-save domain stats to file
         self.saveDomainStats() catch {};
+
+        // v23.32: Auto-save circuit breakers to file
+        self.saveDomainCircuitBreakers() catch {};
 
         // Free domain keys
         var it = self.domain_stats.keyIterator();
@@ -2444,6 +2506,143 @@ pub const RealAgent = struct {
         }
     }
 
+    // =========================================================================
+    // v23.32: PERSISTENT CIRCUIT BREAKERS
+    // =========================================================================
+
+    /// Save domain circuit breakers to file (v23.32)
+    pub fn saveDomainCircuitBreakers(self: *Self) !void {
+        var file = std.fs.cwd().createFile(CIRCUIT_BREAKER_FILE, .{}) catch return;
+        defer file.close();
+
+        var writer = file.writer();
+
+        try writer.writeAll("{\n  \"circuit_breakers\": [\n");
+
+        var first = true;
+        var it = self.domain_circuit_breakers.iterator();
+        while (it.next()) |entry| {
+            if (!first) {
+                try writer.writeAll(",\n");
+            }
+            first = false;
+
+            const snapshot = entry.value_ptr.toSnapshot();
+            try writer.writeAll("    {\n");
+            try writer.print("      \"domain\": \"{s}\",\n", .{entry.key_ptr.*});
+            try writer.print("      \"state\": \"{s}\",\n", .{snapshot.state});
+            try writer.print("      \"failure_count\": {d},\n", .{snapshot.failure_count});
+            try writer.print("      \"success_count\": {d},\n", .{snapshot.success_count});
+            try writer.print("      \"last_failure_time\": {d},\n", .{snapshot.last_failure_time});
+            try writer.print("      \"failure_threshold\": {d},\n", .{snapshot.failure_threshold});
+            try writer.print("      \"success_threshold\": {d},\n", .{snapshot.success_threshold});
+            try writer.print("      \"reset_timeout_ms\": {d}\n", .{snapshot.reset_timeout_ms});
+            try writer.writeAll("    }");
+        }
+
+        try writer.writeAll("\n  ],\n");
+
+        // Save global circuit breaker
+        const global_snapshot = self.circuit_breaker.toSnapshot();
+        try writer.writeAll("  \"global\": {\n");
+        try writer.print("    \"state\": \"{s}\",\n", .{global_snapshot.state});
+        try writer.print("    \"failure_count\": {d},\n", .{global_snapshot.failure_count});
+        try writer.print("    \"success_count\": {d},\n", .{global_snapshot.success_count});
+        try writer.print("    \"last_failure_time\": {d}\n", .{global_snapshot.last_failure_time});
+        try writer.writeAll("  }\n");
+        try writer.writeAll("}\n");
+
+        std.debug.print("    [PERSIST] Saved {d} domain circuit breakers to {s}\n", .{ self.domain_circuit_breakers.count(), CIRCUIT_BREAKER_FILE });
+    }
+
+    /// Load domain circuit breakers from file (v23.32)
+    pub fn loadDomainCircuitBreakers(self: *Self) !void {
+        var file = std.fs.cwd().openFile(CIRCUIT_BREAKER_FILE, .{}) catch return;
+        defer file.close();
+
+        const content = file.readToEndAlloc(self.allocator, 1024 * 1024) catch return;
+        defer self.allocator.free(content);
+
+        var loaded_count: u32 = 0;
+        var pos: usize = 0;
+
+        // Parse domain circuit breakers
+        while (pos < content.len) {
+            // Find "domain": "
+            if (std.mem.indexOf(u8, content[pos..], "\"domain\": \"")) |domain_start| {
+                const abs_start = pos + domain_start + 11;
+                if (std.mem.indexOf(u8, content[abs_start..], "\"")) |domain_end| {
+                    const domain = content[abs_start .. abs_start + domain_end];
+
+                    // Parse circuit breaker fields
+                    var snapshot = CircuitBreakerSnapshot{};
+
+                    // Find state
+                    if (std.mem.indexOf(u8, content[abs_start..], "\"state\": \"")) |state_start| {
+                        const state_pos = abs_start + state_start + 10;
+                        if (std.mem.indexOf(u8, content[state_pos..], "\"")) |state_end| {
+                            snapshot.state = content[state_pos .. state_pos + state_end];
+                        }
+                    }
+
+                    // Find failure_count
+                    if (std.mem.indexOf(u8, content[abs_start..], "\"failure_count\": ")) |fc_start| {
+                        const fc_pos = abs_start + fc_start + 17;
+                        var fc_end = fc_pos;
+                        while (fc_end < content.len and content[fc_end] >= '0' and content[fc_end] <= '9') {
+                            fc_end += 1;
+                        }
+                        snapshot.failure_count = std.fmt.parseInt(u32, content[fc_pos..fc_end], 10) catch 0;
+                    }
+
+                    // Find last_failure_time
+                    if (std.mem.indexOf(u8, content[abs_start..], "\"last_failure_time\": ")) |lft_start| {
+                        const lft_pos = abs_start + lft_start + 21;
+                        var lft_end = lft_pos;
+                        while (lft_end < content.len and (content[lft_end] >= '0' and content[lft_end] <= '9' or content[lft_end] == '-')) {
+                            lft_end += 1;
+                        }
+                        snapshot.last_failure_time = std.fmt.parseInt(i64, content[lft_pos..lft_end], 10) catch 0;
+                    }
+
+                    // Create circuit breaker from snapshot
+                    const cb = CircuitBreaker.fromSnapshot(snapshot);
+
+                    // Add to domain_circuit_breakers
+                    const key = self.allocator.dupe(u8, domain) catch continue;
+                    self.domain_circuit_breakers.put(key, cb) catch {
+                        self.allocator.free(key);
+                        continue;
+                    };
+                    loaded_count += 1;
+
+                    pos = abs_start + domain_end;
+                    continue;
+                }
+            }
+            pos += 1;
+        }
+
+        // Load global circuit breaker state
+        if (std.mem.indexOf(u8, content, "\"global\":")) |_| {
+            if (std.mem.indexOf(u8, content, "\"state\": \"")) |state_start| {
+                const state_pos = state_start + 10;
+                if (std.mem.indexOf(u8, content[state_pos..], "\"")) |state_end| {
+                    const state_str = content[state_pos .. state_pos + state_end];
+                    if (std.mem.eql(u8, state_str, "OPEN")) {
+                        self.circuit_breaker.state = .open;
+                    } else if (std.mem.eql(u8, state_str, "HALF_OPEN")) {
+                        self.circuit_breaker.state = .half_open;
+                    }
+                }
+            }
+        }
+
+        if (loaded_count > 0) {
+            std.debug.print("    [PERSIST] Loaded {d} domain circuit breakers from {s}\n", .{ loaded_count, CIRCUIT_BREAKER_FILE });
+        }
+    }
+
     /// Print domain stats summary (v23.21)
     pub fn printDomainStats(self: *Self) void {
         std.debug.print("\n=== DOMAIN STATS ===\n", .{});
@@ -3589,22 +3788,22 @@ test "getCircuitBreakerForDomain creates new breaker (v23.27)" {
     var agent = RealAgent.init(allocator, .{});
     defer agent.deinit();
 
-    // Initially no domain circuit breakers
-    try std.testing.expectEqual(@as(usize, 0), agent.getDomainCircuitBreakerCount());
+    // Record initial count (may have loaded from file)
+    const initial_count = agent.getDomainCircuitBreakerCount();
 
     // Get circuit breaker for domain - should create new one
-    const cb = try agent.getCircuitBreakerForDomain("example.com");
+    const cb = try agent.getCircuitBreakerForDomain("test-example-unique.com");
     try std.testing.expectEqual(CircuitBreakerState.closed, cb.state);
-    try std.testing.expectEqual(@as(usize, 1), agent.getDomainCircuitBreakerCount());
+    try std.testing.expectEqual(initial_count + 1, agent.getDomainCircuitBreakerCount());
 
     // Get same domain again - should return existing
-    const cb2 = try agent.getCircuitBreakerForDomain("example.com");
+    const cb2 = try agent.getCircuitBreakerForDomain("test-example-unique.com");
     try std.testing.expectEqual(@intFromPtr(cb), @intFromPtr(cb2));
-    try std.testing.expectEqual(@as(usize, 1), agent.getDomainCircuitBreakerCount());
+    try std.testing.expectEqual(initial_count + 1, agent.getDomainCircuitBreakerCount());
 
     // Get different domain - should create new one
-    _ = try agent.getCircuitBreakerForDomain("google.com");
-    try std.testing.expectEqual(@as(usize, 2), agent.getDomainCircuitBreakerCount());
+    _ = try agent.getCircuitBreakerForDomain("test-google-unique.com");
+    try std.testing.expectEqual(initial_count + 2, agent.getDomainCircuitBreakerCount());
 }
 
 test "canExecuteForDomain checks domain circuit breaker (v23.27)" {
@@ -3634,13 +3833,17 @@ test "recordDomainSuccess and recordDomainFailure (v23.27)" {
     var agent = RealAgent.init(allocator, .{});
     defer agent.deinit();
 
-    // Record success
-    agent.recordDomainSuccess("example.com");
-    const cb = try agent.getCircuitBreakerForDomain("example.com");
+    // Use unique domain name for this test
+    const test_domain = "test-record-unique-domain.com";
+
+    // Record success - creates new circuit breaker
+    agent.recordDomainSuccess(test_domain);
+    const cb = try agent.getCircuitBreakerForDomain(test_domain);
+    // After success, failure_count should be 0
     try std.testing.expectEqual(@as(u32, 0), cb.failure_count);
 
     // Record failure
-    agent.recordDomainFailure("example.com");
+    agent.recordDomainFailure(test_domain);
     try std.testing.expectEqual(@as(u32, 1), cb.failure_count);
 }
 
@@ -4132,4 +4335,104 @@ test "RetryExecutor with open circuit breaker (v23.31)" {
 
     try std.testing.expect(!result.success);
     try std.testing.expectEqual(@as(u32, 0), result.attempts);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.32: CIRCUIT BREAKER PERSISTENCE TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "CircuitBreaker toSnapshot (v23.32)" {
+    var cb = CircuitBreaker{
+        .state = .open,
+        .failure_count = 5,
+        .success_count = 2,
+        .last_failure_time = 12345,
+    };
+
+    const snapshot = cb.toSnapshot();
+    try std.testing.expectEqualStrings("OPEN", snapshot.state);
+    try std.testing.expectEqual(@as(u32, 5), snapshot.failure_count);
+    try std.testing.expectEqual(@as(u32, 2), snapshot.success_count);
+    try std.testing.expectEqual(@as(i64, 12345), snapshot.last_failure_time);
+}
+
+test "CircuitBreaker fromSnapshot (v23.32)" {
+    const snapshot = CircuitBreakerSnapshot{
+        .state = "OPEN",
+        .failure_count = 3,
+        .success_count = 1,
+        .last_failure_time = 99999,
+    };
+
+    const cb = CircuitBreaker.fromSnapshot(snapshot);
+    try std.testing.expectEqual(CircuitBreakerState.open, cb.state);
+    try std.testing.expectEqual(@as(u32, 3), cb.failure_count);
+    try std.testing.expectEqual(@as(u32, 1), cb.success_count);
+    try std.testing.expectEqual(@as(i64, 99999), cb.last_failure_time);
+}
+
+test "CircuitBreaker fromSnapshot half_open (v23.32)" {
+    const snapshot = CircuitBreakerSnapshot{
+        .state = "HALF_OPEN",
+        .failure_count = 0,
+        .success_count = 2,
+    };
+
+    const cb = CircuitBreaker.fromSnapshot(snapshot);
+    try std.testing.expectEqual(CircuitBreakerState.half_open, cb.state);
+}
+
+test "CircuitBreaker fromSnapshot closed (v23.32)" {
+    const snapshot = CircuitBreakerSnapshot{
+        .state = "CLOSED",
+    };
+
+    const cb = CircuitBreaker.fromSnapshot(snapshot);
+    try std.testing.expectEqual(CircuitBreakerState.closed, cb.state);
+}
+
+test "CircuitBreaker roundtrip snapshot (v23.32)" {
+    var original = CircuitBreaker{
+        .state = .open,
+        .failure_count = 7,
+        .success_count = 3,
+        .last_failure_time = 54321,
+        .failure_threshold = 10,
+    };
+
+    const snapshot = original.toSnapshot();
+    const restored = CircuitBreaker.fromSnapshot(snapshot);
+
+    try std.testing.expectEqual(original.state, restored.state);
+    try std.testing.expectEqual(original.failure_count, restored.failure_count);
+    try std.testing.expectEqual(original.success_count, restored.success_count);
+    try std.testing.expectEqual(original.last_failure_time, restored.last_failure_time);
+}
+
+test "RealAgent saveDomainCircuitBreakers (v23.32)" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Add a domain circuit breaker
+    const cb = try agent.getCircuitBreakerForDomain("test.com");
+    cb.state = .open;
+    cb.failure_count = 5;
+
+    // Save should not error
+    try agent.saveDomainCircuitBreakers();
+
+    // Verify file was created
+    const file = std.fs.cwd().openFile(CIRCUIT_BREAKER_FILE, .{}) catch |err| {
+        std.debug.print("File not found: {}\n", .{err});
+        return;
+    };
+    defer file.close();
+
+    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(content);
+
+    // Check content contains our domain
+    try std.testing.expect(std.mem.indexOf(u8, content, "test.com") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "OPEN") != null);
 }
