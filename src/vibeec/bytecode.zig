@@ -59,6 +59,13 @@ pub const Opcode = enum(u8) {
     LE = 0x23,
     GT = 0x24,
     GE = 0x25,
+    // Fused compare+jump (optimization)
+    LT_JZ = 0x26,   // if !(a < b) jump offset
+    LE_JZ = 0x27,   // if !(a <= b) jump offset
+    GT_JZ = 0x28,   // if !(a > b) jump offset
+    GE_JZ = 0x29,   // if !(a >= b) jump offset
+    EQ_JZ = 0x2A,   // if !(a == b) jump offset
+    NE_JZ = 0x2B,   // if !(a != b) jump offset
 
     // Logic (0x30-0x3F)
     NOT = 0x30,
@@ -82,6 +89,71 @@ pub const Opcode = enum(u8) {
     RET = 0x44,
     HALT = 0x45,
     LOOP = 0x46,
+    CALL_INDIRECT = 0x47, // Call function at address on stack
+    LOAD_ARG = 0x48,      // Load argument by index
+    STORE_ARG = 0x49,     // Store to argument slot
+    ENTER = 0x4A,         // Enter function (setup frame)
+    LEAVE = 0x4B,         // Leave function (cleanup frame)
+    CALL_NATIVE = 0x4C,   // Call native function by name index
+    CLOSURE = 0x4D,       // Create closure with upvalues
+    GET_UPVALUE = 0x4E,   // Get captured variable
+    SET_UPVALUE = 0x4F,   // Set captured variable
+
+    // Arrays (0x50-0x5F)
+    NEW_ARRAY = 0x50,     // Create new array with N elements from stack
+    ARRAY_GET = 0x51,     // Get element: arr[idx]
+    ARRAY_SET = 0x52,     // Set element: arr[idx] = val
+    ARRAY_LEN = 0x53,     // Get array length
+    ARRAY_PUSH = 0x54,    // Push element to array
+    ARRAY_POP = 0x55,     // Pop element from array
+
+    // Objects (0x60-0x6F)
+    NEW_OBJECT = 0x60,    // Create new empty object
+    OBJECT_GET = 0x61,    // Get property: obj.key
+    OBJECT_SET = 0x62,    // Set property: obj.key = val
+
+    // Ternary/Trit Operations (0x70-0x7F) - ТРОИЧНАЯ ЛОГИКА!
+    PUSH_TRIT = 0x70,     // Push trit value: 1=T, 0=U, -1=F (operand: i8)
+    TRIT_NOT = 0x71,      // Ternary NOT: T→F, F→T, U→U
+    TRIT_AND = 0x72,      // Ternary AND (Kleene): min(a,b)
+    TRIT_OR = 0x73,       // Ternary OR (Kleene): max(a,b)
+    TRIT_XOR = 0x74,      // Ternary XOR
+    TRIT_IMP = 0x75,      // Ternary implication
+    TRIT_EQ = 0x76,       // Ternary equality
+    TRIT_CMP = 0x77,      // Compare and return trit: <→F, =→U, >→T
+    PUSH_TRYTE = 0x78,    // Push tryte (3 trits = 27 values, -13..+13)
+    TRYTE_ADD = 0x79,     // Balanced ternary addition
+    TRYTE_SUB = 0x7A,     // Balanced ternary subtraction
+    TRYTE_MUL = 0x7B,     // Balanced ternary multiplication
+    TRYTE_NEG = 0x7C,     // Balanced ternary negation
+    TO_TRYTE = 0x7D,      // Convert int to tryte
+    FROM_TRYTE = 0x7E,    // Convert tryte to int
+    TRYTE_INC = 0x7F,     // Increment tryte by 1 (fast path)
+    TRYTE_DEC = 0xA9,     // Decrement tryte by 1 (fast path)
+    TRYTE_GT = 0xAA,      // Tryte greater than comparison
+    TRYTE_LE = 0xAB,      // Tryte less than or equal comparison
+    TRYTE_GE = 0xAC,      // Tryte greater than or equal comparison
+    TRYTE_NE = 0xAD,      // Tryte not equal comparison
+    
+    // SIMD Ternary Operations (0xB0-0xBF)
+    SIMD_TRYTE_ADD = 0xB0,   // SIMD add 32 trytes from arrays
+    SIMD_TRYTE_SUB = 0xB1,   // SIMD subtract 32 trytes
+    SIMD_TRYTE_SUM = 0xB2,   // SIMD horizontal sum of tryte array
+    SIMD_TRYTE_MAX = 0xB3,   // SIMD find max in tryte array
+    SIMD_TRYTE_MIN = 0xB4,   // SIMD find min in tryte array
+    
+    // TryteArray Operations (0xC0-0xCF) - Native packed arrays
+    TRYTE_ARRAY_NEW = 0xC0,  // Create new TryteArray(size)
+    TRYTE_ARRAY_GET = 0xC1,  // Get element: arr[idx] -> tryte
+    TRYTE_ARRAY_SET = 0xC2,  // Set element: arr[idx] = tryte
+    TRYTE_ARRAY_LEN = 0xC3,  // Get length of TryteArray
+    TRYTE_ARRAY_SUM = 0xC4,  // SIMD sum of TryteArray (direct)
+    TRYTE_ARRAY_MAX = 0xC5,  // SIMD max of TryteArray (direct)
+    TRYTE_ARRAY_MIN = 0xC6,  // SIMD min of TryteArray (direct)
+    TRYTE_ARRAY_FILL = 0xC7, // Fill TryteArray with value
+    TRYTE_ARRAY_COPY = 0xC8, // Copy TryteArray
+    TRYTE_LT = 0xA7,      // Tryte less than comparison
+    TRYTE_EQ = 0xA8,      // Tryte equality comparison
 
     // SIMD (0x80-0x8F)
     SIMD_ADD = 0x80,
@@ -99,8 +171,8 @@ pub const Opcode = enum(u8) {
     LOAD_ADD = 0xA0,
     LOAD_SUB = 0xA1,
     LOAD_MUL = 0xA2,
-    LT_JZ = 0xA3,
-    LE_JZ = 0xA4,
+    TAIL_CALL = 0xA3,  // Tail call optimization: jump instead of call+ret
+    LOAD_TRYTE_ADD = 0xA4,  // Load local + tryte add (fused)
     INC_LT = 0xA5,
     DEC_GT = 0xA6,
 
@@ -108,8 +180,14 @@ pub const Opcode = enum(u8) {
         return switch (self) {
             .PUSH_CONST, .JMP, .JZ, .JNZ, .CALL, .LOOP => 2,
             .LOAD_LOCAL, .STORE_LOCAL, .LOAD_GLOBAL, .STORE_GLOBAL => 2,
-            .LOAD_ADD, .LOAD_SUB, .LOAD_MUL => 2,
-            .LT_JZ, .LE_JZ => 2,
+            .LOAD_ADD, .LOAD_SUB, .LOAD_MUL, .TAIL_CALL, .LOAD_TRYTE_ADD => 2,
+            .LT_JZ, .LE_JZ, .GT_JZ, .GE_JZ, .EQ_JZ, .NE_JZ => 2,
+            .CALL_INDIRECT => 1, // arity (number of args)
+            .LOAD_ARG, .STORE_ARG => 1, // arg index
+            .ENTER => 1, // number of locals
+            .NEW_ARRAY => 1, // number of elements
+            .PUSH_TRIT => 1,  // trit value: 1=T, 0=U, -1=F (as i8)
+            .PUSH_TRYTE => 2, // tryte value: -13..+13 (as i16)
             else => 0,
         };
     }
@@ -125,6 +203,57 @@ pub const ValueTag = enum(u8) {
     int_val = 2,
     float_val = 3,
     string_val = 4,
+    func_val = 5,
+    array_val = 6,
+    object_val = 7,
+    closure_val = 8,
+    tryte_array_val = 9, // Packed tryte array for SIMD
+    trit_val = 10,    // Ternary value: -1=F, 0=U, 1=T
+    tryte_val = 11,   // Tryte: 3 trits = 27 values (-13..+13 in balanced)
+};
+
+/// Function value for VM
+pub const FuncValue = struct {
+    addr: u16,      // Bytecode address
+    arity: u8,      // Number of parameters
+    locals: u8,     // Number of local variables
+    name: []const u8,
+};
+
+/// Upvalue - captured variable from enclosing scope
+pub const UpvalueObj = struct {
+    location: *Value,  // Pointer to the captured value
+    closed: Value,     // Value when closed over (after scope exit)
+    is_open: bool,     // true if still on stack, false if closed
+};
+
+/// Closure - function with captured environment
+pub const ClosureValue = struct {
+    func_addr: u16,
+    upvalues: []?*UpvalueObj,
+    upvalue_count: u8,
+};
+
+/// Array value - dynamic array of Values
+pub const ArrayValue = struct {
+    items: []Value,
+    capacity: usize,
+};
+
+/// TryteArray value - packed i8 array for efficient SIMD operations
+/// Direct storage without Value wrapper - eliminates extraction overhead
+pub const TryteArrayValue = struct {
+    data: []i8,      // Packed tryte values (-13..+13)
+    len: usize,      // Number of trytes
+    capacity: usize, // Allocated capacity
+};
+
+/// Object value - key-value pairs
+pub const ObjectValue = struct {
+    // Simple implementation: parallel arrays for keys and values
+    keys: [][]const u8,
+    values: []Value,
+    count: usize,
 };
 
 pub const Value = union(ValueTag) {
@@ -133,9 +262,43 @@ pub const Value = union(ValueTag) {
     int_val: i64,
     float_val: f64,
     string_val: []const u8,
+    func_val: FuncValue,
+    array_val: *ArrayValue,
+    object_val: *ObjectValue,
+    closure_val: *ClosureValue,
+    tryte_array_val: *TryteArrayValue, // Packed tryte array for SIMD
+    trit_val: i8,   // -1=F (▽), 0=U (?), 1=T (△)
+    tryte_val: i8,  // Balanced ternary: -13..+13 (3 trits)
 
     pub fn isNil(self: Value) bool {
         return self == .nil;
+    }
+    
+    pub fn isTrit(self: Value) bool {
+        return self == .trit_val;
+    }
+    
+    pub fn isTryte(self: Value) bool {
+        return self == .tryte_val;
+    }
+    
+    pub fn toTrit(self: Value) ?i8 {
+        return switch (self) {
+            .trit_val => |v| v,
+            .bool_val => |v| if (v) @as(i8, 1) else @as(i8, -1),
+            .int_val => |v| if (v > 0) @as(i8, 1) else if (v < 0) @as(i8, -1) else @as(i8, 0),
+            .tryte_val => |v| if (v > 0) @as(i8, 1) else if (v < 0) @as(i8, -1) else @as(i8, 0),
+            else => null,
+        };
+    }
+    
+    pub fn toTryte(self: Value) ?i8 {
+        return switch (self) {
+            .tryte_val => |v| v,
+            .trit_val => |v| v,  // Trit is a single-trit tryte
+            .int_val => |v| @as(i8, @intCast(@mod(@as(i64, @intCast(@mod(v + 13, 27))), 27) - 13)),
+            else => null,
+        };
     }
 
     pub fn toInt(self: Value) ?i64 {
@@ -143,6 +306,7 @@ pub const Value = union(ValueTag) {
             .int_val => |v| v,
             .float_val => |v| @intFromFloat(v),
             .bool_val => |v| if (v) @as(i64, 1) else @as(i64, 0),
+            .trit_val => |v| @as(i64, v),
             else => null,
         };
     }
@@ -153,6 +317,35 @@ pub const Value = union(ValueTag) {
             .int_val => |v| @floatFromInt(v),
             else => null,
         };
+    }
+    
+    pub fn toBool(self: Value) bool {
+        return switch (self) {
+            .nil => false,
+            .bool_val => |v| v,
+            .int_val => |v| v != 0,
+            .float_val => |v| v != 0.0,
+            .string_val => |s| s.len > 0,
+            .array_val => |a| a.items.len > 0,
+            .object_val => |o| o.count > 0,
+            .func_val => true,
+            .closure_val => true,
+            .tryte_array_val => |a| a.len > 0,
+            .trit_val => |v| v > 0,   // T=true, F/U=false
+            .tryte_val => |v| v > 0,  // Positive=true
+        };
+    }
+
+    pub fn isFunc(self: Value) bool {
+        return self == .func_val;
+    }
+
+    pub fn isArray(self: Value) bool {
+        return self == .array_val;
+    }
+
+    pub fn isObject(self: Value) bool {
+        return self == .object_val;
     }
 };
 
@@ -333,6 +526,24 @@ pub const BytecodeEmitter = struct {
         self.bytes_emitted += 3;
     }
 
+    /// Emit opcode with i8 operand (for trit values)
+    pub fn emitWithI8(self: *Self, op: Opcode, operand: i8) !void {
+        try self.code.append(@intFromEnum(op));
+        try self.code.append(@bitCast(operand));
+        self.instructions_emitted += 1;
+        self.bytes_emitted += 2;
+    }
+
+    /// Emit opcode with i16 operand (big-endian, for tryte values)
+    pub fn emitWithI16(self: *Self, op: Opcode, operand: i16) !void {
+        try self.code.append(@intFromEnum(op));
+        const u_operand: u16 = @bitCast(operand);
+        try self.code.append(@intCast(u_operand >> 8));
+        try self.code.append(@intCast(u_operand & 0xFF));
+        self.instructions_emitted += 1;
+        self.bytes_emitted += 3;
+    }
+
     /// Emit PUSH_CONST with integer value
     pub fn emitPushInt(self: *Self, value: i64) !void {
         const idx = try self.constants.addInt(value);
@@ -485,6 +696,45 @@ pub const BytecodeEmitter = struct {
                     const len: u32 = @intCast(v.len);
                     try self.appendU32(output, len);
                     try output.appendNTimes(0, 4);
+                },
+                .func_val => |v| {
+                    try output.append(@intFromEnum(ValueTag.func_val));
+                    // Store addr (2 bytes) + arity (1 byte) + locals (1 byte) + padding
+                    try output.append(@intCast(v.addr >> 8));
+                    try output.append(@intCast(v.addr & 0xFF));
+                    try output.append(v.arity);
+                    try output.append(v.locals);
+                    try output.appendNTimes(0, 4);
+                },
+                .array_val, .object_val => {
+                    // Arrays and objects are runtime-only, not serialized
+                    try output.append(@intFromEnum(ValueTag.nil));
+                    try output.appendNTimes(0, 8);
+                },
+                .closure_val => |v| {
+                    // Closures serialized as function reference
+                    try output.append(@intFromEnum(ValueTag.closure_val));
+                    try output.append(@intCast(v.func_addr >> 8));
+                    try output.append(@intCast(v.func_addr & 0xFF));
+                    try output.append(v.upvalue_count);
+                    try output.appendNTimes(0, 5);
+                },
+                .trit_val => |v| {
+                    // Trit value: -1=F, 0=U, 1=T
+                    try output.append(@intFromEnum(ValueTag.trit_val));
+                    try output.append(@bitCast(v));
+                    try output.appendNTimes(0, 7);
+                },
+                .tryte_val => |v| {
+                    // Tryte value: -13..+13 (balanced ternary)
+                    try output.append(@intFromEnum(ValueTag.tryte_val));
+                    try output.append(@bitCast(v));
+                    try output.appendNTimes(0, 7);
+                },
+                .tryte_array_val => {
+                    // TryteArray is runtime-only, not serialized
+                    try output.append(@intFromEnum(ValueTag.nil));
+                    try output.appendNTimes(0, 8);
                 },
             }
         }

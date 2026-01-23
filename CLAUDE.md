@@ -205,6 +205,9 @@ behaviors:
 ## 🔧 COMMANDS
 
 ```bash
+# EXECUTION (ONLY VM - NO INTERPRETER!)
+./bin/vibee run <file.999>   # Run via bytecode VM (5x faster!)
+
 # GOLDEN CHAIN
 ./bin/vibee koschei          # 16 links (default)
 ./bin/vibee koschei chain    # Lukomorye architecture
@@ -217,6 +220,24 @@ behaviors:
 # TESTING
 zig test trinity/output/<module>.zig
 ```
+
+---
+
+## ⚡ EXECUTION MODEL
+
+**ONLY BYTECODE VM!** Tree-walking interpreter is DEPRECATED.
+
+```
+.999 SOURCE → PARSER → AST → BYTECODE COMPILER → VM EXECUTION
+```
+
+**Why VM only:**
+- 5-6x faster than interpreter
+- Proper stack-based execution
+- Native functions (print, len, range, etc.)
+- Foundation for JIT compilation
+
+**NEVER use coptic_interpreter.zig directly!**
 
 ---
 

@@ -1,0 +1,253 @@
+# VIBEE ⲦⲢⲒⲚⲒⲦⲨ Parser Specification
+# Парсер коптского языка для TRINITY VM
+# φ² + 1/φ² = 3 | 27 символов = 3³
+
+name: coptic_parser
+version: "1.0.0"
+language: zig
+module: coptic_parser
+
+sacred_formula:
+  phi: 1.618033988749895
+  identity: "φ² + 1/φ² = 3"
+  trinity: 27
+  phoenix: 999
+
+creation_pattern:
+  source: TokenStream
+  transformer: CopticParser
+  result: Program
+
+types:
+  ParseError:
+    fields:
+      unexpected_token: Int
+      expected_expression: Int
+      expected_type: Int
+      expected_identifier: Int
+      expected_semicolon: Int
+      expected_colon: Int
+      expected_arrow: Int
+      expected_lbrace: Int
+      expected_rbrace: Int
+      expected_lparen: Int
+      expected_rparen: Int
+
+  CopticParser:
+    fields:
+      tokens: List<String>
+      source: String
+      current: Int
+      allocator: String
+
+  ParseResult:
+    fields:
+      success: Bool
+      program: Option<String>
+      errors: List<String>
+
+behaviors:
+  - name: parse_program
+    given: "Token stream"
+    when: "Parser runs"
+    then: "Program AST returned"
+    test_cases:
+      - name: test_empty
+        input: ""
+        expected: { statements: 0 }
+      - name: test_module
+        input: "ⲙ test;"
+        expected: { module_name: "test" }
+
+  - name: parse_module_decl
+    given: "ⲙ keyword"
+    when: "Module declaration parsed"
+    then: "ModuleDecl node"
+    test_cases:
+      - name: test_module_decl
+        input: "ⲙ ⲙⲁⲓⲛ;"
+        expected: { kind: "module_decl", name: "ⲙⲁⲓⲛ" }
+
+  - name: parse_const_decl
+    given: "ⲕ keyword"
+    when: "Const declaration parsed"
+    then: "ConstDecl node"
+    test_cases:
+      - name: test_const_int
+        input: "ⲕ x : ⲧⲣⲓⲛⲧ = 42;"
+        expected: { kind: "const_decl", name: "x", type: "trint" }
+      - name: test_const_phi
+        input: "ⲕ ⲫ : ⲫⲓ = 1.618;"
+        expected: { kind: "const_decl", type: "phi" }
+
+  - name: parse_var_decl
+    given: "ⲃ keyword"
+    when: "Var declaration parsed"
+    then: "VarDecl node"
+    test_cases:
+      - name: test_var
+        input: "ⲃ y : ⲧⲣⲓⲧ;"
+        expected: { kind: "var_decl", name: "y" }
+      - name: test_var_init
+        input: "ⲃ z : ⲧⲣⲓⲧ = ⲱ;"
+        expected: { kind: "var_decl", has_init: true }
+
+  - name: parse_func_decl
+    given: "ⲅ keyword"
+    when: "Function declaration parsed"
+    then: "FuncDecl node"
+    test_cases:
+      - name: test_func_simple
+        input: "ⲅ ⲙⲁⲓⲛ() -> ⲧⲣⲓⲧ { ⲣ ⲱ; }"
+        expected: { kind: "func_decl", name: "ⲙⲁⲓⲛ", params: 0 }
+      - name: test_func_params
+        input: "ⲅ add(a: ⲧⲣⲓⲛⲧ, b: ⲧⲣⲓⲛⲧ) -> ⲧⲣⲓⲛⲧ { ⲣ a + b; }"
+        expected: { kind: "func_decl", params: 2 }
+
+  - name: parse_struct_decl
+    given: "ⲥ keyword"
+    when: "Struct declaration parsed"
+    then: "StructDecl node"
+    test_cases:
+      - name: test_struct
+        input: "ⲥ Point { x: ⲧⲣⲓⲛⲧ; y: ⲧⲣⲓⲛⲧ; }"
+        expected: { kind: "struct_decl", fields: 2 }
+
+  - name: parse_if_stmt
+    given: "ⲏ keyword"
+    when: "If statement parsed"
+    then: "IfStmt node"
+    test_cases:
+      - name: test_if_simple
+        input: "ⲏ (x ≡ ⲱ) { ⲣ ⲱ; }"
+        expected: { kind: "if_stmt", has_else: false }
+      - name: test_if_else
+        input: "ⲏ (x ≡ ⲱ) { ⲣ ⲱ; } ⲁ { ⲣ ⲁ; }"
+        expected: { kind: "if_stmt", has_else: true }
+
+  - name: parse_loop_stmt
+    given: "ⲍ keyword"
+    when: "Loop statement parsed"
+    then: "LoopStmt node"
+    test_cases:
+      - name: test_loop
+        input: "ⲍ (i < 27) { i = i + 1; }"
+        expected: { kind: "loop_stmt" }
+
+  - name: parse_match_stmt
+    given: "ⲭ keyword"
+    when: "Match statement parsed"
+    then: "MatchStmt with 3 branches"
+    test_cases:
+      - name: test_match
+        input: "ⲭ (x) { ⲁ: ⲣ -1; ⲟ: ⲣ 0; ⲱ: ⲣ 1; }"
+        expected: { kind: "match_stmt", branches: 3 }
+
+  - name: parse_return_stmt
+    given: "ⲣ keyword"
+    when: "Return statement parsed"
+    then: "ReturnStmt node"
+    test_cases:
+      - name: test_return_value
+        input: "ⲣ 42;"
+        expected: { kind: "return_stmt", has_value: true }
+      - name: test_return_trit
+        input: "ⲣ ⲱ;"
+        expected: { kind: "return_stmt", value: "positive" }
+
+  - name: parse_defer_stmt
+    given: "ⲇⲉⲫⲉⲣ keyword"
+    when: "Defer statement parsed"
+    then: "DeferStmt node"
+    test_cases:
+      - name: test_defer
+        input: "ⲇⲉⲫⲉⲣ free(ptr);"
+        expected: { kind: "defer_stmt" }
+
+  - name: parse_comptime_block
+    given: "ⲕⲟⲙⲡⲧⲓⲙⲉ keyword"
+    when: "Comptime block parsed"
+    then: "ComptimeBlock node"
+    test_cases:
+      - name: test_comptime
+        input: "ⲕⲟⲙⲡⲧⲓⲙⲉ { ⲕ x : ⲧⲣⲓⲛⲧ = 27; }"
+        expected: { kind: "comptime_block" }
+
+  - name: parse_expression
+    given: "Expression tokens"
+    when: "Expression parsed"
+    then: "Expr node"
+    test_cases:
+      - name: test_binary
+        input: "1 + 2"
+        expected: { kind: "binary_op", op: "add" }
+      - name: test_ternary_and
+        input: "a ∧ b"
+        expected: { kind: "binary_op", op: "t_and" }
+
+  - name: parse_primary
+    given: "Primary token"
+    when: "Primary parsed"
+    then: "Literal or identifier"
+    test_cases:
+      - name: test_int
+        input: "42"
+        expected: { kind: "int_literal", value: 42 }
+      - name: test_trit
+        input: "ⲱ"
+        expected: { kind: "trit_literal", value: 1 }
+      - name: test_phi
+        input: "ⲫⲓ"
+        expected: { kind: "phi_const" }
+      - name: test_pi
+        input: "ⲡⲓ"
+        expected: { kind: "pi_const" }
+      - name: test_tau
+        input: "ⲧⲁⲩ"
+        expected: { kind: "tau_const" }
+      - name: test_euler
+        input: "ⲉⲩⲗⲉⲣ"
+        expected: { kind: "euler_const" }
+      - name: test_golden_const
+        input: "ⲄⲞⲖⲆⲈⲚ"
+        expected: { kind: "golden_identity_const", value: 3.0 }
+      - name: test_trinity
+        input: "ⲦⲢⲒⲚⲒⲦⲨ"
+        expected: { kind: "trinity_const", value: 27 }
+      - name: test_phoenix
+        input: "ⲪⲞⲈⲚⲒⲜ"
+        expected: { kind: "phoenix_const", value: 999 }
+      - name: test_fibonacci
+        input: "ⲫⲓⲃ(10)"
+        expected: { kind: "fibonacci_call", value: 55 }
+      - name: test_lucas
+        input: "ⲗⲩⲕ(10)"
+        expected: { kind: "lucas_call", value: 123 }
+
+  - name: parse_type
+    given: "Type token"
+    when: "Type parsed"
+    then: "Type node"
+    test_cases:
+      - name: test_trit_type
+        input: "ⲧⲣⲓⲧ"
+        expected: { kind: "trit" }
+      - name: test_trint_type
+        input: "ⲧⲣⲓⲛⲧ"
+        expected: { kind: "trint" }
+      - name: test_phi_type
+        input: "ⲫⲓ"
+        expected: { kind: "phi" }
+
+pas_analysis:
+  current_algorithm: "Recursive descent"
+  predicted_improvement: "Pratt parser with precedence climbing"
+  confidence: 0.88
+  patterns_applied: [D&C, MLS, PRE]
+  timeline: "2026 Q1"
+
+self_evolution:
+  enabled: true
+  mutation_rate: 0.0382
+  fitness_function: "parse_speed_accuracy"
+  generation: 1

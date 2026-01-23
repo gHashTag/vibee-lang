@@ -111,9 +111,50 @@ pub const ZigCodeGen = struct {
         try self.writeTypes(spec.types.items);
         try self.writeMemoryBuffers();
         try self.writeCreationPatterns(spec.creation_patterns.items);
+        try self.writeBehaviorFunctions(spec.behaviors.items);
         try self.writeTests(spec.behaviors.items);
         
         return self.builder.getOutput();
+    }
+    
+    /// Generate functions from behaviors with implementation blocks
+    fn writeBehaviorFunctions(self: *Self, behaviors: []const Behavior) !void {
+        var has_impl = false;
+        for (behaviors) |b| {
+            if (b.implementation.len > 0) {
+                has_impl = true;
+                break;
+            }
+        }
+        if (!has_impl) return;
+        
+        try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
+        try self.builder.writeLine("// BEHAVIOR IMPLEMENTATIONS");
+        try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
+        try self.builder.newline();
+        
+        for (behaviors) |b| {
+            if (b.implementation.len == 0) continue;
+            
+            try self.builder.writeFmt("/// {s}\n", .{b.given});
+            try self.builder.writeFmt("/// When: {s}\n", .{b.when});
+            try self.builder.writeFmt("/// Then: {s}\n", .{b.then});
+            try self.builder.writeFmt("pub fn {s}() void {{\n", .{b.name});
+            self.builder.incIndent();
+            
+            // Write implementation code (trimmed)
+            const impl = std.mem.trim(u8, b.implementation, " \t\n\r");
+            if (impl.len > 0) {
+                try self.builder.write(impl);
+                try self.builder.newline();
+            } else {
+                try self.builder.writeLine("// TODO: implementation");
+            }
+            
+            self.builder.decIndent();
+            try self.builder.writeLine("}");
+            try self.builder.newline();
+        }
     }
     
     fn writeHeader(self: *Self, spec: *const VibeeSpec) !void {
@@ -312,10 +353,125 @@ pub const ZigCodeGen = struct {
             try self.builder.writeLine("return @intFromFloat(@round(phi_n + psi_n));");
             self.builder.decIndent();
             try self.builder.writeLine("}");
+        } else if (std.mem.eql(u8, pattern.name, "factorial")) {
+            try self.builder.writeLine("/// Factorial n! - O(n)");
+            try self.builder.writeLine("fn factorial(n: u64) u64 {");
+            self.builder.incIndent();
+            try self.builder.writeLine("if (n <= 1) return 1;");
+            try self.builder.writeLine("var result: u64 = 1;");
+            try self.builder.writeLine("var i: u64 = 2;");
+            try self.builder.writeLine("while (i <= n) : (i += 1) result *%= i;");
+            try self.builder.writeLine("return result;");
+            self.builder.decIndent();
+            try self.builder.writeLine("}");
+        } else if (std.mem.eql(u8, pattern.name, "gcd")) {
+            try self.builder.writeLine("/// GCD using Euclidean algorithm - O(log(min(a,b)))");
+            try self.builder.writeLine("fn gcd(a: u64, b: u64) u64 {");
+            self.builder.incIndent();
+            try self.builder.writeLine("var x = a;");
+            try self.builder.writeLine("var y = b;");
+            try self.builder.writeLine("while (y != 0) {");
+            self.builder.incIndent();
+            try self.builder.writeLine("const t = y;");
+            try self.builder.writeLine("y = x % y;");
+            try self.builder.writeLine("x = t;");
+            self.builder.decIndent();
+            try self.builder.writeLine("}");
+            try self.builder.writeLine("return x;");
+            self.builder.decIndent();
+            try self.builder.writeLine("}");
+        } else if (std.mem.eql(u8, pattern.name, "lcm")) {
+            try self.builder.writeLine("/// LCM using GCD - O(log(min(a,b)))");
+            try self.builder.writeLine("fn lcm(a: u64, b: u64) u64 {");
+            self.builder.incIndent();
+            try self.builder.writeLine("if (a == 0 or b == 0) return 0;");
+            try self.builder.writeLine("return (a / gcd(a, b)) * b;");
+            self.builder.decIndent();
+            try self.builder.writeLine("}");
+        } else if (std.mem.eql(u8, pattern.name, "digital_root")) {
+            try self.builder.writeLine("/// Digital root (repeated digit sum until single digit) - O(1)");
+            try self.builder.writeLine("fn digital_root(n: u64) u64 {");
+            self.builder.incIndent();
+            try self.builder.writeLine("if (n == 0) return 0;");
+            try self.builder.writeLine("const r = n % 9;");
+            try self.builder.writeLine("return if (r == 0) 9 else r;");
+            self.builder.decIndent();
+            try self.builder.writeLine("}");
+        } else if (std.mem.eql(u8, pattern.name, "trinity_power")) {
+            try self.builder.writeLine("/// Trinity power 3^k with lookup table - O(1) for k < 20");
+            try self.builder.writeLine("fn trinity_power(k: u32) u64 {");
+            self.builder.incIndent();
+            try self.builder.writeLine("const powers = [_]u64{ 1, 3, 9, 27, 81, 243, 729, 2187, 6561, 19683, 59049, 177147, 531441, 1594323, 4782969, 14348907, 43046721, 129140163, 387420489, 1162261467 };");
+            try self.builder.writeLine("if (k < powers.len) return powers[k];");
+            try self.builder.writeLine("var result: u64 = 1;");
+            try self.builder.writeLine("var i: u32 = 0;");
+            try self.builder.writeLine("while (i < k) : (i += 1) result *= 3;");
+            try self.builder.writeLine("return result;");
+            self.builder.decIndent();
+            try self.builder.writeLine("}");
+        } else if (std.mem.eql(u8, pattern.name, "sacred_formula")) {
+            try self.builder.writeLine("/// Sacred formula: V = n × 3^k × π^m × φ^p × e^q");
+            try self.builder.writeLine("fn sacred_formula(n: f64, k: f64, m: f64, p: f64, q: f64) f64 {");
+            self.builder.incIndent();
+            try self.builder.writeLine("return n * math.pow(f64, 3.0, k) * math.pow(f64, PI, m) * math.pow(f64, PHI, p) * math.pow(f64, E, q);");
+            self.builder.decIndent();
+            try self.builder.writeLine("}");
+        } else if (std.mem.eql(u8, pattern.name, "golden_identity")) {
+            try self.builder.writeLine("/// Golden identity: φ² + 1/φ² = 3");
+            try self.builder.writeLine("fn golden_identity() f64 {");
+            self.builder.incIndent();
+            try self.builder.writeLine("return PHI * PHI + 1.0 / (PHI * PHI);");
+            self.builder.decIndent();
+            try self.builder.writeLine("}");
+        } else if (std.mem.eql(u8, pattern.name, "binomial")) {
+            try self.builder.writeLine("/// Binomial coefficient C(n,k) = n! / (k! * (n-k)!)");
+            try self.builder.writeLine("fn binomial(n: u64, k: u64) u64 {");
+            self.builder.incIndent();
+            try self.builder.writeLine("if (k > n) return 0;");
+            try self.builder.writeLine("if (k == 0 or k == n) return 1;");
+            try self.builder.writeLine("var result: u64 = 1;");
+            try self.builder.writeLine("var i: u64 = 0;");
+            try self.builder.writeLine("while (i < k) : (i += 1) {");
+            self.builder.incIndent();
+            try self.builder.writeLine("result = result * (n - i) / (i + 1);");
+            self.builder.decIndent();
+            try self.builder.writeLine("}");
+            try self.builder.writeLine("return result;");
+            self.builder.decIndent();
+            try self.builder.writeLine("}");
         }
     }
     
     fn generateStandardFunctions(self: *Self) !void {
+        // Trit type and operations
+        try self.builder.writeLine("/// Trit - ternary digit (-1, 0, +1)");
+        try self.builder.writeLine("pub const Trit = enum(i8) {");
+        try self.builder.writeLine("    negative = -1, // ▽ FALSE");
+        try self.builder.writeLine("    zero = 0,      // ○ UNKNOWN");
+        try self.builder.writeLine("    positive = 1,  // △ TRUE");
+        try self.builder.newline();
+        try self.builder.writeLine("    pub fn trit_and(a: Trit, b: Trit) Trit {");
+        try self.builder.writeLine("        return @enumFromInt(@min(@intFromEnum(a), @intFromEnum(b)));");
+        try self.builder.writeLine("    }");
+        try self.builder.newline();
+        try self.builder.writeLine("    pub fn trit_or(a: Trit, b: Trit) Trit {");
+        try self.builder.writeLine("        return @enumFromInt(@max(@intFromEnum(a), @intFromEnum(b)));");
+        try self.builder.writeLine("    }");
+        try self.builder.newline();
+        try self.builder.writeLine("    pub fn trit_not(a: Trit) Trit {");
+        try self.builder.writeLine("        return @enumFromInt(-@intFromEnum(a));");
+        try self.builder.writeLine("    }");
+        try self.builder.newline();
+        try self.builder.writeLine("    pub fn trit_xor(a: Trit, b: Trit) Trit {");
+        try self.builder.writeLine("        const av = @intFromEnum(a);");
+        try self.builder.writeLine("        const bv = @intFromEnum(b);");
+        try self.builder.writeLine("        if (av == 0 or bv == 0) return .zero;");
+        try self.builder.writeLine("        if (av == bv) return .negative;");
+        try self.builder.writeLine("        return .positive;");
+        try self.builder.writeLine("    }");
+        try self.builder.writeLine("};");
+        try self.builder.newline();
+        
         // verify_trinity
         try self.builder.writeLine("/// Проверка TRINITY identity: φ² + 1/φ² = 3");
         try self.builder.writeLine("fn verify_trinity() f64 {");
@@ -400,12 +556,16 @@ pub const ZigCodeGen = struct {
     
     fn generateTestAssertion(self: *Self, behavior_name: []const u8, tc: TestCase) !void {
         // Парсим input: { n: 0 } или { a: 0, b: 100, t: 0.5 }
-        const input = tc.input;
+        // Убираем кавычки если есть
+        const input = stripQuotes(tc.input);
         // Извлекаем только число из expected (может содержать комментарий)
-        const expected = extractNumber(tc.expected);
+        const expected = extractNumber(stripQuotes(tc.expected));
         
-        // Определяем функцию по имени behavior
-        if (std.mem.startsWith(u8, behavior_name, "phi_power")) {
+        // Используем tc.name если есть, иначе behavior_name
+        const func_name = if (tc.name.len > 0) tc.name else behavior_name;
+        
+        // Определяем функцию по имени
+        if (std.mem.startsWith(u8, func_name, "phi_power")) {
             // Извлекаем n из input
             if (extractIntParam(input, "n")) |n| {
                 if (tc.tolerance) |tol| {
@@ -414,21 +574,25 @@ pub const ZigCodeGen = struct {
                     try self.builder.writeFmt("try std.testing.expectApproxEqAbs(phi_power({d}), {s}, 1e-10);\n", .{n, expected});
                 }
             }
-        } else if (std.mem.startsWith(u8, behavior_name, "fibonacci")) {
+        } else if (std.mem.startsWith(u8, func_name, "fibonacci") or std.mem.startsWith(u8, func_name, "test_fibonacci")) {
             if (extractIntParam(input, "n")) |n| {
-                try self.builder.writeFmt("try std.testing.expectEqual(fibonacci({d}), {s});\n", .{n, expected});
+                if (parseU64(expected)) |exp_val| {
+                    try self.builder.writeFmt("try std.testing.expectEqual(fibonacci({d}), {d});\n", .{n, exp_val});
+                }
             }
-        } else if (std.mem.startsWith(u8, behavior_name, "lucas")) {
+        } else if (std.mem.startsWith(u8, func_name, "lucas") or std.mem.startsWith(u8, func_name, "test_lucas")) {
             if (extractIntParam(input, "n")) |n| {
-                try self.builder.writeFmt("try std.testing.expectEqual(lucas({d}), {s});\n", .{n, expected});
+                if (parseU64(expected)) |exp_val| {
+                    try self.builder.writeFmt("try std.testing.expectEqual(lucas({d}), {d});\n", .{n, exp_val});
+                }
             }
-        } else if (std.mem.eql(u8, behavior_name, "trinity_identity")) {
+        } else if (std.mem.eql(u8, func_name, "trinity_identity")) {
             try self.builder.writeLine("try std.testing.expectApproxEqAbs(verify_trinity(), TRINITY, 1e-10);");
-        } else if (std.mem.startsWith(u8, behavior_name, "phi_spiral")) {
+        } else if (std.mem.startsWith(u8, func_name, "phi_spiral")) {
             // phi_spiral тесты
             try self.builder.writeLine("const count = generate_phi_spiral(100, 10.0, 0.0, 0.0);");
             try self.builder.writeLine("try std.testing.expect(count > 0);");
-        } else if (std.mem.startsWith(u8, behavior_name, "phi_lerp")) {
+        } else if (std.mem.startsWith(u8, func_name, "phi_lerp")) {
             // phi_lerp тесты - используем большую tolerance из-за приближённых значений в spec
             if (extractFloatParam(input, "t")) |t| {
                 const a = extractFloatParam(input, "a") orelse 0.0;
@@ -436,6 +600,72 @@ pub const ZigCodeGen = struct {
                 const tol = tc.tolerance orelse 1.0; // Большая tolerance для phi_lerp
                 try self.builder.writeFmt("try std.testing.expectApproxEqAbs(phi_lerp({d}, {d}, {d}), {s}, {d});\n", .{a, b_val, t, expected, tol});
             }
+        } else if (std.mem.startsWith(u8, func_name, "factorial") or std.mem.startsWith(u8, func_name, "test_factorial")) {
+            if (extractIntParam(input, "n")) |n| {
+                if (parseU64(expected)) |exp_val| {
+                    try self.builder.writeFmt("try std.testing.expectEqual(factorial({d}), {d});\n", .{n, exp_val});
+                }
+            }
+        } else if (std.mem.startsWith(u8, func_name, "gcd") or std.mem.startsWith(u8, func_name, "test_gcd")) {
+            const a = extractIntParam(input, "a") orelse 0;
+            const b_val = extractIntParam(input, "b") orelse 0;
+            if (a != 0 or b_val != 0) {
+                if (parseU64(expected)) |exp_val| {
+                    try self.builder.writeFmt("try std.testing.expectEqual(gcd({d}, {d}), {d});\n", .{a, b_val, exp_val});
+                }
+            }
+        } else if (std.mem.startsWith(u8, func_name, "lcm") or std.mem.startsWith(u8, func_name, "test_lcm")) {
+            const a = extractIntParam(input, "a") orelse 0;
+            const b_val = extractIntParam(input, "b") orelse 0;
+            if (a != 0 or b_val != 0) {
+                if (parseU64(expected)) |exp_val| {
+                    try self.builder.writeFmt("try std.testing.expectEqual(lcm({d}, {d}), {d});\n", .{a, b_val, exp_val});
+                }
+            }
+        } else if (std.mem.startsWith(u8, func_name, "digital_root") or std.mem.startsWith(u8, func_name, "test_digital_root")) {
+            if (extractIntParam(input, "n")) |n| {
+                if (parseU64(expected)) |exp_val| {
+                    try self.builder.writeFmt("try std.testing.expectEqual(digital_root({d}), {d});\n", .{n, exp_val});
+                }
+            }
+        } else if (std.mem.startsWith(u8, func_name, "trinity_power") or std.mem.startsWith(u8, func_name, "test_trinity_power")) {
+            if (extractIntParam(input, "k")) |k| {
+                if (parseU64(expected)) |exp_val| {
+                    try self.builder.writeFmt("try std.testing.expectEqual(trinity_power({d}), {d});\n", .{k, exp_val});
+                }
+            }
+        } else if (std.mem.startsWith(u8, func_name, "golden_identity") or std.mem.startsWith(u8, func_name, "test_golden_identity")) {
+            try self.builder.writeLine("try std.testing.expectApproxEqAbs(golden_identity(), 3.0, 1e-10);");
+        } else if (std.mem.startsWith(u8, func_name, "binomial") or std.mem.startsWith(u8, func_name, "test_binomial")) {
+            const n = extractIntParam(input, "n") orelse 0;
+            const k = extractIntParam(input, "k") orelse 0;
+            if (n != 0) {
+                if (parseU64(expected)) |exp_val| {
+                    try self.builder.writeFmt("try std.testing.expectEqual(binomial({d}, {d}), {d});\n", .{n, k, exp_val});
+                }
+            }
+        } else if (std.mem.startsWith(u8, func_name, "sacred_formula") or std.mem.startsWith(u8, func_name, "test_sacred_formula")) {
+            const n = extractFloatParam(input, "n") orelse 1.0;
+            const k = extractFloatParam(input, "k") orelse 0.0;
+            const m = extractFloatParam(input, "m") orelse 0.0;
+            const p = extractFloatParam(input, "p") orelse 0.0;
+            const q = extractFloatParam(input, "q") orelse 0.0;
+            const tol = tc.tolerance orelse 1e-6;
+            try self.builder.writeFmt("try std.testing.expectApproxEqAbs(sacred_formula({d}, {d}, {d}, {d}, {d}), {s}, {d});\n", .{n, k, m, p, q, expected, tol});
+        } else if (std.mem.startsWith(u8, func_name, "trit_and") or std.mem.startsWith(u8, func_name, "test_trit_and")) {
+            try self.builder.writeLine("try std.testing.expectEqual(Trit.trit_and(.positive, .negative), .negative);");
+            try self.builder.writeLine("try std.testing.expectEqual(Trit.trit_and(.positive, .zero), .zero);");
+            try self.builder.writeLine("try std.testing.expectEqual(Trit.trit_and(.positive, .positive), .positive);");
+        } else if (std.mem.startsWith(u8, func_name, "trit_or") or std.mem.startsWith(u8, func_name, "test_trit_or")) {
+            try self.builder.writeLine("try std.testing.expectEqual(Trit.trit_or(.positive, .negative), .positive);");
+            try self.builder.writeLine("try std.testing.expectEqual(Trit.trit_or(.negative, .zero), .zero);");
+            try self.builder.writeLine("try std.testing.expectEqual(Trit.trit_or(.negative, .negative), .negative);");
+        } else if (std.mem.startsWith(u8, func_name, "trit_not") or std.mem.startsWith(u8, func_name, "test_trit_not")) {
+            try self.builder.writeLine("try std.testing.expectEqual(Trit.trit_not(.positive), .negative);");
+            try self.builder.writeLine("try std.testing.expectEqual(Trit.trit_not(.zero), .zero);");
+            try self.builder.writeLine("try std.testing.expectEqual(Trit.trit_not(.negative), .positive);");
+        } else if (std.mem.startsWith(u8, func_name, "verify_trinity") or std.mem.startsWith(u8, func_name, "test_verify_trinity")) {
+            try self.builder.writeLine("try std.testing.expectApproxEqAbs(verify_trinity(), TRINITY, 1e-10);");
         } else {
             // Неизвестный тест - генерируем комментарий
             try self.builder.writeFmt("// Test case: input={s}, expected={s}\n", .{input, expected});
@@ -464,9 +694,60 @@ pub const ZigCodeGen = struct {
             try self.builder.writeLine("try std.testing.expectEqual(lucas(1), 1);");
         } else if (std.mem.eql(u8, name, "lucas_sequence")) {
             try self.builder.writeLine("try std.testing.expectEqual(lucas(10), 123);");
+        } else if (std.mem.eql(u8, name, "factorial_base") or std.mem.eql(u8, name, "test_factorial")) {
+            try self.builder.writeLine("try std.testing.expectEqual(factorial(0), 1);");
+            try self.builder.writeLine("try std.testing.expectEqual(factorial(1), 1);");
+            try self.builder.writeLine("try std.testing.expectEqual(factorial(5), 120);");
+            try self.builder.writeLine("try std.testing.expectEqual(factorial(10), 3628800);");
+        } else if (std.mem.eql(u8, name, "gcd_test") or std.mem.eql(u8, name, "test_gcd")) {
+            try self.builder.writeLine("try std.testing.expectEqual(gcd(999, 27), 27);");
+            try self.builder.writeLine("try std.testing.expectEqual(gcd(48, 18), 6);");
+            try self.builder.writeLine("try std.testing.expectEqual(gcd(17, 13), 1);");
+        } else if (std.mem.eql(u8, name, "lcm_test") or std.mem.eql(u8, name, "test_lcm")) {
+            try self.builder.writeLine("try std.testing.expectEqual(lcm(4, 6), 12);");
+            try self.builder.writeLine("try std.testing.expectEqual(lcm(3, 9), 9);");
+        } else if (std.mem.eql(u8, name, "digital_root_test") or std.mem.eql(u8, name, "test_digital_root")) {
+            try self.builder.writeLine("try std.testing.expectEqual(digital_root(999), 9);");
+            try self.builder.writeLine("try std.testing.expectEqual(digital_root(27), 9);");
+            try self.builder.writeLine("try std.testing.expectEqual(digital_root(123), 6);");
+        } else if (std.mem.eql(u8, name, "trinity_power_test") or std.mem.eql(u8, name, "test_trinity_power")) {
+            try self.builder.writeLine("try std.testing.expectEqual(trinity_power(0), 1);");
+            try self.builder.writeLine("try std.testing.expectEqual(trinity_power(3), 27);");
+            try self.builder.writeLine("try std.testing.expectEqual(trinity_power(9), 19683);");
+        } else if (std.mem.eql(u8, name, "golden_identity_test") or std.mem.eql(u8, name, "test_golden_identity")) {
+            try self.builder.writeLine("try std.testing.expectApproxEqAbs(golden_identity(), 3.0, 1e-10);");
+        } else if (std.mem.eql(u8, name, "binomial_test") or std.mem.eql(u8, name, "test_binomial")) {
+            try self.builder.writeLine("try std.testing.expectEqual(binomial(5, 2), 10);");
+            try self.builder.writeLine("try std.testing.expectEqual(binomial(10, 3), 120);");
+        } else if (std.mem.eql(u8, name, "trit_and_test") or std.mem.eql(u8, name, "test_trit_and")) {
+            try self.builder.writeLine("try std.testing.expectEqual(Trit.trit_and(.positive, .negative), .negative);");
+            try self.builder.writeLine("try std.testing.expectEqual(Trit.trit_and(.positive, .positive), .positive);");
+        } else if (std.mem.eql(u8, name, "trit_or_test") or std.mem.eql(u8, name, "test_trit_or")) {
+            try self.builder.writeLine("try std.testing.expectEqual(Trit.trit_or(.positive, .negative), .positive);");
+            try self.builder.writeLine("try std.testing.expectEqual(Trit.trit_or(.negative, .negative), .negative);");
+        } else if (std.mem.eql(u8, name, "trit_not_test") or std.mem.eql(u8, name, "test_trit_not")) {
+            try self.builder.writeLine("try std.testing.expectEqual(Trit.trit_not(.positive), .negative);");
+            try self.builder.writeLine("try std.testing.expectEqual(Trit.trit_not(.zero), .zero);");
         } else {
             try self.builder.writeLine("// TODO: Add test assertions");
         }
+    }
+    
+    fn stripQuotes(value: []const u8) []const u8 {
+        if (value.len >= 2 and value[0] == '"' and value[value.len - 1] == '"') {
+            return value[1..value.len - 1];
+        }
+        return value;
+    }
+    
+    fn parseU64(value: []const u8) ?u64 {
+        const trimmed = std.mem.trim(u8, value, " \t");
+        return std.fmt.parseInt(u64, trimmed, 10) catch null;
+    }
+    
+    fn parseF64(value: []const u8) ?f64 {
+        const trimmed = std.mem.trim(u8, value, " \t");
+        return std.fmt.parseFloat(f64, trimmed) catch null;
     }
     
     fn extractNumber(value: []const u8) []const u8 {

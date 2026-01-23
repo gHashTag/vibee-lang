@@ -107,6 +107,8 @@ pub const NodeKind = enum(u8) {
     literal_int,
     literal_float,
     literal_bool,
+    literal_trit,
+    literal_tryte,
     identifier,
     binary_op,
     unary_op,

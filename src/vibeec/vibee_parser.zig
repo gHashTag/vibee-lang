@@ -115,6 +115,7 @@ pub const Behavior = struct {
     given: []const u8,
     when: []const u8,
     then: []const u8,
+    implementation: []const u8, // Zig code for function body
     test_cases: ArrayList(TestCase),
     
     pub fn init(allocator: Allocator) Behavior {
@@ -123,6 +124,7 @@ pub const Behavior = struct {
             .given = "",
             .when = "",
             .then = "",
+            .implementation = "",
             .test_cases = ArrayList(TestCase).init(allocator),
         };
     }
@@ -713,6 +715,8 @@ pub const VibeeParser = struct {
                 } else if (std.mem.eql(u8, field_key, "then")) {
                     behavior.then = self.readQuotedOrValue();
                     self.skipToNextLine();
+                } else if (std.mem.eql(u8, field_key, "implementation")) {
+                    behavior.implementation = self.readMultilineBlock();
                 } else if (std.mem.eql(u8, field_key, "test_cases")) {
                     self.skipToNextLine();
                     try self.parseTestCases(&behavior.test_cases);
@@ -1181,6 +1185,30 @@ pub const VibeeParser = struct {
             return self.readQuotedValue();
         }
         return self.readValue();
+    }
+    
+    /// Read multiline block starting with | or indented lines
+    fn readMultilineBlock(self: *Self) []const u8 {
+        self.skipWhitespaceAndComments();
+        // Check for | indicator (YAML multiline)
+        if (self.pos < self.source.len and self.source[self.pos] == '|') {
+            self.pos += 1;
+            self.skipToNextLine();
+        }
+        const start = self.pos;
+        const base_indent = self.countIndent();
+        
+        // Read all lines with greater indent
+        while (self.pos < self.source.len) {
+            const line_start = self.pos;
+            const indent = self.countIndent();
+            if (indent <= base_indent and self.pos > start) {
+                // End of block - return to line start
+                return self.source[start..line_start];
+            }
+            self.skipToNextLine();
+        }
+        return self.source[start..self.pos];
     }
     
     fn readBraceValue(self: *Self) []const u8 {
