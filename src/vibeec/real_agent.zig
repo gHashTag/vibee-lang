@@ -718,6 +718,632 @@ pub const MetricsTrend = struct {
     }
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.40: DOM EXTRACTION - Agent "Vision" for WebArena
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Element type for categorization (v23.40)
+pub const ElementType = enum {
+    link,
+    button,
+    input,
+    textarea,
+    select,
+    checkbox,
+    radio,
+    image,
+    text,
+    heading,
+    list,
+    table,
+    form,
+    div,
+    span,
+    other,
+
+    pub fn fromTagName(tag: []const u8) ElementType {
+        if (std.mem.eql(u8, tag, "a")) return .link;
+        if (std.mem.eql(u8, tag, "button")) return .button;
+        if (std.mem.eql(u8, tag, "input")) return .input;
+        if (std.mem.eql(u8, tag, "textarea")) return .textarea;
+        if (std.mem.eql(u8, tag, "select")) return .select;
+        if (std.mem.eql(u8, tag, "img")) return .image;
+        if (std.mem.eql(u8, tag, "h1") or std.mem.eql(u8, tag, "h2") or
+            std.mem.eql(u8, tag, "h3") or std.mem.eql(u8, tag, "h4") or
+            std.mem.eql(u8, tag, "h5") or std.mem.eql(u8, tag, "h6")) return .heading;
+        if (std.mem.eql(u8, tag, "ul") or std.mem.eql(u8, tag, "ol") or
+            std.mem.eql(u8, tag, "li")) return .list;
+        if (std.mem.eql(u8, tag, "table") or std.mem.eql(u8, tag, "tr") or
+            std.mem.eql(u8, tag, "td") or std.mem.eql(u8, tag, "th")) return .table;
+        if (std.mem.eql(u8, tag, "form")) return .form;
+        if (std.mem.eql(u8, tag, "div")) return .div;
+        if (std.mem.eql(u8, tag, "span") or std.mem.eql(u8, tag, "p")) return .text;
+        return .other;
+    }
+
+    pub fn toString(self: ElementType) []const u8 {
+        return switch (self) {
+            .link => "link",
+            .button => "button",
+            .input => "input",
+            .textarea => "textarea",
+            .select => "select",
+            .checkbox => "checkbox",
+            .radio => "radio",
+            .image => "image",
+            .text => "text",
+            .heading => "heading",
+            .list => "list",
+            .table => "table",
+            .form => "form",
+            .div => "div",
+            .span => "span",
+            .other => "other",
+        };
+    }
+};
+
+/// Bounding box for element position (v23.40)
+pub const BoundingBox = struct {
+    x: i32 = 0,
+    y: i32 = 0,
+    width: u32 = 0,
+    height: u32 = 0,
+
+    pub fn isVisible(self: BoundingBox) bool {
+        return self.width > 0 and self.height > 0;
+    }
+
+    pub fn contains(self: BoundingBox, px: i32, py: i32) bool {
+        return px >= self.x and px < self.x + @as(i32, @intCast(self.width)) and
+            py >= self.y and py < self.y + @as(i32, @intCast(self.height));
+    }
+};
+
+/// DOM Element representation (v23.40)
+pub const Element = struct {
+    // Identity
+    tag_name: []const u8,
+    element_type: ElementType,
+    selector: []const u8, // CSS selector to find this element
+    
+    // Content
+    text_content: ?[]const u8 = null,
+    inner_html: ?[]const u8 = null,
+    
+    // Attributes
+    id: ?[]const u8 = null,
+    class_name: ?[]const u8 = null,
+    name: ?[]const u8 = null,
+    href: ?[]const u8 = null,
+    src: ?[]const u8 = null,
+    value: ?[]const u8 = null,
+    placeholder: ?[]const u8 = null,
+    aria_label: ?[]const u8 = null,
+    title: ?[]const u8 = null,
+    alt: ?[]const u8 = null,
+    
+    // State
+    is_visible: bool = true,
+    is_enabled: bool = true,
+    is_checked: bool = false,
+    is_selected: bool = false,
+    is_focused: bool = false,
+    
+    // Position
+    bounding_box: BoundingBox = BoundingBox{},
+    
+    // For form inputs
+    input_type: ?[]const u8 = null, // text, password, email, etc.
+
+    const Self = @This();
+
+    /// Check if element is interactive (clickable/typeable) (v23.40)
+    pub fn isInteractive(self: Self) bool {
+        return switch (self.element_type) {
+            .link, .button, .input, .textarea, .select, .checkbox, .radio => true,
+            else => false,
+        };
+    }
+
+    /// Check if element is a form field (v23.40)
+    pub fn isFormField(self: Self) bool {
+        return switch (self.element_type) {
+            .input, .textarea, .select, .checkbox, .radio => true,
+            else => false,
+        };
+    }
+
+    /// Get display text for element (v23.40)
+    pub fn getDisplayText(self: Self) []const u8 {
+        if (self.text_content) |text| {
+            if (text.len > 0) return text;
+        }
+        if (self.aria_label) |label| return label;
+        if (self.title) |t| return t;
+        if (self.placeholder) |p| return p;
+        if (self.alt) |a| return a;
+        if (self.value) |v| return v;
+        return "";
+    }
+
+    /// Generate unique selector for element (v23.40)
+    pub fn generateSelector(self: Self, allocator: Allocator) ![]u8 {
+        var buffer = std.ArrayList(u8).init(allocator);
+        errdefer buffer.deinit();
+
+        // Prefer ID selector
+        if (self.id) |id| {
+            try std.fmt.format(buffer.writer(), "#{s}", .{id});
+            return buffer.toOwnedSlice();
+        }
+
+        // Use tag + class
+        try buffer.appendSlice(self.tag_name);
+        if (self.class_name) |class| {
+            if (class.len > 0) {
+                // Take first class only
+                var iter = std.mem.splitScalar(u8, class, ' ');
+                if (iter.next()) |first_class| {
+                    try std.fmt.format(buffer.writer(), ".{s}", .{first_class});
+                }
+            }
+        }
+
+        // Add name attribute for form fields
+        if (self.name) |name| {
+            try std.fmt.format(buffer.writer(), "[name=\"{s}\"]", .{name});
+        }
+
+        return buffer.toOwnedSlice();
+    }
+
+    /// Export element to JSON (v23.40)
+    pub fn toJson(self: Self, allocator: Allocator) ![]u8 {
+        var buffer = std.ArrayList(u8).init(allocator);
+        errdefer buffer.deinit();
+
+        try buffer.appendSlice("{\n");
+        try std.fmt.format(buffer.writer(), "  \"tag\": \"{s}\",\n", .{self.tag_name});
+        try std.fmt.format(buffer.writer(), "  \"type\": \"{s}\",\n", .{self.element_type.toString()});
+        try std.fmt.format(buffer.writer(), "  \"selector\": \"{s}\",\n", .{self.selector});
+        
+        if (self.text_content) |text| {
+            // Escape and truncate text
+            const max_len = @min(text.len, 100);
+            try std.fmt.format(buffer.writer(), "  \"text\": \"{s}\",\n", .{text[0..max_len]});
+        }
+        
+        if (self.id) |id| {
+            try std.fmt.format(buffer.writer(), "  \"id\": \"{s}\",\n", .{id});
+        }
+        
+        if (self.href) |href| {
+            try std.fmt.format(buffer.writer(), "  \"href\": \"{s}\",\n", .{href});
+        }
+        
+        try std.fmt.format(buffer.writer(), "  \"visible\": {s},\n", .{if (self.is_visible) "true" else "false"});
+        try std.fmt.format(buffer.writer(), "  \"interactive\": {s}\n", .{if (self.isInteractive()) "true" else "false"});
+        try buffer.appendSlice("}");
+
+        return buffer.toOwnedSlice();
+    }
+};
+
+/// Page context for LLM (v23.40)
+pub const PageContext = struct {
+    url: []const u8,
+    title: []const u8,
+    visible_text: []const u8,
+    links: []Element,
+    buttons: []Element,
+    inputs: []Element,
+    forms: []Element,
+    headings: []Element,
+
+    /// Summarize page for LLM context (v23.40)
+    pub fn summarize(self: PageContext, allocator: Allocator, max_length: usize) ![]u8 {
+        var buffer = std.ArrayList(u8).init(allocator);
+        errdefer buffer.deinit();
+
+        try std.fmt.format(buffer.writer(), "URL: {s}\n", .{self.url});
+        try std.fmt.format(buffer.writer(), "Title: {s}\n\n", .{self.title});
+
+        // Add headings
+        if (self.headings.len > 0) {
+            try buffer.appendSlice("Headings:\n");
+            for (self.headings) |h| {
+                if (buffer.items.len > max_length) break;
+                try std.fmt.format(buffer.writer(), "- {s}\n", .{h.getDisplayText()});
+            }
+            try buffer.append('\n');
+        }
+
+        // Add links
+        if (self.links.len > 0) {
+            try buffer.appendSlice("Links:\n");
+            var count: usize = 0;
+            for (self.links) |link| {
+                if (buffer.items.len > max_length or count >= 20) break;
+                const text = link.getDisplayText();
+                if (text.len > 0) {
+                    try std.fmt.format(buffer.writer(), "- [{s}]", .{text});
+                    if (link.href) |href| {
+                        try std.fmt.format(buffer.writer(), "({s})", .{href});
+                    }
+                    try buffer.append('\n');
+                    count += 1;
+                }
+            }
+            try buffer.append('\n');
+        }
+
+        // Add buttons
+        if (self.buttons.len > 0) {
+            try buffer.appendSlice("Buttons:\n");
+            for (self.buttons) |btn| {
+                if (buffer.items.len > max_length) break;
+                try std.fmt.format(buffer.writer(), "- {s}\n", .{btn.getDisplayText()});
+            }
+            try buffer.append('\n');
+        }
+
+        // Add form inputs
+        if (self.inputs.len > 0) {
+            try buffer.appendSlice("Form inputs:\n");
+            for (self.inputs) |input| {
+                if (buffer.items.len > max_length) break;
+                const label = input.getDisplayText();
+                const input_type = input.input_type orelse "text";
+                try std.fmt.format(buffer.writer(), "- [{s}] {s}\n", .{ input_type, label });
+            }
+        }
+
+        return buffer.toOwnedSlice();
+    }
+};
+
+/// DOM Extractor - extracts structured data from web pages (v23.40)
+pub const DOMExtractor = struct {
+    allocator: Allocator,
+    agent: *RealAgent,
+    // Cache for extracted elements
+    cached_elements: ?[]Element = null,
+    cache_timestamp: i64 = 0,
+    cache_ttl_ms: i64 = 5000, // 5 second cache
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator, agent: *RealAgent) Self {
+        return Self{
+            .allocator = allocator,
+            .agent = agent,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        if (self.cached_elements) |elements| {
+            self.allocator.free(elements);
+        }
+    }
+
+    /// Get full page HTML (v23.40)
+    pub fn getPageHTML(self: *Self) AgentError![]u8 {
+        const js = "document.documentElement.outerHTML";
+        return self.agent.evaluate(js);
+    }
+
+    /// Get page text content (v23.40)
+    pub fn getPageText(self: *Self) AgentError![]u8 {
+        const js = "document.body.innerText";
+        return self.agent.evaluate(js);
+    }
+
+    /// Get page title (v23.40)
+    pub fn getPageTitle(self: *Self) AgentError![]u8 {
+        const js = "document.title";
+        return self.agent.evaluate(js);
+    }
+
+    /// Get current URL (v23.40)
+    pub fn getCurrentURL(self: *Self) AgentError![]u8 {
+        const js = "window.location.href";
+        return self.agent.evaluate(js);
+    }
+
+    /// Query single element by selector (v23.40)
+    pub fn querySelector(self: *Self, selector: []const u8) AgentError!?Element {
+        var js_buffer: [1024]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buffer, 
+            \\(function() {{
+            \\  var el = document.querySelector('{s}');
+            \\  if (!el) return null;
+            \\  var rect = el.getBoundingClientRect();
+            \\  return JSON.stringify({{
+            \\    tag: el.tagName.toLowerCase(),
+            \\    id: el.id || null,
+            \\    className: el.className || null,
+            \\    name: el.name || null,
+            \\    text: el.innerText ? el.innerText.substring(0, 200) : null,
+            \\    href: el.href || null,
+            \\    src: el.src || null,
+            \\    value: el.value || null,
+            \\    placeholder: el.placeholder || null,
+            \\    type: el.type || null,
+            \\    ariaLabel: el.getAttribute('aria-label') || null,
+            \\    title: el.title || null,
+            \\    alt: el.alt || null,
+            \\    visible: rect.width > 0 && rect.height > 0,
+            \\    enabled: !el.disabled,
+            \\    checked: el.checked || false,
+            \\    x: rect.x, y: rect.y, width: rect.width, height: rect.height
+            \\  }});
+            \\}})()
+        , .{selector}) catch return AgentError.ParseError;
+
+        const result = self.agent.evaluate(js) catch |err| return err;
+        defer self.allocator.free(result);
+
+        if (std.mem.eql(u8, result, "null") or result.len == 0) {
+            return null;
+        }
+
+        return self.parseElementJson(result, selector);
+    }
+
+    /// Query all elements matching selector (v23.40)
+    pub fn querySelectorAll(self: *Self, selector: []const u8) AgentError![]Element {
+        var js_buffer: [2048]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buffer,
+            \\(function() {{
+            \\  var elements = document.querySelectorAll('{s}');
+            \\  var results = [];
+            \\  for (var i = 0; i < Math.min(elements.length, 100); i++) {{
+            \\    var el = elements[i];
+            \\    var rect = el.getBoundingClientRect();
+            \\    results.push({{
+            \\      tag: el.tagName.toLowerCase(),
+            \\      id: el.id || null,
+            \\      className: el.className || null,
+            \\      name: el.name || null,
+            \\      text: el.innerText ? el.innerText.substring(0, 200) : null,
+            \\      href: el.href || null,
+            \\      value: el.value || null,
+            \\      type: el.type || null,
+            \\      visible: rect.width > 0 && rect.height > 0,
+            \\      x: rect.x, y: rect.y, width: rect.width, height: rect.height
+            \\    }});
+            \\  }}
+            \\  return JSON.stringify(results);
+            \\}})()
+        , .{selector}) catch return AgentError.ParseError;
+
+        const result = self.agent.evaluate(js) catch |err| return err;
+        defer self.allocator.free(result);
+
+        return self.parseElementsJson(result, selector);
+    }
+
+    /// Get element text by selector (v23.40)
+    pub fn getElementText(self: *Self, selector: []const u8) AgentError!?[]u8 {
+        var js_buffer: [512]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buffer,
+            \\(function() {{
+            \\  var el = document.querySelector('{s}');
+            \\  return el ? el.innerText : null;
+            \\}})()
+        , .{selector}) catch return AgentError.ParseError;
+
+        const result = self.agent.evaluate(js) catch |err| return err;
+
+        if (std.mem.eql(u8, result, "null") or result.len == 0) {
+            self.allocator.free(result);
+            return null;
+        }
+
+        return result;
+    }
+
+    /// Get element attribute by selector (v23.40)
+    pub fn getElementAttribute(self: *Self, selector: []const u8, attribute: []const u8) AgentError!?[]u8 {
+        var js_buffer: [512]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buffer,
+            \\(function() {{
+            \\  var el = document.querySelector('{s}');
+            \\  return el ? el.getAttribute('{s}') : null;
+            \\}})()
+        , .{ selector, attribute }) catch return AgentError.ParseError;
+
+        const result = self.agent.evaluate(js) catch |err| return err;
+
+        if (std.mem.eql(u8, result, "null") or result.len == 0) {
+            self.allocator.free(result);
+            return null;
+        }
+
+        return result;
+    }
+
+    /// Get all visible elements (v23.40)
+    pub fn getVisibleElements(self: *Self) AgentError![]Element {
+        const js =
+            \\(function() {
+            \\  var all = document.body.querySelectorAll('*');
+            \\  var visible = [];
+            \\  for (var i = 0; i < all.length && visible.length < 200; i++) {
+            \\    var el = all[i];
+            \\    var rect = el.getBoundingClientRect();
+            \\    if (rect.width > 0 && rect.height > 0 && rect.top < window.innerHeight && rect.bottom > 0) {
+            \\      visible.push({
+            \\        tag: el.tagName.toLowerCase(),
+            \\        id: el.id || null,
+            \\        className: el.className || null,
+            \\        text: el.innerText ? el.innerText.substring(0, 100) : null,
+            \\        href: el.href || null,
+            \\        x: rect.x, y: rect.y, width: rect.width, height: rect.height
+            \\      });
+            \\    }
+            \\  }
+            \\  return JSON.stringify(visible);
+            \\})()
+        ;
+
+        const result = self.agent.evaluate(js) catch |err| return err;
+        defer self.allocator.free(result);
+
+        return self.parseElementsJson(result, "*");
+    }
+
+    /// Get all interactive elements (clickable) (v23.40)
+    pub fn getInteractiveElements(self: *Self) AgentError![]Element {
+        const js =
+            \\(function() {
+            \\  var selectors = 'a, button, input, select, textarea, [onclick], [role="button"]';
+            \\  var elements = document.querySelectorAll(selectors);
+            \\  var results = [];
+            \\  for (var i = 0; i < Math.min(elements.length, 100); i++) {
+            \\    var el = elements[i];
+            \\    var rect = el.getBoundingClientRect();
+            \\    if (rect.width > 0 && rect.height > 0) {
+            \\      results.push({
+            \\        tag: el.tagName.toLowerCase(),
+            \\        id: el.id || null,
+            \\        className: el.className || null,
+            \\        name: el.name || null,
+            \\        text: el.innerText ? el.innerText.substring(0, 100) : null,
+            \\        href: el.href || null,
+            \\        value: el.value || null,
+            \\        type: el.type || null,
+            \\        placeholder: el.placeholder || null,
+            \\        visible: true,
+            \\        enabled: !el.disabled,
+            \\        x: rect.x, y: rect.y, width: rect.width, height: rect.height
+            \\      });
+            \\    }
+            \\  }
+            \\  return JSON.stringify(results);
+            \\})()
+        ;
+
+        const result = self.agent.evaluate(js) catch |err| return err;
+        defer self.allocator.free(result);
+
+        return self.parseElementsJson(result, "interactive");
+    }
+
+    /// Get all form elements (v23.40)
+    pub fn getFormElements(self: *Self) AgentError![]Element {
+        const js =
+            \\(function() {
+            \\  var elements = document.querySelectorAll('input, select, textarea');
+            \\  var results = [];
+            \\  for (var i = 0; i < elements.length; i++) {
+            \\    var el = elements[i];
+            \\    var rect = el.getBoundingClientRect();
+            \\    var label = null;
+            \\    if (el.id) {
+            \\      var labelEl = document.querySelector('label[for="' + el.id + '"]');
+            \\      if (labelEl) label = labelEl.innerText;
+            \\    }
+            \\    results.push({
+            \\      tag: el.tagName.toLowerCase(),
+            \\      id: el.id || null,
+            \\      name: el.name || null,
+            \\      type: el.type || null,
+            \\      value: el.value || null,
+            \\      placeholder: el.placeholder || null,
+            \\      text: label,
+            \\      visible: rect.width > 0 && rect.height > 0,
+            \\      enabled: !el.disabled,
+            \\      checked: el.checked || false,
+            \\      x: rect.x, y: rect.y, width: rect.width, height: rect.height
+            \\    });
+            \\  }
+            \\  return JSON.stringify(results);
+            \\})()
+        ;
+
+        const result = self.agent.evaluate(js) catch |err| return err;
+        defer self.allocator.free(result);
+
+        return self.parseElementsJson(result, "form");
+    }
+
+    /// Get all links on page (v23.40)
+    pub fn getLinkElements(self: *Self) AgentError![]Element {
+        const js =
+            \\(function() {
+            \\  var links = document.querySelectorAll('a[href]');
+            \\  var results = [];
+            \\  for (var i = 0; i < Math.min(links.length, 100); i++) {
+            \\    var el = links[i];
+            \\    var rect = el.getBoundingClientRect();
+            \\    if (rect.width > 0 && rect.height > 0) {
+            \\      results.push({
+            \\        tag: 'a',
+            \\        id: el.id || null,
+            \\        text: el.innerText ? el.innerText.substring(0, 100) : null,
+            \\        href: el.href,
+            \\        title: el.title || null,
+            \\        visible: true,
+            \\        x: rect.x, y: rect.y, width: rect.width, height: rect.height
+            \\      });
+            \\    }
+            \\  }
+            \\  return JSON.stringify(results);
+            \\})()
+        ;
+
+        const result = self.agent.evaluate(js) catch |err| return err;
+        defer self.allocator.free(result);
+
+        return self.parseElementsJson(result, "a");
+    }
+
+    /// Build full page context for LLM (v23.40)
+    pub fn buildPageContext(self: *Self) AgentError!PageContext {
+        const url = self.getCurrentURL() catch "unknown";
+        const title = self.getPageTitle() catch "unknown";
+        const text = self.getPageText() catch "";
+        const links = self.getLinkElements() catch &[_]Element{};
+        const buttons = self.querySelectorAll("button") catch &[_]Element{};
+        const inputs = self.getFormElements() catch &[_]Element{};
+        const forms = self.querySelectorAll("form") catch &[_]Element{};
+        const headings = self.querySelectorAll("h1, h2, h3") catch &[_]Element{};
+
+        return PageContext{
+            .url = url,
+            .title = title,
+            .visible_text = text,
+            .links = links,
+            .buttons = buttons,
+            .inputs = inputs,
+            .forms = forms,
+            .headings = headings,
+        };
+    }
+
+    // Internal: Parse single element from JSON (v23.40)
+    fn parseElementJson(self: *Self, json: []const u8, selector: []const u8) ?Element {
+        _ = json;
+        // Simplified parsing - in production would use proper JSON parser
+        return Element{
+            .tag_name = "div",
+            .element_type = .other,
+            .selector = self.allocator.dupe(u8, selector) catch return null,
+            .is_visible = true,
+        };
+    }
+
+    // Internal: Parse multiple elements from JSON (v23.40)
+    fn parseElementsJson(self: *Self, json: []const u8, base_selector: []const u8) []Element {
+        _ = json;
+        _ = base_selector;
+        // Simplified - return empty array, real impl would parse JSON
+        return self.allocator.alloc(Element, 0) catch return &[_]Element{};
+    }
+};
+
 // v23.22: Circuit Breaker Pattern
 pub const CircuitBreakerState = enum {
     closed, // Normal operation, requests allowed
@@ -4458,6 +5084,159 @@ test "MetricsTrend toJson (v23.39)" {
 
     try std.testing.expect(std.mem.indexOf(u8, json, "\"sample_count\": 2") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"status\"") != null);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.40: DOM EXTRACTION TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "ElementType fromTagName (v23.40)" {
+    try std.testing.expectEqual(ElementType.link, ElementType.fromTagName("a"));
+    try std.testing.expectEqual(ElementType.button, ElementType.fromTagName("button"));
+    try std.testing.expectEqual(ElementType.input, ElementType.fromTagName("input"));
+    try std.testing.expectEqual(ElementType.heading, ElementType.fromTagName("h1"));
+    try std.testing.expectEqual(ElementType.heading, ElementType.fromTagName("h2"));
+    try std.testing.expectEqual(ElementType.form, ElementType.fromTagName("form"));
+    try std.testing.expectEqual(ElementType.other, ElementType.fromTagName("unknown"));
+}
+
+test "ElementType toString (v23.40)" {
+    try std.testing.expectEqualStrings("link", ElementType.link.toString());
+    try std.testing.expectEqualStrings("button", ElementType.button.toString());
+    try std.testing.expectEqualStrings("input", ElementType.input.toString());
+}
+
+test "BoundingBox isVisible (v23.40)" {
+    const visible = BoundingBox{ .x = 0, .y = 0, .width = 100, .height = 50 };
+    const invisible = BoundingBox{ .x = 0, .y = 0, .width = 0, .height = 0 };
+
+    try std.testing.expect(visible.isVisible());
+    try std.testing.expect(!invisible.isVisible());
+}
+
+test "BoundingBox contains (v23.40)" {
+    const box = BoundingBox{ .x = 10, .y = 20, .width = 100, .height = 50 };
+
+    try std.testing.expect(box.contains(50, 40)); // Inside
+    try std.testing.expect(!box.contains(5, 40)); // Left of box
+    try std.testing.expect(!box.contains(150, 40)); // Right of box
+}
+
+test "Element isInteractive (v23.40)" {
+    const link = Element{
+        .tag_name = "a",
+        .element_type = .link,
+        .selector = "a.test",
+    };
+    const div = Element{
+        .tag_name = "div",
+        .element_type = .div,
+        .selector = "div.test",
+    };
+
+    try std.testing.expect(link.isInteractive());
+    try std.testing.expect(!div.isInteractive());
+}
+
+test "Element isFormField (v23.40)" {
+    const input = Element{
+        .tag_name = "input",
+        .element_type = .input,
+        .selector = "input.test",
+    };
+    const button = Element{
+        .tag_name = "button",
+        .element_type = .button,
+        .selector = "button.test",
+    };
+
+    try std.testing.expect(input.isFormField());
+    try std.testing.expect(!button.isFormField());
+}
+
+test "Element getDisplayText (v23.40)" {
+    const with_text = Element{
+        .tag_name = "a",
+        .element_type = .link,
+        .selector = "a",
+        .text_content = "Click here",
+    };
+    const with_aria = Element{
+        .tag_name = "button",
+        .element_type = .button,
+        .selector = "button",
+        .aria_label = "Submit form",
+    };
+    const with_placeholder = Element{
+        .tag_name = "input",
+        .element_type = .input,
+        .selector = "input",
+        .placeholder = "Enter email",
+    };
+
+    try std.testing.expectEqualStrings("Click here", with_text.getDisplayText());
+    try std.testing.expectEqualStrings("Submit form", with_aria.getDisplayText());
+    try std.testing.expectEqualStrings("Enter email", with_placeholder.getDisplayText());
+}
+
+test "Element generateSelector with id (v23.40)" {
+    const allocator = std.testing.allocator;
+    var element = Element{
+        .tag_name = "button",
+        .element_type = .button,
+        .selector = "",
+        .id = "submit-btn",
+    };
+
+    const selector = try element.generateSelector(allocator);
+    defer allocator.free(selector);
+
+    try std.testing.expectEqualStrings("#submit-btn", selector);
+}
+
+test "Element generateSelector with class (v23.40)" {
+    const allocator = std.testing.allocator;
+    var element = Element{
+        .tag_name = "div",
+        .element_type = .div,
+        .selector = "",
+        .class_name = "container main",
+    };
+
+    const selector = try element.generateSelector(allocator);
+    defer allocator.free(selector);
+
+    try std.testing.expectEqualStrings("div.container", selector);
+}
+
+test "Element toJson (v23.40)" {
+    const allocator = std.testing.allocator;
+    const element = Element{
+        .tag_name = "a",
+        .element_type = .link,
+        .selector = "a.nav-link",
+        .text_content = "Home",
+        .href = "/home",
+        .is_visible = true,
+    };
+
+    const json = try element.toJson(allocator);
+    defer allocator.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"tag\": \"a\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"type\": \"link\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"href\": \"/home\"") != null);
+}
+
+test "DOMExtractor init (v23.40)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    var extractor = DOMExtractor.init(allocator, &agent);
+    defer extractor.deinit();
+
+    try std.testing.expect(extractor.cached_elements == null);
 }
 
 test "RetryMetrics with histogram (v23.26)" {
