@@ -266,6 +266,107 @@ pub const CircuitBreaker = struct {
     }
 };
 
+// v23.24: Metrics Exporter for observability
+pub const MetricsExporter = struct {
+    allocator: Allocator,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return Self{ .allocator = allocator };
+    }
+
+    /// Export retry metrics to JSON format (v23.24)
+    pub fn exportRetryMetricsToJson(self: Self, metrics: RetryMetrics) ![]u8 {
+        var buffer = std.ArrayList(u8).init(self.allocator);
+        var writer = buffer.writer();
+
+        try writer.writeAll("{\n");
+        try writer.print("  \"total_operations\": {d},\n", .{metrics.total_operations});
+        try writer.print("  \"total_retries\": {d},\n", .{metrics.total_retries});
+        try writer.print("  \"successful_operations\": {d},\n", .{metrics.successful_operations});
+        try writer.print("  \"failed_operations\": {d},\n", .{metrics.failed_operations});
+        try writer.print("  \"success_rate\": {d:.4},\n", .{metrics.getSuccessRate()});
+        try writer.print("  \"avg_retries_per_operation\": {d:.4},\n", .{metrics.getAvgRetries()});
+        try writer.print("  \"total_delay_ms\": {d},\n", .{metrics.total_delay_ms});
+        try writer.print("  \"max_delay_ms\": {d},\n", .{metrics.max_delay_ms});
+        try writer.print("  \"avg_delay_ms\": {d:.2},\n", .{metrics.getAvgDelayMs()});
+        try writer.writeAll("  \"per_operation\": {\n");
+        try writer.print("    \"navigate_retries\": {d},\n", .{metrics.navigate_retries});
+        try writer.print("    \"selector_retries\": {d},\n", .{metrics.selector_retries});
+        try writer.print("    \"page_load_retries\": {d},\n", .{metrics.page_load_retries});
+        try writer.print("    \"click_retries\": {d}\n", .{metrics.click_retries});
+        try writer.writeAll("  }\n");
+        try writer.writeAll("}\n");
+
+        return buffer.toOwnedSlice();
+    }
+
+    /// Export retry metrics to Prometheus format (v23.24)
+    pub fn exportRetryMetricsToPrometheus(self: Self, metrics: RetryMetrics) ![]u8 {
+        var buffer = std.ArrayList(u8).init(self.allocator);
+        var writer = buffer.writer();
+
+        // Counters
+        try writer.writeAll("# HELP vibee_retry_operations_total Total number of retry operations\n");
+        try writer.writeAll("# TYPE vibee_retry_operations_total counter\n");
+        try writer.print("vibee_retry_operations_total {d}\n\n", .{metrics.total_operations});
+
+        try writer.writeAll("# HELP vibee_retry_attempts_total Total number of retry attempts\n");
+        try writer.writeAll("# TYPE vibee_retry_attempts_total counter\n");
+        try writer.print("vibee_retry_attempts_total {d}\n\n", .{metrics.total_retries});
+
+        try writer.writeAll("# HELP vibee_retry_success_total Successful operations\n");
+        try writer.writeAll("# TYPE vibee_retry_success_total counter\n");
+        try writer.print("vibee_retry_success_total {d}\n\n", .{metrics.successful_operations});
+
+        try writer.writeAll("# HELP vibee_retry_failure_total Failed operations\n");
+        try writer.writeAll("# TYPE vibee_retry_failure_total counter\n");
+        try writer.print("vibee_retry_failure_total {d}\n\n", .{metrics.failed_operations});
+
+        // Gauges
+        try writer.writeAll("# HELP vibee_retry_success_rate Success rate (0-1)\n");
+        try writer.writeAll("# TYPE vibee_retry_success_rate gauge\n");
+        try writer.print("vibee_retry_success_rate {d:.4}\n\n", .{metrics.getSuccessRate()});
+
+        // Per-operation counters
+        try writer.writeAll("# HELP vibee_retry_by_operation_total Retries by operation type\n");
+        try writer.writeAll("# TYPE vibee_retry_by_operation_total counter\n");
+        try writer.print("vibee_retry_by_operation_total{{operation=\"navigate\"}} {d}\n", .{metrics.navigate_retries});
+        try writer.print("vibee_retry_by_operation_total{{operation=\"selector\"}} {d}\n", .{metrics.selector_retries});
+        try writer.print("vibee_retry_by_operation_total{{operation=\"page_load\"}} {d}\n", .{metrics.page_load_retries});
+        try writer.print("vibee_retry_by_operation_total{{operation=\"click\"}} {d}\n\n", .{metrics.click_retries});
+
+        // Timing
+        try writer.writeAll("# HELP vibee_retry_delay_ms_total Total delay in milliseconds\n");
+        try writer.writeAll("# TYPE vibee_retry_delay_ms_total counter\n");
+        try writer.print("vibee_retry_delay_ms_total {d}\n\n", .{metrics.total_delay_ms});
+
+        try writer.writeAll("# HELP vibee_retry_delay_ms_max Maximum delay in milliseconds\n");
+        try writer.writeAll("# TYPE vibee_retry_delay_ms_max gauge\n");
+        try writer.print("vibee_retry_delay_ms_max {d}\n", .{metrics.max_delay_ms});
+
+        return buffer.toOwnedSlice();
+    }
+
+    /// Export circuit breaker state to JSON (v23.24)
+    pub fn exportCircuitBreakerToJson(self: Self, cb: CircuitBreaker) ![]u8 {
+        var buffer = std.ArrayList(u8).init(self.allocator);
+        var writer = buffer.writer();
+
+        try writer.writeAll("{\n");
+        try writer.print("  \"state\": \"{s}\",\n", .{cb.getStateString()});
+        try writer.print("  \"failure_count\": {d},\n", .{cb.failure_count});
+        try writer.print("  \"success_count\": {d},\n", .{cb.success_count});
+        try writer.print("  \"failure_threshold\": {d},\n", .{cb.failure_threshold});
+        try writer.print("  \"success_threshold\": {d},\n", .{cb.success_threshold});
+        try writer.print("  \"reset_timeout_ms\": {d}\n", .{cb.reset_timeout_ms});
+        try writer.writeAll("}\n");
+
+        return buffer.toOwnedSlice();
+    }
+};
+
 pub const RealAgent = struct {
     allocator: Allocator,
     config: AgentConfig,
@@ -1211,6 +1312,34 @@ pub const RealAgent = struct {
     /// Check if circuit breaker allows execution (v23.22)
     pub fn isCircuitClosed(self: *Self) bool {
         return self.circuit_breaker.canExecute();
+    }
+
+    /// Export retry metrics to JSON (v23.24)
+    pub fn exportMetricsToJson(self: *Self) ![]u8 {
+        const exporter = MetricsExporter.init(self.allocator);
+        return exporter.exportRetryMetricsToJson(self.retry_metrics);
+    }
+
+    /// Export retry metrics to Prometheus format (v23.24)
+    pub fn exportMetricsToPrometheus(self: *Self) ![]u8 {
+        const exporter = MetricsExporter.init(self.allocator);
+        return exporter.exportRetryMetricsToPrometheus(self.retry_metrics);
+    }
+
+    /// Export circuit breaker state to JSON (v23.24)
+    pub fn exportCircuitBreakerToJson(self: *Self) ![]u8 {
+        const exporter = MetricsExporter.init(self.allocator);
+        return exporter.exportCircuitBreakerToJson(self.circuit_breaker);
+    }
+
+    /// Save metrics to file (v23.24)
+    pub fn saveMetricsToFile(self: *Self, filename: []const u8) !void {
+        const json = try self.exportMetricsToJson();
+        defer self.allocator.free(json);
+
+        var file = try std.fs.cwd().createFile(filename, .{});
+        defer file.close();
+        try file.writeAll(json);
     }
 
     /// Print retry metrics summary (v23.19)
@@ -2185,4 +2314,88 @@ test "RealAgent circuit breaker methods (v23.22)" {
     // Reset
     agent.resetCircuitBreaker();
     try std.testing.expectEqual(CircuitBreakerState.closed, agent.getCircuitBreakerState());
+}
+
+test "MetricsExporter JSON export (v23.24)" {
+    const allocator = std.testing.allocator;
+    const exporter = MetricsExporter.init(allocator);
+
+    const metrics = RetryMetrics{
+        .total_operations = 100,
+        .total_retries = 15,
+        .successful_operations = 95,
+        .failed_operations = 5,
+        .navigate_retries = 5,
+        .selector_retries = 8,
+        .page_load_retries = 2,
+        .click_retries = 0,
+        .total_delay_ms = 7500,
+        .max_delay_ms = 2000,
+    };
+
+    const json = try exporter.exportRetryMetricsToJson(metrics);
+    defer allocator.free(json);
+
+    // Verify JSON contains expected fields
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"total_operations\": 100") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"successful_operations\": 95") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"navigate_retries\": 5") != null);
+}
+
+test "MetricsExporter Prometheus export (v23.24)" {
+    const allocator = std.testing.allocator;
+    const exporter = MetricsExporter.init(allocator);
+
+    const metrics = RetryMetrics{
+        .total_operations = 50,
+        .total_retries = 10,
+        .successful_operations = 45,
+        .failed_operations = 5,
+    };
+
+    const prom = try exporter.exportRetryMetricsToPrometheus(metrics);
+    defer allocator.free(prom);
+
+    // Verify Prometheus format
+    try std.testing.expect(std.mem.indexOf(u8, prom, "vibee_retry_operations_total 50") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prom, "vibee_retry_success_total 45") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prom, "# TYPE vibee_retry_operations_total counter") != null);
+}
+
+test "MetricsExporter CircuitBreaker JSON (v23.24)" {
+    const allocator = std.testing.allocator;
+    const exporter = MetricsExporter.init(allocator);
+
+    const cb = CircuitBreaker{
+        .state = .closed,
+        .failure_count = 2,
+        .failure_threshold = 5,
+    };
+
+    const json = try exporter.exportCircuitBreakerToJson(cb);
+    defer allocator.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"state\": \"CLOSED\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"failure_count\": 2") != null);
+}
+
+test "RealAgent export methods (v23.24)" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Export JSON
+    const json = try agent.exportMetricsToJson();
+    defer allocator.free(json);
+    try std.testing.expect(json.len > 0);
+
+    // Export Prometheus
+    const prom = try agent.exportMetricsToPrometheus();
+    defer allocator.free(prom);
+    try std.testing.expect(prom.len > 0);
+
+    // Export circuit breaker
+    const cb_json = try agent.exportCircuitBreakerToJson();
+    defer allocator.free(cb_json);
+    try std.testing.expect(cb_json.len > 0);
 }
