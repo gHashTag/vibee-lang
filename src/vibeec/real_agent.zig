@@ -37,6 +37,33 @@ pub const DomainStats = struct {
     load_count: u32 = 0,
 };
 
+// v23.16: Retry configuration with exponential backoff
+pub const RetryConfig = struct {
+    max_retries: u32 = 3,
+    initial_delay_ms: u32 = 500,
+    backoff_factor: f32 = 2.0,
+    max_delay_ms: u32 = 8000,
+
+    /// Calculate delay for given attempt (0-indexed)
+    pub fn getDelay(self: RetryConfig, attempt: u32) u32 {
+        if (attempt == 0) return self.initial_delay_ms;
+        var delay: f32 = @floatFromInt(self.initial_delay_ms);
+        var i: u32 = 0;
+        while (i < attempt) : (i += 1) {
+            delay *= self.backoff_factor;
+        }
+        const result: u32 = @intFromFloat(delay);
+        return @min(result, self.max_delay_ms);
+    }
+};
+
+// v23.16: Retry result
+pub const RetryResult = struct {
+    success: bool,
+    attempts: u32,
+    total_delay_ms: u32,
+};
+
 pub const RealAgent = struct {
     allocator: Allocator,
     config: AgentConfig,
@@ -53,6 +80,8 @@ pub const RealAgent = struct {
     // v23.15: Network idle detection
     pending_requests: u32 = 0,
     last_network_activity: i64 = 0,
+    // v23.16: Retry configuration
+    retry_config: RetryConfig = .{},
 
     const Self = @This();
 
@@ -654,6 +683,174 @@ pub const RealAgent = struct {
         return self.getAdaptiveTimeout();
     }
 
+    // =========================================================================
+    // v23.16: RETRY WITH EXPONENTIAL BACKOFF
+    // =========================================================================
+
+    /// Navigate with retry on failure (v23.16)
+    pub fn navigateWithRetry(self: *Self, url: []const u8) AgentError!RetryResult {
+        var attempts: u32 = 0;
+        var total_delay: u32 = 0;
+
+        while (attempts <= self.retry_config.max_retries) {
+            // Try navigation
+            self.navigate(url) catch |err| {
+                attempts += 1;
+                if (attempts > self.retry_config.max_retries) {
+                    std.debug.print("    [RETRY] Navigate failed after {d} attempts\n", .{attempts});
+                    return err;
+                }
+
+                // Calculate backoff delay
+                const delay = self.retry_config.getDelay(attempts - 1);
+                total_delay += delay;
+                std.debug.print("    [RETRY] Navigate attempt {d}/{d} failed, waiting {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay });
+
+                // Wait before retry
+                std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
+                continue;
+            };
+
+            // Success
+            return RetryResult{
+                .success = true,
+                .attempts = attempts + 1,
+                .total_delay_ms = total_delay,
+            };
+        }
+
+        return RetryResult{
+            .success = false,
+            .attempts = attempts,
+            .total_delay_ms = total_delay,
+        };
+    }
+
+    /// Wait for selector with retry (v23.16)
+    pub fn waitForSelectorWithRetry(self: *Self, selector: []const u8, timeout_ms: u32) AgentError!RetryResult {
+        var attempts: u32 = 0;
+        var total_delay: u32 = 0;
+
+        while (attempts <= self.retry_config.max_retries) {
+            const found = self.waitForSelector(selector, timeout_ms) catch |err| {
+                attempts += 1;
+                if (attempts > self.retry_config.max_retries) {
+                    return err;
+                }
+                const delay = self.retry_config.getDelay(attempts - 1);
+                total_delay += delay;
+                std.debug.print("    [RETRY] waitForSelector attempt {d} failed, waiting {d}ms\n", .{ attempts, delay });
+                std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
+                continue;
+            };
+
+            if (found) {
+                return RetryResult{
+                    .success = true,
+                    .attempts = attempts + 1,
+                    .total_delay_ms = total_delay,
+                };
+            }
+
+            // Not found, retry with backoff
+            attempts += 1;
+            if (attempts > self.retry_config.max_retries) {
+                break;
+            }
+
+            const delay = self.retry_config.getDelay(attempts - 1);
+            total_delay += delay;
+            std.debug.print("    [RETRY] Selector not found, attempt {d}/{d}, waiting {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay });
+            std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
+        }
+
+        return RetryResult{
+            .success = false,
+            .attempts = attempts,
+            .total_delay_ms = total_delay,
+        };
+    }
+
+    /// Wait for page load with retry (v23.16)
+    pub fn waitForPageLoadWithRetry(self: *Self, timeout_ms: u32) AgentError!RetryResult {
+        var attempts: u32 = 0;
+        var total_delay: u32 = 0;
+
+        while (attempts <= self.retry_config.max_retries) {
+            const loaded = self.waitForPageLoad(timeout_ms) catch |err| {
+                attempts += 1;
+                if (attempts > self.retry_config.max_retries) {
+                    return err;
+                }
+                const delay = self.retry_config.getDelay(attempts - 1);
+                total_delay += delay;
+                std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
+                continue;
+            };
+
+            if (loaded) {
+                return RetryResult{
+                    .success = true,
+                    .attempts = attempts + 1,
+                    .total_delay_ms = total_delay,
+                };
+            }
+
+            attempts += 1;
+            if (attempts > self.retry_config.max_retries) {
+                break;
+            }
+
+            const delay = self.retry_config.getDelay(attempts - 1);
+            total_delay += delay;
+            std.debug.print("    [RETRY] Page load timeout, attempt {d}/{d}, waiting {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay });
+            std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
+        }
+
+        return RetryResult{
+            .success = false,
+            .attempts = attempts,
+            .total_delay_ms = total_delay,
+        };
+    }
+
+    /// Click with retry (v23.16)
+    pub fn clickWithRetry(self: *Self, selector: []const u8) AgentError!RetryResult {
+        var attempts: u32 = 0;
+        var total_delay: u32 = 0;
+
+        while (attempts <= self.retry_config.max_retries) {
+            self.clickSelector(selector) catch |err| {
+                attempts += 1;
+                if (attempts > self.retry_config.max_retries) {
+                    return err;
+                }
+                const delay = self.retry_config.getDelay(attempts - 1);
+                total_delay += delay;
+                std.debug.print("    [RETRY] Click failed, attempt {d}, waiting {d}ms\n", .{ attempts, delay });
+                std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
+                continue;
+            };
+
+            return RetryResult{
+                .success = true,
+                .attempts = attempts + 1,
+                .total_delay_ms = total_delay,
+            };
+        }
+
+        return RetryResult{
+            .success = false,
+            .attempts = attempts,
+            .total_delay_ms = total_delay,
+        };
+    }
+
+    /// Set retry configuration (v23.16)
+    pub fn setRetryConfig(self: *Self, config: RetryConfig) void {
+        self.retry_config = config;
+    }
+
     /// Click element with wait
     pub fn clickSelectorWithWait(self: *Self, selector: []const u8, timeout_ms: u32) AgentError!void {
         // Wait for element
@@ -1151,4 +1348,83 @@ test "waitForFullLoad method exists" {
     _ = agent.waitForFullLoad(1000) catch |err| {
         try std.testing.expect(err == AgentError.BrowserConnectionFailed);
     };
+}
+
+test "RetryConfig exponential backoff" {
+    const config = RetryConfig{
+        .max_retries = 3,
+        .initial_delay_ms = 500,
+        .backoff_factor = 2.0,
+        .max_delay_ms = 8000,
+    };
+
+    // Attempt 0: 500ms
+    try std.testing.expectEqual(@as(u32, 500), config.getDelay(0));
+    // Attempt 1: 500 * 2 = 1000ms
+    try std.testing.expectEqual(@as(u32, 1000), config.getDelay(1));
+    // Attempt 2: 500 * 2 * 2 = 2000ms
+    try std.testing.expectEqual(@as(u32, 2000), config.getDelay(2));
+    // Attempt 3: 500 * 2 * 2 * 2 = 4000ms
+    try std.testing.expectEqual(@as(u32, 4000), config.getDelay(3));
+    // Attempt 4: 500 * 16 = 8000ms (capped at max)
+    try std.testing.expectEqual(@as(u32, 8000), config.getDelay(4));
+    // Attempt 5: would be 16000ms but capped at 8000ms
+    try std.testing.expectEqual(@as(u32, 8000), config.getDelay(5));
+}
+
+test "RetryConfig default values" {
+    const config = RetryConfig{};
+    try std.testing.expectEqual(@as(u32, 3), config.max_retries);
+    try std.testing.expectEqual(@as(u32, 500), config.initial_delay_ms);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), config.backoff_factor, 0.01);
+    try std.testing.expectEqual(@as(u32, 8000), config.max_delay_ms);
+}
+
+test "navigateWithRetry method exists" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Should fail with BrowserConnectionFailed since not connected
+    _ = agent.navigateWithRetry("https://example.com") catch |err| {
+        try std.testing.expect(err == AgentError.BrowserConnectionFailed);
+    };
+}
+
+test "waitForSelectorWithRetry method exists" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    _ = agent.waitForSelectorWithRetry("#test", 100) catch |err| {
+        try std.testing.expect(err == AgentError.BrowserConnectionFailed);
+    };
+}
+
+test "clickWithRetry method exists" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    _ = agent.clickWithRetry("#btn") catch |err| {
+        try std.testing.expect(err == AgentError.BrowserConnectionFailed);
+    };
+}
+
+test "setRetryConfig changes config" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Default config
+    try std.testing.expectEqual(@as(u32, 3), agent.retry_config.max_retries);
+
+    // Change config
+    agent.setRetryConfig(.{
+        .max_retries = 5,
+        .initial_delay_ms = 1000,
+    });
+
+    try std.testing.expectEqual(@as(u32, 5), agent.retry_config.max_retries);
+    try std.testing.expectEqual(@as(u32, 1000), agent.retry_config.initial_delay_ms);
 }
