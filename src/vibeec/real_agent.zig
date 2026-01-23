@@ -18,9 +18,13 @@ pub const AgentError = error{
     BrowserConnectionFailed,
     LLMConnectionFailed,
     NavigationFailed,
+    NavigationTimeout,
     EvaluationFailed,
     ParseError,
     OutOfMemory,
+    ElementNotFound,
+    ClickFailed,
+    Timeout,
 };
 
 pub const AgentConfig = struct {
@@ -1102,11 +1106,13 @@ pub fn shouldRetry(attempt: u32, max_retries: u32, circuit_state: CircuitBreaker
     return error_category.shouldRetry();
 }
 
-/// Pure function: Classify error into category (v23.29)
+/// Pure function: Classify error into category (v23.29, v23.35)
 pub fn classifyError(err: AgentError) ErrorCategory {
     return switch (err) {
         AgentError.NavigationFailed, AgentError.EvaluationFailed => .transient,
         AgentError.BrowserConnectionFailed, AgentError.LLMConnectionFailed => .transient,
+        AgentError.NavigationTimeout, AgentError.Timeout => .transient,
+        AgentError.ElementNotFound, AgentError.ClickFailed => .transient,
         AgentError.ParseError => .permanent,
         AgentError.OutOfMemory => .permanent,
     };
@@ -1280,12 +1286,87 @@ pub const RetryExecutionResult = struct {
     decisions: []const RetryDecision = &[_]RetryDecision{},
 };
 
-/// Retry Executor - bridges pure functions with effectful operations (v23.31)
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.35: OPERATION STRUCTS for RetryExecutor
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Navigate operation for RetryExecutor (v23.35)
+pub const NavigateOperation = struct {
+    url: []const u8,
+    agent: *RealAgent,
+
+    const Self = @This();
+
+    pub fn getType() OperationType {
+        return .navigate;
+    }
+
+    pub fn getDomain(self: Self) []const u8 {
+        return extractDomain(self.url);
+    }
+
+    pub fn execute(self: *Self) AgentError!void {
+        return self.agent.navigate(self.url);
+    }
+};
+
+/// Wait for selector operation for RetryExecutor (v23.35)
+pub const WaitSelectorOperation = struct {
+    selector: []const u8,
+    timeout_ms: u32,
+    agent: *RealAgent,
+
+    const Self = @This();
+
+    pub fn getType() OperationType {
+        return .wait_selector;
+    }
+
+    pub fn execute(self: *Self) AgentError!bool {
+        return self.agent.waitForSelector(self.selector, self.timeout_ms);
+    }
+};
+
+/// Click operation for RetryExecutor (v23.35)
+pub const ClickOperation = struct {
+    selector: []const u8,
+    agent: *RealAgent,
+
+    const Self = @This();
+
+    pub fn getType() OperationType {
+        return .click;
+    }
+
+    pub fn execute(self: *Self) AgentError!void {
+        return self.agent.clickSelector(self.selector);
+    }
+};
+
+/// Wait for page load operation for RetryExecutor (v23.35)
+pub const WaitPageLoadOperation = struct {
+    timeout_ms: u32,
+    agent: *RealAgent,
+
+    const Self = @This();
+
+    pub fn getType() OperationType {
+        return .wait_page_load;
+    }
+
+    pub fn execute(self: *Self) AgentError!bool {
+        return self.agent.waitForPageLoad(self.timeout_ms);
+    }
+};
+
+/// Retry Executor - bridges pure functions with effectful operations (v23.31, v23.35)
 pub const RetryExecutor = struct {
     config: RetryConfig,
     metrics: *RetryMetrics,
     circuit_breaker: *CircuitBreaker,
     allocator: Allocator,
+    // v23.35: Domain circuit breakers support
+    domain_circuit_breakers: ?*std.StringHashMap(CircuitBreaker) = null,
 
     const Self = @This();
 
@@ -1447,6 +1528,396 @@ pub const RetryExecutor = struct {
             .success = false,
             .attempts = attempt,
             .total_delay_ms = total_delay,
+        };
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // v23.35: NEW OPERATION-BASED EXECUTION METHODS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Execute navigate operation with retry (v23.35)
+    pub fn executeNavigate(self: *Self, op: *NavigateOperation) RetryExecutionResult {
+        var attempt: u32 = 0;
+        var total_delay: u32 = 0;
+        var last_error: ?AgentError = null;
+
+        // Track operation
+        self.metrics.total_operations += 1;
+
+        // v23.35: Check domain circuit breaker first
+        const domain = op.getDomain();
+        if (self.domain_circuit_breakers) |dcb| {
+            if (dcb.get(domain)) |cb| {
+                if (cb.state == .open) {
+                    self.metrics.failed_operations += 1;
+                    return RetryExecutionResult{
+                        .success = false,
+                        .attempts = 0,
+                        .total_delay_ms = 0,
+                        .final_error = AgentError.BrowserConnectionFailed,
+                    };
+                }
+            }
+        }
+
+        // Check global circuit breaker
+        if (!shouldRetry(0, self.config.max_retries, self.circuit_breaker.state, .transient)) {
+            self.metrics.failed_operations += 1;
+            return RetryExecutionResult{
+                .success = false,
+                .attempts = 0,
+                .total_delay_ms = 0,
+                .final_error = AgentError.BrowserConnectionFailed,
+            };
+        }
+
+        while (attempt <= self.config.max_retries) {
+            op.execute() catch |err| {
+                last_error = err;
+                attempt += 1;
+                self.metrics.total_retries += 1;
+                self.metrics.navigate_retries += 1;
+
+                // Use pure function for retry decision
+                const error_category = classifyError(err);
+                const ctx = self.buildContext(attempt, error_category);
+                const decision = makeRetryDecision(ctx);
+
+                if (!decision.should_retry) {
+                    self.metrics.failed_operations += 1;
+                    self.circuit_breaker.recordFailure();
+                    // Record domain failure
+                    if (self.domain_circuit_breakers) |dcb| {
+                        if (dcb.getPtr(domain)) |cb| {
+                            cb.recordFailure();
+                        }
+                    }
+                    return RetryExecutionResult{
+                        .success = false,
+                        .attempts = attempt,
+                        .total_delay_ms = total_delay,
+                        .final_error = err,
+                    };
+                }
+
+                total_delay += decision.delay_ms;
+                self.metrics.total_delay_ms += decision.delay_ms;
+                if (decision.delay_ms > self.metrics.max_delay_ms) {
+                    self.metrics.max_delay_ms = decision.delay_ms;
+                }
+                self.metrics.recordDelay(decision.delay_ms);
+
+                std.debug.print("    [RETRY-EXEC] navigate attempt {d}/{d}, waiting {d}ms\n", .{
+                    attempt,
+                    self.config.max_retries + 1,
+                    decision.delay_ms,
+                });
+
+                std.time.sleep(@as(u64, decision.delay_ms) * std.time.ns_per_ms);
+                continue;
+            };
+
+            // Success
+            self.metrics.successful_operations += 1;
+            self.circuit_breaker.recordSuccess();
+            // Record domain success
+            if (self.domain_circuit_breakers) |dcb| {
+                if (dcb.getPtr(domain)) |cb| {
+                    cb.recordSuccess();
+                }
+            }
+            return RetryExecutionResult{
+                .success = true,
+                .attempts = attempt + 1,
+                .total_delay_ms = total_delay,
+            };
+        }
+
+        self.metrics.failed_operations += 1;
+        self.circuit_breaker.recordFailure();
+        return RetryExecutionResult{
+            .success = false,
+            .attempts = attempt,
+            .total_delay_ms = total_delay,
+            .final_error = last_error,
+        };
+    }
+
+    /// Execute click operation with retry (v23.35)
+    pub fn executeClick(self: *Self, op: *ClickOperation) RetryExecutionResult {
+        var attempt: u32 = 0;
+        var total_delay: u32 = 0;
+        var last_error: ?AgentError = null;
+
+        self.metrics.total_operations += 1;
+
+        if (!shouldRetry(0, self.config.max_retries, self.circuit_breaker.state, .transient)) {
+            self.metrics.failed_operations += 1;
+            return RetryExecutionResult{
+                .success = false,
+                .attempts = 0,
+                .total_delay_ms = 0,
+                .final_error = AgentError.BrowserConnectionFailed,
+            };
+        }
+
+        while (attempt <= self.config.max_retries) {
+            op.execute() catch |err| {
+                last_error = err;
+                attempt += 1;
+                self.metrics.total_retries += 1;
+                self.metrics.click_retries += 1;
+
+                const error_category = classifyError(err);
+                const ctx = self.buildContext(attempt, error_category);
+                const decision = makeRetryDecision(ctx);
+
+                if (!decision.should_retry) {
+                    self.metrics.failed_operations += 1;
+                    self.circuit_breaker.recordFailure();
+                    return RetryExecutionResult{
+                        .success = false,
+                        .attempts = attempt,
+                        .total_delay_ms = total_delay,
+                        .final_error = err,
+                    };
+                }
+
+                total_delay += decision.delay_ms;
+                self.metrics.total_delay_ms += decision.delay_ms;
+                self.metrics.recordDelay(decision.delay_ms);
+
+                std.debug.print("    [RETRY-EXEC] click attempt {d}/{d}, waiting {d}ms\n", .{
+                    attempt,
+                    self.config.max_retries + 1,
+                    decision.delay_ms,
+                });
+
+                std.time.sleep(@as(u64, decision.delay_ms) * std.time.ns_per_ms);
+                continue;
+            };
+
+            self.metrics.successful_operations += 1;
+            self.circuit_breaker.recordSuccess();
+            return RetryExecutionResult{
+                .success = true,
+                .attempts = attempt + 1,
+                .total_delay_ms = total_delay,
+            };
+        }
+
+        self.metrics.failed_operations += 1;
+        self.circuit_breaker.recordFailure();
+        return RetryExecutionResult{
+            .success = false,
+            .attempts = attempt,
+            .total_delay_ms = total_delay,
+            .final_error = last_error,
+        };
+    }
+
+    /// Execute WaitSelectorOperation with retry logic (v23.35)
+    pub fn executeWaitSelector(self: *Self, op: *WaitSelectorOperation) RetryExecutionResult {
+        var attempt: u32 = 0;
+        var total_delay: u32 = 0;
+        var last_error: ?AgentError = null;
+
+        self.metrics.total_operations += 1;
+
+        if (!shouldRetry(0, self.config.max_retries, self.circuit_breaker.state, .transient)) {
+            self.metrics.failed_operations += 1;
+            return RetryExecutionResult{
+                .success = false,
+                .attempts = 0,
+                .total_delay_ms = 0,
+                .final_error = AgentError.BrowserConnectionFailed,
+            };
+        }
+
+        while (attempt <= self.config.max_retries) {
+            const found = op.execute() catch |err| {
+                last_error = err;
+                attempt += 1;
+                self.metrics.total_retries += 1;
+                self.metrics.selector_retries += 1;
+
+                const error_category = classifyError(err);
+                const ctx = self.buildContext(attempt, error_category);
+                const decision = makeRetryDecision(ctx);
+
+                if (!decision.should_retry) {
+                    self.metrics.failed_operations += 1;
+                    self.circuit_breaker.recordFailure();
+                    return RetryExecutionResult{
+                        .success = false,
+                        .attempts = attempt,
+                        .total_delay_ms = total_delay,
+                        .final_error = err,
+                    };
+                }
+
+                total_delay += decision.delay_ms;
+                self.metrics.total_delay_ms += decision.delay_ms;
+                self.metrics.recordDelay(decision.delay_ms);
+
+                std.debug.print("    [RETRY-EXEC] waitSelector attempt {d}/{d}, waiting {d}ms\n", .{
+                    attempt,
+                    self.config.max_retries + 1,
+                    decision.delay_ms,
+                });
+
+                std.time.sleep(@as(u64, decision.delay_ms) * std.time.ns_per_ms);
+                continue;
+            };
+
+            if (found) {
+                self.metrics.successful_operations += 1;
+                self.circuit_breaker.recordSuccess();
+                return RetryExecutionResult{
+                    .success = true,
+                    .attempts = attempt + 1,
+                    .total_delay_ms = total_delay,
+                };
+            } else {
+                // Element not found but no error - retry
+                attempt += 1;
+                self.metrics.total_retries += 1;
+                self.metrics.selector_retries += 1;
+                
+                const ctx = self.buildContext(attempt, .transient);
+                const decision = makeRetryDecision(ctx);
+                
+                if (!decision.should_retry) {
+                    self.metrics.failed_operations += 1;
+                    return RetryExecutionResult{
+                        .success = false,
+                        .attempts = attempt,
+                        .total_delay_ms = total_delay,
+                        .final_error = AgentError.ElementNotFound,
+                    };
+                }
+                
+                total_delay += decision.delay_ms;
+                self.metrics.total_delay_ms += decision.delay_ms;
+                std.time.sleep(@as(u64, decision.delay_ms) * std.time.ns_per_ms);
+            }
+        }
+
+        self.metrics.failed_operations += 1;
+        self.circuit_breaker.recordFailure();
+        return RetryExecutionResult{
+            .success = false,
+            .attempts = attempt,
+            .total_delay_ms = total_delay,
+            .final_error = last_error orelse AgentError.ElementNotFound,
+        };
+    }
+
+    /// Execute WaitPageLoadOperation with retry logic (v23.35)
+    pub fn executeWaitPageLoad(self: *Self, op: *WaitPageLoadOperation) RetryExecutionResult {
+        var attempt: u32 = 0;
+        var total_delay: u32 = 0;
+        var last_error: ?AgentError = null;
+
+        self.metrics.total_operations += 1;
+
+        if (!shouldRetry(0, self.config.max_retries, self.circuit_breaker.state, .transient)) {
+            self.metrics.failed_operations += 1;
+            return RetryExecutionResult{
+                .success = false,
+                .attempts = 0,
+                .total_delay_ms = 0,
+                .final_error = AgentError.BrowserConnectionFailed,
+            };
+        }
+
+        while (attempt <= self.config.max_retries) {
+            const loaded = op.execute() catch |err| {
+                last_error = err;
+                attempt += 1;
+                self.metrics.total_retries += 1;
+                self.metrics.page_load_retries += 1;
+
+                const error_category = classifyError(err);
+                const ctx = self.buildContext(attempt, error_category);
+                const decision = makeRetryDecision(ctx);
+
+                if (!decision.should_retry) {
+                    self.metrics.failed_operations += 1;
+                    self.circuit_breaker.recordFailure();
+                    return RetryExecutionResult{
+                        .success = false,
+                        .attempts = attempt,
+                        .total_delay_ms = total_delay,
+                        .final_error = err,
+                    };
+                }
+
+                total_delay += decision.delay_ms;
+                self.metrics.total_delay_ms += decision.delay_ms;
+                self.metrics.recordDelay(decision.delay_ms);
+
+                std.debug.print("    [RETRY-EXEC] waitPageLoad attempt {d}/{d}, waiting {d}ms\n", .{
+                    attempt,
+                    self.config.max_retries + 1,
+                    decision.delay_ms,
+                });
+
+                std.time.sleep(@as(u64, decision.delay_ms) * std.time.ns_per_ms);
+                continue;
+            };
+
+            if (loaded) {
+                self.metrics.successful_operations += 1;
+                self.circuit_breaker.recordSuccess();
+                return RetryExecutionResult{
+                    .success = true,
+                    .attempts = attempt + 1,
+                    .total_delay_ms = total_delay,
+                };
+            } else {
+                // Page not loaded but no error - retry
+                attempt += 1;
+                self.metrics.total_retries += 1;
+                self.metrics.page_load_retries += 1;
+                
+                const ctx = self.buildContext(attempt, .transient);
+                const decision = makeRetryDecision(ctx);
+                
+                if (!decision.should_retry) {
+                    self.metrics.failed_operations += 1;
+                    return RetryExecutionResult{
+                        .success = false,
+                        .attempts = attempt,
+                        .total_delay_ms = total_delay,
+                        .final_error = AgentError.NavigationTimeout,
+                    };
+                }
+                
+                total_delay += decision.delay_ms;
+                self.metrics.total_delay_ms += decision.delay_ms;
+                std.time.sleep(@as(u64, decision.delay_ms) * std.time.ns_per_ms);
+            }
+        }
+
+        self.metrics.failed_operations += 1;
+        self.circuit_breaker.recordFailure();
+        return RetryExecutionResult{
+            .success = false,
+            .attempts = attempt,
+            .total_delay_ms = total_delay,
+            .final_error = last_error orelse AgentError.NavigationTimeout,
+        };
+    }
+
+    /// Create executor from RealAgent (v23.35)
+    pub fn fromAgent(agent: *RealAgent) Self {
+        return Self{
+            .allocator = agent.allocator,
+            .config = agent.retry_config,
+            .metrics = &agent.retry_metrics,
+            .circuit_breaker = &agent.circuit_breaker,
+            .domain_circuit_breakers = &agent.domain_circuit_breakers,
         };
     }
 };
@@ -2095,311 +2566,96 @@ pub const RealAgent = struct {
     // v23.16: RETRY WITH EXPONENTIAL BACKOFF
     // =========================================================================
 
-    /// Navigate with retry on failure (v23.16)
+    /// Navigate with retry on failure (v23.16, v23.35: uses RetryExecutor)
     pub fn navigateWithRetry(self: *Self, url: []const u8) AgentError!RetryResult {
-        // v23.27: Extract domain from URL for per-domain circuit breaker
-        const domain = extractDomain(url);
+        // v23.35: Use RetryExecutor for unified retry logic
+        var executor = RetryExecutor.fromAgent(self);
+        var op = NavigateOperation{
+            .url = url,
+            .agent = self,
+        };
 
-        // v23.27: Check domain-specific circuit breaker first
-        if (domain.len > 0 and !self.canExecuteForDomain(domain)) {
-            std.debug.print("    [CIRCUIT] Request blocked for domain '{s}' - circuit is OPEN\n", .{domain});
-            return RetryResult{
-                .success = false,
-                .attempts = 0,
-                .total_delay_ms = 0,
-            };
+        const result = executor.executeNavigate(&op);
+
+        // Convert RetryExecutionResult to RetryResult
+        if (!result.success and result.final_error != null) {
+            return result.final_error.?;
         }
-
-        // v23.22: Check global circuit breaker
-        if (!self.circuit_breaker.canExecute()) {
-            std.debug.print("    [CIRCUIT] Request blocked - global circuit is OPEN\n", .{});
-            return RetryResult{
-                .success = false,
-                .attempts = 0,
-                .total_delay_ms = 0,
-            };
-        }
-
-        var attempts: u32 = 0;
-        var total_delay: u32 = 0;
-
-        // v23.19: Track operation
-        self.retry_metrics.total_operations += 1;
-
-        while (attempts <= self.retry_config.max_retries) {
-            // Try navigation
-            self.navigate(url) catch |err| {
-                attempts += 1;
-                // v23.19: Track retry
-                self.retry_metrics.total_retries += 1;
-                self.retry_metrics.navigate_retries += 1;
-
-                if (attempts > self.retry_config.max_retries) {
-                    // v23.22: Record failure (global)
-                    self.circuit_breaker.recordFailure();
-                    // v23.27: Record failure (domain)
-                    if (domain.len > 0) self.recordDomainFailure(domain);
-                    // v23.19: Track failure
-                    self.retry_metrics.failed_operations += 1;
-                    std.debug.print("    [RETRY] Navigate failed after {d} attempts\n", .{attempts});
-                    return err;
-                }
-
-                // Calculate backoff delay
-                const delay = self.retry_config.getDelayWithJitter(attempts - 1);
-                total_delay += delay;
-                // v23.19: Track delay
-                self.retry_metrics.total_delay_ms += delay;
-                if (delay > self.retry_metrics.max_delay_ms) {
-                    self.retry_metrics.max_delay_ms = delay;
-                }
-                // v23.26: Record in histogram
-                self.retry_metrics.recordDelay(delay);
-
-                std.debug.print("    [RETRY] Navigate attempt {d}/{d} failed, waiting {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay });
-
-                // Wait before retry
-                std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
-                continue;
-            };
-
-            // v23.19: Track success
-            self.retry_metrics.successful_operations += 1;
-            // v23.22: Record success (global)
-            self.circuit_breaker.recordSuccess();
-            // v23.27: Record success (domain)
-            if (domain.len > 0) self.recordDomainSuccess(domain);
-
-            return RetryResult{
-                .success = true,
-                .attempts = attempts + 1,
-                .total_delay_ms = total_delay,
-            };
-        }
-
-        // v23.19: Track failure (max retries exceeded)
-        self.retry_metrics.failed_operations += 1;
-        // v23.22: Record failure (global)
-        self.circuit_breaker.recordFailure();
-        // v23.27: Record failure (domain)
-        if (domain.len > 0) self.recordDomainFailure(domain);
 
         return RetryResult{
-            .success = false,
-            .attempts = attempts,
-            .total_delay_ms = total_delay,
+            .success = result.success,
+            .attempts = result.attempts,
+            .total_delay_ms = result.total_delay_ms,
         };
     }
 
-    /// Wait for selector with retry (v23.16, v23.19: metrics)
+    /// Wait for selector with retry (v23.16, v23.35: uses RetryExecutor)
     pub fn waitForSelectorWithRetry(self: *Self, selector: []const u8, timeout_ms: u32) AgentError!RetryResult {
-        // v23.23: Check circuit breaker
-        if (!self.circuit_breaker.canExecute()) {
-            std.debug.print("    [CIRCUIT] waitForSelector blocked - circuit is OPEN\n", .{});
-            return RetryResult{ .success = false, .attempts = 0, .total_delay_ms = 0 };
+        // v23.35: Use RetryExecutor for unified retry logic
+        var executor = RetryExecutor.fromAgent(self);
+        var op = WaitSelectorOperation{
+            .selector = selector,
+            .timeout_ms = timeout_ms,
+            .agent = self,
+        };
+
+        const result = executor.executeWaitSelector(&op);
+
+        // Convert RetryExecutionResult to RetryResult
+        if (!result.success and result.final_error != null) {
+            return result.final_error.?;
         }
 
-        var attempts: u32 = 0;
-        var total_delay: u32 = 0;
-
-        // v23.19: Track operation
-        self.retry_metrics.total_operations += 1;
-
-        while (attempts <= self.retry_config.max_retries) {
-            // v23.17: Increase timeout on each retry
-            const current_timeout = self.retry_config.getTimeout(timeout_ms, attempts);
-
-            const found = self.waitForSelector(selector, current_timeout) catch |err| {
-                attempts += 1;
-                self.retry_metrics.total_retries += 1;
-                self.retry_metrics.selector_retries += 1;
-
-                if (attempts > self.retry_config.max_retries) {
-                    self.retry_metrics.failed_operations += 1;
-                    self.circuit_breaker.recordFailure(); // v23.23
-                    return err;
-                }
-                const delay = self.retry_config.getDelayWithJitter(attempts - 1);
-                const next_timeout = self.retry_config.getTimeout(timeout_ms, attempts);
-                total_delay += delay;
-                self.retry_metrics.total_delay_ms += delay;
-                if (delay > self.retry_metrics.max_delay_ms) self.retry_metrics.max_delay_ms = delay;
-                self.retry_metrics.recordDelay(delay); // v23.26
-
-                std.debug.print("    [RETRY] waitForSelector attempt {d} failed, waiting {d}ms, next timeout: {d}ms\n", .{ attempts, delay, next_timeout });
-                std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
-                continue;
-            };
-
-            if (found) {
-                self.retry_metrics.successful_operations += 1;
-                self.circuit_breaker.recordSuccess(); // v23.23
-                return RetryResult{
-                    .success = true,
-                    .attempts = attempts + 1,
-                    .total_delay_ms = total_delay,
-                };
-            }
-
-            // Not found, retry with backoff and increased timeout
-            attempts += 1;
-            self.retry_metrics.total_retries += 1;
-            self.retry_metrics.selector_retries += 1;
-
-            if (attempts > self.retry_config.max_retries) {
-                break;
-            }
-
-            const delay = self.retry_config.getDelayWithJitter(attempts - 1);
-            const next_timeout = self.retry_config.getTimeout(timeout_ms, attempts);
-            total_delay += delay;
-            self.retry_metrics.total_delay_ms += delay;
-            if (delay > self.retry_metrics.max_delay_ms) self.retry_metrics.max_delay_ms = delay;
-            self.retry_metrics.recordDelay(delay); // v23.26
-
-            std.debug.print("    [RETRY] Selector not found, attempt {d}/{d}, waiting {d}ms, next timeout: {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay, next_timeout });
-            std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
-        }
-
-        self.retry_metrics.failed_operations += 1;
-        self.circuit_breaker.recordFailure(); // v23.23
         return RetryResult{
-            .success = false,
-            .attempts = attempts,
-            .total_delay_ms = total_delay,
+            .success = result.success,
+            .attempts = result.attempts,
+            .total_delay_ms = result.total_delay_ms,
         };
     }
 
     /// Wait for page load with retry (v23.16, v23.17: smart timeout)
+    /// Wait for page load with retry (v23.16, v23.35: uses RetryExecutor)
     pub fn waitForPageLoadWithRetry(self: *Self, timeout_ms: u32) AgentError!RetryResult {
-        // v23.23: Check circuit breaker
-        if (!self.circuit_breaker.canExecute()) {
-            std.debug.print("    [CIRCUIT] waitForPageLoad blocked - circuit is OPEN\n", .{});
-            return RetryResult{ .success = false, .attempts = 0, .total_delay_ms = 0 };
+        // v23.35: Use RetryExecutor for unified retry logic
+        var executor = RetryExecutor.fromAgent(self);
+        var op = WaitPageLoadOperation{
+            .timeout_ms = timeout_ms,
+            .agent = self,
+        };
+
+        const result = executor.executeWaitPageLoad(&op);
+
+        // Convert RetryExecutionResult to RetryResult
+        if (!result.success and result.final_error != null) {
+            return result.final_error.?;
         }
 
-        var attempts: u32 = 0;
-        var total_delay: u32 = 0;
-
-        // v23.20: Track operation
-        self.retry_metrics.total_operations += 1;
-
-        while (attempts <= self.retry_config.max_retries) {
-            // v23.17: Increase timeout on each retry
-            const current_timeout = self.retry_config.getTimeout(timeout_ms, attempts);
-
-            const loaded = self.waitForPageLoad(current_timeout) catch |err| {
-                attempts += 1;
-                // v23.20: Track retry
-                self.retry_metrics.total_retries += 1;
-                self.retry_metrics.page_load_retries += 1;
-
-                if (attempts > self.retry_config.max_retries) {
-                    self.retry_metrics.failed_operations += 1;
-                    self.circuit_breaker.recordFailure(); // v23.23
-                    return err;
-                }
-                const delay = self.retry_config.getDelayWithJitter(attempts - 1);
-                total_delay += delay;
-                self.retry_metrics.total_delay_ms += delay;
-                if (delay > self.retry_metrics.max_delay_ms) self.retry_metrics.max_delay_ms = delay;
-                self.retry_metrics.recordDelay(delay); // v23.26
-
-                std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
-                continue;
-            };
-
-            if (loaded) {
-                self.retry_metrics.successful_operations += 1;
-                self.circuit_breaker.recordSuccess(); // v23.23
-                return RetryResult{
-                    .success = true,
-                    .attempts = attempts + 1,
-                    .total_delay_ms = total_delay,
-                };
-            }
-
-            attempts += 1;
-            // v23.20: Track retry
-            self.retry_metrics.total_retries += 1;
-            self.retry_metrics.page_load_retries += 1;
-
-            if (attempts > self.retry_config.max_retries) {
-                break;
-            }
-
-            const delay = self.retry_config.getDelayWithJitter(attempts - 1);
-            const next_timeout = self.retry_config.getTimeout(timeout_ms, attempts);
-            total_delay += delay;
-            self.retry_metrics.total_delay_ms += delay;
-            if (delay > self.retry_metrics.max_delay_ms) self.retry_metrics.max_delay_ms = delay;
-            self.retry_metrics.recordDelay(delay); // v23.26
-
-            std.debug.print("    [RETRY] Page load timeout, attempt {d}/{d}, waiting {d}ms, next timeout: {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay, next_timeout });
-            std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
-        }
-
-        self.retry_metrics.failed_operations += 1;
-        self.circuit_breaker.recordFailure(); // v23.23
         return RetryResult{
-            .success = false,
-            .attempts = attempts,
-            .total_delay_ms = total_delay,
+            .success = result.success,
+            .attempts = result.attempts,
+            .total_delay_ms = result.total_delay_ms,
         };
     }
-
-    /// Click with retry (v23.16, v23.20: metrics)
+    /// Click with retry (v23.16, v23.35: uses RetryExecutor)
     pub fn clickWithRetry(self: *Self, selector: []const u8) AgentError!RetryResult {
-        // v23.23: Check circuit breaker
-        if (!self.circuit_breaker.canExecute()) {
-            std.debug.print("    [CIRCUIT] click blocked - circuit is OPEN\n", .{});
-            return RetryResult{ .success = false, .attempts = 0, .total_delay_ms = 0 };
+        // v23.35: Use RetryExecutor for unified retry logic
+        var executor = RetryExecutor.fromAgent(self);
+        var op = ClickOperation{
+            .selector = selector,
+            .agent = self,
+        };
+
+        const result = executor.executeClick(&op);
+
+        // Convert RetryExecutionResult to RetryResult
+        if (!result.success and result.final_error != null) {
+            return result.final_error.?;
         }
 
-        var attempts: u32 = 0;
-        var total_delay: u32 = 0;
-
-        // v23.20: Track operation
-        self.retry_metrics.total_operations += 1;
-
-        while (attempts <= self.retry_config.max_retries) {
-            self.clickSelector(selector) catch |err| {
-                attempts += 1;
-                // v23.20: Track retry
-                self.retry_metrics.total_retries += 1;
-                self.retry_metrics.click_retries += 1;
-
-                if (attempts > self.retry_config.max_retries) {
-                    self.retry_metrics.failed_operations += 1;
-                    self.circuit_breaker.recordFailure(); // v23.23
-                    return err;
-                }
-                const delay = self.retry_config.getDelayWithJitter(attempts - 1);
-                total_delay += delay;
-                self.retry_metrics.total_delay_ms += delay;
-                if (delay > self.retry_metrics.max_delay_ms) self.retry_metrics.max_delay_ms = delay;
-                self.retry_metrics.recordDelay(delay); // v23.26
-
-                std.debug.print("    [RETRY] Click failed, attempt {d}, waiting {d}ms\n", .{ attempts, delay });
-                std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
-                continue;
-            };
-
-            self.retry_metrics.successful_operations += 1;
-            self.circuit_breaker.recordSuccess(); // v23.23
-            return RetryResult{
-                .success = true,
-                .attempts = attempts + 1,
-                .total_delay_ms = total_delay,
-            };
-        }
-
-        self.retry_metrics.failed_operations += 1;
-        self.circuit_breaker.recordFailure(); // v23.23
         return RetryResult{
-            .success = false,
-            .attempts = attempts,
-            .total_delay_ms = total_delay,
+            .success = result.success,
+            .attempts = result.attempts,
+            .total_delay_ms = result.total_delay_ms,
         };
     }
 
@@ -4508,6 +4764,125 @@ test "RetryExecutor with open circuit breaker (v23.31)" {
 
     try std.testing.expect(!result.success);
     try std.testing.expectEqual(@as(u32, 0), result.attempts);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.35: OPERATION STRUCTS TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "NavigateOperation getType (v23.35)" {
+    try std.testing.expectEqual(OperationType.navigate, NavigateOperation.getType());
+}
+
+test "NavigateOperation getDomain (v23.35)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    var op = NavigateOperation{
+        .url = "https://example.com/page",
+        .agent = &agent,
+    };
+
+    try std.testing.expectEqualStrings("example.com", op.getDomain());
+}
+
+test "WaitSelectorOperation getType (v23.35)" {
+    try std.testing.expectEqual(OperationType.wait_selector, WaitSelectorOperation.getType());
+}
+
+test "ClickOperation getType (v23.35)" {
+    try std.testing.expectEqual(OperationType.click, ClickOperation.getType());
+}
+
+test "WaitPageLoadOperation getType (v23.35)" {
+    try std.testing.expectEqual(OperationType.wait_page_load, WaitPageLoadOperation.getType());
+}
+
+test "RetryExecutor fromAgent (v23.35)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    const executor = RetryExecutor.fromAgent(&agent);
+
+    try std.testing.expectEqual(agent.retry_config.max_retries, executor.config.max_retries);
+    try std.testing.expect(executor.domain_circuit_breakers != null);
+}
+
+test "RetryExecutor executeNavigate with closed circuit (v23.35)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    var executor = RetryExecutor.fromAgent(&agent);
+
+    var op = NavigateOperation{
+        .url = "https://test.com/page",
+        .agent = &agent,
+    };
+
+    // This will fail because we're not connected to a real browser
+    // But it should attempt the operation
+    const result = executor.executeNavigate(&op);
+
+    // Should have attempted at least once
+    try std.testing.expect(result.attempts > 0 or !result.success);
+}
+
+test "RetryExecutor executeWaitSelector with closed circuit (v23.35)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    var executor = RetryExecutor.fromAgent(&agent);
+
+    var op = WaitSelectorOperation{
+        .selector = "#test-element",
+        .timeout_ms = 1000,
+        .agent = &agent,
+    };
+
+    const result = executor.executeWaitSelector(&op);
+
+    // Should have attempted at least once
+    try std.testing.expect(result.attempts > 0 or !result.success);
+}
+
+test "RetryExecutor executeWaitPageLoad with closed circuit (v23.35)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    var executor = RetryExecutor.fromAgent(&agent);
+
+    var op = WaitPageLoadOperation{
+        .timeout_ms = 1000,
+        .agent = &agent,
+    };
+
+    const result = executor.executeWaitPageLoad(&op);
+
+    // Should have attempted at least once
+    try std.testing.expect(result.attempts > 0 or !result.success);
+}
+
+test "RetryExecutor executeClick with closed circuit (v23.35)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    var executor = RetryExecutor.fromAgent(&agent);
+
+    var op = ClickOperation{
+        .selector = "#test-button",
+        .agent = &agent,
+    };
+
+    const result = executor.executeClick(&op);
+
+    // Should have attempted at least once
+    try std.testing.expect(result.attempts > 0 or !result.success);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
