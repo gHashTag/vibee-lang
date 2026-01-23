@@ -114,6 +114,46 @@ pub const RetryResult = struct {
     total_delay_ms: u32,
 };
 
+// v23.19: Retry metrics for observability
+pub const RetryMetrics = struct {
+    // Counters
+    total_operations: u64 = 0,
+    total_retries: u64 = 0,
+    successful_operations: u64 = 0,
+    failed_operations: u64 = 0,
+    // Timing
+    total_delay_ms: u64 = 0,
+    max_delay_ms: u32 = 0,
+    // Per-operation stats
+    navigate_retries: u32 = 0,
+    selector_retries: u32 = 0,
+    page_load_retries: u32 = 0,
+    click_retries: u32 = 0,
+
+    /// Get success rate (0.0 - 1.0)
+    pub fn getSuccessRate(self: RetryMetrics) f32 {
+        if (self.total_operations == 0) return 1.0;
+        return @as(f32, @floatFromInt(self.successful_operations)) / @as(f32, @floatFromInt(self.total_operations));
+    }
+
+    /// Get average retries per operation
+    pub fn getAvgRetries(self: RetryMetrics) f32 {
+        if (self.total_operations == 0) return 0.0;
+        return @as(f32, @floatFromInt(self.total_retries)) / @as(f32, @floatFromInt(self.total_operations));
+    }
+
+    /// Get average delay per retry
+    pub fn getAvgDelayMs(self: RetryMetrics) f32 {
+        if (self.total_retries == 0) return 0.0;
+        return @as(f32, @floatFromInt(self.total_delay_ms)) / @as(f32, @floatFromInt(self.total_retries));
+    }
+
+    /// Reset all metrics
+    pub fn reset(self: *RetryMetrics) void {
+        self.* = RetryMetrics{};
+    }
+};
+
 pub const RealAgent = struct {
     allocator: Allocator,
     config: AgentConfig,
@@ -132,6 +172,8 @@ pub const RealAgent = struct {
     last_network_activity: i64 = 0,
     // v23.16: Retry configuration
     retry_config: RetryConfig = .{},
+    // v23.19: Retry metrics
+    retry_metrics: RetryMetrics = .{},
 
     const Self = @This();
 
@@ -742,11 +784,20 @@ pub const RealAgent = struct {
         var attempts: u32 = 0;
         var total_delay: u32 = 0;
 
+        // v23.19: Track operation
+        self.retry_metrics.total_operations += 1;
+
         while (attempts <= self.retry_config.max_retries) {
             // Try navigation
             self.navigate(url) catch |err| {
                 attempts += 1;
+                // v23.19: Track retry
+                self.retry_metrics.total_retries += 1;
+                self.retry_metrics.navigate_retries += 1;
+
                 if (attempts > self.retry_config.max_retries) {
+                    // v23.19: Track failure
+                    self.retry_metrics.failed_operations += 1;
                     std.debug.print("    [RETRY] Navigate failed after {d} attempts\n", .{attempts});
                     return err;
                 }
@@ -754,6 +805,12 @@ pub const RealAgent = struct {
                 // Calculate backoff delay
                 const delay = self.retry_config.getDelayWithJitter(attempts - 1);
                 total_delay += delay;
+                // v23.19: Track delay
+                self.retry_metrics.total_delay_ms += delay;
+                if (delay > self.retry_metrics.max_delay_ms) {
+                    self.retry_metrics.max_delay_ms = delay;
+                }
+
                 std.debug.print("    [RETRY] Navigate attempt {d}/{d} failed, waiting {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay });
 
                 // Wait before retry
@@ -761,13 +818,18 @@ pub const RealAgent = struct {
                 continue;
             };
 
-            // Success
+            // v23.19: Track success
+            self.retry_metrics.successful_operations += 1;
+
             return RetryResult{
                 .success = true,
                 .attempts = attempts + 1,
                 .total_delay_ms = total_delay,
             };
         }
+
+        // v23.19: Track failure (max retries exceeded)
+        self.retry_metrics.failed_operations += 1;
 
         return RetryResult{
             .success = false,
@@ -776,10 +838,13 @@ pub const RealAgent = struct {
         };
     }
 
-    /// Wait for selector with retry (v23.16)
+    /// Wait for selector with retry (v23.16, v23.19: metrics)
     pub fn waitForSelectorWithRetry(self: *Self, selector: []const u8, timeout_ms: u32) AgentError!RetryResult {
         var attempts: u32 = 0;
         var total_delay: u32 = 0;
+
+        // v23.19: Track operation
+        self.retry_metrics.total_operations += 1;
 
         while (attempts <= self.retry_config.max_retries) {
             // v23.17: Increase timeout on each retry
@@ -787,18 +852,26 @@ pub const RealAgent = struct {
 
             const found = self.waitForSelector(selector, current_timeout) catch |err| {
                 attempts += 1;
+                self.retry_metrics.total_retries += 1;
+                self.retry_metrics.selector_retries += 1;
+
                 if (attempts > self.retry_config.max_retries) {
+                    self.retry_metrics.failed_operations += 1;
                     return err;
                 }
                 const delay = self.retry_config.getDelayWithJitter(attempts - 1);
                 const next_timeout = self.retry_config.getTimeout(timeout_ms, attempts);
                 total_delay += delay;
+                self.retry_metrics.total_delay_ms += delay;
+                if (delay > self.retry_metrics.max_delay_ms) self.retry_metrics.max_delay_ms = delay;
+
                 std.debug.print("    [RETRY] waitForSelector attempt {d} failed, waiting {d}ms, next timeout: {d}ms\n", .{ attempts, delay, next_timeout });
                 std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
                 continue;
             };
 
             if (found) {
+                self.retry_metrics.successful_operations += 1;
                 return RetryResult{
                     .success = true,
                     .attempts = attempts + 1,
@@ -808,6 +881,9 @@ pub const RealAgent = struct {
 
             // Not found, retry with backoff and increased timeout
             attempts += 1;
+            self.retry_metrics.total_retries += 1;
+            self.retry_metrics.selector_retries += 1;
+
             if (attempts > self.retry_config.max_retries) {
                 break;
             }
@@ -815,10 +891,14 @@ pub const RealAgent = struct {
             const delay = self.retry_config.getDelayWithJitter(attempts - 1);
             const next_timeout = self.retry_config.getTimeout(timeout_ms, attempts);
             total_delay += delay;
+            self.retry_metrics.total_delay_ms += delay;
+            if (delay > self.retry_metrics.max_delay_ms) self.retry_metrics.max_delay_ms = delay;
+
             std.debug.print("    [RETRY] Selector not found, attempt {d}/{d}, waiting {d}ms, next timeout: {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay, next_timeout });
             std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
         }
 
+        self.retry_metrics.failed_operations += 1;
         return RetryResult{
             .success = false,
             .attempts = attempts,
@@ -908,6 +988,31 @@ pub const RealAgent = struct {
     /// Set retry configuration (v23.16)
     pub fn setRetryConfig(self: *Self, config: RetryConfig) void {
         self.retry_config = config;
+    }
+
+    /// Get retry metrics (v23.19)
+    pub fn getRetryMetrics(self: *Self) RetryMetrics {
+        return self.retry_metrics;
+    }
+
+    /// Reset retry metrics (v23.19)
+    pub fn resetRetryMetrics(self: *Self) void {
+        self.retry_metrics.reset();
+    }
+
+    /// Print retry metrics summary (v23.19)
+    pub fn printRetryMetrics(self: *Self) void {
+        const m = self.retry_metrics;
+        std.debug.print("\n=== RETRY METRICS ===\n", .{});
+        std.debug.print("Operations: {d} total, {d} success, {d} failed\n", .{ m.total_operations, m.successful_operations, m.failed_operations });
+        std.debug.print("Success rate: {d:.1}%\n", .{m.getSuccessRate() * 100});
+        std.debug.print("Retries: {d} total, {d:.2} avg per operation\n", .{ m.total_retries, m.getAvgRetries() });
+        std.debug.print("  - Navigate: {d}\n", .{m.navigate_retries});
+        std.debug.print("  - Selector: {d}\n", .{m.selector_retries});
+        std.debug.print("  - PageLoad: {d}\n", .{m.page_load_retries});
+        std.debug.print("  - Click: {d}\n", .{m.click_retries});
+        std.debug.print("Delay: {d}ms total, {d:.1}ms avg, {d}ms max\n", .{ m.total_delay_ms, m.getAvgDelayMs(), m.max_delay_ms });
+        std.debug.print("=====================\n\n", .{});
     }
 
     /// Click element with wait
@@ -1572,4 +1677,50 @@ test "getDelayWithJitter zero factor returns base delay" {
 
     const delay = config.getDelayWithJitter(0);
     try std.testing.expectEqual(@as(u32, 1000), delay);
+}
+
+test "RetryMetrics initial values (v23.19)" {
+    const metrics = RetryMetrics{};
+    try std.testing.expectEqual(@as(u64, 0), metrics.total_operations);
+    try std.testing.expectEqual(@as(u64, 0), metrics.total_retries);
+    try std.testing.expectEqual(@as(u64, 0), metrics.successful_operations);
+    try std.testing.expectEqual(@as(u64, 0), metrics.failed_operations);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), metrics.getSuccessRate(), 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), metrics.getAvgRetries(), 0.01);
+}
+
+test "RetryMetrics calculations (v23.19)" {
+    var metrics = RetryMetrics{
+        .total_operations = 10,
+        .successful_operations = 8,
+        .failed_operations = 2,
+        .total_retries = 5,
+        .total_delay_ms = 2500,
+    };
+
+    // Success rate: 8/10 = 0.8
+    try std.testing.expectApproxEqAbs(@as(f32, 0.8), metrics.getSuccessRate(), 0.01);
+    // Avg retries: 5/10 = 0.5
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), metrics.getAvgRetries(), 0.01);
+    // Avg delay: 2500/5 = 500
+    try std.testing.expectApproxEqAbs(@as(f32, 500.0), metrics.getAvgDelayMs(), 0.01);
+
+    // Reset
+    metrics.reset();
+    try std.testing.expectEqual(@as(u64, 0), metrics.total_operations);
+}
+
+test "RealAgent retry metrics (v23.19)" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Initial metrics
+    var metrics = agent.getRetryMetrics();
+    try std.testing.expectEqual(@as(u64, 0), metrics.total_operations);
+
+    // Reset metrics
+    agent.resetRetryMetrics();
+    metrics = agent.getRetryMetrics();
+    try std.testing.expectEqual(@as(u64, 0), metrics.total_operations);
 }
