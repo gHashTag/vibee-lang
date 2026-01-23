@@ -420,6 +420,49 @@ pub const RetryMetrics = struct {
     pub fn reset(self: *RetryMetrics) void {
         self.* = RetryMetrics{};
     }
+
+    /// Export metrics to JSON string (v23.39)
+    pub fn toJson(self: RetryMetrics, allocator: Allocator) ![]u8 {
+        var buffer = std.ArrayList(u8).init(allocator);
+        errdefer buffer.deinit();
+
+        try buffer.appendSlice("{\n");
+        try buffer.appendSlice("  \"counters\": {\n");
+        try std.fmt.format(buffer.writer(), "    \"total_operations\": {d},\n", .{self.total_operations});
+        try std.fmt.format(buffer.writer(), "    \"total_retries\": {d},\n", .{self.total_retries});
+        try std.fmt.format(buffer.writer(), "    \"successful_operations\": {d},\n", .{self.successful_operations});
+        try std.fmt.format(buffer.writer(), "    \"failed_operations\": {d}\n", .{self.failed_operations});
+        try buffer.appendSlice("  },\n");
+
+        try buffer.appendSlice("  \"timing\": {\n");
+        try std.fmt.format(buffer.writer(), "    \"total_delay_ms\": {d},\n", .{self.total_delay_ms});
+        try std.fmt.format(buffer.writer(), "    \"max_delay_ms\": {d},\n", .{self.max_delay_ms});
+        try std.fmt.format(buffer.writer(), "    \"avg_delay_ms\": {d:.2}\n", .{self.getAvgDelayMs()});
+        try buffer.appendSlice("  },\n");
+
+        try buffer.appendSlice("  \"per_operation\": {\n");
+        try std.fmt.format(buffer.writer(), "    \"navigate_retries\": {d},\n", .{self.navigate_retries});
+        try std.fmt.format(buffer.writer(), "    \"selector_retries\": {d},\n", .{self.selector_retries});
+        try std.fmt.format(buffer.writer(), "    \"page_load_retries\": {d},\n", .{self.page_load_retries});
+        try std.fmt.format(buffer.writer(), "    \"click_retries\": {d}\n", .{self.click_retries});
+        try buffer.appendSlice("  },\n");
+
+        try buffer.appendSlice("  \"rates\": {\n");
+        try std.fmt.format(buffer.writer(), "    \"success_rate\": {d:.4},\n", .{self.getSuccessRate()});
+        try std.fmt.format(buffer.writer(), "    \"avg_retries_per_op\": {d:.2}\n", .{self.getAvgRetries()});
+        try buffer.appendSlice("  },\n");
+
+        try buffer.appendSlice("  \"percentiles\": {\n");
+        try std.fmt.format(buffer.writer(), "    \"p50_delay_ms\": {d},\n", .{self.getDelayP50()});
+        try std.fmt.format(buffer.writer(), "    \"p90_delay_ms\": {d},\n", .{self.getDelayP90()});
+        try std.fmt.format(buffer.writer(), "    \"p95_delay_ms\": {d},\n", .{self.getDelayP95()});
+        try std.fmt.format(buffer.writer(), "    \"p99_delay_ms\": {d}\n", .{self.getDelayP99()});
+        try buffer.appendSlice("  }\n");
+
+        try buffer.appendSlice("}");
+
+        return buffer.toOwnedSlice();
+    }
 };
 
 // v23.26: Histogram for latency distribution
@@ -514,6 +557,164 @@ pub const Histogram = struct {
     /// Get bucket boundaries for export
     pub fn getBucketBoundaries() []const u32 {
         return &BUCKET_BOUNDARIES;
+    }
+
+    /// Export histogram to JSON (v23.39)
+    pub fn toJson(self: Self, allocator: Allocator) ![]u8 {
+        var buffer = std.ArrayList(u8).init(allocator);
+        errdefer buffer.deinit();
+
+        try buffer.appendSlice("{\n");
+        try buffer.appendSlice("  \"buckets\": [\n");
+
+        for (BUCKET_BOUNDARIES, 0..) |boundary, i| {
+            const comma: []const u8 = if (i < BUCKET_COUNT - 1) "," else "";
+            try std.fmt.format(buffer.writer(), "    {{\"le\": {d}, \"count\": {d}}}{s}\n", .{ boundary, self.buckets[i], comma });
+        }
+
+        try buffer.appendSlice("  ],\n");
+        try std.fmt.format(buffer.writer(), "  \"overflow\": {d},\n", .{self.overflow});
+        try std.fmt.format(buffer.writer(), "  \"count\": {d},\n", .{self.count});
+        try std.fmt.format(buffer.writer(), "  \"sum\": {d},\n", .{self.sum});
+        try std.fmt.format(buffer.writer(), "  \"min\": {d},\n", .{if (self.count > 0) self.min else 0});
+        try std.fmt.format(buffer.writer(), "  \"max\": {d},\n", .{self.max});
+        try std.fmt.format(buffer.writer(), "  \"avg\": {d:.2}\n", .{self.getAverage()});
+        try buffer.appendSlice("}");
+
+        return buffer.toOwnedSlice();
+    }
+
+    /// Generate ASCII histogram chart (v23.39)
+    pub fn toAsciiChart(self: Self, allocator: Allocator) ![]u8 {
+        var buffer = std.ArrayList(u8).init(allocator);
+        errdefer buffer.deinit();
+
+        try buffer.appendSlice("Delay Distribution (ms):\n");
+
+        // Find max bucket count for scaling
+        var max_count: u64 = 1;
+        for (self.buckets) |count| {
+            if (count > max_count) max_count = count;
+        }
+        if (self.overflow > max_count) max_count = self.overflow;
+
+        const bar_width: u32 = 40;
+
+        for (BUCKET_BOUNDARIES, 0..) |boundary, i| {
+            const count = self.buckets[i];
+            const bar_len = @as(u32, @intFromFloat(@as(f32, @floatFromInt(count)) / @as(f32, @floatFromInt(max_count)) * @as(f32, @floatFromInt(bar_width))));
+
+            try std.fmt.format(buffer.writer(), "  <={d:>5}ms |", .{boundary});
+            var j: u32 = 0;
+            while (j < bar_len) : (j += 1) {
+                try buffer.append('#');
+            }
+            try std.fmt.format(buffer.writer(), " {d}\n", .{count});
+        }
+
+        // Overflow bucket
+        const overflow_bar = @as(u32, @intFromFloat(@as(f32, @floatFromInt(self.overflow)) / @as(f32, @floatFromInt(max_count)) * @as(f32, @floatFromInt(bar_width))));
+        try buffer.appendSlice("  > 12800ms |");
+        var k: u32 = 0;
+        while (k < overflow_bar) : (k += 1) {
+            try buffer.append('#');
+        }
+        try std.fmt.format(buffer.writer(), " {d}\n", .{self.overflow});
+
+        return buffer.toOwnedSlice();
+    }
+};
+
+// v23.39: Metrics Trend Tracking
+pub const MetricsTrend = struct {
+    // Rolling window of success rates (last 10 measurements)
+    const WINDOW_SIZE = 10;
+    success_rates: [WINDOW_SIZE]f32 = [_]f32{0.0} ** WINDOW_SIZE,
+    timestamps: [WINDOW_SIZE]i64 = [_]i64{0} ** WINDOW_SIZE,
+    current_index: usize = 0,
+    sample_count: usize = 0,
+
+    const Self = @This();
+
+    /// Record a new success rate sample (v23.39)
+    pub fn record(self: *Self, success_rate: f32) void {
+        self.success_rates[self.current_index] = success_rate;
+        self.timestamps[self.current_index] = std.time.milliTimestamp();
+        self.current_index = (self.current_index + 1) % WINDOW_SIZE;
+        if (self.sample_count < WINDOW_SIZE) {
+            self.sample_count += 1;
+        }
+    }
+
+    /// Get trend direction: positive = improving, negative = degrading (v23.39)
+    pub fn getTrend(self: Self) f32 {
+        if (self.sample_count < 2) return 0.0;
+
+        // Calculate linear regression slope
+        var sum_x: f32 = 0.0;
+        var sum_y: f32 = 0.0;
+        var sum_xy: f32 = 0.0;
+        var sum_xx: f32 = 0.0;
+        const n = @as(f32, @floatFromInt(self.sample_count));
+
+        for (0..self.sample_count) |i| {
+            const x = @as(f32, @floatFromInt(i));
+            const y = self.success_rates[i];
+            sum_x += x;
+            sum_y += y;
+            sum_xy += x * y;
+            sum_xx += x * x;
+        }
+
+        const denominator = n * sum_xx - sum_x * sum_x;
+        if (denominator == 0.0) return 0.0;
+
+        return (n * sum_xy - sum_x * sum_y) / denominator;
+    }
+
+    /// Get average success rate over window (v23.39)
+    pub fn getAverage(self: Self) f32 {
+        if (self.sample_count == 0) return 0.0;
+        var sum: f32 = 0.0;
+        for (0..self.sample_count) |i| {
+            sum += self.success_rates[i];
+        }
+        return sum / @as(f32, @floatFromInt(self.sample_count));
+    }
+
+    /// Get trend status string (v23.39)
+    pub fn getTrendStatus(self: Self) []const u8 {
+        const trend = self.getTrend();
+        if (trend > 0.01) return "IMPROVING";
+        if (trend < -0.01) return "DEGRADING";
+        return "STABLE";
+    }
+
+    /// Export to JSON (v23.39)
+    pub fn toJson(self: Self, allocator: Allocator) ![]u8 {
+        var buffer = std.ArrayList(u8).init(allocator);
+        errdefer buffer.deinit();
+
+        try buffer.appendSlice("{\n");
+        try std.fmt.format(buffer.writer(), "  \"sample_count\": {d},\n", .{self.sample_count});
+        try std.fmt.format(buffer.writer(), "  \"average\": {d:.4},\n", .{self.getAverage()});
+        try std.fmt.format(buffer.writer(), "  \"trend\": {d:.6},\n", .{self.getTrend()});
+        try std.fmt.format(buffer.writer(), "  \"status\": \"{s}\",\n", .{self.getTrendStatus()});
+        try buffer.appendSlice("  \"samples\": [");
+
+        for (0..self.sample_count) |i| {
+            if (i > 0) try buffer.appendSlice(", ");
+            try std.fmt.format(buffer.writer(), "{d:.4}", .{self.success_rates[i]});
+        }
+
+        try buffer.appendSlice("]\n}");
+
+        return buffer.toOwnedSlice();
+    }
+
+    /// Reset trend data (v23.39)
+    pub fn reset(self: *Self) void {
+        self.* = MetricsTrend{};
     }
 };
 
@@ -4157,6 +4358,106 @@ test "Histogram reset (v23.26)" {
 
     try std.testing.expectEqual(@as(u64, 0), hist.count);
     try std.testing.expectEqual(@as(u64, 0), hist.sum);
+}
+
+test "Histogram toJson (v23.39)" {
+    const allocator = std.testing.allocator;
+    var hist = Histogram{};
+    hist.observe(100);
+    hist.observe(500);
+    hist.observe(1000);
+
+    const json = try hist.toJson(allocator);
+    defer allocator.free(json);
+
+    // Check JSON contains expected fields
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"buckets\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"count\": 3") != null);
+}
+
+test "Histogram toAsciiChart (v23.39)" {
+    const allocator = std.testing.allocator;
+    var hist = Histogram{};
+    hist.observe(100);
+    hist.observe(500);
+    hist.observe(1000);
+
+    const chart = try hist.toAsciiChart(allocator);
+    defer allocator.free(chart);
+
+    // Check chart contains expected elements
+    try std.testing.expect(std.mem.indexOf(u8, chart, "Delay Distribution") != null);
+    try std.testing.expect(std.mem.indexOf(u8, chart, "|") != null);
+}
+
+test "RetryMetrics toJson (v23.39)" {
+    const allocator = std.testing.allocator;
+    var metrics = RetryMetrics{};
+    metrics.total_operations = 100;
+    metrics.successful_operations = 95;
+    metrics.failed_operations = 5;
+    metrics.total_retries = 10;
+
+    const json = try metrics.toJson(allocator);
+    defer allocator.free(json);
+
+    // Check JSON structure
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"counters\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"timing\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"rates\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"success_rate\"") != null);
+}
+
+test "MetricsTrend record and getTrend (v23.39)" {
+    var trend = MetricsTrend{};
+
+    // Record improving trend
+    trend.record(0.80);
+    trend.record(0.85);
+    trend.record(0.90);
+    trend.record(0.95);
+
+    try std.testing.expect(trend.getTrend() > 0.0); // Positive = improving
+    try std.testing.expectEqualStrings("IMPROVING", trend.getTrendStatus());
+}
+
+test "MetricsTrend degrading (v23.39)" {
+    var trend = MetricsTrend{};
+
+    // Record degrading trend
+    trend.record(0.95);
+    trend.record(0.90);
+    trend.record(0.85);
+    trend.record(0.80);
+
+    try std.testing.expect(trend.getTrend() < 0.0); // Negative = degrading
+    try std.testing.expectEqualStrings("DEGRADING", trend.getTrendStatus());
+}
+
+test "MetricsTrend stable (v23.39)" {
+    var trend = MetricsTrend{};
+
+    // Record stable trend
+    trend.record(0.90);
+    trend.record(0.90);
+    trend.record(0.90);
+    trend.record(0.90);
+
+    try std.testing.expect(trend.getTrend() < 0.01 and trend.getTrend() > -0.01);
+    try std.testing.expectEqualStrings("STABLE", trend.getTrendStatus());
+}
+
+test "MetricsTrend toJson (v23.39)" {
+    const allocator = std.testing.allocator;
+    var trend = MetricsTrend{};
+    trend.record(0.90);
+    trend.record(0.92);
+
+    const json = try trend.toJson(allocator);
+    defer allocator.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"sample_count\": 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"status\"") != null);
 }
 
 test "RetryMetrics with histogram (v23.26)" {
