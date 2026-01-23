@@ -3667,6 +3667,68 @@ pub fn initTestAgent(allocator: Allocator) RealAgent {
     return RealAgent.init(allocator, AgentConfig{ .test_mode = true });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.47: LLM RETRY & FALLBACK CONFIGURATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// LLM retry configuration (v23.47)
+pub const LLMRetryConfig = struct {
+    max_retries: u32 = 3,
+    initial_delay_ms: u32 = 1000,
+    max_delay_ms: u32 = 30000,
+    backoff_factor: f32 = 2.0,
+    // Fallback models (in order of preference)
+    fallback_models: []const []const u8 = &[_][]const u8{
+        anthropic.CLAUDE_3_HAIKU, // Fast, cheap fallback
+    },
+    // Token budget per task
+    max_tokens_per_task: u32 = 50000,
+    // Retry on these errors
+    retry_on_rate_limit: bool = true,
+    retry_on_overload: bool = true,
+
+    /// Calculate delay for retry attempt (v23.47)
+    pub fn getDelay(self: LLMRetryConfig, attempt: u32) u32 {
+        if (attempt == 0) return self.initial_delay_ms;
+
+        var delay: f32 = @floatFromInt(self.initial_delay_ms);
+        var i: u32 = 0;
+        while (i < attempt) : (i += 1) {
+            delay *= self.backoff_factor;
+        }
+
+        const delay_u32: u32 = @intFromFloat(@min(delay, @as(f32, @floatFromInt(self.max_delay_ms))));
+        return delay_u32;
+    }
+};
+
+/// LLM usage metrics (v23.47)
+pub const LLMUsageMetrics = struct {
+    total_input_tokens: u32 = 0,
+    total_output_tokens: u32 = 0,
+    total_requests: u32 = 0,
+    failed_requests: u32 = 0,
+    retried_requests: u32 = 0,
+    fallback_used: u32 = 0,
+    total_latency_ms: u64 = 0,
+
+    /// Get average latency per request (v23.47)
+    pub fn avgLatencyMs(self: LLMUsageMetrics) u32 {
+        if (self.total_requests == 0) return 0;
+        return @intCast(self.total_latency_ms / self.total_requests);
+    }
+
+    /// Get total tokens used (v23.47)
+    pub fn totalTokens(self: LLMUsageMetrics) u32 {
+        return self.total_input_tokens + self.total_output_tokens;
+    }
+
+    /// Check if budget exceeded (v23.47)
+    pub fn isBudgetExceeded(self: LLMUsageMetrics, budget: u32) bool {
+        return self.totalTokens() >= budget;
+    }
+};
+
 pub const RealAgent = struct {
     allocator: Allocator,
     config: AgentConfig,
@@ -3700,6 +3762,9 @@ pub const RealAgent = struct {
     action_parser: ?*ActionParser = null,
     // v23.45: Anthropic LLM client
     llm_client: ?*anthropic.AnthropicClient = null,
+    // v23.47: LLM retry configuration and metrics
+    llm_retry_config: LLMRetryConfig = .{},
+    llm_metrics: LLMUsageMetrics = .{},
 
     const Self = @This();
 
@@ -4014,6 +4079,94 @@ pub const RealAgent = struct {
         return AgentError.ComponentNotInitialized;
     }
 
+    /// Call LLM with retry and fallback (v23.47)
+    pub fn callLLMWithRetry(self: *Self, prompt: []const u8) ![]u8 {
+        if (self.llm_client == null) return AgentError.ComponentNotInitialized;
+
+        // Check token budget
+        if (self.llm_metrics.isBudgetExceeded(self.llm_retry_config.max_tokens_per_task)) {
+            std.debug.print("[LLM] Token budget exceeded: {d}/{d}\n", .{
+                self.llm_metrics.totalTokens(),
+                self.llm_retry_config.max_tokens_per_task,
+            });
+            return AgentError.LLMConnectionFailed;
+        }
+
+        var attempt: u32 = 0;
+        var use_fallback = false;
+
+        while (attempt <= self.llm_retry_config.max_retries) : (attempt += 1) {
+            const client = self.llm_client.?;
+
+            // Switch to fallback model if needed
+            if (use_fallback and self.llm_retry_config.fallback_models.len > 0) {
+                client.setModel(self.llm_retry_config.fallback_models[0]);
+                self.llm_metrics.fallback_used += 1;
+                std.debug.print("[LLM] Switching to fallback model: {s}\n", .{self.llm_retry_config.fallback_models[0]});
+            }
+
+            self.llm_metrics.total_requests += 1;
+
+            var response = client.chatWithSystem(AGENT_SYSTEM_PROMPT, prompt) catch |err| {
+                self.llm_metrics.failed_requests += 1;
+
+                const should_retry = switch (err) {
+                    anthropic.AnthropicError.RateLimited => self.llm_retry_config.retry_on_rate_limit,
+                    anthropic.AnthropicError.Overloaded => self.llm_retry_config.retry_on_overload,
+                    else => false,
+                };
+
+                if (should_retry and attempt < self.llm_retry_config.max_retries) {
+                    const delay = self.llm_retry_config.getDelay(attempt);
+                    std.debug.print("[LLM] Retry {d}/{d} after {d}ms ({s})\n", .{
+                        attempt + 1,
+                        self.llm_retry_config.max_retries,
+                        delay,
+                        @errorName(err),
+                    });
+                    self.llm_metrics.retried_requests += 1;
+                    std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
+
+                    // Try fallback on next attempt
+                    if (err == anthropic.AnthropicError.Overloaded) {
+                        use_fallback = true;
+                    }
+                    continue;
+                }
+
+                std.debug.print("[LLM] Failed after {d} attempts: {s}\n", .{ attempt + 1, @errorName(err) });
+                return AgentError.LLMConnectionFailed;
+            };
+            defer response.deinit();
+
+            // Update metrics
+            self.llm_metrics.total_input_tokens += response.input_tokens;
+            self.llm_metrics.total_output_tokens += response.output_tokens;
+            self.llm_metrics.total_latency_ms += @intCast(@divFloor(response.latency_ns, 1_000_000));
+
+            std.debug.print("[LLM] Success: in={d}, out={d}, total={d}/{d}\n", .{
+                response.input_tokens,
+                response.output_tokens,
+                self.llm_metrics.totalTokens(),
+                self.llm_retry_config.max_tokens_per_task,
+            });
+
+            return self.allocator.dupe(u8, response.content) catch return AgentError.OutOfMemory;
+        }
+
+        return AgentError.LLMConnectionFailed;
+    }
+
+    /// Reset LLM metrics (v23.47)
+    pub fn resetLLMMetrics(self: *Self) void {
+        self.llm_metrics = LLMUsageMetrics{};
+    }
+
+    /// Get LLM metrics summary (v23.47)
+    pub fn getLLMMetricsSummary(self: *Self) LLMUsageMetrics {
+        return self.llm_metrics;
+    }
+
     /// Run full task cycle: observe -> think -> act (v23.45)
     /// Returns list of action results from the task execution
     pub fn runTask(self: *Self, instruction: []const u8, max_steps: u32) ![]ActionResult {
@@ -4040,7 +4193,7 @@ pub const RealAgent = struct {
             };
             defer self.allocator.free(prompt);
 
-            const llm_response = self.callLLM(prompt) catch |err| {
+            const llm_response = self.callLLMWithRetry(prompt) catch |err| {
                 std.debug.print("[TASK] LLM call failed: {s}\n", .{@errorName(err)});
                 break;
             };
@@ -8535,4 +8688,109 @@ test "buildElementContext without DOM extractor (v23.46)" {
     defer allocator.free(context);
 
     try std.testing.expect(std.mem.indexOf(u8, context, "not initialized") != null);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.47: LLM RETRY & FALLBACK TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "LLMRetryConfig defaults (v23.47)" {
+    const config = LLMRetryConfig{};
+    try std.testing.expectEqual(@as(u32, 3), config.max_retries);
+    try std.testing.expectEqual(@as(u32, 1000), config.initial_delay_ms);
+    try std.testing.expectEqual(@as(u32, 30000), config.max_delay_ms);
+    try std.testing.expect(config.retry_on_rate_limit);
+    try std.testing.expect(config.retry_on_overload);
+}
+
+test "LLMRetryConfig getDelay exponential backoff (v23.47)" {
+    const config = LLMRetryConfig{
+        .initial_delay_ms = 1000,
+        .backoff_factor = 2.0,
+        .max_delay_ms = 30000,
+    };
+
+    try std.testing.expectEqual(@as(u32, 1000), config.getDelay(0));
+    try std.testing.expectEqual(@as(u32, 2000), config.getDelay(1));
+    try std.testing.expectEqual(@as(u32, 4000), config.getDelay(2));
+    try std.testing.expectEqual(@as(u32, 8000), config.getDelay(3));
+}
+
+test "LLMRetryConfig getDelay capped at max (v23.47)" {
+    const config = LLMRetryConfig{
+        .initial_delay_ms = 1000,
+        .backoff_factor = 2.0,
+        .max_delay_ms = 5000,
+    };
+
+    // 1000 * 2^4 = 16000, but capped at 5000
+    try std.testing.expectEqual(@as(u32, 5000), config.getDelay(4));
+}
+
+test "LLMUsageMetrics initial values (v23.47)" {
+    const metrics = LLMUsageMetrics{};
+    try std.testing.expectEqual(@as(u32, 0), metrics.total_input_tokens);
+    try std.testing.expectEqual(@as(u32, 0), metrics.total_output_tokens);
+    try std.testing.expectEqual(@as(u32, 0), metrics.total_requests);
+    try std.testing.expectEqual(@as(u32, 0), metrics.avgLatencyMs());
+    try std.testing.expectEqual(@as(u32, 0), metrics.totalTokens());
+}
+
+test "LLMUsageMetrics calculations (v23.47)" {
+    var metrics = LLMUsageMetrics{};
+    metrics.total_input_tokens = 100;
+    metrics.total_output_tokens = 50;
+    metrics.total_requests = 2;
+    metrics.total_latency_ms = 1000;
+
+    try std.testing.expectEqual(@as(u32, 150), metrics.totalTokens());
+    try std.testing.expectEqual(@as(u32, 500), metrics.avgLatencyMs());
+}
+
+test "LLMUsageMetrics budget check (v23.47)" {
+    var metrics = LLMUsageMetrics{};
+    metrics.total_input_tokens = 40000;
+    metrics.total_output_tokens = 10000;
+
+    try std.testing.expect(metrics.isBudgetExceeded(50000));
+    try std.testing.expect(!metrics.isBudgetExceeded(60000));
+}
+
+test "RealAgent llm_retry_config field exists (v23.47)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    try std.testing.expectEqual(@as(u32, 3), agent.llm_retry_config.max_retries);
+}
+
+test "RealAgent llm_metrics field exists (v23.47)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), agent.llm_metrics.total_requests);
+}
+
+test "RealAgent resetLLMMetrics (v23.47)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    agent.llm_metrics.total_requests = 10;
+    agent.llm_metrics.total_input_tokens = 5000;
+
+    agent.resetLLMMetrics();
+
+    try std.testing.expectEqual(@as(u32, 0), agent.llm_metrics.total_requests);
+    try std.testing.expectEqual(@as(u32, 0), agent.llm_metrics.total_input_tokens);
+}
+
+test "RealAgent callLLMWithRetry without client (v23.47)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    const result = agent.callLLMWithRetry("test prompt");
+    try std.testing.expectError(AgentError.ComponentNotInitialized, result);
 }
